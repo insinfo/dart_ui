@@ -1,0 +1,13 @@
+name: poc_04_cpu_raster
+description: POC-04 — CPU rasterization into a premultiplied BGRA pixel buffer.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dev_dependencies:
+  lints: ^5.1.0
+  test: ^1.25.0

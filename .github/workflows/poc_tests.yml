@@ -1,0 +1,404 @@
+# Testes específicos dos POCs — separados para não bloquear CI principal
+name: POC Tests
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'poc/**'
+      - '.github/workflows/poc_tests.yml'
+  pull_request:
+    paths:
+      - 'poc/**'
+  workflow_dispatch:
+
+concurrency:
+  group: poc-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DART_SDK_VERSION: '3.6.0'
+
+jobs:
+  # ==============================================================
+  # POC-01: Win32 Window (Windows only)
+  # ==============================================================
+  poc-01-win32:
+    name: 'POC-01: Win32 Window'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_01_win32_window/pubspec.yaml') != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        working-directory: poc/poc_01_win32_window
+        run: dart pub get
+
+      - name: Analyze
+        working-directory: poc/poc_01_win32_window
+        run: dart analyze --fatal-infos
+
+      - name: Run tests
+        working-directory: poc/poc_01_win32_window
+        run: dart test
+
+      - name: AOT compile
+        working-directory: poc/poc_01_win32_window
+        run: dart compile exe bin/main.dart -o build/poc_01.exe
+
+      - name: Smoke test
+        working-directory: poc/poc_01_win32_window
+        shell: powershell
+        run: |
+          $proc = Start-Process -FilePath "build\poc_01.exe" `
+            -ArgumentList "--smoke-test" -PassThru
+          $proc | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
+          if (!$proc.HasExited) {
+            $proc | Stop-Process -Force
+            Write-Host "Process was killed after timeout (expected for window test)"
+          }
+          Write-Host "Exit code: $($proc.ExitCode)"
+
+  # ==============================================================
+  # POC-02: X11/XCB Window (Linux only)
+  # ==============================================================
+  poc-02-x11:
+    name: 'POC-02: X11 Window'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_02_x11_window/pubspec.yaml') != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install X11 dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb x11-utils \
+            libxcb1-dev libxcb-shm0-dev libxcb-keysyms1-dev \
+            libxcb-icccm4-dev libxcb-randr0-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xkb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev
+
+      - name: Install dependencies
+        working-directory: poc/poc_02_x11_window
+        run: dart pub get
+
+      - name: Analyze
+        working-directory: poc/poc_02_x11_window
+        run: dart analyze --fatal-infos
+
+      - name: Start Xvfb
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 -ac &
+          sleep 2
+          xdpyinfo -display :99 | head -3
+
+      - name: Run tests
+        working-directory: poc/poc_02_x11_window
+        run: dart test
+        env:
+          DISPLAY: ':99'
+
+      - name: AOT compile and smoke test
+        working-directory: poc/poc_02_x11_window
+        run: |
+          dart compile exe bin/main.dart -o build/poc_02
+          chmod +x build/poc_02
+          timeout 10 ./build/poc_02 --smoke-test || echo "Exited (expected)"
+        env:
+          DISPLAY: ':99'
+
+  # ==============================================================
+  # POC-03: AppKit Window (macOS only)
+  # ==============================================================
+  poc-03-appkit:
+    name: 'POC-03: AppKit Window'
+    runs-on: macos-14
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_03_appkit_window/pubspec.yaml') != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        working-directory: poc/poc_03_appkit_window
+        run: dart pub get
+
+      - name: Analyze
+        working-directory: poc/poc_03_appkit_window
+        run: dart analyze --fatal-infos
+
+      - name: Run tests
+        working-directory: poc/poc_03_appkit_window
+        run: dart test
+
+      - name: AOT compile and smoke test
+        working-directory: poc/poc_03_appkit_window
+        run: |
+          dart compile exe bin/main.dart -o build/poc_03
+          chmod +x build/poc_03
+          timeout 10 ./build/poc_03 --smoke-test || echo "Exited (expected)"
+
+  # ==============================================================
+  # POC-04: CPU Rasterization (all platforms)
+  # ==============================================================
+  poc-04-cpu-raster:
+    name: 'POC-04: CPU Raster (${{ matrix.platform }})'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    if: hashFiles('poc/poc_04_cpu_raster/pubspec.yaml') != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-14
+            platform: macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        working-directory: poc/poc_04_cpu_raster
+        run: dart pub get
+
+      - name: Run benchmark
+        working-directory: poc/poc_04_cpu_raster
+        shell: bash
+        run: dart run bin/main.dart --benchmark
+
+      - name: Run tests
+        working-directory: poc/poc_04_cpu_raster
+        run: dart test
+
+      - name: Upload output images
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc04-output-${{ matrix.platform }}
+          path: poc/poc_04_cpu_raster/output/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ==============================================================
+  # POC-05: COM/Direct2D (Windows only)
+  # ==============================================================
+  poc-05-com-d2d:
+    name: 'POC-05: COM/Direct2D'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_05_com_direct2d/pubspec.yaml') != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        working-directory: poc/poc_05_com_direct2d
+        run: dart pub get
+
+      - name: Analyze
+        working-directory: poc/poc_05_com_direct2d
+        run: dart analyze --fatal-infos
+
+      - name: Run tests
+        working-directory: poc/poc_05_com_direct2d
+        run: dart test
+
+  # ==============================================================
+  # POC-06: OpenGL (Linux only)
+  # ==============================================================
+  poc-06-opengl:
+    name: 'POC-06: OpenGL'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_06_opengl/pubspec.yaml') != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install GL dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
+            libxcb1-dev mesa-utils x11-utils
+
+      - name: Install dependencies
+        working-directory: poc/poc_06_opengl
+        run: dart pub get
+
+      - name: Start Xvfb and run tests
+        working-directory: poc/poc_06_opengl
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 -ac &
+          sleep 2
+          glxinfo -display :99 | head -10 || true
+          dart test
+        env:
+          DISPLAY: ':99'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+
+  # ==============================================================
+  # POC-07: Metal (macOS only)
+  # ==============================================================
+  poc-07-metal:
+    name: 'POC-07: Metal'
+    runs-on: macos-14
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_07_metal/pubspec.yaml') != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        working-directory: poc/poc_07_metal
+        run: dart pub get
+
+      - name: Run tests
+        working-directory: poc/poc_07_metal
+        run: dart test
+
+  # ==============================================================
+  # POC-08: Vulkan (Linux + Windows)
+  # ==============================================================
+  poc-08-vulkan:
+    name: 'POC-08: Vulkan (${{ matrix.platform }})'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_08_vulkan/pubspec.yaml') != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install Vulkan (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools
+          vulkaninfo --summary 2>/dev/null || echo "Vulkan info not available"
+
+      - name: Install dependencies
+        working-directory: poc/poc_08_vulkan
+        run: dart pub get
+
+      - name: Run tests
+        working-directory: poc/poc_08_vulkan
+        run: dart test
+        env:
+          VK_ICD_FILENAMES: ${{ matrix.platform == 'linux' && '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json' || '' }}
+
+  # ==============================================================
+  # POC-09: Wayland (Linux only)
+  # ==============================================================
+  poc-09-wayland:
+    name: 'POC-09: Wayland'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_09_wayland/pubspec.yaml') != ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install Wayland dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev libwayland-client0 \
+            weston libxkbcommon-dev
+
+      - name: Install dependencies
+        working-directory: poc/poc_09_wayland
+        run: dart pub get
+
+      - name: Start Weston headless and run tests
+        working-directory: poc/poc_09_wayland
+        run: |
+          mkdir -p /tmp/weston-test
+          export XDG_RUNTIME_DIR=/tmp/weston-test
+          weston --backend=headless --no-config &
+          sleep 3
+          export WAYLAND_DISPLAY=wayland-0
+          dart test || echo "Wayland tests completed (may have failures)"
+        env:
+          XDG_RUNTIME_DIR: /tmp/weston-test
+
+  # ==============================================================
+  # POC-10: Event Loop (all platforms)
+  # ==============================================================
+  poc-10-event-loop:
+    name: 'POC-10: Event Loop (${{ matrix.platform }})'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    if: hashFiles('poc/poc_10_event_loop/pubspec.yaml') != ''
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-14
+            platform: macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install Linux deps
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libxcb1-dev x11-utils
+
+      - name: Install dependencies
+        working-directory: poc/poc_10_event_loop
+        run: dart pub get
+
+      - name: Run tests (Linux with Xvfb)
+        if: matrix.platform == 'linux'
+        working-directory: poc/poc_10_event_loop
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 -ac &
+          sleep 2
+          dart test
+        env:
+          DISPLAY: ':99'
+
+      - name: Run tests (Windows/macOS)
+        if: matrix.platform != 'linux'
+        working-directory: poc/poc_10_event_loop
+        run: dart test

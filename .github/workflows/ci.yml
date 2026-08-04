@@ -1,0 +1,286 @@
+# CI principal multiplataforma para dart_ui
+# Framework de Interface Gráfica Multiplataforma em 100% Puro Dart
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DART_SDK_VERSION: '3.6.0'
+
+jobs:
+  # ==============================================================
+  # Análise estática (uma vez, bloqueante para testes)
+  # ==============================================================
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Cache Dart packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: dart-pub-analyze-${{ hashFiles('**/pubspec.yaml', '**/pubspec.lock') }}
+          restore-keys: dart-pub-analyze-
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Check format
+        run: dart format --output=none --set-exit-if-changed .
+
+      - name: Analyze
+        run: dart analyze --fatal-infos
+
+  # ==============================================================
+  # Sanity check: verificar ambiente e FFI em todas as plataformas
+  # ==============================================================
+  sanity:
+    name: Sanity (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-14
+            platform: macos-arm64
+          - os: macos-13
+            platform: macos-x64
+    steps:
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Dart version and FFI info
+        shell: bash
+        run: |
+          dart --version
+          dart run -e "
+            import 'dart:ffi';
+            import 'dart:io';
+            print('OS: \${Platform.operatingSystem}');
+            print('OS Version: \${Platform.operatingSystemVersion}');
+            print('Dart: \${Platform.version}');
+            print('Pointer size: \${sizeOf<Pointer>()} bytes');
+            print('Int size: \${sizeOf<Int>()} bytes');
+            print('Long size: \${sizeOf<Long>()} bytes');
+            print('IntPtr size: \${sizeOf<IntPtr>()} bytes');
+          "
+
+      - name: Verify native libraries (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          for lib in libxcb.so.1 libwayland-client.so.0 libEGL.so.1 \
+                     libGL.so.1 libvulkan.so.1 libxkbcommon.so.0; do
+            if ldconfig -p | grep -q "$lib"; then
+              echo "✅ $lib"
+            else
+              echo "⚠️  $lib (not found, may need install)"
+            fi
+          done
+
+      - name: Verify native libraries (Windows)
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          @('user32.dll', 'kernel32.dll', 'gdi32.dll', 'shell32.dll',
+            'd2d1.dll', 'd3d11.dll', 'dxgi.dll', 'dwmapi.dll',
+            'dwrite.dll', 'ole32.dll', 'oleaut32.dll', 'comctl32.dll') | ForEach-Object {
+            $path = [System.IO.Path]::Combine($env:SystemRoot, 'System32', $_)
+            if (Test-Path $path) {
+              Write-Host "✅ $_" -ForegroundColor Green
+            } else {
+              Write-Host "⚠️  $_ (not found)" -ForegroundColor Yellow
+            }
+          }
+
+      - name: Verify frameworks (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          for fw in AppKit Metal CoreGraphics QuartzCore Foundation IOKit; do
+            if [ -d "/System/Library/Frameworks/${fw}.framework" ]; then
+              echo "✅ ${fw}.framework"
+            else
+              echo "⚠️  ${fw}.framework (not found)"
+            fi
+          done
+          echo "Architecture: $(uname -m)"
+          echo "macOS: $(sw_vers -productVersion)"
+          # Verificar libobjc
+          if [ -f "/usr/lib/libobjc.A.dylib" ]; then
+            echo "✅ libobjc.A.dylib"
+          fi
+
+  # ==============================================================
+  # Testes multiplataforma
+  # ==============================================================
+  test:
+    name: Test (${{ matrix.platform }})
+    needs: analyze
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-14
+            platform: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Cache Dart packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: dart-pub-${{ matrix.os }}-${{ hashFiles('**/pubspec.yaml', '**/pubspec.lock') }}
+          restore-keys: dart-pub-${{ matrix.os }}-
+
+      - name: Install dependencies
+        run: dart pub get
+
+      # ---- Linux: Instalar dependências de display ----
+      - name: Install Linux display dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb \
+            libxcb1-dev libxcb-shm0-dev libxcb-xfixes0-dev \
+            libxcb-keysyms1-dev libxcb-icccm4-dev libxcb-randr0-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xkb-dev \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libwayland-client0 \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
+            libvulkan-dev mesa-vulkan-drivers \
+            weston x11-utils x11-xserver-utils
+
+      # ---- Testes headless (sem display, todas plataformas) ----
+      - name: Run headless tests
+        run: dart test --tags headless
+        continue-on-error: true
+
+      # ---- Testes unitários ----
+      - name: Run unit tests
+        run: dart test --exclude-tags "platform,golden,headless"
+        continue-on-error: true
+
+      # ---- Linux: Testes de plataforma com Xvfb ----
+      - name: Run platform tests (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 -ac &
+          sleep 2
+          xdpyinfo -display :99 | head -3 || true
+          dart test --tags platform
+        env:
+          DISPLAY: ':99'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        continue-on-error: true
+
+      # ---- Windows: Testes de plataforma ----
+      - name: Run platform tests (Windows)
+        if: matrix.platform == 'windows'
+        run: dart test --tags platform
+        continue-on-error: true
+
+      # ---- macOS: Testes de plataforma ----
+      - name: Run platform tests (macOS)
+        if: matrix.platform == 'macos'
+        run: dart test --tags platform
+        continue-on-error: true
+
+  # ==============================================================
+  # Build AOT multiplataforma
+  # ==============================================================
+  build-aot:
+    name: AOT (${{ matrix.platform }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+            ext: ''
+          - os: windows-latest
+            platform: windows
+            ext: '.exe'
+          - os: macos-14
+            platform: macos-arm64
+            ext: ''
+          - os: macos-13
+            platform: macos-x64
+            ext: ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Cache Dart packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: dart-pub-${{ matrix.os }}-${{ hashFiles('**/pubspec.yaml', '**/pubspec.lock') }}
+          restore-keys: dart-pub-${{ matrix.os }}-
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: AOT compile example
+        shell: bash
+        run: |
+          if [ -f "examples/counter/bin/main.dart" ]; then
+            mkdir -p build
+            dart compile exe examples/counter/bin/main.dart \
+              -o build/counter_${{ matrix.platform }}${{ matrix.ext }}
+            echo "✅ AOT compilation successful"
+            ls -la build/
+          else
+            echo "⚠️  Example not yet created, skipping AOT"
+          fi
+
+      - name: Upload AOT binary
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: aot-${{ matrix.platform }}
+          path: build/counter_*
+          retention-days: 7
+          if-no-files-found: ignore

@@ -1,0 +1,10 @@
+name: dart_ui_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+workspace:
+  - poc/poc_01_win32_window
+  - poc/poc_04_cpu_raster
+  - poc/poc_05_com_direct2d
