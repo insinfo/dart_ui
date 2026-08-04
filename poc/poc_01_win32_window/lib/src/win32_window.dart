@@ -65,7 +65,6 @@ class Win32Window {
   // GDI resources for framebuffer presentation
   int _dibSection = 0;
   int _memDC = 0;
-  Pointer<Void> _dibBits = nullptr;
 
   /// Callbacks for window events.
   void Function(Win32Window window)? onPaint;
@@ -298,7 +297,6 @@ class Win32Window {
       Win32.DeleteDC(_memDC);
       _memDC = 0;
     }
-    _dibBits = nullptr;
     _framebuffer = null;
   }
 
@@ -488,13 +486,12 @@ class Win32Window {
     return 0;
   }
 
-  int _onDpiChanged(int hwnd, int newDpi, int lParam) {
+  int _onDpiChanged(int hwnd, int newDpi, int _) {
     final oldDpi = _dpi;
     _dpi = newDpi;
-    print('[Win32] DPI changed: $oldDpi → $newDpi (scale: ${scale.toStringAsFixed(2)})');
+    print(
+        '[Win32] DPI changed: $oldDpi → $newDpi (scale: ${scale.toStringAsFixed(2)})');
 
-    // The suggested new rect is in lParam
-    final suggestedRect = Pointer<RECT>.fromAddress(lParam);
     // We could use SetWindowPos here; for now, just invalidate
     invalidate();
     return 0;

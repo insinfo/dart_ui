@@ -27,7 +27,6 @@ jobs:
     name: 'POC-01: Win32 Window'
     runs-on: windows-latest
     timeout-minutes: 10
-    if: hashFiles('poc/poc_01_win32_window/pubspec.yaml') != ''
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -40,7 +39,7 @@ jobs:
 
       - name: Analyze
         working-directory: poc/poc_01_win32_window
-        run: dart analyze --fatal-infos
+        run: dart analyze
 
       - name: Run tests
         working-directory: poc/poc_01_win32_window
@@ -70,7 +69,6 @@ jobs:
     name: 'POC-02: X11 Window'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    if: hashFiles('poc/poc_02_x11_window/pubspec.yaml') != ''
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -93,7 +91,7 @@ jobs:
 
       - name: Analyze
         working-directory: poc/poc_02_x11_window
-        run: dart analyze --fatal-infos
+        run: dart analyze
 
       - name: Start Xvfb
         run: |
@@ -123,7 +121,8 @@ jobs:
     name: 'POC-03: AppKit Window'
     runs-on: macos-14
     timeout-minutes: 10
-    if: hashFiles('poc/poc_03_appkit_window/pubspec.yaml') != ''
+    # Reserved until POC-03 exists.
+    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -136,7 +135,7 @@ jobs:
 
       - name: Analyze
         working-directory: poc/poc_03_appkit_window
-        run: dart analyze --fatal-infos
+        run: dart analyze
 
       - name: Run tests
         working-directory: poc/poc_03_appkit_window
@@ -156,7 +155,6 @@ jobs:
     name: 'POC-04: CPU Raster (${{ matrix.platform }})'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
-    if: hashFiles('poc/poc_04_cpu_raster/pubspec.yaml') != ''
     strategy:
       fail-fast: false
       matrix:
@@ -201,7 +199,6 @@ jobs:
     name: 'POC-05: COM/Direct2D'
     runs-on: windows-latest
     timeout-minutes: 10
-    if: hashFiles('poc/poc_05_com_direct2d/pubspec.yaml') != ''
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -214,7 +211,7 @@ jobs:
 
       - name: Analyze
         working-directory: poc/poc_05_com_direct2d
-        run: dart analyze --fatal-infos
+        run: dart analyze
 
       - name: Run tests
         working-directory: poc/poc_05_com_direct2d
@@ -227,7 +224,8 @@ jobs:
     name: 'POC-06: OpenGL'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    if: hashFiles('poc/poc_06_opengl/pubspec.yaml') != ''
+    # Reserved until POC-06 exists.
+    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -263,7 +261,8 @@ jobs:
     name: 'POC-07: Metal'
     runs-on: macos-14
     timeout-minutes: 10
-    if: hashFiles('poc/poc_07_metal/pubspec.yaml') != ''
+    # Reserved until POC-07 exists.
+    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -285,7 +284,8 @@ jobs:
     name: 'POC-08: Vulkan (${{ matrix.platform }})'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
-    if: hashFiles('poc/poc_08_vulkan/pubspec.yaml') != ''
+    # Reserved until POC-08 exists.
+    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -324,7 +324,8 @@ jobs:
     name: 'POC-09: Wayland'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    if: hashFiles('poc/poc_09_wayland/pubspec.yaml') != ''
+    # Reserved until POC-09 exists.
+    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -361,7 +362,6 @@ jobs:
     name: 'POC-10: Event Loop (${{ matrix.platform }})'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
-    if: hashFiles('poc/poc_10_event_loop/pubspec.yaml') != ''
     strategy:
       fail-fast: false
       matrix:

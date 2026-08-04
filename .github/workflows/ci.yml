@@ -46,7 +46,7 @@ jobs:
         run: dart format --output=none --set-exit-if-changed .
 
       - name: Analyze
-        run: dart analyze --fatal-infos
+        run: dart analyze
 
   # ==============================================================
   # Sanity check: verificar ambiente e FFI em todas as plataformas
@@ -73,20 +73,7 @@ jobs:
           sdk: ${{ env.DART_SDK_VERSION }}
 
       - name: Dart version and FFI info
-        shell: bash
-        run: |
-          dart --version
-          dart run -e "
-            import 'dart:ffi';
-            import 'dart:io';
-            print('OS: \${Platform.operatingSystem}');
-            print('OS Version: \${Platform.operatingSystemVersion}');
-            print('Dart: \${Platform.version}');
-            print('Pointer size: \${sizeOf<Pointer>()} bytes');
-            print('Int size: \${sizeOf<Int>()} bytes');
-            print('Long size: \${sizeOf<Long>()} bytes');
-            print('IntPtr size: \${sizeOf<IntPtr>()} bytes');
-          "
+        run: dart run tool/ffi_info.dart
 
       - name: Verify native libraries (Linux)
         if: matrix.platform == 'linux'

@@ -170,8 +170,7 @@ void _renderScene(
 
   // Counter display area
   final counterStr = 'Contagem: $counter';
-  _drawText(fb, width, height, width ~/ 2 - 60, 100, counterStr,
-      220, 220, 240);
+  _drawText(fb, width, height, width ~/ 2 - 60, 100, counterStr, 220, 220, 240);
 
   // Button
   final btnX = width ~/ 2 - 80;
@@ -180,56 +179,82 @@ void _renderScene(
   const btnH = 50;
 
   // Check hover
-  final hovered =
-      mouseX >= btnX && mouseX < btnX + btnW &&
-      mouseY >= btnY && mouseY < btnY + btnH;
+  final hovered = mouseX >= btnX &&
+      mouseX < btnX + btnW &&
+      mouseY >= btnY &&
+      mouseY < btnY + btnH;
 
   // Button colors
   int btnR, btnG, btnB;
   if (mouseDown && hovered) {
-    btnR = 40; btnG = 100; btnB = 200; // pressed
+    btnR = 40;
+    btnG = 100;
+    btnB = 200; // pressed
   } else if (hovered) {
-    btnR = 60; btnG = 130; btnB = 230; // hover
+    btnR = 60;
+    btnG = 130;
+    btnB = 230; // hover
   } else {
-    btnR = 50; btnG = 115; btnB = 220; // normal
+    btnR = 50;
+    btnG = 115;
+    btnB = 220; // normal
   }
 
   // Button shadow
-  _drawFilledRect(fb, width, height, btnX + 3, btnY + 3, btnW, btnH,
-      10, 15, 25, 180);
+  _drawFilledRect(
+      fb, width, height, btnX + 3, btnY + 3, btnW, btnH, 10, 15, 25, 180);
   // Button body
-  _drawFilledRect(fb, width, height, btnX, btnY, btnW, btnH,
-      btnB, btnG, btnR, 255);
+  _drawFilledRect(
+      fb, width, height, btnX, btnY, btnW, btnH, btnB, btnG, btnR, 255);
   // Button border (top/left lighter, bottom/right darker)
-  _drawHLine(fb, width, height, btnX, btnY, btnW,
-      (btnB + 30).clamp(0, 255), (btnG + 30).clamp(0, 255),
-      (btnR + 30).clamp(0, 255));
-  _drawHLine(fb, width, height, btnX, btnY + btnH - 1, btnW,
-      (btnB - 20).clamp(0, 255), (btnG - 20).clamp(0, 255),
+  _drawHLine(fb, width, height, btnX, btnY, btnW, (btnB + 30).clamp(0, 255),
+      (btnG + 30).clamp(0, 255), (btnR + 30).clamp(0, 255));
+  _drawHLine(
+      fb,
+      width,
+      height,
+      btnX,
+      btnY + btnH - 1,
+      btnW,
+      (btnB - 20).clamp(0, 255),
+      (btnG - 20).clamp(0, 255),
       (btnR - 20).clamp(0, 255));
-  _drawVLine(fb, width, height, btnX, btnY, btnH,
-      (btnB + 20).clamp(0, 255), (btnG + 20).clamp(0, 255),
-      (btnR + 20).clamp(0, 255));
-  _drawVLine(fb, width, height, btnX + btnW - 1, btnY, btnH,
-      (btnB - 30).clamp(0, 255), (btnG - 30).clamp(0, 255),
+  _drawVLine(fb, width, height, btnX, btnY, btnH, (btnB + 20).clamp(0, 255),
+      (btnG + 20).clamp(0, 255), (btnR + 20).clamp(0, 255));
+  _drawVLine(
+      fb,
+      width,
+      height,
+      btnX + btnW - 1,
+      btnY,
+      btnH,
+      (btnB - 30).clamp(0, 255),
+      (btnG - 30).clamp(0, 255),
       (btnR - 30).clamp(0, 255));
 
   // Button label
-  _drawText(fb, width, height, btnX + 20, btnY + 18,
-      'Incrementar', 240, 240, 255);
+  _drawText(
+      fb, width, height, btnX + 20, btnY + 18, 'Incrementar', 240, 240, 255);
 
   // Mouse cursor indicator (small crosshair)
-  _drawFilledRect(fb, width, height, mouseX - 2, mouseY - 2, 5, 5,
-      255, 100, 100, 200);
+  _drawFilledRect(
+      fb, width, height, mouseX - 2, mouseY - 2, 5, 5, 255, 100, 100, 200);
 
   // Status bar at bottom
-  _drawFilledRect(fb, width, height, 0, height - 30, width, 30,
-      35, 30, 25, 255);
-  _drawText(fb, width, height, 10, height - 22,
+  _drawFilledRect(
+      fb, width, height, 0, height - 30, width, 30, 35, 30, 25, 255);
+  _drawText(
+      fb,
+      width,
+      height,
+      10,
+      height - 22,
       'DPI: ${w.dpi} | Scale: ${w.scale.toStringAsFixed(2)}x | '
       'Size: ${width}x$height | Frame: $frameCount | '
       'Mouse: $mouseX,$mouseY',
-      160, 160, 170);
+      160,
+      160,
+      170);
 
   // Animated element: spinning dots
   final angle = frameCount * 0.05;
@@ -238,8 +263,8 @@ void _renderScene(
     final cx = width - 60 + (cos(a) * 25).toInt();
     final cy = 80 + (sin(a) * 25).toInt();
     final brightness = ((sin(angle + i * 0.8) + 1) * 127).toInt();
-    _drawFilledRect(fb, width, height, cx - 3, cy - 3, 7, 7,
-        brightness, 100 + brightness ~/ 2, 255, 255);
+    _drawFilledRect(fb, width, height, cx - 3, cy - 3, 7, 7, brightness,
+        100 + brightness ~/ 2, 255, 255);
   }
 }
 
@@ -255,9 +280,17 @@ bool _isInsideButton(Win32Window w, int x, int y) {
 // ============================================================
 
 void _drawFilledRect(
-  Uint8List fb, int fbW, int fbH,
-  int x, int y, int w, int h,
-  int b, int g, int r, int a,
+  Uint8List fb,
+  int fbW,
+  int fbH,
+  int x,
+  int y,
+  int w,
+  int h,
+  int b,
+  int g,
+  int r,
+  int a,
 ) {
   final x0 = x.clamp(0, fbW);
   final y0 = y.clamp(0, fbH);
@@ -286,8 +319,15 @@ void _drawFilledRect(
 }
 
 void _drawHLine(
-  Uint8List fb, int fbW, int fbH,
-  int x, int y, int w, int b, int g, int r,
+  Uint8List fb,
+  int fbW,
+  int fbH,
+  int x,
+  int y,
+  int w,
+  int b,
+  int g,
+  int r,
 ) {
   if (y < 0 || y >= fbH) return;
   final x0 = x.clamp(0, fbW);
@@ -303,8 +343,15 @@ void _drawHLine(
 }
 
 void _drawVLine(
-  Uint8List fb, int fbW, int fbH,
-  int x, int y, int h, int b, int g, int r,
+  Uint8List fb,
+  int fbW,
+  int fbH,
+  int x,
+  int y,
+  int h,
+  int b,
+  int g,
+  int r,
 ) {
   if (x < 0 || x >= fbW) return;
   final y0 = y.clamp(0, fbH);
@@ -321,8 +368,15 @@ void _drawVLine(
 /// Simple pixel-font text rendering for POC.
 /// Uses a minimal 5x7 bitmap font — just enough to show text.
 void _drawText(
-  Uint8List fb, int fbW, int fbH,
-  int x, int y, String text, int r, int g, int b,
+  Uint8List fb,
+  int fbW,
+  int fbH,
+  int x,
+  int y,
+  String text,
+  int r,
+  int g,
+  int b,
 ) {
   var cx = x;
   for (var i = 0; i < text.length; i++) {
@@ -475,14 +529,6 @@ void _runStressTest() {
   stopwatch.stop();
   Win32Window.shutdownWin32();
   print('[Stress] ✅ $iterations cycles in ${stopwatch.elapsedMilliseconds}ms');
-  print('[Stress] Avg: ${(stopwatch.elapsedMilliseconds / iterations).toStringAsFixed(1)}ms/cycle');
-}
-
-// Need this for the smoke test pump
-// PeekMessageW is missing from our bindings — let's add a local lookup
-extension _PeekMessage on Win32 {
-  static late final int Function(Pointer<MSG>, int, int, int, int)
-      PeekMessageW = DynamicLibrary.open('user32.dll').lookupFunction<
-          Int32 Function(Pointer<MSG>, IntPtr, Uint32, Uint32, Uint32),
-          int Function(Pointer<MSG>, int, int, int, int)>('PeekMessageW');
+  print(
+      '[Stress] Avg: ${(stopwatch.elapsedMilliseconds / iterations).toStringAsFixed(1)}ms/cycle');
 }

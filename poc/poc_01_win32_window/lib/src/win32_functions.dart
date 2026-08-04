@@ -40,14 +40,12 @@ class Win32 {
   // kernel32.dll
   // ============================================================
 
-  static late final int Function(Pointer<Utf16> lpModuleName)
-      GetModuleHandleW;
+  static late final int Function(Pointer<Utf16> lpModuleName) GetModuleHandleW;
 
   static late final int Function() GetLastError;
 
   static void _bindKernel32() {
-    GetModuleHandleW = _kernel32.lookupFunction<
-        IntPtr Function(Pointer<Utf16>),
+    GetModuleHandleW = _kernel32.lookupFunction<IntPtr Function(Pointer<Utf16>),
         int Function(Pointer<Utf16>)>('GetModuleHandleW');
 
     GetLastError = _kernel32
@@ -58,8 +56,7 @@ class Win32 {
   // user32.dll — Window management
   // ============================================================
 
-  static late final int Function(Pointer<WNDCLASSEXW> lpwcx)
-      RegisterClassExW;
+  static late final int Function(Pointer<WNDCLASSEXW> lpwcx) RegisterClassExW;
 
   static late final int Function(Pointer<Utf16> lpClassName, int hInstance)
       UnregisterClassW;
@@ -86,11 +83,12 @@ class Win32 {
   static late final int Function(int hWnd, int Msg, int wParam, int lParam)
       DefWindowProcW;
 
-  static late final int Function(Pointer<MSG> lpMsg, int hWnd, int wMsgFilterMin, int wMsgFilterMax)
+  static late final int Function(
+          Pointer<MSG> lpMsg, int hWnd, int wMsgFilterMin, int wMsgFilterMax)
       GetMessageW;
 
-  static late final int Function(Pointer<MSG> lpMsg, int hWnd, int wMsgFilterMin, int wMsgFilterMax, int wRemoveMsg)
-      PeekMessageW;
+  static late final int Function(Pointer<MSG> lpMsg, int hWnd,
+      int wMsgFilterMin, int wMsgFilterMax, int wRemoveMsg) PeekMessageW;
 
   static late final int Function(Pointer<MSG> lpMsg) TranslateMessage;
   static late final int Function(Pointer<MSG> lpMsg) DispatchMessageW;
@@ -105,8 +103,7 @@ class Win32 {
   static late final int Function(int hWnd, Pointer<PAINTSTRUCT> lpPaint)
       EndPaint;
 
-  static late final int Function(int hWnd, Pointer<RECT> lpRect)
-      GetClientRect;
+  static late final int Function(int hWnd, Pointer<RECT> lpRect) GetClientRect;
 
   static late final int Function(int hWnd, Pointer<RECT> lpRect, int bErase)
       InvalidateRect;
@@ -115,7 +112,9 @@ class Win32 {
       SetWindowTextW;
 
   static late final int Function(
-    int hdc, Pointer<RECT> lprc, int hbr,
+    int hdc,
+    Pointer<RECT> lprc,
+    int hbr,
   ) FillRect;
 
   static late final int Function(int type, int cx, int cy, int fuLoad)
@@ -138,19 +137,21 @@ class Win32 {
         int Function(Pointer<Utf16>, int)>('UnregisterClassW');
 
     CreateWindowExW = _user32.lookupFunction<
-        IntPtr Function(Uint32, Pointer<Utf16>, Pointer<Utf16>, Uint32,
-            Int32, Int32, Int32, Int32, IntPtr, IntPtr, IntPtr, IntPtr),
-        int Function(int, Pointer<Utf16>, Pointer<Utf16>, int, int, int,
-            int, int, int, int, int, int)>('CreateWindowExW');
+        IntPtr Function(Uint32, Pointer<Utf16>, Pointer<Utf16>, Uint32, Int32,
+            Int32, Int32, Int32, IntPtr, IntPtr, IntPtr, IntPtr),
+        int Function(int, Pointer<Utf16>, Pointer<Utf16>, int, int, int, int,
+            int, int, int, int, int)>('CreateWindowExW');
 
     ShowWindow = _user32.lookupFunction<Int32 Function(IntPtr, Int32),
         int Function(int, int)>('ShowWindow');
 
-    UpdateWindow = _user32.lookupFunction<Int32 Function(IntPtr),
-        int Function(int)>('UpdateWindow');
+    UpdateWindow =
+        _user32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+            'UpdateWindow');
 
-    DestroyWindow = _user32.lookupFunction<Int32 Function(IntPtr),
-        int Function(int)>('DestroyWindow');
+    DestroyWindow =
+        _user32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+            'DestroyWindow');
 
     DefWindowProcW = _user32.lookupFunction<
         IntPtr Function(IntPtr, Uint32, IntPtr, IntPtr),
@@ -164,16 +165,15 @@ class Win32 {
         Int32 Function(Pointer<MSG>, IntPtr, Uint32, Uint32, Uint32),
         int Function(Pointer<MSG>, int, int, int, int)>('PeekMessageW');
 
-    TranslateMessage = _user32.lookupFunction<
-        Int32 Function(Pointer<MSG>),
+    TranslateMessage = _user32.lookupFunction<Int32 Function(Pointer<MSG>),
         int Function(Pointer<MSG>)>('TranslateMessage');
 
-    DispatchMessageW = _user32.lookupFunction<
-        IntPtr Function(Pointer<MSG>),
+    DispatchMessageW = _user32.lookupFunction<IntPtr Function(Pointer<MSG>),
         int Function(Pointer<MSG>)>('DispatchMessageW');
 
-    PostQuitMessage = _user32.lookupFunction<Void Function(Int32),
-        void Function(int)>('PostQuitMessage');
+    PostQuitMessage =
+        _user32.lookupFunction<Void Function(Int32), void Function(int)>(
+            'PostQuitMessage');
 
     PostMessageW = _user32.lookupFunction<
         Int32 Function(IntPtr, Uint32, IntPtr, IntPtr),
@@ -210,15 +210,15 @@ class Win32 {
     LoadImageW_fromOem = (int type, int cx, int cy, int fuLoad) =>
         loadImageW(0, type, 1, cx, cy, fuLoad);
 
-    GetSystemMetrics = _user32.lookupFunction<Int32 Function(Int32),
-        int Function(int)>('GetSystemMetrics');
+    GetSystemMetrics =
+        _user32.lookupFunction<Int32 Function(Int32), int Function(int)>(
+            'GetSystemMetrics');
 
     SetWindowLongPtrW = _user32.lookupFunction<
         IntPtr Function(IntPtr, Int32, IntPtr),
         int Function(int, int, int)>('SetWindowLongPtrW');
 
-    GetWindowLongPtrW = _user32.lookupFunction<
-        IntPtr Function(IntPtr, Int32),
+    GetWindowLongPtrW = _user32.lookupFunction<IntPtr Function(IntPtr, Int32),
         int Function(int, int)>('GetWindowLongPtrW');
   }
 
@@ -232,16 +232,17 @@ class Win32 {
 
   static void _tryBindDpiAwareness() {
     try {
-      SetProcessDpiAwarenessContext = _user32.lookupFunction<
-          Int32 Function(IntPtr),
-          int Function(int)>('SetProcessDpiAwarenessContext');
+      SetProcessDpiAwarenessContext =
+          _user32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+              'SetProcessDpiAwarenessContext');
     } catch (_) {
       SetProcessDpiAwarenessContext = null;
     }
 
     try {
-      GetDpiForWindow = _user32.lookupFunction<Uint32 Function(IntPtr),
-          int Function(int)>('GetDpiForWindow');
+      GetDpiForWindow =
+          _user32.lookupFunction<Uint32 Function(IntPtr), int Function(int)>(
+              'GetDpiForWindow');
     } catch (_) {
       GetDpiForWindow = null;
     }
@@ -251,8 +252,7 @@ class Win32 {
   // user32.dll — Cursor loading
   // ============================================================
 
-  static late final int Function(int hInstance, int lpCursorName)
-      LoadCursorW;
+  static late final int Function(int hInstance, int lpCursorName) LoadCursorW;
 
   // Note: LoadCursorW is bound after the main block
   // We add it inline at the end of _bindUser32
@@ -306,17 +306,20 @@ class Win32 {
   ) StretchDIBits;
 
   static void _bindGdi32() {
-    CreateSolidBrush = _gdi32.lookupFunction<IntPtr Function(Uint32),
-        int Function(int)>('CreateSolidBrush');
+    CreateSolidBrush =
+        _gdi32.lookupFunction<IntPtr Function(Uint32), int Function(int)>(
+            'CreateSolidBrush');
 
-    DeleteObject = _gdi32.lookupFunction<Int32 Function(IntPtr),
-        int Function(int)>('DeleteObject');
+    DeleteObject =
+        _gdi32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+            'DeleteObject');
 
-    CreateCompatibleDC = _gdi32.lookupFunction<IntPtr Function(IntPtr),
-        int Function(int)>('CreateCompatibleDC');
+    CreateCompatibleDC =
+        _gdi32.lookupFunction<IntPtr Function(IntPtr), int Function(int)>(
+            'CreateCompatibleDC');
 
-    DeleteDC = _gdi32.lookupFunction<Int32 Function(IntPtr),
-        int Function(int)>('DeleteDC');
+    DeleteDC = _gdi32
+        .lookupFunction<Int32 Function(IntPtr), int Function(int)>('DeleteDC');
 
     SelectObject = _gdi32.lookupFunction<IntPtr Function(IntPtr, IntPtr),
         int Function(int, int)>('SelectObject');
@@ -324,20 +327,19 @@ class Win32 {
     CreateDIBSection = _gdi32.lookupFunction<
         IntPtr Function(IntPtr, Pointer<BITMAPINFO>, Uint32,
             Pointer<Pointer<Void>>, IntPtr, Uint32),
-        int Function(int, Pointer<BITMAPINFO>, int, Pointer<Pointer<Void>>,
-            int, int)>('CreateDIBSection');
+        int Function(int, Pointer<BITMAPINFO>, int, Pointer<Pointer<Void>>, int,
+            int)>('CreateDIBSection');
 
     BitBlt = _gdi32.lookupFunction<
         Int32 Function(
             IntPtr, Int32, Int32, Int32, Int32, IntPtr, Int32, Int32, Uint32),
-        int Function(
-            int, int, int, int, int, int, int, int, int)>('BitBlt');
+        int Function(int, int, int, int, int, int, int, int, int)>('BitBlt');
 
     StretchDIBits = _gdi32.lookupFunction<
-        Int32 Function(IntPtr, Int32, Int32, Int32, Int32, Int32, Int32,
-            Int32, Int32, Pointer<Void>, Pointer<BITMAPINFO>, Uint32, Uint32),
-        int Function(int, int, int, int, int, int, int, int, int,
-            Pointer<Void>, Pointer<BITMAPINFO>, int, int)>('StretchDIBits');
+        Int32 Function(IntPtr, Int32, Int32, Int32, Int32, Int32, Int32, Int32,
+            Int32, Pointer<Void>, Pointer<BITMAPINFO>, Uint32, Uint32),
+        int Function(int, int, int, int, int, int, int, int, int, Pointer<Void>,
+            Pointer<BITMAPINFO>, int, int)>('StretchDIBits');
 
     // Bind LoadCursorW here
     LoadCursorW = _user32.lookupFunction<IntPtr Function(IntPtr, IntPtr),
