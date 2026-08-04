@@ -50,6 +50,7 @@
 6. **Dart SDK é fixado** para reprodutibilidade
 7. **Golden files são plataforma-específicos** (fontes/rendering diferem)
 8. **POC tests são separados** para não bloquear o CI principal
+9. **Caching agressivo** de Dart pub e ferramentas
 
 ## Estado atual dos workflows
 
@@ -68,7 +69,11 @@ usado apenas em chaves de cache de steps, nunca em condições de job.
 
 Todos os passos que compilam AOT criam explicitamente o diretório `build/`,
 que é ignorado pelo Git.
-9. **Caching agressivo** de Dart pub e ferramentas
+
+O workflow principal executa testes portáveis do POC-04 nas três plataformas,
+o POC-02 dentro do Xvfb no Linux e os POCs 01/05/10 no Windows. Não são usados
+filtros `--tags` enquanto não existir uma taxonomia de tags comum no workspace.
+Cada job `sanity` faz checkout antes de executar `tool/ffi_info.dart`.
 
 ---
 
@@ -79,12 +84,11 @@ que é ignorado pelo Git.
 | Windows x64 | `windows-latest` | x64 | Desktop (real) | Software ou disponível |
 | Linux x64 | `ubuntu-24.04` | x64 | Xvfb (virtual) | Mesa (software) |
 | macOS arm64 | `macos-14` | arm64 (Apple Silicon) | Desktop (real) | Apple GPU |
-| macOS x64 | `macos-13` | x64 (Intel) | Desktop (real) | Apple GPU |
 
 ### Observações
 
 - `ubuntu-24.04` é preferido por ter pacotes mais recentes
-- `macos-14` é arm64, `macos-13` é x64 — testar ambos idealmente
+- `macos-14` é o runner macOS ativo; x64 volta à matriz quando houver runner disponível
 - `windows-latest` é x64; arm64 não disponível no GitHub Actions padrão
 - Para arm64 Windows, usar runner self-hosted quando disponível
 
@@ -208,13 +212,9 @@ jobs:
             x11-utils \
             x11-xserver-utils
       
-      # ---- Rodar testes unitários ----
-      - name: Run unit tests
-        run: dart test
-      
-      # ---- Rodar testes headless (sem display) ----
-      - name: Run headless tests
-        run: dart test --tags headless
+      # ---- Testes portáveis em todas as plataformas ----
+      - name: Run portable CPU raster tests
+        run: dart test poc/poc_04_cpu_raster
       
       # ---- Linux: Rodar testes de plataforma com Xvfb ----
       - name: Run platform tests (Linux X11)
@@ -225,7 +225,7 @@ jobs:
           sleep 2
           # Verificar que Xvfb está rodando
           xdpyinfo -display :99 | head -5
-          dart test --tags platform
+          dart test poc/poc_02_x11_window
         env:
           DISPLAY: ':99'
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -233,12 +233,10 @@ jobs:
       # ---- Windows: Rodar testes de plataforma ----
       - name: Run platform tests (Windows)
         if: matrix.platform == 'windows'
-        run: dart test --tags platform
-      
-      # ---- macOS: Rodar testes de plataforma ----
-      - name: Run platform tests (macOS)
-        if: matrix.platform == 'macos'
-        run: dart test --tags platform
+        run: |
+          dart test poc/poc_01_win32_window
+          dart test poc/poc_05_com_direct2d
+          dart test poc/poc_10_event_loop
 
   # ============================================================
   # Job 3: Build AOT multiplataforma
@@ -865,7 +863,7 @@ vulkaninfo --summary
 
 ## 6.5 macOS — sessão GUI
 
-macOS runners do GitHub Actions (`macos-13`, `macos-14`) têm sessão GUI ativa por padrão.
+O runner `macos-14` do GitHub Actions tem sessão GUI ativa por padrão.
 
 ```bash
 # Verificar GPU
@@ -1027,7 +1025,7 @@ type dxdiag.txt | Select-String "DirectX Version"
     fi
     
     # Verificar arquitetura
-    uname -m  # arm64 para macos-14, x86_64 para macos-13
+    uname -m  # arm64 no runner macos-14
 ```
 
 ---
@@ -1045,25 +1043,14 @@ sanity:
     matrix:
       os: [ubuntu-24.04, windows-latest, macos-14]
   steps:
+    - uses: actions/checkout@v4
+
     - uses: dart-lang/setup-dart@v1
       with:
         sdk: ${{ env.DART_SDK_VERSION }}
-    
-    - name: Dart version
-      run: dart --version
-    
-    - name: FFI availability
-      run: |
-        dart run -e "
-          import 'dart:ffi';
-          import 'dart:io';
-          print('OS: \${Platform.operatingSystem}');
-          print('Arch: \${Platform.version}');
-          print('Pointer size: \${sizeOf<Pointer>()}');
-          print('Int size: \${sizeOf<Int>()}');
-          print('Long size: \${sizeOf<Long>()}');
-          print('IntPtr size: \${sizeOf<IntPtr>()}');
-        "
+
+    - name: Dart version and FFI availability
+      run: dart run tool/ffi_info.dart
 ```
 
 ---

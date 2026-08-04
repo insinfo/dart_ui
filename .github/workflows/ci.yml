@@ -65,9 +65,9 @@ jobs:
             platform: windows
           - os: macos-14
             platform: macos-arm64
-          - os: macos-13
-            platform: macos-x64
     steps:
+      - uses: actions/checkout@v4
+
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: ${{ env.DART_SDK_VERSION }}
@@ -172,15 +172,9 @@ jobs:
             libvulkan-dev mesa-vulkan-drivers \
             weston x11-utils x11-xserver-utils
 
-      # ---- Testes headless (sem display, todas plataformas) ----
-      - name: Run headless tests
-        run: dart test --tags headless
-        continue-on-error: true
-
-      # ---- Testes unitários ----
-      - name: Run unit tests
-        run: dart test --exclude-tags "platform,golden,headless"
-        continue-on-error: true
+      # ---- Testes portáveis (todas as plataformas) ----
+      - name: Run portable CPU raster tests
+        run: dart test poc/poc_04_cpu_raster
 
       # ---- Linux: Testes de plataforma com Xvfb ----
       - name: Run platform tests (Linux)
@@ -189,23 +183,17 @@ jobs:
           Xvfb :99 -screen 0 1920x1080x24 -ac &
           sleep 2
           xdpyinfo -display :99 | head -3 || true
-          dart test --tags platform
+          dart test poc/poc_02_x11_window
         env:
           DISPLAY: ':99'
           LIBGL_ALWAYS_SOFTWARE: '1'
-        continue-on-error: true
-
       # ---- Windows: Testes de plataforma ----
       - name: Run platform tests (Windows)
         if: matrix.platform == 'windows'
-        run: dart test --tags platform
-        continue-on-error: true
-
-      # ---- macOS: Testes de plataforma ----
-      - name: Run platform tests (macOS)
-        if: matrix.platform == 'macos'
-        run: dart test --tags platform
-        continue-on-error: true
+        run: |
+          dart test poc/poc_01_win32_window
+          dart test poc/poc_05_com_direct2d
+          dart test poc/poc_10_event_loop
 
   # ==============================================================
   # Build AOT multiplataforma
@@ -227,9 +215,6 @@ jobs:
             ext: '.exe'
           - os: macos-14
             platform: macos-arm64
-            ext: ''
-          - os: macos-13
-            platform: macos-x64
             ext: ''
     steps:
       - uses: actions/checkout@v4

@@ -396,15 +396,16 @@ poc/
 ## 6.6 Critério de sucesso
 
 Implementação inicial disponível em `poc/poc_02_x11_window`. A validação
-funcional é intencionalmente executada no job Linux/Xvfb do GitHub Actions.
+funcional é executada no job Linux/Xvfb do GitHub Actions. Validado no
+workflow `POC Tests` em 2026-08-04 (commit `3cfcefc`).
 
-- [ ] Conexão ao X server no CI (Xvfb) funciona
-- [ ] Janela é criada e mapeada
-- [ ] Evento `XCB_EXPOSE` é recebido
-- [ ] Pixels são escritos via `xcb_put_image`
+- [x] Conexão ao X server no CI (Xvfb) funciona
+- [x] Janela é criada e mapeada
+- [x] Evento `XCB_EXPOSE` é recebido
+- [x] Pixels são escritos via `xcb_put_image`
 - [ ] `WM_DELETE_WINDOW` funciona (atom internado, property setada, evento capturado)
-- [ ] Desconexão limpa
-- [ ] AOT funciona no Linux
+- [x] Desconexão limpa
+- [x] AOT funciona no Linux
 - [ ] CI passa sem falhas intermitentes
 
 ---
