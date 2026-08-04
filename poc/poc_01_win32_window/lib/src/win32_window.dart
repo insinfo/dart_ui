@@ -37,8 +37,21 @@ class _WindowRegistry {
   }
 }
 
+/// Storage and presentation path used by [Win32Window].
+enum FramebufferBackend {
+  /// Dart heap buffer copied to temporary native memory on every paint.
+  dartCopy,
+
+  /// Persistent CreateDIBSection memory written and presented without copying.
+  nativeDib,
+}
+
 /// A basic Win32 window created entirely from Dart via FFI.
 class Win32Window {
+  Win32Window({this.framebufferBackend = FramebufferBackend.dartCopy});
+
+  final FramebufferBackend framebufferBackend;
+
   /// The native window handle, or 0 if not created/already destroyed.
   int _hwnd = 0;
   int get hwnd => _hwnd;
@@ -63,9 +76,30 @@ class Win32Window {
   Uint8List? _framebuffer;
   Uint8List? get framebuffer => _framebuffer;
 
+  Pointer<Uint8> _nativeFramebuffer = nullptr;
+
+  /// Direct pointer to the persistent DIB pixels.
+  ///
+  /// It is valid only for [FramebufferBackend.nativeDib] and until the next
+  /// resize or window destruction.
+  Pointer<Uint32> get nativeFramebufferPointer {
+    if (framebufferBackend != FramebufferBackend.nativeDib ||
+        _nativeFramebuffer == nullptr) {
+      throw StateError('No native DIB framebuffer is currently available.');
+    }
+    return _nativeFramebuffer.cast();
+  }
+
   // GDI resources for framebuffer presentation
   int _dibSection = 0;
   int _memDC = 0;
+  int _previousBitmap = 0;
+
+  final Stopwatch _presentStopwatch = Stopwatch();
+  int presentCount = 0;
+  int totalPresentMicroseconds = 0;
+  double get averagePresentMicroseconds =>
+      presentCount == 0 ? 0 : totalPresentMicroseconds / presentCount;
 
   /// Callbacks for window events.
   void Function(Win32Window window)? onPaint;
@@ -279,14 +313,57 @@ class Win32Window {
     _destroyFramebuffer();
     if (_clientWidth <= 0 || _clientHeight <= 0) return;
 
-    // Allocate Dart-side pixel buffer
-    _framebuffer = Uint8List(_clientWidth * _clientHeight * 4);
+    final byteLength = _clientWidth * _clientHeight * 4;
+    if (framebufferBackend == FramebufferBackend.dartCopy) {
+      _framebuffer = Uint8List(byteLength);
+    } else {
+      final bmi = calloc<BITMAPINFO>();
+      final bits = calloc<Pointer<Void>>();
+      try {
+        bmi.ref.bmiHeader
+          ..biSize = sizeOf<BITMAPINFOHEADER>()
+          ..biWidth = _clientWidth
+          ..biHeight = -_clientHeight
+          ..biPlanes = 1
+          ..biBitCount = 32
+          ..biCompression = BI_RGB
+          ..biSizeImage = byteLength;
+        _memDC = Win32.CreateCompatibleDC(0);
+        if (_memDC == 0) throw StateError('CreateCompatibleDC failed.');
+        _dibSection = Win32.CreateDIBSection(
+          _memDC,
+          bmi,
+          DIB_RGB_COLORS,
+          bits,
+          0,
+          0,
+        );
+        if (_dibSection == 0 || bits.value == nullptr) {
+          throw StateError('CreateDIBSection failed.');
+        }
+        _previousBitmap = Win32.SelectObject(_memDC, _dibSection);
+        _nativeFramebuffer = bits.value.cast();
+        _framebuffer = _nativeFramebuffer.asTypedList(byteLength);
+      } catch (_) {
+        _destroyFramebuffer();
+        rethrow;
+      } finally {
+        calloc.free(bits);
+        calloc.free(bmi);
+      }
+    }
 
     print('[Win32] Framebuffer created: ${_clientWidth}x$_clientHeight '
-        '(${_framebuffer!.length} bytes)');
+        '(${_framebuffer!.length} bytes, ${framebufferBackend.name})');
   }
 
   void _destroyFramebuffer() {
+    _framebuffer = null;
+    _nativeFramebuffer = nullptr;
+    if (_memDC != 0 && _previousBitmap != 0) {
+      Win32.SelectObject(_memDC, _previousBitmap);
+      _previousBitmap = 0;
+    }
     if (_dibSection != 0) {
       Win32.DeleteObject(_dibSection);
       _dibSection = 0;
@@ -295,7 +372,6 @@ class Win32Window {
       Win32.DeleteDC(_memDC);
       _memDC = 0;
     }
-    _framebuffer = null;
   }
 
   void _updateClientSize() {
@@ -311,6 +387,21 @@ class Win32Window {
   void _presentFramebuffer(int hdc) {
     final fb = _framebuffer;
     if (fb == null || _clientWidth <= 0 || _clientHeight <= 0) return;
+
+    if (framebufferBackend == FramebufferBackend.nativeDib) {
+      Win32.BitBlt(
+        hdc,
+        0,
+        0,
+        _clientWidth,
+        _clientHeight,
+        _memDC,
+        0,
+        0,
+        SRCCOPY,
+      );
+      return;
+    }
 
     // Create BITMAPINFO on the stack
     final bmi = calloc<BITMAPINFO>();
@@ -463,7 +554,13 @@ class Win32Window {
     onPaint?.call(this);
 
     // Present framebuffer to window
+    _presentStopwatch
+      ..reset()
+      ..start();
     _presentFramebuffer(hdc);
+    _presentStopwatch.stop();
+    presentCount++;
+    totalPresentMicroseconds += _presentStopwatch.elapsedMicroseconds;
 
     Win32.EndPaint(hwnd, ps);
     calloc.free(ps);

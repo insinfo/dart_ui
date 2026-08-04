@@ -471,3 +471,49 @@ jobs:
           name: poc12-native-buffer-${{ matrix.platform }}
           path: poc/poc_12_native_buffers/build/benchmark.txt
           retention-days: 7
+
+  # ==============================================================
+  # POC-13: Persistent native DIB presentation (Windows)
+  # ==============================================================
+  poc-13-native-dib:
+    name: 'POC-13: Native DIB presentation'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        working-directory: poc/poc_13_native_dib_present
+        run: dart pub get
+
+      - name: Analyze and test metrics
+        working-directory: poc/poc_13_native_dib_present
+        run: |
+          dart analyze
+          dart test
+
+      - name: Compile AOT benchmark
+        working-directory: poc/poc_13_native_dib_present
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          dart compile exe bin/main.dart -o build/poc_13.exe
+
+      - name: Compare copied and persistent-DIB pipelines
+        working-directory: poc/poc_13_native_dib_present
+        shell: powershell
+        run: |
+          & .\build\poc_13.exe | Tee-Object -FilePath build\benchmark.txt
+          if ($LASTEXITCODE -ne 0) {
+            throw "POC-13 failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Upload pipeline benchmark
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc13-native-dib-windows
+          path: poc/poc_13_native_dib_present/build/benchmark.txt
+          retention-days: 7

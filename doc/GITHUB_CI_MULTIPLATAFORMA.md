@@ -68,6 +68,7 @@ usado apenas em chaves de cache de steps, nunca em condições de job.
 | POC-10 event loop | Windows | testes de Timer + wakeup Win32 |
 | POC-11 download assíncrono | Windows | análise, rede fragmentada, progresso, decode, AOT e smoke de UI |
 | POC-12 buffers FFI | Linux, Windows, macOS | lifecycle nativo, testes, benchmark AOT e relatório por plataforma |
+| POC-13 DIB persistente | Windows | dois pipelines GDI, AOT, apresentação zero-copy e relatório de throughput |
 
 Todos os passos que compilam AOT criam explicitamente o diretório `build/`,
 que é ignorado pelo Git.

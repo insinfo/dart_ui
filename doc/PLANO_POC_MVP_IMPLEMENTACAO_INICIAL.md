@@ -27,6 +27,7 @@
 - [14. POC-10: Event Loop unificado Dart + Plataforma](#14-poc-10-event-loop-unificado-dart--plataforma)
 - [14A. POC-11: UI responsiva durante download de imagem](#14a-poc-11-ui-responsiva-durante-download-de-imagem)
 - [14B. POC-12: Buffers nativos com ponteiros FFI](#14b-poc-12-buffers-nativos-com-ponteiros-ffi)
+- [14C. POC-13: Framebuffer DIB nativo persistente](#14c-poc-13-framebuffer-dib-nativo-persistente)
 - [15. MVP-01: Vertical Slice Windows — Janela + CPU Render + Button](#15-mvp-01-vertical-slice-windows--janela--cpu-render--button)
 - [16. MVP-02: Vertical Slice Linux — X11 + CPU Render + Button (CI)](#16-mvp-02-vertical-slice-linux--x11--cpu-render--button-ci)
 - [17. MVP-03: Vertical Slice macOS — AppKit + CPU Render + Button (CI)](#17-mvp-03-vertical-slice-macos--appkit--cpu-render--button-ci)
@@ -1103,6 +1104,49 @@ plataforma.
 - [x] Custo da cópia heap → nativo é medido separadamente
 - [x] AOT passa em Linux, Windows e macOS no GitHub Actions (execução `30885659042`)
 - [ ] Buffer nativo é apresentado diretamente, sem cópia intermediária
+
+---
+
+# 14C. POC-13: Framebuffer DIB nativo persistente
+
+## 14C.1 Objetivo
+
+Comparar pipelines Win32 completos e provar se a memória nativa persistente
+compensa o custo ligeiramente maior da escrita por ponteiro:
+
+- `dartCopy`: raster em `Uint8List`, `calloc` + cópia por frame e
+  `StretchDIBits`;
+- `nativeDib`: `CreateDIBSection` persistente, raster direto pelo
+  `Pointer<Uint32>` retornado e apresentação do mesmo bitmap por `BitBlt`.
+
+O backend foi integrado ao POC-01 por `FramebufferBackend`, mantendo
+`dartCopy` como compatibilidade e oferecendo `nativeDib` sem cópia
+intermediária. Resize restaura o bitmap anterior no DC, destrói os recursos GDI
+na ordem correta e recria a view apenas enquanto o ponteiro é válido.
+
+## 14C.2 Resultado preliminar Windows AOT
+
+Benchmark local com 180 frames e área cliente de 1264×681:
+
+| Pipeline | FPS | Raster médio | Apresentação média | Frame médio |
+|---|---:|---:|---:|---:|
+| Heap + cópia + `StretchDIBits` | 241,8 | 538,6 µs | 3240,0 µs | 4135,6 µs |
+| Ponteiro DIB + `BitBlt` | 378,6 | 753,0 µs | 1354,1 µs | 2641,0 µs |
+
+O raster por ponteiro foi 40% mais caro, porém a apresentação ficou 2,39× mais
+rápida e o throughput end-to-end aumentou 1,57×. O resultado confirma que o
+benefício da memória nativa vem de remover a cópia de frame, não de tornar cada
+store Dart mais rápido.
+
+## 14C.3 Critério de sucesso
+
+- [x] `CreateDIBSection` retorna memória BGRA gravável por Dart FFI
+- [x] O mesmo `HBITMAP` é selecionado em memory DC e apresentado por `BitBlt`
+- [x] Nenhuma alocação/cópia completa ocorre no caminho nativo por frame
+- [x] Cleanup restaura o objeto GDI anterior antes de `DeleteObject`
+- [x] Pipeline nativo supera o pipeline copiado em apresentação e throughput
+- [ ] Teste AOT e benchmark passam no GitHub Actions Windows
+- [ ] Resize/maximize contínuo mantém latência de UI abaixo de 100 ms
 
 ---
 

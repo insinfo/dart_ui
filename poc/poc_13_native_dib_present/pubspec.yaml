@@ -1,0 +1,17 @@
+name: poc_13_native_dib_present
+description: End-to-end Win32 native DIB framebuffer presentation benchmark.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dependencies:
+  poc_01_win32_window: any
+  poc_10_event_loop: any
+
+dev_dependencies:
+  lints: ^5.1.0
+  test: ^1.25.0
