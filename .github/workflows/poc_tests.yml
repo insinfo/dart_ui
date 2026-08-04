@@ -146,6 +146,7 @@ jobs:
       - name: AOT compile and smoke test
         working-directory: poc/poc_03_appkit_window
         run: |
+          mkdir -p build
           dart compile exe bin/main.dart -o build/poc_03
           chmod +x build/poc_03
           timeout 10 ./build/poc_03 --smoke-test || echo "Exited (expected)"

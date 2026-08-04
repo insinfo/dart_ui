@@ -1030,7 +1030,7 @@ simples versus double buffering.
 - [x] Cancelamento fecha o cliente HTTP
 - [x] Falhas de rede/formato tornam-se estado de erro controlado
 - [x] Smoke local completa com intervalo máximo entre ticks menor que 100 ms
-- [ ] AOT e smoke passam no GitHub Actions Windows
+- [x] AOT e smoke passam no GitHub Actions Windows (execução `30884668460`)
 
 ---
 
