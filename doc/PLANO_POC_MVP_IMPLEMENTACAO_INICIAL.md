@@ -1080,6 +1080,20 @@ Linux, 0,64 contra 0,65 no Windows e 0,45 contra 0,42 no macOS. Em contraste,
 `fillRange` sobre a view nativa custou de 3,68 a 6,99 ns/pixel. O perfil do CI
 foi elevado para 1080p/15 frames para reduzir ruído e validar escalabilidade.
 
+O segundo perfil AOT em 1920×1080 confirmou o custo do pipeline completo:
+
+| Runner | Heap indexado | Ponteiro indexado | Heap + cópia nativa |
+|---|---:|---:|---:|
+| Linux | 0,47 ns/pixel | 0,64 ns/pixel | 3,02 ns/pixel |
+| Windows | 0,53 ns/pixel | 0,71 ns/pixel | 3,13 ns/pixel |
+| macOS | 0,44 ns/pixel | 0,43 ns/pixel | 1,85 ns/pixel |
+
+O heap continua ideal para operações puramente Dart. Porém, quando a
+apresentação exige memória nativa, desenhar diretamente pelo ponteiro é de
+quatro a cinco vezes mais barato que preencher o heap e copiar o frame inteiro.
+Resultados da execução `30885939838` estão disponíveis como artifacts por
+plataforma.
+
 ## 14B.4 Critério de sucesso
 
 - [x] Buffer `calloc<Uint32>` possui alinhamento e layout BGRA corretos
