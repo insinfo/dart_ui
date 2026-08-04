@@ -704,8 +704,8 @@ wrapper `IUnknown` do pacote para confirmar a convenção de ponteiros COM.
 - [ ] Swapchain é criada para um HWND
 - [ ] `BeginDraw`/`Clear`/`EndDraw`/`Present` funciona
 - [ ] Sem COM leak (contagem de Release == AddRef)
-- [ ] HRESULT tratado corretamente
-- [ ] `GUID` layout correto (16 bytes, alignment)
+- [x] HRESULT tratado corretamente (`FAILED`/`SUCCEEDED` testados)
+- [x] `GUID` layout correto (16 bytes; serialização testada)
 
 ```powershell
 dart run poc/poc_05_com_direct2d/bin/main.dart
