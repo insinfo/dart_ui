@@ -8,3 +8,5 @@ workspace:
   - poc/poc_01_win32_window
   - poc/poc_04_cpu_raster
   - poc/poc_05_com_direct2d
+  - poc/poc_10_event_loop
+  - poc/poc_02_x11_window

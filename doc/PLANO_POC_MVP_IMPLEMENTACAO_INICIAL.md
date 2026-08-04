@@ -395,6 +395,9 @@ poc/
 
 ## 6.6 Critério de sucesso
 
+Implementação inicial disponível em `poc/poc_02_x11_window`. A validação
+funcional é intencionalmente executada no job Linux/Xvfb do GitHub Actions.
+
 - [ ] Conexão ao X server no CI (Xvfb) funciona
 - [ ] Janela é criada e mapeada
 - [ ] Evento `XCB_EXPOSE` é recebido
@@ -952,12 +955,15 @@ Future.delayed(Duration.zero, () {
 
 ## 14.4 Critério de sucesso
 
-- [ ] Dart `Future.delayed` funciona dentro do loop nativo
-- [ ] `Timer.periodic` dispara no timing correto
+- [x] Dart `Future.delayed` funciona entre iterações do loop nativo
+- [x] `Timer.periodic` dispara e acorda o loop via `PostThreadMessage(WM_APP)`
 - [ ] Input nativo não é atrasado por Dart tasks
 - [ ] Loop idle consome < 1% CPU
-- [ ] Wake funciona de qualquer contexto
+- [x] Wake funciona no contexto da thread da janela
 - [ ] Sem deadlock em nenhum cenário testado
+
+Implementação Windows em `poc/poc_10_event_loop`; o teste automatizado cobre
+Timer + wakeup e o executável demonstra três ciclos completos.
 
 ---
 
