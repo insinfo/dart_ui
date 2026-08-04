@@ -25,6 +25,7 @@
 - [12. POC-08: Vulkan Loader via FFI](#12-poc-08-vulkan-loader-via-ffi)
 - [13. POC-09: Wayland Client via FFI (Linux)](#13-poc-09-wayland-client-via-ffi-linux)
 - [14. POC-10: Event Loop unificado Dart + Plataforma](#14-poc-10-event-loop-unificado-dart--plataforma)
+- [14A. POC-11: UI responsiva durante download de imagem](#14a-poc-11-ui-responsiva-durante-download-de-imagem)
 - [15. MVP-01: Vertical Slice Windows — Janela + CPU Render + Button](#15-mvp-01-vertical-slice-windows--janela--cpu-render--button)
 - [16. MVP-02: Vertical Slice Linux — X11 + CPU Render + Button (CI)](#16-mvp-02-vertical-slice-linux--x11--cpu-render--button-ci)
 - [17. MVP-03: Vertical Slice macOS — AppKit + CPU Render + Button (CI)](#17-mvp-03-vertical-slice-macos--appkit--cpu-render--button-ci)
@@ -970,6 +971,41 @@ Future.delayed(Duration.zero, () {
 
 Implementação Windows em `poc/poc_10_event_loop`; o teste automatizado cobre
 Timer + wakeup e o executável demonstra três ciclos completos.
+
+---
+
+# 14A. POC-11: UI responsiva durante download de imagem
+
+## 14A.1 Objetivo
+
+Provar, em uma aplicação interativa real, que rede e processamento de imagem
+podem coexistir com mensagens nativas, input, timers e renderização sem congelar
+a interface gráfica.
+
+## 14A.2 Implementação
+
+A implementação Windows está em `poc/poc_11_async_image_download` e integra:
+
+- janela, mouse e framebuffer BGRA do POC-01;
+- event loop cooperativo Win32/Dart do POC-10;
+- botão para iniciar e cancelar o download;
+- `HttpClient` assíncrono com leitura em streaming e progresso por bytes;
+- decodificação da imagem em `Isolate.run`;
+- barra de progresso e pulso animado contínuo;
+- apresentação da imagem no framebuffer;
+- servidor HTTP local fragmentado para smoke test determinístico e sem internet.
+
+## 14A.3 Critério de sucesso
+
+- [x] Botão inicia download sem bloquear mensagens Win32
+- [x] Progresso acompanha os bytes recebidos
+- [x] `Timer.periodic` continua executando durante rede e decode
+- [x] Decodificação ocorre fora do fluxo da UI
+- [x] Imagem decodificada é convertida para BGRA e exibida
+- [x] Cancelamento fecha o cliente HTTP
+- [x] Falhas de rede/formato tornam-se estado de erro controlado
+- [x] Smoke local completa com intervalo máximo entre ticks menor que 100 ms
+- [ ] AOT e smoke passam no GitHub Actions Windows
 
 ---
 

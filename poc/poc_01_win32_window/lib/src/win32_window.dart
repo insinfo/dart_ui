@@ -241,12 +241,9 @@ class Win32Window {
   void clearFramebuffer(int b, int g, int r, int a) {
     final fb = _framebuffer;
     if (fb == null) return;
-    for (var i = 0; i < fb.length; i += 4) {
-      fb[i + 0] = b;
-      fb[i + 1] = g;
-      fb[i + 2] = r;
-      fb[i + 3] = a;
-    }
+    final packed = b | (g << 8) | (r << 16) | (a << 24);
+    Uint32List.view(fb.buffer, fb.offsetInBytes, fb.lengthInBytes ~/ 4)
+        .fillRange(0, fb.lengthInBytes ~/ 4, packed);
   }
 
   /// Fill a rectangle in the framebuffer with a solid color (BGRA).

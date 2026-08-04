@@ -66,6 +66,7 @@ usado apenas em chaves de cache de steps, nunca em condições de job.
 | POC-04 CPU | Linux, Windows, macOS | benchmark e testes unitários |
 | POC-05 COM/D2D | Windows | análise e testes de COM/ABI |
 | POC-10 event loop | Windows | testes de Timer + wakeup Win32 |
+| POC-11 download assíncrono | Windows | análise, rede fragmentada, progresso, decode, AOT e smoke de UI |
 
 Todos os passos que compilam AOT criam explicitamente o diretório `build/`,
 que é ignorado pelo Git.
@@ -74,6 +75,10 @@ O workflow principal executa testes portáveis do POC-04 nas três plataformas,
 o POC-02 dentro do Xvfb no Linux e os POCs 01/05/10 no Windows. Não são usados
 filtros `--tags` enquanto não existir uma taxonomia de tags comum no workspace.
 Cada job `sanity` faz checkout antes de executar `tool/ffi_info.dart`.
+
+O workflow dedicado `POC Tests` também executa o POC-11 no Windows. Seu smoke
+test cria um servidor HTTP loopback, entrega uma PNG em blocos e falha se a
+janela não concluir download, decode e encerramento em até 30 segundos.
 
 ---
 

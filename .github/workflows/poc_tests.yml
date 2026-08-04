@@ -377,3 +377,45 @@ jobs:
       - name: Run tests
         working-directory: poc/poc_10_event_loop
         run: dart test
+
+  # ==============================================================
+  # POC-11: Responsive UI + streamed image download (Windows)
+  # ==============================================================
+  poc-11-async-download:
+    name: 'POC-11: Async image download UI'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        working-directory: poc/poc_11_async_image_download
+        run: dart pub get
+
+      - name: Analyze
+        working-directory: poc/poc_11_async_image_download
+        run: dart analyze
+
+      - name: Test streamed download and decoding
+        working-directory: poc/poc_11_async_image_download
+        run: dart test
+
+      - name: AOT compile and responsive UI smoke test
+        working-directory: poc/poc_11_async_image_download
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          dart compile exe bin/main.dart -o build/poc_11.exe
+          $proc = Start-Process -FilePath "build\poc_11.exe" `
+            -ArgumentList "--smoke-test" -PassThru -NoNewWindow
+          $proc | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+          if (!$proc.HasExited) {
+            $proc | Stop-Process -Force
+            throw "POC-11 smoke test timed out; the UI event loop may be blocked."
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "POC-11 smoke test failed with exit code $($proc.ExitCode)."
+          }

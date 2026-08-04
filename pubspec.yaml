@@ -11,3 +11,4 @@ workspace:
   - poc/poc_10_event_loop
   - poc/poc_02_x11_window
   - poc/poc_03_appkit_window
+  - poc/poc_11_async_image_download

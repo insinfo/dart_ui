@@ -1,6 +1,7 @@
 import 'dart:io';
-import 'package:test/test.dart';
+
 import 'package:poc_03_appkit_window/objc_runtime.dart';
+import 'package:test/test.dart';
 
 void main() {
   test('macOS Objective-C Runtime bindings smoke test', () {
@@ -10,12 +11,15 @@ void main() {
     }
 
     final nsObjectClass = getClass('NSObject');
-    expect(nsObjectClass.address, isNot(0), reason: 'Should get NSObject class pointer');
+    expect(nsObjectClass.address, isNot(0),
+        reason: 'Should get NSObject class pointer');
 
     final nsStringClass = getClass('NSString');
-    expect(nsStringClass.address, isNot(0), reason: 'Should get NSString class pointer');
+    expect(nsStringClass.address, isNot(0),
+        reason: 'Should get NSString class pointer');
 
     final selAlloc = sel('alloc');
-    expect(selAlloc.address, isNot(0), reason: 'Should register alloc selector');
+    expect(selAlloc.address, isNot(0),
+        reason: 'Should register alloc selector');
   });
 }

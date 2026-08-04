@@ -13,7 +13,7 @@ void main(List<String> args) {
   }
 
   runAppKitWindow();
-  
+
   print('AppKit event loop finished. Exiting.');
   exit(0);
 }
