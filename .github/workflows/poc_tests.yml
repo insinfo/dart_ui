@@ -418,3 +418,56 @@ jobs:
           if ($proc.ExitCode -ne 0) {
             throw "POC-11 smoke test failed with exit code $($proc.ExitCode)."
           }
+
+  # ==============================================================
+  # POC-12: Dart heap vs FFI-native pixel buffers (all platforms)
+  # ==============================================================
+  poc-12-native-buffers:
+    name: 'POC-12: Native buffers (${{ matrix.platform }})'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-14
+            platform: macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        working-directory: poc/poc_12_native_buffers
+        run: dart pub get
+
+      - name: Analyze and test native allocation lifecycle
+        working-directory: poc/poc_12_native_buffers
+        run: |
+          dart analyze
+          dart test
+
+      - name: Compile AOT benchmark
+        working-directory: poc/poc_12_native_buffers
+        shell: bash
+        run: |
+          mkdir -p build
+          dart compile exe bin/main.dart -o "build/poc_12${{ runner.os == 'Windows' && '.exe' || '' }}"
+
+      - name: Run AOT native-buffer benchmark
+        working-directory: poc/poc_12_native_buffers
+        shell: bash
+        run: |
+          "./build/poc_12${{ runner.os == 'Windows' && '.exe' || '' }}" --ci | tee build/benchmark.txt
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc12-native-buffer-${{ matrix.platform }}
+          path: poc/poc_12_native_buffers/build/benchmark.txt
+          retention-days: 7

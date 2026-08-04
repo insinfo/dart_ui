@@ -26,6 +26,7 @@
 - [13. POC-09: Wayland Client via FFI (Linux)](#13-poc-09-wayland-client-via-ffi-linux)
 - [14. POC-10: Event Loop unificado Dart + Plataforma](#14-poc-10-event-loop-unificado-dart--plataforma)
 - [14A. POC-11: UI responsiva durante download de imagem](#14a-poc-11-ui-responsiva-durante-download-de-imagem)
+- [14B. POC-12: Buffers nativos com ponteiros FFI](#14b-poc-12-buffers-nativos-com-ponteiros-ffi)
 - [15. MVP-01: Vertical Slice Windows — Janela + CPU Render + Button](#15-mvp-01-vertical-slice-windows--janela--cpu-render--button)
 - [16. MVP-02: Vertical Slice Linux — X11 + CPU Render + Button (CI)](#16-mvp-02-vertical-slice-linux--x11--cpu-render--button-ci)
 - [17. MVP-03: Vertical Slice macOS — AppKit + CPU Render + Button (CI)](#17-mvp-03-vertical-slice-macos--appkit--cpu-render--button-ci)
@@ -1031,6 +1032,57 @@ simples versus double buffering.
 - [x] Falhas de rede/formato tornam-se estado de erro controlado
 - [x] Smoke local completa com intervalo máximo entre ticks menor que 100 ms
 - [x] AOT e smoke passam no GitHub Actions Windows (execução `30884668460`)
+
+---
+
+# 14B. POC-12: Buffers nativos com ponteiros FFI
+
+## 14B.1 Objetivo
+
+Medir se uma implementação de framebuffer semelhante a C, mas escrita apenas
+com `dart:ffi`, supera buffers gerenciados pelo Dart. A implementação está em
+`poc/poc_12_native_buffers` e não usa wrapper C/C++.
+
+## 14B.2 Estratégias comparadas
+
+- `Uint8List` com quatro stores por pixel;
+- `Uint32List` com um store BGRA por pixel;
+- `Uint32List.fillRange`;
+- memória `calloc` escrita por `Pointer<Uint32>`;
+- view `Uint32List` que referencia diretamente a memória `calloc`;
+- fill no heap seguido de cópia completa para a view nativa.
+
+O lifecycle é manual e testado: dimensões, alinhamento, alias entre bytes/words,
+cópia, checksum, `dispose` idempotente e rejeição de operações após `free`.
+
+## 14B.3 Resultado preliminar Windows AOT
+
+Benchmark de 30 frames BGRA em 1920×1080, Dart 3.6.2:
+
+| Estratégia | ns/pixel | GiB/s | Relativo |
+|---|---:|---:|---:|
+| `Uint32List` indexado no heap | 0,27 | 13,56 | 1,00× |
+| `Pointer<Uint32>` indexado | 0,52 | 7,22 | 1,88× |
+| `Uint8List` byte a byte | 1,32 | 2,82 | 4,81× |
+| `Uint32List.fillRange` no heap | 2,09 | 1,78 | 7,60× |
+| View tipada sobre memória nativa | 2,46 | 1,52 | 8,93× |
+| Fill no heap + cópia para FFI | 2,47 | 1,51 | 9,00× |
+
+O acesso por ponteiro não torna o loop Dart automaticamente mais rápido. A
+vantagem arquitetural possível é manter um buffer nativo persistente que possa
+ser consumido diretamente pela API gráfica, eliminando a cópia completa entre
+heap e memória nativa. O próximo teste deve mapear diretamente a memória de um
+`CreateDIBSection` e comparar o pipeline completo, inclusive apresentação.
+
+## 14B.4 Critério de sucesso
+
+- [x] Buffer `calloc<Uint32>` possui alinhamento e layout BGRA corretos
+- [x] Escrita por ponteiro e view tipada produz pixels equivalentes
+- [x] Lifecycle manual é validado sem double-free
+- [x] Benchmark JIT e AOT executa em 1080p no Windows
+- [x] Custo da cópia heap → nativo é medido separadamente
+- [ ] AOT passa em Linux, Windows e macOS no GitHub Actions
+- [ ] Buffer nativo é apresentado diretamente, sem cópia intermediária
 
 ---
 

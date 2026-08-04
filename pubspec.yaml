@@ -13,3 +13,4 @@ workspace:
   - poc/poc_03_appkit_window
   - poc/poc_11_async_image_download
   - poc/poc_06_opengl
+  - poc/poc_12_native_buffers

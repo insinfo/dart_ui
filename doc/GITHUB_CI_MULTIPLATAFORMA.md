@@ -67,6 +67,7 @@ usado apenas em chaves de cache de steps, nunca em condições de job.
 | POC-05 COM/D2D | Windows | análise e testes de COM/ABI |
 | POC-10 event loop | Windows | testes de Timer + wakeup Win32 |
 | POC-11 download assíncrono | Windows | análise, rede fragmentada, progresso, decode, AOT e smoke de UI |
+| POC-12 buffers FFI | Linux, Windows, macOS | lifecycle nativo, testes, benchmark AOT e relatório por plataforma |
 
 Todos os passos que compilam AOT criam explicitamente o diretório `build/`,
 que é ignorado pelo Git.
