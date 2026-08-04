@@ -125,8 +125,6 @@ jobs:
     name: 'POC-03: AppKit Window'
     runs-on: macos-14
     timeout-minutes: 10
-    # Reserved until POC-03 exists.
-    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
