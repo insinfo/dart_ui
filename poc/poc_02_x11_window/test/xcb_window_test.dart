@@ -16,5 +16,11 @@ void main() {
 
     expect(window.windowId, isNot(0));
     expect(window.waitForExpose(const Duration(seconds: 2)), isTrue);
+
+    window.requestCloseForTest();
+    expect(
+      window.waitForDeleteWindow(const Duration(seconds: 2)),
+      isTrue,
+    );
   });
 }

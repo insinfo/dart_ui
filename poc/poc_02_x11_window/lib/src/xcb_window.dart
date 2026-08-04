@@ -11,6 +11,9 @@ const _xcbEventMaskStructureNotify = 1 << 17;
 const _xcbWindowClassInputOutput = 1;
 const _xcbZPixmap = 2;
 const _xcbExpose = 12;
+const _xcbClientMessage = 33;
+const _xcbPropModeReplace = 0;
+const _xcbAtomAtom = 4;
 
 final class _XcbScreen extends Struct {
   @Uint32()
@@ -55,6 +58,41 @@ final class _XcbScreenIterator extends Struct {
   external int index;
 }
 
+final class _XcbInternAtomCookie extends Struct {
+  @Uint32()
+  external int sequence;
+}
+
+final class _XcbInternAtomReply extends Struct {
+  @Uint8()
+  external int responseType;
+  @Uint8()
+  external int pad0;
+  @Uint16()
+  external int sequence;
+  @Uint32()
+  external int length;
+  @Uint32()
+  external int atom;
+  @Array(20)
+  external Array<Uint8> pad;
+}
+
+final class _XcbClientMessageEvent extends Struct {
+  @Uint8()
+  external int responseType;
+  @Uint8()
+  external int format;
+  @Uint16()
+  external int sequence;
+  @Uint32()
+  external int window;
+  @Uint32()
+  external int type;
+  @Array(5)
+  external Array<Uint32> data32;
+}
+
 /// A minimal XCB window that is suitable for Xvfb smoke testing.
 final class XcbWindow {
   XcbWindow() {
@@ -67,6 +105,8 @@ final class XcbWindow {
   Pointer<Void> _connection = nullptr;
   int _window = 0;
   int _graphicsContext = 0;
+  int _wmProtocols = 0;
+  int _wmDeleteWindow = 0;
   late final int _rootDepth;
 
   bool get isConnected => _connection != nullptr;
@@ -104,6 +144,34 @@ final class XcbWindow {
       Void Function(Pointer<Void>, Uint32), void Function(Pointer<Void>, int)>(
     'xcb_map_window',
   );
+  late final _XcbInternAtomCookie Function(
+          Pointer<Void>, int, int, Pointer<Int8>) _internAtom =
+      _xcb.lookupFunction<
+          _XcbInternAtomCookie Function(
+              Pointer<Void>, Uint8, Uint16, Pointer<Int8>),
+          _XcbInternAtomCookie Function(
+              Pointer<Void>, int, int, Pointer<Int8>)>('xcb_intern_atom');
+  late final Pointer<_XcbInternAtomReply> Function(
+          Pointer<Void>, _XcbInternAtomCookie, Pointer<Pointer<Void>>)
+      _internAtomReply = _xcb.lookupFunction<
+          Pointer<_XcbInternAtomReply> Function(
+              Pointer<Void>, _XcbInternAtomCookie, Pointer<Pointer<Void>>),
+          Pointer<_XcbInternAtomReply> Function(
+              Pointer<Void>, _XcbInternAtomCookie, Pointer<Pointer<Void>>)>(
+    'xcb_intern_atom_reply',
+  );
+  late final void Function(
+          Pointer<Void>, int, int, int, int, int, int, Pointer<Void>)
+      _changeProperty = _xcb.lookupFunction<
+          Void Function(Pointer<Void>, Uint8, Uint32, Uint32, Uint32, Uint8,
+              Uint32, Pointer<Void>),
+          void Function(Pointer<Void>, int, int, int, int, int, int,
+              Pointer<Void>)>('xcb_change_property');
+  late final void Function(Pointer<Void>, int, int, int, Pointer<Int8>)
+      _sendEvent = _xcb.lookupFunction<
+          Void Function(Pointer<Void>, Uint8, Uint32, Uint32, Pointer<Int8>),
+          void Function(
+              Pointer<Void>, int, int, int, Pointer<Int8>)>('xcb_send_event');
   late final void Function(Pointer<Void>, int, int, int, Pointer<Uint32>)
       _createGc = _xcb.lookupFunction<
           Void Function(Pointer<Void>, Uint32, Uint32, Uint32, Pointer<Uint32>),
@@ -166,10 +234,50 @@ final class XcbWindow {
         values,
       );
       _createGc(_connection, _graphicsContext, _window, 0, nullptr);
+      _configureDeleteWindowProtocol();
       _mapWindow(_connection, _window);
       _flush(_connection);
     } finally {
       calloc.free(values);
+    }
+  }
+
+  int _internAtomNamed(String name) {
+    final nativeName = name.toNativeUtf8();
+    try {
+      final cookie =
+          _internAtom(_connection, 0, nativeName.length, nativeName.cast());
+      final reply = _internAtomReply(_connection, cookie, nullptr);
+      if (reply == nullptr) {
+        throw StateError('xcb_intern_atom_reply failed for $name.');
+      }
+      try {
+        return reply.ref.atom;
+      } finally {
+        calloc.free(reply);
+      }
+    } finally {
+      calloc.free(nativeName);
+    }
+  }
+
+  void _configureDeleteWindowProtocol() {
+    _wmProtocols = _internAtomNamed('WM_PROTOCOLS');
+    _wmDeleteWindow = _internAtomNamed('WM_DELETE_WINDOW');
+    final atom = calloc<Uint32>()..value = _wmDeleteWindow;
+    try {
+      _changeProperty(
+        _connection,
+        _xcbPropModeReplace,
+        _window,
+        _wmProtocols,
+        _xcbAtomAtom,
+        32,
+        1,
+        atom.cast(),
+      );
+    } finally {
+      calloc.free(atom);
     }
   }
 
@@ -208,6 +316,53 @@ final class XcbWindow {
     return false;
   }
 
+  /// Sends the ClientMessage shape used by a window manager to close a window.
+  ///
+  /// This makes the complete WM_DELETE_WINDOW path deterministic under Xvfb.
+  void requestCloseForTest() {
+    if (_window == 0 || _wmProtocols == 0 || _wmDeleteWindow == 0) {
+      throw StateError('Window close protocol has not been configured.');
+    }
+    final message = calloc<_XcbClientMessageEvent>();
+    try {
+      message.ref
+        ..responseType = _xcbClientMessage
+        ..format = 32
+        ..window = _window
+        ..type = _wmProtocols
+        ..data32[0] = _wmDeleteWindow;
+      _sendEvent(_connection, 0, _window, 0, message.cast());
+      _flush(_connection);
+    } finally {
+      calloc.free(message);
+    }
+  }
+
+  /// Polls until a WM_PROTOCOLS/WM_DELETE_WINDOW ClientMessage is received.
+  bool waitForDeleteWindow(Duration timeout) {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      final event = _pollForEvent(_connection);
+      if (event != nullptr) {
+        try {
+          if ((event.value & 0x7f) == _xcbClientMessage) {
+            final message = event.cast<_XcbClientMessageEvent>().ref;
+            if (message.format == 32 &&
+                message.window == _window &&
+                message.type == _wmProtocols &&
+                message.data32[0] == _wmDeleteWindow) {
+              return true;
+            }
+          }
+        } finally {
+          calloc.free(event);
+        }
+      }
+      sleep(const Duration(milliseconds: 5));
+    }
+    return false;
+  }
+
   void dispose() {
     if (_connection == nullptr) return;
     if (_window != 0) {
@@ -215,6 +370,8 @@ final class XcbWindow {
       _flush(_connection);
       _window = 0;
     }
+    _wmProtocols = 0;
+    _wmDeleteWindow = 0;
     _disconnect(_connection);
     _connection = nullptr;
   }

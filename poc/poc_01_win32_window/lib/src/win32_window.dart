@@ -9,11 +9,12 @@ library;
 
 import 'dart:ffi';
 import 'dart:typed_data';
+
 import 'package:ffi/ffi.dart';
 
 import 'win32_constants.dart';
-import 'win32_structs.dart';
 import 'win32_functions.dart';
+import 'win32_structs.dart';
 
 /// Registry that maps HWND → Win32Window instances.
 ///

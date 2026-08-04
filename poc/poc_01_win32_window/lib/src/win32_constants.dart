@@ -4,6 +4,10 @@
 /// handle messages, and present a CPU-rendered framebuffer.
 library;
 
+// Win32 header names are preserved so the bindings remain directly comparable
+// with Microsoft's native API documentation.
+// ignore_for_file: constant_identifier_names
+
 // ============================================================
 // Window Messages
 // ============================================================

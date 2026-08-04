@@ -399,6 +399,11 @@ Implementação inicial disponível em `poc/poc_02_x11_window`. A validação
 funcional é executada no job Linux/Xvfb do GitHub Actions. Validado no
 workflow `POC Tests` em 2026-08-04 (commit `3cfcefc`).
 
+O caminho de fechamento foi ampliado para internar `WM_PROTOCOLS` e
+`WM_DELETE_WINDOW`, instalar a property no X server e validar o
+`ClientMessage` correspondente. A marcação abaixo permanece pendente até a
+execução dessa nova cobertura no job Linux/Xvfb.
+
 - [x] Conexão ao X server no CI (Xvfb) funciona
 - [x] Janela é criada e mapeada
 - [x] Evento `XCB_EXPOSE` é recebido

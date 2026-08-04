@@ -20,10 +20,10 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
-import '../lib/src/win32_constants.dart';
-import '../lib/src/win32_functions.dart' show Win32;
-import '../lib/src/win32_structs.dart';
-import '../lib/src/win32_window.dart';
+import 'package:poc_01_win32_window/src/win32_constants.dart';
+import 'package:poc_01_win32_window/src/win32_functions.dart' show Win32;
+import 'package:poc_01_win32_window/src/win32_structs.dart';
+import 'package:poc_01_win32_window/src/win32_window.dart';
 
 void main(List<String> args) {
   final smokeTest = args.contains('--smoke-test');

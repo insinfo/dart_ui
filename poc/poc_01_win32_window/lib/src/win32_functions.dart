@@ -5,8 +5,13 @@
 /// DPI awareness, and DIBSection CPU framebuffer.
 library;
 
+// Win32 API spelling is part of the native ABI vocabulary used by this POC.
+// ignore_for_file: non_constant_identifier_names
+
 import 'dart:ffi';
+
 import 'package:ffi/ffi.dart';
+
 import 'win32_structs.dart';
 
 /// Singleton holder for all loaded Win32 function pointers.
