@@ -995,7 +995,32 @@ A implementação Windows está em `poc/poc_11_async_image_download` e integra:
 - apresentação da imagem no framebuffer;
 - servidor HTTP local fragmentado para smoke test determinístico e sem internet.
 
-## 14A.3 Critério de sucesso
+## 14A.3 Decisão arquitetural preliminar
+
+Os resultados dos POCs 10 e 11 apontam para uma estratégia **híbrida**, não
+para uma escolha exclusiva entre loop cooperativo e isolates:
+
+- o isolate da UI mantém a janela, callbacks nativos, estado leve e o pump
+  cooperativo, respeitando a afinidade de thread da API Win32;
+- rede, arquivos, timers e outros I/Os assíncronos permanecem nesse isolate por
+  `Future`/`Stream`, pois esperam o sistema operacional sem bloquear;
+- decode, raster pesado, layout custoso e qualquer chamada síncrona longa vão
+  para isolates de trabalho;
+- o retorno ao isolate da UI deve usar buffers transferíveis/double buffering e
+  aplicar apenas trabalho curto e limitado por frame.
+
+Um teste manual com maximização/restauração durante o download revelou um pico
+de 1723 ms quando uma grande área era preenchida pixel a pixel no isolate da UI.
+O placeholder foi convertido para desenho de bordas, o clear BGRA foi
+vetorizado com `Uint32List.fillRange` e a animação foi limitada a 30 FPS. Esse
+achado confirma que I/O assíncrono não exige isolate, mas carga CPU sem orçamento
+de frame exige.
+
+A decisão ainda precisa de POCs de resize 4K contínuo, input sob carga, múltiplos
+downloads, raster em worker com `TransferableTypedData` e comparação de cópia
+simples versus double buffering.
+
+## 14A.4 Critério de sucesso
 
 - [x] Botão inicia download sem bloquear mensagens Win32
 - [x] Progresso acompanha os bytes recebidos

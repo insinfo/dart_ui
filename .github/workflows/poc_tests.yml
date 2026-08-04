@@ -226,8 +226,6 @@ jobs:
     name: 'POC-06: OpenGL'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Reserved until POC-06 exists.
-    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
