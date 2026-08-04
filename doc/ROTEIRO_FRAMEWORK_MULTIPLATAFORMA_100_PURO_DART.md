@@ -944,6 +944,18 @@ Exemplos:
 - certos callbacks de enumeração;
 - função de comparação nativa chamada durante a mesma operação.
 
+No Win32, a janela, o message pump e o `WndProc` devem pertencer à thread
+mutadora do isolate de UI. `DispatchMessage` chama o procedimento
+sincronamente e o Windows entrega mensagens entre threads na thread que criou
+a janela. Nesse arranjo, `NativeCallable.isolateLocal` satisfaz tanto a
+afinidade de thread quanto o retorno imediato de `LRESULT`.
+
+`Pointer.fromFunction` não é um fallback para chamadas em outra thread: ele
+possui a mesma restrição à thread mutadora. Deve ser reservado para callbacks
+top-level/estáticos que precisam viver até o fim do isolate; `isolateLocal` é
+preferível no backend porque aceita closures/métodos e possui lifecycle
+explícito com `close()`.
+
 ### Callback assíncrono de qualquer thread
 
 Usar `NativeCallable.listener` quando:
@@ -957,6 +969,12 @@ Exemplos:
 - notificação de dispositivo;
 - callback de biblioteca que não exige resposta imediata.
 
+`listener` não pode implementar `WndProc`: o chamador nativo não espera o Dart
+e a assinatura precisa retornar `void`, enquanto o Win32 exige um `LRESULT`
+síncrono. Para uma notificação originada em thread externa, o padrão permitido
+é `listener` → atualização/enfileiramento Dart → `PostMessage(WM_APP + n)`; o
+`WndProc` continua sendo `isolateLocal` e processa a mensagem na thread de UI.
+
 ### Callback experimental entre threads
 
 Não depender de API experimental no núcleo estável. Se `isolateGroupBound` for avaliado:
@@ -965,6 +983,21 @@ Não depender de API experimental no núcleo estável. Se `isolateGroupBound` fo
 - testar por versão do SDK;
 - oferecer fallback;
 - não usá-lo para contratos públicos.
+
+O construtor não está disponível no SDK Dart 3.6.2 usado atualmente. Em SDKs
+mais novos ele aceita retorno e chamadas de qualquer thread, mas callback e
+`exceptionalReturn` precisam ser trivialmente compartilháveis, e o código não
+pode depender de estado global/estático específico de um isolate. Mesmo quando
+disponível, não será usado como `WndProc` principal: não oferece vantagem para
+uma janela que já possui afinidade com a thread de UI e acrescenta concorrência
+e dependência experimental.
+
+| Contrato nativo | Callable adotado | Regra |
+|---|---|---|
+| `WndProc` e callback síncrono na UI | `NativeCallable.isolateLocal` | mesma thread, retorno imediato |
+| Notificação `void` de thread externa | `NativeCallable.listener` | entrega assíncrona e ponte por `PostMessage` |
+| Callback top-level com vida do isolate | `Pointer.fromFunction` | mesma restrição de thread de `isolateLocal` |
+| Callback síncrono de qualquer thread | `isolateGroupBound` | experimental; fora do núcleo e ausente no SDK 3.6.2 |
 
 ## 10.4 Registro de callbacks
 
@@ -989,6 +1022,8 @@ Garantias:
 - tokens possuem geração para evitar use-after-free;
 - exceptions nunca atravessam a fronteira FFI;
 - cada callback captura erro e publica diagnóstico no dispatcher.
+- no Win32, `close()` só ocorre após destruir as janelas, processar
+  `WM_NCDESTROY`, remover referências nativas e desregistrar a classe.
 
 ---
 

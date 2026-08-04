@@ -295,6 +295,27 @@ void _initCallback() {
 }
 ```
 
+### 5.4.1 Decisão validada sobre callbacks Win32
+
+No SDK Dart 3.6.2 e na arquitetura comprovada pelos POCs 01, 10 e 11:
+
+- `NativeCallable.isolateLocal` é o callback canônico do `WndProc`;
+- janela, `PeekMessage`/`DispatchMessage` e `WndProc` permanecem na thread
+  mutadora do isolate de UI;
+- `NativeCallable.listener` não pode substituir o `WndProc`, pois somente
+  retorna `void` e agenda a execução Dart, enquanto o Windows exige `LRESULT`
+  síncrono;
+- callbacks `void` originados em threads externas podem usar `listener` e
+  acordar a janela posteriormente com `PostMessage(WM_APP + n)`;
+- `Pointer.fromFunction` tem a mesma restrição de thread de `isolateLocal` e
+  apenas aceita funções top-level/estáticas; não é fallback de concorrência;
+- `NativeCallable.isolateGroupBound` não existe no SDK 3.6.2. Em versões que o
+  oferecem, permanece experimental e fora do caminho principal da UI.
+
+O callable deve manter referência forte durante toda a vida da classe/janela.
+O encerramento ocorre somente depois de destruir as janelas, processar
+`WM_NCDESTROY`, eliminar os usos nativos do ponteiro e desregistrar a classe.
+
 ## 5.5 Testes de stress
 
 1. Abrir/fechar 1000 janelas em sequência
@@ -324,7 +345,11 @@ void _initCallback() {
 ## 5.7 Se falhar
 
 - Se `NativeCallable.isolateLocal` não funcionar para WndProc:
-  - Testar `NativeCallable.listener` com `PostMessage` para sinalizar
+  - Não substituir o `WndProc` por `NativeCallable.listener`
+  - Usar um trampoline nativo somente se uma limitação real do runtime for
+    confirmada e o requisito de 100% Dart for formalmente revisto
+  - Reservar `listener` para notificações `void` externas e usar `PostMessage`
+    apenas para encaminhá-las ao `WndProc` síncrono
   - Avaliar timer polling (degradação aceitável?)
   - Verificar se Dart SDK tem plano para resolver
   - Documentar limitação com issue + versão do SDK
@@ -1588,7 +1613,8 @@ graph TD
 Cada POC deve documentar respostas claras para:
 
 ## POC-01 (Win32)
-1. `NativeCallable.isolateLocal` é estável para `WndProc`? → Sim/Não + versão SDK
+1. `NativeCallable.isolateLocal` é estável para `WndProc`? → Sim no Dart 3.6.2,
+   desde que janela e pump permaneçam na thread mutadora do isolate
 2. Qual o padrão de associação HWND → objeto Dart? → `SetWindowLongPtrW(GWLP_USERDATA)` ou registry
 3. `GetMessageW` ou `PeekMessageW`? → Qual funciona melhor com Dart event loop
 4. Qual o overhead do callback FFI por mensagem? → Benchmark
@@ -1769,7 +1795,7 @@ Antes de iniciar o desenvolvimento do framework principal (Fases 0-17 do roteiro
 
 - [ ] Rasterizador CPU canônico escolhido (marlin vs dart_graphics)
 - [ ] Formato de pixel canônico definido
-- [ ] Padrão de callback FFI documentado
+- [x] Padrão de callback FFI documentado
 - [ ] Padrão de COM wrapper documentado
 - [ ] Padrão de ObjC bridge documentado
 - [ ] Estratégia de event loop documentada por plataforma
