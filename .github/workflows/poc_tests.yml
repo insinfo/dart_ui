@@ -47,7 +47,10 @@ jobs:
 
       - name: AOT compile
         working-directory: poc/poc_01_win32_window
-        run: dart compile exe bin/main.dart -o build/poc_01.exe
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          dart compile exe bin/main.dart -o build/poc_01.exe
 
       - name: Smoke test
         working-directory: poc/poc_01_win32_window
@@ -108,6 +111,7 @@ jobs:
       - name: AOT compile and smoke test
         working-directory: poc/poc_02_x11_window
         run: |
+          mkdir -p build
           dart compile exe bin/main.dart -o build/poc_02
           chmod +x build/poc_02
           timeout 10 ./build/poc_02 --smoke-test || echo "Exited (expected)"
@@ -356,49 +360,22 @@ jobs:
           XDG_RUNTIME_DIR: /tmp/weston-test
 
   # ==============================================================
-  # POC-10: Event Loop (all platforms)
+  # POC-10: Event Loop (Windows implementation)
   # ==============================================================
   poc-10-event-loop:
-    name: 'POC-10: Event Loop (${{ matrix.platform }})'
-    runs-on: ${{ matrix.os }}
+    name: 'POC-10: Event Loop (Windows)'
+    runs-on: windows-latest
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            platform: linux
-          - os: windows-latest
-            platform: windows
-          - os: macos-14
-            platform: macos
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: ${{ env.DART_SDK_VERSION }}
 
-      - name: Install Linux deps
-        if: matrix.platform == 'linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb libxcb1-dev x11-utils
-
       - name: Install dependencies
         working-directory: poc/poc_10_event_loop
         run: dart pub get
 
-      - name: Run tests (Linux with Xvfb)
-        if: matrix.platform == 'linux'
-        working-directory: poc/poc_10_event_loop
-        run: |
-          Xvfb :99 -screen 0 1920x1080x24 -ac &
-          sleep 2
-          dart test
-        env:
-          DISPLAY: ':99'
-
-      - name: Run tests (Windows/macOS)
-        if: matrix.platform != 'linux'
+      - name: Run tests
         working-directory: poc/poc_10_event_loop
         run: dart test

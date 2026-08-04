@@ -50,6 +50,24 @@
 6. **Dart SDK é fixado** para reprodutibilidade
 7. **Golden files são plataforma-específicos** (fontes/rendering diferem)
 8. **POC tests são separados** para não bloquear o CI principal
+
+## Estado atual dos workflows
+
+O workflow `POC Tests` executa somente POCs já presentes no repositório;
+POCs planejados sem implementação ficam explicitamente ignorados. Isso evita
+falhas de configuração por diretórios ainda inexistentes. `hashFiles()` é
+usado apenas em chaves de cache de steps, nunca em condições de job.
+
+| POC | Runner atual | Validação |
+|---|---|---|
+| POC-01 Win32 | Windows | análise, teste de constantes, AOT e smoke test |
+| POC-02 XCB | Linux + Xvfb | análise, janela, `XCB_EXPOSE`, `xcb_put_image` e AOT |
+| POC-04 CPU | Linux, Windows, macOS | benchmark e testes unitários |
+| POC-05 COM/D2D | Windows | análise e testes de COM/ABI |
+| POC-10 event loop | Windows | testes de Timer + wakeup Win32 |
+
+Todos os passos que compilam AOT criam explicitamente o diretório `build/`,
+que é ignorado pelo Git.
 9. **Caching agressivo** de Dart pub e ferramentas
 
 ---
