@@ -1103,7 +1103,8 @@ plataforma.
 - [x] Benchmark JIT e AOT executa em 1080p no Windows
 - [x] Custo da cópia heap → nativo é medido separadamente
 - [x] AOT passa em Linux, Windows e macOS no GitHub Actions (execução `30885659042`)
-- [ ] Buffer nativo é apresentado diretamente, sem cópia intermediária
+- [x] Buffer nativo é apresentado diretamente, sem cópia intermediária (POC-13,
+  execução `30886674910`)
 
 ---
 
@@ -1138,6 +1139,19 @@ rápida e o throughput end-to-end aumentou 1,57×. O resultado confirma que o
 benefício da memória nativa vem de remover a cópia de frame, não de tornar cada
 store Dart mais rápido.
 
+O benchmark AOT automatizado no runner Windows da execução `30886674910`, com
+180 frames e área cliente de 1028×681, confirmou a tendência com maior margem:
+
+| Pipeline | FPS | Raster médio | Apresentação média | Frame médio |
+|---|---:|---:|---:|---:|
+| Heap + cópia + `StretchDIBits` | 304,1 | 529,7 µs | 2375,6 µs | 3288,3 µs |
+| Ponteiro DIB + `BitBlt` | 898,3 | 533,3 µs | 247,6 µs | 1113,2 µs |
+
+No runner, o custo de raster ficou praticamente igual, enquanto a apresentação
+do DIB persistente foi 9,60× mais rápida e o throughput completo 2,95× maior.
+Isso valida manter a memória de pixels no formato nativo esperado pelo backend
+gráfico e evitar a cópia integral por frame no caminho de produção.
+
 ## 14C.3 Critério de sucesso
 
 - [x] `CreateDIBSection` retorna memória BGRA gravável por Dart FFI
@@ -1145,7 +1159,8 @@ store Dart mais rápido.
 - [x] Nenhuma alocação/cópia completa ocorre no caminho nativo por frame
 - [x] Cleanup restaura o objeto GDI anterior antes de `DeleteObject`
 - [x] Pipeline nativo supera o pipeline copiado em apresentação e throughput
-- [ ] Teste AOT e benchmark passam no GitHub Actions Windows
+- [x] Teste AOT e benchmark passam no GitHub Actions Windows (execução
+  `30886674910`)
 - [ ] Resize/maximize contínuo mantém latência de UI abaixo de 100 ms
 
 ---
