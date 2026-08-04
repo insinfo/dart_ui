@@ -4,9 +4,9 @@ import 'package:poc_12_native_buffers/poc_12_native_buffers.dart';
 
 void main(List<String> args) {
   final ci = args.contains('--ci');
-  final width = ci ? 800 : 1920;
-  final height = ci ? 600 : 1080;
-  final iterations = ci ? 12 : 30;
+  const width = 1920;
+  const height = 1080;
+  final iterations = ci ? 15 : 30;
   final benchmark = NativeBufferBenchmark(
     width: width,
     height: height,

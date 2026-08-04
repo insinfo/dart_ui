@@ -1074,6 +1074,12 @@ ser consumido diretamente pela API gráfica, eliminando a cópia completa entre
 heap e memória nativa. O próximo teste deve mapear diretamente a memória de um
 `CreateDIBSection` e comparar o pipeline completo, inclusive apresentação.
 
+O primeiro perfil AOT multiplataforma em 800×600 mostrou o loop indexado por
+ponteiro praticamente empatado com o `Uint32List`: 0,64 contra 0,66 ns/pixel no
+Linux, 0,64 contra 0,65 no Windows e 0,45 contra 0,42 no macOS. Em contraste,
+`fillRange` sobre a view nativa custou de 3,68 a 6,99 ns/pixel. O perfil do CI
+foi elevado para 1080p/15 frames para reduzir ruído e validar escalabilidade.
+
 ## 14B.4 Critério de sucesso
 
 - [x] Buffer `calloc<Uint32>` possui alinhamento e layout BGRA corretos
@@ -1081,7 +1087,7 @@ heap e memória nativa. O próximo teste deve mapear diretamente a memória de u
 - [x] Lifecycle manual é validado sem double-free
 - [x] Benchmark JIT e AOT executa em 1080p no Windows
 - [x] Custo da cópia heap → nativo é medido separadamente
-- [ ] AOT passa em Linux, Windows e macOS no GitHub Actions
+- [x] AOT passa em Linux, Windows e macOS no GitHub Actions (execução `30885659042`)
 - [ ] Buffer nativo é apresentado diretamente, sem cópia intermediária
 
 ---
