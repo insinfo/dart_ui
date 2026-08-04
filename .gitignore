@@ -1,0 +1,28 @@
+# Files and directories created by pub
+.dart_tool/
+.packages
+build/
+
+# Lockfiles are generated for this prototype workspace.
+pubspec.lock
+
+# Reference material is local-only and must not be published.
+referencias/
+
+# Directory created by dartdoc
+doc/api/
+
+# dotenv environment variables file
+.env*
+
+# Avoid committing generated JavaScript files
+*.dart.js
+*.info.json
+*.js
+*.js_
+*.js.deps
+*.js.map
+
+# Flutter generated files
+.flutter-plugins
+.flutter-plugins-dependencies
