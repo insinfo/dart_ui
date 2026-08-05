@@ -1576,6 +1576,8 @@ class CpuRenderer implements RendererBackend {
 - [x] DisplayList grava e reproduz (`DisplayListBuilder` + comandos v0)
 - [x] CpuRenderer produz output correto (rect, texto, translate e clip)
 - [x] Golden comparison determinística com checksum no backend headless
+- [x] `CounterApp.recordDisplayList()` permite replay da cena completa fora do
+      caminho direto de widgets
 - [ ] Performance ≥ 30 FPS em cena de widget
 
 ---

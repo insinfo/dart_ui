@@ -57,4 +57,14 @@ void main() {
     final secondShot = HeadlessScreenshot(64, 48, second.pixels);
     expect(firstShot.checksum, secondShot.checksum);
   });
+
+  test('CounterApp grava e renderiza a cena completa via DisplayList', () {
+    final frame = HeadlessFrame(320, 240);
+    frame.renderDisplayList();
+
+    final displayList = frame.app.recordDisplayList();
+    expect(displayList.commands, isNotEmpty);
+    expect(frame.pixelAt(0, 0), const Color.opaque(30, 34, 42).packedBgra);
+    expect(frame.app.incrementButton.bounds.isEmpty, isFalse);
+  });
 }

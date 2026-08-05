@@ -8,6 +8,7 @@ library;
 import '../core/bitmap_font.dart' as font;
 import '../core/color.dart';
 import '../core/geometry.dart';
+import '../render/display_list.dart';
 import 'button.dart';
 import 'label.dart';
 import 'widget.dart';
@@ -37,6 +38,33 @@ final class CounterApp extends UiRoot {
 
   int _count = 0;
   int get count => _count;
+
+  /// Grava a cena atual em DisplayList v0 para renderers alternativos.
+  ///
+  /// O caminho widget-paint continua disponível para dirty rect; esta lista
+  /// representa o frame completo e é usada por headless, golden e futuros
+  /// backends acelerados.
+  DisplayList recordDisplayList() {
+    final builder = DisplayListBuilder()
+      ..drawRect(
+          Rect.fromLTWH(0, 0, width, height), const Color.opaque(30, 34, 42))
+      ..drawText(_title.text, _title.bounds, _title.color)
+      ..drawText(_countLabel.text, _countLabel.bounds, _countLabel.color)
+      ..drawRect(
+          _incrementButton.bounds, _buttonFillColor(_incrementButton.state))
+      ..drawText('INCREMENTAR', _incrementButton.bounds, Color.white)
+      ..drawRect(_resetButton.bounds, _buttonFillColor(_resetButton.state))
+      ..drawText('ZERAR', _resetButton.bounds, Color.white);
+    return builder.build();
+  }
+
+  Color _buttonFillColor(ButtonState state) {
+    return switch (state) {
+      ButtonState.pressed => const Color.opaque(48, 54, 68),
+      ButtonState.hover => const Color.opaque(82, 92, 116),
+      _ => const Color.opaque(68, 74, 92),
+    };
+  }
 
   static const int buttonWidth = 190;
   static const int buttonHeight = 44;

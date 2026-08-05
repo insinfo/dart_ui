@@ -10,6 +10,7 @@ import 'dart:typed_data';
 import 'src/core/geometry.dart';
 import 'src/ppm_writer.dart';
 import 'src/render/canvas.dart';
+import 'src/render/cpu_renderer.dart';
 import 'src/ui/counter_app.dart';
 
 final class HeadlessConfig {
@@ -182,6 +183,11 @@ final class HeadlessFrame {
   void renderFull() {
     app.markFullDirty();
     app.paint();
+  }
+
+  /// Executa o frame completo gravado pelo MVP-05 DisplayList.
+  void renderDisplayList() {
+    CpuRenderer().render(app.recordDisplayList(), canvas);
   }
 
   // ---- Input sintético ----------------------------------------------------
