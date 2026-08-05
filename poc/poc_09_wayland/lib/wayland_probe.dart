@@ -156,7 +156,7 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
   if (_shmProxy == null) {
     result.diagnostic =
         'No wl_shm global was advertised; cannot create a shm pool.';
-    wl_compositor_destroy(_compositorProxy!);
+    wl_proxy_destroy_only(_compositorProxy!);
     calloc.free(listener);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
@@ -169,8 +169,8 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
   final surface = wl_compositor_create_surface(_compositorProxy!);
   if (surface == nullptr) {
     result.diagnostic = 'wl_compositor_create_surface returned NULL.';
-    wl_shm_destroy(_shmProxy!);
-    wl_compositor_destroy(_compositorProxy!);
+    wl_proxy_destroy_only(_shmProxy!);
+    wl_proxy_destroy_only(_compositorProxy!);
     calloc.free(listener);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
@@ -189,8 +189,8 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
   if (fd < 0) {
     result.diagnostic = 'memfd_create returned $fd (errno-style).';
     wl_surface_destroy(surface);
-    wl_shm_destroy(_shmProxy!);
-    wl_compositor_destroy(_compositorProxy!);
+    wl_proxy_destroy_only(_shmProxy!);
+    wl_proxy_destroy_only(_compositorProxy!);
     calloc.free(listener);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
@@ -200,8 +200,8 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
     result.diagnostic = 'ftruncate failed.';
     close_fd(fd);
     wl_surface_destroy(surface);
-    wl_shm_destroy(_shmProxy!);
-    wl_compositor_destroy(_compositorProxy!);
+    wl_proxy_destroy_only(_shmProxy!);
+    wl_proxy_destroy_only(_compositorProxy!);
     calloc.free(listener);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
@@ -213,8 +213,8 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
     result.diagnostic = 'mmap failed.';
     close_fd(fd);
     wl_surface_destroy(surface);
-    wl_shm_destroy(_shmProxy!);
-    wl_compositor_destroy(_compositorProxy!);
+    wl_proxy_destroy_only(_shmProxy!);
+    wl_proxy_destroy_only(_compositorProxy!);
     calloc.free(listener);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
@@ -239,8 +239,8 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
     munmap(mapped, poolSize);
     close_fd(fd);
     wl_surface_destroy(surface);
-    wl_shm_destroy(_shmProxy!);
-    wl_compositor_destroy(_compositorProxy!);
+    wl_proxy_destroy_only(_shmProxy!);
+    wl_proxy_destroy_only(_compositorProxy!);
     calloc.free(listener);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
@@ -254,8 +254,8 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
     munmap(mapped, poolSize);
     close_fd(fd);
     wl_surface_destroy(surface);
-    wl_shm_destroy(_shmProxy!);
-    wl_compositor_destroy(_compositorProxy!);
+    wl_proxy_destroy_only(_shmProxy!);
+    wl_proxy_destroy_only(_compositorProxy!);
     calloc.free(listener);
     wl_registry_destroy(registry);
     wl_display_disconnect(display);
@@ -286,8 +286,10 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
   munmap(mapped, poolSize);
   close_fd(fd);
   wl_surface_destroy(surface);
-  wl_shm_destroy(_shmProxy!);
-  wl_compositor_destroy(_compositorProxy!);
+  // wl_compositor / wl_shm have no destructor opcode at version 1; we just
+  // destroy the local proxies.
+  wl_proxy_destroy_only(_shmProxy!);
+  wl_proxy_destroy_only(_compositorProxy!);
   // Close the registry listener callables so their native trampolines are
   // torn down before the listener struct itself is freed.
   _globalCallable.close();

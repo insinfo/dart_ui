@@ -10,7 +10,8 @@ import 'objc_runtime.dart';
 
 // The Metal framework is loaded by name on macOS; `dlopen` resolves the framework
 // path via the standard search rules.
-final DynamicLibrary libMetal = DynamicLibrary.open('Metal');
+final DynamicLibrary libMetal =
+    DynamicLibrary.open('/System/Library/Frameworks/Metal.framework/Metal');
 
 // `id MTLCreateSystemDefaultDevice(void)` is the C entry point that returns the
 // system-default GPU. It is *not* an Objective-C method, so we look it up on the
