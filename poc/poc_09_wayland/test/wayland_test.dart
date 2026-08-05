@@ -32,8 +32,12 @@ void main() {
         reason: 'wl_proxy_add_listener must resolve');
     expect(() => wl_registry_add_listener, returnsNormally,
         reason: 'wl_registry_add_listener Dart inline reimplementation exists');
+    // `wl_registry_bind` is likewise a scanner-generated inline; its backing
+    // exported primitive is `wl_proxy_marshal_constructor_versioned`.
+    expect(() => wl_proxy_marshal_constructor_versioned_bind, returnsNormally,
+        reason: 'wl_proxy_marshal_constructor_versioned must resolve');
     expect(() => wl_registry_bind, returnsNormally,
-        reason: 'wl_registry_bind must resolve');
+        reason: 'wl_registry_bind Dart inline reimplementation exists');
     expect(() => wl_proxy_destroy, returnsNormally,
         reason: 'wl_proxy_destroy must resolve');
     expect(() => wl_proxy_marshal_0, returnsNormally,

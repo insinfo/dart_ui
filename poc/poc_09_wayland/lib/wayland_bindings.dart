@@ -65,18 +65,54 @@ final WlProxyAddListenerDart wl_proxy_add_listener =
     libWayland.lookupFunction<WlProxyAddListenerNative, WlProxyAddListenerDart>(
         'wl_proxy_add_listener');
 
-// void *wl_registry_bind(struct wl_registry *wl_registry, uint32_t name,
-//                        const struct wl_interface *interface, uint32_t version);
-// NOTE: `wl_registry_bind` is exported by the runtime even though it
-// returns a new id; the scanner-generated wrapper for `bind` is a special
-// case that the runtime ships explicitly.
-typedef WlRegistryBindNative = Pointer<Void> Function(Pointer<Void> registry,
-    Uint32 name, Pointer<Void> interface, Uint32 version);
-typedef WlRegistryBindDart = Pointer<Void> Function(
-    Pointer<Void> registry, int name, Pointer<Void> interface, int version);
-final WlRegistryBindDart wl_registry_bind =
-    libWayland.lookupFunction<WlRegistryBindNative, WlRegistryBindDart>(
-        'wl_registry_bind');
+// struct wl_interface { const char *name; int version;
+//                        uint32_t method_count; ... };
+// Only the `name` field (offset 0) is ever dereferenced, by the
+// `wl_registry_bind` inline reimplementation below. The exported
+// `wl_*_interface` symbols point at instances of this struct.
+final class WlInterface extends Struct {
+  external Pointer<Utf8> name;
+  @Int32()
+  external int version;
+  @Uint32()
+  external int method_count;
+  external Pointer<Void> methods;
+  @Uint32()
+  external int event_count;
+  external Pointer<Void> events;
+}
+
+// struct wl_proxy *wl_proxy_marshal_constructor_versioned(
+//     struct wl_proxy *proxy, uint32_t opcode,
+//     const struct wl_interface *interface, uint32_t version, ...);
+// Fixed-shape signature matching the `wl_registry_bind` call site: the
+// variadic args are `name:uint`, `interface->name:const char*`,
+// `version:uint`, NULL. NOTE: `wl_registry_bind` itself is NOT exported —
+// the scanner generates it as an inline around this primitive — so it is
+// reimplemented in Dart below, like the other inlines.
+typedef WlProxyMarshalConstructorVersionedBindNative = Pointer<Void> Function(
+    Pointer<Void> proxy,
+    Uint32 opcode,
+    Pointer<Void> interface,
+    Uint32 version,
+    Uint32 name,
+    Pointer<Utf8> interfaceName,
+    Uint32 requestVersion,
+    Pointer<Void> sentinel);
+typedef WlProxyMarshalConstructorVersionedBindDart = Pointer<Void> Function(
+    Pointer<Void> proxy,
+    int opcode,
+    Pointer<Void> interface,
+    int version,
+    int name,
+    Pointer<Utf8> interfaceName,
+    int requestVersion,
+    Pointer<Void> sentinel);
+final WlProxyMarshalConstructorVersionedBindDart
+    wl_proxy_marshal_constructor_versioned_bind = libWayland.lookupFunction<
+            WlProxyMarshalConstructorVersionedBindNative,
+            WlProxyMarshalConstructorVersionedBindDart>(
+        'wl_proxy_marshal_constructor_versioned');
 
 // ---- wl_proxy_* runtime primitives (replace the inline-generated
 //      protocol functions from the scanner). ------------------------------
@@ -233,6 +269,24 @@ const int wlBufferDestroyOpcode = 0;
 Pointer<Void> wl_display_get_registry(Pointer<Void> display) {
   return wl_proxy_marshal_constructor_iface0(
       display, wlDisplayGetRegistryOpcode, wl_registry_interface_ptr, nullptr);
+}
+
+/// Reimplements `wl_registry_bind(struct wl_registry *, uint32_t name,
+/// const struct wl_interface *interface, uint32_t version)`. The generated
+/// inline marshals `name`, `interface->name` (a string) and `version` via
+/// `wl_proxy_marshal_constructor_versioned`, passing `version` both as the
+/// constructor version and as the request argument.
+Pointer<Void> wl_registry_bind(
+    Pointer<Void> registry, int name, Pointer<Void> interface, int version) {
+  return wl_proxy_marshal_constructor_versioned_bind(
+      registry,
+      wlRegistryBindOpcode,
+      interface,
+      version,
+      name,
+      interface.cast<WlInterface>().ref.name,
+      version,
+      nullptr);
 }
 
 /// Reimplements `wl_compositor_create_surface(struct wl_compositor *compositor)`.
