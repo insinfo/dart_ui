@@ -1,0 +1,20 @@
+name: mvp_01_win32_counter
+description: >
+  MVP-01: Vertical Slice Windows — janela Win32 + renderização CPU em puro
+  Dart + botão com estados (normal, hover, pressed, focused) + Counter app.
+  O código de widgets é 100% Dart e roda também em backend headless.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dependencies:
+  poc_01_win32_window:
+    path: ../../poc/poc_01_win32_window
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^5.1.0

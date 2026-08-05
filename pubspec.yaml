@@ -18,3 +18,9 @@ workspace:
   - poc/poc_09_wayland
   - poc/poc_12_native_buffers
   - poc/poc_13_native_dib_present
+  - mvp/mvp_01_win32_counter
+  - poc/poc_14_direct3d
+  - poc/poc_15_direct3d12
+  - poc/poc_16_webgl1
+  - poc/poc_17_webgl2
+  - poc/poc_18_webgpu

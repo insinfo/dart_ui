@@ -111,6 +111,14 @@ class Win32Window {
   void Function(Win32Window window, int x, int y, int button)? onMouseUp;
   void Function(Win32Window window, int keyCode, bool isDown)? onKey;
 
+  /// Optional provider of the dirty region to present on the next paint.
+  ///
+  /// When set and returning `(left, top, right, bottom)` in client
+  /// coordinates, only that region is presented (partial present,
+  /// `nativeDib` backend). Otherwise the whole framebuffer is presented.
+  /// A record keeps this low-level POC independent of MVP geometry types.
+  (int, int, int, int) Function(Win32Window window)? presentRegionProvider;
+
   /// Whether this window has been destroyed.
   bool _destroyed = false;
   bool get isDestroyed => _destroyed;
@@ -504,6 +512,7 @@ class Win32Window {
         return 0;
 
       case WM_LBUTTONDOWN:
+      case WM_LBUTTONDBLCLK:
         final x = _loWord(lParam);
         final y = _hiWord(lParam);
         onMouseDown?.call(this, x, y, 0);
@@ -553,18 +562,66 @@ class Win32Window {
     // Call user paint callback to update framebuffer
     onPaint?.call(this);
 
-    // Present framebuffer to window
-    _presentStopwatch
-      ..reset()
-      ..start();
-    _presentFramebuffer(hdc);
-    _presentStopwatch.stop();
-    presentCount++;
-    totalPresentMicroseconds += _presentStopwatch.elapsedMicroseconds;
+    // Present only the dirty region when provided (partial present).
+    final region = presentRegionProvider?.call(this);
+    if (region != null) {
+      final regionWidth = region.$3 - region.$1;
+      final regionHeight = region.$4 - region.$2;
+      if (regionWidth > 0 && regionHeight > 0) {
+        _presentRegion(hdc, region.$1, region.$2, regionWidth, regionHeight);
+      }
+    } else {
+      _presentStopwatch
+        ..reset()
+        ..start();
+      _presentFramebuffer(hdc);
+      _presentStopwatch.stop();
+      presentCount++;
+      totalPresentMicroseconds += _presentStopwatch.elapsedMicroseconds;
+    }
 
     Win32.EndPaint(hwnd, ps);
     calloc.free(ps);
     return 0;
+  }
+
+  /// Presents only [x, y, w, h] of the framebuffer.
+  ///
+  /// For the persistent-DIB backend this is a single `BitBlt` of the region
+  /// (no full-frame copy). For the heap-copy backend the region is ignored and
+  /// the whole framebuffer is presented, since `StretchDIBits` always uploads
+  /// the full source bitmap.
+  void _presentRegion(int hdc, int x, int y, int w, int h) {
+    final fb = _framebuffer;
+    if (fb == null || w <= 0 || h <= 0) {
+      _presentFramebuffer(hdc);
+      return;
+    }
+    if (framebufferBackend != FramebufferBackend.nativeDib) {
+      _presentFramebuffer(hdc);
+      return;
+    }
+    final clippedW = (x + w).clamp(0, _clientWidth) - x;
+    final clippedH = (y + h).clamp(0, _clientHeight) - y;
+    if (clippedW <= 0 || clippedH <= 0) return;
+
+    _presentStopwatch
+      ..reset()
+      ..start();
+    Win32.BitBlt(
+      hdc,
+      x,
+      y,
+      clippedW,
+      clippedH,
+      _memDC,
+      x,
+      y,
+      SRCCOPY,
+    );
+    _presentStopwatch.stop();
+    presentCount++;
+    totalPresentMicroseconds += _presentStopwatch.elapsedMicroseconds;
   }
 
   int _onSize(int hwnd, int width, int height) {

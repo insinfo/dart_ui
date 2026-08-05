@@ -1,0 +1,16 @@
+name: poc_17_webgl2
+description: POC-17 — WebGL 2 context via package:web (dart:js_interop).
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dependencies:
+  web: ^1.1.0
+
+dev_dependencies:
+  lints: ^5.1.0
+  test: ^1.25.0

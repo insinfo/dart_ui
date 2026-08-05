@@ -74,6 +74,9 @@ usado apenas em chaves de cache de steps, nunca em condições de job.
 | POC-11 download assíncrono | Windows | análise, rede fragmentada, progresso, decode, AOT e smoke de UI |
 | POC-12 buffers FFI | Linux, Windows, macOS | lifecycle nativo, testes, benchmark AOT e relatório por plataforma |
 | POC-13 DIB persistente | Windows | dois pipelines GDI, AOT, apresentação zero-copy e relatório de throughput |
+| POC-16 WebGL1 | Ubuntu + Chrome headless | `dart test -p chrome`, contexto pode retornar `null` |
+| POC-17 WebGL2 | Ubuntu + Chrome headless | `dart test -p chrome`, contexto WebGL2 |
+| POC-18 WebGPU | Ubuntu + Chrome headless | `dart test -p chrome`, skip controlado sem adapter |
 
 Todos os passos que compilam AOT criam explicitamente o diretório `build/`,
 que é ignorado pelo Git.
@@ -86,6 +89,14 @@ Cada job `sanity` faz checkout antes de executar `tool/ffi_info.dart`.
 O workflow dedicado `POC Tests` também executa o POC-11 no Windows. Seu smoke
 test cria um servidor HTTP loopback, entrega uma PNG em blocos e falha se a
 janela não concluir download, decode e encerramento em até 30 segundos.
+
+### Testes web no Chrome
+
+O job `poc-web-chrome` executa os POCs 16, 17 e 18 com `dart test -p chrome`.
+WebGL1 aceita `null` como fallback válido em ambientes que desabilitam o
+contexto legado. WebGPU também pode não fornecer `GPUAdapter` em Chrome
+headless sem flags específicas; nesse caso o teste registra o motivo e passa,
+sem declarar que o device foi inicializado.
 
 ---
 

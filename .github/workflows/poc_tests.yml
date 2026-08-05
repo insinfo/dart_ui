@@ -580,3 +580,34 @@ jobs:
           name: poc13-native-dib-windows
           path: poc/poc_13_native_dib_present/build/benchmark.txt
           retention-days: 7
+
+  # ==============================================================
+  # POC-16/17/18: WebGL/WebGPU (Chrome headless)
+  # ==============================================================
+  poc-web-chrome:
+    name: 'POC Web: WebGL1, WebGL2, WebGPU (Chrome)'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Verify Chrome
+        run: google-chrome --version
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Test WebGL 1 in Chrome
+        working-directory: poc/poc_16_webgl1
+        run: dart test -p chrome
+
+      - name: Test WebGL 2 in Chrome
+        working-directory: poc/poc_17_webgl2
+        run: dart test -p chrome
+
+      - name: Test WebGPU in Chrome
+        working-directory: poc/poc_18_webgpu
+        run: dart test -p chrome

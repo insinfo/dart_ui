@@ -28,6 +28,11 @@
 - [14A. POC-11: UI responsiva durante download de imagem](#14a-poc-11-ui-responsiva-durante-download-de-imagem)
 - [14B. POC-12: Buffers nativos com ponteiros FFI](#14b-poc-12-buffers-nativos-com-ponteiros-ffi)
 - [14C. POC-13: Framebuffer DIB nativo persistente](#14c-poc-13-framebuffer-dib-nativo-persistente)
+- [14D. POC-14: Inicialização Direct3D 11 (Windows)](#14d-poc-14-inicialização-direct3d-11-windows)
+- [14E. POC-15: Inicialização Direct3D 12 (Windows)](#14e-poc-15-inicialização-direct3d-12-windows)
+- [14F. POC-16: Contexto WebGL 1 via JS Interop (Web)](#14f-poc-16-contexto-webgl-1-via-js-interop-web)
+- [14G. POC-17: Contexto WebGL 2 via JS Interop (Web)](#14g-poc-17-contexto-webgl-2-via-js-interop-web)
+- [14H. POC-18: Contexto WebGPU via JS Interop (Web)](#14h-poc-18-contexto-webgpu-via-js-interop-web)
 - [15. MVP-01: Vertical Slice Windows — Janela + CPU Render + Button](#15-mvp-01-vertical-slice-windows--janela--cpu-render--button)
 - [16. MVP-02: Vertical Slice Linux — X11 + CPU Render + Button (CI)](#16-mvp-02-vertical-slice-linux--x11--cpu-render--button-ci)
 - [17. MVP-03: Vertical Slice macOS — AppKit + CPU Render + Button (CI)](#17-mvp-03-vertical-slice-macos--appkit--cpu-render--button-ci)
@@ -154,8 +159,9 @@ O objetivo é **validar as hipóteses técnicas mais arriscadas** antes de inves
 | D07 | Performance de rasterização CPU em Dart | MÉDIO | Todos | POC-04 |
 | D08 | COM vtable call e QueryInterface | ALTO | Windows | POC-05 |
 | D09 | Implementação de IUnknown em Dart | ALTO | Windows | POC-05 |
-| D10 | Criação de swapchain D3D11/DXGI | ALTO | Windows | POC-05 |
+| D10 | Criação de swapchain D3D11/DXGI | ALTO | Windows | POC-05, POC-14, POC-15 |
 | D11 | EGL/GLX context creation | MÉDIO | Linux | POC-06 |
+| D12 | Suporte nativo vs Web (Wasm/JS interop) | ALTO | Web | POC-16, 17, 18 |
 | D12 | CAMetalLayer e drawable lifecycle | ALTO | macOS | POC-07 |
 | D13 | Vulkan instance + device via loader | MÉDIO | Linux/Windows | POC-08 |
 | D14 | Wayland marshal/unmarshal de protocolo | ALTO | Linux | POC-09 |
@@ -1263,6 +1269,81 @@ gráfico e evitar a cópia integral por frame no caminho de produção.
 
 ---
 
+# 14D. POC-14: Inicialização Direct3D 11 (Windows)
+
+## 14D.1 Objetivo
+
+Validar a inicialização e manipulação do Direct3D 11 via FFI e puro Dart para uso futuro em rasterização por hardware (GPU).
+O teste isola a criação do dispositivo, verificação de feature levels e inicialização básica para garantir compatibilidade com D3D11 e ponteiros COM.
+
+## 14D.2 Critério de sucesso
+
+- [ ] Instanciação correta do dispositivo D3D11 e Contexto Imadiato.
+- [ ] Leitura do *Feature Level* suportado pelo sistema.
+- [ ] Memória limpa no descarte e terminação segura sem vazamentos via IUnknown.
+
+---
+
+# 14E. POC-15: Inicialização Direct3D 12 (Windows)
+
+## 14E.1 Objetivo
+
+Validar a inicialização do Direct3D 12 via FFI e puro Dart (chamada de `D3D12CreateDevice`). Assim como a POC-14, este teste foca na alocação de dispositivos modernos e na validação do *Feature Level* suportado, preparando o terreno para futuros backends gráficos que tirem vantagem de pipelines explícitos na GPU.
+
+## 14E.2 Critério de sucesso
+
+- [ ] Criação do `ID3D12Device` com a `d3d12.dll`.
+- [ ] Validação do sucesso de inicialização pelo FFI e ponteiros IUnknown limpos ao final.
+
+---
+
+# 14F. POC-16: Contexto WebGL 1 via JS Interop (Web)
+
+## 14F.1 Objetivo
+Validar fallback legado para o navegador via WebGL 1.
+
+## 14F.2 Critério de sucesso
+- [x] O navegador deve tentar alocar o contexto (ou negar com `null` em setups que forçam WebGL2/WebGPU).
+- [x] Teste passa com sucesso via `dart test -p chrome`.
+
+---
+
+# 14G. POC-17: Contexto WebGL 2 via JS Interop (Web)
+
+## 14G.1 Objetivo
+Validar o baseline universal moderno para os navegadores.
+
+## 14G.2 Critério de sucesso
+- [x] Contexto instanciado.
+- [x] Teste passa com sucesso via `dart test -p chrome`.
+
+---
+
+# 14H. POC-18: Contexto WebGPU via JS Interop (Web)
+
+## 14H.1 Objetivo
+Validar a moderna e performática API WebGPU no navegador usando `package:web`.
+
+## 14H.2 Critério de sucesso
+- [ ] Adaptador e Device são instanciados e Render Pass executado sem crash
+      (Chrome headless local não disponibilizou adapter sem flags WebGPU).
+- [x] Teste compila e executa via `dart test -p chrome`, com skip controlado
+      quando WebGPU não está disponível.
+
+Resultado validado em 2026-08-05:
+
+| POC | Comando | Resultado |
+|---|---|---|
+| POC-16 WebGL1 | `dart test -p chrome` | passou |
+| POC-17 WebGL2 | `dart test -p chrome` | passou |
+| POC-18 WebGPU | `dart test -p chrome` | passou com skip de adapter |
+
+O job `POC Web: WebGL1, WebGL2, WebGPU (Chrome)` repete essa matriz no
+workflow `POC Tests`. O skip do WebGPU é intencional: disponibilidade de
+adapter depende do runner, flags do Chrome e backend gráfico do sistema.
+
+---
+
 # 15. MVP-01: Vertical Slice Windows — Janela + CPU Render + Button
 
 ## 15.1 Objetivo
@@ -1318,17 +1399,17 @@ dart_ui/
 
 ## 15.4 Critério de sucesso
 
-- [ ] Janela aparece com conteúdo renderizado por Dart
-- [ ] Botão tem estados visuais (normal, hover, pressed, focused)
-- [ ] Click funciona
-- [ ] Teclado funciona
-- [ ] Texto atualiza
-- [ ] Dirty rect funciona
-- [ ] Resize funciona
+- [x] Janela aparece com conteúdo renderizado por Dart (`mvp/mvp_01_win32_counter`)
+- [x] Botão tem estados visuais (normal, hover, pressed, focused)
+- [x] Click funciona, inclusive `WM_LBUTTONDBLCLK` em cliques rápidos
+- [x] Teclado funciona (`Tab`, `Enter`, `Space`)
+- [x] Texto atualiza
+- [x] Dirty rect funciona no raster e no `BitBlt` parcial do DIB nativo
+- [x] Resize recria o framebuffer e relayouta a árvore
 - [ ] DPI funciona
-- [ ] Fecha sem leak
-- [ ] AOT funciona
-- [ ] Mesmo código de widget funciona no headless
+- [x] Fecha sem leak observável no smoke test
+- [x] AOT funciona
+- [x] Mesmo código de widget funciona no headless
 
 ---
 
@@ -1413,10 +1494,10 @@ expect(screenshot, matchesGolden('button_hover.png'));
 
 ## 18.3 Critério de sucesso
 
-- [ ] Funciona em Windows, Linux, macOS sem display
-- [ ] Golden tests passam em CI
-- [ ] Performance suficiente para rodar centenas de testes
-- [ ] Determinístico (mesmo input → mesmo output)
+- [x] Funciona em Windows, Linux, macOS sem display (testes headless sem API nativa)
+- [ ] Golden tests visuais passam em CI (checksum determinístico já disponível)
+- [x] Performance suficiente para a suíte headless do MVP
+- [x] Determinístico (mesmo input → mesmo output)
 
 ---
 
@@ -1469,9 +1550,9 @@ class CpuRenderer implements RendererBackend {
 
 ## 19.4 Critério de sucesso
 
-- [ ] DisplayList grava e reproduz
-- [ ] CpuRenderer produz output correto
-- [ ] Golden comparison com backend headless
+- [x] DisplayList grava e reproduz (`DisplayListBuilder` + comandos v0)
+- [x] CpuRenderer produz output correto (rect, texto, translate e clip)
+- [x] Golden comparison determinística com checksum no backend headless
 - [ ] Performance ≥ 30 FPS em cena de widget
 
 ---

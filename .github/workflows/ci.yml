@@ -171,7 +171,9 @@ jobs:
 
       # ---- Testes portáveis (todas as plataformas) ----
       - name: Run portable CPU raster tests
-        run: dart test poc/poc_04_cpu_raster
+        run: |
+          dart test poc/poc_04_cpu_raster
+          dart test mvp/mvp_01_win32_counter
 
       # ---- Linux: Testes de plataforma com Xvfb ----
       - name: Run platform tests (Linux)
@@ -191,6 +193,9 @@ jobs:
           dart test poc/poc_01_win32_window
           dart test poc/poc_05_com_direct2d
           dart test poc/poc_10_event_loop
+          New-Item -ItemType Directory -Force -Path mvp/mvp_01_win32_counter/build | Out-Null
+          dart compile exe mvp/mvp_01_win32_counter/bin/main.dart -o mvp/mvp_01_win32_counter/build/mvp_01.exe
+          mvp/mvp_01_win32_counter/build/mvp_01.exe --smoke-test
 
   # ==============================================================
   # Build AOT multiplataforma
