@@ -9,8 +9,6 @@ workspace:
   - poc/poc_04_cpu_raster
   - poc/poc_05_com_direct2d
   - poc/poc_10_event_loop
-  - poc/poc_02_x11_window
-  - poc/poc_03_appkit_window
   - poc/poc_11_async_image_download
   - poc/poc_06_opengl
   - poc/poc_07_metal
@@ -18,10 +16,14 @@ workspace:
   - poc/poc_09_wayland
   - poc/poc_12_native_buffers
   - poc/poc_13_native_dib_present
-  - mvp/mvp_01_win32_counter
-  - mvp/mvp_02_x11_counter
   - poc/poc_14_direct3d
   - poc/poc_15_direct3d12
   - poc/poc_16_webgl1
   - poc/poc_17_webgl2
   - poc/poc_18_webgpu
+  - poc/poc_02_x11_window
+  - poc/poc_03_appkit_window
+  - mvp/mvp_01_win32_counter
+  - mvp/mvp_02_x11_counter
+  - mvp/mvp_03_appkit_counter
+  - mvp/mvp_04_web_counter

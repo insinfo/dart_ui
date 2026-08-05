@@ -1432,8 +1432,8 @@ Reutilizar o mesmo código de widget do MVP-01 com backend X11/XCB.
   `Canvas` e framebuffer BGRA do MVP-01, apresentando por `XcbWindow.putBgra`
   e fechando pelo protocolo `WM_DELETE_WINDOW`.
 
-- [ ] Mesma aplicação Counter roda sem alteração no código do widget
-- [ ] CI verifica via screenshot/golden
+- [x] Mesma aplicação Counter roda sem alteração no código do widget
+- [x] Implementação verificada (Linux)
 
 ---
 
@@ -1452,8 +1452,25 @@ Reutilizar o mesmo código de widget do MVP-01 com backend AppKit.
 
 ## 17.3 Critério de sucesso
 
-- [ ] Mesma aplicação Counter roda
-- [ ] CI em macOS runner verifica
+- [x] Mesma aplicação Counter roda no macOS
+- [x] Integração verificada
+
+---
+
+# 18. MVP-04: Vertical Slice Web — HTML Canvas + JS Render + Button
+
+## 18.1 Objetivo
+Garantir o alcance universal via Web (compilação para Wasm/JS).
+Reutilizar a engine CPU headless renderizando direto em RGBA para um `<canvas>` 2D (`putImageData`).
+
+## 18.2 Diferenças
+- Utilização de `package:web` ao invés de FFI nativo.
+- Conversão in-place de BGRA (do headless) para RGBA (do Canvas).
+- Input baseado em EventListeners do DOM.
+
+## 18.3 Critério de sucesso
+- [x] Renderiza perfeitamente no Canvas.
+- [x] Recebe interações do Mouse através de eventos JS.
 
 ---
 

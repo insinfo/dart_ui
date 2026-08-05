@@ -40,12 +40,12 @@ final class HeadlessScreenshot {
         (pixels[offset + 3] << 24);
   }
 
-  /// Hash FNV-1a 64-bit estável para golden tests e diagnóstico.
+  /// Hash FNV-1a 32-bit estável para golden tests e diagnóstico (compatível Web/JS).
   int get checksum {
-    var hash = 0xcbf29ce484222325;
+    var hash = 0x811c9dc5;
     for (final byte in pixels) {
       hash ^= byte;
-      hash = (hash * 0x100000001b3) & 0xFFFFFFFFFFFFFFFF;
+      hash = (hash * 0x01000193) & 0xFFFFFFFF;
     }
     return hash;
   }

@@ -1,0 +1,19 @@
+name: mvp_03_appkit_counter
+description: 'MVP-03: Counter headless renderer presented through AppKit.'
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dependencies:
+  mvp_01_win32_counter:
+    path: ../mvp_01_win32_counter
+  poc_03_appkit_window:
+    path: ../../poc/poc_03_appkit_window
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^5.1.0
