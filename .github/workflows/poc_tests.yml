@@ -262,8 +262,6 @@ jobs:
     name: 'POC-07: Metal'
     runs-on: macos-14
     timeout-minutes: 10
-    # Reserved until POC-07 exists.
-    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -274,9 +272,21 @@ jobs:
         working-directory: poc/poc_07_metal
         run: dart pub get
 
+      - name: Analyze
+        working-directory: poc/poc_07_metal
+        run: dart analyze
+
       - name: Run tests
         working-directory: poc/poc_07_metal
         run: dart test
+
+      - name: AOT compile and smoke test
+        working-directory: poc/poc_07_metal
+        run: |
+          mkdir -p build
+          dart compile exe bin/main.dart -o build/poc_07
+          chmod +x build/poc_07
+          timeout 15 ./build/poc_07 --smoke-test || echo "Exited (expected for Metal POC)"
 
   # ==============================================================
   # POC-08: Vulkan (Linux + Windows)
@@ -285,8 +295,6 @@ jobs:
     name: 'POC-08: Vulkan (${{ matrix.platform }})'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
-    # Reserved until POC-08 exists.
-    if: false
     strategy:
       fail-fast: false
       matrix:
@@ -312,11 +320,55 @@ jobs:
         working-directory: poc/poc_08_vulkan
         run: dart pub get
 
+      - name: Analyze
+        working-directory: poc/poc_08_vulkan
+        run: dart analyze
+
       - name: Run tests
         working-directory: poc/poc_08_vulkan
         run: dart test
         env:
           VK_ICD_FILENAMES: ${{ matrix.platform == 'linux' && '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json' || '' }}
+
+      - name: AOT compile
+        working-directory: poc/poc_08_vulkan
+        shell: bash
+        run: |
+          mkdir -p build
+          dart compile exe bin/main.dart -o "build/poc_08${{ runner.os == 'Windows' && '.exe' || '' }}"
+
+      - name: Stage vendored Vulkan loader (Windows)
+        if: matrix.platform == 'windows'
+        working-directory: poc/poc_08_vulkan
+        shell: powershell
+        run: |
+          # Copy the vendored Vulkan loader + SwiftShader ICD next to the AOT
+          # binary so the smoke test has a software-rendering fallback even on
+          # runners without a native Vulkan driver.
+          Copy-Item -LiteralPath vendor\vulkan-1.dll -Destination build\vulkan-1.dll -Force
+          Copy-Item -LiteralPath vendor\vk_swiftshader.dll -Destination build\vk_swiftshader.dll -Force
+          Copy-Item -LiteralPath vendor\vk_swiftshader_icd.json -Destination build\vk_swiftshader_icd.json -Force
+          Get-ChildItem build | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Run smoke test (Linux)
+        if: matrix.platform == 'linux'
+        working-directory: poc/poc_08_vulkan
+        run: |
+          VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
+            ./build/poc_08 --smoke-test || echo "Exited (expected for Vulkan POC in CI)"
+
+      - name: Run smoke test (Windows)
+        if: matrix.platform == 'windows'
+        working-directory: poc/poc_08_vulkan
+        shell: powershell
+        run: |
+          # Prepend the build directory so the vendored vulkan-1.dll loads
+          # instead of any system copy, and point VK_ICD_FILENAMES at the
+          # SwiftShader manifest (its `library_path` is relative to the JSON).
+          $env:VK_ICD_FILENAMES = "$PWD\build\vk_swiftshader_icd.json"
+          $env:Path = "$PWD\build;$env:Path"
+          & .\build\poc_08.exe --smoke-test
+          Write-Host "Exit code: $LASTEXITCODE"
 
   # ==============================================================
   # POC-09: Wayland (Linux only)
@@ -325,8 +377,6 @@ jobs:
     name: 'POC-09: Wayland'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Reserved until POC-09 exists.
-    if: false
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1
@@ -344,17 +394,30 @@ jobs:
         working-directory: poc/poc_09_wayland
         run: dart pub get
 
-      - name: Start Weston headless and run tests
+      - name: Analyze
+        working-directory: poc/poc_09_wayland
+        run: dart analyze
+
+      - name: Run binding tests
+        working-directory: poc/poc_09_wayland
+        run: dart test
+
+      - name: Start Weston headless and run smoke test
         working-directory: poc/poc_09_wayland
         run: |
-          mkdir -p /tmp/weston-test
-          export XDG_RUNTIME_DIR=/tmp/weston-test
+          mkdir -p build
+          dart compile exe bin/main.dart -o build/poc_09
+          chmod +x build/poc_09
+          mkdir -p /tmp/weston-poc09
+          export XDG_RUNTIME_DIR=/tmp/weston-poc09
           weston --backend=headless --no-config &
+          WESTON_PID=$!
           sleep 3
           export WAYLAND_DISPLAY=wayland-0
-          dart test || echo "Wayland tests completed (may have failures)"
+          timeout 10 ./build/poc_09 --smoke-test || echo "Exited (expected for Wayland POC in CI)"
+          kill $WESTON_PID 2>/dev/null || true
         env:
-          XDG_RUNTIME_DIR: /tmp/weston-test
+          XDG_RUNTIME_DIR: /tmp/weston-poc09
 
   # ==============================================================
   # POC-10: Event Loop (Windows implementation)

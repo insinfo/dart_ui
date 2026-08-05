@@ -63,8 +63,13 @@ usado apenas em chaves de cache de steps, nunca em condições de job.
 |---|---|---|
 | POC-01 Win32 | Windows | análise, teste de constantes, AOT e smoke test |
 | POC-02 XCB | Linux + Xvfb | análise, janela, `XCB_EXPOSE`, `xcb_put_image` e AOT |
+| POC-03 AppKit | macOS | análise, bindings ObjC, `NSApplication`/`NSWindow` e AOT |
 | POC-04 CPU | Linux, Windows, macOS | benchmark e testes unitários |
 | POC-05 COM/D2D | Windows | análise e testes de COM/ABI |
+| POC-06 OpenGL | Linux + Xvfb | análise, bindings EGL/GL e testes de smoke |
+| POC-07 Metal | macOS | análise, bindings Metal+ObjC, clear render e AOT |
+| POC-08 Vulkan | Linux (lavapipe) + Windows (SwiftShader vendored) | análise, loader + device enum + AOT smoke |
+| POC-09 Wayland | Linux + Weston headless | análise, bindings libwayland + libc + AOT smoke |
 | POC-10 event loop | Windows | testes de Timer + wakeup Win32 |
 | POC-11 download assíncrono | Windows | análise, rede fragmentada, progresso, decode, AOT e smoke de UI |
 | POC-12 buffers FFI | Linux, Windows, macOS | lifecycle nativo, testes, benchmark AOT e relatório por plataforma |

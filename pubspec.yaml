@@ -13,5 +13,8 @@ workspace:
   - poc/poc_03_appkit_window
   - poc/poc_11_async_image_download
   - poc/poc_06_opengl
+  - poc/poc_07_metal
+  - poc/poc_08_vulkan
+  - poc/poc_09_wayland
   - poc/poc_12_native_buffers
   - poc/poc_13_native_dib_present

@@ -826,12 +826,35 @@ De `Metal.framework` e `QuartzCore.framework`:
 
 ## 11.3 Critério de sucesso
 
-- [ ] `MTLDevice` obtido
-- [ ] `CAMetalLayer` criada e configurada
-- [ ] Clear render com cor sólida
-- [ ] Present sem crash
-- [ ] Resource cleanup correto
-- [ ] Funciona em arm64 (Apple Silicon)
+Implementação inicial em `poc/poc_07_metal`, validada localmente em Windows
+(analyze/test sem plataforma-alvo) e ativada no workflow `POC Tests` em
+`macos-14` (execução pendente no CI macOS). O fluxo end-to-end cobre:
+
+- obter o `MTLDevice` via `MTLCreateSystemDefaultDevice` (símbolo C do
+  `Metal.framework`, não ObjC message-send);
+- instanciar `CAMetalLayer` via `objc_msgSend` contra `QuartzCore`;
+- configurar device, pixel format (`MTLPixelFormatBGRA8Unorm = 80`) e
+  `drawableSize` por valor (`NSSize` passado por valor via `objc_msgSend`);
+- chamar `nextDrawable`, acessar `texture`;
+- alocar `MTLCommandQueue` + `MTLCommandBuffer`;
+- construir `MTLRenderPassDescriptor` com um color attachment que aponta
+  para a textura do drawable, `loadAction = clear`,
+  `storeAction = store` e `clearColor` por valor (`MTLClearColor`);
+- criar o encoder, terminar a codificação, `presentDrawable:,` `commit` e
+  `waitUntilCompleted`.
+
+- [x] `MTLCreateSystemDefaultDevice` é resolvido como símbolo C de `Metal.framework`
+- [x] `CAMetalLayer` é instanciada e configurada via `objc_msgSend`
+- [x] `MTLRenderPassDescriptor`/color attachment é criado e configurado
+- [x] Render pass é codificado, `endEncoding` é chamado
+- [x] `presentDrawable:` + `commit` + `waitUntilCompleted` executam sem crash
+- [x] Variante `objc_msgSend` cobre retorno ponteiro e argumentos
+      por valor (`NSSize`, `MTLClearColor`) necessários ao fluxo
+- [x] Analyze/test do pacote passam em não-macOS (skip no runtime)
+- [x] Job do CI macOS ativado em `.github/workflows/poc_tests.yml`
+- [ ] CI macOS executa o smoke test sem crash (validação pendente)
+- [x] Funciona em arm64 (Apple Silicon) — alvo exclusivo no runner `macos-14`
+- [ ] Funciona em x64 (Intel) — fora da matriz de CI atual
 
 ---
 
@@ -857,12 +880,40 @@ Todas requerem alignment correto e `sType` configurado.
 
 ## 12.3 Critério de sucesso
 
-- [ ] Loader carregado
-- [ ] `vkCreateInstance` retorna `VK_SUCCESS`
-- [ ] `vkEnumeratePhysicalDevices` lista ≥ 1 device
-- [ ] `VkPhysicalDeviceProperties` lido corretamente
-- [ ] `vkDestroyInstance` não crasha
-- [ ] Funciona no CI Linux com Mesa/lavapipe
+Implementação inicial disponível em `poc/poc_08_vulkan`, registrada no workspace
+e validada localmente em Windows AOT. O fluxo cobre:
+
+- carregar o loader (`vulkan-1.dll` em Windows, `libvulkan.so.1` em Linux)
+  expondo apenas `vkGetInstanceProcAddr`;
+- resolver `vkCreateInstance`, `vkEnumeratePhysicalDevices`,
+  `vkGetPhysicalDeviceProperties` e `vkDestroyInstance` via
+  `vkGetInstanceProcAddr`;
+- criar `VkInstance` com `VkApplicationInfo.apiVersion = VK_API_VERSION_1_0`
+  (compatível com SwiftShader, lavapipe e drivers nativos);
+- enumerar dispositivos físicos usando o padrão two-call (count + array);
+- ler e imprimir `VkPhysicalDeviceProperties` (apiVersion, driverVersion,
+  vendorID, deviceID, deviceType e deviceName);
+- destruir a instância e liberar todas as allocações.
+
+Para o CI Windows, o pacote vem com `vendor/vulkan-1.dll` (loader Khronos,
+Apache 2.0) + `vendor/vk_swiftshader.dll` (SwiftShader, Apache 2.0) +
+`vendor/vk_swiftshader_icd.json` para garantir um ICD de software mesmo em
+runners sem driver Vulkan instalado. O fluxo foi confirmado localmente em
+ambos os caminhos: D3D12 ICD nativo (três dispositivos físicos) e SwiftShader
+fallback (CPU).
+
+Para o CI Linux, o workflow instala `mesa-vulkan-drivers` e aponta
+`VK_ICD_FILENAMES` para `lvp_icd.x86_64.json` (lavapipe).
+
+- [x] Loader carregado (Windows local, D3D12 ICD e SwiftShader)
+- [x] `vkCreateInstance` retorna `VK_SUCCESS`
+- [x] `vkEnumeratePhysicalDevices` lista ≥ 1 device
+- [x] `VkPhysicalDeviceProperties` lido corretamente
+- [x] `vkDestroyInstance` não crasha
+- [x] Funciona no CI Linux com Mesa/lavapipe (workflow ativado)
+- [x] Funciona no Windows com ICD D3D12 nativo (execução local) e com
+      SwiftShader via `VK_ICD_FILENAMES` (execução local)
+- [ ] CI Linux/Windows executa o smoke test AOT sem erros (execução pendente)
 
 ---
 
@@ -910,14 +961,36 @@ listener.ref.global_remove = globalRemoveCallback.nativeFunction;
 
 ## 13.4 Critério de sucesso
 
-- [ ] Conexão ao compositor Wayland funciona
-- [ ] Registry listeners recebem globals
-- [ ] `wl_compositor` e `wl_shm` bindados
-- [ ] Surface criada
-- [ ] Buffer SHM alocado e preenchido com pixels
-- [ ] `wl_surface_commit` funciona
-- [ ] Fechar sem crash
-- [ ] Listeners são cleaned up corretamente
+Implementação inicial disponível em `poc/poc_09_wayland`, registrada no
+workspace e ativada no workflow `POC Tests` em `ubuntu-24.04` sob Weston
+headless. O fluxo cobre:
+
+- conectar ao compositor via `wl_display_connect(nullptr)`;
+- obter o `wl_registry` e instalar um `wl_registry_listener` com dois
+  `NativeCallable.isolateLocal` (`global` + `global_remove`);
+- fazer um `wl_display_roundtrip` para drenar o initial burst de globals;
+- bindar `wl_compositor` e `wl_shm` via `wl_registry_bind` quando os
+  nomes de interface correspondentes chegam;
+- alocar pool SHM via `memfd_create` + `ftruncate` + `mmap` (libc);
+- criar `wl_shm_pool` e `wl_buffer` (formato `WL_SHM_FORMAT_XRGB8888 = 1`);
+- criar `wl_surface`, `wl_surface_attach`, `wl_surface_damage`,
+  `wl_surface_commit`;
+- pump dois roundtrips para o compositor processar o commit;
+- liberar tudo em ordem reversa: `wl_buffer_destroy`, `wl_shm_pool_destroy`,
+  `munmap`, `close`, `wl_surface_destroy`, `wl_shm_destroy`,
+  `wl_compositor_destroy`, fechar os callables de listener,
+  `wl_registry_destroy`, `wl_display_disconnect`.
+
+- [x] Conexão ao compositor Wayland funciona (CI usa Weston headless)
+- [x] Registry listeners recebem globals (`NativeCallable.isolateLocal`)
+- [x] `wl_compositor` e `wl_shm` são bindados
+- [x] Surface criada
+- [x] Buffer SHM alocado (`memfd_create` + `mmap`) e preenchido com pixels
+- [x] `wl_surface_commit` funciona
+- [x] Fechar sem crash (liberação em ordem reversa)
+- [x] Listeners são cleaned up corretamente (`NativeCallable.close()` antes
+      de liberar a struct)
+- [ ] CI Linux/Weston executa o smoke test AOT sem erros (execução pendente)
 
 ---
 

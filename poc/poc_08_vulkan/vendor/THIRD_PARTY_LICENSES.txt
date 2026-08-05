@@ -1,0 +1,33 @@
+Third-party assets vendored for POC-08
+======================================
+
+This directory contains the Vulkan loader and a software Vulkan ICD so the POC
+can run on Windows runners that lack a native Vulkan driver.
+
+The files were sourced from a local Flutter Engine distribution (referencias/)
+which itself redistributes the following open-source components:
+
+  vulkan-1.dll
+    - Vulkan Loader
+    - Copyright (c) 2015-2016 The Khronos Group Inc.
+    - License: Apache License, Version 2.0
+    - Source: https://github.com/KhronosGroup/Vulkan-Loader
+
+  vk_swiftshader.dll
+    - SwiftShader — a CPU-based Vulkan implementation
+    - Copyright (c) 2016 Google Inc.
+    - License: Apache License, Version 2.0
+    - Source: https://github.com/google/swiftshader
+
+  vk_swiftshader_icd.json
+    - ICD manifest pointing the Vulkan loader at SwiftShader.
+    - The `library_path` is relative to this JSON file (`.\\vk_swiftshader.dll`),
+      so the three files must stay together in the same directory.
+
+The Apache 2.0 license permits redistribution, including in binary form, as
+long as the LICENSE and NOTICE files (when present) are retained. Full license
+texts are available at https://www.apache.org/licenses/LICENSE-2.0.
+
+These assets exist solely to enable CI validation of POC-08 on Windows
+runners; the dart_ui framework itself does not require Vulkan to be present at
+runtime.
