@@ -52,16 +52,18 @@ final WlDisplayDispatchDart wl_display_dispatch =
     libWayland.lookupFunction<WlDisplayDispatchNative, WlDisplayDispatchDart>(
         'wl_display_dispatch');
 
-// int wl_registry_add_listener(struct wl_registry *wl_registry,
-//                              const struct wl_registry_listener *listener,
-//                              void *data);
-typedef WlRegistryAddListenerNative = Int32 Function(
-    Pointer<Void> registry, Pointer<Void> listener, Pointer<Void> data);
-typedef WlRegistryAddListenerDart = int Function(
-    Pointer<Void> registry, Pointer<Void> listener, Pointer<Void> data);
-final WlRegistryAddListenerDart wl_registry_add_listener = libWayland
-    .lookupFunction<WlRegistryAddListenerNative, WlRegistryAddListenerDart>(
-        'wl_registry_add_listener');
+// int wl_proxy_add_listener(struct wl_proxy *proxy,
+//                           void (**implementation)(void), void *data);
+// NOTE: `wl_registry_add_listener` is NOT exported by the shared library —
+// the scanner generates it as an inline around this primitive — so it is
+// reimplemented in Dart below, like the other inlines.
+typedef WlProxyAddListenerNative = Int32 Function(
+    Pointer<Void> proxy, Pointer<Void> implementation, Pointer<Void> data);
+typedef WlProxyAddListenerDart = int Function(
+    Pointer<Void> proxy, Pointer<Void> implementation, Pointer<Void> data);
+final WlProxyAddListenerDart wl_proxy_add_listener =
+    libWayland.lookupFunction<WlProxyAddListenerNative, WlProxyAddListenerDart>(
+        'wl_proxy_add_listener');
 
 // void *wl_registry_bind(struct wl_registry *wl_registry, uint32_t name,
 //                        const struct wl_interface *interface, uint32_t version);
@@ -313,6 +315,13 @@ void wl_registry_destroy(Pointer<Void> registry) {
 /// only added in version 4 / version 2 respectively).
 void wl_proxy_destroy_only(Pointer<Void> proxy) {
   wl_proxy_destroy(proxy);
+}
+
+/// Reimplements `wl_registry_add_listener(struct wl_registry *,
+/// const struct wl_registry_listener *, void *)`.
+int wl_registry_add_listener(
+    Pointer<Void> registry, Pointer<Void> listener, Pointer<Void> data) {
+  return wl_proxy_add_listener(registry, listener, data);
 }
 
 // --- Listener struct ------------------------------------------------------

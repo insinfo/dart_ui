@@ -25,8 +25,13 @@ void main() {
         reason: 'wl_display_roundtrip must resolve');
     expect(() => wl_display_dispatch, returnsNormally,
         reason: 'wl_display_dispatch must resolve');
+    // `wl_registry_add_listener` is a scanner-generated inline, so the shared
+    // library only needs to export its backing primitive `wl_proxy_add_listener`;
+    // the inline itself is reimplemented in Dart (wayland_bindings.dart).
+    expect(() => wl_proxy_add_listener, returnsNormally,
+        reason: 'wl_proxy_add_listener must resolve');
     expect(() => wl_registry_add_listener, returnsNormally,
-        reason: 'wl_registry_add_listener must resolve');
+        reason: 'wl_registry_add_listener Dart inline reimplementation exists');
     expect(() => wl_registry_bind, returnsNormally,
         reason: 'wl_registry_bind must resolve');
     expect(() => wl_proxy_destroy, returnsNormally,
