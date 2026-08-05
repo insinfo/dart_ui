@@ -4,7 +4,6 @@ library;
 import 'dart:js_interop';
 import 'dart:js_interop_unsafe';
 import 'package:test/test.dart';
-import 'package:web/web.dart' as web;
 
 @JS('navigator.gpu')
 external JSObject? get _gpu;
