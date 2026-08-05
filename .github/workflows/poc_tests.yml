@@ -611,3 +611,7 @@ jobs:
       - name: Test WebGPU in Chrome
         working-directory: poc/poc_18_webgpu
         run: dart test -p chrome
+
+      - name: Test MVP Web headless counter in Chrome
+        working-directory: mvp/mvp_04_web_counter
+        run: dart test -p chrome

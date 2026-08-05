@@ -16,36 +16,45 @@ void main() async {
   void draw() {
     headless.render(); // Paint dirty rects
     final bgra = headless.frame.pixels;
-    
+
     // Web requires RGBA
     final rgba = Uint8ClampedList(bgra.length);
     for (int i = 0; i < bgra.length; i += 4) {
-      rgba[i] = bgra[i + 2];     // R
+      rgba[i] = bgra[i + 2]; // R
       rgba[i + 1] = bgra[i + 1]; // G
-      rgba[i + 2] = bgra[i];     // B
+      rgba[i + 2] = bgra[i]; // B
       rgba[i + 3] = bgra[i + 3]; // A
     }
 
-    final imageDataClass = globalContext.getProperty('ImageData'.toJS) as JSFunction;
-    final imageData = imageDataClass.callAsConstructor(rgba.toJS, 800.toJS, 600.toJS) as JSObject;
-    (ctx as JSObject).callMethod('putImageData'.toJS, imageData, 0.toJS, 0.toJS);
+    final imageDataClass =
+        globalContext.getProperty('ImageData'.toJS) as JSFunction;
+    final imageData = imageDataClass.callAsConstructor(
+        rgba.toJS, 800.toJS, 600.toJS) as JSObject;
+    (ctx as JSObject)
+        .callMethod('putImageData'.toJS, imageData, 0.toJS, 0.toJS);
   }
-  
+
   draw();
 
   // Setup input
-  canvas.addEventListener('mousemove', (web.MouseEvent e) {
-    headless.injectMouseMove(e.offsetX.toInt(), e.offsetY.toInt());
-    draw();
-  }.toJS);
+  canvas.addEventListener(
+      'mousemove',
+      (web.MouseEvent e) {
+        headless.injectMouseMove(e.offsetX.toInt(), e.offsetY.toInt());
+        draw();
+      }.toJS);
 
-  canvas.addEventListener('mousedown', (web.MouseEvent e) {
-    headless.injectMouseDown(e.offsetX.toInt(), e.offsetY.toInt());
-    draw();
-  }.toJS);
+  canvas.addEventListener(
+      'mousedown',
+      (web.MouseEvent e) {
+        headless.injectMouseDown(e.offsetX.toInt(), e.offsetY.toInt());
+        draw();
+      }.toJS);
 
-  canvas.addEventListener('mouseup', (web.MouseEvent e) {
-    headless.injectMouseUp(e.offsetX.toInt(), e.offsetY.toInt());
-    draw();
-  }.toJS);
+  canvas.addEventListener(
+      'mouseup',
+      (web.MouseEvent e) {
+        headless.injectMouseUp(e.offsetX.toInt(), e.offsetY.toInt());
+        draw();
+      }.toJS);
 }

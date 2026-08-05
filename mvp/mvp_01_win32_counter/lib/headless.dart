@@ -5,10 +5,10 @@
 /// janelas — é a base dos testes automatizados do vertical slice.
 library;
 
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'src/core/geometry.dart';
+import 'src/ppm_writer.dart';
 import 'src/render/canvas.dart';
 import 'src/ui/counter_app.dart';
 
@@ -64,7 +64,7 @@ final class HeadlessScreenshot {
       rgb[target++] = pixels[i];
     }
     output.add(rgb);
-    await File(path).writeAsBytes(output.takeBytes());
+    await writePpm(path, output.takeBytes());
   }
 }
 

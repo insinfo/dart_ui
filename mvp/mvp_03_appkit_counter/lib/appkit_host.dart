@@ -4,16 +4,17 @@ import 'package:mvp_01_win32_counter/headless.dart';
 
 /// Host de renderização para macOS via AppKit e CoreGraphics.
 class AppKitCounterHost {
-  bool run({bool smokeTest = false}) {
+  Future<bool> run({bool smokeTest = false}) async {
     // Configura o backend headless independente de plataforma
     const config = HeadlessConfig(width: 800, height: 600, scale: 1.0);
     final backend = HeadlessBackend(config);
-    backend.initialize();
-    
+    await backend.initialize();
+
     // Renderiza a primeira frame
     backend.render();
-    
-    print('[AppKitHost] Backend inicializado. Framebuffer pronto: ${backend.frame.pixels.length} bytes.');
+
+    print(
+        '[AppKitHost] Backend inicializado. Framebuffer pronto: ${backend.frame.pixels.length} bytes.');
 
     // TODO: A integração profunda com AppKit requer bindings FFI para:
     // - CGColorSpaceCreateDeviceRGB()

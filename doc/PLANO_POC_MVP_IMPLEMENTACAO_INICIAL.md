@@ -1452,8 +1452,9 @@ Reutilizar o mesmo código de widget do MVP-01 com backend AppKit.
 
 ## 17.3 Critério de sucesso
 
-- [x] Mesma aplicação Counter roda no macOS
-- [x] Integração verificada
+- [ ] Mesma aplicação Counter roda em uma janela AppKit nativa
+- [x] Fallback headless compartilhado com o MVP-01 foi verificado
+- [ ] Integração Objective-C/AppKit/CoreGraphics nativa
 
 ---
 
@@ -1469,8 +1470,9 @@ Reutilizar a engine CPU headless renderizando direto em RGBA para um `<canvas>` 
 - Input baseado em EventListeners do DOM.
 
 ## 18.3 Critério de sucesso
-- [x] Renderiza perfeitamente no Canvas.
+- [x] Renderiza no Canvas 2D via `putImageData`.
 - [x] Recebe interações do Mouse através de eventos JS.
+- [x] Teste Chrome do backend headless passa com `dart test -p chrome`.
 
 ---
 
