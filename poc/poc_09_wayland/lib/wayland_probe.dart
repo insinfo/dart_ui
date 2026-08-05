@@ -55,8 +55,8 @@ void _onGlobal(Pointer<Void> data, Pointer<Void> registry, int name,
   if (interfaceName == 'wl_compositor' && _compositorProxy == null) {
     _compositorName = name;
     _compositorVersion = version;
-    _compositorProxy = wl_registry_bind(
-        registry, name, wl_compositor_interface_ptr, version);
+    _compositorProxy =
+        wl_registry_bind(registry, name, wl_compositor_interface_ptr, version);
   } else if (interfaceName == 'wl_shm' && _shmProxy == null) {
     _shmName = name;
     _shmVersion = version;
@@ -107,7 +107,8 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
   _globalCallable =
       NativeCallable<WlRegistryGlobalNative>.isolateLocal(_onGlobal);
   _globalRemoveCallable =
-      NativeCallable<WlRegistryGlobalRemoveNative>.isolateLocal(_onGlobalRemove);
+      NativeCallable<WlRegistryGlobalRemoveNative>.isolateLocal(
+          _onGlobalRemove);
 
   final listener = calloc<WlRegistryListener>();
   listener.ref.global = _globalCallable.nativeFunction;
@@ -207,8 +208,8 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
     wl_display_disconnect(display);
     return result;
   }
-  final mapped = mmap(
-      nullptr, poolSize, protRead | protWrite, mapShared, fd, 0);
+  final mapped =
+      mmap(nullptr, poolSize, protRead | protWrite, mapShared, fd, 0);
   if (mapped == mapFailed || mapped.address == 0) {
     result.diagnostic = 'mmap failed.';
     close_fd(fd);

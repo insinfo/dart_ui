@@ -53,7 +53,8 @@ void runMetalClearRender({int width = 800, int height = 600}) {
   size.ref.height = height.toDouble();
   msgSendVoidSize(layer, sel('setDrawableSize:'), size.ref);
   calloc.free(size);
-  print('[Metal] CAMetalLayer configured (size ${width}x$height, BGRA8 Unorm).');
+  print(
+      '[Metal] CAMetalLayer configured (size ${width}x$height, BGRA8 Unorm).');
 
   print('[Metal] Calling nextDrawable...');
   final drawable = msgSendPointer(layer, sel('nextDrawable'));
@@ -85,16 +86,16 @@ void runMetalClearRender({int width = 800, int height = 600}) {
 
   print('[Metal] Building render-pass descriptor...');
   final descriptorClass = getClass('MTLRenderPassDescriptor');
-  final descriptor = msgSendPointer(descriptorClass, sel('renderPassDescriptor'));
+  final descriptor =
+      msgSendPointer(descriptorClass, sel('renderPassDescriptor'));
   if (descriptor == nullptr) {
     print('[Metal] renderPassDescriptor returned nil. Aborting.');
     return;
   }
-  final colorAttachments =
-      msgSendPointer(descriptor, sel('colorAttachments'));
+  final colorAttachments = msgSendPointer(descriptor, sel('colorAttachments'));
   // -[MTLRenderPassColorAttachmentDescriptorArray objectAtIndexedSubscript:]
-  final colorAttachment =
-      msgSendPointerIntPtr(colorAttachments, sel('objectAtIndexedSubscript:'), 0);
+  final colorAttachment = msgSendPointerIntPtr(
+      colorAttachments, sel('objectAtIndexedSubscript:'), 0);
   if (colorAttachment == nullptr) {
     print('[Metal] Color attachment at index 0 is nil. Aborting.');
     return;
@@ -119,7 +120,8 @@ void runMetalClearRender({int width = 800, int height = 600}) {
   final encoder = msgSendPointerPointer(
       cmdBuffer, sel('renderCommandEncoderWithDescriptor:'), descriptor);
   if (encoder == nullptr) {
-    print('[Metal] renderCommandEncoderWithDescriptor: returned nil. Aborting.');
+    print(
+        '[Metal] renderCommandEncoderWithDescriptor: returned nil. Aborting.');
     return;
   }
   msgSendVoid(encoder, sel('endEncoding'));

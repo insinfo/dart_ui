@@ -45,23 +45,31 @@ const Map<int, String> vkPhysicalDeviceTypeNames = {
 // --- Native struct declarations --------------------------------------------
 
 final class VkApplicationInfo extends Struct {
-  @Int32() external int sType;
+  @Int32()
+  external int sType;
   external Pointer<Void> pNext;
   external Pointer<Utf8> pApplicationName;
-  @Uint32() external int applicationVersion;
+  @Uint32()
+  external int applicationVersion;
   external Pointer<Utf8> pEngineName;
-  @Uint32() external int engineVersion;
-  @Uint32() external int apiVersion;
+  @Uint32()
+  external int engineVersion;
+  @Uint32()
+  external int apiVersion;
 }
 
 final class VkInstanceCreateInfo extends Struct {
-  @Int32() external int sType;
+  @Int32()
+  external int sType;
   external Pointer<Void> pNext;
-  @Int32() external int flags;
+  @Int32()
+  external int flags;
   external Pointer<VkApplicationInfo> pApplicationInfo;
-  @Uint32() external int enabledLayerCount;
+  @Uint32()
+  external int enabledLayerCount;
   external Pointer<Pointer<Utf8>> ppEnabledLayerNames;
-  @Uint32() external int enabledExtensionCount;
+  @Uint32()
+  external int enabledExtensionCount;
   external Pointer<Pointer<Utf8>> ppEnabledExtensionNames;
 }
 
@@ -70,12 +78,18 @@ final class VkInstanceCreateInfo extends Struct {
 // struct stops after `deviceName`. The full Vulkan struct is larger, but the
 // caller is expected to allocate enough memory (we use 1024 bytes below).
 final class VkPhysicalDeviceProperties extends Struct {
-  @Uint32() external int apiVersion;
-  @Uint32() external int driverVersion;
-  @Uint32() external int vendorID;
-  @Uint32() external int deviceID;
-  @Int32() external int deviceType;
-  @Array(vkMaxPhysicalDeviceNameSize) external Array<Uint8> deviceName;
+  @Uint32()
+  external int apiVersion;
+  @Uint32()
+  external int driverVersion;
+  @Uint32()
+  external int vendorID;
+  @Uint32()
+  external int deviceID;
+  @Int32()
+  external int deviceType;
+  @Array(vkMaxPhysicalDeviceNameSize)
+  external Array<Uint8> deviceName;
 }
 
 // --- Function pointer typedefs ---------------------------------------------
@@ -158,7 +172,8 @@ VkCreateInstanceDart loadVkCreateInstance() {
   if (ptr.address == 0) {
     throw StateError('vkCreateInstance not available from loader');
   }
-  return Pointer<NativeFunction<VkCreateInstanceNative>>.fromAddress(ptr.address)
+  return Pointer<NativeFunction<VkCreateInstanceNative>>.fromAddress(
+          ptr.address)
       .asFunction<VkCreateInstanceDart>();
 }
 
@@ -175,12 +190,12 @@ VkEnumeratePhysicalDevicesDart loadVkEnumeratePhysicalDevices(
 
 VkGetPhysicalDevicePropertiesDart loadVkGetPhysicalDeviceProperties(
     Pointer<Void> instance) {
-  final ptr =
-      getInstanceProcAddress(instance, 'vkGetPhysicalDeviceProperties');
+  final ptr = getInstanceProcAddress(instance, 'vkGetPhysicalDeviceProperties');
   if (ptr.address == 0) {
     throw StateError('vkGetPhysicalDeviceProperties not available');
   }
-  return Pointer<NativeFunction<VkGetPhysicalDevicePropertiesNative>>.fromAddress(
+  return Pointer<
+              NativeFunction<VkGetPhysicalDevicePropertiesNative>>.fromAddress(
           ptr.address)
       .asFunction<VkGetPhysicalDevicePropertiesDart>();
 }
@@ -190,6 +205,7 @@ VkDestroyInstanceDart loadVkDestroyInstance(Pointer<Void> instance) {
   if (ptr.address == 0) {
     throw StateError('vkDestroyInstance not available');
   }
-  return Pointer<NativeFunction<VkDestroyInstanceNative>>.fromAddress(ptr.address)
+  return Pointer<NativeFunction<VkDestroyInstanceNative>>.fromAddress(
+          ptr.address)
       .asFunction<VkDestroyInstanceDart>();
 }

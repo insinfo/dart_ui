@@ -17,8 +17,7 @@ final DynamicLibrary libMetal =
 // system-default GPU. It is *not* an Objective-C method, so we look it up on the
 // Metal library directly instead of going through `objc_msgSend`.
 final Pointer<ObjCObject> Function() mtlCreateSystemDefaultDevice =
-    libMetal.lookupFunction<
-        Pointer<ObjCObject> Function(),
+    libMetal.lookupFunction<Pointer<ObjCObject> Function(),
         Pointer<ObjCObject> Function()>('MTLCreateSystemDefaultDevice');
 
 // MTLPixelFormatBGRA8Unorm = 80 (see Metal/Metal.h).

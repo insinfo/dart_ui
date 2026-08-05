@@ -38,9 +38,11 @@ void main() {
     expect(() => wl_proxy_marshal_5, returnsNormally,
         reason: 'wl_proxy_marshal (5 args) must resolve');
     expect(() => wl_proxy_marshal_constructor_iface0, returnsNormally,
-        reason: 'wl_proxy_marshal_constructor (interface, 0 args) must resolve');
+        reason:
+            'wl_proxy_marshal_constructor (interface, 0 args) must resolve');
     expect(() => wl_proxy_marshal_constructor_iface2_int, returnsNormally,
-        reason: 'wl_proxy_marshal_constructor (interface, 2 ints) must resolve');
+        reason:
+            'wl_proxy_marshal_constructor (interface, 2 ints) must resolve');
     expect(() => wl_proxy_marshal_constructor_iface5_int, returnsNormally,
         reason:
             'wl_proxy_marshal_constructor (interface, 5 ints) must resolve');

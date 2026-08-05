@@ -36,7 +36,8 @@ void main() {
     final ptr = getInstanceProcAddress(nullptr, knownGlobal);
     expect(ptr.address, isNot(0),
         reason: 'Expected vkCreateInstance to resolve via the loader');
-  }, skip: (!Platform.isLinux && !Platform.isWindows)
-      ? 'Vulkan loader is only required on Linux/Windows'
-      : false);
+  },
+      skip: (!Platform.isLinux && !Platform.isWindows)
+          ? 'Vulkan loader is only required on Linux/Windows'
+          : false);
 }

@@ -136,8 +136,8 @@ VulkanProbeResult runVulkanProbe() {
     return result;
   }
 
-  final createResult =
-      vkCreateInstance(instanceCreateInfoPtr.cast(), nullptr, instanceHandlePtr);
+  final createResult = vkCreateInstance(
+      instanceCreateInfoPtr.cast(), nullptr, instanceHandlePtr);
   if (createResult != vkSuccess) {
     result.diagnostic = 'vkCreateInstance returned $createResult '
         '(driver may be missing — CI Linux expects lavapipe).';
@@ -231,8 +231,7 @@ VulkanProbeResult runVulkanProbe() {
   // Query properties for each device.
   final VkGetPhysicalDevicePropertiesDart vkGetPhysicalDeviceProperties;
   try {
-    vkGetPhysicalDeviceProperties =
-        loadVkGetPhysicalDeviceProperties(instance);
+    vkGetPhysicalDeviceProperties = loadVkGetPhysicalDeviceProperties(instance);
   } on StateError catch (e) {
     result.diagnostic = 'vkGetPhysicalDeviceProperties unavailable: $e';
     _destroyInstanceAndFree(
@@ -254,8 +253,7 @@ VulkanProbeResult runVulkanProbe() {
   const int kPropertiesBufferSizeBytes = 1024;
   for (var i = 0; i < deviceCount; i++) {
     final deviceHandle = devicesArrayPtr[i];
-    final propsBuf =
-        calloc<Uint8>(kPropertiesBufferSizeBytes);
+    final propsBuf = calloc<Uint8>(kPropertiesBufferSizeBytes);
     final props = propsBuf.cast<VkPhysicalDeviceProperties>();
     vkGetPhysicalDeviceProperties(deviceHandle, props);
 

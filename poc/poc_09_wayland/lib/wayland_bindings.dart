@@ -34,9 +34,9 @@ final WlDisplayConnectDart wl_display_connect =
 // wl_display_disconnect(struct wl_display *display)
 typedef WlDisplayDisconnectNative = Void Function(Pointer<Void> display);
 typedef WlDisplayDisconnectDart = void Function(Pointer<Void> display);
-final WlDisplayDisconnectDart wl_display_disconnect = libWayland
-    .lookupFunction<WlDisplayDisconnectNative, WlDisplayDisconnectDart>(
-        'wl_display_disconnect');
+final WlDisplayDisconnectDart wl_display_disconnect = libWayland.lookupFunction<
+    WlDisplayDisconnectNative,
+    WlDisplayDisconnectDart>('wl_display_disconnect');
 
 // int wl_display_roundtrip(struct wl_display *display)
 typedef WlDisplayRoundtripNative = Int32 Function(Pointer<Void> display);
@@ -48,8 +48,8 @@ final WlDisplayRoundtripDart wl_display_roundtrip =
 // int wl_display_dispatch(struct wl_display *display)
 typedef WlDisplayDispatchNative = Int32 Function(Pointer<Void> display);
 typedef WlDisplayDispatchDart = int Function(Pointer<Void> display);
-final WlDisplayDispatchDart wl_display_dispatch = libWayland
-    .lookupFunction<WlDisplayDispatchNative, WlDisplayDispatchDart>(
+final WlDisplayDispatchDart wl_display_dispatch =
+    libWayland.lookupFunction<WlDisplayDispatchNative, WlDisplayDispatchDart>(
         'wl_display_dispatch');
 
 // int wl_registry_add_listener(struct wl_registry *wl_registry,
@@ -68,8 +68,8 @@ final WlRegistryAddListenerDart wl_registry_add_listener = libWayland
 // NOTE: `wl_registry_bind` is exported by the runtime even though it
 // returns a new id; the scanner-generated wrapper for `bind` is a special
 // case that the runtime ships explicitly.
-typedef WlRegistryBindNative = Pointer<Void> Function(
-    Pointer<Void> registry, Uint32 name, Pointer<Void> interface, Uint32 version);
+typedef WlRegistryBindNative = Pointer<Void> Function(Pointer<Void> registry,
+    Uint32 name, Pointer<Void> interface, Uint32 version);
 typedef WlRegistryBindDart = Pointer<Void> Function(
     Pointer<Void> registry, int name, Pointer<Void> interface, int version);
 final WlRegistryBindDart wl_registry_bind =
@@ -107,26 +107,37 @@ typedef WlProxyMarshal0Native = Void Function(
     Pointer<Void> proxy, Uint32 opcode, Pointer<Void> sentinel);
 typedef WlProxyMarshal0Dart = void Function(
     Pointer<Void> proxy, int opcode, Pointer<Void> sentinel);
-final WlProxyMarshal0Dart wl_proxy_marshal_0 = libWayland
-    .lookupFunction<WlProxyMarshal0Native, WlProxyMarshal0Dart>(
+final WlProxyMarshal0Dart wl_proxy_marshal_0 =
+    libWayland.lookupFunction<WlProxyMarshal0Native, WlProxyMarshal0Dart>(
         'wl_proxy_marshal');
 
 // wl_proxy_marshal(proxy, opcode, buffer, x, y, NULL) — `wl_surface_attach`.
-typedef WlProxyMarshal3Native = Void Function(Pointer<Void> proxy,
-    Uint32 opcode, Pointer<Void> buffer, Int32 x, Int32 y, Pointer<Void> sentinel);
+typedef WlProxyMarshal3Native = Void Function(
+    Pointer<Void> proxy,
+    Uint32 opcode,
+    Pointer<Void> buffer,
+    Int32 x,
+    Int32 y,
+    Pointer<Void> sentinel);
 typedef WlProxyMarshal3Dart = void Function(Pointer<Void> proxy, int opcode,
     Pointer<Void> buffer, int x, int y, Pointer<Void> sentinel);
-final WlProxyMarshal3Dart wl_proxy_marshal_3 = libWayland
-    .lookupFunction<WlProxyMarshal3Native, WlProxyMarshal3Dart>(
+final WlProxyMarshal3Dart wl_proxy_marshal_3 =
+    libWayland.lookupFunction<WlProxyMarshal3Native, WlProxyMarshal3Dart>(
         'wl_proxy_marshal');
 
 // wl_proxy_marshal(proxy, opcode, x, y, width, height, NULL) — `wl_surface_damage`.
-typedef WlProxyMarshal5Native = Void Function(Pointer<Void> proxy,
-    Uint32 opcode, Int32 x, Int32 y, Int32 width, Int32 height, Pointer<Void> sentinel);
+typedef WlProxyMarshal5Native = Void Function(
+    Pointer<Void> proxy,
+    Uint32 opcode,
+    Int32 x,
+    Int32 y,
+    Int32 width,
+    Int32 height,
+    Pointer<Void> sentinel);
 typedef WlProxyMarshal5Dart = void Function(Pointer<Void> proxy, int opcode,
     int x, int y, int width, int height, Pointer<Void> sentinel);
-final WlProxyMarshal5Dart wl_proxy_marshal_5 = libWayland
-    .lookupFunction<WlProxyMarshal5Native, WlProxyMarshal5Dart>(
+final WlProxyMarshal5Dart wl_proxy_marshal_5 =
+    libWayland.lookupFunction<WlProxyMarshal5Native, WlProxyMarshal5Dart>(
         'wl_proxy_marshal');
 
 // wl_proxy_marshal_constructor(proxy, opcode, interface, NULL) — variants
@@ -143,9 +154,8 @@ typedef WlProxyMarshalConstructorIface0Dart = Pointer<Void> Function(
     int opcode,
     Pointer<Void> interface,
     Pointer<Void> sentinel);
-final WlProxyMarshalConstructorIface0Dart
-    wl_proxy_marshal_constructor_iface0 = libWayland.lookupFunction<
-        WlProxyMarshalConstructorIface0Native,
+final WlProxyMarshalConstructorIface0Dart wl_proxy_marshal_constructor_iface0 =
+    libWayland.lookupFunction<WlProxyMarshalConstructorIface0Native,
         WlProxyMarshalConstructorIface0Dart>('wl_proxy_marshal_constructor');
 
 // wl_proxy_marshal_constructor(proxy, opcode, interface, fd, size, NULL) —
@@ -225,8 +235,8 @@ Pointer<Void> wl_display_get_registry(Pointer<Void> display) {
 
 /// Reimplements `wl_compositor_create_surface(struct wl_compositor *compositor)`.
 Pointer<Void> wl_compositor_create_surface(Pointer<Void> compositor) {
-  return wl_proxy_marshal_constructor_iface0(
-      compositor, wlCompositorCreateSurfaceOpcode, wl_surface_interface_ptr, nullptr);
+  return wl_proxy_marshal_constructor_iface0(compositor,
+      wlCompositorCreateSurfaceOpcode, wl_surface_interface_ptr, nullptr);
 }
 
 /// Reimplements `wl_shm_create_pool(struct wl_shm *wl_shm, int fd, int size)`.
@@ -239,16 +249,22 @@ Pointer<Void> wl_shm_create_pool(Pointer<Void> shm, int fd, int size) {
 /// int offset, int width, int height, int stride, uint format)`.
 Pointer<Void> wl_shm_pool_create_buffer(Pointer<Void> pool, int offset,
     int width, int height, int stride, int format) {
-  return wl_proxy_marshal_constructor_iface5_int(pool,
-      wlShmPoolCreateBufferOpcode, wl_buffer_interface_ptr, offset, width,
-      height, stride, format, nullptr);
+  return wl_proxy_marshal_constructor_iface5_int(
+      pool,
+      wlShmPoolCreateBufferOpcode,
+      wl_buffer_interface_ptr,
+      offset,
+      width,
+      height,
+      stride,
+      format,
+      nullptr);
 }
 
 /// Reimplements `wl_surface_attach(struct wl_surface *, struct wl_buffer *, int, int)`.
 void wl_surface_attach(
     Pointer<Void> surface, Pointer<Void> buffer, int x, int y) {
-  wl_proxy_marshal_3(
-      surface, wlSurfaceAttachOpcode, buffer, x, y, nullptr);
+  wl_proxy_marshal_3(surface, wlSurfaceAttachOpcode, buffer, x, y, nullptr);
 }
 
 /// Reimplements `wl_surface_damage(struct wl_surface *, int, int, int, int)`.
@@ -339,10 +355,9 @@ final FtruncateDart ftruncate =
 // void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
 typedef MmapNative = Pointer<Void> Function(Pointer<Void> addr, IntPtr length,
     Int32 prot, Int32 flags, Int32 fd, Long offset);
-typedef MmapDart = Pointer<Void> Function(Pointer<Void> addr, int length,
-    int prot, int flags, int fd, int offset);
-final MmapDart mmap =
-    libc.lookupFunction<MmapNative, MmapDart>('mmap');
+typedef MmapDart = Pointer<Void> Function(
+    Pointer<Void> addr, int length, int prot, int flags, int fd, int offset);
+final MmapDart mmap = libc.lookupFunction<MmapNative, MmapDart>('mmap');
 
 // int munmap(void *addr, size_t length);
 typedef MunmapNative = Int32 Function(Pointer<Void> addr, IntPtr length);
@@ -353,8 +368,7 @@ final MunmapDart munmap =
 // int close(int fd);
 typedef CloseNative = Int32 Function(Int32 fd);
 typedef CloseDart = int Function(int fd);
-final CloseDart close_fd =
-    libc.lookupFunction<CloseNative, CloseDart>('close');
+final CloseDart close_fd = libc.lookupFunction<CloseNative, CloseDart>('close');
 
 // --- Constants -------------------------------------------------------------
 
@@ -393,8 +407,7 @@ Pointer<Void> get wl_registry_interface_ptr {
 }
 
 Pointer<Void> get wl_surface_interface_ptr {
-  _wl_surface_interface_ptr ??=
-      libWayland.lookup<Void>('wl_surface_interface');
+  _wl_surface_interface_ptr ??= libWayland.lookup<Void>('wl_surface_interface');
   return _wl_surface_interface_ptr!;
 }
 
