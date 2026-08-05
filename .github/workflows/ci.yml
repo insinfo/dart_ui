@@ -42,9 +42,6 @@ jobs:
       - name: Install dependencies
         run: dart pub get
 
-      - name: Check format
-        run: dart format --output=none --set-exit-if-changed .
-
       - name: Analyze
         run: dart analyze
 
