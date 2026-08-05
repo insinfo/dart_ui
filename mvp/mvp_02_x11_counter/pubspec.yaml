@@ -1,0 +1,19 @@
+name: mvp_02_x11_counter
+description: 'MVP-02: Counter headless renderer presented through X11/XCB.'
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dependencies:
+  mvp_01_win32_counter:
+    path: ../mvp_01_win32_counter
+  poc_02_x11_window:
+    path: ../../poc/poc_02_x11_window
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^5.1.0

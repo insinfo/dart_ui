@@ -1428,6 +1428,10 @@ Reutilizar o mesmo código de widget do MVP-01 com backend X11/XCB.
 
 ## 16.3 Critério de sucesso
 
+- Implementação inicial em `mvp/mvp_02_x11_counter`: reutiliza `CounterApp`,
+  `Canvas` e framebuffer BGRA do MVP-01, apresentando por `XcbWindow.putBgra`
+  e fechando pelo protocolo `WM_DELETE_WINDOW`.
+
 - [ ] Mesma aplicação Counter roda sem alteração no código do widget
 - [ ] CI verifica via screenshot/golden
 
