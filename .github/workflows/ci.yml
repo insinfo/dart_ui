@@ -216,12 +216,15 @@ jobs:
           - os: ubuntu-24.04
             platform: linux
             ext: ''
+            entrypoint: mvp/mvp_02_x11_counter/bin/main.dart
           - os: windows-latest
             platform: windows
             ext: '.exe'
+            entrypoint: mvp/mvp_01_win32_counter/bin/main.dart
           - os: macos-14
             platform: macos-arm64
             ext: ''
+            entrypoint: mvp/mvp_03_appkit_counter/bin/main.dart
     steps:
       - uses: actions/checkout@v4
 
@@ -241,18 +244,15 @@ jobs:
       - name: Install dependencies
         run: dart pub get
 
-      - name: AOT compile example
+      - name: AOT compile platform Counter
         shell: bash
         run: |
-          if [ -f "examples/counter/bin/main.dart" ]; then
-            mkdir -p build
-            dart compile exe examples/counter/bin/main.dart \
-              -o build/counter_${{ matrix.platform }}${{ matrix.ext }}
-            echo "✅ AOT compilation successful"
-            ls -la build/
-          else
-            echo "⚠️  Example not yet created, skipping AOT"
-          fi
+          test -f "${{ matrix.entrypoint }}"
+          mkdir -p build
+          dart compile exe "${{ matrix.entrypoint }}" \
+            -o build/counter_${{ matrix.platform }}${{ matrix.ext }}
+          echo "✅ AOT compilation successful"
+          ls -la build/
 
       - name: Upload AOT binary
         if: success()
@@ -261,4 +261,4 @@ jobs:
           name: aot-${{ matrix.platform }}
           path: build/counter_*
           retention-days: 7
-          if-no-files-found: ignore
+          if-no-files-found: error

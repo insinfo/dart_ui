@@ -67,4 +67,22 @@ void main() {
     expect(frame.pixelAt(0, 0), const Color.opaque(30, 34, 42).packedBgra);
     expect(frame.app.incrementButton.bounds.isEmpty, isFalse);
   });
+
+  test('DisplayList sustenta ao menos 30 FPS na cena Counter 800x600', () {
+    const frameCount = 30;
+    final frame = HeadlessFrame(800, 600);
+    final stopwatch = Stopwatch()..start();
+
+    for (var index = 0; index < frameCount; index++) {
+      frame.renderDisplayList();
+    }
+
+    stopwatch.stop();
+    final averageFrameMs = stopwatch.elapsedMicroseconds / frameCount / 1000;
+    expect(
+      averageFrameMs,
+      lessThan(1000 / 30),
+      reason: 'DisplayList levou ${averageFrameMs.toStringAsFixed(2)} ms/frame',
+    );
+  });
 }

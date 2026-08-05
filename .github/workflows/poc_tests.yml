@@ -6,10 +6,12 @@ on:
     branches: [main, develop]
     paths:
       - 'poc/**'
+      - 'mvp/**'
       - '.github/workflows/poc_tests.yml'
   pull_request:
     paths:
       - 'poc/**'
+      - 'mvp/**'
   workflow_dispatch:
 
 concurrency:
@@ -61,7 +63,10 @@ jobs:
           $proc | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
           if (!$proc.HasExited) {
             $proc | Stop-Process -Force
-            Write-Host "Process was killed after timeout (expected for window test)"
+            throw "POC-01 smoke test timed out."
+          }
+          if ($proc.ExitCode -ne 0) {
+            throw "POC-01 smoke test failed with exit code $($proc.ExitCode)."
           }
           Write-Host "Exit code: $($proc.ExitCode)"
 
@@ -114,7 +119,7 @@ jobs:
           mkdir -p build
           dart compile exe bin/main.dart -o build/poc_02
           chmod +x build/poc_02
-          timeout 10 ./build/poc_02 --smoke-test || echo "Exited (expected)"
+          timeout 10 ./build/poc_02 --smoke-test
         env:
           DISPLAY: ':99'
 
@@ -149,7 +154,7 @@ jobs:
           mkdir -p build
           dart compile exe bin/main.dart -o build/poc_03
           chmod +x build/poc_03
-          timeout 10 ./build/poc_03 --smoke-test || echo "Exited (expected)"
+          ./build/poc_03 --smoke-test
 
   # ==============================================================
   # POC-04: CPU Rasterization (all platforms)
@@ -220,6 +225,17 @@ jobs:
         working-directory: poc/poc_05_com_direct2d
         run: dart test
 
+      - name: AOT compile and COM smoke test
+        working-directory: poc/poc_05_com_direct2d
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          dart compile exe bin/main.dart -o build/poc_05.exe
+          & .\build\poc_05.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "POC-05 AOT smoke failed with exit code $LASTEXITCODE."
+          }
+
   # ==============================================================
   # POC-06: OpenGL (Linux only)
   # ==============================================================
@@ -255,6 +271,17 @@ jobs:
           DISPLAY: ':99'
           LIBGL_ALWAYS_SOFTWARE: '1'
 
+      - name: AOT compile and OpenGL smoke test
+        working-directory: poc/poc_06_opengl
+        run: |
+          mkdir -p build
+          dart compile exe bin/main.dart -o build/poc_06
+          chmod +x build/poc_06
+          ./build/poc_06 --smoke-test
+        env:
+          DISPLAY: ':99'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+
   # ==============================================================
   # POC-07: Metal (macOS only)
   # ==============================================================
@@ -286,7 +313,7 @@ jobs:
           mkdir -p build
           dart compile exe bin/main.dart -o build/poc_07
           chmod +x build/poc_07
-          timeout 15 ./build/poc_07 --smoke-test || echo "Exited (expected for Metal POC)"
+          ./build/poc_07 --smoke-test
 
   # ==============================================================
   # POC-08: Vulkan (Linux + Windows)
@@ -314,7 +341,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libvulkan-dev mesa-vulkan-drivers vulkan-tools
-          vulkaninfo --summary 2>/dev/null || echo "Vulkan info not available"
+          VULKAN_ICD=$(find /usr/share/vulkan/icd.d -type f -name '*lvp*json' -print -quit)
+          test -n "$VULKAN_ICD"
+          echo "VULKAN_ICD=$VULKAN_ICD" >> "$GITHUB_ENV"
+          VK_DRIVER_FILES="$VULKAN_ICD" vulkaninfo --summary
 
       - name: Install dependencies
         working-directory: poc/poc_08_vulkan
@@ -327,8 +357,6 @@ jobs:
       - name: Run tests
         working-directory: poc/poc_08_vulkan
         run: dart test
-        env:
-          VK_ICD_FILENAMES: ${{ matrix.platform == 'linux' && '/usr/share/vulkan/icd.d/lvp_icd.x86_64.json' || '' }}
 
       - name: AOT compile
         working-directory: poc/poc_08_vulkan
@@ -354,8 +382,7 @@ jobs:
         if: matrix.platform == 'linux'
         working-directory: poc/poc_08_vulkan
         run: |
-          VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json \
-            ./build/poc_08 --smoke-test || echo "Exited (expected for Vulkan POC in CI)"
+          VK_DRIVER_FILES="$VULKAN_ICD" ./build/poc_08 --smoke-test
 
       - name: Run smoke test (Windows)
         if: matrix.platform == 'windows'
@@ -368,6 +395,9 @@ jobs:
           $env:VK_ICD_FILENAMES = "$PWD\build\vk_swiftshader_icd.json"
           $env:Path = "$PWD\build;$env:Path"
           & .\build\poc_08.exe --smoke-test
+          if ($LASTEXITCODE -ne 0) {
+            throw "POC-08 Windows smoke failed with exit code $LASTEXITCODE."
+          }
           Write-Host "Exit code: $LASTEXITCODE"
 
   # ==============================================================
@@ -409,12 +439,18 @@ jobs:
           dart compile exe bin/main.dart -o build/poc_09
           chmod +x build/poc_09
           mkdir -p /tmp/weston-poc09
+          chmod 700 /tmp/weston-poc09
           export XDG_RUNTIME_DIR=/tmp/weston-poc09
+          export WAYLAND_DISPLAY=wayland-0
           weston --backend=headless --no-config &
           WESTON_PID=$!
-          sleep 3
-          export WAYLAND_DISPLAY=wayland-0
-          timeout 10 ./build/poc_09 --smoke-test || echo "Exited (expected for Wayland POC in CI)"
+          trap 'kill $WESTON_PID 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 20); do
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+            sleep 0.25
+          done
+          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          timeout 10 ./build/poc_09 --smoke-test
           kill $WESTON_PID 2>/dev/null || true
         env:
           XDG_RUNTIME_DIR: /tmp/weston-poc09
@@ -439,6 +475,17 @@ jobs:
       - name: Run tests
         working-directory: poc/poc_10_event_loop
         run: dart test
+
+      - name: AOT compile and event-loop smoke test
+        working-directory: poc/poc_10_event_loop
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build | Out-Null
+          dart compile exe bin/main.dart -o build/poc_10.exe
+          & .\build\poc_10.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "POC-10 AOT smoke failed with exit code $LASTEXITCODE."
+          }
 
   # ==============================================================
   # POC-11: Responsive UI + streamed image download (Windows)
@@ -580,6 +627,47 @@ jobs:
           name: poc13-native-dib-windows
           path: poc/poc_13_native_dib_present/build/benchmark.txt
           retention-days: 7
+
+  # ==============================================================
+  # POC-14/15: Direct3D device initialization (Windows)
+  # ==============================================================
+  poc-direct3d-devices:
+    name: 'POC-14/15: Direct3D devices'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Analyze and test D3D11
+        run: |
+          dart analyze poc/poc_14_direct3d
+          dart test poc/poc_14_direct3d
+
+      - name: Analyze and test D3D12
+        run: |
+          dart analyze poc/poc_15_direct3d12
+          dart test poc/poc_15_direct3d12
+
+      - name: Compile and run AOT probes
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build\direct3d | Out-Null
+          dart compile exe poc/poc_14_direct3d/bin/main.dart -o build/direct3d/poc_14.exe
+          & .\build\direct3d\poc_14.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "POC-14 AOT probe failed with exit code $LASTEXITCODE."
+          }
+          dart compile exe poc/poc_15_direct3d12/bin/main.dart -o build/direct3d/poc_15.exe
+          & .\build\direct3d\poc_15.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "POC-15 AOT probe failed with exit code $LASTEXITCODE."
+          }
 
   # ==============================================================
   # POC-16/17/18: WebGL/WebGPU (Chrome headless)

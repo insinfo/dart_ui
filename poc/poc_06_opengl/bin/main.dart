@@ -29,7 +29,7 @@ void main(List<String> args) {
     print('Error: eglInitialize failed.');
     exit(1);
   }
-  print('EGL Initialized. Version: \${major.value}.\${minor.value}');
+  print('EGL Initialized. Version: ${major.value}.${minor.value}');
 
   // Choose config
   final attribList = calloc<Int32>(15);
@@ -55,7 +55,7 @@ void main(List<String> args) {
     print('Error: eglChooseConfig failed.');
     exit(1);
   }
-  print('EGL Config chosen (Count: \${numConfig.value})');
+  print('EGL Config chosen (Count: ${numConfig.value})');
 
   // Create Pbuffer surface
   final pbufferAttribs = calloc<Int32>(5);
@@ -100,21 +100,25 @@ void main(List<String> args) {
   glClear(glColorBufferBit);
 
   final glVer = glGetString(glVersion);
-  if (glVer.address != 0) {
-    print('OpenGL Version: \${glVer.cast<Utf8>().toDartString()}');
+  if (glVer.address == 0) {
+    print('Error: glGetString(GL_VERSION) returned null.');
+    exit(1);
   }
+  print('OpenGL Version: ${glVer.cast<Utf8>().toDartString()}');
 
   final glRend = glGetString(glRenderer);
-  if (glRend.address != 0) {
-    print('OpenGL Renderer: \${glRend.cast<Utf8>().toDartString()}');
+  if (glRend.address == 0) {
+    print('Error: glGetString(GL_RENDERER) returned null.');
+    exit(1);
   }
+  print('OpenGL Renderer: ${glRend.cast<Utf8>().toDartString()}');
 
   // Swap buffers
   if (eglSwapBuffers(display, surface) == 0) {
-    print('Warning: eglSwapBuffers failed.');
-  } else {
-    print('eglSwapBuffers succeeded.');
+    print('Error: eglSwapBuffers failed.');
+    exit(1);
   }
+  print('eglSwapBuffers succeeded.');
 
   // Teardown
   print('Tearing down EGL resources...');

@@ -12,7 +12,12 @@ void main(List<String> args) {
     exit(1);
   }
 
-  runAppKitWindow();
+  final passed = runAppKitWindow();
+
+  if (!passed) {
+    stderr.writeln('AppKit lifecycle validation failed.');
+    exit(1);
+  }
 
   print('AppKit event loop finished. Exiting.');
   exit(0);

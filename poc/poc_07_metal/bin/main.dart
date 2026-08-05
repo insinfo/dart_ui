@@ -18,7 +18,11 @@ void main(List<String> args) {
   // the clear-render flow terminates synchronously — no run loop is required.
   final smokeTest = args.contains('--smoke-test');
 
-  runMetalClearRender(width: 800, height: 600);
+  final rendered = runMetalClearRender(width: 800, height: 600);
+  if (!rendered) {
+    stderr.writeln('[POC-07] Metal clear-render validation failed.');
+    exit(1);
+  }
 
   if (smokeTest) {
     print('[POC-07] Smoke-test mode: exiting after a single frame.');

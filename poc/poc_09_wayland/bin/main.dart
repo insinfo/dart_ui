@@ -43,13 +43,8 @@ void main(List<String> args) {
       result.bufferCommitted &&
       result.disposed;
 
-  final smokeTest = args.contains('--smoke-test');
-  if (smokeTest && !result.connected) {
-    print('[POC-09] Smoke-test mode: '
-        'compositor unreachable — exiting cleanly (CI skips when Weston is down).');
-    exit(0);
-  }
-  if (!allPassed && !smokeTest) {
+  if (!allPassed) {
+    stderr.writeln('[POC-09] Wayland validation failed.');
     exit(1);
   }
   exit(0);

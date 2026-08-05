@@ -21,6 +21,7 @@ typedef AppCallbackNative = Void Function(Pointer<ObjCObject> self,
 
 void _onFinishLaunching(Pointer<ObjCObject> self, Pointer<ObjCSel> _cmd,
     Pointer<ObjCObject> notification) {
+  _didFinishLaunching = true;
   print('[AppKit] applicationDidFinishLaunching:');
 
   final nsWindow = getClass('NSWindow');
@@ -54,6 +55,7 @@ void _onFinishLaunching(Pointer<ObjCObject> self, Pointer<ObjCSel> _cmd,
 
   msgSendVoidPointer(window, sel('setTitle:'), titleObj);
 
+  _didCreateWindow = true;
   print('[AppKit] Window created.');
 
   // Schedule a timer to close the app after 3 seconds for the smoke test
@@ -70,6 +72,7 @@ void _onFinishLaunching(Pointer<ObjCObject> self, Pointer<ObjCSel> _cmd,
 
 void _stopApp(Pointer<ObjCObject> self, Pointer<ObjCSel> _cmd,
     Pointer<ObjCObject> timer) {
+  _didStopApplication = true;
   print('[AppKit] stopApp: called. Terminating NSApplication...');
   final nsAppClass = getClass('NSApplication');
   final sharedApp = nsAppClass.msgSend('sharedApplication');
@@ -78,8 +81,14 @@ void _stopApp(Pointer<ObjCObject> self, Pointer<ObjCSel> _cmd,
 
 late NativeCallable<AppCallbackNative> finishCallback;
 late NativeCallable<AppCallbackNative> stopCallback;
+bool _didFinishLaunching = false;
+bool _didCreateWindow = false;
+bool _didStopApplication = false;
 
-void runAppKitWindow() {
+bool runAppKitWindow() {
+  _didFinishLaunching = false;
+  _didCreateWindow = false;
+  _didStopApplication = false;
   print('[AppKit] Initializing NSApplication...');
   final nsAppClass = getClass('NSApplication');
   final sharedApp = nsAppClass.msgSend('sharedApplication');
@@ -95,7 +104,7 @@ void runAppKitWindow() {
 
   if (delegateClass == nullptr) {
     print('[AppKit] Failed to allocate delegate class.');
-    return;
+    return false;
   }
 
   final typesUtf8 = 'v@:@'.toNativeUtf8();
@@ -103,15 +112,22 @@ void runAppKitWindow() {
   final didFinishSel = sel('applicationDidFinishLaunching:');
   finishCallback =
       NativeCallable<AppCallbackNative>.isolateLocal(_onFinishLaunching);
-  class_addMethod(delegateClass, didFinishSel,
+  final didAddFinish = class_addMethod(delegateClass, didFinishSel,
       finishCallback.nativeFunction.cast<Void>(), typesUtf8);
 
   final stopSel = sel('stopApp:');
   stopCallback = NativeCallable<AppCallbackNative>.isolateLocal(_stopApp);
-  class_addMethod(delegateClass, stopSel,
+  final didAddStop = class_addMethod(delegateClass, stopSel,
       stopCallback.nativeFunction.cast<Void>(), typesUtf8);
 
   calloc.free(typesUtf8);
+
+  if (didAddFinish == 0 || didAddStop == 0) {
+    print('[AppKit] Failed to install Dart delegate methods.');
+    finishCallback.close();
+    stopCallback.close();
+    return false;
+  }
 
   objc_registerClassPair(delegateClass);
 
@@ -122,4 +138,8 @@ void runAppKitWindow() {
   print('[AppKit] Running application...');
   sharedApp.msgSend('run');
   print('[AppKit] Application run loop exited.');
+  finishCallback.close();
+  stopCallback.close();
+
+  return _didFinishLaunching && _didCreateWindow && _didStopApplication;
 }

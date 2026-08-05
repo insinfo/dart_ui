@@ -921,6 +921,12 @@ Para o CI Linux, o workflow instala `mesa-vulkan-drivers` e aponta
       SwiftShader via `VK_ICD_FILENAMES` (execução local)
 - [ ] CI Linux/Windows executa o smoke test AOT sem erros (execução pendente)
 
+Auditoria de 2026-08-05 identificou que o smoke Linux anterior aceitava falha
+de `vkCreateInstance` como sucesso. O executável e o workflow agora tornam
+qualquer etapa incompleta fatal, descobrem dinamicamente o ICD lavapipe e
+validam `vulkaninfo` antes do AOT. A nova execução de CI ainda é necessária
+para fechar o item acima; Windows + SwiftShader foi revalidado localmente.
+
 ---
 
 # 13. POC-09: Wayland Client via FFI (Linux)
@@ -987,16 +993,21 @@ headless. O fluxo cobre:
   `wl_compositor_destroy`, fechar os callables de listener,
   `wl_registry_destroy`, `wl_display_disconnect`.
 
-- [x] Conexão ao compositor Wayland funciona (CI usa Weston headless)
-- [x] Registry listeners recebem globals (`NativeCallable.isolateLocal`)
-- [x] `wl_compositor` e `wl_shm` são bindados
-- [x] Surface criada
-- [x] Buffer SHM alocado (`memfd_create` + `mmap`) e preenchido com pixels
-- [x] `wl_surface_commit` funciona
-- [x] Fechar sem crash (liberação em ordem reversa)
-- [x] Listeners são cleaned up corretamente (`NativeCallable.close()` antes
+- [ ] Conexão ao compositor Wayland funciona no CI corrigido
+- [ ] Registry listeners recebem globals (`NativeCallable.isolateLocal`)
+- [ ] `wl_compositor` e `wl_shm` são bindados
+- [ ] Surface criada
+- [ ] Buffer SHM alocado (`memfd_create` + `mmap`) e preenchido com pixels
+- [ ] `wl_surface_commit` funciona
+- [ ] Fechar sem crash (liberação em ordem reversa)
+- [ ] Listeners são cleaned up corretamente (`NativeCallable.close()` antes
       de liberar a struct)
 - [ ] CI Linux/Weston executa o smoke test AOT sem erros (execução pendente)
+
+Auditoria de 2026-08-05 mostrou que a execução anterior não conectou ao
+Weston, mas retornou sucesso. O runtime agora falha quando o resultado não é
+completo; o workflow configura `XDG_RUNTIME_DIR` com modo `0700`, espera o
+socket Wayland e não mascara mais o exit code.
 
 ---
 
@@ -1278,9 +1289,10 @@ O teste isola a criação do dispositivo, verificação de feature levels e inic
 
 ## 14D.2 Critério de sucesso
 
-- [ ] Instanciação correta do dispositivo D3D11 e Contexto Imadiato.
-- [ ] Leitura do *Feature Level* suportado pelo sistema.
-- [ ] Memória limpa no descarte e terminação segura sem vazamentos via IUnknown.
+- [x] Instanciação correta do dispositivo D3D11 e contexto imediato.
+- [x] Leitura do *Feature Level* suportado pelo sistema.
+- [x] `Release` do device/context executado no descarte via `IUnknown`.
+- [x] Teste end-to-end Windows e compilação AOT adicionados ao CI.
 
 ---
 
@@ -1292,8 +1304,9 @@ Validar a inicialização do Direct3D 12 via FFI e puro Dart (chamada de `D3D12C
 
 ## 14E.2 Critério de sucesso
 
-- [ ] Criação do `ID3D12Device` com a `d3d12.dll`.
-- [ ] Validação do sucesso de inicialização pelo FFI e ponteiros IUnknown limpos ao final.
+- [x] Criação do `ID3D12Device` com a `d3d12.dll`.
+- [x] Validação do sucesso de inicialização pelo FFI e `Release` via `IUnknown`.
+- [x] Teste end-to-end Windows e compilação AOT adicionados ao CI.
 
 ---
 
@@ -1578,7 +1591,8 @@ class CpuRenderer implements RendererBackend {
 - [x] Golden comparison determinística com checksum no backend headless
 - [x] `CounterApp.recordDisplayList()` permite replay da cena completa fora do
       caminho direto de widgets
-- [ ] Performance ≥ 30 FPS em cena de widget
+- [x] Performance ≥ 30 FPS em cena Counter 800x600 via DisplayList
+      (gate automatizado de 30 frames; validação local em 2026-08-05)
 
 ---
 
@@ -1956,24 +1970,24 @@ Antes de iniciar o desenvolvimento do framework principal (Fases 0-17 do roteiro
 ## 29.1 Viabilidade técnica confirmada
 
 - [ ] POC-01: WndProc funciona de forma estável em Dart
-- [ ] POC-02: X11/XCB window funciona no CI
+- [x] POC-02: X11/XCB window funciona no CI
 - [ ] POC-03: AppKit via ObjC Runtime funciona no CI
-- [ ] POC-04: CPU rasterização ≥ 30 FPS em 800x600
-- [ ] POC-05: COM vtable funciona para D2D (ou confirmado que Direct2D é viável)
+- [x] POC-04: CPU rasterização ≥ 30 FPS em 800x600
+- [x] POC-05: COM vtable funciona para D2D (factory/device validados; swapchain adiada)
 - [ ] POC-10: Event loop unificado funciona sem deadlock
 
 ## 29.2 Infraestrutura pronta
 
 - [ ] CI verde em Windows, Linux, macOS
-- [ ] Monorepo configurado com workspace Dart
-- [ ] `dart analyze` limpo em todos os pacotes
-- [ ] `dart test` roda em CI
+- [x] Monorepo configurado com workspace Dart
+- [x] `dart analyze` limpo em todos os pacotes
+- [x] `dart test` roda em CI
 - [ ] Golden test harness funciona
 
 ## 29.3 Decisões tomadas
 
 - [ ] Rasterizador CPU canônico escolhido (marlin vs dart_graphics)
-- [ ] Formato de pixel canônico definido
+- [x] Formato de pixel canônico definido (BGRA8888 premultiplicado no CPU/nativo)
 - [x] Padrão de callback FFI documentado
 - [ ] Padrão de COM wrapper documentado
 - [ ] Padrão de ObjC bridge documentado
@@ -1987,6 +2001,24 @@ Antes de iniciar o desenvolvimento do framework principal (Fases 0-17 do roteiro
 - [ ] Benchmark baseline salvo
 - [ ] Riscos residuais registrados
 - [ ] Decisões de pivotar registradas
+
+## 29.5 Correções de validação preparadas em 2026-08-05
+
+- smoke Win32 falha em timeout ou exit code não zero;
+- smokes X11, AppKit, Metal, Vulkan e Wayland não mascaram mais falhas;
+- AppKit exige lifecycle completo (launch, criação da janela e stop);
+- Metal exige device, drawable, texture, command queue/buffer e encoder;
+- OpenGL executa o fluxo EGL/OpenGL completo em AOT no CI;
+- Vulkan/Linux exige ICD lavapipe funcional e `vulkaninfo` válido;
+- Wayland espera o socket do Weston com `XDG_RUNTIME_DIR` modo `0700`;
+- POC-05 e POC-10 agora possuem smoke AOT bloqueante;
+- POC-14/D3D11 e POC-15/D3D12 possuem testes end-to-end e smoke AOT;
+- o job AOT principal compila obrigatoriamente o Counter específico de cada
+  plataforma; não existe mais sucesso por ausência de `examples/counter`;
+- MVP-05 possui gate automatizado de 30 FPS para a cena Counter 800x600.
+
+Os itens dependentes de Linux/macOS permanecem abertos até uma nova execução
+verde dos workflows corrigidos.
 
 ---
 

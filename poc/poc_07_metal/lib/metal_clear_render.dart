@@ -23,12 +23,12 @@ import 'package:ffi/ffi.dart';
 import 'metal_bindings.dart';
 import 'objc_runtime.dart';
 
-void runMetalClearRender({int width = 800, int height = 600}) {
+bool runMetalClearRender({int width = 800, int height = 600}) {
   print('[Metal] Acquiring system default device...');
   final device = mtlCreateSystemDefaultDevice();
   if (device == nullptr) {
     print('[Metal] No default Metal device available. Aborting.');
-    return;
+    return false;
   }
   print('[Metal] MTLDevice acquired (${device.address}).');
 
@@ -36,12 +36,12 @@ void runMetalClearRender({int width = 800, int height = 600}) {
   final metalLayerClass = getClass('CAMetalLayer');
   if (metalLayerClass == nullptr) {
     print('[Metal] CAMetalLayer class not found. Aborting.');
-    return;
+    return false;
   }
   final layer = metalLayerClass.msgSend('alloc').msgSend('init');
   if (layer == nullptr) {
     print('[Metal] CAMetalLayer init returned nil. Aborting.');
-    return;
+    return false;
   }
 
   // Configure layer: device, pixel format, drawable size.
@@ -60,7 +60,7 @@ void runMetalClearRender({int width = 800, int height = 600}) {
   final drawable = msgSendPointer(layer, sel('nextDrawable'));
   if (drawable == nullptr) {
     print('[Metal] nextDrawable returned nil (no drawable surface). Aborting.');
-    return;
+    return false;
   }
   print('[Metal] Drawable acquired (${drawable.address}).');
 
@@ -68,7 +68,7 @@ void runMetalClearRender({int width = 800, int height = 600}) {
   final texture = msgSendPointer(drawable, sel('texture'));
   if (texture == nullptr) {
     print('[Metal] Drawable.texture returned nil. Aborting.');
-    return;
+    return false;
   }
   print('[Metal] Drawable texture acquired (${texture.address}).');
 
@@ -76,12 +76,12 @@ void runMetalClearRender({int width = 800, int height = 600}) {
   final queue = msgSendPointer(device, sel('newCommandQueue'));
   if (queue == nullptr) {
     print('[Metal] newCommandQueue returned nil. Aborting.');
-    return;
+    return false;
   }
   final cmdBuffer = msgSendPointer(queue, sel('commandBuffer'));
   if (cmdBuffer == nullptr) {
     print('[Metal] commandBuffer returned nil. Aborting.');
-    return;
+    return false;
   }
 
   print('[Metal] Building render-pass descriptor...');
@@ -90,7 +90,7 @@ void runMetalClearRender({int width = 800, int height = 600}) {
       msgSendPointer(descriptorClass, sel('renderPassDescriptor'));
   if (descriptor == nullptr) {
     print('[Metal] renderPassDescriptor returned nil. Aborting.');
-    return;
+    return false;
   }
   final colorAttachments = msgSendPointer(descriptor, sel('colorAttachments'));
   // -[MTLRenderPassColorAttachmentDescriptorArray objectAtIndexedSubscript:]
@@ -98,7 +98,7 @@ void runMetalClearRender({int width = 800, int height = 600}) {
       colorAttachments, sel('objectAtIndexedSubscript:'), 0);
   if (colorAttachment == nullptr) {
     print('[Metal] Color attachment at index 0 is nil. Aborting.');
-    return;
+    return false;
   }
 
   // Configure color attachment: texture + load action + store action + clear color.
@@ -122,7 +122,7 @@ void runMetalClearRender({int width = 800, int height = 600}) {
   if (encoder == nullptr) {
     print(
         '[Metal] renderCommandEncoderWithDescriptor: returned nil. Aborting.');
-    return;
+    return false;
   }
   msgSendVoid(encoder, sel('endEncoding'));
   print('[Metal] Render pass encoded.');
@@ -135,4 +135,5 @@ void runMetalClearRender({int width = 800, int height = 600}) {
 
   print('[Metal] POC-07 finished successfully. '
       'A single frame was cleared and presented through Metal on arm64 macOS.');
+  return true;
 }
