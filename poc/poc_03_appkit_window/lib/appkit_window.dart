@@ -14,27 +14,31 @@ const NSWindowStyleMaskClosable = 1 << 1;
 const NSWindowStyleMaskResizable = 1 << 3;
 const NSBackingStoreBuffered = 2;
 
-bool runAppKitWindow() {
-  print('[AppKit] Initializing NSApplication...');
-  ensureAppKitLoaded();
+typedef DispatchWorkNative = Void Function(Pointer<Void> context);
+
+bool _didCreateWindowSuccess = false;
+
+void _createAppKitWindowOnMainThread(Pointer<Void> context) {
+  print('[AppKit] Executing on main OS thread...');
   final nsAppClass = getClass('NSApplication');
   print('[AppKit] nsAppClass pointer: ${nsAppClass.address}');
   if (nsAppClass == nullptr) {
     print('[AppKit] Failed to resolve NSApplication class.');
-    return false;
+    return;
   }
+
   final sharedApp = nsAppClass.msgSend('sharedApplication');
   print('[AppKit] sharedApp pointer: ${sharedApp.address}');
 
   if (sharedApp == nullptr) {
     print('[AppKit] Failed to get sharedApplication.');
-    return false;
+    return;
   }
 
   msgSendVoidIntPtr(sharedApp, sel('setActivationPolicy:'),
       NSApplicationActivationPolicyRegular);
 
-  // Allocate and initialize NSWindow
+  // Allocate and initialize NSWindow on the main thread
   final nsWindow = getClass('NSWindow');
   final alloc = nsWindow.msgSend('alloc');
 
@@ -57,8 +61,8 @@ bool runAppKitWindow() {
   calloc.free(rectPtr);
 
   if (window == nullptr) {
-    print('[AppKit] Failed to create NSWindow.');
-    return false;
+    print('[AppKit] Failed to create NSWindow on main thread.');
+    return;
   }
 
   msgSendVoidPointer(window, sel('makeKeyAndOrderFront:'), nullptr);
@@ -70,11 +74,26 @@ bool runAppKitWindow() {
   calloc.free(titleUtf8);
 
   msgSendVoidPointer(window, sel('setTitle:'), titleObj);
-  print('[AppKit] NSWindow created successfully (${window.address}).');
+  print('[AppKit] NSWindow created successfully on main thread (${window.address}).');
 
   // Activate application
   msgSendVoidBool(sharedApp, sel('activateIgnoringOtherApps:'), true);
+  _didCreateWindowSuccess = true;
+}
 
-  print('[AppKit] AppKit window lifecycle validated.');
-  return true;
+bool runAppKitWindow() {
+  _didCreateWindowSuccess = false;
+  print('[AppKit] Initializing NSApplication...');
+  ensureAppKitLoaded();
+
+  final mainQueue = dispatch_get_main_queue();
+  final workCallable =
+      NativeCallable<DispatchWorkNative>.isolateLocal(_createAppKitWindowOnMainThread);
+
+  dispatch_sync_f(mainQueue, nullptr, workCallable.nativeFunction);
+
+  workCallable.close();
+
+  print('[AppKit] AppKit window lifecycle validation result: $_didCreateWindowSuccess');
+  return _didCreateWindowSuccess;
 }

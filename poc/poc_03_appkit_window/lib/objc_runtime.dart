@@ -6,6 +6,19 @@ import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
 final DynamicLibrary libObjC = DynamicLibrary.open('libobjc.A.dylib');
+final DynamicLibrary libSystem = DynamicLibrary.open('libSystem.B.dylib');
+
+typedef DispatchGetMainQueueNative = Pointer<Void> Function();
+typedef DispatchGetMainQueueDart = Pointer<Void> Function();
+final dispatch_get_main_queue = libSystem.lookupFunction<
+    DispatchGetMainQueueNative, DispatchGetMainQueueDart>('dispatch_get_main_queue');
+
+typedef DispatchSyncFNative = Void Function(Pointer<Void> queue,
+    Pointer<Void> context, Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
+typedef DispatchSyncFDart = void Function(Pointer<Void> queue,
+    Pointer<Void> context, Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
+final dispatch_sync_f = libSystem.lookupFunction<
+    DispatchSyncFNative, DispatchSyncFDart>('dispatch_sync_f');
 
 DynamicLibrary? _loadedAppKit;
 
