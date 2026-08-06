@@ -442,6 +442,12 @@ void probeEventPump() {
   _invokeOnMain(policyInvocation);
   print('activation policy set on the main thread.');
 
+  // First attempt hung right here: AppKit only wires up its event queue during
+  // -finishLaunching, so nextEventMatchingMask: had nothing to wait on and
+  // never came back. [NSApp run] would call this itself; a manual pump has to.
+  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
+  print('[NSApp finishLaunching] returned.');
+
   final location = calloc<NSPoint>()
     ..ref.x = 0
     ..ref.y = 0;

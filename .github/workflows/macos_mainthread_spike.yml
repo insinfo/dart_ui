@@ -58,22 +58,22 @@ jobs:
 
       - name: 'Probe C: WindowServer via SkyLight/CGS, no AppKit'
         timeout-minutes: 3
+        continue-on-error: true
         run: ./build/probe skylight || echo "exit=$?"
 
       - name: 'Probe D: hijack the main thread with a signal'
         timeout-minutes: 3
+        continue-on-error: true
         run: ./build/probe signal-hijack || echo "exit=$?"
 
       - name: 'Probe E: NSWindow on the hijacked main thread via NSInvocation'
         timeout-minutes: 3
+        continue-on-error: true
         run: ./build/probe mainthread-window || echo "exit=$?"
-
-      - name: 'Probe F: post an NSEvent and pump it back'
-        timeout-minutes: 3
-        run: ./build/probe event-pump || echo "exit=$?"
 
       - name: 'Probe G: [NSApp run] on the hijacked main thread'
         timeout-minutes: 3
+        continue-on-error: true
         run: ./build/probe nsapp-run-main || echo "exit=$?"
 
       # SkyLight lives in the dyld shared cache, so there is no file to nm(1).
@@ -90,8 +90,17 @@ jobs:
 
       - name: 'Probe H: window straight from the WindowServer (no AppKit)'
         timeout-minutes: 3
+        continue-on-error: true
         run: ./build/probe skylight-window || echo "exit=$?"
 
       - name: 'Probe I: does the Dart runtime survive losing thread 0?'
         timeout-minutes: 3
+        continue-on-error: true
         run: ./build/probe vm-health || echo "exit=$?"
+
+      # Last on purpose: F hung on its first run, so it is the probe most likely
+      # to spend its whole budget. Nothing after it should wait on that.
+      - name: 'Probe F: post an NSEvent and pump it back'
+        timeout-minutes: 2
+        continue-on-error: true
+        run: ./build/probe event-pump || echo "exit=$?"
