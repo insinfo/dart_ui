@@ -1286,6 +1286,110 @@ void probePostInput() {
   _exitProcess(0);
 }
 
+// ---------------------------------------------------------------------------
+// Probe P - close route C: pull input straight from the WindowServer.
+//
+// The export dump handed over the whole event API. AppKit has no privileged
+// channel: it pulls events from the same CGS connection we already opened.
+//   CGEventRef SLEventCreateNextEvent(CGSConnectionID cid);
+// SLEvent* mirrors CGEvent* (there is an SLEventCreateKeyboardEvent next to
+// CGEventCreateKeyboardEvent), so the returned object is inspectable with
+// SLEventGetType / SLEventGetLocation.
+// ---------------------------------------------------------------------------
+
+typedef _EventCreateNextNative = Pointer<Void> Function(Int32 cid);
+typedef _EventGetTypeNative = Uint32 Function(Pointer<Void> event);
+typedef _EventGetLocationNative = NSPoint Function(Pointer<Void> event);
+typedef _EventGetFlagsNative = Uint64 Function(Pointer<Void> event);
+
+Future<void> probeSkyLightEvents(int seconds) async {
+  final skyLight = DynamicLibrary.open(
+      '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+  final connectionId = skyLight
+      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  print('SLSMainConnectionID() = $connectionId '
+      '(pthread_main_np() = ${pthread_main_np()})');
+
+  // A window gives the WindowServer somewhere to aim events.
+  final rect = calloc<NSRect>()
+    ..ref.x = 200
+    ..ref.y = 200
+    ..ref.width = 480
+    ..ref.height = 320;
+  final regionSlot = calloc<Pointer<Void>>();
+  skyLight.lookupFunction<_NewRegionWithRectNative,
+          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
+      'CGSNewRegionWithRect')(rect, regionSlot);
+  final windowIdSlot = calloc<Uint32>();
+  skyLight.lookupFunction<
+      _SlsNewWindowNative,
+      int Function(int, int, double, double, Pointer<Void>,
+          Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+      kCGSBackingStoreBuffered, 200.0, 200.0, regionSlot.value, windowIdSlot);
+  final windowId = windowIdSlot.value;
+  final context = skyLight.lookupFunction<_WindowContextCreateNative,
+      Pointer<Void> Function(int, int, Pointer<Void>)>(
+      'SLWindowContextCreate')(connectionId, windowId, nullptr);
+  if (context != nullptr) {
+    final coreGraphics = DynamicLibrary.open(
+        '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+    final fill = calloc<NSRect>()
+      ..ref.width = 480
+      ..ref.height = 320;
+    coreGraphics.lookupFunction<_SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double, double)>(
+        'CGContextSetRGBFillColor')(context, 0.9, 0.3, 0.1, 1.0);
+    coreGraphics.lookupFunction<_FillRectNative,
+        void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
+        context, fill.ref);
+    coreGraphics.lookupFunction<_ContextFlushNative,
+        void Function(Pointer<Void>)>('CGContextFlush')(context);
+  }
+  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  print('WINDOW_ID=$windowId');
+
+  final eventPort = skyLight
+      .lookupFunction<Uint32 Function(Int32), int Function(int)>(
+          'SLSGetEventPort')(connectionId);
+  print('SLSGetEventPort -> $eventPort');
+
+  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
+      Pointer<Void> Function(int)>('SLEventCreateNextEvent');
+  final getType = skyLight
+      .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
+          'SLEventGetType');
+  final getLocation = skyLight
+      .lookupFunction<_EventGetLocationNative, NSPoint Function(Pointer<Void>)>(
+          'SLEventGetLocation');
+  final getFlags = skyLight
+      .lookupFunction<_EventGetFlagsNative, int Function(Pointer<Void>)>(
+          'SLEventGetFlags');
+
+  print('polling SLEventCreateNextEvent for ${seconds}s...');
+  var received = 0;
+  for (var i = 0; i < seconds * 20; i++) {
+    final event = createNextEvent(connectionId);
+    if (event != nullptr) {
+      received++;
+      final location = getLocation(event);
+      print('EVENT type=${getType(event)} '
+          'at (${location.x}, ${location.y}) flags=${getFlags(event)}');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+
+  print('events received: $received');
+  print(received > 0
+      ? 'RESULT: input arrives straight from the WindowServer, off the main '
+          'thread, with no AppKit. Route C is complete: window, pixels and '
+          'input in pure Dart FFI.'
+      : 'RESULT: the connection produced no events. The process is probably '
+          'not registered with the WindowServer as a front application, so '
+          'nothing is routed to it.');
+  _exitProcess(received > 0 ? 0 : 1);
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -1321,6 +1425,9 @@ Future<void> main(List<String> args) async {
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     case 'post-input':
       probePostInput();
+    case 'skylight-events':
+      await probeSkyLightEvents(
+          int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     default:
       print('unknown probe: $probe');
       print('usage: probe [thread|nsapp-run|skylight|signal-hijack'

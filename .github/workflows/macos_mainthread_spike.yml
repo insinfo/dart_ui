@@ -178,6 +178,27 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+      # The decider for route C: if input arrives on the CGS connection, the
+      # route is complete - window, pixels and input with no AppKit and no main
+      # thread. A second process supplies the input.
+      - name: 'Probe P: pull input straight from the WindowServer'
+        timeout-minutes: 4
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/shots
+          ./build/probe skylight-events 15 > /tmp/events.log 2>&1 &
+          sleep 3
+          WID=$(grep -o 'WINDOW_ID=[0-9]*' /tmp/events.log | cut -d= -f2)
+          echo "holder window: $WID"
+          screencapture -x -o -l"$WID" /tmp/shots/skylight-events-window.png \
+            || echo "screencapture -l exit=$?"
+          for i in 1 2 3; do
+            ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
+            sleep 2
+          done
+          wait
+          cat /tmp/events.log
+
       - name: 'Probe K: pump the event queue from an NSTimer instead'
         timeout-minutes: 3
         continue-on-error: true
