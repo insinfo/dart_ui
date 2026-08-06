@@ -1,0 +1,89 @@
+# Inspeção de ambiente dos runners — não testa o código do projeto, apenas
+# verifica que as imagens do GitHub Actions ainda expõem as bibliotecas/
+# frameworks nativos que os POCs carregam via dart:ffi.
+#
+# Roda semanalmente (as imagens mudam raramente) ou sob demanda, em vez de a
+# cada push: nenhum job aqui é bloqueante e o runner macOS custa 10x minutos.
+name: Sanity
+
+on:
+  schedule:
+    # Segunda-feira, 06:00 UTC
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: sanity-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DART_SDK_VERSION: '3.6.0'
+
+jobs:
+  sanity:
+    name: Sanity (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-14
+            platform: macos-arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Dart version and FFI info
+        run: dart run tool/ffi_info.dart
+
+      - name: Verify native libraries (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          for lib in libxcb.so.1 libwayland-client.so.0 libEGL.so.1 \
+                     libGL.so.1 libvulkan.so.1 libxkbcommon.so.0; do
+            if ldconfig -p | grep -q "$lib"; then
+              echo "✅ $lib"
+            else
+              echo "⚠️  $lib (not found, may need install)"
+            fi
+          done
+
+      - name: Verify native libraries (Windows)
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          @('user32.dll', 'kernel32.dll', 'gdi32.dll', 'shell32.dll',
+            'd2d1.dll', 'd3d11.dll', 'dxgi.dll', 'dwmapi.dll',
+            'dwrite.dll', 'ole32.dll', 'oleaut32.dll', 'comctl32.dll') | ForEach-Object {
+            $path = [System.IO.Path]::Combine($env:SystemRoot, 'System32', $_)
+            if (Test-Path $path) {
+              Write-Host "✅ $_" -ForegroundColor Green
+            } else {
+              Write-Host "⚠️  $_ (not found)" -ForegroundColor Yellow
+            }
+          }
+
+      - name: Verify frameworks (macOS)
+        if: startsWith(matrix.platform, 'macos')
+        run: |
+          for fw in AppKit Metal CoreGraphics QuartzCore Foundation IOKit; do
+            if [ -d "/System/Library/Frameworks/${fw}.framework" ]; then
+              echo "✅ ${fw}.framework"
+            else
+              echo "⚠️  ${fw}.framework (not found)"
+            fi
+          done
+          echo "Architecture: $(uname -m)"
+          echo "macOS: $(sw_vers -productVersion)"
+          # Verificar libobjc
+          if [ -f "/usr/lib/libobjc.A.dylib" ]; then
+            echo "✅ libobjc.A.dylib"
+          fi

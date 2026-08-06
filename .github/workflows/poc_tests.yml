@@ -154,7 +154,21 @@ jobs:
           mkdir -p build
           dart compile exe bin/main.dart -o build/poc_03
           chmod +x build/poc_03
-          ./build/poc_03 --smoke-test
+          # macOS runners have no GNU `timeout`; use a watchdog so a blocked
+          # AppKit call fails fast instead of burning the whole job budget.
+          ./build/poc_03 --smoke-test &
+          POC_PID=$!
+          ( sleep 60; kill -9 $POC_PID 2>/dev/null || true ) &
+          WATCHDOG_PID=$!
+          set +e
+          wait $POC_PID
+          STATUS=$?
+          set -e
+          kill $WATCHDOG_PID 2>/dev/null || true
+          if [ $STATUS -ne 0 ]; then
+            echo "::error::POC-03 smoke test failed or timed out (exit $STATUS)"
+            exit $STATUS
+          fi
 
   # ==============================================================
   # POC-04: CPU Rasterization (all platforms)
@@ -441,15 +455,22 @@ jobs:
           mkdir -p /tmp/weston-poc09
           chmod 700 /tmp/weston-poc09
           export XDG_RUNTIME_DIR=/tmp/weston-poc09
-          export WAYLAND_DISPLAY=wayland-0
-          weston --backend=headless --no-config &
+          # Name the socket explicitly: with wl_display_add_socket_auto() the
+          # compositor picks the first free wayland-N, so a hardcoded
+          # WAYLAND_DISPLAY=wayland-0 is a guess, not a contract.
+          export WAYLAND_DISPLAY=wayland-poc09
+          weston --backend=headless --no-config --socket="$WAYLAND_DISPLAY" &
           WESTON_PID=$!
           trap 'kill $WESTON_PID 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 40); do
             test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
             sleep 0.25
           done
-          test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          if ! test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"; then
+            echo "::error::Weston never created $XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+            ls -la "$XDG_RUNTIME_DIR" || true
+            exit 1
+          fi
           timeout 10 ./build/poc_09 --smoke-test
           kill $WESTON_PID 2>/dev/null || true
         env:

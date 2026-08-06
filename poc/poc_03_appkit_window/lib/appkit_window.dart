@@ -14,12 +14,9 @@ const NSWindowStyleMaskClosable = 1 << 1;
 const NSWindowStyleMaskResizable = 1 << 3;
 const NSBackingStoreBuffered = 2;
 
-typedef DispatchWorkNative = Void Function(Pointer<Void> context);
-
 bool _didCreateWindowSuccess = false;
 
-void _createAppKitWindowOnMainThread(Pointer<Void> context) {
-  print('[AppKit] Executing on main OS thread...');
+void _createAppKitWindow() {
   final nsAppClass = getClass('NSApplication');
   print('[AppKit] nsAppClass pointer: ${nsAppClass.address}');
   if (nsAppClass == nullptr) {
@@ -86,21 +83,13 @@ bool runAppKitWindow() {
   print('[AppKit] Initializing NSApplication...');
   ensureAppKitLoaded();
 
-  if (isMainThread()) {
-    // The Dart standalone VM runs the main isolate on the process' main thread.
-    // Dispatching synchronously onto the main queue from the main thread would
-    // deadlock, because nothing is draining that queue - just call directly.
-    print('[AppKit] Already on the main OS thread, invoking directly.');
-    _createAppKitWindowOnMainThread(nullptr);
-  } else {
-    final mainQueue = dispatch_get_main_queue();
-    final workCallable = NativeCallable<DispatchWorkNative>.isolateLocal(
-        _createAppKitWindowOnMainThread);
-
-    dispatch_sync_f(mainQueue, nullptr, workCallable.nativeFunction);
-
-    workCallable.close();
-  }
+  // Nothing ever drains the libdispatch main queue in a Dart process: the VM
+  // owns the process main thread and never runs a Cocoa/CFRunLoop on it, so
+  // handing the work to dispatch_sync_f blocks forever. Run the AppKit calls
+  // inline instead; the thread report below explains any main-thread complaint
+  // AppKit may raise.
+  print('[AppKit] pthread_main_np() = ${pthread_main_np()}');
+  _createAppKitWindow();
 
   print('[AppKit] AppKit window lifecycle validation result: $_didCreateWindowSuccess');
   return _didCreateWindowSuccess;

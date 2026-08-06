@@ -29,6 +29,9 @@ Pointer<Void> dispatch_get_main_queue() {
       'Unable to resolve the libdispatch main queue symbol `_dispatch_main_q`.');
 }
 
+// WARNING: dispatching *synchronously* onto the main queue hangs forever under
+// the Dart standalone VM - the VM owns the process main thread and never
+// drains that queue, so the work item is enqueued and nobody ever runs it.
 typedef DispatchSyncFNative = Void Function(Pointer<Void> queue,
     Pointer<Void> context, Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
 typedef DispatchSyncFDart = void Function(Pointer<Void> queue,
@@ -39,16 +42,8 @@ final dispatch_sync_f = libSystem.lookupFunction<
 // Returns non-zero when the calling thread is the process' main thread.
 typedef PthreadMainNpNative = Int32 Function();
 typedef PthreadMainNpDart = int Function();
-final _pthread_main_np = libSystem
+final pthread_main_np = libSystem
     .lookupFunction<PthreadMainNpNative, PthreadMainNpDart>('pthread_main_np');
-
-bool isMainThread() {
-  try {
-    return _pthread_main_np() != 0;
-  } catch (_) {
-    return false;
-  }
-}
 
 DynamicLibrary? _loadedAppKit;
 
