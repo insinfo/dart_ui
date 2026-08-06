@@ -17,7 +17,13 @@ const NSBackingStoreBuffered = 2;
 bool runAppKitWindow() {
   print('[AppKit] Initializing NSApplication...');
   final nsAppClass = getClass('NSApplication');
+  print('[AppKit] nsAppClass pointer: ${nsAppClass.address}');
+  if (nsAppClass == nullptr) {
+    print('[AppKit] Failed to resolve NSApplication class.');
+    return false;
+  }
   final sharedApp = nsAppClass.msgSend('sharedApplication');
+  print('[AppKit] sharedApp pointer: ${sharedApp.address}');
 
   if (sharedApp == nullptr) {
     print('[AppKit] Failed to get sharedApplication.');

@@ -6,8 +6,23 @@ import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
 final DynamicLibrary libObjC = DynamicLibrary.open('libobjc.A.dylib');
-final DynamicLibrary libAppKit = DynamicLibrary.open(
-    '/System/Library/Frameworks/AppKit.framework/AppKit');
+
+DynamicLibrary _loadAppKit() {
+  for (final path in [
+    '/System/Library/Frameworks/AppKit.framework/AppKit',
+    '/System/Library/Frameworks/Cocoa.framework/Cocoa',
+    '/System/Library/Frameworks/Foundation.framework/Foundation',
+    'AppKit.framework/AppKit',
+    'Cocoa.framework/Cocoa',
+  ]) {
+    try {
+      return DynamicLibrary.open(path);
+    } catch (_) {}
+  }
+  return DynamicLibrary.process();
+}
+
+final DynamicLibrary libAppKit = _loadAppKit();
 
 final class ObjCObject extends Opaque {}
 
