@@ -2709,17 +2709,36 @@ isolate" e "main thread do processo" são coisas diferentes. Consequências:
 - `dispatch_async_f` e `NativeCallable.listener` também não servem: o primeiro só
   remove a espera, o segundo devolve o callback para a thread do Dart.
 
-Portanto o backend AppKit exige que a main thread do processo pertença ao
-AppKit, via uma destas duas arquiteturas:
+Nenhum modo de execução muda isso: JIT (`dart run`), `dartaotruntime` e
+`dart compile exe` foram medidos e os três dão `pthread_main_np() = 0`.
 
-1. um host nativo mínimo (Objective-C, C ou Swift) como `main()` real, que
-   inicializa o AppKit e hospeda o runtime Dart;
-2. um launcher/runtime Dart próprio que mantenha a main thread livre para o
-   Cocoa e integre o event loop do Dart ao `CFRunLoop`.
+### Rotas abertas (medidas, não teóricas)
 
-Isso **não** reintroduz wrapper por API: `objc_msgSend`, structs e objetos
-continuam em Dart FFI. O componente nativo resolve apenas o que FFI não resolve
-— a propriedade da main thread e o event loop do processo.
+O spike completo está em
+[SPIKE_MACOS_MAIN_THREAD.md](SPIKE_MACOS_MAIN_THREAD.md). Duas rotas **100%
+Dart** — sem fonte nativa, sem shellcode, sem entitlement — foram confirmadas em
+CI:
+
+1. **Sequestro da main thread por sinal.** Um sinal é entregue *na thread alvo*:
+   instalando o endereço da própria `CFRunLoopRun` como handler de `SIGUSR2` e
+   mandando `pthread_kill` na main thread, ela entra num `CFRunLoop` e passa a
+   drenar a main queue. A partir daí a chamada restrita vai empacotada como
+   `NSInvocation` por `performSelectorOnMainThread:` — **uma `NSWindow` real já
+   foi criada assim**. Falta resolver a entrega de `NSEvent` (input) e medir o
+   efeito do sequestro sobre a VM.
+2. **WindowServer direto via SkyLight/CGS.** `SLSMainConnectionID()` responde
+   fora da main thread, sem AppKit e sem regra de thread. Serve como superfície
+   de renderização, mas é API privada e não tem fila de `NSEvent`.
+
+A alternativa conservadora continua válida e pode acabar sendo a escolhida por
+robustez: um **host nativo mínimo** (Objective-C ou Swift, ~50 linhas) como
+`main()` real, que inicializa o AppKit e hospeda o runtime Dart numa thread
+secundária. Isso **não** reintroduz wrapper por API — `objc_msgSend`, structs e
+objetos continuam em Dart FFI; o componente nativo resolve apenas o que FFI não
+resolve, que é a propriedade da main thread.
+
+A decisão entre as três depende do probe de input e do teste de estabilidade
+listados no spike.
 
 ## 20.3 Geração de bindings Objective-C
 
@@ -5136,7 +5155,7 @@ Modelo:
 | ID | Risco | Probabilidade | Impacto | Mitigação |
 |---|---|---:|---:|---|
 | R01 | callback nativo chamado após GC/dispose | alta | crítico | registry, token geracional, leak tests |
-| R02 | AppKit exige comportamento difícil sem ObjC wrapper | alta | crítico | protótipo spike antes de expandir widgets |
+| R02 | AppKit exige comportamento difícil sem ObjC wrapper | alta | crítico | spike executado — ver [SPIKE_MACOS_MAIN_THREAD.md](SPIKE_MACOS_MAIN_THREAD.md); `NSWindow` criada de Dart puro, falta input |
 | R03 | COM vtable incorreta | alta | crítico | gerador, ABI tests, wrappers mínimos |
 | R04 | event loop Dart compete com loop nativo | alta | crítico | dispatcher por plataforma e testes de idle/latência |
 | R05 | Wayland marshalling incorreto | média | crítico | codegen XML, conformance, sanitização |
