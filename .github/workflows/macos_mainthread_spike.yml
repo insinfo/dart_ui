@@ -217,11 +217,28 @@ jobs:
           pid=$!
           sleep 1
           sample "$pid" 1 1 -file /tmp/probe-l.sample || echo "sample exit=$?"
-          wait "$pid" || echo "probe exit=$?"
+          # Print BEFORE waiting and never wait unbounded: the first run of this
+          # step hung in `wait` and the timeout ate the log and the sample, the
+          # two things it exists to collect.
+          sleep 5
           echo "----- probe output -----"
-          cat /tmp/probe-l.log
+          cat /tmp/probe-l.log || true
           echo "----- main thread stack -----"
           sed -n '1,60p' /tmp/probe-l.sample || true
+          kill -9 "$pid" 2>/dev/null || true
+
+      - name: 'Probe Q: register as a foreground app, then ask for events'
+        timeout-minutes: 4
+        continue-on-error: true
+        run: |
+          ./build/probe skylight-foreground 12 > /tmp/foreground.log 2>&1 &
+          sleep 3
+          for i in 1 2 3; do
+            ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
+            sleep 2
+          done
+          sleep 6
+          cat /tmp/foreground.log || true
 
       - name: 'Probe K: pump the event queue from an NSTimer instead'
         timeout-minutes: 3

@@ -1538,6 +1538,127 @@ Future<void> probePumpTimerDiagnostic() async {
   _exitProcess(1);
 }
 
+// ---------------------------------------------------------------------------
+// Probe Q - register as a foreground application, then ask for events again.
+//
+// Probe P got zero events because the WindowServer routes input to the FRONT
+// PROCESS, identified by PSN, and ours never registered as one. The export dump
+// has the whole layer: SLPSGetCurrentProcess, SLPSEnableForegroundOperation
+// (the modern name of the classic CPSEnableForegroundOperation trick that turns
+// a CLI process into a real foreground app), SLPSSetFrontProcess and
+// SLPSStealKeyFocus.
+//
+// Every signature here is a guess against private API, so each call prints
+// immediately after it returns: if one of them crashes, the log says which.
+// ---------------------------------------------------------------------------
+
+final class ProcessSerialNumber extends Struct {
+  @Uint32()
+  external int high;
+  @Uint32()
+  external int low;
+}
+
+typedef _PsnOnlyNative = Int32 Function(Pointer<ProcessSerialNumber> psn);
+typedef _EnableForegroundNative = Int32 Function(
+    Pointer<ProcessSerialNumber> psn, Uint32 a, Uint32 b, Uint32 c, Uint32 d);
+
+Future<void> probeSkyLightForeground(int seconds) async {
+  final skyLight = DynamicLibrary.open(
+      '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+  final connectionId = skyLight
+      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  print('SLSMainConnectionID() = $connectionId');
+
+  final psn = calloc<ProcessSerialNumber>();
+  final getCurrentProcess = skyLight.lookupFunction<_PsnOnlyNative,
+      int Function(Pointer<ProcessSerialNumber>)>('SLPSGetCurrentProcess');
+  print('SLPSGetCurrentProcess -> ${getCurrentProcess(psn)} '
+      'psn=(${psn.ref.high}, ${psn.ref.low})');
+
+  // The magic arguments are the ones the CPS-era snippets have used for two
+  // decades; there is no header to check them against.
+  final enableForeground = skyLight.lookupFunction<
+      _EnableForegroundNative,
+      int Function(Pointer<ProcessSerialNumber>, int, int, int,
+          int)>('SLPSEnableForegroundOperation');
+  print('SLPSEnableForegroundOperation -> '
+      '${enableForeground(psn, 0x03, 0x3C, 0x2C, 0x1103)}');
+
+  final setFrontProcess = skyLight.lookupFunction<_PsnOnlyNative,
+      int Function(Pointer<ProcessSerialNumber>)>('SLPSSetFrontProcess');
+  print('SLPSSetFrontProcess -> ${setFrontProcess(psn)}');
+
+  final rect = calloc<NSRect>()
+    ..ref.x = 260
+    ..ref.y = 260
+    ..ref.width = 480
+    ..ref.height = 320;
+  final regionSlot = calloc<Pointer<Void>>();
+  skyLight.lookupFunction<_NewRegionWithRectNative,
+          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
+      'CGSNewRegionWithRect')(rect, regionSlot);
+  final windowIdSlot = calloc<Uint32>();
+  skyLight.lookupFunction<
+      _SlsNewWindowNative,
+      int Function(int, int, double, double, Pointer<Void>,
+          Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+      kCGSBackingStoreBuffered, 260.0, 260.0, regionSlot.value, windowIdSlot);
+  final windowId = windowIdSlot.value;
+  final context = skyLight.lookupFunction<_WindowContextCreateNative,
+      Pointer<Void> Function(int, int, Pointer<Void>)>(
+      'SLWindowContextCreate')(connectionId, windowId, nullptr);
+  if (context != nullptr) {
+    final coreGraphics = DynamicLibrary.open(
+        '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+    final fill = calloc<NSRect>()
+      ..ref.width = 480
+      ..ref.height = 320;
+    coreGraphics.lookupFunction<_SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double, double)>(
+        'CGContextSetRGBFillColor')(context, 0.2, 0.8, 0.3, 1.0);
+    coreGraphics.lookupFunction<_FillRectNative,
+        void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
+        context, fill.ref);
+    coreGraphics.lookupFunction<_ContextFlushNative,
+        void Function(Pointer<Void>)>('CGContextFlush')(context);
+  }
+  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  print('WINDOW_ID=$windowId');
+
+  final stealKeyFocus = skyLight.lookupFunction<_PsnOnlyNative,
+      int Function(Pointer<ProcessSerialNumber>)>('SLPSStealKeyFocus');
+  print('SLPSStealKeyFocus -> ${stealKeyFocus(psn)}');
+
+  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
+      Pointer<Void> Function(Pointer<Void>, int)>('SLEventCreateNextEvent');
+  final getType = skyLight
+      .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
+          'SLEventGetType');
+
+  print('registered as foreground; polling for ${seconds}s...');
+  var received = 0;
+  for (var i = 0; i < seconds * 20; i++) {
+    final event = createNextEvent(nullptr, connectionId);
+    if (event != nullptr) {
+      received++;
+      print('EVENT type=${getType(event)}');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+
+  print('events received: $received');
+  print(received > 0
+      ? 'RESULT: registering as a foreground process opened the input path. '
+          'Route C is complete in pure Dart FFI: window, pixels and input.'
+      : 'RESULT: still no events after foreground registration. Either one of '
+          'the guessed signatures is a no-op, or delivery needs more of the '
+          'PSN handshake (SLPSRegisterWithServer, '
+          'SLPSSetMainApplicationConnection).');
+  _exitProcess(received > 0 ? 0 : 1);
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -1578,6 +1699,9 @@ Future<void> main(List<String> args) async {
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     case 'pump-timer-diagnostic':
       await probePumpTimerDiagnostic();
+    case 'skylight-foreground':
+      await probeSkyLightForeground(
+          int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     default:
       print('unknown probe: $probe');
       print('usage: probe [thread|nsapp-run|skylight|signal-hijack'
