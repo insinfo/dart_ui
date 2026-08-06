@@ -263,8 +263,9 @@ jobs:
         continue-on-error: true
         run: ./build/probe pump-timer || echo "exit=$?"
 
-      # Last on purpose: F hangs inside nextEventMatchingMask: and always spends
-      # its whole budget. Nothing after it should wait on that.
+      # F is re-run because probe R changed the ground under it: it used to
+      # block against a run loop that had already exited. With the keep-alive
+      # source there is a real one now, so this is a genuine retest.
       - name: 'Probe F: post an NSEvent and pump it back'
         timeout-minutes: 2
         continue-on-error: true

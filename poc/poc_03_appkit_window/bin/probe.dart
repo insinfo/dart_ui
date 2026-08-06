@@ -246,7 +246,16 @@ void probeSignalHijack() {
 
 /// Parks the process main thread in a CFRunLoop and returns once the main
 /// queue is confirmed to be draining. See [probeSignalHijack] for the why.
+///
+/// The keep-alive source is not optional. Without it CFRunLoopRun drains what
+/// is pending, finds no source to justify staying, returns
+/// kCFRunLoopRunFinished, and the VM takes the thread back - which is what the
+/// probe L stack sample caught and what made F, K, G and O fail against a run
+/// loop that was no longer there.
 bool _parkMainThreadInRunLoop() {
+  if (!_keepMainRunLoopAlive()) {
+    print('WARNING: no keep-alive source; the run loop will exit immediately.');
+  }
   signal(SIGUSR2, cfRunLoopRunPtr);
   final killResult = pthread_kill(pthread_main_thread_np(), SIGUSR2);
   if (killResult != 0) {
@@ -1722,12 +1731,8 @@ bool _keepMainRunLoopAlive() {
 Future<void> probeKeepAliveHijack() async {
   ensureAppKitLoaded();
 
-  if (!_keepMainRunLoopAlive()) {
-    print('RESULT: could not create the keep-alive source.');
-    _exitProcess(1);
-  }
-  print('keep-alive source attached to the main run loop.');
-
+  // _parkMainThreadInRunLoop attaches the keep-alive source itself now; this
+  // probe stays as the dedicated demonstration of why it has to.
   if (!_parkMainThreadInRunLoop()) {
     print('RESULT: main queue never drained, so the hijack itself failed.');
     _exitProcess(1);
