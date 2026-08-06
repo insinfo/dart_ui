@@ -56,11 +56,11 @@ void _onGlobal(Pointer<Void> data, Pointer<Void> registry, int name,
     _compositorName = name;
     _compositorVersion = version;
     _compositorProxy =
-        wl_registry_bind(registry, name, wl_compositor_interface_ptr, version);
+        wl_registry_bind(registry, name, wl_compositor_interface_ptr, 1);
   } else if (interfaceName == 'wl_shm' && _shmProxy == null) {
     _shmName = name;
     _shmVersion = version;
-    _shmProxy = wl_registry_bind(registry, name, wl_shm_interface_ptr, version);
+    _shmProxy = wl_registry_bind(registry, name, wl_shm_interface_ptr, 1);
   }
 }
 

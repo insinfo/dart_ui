@@ -6,6 +6,8 @@ import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
 final DynamicLibrary libObjC = DynamicLibrary.open('libobjc.A.dylib');
+final DynamicLibrary libAppKit = DynamicLibrary.open(
+    '/System/Library/Frameworks/AppKit.framework/AppKit');
 
 final class ObjCObject extends Opaque {}
 
