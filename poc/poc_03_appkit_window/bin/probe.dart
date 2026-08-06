@@ -9,6 +9,8 @@
 // ignore_for_file: non_constant_identifier_names, constant_identifier_names
 
 import 'dart:ffi';
+import 'dart:io';
+import 'dart:isolate';
 
 import 'package:ffi/ffi.dart';
 import 'package:poc_03_appkit_window/appkit_window.dart';
@@ -548,7 +550,183 @@ void probeNsAppRunOnMain() {
   _exitProcess(ok ? 0 : 1);
 }
 
-void main(List<String> args) {
+// ---------------------------------------------------------------------------
+// Probe H - route C to the end: a window straight from the WindowServer, with
+// no AppKit and therefore no main-thread rule at all.
+//
+// ABI per the long-standing CGSInternal reverse-engineered headers:
+//   CGError CGSNewRegionWithRect(const CGRect *rect, CGSRegionRef *out);
+//   CGError SLSNewWindow(CGSConnectionID cid, CGSBackingType backing,
+//                        float x, float y, CGSRegionRef shape,
+//                        CGSWindowID *outWID);
+// Note x/y are 32-bit floats there, not CGFloat - one of the reasons this ABI
+// needs measuring rather than trusting.
+// ---------------------------------------------------------------------------
+
+const kCGSBackingStoreBuffered = 2;
+
+typedef _NewRegionWithRectNative = Int32 Function(
+    Pointer<NSRect> rect, Pointer<Pointer<Void>> outRegion);
+typedef _SlsNewWindowNative = Int32 Function(Int32 cid, Int32 backing, Float x,
+    Float y, Pointer<Void> shape, Pointer<Uint32> outWindowId);
+typedef _SlsOrderWindowNative = Int32 Function(
+    Int32 cid, Uint32 windowId, Int32 order, Uint32 relativeTo);
+typedef _SlsSetWindowLevelNative = Int32 Function(
+    Int32 cid, Uint32 windowId, Int32 level);
+
+Pointer<T>? _tryLookup<T extends NativeType>(DynamicLibrary lib, String name) {
+  try {
+    return lib.lookup<T>(name);
+  } catch (_) {
+    return null;
+  }
+}
+
+void probeSkyLightWindow() {
+  final DynamicLibrary lib;
+  try {
+    lib = DynamicLibrary.open(
+        '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+  } catch (e) {
+    print('RESULT: SkyLight.framework not loadable: $e');
+    _exitProcess(1);
+    return;
+  }
+
+  // SLSNewRegionWithRect is absent on this OS, so hunt for the current name
+  // instead of hardcoding one.
+  const regionCandidates = [
+    'CGSNewRegionWithRect',
+    'SLSNewRegionWithRect',
+    'CGSNewRegionWithRectList',
+    'SLSNewRegionWithRectList',
+    'CGSNewEmptyRegion',
+    'SLSNewEmptyRegion',
+    'CGRegionCreateWithRect',
+    'SLSRegionCreateWithRect',
+  ];
+  String? regionSymbol;
+  for (final candidate in regionCandidates) {
+    if (_tryLookup<Void>(lib, candidate) != null) {
+      print('  found   $candidate');
+      regionSymbol ??= candidate;
+    } else {
+      print('  missing $candidate');
+    }
+  }
+  if (regionSymbol == null || !regionSymbol.endsWith('NewRegionWithRect')) {
+    print('RESULT: no rect-shaped region constructor found '
+        '(best match: $regionSymbol). Window shape cannot be built yet.');
+    _exitProcess(1);
+  }
+
+  final connectionId = lib.lookupFunction<Int32 Function(), int Function()>(
+      'SLSMainConnectionID')();
+  print('SLSMainConnectionID() = $connectionId '
+      '(pthread_main_np() = ${pthread_main_np()})');
+
+  final newRegionWithRect = lib.lookupFunction<_NewRegionWithRectNative,
+      int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(regionSymbol!);
+  final rect = calloc<NSRect>()
+    ..ref.x = 160
+    ..ref.y = 160
+    ..ref.width = 640
+    ..ref.height = 480;
+  final regionSlot = calloc<Pointer<Void>>();
+  final regionError = newRegionWithRect(rect, regionSlot);
+  print('$regionSymbol -> CGError $regionError, region ${regionSlot.value.address}');
+  if (regionError != 0 || regionSlot.value == nullptr) {
+    print('RESULT: could not build the window shape.');
+    _exitProcess(1);
+  }
+
+  final newWindow = lib.lookupFunction<
+      _SlsNewWindowNative,
+      int Function(int, int, double, double, Pointer<Void>,
+          Pointer<Uint32>)>('SLSNewWindow');
+  final windowIdSlot = calloc<Uint32>();
+  final windowError = newWindow(connectionId, kCGSBackingStoreBuffered, 160.0,
+      160.0, regionSlot.value, windowIdSlot);
+  final windowId = windowIdSlot.value;
+  print('SLSNewWindow -> CGError $windowError, CGSWindowID $windowId');
+
+  if (windowError != 0 || windowId == 0) {
+    print('RESULT: WindowServer refused the window (CGError $windowError). '
+        'The guessed ABI is the prime suspect.');
+    _exitProcess(1);
+  }
+
+  final setLevel = lib.lookupFunction<_SlsSetWindowLevelNative,
+      int Function(int, int, int)>('SLSSetWindowLevel');
+  print('SLSSetWindowLevel -> ${setLevel(connectionId, windowId, 0)}');
+
+  final orderWindow = lib.lookupFunction<_SlsOrderWindowNative,
+      int Function(int, int, int, int)>('SLSOrderWindow');
+  final orderError = orderWindow(connectionId, windowId, 1, 0);
+  print('SLSOrderWindow -> CGError $orderError');
+
+  print('RESULT: WindowServer window $windowId created and ordered WITHOUT '
+      'AppKit, from a non-main thread. Still needs a drawing context and has '
+      'no NSEvent queue.');
+  _exitProcess(0);
+}
+
+// ---------------------------------------------------------------------------
+// Probe I - does the Dart runtime survive losing thread 0?
+//
+// The hijack parks the process main thread forever. The isolate runs on a VM
+// pool thread and should be untouched, but "should" is not a measurement:
+// check that timers still fire, that file I/O completes, that a spawned
+// isolate still runs, and that UI work can still be routed to the parked
+// thread while all of that happens.
+// ---------------------------------------------------------------------------
+
+Future<void> probeVmHealthUnderHijack() async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+  print('main thread parked; the isolate keeps its own thread.');
+
+  var healthy = true;
+
+  final timer = Stopwatch()..start();
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  final elapsed = timer.elapsedMilliseconds;
+  final timersWork = elapsed >= 200 && elapsed < 2000;
+  print('timer fired after ${elapsed}ms -> $timersWork');
+  healthy &= timersWork;
+
+  final file = File('${Directory.systemTemp.path}/probe_io_under_hijack.txt');
+  await file.writeAsString('io works under hijack');
+  final readBack = await file.readAsString();
+  final ioWorks = readBack == 'io works under hijack';
+  print('async file I/O round trip -> $ioWorks');
+  healthy &= ioWorks;
+
+  final spawned = await Isolate.run(() => 6 * 7);
+  final isolatesWork = spawned == 42;
+  print('Isolate.run -> $spawned ($isolatesWork)');
+  healthy &= isolatesWork;
+
+  // And the UI channel must still be open after all that async traffic.
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+  final isRunningInvocation = _newInvocation(app, sel('isRunning'));
+  _invokeOnMain(isRunningInvocation);
+  final isRunning = calloc<Uint8>();
+  msgSendVoidPointer(
+      isRunningInvocation, sel('getReturnValue:'), isRunning.cast());
+  print('UI channel still answers: [NSApp isRunning] = ${isRunning.value}');
+
+  print(healthy
+      ? 'RESULT: the VM is unharmed by the hijack - timers, I/O and isolates '
+          'all work while the main thread belongs to AppKit.'
+      : 'RESULT: the hijack DAMAGED the Dart runtime; see the failures above.');
+  _exitProcess(healthy ? 0 : 1);
+}
+
+Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
   switch (probe) {
@@ -566,9 +744,14 @@ void main(List<String> args) {
       probeEventPump();
     case 'nsapp-run-main':
       probeNsAppRunOnMain();
+    case 'skylight-window':
+      probeSkyLightWindow();
+    case 'vm-health':
+      await probeVmHealthUnderHijack();
     default:
       print('unknown probe: $probe');
       print('usage: probe [thread|nsapp-run|skylight|signal-hijack'
-          '|mainthread-window|event-pump|nsapp-run-main]');
+          '|mainthread-window|event-pump|nsapp-run-main|skylight-window'
+          '|vm-health]');
   }
 }

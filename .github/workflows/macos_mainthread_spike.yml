@@ -51,10 +51,10 @@ jobs:
           echo "----- AOT exe -----"
           ./build/probe thread || echo "exit=$?"
 
-      - name: 'Probe B: [NSApp run] from the Dart thread'
-        timeout-minutes: 2
-        continue-on-error: true
-        run: ./build/probe nsapp-run || echo "exit=$?"
+      # Probe B ([NSApp run] from the Dart thread) is settled: it blocks forever
+      # without transferring main-thread ownership. The subcommand is still
+      # there, but running it costs a full 2-minute timeout for an answer
+      # already recorded in doc/SPIKE_MACOS_MAIN_THREAD.md.
 
       - name: 'Probe C: WindowServer via SkyLight/CGS, no AppKit'
         timeout-minutes: 3
@@ -75,3 +75,23 @@ jobs:
       - name: 'Probe G: [NSApp run] on the hijacked main thread'
         timeout-minutes: 3
         run: ./build/probe nsapp-run-main || echo "exit=$?"
+
+      # SkyLight lives in the dyld shared cache, so there is no file to nm(1).
+      # dyld_info reads the cache and gives the real export names instead of
+      # letting us guess them one dlsym at a time.
+      - name: 'Discovery: SkyLight exports (region / window)'
+        timeout-minutes: 3
+        run: |
+          SKYLIGHT=/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight
+          echo "----- region constructors -----"
+          dyld_info -exports "$SKYLIGHT" | grep -iE "region" | head -40 || echo "exit=$?"
+          echo "----- window creation -----"
+          dyld_info -exports "$SKYLIGHT" | grep -iE "NewWindow|WindowContext|SetWindowShape" | head -40 || echo "exit=$?"
+
+      - name: 'Probe H: window straight from the WindowServer (no AppKit)'
+        timeout-minutes: 3
+        run: ./build/probe skylight-window || echo "exit=$?"
+
+      - name: 'Probe I: does the Dart runtime survive losing thread 0?'
+        timeout-minutes: 3
+        run: ./build/probe vm-health || echo "exit=$?"
