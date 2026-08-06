@@ -227,6 +227,24 @@ jobs:
           sed -n '1,60p' /tmp/probe-l.sample || true
           kill -9 "$pid" 2>/dev/null || true
 
+      # The stack sample showed the main thread never stayed in CFRunLoopRun -
+      # it was in Dart_RunLoop -> pthread_cond_wait for 612 of 612 samples. This
+      # gives the loop a source so it cannot finish.
+      - name: 'Probe R: keep the parked run loop alive with a dummy source'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          ./build/probe keepalive-hijack > /tmp/probe-r.log 2>&1 &
+          pid=$!
+          sleep 2
+          sample "$pid" 1 1 -file /tmp/probe-r.sample || echo "sample exit=$?"
+          sleep 4
+          echo "----- probe output -----"
+          cat /tmp/probe-r.log || true
+          echo "----- main thread stack -----"
+          grep -A 14 "com.apple.main-thread" /tmp/probe-r.sample | head -20 || true
+          kill -9 "$pid" 2>/dev/null || true
+
       - name: 'Probe Q: register as a foreground app, then ask for events'
         timeout-minutes: 4
         continue-on-error: true

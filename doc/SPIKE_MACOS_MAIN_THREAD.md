@@ -415,6 +415,59 @@ SLSMainConnectionID() = 182931
 se paga com um crash. Não há header, e o `dyld_info` dá o nome mas não os tipos.
 Isso é fricção permanente da rota C, não um obstáculo pontual.
 
+## L — a stack sample explica todas as anomalias de uma vez 🔑
+
+`sample(1)` na process main thread durante o probe, 612 amostras em 1 segundo:
+
+```
+612 Thread_11491   DispatchQueue_1: com.apple.main-thread  (serial)
++ 612 start (in dyld)
++   ...
++     612 Dart_RunLoop (in probe) + 352
++       612 _pthread_cond_wait (in libsystem_pthread.dylib)
++         612 __psynch_cvwait (in libsystem_kernel.dylib)
+```
+
+**612 de 612 dentro de `Dart_RunLoop` → `pthread_cond_wait`.** A main thread
+nunca ficou estacionada no `CFRunLoopRun`. O que aconteceu foi: o handler
+chamou `CFRunLoopRun`, ele drenou o que estava pendente, não encontrou nenhuma
+source persistente, retornou `kCFRunLoopRunFinished`, e a VM retomou a thread.
+
+Isso reinterpreta **todos** os resultados anteriores de forma coerente:
+
+| Observação | Explicação |
+| --- | --- |
+| D drenou a main queue | dentro da janela curta em que o loop rodou |
+| E criou a `NSWindow` | aconteceu cedo, na mesma janela |
+| F trava | o `performSelector` chegou depois que o loop saiu |
+| K não vê timer | não há loop rodando para servi-los |
+| L trava no marcador | idem, e o log para exatamente ali |
+
+Ou seja, a conclusão anterior ("o run loop estacionado é meio run loop") estava
+errada no mecanismo: **não há run loop estacionado nenhum**. Foi a stack sample
+sugerida em `doc/propostas/03` que revelou isso — nenhum probe anterior
+conseguiria, porque todos observavam de fora.
+
+**Correção candidata (probe R):** `CFRunLoopRun` só retorna quando o loop não
+tem *nenhuma* source ou timer. Anexar uma source versão 0 nunca sinalizada
+antes do sinal deve impedir o loop de terminar. `CFRunLoopAddSource` é
+thread-safe, então dá para fazer isso da thread do Dart.
+
+## Q — registro de processo não bastou
+
+```
+SLPSGetCurrentProcess         -> 0   psn=(0, 237626)
+SLPSEnableForegroundOperation -> 0
+SLPSSetFrontProcess           -> 0
+SLPSStealKeyFocus             -> 0
+events received: 0
+```
+
+Todas as quatro chamadas retornaram sucesso — as assinaturas estão certas — e
+ainda assim nenhum evento em 12s. Falta mais do handshake PSN
+(`SLPSRegisterWithServer`, `SLPSSetMainApplicationConnection`) ou a entrega
+depende de algo que só um app bundle registrado no LaunchServices tem.
+
 ## Veredito atual
 
 **A rota C passou à frente.** Ela não tem AppKit no caminho, logo não tem

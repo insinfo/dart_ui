@@ -1659,6 +1659,126 @@ Future<void> probeSkyLightForeground(int seconds) async {
   _exitProcess(received > 0 ? 0 : 1);
 }
 
+// ---------------------------------------------------------------------------
+// Probe R - the fix the stack sample pointed at.
+//
+// sample(1) caught the main thread with 612 of 612 samples inside
+// Dart_RunLoop -> pthread_cond_wait. It was never parked in CFRunLoopRun at
+// all: the handler's CFRunLoopRun drained what was pending, found no persistent
+// source to keep it alive, returned kCFRunLoopRunFinished, and the VM took the
+// thread back. Everything else follows - D and E worked inside that brief
+// window, F/K/L came after it closed.
+//
+// CFRunLoopRun only returns when the loop has no sources or timers at all. So
+// add an unsignalled version-0 source first: it never fires, it just keeps the
+// loop from finishing. CFRunLoopAddSource is thread-safe, so this can be done
+// from the Dart thread before the signal.
+// ---------------------------------------------------------------------------
+
+// {version, info, retain, release, copyDescription, equal, hash, schedule,
+// cancel, perform} - all zero, since the source is never signalled.
+final class CFRunLoopSourceContext extends Struct {
+  @Int64()
+  external int version;
+  external Pointer<Void> info;
+  external Pointer<Void> retain;
+  external Pointer<Void> release;
+  external Pointer<Void> copyDescription;
+  external Pointer<Void> equal;
+  external Pointer<Void> hash;
+  external Pointer<Void> schedule;
+  external Pointer<Void> cancel;
+  external Pointer<Void> perform;
+}
+
+bool _keepMainRunLoopAlive() {
+  final getMain = libCoreFoundation
+      .lookupFunction<Pointer<Void> Function(), Pointer<Void> Function()>(
+          'CFRunLoopGetMain');
+  final sourceCreate = libCoreFoundation.lookupFunction<
+      Pointer<Void> Function(Pointer<Void>, Int64, Pointer<CFRunLoopSourceContext>),
+      Pointer<Void> Function(
+          Pointer<Void>, int, Pointer<CFRunLoopSourceContext>)>(
+      'CFRunLoopSourceCreate');
+  final addSource = libCoreFoundation.lookupFunction<
+      Void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>),
+      void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>)>(
+      'CFRunLoopAddSource');
+  final defaultMode =
+      libCoreFoundation.lookup<Pointer<Void>>('kCFRunLoopDefaultMode').value;
+
+  final context = calloc<CFRunLoopSourceContext>();
+  final source = sourceCreate(nullptr, 0, context);
+  print('CFRunLoopSourceCreate -> ${source.address}');
+  if (source == nullptr) return false;
+
+  final mainRunLoop = getMain();
+  print('CFRunLoopGetMain -> ${mainRunLoop.address}, '
+      'kCFRunLoopDefaultMode -> ${defaultMode.address}');
+  addSource(mainRunLoop, source, defaultMode);
+  return true;
+}
+
+Future<void> probeKeepAliveHijack() async {
+  ensureAppKitLoaded();
+
+  if (!_keepMainRunLoopAlive()) {
+    print('RESULT: could not create the keep-alive source.');
+    _exitProcess(1);
+  }
+  print('keep-alive source attached to the main run loop.');
+
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: main queue never drained, so the hijack itself failed.');
+    _exitProcess(1);
+  }
+  print('main queue draining.');
+
+  // The real test is whether the loop is STILL running later. A timer proves
+  // it: probe K showed timers never fire on a loop that has already exited.
+  var ticks = 0;
+  final witness = NativeCallable<_HandleValueNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, int value) => ticks++);
+  final className = 'DartUiKeepAliveWitness'.toNativeUtf8();
+  final witnessClass =
+      objc_allocateClassPair(getClass('NSObject'), className, 0);
+  calloc.free(className);
+  final types = 'v@:q'.toNativeUtf8();
+  class_addMethod(
+      witnessClass, sel('handleValue:'), witness.nativeFunction.cast(), types);
+  calloc.free(types);
+  objc_registerClassPair(witnessClass);
+  final witnessObject = witnessClass.msgSend('alloc').msgSend('init');
+
+  final witnessInvocation = _newInvocation(witnessObject, sel('handleValue:'));
+  final value = calloc<Int64>()..value = 1;
+  _setArgument(witnessInvocation, value.cast(), 2);
+  witnessInvocation.msgSend('retainArguments');
+
+  final schedule = _newInvocation(getClass('NSTimer'),
+      sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
+  final interval = calloc<Double>()..value = 0.05;
+  final target = calloc<Pointer<ObjCObject>>()..value = witnessInvocation;
+  final repeats = calloc<Uint8>()..value = 1;
+  _setArgument(schedule, interval.cast(), 2);
+  _setArgument(schedule, target.cast(), 3);
+  _setArgument(schedule, repeats.cast(), 4);
+  _invokeOnMain(schedule);
+  print('repeating timer scheduled.');
+
+  await Future<void>.delayed(const Duration(seconds: 3));
+  witness.close();
+
+  print('timer fired $ticks times in 3s');
+  print(ticks > 0
+      ? 'RESULT: the keep-alive source holds the main thread in CFRunLoopRun. '
+          'It is a REAL run loop now - timers fire, so AppKit event dispatch '
+          'finally has somewhere to live.'
+      : 'RESULT: still no timers. The loop exits despite the source, or the '
+          'signal handler never entered CFRunLoopRun at all.');
+  _exitProcess(ticks > 0 ? 0 : 1);
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -1699,6 +1819,8 @@ Future<void> main(List<String> args) async {
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     case 'pump-timer-diagnostic':
       await probePumpTimerDiagnostic();
+    case 'keepalive-hijack':
+      await probeKeepAliveHijack();
     case 'skylight-foreground':
       await probeSkyLightForeground(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
