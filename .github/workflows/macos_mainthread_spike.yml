@@ -103,6 +103,65 @@ jobs:
         continue-on-error: true
         run: ./build/probe reverse-channel || echo "exit=$?"
 
+      - name: 'Probe M: draw pixels into the WindowServer window'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: ./build/probe skylight-draw || echo "exit=$?"
+
+      # Everything else is self-reported. screencapture(1) can photograph a
+      # window by its CGSWindowID, which only works if the WindowServer really
+      # has it - an external witness the probe cannot fake.
+      - name: 'Probe N: screenshot the WindowServer window from outside'
+        timeout-minutes: 4
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/shots
+          ./build/probe hold-skylight 20 > /tmp/hold-skylight.log 2>&1 &
+          sleep 4
+          cat /tmp/hold-skylight.log
+          WID=$(grep -o 'WINDOW_ID=[0-9]*' /tmp/hold-skylight.log | cut -d= -f2)
+          echo "aiming screencapture at window id '$WID'"
+          screencapture -x -o -l"$WID" /tmp/shots/skylight-window.png \
+            || echo "screencapture -l exit=$?"
+          screencapture -x /tmp/shots/skylight-screen.png \
+            || echo "screencapture screen exit=$?"
+          ls -la /tmp/shots/ || true
+          for f in /tmp/shots/*.png; do
+            [ -f "$f" ] && sips -g pixelWidth -g pixelHeight "$f" 2>/dev/null || true
+          done
+          wait
+
+      - name: 'Probe O: inject keyboard/mouse from a second process'
+        timeout-minutes: 4
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/shots
+          ./build/probe hold-appkit 20 > /tmp/hold-appkit.log 2>&1 &
+          sleep 5
+          echo "----- holder so far -----"
+          cat /tmp/hold-appkit.log
+          WID=$(grep -o 'WINDOW_ID=[0-9]*' /tmp/hold-appkit.log | cut -d= -f2)
+          echo "----- capturing NSWindow $WID -----"
+          screencapture -x -o -l"$WID" /tmp/shots/appkit-window.png \
+            || echo "screencapture -l exit=$?"
+          echo "----- injecting input from a second process -----"
+          ./build/probe post-input || echo "post-input exit=$?"
+          sleep 4
+          ./build/probe post-input || echo "post-input exit=$?"
+          wait
+          echo "----- holder final -----"
+          cat /tmp/hold-appkit.log
+          ls -la /tmp/shots/ || true
+
+      - name: Upload screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-screenshots
+          path: /tmp/shots/
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: 'Probe K: pump the event queue from an NSTimer instead'
         timeout-minutes: 3
         continue-on-error: true

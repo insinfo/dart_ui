@@ -834,12 +834,29 @@ Future<void> probeReverseChannel() async {
 // source, with no performSelector in the path and no callback into Dart.
 // ---------------------------------------------------------------------------
 
-void probePumpViaTimer() {
+Future<void> probePumpViaTimer() async {
   ensureAppKitLoaded();
   if (!_parkMainThreadInRunLoop()) {
     print('RESULT: could not park the main thread.');
     _exitProcess(1);
   }
+
+  // A witness timer, needed to read the result at all: a nil from the pump
+  // means "queue was empty" only if timers fire in the first place. Without
+  // this, a nil is indistinguishable from a timer that never ran.
+  var ticks = 0;
+  final witness = NativeCallable<_HandleValueNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, int value) => ticks++);
+  final className = 'DartUiTimerWitness'.toNativeUtf8();
+  final witnessClass =
+      objc_allocateClassPair(getClass('NSObject'), className, 0);
+  calloc.free(className);
+  final types = 'v@:q'.toNativeUtf8();
+  class_addMethod(witnessClass, sel('handleValue:'),
+      witness.nativeFunction.cast(), types);
+  calloc.free(types);
+  objc_registerClassPair(witnessClass);
+  final witnessObject = witnessClass.msgSend('alloc').msgSend('init');
 
   final app = getClass('NSApplication').msgSend('sharedApplication');
   final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
@@ -880,7 +897,21 @@ void probePumpViaTimer() {
   _setArgument(scheduleInvocation, invocationArgument.cast(), 3);
   _setArgument(scheduleInvocation, repeats.cast(), 4);
   _invokeOnMain(scheduleInvocation);
-  print('timer scheduled on the main run loop.');
+  print('pump timer scheduled on the main run loop.');
+
+  final witnessInvocation = _newInvocation(witnessObject, sel('handleValue:'));
+  final witnessValue = calloc<Int64>()..value = 1;
+  _setArgument(witnessInvocation, witnessValue.cast(), 2);
+  witnessInvocation.msgSend('retainArguments');
+  final scheduleWitness = _newInvocation(
+      timerClass, sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
+  final witnessArgument = calloc<Pointer<ObjCObject>>()
+    ..value = witnessInvocation;
+  _setArgument(scheduleWitness, interval.cast(), 2);
+  _setArgument(scheduleWitness, witnessArgument.cast(), 3);
+  _setArgument(scheduleWitness, repeats.cast(), 4);
+  _invokeOnMain(scheduleWitness);
+  print('witness timer scheduled on the main run loop.');
 
   final location = calloc<NSPoint>()
     ..ref.x = 0
@@ -906,12 +937,21 @@ void probePumpViaTimer() {
   _invokeOnMain(postInvocation);
   print('posted event ${posted.address}; letting the timer run...');
 
-  const twoSeconds = 2000000000;
-  _sleepNanos(twoSeconds);
+  // Async, not a blocking sleep: the witness arrives through this isolate's
+  // event loop, so blocking the thread would silence the very evidence needed.
+  await Future<void>.delayed(const Duration(seconds: 2));
+  witness.close();
 
-  // If the timer ever fired, the invocation holds the last returned event.
   final pumped = _returnedObject(pumpInvocation);
+  print('witness timer fired $ticks times');
   print('last value returned by the timed pump: ${pumped.address}');
+
+  if (ticks == 0) {
+    print('RESULT: the parked run loop never serviced a timer, so the pump '
+        'never ran. CFRunLoopRun inside a signal handler is the suspect, not '
+        'nextEventMatchingMask:.');
+    _exitProcess(1);
+  }
 
   if (pumped == posted) {
     print('RESULT: the timer pumped our event off the main thread run loop. '
@@ -919,10 +959,331 @@ void probePumpViaTimer() {
     _exitProcess(0);
   }
   print(pumped == nullptr
-      ? 'RESULT: the timed pump returned nil - either it never fired or the '
-          'event queue is empty in a headless session.'
+      ? 'RESULT: timers DO fire on the parked run loop ($ticks times) and the '
+          'pump still returned nil - so nextEventMatchingMask: returns '
+          'normally here and the queue is simply empty. The earlier hang was '
+          're-entrancy from performSelectorOnMainThread:, and the missing '
+          'event points at the headless session.'
       : 'RESULT: a different object came back (${pumped.address}).');
   _exitProcess(1);
+}
+
+// ---------------------------------------------------------------------------
+// Probe M - finish route C: draw actual pixels into the WindowServer window.
+//
+// The export dump surfaced SLWindowContextCreate, the piece this route was
+// missing. If it hands back a CGContext, route C has a window AND a drawing
+// surface with no AppKit anywhere - and no main-thread rule on either.
+// ---------------------------------------------------------------------------
+
+typedef _WindowContextCreateNative = Pointer<Void> Function(
+    Int32 cid, Uint32 windowId, Pointer<Void> options);
+typedef _SetRgbFillColorNative = Void Function(
+    Pointer<Void> context, Double r, Double g, Double b, Double a);
+typedef _FillRectNative = Void Function(Pointer<Void> context, NSRect rect);
+typedef _ContextFlushNative = Void Function(Pointer<Void> context);
+
+void probeSkyLightDraw() {
+  final DynamicLibrary skyLight;
+  try {
+    skyLight = DynamicLibrary.open(
+        '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+  } catch (e) {
+    print('RESULT: SkyLight.framework not loadable: $e');
+    _exitProcess(1);
+    return;
+  }
+
+  final connectionId = skyLight.lookupFunction<Int32 Function(), int Function()>(
+      'SLSMainConnectionID')();
+  final newRegionWithRect = skyLight.lookupFunction<_NewRegionWithRectNative,
+      int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
+      'CGSNewRegionWithRect');
+  final rect = calloc<NSRect>()
+    ..ref.x = 200
+    ..ref.y = 200
+    ..ref.width = 480
+    ..ref.height = 320;
+  final regionSlot = calloc<Pointer<Void>>();
+  newRegionWithRect(rect, regionSlot);
+
+  final newWindow = skyLight.lookupFunction<
+      _SlsNewWindowNative,
+      int Function(int, int, double, double, Pointer<Void>,
+          Pointer<Uint32>)>('SLSNewWindow');
+  final windowIdSlot = calloc<Uint32>();
+  final windowError = newWindow(connectionId, kCGSBackingStoreBuffered, 200.0,
+      200.0, regionSlot.value, windowIdSlot);
+  final windowId = windowIdSlot.value;
+  print('SLSNewWindow -> CGError $windowError, CGSWindowID $windowId');
+  if (windowError != 0 || windowId == 0) {
+    print('RESULT: no window to draw into.');
+    _exitProcess(1);
+  }
+
+  final windowContextCreate = skyLight.lookupFunction<
+      _WindowContextCreateNative,
+      Pointer<Void> Function(int, int, Pointer<Void>)>('SLWindowContextCreate');
+  final context = windowContextCreate(connectionId, windowId, nullptr);
+  print('SLWindowContextCreate -> ${context.address} '
+      '(pthread_main_np() = ${pthread_main_np()})');
+  if (context == nullptr) {
+    print('RESULT: no drawing context; route C stops at an empty window.');
+    _exitProcess(1);
+  }
+
+  final coreGraphics = DynamicLibrary.open(
+      '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+  final setFillColor = coreGraphics.lookupFunction<_SetRgbFillColorNative,
+      void Function(Pointer<Void>, double, double, double, double)>(
+      'CGContextSetRGBFillColor');
+  final fillRect = coreGraphics.lookupFunction<_FillRectNative,
+      void Function(Pointer<Void>, NSRect)>('CGContextFillRect');
+  final flush = coreGraphics.lookupFunction<_ContextFlushNative,
+      void Function(Pointer<Void>)>('CGContextFlush');
+
+  final fill = calloc<NSRect>()
+    ..ref.x = 0
+    ..ref.y = 0
+    ..ref.width = 480
+    ..ref.height = 320;
+  setFillColor(context, 0.1, 0.5, 0.9, 1.0);
+  fillRect(context, fill.ref);
+  flush(context);
+  print('filled 480x320 and flushed the context.');
+
+  final orderWindow = skyLight.lookupFunction<_SlsOrderWindowNative,
+      int Function(int, int, int, int)>('SLSOrderWindow');
+  print('SLSOrderWindow -> ${orderWindow(connectionId, windowId, 1, 0)}');
+
+  print('RESULT: route C draws. Window $windowId has a CGContext and painted '
+      'pixels, entirely off the main thread, with no AppKit involved.');
+  _exitProcess(0);
+}
+
+// ---------------------------------------------------------------------------
+// Probes N/O/P - verification from OUTSIDE the process.
+//
+// Everything so far is self-reported: the probe says it made a window and the
+// same probe says it worked. An external witness settles it. screencapture(1)
+// can photograph a window by its CGSWindowID, which only succeeds if the
+// WindowServer really has that window - and a second process can inject real
+// keyboard and mouse events through CGEventPost.
+//
+// The holders print their window id in a grep-friendly form and stay alive so
+// the outside world has something to look at.
+// ---------------------------------------------------------------------------
+
+int _returnedInt(Pointer<ObjCObject> invocation) {
+  final slot = calloc<Int64>();
+  msgSendVoidPointer(invocation, sel('getReturnValue:'), slot.cast());
+  final value = slot.value;
+  calloc.free(slot);
+  return value;
+}
+
+void probeHoldSkyLightWindow(int seconds) {
+  final skyLight = DynamicLibrary.open(
+      '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+  final connectionId = skyLight
+      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+
+  final rect = calloc<NSRect>()
+    ..ref.x = 200
+    ..ref.y = 200
+    ..ref.width = 480
+    ..ref.height = 320;
+  final regionSlot = calloc<Pointer<Void>>();
+  skyLight.lookupFunction<_NewRegionWithRectNative,
+          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
+      'CGSNewRegionWithRect')(rect, regionSlot);
+
+  final windowIdSlot = calloc<Uint32>();
+  final error = skyLight.lookupFunction<
+      _SlsNewWindowNative,
+      int Function(int, int, double, double, Pointer<Void>,
+          Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+      kCGSBackingStoreBuffered, 200.0, 200.0, regionSlot.value, windowIdSlot);
+  final windowId = windowIdSlot.value;
+  if (error != 0 || windowId == 0) {
+    print('RESULT: SLSNewWindow failed with CGError $error');
+    _exitProcess(1);
+  }
+
+  final context = skyLight.lookupFunction<_WindowContextCreateNative,
+      Pointer<Void> Function(int, int, Pointer<Void>)>(
+      'SLWindowContextCreate')(connectionId, windowId, nullptr);
+  print('SLWindowContextCreate -> ${context.address}');
+  if (context != nullptr) {
+    final coreGraphics = DynamicLibrary.open(
+        '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+    final fill = calloc<NSRect>()
+      ..ref.x = 0
+      ..ref.y = 0
+      ..ref.width = 480
+      ..ref.height = 320;
+    coreGraphics.lookupFunction<_SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double, double)>(
+        'CGContextSetRGBFillColor')(context, 0.1, 0.5, 0.9, 1.0);
+    coreGraphics.lookupFunction<_FillRectNative,
+        void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
+        context, fill.ref);
+    coreGraphics.lookupFunction<_ContextFlushNative,
+        void Function(Pointer<Void>)>('CGContextFlush')(context);
+    print('painted 480x320 into the window context.');
+  }
+
+  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+
+  // Grep-friendly: the workflow reads this to aim screencapture.
+  print('WINDOW_ID=$windowId');
+  print('holding for ${seconds}s so another process can look at it...');
+  _sleepNanos(seconds * 1000000000);
+  print('RESULT: held window $windowId for ${seconds}s.');
+  _exitProcess(0);
+}
+
+Future<void> probeHoldAppKitWindow(int seconds) async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
+  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
+  _setArgument(policyInvocation, policy.cast(), 2);
+  _invokeOnMain(policyInvocation);
+  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
+
+  final windowClass = getClass('NSWindow');
+  final allocated = windowClass.msgSend('alloc');
+  final initSelector = sel('initWithContentRect:styleMask:backing:defer:');
+  final invocation = _newInvocation(allocated, initSelector);
+  final rect = calloc<NSRect>()
+    ..ref.x = 140
+    ..ref.y = 140
+    ..ref.width = 800
+    ..ref.height = 600;
+  final styleMask = calloc<Uint64>()
+    ..value = NSWindowStyleMaskTitled |
+        NSWindowStyleMaskClosable |
+        NSWindowStyleMaskResizable;
+  final backing = calloc<Uint64>()..value = NSBackingStoreBuffered;
+  final deferCreation = calloc<Uint8>()..value = 0;
+  _setArgument(invocation, rect.cast(), 2);
+  _setArgument(invocation, styleMask.cast(), 3);
+  _setArgument(invocation, backing.cast(), 4);
+  _setArgument(invocation, deferCreation.cast(), 5);
+  _invokeOnMain(invocation);
+  final window = _returnedObject(invocation);
+  print('NSWindow = ${window.address}');
+  if (window == nullptr) {
+    print('RESULT: no window.');
+    _exitProcess(1);
+  }
+
+  msgSendPerformOnMain(
+      window,
+      sel('performSelectorOnMainThread:withObject:waitUntilDone:'),
+      sel('makeKeyAndOrderFront:'),
+      nullptr,
+      true);
+
+  final numberInvocation = _newInvocation(window, sel('windowNumber'));
+  _invokeOnMain(numberInvocation);
+  print('WINDOW_ID=${_returnedInt(numberInvocation)}');
+
+  // Pump on a timer (probe K's mechanism) and count what comes out, so an
+  // externally injected key press has somewhere to land.
+  final pumpInvocation = _newInvocation(
+      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
+  final mask = calloc<Uint64>()..value = NSEventMaskAny;
+  final untilDate = calloc<Pointer<ObjCObject>>()
+    ..value = getClass('NSDate').msgSend('distantPast');
+  final mode = calloc<Pointer<ObjCObject>>()
+    ..value = _nsString('kCFRunLoopDefaultMode');
+  final dequeue = calloc<Uint8>()..value = 1;
+  _setArgument(pumpInvocation, mask.cast(), 2);
+  _setArgument(pumpInvocation, untilDate.cast(), 3);
+  _setArgument(pumpInvocation, mode.cast(), 4);
+  _setArgument(pumpInvocation, dequeue.cast(), 5);
+  pumpInvocation.msgSend('retainArguments');
+
+  final timerClass = getClass('NSTimer');
+  final scheduleInvocation = _newInvocation(
+      timerClass, sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
+  final interval = calloc<Double>()..value = 0.02;
+  final invocationArgument = calloc<Pointer<ObjCObject>>()
+    ..value = pumpInvocation;
+  final repeats = calloc<Uint8>()..value = 1;
+  _setArgument(scheduleInvocation, interval.cast(), 2);
+  _setArgument(scheduleInvocation, invocationArgument.cast(), 3);
+  _setArgument(scheduleInvocation, repeats.cast(), 4);
+  _invokeOnMain(scheduleInvocation);
+  print('pump timer running; holding for ${seconds}s...');
+
+  final seen = <int>{};
+  for (var i = 0; i < seconds * 5; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    final event = _returnedObject(pumpInvocation);
+    if (event != nullptr && seen.add(event.address)) {
+      print('pumped an NSEvent: ${event.address}');
+    }
+  }
+
+  print('distinct events pumped: ${seen.length}');
+  print(seen.isEmpty
+      ? 'RESULT: no events reached the queue in ${seconds}s.'
+      : 'RESULT: ${seen.length} event(s) came through the pump.');
+  _exitProcess(seen.isEmpty ? 1 : 0);
+}
+
+// kCGHIDEventTap = 0, kCGEventMouseMoved = 5.
+void probePostInput() {
+  final coreGraphics = DynamicLibrary.open(
+      '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+
+  final createKeyboardEvent = coreGraphics.lookupFunction<
+      Pointer<Void> Function(Pointer<Void>, Uint16, Bool),
+      Pointer<Void> Function(Pointer<Void>, int, bool)>(
+      'CGEventCreateKeyboardEvent');
+  final createMouseEvent = coreGraphics.lookupFunction<
+      Pointer<Void> Function(Pointer<Void>, Uint32, NSPoint, Uint32),
+      Pointer<Void> Function(Pointer<Void>, int, NSPoint, int)>(
+      'CGEventCreateMouseEvent');
+  final post = coreGraphics.lookupFunction<
+      Void Function(Uint32, Pointer<Void>),
+      void Function(int, Pointer<Void>)>('CGEventPost');
+
+  final keyDown = createKeyboardEvent(nullptr, 0, true); // keycode 0 = 'a'
+  final keyUp = createKeyboardEvent(nullptr, 0, false);
+  print('CGEventCreateKeyboardEvent -> down ${keyDown.address}, '
+      'up ${keyUp.address}');
+  if (keyDown == nullptr) {
+    print('RESULT: could not synthesize a keyboard event.');
+    _exitProcess(1);
+  }
+  post(0, keyDown);
+  post(0, keyUp);
+  print('posted key down/up for keycode 0.');
+
+  final point = calloc<NSPoint>()
+    ..ref.x = 400
+    ..ref.y = 400;
+  final mouseMove = createMouseEvent(nullptr, 5, point.ref, 0);
+  print('CGEventCreateMouseEvent -> ${mouseMove.address}');
+  if (mouseMove != nullptr) {
+    post(0, mouseMove);
+    print('posted a mouse move to (400, 400).');
+  }
+
+  print('RESULT: CGEventPost accepted synthetic input. Whether anything '
+      'RECEIVES it is the holder process to answer - and on a runner without '
+      'an Aqua session, or without accessibility permission, it will not.');
+  _exitProcess(0);
 }
 
 Future<void> main(List<String> args) async {
@@ -950,7 +1311,16 @@ Future<void> main(List<String> args) async {
     case 'reverse-channel':
       await probeReverseChannel();
     case 'pump-timer':
-      probePumpViaTimer();
+      await probePumpViaTimer();
+    case 'skylight-draw':
+      probeSkyLightDraw();
+    case 'hold-skylight':
+      probeHoldSkyLightWindow(int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
+    case 'hold-appkit':
+      await probeHoldAppKitWindow(
+          int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
+    case 'post-input':
+      probePostInput();
     default:
       print('unknown probe: $probe');
       print('usage: probe [thread|nsapp-run|skylight|signal-hijack'
