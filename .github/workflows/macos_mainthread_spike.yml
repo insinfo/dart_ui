@@ -103,6 +103,22 @@ jobs:
         continue-on-error: true
         run: ./build/probe reverse-channel || echo "exit=$?"
 
+      # Route C is proven for output but has no input yet. AppKit itself gets
+      # events from the WindowServer connection, so the delivery API is in here
+      # somewhere - find its real name rather than guessing.
+      - name: 'Discovery: SkyLight event delivery API'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          SKYLIGHT=/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight
+          echo "----- event ports and records -----"
+          dyld_info -exports "$SKYLIGHT" \
+            | grep -iE "EventPort|EventRecord|NextEvent|EventTap|RegisterEvent" \
+            | head -40
+          echo "----- other event entry points -----"
+          dyld_info -exports "$SKYLIGHT" \
+            | grep -iE "_SLSEvent|_SLEvent|SetEventMask|EventMask" | head -40
+
       - name: 'Probe M: draw pixels into the WindowServer window'
         timeout-minutes: 3
         continue-on-error: true

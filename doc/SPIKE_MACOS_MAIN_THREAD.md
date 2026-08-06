@@ -38,9 +38,13 @@ Reproduzir: `gh workflow run "macOS main-thread spike"`.
 | H | `SLSNewWindow` cria janela de verdade, sem AppKit | ✅ **Confirmada** |
 | I | O runtime do Dart sobrevive a perder a thread 0 | ✅ **Confirmada** |
 | J | Uma chamada feita na main thread alcança o isolate | ✅ **Confirmada** |
+| K | O run loop estacionado serve `NSTimer` | ❌ **Refutada** |
+| M | A rota C desenha pixels (`SLWindowContextCreate`) | ✅ **Confirmada** |
+| N | A janela da rota C é fotografável de fora | ✅ **Confirmada** |
+| O | A janela AppKit sobrevive com pump por timer | ❌ **Crash** |
 
-**Resumo em uma linha:** as duas rotas criam janela e o Dart continua saudável;
-o que **nenhuma** das duas tem ainda é entrega de input.
+**Resumo em uma linha:** a rota C tem janela visível, desenho e prova externa;
+a rota D+E **chama** AppKit mas não consegue **rodar** AppKit.
 
 ## A — nenhum modo de execução dá a thread 0
 
@@ -203,6 +207,68 @@ Receita, em ordem:
 7. seletores com zero ou um argumento objeto (`makeKeyAndOrderFront:`) dispensam
    `NSInvocation` — vão diretos por `performSelectorOnMainThread:`.
 
+## M/N — prova visual externa: a janela da rota C é real ✅
+
+Todo resultado anterior era autodeclarado — o probe dizia ter criado a janela e
+o mesmo probe confirmava. `screencapture(1)` fotografando **pelo CGSWindowID**
+é uma testemunha que o probe não tem como falsificar:
+
+```
+=== probe: skylight-draw ===
+SLSNewWindow          -> CGError 0, CGSWindowID 26
+SLWindowContextCreate -> 105553150182336 (pthread_main_np() = 0)
+filled 480x320 and flushed the context.
+
+=== probe: hold-skylight ===
+WINDOW_ID=27
+skylight-window.png   pixelWidth: 480   pixelHeight: 320
+skylight-screen.png   pixelWidth: 1920  pixelHeight: 1080
+```
+
+A captura de tela cheia mostra o retângulo azul (`0.1, 0.5, 0.9`) desenhado na
+posição pedida, num desktop macOS completo com Finder, Dock e barra de menus —
+e, ao lado, o diálogo *"probe quit unexpectedly"* do holder AppKit morrendo.
+
+Duas consequências importantes:
+
+1. **A rota C funciona de verdade**: janela visível, com pixels, criada e
+   pintada inteiramente fora da main thread, sem AppKit em lugar nenhum.
+2. **A hipótese "sessão headless" está morta.** O runner tem sessão gráfica
+   completa a 1920x1080. Logo a trava do probe F e os crashes de G e O são
+   problemas **reais da técnica**, não artefato do CI.
+
+## K — o run loop estacionado não é um run loop completo ❌
+
+O primeiro resultado de K (nil) era ambíguo: "timer nunca disparou" e "fila
+vazia" liam idêntico, porque o buffer de retorno nasce zerado. Com um segundo
+timer-testemunha chamando de volta no Dart:
+
+```
+pump timer scheduled on the main run loop.
+witness timer scheduled on the main run loop.
+witness timer fired 0 times
+RESULT: the parked run loop never serviced a timer
+```
+
+Ou seja, `CFRunLoopRun` dentro de um handler de sinal **drena a main queue e
+atende `performSelector`, mas não serve `NSTimer`**. É meio run loop.
+
+## O — a janela AppKit crasha sob bombeamento ❌
+
+Segurar a `NSWindow` viva com o pump por timer termina no mesmo trap do probe G:
+
+```
+NSWindow = 5553307568
+WINDOW_ID=29
+pump timer running; holding for 20s...
+===== CRASH =====
+si_signo=Trace/BPT trap: 5(5), si_addr=0x18ff61d08
+```
+
+Somado a G, o padrão fica claro: **é possível chamar APIs do AppKit na thread
+sequestrada, mas não rodar a máquina de eventos dele ali**. Sem event loop não
+há input, redesenho nem menus.
+
 ## I — o runtime do Dart sobrevive ao sequestro ✅
 
 Com a thread 0 já entregue ao AppKit:
@@ -320,14 +386,30 @@ thread 0 (sequestrada)          isolate principal            isolate de bombeame
 
 Tudo nesse diagrama está medido, **exceto** a origem dos eventos.
 
+## Veredito atual
+
+**A rota C passou à frente.** Ela não tem AppKit no caminho, logo não tem
+assertion de thread para violar — e é a única com prova visual externa. Falta
+input.
+
+**A rota D+E está severamente comprometida como arquitetura.** Ela cria janela e
+o canal bidirecional com o Dart funciona, mas tudo que tenta *rodar* o AppKit na
+thread sequestrada morre: `[NSApp run]` crasha (G), o bombeamento por
+`performSelector` trava (F), o bombeamento por timer nem dispara (K) e o
+processo crasha ao segurar a janela (O). Serve para chamadas pontuais de AppKit,
+não para operar uma aplicação.
+
+**O host nativo mínimo volta a ser a alternativa mais robusta** para quem quiser
+AppKit de verdade — com a ressalva, agora medida, de que a rota C entrega janela
+e pixels sem ele.
+
 ## Próximos passos
 
-1. Probe K — bombear a fila por `NSTimer` em vez de `performSelectorOnMainThread:`,
-   para separar reentrância de sessão headless.
-2. Se K falhar, validar num Mac real com sessão gráfica: só isso descarta a
-   hipótese 2 do probe F.
-3. Rota C — `SLWindowContextCreate` para obter contexto de desenho, e avaliar
-   `CGEventTap` como fonte de input.
-4. Comparar honestamente com o host nativo de ~50 linhas: as rotas puras
-   preservam "zero código nativo" ao custo de depender de comportamento não
-   documentado do runtime do Dart e do AppKit.
+1. Descobrir a API de entrega de eventos do WindowServer no SkyLight
+   (`dyld_info -exports | grep -i event`). É assim que o próprio AppKit recebe
+   input; se ela for alcançável, a rota C fecha sozinha — janela, pixels e
+   input, sem main thread e sem AppKit.
+2. Avaliar `CGEventTap` como plano B para input (exige permissão de
+   acessibilidade concedida pelo usuário).
+3. Decorações, menus, IME e acessibilidade: o que a rota C perde ao abrir mão do
+   AppKit, e quanto disso o framework precisa reimplementar.
