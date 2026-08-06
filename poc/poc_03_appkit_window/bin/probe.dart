@@ -1784,6 +1784,100 @@ Future<void> probeKeepAliveHijack() async {
   _exitProcess(ticks > 0 ? 0 : 1);
 }
 
+// ---------------------------------------------------------------------------
+// Probe T - which AppKit call kills the run loop?
+//
+// Probe R parked the thread and saw 34 timer ticks in 3s. Probe K parked it the
+// same way and saw zero. The only difference is what happens in between:
+// sharedApplication, setActivationPolicy: and finishLaunching. So the hijack is
+// not what breaks the loop - one of those does.
+//
+// A tick counter runs continuously while each call is made in turn. The step
+// after which ticks stop is the culprit. Note that the earlier probes called
+// sharedApplication from the DART thread, not through the main thread, which is
+// itself a candidate.
+// ---------------------------------------------------------------------------
+
+Future<void> probeAppKitBisect() async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+
+  var ticks = 0;
+  final witness = NativeCallable<_HandleValueNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, int value) => ticks++);
+  final className = 'DartUiBisectWitness'.toNativeUtf8();
+  final witnessClass =
+      objc_allocateClassPair(getClass('NSObject'), className, 0);
+  calloc.free(className);
+  final types = 'v@:q'.toNativeUtf8();
+  class_addMethod(
+      witnessClass, sel('handleValue:'), witness.nativeFunction.cast(), types);
+  calloc.free(types);
+  objc_registerClassPair(witnessClass);
+  final witnessObject = witnessClass.msgSend('alloc').msgSend('init');
+
+  final witnessInvocation = _newInvocation(witnessObject, sel('handleValue:'));
+  final value = calloc<Int64>()..value = 1;
+  _setArgument(witnessInvocation, value.cast(), 2);
+  witnessInvocation.msgSend('retainArguments');
+
+  final schedule = _newInvocation(getClass('NSTimer'),
+      sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
+  final interval = calloc<Double>()..value = 0.05;
+  final target = calloc<Pointer<ObjCObject>>()..value = witnessInvocation;
+  final repeats = calloc<Uint8>()..value = 1;
+  _setArgument(schedule, interval.cast(), 2);
+  _setArgument(schedule, target.cast(), 3);
+  _setArgument(schedule, repeats.cast(), 4);
+  _invokeOnMain(schedule);
+
+  var previous = 0;
+  Future<bool> measure(String label) async {
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    final delta = ticks - previous;
+    previous = ticks;
+    print('$label -> +$delta ticks');
+    return delta > 0;
+  }
+
+  if (!await measure('baseline, no AppKit touched')) {
+    print('RESULT: the loop was already dead before any AppKit call.');
+    _exitProcess(1);
+  }
+
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+  print('sharedApplication (from the DART thread) = ${app.address}');
+  if (!await measure('after sharedApplication on the Dart thread')) {
+    print('RESULT: [NSApplication sharedApplication] called off the main '
+        'thread is what kills the run loop.');
+    _exitProcess(1);
+  }
+
+  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
+  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
+  _setArgument(policyInvocation, policy.cast(), 2);
+  _invokeOnMain(policyInvocation);
+  if (!await measure('after setActivationPolicy:')) {
+    print('RESULT: setActivationPolicy: is what kills the run loop.');
+    _exitProcess(1);
+  }
+
+  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
+  if (!await measure('after finishLaunching')) {
+    print('RESULT: [NSApp finishLaunching] is what kills the run loop - it '
+        'takes the loop over and expects [NSApp run] to drive it.');
+    _exitProcess(1);
+  }
+
+  witness.close();
+  print('RESULT: the loop survived every AppKit initialisation step. The '
+      'earlier failures came from somewhere else.');
+  _exitProcess(0);
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -1824,6 +1918,8 @@ Future<void> main(List<String> args) async {
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     case 'pump-timer-diagnostic':
       await probePumpTimerDiagnostic();
+    case 'appkit-bisect':
+      await probeAppKitBisect();
     case 'keepalive-hijack':
       await probeKeepAliveHijack();
     case 'skylight-foreground':

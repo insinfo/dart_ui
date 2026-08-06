@@ -245,6 +245,15 @@ jobs:
           grep -A 14 "com.apple.main-thread" /tmp/probe-r.sample | head -20 || true
           kill -9 "$pid" 2>/dev/null || true
 
+      # R saw 34 timer ticks after parking; K saw zero after parking the same
+      # way. The only difference is the AppKit initialisation in between, so one
+      # of those calls is what kills the loop. This bisects it with a running
+      # tick counter.
+      - name: 'Probe T: which AppKit call kills the run loop?'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: ./build/probe appkit-bisect || echo "exit=$?"
+
       - name: 'Probe Q: register as a foreground app, then ask for events'
         timeout-minutes: 4
         continue-on-error: true

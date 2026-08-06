@@ -6,6 +6,10 @@ shellcode, sem entitlement — para criar e operar uma janela no macOS?
 **Resposta curta:** sim, duas rotas estão abertas e uma delas já criou uma
 `NSWindow` de verdade. Ambas têm ressalvas sérias, documentadas abaixo.
 
+> Este documento registra **o que foi medido**, probe por probe. Para **como
+> fazer** — as etapas da técnica, o código e as armadilhas catalogadas — veja
+> [TECNICA_MAIN_THREAD_DART_FFI.md](TECNICA_MAIN_THREAD_DART_FFI.md).
+
 ## Contexto
 
 O AppKit exige que `NSWindow` seja instanciada na **main thread do processo**, e
