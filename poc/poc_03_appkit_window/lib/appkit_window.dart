@@ -165,6 +165,7 @@ bool runAppKitWindow() {
   final delegateInstance = delegateClass.msgSend('alloc').msgSend('init');
 
   msgSendVoidPointer(sharedApp, sel('setDelegate:'), delegateInstance);
+  sharedApp.msgSend('finishLaunching');
 
   print('[AppKit] Running application...');
   sharedApp.msgSend('run');
