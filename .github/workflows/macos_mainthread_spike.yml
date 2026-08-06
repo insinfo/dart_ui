@@ -1,0 +1,65 @@
+# Spike de investigacao: existe rota 100% Dart para a main thread do macOS?
+#
+# NAO e um gate. Cada probe explora uma hipotese que pode legitimamente abortar
+# o processo ou travar - por isso todo passo captura o exit code em vez de
+# falhar o job, e cada um tem seu proprio timeout. O resultado sao os logs.
+#
+# Disparo manual apenas: `gh workflow run "macOS main-thread spike"`.
+name: macOS main-thread spike
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: mainthread-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DART_SDK_VERSION: '3.6.0'
+
+jobs:
+  spike:
+    name: 'Spike: main thread ownership (macos-14 arm64)'
+    runs-on: macos-14
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: poc/poc_03_appkit_window
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Build probe (JIT, aot-snapshot, exe)
+        run: |
+          mkdir -p build
+          dart compile aot-snapshot bin/probe.dart -o build/probe.aot
+          dart compile exe bin/probe.dart -o build/probe
+          chmod +x build/probe
+
+      - name: 'Probe A: does any execution mode own the main thread?'
+        timeout-minutes: 5
+        run: |
+          echo "----- JIT: dart run -----"
+          dart run bin/probe.dart thread || echo "exit=$?"
+          echo "----- dartaotruntime snapshot -----"
+          dartaotruntime build/probe.aot thread || echo "exit=$?"
+          echo "----- AOT exe -----"
+          ./build/probe thread || echo "exit=$?"
+
+      - name: 'Probe B: [NSApp run] from the Dart thread'
+        timeout-minutes: 2
+        continue-on-error: true
+        run: ./build/probe nsapp-run || echo "exit=$?"
+
+      - name: 'Probe C: WindowServer via SkyLight/CGS, no AppKit'
+        timeout-minutes: 3
+        run: ./build/probe skylight || echo "exit=$?"
+
+      - name: 'Probe D: hijack the main thread with a signal'
+        timeout-minutes: 3
+        run: ./build/probe signal-hijack || echo "exit=$?"
