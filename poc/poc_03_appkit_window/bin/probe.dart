@@ -1297,7 +1297,12 @@ void probePostInput() {
 // SLEventGetType / SLEventGetLocation.
 // ---------------------------------------------------------------------------
 
-typedef _EventCreateNextNative = Pointer<Void> Function(Int32 cid);
+// First attempt passed the connection id as the only argument and segfaulted
+// with si_addr equal to the id itself - it was dereferenced as a pointer. The
+// CoreGraphics family takes a CFAllocatorRef first (CGEventCreateFromData does),
+// so the allocator-first shape is the next candidate.
+typedef _EventCreateNextNative = Pointer<Void> Function(
+    Pointer<Void> allocator, Int32 cid);
 typedef _EventGetTypeNative = Uint32 Function(Pointer<Void> event);
 typedef _EventGetLocationNative = NSPoint Function(Pointer<Void> event);
 typedef _EventGetFlagsNative = Uint64 Function(Pointer<Void> event);
@@ -1349,13 +1354,10 @@ Future<void> probeSkyLightEvents(int seconds) async {
       'SLSOrderWindow')(connectionId, windowId, 1, 0);
   print('WINDOW_ID=$windowId');
 
-  final eventPort = skyLight
-      .lookupFunction<Uint32 Function(Int32), int Function(int)>(
-          'SLSGetEventPort')(connectionId);
-  print('SLSGetEventPort -> $eventPort');
-
+  // SLSGetEventPort(cid) was the call that segfaulted, dereferencing the id.
+  // It is informational anyway, so it is gone rather than guessed at again.
   final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
-      Pointer<Void> Function(int)>('SLEventCreateNextEvent');
+      Pointer<Void> Function(Pointer<Void>, int)>('SLEventCreateNextEvent');
   final getType = skyLight
       .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
           'SLEventGetType');
@@ -1369,7 +1371,7 @@ Future<void> probeSkyLightEvents(int seconds) async {
   print('polling SLEventCreateNextEvent for ${seconds}s...');
   var received = 0;
   for (var i = 0; i < seconds * 20; i++) {
-    final event = createNextEvent(connectionId);
+    final event = createNextEvent(nullptr, connectionId);
     if (event != nullptr) {
       received++;
       final location = getLocation(event);

@@ -386,6 +386,35 @@ thread 0 (sequestrada)          isolate principal            isolate de bombeame
 
 Tudo nesse diagrama está medido, **exceto** a origem dos eventos.
 
+## P — input pela conexão do WindowServer (em andamento)
+
+O dump de exports entregou a API de eventos inteira. As mais promissoras:
+
+```
+_SLEventCreateNextEvent   _SLEventCopyNextEvent    _SLSGetNextEventRecord
+_SLSGetEventPort          _SLEventTapCreate        _SLEventTapPostEvent
+_SLEventGetType  _SLEventGetLocation  _SLEventGetFlags
+_SLEventKeyboardGetUnicodeString
+```
+
+O padrão de nomes confirma que `SLEvent*` espelha `CGEvent*` (existe
+`SLEventCreateKeyboardEvent` ao lado do público `CGEventCreateKeyboardEvent`),
+então o objeto devolvido deve ser um `CGEventRef` inspecionável.
+
+Primeira tentativa crashou, e o endereço da falha diz exatamente o quê:
+
+```
+SLSMainConnectionID() = 182931
+===== CRASH ===== Segmentation fault: SEGV_ACCERR, si_addr=0x2ca93
+```
+
+`0x2ca93` é 182931 — o próprio connection id, desreferenciado como ponteiro por
+`SLSGetEventPort(cid)`. Assinatura errada, não conceito errado.
+
+**Custo registrado desta rota:** cada assinatura de API privada é um chute que
+se paga com um crash. Não há header, e o `dyld_info` dá o nome mas não os tipos.
+Isso é fricção permanente da rota C, não um obstáculo pontual.
+
 ## Veredito atual
 
 **A rota C passou à frente.** Ela não tem AppKit no caminho, logo não tem
