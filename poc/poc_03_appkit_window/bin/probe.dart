@@ -449,6 +449,16 @@ void probeEventPump() {
   _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
   print('[NSApp finishLaunching] returned.');
 
+  // finishLaunching is a suspect for the hang: if the UI channel is already
+  // dead here, the problem is not nextEventMatchingMask: at all. A trivial
+  // round trip tells the two apart instead of leaving us guessing.
+  final probeChannel = _newInvocation(app, sel('isRunning'));
+  _invokeOnMain(probeChannel);
+  final running = calloc<Uint8>();
+  msgSendVoidPointer(probeChannel, sel('getReturnValue:'), running.cast());
+  print('channel alive after finishLaunching: [NSApp isRunning] = '
+      '${running.value}');
+
   final location = calloc<NSPoint>()
     ..ref.x = 0
     ..ref.y = 0;
