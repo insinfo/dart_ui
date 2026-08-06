@@ -258,6 +258,57 @@ bool _parkMainThreadInRunLoop() {
   return dispatch_semaphore_wait(semaphore, dispatch_time(0, threeSeconds)) == 0;
 }
 
+/// Blocks the calling thread by waiting on a semaphore nobody ever signals.
+void _sleepNanos(int nanos) {
+  final semaphore = dispatch_semaphore_create(0);
+  dispatch_semaphore_wait(semaphore, dispatch_time(0, nanos));
+}
+
+/// Builds an NSInvocation bound to [target] and [selector]. Arguments still
+/// have to be set by the caller, starting at index 2 (0 is self, 1 is _cmd).
+Pointer<ObjCObject> _newInvocation(
+    Pointer<ObjCObject> target, Pointer<ObjCSel> selector) {
+  final signature =
+      msgSendPointerSel(target, sel('methodSignatureForSelector:'), selector);
+  if (signature == nullptr) return nullptr;
+  final invocation = msgSendPointerPointer(
+      getClass('NSInvocation'), sel('invocationWithMethodSignature:'), signature);
+  msgSendVoidPointer(invocation, sel('setTarget:'), target);
+  msgSendVoidSel(invocation, sel('setSelector:'), selector);
+  return invocation;
+}
+
+void _setArgument(
+    Pointer<ObjCObject> invocation, Pointer<Void> value, int index) {
+  msgSendVoidPointerInt(invocation, sel('setArgument:atIndex:'), value, index);
+}
+
+void _invokeOnMain(Pointer<ObjCObject> invocation, {bool wait = true}) {
+  invocation.msgSend('retainArguments');
+  msgSendPerformOnMain(
+      invocation,
+      sel('performSelectorOnMainThread:withObject:waitUntilDone:'),
+      sel('invoke'),
+      nullptr,
+      wait);
+}
+
+Pointer<ObjCObject> _returnedObject(Pointer<ObjCObject> invocation) {
+  final slot = calloc<Pointer<ObjCObject>>();
+  msgSendVoidPointer(invocation, sel('getReturnValue:'), slot.cast());
+  final value = slot.value;
+  calloc.free(slot);
+  return value;
+}
+
+Pointer<ObjCObject> _nsString(String value) {
+  final utf8 = value.toNativeUtf8();
+  final string = msgSendPointerPointer(getClass('NSString').msgSend('alloc'),
+      sel('initWithUTF8String:'), utf8.cast());
+  calloc.free(utf8);
+  return string;
+}
+
 // ---------------------------------------------------------------------------
 // Probe E - the end-to-end claim: an NSWindow created from pure Dart FFI.
 //
@@ -359,6 +410,144 @@ void probeMainThreadWindow() {
   _exitProcess(0);
 }
 
+// ---------------------------------------------------------------------------
+// Probe F - is there an event queue? Creating a window proves nothing if input
+// never arrives.
+//
+// A headless runner has no real keyboard or mouse, so the honest test is the
+// machinery itself: post a synthetic NSEvent through the app and pump it back
+// with nextEventMatchingMask: on the hijacked main thread. If the very object
+// posted comes back out, the queue works and the manual-pump architecture
+// (the POC-10 pattern, but for AppKit) is viable.
+// ---------------------------------------------------------------------------
+
+const NSEventTypeApplicationDefined = 15;
+const NSEventMaskAny = 0xFFFFFFFFFFFFFFFF;
+
+void probeEventPump() {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+  print('main thread parked, main queue draining.');
+
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+
+  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
+  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
+  _setArgument(policyInvocation, policy.cast(), 2);
+  _invokeOnMain(policyInvocation);
+  print('activation policy set on the main thread.');
+
+  final location = calloc<NSPoint>()
+    ..ref.x = 0
+    ..ref.y = 0;
+  final posted = msgSendDummyEvent(
+      getClass('NSEvent'),
+      sel('otherEventWithType:location:modifierFlags:timestamp:windowNumber:'
+          'context:subtype:data1:data2:'),
+      NSEventTypeApplicationDefined,
+      location.ref,
+      0,
+      0.0,
+      0,
+      nullptr,
+      1,
+      0xBEEF,
+      0);
+  print('synthetic NSEvent = ${posted.address}');
+  if (posted == nullptr) {
+    print('RESULT: could not build an NSEvent.');
+    _exitProcess(1);
+  }
+
+  final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
+  final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
+  final atStart = calloc<Uint8>()..value = 1;
+  _setArgument(postInvocation, eventArgument.cast(), 2);
+  _setArgument(postInvocation, atStart.cast(), 3);
+  _invokeOnMain(postInvocation);
+  print('event posted on the main thread.');
+
+  final pumpInvocation = _newInvocation(
+      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
+  final mask = calloc<Uint64>()..value = NSEventMaskAny;
+  final untilDate = calloc<Pointer<ObjCObject>>()
+    ..value = getClass('NSDate').msgSend('distantPast');
+  final mode = calloc<Pointer<ObjCObject>>()
+    ..value = _nsString('kCFRunLoopDefaultMode');
+  final dequeue = calloc<Uint8>()..value = 1;
+  _setArgument(pumpInvocation, mask.cast(), 2);
+  _setArgument(pumpInvocation, untilDate.cast(), 3);
+  _setArgument(pumpInvocation, mode.cast(), 4);
+  _setArgument(pumpInvocation, dequeue.cast(), 5);
+  _invokeOnMain(pumpInvocation);
+
+  final pumped = _returnedObject(pumpInvocation);
+  print('nextEventMatchingMask: -> ${pumped.address}');
+
+  if (pumped == posted) {
+    print('RESULT: the exact event posted came back out of the queue. AppKit '
+        'event dispatch works on the hijacked main thread.');
+    _exitProcess(0);
+  }
+  print(pumped == nullptr
+      ? 'RESULT: queue returned nil - the event never made it through.'
+      : 'RESULT: a DIFFERENT event came back (${pumped.address}); the queue is '
+          'alive but identity is unproven.');
+  _exitProcess(1);
+}
+
+// ---------------------------------------------------------------------------
+// Probe G - hand the hijacked main thread to [NSApp run], the standard AppKit
+// loop. `run` never returns, so it goes with waitUntilDone:NO; the questions
+// are whether the app reports itself running and whether the main queue keeps
+// draining afterwards (i.e. whether we can still route work to it).
+// ---------------------------------------------------------------------------
+
+void probeNsAppRunOnMain() {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
+  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
+  _setArgument(policyInvocation, policy.cast(), 2);
+  _invokeOnMain(policyInvocation);
+
+  print('sending -run to the main thread (waitUntilDone: NO)...');
+  _invokeOnMain(_newInvocation(app, sel('run')), wait: false);
+
+  const twoSeconds = 2000000000;
+  _sleepNanos(twoSeconds);
+
+  final semaphore = dispatch_semaphore_create(0);
+  dispatch_async_f(
+      dispatch_get_main_queue(), semaphore, dispatch_semaphore_signal_ptr);
+  const threeSeconds = 3000000000;
+  final stillDraining =
+      dispatch_semaphore_wait(semaphore, dispatch_time(0, threeSeconds)) == 0;
+  print('main queue still draining under [NSApp run]: $stillDraining');
+
+  final isRunningInvocation = _newInvocation(app, sel('isRunning'));
+  _invokeOnMain(isRunningInvocation);
+  final isRunning = calloc<Uint8>();
+  msgSendVoidPointer(
+      isRunningInvocation, sel('getReturnValue:'), isRunning.cast());
+  print('[NSApp isRunning] = ${isRunning.value}');
+
+  final ok = stillDraining && isRunning.value != 0;
+  print(ok
+      ? 'RESULT: the AppKit event loop is running on the hijacked main thread '
+          'and work can still be routed to it.'
+      : 'RESULT: [NSApp run] did not take over cleanly.');
+  _exitProcess(ok ? 0 : 1);
+}
+
 void main(List<String> args) {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -373,9 +562,13 @@ void main(List<String> args) {
       probeSignalHijack();
     case 'mainthread-window':
       probeMainThreadWindow();
+    case 'event-pump':
+      probeEventPump();
+    case 'nsapp-run-main':
+      probeNsAppRunOnMain();
     default:
       print('unknown probe: $probe');
-      print('usage: probe '
-          '[thread|nsapp-run|skylight|signal-hijack|mainthread-window]');
+      print('usage: probe [thread|nsapp-run|skylight|signal-hijack'
+          '|mainthread-window|event-pump|nsapp-run-main]');
   }
 }

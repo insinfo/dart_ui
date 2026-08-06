@@ -67,3 +67,11 @@ jobs:
       - name: 'Probe E: NSWindow on the hijacked main thread via NSInvocation'
         timeout-minutes: 3
         run: ./build/probe mainthread-window || echo "exit=$?"
+
+      - name: 'Probe F: post an NSEvent and pump it back'
+        timeout-minutes: 3
+        run: ./build/probe event-pump || echo "exit=$?"
+
+      - name: 'Probe G: [NSApp run] on the hijacked main thread'
+        timeout-minutes: 3
+        run: ./build/probe nsapp-run-main || echo "exit=$?"
