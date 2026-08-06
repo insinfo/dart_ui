@@ -63,3 +63,7 @@ jobs:
       - name: 'Probe D: hijack the main thread with a signal'
         timeout-minutes: 3
         run: ./build/probe signal-hijack || echo "exit=$?"
+
+      - name: 'Probe E: NSWindow on the hijacked main thread via NSInvocation'
+        timeout-minutes: 3
+        run: ./build/probe mainthread-window || echo "exit=$?"
