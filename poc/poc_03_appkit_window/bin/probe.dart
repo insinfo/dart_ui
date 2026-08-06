@@ -820,6 +820,111 @@ Future<void> probeReverseChannel() async {
   _exitProcess(1);
 }
 
+// ---------------------------------------------------------------------------
+// Probe K - why does nextEventMatchingMask: hang, and can a timer dodge it?
+//
+// Probe F proved the UI channel is alive after -finishLaunching and that
+// -postEvent:atStart: works; only nextEventMatchingMask: never returns. One
+// suspect is re-entrancy: performSelectorOnMainThread: delivers through a run
+// loop source, so the pump would be running a nested run loop from inside a
+// run loop callback.
+//
+// +[NSTimer scheduledTimerWithTimeInterval:invocation:repeats:] dodges that -
+// the timer fires the NSInvocation directly on the main thread, off the timer
+// source, with no performSelector in the path and no callback into Dart.
+// ---------------------------------------------------------------------------
+
+void probePumpViaTimer() {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
+  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
+  _setArgument(policyInvocation, policy.cast(), 2);
+  _invokeOnMain(policyInvocation);
+  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
+  print('[NSApp finishLaunching] returned.');
+
+  final pumpInvocation = _newInvocation(
+      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
+  final mask = calloc<Uint64>()..value = NSEventMaskAny;
+  final untilDate = calloc<Pointer<ObjCObject>>()
+    ..value = getClass('NSDate').msgSend('distantPast');
+  final mode = calloc<Pointer<ObjCObject>>()
+    ..value = _nsString('kCFRunLoopDefaultMode');
+  final dequeue = calloc<Uint8>()..value = 1;
+  _setArgument(pumpInvocation, mask.cast(), 2);
+  _setArgument(pumpInvocation, untilDate.cast(), 3);
+  _setArgument(pumpInvocation, mode.cast(), 4);
+  _setArgument(pumpInvocation, dequeue.cast(), 5);
+  pumpInvocation.msgSend('retainArguments');
+
+  // Scheduling has to happen ON the main thread: the timer attaches to the
+  // run loop of whichever thread schedules it.
+  final timerClass = getClass('NSTimer');
+  final scheduleInvocation = _newInvocation(
+      timerClass, sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
+  if (scheduleInvocation == nullptr) {
+    print('RESULT: no signature for the invocation-based NSTimer factory.');
+    _exitProcess(1);
+  }
+  final interval = calloc<Double>()..value = 0.05;
+  final invocationArgument = calloc<Pointer<ObjCObject>>()
+    ..value = pumpInvocation;
+  final repeats = calloc<Uint8>()..value = 1;
+  _setArgument(scheduleInvocation, interval.cast(), 2);
+  _setArgument(scheduleInvocation, invocationArgument.cast(), 3);
+  _setArgument(scheduleInvocation, repeats.cast(), 4);
+  _invokeOnMain(scheduleInvocation);
+  print('timer scheduled on the main run loop.');
+
+  final location = calloc<NSPoint>()
+    ..ref.x = 0
+    ..ref.y = 0;
+  final posted = msgSendDummyEvent(
+      getClass('NSEvent'),
+      sel('otherEventWithType:location:modifierFlags:timestamp:windowNumber:'
+          'context:subtype:data1:data2:'),
+      NSEventTypeApplicationDefined,
+      location.ref,
+      0,
+      0.0,
+      0,
+      nullptr,
+      1,
+      0xBEEF,
+      0);
+  final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
+  final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
+  final atStart = calloc<Uint8>()..value = 1;
+  _setArgument(postInvocation, eventArgument.cast(), 2);
+  _setArgument(postInvocation, atStart.cast(), 3);
+  _invokeOnMain(postInvocation);
+  print('posted event ${posted.address}; letting the timer run...');
+
+  const twoSeconds = 2000000000;
+  _sleepNanos(twoSeconds);
+
+  // If the timer ever fired, the invocation holds the last returned event.
+  final pumped = _returnedObject(pumpInvocation);
+  print('last value returned by the timed pump: ${pumped.address}');
+
+  if (pumped == posted) {
+    print('RESULT: the timer pumped our event off the main thread run loop. '
+        'A timer-driven pump is the way to feed AppKit event dispatch.');
+    _exitProcess(0);
+  }
+  print(pumped == nullptr
+      ? 'RESULT: the timed pump returned nil - either it never fired or the '
+          'event queue is empty in a headless session.'
+      : 'RESULT: a different object came back (${pumped.address}).');
+  _exitProcess(1);
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -844,10 +949,12 @@ Future<void> main(List<String> args) async {
       await probeVmHealthUnderHijack();
     case 'reverse-channel':
       await probeReverseChannel();
+    case 'pump-timer':
+      probePumpViaTimer();
     default:
       print('unknown probe: $probe');
       print('usage: probe [thread|nsapp-run|skylight|signal-hijack'
           '|mainthread-window|event-pump|nsapp-run-main|skylight-window'
-          '|vm-health|reverse-channel]');
+          '|vm-health|reverse-channel|pump-timer]');
   }
 }

@@ -33,6 +33,14 @@ Reproduzir: `gh workflow run "macOS main-thread spike"`.
 | C | O WindowServer é alcançável sem AppKit (SkyLight/CGS) | ✅ Confirmada |
 | D | Um sinal força a main thread a rodar um `CFRunLoop` | ✅ **Confirmada** |
 | E | Com D, `NSInvocation` cria uma `NSWindow` legalmente | ✅ **Confirmada** |
+| F | `nextEventMatchingMask:` bombeia a fila de eventos | ⛔ Trava |
+| G | `[NSApp run]` aceita a main thread sequestrada | ❌ **Crash** |
+| H | `SLSNewWindow` cria janela de verdade, sem AppKit | ✅ **Confirmada** |
+| I | O runtime do Dart sobrevive a perder a thread 0 | ✅ **Confirmada** |
+| J | Uma chamada feita na main thread alcança o isolate | ✅ **Confirmada** |
+
+**Resumo em uma linha:** as duas rotas criam janela e o Dart continua saudável;
+o que **nenhuma** das duas tem ainda é entrega de input.
 
 ## A — nenhum modo de execução dá a thread 0
 
@@ -101,10 +109,29 @@ indistintamente.
 Uma connection id não-zero significa que o processo fala com o WindowServer por
 IPC, sem AppKit e **sem regra de main thread**.
 
-**O que falta:** ABI de `SLSNewWindow` (assinatura não é pública e o tipo de
-`x`/`y` variou entre versões), e a região precisa ser construída — o nome
-`SLSNewRegionWithRect` não existe nesta versão, então há que descobrir o
-equivalente atual.
+### H — a janela foi criada de verdade ✅
+
+A ABI dos headers `CGSInternal` estava correta, inclusive o `float` de 32 bits
+em `x`/`y`:
+
+```
+CGSNewRegionWithRect -> CGError 0, region 105553158064720
+SLSNewWindow         -> CGError 0, CGSWindowID 25
+SLSSetWindowLevel    -> 0
+SLSOrderWindow       -> CGError 0
+```
+
+Duas descobertas de nome que só a medição daria:
+
+- o construtor de região é **`CGSNewRegionWithRect`**, com prefixo CGS mesmo —
+  não existe versão `SLS`;
+- ele **não aparece** na tabela de exports do SkyLight (`dyld_info -exports`),
+  mas o `dlsym` no handle do SkyLight o encontra pela cadeia de dependências:
+  o símbolo mora no CoreGraphics. Nem o `dyld_info` sozinho bastava.
+
+O dump de exports também entregou **`SLWindowContextCreate`**, que é o criador
+de contexto de desenho — a peça que faltava para essa rota ter janela *e*
+superfície.
 
 **Riscos:** é API privada — quebra entre versões do macOS e inviabiliza App
 Store. E o problema maior não é criar a superfície, é **input**: sem
@@ -176,6 +203,82 @@ Receita, em ordem:
 7. seletores com zero ou um argumento objeto (`makeKeyAndOrderFront:`) dispensam
    `NSInvocation` — vão diretos por `performSelectorOnMainThread:`.
 
+## I — o runtime do Dart sobrevive ao sequestro ✅
+
+Com a thread 0 já entregue ao AppKit:
+
+```
+timer fired after 253ms -> true
+async file I/O round trip -> true
+Isolate.run -> 42 (true)
+RESULT: the VM is unharmed by the hijack
+```
+
+Confirma a intuição por trás do desenho: roubamos uma thread que o Dart não
+usava. Timers, I/O assíncrono e isolates novos seguem funcionando.
+
+## J — o canal de volta (UI → Dart) ✅
+
+`NativeCallable.isolateLocal` aborta quando invocado por thread estranha, mas
+`.listener` existe exatamente para isso. Registrando uma classe Objective-C a
+partir do Dart e instalando um `.listener` como IMP de um método dela
+(`class_addMethod` com encoding `"v@:q"`), uma chamada feita **na main thread
+sequestrada** chega ao isolate:
+
+```
+class registered, class_addMethod -> 1
+invocation dispatched to the main thread (waitUntilDone: NO)
+Dart received 12648430   (0xC0FFEE)
+```
+
+Armadilha registrada no código: o `waitUntilDone` **tem** que ser `NO`. O
+`listener` entrega pelo event loop do isolate, então bloquear a thread do Dart
+esperando a main thread trava o próprio mecanismo sob teste.
+
+Com isso, delegates e handlers de evento podem ser escritos em Dart. Limitação:
+`.listener` não retorna valor, então delegates que exigem resposta síncrona
+(`windowShouldClose:` devolvendo `BOOL`) não cabem nele.
+
+## G — `[NSApp run]` na thread sequestrada: crash ❌
+
+```
+sending -run to the main thread (waitUntilDone: NO)...
+===== CRASH =====
+si_signo=Trace/BPT trap: 5(5), si_addr=0x18b635d08
+Abort trap: 6
+```
+
+O loop padrão do AppKit **rejeita** a thread nesse estado. Isso elimina o
+desenho mais confortável e obriga o bombeamento manual de eventos.
+
+## F — `nextEventMatchingMask:` trava ⛔
+
+O ponto exato foi isolado por instrumentação:
+
+```
+[NSApp finishLaunching] returned.
+channel alive after finishLaunching: [NSApp isRunning] = 0
+event posted on the main thread.
+<trava>
+```
+
+Ou seja: `finishLaunching` retorna, o canal de invocação continua vivo depois
+dele, `postEvent:atStart:` funciona — e só o `nextEventMatchingMask:` nunca
+volta, mesmo com `[NSDate distantPast]`.
+
+Duas hipóteses ainda abertas, nesta ordem de suspeita:
+
+1. **Reentrância** — `performSelectorOnMainThread:` entrega por uma source do
+   run loop, então o pump estaria rodando um run loop aninhado de dentro de um
+   callback de run loop. É o que o probe K testa, disparando a `NSInvocation`
+   por um `NSTimer` (que a executa direto na main thread, sem `performSelector`
+   no caminho).
+2. **Sessão headless** — o runner de CI pode não ter sessão gráfica que entregue
+   eventos. `SLSMainConnectionID` responde, mas a conexão de *eventos* é outra.
+   Esta hipótese não é testável no CI: ela **é** o ambiente do CI.
+
+Enquanto F não fechar, **input continua não provado nas duas rotas**.
+
 ### Ressalvas antes de adotar como arquitetura
 
 - A main thread fica presa **dentro de um handler de sinal**, para sempre. O
@@ -184,10 +287,9 @@ Receita, em ordem:
   Handlers de `atexit` e finalização da VM não rodam.
 - A VM do Dart não sabe que perdeu a main thread. Não foi medido o efeito sobre
   profiler, service protocol e sinais que a VM usa.
-- **Falta o input.** `CFRunLoopRun` puro não distribui `NSEvent` para a
-  aplicação — isso é trabalho de `[NSApp run]`. O próximo experimento é enviar
-  `run` para a main thread sequestrada com `waitUntilDone:NO` (é seletor sem
-  argumento, dispensa `NSInvocation`) e verificar se teclado e mouse chegam.
+- **Falta o input.** `CFRunLoopRun` puro não distribui `NSEvent`; isso é
+  trabalho de `[NSApp run]`, que crasha nessa thread (probe G), e o bombeamento
+  manual trava (probe F). Este é o item que decide se a rota vira arquitetura.
 - Não foi verificado se a janela é realmente **visível** num display real; o
   runner de CI é headless.
 
@@ -204,12 +306,28 @@ de toolchain nativa, justamente o que se queria evitar.
 A rota D dispensa tudo isso porque o handler é o endereço de uma função **já
 exportada** e o resto é `NSInvocation`.
 
+## Arquitetura que os resultados sustentam
+
+```
+thread 0 (sequestrada)          isolate principal            isolate de bombeamento
+├─ CFRunLoopRun                 ├─ lógica, estado, layout    └─ (se necessário) bloqueia
+├─ objetos AppKit               ├─ I/O, timers ✅ (probe I)      no pump sem travar
+└─ executa NSInvocation ✅      └─ SendPort ↔ pump               o isolate principal
+        ▲                                 │
+        └── Dart → UI: performSelectorOnMainThread: ✅ (probe E)
+        └── UI → Dart: NativeCallable.listener como IMP ✅ (probe J)
+```
+
+Tudo nesse diagrama está medido, **exceto** a origem dos eventos.
+
 ## Próximos passos
 
-1. Probe F — `[NSApp run]` na main thread sequestrada e verificação de entrega
-   de eventos de teclado/mouse.
-2. Medir estabilidade: a VM sobrevive ao sequestro sob carga (timers, isolates,
-   I/O)?
-3. Se F passar, comparar honestamente com o host nativo de ~50 linhas: a rota D
-   preserva "zero código nativo" ao custo de depender de comportamento não
+1. Probe K — bombear a fila por `NSTimer` em vez de `performSelectorOnMainThread:`,
+   para separar reentrância de sessão headless.
+2. Se K falhar, validar num Mac real com sessão gráfica: só isso descarta a
+   hipótese 2 do probe F.
+3. Rota C — `SLWindowContextCreate` para obter contexto de desenho, e avaliar
+   `CGEventTap` como fonte de input.
+4. Comparar honestamente com o host nativo de ~50 linhas: as rotas puras
+   preservam "zero código nativo" ao custo de depender de comportamento não
    documentado do runtime do Dart e do AppKit.

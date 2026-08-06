@@ -103,8 +103,13 @@ jobs:
         continue-on-error: true
         run: ./build/probe reverse-channel || echo "exit=$?"
 
-      # Last on purpose: F hung on its first run, so it is the probe most likely
-      # to spend its whole budget. Nothing after it should wait on that.
+      - name: 'Probe K: pump the event queue from an NSTimer instead'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: ./build/probe pump-timer || echo "exit=$?"
+
+      # Last on purpose: F hangs inside nextEventMatchingMask: and always spends
+      # its whole budget. Nothing after it should wait on that.
       - name: 'Probe F: post an NSEvent and pump it back'
         timeout-minutes: 2
         continue-on-error: true
