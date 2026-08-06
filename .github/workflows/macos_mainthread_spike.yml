@@ -118,6 +118,12 @@ jobs:
           echo "----- other event entry points -----"
           dyld_info -exports "$SKYLIGHT" \
             | grep -iE "_SLSEvent|_SLEvent|SetEventMask|EventMask" | head -40
+          # Probe P got zero events: the WindowServer routes input to the front
+          # PROCESS, and ours never registered as one. This is that layer.
+          echo "----- process registration (PSN / front / activate) -----"
+          dyld_info -exports "$SKYLIGHT" \
+            | grep -iE "_SLPS|SetFrontProcess|RegisterConnection|ConnectionProperty|Activate" \
+            | head -50
 
       - name: 'Probe M: draw pixels into the WindowServer window'
         timeout-minutes: 3
@@ -198,6 +204,24 @@ jobs:
           done
           wait
           cat /tmp/events.log
+
+      # Probe L supersedes K: one-shot timers, a sentinel in the return buffer,
+      # a marker timer, and the real NSDefaultRunLoopMode. sample(1) reads the
+      # main thread's stack while it runs, which is what tells "timer never
+      # delivered" apart from "pump blocked inside _DPSNextEvent".
+      - name: 'Probe L: unambiguous timer/pump diagnostic + stack sample'
+        timeout-minutes: 4
+        continue-on-error: true
+        run: |
+          ./build/probe pump-timer-diagnostic > /tmp/probe-l.log 2>&1 &
+          pid=$!
+          sleep 1
+          sample "$pid" 1 1 -file /tmp/probe-l.sample || echo "sample exit=$?"
+          wait "$pid" || echo "probe exit=$?"
+          echo "----- probe output -----"
+          cat /tmp/probe-l.log
+          echo "----- main thread stack -----"
+          sed -n '1,60p' /tmp/probe-l.sample || true
 
       - name: 'Probe K: pump the event queue from an NSTimer instead'
         timeout-minutes: 3

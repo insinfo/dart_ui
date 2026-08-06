@@ -1392,6 +1392,152 @@ Future<void> probeSkyLightEvents(int seconds) async {
   _exitProcess(received > 0 ? 0 : 1);
 }
 
+// ---------------------------------------------------------------------------
+// Probe L - probe K without the ambiguities, per doc/propostas/03.
+//
+// K was inconclusive on two counts. Its pump timer used repeats:YES, and an
+// NSInvocation keeps only the LAST return value, so a later firing that found
+// an empty queue would overwrite an earlier one that got the event. And a
+// return buffer that was never written is indistinguishable from one written
+// with nil.
+//
+// Fixes: post the event before scheduling, one-shot timers, a sentinel written
+// into the return buffer up front, a harmless marker timer scheduled ahead of
+// the pump, and the real NSDefaultRunLoopMode global instead of a string built
+// by hand. The workflow samples the main thread's stack while this runs.
+//
+//   0x1        -> the invocation never completed
+//   0x0        -> it completed and returned nil
+//   event ptr  -> the synthetic event came back
+// ---------------------------------------------------------------------------
+
+final DynamicLibrary libFoundation = DynamicLibrary.open(
+    '/System/Library/Frameworks/Foundation.framework/Foundation');
+
+void _writeSentinel(Pointer<ObjCObject> invocation) {
+  final sentinel = calloc<Pointer<ObjCObject>>()
+    ..value = Pointer<ObjCObject>.fromAddress(1);
+  msgSendVoidPointer(invocation, sel('setReturnValue:'), sentinel.cast());
+  calloc.free(sentinel);
+}
+
+void _scheduleOneShot(
+    Pointer<ObjCObject> invocation, double delaySeconds) {
+  final schedule = _newInvocation(getClass('NSTimer'),
+      sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
+  final interval = calloc<Double>()..value = delaySeconds;
+  final target = calloc<Pointer<ObjCObject>>()..value = invocation;
+  final repeats = calloc<Uint8>()..value = 0; // one-shot
+  _setArgument(schedule, interval.cast(), 2);
+  _setArgument(schedule, target.cast(), 3);
+  _setArgument(schedule, repeats.cast(), 4);
+  _invokeOnMain(schedule);
+}
+
+Future<void> probePumpTimerDiagnostic() async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+  print('main thread parked, main queue draining.');
+
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
+  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
+  _setArgument(policyInvocation, policy.cast(), 2);
+  _invokeOnMain(policyInvocation);
+  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
+  print('[NSApp finishLaunching] returned.');
+
+  // 1. Post first, so the queue is already non-empty when the pump fires.
+  final location = calloc<NSPoint>()
+    ..ref.x = 0
+    ..ref.y = 0;
+  final posted = msgSendDummyEvent(
+      getClass('NSEvent'),
+      sel('otherEventWithType:location:modifierFlags:timestamp:windowNumber:'
+          'context:subtype:data1:data2:'),
+      NSEventTypeApplicationDefined,
+      location.ref,
+      0,
+      0.0,
+      0,
+      nullptr,
+      1,
+      0xBEEF,
+      0);
+  final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
+  final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
+  final atStart = calloc<Uint8>()..value = 1;
+  _setArgument(postInvocation, eventArgument.cast(), 2);
+  _setArgument(postInvocation, atStart.cast(), 3);
+  _invokeOnMain(postInvocation);
+  print('posted event ${posted.address} BEFORE scheduling anything.');
+
+  // 2. Marker: a harmless +[NSDate date] at 20ms. If its sentinel survives,
+  //    the problem is the timer or the run loop mode, not the pump.
+  final markerInvocation = _newInvocation(getClass('NSDate'), sel('date'));
+  _writeSentinel(markerInvocation);
+  _scheduleOneShot(markerInvocation, 0.02);
+
+  // 3. The pump at 100ms, with the REAL NSDefaultRunLoopMode global - probe K
+  //    built an NSString by hand, which is not guaranteed to be the same mode
+  //    object AppKit matches against.
+  final defaultRunLoopMode =
+      libFoundation.lookup<Pointer<ObjCObject>>('NSDefaultRunLoopMode').value;
+  print('NSDefaultRunLoopMode global = ${defaultRunLoopMode.address}');
+
+  final pumpInvocation = _newInvocation(
+      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
+  final mask = calloc<Uint64>()..value = NSEventMaskAny;
+  final untilDate = calloc<Pointer<ObjCObject>>()
+    ..value = getClass('NSDate').msgSend('distantPast');
+  final mode = calloc<Pointer<ObjCObject>>()..value = defaultRunLoopMode;
+  final dequeue = calloc<Uint8>()..value = 1;
+  _setArgument(pumpInvocation, mask.cast(), 2);
+  _setArgument(pumpInvocation, untilDate.cast(), 3);
+  _setArgument(pumpInvocation, mode.cast(), 4);
+  _setArgument(pumpInvocation, dequeue.cast(), 5);
+  pumpInvocation.msgSend('retainArguments');
+  _writeSentinel(pumpInvocation);
+  _scheduleOneShot(pumpInvocation, 0.1);
+  print('marker at 20ms and pump at 100ms scheduled, both one-shot.');
+
+  await Future<void>.delayed(const Duration(seconds: 3));
+
+  final marker = _returnedObject(markerInvocation);
+  final pumped = _returnedObject(pumpInvocation);
+  String describe(Pointer<ObjCObject> value) => switch (value.address) {
+        1 => 'SENTINEL (never completed)',
+        0 => 'nil',
+        _ => '0x${value.address.toRadixString(16)}',
+      };
+  print('marker returned: ${describe(marker)}');
+  print('pump returned:   ${describe(pumped)}');
+
+  if (marker.address == 1) {
+    print('RESULT: the marker never ran either - one-shot timers are not '
+        'delivered on the parked run loop at all. The problem is the run loop, '
+        'not nextEventMatchingMask:.');
+    _exitProcess(1);
+  }
+  if (pumped.address == 1) {
+    print('RESULT: the marker ran but the pump did not complete - '
+        'nextEventMatchingMask: blocked. Check the stack sample for '
+        '_DPSNextEvent / mach_msg.');
+    _exitProcess(1);
+  }
+  if (pumped == posted) {
+    print('RESULT: the synthetic event came back through a timer-driven pump. '
+        'Event dispatch works on the parked main thread.');
+    _exitProcess(0);
+  }
+  print('RESULT: timers fire and the pump completed, returning '
+      '${describe(pumped)} instead of our event.');
+  _exitProcess(1);
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -1430,6 +1576,8 @@ Future<void> main(List<String> args) async {
     case 'skylight-events':
       await probeSkyLightEvents(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
+    case 'pump-timer-diagnostic':
+      await probePumpTimerDiagnostic();
     default:
       print('unknown probe: $probe');
       print('usage: probe [thread|nsapp-run|skylight|signal-hijack'
