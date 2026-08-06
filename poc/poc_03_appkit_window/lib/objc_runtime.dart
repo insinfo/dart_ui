@@ -7,7 +7,10 @@ import 'package:ffi/ffi.dart';
 
 final DynamicLibrary libObjC = DynamicLibrary.open('libobjc.A.dylib');
 
-DynamicLibrary _loadAppKit() {
+DynamicLibrary? _loadedAppKit;
+
+DynamicLibrary ensureAppKitLoaded() {
+  if (_loadedAppKit != null) return _loadedAppKit!;
   for (final path in [
     '/System/Library/Frameworks/AppKit.framework/AppKit',
     '/System/Library/Frameworks/Cocoa.framework/Cocoa',
@@ -16,13 +19,16 @@ DynamicLibrary _loadAppKit() {
     'Cocoa.framework/Cocoa',
   ]) {
     try {
-      return DynamicLibrary.open(path);
+      final handle = DynamicLibrary.open(path);
+      print('[AppKit] Successfully opened framework: $path');
+      _loadedAppKit = handle;
+      return handle;
     } catch (_) {}
   }
-  return DynamicLibrary.process();
+  print('[AppKit] Fallback: using DynamicLibrary.process()');
+  _loadedAppKit = DynamicLibrary.process();
+  return _loadedAppKit!;
 }
-
-final DynamicLibrary libAppKit = _loadAppKit();
 
 final class ObjCObject extends Opaque {}
 
@@ -224,6 +230,7 @@ Pointer<ObjCSel> sel(String name) {
 }
 
 Pointer<ObjCObject> getClass(String name) {
+  ensureAppKitLoaded();
   final cStr = name.toNativeUtf8();
   final result = objc_getClass(cStr);
   calloc.free(cStr);

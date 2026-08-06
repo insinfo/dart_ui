@@ -16,6 +16,7 @@ const NSBackingStoreBuffered = 2;
 
 bool runAppKitWindow() {
   print('[AppKit] Initializing NSApplication...');
+  ensureAppKitLoaded();
   final nsAppClass = getClass('NSApplication');
   print('[AppKit] nsAppClass pointer: ${nsAppClass.address}');
   if (nsAppClass == nullptr) {
