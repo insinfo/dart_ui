@@ -8,6 +8,7 @@
 //
 // ignore_for_file: non_constant_identifier_names, constant_identifier_names
 
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
@@ -732,6 +733,83 @@ Future<void> probeVmHealthUnderHijack() async {
   _exitProcess(healthy ? 0 : 1);
 }
 
+// ---------------------------------------------------------------------------
+// Probe J - the reverse channel: can a call that ORIGINATES on the AppKit main
+// thread reach Dart safely?
+//
+// Dart -> UI is proven (NSInvocation + performSelectorOnMainThread:). This is
+// the other direction, and it is what delegates, event handlers and callbacks
+// all need. NativeCallable.isolateLocal aborts when invoked from a foreign
+// thread; .listener exists for exactly this case - it accepts calls from any
+// thread and posts a message to the isolate's event loop.
+//
+// So: register a real Objective-C class from Dart, give one of its methods a
+// .listener as its IMP, and invoke that method from the hijacked main thread.
+// ---------------------------------------------------------------------------
+
+typedef _HandleValueNative = Void Function(
+    Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, Int64 value);
+
+Future<void> probeReverseChannel() async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    print('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+  print('main thread parked, main queue draining.');
+
+  final delivered = Completer<int>();
+  final callable = NativeCallable<_HandleValueNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, int value) {
+    // Runs on the Dart isolate, not on the thread that called the method.
+    print('Dart received $value (pthread_main_np() = ${pthread_main_np()})');
+    if (!delivered.isCompleted) delivered.complete(value);
+  });
+
+  final className = 'DartUiProbeReceiver'.toNativeUtf8();
+  final receiverClass =
+      objc_allocateClassPair(getClass('NSObject'), className, 0);
+  calloc.free(className);
+  if (receiverClass == nullptr) {
+    print('RESULT: objc_allocateClassPair failed.');
+    _exitProcess(1);
+  }
+
+  // "v@:q" = returns void, takes self, _cmd and a long long.
+  final types = 'v@:q'.toNativeUtf8();
+  final added = class_addMethod(receiverClass, sel('handleValue:'),
+      callable.nativeFunction.cast(), types);
+  calloc.free(types);
+  objc_registerClassPair(receiverClass);
+  print('class registered, class_addMethod -> $added');
+
+  final receiver = receiverClass.msgSend('alloc').msgSend('init');
+  print('receiver instance = ${receiver.address}');
+
+  final invocation = _newInvocation(receiver, sel('handleValue:'));
+  final value = calloc<Int64>()..value = 0xC0FFEE;
+  _setArgument(invocation, value.cast(), 2);
+
+  // waitUntilDone MUST be false: the listener delivers through this isolate's
+  // event loop, so blocking this thread on the main thread would deadlock the
+  // very mechanism under test.
+  _invokeOnMain(invocation, wait: false);
+  print('invocation dispatched to the main thread (waitUntilDone: NO).');
+
+  final received = await delivered.future
+      .timeout(const Duration(seconds: 5), onTimeout: () => -1);
+  callable.close();
+
+  if (received == 0xC0FFEE) {
+    print('RESULT: a call made ON the AppKit main thread was delivered to the '
+        'Dart isolate. The UI -> Dart channel works; delegates and event '
+        'handlers can be written in Dart.');
+    _exitProcess(0);
+  }
+  print('RESULT: nothing reached Dart (got $received).');
+  _exitProcess(1);
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -754,10 +832,12 @@ Future<void> main(List<String> args) async {
       probeSkyLightWindow();
     case 'vm-health':
       await probeVmHealthUnderHijack();
+    case 'reverse-channel':
+      await probeReverseChannel();
     default:
       print('unknown probe: $probe');
       print('usage: probe [thread|nsapp-run|skylight|signal-hijack'
           '|mainthread-window|event-pump|nsapp-run-main|skylight-window'
-          '|vm-health]');
+          '|vm-health|reverse-channel]');
   }
 }

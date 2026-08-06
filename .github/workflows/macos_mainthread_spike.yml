@@ -98,6 +98,11 @@ jobs:
         continue-on-error: true
         run: ./build/probe vm-health || echo "exit=$?"
 
+      - name: 'Probe J: UI -> Dart, a main-thread call reaching the isolate'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: ./build/probe reverse-channel || echo "exit=$?"
+
       # Last on purpose: F hung on its first run, so it is the probe most likely
       # to spend its whole budget. Nothing after it should wait on that.
       - name: 'Probe F: post an NSEvent and pump it back'
