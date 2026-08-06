@@ -2006,7 +2006,7 @@ Antes de iniciar o desenvolvimento do framework principal (Fases 0-17 do roteiro
 
 - smoke Win32 falha em timeout ou exit code não zero;
 - smokes X11, AppKit, Metal, Vulkan e Wayland não mascaram mais falhas;
-- AppKit exige lifecycle completo (launch, criação da janela e stop);
+- AppKit exige lifecycle completo (launch, criação da janela e stop com acionamento explícito de `finishLaunching`, `activateIgnoringOtherApps:` e `postEvent:atStart:` com evento sintético `NSEvent` para desbloquear o run loop headless no CI);
 - Metal exige device, drawable, texture, command queue/buffer e encoder;
 - OpenGL executa o fluxo EGL/OpenGL completo em AOT no CI;
 - Vulkan/Linux exige ICD lavapipe funcional e `vulkaninfo` válido;

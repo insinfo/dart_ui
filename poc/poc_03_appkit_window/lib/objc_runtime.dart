@@ -82,6 +82,59 @@ final msgSendVoidPointer = objc_msgSend_ptr
     .cast<NativeFunction<MsgSendVoidPointerNative>>()
     .asFunction<MsgSendVoidPointerDart>();
 
+// Void msgSend(Pointer, Selector, Bool)
+typedef MsgSendVoidBoolNative = Void Function(
+    Pointer<ObjCObject> target, Pointer<ObjCSel> op, Bool arg1);
+typedef MsgSendVoidBoolDart = void Function(
+    Pointer<ObjCObject> target, Pointer<ObjCSel> op, bool arg1);
+final msgSendVoidBool = objc_msgSend_ptr
+    .cast<NativeFunction<MsgSendVoidBoolNative>>()
+    .asFunction<MsgSendVoidBoolDart>();
+
+// Void msgSend(Pointer, Selector, Pointer, Bool)
+typedef MsgSendVoidPointerBoolNative = Void Function(
+    Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op,
+    Pointer<ObjCObject> arg1,
+    Bool arg2);
+typedef MsgSendVoidPointerBoolDart = void Function(
+    Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op,
+    Pointer<ObjCObject> arg1,
+    bool arg2);
+final msgSendVoidPointerBool = objc_msgSend_ptr
+    .cast<NativeFunction<MsgSendVoidPointerBoolNative>>()
+    .asFunction<MsgSendVoidPointerBoolDart>();
+
+// Pointer msgSendDummyEvent(...)
+typedef MsgSendDummyEventNative = Pointer<ObjCObject> Function(
+    Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op,
+    IntPtr type,
+    NSPoint location,
+    IntPtr flags,
+    Double timestamp,
+    IntPtr windowNum,
+    Pointer<ObjCObject> context,
+    Int16 subtype,
+    IntPtr d1,
+    IntPtr d2);
+typedef MsgSendDummyEventDart = Pointer<ObjCObject> Function(
+    Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op,
+    int type,
+    NSPoint location,
+    int flags,
+    double timestamp,
+    int windowNum,
+    Pointer<ObjCObject> context,
+    int subtype,
+    int d1,
+    int d2);
+final msgSendDummyEvent = objc_msgSend_ptr
+    .cast<NativeFunction<MsgSendDummyEventNative>>()
+    .asFunction<MsgSendDummyEventDart>();
+
 // Pointer msgSend(Pointer, Selector, Pointer)
 typedef MsgSendPointerPointerNative = Pointer<ObjCObject> Function(
     Pointer<ObjCObject> target, Pointer<ObjCSel> op, Pointer<ObjCObject> arg1);

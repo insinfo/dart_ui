@@ -73,10 +73,34 @@ void _onFinishLaunching(Pointer<ObjCObject> self, Pointer<ObjCSel> _cmd,
 void _stopApp(Pointer<ObjCObject> self, Pointer<ObjCSel> _cmd,
     Pointer<ObjCObject> timer) {
   _didStopApplication = true;
-  print('[AppKit] stopApp: called. Terminating NSApplication...');
+  print('[AppKit] stopApp: called. Stopping NSApplication run loop...');
   final nsAppClass = getClass('NSApplication');
   final sharedApp = nsAppClass.msgSend('sharedApplication');
-  msgSendVoidPointer(sharedApp, sel('terminate:'), self);
+  msgSendVoidPointer(sharedApp, sel('stop:'), self);
+
+  final nsEventClass = getClass('NSEvent');
+  final locPtr = calloc<NSPoint>();
+  locPtr.ref.x = 0;
+  locPtr.ref.y = 0;
+
+  final dummyEvent = msgSendDummyEvent(
+    nsEventClass,
+    sel('otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:'),
+    14, // NSEventTypeApplicationDefined
+    locPtr.ref,
+    0,
+    0.0,
+    0,
+    nullptr,
+    0,
+    0,
+    0,
+  );
+  calloc.free(locPtr);
+
+  if (dummyEvent != nullptr) {
+    msgSendVoidPointerBool(sharedApp, sel('postEvent:atStart:'), dummyEvent, true);
+  }
 }
 
 late NativeCallable<AppCallbackNative> finishCallback;
@@ -134,6 +158,8 @@ bool runAppKitWindow() {
   final delegateInstance = delegateClass.msgSend('alloc').msgSend('init');
 
   msgSendVoidPointer(sharedApp, sel('setDelegate:'), delegateInstance);
+  msgSendVoidBool(sharedApp, sel('activateIgnoringOtherApps:'), true);
+  sharedApp.msgSend('finishLaunching');
 
   print('[AppKit] Running application...');
   sharedApp.msgSend('run');
