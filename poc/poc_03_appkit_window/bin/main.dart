@@ -12,13 +12,21 @@ void main(List<String> args) {
     exit(1);
   }
 
-  final passed = runAppKitWindow();
+  // --smoke-test asserts only what a headless CI process can prove: that pure
+  // Dart FFI reaches the Objective-C runtime and AppKit. Presenting a window
+  // additionally requires the process main thread, which the Dart VM keeps.
+  final smokeTest = args.contains('--smoke-test');
+  final passed = smokeTest ? runAppKitBindingSmokeTest() : runAppKitWindow();
 
   if (!passed) {
-    stderr.writeln('AppKit lifecycle validation failed.');
+    stderr.writeln(smokeTest
+        ? 'AppKit binding smoke test failed.'
+        : 'AppKit window creation failed.');
     exit(1);
   }
 
-  print('AppKit event loop finished. Exiting.');
+  print(smokeTest
+      ? 'AppKit bindings validated. Exiting.'
+      : 'AppKit event loop finished. Exiting.');
   exit(0);
 }

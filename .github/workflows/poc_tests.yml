@@ -148,27 +148,16 @@ jobs:
         working-directory: poc/poc_03_appkit_window
         run: dart test
 
+      # Step-level cap: macOS runners have no GNU `timeout`, and a blocked
+      # AppKit call must not eat the job budget again.
       - name: AOT compile and smoke test
         working-directory: poc/poc_03_appkit_window
+        timeout-minutes: 3
         run: |
           mkdir -p build
           dart compile exe bin/main.dart -o build/poc_03
           chmod +x build/poc_03
-          # macOS runners have no GNU `timeout`; use a watchdog so a blocked
-          # AppKit call fails fast instead of burning the whole job budget.
-          ./build/poc_03 --smoke-test &
-          POC_PID=$!
-          ( sleep 60; kill -9 $POC_PID 2>/dev/null || true ) &
-          WATCHDOG_PID=$!
-          set +e
-          wait $POC_PID
-          STATUS=$?
-          set -e
-          kill $WATCHDOG_PID 2>/dev/null || true
-          if [ $STATUS -ne 0 ]; then
-            echo "::error::POC-03 smoke test failed or timed out (exit $STATUS)"
-            exit $STATUS
-          fi
+          ./build/poc_03 --smoke-test
 
   # ==============================================================
   # POC-04: CPU Rasterization (all platforms)

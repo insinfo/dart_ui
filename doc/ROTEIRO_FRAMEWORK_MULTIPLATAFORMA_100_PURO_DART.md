@@ -2683,6 +2683,44 @@ dart_ui_backend_macos/
 13. executar loop;
 14. liberar recursos.
 
+### Restrição medida no POC-03 (risco R02)
+
+O passo 1 não é formalidade: **um binário gerado por `dart compile exe` reprova
+nessa verificação**. Medido no CI macOS (macos-14 arm64, Dart 3.6.0):
+
+```
+[AppKit] pthread_main_np() = 0
+[AppKit] sharedApp pointer: 5408589776
+*** NSInternalInconsistencyException:
+    'NSWindow should only be instantiated on the main thread!'  -> Abort trap: 6
+```
+
+A VM do Dart não entrega a main thread do processo ao código Dart — "main
+isolate" e "main thread do processo" são coisas diferentes. Consequências:
+
+- `objc_getClass`, `sel_registerName`, `objc_msgSend` e até
+  `[NSApplication sharedApplication]` funcionam fora da main thread;
+- `NSWindow` aborta o processo;
+- passar o trabalho para `dispatch_sync_f(dispatch_get_main_queue(), ...)` **não
+  resolve e trava para sempre**: nenhum `NSApplicationMain`, `dispatch_main` ou
+  `CFRunLoop` está drenando a main queue. E, mesmo que estivesse, um
+  `NativeCallable.isolateLocal` aborta ao ser invocado por outra thread que não
+  a do isolate que o criou;
+- `dispatch_async_f` e `NativeCallable.listener` também não servem: o primeiro só
+  remove a espera, o segundo devolve o callback para a thread do Dart.
+
+Portanto o backend AppKit exige que a main thread do processo pertença ao
+AppKit, via uma destas duas arquiteturas:
+
+1. um host nativo mínimo (Objective-C, C ou Swift) como `main()` real, que
+   inicializa o AppKit e hospeda o runtime Dart;
+2. um launcher/runtime Dart próprio que mantenha a main thread livre para o
+   Cocoa e integre o event loop do Dart ao `CFRunLoop`.
+
+Isso **não** reintroduz wrapper por API: `objc_msgSend`, structs e objetos
+continuam em Dart FFI. O componente nativo resolve apenas o que FFI não resolve
+— a propriedade da main thread e o event loop do processo.
+
 ## 20.3 Geração de bindings Objective-C
 
 `ffigen` pode gerar bindings de headers Objective-C, mas o projeto precisa de uma camada estável própria:

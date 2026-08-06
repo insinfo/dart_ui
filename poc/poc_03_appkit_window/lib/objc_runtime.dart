@@ -39,11 +39,15 @@ typedef DispatchSyncFDart = void Function(Pointer<Void> queue,
 final dispatch_sync_f = libSystem.lookupFunction<
     DispatchSyncFNative, DispatchSyncFDart>('dispatch_sync_f');
 
-// Returns non-zero when the calling thread is the process' main thread.
+// Returns non-zero when the calling thread is the process' main thread. AppKit
+// gates NSWindow on exactly this check, so it is what decides whether a window
+// can be instantiated at all.
 typedef PthreadMainNpNative = Int32 Function();
 typedef PthreadMainNpDart = int Function();
 final pthread_main_np = libSystem
     .lookupFunction<PthreadMainNpNative, PthreadMainNpDart>('pthread_main_np');
+
+bool isMainThread() => pthread_main_np() != 0;
 
 DynamicLibrary? _loadedAppKit;
 
