@@ -52,6 +52,13 @@ final WlDisplayDispatchDart wl_display_dispatch =
     libWayland.lookupFunction<WlDisplayDispatchNative, WlDisplayDispatchDart>(
         'wl_display_dispatch');
 
+// int wl_display_flush(struct wl_display *display)
+typedef WlDisplayFlushNative = Int32 Function(Pointer<Void> display);
+typedef WlDisplayFlushDart = int Function(Pointer<Void> display);
+final WlDisplayFlushDart wl_display_flush =
+    libWayland.lookupFunction<WlDisplayFlushNative, WlDisplayFlushDart>(
+        'wl_display_flush');
+
 // int wl_proxy_add_listener(struct wl_proxy *proxy,
 //                           void (**implementation)(void), void *data);
 // NOTE: `wl_registry_add_listener` is NOT exported by the shared library —

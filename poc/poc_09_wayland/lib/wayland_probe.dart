@@ -272,10 +272,9 @@ WaylandProbeResult runWaylandProbe({int width = 320, int height = 240}) {
   wl_surface_commit(surface);
   result.bufferCommitted = true;
 
-  // Pump two more roundtrips to ensure the compositor processes the commit.
-  print('[Wayland] Pumping roundtrips to confirm compositor ack...');
-  wl_display_roundtrip(display);
-  wl_display_roundtrip(display);
+  // Flush all queued requests to the compositor.
+  print('[Wayland] Flushing requests to compositor...');
+  wl_display_flush(display);
 
   // Cleanup in reverse order.
   print('[Wayland] Cleaning up...');
