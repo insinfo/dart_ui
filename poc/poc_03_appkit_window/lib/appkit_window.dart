@@ -86,13 +86,21 @@ bool runAppKitWindow() {
   print('[AppKit] Initializing NSApplication...');
   ensureAppKitLoaded();
 
-  final mainQueue = dispatch_get_main_queue();
-  final workCallable =
-      NativeCallable<DispatchWorkNative>.isolateLocal(_createAppKitWindowOnMainThread);
+  if (isMainThread()) {
+    // The Dart standalone VM runs the main isolate on the process' main thread.
+    // Dispatching synchronously onto the main queue from the main thread would
+    // deadlock, because nothing is draining that queue - just call directly.
+    print('[AppKit] Already on the main OS thread, invoking directly.');
+    _createAppKitWindowOnMainThread(nullptr);
+  } else {
+    final mainQueue = dispatch_get_main_queue();
+    final workCallable = NativeCallable<DispatchWorkNative>.isolateLocal(
+        _createAppKitWindowOnMainThread);
 
-  dispatch_sync_f(mainQueue, nullptr, workCallable.nativeFunction);
+    dispatch_sync_f(mainQueue, nullptr, workCallable.nativeFunction);
 
-  workCallable.close();
+    workCallable.close();
+  }
 
   print('[AppKit] AppKit window lifecycle validation result: $_didCreateWindowSuccess');
   return _didCreateWindowSuccess;

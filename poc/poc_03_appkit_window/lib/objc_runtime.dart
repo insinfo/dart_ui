@@ -8,10 +8,26 @@ import 'package:ffi/ffi.dart';
 final DynamicLibrary libObjC = DynamicLibrary.open('libobjc.A.dylib');
 final DynamicLibrary libSystem = DynamicLibrary.open('libSystem.B.dylib');
 
-typedef DispatchGetMainQueueNative = Pointer<Void> Function();
-typedef DispatchGetMainQueueDart = Pointer<Void> Function();
-final dispatch_get_main_queue = libSystem.lookupFunction<
-    DispatchGetMainQueueNative, DispatchGetMainQueueDart>('dispatch_get_main_queue');
+// `dispatch_get_main_queue()` is a `static inline` function declared in
+// <dispatch/queue.h>; it is NOT an exported symbol, so dlsym() always fails on
+// it. What it actually returns is the address of the global queue object
+// `_dispatch_main_q`, which *is* exported as a data symbol by libdispatch
+// (re-exported through libSystem). Look that up instead.
+Pointer<Void>? _mainQueueCache;
+
+Pointer<Void> dispatch_get_main_queue() {
+  final cached = _mainQueueCache;
+  if (cached != null) return cached;
+  for (final lib in [libSystem, DynamicLibrary.process()]) {
+    try {
+      final queue = lib.lookup<Void>('_dispatch_main_q');
+      _mainQueueCache = queue;
+      return queue;
+    } catch (_) {}
+  }
+  throw UnsupportedError(
+      'Unable to resolve the libdispatch main queue symbol `_dispatch_main_q`.');
+}
 
 typedef DispatchSyncFNative = Void Function(Pointer<Void> queue,
     Pointer<Void> context, Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
@@ -19,6 +35,20 @@ typedef DispatchSyncFDart = void Function(Pointer<Void> queue,
     Pointer<Void> context, Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
 final dispatch_sync_f = libSystem.lookupFunction<
     DispatchSyncFNative, DispatchSyncFDart>('dispatch_sync_f');
+
+// Returns non-zero when the calling thread is the process' main thread.
+typedef PthreadMainNpNative = Int32 Function();
+typedef PthreadMainNpDart = int Function();
+final _pthread_main_np = libSystem
+    .lookupFunction<PthreadMainNpNative, PthreadMainNpDart>('pthread_main_np');
+
+bool isMainThread() {
+  try {
+    return _pthread_main_np() != 0;
+  } catch (_) {
+    return false;
+  }
+}
 
 DynamicLibrary? _loadedAppKit;
 
