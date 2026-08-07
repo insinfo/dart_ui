@@ -559,19 +559,24 @@ event-port summary: callbacks=12 events=32
 sampledTypes=[13, 21, 10, 11, 5, 10, 11, 5, ...]
 ```
 
-O resultado corrige a hipótese anterior: `SLPSRegisterWithServer` não recebe
-`ProcessSerialNumber*` neste caminho. O argumento medido que funcionou foi o
-`mach_port_t` retornado por `SLSGetEventPort`. O consumidor sem registro montou
-`CFMachPort` e `CFRunLoopSource`, recebeu sinal e então bloqueou ao chamar
+O resultado corrige a hipótese anterior: o ponteiro PSN certamente não é o
+argumento observado. O consumidor sem registro montou `CFMachPort` e
+`CFRunLoopSource`, recebeu sinal e então bloqueou ao chamar
 `SLEventCreateNextEvent`; o hard cap do workflow o matou e preservou o sample.
-No probe Y, depois de `SLPSRegisterWithServer(eventPort) == 0`, a mesma rotina
-drenou 32 eventos e terminou normalmente. Os tipos `10/11` correspondem ao par
-de teclado sintético e `5` ao movimento de mouse postado pelo probe.
+No probe Y, uma chamada posterior escrita como
+`SLPSRegisterWithServer(eventPort)` retornou 0 e a mesma rotina drenou 32 eventos.
+Os tipos `10/11` correspondem ao par de teclado sintético e `5` ao movimento de
+mouse postado pelo probe.
 
-Y também executou operações de foreground antes do dreno. Por isso a evidência
-prova o pipeline completo, mas ainda não que o registro da porta seja suficiente
-isoladamente. **Z3** repete apenas `SLSGetEventPort ->
-SLPSRegisterWithServer(eventPort) -> CFMachPort`, sem PSN, AppKit ou foreground.
+O [run 31155012538](https://github.com/insinfo/dart_ui/actions/runs/31155012538)
+refutou a leitura literal desse argumento: isolada, a chamada com `eventPort`
+retornou `-50`. O sucesso de Y depende da sequência anterior ou de argumentos
+adicionais que o typedef de um parâmetro não inicializa. O
+[stub do Darling](https://github.com/darlinghq/darling/blob/6efdaf4246ef01da66ebb57f27c5645d6cf95b4c/src/private-frameworks/SkyLight/include/SkyLight/SkyLight.h)
+declara `SLPSRegisterWithServer(void)`, insuficiente como prova mas compatível
+com argumentos extras simplesmente ignorados. **Z4**
+testa o ABI sem argumentos com retry imediato; o workflow também para no símbolo
+sob LLDB, registra `x0...x7` e desassembla a implementação do macOS 14.
 
 ## Próximos passos
 
@@ -590,17 +595,19 @@ diferenças objetivas entre o probe e o consumidor conhecido.
    notificar o isolate, sem criar, destruir ou redesenhar janelas ali dentro.
    O workflow agora impõe um hard cap, coleta `sample` e mata o processo se uma
    chamada privada voltar a bloquear.
-3. **Probe Z3 — implementado, aguardando CI:** registrar somente o `eventPort`
-   com `SLPSRegisterWithServer(eventPort)` antes de instalar a source. Se repetir
-   os 32 eventos, elimina PSN, `SLPSSetMainApplicationConnection`, foreground,
-   bundle e LaunchServices do caminho mínimo.
-4. Depois da confirmação de Z3, extrair o consumidor para uma classe pequena,
+3. **Probe Z3 — refutado no CI:** `SLPSRegisterWithServer(eventPort)` isolado
+   retornou `-50`; não chamar `SLEventCreateNextEvent` depois dessa falha evita o
+   bloqueio observado na rodada anterior.
+4. **Probe Z4 — implementado, aguardando CI:** chamar
+   `SLPSRegisterWithServer()` sem argumentos e repetir uma vez. Em paralelo,
+   recuperar prólogo, registradores e desassembly pelo LLDB.
+5. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-5. Manter `CGEventTap` como plano B público para captura global. Eventos de
+6. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-6. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+7. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-7. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+8. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.

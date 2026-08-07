@@ -1415,16 +1415,21 @@ int _consumeSkyLightEventPort(
       'rc=$getEventPortRc port=$eventPort');
   if (getEventPortRc != 0 || eventPort == 0) return -1;
 
-  // Run 31154591354 narrowed the registration ABI. Passing a PSN* returned
-  // paramErr (-50), while passing this mach_port_t returned 0 and the following
-  // pipeline drained 32 events. This minimal path isolates whether foreground
-  // calls are unnecessary. Never drain unless registration succeeds: before
-  // registration SLEventCreateNextEvent can block after the port signals.
+  // Public source searches only expose void-argument stubs for this symbol.
+  // Run 31154591354 saw the first call return -50 and a later call return 0;
+  // run 31155012538 confirmed one call alone still returns -50. Test the
+  // smallest stateful interpretation: no arguments and one immediate retry.
+  // Never drain unless registration succeeds: before registration
+  // SLEventCreateNextEvent can block indefinitely after the port signals.
   final registerWithServer =
-      skyLight.lookupFunction<Int32 Function(Uint32), int Function(int)>(
+      skyLight.lookupFunction<Int32 Function(), int Function()>(
           'SLPSRegisterWithServer');
-  final registerRc = registerWithServer(eventPort);
-  _log('SLPSRegisterWithServer(eventPort=$eventPort) -> $registerRc');
+  var registerRc = registerWithServer();
+  _log('SLPSRegisterWithServer() attempt 1 -> $registerRc');
+  if (registerRc != 0) {
+    registerRc = registerWithServer();
+    _log('SLPSRegisterWithServer() attempt 2 -> $registerRc');
+  }
   if (registerRc != 0) return -2;
 
   final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,

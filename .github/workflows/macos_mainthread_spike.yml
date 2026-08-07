@@ -194,8 +194,8 @@ jobs:
           retention-days: 7
 
       # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
-      # a CFRunLoopSource. Z3 registers that port before draining its callback.
-      - name: 'Probe Z1/Z2/Z3: consume the registered SkyLight event port'
+      # a CFRunLoopSource. Z4 tests the void ABI and stateful registration retry.
+      - name: 'Probe Z1/Z2/Z4: consume the registered SkyLight event port'
         timeout-minutes: 4
         continue-on-error: true
         run: |
@@ -227,6 +227,18 @@ jobs:
           cat /tmp/events.log || true
           grep -A 16 "com.apple.main-thread" /tmp/events.sample 2>/dev/null | head -24 || true
           exit "$status"
+
+      - name: 'lldb: recover SLPSRegisterWithServer ABI from macOS 14'
+        timeout-minutes: 2
+        continue-on-error: true
+        run: |
+          lldb --batch \
+            -o "breakpoint set --name SLPSRegisterWithServer" \
+            -o "run skylight-events 1" \
+            -o "register read x0 x1 x2 x3 x4 x5 x6 x7" \
+            -o "disassemble --name SLPSRegisterWithServer" \
+            -o "bt" \
+            ./build/probe 2>&1 | tee /tmp/slps-register-lldb.txt || true
 
       # Probe L supersedes K: one-shot timers, a sentinel in the return buffer,
       # a marker timer, and the real NSDefaultRunLoopMode. sample(1) reads the
