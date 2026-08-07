@@ -354,11 +354,15 @@ jobs:
             echo "===== lldb $name ====="
             # macOS has no GNU timeout(1); cap with perl alarm instead so a
             # hung probe cannot wedge the step.
-            perl -e 'alarm shift; exec @ARGV' 25 lldb --batch \
-              -o "process handle SIGSEGV -n false -p true -s true" \
-              -o "process handle SIGBUS  -n false -p true -s true" \
-              -o "process handle SIGTRAP -n false -p true -s true" \
-              -o "process handle SIGABRT -n false -p true -s true" \
+            # SIGUSR2 is OUR hijack signal (handler = CFRunLoopRun). lldb must
+            # PASS it without stopping, or the session dies at park and never
+            # reaches the real crash. Stop only on fatal faults.
+            perl -e 'alarm shift; exec @ARGV' 30 lldb --batch \
+              -o "process handle SIGUSR2 -n false -p true -s false" \
+              -o "process handle SIGSEGV -n true  -p true -s true" \
+              -o "process handle SIGBUS  -n true  -p true -s true" \
+              -o "process handle SIGTRAP -n true  -p true -s true" \
+              -o "process handle SIGABRT -n true  -p true -s true" \
               -o "run $*" \
               -o "bt" \
               -o "thread backtrace all" \
