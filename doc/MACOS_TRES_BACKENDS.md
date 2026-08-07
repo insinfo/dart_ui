@@ -105,6 +105,11 @@ distinguir três resultados: retorno ao frame interrompido, trap durante o
 unwind ou run loop que nunca retorna. O teste funcional exige também que o
 processo chegue a `NORMAL_SHUTDOWN=PASS` e saia sem chamar `_exit`.
 
+No run arm64 de 2026-08-07 isso foi confirmado: o step-out voltou de
+`CFRunLoopRun` para `_sigtramp`, depois para o `pthread_cond_wait` de
+`Dart_RunLoop`, e o processo saiu com status 0. O trace e seus limites estão em
+[`logs/MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md`](logs/MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md).
+
 Os traces recentes também refinam o diagnóstico do pump: timers continuam
 ativos depois de `finishLaunching`; o bloqueio observado é a chamada síncrona
 a `nextEventMatchingMask`. O `hold-appkit` com pump periódico já recebeu um

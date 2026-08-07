@@ -63,6 +63,14 @@ void main() {
     );
   });
 
+  test('signal backend reports recoverable but non-normal lifecycle', () {
+    final descriptor = macosBackendDescriptors[MacosBackendKind.appkitSignal]!;
+
+    expect(descriptor.hasRecoverableShutdown, isTrue);
+    expect(descriptor.hasNormalAppKitLifecycle, isFalse);
+    expect(descriptor.support, MacosBackendSupport.experimentalUnsafe);
+  });
+
   test('signal hijack requires explicit preference and permission', () {
     final denied = selectMacosBackend(
       availability: allAvailable,

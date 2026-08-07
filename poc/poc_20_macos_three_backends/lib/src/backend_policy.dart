@@ -23,6 +23,7 @@ class MacosBackendDescriptor {
     required this.usesPrivateApi,
     required this.requiresNativeArtifact,
     required this.hasNormalAppKitLifecycle,
+    required this.hasRecoverableShutdown,
   });
 
   final MacosBackendKind kind;
@@ -30,6 +31,7 @@ class MacosBackendDescriptor {
   final bool usesPrivateApi;
   final bool requiresNativeArtifact;
   final bool hasNormalAppKitLifecycle;
+  final bool hasRecoverableShutdown;
 }
 
 const macosBackendDescriptors = <MacosBackendKind, MacosBackendDescriptor>{
@@ -39,6 +41,7 @@ const macosBackendDescriptors = <MacosBackendKind, MacosBackendDescriptor>{
     usesPrivateApi: true,
     requiresNativeArtifact: false,
     hasNormalAppKitLifecycle: false,
+    hasRecoverableShutdown: false,
   ),
   MacosBackendKind.appkitSignal: MacosBackendDescriptor(
     kind: MacosBackendKind.appkitSignal,
@@ -46,6 +49,7 @@ const macosBackendDescriptors = <MacosBackendKind, MacosBackendDescriptor>{
     usesPrivateApi: false,
     requiresNativeArtifact: false,
     hasNormalAppKitLifecycle: false,
+    hasRecoverableShutdown: true,
   ),
   MacosBackendKind.appkitNativeHost: MacosBackendDescriptor(
     kind: MacosBackendKind.appkitNativeHost,
@@ -53,6 +57,7 @@ const macosBackendDescriptors = <MacosBackendKind, MacosBackendDescriptor>{
     usesPrivateApi: false,
     requiresNativeArtifact: true,
     hasNormalAppKitLifecycle: true,
+    hasRecoverableShutdown: true,
   ),
 };
 
