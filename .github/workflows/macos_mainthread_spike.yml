@@ -209,22 +209,20 @@ jobs:
       # a marker timer, and the real NSDefaultRunLoopMode. sample(1) reads the
       # main thread's stack while it runs, which is what tells "timer never
       # delivered" apart from "pump blocked inside _DPSNextEvent".
+      # Sample AFTER the pump is due (100ms) so a block shows _DPSNextEvent.
       - name: 'Probe L: unambiguous timer/pump diagnostic + stack sample'
         timeout-minutes: 4
         continue-on-error: true
         run: |
           ./build/probe pump-timer-diagnostic > /tmp/probe-l.log 2>&1 &
           pid=$!
-          sleep 1
+          sleep 0.5
           sample "$pid" 1 1 -file /tmp/probe-l.sample || echo "sample exit=$?"
-          # Print BEFORE waiting and never wait unbounded: the first run of this
-          # step hung in `wait` and the timeout ate the log and the sample, the
-          # two things it exists to collect.
-          sleep 5
+          sleep 4
           echo "----- probe output -----"
           cat /tmp/probe-l.log || true
           echo "----- main thread stack -----"
-          sed -n '1,60p' /tmp/probe-l.sample || true
+          grep -A 20 "com.apple.main-thread" /tmp/probe-l.sample | head -30 || true
           kill -9 "$pid" 2>/dev/null || true
 
       # The stack sample showed the main thread never stayed in CFRunLoopRun -
@@ -254,6 +252,24 @@ jobs:
         continue-on-error: true
         run: ./build/probe appkit-bisect || echo "exit=$?"
 
+      # O crashed at the same Trace/BPT address as G after starting the pump.
+      # Hold the window with only a witness timer - no nextEvent - to see which
+      # of the two is the killer.
+      - name: 'Probe U: hold NSWindow with NO nextEvent pump'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          ./build/probe hold-appkit-nopump 8 > /tmp/probe-u.log 2>&1 &
+          pid=$!
+          sleep 2
+          sample "$pid" 1 1 -file /tmp/probe-u.sample || echo "sample exit=$?"
+          sleep 8
+          echo "----- probe output -----"
+          cat /tmp/probe-u.log || true
+          echo "----- main thread stack -----"
+          grep -A 16 "com.apple.main-thread" /tmp/probe-u.sample | head -24 || true
+          kill -9 "$pid" 2>/dev/null || true
+
       - name: 'Probe Q: register as a foreground app, then ask for events'
         timeout-minutes: 4
         continue-on-error: true
@@ -267,14 +283,28 @@ jobs:
           sleep 6
           cat /tmp/foreground.log || true
 
+      # Public HIServices TransformProcessType instead of guessed SLPS* calls.
+      - name: 'Probe X: TransformProcessType then pull WindowServer events'
+        timeout-minutes: 4
+        continue-on-error: true
+        run: |
+          ./build/probe transform-process 12 > /tmp/transform.log 2>&1 &
+          sleep 3
+          for i in 1 2 3; do
+            ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
+            sleep 2
+          done
+          sleep 8
+          cat /tmp/transform.log || true
+
       - name: 'Probe K: pump the event queue from an NSTimer instead'
         timeout-minutes: 3
         continue-on-error: true
         run: ./build/probe pump-timer || echo "exit=$?"
 
-      # F is re-run because probe R changed the ground under it: it used to
-      # block against a run loop that had already exited. With the keep-alive
-      # source there is a real one now, so this is a genuine retest.
+      # F no longer blocks the Dart thread on nextEvent (one-shot timer +
+      # sentinel). Keep-alive makes this a real retest rather than a hang on a
+      # run loop that already exited.
       - name: 'Probe F: post an NSEvent and pump it back'
         timeout-minutes: 2
         continue-on-error: true

@@ -489,13 +489,42 @@ não para operar uma aplicação.
 AppKit de verdade — com a ressalva, agora medida, de que a rota C entrega janela
 e pixels sem ele.
 
+## Atualização pós keep-alive (probe R/T, run `31082398267`)
+
+A keep-alive source **funciona**: sample mostra
+`_sigtramp -> CFRunLoopRun -> mach_msg`, e um timer repetiu 39 vezes em 3s.
+O bisect T mostrou que `sharedApplication`, `setActivationPolicy:` e
+`finishLaunching` **não matam** o loop (+12 ticks depois de cada um).
+
+Isso reabre F/K/O como testes genuínos (antes mediam um loop que já tinha
+saído). Resultados ainda abertos depois do keep-alive:
+
+| Probe | Depois do keep-alive |
+| --- | --- |
+| R keepalive | ✅ loop real, timers disparam |
+| T appkit-bisect | ✅ init AppKit não mata o loop |
+| K pump-timer | witness 0 ticks (suspeito: pump agendado *antes* do witness e `nextEvent` trava a main) |
+| F event-pump | ⛔ ainda trava em `nextEventMatchingMask:` via `waitUntilDone:YES` |
+| O hold-appkit | ❌ mesmo Trace/BPT de G logo após o pump timer |
+| Q/P skylight input | 0 eventos mesmo com SLPS* |
+
+**Próximos probes (esta rodada):**
+
+- **U** `hold-appkit-nopump` — janela + witness, **sem** `nextEvent`. Bisect do
+  crash O: é a janela ou o pump?
+- **K/F/L reescritos** — witness antes do pump, one-shot + sentinel,
+  `NSDefaultRunLoopMode` real, F sem `waitUntilDone:YES` no nextEvent,
+  log em stderr (stdout redirecionado no CI engolia RESULT).
+- **X** `transform-process` — `TransformProcessType` / `SetFrontProcess`
+  (HIServices público) no lugar dos SLPS* chutados, depois
+  `SLEventCreateNextEvent`.
+
 ## Próximos passos
 
-1. Descobrir a API de entrega de eventos do WindowServer no SkyLight
-   (`dyld_info -exports | grep -i event`). É assim que o próprio AppKit recebe
-   input; se ela for alcançável, a rota C fecha sozinha — janela, pixels e
-   input, sem main thread e sem AppKit.
-2. Avaliar `CGEventTap` como plano B para input (exige permissão de
+1. Fechar U (janela sem pump) e o reteste F/K/L com keep-alive de verdade.
+2. Se X ainda der 0 eventos: `SLPSRegisterWithServer` /
+   `SLPSSetMainApplicationConnection`, ou app bundle + LaunchServices.
+3. Avaliar `CGEventTap` como plano B para input (exige permissão de
    acessibilidade concedida pelo usuário).
-3. Decorações, menus, IME e acessibilidade: o que a rota C perde ao abrir mão do
+4. Decorações, menus, IME e acessibilidade: o que a rota C perde ao abrir mão do
    AppKit, e quanto disso o framework precisa reimplementar.

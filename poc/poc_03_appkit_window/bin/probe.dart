@@ -62,6 +62,9 @@ final dispatch_time = libSystem.lookupFunction<
 final DynamicLibrary libCoreFoundation = DynamicLibrary.open(
     '/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation');
 
+final DynamicLibrary libFoundation = DynamicLibrary.open(
+    '/System/Library/Frameworks/Foundation.framework/Foundation');
+
 final Pointer<Void> cfRunLoopRunPtr = libCoreFoundation.lookup<Void>('CFRunLoopRun');
 
 // Once the main thread is parked in a run loop it never returns, so normal
@@ -247,6 +250,17 @@ void probeSignalHijack() {
 /// Parks the process main thread in a CFRunLoop and returns once the main
 /// queue is confirmed to be draining. See [probeSignalHijack] for the why.
 ///
+/// Line-buffered-ish logging: when stdout is redirected to a file (every CI
+/// step that backgrounds a probe), Dart block-buffers it and a kill -9 eats
+/// the evidence. stderr stays line-buffered on Darwin.
+void _log(String message) {
+  print(message);
+  stderr.writeln(message);
+}
+
+Pointer<ObjCObject> _nsDefaultRunLoopMode() =>
+    libFoundation.lookup<Pointer<ObjCObject>>('NSDefaultRunLoopMode').value;
+
 /// The keep-alive source is not optional. Without it CFRunLoopRun drains what
 /// is pending, finds no source to justify staying, returns
 /// kCFRunLoopRunFinished, and the VM takes the thread back - which is what the
@@ -254,12 +268,12 @@ void probeSignalHijack() {
 /// loop that was no longer there.
 bool _parkMainThreadInRunLoop() {
   if (!_keepMainRunLoopAlive()) {
-    print('WARNING: no keep-alive source; the run loop will exit immediately.');
+    _log('WARNING: no keep-alive source; the run loop will exit immediately.');
   }
   signal(SIGUSR2, cfRunLoopRunPtr);
   final killResult = pthread_kill(pthread_main_thread_np(), SIGUSR2);
   if (killResult != 0) {
-    print('pthread_kill(main, SIGUSR2) failed: $killResult');
+    _log('pthread_kill(main, SIGUSR2) failed: $killResult');
     return false;
   }
 
@@ -311,14 +325,6 @@ Pointer<ObjCObject> _returnedObject(Pointer<ObjCObject> invocation) {
   final value = slot.value;
   calloc.free(slot);
   return value;
-}
-
-Pointer<ObjCObject> _nsString(String value) {
-  final utf8 = value.toNativeUtf8();
-  final string = msgSendPointerPointer(getClass('NSString').msgSend('alloc'),
-      sel('initWithUTF8String:'), utf8.cast());
-  calloc.free(utf8);
-  return string;
 }
 
 // ---------------------------------------------------------------------------
@@ -436,42 +442,29 @@ void probeMainThreadWindow() {
 const NSEventTypeApplicationDefined = 15;
 const NSEventMaskAny = 0xFFFFFFFFFFFFFFFF;
 
-void probeEventPump() {
-  ensureAppKitLoaded();
-  if (!_parkMainThreadInRunLoop()) {
-    print('RESULT: could not park the main thread.');
-    _exitProcess(1);
-  }
-  print('main thread parked, main queue draining.');
+/// Builds the nextEventMatchingMask: invocation with the real
+/// NSDefaultRunLoopMode global and distantPast. Shared by F/K/L/O/V.
+Pointer<ObjCObject> _newPumpInvocation(Pointer<ObjCObject> app) {
+  final pumpInvocation = _newInvocation(
+      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
+  final mask = calloc<Uint64>()..value = NSEventMaskAny;
+  final untilDate = calloc<Pointer<ObjCObject>>()
+    ..value = getClass('NSDate').msgSend('distantPast');
+  final mode = calloc<Pointer<ObjCObject>>()..value = _nsDefaultRunLoopMode();
+  final dequeue = calloc<Uint8>()..value = 1;
+  _setArgument(pumpInvocation, mask.cast(), 2);
+  _setArgument(pumpInvocation, untilDate.cast(), 3);
+  _setArgument(pumpInvocation, mode.cast(), 4);
+  _setArgument(pumpInvocation, dequeue.cast(), 5);
+  pumpInvocation.msgSend('retainArguments');
+  return pumpInvocation;
+}
 
-  final app = getClass('NSApplication').msgSend('sharedApplication');
-
-  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
-  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
-  _setArgument(policyInvocation, policy.cast(), 2);
-  _invokeOnMain(policyInvocation);
-  print('activation policy set on the main thread.');
-
-  // First attempt hung right here: AppKit only wires up its event queue during
-  // -finishLaunching, so nextEventMatchingMask: had nothing to wait on and
-  // never came back. [NSApp run] would call this itself; a manual pump has to.
-  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
-  print('[NSApp finishLaunching] returned.');
-
-  // finishLaunching is a suspect for the hang: if the UI channel is already
-  // dead here, the problem is not nextEventMatchingMask: at all. A trivial
-  // round trip tells the two apart instead of leaving us guessing.
-  final probeChannel = _newInvocation(app, sel('isRunning'));
-  _invokeOnMain(probeChannel);
-  final running = calloc<Uint8>();
-  msgSendVoidPointer(probeChannel, sel('getReturnValue:'), running.cast());
-  print('channel alive after finishLaunching: [NSApp isRunning] = '
-      '${running.value}');
-
+Pointer<ObjCObject> _newSyntheticAppEvent() {
   final location = calloc<NSPoint>()
     ..ref.x = 0
     ..ref.y = 0;
-  final posted = msgSendDummyEvent(
+  return msgSendDummyEvent(
       getClass('NSEvent'),
       sel('otherEventWithType:location:modifierFlags:timestamp:windowNumber:'
           'context:subtype:data1:data2:'),
@@ -484,43 +477,83 @@ void probeEventPump() {
       1,
       0xBEEF,
       0);
-  print('synthetic NSEvent = ${posted.address}');
-  if (posted == nullptr) {
-    print('RESULT: could not build an NSEvent.');
-    _exitProcess(1);
-  }
+}
 
+void _postEventOnMain(Pointer<ObjCObject> app, Pointer<ObjCObject> event) {
   final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
-  final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
+  final eventArgument = calloc<Pointer<ObjCObject>>()..value = event;
   final atStart = calloc<Uint8>()..value = 1;
   _setArgument(postInvocation, eventArgument.cast(), 2);
   _setArgument(postInvocation, atStart.cast(), 3);
   _invokeOnMain(postInvocation);
-  print('event posted on the main thread.');
+}
 
-  final pumpInvocation = _newInvocation(
-      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
-  final mask = calloc<Uint64>()..value = NSEventMaskAny;
-  final untilDate = calloc<Pointer<ObjCObject>>()
-    ..value = getClass('NSDate').msgSend('distantPast');
-  final mode = calloc<Pointer<ObjCObject>>()
-    ..value = _nsString('kCFRunLoopDefaultMode');
-  final dequeue = calloc<Uint8>()..value = 1;
-  _setArgument(pumpInvocation, mask.cast(), 2);
-  _setArgument(pumpInvocation, untilDate.cast(), 3);
-  _setArgument(pumpInvocation, mode.cast(), 4);
-  _setArgument(pumpInvocation, dequeue.cast(), 5);
-  _invokeOnMain(pumpInvocation);
+Future<void> probeEventPump() async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    _log('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+  _log('main thread parked, main queue draining.');
+
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+
+  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
+  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
+  _setArgument(policyInvocation, policy.cast(), 2);
+  _invokeOnMain(policyInvocation);
+  _log('activation policy set on the main thread.');
+
+  // First attempt hung right here: AppKit only wires up its event queue during
+  // -finishLaunching, so nextEventMatchingMask: had nothing to wait on and
+  // never came back. [NSApp run] would call this itself; a manual pump has to.
+  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
+  _log('[NSApp finishLaunching] returned.');
+
+  // finishLaunching is a suspect for the hang: if the UI channel is already
+  // dead here, the problem is not nextEventMatchingMask: at all. A trivial
+  // round trip tells the two apart instead of leaving us guessing.
+  final probeChannel = _newInvocation(app, sel('isRunning'));
+  _invokeOnMain(probeChannel);
+  final running = calloc<Uint8>();
+  msgSendVoidPointer(probeChannel, sel('getReturnValue:'), running.cast());
+  _log('channel alive after finishLaunching: [NSApp isRunning] = '
+      '${running.value}');
+
+  final posted = _newSyntheticAppEvent();
+  _log('synthetic NSEvent = ${posted.address}');
+  if (posted == nullptr) {
+    _log('RESULT: could not build an NSEvent.');
+    _exitProcess(1);
+  }
+
+  _postEventOnMain(app, posted);
+  _log('event posted on the main thread.');
+
+  // Never call nextEventMatchingMask: via performSelector waitUntilDone:YES -
+  // that hung the CI for 2 minutes. Drive it from a one-shot NSTimer instead
+  // (same path as L) and let the Dart isolate time out cleanly.
+  final pumpInvocation = _newPumpInvocation(app);
+  _writeSentinel(pumpInvocation);
+  _scheduleOneShot(pumpInvocation, 0.05);
+  _log('one-shot pump scheduled; waiting up to 2s...');
+
+  await Future<void>.delayed(const Duration(seconds: 2));
 
   final pumped = _returnedObject(pumpInvocation);
-  print('nextEventMatchingMask: -> ${pumped.address}');
+  _log('nextEventMatchingMask: -> ${pumped.address}');
 
+  if (pumped.address == 1) {
+    _log('RESULT: pump never completed - nextEventMatchingMask: blocked even '
+        'with distantPast, driven from an NSTimer on the parked run loop.');
+    _exitProcess(1);
+  }
   if (pumped == posted) {
-    print('RESULT: the exact event posted came back out of the queue. AppKit '
+    _log('RESULT: the exact event posted came back out of the queue. AppKit '
         'event dispatch works on the hijacked main thread.');
     _exitProcess(0);
   }
-  print(pumped == nullptr
+  _log(pumped == nullptr
       ? 'RESULT: queue returned nil - the event never made it through.'
       : 'RESULT: a DIFFERENT event came back (${pumped.address}); the queue is '
           'alive but identity is unproven.');
@@ -846,13 +879,16 @@ Future<void> probeReverseChannel() async {
 Future<void> probePumpViaTimer() async {
   ensureAppKitLoaded();
   if (!_parkMainThreadInRunLoop()) {
-    print('RESULT: could not park the main thread.');
+    _log('RESULT: could not park the main thread.');
     _exitProcess(1);
   }
 
   // A witness timer, needed to read the result at all: a nil from the pump
   // means "queue was empty" only if timers fire in the first place. Without
   // this, a nil is indistinguishable from a timer that never ran.
+  // Schedule the witness BEFORE the pump: if nextEventMatchingMask: blocks the
+  // main thread, a witness scheduled after it never gets a chance to fire and
+  // falsely reports "timers dead".
   var ticks = 0;
   final witness = NativeCallable<_HandleValueNative>.listener(
       (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, int value) => ticks++);
@@ -873,40 +909,11 @@ Future<void> probePumpViaTimer() async {
   _setArgument(policyInvocation, policy.cast(), 2);
   _invokeOnMain(policyInvocation);
   _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
-  print('[NSApp finishLaunching] returned.');
+  _log('[NSApp finishLaunching] returned.');
 
-  final pumpInvocation = _newInvocation(
-      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
-  final mask = calloc<Uint64>()..value = NSEventMaskAny;
-  final untilDate = calloc<Pointer<ObjCObject>>()
-    ..value = getClass('NSDate').msgSend('distantPast');
-  final mode = calloc<Pointer<ObjCObject>>()
-    ..value = _nsString('kCFRunLoopDefaultMode');
-  final dequeue = calloc<Uint8>()..value = 1;
-  _setArgument(pumpInvocation, mask.cast(), 2);
-  _setArgument(pumpInvocation, untilDate.cast(), 3);
-  _setArgument(pumpInvocation, mode.cast(), 4);
-  _setArgument(pumpInvocation, dequeue.cast(), 5);
-  pumpInvocation.msgSend('retainArguments');
-
-  // Scheduling has to happen ON the main thread: the timer attaches to the
-  // run loop of whichever thread schedules it.
   final timerClass = getClass('NSTimer');
-  final scheduleInvocation = _newInvocation(
-      timerClass, sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
-  if (scheduleInvocation == nullptr) {
-    print('RESULT: no signature for the invocation-based NSTimer factory.');
-    _exitProcess(1);
-  }
   final interval = calloc<Double>()..value = 0.05;
-  final invocationArgument = calloc<Pointer<ObjCObject>>()
-    ..value = pumpInvocation;
   final repeats = calloc<Uint8>()..value = 1;
-  _setArgument(scheduleInvocation, interval.cast(), 2);
-  _setArgument(scheduleInvocation, invocationArgument.cast(), 3);
-  _setArgument(scheduleInvocation, repeats.cast(), 4);
-  _invokeOnMain(scheduleInvocation);
-  print('pump timer scheduled on the main run loop.');
 
   final witnessInvocation = _newInvocation(witnessObject, sel('handleValue:'));
   final witnessValue = calloc<Int64>()..value = 1;
@@ -920,59 +927,53 @@ Future<void> probePumpViaTimer() async {
   _setArgument(scheduleWitness, witnessArgument.cast(), 3);
   _setArgument(scheduleWitness, repeats.cast(), 4);
   _invokeOnMain(scheduleWitness);
-  print('witness timer scheduled on the main run loop.');
+  _log('witness timer scheduled on the main run loop FIRST.');
 
-  final location = calloc<NSPoint>()
-    ..ref.x = 0
-    ..ref.y = 0;
-  final posted = msgSendDummyEvent(
-      getClass('NSEvent'),
-      sel('otherEventWithType:location:modifierFlags:timestamp:windowNumber:'
-          'context:subtype:data1:data2:'),
-      NSEventTypeApplicationDefined,
-      location.ref,
-      0,
-      0.0,
-      0,
-      nullptr,
-      1,
-      0xBEEF,
-      0);
-  final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
-  final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
-  final atStart = calloc<Uint8>()..value = 1;
-  _setArgument(postInvocation, eventArgument.cast(), 2);
-  _setArgument(postInvocation, atStart.cast(), 3);
-  _invokeOnMain(postInvocation);
-  print('posted event ${posted.address}; letting the timer run...');
+  // Let the witness prove the loop is alive before introducing nextEvent.
+  await Future<void>.delayed(const Duration(milliseconds: 400));
+  _log('witness ticks before pump: $ticks');
 
-  // Async, not a blocking sleep: the witness arrives through this isolate's
-  // event loop, so blocking the thread would silence the very evidence needed.
+  final posted = _newSyntheticAppEvent();
+  _postEventOnMain(app, posted);
+  _log('posted event ${posted.address}');
+
+  // One-shot pump (repeats:YES overwrote the return value and could wedge the
+  // loop on the first blocking call).
+  final pumpInvocation = _newPumpInvocation(app);
+  _writeSentinel(pumpInvocation);
+  _scheduleOneShot(pumpInvocation, 0.05);
+  _log('one-shot pump scheduled; waiting 2s...');
+
   await Future<void>.delayed(const Duration(seconds: 2));
   witness.close();
 
   final pumped = _returnedObject(pumpInvocation);
-  print('witness timer fired $ticks times');
-  print('last value returned by the timed pump: ${pumped.address}');
+  _log('witness timer fired $ticks times total');
+  _log('pump returned: ${pumped.address}');
 
   if (ticks == 0) {
-    print('RESULT: the parked run loop never serviced a timer, so the pump '
+    _log('RESULT: the parked run loop never serviced a timer, so the pump '
         'never ran. CFRunLoopRun inside a signal handler is the suspect, not '
         'nextEventMatchingMask:.');
     _exitProcess(1);
   }
 
+  if (pumped.address == 1) {
+    _log('RESULT: timers fire ($ticks) but the pump never completed - '
+        'nextEventMatchingMask: blocked the main thread. That is why the '
+        'earlier witness-after-pump setup saw zero ticks.');
+    _exitProcess(1);
+  }
+
   if (pumped == posted) {
-    print('RESULT: the timer pumped our event off the main thread run loop. '
+    _log('RESULT: the timer pumped our event off the main thread run loop. '
         'A timer-driven pump is the way to feed AppKit event dispatch.');
     _exitProcess(0);
   }
-  print(pumped == nullptr
+  _log(pumped == nullptr
       ? 'RESULT: timers DO fire on the parked run loop ($ticks times) and the '
           'pump still returned nil - so nextEventMatchingMask: returns '
-          'normally here and the queue is simply empty. The earlier hang was '
-          're-entrancy from performSelectorOnMainThread:, and the missing '
-          'event points at the headless session.'
+          'normally here and the queue is simply empty.'
       : 'RESULT: a different object came back (${pumped.address}).');
   _exitProcess(1);
 }
@@ -1153,20 +1154,7 @@ void probeHoldSkyLightWindow(int seconds) {
   _exitProcess(0);
 }
 
-Future<void> probeHoldAppKitWindow(int seconds) async {
-  ensureAppKitLoaded();
-  if (!_parkMainThreadInRunLoop()) {
-    print('RESULT: could not park the main thread.');
-    _exitProcess(1);
-  }
-
-  final app = getClass('NSApplication').msgSend('sharedApplication');
-  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
-  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
-  _setArgument(policyInvocation, policy.cast(), 2);
-  _invokeOnMain(policyInvocation);
-  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
-
+Pointer<ObjCObject> _createAndFrontNSWindow() {
   final windowClass = getClass('NSWindow');
   final allocated = windowClass.msgSend('alloc');
   final initSelector = sel('initWithContentRect:styleMask:backing:defer:');
@@ -1188,11 +1176,7 @@ Future<void> probeHoldAppKitWindow(int seconds) async {
   _setArgument(invocation, deferCreation.cast(), 5);
   _invokeOnMain(invocation);
   final window = _returnedObject(invocation);
-  print('NSWindow = ${window.address}');
-  if (window == nullptr) {
-    print('RESULT: no window.');
-    _exitProcess(1);
-  }
+  if (window == nullptr) return nullptr;
 
   msgSendPerformOnMain(
       window,
@@ -1200,27 +1184,42 @@ Future<void> probeHoldAppKitWindow(int seconds) async {
       sel('makeKeyAndOrderFront:'),
       nullptr,
       true);
+  return window;
+}
+
+void _finishLaunchingOnMain() {
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
+  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
+  _setArgument(policyInvocation, policy.cast(), 2);
+  _invokeOnMain(policyInvocation);
+  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
+}
+
+Future<void> probeHoldAppKitWindow(int seconds) async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    _log('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+
+  final app = getClass('NSApplication').msgSend('sharedApplication');
+  _finishLaunchingOnMain();
+
+  final window = _createAndFrontNSWindow();
+  _log('NSWindow = ${window.address}');
+  if (window == nullptr) {
+    _log('RESULT: no window.');
+    _exitProcess(1);
+  }
 
   final numberInvocation = _newInvocation(window, sel('windowNumber'));
   _invokeOnMain(numberInvocation);
-  print('WINDOW_ID=${_returnedInt(numberInvocation)}');
+  _log('WINDOW_ID=${_returnedInt(numberInvocation)}');
 
   // Pump on a timer (probe K's mechanism) and count what comes out, so an
   // externally injected key press has somewhere to land.
-  final pumpInvocation = _newInvocation(
-      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
-  final mask = calloc<Uint64>()..value = NSEventMaskAny;
-  final untilDate = calloc<Pointer<ObjCObject>>()
-    ..value = getClass('NSDate').msgSend('distantPast');
-  final mode = calloc<Pointer<ObjCObject>>()
-    ..value = _nsString('kCFRunLoopDefaultMode');
-  final dequeue = calloc<Uint8>()..value = 1;
-  _setArgument(pumpInvocation, mask.cast(), 2);
-  _setArgument(pumpInvocation, untilDate.cast(), 3);
-  _setArgument(pumpInvocation, mode.cast(), 4);
-  _setArgument(pumpInvocation, dequeue.cast(), 5);
-  pumpInvocation.msgSend('retainArguments');
-
+  final pumpInvocation = _newPumpInvocation(app);
   final timerClass = getClass('NSTimer');
   final scheduleInvocation = _newInvocation(
       timerClass, sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
@@ -1232,64 +1231,105 @@ Future<void> probeHoldAppKitWindow(int seconds) async {
   _setArgument(scheduleInvocation, invocationArgument.cast(), 3);
   _setArgument(scheduleInvocation, repeats.cast(), 4);
   _invokeOnMain(scheduleInvocation);
-  print('pump timer running; holding for ${seconds}s...');
+  _log('pump timer running; holding for ${seconds}s...');
 
   final seen = <int>{};
   for (var i = 0; i < seconds * 5; i++) {
     await Future<void>.delayed(const Duration(milliseconds: 200));
     final event = _returnedObject(pumpInvocation);
-    if (event != nullptr && seen.add(event.address)) {
-      print('pumped an NSEvent: ${event.address}');
+    if (event != nullptr && event.address != 1 && seen.add(event.address)) {
+      _log('pumped an NSEvent: ${event.address}');
     }
   }
 
-  print('distinct events pumped: ${seen.length}');
-  print(seen.isEmpty
+  _log('distinct events pumped: ${seen.length}');
+  _log(seen.isEmpty
       ? 'RESULT: no events reached the queue in ${seconds}s.'
       : 'RESULT: ${seen.length} event(s) came through the pump.');
   _exitProcess(seen.isEmpty ? 1 : 0);
 }
 
-// kCGHIDEventTap = 0, kCGEventMouseMoved = 5.
-void probePostInput() {
-  final coreGraphics = DynamicLibrary.open(
-      '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+// ---------------------------------------------------------------------------
+// Probe U - does the NSWindow itself crash, or only the pump?
+//
+// Probe O creates a window and immediately starts a repeating nextEvent pump,
+// then dies with the same Trace/BPT trap as [NSApp run] (probe G). Bisect:
+// hold the window with only a witness timer and the keep-alive source - no
+// nextEventMatchingMask: at all. Survive => the pump is the killer. Crash =>
+// the window (or makeKeyAndOrderFront:) cannot live on the hijacked thread.
+// ---------------------------------------------------------------------------
 
-  final createKeyboardEvent = coreGraphics.lookupFunction<
-      Pointer<Void> Function(Pointer<Void>, Uint16, Bool),
-      Pointer<Void> Function(Pointer<Void>, int, bool)>(
-      'CGEventCreateKeyboardEvent');
-  final createMouseEvent = coreGraphics.lookupFunction<
-      Pointer<Void> Function(Pointer<Void>, Uint32, NSPoint, Uint32),
-      Pointer<Void> Function(Pointer<Void>, int, NSPoint, int)>(
-      'CGEventCreateMouseEvent');
-  final post = coreGraphics.lookupFunction<
-      Void Function(Uint32, Pointer<Void>),
-      void Function(int, Pointer<Void>)>('CGEventPost');
-
-  final keyDown = createKeyboardEvent(nullptr, 0, true); // keycode 0 = 'a'
-  final keyUp = createKeyboardEvent(nullptr, 0, false);
-  print('CGEventCreateKeyboardEvent -> down ${keyDown.address}, '
-      'up ${keyUp.address}');
-  if (keyDown == nullptr) {
-    print('RESULT: could not synthesize a keyboard event.');
+Future<void> probeHoldAppKitNoPump(int seconds) async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    _log('RESULT: could not park the main thread.');
     _exitProcess(1);
   }
-  post(0, keyDown);
-  post(0, keyUp);
-  print('posted key down/up for keycode 0.');
+  _log('main thread parked.');
 
-  final point = calloc<NSPoint>()
-    ..ref.x = 400
-    ..ref.y = 400;
-  final mouseMove = createMouseEvent(nullptr, 5, point.ref, 0);
-  print('CGEventCreateMouseEvent -> ${mouseMove.address}');
-  if (mouseMove != nullptr) {
-    post(0, mouseMove);
-    print('posted a mouse move to (400, 400).');
+  var ticks = 0;
+  final witness = NativeCallable<_HandleValueNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, int value) => ticks++);
+  final className = 'DartUiHoldNoPumpWitness'.toNativeUtf8();
+  final witnessClass =
+      objc_allocateClassPair(getClass('NSObject'), className, 0);
+  calloc.free(className);
+  final types = 'v@:q'.toNativeUtf8();
+  class_addMethod(
+      witnessClass, sel('handleValue:'), witness.nativeFunction.cast(), types);
+  calloc.free(types);
+  objc_registerClassPair(witnessClass);
+  final witnessObject = witnessClass.msgSend('alloc').msgSend('init');
+  final witnessInvocation = _newInvocation(witnessObject, sel('handleValue:'));
+  final value = calloc<Int64>()..value = 1;
+  _setArgument(witnessInvocation, value.cast(), 2);
+  witnessInvocation.msgSend('retainArguments');
+  final schedule = _newInvocation(getClass('NSTimer'),
+      sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
+  final interval = calloc<Double>()..value = 0.05;
+  final target = calloc<Pointer<ObjCObject>>()..value = witnessInvocation;
+  final repeats = calloc<Uint8>()..value = 1;
+  _setArgument(schedule, interval.cast(), 2);
+  _setArgument(schedule, target.cast(), 3);
+  _setArgument(schedule, repeats.cast(), 4);
+  _invokeOnMain(schedule);
+
+  _finishLaunchingOnMain();
+  _log('finishLaunching done; ticks so far=$ticks');
+
+  final window = _createAndFrontNSWindow();
+  _log('NSWindow = ${window.address}');
+  if (window == nullptr) {
+    _log('RESULT: no window.');
+    _exitProcess(1);
   }
+  final numberInvocation = _newInvocation(window, sel('windowNumber'));
+  _invokeOnMain(numberInvocation);
+  _log('WINDOW_ID=${_returnedInt(numberInvocation)}');
+  _log('holding window with NO nextEvent pump for ${seconds}s...');
 
-  print('RESULT: CGEventPost accepted synthetic input. Whether anything '
+  for (var i = 0; i < seconds; i++) {
+    await Future<void>.delayed(const Duration(seconds: 1));
+    _log('t=${i + 1}s ticks=$ticks alive');
+  }
+  witness.close();
+
+  _log(ticks > 0
+      ? 'RESULT: NSWindow survived ${seconds}s without a pump ($ticks timer '
+          'ticks). The Trace/BPT trap in probe O is the pump, not the window.'
+      : 'RESULT: window path killed the run loop (0 ticks). The crash is not '
+          'unique to nextEventMatchingMask:.');
+  _exitProcess(ticks > 0 ? 0 : 1);
+}
+
+// kCGHIDEventTap = 0, kCGEventMouseMoved = 5.
+void probePostInput() {
+  final ok = probePostInputBody();
+  if (!ok) {
+    _log('RESULT: could not synthesize a keyboard event.');
+    _exitProcess(1);
+  }
+  _log('RESULT: CGEventPost accepted synthetic input. Whether anything '
       'RECEIVES it is the holder process to answer - and on a runner without '
       'an Aqua session, or without accessibility permission, it will not.');
   _exitProcess(0);
@@ -1420,9 +1460,6 @@ Future<void> probeSkyLightEvents(int seconds) async {
 //   event ptr  -> the synthetic event came back
 // ---------------------------------------------------------------------------
 
-final DynamicLibrary libFoundation = DynamicLibrary.open(
-    '/System/Library/Frameworks/Foundation.framework/Foundation');
-
 void _writeSentinel(Pointer<ObjCObject> invocation) {
   final sentinel = calloc<Pointer<ObjCObject>>()
     ..value = Pointer<ObjCObject>.fromAddress(1);
@@ -1446,72 +1483,33 @@ void _scheduleOneShot(
 Future<void> probePumpTimerDiagnostic() async {
   ensureAppKitLoaded();
   if (!_parkMainThreadInRunLoop()) {
-    print('RESULT: could not park the main thread.');
+    _log('RESULT: could not park the main thread.');
     _exitProcess(1);
   }
-  print('main thread parked, main queue draining.');
+  _log('main thread parked, main queue draining.');
 
   final app = getClass('NSApplication').msgSend('sharedApplication');
-  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
-  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
-  _setArgument(policyInvocation, policy.cast(), 2);
-  _invokeOnMain(policyInvocation);
-  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
-  print('[NSApp finishLaunching] returned.');
+  _finishLaunchingOnMain();
+  _log('[NSApp finishLaunching] returned.');
 
   // 1. Post first, so the queue is already non-empty when the pump fires.
-  final location = calloc<NSPoint>()
-    ..ref.x = 0
-    ..ref.y = 0;
-  final posted = msgSendDummyEvent(
-      getClass('NSEvent'),
-      sel('otherEventWithType:location:modifierFlags:timestamp:windowNumber:'
-          'context:subtype:data1:data2:'),
-      NSEventTypeApplicationDefined,
-      location.ref,
-      0,
-      0.0,
-      0,
-      nullptr,
-      1,
-      0xBEEF,
-      0);
-  final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
-  final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
-  final atStart = calloc<Uint8>()..value = 1;
-  _setArgument(postInvocation, eventArgument.cast(), 2);
-  _setArgument(postInvocation, atStart.cast(), 3);
-  _invokeOnMain(postInvocation);
-  print('posted event ${posted.address} BEFORE scheduling anything.');
+  final posted = _newSyntheticAppEvent();
+  _postEventOnMain(app, posted);
+  _log('posted event ${posted.address} BEFORE scheduling anything.');
 
   // 2. Marker: a harmless +[NSDate date] at 20ms. If its sentinel survives,
   //    the problem is the timer or the run loop mode, not the pump.
   final markerInvocation = _newInvocation(getClass('NSDate'), sel('date'));
   _writeSentinel(markerInvocation);
   _scheduleOneShot(markerInvocation, 0.02);
+  _log('marker scheduled at 20ms.');
 
-  // 3. The pump at 100ms, with the REAL NSDefaultRunLoopMode global - probe K
-  //    built an NSString by hand, which is not guaranteed to be the same mode
-  //    object AppKit matches against.
-  final defaultRunLoopMode =
-      libFoundation.lookup<Pointer<ObjCObject>>('NSDefaultRunLoopMode').value;
-  print('NSDefaultRunLoopMode global = ${defaultRunLoopMode.address}');
-
-  final pumpInvocation = _newInvocation(
-      app, sel('nextEventMatchingMask:untilDate:inMode:dequeue:'));
-  final mask = calloc<Uint64>()..value = NSEventMaskAny;
-  final untilDate = calloc<Pointer<ObjCObject>>()
-    ..value = getClass('NSDate').msgSend('distantPast');
-  final mode = calloc<Pointer<ObjCObject>>()..value = defaultRunLoopMode;
-  final dequeue = calloc<Uint8>()..value = 1;
-  _setArgument(pumpInvocation, mask.cast(), 2);
-  _setArgument(pumpInvocation, untilDate.cast(), 3);
-  _setArgument(pumpInvocation, mode.cast(), 4);
-  _setArgument(pumpInvocation, dequeue.cast(), 5);
-  pumpInvocation.msgSend('retainArguments');
+  // 3. The pump at 100ms, with the REAL NSDefaultRunLoopMode global.
+  _log('NSDefaultRunLoopMode global = ${_nsDefaultRunLoopMode().address}');
+  final pumpInvocation = _newPumpInvocation(app);
   _writeSentinel(pumpInvocation);
   _scheduleOneShot(pumpInvocation, 0.1);
-  print('marker at 20ms and pump at 100ms scheduled, both one-shot.');
+  _log('marker at 20ms and pump at 100ms scheduled, both one-shot.');
 
   await Future<void>.delayed(const Duration(seconds: 3));
 
@@ -1522,27 +1520,27 @@ Future<void> probePumpTimerDiagnostic() async {
         0 => 'nil',
         _ => '0x${value.address.toRadixString(16)}',
       };
-  print('marker returned: ${describe(marker)}');
-  print('pump returned:   ${describe(pumped)}');
+  _log('marker returned: ${describe(marker)}');
+  _log('pump returned:   ${describe(pumped)}');
 
   if (marker.address == 1) {
-    print('RESULT: the marker never ran either - one-shot timers are not '
+    _log('RESULT: the marker never ran either - one-shot timers are not '
         'delivered on the parked run loop at all. The problem is the run loop, '
         'not nextEventMatchingMask:.');
     _exitProcess(1);
   }
   if (pumped.address == 1) {
-    print('RESULT: the marker ran but the pump did not complete - '
+    _log('RESULT: the marker ran but the pump did not complete - '
         'nextEventMatchingMask: blocked. Check the stack sample for '
         '_DPSNextEvent / mach_msg.');
     _exitProcess(1);
   }
   if (pumped == posted) {
-    print('RESULT: the synthetic event came back through a timer-driven pump. '
+    _log('RESULT: the synthetic event came back through a timer-driven pump. '
         'Event dispatch works on the parked main thread.');
     _exitProcess(0);
   }
-  print('RESULT: timers fire and the pump completed, returning '
+  _log('RESULT: timers fire and the pump completed, returning '
       '${describe(pumped)} instead of our event.');
   _exitProcess(1);
 }
@@ -1666,6 +1664,173 @@ Future<void> probeSkyLightForeground(int seconds) async {
           'PSN handshake (SLPSRegisterWithServer, '
           'SLPSSetMainApplicationConnection).');
   _exitProcess(received > 0 ? 0 : 1);
+}
+
+// ---------------------------------------------------------------------------
+// Probe X - TransformProcessType, the PUBLIC way to become a foreground app.
+//
+// Probe Q guessed private SLPS* signatures and got success codes with zero
+// events. TransformProcessType / GetCurrentProcess are documented HIServices
+// APIs (ApplicationServices) that Carbon/Cocoa apps have used for decades to
+// turn a bg CLI into a real UI process. If this still yields zero events, the
+// blocker is deeper than "not frontmost" (bundle / LaunchServices / event
+// port registration).
+// ---------------------------------------------------------------------------
+
+const kProcessTransformToForegroundApplication = 1;
+
+Future<void> probeTransformProcess(int seconds) async {
+  // HIServices lives inside ApplicationServices on modern macOS.
+  DynamicLibrary hiServices;
+  try {
+    hiServices = DynamicLibrary.open(
+        '/System/Library/Frameworks/ApplicationServices.framework/'
+        'Frameworks/HIServices.framework/HIServices');
+  } catch (_) {
+    hiServices = DynamicLibrary.open(
+        '/System/Library/Frameworks/ApplicationServices.framework/'
+        'ApplicationServices');
+  }
+
+  final getCurrentProcess = hiServices.lookupFunction<
+      Int32 Function(Pointer<ProcessSerialNumber>),
+      int Function(Pointer<ProcessSerialNumber>)>('GetCurrentProcess');
+  final transformProcessType = hiServices.lookupFunction<
+      Int32 Function(Pointer<ProcessSerialNumber>, Int32),
+      int Function(Pointer<ProcessSerialNumber>, int)>('TransformProcessType');
+  final setFrontProcess = hiServices.lookupFunction<
+      Int32 Function(Pointer<ProcessSerialNumber>),
+      int Function(Pointer<ProcessSerialNumber>)>('SetFrontProcess');
+
+  final psn = calloc<ProcessSerialNumber>();
+  final getRc = getCurrentProcess(psn);
+  _log('GetCurrentProcess -> $getRc psn=(${psn.ref.high}, ${psn.ref.low})');
+  final transformRc =
+      transformProcessType(psn, kProcessTransformToForegroundApplication);
+  _log('TransformProcessType(ForegroundApplication) -> $transformRc');
+  final frontRc = setFrontProcess(psn);
+  _log('SetFrontProcess -> $frontRc');
+
+  final skyLight = DynamicLibrary.open(
+      '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+  final connectionId = skyLight
+      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  _log('SLSMainConnectionID() = $connectionId');
+
+  final rect = calloc<NSRect>()
+    ..ref.x = 300
+    ..ref.y = 300
+    ..ref.width = 480
+    ..ref.height = 320;
+  final regionSlot = calloc<Pointer<Void>>();
+  skyLight.lookupFunction<_NewRegionWithRectNative,
+          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
+      'CGSNewRegionWithRect')(rect, regionSlot);
+  final windowIdSlot = calloc<Uint32>();
+  skyLight.lookupFunction<
+          _SlsNewWindowNative,
+          int Function(int, int, double, double, Pointer<Void>,
+              Pointer<Uint32>)>('SLSNewWindow')(
+      connectionId,
+      kCGSBackingStoreBuffered,
+      300.0,
+      300.0,
+      regionSlot.value,
+      windowIdSlot);
+  final windowId = windowIdSlot.value;
+  final context = skyLight.lookupFunction<_WindowContextCreateNative,
+      Pointer<Void> Function(int, int, Pointer<Void>)>(
+      'SLWindowContextCreate')(connectionId, windowId, nullptr);
+  if (context != nullptr) {
+    final coreGraphics = DynamicLibrary.open(
+        '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+    final fill = calloc<NSRect>()
+      ..ref.width = 480
+      ..ref.height = 320;
+    coreGraphics.lookupFunction<_SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double, double)>(
+        'CGContextSetRGBFillColor')(context, 0.8, 0.2, 0.8, 1.0);
+    coreGraphics.lookupFunction<_FillRectNative,
+        void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
+        context, fill.ref);
+    coreGraphics.lookupFunction<_ContextFlushNative,
+        void Function(Pointer<Void>)>('CGContextFlush')(context);
+  }
+  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  _log('WINDOW_ID=$windowId');
+
+  // Self-inject so we do not depend on a second process timing window.
+  final injected = probePostInputBody();
+  _log('self-inject ok=$injected');
+
+  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
+      Pointer<Void> Function(Pointer<Void>, int)>('SLEventCreateNextEvent');
+  final getType = skyLight
+      .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
+          'SLEventGetType');
+
+  _log('polling SLEventCreateNextEvent for ${seconds}s...');
+  var received = 0;
+  for (var i = 0; i < seconds * 20; i++) {
+    if (i > 0 && i % 40 == 0) {
+      probePostInputBody();
+    }
+    final event = createNextEvent(nullptr, connectionId);
+    if (event != nullptr) {
+      received++;
+      _log('EVENT type=${getType(event)}');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+
+  _log('events received: $received');
+  _log(received > 0
+      ? 'RESULT: TransformProcessType opened the input path. Route C has '
+          'window, pixels and input via public process APIs + private '
+          'SkyLight drawing/events.'
+      : 'RESULT: still no events after TransformProcessType '
+          '(get=$getRc transform=$transformRc front=$frontRc). Foreground '
+          'status alone is not enough - need event-port / bundle registration.');
+  _exitProcess(received > 0 ? 0 : 1);
+}
+
+/// Body of post-input without _exit, so other probes can inject from inside.
+/// Returns false if the keyboard event could not be created.
+bool probePostInputBody() {
+  final coreGraphics = DynamicLibrary.open(
+      '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+
+  final createKeyboardEvent = coreGraphics.lookupFunction<
+      Pointer<Void> Function(Pointer<Void>, Uint16, Bool),
+      Pointer<Void> Function(Pointer<Void>, int, bool)>(
+      'CGEventCreateKeyboardEvent');
+  final createMouseEvent = coreGraphics.lookupFunction<
+      Pointer<Void> Function(Pointer<Void>, Uint32, NSPoint, Uint32),
+      Pointer<Void> Function(Pointer<Void>, int, NSPoint, int)>(
+      'CGEventCreateMouseEvent');
+  final post = coreGraphics.lookupFunction<
+      Void Function(Uint32, Pointer<Void>),
+      void Function(int, Pointer<Void>)>('CGEventPost');
+
+  final down = createKeyboardEvent(nullptr, 0, true);
+  final up = createKeyboardEvent(nullptr, 0, false);
+  _log('CGEventCreateKeyboardEvent -> down ${down.address}, up ${up.address}');
+  if (down == nullptr) return false;
+  post(0, down);
+  if (up != nullptr) post(0, up);
+  _log('posted key down/up for keycode 0.');
+
+  final point = calloc<NSPoint>()
+    ..ref.x = 400
+    ..ref.y = 400;
+  final move = createMouseEvent(nullptr, 5, point.ref, 0);
+  _log('CGEventCreateMouseEvent -> ${move.address}');
+  if (move != nullptr) {
+    post(0, move);
+    _log('posted a mouse move to (400, 400).');
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1893,7 +2058,7 @@ Future<void> main(List<String> args) async {
     case 'mainthread-window':
       probeMainThreadWindow();
     case 'event-pump':
-      probeEventPump();
+      await probeEventPump();
     case 'nsapp-run-main':
       probeNsAppRunOnMain();
     case 'skylight-window':
@@ -1911,6 +2076,9 @@ Future<void> main(List<String> args) async {
     case 'hold-appkit':
       await probeHoldAppKitWindow(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
+    case 'hold-appkit-nopump':
+      await probeHoldAppKitNoPump(
+          int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     case 'post-input':
       probePostInput();
     case 'skylight-events':
@@ -1925,10 +2093,14 @@ Future<void> main(List<String> args) async {
     case 'skylight-foreground':
       await probeSkyLightForeground(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
+    case 'transform-process':
+      await probeTransformProcess(
+          int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     default:
-      print('unknown probe: $probe');
-      print('usage: probe [thread|nsapp-run|skylight|signal-hijack'
+      _log('unknown probe: $probe');
+      _log('usage: probe [thread|nsapp-run|skylight|signal-hijack'
           '|mainthread-window|event-pump|nsapp-run-main|skylight-window'
-          '|vm-health|reverse-channel|pump-timer]');
+          '|vm-health|reverse-channel|pump-timer|hold-appkit-nopump'
+          '|transform-process|appkit-bisect|keepalive-hijack]');
   }
 }
