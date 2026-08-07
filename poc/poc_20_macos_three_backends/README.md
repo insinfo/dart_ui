@@ -25,6 +25,12 @@ janela, framebuffer e input, ele fornece uma máquina de estados comum e tokens
 geracionais: assim que shutdown ou falha começa, callbacks nativos antigos são
 rejeitados antes de alcançar widgets Dart.
 
+O host também expõe um protocolo de controle versão 1 por stdin/stdout. Os
+comandos chegam por uma fila auxiliar, mas `PING`, `SET_TITLE` e `CLOSE` são
+sempre executados na main queue. O cliente
+[`bin/native_host_protocol_smoke.dart`](bin/native_host_protocol_smoke.dart)
+prova o caminho Dart → IPC → AppKit → resposta → shutdown normal.
+
 Validar a política em qualquer plataforma:
 
 ```bash
@@ -39,6 +45,9 @@ mkdir -p build
 clang -fobjc-arc -Wall -Wextra -framework Cocoa \
   native/minimal_appkit_host.m -o build/minimal_appkit_host
 ./build/minimal_appkit_host --smoke-seconds 2
+
+# Smoke do protocolo controlado por Dart:
+dart run bin/native_host_protocol_smoke.dart build/minimal_appkit_host
 ```
 
 O smoke é aprovado somente se imprimir:
@@ -53,7 +62,7 @@ Próximas etapas:
 - extrair o backend SkyLight comprovado do probe para uma classe com teardown;
 - ligar as implementações reais aos descritores e ao resultado da seleção;
 - escolher para o host `.m` entre embedder Dart no mesmo processo e protocolo
-  IPC com um processo Dart worker;
+  IPC com um processo Dart worker (o controle IPC mínimo agora está provado);
 - executar a mesma aplicação counter sobre os três contratos.
 
 Arquitetura e critérios completos: [MACOS_TRES_BACKENDS.md](../../doc/MACOS_TRES_BACKENDS.md).

@@ -62,6 +62,12 @@ jobs:
           grep -q '^MAIN_THREAD=1$' /tmp/shots/minimal-appkit-host.log
           grep -Eq '^WINDOW_ID=[1-9][0-9]*$' \
             /tmp/shots/minimal-appkit-host.log
+          dart run \
+            ../../poc/poc_20_macos_three_backends/bin/native_host_protocol_smoke.dart \
+            build/minimal_appkit_host \
+            | tee /tmp/shots/minimal-appkit-ipc.log
+          grep -q '^DART_IPC_SMOKE=PASS$' \
+            /tmp/shots/minimal-appkit-ipc.log
 
       - name: 'Three-backend selection policy'
         run: |

@@ -1,10 +1,13 @@
 #import <Cocoa/Cocoa.h>
+#include <dispatch/dispatch.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 @interface DartUiMinimalAppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, assign) NSTimeInterval smokeDuration;
+@property(nonatomic, assign) BOOL commandStdin;
 @end
 
 @implementation DartUiMinimalAppDelegate
@@ -28,7 +31,12 @@
 
   printf("MAIN_THREAD=%d\n", [NSThread isMainThread] ? 1 : 0);
   printf("WINDOW_ID=%ld\n", (long)self.window.windowNumber);
+  printf("PROTOCOL=1\n");
   fflush(stdout);
+
+  if (self.commandStdin) {
+    [self startCommandReader];
+  }
 
   if (self.smokeDuration > 0) {
     [NSTimer scheduledTimerWithTimeInterval:self.smokeDuration
@@ -37,6 +45,42 @@
                                    userInfo:nil
                                     repeats:NO];
   }
+}
+
+- (void)startCommandReader {
+  __weak DartUiMinimalAppDelegate *weakSelf = self;
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), stdin) != NULL) {
+      @autoreleasepool {
+        NSString *line = [NSString stringWithUTF8String:buffer];
+        line = [line stringByTrimmingCharactersInSet:
+                         [NSCharacterSet newlineCharacterSet]];
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [weakSelf handleCommand:line];
+        });
+      }
+    }
+  });
+}
+
+- (void)handleCommand:(NSString *)command {
+  if (![NSThread isMainThread]) {
+    printf("ERROR=COMMAND_NOT_ON_MAIN_THREAD\n");
+  } else if ([command isEqualToString:@"PING"]) {
+    printf("PONG\n");
+  } else if ([command hasPrefix:@"SET_TITLE "]) {
+    self.window.title = [command substringFromIndex:10];
+    printf("TITLE_OK\n");
+  } else if ([command isEqualToString:@"CLOSE"]) {
+    printf("CLOSE_OK\n");
+    fflush(stdout);
+    [NSApp terminate:nil];
+    return;
+  } else {
+    printf("ERROR=UNKNOWN_COMMAND\n");
+  }
+  fflush(stdout);
 }
 
 - (BOOL)applicationShouldTerminateAfterLastWindowClosed:
@@ -50,14 +94,20 @@
 int main(int argc, const char *argv[]) {
   @autoreleasepool {
     NSTimeInterval smokeDuration = 0;
-    if (argc == 3 && strcmp(argv[1], "--smoke-seconds") == 0) {
-      smokeDuration = strtod(argv[2], NULL);
+    BOOL commandStdin = NO;
+    for (int index = 1; index < argc; index++) {
+      if (strcmp(argv[index], "--smoke-seconds") == 0 && index + 1 < argc) {
+        smokeDuration = strtod(argv[++index], NULL);
+      } else if (strcmp(argv[index], "--command-stdin") == 0) {
+        commandStdin = YES;
+      }
     }
 
     NSApplication *app = [NSApplication sharedApplication];
     DartUiMinimalAppDelegate *delegate =
         [[DartUiMinimalAppDelegate alloc] init];
     delegate.smokeDuration = smokeDuration;
+    delegate.commandStdin = commandStdin;
     app.delegate = delegate;
     [app setActivationPolicy:NSApplicationActivationPolicyRegular];
     [app run];

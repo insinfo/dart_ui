@@ -106,6 +106,10 @@ sem possuir a thread 0 desde o início do processo.
 
 O witness inicial está em
 [`poc/poc_20_macos_three_backends/native/minimal_appkit_host.m`](../poc/poc_20_macos_three_backends/native/minimal_appkit_host.m).
+Ele já inclui um protocolo stdin/stdout versão 1: um cliente Dart comprova
+`PING`, alteração do título na main queue e `CLOSE` com shutdown normal. Isso
+valida o limite de processo da opção IPC, mas ainda não transporta frames ou
+input.
 
 ### Duas evoluções possíveis
 
