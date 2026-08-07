@@ -687,6 +687,13 @@ aceito. O probe ainda fazia esse cadastro tarde demais, depois de criar e
 ordenar a janela; AppKit/HIServices o faz durante a inicialização do processo,
 antes da primeira janela. Z17 corrige essa ordem.
 
+Z17 confirmou a ordem no
+[run 31159720697](https://github.com/insinfo/dart_ui/actions/runs/31159720697):
+`SLPSRegisterWithServer(3)` retornou 0 antes da janela, a porta 15111 produziu
+três callbacks e os três eventos `[10, 11, 5]`. A etapa já era obrigatória, não
+registrou `MISSING POOLS`, e o workflow completo terminou com sucesso. Esta é a
+primeira repetição da rota fechada sob uma asserção que realmente reprova a CI.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -732,8 +739,9 @@ diferenças objetivas entre o probe e o consumidor conhecido.
 17. **Regressão em CI:** exigir ao menos um evento e nenhum aviso de pool; usar
     `void SLEventPostToPid(pid_t, CGEventRef)` sem condicionar a continuação ao
     retorno do registro SLPS.
-18. **Probe Z17 — em CI:** registrar flavor 3 imediatamente após obter a conexão
-    principal e antes de criar/ordenar a primeira janela.
+18. **Probe Z17 — confirmado e obrigatório:** registrar flavor 3 imediatamente
+    após obter a conexão principal e antes de criar/ordenar a primeira janela;
+    o CI repetiu a entrega de três eventos sem falha de pool.
 19. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
 20. Manter `CGEventTap` como plano B público para captura global. Eventos de
