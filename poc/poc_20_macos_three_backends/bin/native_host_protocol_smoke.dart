@@ -41,6 +41,7 @@ Future<void> main(List<String> arguments) async {
   await process.stdin.close();
 
   final status = await process.exitCode.timeout(const Duration(seconds: 10));
+  await output.cancel();
   final nativeStderr = await stderrLines;
   if (nativeStderr.isNotEmpty) stderr.write(nativeStderr);
   if (status != 0) throw StateError('native host exited with status $status');
