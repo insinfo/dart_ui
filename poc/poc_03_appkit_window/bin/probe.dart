@@ -1923,30 +1923,51 @@ Future<void> probeSkyLightRegister(int seconds) async {
   final eventPort = eventPortOut.value;
   _log('SLSGetEventPort -> rc=$getEventPortRc port=$eventPort');
 
-  // SLPSRegisterWithServer - try event port, then cid. Both are guesses; the
-  // 2016 dump only gives the name.
-  final registerWithServer = skyLight.lookupFunction<Int32 Function(Uint32),
-      int Function(int)>('SLPSRegisterWithServer');
-  var regRc = -999;
-  if (getEventPortRc == 0 && eventPort != 0) {
-    _log('calling SLPSRegisterWithServer(eventPort=$eventPort)...');
-    regRc = registerWithServer(eventPort);
-    _log('SLPSRegisterWithServer(eventPort) -> $regRc');
-  }
-  if (regRc != 0) {
-    _log('calling SLPSRegisterWithServer(cid=$connectionId)...');
-    regRc = registerWithServer(connectionId);
-    _log('SLPSRegisterWithServer(cid) -> $regRc');
-  }
+  // ABI lesson from run 31150976455: SLPSSetMainApplicationConnection(cid, 0)
+  // returned -600 (procNotFoundErr). Every other SLPS/CPS function in the
+  // ecosystem (CGSInternal, yabai) takes a ProcessSerialNumber* - the cid was
+  // being reinterpreted as a bogus PSN pointer. Try the PSN-pointer ABI first.
+  final psn = calloc<ProcessSerialNumber>();
+  skyLight.lookupFunction<_PsnOnlyNative,
+      int Function(Pointer<ProcessSerialNumber>)>('SLPSGetCurrentProcess')(psn);
+  _log('PSN = (${psn.ref.high}, ${psn.ref.low})');
 
-  // SLPSSetMainApplicationConnection(cid) - bind this connection as the one
-  // the WindowServer should deliver app events on. Second arg is a guess
-  // (flags/options); 0 is the conservative value.
-  _log('calling SLPSSetMainApplicationConnection($connectionId, 0)...');
-  final setMain = skyLight.lookupFunction<Int32 Function(Int32, Int32),
-      int Function(int, int)>('SLPSSetMainApplicationConnection');
-  final mainRc = setMain(connectionId, 0);
-  _log('SLPSSetMainApplicationConnection -> $mainRc');
+  final registerWithServer = skyLight
+      .lookupFunction<Int32 Function(Pointer<ProcessSerialNumber>),
+          int Function(Pointer<ProcessSerialNumber>)>('SLPSRegisterWithServer');
+  final setMain = skyLight.lookupFunction<
+      Int32 Function(Pointer<ProcessSerialNumber>, Int32),
+      int Function(Pointer<ProcessSerialNumber>, int)>(
+      'SLPSSetMainApplicationConnection');
+
+  _log('calling SLPSRegisterWithServer(psn)...');
+  final regRc = registerWithServer(psn);
+  _log('SLPSRegisterWithServer(psn) -> $regRc');
+
+  // Bind our CGS connection as the process's main application connection so
+  // the WindowServer routes input to it.
+  _log('calling SLPSSetMainApplicationConnection(psn, cid=$connectionId)...');
+  final mainRc = setMain(psn, connectionId);
+  _log('SLPSSetMainApplicationConnection(psn, cid) -> $mainRc');
+
+  // Fallback: the numeric variants from the previous run, in case the PSN
+  // ABI is wrong on both (they must be -600/0 to confirm the pointer ABI).
+  if (mainRc != 0) {
+    final setMainNumeric = skyLight.lookupFunction<Int32 Function(Int32, Int32),
+        int Function(int, int)>('SLPSSetMainApplicationConnection');
+    final numericRc = setMainNumeric(connectionId, 0);
+    _log('SLPSSetMainApplicationConnection(cid, 0) -> $numericRc (retry)');
+    if (numericRc != 0) {
+      final registerNumeric = skyLight
+          .lookupFunction<Int32 Function(Uint32), int Function(int)>(
+              'SLPSRegisterWithServer');
+      if (getEventPortRc == 0 && eventPort != 0) {
+        final regNumericRc = registerNumeric(eventPort);
+        _log('SLPSRegisterWithServer(eventPort=$eventPort) -> $regNumericRc '
+            '(retry)');
+      }
+    }
+  }
 
   // Public foreground transform on top of the private registration.
   try {

@@ -521,15 +521,54 @@ saído). Resultados ainda abertos depois do keep-alive:
   `NSAssertMainEventQueueIsCurrentEventQueue` — não é `pthread_main_np`.
   A thread 0 está certa; a **event queue** do AppKit não. Por isso U (sem
   pump) vive e O/G (com `nextEvent` / `-run`) morrem.
-- **Y v1:** `SLSGetEventPort(cid)` como retorno-por-valor ainda SEGV com
+- **Y v1:** `SLSGetEventPort(c)` como retorno-por-valor ainda SEGV com
   `si_addr==cid`. Próximo chute: `CGError SLSGetEventPort(cid, mach_port_t*)`.
+
+## Atualização pós `finishLaunching` na main (run `31150976455`) 🔑
+
+Foi implantada a hipótese da seção lldb: **`sharedApplication` + `finishLaunching`
+passaram a ser criados SEMPRE na main thread estacionada** (`_sharedAppOnMain` /
+`_finishLaunchingOnMain`), nunca na thread do Dart. O crash O **sumiu**:
+
+- **lldb hold-appkit (O):** rodou até o cap de 30s **sem parar** — antes morria
+  em `NSAssertMainEventQueueIsCurrentEventQueue`/
+  `NSCrashOnBackgroundThreadMainEventQueue`. A criatura da event queue era o
+  `sharedApplication` criado fora da main, não o pump em si.
+- **K/F:** agora travas legais e mensuráveis. witness dispara 9x, o pump
+  **bloqueia** em `nextEventMatchingMask:` com o sentinel intacto — a main thread
+  ficou esperando eventos que nunca chegam, em vez de crashar.
+- **O (CI):** 20s seguros, `distinct events pumped: 0` — sem Trace/BPT.
+
+Ou seja: **a rota D+E ganhou o direito de *rodar* o AppKit** (sem crash), mas
+ainda **não tem o que *rodar* — a fila de eventos continua vazia**. A entrega
+de eventos continua sendo o gargalo único, agora isolado do crash.
+
+### PSN/`-600` (probe Y, run `31150990449`)
+
+```
+SLSGetEventPort -> rc=0 port=12295          (porta real, só que ninguém a lê)
+SLPSRegisterWithServer(psn) -> 0
+SLPSSetMainApplicationConnection(cid, 0) -> -600   procNotFoundErr
+```
+
+O `-600` é exatamente `procNotFoundErr`: no ecossistema SLPS/CPS (CGSInternal,
+yabai) **todas** as funções pegam `ProcessSerialNumber*`, então o `cid` que
+passamos antes foi **reinterpretado como ponteiro de PSN inválido**. O ABI real
+é `SLPSRegisterWithServer(ProcessSerialNumber*)` e
+`SLPSSetMainApplicationConnection(ProcessSerialNumber*, cid)`. A próxima rodada
+da probe Y passa o PSN obtido via `SLPSGetCurrentProcess` como ponteiro — se o
+`-600` virar 0, a rota C está a uma entrega (`SLEventCreateNextEvent`) de
+completar o handshake de eventos.
 
 ## Próximos passos
 
-1. Fechar U (janela sem pump) e o reteste F/K/L com keep-alive de verdade.
-2. Se X ainda der 0 eventos: `SLPSRegisterWithServer` /
-   `SLPSSetMainApplicationConnection`, ou app bundle + LaunchServices.
+1. **Probe Y v3** no CI com o ABI PSN-pointer
+   (`SLPSRegisterWithServer(psn)`/`SLPSSetMainApplicationConnection(psn, cid)`).
+   Se mainParar de dar `-600`, a rota C tem o handshake de eventos completo e
+   podemos medir se `SLEventCreateNextEvent` começa a entregar.
+2. Se ainda 0 eventos: app bundle (.app) + registro LaunchServices, ou
+   `SLEventModifyConnection`/`SLEventPackets` do dump.
 3. Avaliar `CGEventTap` como plano B para input (exige permissão de
    acessibilidade concedida pelo usuário).
 4. Decorações, menus, IME e acessibilidade: o que a rota C perde ao abrir mão do
-   AppKit, e quanto disso o framework precisa reimplementar.
+   AppKit, e que disso o o framework precisa reimplementar.
