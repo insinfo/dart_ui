@@ -517,6 +517,12 @@ saído). Resultados ainda abertos depois do keep-alive:
 - Dump SkyLight 2016 (`referencias/skylight.txt` = gist erica) ainda casa:
   `SLPSRegisterWithServer` e `SLPSSetMainApplicationConnection` são **T**
   exportados — o meio do handshake que Q/X pularam → probe **Y**.
+- **lldb no hold-appkit (O):** o Trace/BPT é
+  `NSAssertMainEventQueueIsCurrentEventQueue` — não é `pthread_main_np`.
+  A thread 0 está certa; a **event queue** do AppKit não. Por isso U (sem
+  pump) vive e O/G (com `nextEvent` / `-run`) morrem.
+- **Y v1:** `SLSGetEventPort(cid)` como retorno-por-valor ainda SEGV com
+  `si_addr==cid`. Próximo chute: `CGError SLSGetEventPort(cid, mach_port_t*)`.
 
 ## Próximos passos
 

@@ -1894,23 +1894,29 @@ Future<void> probeSkyLightRegister(int seconds) async {
       .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
   _log('SLSMainConnectionID() = $connectionId');
 
-  // SLSGetEventPort(cid) -> mach_port_t. Earlier crash had si_addr==cid when
-  // the signature treated cid as a pointer; returning a port by value is the
-  // shape that matches the name and the old CGS headers.
-  _log('calling SLSGetEventPort($connectionId)...');
-  final eventPort = skyLight.lookupFunction<Uint32 Function(Int32),
-      int Function(int)>('SLSGetEventPort')(connectionId);
-  _log('SLSGetEventPort -> $eventPort');
+  // SLSGetEventPort: two crashes proved `port = f(cid)` dereferences cid
+  // (si_addr == cid). So the ABI is out-parameter style:
+  //   CGError SLSGetEventPort(CGSConnectionID cid, mach_port_t *out);
+  final eventPortOut = calloc<Uint32>();
+  _log('calling SLSGetEventPort(cid=$connectionId, &out)...');
+  final getEventPortRc = skyLight.lookupFunction<
+      Int32 Function(Int32, Pointer<Uint32>),
+      int Function(int, Pointer<Uint32>)>('SLSGetEventPort')(
+      connectionId, eventPortOut);
+  final eventPort = eventPortOut.value;
+  _log('SLSGetEventPort -> rc=$getEventPortRc port=$eventPort');
 
-  // SLPSRegisterWithServer(mach_port_t) - CPS-era entry that turns a bare
-  // connection into a registered application. Try the event port first; if
-  // that returns a non-zero error, also try the connection id itself.
-  _log('calling SLPSRegisterWithServer(eventPort=$eventPort)...');
+  // SLPSRegisterWithServer - try event port, then cid. Both are guesses; the
+  // 2016 dump only gives the name.
   final registerWithServer = skyLight.lookupFunction<Int32 Function(Uint32),
       int Function(int)>('SLPSRegisterWithServer');
-  var regRc = registerWithServer(eventPort);
-  _log('SLPSRegisterWithServer(eventPort) -> $regRc');
-  if (regRc != 0 && eventPort != connectionId) {
+  var regRc = -999;
+  if (getEventPortRc == 0 && eventPort != 0) {
+    _log('calling SLPSRegisterWithServer(eventPort=$eventPort)...');
+    regRc = registerWithServer(eventPort);
+    _log('SLPSRegisterWithServer(eventPort) -> $regRc');
+  }
+  if (regRc != 0) {
     _log('calling SLPSRegisterWithServer(cid=$connectionId)...');
     regRc = registerWithServer(connectionId);
     _log('SLPSRegisterWithServer(cid) -> $regRc');
