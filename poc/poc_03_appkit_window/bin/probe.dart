@@ -1222,9 +1222,10 @@ void probeHoldSkyLightWindow(int seconds) {
   _exitProcess(0);
 }
 
-Pointer<ObjCObject> _createAndFrontNSWindow() {
-  final windowClass = getClass('NSWindow');
-  final allocated = windowClass.msgSend('alloc');
+Pointer<ObjCObject> _createAndFrontNSWindow(
+    {Pointer<ObjCObject>? windowClass}) {
+  final effectiveClass = windowClass ?? getClass('NSWindow');
+  final allocated = effectiveClass.msgSend('alloc');
   final initSelector = sel('initWithContentRect:styleMask:backing:defer:');
   final invocation = _newInvocation(allocated, initSelector);
   final rect = calloc<NSRect>()
@@ -2516,6 +2517,257 @@ Future<void> probeAppKitBisect() async {
   _exitProcess(0);
 }
 
+// ---------------------------------------------------------------------------
+// Probe W - backend 2's full input path, without the postEvent wedge.
+//
+// Three measured facts from CI motivate this shape:
+//   1. hold-appkit fired its repeating distantPast pump ~1000 times over 20s
+//      with no block and no crash, so the periodic non-blocking
+//      nextEventMatchingMask: is NOT the wedge.
+//   2. F/K/L show nothing scheduled after postEvent:atStart: ever runs, and
+//      the pre-existing repeating witness stops too: posting ON the parked
+//      loop is what kills run-loop delivery, not the pump.
+//   3. skylight-events received 3 events injected with
+//      SLEventPostToPid(getpid()), while hold-appkit saw none of the
+//      CGEventPost HID-tap injections (runner permissions). WindowServer-
+//      directed injection is the usable path on CI.
+//
+// So this probe never calls postEvent:atStart:. Phase A dispatches retained
+// synthetic NSEvents straight into [NSApp sendEvent:] and expects a Dart IMP
+// on a custom NSWindow subclass to receive keyDown:/mouseDown:. Phase B runs
+// the periodic pump while SLEventPostToPid feeds the queue, with a witness
+// timer proving the loop stays alive. Phase C unwinds the hijack and returns
+// normally - no _exit anywhere on this path.
+// ---------------------------------------------------------------------------
+
+typedef _EventHandlerNative = Void Function(
+    Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, Pointer<ObjCObject> event);
+
+const NSEventTypeLeftMouseDown = 1;
+const NSEventTypeKeyDown = 10;
+
+Pointer<ObjCObject> _retainedNSString(String value) {
+  final cString = value.toNativeUtf8();
+  final string = msgSendPointerPointer(
+      getClass('NSString'), sel('stringWithUTF8String:'), cString.cast());
+  calloc.free(cString);
+  return string.msgSend('retain');
+}
+
+void _scheduleRepeatingTimer(
+    Pointer<ObjCObject> invocation, double intervalSeconds) {
+  final schedule = _newInvocation(getClass('NSTimer'),
+      sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
+  final interval = calloc<Double>()..value = intervalSeconds;
+  final target = calloc<Pointer<ObjCObject>>()..value = invocation;
+  final repeats = calloc<Uint8>()..value = 1;
+  _setArgument(schedule, interval.cast(), 2);
+  _setArgument(schedule, target.cast(), 3);
+  _setArgument(schedule, repeats.cast(), 4);
+  _invokeOnMain(schedule);
+}
+
+/// A repeating NSTimer whose Dart listener only counts firings. The witness
+/// answers "is the run loop still delivering timers?" without trusting the
+/// code under test.
+(NativeCallable<_HandleValueNative>, int Function()) _startWitnessTimer(
+    String className, double intervalSeconds) {
+  var ticks = 0;
+  final witness = NativeCallable<_HandleValueNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd, int value) => ticks++);
+  final name = className.toNativeUtf8();
+  final witnessClass = objc_allocateClassPair(getClass('NSObject'), name, 0);
+  calloc.free(name);
+  final types = 'v@:q'.toNativeUtf8();
+  class_addMethod(
+      witnessClass, sel('handleValue:'), witness.nativeFunction.cast(), types);
+  calloc.free(types);
+  objc_registerClassPair(witnessClass);
+  final witnessObject = witnessClass.msgSend('alloc').msgSend('init');
+
+  final witnessInvocation = _newInvocation(witnessObject, sel('handleValue:'));
+  final value = calloc<Int64>()..value = 1;
+  _setArgument(witnessInvocation, value.cast(), 2);
+  witnessInvocation.msgSend('retainArguments');
+  _scheduleRepeatingTimer(witnessInvocation, intervalSeconds);
+  return (witness, () => ticks);
+}
+
+Future<void> probeDispatchLoop() async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    _log('RESULT: could not park the main thread.');
+    _exitProcess(1);
+  }
+  _log('main thread parked.');
+
+  final app = _finishLaunchingOnMain();
+  if (app == nullptr || _isSentinel(app)) {
+    _log('RESULT: finishLaunching on main failed.');
+    _exitProcess(1);
+  }
+
+  // keyDown:/mouseDown: reach Dart through probe J's reverse channel: the IMP
+  // is a NativeCallable.listener, so the AppKit main thread posts to the
+  // isolate instead of calling into it.
+  final keyDown = Completer<void>();
+  final mouseDown = Completer<void>();
+  final keyImp = NativeCallable<_EventHandlerNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd,
+          Pointer<ObjCObject> event) {
+    if (!keyDown.isCompleted) keyDown.complete();
+  });
+  final mouseImp = NativeCallable<_EventHandlerNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd,
+          Pointer<ObjCObject> event) {
+    if (!mouseDown.isCompleted) mouseDown.complete();
+  });
+
+  final className = 'DartUiDispatchWindow'.toNativeUtf8();
+  final windowClass =
+      objc_allocateClassPair(getClass('NSWindow'), className, 0);
+  calloc.free(className);
+  final types = 'v@:@'.toNativeUtf8();
+  class_addMethod(
+      windowClass, sel('keyDown:'), keyImp.nativeFunction.cast(), types);
+  class_addMethod(
+      windowClass, sel('mouseDown:'), mouseImp.nativeFunction.cast(), types);
+  calloc.free(types);
+  objc_registerClassPair(windowClass);
+
+  final window = _createAndFrontNSWindow(windowClass: windowClass);
+  if (window == nullptr) {
+    _log('RESULT: no window.');
+    _exitProcess(1);
+  }
+  final numberInvocation = _newInvocation(window, sel('windowNumber'));
+  _invokeOnMain(numberInvocation);
+  final windowNumber = _returnedInt(numberInvocation);
+  _log('WINDOW_ID=$windowNumber');
+
+  // Key events only go somewhere if the app treats itself as active.
+  final activate = _newInvocation(app, sel('activateIgnoringOtherApps:'));
+  final yes = calloc<Uint8>()..value = 1;
+  _setArgument(activate, yes.cast(), 2);
+  _invokeOnMain(activate);
+  calloc.free(yes);
+
+  // --- phase A: dispatch -----------------------------------------------------
+  //
+  // sendEvent: never touches the event queue, so this half cannot wedge the
+  // loop. The events are retained: nothing here depends on an autorelease
+  // pool staying out of the way.
+  final characters = _retainedNSString('a');
+  final location = calloc<NSPoint>()
+    ..ref.x = 400
+    ..ref.y = 400;
+  final keyEvent = msgSendKeyEvent(
+      getClass('NSEvent'),
+      sel('keyEventWithType:location:modifierFlags:timestamp:windowNumber:'
+          'context:characters:charactersIgnoringModifiers:isARepeat:keyCode:'),
+      NSEventTypeKeyDown,
+      location.ref,
+      0,
+      0.0,
+      windowNumber,
+      nullptr,
+      characters,
+      characters,
+      false,
+      0);
+  final mouseEvent = msgSendMouseEvent(
+      getClass('NSEvent'),
+      sel('mouseEventWithType:location:modifierFlags:timestamp:windowNumber:'
+          'context:eventNumber:clickCount:pressure:'),
+      NSEventTypeLeftMouseDown,
+      location.ref,
+      0,
+      0.0,
+      windowNumber,
+      nullptr,
+      1,
+      1,
+      1.0);
+  calloc.free(location);
+  keyEvent.msgSend('retain');
+  mouseEvent.msgSend('retain');
+  _log('synthetic keyEvent=${keyEvent.address} '
+      'mouseEvent=${mouseEvent.address} (both retained)');
+
+  void sendEventOnMain(Pointer<ObjCObject> event) {
+    final invocation = _newInvocation(app, sel('sendEvent:'));
+    final argument = calloc<Pointer<ObjCObject>>()..value = event;
+    _setArgument(invocation, argument.cast(), 2);
+    _invokeOnMain(invocation);
+    calloc.free(argument);
+  }
+
+  sendEventOnMain(keyEvent);
+  sendEventOnMain(mouseEvent);
+  _log('sendEvent: keyDown + mouseDown performed on main.');
+
+  var keyDelivered = true;
+  await keyDown.future.timeout(const Duration(seconds: 3), onTimeout: () {
+    keyDelivered = false;
+  });
+  var mouseDelivered = true;
+  await mouseDown.future.timeout(const Duration(seconds: 3), onTimeout: () {
+    mouseDelivered = false;
+  });
+  _log('KEYDOWN_DELIVERED=${keyDelivered ? 1 : 0}');
+  _log('MOUSEDOWN_DELIVERED=${mouseDelivered ? 1 : 0}');
+  _log('DISPATCH_LOOP=${keyDelivered || mouseDelivered ? 'PASS' : 'FAIL'}');
+
+  // --- phase B: pump + WindowServer-directed input ---------------------------
+  //
+  // The pump fires every 50ms and Dart polls every 20ms, so each dequeued
+  // event is observed more than once before the next firing overwrites the
+  // return buffer. No postEvent:atStart: anywhere - input arrives through the
+  // WindowServer, the way real keyboard/mouse input would.
+  final (witness, ticks) = _startWitnessTimer('DartUiDispatchWitness', 0.05);
+  final pumpInvocation = _newPumpInvocation(app);
+  _scheduleRepeatingTimer(pumpInvocation, 0.05);
+  _log('witness + repeating pump timers scheduled; injecting input via '
+      'SLEventPostToPid...');
+
+  final skyLight = DynamicLibrary.open(
+      '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+  final injected = probePostInputBody(skyLight: skyLight);
+  _log('SLEventPostToPid injection attempted: $injected');
+
+  final seen = <int>{};
+  final ticksBefore = ticks();
+  for (var i = 0; i < 150; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final event = _returnedObject(pumpInvocation);
+    if (event != nullptr && !_isSentinel(event) && seen.add(event.address)) {
+      _log('pumped an NSEvent: ${event.address}');
+    }
+    if (i == 50) {
+      probePostInputBody(skyLight: skyLight);
+    }
+  }
+  final livenessTicks = ticks() - ticksBefore;
+  _log('PUMPED_FROM_WINDOWSERVER=${seen.length}');
+  _log(livenessTicks > 0
+      ? 'PUMP_LIVENESS=PASS (+$livenessTicks witness ticks while pumping)'
+      : 'PUMP_LIVENESS=FAIL (witness stopped once the pump started)');
+
+  // --- phase C: normal shutdown ----------------------------------------------
+  //
+  // Stop the loop BEFORE closing the callables: a timer firing into a closed
+  // NativeCallable would jump into a freed trampoline.
+  if (!_stopHijackedMainRunLoop()) {
+    _log('NORMAL_SHUTDOWN=FAIL (run loop ownership was not recorded)');
+    _exitProcess(1);
+  }
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  witness.close();
+  keyImp.close();
+  mouseImp.close();
+  _log('NORMAL_SHUTDOWN=PASS');
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -2566,6 +2818,8 @@ Future<void> main(List<String> args) async {
       await probeKeepAliveHijack();
     case 'graceful-hijack-shutdown':
       await probeGracefulHijackShutdown();
+    case 'dispatch-loop':
+      await probeDispatchLoop();
     case 'skylight-foreground':
       await probeSkyLightForeground(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
@@ -2581,6 +2835,6 @@ Future<void> main(List<String> args) async {
           '|mainthread-window|event-pump|nsapp-run-main|skylight-window'
           '|vm-health|reverse-channel|pump-timer|hold-appkit-nopump'
           '|transform-process|appkit-bisect|keepalive-hijack'
-          '|graceful-hijack-shutdown]');
+          '|graceful-hijack-shutdown|dispatch-loop]');
   }
 }

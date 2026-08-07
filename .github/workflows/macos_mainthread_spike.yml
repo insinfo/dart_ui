@@ -107,6 +107,21 @@ jobs:
           grep -q '^NORMAL_SHUTDOWN=PASS$' \
             /tmp/graceful-hijack-shutdown.log
 
+      # The wedge in F/K/L is postEvent:atStart:, not the pump: hold-appkit
+      # fired its repeating distantPast pump ~1000 times in 20s with no block,
+      # while everything scheduled after a postEvent never ran. This probe
+      # therefore never posts: sendEvent: is fed retained synthetic NSEvents
+      # (dispatch half) and SLEventPostToPid feeds the real queue (pump half).
+      # Only liveness and normal shutdown gate for now; the dispatch/pump
+      # counts are reported and promoted to gates once measured green.
+      - name: 'Backend 2 input: dispatch, pump liveness, normal shutdown'
+        timeout-minutes: 2
+        run: |
+          ./build/probe dispatch-loop \
+            2>&1 | tee /tmp/dispatch-loop.log
+          grep -q '^PUMP_LIVENESS=PASS' /tmp/dispatch-loop.log
+          grep -q '^NORMAL_SHUTDOWN=PASS$' /tmp/dispatch-loop.log
+
       - name: 'Probe E: NSWindow on the hijacked main thread via NSInvocation'
         timeout-minutes: 3
         continue-on-error: true

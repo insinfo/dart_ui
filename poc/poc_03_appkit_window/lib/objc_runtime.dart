@@ -214,6 +214,70 @@ final msgSendDummyEvent = objc_msgSend_ptr
     .cast<NativeFunction<MsgSendDummyEventNative>>()
     .asFunction<MsgSendDummyEventDart>();
 
+// Pointer msgSendKeyEvent(...) - +[NSEvent keyEventWithType:location:
+// modifierFlags:timestamp:windowNumber:context:characters:
+// charactersIgnoringModifiers:isARepeat:keyCode:]
+typedef MsgSendKeyEventNative = Pointer<ObjCObject> Function(
+    Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op,
+    IntPtr type,
+    NSPoint location,
+    IntPtr flags,
+    Double timestamp,
+    IntPtr windowNum,
+    Pointer<ObjCObject> context,
+    Pointer<ObjCObject> characters,
+    Pointer<ObjCObject> charactersIgnoringModifiers,
+    Bool isARepeat,
+    Int16 keyCode);
+typedef MsgSendKeyEventDart = Pointer<ObjCObject> Function(
+    Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op,
+    int type,
+    NSPoint location,
+    int flags,
+    double timestamp,
+    int windowNum,
+    Pointer<ObjCObject> context,
+    Pointer<ObjCObject> characters,
+    Pointer<ObjCObject> charactersIgnoringModifiers,
+    bool isARepeat,
+    int keyCode);
+final msgSendKeyEvent = objc_msgSend_ptr
+    .cast<NativeFunction<MsgSendKeyEventNative>>()
+    .asFunction<MsgSendKeyEventDart>();
+
+// Pointer msgSendMouseEvent(...) - +[NSEvent mouseEventWithType:location:
+// modifierFlags:timestamp:windowNumber:context:eventNumber:clickCount:
+// pressure:]
+typedef MsgSendMouseEventNative = Pointer<ObjCObject> Function(
+    Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op,
+    IntPtr type,
+    NSPoint location,
+    IntPtr flags,
+    Double timestamp,
+    IntPtr windowNum,
+    Pointer<ObjCObject> context,
+    IntPtr eventNumber,
+    IntPtr clickCount,
+    Float pressure);
+typedef MsgSendMouseEventDart = Pointer<ObjCObject> Function(
+    Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op,
+    int type,
+    NSPoint location,
+    int flags,
+    double timestamp,
+    int windowNum,
+    Pointer<ObjCObject> context,
+    int eventNumber,
+    int clickCount,
+    double pressure);
+final msgSendMouseEvent = objc_msgSend_ptr
+    .cast<NativeFunction<MsgSendMouseEventNative>>()
+    .asFunction<MsgSendMouseEventDart>();
+
 // Pointer msgSend(Pointer, Selector, Pointer)
 typedef MsgSendPointerPointerNative = Pointer<ObjCObject> Function(
     Pointer<ObjCObject> target, Pointer<ObjCSel> op, Pointer<ObjCObject> arg1);
