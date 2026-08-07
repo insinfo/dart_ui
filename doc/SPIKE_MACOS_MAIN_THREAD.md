@@ -49,9 +49,10 @@ Reproduzir: `gh workflow run "macOS main-thread spike"`.
 | M | A rota C desenha pixels (`SLWindowContextCreate`) | ✅ **Confirmada** |
 | N | A janela da rota C é fotografável de fora | ✅ **Confirmada** |
 | O | A janela AppKit sobrevive com pump por timer | ❌ **Crash** |
+| Z | A porta SkyLight registrada entrega input à rota C | ✅ **32 eventos** |
 
-**Resumo em uma linha:** a rota C tem janela visível, desenho e prova externa;
-a rota D+E **chama** AppKit mas não consegue **rodar** AppKit.
+**Resumo em uma linha:** a rota C tem janela visível, desenho, prova externa e
+input medido; a rota D+E chama AppKit, mas seu pump de `NSEvent` ainda bloqueia.
 
 ## A — nenhum modo de execução dá a thread 0
 
@@ -546,22 +547,31 @@ Ou seja: **a rota D+E ganhou o direito de *rodar* o AppKit** (sem crash), mas
 ainda **não tem o que *rodar* — a fila de eventos continua vazia**. A entrega
 de eventos continua sendo o gargalo único, agora isolado do crash.
 
-### PSN/`-600` (probe Y, run `31150990449`)
+### A porta entregou eventos (probe Y, run `31154591354`) 🔑
 
 ```
-SLSGetEventPort -> rc=0 port=12295          (porta real, só que ninguém a lê)
-SLPSRegisterWithServer(psn) -> 0
-SLPSSetMainApplicationConnection(cid, 0) -> -600   procNotFoundErr
+SLSGetEventPort -> rc=0 port=15367
+SLPSRegisterWithServer(psn) -> -50
+SLPSSetMainApplicationConnection(psn, cid) -> 1003
+SLPSSetMainApplicationConnection(cid, 0) -> -600
+SLPSRegisterWithServer(eventPort=15367) -> 0
+event-port summary: callbacks=12 events=32
+sampledTypes=[13, 21, 10, 11, 5, 10, 11, 5, ...]
 ```
 
-O `-600` é exatamente `procNotFoundErr`: no ecossistema SLPS/CPS (CGSInternal,
-yabai) **todas** as funções pegam `ProcessSerialNumber*`, então o `cid` que
-passamos antes foi **reinterpretado como ponteiro de PSN inválido**. O ABI real
-é `SLPSRegisterWithServer(ProcessSerialNumber*)` e
-`SLPSSetMainApplicationConnection(ProcessSerialNumber*, cid)`. A próxima rodada
-da probe Y passa o PSN obtido via `SLPSGetCurrentProcess` como ponteiro — se o
-`-600` virar 0, a rota C está a uma entrega (`SLEventCreateNextEvent`) de
-completar o handshake de eventos.
+O resultado corrige a hipótese anterior: `SLPSRegisterWithServer` não recebe
+`ProcessSerialNumber*` neste caminho. O argumento medido que funcionou foi o
+`mach_port_t` retornado por `SLSGetEventPort`. O consumidor sem registro montou
+`CFMachPort` e `CFRunLoopSource`, recebeu sinal e então bloqueou ao chamar
+`SLEventCreateNextEvent`; o hard cap do workflow o matou e preservou o sample.
+No probe Y, depois de `SLPSRegisterWithServer(eventPort) == 0`, a mesma rotina
+drenou 32 eventos e terminou normalmente. Os tipos `10/11` correspondem ao par
+de teclado sintético e `5` ao movimento de mouse postado pelo probe.
+
+Y também executou operações de foreground antes do dreno. Por isso a evidência
+prova o pipeline completo, mas ainda não que o registro da porta seja suficiente
+isoladamente. **Z3** repete apenas `SLSGetEventPort ->
+SLPSRegisterWithServer(eventPort) -> CFMachPort`, sem PSN, AppKit ou foreground.
 
 ## Próximos passos
 
@@ -570,24 +580,22 @@ do caminho de eventos e mudou a ordem destes experimentos. Veja a seção a
 seguir: antes de continuar chutando o ABI de `SLPS*`, é preciso corrigir duas
 diferenças objetivas entre o probe e o consumidor conhecido.
 
-1. **Probe Z1 — implementado, aguardando CI:** ABI de
+1. **Probe Z1 — confirmado no CI:** ABI de
    `SLEventCreateNextEvent` corrigido para
    `CGEventRef SLEventCreateNextEvent(int cid)`, sem `CFAllocatorRef`.
-2. **Probe Z2 — implementado, aguardando CI:** envolver o
+2. **Probe Z2 — confirmado no CI:** envolver o
    `mach_port_t` de `SLSGetEventPort(cid, &port)` em `CFMachPort`, criar uma
    `CFRunLoopSource` e drenar `SLEventCreateNextEvent(cid)` quando a porta
    sinalizar. O callback deve ser mínimo: copiar/reter os dados necessários e
    notificar o isolate, sem criar, destruir ou redesenhar janelas ali dentro.
    O workflow agora impõe um hard cap, coleta `sample` e mata o processo se uma
-   chamada privada voltar a bloquear; Q/X/Y usam o mesmo consumidor em vez de
-   repetir polling com ABI incorreto.
-3. Só depois repetir o PSN-pointer de Y v3. Se Z1/Z2 já entregarem os eventos
-   sintéticos de `CGEventPost`, `SLPSRegisterWithServer` e
-   `SLPSSetMainApplicationConnection` não pertencem ao caminho mínimo.
-4. Se ainda houver 0 eventos: comparar sob LLDB a sequência e os registradores
-   de um processo AppKit em `SLSGetEventPort`, `SLEventCreateNextEvent` e
-   `SLPSSetMainApplicationConnection`; depois testar app bundle + registro no
-   LaunchServices.
+   chamada privada voltar a bloquear.
+3. **Probe Z3 — implementado, aguardando CI:** registrar somente o `eventPort`
+   com `SLPSRegisterWithServer(eventPort)` antes de instalar a source. Se repetir
+   os 32 eventos, elimina PSN, `SLPSSetMainApplicationConnection`, foreground,
+   bundle e LaunchServices do caminho mínimo.
+4. Depois da confirmação de Z3, extrair o consumidor para uma classe pequena,
+   com ownership explícito de porta/source/callback e fechamento ordenado.
 5. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
 6. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir

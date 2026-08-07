@@ -193,9 +193,9 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # Z1 fixes the ABI to SLEventCreateNextEvent(cid). Z2 installs the Mach
-      # event port as a CFRunLoopSource and drains only from its callback.
-      - name: 'Probe Z1/Z2: consume the SkyLight event port'
+      # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
+      # a CFRunLoopSource. Z3 registers that port before draining its callback.
+      - name: 'Probe Z1/Z2/Z3: consume the registered SkyLight event port'
         timeout-minutes: 4
         continue-on-error: true
         run: |
@@ -293,66 +293,10 @@ jobs:
           grep -A 16 "com.apple.main-thread" /tmp/probe-u.sample | head -24 || true
           kill -9 "$pid" 2>/dev/null || true
 
-      - name: 'Probe Q: register as a foreground app, then ask for events'
-        timeout-minutes: 4
-        continue-on-error: true
-        run: |
-          ./build/probe skylight-foreground 12 > /tmp/foreground.log 2>&1 &
-          pid=$!
-          sleep 3
-          for i in 1 2 3; do
-            ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
-            sleep 2
-          done
-          for i in {1..24}; do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.5
-          done
-          kill -9 "$pid" 2>/dev/null || true
-          wait "$pid" 2>/dev/null || true
-          cat /tmp/foreground.log || true
-
-      # Public HIServices TransformProcessType instead of guessed SLPS* calls.
-      - name: 'Probe X: TransformProcessType then pull WindowServer events'
-        timeout-minutes: 4
-        continue-on-error: true
-        run: |
-          ./build/probe transform-process 12 > /tmp/transform.log 2>&1 &
-          pid=$!
-          sleep 3
-          for i in 1 2 3; do
-            ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
-            sleep 2
-          done
-          for i in {1..24}; do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.5
-          done
-          kill -9 "$pid" 2>/dev/null || true
-          wait "$pid" 2>/dev/null || true
-          cat /tmp/transform.log || true
-
-      # 2016 SkyLight nm dump (referencias/skylight.txt / gist erica) still
-      # matches: SLPSRegisterWithServer + SLPSSetMainApplicationConnection are
-      # T-exported. Q/X got 0 events without them.
-      - name: 'Probe Y: RegisterWithServer + SetMainApplicationConnection'
-        timeout-minutes: 4
-        continue-on-error: true
-        run: |
-          ./build/probe skylight-register 12 > /tmp/register.log 2>&1 &
-          pid=$!
-          sleep 3
-          for i in 1 2 3; do
-            ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
-            sleep 2
-          done
-          for i in {1..24}; do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.5
-          done
-          kill -9 "$pid" 2>/dev/null || true
-          wait "$pid" 2>/dev/null || true
-          cat /tmp/register.log || true
+      # Q/X/Y remain available as manual subcommands for historical comparison,
+      # but are no longer in the default run. In run 31154591354, registering
+      # eventPort was the only new successful call before the stream opened;
+      # Z1/Z2/Z3 now isolates that candidate without foreground/PSN setup.
 
       # K/F can hang the Dart thread if waitUntilDone meets a wedged main.
       # Always background + sample + hard kill so the step cannot eat the job.
