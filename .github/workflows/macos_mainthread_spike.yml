@@ -63,6 +63,11 @@ jobs:
           grep -Eq '^WINDOW_ID=[1-9][0-9]*$' \
             /tmp/shots/minimal-appkit-host.log
 
+      - name: 'Three-backend selection policy'
+        run: |
+          dart analyze ../../poc/poc_20_macos_three_backends
+          dart test ../../poc/poc_20_macos_three_backends
+
       - name: 'Probe A: does any execution mode own the main thread?'
         timeout-minutes: 5
         run: |

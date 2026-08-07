@@ -1,0 +1,13 @@
+name: poc_20_macos_three_backends
+description: Contrato e politica de selecao dos tres backends macOS.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dev_dependencies:
+  lints: ^5.1.0
+  test: ^1.25.0

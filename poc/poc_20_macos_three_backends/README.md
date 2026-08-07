@@ -12,6 +12,20 @@ VM Dart ainda. Sua função é estabelecer o limite mínimo correto do host:
 `main()` nativo, autorelease pool, `NSApplication`, delegate, janela e event
 loop AppKit, todos sob ownership normal da thread principal.
 
+O segundo artefato é a política Dart em
+[`lib/src/backend_policy.dart`](lib/src/backend_policy.dart). Ela torna a
+seleção observável: cada tentativa registra aprovação ou rejeição e seu motivo.
+O host nativo é o padrão; SkyLight exige permissão para API privada e ABI
+validada; signal hijack exige seleção e permissão explícitas e nunca participa
+do fallback automático.
+
+Validar a política em qualquer plataforma:
+
+```bash
+dart analyze
+dart test
+```
+
 Compilar e executar no macOS:
 
 ```bash
@@ -31,10 +45,9 @@ WINDOW_ID=<id positivo>
 Próximas etapas:
 
 - extrair o backend SkyLight comprovado do probe para uma classe com teardown;
-- encapsular o signal hijack como backend explicitamente `experimentalUnsafe`;
+- ligar as implementações reais aos descritores e ao resultado da seleção;
 - escolher para o host `.m` entre embedder Dart no mesmo processo e protocolo
   IPC com um processo Dart worker;
 - executar a mesma aplicação counter sobre os três contratos.
 
 Arquitetura e critérios completos: [MACOS_TRES_BACKENDS.md](../../doc/MACOS_TRES_BACKENDS.md).
-
