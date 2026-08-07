@@ -705,3 +705,46 @@ jobs:
       - name: Test MVP Web headless counter in Chrome
         working-directory: mvp/mvp_04_web_counter
         run: dart test -p chrome
+
+  # ==============================================================
+  # POC-19: Dart event loop vs. a native Win32 wait
+  # ==============================================================
+  poc-19-event-loop-metrics:
+    name: 'POC-19: event-loop metrics'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Analyze and test
+        run: |
+          dart analyze poc/poc_19_event_loop_metrics
+          dart test poc/poc_19_event_loop_metrics
+
+      - name: Run short benchmark with invariants
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path build\poc19 | Out-Null
+          dart run poc/poc_19_event_loop_metrics/bin/main.dart --ci |
+            Tee-Object -FilePath build\poc19\benchmark.txt
+          if ($LASTEXITCODE -ne 0) {
+            throw "POC-19 invariants failed with exit code $LASTEXITCODE."
+          }
+          dart run poc/poc_19_event_loop_metrics/bin/main.dart --ci --json |
+            Out-File -Encoding utf8 build\poc19\benchmark.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "POC-19 JSON run failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Upload benchmark evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: poc19-event-loop-metrics-windows
+          path: build/poc19/
+          retention-days: 14

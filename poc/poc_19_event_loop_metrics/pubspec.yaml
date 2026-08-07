@@ -1,0 +1,18 @@
+name: poc_19_event_loop_metrics
+description: >-
+  POC-19 — Measure the cost of hosting a native Win32 loop alongside the Dart
+  event loop: idle wakeups, CPU time, frame timer drift and message latency.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+resolution: workspace
+
+dependencies:
+  ffi: ^2.1.3
+
+dev_dependencies:
+  lints: ^5.1.0
+  test: ^1.25.0

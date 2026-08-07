@@ -49,7 +49,7 @@ Reproduzir: `gh workflow run "macOS main-thread spike"`.
 | M | A rota C desenha pixels (`SLWindowContextCreate`) | ✅ **Confirmada** |
 | N | A janela da rota C é fotografável de fora | ✅ **Confirmada** |
 | O | A janela AppKit sobrevive com pump por timer | ❌ **Crash** |
-| Z | A porta SkyLight registrada entrega input à rota C | ✅ **32 eventos** |
+| Z | A porta SkyLight registrada entrega input à rota C | ✅ **3 eventos no teste obrigatório** (Y histórico: 32) |
 
 **Resumo em uma linha:** a rota C tem janela visível, desenho, prova externa e
 input medido; a rota D+E chama AppKit, mas seu pump de `NSEvent` ainda bloqueia.
@@ -944,19 +944,22 @@ viabilidade, não uma recomendação atual: a família `CVDisplayLink` está
 deprecada no SDK moderno em favor de display links de `NSView`, `NSWindow` ou
 `NSScreen` — alternativas que voltam a depender do AppKit.
 
-### O que essa receita prova — e o que ainda não prova
+### O que essa receita prova — e o que ainda falta
 
 - Prova o ABI de `SLSGetEventPort` e `SLEventCreateNextEvent` em software
   contemporâneo e fornece o elo que faltava entre a porta Mach e o run loop.
 - Prova uma rota para notificações internas do WindowServer
   (`SLSRegisterNotifyProc`: criação, movimento, resize, Spaces e front app).
-- Ainda **não prova** que uma janela SkyLight própria receberá mouse/teclado. O
-  JankyBorders observa janelas de terceiros; o teste Z precisa inspecionar o
-  `CGEventRef` antes de liberá-lo e confirmar eventos dirigidos à nossa janela.
-- Não prova os ABIs de `SLPSRegisterWithServer` nem
-  `SLPSSetMainApplicationConnection`. Os repositórios encontrados que contêm
-  esses nomes são em geral stubs sem tipos ou arquivos `.tbd`, que confirmam
-  exportação, não assinatura.
+- O teste obrigatório Z17 **prova input dirigido ao próprio processo**: após
+  `SLEventPostToPid`, três mensagens Mach produziram os tipos `[10, 11, 5]`
+  (key-down, key-up e mouse-move) na conexão que criou a janela SkyLight.
+- O ABI observado de `SLPSRegisterWithServer` é um argumento `int flavor`; o
+  AppKit usa flavor 3. `SLPSSetMainApplicationConnection` consome apenas o ID da
+  conexão em `x0`, mas não participa da rota AppKit observada.
+- Ainda faltam lifecycle/teardown ordenados, input físico de usuário, IME,
+  acessibilidade, múltiplas janelas, Spaces/fullscreen/sleep e uma matriz de
+  versões do macOS. Três eventos sintéticos fecham o caminho técnico, não a
+  robustez de produto.
 
 ### Pista para a rota AppKit
 

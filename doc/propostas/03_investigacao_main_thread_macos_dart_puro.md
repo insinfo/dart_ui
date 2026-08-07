@@ -10,6 +10,11 @@
 **Runner:** macOS 14.8.7, arm64  
 **Dart usado pelo workflow:** 3.6.0
 
+**Atualização de 7 de agosto de 2026:** os runs Z16/Z17 fecharam a rota
+SkyLight/CGS com janela, pixels e input sintético `[10, 11, 5]`; a limitação de
+produção descrita abaixo agora se refere à rota AppKit suportada e à robustez
+multiversão, não à capacidade de receber qualquer input.
+
 ---
 
 ## 1. O que significa “Dart puro” nesta investigação
@@ -50,7 +55,7 @@ Faltam:
 
 - um acesso oficial à primeira thread do processo;
 - inicialização segura e top-level do event loop AppKit;
-- input real validado;
+- input AppKit, IME e acessibilidade validados numa rota suportada;
 - shutdown normal;
 - ausência de comportamento indefinido.
 
@@ -726,9 +731,12 @@ não existe API privada
 ### Pesquisa
 
 1. continuar probes AppKit;
-2. testar superfície SkyLight;
-3. testar `CGEventTap`;
-4. estudar callbacks síncronos com `isolateGroupBound`.
+2. promover a superfície SkyLight já confirmada a testes de teardown,
+   múltiplas janelas, Spaces/fullscreen/sleep e versões do macOS;
+3. testar `CGEventTap` como fallback público para captura global;
+4. estudar callbacks síncronos com `isolateGroupBound`;
+5. implementar e medir a integração `Isolate.onEvent`/`handleEvent` proposta no
+   documento 04.
 
 ### Não recomendado
 

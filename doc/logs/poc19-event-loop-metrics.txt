@@ -1,0 +1,48 @@
+  running polling 16ms
+  running polling 4ms
+  running spin (timeout 0)
+  running oracle (proposed API)
+
+ANIMATING — 60 Hz frame timer + messages every 50ms
+--------------------------------------------------------------------------------------------------------
+configuration                iter/s  idle wk/s  Mcycle/s  CPU %  frame Hz   gap p50   gap p95   msg p50   msg p95
+baseline (no native loop)         0        0.0      56.6    0.0      61.0   15.81ms   17.38ms    0.07ms    0.23ms
+polling 50ms (poc_10)            16        0.0      35.8    6.2      16.0   62.46ms   63.81ms   31.60ms   63.02ms
+polling 16ms                     34        0.0      48.1    1.0      34.0   30.97ms   32.02ms   15.61ms   31.27ms
+polling 4ms                      64        1.3      93.8    0.0      62.3   15.55ms   16.43ms   15.20ms   16.15ms
+spin (timeout 0)             333160   333078.1    2281.3   87.5      62.3   16.00ms   16.12ms    0.03ms    0.14ms
+oracle (proposed API)            80        1.3      60.4    4.2      59.2   15.70ms   31.00ms    0.14ms    0.54ms
+target frame rate: 60.0 Hz (gap 16.67ms)
+
+IDLE — no frame timer, messages every 500ms
+--------------------------------------------------------------------------------------------------------
+configuration                iter/s  idle wk/s  Mcycle/s  CPU %                                 msg p50   msg p95
+baseline (no native loop)         0        0.0       2.6    0.0                                  0.16ms    0.24ms
+polling 50ms (poc_10)            16       14.0      12.7    0.5                                  0.13ms   63.67ms
+polling 16ms                     35       33.0      21.5    0.0                                 30.74ms   31.39ms
+polling 4ms                      64       62.4      39.3    4.1                                 15.69ms   17.61ms
+spin (timeout 0)             197233   197231.0    3116.5  115.6                                  0.02ms    0.12ms
+oracle (proposed API)             2        0.3       5.5    0.0                                  0.23ms    0.40ms
+
+LOOP MECHANICS (animating) — where each iteration went
+--------------------------------------------------------------------------------------------------------
+configuration                  asked  waited p50  waited p95  yield p50  yield p95  yield max
+polling 50ms (poc_10)        50.00ms     62.03ms     63.53ms     0.28ms     0.78ms     4.13ms
+polling 16ms                 16.00ms     30.71ms     31.71ms     0.23ms     0.49ms     1.26ms
+polling 4ms                   4.00ms     15.18ms     15.85ms     0.29ms     0.54ms     2.11ms
+spin (timeout 0)              0.00ms      0.00ms      0.00ms     0.00ms     0.00ms     8.83ms
+oracle (proposed API)         9.00ms     15.37ms     21.78ms     0.09ms     0.27ms     0.78ms
+
+FINDINGS  (polling 50ms = what poc_10 does today; oracle = what the proposed API would allow)
+--------------------------------------------------------------------------------------------------------
+1. A 60Hz frame timer runs at 16.0Hz under a 50ms polling loop, 59.2Hz under the oracle.
+   Target 60.0Hz, pure-Dart baseline 61.0Hz. Frame gap p95 63.81ms -> 31.00ms.
+2. Cross-isolate message latency p95 63.02ms -> 0.54ms (baseline 0.23ms). A wake handle removes the queueing delay entirely.
+3. Idle wakeups/s 14.0 -> 0.3. Process cycles/s 12.7M -> 5.5M (baseline 2.6M).
+   Caveat: the cycle counter is process-wide, so it also counts the sender isolate and the VM background threads.
+   At this wakeup rate it cannot resolve the loop's own cost and the two numbers may even invert between runs.
+   The defensible claim is the wakeup count itself, which is what keeps a core out of deep sleep states.
+4. Spinning is not the escape hatch: 87% CPU animating, 116% idle, 3116M cycles/s while doing nothing.
+5. The only available yield primitive, await Future.delayed(Duration.zero), costs 0.09ms p50 / 0.27ms p95 after a blocking wait,
+   versus 0.00ms in a tight spin where the fast path is always hot. On a 16.67ms frame budget that is 0.5% spent re-entering the scheduler.
+6. Isolate thread migrations across all runs: 0 (stable in this session, but nothing in the SDK promises it)

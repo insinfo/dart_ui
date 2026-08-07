@@ -23,6 +23,7 @@ workspace:
   - poc/poc_18_webgpu
   - poc/poc_02_x11_window
   - poc/poc_03_appkit_window
+  - poc/poc_19_event_loop_metrics
   - mvp/mvp_01_win32_counter
   - mvp/mvp_02_x11_counter
   - mvp/mvp_03_appkit_counter
