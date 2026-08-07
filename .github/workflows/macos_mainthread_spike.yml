@@ -306,6 +306,22 @@ jobs:
           sleep 8
           cat /tmp/transform.log || true
 
+      # 2016 SkyLight nm dump (referencias/skylight.txt / gist erica) still
+      # matches: SLPSRegisterWithServer + SLPSSetMainApplicationConnection are
+      # T-exported. Q/X got 0 events without them.
+      - name: 'Probe Y: RegisterWithServer + SetMainApplicationConnection'
+        timeout-minutes: 4
+        continue-on-error: true
+        run: |
+          ./build/probe skylight-register 12 > /tmp/register.log 2>&1 &
+          sleep 3
+          for i in 1 2 3; do
+            ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
+            sleep 2
+          done
+          sleep 8
+          cat /tmp/register.log || true
+
       # K/F can hang the Dart thread if waitUntilDone meets a wedged main.
       # Always background + sample + hard kill so the step cannot eat the job.
       - name: 'Probe K: pump the event queue from an NSTimer instead'

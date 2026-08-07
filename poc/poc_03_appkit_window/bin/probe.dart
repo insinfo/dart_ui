@@ -1874,6 +1874,171 @@ bool probePostInputBody() {
 }
 
 // ---------------------------------------------------------------------------
+// Probe Y - full PSN/event-port handshake from the 2016 SkyLight nm dump
+// (referencias/skylight.txt = gist erica/skylight). The interesting symbols
+// are still T-exported on modern macOS:
+//
+//   SLPSRegisterWithServer          - register this process with WindowServer
+//   SLPSSetMainApplicationConnection - bind our CGS connection as the app's
+//   SLSGetEventPort                 - mach port the event stream arrives on
+//
+// Q/X proved foreground alone is not enough. This is the missing middle of
+// the classic CPS/CGS app bring-up that AppKit does inside finishLaunching.
+// ---------------------------------------------------------------------------
+
+Future<void> probeSkyLightRegister(int seconds) async {
+  final skyLight = DynamicLibrary.open(
+      '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+
+  final connectionId = skyLight
+      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  _log('SLSMainConnectionID() = $connectionId');
+
+  // SLSGetEventPort(cid) -> mach_port_t. Earlier crash had si_addr==cid when
+  // the signature treated cid as a pointer; returning a port by value is the
+  // shape that matches the name and the old CGS headers.
+  _log('calling SLSGetEventPort($connectionId)...');
+  final eventPort = skyLight.lookupFunction<Uint32 Function(Int32),
+      int Function(int)>('SLSGetEventPort')(connectionId);
+  _log('SLSGetEventPort -> $eventPort');
+
+  // SLPSRegisterWithServer(mach_port_t) - CPS-era entry that turns a bare
+  // connection into a registered application. Try the event port first; if
+  // that returns a non-zero error, also try the connection id itself.
+  _log('calling SLPSRegisterWithServer(eventPort=$eventPort)...');
+  final registerWithServer = skyLight.lookupFunction<Int32 Function(Uint32),
+      int Function(int)>('SLPSRegisterWithServer');
+  var regRc = registerWithServer(eventPort);
+  _log('SLPSRegisterWithServer(eventPort) -> $regRc');
+  if (regRc != 0 && eventPort != connectionId) {
+    _log('calling SLPSRegisterWithServer(cid=$connectionId)...');
+    regRc = registerWithServer(connectionId);
+    _log('SLPSRegisterWithServer(cid) -> $regRc');
+  }
+
+  // SLPSSetMainApplicationConnection(cid) - bind this connection as the one
+  // the WindowServer should deliver app events on. Second arg is a guess
+  // (flags/options); 0 is the conservative value.
+  _log('calling SLPSSetMainApplicationConnection($connectionId, 0)...');
+  final setMain = skyLight.lookupFunction<Int32 Function(Int32, Int32),
+      int Function(int, int)>('SLPSSetMainApplicationConnection');
+  final mainRc = setMain(connectionId, 0);
+  _log('SLPSSetMainApplicationConnection -> $mainRc');
+
+  // Public foreground transform on top of the private registration.
+  try {
+    final hi = DynamicLibrary.open(
+        '/System/Library/Frameworks/ApplicationServices.framework/'
+        'Frameworks/HIServices.framework/HIServices');
+    final psn = calloc<ProcessSerialNumber>();
+    final getRc = hi.lookupFunction<
+            Int32 Function(Pointer<ProcessSerialNumber>),
+            int Function(Pointer<ProcessSerialNumber>)>('GetCurrentProcess')(psn);
+    final transformRc = hi.lookupFunction<
+            Int32 Function(Pointer<ProcessSerialNumber>, Int32),
+            int Function(Pointer<ProcessSerialNumber>, int)>(
+        'TransformProcessType')(psn, kProcessTransformToForegroundApplication);
+    final frontRc = hi.lookupFunction<
+            Int32 Function(Pointer<ProcessSerialNumber>),
+            int Function(Pointer<ProcessSerialNumber>)>('SetFrontProcess')(psn);
+    _log('GetCurrentProcess=$getRc Transform=$transformRc Front=$frontRc '
+        'psn=(${psn.ref.high},${psn.ref.low})');
+  } catch (e) {
+    _log('HIServices foreground path failed: $e');
+  }
+
+  // Also the private front/focus path that Q already measured as "success, no
+  // events" - cheap to re-run after real registration.
+  final psn2 = calloc<ProcessSerialNumber>();
+  skyLight.lookupFunction<_PsnOnlyNative,
+          int Function(Pointer<ProcessSerialNumber>)>('SLPSGetCurrentProcess')(
+      psn2);
+  final enableFg = skyLight.lookupFunction<
+      _EnableForegroundNative,
+      int Function(Pointer<ProcessSerialNumber>, int, int, int,
+          int)>('SLPSEnableForegroundOperation');
+  _log('SLPSEnableForegroundOperation -> '
+      '${enableFg(psn2, 0x03, 0x3C, 0x2C, 0x1103)}');
+  _log('SLPSSetFrontProcess -> ${skyLight.lookupFunction<_PsnOnlyNative, int Function(Pointer<ProcessSerialNumber>)>('SLPSSetFrontProcess')(psn2)}');
+  _log('SLPSStealKeyFocus -> ${skyLight.lookupFunction<_PsnOnlyNative, int Function(Pointer<ProcessSerialNumber>)>('SLPSStealKeyFocus')(psn2)}');
+
+  // Visible window so the server has a target.
+  final rect = calloc<NSRect>()
+    ..ref.x = 320
+    ..ref.y = 320
+    ..ref.width = 480
+    ..ref.height = 320;
+  final regionSlot = calloc<Pointer<Void>>();
+  skyLight.lookupFunction<_NewRegionWithRectNative,
+          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
+      'CGSNewRegionWithRect')(rect, regionSlot);
+  final windowIdSlot = calloc<Uint32>();
+  skyLight.lookupFunction<
+          _SlsNewWindowNative,
+          int Function(int, int, double, double, Pointer<Void>,
+              Pointer<Uint32>)>('SLSNewWindow')(
+      connectionId,
+      kCGSBackingStoreBuffered,
+      320.0,
+      320.0,
+      regionSlot.value,
+      windowIdSlot);
+  final windowId = windowIdSlot.value;
+  final context = skyLight.lookupFunction<_WindowContextCreateNative,
+      Pointer<Void> Function(int, int, Pointer<Void>)>(
+      'SLWindowContextCreate')(connectionId, windowId, nullptr);
+  if (context != nullptr) {
+    final coreGraphics = DynamicLibrary.open(
+        '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+    final fill = calloc<NSRect>()
+      ..ref.width = 480
+      ..ref.height = 320;
+    coreGraphics.lookupFunction<_SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double, double)>(
+        'CGContextSetRGBFillColor')(context, 0.1, 0.7, 0.9, 1.0);
+    coreGraphics.lookupFunction<_FillRectNative,
+            void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
+        context, fill.ref);
+    coreGraphics.lookupFunction<_ContextFlushNative,
+        void Function(Pointer<Void>)>('CGContextFlush')(context);
+  }
+  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  _log('WINDOW_ID=$windowId');
+
+  probePostInputBody();
+
+  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
+      Pointer<Void> Function(Pointer<Void>, int)>('SLEventCreateNextEvent');
+  final getType = skyLight
+      .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
+          'SLEventGetType');
+
+  _log('handshake done (reg=$regRc main=$mainRc port=$eventPort); '
+      'polling ${seconds}s...');
+  var received = 0;
+  for (var i = 0; i < seconds * 20; i++) {
+    if (i > 0 && i % 40 == 0) probePostInputBody();
+    final event = createNextEvent(nullptr, connectionId);
+    if (event != nullptr) {
+      received++;
+      _log('EVENT type=${getType(event)}');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+
+  _log('events received: $received');
+  _log(received > 0
+      ? 'RESULT: full handshake opened input. Route C is complete: window, '
+          'pixels and events via pure Dart FFI + private SkyLight.'
+      : 'RESULT: still 0 events after RegisterWithServer+SetMainApplication'
+          'Connection (reg=$regRc main=$mainRc port=$eventPort). Either the '
+          'signatures are still wrong, or a .app bundle / LaunchServices '
+          'registration is mandatory.');
+  _exitProcess(received > 0 ? 0 : 1);
+}
+
+// ---------------------------------------------------------------------------
 // Probe R - the fix the stack sample pointed at.
 //
 // sample(1) caught the main thread with 612 of 612 samples inside
@@ -2135,6 +2300,9 @@ Future<void> main(List<String> args) async {
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     case 'transform-process':
       await probeTransformProcess(
+          int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
+    case 'skylight-register':
+      await probeSkyLightRegister(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     default:
       _log('unknown probe: $probe');

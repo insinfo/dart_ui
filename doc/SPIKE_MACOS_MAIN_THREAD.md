@@ -508,16 +508,15 @@ saído). Resultados ainda abertos depois do keep-alive:
 | O hold-appkit | ❌ mesmo Trace/BPT de G logo após o pump timer |
 | Q/P skylight input | 0 eventos mesmo com SLPS* |
 
-**Próximos probes (esta rodada):**
+**Medido depois disso:**
 
-- **U** `hold-appkit-nopump` — janela + witness, **sem** `nextEvent`. Bisect do
-  crash O: é a janela ou o pump?
-- **K/F/L reescritos** — witness antes do pump, one-shot + sentinel,
-  `NSDefaultRunLoopMode` real, F sem `waitUntilDone:YES` no nextEvent,
-  log em stderr (stdout redirecionado no CI engolia RESULT).
-- **X** `transform-process` — `TransformProcessType` / `SetFrontProcess`
-  (HIServices público) no lugar dos SLPS* chutados, depois
-  `SLEventCreateNextEvent`.
+- **U** ✅ NSWindow sobrevive 8s sem pump (110 ticks). Crash O = o pump.
+- **K/F** ✅/⛔ timers disparam; `nextEventMatchingMask:` **bloqueia** mesmo com
+  `distantPast` (sentinel permanece). Rota D cria janela mas não bombeia.
+- **X** TransformProcessType=0, Front=0, ainda **0 eventos**.
+- Dump SkyLight 2016 (`referencias/skylight.txt` = gist erica) ainda casa:
+  `SLPSRegisterWithServer` e `SLPSSetMainApplicationConnection` são **T**
+  exportados — o meio do handshake que Q/X pularam → probe **Y**.
 
 ## Próximos passos
 
