@@ -1485,9 +1485,9 @@ int _consumeSkyLightEventPort(
     _log('event-port callback #$callbacks: messageSize=$size; reading one');
     final pool = objc_autoreleasePoolPush();
     try {
-      // Diagnostic bound for Z16: JankyBorders drains until null, but Z15
-      // hung inside that callback. One read tells us whether the first read or
-      // the exhaustion read blocks, without conflating the two operations.
+      // One Mach message produced one readable event on macOS 14 arm64. Do not
+      // probe for exhaustion here: unlike the JankyBorders host process, this
+      // bare CGS client blocks on that extra read instead of returning null.
       final event = createNextEvent(connectionId);
       if (event != nullptr) {
         received++;

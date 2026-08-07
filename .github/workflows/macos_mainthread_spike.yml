@@ -198,7 +198,6 @@ jobs:
       # distinguish a blocked first read from a blocked exhaustion read.
       - name: 'Probe Z1/Z2/Z16: bounded pid-targeted SkyLight drain'
         timeout-minutes: 4
-        continue-on-error: true
         run: |
           mkdir -p /tmp/shots
           OBJC_DEBUG_MISSING_POOLS=YES ./build/probe skylight-events 8 > /tmp/events.log 2>&1 &
@@ -225,6 +224,10 @@ jobs:
           cat /tmp/events.log || true
           if grep -q 'MISSING POOLS' /tmp/events.log; then
             echo 'autorelease-pool regression detected'
+            status=1
+          fi
+          if ! grep -Eq 'events received: [1-9][0-9]*' /tmp/events.log; then
+            echo 'SkyLight input regression: no event was received'
             status=1
           fi
           grep -A 16 "com.apple.main-thread" /tmp/events.sample 2>/dev/null | head -24 || true

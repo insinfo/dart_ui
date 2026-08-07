@@ -670,6 +670,15 @@ Z16 limita deliberadamente o diagnóstico a uma leitura por sinal e marca a
 entrada/saída, distinguindo bloqueio da primeira leitura de bloqueio ao tentar
 provar que a fila acabou.
 
+Z16 fechou a rota no
+[run 31159212053](https://github.com/insinfo/dart_ui/actions/runs/31159212053):
+três mensagens da Mach port produziram três eventos, com tipos `[10, 11, 5]`
+(key-down, key-up e mouse-move), sem AppKit e fora da main thread. A primeira
+leitura sempre retornou; era a leitura adicional de exaustão que prendia o
+cliente CGS mínimo. O consumidor mantém uma leitura por mensagem e o workflow
+agora exige `events received > 0`, além de continuar verificando ausência de
+`MISSING POOLS`.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -710,12 +719,11 @@ diferenças objetivas entre o probe e o consumidor conhecido.
     porque o retorno mudou de 0 para `-50` nessa execução.
 15. **Probe Z15 — parcial:** `SLEventPostToPid` foi executado, mas o callback
     não voltou para produzir o resumo.
-16. **Probe Z16 — em CI:** limitar a uma leitura por sinal e instrumentar
-    entrada/saída para localizar se o bloqueio ocorre no primeiro evento ou na
-    leitura de exaustão do loop usado pelo JankyBorders.
-17. Depois de localizar o bloqueio, usar o ABI confirmado pelo Cua
-    `void SLEventPostToPid(pid_t, CGEventRef)` para endereçar o input ao próprio
-    processo sem condicionar a continuação ao registro SLPS.
+16. **Probe Z16 — confirmado:** uma leitura por mensagem entregou três eventos
+    `[10, 11, 5]`; a leitura extra de exaustão era o ponto de bloqueio.
+17. **Regressão em CI:** exigir ao menos um evento e nenhum aviso de pool; usar
+    `void SLEventPostToPid(pid_t, CGEventRef)` sem condicionar a continuação ao
+    retorno do registro SLPS.
 18. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
 19. Manter `CGEventTap` como plano B público para captura global. Eventos de
