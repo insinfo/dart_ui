@@ -194,9 +194,9 @@ jobs:
           retention-days: 7
 
       # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
-      # a CFRunLoopSource. Z16 bounds each callback to one read so the trace can
-      # distinguish a blocked first read from a blocked exhaustion read.
-      - name: 'Probe Z1/Z2/Z16: bounded pid-targeted SkyLight drain'
+      # a CFRunLoopSource. Z17 registers the process before its first window,
+      # matching AppKit/HIServices ordering, then performs bounded reads.
+      - name: 'Probe Z1/Z2/Z17: register before window and receive input'
         timeout-minutes: 4
         run: |
           mkdir -p /tmp/shots

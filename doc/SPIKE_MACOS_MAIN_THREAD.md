@@ -679,6 +679,14 @@ cliente CGS mínimo. O consumidor mantém uma leitura por mensagem e o workflow
 agora exige `events received > 0`, além de continuar verificando ausência de
 `MISSING POOLS`.
 
+O primeiro run com essa asserção,
+[31159475603](https://github.com/insinfo/dart_ui/actions/runs/31159475603),
+falhou corretamente: o registro oscilou para `-50` e a porta recebeu zero
+callbacks. A correlação dos dois runs mostra que a entrega depende de registro
+aceito. O probe ainda fazia esse cadastro tarde demais, depois de criar e
+ordenar a janela; AppKit/HIServices o faz durante a inicialização do processo,
+antes da primeira janela. Z17 corrige essa ordem.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -724,13 +732,15 @@ diferenças objetivas entre o probe e o consumidor conhecido.
 17. **Regressão em CI:** exigir ao menos um evento e nenhum aviso de pool; usar
     `void SLEventPostToPid(pid_t, CGEventRef)` sem condicionar a continuação ao
     retorno do registro SLPS.
-18. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+18. **Probe Z17 — em CI:** registrar flavor 3 imediatamente após obter a conexão
+    principal e antes de criar/ordenar a primeira janela.
+19. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-19. Manter `CGEventTap` como plano B público para captura global. Eventos de
+20. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-20. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+21. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-21. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+22. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.

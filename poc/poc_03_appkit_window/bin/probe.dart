@@ -1447,15 +1447,6 @@ int _consumeSkyLightEventPort(
   _log('SLSRegisterNotifyProc x${notificationTypes.length} -> '
       '$registrationResults');
 
-  final registerWithServer =
-      skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
-          'SLPSRegisterWithServer');
-  final processRegistrationRc = registerWithServer(3);
-  _log('SLPSRegisterWithServer(flavor=3) -> $processRegistrationRc');
-  // Registration is diagnostic, not a gate. The historical Y run received
-  // events after this family returned -50, and this process may already have
-  // been registered implicitly while opening its WindowServer connection.
-
   final eventPortOut = calloc<Uint32>();
   final getEventPort = skyLight.lookupFunction<
       Int32 Function(Int32, Pointer<Uint32>),
@@ -1576,6 +1567,16 @@ Future<void> probeSkyLightEvents(int seconds) async {
           'SLSMainConnectionID')();
   print('SLSMainConnectionID() = $connectionId '
       '(pthread_main_np() = ${pthread_main_np()})');
+
+  // AppKit/HIServices registers the process before creating its first window.
+  // Doing this inside the consumer was too late and alternated between 0 and
+  // paramErr (-50), with event delivery present only in successful runs.
+  final registerWithServer =
+      skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'SLPSRegisterWithServer');
+  final processRegistrationRc = registerWithServer(3);
+  _log('SLPSRegisterWithServer(flavor=3, before window) -> '
+      '$processRegistrationRc');
 
   // A window gives the WindowServer somewhere to aim events.
   final rect = calloc<NSRect>()
