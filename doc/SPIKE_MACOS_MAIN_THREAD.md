@@ -662,6 +662,14 @@ histórico Y já mostrou que `-50` não impede necessariamente entrega posterior
 logo esse retorno não pode ser tratado como pré-condição. Z15 o mantém como
 telemetria e sempre continua até o teste de `SLEventPostToPid`.
 
+Z15, no [run 31158816222](https://github.com/insinfo/dart_ui/actions/runs/31158816222),
+chegou ao teste: registro 0, porta 15111 e várias publicações direcionadas ao
+próprio PID. O processo ainda ficou preso antes do resumo. O código atual do
+JankyBorders confirma que seu callback drena em loop até a API retornar null;
+Z16 limita deliberadamente o diagnóstico a uma leitura por sinal e marca a
+entrada/saída, distinguindo bloqueio da primeira leitura de bloqueio ao tentar
+provar que a fila acabou.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -700,16 +708,21 @@ diferenças objetivas entre o probe e o consumidor conhecido.
     bloqueia quando os eventos são enviados ao stream HID global.
 14. **Probe Z14 — inconclusivo:** o guard do registro encerrou antes do teste
     porque o retorno mudou de 0 para `-50` nessa execução.
-15. **Probe Z15 — em CI:** usar o ABI confirmado pelo Cua
+15. **Probe Z15 — parcial:** `SLEventPostToPid` foi executado, mas o callback
+    não voltou para produzir o resumo.
+16. **Probe Z16 — em CI:** limitar a uma leitura por sinal e instrumentar
+    entrada/saída para localizar se o bloqueio ocorre no primeiro evento ou na
+    leitura de exaustão do loop usado pelo JankyBorders.
+17. Depois de localizar o bloqueio, usar o ABI confirmado pelo Cua
     `void SLEventPostToPid(pid_t, CGEventRef)` para endereçar o input ao próprio
     processo sem condicionar a continuação ao registro SLPS.
-16. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+18. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-17. Manter `CGEventTap` como plano B público para captura global. Eventos de
+19. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-18. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+20. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-19. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+21. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.

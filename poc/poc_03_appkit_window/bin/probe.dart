@@ -1482,14 +1482,20 @@ int _consumeSkyLightEventPort(
       (Pointer<Void> port, Pointer<Void> message, int size,
           Pointer<Void> context) {
     callbacks++;
+    _log('event-port callback #$callbacks: messageSize=$size; reading one');
     final pool = objc_autoreleasePoolPush();
     try {
-      while (true) {
-        final event = createNextEvent(connectionId);
-        if (event == nullptr) break;
+      // Diagnostic bound for Z16: JankyBorders drains until null, but Z15
+      // hung inside that callback. One read tells us whether the first read or
+      // the exhaustion read blocks, without conflating the two operations.
+      final event = createNextEvent(connectionId);
+      if (event != nullptr) {
         received++;
         if (sampledTypes.length < 64) sampledTypes.add(getType(event));
         cfRelease(event);
+        _log('event-port callback #$callbacks: received event #$received');
+      } else {
+        _log('event-port callback #$callbacks: no event');
       }
     } finally {
       objc_autoreleasePoolPop(pool);

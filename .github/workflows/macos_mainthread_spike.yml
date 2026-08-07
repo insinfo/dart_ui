@@ -194,15 +194,14 @@ jobs:
           retention-days: 7
 
       # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
-      # a CFRunLoopSource. Z15 treats process registration as diagnostic and
-      # sends input directly to this pid through SkyLight even if it returns
-      # the historically observed -50.
-      - name: 'Probe Z1/Z2/Z15: consume pid-targeted SkyLight events'
+      # a CFRunLoopSource. Z16 bounds each callback to one read so the trace can
+      # distinguish a blocked first read from a blocked exhaustion read.
+      - name: 'Probe Z1/Z2/Z16: bounded pid-targeted SkyLight drain'
         timeout-minutes: 4
         continue-on-error: true
         run: |
           mkdir -p /tmp/shots
-          OBJC_DEBUG_MISSING_POOLS=YES ./build/probe skylight-events 15 > /tmp/events.log 2>&1 &
+          OBJC_DEBUG_MISSING_POOLS=YES ./build/probe skylight-events 8 > /tmp/events.log 2>&1 &
           pid=$!
           sleep 3
           WID=$(grep -o 'WINDOW_ID=[0-9]*' /tmp/events.log | cut -d= -f2)
@@ -211,11 +210,8 @@ jobs:
             screencapture -x -o -l"$WID" /tmp/shots/skylight-events-window.png \
               || echo "screencapture -l exit=$?"
           fi
-          for i in 1 2 3; do
-            ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
-            sleep 2
-          done
-          for i in {1..30}; do
+          ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
+          for i in {1..40}; do
             kill -0 "$pid" 2>/dev/null || break
             sleep 0.5
           done
