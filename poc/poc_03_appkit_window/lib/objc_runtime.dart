@@ -8,6 +8,22 @@ import 'package:ffi/ffi.dart';
 final DynamicLibrary libObjC = DynamicLibrary.open('libobjc.A.dylib');
 final DynamicLibrary libSystem = DynamicLibrary.open('libSystem.B.dylib');
 
+// SkyLight event finalization can autorelease private Objective-C appendix
+// objects (_NSCGEventBuffer and authentication messages). A Dart worker does
+// not come with an AppKit-managed autorelease pool, so every bounded event
+// drain must establish one explicitly.
+typedef ObjcAutoreleasePoolPushNative = Pointer<Void> Function();
+typedef ObjcAutoreleasePoolPushDart = Pointer<Void> Function();
+final objc_autoreleasePoolPush = libObjC.lookupFunction<
+    ObjcAutoreleasePoolPushNative,
+    ObjcAutoreleasePoolPushDart>('objc_autoreleasePoolPush');
+
+typedef ObjcAutoreleasePoolPopNative = Void Function(Pointer<Void> token);
+typedef ObjcAutoreleasePoolPopDart = void Function(Pointer<Void> token);
+final objc_autoreleasePoolPop = libObjC.lookupFunction<
+    ObjcAutoreleasePoolPopNative,
+    ObjcAutoreleasePoolPopDart>('objc_autoreleasePoolPop');
+
 // `dispatch_get_main_queue()` is a `static inline` function declared in
 // <dispatch/queue.h>; it is NOT an exported symbol, so dlsym() always fails on
 // it. What it actually returns is the address of the global queue object
@@ -32,12 +48,16 @@ Pointer<Void> dispatch_get_main_queue() {
 // WARNING: dispatching *synchronously* onto the main queue hangs forever under
 // the Dart standalone VM - the VM owns the process main thread and never
 // drains that queue, so the work item is enqueued and nobody ever runs it.
-typedef DispatchSyncFNative = Void Function(Pointer<Void> queue,
-    Pointer<Void> context, Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
-typedef DispatchSyncFDart = void Function(Pointer<Void> queue,
-    Pointer<Void> context, Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
-final dispatch_sync_f = libSystem.lookupFunction<
-    DispatchSyncFNative, DispatchSyncFDart>('dispatch_sync_f');
+typedef DispatchSyncFNative = Void Function(
+    Pointer<Void> queue,
+    Pointer<Void> context,
+    Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
+typedef DispatchSyncFDart = void Function(
+    Pointer<Void> queue,
+    Pointer<Void> context,
+    Pointer<NativeFunction<Void Function(Pointer<Void>)>> work);
+final dispatch_sync_f = libSystem
+    .lookupFunction<DispatchSyncFNative, DispatchSyncFDart>('dispatch_sync_f');
 
 // Returns non-zero when the calling thread is the process' main thread. AppKit
 // gates NSWindow on exactly this check, so it is what decides whether a window
@@ -157,16 +177,10 @@ final msgSendVoidBool = objc_msgSend_ptr
     .asFunction<MsgSendVoidBoolDart>();
 
 // Void msgSend(Pointer, Selector, Pointer, Bool)
-typedef MsgSendVoidPointerBoolNative = Void Function(
-    Pointer<ObjCObject> target,
-    Pointer<ObjCSel> op,
-    Pointer<ObjCObject> arg1,
-    Bool arg2);
-typedef MsgSendVoidPointerBoolDart = void Function(
-    Pointer<ObjCObject> target,
-    Pointer<ObjCSel> op,
-    Pointer<ObjCObject> arg1,
-    bool arg2);
+typedef MsgSendVoidPointerBoolNative = Void Function(Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op, Pointer<ObjCObject> arg1, Bool arg2);
+typedef MsgSendVoidPointerBoolDart = void Function(Pointer<ObjCObject> target,
+    Pointer<ObjCSel> op, Pointer<ObjCObject> arg1, bool arg2);
 final msgSendVoidPointerBool = objc_msgSend_ptr
     .cast<NativeFunction<MsgSendVoidPointerBoolNative>>()
     .asFunction<MsgSendVoidPointerBoolDart>();

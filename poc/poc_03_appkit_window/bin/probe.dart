@@ -1415,21 +1415,17 @@ int _consumeSkyLightEventPort(
       'rc=$getEventPortRc port=$eventPort');
   if (getEventPortRc != 0 || eventPort == 0) return -1;
 
-  // Public source searches only expose void-argument stubs for this symbol.
-  // Run 31154591354 saw the first call return -50 and a later call return 0;
-  // run 31155012538 confirmed one call alone still returns -50. Test the
-  // smallest stateful interpretation: no arguments and one immediate retry.
+  // LLDB run 31155876163 captured AppKit -> HIServices calling the private
+  // implementation with x0=3. Disassembly of the public wrapper proves it
+  // forwards that single integer as `flavor`; do not confuse it with the Mach
+  // port number returned above.
   // Never drain unless registration succeeds: before registration
   // SLEventCreateNextEvent can block indefinitely after the port signals.
   final registerWithServer =
-      skyLight.lookupFunction<Int32 Function(), int Function()>(
+      skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
           'SLPSRegisterWithServer');
-  var registerRc = registerWithServer();
-  _log('SLPSRegisterWithServer() attempt 1 -> $registerRc');
-  if (registerRc != 0) {
-    registerRc = registerWithServer();
-    _log('SLPSRegisterWithServer() attempt 2 -> $registerRc');
-  }
+  final registerRc = registerWithServer(3);
+  _log('SLPSRegisterWithServer(flavor=3) -> $registerRc');
   if (registerRc != 0) return -2;
 
   final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
@@ -1447,12 +1443,17 @@ int _consumeSkyLightEventPort(
       (Pointer<Void> port, Pointer<Void> message, int size,
           Pointer<Void> context) {
     callbacks++;
-    while (true) {
-      final event = createNextEvent(connectionId);
-      if (event == nullptr) break;
-      received++;
-      if (sampledTypes.length < 64) sampledTypes.add(getType(event));
-      cfRelease(event);
+    final pool = objc_autoreleasePoolPush();
+    try {
+      while (true) {
+        final event = createNextEvent(connectionId);
+        if (event == nullptr) break;
+        received++;
+        if (sampledTypes.length < 64) sampledTypes.add(getType(event));
+        cfRelease(event);
+      }
+    } finally {
+      objc_autoreleasePoolPop(pool);
     }
   });
 

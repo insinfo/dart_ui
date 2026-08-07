@@ -593,6 +593,13 @@ o wrapper público não foi chamado pela testemunha AppKit; o processo terminou
 sem atingir o breakpoint. **Z6** move a interrupção para
 `_SLPSRegisterWithServer`, destino interno comprovado pelo desassembly do wrapper.
 
+O [run 31155876163](https://github.com/insinfo/dart_ui/actions/runs/31155876163)
+fechou o argumento: AppKit chamou `_SLPSRegisterWithServer` pela cadeia
+`NSApplication -> HIServices GetCurrentProcess -> _RegisterApplication` com
+`x0=3`, `x1=&sOurASN`, `x2=getpid()` e `x3=appName`. Isso confirma
+`SLPSRegisterWithServer(int flavor)` e fornece o valor observado no macOS 14:
+**flavor 3**. Z7 passou a fazer uma única chamada tipada com esse valor.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -616,15 +623,16 @@ diferenças objetivas entre o probe e o consumidor conhecido.
 4. **Probe Z4 — refutado, ABI recuperado:** retry sem argumentos produz estado
    parcial, mas zero callbacks. O desassembly prova um argumento `int flavor`.
 5. **Probe Z5 — inconclusivo:** AppKit não chamou o wrapper público.
-6. **Probe Z6 — implementado, aguardando CI:** interromper AppKit em
-   `_SLPSRegisterWithServer` e capturar `flavor`, PSN, pid e nome em `x0...x3`.
-7. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+6. **Probe Z6 — confirmado:** o flavor usado por AppKit no macOS 14 é `3`.
+7. **Probe Z7 — em CI:** registrar uma vez com `flavor=3`, instalar a source e
+   exigir callbacks/eventos sem depender da sequência acidental de Y.
+8. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-8. Manter `CGEventTap` como plano B público para captura global. Eventos de
+9. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-9. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+10. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-10. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+11. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.
@@ -657,6 +665,20 @@ SLSMainConnectionID
 callback da porta:
   repetir SLEventCreateNextEvent(cid) até retornar NULL
 ```
+
+Cada drenagem agora abre e fecha um pool com
+`objc_autoreleasePoolPush/Pop`. A [issue SDL #14256](https://github.com/libsdl-org/SDL/issues/14256)
+mostra `_NSCGEventBuffer` e mensagens privadas de autenticação do SkyLight sendo
+autoreleased durante input; sem pool na thread consumidora, o processo perde
+memória rapidamente mesmo liberando o `CGEventRef`.
+
+Há outra restrição menos óbvia: `SLEventCreateNextEvent` processa datagramas
+laterais. Um [backtrace do R-SIG-Mac](https://stat.ethz.ch/pipermail/r-sig-mac/2020-August/013663.html)
+mostra essa chamada passando por `CGSSnarfAndDispatchDatagrams`, notificando
+mudança do Dock/telas e atingindo uma asserção porque `NSScreen` foi invalidado
+fora da main thread. Portanto a rota C não deve inicializar AppKit no isolate
+que drena SkyLight; se ambos forem combinados, efeitos AppKit precisam ser
+entregues à main thread.
 
 Fontes exatas:
 
@@ -844,6 +866,10 @@ produtora. É uma pista forte para amostrar/backtracear também a
 | [catálogo de reversing de 0xdevalias](https://gist.github.com/0xdevalias/256a8018473839695e8684e37da92c25) | Índice amplo de ferramentas; útil como caixa de ferramentas, não como fonte de assinatura. |
 | [Google/Mandiant: reversing de Cocoa](https://cloud.google.com/blog/topics/threat-intelligence/introduction-to-reve/) | Útil para reconstruir xrefs entre seletores e IMPs e localizar `NSApplicationMain`/delegate. O helper apresentado é x86_64 e Objective-C; não recupera ABIs das funções C do SkyLight. |
 | [JankyBorders issue 62](https://github.com/FelixKratz/JankyBorders/issues/62?timeline_page=1) | Muito útil para concorrência, ownership de conexões, `SLSTransaction*`, transformações, IPC Mach separado e falhas reais no `SLSWMBridge`. |
+| [SDL issue 14256](https://github.com/libsdl-org/SDL/issues/14256) | Evidência direta de autoreleases privados durante o consumo de input SkyLight; exige pool explícito em threads não gerenciadas pelo AppKit. |
+| [R-SIG-Mac: rgl/base graphics](https://stat.ethz.ch/pipermail/r-sig-mac/2020-August/013663.html) | Backtrace causal: o dreno SkyLight despacha notificações de tela/Dock e pode alcançar AppKit fora da main thread. |
+| [BetterTouchTool: save/restore layout](https://community.folivora.ai/t/saving-restoring-window-layout/21249) | Confirma a cadeia `CFRunLoop -> SLEventCreateNextEvent -> CGSSnarfAndDispatchDatagrams`, mas o relatório é de excesso de wakeups em AppleScript e não revela novo ABI. |
+| Relatos Apple Community, Adobe, ChimeraX e SourceTree enviados | Úteis como casos para a matriz de regressão (sleep/display/IME), mas crashes de terceiros sem call site controlado não são usados para inferir assinatura privada. |
 | [historicalsource/supermario](https://github.com/historicalsource/supermario) | Fonte do System 7 clássico, 68k/PPC/Toolbox. Pode ensinar arqueologia e comparação de binários, mas seu Window/Event Manager não é ancestral de ABI compatível com Quartz/SkyLight. O próprio projeto descreve a origem como fontes “passed around”; não deve ser tratado como SDK oficial/licenciado para copiar código. |
 | [MacOS9-USB2-EHCI](https://github.com/UnexpectedBomb/MacOS9-USB2-EHCI) | Bom estudo de engenharia de driver clássico e validação em hardware, mas trata ROM, Name Registry, PEF e USB no Mac OS 9; não fornece APIs de janela/evento do macOS moderno. |
 | [Macintosh Garden](https://macintoshgarden.org/games/all) | Catálogo de software clássico. Binários 68k/PPC podem servir para estudo histórico, não para descobrir `SkyLight.framework`; baixa prioridade para este spike. |
