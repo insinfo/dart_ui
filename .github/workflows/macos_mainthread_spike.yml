@@ -194,8 +194,9 @@ jobs:
           retention-days: 7
 
       # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
-      # a CFRunLoopSource. Z10 seeds input before the first port dispatch.
-      - name: 'Probe Z1/Z2/Z10: consume the registered SkyLight event port'
+      # a CFRunLoopSource. Z13 combines AppKit's flavor=3 process registration
+      # with a pre-seeded input queue before the first port dispatch.
+      - name: 'Probe Z1/Z2/Z13: consume the registered SkyLight event port'
         timeout-minutes: 4
         continue-on-error: true
         run: |

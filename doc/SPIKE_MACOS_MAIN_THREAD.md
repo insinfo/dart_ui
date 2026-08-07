@@ -639,6 +639,14 @@ exports em SDKs, nenhum call site. Z12 para depois de carregar SkyLight e
 desassembla a função diretamente para determinar quantos registradores ela
 realmente consome antes de qualquer novo teste de efeito.
 
+O [run 31157833578](https://github.com/insinfo/dart_ui/actions/runs/31157833578)
+fechou esse ABI: `SLPSSetMainApplicationConnection` lê somente `x0`, preserva o
+valor como um `int` e o envia a um bloco na fila da conexão primária. Portanto a
+assinatura observada é `CGError SLPSSetMainApplicationConnection(int cid)`; as
+duas chamadas de Y retornaram erro e não explicam seus eventos. Resta uma
+combinação ainda não medida: o registro correto de processo com flavor 3 junto
+da fila pré-alimentada. Z13 testa exatamente essa combinação.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -671,15 +679,17 @@ diferenças objetivas entre o probe e o consumidor conhecido.
 10. **Probe Z10 — parcial:** eliminou o bloqueio e não acusou pool ausente, mas
     não vinculou a conexão ao roteamento de input (`callbacks=0`).
 11. **Probe Z11 — refutado como rota AppKit:** o símbolo não foi chamado.
-12. **Probe Z12 — em CI:** desassembly direto do símbolo após `dlopen`, parando
-    em `SLSGetEventPort` para manter o processo e a imagem carregados.
-13. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+12. **Probe Z12 — confirmado:** o símbolo consome apenas `x0`; o ABI observado
+    é `CGError SLPSSetMainApplicationConnection(int cid)`.
+13. **Probe Z13 — em CI:** combinar o registro AppKit `flavor=3` com o
+    pré-enfileiramento que impediu o primeiro dreno de bloquear em Z10.
+14. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-14. Manter `CGEventTap` como plano B público para captura global. Eventos de
+15. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-15. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+16. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-16. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+17. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.

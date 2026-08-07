@@ -1407,9 +1407,10 @@ typedef _SlsNotifyCallbackNative = Void Function(
 /// SLSGetEventPort -> CFMachPort -> CFRunLoopSource -> SLEventCreateNextEvent.
 int _consumeSkyLightEventPort(
     DynamicLibrary skyLight, int connectionId, int seconds) {
-  // This is the initializer used by JankyBorders immediately before it asks
-  // for the event port. SLPSRegisterWithServer is process registration and is
-  // not part of that working event-consumer sequence.
+  // These notification registrations are used by JankyBorders immediately
+  // before it asks for the event port. AppKit/HIServices additionally
+  // registers the process with flavor 3. Earlier probes tested each half in
+  // isolation; keep both here so input can be routed before the first drain.
   var notifications = 0;
   final notifyCallback = NativeCallable<_SlsNotifyCallbackNative>.isolateLocal(
       (int event, Pointer<Void> data, int size, Pointer<Void> context) {
@@ -1442,6 +1443,13 @@ int _consumeSkyLightEventPort(
   }
   _log('SLSRegisterNotifyProc x${notificationTypes.length} -> '
       '$registrationResults');
+
+  final registerWithServer =
+      skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
+          'SLPSRegisterWithServer');
+  final processRegistrationRc = registerWithServer(3);
+  _log('SLPSRegisterWithServer(flavor=3) -> $processRegistrationRc');
+  if (processRegistrationRc != 0) return -2;
 
   final eventPortOut = calloc<Uint32>();
   final getEventPort = skyLight.lookupFunction<
