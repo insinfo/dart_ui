@@ -578,6 +578,16 @@ com argumentos extras simplesmente ignorados. **Z4**
 testa o ABI sem argumentos com retry imediato; o workflow também para no símbolo
 sob LLDB, registra `x0...x7` e desassembla a implementação do macOS 14.
 
+O [run 31155345682](https://github.com/insinfo/dart_ui/actions/runs/31155345682)
+mostrou que o stub público estava incompleto: a implementação faz
+`mov x19, x0`, registra no log `flavor=%d` e chama
+`_SLPSRegisterWithServer(x0, &gOurPSN, getpid(), processName)`. Portanto o ABI
+externo é `CGError SLPSRegisterWithServer(int flavor)`. A primeira chamada de
+Z4, com `x0` indefinido, retornou `-50`; a segunda retornou 0 porque a primeira
+já havia preenchido `gOurPSN`, mas isso não bastou: `callbacks=0 events=0`.
+O próximo breakpoint executa a rota AppKit testemunha e lê o flavor verdadeiro
+em `x0` antes de adotá-lo no probe Dart.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -598,16 +608,17 @@ diferenças objetivas entre o probe e o consumidor conhecido.
 3. **Probe Z3 — refutado no CI:** `SLPSRegisterWithServer(eventPort)` isolado
    retornou `-50`; não chamar `SLEventCreateNextEvent` depois dessa falha evita o
    bloqueio observado na rodada anterior.
-4. **Probe Z4 — implementado, aguardando CI:** chamar
-   `SLPSRegisterWithServer()` sem argumentos e repetir uma vez. Em paralelo,
-   recuperar prólogo, registradores e desassembly pelo LLDB.
-5. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+4. **Probe Z4 — refutado, ABI recuperado:** retry sem argumentos produz estado
+   parcial, mas zero callbacks. O desassembly prova um argumento `int flavor`.
+5. **Probe Z5 — implementado, aguardando CI:** interromper a inicialização
+   AppKit em `SLPSRegisterWithServer` e capturar o flavor real em `x0`.
+6. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-6. Manter `CGEventTap` como plano B público para captura global. Eventos de
+7. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-7. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+8. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-8. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+9. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.
