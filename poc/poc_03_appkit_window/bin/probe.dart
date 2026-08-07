@@ -1398,12 +1398,50 @@ typedef _EventGetTypeNative = Uint32 Function(Pointer<Void> event);
 
 typedef _MachPortCallbackNative = Void Function(Pointer<Void> port,
     Pointer<Void> message, IntPtr size, Pointer<Void> context);
+typedef _SlsNotifyCallbackNative = Void Function(
+    Uint32 event, Pointer<Void> data, IntPtr size, Pointer<Void> context);
 
 /// Installs the event port on the current thread's CFRunLoop and drains it only
 /// when signalled. This mirrors JankyBorders' working sequence:
 /// SLSGetEventPort -> CFMachPort -> CFRunLoopSource -> SLEventCreateNextEvent.
 int _consumeSkyLightEventPort(
     DynamicLibrary skyLight, int connectionId, int seconds) {
+  // This is the initializer used by JankyBorders immediately before it asks
+  // for the event port. SLPSRegisterWithServer is process registration and is
+  // not part of that working event-consumer sequence.
+  var notifications = 0;
+  final notifyCallback = NativeCallable<_SlsNotifyCallbackNative>.isolateLocal(
+      (int event, Pointer<Void> data, int size, Pointer<Void> context) {
+    notifications++;
+  });
+  final registerNotify = skyLight.lookupFunction<
+      Int32 Function(Pointer<NativeFunction<_SlsNotifyCallbackNative>>, Uint32,
+          Pointer<Void>),
+      int Function(Pointer<NativeFunction<_SlsNotifyCallbackNative>>, int,
+          Pointer<Void>)>('SLSRegisterNotifyProc');
+  const notificationTypes = <int>[
+    723,
+    804,
+    806,
+    807,
+    808,
+    811,
+    815,
+    816,
+    1322,
+    1325,
+    1326,
+    1401,
+    1508
+  ];
+  final registrationResults = <int>[];
+  for (final eventType in notificationTypes) {
+    registrationResults
+        .add(registerNotify(notifyCallback.nativeFunction, eventType, nullptr));
+  }
+  _log('SLSRegisterNotifyProc x${notificationTypes.length} -> '
+      '$registrationResults');
+
   final eventPortOut = calloc<Uint32>();
   final getEventPort = skyLight.lookupFunction<
       Int32 Function(Int32, Pointer<Uint32>),
@@ -1414,19 +1452,6 @@ int _consumeSkyLightEventPort(
   _log('SLSGetEventPort(cid=$connectionId) -> '
       'rc=$getEventPortRc port=$eventPort');
   if (getEventPortRc != 0 || eventPort == 0) return -1;
-
-  // LLDB run 31155876163 captured AppKit -> HIServices calling the private
-  // implementation with x0=3. Disassembly of the public wrapper proves it
-  // forwards that single integer as `flavor`; do not confuse it with the Mach
-  // port number returned above.
-  // Never drain unless registration succeeds: before registration
-  // SLEventCreateNextEvent can block indefinitely after the port signals.
-  final registerWithServer =
-      skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
-          'SLPSRegisterWithServer');
-  final registerRc = registerWithServer(3);
-  _log('SLPSRegisterWithServer(flavor=3) -> $registerRc');
-  if (registerRc != 0) return -2;
 
   final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
       Pointer<Void> Function(int)>('SLEventCreateNextEvent');
@@ -1511,7 +1536,7 @@ int _consumeSkyLightEventPort(
     runInMode(defaultMode, 0.05, true);
   }
   _log('event-port summary: callbacks=$callbacks events=$received '
-      'sampledTypes=$sampledTypes');
+      'notifications=$notifications sampledTypes=$sampledTypes');
   return received;
 }
 

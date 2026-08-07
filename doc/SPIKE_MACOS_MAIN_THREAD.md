@@ -600,6 +600,13 @@ fechou o argumento: AppKit chamou `_SLPSRegisterWithServer` pela cadeia
 `SLPSRegisterWithServer(int flavor)` e fornece o valor observado no macOS 14:
 **flavor 3**. Z7 passou a fazer uma única chamada tipada com esse valor.
 
+Z7, no [run 31156204562](https://github.com/insinfo/dart_ui/actions/runs/31156204562),
+retornou 0 mas bloqueou na primeira drenagem, sem produzir evento. Logo esse
+registro pertence ao cadastro do processo feito por HIServices/AppKit, não ao
+handshake do consumidor da porta. A comparação linha a linha revelou a etapa
+que ainda faltava: JankyBorders executa seus `SLSRegisterNotifyProc` **antes**
+de `SLSGetEventPort` e não chama `SLPSRegisterWithServer` nesse caminho.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -624,15 +631,16 @@ diferenças objetivas entre o probe e o consumidor conhecido.
    parcial, mas zero callbacks. O desassembly prova um argumento `int flavor`.
 5. **Probe Z5 — inconclusivo:** AppKit não chamou o wrapper público.
 6. **Probe Z6 — confirmado:** o flavor usado por AppKit no macOS 14 é `3`.
-7. **Probe Z7 — em CI:** registrar uma vez com `flavor=3`, instalar a source e
-   exigir callbacks/eventos sem depender da sequência acidental de Y.
-8. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+7. **Probe Z7 — refutado:** flavor 3 retorna sucesso, mas não habilita a fila.
+8. **Probe Z8 — em CI:** reproduzir `events_register(cid)` com os 13 tipos do
+   JankyBorders antes de obter a porta, sem chamar `SLPSRegisterWithServer`.
+9. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-9. Manter `CGEventTap` como plano B público para captura global. Eventos de
+10. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-10. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+11. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-11. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+12. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.
