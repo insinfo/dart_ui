@@ -73,6 +73,9 @@ final Pointer<Void> cfRunLoopRunPtr =
 final _exitProcess =
     libSystem.lookupFunction<Void Function(Int32), void Function(int)>('_exit');
 
+final getpid =
+    libSystem.lookupFunction<Int32 Function(), int Function()>('getpid');
+
 // ---------------------------------------------------------------------------
 // objc_msgSend shapes needed to drive NSInvocation.
 // ---------------------------------------------------------------------------
@@ -1541,13 +1544,15 @@ int _consumeSkyLightEventPort(
   // run loop first; its initial port signal then called into an empty queue and
   // SLEventCreateNextEvent waited in mach_msg forever. The one successful Y
   // run posted input before installing/pumping the consumer.
-  probePostInputBody();
+  probePostInputBody(skyLight: skyLight);
 
   // Pump synchronously in bounded slices on the same OS thread/run loop where
   // the isolateLocal callback was created. No await is allowed in this loop:
   // resuming the isolate on another worker would pump a different CFRunLoop.
   for (var i = 0; i < seconds * 20; i++) {
-    if (i == 1 || (i > 1 && i % 40 == 0)) probePostInputBody();
+    if (i == 1 || (i > 1 && i % 40 == 0)) {
+      probePostInputBody(skyLight: skyLight);
+    }
     runInMode(defaultMode, 0.05, true);
   }
   _log('event-port summary: callbacks=$callbacks events=$received '
@@ -1968,7 +1973,7 @@ Future<void> probeTransformProcess(int seconds) async {
 
 /// Body of post-input without _exit, so other probes can inject from inside.
 /// Returns false if the keyboard event could not be created.
-bool probePostInputBody() {
+bool probePostInputBody({DynamicLibrary? skyLight}) {
   final coreGraphics = DynamicLibrary.open(
       '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
 
@@ -1982,6 +1987,9 @@ bool probePostInputBody() {
           Pointer<Void>, int, NSPoint, int)>('CGEventCreateMouseEvent');
   final post = coreGraphics.lookupFunction<Void Function(Uint32, Pointer<Void>),
       void Function(int, Pointer<Void>)>('CGEventPost');
+  final postToPid = skyLight?.lookupFunction<
+      Void Function(Int32, Pointer<Void>),
+      void Function(int, Pointer<Void>)>('SLEventPostToPid');
   final cfRelease = libCoreFoundation.lookupFunction<
       Void Function(Pointer<Void>), void Function(Pointer<Void>)>('CFRelease');
 
@@ -1992,9 +2000,16 @@ bool probePostInputBody() {
     if (up != nullptr) cfRelease(up);
     return false;
   }
-  post(0, down);
-  if (up != nullptr) post(0, up);
-  _log('posted key down/up for keycode 0.');
+  if (postToPid != null) {
+    final pid = getpid();
+    postToPid(pid, down);
+    if (up != nullptr) postToPid(pid, up);
+    _log('SLEventPostToPid(pid=$pid): key down/up for keycode 0.');
+  } else {
+    post(0, down);
+    if (up != nullptr) post(0, up);
+    _log('CGEventPost: key down/up for keycode 0.');
+  }
   cfRelease(down);
   if (up != nullptr) cfRelease(up);
 
@@ -2004,8 +2019,13 @@ bool probePostInputBody() {
   final move = createMouseEvent(nullptr, 5, point.ref, 0);
   _log('CGEventCreateMouseEvent -> ${move.address}');
   if (move != nullptr) {
-    post(0, move);
-    _log('posted a mouse move to (400, 400).');
+    if (postToPid != null) {
+      postToPid(getpid(), move);
+      _log('SLEventPostToPid: mouse move to (400, 400).');
+    } else {
+      post(0, move);
+      _log('CGEventPost: mouse move to (400, 400).');
+    }
     cfRelease(move);
   }
   calloc.free(point);

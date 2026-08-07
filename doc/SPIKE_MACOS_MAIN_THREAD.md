@@ -647,6 +647,14 @@ duas chamadas de Y retornaram erro e não explicam seus eventos. Resta uma
 combinação ainda não medida: o registro correto de processo com flavor 3 junto
 da fila pré-alimentada. Z13 testa exatamente essa combinação.
 
+Z13, no [run 31158216669](https://github.com/insinfo/dart_ui/actions/runs/31158216669),
+registrou os 13 notifications e o processo (`flavor=3`) com retorno 0, obteve a
+porta 14599, mas voltou a bloquear no primeiro dreno. Portanto registro e
+pré-enfileiramento não bastam quando o input é publicado no stream HID global.
+A implementação atual do Cua fornece uma diferença testável, com ABI explícito
+`void SLEventPostToPid(pid_t, CGEventRef)`: Z14 publica os eventos diretamente
+ao PID consumidor antes de acionar sua source.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -681,15 +689,18 @@ diferenças objetivas entre o probe e o consumidor conhecido.
 11. **Probe Z11 — refutado como rota AppKit:** o símbolo não foi chamado.
 12. **Probe Z12 — confirmado:** o símbolo consome apenas `x0`; o ABI observado
     é `CGError SLPSSetMainApplicationConnection(int cid)`.
-13. **Probe Z13 — em CI:** combinar o registro AppKit `flavor=3` com o
-    pré-enfileiramento que impediu o primeiro dreno de bloquear em Z10.
-14. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+13. **Probe Z13 — refutado:** registro de processo mais pré-enfileiramento ainda
+    bloqueia quando os eventos são enviados ao stream HID global.
+14. **Probe Z14 — em CI:** usar o ABI confirmado pelo Cua
+    `void SLEventPostToPid(pid_t, CGEventRef)` para endereçar o input ao próprio
+    processo e distinguir falha de roteamento de falha do consumidor.
+15. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-15. Manter `CGEventTap` como plano B público para captura global. Eventos de
+16. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-16. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+17. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-17. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+18. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.
