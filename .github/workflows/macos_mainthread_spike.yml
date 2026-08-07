@@ -194,13 +194,13 @@ jobs:
           retention-days: 7
 
       # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
-      # a CFRunLoopSource. Z9 isolates window and event traffic by connection.
-      - name: 'Probe Z1/Z2/Z9: consume the registered SkyLight event port'
+      # a CFRunLoopSource. Z10 seeds input before the first port dispatch.
+      - name: 'Probe Z1/Z2/Z10: consume the registered SkyLight event port'
         timeout-minutes: 4
         continue-on-error: true
         run: |
           mkdir -p /tmp/shots
-          ./build/probe skylight-events 15 > /tmp/events.log 2>&1 &
+          OBJC_DEBUG_MISSING_POOLS=YES ./build/probe skylight-events 15 > /tmp/events.log 2>&1 &
           pid=$!
           sleep 3
           WID=$(grep -o 'WINDOW_ID=[0-9]*' /tmp/events.log | cut -d= -f2)
@@ -225,6 +225,10 @@ jobs:
           status=0
           wait "$pid" || status=$?
           cat /tmp/events.log || true
+          if grep -q 'MISSING POOLS' /tmp/events.log; then
+            echo 'autorelease-pool regression detected'
+            status=1
+          fi
           grep -A 16 "com.apple.main-thread" /tmp/events.sample 2>/dev/null | head -24 || true
           exit "$status"
 

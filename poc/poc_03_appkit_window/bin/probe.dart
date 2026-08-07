@@ -1529,6 +1529,12 @@ int _consumeSkyLightEventPort(
   if (source == nullptr || runLoop == nullptr) return -1;
   addSource(runLoop, source, defaultMode);
 
+  // Seed the queue before the first source dispatch. Runs Z2-Z9 entered the
+  // run loop first; its initial port signal then called into an empty queue and
+  // SLEventCreateNextEvent waited in mach_msg forever. The one successful Y
+  // run posted input before installing/pumping the consumer.
+  probePostInputBody();
+
   // Pump synchronously in bounded slices on the same OS thread/run loop where
   // the isolateLocal callback was created. No await is allowed in this loop:
   // resuming the isolate on another worker would pump a different CFRunLoop.
@@ -1550,22 +1556,6 @@ Future<void> probeSkyLightEvents(int seconds) async {
   print('SLSMainConnectionID() = $connectionId '
       '(pthread_main_np() = ${pthread_main_np()})');
 
-  // Keep window traffic off the connection whose receive port is being
-  // consumed. JankyBorders eventually adopted a dedicated SLS connection per
-  // border for the same reentrancy/ordering reason.
-  final windowConnectionOut = calloc<Int32>();
-  final newConnectionRc = skyLight.lookupFunction<
-      Int32 Function(Int32, Pointer<Int32>),
-      int Function(int, Pointer<Int32>)>('SLSNewConnection')(
-    0,
-    windowConnectionOut,
-  );
-  final windowConnectionId =
-      newConnectionRc == 0 ? windowConnectionOut.value : connectionId;
-  calloc.free(windowConnectionOut);
-  print('SLSNewConnection(window) -> rc=$newConnectionRc '
-      'cid=$windowConnectionId');
-
   // A window gives the WindowServer somewhere to aim events.
   final rect = calloc<NSRect>()
     ..ref.x = 200
@@ -1581,12 +1571,12 @@ Future<void> probeSkyLightEvents(int seconds) async {
   skyLight.lookupFunction<
           _SlsNewWindowNative,
           int Function(int, int, double, double, Pointer<Void>,
-              Pointer<Uint32>)>('SLSNewWindow')(windowConnectionId,
+              Pointer<Uint32>)>('SLSNewWindow')(connectionId,
       kCGSBackingStoreBuffered, 200.0, 200.0, regionSlot.value, windowIdSlot);
   final windowId = windowIdSlot.value;
   final context = skyLight.lookupFunction<_WindowContextCreateNative,
           Pointer<Void> Function(int, int, Pointer<Void>)>(
-      'SLWindowContextCreate')(windowConnectionId, windowId, nullptr);
+      'SLWindowContextCreate')(connectionId, windowId, nullptr);
   if (context != nullptr) {
     final coreGraphics = DynamicLibrary.open(
         '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
@@ -1605,7 +1595,7 @@ Future<void> probeSkyLightEvents(int seconds) async {
   }
   skyLight
       .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
-          'SLSOrderWindow')(windowConnectionId, windowId, 1, 0);
+          'SLSOrderWindow')(connectionId, windowId, 1, 0);
   print('WINDOW_ID=$windowId');
 
   final received = _consumeSkyLightEventPort(skyLight, connectionId, seconds);

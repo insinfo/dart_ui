@@ -615,6 +615,15 @@ mesma conexão cuja porta tentou consumir, enquanto as correções modernas do
 JankyBorders isolam janelas próprias em conexões dedicadas. Z9 usa
 `SLSNewConnection` para a janela e reserva `SLSMainConnectionID` para eventos.
 
+Z9, no [run 31156918427](https://github.com/insinfo/dart_ui/actions/runs/31156918427),
+também bloqueou: a janela pertenceu à conexão dedicada, portanto o input
+endereçado a ela não alimentou a porta da conexão principal. A revisão do
+código histórico de Y encontrou uma diferença temporal mais forte: Y chamou
+`probePostInputBody()` **antes** de entrar no consumidor; Z2–Z9 entraram no
+primeiro `CFRunLoopRunInMode` com a fila vazia e só planejavam postar na segunda
+iteração, que nunca era alcançada. Z10 volta a usar a mesma conexão e semeia a
+fila antes do primeiro dispatch da source.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -642,15 +651,17 @@ diferenças objetivas entre o probe e o consumidor conhecido.
 7. **Probe Z7 — refutado:** flavor 3 retorna sucesso, mas não habilita a fila.
 8. **Probe Z8 — refutado isoladamente:** os registros retornam sucesso, mas a
    porta da conexão que também criou a janela ainda leva a dreno bloqueado.
-9. **Probe Z9 — em CI:** janela em `SLSNewConnection`; eventos exclusivamente
-   em `SLSMainConnectionID`, preservando os registros de notificação.
-10. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+9. **Probe Z9 — refutado:** separar a conexão da janela separa também a fila à
+   qual o input dessa janela é endereçado.
+10. **Probe Z10 — em CI:** mesma conexão, mas input enfileirado antes do primeiro
+    dispatch; rodar também com `OBJC_DEBUG_MISSING_POOLS=YES` e falhar em aviso.
+11. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-11. Manter `CGEventTap` como plano B público para captura global. Eventos de
+12. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-12. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+13. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-13. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+14. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.
