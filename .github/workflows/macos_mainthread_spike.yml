@@ -194,9 +194,10 @@ jobs:
           retention-days: 7
 
       # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
-      # a CFRunLoopSource. Z14 combines AppKit's flavor=3 process registration
-      # with input addressed directly to this pid through SkyLight.
-      - name: 'Probe Z1/Z2/Z14: consume pid-targeted SkyLight events'
+      # a CFRunLoopSource. Z15 treats process registration as diagnostic and
+      # sends input directly to this pid through SkyLight even if it returns
+      # the historically observed -50.
+      - name: 'Probe Z1/Z2/Z15: consume pid-targeted SkyLight events'
         timeout-minutes: 4
         continue-on-error: true
         run: |

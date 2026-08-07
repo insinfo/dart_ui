@@ -1452,7 +1452,9 @@ int _consumeSkyLightEventPort(
           'SLPSRegisterWithServer');
   final processRegistrationRc = registerWithServer(3);
   _log('SLPSRegisterWithServer(flavor=3) -> $processRegistrationRc');
-  if (processRegistrationRc != 0) return -2;
+  // Registration is diagnostic, not a gate. The historical Y run received
+  // events after this family returned -50, and this process may already have
+  // been registered implicitly while opening its WindowServer connection.
 
   final eventPortOut = calloc<Uint32>();
   final getEventPort = skyLight.lookupFunction<
