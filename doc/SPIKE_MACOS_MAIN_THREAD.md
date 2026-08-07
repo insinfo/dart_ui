@@ -631,6 +631,14 @@ input global ainda não é roteado à conexão de uma aplicação não registrad
 O único Y funcional também executou `SLPSSetMainApplicationConnection`; em vez
 de repetir o typedef especulativo, Z11 captura a chamada real feita por AppKit.
 
+O [run 31157562380](https://github.com/insinfo/dart_ui/actions/runs/31157562380)
+terminou sem atingir esse breakpoint. Assim, `NSApplication` não usa o símbolo
+exportado nessa rota do macOS 14, e Y não pode ser justificado como imitação do
+AppKit. A busca de código encontrou somente stubs sem tipo (Darling) e listas de
+exports em SDKs, nenhum call site. Z12 para depois de carregar SkyLight e
+desassembla a função diretamente para determinar quantos registradores ela
+realmente consome antes de qualquer novo teste de efeito.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -662,15 +670,16 @@ diferenças objetivas entre o probe e o consumidor conhecido.
    qual o input dessa janela é endereçado.
 10. **Probe Z10 — parcial:** eliminou o bloqueio e não acusou pool ausente, mas
     não vinculou a conexão ao roteamento de input (`callbacks=0`).
-11. **Probe Z11 — em CI:** breakpoint em `SLPSSetMainApplicationConnection`
-    durante `+[NSApplication sharedApplication]`, com registradores e caller.
-12. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+11. **Probe Z11 — refutado como rota AppKit:** o símbolo não foi chamado.
+12. **Probe Z12 — em CI:** desassembly direto do símbolo após `dlopen`, parando
+    em `SLSGetEventPort` para manter o processo e a imagem carregados.
+13. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-13. Manter `CGEventTap` como plano B público para captura global. Eventos de
+14. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-14. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+15. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-15. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+16. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.

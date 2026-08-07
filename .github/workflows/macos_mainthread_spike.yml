@@ -261,6 +261,14 @@ jobs:
             -o "disassemble --name SLPSSetMainApplicationConnection" \
             -o "bt" \
             ./build/probe 2>&1 | tee /tmp/slps-set-main-appkit-lldb.txt || true
+          echo "===== direct disassembly: SLPSSetMainApplicationConnection ====="
+          lldb --batch \
+            -o "breakpoint set --name SLSGetEventPort" \
+            -o "run skylight-events 1" \
+            -o "disassemble --name SLPSSetMainApplicationConnection" \
+            -o "image lookup --verbose --name SLPSSetMainApplicationConnection" \
+            -o "bt" \
+            ./build/probe 2>&1 | tee /tmp/slps-set-main-disassembly.txt || true
 
       # Probe L supersedes K: one-shot timers, a sentinel in the return buffer,
       # a marker timer, and the real NSDefaultRunLoopMode. sample(1) reads the
