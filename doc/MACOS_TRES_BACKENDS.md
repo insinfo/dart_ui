@@ -86,7 +86,9 @@ runtime Dart ativo.
 - `CFRunLoopRun` não é async-signal-safe;
 - o handler não estabelece um frame normal de entrada do AppKit;
 - `[NSApp run]` e alguns pumps produziram traps/crashes;
-- shutdown usa `_exit`, não unwind normal;
+- os probes históricos usam `_exit`; o probe de lifecycle agora testa
+  `CFRunLoopRemoveSource` + `CFRunLoopStop` + `CFRunLoopWakeUp` para devolver a
+  thread 0 ao frame do launcher e permitir shutdown normal;
 - bibliotecas do processo podem disputar o mesmo sinal;
 - não há contrato do Dart que preserve o estado estacionado da thread 0.
 
@@ -94,6 +96,20 @@ Esse backend deve exigir opção explícita, emitir diagnóstico visível e nunc
 ser escolhido automaticamente. Seu valor é comparar comportamento AppKit e
 testar APIs enquanto o SDK não oferece takeover suportado da process main
 thread.
+
+### Investigação LLDB do lifecycle
+
+O CI interrompe em `CFRunLoopRun` na thread principal, registra todas as
+threads e usa `thread step-out` enquanto o isolate solicita o stop. Isso permite
+distinguir três resultados: retorno ao frame interrompido, trap durante o
+unwind ou run loop que nunca retorna. O teste funcional exige também que o
+processo chegue a `NORMAL_SHUTDOWN=PASS` e saia sem chamar `_exit`.
+
+Os traces recentes também refinam o diagnóstico do pump: timers continuam
+ativos depois de `finishLaunching`; o bloqueio observado é a chamada síncrona
+a `nextEventMatchingMask`. O `hold-appkit` com pump periódico já recebeu um
+`NSEvent`, portanto “não existe fila AppKit” deixou de ser uma descrição
+correta do estado atual.
 
 ## Backend 3 — host Objective-C mínimo
 

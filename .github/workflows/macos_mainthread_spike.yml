@@ -99,6 +99,14 @@ jobs:
         continue-on-error: true
         run: ./build/probe signal-hijack || echo "exit=$?"
 
+      - name: 'Backend 2 lifecycle: stop hijacked run loop without _exit'
+        timeout-minutes: 2
+        run: |
+          ./build/probe graceful-hijack-shutdown \
+            2>&1 | tee /tmp/graceful-hijack-shutdown.log
+          grep -q '^NORMAL_SHUTDOWN=PASS$' \
+            /tmp/graceful-hijack-shutdown.log
+
       - name: 'Probe E: NSWindow on the hijacked main thread via NSInvocation'
         timeout-minutes: 3
         continue-on-error: true
@@ -407,6 +415,19 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p /tmp/lldb
+          echo "===== lldb CFRunLoopRun entry and normal return ====="
+          perl -e 'alarm shift; exec @ARGV' 30 lldb --batch \
+            -o "process handle SIGUSR2 -n false -p true -s false" \
+            -o "breakpoint set --name CFRunLoopRun" \
+            -o "run graceful-hijack-shutdown" \
+            -o "thread list" \
+            -o "thread backtrace" \
+            -o "thread step-out" \
+            -o "thread backtrace" \
+            -o "continue" \
+            ./build/probe 2>&1 \
+            | tee /tmp/lldb/graceful-hijack-return.txt \
+            || echo "lldb/timeout exit=$?"
           run_lldb() {
             local name="$1"
             shift

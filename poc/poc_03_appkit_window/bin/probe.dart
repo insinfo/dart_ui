@@ -68,8 +68,26 @@ final DynamicLibrary libFoundation = DynamicLibrary.open(
 final Pointer<Void> cfRunLoopRunPtr =
     libCoreFoundation.lookup<Void>('CFRunLoopRun');
 
-// Once the main thread is parked in a run loop it never returns, so normal
-// shutdown is gone: leave through _exit() instead of waiting for it.
+final cfRunLoopStop = libCoreFoundation.lookupFunction<
+    Void Function(Pointer<Void>),
+    void Function(Pointer<Void>)>('CFRunLoopStop');
+
+final cfRunLoopWakeUp = libCoreFoundation.lookupFunction<
+    Void Function(Pointer<Void>),
+    void Function(Pointer<Void>)>('CFRunLoopWakeUp');
+
+final cfRunLoopRemoveSource = libCoreFoundation.lookupFunction<
+    Void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>),
+    void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>)>(
+  'CFRunLoopRemoveSource',
+);
+
+final cfRelease = libCoreFoundation.lookupFunction<Void Function(Pointer<Void>),
+    void Function(Pointer<Void>)>('CFRelease');
+
+// Historical probes deliberately terminate at a precise observation point.
+// The graceful-hijack-shutdown probe below instead unwinds CFRunLoopRun and
+// returns normally, which is the lifecycle required by a reusable backend.
 final _exitProcess =
     libSystem.lookupFunction<Void Function(Int32), void Function(int)>('_exit');
 
@@ -276,7 +294,7 @@ bool _parkMainThreadInRunLoop() {
   if (!_keepMainRunLoopAlive()) {
     _log('WARNING: no keep-alive source; the run loop will exit immediately.');
   }
-  signal(SIGUSR2, cfRunLoopRunPtr);
+  _previousSigusr2Handler = signal(SIGUSR2, cfRunLoopRunPtr);
   final killResult = pthread_kill(pthread_main_thread_np(), SIGUSR2);
   if (killResult != 0) {
     _log('pthread_kill(main, SIGUSR2) failed: $killResult');
@@ -289,6 +307,31 @@ bool _parkMainThreadInRunLoop() {
   const threeSeconds = 3000000000;
   return dispatch_semaphore_wait(semaphore, dispatch_time(0, threeSeconds)) ==
       0;
+}
+
+Pointer<Void> _previousSigusr2Handler = nullptr;
+Pointer<Void> _hijackedMainRunLoop = nullptr;
+Pointer<Void> _mainRunLoopKeepAliveSource = nullptr;
+Pointer<Void> _mainRunLoopDefaultMode = nullptr;
+
+bool _stopHijackedMainRunLoop() {
+  if (_hijackedMainRunLoop == nullptr) return false;
+
+  // Restore signal disposition first, so a later SIGUSR2 cannot re-enter the
+  // backend while teardown is in progress.
+  signal(SIGUSR2, _previousSigusr2Handler);
+  if (_mainRunLoopKeepAliveSource != nullptr) {
+    cfRunLoopRemoveSource(
+      _hijackedMainRunLoop,
+      _mainRunLoopKeepAliveSource,
+      _mainRunLoopDefaultMode,
+    );
+    cfRelease(_mainRunLoopKeepAliveSource);
+    _mainRunLoopKeepAliveSource = nullptr;
+  }
+  cfRunLoopStop(_hijackedMainRunLoop);
+  cfRunLoopWakeUp(_hijackedMainRunLoop);
+  return true;
 }
 
 /// Blocks the calling thread by waiting on a semaphore nobody ever signals.
@@ -2269,6 +2312,7 @@ bool _keepMainRunLoopAlive() {
 
   final context = calloc<CFRunLoopSourceContext>();
   final source = sourceCreate(nullptr, 0, context);
+  calloc.free(context);
   print('CFRunLoopSourceCreate -> ${source.address}');
   if (source == nullptr) return false;
 
@@ -2276,7 +2320,50 @@ bool _keepMainRunLoopAlive() {
   print('CFRunLoopGetMain -> ${mainRunLoop.address}, '
       'kCFRunLoopDefaultMode -> ${defaultMode.address}');
   addSource(mainRunLoop, source, defaultMode);
+  _hijackedMainRunLoop = mainRunLoop;
+  _mainRunLoopKeepAliveSource = source;
+  _mainRunLoopDefaultMode = defaultMode;
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Probe S - can the signal backend unwind instead of calling _exit?
+//
+// CFRunLoopStop is thread-safe. Removing the synthetic keep-alive source,
+// stopping and waking the main loop should make CFRunLoopRun return from the
+// signal handler to the VM launcher frame it interrupted. The process then
+// exits through normal Dart shutdown. LLDB's step-out capture verifies the
+// otherwise invisible return boundary.
+// ---------------------------------------------------------------------------
+
+Future<void> probeGracefulHijackShutdown() async {
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    throw StateError('could not park the process main thread');
+  }
+  _log('graceful shutdown: main queue is draining');
+
+  final beforeStop = dispatch_semaphore_create(0);
+  dispatch_async_f(
+    dispatch_get_main_queue(),
+    beforeStop,
+    dispatch_semaphore_signal_ptr,
+  );
+  const oneSecond = 1000000000;
+  if (dispatch_semaphore_wait(
+        beforeStop,
+        dispatch_time(0, oneSecond),
+      ) !=
+      0) {
+    throw StateError('main queue stopped before teardown began');
+  }
+
+  if (!_stopHijackedMainRunLoop()) {
+    throw StateError('main run loop ownership was not recorded');
+  }
+  _log('graceful shutdown: stop + wake requested; returning from Dart main');
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  _log('NORMAL_SHUTDOWN=PASS');
 }
 
 Future<void> probeKeepAliveHijack() async {
@@ -2477,6 +2564,8 @@ Future<void> main(List<String> args) async {
       await probeAppKitBisect();
     case 'keepalive-hijack':
       await probeKeepAliveHijack();
+    case 'graceful-hijack-shutdown':
+      await probeGracefulHijackShutdown();
     case 'skylight-foreground':
       await probeSkyLightForeground(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
@@ -2491,6 +2580,7 @@ Future<void> main(List<String> args) async {
       _log('usage: probe [thread|nsapp-run|skylight|signal-hijack'
           '|mainthread-window|event-pump|nsapp-run-main|skylight-window'
           '|vm-health|reverse-channel|pump-timer|hold-appkit-nopump'
-          '|transform-process|appkit-bisect|keepalive-hijack]');
+          '|transform-process|appkit-bisect|keepalive-hijack'
+          '|graceful-hijack-shutdown]');
   }
 }
