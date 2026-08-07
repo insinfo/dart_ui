@@ -527,16 +527,23 @@ Future<void> probeEventPump() async {
     _exitProcess(1);
   }
 
-  _postEventOnMain(app, posted);
-  _log('event posted on the main thread.');
-
-  // Never call nextEventMatchingMask: via performSelector waitUntilDone:YES -
-  // that hung the CI for 2 minutes. Drive it from a one-shot NSTimer instead
-  // (same path as L) and let the Dart isolate time out cleanly.
+  _log('building pump invocation before post...');
   final pumpInvocation = _newPumpInvocation(app);
   _writeSentinel(pumpInvocation);
-  _scheduleOneShot(pumpInvocation, 0.05);
-  _log('one-shot pump scheduled; waiting up to 2s...');
+
+  // Never waitUntilDone:YES after the queue may be live - deadlocks K/F on CI.
+  final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
+  final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
+  final atStart = calloc<Uint8>()..value = 1;
+  _setArgument(postInvocation, eventArgument.cast(), 2);
+  _setArgument(postInvocation, atStart.cast(), 3);
+  _invokeOnMain(postInvocation, wait: false);
+  _log('event post dispatched (async).');
+
+  // Never call nextEventMatchingMask: via performSelector waitUntilDone:YES -
+  // that hung the CI for 2 minutes. Drive it from a one-shot NSTimer instead.
+  _scheduleOneShot(pumpInvocation, 0.1, wait: false);
+  _log('one-shot pump scheduled (async); waiting up to 2s...');
 
   await Future<void>.delayed(const Duration(seconds: 2));
 
@@ -933,23 +940,33 @@ Future<void> probePumpViaTimer() async {
   await Future<void>.delayed(const Duration(milliseconds: 400));
   _log('witness ticks before pump: $ticks');
 
-  final posted = _newSyntheticAppEvent();
-  _postEventOnMain(app, posted);
-  _log('posted event ${posted.address}');
-
-  // One-shot pump (repeats:YES overwrote the return value and could wedge the
-  // loop on the first blocking call).
+  // Build the pump invocation BEFORE posting: once an NSEvent is in the queue
+  // the main thread may stop answering waitUntilDone:YES.
+  _log('building pump invocation...');
   final pumpInvocation = _newPumpInvocation(app);
   _writeSentinel(pumpInvocation);
-  _scheduleOneShot(pumpInvocation, 0.05);
-  _log('one-shot pump scheduled; waiting 2s...');
+  _log('pump invocation ready, sentinel written.');
+
+  final posted = _newSyntheticAppEvent();
+  _log('posting event ${posted.address} (waitUntilDone: NO)...');
+  final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
+  final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
+  final atStart = calloc<Uint8>()..value = 1;
+  _setArgument(postInvocation, eventArgument.cast(), 2);
+  _setArgument(postInvocation, atStart.cast(), 3);
+  _invokeOnMain(postInvocation, wait: false);
+  _log('post dispatched.');
+
+  // One-shot pump; schedule without waiting on the main thread.
+  _scheduleOneShot(pumpInvocation, 0.1, wait: false);
+  _log('one-shot pump scheduled (async); waiting 2s...');
 
   await Future<void>.delayed(const Duration(seconds: 2));
   witness.close();
 
   final pumped = _returnedObject(pumpInvocation);
   _log('witness timer fired $ticks times total');
-  _log('pump returned: ${pumped.address}');
+  _log('pump returned: ${pumped.address} sentinel=${_isSentinel(pumped)}');
 
   if (ticks == 0) {
     _log('RESULT: the parked run loop never serviced a timer, so the pump '
@@ -1484,7 +1501,11 @@ bool _isSentinel(Pointer<ObjCObject> value) =>
     value == _completionSentinel() || value.address == 1;
 
 void _scheduleOneShot(
-    Pointer<ObjCObject> invocation, double delaySeconds) {
+    Pointer<ObjCObject> invocation, double delaySeconds,
+    {bool wait = false}) {
+  // Default wait:false - after an NSEvent is posted, AppKit may busy the main
+  // run loop; waitUntilDone:YES then deadlocks the Dart thread (CI hung K
+  // right after "posted event" with no further log line).
   final schedule = _newInvocation(getClass('NSTimer'),
       sel('scheduledTimerWithTimeInterval:invocation:repeats:'));
   final interval = calloc<Double>()..value = delaySeconds;
@@ -1493,7 +1514,7 @@ void _scheduleOneShot(
   _setArgument(schedule, interval.cast(), 2);
   _setArgument(schedule, target.cast(), 3);
   _setArgument(schedule, repeats.cast(), 4);
-  _invokeOnMain(schedule);
+  _invokeOnMain(schedule, wait: wait);
 }
 
 Future<void> probePumpTimerDiagnostic() async {

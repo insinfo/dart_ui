@@ -306,23 +306,44 @@ jobs:
           sleep 8
           cat /tmp/transform.log || true
 
+      # K/F can hang the Dart thread if waitUntilDone meets a wedged main.
+      # Always background + sample + hard kill so the step cannot eat the job.
       - name: 'Probe K: pump the event queue from an NSTimer instead'
-        timeout-minutes: 3
+        timeout-minutes: 2
         continue-on-error: true
-        run: ./build/probe pump-timer || echo "exit=$?"
+        run: |
+          ./build/probe pump-timer > /tmp/probe-k.log 2>&1 &
+          pid=$!
+          sleep 2
+          sample "$pid" 1 1 -file /tmp/probe-k.sample || echo "sample exit=$?"
+          sleep 3
+          echo "----- probe K output -----"
+          cat /tmp/probe-k.log || true
+          echo "----- main thread stack -----"
+          grep -A 20 "com.apple.main-thread" /tmp/probe-k.sample | head -30 || true
+          kill -9 "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
 
-      # F no longer blocks the Dart thread on nextEvent (one-shot timer +
-      # sentinel). Keep-alive makes this a real retest rather than a hang on a
-      # run loop that already exited.
       - name: 'Probe F: post an NSEvent and pump it back'
         timeout-minutes: 2
         continue-on-error: true
-        run: ./build/probe event-pump || echo "exit=$?"
+        run: |
+          ./build/probe event-pump > /tmp/probe-f.log 2>&1 &
+          pid=$!
+          sleep 2
+          sample "$pid" 1 1 -file /tmp/probe-f.sample || echo "sample exit=$?"
+          sleep 3
+          echo "----- probe F output -----"
+          cat /tmp/probe-f.log || true
+          echo "----- main thread stack -----"
+          grep -A 20 "com.apple.main-thread" /tmp/probe-f.sample | head -30 || true
+          kill -9 "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
 
       # Batch lldb on the AOT exe. Interactive debug is awkward on GHA, but
-      # crash backtraces work: run until fault, dump every thread, quit.
+      # crash backtraces work. Each run is hard-capped with timeout(1).
       # Dart frames often show as ???; AppKit/CoreFoundation symbolicate.
-      - name: 'lldb: backtrace pump-timer (K) and event-pump (F) crashes'
+      - name: 'lldb: backtrace pump-timer (K), event-pump (F), hold-appkit (O)'
         timeout-minutes: 5
         continue-on-error: true
         run: |
@@ -331,10 +352,9 @@ jobs:
             local name="$1"
             shift
             echo "===== lldb $name ====="
-            # -b batch  -o commands  -- args after the binary
-            # stop on SEGV/SIGBUS/SIGTRAP so we get a bt instead of silent exit
-            lldb --batch \
-              -o "settings set target.process.disable-aslr false" \
+            # macOS has no GNU timeout(1); cap with perl alarm instead so a
+            # hung probe cannot wedge the step.
+            perl -e 'alarm shift; exec @ARGV' 25 lldb --batch \
               -o "process handle SIGSEGV -n false -p true -s true" \
               -o "process handle SIGBUS  -n false -p true -s true" \
               -o "process handle SIGTRAP -n false -p true -s true" \
@@ -342,16 +362,14 @@ jobs:
               -o "run $*" \
               -o "bt" \
               -o "thread backtrace all" \
-              -o "register read" \
               -o "quit" \
-              ./build/probe 2>&1 | tee "/tmp/lldb/${name}.txt" || true
+              ./build/probe 2>&1 | tee "/tmp/lldb/${name}.txt" || echo "lldb/timeout exit=$?"
             echo "----- tail $name -----"
-            tail -80 "/tmp/lldb/${name}.txt" || true
+            tail -100 "/tmp/lldb/${name}.txt" || true
           }
           run_lldb pump-timer pump-timer
           run_lldb event-pump event-pump
-          # hold-appkit still hits Trace/BPT (same family as [NSApp run])
-          run_lldb hold-appkit hold-appkit 6
+          run_lldb hold-appkit hold-appkit 4
 
       - name: Upload lldb traces
         if: always()
