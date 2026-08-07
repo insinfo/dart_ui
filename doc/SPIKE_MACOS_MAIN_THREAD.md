@@ -624,6 +624,13 @@ primeiro `CFRunLoopRunInMode` com a fila vazia e só planejavam postar na segund
 iteração, que nunca era alcançada. Z10 volta a usar a mesma conexão e semeia a
 fila antes do primeiro dispatch da source.
 
+Z10, no [run 31157244965](https://github.com/insinfo/dart_ui/actions/runs/31157244965),
+não bloqueou e terminou o loop (`callbacks=0 events=0`), mas o processo só foi
+encerrado pelo hard cap. Isso confirma que pré-enfileirar evita o deadlock, mas
+input global ainda não é roteado à conexão de uma aplicação não registrada.
+O único Y funcional também executou `SLPSSetMainApplicationConnection`; em vez
+de repetir o typedef especulativo, Z11 captura a chamada real feita por AppKit.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -653,15 +660,17 @@ diferenças objetivas entre o probe e o consumidor conhecido.
    porta da conexão que também criou a janela ainda leva a dreno bloqueado.
 9. **Probe Z9 — refutado:** separar a conexão da janela separa também a fila à
    qual o input dessa janela é endereçado.
-10. **Probe Z10 — em CI:** mesma conexão, mas input enfileirado antes do primeiro
-    dispatch; rodar também com `OBJC_DEBUG_MISSING_POOLS=YES` e falhar em aviso.
-11. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+10. **Probe Z10 — parcial:** eliminou o bloqueio e não acusou pool ausente, mas
+    não vinculou a conexão ao roteamento de input (`callbacks=0`).
+11. **Probe Z11 — em CI:** breakpoint em `SLPSSetMainApplicationConnection`
+    durante `+[NSApplication sharedApplication]`, com registradores e caller.
+12. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-12. Manter `CGEventTap` como plano B público para captura global. Eventos de
+13. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-13. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+14. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-14. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+15. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.
