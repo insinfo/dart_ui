@@ -1,17 +1,9 @@
 # Testes específicos dos POCs — separados para não bloquear CI principal
 name: POC Tests
 
+# Pausado no push enquanto o foco é o spike macOS main-thread.
+# Dispare manualmente se precisar validar outro POC.
 on:
-  push:
-    branches: [main, develop]
-    paths:
-      - 'poc/**'
-      - 'mvp/**'
-      - '.github/workflows/poc_tests.yml'
-  pull_request:
-    paths:
-      - 'poc/**'
-      - 'mvp/**'
   workflow_dispatch:
 
 concurrency:

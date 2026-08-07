@@ -37,9 +37,18 @@ jobs:
       - name: Build probe (JIT, aot-snapshot, exe)
         run: |
           mkdir -p build
+          # Keep DWARF in the exe so lldb can symbolicate AppKit/CF frames.
+          # (--save-debugging-info strips it OUT of the binary.)
           dart compile aot-snapshot bin/probe.dart -o build/probe.aot
           dart compile exe bin/probe.dart -o build/probe
           chmod +x build/probe
+          echo "----- debug tools on this runner -----"
+          which lldb && lldb --version | head -2
+          which sample && which atos && which dsymutil
+          file build/probe
+          # Confirm the binary still carries some debug/unwind info.
+          dwarfdump --uuid build/probe 2>/dev/null || true
+          size build/probe 2>/dev/null || ls -la build/probe
 
       - name: 'Probe A: does any execution mode own the main thread?'
         timeout-minutes: 5
@@ -309,3 +318,46 @@ jobs:
         timeout-minutes: 2
         continue-on-error: true
         run: ./build/probe event-pump || echo "exit=$?"
+
+      # Batch lldb on the AOT exe. Interactive debug is awkward on GHA, but
+      # crash backtraces work: run until fault, dump every thread, quit.
+      # Dart frames often show as ???; AppKit/CoreFoundation symbolicate.
+      - name: 'lldb: backtrace pump-timer (K) and event-pump (F) crashes'
+        timeout-minutes: 5
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/lldb
+          run_lldb() {
+            local name="$1"
+            shift
+            echo "===== lldb $name ====="
+            # -b batch  -o commands  -- args after the binary
+            # stop on SEGV/SIGBUS/SIGTRAP so we get a bt instead of silent exit
+            lldb --batch \
+              -o "settings set target.process.disable-aslr false" \
+              -o "process handle SIGSEGV -n false -p true -s true" \
+              -o "process handle SIGBUS  -n false -p true -s true" \
+              -o "process handle SIGTRAP -n false -p true -s true" \
+              -o "process handle SIGABRT -n false -p true -s true" \
+              -o "run $*" \
+              -o "bt" \
+              -o "thread backtrace all" \
+              -o "register read" \
+              -o "quit" \
+              ./build/probe 2>&1 | tee "/tmp/lldb/${name}.txt" || true
+            echo "----- tail $name -----"
+            tail -80 "/tmp/lldb/${name}.txt" || true
+          }
+          run_lldb pump-timer pump-timer
+          run_lldb event-pump event-pump
+          # hold-appkit still hits Trace/BPT (same family as [NSApp run])
+          run_lldb hold-appkit hold-appkit 6
+
+      - name: Upload lldb traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-lldb-traces
+          path: /tmp/lldb/
+          if-no-files-found: warn
+          retention-days: 7

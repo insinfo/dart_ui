@@ -227,7 +227,8 @@ Cada uma custou pelo menos um run de CI.
 | Processo aborta ao chamar callback | `NativeCallable.isolateLocal` de thread estranha | `.listener` |
 | Deadlock ao usar `.listener` | `waitUntilDone: YES` bloqueia o event loop que entregaria o callback | `waitUntilDone: NO` |
 | `NSInvocation` devolve nil "às vezes" | com `repeats: YES`, a invocação seguinte sobrescreve o retorno | timer one-shot |
-| Não dá para distinguir "não rodou" de "retornou nil" | buffer de retorno nasce zerado | gravar sentinela `0x1` com `setReturnValue:` antes |
+| Não dá para distinguir "não rodou" de "retornou nil" | buffer de retorno nasce zerado | gravar um `NSObject` real com `setReturnValue:` antes (nunca `0x1`: o runtime faz message nele e vira `SEGV si_addr=0x1`) |
+| `SEGV si_addr=0x1` logo ao disparar o pump | sentinela era o ponteiro falso `0x1` | usar objeto Objective-C de verdade |
 | Modo de run loop não bate | `NSString` construída à mão em vez do global | usar o global `NSDefaultRunLoopMode` |
 | `SIGSEGV` com `si_addr` = um valor seu | assinatura errada: um inteiro foi desreferenciado como ponteiro | o `si_addr` **identifica o argumento culpado** |
 | Trava sem log e sem crash | nada observável de fora | `sample <pid> 1 1 -file out` |

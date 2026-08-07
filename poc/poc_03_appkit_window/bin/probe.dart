@@ -543,7 +543,7 @@ Future<void> probeEventPump() async {
   final pumped = _returnedObject(pumpInvocation);
   _log('nextEventMatchingMask: -> ${pumped.address}');
 
-  if (pumped.address == 1) {
+  if (_isSentinel(pumped)) {
     _log('RESULT: pump never completed - nextEventMatchingMask: blocked even '
         'with distantPast, driven from an NSTimer on the parked run loop.');
     _exitProcess(1);
@@ -958,7 +958,7 @@ Future<void> probePumpViaTimer() async {
     _exitProcess(1);
   }
 
-  if (pumped.address == 1) {
+  if (_isSentinel(pumped)) {
     _log('RESULT: timers fire ($ticks) but the pump never completed - '
         'nextEventMatchingMask: blocked the main thread. That is why the '
         'earlier witness-after-pump setup saw zero ticks.');
@@ -1237,7 +1237,7 @@ Future<void> probeHoldAppKitWindow(int seconds) async {
   for (var i = 0; i < seconds * 5; i++) {
     await Future<void>.delayed(const Duration(milliseconds: 200));
     final event = _returnedObject(pumpInvocation);
-    if (event != nullptr && event.address != 1 && seen.add(event.address)) {
+    if (event != nullptr && !_isSentinel(event) && seen.add(event.address)) {
       _log('pumped an NSEvent: ${event.address}');
     }
   }
@@ -1460,12 +1460,28 @@ Future<void> probeSkyLightEvents(int seconds) async {
 //   event ptr  -> the synthetic event came back
 // ---------------------------------------------------------------------------
 
+// A real NSObject, never 0x1: writing a fake pointer as the return value made
+// NSInvocation / the runtime message address 1 (CI: SEGV si_addr=0x1 on K/F).
+Pointer<ObjCObject>? _sentinelObject;
+
+Pointer<ObjCObject> _completionSentinel() {
+  final existing = _sentinelObject;
+  if (existing != null) return existing;
+  final obj = getClass('NSObject').msgSend('alloc').msgSend('init');
+  // Keep it alive for the whole process; probes compare by address.
+  obj.msgSend('retain');
+  _sentinelObject = obj;
+  return obj;
+}
+
 void _writeSentinel(Pointer<ObjCObject> invocation) {
-  final sentinel = calloc<Pointer<ObjCObject>>()
-    ..value = Pointer<ObjCObject>.fromAddress(1);
+  final sentinel = calloc<Pointer<ObjCObject>>()..value = _completionSentinel();
   msgSendVoidPointer(invocation, sel('setReturnValue:'), sentinel.cast());
   calloc.free(sentinel);
 }
+
+bool _isSentinel(Pointer<ObjCObject> value) =>
+    value == _completionSentinel() || value.address == 1;
 
 void _scheduleOneShot(
     Pointer<ObjCObject> invocation, double delaySeconds) {
@@ -1515,21 +1531,24 @@ Future<void> probePumpTimerDiagnostic() async {
 
   final marker = _returnedObject(markerInvocation);
   final pumped = _returnedObject(pumpInvocation);
-  String describe(Pointer<ObjCObject> value) => switch (value.address) {
-        1 => 'SENTINEL (never completed)',
-        0 => 'nil',
-        _ => '0x${value.address.toRadixString(16)}',
-      };
+  final sentinelAddr = _completionSentinel().address;
+  String describe(Pointer<ObjCObject> value) {
+    if (_isSentinel(value)) return 'SENTINEL (never completed)';
+    if (value == nullptr) return 'nil';
+    return '0x${value.address.toRadixString(16)}';
+  }
+
+  _log('completion sentinel object = $sentinelAddr');
   _log('marker returned: ${describe(marker)}');
   _log('pump returned:   ${describe(pumped)}');
 
-  if (marker.address == 1) {
+  if (_isSentinel(marker)) {
     _log('RESULT: the marker never ran either - one-shot timers are not '
         'delivered on the parked run loop at all. The problem is the run loop, '
         'not nextEventMatchingMask:.');
     _exitProcess(1);
   }
-  if (pumped.address == 1) {
+  if (_isSentinel(pumped)) {
     _log('RESULT: the marker ran but the pump did not complete - '
         'nextEventMatchingMask: blocked. Check the stack sample for '
         '_DPSNextEvent / mach_msg.');
