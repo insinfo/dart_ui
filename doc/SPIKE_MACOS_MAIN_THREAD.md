@@ -588,6 +588,11 @@ já havia preenchido `gOurPSN`, mas isso não bastou: `callbacks=0 events=0`.
 O próximo breakpoint executa a rota AppKit testemunha e lê o flavor verdadeiro
 em `x0` antes de adotá-lo no probe Dart.
 
+No [run 31155621950](https://github.com/insinfo/dart_ui/actions/runs/31155621950),
+o wrapper público não foi chamado pela testemunha AppKit; o processo terminou
+sem atingir o breakpoint. **Z6** move a interrupção para
+`_SLPSRegisterWithServer`, destino interno comprovado pelo desassembly do wrapper.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -610,15 +615,16 @@ diferenças objetivas entre o probe e o consumidor conhecido.
    bloqueio observado na rodada anterior.
 4. **Probe Z4 — refutado, ABI recuperado:** retry sem argumentos produz estado
    parcial, mas zero callbacks. O desassembly prova um argumento `int flavor`.
-5. **Probe Z5 — implementado, aguardando CI:** interromper a inicialização
-   AppKit em `SLPSRegisterWithServer` e capturar o flavor real em `x0`.
-6. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+5. **Probe Z5 — inconclusivo:** AppKit não chamou o wrapper público.
+6. **Probe Z6 — implementado, aguardando CI:** interromper AppKit em
+   `_SLPSRegisterWithServer` e capturar `flavor`, PSN, pid e nome em `x0...x3`.
+7. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-7. Manter `CGEventTap` como plano B público para captura global. Eventos de
+8. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-8. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+9. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-9. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+10. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.
