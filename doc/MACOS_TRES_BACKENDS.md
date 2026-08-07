@@ -40,6 +40,11 @@ O contrato concreto deve incluir tokens geracionais para rejeitar callbacks
 tardios, estados explícitos (`new`, `initializing`, `running`, `stopping`,
 `stopped`, `failed`) e shutdown idempotente.
 
+O contrato, a máquina de estados e os testes dessas invariantes agora vivem em
+[`poc/poc_20_macos_three_backends/lib`](../poc/poc_20_macos_three_backends/lib).
+O estado inicial concreto chama-se `created` (equivalente ao `new` conceitual
+acima, que é palavra reservada em Dart).
+
 ## Backend 1 — SkyLight/CGS
 
 ### Evidência já confirmada
@@ -149,4 +154,3 @@ Cada backend deverá executar a mesma suíte:
 5. spike embedder-vs-IPC do host `.m`;
 6. counter comum nos três backends;
 7. matriz de robustez e decisão do default.
-

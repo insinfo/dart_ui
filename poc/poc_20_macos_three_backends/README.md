@@ -19,6 +19,12 @@ O host nativo é o padrão; SkyLight exige permissão para API privada e ABI
 validada; signal hijack exige seleção e permissão explícitas e nunca participa
 do fallback automático.
 
+O contrato reutilizável está em
+[`lib/src/backend_contract.dart`](lib/src/backend_contract.dart). Além de
+janela, framebuffer e input, ele fornece uma máquina de estados comum e tokens
+geracionais: assim que shutdown ou falha começa, callbacks nativos antigos são
+rejeitados antes de alcançar widgets Dart.
+
 Validar a política em qualquer plataforma:
 
 ```bash
