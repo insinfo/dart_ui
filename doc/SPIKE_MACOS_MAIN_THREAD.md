@@ -607,6 +607,14 @@ handshake do consumidor da porta. A comparação linha a linha revelou a etapa
 que ainda faltava: JankyBorders executa seus `SLSRegisterNotifyProc` **antes**
 de `SLSGetEventPort` e não chama `SLPSRegisterWithServer` nesse caminho.
 
+Z8 reproduziu esses 13 registros no
+[run 31156567751](https://github.com/insinfo/dart_ui/actions/runs/31156567751):
+todos retornaram 0, mas a primeira drenagem ainda bloqueou. A próxima diferença
+objetiva é ownership de conexão: o probe criou/desenhou/ordenou sua janela na
+mesma conexão cuja porta tentou consumir, enquanto as correções modernas do
+JankyBorders isolam janelas próprias em conexões dedicadas. Z9 usa
+`SLSNewConnection` para a janela e reserva `SLSMainConnectionID` para eventos.
+
 ## Próximos passos
 
 Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
@@ -632,15 +640,17 @@ diferenças objetivas entre o probe e o consumidor conhecido.
 5. **Probe Z5 — inconclusivo:** AppKit não chamou o wrapper público.
 6. **Probe Z6 — confirmado:** o flavor usado por AppKit no macOS 14 é `3`.
 7. **Probe Z7 — refutado:** flavor 3 retorna sucesso, mas não habilita a fila.
-8. **Probe Z8 — em CI:** reproduzir `events_register(cid)` com os 13 tipos do
-   JankyBorders antes de obter a porta, sem chamar `SLPSRegisterWithServer`.
-9. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
+8. **Probe Z8 — refutado isoladamente:** os registros retornam sucesso, mas a
+   porta da conexão que também criou a janela ainda leva a dreno bloqueado.
+9. **Probe Z9 — em CI:** janela em `SLSNewConnection`; eventos exclusivamente
+   em `SLSMainConnectionID`, preservando os registros de notificação.
+10. Depois de fechar o ABI, extrair o consumidor para uma classe pequena,
    com ownership explícito de porta/source/callback e fechamento ordenado.
-10. Manter `CGEventTap` como plano B público para captura global. Eventos de
+11. Manter `CGEventTap` como plano B público para captura global. Eventos de
    teclado exigem acesso assistivo conforme a documentação da Apple.
-11. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+12. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
    mão do AppKit e o que o framework precisaria reimplementar.
-12. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+13. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
    após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
    segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
    conclusão.
@@ -877,6 +887,7 @@ produtora. É uma pista forte para amostrar/backtracear também a
 | [SDL issue 14256](https://github.com/libsdl-org/SDL/issues/14256) | Evidência direta de autoreleases privados durante o consumo de input SkyLight; exige pool explícito em threads não gerenciadas pelo AppKit. |
 | [R-SIG-Mac: rgl/base graphics](https://stat.ethz.ch/pipermail/r-sig-mac/2020-August/013663.html) | Backtrace causal: o dreno SkyLight despacha notificações de tela/Dock e pode alcançar AppKit fora da main thread. |
 | [BetterTouchTool: save/restore layout](https://community.folivora.ai/t/saving-restoring-window-layout/21249) | Confirma a cadeia `CFRunLoop -> SLEventCreateNextEvent -> CGSSnarfAndDispatchDatagrams`, mas o relatório é de excesso de wakeups em AppleScript e não revela novo ABI. |
+| [Cua: internals e implementação Rust](https://github.com/trycua/cua/blob/main/libs/cua-driver/rust/crates/platform-macos/src/input/skylight.rs) | Fonte moderna e executável para envio direcionado: `SLEventPostToPid(pid,event)`, localização local da janela, campos privados, autenticação no macOS 15+ e foco sem raise. Complementa o recebimento estudado aqui e fornece um plano melhor que `CGEventPost` global para o injetor. |
 | Relatos Apple Community, Adobe, ChimeraX e SourceTree enviados | Úteis como casos para a matriz de regressão (sleep/display/IME), mas crashes de terceiros sem call site controlado não são usados para inferir assinatura privada. |
 | [historicalsource/supermario](https://github.com/historicalsource/supermario) | Fonte do System 7 clássico, 68k/PPC/Toolbox. Pode ensinar arqueologia e comparação de binários, mas seu Window/Event Manager não é ancestral de ABI compatível com Quartz/SkyLight. O próprio projeto descreve a origem como fontes “passed around”; não deve ser tratado como SDK oficial/licenciado para copiar código. |
 | [MacOS9-USB2-EHCI](https://github.com/UnexpectedBomb/MacOS9-USB2-EHCI) | Bom estudo de engenharia de driver clássico e validação em hardware, mas trata ROM, Name Registry, PEF e USB no Mac OS 9; não fornece APIs de janela/evento do macOS moderno. |
@@ -909,6 +920,11 @@ produtora. É uma pista forte para amostrar/backtracear também a
 6. **Congelar evidência local.** Para cada ABI adotado, salvar no repositório o
    link com commit, versão do macOS, trecho mínimo da declaração e o log do
    probe. Links `main` são úteis para descoberta, mas não são especificação.
+
+Os primeiros artefatos LLDB foram preservados em `doc/logs/pump-timer.txt`,
+`doc/logs/event-pump.txt` e `doc/logs/hold-appkit.txt`; eles registram a fila
+AppKit vazia/bloqueada e tornam essa conclusão auditável sem depender da
+retenção temporária dos artefatos do Actions.
 
 O plano B público continua sendo
 [`CGEventTapCreate`](https://developer.apple.com/documentation/coregraphics/cgevent/tapcreate%28tap%3Aplace%3Aoptions%3Aeventsofinterest%3Acallback%3Auserinfo%3A%29):

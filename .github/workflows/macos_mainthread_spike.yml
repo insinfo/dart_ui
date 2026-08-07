@@ -194,8 +194,8 @@ jobs:
           retention-days: 7
 
       # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
-      # a CFRunLoopSource. Z8 mirrors JankyBorders' notification registration.
-      - name: 'Probe Z1/Z2/Z8: consume the registered SkyLight event port'
+      # a CFRunLoopSource. Z9 isolates window and event traffic by connection.
+      - name: 'Probe Z1/Z2/Z9: consume the registered SkyLight event port'
         timeout-minutes: 4
         continue-on-error: true
         run: |

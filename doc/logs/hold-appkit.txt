@@ -1,0 +1,41 @@
+(lldb) target create "./build/probe"
+Current executable set to '/Users/runner/work/dart_ui/dart_ui/poc/poc_03_appkit_window/build/probe' (arm64).
+(lldb) process handle SIGUSR2 -n false -p true -s false
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGUSR2      true     false    false  
+(lldb) process handle SIGSEGV -n true  -p true -s true
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGSEGV      true     true     true   
+(lldb) process handle SIGBUS  -n true  -p true -s true
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGBUS       true     true     true   
+(lldb) process handle SIGTRAP -n true  -p true -s true
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGTRAP      true     true     true   
+(lldb) process handle SIGABRT -n true  -p true -s true
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGABRT      true     true     true   
+(lldb) run hold-appkit 4
+=== probe: hold-appkit ===
+[AppKit] Successfully opened framework: /System/Library/Frameworks/AppKit.framework/AppKit
+CFRunLoopSourceCreate -> 105553154605056
+CFRunLoopGetMain -> 105553154605248, kCFRunLoopDefaultMode -> 8286985216
+NSWindow = 4880108832
+NSWindow = 4880108832
+WINDOW_ID=34
+WINDOW_ID=34
+pump timer running; holding for 4s...
+pump timer running; holding for 4s...
+distinct events pumped: 0
+distinct events pumped: 0
+RESULT: no events reached the queue in 4s.
+RESULT: no events reached the queue in 4s.
+Process 8019 exited with status = 1 (0x00000001)
+Process 8019 launched: '/Users/runner/work/dart_ui/dart_ui/poc/poc_03_appkit_window/build/probe' (arm64)
+(lldb) bt
+error: Command requires a process which is currently stopped.

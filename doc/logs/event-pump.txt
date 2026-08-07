@@ -1,0 +1,49 @@
+(lldb) target create "./build/probe"
+Current executable set to '/Users/runner/work/dart_ui/dart_ui/poc/poc_03_appkit_window/build/probe' (arm64).
+(lldb) process handle SIGUSR2 -n false -p true -s false
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGUSR2      true     false    false  
+(lldb) process handle SIGSEGV -n true  -p true -s true
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGSEGV      true     true     true   
+(lldb) process handle SIGBUS  -n true  -p true -s true
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGBUS       true     true     true   
+(lldb) process handle SIGTRAP -n true  -p true -s true
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGTRAP      true     true     true   
+(lldb) process handle SIGABRT -n true  -p true -s true
+NAME         PASS     STOP     NOTIFY
+===========  =======  =======  =======
+SIGABRT      true     true     true   
+(lldb) run event-pump
+=== probe: event-pump ===
+[AppKit] Successfully opened framework: /System/Library/Frameworks/AppKit.framework/AppKit
+CFRunLoopSourceCreate -> 105553150722432
+CFRunLoopGetMain -> 105553150722624, kCFRunLoopDefaultMode -> 8286985216
+main thread parked, main queue draining.
+main thread parked, main queue draining.
+[NSApp finishLaunching] on main; app=4829769968
+[NSApp finishLaunching] on main; app=4829769968
+channel alive after finishLaunching: [NSApp isRunning] = 0
+channel alive after finishLaunching: [NSApp isRunning] = 0
+synthetic NSEvent = 105553150725120
+synthetic NSEvent = 105553150725120
+building pump invocation before post...
+building pump invocation before post...
+event post dispatched (async).
+event post dispatched (async).
+one-shot pump scheduled (async); waiting up to 2s...
+one-shot pump scheduled (async); waiting up to 2s...
+nextEventMatchingMask: -> 105553141269120
+nextEventMatchingMask: -> 105553141269120
+RESULT: pump never completed - nextEventMatchingMask: blocked even with distantPast, driven from an NSTimer on the parked run loop.
+RESULT: pump never completed - nextEventMatchingMask: blocked even with distantPast, driven from an NSTimer on the parked run loop.
+Process 7802 exited with status = 1 (0x00000001)
+Process 7802 launched: '/Users/runner/work/dart_ui/dart_ui/poc/poc_03_appkit_window/build/probe' (arm64)
+(lldb) bt
+error: Command requires a process which is currently stopped.
