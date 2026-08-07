@@ -18,6 +18,9 @@ arbitrary thread and that the external loop later calls `handleEvent`, which
 handles at most one pending event. In the VM patch library both methods still
 throw `UnsupportedError`.
 
+Audit baseline: [`dart-lang/sdk@741e464`](https://github.com/dart-lang/sdk/commit/741e4646241d0d1940ccb67c428a24e06357d4a7),
+the `main` HEAD inspected on August 7, 2026.
+
 Please implement these existing APIs for the Dart VM and specify their
 ownership, teardown, timer, and reentrancy semantics. This would let packages
 integrate Win32, X11, Wayland, and AppKit loops without fixed-interval polling

@@ -198,6 +198,10 @@ O ponto a destacar para os mantenedores: **as plataformas onde o Dart já conseg
 
 ## 5. O que já existe no SDK e o que falta
 
+Base da auditoria: `dart-lang/sdk@741e4646241d0d1940ccb67c428a24e06357d4a7`,
+HEAD de `main` consultado em 7 de agosto de 2026. Os links da seção 14 apontam
+para `main` por conveniência; as conclusões abaixo referem-se a esse commit.
+
 ### 5.1 `Isolate.runEventLoopSync`
 
 Presente no branch `main`, marcada `@Since("3.13")`, com implementação na VM.
