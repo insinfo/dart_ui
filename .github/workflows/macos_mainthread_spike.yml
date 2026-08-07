@@ -193,26 +193,40 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-      # The decider for route C: if input arrives on the CGS connection, the
-      # route is complete - window, pixels and input with no AppKit and no main
-      # thread. A second process supplies the input.
-      - name: 'Probe P: pull input straight from the WindowServer'
+      # Z1 fixes the ABI to SLEventCreateNextEvent(cid). Z2 installs the Mach
+      # event port as a CFRunLoopSource and drains only from its callback.
+      - name: 'Probe Z1/Z2: consume the SkyLight event port'
         timeout-minutes: 4
         continue-on-error: true
         run: |
           mkdir -p /tmp/shots
           ./build/probe skylight-events 15 > /tmp/events.log 2>&1 &
+          pid=$!
           sleep 3
           WID=$(grep -o 'WINDOW_ID=[0-9]*' /tmp/events.log | cut -d= -f2)
           echo "holder window: $WID"
-          screencapture -x -o -l"$WID" /tmp/shots/skylight-events-window.png \
-            || echo "screencapture -l exit=$?"
+          if [[ -n "$WID" ]]; then
+            screencapture -x -o -l"$WID" /tmp/shots/skylight-events-window.png \
+              || echo "screencapture -l exit=$?"
+          fi
           for i in 1 2 3; do
             ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
             sleep 2
           done
-          wait
-          cat /tmp/events.log
+          for i in {1..30}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "probe exceeded hard cap; sampling and killing pid=$pid"
+            sample "$pid" 1 1 -file /tmp/events.sample || true
+            kill -9 "$pid" 2>/dev/null || true
+          fi
+          status=0
+          wait "$pid" || status=$?
+          cat /tmp/events.log || true
+          grep -A 16 "com.apple.main-thread" /tmp/events.sample 2>/dev/null | head -24 || true
+          exit "$status"
 
       # Probe L supersedes K: one-shot timers, a sentinel in the return buffer,
       # a marker timer, and the real NSDefaultRunLoopMode. sample(1) reads the
@@ -284,12 +298,18 @@ jobs:
         continue-on-error: true
         run: |
           ./build/probe skylight-foreground 12 > /tmp/foreground.log 2>&1 &
+          pid=$!
           sleep 3
           for i in 1 2 3; do
             ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
             sleep 2
           done
-          sleep 6
+          for i in {1..24}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+          done
+          kill -9 "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
           cat /tmp/foreground.log || true
 
       # Public HIServices TransformProcessType instead of guessed SLPS* calls.
@@ -298,12 +318,18 @@ jobs:
         continue-on-error: true
         run: |
           ./build/probe transform-process 12 > /tmp/transform.log 2>&1 &
+          pid=$!
           sleep 3
           for i in 1 2 3; do
             ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
             sleep 2
           done
-          sleep 8
+          for i in {1..24}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+          done
+          kill -9 "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
           cat /tmp/transform.log || true
 
       # 2016 SkyLight nm dump (referencias/skylight.txt / gist erica) still
@@ -314,12 +340,18 @@ jobs:
         continue-on-error: true
         run: |
           ./build/probe skylight-register 12 > /tmp/register.log 2>&1 &
+          pid=$!
           sleep 3
           for i in 1 2 3; do
             ./build/probe post-input > /dev/null 2>&1 || echo "post exit=$?"
             sleep 2
           done
-          sleep 8
+          for i in {1..24}; do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.5
+          done
+          kill -9 "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
           cat /tmp/register.log || true
 
       # K/F can hang the Dart thread if waitUntilDone meets a wedged main.

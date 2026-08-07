@@ -24,9 +24,9 @@ const SIGUSR2 = 31;
 // Extra libSystem / CoreFoundation bindings used only by the probes.
 // ---------------------------------------------------------------------------
 
-final pthread_main_thread_np =
-    libSystem.lookupFunction<Pointer<Void> Function(), Pointer<Void> Function()>(
-        'pthread_main_thread_np');
+final pthread_main_thread_np = libSystem.lookupFunction<
+    Pointer<Void> Function(),
+    Pointer<Void> Function()>('pthread_main_thread_np');
 
 final pthread_kill = libSystem.lookupFunction<
     Int32 Function(Pointer<Void>, Int32),
@@ -40,8 +40,8 @@ final signal = libSystem.lookupFunction<
 
 final dispatch_async_f = libSystem.lookupFunction<
     Void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>),
-    void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>)>(
-    'dispatch_async_f');
+    void Function(
+        Pointer<Void>, Pointer<Void>, Pointer<Void>)>('dispatch_async_f');
 
 final dispatch_semaphore_create = libSystem.lookupFunction<
     Pointer<Void> Function(IntPtr),
@@ -56,8 +56,8 @@ final dispatch_semaphore_wait = libSystem.lookupFunction<
 final dispatch_semaphore_signal_ptr =
     libSystem.lookup<Void>('dispatch_semaphore_signal');
 
-final dispatch_time = libSystem.lookupFunction<
-    Uint64 Function(Uint64, Int64), int Function(int, int)>('dispatch_time');
+final dispatch_time = libSystem.lookupFunction<Uint64 Function(Uint64, Int64),
+    int Function(int, int)>('dispatch_time');
 
 final DynamicLibrary libCoreFoundation = DynamicLibrary.open(
     '/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation');
@@ -65,12 +65,13 @@ final DynamicLibrary libCoreFoundation = DynamicLibrary.open(
 final DynamicLibrary libFoundation = DynamicLibrary.open(
     '/System/Library/Frameworks/Foundation.framework/Foundation');
 
-final Pointer<Void> cfRunLoopRunPtr = libCoreFoundation.lookup<Void>('CFRunLoopRun');
+final Pointer<Void> cfRunLoopRunPtr =
+    libCoreFoundation.lookup<Void>('CFRunLoopRun');
 
 // Once the main thread is parked in a run loop it never returns, so normal
 // shutdown is gone: leave through _exit() instead of waiting for it.
-final _exitProcess = libSystem
-    .lookupFunction<Void Function(Int32), void Function(int)>('_exit');
+final _exitProcess =
+    libSystem.lookupFunction<Void Function(Int32), void Function(int)>('_exit');
 
 // ---------------------------------------------------------------------------
 // objc_msgSend shapes needed to drive NSInvocation.
@@ -220,7 +221,8 @@ void probeSignalHijack() {
   print('CFRunLoopRun @ ${cfRunLoopRunPtr.address}');
 
   final previous = signal(SIGUSR2, cfRunLoopRunPtr);
-  print('signal(SIGUSR2, CFRunLoopRun) -> previous handler ${previous.address}');
+  print(
+      'signal(SIGUSR2, CFRunLoopRun) -> previous handler ${previous.address}');
 
   final killResult = pthread_kill(mainThread, SIGUSR2);
   print('pthread_kill(main, SIGUSR2) -> $killResult');
@@ -281,7 +283,8 @@ bool _parkMainThreadInRunLoop() {
   dispatch_async_f(
       dispatch_get_main_queue(), semaphore, dispatch_semaphore_signal_ptr);
   const threeSeconds = 3000000000;
-  return dispatch_semaphore_wait(semaphore, dispatch_time(0, threeSeconds)) == 0;
+  return dispatch_semaphore_wait(semaphore, dispatch_time(0, threeSeconds)) ==
+      0;
 }
 
 /// Blocks the calling thread by waiting on a semaphore nobody ever signals.
@@ -297,8 +300,8 @@ Pointer<ObjCObject> _newInvocation(
   final signature =
       msgSendPointerSel(target, sel('methodSignatureForSelector:'), selector);
   if (signature == nullptr) return nullptr;
-  final invocation = msgSendPointerPointer(
-      getClass('NSInvocation'), sel('invocationWithMethodSignature:'), signature);
+  final invocation = msgSendPointerPointer(getClass('NSInvocation'),
+      sel('invocationWithMethodSignature:'), signature);
   msgSendVoidPointer(invocation, sel('setTarget:'), target);
   msgSendVoidSel(invocation, sel('setSelector:'), selector);
   return invocation;
@@ -691,7 +694,8 @@ void probeSkyLightWindow() {
     ..ref.height = 480;
   final regionSlot = calloc<Pointer<Void>>();
   final regionError = newRegionWithRect(rect, regionSlot);
-  print('$regionSymbol -> CGError $regionError, region ${regionSlot.value.address}');
+  print(
+      '$regionSymbol -> CGError $regionError, region ${regionSlot.value.address}');
   if (regionError != 0 || regionSlot.value == nullptr) {
     print('RESULT: could not build the window shape.');
     _exitProcess(1);
@@ -713,8 +717,9 @@ void probeSkyLightWindow() {
     _exitProcess(1);
   }
 
-  final setLevel = lib.lookupFunction<_SlsSetWindowLevelNative,
-      int Function(int, int, int)>('SLSSetWindowLevel');
+  final setLevel =
+      lib.lookupFunction<_SlsSetWindowLevelNative, int Function(int, int, int)>(
+          'SLSSetWindowLevel');
   print('SLSSetWindowLevel -> ${setLevel(connectionId, windowId, 0)}');
 
   final orderWindow = lib.lookupFunction<_SlsOrderWindowNative,
@@ -895,8 +900,8 @@ Future<void> probePumpViaTimer() async {
       objc_allocateClassPair(getClass('NSObject'), className, 0);
   calloc.free(className);
   final types = 'v@:q'.toNativeUtf8();
-  class_addMethod(witnessClass, sel('handleValue:'),
-      witness.nativeFunction.cast(), types);
+  class_addMethod(
+      witnessClass, sel('handleValue:'), witness.nativeFunction.cast(), types);
   calloc.free(types);
   objc_registerClassPair(witnessClass);
   final witnessObject = witnessClass.msgSend('alloc').msgSend('init');
@@ -1013,11 +1018,13 @@ void probeSkyLightDraw() {
     return;
   }
 
-  final connectionId = skyLight.lookupFunction<Int32 Function(), int Function()>(
-      'SLSMainConnectionID')();
-  final newRegionWithRect = skyLight.lookupFunction<_NewRegionWithRectNative,
-      int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
-      'CGSNewRegionWithRect');
+  final connectionId =
+      skyLight.lookupFunction<Int32 Function(), int Function()>(
+          'SLSMainConnectionID')();
+  final newRegionWithRect = skyLight.lookupFunction<
+      _NewRegionWithRectNative,
+      int Function(
+          Pointer<NSRect>, Pointer<Pointer<Void>>)>('CGSNewRegionWithRect');
   final rect = calloc<NSRect>()
     ..ref.x = 200
     ..ref.y = 200
@@ -1053,9 +1060,10 @@ void probeSkyLightDraw() {
 
   final coreGraphics = DynamicLibrary.open(
       '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
-  final setFillColor = coreGraphics.lookupFunction<_SetRgbFillColorNative,
-      void Function(Pointer<Void>, double, double, double, double)>(
-      'CGContextSetRGBFillColor');
+  final setFillColor = coreGraphics.lookupFunction<
+      _SetRgbFillColorNative,
+      void Function(Pointer<Void>, double, double, double,
+          double)>('CGContextSetRGBFillColor');
   final fillRect = coreGraphics.lookupFunction<_FillRectNative,
       void Function(Pointer<Void>, NSRect)>('CGContextFillRect');
   final flush = coreGraphics.lookupFunction<_ContextFlushNative,
@@ -1104,8 +1112,9 @@ int _returnedInt(Pointer<ObjCObject> invocation) {
 void probeHoldSkyLightWindow(int seconds) {
   final skyLight = DynamicLibrary.open(
       '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
-  final connectionId = skyLight
-      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  final connectionId =
+      skyLight.lookupFunction<Int32 Function(), int Function()>(
+          'SLSMainConnectionID')();
 
   final rect = calloc<NSRect>()
     ..ref.x = 200
@@ -1113,15 +1122,16 @@ void probeHoldSkyLightWindow(int seconds) {
     ..ref.width = 480
     ..ref.height = 320;
   final regionSlot = calloc<Pointer<Void>>();
-  skyLight.lookupFunction<_NewRegionWithRectNative,
-          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
-      'CGSNewRegionWithRect')(rect, regionSlot);
+  skyLight.lookupFunction<
+      _NewRegionWithRectNative,
+      int Function(Pointer<NSRect>,
+          Pointer<Pointer<Void>>)>('CGSNewRegionWithRect')(rect, regionSlot);
 
   final windowIdSlot = calloc<Uint32>();
   final error = skyLight.lookupFunction<
-      _SlsNewWindowNative,
-      int Function(int, int, double, double, Pointer<Void>,
-          Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+          _SlsNewWindowNative,
+          int Function(int, int, double, double, Pointer<Void>,
+              Pointer<Uint32>)>('SLSNewWindow')(connectionId,
       kCGSBackingStoreBuffered, 200.0, 200.0, regionSlot.value, windowIdSlot);
   final windowId = windowIdSlot.value;
   if (error != 0 || windowId == 0) {
@@ -1130,7 +1140,7 @@ void probeHoldSkyLightWindow(int seconds) {
   }
 
   final context = skyLight.lookupFunction<_WindowContextCreateNative,
-      Pointer<Void> Function(int, int, Pointer<Void>)>(
+          Pointer<Void> Function(int, int, Pointer<Void>)>(
       'SLWindowContextCreate')(connectionId, windowId, nullptr);
   print('SLWindowContextCreate -> ${context.address}');
   if (context != nullptr) {
@@ -1141,19 +1151,21 @@ void probeHoldSkyLightWindow(int seconds) {
       ..ref.y = 0
       ..ref.width = 480
       ..ref.height = 320;
-    coreGraphics.lookupFunction<_SetRgbFillColorNative,
-        void Function(Pointer<Void>, double, double, double, double)>(
-        'CGContextSetRGBFillColor')(context, 0.1, 0.5, 0.9, 1.0);
-    coreGraphics.lookupFunction<_FillRectNative,
-        void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
-        context, fill.ref);
+    coreGraphics.lookupFunction<
+        _SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double,
+            double)>('CGContextSetRGBFillColor')(context, 0.1, 0.5, 0.9, 1.0);
+    coreGraphics
+        .lookupFunction<_FillRectNative, void Function(Pointer<Void>, NSRect)>(
+            'CGContextFillRect')(context, fill.ref);
     coreGraphics.lookupFunction<_ContextFlushNative,
         void Function(Pointer<Void>)>('CGContextFlush')(context);
     print('painted 480x320 into the window context.');
   }
 
-  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
-      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  skyLight
+      .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+          'SLSOrderWindow')(connectionId, windowId, 1, 0);
 
   // Grep-friendly: the workflow reads this to aim screencapture.
   print('WINDOW_ID=$windowId');
@@ -1377,21 +1389,120 @@ void probePostInput() {
 // SLEventGetType / SLEventGetLocation.
 // ---------------------------------------------------------------------------
 
-// First attempt passed the connection id as the only argument and segfaulted
-// with si_addr equal to the id itself - it was dereferenced as a pointer. The
-// CoreGraphics family takes a CFAllocatorRef first (CGEventCreateFromData does),
-// so the allocator-first shape is the next candidate.
-typedef _EventCreateNextNative = Pointer<Void> Function(
-    Pointer<Void> allocator, Int32 cid);
+// Current JankyBorders consumes this exact one-argument ABI, but only after the
+// mach port returned by SLSGetEventPort signals. Our earlier allocator-first
+// guess put nullptr in x0, so SkyLight read connection 0 and the result was not
+// evidence about event delivery.
+typedef _EventCreateNextNative = Pointer<Void> Function(Int32 cid);
 typedef _EventGetTypeNative = Uint32 Function(Pointer<Void> event);
-typedef _EventGetLocationNative = NSPoint Function(Pointer<Void> event);
-typedef _EventGetFlagsNative = Uint64 Function(Pointer<Void> event);
+
+typedef _MachPortCallbackNative = Void Function(Pointer<Void> port,
+    Pointer<Void> message, IntPtr size, Pointer<Void> context);
+
+/// Installs the event port on the current thread's CFRunLoop and drains it only
+/// when signalled. This mirrors JankyBorders' working sequence:
+/// SLSGetEventPort -> CFMachPort -> CFRunLoopSource -> SLEventCreateNextEvent.
+int _consumeSkyLightEventPort(
+    DynamicLibrary skyLight, int connectionId, int seconds) {
+  final eventPortOut = calloc<Uint32>();
+  final getEventPort = skyLight.lookupFunction<
+      Int32 Function(Int32, Pointer<Uint32>),
+      int Function(int, Pointer<Uint32>)>('SLSGetEventPort');
+  final getEventPortRc = getEventPort(connectionId, eventPortOut);
+  final eventPort = eventPortOut.value;
+  calloc.free(eventPortOut);
+  _log('SLSGetEventPort(cid=$connectionId) -> '
+      'rc=$getEventPortRc port=$eventPort');
+  if (getEventPortRc != 0 || eventPort == 0) return -1;
+
+  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
+      Pointer<Void> Function(int)>('SLEventCreateNextEvent');
+  final getType =
+      skyLight.lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
+          'SLEventGetType');
+  final cfRelease = libCoreFoundation.lookupFunction<
+      Void Function(Pointer<Void>), void Function(Pointer<Void>)>('CFRelease');
+
+  var callbacks = 0;
+  var received = 0;
+  final sampledTypes = <int>[];
+  final callback = NativeCallable<_MachPortCallbackNative>.isolateLocal(
+      (Pointer<Void> port, Pointer<Void> message, int size,
+          Pointer<Void> context) {
+    callbacks++;
+    while (true) {
+      final event = createNextEvent(connectionId);
+      if (event == nullptr) break;
+      received++;
+      if (sampledTypes.length < 64) sampledTypes.add(getType(event));
+      cfRelease(event);
+    }
+  });
+
+  final createMachPort = libCoreFoundation.lookupFunction<
+      Pointer<Void> Function(
+          Pointer<Void>,
+          Uint32,
+          Pointer<NativeFunction<_MachPortCallbackNative>>,
+          Pointer<Void>,
+          Pointer<Bool>),
+      Pointer<Void> Function(
+          Pointer<Void>,
+          int,
+          Pointer<NativeFunction<_MachPortCallbackNative>>,
+          Pointer<Void>,
+          Pointer<Bool>)>('CFMachPortCreateWithPort');
+  final setMachPortOptions = libCoreFoundation.lookupFunction<
+      Void Function(Pointer<Void>, Int32),
+      void Function(Pointer<Void>, int)>('_CFMachPortSetOptions');
+  final createSource = libCoreFoundation.lookupFunction<
+      Pointer<Void> Function(Pointer<Void>, Pointer<Void>, IntPtr),
+      Pointer<Void> Function(
+          Pointer<Void>, Pointer<Void>, int)>('CFMachPortCreateRunLoopSource');
+  final getCurrentRunLoop = libCoreFoundation.lookupFunction<
+      Pointer<Void> Function(),
+      Pointer<Void> Function()>('CFRunLoopGetCurrent');
+  final addSource = libCoreFoundation.lookupFunction<
+      Void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>),
+      void Function(
+          Pointer<Void>, Pointer<Void>, Pointer<Void>)>('CFRunLoopAddSource');
+  final runInMode = libCoreFoundation.lookupFunction<
+      Int32 Function(Pointer<Void>, Double, Bool),
+      int Function(Pointer<Void>, double, bool)>('CFRunLoopRunInMode');
+  final defaultMode =
+      libCoreFoundation.lookup<Pointer<Void>>('kCFRunLoopDefaultMode').value;
+
+  final machPort = createMachPort(nullptr, eventPort, callback.nativeFunction,
+      nullptr, nullptr.cast<Bool>());
+  _log('CFMachPortCreateWithPort -> ${machPort.address}');
+  if (machPort == nullptr) return -1;
+  setMachPortOptions(machPort, 0x40);
+
+  final source = createSource(nullptr, machPort, 0);
+  final runLoop = getCurrentRunLoop();
+  _log('CFMachPortCreateRunLoopSource -> ${source.address}; '
+      'CFRunLoopGetCurrent -> ${runLoop.address}');
+  if (source == nullptr || runLoop == nullptr) return -1;
+  addSource(runLoop, source, defaultMode);
+
+  // Pump synchronously in bounded slices on the same OS thread/run loop where
+  // the isolateLocal callback was created. No await is allowed in this loop:
+  // resuming the isolate on another worker would pump a different CFRunLoop.
+  for (var i = 0; i < seconds * 20; i++) {
+    if (i == 1 || (i > 1 && i % 40 == 0)) probePostInputBody();
+    runInMode(defaultMode, 0.05, true);
+  }
+  _log('event-port summary: callbacks=$callbacks events=$received '
+      'sampledTypes=$sampledTypes');
+  return received;
+}
 
 Future<void> probeSkyLightEvents(int seconds) async {
   final skyLight = DynamicLibrary.open(
       '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
-  final connectionId = skyLight
-      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  final connectionId =
+      skyLight.lookupFunction<Int32 Function(), int Function()>(
+          'SLSMainConnectionID')();
   print('SLSMainConnectionID() = $connectionId '
       '(pthread_main_np() = ${pthread_main_np()})');
 
@@ -1402,18 +1513,19 @@ Future<void> probeSkyLightEvents(int seconds) async {
     ..ref.width = 480
     ..ref.height = 320;
   final regionSlot = calloc<Pointer<Void>>();
-  skyLight.lookupFunction<_NewRegionWithRectNative,
-          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
-      'CGSNewRegionWithRect')(rect, regionSlot);
+  skyLight.lookupFunction<
+      _NewRegionWithRectNative,
+      int Function(Pointer<NSRect>,
+          Pointer<Pointer<Void>>)>('CGSNewRegionWithRect')(rect, regionSlot);
   final windowIdSlot = calloc<Uint32>();
   skyLight.lookupFunction<
-      _SlsNewWindowNative,
-      int Function(int, int, double, double, Pointer<Void>,
-          Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+          _SlsNewWindowNative,
+          int Function(int, int, double, double, Pointer<Void>,
+              Pointer<Uint32>)>('SLSNewWindow')(connectionId,
       kCGSBackingStoreBuffered, 200.0, 200.0, regionSlot.value, windowIdSlot);
   final windowId = windowIdSlot.value;
   final context = skyLight.lookupFunction<_WindowContextCreateNative,
-      Pointer<Void> Function(int, int, Pointer<Void>)>(
+          Pointer<Void> Function(int, int, Pointer<Void>)>(
       'SLWindowContextCreate')(connectionId, windowId, nullptr);
   if (context != nullptr) {
     final coreGraphics = DynamicLibrary.open(
@@ -1421,54 +1533,31 @@ Future<void> probeSkyLightEvents(int seconds) async {
     final fill = calloc<NSRect>()
       ..ref.width = 480
       ..ref.height = 320;
-    coreGraphics.lookupFunction<_SetRgbFillColorNative,
-        void Function(Pointer<Void>, double, double, double, double)>(
-        'CGContextSetRGBFillColor')(context, 0.9, 0.3, 0.1, 1.0);
-    coreGraphics.lookupFunction<_FillRectNative,
-        void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
-        context, fill.ref);
+    coreGraphics.lookupFunction<
+        _SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double,
+            double)>('CGContextSetRGBFillColor')(context, 0.9, 0.3, 0.1, 1.0);
+    coreGraphics
+        .lookupFunction<_FillRectNative, void Function(Pointer<Void>, NSRect)>(
+            'CGContextFillRect')(context, fill.ref);
     coreGraphics.lookupFunction<_ContextFlushNative,
         void Function(Pointer<Void>)>('CGContextFlush')(context);
   }
-  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
-      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  skyLight
+      .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+          'SLSOrderWindow')(connectionId, windowId, 1, 0);
   print('WINDOW_ID=$windowId');
 
-  // SLSGetEventPort(cid) was the call that segfaulted, dereferencing the id.
-  // It is informational anyway, so it is gone rather than guessed at again.
-  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
-      Pointer<Void> Function(Pointer<Void>, int)>('SLEventCreateNextEvent');
-  final getType = skyLight
-      .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
-          'SLEventGetType');
-  final getLocation = skyLight
-      .lookupFunction<_EventGetLocationNative, NSPoint Function(Pointer<Void>)>(
-          'SLEventGetLocation');
-  final getFlags = skyLight
-      .lookupFunction<_EventGetFlagsNative, int Function(Pointer<Void>)>(
-          'SLEventGetFlags');
-
-  print('polling SLEventCreateNextEvent for ${seconds}s...');
-  var received = 0;
-  for (var i = 0; i < seconds * 20; i++) {
-    final event = createNextEvent(nullptr, connectionId);
-    if (event != nullptr) {
-      received++;
-      final location = getLocation(event);
-      print('EVENT type=${getType(event)} '
-          'at (${location.x}, ${location.y}) flags=${getFlags(event)}');
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-  }
+  final received = _consumeSkyLightEventPort(skyLight, connectionId, seconds);
 
   print('events received: $received');
   print(received > 0
       ? 'RESULT: input arrives straight from the WindowServer, off the main '
           'thread, with no AppKit. Route C is complete: window, pixels and '
           'input in pure Dart FFI.'
-      : 'RESULT: the connection produced no events. The process is probably '
-          'not registered with the WindowServer as a front application, so '
-          'nothing is routed to it.');
+      : 'RESULT: the event port delivered no events (count=$received). Test '
+          'foreground/PSN registration only after confirming the port callback '
+          'was installed and signalled.');
   _exitProcess(received > 0 ? 0 : 1);
 }
 
@@ -1514,8 +1603,7 @@ void _writeSentinel(Pointer<ObjCObject> invocation) {
 bool _isSentinel(Pointer<ObjCObject> value) =>
     value == _completionSentinel() || value.address == 1;
 
-void _scheduleOneShot(
-    Pointer<ObjCObject> invocation, double delaySeconds,
+void _scheduleOneShot(Pointer<ObjCObject> invocation, double delaySeconds,
     {bool wait = false}) {
   // Default wait:false - after an NSEvent is posted, AppKit may busy the main
   // run loop; waitUntilDone:YES then deadlocks the Dart thread (CI hung K
@@ -1630,8 +1718,9 @@ typedef _EnableForegroundNative = Int32 Function(
 Future<void> probeSkyLightForeground(int seconds) async {
   final skyLight = DynamicLibrary.open(
       '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
-  final connectionId = skyLight
-      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  final connectionId =
+      skyLight.lookupFunction<Int32 Function(), int Function()>(
+          'SLSMainConnectionID')();
   print('SLSMainConnectionID() = $connectionId');
 
   final psn = calloc<ProcessSerialNumber>();
@@ -1659,18 +1748,19 @@ Future<void> probeSkyLightForeground(int seconds) async {
     ..ref.width = 480
     ..ref.height = 320;
   final regionSlot = calloc<Pointer<Void>>();
-  skyLight.lookupFunction<_NewRegionWithRectNative,
-          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
-      'CGSNewRegionWithRect')(rect, regionSlot);
+  skyLight.lookupFunction<
+      _NewRegionWithRectNative,
+      int Function(Pointer<NSRect>,
+          Pointer<Pointer<Void>>)>('CGSNewRegionWithRect')(rect, regionSlot);
   final windowIdSlot = calloc<Uint32>();
   skyLight.lookupFunction<
-      _SlsNewWindowNative,
-      int Function(int, int, double, double, Pointer<Void>,
-          Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+          _SlsNewWindowNative,
+          int Function(int, int, double, double, Pointer<Void>,
+              Pointer<Uint32>)>('SLSNewWindow')(connectionId,
       kCGSBackingStoreBuffered, 260.0, 260.0, regionSlot.value, windowIdSlot);
   final windowId = windowIdSlot.value;
   final context = skyLight.lookupFunction<_WindowContextCreateNative,
-      Pointer<Void> Function(int, int, Pointer<Void>)>(
+          Pointer<Void> Function(int, int, Pointer<Void>)>(
       'SLWindowContextCreate')(connectionId, windowId, nullptr);
   if (context != nullptr) {
     final coreGraphics = DynamicLibrary.open(
@@ -1678,39 +1768,28 @@ Future<void> probeSkyLightForeground(int seconds) async {
     final fill = calloc<NSRect>()
       ..ref.width = 480
       ..ref.height = 320;
-    coreGraphics.lookupFunction<_SetRgbFillColorNative,
-        void Function(Pointer<Void>, double, double, double, double)>(
-        'CGContextSetRGBFillColor')(context, 0.2, 0.8, 0.3, 1.0);
-    coreGraphics.lookupFunction<_FillRectNative,
-        void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
-        context, fill.ref);
+    coreGraphics.lookupFunction<
+        _SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double,
+            double)>('CGContextSetRGBFillColor')(context, 0.2, 0.8, 0.3, 1.0);
+    coreGraphics
+        .lookupFunction<_FillRectNative, void Function(Pointer<Void>, NSRect)>(
+            'CGContextFillRect')(context, fill.ref);
     coreGraphics.lookupFunction<_ContextFlushNative,
         void Function(Pointer<Void>)>('CGContextFlush')(context);
   }
-  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
-      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  skyLight
+      .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+          'SLSOrderWindow')(connectionId, windowId, 1, 0);
   print('WINDOW_ID=$windowId');
 
   final stealKeyFocus = skyLight.lookupFunction<_PsnOnlyNative,
       int Function(Pointer<ProcessSerialNumber>)>('SLPSStealKeyFocus');
   print('SLPSStealKeyFocus -> ${stealKeyFocus(psn)}');
 
-  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
-      Pointer<Void> Function(Pointer<Void>, int)>('SLEventCreateNextEvent');
-  final getType = skyLight
-      .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
-          'SLEventGetType');
-
-  print('registered as foreground; polling for ${seconds}s...');
-  var received = 0;
-  for (var i = 0; i < seconds * 20; i++) {
-    final event = createNextEvent(nullptr, connectionId);
-    if (event != nullptr) {
-      received++;
-      print('EVENT type=${getType(event)}');
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-  }
+  print(
+      'registered as foreground; consuming the event port for ${seconds}s...');
+  final received = _consumeSkyLightEventPort(skyLight, connectionId, seconds);
 
   print('events received: $received');
   print(received > 0
@@ -1770,8 +1849,9 @@ Future<void> probeTransformProcess(int seconds) async {
 
   final skyLight = DynamicLibrary.open(
       '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
-  final connectionId = skyLight
-      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  final connectionId =
+      skyLight.lookupFunction<Int32 Function(), int Function()>(
+          'SLSMainConnectionID')();
   _log('SLSMainConnectionID() = $connectionId');
 
   final rect = calloc<NSRect>()
@@ -1780,23 +1860,19 @@ Future<void> probeTransformProcess(int seconds) async {
     ..ref.width = 480
     ..ref.height = 320;
   final regionSlot = calloc<Pointer<Void>>();
-  skyLight.lookupFunction<_NewRegionWithRectNative,
-          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
-      'CGSNewRegionWithRect')(rect, regionSlot);
+  skyLight.lookupFunction<
+      _NewRegionWithRectNative,
+      int Function(Pointer<NSRect>,
+          Pointer<Pointer<Void>>)>('CGSNewRegionWithRect')(rect, regionSlot);
   final windowIdSlot = calloc<Uint32>();
   skyLight.lookupFunction<
           _SlsNewWindowNative,
           int Function(int, int, double, double, Pointer<Void>,
-              Pointer<Uint32>)>('SLSNewWindow')(
-      connectionId,
-      kCGSBackingStoreBuffered,
-      300.0,
-      300.0,
-      regionSlot.value,
-      windowIdSlot);
+              Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+      kCGSBackingStoreBuffered, 300.0, 300.0, regionSlot.value, windowIdSlot);
   final windowId = windowIdSlot.value;
   final context = skyLight.lookupFunction<_WindowContextCreateNative,
-      Pointer<Void> Function(int, int, Pointer<Void>)>(
+          Pointer<Void> Function(int, int, Pointer<Void>)>(
       'SLWindowContextCreate')(connectionId, windowId, nullptr);
   if (context != nullptr) {
     final coreGraphics = DynamicLibrary.open(
@@ -1804,42 +1880,22 @@ Future<void> probeTransformProcess(int seconds) async {
     final fill = calloc<NSRect>()
       ..ref.width = 480
       ..ref.height = 320;
-    coreGraphics.lookupFunction<_SetRgbFillColorNative,
-        void Function(Pointer<Void>, double, double, double, double)>(
-        'CGContextSetRGBFillColor')(context, 0.8, 0.2, 0.8, 1.0);
-    coreGraphics.lookupFunction<_FillRectNative,
-        void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
-        context, fill.ref);
+    coreGraphics.lookupFunction<
+        _SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double,
+            double)>('CGContextSetRGBFillColor')(context, 0.8, 0.2, 0.8, 1.0);
+    coreGraphics
+        .lookupFunction<_FillRectNative, void Function(Pointer<Void>, NSRect)>(
+            'CGContextFillRect')(context, fill.ref);
     coreGraphics.lookupFunction<_ContextFlushNative,
         void Function(Pointer<Void>)>('CGContextFlush')(context);
   }
-  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
-      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  skyLight
+      .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+          'SLSOrderWindow')(connectionId, windowId, 1, 0);
   _log('WINDOW_ID=$windowId');
 
-  // Self-inject so we do not depend on a second process timing window.
-  final injected = probePostInputBody();
-  _log('self-inject ok=$injected');
-
-  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
-      Pointer<Void> Function(Pointer<Void>, int)>('SLEventCreateNextEvent');
-  final getType = skyLight
-      .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
-          'SLEventGetType');
-
-  _log('polling SLEventCreateNextEvent for ${seconds}s...');
-  var received = 0;
-  for (var i = 0; i < seconds * 20; i++) {
-    if (i > 0 && i % 40 == 0) {
-      probePostInputBody();
-    }
-    final event = createNextEvent(nullptr, connectionId);
-    if (event != nullptr) {
-      received++;
-      _log('EVENT type=${getType(event)}');
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-  }
+  final received = _consumeSkyLightEventPort(skyLight, connectionId, seconds);
 
   _log('events received: $received');
   _log(received > 0
@@ -1860,23 +1916,29 @@ bool probePostInputBody() {
 
   final createKeyboardEvent = coreGraphics.lookupFunction<
       Pointer<Void> Function(Pointer<Void>, Uint16, Bool),
-      Pointer<Void> Function(Pointer<Void>, int, bool)>(
-      'CGEventCreateKeyboardEvent');
+      Pointer<Void> Function(
+          Pointer<Void>, int, bool)>('CGEventCreateKeyboardEvent');
   final createMouseEvent = coreGraphics.lookupFunction<
       Pointer<Void> Function(Pointer<Void>, Uint32, NSPoint, Uint32),
-      Pointer<Void> Function(Pointer<Void>, int, NSPoint, int)>(
-      'CGEventCreateMouseEvent');
-  final post = coreGraphics.lookupFunction<
-      Void Function(Uint32, Pointer<Void>),
+      Pointer<Void> Function(
+          Pointer<Void>, int, NSPoint, int)>('CGEventCreateMouseEvent');
+  final post = coreGraphics.lookupFunction<Void Function(Uint32, Pointer<Void>),
       void Function(int, Pointer<Void>)>('CGEventPost');
+  final cfRelease = libCoreFoundation.lookupFunction<
+      Void Function(Pointer<Void>), void Function(Pointer<Void>)>('CFRelease');
 
   final down = createKeyboardEvent(nullptr, 0, true);
   final up = createKeyboardEvent(nullptr, 0, false);
   _log('CGEventCreateKeyboardEvent -> down ${down.address}, up ${up.address}');
-  if (down == nullptr) return false;
+  if (down == nullptr) {
+    if (up != nullptr) cfRelease(up);
+    return false;
+  }
   post(0, down);
   if (up != nullptr) post(0, up);
   _log('posted key down/up for keycode 0.');
+  cfRelease(down);
+  if (up != nullptr) cfRelease(up);
 
   final point = calloc<NSPoint>()
     ..ref.x = 400
@@ -1886,7 +1948,9 @@ bool probePostInputBody() {
   if (move != nullptr) {
     post(0, move);
     _log('posted a mouse move to (400, 400).');
+    cfRelease(move);
   }
+  calloc.free(point);
   return true;
 }
 
@@ -1907,8 +1971,9 @@ Future<void> probeSkyLightRegister(int seconds) async {
   final skyLight = DynamicLibrary.open(
       '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
 
-  final connectionId = skyLight
-      .lookupFunction<Int32 Function(), int Function()>('SLSMainConnectionID')();
+  final connectionId =
+      skyLight.lookupFunction<Int32 Function(), int Function()>(
+          'SLSMainConnectionID')();
   _log('SLSMainConnectionID() = $connectionId');
 
   // SLSGetEventPort: two crashes proved `port = f(cid)` dereferences cid
@@ -1918,8 +1983,8 @@ Future<void> probeSkyLightRegister(int seconds) async {
   _log('calling SLSGetEventPort(cid=$connectionId, &out)...');
   final getEventPortRc = skyLight.lookupFunction<
       Int32 Function(Int32, Pointer<Uint32>),
-      int Function(int, Pointer<Uint32>)>('SLSGetEventPort')(
-      connectionId, eventPortOut);
+      int Function(
+          int, Pointer<Uint32>)>('SLSGetEventPort')(connectionId, eventPortOut);
   final eventPort = eventPortOut.value;
   _log('SLSGetEventPort -> rc=$getEventPortRc port=$eventPort');
 
@@ -1932,13 +1997,13 @@ Future<void> probeSkyLightRegister(int seconds) async {
       int Function(Pointer<ProcessSerialNumber>)>('SLPSGetCurrentProcess')(psn);
   _log('PSN = (${psn.ref.high}, ${psn.ref.low})');
 
-  final registerWithServer = skyLight
-      .lookupFunction<Int32 Function(Pointer<ProcessSerialNumber>),
-          int Function(Pointer<ProcessSerialNumber>)>('SLPSRegisterWithServer');
+  final registerWithServer = skyLight.lookupFunction<
+      Int32 Function(Pointer<ProcessSerialNumber>),
+      int Function(Pointer<ProcessSerialNumber>)>('SLPSRegisterWithServer');
   final setMain = skyLight.lookupFunction<
       Int32 Function(Pointer<ProcessSerialNumber>, Int32),
-      int Function(Pointer<ProcessSerialNumber>, int)>(
-      'SLPSSetMainApplicationConnection');
+      int Function(Pointer<ProcessSerialNumber>,
+          int)>('SLPSSetMainApplicationConnection');
 
   _log('calling SLPSRegisterWithServer(psn)...');
   final regRc = registerWithServer(psn);
@@ -1958,8 +2023,8 @@ Future<void> probeSkyLightRegister(int seconds) async {
     final numericRc = setMainNumeric(connectionId, 0);
     _log('SLPSSetMainApplicationConnection(cid, 0) -> $numericRc (retry)');
     if (numericRc != 0) {
-      final registerNumeric = skyLight
-          .lookupFunction<Int32 Function(Uint32), int Function(int)>(
+      final registerNumeric =
+          skyLight.lookupFunction<Int32 Function(Uint32), int Function(int)>(
               'SLPSRegisterWithServer');
       if (getEventPortRc == 0 && eventPort != 0) {
         final regNumericRc = registerNumeric(eventPort);
@@ -1976,15 +2041,15 @@ Future<void> probeSkyLightRegister(int seconds) async {
         'Frameworks/HIServices.framework/HIServices');
     final psn = calloc<ProcessSerialNumber>();
     final getRc = hi.lookupFunction<
-            Int32 Function(Pointer<ProcessSerialNumber>),
-            int Function(Pointer<ProcessSerialNumber>)>('GetCurrentProcess')(psn);
+        Int32 Function(Pointer<ProcessSerialNumber>),
+        int Function(Pointer<ProcessSerialNumber>)>('GetCurrentProcess')(psn);
     final transformRc = hi.lookupFunction<
             Int32 Function(Pointer<ProcessSerialNumber>, Int32),
             int Function(Pointer<ProcessSerialNumber>, int)>(
         'TransformProcessType')(psn, kProcessTransformToForegroundApplication);
     final frontRc = hi.lookupFunction<
-            Int32 Function(Pointer<ProcessSerialNumber>),
-            int Function(Pointer<ProcessSerialNumber>)>('SetFrontProcess')(psn);
+        Int32 Function(Pointer<ProcessSerialNumber>),
+        int Function(Pointer<ProcessSerialNumber>)>('SetFrontProcess')(psn);
     _log('GetCurrentProcess=$getRc Transform=$transformRc Front=$frontRc '
         'psn=(${psn.ref.high},${psn.ref.low})');
   } catch (e) {
@@ -1994,17 +2059,20 @@ Future<void> probeSkyLightRegister(int seconds) async {
   // Also the private front/focus path that Q already measured as "success, no
   // events" - cheap to re-run after real registration.
   final psn2 = calloc<ProcessSerialNumber>();
-  skyLight.lookupFunction<_PsnOnlyNative,
-          int Function(Pointer<ProcessSerialNumber>)>('SLPSGetCurrentProcess')(
-      psn2);
+  skyLight.lookupFunction<
+      _PsnOnlyNative,
+      int Function(
+          Pointer<ProcessSerialNumber>)>('SLPSGetCurrentProcess')(psn2);
   final enableFg = skyLight.lookupFunction<
       _EnableForegroundNative,
       int Function(Pointer<ProcessSerialNumber>, int, int, int,
           int)>('SLPSEnableForegroundOperation');
   _log('SLPSEnableForegroundOperation -> '
       '${enableFg(psn2, 0x03, 0x3C, 0x2C, 0x1103)}');
-  _log('SLPSSetFrontProcess -> ${skyLight.lookupFunction<_PsnOnlyNative, int Function(Pointer<ProcessSerialNumber>)>('SLPSSetFrontProcess')(psn2)}');
-  _log('SLPSStealKeyFocus -> ${skyLight.lookupFunction<_PsnOnlyNative, int Function(Pointer<ProcessSerialNumber>)>('SLPSStealKeyFocus')(psn2)}');
+  _log(
+      'SLPSSetFrontProcess -> ${skyLight.lookupFunction<_PsnOnlyNative, int Function(Pointer<ProcessSerialNumber>)>('SLPSSetFrontProcess')(psn2)}');
+  _log(
+      'SLPSStealKeyFocus -> ${skyLight.lookupFunction<_PsnOnlyNative, int Function(Pointer<ProcessSerialNumber>)>('SLPSStealKeyFocus')(psn2)}');
 
   // Visible window so the server has a target.
   final rect = calloc<NSRect>()
@@ -2013,23 +2081,19 @@ Future<void> probeSkyLightRegister(int seconds) async {
     ..ref.width = 480
     ..ref.height = 320;
   final regionSlot = calloc<Pointer<Void>>();
-  skyLight.lookupFunction<_NewRegionWithRectNative,
-          int Function(Pointer<NSRect>, Pointer<Pointer<Void>>)>(
-      'CGSNewRegionWithRect')(rect, regionSlot);
+  skyLight.lookupFunction<
+      _NewRegionWithRectNative,
+      int Function(Pointer<NSRect>,
+          Pointer<Pointer<Void>>)>('CGSNewRegionWithRect')(rect, regionSlot);
   final windowIdSlot = calloc<Uint32>();
   skyLight.lookupFunction<
           _SlsNewWindowNative,
           int Function(int, int, double, double, Pointer<Void>,
-              Pointer<Uint32>)>('SLSNewWindow')(
-      connectionId,
-      kCGSBackingStoreBuffered,
-      320.0,
-      320.0,
-      regionSlot.value,
-      windowIdSlot);
+              Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+      kCGSBackingStoreBuffered, 320.0, 320.0, regionSlot.value, windowIdSlot);
   final windowId = windowIdSlot.value;
   final context = skyLight.lookupFunction<_WindowContextCreateNative,
-      Pointer<Void> Function(int, int, Pointer<Void>)>(
+          Pointer<Void> Function(int, int, Pointer<Void>)>(
       'SLWindowContextCreate')(connectionId, windowId, nullptr);
   if (context != nullptr) {
     final coreGraphics = DynamicLibrary.open(
@@ -2037,39 +2101,26 @@ Future<void> probeSkyLightRegister(int seconds) async {
     final fill = calloc<NSRect>()
       ..ref.width = 480
       ..ref.height = 320;
-    coreGraphics.lookupFunction<_SetRgbFillColorNative,
-        void Function(Pointer<Void>, double, double, double, double)>(
-        'CGContextSetRGBFillColor')(context, 0.1, 0.7, 0.9, 1.0);
-    coreGraphics.lookupFunction<_FillRectNative,
-            void Function(Pointer<Void>, NSRect)>('CGContextFillRect')(
-        context, fill.ref);
+    coreGraphics.lookupFunction<
+        _SetRgbFillColorNative,
+        void Function(Pointer<Void>, double, double, double,
+            double)>('CGContextSetRGBFillColor')(context, 0.1, 0.7, 0.9, 1.0);
+    coreGraphics
+        .lookupFunction<_FillRectNative, void Function(Pointer<Void>, NSRect)>(
+            'CGContextFillRect')(context, fill.ref);
     coreGraphics.lookupFunction<_ContextFlushNative,
         void Function(Pointer<Void>)>('CGContextFlush')(context);
   }
-  skyLight.lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
-      'SLSOrderWindow')(connectionId, windowId, 1, 0);
+  skyLight
+      .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+          'SLSOrderWindow')(connectionId, windowId, 1, 0);
   _log('WINDOW_ID=$windowId');
 
   probePostInputBody();
 
-  final createNextEvent = skyLight.lookupFunction<_EventCreateNextNative,
-      Pointer<Void> Function(Pointer<Void>, int)>('SLEventCreateNextEvent');
-  final getType = skyLight
-      .lookupFunction<_EventGetTypeNative, int Function(Pointer<Void>)>(
-          'SLEventGetType');
-
   _log('handshake done (reg=$regRc main=$mainRc port=$eventPort); '
-      'polling ${seconds}s...');
-  var received = 0;
-  for (var i = 0; i < seconds * 20; i++) {
-    if (i > 0 && i % 40 == 0) probePostInputBody();
-    final event = createNextEvent(nullptr, connectionId);
-    if (event != nullptr) {
-      received++;
-      _log('EVENT type=${getType(event)}');
-    }
-    await Future<void>.delayed(const Duration(milliseconds: 50));
-  }
+      'consuming the event port for ${seconds}s...');
+  final received = _consumeSkyLightEventPort(skyLight, connectionId, seconds);
 
   _log('events received: $received');
   _log(received > 0
@@ -2115,18 +2166,17 @@ final class CFRunLoopSourceContext extends Struct {
 }
 
 bool _keepMainRunLoopAlive() {
-  final getMain = libCoreFoundation
-      .lookupFunction<Pointer<Void> Function(), Pointer<Void> Function()>(
-          'CFRunLoopGetMain');
+  final getMain = libCoreFoundation.lookupFunction<Pointer<Void> Function(),
+      Pointer<Void> Function()>('CFRunLoopGetMain');
   final sourceCreate = libCoreFoundation.lookupFunction<
-      Pointer<Void> Function(Pointer<Void>, Int64, Pointer<CFRunLoopSourceContext>),
       Pointer<Void> Function(
-          Pointer<Void>, int, Pointer<CFRunLoopSourceContext>)>(
-      'CFRunLoopSourceCreate');
+          Pointer<Void>, Int64, Pointer<CFRunLoopSourceContext>),
+      Pointer<Void> Function(Pointer<Void>, int,
+          Pointer<CFRunLoopSourceContext>)>('CFRunLoopSourceCreate');
   final addSource = libCoreFoundation.lookupFunction<
       Void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>),
-      void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>)>(
-      'CFRunLoopAddSource');
+      void Function(
+          Pointer<Void>, Pointer<Void>, Pointer<Void>)>('CFRunLoopAddSource');
   final defaultMode =
       libCoreFoundation.lookup<Pointer<Void>>('kCFRunLoopDefaultMode').value;
 
@@ -2321,7 +2371,8 @@ Future<void> main(List<String> args) async {
     case 'skylight-draw':
       probeSkyLightDraw();
     case 'hold-skylight':
-      probeHoldSkyLightWindow(int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
+      probeHoldSkyLightWindow(
+          int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
     case 'hold-appkit':
       await probeHoldAppKitWindow(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);

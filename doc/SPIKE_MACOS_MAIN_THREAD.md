@@ -6,6 +6,9 @@ shellcode, sem entitlement — para criar e operar uma janela no macOS?
 **Resposta curta:** sim, duas rotas estão abertas e uma delas já criou uma
 `NSWindow` de verdade. Ambas têm ressalvas sérias, documentadas abaixo.
 
+**Prioridade deste spike:** funcionamento correto e recuperável nas versões de
+macOS suportadas.
+
 > Este documento registra **o que foi medido**, probe por probe. Para **como
 > fazer** — as etapas da técnica, o código e as armadilhas catalogadas — veja
 > [TECNICA_MAIN_THREAD_DART_FFI.md](TECNICA_MAIN_THREAD_DART_FFI.md).
@@ -562,13 +565,288 @@ completar o handshake de eventos.
 
 ## Próximos passos
 
-1. **Probe Y v3** no CI com o ABI PSN-pointer
-   (`SLPSRegisterWithServer(psn)`/`SLPSSetMainApplicationConnection(psn, cid)`).
-   Se mainParar de dar `-600`, a rota C tem o handshake de eventos completo e
-   podemos medir se `SLEventCreateNextEvent` começa a entregar.
-2. Se ainda 0 eventos: app bundle (.app) + registro LaunchServices, ou
-   `SLEventModifyConnection`/`SLEventPackets` do dump.
-3. Avaliar `CGEventTap` como plano B para input (exige permissão de
-   acessibilidade concedida pelo usuário).
-4. Decorações, menus, IME e acessibilidade: o que a rota C perde ao abrir mão do
-   AppKit, e que disso o o framework precisa reimplementar.
+Uma pesquisa externa dirigida em 2026-08-07 encontrou uma implementação atual
+do caminho de eventos e mudou a ordem destes experimentos. Veja a seção a
+seguir: antes de continuar chutando o ABI de `SLPS*`, é preciso corrigir duas
+diferenças objetivas entre o probe e o consumidor conhecido.
+
+1. **Probe Z1 — implementado, aguardando CI:** ABI de
+   `SLEventCreateNextEvent` corrigido para
+   `CGEventRef SLEventCreateNextEvent(int cid)`, sem `CFAllocatorRef`.
+2. **Probe Z2 — implementado, aguardando CI:** envolver o
+   `mach_port_t` de `SLSGetEventPort(cid, &port)` em `CFMachPort`, criar uma
+   `CFRunLoopSource` e drenar `SLEventCreateNextEvent(cid)` quando a porta
+   sinalizar. O callback deve ser mínimo: copiar/reter os dados necessários e
+   notificar o isolate, sem criar, destruir ou redesenhar janelas ali dentro.
+   O workflow agora impõe um hard cap, coleta `sample` e mata o processo se uma
+   chamada privada voltar a bloquear; Q/X/Y usam o mesmo consumidor em vez de
+   repetir polling com ABI incorreto.
+3. Só depois repetir o PSN-pointer de Y v3. Se Z1/Z2 já entregarem os eventos
+   sintéticos de `CGEventPost`, `SLPSRegisterWithServer` e
+   `SLPSSetMainApplicationConnection` não pertencem ao caminho mínimo.
+4. Se ainda houver 0 eventos: comparar sob LLDB a sequência e os registradores
+   de um processo AppKit em `SLSGetEventPort`, `SLEventCreateNextEvent` e
+   `SLPSSetMainApplicationConnection`; depois testar app bundle + registro no
+   LaunchServices.
+5. Manter `CGEventTap` como plano B público para captura global. Eventos de
+   teclado exigem acesso assistivo conforme a documentação da Apple.
+6. Decorações, menus, IME e acessibilidade: medir o que a rota C perde ao abrir
+   mão do AppKit e o que o framework precisaria reimplementar.
+7. Depois de fechar input, promover a prova a um teste de robustez: reconciliação
+   após fullscreen/Spaces/sleep, resize contínuo, múltiplos monitores e uma
+   segunda ferramenta que também mova janelas. Sucesso pontual não é critério de
+   conclusão.
+
+## Pesquisa externa dirigida — 2026-08-07
+
+### Achado principal: existe uma receita executável e atual
+
+O [JankyBorders](https://github.com/FelixKratz/JankyBorders) contém o caminho
+completo usado hoje para consumir a porta de eventos do SkyLight. Seus headers
+declaram:
+
+```c
+CGError   SLSGetEventPort(int cid, mach_port_t *port_out);
+CGEventRef SLEventCreateNextEvent(int cid);
+```
+
+E o `main` faz, nesta ordem:
+
+```text
+SLSMainConnectionID
+  -> SLSRegisterNotifyProc(...)
+  -> SLSGetEventPort(cid, &port)
+  -> CFMachPortCreateWithPort(port, callback)
+  -> _CFMachPortSetOptions(machPort, 0x40)
+  -> CFMachPortCreateRunLoopSource
+  -> CFRunLoopAddSource(..., kCFRunLoopDefaultMode)
+  -> CFRunLoopRun
+
+callback da porta:
+  repetir SLEventCreateNextEvent(cid) até retornar NULL
+```
+
+Fontes exatas:
+
+- [declarações de ABI](https://github.com/FelixKratz/JankyBorders/blob/a7297ca7d1933f3a30b12e8f10750e8d84eeee1e/src/misc/extern.h);
+- [montagem da porta e da run-loop source](https://github.com/FelixKratz/JankyBorders/blob/a7297ca7d1933f3a30b12e8f10750e8d84eeee1e/src/main.c);
+- [registro e tipos das notificações](https://github.com/FelixKratz/JankyBorders/blob/a7297ca7d1933f3a30b12e8f10750e8d84eeee1e/src/events.c).
+
+O projeto Rust [edges](https://github.com/pablopunk/edges/blob/7bc134760b5facdce5e5b5b264d4d9e5b4feb770/src/events.rs)
+reproduz a mesma sequência e explicita o encadeamento
+`SLSGetEventPort -> CFMachPort -> CFRunLoop -> SLEventCreateNextEvent`. Ele não é
+evidência totalmente independente — declara que segue o JankyBorders —, mas é
+uma segunda tradução útil para conferir tipos, ownership e callback.
+
+### Consequência para P/Q/X/Y: os resultados de zero eventos são inconclusivos
+
+O probe atual declara:
+
+```dart
+Pointer<Void> Function(Pointer<Void> allocator, Int32 cid)
+```
+
+e chama `SLEventCreateNextEvent(nullptr, connectionId)`. A assinatura observada
+nos consumidores atuais tem **um único argumento**, o `cid`. No ABI arm64, o
+probe põe `nullptr` em `x0` e o connection id em `x1`; uma função de um argumento
+lê `x0`, portanto recebe conexão `0`. Isso explica o retorno vazio sem precisar
+postular falha de registro PSN.
+
+Além disso, Y já provou a assinatura correta de `SLSGetEventPort` e recebeu uma
+porta Mach válida, mas apenas registrou seu número. A implementação conhecida
+instala essa porta como source do `CFRunLoop` e só chama
+`SLEventCreateNextEvent(cid)` dentro do callback disparado por uma mensagem.
+Logo, polling com ABI errado **e** sem drenar a porta não testa o mecanismo que
+um consumidor funcional usa.
+
+O valor `0x40` passado a `_CFMachPortSetOptions` continua sem semântica pública.
+Deve ser reproduzido no primeiro teste por paridade e depois isolado por bisect;
+não deve ser transformado em constante arquitetural sem essa medição.
+
+### Issue 62: a porta funciona, mas é uma região crítica
+
+A discussão da
+[issue 62 do JankyBorders](https://github.com/FelixKratz/JankyBorders/issues/62?timeline_page=1)
+registra a evolução de um consumidor real sob carga. Ela acrescenta quatro
+restrições importantes à receita acima:
+
+1. O callback da porta precisa drenar `SLEventCreateNextEvent(cid)` até `NULL`.
+   Deixar trabalho pendente altera a ordem observável dos eventos.
+2. Trabalho caro dentro do callback permite que um evento do WindowServer
+   ultrapasse uma mensagem Mach relacionada. Isso produziu frames errados e
+   flicker durante animações interceptadas.
+3. Criar uma janela SkyLight de dentro desse caminho reentrante chegou a
+   quebrar em `SLSWMBridgePerformTransaction`/
+   `SLSWindowManagementFallbackBridge`. O projeto moveu criação para a main
+   thread, serializou operações com mutexes e, posteriormente, passou a usar
+   conexões SLS separadas para as janelas de borda.
+4. Mensagens próprias do yabai foram movidas para **outra porta Mach**, em vez
+   de compartilhar a porta de eventos do WindowServer. O desenho atual mantém
+   o callback SkyLight apenas como dreno de eventos.
+
+Commits que isolam essas correções:
+
+- [criação da proxy na main thread](https://github.com/FelixKratz/JankyBorders/commit/404cf26426ee);
+- [mutex em todas as operações que alcançam o SLSWMBridge](https://github.com/FelixKratz/JankyBorders/commit/745d4816e77d);
+- [porta separada para mensagens do yabai](https://github.com/FelixKratz/JankyBorders/commit/6b08d5875160);
+- [coalescing e limite da fila da porta própria](https://github.com/FelixKratz/JankyBorders/commit/2c7f0488a80e);
+- [conexão SLS dedicada por borda](https://github.com/FelixKratz/JankyBorders/commit/18086e4fe15e).
+
+**Regra para Z2:** o callback de `CFMachPort` é transporte, não lugar para
+executar a UI. Com `NativeCallable.listener`, ele pode apenas acordar o isolate;
+o isolate drena/copia os `CGEventRef` e agenda qualquer mutação de janela fora
+da pilha do callback. Se for preciso mandar IPC próprio, deve existir uma porta
+separada.
+
+### Issues atuais: critérios de correção, não documentação de ABI
+
+Os issues abertos do JankyBorders e do yabai são valiosos como telemetria de
+regressão. Eles não provam sozinhos a causa descrita pelo autor, mas fornecem
+cenários que o backend precisa sobreviver:
+
+| Evidência atual | O que transforma em requisito |
+| --- | --- |
+| [JankyBorders #199](https://github.com/FelixKratz/JankyBorders/issues/199): borda corrompida durante resize no macOS 26.5; o mantenedor indicou correção na 1.9.0. | Resize contínuo precisa de coalescing, teste visual e verificação após o fim do gesto. |
+| [JankyBorders #200](https://github.com/FelixKratz/JankyBorders/issues/200): na 1.9.0, algumas janelas deixam de ser reconhecidas; um comentário suspeita de um filtro de elegibilidade. | Não inferir existência/foco a partir de uma única notificação ou filtro. Reconciliar inventário e foco com consultas periódicas. |
+| [JankyBorders #201](https://github.com/FelixKratz/JankyBorders/issues/201): borda às vezes some ao sair de fullscreen no macOS 27 beta. | Fullscreen/Spaces são transições de estado; ao final delas, reconsultar ordem, bounds e transform, recriando a superfície se necessário. |
+| [JankyBorders #188](https://github.com/FelixKratz/JankyBorders/issues/188): relatos de custo de GPU atribuído ao WindowServer no Tahoe 26.2, com resultados diferentes por app. | Medir CPU/GPU/WindowServer por cenário e impor limite de redraw; ausência de crash não basta. |
+| [yabai #2785](https://github.com/asmvik/yabai/issues/2785): conflito ao abrir Time Machine. | Detectar controladores/transições do sistema e evitar disputar continuamente o mesmo estado. |
+| [yabai #2811](https://github.com/asmvik/yabai/issues/2811): relato ainda não confirmado de loop entre yabai e `WindowManager` no macOS 26.3.1. | Toda correção de posição deve ser idempotente, ter tolerância, limite de tentativas e circuit breaker; nunca responder indefinidamente à correção de outro controlador. |
+
+Há outra classe de falha que **não deve ser atribuída à API exportada do
+SkyLight**. Em [yabai #2800](https://github.com/asmvik/yabai/issues/2800) e
+[yabai #2802](https://github.com/asmvik/yabai/issues/2802), o que quebrou no
+macOS 27 foi a scripting addition injetada no Dock: verificação explícita da
+versão, padrões de bytes e offsets internos. O relato da #2802 mostra sete
+assinaturas de funções do Dock, cinco ainda iguais às do macOS 26 e duas que
+precisaram de novos padrões; também registra que os offsets mudam entre betas.
+Isso é evidência forte contra importar injeção/pattern scanning para a rota
+principal, mas não demonstra que `SLSGetEventPort` ou outro símbolo exportado
+tenha mudado de ABI. Já a [yabai #2799](https://github.com/asmvik/yabai/issues/2799)
+confirma que até uma atualização 26.6 exigiu correção para operações de Spaces.
+
+#### Contrato operacional proposto para o backend
+
+1. Na inicialização, resolver cada símbolo com `dlsym` e publicar uma tabela de
+   capacidades por versão/build. Uma função ausente desabilita apenas a feature
+   correspondente; não se chama endereço presumido.
+2. Manter conexão/porta de eventos separada das conexões usadas para criar e
+   mutar janelas. Serializar operações que chegam ao `SLSWMBridge` e nunca
+   executá-las dentro do callback da porta.
+3. Tratar eventos como sinais de invalidação, não como estado autoritativo. O
+   isolate mantém estado desejado e reconcilia ordem, bounds e transform após
+   rajadas e transições do sistema.
+4. Coalescer move/resize por janela, limitar a fila e descartar trabalho
+   obsoleto. Aplicar mudanças idempotentes, com tolerância geométrica e limite de
+   repetição para impedir feedback loops.
+5. Ter recuperação explícita: se uma janela ficar ausente, corrompida ou a
+   conexão falhar, retirar a surface antiga, reabrir conexão/janela e reaplicar
+   o estado desejado. Registrar a causa e o número de recuperações.
+6. Só declarar suporte a uma versão/build depois de testes funcionais e soak:
+   input, resize, fullscreen, Spaces, sleep/wake, troca de monitor/escala, screen
+   sharing, Time Machine e coexistência com outro gerenciador. Medir também
+   CPU/GPU do processo e do WindowServer.
+
+Para cumprir esse contrato, o probe deve registrar ao menos: versão e build do
+macOS, arquitetura, símbolos encontrados, connection/window ids, profundidade
+máxima da fila, eventos coalescidos/descartados, reconciliações, recriações e
+latência entre evento e frame. Esses dados distinguem uma regressão de ABI de
+uma falha de ordenação ou de desempenho.
+
+A issue também recupera APIs úteis para uma etapa futura de animação e
+diagnóstico, mas não necessárias para fechar input:
+
+```c
+CGError SLSGetWindowOwner(int cid, uint32_t wid, int *owner_cid);
+CGError SLSConnectionGetPID(int cid, pid_t *pid);
+CGError SLSCopyConnectionProperty(
+    int cid, int target_cid, CFStringRef key, CFTypeRef *value);
+CGError SLSGetWindowBounds(int cid, uint32_t wid, CGRect *frame);
+CGError SLSGetWindowTransform(
+    int cid, uint32_t wid, CGAffineTransform *transform);
+```
+
+O yabai marca a relação proxy → janela real por propriedade da conexão; o
+JankyBorders lê essa relação, acompanha transformações e usa `SLSTransaction*`
+para trocar alpha/transform de várias janelas atomicamente. A solução animada
+usou `CVDisplayLink` para sincronizar o polling com frames. Isso é evidência de
+viabilidade, não uma recomendação atual: a família `CVDisplayLink` está
+deprecada no SDK moderno em favor de display links de `NSView`, `NSWindow` ou
+`NSScreen` — alternativas que voltam a depender do AppKit.
+
+### O que essa receita prova — e o que ainda não prova
+
+- Prova o ABI de `SLSGetEventPort` e `SLEventCreateNextEvent` em software
+  contemporâneo e fornece o elo que faltava entre a porta Mach e o run loop.
+- Prova uma rota para notificações internas do WindowServer
+  (`SLSRegisterNotifyProc`: criação, movimento, resize, Spaces e front app).
+- Ainda **não prova** que uma janela SkyLight própria receberá mouse/teclado. O
+  JankyBorders observa janelas de terceiros; o teste Z precisa inspecionar o
+  `CGEventRef` antes de liberá-lo e confirmar eventos dirigidos à nossa janela.
+- Não prova os ABIs de `SLPSRegisterWithServer` nem
+  `SLPSSetMainApplicationConnection`. Os repositórios encontrados que contêm
+  esses nomes são em geral stubs sem tipos ou arquivos `.tbd`, que confirmam
+  exportação, não assinatura.
+
+### Pista para a rota AppKit
+
+O [HookCase](https://github.com/steven-michaud/HookCase/blob/896ed6c9fe86862534a2d79b90910e63a9d738e0/Examples/events/hook.mm)
+documenta, por instrumentação, o pipeline histórico: uma `NSEventThread` chama
+o consumidor de eventos SkyLight, coloca o `CGEvent` numa fila e mais tarde a
+main thread converte e publica o evento na fila principal. Embora os nomes
+internos tenham mudado entre versões, isso explica por que apenas bombear
+`nextEventMatchingMask:` na main thread não substitui necessariamente a etapa
+produtora. É uma pista forte para amostrar/backtracear também a
+`com.apple.NSEventThread` num app AppKit testemunha.
+
+### Valor dos materiais enviados
+
+| Material | Valor para este spike |
+| --- | --- |
+| [NUIKit/CGSInternal](https://github.com/NUIKit/CGSInternal) | Melhor catálogo de tipos CGS/SLS para janelas, conexões, regiões e eventos; cada assinatura ainda deve ser validada na versão-alvo. |
+| [yabai](https://github.com/asmvik/yabai) e [issue 148](https://github.com/asmvik/yabai/issues/148) | Código real e atual para Spaces/janelas; a issue é especialmente útil para `SLSTransaction*`, transformações e animações, não para input de uma app própria. |
+| [JankyBorders](https://github.com/FelixKratz/JankyBorders) | Referência mais diretamente útil encontrada: resolve exatamente a porta de eventos que Y descobriu. |
+| [dump de símbolos de Erica Sadun](https://gist.github.com/erica/448a71ae1aa5156ce9703dac747e2cec) | Excelente índice de nomes e relações históricas; não contém tipos e é de 2016. |
+| [RET2: WindowServer](https://blog.ret2.io/2018/08/28/pwn2own-2018-sandbox-escape/) | Confirma o bootstrap `dlopen`/`dlsym`, `CGSNewConnection` e IPC Mach; é pesquisa de exploração em 10.13, não contrato de ABI moderno. |
+| [Apriorit: API não documentada](https://www.apriorit.com/dev-blog/778-reverse-engineering-undocumented-macos-api) | Bom roteiro de Ghidra/LLDB e de reconstrução de call sites; o caso estudado não é SkyLight. |
+| [catálogo de reversing de 0xdevalias](https://gist.github.com/0xdevalias/256a8018473839695e8684e37da92c25) | Índice amplo de ferramentas; útil como caixa de ferramentas, não como fonte de assinatura. |
+| [Google/Mandiant: reversing de Cocoa](https://cloud.google.com/blog/topics/threat-intelligence/introduction-to-reve/) | Útil para reconstruir xrefs entre seletores e IMPs e localizar `NSApplicationMain`/delegate. O helper apresentado é x86_64 e Objective-C; não recupera ABIs das funções C do SkyLight. |
+| [JankyBorders issue 62](https://github.com/FelixKratz/JankyBorders/issues/62?timeline_page=1) | Muito útil para concorrência, ownership de conexões, `SLSTransaction*`, transformações, IPC Mach separado e falhas reais no `SLSWMBridge`. |
+| [historicalsource/supermario](https://github.com/historicalsource/supermario) | Fonte do System 7 clássico, 68k/PPC/Toolbox. Pode ensinar arqueologia e comparação de binários, mas seu Window/Event Manager não é ancestral de ABI compatível com Quartz/SkyLight. O próprio projeto descreve a origem como fontes “passed around”; não deve ser tratado como SDK oficial/licenciado para copiar código. |
+| [MacOS9-USB2-EHCI](https://github.com/UnexpectedBomb/MacOS9-USB2-EHCI) | Bom estudo de engenharia de driver clássico e validação em hardware, mas trata ROM, Name Registry, PEF e USB no Mac OS 9; não fornece APIs de janela/evento do macOS moderno. |
+| [Macintosh Garden](https://macintoshgarden.org/games/all) | Catálogo de software clássico. Binários 68k/PPC podem servir para estudo histórico, não para descobrir `SkyLight.framework`; baixa prioridade para este spike. |
+| `logich/Skylight-swift` | **Falso positivo:** é um cliente Swift para o produto Skylight Calendar, sem relação com `SkyLight.framework` do macOS. |
+| Artigos de patch/re-sign e pergunta sobre PluginKit | Contexto geral de Mach-O, Ghidra, LLDB e assinatura; pouca informação específica para o gargalo deste spike. |
+
+### Processo recomendado para descobrir o restante da API
+
+1. **Código consumidor antes de dump de símbolos.** Um `.tbd`, `nm` ou
+   `dyld_info` prova que o nome existe; um call site mostra quantidade, ordem e
+   largura dos argumentos.
+2. **Validar por versão.** Fixar uma matriz macOS 14/15/26 e registrar para cada
+   símbolo: encontrado por `dlsym`, ABI inferido, retorno medido e teste de
+   fumaça. API privada não deve compartilhar uma única declaração presumida
+   entre versões sem guarda.
+3. **Extrair o dyld shared cache da versão-alvo.** A ferramenta
+   [`ipsw`](https://blacktop.github.io/ipsw/docs/guides/dyld/) consegue extrair
+   imagens com símbolos locais/metadados Objective-C e desassemblar por símbolo
+   ou importador. Para este spike, procurar call sites de
+   `SLEventCreateNextEvent`, `SLSGetEventPort`, `_CFMachPortSetOptions` e
+   `SLPS*` em AppKit, HIToolbox, SkyLight e WindowManagement.
+4. **Usar LLDB no chamador conhecido.** Breakpoint por símbolo em um app AppKit
+   mínimo ou no JankyBorders; no arm64, registrar `x0...x7`, valor de retorno e
+   backtrace. Isso é mais confiável que inferir tipos apenas do nome.
+5. **Separar C de Objective-C.** O runtime Objective-C e
+   `method_getTypeEncoding` recuperam assinaturas de seletores AppKit; não ajudam
+   com funções C do SkyLight. Para estas, disassembly dos call sites continua
+   indispensável.
+6. **Congelar evidência local.** Para cada ABI adotado, salvar no repositório o
+   link com commit, versão do macOS, trecho mínimo da declaração e o log do
+   probe. Links `main` são úteis para descoberta, mas não são especificação.
+
+O plano B público continua sendo
+[`CGEventTapCreate`](https://developer.apple.com/documentation/coregraphics/cgevent/tapcreate%28tap%3Aplace%3Aoptions%3Aeventsofinterest%3Acallback%3Auserinfo%3A%29):
+a própria Apple documenta a criação de uma `CFMachPort`/run-loop source e as
+restrições para eventos de teclado. Ele permanece no estudo apenas como fallback
+funcional e como implementação pública de referência para o encadeamento
+`CFMachPort`/`CFRunLoopSource`.
