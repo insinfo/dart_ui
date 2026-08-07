@@ -50,6 +50,19 @@ jobs:
           dwarfdump --uuid build/probe 2>/dev/null || true
           size build/probe 2>/dev/null || ls -la build/probe
 
+      - name: 'Backend 3: minimal Objective-C AppKit host owns thread 0'
+        timeout-minutes: 2
+        run: |
+          mkdir -p /tmp/shots
+          clang -fobjc-arc -Wall -Wextra -framework Cocoa \
+            ../../poc/poc_20_macos_three_backends/native/minimal_appkit_host.m \
+            -o build/minimal_appkit_host
+          ./build/minimal_appkit_host --smoke-seconds 1 \
+            | tee /tmp/shots/minimal-appkit-host.log
+          grep -q '^MAIN_THREAD=1$' /tmp/shots/minimal-appkit-host.log
+          grep -Eq '^WINDOW_ID=[1-9][0-9]*$' \
+            /tmp/shots/minimal-appkit-host.log
+
       - name: 'Probe A: does any execution mode own the main thread?'
         timeout-minutes: 5
         run: |

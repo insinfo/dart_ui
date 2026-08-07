@@ -2724,21 +2724,24 @@ CI:
    mandando `pthread_kill` na main thread, ela entra num `CFRunLoop` e passa a
    drenar a main queue. A partir daí a chamada restrita vai empacotada como
    `NSInvocation` por `performSelectorOnMainThread:` — **uma `NSWindow` real já
-   foi criada assim**. Falta resolver a entrega de `NSEvent` (input) e medir o
-   efeito do sequestro sobre a VM.
+   foi criada assim**. O runtime continuou ativo, mas `[NSApp run]`, pumps e
+   shutdown ainda produzem traps/bloqueios; esta rota é laboratório, não default.
 2. **WindowServer direto via SkyLight/CGS.** `SLSMainConnectionID()` responde
-   fora da main thread, sem AppKit e sem regra de thread. Serve como superfície
-   de renderização, mas é API privada e não tem fila de `NSEvent`.
+   fora da main thread, sem AppKit e sem regra de thread. O CI já confirmou
+   janela, pixels e input dirigido ao processo (`[10, 11, 5]`) pela Mach port.
+   É tecnicamente completo no spike, mas privado e ainda sem matriz de robustez.
 
 A alternativa conservadora continua válida e pode acabar sendo a escolhida por
-robustez: um **host nativo mínimo** (Objective-C ou Swift, ~50 linhas) como
-`main()` real, que inicializa o AppKit e hospeda o runtime Dart numa thread
-secundária. Isso **não** reintroduz wrapper por API — `objc_msgSend`, structs e
-objetos continuam em Dart FFI; o componente nativo resolve apenas o que FFI não
-resolve, que é a propriedade da main thread.
+robustez: um **host nativo mínimo** Objective-C como `main()` real, que
+inicializa o AppKit e depois hospeda a VM Dart ou um processo Dart worker. Isso
+não precisa virar wrapper de toda API: o componente nativo resolve ownership e
+lifecycle, enquanto a política de UI continua em Dart. Um witness compilável já
+existe em `poc/poc_20_macos_three_backends/native/minimal_appkit_host.m`.
 
-A decisão entre as três depende do probe de input e do teste de estabilidade
-listados no spike.
+A arquitetura, seleção e critérios comparáveis das três rotas estão em
+[MACOS_TRES_BACKENDS.md](MACOS_TRES_BACKENDS.md). A decisão do default depende
+agora de lifecycle, compatibilidade multiversão e do spike embedder-vs-IPC do
+host, não mais da existência básica de input SkyLight.
 
 ## 20.3 Geração de bindings Objective-C
 
