@@ -496,23 +496,16 @@ Future<void> probeEventPump() async {
   }
   _log('main thread parked, main queue draining.');
 
-  final app = getClass('NSApplication').msgSend('sharedApplication');
+  // sharedApplication + finishLaunching only on the parked main thread - see
+  // _sharedAppOnMain. Creating NSApp on the Dart thread is what made O hit
+  // NSCrashOnBackgroundThreadMainEventQueue.
+  final app = _finishLaunchingOnMain();
+  if (app == nullptr || _isSentinel(app)) {
+    _log('RESULT: could not finishLaunching on the main thread.');
+    _exitProcess(1);
+  }
+  _log('[NSApp finishLaunching] on main; app=${app.address}');
 
-  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
-  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
-  _setArgument(policyInvocation, policy.cast(), 2);
-  _invokeOnMain(policyInvocation);
-  _log('activation policy set on the main thread.');
-
-  // First attempt hung right here: AppKit only wires up its event queue during
-  // -finishLaunching, so nextEventMatchingMask: had nothing to wait on and
-  // never came back. [NSApp run] would call this itself; a manual pump has to.
-  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
-  _log('[NSApp finishLaunching] returned.');
-
-  // finishLaunching is a suspect for the hang: if the UI channel is already
-  // dead here, the problem is not nextEventMatchingMask: at all. A trivial
-  // round trip tells the two apart instead of leaving us guessing.
   final probeChannel = _newInvocation(app, sel('isRunning'));
   _invokeOnMain(probeChannel);
   final running = calloc<Uint8>();
@@ -531,7 +524,6 @@ Future<void> probeEventPump() async {
   final pumpInvocation = _newPumpInvocation(app);
   _writeSentinel(pumpInvocation);
 
-  // Never waitUntilDone:YES after the queue may be live - deadlocks K/F on CI.
   final postInvocation = _newInvocation(app, sel('postEvent:atStart:'));
   final eventArgument = calloc<Pointer<ObjCObject>>()..value = posted;
   final atStart = calloc<Uint8>()..value = 1;
@@ -540,8 +532,6 @@ Future<void> probeEventPump() async {
   _invokeOnMain(postInvocation, wait: false);
   _log('event post dispatched (async).');
 
-  // Never call nextEventMatchingMask: via performSelector waitUntilDone:YES -
-  // that hung the CI for 2 minutes. Drive it from a one-shot NSTimer instead.
   _scheduleOneShot(pumpInvocation, 0.1, wait: false);
   _log('one-shot pump scheduled (async); waiting up to 2s...');
 
@@ -557,7 +547,8 @@ Future<void> probeEventPump() async {
   }
   if (pumped == posted) {
     _log('RESULT: the exact event posted came back out of the queue. AppKit '
-        'event dispatch works on the hijacked main thread.');
+        'event dispatch works on the hijacked main thread '
+        '(sharedApplication was created ON main).');
     _exitProcess(0);
   }
   _log(pumped == nullptr
@@ -910,14 +901,8 @@ Future<void> probePumpViaTimer() async {
   objc_registerClassPair(witnessClass);
   final witnessObject = witnessClass.msgSend('alloc').msgSend('init');
 
-  final app = getClass('NSApplication').msgSend('sharedApplication');
-  final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
-  final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
-  _setArgument(policyInvocation, policy.cast(), 2);
-  _invokeOnMain(policyInvocation);
-  _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
-  _log('[NSApp finishLaunching] returned.');
-
+  // Witness BEFORE touching NSApp, so we can tell "loop dead" from "NSApp
+  // broke the loop".
   final timerClass = getClass('NSTimer');
   final interval = calloc<Double>()..value = 0.05;
   final repeats = calloc<Uint8>()..value = 1;
@@ -936,12 +921,19 @@ Future<void> probePumpViaTimer() async {
   _invokeOnMain(scheduleWitness);
   _log('witness timer scheduled on the main run loop FIRST.');
 
-  // Let the witness prove the loop is alive before introducing nextEvent.
   await Future<void>.delayed(const Duration(milliseconds: 400));
-  _log('witness ticks before pump: $ticks');
+  _log('witness ticks before NSApp: $ticks');
 
-  // Build the pump invocation BEFORE posting: once an NSEvent is in the queue
-  // the main thread may stop answering waitUntilDone:YES.
+  final app = _finishLaunchingOnMain();
+  if (app == nullptr || _isSentinel(app)) {
+    _log('RESULT: finishLaunching on main failed.');
+    _exitProcess(1);
+  }
+  _log('[NSApp finishLaunching] on main; app=${app.address}');
+
+  await Future<void>.delayed(const Duration(milliseconds: 400));
+  _log('witness ticks after NSApp: $ticks');
+
   _log('building pump invocation...');
   final pumpInvocation = _newPumpInvocation(app);
   _writeSentinel(pumpInvocation);
@@ -1204,13 +1196,32 @@ Pointer<ObjCObject> _createAndFrontNSWindow() {
   return window;
 }
 
-void _finishLaunchingOnMain() {
-  final app = getClass('NSApplication').msgSend('sharedApplication');
+/// NSApplication MUST be born on the process main thread. Calling
+/// +sharedApplication from the Dart thread makes AppKit attach the main event
+/// queue to the wrong thread; later nextEventMatchingMask: then dies with
+/// NSAssertMainEventQueueIsCurrentEventQueue / NSCrashOnBackgroundThreadMainEventQueue
+/// (lldb on probe O). Always go through the parked main thread.
+Pointer<ObjCObject> _sharedAppOnMain() {
+  final inv =
+      _newInvocation(getClass('NSApplication'), sel('sharedApplication'));
+  _writeSentinel(inv);
+  _invokeOnMain(inv);
+  final app = _returnedObject(inv);
+  if (_isSentinel(app) || app == nullptr) {
+    _log('WARNING: sharedApplication on main returned ${app.address}');
+  }
+  return app;
+}
+
+Pointer<ObjCObject> _finishLaunchingOnMain() {
+  final app = _sharedAppOnMain();
+  if (app == nullptr || _isSentinel(app)) return nullptr;
   final policyInvocation = _newInvocation(app, sel('setActivationPolicy:'));
   final policy = calloc<Int64>()..value = NSApplicationActivationPolicyRegular;
   _setArgument(policyInvocation, policy.cast(), 2);
   _invokeOnMain(policyInvocation);
   _invokeOnMain(_newInvocation(app, sel('finishLaunching')));
+  return app;
 }
 
 Future<void> probeHoldAppKitWindow(int seconds) async {
@@ -1220,8 +1231,11 @@ Future<void> probeHoldAppKitWindow(int seconds) async {
     _exitProcess(1);
   }
 
-  final app = getClass('NSApplication').msgSend('sharedApplication');
-  _finishLaunchingOnMain();
+  final app = _finishLaunchingOnMain();
+  if (app == nullptr || _isSentinel(app)) {
+    _log('RESULT: finishLaunching on main failed.');
+    _exitProcess(1);
+  }
 
   final window = _createAndFrontNSWindow();
   _log('NSWindow = ${window.address}');
@@ -1311,8 +1325,8 @@ Future<void> probeHoldAppKitNoPump(int seconds) async {
   _setArgument(schedule, repeats.cast(), 4);
   _invokeOnMain(schedule);
 
-  _finishLaunchingOnMain();
-  _log('finishLaunching done; ticks so far=$ticks');
+  final app = _finishLaunchingOnMain();
+  _log('finishLaunching on main done; app=${app.address} ticks so far=$ticks');
 
   final window = _createAndFrontNSWindow();
   _log('NSWindow = ${window.address}');
@@ -1525,9 +1539,12 @@ Future<void> probePumpTimerDiagnostic() async {
   }
   _log('main thread parked, main queue draining.');
 
-  final app = getClass('NSApplication').msgSend('sharedApplication');
-  _finishLaunchingOnMain();
-  _log('[NSApp finishLaunching] returned.');
+  final app = _finishLaunchingOnMain();
+  if (app == nullptr || _isSentinel(app)) {
+    _log('RESULT: finishLaunching on main failed.');
+    _exitProcess(1);
+  }
+  _log('[NSApp finishLaunching] on main; app=${app.address}');
 
   // 1. Post first, so the queue is already non-empty when the pump fires.
   final posted = _newSyntheticAppEvent();
