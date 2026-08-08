@@ -5,6 +5,13 @@ publish_to: none
 environment:
   sdk: ^3.6.0
 
+dependencies:
+  # Anotacoes apenas: `meta` nao tem codigo em runtime. Entra para que
+  # "owner-side API" possa ser verificado pelo analisador em vez de ficar so
+  # no comentario - um TimerHandle e devolvido ao usuario, e markFired() nas
+  # maos dele corromperia o estado do dispatcher.
+  meta: ^1.16.0
+
 dev_dependencies:
   lints: ^5.1.0
   test: ^1.25.0

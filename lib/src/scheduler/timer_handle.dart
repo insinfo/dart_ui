@@ -8,6 +8,8 @@
 /// bug onto every caller. This one absorbs it.
 library;
 
+import 'package:meta/meta.dart';
+
 /// A scheduled timer that has not necessarily fired yet.
 ///
 /// A handle is *active* from creation until exactly one of two things
@@ -66,10 +68,14 @@ final class TimerHandle {
 
   /// Marks the timer as having fired. Owner-side API.
   ///
+  /// `@internal` makes that enforceable: the analyser flags a call from
+  /// outside this package, which is where the damage would come from.
+  ///
   /// Called by the dispatcher that created the handle, immediately before it
   /// invokes the callback - never by client code. Doing it before rather than
   /// after the callback is what makes "cancel from inside my own callback" a
   /// no-op instead of a re-entrant de-registration.
+  @internal
   void markFired() {
     _active = false;
   }
