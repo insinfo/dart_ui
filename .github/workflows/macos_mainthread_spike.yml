@@ -171,6 +171,23 @@ jobs:
           grep -q '^PUMP_LIVENESS=PASS' /tmp/dispatch-loop.log
           grep -q '^NORMAL_SHUTDOWN=PASS$' /tmp/dispatch-loop.log
 
+      - name: 'Backend 2 conformance: window, present, pixels, input, teardown'
+        timeout-minutes: 4
+        run: |
+          mkdir -p /tmp/shots
+          status=0
+          CONFORMANCE_SHOTS=/tmp/shots ./build/probe conformance-signal \
+            > /tmp/conformance-signal.log 2>&1 || status=$?
+          cat /tmp/conformance-signal.log
+          echo "exit=$status"
+          grep -Eq '^WINDOW_ID=[1-9][0-9]*$' /tmp/conformance-signal.log
+          grep -q '^PRESENT=PASS$' /tmp/conformance-signal.log
+          grep -q '^PIXEL_WITNESS=PASS' /tmp/conformance-signal.log
+          grep -Eq '^INPUT_EVENTS=[1-9][0-9]*$' /tmp/conformance-signal.log
+          grep -q '^TEARDOWN=PASS$' /tmp/conformance-signal.log
+          grep -q '^CONFORMANCE=PASS$' /tmp/conformance-signal.log
+          [ "$status" -eq 0 ]
+
       - name: 'Probe E: NSWindow on the hijacked main thread via NSInvocation'
         timeout-minutes: 3
         continue-on-error: true

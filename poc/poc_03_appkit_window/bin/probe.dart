@@ -16,6 +16,10 @@ import 'dart:isolate';
 import 'package:ffi/ffi.dart';
 import 'package:poc_03_appkit_window/appkit_window.dart';
 import 'package:poc_03_appkit_window/objc_runtime.dart';
+// The conformance suite lives with the other two backends; backend 2 answers
+// the same lines with the same witness code.
+import 'package:poc_20_macos_three_backends/poc_20_macos_three_backends.dart'
+    as shared;
 
 // Darwin signal numbers.
 const SIGUSR2 = 31;
@@ -1223,7 +1227,7 @@ void probeHoldSkyLightWindow(int seconds) {
 }
 
 Pointer<ObjCObject> _createAndFrontNSWindow(
-    {Pointer<ObjCObject>? windowClass}) {
+    {Pointer<ObjCObject>? windowClass, int width = 800, int height = 600}) {
   final effectiveClass = windowClass ?? getClass('NSWindow');
   final allocated = effectiveClass.msgSend('alloc');
   final initSelector = sel('initWithContentRect:styleMask:backing:defer:');
@@ -1231,8 +1235,8 @@ Pointer<ObjCObject> _createAndFrontNSWindow(
   final rect = calloc<NSRect>()
     ..ref.x = 140
     ..ref.y = 140
-    ..ref.width = 800
-    ..ref.height = 600;
+    ..ref.width = width.toDouble()
+    ..ref.height = height.toDouble();
   final styleMask = calloc<Uint64>()
     ..value = NSWindowStyleMaskTitled |
         NSWindowStyleMaskClosable |
@@ -2768,6 +2772,232 @@ Future<void> probeDispatchLoop() async {
   _log('NORMAL_SHUTDOWN=PASS');
 }
 
+// ---------------------------------------------------------------------------
+// Backend 2 conformance - the same six lines the other two backends answer.
+//
+// dispatch-loop already showed input and normal shutdown on the hijacked main
+// thread. What was missing was presentation: a CPU framebuffer that an outside
+// process can photograph. AppKit owns this window's backing store, so the frame
+// goes in as a CGImage on the content view's layer rather than through a CGS
+// window context.
+// ---------------------------------------------------------------------------
+
+final DynamicLibrary libCoreGraphics = DynamicLibrary.open(
+    '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+
+/// Wraps BGRA bytes in a CGImage. The buffer is handed to a data provider and
+/// must outlive the image, so it is deliberately never freed here.
+Pointer<Void> _cgImageFromBgra(List<int> pixels, int width, int height) {
+  final buffer = calloc<Uint8>(pixels.length);
+  buffer.asTypedList(pixels.length).setAll(0, pixels);
+  final provider = libCoreGraphics.lookupFunction<
+      Pointer<Void> Function(Pointer<Void>, Pointer<Void>, IntPtr,
+          Pointer<Void>),
+      Pointer<Void> Function(Pointer<Void>, Pointer<Void>, int,
+          Pointer<Void>)>('CGDataProviderCreateWithData')(
+    nullptr,
+    buffer.cast(),
+    pixels.length,
+    nullptr,
+  );
+  final colorSpace = libCoreGraphics
+      .lookupFunction<Pointer<Void> Function(), Pointer<Void> Function()>(
+          'CGColorSpaceCreateDeviceRGB')();
+  // kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little => BGRA.
+  const bitmapInfo = 2 | (2 << 12);
+  return libCoreGraphics.lookupFunction<
+      Pointer<Void> Function(IntPtr, IntPtr, IntPtr, IntPtr, IntPtr,
+          Pointer<Void>, Uint32, Pointer<Void>, Pointer<Void>, Bool, Int32),
+      Pointer<Void> Function(int, int, int, int, int, Pointer<Void>, int,
+          Pointer<Void>, Pointer<Void>, bool, int)>('CGImageCreate')(
+    width,
+    height,
+    8,
+    32,
+    width * 4,
+    colorSpace,
+    bitmapInfo,
+    provider,
+    nullptr,
+    false,
+    0,
+  );
+}
+
+/// Puts [image] on the window's content-view layer, entirely on the parked
+/// main thread. Nearest-neighbour filtering keeps the witness reading the pixel
+/// that was sent instead of a resample of its neighbours.
+bool _setLayerContentsOnMain(
+    Pointer<ObjCObject> window, Pointer<Void> image) {
+  final contentInvocation = _newInvocation(window, sel('contentView'));
+  _invokeOnMain(contentInvocation);
+  final contentView = _returnedObject(contentInvocation);
+  if (contentView == nullptr || _isSentinel(contentView)) return false;
+
+  final wantsLayer = _newInvocation(contentView, sel('setWantsLayer:'));
+  final yes = calloc<Uint8>()..value = 1;
+  _setArgument(wantsLayer, yes.cast(), 2);
+  _invokeOnMain(wantsLayer);
+  calloc.free(yes);
+
+  final layerInvocation = _newInvocation(contentView, sel('layer'));
+  _invokeOnMain(layerInvocation);
+  final layer = _returnedObject(layerInvocation);
+  if (layer == nullptr || _isSentinel(layer)) return false;
+
+  final nearest = _retainedNSString('nearest');
+  for (final selector in const ['setMagnificationFilter:', 'setMinificationFilter:']) {
+    final invocation = _newInvocation(layer, sel(selector));
+    final argument = calloc<Pointer<ObjCObject>>()..value = nearest;
+    _setArgument(invocation, argument.cast(), 2);
+    _invokeOnMain(invocation);
+    calloc.free(argument);
+  }
+
+  final contents = _newInvocation(layer, sel('setContents:'));
+  final argument = calloc<Pointer<ObjCObject>>()..value = image.cast();
+  _setArgument(contents, argument.cast(), 2);
+  _invokeOnMain(contents);
+  calloc.free(argument);
+
+  // Without an explicit flush the frame waits for the next implicit
+  // transaction, which the capture can easily beat.
+  _invokeOnMain(_newInvocation(getClass('CATransaction'), sel('flush')));
+  return true;
+}
+
+Future<void> probeSignalConformance() async {
+  const width = 480;
+  const height = 320;
+  const expected = shared.PixelSample(120, 220, 20);
+  print('CONFORMANCE_BACKEND=appkitSignal');
+
+  var failures = 0;
+  void check(bool condition, String failure) {
+    if (!condition) {
+      failures++;
+      _log('FAILURE: $failure');
+    }
+  }
+
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    _log('FAILURE: could not park the main thread.');
+    print('CONFORMANCE=FAIL (1)');
+    exitCode = 1;
+    return;
+  }
+  final app = _finishLaunchingOnMain();
+  if (app == nullptr || _isSentinel(app)) {
+    _log('FAILURE: finishLaunching on main failed.');
+    print('CONFORMANCE=FAIL (1)');
+    exitCode = 1;
+    return;
+  }
+
+  // Input reaches Dart the same way probe J does: the IMP is a listener, so
+  // AppKit posts to the isolate instead of calling into it.
+  final keyDown = Completer<void>();
+  final keyImp = NativeCallable<_EventHandlerNative>.listener(
+      (Pointer<ObjCObject> self, Pointer<ObjCSel> cmd,
+          Pointer<ObjCObject> event) {
+    if (!keyDown.isCompleted) keyDown.complete();
+  });
+  final className = 'DartUiConformanceWindow'.toNativeUtf8();
+  final windowClass = objc_allocateClassPair(getClass('NSWindow'), className, 0);
+  calloc.free(className);
+  final types = 'v@:@'.toNativeUtf8();
+  class_addMethod(
+      windowClass, sel('keyDown:'), keyImp.nativeFunction.cast(), types);
+  calloc.free(types);
+  objc_registerClassPair(windowClass);
+
+  final window = _createAndFrontNSWindow(
+      windowClass: windowClass, width: width, height: height);
+  check(window != nullptr, 'no NSWindow');
+  final numberInvocation = _newInvocation(window, sel('windowNumber'));
+  _invokeOnMain(numberInvocation);
+  final windowNumber = _returnedInt(numberInvocation);
+  print('WINDOW_ID=$windowNumber');
+  check(windowNumber > 0, 'no window number');
+
+  final activate = _newInvocation(app, sel('activateIgnoringOtherApps:'));
+  final yes = calloc<Uint8>()..value = 1;
+  _setArgument(activate, yes.cast(), 2);
+  _invokeOnMain(activate);
+  calloc.free(yes);
+
+  // --- present ---------------------------------------------------------------
+  final pixels = List<int>.filled(width * height * 4, 0);
+  for (var i = 0; i < pixels.length; i += 4) {
+    pixels[i] = expected.blue;
+    pixels[i + 1] = expected.green;
+    pixels[i + 2] = expected.red;
+    pixels[i + 3] = 255;
+  }
+  final image = _cgImageFromBgra(pixels, width, height);
+  final presented = image != nullptr && _setLayerContentsOnMain(window, image);
+  print(presented ? 'PRESENT=PASS' : 'PRESENT=FAIL');
+  check(presented, 'the frame did not reach the layer');
+  await Future<void>.delayed(const Duration(milliseconds: 500));
+
+  // --- outside witness -------------------------------------------------------
+  final witness = shared.WindowPixelWitness(
+          workDirectory:
+              Platform.environment['CONFORMANCE_SHOTS'] ?? '/tmp/shots')
+      .capture(windowNumber, label: 'appkit-signal');
+  final centre = witness.centre;
+  if (centre != null && centre.matches(expected)) {
+    print('PIXEL_WITNESS=PASS centre=$centre '
+        'size=${witness.width}x${witness.height}');
+  } else {
+    print('PIXEL_WITNESS=FAIL centre=$centre '
+        'size=${witness.width}x${witness.height} expected=$expected '
+        'failure=${witness.failure}');
+    failures++;
+  }
+
+  // --- input -----------------------------------------------------------------
+  final (witnessTimer, ticks) =
+      _startWitnessTimer('DartUiConformanceWitness', 0.05);
+  final pumpInvocation = _newPumpInvocation(app);
+  _scheduleRepeatingTimer(pumpInvocation, 0.05);
+  final skyLight = DynamicLibrary.open(
+      '/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight');
+  probePostInputBody(skyLight: skyLight);
+
+  final seen = <int>{};
+  final ticksBefore = ticks();
+  for (var i = 0; i < 120; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final event = _returnedObject(pumpInvocation);
+    if (event != nullptr && !_isSentinel(event)) seen.add(event.address);
+    if (i == 40) probePostInputBody(skyLight: skyLight);
+  }
+  final livenessTicks = ticks() - ticksBefore;
+  print('INPUT_EVENTS=${seen.length}');
+  print('PUMP_LIVENESS=${livenessTicks > 0 ? 'PASS' : 'FAIL'} '
+      '(+$livenessTicks witness ticks)');
+  print('KEYDOWN_DELIVERED=${keyDown.isCompleted ? 1 : 0}');
+  check(seen.isNotEmpty, 'the pump dequeued no NSEvent');
+  check(livenessTicks > 0, 'the run loop stopped delivering timers');
+
+  // --- teardown --------------------------------------------------------------
+  final failuresBeforeTeardown = failures;
+  final closeWindow = _newInvocation(window, sel('close'));
+  _invokeOnMain(closeWindow);
+  check(_stopHijackedMainRunLoop(), 'the hijacked run loop did not stop');
+  // Stop first, close the callables second: a timer firing into a closed
+  // NativeCallable would jump into a freed trampoline.
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  witnessTimer.close();
+  keyImp.close();
+  print(failures == failuresBeforeTeardown ? 'TEARDOWN=PASS' : 'TEARDOWN=FAIL');
+
+  print(failures == 0 ? 'CONFORMANCE=PASS' : 'CONFORMANCE=FAIL ($failures)');
+  if (failures != 0) exitCode = 1;
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -2820,6 +3050,8 @@ Future<void> main(List<String> args) async {
       await probeGracefulHijackShutdown();
     case 'dispatch-loop':
       await probeDispatchLoop();
+    case 'conformance-signal':
+      await probeSignalConformance();
     case 'skylight-foreground':
       await probeSkyLightForeground(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
@@ -2835,6 +3067,6 @@ Future<void> main(List<String> args) async {
           '|mainthread-window|event-pump|nsapp-run-main|skylight-window'
           '|vm-health|reverse-channel|pump-timer|hold-appkit-nopump'
           '|transform-process|appkit-bisect|keepalive-hijack'
-          '|graceful-hijack-shutdown|dispatch-loop]');
+          '|graceful-hijack-shutdown|dispatch-loop|conformance-signal]');
   }
 }

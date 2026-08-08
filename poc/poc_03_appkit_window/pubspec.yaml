@@ -9,6 +9,8 @@ resolution: workspace
 
 dependencies:
   ffi: ^2.1.3
+  poc_20_macos_three_backends:
+    path: ../poc_20_macos_three_backends
 
 dev_dependencies:
   lints: ^5.0.0

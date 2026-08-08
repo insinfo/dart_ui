@@ -245,10 +245,15 @@ Future<void> runNativeHostConformance(String hostBinary) async {
     if (inputs.isEmpty) input.postTo(host.pid);
     await waitForLine((l) => l.startsWith('INPUT='),
         timeout: const Duration(seconds: 3));
+    // The first INPUT line only proves the path is open; the rest of the burst
+    // is still in flight, and counting it here is what makes the numbers below
+    // match what the host actually reported.
+    await Future<void>.delayed(const Duration(milliseconds: 750));
     print('INPUT_EVENTS=${inputs.length}');
     print('INPUT_EVENT_KINDS=$inputs');
     print('VIEW_INPUT_EVENTS=${viewInputs.length} $viewInputs');
     check(inputs.isNotEmpty, 'the host dequeued no input');
+    check(viewInputs.isNotEmpty, 'no input reached the responder chain');
 
     host.stdin.writeln('CLOSE');
     await host.stdin.flush();
