@@ -4,9 +4,9 @@ Este documento descreve **o que existe em `lib/`**, não o alvo. O alvo é o
 [roteiro](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md); quando os dois
 divergirem, o roteiro descreve a intenção e este arquivo descreve o código.
 
-**Estado em 8 de agosto de 2026:** quatro camadas de base, 226 testes, gate
-próprio rodando em push nas três plataformas (formato, análise, testes e
-compilação AOT).
+**Estado em 8 de agosto de 2026:** cinco camadas, **342 testes**, gate próprio
+rodando em push nas três plataformas (formato, análise, testes e compilação
+AOT). O caminho de display list até pixels está fechado.
 
 ## Por que um package só
 
@@ -24,6 +24,7 @@ geometry     Offset, Size, Rect, Transform2D (não depende de nada)
 scheduler    prioridades, dispatcher         (foundation)
 graphics     display list                    (foundation, geometry)
 platform     eventos de janela               (foundation, geometry)
+rendering    contratos + renderer de CPU     (foundation, geometry, graphics)
 ```
 
 A regra de dependência da seção 8.2 é imposta por onde o arquivo mora. Nenhuma
@@ -110,11 +111,43 @@ handle nativo: `HWND`, `xcb_window_t` e `CGSWindowID` têm larguras e tempos de
 vida diferentes, e deixá-los vazar para código comum é como suposições
 específicas de backend se espalham.
 
+### `rendering/`
+
+Os contratos da seção 9.5 separam **backend** (a API existe nesta máquina),
+**device** (conexão aberta, que pode ser *perdida* — reset de GPU, atualização
+de driver; recriar um device não pode significar recriar a janela) e **target**
+(os pixels de uma superfície, morre com ela). `Frame` carrega geração, então um
+present que chega depois de um resize é rejeitado em vez de desenhado num
+buffer que mudou de lugar.
+
+`Framebuffer` carrega `bytesPerRow` junto com os pixels porque **não** é sempre
+`width * 4` — uma superfície compartilhada arredonda o stride para cima. O
+teste que sustenta isso constrói um buffer com padding e verifica que os bytes
+entre linhas ficam intocados.
+
+O renderer de CPU liga as duas metades que foram construídas sem se conhecerem:
+`DisplayListPlayer` resolve transform e clip para espaço de dispositivo e emite
+para um `RasterSink`; `CpuRasterizer` transforma primitivas de dispositivo em
+bytes. `MemoryRenderTarget` é o que torna testável tudo que vier acima — um
+teste golden não precisa de janela, GPU nem display server.
+
+O arredondamento do blend (`mul255`) foi verificado exaustivamente nos 65536
+pares contra `(v * a + 127) ~/ 255`: idêntico bit a bit, sem divisão. A
+equivalência é teste, não afirmação.
+
+**Limites declarados onde o chamador esbarra neles:** sem antialiasing (a
+costura é coverage-como-alpha entrando no mesmo `blendPixelOver`); retângulos
+arredondados preenchem a caixa até o rasterizador ganhar um loop de canto;
+`saveLayer` é um clip até existir buffer offscreen para compor; paths e texto
+**lançam** em vez de desenhar algo plausível. O `probe()` do backend diz isso em
+voz alta.
+
 ## O que ainda não existe
 
-Nenhum backend, nenhum renderer, nenhuma árvore de layout, nenhum widget. O que
+Nenhum backend de janela real, nenhuma árvore de layout, nenhum widget. O que
 existe é a base sobre a qual essas coisas são escritas, com as invariantes já
-travadas por teste.
+travadas por teste — e agora com um caminho completo até pixels para testá-las
+contra.
 
 O caminho macOS tem POCs validados e uma decisão de arquitetura registrada
 ([ADR 0001](../adr/0001-worker-process-com-iosurface-no-macos.md)) mas ainda
