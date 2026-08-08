@@ -135,14 +135,20 @@ Future<void> main(List<String> arguments) async {
   // work still fits when one arrives every 16.67ms. A late frame here means
   // the budget is already spent before any application code runs.
   const budget = Duration(microseconds: 16667);
-  final paced = <int>[];
+  final pacedPresent = <int>[];
+  final pacedFill = <int>[];
+  final pacedTotal = <int>[];
   var late = 0;
   for (var i = 0; i < frames; i++) {
     final frameStart = Stopwatch()..start();
+    final fillWatch = Stopwatch()..start();
     surface.fillBgra(0x40, 0x20 + (i % 200), 0x80);
+    fillWatch.stop();
     final elapsed = await presentOnce();
     if (elapsed == null) break;
-    paced.add(elapsed);
+    pacedFill.add(fillWatch.elapsedMicroseconds);
+    pacedPresent.add(elapsed);
+    pacedTotal.add(frameStart.elapsedMicroseconds);
     final remaining = budget - frameStart.elapsed;
     if (remaining.isNegative) {
       late++;
@@ -150,11 +156,17 @@ Future<void> main(List<String> arguments) async {
       await Future<void>.delayed(remaining);
     }
   }
-  print('VSYNC_PACED_FRAMES=${paced.length}');
-  print('VSYNC_PACED_MEDIAN_US=${_percentile(paced, 50)}');
+  print('VSYNC_PACED_FRAMES=${pacedPresent.length}');
+  // Reported separately on purpose. The present alone is a small fraction of
+  // the budget, and quoting only that would make the frame look far cheaper
+  // than it is: filling the surface costs an order of magnitude more, and it
+  // is the part that has to fit.
+  print('VSYNC_PACED_FILL_MEDIAN_US=${_percentile(pacedFill, 50)}');
+  print('VSYNC_PACED_PRESENT_MEDIAN_US=${_percentile(pacedPresent, 50)}');
+  print('VSYNC_PACED_TOTAL_MEDIAN_US=${_percentile(pacedTotal, 50)}');
   print('VSYNC_PACED_LATE=$late');
   print('VSYNC_PACED_BUDGET_SHARE='
-      '${(_percentile(paced, 50) * 100 / budget.inMicroseconds).toStringAsFixed(2)}%');
+      '${(_percentile(pacedTotal, 50) * 100 / budget.inMicroseconds).toStringAsFixed(2)}%');
 
   // --- 3. the tear window ----------------------------------------------------
   //
@@ -186,7 +198,7 @@ Future<void> main(List<String> arguments) async {
   // Nothing here is a pass/fail gate: this probe exists to size a problem, not
   // to guard one. It fails only if the host stopped answering, because then
   // the numbers describe nothing.
-  if (sustained.isEmpty || paced.isEmpty) {
+  if (sustained.isEmpty || pacedTotal.isEmpty) {
     stderr.writeln('the host stopped acknowledging presents');
     exitCode = 1;
   }
