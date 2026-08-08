@@ -44,6 +44,7 @@ export 'src/layout/render_constrained_box.dart';
 export 'src/layout/render_flex.dart';
 export 'src/layout/render_padding.dart';
 export 'src/layout/render_stack.dart';
+export 'src/platform/native_window.dart';
 export 'src/platform/window_events.dart';
 export 'src/rendering/cpu_renderer.dart';
 export 'src/rendering/framebuffer.dart';
