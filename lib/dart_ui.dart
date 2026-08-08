@@ -26,3 +26,7 @@ export 'src/geometry/rect.dart';
 export 'src/geometry/size.dart';
 export 'src/geometry/transform2d.dart';
 export 'src/platform/window_events.dart';
+export 'src/scheduler/dispatcher_priority.dart';
+export 'src/scheduler/manual_dispatcher.dart';
+export 'src/scheduler/timer_handle.dart';
+export 'src/scheduler/ui_dispatcher.dart';
