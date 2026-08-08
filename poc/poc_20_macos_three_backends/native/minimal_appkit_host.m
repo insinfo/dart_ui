@@ -35,6 +35,15 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+// -setContentsChanged is CALayer's private "the pages under this surface moved
+// on, re-read them" call, and it is how every compositor drives an IOSurface
+// layer. Declaring it here only satisfies the compiler; the code still checks
+// respondsToSelector: at runtime and falls back to the public reassignment, and
+// reports which path ran so the benchmark cannot silently measure the wrong one.
+@interface CALayer (DartUiContentsChanged)
+- (void)setContentsChanged;
+@end
+
 @interface DartUiHostView : NSView
 @end
 
