@@ -126,6 +126,9 @@ void runSkylightConformance() {
     }
     print('INPUT_EVENTS=${backend.report.eventsRead}');
     print('INPUT_EVENT_TYPES=${backend.report.eventTypes}');
+    print('MACH_MESSAGES=${backend.report.machMessages}');
+    print('POINTER_INPUT='
+        '${events.any((e) => e.kind == MacosInputKind.pointerMove) ? 1 : 0}');
     print('INPUT_EVENTS_DECODED=${events.map((e) => e.kind.name).toList()}');
     check(
         backend.report.eventsRead > 0,

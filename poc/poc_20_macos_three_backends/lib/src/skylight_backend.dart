@@ -38,6 +38,9 @@ typedef _VoidPtr = Pointer<Void>;
 typedef _MachPortCallbackNative = Void Function(
     _VoidPtr port, _VoidPtr message, IntPtr size, _VoidPtr context);
 
+typedef _SlsNotifyCallbackNative = Void Function(
+    Uint32 event, _VoidPtr data, IntPtr size, _VoidPtr context);
+
 const _kCGSBackingStoreBuffered = 2;
 const _kCGKeyboardEventKeycode = 9;
 
@@ -61,6 +64,9 @@ class SkylightBackendReport {
   int eventPort = 0;
   int windowId = 0;
   int machMessages = 0;
+  int notifications = 0;
+  int windowEventMaskBefore = 0;
+  int windowEventMaskAfter = 0;
   int eventsRead = 0;
   final List<int> eventTypes = <int>[];
   final List<String> teardownSteps = <String>[];
@@ -82,6 +88,7 @@ class SkylightBackend implements MacosWindowBackend {
 
   // Owned native handles, in acquisition order.
   NativeCallable<_MachPortCallbackNative>? _portCallback;
+  NativeCallable<_SlsNotifyCallbackNative>? _notifyCallback;
   _VoidPtr _machPort = nullptr;
   _VoidPtr _runLoopSource = nullptr;
   _VoidPtr _runLoop = nullptr;
@@ -203,7 +210,32 @@ class SkylightBackend implements MacosWindowBackend {
         'SLPSRegisterWithServer never succeeded (${report.processRegistration})');
   }
 
+  /// Event types JankyBorders subscribes to immediately before asking for the
+  /// event port. The Z17 probe does this and receives `[10, 11, 5]`; the first
+  /// version of this backend skipped it and received only `[10, 11]`.
+  static const List<int> _notificationTypes = <int>[
+    723, 804, 806, 807, 808, 811, 815, 816, 1322, 1325, 1326, 1401, 1508
+  ];
+
+  void _registerNotifications() {
+    final registerNotify = _skyLight.lookupFunction<
+        Int32 Function(Pointer<NativeFunction<_SlsNotifyCallbackNative>>, Uint32,
+            _VoidPtr),
+        int Function(Pointer<NativeFunction<_SlsNotifyCallbackNative>>, int,
+            _VoidPtr)>('SLSRegisterNotifyProc');
+    _notifyCallback = NativeCallable<_SlsNotifyCallbackNative>.isolateLocal(
+        (int event, _VoidPtr data, int size, _VoidPtr context) {
+      report.notifications++;
+    });
+    final results = <int>[
+      for (final type in _notificationTypes)
+        registerNotify(_notifyCallback!.nativeFunction, type, nullptr)
+    ];
+    log('SLSRegisterNotifyProc x${_notificationTypes.length} -> $results');
+  }
+
   void _installEventPort() {
+    _registerNotifications();
     final portSlot = calloc<Uint32>();
     try {
       final rc = _skyLight.lookupFunction<
@@ -387,6 +419,8 @@ class SkylightBackend implements MacosWindowBackend {
     );
     if (_windowContext == nullptr) throw StateError('SLWindowContextCreate');
 
+    _requestAllWindowEvents();
+
     _skyLight.lookupFunction<Int32 Function(Int32, Uint32, Int32, Uint32),
         int Function(int, int, int, int)>('SLSOrderWindow')(
       report.connectionId,
@@ -395,6 +429,42 @@ class SkylightBackend implements MacosWindowBackend {
       0,
     );
     return MacosWindow(id: _windowId, generation: _lifecycle.generation);
+  }
+
+  /// A window only receives the event types its mask asks for, which is what
+  /// `-[NSWindow setAcceptsMouseMovedEvents:]` ends up doing for AppKit. The
+  /// export dump surfaced the pair; ask for everything and record what the mask
+  /// was before, so a future narrowing has a baseline.
+  void _requestAllWindowEvents() {
+    final get = _optional(
+        () => _skyLight.lookupFunction<Int32 Function(Int32, Uint32,
+            Pointer<Uint32>), int Function(int, int, Pointer<Uint32>)>(
+            'SLSGetWindowEventMask'),
+        'SLSGetWindowEventMask');
+    final set = _optional(
+        () => _skyLight.lookupFunction<Int32 Function(Int32, Uint32, Uint32),
+            int Function(int, int, int)>('SLSSetWindowEventMask'),
+        'SLSSetWindowEventMask');
+    if (set == null) return;
+
+    final slot = calloc<Uint32>();
+    try {
+      if (get != null) {
+        get(report.connectionId, _windowId, slot);
+        report.windowEventMaskBefore = slot.value;
+      }
+      final rc = set(report.connectionId, _windowId, 0xFFFFFFFF);
+      if (get != null) {
+        slot.value = 0;
+        get(report.connectionId, _windowId, slot);
+        report.windowEventMaskAfter = slot.value;
+      }
+      log('SLSSetWindowEventMask(0xFFFFFFFF) -> $rc '
+          '(mask ${report.windowEventMaskBefore.toRadixString(16)} -> '
+          '${report.windowEventMaskAfter.toRadixString(16)})');
+    } finally {
+      calloc.free(slot);
+    }
   }
 
   // --- presentation ----------------------------------------------------------
@@ -568,6 +638,8 @@ class SkylightBackend implements MacosWindowBackend {
     }
     _portCallback?.close();
     _portCallback = null;
+    _notifyCallback?.close();
+    _notifyCallback = null;
     report.teardownSteps.add('NativeCallable.close');
     if (!_events.isClosed) _events.close();
 
