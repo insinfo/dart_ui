@@ -78,8 +78,13 @@ praticamente independente da resolução.
 processos. Detecção de crash do host e restart passam a ser requisitos, não
 detalhes.
 
-**Dívida conhecida.** A passagem da superfície usa `IOSurfaceLookup`, que é
-deprecado. O substituto suportado passa um mach port, que um pipe não carrega.
+**Dívida conhecida — resolvida em 8 de agosto de 2026.** A passagem usava
+`IOSurfaceLookup`, deprecado. O substituto suportado passa um mach port, que um
+pipe não carrega; o mecanismo de rendezvous resolve isso — o host faz
+`bootstrap_check_in` com um nome derivado do próprio pid, o **nome** viaja pelo
+pipe, e o pai manda o port. Sem API deprecada e sem restrição de ordem.
+Medições e o mecanismo descartado em
+[`logs/MACH_PORT_HANDOFF_2026-08-08.md`](../logs/MACH_PORT_HANDOFF_2026-08-08.md).
 
 ## Quando reabrir
 
