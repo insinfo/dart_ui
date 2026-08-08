@@ -655,16 +655,14 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
 - (void)attachSurfacePool:(NSString *)command {
   NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
   if (parts.count < 2) {
-    printf("ERROR=SURFACE_POOL:EMPTY
-");
+    printf("ERROR=SURFACE_POOL:EMPTY\n");
     fflush(stdout);
     return;
   }
   NSUInteger count = parts.count - 1;
   IOSurfaceRef *pool = calloc(count, sizeof(IOSurfaceRef));
   if (pool == NULL) {
-    printf("ERROR=SURFACE_POOL:ALLOC
-");
+    printf("ERROR=SURFACE_POOL:ALLOC\n");
     fflush(stdout);
     return;
   }
@@ -679,8 +677,7 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
       // leak every surface before the one that failed.
       for (NSUInteger j = 0; j < i; j++) CFRelease(pool[j]);
       free(pool);
-      printf("ERROR=SURFACE_POOL:LOOKUP:%u
-", identifier);
+      printf("ERROR=SURFACE_POOL:LOOKUP:%u\n", identifier);
       fflush(stdout);
       return;
     }
@@ -689,8 +686,7 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
   self.surfacePool = pool;
   self.surfacePoolCount = count;
   self.presentedSlot = -1;
-  printf("SURFACES_OK %lu
-", (unsigned long)count);
+  printf("SURFACES_OK %lu\n", (unsigned long)count);
   fflush(stdout);
 }
 
@@ -708,15 +704,13 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
 - (void)presentSlot:(NSString *)command {
   NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
   if (parts.count != 3 || self.surfacePool == NULL) {
-    printf("ERROR=SURFACE_POOL:NOT_READY
-");
+    printf("ERROR=SURFACE_POOL:NOT_READY\n");
     fflush(stdout);
     return;
   }
   NSInteger slot = [parts[2] integerValue];
   if (slot < 0 || (NSUInteger)slot >= self.surfacePoolCount) {
-    printf("ERROR=SURFACE_POOL:SLOT:%ld
-", (long)slot);
+    printf("ERROR=SURFACE_POOL:SLOT:%ld\n", (long)slot);
     fflush(stdout);
     return;
   }
@@ -731,8 +725,7 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
   }
   [CATransaction flush];
   self.frameCount++;
-  printf("PRESENT_OK %s slot%ld
-", parts[1].UTF8String, (long)slot);
+  printf("PRESENT_OK %s slot%ld\n", parts[1].UTF8String, (long)slot);
   fflush(stdout);
 }
 
