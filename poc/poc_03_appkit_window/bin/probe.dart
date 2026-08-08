@@ -1676,15 +1676,16 @@ Future<void> probeSkyLightEvents(int seconds) async {
           _SetRgbFillColorNative,
           void Function(Pointer<Void>, double, double, double,
               double)>('CGContextSetRGBFillColor')(context, 0.9, 0.3, 0.1, 1.0);
-      coreGraphics
-          .lookupFunction<_FillRectNative, void Function(Pointer<Void>, NSRect)>(
-              'CGContextFillRect')(context, fill.ref);
+      coreGraphics.lookupFunction<
+          _FillRectNative,
+          void Function(
+              Pointer<Void>, NSRect)>('CGContextFillRect')(context, fill.ref);
       coreGraphics.lookupFunction<_ContextFlushNative,
           void Function(Pointer<Void>)>('CGContextFlush')(context);
     }
-    skyLight
-        .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
-            'SLSOrderWindow')(connectionId, windowId, 1, 0);
+    skyLight.lookupFunction<_SlsOrderWindowNative,
+            int Function(int, int, int, int)>('SLSOrderWindow')(
+        connectionId, windowId, 1, 0);
     print('WINDOW_ID=$windowId');
   }
 
@@ -2812,8 +2813,8 @@ Pointer<Void> _cgImageFromBgra(List<int> pixels, int width, int height) {
   final buffer = calloc<Uint8>(pixels.length);
   buffer.asTypedList(pixels.length).setAll(0, pixels);
   final provider = libCoreGraphics.lookupFunction<
-      Pointer<Void> Function(Pointer<Void>, Pointer<Void>, IntPtr,
-          Pointer<Void>),
+      Pointer<Void> Function(
+          Pointer<Void>, Pointer<Void>, IntPtr, Pointer<Void>),
       Pointer<Void> Function(Pointer<Void>, Pointer<Void>, int,
           Pointer<Void>)>('CGDataProviderCreateWithData')(
     nullptr,
@@ -2821,9 +2822,8 @@ Pointer<Void> _cgImageFromBgra(List<int> pixels, int width, int height) {
     pixels.length,
     nullptr,
   );
-  final colorSpace = libCoreGraphics
-      .lookupFunction<Pointer<Void> Function(), Pointer<Void> Function()>(
-          'CGColorSpaceCreateDeviceRGB')();
+  final colorSpace = libCoreGraphics.lookupFunction<Pointer<Void> Function(),
+      Pointer<Void> Function()>('CGColorSpaceCreateDeviceRGB')();
   // kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little => BGRA.
   const bitmapInfo = 2 | (2 << 12);
   return libCoreGraphics.lookupFunction<
@@ -2848,8 +2848,7 @@ Pointer<Void> _cgImageFromBgra(List<int> pixels, int width, int height) {
 /// Puts [image] on the window's content-view layer, entirely on the parked
 /// main thread. Nearest-neighbour filtering keeps the witness reading the pixel
 /// that was sent instead of a resample of its neighbours.
-bool _setLayerContentsOnMain(
-    Pointer<ObjCObject> window, Pointer<Void> image) {
+bool _setLayerContentsOnMain(Pointer<ObjCObject> window, Pointer<Void> image) {
   final contentInvocation = _newInvocation(window, sel('contentView'));
   _invokeOnMain(contentInvocation);
   final contentView = _returnedObject(contentInvocation);
@@ -2867,7 +2866,10 @@ bool _setLayerContentsOnMain(
   if (layer == nullptr || _isSentinel(layer)) return false;
 
   final nearest = _retainedNSString('nearest');
-  for (final selector in const ['setMagnificationFilter:', 'setMinificationFilter:']) {
+  for (final selector in const [
+    'setMagnificationFilter:',
+    'setMinificationFilter:'
+  ]) {
     final invocation = _newInvocation(layer, sel(selector));
     final argument = calloc<Pointer<ObjCObject>>()..value = nearest;
     _setArgument(invocation, argument.cast(), 2);
@@ -2926,7 +2928,8 @@ Future<void> probeSignalConformance() async {
     if (!keyDown.isCompleted) keyDown.complete();
   });
   final className = 'DartUiConformanceWindow'.toNativeUtf8();
-  final windowClass = objc_allocateClassPair(getClass('NSWindow'), className, 0);
+  final windowClass =
+      objc_allocateClassPair(getClass('NSWindow'), className, 0);
   calloc.free(className);
   final types = 'v@:@'.toNativeUtf8();
   class_addMethod(

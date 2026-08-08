@@ -71,7 +71,8 @@ void _createAppKitWindow() {
   calloc.free(titleUtf8);
 
   msgSendVoidPointer(window, sel('setTitle:'), titleObj);
-  print('[AppKit] NSWindow created successfully on main thread (${window.address}).');
+  print(
+      '[AppKit] NSWindow created successfully on main thread (${window.address}).');
 
   // Activate application
   msgSendVoidBool(sharedApp, sel('activateIgnoringOtherApps:'), true);
@@ -131,6 +132,7 @@ bool runAppKitWindow() {
   print('[AppKit] pthread_main_np() = 1: running on the process main thread.');
   _createAppKitWindow();
 
-  print('[AppKit] AppKit window lifecycle validation result: $_didCreateWindowSuccess');
+  print(
+      '[AppKit] AppKit window lifecycle validation result: $_didCreateWindowSuccess');
   return _didCreateWindowSuccess;
 }

@@ -189,7 +189,8 @@ final class GlContextFactory {
   ) {
     final api = _EglApi(egl);
 
-    final display = api.getDisplay(Pointer<Void>.fromAddress(_eglDefaultDisplay));
+    final display =
+        api.getDisplay(Pointer<Void>.fromAddress(_eglDefaultDisplay));
     if (display.address == 0) {
       diagnostics.add(
         BackendDiagnostic(
@@ -374,12 +375,12 @@ final class _EglApi {
           int Function(
               Pointer<Void>, Pointer<Int32>, Pointer<Int32>)>('eglInitialize');
 
-  late final int Function(int) bindApi =
-      library.lookupFunction<Int32 Function(Uint32), int Function(int)>(
-          'eglBindAPI');
+  late final int Function(int) bindApi = library
+      .lookupFunction<Int32 Function(Uint32), int Function(int)>('eglBindAPI');
 
   late final int Function(Pointer<Void>, Pointer<Int32>, Pointer<Pointer<Void>>,
-      int, Pointer<Int32>) chooseConfig = library.lookupFunction<
+          int, Pointer<Int32>) chooseConfig =
+      library.lookupFunction<
           Int32 Function(Pointer<Void>, Pointer<Int32>, Pointer<Pointer<Void>>,
               Int32, Pointer<Int32>),
           int Function(Pointer<Void>, Pointer<Int32>, Pointer<Pointer<Void>>,
@@ -416,9 +417,9 @@ final class _EglApi {
       library.lookupFunction<Int32 Function(Pointer<Void>, Pointer<Void>),
           int Function(Pointer<Void>, Pointer<Void>)>('eglDestroyContext');
 
-  late final int Function(Pointer<Void>) terminate =
-      library.lookupFunction<Int32 Function(Pointer<Void>),
-          int Function(Pointer<Void>)>('eglTerminate');
+  late final int Function(Pointer<Void>) terminate = library.lookupFunction<
+      Int32 Function(Pointer<Void>),
+      int Function(Pointer<Void>)>('eglTerminate');
 
   late final int Function() getError =
       library.lookupFunction<Int32 Function(), int Function()>('eglGetError');

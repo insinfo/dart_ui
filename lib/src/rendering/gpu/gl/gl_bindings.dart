@@ -115,9 +115,8 @@ final class NativeHeap {
     ]) {
       if (library == null) continue;
       try {
-        final malloc =
-            library.lookupFunction<Pointer<Void> Function(IntPtr), Pointer<Void>
-                Function(int)>('malloc');
+        final malloc = library.lookupFunction<Pointer<Void> Function(IntPtr),
+            Pointer<Void> Function(int)>('malloc');
         final free = library.lookupFunction<Void Function(Pointer<Void>),
             void Function(Pointer<Void>)>('free');
         return NativeHeap._(malloc, free);
@@ -354,9 +353,9 @@ final class GlApi {
       library.lookupFunction<Void Function(Int32, Int32, Int32, Int32),
           void Function(int, int, int, int)>('glViewport');
 
-  late final void Function(int, int, int, int) scissor =
-      library.lookupFunction<Void Function(Int32, Int32, Int32, Int32),
-          void Function(int, int, int, int)>('glScissor');
+  late final void Function(int, int, int, int) scissor = library.lookupFunction<
+      Void Function(Int32, Int32, Int32, Int32),
+      void Function(int, int, int, int)>('glScissor');
 
   late final void Function(int) enable = library
       .lookupFunction<Void Function(Uint32), void Function(int)>('glEnable');
@@ -364,9 +363,8 @@ final class GlApi {
   late final void Function(int) disable = library
       .lookupFunction<Void Function(Uint32), void Function(int)>('glDisable');
 
-  late final void Function(int, int) blendFunc =
-      library.lookupFunction<Void Function(Uint32, Uint32),
-          void Function(int, int)>('glBlendFunc');
+  late final void Function(int, int) blendFunc = library.lookupFunction<
+      Void Function(Uint32, Uint32), void Function(int, int)>('glBlendFunc');
 
   late final void Function(double, double, double, double) clearColor =
       library.lookupFunction<Void Function(Float, Float, Float, Float),
@@ -386,9 +384,8 @@ final class GlApi {
       library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
           void Function(int, Pointer<Uint32>)>('glDeleteBuffers');
 
-  late final void Function(int, int) bindBuffer =
-      library.lookupFunction<Void Function(Uint32, Uint32),
-          void Function(int, int)>('glBindBuffer');
+  late final void Function(int, int) bindBuffer = library.lookupFunction<
+      Void Function(Uint32, Uint32), void Function(int, int)>('glBindBuffer');
 
   late final void Function(int, int, Pointer<Void>, int) bufferData =
       library.lookupFunction<
@@ -427,11 +424,9 @@ final class GlApi {
 
   late final void Function(int, int, Pointer<Pointer<Uint8>>, Pointer<Int32>)
       shaderSource = library.lookupFunction<
-              Void Function(
-                  Uint32, Int32, Pointer<Pointer<Uint8>>, Pointer<Int32>),
-              void Function(
-                  int, int, Pointer<Pointer<Uint8>>, Pointer<Int32>)>(
-          'glShaderSource');
+          Void Function(Uint32, Int32, Pointer<Pointer<Uint8>>, Pointer<Int32>),
+          void Function(int, int, Pointer<Pointer<Uint8>>,
+              Pointer<Int32>)>('glShaderSource');
 
   late final void Function(int) compileShader =
       library.lookupFunction<Void Function(Uint32), void Function(int)>(
@@ -447,17 +442,15 @@ final class GlApi {
           void Function(
               int, int, Pointer<Int32>, Pointer<Uint8>)>('glGetShaderInfoLog');
 
-  late final int Function() createProgram =
-      library.lookupFunction<Uint32 Function(), int Function()>(
-          'glCreateProgram');
+  late final int Function() createProgram = library
+      .lookupFunction<Uint32 Function(), int Function()>('glCreateProgram');
 
   late final void Function(int) deleteProgram =
       library.lookupFunction<Void Function(Uint32), void Function(int)>(
           'glDeleteProgram');
 
-  late final void Function(int, int) attachShader =
-      library.lookupFunction<Void Function(Uint32, Uint32),
-          void Function(int, int)>('glAttachShader');
+  late final void Function(int, int) attachShader = library.lookupFunction<
+      Void Function(Uint32, Uint32), void Function(int, int)>('glAttachShader');
 
   late final void Function(int, int, Pointer<Uint8>) bindAttribLocation =
       library.lookupFunction<Void Function(Uint32, Uint32, Pointer<Uint8>),
@@ -489,9 +482,8 @@ final class GlApi {
       library.lookupFunction<Void Function(Int32, Float, Float),
           void Function(int, double, double)>('glUniform2f');
 
-  late final void Function(int, int) uniform1i =
-      library.lookupFunction<Void Function(Int32, Int32),
-          void Function(int, int)>('glUniform1i');
+  late final void Function(int, int) uniform1i = library.lookupFunction<
+      Void Function(Int32, Int32), void Function(int, int)>('glUniform1i');
 
   late final void Function(int, Pointer<Uint32>) genTextures =
       library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
@@ -501,12 +493,11 @@ final class GlApi {
       library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
           void Function(int, Pointer<Uint32>)>('glDeleteTextures');
 
-  late final void Function(int, int) bindTexture =
-      library.lookupFunction<Void Function(Uint32, Uint32),
-          void Function(int, int)>('glBindTexture');
+  late final void Function(int, int) bindTexture = library.lookupFunction<
+      Void Function(Uint32, Uint32), void Function(int, int)>('glBindTexture');
 
   late final void Function(
-      int, int, int, int, int, int, int, int, Pointer<Void>) texImage2D =
+          int, int, int, int, int, int, int, int, Pointer<Void>) texImage2D =
       library.lookupFunction<
           Void Function(Uint32, Int32, Int32, Int32, Int32, Int32, Uint32,
               Uint32, Pointer<Void>),
@@ -514,7 +505,7 @@ final class GlApi {
               Pointer<Void>)>('glTexImage2D');
 
   late final void Function(
-      int, int, int, int, int, int, int, int, Pointer<Void>) texSubImage2D =
+          int, int, int, int, int, int, int, int, Pointer<Void>) texSubImage2D =
       library.lookupFunction<
           Void Function(Uint32, Int32, Int32, Int32, Int32, Int32, Uint32,
               Uint32, Pointer<Void>),
@@ -529,9 +520,8 @@ final class GlApi {
       library.lookupFunction<Void Function(Uint32), void Function(int)>(
           'glActiveTexture');
 
-  late final void Function(int, int) pixelStorei =
-      library.lookupFunction<Void Function(Uint32, Int32),
-          void Function(int, int)>('glPixelStorei');
+  late final void Function(int, int) pixelStorei = library.lookupFunction<
+      Void Function(Uint32, Int32), void Function(int, int)>('glPixelStorei');
 
   late final void Function(int, Pointer<Uint32>) genFramebuffers =
       library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
@@ -541,9 +531,9 @@ final class GlApi {
       library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
           void Function(int, Pointer<Uint32>)>('glDeleteFramebuffers');
 
-  late final void Function(int, int) bindFramebuffer =
-      library.lookupFunction<Void Function(Uint32, Uint32),
-          void Function(int, int)>('glBindFramebuffer');
+  late final void Function(int, int) bindFramebuffer = library.lookupFunction<
+      Void Function(Uint32, Uint32),
+      void Function(int, int)>('glBindFramebuffer');
 
   late final void Function(int, int, int, int, int) framebufferTexture2D =
       library.lookupFunction<
@@ -555,13 +545,14 @@ final class GlApi {
           'glCheckFramebufferStatus');
 
   late final void Function(int, int, int, Pointer<Void>) drawElements =
-      library.lookupFunction<Void Function(Uint32, Int32, Uint32, Pointer<Void>),
+      library.lookupFunction<
+          Void Function(Uint32, Int32, Uint32, Pointer<Void>),
           void Function(int, int, int, Pointer<Void>)>('glDrawElements');
 
   late final void Function(int, int, int, int, int, int, Pointer<Void>)
       readPixels = library.lookupFunction<
-          Void Function(Int32, Int32, Int32, Int32, Uint32, Uint32,
-              Pointer<Void>),
+          Void Function(
+              Int32, Int32, Int32, Int32, Uint32, Uint32, Pointer<Void>),
           void Function(
               int, int, int, int, int, int, Pointer<Void>)>('glReadPixels');
 

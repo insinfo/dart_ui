@@ -195,7 +195,8 @@ final class MacosHostLocator {
     );
   }
 
-  static String? _resolveSource(Map<String, String> env, List<String> searched) {
+  static String? _resolveSource(
+      Map<String, String> env, List<String> searched) {
     final explicit = env[hostSourceEnvironmentVariable];
     if (explicit != null && explicit.isNotEmpty) {
       final path = _absolute(explicit);
@@ -276,7 +277,9 @@ final class MacosHostLocator {
   static Iterable<String> _pathEntries(Map<String, String> env) {
     final path = env['PATH'];
     if (path == null || path.isEmpty) return const <String>[];
-    return path.split(Platform.isWindows ? ';' : ':').where((e) => e.isNotEmpty);
+    return path
+        .split(Platform.isWindows ? ';' : ':')
+        .where((e) => e.isNotEmpty);
   }
 
   static _CandidateStatus _statusOf(String path) {

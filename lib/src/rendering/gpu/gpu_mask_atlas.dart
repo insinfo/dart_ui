@@ -101,8 +101,7 @@ final class MaskQuad {
   final double v1;
 
   @override
-  String toString() =>
-      'MaskQuad($deviceRect, uv $u0,$v0..$u1,$v1)';
+  String toString() => 'MaskQuad($deviceRect, uv $u0,$v0..$u1,$v1)';
 }
 
 /// A CPU-side alpha8 staging image plus the packer that carves it up.

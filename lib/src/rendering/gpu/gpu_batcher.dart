@@ -98,8 +98,7 @@ final class GpuBatch {
 /// Turns a stream of device-space quads into the fewest draw calls that
 /// preserve the picture.
 final class GpuBatcher {
-  GpuBatcher({GpuVertexBuffer? buffer})
-      : buffer = buffer ?? GpuVertexBuffer();
+  GpuBatcher({GpuVertexBuffer? buffer}) : buffer = buffer ?? GpuVertexBuffer();
 
   /// The frame's geometry. Shared with the backend, which uploads it once.
   final GpuVertexBuffer buffer;

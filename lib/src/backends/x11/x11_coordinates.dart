@@ -69,8 +69,7 @@ final class X11CoordinateSpace {
 
   /// Device pixels to logical units, for a position already relative to the
   /// client area - what a ButtonPress event carries.
-  Offset devicePixelsToLogical(int x, int y) =>
-      Offset(x / scale, y / scale);
+  Offset devicePixelsToLogical(int x, int y) => Offset(x / scale, y / scale);
 
   Size deviceSizeToLogical(int width, int height) =>
       Size(width / scale, height / scale);

@@ -111,12 +111,16 @@ void main() {
           Offset(1919, 1079),
         ]) {
           final csc = space.screenToClient(space.clientToScreen(point));
-          expect(csc.dx, closeTo(point.dx, 1e-10), reason: 'client -> screen -> client at $dpi dpi (dx)');
-          expect(csc.dy, closeTo(point.dy, 1e-10), reason: 'client -> screen -> client at $dpi dpi (dy)');
+          expect(csc.dx, closeTo(point.dx, 1e-10),
+              reason: 'client -> screen -> client at $dpi dpi (dx)');
+          expect(csc.dy, closeTo(point.dy, 1e-10),
+              reason: 'client -> screen -> client at $dpi dpi (dy)');
 
           final scs = space.clientToScreen(space.screenToClient(point));
-          expect(scs.dx, closeTo(point.dx, 1e-10), reason: 'screen -> client -> screen at $dpi dpi (dx)');
-          expect(scs.dy, closeTo(point.dy, 1e-10), reason: 'screen -> client -> screen at $dpi dpi (dy)');
+          expect(scs.dx, closeTo(point.dx, 1e-10),
+              reason: 'screen -> client -> screen at $dpi dpi (dx)');
+          expect(scs.dy, closeTo(point.dy, 1e-10),
+              reason: 'screen -> client -> screen at $dpi dpi (dy)');
         }
       }
     });

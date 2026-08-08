@@ -50,9 +50,8 @@ final class MacosWindowingBackend implements WindowingBackend {
   MacosBackendKind? get activeKind => _activeKind;
 
   @override
-  String get name => _activeKind != null
-      ? 'macos.${_activeKind!.name}'
-      : 'macos';
+  String get name =>
+      _activeKind != null ? 'macos.${_activeKind!.name}' : 'macos';
 
   @override
   BackendProbeResult probe() {

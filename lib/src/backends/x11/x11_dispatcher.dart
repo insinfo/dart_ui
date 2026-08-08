@@ -61,7 +61,8 @@ final class X11Dispatcher implements UiDispatcher {
   final void Function() _wakeWriter;
 
   // One FIFO queue per priority.
-  final List<Queue<void Function()>> _queues = List<Queue<void Function()>>.generate(
+  final List<Queue<void Function()>> _queues =
+      List<Queue<void Function()>>.generate(
     DispatcherPriority.values.length,
     (_) => Queue<void Function()>(),
     growable: false,

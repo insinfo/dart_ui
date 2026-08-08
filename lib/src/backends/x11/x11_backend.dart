@@ -256,7 +256,6 @@ final class X11WindowingBackend implements WindowingBackend {
   }
 
   @override
-  String toString() =>
-      'X11WindowingBackend(initialized: $_initialized, '
+  String toString() => 'X11WindowingBackend(initialized: $_initialized, '
       'windows: ${_windows.length}, scale: ${_scale?.scale})';
 }

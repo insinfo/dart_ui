@@ -70,7 +70,14 @@ final class MacosRecoveryPolicy {
 }
 
 /// What the supervisor is doing.
-enum MacosSupervisorState { created, starting, running, recovering, stopped, failed }
+enum MacosSupervisorState {
+  created,
+  starting,
+  running,
+  recovering,
+  stopped,
+  failed
+}
 
 /// Owns the current host and replaces it when it dies.
 final class MacosHostSupervisor {

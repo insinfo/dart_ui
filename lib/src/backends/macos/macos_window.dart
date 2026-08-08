@@ -254,7 +254,8 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
   void setTitle(String value) {
     // Newlines would end the command early and let the rest of the title be
     // parsed as commands. Stripping is cheaper to reason about than escaping.
-    _supervisor?.rememberTitle(value.replaceAll('\n', ' ').replaceAll('\r', ' '));
+    _supervisor
+        ?.rememberTitle(value.replaceAll('\n', ' ').replaceAll('\r', ' '));
   }
 
   @override

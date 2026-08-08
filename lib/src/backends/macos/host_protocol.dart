@@ -848,8 +848,9 @@ final class HostCommands {
   static String portServer(String name) => 'PORT_SERVER $name\n';
 
   /// Receives one surface port into [slot]; -1 for the single-surface form.
-  static String surfacePortRendezvous(int slot) =>
-      slot < 0 ? 'SURFACE_PORT RENDEZVOUS\n' : 'SURFACE_PORT RENDEZVOUS $slot\n';
+  static String surfacePortRendezvous(int slot) => slot < 0
+      ? 'SURFACE_PORT RENDEZVOUS\n'
+      : 'SURFACE_PORT RENDEZVOUS $slot\n';
 
   static String presentSlot(int sequence, int slot) =>
       'PRESENT_SLOT $sequence $slot\n';

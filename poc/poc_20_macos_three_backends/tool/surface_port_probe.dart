@@ -91,8 +91,8 @@ Future<void> main(List<String> arguments) async {
   // (b) has no ordering constraint but is the one most likely to be refused
   // outright, so its status is printed whether or not the host is up yet.
   final bootstrapName = 'dart-ui.poc20.s.$pid';
-  final bootstrapStatus = MachPortTransfer.bootstrapRegister(
-      bootstrapName, port);
+  final bootstrapStatus =
+      MachPortTransfer.bootstrapRegister(bootstrapName, port);
   print('PROBE_BOOTSTRAP_NAME=$bootstrapName');
   print('PROBE_BOOTSTRAP_REGISTER=$bootstrapStatus');
 
@@ -135,7 +135,8 @@ Future<void> main(List<String> arguments) async {
 
   // (c) The host publishes the name, so its pid is what makes the name unique.
   final hostPidLine = await host.waitFor((l) => l.startsWith('HOST_PID='));
-  final hostPid = hostPidLine == null ? pid : int.parse(hostPidLine.substring(9));
+  final hostPid =
+      hostPidLine == null ? pid : int.parse(hostPidLine.substring(9));
   final serviceName = 'dart-ui.poc20.r.$hostPid';
   await host.send('PORT_SERVER $serviceName');
   final checkIn = await host.waitFor((l) =>
@@ -167,9 +168,8 @@ Future<void> main(List<String> arguments) async {
   // A mechanism that attached but cannot present is not a working mechanism.
   if (winners.isNotEmpty) {
     await host.send('PRESENT 1');
-    final presented =
-        await host.waitFor((l) => l.startsWith('PRESENT_OK 1 ') ||
-            l.startsWith('ERROR='));
+    final presented = await host.waitFor(
+        (l) => l.startsWith('PRESENT_OK 1 ') || l.startsWith('ERROR='));
     print('SURFACE_PORT_PRESENT=${presented ?? "timeout"}');
   } else {
     print('SURFACE_PORT_PRESENT=skipped');
@@ -181,8 +181,8 @@ Future<void> main(List<String> arguments) async {
   final legacy = IOSurfaceFrame.create(width: 480, height: 320);
   legacy.fillBgra(0xC0, 0x20, 0x40);
   await host.send('SURFACE ${legacy.id}');
-  final legacyAttach = await host
-      .waitFor((l) => l.startsWith('SURFACE_OK') || l == 'ERROR=SURFACE_LOOKUP');
+  final legacyAttach = await host.waitFor(
+      (l) => l.startsWith('SURFACE_OK') || l == 'ERROR=SURFACE_LOOKUP');
   await host.send('PRESENT 2');
   final legacyPresent = await host
       .waitFor((l) => l.startsWith('PRESENT_OK 2 ') || l.startsWith('ERROR='));

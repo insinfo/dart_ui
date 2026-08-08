@@ -218,8 +218,7 @@ final class GlRenderDevice with DisposableMixin implements RenderDevice {
     final bytes = width * height * texture.format.bytesPerPixel;
     final staging = _ensurePixelStaging(bytes);
     staging.asTypedList(bytes).setRange(0, bytes, pixels, sourceOffset);
-    final external =
-        texture.format == GpuTextureFormat.alpha8 ? glRed : glRgba;
+    final external = texture.format == GpuTextureFormat.alpha8 ? glRed : glRgba;
     _gl
       ..bindTexture(glTexture2D, texture.id)
       ..pixelStorei(glUnpackAlignment, 1)
@@ -358,8 +357,8 @@ final class GlRenderDevice with DisposableMixin implements RenderDevice {
         .setRange(0, indexCount, buffer.indexStorage);
     _gl
       ..bindBuffer(glElementArrayBuffer, _ebo)
-      ..bufferData(glElementArrayBuffer, indexBytes,
-          indexStaging.cast<Void>(), glDynamicDraw);
+      ..bufferData(glElementArrayBuffer, indexBytes, indexStaging.cast<Void>(),
+          glDynamicDraw);
     _checkError('glBufferData');
   }
 

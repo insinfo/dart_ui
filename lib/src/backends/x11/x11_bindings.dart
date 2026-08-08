@@ -102,8 +102,7 @@ typedef XcbCrtWinN = Void Function(Pointer<Void>, Uint8, Uint32, Uint32, Int16,
     Int16, Uint16, Uint16, Uint16, Uint16, Uint32, Uint32, Pointer<Uint32>);
 typedef XcbCrtWinD = void Function(Pointer<Void>, int, int, int, int, int, int,
     int, int, int, int, int, Pointer<Uint32>);
-typedef XcbCwaN = Void Function(
-    Pointer<Void>, Uint32, Uint32, Pointer<Uint32>);
+typedef XcbCwaN = Void Function(Pointer<Void>, Uint32, Uint32, Pointer<Uint32>);
 typedef XcbCwaD = void Function(Pointer<Void>, int, int, Pointer<Uint32>);
 typedef XcbCfgWinN = Void Function(
     Pointer<Void>, Uint32, Uint16, Pointer<Uint32>);
@@ -138,10 +137,8 @@ typedef XcbPutImgD = void Function(Pointer<Void>, int, int, int, int, int, int,
     int, int, int, int, Pointer<Uint8>);
 typedef XcbClearN = Void Function(
     Pointer<Void>, Uint8, Uint32, Int16, Int16, Uint16, Uint16);
-typedef XcbClearD = void Function(
-    Pointer<Void>, int, int, int, int, int, int);
-typedef XcbQryExtN = XcbCookie Function(
-    Pointer<Void>, Uint16, Pointer<Uint8>);
+typedef XcbClearD = void Function(Pointer<Void>, int, int, int, int, int, int);
+typedef XcbQryExtN = XcbCookie Function(Pointer<Void>, Uint16, Pointer<Uint8>);
 typedef XcbQryExtD = XcbCookie Function(Pointer<Void>, int, Pointer<Uint8>);
 typedef XcbXlateN = XcbCookie Function(
     Pointer<Void>, Uint32, Uint32, Int16, Int16);
@@ -150,12 +147,11 @@ typedef XcbGeomN = XcbCookie Function(Pointer<Void>, Uint32);
 typedef XcbGeomD = XcbCookie Function(Pointer<Void>, int);
 typedef XcbOpenFontN = Void Function(
     Pointer<Void>, Uint32, Uint16, Pointer<Uint8>);
-typedef XcbOpenFontD = void Function(
-    Pointer<Void>, int, int, Pointer<Uint8>);
+typedef XcbOpenFontD = void Function(Pointer<Void>, int, int, Pointer<Uint8>);
 typedef XcbGlyphN = Void Function(Pointer<Void>, Uint32, Uint32, Uint32, Uint16,
     Uint16, Uint16, Uint16, Uint16, Uint16, Uint16, Uint16);
-typedef XcbGlyphD = void Function(Pointer<Void>, int, int, int, int, int, int,
-    int, int, int, int, int);
+typedef XcbGlyphD = void Function(
+    Pointer<Void>, int, int, int, int, int, int, int, int, int, int, int);
 typedef XcbFocusN = Void Function(Pointer<Void>, Uint8, Uint32, Uint32);
 typedef XcbFocusD = void Function(Pointer<Void>, int, int, int);
 
@@ -337,9 +333,23 @@ typedef XcbShmAtN = XcbCookie Function(Pointer<Void>, Uint32, Uint32, Uint8);
 typedef XcbShmAtD = XcbCookie Function(Pointer<Void>, int, int, int);
 typedef XcbShmDetN = XcbCookie Function(Pointer<Void>, Uint32);
 typedef XcbShmDetD = XcbCookie Function(Pointer<Void>, int);
-typedef XcbShmImgN = XcbCookie Function(Pointer<Void>, Uint32, Uint32, Uint16,
-    Uint16, Uint16, Uint16, Uint16, Uint16, Int16, Int16, Uint8, Uint8, Uint8,
-    Uint32, Uint32);
+typedef XcbShmImgN = XcbCookie Function(
+    Pointer<Void>,
+    Uint32,
+    Uint32,
+    Uint16,
+    Uint16,
+    Uint16,
+    Uint16,
+    Uint16,
+    Uint16,
+    Int16,
+    Int16,
+    Uint8,
+    Uint8,
+    Uint8,
+    Uint32,
+    Uint32);
 typedef XcbShmImgD = XcbCookie Function(Pointer<Void>, int, int, int, int, int,
     int, int, int, int, int, int, int, int, int, int);
 

@@ -41,8 +41,8 @@ import 'gpu_pipeline.dart';
 final class GpuVertexBuffer {
   GpuVertexBuffer({int initialQuads = 256})
       : assert(initialQuads > 0),
-        _vertices =
-            Float32List(initialQuads * kGpuVerticesPerQuad * kGpuFloatsPerVertex),
+        _vertices = Float32List(
+            initialQuads * kGpuVerticesPerQuad * kGpuFloatsPerVertex),
         _indices = Uint32List(initialQuads * kGpuIndicesPerQuad);
 
   Float32List _vertices;

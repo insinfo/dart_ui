@@ -74,9 +74,9 @@ final _cfNumberCreate = _coreFoundation.lookupFunction<
 final _cfRelease = _coreFoundation.lookupFunction<Void Function(_VoidPtr),
     void Function(_VoidPtr)>('CFRelease');
 
-final _ioSurfaceCreate = _ioSurfaceLib
-    .lookupFunction<_VoidPtr Function(_VoidPtr), _VoidPtr Function(_VoidPtr)>(
-        'IOSurfaceCreate');
+final _ioSurfaceCreate = _ioSurfaceLib.lookupFunction<
+    _VoidPtr Function(_VoidPtr),
+    _VoidPtr Function(_VoidPtr)>('IOSurfaceCreate');
 final _ioSurfaceGetID = _ioSurfaceLib.lookupFunction<Uint32 Function(_VoidPtr),
     int Function(_VoidPtr)>('IOSurfaceGetID');
 final _ioSurfaceLock = _ioSurfaceLib.lookupFunction<
@@ -94,7 +94,8 @@ final _ioSurfaceGetBytesPerRow = _ioSurfaceLib.lookupFunction<
     IntPtr Function(_VoidPtr),
     int Function(_VoidPtr)>('IOSurfaceGetBytesPerRow');
 final _ioSurfaceCreateMachPort = _ioSurfaceLib.lookupFunction<
-    Uint32 Function(_VoidPtr), int Function(_VoidPtr)>('IOSurfaceCreateMachPort');
+    Uint32 Function(_VoidPtr),
+    int Function(_VoidPtr)>('IOSurfaceCreateMachPort');
 
 /// Dereferences one of IOSurface's exported `CFStringRef` property keys.
 _VoidPtr _key(String name) => _ioSurfaceLib.lookup<_VoidPtr>(name).value;

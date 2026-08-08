@@ -141,7 +141,9 @@ final class MachRendezvous {
   /// Checked by `probe()` so that "rendezvous unavailable" is reported before
   /// a window is created rather than as a five-second timeout during one.
   static bool get isAvailable =>
-      _bootstrapLookUp != null && _taskGetSpecialPort != null && _machMsg != null;
+      _bootstrapLookUp != null &&
+      _taskGetSpecialPort != null &&
+      _machMsg != null;
 
   /// The task's bootstrap port.
   ///

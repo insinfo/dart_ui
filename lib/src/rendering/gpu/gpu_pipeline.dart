@@ -99,8 +99,8 @@ final class GpuBlendState {
 /// mode to be *measured*, which is impossible if one side quietly substitutes.
 GpuBlendState gpuBlendForMode(int blendMode) => switch (blendMode) {
       // dst = src + dst * (1 - a), the premultiplied source-over of blend.dart.
-      blendModeSrcOver =>
-        const GpuBlendState(GpuBlendFactor.one, GpuBlendFactor.oneMinusSrcAlpha),
+      blendModeSrcOver => const GpuBlendState(
+          GpuBlendFactor.one, GpuBlendFactor.oneMinusSrcAlpha),
       blendModeSrc =>
         const GpuBlendState(GpuBlendFactor.one, GpuBlendFactor.zero),
       blendModePlus =>

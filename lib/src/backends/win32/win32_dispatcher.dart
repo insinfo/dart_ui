@@ -71,7 +71,8 @@ final class Win32Dispatcher implements UiDispatcher {
   final int maxNativeMessagesPerPass;
 
   // One FIFO queue per priority.
-  final List<Queue<void Function()>> _queues = List<Queue<void Function()>>.generate(
+  final List<Queue<void Function()>> _queues =
+      List<Queue<void Function()>>.generate(
     DispatcherPriority.values.length,
     (_) => Queue<void Function()>(),
     growable: false,
@@ -210,7 +211,9 @@ final class Win32Dispatcher implements UiDispatcher {
       // PeekMessage removes and dispatches the message.
       final hasMessage = _api.peekMessageW(
         _api.allocator<Msg>(),
-        0, 0, 0,
+        0,
+        0,
+        0,
         pmRemove,
       );
       if (hasMessage == 0) break;

@@ -223,7 +223,13 @@ final class Win32Api {
   late final int Function(int, Pointer<Uint32>, int, int, int)
       msgWaitForMultipleObjectsEx;
 
-  late final int Function(int, int, int, Pointer<NativeFunction<Void Function(IntPtr, Uint32, IntPtr, Uint32)>>) setTimer;
+  late final int Function(
+          int,
+          int,
+          int,
+          Pointer<
+              NativeFunction<Void Function(IntPtr, Uint32, IntPtr, Uint32)>>)
+      setTimer;
   late final int Function(int, int) killTimer;
 
   void _bindUser32() {
@@ -334,8 +340,20 @@ final class Win32Api {
         int Function(int, Pointer<Uint32>, int, int,
             int)>('MsgWaitForMultipleObjectsEx');
     setTimer = _user32.lookupFunction<
-        IntPtr Function(IntPtr, IntPtr, Uint32, Pointer<NativeFunction<Void Function(IntPtr, Uint32, IntPtr, Uint32)>>),
-        int Function(int, int, int, Pointer<NativeFunction<Void Function(IntPtr, Uint32, IntPtr, Uint32)>>)>('SetTimer');
+        IntPtr Function(
+            IntPtr,
+            IntPtr,
+            Uint32,
+            Pointer<
+                NativeFunction<Void Function(IntPtr, Uint32, IntPtr, Uint32)>>),
+        int Function(
+            int,
+            int,
+            int,
+            Pointer<
+                NativeFunction<
+                    Void Function(
+                        IntPtr, Uint32, IntPtr, Uint32)>>)>('SetTimer');
     killTimer = _user32.lookupFunction<Int32 Function(IntPtr, IntPtr),
         int Function(int, int)>('KillTimer');
   }
