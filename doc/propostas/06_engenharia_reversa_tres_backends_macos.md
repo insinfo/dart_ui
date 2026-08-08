@@ -7,8 +7,13 @@
 **Spike original:** [`SPIKE_MACOS_MAIN_THREAD.md`](../SPIKE_MACOS_MAIN_THREAD.md)
 **Runner:** macOS 14.8.7, arm64
 **Dart SDK:** 3.6.0
-**CI confirmado:** runs `31159720697` (SkyLight Z17), `31162204180` (três backends), `31162694435` (LLDB backend 2)
+**CI confirmado:** runs `31159720697` (SkyLight Z17), `31162204180` (três backends), `31162694435` (LLDB backend 2), `31243508746` (conformidade dos três)
 **Commits:** `5a30841`, `c7da356`, `f2fb875`, `a474dc9`
+
+**Atualização de 8 de agosto de 2026:** os três backends passam a mesma suíte de
+conformidade no CI — janela, framebuffer de CPU, testemunha externa de pixels,
+input pela rota real e teardown sem `_exit`. Medições em
+[`logs/CONFORMANCE_TRES_BACKENDS_2026-08-08.md`](../logs/CONFORMANCE_TRES_BACKENDS_2026-08-08.md).
 
 ---
 
@@ -31,9 +36,9 @@ dentro** — a engenharia reversa propriamente dita.
 
 | Backend | API principal | Thread 0 | Estado de maturidade |
 |---|---|---|---|
-| `skylight` | SkyLight/CGS (API privada) | não exige | janela + pixels + input sintético confirmados |
-| `appkitSignal` | AppKit via ObjC runtime | sequestrada por `SIGUSR2` | shutdown recuperável confirmado; pump síncrono ainda bloqueia |
-| `appkitNativeHost` | AppKit normal via `.m` | possuída desde `main()` | IPC Dart↔AppKit funcional; caminho recomendado |
+| `skylight` | SkyLight/CGS (API privada) | não exige | conformidade completa; falta `pointerMove` |
+| `appkitSignal` | AppKit via ObjC runtime | sequestrada por `SIGUSR2` | conformidade completa, incluindo cadeia de responders |
+| `appkitNativeHost` | AppKit normal via `.m` | possuída desde `main()` | conformidade completa; caminho recomendado |
 
 ---
 
@@ -63,7 +68,8 @@ A engenharia reversa do SkyLight seguiu um processo iterativo de 17 probes
 | `SLWindowContextCreate` | `CGContextRef SLWindowContextCreate(int cid, uint32_t wid, void *options)` | Probe M: contexto não-null, pixels pintados |
 | `SLSGetEventPort` | `CGError SLSGetEventPort(int cid, mach_port_t *port_out)` | Probe Y/Z1: retorno 0, porta Mach válida; ABI com ponteiro-de-saída, não retorno-por-valor |
 | `SLEventCreateNextEvent` | `CGEventRef SLEventCreateNextEvent(int cid)` | Probe Z1: um argumento (cid), sem `CFAllocatorRef`; ABI corrigido comparando com JankyBorders |
-| `SLPSRegisterWithServer` | `CGError SLPSRegisterWithServer(int flavor)` | Probe Z6/Z7: desassembly mostra `mov x19, x0`; AppKit usa flavor `3` via HIServices |
+| `SLPSRegisterWithServer` | `CGError SLPSRegisterWithServer(int flavor)` | Probe Z6/Z7 + disassembly completo (§3.3.1): `mov x19, x0`, um argumento; AppKit usa flavor `3` via HIServices |
+| `_SLPSRegisterWithServer` | `CGError _SLPSRegisterWithServer(int flavor, LSASN *asn, pid_t pid)` | LLDB no chamador: `HIServices _RegisterApplication` passa `x0=3`, `x1=&sOurASN`, `x2=<pid>` |
 | `SLPSSetMainApplicationConnection` | `CGError SLPSSetMainApplicationConnection(int cid)` | Probe Z12: consome apenas `x0`; LLDB confirmou |
 | `SLEventPostToPid` | `void SLEventPostToPid(pid_t pid, CGEventRef event)` | Probe Z14–Z16: assinatura do Cua confirmada; entrega eventos diretamente ao PID |
 | `SLSRegisterNotifyProc` | `void SLSRegisterNotifyProc(SLSNotifyProcPtr proc, uint32_t event, void *userData)` | JankyBorders: 13 registros retornaram 0 no probe Z8 |
@@ -76,6 +82,35 @@ A engenharia reversa do SkyLight seguiu um processo iterativo de 17 probes
 | `SLSGetEventPort(cid)` retorno-por-valor | SEGV com `si_addr == cid` — o cid foi desreferenciado como ponteiro | ABI é `out-pointer`, não retorno direto |
 | `SLPSRegisterWithServer(eventPort)` isolado | Retornou `-50`; o sucesso de Y era artefato de estado residual | Argumentos residuais em registradores arm64 podem mascarar ABIs errados |
 | `SLPSRegisterWithServer(void)` (stub Darling) | Primeira chamada com `x0` indefinido retornou `-50`; segunda retornou 0 mas sem efeito | Stubs open-source são pontos de partida, não contratos |
+
+### 3.3.1 O `-50` alternante, explicado
+
+A alternância entre `0` e `paramErr (-50)` estava registrada como inexplicada.
+O disassembly de `SLPSRegisterWithServer` (macOS 14, arm64) fecha a questão:
+
+```text
+SLPSRegisterWithServer:
+  mov  x19, x0                      ; um único argumento: o flavor
+  bl   primary_connection_exists
+  cbz  w0, <erro>
+  ldp  w9, w8, [gOurPSN]            ; já registrado? retorna cedo
+  bl   getpid
+  bl   _LSASNCreateWithPid
+  cbz  x0, <erro>
+  bl   _LSCopyApplicationInformationItem
+  cbz  x0, <erro>
+  ...
+  bl   _SLPSRegisterWithServer      ; (flavor, ASN*, pid)
+```
+
+A ABI de um argumento estava certa; a chamada é que podia ser cedo demais. A
+função pergunta ao LaunchServices quem é este processo, e para um binário de
+linha de comando sem bundle essa resposta nem sempre está pronta na primeira
+chamada — na run `31243093662` um processo recebeu `0` e outro, no mesmo job,
+recebeu `-50`.
+
+**Correção:** retry limitado (12 tentativas, 150 ms), não outra assinatura.
+Backend e probe registram cada tentativa; na medição verde bastou uma.
 
 ### 3.4 Regra de consumo da porta de eventos
 
@@ -421,9 +456,12 @@ garante:
 
 ### 10.1 SkyLight (backend 1)
 
-- [ ] Extrair o consumidor de `probe.dart` para tipos pequenos com ownership
-  explícito de porta, source, callback, região, contexto e janela.
-- [ ] Invalidar e liberar em ordem inversa.
+- [x] Extrair o consumidor de `probe.dart` para tipos pequenos com ownership
+  explícito de porta, source, callback, região, contexto e janela —
+  [`skylight_backend.dart`](../../poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart).
+- [x] Invalidar e liberar em ordem inversa — medido no CI, sem símbolo faltando.
+- [ ] `pointerMove`: chegam `keyDown`/`keyUp` mas não o movimento; provável
+  máscara de evento da janela CGS.
 - [ ] Input físico (não sintético): mouse real, teclado real.
 - [ ] IME, acessibilidade, clipboard, cursores, drag-and-drop.
 - [ ] Reconciliação após Spaces, fullscreen, monitores, sleep/wake e restart
@@ -434,7 +472,12 @@ garante:
 
 ### 10.2 Signal hijack (backend 2)
 
-- [ ] Resolver o pump síncrono de `nextEventMatchingMask:`.
+- [x] Resolver o pump síncrono de `nextEventMatchingMask:` — o pump periódico
+  retira eventos sem bloquear e a cadeia de responders recebe eventos próprios
+  via `[NSApp sendEvent:]`.
+- [ ] Reenviar eventos *bombeados* pela cadeia de responders: o `NSEvent`
+  devolvido é autoreleased e Dart não consegue retê-lo na main thread sem um
+  método Objective-C próprio.
 - [ ] Investigar se `NSEventThread` precisa ser criada explicitamente.
 - [ ] Repetição start/stop do run loop.
 - [ ] Múltiplas janelas.
@@ -445,14 +488,17 @@ garante:
 
 - [ ] Spike embedder-vs-IPC: medir latência e decidir se o Dart roda no mesmo
   processo ou como worker.
-- [ ] Transportar frames (framebuffer CPU ou Metal) pelo protocolo IPC.
-- [ ] Input do host para o Dart: traduzir `NSEvent` em `MacosInputEvent`.
+- [x] Transportar frames de CPU pelo protocolo IPC (`FRAME <w> <h> <bytes>` com
+  octetos crus). Falta memória compartilhada em vez de pipe, e Metal.
+- [x] Input do host para o Dart: `INPUT=` do monitor local e `VIEW_INPUT=` da
+  cadeia de responders.
 - [ ] Lifecycle de dois processos: detecção de crash, restart, cleanup.
 
 ### 10.4 Comuns
 
-- [ ] Counter/suíte de validação comum nos três backends (§ critérios comparáveis
-  em `MACOS_TRES_BACKENDS.md`).
+- [x] Suíte de validação comum nos três backends: janela, present, testemunha
+  externa de pixels, input e teardown, todos como gate do CI.
+- [ ] Counter comum nos três backends.
 - [ ] Matriz de robustez: duas janelas, framebuffer CPU + Metal, teclado, mouse,
   scroll, foco, captura, fullscreen/Spaces, dois monitores, sleep/wake,
   teardown limpo.

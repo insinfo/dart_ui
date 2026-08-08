@@ -64,9 +64,16 @@ entregou key-down, key-up e mouse-move.
 
 ### Trabalho restante
 
-- extrair o código de `probe.dart` para tipos pequenos com ownership explícito;
-- invalidar e liberar source, Mach port, callbacks, regions, contexts e janelas
-  em ordem inversa;
+- ~~extrair o código de `probe.dart` para tipos pequenos com ownership
+  explícito~~ — feito em
+  [`skylight_backend.dart`](../poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart);
+- ~~invalidar e liberar source, Mach port, callbacks, regions, contexts e
+  janelas em ordem inversa~~ — medido:
+  `CGContextRelease → SLSReleaseWindow → CGSReleaseRegion →
+  CFRunLoopRemoveSource → CFRelease(source) → CFMachPortInvalidate+CFRelease →
+  NativeCallable.close`, sem símbolo faltando;
+- `pointerMove`: chegam `keyDown`/`keyUp`, não o movimento do mouse; provável
+  máscara de evento da janela CGS;
 - input físico, IME, acessibilidade, clipboard, cursores e drag-and-drop;
 - reconciliação após Spaces, fullscreen, monitores, sleep/wake e WindowServer
   restart;
@@ -110,11 +117,30 @@ No run arm64 de 2026-08-07 isso foi confirmado: o step-out voltou de
 `Dart_RunLoop`, e o processo saiu com status 0. O trace e seus limites estão em
 [`logs/MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md`](logs/MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md).
 
-Os traces recentes também refinam o diagnóstico do pump: timers continuam
-ativos depois de `finishLaunching`; o bloqueio observado é a chamada síncrona
-a `nextEventMatchingMask`. O `hold-appkit` com pump periódico já recebeu um
-`NSEvent`, portanto “não existe fila AppKit” deixou de ser uma descrição
-correta do estado atual.
+### Pump e cadeia de responders — resolvidos
+
+O diagnóstico de bloqueio no `nextEventMatchingMask` foi superado. O pump
+periódico não bloqueia: na conformidade ele retira 5 `NSEvent` injetados via
+`SLEventPostToPid` enquanto um timer testemunha continua disparando
+(`PUMP_LIVENESS=PASS`).
+
+O input é medido em duas metades porque só uma pode ser feita sem corrida a
+partir de Dart puro:
+
+- **dispatch** — um `NSEvent` criado e retido por nós passa por
+  `[NSApp sendEvent:]` e chega em `keyDown:` da janela (`RESPONDER_INPUT=1`);
+- **fila** — eventos injetados pelo WindowServer são retirados pelo pump
+  (`INPUT_EVENTS=5`).
+
+Reenviar um evento *bombeado* não é seguro: `nextEventMatchingMask:` devolve um
+`NSEvent` autoreleased que o pool da iteração do run loop pode drenar antes de o
+isolate retê-lo, e Dart não tem como fazer o retain na main thread sem um método
+Objective-C próprio.
+
+O teardown tem uma regra descoberta por `sample(1)`: depois que o run loop
+sequestrado para, a main queue não tem quem a drene, então nenhuma chamada com
+`waitUntilDone:YES` pode acontecer a partir daí. `orderOut:` assíncrono antes do
+stop; nunca `[window close]` bloqueante depois.
 
 ## Backend 3 — host Objective-C mínimo
 
@@ -127,10 +153,22 @@ sem possuir a thread 0 desde o início do processo.
 
 O witness inicial está em
 [`poc/poc_20_macos_three_backends/native/minimal_appkit_host.m`](../poc/poc_20_macos_three_backends/native/minimal_appkit_host.m).
-Ele já inclui um protocolo stdin/stdout versão 1: um cliente Dart comprova
-`PING`, alteração do título na main queue e `CLOSE` com shutdown normal. Isso
-valida o limite de processo da opção IPC, mas ainda não transporta frames ou
-input.
+O protocolo stdin/stdout está na versão 2 e já transporta os dois sentidos:
+
+| Comando | Direção | Efeito |
+|---|---|---|
+| `PING` | Dart → host | responde `PONG` |
+| `SET_TITLE <texto>` | Dart → host | título alterado na main queue |
+| `FRAME <w> <h> <bytes>` | Dart → host | seguido dos octetos BGRA crus; responde `FRAME_OK <n>` |
+| `CLOSE` | Dart → host | `[NSApp terminate:]`, teardown ordenado |
+| `INPUT=<kind>:<x>:<y>:<key>` | host → Dart | todo `NSEvent` que a aplicação retira da fila |
+| `VIEW_INPUT=<kind>:<x>:<y>` | host → Dart | o mesmo evento, visto pela cadeia de responders |
+
+Os octetos crus existem porque base64 estouraria qualquer buffer de linha
+razoável para um frame 480x320. O input é reportado duas vezes de propósito: o
+monitor local é o gate, e `VIEW_INPUT` prova que o evento foi roteado até uma
+view. O Dart injeta em `SLEventPostToPid(pid_do_host)`, o que também demonstra
+essa API dirigindo um segundo processo.
 
 ### Duas evoluções possíveis
 
@@ -160,22 +198,54 @@ registro de processo, permissões relevantes e motivo exato da rejeição.
 
 ## Critérios comparáveis
 
-Cada backend deverá executar a mesma suíte:
+### Suíte comum — já executando no CI
 
-- criar, mostrar, redimensionar e fechar duas janelas;
-- apresentar framebuffer CPU e, depois, Metal;
-- teclado, mouse, scroll, foco e captura;
+Os três backends respondem às mesmas seis linhas, e as quatro etapas que as
+verificam são gates (nenhuma é `continue-on-error`):
+
+```text
+WINDOW_ID=<n>                     o WindowServer possui uma janela
+PRESENT=PASS                      um framebuffer BGRA de CPU chegou nela
+PIXEL_WITNESS=PASS centre=r,g,b   outro processo fotografou o frame
+INPUT_EVENTS=<n>                  input chegou pela rota real de eventos
+TEARDOWN=PASS                     todo handle liberado, sem _exit
+CONFORMANCE=PASS                  tudo acima, com main() retornando 0
+```
+
+O `PIXEL_WITNESS` é a única linha que nenhum backend consegue auto-reportar:
+`screencapture -l<CGSWindowID>` só devolve pixels se o WindowServer realmente
+tiver aquela janela. Cada backend pinta uma cor distinta, então uma captura
+antiga não passa por frame novo.
+
+Medição de 2026-08-08, run `31243508746`, macos-14 arm64
+([log completo](logs/CONFORMANCE_TRES_BACKENDS_2026-08-08.md)):
+
+| backend | janela | present | pixel central (esperado) | input | teardown | exit |
+|---|---|---|---|---|---|---|
+| `skylight` | 38 | PASS | `19,120,220` (`20,120,220`) | 2 | PASS | 0 |
+| `appkitSignal` | 47 | PASS | `120,220,20` (`120,220,20`) | 5 | PASS | 0 |
+| `appkitNativeHost` | 39 | PASS | `220,120,20` (`220,120,20`) | 3 | PASS | 0 |
+
+O backend 2 também comprova a cadeia de responders (`RESPONDER_INPUT=1`) e o
+backend 3 comprova o roteamento até a view (`VIEW_INPUT_EVENTS=3`).
+
+### Ainda fora da suíte
+
+- criar, redimensionar e fechar **duas** janelas;
+- Metal além do framebuffer de CPU;
+- scroll, foco e captura; `pointerMove` no backend 1;
 - timer/frame pacing e latência input→frame;
 - fullscreen/Spaces, dois monitores e mudança de escala;
-- sleep/wake e restart do processo auxiliar, quando existir;
-- teardown sem callback tardio, handle vazado ou `_exit` no caminho normal.
+- sleep/wake e restart do processo auxiliar, quando existir.
 
 ## Sequência de implementação
 
-1. CI do witness `.m` e captura de `MAIN_THREAD=1`/`WINDOW_ID`;
-2. interface Dart e capability report sem selecionar backend automaticamente;
-3. extração do SkyLight funcional para código reutilizável;
-4. encapsulamento do signal hijack com opt-in e watchdog;
-5. spike embedder-vs-IPC do host `.m`;
-6. counter comum nos três backends;
-7. matriz de robustez e decisão do default.
+1. ~~CI do witness `.m` e captura de `MAIN_THREAD=1`/`WINDOW_ID`~~;
+2. ~~interface Dart e capability report sem selecionar backend automaticamente~~;
+3. ~~extração do SkyLight funcional para código reutilizável~~
+   ([`skylight_backend.dart`](../poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart));
+4. ~~suíte comum de janela, present, pixels, input e teardown nos três~~;
+5. encapsulamento do signal hijack com opt-in e watchdog;
+6. spike embedder-vs-IPC do host `.m`;
+7. counter comum nos três backends;
+8. matriz de robustez restante e decisão do default.
