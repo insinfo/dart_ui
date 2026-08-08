@@ -9,21 +9,22 @@
 /// touching pixel code, and lets this file be tested with nothing but a buffer
 /// and a rectangle.
 ///
-/// ANTIALIASING IS NOT IMPLEMENTED. Every fill covers whole pixels, and an
-/// edge at x = 10.5 lands at 10 or 11 rather than half-covering a column. That
-/// is a real limitation with a real reason to wait: [ClipStack] is integer and
-/// rectangle-only, so an antialiased fill today would be soft on the edges the
-/// clip does not touch and hard on the edges it does, which looks worse than
-/// uniformly hard edges and produces a seam that moves when a clip changes.
-/// The two have to land together.
+/// ANTIALIASING IS OPT-IN, NOT THE DEFAULT. [CpuRasterizer.fillRect] covers
+/// whole pixels: an edge at x = 10.5 lands at 10 or 11 rather than half
+/// covering a column. [CpuRasterizer.fillRectAntiAliased] is the same fill
+/// with exact coverage on its boundary. The two are separate entry points
+/// rather than a flag on one, so that a caller reading a display list can pick
+/// per primitive and so that adding antialiasing changed nothing for callers
+/// that already existed.
 ///
-/// Where that seam is, concretely: coverage is already expressible as an alpha.
-/// An antialiased fill computes a per-pixel coverage byte for the partially
-/// covered rows and columns (for an axis-aligned rectangle, the product of the
-/// fractional overlap in x and in y - exact, not an approximation) and calls
-/// the same [blendPixelOver] with `mul255(alpha, coverage)` and colour channels
-/// scaled to match. The interior span is unchanged. So the work is a coverage
-/// source, not a different compositor: nothing below this comment has to move.
+/// The antialiased path is not a second compositor. It computes a coverage
+/// byte per boundary pixel with `spanCoverage` - for an axis-aligned rectangle
+/// the exact product of the fractional overlap in x and in y - scales the
+/// premultiplied source by it, and hands the result to the same
+/// [blendPixelOver] everything else uses. Interior pixels have coverage 255,
+/// which is the identity, so they run down the same span loop a hard-edged
+/// fill uses and pay nothing. That is the entire cost model: antialiasing is
+/// charged to the boundary of a shape, never to its area.
 library;
 
 import 'dart:typed_data';
@@ -32,6 +33,7 @@ import '../../geometry/rect.dart';
 import '../framebuffer.dart';
 import 'blend.dart';
 import 'clip_stack.dart';
+import 'coverage.dart';
 
 /// Draws device-space primitives into a [Framebuffer] on the CPU.
 ///
@@ -78,8 +80,11 @@ final class CpuRasterizer {
   /// throughout.
   ///
   /// Coverage is integer: each pixel is either fully in or fully out, edges
-  /// rounded to the nearest pixel by [pixelEdge]. See the library comment for
-  /// why antialiasing is not here yet.
+  /// rounded to the nearest pixel by [pixelEdge], and the clip that applies is
+  /// the integer one. [fillRectAntiAliased] is the same fill with fractional
+  /// coverage on the boundary; this one stays as it is because a hard edge is
+  /// what a pixel-aligned fill wants, and most of what a UI paints is pixel
+  /// aligned.
   void fillRect(Rect rect, int argbColor) {
     final alpha = (argbColor >> 24) & 0xff;
     // Fully transparent draws are common enough in real UIs - a faded-out
@@ -146,6 +151,137 @@ final class CpuRasterizer {
         _pixels[offset + 3] = 255;
         offset += 4;
       }
+    }
+  }
+
+  /// Fills [rect] with [argbColor], antialiased on its boundary.
+  ///
+  /// Same colour convention and same compositor as [fillRect]; the difference
+  /// is that a pixel the rectangle covers partially is blended with that
+  /// fraction rather than being rounded in or out. For an axis-aligned
+  /// rectangle the fraction is exact - see `coverage.dart` - so this is not a
+  /// sampled approximation and does not get better with more work.
+  ///
+  /// A rectangle already on integer boundaries produces byte-for-byte the same
+  /// result as [fillRect]. That is worth relying on: every boundary pixel gets
+  /// coverage 255 or 0, and 255 is the identity for the scale, so there is no
+  /// path by which antialiasing can perturb a pixel-aligned fill. There is a
+  /// test on exactly that.
+  ///
+  /// This clips against the *exact* clip rectangle, not the integer one, so a
+  /// clip edge at 10.5 leaves column 10 half covered instead of chopping it.
+  /// See [ClipStack] for why both exist.
+  void fillRectAntiAliased(Rect rect, int argbColor) {
+    final alpha = (argbColor >> 24) & 0xff;
+    if (alpha == 0) return;
+
+    // Clip in continuous space, before anything is rounded. Intersecting two
+    // axis-aligned rectangles is exact, so no coverage is lost here - which is
+    // the whole reason the clip stack carries fractional edges.
+    final left = _maxD(rect.left, clip.exactLeft);
+    final top = _maxD(rect.top, clip.exactTop);
+    final right = _minD(rect.right, clip.exactRight);
+    final bottom = _minD(rect.bottom, clip.exactBottom);
+    if (right <= left || bottom <= top) return;
+
+    // Safe without a bounds clamp: the clip's exact rectangle starts at the
+    // device bounds and intersection only shrinks it, so flooring its left and
+    // ceiling its right cannot leave the buffer.
+    final x0 = firstCoveredPixel(left);
+    final x1 = coveredPixelEnd(right);
+    final y0 = firstCoveredPixel(top);
+    final y1 = coveredPixelEnd(bottom);
+
+    final red = premultiply((argbColor >> 16) & 0xff, alpha);
+    final green = premultiply((argbColor >> 8) & 0xff, alpha);
+    final blue = premultiply(argbColor & 0xff, alpha);
+    final c0 = _redIndex == 0 ? red : blue;
+    final c2 = _redIndex == 0 ? blue : red;
+
+    // Column coverage is the same for every row, so it is computed once for
+    // the two boundary columns and never inside the row loop. Everything
+    // between them is a full column by construction.
+    final singleColumn = x1 - x0 == 1;
+    final leftCoverage = spanCoverage(left, right, x0);
+    final rightCoverage =
+        singleColumn ? leftCoverage : spanCoverage(left, right, x1 - 1);
+
+    for (var y = y0; y < y1; y++) {
+      final rowCoverage = spanCoverage(top, bottom, y);
+      // A row the rectangle only touches contributes nothing. Checking here
+      // rather than per pixel is what keeps the generous `ceil` bound free.
+      if (rowCoverage == 0) continue;
+
+      if (singleColumn) {
+        _fillSpan(
+            y, x0, x1, c0, green, c2, alpha, mul255(leftCoverage, rowCoverage));
+        continue;
+      }
+      _fillSpan(y, x0, x0 + 1, c0, green, c2, alpha,
+          mul255(leftCoverage, rowCoverage));
+      // The interior. Its coverage is the row's, so a fully covered row runs
+      // the identical loop `fillRect` runs, including the opaque byte-copy
+      // case.
+      _fillSpan(y, x0 + 1, x1 - 1, c0, green, c2, alpha, rowCoverage);
+      _fillSpan(y, x1 - 1, x1, c0, green, c2, alpha,
+          mul255(rightCoverage, rowCoverage));
+    }
+  }
+
+  /// Composites a horizontal run of one colour at one coverage.
+  ///
+  /// [coverage] scales the already-premultiplied source: scaling all four
+  /// channels including alpha is what keeps the result premultiplied, and it
+  /// is done once for the run rather than once per pixel. Coverage 255 skips
+  /// the scaling entirely, which is why an interior span costs exactly what it
+  /// costs in [fillRect].
+  void _fillSpan(
+    int y,
+    int xStart,
+    int xEnd,
+    int c0,
+    int c1,
+    int c2,
+    int alpha,
+    int coverage,
+  ) {
+    // Coverage zero must not write. Blending with alpha 0 would be a no-op
+    // arithmetically, but it would still read and write four bytes per pixel
+    // on every row of every antialiased fill's bounding box.
+    if (xEnd <= xStart || coverage == 0) return;
+
+    var a = alpha;
+    var s0 = c0;
+    var s1 = c1;
+    var s2 = c2;
+    if (coverage != 255) {
+      a = mul255(alpha, coverage);
+      // A faint colour under a slight coverage can round away completely.
+      if (a == 0) return;
+      s0 = mul255(c0, coverage);
+      s1 = mul255(c1, coverage);
+      s2 = mul255(c2, coverage);
+    }
+
+    var offset = y * _bytesPerRow + xStart * 4;
+    if (a == 255) {
+      for (var x = xStart; x < xEnd; x++) {
+        _pixels[offset] = s0;
+        _pixels[offset + 1] = s1;
+        _pixels[offset + 2] = s2;
+        _pixels[offset + 3] = 255;
+        offset += 4;
+      }
+      return;
+    }
+
+    final inverse = 255 - a;
+    for (var x = xStart; x < xEnd; x++) {
+      _pixels[offset] = blendChannelOver(s0, _pixels[offset], inverse);
+      _pixels[offset + 1] = blendChannelOver(s1, _pixels[offset + 1], inverse);
+      _pixels[offset + 2] = blendChannelOver(s2, _pixels[offset + 2], inverse);
+      _pixels[offset + 3] = blendChannelOver(a, _pixels[offset + 3], inverse);
+      offset += 4;
     }
   }
 
@@ -219,3 +355,9 @@ int _min(int a, int b) => a < b ? a : b;
 
 @pragma('vm:prefer-inline')
 int _max(int a, int b) => a > b ? a : b;
+
+@pragma('vm:prefer-inline')
+double _minD(double a, double b) => a < b ? a : b;
+
+@pragma('vm:prefer-inline')
+double _maxD(double a, double b) => a > b ? a : b;

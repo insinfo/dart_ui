@@ -84,6 +84,93 @@ void main() {
     });
   });
 
+  group('the exact rectangle', () {
+    test('starts at the device bounds like the integer one', () {
+      final clip = ClipStack.forDevice(320, 200);
+
+      expect(clip.currentExact, const Rect.fromLTRB(0, 0, 320, 200));
+      expect(clip.exactLeft, 0.0);
+      expect(clip.exactRight, 320.0);
+      expect(clip.isEmptyExact, isFalse);
+    });
+
+    test('keeps fractional edges the integer one has to round', () {
+      final clip = ClipStack.forDevice(100, 100)
+        ..intersect(const Rect.fromLTRB(10.5, 20.25, 60.75, 70.5));
+
+      expect(clip.currentExact, const Rect.fromLTRB(10.5, 20.25, 60.75, 70.5));
+      // The integer clip rounds each edge to the nearest pixel, as it always
+      // has - the two are the same region at two resolutions.
+      expect(clip.current, const Rect.fromLTRB(11, 20, 61, 71));
+    });
+
+    test('cannot be widened either', () {
+      final clip = ClipStack.forDevice(100, 100)
+        ..intersect(const Rect.fromLTRB(10.5, 10.5, 20.5, 20.5))
+        ..intersect(const Rect.fromLTRB(-100, -100, 1000, 1000));
+
+      expect(clip.currentExact, const Rect.fromLTRB(10.5, 10.5, 20.5, 20.5));
+    });
+
+    test('is saved and restored alongside the integer one', () {
+      final clip = ClipStack.forDevice(100, 100)
+        ..intersect(const Rect.fromLTRB(1.5, 2.5, 90.5, 91.5))
+        ..save()
+        ..intersect(const Rect.fromLTRB(20.25, 20.25, 30.75, 30.75));
+      expect(
+          clip.currentExact, const Rect.fromLTRB(20.25, 20.25, 30.75, 30.75));
+
+      clip.restore();
+
+      expect(clip.currentExact, const Rect.fromLTRB(1.5, 2.5, 90.5, 91.5));
+      expect(clip.current, const Rect.fromLTRB(2, 3, 91, 92));
+    });
+
+    test('a clip narrower than a pixel empties the integer clip only', () {
+      // The one place the two notions of empty come apart, and the reason
+      // isEmpty and isEmptyExact are separate questions. An antialiased draw
+      // can still put ink through this clip; a hard-edged one cannot.
+      final clip = ClipStack.forDevice(100, 100)
+        ..intersect(const Rect.fromLTRB(1.6, 0, 2.4, 10));
+
+      expect(clip.isEmpty, isTrue);
+      expect(clip.current, Rect.zero);
+      expect(clip.isEmptyExact, isFalse);
+      expect(clip.currentExact, const Rect.fromLTRB(1.6, 0, 2.4, 10));
+    });
+
+    test('still narrows after the integer clip has emptied', () {
+      // Regression: bailing out of intersect on the integer emptiness would
+      // leave the exact rectangle wider than the caller asked for, and an
+      // antialiased fill would then paint through a clip that had been closed.
+      final clip = ClipStack.forDevice(100, 100)
+        ..intersect(const Rect.fromLTRB(1.6, 0, 2.4, 10));
+      expect(clip.isEmpty, isTrue);
+
+      clip.intersect(const Rect.fromLTRB(50, 50, 60, 60));
+
+      expect(clip.isEmptyExact, isTrue);
+      expect(clip.currentExact, Rect.zero);
+    });
+
+    test('an exactly empty clip is empty by both measures', () {
+      final clip = ClipStack.forDevice(100, 100)
+        ..intersect(const Rect.fromLTRB(0, 0, 10, 10))
+        ..intersect(const Rect.fromLTRB(50, 50, 60, 60));
+
+      expect(clip.isEmptyExact, isTrue);
+      expect(clip.isEmpty, isTrue);
+      expect(clip.currentExact, Rect.zero);
+    });
+
+    test('integer edges set both rectangles to the same numbers', () {
+      final clip = ClipStack.forDevice(100, 100)..intersectDevice(5, 6, 7, 8);
+
+      expect(clip.current, const Rect.fromLTRB(5, 6, 7, 8));
+      expect(clip.currentExact, const Rect.fromLTRB(5, 6, 7, 8));
+    });
+  });
+
   group('pixelEdge', () {
     test('rounds to the nearest pixel', () {
       expect(pixelEdge(10.0), 10);
