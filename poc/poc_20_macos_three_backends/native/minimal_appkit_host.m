@@ -174,6 +174,13 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
 // Transport 3: the surface the compositor can scan out directly.
 @property(nonatomic, assign) IOSurfaceRef surface;
 @property(nonatomic, assign) BOOL surfaceAttached;
+// A pool, for double buffering. Presenting alternating surfaces is what lets
+// the client write into one while the compositor is still reading the other -
+// the single-surface path measured a 3.3ms window per frame in which a write
+// can land mid-scan-out.
+@property(nonatomic, assign) IOSurfaceRef *surfacePool;
+@property(nonatomic, assign) NSUInteger surfacePoolCount;
+@property(nonatomic, assign) NSInteger presentedSlot;
 // nil while the surface came from the deprecated IOSurfaceLookup, otherwise
 // the name of the mach-port mechanism that delivered it. PRESENT reads this,
 // so the transport a benchmark measures is the transport it reports.
@@ -634,6 +641,101 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
   }
 }
 
+// --- double buffering -------------------------------------------------------
+//
+// The single-surface path leaves the client writing into pages the
+// WindowServer may be scanning out. A pool makes that impossible by
+// construction rather than by timing: the client writes the slot it did not
+// just present.
+//
+// Kept alongside SURFACE rather than replacing it, so the cost of swapping
+// contents every frame can be measured against holding one surface. If the
+// swap turns out to cost more, that is the price of correctness and it should
+// be a known number, not a surprise.
+- (void)attachSurfacePool:(NSString *)command {
+  NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+  if (parts.count < 2) {
+    printf("ERROR=SURFACE_POOL:EMPTY
+");
+    fflush(stdout);
+    return;
+  }
+  NSUInteger count = parts.count - 1;
+  IOSurfaceRef *pool = calloc(count, sizeof(IOSurfaceRef));
+  if (pool == NULL) {
+    printf("ERROR=SURFACE_POOL:ALLOC
+");
+    fflush(stdout);
+    return;
+  }
+  for (NSUInteger i = 0; i < count; i++) {
+    IOSurfaceID identifier = (IOSurfaceID)[parts[i + 1] integerValue];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    pool[i] = IOSurfaceLookup(identifier);
+#pragma clang diagnostic pop
+    if (pool[i] == NULL) {
+      // Release what was already looked up: a partially built pool would
+      // leak every surface before the one that failed.
+      for (NSUInteger j = 0; j < i; j++) CFRelease(pool[j]);
+      free(pool);
+      printf("ERROR=SURFACE_POOL:LOOKUP:%u
+", identifier);
+      fflush(stdout);
+      return;
+    }
+  }
+  [self releaseSurfacePool];
+  self.surfacePool = pool;
+  self.surfacePoolCount = count;
+  self.presentedSlot = -1;
+  printf("SURFACES_OK %lu
+", (unsigned long)count);
+  fflush(stdout);
+}
+
+- (void)releaseSurfacePool {
+  if (self.surfacePool == NULL) return;
+  for (NSUInteger i = 0; i < self.surfacePoolCount; i++) {
+    if (self.surfacePool[i] != NULL) CFRelease(self.surfacePool[i]);
+  }
+  free(self.surfacePool);
+  self.surfacePool = NULL;
+  self.surfacePoolCount = 0;
+  self.presentedSlot = -1;
+}
+
+- (void)presentSlot:(NSString *)command {
+  NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+  if (parts.count != 3 || self.surfacePool == NULL) {
+    printf("ERROR=SURFACE_POOL:NOT_READY
+");
+    fflush(stdout);
+    return;
+  }
+  NSInteger slot = [parts[2] integerValue];
+  if (slot < 0 || (NSUInteger)slot >= self.surfacePoolCount) {
+    printf("ERROR=SURFACE_POOL:SLOT:%ld
+", (long)slot);
+    fflush(stdout);
+    return;
+  }
+  // Handing the layer a different surface IS the swap. Same slot twice in a
+  // row is a redraw of the same buffer, which only needs the changed flag.
+  if (slot != self.presentedSlot) {
+    self.hostView.layer.contents = (__bridge id)self.surfacePool[slot];
+    self.presentedSlot = slot;
+  } else if ([self.hostView.layer
+                 respondsToSelector:@selector(setContentsChanged)]) {
+    [self.hostView.layer setContentsChanged];
+  }
+  [CATransaction flush];
+  self.frameCount++;
+  printf("PRESENT_OK %s slot%ld
+", parts[1].UTF8String, (long)slot);
+  fflush(stdout);
+}
+
 // One entry point for both zero-copy transports, so the measured difference is
 // the transport and not the surrounding code.
 - (void)present:(NSString *)command {
@@ -709,6 +811,12 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
   } else if ([command hasPrefix:@"PORT_SERVER "]) {
     [self startPortServer:command];
     return;
+  } else if ([command hasPrefix:@"SURFACES "]) {
+    [self attachSurfacePool:command];
+    return;
+  } else if ([command hasPrefix:@"PRESENT_SLOT "]) {
+    [self presentSlot:command];
+    return;
   } else if ([command hasPrefix:@"SURFACE "]) {
     [self attachSurface:command];
     return;
@@ -735,6 +843,7 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
   }
   self.hostView.layer.contents = nil;
   [self releaseSharedMemory];
+  [self releaseSurfacePool];
   if (self.surface != NULL) {
     CFRelease(self.surface);
     self.surface = NULL;

@@ -186,6 +186,50 @@ Future<void> main(List<String> arguments) async {
   print('VSYNC_UNSYNCED_WRITE_MEDIAN_US=${_percentile(tearWindow, 50)}');
   print('VSYNC_TEAR_HAZARD=${tearWindow.isEmpty ? "unknown" : "present"}');
 
+  // --- 4. double buffering ---------------------------------------------------
+  //
+  // Double buffering does not get "measured" as removing tears - it removes
+  // them by construction, because the client writes the slot it did not just
+  // present. What CAN be measured is the price: handing the layer a different
+  // surface every frame may cost more than flagging one surface as changed,
+  // and if it does, that number should be known rather than discovered.
+  final back = IOSurfaceFrame.create(width: 1920, height: 1080);
+  await host.send('SURFACES ${surface.id} ${back.id}');
+  final pooled = await host.waitFor((l) => l.startsWith('SURFACES_OK'));
+  if (pooled == null) {
+    print('VSYNC_DOUBLE_BUFFER=unavailable');
+  } else {
+    final swapped = <int>[];
+    var writeSlot = 0;
+    var mismatches = 0;
+    var presentedSlot = -1;
+    for (var i = 0; i < frames; i++) {
+      // The invariant, checked rather than assumed: never write the slot that
+      // was just handed to the compositor.
+      if (writeSlot == presentedSlot) mismatches++;
+      (writeSlot == 0 ? surface : back).fillBgra(0x10 * (i % 16), 0x60, 0xA0);
+      sequence++;
+      final watch = Stopwatch()..start();
+      await host.send('PRESENT_SLOT $sequence $writeSlot');
+      final ok =
+          await host.waitFor((l) => l == 'PRESENT_OK $sequence slot$writeSlot');
+      watch.stop();
+      if (ok == null) break;
+      swapped.add(watch.elapsedMicroseconds);
+      presentedSlot = writeSlot;
+      writeSlot = 1 - writeSlot;
+    }
+    print('VSYNC_DOUBLE_BUFFER_FRAMES=${swapped.length}');
+    print('VSYNC_DOUBLE_BUFFER_MEDIAN_US=${_percentile(swapped, 50)}');
+    print('VSYNC_DOUBLE_BUFFER_P95_US=${_percentile(swapped, 95)}');
+    print('VSYNC_DOUBLE_BUFFER_WRITE_COLLISIONS=$mismatches');
+    final single = _percentile(sustained, 50);
+    if (single > 0 && swapped.isNotEmpty) {
+      print('VSYNC_SWAP_OVERHEAD_US=${_percentile(swapped, 50) - single}');
+    }
+  }
+  back.dispose();
+
   await host.send('CLOSE');
   await host.waitFor((l) => l == 'CLOSE_OK');
   await host.process.exitCode.timeout(const Duration(seconds: 10),

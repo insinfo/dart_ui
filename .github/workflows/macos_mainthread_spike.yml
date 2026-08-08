@@ -255,6 +255,10 @@ jobs:
           cat /tmp/vsync.log
           echo "exit=$status"
           [ "$status" -eq 0 ]
+          # Double buffering removes the tear window by construction, so the
+          # thing to guard is the invariant, not a pixel: the client must never
+          # write the slot it just presented.
+          grep -q '^VSYNC_DOUBLE_BUFFER_WRITE_COLLISIONS=0$' /tmp/vsync.log
           {
             echo '## Present pacing at 1920x1080'
             echo
