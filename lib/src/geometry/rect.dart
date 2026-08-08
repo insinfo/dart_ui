@@ -21,27 +21,27 @@ final class Rect {
   const Rect.fromLTRB(this.left, this.top, this.right, this.bottom);
 
   const Rect.fromLTWH(double left, double top, double width, double height)
-    : this.fromLTRB(left, top, left + width, top + height);
+      : this.fromLTRB(left, top, left + width, top + height);
 
   /// The smallest rectangle enclosing both corners, in any order.
   Rect.fromPoints(Offset a, Offset b)
-    : this.fromLTRB(
-        math.min(a.dx, b.dx),
-        math.min(a.dy, b.dy),
-        math.max(a.dx, b.dx),
-        math.max(a.dy, b.dy),
-      );
+      : this.fromLTRB(
+          math.min(a.dx, b.dx),
+          math.min(a.dy, b.dy),
+          math.max(a.dx, b.dx),
+          math.max(a.dy, b.dy),
+        );
 
   Rect.fromCenter({
     required Offset center,
     required double width,
     required double height,
   }) : this.fromLTRB(
-         center.dx - width / 2,
-         center.dy - height / 2,
-         center.dx + width / 2,
-         center.dy + height / 2,
-       );
+          center.dx - width / 2,
+          center.dy - height / 2,
+          center.dx + width / 2,
+          center.dy + height / 2,
+        );
 
   /// The canonical empty rectangle, and the answer [intersect] gives when two
   /// rectangles do not overlap.

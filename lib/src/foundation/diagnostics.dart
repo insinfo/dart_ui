@@ -107,8 +107,9 @@ final class BackendDiagnostic {
   bool get isFailure => kind != DiagnosticKind.note;
 
   @override
-  String toString() =>
-      detail == null ? '${kind.name}: $message' : '${kind.name}: $message ($detail)';
+  String toString() => detail == null
+      ? '${kind.name}: $message'
+      : '${kind.name}: $message ($detail)';
 }
 
 /// The answer a backend gives when asked whether it can run here.

@@ -52,7 +52,8 @@ void main() {
       expect(log, <String>['window', 'source', 'port']);
     });
 
-    test('add returns the resource so acquisition and registration are one '
+    test(
+        'add returns the resource so acquisition and registration are one '
         'expression', () {
       final bag = DisposableBag();
       final resource = bag.add(_Resource('a', <String>[]), () {});
@@ -61,8 +62,7 @@ void main() {
       expect(bag.length, 1);
     });
 
-    test('a throwing release does not stop the others, and still surfaces',
-        () {
+    test('a throwing release does not stop the others, and still surfaces', () {
       final log = <String>[];
       final bag = DisposableBag()
         ..add('first', () => log.add('first'))

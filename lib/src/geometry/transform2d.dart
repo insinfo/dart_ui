@@ -37,7 +37,7 @@ final class Transform2D {
   static const Transform2D identity = Transform2D(1, 0, 0, 1, 0, 0);
 
   const Transform2D.translation(double dx, double dy)
-    : this(1, 0, 0, 1, dx, dy);
+      : this(1, 0, 0, 1, dx, dy);
 
   const Transform2D.scaling(double sx, double sy) : this(sx, 0, 0, sy, 0, 0);
 
@@ -91,18 +91,18 @@ final class Transform2D {
   /// transforms that look right until rotation and translation are mixed, so
   /// the argument order is worth checking at every call site.
   Transform2D multiply(Transform2D other) => Transform2D(
-    a * other.a + c * other.b,
-    b * other.a + d * other.b,
-    a * other.c + c * other.d,
-    b * other.c + d * other.d,
-    a * other.tx + c * other.ty + tx,
-    b * other.tx + d * other.ty + ty,
-  );
+        a * other.a + c * other.b,
+        b * other.a + d * other.b,
+        a * other.c + c * other.d,
+        b * other.c + d * other.d,
+        a * other.tx + c * other.ty + tx,
+        b * other.tx + d * other.ty + ty,
+      );
 
   Offset transformOffset(Offset offset) => Offset(
-    a * offset.dx + c * offset.dy + tx,
-    b * offset.dx + d * offset.dy + ty,
-  );
+        a * offset.dx + c * offset.dy + tx,
+        b * offset.dx + d * offset.dy + ty,
+      );
 
   /// The axis-aligned bounding box of the transformed rectangle.
   ///
