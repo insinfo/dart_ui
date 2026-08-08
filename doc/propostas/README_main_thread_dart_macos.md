@@ -43,3 +43,12 @@ já pertence ao trabalho experimental escondido por flags.
 5. `05_proposal_dart_sdk_external_event_loop_github_en.md`
    Versão inglesa curta e pronta para issue, limitada à implementação das APIs
    já declaradas, com evidência da POC-19 e critérios de aceitação.
+
+## Eixo 3 — engenharia reversa dos backends macOS
+
+6. `06_engenharia_reversa_tres_backends_macos.md`
+   Consolidação completa da engenharia reversa: 12 ABIs de funções C privadas
+   do SkyLight/CGS com assinatura, método de validação e erros conhecidos;
+   análise LLDB do shutdown recuperável do signal hijack; protocolo IPC do host
+   Objective-C; política de seleção e contrato comum; tabela de trabalho
+   restante.
