@@ -85,12 +85,31 @@ jobs:
           dart compile exe \
             ../../poc/poc_20_macos_three_backends/bin/conformance.dart \
             -o build/conformance
+          # Bounded in-step: the extra drain outside the port callback is the
+          # call earlier probes saw block in mach_msg, so a stall has to name
+          # itself instead of being killed by the step timeout.
           status=0
           OBJC_DEBUG_MISSING_POOLS=YES CONFORMANCE_SHOTS=/tmp/shots \
-            ./build/conformance skylight > /tmp/conformance-skylight.log 2>&1 \
-            || status=$?
+            ./build/conformance skylight > /tmp/conformance-skylight.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 90); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "backend 1 conformance still running after 90s; sampling"
+            mkdir -p /tmp/lldb
+            sample "$pid" 2 1 -file /tmp/lldb/conformance-skylight.sample || true
+            kill -9 "$pid" 2>/dev/null || true
+            status=124
+          fi
+          wait "$pid" 2>/dev/null || rc=$?
+          [ "$status" -eq 124 ] || status=${rc:-0}
           cat /tmp/conformance-skylight.log
           echo "exit=$status"
+          if [ -f /tmp/lldb/conformance-skylight.sample ]; then
+            head -60 /tmp/lldb/conformance-skylight.sample || true
+          fi
           grep -Eq '^WINDOW_ID=[1-9][0-9]*$' /tmp/conformance-skylight.log
           grep -q '^PRESENT=PASS$' /tmp/conformance-skylight.log
           grep -q '^PIXEL_WITNESS=PASS' /tmp/conformance-skylight.log

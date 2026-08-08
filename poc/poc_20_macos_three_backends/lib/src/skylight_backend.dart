@@ -593,10 +593,13 @@ class SkylightBackend implements MacosWindowBackend {
         int Function(_VoidPtr, double, bool)>('CFRunLoopRunInMode');
     final before = report.eventsRead;
     for (var i = 0; i < slices; i++) {
+      final beforeSlice = report.eventsRead;
       runInMode(_defaultMode, sliceSeconds, true);
-      // Only worth trying when a message has already been seen: on an empty
-      // queue this read is the one that was observed to block.
-      if (report.machMessages > report.eventsRead) {
+      // Only after a slice that actually delivered something: on an empty
+      // queue this read is the one earlier probes saw block in mach_msg. A
+      // slice that produced an event is exactly the case where the
+      // WindowServer may have batched more into the same message.
+      if (report.eventsRead > beforeSlice) {
         for (var extra = 0; extra < extraReadsPerSlice; extra++) {
           report.extraReads++;
           if (!(_readOneEvent?.call() ?? false)) break;
