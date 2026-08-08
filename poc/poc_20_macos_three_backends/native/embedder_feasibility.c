@@ -13,10 +13,14 @@
 
 #include "dart_api.h"
 
+// Opaque to the optimiser, so the reference below cannot be folded away.
+int never_true(void);
+int never_true(void) { return 0; }
+
 int main(void) {
   // Never actually called - the point is to force the linker to resolve the
   // symbol. Calling it would need a snapshot we do not have yet.
-  if (getenv_never_set()) {
+  if (never_true()) {
     Dart_InitializeParams params = {0};
     params.version = DART_INITIALIZE_PARAMS_CURRENT_VERSION;
     const char *error = Dart_Initialize(&params);
@@ -25,7 +29,3 @@ int main(void) {
   printf("EMBEDDER_LINK=OK\n");
   return 0;
 }
-
-// Opaque to the optimiser, so the reference above cannot be folded away.
-int getenv_never_set(void);
-int getenv_never_set(void) { return 0; }

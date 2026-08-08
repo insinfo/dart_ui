@@ -90,6 +90,7 @@ Future<void> main(List<String> arguments) async {
   final frames = arguments.length > 1 ? int.parse(arguments[1]) : 120;
 
   final results = <TransportResult>[
+    await _benchmarkControlRoundTrip(hostBinary, frames),
     await _benchmarkPipe(hostBinary, frames),
     await _benchmarkSharedMemory(hostBinary, frames),
     await _benchmarkIOSurface(hostBinary, frames),
@@ -107,7 +108,22 @@ Future<void> main(List<String> arguments) async {
         'note=${result.note}');
   }
 
-  final ranked = results.where((r) => r.samples.isNotEmpty).toList()
+  // The baseline is not a transport: it is the floor every transport pays and
+  // the only part an in-process embedder could remove.
+  final baseline = results.firstWhere((r) => r.name == 'ipc-baseline').median;
+  final best = results
+      .where((r) => r.name != 'ipc-baseline' && r.samples.isNotEmpty)
+      .fold<int>(1 << 30, (value, r) => r.median < value ? r.median : value);
+  if (best < (1 << 30) && best > 0) {
+    print('IPC_BASELINE_US=$baseline');
+    print('EMBEDDER_HEADROOM_US=$baseline '
+        '(${(baseline * 100 / best).toStringAsFixed(0)}% of the best '
+        'transport round trip)');
+  }
+
+  final ranked = results
+      .where((r) => r.name != 'ipc-baseline' && r.samples.isNotEmpty)
+      .toList()
     ..sort((a, b) => a.median.compareTo(b.median));
   if (ranked.isEmpty) {
     print('TRANSPORT_WINNER=none');
@@ -127,6 +143,40 @@ Future<void> main(List<String> arguments) async {
         '${results.where((r) => r.samples.isEmpty).map((r) => r.name).toList()}');
     exitCode = 1;
   }
+}
+
+/// Not a transport: the cost of a round trip that carries no pixels at all.
+///
+/// Every transport pays this, and it is the ONLY part an in-process embedder
+/// could remove. Whatever is left after subtracting it is work the embedder
+/// would still have to do.
+Future<TransportResult> _benchmarkControlRoundTrip(
+    String hostBinary, int frames) async {
+  final host = await _Host.start(hostBinary);
+  await _awaitWindow(host);
+  final samples = <int>[];
+  final watch = Stopwatch();
+  var seen = 0;
+  for (var i = 0; i < frames; i++) {
+    watch
+      ..reset()
+      ..start();
+    host.process.stdin.writeln('PING');
+    await host.process.stdin.flush();
+    final target = seen + 1;
+    final ok = await host.waitFor(
+        (l) =>
+            l == 'PONG' &&
+            host.lines.where((x) => x == 'PONG').length >= target,
+        timeout: const Duration(seconds: 10));
+    watch.stop();
+    if (ok == null) break;
+    seen = host.lines.where((x) => x == 'PONG').length;
+    samples.add(watch.elapsedMicroseconds);
+  }
+  await _shutdown(host);
+  return TransportResult('ipc-baseline', samples, 5,
+      'PING/PONG: the process boundary with no pixels attached');
 }
 
 Future<int> _awaitWindow(_Host host) async {
