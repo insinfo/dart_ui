@@ -44,24 +44,23 @@ Future<void> main(List<String> arguments) async {
 
   final host = await Process.start(hostBinary, const ['--command-stdin']);
   final lines = <String>[];
+  // The arrival timestamp is taken INSIDE the stdout listener, and the waiting
+  // is done on a completer rather than a polling loop. Polling would put its
+  // own scheduling granularity straight into the host -> Dart leg, which is
+  // precisely the number this benchmark exists to produce.
+  Completer<({String line, int ticks})>? pending;
   final drained = host.stdout
       .transform(utf8.decoder)
       .transform(const LineSplitter())
-      .listen(lines.add)
-      .asFuture<void>();
-  unawaited(host.stderr.transform(utf8.decoder).forEach(stderr.write));
-
-  Future<bool> waitForCount(int count,
-      {Duration timeout = const Duration(seconds: 5)}) async {
-    final deadline = DateTime.now().add(timeout);
-    while (DateTime.now().isBefore(deadline)) {
-      if (lines.where((l) => l.startsWith('INPUT=')).length >= count) {
-        return true;
-      }
-      await Future<void>.delayed(const Duration(microseconds: 200));
+      .listen((line) {
+    final ticks = machNow();
+    lines.add(line);
+    final waiter = pending;
+    if (line.startsWith('INPUT=') && waiter != null && !waiter.isCompleted) {
+      waiter.complete((line: line, ticks: ticks));
     }
-    return false;
-  }
+  }).asFuture<void>();
+  unawaited(host.stderr.transform(utf8.decoder).forEach(stderr.write));
 
   while (!lines.contains('PROTOCOL=3')) {
     await Future<void>.delayed(const Duration(milliseconds: 10));
@@ -74,7 +73,8 @@ Future<void> main(List<String> arguments) async {
   var lost = 0;
 
   for (var i = 0; i < events; i++) {
-    final before = lines.where((l) => l.startsWith('INPUT=')).length;
+    final waiter = Completer<({String line, int ticks})>();
+    pending = waiter;
     // Cycle the key code so a duplicated line is visible rather than silently
     // counted twice.
     final posted = input.postKeyStamped(host.pid, keyCode: i % 50);
@@ -82,18 +82,15 @@ Future<void> main(List<String> arguments) async {
       lost++;
       continue;
     }
-    if (!await waitForCount(before + 1)) {
+    final arrival = await waiter.future.timeout(const Duration(seconds: 5),
+        onTimeout: () => (line: '', ticks: 0));
+    pending = null;
+    if (arrival.line.isEmpty) {
       lost++;
       continue;
     }
-    final arrivedAt = machNow();
-    final line = lines.where((l) => l.startsWith('INPUT=')).elementAt(before);
-    final fields = line.substring('INPUT='.length).split(':');
-    if (fields.length < 5) {
-      lost++;
-      continue;
-    }
-    final hostTicks = int.tryParse(fields[4]);
+    final fields = arrival.line.substring('INPUT='.length).split(':');
+    final hostTicks = fields.length < 5 ? null : int.tryParse(fields[4]);
     if (hostTicks == null) {
       lost++;
       continue;
@@ -101,7 +98,7 @@ Future<void> main(List<String> arguments) async {
     delivered++;
     samples.add(_Sample(
       machTicksToMicroseconds(hostTicks - posted.ticks),
-      machTicksToMicroseconds(arrivedAt - hostTicks),
+      machTicksToMicroseconds(arrival.ticks - hostTicks),
     ));
     // Let the queue settle so consecutive events are not coalesced.
     await Future<void>.delayed(const Duration(milliseconds: 5));
