@@ -1457,7 +1457,8 @@ typedef _SlsNotifyCallbackNative = Void Function(
 /// when signalled. This mirrors JankyBorders' working sequence:
 /// SLSGetEventPort -> CFMachPort -> CFRunLoopSource -> SLEventCreateNextEvent.
 int _consumeSkyLightEventPort(
-    DynamicLibrary skyLight, int connectionId, int seconds) {
+    DynamicLibrary skyLight, int connectionId, int seconds,
+    {void Function()? afterSourceInstalled}) {
   // These notification registrations are used by JankyBorders immediately
   // before it asks for the event port. AppKit/HIServices additionally
   // registers the process with flavor 3. Earlier probes tested each half in
@@ -1587,6 +1588,12 @@ int _consumeSkyLightEventPort(
   if (source == nullptr || runLoop == nullptr) return -1;
   addSource(runLoop, source, defaultMode);
 
+  // The window comes AFTER the source, not before. Backend 1's extracted
+  // implementation uses that order and receives events on every run; this probe
+  // used to create the window first and delivered nothing in runs 31243093662
+  // and 31243780407 even though the process registration eventually returned 0.
+  afterSourceInstalled?.call();
+
   // Seed the queue before the first source dispatch. Runs Z2-Z9 entered the
   // run loop first; its initial port signal then called into an empty queue and
   // SLEventCreateNextEvent waited in mach_msg forever. The one successful Y
@@ -1636,49 +1643,53 @@ Future<void> probeSkyLightEvents(int seconds) async {
     sleep(const Duration(milliseconds: 150));
   }
 
-  // A window gives the WindowServer somewhere to aim events.
-  final rect = calloc<NSRect>()
-    ..ref.x = 200
-    ..ref.y = 200
-    ..ref.width = 480
-    ..ref.height = 320;
-  final regionSlot = calloc<Pointer<Void>>();
-  skyLight.lookupFunction<
-      _NewRegionWithRectNative,
-      int Function(Pointer<NSRect>,
-          Pointer<Pointer<Void>>)>('CGSNewRegionWithRect')(rect, regionSlot);
-  final windowIdSlot = calloc<Uint32>();
-  skyLight.lookupFunction<
-          _SlsNewWindowNative,
-          int Function(int, int, double, double, Pointer<Void>,
-              Pointer<Uint32>)>('SLSNewWindow')(connectionId,
-      kCGSBackingStoreBuffered, 200.0, 200.0, regionSlot.value, windowIdSlot);
-  final windowId = windowIdSlot.value;
-  final context = skyLight.lookupFunction<_WindowContextCreateNative,
-          Pointer<Void> Function(int, int, Pointer<Void>)>(
-      'SLWindowContextCreate')(connectionId, windowId, nullptr);
-  if (context != nullptr) {
-    final coreGraphics = DynamicLibrary.open(
-        '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
-    final fill = calloc<NSRect>()
+  // A window gives the WindowServer somewhere to aim events, but it is created
+  // only once the event source is installed - see afterSourceInstalled below.
+  void createWindow() {
+    final rect = calloc<NSRect>()
+      ..ref.x = 200
+      ..ref.y = 200
       ..ref.width = 480
       ..ref.height = 320;
-    coreGraphics.lookupFunction<
-        _SetRgbFillColorNative,
-        void Function(Pointer<Void>, double, double, double,
-            double)>('CGContextSetRGBFillColor')(context, 0.9, 0.3, 0.1, 1.0);
-    coreGraphics
-        .lookupFunction<_FillRectNative, void Function(Pointer<Void>, NSRect)>(
-            'CGContextFillRect')(context, fill.ref);
-    coreGraphics.lookupFunction<_ContextFlushNative,
-        void Function(Pointer<Void>)>('CGContextFlush')(context);
+    final regionSlot = calloc<Pointer<Void>>();
+    skyLight.lookupFunction<
+        _NewRegionWithRectNative,
+        int Function(Pointer<NSRect>,
+            Pointer<Pointer<Void>>)>('CGSNewRegionWithRect')(rect, regionSlot);
+    final windowIdSlot = calloc<Uint32>();
+    skyLight.lookupFunction<
+            _SlsNewWindowNative,
+            int Function(int, int, double, double, Pointer<Void>,
+                Pointer<Uint32>)>('SLSNewWindow')(connectionId,
+        kCGSBackingStoreBuffered, 200.0, 200.0, regionSlot.value, windowIdSlot);
+    final windowId = windowIdSlot.value;
+    final context = skyLight.lookupFunction<_WindowContextCreateNative,
+            Pointer<Void> Function(int, int, Pointer<Void>)>(
+        'SLWindowContextCreate')(connectionId, windowId, nullptr);
+    if (context != nullptr) {
+      final coreGraphics = DynamicLibrary.open(
+          '/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics');
+      final fill = calloc<NSRect>()
+        ..ref.width = 480
+        ..ref.height = 320;
+      coreGraphics.lookupFunction<
+          _SetRgbFillColorNative,
+          void Function(Pointer<Void>, double, double, double,
+              double)>('CGContextSetRGBFillColor')(context, 0.9, 0.3, 0.1, 1.0);
+      coreGraphics
+          .lookupFunction<_FillRectNative, void Function(Pointer<Void>, NSRect)>(
+              'CGContextFillRect')(context, fill.ref);
+      coreGraphics.lookupFunction<_ContextFlushNative,
+          void Function(Pointer<Void>)>('CGContextFlush')(context);
+    }
+    skyLight
+        .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
+            'SLSOrderWindow')(connectionId, windowId, 1, 0);
+    print('WINDOW_ID=$windowId');
   }
-  skyLight
-      .lookupFunction<_SlsOrderWindowNative, int Function(int, int, int, int)>(
-          'SLSOrderWindow')(connectionId, windowId, 1, 0);
-  print('WINDOW_ID=$windowId');
 
-  final received = _consumeSkyLightEventPort(skyLight, connectionId, seconds);
+  final received = _consumeSkyLightEventPort(skyLight, connectionId, seconds,
+      afterSourceInstalled: createWindow);
 
   print('events received: $received');
   print(received > 0
