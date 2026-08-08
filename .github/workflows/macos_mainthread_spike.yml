@@ -171,15 +171,38 @@ jobs:
           grep -q '^PUMP_LIVENESS=PASS' /tmp/dispatch-loop.log
           grep -q '^NORMAL_SHUTDOWN=PASS$' /tmp/dispatch-loop.log
 
+      # Bounded in-step instead of relying on the step timeout: a step that
+      # times out is killed before it can print anything, and the whole point
+      # of a hang is to see WHERE it hung.
       - name: 'Backend 2 conformance: window, present, pixels, input, teardown'
-        timeout-minutes: 4
+        timeout-minutes: 5
         run: |
-          mkdir -p /tmp/shots
+          mkdir -p /tmp/shots /tmp/lldb
           status=0
           CONFORMANCE_SHOTS=/tmp/shots ./build/probe conformance-signal \
-            > /tmp/conformance-signal.log 2>&1 || status=$?
+            > /tmp/conformance-signal.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 60); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "conformance-signal still running after 60s; sampling"
+            sample "$pid" 2 1 -file /tmp/lldb/conformance-signal.sample || true
+            kill -9 "$pid" 2>/dev/null || true
+            status=124
+          fi
+          wait "$pid" 2>/dev/null || rc=$?
+          [ "$status" -eq 124 ] || status=${rc:-0}
           cat /tmp/conformance-signal.log
           echo "exit=$status"
+          if [ -f /tmp/lldb/conformance-signal.sample ]; then
+            echo "----- main thread -----"
+            grep -A 24 "com.apple.main-thread" \
+              /tmp/lldb/conformance-signal.sample | head -30 || true
+            echo "----- all threads (call graph head) -----"
+            head -120 /tmp/lldb/conformance-signal.sample || true
+          fi
           grep -Eq '^WINDOW_ID=[1-9][0-9]*$' /tmp/conformance-signal.log
           grep -q '^PRESENT=PASS$' /tmp/conformance-signal.log
           grep -q '^PIXEL_WITNESS=PASS' /tmp/conformance-signal.log
@@ -187,6 +210,25 @@ jobs:
           grep -q '^TEARDOWN=PASS$' /tmp/conformance-signal.log
           grep -q '^CONFORMANCE=PASS$' /tmp/conformance-signal.log
           [ "$status" -eq 0 ]
+
+      # Runs whether or not the gate above passed: when it hangs this is the
+      # only thing that says which frame is stuck, and SIGUSR2 must be passed
+      # through or the session dies at the hijack instead of at the bug.
+      - name: 'lldb: where backend 2 conformance stops'
+        if: always()
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          mkdir -p /tmp/lldb
+          perl -e 'alarm shift; exec @ARGV' 90 lldb --batch \
+            -o "process handle SIGUSR2 -n false -p true -s false" \
+            -o "run conformance-signal" \
+            -o "thread backtrace all" \
+            -o "quit" \
+            ./build/probe 2>&1 \
+            | tee /tmp/lldb/conformance-signal.txt || echo "lldb exit=$?"
+          echo "----- tail -----"
+          tail -120 /tmp/lldb/conformance-signal.txt || true
 
       - name: 'Probe E: NSWindow on the hijacked main thread via NSInvocation'
         timeout-minutes: 3

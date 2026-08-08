@@ -2870,7 +2870,7 @@ Future<void> probeSignalConformance() async {
   const width = 480;
   const height = 320;
   const expected = shared.PixelSample(120, 220, 20);
-  print('CONFORMANCE_BACKEND=appkitSignal');
+  _log('CONFORMANCE_BACKEND=appkitSignal');
 
   var failures = 0;
   void check(bool condition, String failure) {
@@ -2880,17 +2880,18 @@ Future<void> probeSignalConformance() async {
     }
   }
 
+  _log('PHASE=park');
   ensureAppKitLoaded();
   if (!_parkMainThreadInRunLoop()) {
     _log('FAILURE: could not park the main thread.');
-    print('CONFORMANCE=FAIL (1)');
+    _log('CONFORMANCE=FAIL (1)');
     exitCode = 1;
     return;
   }
   final app = _finishLaunchingOnMain();
   if (app == nullptr || _isSentinel(app)) {
     _log('FAILURE: finishLaunching on main failed.');
-    print('CONFORMANCE=FAIL (1)');
+    _log('CONFORMANCE=FAIL (1)');
     exitCode = 1;
     return;
   }
@@ -2912,13 +2913,14 @@ Future<void> probeSignalConformance() async {
   calloc.free(types);
   objc_registerClassPair(windowClass);
 
+  _log('PHASE=window');
   final window = _createAndFrontNSWindow(
       windowClass: windowClass, width: width, height: height);
   check(window != nullptr, 'no NSWindow');
   final numberInvocation = _newInvocation(window, sel('windowNumber'));
   _invokeOnMain(numberInvocation);
   final windowNumber = _returnedInt(numberInvocation);
-  print('WINDOW_ID=$windowNumber');
+  _log('WINDOW_ID=$windowNumber');
   check(windowNumber > 0, 'no window number');
 
   final activate = _newInvocation(app, sel('activateIgnoringOtherApps:'));
@@ -2935,29 +2937,33 @@ Future<void> probeSignalConformance() async {
     pixels[i + 2] = expected.red;
     pixels[i + 3] = 255;
   }
+  _log('PHASE=present');
   final image = _cgImageFromBgra(pixels, width, height);
+  _log('CGImageCreate -> ${image.address}');
   final presented = image != nullptr && _setLayerContentsOnMain(window, image);
-  print(presented ? 'PRESENT=PASS' : 'PRESENT=FAIL');
+  _log(presented ? 'PRESENT=PASS' : 'PRESENT=FAIL');
   check(presented, 'the frame did not reach the layer');
   await Future<void>.delayed(const Duration(milliseconds: 500));
 
   // --- outside witness -------------------------------------------------------
+  _log('PHASE=witness');
   final witness = shared.WindowPixelWitness(
           workDirectory:
               Platform.environment['CONFORMANCE_SHOTS'] ?? '/tmp/shots')
       .capture(windowNumber, label: 'appkit-signal');
   final centre = witness.centre;
   if (centre != null && centre.matches(expected)) {
-    print('PIXEL_WITNESS=PASS centre=$centre '
+    _log('PIXEL_WITNESS=PASS centre=$centre '
         'size=${witness.width}x${witness.height}');
   } else {
-    print('PIXEL_WITNESS=FAIL centre=$centre '
+    _log('PIXEL_WITNESS=FAIL centre=$centre '
         'size=${witness.width}x${witness.height} expected=$expected '
         'failure=${witness.failure}');
     failures++;
   }
 
   // --- input -----------------------------------------------------------------
+  _log('PHASE=input');
   final (witnessTimer, ticks) =
       _startWitnessTimer('DartUiConformanceWitness', 0.05);
   final pumpInvocation = _newPumpInvocation(app);
@@ -2975,14 +2981,15 @@ Future<void> probeSignalConformance() async {
     if (i == 40) probePostInputBody(skyLight: skyLight);
   }
   final livenessTicks = ticks() - ticksBefore;
-  print('INPUT_EVENTS=${seen.length}');
-  print('PUMP_LIVENESS=${livenessTicks > 0 ? 'PASS' : 'FAIL'} '
+  _log('INPUT_EVENTS=${seen.length}');
+  _log('PUMP_LIVENESS=${livenessTicks > 0 ? 'PASS' : 'FAIL'} '
       '(+$livenessTicks witness ticks)');
-  print('KEYDOWN_DELIVERED=${keyDown.isCompleted ? 1 : 0}');
+  _log('KEYDOWN_DELIVERED=${keyDown.isCompleted ? 1 : 0}');
   check(seen.isNotEmpty, 'the pump dequeued no NSEvent');
   check(livenessTicks > 0, 'the run loop stopped delivering timers');
 
   // --- teardown --------------------------------------------------------------
+  _log('PHASE=teardown');
   final failuresBeforeTeardown = failures;
   final closeWindow = _newInvocation(window, sel('close'));
   _invokeOnMain(closeWindow);
@@ -2992,9 +2999,9 @@ Future<void> probeSignalConformance() async {
   await Future<void>.delayed(const Duration(milliseconds: 250));
   witnessTimer.close();
   keyImp.close();
-  print(failures == failuresBeforeTeardown ? 'TEARDOWN=PASS' : 'TEARDOWN=FAIL');
+  _log(failures == failuresBeforeTeardown ? 'TEARDOWN=PASS' : 'TEARDOWN=FAIL');
 
-  print(failures == 0 ? 'CONFORMANCE=PASS' : 'CONFORMANCE=FAIL ($failures)');
+  _log(failures == 0 ? 'CONFORMANCE=PASS' : 'CONFORMANCE=FAIL ($failures)');
   if (failures != 0) exitCode = 1;
 }
 
