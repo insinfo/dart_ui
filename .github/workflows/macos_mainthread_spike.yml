@@ -229,6 +229,33 @@ jobs:
               /tmp/transport-benchmark.log | sed 's/^/- `/;s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The frame benchmark measured the boundary going out. This measures it
+      # coming in, split across the same event with the system-wide clock:
+      # inject -> host is WindowServer and AppKit, which an embedder would still
+      # pay, and host -> Dart is the only part it would remove.
+      - name: 'Worker option: input latency, split across the boundary'
+        timeout-minutes: 4
+        run: |
+          dart compile exe \
+            ../../poc/poc_20_macos_three_backends/bin/input_latency_benchmark.dart \
+            -o build/input_latency_benchmark
+          status=0
+          ./build/input_latency_benchmark build/minimal_appkit_host 60 \
+            > /tmp/input-latency.log 2>&1 || status=$?
+          cat /tmp/input-latency.log
+          echo "exit=$status"
+          grep -q '^INPUT_LATENCY_INJECT_TO_HOST ' /tmp/input-latency.log
+          grep -q '^INPUT_LATENCY_HOST_TO_DART ' /tmp/input-latency.log
+          grep -q '^INPUT_LATENCY_END_TO_END ' /tmp/input-latency.log
+          grep -Eq '^INPUT_EVENTS_DELIVERED=[1-9][0-9]*' /tmp/input-latency.log
+          [ "$status" -eq 0 ]
+          {
+            echo '## Input latency across the process boundary'
+            echo
+            grep -E '^(INPUT_LATENCY_|INPUT_BOUNDARY_SHARE|INPUT_END_TO_END_FRAME_SHARE|INPUT_SUB_MILLISECOND|INPUT_EVENTS_)' \
+              /tmp/input-latency.log | sed 's/^/- `/;s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: 'Probe A: does any execution mode own the main thread?'
         timeout-minutes: 5
         run: |

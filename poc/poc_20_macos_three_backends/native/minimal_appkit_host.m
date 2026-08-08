@@ -29,6 +29,7 @@
 #import <QuartzCore/QuartzCore.h>
 #include <dispatch/dispatch.h>
 #include <fcntl.h>
+#include <mach/mach_time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -180,8 +181,12 @@
       (event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp)
           ? event.keyCode
           : 0;
-  printf("INPUT=%s:%.0f:%.0f:%u\n", kind, point.x, point.y,
-         (unsigned)keyCode);
+  // mach_absolute_time is system-wide, so a Dart process reading the same clock
+  // can subtract these directly: injection -> here is WindowServer plus AppKit,
+  // here -> Dart is the process boundary. Without the stamp the two are
+  // indistinguishable from either end.
+  printf("INPUT=%s:%.0f:%.0f:%u:%llu\n", kind, point.x, point.y,
+         (unsigned)keyCode, (unsigned long long)mach_absolute_time());
   fflush(stdout);
 }
 

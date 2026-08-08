@@ -3,6 +3,7 @@ import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
 import 'core_graphics_types.dart';
+import 'mach_clock.dart';
 
 /// Input injected the way real input arrives: through the WindowServer.
 ///
@@ -38,6 +39,19 @@ class SyntheticInput {
       void Function(int, Pointer<Void>)>('SLEventPostToPid');
   late final _release = _coreFoundation.lookupFunction<
       Void Function(Pointer<Void>), void Function(Pointer<Void>)>('CFRelease');
+
+  /// One key event, with the mach tick at which it was handed to the
+  /// WindowServer. The host stamps the same clock when it dequeues, so the two
+  /// halves of the trip can be told apart.
+  ({bool posted, int ticks}) postKeyStamped(int pid,
+      {int keyCode = 0, bool down = true}) {
+    final event = _createKey(nullptr, keyCode, down);
+    if (event == nullptr) return (posted: false, ticks: 0);
+    final ticks = machNow();
+    _postToPid(pid, event);
+    _release(event);
+    return (posted: true, ticks: ticks);
+  }
 
   /// One key down/up pair plus one pointer move, delivered to [pid].
   bool postTo(int pid, {int keyCode = 0, double x = 400, double y = 400}) {
