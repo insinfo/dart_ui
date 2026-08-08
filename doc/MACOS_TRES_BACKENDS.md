@@ -221,7 +221,7 @@ O `PIXEL_WITNESS` é a única linha que nenhum backend consegue auto-reportar:
 tiver aquela janela. Cada backend pinta uma cor distinta, então uma captura
 antiga não passa por frame novo.
 
-Medição de 2026-08-08, run `31243508746`, macos-14 arm64
+Medição de 2026-08-08, run `31244960783`, macos-14 arm64
 ([log completo](logs/CONFORMANCE_TRES_BACKENDS_2026-08-08.md)):
 
 | backend | janela | present | pixel central (esperado) | input | teardown | exit |

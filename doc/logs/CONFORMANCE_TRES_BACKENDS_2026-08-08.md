@@ -1,7 +1,8 @@
 # Conformidade dos três backends macOS — medição de 2026-08-08
 
-**Run:** [`31243508746`](https://github.com/insinfo/dart_ui/actions/runs/31243508746)
-(job `93068195921`) — `macos-14` arm64, Dart 3.6.0
+**Run:** [`31244960783`](https://github.com/insinfo/dart_ui/actions/runs/31244960783)
+— `macos-14` arm64, Dart 3.6.0. A mesma matriz saiu verde em runs consecutivas
+(`31243508746`, `31243936738`, `31244470676`, `31244738786`).
 **Workflow:** `.github/workflows/macos_mainthread_spike.yml`
 **Suíte:** `poc/poc_20_macos_three_backends/bin/conformance.dart` e
 `poc/poc_03_appkit_window/bin/probe.dart conformance-signal`
