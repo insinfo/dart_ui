@@ -1,9 +1,19 @@
-name: dart_ui_workspace
+name: dart_ui
+description: Framework de interface grafica multiplataforma em 100% Dart.
 publish_to: none
 
 environment:
   sdk: ^3.6.0
 
+dev_dependencies:
+  lints: ^5.1.0
+  test: ^1.25.0
+
+# O roteiro (secao 7) descreve um monorepo de dezenas de packages como alvo
+# final, e a secao 7.1 autoriza comecar em um package unico para nao criar
+# pacotes vazios. O codigo em lib/src ja e dividido pelas fronteiras de camada
+# do roteiro, entao a separacao futura e mecanica: cada diretorio vira package
+# quando tiver contrato estavel, consumidor real e testes proprios.
 workspace:
   - poc/poc_01_win32_window
   - poc/poc_04_cpu_raster

@@ -1,0 +1,91 @@
+# Gate do framework de producao (package `dart_ui`, em lib/).
+#
+# Separado de ci.yml de proposito. Aquele workflow exercita POCs e MVPs que
+# dependem de display, drivers e APIs privadas, e por isso vive em disparo
+# manual. O codigo de lib/ e Dart puro: roda em qualquer lugar, sempre, e nao
+# tem desculpa para quebrar. Por isso este roda em push e PR.
+name: Framework
+
+on:
+  push:
+    paths:
+      - 'lib/**'
+      - 'test/**'
+      - 'pubspec.yaml'
+      - 'analysis_options.yaml'
+      - '.github/workflows/framework.yml'
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'test/**'
+      - 'pubspec.yaml'
+      - 'analysis_options.yaml'
+      - '.github/workflows/framework.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: framework-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DART_SDK_VERSION: '3.6.0'
+
+jobs:
+  framework:
+    name: 'Framework (${{ matrix.platform }})'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-14
+            platform: macos
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        run: dart pub get
+
+      # Formatting is a gate, not a suggestion: a diff that is half reformatted
+      # hides the change that matters during review.
+      - name: Check formatting
+        run: dart format --line-length 80 --output=none --set-exit-if-changed lib test
+
+      - name: Analyze
+        run: dart analyze lib test
+
+      - name: Test
+        run: dart test test --reporter=expanded
+
+      # The framework must stay AOT-compilable on every platform from day one.
+      # Finding out at release time that something in the core needs mirrors or
+      # deferred loading is the expensive way to learn it.
+      - name: AOT smoke
+        shell: bash
+        run: |
+          mkdir -p build
+          cat > build/aot_smoke.dart <<'DART'
+          import 'package:dart_ui/dart_ui.dart';
+
+          void main() {
+            final bag = DisposableBag()..add('x', () {});
+            bag.dispose();
+            final probe = BackendProbeResult(
+              backendName: 'aot-smoke',
+              supported: true,
+              capabilities: {Capability.window},
+            );
+            print('AOT_SMOKE=${bag.isDisposed && probe.supported}');
+          }
+          DART
+          dart compile exe build/aot_smoke.dart -o build/aot_smoke
+          ./build/aot_smoke | grep -q '^AOT_SMOKE=true$'
