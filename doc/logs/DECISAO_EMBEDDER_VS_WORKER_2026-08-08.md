@@ -1,8 +1,9 @@
 # Backend 3 — embedder no mesmo processo ou Dart como worker?
 
 **Data:** 8 de agosto de 2026
-**Runs:** [`31246294865`](https://github.com/insinfo/dart_ui/actions/runs/31246294865)
-e [`31246483105`](https://github.com/insinfo/dart_ui/actions/runs/31246483105)
+**Runs:** [`31246294865`](https://github.com/insinfo/dart_ui/actions/runs/31246294865),
+[`31246483105`](https://github.com/insinfo/dart_ui/actions/runs/31246483105) e
+[`31246734901`](https://github.com/insinfo/dart_ui/actions/runs/31246734901)
 — `macos-14` arm64, Dart 3.6.0
 **Código:** [`transport_benchmark.dart`](../../poc/poc_20_macos_three_backends/bin/transport_benchmark.dart),
 [`embedder_feasibility.c`](../../poc/poc_20_macos_three_backends/native/embedder_feasibility.c)
@@ -64,16 +65,25 @@ Três transportes, o mesmo host, a mesma janela, o mesmo frame 480×320 BGRA
 (614 400 bytes), 120 frames cada. O tempo é ida e volta completa: o Dart
 escreve o frame, o host confirma que apresentou.
 
-| transporte | mediana (µs) | p95 (µs) | fps | bytes pelo pipe |
+| transporte | mín (µs) | mediana (µs) | p95 (µs) | bytes pelo pipe |
 |---|---|---|---|---|
-| `ipc-baseline` (PING/PONG, sem pixels) | 124 | 287 | 8 064 | 5 |
-| `pipe` (`FRAME` + octetos) | 2 671 | 3 861 | 374 | 614 400 |
-| `shm` (mapeamento POSIX) | 1 554 | 3 217 | 643 | 20 |
-| `iosurface` | 245 | 487 | 4 081 | 12 |
+| `ipc-baseline` (PING/PONG, sem pixels) | **24** | 77 | 356 | 5 |
+| `pipe` (`FRAME` + octetos) | **1 352** | 2 698 | 4 989 | 614 400 |
+| `shm` (mapeamento POSIX) | **987** | 1 679 | 3 872 | 20 |
+| `iosurface` | **80** | 125 | 522 | 12 |
 
-Run anterior, mesma ordem: 1 269 / 904 / 108 µs. **As medianas variam por 2×
-entre runs — é hardware compartilhado — mas as proporções se mantêm.** Use as
-razões, não os absolutos.
+Medianas nas três runs, na mesma ordem de transporte:
+
+| run | pipe | shm | iosurface |
+|---|---|---|---|
+| `31246294865` | 1 269 | 904 | 108 |
+| `31246483105` | 2 671 | 1 554 | 245 |
+| `31246734901` | 2 698 | 1 679 | 125 |
+
+**As medianas variam por 2× entre runs — é hardware compartilhado — mas a ordem
+e as proporções nunca mudaram.** O mínimo é a medida mais estável: é o custo
+quando a máquina não está ocupada. Pelo mínimo, `iosurface` é 16,9× mais rápido
+que o pipe.
 
 ### O que os números dizem
 
@@ -94,21 +104,22 @@ lock e visibilidade para GPU e WindowServer.
 
 ### Quanto o embedder economizaria
 
-`IPC_BASELINE_US=124` — uma ida e volta que não carrega pixel nenhum. Esse é o
-piso que todo transporte paga e é **a única parte que um embedder eliminaria**.
-Contra os 245 µs do IOSurface, isso é 51% do round trip.
+O `ipc-baseline` é uma ida e volta que não carrega pixel nenhum: 24 µs no
+mínimo, 77 µs na mediana. Esse é o piso que todo transporte paga e é **a única
+parte que um embedder eliminaria**. Dos 80 µs do IOSurface, 24 são fronteira e
+56 são o trabalho de apresentar, que o embedder também teria que fazer.
 
-Só que a régua certa não é o round trip, é o orçamento de um frame:
+A régua certa não é o round trip, é o orçamento de um frame:
 
 ```text
-60 Hz            16 667 µs por frame
-iosurface           245 µs   1,5% do orçamento
-fronteira de proc.  124 µs   0,7% do orçamento
-pipe              2 671 µs    16% do orçamento
+60 Hz             16 667 µs por frame
+iosurface             80 µs   0,5% do orçamento
+fronteira de proc.    24 µs   0,14% do orçamento
+pipe               1 352 µs   8,1% do orçamento
 ```
 
-Mesmo o pipe ingênuo cabe em 60 Hz. O embedder compraria de volta 0,7% de um
-frame ao custo de compilar o SDK do Dart do zero.
+Mesmo o pipe ingênuo cabe em 60 Hz com folga. O embedder compraria de volta
+0,14% de um frame ao custo de compilar o SDK do Dart do zero.
 
 ---
 
@@ -120,7 +131,7 @@ Razões, em ordem de peso:
 
 1. O embedder não está disponível com SDK de release — é uma decisão de
    toolchain, não de arquitetura.
-2. A fronteira de processo custa 0,7% de um frame a 60 Hz. Não é o gargalo.
+2. A fronteira de processo custa 0,14% de um frame a 60 Hz. Não é o gargalo.
 3. O isolamento de crash é uma vantagem real: um erro no código de UI em Dart
    não derruba a janela, e o host é pequeno o bastante para ser auditado.
 
@@ -130,7 +141,7 @@ degradado, mas o caminho recomendado passa a ser `SURFACE` + `PRESENT`.
 ### Quando reabrir a decisão
 
 - Se o alvo passar a ser 120 Hz **e** o orçamento por frame ficar apertado por
-  outros motivos — aí 124 µs deixam de ser ruído.
+  outros motivos — aí 24 µs deixam de ser ruído.
 - Se o projeto já precisar compilar o SDK do Dart por outra razão, o custo
   incremental do embedder cai muito.
 - Se o input precisar de latência abaixo de ~1 ms de ponta a ponta; isso ainda

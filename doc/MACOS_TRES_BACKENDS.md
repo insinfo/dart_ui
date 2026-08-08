@@ -189,12 +189,12 @@ processo Dart. Hospedar a VM exige compilar o SDK do código-fonte.
 **Worker com transporte melhor: medido.** Mesmo host, mesma janela, frame
 480×320 BGRA, 120 frames:
 
-| transporte | mediana (µs) | fps | bytes pelo pipe |
+| transporte | mín (µs) | mediana (µs) | bytes pelo pipe |
 |---|---|---|---|
-| `ipc-baseline` (sem pixels) | 124 | 8 064 | 5 |
-| `pipe` | 2 671 | 374 | 614 400 |
-| `shm` | 1 554 | 643 | 20 |
-| `iosurface` | 245 | 4 081 | 12 |
+| `ipc-baseline` (sem pixels) | 24 | 77 | 5 |
+| `pipe` | 1 352 | 2 698 | 614 400 |
+| `shm` | 987 | 1 679 | 20 |
+| `iosurface` | 80 | 125 | 12 |
 
 O `shm` melhora só 1,7×, e é isso que decide: se a cópia fosse o gargalo,
 eliminar 614 KB duas vezes teria resolvido. O custo dominante era o host
@@ -202,8 +202,9 @@ reconstruir um `CGImage` por frame e o CoreAnimation subir os pixels a cada
 apresentação — que é o que o `IOSurface` elimina ao ser entregue ao layer uma
 única vez.
 
-A fronteira de processo custa 124 µs, ou **0,7% de um frame a 60 Hz**. É tudo
-o que um embedder poderia recuperar.
+A fronteira de processo custa 24 µs, ou **0,14% de um frame a 60 Hz**. É tudo
+o que um embedder poderia recuperar; os outros 56 µs do IOSurface são trabalho
+de apresentação que o embedder também teria.
 
 **Decisão: Dart como processo worker, `IOSurface` para frames e pipe para
 controle.** Reabrir se o alvo for 120 Hz com orçamento apertado, se o SDK já

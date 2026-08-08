@@ -359,9 +359,9 @@ respostas. O CI macOS `31162204180` aprovou.
 | Evolução | Veredito medido |
 |---|---|
 | **Embedder no mesmo processo** | Indisponível com SDK de release: sem `libdart` linkável, `Dart_Initialize` não resolve. Exige compilar o SDK do código-fonte |
-| **Dart como processo worker** | Escolhido. Com `IOSurface`, 245 µs por frame — 1,5% do orçamento de 60 Hz |
+| **Dart como processo worker** | Escolhido. Com `IOSurface`, 80 µs por frame — 0,5% do orçamento de 60 Hz |
 
-A fronteira de processo custa 124 µs (PING/PONG sem pixels), ou 0,7% de um
+A fronteira de processo custa 24 µs (PING/PONG sem pixels), ou 0,14% de um
 frame a 60 Hz — o total que um embedder poderia recuperar. O `shm` melhora
 apenas 1,7× sobre o pipe, o que mostra que a cópia nunca foi o gargalo: era o
 `CGImage` reconstruído por frame mais o upload do CoreAnimation, que é
