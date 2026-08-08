@@ -191,28 +191,38 @@ jobs:
             ../../poc/poc_20_macos_three_backends/bin/transport_benchmark.dart \
             -o build/transport_benchmark
           status=0
+          # Three resolutions, because the transports are expected to diverge
+          # with frame size: the pipe copies every byte twice, shared memory
+          # copies none but still rebuilds a CGImage over all of them, and an
+          # IOSurface should barely notice. A 480x320 result alone cannot tell
+          # those apart.
           ./build/transport_benchmark build/minimal_appkit_host 120 \
+            480x320,1920x1080,3840x2160 \
             > /tmp/transport-benchmark.log 2>&1 || status=$?
           cat /tmp/transport-benchmark.log
           echo "exit=$status"
-          grep -q '^TRANSPORT=pipe ' /tmp/transport-benchmark.log
-          grep -q '^TRANSPORT=shm ' /tmp/transport-benchmark.log
-          grep -q '^TRANSPORT=iosurface ' /tmp/transport-benchmark.log
-          grep -Eq '^TRANSPORT_WINNER=(shm|iosurface)$' \
-            /tmp/transport-benchmark.log
+          for size in 480x320 1920x1080 3840x2160; do
+            grep -q "^TRANSPORT=pipe size=$size " /tmp/transport-benchmark.log
+            grep -q "^TRANSPORT=shm size=$size " /tmp/transport-benchmark.log
+            grep -q "^TRANSPORT=iosurface size=$size " \
+              /tmp/transport-benchmark.log
+            grep -Eq "^TRANSPORT_WINNER=(shm|iosurface) size=$size$" \
+              /tmp/transport-benchmark.log
+          done
           [ "$status" -eq 0 ]
           {
             echo '## Frame transport across the process boundary'
             echo
-            echo '| transport | min us | median us | fps | pipe bytes/frame |'
-            echo '|---|---|---|---|---|'
+            echo '| size | transport | min us | median us | fps | pipe bytes/frame |'
+            echo '|---|---|---|---|---|---|'
             grep '^TRANSPORT=' /tmp/transport-benchmark.log | while read -r l; do
               name=$(echo "$l" | sed -E 's/^TRANSPORT=([^ ]+).*/\1/')
+              size=$(echo "$l" | sed -E 's/.* size=([0-9x]+).*/\1/')
               min=$(echo "$l" | sed -E 's/.*min_us=([0-9]+).*/\1/')
               med=$(echo "$l" | sed -E 's/.*median_us=([0-9]+).*/\1/')
               fps=$(echo "$l" | sed -E 's/.*fps=([0-9.]+).*/\1/')
               bytes=$(echo "$l" | sed -E 's/.*pipe_bytes_per_frame=([0-9]+).*/\1/')
-              echo "| $name | $min | $med | $fps | $bytes |"
+              echo "| $size | $name | $min | $med | $fps | $bytes |"
             done
             echo
             grep -E '^(TRANSPORT_WINNER|TRANSPORT_SPEEDUP|IPC_BASELINE_US|EMBEDDER_HEADROOM_US)=' \

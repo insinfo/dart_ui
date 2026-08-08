@@ -24,9 +24,13 @@ import 'package:poc_20_macos_three_backends/poc_20_macos_three_backends.dart';
 // host acknowledges it presented), plus the bytes that crossed the pipe.
 // ---------------------------------------------------------------------------
 
-const int frameWidth = 480;
-const int frameHeight = 320;
-const int frameBytes = frameWidth * frameHeight * 4;
+/// Frame size is a parameter, not a constant, because the whole question is
+/// how each transport scales with it: the pipe copies every byte twice, shared
+/// memory copies none but still rebuilds a CGImage over all of them, and an
+/// IOSurface should barely notice.
+int frameWidth = 480;
+int frameHeight = 320;
+int get frameBytes => frameWidth * frameHeight * 4;
 
 class TransportResult {
   TransportResult(this.name, this.samples, this.pipeBytesPerFrame, this.note);
@@ -86,13 +90,38 @@ class _Host {
 
 Future<void> main(List<String> arguments) async {
   if (arguments.isEmpty) {
-    stderr.writeln('usage: transport_benchmark <host-binary> [frames]');
+    stderr.writeln('usage: transport_benchmark <host-binary> [frames] '
+        '[WxH,WxH,...]');
     exitCode = 64;
     return;
   }
   final hostBinary = arguments.first;
   final frames = arguments.length > 1 ? int.parse(arguments[1]) : 120;
+  final sizes = arguments.length > 2
+      ? arguments[2].split(',').map(_parseSize).toList()
+      : const [(480, 320)];
 
+  var failed = false;
+  for (final size in sizes) {
+    frameWidth = size.$1;
+    frameHeight = size.$2;
+    // Fewer frames at 4K: the point is the per-frame cost, and a slow
+    // transport at 8 MB per frame would otherwise dominate the job's runtime.
+    final count =
+        frameBytes > 4 * 1024 * 1024 ? (frames ~/ 4).clamp(15, 120) : frames;
+    if (!await _runSuite(hostBinary, count)) failed = true;
+  }
+  if (failed) exitCode = 1;
+}
+
+(int, int) _parseSize(String value) {
+  final parts = value.toLowerCase().split('x');
+  if (parts.length != 2) throw FormatException('bad size: $value');
+  return (int.parse(parts[0]), int.parse(parts[1]));
+}
+
+/// Returns false when a transport produced no samples at all.
+Future<bool> _runSuite(String hostBinary, int frames) async {
   final results = <TransportResult>[
     await _benchmarkControlRoundTrip(hostBinary, frames),
     await _benchmarkPipe(hostBinary, frames),
@@ -100,11 +129,13 @@ Future<void> main(List<String> arguments) async {
     await _benchmarkIOSurface(hostBinary, frames),
   ];
 
+  final label = '${frameWidth}x$frameHeight';
   print('');
-  print('TRANSPORT_FRAMES=$frames  SIZE=${frameWidth}x$frameHeight  '
+  print('TRANSPORT_FRAMES=$frames  SIZE=$label  '
       'BYTES_PER_FRAME=$frameBytes');
   for (final result in results) {
     print('TRANSPORT=${result.name} '
+        'size=$label '
         'min_us=${result.best} '
         'median_us=${result.median} '
         'p95_us=${result.p95} '
@@ -120,7 +151,7 @@ Future<void> main(List<String> arguments) async {
       .where((r) => r.name != 'ipc-baseline' && r.samples.isNotEmpty)
       .fold<int>(1 << 30, (value, r) => r.median < value ? r.median : value);
   if (best < (1 << 30) && best > 0) {
-    print('IPC_BASELINE_US=$baseline');
+    print('IPC_BASELINE_US=$baseline size=$label');
     print('EMBEDDER_HEADROOM_US=$baseline '
         '(${(baseline * 100 / best).toStringAsFixed(0)}% of the best '
         'transport round trip)');
@@ -131,23 +162,23 @@ Future<void> main(List<String> arguments) async {
       .toList()
     ..sort((a, b) => a.median.compareTo(b.median));
   if (ranked.isEmpty) {
-    print('TRANSPORT_WINNER=none');
-    exitCode = 1;
-    return;
+    print('TRANSPORT_WINNER=none size=$label');
+    return false;
   }
-  print('TRANSPORT_WINNER=${ranked.first.name}');
+  print('TRANSPORT_WINNER=${ranked.first.name} size=$label');
   final slowest = ranked.last;
   final fastest = ranked.first;
   if (fastest.median > 0) {
     print('TRANSPORT_SPEEDUP='
-        '${(slowest.median / fastest.median).toStringAsFixed(2)}x '
-        '(${slowest.name} -> ${fastest.name})');
+        '${(slowest.best / fastest.best).toStringAsFixed(2)}x '
+        '(${slowest.name} -> ${fastest.name}) size=$label');
   }
   if (results.any((r) => r.samples.isEmpty)) {
-    print('TRANSPORT_INCOMPLETE='
+    print('TRANSPORT_INCOMPLETE=$label '
         '${results.where((r) => r.samples.isEmpty).map((r) => r.name).toList()}');
-    exitCode = 1;
+    return false;
   }
+  return true;
 }
 
 /// Not a transport: the cost of a round trip that carries no pixels at all.

@@ -2731,17 +2731,27 @@ CI:
    janela, pixels e input dirigido ao processo (`[10, 11, 5]`) pela Mach port.
    É tecnicamente completo no spike, mas privado e ainda sem matriz de robustez.
 
-A alternativa conservadora continua válida e pode acabar sendo a escolhida por
-robustez: um **host nativo mínimo** Objective-C como `main()` real, que
-inicializa o AppKit e depois hospeda a VM Dart ou um processo Dart worker. Isso
-não precisa virar wrapper de toda API: o componente nativo resolve ownership e
-lifecycle, enquanto a política de UI continua em Dart. Um witness compilável já
-existe em `poc/poc_20_macos_three_backends/native/minimal_appkit_host.m`.
+A alternativa conservadora continua válida e é hoje a recomendada por robustez:
+um **host nativo mínimo** Objective-C como `main()` real, que inicializa o
+AppKit e conversa com um **processo Dart worker**. O componente nativo resolve
+ownership e lifecycle; a política de UI continua em Dart. O host está em
+`poc/poc_20_macos_three_backends/native/minimal_appkit_host.m`.
+
+O "ou hospeda a VM Dart" saiu dessa frase por medição, não por preferência: o
+SDK de release não distribui `libdart` linkável, então um `main()` nativo que
+referencia `Dart_Initialize` não linka. Hospedar a VM exige compilar o SDK do
+código-fonte. E o custo que isso evitaria é pequeno — a fronteira de processo
+mede 24 µs, 0,14% de um frame a 60 Hz, com `IOSurface` levando os frames em
+80 µs. Números e condições para reabrir em
+[logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md](logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md).
 
 A arquitetura, seleção e critérios comparáveis das três rotas estão em
-[MACOS_TRES_BACKENDS.md](MACOS_TRES_BACKENDS.md). A decisão do default depende
-agora de lifecycle, compatibilidade multiversão e do spike embedder-vs-IPC do
-host, não mais da existência básica de input SkyLight.
+[MACOS_TRES_BACKENDS.md](MACOS_TRES_BACKENDS.md). Os três backends passam a
+mesma suíte de conformidade no CI — janela, framebuffer de CPU, testemunha
+externa de pixels, input pela rota real e teardown sem `_exit`
+([medições](logs/CONFORMANCE_TRES_BACKENDS_2026-08-08.md)). A decisão do
+default depende agora de compatibilidade multiversão e da matriz de robustez
+restante, não mais de input nem do spike embedder-vs-IPC.
 
 ## 20.3 Geração de bindings Objective-C
 
