@@ -198,10 +198,13 @@ pintura vai para uma `DisplayList` e hit test volta. `RenderColoredBox`,
 
 **Relayout boundaries** são a parte que importa. Um nó é sua própria fronteira
 quando não tem pai, quando o pai passou `parentUsesSize: false`, ou quando as
-restrições que chegam são justas; `markNeedsLayout` sobe só até ali. O terceiro
-disjunto do Flutter (`sizedByParent`) foi deixado de fora de propósito: exige
-partir `performLayout` em dois em toda subclasse para comprar fronteiras que
-restrições justas já cobrem na maioria dos casos.
+restrições que chegam são justas; `markNeedsLayout` sobe só até ali. O Flutter admite uma
+quarta alternativa, `sizedByParent` — um nó cujo tamanho depende só das
+restrições, nunca dos filhos —, deixada de fora de propósito: ela exige partir
+`performLayout` em dois (`performResize` + `performLayout`) em **toda**
+subclasse, para comprar fronteira num caso que restrições justas já cobrem na
+maior parte. Omiti-la não afeta a saída; apenas faz um `markNeedsLayout` subir
+mais alto que o necessário nesse caso específico.
 
 **Overflow no `Flex` não corta nem lança.** Ele se dimensiona pelas restrições,
 deixa os filhos passarem visivelmente da borda e registra o excesso. Cortar

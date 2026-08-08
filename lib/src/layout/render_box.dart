@@ -349,7 +349,8 @@ abstract class RenderBox {
     // asked to lay out again. With them, the work is proportional to the
     // subtree that actually changed rather than to the size of the window.
     //
-    // Deliberately not implemented: Flutter's third condition, `sizedByParent`
+    // Deliberately not implemented: the fourth alternative Flutter allows,
+    // `sizedByParent`
     // (a node whose size depends only on the constraints, computed in a
     // separate resize pass). It needs performLayout split into two methods on
     // every subclass to buy a boundary in cases that tight constraints already
