@@ -208,8 +208,43 @@ jobs:
           grep -q '^PIXEL_WITNESS=PASS' /tmp/conformance-signal.log
           grep -Eq '^INPUT_EVENTS=[1-9][0-9]*$' /tmp/conformance-signal.log
           grep -q '^TEARDOWN=PASS$' /tmp/conformance-signal.log
+          grep -q '^RESPONDER_INPUT=1$' /tmp/conformance-signal.log
           grep -q '^CONFORMANCE=PASS$' /tmp/conformance-signal.log
           [ "$status" -eq 0 ]
+
+      # One table for the three backends, so the comparison is a fact in the
+      # job summary rather than something to reconstruct from three step logs.
+      - name: 'Three-backend conformance summary'
+        if: always()
+        run: |
+          row() {
+            local name="$1" file="$2"
+            if [ ! -f "$file" ]; then
+              printf '| %s | %s |\n' "$name" 'no log' >> "$GITHUB_STEP_SUMMARY"
+              return
+            fi
+            local wid present pixel input teardown result
+            wid=$(grep -m1 '^WINDOW_ID=' "$file" | cut -d= -f2)
+            present=$(grep -m1 '^PRESENT=' "$file" | cut -d= -f2)
+            pixel=$(grep -m1 '^PIXEL_WITNESS=' "$file" | cut -d' ' -f1-2 \
+              | sed 's/PIXEL_WITNESS=//')
+            input=$(grep -m1 '^INPUT_EVENTS=' "$file" | cut -d= -f2)
+            teardown=$(grep -m1 '^TEARDOWN=' "$file" | cut -d= -f2)
+            result=$(grep -m1 '^CONFORMANCE=' "$file" | cut -d= -f2)
+            printf '| %s | %s | %s | %s | %s | %s | %s |\n' \
+              "$name" "${wid:-none}" "${present:-none}" "${pixel:-none}" \
+              "${input:-0}" "${teardown:-none}" "${result:-none}" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+          {
+            echo '## macOS three-backend conformance'
+            echo
+            echo '| backend | window | present | pixel witness | input | teardown | result |'
+            echo '|---|---|---|---|---|---|---|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          row skylight /tmp/conformance-skylight.log
+          row appkitSignal /tmp/conformance-signal.log
+          row appkitNativeHost /tmp/conformance-native-host.log
 
       # Runs whether or not the gate above passed: when it hangs this is the
       # only thing that says which frame is stuck, and SIGUSR2 must be passed

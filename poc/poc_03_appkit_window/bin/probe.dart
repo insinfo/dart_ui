@@ -2972,7 +2972,53 @@ Future<void> probeSignalConformance() async {
     failures++;
   }
 
+  // --- responder chain -------------------------------------------------------
+  //
+  // Two halves, because they answer different questions and only one of them
+  // can be done race-free from pure Dart.
+  //
+  // This half proves dispatch: events we created and retained go through
+  // [NSApp sendEvent:] and come out at keyDown:/mouseDown: on the window, so
+  // the responder chain is intact on a hijacked main thread. Pumped events
+  // cannot be re-sent this way - nextEventMatchingMask: hands back an
+  // autoreleased NSEvent that the main thread's run-loop pool may drain before
+  // the isolate can retain it, and there is no way to retain it on main from
+  // Dart without an ObjC method of our own.
+  _log('PHASE=responder');
+  final characters = _retainedNSString('a');
+  final location = calloc<NSPoint>()
+    ..ref.x = 240
+    ..ref.y = 160;
+  final keyEvent = msgSendKeyEvent(
+      getClass('NSEvent'),
+      sel('keyEventWithType:location:modifierFlags:timestamp:windowNumber:'
+          'context:characters:charactersIgnoringModifiers:isARepeat:keyCode:'),
+      NSEventTypeKeyDown,
+      location.ref,
+      0,
+      0.0,
+      windowNumber,
+      nullptr,
+      characters,
+      characters,
+      false,
+      0);
+  calloc.free(location);
+  keyEvent.msgSend('retain');
+  final sendEvent = _newInvocation(app, sel('sendEvent:'));
+  final eventArgument = calloc<Pointer<ObjCObject>>()..value = keyEvent;
+  _setArgument(sendEvent, eventArgument.cast(), 2);
+  _invokeOnMain(sendEvent);
+  calloc.free(eventArgument);
+  await keyDown.future.timeout(const Duration(seconds: 3), onTimeout: () {});
+  _log('RESPONDER_INPUT=${keyDown.isCompleted ? 1 : 0}');
+  check(keyDown.isCompleted, 'sendEvent: never reached keyDown:');
+
   // --- input -----------------------------------------------------------------
+  //
+  // And this half proves the queue: real events injected through the
+  // WindowServer are dequeued by the periodic pump while a witness timer shows
+  // the run loop is still alive.
   _log('PHASE=input');
   final (witnessTimer, ticks) =
       _startWitnessTimer('DartUiConformanceWitness', 0.05);
@@ -2994,7 +3040,6 @@ Future<void> probeSignalConformance() async {
   _log('INPUT_EVENTS=${seen.length}');
   _log('PUMP_LIVENESS=${livenessTicks > 0 ? 'PASS' : 'FAIL'} '
       '(+$livenessTicks witness ticks)');
-  _log('KEYDOWN_DELIVERED=${keyDown.isCompleted ? 1 : 0}');
   check(seen.isNotEmpty, 'the pump dequeued no NSEvent');
   check(livenessTicks > 0, 'the run loop stopped delivering timers');
 
