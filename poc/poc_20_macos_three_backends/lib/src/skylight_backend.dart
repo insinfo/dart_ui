@@ -65,6 +65,7 @@ class SkylightBackendReport {
   int windowId = 0;
   int machMessages = 0;
   int notifications = 0;
+  int extraReads = 0;
   int windowEventMaskBefore = 0;
   int windowEventMaskAfter = 0;
   int eventsRead = 0;
@@ -89,6 +90,7 @@ class SkylightBackend implements MacosWindowBackend {
   // Owned native handles, in acquisition order.
   NativeCallable<_MachPortCallbackNative>? _portCallback;
   NativeCallable<_SlsNotifyCallbackNative>? _notifyCallback;
+  bool Function()? _readOneEvent;
   _VoidPtr _machPort = nullptr;
   _VoidPtr _runLoopSource = nullptr;
   _VoidPtr _runLoop = nullptr;
@@ -278,16 +280,14 @@ class SkylightBackend implements MacosWindowBackend {
             'objc_autoreleasePoolPop');
 
     final generation = _lifecycle.generation;
-    _portCallback = NativeCallable<_MachPortCallbackNative>.isolateLocal(
-        (_VoidPtr port, _VoidPtr message, int size, _VoidPtr context) {
-      report.machMessages++;
+    _readOneEvent = () {
       // SLEventCreateNextEvent autoreleases internally (SDL #14256): without a
       // pool this leaks and logs "MISSING POOLS" under OBJC_DEBUG_MISSING_POOLS.
       final pool = poolPush();
       try {
         // Exactly one read per message. See the header comment.
         final event = createNextEvent(report.connectionId);
-        if (event == nullptr) return;
+        if (event == nullptr) return false;
         final type = getType(event);
         report.eventsRead++;
         if (report.eventTypes.length < 64) report.eventTypes.add(type);
@@ -307,9 +307,16 @@ class SkylightBackend implements MacosWindowBackend {
           ));
         }
         _cfRelease(event);
+        return true;
       } finally {
         poolPop(pool);
       }
+    };
+
+    _portCallback = NativeCallable<_MachPortCallbackNative>.isolateLocal(
+        (_VoidPtr port, _VoidPtr message, int size, _VoidPtr context) {
+      report.machMessages++;
+      _readOneEvent!();
     });
 
     _machPort = _coreFoundation.lookupFunction<
@@ -567,7 +574,19 @@ class SkylightBackend implements MacosWindowBackend {
       _syntheticInput.postTo(_getpid(), x: x, y: y);
 
   /// Runs the owning run loop in bounded slices. Synchronous by design.
-  int pumpSync({required int slices, double sliceSeconds = 0.05}) {
+  ///
+  /// [extraReadsPerSlice] implements the rule the probes measured: one read per
+  /// Mach message inside the callback, and any further drain scheduled
+  /// separately. Three posted events arrived as two messages, which under a
+  /// strict one-read-per-message rule leaves the third one sitting in the
+  /// queue - the reason pointerMove never showed up. Draining to NULL inside
+  /// the callback blocked in mach_msg; these reads happen outside it and are
+  /// bounded.
+  int pumpSync({
+    required int slices,
+    double sliceSeconds = 0.05,
+    int extraReadsPerSlice = 1,
+  }) {
     _checkThread('pump');
     final runInMode = _coreFoundation.lookupFunction<
         Int32 Function(_VoidPtr, Double, Bool),
@@ -575,6 +594,14 @@ class SkylightBackend implements MacosWindowBackend {
     final before = report.eventsRead;
     for (var i = 0; i < slices; i++) {
       runInMode(_defaultMode, sliceSeconds, true);
+      // Only worth trying when a message has already been seen: on an empty
+      // queue this read is the one that was observed to block.
+      if (report.machMessages > report.eventsRead) {
+        for (var extra = 0; extra < extraReadsPerSlice; extra++) {
+          report.extraReads++;
+          if (!(_readOneEvent?.call() ?? false)) break;
+        }
+      }
     }
     return report.eventsRead - before;
   }
