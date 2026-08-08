@@ -138,6 +138,50 @@ void main() {
     });
   });
 
+  group('antialiasing reaches the pixels', () {
+    test('a rect on fractional bounds comes out soft at the edge', () async {
+      final target = await targetOf(8, 4);
+      final list = DisplayList();
+      final paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+      // Left edge at 2.5: pixel 2 gets half coverage, pixel 3 gets all of it.
+      list.drawRectangle(const Rect.fromLTRB(2.5, 0, 6, 4), paint);
+
+      await target.renderDisplayList(list, clearColor: 0xFF000000);
+
+      final (_, _, _, aOutside) = pixelAt(target.framebuffer, 1, 1);
+      final (rEdge, _, _, _) = pixelAt(target.framebuffer, 2, 1);
+      final (rInside, _, _, _) = pixelAt(target.framebuffer, 3, 1);
+
+      expect(aOutside, 255, reason: 'the background is opaque black');
+      expect(pixelAt(target.framebuffer, 1, 1).$1, 0);
+      // Half coverage of white over black. 127 rather than 128 because
+      // coverage conserves area rather than splitting symmetrically.
+      expect(rEdge, closeTo(127, 2));
+      expect(rInside, 255);
+    });
+
+    test('an integer-bounds rect is byte-identical to the hard fill', () async {
+      // The regression guard: turning antialiasing on must not change anything
+      // that was already exact, or every existing golden would shift by a
+      // pixel of grey.
+      final soft = await targetOf(8, 4);
+      final hard = await targetOf(8, 4);
+
+      final aa = DisplayList();
+      aa.drawRectangle(
+          const Rect.fromLTRB(2, 1, 6, 3), aa.addPaint(colorArgb: 0xFF00FF00));
+      final noAa = DisplayList();
+      noAa.drawRectangle(const Rect.fromLTRB(2, 1, 6, 3),
+          noAa.addPaint(colorArgb: 0xFF00FF00, antiAlias: false));
+
+      await soft.renderDisplayList(aa, clearColor: 0xFF000000);
+      await hard.renderDisplayList(noAa, clearColor: 0xFF000000);
+
+      expect(
+          soft.framebuffer.toPackedBytes(), hard.framebuffer.toPackedBytes());
+    });
+  });
+
   group('MemoryRenderTarget', () {
     test('rejects a frame from before a resize instead of drawing it',
         () async {

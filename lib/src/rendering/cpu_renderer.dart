@@ -40,7 +40,20 @@ final class _RasterizerSink implements RasterSink {
   void _fillClipped(Rect deviceRect, Rect clip, ReplayPaint paint) {
     final visible = deviceRect.intersect(clip);
     if (visible.isEmpty) return;
-    _rasterizer.fillRect(visible, paint.argbColor);
+    // The intersection happens in double space, so a clipped edge arrives here
+    // fractional and comes out soft. Antialiasing everything is the right
+    // default for a UI: the shapes are axis-aligned most of the time, where
+    // coverage is exact and the interior spans take the same loop the hard
+    // fill takes, so the cost is confined to boundary pixels.
+    //
+    // paint.antiAlias exists to turn it OFF - for a caller who has measured
+    // that a particular fill is on a hot path and lands on integer bounds
+    // anyway, where the two produce identical bytes.
+    if (paint.antiAlias) {
+      _rasterizer.fillRectAntiAliased(visible, paint.argbColor);
+    } else {
+      _rasterizer.fillRect(visible, paint.argbColor);
+    }
   }
 
   @override
