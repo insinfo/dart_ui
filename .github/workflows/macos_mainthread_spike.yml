@@ -144,6 +144,64 @@ jobs:
           grep -q '^CONFORMANCE=PASS$' /tmp/conformance-native-host.log
           [ "$status" -eq 0 ]
 
+      # The two candidates for backend 3's future. Both get measured; neither
+      # gets assumed.
+      #
+      # An in-process embedder wins on cost by construction - there is no
+      # boundary - but only if the stock SDK ships a linkable VM. That is a
+      # question with a yes/no answer, and the linker gives it.
+      - name: 'Embedder option: does the stock SDK ship a linkable VM?'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          SDK="$DART_HOME"
+          echo "----- what the SDK actually ships -----"
+          ls "$SDK" && ls "$SDK/include"
+          echo "----- anything linkable? -----"
+          find "$SDK" \( -name 'libdart*' -o -name '*.a' -o -name '*.dylib' \) \
+            -maxdepth 3 2>/dev/null | head -20 || echo '(none)'
+          echo "----- do the Dart_* symbols exist in the shipped binaries? -----"
+          for binary in "$SDK/bin/dart" "$SDK/bin/dartaotruntime"; do
+            [ -f "$binary" ] || continue
+            echo "== $binary"
+            nm -gU "$binary" 2>/dev/null | grep -c '_Dart_' \
+              || echo 'no exported Dart_ symbols'
+          done
+          echo "----- try to link a native main() against Dart_Initialize -----"
+          set +e
+          clang -I"$SDK/include" \
+            ../../poc/poc_20_macos_three_backends/native/embedder_feasibility.c \
+            -o build/embedder_feasibility 2> /tmp/embedder-link.txt
+          link_status=$?
+          set -e
+          echo "link exit=$link_status"
+          cat /tmp/embedder-link.txt || true
+          if [ "$link_status" -eq 0 ]; then
+            echo 'EMBEDDER_FEASIBLE=1'
+          else
+            echo 'EMBEDDER_FEASIBLE=0'
+          fi
+
+      # And the worker-process option: what does the boundary actually cost,
+      # measured three ways against the same host and the same window?
+      - name: 'Worker option: pipe vs shared memory vs IOSurface'
+        timeout-minutes: 6
+        run: |
+          dart compile exe \
+            ../../poc/poc_20_macos_three_backends/bin/transport_benchmark.dart \
+            -o build/transport_benchmark
+          status=0
+          ./build/transport_benchmark build/minimal_appkit_host 120 \
+            > /tmp/transport-benchmark.log 2>&1 || status=$?
+          cat /tmp/transport-benchmark.log
+          echo "exit=$status"
+          grep -q '^TRANSPORT=pipe ' /tmp/transport-benchmark.log
+          grep -q '^TRANSPORT=shm ' /tmp/transport-benchmark.log
+          grep -q '^TRANSPORT=iosurface ' /tmp/transport-benchmark.log
+          grep -Eq '^TRANSPORT_WINNER=(shm|iosurface)$' \
+            /tmp/transport-benchmark.log
+          [ "$status" -eq 0 ]
+
       - name: 'Probe A: does any execution mode own the main thread?'
         timeout-minutes: 5
         run: |

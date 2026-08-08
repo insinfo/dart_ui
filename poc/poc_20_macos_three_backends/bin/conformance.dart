@@ -219,9 +219,9 @@ Future<void> runNativeHostConformance(String hostBinary) async {
 
   try {
     check(
-        await waitForLine((l) => l == 'PROTOCOL=2'),
+        await waitForLine((l) => l == 'PROTOCOL=3'),
         'host never announced '
-        'protocol 2');
+        'protocol 3');
     check(lines.contains('MAIN_THREAD=1'), 'host does not own thread 0');
     final idLine = lines.firstWhere((l) => l.startsWith('WINDOW_ID='),
         orElse: () => 'WINDOW_ID=0');

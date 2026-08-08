@@ -197,8 +197,8 @@ class SkylightBackend implements MacosWindowBackend {
   /// while another in the same job got 0 - so a bounded retry is the fix, not
   /// a different ABI.
   void _registerProcess() {
-    final register = _skyLight
-        .lookupFunction<Int32 Function(Int32), int Function(int)>(
+    final register =
+        _skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
             'SLPSRegisterWithServer');
     for (var attempt = 1; attempt <= 12; attempt++) {
       report.registrationAttempts = attempt;
@@ -223,13 +223,25 @@ class SkylightBackend implements MacosWindowBackend {
   /// event port. The Z17 probe does this and receives `[10, 11, 5]`; the first
   /// version of this backend skipped it and received only `[10, 11]`.
   static const List<int> _notificationTypes = <int>[
-    723, 804, 806, 807, 808, 811, 815, 816, 1322, 1325, 1326, 1401, 1508
+    723,
+    804,
+    806,
+    807,
+    808,
+    811,
+    815,
+    816,
+    1322,
+    1325,
+    1326,
+    1401,
+    1508
   ];
 
   void _registerNotifications() {
     final registerNotify = _skyLight.lookupFunction<
-        Int32 Function(Pointer<NativeFunction<_SlsNotifyCallbackNative>>, Uint32,
-            _VoidPtr),
+        Int32 Function(Pointer<NativeFunction<_SlsNotifyCallbackNative>>,
+            Uint32, _VoidPtr),
         int Function(Pointer<NativeFunction<_SlsNotifyCallbackNative>>, int,
             _VoidPtr)>('SLSRegisterNotifyProc');
     _notifyCallback = NativeCallable<_SlsNotifyCallbackNative>.isolateLocal(
@@ -451,9 +463,9 @@ class SkylightBackend implements MacosWindowBackend {
   /// was before, so a future narrowing has a baseline.
   void _requestAllWindowEvents() {
     final get = _optional(
-        () => _skyLight.lookupFunction<Int32 Function(Int32, Uint32,
-            Pointer<Uint32>), int Function(int, int, Pointer<Uint32>)>(
-            'SLSGetWindowEventMask'),
+        () => _skyLight.lookupFunction<
+            Int32 Function(Int32, Uint32, Pointer<Uint32>),
+            int Function(int, int, Pointer<Uint32>)>('SLSGetWindowEventMask'),
         'SLSGetWindowEventMask');
     final set = _optional(
         () => _skyLight.lookupFunction<Int32 Function(Int32, Uint32, Uint32),

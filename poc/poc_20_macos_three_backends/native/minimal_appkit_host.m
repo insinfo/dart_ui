@@ -11,16 +11,29 @@
 //     inflate a 480x320 frame past any sane line buffer);
 //   * INPUT= lines, so NSEvents the host dequeues reach Dart.
 //
+// Protocol version 3 adds the two transports that skip the pipe for pixels, so
+// the cost of the process boundary can be measured instead of argued about:
+//   * SHM <name> <bytes> maps a POSIX shared segment read-only, and
+//     PRESENT <seq> <w> <h> wraps those same pages in a CGImage;
+//   * SURFACE <id> looks up an IOSurface, and PRESENT <seq> hands it to the
+//     layer once - later frames only mark the contents changed, because the
+//     compositor is already scanning out those pages.
+// FRAME stays in for comparison: it is the only one that copies.
+//
 // Input is reported twice on purpose. The local NSEvent monitor sees every
 // event the application dequeues and is the gate; VIEW_INPUT= comes from the
 // responder chain and proves the event was routed to a view, not merely
 // received.
 #import <Cocoa/Cocoa.h>
+#import <IOSurface/IOSurface.h>
 #import <QuartzCore/QuartzCore.h>
 #include <dispatch/dispatch.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 @interface DartUiHostView : NSView
 @end
@@ -71,6 +84,14 @@
 @property(nonatomic, assign) NSTimeInterval smokeDuration;
 @property(nonatomic, assign) BOOL commandStdin;
 @property(nonatomic, assign) NSUInteger frameCount;
+// Transport 2: a shared mapping plus the one data provider that covers it. The
+// provider is built once, not per frame - that is the whole point.
+@property(nonatomic, assign) void *shmMapping;
+@property(nonatomic, assign) size_t shmLength;
+@property(nonatomic, assign) CGDataProviderRef shmProvider;
+// Transport 3: the surface the compositor can scan out directly.
+@property(nonatomic, assign) IOSurfaceRef surface;
+@property(nonatomic, assign) BOOL surfaceAttached;
 @end
 
 @implementation DartUiMinimalAppDelegate
@@ -106,7 +127,7 @@
 
   printf("MAIN_THREAD=%d\n", [NSThread isMainThread] ? 1 : 0);
   printf("WINDOW_ID=%ld\n", (long)self.window.windowNumber);
-  printf("PROTOCOL=2\n");
+  printf("PROTOCOL=3\n");
   fflush(stdout);
 
   if (self.commandStdin) {
@@ -231,6 +252,140 @@
   fflush(stdout);
 }
 
+// --- transport 2: shared memory --------------------------------------------
+//
+// Map the segment read-only once and build one CGDataProvider over it. Every
+// later frame is a CGImageCreate over pages Dart already wrote: no copy
+// crosses the process boundary, and only the control line goes through the
+// pipe.
+- (void)attachSharedMemory:(NSString *)command {
+  NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+  if (parts.count != 3) {
+    printf("ERROR=BAD_SHM\n");
+    fflush(stdout);
+    return;
+  }
+  const char *name = parts[1].UTF8String;
+  size_t length = (size_t)[parts[2] integerValue];
+  int fd = shm_open(name, O_RDONLY, 0);
+  if (fd < 0) {
+    printf("ERROR=SHM_OPEN:%d\n", errno);
+    fflush(stdout);
+    return;
+  }
+  void *mapping = mmap(NULL, length, PROT_READ, MAP_SHARED, fd, 0);
+  close(fd);
+  if (mapping == MAP_FAILED) {
+    printf("ERROR=SHM_MMAP:%d\n", errno);
+    fflush(stdout);
+    return;
+  }
+  [self releaseSharedMemory];
+  self.shmMapping = mapping;
+  self.shmLength = length;
+  // NULL release callback: the mapping outlives the provider and is unmapped
+  // by releaseSharedMemory.
+  self.shmProvider = CGDataProviderCreateWithData(NULL, mapping, length, NULL);
+  printf("SHM_OK %zu\n", length);
+  fflush(stdout);
+}
+
+- (void)releaseSharedMemory {
+  if (self.shmProvider != NULL) {
+    CGDataProviderRelease(self.shmProvider);
+    self.shmProvider = NULL;
+  }
+  if (self.shmMapping != NULL) {
+    munmap(self.shmMapping, self.shmLength);
+    self.shmMapping = NULL;
+    self.shmLength = 0;
+  }
+}
+
+// --- transport 3: IOSurface -------------------------------------------------
+//
+// IOSurfaceLookup is the deprecated global-surface path. The supported
+// replacement passes a mach port right, which a pipe cannot carry; moving to
+// it means adding an XPC channel, not changing the surface API.
+- (void)attachSurface:(NSString *)command {
+  NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+  if (parts.count != 2) {
+    printf("ERROR=BAD_SURFACE\n");
+    fflush(stdout);
+    return;
+  }
+  IOSurfaceID surfaceId = (IOSurfaceID)[parts[1] integerValue];
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  IOSurfaceRef surface = IOSurfaceLookup(surfaceId);
+#pragma clang diagnostic pop
+  if (surface == NULL) {
+    printf("ERROR=SURFACE_LOOKUP\n");
+    fflush(stdout);
+    return;
+  }
+  if (self.surface != NULL) CFRelease(self.surface);
+  self.surface = surface;
+  self.surfaceAttached = NO;
+  printf("SURFACE_OK %u %zux%zu\n", surfaceId, IOSurfaceGetWidth(surface),
+         IOSurfaceGetHeight(surface));
+  fflush(stdout);
+}
+
+// One entry point for both zero-copy transports, so the measured difference is
+// the transport and not the surrounding code.
+- (void)present:(NSString *)command {
+  NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+  if (parts.count < 2) {
+    printf("ERROR=BAD_PRESENT\n");
+    fflush(stdout);
+    return;
+  }
+  NSString *sequence = parts[1];
+
+  if (self.surface != NULL) {
+    if (!self.surfaceAttached) {
+      // Handing the layer the surface is a one-off; later frames only need to
+      // say the contents changed.
+      self.hostView.layer.contents = (__bridge id)self.surface;
+      self.surfaceAttached = YES;
+    } else {
+      [self.hostView.layer setContentsChanged];
+    }
+    [CATransaction flush];
+    self.frameCount++;
+    printf("PRESENT_OK %s surface\n", sequence.UTF8String);
+    fflush(stdout);
+    return;
+  }
+
+  if (self.shmProvider == NULL || parts.count != 4) {
+    printf("ERROR=NO_TRANSPORT\n");
+    fflush(stdout);
+    return;
+  }
+  size_t width = (size_t)[parts[2] integerValue];
+  size_t height = (size_t)[parts[3] integerValue];
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGImageRef image = CGImageCreate(
+      width, height, 8, 32, width * 4, colorSpace,
+      (CGBitmapInfo)(kCGImageAlphaPremultipliedFirst |
+                     kCGBitmapByteOrder32Little),
+      self.shmProvider, NULL, NO, kCGRenderingIntentDefault);
+  CGColorSpaceRelease(colorSpace);
+  if (image == NULL) {
+    printf("ERROR=PRESENT_IMAGE\n");
+    fflush(stdout);
+    return;
+  }
+  self.hostView.layer.contents = (__bridge id)image;
+  [CATransaction flush];
+  CGImageRelease(image);
+  self.frameCount++;
+  printf("PRESENT_OK %s shm\n", sequence.UTF8String);
+  fflush(stdout);
+}
+
 - (void)handleCommand:(NSString *)command {
   if (![NSThread isMainThread]) {
     printf("ERROR=COMMAND_NOT_ON_MAIN_THREAD\n");
@@ -239,6 +394,15 @@
   } else if ([command hasPrefix:@"SET_TITLE "]) {
     self.window.title = [command substringFromIndex:10];
     printf("TITLE_OK\n");
+  } else if ([command hasPrefix:@"SHM "]) {
+    [self attachSharedMemory:command];
+    return;
+  } else if ([command hasPrefix:@"SURFACE "]) {
+    [self attachSurface:command];
+    return;
+  } else if ([command hasPrefix:@"PRESENT "]) {
+    [self present:command];
+    return;
   } else if ([command isEqualToString:@"CLOSE"]) {
     printf("CLOSE_OK\n");
     fflush(stdout);
@@ -258,6 +422,11 @@
     self.eventMonitor = nil;
   }
   self.hostView.layer.contents = nil;
+  [self releaseSharedMemory];
+  if (self.surface != NULL) {
+    CFRelease(self.surface);
+    self.surface = NULL;
+  }
   [self.window orderOut:nil];
   self.window.contentView = nil;
   self.hostView = nil;
