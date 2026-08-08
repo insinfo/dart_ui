@@ -74,6 +74,35 @@ jobs:
           dart analyze ../../poc/poc_20_macos_three_backends
           dart test ../../poc/poc_20_macos_three_backends
 
+      # The same six lines gate every backend. PIXEL_WITNESS is the only one no
+      # backend can fake: screencapture(1) photographs the CGSWindowID from
+      # another process, so the frame has to exist in the WindowServer.
+      - name: 'Backend 1 conformance: window, present, pixels, input, teardown'
+        timeout-minutes: 4
+        run: |
+          mkdir -p /tmp/shots
+          dart compile exe \
+            ../../poc/poc_20_macos_three_backends/bin/conformance.dart \
+            -o build/conformance
+          status=0
+          OBJC_DEBUG_MISSING_POOLS=YES CONFORMANCE_SHOTS=/tmp/shots \
+            ./build/conformance skylight > /tmp/conformance-skylight.log 2>&1 \
+            || status=$?
+          cat /tmp/conformance-skylight.log
+          echo "exit=$status"
+          grep -Eq '^WINDOW_ID=[1-9][0-9]*$' /tmp/conformance-skylight.log
+          grep -q '^PRESENT=PASS$' /tmp/conformance-skylight.log
+          grep -q '^PIXEL_WITNESS=PASS' /tmp/conformance-skylight.log
+          grep -Eq '^INPUT_EVENTS=[1-9][0-9]*$' /tmp/conformance-skylight.log
+          grep -q '^TEARDOWN=PASS$' /tmp/conformance-skylight.log
+          grep -q '^CONFORMANCE=PASS$' /tmp/conformance-skylight.log
+          if grep -q 'MISSING POOLS' /tmp/conformance-skylight.log; then
+            echo 'autorelease-pool regression'
+            exit 1
+          fi
+          # Returning normally from main() is part of the contract.
+          [ "$status" -eq 0 ]
+
       - name: 'Probe A: does any execution mode own the main thread?'
         timeout-minutes: 5
         run: |
