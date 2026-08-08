@@ -182,6 +182,84 @@ void main() {
     });
   });
 
+  group('paths reach the pixels', () {
+    test('a rectangular path fills the same pixels a rect fill would',
+        () async {
+      // Ties the scanline filler to the rect path: the same geometry through
+      // two entirely different code paths must land on the same bytes, or
+      // shapes will not line up where a border meets a fill.
+      final viaPath = await targetOf(8, 8);
+      final viaRect = await targetOf(8, 8);
+
+      final pathList = DisplayList();
+      final pathPaint = pathList.addPaint(colorArgb: 0xFFFFFFFF);
+      final pathId =
+          pathList.addPath(Path.rect(const Rect.fromLTRB(2, 2, 6, 6)));
+      pathList.drawPath(pathId, pathPaint);
+
+      final rectList = DisplayList();
+      rectList.drawRectangle(const Rect.fromLTRB(2, 2, 6, 6),
+          rectList.addPaint(colorArgb: 0xFFFFFFFF));
+
+      await viaPath.renderDisplayList(pathList, clearColor: 0xFF000000);
+      await viaRect.renderDisplayList(rectList, clearColor: 0xFF000000);
+
+      expect(
+        viaPath.framebuffer.toPackedBytes(),
+        viaRect.framebuffer.toPackedBytes(),
+      );
+    });
+
+    test('a triangle covers its interior and antialiases its slope', () async {
+      final target = await targetOf(16, 16);
+      final list = DisplayList();
+      final paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+      final builder = PathBuilder()
+        ..moveTo(2, 2)
+        ..lineTo(14, 2)
+        ..lineTo(2, 14)
+        ..close();
+      list.drawPath(list.addPath(builder.build()), paint);
+
+      await target.renderDisplayList(list, clearColor: 0xFF000000);
+
+      // Well inside the triangle.
+      expect(pixelAt(target.framebuffer, 4, 4).$1, 255);
+      // Well outside it, past the hypotenuse.
+      expect(pixelAt(target.framebuffer, 13, 13).$1, 0);
+      // On the slope. The hypotenuse runs from (14,2) to (2,14), so the
+      // interior is x + y < 16 and pixel (8,8) - whose nearest corner already
+      // sums to 16 - lies entirely OUTSIDE it. Pixel (7,8) spans sums 15..17
+      // and is the one the edge actually cuts, which is where partial
+      // coverage has to show up.
+      final onEdge = pixelAt(target.framebuffer, 7, 8).$1;
+      expect(onEdge, greaterThan(0));
+      expect(onEdge, lessThan(255));
+      expect(pixelAt(target.framebuffer, 8, 8).$1, 0);
+    });
+
+    test('a stroke-styled path is refused rather than filled', () async {
+      final target = await targetOf(8, 8);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0xFFFFFFFF,
+        style: paintStyleStroke,
+        strokeWidth: 1,
+      );
+      list.drawPath(
+        list.addPath(Path.rect(const Rect.fromLTRB(1, 1, 7, 7))),
+        paint,
+      );
+
+      // Filling the enclosed region would draw a solid block where a border
+      // was asked for - wrong output that looks deliberate.
+      expect(
+        () => target.renderDisplayList(list, clearColor: 0),
+        throwsA(isA<UnsupportedCapabilityError>()),
+      );
+    });
+  });
+
   group('MemoryRenderTarget', () {
     test('rejects a frame from before a resize instead of drawing it',
         () async {

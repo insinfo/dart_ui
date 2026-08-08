@@ -17,11 +17,16 @@ import 'dart:typed_data';
 import '../foundation/diagnostics.dart';
 import '../foundation/lifecycle.dart';
 import '../geometry/offset.dart';
+import '../geometry/path.dart';
 import '../geometry/rect.dart';
 import '../geometry/transform2d.dart';
 import '../graphics/display_list.dart';
+import '../graphics/display_list_opcodes.dart';
 import '../graphics/display_list_reader.dart';
 import 'framebuffer.dart';
+import 'path/coverage_span_sink.dart';
+import 'path/scanline_filler.dart';
+import 'raster/blend.dart';
 import 'raster/rasterizer.dart';
 import 'renderer.dart';
 import 'replay/display_list_player.dart';
@@ -33,9 +38,15 @@ import 'replay/display_list_player.dart';
 /// than trusting the player keeps the rasteriser's clip stack the single
 /// authority on what is on screen.
 final class _RasterizerSink implements RasterSink {
-  _RasterizerSink(this._rasterizer);
+  _RasterizerSink(this._rasterizer)
+      : _spanSink = _CoverageToRasterizer(_rasterizer);
 
   final CpuRasterizer _rasterizer;
+
+  /// Kept across draws: the filler holds the edge and accumulator buffers that
+  /// must not be rebuilt per path.
+  final ScanlineFiller _filler = ScanlineFiller();
+  final _CoverageToRasterizer _spanSink;
 
   void _fillClipped(Rect deviceRect, Rect clip, ReplayPaint paint) {
     final visible = deviceRect.intersect(clip);
@@ -94,10 +105,27 @@ final class _RasterizerSink implements RasterSink {
     Rect clip,
     ReplayPaint paint,
   ) {
-    throw UnimplementedError(
-      'the CPU rasteriser has no path filler yet; paths reach here as opaque '
-      'objects and need a scanline edge list',
-    );
+    if (path is! Path) {
+      throw ArgumentError.value(
+        path,
+        'path',
+        'the CPU renderer fills Path objects; got ${path.runtimeType}',
+      );
+    }
+    // Refused rather than approximated. The filler produces the region the
+    // outline encloses, so filling a stroke-styled paint would draw a solid
+    // shape where a border was asked for - wrong output that looks
+    // deliberate, which is worse than an error.
+    if (paint.style != paintStyleFill) {
+      throw UnsupportedCapabilityError(
+        backendName: 'cpu',
+        capability: Capability.cpuPresentation,
+        detail: 'stroking is not implemented; a stroke-styled path would be '
+            'filled as its enclosed region',
+      );
+    }
+    _spanSink.paint = paint;
+    _filler.fill(path, clip, _spanSink, transform: transform);
   }
 
   @override
@@ -138,6 +166,46 @@ final class _RasterizerSink implements RasterSink {
     throw UnimplementedError(
       'text needs a shaper and a glyph atlas; the run reaches here already '
       'positioned in device space, so the atlas is the only missing piece',
+    );
+  }
+}
+
+/// Turns coverage spans into composited pixels.
+///
+/// A span is already whole pixels with its antialiasing carried as a coverage
+/// byte, so folding that byte into the paint's alpha and asking for a hard
+/// fill on integer bounds is exactly right - no second antialiasing pass, and
+/// no new compositor. `mul255` is the same rounding the filler used, which is
+/// what makes a full-coverage span composite bit-identically to a rect fill.
+///
+/// One fill call per span is the cost. Spans are per-scanline runs rather than
+/// per-pixel, so this is on the order of the shape's height; a public
+/// span-level entry point on the rasteriser would remove even that, and is the
+/// obvious next optimisation if paths ever show up in a profile.
+final class _CoverageToRasterizer implements CoverageSpanSink {
+  _CoverageToRasterizer(this._rasterizer);
+
+  final CpuRasterizer _rasterizer;
+
+  /// Set immediately before each fill. Mutable on purpose: a sink allocated
+  /// per draw would put an allocation on the path-drawing path.
+  ReplayPaint? paint;
+
+  @override
+  void span(int y, int xStart, int xEnd, int coverage) {
+    final current = paint;
+    if (current == null) return;
+    final argb = current.argbColor;
+    final alpha = mul255((argb >> 24) & 0xFF, coverage);
+    if (alpha == 0) return;
+    _rasterizer.fillRect(
+      Rect.fromLTRB(
+        xStart.toDouble(),
+        y.toDouble(),
+        xEnd.toDouble(),
+        (y + 1).toDouble(),
+      ),
+      (alpha << 24) | (argb & 0x00FFFFFF),
     );
   }
 }
