@@ -4,9 +4,10 @@ Este documento descreve **o que existe em `lib/`**, não o alvo. O alvo é o
 [roteiro](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md); quando os dois
 divergirem, o roteiro descreve a intenção e este arquivo descreve o código.
 
-**Estado em 8 de agosto de 2026:** cinco camadas, **442 testes**, gate próprio
+**Estado em 8 de agosto de 2026:** seis camadas, **575 testes**, gate próprio
 rodando em push nas três plataformas (formato, análise, testes e compilação
-AOT). O caminho de display list até pixels está fechado.
+AOT). O caminho **restrições → layout → display list → rasterização → pixels**
+está fechado e testado ponta a ponta, sem janela, GPU ou display server.
 
 ## Por que um package só
 
@@ -25,6 +26,7 @@ scheduler    prioridades, dispatcher         (foundation)
 graphics     display list                    (foundation, geometry)
 platform     eventos de janela               (foundation, geometry)
 rendering    contratos + renderer de CPU     (foundation, geometry, graphics)
+layout       árvore de render                (foundation, geometry, graphics)
 ```
 
 A regra de dependência da seção 8.2 é imposta por onde o arquivo mora. Nenhuma
@@ -187,12 +189,56 @@ preenchem a caixa (via `Path` eles saem corretos); `saveLayer` é um clip até
 existir buffer offscreen para compor; texto **lança**. O `probe()` do backend
 diz isso em voz alta.
 
+### `layout/`
+
+A árvore de render da seção 8: restrições entram, tamanhos e offsets saem,
+pintura vai para uma `DisplayList` e hit test volta. `RenderColoredBox`,
+`Padding`, `Align`, `ConstrainedBox`, `Flex` e `Stack`, dirigidos por um
+`PipelineOwner` que faz flush de layout e depois de pintura.
+
+**Relayout boundaries** são a parte que importa. Um nó é sua própria fronteira
+quando não tem pai, quando o pai passou `parentUsesSize: false`, ou quando as
+restrições que chegam são justas; `markNeedsLayout` sobe só até ali. O terceiro
+disjunto do Flutter (`sizedByParent`) foi deixado de fora de propósito: exige
+partir `performLayout` em dois em toda subclasse para comprar fronteiras que
+restrições justas já cobrem na maioria dos casos.
+
+**Overflow no `Flex` não corta nem lança.** Ele se dimensiona pelas restrições,
+deixa os filhos passarem visivelmente da borda e registra o excesso. Cortar
+esconde o bug; lançar transforma um frame transitório de resize ou animação em
+crash. O corte continua disponível como nó envolvente, não como flag.
+
+Ler `size` de um pai que passou `parentUsesSize: false` **lança** — verificação
+de runtime, não `assert`, então sobrevive ao AOT, ao custo de uma comparação
+com null fora do layout. Esse engano produz layouts obsoletos em silêncio.
+
+Adiado, sempre anotado onde o chamador esbarra: sizing intrínseco, baselines,
+RTL, repaint boundaries (o `flushPaint` hoje repercorre a árvore inteira).
+
+### Teste de ponta a ponta
+
+`test/end_to_end_test.dart` exercita as seis camadas juntas. As suítes por
+camada já provam cada peça contra o próprio contrato; esse arquivo existe para
+a falha que elas não pegam — duas camadas cada uma correta e **discordando
+entre si** sobre coordenadas, ordem de canais ou bordas. Um padding de 4 tem
+que colocar a fronteira de cor exatamente em `x=4` nos pixels; um flex 1:3 tem
+que cair em `x=4` de 16. Cada uma dessas afirmações vira falsa se duas camadas
+divergirem por um pixel.
+
+O caso de hit test é o que vale além disso: uma árvore pode renderizar
+perfeitamente e ainda rotear cliques para o nó errado, então o teste exige que
+o acerto caia na mesma caixa cuja cor está sob aquele pixel.
+
 ## O que ainda não existe
 
-Nenhum backend de janela real, nenhuma árvore de layout, nenhum widget. O que
-existe é a base sobre a qual essas coisas são escritas, com as invariantes já
-travadas por teste — e agora com um caminho completo até pixels para testá-las
-contra.
+Nenhum backend de janela real e nenhum widget. O que existe é a base sobre a
+qual essas coisas são escritas, com as invariantes travadas por teste e um
+caminho completo de restrições a pixels para testá-las contra.
+
+O que falta para virar framework de fato, em ordem: uma camada declarativa de
+widgets/elements acima do layout (reconciliação e estado — a segunda das quatro
+árvores da seção 8.1), e portar o backend macOS de `poc/poc_20` para `lib/`
+atrás dos contratos de plataforma.
 
 O caminho macOS tem POCs validados e uma decisão de arquitetura registrada
 ([ADR 0001](../adr/0001-worker-process-com-iosurface-no-macos.md)) mas ainda
