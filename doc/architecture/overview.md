@@ -4,7 +4,7 @@ Este documento descreve **o que existe em `lib/`**, não o alvo. O alvo é o
 [roteiro](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md); quando os dois
 divergirem, o roteiro descreve a intenção e este arquivo descreve o código.
 
-**Estado em 8 de agosto de 2026:** cinco camadas, **418 testes**, gate próprio
+**Estado em 8 de agosto de 2026:** cinco camadas, **442 testes**, gate próprio
 rodando em push nas três plataformas (formato, análise, testes e compilação
 AOT). O caminho de display list até pixels está fechado.
 
@@ -159,10 +159,33 @@ exatamente sua área (verificado em 200 mil spans aleatórios). Como 255 é ímp
 não dá para dividir simetricamente **e** conservar; conservar ganha, porque a
 alternativa deixa costura visível onde duas metades de pixel se encontram.
 
-**Limites declarados onde o chamador esbarra neles:** retângulos arredondados
-preenchem a caixa até o rasterizador ganhar um loop de canto; `saveLayer` é um
-clip até existir buffer offscreen para compor; paths e texto **lançam** em vez
-de desenhar algo plausível. O `probe()` do backend diz isso em voz alta.
+**Paths** preenchem por área assinada exata, não por supersampling: cada aresta
+deposita sua contribuição trapezoidal num acumulador por pixel e a soma
+corrente dá o winding fracionário. Sem contagem de amostras para calibrar e sem
+banding em arestas quase horizontais; verificado contra uma referência
+amostrada 64×64 independente, com divergência ≤ 1/255 em todo pixel. Regras
+`nonZero` e `evenOdd`, ambas testadas contra uma estrela auto-intersectante,
+que é onde elas diferem visivelmente.
+
+Curvas achatam por contagem de segmentos calculada a priori pelo limite de erro
+da segunda derivada, depois diferenças progressivas — sem pilha e sem corte de
+profundidade silencioso. O transform é aplicado **durante** o achatamento,
+então um path ampliado ganha mais segmentos em vez de facetas visíveis.
+
+O span sink não precisou de compositor novo: um span já é pixel inteiro com o
+antialiasing carregado como byte de cobertura, então dobrar esse byte no alpha
+do paint — com o mesmo `mul255` que o filler usou — e pedir preenchimento duro
+em fronteira inteira é exatamente certo. É por isso que um span de cobertura
+total compõe bit a bit igual a um preenchimento de retângulo, e o primeiro
+teste exige justamente isso.
+
+**Limites declarados onde o chamador esbarra neles:** stroke, caps, joins e
+dash **não existem** — um path com paint de stroke é **recusado**, não
+preenchido, porque preencher a região que o contorno encerra desenharia um
+bloco sólido onde se pediu uma borda; retângulos arredondados via `drawRRect`
+preenchem a caixa (via `Path` eles saem corretos); `saveLayer` é um clip até
+existir buffer offscreen para compor; texto **lança**. O `probe()` do backend
+diz isso em voz alta.
 
 ## O que ainda não existe
 
