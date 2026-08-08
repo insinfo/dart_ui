@@ -1619,12 +1619,22 @@ Future<void> probeSkyLightEvents(int seconds) async {
   // AppKit/HIServices registers the process before creating its first window.
   // Doing this inside the consumer was too late and alternated between 0 and
   // paramErr (-50), with event delivery present only in successful runs.
+  // Registration is not reliably idempotent on the first try: the macOS 14
+  // disassembly shows SLPSRegisterWithServer asking LaunchServices for this
+  // process (_LSASNCreateWithPid, _LSCopyApplicationInformationItem) and
+  // returning paramErr when the answer is not ready. Retry instead of
+  // treating a flaky -50 as a route failure.
   final registerWithServer =
       skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
           'SLPSRegisterWithServer');
-  final processRegistrationRc = registerWithServer(3);
-  _log('SLPSRegisterWithServer(flavor=3, before window) -> '
-      '$processRegistrationRc');
+  var processRegistrationRc = -50;
+  for (var attempt = 1; attempt <= 12; attempt++) {
+    processRegistrationRc = registerWithServer(3);
+    _log('SLPSRegisterWithServer(flavor=3, before window) attempt $attempt -> '
+        '$processRegistrationRc');
+    if (processRegistrationRc == 0) break;
+    sleep(const Duration(milliseconds: 150));
+  }
 
   // A window gives the WindowServer somewhere to aim events.
   final rect = calloc<NSRect>()

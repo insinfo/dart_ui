@@ -135,6 +135,7 @@ void runSkylightConformance() {
 
     final failuresBeforeTeardown = failures;
     final stopped = backend.shutdownSync();
+    print('REGISTRATION_ATTEMPTS=${backend.report.registrationAttempts}');
     print('TEARDOWN_STEPS=${backend.report.teardownSteps}');
     print('MISSING_SYMBOLS=${backend.report.missingSymbols}');
     check(stopped, 'shutdown was refused');

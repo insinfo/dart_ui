@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:ffi';
+import 'dart:io' show sleep;
 
 import 'package:ffi/ffi.dart';
 
@@ -56,6 +57,7 @@ class SkylightBackendReport {
 
   int connectionId = 0;
   int processRegistration = -1;
+  int registrationAttempts = 0;
   int eventPort = 0;
   int windowId = 0;
   int machMessages = 0;
@@ -165,10 +167,7 @@ class SkylightBackend implements MacosWindowBackend {
 
       // Order matters: the process must exist for the WindowServer before it
       // owns a window, otherwise input is never routed to it.
-      report.processRegistration =
-          _skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
-              'SLPSRegisterWithServer')(3);
-      log('SLPSRegisterWithServer(3) -> ${report.processRegistration}');
+      _registerProcess();
 
       _installEventPort();
       _lifecycle.finishInitialize();
@@ -177,6 +176,31 @@ class SkylightBackend implements MacosWindowBackend {
       log('INITIALIZE_FAILED: $error');
       rethrow;
     }
+  }
+
+  /// Registers the process with the WindowServer, retrying paramErr.
+  ///
+  /// The macOS 14 disassembly of `SLPSRegisterWithServer` shows it asking
+  /// LaunchServices for this process: `_LSASNCreateWithPid` then
+  /// `_LSCopyApplicationInformationItem`, with an error return when either
+  /// comes back null. For a plain command-line binary that answer is not
+  /// always ready on the first call - run 31243093662 got -50 from one process
+  /// while another in the same job got 0 - so a bounded retry is the fix, not
+  /// a different ABI.
+  void _registerProcess() {
+    final register = _skyLight
+        .lookupFunction<Int32 Function(Int32), int Function(int)>(
+            'SLPSRegisterWithServer');
+    for (var attempt = 1; attempt <= 12; attempt++) {
+      report.registrationAttempts = attempt;
+      report.processRegistration = register(3);
+      log('SLPSRegisterWithServer(3) attempt $attempt -> '
+          '${report.processRegistration}');
+      if (report.processRegistration == 0) return;
+      sleep(const Duration(milliseconds: 150));
+    }
+    throw StateError(
+        'SLPSRegisterWithServer never succeeded (${report.processRegistration})');
   }
 
   void _installEventPort() {
