@@ -76,7 +76,19 @@ praticamente independente da resolução.
 
 **Negativas.** Existe um protocolo para manter e um lifecycle de dois
 processos. Detecção de crash do host e restart passam a ser requisitos, não
-detalhes.
+detalhes — e foram medidos na run
+[`31272239992`](https://github.com/insinfo/dart_ui/actions/runs/31272239992):
+
+| verificação | resultado |
+|---|---|
+| Dart percebe o `SIGKILL` | 29 ms, status `-9` |
+| A superfície sobrevive ao host | escrita posterior funciona |
+| Host novo reanexa a **mesma** superfície | `SURFACE_OK 7` + `PRESENT_OK` |
+
+O terceiro item é o que torna a recuperação barata: a janela é nova, o
+framebuffer não. A superfície pertence ao Dart — o host é consumidor de pixels,
+não dono deles — e o `SIGKILL` é deliberado, porque um teardown educado do
+AppKit nunca foi o caso em dúvida.
 
 **Dívida conhecida — resolvida em 8 de agosto de 2026.** A passagem usava
 `IOSurfaceLookup`, deprecado. O substituto suportado passa um mach port, que um
