@@ -58,9 +58,15 @@ acima, que é palavra reservada em Dart).
 
 ### Regra de consumo medida
 
-No cliente CGS mínimo, cada mensagem da Mach port deve consumir um evento. A
-leitura adicional usada para procurar `null` bloqueou; uma leitura por mensagem
-entregou key-down, key-up e mouse-move.
+Uma leitura por mensagem **não basta**: o WindowServer agrupa. Três eventos
+postados chegaram como duas mensagens Mach, e a leitura única deixou o terceiro
+na fila — era essa a razão de o backend receber `keyDown`/`keyUp` mas nunca o
+movimento do mouse.
+
+A regra medida é: uma leitura por mensagem dentro do callback, mais leituras
+extras **limitadas e fora do callback**, apenas depois de uma fatia do run loop
+que entregou algo. O bloqueio histórico acontecia dentro do callback e sem
+limite.
 
 ### Trabalho restante
 
@@ -72,8 +78,6 @@ entregou key-down, key-up e mouse-move.
   `CGContextRelease → SLSReleaseWindow → CGSReleaseRegion →
   CFRunLoopRemoveSource → CFRelease(source) → CFMachPortInvalidate+CFRelease →
   NativeCallable.close`, sem símbolo faltando;
-- `pointerMove`: chegam `keyDown`/`keyUp`, não o movimento do mouse; provável
-  máscara de evento da janela CGS;
 - input físico, IME, acessibilidade, clipboard, cursores e drag-and-drop;
 - reconciliação após Spaces, fullscreen, monitores, sleep/wake e WindowServer
   restart;
@@ -222,7 +226,7 @@ Medição de 2026-08-08, run `31243508746`, macos-14 arm64
 
 | backend | janela | present | pixel central (esperado) | input | teardown | exit |
 |---|---|---|---|---|---|---|
-| `skylight` | 38 | PASS | `19,120,220` (`20,120,220`) | 2 | PASS | 0 |
+| `skylight` | 38 | PASS | `19,120,220` (`20,120,220`) | 4 | PASS | 0 |
 | `appkitSignal` | 47 | PASS | `120,220,20` (`120,220,20`) | 5 | PASS | 0 |
 | `appkitNativeHost` | 39 | PASS | `220,120,20` (`220,120,20`) | 3 | PASS | 0 |
 
@@ -233,7 +237,7 @@ backend 3 comprova o roteamento até a view (`VIEW_INPUT_EVENTS=3`).
 
 - criar, redimensionar e fechar **duas** janelas;
 - Metal além do framebuffer de CPU;
-- scroll, foco e captura; `pointerMove` no backend 1;
+- scroll, foco e captura;
 - timer/frame pacing e latência input→frame;
 - fullscreen/Spaces, dois monitores e mudança de escala;
 - sleep/wake e restart do processo auxiliar, quando existir.

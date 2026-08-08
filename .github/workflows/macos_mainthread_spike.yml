@@ -113,7 +113,9 @@ jobs:
           grep -Eq '^WINDOW_ID=[1-9][0-9]*$' /tmp/conformance-skylight.log
           grep -q '^PRESENT=PASS$' /tmp/conformance-skylight.log
           grep -q '^PIXEL_WITNESS=PASS' /tmp/conformance-skylight.log
-          grep -Eq '^INPUT_EVENTS=[1-9][0-9]*$' /tmp/conformance-skylight.log
+          grep -Eq '^INPUT_EVENTS=([3-9]|[1-9][0-9]+)$' \
+            /tmp/conformance-skylight.log
+          grep -q '^POINTER_INPUT=1$' /tmp/conformance-skylight.log
           grep -q '^TEARDOWN=PASS$' /tmp/conformance-skylight.log
           grep -q '^CONFORMANCE=PASS$' /tmp/conformance-skylight.log
           if grep -q 'MISSING POOLS' /tmp/conformance-skylight.log; then

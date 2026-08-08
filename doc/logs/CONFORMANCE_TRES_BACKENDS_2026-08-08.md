@@ -31,7 +31,7 @@ novo.
 
 | backend | janela | present | pixel central (esperado) | input | teardown | exit |
 |---|---|---|---|---|---|---|
-| `skylight` | 38 | PASS | `19,120,220` (`20,120,220`) | 2 | PASS | 0 |
+| `skylight` | 38 | PASS | `19,120,220` (`20,120,220`) | 4 | PASS | 0 |
 | `appkitSignal` | 47 | PASS | `120,220,20` (`120,220,20`) | 5 | PASS | 0 |
 | `appkitNativeHost` | 39 | PASS | `220,120,20` (`220,120,20`) | 3 | PASS | 0 |
 
@@ -46,9 +46,11 @@ REGISTRATION_ATTEMPTS=1
 WINDOW_ID=38
 PRESENT=PASS
 PIXEL_WITNESS=PASS centre=19,120,220 size=480x320
-INPUT_EVENTS=2
-INPUT_EVENT_TYPES=[10, 11]
-INPUT_EVENTS_DECODED=[keyDown, keyUp]
+INPUT_EVENTS=4
+INPUT_EVENT_TYPES=[10, 11, 5, 10]
+MACH_MESSAGES=2 extraReads=2
+POINTER_INPUT=1
+INPUT_EVENTS_DECODED=[keyDown, keyUp, pointerMove, keyDown]
 TEARDOWN_STEPS=[CGContextRelease, SLSReleaseWindow=0, CGSReleaseRegion=0,
                 CFRunLoopRemoveSource, CFRelease(source),
                 CFMachPortInvalidate+CFRelease, NativeCallable.close]
@@ -62,9 +64,19 @@ O framebuffer entra por `CGImageCreate` + `CGContextDrawImage` no contexto de
 `SLSReleaseWindow`/`CGSReleaseRegion` existem e retornam 0 — nenhum símbolo
 faltou. O processo retorna de `main()`; `_exit` não aparece nesse caminho.
 
-Falta: `pointerMove` não chega (só `keyDown`/`keyUp`). O backend 3, com uma
-`NSWindow` e `acceptsMouseMovedEvents`, recebe os três. A hipótese é máscara de
-evento da janela CGS, ainda não isolada.
+### O `pointerMove` que faltava era coalescência, não máscara
+
+Por várias medições o backend recebia só `[10, 11]`. Três hipóteses foram
+testadas e descartadas no CI: `SLSSetWindowEventMask(0xFFFFFFFF)` (a máscara
+mudou de `0` para `ffffffff` e nada mudou), variar a posição do ponteiro entre
+injeções, e tirar o `screencapture` de entre o present e a injeção.
+
+O que estava errado era a regra de drenagem. `MACH_MESSAGES=2` para três
+eventos postados: o WindowServer agrupa, e uma leitura por mensagem deixava o
+terceiro evento na fila para sempre. Com uma leitura extra limitada **fora** do
+callback, executada apenas depois de uma fatia que entregou algo, o backend
+passou a receber `[10, 11, 5, 10]` sem bloquear. O bloqueio histórico dos
+probes Z2–Z15 era drenagem ilimitada **dentro** do callback.
 
 ## Backend 2 — `appkitSignal`
 
@@ -162,9 +174,19 @@ A variante interna `_SLPSRegisterWithServer` é chamada por
 `HIServices _RegisterApplication` com `x0=3` (flavor), `x1=&sOurASN`,
 `x2=<pid>`.
 
+## Robustez tardia no job
+
+O backend 1 registra na primeira tentativa mesmo quando roda no fim do job,
+onde o probe Z17 falha. A suíte roda duas vezes por isso: uma cedo e uma
+depois de todos os outros probes, ambas como gate.
+
+O probe Z17 continua com uma falha em aberto e virou diagnóstico: quando a
+primeira chamada a `SLPSRegisterWithServer` devolve `-50`, o retry devolve `0`
+mas o WindowServer não entrega mais nada. Três runs concordam com essa
+correlação. O backend nunca caiu nesse estado.
+
 ## O que ainda falta
 
-- `pointerMove` no backend 1 (máscara de evento da janela CGS).
 - Duas janelas, resize, segundo frame e pacing na mesma suíte.
 - Metal além do framebuffer de CPU.
 - Fullscreen/Spaces, dois monitores, mudança de escala, sleep/wake.

@@ -36,7 +36,7 @@ dentro** — a engenharia reversa propriamente dita.
 
 | Backend | API principal | Thread 0 | Estado de maturidade |
 |---|---|---|---|
-| `skylight` | SkyLight/CGS (API privada) | não exige | conformidade completa; falta `pointerMove` |
+| `skylight` | SkyLight/CGS (API privada) | não exige | conformidade completa, incluindo `pointerMove` |
 | `appkitSignal` | AppKit via ObjC runtime | sequestrada por `SIGUSR2` | conformidade completa, incluindo cadeia de responders |
 | `appkitNativeHost` | AppKit normal via `.m` | possuída desde `main()` | conformidade completa; caminho recomendado |
 
@@ -131,9 +131,26 @@ próprios eventos. A diferença:
 | Probe Z16 (eventos auto-injetados, finitos) | uma leitura por mensagem Mach | funciona |
 | Probe Z2–Z15 (auto-injetados + exaustão) | loop até NULL após cada mensagem | bloqueia |
 
-**Regra para o framework:** quando o cliente é o próprio produtor dos eventos,
-drenar até NULL pode bloquear. Manter uma leitura por sinal da porta e agendar
-uma segunda drenagem assincronamente caso haja mais trabalho.
+**Regra para o framework (corrigida em 8 de agosto de 2026):** uma leitura por
+mensagem **perde eventos**. O WindowServer agrupa: três eventos postados
+(`keyDown`, `keyUp`, `mouseMoved`) chegaram como **duas** mensagens Mach, e a
+regra estrita deixou o terceiro na fila para sempre. Era exatamente por isso
+que o backend 1 recebia `[10, 11]` e nunca o `pointerMove`, enquanto uma janela
+AppKit normal recebia os três.
+
+A regra correta é a segunda metade do que este documento já dizia, e que não
+estava implementada:
+
+```text
+dentro do callback:  exatamente uma leitura por mensagem
+fora do callback:    leituras extras limitadas, apenas depois de uma fatia
+                     do run loop que entregou algo
+```
+
+Com isso o backend passou a receber `[10, 11, 5, 10]` — `keyDown`, `keyUp`,
+`pointerMove`, `keyDown` — com `MACH_MESSAGES=2` e `extraReads=2`, sem bloquear.
+O bloqueio medido nos probes Z2–Z15 acontecia **dentro** do callback e sem
+limite; fora dele e limitado, não acontece.
 
 ### 3.5 Ordem de inicialização obrigatória
 
@@ -460,8 +477,8 @@ garante:
   explícito de porta, source, callback, região, contexto e janela —
   [`skylight_backend.dart`](../../poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart).
 - [x] Invalidar e liberar em ordem inversa — medido no CI, sem símbolo faltando.
-- [ ] `pointerMove`: chegam `keyDown`/`keyUp` mas não o movimento; provável
-  máscara de evento da janela CGS.
+- [x] `pointerMove`: era coalescência de mensagens Mach, não máscara de evento
+  (§ 3.4). Resolvido com drenagem extra limitada fora do callback.
 - [ ] Input físico (não sintético): mouse real, teclado real.
 - [ ] IME, acessibilidade, clipboard, cursores, drag-and-drop.
 - [ ] Reconciliação após Spaces, fullscreen, monitores, sleep/wake e restart
