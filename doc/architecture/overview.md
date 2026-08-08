@@ -240,8 +240,10 @@ caminho completo de restrições a pixels para testá-las contra.
 
 O que falta para virar framework de fato, em ordem: uma camada declarativa de
 widgets/elements acima do layout (reconciliação e estado — a segunda das quatro
-árvores da seção 8.1), e portar o backend macOS de `poc/poc_20` para `lib/`
-atrás dos contratos de plataforma.
+árvores da seção 8.1), e portar os **três** backends macOS de
+`poc/poc_20` para `lib/` atrás dos contratos de plataforma — `appkitNativeHost`
+como default, `skylight` como alternativa para executável Dart standalone, e
+`appkitSignal` só com opt-in explícito.
 
 O caminho macOS tem POCs validados e uma decisão de arquitetura registrada
 ([ADR 0001](../adr/0001-worker-process-com-iosurface-no-macos.md)) mas ainda

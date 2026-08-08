@@ -4,12 +4,26 @@
 **Data:** 8 de agosto de 2026
 **Contexto medido:** [`logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md`](../logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md)
 
+## Escopo deste ADR
+
+**Este ADR não reduz o número de backends macOS.** Ele decide *uma* questão
+sobre o `appkitNativeHost`: como o Dart se relaciona com o host nativo. Os três
+backends continuam existindo atrás do mesmo contrato, como
+[`MACOS_TRES_BACKENDS.md`](../MACOS_TRES_BACKENDS.md) estabelece — `skylight` e
+`appkitSignal` têm ownership de thread, risco e finalidade diferentes, e não
+são nomes alternativos para a mesma técnica.
+
+O aviso está aqui porque a confusão já aconteceu uma vez: este documento foi
+lido como se "escolhido" significasse "único", e um briefing chegou a instruir
+que os outros dois ficassem para trás.
+
 ## Contexto
 
 O AppKit exige a primeira thread do processo e a VM do Dart não a entrega. Dos
 três backends macOS validados, o `appkitNativeHost` — um `main()` em
-Objective-C que possui a thread 0 por construção — é o recomendado por
-robustez. Restava decidir como o Dart se relaciona com esse host:
+Objective-C que possui a thread 0 por construção — é o **default recomendado**
+por robustez, com `skylight` como segunda opção e `appkitSignal` restrito a
+opt-in explícito. Restava decidir como o Dart se relaciona com esse host:
 
 1. **embedder no mesmo processo:** o host liga a VM do Dart e cria o isolate;
 2. **Dart como processo worker:** o host fala com um processo Dart separado.
@@ -19,7 +33,7 @@ resultado desse spike.
 
 ## Decisão
 
-**Dart roda como processo worker.** O host nativo possui a janela e a thread 0;
+**Para o `appkitNativeHost`: Dart roda como processo worker.** O host nativo possui a janela e a thread 0;
 os frames atravessam a fronteira por `IOSurface`; o pipe carrega apenas
 controle e input.
 
