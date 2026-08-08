@@ -21,7 +21,7 @@ class PixelSample {
   /// Colour management on the capture path shifts values by a few units, and
   /// window shadows/rounded corners never touch the centre pixel, so a loose
   /// per-channel tolerance is enough to tell "our frame" from "the desktop".
-  bool matches(PixelSample expected, {int tolerance = 48}) =>
+  bool matches(PixelSample expected, {int tolerance = 24}) =>
       (red - expected.red).abs() <= tolerance &&
       (green - expected.green).abs() <= tolerance &&
       (blue - expected.blue).abs() <= tolerance;

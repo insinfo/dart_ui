@@ -5,6 +5,8 @@ import 'package:ffi/ffi.dart';
 
 import 'backend_contract.dart';
 import 'backend_policy.dart';
+import 'core_graphics_types.dart';
+import 'synthetic_input.dart';
 
 // ---------------------------------------------------------------------------
 // Backend 1 - SkyLight/CGS, extracted from poc_03's probe.dart.
@@ -31,24 +33,6 @@ import 'backend_policy.dart';
 // ---------------------------------------------------------------------------
 
 typedef _VoidPtr = Pointer<Void>;
-
-final class _CGRect extends Struct {
-  @Double()
-  external double x;
-  @Double()
-  external double y;
-  @Double()
-  external double width;
-  @Double()
-  external double height;
-}
-
-final class _CGPoint extends Struct {
-  @Double()
-  external double x;
-  @Double()
-  external double y;
-}
 
 typedef _MachPortCallbackNative = Void Function(
     _VoidPtr port, _VoidPtr message, IntPtr size, _VoidPtr context);
@@ -128,14 +112,13 @@ class SkylightBackend implements MacosWindowBackend {
 
   // --- library plumbing ------------------------------------------------------
 
-  late final _pthreadSelf =
-      DynamicLibrary.process().lookupFunction<IntPtr Function(), int Function()>(
-          'pthread_self');
+  late final _pthreadSelf = DynamicLibrary.process()
+      .lookupFunction<IntPtr Function(), int Function()>('pthread_self');
   late final _getpid = DynamicLibrary.process()
       .lookupFunction<Int32 Function(), int Function()>('getpid');
-  late final _cfRelease = _coreFoundation
-      .lookupFunction<Void Function(_VoidPtr), void Function(_VoidPtr)>(
-          'CFRelease');
+  late final SyntheticInput _syntheticInput = SyntheticInput();
+  late final _cfRelease = _coreFoundation.lookupFunction<
+      Void Function(_VoidPtr), void Function(_VoidPtr)>('CFRelease');
 
   T? _optional<T>(T Function() lookup, String symbol) {
     try {
@@ -172,8 +155,8 @@ class SkylightBackend implements MacosWindowBackend {
 
       _ownerThread = _pthreadSelf();
 
-      report.connectionId = _skyLight
-          .lookupFunction<Int32 Function(), int Function()>(
+      report.connectionId =
+          _skyLight.lookupFunction<Int32 Function(), int Function()>(
               'SLSMainConnectionID')();
       log('SLSMainConnectionID -> ${report.connectionId}');
       if (report.connectionId == 0) {
@@ -182,8 +165,8 @@ class SkylightBackend implements MacosWindowBackend {
 
       // Order matters: the process must exist for the WindowServer before it
       // owns a window, otherwise input is never routed to it.
-      report.processRegistration = _skyLight
-          .lookupFunction<Int32 Function(Int32), int Function(int)>(
+      report.processRegistration =
+          _skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
               'SLPSRegisterWithServer')(3);
       log('SLPSRegisterWithServer(3) -> ${report.processRegistration}');
 
@@ -199,7 +182,8 @@ class SkylightBackend implements MacosWindowBackend {
   void _installEventPort() {
     final portSlot = calloc<Uint32>();
     try {
-      final rc = _skyLight.lookupFunction<Int32 Function(Int32, Pointer<Uint32>),
+      final rc = _skyLight.lookupFunction<
+          Int32 Function(Int32, Pointer<Uint32>),
           int Function(int, Pointer<Uint32>)>('SLSGetEventPort')(
         report.connectionId,
         portSlot,
@@ -215,11 +199,11 @@ class SkylightBackend implements MacosWindowBackend {
 
     final createNextEvent = _skyLight.lookupFunction<_VoidPtr Function(Int32),
         _VoidPtr Function(int)>('SLEventCreateNextEvent');
-    final getType = _skyLight
-        .lookupFunction<Uint32 Function(_VoidPtr), int Function(_VoidPtr)>(
-            'SLEventGetType');
-    final getLocation = _coreGraphics.lookupFunction<_CGPoint Function(_VoidPtr),
-        _CGPoint Function(_VoidPtr)>('CGEventGetLocation');
+    final getType = _skyLight.lookupFunction<Uint32 Function(_VoidPtr),
+        int Function(_VoidPtr)>('SLEventGetType');
+    final getLocation = _coreGraphics.lookupFunction<
+        CGPointNative Function(_VoidPtr),
+        CGPointNative Function(_VoidPtr)>('CGEventGetLocation');
     final getField = _coreGraphics.lookupFunction<
         Int64 Function(_VoidPtr, Uint32),
         int Function(_VoidPtr, int)>('CGEventGetIntegerValueField');
@@ -253,10 +237,10 @@ class SkylightBackend implements MacosWindowBackend {
             generation: generation,
             x: location.x,
             y: location.y,
-            keyCode: kind == MacosInputKind.keyDown ||
-                    kind == MacosInputKind.keyUp
-                ? getField(event, _kCGKeyboardEventKeycode)
-                : null,
+            keyCode:
+                kind == MacosInputKind.keyDown || kind == MacosInputKind.keyUp
+                    ? getField(event, _kCGKeyboardEventKeycode)
+                    : null,
           ));
         }
         _cfRelease(event);
@@ -266,11 +250,17 @@ class SkylightBackend implements MacosWindowBackend {
     });
 
     _machPort = _coreFoundation.lookupFunction<
-        _VoidPtr Function(_VoidPtr, Uint32,
-            Pointer<NativeFunction<_MachPortCallbackNative>>, _VoidPtr,
+        _VoidPtr Function(
+            _VoidPtr,
+            Uint32,
+            Pointer<NativeFunction<_MachPortCallbackNative>>,
+            _VoidPtr,
             Pointer<Bool>),
-        _VoidPtr Function(_VoidPtr, int,
-            Pointer<NativeFunction<_MachPortCallbackNative>>, _VoidPtr,
+        _VoidPtr Function(
+            _VoidPtr,
+            int,
+            Pointer<NativeFunction<_MachPortCallbackNative>>,
+            _VoidPtr,
             Pointer<Bool>)>('CFMachPortCreateWithPort')(
       nullptr,
       report.eventPort,
@@ -292,9 +282,8 @@ class SkylightBackend implements MacosWindowBackend {
       _machPort,
       0,
     );
-    _runLoop = _coreFoundation
-        .lookupFunction<_VoidPtr Function(), _VoidPtr Function()>(
-            'CFRunLoopGetCurrent')();
+    _runLoop = _coreFoundation.lookupFunction<_VoidPtr Function(),
+        _VoidPtr Function()>('CFRunLoopGetCurrent')();
     if (_runLoopSource == nullptr || _runLoop == nullptr) {
       throw StateError('no run loop source');
     }
@@ -320,7 +309,7 @@ class SkylightBackend implements MacosWindowBackend {
     _lifecycle.requireRunning('create a window');
     _checkThread('createWindow');
 
-    final rect = calloc<_CGRect>()
+    final rect = calloc<CGRectNative>()
       ..ref.x = 200
       ..ref.y = 200
       ..ref.width = options.width.toDouble()
@@ -328,8 +317,8 @@ class SkylightBackend implements MacosWindowBackend {
     final regionSlot = calloc<Pointer<Void>>();
     try {
       final regionRc = _skyLight.lookupFunction<
-          Int32 Function(Pointer<_CGRect>, Pointer<Pointer<Void>>),
-          int Function(Pointer<_CGRect>,
+          Int32 Function(Pointer<CGRectNative>, Pointer<Pointer<Void>>),
+          int Function(Pointer<CGRectNative>,
               Pointer<Pointer<Void>>)>('CGSNewRegionWithRect')(
         rect,
         regionSlot,
@@ -346,7 +335,8 @@ class SkylightBackend implements MacosWindowBackend {
     final windowIdSlot = calloc<Uint32>();
     try {
       final rc = _skyLight.lookupFunction<
-          Int32 Function(Int32, Int32, Double, Double, _VoidPtr, Pointer<Uint32>),
+          Int32 Function(
+              Int32, Int32, Double, Double, _VoidPtr, Pointer<Uint32>),
           int Function(int, int, double, double, _VoidPtr,
               Pointer<Uint32>)>('SLSNewWindow')(
         report.connectionId,
@@ -404,15 +394,15 @@ class SkylightBackend implements MacosWindowBackend {
 
     final provider = _coreGraphics.lookupFunction<
         _VoidPtr Function(_VoidPtr, _VoidPtr, IntPtr, _VoidPtr),
-        _VoidPtr Function(_VoidPtr, _VoidPtr, int,
-            _VoidPtr)>('CGDataProviderCreateWithData')(
+        _VoidPtr Function(
+            _VoidPtr, _VoidPtr, int, _VoidPtr)>('CGDataProviderCreateWithData')(
       nullptr,
       pixels.cast(),
       frame.bgraPremultiplied.length,
       nullptr,
     );
-    final colorSpace = _coreGraphics
-        .lookupFunction<_VoidPtr Function(), _VoidPtr Function()>(
+    final colorSpace =
+        _coreGraphics.lookupFunction<_VoidPtr Function(), _VoidPtr Function()>(
             'CGColorSpaceCreateDeviceRGB')();
     // kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little => BGRA.
     const bitmapInfo = 2 | (2 << 12);
@@ -438,31 +428,28 @@ class SkylightBackend implements MacosWindowBackend {
       throw StateError('CGImageCreate returned null');
     }
 
-    final rect = calloc<_CGRect>()
+    final rect = calloc<CGRectNative>()
       ..ref.x = 0
       ..ref.y = 0
       ..ref.width = frame.width.toDouble()
       ..ref.height = frame.height.toDouble();
-    _coreGraphics.lookupFunction<Void Function(_VoidPtr, _CGRect, _VoidPtr),
-        void Function(_VoidPtr, _CGRect, _VoidPtr)>('CGContextDrawImage')(
+    _coreGraphics.lookupFunction<
+        Void Function(_VoidPtr, CGRectNative, _VoidPtr),
+        void Function(_VoidPtr, CGRectNative, _VoidPtr)>('CGContextDrawImage')(
       _windowContext,
       rect.ref,
       image,
     );
-    _coreGraphics
-        .lookupFunction<Void Function(_VoidPtr), void Function(_VoidPtr)>(
-            'CGContextFlush')(_windowContext);
+    _coreGraphics.lookupFunction<Void Function(_VoidPtr),
+        void Function(_VoidPtr)>('CGContextFlush')(_windowContext);
     calloc.free(rect);
 
-    _coreGraphics
-        .lookupFunction<Void Function(_VoidPtr), void Function(_VoidPtr)>(
-            'CGImageRelease')(image);
-    _coreGraphics
-        .lookupFunction<Void Function(_VoidPtr), void Function(_VoidPtr)>(
-            'CGColorSpaceRelease')(colorSpace);
-    _coreGraphics
-        .lookupFunction<Void Function(_VoidPtr), void Function(_VoidPtr)>(
-            'CGDataProviderRelease')(provider);
+    _coreGraphics.lookupFunction<Void Function(_VoidPtr),
+        void Function(_VoidPtr)>('CGImageRelease')(image);
+    _coreGraphics.lookupFunction<Void Function(_VoidPtr),
+        void Function(_VoidPtr)>('CGColorSpaceRelease')(colorSpace);
+    _coreGraphics.lookupFunction<Void Function(_VoidPtr),
+        void Function(_VoidPtr)>('CGDataProviderRelease')(provider);
     // CGImageCreate copies nothing; the provider held the buffer and is gone
     // now, so the frame bytes can go too.
     calloc.free(pixels);
@@ -472,38 +459,7 @@ class SkylightBackend implements MacosWindowBackend {
 
   /// Injects one key down/up pair and one pointer move into this process
   /// through the WindowServer - the same route physical input takes.
-  bool injectSyntheticInput() {
-    final createKey = _coreGraphics.lookupFunction<
-        _VoidPtr Function(_VoidPtr, Uint16, Bool),
-        _VoidPtr Function(
-            _VoidPtr, int, bool)>('CGEventCreateKeyboardEvent');
-    final createMouse = _coreGraphics.lookupFunction<
-        _VoidPtr Function(_VoidPtr, Uint32, _CGPoint, Uint32),
-        _VoidPtr Function(
-            _VoidPtr, int, _CGPoint, int)>('CGEventCreateMouseEvent');
-    final postToPid = _skyLight.lookupFunction<Void Function(Int32, _VoidPtr),
-        void Function(int, _VoidPtr)>('SLEventPostToPid');
-    final pid = _getpid();
-
-    final down = createKey(nullptr, 0, true);
-    final up = createKey(nullptr, 0, false);
-    if (down == nullptr) return false;
-    postToPid(pid, down);
-    if (up != nullptr) postToPid(pid, up);
-    _cfRelease(down);
-    if (up != nullptr) _cfRelease(up);
-
-    final point = calloc<_CGPoint>()
-      ..ref.x = 400
-      ..ref.y = 400;
-    final move = createMouse(nullptr, 5, point.ref, 0);
-    calloc.free(point);
-    if (move != nullptr) {
-      postToPid(pid, move);
-      _cfRelease(move);
-    }
-    return true;
-  }
+  bool injectSyntheticInput() => _syntheticInput.postTo(_getpid());
 
   /// Runs the owning run loop in bounded slices. Synchronous by design.
   int pumpSync({required int slices, double sliceSeconds = 0.05}) {
@@ -525,9 +481,8 @@ class SkylightBackend implements MacosWindowBackend {
 
   void _releaseWindow() {
     if (_windowContext != nullptr) {
-      _coreGraphics
-          .lookupFunction<Void Function(_VoidPtr), void Function(_VoidPtr)>(
-              'CGContextRelease')(_windowContext);
+      _coreGraphics.lookupFunction<Void Function(_VoidPtr),
+          void Function(_VoidPtr)>('CGContextRelease')(_windowContext);
       _windowContext = nullptr;
       report.teardownSteps.add('CGContextRelease');
     }
@@ -564,9 +519,9 @@ class SkylightBackend implements MacosWindowBackend {
     _releaseWindow();
 
     if (_runLoopSource != nullptr && _runLoop != nullptr) {
-      _coreFoundation.lookupFunction<Void Function(_VoidPtr, _VoidPtr, _VoidPtr),
-          void Function(
-              _VoidPtr, _VoidPtr, _VoidPtr)>('CFRunLoopRemoveSource')(
+      _coreFoundation.lookupFunction<
+          Void Function(_VoidPtr, _VoidPtr, _VoidPtr),
+          void Function(_VoidPtr, _VoidPtr, _VoidPtr)>('CFRunLoopRemoveSource')(
         _runLoop,
         _runLoopSource,
         _defaultMode,
@@ -581,9 +536,8 @@ class SkylightBackend implements MacosWindowBackend {
     if (_machPort != nullptr) {
       // Invalidate before release: the port must stop calling into the
       // NativeCallable before that callable is closed.
-      _coreFoundation
-          .lookupFunction<Void Function(_VoidPtr), void Function(_VoidPtr)>(
-              'CFMachPortInvalidate')(_machPort);
+      _coreFoundation.lookupFunction<Void Function(_VoidPtr),
+          void Function(_VoidPtr)>('CFMachPortInvalidate')(_machPort);
       _cfRelease(_machPort);
       _machPort = nullptr;
       report.teardownSteps.add('CFMachPortInvalidate+CFRelease');

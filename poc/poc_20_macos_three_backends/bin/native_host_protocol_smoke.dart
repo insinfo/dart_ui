@@ -26,7 +26,7 @@ Future<void> main(List<String> arguments) async {
     throw StateError('host exited before producing $expected');
   }
 
-  await waitFor('PROTOCOL=1');
+  await waitFor('PROTOCOL=2');
   process.stdin.writeln('PING');
   await process.stdin.flush();
   await waitFor('PONG');

@@ -55,6 +55,7 @@ jobs:
         run: |
           mkdir -p /tmp/shots
           clang -fobjc-arc -Wall -Wextra -framework Cocoa \
+            -framework QuartzCore \
             ../../poc/poc_20_macos_three_backends/native/minimal_appkit_host.m \
             -o build/minimal_appkit_host
           ./build/minimal_appkit_host --smoke-seconds 1 \
@@ -101,6 +102,25 @@ jobs:
             exit 1
           fi
           # Returning normally from main() is part of the contract.
+          [ "$status" -eq 0 ]
+
+      - name: 'Backend 3 conformance: window, present, pixels, input, teardown'
+        timeout-minutes: 4
+        run: |
+          mkdir -p /tmp/shots
+          status=0
+          CONFORMANCE_SHOTS=/tmp/shots ./build/conformance \
+            appkit-native-host build/minimal_appkit_host \
+            > /tmp/conformance-native-host.log 2>&1 || status=$?
+          cat /tmp/conformance-native-host.log
+          echo "exit=$status"
+          grep -Eq '^WINDOW_ID=[1-9][0-9]*$' /tmp/conformance-native-host.log
+          grep -q '^PRESENT=PASS$' /tmp/conformance-native-host.log
+          grep -q '^PIXEL_WITNESS=PASS' /tmp/conformance-native-host.log
+          grep -Eq '^INPUT_EVENTS=[1-9][0-9]*$' \
+            /tmp/conformance-native-host.log
+          grep -q '^TEARDOWN=PASS$' /tmp/conformance-native-host.log
+          grep -q '^CONFORMANCE=PASS$' /tmp/conformance-native-host.log
           [ "$status" -eq 0 ]
 
       - name: 'Probe A: does any execution mode own the main thread?'

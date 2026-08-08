@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -26,9 +27,13 @@ import 'package:poc_20_macos_three_backends/poc_20_macos_three_backends.dart';
 const int frameWidth = 480;
 const int frameHeight = 320;
 
-/// Distinct from the desktop background and from every other backend's fill, so
-/// a stale capture cannot pass for a fresh one.
-const PixelSample expectedCentre = PixelSample(20, 120, 220);
+/// One fill colour per backend, all distinct from the desktop background, so a
+/// capture left behind by another backend cannot pass for a fresh frame.
+const Map<String, PixelSample> expectedCentres = <String, PixelSample>{
+  'skylight': PixelSample(20, 120, 220),
+  'appkit-native-host': PixelSample(220, 120, 20),
+  'appkit-signal': PixelSample(120, 220, 20),
+};
 
 Uint8List solidBgraFrame(PixelSample colour) {
   final bytes = Uint8List(frameWidth * frameHeight * 4);
@@ -49,14 +54,22 @@ Future<void> main(List<String> arguments) async {
   switch (backend) {
     case 'skylight':
       runSkylightConformance();
+    case 'appkit-native-host':
+      if (arguments.length != 2) {
+        stderr.writeln('usage: conformance appkit-native-host <host-binary>');
+        exitCode = 64;
+        return;
+      }
+      await runNativeHostConformance(arguments[1]);
     default:
-      stderr.writeln('usage: conformance [skylight]');
+      stderr.writeln('usage: conformance [skylight|appkit-native-host <bin>]');
       exitCode = 64;
   }
 }
 
 void runSkylightConformance() {
   print('CONFORMANCE_BACKEND=skylight');
+  final expectedCentre = expectedCentres['skylight']!;
   final backend = SkylightBackend();
   var failures = 0;
 
@@ -107,14 +120,16 @@ void runSkylightConformance() {
     // Input, through the WindowServer, the way physical input arrives.
     backend.injectSyntheticInput();
     var pumped = 0;
-    for (var round = 0; round < 40 && backend.report.eventsRead < 3; round++) {
+    for (var round = 0; round < 60 && backend.report.eventsRead < 4; round++) {
       pumped += backend.pumpSync(slices: 2);
-      if (round == 20) backend.injectSyntheticInput();
+      if (round == 20 || round == 40) backend.injectSyntheticInput();
     }
     print('INPUT_EVENTS=${backend.report.eventsRead}');
     print('INPUT_EVENT_TYPES=${backend.report.eventTypes}');
     print('INPUT_EVENTS_DECODED=${events.map((e) => e.kind.name).toList()}');
-    check(backend.report.eventsRead > 0, 'no input event arrived (pumped '
+    check(
+        backend.report.eventsRead > 0,
+        'no input event arrived (pumped '
         '$pumped)');
     check(backend.threadIsStable, 'the isolate migrated OS threads');
 
@@ -125,7 +140,8 @@ void runSkylightConformance() {
     check(stopped, 'shutdown was refused');
     check(backend.state == MacosBackendState.stopped, 'state is not stopped');
     check(backend.shutdownSync() == false, 'shutdown is not idempotent');
-    print(failures == failuresBeforeTeardown ? 'TEARDOWN=PASS' : 'TEARDOWN=FAIL');
+    print(
+        failures == failuresBeforeTeardown ? 'TEARDOWN=PASS' : 'TEARDOWN=FAIL');
   } catch (error, stack) {
     failures++;
     print('CONFORMANCE_ERROR: $error');
@@ -138,5 +154,122 @@ void runSkylightConformance() {
 
   print(failures == 0 ? 'CONFORMANCE=PASS' : 'CONFORMANCE=FAIL ($failures)');
   // No _exit: returning from main is part of what this suite proves.
+  if (failures != 0) exitCode = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Backend 3. The window, the frame and the teardown all happen in the native
+// host; Dart drives them over the protocol and verifies from outside. The
+// interesting part is that input reaches a Dart process at all: the events are
+// posted to the HOST's pid, dequeued by the host's AppKit loop, and reported
+// back over stdout.
+// ---------------------------------------------------------------------------
+
+Future<void> runNativeHostConformance(String hostBinary) async {
+  print('CONFORMANCE_BACKEND=appkitNativeHost');
+  final expectedCentre = expectedCentres['appkit-native-host']!;
+  var failures = 0;
+
+  void check(bool condition, String failure) {
+    if (!condition) {
+      failures++;
+      print('FAILURE: $failure');
+    }
+  }
+
+  final host = await Process.start(hostBinary, const ['--command-stdin']);
+  final lines = <String>[];
+  final inputs = <String>[];
+  final viewInputs = <String>[];
+  final stdoutDone = host.stdout
+      .transform(utf8.decoder)
+      .transform(const LineSplitter())
+      .listen((line) {
+    lines.add(line);
+    print('HOST: $line');
+    if (line.startsWith('INPUT=')) inputs.add(line.substring(6));
+    if (line.startsWith('VIEW_INPUT=')) viewInputs.add(line.substring(11));
+  }).asFuture<void>();
+  final hostStderr = host.stderr.transform(utf8.decoder).join();
+
+  Future<bool> waitForLine(bool Function(String line) predicate,
+      {Duration timeout = const Duration(seconds: 10)}) async {
+    final deadline = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(deadline)) {
+      if (lines.any(predicate)) return true;
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+    }
+    return false;
+  }
+
+  try {
+    check(
+        await waitForLine((l) => l == 'PROTOCOL=2'),
+        'host never announced '
+        'protocol 2');
+    check(lines.contains('MAIN_THREAD=1'), 'host does not own thread 0');
+    final idLine = lines.firstWhere((l) => l.startsWith('WINDOW_ID='),
+        orElse: () => 'WINDOW_ID=0');
+    final windowId = int.parse(idLine.split('=').last);
+    print('WINDOW_ID=$windowId');
+    check(windowId > 0, 'no window id');
+
+    // A real CPU framebuffer crosses the process boundary: header line, then
+    // exactly that many raw octets.
+    final frame = solidBgraFrame(expectedCentre);
+    host.stdin.write('FRAME $frameWidth $frameHeight ${frame.length}\n');
+    host.stdin.add(frame);
+    await host.stdin.flush();
+    final framed = await waitForLine((l) => l.startsWith('FRAME_OK'));
+    print(framed ? 'PRESENT=PASS' : 'PRESENT=FAIL');
+    check(framed, 'host did not acknowledge the frame');
+
+    final witness = WindowPixelWitness(workDirectory: _workDirectory)
+        .capture(windowId, label: 'appkit-native-host');
+    final centre = witness.centre;
+    if (centre != null && centre.matches(expectedCentre)) {
+      print('PIXEL_WITNESS=PASS centre=$centre '
+          'size=${witness.width}x${witness.height}');
+    } else {
+      print('PIXEL_WITNESS=FAIL centre=$centre '
+          'size=${witness.width}x${witness.height} '
+          'expected=$expectedCentre failure=${witness.failure}');
+      failures++;
+    }
+
+    // Input is posted to the host process, not to this one.
+    final input = SyntheticInput();
+    check(input.postTo(host.pid), 'could not create synthetic events');
+    await waitForLine((l) => l.startsWith('INPUT='),
+        timeout: const Duration(seconds: 3));
+    if (inputs.isEmpty) input.postTo(host.pid);
+    await waitForLine((l) => l.startsWith('INPUT='),
+        timeout: const Duration(seconds: 3));
+    print('INPUT_EVENTS=${inputs.length}');
+    print('INPUT_EVENT_KINDS=$inputs');
+    print('VIEW_INPUT_EVENTS=${viewInputs.length} $viewInputs');
+    check(inputs.isNotEmpty, 'the host dequeued no input');
+
+    host.stdin.writeln('CLOSE');
+    await host.stdin.flush();
+    final closed = await waitForLine((l) => l == 'CLOSE_OK');
+    final tornDown = await waitForLine((l) => l == 'TEARDOWN=PASS');
+    await host.stdin.close();
+    final status = await host.exitCode.timeout(const Duration(seconds: 10));
+    check(closed, 'host did not acknowledge CLOSE');
+    check(status == 0, 'host exited with status $status');
+    print(tornDown && status == 0 ? 'TEARDOWN=PASS' : 'TEARDOWN=FAIL');
+    check(tornDown, 'host did not report an ordered teardown');
+  } on Object catch (error, stack) {
+    failures++;
+    print('CONFORMANCE_ERROR: $error');
+    print(stack);
+    host.kill(ProcessSignal.sigkill);
+  }
+
+  await stdoutDone;
+  final errors = await hostStderr;
+  if (errors.isNotEmpty) stderr.write(errors);
+  print(failures == 0 ? 'CONFORMANCE=PASS' : 'CONFORMANCE=FAIL ($failures)');
   if (failures != 0) exitCode = 1;
 }
