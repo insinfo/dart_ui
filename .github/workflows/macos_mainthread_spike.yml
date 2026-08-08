@@ -236,6 +236,31 @@ jobs:
               /tmp/transport-benchmark.log | sed 's/^/- `/;s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # The transport benchmark measured what a present COSTS. This measures
+      # whether the compositor keeps up, which a per-frame number cannot show:
+      # with one shared surface, Dart writes into the same pages the
+      # WindowServer is scanning out, so a frame can be composited
+      # half-updated. Sizing that window is what decides whether double
+      # buffering is needed, rather than assuming it is.
+      #
+      # Not a gate. It fails only if the host stops answering, because then the
+      # numbers describe nothing.
+      - name: 'Present pacing: does the compositor keep up, and how wide is the tear window?'
+        timeout-minutes: 4
+        run: |
+          status=0
+          dart run \
+            ../../poc/poc_20_macos_three_backends/bin/vsync_probe.dart \
+            build/minimal_appkit_host 120 > /tmp/vsync.log 2>&1 || status=$?
+          cat /tmp/vsync.log
+          echo "exit=$status"
+          [ "$status" -eq 0 ]
+          {
+            echo '## Present pacing at 1920x1080'
+            echo
+            grep -E '^VSYNC_' /tmp/vsync.log | sed 's/^/- `/;s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # ADR 0001 chose a worker process partly BECAUSE it isolates crashes, and
       # then listed crash detection and restart as a requirement rather than a
       # detail. This is that requirement: SIGKILL the host mid-session and
