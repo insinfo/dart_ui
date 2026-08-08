@@ -260,6 +260,100 @@ void main() {
     });
   });
 
+  group('rounded rectangles have real corners', () {
+    test('a rounded corner is cut away, and the middle is not', () async {
+      final target = await targetOf(20, 20);
+      final list = DisplayList();
+      final paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+      list.drawRRect(
+        2,
+        2,
+        18,
+        18,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        6,
+        paint,
+      );
+
+      await target.renderDisplayList(list, clearColor: 0xFF000000);
+
+      // The corner pixel of the bounding box is outside a 6px radius, so a
+      // bounding-box fill - which is what this used to do - would light it up.
+      expect(pixelAt(target.framebuffer, 2, 2).$1, 0);
+      // The middle of each edge is well inside.
+      expect(pixelAt(target.framebuffer, 10, 3).$1, 255);
+      expect(pixelAt(target.framebuffer, 3, 10).$1, 255);
+      expect(pixelAt(target.framebuffer, 10, 10).$1, 255);
+    });
+
+    test('a zero radius keeps that corner square', () async {
+      final target = await targetOf(20, 20);
+      final list = DisplayList();
+      final paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+      // Round only the bottom-right corner.
+      list.drawRRect(
+        2, 2, 18, 18,
+        // Only the bottom-right corner is rounded.
+        0, 0, 0, 0, 8, 8, 0, 0,
+        paint,
+      );
+
+      await target.renderDisplayList(list, clearColor: 0xFF000000);
+
+      // Square corners stay filled; only the rounded one is cut.
+      expect(pixelAt(target.framebuffer, 2, 2).$1, 255);
+      expect(pixelAt(target.framebuffer, 17, 2).$1, 255);
+      expect(pixelAt(target.framebuffer, 2, 17).$1, 255);
+      expect(pixelAt(target.framebuffer, 17, 17).$1, 0);
+    });
+
+    test('a stroke-styled rounded rect is refused, by the player', () async {
+      final target = await targetOf(20, 20);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0xFFFFFFFF,
+        style: paintStyleStroke,
+        strokeWidth: 2,
+      );
+      list.drawRRect(
+        2,
+        2,
+        18,
+        18,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        4,
+        paint,
+      );
+
+      // Two layers refuse this and they are not redundant. The player rejects
+      // drawRRect with a non-fill style because it has no stroke primitive to
+      // emit to; the sink rejects it again for paths, which the player passes
+      // through untouched. Whichever fires, nothing gets filled as a solid
+      // block where a border was asked for.
+      expect(
+        () => target.renderDisplayList(list, clearColor: 0),
+        throwsA(
+          predicate<Object>(
+            (e) => e.toString().toLowerCase().contains('stroke'),
+            'an error naming stroking as the missing piece',
+          ),
+        ),
+      );
+    });
+  });
+
   group('MemoryRenderTarget', () {
     test('rejects a frame from before a resize instead of drawing it',
         () async {

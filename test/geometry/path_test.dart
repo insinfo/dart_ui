@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/path.dart';
@@ -440,15 +441,17 @@ void main() {
       }
     });
 
-    test('rounded rect radii are clamped to half the side', () {
+    test('over-large uniform radii are reduced, and stay inside the box', () {
       const rect = Rect.fromLTRB(0, 0, 20, 10);
-      final huge =
-          (PathBuilder()..addRoundedRect(rect, 1000, 1000)).build().bounds;
+      final path = (PathBuilder()..addRoundedRect(rect, 1000, 1000)).build();
 
-      expect(huge.left, closeTo(0, 1e-4));
-      expect(huge.top, closeTo(0, 1e-4));
-      expect(huge.right, closeTo(20, 1e-4));
-      expect(huge.bottom, closeTo(10, 1e-4));
+      // The shorter side decides: 10 / (1000 + 1000) is the smallest factor,
+      // and it applies to the x radii too.
+      expect(_effectiveRadii(path), <double>[5, 5, 5, 5, 5, 5, 5, 5]);
+      expect(path.bounds.left, closeTo(0, 1e-4));
+      expect(path.bounds.top, closeTo(0, 1e-4));
+      expect(path.bounds.right, closeTo(20, 1e-4));
+      expect(path.bounds.bottom, closeTo(10, 1e-4));
     });
 
     test('a zero radius degrades to a plain rectangle', () {
@@ -459,4 +462,264 @@ void main() {
       expect(rounded, Path.rect(rect));
     });
   });
+
+  group('per-corner rounded rectangles', () {
+    const box = Rect.fromLTRB(0, 0, 100, 100);
+
+    test('each corner keeps its own two radii', () {
+      final path = _perCorner(box, 2, 3, 4, 5, 6, 7, 8, 9);
+
+      expect(
+        _effectiveRadii(path),
+        <double>[2, 3, 4, 5, 6, 7, 8, 9],
+        reason: 'nothing overruns a 100 x 100 box, so nothing is scaled',
+      );
+      // Sampled where it shows: just inside each corner of the bounding box,
+      // which the corner's own curve either cuts off or does not.
+      expect(_contains(path, const Offset(0.5, 0.5)), isFalse);
+      expect(_contains(path, const Offset(99.5, 99.5)), isFalse);
+      // The same offset from a corner is inside the shallow one and outside
+      // the deep one, which is what "independent" has to mean.
+      expect(_contains(path, const Offset(2.2, 0.2)), isTrue);
+      expect(_contains(path, const Offset(97.8, 99.8)), isFalse);
+      expect(_contains(path, const Offset(50, 50)), isTrue);
+      expect(_contains(path, const Offset(0.5, 50)), isTrue);
+    });
+
+    test('adjacent radii overrunning an edge scale by one shared factor', () {
+      // Top edge: 40 + 40 on 50 gives 0.625, the smallest of the four. Every
+      // radius is multiplied by it - including the bottom corners, whose own
+      // edge had room to spare.
+      const rect = Rect.fromLTRB(0, 0, 50, 60);
+      final path = _perCorner(rect, 40, 10, 40, 10, 5, 5, 5, 5);
+
+      expect(_effectiveRadii(path), <double>[
+        25, 6.25, // top-left
+        25, 6.25, // top-right
+        3.125, 3.125, // bottom-right, shrunk although its edge fitted
+        3.125, 3.125, // bottom-left
+      ]);
+      // The proportions the caller asked for survive: 40 : 5 before, 25 :
+      // 3.125 after, the same 8 : 1.
+      expect(25 / 3.125, 40 / 5);
+      expect(path.bounds, const Rect.fromLTRB(0, 0, 50, 60));
+      expect(path.verbAt(path.verbCount - 1), verbClose);
+    });
+
+    test('the smallest factor over the four edges is the one applied', () {
+      // The top edge fits easily (10 + 10 on 50) while the left edge does not
+      // (20 + 20 on 20). The vertical overrun still halves the horizontal
+      // radii, because one corner's two radii cannot scale apart without
+      // changing the shape of its curve.
+      const rect = Rect.fromLTRB(0, 0, 50, 20);
+      final path = _perCorner(rect, 10, 20, 10, 20, 10, 20, 10, 20);
+
+      expect(
+        _effectiveRadii(path),
+        <double>[5, 10, 5, 10, 5, 10, 5, 10],
+      );
+      expect(path.bounds, rect);
+    });
+
+    test('a zero radius is a right angle, not a curve of no size', () {
+      // Square top-left, rounded everywhere else.
+      final path = _perCorner(box, 0, 0, 20, 20, 20, 20, 20, 20);
+
+      // No cubic at the square corner: three rounded corners, so three.
+      var cubics = 0;
+      for (var i = 0; i < path.verbCount; i++) {
+        if (path.verbAt(i) == verbCubicTo) cubics++;
+      }
+      expect(cubics, 3);
+
+      // The corner point itself is on the outline, and the pixel-sized
+      // neighbourhood of it is inside - both of which fail for a corner that
+      // has been rounded even slightly.
+      expect(_contains(path, const Offset(0.05, 0.05)), isTrue);
+      expect(_contains(path, const Offset(1, 1)), isTrue);
+      expect(_contains(path, const Offset(99, 1)), isFalse);
+    });
+
+    test('a corner with one axis zero is square on both', () {
+      // Half a radius cannot describe a corner: the curve would have no
+      // extent on one axis and the shape would depend on which axis it was.
+      final square = _perCorner(box, 20, 0, 0, 0, 0, 0, 0, 0);
+
+      expect(square, Path.rect(box));
+    });
+
+    test('every radius zero is exactly the rectangle', () {
+      final none = _perCorner(box, 0, 0, 0, 0, 0, 0, 0, 0);
+
+      expect(none, Path.rect(box));
+      expect(none.verbCount, 5, reason: 'no zero-length closing segment');
+    });
+
+    test('negative and NaN radii are treated as square corners', () {
+      final path = _perCorner(box, -5, -5, double.nan, 10, 0, 0, 0, 0);
+
+      expect(path, Path.rect(box));
+    });
+
+    test('an infinite radius rounds as far as the box allows', () {
+      const rect = Rect.fromLTRB(0, 0, 40, 20);
+      final infinite = (PathBuilder()
+            ..addRoundedRect(rect, double.infinity, double.infinity))
+          .build();
+      // Infinity is read as the longer side, 40, and then reduced by the
+      // tightest edge - the same shape a very large finite radius gets, which
+      // is the property that matters: "as round as possible" must not be a
+      // different shape from "very round".
+      final huge = (PathBuilder()..addRoundedRect(rect, 4000, 4000)).build();
+
+      expect(
+        _effectiveRadii(infinite),
+        <double>[10, 10, 10, 10, 10, 10, 10, 10],
+      );
+      expect(_effectiveRadii(huge), _effectiveRadii(infinite));
+    });
+
+    test('the uniform entry point is exactly the per-corner one', () {
+      // The regression guard on the forwarding: same points, same verbs, so
+      // the same interned resource.
+      for (final radii in <List<double>>[
+        <double>[8, 8],
+        <double>[12, 4],
+        <double>[0, 6],
+        <double>[1000, 1000],
+      ]) {
+        const rect = Rect.fromLTRB(3, 5, 43, 25);
+        final uniform =
+            (PathBuilder()..addRoundedRect(rect, radii[0], radii[1])).build();
+        final perCorner = _perCorner(
+          rect,
+          radii[0],
+          radii[1],
+          radii[0],
+          radii[1],
+          radii[0],
+          radii[1],
+          radii[0],
+          radii[1],
+        );
+
+        expect(uniform, perCorner, reason: 'radii $radii');
+        expect(uniform.hashCode, perCorner.hashCode);
+      }
+    });
+
+    test('bounds stay tight on the rectangle after clamping', () {
+      for (final path in <Path>[
+        _perCorner(box, 2, 3, 4, 5, 6, 7, 8, 9),
+        _perCorner(box, 90, 90, 90, 90, 90, 90, 90, 90),
+        _perCorner(box, 0, 0, 50, 50, 0, 0, 50, 50),
+      ]) {
+        expect(path.bounds.left, closeTo(0, 1e-4));
+        expect(path.bounds.top, closeTo(0, 1e-4));
+        expect(path.bounds.right, closeTo(100, 1e-4));
+        expect(path.bounds.bottom, closeTo(100, 1e-4));
+      }
+    });
+
+    test('addRoundedRectRadii reads the display list order', () {
+      final radii = Float32List.fromList(<double>[2, 3, 4, 5, 6, 7, 8, 9]);
+      final fromList = (PathBuilder()..addRoundedRectRadii(box, radii)).build();
+
+      expect(fromList, _perCorner(box, 2, 3, 4, 5, 6, 7, 8, 9));
+
+      // And it reads from an offset, since a caller may hold a longer buffer.
+      final padded = Float32List.fromList(
+        <double>[0, 0, 2, 3, 4, 5, 6, 7, 8, 9],
+      );
+      expect(
+        (PathBuilder()..addRoundedRectRadii(box, padded, 2)).build(),
+        fromList,
+      );
+      expect(
+        () => (PathBuilder()..addRoundedRectRadii(box, radii, 1)).build(),
+        throwsRangeError,
+      );
+    });
+
+    test('an empty rectangle has no corners to round', () {
+      const empty = Rect.fromLTRB(10, 10, 10, 20);
+
+      expect(_perCorner(empty, 4, 4, 4, 4, 4, 4, 4, 4), Path.rect(empty));
+    });
+  });
 }
+
+Path _perCorner(
+  Rect rect,
+  double tlx,
+  double tly,
+  double trx,
+  double try_,
+  double brx,
+  double bry,
+  double blx,
+  double bly,
+) =>
+    (PathBuilder()
+          ..addRoundedRectPerCorner(
+            rect,
+            topLeftX: tlx,
+            topLeftY: tly,
+            topRightX: trx,
+            topRightY: try_,
+            bottomRightX: brx,
+            bottomRightY: bry,
+            bottomLeftX: blx,
+            bottomLeftY: bly,
+          ))
+        .build();
+
+/// The eight radii a rounded rectangle actually ended up with, read back out
+/// of its points in the display list's order.
+///
+/// Only valid when all four corners are rounded, which is asserted: the verb
+/// stream is then fixed, and every tangent point is at a known index. Reading
+/// the geometry back rather than exposing the clamped values keeps the
+/// assertion about the shape that was emitted.
+List<double> _effectiveRadii(Path path) {
+  expect(path.verbCount, 10, reason: 'expected four rounded corners');
+  final bounds = path.bounds;
+  return <double>[
+    path.pointX(0) - bounds.left,
+    path.pointY(13) - bounds.top,
+    bounds.right - path.pointX(1),
+    path.pointY(4) - bounds.top,
+    bounds.right - path.pointX(8),
+    bounds.bottom - path.pointY(5),
+    path.pointX(9) - bounds.left,
+    bounds.bottom - path.pointY(12),
+  ];
+}
+
+/// Whether [point] is inside [path] under the non-zero rule, decided on the
+/// flattened outline.
+///
+/// A test-local answer on purpose: the framework has no point-in-path yet, and
+/// a containment test written here shares no arithmetic with the builder it is
+/// checking.
+bool _contains(Path path, Offset point) {
+  final flat = path.flatten(0.01);
+  var winding = 0;
+  for (var c = 0; c + 1 < flat.contourStarts.length; c++) {
+    final start = flat.contourStarts[c];
+    final end = flat.contourStarts[c + 1];
+    for (var i = start; i < end; i++) {
+      final a = flat.pointAt(i);
+      final b = flat.pointAt(i + 1 < end ? i + 1 : start);
+      if (a.dy <= point.dy) {
+        if (b.dy > point.dy && _isLeft(a, b, point) > 0) winding++;
+      } else if (b.dy <= point.dy && _isLeft(a, b, point) < 0) {
+        winding--;
+      }
+    }
+  }
+  return winding != 0;
+}
+
+double _isLeft(Offset a, Offset b, Offset p) =>
+    (b.dx - a.dx) * (p.dy - a.dy) - (p.dx - a.dx) * (b.dy - a.dy);

@@ -78,11 +78,31 @@ final class _RasterizerSink implements RasterSink {
     Float32List deviceRadii,
     ReplayPaint paint,
   ) {
-    // Square corners for now. Filling the bounding box is wrong at the
-    // corners, but it is wrong by a documented amount rather than silently:
-    // the radii are carried all the way here, so the rasteriser growing a
-    // rounded-rect span loop is the only change needed.
-    _fillClipped(deviceRect, clip, paint);
+    _requireFillStyle(paint, 'rounded rectangles');
+    // Through the path filler rather than a special-case span loop in the
+    // rasteriser. The filler already antialiases by exact area, so the corners
+    // come out at the same quality as every other curve, and there is one
+    // implementation of a rounded rectangle rather than two that can disagree.
+    //
+    // The radii arrive already in device space and in the encoder's order, so
+    // addRoundedRectRadii consumes the borrowed scratch buffer directly and
+    // the eight-value order is stated in one place instead of here.
+    final builder = PathBuilder()..addRoundedRectRadii(deviceRect, deviceRadii);
+    _spanSink.paint = paint;
+    _filler.fill(builder.build(), clip, _spanSink);
+  }
+
+  /// The filler produces the region an outline encloses, so a stroke-styled
+  /// paint would come out as a solid shape where a border was asked for -
+  /// wrong output that looks deliberate.
+  void _requireFillStyle(ReplayPaint paint, String what) {
+    if (paint.style == paintStyleFill) return;
+    throw UnsupportedCapabilityError(
+      backendName: 'cpu',
+      capability: Capability.cpuPresentation,
+      detail: 'stroking is not implemented; a stroke-styled $what would be '
+          'filled as its enclosed region',
+    );
   }
 
   @override
@@ -116,14 +136,7 @@ final class _RasterizerSink implements RasterSink {
     // outline encloses, so filling a stroke-styled paint would draw a solid
     // shape where a border was asked for - wrong output that looks
     // deliberate, which is worse than an error.
-    if (paint.style != paintStyleFill) {
-      throw UnsupportedCapabilityError(
-        backendName: 'cpu',
-        capability: Capability.cpuPresentation,
-        detail: 'stroking is not implemented; a stroke-styled path would be '
-            'filled as its enclosed region',
-      );
-    }
+    _requireFillStyle(paint, 'path');
     _spanSink.paint = paint;
     _filler.fill(path, clip, _spanSink, transform: transform);
   }

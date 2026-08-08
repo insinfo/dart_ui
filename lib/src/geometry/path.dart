@@ -577,41 +577,228 @@ final class PathBuilder {
     close();
   }
 
-  /// Adds [rect] with corners rounded by [radiusX] and [radiusY].
+  /// Adds [rect] with every corner rounded by [radiusX] and [radiusY].
   ///
-  /// Radii are clamped to half the corresponding side, so an over-large
-  /// radius degrades to a stadium rather than producing a self-crossing
-  /// outline. A radius of zero on either axis adds a plain rectangle. The
-  /// corners are cubic approximations of quarter ellipses; see the library
-  /// comment for the error.
-  void addRoundedRect(Rect rect, double radiusX, double radiusY) {
-    final halfWidth = rect.width / 2;
-    final halfHeight = rect.height / 2;
-    var rx = radiusX < halfWidth ? radiusX : halfWidth;
-    var ry = radiusY < halfHeight ? radiusY : halfHeight;
-    if (!(rx > 0) || !(ry > 0)) {
+  /// The uniform case of [addRoundedRectPerCorner], which is where the
+  /// clamping rule and the corner geometry are documented. It forwards rather
+  /// than duplicating the emission, so the two can never drift apart - a test
+  /// asserts the two produce the identical path.
+  void addRoundedRect(Rect rect, double radiusX, double radiusY) =>
+      addRoundedRectPerCorner(
+        rect,
+        topLeftX: radiusX,
+        topLeftY: radiusY,
+        topRightX: radiusX,
+        topRightY: radiusY,
+        bottomRightX: radiusX,
+        bottomRightY: radiusY,
+        bottomLeftX: radiusX,
+        bottomLeftY: radiusY,
+      );
+
+  /// Adds [rect] with each corner rounded independently.
+  ///
+  /// Eight values, because real shapes need them: a tab is rounded on top
+  /// only, the first row of a grouped list on its top two corners, a chat
+  /// bubble on three. The parameter order matches the display list's
+  /// `opDrawRRect` radii - top-left, top-right, bottom-right, bottom-left,
+  /// x before y - so a caller replaying that opcode can hand them over
+  /// without reordering, and [addRoundedRectRadii] does exactly that.
+  ///
+  /// Named doubles rather than a radii value type: this runs per rounded
+  /// rectangle per frame from the replay path, and an object per draw is what
+  /// section 6.5 rules out. Eight names also make a transposed pair a compile
+  /// error at most call sites instead of a shape that is subtly wrong.
+  ///
+  /// ## A corner is rounded only when both its radii are positive
+  ///
+  /// A corner with a zero (or negative, or NaN) radius on either axis is
+  /// emitted as a plain right angle - a `lineTo` into the corner - and not as
+  /// a curve of zero extent. The explicit branch matters: a degenerate cubic
+  /// would still cost three control points, would still be flattened, and
+  /// would put two coincident points where the filler expects an edge. This
+  /// also means a rectangle with every radius zero produces exactly the verb
+  /// stream [addRect] produces.
+  ///
+  /// ## Overrunning radii scale together, by one factor
+  ///
+  /// Two radii sharing an edge can ask for more than the edge has: 40 and 40
+  /// on a 50-wide top edge. The rule here is CSS's (Backgrounds and Borders,
+  /// "overlapping curves"): compute `edge length / sum of the two radii on it`
+  /// for all four edges, take the smallest of those and 1, and multiply **all
+  /// eight** radii by that single factor.
+  ///
+  /// One global factor rather than fixing each edge on its own, for two
+  /// reasons. The corner is shared: the top edge and the left edge both end
+  /// at the top-left corner, and if the top edge shrank that corner's x radius
+  /// while the left edge left its y radius alone, the quarter ellipse would
+  /// change shape rather than size - the outline stays continuous but its
+  /// curvature jumps where the two curves meet, which reads as a kink. And the
+  /// proportions the caller asked for are information: scaling everything by
+  /// one factor keeps a shape with a big radius on one corner and a small one
+  /// on another looking like that shape, merely smaller, instead of
+  /// flattening the big corner toward the small one.
+  ///
+  /// A non-finite radius is treated as the larger of the rectangle's sides
+  /// before the rule is applied, so "as round as possible" is expressible and
+  /// lands on the same shape a very large finite radius would.
+  void addRoundedRectPerCorner(
+    Rect rect, {
+    required double topLeftX,
+    required double topLeftY,
+    required double topRightX,
+    required double topRightY,
+    required double bottomRightX,
+    required double bottomRightY,
+    required double bottomLeftX,
+    required double bottomLeftY,
+  }) {
+    final width = rect.width;
+    final height = rect.height;
+    if (!(width > 0) || !(height > 0)) {
+      // An empty or inverted rectangle has no corners to round. Rect does not
+      // normalise an inverted rectangle and neither does this: it is passed
+      // through so that whatever produced it is still visible downstream.
       addRect(rect);
       return;
     }
-    if (rx < 0) rx = 0;
-    if (ry < 0) ry = 0;
-    final kx = rx * _kappa;
-    final ky = ry * _kappa;
+
+    final limit = width > height ? width : height;
+    var tlx = _sanitizeRadius(topLeftX, limit);
+    var tly = _sanitizeRadius(topLeftY, limit);
+    var trx = _sanitizeRadius(topRightX, limit);
+    var try_ = _sanitizeRadius(topRightY, limit);
+    var brx = _sanitizeRadius(bottomRightX, limit);
+    var bry = _sanitizeRadius(bottomRightY, limit);
+    var blx = _sanitizeRadius(bottomLeftX, limit);
+    var bly = _sanitizeRadius(bottomLeftY, limit);
+
+    // Square a corner whose other axis is zero *before* the overrun rule, so
+    // that a corner that will be a right angle anyway does not consume any of
+    // the edge it sits on and shrink the corner opposite it.
+    if (tlx == 0 || tly == 0) {
+      tlx = 0;
+      tly = 0;
+    }
+    if (trx == 0 || try_ == 0) {
+      trx = 0;
+      try_ = 0;
+    }
+    if (brx == 0 || bry == 0) {
+      brx = 0;
+      bry = 0;
+    }
+    if (blx == 0 || bly == 0) {
+      blx = 0;
+      bly = 0;
+    }
+
+    var scale = 1.0;
+    scale = _edgeScale(scale, width, tlx + trx);
+    scale = _edgeScale(scale, width, blx + brx);
+    scale = _edgeScale(scale, height, tly + bly);
+    scale = _edgeScale(scale, height, try_ + bry);
+    if (scale < 1) {
+      tlx *= scale;
+      tly *= scale;
+      trx *= scale;
+      try_ *= scale;
+      brx *= scale;
+      bry *= scale;
+      blx *= scale;
+      bly *= scale;
+    }
+
     final l = rect.left;
     final t = rect.top;
     final r = rect.right;
     final b = rect.bottom;
 
-    moveTo(l + rx, t);
-    lineTo(r - rx, t);
-    cubicTo(r - rx + kx, t, r, t + ry - ky, r, t + ry);
-    lineTo(r, b - ry);
-    cubicTo(r, b - ry + ky, r - rx + kx, b, r - rx, b);
-    lineTo(l + rx, b);
-    cubicTo(l + rx - kx, b, l, b - ry + ky, l, b - ry);
-    lineTo(l, t + ry);
-    cubicTo(l, t + ry - ky, l + rx - kx, t, l + rx, t);
+    moveTo(l + tlx, t);
+
+    lineTo(r - trx, t);
+    if (trx > 0) {
+      cubicTo(
+        r - trx + trx * _kappa,
+        t,
+        r,
+        t + try_ - try_ * _kappa,
+        r,
+        t + try_,
+      );
+    }
+
+    lineTo(r, b - bry);
+    if (brx > 0) {
+      cubicTo(
+        r,
+        b - bry + bry * _kappa,
+        r - brx + brx * _kappa,
+        b,
+        r - brx,
+        b,
+      );
+    }
+
+    lineTo(l + blx, b);
+    if (blx > 0) {
+      cubicTo(
+        l + blx - blx * _kappa,
+        b,
+        l,
+        b - bly + bly * _kappa,
+        l,
+        b - bly,
+      );
+    }
+
+    // The last edge is the one that can be redundant: with a square top-left
+    // corner it would run to (l, t), which is where the contour started and
+    // where close() returns anyway. Skipping it is what makes an all-square
+    // rounded rectangle byte-identical to addRect instead of carrying a
+    // zero-length segment.
+    if (tly > 0) {
+      lineTo(l, t + tly);
+      cubicTo(
+        l,
+        t + tly - tly * _kappa,
+        l + tlx - tlx * _kappa,
+        t,
+        l + tlx,
+        t,
+      );
+    }
     close();
+  }
+
+  /// [addRoundedRectPerCorner] reading its eight radii from [radii] starting
+  /// at [offset], in the display list's `opDrawRRect` order.
+  ///
+  /// The one place that order is written down as code. A replay path holding
+  /// the opcode's `Float32List` calls this instead of unpacking eight values
+  /// at the call site, which is where a transposition would otherwise happen
+  /// and would look like a rendering bug rather than an indexing one.
+  void addRoundedRectRadii(Rect rect, Float32List radii, [int offset = 0]) {
+    if (offset < 0 || offset + 8 > radii.length) {
+      throw RangeError.range(
+        offset,
+        0,
+        radii.length - 8,
+        'offset',
+        'a rounded rectangle needs eight radii',
+      );
+    }
+    addRoundedRectPerCorner(
+      rect,
+      topLeftX: radii[offset],
+      topLeftY: radii[offset + 1],
+      topRightX: radii[offset + 2],
+      topRightY: radii[offset + 3],
+      bottomRightX: radii[offset + 4],
+      bottomRightY: radii[offset + 5],
+      bottomLeftX: radii[offset + 6],
+      bottomLeftY: radii[offset + 7],
+    );
   }
 
   /// Adds the ellipse inscribed in [rect] as four cubics, wound clockwise in
@@ -684,6 +871,25 @@ final class PathBuilder {
 
 /// The circle constant for a cubic quarter arc: `4/3 * (sqrt(2) - 1)`.
 const double _kappa = 0.5522847498307933;
+
+/// A corner radius reduced to a usable number.
+///
+/// Negative and NaN become zero - a corner nobody can draw is a right angle,
+/// which is the one interpretation that cannot look like a mistake. Infinity
+/// becomes [limit], the rectangle's longer side, so that "round it as much as
+/// possible" survives into the overrun rule instead of dividing by infinity
+/// and collapsing every corner back to square.
+double _sanitizeRadius(double radius, double limit) {
+  if (!(radius > 0)) return 0;
+  return radius.isFinite ? radius : limit;
+}
+
+/// The overrun factor for one edge, folded into the smallest seen so far.
+double _edgeScale(double scale, double length, double sum) {
+  if (sum <= length) return scale;
+  final factor = length / sum;
+  return factor < scale ? factor : scale;
+}
 
 /// [PolylineSink] that grows plain lists, behind [Path.flatten].
 final class _PolylineCollector implements PolylineSink {
