@@ -2989,14 +2989,29 @@ Future<void> probeSignalConformance() async {
   check(livenessTicks > 0, 'the run loop stopped delivering timers');
 
   // --- teardown --------------------------------------------------------------
-  _log('PHASE=teardown');
+  //
+  // Nothing here may wait on the main thread. Once the hijacked run loop stops,
+  // thread 0 goes back to Dart_RunLoop and stops draining the main queue, so a
+  // performSelectorOnMainThread: with waitUntilDone:YES would block forever -
+  // which is exactly what a blocking [window close] did in run 31242939984.
+  // Order the window out asynchronously, give the main thread a turn to do it,
+  // and only then take the loop back.
+  _log('PHASE=teardown.orderout');
   final failuresBeforeTeardown = failures;
-  final closeWindow = _newInvocation(window, sel('close'));
-  _invokeOnMain(closeWindow);
+  final orderOut = _newInvocation(window, sel('orderOut:'));
+  final nilSender = calloc<Pointer<ObjCObject>>()..value = nullptr;
+  _setArgument(orderOut, nilSender.cast(), 2);
+  _invokeOnMain(orderOut, wait: false);
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  calloc.free(nilSender);
+
+  _log('PHASE=teardown.stop');
   check(_stopHijackedMainRunLoop(), 'the hijacked run loop did not stop');
   // Stop first, close the callables second: a timer firing into a closed
   // NativeCallable would jump into a freed trampoline.
+  _log('PHASE=teardown.drain');
   await Future<void>.delayed(const Duration(milliseconds: 250));
+  _log('PHASE=teardown.callables');
   witnessTimer.close();
   keyImp.close();
   _log(failures == failuresBeforeTeardown ? 'TEARDOWN=PASS' : 'TEARDOWN=FAIL');
