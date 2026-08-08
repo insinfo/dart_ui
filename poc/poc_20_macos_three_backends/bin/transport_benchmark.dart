@@ -36,6 +36,10 @@ class TransportResult {
   final int pipeBytesPerFrame;
   final String note;
 
+  /// The GitHub runner is shared hardware: medians moved by 2x between runs
+  /// while the ratios between transports held. The minimum is the closest
+  /// thing to "what this costs when the machine is not busy".
+  int get best => samples.isEmpty ? 0 : samples.reduce((a, b) => a < b ? a : b);
   int get median => _percentile(50);
   int get p95 => _percentile(95);
   double get framesPerSecond => median == 0 ? 0 : 1000000 / median;
@@ -101,6 +105,7 @@ Future<void> main(List<String> arguments) async {
       'BYTES_PER_FRAME=$frameBytes');
   for (final result in results) {
     print('TRANSPORT=${result.name} '
+        'min_us=${result.best} '
         'median_us=${result.median} '
         'p95_us=${result.p95} '
         'fps=${result.framesPerSecond.toStringAsFixed(1)} '

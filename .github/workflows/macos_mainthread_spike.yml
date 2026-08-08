@@ -201,6 +201,23 @@ jobs:
           grep -Eq '^TRANSPORT_WINNER=(shm|iosurface)$' \
             /tmp/transport-benchmark.log
           [ "$status" -eq 0 ]
+          {
+            echo '## Frame transport across the process boundary'
+            echo
+            echo '| transport | min us | median us | fps | pipe bytes/frame |'
+            echo '|---|---|---|---|---|'
+            grep '^TRANSPORT=' /tmp/transport-benchmark.log | while read -r l; do
+              name=$(echo "$l" | sed -E 's/^TRANSPORT=([^ ]+).*/\1/')
+              min=$(echo "$l" | sed -E 's/.*min_us=([0-9]+).*/\1/')
+              med=$(echo "$l" | sed -E 's/.*median_us=([0-9]+).*/\1/')
+              fps=$(echo "$l" | sed -E 's/.*fps=([0-9.]+).*/\1/')
+              bytes=$(echo "$l" | sed -E 's/.*pipe_bytes_per_frame=([0-9]+).*/\1/')
+              echo "| $name | $min | $med | $fps | $bytes |"
+            done
+            echo
+            grep -E '^(TRANSPORT_WINNER|TRANSPORT_SPEEDUP|IPC_BASELINE_US|EMBEDDER_HEADROOM_US)=' \
+              /tmp/transport-benchmark.log | sed 's/^/- `/;s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: 'Probe A: does any execution mode own the main thread?'
         timeout-minutes: 5

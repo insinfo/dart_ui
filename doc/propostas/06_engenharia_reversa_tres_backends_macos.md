@@ -356,13 +356,19 @@ respostas. O CI macOS `31162204180` aprovou.
 
 ### 5.3 Duas evoluções possíveis
 
-| Evolução | Vantagem | Custo |
-|---|---|---|
-| **Embedder no mesmo processo** | Latência mínima; memória compartilhada | Build nativo; dependência de API de embedder |
-| **Dart como processo worker** | Isola crashes; host pequeno | Protocolo IPC; cópias; lifecycle de dois processos |
+| Evolução | Veredito medido |
+|---|---|
+| **Embedder no mesmo processo** | Indisponível com SDK de release: sem `libdart` linkável, `Dart_Initialize` não resolve. Exige compilar o SDK do código-fonte |
+| **Dart como processo worker** | Escolhido. Com `IOSurface`, 245 µs por frame — 1,5% do orçamento de 60 Hz |
 
-A escolha será feita por um spike separado. O witness atual não finge ter
-resolvido essa integração.
+A fronteira de processo custa 124 µs (PING/PONG sem pixels), ou 0,7% de um
+frame a 60 Hz — o total que um embedder poderia recuperar. O `shm` melhora
+apenas 1,7× sobre o pipe, o que mostra que a cópia nunca foi o gargalo: era o
+`CGImage` reconstruído por frame mais o upload do CoreAnimation, que é
+exatamente o que o `IOSurface` elimina.
+
+Medições completas em
+[`logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md`](../logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md).
 
 ---
 
@@ -503,10 +509,11 @@ garante:
 
 ### 10.3 Host nativo (backend 3)
 
-- [ ] Spike embedder-vs-IPC: medir latência e decidir se o Dart roda no mesmo
-  processo ou como worker.
-- [x] Transportar frames de CPU pelo protocolo IPC (`FRAME <w> <h> <bytes>` com
-  octetos crus). Falta memória compartilhada em vez de pipe, e Metal.
+- [x] Spike embedder-vs-IPC: decidido por medição pelo worker com `IOSurface`.
+- [ ] Trocar `IOSurfaceLookup` (deprecado) por mach port via XPC.
+- [ ] Medir latência de input isoladamente do frame.
+- [x] Transportar frames de CPU pelo protocolo IPC: três transportes medidos
+  (`FRAME` por pipe, `SHM`, `SURFACE`/`IOSurface`). Falta Metal.
 - [x] Input do host para o Dart: `INPUT=` do monitor local e `VIEW_INPUT=` da
   cadeia de responders.
 - [ ] Lifecycle de dois processos: detecção de crash, restart, cleanup.

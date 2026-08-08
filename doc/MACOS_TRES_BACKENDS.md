@@ -174,18 +174,41 @@ monitor local é o gate, e `VIEW_INPUT` prova que o evento foi roteado até uma
 view. O Dart injeta em `SLEventPostToPid(pid_do_host)`, o que também demonstra
 essa API dirigindo um segundo processo.
 
-### Duas evoluções possíveis
+### A escolha entre embedder e worker — decidida por medição
 
-1. **Embedder no mesmo processo.** O host liga a VM/engine Dart, cria o isolate
-   worker e integra seus eventos ao `CFRunLoop`. Menor latência e memória
-   compartilhada, maior custo de build e dependência de API de embedder.
-2. **Dart como processo worker.** O host inicia o executável Dart e usa IPC mais
-   memória compartilhada para comandos, input e frames. Isola crashes e mantém
-   o host pequeno, mas adiciona protocolo, cópias/sincronização e lifecycle de
-   dois processos.
+O spike está feito. Detalhes e números em
+[`logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md`](logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md).
 
-A escolha será feita por um spike separado; o witness atual não finge ter
-resolvido essa integração.
+**Embedder no mesmo processo: indisponível com SDK de release.** O SDK
+distribui `include/dart_api.h` mas nenhum `libdart` linkável; os 295–298
+símbolos `Dart_*` vivem dentro de `dart`/`dartaotruntime`. Um `main()` nativo
+que referencia `Dart_Initialize` não linka (`EMBEDDER_FEASIBLE=0`). Os
+cabeçalhos servem ao caminho inverso — código nativo carregado *dentro* do
+processo Dart. Hospedar a VM exige compilar o SDK do código-fonte.
+
+**Worker com transporte melhor: medido.** Mesmo host, mesma janela, frame
+480×320 BGRA, 120 frames:
+
+| transporte | mediana (µs) | fps | bytes pelo pipe |
+|---|---|---|---|
+| `ipc-baseline` (sem pixels) | 124 | 8 064 | 5 |
+| `pipe` | 2 671 | 374 | 614 400 |
+| `shm` | 1 554 | 643 | 20 |
+| `iosurface` | 245 | 4 081 | 12 |
+
+O `shm` melhora só 1,7×, e é isso que decide: se a cópia fosse o gargalo,
+eliminar 614 KB duas vezes teria resolvido. O custo dominante era o host
+reconstruir um `CGImage` por frame e o CoreAnimation subir os pixels a cada
+apresentação — que é o que o `IOSurface` elimina ao ser entregue ao layer uma
+única vez.
+
+A fronteira de processo custa 124 µs, ou **0,7% de um frame a 60 Hz**. É tudo
+o que um embedder poderia recuperar.
+
+**Decisão: Dart como processo worker, `IOSurface` para frames e pipe para
+controle.** Reabrir se o alvo for 120 Hz com orçamento apertado, se o SDK já
+precisar ser compilado por outro motivo, ou se input exigir latência abaixo de
+1 ms ponta a ponta.
 
 ## Seleção e fallback
 
