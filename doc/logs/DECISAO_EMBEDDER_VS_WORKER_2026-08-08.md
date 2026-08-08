@@ -2,9 +2,10 @@
 
 **Data:** 8 de agosto de 2026
 **Runs:** [`31246294865`](https://github.com/insinfo/dart_ui/actions/runs/31246294865),
-[`31246483105`](https://github.com/insinfo/dart_ui/actions/runs/31246483105) e
-[`31246734901`](https://github.com/insinfo/dart_ui/actions/runs/31246734901)
-— `macos-14` arm64, Dart 3.6.0
+[`31246483105`](https://github.com/insinfo/dart_ui/actions/runs/31246483105),
+[`31246734901`](https://github.com/insinfo/dart_ui/actions/runs/31246734901) e
+[`31247641461`](https://github.com/insinfo/dart_ui/actions/runs/31247641461)
+(varredura 480×320 / 1080p / 4K) — `macos-14` arm64, Dart 3.6.0
 **Código:** [`transport_benchmark.dart`](../../poc/poc_20_macos_three_backends/bin/transport_benchmark.dart),
 [`embedder_feasibility.c`](../../poc/poc_20_macos_three_backends/native/embedder_feasibility.c)
 
@@ -109,17 +110,49 @@ mínimo, 77 µs na mediana. Esse é o piso que todo transporte paga e é **a ún
 parte que um embedder eliminaria**. Dos 80 µs do IOSurface, 24 são fronteira e
 56 são o trabalho de apresentar, que o embedder também teria que fazer.
 
-A régua certa não é o round trip, é o orçamento de um frame:
+A régua certa não é o round trip, é o orçamento de um frame — e a resposta
+depende do tamanho do frame, o que a primeira medição em 480×320 escondia.
 
 ```text
 60 Hz             16 667 µs por frame
-iosurface             80 µs   0,5% do orçamento
-fronteira de proc.    24 µs   0,14% do orçamento
-pipe               1 352 µs   8,1% do orçamento
+
+480x320    iosurface     66 µs   0,4%      pipe     975 µs    5,8%
+1920x1080  iosurface    107 µs   0,6%      pipe  14 361 µs   86,2%
+3840x2160  iosurface    130 µs   0,8%      pipe  56 092 µs  336,5%
+
+fronteira de processo   22-59 µs  ≈0,2% em qualquer tamanho
 ```
 
-Mesmo o pipe ingênuo cabe em 60 Hz com folga. O embedder compraria de volta
-0,14% de um frame ao custo de compilar o SDK do Dart do zero.
+**Correção de uma afirmação anterior:** eu havia escrito que "até o pipe cabe em
+60 Hz com folga". Isso valia só em 480×320. Em 1080p o pipe consome 86% do
+orçamento e em 4K ele estoura por 3,4×. A frase certa é: em 480×320 qualquer
+transporte serve, e é exatamente por isso que medir só nesse tamanho não
+decidiria nada.
+
+O embedder, em qualquer tamanho, compraria de volta ~0,2% de um frame ao custo
+de compilar o SDK do Dart do zero.
+
+### Escala com o tamanho do frame
+
+Mínimos, run [`31247641461`](https://github.com/insinfo/dart_ui/actions/runs/31247641461):
+
+| tamanho | bytes/frame | `pipe` (µs) | `shm` (µs) | `iosurface` (µs) | ganho |
+|---|---|---|---|---|---|
+| 480×320 | 614 KB | 975 | 831 | **66** | 14,8× |
+| 1920×1080 | 8,3 MB | 14 361 | 10 363 | **107** | 134× |
+| 3840×2160 | 33 MB | 56 092 | 45 202 | **130** | 431× |
+
+Esta é a tabela que decide, e ela diz três coisas:
+
+1. **`iosurface` é praticamente plano.** O frame cresce 54× e o custo sobe 2×.
+   Nada no caminho de apresentação é por pixel — a superfície já está no layer,
+   e cada frame só avisa que o conteúdo mudou.
+2. **`pipe` e `shm` escalam linearmente com os bytes** e ambos estouram o
+   orçamento de 60 Hz já em 1080p (86% e 62%). Em 4K os dois entregam ~16 fps.
+3. **A vantagem do `shm` sobre o `pipe` fica em 1,2–1,4× em todos os tamanhos.**
+   Se a cópia fosse o custo dominante, essa razão cresceria com o tamanho. Ela
+   não cresce — confirmando que o gargalo é o `CGImage` por frame mais o upload
+   do CoreAnimation, ambos por pixel, que `shm` não toca.
 
 ---
 
@@ -131,7 +164,9 @@ Razões, em ordem de peso:
 
 1. O embedder não está disponível com SDK de release — é uma decisão de
    toolchain, não de arquitetura.
-2. A fronteira de processo custa 0,14% de um frame a 60 Hz. Não é o gargalo.
+2. A fronteira de processo custa ~0,2% de um frame a 60 Hz, em qualquer
+   resolução. Não é o gargalo — o caminho por pixel é, e é ele que o
+   `IOSurface` elimina.
 3. O isolamento de crash é uma vantagem real: um erro no código de UI em Dart
    não derruba a janela, e o host é pequeno o bastante para ser auditado.
 
@@ -156,5 +191,7 @@ degradado, mas o caminho recomendado passa a ser `SURFACE` + `PRESENT`.
 - [ ] Detecção de crash do host e restart, com a superfície sobrevivendo.
 - [ ] Substituir `IOSurfaceLookup` (deprecado) por passagem de mach port via
       XPC — hoje o pipe não carrega um port right.
-- [ ] Frames maiores (4K) para confirmar que a vantagem do IOSurface cresce com
-      o tamanho, como a teoria prevê.
+- [x] Frames maiores: confirmado. A vantagem vai de 14,8× em 480×320 para 431×
+      em 4K, e o custo do `IOSurface` é praticamente plano.
+- [ ] Medir com o display real a 60 Hz em vez de um loop livre: hoje o
+      benchmark mede quanto custa apresentar, não se o compositor acompanha.

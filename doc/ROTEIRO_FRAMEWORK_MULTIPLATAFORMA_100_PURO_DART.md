@@ -2741,8 +2741,8 @@ O "ou hospeda a VM Dart" saiu dessa frase por medição, não por preferência: 
 SDK de release não distribui `libdart` linkável, então um `main()` nativo que
 referencia `Dart_Initialize` não linka. Hospedar a VM exige compilar o SDK do
 código-fonte. E o custo que isso evitaria é pequeno — a fronteira de processo
-mede 24 µs, 0,14% de um frame a 60 Hz, com `IOSurface` levando os frames em
-80 µs. Números e condições para reabrir em
+mede 22–59 µs, ~0,2% de um frame a 60 Hz, com `IOSurface` levando os frames em
+66 µs a 480×320 e 130 µs em 4K. Números e condições para reabrir em
 [logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md](logs/DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md).
 
 A arquitetura, seleção e critérios comparáveis das três rotas estão em

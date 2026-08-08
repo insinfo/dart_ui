@@ -189,22 +189,27 @@ processo Dart. Hospedar a VM exige compilar o SDK do código-fonte.
 **Worker com transporte melhor: medido.** Mesmo host, mesma janela, frame
 480×320 BGRA, 120 frames:
 
-| transporte | mín (µs) | mediana (µs) | bytes pelo pipe |
-|---|---|---|---|
-| `ipc-baseline` (sem pixels) | 24 | 77 | 5 |
-| `pipe` | 1 352 | 2 698 | 614 400 |
-| `shm` | 987 | 1 679 | 20 |
-| `iosurface` | 80 | 125 | 12 |
+Mínimos por tamanho de frame (o tamanho é o que separa os transportes):
 
-O `shm` melhora só 1,7×, e é isso que decide: se a cópia fosse o gargalo,
-eliminar 614 KB duas vezes teria resolvido. O custo dominante era o host
-reconstruir um `CGImage` por frame e o CoreAnimation subir os pixels a cada
-apresentação — que é o que o `IOSurface` elimina ao ser entregue ao layer uma
-única vez.
+| tamanho | bytes/frame | `pipe` (µs) | `shm` (µs) | `iosurface` (µs) | ganho |
+|---|---|---|---|---|---|
+| 480×320 | 614 KB | 975 | 831 | **66** | 14,8× |
+| 1920×1080 | 8,3 MB | 14 361 | 10 363 | **107** | 134× |
+| 3840×2160 | 33 MB | 56 092 | 45 202 | **130** | 431× |
 
-A fronteira de processo custa 24 µs, ou **0,14% de um frame a 60 Hz**. É tudo
-o que um embedder poderia recuperar; os outros 56 µs do IOSurface são trabalho
-de apresentação que o embedder também teria.
+Três leituras:
+
+1. **`iosurface` é plano.** O frame cresce 54× e o custo sobe 2×: nada no
+   caminho de apresentação é por pixel.
+2. **`pipe` e `shm` escalam com os bytes** e estouram o orçamento de 60 Hz já em
+   1080p (86% e 62% de 16 667 µs). Em 4K, ~16 fps.
+3. **`shm` fica 1,2–1,4× à frente do `pipe` em todos os tamanhos.** Se a cópia
+   fosse o gargalo essa razão cresceria; como não cresce, o custo dominante é o
+   `CGImage` por frame mais o upload do CoreAnimation — por pixel, e intocados
+   pelo `shm`.
+
+A fronteira de processo custa 22–59 µs em qualquer resolução, ou **~0,2% de um
+frame a 60 Hz**. É tudo o que um embedder poderia recuperar.
 
 **Decisão: Dart como processo worker, `IOSurface` para frames e pipe para
 controle.** Reabrir se o alvo for 120 Hz com orçamento apertado, se o SDK já
