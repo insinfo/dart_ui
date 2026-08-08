@@ -1,0 +1,122 @@
+/// The pixels a renderer writes into.
+///
+/// This is the one place the framework commits to a memory layout, and it is
+/// deliberately the layout the platforms already want: the macOS work presents
+/// BGRA premultiplied straight into an IOSurface, and Win32 DIBs and X11 shm
+/// images take the same bytes. Choosing anything else would mean a swizzle per
+/// frame on every platform to save a swizzle on none.
+library;
+
+import 'dart:typed_data';
+
+/// Byte order and alpha handling of a [Framebuffer].
+///
+/// Premultiplied only. Straight alpha needs a divide per pixel at composite
+/// time, and every compositor these three platforms hand pixels to expects
+/// premultiplied anyway.
+enum PixelFormat {
+  /// Blue, green, red, alpha - the order a little-endian 32-bit word gives
+  /// CoreGraphics with `kCGBitmapByteOrder32Little`, and what a Win32 DIB and
+  /// an XImage expect.
+  bgra8888Premultiplied,
+
+  /// Same bytes, opposite channel order. Present because GL and Vulkan
+  /// surfaces frequently prefer it, and converting at surface creation is
+  /// cheaper than converting per frame.
+  rgba8888Premultiplied;
+
+  int get bytesPerPixel => 4;
+}
+
+/// A CPU-visible image the renderer owns for the duration of a frame.
+///
+/// [bytesPerRow] is not always `width * 4`. Shared surfaces round their stride
+/// up for alignment - an IOSurface reports its own - so code that walks rows
+/// must use this and never recompute it. Every row-walking loop in the
+/// rasteriser is a chance to get that wrong, which is why the value travels
+/// with the pixels instead of being derived.
+final class Framebuffer {
+  Framebuffer({
+    required this.width,
+    required this.height,
+    required this.bytesPerRow,
+    required this.format,
+    required this.pixels,
+  })  : assert(width > 0 && height > 0),
+        assert(bytesPerRow >= width * 4),
+        assert(pixels.length >= bytesPerRow * height);
+
+  /// Allocates a tightly packed framebuffer. For tests and for backends that
+  /// present a buffer they do not own.
+  factory Framebuffer.allocate({
+    required int width,
+    required int height,
+    PixelFormat format = PixelFormat.bgra8888Premultiplied,
+  }) =>
+      Framebuffer(
+        width: width,
+        height: height,
+        bytesPerRow: width * 4,
+        format: format,
+        pixels: Uint8List(width * height * 4),
+      );
+
+  /// Wraps memory somebody else owns - an IOSurface's base address, a DIB
+  /// section, an shm segment. The framebuffer does not free it.
+  factory Framebuffer.wrap(
+    Uint8List pixels, {
+    required int width,
+    required int height,
+    required int bytesPerRow,
+    PixelFormat format = PixelFormat.bgra8888Premultiplied,
+  }) =>
+      Framebuffer(
+        width: width,
+        height: height,
+        bytesPerRow: bytesPerRow,
+        format: format,
+        pixels: pixels,
+      );
+
+  final int width;
+  final int height;
+  final int bytesPerRow;
+  final PixelFormat format;
+  final Uint8List pixels;
+
+  /// Byte offset of the first channel of the pixel at ([x], [y]).
+  ///
+  /// No bounds check: this is called once per pixel in the inner loop, and the
+  /// callers clip before they get here. Passing coordinates outside the buffer
+  /// is a bug in the caller, not a condition to handle.
+  int offsetOf(int x, int y) => y * bytesPerRow + x * 4;
+
+  /// Fills the whole buffer with one premultiplied colour.
+  void clear(int blue, int green, int red, int alpha) {
+    for (var y = 0; y < height; y++) {
+      var index = y * bytesPerRow;
+      for (var x = 0; x < width; x++) {
+        pixels[index] = blue;
+        pixels[index + 1] = green;
+        pixels[index + 2] = red;
+        pixels[index + 3] = alpha;
+        index += 4;
+      }
+    }
+  }
+
+  /// A copy with rows packed tightly, for comparing against a golden image
+  /// without the stride getting in the way.
+  Uint8List toPackedBytes() {
+    final packed = Uint8List(width * height * 4);
+    for (var y = 0; y < height; y++) {
+      packed.setRange(
+        y * width * 4,
+        (y + 1) * width * 4,
+        pixels,
+        y * bytesPerRow,
+      );
+    }
+    return packed;
+  }
+}

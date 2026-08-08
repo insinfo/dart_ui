@@ -14,6 +14,7 @@
 ///   scheduler   <- foundation
 ///   graphics    <- foundation, geometry
 ///   platform    <- foundation, geometry, scheduler
+///   rendering   <- foundation, geometry, graphics
 ///
 /// No layer here may import a backend, and no backend may be referenced by
 /// name from common code.
@@ -31,6 +32,8 @@ export 'src/graphics/display_list_geometry.dart';
 export 'src/graphics/display_list_opcodes.dart';
 export 'src/graphics/display_list_reader.dart';
 export 'src/platform/window_events.dart';
+export 'src/rendering/framebuffer.dart';
+export 'src/rendering/renderer.dart';
 export 'src/scheduler/dispatcher_priority.dart';
 export 'src/scheduler/manual_dispatcher.dart';
 export 'src/scheduler/timer_handle.dart';
