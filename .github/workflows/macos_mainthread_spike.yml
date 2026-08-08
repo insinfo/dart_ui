@@ -236,6 +236,27 @@ jobs:
               /tmp/transport-benchmark.log | sed 's/^/- `/;s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # ADR 0001 chose a worker process partly BECAUSE it isolates crashes, and
+      # then listed crash detection and restart as a requirement rather than a
+      # detail. This is that requirement: SIGKILL the host mid-session and
+      # check that Dart notices, that the surface outlives the process that was
+      # drawing from it, and that a fresh host attaches the SAME surface. That
+      # last one is what makes recovery cheap - the window is new, the
+      # framebuffer is not.
+      - name: 'Host crash: does the surface outlive the host, and can it restart?'
+        timeout-minutes: 3
+        run: |
+          status=0
+          dart run \
+            ../../poc/poc_20_macos_three_backends/bin/host_recovery_probe.dart \
+            build/minimal_appkit_host > /tmp/host-recovery.log 2>&1 || status=$?
+          cat /tmp/host-recovery.log
+          echo "exit=$status"
+          grep -q '^SURFACE_SURVIVED_CRASH=1$' /tmp/host-recovery.log
+          grep -q '^HOST_EXIT_STATUS=-9$' /tmp/host-recovery.log
+          grep -q '^HOST_RECOVERY=PASS$' /tmp/host-recovery.log
+          [ "$status" -eq 0 ]
+
       # IOSurfaceLookup is deprecated. The supported replacement passes a mach
       # port, and a port right does not fit through a pipe - that is the whole
       # difficulty, not a detail. Three ways of moving it are implemented and
