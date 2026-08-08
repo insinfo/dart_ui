@@ -78,11 +78,25 @@ O `bootstrap_check_in` aceitou um nome que não está em plist nenhum
 demanda para um processo não-sandboxed. Sob App Sandbox isso vira
 `1100 BOOTSTRAP_NOT_PRIVILEGED` — relevante quando houver empacotamento.
 
-## O que ainda não foi medido
+## O custo por frame: nenhum
 
-O custo por frame pelo caminho do port. Deveria ser idêntico aos 80–130 µs
-medidos, porque o mecanismo muda apenas como a superfície é **adquirida** e o
-`PRESENT` é o mesmo código — mas "deveria" não é medição, e a próxima é essa.
+Medido na run [`31249764312`](https://github.com/insinfo/dart_ui/actions/runs/31249764312),
+mínimos, mesma janela e mesmo frame:
+
+| tamanho | `iosurface` (deprecado) | `iosurface-port` (suportado) |
+|---|---|---|
+| 480×320 | 72 µs | **66 µs** |
+| 1920×1080 | 101 µs | **103 µs** |
+| 3840×2160 | 133 µs | **134 µs** |
+
+Idêntico dentro do ruído, como a teoria previa: o mecanismo muda apenas como a
+superfície é **adquirida**, e o `PRESENT` é o mesmo código. Em 480×320 o
+caminho suportado chegou a vencer o benchmark inteiro — o que trocou o
+`TRANSPORT_WINNER` e derrubou um gate meu que assumia o nome `iosurface`.
+Falha do gate, não da medição.
+
+A dívida está paga: não há motivo de performance para manter a chamada
+deprecada.
 
 ## Detalhe conhecido
 

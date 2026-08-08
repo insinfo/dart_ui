@@ -206,7 +206,14 @@ jobs:
             grep -q "^TRANSPORT=shm size=$size " /tmp/transport-benchmark.log
             grep -q "^TRANSPORT=iosurface size=$size " \
               /tmp/transport-benchmark.log
-            grep -Eq "^TRANSPORT_WINNER=(shm|iosurface) size=$size$" \
+            # The supported acquisition must not cost more per frame than the
+            # deprecated one, or the debt was not actually paid.
+            grep -q "^TRANSPORT=iosurface-port size=$size " \
+              /tmp/transport-benchmark.log
+            # iosurface-port is in the running now and can win outright, so the
+            # gate is "a zero-copy transport won", not a fixed name.
+            grep -Eq \
+              "^TRANSPORT_WINNER=(shm|iosurface|iosurface-port) size=$size$" \
               /tmp/transport-benchmark.log
           done
           [ "$status" -eq 0 ]
