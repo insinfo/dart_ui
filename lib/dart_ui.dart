@@ -21,3 +21,8 @@ library;
 
 export 'src/foundation/diagnostics.dart';
 export 'src/foundation/lifecycle.dart';
+export 'src/geometry/offset.dart';
+export 'src/geometry/rect.dart';
+export 'src/geometry/size.dart';
+export 'src/geometry/transform2d.dart';
+export 'src/platform/window_events.dart';
