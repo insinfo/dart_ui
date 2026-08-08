@@ -92,7 +92,33 @@ final class Framebuffer {
   int offsetOf(int x, int y) => y * bytesPerRow + x * 4;
 
   /// Fills the whole buffer with one premultiplied colour.
+  ///
+  /// One 32-bit store per pixel rather than four 8-bit ones. That is not
+  /// premature: the macOS pacing probe measured a byte-wise fill of a 1080p
+  /// surface at 7.1ms - 42% of a 60Hz frame, and seventeen times the cost of
+  /// presenting it - so the inner loop of a clear is genuinely on the critical
+  /// path. See `doc/logs/PRESENT_PACING_2026-08-08.md`.
+  ///
+  /// The word view is only valid when the buffer's rows are 4-byte aligned,
+  /// which a Uint8List does not promise; [Uint32List.view] throws otherwise,
+  /// and the byte loop stays as the fallback rather than as dead code.
   void clear(int blue, int green, int red, int alpha) {
+    final packed = _packWord(blue, green, red, alpha);
+    if (bytesPerRow % 4 == 0 && pixels.offsetInBytes % 4 == 0) {
+      final words = Uint32List.view(
+        pixels.buffer,
+        pixels.offsetInBytes,
+        (bytesPerRow ~/ 4) * height,
+      );
+      final wordsPerRow = bytesPerRow ~/ 4;
+      for (var y = 0; y < height; y++) {
+        final start = y * wordsPerRow;
+        // Only the payload, never the padding: the stride tests assert those
+        // bytes stay untouched.
+        words.fillRange(start, start + width, packed);
+      }
+      return;
+    }
     for (var y = 0; y < height; y++) {
       var index = y * bytesPerRow;
       for (var x = 0; x < width; x++) {
@@ -104,6 +130,12 @@ final class Framebuffer {
       }
     }
   }
+
+  /// Packs four channel bytes into the word a little-endian store writes back
+  /// in memory order. Byte 0 of the pixel ends up in the low bits, which is
+  /// what makes this equal to the byte loop above.
+  static int _packWord(int b0, int b1, int b2, int b3) =>
+      (b3 << 24) | (b2 << 16) | (b1 << 8) | b0;
 
   /// A copy with rows packed tightly, for comparing against a golden image
   /// without the stride getting in the way.
