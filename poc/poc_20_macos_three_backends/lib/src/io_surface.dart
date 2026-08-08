@@ -12,12 +12,24 @@ import 'package:ffi/ffi.dart';
 // hand the layer the surface once and later frames are just writes into pages
 // the compositor is already scanning out.
 //
-// Crossing the process boundary uses the global-surface path
-// (kIOSurfaceIsGlobal + IOSurfaceGetID / IOSurfaceLookup). Apple deprecated it
-// in favour of mach-port passing, which needs a port right to travel between
-// the processes - a pipe cannot carry one. The deprecated call still resolves
-// and works on macOS 14; if it ever stops, the replacement is an XPC channel,
-// not a different surface API.
+// There are two ways across the process boundary here.
+//
+// The old one is the global-surface path (kIOSurfaceIsGlobal +
+// IOSurfaceGetID / IOSurfaceLookup): the surface is visible to every process
+// on the machine and an integer identifies it, so the id goes through the pipe
+// like any other number. Apple deprecated it, and the reason is visible in the
+// description - "every process on the machine".
+//
+// The supported one is IOSurfaceCreateMachPort / IOSurfaceLookupFromMachPort.
+// The port right names the surface for one task only, which is the point, and
+// also the difficulty: a right is a capability the kernel moves, not a number
+// a pipe can carry. Getting one to a child process is `mach_port_transfer.dart`
+// and is the actual subject of the spike; [createMachPort] here is only the
+// last step of it.
+//
+// [create] therefore takes `global`. Passing false is what proves a mach-port
+// mechanism really worked: with no global registration there is no other way
+// the host could have found the surface.
 // ---------------------------------------------------------------------------
 
 final DynamicLibrary _ioSurfaceLib = DynamicLibrary.open(
@@ -65,12 +77,15 @@ final _ioSurfaceGetAllocSize = _ioSurfaceLib.lookupFunction<
 final _ioSurfaceGetBytesPerRow = _ioSurfaceLib.lookupFunction<
     IntPtr Function(_VoidPtr),
     int Function(_VoidPtr)>('IOSurfaceGetBytesPerRow');
+final _ioSurfaceCreateMachPort = _ioSurfaceLib.lookupFunction<
+    Uint32 Function(_VoidPtr),
+    int Function(_VoidPtr)>('IOSurfaceCreateMachPort');
 
 _VoidPtr _key(String name) => _ioSurfaceLib.lookup<_VoidPtr>(name).value;
 
 class IOSurfaceFrame {
   IOSurfaceFrame._(this._surface, this.id, this.width, this.height,
-      this.bytesPerRow, this._allocSize);
+      this.bytesPerRow, this._allocSize, this.isGlobal);
 
   final _VoidPtr _surface;
   final int id;
@@ -79,9 +94,14 @@ class IOSurfaceFrame {
   final int bytesPerRow;
   final int _allocSize;
 
+  /// Whether the surface carries kIOSurfaceIsGlobal, i.e. whether the
+  /// deprecated `SURFACE <id>` fallback can reach it at all.
+  final bool isGlobal;
+
   bool _closed = false;
 
-  static IOSurfaceFrame create({required int width, required int height}) {
+  static IOSurfaceFrame create(
+      {required int width, required int height, bool global = true}) {
     final properties = _cfDictionaryCreateMutable(
       nullptr,
       0,
@@ -109,9 +129,13 @@ class IOSurfaceFrame {
     putInt('kIOSurfaceAllocSize', bytesPerRow * height);
     putInt('kIOSurfacePixelFormat', kPixelFormatBGRA);
     // Without this the surface is private to this process and IOSurfaceLookup
-    // in the host returns null.
-    _cfDictionarySetValue(properties, _key('kIOSurfaceIsGlobal'),
-        _coreFoundation.lookup<_VoidPtr>('kCFBooleanTrue').value);
+    // in the host returns null. It is a parameter rather than a constant
+    // because a mach-port handoff that succeeds on a global surface has proven
+    // nothing: the host could have found it either way.
+    if (global) {
+      _cfDictionarySetValue(properties, _key('kIOSurfaceIsGlobal'),
+          _coreFoundation.lookup<_VoidPtr>('kCFBooleanTrue').value);
+    }
     calloc.free(slot);
 
     final surface = _ioSurfaceCreate(properties);
@@ -125,7 +149,21 @@ class IOSurfaceFrame {
       height,
       _ioSurfaceGetBytesPerRow(surface),
       _ioSurfaceGetAllocSize(surface),
+      global,
     );
+  }
+
+  /// A send right naming this surface, for the supported cross-process path.
+  ///
+  /// The right belongs to the caller. It is deliberately not deallocated here:
+  /// the mechanisms in `mach_port_transfer.dart` all copy the right rather than
+  /// move it, so one right per surface is enough for every attempt, and the
+  /// process exits long before that matters.
+  int createMachPort() {
+    if (_closed) throw StateError('IOSurfaceFrame is disposed');
+    final port = _ioSurfaceCreateMachPort(_surface);
+    if (port == 0) throw StateError('IOSurfaceCreateMachPort returned null');
+    return port;
   }
 
   /// Writes into the surface while holding the lock the compositor honours.

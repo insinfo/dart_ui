@@ -229,6 +229,41 @@ jobs:
               /tmp/transport-benchmark.log | sed 's/^/- `/;s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # IOSurfaceLookup is deprecated. The supported replacement passes a mach
+      # port, and a port right does not fit through a pipe - that is the whole
+      # difficulty, not a detail. Three ways of moving it are implemented and
+      # this asks the machine which of them still works:
+      #
+      #   registered   mach_ports_register, inherited across the fork. Reported
+      #                clobbered by libxpc's atfork handler in 2014; unverified
+      #                on 14/15, and Dart's Process.start does fork.
+      #   bootstrap    bootstrap_register, deprecated since 10.5.
+      #   rendezvous   the host checks in under a pid-derived name and the
+      #                parent sends the port to it. Chromium ships this shape,
+      #                with the roles swapped.
+      #
+      # A mechanism the OS refuses is the FINDING, not a broken build. The step
+      # fails only if the deprecated path it is meant to replace regresses.
+      - name: 'Surface handoff: which mach-port mechanism still works?'
+        timeout-minutes: 4
+        run: |
+          status=0
+          dart run \
+            ../../poc/poc_20_macos_three_backends/tool/surface_port_probe.dart \
+            build/minimal_appkit_host > /tmp/surface-port-probe.log 2>&1 \
+            || status=$?
+          cat /tmp/surface-port-probe.log
+          echo "exit=$status"
+          grep -q '^SURFACE_FALLBACK_PRESENT=PRESENT_OK 2 surface$' \
+            /tmp/surface-port-probe.log
+          [ "$status" -eq 0 ]
+          {
+            echo '## Mach-port surface handoff'
+            echo
+            grep -E '^(SURFACE_PORT_WINNERS|SURFACE_PORT_PRESENT|PROBE_)' \
+              /tmp/surface-port-probe.log | sed 's/^/- `/;s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # The frame benchmark measured the boundary going out. This measures it
       # coming in, split across the same event with the system-wide clock:
       # inject -> host is WindowServer and AppKit, which an embedder would still
