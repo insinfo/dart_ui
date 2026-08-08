@@ -102,21 +102,6 @@ void runSkylightConformance() {
     );
     print('PRESENT=PASS');
 
-    // Outside witness. Runs between pump slices; the Mach port queues in the
-    // meantime, so nothing is lost.
-    final witness = WindowPixelWitness(workDirectory: _workDirectory)
-        .capture(window.id, label: 'skylight');
-    final centre = witness.centre;
-    if (centre != null && centre.matches(expectedCentre)) {
-      print('PIXEL_WITNESS=PASS centre=$centre '
-          'size=${witness.width}x${witness.height}');
-    } else {
-      print('PIXEL_WITNESS=FAIL centre=$centre '
-          'size=${witness.width}x${witness.height} '
-          'expected=$expectedCentre failure=${witness.failure}');
-      failures++;
-    }
-
     // Input, through the WindowServer, the way physical input arrives.
     var injected = 0;
     double injectX() => 260 + (injected % 8) * 23;
@@ -142,6 +127,24 @@ void runSkylightConformance() {
         'no input event arrived (pumped '
         '$pumped)');
     check(backend.threadIsStable, 'the isolate migrated OS threads');
+
+    // Outside witness runs AFTER the input phase on purpose: screencapture(1)
+    // grabs the display and spawns two processes, and pointerMove never
+    // arrived when it ran in between. Key events are posted to a pid and come
+    // through regardless; a pointer move is only worth reporting to whoever is
+    // under the pointer.
+    final witness = WindowPixelWitness(workDirectory: _workDirectory)
+        .capture(window.id, label: 'skylight');
+    final centre = witness.centre;
+    if (centre != null && centre.matches(expectedCentre)) {
+      print('PIXEL_WITNESS=PASS centre=$centre '
+          'size=${witness.width}x${witness.height}');
+    } else {
+      print('PIXEL_WITNESS=FAIL centre=$centre '
+          'size=${witness.width}x${witness.height} '
+          'expected=$expectedCentre failure=${witness.failure}');
+      failures++;
+    }
 
     final failuresBeforeTeardown = failures;
     final stopped = backend.shutdownSync();
