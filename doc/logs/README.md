@@ -11,6 +11,7 @@ documento é corrigido — não o log.
 |---|---|
 | [CONFORMANCE_TRES_BACKENDS_2026-08-08.md](CONFORMANCE_TRES_BACKENDS_2026-08-08.md) | Os três backends macOS passando a mesma suíte: janela, framebuffer de CPU, testemunha externa de pixels, input pela rota real e teardown sem `_exit`. Inclui a correção da regra de drenagem que escondia o `pointerMove`. |
 | [DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md](DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md) | Embedder no mesmo processo vs. Dart como worker. Veredito do linker sobre o SDK de release, três transportes de frame medidos em 480×320/1080p/4K, e a latência de input separada nos dois trechos da viagem. |
+| [PRESENT_PACING_2026-08-08.md](PRESENT_PACING_2026-08-08.md) | Se o compositor acompanha, e quão larga é a janela em que uma escrita pode cair no meio do scan-out. Mostra que o gargalo é o loop de pixels em Dart, não o present. |
 | [MACH_PORT_HANDOFF_2026-08-08.md](MACH_PORT_HANDOFF_2026-08-08.md) | Qual mecanismo de passagem de mach port ainda funciona no macOS 14. Confirma, 12 anos depois, que o libxpc continua limpando os registered ports no fork. |
 | [MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md](MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md) | Trace LLDB provando que `CFRunLoopRun` retorna do `_sigtramp` e o processo sai com status 0 — o shutdown do backend 2 não precisa de `_exit`. |
 
