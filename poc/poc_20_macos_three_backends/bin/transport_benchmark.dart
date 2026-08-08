@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:poc_20_macos_three_backends/poc_20_macos_three_backends.dart';
+import 'package:poc_20_macos_three_backends/src/mach_port_transfer.dart';
 
 // ---------------------------------------------------------------------------
 // Which side of the process boundary should the frames cross?
@@ -127,6 +128,7 @@ Future<bool> _runSuite(String hostBinary, int frames) async {
     await _benchmarkPipe(hostBinary, frames),
     await _benchmarkSharedMemory(hostBinary, frames),
     await _benchmarkIOSurface(hostBinary, frames),
+    await _benchmarkIOSurfacePort(hostBinary, frames),
   ];
 
   final label = '${frameWidth}x$frameHeight';
@@ -347,6 +349,78 @@ Future<TransportResult> _benchmarkIOSurface(
   }
   final controlBytes = 'PRESENT 000\n'.length;
   return TransportResult('iosurface', samples, controlBytes, note);
+}
+
+/// Transport 4: the same IOSurface, acquired the supported way.
+///
+/// IOSurfaceLookup is deprecated, and run 31249520943 showed the rendezvous
+/// handoff replacing it. What that run did not answer is whether the surface
+/// costs more per frame once acquired this way. It should not - the mechanism
+/// changes only how the host GETS the surface, and PRESENT is the same code -
+/// but "should not" is not a measurement, and a regression here would put the
+/// deprecated call back on the table.
+Future<TransportResult> _benchmarkIOSurfacePort(
+    String hostBinary, int frames) async {
+  final host = await _Host.start(hostBinary);
+  await _awaitWindow(host);
+
+  IOSurfaceFrame? surface;
+  final samples = <int>[];
+  var note = 'zero copies; acquired by mach port, no deprecated call';
+  try {
+    // Not global: a success here cannot be the deprecated path in disguise.
+    surface = IOSurfaceFrame.create(
+        width: frameWidth, height: frameHeight, global: false);
+    final port = surface.createMachPort();
+
+    final pidLine = await host.waitFor((l) => l.startsWith('HOST_PID='));
+    if (pidLine == null) {
+      note = 'host never announced its pid';
+    } else {
+      final serviceName = 'dart-ui.bench.${pidLine.substring(9)}';
+      host.process.stdin.writeln('PORT_SERVER $serviceName');
+      await host.process.stdin.flush();
+      final checkedIn =
+          await host.waitFor((l) => l.startsWith('PORT_SERVER_OK'));
+      if (checkedIn == null) {
+        note = 'host could not check in as $serviceName';
+      } else if (MachPortTransfer.rendezvousSend(serviceName, port, 0x51) !=
+          kernSuccess) {
+        note = 'the port never reached the host';
+      } else {
+        host.process.stdin.writeln('SURFACE_PORT RENDEZVOUS');
+        await host.process.stdin.flush();
+        final attached =
+            await host.waitFor((l) => l.startsWith('SURFACE_PORT_OK'));
+        if (attached == null) {
+          note = 'host did not attach the surface';
+        } else {
+          final watch = Stopwatch();
+          final stride = surface.bytesPerRow;
+          for (var frame = 0; frame < frames; frame++) {
+            watch
+              ..reset()
+              ..start();
+            surface.withPixels((pixels) => _paint(pixels, frame, stride));
+            host.process.stdin.writeln('PRESENT ${frame + 1}');
+            await host.process.stdin.flush();
+            final ok = await host.waitFor(
+                (l) => l == 'PRESENT_OK ${frame + 1} surface-port',
+                timeout: const Duration(seconds: 10));
+            watch.stop();
+            if (ok == null) break;
+            samples.add(watch.elapsedMicroseconds);
+          }
+        }
+      }
+    }
+  } on Object catch (error) {
+    note = 'mach port handoff unavailable: $error';
+  } finally {
+    await _shutdown(host);
+    surface?.dispose();
+  }
+  return TransportResult('iosurface-port', samples, 12, note);
 }
 
 /// A cheap per-frame pattern. Only the first rows change, so the measurement
