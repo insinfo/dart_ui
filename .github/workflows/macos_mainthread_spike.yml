@@ -55,7 +55,7 @@ jobs:
         run: |
           mkdir -p /tmp/shots
           clang -fobjc-arc -Wall -Wextra -framework Cocoa \
-            -framework QuartzCore \
+            -framework QuartzCore -framework IOSurface \
             ../../poc/poc_20_macos_three_backends/native/minimal_appkit_host.m \
             -o build/minimal_appkit_host
           ./build/minimal_appkit_host --smoke-seconds 1 \
