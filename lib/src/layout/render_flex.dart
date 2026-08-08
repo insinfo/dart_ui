@@ -20,8 +20,7 @@ enum Axis {
   horizontal,
   vertical;
 
-  Axis get cross =>
-      this == Axis.horizontal ? Axis.vertical : Axis.horizontal;
+  Axis get cross => this == Axis.horizontal ? Axis.vertical : Axis.horizontal;
 }
 
 /// How leftover main-axis space is distributed.
@@ -106,7 +105,7 @@ final class FlexParentData extends BoxParentData {
 ///   * positions the children at their computed offsets anyway, so they extend
 ///     past the edge and are visibly, obviously wrong;
 ///   * does **not** clip, and does **not** throw;
-///   * records the excess in [overflow] and [crossOverflow].
+///   * records the excess in [overflow].
 ///
 /// The reasoning: clipping hides the bug at exactly the moment it should be
 /// noticed, and produces a UI that is merely missing something. Throwing is
@@ -125,6 +124,13 @@ final class FlexParentData extends BoxParentData {
 /// starts its children at the leading edge instead of at a negative offset.
 /// A negative leading space would push the *first* child off the start edge,
 /// which hides the beginning of the content rather than the end.
+///
+/// The cross axis cannot overflow and so has no counterpart to [overflow]:
+/// every child is given the flex's own cross extent as its maximum, and this
+/// node is never smaller than the largest child that came back. A child taller
+/// than the row is squeezed at layout time rather than reported afterwards,
+/// which is the opposite of the main-axis policy for the reason that makes the
+/// two different - the main axis is a shared budget, and the cross axis is not.
 ///
 /// ## Not implemented
 ///
@@ -147,7 +153,6 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
   CrossAxisAlignment _crossAxisAlignment;
   MainAxisSize _mainAxisSize;
   double _overflow = 0;
-  double _crossOverflow = 0;
 
   Axis get direction => _direction;
 
@@ -185,11 +190,7 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
   /// or zero. See the overflow policy above.
   double get overflow => _overflow;
 
-  /// The same for the cross axis, where it comes from a single child that is
-  /// too fat rather than from an accumulation.
-  double get crossOverflow => _crossOverflow;
-
-  bool get hasOverflow => _overflow > 0 || _crossOverflow > 0;
+  bool get hasOverflow => _overflow > 0;
 
   @override
   void setupParentData(RenderBox child) {
@@ -319,8 +320,8 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
     // children fall back to their natural size and the flex behaves as if
     // nothing were flexible.
     if (totalFlex > 0) {
-      final double freeSpace = math.max(0.0, (canFlex ? maxMain : 0.0) -
-          allocated);
+      final double freeSpace =
+          math.max(0.0, (canFlex ? maxMain : 0.0) - allocated);
       final double spacePerFlex = canFlex ? freeSpace / totalFlex : 0.0;
       // Budget rather than actual consumption: a loose child that took less
       // than its share must not hand the surplus to the last child, or the
@@ -371,7 +372,6 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
     final double actualCross = _crossOf(resolved);
     final double slack = actualMain - allocated;
     _overflow = math.max(0.0, -slack);
-    _crossOverflow = math.max(0.0, maxChildCross - actualCross);
     final double remaining = math.max(0.0, slack);
 
     final (double leading, double between) = _distribute(remaining, count);
@@ -380,11 +380,9 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
     for (int i = 0; i < count; i++) {
       final RenderBox child = childAt(i);
       final Size childSize = child.size;
-      final double cross =
-          _crossOffset(actualCross, _crossOf(childSize));
-      childParentData(child).offset = _isHorizontal
-          ? Offset(position, cross)
-          : Offset(cross, position);
+      final double cross = _crossOffset(actualCross, _crossOf(childSize));
+      childParentData(child).offset =
+          _isHorizontal ? Offset(position, cross) : Offset(cross, position);
       position += _mainOf(childSize) + between;
     }
   }
@@ -397,11 +395,12 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
         MainAxisAlignment.center => (remaining / 2.0, 0.0),
         MainAxisAlignment.spaceBetween =>
           count > 1 ? (0.0, remaining / (count - 1)) : (0.0, 0.0),
-        MainAxisAlignment.spaceAround => count > 0
-            ? (remaining / count / 2.0, remaining / count)
-            : (0.0, 0.0),
-        MainAxisAlignment.spaceEvenly =>
-          (remaining / (count + 1), remaining / (count + 1)),
+        MainAxisAlignment.spaceAround =>
+          count > 0 ? (remaining / count / 2.0, remaining / count) : (0.0, 0.0),
+        MainAxisAlignment.spaceEvenly => (
+            remaining / (count + 1),
+            remaining / (count + 1)
+          ),
       };
 
   double _crossOffset(double extent, double childExtent) =>

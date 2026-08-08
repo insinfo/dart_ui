@@ -15,6 +15,7 @@
 ///   graphics    <- foundation, geometry
 ///   platform    <- foundation, geometry, scheduler
 ///   rendering   <- foundation, geometry, graphics
+///   layout      <- foundation, geometry, graphics
 ///
 /// No layer here may import a backend, and no backend may be referenced by
 /// name from common code.
@@ -32,6 +33,17 @@ export 'src/graphics/display_list_debug.dart';
 export 'src/graphics/display_list_geometry.dart';
 export 'src/graphics/display_list_opcodes.dart';
 export 'src/graphics/display_list_reader.dart';
+export 'src/layout/alignment.dart';
+export 'src/layout/box_constraints.dart';
+export 'src/layout/edge_insets.dart';
+export 'src/layout/pipeline.dart';
+export 'src/layout/render_align.dart';
+export 'src/layout/render_box.dart';
+export 'src/layout/render_colored_box.dart';
+export 'src/layout/render_constrained_box.dart';
+export 'src/layout/render_flex.dart';
+export 'src/layout/render_padding.dart';
+export 'src/layout/render_stack.dart';
 export 'src/platform/window_events.dart';
 export 'src/rendering/cpu_renderer.dart';
 export 'src/rendering/framebuffer.dart';
