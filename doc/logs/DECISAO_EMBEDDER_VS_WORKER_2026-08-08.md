@@ -1,7 +1,8 @@
 # Backend 3 — embedder no mesmo processo ou Dart como worker?
 
 **Data:** 8 de agosto de 2026
-**Runs:** [`31246294865`](https://github.com/insinfo/dart_ui/actions/runs/31246294865),
+**Runs:** [`31248119329`](https://github.com/insinfo/dart_ui/actions/runs/31248119329) (latência de input),
+[`31246294865`](https://github.com/insinfo/dart_ui/actions/runs/31246294865),
 [`31246483105`](https://github.com/insinfo/dart_ui/actions/runs/31246483105),
 [`31246734901`](https://github.com/insinfo/dart_ui/actions/runs/31246734901) e
 [`31247641461`](https://github.com/insinfo/dart_ui/actions/runs/31247641461)
@@ -156,6 +157,48 @@ Esta é a tabela que decide, e ela diz três coisas:
 
 ---
 
+## 2.1 A outra direção: latência de input
+
+Frames saem; input entra. A condição escrita para reabrir a decisão do embedder
+era "se o input precisar de latência abaixo de ~1 ms de ponta a ponta", então
+esse número precisava existir.
+
+`mach_absolute_time` é um relógio do sistema inteiro, então o host carimba cada
+linha `INPUT=` e o Dart carimba a injeção e a chegada. Isso separa a viagem em
+dois trechos de tamanhos bem diferentes:
+
+| trecho | mín (µs) | mediana (µs) | p95 (µs) | quem paga |
+|---|---|---|---|---|
+| injeção → host | 182 | 690 | 1 945 | WindowServer + AppKit — **o embedder também** |
+| host → Dart | 39 | **95** | 164 | pipe + escalonamento — **só isto o embedder remove** |
+| ponta a ponta | 222 | 824 | 2 208 | |
+
+60 de 60 eventos entregues, nenhum perdido.
+
+**Ponta a ponta fica abaixo de 1 ms** (824 µs de mediana, 4,9% de um frame a
+60 Hz), e a fronteira responde por 11,5% disso. O trecho dominante é a entrega
+do WindowServer até a fila do AppKit — que nenhuma das duas arquiteturas muda.
+
+### Uma correção de método
+
+A primeira medição deu `host → Dart` em 326 µs de mediana. Boa parte disso era
+o próprio benchmark: a chegada era detectada por um laço que dormia 200 µs
+entre verificações, e esse escalonamento entrava direto no número medido.
+Passando a carimbar dentro do listener de stdout e a esperar num `Completer`,
+a mediana caiu para 95 µs e o p95 de 1 038 para 164 µs.
+
+Fica o registro porque o erro tinha a direção mais perigosa possível: inflava
+justamente a métrica que sustentaria o argumento a favor do embedder.
+
+### Limites desta medição
+
+- O input é sintético (`SLEventPostToPid`), não vem de um HID real.
+- O runner é uma VM compartilhada; o p95 do trecho WindowServer varia muito.
+- `MACH_TIMEBASE=125/3` nesta máquina — ticks **não** são nanossegundos aqui.
+  Ler o timebase em vez de assumir `1/1` foi necessário.
+
+---
+
 ## 3. Decisão
 
 **Dart como processo worker, com IOSurface para frames e pipe para controle.**
@@ -179,14 +222,18 @@ degradado, mas o caminho recomendado passa a ser `SURFACE` + `PRESENT`.
   outros motivos — aí 24 µs deixam de ser ruído.
 - Se o projeto já precisar compilar o SDK do Dart por outra razão, o custo
   incremental do embedder cai muito.
-- Se o input precisar de latência abaixo de ~1 ms de ponta a ponta; isso ainda
-  não foi medido separadamente do frame.
+- ~~Se o input precisar de latência abaixo de ~1 ms de ponta a ponta~~ —
+  medido: 824 µs de mediana ponta a ponta, com a fronteira respondendo por
+  95 µs (11,5%). A condição já está satisfeita e o embedder removeria só esses
+  95 µs.
 
 ---
 
 ## 4. Trabalho restante deste eixo
 
-- [ ] Medir latência de **input** (host → Dart) isoladamente, do mesmo jeito.
+- [x] Medir latência de **input** isoladamente: 95 µs na fronteira, 824 µs
+      ponta a ponta.
+- [ ] Repetir com input de HID real em vez de injeção sintética.
 - [ ] Múltiplos buffers (double/triple) e sincronismo com o refresh.
 - [ ] Detecção de crash do host e restart, com a superfície sobrevivendo.
 - [ ] Substituir `IOSurfaceLookup` (deprecado) por passagem de mach port via

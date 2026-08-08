@@ -211,6 +211,10 @@ Três leituras:
 A fronteira de processo custa 22–59 µs em qualquer resolução, ou **~0,2% de um
 frame a 60 Hz**. É tudo o que um embedder poderia recuperar.
 
+No sentido inverso — input — a viagem ponta a ponta mede 824 µs de mediana, dos
+quais 95 µs são a fronteira (11,5%); o resto é entrega do WindowServer até a
+fila do AppKit, que nenhuma das arquiteturas muda.
+
 **Decisão: Dart como processo worker, `IOSurface` para frames e pipe para
 controle.** Reabrir se o alvo for 120 Hz com orçamento apertado, se o SDK já
 precisar ser compilado por outro motivo, ou se input exigir latência abaixo de

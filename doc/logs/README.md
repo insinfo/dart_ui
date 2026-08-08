@@ -10,7 +10,7 @@ documento é corrigido — não o log.
 | Documento | O que estabelece |
 |---|---|
 | [CONFORMANCE_TRES_BACKENDS_2026-08-08.md](CONFORMANCE_TRES_BACKENDS_2026-08-08.md) | Os três backends macOS passando a mesma suíte: janela, framebuffer de CPU, testemunha externa de pixels, input pela rota real e teardown sem `_exit`. Inclui a correção da regra de drenagem que escondia o `pointerMove`. |
-| [DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md](DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md) | Embedder no mesmo processo vs. Dart como worker. Veredito do linker sobre o SDK de release e comparação medida de três transportes de frame. |
+| [DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md](DECISAO_EMBEDDER_VS_WORKER_2026-08-08.md) | Embedder no mesmo processo vs. Dart como worker. Veredito do linker sobre o SDK de release, três transportes de frame medidos em 480×320/1080p/4K, e a latência de input separada nos dois trechos da viagem. |
 | [MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md](MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md) | Trace LLDB provando que `CFRunLoopRun` retorna do `_sigtramp` e o processo sai com status 0 — o shutdown do backend 2 não precisa de `_exit`. |
 
 ## Saídas de probe preservadas
