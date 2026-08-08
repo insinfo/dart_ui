@@ -203,7 +203,14 @@ class SkylightBackend implements MacosWindowBackend {
       report.processRegistration = register(3);
       log('SLPSRegisterWithServer(3) attempt $attempt -> '
           '${report.processRegistration}');
-      if (report.processRegistration == 0) return;
+      if (report.processRegistration == 0) {
+        // A first-call failure correlates with the WindowServer never
+        // delivering events afterwards, even though the retry returns 0 (probe
+        // Z17, runs 31243780407 and 31244128854). Whatever LaunchServices was
+        // not ready for, give it time to settle before asking for the port.
+        if (attempt > 1) sleep(const Duration(milliseconds: 500));
+        return;
+      }
       sleep(const Duration(milliseconds: 150));
     }
     throw StateError(
@@ -553,7 +560,11 @@ class SkylightBackend implements MacosWindowBackend {
 
   /// Injects one key down/up pair and one pointer move into this process
   /// through the WindowServer - the same route physical input takes.
-  bool injectSyntheticInput() => _syntheticInput.postTo(_getpid());
+  /// [x] and [y] should differ between calls: the WindowServer has no reason
+  /// to report a pointer move to a position the pointer is already at, which is
+  /// why a fixed (400, 400) produced key events but never pointerMove.
+  bool injectSyntheticInput({double x = 400, double y = 400}) =>
+      _syntheticInput.postTo(_getpid(), x: x, y: y);
 
   /// Runs the owning run loop in bounded slices. Synchronous by design.
   int pumpSync({required int slices, double sliceSeconds = 0.05}) {

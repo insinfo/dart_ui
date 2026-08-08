@@ -118,11 +118,18 @@ void runSkylightConformance() {
     }
 
     // Input, through the WindowServer, the way physical input arrives.
-    backend.injectSyntheticInput();
+    var injected = 0;
+    double injectX() => 260 + (injected % 8) * 23;
+    double injectY() => 240 + (injected % 5) * 17;
+    backend.injectSyntheticInput(x: injectX(), y: injectY());
+    injected++;
     var pumped = 0;
     for (var round = 0; round < 60 && backend.report.eventsRead < 4; round++) {
       pumped += backend.pumpSync(slices: 2);
-      if (round == 20 || round == 40) backend.injectSyntheticInput();
+      if (round % 12 == 11) {
+        backend.injectSyntheticInput(x: injectX(), y: injectY());
+        injected++;
+      }
     }
     print('INPUT_EVENTS=${backend.report.eventsRead}');
     print('INPUT_EVENT_TYPES=${backend.report.eventTypes}');

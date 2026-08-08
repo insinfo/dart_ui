@@ -386,8 +386,15 @@ jobs:
       # Z1 fixes SLEventCreateNextEvent(cid). Z2 installs the Mach event port as
       # a CFRunLoopSource. Z17 registers the process before its first window,
       # matching AppKit/HIServices ordering, then performs bounded reads.
+      # Superseded by "Backend 1 conformance", which tests strictly more of the
+      # same route. Kept as a diagnostic because it fails in a specific and
+      # still-unexplained way: late in the job the FIRST
+      # SLPSRegisterWithServer returns -50, the retry returns 0, and the
+      # WindowServer then delivers nothing. The gated late re-run below exists
+      # to find out whether the backend shares that weakness.
       - name: 'Probe Z1/Z2/Z17: register before window and receive input'
         timeout-minutes: 4
+        continue-on-error: true
         run: |
           mkdir -p /tmp/shots
           OBJC_DEBUG_MISSING_POOLS=YES ./build/probe skylight-events 8 > /tmp/events.log 2>&1 &
@@ -643,6 +650,24 @@ jobs:
           run_lldb pump-timer pump-timer
           run_lldb event-pump event-pump
           run_lldb hold-appkit hold-appkit 4
+
+      # Backend 1 always registers on the first attempt when it runs early. This
+      # runs the identical binary at the END of the job, in the environment
+      # where the Z17 probe fails, so "the backend is robust" is measured
+      # rather than assumed.
+      - name: 'Backend 1 conformance again, late in the job'
+        timeout-minutes: 4
+        run: |
+          mkdir -p /tmp/shots
+          status=0
+          OBJC_DEBUG_MISSING_POOLS=YES CONFORMANCE_SHOTS=/tmp/shots             ./build/conformance skylight             > /tmp/conformance-skylight-late.log 2>&1 || status=$?
+          cat /tmp/conformance-skylight-late.log
+          echo "exit=$status"
+          grep -q '^PRESENT=PASS$' /tmp/conformance-skylight-late.log
+          grep -q '^PIXEL_WITNESS=PASS' /tmp/conformance-skylight-late.log
+          grep -Eq '^INPUT_EVENTS=[1-9][0-9]*$'             /tmp/conformance-skylight-late.log
+          grep -q '^CONFORMANCE=PASS$' /tmp/conformance-skylight-late.log
+          [ "$status" -eq 0 ]
 
       - name: Upload lldb traces
         if: always()
