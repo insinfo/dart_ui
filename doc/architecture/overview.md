@@ -4,7 +4,7 @@ Este documento descreve **o que existe em `lib/`**, não o alvo. O alvo é o
 [roteiro](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md); quando os dois
 divergirem, o roteiro descreve a intenção e este arquivo descreve o código.
 
-**Estado em 8 de agosto de 2026:** cinco camadas, **342 testes**, gate próprio
+**Estado em 8 de agosto de 2026:** cinco camadas, **418 testes**, gate próprio
 rodando em push nas três plataformas (formato, análise, testes e compilação
 AOT). O caminho de display list até pixels está fechado.
 
@@ -135,12 +135,34 @@ O arredondamento do blend (`mul255`) foi verificado exaustivamente nos 65536
 pares contra `(v * a + 127) ~/ 255`: idêntico bit a bit, sem divisão. A
 equivalência é teste, não afirmação.
 
-**Limites declarados onde o chamador esbarra neles:** sem antialiasing (a
-costura é coverage-como-alpha entrando no mesmo `blendPixelOver`); retângulos
-arredondados preenchem a caixa até o rasterizador ganhar um loop de canto;
-`saveLayer` é um clip até existir buffer offscreen para compor; paths e texto
-**lançam** em vez de desenhar algo plausível. O `probe()` do backend diz isso em
-voz alta.
+**Antialiasing** está ligado por padrão. Spans interiores rodam com cobertura
+255, o que pula o escalonamento e toma o mesmo loop do preenchimento duro — o
+custo fica nos pixels de borda. `paint.antiAlias` existe para desligar.
+
+O clip guarda o retângulo **duas vezes**, inteiro e exato. Desenhos de borda
+dura leem o inteiro; o preenchimento AA lê o exato. A alternativa — aceitar
+borda dura no clip — falharia justamente no caso comum de uma forma desenhada
+exatamente sobre os limites em que é recortada (um cartão pintando o próprio
+fundo): ela sairia suave nas bordas que o clip não toca e dura nas que toca, e
+*quais* bordas dependeria de onde o layout sub-pixel caiu. Artefato que aparece
+e some conforme o layout é o que vira "às vezes o cartão fica errado" e nunca
+reproduz.
+
+Consequência que um chamador precisa saber: **existem duas noções de vazio**.
+Um clip mais estreito que um pixel não admite pixel inteiro nenhum mas ainda
+admite parte de um, então um preenchimento AA pode pintar onde o duro não
+pinta. Culling por `clip.isEmpty` só é correto para desenhos de borda dura.
+
+Meia cobertura divide 127/128, não 128/128: as *posições* são quantizadas, não
+as larguras, então coberturas adjacentes se encaixam e a soma de um span é
+exatamente sua área (verificado em 200 mil spans aleatórios). Como 255 é ímpar,
+não dá para dividir simetricamente **e** conservar; conservar ganha, porque a
+alternativa deixa costura visível onde duas metades de pixel se encontram.
+
+**Limites declarados onde o chamador esbarra neles:** retângulos arredondados
+preenchem a caixa até o rasterizador ganhar um loop de canto; `saveLayer` é um
+clip até existir buffer offscreen para compor; paths e texto **lançam** em vez
+de desenhar algo plausível. O `probe()` do backend diz isso em voz alta.
 
 ## O que ainda não existe
 
