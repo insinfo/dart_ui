@@ -133,6 +133,15 @@ final class Frame {
   });
 
   final RenderTarget target;
+
+  /// Valid for THIS frame only.
+  ///
+  /// A backend that locks a shared surface gets a base address back from the
+  /// lock, and there is no promise it is the same address as last time - a
+  /// resize, a compositor decision, or a driver moving the buffer all change
+  /// it. Anything that caches the pixel list or the stride (the CPU rasteriser
+  /// does, on purpose, to keep it out of the inner loop) must therefore be
+  /// built per frame, not once per target.
   final Framebuffer framebuffer;
 
   /// The region the caller promised to redraw. A backend without partial
