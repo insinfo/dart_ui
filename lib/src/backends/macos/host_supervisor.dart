@@ -33,11 +33,6 @@ enum MacosSurfaceHandoff {
   /// checked in. Supported, non-deprecated, no ordering constraint.
   rendezvous,
 
-  /// `kIOSurfaceIsGlobal` + `IOSurfaceLookup`. Deprecated, and global means
-  /// every process on the machine can look the surface up by id. Kept because
-  /// it is the path with the longest measured history in this repository, and
-  /// because a sandboxed process may be refused `mach-register`.
-  deprecatedLookup,
 }
 
 /// Tuning for the restart policy.
@@ -90,15 +85,13 @@ final class MacosHostSupervisor {
     required void Function() onRecoveryExhausted,
     MacosRecoveryPolicy policy = const MacosRecoveryPolicy(),
     MacosSurfaceHandoff handoff = MacosSurfaceHandoff.rendezvous,
-    bool allowLookupFallback = true,
   })  : _spawnOptions = spawnOptions,
         _sink = sink,
         _onDiagnostic = onDiagnostic,
         _onHostReplaced = onHostReplaced,
         _onRecoveryExhausted = onRecoveryExhausted,
         _policy = policy,
-        _handoff = handoff,
-        _allowLookupFallback = allowLookupFallback;
+        _handoff = handoff;
 
   MacosHostSpawnOptions _spawnOptions;
   final HostMessageSink _sink;
@@ -108,7 +101,6 @@ final class MacosHostSupervisor {
   final void Function() _onRecoveryExhausted;
   final MacosRecoveryPolicy _policy;
   final MacosSurfaceHandoff _handoff;
-  final bool _allowLookupFallback;
 
   MacosHostProcess? _host;
   MacosSurfacePool? _pool;
@@ -251,29 +243,8 @@ final class MacosHostSupervisor {
         _activeHandoff = MacosSurfaceHandoff.rendezvous;
         return true;
       }
-      if (!_allowLookupFallback) {
-        _onDiagnostic(
-          const BackendDiagnostic(
-            kind: DiagnosticKind.surfaceCreationFailed,
-            message: 'mach-port surface handoff failed and fallback is off',
-            detail: 'set allowLookupFallback: true to use the deprecated '
-                'IOSurfaceLookup path, or check for BOOTSTRAP_NOT_PRIVILEGED '
-                '(1100), which is App Sandbox refusing mach-register',
-          ),
-        );
-        return false;
-      }
-      _onDiagnostic(
-        const BackendDiagnostic.note(
-          'falling back to the deprecated IOSurfaceLookup handoff',
-          detail: 'rendezvous did not complete; the surfaces are global and '
-              'therefore visible to every process on this machine',
-        ),
-      );
     }
-    final attached = await _attachByLookup(host, pool);
-    if (attached) _activeHandoff = MacosSurfaceHandoff.deprecatedLookup;
-    return attached;
+    return false;
   }
 
   Future<bool> _attachByRendezvous(
@@ -318,31 +289,6 @@ final class MacosHostSupervisor {
       }
     }
     return true;
-  }
-
-  Future<bool> _attachByLookup(
-    MacosHostProcess host,
-    MacosSurfacePool pool,
-  ) async {
-    for (final surface in pool.surfaces) {
-      if (surface.isGlobal) continue;
-      _onDiagnostic(
-        const BackendDiagnostic(
-          kind: DiagnosticKind.surfaceCreationFailed,
-          message: 'IOSurfaceLookup needs global surfaces',
-          detail: 'the pool was created without kIOSurfaceIsGlobal, so the '
-              'deprecated fallback cannot reach it; this is what '
-              'allowLookupFallback: false asks for',
-        ),
-      );
-      return false;
-    }
-    final ids = <int>[for (final surface in pool.surfaces) surface.id];
-    if (!host.send(HostCommands.surfacesByLookup(ids))) return false;
-    return host.awaitAck(
-      HostAckKind.surfacePoolLookup,
-      _policy.attachTimeout,
-    );
   }
 
   void _applyState() {

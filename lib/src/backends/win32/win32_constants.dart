@@ -113,8 +113,26 @@ const int wmSetcursor = 0x0020;
 const int wmGetminmaxinfo = 0x0024;
 const int wmNccreate = 0x0081;
 const int wmNcdestroy = 0x0082;
-const int wmDpichanged = 0x02E0;
+const int wmKeydown = 0x0100;
+const int wmKeyup = 0x0101;
+const int wmChar = 0x0102;
+const int wmSyskeydown = 0x0104;
+const int wmSyskeyup = 0x0105;
 const int wmMousemove = 0x0200;
+const int wmLbuttondown = 0x0201;
+const int wmLbuttonup = 0x0202;
+const int wmRbuttondown = 0x0204;
+const int wmRbuttonup = 0x0205;
+const int wmMbuttondown = 0x0207;
+const int wmMbuttonup = 0x0208;
+const int wmMousewheel = 0x020A;
+const int wmXbuttondown = 0x020B;
+const int wmXbuttonup = 0x020C;
+const int wmMouseleave = 0x02A3;
+const int wmDpichanged = 0x02E0;
+
+/// `TME_LEAVE`
+const int tmeLeave = 0x0002;
 
 /// `WM_APP`. Everything from here up is private to the application, so the
 /// wake message can never collide with a system or control message.

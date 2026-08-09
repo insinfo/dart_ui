@@ -203,20 +203,23 @@ final class Win32Dispatcher implements UiDispatcher {
   }
 
   void _pumpNative() {
-    // Allocate the MSG on the stack equivalent (Dart's arena allocator).
-    // The backend already has one allocated; in a real integration this
-    // would share it.  For now, use PeekMessage directly through the API.
     var count = 0;
     while (count < maxNativeMessagesPerPass) {
-      // PeekMessage removes and dispatches the message.
-      final hasMessage = _api.peekMessageW(
-        _api.allocator<Msg>(),
-        0,
-        0,
-        0,
-        pmRemove,
-      );
-      if (hasMessage == 0) break;
+      final msg = _api.allocator<Msg>();
+      try {
+        final hasMessage = _api.peekMessageW(
+          msg,
+          0,
+          0,
+          0,
+          pmRemove,
+        );
+        if (hasMessage == 0) break;
+        _api.translateMessage(msg);
+        _api.dispatchMessageW(msg);
+      } finally {
+        _api.allocator.free(msg);
+      }
       count++;
     }
   }

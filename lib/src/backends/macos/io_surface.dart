@@ -128,7 +128,6 @@ abstract interface class MacosPoolSurface {
   int get width;
   int get height;
   int get bytesPerRow;
-  bool get isGlobal;
   bool get isDisposed;
 
   void withPixels(void Function(Uint8List pixels) write);
@@ -154,7 +153,6 @@ final class MacosIOSurface implements MacosPoolSurface {
     this.height,
     this.bytesPerRow,
     this._allocSize,
-    this.isGlobal,
   );
 
   final _VoidPtr _surface;
@@ -177,15 +175,6 @@ final class MacosIOSurface implements MacosPoolSurface {
 
   final int _allocSize;
 
-  /// Whether `kIOSurfaceIsGlobal` was set, i.e. whether every process on the
-  /// machine can look this surface up by id.
-  ///
-  /// False is the correct production setting and the one the mach-port
-  /// handoff needs; true is only for the deprecated fallback, and callers that
-  /// choose it must emit a note saying so.
-  @override
-  final bool isGlobal;
-
   bool _disposed = false;
   @override
   bool get isDisposed => _disposed;
@@ -198,7 +187,6 @@ final class MacosIOSurface implements MacosPoolSurface {
   static MacosIOSurface create({
     required int width,
     required int height,
-    bool global = false,
   }) {
     if (width <= 0 || height <= 0) {
       throw MacosSurfaceError('IOSurfaceCreate: ${width}x$height');
@@ -232,13 +220,6 @@ final class MacosIOSurface implements MacosPoolSurface {
       putInt('kIOSurfaceBytesPerRow', bytesPerRow);
       putInt('kIOSurfaceAllocSize', bytesPerRow * height);
       putInt('kIOSurfacePixelFormat', kMacosPixelFormatBgra);
-      if (global) {
-        _cfDictionarySetValue(
-          properties,
-          _key('kIOSurfaceIsGlobal'),
-          _coreFoundation.lookup<_VoidPtr>('kCFBooleanTrue').value,
-        );
-      }
     } finally {
       macosFree(slot);
     }
@@ -254,7 +235,6 @@ final class MacosIOSurface implements MacosPoolSurface {
       height,
       _ioSurfaceGetBytesPerRow(surface),
       _ioSurfaceGetAllocSize(surface),
-      global,
     );
   }
 

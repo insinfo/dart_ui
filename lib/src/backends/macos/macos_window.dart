@@ -187,7 +187,6 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
       onRecoveryExhausted: _onRecoveryExhausted,
       policy: policy,
       handoff: handoff,
-      allowLookupFallback: allowLookupFallback,
     );
     _supervisor = supervisor;
     final started = await supervisor.start();
@@ -680,7 +679,6 @@ MacosSurfacePool createIOSurfacePool({
         MacosIOSurface.create(
           width: pixelWidth,
           height: pixelHeight,
-          global: global,
         ),
       );
     }

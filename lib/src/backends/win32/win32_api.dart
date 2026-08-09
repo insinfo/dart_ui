@@ -222,6 +222,7 @@ final class Win32Api {
   late final int Function(int, int) releaseDC;
   late final int Function(int, Pointer<Uint32>, int, int, int)
       msgWaitForMultipleObjectsEx;
+  late final int Function(Pointer<TrackMouseEventStruct>) trackMouseEvent;
 
   late final int Function(
           int,
@@ -339,6 +340,9 @@ final class Win32Api {
         Uint32 Function(Uint32, Pointer<Uint32>, Uint32, Uint32, Uint32),
         int Function(int, Pointer<Uint32>, int, int,
             int)>('MsgWaitForMultipleObjectsEx');
+    trackMouseEvent = _user32.lookupFunction<
+        Int32 Function(Pointer<TrackMouseEventStruct>),
+        int Function(Pointer<TrackMouseEventStruct>)>('TrackMouseEvent');
     setTimer = _user32.lookupFunction<
         IntPtr Function(
             IntPtr,

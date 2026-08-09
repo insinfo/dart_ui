@@ -23,7 +23,7 @@ import '../geometry/size.dart';
 /// into common code is how backend-specific assumptions spread.
 extension type const NativeWindowId(int value) {}
 
-sealed class PlatformWindowEvent {
+abstract class PlatformWindowEvent {
   const PlatformWindowEvent({
     required this.windowId,
     required this.generation,
@@ -120,6 +120,22 @@ final class WindowCloseRequestedEvent extends PlatformWindowEvent {
 /// The window is gone. Nothing more will arrive for this generation.
 final class WindowClosedEvent extends PlatformWindowEvent {
   const WindowClosedEvent({
+    required super.windowId,
+    required super.generation,
+  });
+}
+
+/// The pointer entered the window's client area.
+final class WindowPointerEnterEvent extends PlatformWindowEvent {
+  const WindowPointerEnterEvent({
+    required super.windowId,
+    required super.generation,
+  });
+}
+
+/// The pointer left the window's client area.
+final class WindowPointerLeaveEvent extends PlatformWindowEvent {
+  const WindowPointerLeaveEvent({
     required super.windowId,
     required super.generation,
   });

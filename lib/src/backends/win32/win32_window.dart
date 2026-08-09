@@ -32,6 +32,7 @@ import '../../foundation/lifecycle.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
@@ -495,6 +496,32 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         _onNcDestroy();
         return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
+      case wmMousemove:
+        return _onPointerMove(lParam);
+
+      case wmLbuttondown:
+        return _onPointerDown(PointerButton.primary, lParam);
+
+      case wmLbuttonup:
+        return _onPointerUp(PointerButton.primary, lParam);
+
+      case wmRbuttondown:
+        return _onPointerDown(PointerButton.secondary, lParam);
+
+      case wmRbuttonup:
+        return _onPointerUp(PointerButton.secondary, lParam);
+
+      case wmMouseleave:
+        return _onPointerLeave();
+
+      case wmKeydown:
+      case wmSyskeydown:
+        return _onKeyDown(wParam, lParam);
+
+      case wmKeyup:
+      case wmSyskeyup:
+        return _onKeyUp(wParam, lParam);
+
       default:
         // Every input message lands here: one call out, nothing allocated.
         return _api.defWindowProcW(hwnd, msg, wParam, lParam);
@@ -503,6 +530,123 @@ final class Win32Window with DisposableMixin implements NativeWindow {
 
   /// Called from WM_NCCREATE, before `CreateWindowExW` has returned.
   void attachHandle(int hwnd) => _hwnd = hwnd;
+
+  bool _trackingMouse = false;
+
+  int _onPointerMove(int lParam) {
+    if (!_trackingMouse) {
+      _trackingMouse = true;
+      final tme = _api.allocator<TrackMouseEventStruct>();
+      try {
+        tme.ref
+          ..cbSize = sizeOf<TrackMouseEventStruct>()
+          ..dwFlags = tmeLeave
+          ..hwndTrack = _hwnd
+          ..dwHoverTime = 0;
+        _api.trackMouseEvent(tme);
+      } finally {
+        _api.allocator.free(tme);
+      }
+      _emit(
+        WindowPointerEnterEvent(
+          windowId: id,
+          generation: _generation.current,
+        ),
+      );
+    }
+    _emit(
+      PointerMoveEvent(
+        windowId: id,
+        generation: _generation.current,
+        timestamp:
+            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: _space.physicalToLogical(
+          win32SignedLoWord(lParam),
+          win32SignedHiWord(lParam),
+        ),
+      ),
+    );
+    return 0;
+  }
+
+  int _onPointerDown(PointerButton button, int lParam) {
+    _emit(
+      PointerDownEvent(
+        windowId: id,
+        generation: _generation.current,
+        timestamp:
+            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: _space.physicalToLogical(
+          win32SignedLoWord(lParam),
+          win32SignedHiWord(lParam),
+        ),
+        button: button,
+      ),
+    );
+    return 0;
+  }
+
+  int _onPointerUp(PointerButton button, int lParam) {
+    _emit(
+      PointerUpEvent(
+        windowId: id,
+        generation: _generation.current,
+        timestamp:
+            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: _space.physicalToLogical(
+          win32SignedLoWord(lParam),
+          win32SignedHiWord(lParam),
+        ),
+        button: button,
+      ),
+    );
+    return 0;
+  }
+
+  int _onPointerLeave() {
+    _trackingMouse = false;
+    _emit(
+      WindowPointerLeaveEvent(
+        windowId: id,
+        generation: _generation.current,
+      ),
+    );
+    return 0;
+  }
+
+  int _onKeyDown(int wParam, int lParam) {
+    _emit(
+      KeyDownEvent(
+        windowId: id,
+        generation: _generation.current,
+        timestamp:
+            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        physicalKey: (lParam >> 16) & 0xFF,
+        logicalKey: wParam,
+      ),
+    );
+    return 0;
+  }
+
+  int _onKeyUp(int wParam, int lParam) {
+    _emit(
+      KeyUpEvent(
+        windowId: id,
+        generation: _generation.current,
+        timestamp:
+            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        physicalKey: (lParam >> 16) & 0xFF,
+        logicalKey: wParam,
+      ),
+    );
+    return 0;
+  }
 
   int _onPaint(int hwnd) {
     _withScratchRect((rect) {

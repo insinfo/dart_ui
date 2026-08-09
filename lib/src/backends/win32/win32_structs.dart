@@ -190,3 +190,18 @@ final class BitmapInfo extends Struct {
   @Uint32()
   external int bmiColors0;
 }
+
+/// `TRACKMOUSEEVENT`.
+final class TrackMouseEventStruct extends Struct {
+  @Uint32()
+  external int cbSize;
+
+  @Uint32()
+  external int dwFlags;
+
+  @IntPtr()
+  external int hwndTrack;
+
+  @Uint32()
+  external int dwHoverTime;
+}
