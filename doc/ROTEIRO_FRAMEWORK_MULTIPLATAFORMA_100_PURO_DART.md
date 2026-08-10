@@ -5649,10 +5649,11 @@ Tornar edição de texto uma capacidade central, não um adendo.
   apresentação CPU, input, cursor nativo e DPI por monitor continuam fora;
 - trinta e oito testes X11 portáveis cobrem conexão, ABI/lifecycle da janela,
   decoder, tradução, coalescimento, roteamento, generation e descarte;
-- o smoke AOT do backend foi ampliado para criar, expor, redimensionar e fechar
-  uma janela real no job Linux automático da CI, sob Xvfb; a execução remota
-  desta ampliação ainda está pendente, enquanto os POCs X11 e o
-  MVP-02 já verdes no
+- o smoke AOT do backend criou, expôs, redimensionou e fechou uma janela real
+  sob Xvfb no
+  [GitHub Actions #31346512333](https://github.com/insinfo/dart_ui/actions/runs/31346512333),
+  com probe/window/smoke verdes; os POCs X11 e o MVP-02 também permanecem
+  verdes no
   [GitHub Actions #31343963060](https://github.com/insinfo/dart_ui/actions/runs/31343963060);
 - as referências locais confirmaram os padrões sem cópia de código: Cairo
   1.18.4 (LGPL-2.1/MPL-1.1) para create checked e futuro PutImage em bandas,
