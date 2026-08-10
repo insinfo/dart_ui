@@ -5640,15 +5640,24 @@ Tornar edição de texto uma capacidade central, não um adendo.
   tela, `RESOURCE_MANAGER` e extensões, resolve a escala e fecha a conexão;
 - `initialize()` e `shutdown()` possuem uma conexão separada, com teardown
   idempotente, e `wake()` já usa o self-pipe da conexão;
-- enquanto `createWindow()` não estiver ligado à fachada, o probe permanece
-  `unsupported` com diagnóstico explícito e não anuncia capabilities de
-  janela, apresentação ou input;
-- dez testes unitários cobrem plataforma/ambiente, falhas de abertura,
-  diagnóstico, ownership e descarte único;
-- o smoke de bootstrap está no job Linux automático da CI, sob Xvfb, além dos
-  POCs X11 e do
+- `createWindow()` está ligado a uma janela XCB real com criação checked,
+  `WM_PROTOCOLS`/`WM_DELETE_WINDOW`, título UTF-8 + fallback, hints
+  ICCCM/EWMH, map/unmap, bounds, redraw e teardown idempotente;
+- o pump possui mapa XID → janela, orçamento contra starvation e coalesce de
+  Configure/Expose/Focus/ClientMessage/Destroy; erros X são diagnosticados;
+- o probe anuncia somente `window`, `multipleWindows` e `orderlyShutdown`;
+  apresentação CPU, input, cursor nativo e DPI por monitor continuam fora;
+- trinta e oito testes X11 portáveis cobrem conexão, ABI/lifecycle da janela,
+  decoder, tradução, coalescimento, roteamento, generation e descarte;
+- o smoke AOT do backend foi ampliado para criar, expor, redimensionar e fechar
+  uma janela real no job Linux automático da CI, sob Xvfb; a execução remota
+  desta ampliação ainda está pendente, enquanto os POCs X11 e o
   MVP-02 já verdes no
   [GitHub Actions #31343963060](https://github.com/insinfo/dart_ui/actions/runs/31343963060);
+- as referências locais confirmaram os padrões sem cópia de código: Cairo
+  1.18.4 (LGPL-2.1/MPL-1.1) para create checked e futuro PutImage em bandas,
+  Avalonia `064b84a` (MIT) para lifecycle/roteamento por XID, e Skia
+  `2eed75b` (BSD-3) para drenagem limitada/coalescida;
 - Wayland/Weston segue como POC: o
   [GitHub Actions #31343964231](https://github.com/insinfo/dart_ui/actions/runs/31343964231)
   comprovou conexão, registry, `wl_compositor`, `wl_shm`, surface, commit e

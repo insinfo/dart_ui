@@ -10,11 +10,14 @@
 /// present touches is allocated once, at [X11Connection.open], and reused.
 library;
 
+import 'dart:convert';
 import 'dart:ffi';
+import 'dart:io' show pid;
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
 import 'x11_bindings.dart';
+import 'x11_events.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
 import 'x11_scale.dart';
@@ -71,6 +74,81 @@ abstract interface class X11BackendConnection implements Disposable {
   bool signalWake();
 }
 
+/// Window and event operations exposed by a production X11 connection.
+///
+/// No pointer crosses this seam. That keeps [X11Window] and the backend
+/// testable on Windows and macOS while [X11Connection] remains the only place
+/// that knows about XCB allocation and request encoding.
+abstract interface class X11WindowClient implements X11BackendConnection {
+  int get root;
+  int atom(String name);
+
+  int createTopLevelWindow(X11TopLevelWindowRequest request);
+  void destroyTopLevelWindow(int window);
+  void mapTopLevelWindow(int window);
+  void unmapTopLevelWindow(int window);
+  void setTopLevelTitle(int window, String title);
+  void configureTopLevelWindow(int window, X11TopLevelBounds bounds);
+  void requestTopLevelRedraw(int window, X11RedrawRegion? region);
+
+  bool pollEventInto(X11RawEvent target);
+  bool waitForActivity(int timeoutMilliseconds);
+  ({int x, int y})? translateToRoot(int window);
+  int flush();
+  void recordError(String message);
+}
+
+/// Device-pixel creation parameters for one top-level X11 window.
+final class X11TopLevelWindowRequest {
+  const X11TopLevelWindowRequest({
+    required this.width,
+    required this.height,
+    required this.title,
+    required this.resizable,
+    required this.decorated,
+    required this.visible,
+    this.x,
+    this.y,
+  });
+
+  final int width;
+  final int height;
+  final int? x;
+  final int? y;
+  final String title;
+  final bool resizable;
+  final bool decorated;
+  final bool visible;
+}
+
+final class X11TopLevelBounds {
+  const X11TopLevelBounds({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+  });
+
+  final int x;
+  final int y;
+  final int width;
+  final int height;
+}
+
+final class X11RedrawRegion {
+  const X11RedrawRegion({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+  });
+
+  final int x;
+  final int y;
+  final int width;
+  final int height;
+}
+
 /// The outcome of trying to open a display.
 final class X11ConnectionAttempt {
   const X11ConnectionAttempt({
@@ -86,7 +164,7 @@ final class X11ConnectionAttempt {
 }
 
 /// A live X display connection.
-final class X11Connection with DisposableMixin implements X11BackendConnection {
+final class X11Connection with DisposableMixin implements X11WindowClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
   /// Opens `$DISPLAY`, or reports exactly what stopped it.
@@ -212,6 +290,7 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
 
   Pointer<Void> get handle => _handle;
 
+  @override
   int root = 0;
   int rootVisual = 0;
   int rootDepth = 0;
@@ -468,6 +547,7 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
   }
 
   /// Appends to the bounded error ring.
+  @override
   void recordError(String message) {
     recentErrors.add(message);
     if (recentErrors.length > _maxRecordedErrors) {
@@ -475,6 +555,7 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
     }
   }
 
+  @override
   int atom(String name) => atoms[name] ?? 0;
 
   /// Interns an atom that is not in [x11WellKnownAtoms]. One round trip; use
@@ -590,10 +671,340 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
         heightInMillimetres: screenHeightMillimetres,
       );
 
+  // -------------------------------------------------------------------------
+  // Top-level windows
+  // -------------------------------------------------------------------------
+
+  @override
+  int createTopLevelWindow(X11TopLevelWindowRequest request) {
+    throwIfDisposed();
+    final window = xcb.generateId(_handle);
+    if (window == 0) {
+      throw StateError('xcb_generate_id returned zero for a top-level window');
+    }
+
+    const eventMask = xcbEventMaskExposure |
+        xcbEventMaskStructureNotify |
+        xcbEventMaskFocusChange |
+        xcbEventMaskPropertyChange |
+        xcbEventMaskKeyPress |
+        xcbEventMaskKeyRelease |
+        xcbEventMaskButtonPress |
+        xcbEventMaskButtonRelease |
+        xcbEventMaskEnterWindow |
+        xcbEventMaskLeaveWindow |
+        xcbEventMaskPointerMotion;
+    const valueMask = xcbCwBackPixmap |
+        xcbCwBorderPixel |
+        xcbCwBitGravity |
+        xcbCwWinGravity |
+        xcbCwEventMask;
+    valueScratch[0] = xcbBackPixmapNone;
+    valueScratch[1] = blackPixel;
+    valueScratch[2] = xcbGravityNorthWest;
+    valueScratch[3] = xcbGravityNorthWest;
+    valueScratch[4] = eventMask;
+
+    final x = _clampI16(request.x ?? 0);
+    final y = _clampI16(request.y ?? 0);
+    final width = _clampU16Extent(request.width);
+    final height = _clampU16Extent(request.height);
+    final createCookie = xcb.createWindowChecked(
+      _handle,
+      rootDepth,
+      window,
+      root,
+      x,
+      y,
+      width,
+      height,
+      0,
+      xcbWindowClassInputOutput,
+      rootVisual,
+      valueMask,
+      valueScratch,
+    );
+    final creationError = checkRequest(
+      createCookie,
+      'CreateWindow(0x${window.toRadixString(16)})',
+    );
+    if (creationError != null) throw StateError(creationError);
+
+    try {
+      _configureTopLevelProtocols(window);
+      setTopLevelTitle(window, request.title);
+      _configureTopLevelIdentity(window);
+      _configureTopLevelHints(window, request, width, height, x, y);
+      if (request.visible) xcb.mapWindow(_handle, window);
+      if (xcb.flush(_handle) <= 0 || !isValid) {
+        throw StateError('X11 connection failed while publishing window '
+            '0x${window.toRadixString(16)}');
+      }
+      return window;
+    } on Object {
+      xcb.destroyWindow(_handle, window);
+      xcb.flush(_handle);
+      rethrow;
+    }
+  }
+
+  void _configureTopLevelProtocols(int window) {
+    final wmProtocols = atom('WM_PROTOCOLS');
+    final wmDeleteWindow = atom('WM_DELETE_WINDOW');
+    if (wmProtocols == 0 || wmDeleteWindow == 0) {
+      throw StateError('WM_PROTOCOLS/WM_DELETE_WINDOW atoms are unavailable');
+    }
+    valueScratch[0] = wmDeleteWindow;
+    xcb.changeProperty(
+      _handle,
+      xcbPropModeReplace,
+      window,
+      wmProtocols,
+      xcbAtomAtom,
+      32,
+      1,
+      valueScratch.cast<Uint8>(),
+    );
+  }
+
+  void _configureTopLevelIdentity(int window) {
+    final pidAtom = atom('_NET_WM_PID');
+    if (pidAtom != 0) {
+      valueScratch[0] = pid;
+      xcb.changeProperty(
+        _handle,
+        xcbPropModeReplace,
+        window,
+        pidAtom,
+        xcbAtomCardinal,
+        32,
+        1,
+        valueScratch.cast<Uint8>(),
+      );
+    }
+
+    final typeAtom = atom('_NET_WM_WINDOW_TYPE');
+    final normalAtom = atom('_NET_WM_WINDOW_TYPE_NORMAL');
+    if (typeAtom != 0 && normalAtom != 0) {
+      valueScratch[0] = normalAtom;
+      xcb.changeProperty(
+        _handle,
+        xcbPropModeReplace,
+        window,
+        typeAtom,
+        xcbAtomAtom,
+        32,
+        1,
+        valueScratch.cast<Uint8>(),
+      );
+    }
+
+    _changePropertyBytes(
+      window,
+      xcbAtomWmClass,
+      xcbAtomString,
+      <int>[...ascii.encode('dart_ui'), 0, ...ascii.encode('DartUi'), 0],
+    );
+  }
+
+  void _configureTopLevelHints(
+    int window,
+    X11TopLevelWindowRequest request,
+    int width,
+    int height,
+    int x,
+    int y,
+  ) {
+    if (!request.resizable || request.x != null || request.y != null) {
+      for (var i = 0; i < icccmSizeHintsWordCount; i++) {
+        valueScratch[i] = 0;
+      }
+      var flags = 0;
+      if (request.x != null || request.y != null) {
+        flags |= icccmSizeHintUsPosition;
+        valueScratch[1] = x & 0xffffffff;
+        valueScratch[2] = y & 0xffffffff;
+      }
+      if (!request.resizable) {
+        flags |= icccmSizeHintPMinSize | icccmSizeHintPMaxSize;
+        valueScratch[5] = width;
+        valueScratch[6] = height;
+        valueScratch[7] = width;
+        valueScratch[8] = height;
+      }
+      valueScratch[0] = flags;
+      xcb.changeProperty(
+        _handle,
+        xcbPropModeReplace,
+        window,
+        xcbAtomWmNormalHints,
+        xcbAtomWmSizeHints,
+        32,
+        icccmSizeHintsWordCount,
+        valueScratch.cast<Uint8>(),
+      );
+    }
+
+    if (!request.decorated) {
+      final motif = atom('_MOTIF_WM_HINTS');
+      if (motif != 0) {
+        for (var i = 0; i < motifHintsWordCount; i++) {
+          valueScratch[i] = 0;
+        }
+        valueScratch[0] = motifHintFlagDecorations;
+        valueScratch[2] = 0;
+        xcb.changeProperty(
+          _handle,
+          xcbPropModeReplace,
+          window,
+          motif,
+          motif,
+          32,
+          motifHintsWordCount,
+          valueScratch.cast<Uint8>(),
+        );
+      }
+    }
+  }
+
+  @override
+  void destroyTopLevelWindow(int window) {
+    if (isDisposed || window == 0) return;
+    xcb.destroyWindow(_handle, window);
+    xcb.flush(_handle);
+  }
+
+  @override
+  void mapTopLevelWindow(int window) {
+    throwIfDisposed();
+    xcb.mapWindow(_handle, window);
+    xcb.flush(_handle);
+  }
+
+  @override
+  void unmapTopLevelWindow(int window) {
+    throwIfDisposed();
+    xcb.unmapWindow(_handle, window);
+    xcb.flush(_handle);
+  }
+
+  @override
+  void setTopLevelTitle(int window, String title) {
+    throwIfDisposed();
+    final utf8Title = utf8.encode(title);
+    final netWmName = atom('_NET_WM_NAME');
+    final utf8String = atom('UTF8_STRING');
+    if (netWmName != 0 && utf8String != 0) {
+      _changePropertyBytes(window, netWmName, utf8String, utf8Title);
+    }
+    final legacyTitle = <int>[
+      for (final rune in title.runes) rune <= 0xff ? rune : 0x3f,
+    ];
+    _changePropertyBytes(
+      window,
+      xcbAtomWmName,
+      xcbAtomString,
+      legacyTitle,
+    );
+  }
+
+  void _changePropertyBytes(
+    int window,
+    int property,
+    int type,
+    List<int> bytes,
+  ) {
+    if (property == 0 || type == 0) return;
+    final storage = libc.allocateZeroed(bytes.isEmpty ? 1 : bytes.length);
+    if (storage == nullptr) {
+      throw StateError('malloc failed while encoding X11 property $property');
+    }
+    try {
+      if (bytes.isNotEmpty) storage.asTypedList(bytes.length).setAll(0, bytes);
+      xcb.changeProperty(
+        _handle,
+        xcbPropModeReplace,
+        window,
+        property,
+        type,
+        8,
+        bytes.length,
+        storage,
+      );
+    } finally {
+      libc.free(storage);
+    }
+  }
+
+  @override
+  void configureTopLevelWindow(int window, X11TopLevelBounds bounds) {
+    throwIfDisposed();
+    valueScratch[0] = bounds.x & 0xffffffff;
+    valueScratch[1] = bounds.y & 0xffffffff;
+    valueScratch[2] = _clampU16Extent(bounds.width);
+    valueScratch[3] = _clampU16Extent(bounds.height);
+    xcb.configureWindow(
+      _handle,
+      window,
+      xcbConfigWindowX |
+          xcbConfigWindowY |
+          xcbConfigWindowWidth |
+          xcbConfigWindowHeight,
+      valueScratch,
+    );
+    xcb.flush(_handle);
+  }
+
+  @override
+  void requestTopLevelRedraw(int window, X11RedrawRegion? region) {
+    throwIfDisposed();
+    xcb.clearArea(
+      _handle,
+      1,
+      window,
+      _clampI16(region?.x ?? 0),
+      _clampI16(region?.y ?? 0),
+      region == null ? 0 : _clampU16(region.width),
+      region == null ? 0 : _clampU16(region.height),
+    );
+    xcb.flush(_handle);
+  }
+
+  @override
+  bool pollEventInto(X11RawEvent target) {
+    throwIfDisposed();
+    final event = pollForEvent();
+    if (event == nullptr) return false;
+    try {
+      target.decodeFrom(event);
+      return true;
+    } finally {
+      freeEvent(event);
+    }
+  }
+
+  static int _clampI16(int value) => value < -32768
+      ? -32768
+      : value > 32767
+          ? 32767
+          : value;
+
+  static int _clampU16(int value) => value < 0
+      ? 0
+      : value > 65535
+          ? 65535
+          : value;
+
+  static int _clampU16Extent(int value) {
+    final clamped = _clampU16(value);
+    return clamped == 0 ? 1 : clamped;
+  }
+
   /// Position of [window]'s origin in root coordinates, or null on failure.
   ///
   /// One round trip, so callers coalesce: see
   /// `X11PendingWindowEvents.originDirty`.
+  @override
   ({int x, int y})? translateToRoot(int window) {
     final cookie = xcb.translateCoordinates(_handle, window, root, 0, 0);
     final reply = xcb.translateCoordinatesReply(_handle, cookie, errorScratch);
@@ -646,6 +1057,7 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
     return message;
   }
 
+  @override
   int flush() => xcb.flush(_handle);
 
   /// The next queued event, or `nullptr`. The caller must [freeEvent] it.
@@ -662,6 +1074,7 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
   ///
   /// A negative [timeout] blocks indefinitely, which is what `poll` already
   /// means and what an idle application wants.
+  @override
   bool waitForActivity(int timeout) {
     if (_fileDescriptor < 0) return false;
     writeU32(pollScratch, 0, _fileDescriptor);

@@ -90,30 +90,44 @@ typedef XcbEvtCN = Pointer<Uint8> Function(Pointer<Void>);
 typedef XcbEvtCD = Pointer<Uint8> Function(Pointer<Void>);
 typedef XcbIterN = XcbScreenIterator Function(Pointer<Void>);
 typedef XcbIterD = XcbScreenIterator Function(Pointer<Void>);
-typedef XcbWinN = Void Function(Pointer<Void>, Uint32);
-typedef XcbWinD = void Function(Pointer<Void>, int);
+typedef XcbWinN = XcbCookie Function(Pointer<Void>, Uint32);
+typedef XcbWinD = XcbCookie Function(Pointer<Void>, int);
 typedef XcbReplyN = Pointer<Uint8> Function(
     Pointer<Void>, XcbCookie, Pointer<Pointer<Uint8>>);
 typedef XcbReplyD = Pointer<Uint8> Function(
     Pointer<Void>, XcbCookie, Pointer<Pointer<Uint8>>);
 typedef XcbReqChkN = Pointer<Uint8> Function(Pointer<Void>, XcbCookie);
 typedef XcbReqChkD = Pointer<Uint8> Function(Pointer<Void>, XcbCookie);
-typedef XcbCrtWinN = Void Function(Pointer<Void>, Uint8, Uint32, Uint32, Int16,
-    Int16, Uint16, Uint16, Uint16, Uint16, Uint32, Uint32, Pointer<Uint32>);
-typedef XcbCrtWinD = void Function(Pointer<Void>, int, int, int, int, int, int,
-    int, int, int, int, int, Pointer<Uint32>);
-typedef XcbCwaN = Void Function(Pointer<Void>, Uint32, Uint32, Pointer<Uint32>);
-typedef XcbCwaD = void Function(Pointer<Void>, int, int, Pointer<Uint32>);
-typedef XcbCfgWinN = Void Function(
+typedef XcbCrtWinN = XcbCookie Function(
+    Pointer<Void>,
+    Uint8,
+    Uint32,
+    Uint32,
+    Int16,
+    Int16,
+    Uint16,
+    Uint16,
+    Uint16,
+    Uint16,
+    Uint32,
+    Uint32,
+    Pointer<Uint32>);
+typedef XcbCrtWinD = XcbCookie Function(Pointer<Void>, int, int, int, int, int,
+    int, int, int, int, int, int, Pointer<Uint32>);
+typedef XcbCwaN = XcbCookie Function(
+    Pointer<Void>, Uint32, Uint32, Pointer<Uint32>);
+typedef XcbCwaD = XcbCookie Function(Pointer<Void>, int, int, Pointer<Uint32>);
+typedef XcbCfgWinN = XcbCookie Function(
     Pointer<Void>, Uint32, Uint16, Pointer<Uint32>);
-typedef XcbCfgWinD = void Function(Pointer<Void>, int, int, Pointer<Uint32>);
+typedef XcbCfgWinD = XcbCookie Function(
+    Pointer<Void>, int, int, Pointer<Uint32>);
 typedef XcbInternN = XcbCookie Function(
     Pointer<Void>, Uint8, Uint16, Pointer<Uint8>);
 typedef XcbInternD = XcbCookie Function(
     Pointer<Void>, int, int, Pointer<Uint8>);
-typedef XcbChgPropN = Void Function(Pointer<Void>, Uint8, Uint32, Uint32,
+typedef XcbChgPropN = XcbCookie Function(Pointer<Void>, Uint8, Uint32, Uint32,
     Uint32, Uint8, Uint32, Pointer<Uint8>);
-typedef XcbChgPropD = void Function(
+typedef XcbChgPropD = XcbCookie Function(
     Pointer<Void>, int, int, int, int, int, int, Pointer<Uint8>);
 typedef XcbGetPropN = XcbCookie Function(
     Pointer<Void>, Uint8, Uint32, Uint32, Uint32, Uint32, Uint32);
@@ -123,21 +137,22 @@ typedef XcbPValN = Pointer<Uint8> Function(Pointer<Uint8>);
 typedef XcbPValD = Pointer<Uint8> Function(Pointer<Uint8>);
 typedef XcbPLnN = Int32 Function(Pointer<Uint8>);
 typedef XcbPLnD = int Function(Pointer<Uint8>);
-typedef XcbSendEvtN = Void Function(
+typedef XcbSendEvtN = XcbCookie Function(
     Pointer<Void>, Uint8, Uint32, Uint32, Pointer<Uint8>);
-typedef XcbSendEvtD = void Function(
+typedef XcbSendEvtD = XcbCookie Function(
     Pointer<Void>, int, int, int, Pointer<Uint8>);
-typedef XcbCrtGcN = Void Function(
+typedef XcbCrtGcN = XcbCookie Function(
     Pointer<Void>, Uint32, Uint32, Uint32, Pointer<Uint32>);
-typedef XcbCrtGcD = void Function(
+typedef XcbCrtGcD = XcbCookie Function(
     Pointer<Void>, int, int, int, Pointer<Uint32>);
-typedef XcbPutImgN = Void Function(Pointer<Void>, Uint8, Uint32, Uint32, Uint16,
-    Uint16, Int16, Int16, Uint8, Uint8, Uint32, Pointer<Uint8>);
-typedef XcbPutImgD = void Function(Pointer<Void>, int, int, int, int, int, int,
-    int, int, int, int, Pointer<Uint8>);
-typedef XcbClearN = Void Function(
+typedef XcbPutImgN = XcbCookie Function(Pointer<Void>, Uint8, Uint32, Uint32,
+    Uint16, Uint16, Int16, Int16, Uint8, Uint8, Uint32, Pointer<Uint8>);
+typedef XcbPutImgD = XcbCookie Function(Pointer<Void>, int, int, int, int, int,
+    int, int, int, int, int, Pointer<Uint8>);
+typedef XcbClearN = XcbCookie Function(
     Pointer<Void>, Uint8, Uint32, Int16, Int16, Uint16, Uint16);
-typedef XcbClearD = void Function(Pointer<Void>, int, int, int, int, int, int);
+typedef XcbClearD = XcbCookie Function(
+    Pointer<Void>, int, int, int, int, int, int);
 typedef XcbQryExtN = XcbCookie Function(Pointer<Void>, Uint16, Pointer<Uint8>);
 typedef XcbQryExtD = XcbCookie Function(Pointer<Void>, int, Pointer<Uint8>);
 typedef XcbXlateN = XcbCookie Function(
@@ -145,15 +160,16 @@ typedef XcbXlateN = XcbCookie Function(
 typedef XcbXlateD = XcbCookie Function(Pointer<Void>, int, int, int, int);
 typedef XcbGeomN = XcbCookie Function(Pointer<Void>, Uint32);
 typedef XcbGeomD = XcbCookie Function(Pointer<Void>, int);
-typedef XcbOpenFontN = Void Function(
+typedef XcbOpenFontN = XcbCookie Function(
     Pointer<Void>, Uint32, Uint16, Pointer<Uint8>);
-typedef XcbOpenFontD = void Function(Pointer<Void>, int, int, Pointer<Uint8>);
-typedef XcbGlyphN = Void Function(Pointer<Void>, Uint32, Uint32, Uint32, Uint16,
-    Uint16, Uint16, Uint16, Uint16, Uint16, Uint16, Uint16);
-typedef XcbGlyphD = void Function(
+typedef XcbOpenFontD = XcbCookie Function(
+    Pointer<Void>, int, int, Pointer<Uint8>);
+typedef XcbGlyphN = XcbCookie Function(Pointer<Void>, Uint32, Uint32, Uint32,
+    Uint16, Uint16, Uint16, Uint16, Uint16, Uint16, Uint16, Uint16);
+typedef XcbGlyphD = XcbCookie Function(
     Pointer<Void>, int, int, int, int, int, int, int, int, int, int, int);
-typedef XcbFocusN = Void Function(Pointer<Void>, Uint8, Uint32, Uint32);
-typedef XcbFocusD = void Function(Pointer<Void>, int, int, int);
+typedef XcbFocusN = XcbCookie Function(Pointer<Void>, Uint8, Uint32, Uint32);
+typedef XcbFocusD = XcbCookie Function(Pointer<Void>, int, int, int);
 
 /// Bound libxcb. Constructed only after every symbol has been verified.
 final class XcbBindings {
@@ -209,6 +225,7 @@ final class XcbBindings {
     'xcb_poll_for_queued_event',
     'xcb_request_check',
     'xcb_create_window',
+    'xcb_create_window_checked',
     'xcb_destroy_window',
     'xcb_map_window',
     'xcb_unmap_window',
@@ -271,6 +288,8 @@ final class XcbBindings {
       library.lookupFunction<XcbReqChkN, XcbReqChkD>('xcb_request_check');
   late final XcbCrtWinD createWindow =
       library.lookupFunction<XcbCrtWinN, XcbCrtWinD>('xcb_create_window');
+  late final XcbCrtWinD createWindowChecked = library
+      .lookupFunction<XcbCrtWinN, XcbCrtWinD>('xcb_create_window_checked');
   late final XcbCwaD changeWindowAttributes =
       library.lookupFunction<XcbCwaN, XcbCwaD>('xcb_change_window_attributes');
   late final XcbCfgWinD configureWindow =

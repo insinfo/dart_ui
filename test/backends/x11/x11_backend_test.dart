@@ -1,10 +1,18 @@
+import 'dart:async';
+
 import 'package:dart_ui/src/backends/x11/x11_backend.dart';
 import 'package:dart_ui/src/backends/x11/x11_connection.dart';
+import 'package:dart_ui/src/backends/x11/x11_events.dart';
+import 'package:dart_ui/src/backends/x11/x11_protocol.dart';
 import 'package:dart_ui/src/backends/x11/x11_scale.dart';
+import 'package:dart_ui/src/backends/x11/x11_window.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
+import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/platform/native_window.dart';
+import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:test/test.dart';
 
-final class _FakeConnection implements X11BackendConnection {
+final class _FakeConnection implements X11WindowClient {
   _FakeConnection({
     this.valid = true,
     this.invalidateDuringInspection = false,
@@ -35,6 +43,73 @@ final class _FakeConnection implements X11BackendConnection {
 
   int disposeCalls = 0;
   int wakeCalls = 0;
+  int nextWindow = 100;
+  int waitCalls = 0;
+  final List<int> destroyedWindows = <int>[];
+  final List<X11TopLevelWindowRequest> createRequests =
+      <X11TopLevelWindowRequest>[];
+  final List<void Function(X11RawEvent)> queuedEvents =
+      <void Function(X11RawEvent)>[];
+  final List<String> recordedErrors = <String>[];
+
+  @override
+  int root = 1;
+
+  @override
+  int atom(String name) =>
+      <String, int>{
+        'WM_PROTOCOLS': 10,
+        'WM_DELETE_WINDOW': 11,
+        '_NET_WM_STATE': 12,
+        'WM_STATE': 13,
+      }[name] ??
+      0;
+
+  @override
+  int createTopLevelWindow(X11TopLevelWindowRequest request) {
+    createRequests.add(request);
+    return nextWindow++;
+  }
+
+  @override
+  void destroyTopLevelWindow(int window) => destroyedWindows.add(window);
+
+  @override
+  void mapTopLevelWindow(int window) {}
+
+  @override
+  void unmapTopLevelWindow(int window) {}
+
+  @override
+  void setTopLevelTitle(int window, String title) {}
+
+  @override
+  void configureTopLevelWindow(int window, X11TopLevelBounds bounds) {}
+
+  @override
+  void requestTopLevelRedraw(int window, X11RedrawRegion? region) {}
+
+  @override
+  bool pollEventInto(X11RawEvent target) {
+    if (queuedEvents.isEmpty) return false;
+    queuedEvents.removeAt(0)(target);
+    return true;
+  }
+
+  @override
+  bool waitForActivity(int timeoutMilliseconds) {
+    waitCalls++;
+    return queuedEvents.isNotEmpty;
+  }
+
+  @override
+  ({int x, int y})? translateToRoot(int window) => null;
+
+  @override
+  int flush() => 1;
+
+  @override
+  void recordError(String message) => recordedErrors.add(message);
 
   @override
   bool get isValid => valid && !isDisposed;
@@ -134,18 +209,21 @@ void main() {
 
       final result = backend.probe();
 
-      expect(result.supported, isFalse);
-      expect(result.capabilities, isEmpty);
+      expect(result.supported, isTrue);
+      expect(
+        result.capabilities,
+        containsAll(<Capability>[
+          Capability.window,
+          Capability.multipleWindows,
+          Capability.orderlyShutdown,
+        ]),
+      );
       expect(backend.scale?.scale, 1.5);
       expect(backend.scale?.source, X11ScaleSource.xftDpi);
       expect(connection.disposeCalls, 1);
       expect(
         result.diagnostics.map((item) => item.message).join('\n'),
-        contains('not selectable yet'),
-      );
-      expect(
-        result.failures.single.kind,
-        DiagnosticKind.rejectedByPolicy,
+        contains('core window lifecycle is available'),
       );
       expect(
         result.diagnostics.map((item) => item.message).join('\n'),
@@ -316,6 +394,148 @@ void main() {
       expect(connection.disposeCalls, 1);
       backend.wake();
       expect(connection.wakeCalls, 0);
+    });
+  });
+
+  group('window lifecycle and pump', () {
+    late _FakeConnection connection;
+    late X11WindowingBackend backend;
+
+    setUp(() async {
+      connection = _FakeConnection();
+      backend = X11WindowingBackend(
+        isLinux: true,
+        environment: const <String, String>{'DISPLAY': ':103'},
+        connectionOpener: (_) => _success(connection),
+      );
+      await backend.initialize();
+    });
+
+    tearDown(() => backend.shutdown());
+
+    test('creates stable framework ids and shuts XIDs down in reverse',
+        () async {
+      final first = await backend.createWindow(
+        const WindowOptions(size: Size(320, 200), visible: false),
+      );
+      final second = await backend.createWindow(
+        const WindowOptions(size: Size(640, 480), visible: false),
+      );
+
+      expect(first, isA<X11Window>());
+      expect(second, isA<X11Window>());
+      expect(first.id.value, 1);
+      expect(second.id.value, 2);
+      expect(backend.windows, <NativeWindow>[first, second]);
+      expect(
+          connection.createRequests.map((item) => item.width), <int>[320, 640]);
+      expect(first.surfaces, isEmpty);
+
+      await backend.shutdown();
+
+      expect(connection.destroyedWindows, <int>[101, 100]);
+      expect(connection.disposeCalls, 1);
+      expect(backend.windows, isEmpty);
+    });
+
+    test('routes and coalesces native events by XID', () async {
+      final window = await backend.createWindow(
+        const WindowOptions(size: Size(100, 80), visible: false),
+      ) as X11Window;
+      final events = <PlatformWindowEvent>[];
+      final subscription = window.events.listen(events.add);
+      connection.queuedEvents
+        ..add((raw) {
+          raw
+            ..type = xcbConfigureNotify
+            ..window = window.xcbWindow
+            ..x = 3
+            ..y = 4
+            ..width = 150
+            ..height = 90
+            ..synthetic = false;
+        })
+        ..add((raw) {
+          raw
+            ..type = xcbExpose
+            ..window = window.xcbWindow
+            ..x = 2
+            ..y = 5
+            ..width = 20
+            ..height = 10;
+        });
+
+      expect(backend.pumpEvents(), isTrue);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(events.whereType<WindowResizedEvent>(), hasLength(1));
+      expect(events.whereType<WindowMovedEvent>(), hasLength(1));
+      expect(events.whereType<WindowExposedEvent>(), hasLength(1));
+      expect(window.clientSize, const Size(150, 90));
+      expect(window.generation, 1);
+      await subscription.cancel();
+    });
+
+    test('waits only when the queue starts empty', () async {
+      await backend.createWindow(
+        const WindowOptions(size: Size(10, 10), visible: false),
+      );
+
+      expect(
+        backend.pumpEvents(timeout: const Duration(milliseconds: 7)),
+        isTrue,
+      );
+      expect(connection.waitCalls, 1);
+    });
+
+    test('closing the last window requests application quit', () async {
+      final window = await backend.createWindow(
+        const WindowOptions(size: Size(10, 10), visible: false),
+      );
+
+      window.close();
+
+      expect(backend.windows, isEmpty);
+      expect(
+        backend.pumpEvents(timeout: const Duration(microseconds: -1)),
+        isFalse,
+      );
+      expect(connection.waitCalls, 0);
+      expect(connection.destroyedWindows, <int>[100]);
+    });
+
+    test('a lost X server terminates the pump with one diagnostic', () async {
+      await backend.createWindow(
+        const WindowOptions(size: Size(10, 10), visible: false),
+      );
+      connection.valid = false;
+
+      expect(backend.pumpEvents(), isFalse);
+      expect(backend.pumpEvents(), isFalse);
+      expect(
+        backend.diagnostics
+            .where((item) => item.message.contains('connection was lost')),
+        hasLength(1),
+      );
+    });
+
+    test('records X errors instead of routing them to a window', () async {
+      await backend.createWindow(
+        const WindowOptions(size: Size(10, 10), visible: false),
+      );
+      connection.queuedEvents.add((raw) {
+        raw
+          ..type = xcbError
+          ..errorCode = 3
+          ..majorOpcode = 1
+          ..minorOpcode = 0
+          ..resourceId = 100
+          ..sequence = 7;
+      });
+
+      backend.pumpEvents();
+
+      expect(connection.recordedErrors.single, contains('CreateWindow'));
     });
   });
 }

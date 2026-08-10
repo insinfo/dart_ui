@@ -2,9 +2,8 @@
 ///
 /// This is the X11 entry point: it implements [WindowingBackend], opens the
 /// XCB connection, resolves the scale (section 6.5 and the precedence in
-/// `x11_scale.dart`), and owns the display connection. Window creation and
-/// event translation remain explicit follow-up work; the probe therefore does
-/// not advertise those capabilities yet.
+/// `x11_scale.dart`), owns the display connection and routes core window
+/// events. Presentation and input translation remain explicit follow-up work.
 ///
 /// ## Bootstrap order
 ///
@@ -12,8 +11,8 @@
 ///   2. Read the screen's physical size and the `RESOURCE_MANAGER` property.
 ///   3. Resolve the scale via [resolveX11Scale].
 ///   4. Check for RANDR and other extensions (detected, not required).
-///   5. Future: create windows on demand.
-///   6. Future: pump events via `xcb_poll_for_event` in [pumpEvents].
+///   5. Create windows on demand.
+///   6. Pump and coalesce events in [pumpEvents].
 ///   7. Shutdown: dispose owned resources and disconnect.
 ///
 /// ## What this cannot do yet, said plainly
@@ -36,10 +35,14 @@ import 'dart:io' show Platform;
 import '../../foundation/diagnostics.dart';
 
 import '../../platform/native_window.dart';
+import '../../platform/window_events.dart';
 import 'x11_bindings.dart';
 import 'x11_connection.dart';
+import 'x11_events.dart';
 import 'x11_libc.dart';
+import 'x11_protocol.dart';
 import 'x11_scale.dart';
+import 'x11_window.dart';
 
 /// Opens one X11 connection for [display].
 ///
@@ -64,17 +67,21 @@ final class X11WindowingBackend implements WindowingBackend {
   @override
   String get name => 'x11';
 
-  final List<NativeWindow> _windows = <NativeWindow>[];
+  final List<X11Window> _windows = <X11Window>[];
+  final Map<int, X11Window> _windowsByXid = <int, X11Window>{};
   final List<BackendDiagnostic> _diagnostics = <BackendDiagnostic>[];
   final bool _isLinux;
   final String _operatingSystem;
   final Map<String, String> _environment;
   final X11ConnectionOpener _connectionOpener;
 
-  X11BackendConnection? _connection;
+  X11WindowClient? _connection;
   X11ScaleResolution? _scale;
+  final X11RawEvent _rawEvent = X11RawEvent();
+  int _nextWindowId = 1;
   bool _initialized = false;
   bool _quitRequested = false; // ignore: prefer_final_fields
+  bool _serverDisconnected = false;
 
   // Extension detection flags — set during initialize, available for diagnostics.
   // ignore: prefer_final_fields
@@ -125,17 +132,24 @@ final class X11WindowingBackend implements WindowingBackend {
     final attempt = _tryOpen(display);
     diagnostics.addAll(attempt.diagnostics);
     final connection = attempt.connection;
+    var supported = false;
     try {
       final initiallyValid = connection != null && connection.isValid;
       if (initiallyValid) {
         _inspectConnection(connection, diagnostics);
         if (connection.isValid) {
-          diagnostics.add(const BackendDiagnostic(
-            kind: DiagnosticKind.rejectedByPolicy,
-            message: 'X11 windowing backend is not selectable yet',
-            detail: 'createWindow is not implemented; '
-                'no WindowingBackend capabilities are advertised',
-          ));
+          supported = connection is X11WindowClient;
+          diagnostics.add(
+            supported
+                ? const BackendDiagnostic.note(
+                    'X11 core window lifecycle is available',
+                    detail: 'CPU presentation and input are not integrated',
+                  )
+                : const BackendDiagnostic(
+                    kind: DiagnosticKind.rejectedByPolicy,
+                    message: 'X11 connection has no window protocol client',
+                  ),
+          );
         } else {
           diagnostics.add(const BackendDiagnostic(
             kind: DiagnosticKind.connectionFailed,
@@ -162,6 +176,7 @@ final class X11WindowingBackend implements WindowingBackend {
       try {
         connection?.dispose();
       } on Object catch (error) {
+        supported = false;
         diagnostics.add(BackendDiagnostic(
           kind: DiagnosticKind.connectionFailed,
           message: 'failed to close X11 probe connection',
@@ -170,7 +185,7 @@ final class X11WindowingBackend implements WindowingBackend {
       }
     }
 
-    return _recordProbe(_probeResult(false, diagnostics));
+    return _recordProbe(_probeResult(supported, diagnostics));
   }
 
   // ---------------------------------------------------------------------------
@@ -193,13 +208,14 @@ final class X11WindowingBackend implements WindowingBackend {
     ];
     final attempt = _tryOpen(display);
     diagnostics.addAll(attempt.diagnostics);
-    final connection = attempt.connection;
+    final candidate = attempt.connection;
+    final connection = candidate is X11WindowClient ? candidate : null;
     if (connection == null || !connection.isValid) {
-      connection?.dispose();
-      if (connection != null) {
+      candidate?.dispose();
+      if (candidate != null) {
         diagnostics.add(const BackendDiagnostic(
-          kind: DiagnosticKind.connectionFailed,
-          message: 'X11 connection became invalid during initialize',
+          kind: DiagnosticKind.rejectedByPolicy,
+          message: 'X11 connection cannot create top-level windows',
         ));
       }
       _resolveScale(null, diagnostics);
@@ -237,10 +253,13 @@ final class X11WindowingBackend implements WindowingBackend {
     }
 
     diagnostics.add(const BackendDiagnostic.note(
-      'X11 bootstrap initialized; window creation is not integrated yet',
+      'X11 window lifecycle initialized',
+      detail: 'presentation and input remain deferred',
     ));
     _connection = connection;
     _initialized = true;
+    _quitRequested = false;
+    _serverDisconnected = false;
     _replaceDiagnostics(diagnostics);
   }
 
@@ -251,7 +270,7 @@ final class X11WindowingBackend implements WindowingBackend {
 
     Object? firstError;
     StackTrace? firstStack;
-    for (final window in List<NativeWindow>.of(_windows).reversed) {
+    for (final window in List<X11Window>.of(_windows).reversed) {
       try {
         window.dispose();
       } on Object catch (error, stack) {
@@ -260,6 +279,7 @@ final class X11WindowingBackend implements WindowingBackend {
       }
     }
     _windows.clear();
+    _windowsByXid.clear();
 
     final connection = _connection;
     _connection = null;
@@ -284,16 +304,27 @@ final class X11WindowingBackend implements WindowingBackend {
   @override
   Future<NativeWindow> createWindow(WindowOptions options) async {
     _requireInitialized('createWindow');
-    // X11Window.create would:
-    //   1. xcb_generate_id
-    //   2. xcb_create_window with the screen's root visual
-    //   3. set WM_PROTOCOLS (WM_DELETE_WINDOW)
-    //   4. set _NET_WM_NAME
-    //   5. xcb_map_window
-    //   6. xcb_flush
-    throw UnimplementedError(
-      '$name.createWindow: wire X11Window.create here',
+    final connection = _connection!;
+    final scaleResolution = _scale;
+    final resolvedScale = scaleResolution?.scale ?? 1.0;
+    final window = X11Window.create(
+      client: connection,
+      id: NativeWindowId(_nextWindowId++),
+      options: options,
+      scale: resolvedScale,
+      desktopScale: scaleResolution?.effectiveDesktopScale ?? resolvedScale,
+      onClosed: _onWindowClosed,
     );
+    if (_windowsByXid.containsKey(window.xcbWindow)) {
+      window.dispose();
+      throw StateError(
+        'XCB reused live window id 0x${window.xcbWindow.toRadixString(16)}',
+      );
+    }
+    _windows.add(window);
+    _windowsByXid[window.xcbWindow] = window;
+    _quitRequested = false;
+    return window;
   }
 
   // ---------------------------------------------------------------------------
@@ -303,12 +334,64 @@ final class X11WindowingBackend implements WindowingBackend {
   @override
   bool pumpEvents({Duration timeout = Duration.zero}) {
     _requireInitialized('pumpEvents');
-    // In a full implementation:
-    //   while ((event = xcb_poll_for_event(_connection)) != null) {
-    //     _translateEvent(event);
-    //     free(event);
-    //   }
+    if (_quitRequested) return false;
+    final connection = _connection!;
+    var drained = _drainQueuedEvents(connection);
+    if (drained == 0 && timeout != Duration.zero) {
+      final milliseconds = timeout.isNegative
+          ? -1
+          : timeout.inMicroseconds == 0
+              ? 0
+              : (timeout.inMicroseconds / 1000).ceil();
+      connection.waitForActivity(milliseconds);
+      drained += _drainQueuedEvents(connection);
+    }
+    if (!connection.isValid) {
+      if (!_serverDisconnected) {
+        _serverDisconnected = true;
+        _diagnostics.add(const BackendDiagnostic(
+          kind: DiagnosticKind.connectionFailed,
+          message: 'X11 server connection was lost during event pump',
+        ));
+      }
+      _quitRequested = true;
+      return false;
+    }
+    if (drained > 0) {
+      for (final window in List<X11Window>.of(_windows)) {
+        window.flushPendingEvents();
+      }
+    }
     return !_quitRequested;
+  }
+
+  int _drainQueuedEvents(X11WindowClient connection) {
+    // A fixed budget prevents a producer flooding MotionNotify from starving
+    // Dart tasks forever. Remaining events stay queued for the next pump.
+    const budget = 4096;
+    var drained = 0;
+    while (drained < budget && connection.pollEventInto(_rawEvent)) {
+      drained++;
+      if (_rawEvent.type == xcbError) {
+        connection.recordError(_rawEvent.describeError());
+        continue;
+      }
+      if (_rawEvent.type == xcbPropertyNotify &&
+          _rawEvent.window == connection.root) {
+        for (final window in _windows) {
+          window.handleRawEvent(_rawEvent);
+        }
+        continue;
+      }
+      _windowsByXid[_rawEvent.window]?.handleRawEvent(_rawEvent);
+    }
+    return drained;
+  }
+
+  void _onWindowClosed(X11Window window) {
+    _windowsByXid.remove(window.xcbWindow);
+    _windows.remove(window);
+    if (_initialized && _windows.isEmpty) _quitRequested = true;
   }
 
   @override
@@ -393,7 +476,13 @@ final class X11WindowingBackend implements WindowingBackend {
     return BackendProbeResult(
       backendName: name,
       supported: supported,
-      capabilities: const <Capability>{},
+      capabilities: supported
+          ? const <Capability>{
+              Capability.window,
+              Capability.multipleWindows,
+              Capability.orderlyShutdown,
+            }
+          : const <Capability>{},
       diagnostics: diagnostics,
     );
   }

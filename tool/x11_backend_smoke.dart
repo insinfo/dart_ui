@@ -1,6 +1,6 @@
 import 'dart:io';
 
-import 'package:dart_ui/dart_ui.dart' show DiagnosticKind;
+import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/x11/x11_backend.dart';
 
 Future<void> main() async {
@@ -13,28 +13,60 @@ Future<void> main() async {
   }
 
   final backend = X11WindowingBackend();
+  NativeWindow? window;
   Object? failure;
   StackTrace? failureStack;
 
   try {
     final probe = backend.probe();
-    final deferred = !probe.supported &&
-        probe.diagnostics.any(
-          (item) => item.kind == DiagnosticKind.rejectedByPolicy,
-        );
-    final hardFailures = probe.failures
-        .where((item) => item.kind != DiagnosticKind.rejectedByPolicy)
-        .toList();
-    final probePassed = deferred && hardFailures.isEmpty;
+    final probePassed = probe.supported &&
+        probe.supports(Capability.window) &&
+        !probe.supports(Capability.cpuPresentation);
     stdout.writeln(
       'X11_BACKEND_PROBE=${probePassed ? 'PASS' : 'FAIL'} '
-      'supported=${probe.supported} deferred=createWindow',
+      'supported=${probe.supported} window=true cpu=false',
     );
     if (!probePassed) {
       throw StateError(probe.describe());
     }
 
     await backend.initialize().timeout(const Duration(seconds: 10));
+    window = await backend
+        .createWindow(
+          const WindowOptions(
+            size: Size(320, 200),
+            title: 'dart_ui X11 production smoke',
+          ),
+        )
+        .timeout(const Duration(seconds: 10));
+    var exposed = false;
+    var resized = false;
+    final subscription = window.events.listen((event) {
+      exposed |= event is WindowExposedEvent;
+      resized |= event is WindowResizedEvent;
+    });
+    try {
+      await _pumpUntil(
+        backend,
+        () => exposed,
+        const Duration(seconds: 5),
+        'Expose',
+      );
+      window.setBounds(const Rect.fromLTWH(10, 12, 360, 240));
+      await _pumpUntil(
+        backend,
+        () => resized,
+        const Duration(seconds: 5),
+        'ConfigureNotify',
+      );
+    } finally {
+      await subscription.cancel();
+    }
+    stdout.writeln('X11_BACKEND_WINDOW=PASS id=${window.id.value}');
+    window.close();
+    if (backend.windows.isNotEmpty || backend.pumpEvents()) {
+      throw StateError('closing the final X11 window did not request quit');
+    }
     backend.wake();
   } on Object catch (error, stack) {
     failure = error;
@@ -59,4 +91,18 @@ Future<void> main() async {
     );
   }
   stdout.writeln('X11_BACKEND_SMOKE=PASS');
+}
+
+Future<void> _pumpUntil(
+  X11WindowingBackend backend,
+  bool Function() predicate,
+  Duration timeout,
+  String eventName,
+) async {
+  final deadline = DateTime.now().add(timeout);
+  while (!predicate() && DateTime.now().isBefore(deadline)) {
+    backend.pumpEvents(timeout: const Duration(milliseconds: 25));
+    await Future<void>.delayed(Duration.zero);
+  }
+  if (!predicate()) throw StateError('timed out waiting for $eventName');
 }

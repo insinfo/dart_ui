@@ -128,13 +128,24 @@ jobs:
       - name: Run platform tests (Linux)
         if: matrix.platform == 'linux'
         run: |
-          Xvfb :99 -screen 0 1920x1080x24 -ac &
-          sleep 2
-          xdpyinfo -display :99 | head -3 || true
-          dart test poc/poc_02_x11_window
           mkdir -p build
+          Xvfb :99 -screen 0 1920x1080x24 -ac >build/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 15); do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then
+              break
+            fi
+            if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+              cat build/xvfb.log
+              exit 1
+            fi
+            sleep 1
+          done
+          xdpyinfo -display :99 | sed -n '1,3p'
+          dart test poc/poc_02_x11_window
           dart compile exe tool/x11_backend_smoke.dart -o build/x11_backend_smoke
-          timeout 15 build/x11_backend_smoke
+          timeout --kill-after=5 20 build/x11_backend_smoke
           mkdir -p mvp/mvp_02_x11_counter/build
           dart compile exe mvp/mvp_02_x11_counter/bin/main.dart -o mvp/mvp_02_x11_counter/build/mvp_02
           chmod +x mvp/mvp_02_x11_counter/build/mvp_02
