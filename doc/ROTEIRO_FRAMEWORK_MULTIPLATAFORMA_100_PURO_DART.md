@@ -5634,6 +5634,24 @@ Tornar edição de texto uma capacidade central, não um adendo.
 
 ## Fase 8 — Backend X11/XCB CPU
 
+### Estado auditado em 2026-08-09
+
+- `X11WindowingBackend.probe()` abre uma conexão XCB temporária real, inspeciona
+  tela, `RESOURCE_MANAGER` e extensões, resolve a escala e fecha a conexão;
+- `initialize()` e `shutdown()` possuem uma conexão separada, com teardown
+  idempotente, e `wake()` já usa o self-pipe da conexão;
+- enquanto `createWindow()` não estiver ligado à fachada, o backend não anuncia
+  capabilities de janela, apresentação ou input;
+- oito testes unitários cobrem plataforma/ambiente, falhas de abertura,
+  diagnóstico, ownership e descarte único;
+- o smoke da fachada está no job Linux da CI, sob Xvfb, além dos POCs X11 e do
+  MVP-02 já verdes no
+  [GitHub Actions #31343963060](https://github.com/insinfo/dart_ui/actions/runs/31343963060);
+- Wayland/Weston segue como POC: o
+  [GitHub Actions #31343964231](https://github.com/insinfo/dart_ui/actions/runs/31343964231)
+  comprovou conexão, registry, `wl_compositor`, `wl_shm`, surface, commit e
+  teardown, mas ainda não `xdg-shell` nem o lifecycle de `wl_buffer.release`.
+
 ### Objetivo
 
 Provar portabilidade do núcleo sem GPU.
@@ -5686,8 +5704,9 @@ Requisitos:
   sequestrada de `CFRunLoopRun` para `Dart_RunLoop`, mas isso não torna a
   entrada por signal async-signal-safe;
 - em `lib`, `appkitNativeHost` está ligado a `MacosWindow.open` e inclui host
-  Objective-C protocolo v4 + script de build; o smoke da fachada foi adicionado
-  ao workflow macOS, mas esta alteração local ainda precisa de execução remota;
+  Objective-C protocolo v4 + script de build; compilação, criação/attach da
+  janela e IOSurfaces e teardown passaram no runner `macos-14` arm64 no
+  [GitHub Actions #31343965371](https://github.com/insinfo/dart_ui/actions/runs/31343965371);
 - o supervisor possui testes determinísticos de crash/restart, replay de
   estado, preservação/reattach do mesmo pool e esgotamento de tentativas;
 - SkyLight e `appkitSignal` continuam indisponíveis para seleção de produção

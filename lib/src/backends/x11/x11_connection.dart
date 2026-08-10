@@ -58,6 +58,19 @@ const List<String> x11QueriedExtensions = <String>[
   'XKEYBOARD',
 ];
 
+/// The connection surface the backend itself needs.
+///
+/// Keeping this smaller than [X11Connection] makes connection ownership and
+/// probing testable without loading libxcb in the test process. Windows keep
+/// using the concrete connection because they need its protocol operations.
+abstract interface class X11BackendConnection implements Disposable {
+  bool get isValid;
+  Set<String> get extensions;
+  X11PhysicalScreen get physicalScreen;
+  String? readResourceManager();
+  bool signalWake();
+}
+
 /// The outcome of trying to open a display.
 final class X11ConnectionAttempt {
   const X11ConnectionAttempt({
@@ -66,14 +79,14 @@ final class X11ConnectionAttempt {
   });
 
   /// Null when the display could not be opened. [diagnostics] then names why.
-  final X11Connection? connection;
+  final X11BackendConnection? connection;
   final List<BackendDiagnostic> diagnostics;
 
   bool get succeeded => connection != null;
 }
 
 /// A live X display connection.
-final class X11Connection with DisposableMixin {
+final class X11Connection with DisposableMixin implements X11BackendConnection {
   X11Connection._(this.xcb, this.libc, this._handle);
 
   /// Opens `$DISPLAY`, or reports exactly what stopped it.
@@ -176,6 +189,7 @@ final class X11Connection with DisposableMixin {
   final Map<String, int> atoms = <String, int>{};
 
   /// Which of [x11QueriedExtensions] the server reported as present.
+  @override
   final Set<String> extensions = <String>{};
 
   /// Largest request the server will accept, in bytes. PutImage of a full
@@ -194,6 +208,7 @@ final class X11Connection with DisposableMixin {
   late final Pointer<Uint8> wakeScratch;
   late final Pointer<Pointer<Uint8>> errorScratch;
 
+  @override
   bool get isValid =>
       !isDisposed && _handle != nullptr && xcb.connectionHasError(_handle) == 0;
 
@@ -517,10 +532,12 @@ final class X11Connection with DisposableMixin {
   /// The `RESOURCE_MANAGER` string on the root window, which is where
   /// `Xft.dpi` lives. Null when the display has none, which is the normal
   /// state of a bare X server and of Xvfb.
+  @override
   String? readResourceManager() =>
       getStringProperty(root, xcbAtomResourceManager, xcbAtomString);
 
   /// The screen dimensions candidate 6 of the scale order needs.
+  @override
   X11PhysicalScreen get physicalScreen => X11PhysicalScreen(
         widthInPixels: screenWidthPixels,
         heightInPixels: screenHeightPixels,
@@ -636,6 +653,7 @@ final class X11Connection with DisposableMixin {
   ///
   /// A full pipe means an unread wake is already pending, so `EAGAIN` is a
   /// success, not a failure.
+  @override
   bool signalWake() {
     if (_wakeWriteFd < 0) return false;
     wakeScratch[0] = 1;

@@ -115,6 +115,9 @@ jobs:
           sleep 2
           xdpyinfo -display :99 | head -3 || true
           dart test poc/poc_02_x11_window
+          mkdir -p build
+          dart compile exe tool/x11_backend_smoke.dart -o build/x11_backend_smoke
+          timeout 15 build/x11_backend_smoke
           mkdir -p mvp/mvp_02_x11_counter/build
           dart compile exe mvp/mvp_02_x11_counter/bin/main.dart -o mvp/mvp_02_x11_counter/build/mvp_02
           chmod +x mvp/mvp_02_x11_counter/build/mvp_02
