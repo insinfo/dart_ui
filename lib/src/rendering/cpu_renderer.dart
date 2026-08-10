@@ -223,6 +223,40 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
   }
 }
 
+/// Rasterises [list] directly into an existing [framebuffer].
+///
+/// This is the shared CPU drawing path for owned memory targets and native
+/// framebuffers such as a Win32 DIB section. Keeping the adapter here avoids a
+/// full-frame staging copy and, more importantly, prevents platform backends
+/// from growing their own subtly different display-list players.
+void rasterizeDisplayList(
+  DisplayList list,
+  Framebuffer framebuffer, {
+  int? clearColor,
+  Transform2D deviceTransform = Transform2D.identity,
+}) {
+  if (clearColor != null) {
+    framebuffer.clear(
+      clearColor & 0xFF,
+      (clearColor >> 8) & 0xFF,
+      (clearColor >> 16) & 0xFF,
+      (clearColor >> 24) & 0xFF,
+    );
+  }
+  final rasterizer = CpuRasterizer(framebuffer);
+  DisplayListPlayer(_RasterizerSink(rasterizer)).play(
+    DisplayListReader(list),
+    DisplayListResources(list),
+    deviceBounds: Rect.fromLTWH(
+      0,
+      0,
+      framebuffer.width.toDouble(),
+      framebuffer.height.toDouble(),
+    ),
+    deviceTransform: deviceTransform,
+  );
+}
+
 /// A render target backed by plain memory.
 final class MemoryRenderTarget with DisposableMixin implements RenderTarget {
   MemoryRenderTarget(MemorySurfaceDescriptor surface)
@@ -323,17 +357,11 @@ final class MemoryRenderTarget with DisposableMixin implements RenderTarget {
     int? clearColor,
     Transform2D deviceTransform = Transform2D.identity,
   }) async {
-    final frame = beginFrame(FrameRequest(clearColor: clearColor));
-    final rasterizer = CpuRasterizer(frame.framebuffer);
-    DisplayListPlayer(_RasterizerSink(rasterizer)).play(
-      DisplayListReader(list),
-      DisplayListResources(list),
-      deviceBounds: Rect.fromLTWH(
-        0,
-        0,
-        frame.framebuffer.width.toDouble(),
-        frame.framebuffer.height.toDouble(),
-      ),
+    final frame = beginFrame(const FrameRequest());
+    rasterizeDisplayList(
+      list,
+      frame.framebuffer,
+      clearColor: clearColor,
       deviceTransform: deviceTransform,
     );
     return present(frame);

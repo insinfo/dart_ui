@@ -1,19 +1,10 @@
+/// Compatibility name for the production render-tree node.
+///
+/// Widgets used to depend on a second, skeletal `RenderObject` hierarchy in
+/// this directory. There is now exactly one render tree: [RenderBox], owned by
+/// `layout/` and driven by `PipelineOwner`.
 library;
 
-import '../geometry/offset.dart';
-import '../geometry/size.dart';
+import '../layout/render_box.dart';
 
-abstract class RenderObject {
-  RenderObject? parent;
-
-  void attach(RenderObject? parent) {
-    this.parent = parent;
-  }
-
-  void detach() {
-    parent = null;
-  }
-
-  void layout(Size constraints);
-  void paint(Offset offset);
-}
+typedef RenderObject = RenderBox;

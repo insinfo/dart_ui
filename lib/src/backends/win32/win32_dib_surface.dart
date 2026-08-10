@@ -27,15 +27,24 @@ import 'win32_coordinates.dart';
 import 'win32_diagnostics.dart';
 import 'win32_structs.dart';
 
+/// CPU framebuffer and presentation seam consumed by `Win32CpuPresenter`.
+///
+/// [Win32DibSurface] is the production implementation. The interface keeps
+/// resize, expose, stale-generation, and stride behaviour testable on CI
+/// hosts that cannot load user32/gdi32.
+abstract interface class Win32CpuSurface implements NativeSurfaceDescriptor {
+  int get generation;
+  Framebuffer get framebuffer;
+  BackendDiagnostic? present({Rect? damage});
+}
+
 /// A CPU surface over one window's client area.
 ///
 /// Lives exactly as long as one size: a resize disposes this and builds
 /// another, which is why it carries the window [generation] that produced it.
 /// A frame holding a stale surface can compare generations instead of
 /// discovering the truth through a freed pointer.
-final class Win32DibSurface
-    with DisposableMixin
-    implements NativeSurfaceDescriptor {
+final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
   Win32DibSurface._({
     required Win32Api api,
     required this.hwnd,
@@ -170,6 +179,7 @@ final class Win32DibSurface
   final double scale;
 
   /// The window generation this surface was created for.
+  @override
   final int generation;
 
   /// The DIB's own memory, wrapped rather than copied.
@@ -177,6 +187,7 @@ final class Win32DibSurface
   /// Valid only until [dispose]. After that the list points at memory GDI has
   /// freed, which is why the window drops its reference in the same statement
   /// that disposes the surface.
+  @override
   late final Framebuffer framebuffer;
 
   /// Base address of the pixels, for a renderer that wants to hand them to
@@ -199,6 +210,7 @@ final class Win32DibSurface
   /// Presenting outside `WM_PAINT` is deliberate and legal: the renderer
   /// produces a frame when it has one, not when Windows asks, and `WM_PAINT`
   /// is treated as "the OS lost your pixels" rather than as the render trigger.
+  @override
   BackendDiagnostic? present({Rect? damage}) {
     throwIfDisposed();
     var left = 0;

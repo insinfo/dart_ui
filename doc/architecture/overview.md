@@ -4,10 +4,12 @@ Este documento descreve **o que existe em `lib/`**, não o alvo. O alvo é o
 [roteiro](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md); quando os dois
 divergirem, o roteiro descreve a intenção e este arquivo descreve o código.
 
-**Estado em 8 de agosto de 2026:** seis camadas, **575 testes**, gate próprio
-rodando em push nas três plataformas (formato, análise, testes e compilação
-AOT). O caminho **restrições → layout → display list → rasterização → pixels**
-está fechado e testado ponta a ponta, sem janela, GPU ou display server.
+**Estado em 9 de agosto de 2026:** oito camadas comuns, **663 testes** e gate
+próprio rodando em push nas três plataformas (formato, análise, testes e
+compilação AOT). O caminho **Widget → Element → RenderBox → layout → display
+list → rasterização CPU → framebuffer** está fechado e testado. No Windows, o
+`Win32CpuPresenter` continua o caminho até uma DIB e `BitBlt`, sem cópia
+intermediária do frame.
 
 ## Por que um package só
 
@@ -27,11 +29,12 @@ graphics     display list                    (foundation, geometry)
 platform     eventos de janela               (foundation, geometry)
 rendering    contratos + renderer de CPU     (foundation, geometry, graphics)
 layout       árvore de render                (foundation, geometry, graphics)
+widgets      reconciliação + estado          (layout)
+backends     adaptadores Win32/X11/macOS     (platform, rendering)
 ```
 
 A regra de dependência da seção 8.2 é imposta por onde o arquivo mora. Nenhuma
-camada aqui importa um backend, e nenhum backend é citado por nome em código
-comum.
+camada comum importa um backend, e nenhum backend é citado por nome no núcleo.
 
 ### `foundation/`
 
@@ -234,18 +237,28 @@ o acerto caia na mesma caixa cuja cor está sob aquele pixel.
 
 ## O que ainda não existe
 
-Nenhum backend de janela real e nenhum widget. O que existe é a base sobre a
-qual essas coisas são escritas, com as invariantes travadas por teste e um
-caminho completo de restrições a pixels para testá-las contra.
+O núcleo de widgets ainda é deliberadamente pequeno: `ColoredBox`, `Padding`,
+stateless/stateful, chaves e reconciliação single-child. Não há roteador de
+pointer, foco, eventos roteados, inherited context, propriedades, estilos,
+templates, semântica ou controles. `GestureDetector` com callback e pintura de
+`Text` falham explicitamente; aceitar e não produzir comportamento seria uma
+capacidade falsa.
 
-O que falta para virar framework de fato, em ordem: uma camada declarativa de
-widgets/elements acima do layout (reconciliação e estado — a segunda das quatro
-árvores da seção 8.1), e portar os **três** backends macOS de
-`poc/poc_20` para `lib/` atrás dos contratos de plataforma — `appkitNativeHost`
-como default, `skylight` como alternativa para executável Dart standalone, e
-`appkitSignal` só com opt-in explícito.
+O vertical Win32 agora apresenta pixels reais e reage a resize/DPI/expose, mas
+ainda não satisfaz o gate completo da Fase 5: faltam Button com hit-test,
+captura, foco por Tab, Enter/Space, texto centralizado, semântica, clipboard,
+screenshot e verificação de leak. O exemplo `examples/hello_button` demonstra
+a ligação estrutural e estados visuais da janela inteira, não declara ser esse
+Button final.
 
-O caminho macOS tem POCs validados e uma decisão de arquitetura registrada
-([ADR 0001](../adr/0001-worker-process-com-iosurface-no-macos.md)) mas ainda
-não foi portado para `lib/` — os três backends vivem em
-`poc/poc_20_macos_three_backends`.
+X11 possui bindings, dispatcher e estrutura de backend em `lib/`, mas ainda
+não implementa `createWindow`. No macOS, `appkitNativeHost` já liga a fachada a
+uma janela/pool IOSurface e inclui o host protocolo v4; a compilação e o smoke
+reais dessa implementação ainda dependem do gate remoto macOS. SkyLight e
+`appkitSignal` permanecem somente nos POCs. O subsistema OpenGL atual é um
+spike offscreen não exportado, sem target de janela e sem suíte própria. Há
+também dois packers `ShelfAtlas` divergentes; eles precisam ser consolidados e
+testados antes de qualquer expansão de GPU.
+
+Pelo roteiro, a ordem imediata continua sendo fechar a Fase 5 e o núcleo da
+Fase 6 antes de aprofundar GPU, X11 ou macOS.

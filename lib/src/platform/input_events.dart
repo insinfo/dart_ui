@@ -16,6 +16,7 @@ sealed class PlatformInputEvent extends PlatformWindowEvent {
 }
 
 enum PointerKind { mouse, touch, stylus }
+
 enum PointerButton { primary, secondary, middle, forward, back }
 
 /// Base class for pointer input (mouse, touch).
@@ -33,7 +34,7 @@ sealed class PointerEvent extends PlatformInputEvent {
   /// this is typically 0.
   final int pointerId;
   final PointerKind kind;
-  
+
   /// The position in logical units within the client area of the window.
   final Offset logicalPosition;
 }

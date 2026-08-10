@@ -283,6 +283,13 @@ final class Win32Window with DisposableMixin implements NativeWindow {
     _events.addError(error, stackTrace);
   }
 
+  /// Records a renderer-side failure against this window.
+  ///
+  /// Public only for the Win32 CPU presenter, which lives in a separate
+  /// library so its event-driven behaviour can be tested without user32.
+  void recordRenderDiagnostic(BackendDiagnostic diagnostic) =>
+      _record(diagnostic);
+
   Win32CoordinateSpace get _space => Win32CoordinateSpace(
         clientOriginX: _clientOriginX,
         clientOriginY: _clientOriginY,

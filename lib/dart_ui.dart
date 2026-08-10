@@ -16,6 +16,7 @@
 ///   platform    <- foundation, geometry, scheduler
 ///   rendering   <- foundation, geometry, graphics
 ///   layout      <- foundation, geometry, graphics
+///   widgets     <- layout
 ///
 /// No layer here may import a backend, and no backend may be referenced by
 /// name from common code.
