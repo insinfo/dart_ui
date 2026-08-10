@@ -153,6 +153,7 @@ final class MacosIOSurface implements MacosPoolSurface {
     this.height,
     this.bytesPerRow,
     this._allocSize,
+    this.isGlobal,
   );
 
   final _VoidPtr _surface;
@@ -173,6 +174,10 @@ final class MacosIOSurface implements MacosPoolSurface {
   @override
   final int bytesPerRow;
 
+  /// Whether this surface was deliberately exposed for lookup by global ID.
+  /// Production uses private surfaces and Mach-port handoff.
+  final bool isGlobal;
+
   final int _allocSize;
 
   bool _disposed = false;
@@ -187,6 +192,7 @@ final class MacosIOSurface implements MacosPoolSurface {
   static MacosIOSurface create({
     required int width,
     required int height,
+    required bool global,
   }) {
     if (width <= 0 || height <= 0) {
       throw MacosSurfaceError('IOSurfaceCreate: ${width}x$height');
@@ -220,6 +226,13 @@ final class MacosIOSurface implements MacosPoolSurface {
       putInt('kIOSurfaceBytesPerRow', bytesPerRow);
       putInt('kIOSurfaceAllocSize', bytesPerRow * height);
       putInt('kIOSurfacePixelFormat', kMacosPixelFormatBgra);
+      if (global) {
+        _cfDictionarySetValue(
+          properties,
+          _key('kIOSurfaceIsGlobal'),
+          _coreFoundation.lookup<_VoidPtr>('kCFBooleanTrue').value,
+        );
+      }
     } finally {
       macosFree(slot);
     }
@@ -235,6 +248,7 @@ final class MacosIOSurface implements MacosPoolSurface {
       height,
       _ioSurfaceGetBytesPerRow(surface),
       _ioSurfaceGetAllocSize(surface),
+      global,
     );
   }
 

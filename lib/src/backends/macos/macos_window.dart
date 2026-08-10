@@ -73,8 +73,10 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
     required double desktopScale,
     required void Function(BackendDiagnostic diagnostic) onDiagnostic,
     required void Function(MacosWindow window) onClosed,
-    bool globalSurfaces = true,
+    bool globalSurfaces = false,
     int slotCount = 2,
+    MacosHostStarter? hostStarter,
+    MacosSurfacePoolAttacher? poolAttacher,
   })  : _id = id,
         _surfaceFactory = surfaceFactory,
         _clientSize = clientSize,
@@ -83,7 +85,9 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
         _onDiagnostic = onDiagnostic,
         _onClosed = onClosed,
         _globalSurfaces = globalSurfaces,
-        _slotCount = slotCount;
+        _slotCount = slotCount,
+        _hostStarter = hostStarter,
+        _poolAttacher = poolAttacher;
 
   final NativeWindowId _id;
   final MacosSurfaceFactory _surfaceFactory;
@@ -91,6 +95,8 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
   final void Function(MacosWindow window) _onClosed;
   final bool _globalSurfaces;
   final int _slotCount;
+  final MacosHostStarter? _hostStarter;
+  final MacosSurfacePoolAttacher? _poolAttacher;
 
   /// Single subscription rather than broadcast, and therefore buffered until
   /// somebody listens. A broadcast controller silently drops everything that
@@ -112,6 +118,7 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
   WindowState _state = WindowState.normal;
   Offset _screenPosition = Offset.zero;
   bool _resizeInFlight = false;
+  bool _closed = false;
   Future<void>? _teardown;
 
   @override
@@ -162,41 +169,63 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
 
   set inputListener(MacosInputListener? listener) => _inputListener = listener;
 
-  /// Brings the window up: allocates surfaces, then starts the host.
+  /// Brings the window up: starts hidden, reads its scale, then attaches pixels.
   ///
-  /// Surfaces first, deliberately. They outlive every host this window will
-  /// ever spawn, and a host that starts before them would have a window with
-  /// nothing to show - which is also the state a recovery passes through.
+  /// The handshake must come first because it carries the backing scale. The
+  /// host starts hidden so a Retina window never flashes a temporary 1x pool.
   Future<bool> open({
     required MacosHostSpawnOptions spawnOptions,
     MacosRecoveryPolicy policy = const MacosRecoveryPolicy(),
     MacosSurfaceHandoff handoff = MacosSurfaceHandoff.rendezvous,
-    bool allowLookupFallback = true,
   }) async {
     throwIfDisposed();
-    final pool = _allocatePool();
-    if (pool == null) return false;
-    _pool = pool;
-    _descriptor = pool.describe(_renderScale);
-
     final supervisor = MacosHostSupervisor(
-      spawnOptions: spawnOptions,
+      spawnOptions: MacosHostSpawnOptions(
+        binaryPath: spawnOptions.binaryPath,
+        logicalWidth: spawnOptions.logicalWidth,
+        logicalHeight: spawnOptions.logicalHeight,
+        title: spawnOptions.title,
+        x: spawnOptions.x,
+        y: spawnOptions.y,
+        visible: false,
+        decorated: spawnOptions.decorated,
+        resizable: spawnOptions.resizable,
+        handshakeTimeout: spawnOptions.handshakeTimeout,
+      ),
       sink: _HostSink(this),
       onDiagnostic: _onDiagnostic,
       onHostReplaced: _onHostReplaced,
       onRecoveryExhausted: _onRecoveryExhausted,
       policy: policy,
       handoff: handoff,
+      starter: _hostStarter,
+      poolAttacher: _poolAttacher,
     );
     _supervisor = supervisor;
     final started = await supervisor.start();
-    if (!started || !await supervisor.attachPool(pool)) {
+    if (!started) return false;
+
+    final handshakeScale = supervisor.handshake?.renderScale ?? _renderScale;
+    if (handshakeScale > 0) {
+      _renderScale = handshakeScale;
+      _desktopScale = handshakeScale;
+    }
+    final pool = _allocatePool();
+    if (pool == null) {
+      await supervisor.stop();
+      return false;
+    }
+    _pool = pool;
+    _descriptor = pool.describe(_renderScale);
+    if (!await supervisor.attachPool(pool)) {
       pool.dispose();
       _pool = null;
       _descriptor = null;
+      await supervisor.stop();
       return false;
     }
     supervisor.rememberTitle(spawnOptions.title);
+    supervisor.rememberVisibility(spawnOptions.visible);
     return true;
   }
 
@@ -243,10 +272,10 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
   @override
   void close() {
     if (isDisposed) return;
-    // A close is not a dispose: the framework may still read the window's last
-    // size out of the closed event. dispose() releases; this only stops the
-    // host.
-    unawaited(_shutdown());
+    // The final event is queued before dispose, so listeners can still read
+    // the window's last geometry. Native ownership ends once the host stops,
+    // even if an old host omitted WINDOW=CLOSED while terminating.
+    unawaited(_shutdown().whenComplete(_emitClosed));
   }
 
   @override
@@ -475,9 +504,9 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
   void _handleResized(double width, double height, double scale) {
     final size = Size(width, height);
     final scaleChanged = scale != _renderScale;
-    final pixelsChanged = _pool == null ||
-        (width * scale).round() != _pool!.surfaces.first.width ||
-        (height * scale).round() != _pool!.surfaces.first.height;
+    final pixelsChanged = _pool != null &&
+        ((width * scale).round() != _pool!.surfaces.first.width ||
+            (height * scale).round() != _pool!.surfaces.first.height);
 
     _clientSize = size;
     _renderScale = scale;
@@ -504,7 +533,7 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
     final changed = renderScale != _renderScale;
     _renderScale = renderScale;
     _desktopScale = desktopScale;
-    if (changed) {
+    if (changed && _pool != null) {
       _generation.invalidate();
       unawaited(_reallocate());
     }
@@ -586,11 +615,14 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
   }
 
   void _emitClosed() {
+    if (_closed || _events.isClosed) return;
+    _closed = true;
     _generation.invalidate();
     _events.add(
       WindowClosedEvent(windowId: _id, generation: _generation.current),
     );
     _onClosed(this);
+    dispose();
   }
 
   void _emit(PlatformWindowEvent event) {
@@ -663,9 +695,9 @@ final class _HostSink with HostMessageSinkAdapter {
 /// The default factory: real `IOSurface`s.
 ///
 /// [global] carries a security decision. A global surface is visible to every
-/// process on the machine, which is what the deprecated `IOSurfaceLookup`
-/// fallback needs; the rendezvous path does not, and a build that turns the
-/// fallback off gets private surfaces.
+/// process on the machine. Production passes false because its only supported
+/// handoff is a Mach port. The flag remains explicit for diagnostics and
+/// experiments that deliberately exercise deprecated `IOSurfaceLookup`.
 MacosSurfacePool createIOSurfacePool({
   required int pixelWidth,
   required int pixelHeight,
@@ -679,6 +711,7 @@ MacosSurfacePool createIOSurfacePool({
         MacosIOSurface.create(
           width: pixelWidth,
           height: pixelHeight,
+          global: global,
         ),
       );
     }

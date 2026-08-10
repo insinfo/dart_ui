@@ -26,13 +26,29 @@ import 'host_protocol.dart';
 import 'mach_rendezvous.dart';
 import 'surface_pool.dart';
 
+/// Starts one host process for [MacosHostSupervisor].
+typedef MacosHostStarter = Future<MacosHostProcessHandle?> Function(
+  MacosHostSpawnOptions options,
+  HostMessageSink sink,
+  void Function(BackendDiagnostic diagnostic) onDiagnostic,
+);
+
+/// Attaches a pool to a host.
+///
+/// The production default is the Mach rendezvous implementation below. The
+/// injectable boundary exists so recovery can prove that it reuses the exact
+/// same pool without requiring IOSurface or AppKit in a unit test.
+typedef MacosSurfacePoolAttacher = Future<bool> Function(
+  MacosHostProcessHandle host,
+  MacosSurfacePool pool,
+);
+
 /// How the surface reaches the host.
 enum MacosSurfaceHandoff {
   /// `IOSurfaceCreateMachPort` in Dart, `IOSurfaceLookupFromMachPort` in the
   /// host, with the port carried by a rendezvous over a launchd name the host
   /// checked in. Supported, non-deprecated, no ordering constraint.
   rendezvous,
-
 }
 
 /// Tuning for the restart policy.
@@ -85,13 +101,21 @@ final class MacosHostSupervisor {
     required void Function() onRecoveryExhausted,
     MacosRecoveryPolicy policy = const MacosRecoveryPolicy(),
     MacosSurfaceHandoff handoff = MacosSurfaceHandoff.rendezvous,
+    MacosHostStarter? starter,
+    DateTime Function()? clock,
+    Future<void> Function(Duration duration)? delay,
+    MacosSurfacePoolAttacher? poolAttacher,
   })  : _spawnOptions = spawnOptions,
         _sink = sink,
         _onDiagnostic = onDiagnostic,
         _onHostReplaced = onHostReplaced,
         _onRecoveryExhausted = onRecoveryExhausted,
         _policy = policy,
-        _handoff = handoff;
+        _handoff = handoff,
+        _starter = starter ?? MacosHostProcess.start,
+        _clock = clock ?? DateTime.now,
+        _delay = delay ?? _defaultDelay,
+        _poolAttacher = poolAttacher;
 
   MacosHostSpawnOptions _spawnOptions;
   final HostMessageSink _sink;
@@ -101,8 +125,13 @@ final class MacosHostSupervisor {
   final void Function() _onRecoveryExhausted;
   final MacosRecoveryPolicy _policy;
   final MacosSurfaceHandoff _handoff;
+  final MacosHostStarter _starter;
+  final DateTime Function() _clock;
+  final Future<void> Function(Duration duration) _delay;
+  final MacosSurfacePoolAttacher? _poolAttacher;
+  Future<void> _attachmentTail = Future<void>.value();
 
-  MacosHostProcess? _host;
+  MacosHostProcessHandle? _host;
   MacosSurfacePool? _pool;
   MacosSupervisorState _state = MacosSupervisorState.created;
 
@@ -125,7 +154,7 @@ final class MacosHostSupervisor {
   bool _visible = true;
 
   MacosSupervisorState get state => _state;
-  MacosHostProcess? get host => _host;
+  MacosHostProcessHandle? get host => _host;
   MacosHostHandshake? get handshake => _host?.handshake;
   int get restartCount => _restartCounter;
 
@@ -208,19 +237,23 @@ final class MacosHostSupervisor {
   // --- spawning and attaching -----------------------------------------------
 
   Future<bool> _spawnAndAttach() async {
-    final host = await MacosHostProcess.start(
+    final host = await _starter(
       _spawnOptions,
       _sink,
       _onDiagnostic,
     );
     if (host == null) return false;
     _host = host;
-    _startedAt = DateTime.now();
+    _startedAt = _clock();
     unawaited(host.exitStatus.then((int status) => _onHostExit(host, status)));
 
     final pool = _pool;
     if (pool == null) return true;
-    if (!await _attachPool(host, pool)) {
+    if (!await _queueAttach(host, pool)) {
+      // Detach before kill: the recovery caller owns the next retry. Leaving
+      // this host current would also let its exit callback schedule a second
+      // recovery and consume the retry budget twice.
+      if (identical(_host, host)) _host = null;
       await host.kill();
       return false;
     }
@@ -235,7 +268,16 @@ final class MacosHostSupervisor {
   /// port would race for the same two messages and could pair a port with the
   /// wrong slot - a mix-up that would show up as tearing rather than as an
   /// error, which is the worst kind.
-  Future<bool> _attachPool(MacosHostProcess host, MacosSurfacePool pool) async {
+  Future<bool> _attachPool(
+    MacosHostProcessHandle host,
+    MacosSurfacePool pool,
+  ) async {
+    final poolAttacher = _poolAttacher;
+    if (poolAttacher != null) {
+      final attached = await poolAttacher(host, pool);
+      if (attached) _activeHandoff = _handoff;
+      return attached;
+    }
     if (_handoff == MacosSurfaceHandoff.rendezvous &&
         MachRendezvous.isAvailable &&
         (host.handshake?.supportsSurfacePort ?? false)) {
@@ -247,8 +289,32 @@ final class MacosHostSupervisor {
     return false;
   }
 
+  /// Serialises surface handoffs for one host.
+  ///
+  /// A resize can arrive while the initial pool is still crossing the Mach
+  /// rendezvous. Interleaving two SURFACE_POOL/PORT_SERVER sequences pairs
+  /// ports with the wrong slots, so every attach shares this queue.
+  Future<bool> _queueAttach(
+    MacosHostProcessHandle host,
+    MacosSurfacePool pool,
+  ) {
+    final result = Completer<bool>();
+    _attachmentTail = _attachmentTail.then((_) async {
+      if (_stopping || !identical(host, _host)) {
+        result.complete(false);
+        return;
+      }
+      try {
+        result.complete(await _attachPool(host, pool));
+      } on Object catch (error, stackTrace) {
+        result.completeError(error, stackTrace);
+      }
+    });
+    return result.future;
+  }
+
   Future<bool> _attachByRendezvous(
-    MacosHostProcess host,
+    MacosHostProcessHandle host,
     MacosSurfacePool pool,
   ) async {
     if (!host.send(HostCommands.surfacePool(pool.slotCount))) return false;
@@ -310,7 +376,7 @@ final class MacosHostSupervisor {
 
   // --- recovery --------------------------------------------------------------
 
-  void _onHostExit(MacosHostProcess host, int status) {
+  void _onHostExit(MacosHostProcessHandle host, int status) {
     if (!identical(host, _host)) return;
     if (_stopping || _state == MacosSupervisorState.stopped) return;
     _host = null;
@@ -320,9 +386,8 @@ final class MacosHostSupervisor {
       return;
     }
 
-    final uptime = _startedAt == null
-        ? Duration.zero
-        : DateTime.now().difference(_startedAt!);
+    final uptime =
+        _startedAt == null ? Duration.zero : _clock().difference(_startedAt!);
     if (uptime > _policy.minimumHealthyUptime) _consecutiveFailures = 0;
 
     _onDiagnostic(
@@ -352,11 +417,11 @@ final class MacosHostSupervisor {
 
     _consecutiveFailures++;
     _state = MacosSupervisorState.recovering;
-    unawaited(_recover(DateTime.now()));
+    unawaited(_recover(_clock()));
   }
 
   Future<void> _recover(DateTime diedAt) async {
-    await Future<void>.delayed(_policy.backoff * _consecutiveFailures);
+    await _delay(_policy.backoff * _consecutiveFailures);
     if (_stopping) return;
 
     _restartCounter++;
@@ -381,7 +446,7 @@ final class MacosHostSupervisor {
     }
 
     _state = MacosSupervisorState.running;
-    final downtime = DateTime.now().difference(diedAt);
+    final downtime = _clock().difference(diedAt);
     final banner = _host?.handshake;
     if (banner != null) {
       _onDiagnostic(
@@ -408,7 +473,7 @@ final class MacosHostSupervisor {
     _pool = pool;
     final host = _host;
     if (host == null) return false;
-    return _attachPool(host, pool);
+    return _queueAttach(host, pool);
   }
 
   /// Updates the spawn options a *future* host will use.
@@ -429,4 +494,7 @@ final class MacosHostSupervisor {
       handshakeTimeout: _spawnOptions.handshakeTimeout,
     );
   }
+
+  static Future<void> _defaultDelay(Duration duration) =>
+      Future<void>.delayed(duration);
 }

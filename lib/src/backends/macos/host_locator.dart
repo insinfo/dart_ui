@@ -107,9 +107,13 @@ final class MacosHostLocator {
   /// Synchronous because `WindowingBackend.probe()` is, and because every step
   /// is a `stat`: the whole search costs less than the process spawn it
   /// precedes.
+  ///
+  /// [isExecutableFile] is a narrow test seam for platforms that do not expose
+  /// POSIX execute bits. Production callers should leave it null.
   static MacosHostLocation resolve({
     String? explicitPath,
     Map<String, String>? environment,
+    bool Function(String path)? isExecutableFile,
   }) {
     final env = environment ?? Platform.environment;
     final searched = <String>[];
@@ -123,7 +127,7 @@ final class MacosHostLocator {
       if (accepted != null || candidate == null || candidate.isEmpty) return;
       final path = _absolute(candidate);
       searched.add('$label: $path');
-      final status = _statusOf(path);
+      final status = _statusOf(path, isExecutableFile);
       if (status == _CandidateStatus.executable) {
         accepted = path;
         origin = label;
@@ -282,10 +286,18 @@ final class MacosHostLocator {
         .where((e) => e.isNotEmpty);
   }
 
-  static _CandidateStatus _statusOf(String path) {
+  static _CandidateStatus _statusOf(
+    String path,
+    bool Function(String path)? isExecutableFile,
+  ) {
     final stat = FileStat.statSync(path);
     if (stat.type != FileSystemEntityType.file) {
       return _CandidateStatus.absent;
+    }
+    if (isExecutableFile != null) {
+      return isExecutableFile(path)
+          ? _CandidateStatus.executable
+          : _CandidateStatus.notExecutable;
     }
     // Any of the three execute bits: the host is normally 0755, but a binary
     // restored from an archive can land 0644 and that failure should name

@@ -10,9 +10,11 @@
 ///   1. **appkitNativeHost** — the recommended default.  Correct thread
 ///      ownership, proven lifecycle, smallest risk surface.
 ///   2. **skylight** — works without a host binary, but uses private API.
-///      Chosen only when the host is unavailable or the caller asked for it.
+///      It requires explicit private-API permission and an ABI validation for
+///      the running macOS build.
 ///   3. **appkitSignal** — experimental.  Never chosen automatically, only
-///      when the caller passes `allowExperimental: true` and names it.
+///      when the caller explicitly permits the unsafe signal path and names
+///      it.
 ///
 /// The caller can override by passing a [MacosBackendKind] as the requested
 /// backend, and the selection layer will pin to it or fail with a report.
@@ -31,6 +33,9 @@ final class MacosBackendOptions {
   const MacosBackendOptions({
     this.requested,
     this.allowExperimental = false,
+    this.allowPrivateApi = false,
+    this.skylightAbiValidated = false,
+    this.allowUnsafeSignal = false,
     this.hostBinaryPath,
   });
 
@@ -38,8 +43,23 @@ final class MacosBackendOptions {
   /// it will never silently fall back.
   final MacosBackendKind? requested;
 
-  /// Whether experimental backends (appkitSignal) may be chosen.
+  /// Legacy opt-in for experimental backends.
+  ///
+  /// Kept for source compatibility. New code should use
+  /// [allowUnsafeSignal], which names the actual risk being accepted.
   final bool allowExperimental;
+
+  /// Whether the caller accepts using the private SkyLight/CGS API.
+  final bool allowPrivateApi;
+
+  /// Whether SkyLight's private ABI was validated for this macOS build.
+  ///
+  /// Permission alone is insufficient: a private ABI mismatch can corrupt
+  /// native memory before Dart has a chance to report an error.
+  final bool skylightAbiValidated;
+
+  /// Whether the caller accepts entering AppKit from a signal handler.
+  final bool allowUnsafeSignal;
 
   /// Explicit path to the native host binary.  Bypasses the locator.
   final String? hostBinaryPath;
@@ -61,7 +81,7 @@ BackendSelection selectMacosBackend([
     return BackendSelection(
       chosen: null,
       rejected: <BackendRejection>[],
-      requested: options.requested?.name,
+      requested: _candidateName(options.requested),
       required_: const <Capability>{},
     );
   }
@@ -69,15 +89,66 @@ BackendSelection selectMacosBackend([
   final candidates = <BackendCandidate>[
     _probeAppKitNativeHost(options),
     _probeSkylight(),
-    _probeAppKitSignal(),
+    _probeAppKitSignal(options),
   ];
 
+  return selectMacosBackendCandidates(candidates, options);
+}
+
+/// Applies macOS policy to already-probed candidates.
+///
+/// Kept separate from the platform probes so the security-sensitive naming
+/// and opt-in rules can be regression-tested on Linux and Windows CI.
+BackendSelection selectMacosBackendCandidates(
+  List<BackendCandidate> candidates,
+  MacosBackendOptions options,
+) {
+  final guardedCandidates = <BackendCandidate>[
+    for (final candidate in candidates)
+      if (candidate.name == _candidateName(MacosBackendKind.skylight) &&
+          (!options.allowPrivateApi || !options.skylightAbiValidated))
+        _rejectByPolicy(
+          candidate,
+          !options.allowPrivateApi
+              ? 'SkyLight private API was not explicitly allowed'
+              : 'SkyLight ABI is not validated for this macOS build',
+        )
+      else
+        candidate,
+  ];
   return selectBackend(
-    candidates,
-    requested: options.requested?.name,
-    allowExperimental: options.allowExperimental,
+    guardedCandidates,
+    requested: _candidateName(options.requested),
+    // appkitSignal must be both named and explicitly allowed. Merely enabling
+    // experimental features must never insert it into the fallback chain.
+    allowExperimental: options.requested == MacosBackendKind.appkitSignal &&
+        (options.allowUnsafeSignal || options.allowExperimental),
   );
 }
+
+BackendCandidate _rejectByPolicy(
+  BackendCandidate candidate,
+  String message,
+) {
+  return BackendCandidate(
+    name: candidate.name,
+    experimental: candidate.experimental,
+    probe: BackendProbeResult(
+      backendName: candidate.probe.backendName,
+      supported: false,
+      diagnostics: <BackendDiagnostic>[
+        ...candidate.probe.diagnostics,
+        BackendDiagnostic(
+          kind: DiagnosticKind.rejectedByPolicy,
+          message: message,
+        ),
+      ],
+    ),
+  );
+}
+
+String? _candidateName(MacosBackendKind? kind) =>
+    kind == null ? null : 'macos.${kind.name}';
 
 BackendCandidate _probeAppKitNativeHost(MacosBackendOptions options) {
   final diagnostics = <BackendDiagnostic>[];
@@ -91,7 +162,10 @@ BackendCandidate _probeAppKitNativeHost(MacosBackendOptions options) {
       message: 'mach_msg / bootstrap_look_up not found',
       detail: 'rendezvous handoff unavailable; host cannot receive surfaces',
     ));
-    // Not fatal — the deprecated IOSurfaceLookup path exists as fallback.
+    // Fatal: production currently implements only the Mach-port handoff.
+    // Claiming the deprecated ID lookup as a fallback here used to make the
+    // probe pass even though the supervisor had no such attach path.
+    canCreate = false;
   }
 
   // Locate the host binary.
@@ -128,20 +202,21 @@ BackendCandidate _probeAppKitNativeHost(MacosBackendOptions options) {
 }
 
 BackendCandidate _probeSkylight() {
-  final diagnostics = <BackendDiagnostic>[];
-  var canCreate = true;
+  final diagnostics = <BackendDiagnostic>[
+    const BackendDiagnostic.note(
+      'skylight: private API, forward compatibility not guaranteed',
+    ),
+  ];
 
-  // SkyLight is a private framework; check that the symbols we need exist.
-  try {
-    _checkSkylightSymbols(diagnostics);
-  } on Object catch (e) {
-    diagnostics.add(BackendDiagnostic(
-      kind: DiagnosticKind.missingLibrary,
-      message: 'SkyLight framework not loadable',
-      detail: '$e',
-    ));
-    canCreate = false;
-  }
+  diagnostics.add(const BackendDiagnostic(
+    kind: DiagnosticKind.missingLibrary,
+    message: 'SkyLight production backend is not integrated',
+    detail: 'the validated implementation currently exists only in POC 20',
+  ));
+
+  // The POC is evidence, not a production implementation. Keep this false
+  // until createWindow/pumpEvents/wake have a concrete SkyLight delegate.
+  const canCreate = false;
 
   final capabilities = MacosBackendCapabilities(
     kind: MacosBackendKind.skylight,
@@ -149,7 +224,7 @@ BackendCandidate _probeSkylight() {
     hasInput: canCreate,
     hasIme: false,
     hasAccessibility: false,
-    hasOrderlyShutdown: canCreate,
+    hasOrderlyShutdown: false,
     needsHostBinary: false,
     diagnostics: diagnostics,
   );
@@ -160,25 +235,40 @@ BackendCandidate _probeSkylight() {
   );
 }
 
-BackendCandidate _probeAppKitSignal() {
+BackendCandidate _probeAppKitSignal(MacosBackendOptions options) {
   // AppKit signal hijack is always marked experimental: it works, but
   // CFRunLoopRun is not async-signal-safe and the mechanism has produced
-  // traps in spikes.  The probe succeeds (it is functional) but the
-  // experimental flag prevents automatic selection.
-  const capabilities = MacosBackendCapabilities(
+  // traps in spikes. The experimental flag prevents automatic selection,
+  // while the unsupported probe records that it has not reached lib yet.
+  final explicitlyAllowed =
+      options.allowUnsafeSignal || options.allowExperimental;
+  final diagnostics = <BackendDiagnostic>[
+    const BackendDiagnostic.note(
+      'appkitSignal: experimental, not async-signal-safe',
+      detail: 'requires explicit opt-in; see MACOS_TRES_BACKENDS.md',
+    ),
+    if (!explicitlyAllowed)
+      const BackendDiagnostic(
+        kind: DiagnosticKind.rejectedByPolicy,
+        message: 'unsafe AppKit signal hijack was not explicitly allowed',
+      ),
+    const BackendDiagnostic(
+      kind: DiagnosticKind.missingLibrary,
+      message: 'appkitSignal production backend is not integrated',
+      detail: 'the LLDB-validated implementation remains a monolithic POC',
+    ),
+  ];
+  final capabilities = MacosBackendCapabilities(
     kind: MacosBackendKind.appkitSignal,
-    canCreateWindow: true,
-    hasInput: true,
+    canCreateWindow: false,
+    hasInput: false,
     hasIme: false,
     hasAccessibility: false,
-    hasOrderlyShutdown: false, // Teardown still uses _exit in spikes.
+    // LLDB run 31341132992 proves CFRunLoopStop + WakeUp unwinds to
+    // Dart_RunLoop and exits normally. The entry mechanism remains unsafe.
+    hasOrderlyShutdown: true,
     needsHostBinary: false,
-    diagnostics: <BackendDiagnostic>[
-      BackendDiagnostic.note(
-        'appkitSignal: experimental, not async-signal-safe',
-        detail: 'requires explicit opt-in; see MACOS_TRES_BACKENDS.md',
-      ),
-    ],
+    diagnostics: diagnostics,
   );
 
   return BackendCandidate(
@@ -186,29 +276,4 @@ BackendCandidate _probeAppKitSignal() {
     probe: capabilities.toProbeResult(),
     experimental: true,
   );
-}
-
-/// Checks that the SkyLight/CGS symbols the skylight backend needs are
-/// resolvable.  Adds diagnostics for each missing symbol rather than
-/// aborting at the first one, because a probe that says "three symbols are
-/// missing" is more useful than one that says "one symbol is missing"
-/// and makes the user run it three times.
-void _checkSkylightSymbols(List<BackendDiagnostic> diagnostics) {
-  // The actual symbol lookups are done by the skylight backend at
-  // initialisation time.  Here we only check the framework is loadable at
-  // all — the symbol-level probe is the backend's responsibility and its
-  // diagnostics flow into the capabilities.
-  //
-  // On a machine where SkyLight is not available (non-macOS, or a future
-  // macOS that removed it), DynamicLibrary.open will throw, which the
-  // caller catches.
-  //
-  // We do NOT import DynamicLibrary here to avoid loading the framework at
-  // probe time on Windows/Linux CI where the import would fail.  The
-  // Platform.isMacOS guard in selectMacosBackend ensures this code only
-  // runs on macOS.
-  diagnostics.add(const BackendDiagnostic.note(
-    'skylight: private API, forward compatibility not guaranteed',
-    detail: 'SkyLight/CGS symbols resolved at initialisation',
-  ));
 }

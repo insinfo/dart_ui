@@ -5676,6 +5676,28 @@ Requisitos:
 
 ## Fase 9 — Backend AppKit CPU
 
+### Estado auditado em 2026-08-09
+
+- o spike arm64 das três estratégias permanece verde no
+  [GitHub Actions #31341132992](https://github.com/insinfo/dart_ui/actions/runs/31341132992):
+  SkyLight e `appkitSignal` passaram janela, pixels, input e teardown sem sinal
+  fatal;
+- o LLDB confirmou que `CFRunLoopStop` + `CFRunLoopWakeUp` devolve a thread
+  sequestrada de `CFRunLoopRun` para `Dart_RunLoop`, mas isso não torna a
+  entrada por signal async-signal-safe;
+- em `lib`, `appkitNativeHost` está ligado a `MacosWindow.open` e inclui host
+  Objective-C protocolo v4 + script de build; o smoke da fachada foi adicionado
+  ao workflow macOS, mas esta alteração local ainda precisa de execução remota;
+- o supervisor possui testes determinísticos de crash/restart, replay de
+  estado, preservação/reattach do mesmo pool e esgotamento de tentativas;
+- SkyLight e `appkitSignal` continuam indisponíveis para seleção de produção
+  até que suas implementações saiam dos POCs;
+- a seleção exige opt-in privado + ABI validada para SkyLight, e pedido
+  explícito + opt-in inseguro para `appkitSignal`; nenhum dos dois entra como
+  fallback silencioso;
+- o gate desta fase ainda está aberto: faltam gallery, Intel, IME, clipboard,
+  drag, menus, diálogos, tema, acessibilidade e packaging.
+
 ### Objetivo
 
 Provar o caminho Objective-C puro.

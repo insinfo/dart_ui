@@ -28,8 +28,12 @@ import 'dart:io' show Platform;
 import '../../foundation/diagnostics.dart';
 import '../../platform/backend_selection.dart';
 import '../../platform/native_window.dart';
+import '../../platform/window_events.dart';
+import 'host_locator.dart';
+import 'host_process.dart';
 import 'macos_backend_kind.dart';
 import 'macos_backend_selection.dart';
+import 'macos_window.dart';
 
 /// Creates and owns macOS windows through the selected backend strategy.
 final class MacosWindowingBackend implements WindowingBackend {
@@ -45,6 +49,7 @@ final class MacosWindowingBackend implements WindowingBackend {
   MacosBackendKind? _activeKind;
   bool _initialized = false;
   bool _quitRequested = false; // ignore: prefer_final_fields
+  int _nextWindowId = 1;
 
   /// Which backend was selected, available after [probe].
   MacosBackendKind? get activeKind => _activeKind;
@@ -107,7 +112,9 @@ final class MacosWindowingBackend implements WindowingBackend {
     if (_selection == null) probe();
     if (_activeKind == null) {
       throw BackendSelectionError(
-        requested: _options.requested?.name,
+        requested: _options.requested == null
+            ? null
+            : 'macos.${_options.requested!.name}',
         attempts: _selection == null
             ? const <BackendProbeResult>[]
             : <BackendProbeResult>[
@@ -130,10 +137,15 @@ final class MacosWindowingBackend implements WindowingBackend {
   Future<void> shutdown() async {
     if (!_initialized) return;
     _initialized = false;
+    _quitRequested = true;
 
-    for (final window in List<NativeWindow>.of(_windows)) {
+    final windows = List<NativeWindow>.of(_windows);
+    for (final window in windows) {
       window.dispose();
     }
+    await Future.wait<void>(
+      windows.whereType<MacosWindow>().map((window) => window.teardown),
+    );
     _windows.clear();
   }
 
@@ -152,12 +164,54 @@ final class MacosWindowingBackend implements WindowingBackend {
       );
     }
 
-    // MacosWindow.create is asynchronous because it spawns the host.
-    // The WindowOptions → MacosWindowOptions mapping is straightforward.
-    throw UnimplementedError(
-      '$name.createWindow: wire MacosWindow.create here once the host '
-      'locator result is threaded through',
+    final location = MacosHostLocator.resolve(
+      explicitPath: _options.hostBinaryPath,
     );
+    _diagnostics.addAll(location.diagnostics);
+    final binaryPath = location.binaryPath;
+    if (binaryPath == null) {
+      throw UnsupportedCapabilityError(
+        backendName: name,
+        capability: Capability.window,
+        detail: 'native AppKit host binary disappeared after probe',
+      );
+    }
+
+    late final MacosWindow window;
+    window = MacosWindow(
+      id: NativeWindowId(_nextWindowId++),
+      surfaceFactory: createIOSurfacePool,
+      clientSize: options.size,
+      renderScale: 1,
+      desktopScale: 1,
+      onDiagnostic: _diagnostics.add,
+      onClosed: _onWindowClosed,
+      // Production has only the Mach-port rendezvous handoff. Keep surfaces
+      // private instead of exposing them system-wide for an unimplemented ID
+      // lookup fallback.
+      globalSurfaces: false,
+    );
+    final opened = await window.open(
+      spawnOptions: MacosHostSpawnOptions(
+        binaryPath: binaryPath,
+        logicalWidth: options.size.width,
+        logicalHeight: options.size.height,
+        title: options.title,
+        x: options.position?.dx,
+        y: options.position?.dy,
+        visible: options.visible,
+        decorated: options.decorated,
+        resizable: options.resizable,
+      ),
+    );
+    if (!opened) {
+      window.dispose();
+      await window.teardown;
+      throw StateError('$name.createWindow: native AppKit host did not start');
+    }
+    _quitRequested = false;
+    _windows.add(window);
+    return window;
   }
 
   @override
@@ -191,6 +245,11 @@ final class MacosWindowingBackend implements WindowingBackend {
     if (!_initialized) {
       throw StateError('$name.$operation before initialize()');
     }
+  }
+
+  void _onWindowClosed(MacosWindow window) {
+    _windows.remove(window);
+    if (_windows.isEmpty) _quitRequested = true;
   }
 
   @override

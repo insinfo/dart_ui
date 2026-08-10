@@ -1,6 +1,13 @@
 include: package:lints/recommended.yaml
 
 analyzer:
+  # POCs and vendored references are independent projects with their own
+  # analyzers. Walking them from the framework root makes `dart analyze`
+  # traverse millions of reference lines and can leave the CI gate timing out.
+  exclude:
+    - poc/**
+    - referencias/**
+    - build/**
   language:
     strict-casts: true
     strict-raw-types: true

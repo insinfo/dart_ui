@@ -45,6 +45,7 @@ final class MacosHostHandshake {
     required this.hostPid,
     required this.protocolVersion,
     required this.features,
+    this.renderScale = 1,
   });
 
   /// The `CGSWindowID`. Kept for `screencapture -l<id>` - the only witness
@@ -54,6 +55,9 @@ final class MacosHostHandshake {
 
   final int hostPid;
   final int protocolVersion;
+
+  /// Backing scale reported before the first IOSurface allocation.
+  final double renderScale;
 
   /// `PROTOCOL_FEATURES` verbatim. Compared with `contains`, never for
   /// equality: a host that gains a feature must not look like a stranger.
@@ -140,12 +144,33 @@ final class _Waiter {
   final Completer<bool> completer;
 }
 
+/// The process operations the supervisor needs from one host instance.
+///
+/// Keeping this boundary smaller than [MacosHostProcess] lets recovery be
+/// exercised without spawning AppKit (or even running on macOS). Production
+/// still uses [MacosHostProcess.start]; tests can supply a deterministic
+/// implementation whose exit status they control.
+abstract interface class MacosHostProcessHandle {
+  MacosHostHandshake? get handshake;
+  MacosHostExitReason get exitReason;
+  int get pid;
+  Future<int> get exitStatus;
+
+  bool send(String command);
+  Future<bool> awaitAck(HostAckKind kind, Duration timeout);
+  Future<bool> awaitSurfaceAttached(int slot, Duration timeout);
+  Future<bool> awaitPresented(int sequence, Duration timeout);
+  Future<int> close({Duration timeout = const Duration(seconds: 5)});
+  Future<int> kill();
+}
+
 /// A live host process.
 ///
 /// Owns exactly one `Process` and never restarts it: replacing a dead host is
 /// [MacosHostSupervisor]'s job, and keeping the two apart is what lets the
 /// restart path be read without also reading the protocol.
-final class MacosHostProcess implements HostMessageSink {
+final class MacosHostProcess
+    implements HostMessageSink, MacosHostProcessHandle {
   MacosHostProcess._(this._process, this._sink, this._onDiagnostic) {
     _parser = HostProtocolParser(this);
   }
@@ -168,6 +193,7 @@ final class MacosHostProcess implements HostMessageSink {
   int _windowNumber = 0;
   int _hostPid = 0;
   int _protocolVersion = 0;
+  int _renderScaleMilli = 1000;
   String _features = '';
   bool _sawMainThread = false;
 
@@ -177,13 +203,20 @@ final class MacosHostProcess implements HostMessageSink {
 
   MacosHostHandshake? _completedHandshake;
 
+  @override
   MacosHostHandshake? get handshake => _completedHandshake;
+
+  @override
   MacosHostExitReason get exitReason => _exitReason;
+
+  @override
   int get pid => _process.pid;
+
   bool get isAlive => !_exited.isCompleted;
 
   /// Completes with the process exit status. `-9` is the `SIGKILL` the
   /// recovery probe uses; Dart reports a signal death as `-signal` on POSIX.
+  @override
   Future<int> get exitStatus => _exited.future;
 
   /// Spawns a host and waits for its banner.
@@ -320,6 +353,7 @@ final class MacosHostProcess implements HostMessageSink {
 
   /// Writes a command. Returns false when the pipe is gone, which is what a
   /// host that died between two commands looks like from here.
+  @override
   bool send(String command) {
     if (_stdinBroken || _exited.isCompleted) return false;
     try {
@@ -345,6 +379,7 @@ final class MacosHostProcess implements HostMessageSink {
   /// Reverse order on purpose: `CLOSE` lets `applicationWillTerminate` release
   /// the event monitor, the layer contents, the pool and the window before the
   /// process leaves. `kill` is the fallback for a host that ignored it.
+  @override
   Future<int> close({Duration timeout = const Duration(seconds: 5)}) async {
     if (_exited.isCompleted) return _exited.future;
     _closeRequested = true;
@@ -363,6 +398,7 @@ final class MacosHostProcess implements HostMessageSink {
     return status;
   }
 
+  @override
   Future<int> kill() async {
     if (_exited.isCompleted) return _exited.future;
     _process.kill(ProcessSignal.sigkill);
@@ -393,12 +429,14 @@ final class MacosHostProcess implements HostMessageSink {
     });
   }
 
+  @override
   Future<bool> awaitAck(HostAckKind kind, Duration timeout) => _waitFor(
         (signal, a, _) => signal == _SignalKind.ack && a == kind.index,
         timeout,
       );
 
   /// Waits for a surface to be attached, by either mechanism, into [slot].
+  @override
   Future<bool> awaitSurfaceAttached(int slot, Duration timeout) => _waitFor(
         (signal, _, attachedSlot) =>
             (signal == _SignalKind.surfaceAttached ||
@@ -407,6 +445,7 @@ final class MacosHostProcess implements HostMessageSink {
         timeout,
       );
 
+  @override
   Future<bool> awaitPresented(int sequence, Duration timeout) => _waitFor(
         (signal, presented, _) =>
             signal == _SignalKind.presented && presented == sequence,
@@ -441,7 +480,7 @@ final class MacosHostProcess implements HostMessageSink {
       case HostHandshakeField.hostPid:
         _hostPid = value;
       case HostHandshakeField.renderScaleMilli:
-        break;
+        if (value > 0) _renderScaleMilli = value;
     }
     _maybeCompleteHandshake();
     _sink.onHandshake(field, value);
@@ -465,6 +504,7 @@ final class MacosHostProcess implements HostMessageSink {
       hostPid: _hostPid,
       protocolVersion: _protocolVersion,
       features: _features,
+      renderScale: _renderScaleMilli / 1000,
     );
     _completedHandshake = banner;
     _handshake.complete(banner);
