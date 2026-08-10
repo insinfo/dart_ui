@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/x11/x11_backend.dart';
+import 'package:dart_ui/src/backends/x11/x11_cpu_presenter.dart';
+import 'package:dart_ui/src/backends/x11/x11_window.dart';
 
 Future<void> main() async {
   if (!Platform.isLinux) {
@@ -21,10 +23,10 @@ Future<void> main() async {
     final probe = backend.probe();
     final probePassed = probe.supported &&
         probe.supports(Capability.window) &&
-        !probe.supports(Capability.cpuPresentation);
+        probe.supports(Capability.cpuPresentation);
     stdout.writeln(
       'X11_BACKEND_PROBE=${probePassed ? 'PASS' : 'FAIL'} '
-      'supported=${probe.supported} window=true cpu=false',
+      'supported=${probe.supported} window=true cpu=true',
     );
     if (!probePassed) {
       throw StateError(probe.describe());
@@ -39,6 +41,12 @@ Future<void> main() async {
           ),
         )
         .timeout(const Duration(seconds: 10));
+    final x11Window = window as X11Window;
+    final initialSurface = x11Window.cpuSurface;
+    if (initialSurface == null || x11Window.surfaces.length != 1) {
+      throw StateError('compatible X11 window has no PutImage surface');
+    }
+    final presenter = X11CpuPresenter(x11Window);
     var exposed = false;
     var resized = false;
     final subscription = window.events.listen((event) {
@@ -52,6 +60,19 @@ Future<void> main() async {
         const Duration(seconds: 5),
         'Expose',
       );
+      final firstList = DisplayList();
+      firstList.drawRect(
+        0,
+        0,
+        320,
+        200,
+        firstList.addPaint(colorArgb: 0xffc06020),
+      );
+      final firstPresent = await presenter.renderDisplayList(
+        firstList,
+        clearColor: 0xff101010,
+      );
+      if (!firstPresent.isSuccess) throw StateError('$firstPresent');
       window.setBounds(const Rect.fromLTWH(10, 12, 360, 240));
       await _pumpUntil(
         backend,
@@ -59,8 +80,37 @@ Future<void> main() async {
         const Duration(seconds: 5),
         'ConfigureNotify',
       );
+      final resizedSurface = x11Window.cpuSurface;
+      if (resizedSurface == null ||
+          identical(resizedSurface, initialSurface) ||
+          !initialSurface.isDisposed ||
+          resizedSurface.generation != x11Window.generation) {
+        throw StateError('resize did not replace the X11 CPU surface');
+      }
+      await presenter.idle;
+      final secondList = DisplayList();
+      secondList.drawRect(
+        7.25,
+        8.5,
+        58.75,
+        45.75,
+        secondList.addPaint(colorArgb: 0xff103090),
+      );
+      final damagePresent = await presenter.renderDisplayList(
+        secondList,
+        clearColor: 0xff202020,
+        damage: const Rect.fromLTWH(7.25, 8.5, 51.5, 37.25),
+      );
+      if (!damagePresent.isSuccess) throw StateError('$damagePresent');
+      backend.pumpEvents(timeout: const Duration(milliseconds: 25));
+      stdout.writeln(
+        'X11_PUT_IMAGE=PASS depth=24 format=BGRA8888 '
+        'size=${resizedSurface.pixelWidth}x${resizedSurface.pixelHeight} '
+        'generation=${resizedSurface.generation}',
+      );
     } finally {
       await subscription.cancel();
+      presenter.dispose();
     }
     stdout.writeln('X11_BACKEND_WINDOW=PASS id=${window.id.value}');
     window.close();

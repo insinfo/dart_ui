@@ -3,7 +3,8 @@
 /// This is the X11 entry point: it implements [WindowingBackend], opens the
 /// XCB connection, resolves the scale (section 6.5 and the precedence in
 /// `x11_scale.dart`), owns the display connection and routes core window
-/// events. Presentation and input translation remain explicit follow-up work.
+/// events and exposes a retained core PutImage CPU framebuffer when the root
+/// visual accepts the framework's BGRA layout.
 ///
 /// ## Bootstrap order
 ///
@@ -25,9 +26,9 @@
 ///     protocol keycodes. Xkb gives layouts, compose sequences and LED state;
 ///     it needs
 ///     `libxcb-xkb` and is the next extension to add.
-///   * **No presentation integration.** The existing lower-level path can use
-///     `PutImage`, which copies. `xcb-shm` would eliminate that copy; it is
-///     detected here and is the first performance extension to wire.
+///   * **PutImage copies.** The core CPU path works on compatible TrueColor
+///     visuals, but `xcb-shm` would eliminate that copy; it is detected here
+///     and is the first performance extension to wire.
 library;
 
 import 'dart:io' show Platform;
@@ -42,6 +43,7 @@ import 'x11_events.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
 import 'x11_scale.dart';
+import 'x11_surface.dart';
 import 'x11_window.dart';
 
 /// Opens one X11 connection for [display].
@@ -90,6 +92,7 @@ final class X11WindowingBackend implements WindowingBackend {
   bool _hasShm = false;
   // ignore: prefer_final_fields
   bool _hasXkb = false;
+  bool _supportsCpuPresentation = false;
 
   /// The resolved scale, available after [probe] or [initialize].
   X11ScaleResolution? get scale => _scale;
@@ -143,7 +146,6 @@ final class X11WindowingBackend implements WindowingBackend {
             supported
                 ? const BackendDiagnostic.note(
                     'X11 core window lifecycle is available',
-                    detail: 'CPU presentation and input are not integrated',
                   )
                 : const BackendDiagnostic(
                     kind: DiagnosticKind.rejectedByPolicy,
@@ -254,7 +256,7 @@ final class X11WindowingBackend implements WindowingBackend {
 
     diagnostics.add(const BackendDiagnostic.note(
       'X11 window lifecycle initialized',
-      detail: 'presentation and input remain deferred',
+      detail: 'core PutImage presentation is used on compatible visuals',
     ));
     _connection = connection;
     _initialized = true;
@@ -448,10 +450,18 @@ final class X11WindowingBackend implements WindowingBackend {
     _hasRandr = extensions.contains('RANDR');
     _hasShm = extensions.contains('MIT-SHM');
     _hasXkb = extensions.contains('XKEYBOARD');
+    final cpuClient =
+        connection is X11CpuClient ? connection as X11CpuClient : null;
+    _supportsCpuPresentation = cpuClient?.supportsBgraPutImage ?? false;
     _resolveScale(connection, diagnostics);
     diagnostics.add(BackendDiagnostic.note(
       'extensions: randr=${_hasRandr ? "yes" : "no"}, '
       'shm=${_hasShm ? "yes" : "no"}, xkb=${_hasXkb ? "yes" : "no"}',
+    ));
+    diagnostics.add(BackendDiagnostic.note(
+      _supportsCpuPresentation
+          ? 'core BGRA PutImage presentation is available'
+          : 'core BGRA PutImage presentation is unavailable',
     ));
   }
 
@@ -477,10 +487,11 @@ final class X11WindowingBackend implements WindowingBackend {
       backendName: name,
       supported: supported,
       capabilities: supported
-          ? const <Capability>{
+          ? <Capability>{
               Capability.window,
               Capability.multipleWindows,
               Capability.orderlyShutdown,
+              if (_supportsCpuPresentation) Capability.cpuPresentation,
             }
           : const <Capability>{},
       diagnostics: diagnostics,

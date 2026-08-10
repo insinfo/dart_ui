@@ -21,6 +21,53 @@ import 'dart:ffi';
 
 import '../../foundation/diagnostics.dart';
 
+/// Fixed header of the server setup reply.
+///
+/// Variable vendor/formats/screens data follows these 40 bytes and must be
+/// reached through XCB accessors rather than pointer arithmetic.
+final class XcbSetup extends Struct {
+  @Uint8()
+  external int status;
+  @Uint8()
+  external int pad0;
+  @Uint16()
+  external int protocolMajorVersion;
+  @Uint16()
+  external int protocolMinorVersion;
+  @Uint16()
+  external int length;
+  @Uint32()
+  external int releaseNumber;
+  @Uint32()
+  external int resourceIdBase;
+  @Uint32()
+  external int resourceIdMask;
+  @Uint32()
+  external int motionBufferSize;
+  @Uint16()
+  external int vendorLen;
+  @Uint16()
+  external int maximumRequestLength;
+  @Uint8()
+  external int rootsLen;
+  @Uint8()
+  external int pixmapFormatsLen;
+  @Uint8()
+  external int imageByteOrder;
+  @Uint8()
+  external int bitmapFormatBitOrder;
+  @Uint8()
+  external int bitmapFormatScanlineUnit;
+  @Uint8()
+  external int bitmapFormatScanlinePad;
+  @Uint8()
+  external int minKeycode;
+  @Uint8()
+  external int maxKeycode;
+  @Array(4)
+  external Array<Uint8> pad1;
+}
+
 /// `xcb_screen_t`, as far as the setup reply exposes it.
 final class XcbScreen extends Struct {
   @Uint32()
@@ -65,6 +112,79 @@ final class XcbScreenIterator extends Struct {
   external int index;
 }
 
+/// One pixmap wire format advertised by the X server setup reply.
+///
+/// The root depth alone is not enough to select a CPU pixel layout: depth 24
+/// is commonly transported as either 24 or 32 bits per pixel.  Reading the
+/// server's format keeps the PutImage path honest instead of assuming the
+/// layout of the developer machine.
+final class XcbFormat extends Struct {
+  @Uint8()
+  external int depth;
+  @Uint8()
+  external int bitsPerPixel;
+  @Uint8()
+  external int scanlinePad;
+  @Array(5)
+  external Array<Uint8> pad0;
+}
+
+final class XcbFormatIterator extends Struct {
+  external Pointer<XcbFormat> data;
+  @Int32()
+  external int rem;
+  @Int32()
+  external int index;
+}
+
+/// Header before the variable-length visual list for one allowed depth.
+final class XcbDepth extends Struct {
+  @Uint8()
+  external int depth;
+  @Uint8()
+  external int pad0;
+  @Uint16()
+  external int visualsLen;
+  @Array(4)
+  external Array<Uint8> pad1;
+}
+
+final class XcbDepthIterator extends Struct {
+  external Pointer<XcbDepth> data;
+  @Int32()
+  external int rem;
+  @Int32()
+  external int index;
+}
+
+/// Colour masks and class for one X visual.
+final class XcbVisualType extends Struct {
+  @Uint32()
+  external int visualId;
+  @Uint8()
+  external int visualClass;
+  @Uint8()
+  external int bitsPerRgbValue;
+  @Uint16()
+  external int colormapEntries;
+  @Uint32()
+  external int redMask;
+  @Uint32()
+  external int greenMask;
+  @Uint32()
+  external int blueMask;
+  @Array(4)
+  external Array<Uint8> pad0;
+}
+
+final class XcbVisualTypeIterator extends Struct {
+  external Pointer<XcbVisualType> data;
+  @Int32()
+  external int rem;
+  @Int32()
+  external int index;
+}
+
 /// Every XCB cookie is one sequence number, and they are ABI-identical.
 ///
 /// One Dart type for all of them rather than a dozen indistinguishable copies.
@@ -90,6 +210,18 @@ typedef XcbEvtCN = Pointer<Uint8> Function(Pointer<Void>);
 typedef XcbEvtCD = Pointer<Uint8> Function(Pointer<Void>);
 typedef XcbIterN = XcbScreenIterator Function(Pointer<Void>);
 typedef XcbIterD = XcbScreenIterator Function(Pointer<Void>);
+typedef XcbFormatIterN = XcbFormatIterator Function(Pointer<Void>);
+typedef XcbFormatIterD = XcbFormatIterator Function(Pointer<Void>);
+typedef XcbDepthIterN = XcbDepthIterator Function(Pointer<XcbScreen>);
+typedef XcbDepthIterD = XcbDepthIterator Function(Pointer<XcbScreen>);
+typedef XcbVisualIterN = XcbVisualTypeIterator Function(Pointer<XcbDepth>);
+typedef XcbVisualIterD = XcbVisualTypeIterator Function(Pointer<XcbDepth>);
+typedef XcbFormatNextN = Void Function(Pointer<XcbFormatIterator>);
+typedef XcbFormatNextD = void Function(Pointer<XcbFormatIterator>);
+typedef XcbDepthNextN = Void Function(Pointer<XcbDepthIterator>);
+typedef XcbDepthNextD = void Function(Pointer<XcbDepthIterator>);
+typedef XcbVisualNextN = Void Function(Pointer<XcbVisualTypeIterator>);
+typedef XcbVisualNextD = void Function(Pointer<XcbVisualTypeIterator>);
 typedef XcbWinN = XcbCookie Function(Pointer<Void>, Uint32);
 typedef XcbWinD = XcbCookie Function(Pointer<Void>, int);
 typedef XcbReplyN = Pointer<Uint8> Function(
@@ -217,6 +349,12 @@ final class XcbBindings {
     'xcb_connection_has_error',
     'xcb_get_setup',
     'xcb_setup_roots_iterator',
+    'xcb_setup_pixmap_formats_iterator',
+    'xcb_format_next',
+    'xcb_screen_allowed_depths_iterator',
+    'xcb_depth_next',
+    'xcb_depth_visuals_iterator',
+    'xcb_visualtype_next',
     'xcb_generate_id',
     'xcb_get_file_descriptor',
     'xcb_get_maximum_request_length',
@@ -240,6 +378,7 @@ final class XcbBindings {
     'xcb_get_property_value_length',
     'xcb_send_event',
     'xcb_create_gc',
+    'xcb_create_gc_checked',
     'xcb_free_gc',
     'xcb_put_image',
     'xcb_clear_area',
@@ -284,6 +423,21 @@ final class XcbBindings {
       library.lookupFunction<XcbPtrCN, XcbPtrCD>('xcb_get_setup');
   late final XcbIterD setupRootsIterator =
       library.lookupFunction<XcbIterN, XcbIterD>('xcb_setup_roots_iterator');
+  late final XcbFormatIterD setupPixmapFormatsIterator =
+      library.lookupFunction<XcbFormatIterN, XcbFormatIterD>(
+          'xcb_setup_pixmap_formats_iterator');
+  late final XcbFormatNextD formatNext =
+      library.lookupFunction<XcbFormatNextN, XcbFormatNextD>('xcb_format_next');
+  late final XcbDepthIterD screenAllowedDepthsIterator =
+      library.lookupFunction<XcbDepthIterN, XcbDepthIterD>(
+          'xcb_screen_allowed_depths_iterator');
+  late final XcbDepthNextD depthNext =
+      library.lookupFunction<XcbDepthNextN, XcbDepthNextD>('xcb_depth_next');
+  late final XcbVisualIterD depthVisualsIterator =
+      library.lookupFunction<XcbVisualIterN, XcbVisualIterD>(
+          'xcb_depth_visuals_iterator');
+  late final XcbVisualNextD visualTypeNext = library
+      .lookupFunction<XcbVisualNextN, XcbVisualNextD>('xcb_visualtype_next');
   late final XcbReqChkD requestCheck =
       library.lookupFunction<XcbReqChkN, XcbReqChkD>('xcb_request_check');
   late final XcbCrtWinD createWindow =
@@ -308,6 +462,8 @@ final class XcbBindings {
       library.lookupFunction<XcbSendEvtN, XcbSendEvtD>('xcb_send_event');
   late final XcbCrtGcD createGc =
       library.lookupFunction<XcbCrtGcN, XcbCrtGcD>('xcb_create_gc');
+  late final XcbCrtGcD createGcChecked =
+      library.lookupFunction<XcbCrtGcN, XcbCrtGcD>('xcb_create_gc_checked');
   late final XcbPutImgD putImage =
       library.lookupFunction<XcbPutImgN, XcbPutImgD>('xcb_put_image');
   late final XcbClearD clearArea =

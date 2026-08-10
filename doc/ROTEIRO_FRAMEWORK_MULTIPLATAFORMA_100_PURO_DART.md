@@ -5645,10 +5645,23 @@ Tornar edição de texto uma capacidade central, não um adendo.
   ICCCM/EWMH, map/unmap, bounds, redraw e teardown idempotente;
 - o pump possui mapa XID → janela, orçamento contra starvation e coalesce de
   Configure/Expose/Focus/ClientMessage/Destroy; erros X são diagnosticados;
-- o probe anuncia somente `window`, `multipleWindows` e `orderlyShutdown`;
-  apresentação CPU, input, cursor nativo e DPI por monitor continuam fora;
-- trinta e oito testes X11 portáveis cobrem conexão, ABI/lifecycle da janela,
-  decoder, tradução, coalescimento, roteamento, generation e descarte;
+- a conexão valida `image_byte_order`, formato de pixmap e visual root antes de
+  aceitar BGRA: a primeira versão segura restringe-se a TrueColor depth 24,
+  bpp/pad 32, LSB-first e máscaras RGB canônicas, sem tratar depth 30 como se
+  fosse BGRA8888;
+- cada janela compatível possui framebuffer BGRA retido, GC criado por request
+  checked e apresentação `PutImage`; requests grandes são divididos por um
+  planner puro em bandas verticais ou tiles horizontais, com um único flush;
+- resize invalida a generation, substitui a surface antes de emitir o evento e
+  teardown libera buffer/GC antes do XID; o probe anuncia `cpuPresentation`
+  somente quando o formato real do servidor é compatível;
+- `X11CpuPresenter` rasteriza `DisplayList` diretamente no buffer nativo,
+  reenvia pixels em Expose e repete a lista retida na surface de um resize,
+  sempre revalidando identidade e generation antes de apresentar;
+- setenta e quatro testes X11 portáveis cobrem conexão, layouts ABI, limites
+  core/BIG-REQUESTS, fragmentação sem gaps, surface, damage, resize/lifecycle,
+  presenter, decoder, tradução, coalescimento, roteamento, generation e
+  descarte;
 - o smoke AOT do backend criou, expôs, redimensionou e fechou uma janela real
   sob Xvfb no
   [GitHub Actions #31346512333](https://github.com/insinfo/dart_ui/actions/runs/31346512333),
@@ -5656,7 +5669,7 @@ Tornar edição de texto uma capacidade central, não um adendo.
   verdes no
   [GitHub Actions #31343963060](https://github.com/insinfo/dart_ui/actions/runs/31343963060);
 - as referências locais confirmaram os padrões sem cópia de código: Cairo
-  1.18.4 (LGPL-2.1/MPL-1.1) para create checked e futuro PutImage em bandas,
+  1.18.4 (LGPL-2.1/MPL-1.1) para create checked e PutImage em bandas,
   Avalonia `064b84a` (MIT) para lifecycle/roteamento por XID, e Skia
   `2eed75b` (BSD-3) para drenagem limitada/coalescida;
 - Wayland/Weston segue como POC: o

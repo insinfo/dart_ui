@@ -1,13 +1,12 @@
 /// One top-level X11 window behind the framework's [NativeWindow] contract.
 ///
-/// This first production slice owns window lifecycle and platform events. It
-/// deliberately exposes no presentation surface yet; the following slice
-/// adds the retained PutImage framebuffer without making window creation wait
-/// on rendering work.
+/// Owns window lifecycle, platform events, and a retained PutImage framebuffer
+/// when the connection's root visual supports the framework BGRA layout.
 library;
 
 import 'dart:async';
 
+import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
@@ -18,6 +17,7 @@ import '../../rendering/renderer.dart';
 import 'x11_connection.dart';
 import 'x11_coordinates.dart';
 import 'x11_events.dart';
+import 'x11_surface.dart';
 
 final class X11Window with DisposableMixin implements NativeWindow {
   X11Window._({
@@ -31,6 +31,7 @@ final class X11Window with DisposableMixin implements NativeWindow {
     required bool visible,
     required void Function(X11Window window) onClosed,
   })  : _client = client,
+        _cpuClient = client is X11CpuClient ? client as X11CpuClient : null,
         _id = id,
         _scale = scale,
         _desktopScale = desktopScale,
@@ -48,6 +49,7 @@ final class X11Window with DisposableMixin implements NativeWindow {
       ..width = pixelWidth
       ..height = pixelHeight
       ..mapped = visible;
+    _rebuildSurface();
   }
 
   static X11Window create({
@@ -59,8 +61,12 @@ final class X11Window with DisposableMixin implements NativeWindow {
     required void Function(X11Window window) onClosed,
   }) {
     final space = X11CoordinateSpace(originX: 0, originY: 0, scale: scale);
-    final width = space.logicalToDevicePixels(options.size.width);
-    final height = space.logicalToDevicePixels(options.size.height);
+    final width = _clampXcbExtent(
+      space.logicalToDevicePixels(options.size.width),
+    );
+    final height = _clampXcbExtent(
+      space.logicalToDevicePixels(options.size.height),
+    );
     final position = options.position;
     final x = position == null ? null : (position.dx * scale).round();
     final y = position == null ? null : (position.dy * scale).round();
@@ -90,6 +96,7 @@ final class X11Window with DisposableMixin implements NativeWindow {
   }
 
   final X11WindowClient _client;
+  final X11CpuClient? _cpuClient;
   final NativeWindowId _id;
   final void Function(X11Window window) _onClosed;
   final GenerationToken _generation = GenerationToken();
@@ -97,6 +104,9 @@ final class X11Window with DisposableMixin implements NativeWindow {
       StreamController<PlatformWindowEvent>.broadcast();
   final X11PendingWindowEvents _pending = X11PendingWindowEvents();
   final X11WindowProtocolState _protocol;
+  final List<BackendDiagnostic> _diagnostics = <BackendDiagnostic>[];
+
+  X11PutImageSurface? _surface;
 
   final int xcbWindow;
   final double _scale;
@@ -132,11 +142,29 @@ final class X11Window with DisposableMixin implements NativeWindow {
   WindowState get state => WindowState.normal;
 
   @override
-  List<NativeSurfaceDescriptor> get surfaces =>
-      const <NativeSurfaceDescriptor>[];
+  List<NativeSurfaceDescriptor> get surfaces {
+    final surface = _surface;
+    return surface == null
+        ? const <NativeSurfaceDescriptor>[]
+        : <NativeSurfaceDescriptor>[surface];
+  }
+
+  X11PutImageSurface? get cpuSurface => _surface;
+
+  List<BackendDiagnostic> get diagnostics =>
+      List<BackendDiagnostic>.unmodifiable(_diagnostics);
 
   @override
   Stream<PlatformWindowEvent> get events => _events.stream;
+
+  /// Records a renderer-side failure against this window.
+  void recordRenderDiagnostic(BackendDiagnostic diagnostic) =>
+      _record(diagnostic);
+
+  /// Surfaces an asynchronous presenter failure on the window event stream.
+  void reportError(Object error, StackTrace stackTrace) {
+    if (!_events.isClosed) _events.addError(error, stackTrace);
+  }
 
   SystemCursor get cursor => _cursor;
 
@@ -175,8 +203,12 @@ final class X11Window with DisposableMixin implements NativeWindow {
       X11TopLevelBounds(
         x: (bounds.left * _scale).round(),
         y: (bounds.top * _scale).round(),
-        width: space.logicalToDevicePixels(bounds.width),
-        height: space.logicalToDevicePixels(bounds.height),
+        width: _clampXcbExtent(
+          space.logicalToDevicePixels(bounds.width),
+        ),
+        height: _clampXcbExtent(
+          space.logicalToDevicePixels(bounds.height),
+        ),
       ),
     );
   }
@@ -207,6 +239,23 @@ final class X11Window with DisposableMixin implements NativeWindow {
         height: device.height.toInt(),
       ),
     );
+  }
+
+  /// Uploads the retained CPU framebuffer to the X11 window.
+  BackendDiagnostic? present({Rect? damage}) {
+    throwIfDisposed();
+    final surface = _surface;
+    if (surface == null) {
+      const failure = BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'no X11 CPU surface to present',
+      );
+      _record(failure);
+      return failure;
+    }
+    final failure = surface.present(damage: damage);
+    if (failure != null) _record(failure);
+    return failure;
   }
 
   @override
@@ -245,7 +294,14 @@ final class X11Window with DisposableMixin implements NativeWindow {
       _pending.originDirty = false;
     }
     final destroyed = _pending.destroyed;
-    if (_pending.resized || destroyed) _generation.invalidate();
+    if (_pending.resized || destroyed) {
+      _generation.invalidate();
+      if (destroyed) {
+        _releaseSurface();
+      } else {
+        _rebuildSurface();
+      }
+    }
     X11EventTranslator.emitPending(
       _pending,
       windowId: id,
@@ -266,8 +322,44 @@ final class X11Window with DisposableMixin implements NativeWindow {
     if (!_events.isClosed) _events.add(event);
   }
 
+  void _rebuildSurface() {
+    _releaseSurface();
+    final client = _cpuClient;
+    if (client == null || !client.supportsBgraPutImage || isDisposed) return;
+    if (_protocol.destroyed || _protocol.width <= 0 || _protocol.height <= 0) {
+      return;
+    }
+    try {
+      _surface = X11PutImageSurface.create(
+        client: client,
+        xcbWindow: xcbWindow,
+        pixelWidth: _protocol.width,
+        pixelHeight: _protocol.height,
+        scale: _scale,
+        generation: generation,
+      );
+    } on Object catch (error) {
+      _record(BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'failed to create X11 PutImage surface',
+        detail: '$error',
+      ));
+    }
+  }
+
+  void _releaseSurface() {
+    _surface?.dispose();
+    _surface = null;
+  }
+
+  void _record(BackendDiagnostic diagnostic) {
+    if (_diagnostics.length >= 64) _diagnostics.removeAt(0);
+    _diagnostics.add(diagnostic);
+  }
+
   @override
   void onDispose() {
+    _releaseSurface();
     if (!_protocol.destroyed) {
       _generation.invalidate();
       _client.destroyTopLevelWindow(xcbWindow);
@@ -286,4 +378,12 @@ final class X11Window with DisposableMixin implements NativeWindow {
   String toString() => 'X11Window(id: ${id.value}, '
       'xid: 0x${xcbWindow.toRadixString(16)}, '
       '${_protocol.width}x${_protocol.height}px @ $_scale)';
+
+  // PutImage destinations are signed 16-bit. Keeping framework-requested
+  // extents within that range means every band/tile origin is representable.
+  static int _clampXcbExtent(int value) => value < 1
+      ? 1
+      : value > 0x7fff
+          ? 0x7fff
+          : value;
 }

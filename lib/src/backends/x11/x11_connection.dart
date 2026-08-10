@@ -6,8 +6,9 @@
 /// other's windows for grabs, selections or focus, and a framework that opened
 /// one per window would work until the first popup menu.
 ///
-/// Nothing here allocates during a pump. Every buffer an event drain or a
-/// present touches is allocated once, at [X11Connection.open], and reused.
+/// Nothing here allocates during an event pump. Scratch used by decoding and
+/// protocol replies is allocated once at [X11Connection.open] and reused;
+/// presentation owns a retained native framebuffer per window generation.
 library;
 
 import 'dart:convert';
@@ -16,11 +17,14 @@ import 'dart:io' show pid;
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../rendering/framebuffer.dart';
 import 'x11_bindings.dart';
 import 'x11_events.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
+import 'x11_put_image_plan.dart';
 import 'x11_scale.dart';
+import 'x11_surface.dart';
 
 /// The atoms this backend interns up front, in one batch.
 ///
@@ -164,7 +168,9 @@ final class X11ConnectionAttempt {
 }
 
 /// A live X display connection.
-final class X11Connection with DisposableMixin implements X11WindowClient {
+final class X11Connection
+    with DisposableMixin
+    implements X11WindowClient, X11CpuClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
   /// Opens `$DISPLAY`, or reports exactly what stopped it.
@@ -294,6 +300,13 @@ final class X11Connection with DisposableMixin implements X11WindowClient {
   int root = 0;
   int rootVisual = 0;
   int rootDepth = 0;
+  int imageByteOrder = -1;
+  int rootBitsPerPixel = 0;
+  int rootScanlinePad = 0;
+  int rootVisualClass = -1;
+  int rootRedMask = 0;
+  int rootGreenMask = 0;
+  int rootBlueMask = 0;
   int blackPixel = 0;
   int whitePixel = 0;
   int screenWidthPixels = 0;
@@ -313,6 +326,26 @@ final class X11Connection with DisposableMixin implements X11WindowClient {
   /// window exceeds it by an order of magnitude, so the present path splits
   /// into row bands; see `x11_surface.dart`.
   int maximumRequestBytes = 0;
+  int maximumRequestUnits = 0;
+
+  /// Whether the root window accepts the framework's tightly-packed BGRA
+  /// framebuffer without conversion.
+  ///
+  /// The deliberately conservative first version accepts the ubiquitous
+  /// depth-24 TrueColor visual transported as 32 LSB-first bits. Depth 30,
+  /// bpp24 and server-specific masks remain available to a later conversion
+  /// path, but are never misreported as CPU presentation today.
+  @override
+  bool get supportsBgraPutImage =>
+      rootDepth == 24 &&
+      rootBitsPerPixel == 32 &&
+      rootScanlinePad == 32 &&
+      imageByteOrder == 0 &&
+      rootVisualClass == 4 &&
+      rootRedMask == 0x00ff0000 &&
+      rootGreenMask == 0x0000ff00 &&
+      rootBlueMask == 0x000000ff &&
+      maximumRequestBytes > 24;
 
   int _fileDescriptor = -1;
   int _wakeReadFd = -1;
@@ -345,7 +378,19 @@ final class X11Connection with DisposableMixin implements X11WindowClient {
 
     _fileDescriptor = xcb.getFileDescriptor(_handle);
     // The reply is in 4-byte units and already accounts for BIG-REQUESTS.
-    maximumRequestBytes = xcb.maximumRequestLength(_handle) * 4;
+    maximumRequestUnits = xcb.maximumRequestLength(_handle);
+    maximumRequestBytes = maximumRequestUnits * 4;
+    _setupDiagnostics.add(BackendDiagnostic.note(
+      supportsBgraPutImage
+          ? 'root visual supports BGRA PutImage'
+          : 'root visual cannot use direct BGRA PutImage',
+      detail: 'depth=$rootDepth, bpp=$rootBitsPerPixel, '
+          'pad=$rootScanlinePad, byteOrder=$imageByteOrder, '
+          'class=$rootVisualClass, '
+          'masks=${rootRedMask.toRadixString(16)}/'
+          '${rootGreenMask.toRadixString(16)}/'
+          '${rootBlueMask.toRadixString(16)}',
+    ));
 
     _internWellKnownAtoms();
     _queryExtensions();
@@ -414,7 +459,8 @@ final class X11Connection with DisposableMixin implements X11WindowClient {
     // thing that knows the stride. One screen is the overwhelmingly common
     // case, and taking screen 0 when the requested one is out of range is
     // better than refusing to start.
-    final screen = iterator.data.ref;
+    final screenPointer = iterator.data;
+    final screen = screenPointer.ref;
     if (preferred > 0 && preferred < iterator.rem) {
       _setupDiagnostics.add(BackendDiagnostic.note(
         'DISPLAY requested screen $preferred; using screen 0',
@@ -424,20 +470,81 @@ final class X11Connection with DisposableMixin implements X11WindowClient {
     root = screen.root;
     rootVisual = screen.rootVisual;
     rootDepth = screen.rootDepth;
+    imageByteOrder = setup.cast<XcbSetup>().ref.imageByteOrder;
     blackPixel = screen.blackPixel;
     whitePixel = screen.whitePixel;
     screenWidthPixels = screen.widthInPixels;
     screenHeightPixels = screen.heightInPixels;
     screenWidthMillimetres = screen.widthInMillimeters;
     screenHeightMillimetres = screen.heightInMillimeters;
-    if (rootDepth != 24 && rootDepth != 32 && rootDepth != 30) {
-      _setupDiagnostics.add(BackendDiagnostic.note(
-        'root depth is $rootDepth',
-        detail: 'the CPU present path assumes 32 bits per pixel; a depth '
-            'below 24 will present incorrect colours',
-      ));
-    }
+    _readRootPixmapFormat(setup);
+    _readRootVisual(screenPointer);
     return true;
+  }
+
+  void _readRootPixmapFormat(Pointer<Void> setup) {
+    final storage = libc.allocateZeroed(sizeOf<XcbFormatIterator>());
+    if (storage == nullptr) return;
+    final iterator = storage.cast<XcbFormatIterator>();
+    try {
+      final value = xcb.setupPixmapFormatsIterator(setup);
+      iterator.ref
+        ..data = value.data
+        ..rem = value.rem
+        ..index = value.index;
+      while (iterator.ref.rem > 0 && iterator.ref.data != nullptr) {
+        final format = iterator.ref.data.ref;
+        if (format.depth == rootDepth) {
+          rootBitsPerPixel = format.bitsPerPixel;
+          rootScanlinePad = format.scanlinePad;
+          return;
+        }
+        xcb.formatNext(iterator);
+      }
+    } finally {
+      libc.free(storage);
+    }
+  }
+
+  void _readRootVisual(Pointer<XcbScreen> screen) {
+    final depthsStorage = libc.allocateZeroed(sizeOf<XcbDepthIterator>());
+    final visualsStorage = libc.allocateZeroed(sizeOf<XcbVisualTypeIterator>());
+    if (depthsStorage == nullptr || visualsStorage == nullptr) {
+      libc.free(depthsStorage);
+      libc.free(visualsStorage);
+      return;
+    }
+    final depths = depthsStorage.cast<XcbDepthIterator>();
+    final visuals = visualsStorage.cast<XcbVisualTypeIterator>();
+    try {
+      final depthValue = xcb.screenAllowedDepthsIterator(screen);
+      depths.ref
+        ..data = depthValue.data
+        ..rem = depthValue.rem
+        ..index = depthValue.index;
+      while (depths.ref.rem > 0 && depths.ref.data != nullptr) {
+        final visualValue = xcb.depthVisualsIterator(depths.ref.data);
+        visuals.ref
+          ..data = visualValue.data
+          ..rem = visualValue.rem
+          ..index = visualValue.index;
+        while (visuals.ref.rem > 0 && visuals.ref.data != nullptr) {
+          final visual = visuals.ref.data.ref;
+          if (visual.visualId == rootVisual) {
+            rootVisualClass = visual.visualClass;
+            rootRedMask = visual.redMask;
+            rootGreenMask = visual.greenMask;
+            rootBlueMask = visual.blueMask;
+            return;
+          }
+          xcb.visualTypeNext(visuals);
+        }
+        xcb.depthNext(depths);
+      }
+    } finally {
+      libc.free(visualsStorage);
+      libc.free(depthsStorage);
+    }
   }
 
   bool _openWakePipe(List<BackendDiagnostic> diagnostics) {
@@ -970,6 +1077,170 @@ final class X11Connection with DisposableMixin implements X11WindowClient {
     xcb.flush(_handle);
   }
 
+  // -------------------------------------------------------------------------
+  // Core PutImage CPU surfaces
+  // -------------------------------------------------------------------------
+
+  @override
+  X11CpuBuffer createCpuBuffer({
+    required int xcbWindow,
+    required int pixelWidth,
+    required int pixelHeight,
+  }) {
+    throwIfDisposed();
+    if (!supportsBgraPutImage) {
+      throw StateError('root visual does not support direct BGRA PutImage');
+    }
+    if (xcbWindow == 0 || pixelWidth <= 0 || pixelHeight <= 0) {
+      throw ArgumentError('invalid X11 CPU buffer geometry or window');
+    }
+    if (pixelWidth > 0x7fff || pixelHeight > 0x7fff) {
+      throw RangeError(
+        'core PutImage CPU buffers are limited to 32767x32767 pixels',
+      );
+    }
+    final byteLength = pixelWidth * pixelHeight * 4;
+    final pixels = libc.allocateZeroed(byteLength);
+    if (pixels == nullptr) {
+      throw StateError(
+        'malloc failed for a ${pixelWidth}x$pixelHeight X11 CPU buffer',
+      );
+    }
+    final gc = xcb.generateId(_handle);
+    if (gc == 0) {
+      libc.free(pixels);
+      throw StateError('xcb_generate_id returned zero for a graphics context');
+    }
+    final cookie = xcb.createGcChecked(
+      _handle,
+      gc,
+      xcbWindow,
+      0,
+      valueScratch,
+    );
+    final error = checkRequest(
+      cookie,
+      'CreateGC(0x${gc.toRadixString(16)})',
+    );
+    if (error != null) {
+      libc.free(pixels);
+      throw StateError(error);
+    }
+    try {
+      return _X11NativeCpuBuffer(
+        owner: this,
+        xcbWindow: xcbWindow,
+        gc: gc,
+        pixels: pixels,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      );
+    } on Object {
+      // Creating the Dart view can still fail after malloc/GC succeeded (for
+      // example, an address-space limit on an unusually large window).
+      xcb.freeGc(_handle, gc);
+      xcb.flush(_handle);
+      libc.free(pixels);
+      rethrow;
+    }
+  }
+
+  @override
+  BackendDiagnostic? presentCpuBuffer({
+    required int xcbWindow,
+    required X11CpuBuffer buffer,
+    required X11CpuDamage damage,
+  }) {
+    if (isDisposed || !isValid) {
+      return const BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'X11 connection is unavailable during PutImage',
+      );
+    }
+    final native = _ownedCpuBuffer(buffer, xcbWindow);
+    if (native == null) {
+      return const BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'X11 CPU buffer does not belong to this live window',
+      );
+    }
+    X11PutImagePlan plan;
+    try {
+      plan = X11PutImagePlan.create(
+        pixelWidth: native.framebuffer.width,
+        pixelHeight: native.framebuffer.height,
+        bytesPerRow: native.framebuffer.bytesPerRow,
+        maximumRequestUnits: maximumRequestUnits,
+        left: damage.x,
+        top: damage.y,
+        width: damage.width,
+        height: damage.height,
+      );
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'X11 PutImage request cannot represent the damage region',
+        detail: '$error',
+      );
+    }
+
+    for (final segment in plan.segments) {
+      xcb.putImage(
+        _handle,
+        xcbImageFormatZPixmap,
+        xcbWindow,
+        native.gc,
+        segment.width,
+        segment.height,
+        segment.x,
+        segment.y,
+        0,
+        rootDepth,
+        segment.byteLength,
+        native.pixels + segment.sourceOffset,
+      );
+    }
+    if (xcb.flush(_handle) <= 0 || !isValid) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'X11 connection failed while flushing PutImage',
+        detail: '${plan.segments.length} request(s), '
+            '${plan.totalPayloadBytes} payload bytes',
+      );
+    }
+    return null;
+  }
+
+  @override
+  void destroyCpuBuffer(X11CpuBuffer buffer) {
+    if (buffer is! _X11NativeCpuBuffer || !identical(buffer.owner, this)) {
+      throw ArgumentError.value(buffer, 'buffer', 'not owned by this client');
+    }
+    if (buffer.released) return;
+    buffer.released = true;
+    try {
+      if (!isDisposed && _handle != nullptr) {
+        xcb.freeGc(_handle, buffer.gc);
+        xcb.flush(_handle);
+      }
+    } finally {
+      libc.free(buffer.pixels);
+    }
+  }
+
+  _X11NativeCpuBuffer? _ownedCpuBuffer(
+    X11CpuBuffer buffer,
+    int xcbWindow,
+  ) {
+    if (buffer is! _X11NativeCpuBuffer ||
+        !identical(buffer.owner, this) ||
+        buffer.released ||
+        buffer.xcbWindow != xcbWindow) {
+      return null;
+    }
+    return buffer;
+  }
+
   @override
   bool pollEventInto(X11RawEvent target) {
     throwIfDisposed();
@@ -1124,4 +1395,29 @@ final class X11Connection with DisposableMixin implements X11WindowClient {
   void onDispose() {
     _bag.dispose();
   }
+}
+
+final class _X11NativeCpuBuffer implements X11CpuBuffer {
+  _X11NativeCpuBuffer({
+    required this.owner,
+    required this.xcbWindow,
+    required this.gc,
+    required this.pixels,
+    required int pixelWidth,
+    required int pixelHeight,
+  }) : framebuffer = Framebuffer.wrap(
+          pixels.asTypedList(pixelWidth * pixelHeight * 4),
+          width: pixelWidth,
+          height: pixelHeight,
+          bytesPerRow: pixelWidth * 4,
+        );
+
+  final X11Connection owner;
+  final int xcbWindow;
+  final int gc;
+  final Pointer<Uint8> pixels;
+  bool released = false;
+
+  @override
+  final Framebuffer framebuffer;
 }

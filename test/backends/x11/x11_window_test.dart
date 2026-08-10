@@ -1,18 +1,36 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/x11/x11_connection.dart';
 import 'package:dart_ui/src/backends/x11/x11_events.dart';
 import 'package:dart_ui/src/backends/x11/x11_protocol.dart';
 import 'package:dart_ui/src/backends/x11/x11_scale.dart';
+import 'package:dart_ui/src/backends/x11/x11_surface.dart';
 import 'package:dart_ui/src/backends/x11/x11_window.dart';
+import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/platform/native_window.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
+import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:test/test.dart';
 
-final class _FakeX11WindowClient implements X11WindowClient {
+final class _FakeCpuBuffer implements X11CpuBuffer {
+  _FakeCpuBuffer(int width, int height)
+      : framebuffer = Framebuffer(
+          width: width,
+          height: height,
+          bytesPerRow: width * 4,
+          format: PixelFormat.bgra8888Premultiplied,
+          pixels: Uint8List(width * height * 4),
+        );
+
+  @override
+  final Framebuffer framebuffer;
+}
+
+final class _FakeX11WindowClient implements X11WindowClient, X11CpuClient {
   final int nextWindow = 0x220011;
 
   @override
@@ -47,10 +65,45 @@ final class _FakeX11WindowClient implements X11WindowClient {
   final List<({int window, X11RedrawRegion? region})> redraws =
       <({int window, X11RedrawRegion? region})>[];
   final List<String> errors = <String>[];
+  final List<_FakeCpuBuffer> createdBuffers = <_FakeCpuBuffer>[];
+  final List<X11CpuBuffer> destroyedBuffers = <X11CpuBuffer>[];
+  final List<X11CpuDamage> presentedDamage = <X11CpuDamage>[];
+  final List<String> teardownOrder = <String>[];
 
   int flushCalls = 0;
   int wakeCalls = 0;
   ({int x, int y})? translatedOrigin;
+  bool cpuSupported = false;
+
+  @override
+  bool get supportsBgraPutImage => cpuSupported;
+
+  @override
+  X11CpuBuffer createCpuBuffer({
+    required int xcbWindow,
+    required int pixelWidth,
+    required int pixelHeight,
+  }) {
+    final buffer = _FakeCpuBuffer(pixelWidth, pixelHeight);
+    createdBuffers.add(buffer);
+    return buffer;
+  }
+
+  @override
+  void destroyCpuBuffer(X11CpuBuffer buffer) {
+    destroyedBuffers.add(buffer);
+    teardownOrder.add('surface');
+  }
+
+  @override
+  BackendDiagnostic? presentCpuBuffer({
+    required int xcbWindow,
+    required X11CpuBuffer buffer,
+    required X11CpuDamage damage,
+  }) {
+    presentedDamage.add(damage);
+    return null;
+  }
 
   @override
   int atom(String name) => switch (name) {
@@ -68,7 +121,10 @@ final class _FakeX11WindowClient implements X11WindowClient {
   }
 
   @override
-  void destroyTopLevelWindow(int window) => destroyedWindows.add(window);
+  void destroyTopLevelWindow(int window) {
+    destroyedWindows.add(window);
+    teardownOrder.add('window');
+  }
 
   @override
   void mapTopLevelWindow(int window) => mappedWindows.add(window);
@@ -289,6 +345,45 @@ void main() {
     expect(resized.generation, 1);
     expect(resized.clientSize, const Size(320, 240));
     expect(resized.renderScale, 2);
+  });
+
+  test('CPU surface is replaced on resize and freed before its XID', () {
+    final client = _FakeX11WindowClient()..cpuSupported = true;
+    final window = _createWindow(client);
+
+    final first = window.cpuSurface!;
+    expect(first.generation, 0);
+    expect(first.pixelWidth, 100);
+    expect(first.pixelHeight, 80);
+    first.framebuffer.clear(0x10, 0x20, 0x30, 0xff);
+    expect(window.present(), isNull);
+    expect(
+      client.presentedDamage,
+      <X11CpuDamage>[
+        const X11CpuDamage(x: 0, y: 0, width: 100, height: 80),
+      ],
+    );
+
+    window.handleRawEvent(
+      _raw(type: xcbConfigureNotify, width: 160, height: 90),
+    );
+    window.flushPendingEvents();
+
+    final second = window.cpuSurface!;
+    expect(first.isDisposed, isTrue);
+    expect(second, isNot(same(first)));
+    expect(second.generation, 1);
+    expect(second.pixelWidth, 160);
+    expect(second.pixelHeight, 90);
+    expect(
+        client.destroyedBuffers, <X11CpuBuffer>[client.createdBuffers.first]);
+
+    window.dispose();
+    expect(second.isDisposed, isTrue);
+    expect(
+      client.teardownOrder.sublist(client.teardownOrder.length - 2),
+      <String>['surface', 'window'],
+    );
   });
 
   test('close destroys and reports closure exactly once', () async {

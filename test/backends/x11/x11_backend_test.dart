@@ -1,21 +1,39 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/x11/x11_backend.dart';
 import 'package:dart_ui/src/backends/x11/x11_connection.dart';
 import 'package:dart_ui/src/backends/x11/x11_events.dart';
 import 'package:dart_ui/src/backends/x11/x11_protocol.dart';
 import 'package:dart_ui/src/backends/x11/x11_scale.dart';
+import 'package:dart_ui/src/backends/x11/x11_surface.dart';
 import 'package:dart_ui/src/backends/x11/x11_window.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/platform/native_window.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
+import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:test/test.dart';
 
-final class _FakeConnection implements X11WindowClient {
+final class _FakeBackendCpuBuffer implements X11CpuBuffer {
+  _FakeBackendCpuBuffer(int width, int height)
+      : framebuffer = Framebuffer(
+          width: width,
+          height: height,
+          bytesPerRow: width * 4,
+          format: PixelFormat.bgra8888Premultiplied,
+          pixels: Uint8List(width * height * 4),
+        );
+
+  @override
+  final Framebuffer framebuffer;
+}
+
+final class _FakeConnection implements X11WindowClient, X11CpuClient {
   _FakeConnection({
     this.valid = true,
     this.invalidateDuringInspection = false,
+    this.supportsBgraPutImage = false,
     this.resourceManager,
     Set<String> extensions = const <String>{},
     X11PhysicalScreen? screen,
@@ -31,6 +49,28 @@ final class _FakeConnection implements X11WindowClient {
   bool valid;
   final bool invalidateDuringInspection;
   final String? resourceManager;
+
+  @override
+  final bool supportsBgraPutImage;
+
+  @override
+  X11CpuBuffer createCpuBuffer({
+    required int xcbWindow,
+    required int pixelWidth,
+    required int pixelHeight,
+  }) =>
+      _FakeBackendCpuBuffer(pixelWidth, pixelHeight);
+
+  @override
+  void destroyCpuBuffer(X11CpuBuffer buffer) {}
+
+  @override
+  BackendDiagnostic? presentCpuBuffer({
+    required int xcbWindow,
+    required X11CpuBuffer buffer,
+    required X11CpuDamage damage,
+  }) =>
+      null;
 
   @override
   final Set<String> extensions;
@@ -228,6 +268,26 @@ void main() {
       expect(
         result.diagnostics.map((item) => item.message).join('\n'),
         contains('randr=yes'),
+      );
+    });
+
+    test('advertises CPU presentation only for a compatible visual', () {
+      final connection = _FakeConnection(supportsBgraPutImage: true);
+      final backend = X11WindowingBackend(
+        isLinux: true,
+        operatingSystem: 'linux',
+        environment: const <String, String>{'DISPLAY': ':55'},
+        connectionOpener: (_) => _success(connection),
+      );
+
+      final result = backend.probe();
+
+      expect(result.supported, isTrue);
+      expect(result.supports(Capability.cpuPresentation), isTrue);
+      expect(connection.disposeCalls, 1);
+      expect(
+        result.diagnostics.map((diagnostic) => diagnostic.message),
+        contains('core BGRA PutImage presentation is available'),
       );
     });
 
