@@ -7,6 +7,7 @@ import 'package:test/test.dart';
 final class _FakeConnection implements X11BackendConnection {
   _FakeConnection({
     this.valid = true,
+    this.invalidateDuringInspection = false,
     this.resourceManager,
     Set<String> extensions = const <String>{},
     X11PhysicalScreen? screen,
@@ -19,7 +20,8 @@ final class _FakeConnection implements X11BackendConnection {
               heightInMillimetres: 286,
             );
 
-  final bool valid;
+  bool valid;
+  final bool invalidateDuringInspection;
   final String? resourceManager;
 
   @override
@@ -38,7 +40,10 @@ final class _FakeConnection implements X11BackendConnection {
   bool get isValid => valid && !isDisposed;
 
   @override
-  String? readResourceManager() => resourceManager;
+  String? readResourceManager() {
+    if (invalidateDuringInspection) valid = false;
+    return resourceManager;
+  }
 
   @override
   bool signalWake() {
@@ -129,18 +134,44 @@ void main() {
 
       final result = backend.probe();
 
-      expect(result.supported, isTrue);
+      expect(result.supported, isFalse);
       expect(result.capabilities, isEmpty);
       expect(backend.scale?.scale, 1.5);
       expect(backend.scale?.source, X11ScaleSource.xftDpi);
       expect(connection.disposeCalls, 1);
       expect(
         result.diagnostics.map((item) => item.message).join('\n'),
-        contains('window creation is not integrated'),
+        contains('not selectable yet'),
+      );
+      expect(
+        result.failures.single.kind,
+        DiagnosticKind.rejectedByPolicy,
       );
       expect(
         result.diagnostics.map((item) => item.message).join('\n'),
         contains('randr=yes'),
+      );
+    });
+
+    test('rejects a connection that becomes invalid during inspection', () {
+      final connection = _FakeConnection(invalidateDuringInspection: true);
+      final backend = X11WindowingBackend(
+        isLinux: true,
+        environment: const <String, String>{'DISPLAY': ':78'},
+        connectionOpener: (_) => _success(connection),
+      );
+
+      final result = backend.probe();
+
+      expect(result.supported, isFalse);
+      expect(connection.disposeCalls, 1);
+      expect(
+        result.failures.map((item) => item.message),
+        contains('X11 connection became invalid after probe inspection'),
+      );
+      expect(
+        result.failures.map((item) => item.kind),
+        isNot(contains(DiagnosticKind.rejectedByPolicy)),
       );
     });
 
@@ -259,6 +290,32 @@ void main() {
         throwsA(isA<BackendSelectionError>()),
       );
       expect(connection.disposeCalls, 1);
+    });
+
+    test('initialize revalidates the connection after inspection', () async {
+      final connection = _FakeConnection(invalidateDuringInspection: true);
+      final backend = X11WindowingBackend(
+        isLinux: true,
+        environment: const <String, String>{'DISPLAY': ':102'},
+        connectionOpener: (_) => _success(connection),
+      );
+
+      await expectLater(
+        backend.initialize(),
+        throwsA(
+          isA<BackendSelectionError>().having(
+            (error) =>
+                error.attempts.single.failures.map((item) => item.message),
+            'failures',
+            contains(
+              'X11 connection became invalid after initialization inspection',
+            ),
+          ),
+        ),
+      );
+      expect(connection.disposeCalls, 1);
+      backend.wake();
+      expect(connection.wakeCalls, 0);
     });
   });
 }

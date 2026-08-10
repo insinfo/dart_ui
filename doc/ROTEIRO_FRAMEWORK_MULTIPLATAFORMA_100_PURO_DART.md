@@ -5640,11 +5640,13 @@ Tornar edição de texto uma capacidade central, não um adendo.
   tela, `RESOURCE_MANAGER` e extensões, resolve a escala e fecha a conexão;
 - `initialize()` e `shutdown()` possuem uma conexão separada, com teardown
   idempotente, e `wake()` já usa o self-pipe da conexão;
-- enquanto `createWindow()` não estiver ligado à fachada, o backend não anuncia
-  capabilities de janela, apresentação ou input;
-- oito testes unitários cobrem plataforma/ambiente, falhas de abertura,
+- enquanto `createWindow()` não estiver ligado à fachada, o probe permanece
+  `unsupported` com diagnóstico explícito e não anuncia capabilities de
+  janela, apresentação ou input;
+- dez testes unitários cobrem plataforma/ambiente, falhas de abertura,
   diagnóstico, ownership e descarte único;
-- o smoke da fachada está no job Linux da CI, sob Xvfb, além dos POCs X11 e do
+- o smoke de bootstrap está no job Linux automático da CI, sob Xvfb, além dos
+  POCs X11 e do
   MVP-02 já verdes no
   [GitHub Actions #31343963060](https://github.com/insinfo/dart_ui/actions/runs/31343963060);
 - Wayland/Weston segue como POC: o

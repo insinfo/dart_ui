@@ -125,11 +125,23 @@ final class X11WindowingBackend implements WindowingBackend {
     final attempt = _tryOpen(display);
     diagnostics.addAll(attempt.diagnostics);
     final connection = attempt.connection;
-    var supported = false;
     try {
-      supported = connection != null && connection.isValid;
-      if (supported) {
+      final initiallyValid = connection != null && connection.isValid;
+      if (initiallyValid) {
         _inspectConnection(connection, diagnostics);
+        if (connection.isValid) {
+          diagnostics.add(const BackendDiagnostic(
+            kind: DiagnosticKind.rejectedByPolicy,
+            message: 'X11 windowing backend is not selectable yet',
+            detail: 'createWindow is not implemented; '
+                'no WindowingBackend capabilities are advertised',
+          ));
+        } else {
+          diagnostics.add(const BackendDiagnostic(
+            kind: DiagnosticKind.connectionFailed,
+            message: 'X11 connection became invalid after probe inspection',
+          ));
+        }
       } else {
         if (connection != null) {
           diagnostics.add(const BackendDiagnostic(
@@ -140,7 +152,6 @@ final class X11WindowingBackend implements WindowingBackend {
         _resolveScale(null, diagnostics);
       }
     } on Object catch (error) {
-      supported = false;
       diagnostics.add(BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
         message: 'failed to inspect X11 connection',
@@ -151,7 +162,6 @@ final class X11WindowingBackend implements WindowingBackend {
       try {
         connection?.dispose();
       } on Object catch (error) {
-        supported = false;
         diagnostics.add(BackendDiagnostic(
           kind: DiagnosticKind.connectionFailed,
           message: 'failed to close X11 probe connection',
@@ -160,7 +170,7 @@ final class X11WindowingBackend implements WindowingBackend {
       }
     }
 
-    return _recordProbe(_probeResult(supported, diagnostics));
+    return _recordProbe(_probeResult(false, diagnostics));
   }
 
   // ---------------------------------------------------------------------------
@@ -198,11 +208,10 @@ final class X11WindowingBackend implements WindowingBackend {
           requested: name, attempts: <BackendProbeResult>[result]);
     }
 
+    bool stillValid;
     try {
       _inspectConnection(connection, diagnostics);
-      _connection = connection;
-      _initialized = true;
-      _replaceDiagnostics(diagnostics);
+      stillValid = connection.isValid;
     } on Object catch (error) {
       connection.dispose();
       diagnostics.add(BackendDiagnostic(
@@ -214,6 +223,25 @@ final class X11WindowingBackend implements WindowingBackend {
       throw BackendSelectionError(
           requested: name, attempts: <BackendProbeResult>[result]);
     }
+
+    if (!stillValid) {
+      connection.dispose();
+      diagnostics.add(const BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message:
+            'X11 connection became invalid after initialization inspection',
+      ));
+      final result = _recordProbe(_probeResult(false, diagnostics));
+      throw BackendSelectionError(
+          requested: name, attempts: <BackendProbeResult>[result]);
+    }
+
+    diagnostics.add(const BackendDiagnostic.note(
+      'X11 bootstrap initialized; window creation is not integrated yet',
+    ));
+    _connection = connection;
+    _initialized = true;
+    _replaceDiagnostics(diagnostics);
   }
 
   @override
@@ -341,10 +369,6 @@ final class X11WindowingBackend implements WindowingBackend {
     diagnostics.add(BackendDiagnostic.note(
       'extensions: randr=${_hasRandr ? "yes" : "no"}, '
       'shm=${_hasShm ? "yes" : "no"}, xkb=${_hasXkb ? "yes" : "no"}',
-    ));
-    diagnostics.add(const BackendDiagnostic.note(
-      'X11 bootstrap is available; window creation is not integrated yet',
-      detail: 'no WindowingBackend capabilities are advertised',
     ));
   }
 

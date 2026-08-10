@@ -114,6 +114,17 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
     Pointer<Uint8> displayName = nullptr;
     if (display != null && display.isNotEmpty) {
       displayName = libc.allocateUtf8(display);
+      if (displayName == nullptr) {
+        libc.free(screenNumber.cast<Uint8>());
+        diagnostics.add(const BackendDiagnostic(
+          kind: DiagnosticKind.connectionFailed,
+          message: 'malloc failed while encoding DISPLAY for xcb_connect',
+        ));
+        return X11ConnectionAttempt(
+          connection: null,
+          diagnostics: diagnostics,
+        );
+      }
     }
 
     Pointer<Void> handle;
@@ -148,9 +159,36 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
     }
 
     final connection = X11Connection._(xcb, libc, handle);
-    final ready = connection._initialise(preferredScreen, diagnostics);
+    bool ready;
+    try {
+      ready = connection._initialise(preferredScreen, diagnostics);
+    } on Object catch (error) {
+      diagnostics.add(BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'failed to initialise X11 connection',
+        detail: '$error',
+      ));
+      try {
+        connection.dispose();
+      } on Object catch (disposeError) {
+        diagnostics.add(BackendDiagnostic(
+          kind: DiagnosticKind.connectionFailed,
+          message: 'failed to close partially initialised X11 connection',
+          detail: '$disposeError',
+        ));
+      }
+      return X11ConnectionAttempt(connection: null, diagnostics: diagnostics);
+    }
     if (!ready) {
-      connection.dispose();
+      try {
+        connection.dispose();
+      } on Object catch (error) {
+        diagnostics.add(BackendDiagnostic(
+          kind: DiagnosticKind.connectionFailed,
+          message: 'failed to close rejected X11 connection',
+          detail: '$error',
+        ));
+      }
       return X11ConnectionAttempt(connection: null, diagnostics: diagnostics);
     }
     diagnostics.addAll(connection._setupDiagnostics);
@@ -224,7 +262,7 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
 
     if (!_allocateScratch(diagnostics)) return false;
     if (!_readScreen(preferredScreen, diagnostics)) return false;
-    _openWakePipe(diagnostics);
+    if (!_openWakePipe(diagnostics)) return false;
 
     _fileDescriptor = xcb.getFileDescriptor(_handle);
     // The reply is in 4-byte units and already accounts for BIG-REQUESTS.
@@ -323,9 +361,15 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
     return true;
   }
 
-  void _openWakePipe(List<BackendDiagnostic> diagnostics) {
+  bool _openWakePipe(List<BackendDiagnostic> diagnostics) {
     final fds = libc.allocateZeroed(8).cast<Int32>();
-    if (fds == nullptr) return;
+    if (fds == nullptr) {
+      diagnostics.add(const BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'malloc failed while preparing X11 wake pipe',
+      ));
+      return false;
+    }
     final result = libc.pipe2(fds, oCloexec | oNonblock);
     if (result != 0) {
       diagnostics.add(BackendDiagnostic(
@@ -334,7 +378,7 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
         detail: 'errno=${libc.errno}',
       ));
       libc.free(fds.cast<Uint8>());
-      return;
+      return false;
     }
     _wakeReadFd = fds[0];
     _wakeWriteFd = fds[1];
@@ -345,6 +389,7 @@ final class X11Connection with DisposableMixin implements X11BackendConnection {
       _wakeWriteFd = -1;
       _wakeReadFd = -1;
     });
+    return true;
   }
 
   void _internWellKnownAtoms() {

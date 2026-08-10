@@ -2,10 +2,27 @@
 # Framework de Interface Gráfica Multiplataforma em 100% Puro Dart
 name: CI
 
-# Pausado no push enquanto o foco é o spike macOS main-thread
-# (workflow macos_mainthread_spike.yml). Reative push/PR quando voltar
-# o gate multiplataforma.
 on:
+  push:
+    paths:
+      - '.github/workflows/ci.yml'
+      - 'lib/**'
+      - 'test/**'
+      - 'tool/**'
+      - 'poc/**'
+      - 'mvp/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+  pull_request:
+    paths:
+      - '.github/workflows/ci.yml'
+      - 'lib/**'
+      - 'test/**'
+      - 'tool/**'
+      - 'poc/**'
+      - 'mvp/**'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
   workflow_dispatch:
 
 concurrency:

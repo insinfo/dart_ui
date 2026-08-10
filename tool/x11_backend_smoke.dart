@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:dart_ui/dart_ui.dart' show DiagnosticKind;
 import 'package:dart_ui/src/backends/x11/x11_backend.dart';
 
 Future<void> main() async {
@@ -17,8 +18,19 @@ Future<void> main() async {
 
   try {
     final probe = backend.probe();
-    stdout.writeln('X11_BACKEND_PROBE=${probe.supported ? 'PASS' : 'FAIL'}');
-    if (!probe.supported) {
+    final deferred = !probe.supported &&
+        probe.diagnostics.any(
+          (item) => item.kind == DiagnosticKind.rejectedByPolicy,
+        );
+    final hardFailures = probe.failures
+        .where((item) => item.kind != DiagnosticKind.rejectedByPolicy)
+        .toList();
+    final probePassed = deferred && hardFailures.isEmpty;
+    stdout.writeln(
+      'X11_BACKEND_PROBE=${probePassed ? 'PASS' : 'FAIL'} '
+      'supported=${probe.supported} deferred=createWindow',
+    );
+    if (!probePassed) {
       throw StateError(probe.describe());
     }
 
