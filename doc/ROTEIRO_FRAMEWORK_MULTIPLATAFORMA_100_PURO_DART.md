@@ -5662,12 +5662,13 @@ Tornar edição de texto uma capacidade central, não um adendo.
   core/BIG-REQUESTS, fragmentação sem gaps, surface, damage, resize/lifecycle,
   presenter, decoder, tradução, coalescimento, roteamento, generation e
   descarte;
-- o smoke AOT do backend criou, expôs, redimensionou e fechou uma janela real
-  sob Xvfb no
-  [GitHub Actions #31346512333](https://github.com/insinfo/dart_ui/actions/runs/31346512333),
-  com probe/window/smoke verdes; os POCs X11 e o MVP-02 também permanecem
-  verdes no
-  [GitHub Actions #31343963060](https://github.com/insinfo/dart_ui/actions/runs/31343963060);
+- o smoke AOT rasterizou uma `DisplayList`, apresentou frame completo e damage,
+  redimensionou/recriou a surface e fechou a janela real sob Xvfb no
+  [GitHub Actions #31348127502](https://github.com/insinfo/dart_ui/actions/runs/31348127502),
+  com `cpu=true`, `X11_PUT_IMAGE=PASS`, depth 24/BGRA8888 e generation 1;
+  Analyze/Test/AOT também ficaram verdes em Linux, Windows e macOS, e o gate
+  integral do framework passou nas três plataformas no
+  [GitHub Actions #31348127462](https://github.com/insinfo/dart_ui/actions/runs/31348127462);
 - as referências locais confirmaram os padrões sem cópia de código: Cairo
   1.18.4 (LGPL-2.1/MPL-1.1) para create checked e PutImage em bandas,
   Avalonia `064b84a` (MIT) para lifecycle/roteamento por XID, e Skia
