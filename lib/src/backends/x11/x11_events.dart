@@ -1,11 +1,10 @@
-/// Turning X events into framework events without allocating per event.
+/// Turning X events into framework events without intermediate allocations.
 ///
-/// Section 6.5 forbids an allocation per platform event, and X11 is where that
-/// rule bites hardest. A window with PointerMotion selected receives one
-/// MotionNotify per pointer sample - well over a thousand a second on a
-/// 1000Hz mouse - and a `MotionNotify` object per sample is a garbage
-/// collection every few seconds during a drag. ConfigureNotify is nearly as
-/// bad: a window manager sends one per pixel of a resize drag.
+/// Section 6.5 forbids avoidable allocations per platform event, and X11 is
+/// where that rule bites hardest. A window with PointerMotion selected can
+/// receive well over a thousand samples a second. The framework pointer event
+/// is necessary; an intermediate native event object is not. ConfigureNotify
+/// is coalesced further because a window manager can send one per resize pixel.
 ///
 /// The shape that solves both:
 ///
@@ -23,11 +22,10 @@
 ///     server - the only way this code gets covered at all, since the CI
 ///     runner has Xvfb and no window manager.
 ///
-/// Deferred, and visible here as event codes that are consumed and dropped:
-/// keyboard and pointer input (they belong to an input module that owns XKB
-/// keymaps and XInput2 device state), selections/clipboard, and XDND. Each is
-/// named at the point it is ignored so the gap is discoverable from the code
-/// rather than only from a document.
+/// The core mouse bootstrap is normalised here. Keyboard input remains
+/// deferred to the module that owns XKB keymaps; XInput2 device state,
+/// high-resolution scroll axes, selections/clipboard and XDND are also
+/// intentionally deferred.
 library;
 
 import 'dart:ffi';
@@ -35,6 +33,7 @@ import 'dart:ffi';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/input_events.dart';
 import '../../platform/window_events.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
@@ -55,6 +54,9 @@ final class X11RawEvent {
   int detail = 0;
 
   int sequence = 0;
+
+  /// Core input timestamp in server milliseconds (a wrapping uint32).
+  int timestamp = 0;
 
   /// The window the event is *about*. For StructureNotify events this is the
   /// `window` field, not the `event` field, which differ when the notification
@@ -108,6 +110,7 @@ final class X11RawEvent {
     mode = 0;
     atom = 0;
     data0 = 0;
+    timestamp = 0;
     errorCode = 0;
     majorOpcode = 0;
     minorOpcode = 0;
@@ -164,11 +167,10 @@ final class X11RawEvent {
       case xcbButtonRelease:
       case xcbEnterNotify:
       case xcbLeaveNotify:
-        // Input, deferred to the input module. Decoded far enough to route it
-        // to a window and no further: decoding coordinates and modifier state
-        // for an event nobody consumes is exactly the per-event cost this file
-        // exists to avoid.
+        timestamp = readU32(event, 4);
         window = readU32(event, 12);
+        x = readI16(event, 24);
+        y = readI16(event, 26);
       default:
         window = readU32(event, 4);
     }
@@ -307,6 +309,97 @@ final class X11PendingWindowEvents {
 
 /// The rules, as pure functions over [X11RawEvent] and the window state.
 abstract final class X11EventTranslator {
+  /// Normalises the core pointer subset that does not depend on XInput2.
+  ///
+  /// Core wheel mappings are discrete button pairs. Only the press becomes a
+  /// line scroll event; translating the matching release would double every
+  /// wheel step. Unknown mappings are consumed by [apply] but do not become a
+  /// misleading pointer event.
+  static PlatformWindowEvent? translateCorePointer(
+    X11RawEvent raw, {
+    required NativeWindowId windowId,
+    required int generation,
+    required double scale,
+  }) {
+    switch (raw.type) {
+      case xcbMotionNotify:
+        return PointerMoveEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: Duration(milliseconds: raw.timestamp),
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: Offset(raw.x / scale, raw.y / scale),
+        );
+      case xcbButtonPress:
+      case xcbButtonRelease:
+        final scrollDelta =
+            raw.type == xcbButtonPress ? _coreScrollDelta(raw.detail) : null;
+        if (scrollDelta != null) {
+          return PointerScrollEvent(
+            windowId: windowId,
+            generation: generation,
+            timestamp: Duration(milliseconds: raw.timestamp),
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: Offset(raw.x / scale, raw.y / scale),
+            scrollDelta: scrollDelta,
+            scrollDeltaUnit: ScrollDeltaUnit.lines,
+          );
+        }
+        final button = _corePointerButton(raw.detail);
+        if (button == null) return null;
+        return raw.type == xcbButtonPress
+            ? PointerDownEvent(
+                windowId: windowId,
+                generation: generation,
+                timestamp: Duration(milliseconds: raw.timestamp),
+                pointerId: 0,
+                kind: PointerKind.mouse,
+                logicalPosition: Offset(raw.x / scale, raw.y / scale),
+                button: button,
+              )
+            : PointerUpEvent(
+                windowId: windowId,
+                generation: generation,
+                timestamp: Duration(milliseconds: raw.timestamp),
+                pointerId: 0,
+                kind: PointerKind.mouse,
+                logicalPosition: Offset(raw.x / scale, raw.y / scale),
+                button: button,
+              );
+      case xcbEnterNotify:
+        return WindowPointerEnterEvent(
+          windowId: windowId,
+          generation: generation,
+        );
+      case xcbLeaveNotify:
+        return WindowPointerLeaveEvent(
+          windowId: windowId,
+          generation: generation,
+        );
+      default:
+        return null;
+    }
+  }
+
+  static PointerButton? _corePointerButton(int detail) => switch (detail) {
+        1 => PointerButton.primary,
+        2 => PointerButton.middle,
+        3 => PointerButton.secondary,
+        8 => PointerButton.back,
+        9 => PointerButton.forward,
+        _ => null,
+      };
+
+  static Offset? _coreScrollDelta(int detail) => switch (detail) {
+        4 => const Offset(0, -1),
+        5 => const Offset(0, 1),
+        6 => const Offset(-1, 0),
+        7 => const Offset(1, 0),
+        _ => null,
+      };
+
   /// Applies one decoded event. Sets bits on [pending]; allocates nothing.
   ///
   /// Returns false when the event was not for this window and nothing was

@@ -147,14 +147,10 @@ final class Win32WindowingBackend implements WindowingBackend {
       );
     }
 
-    // Deliberately not claimed. The messages arrive and are routed to
-    // DefWindowProcW, but `window_events.dart` has no input event to carry
-    // them, and a backend that invents its own vocabulary is how two backends
-    // stop agreeing. See the deferral list in win32_window.dart.
     diagnostics.add(
       const BackendDiagnostic.note(
-        'input, IME, clipboard, drag-and-drop and accessibility are not '
-        'implemented; no input event contract exists above this layer yet',
+        'core mouse and keyboard input are normalized; wheel, IME, clipboard, '
+        'drag-and-drop and accessibility are not implemented yet',
       ),
     );
     diagnostics.add(
@@ -172,6 +168,8 @@ final class Win32WindowingBackend implements WindowingBackend {
         Capability.multipleWindows,
         Capability.cpuPresentation,
         Capability.partialPresent,
+        Capability.keyboardInput,
+        Capability.pointerInput,
         Capability.orderlyShutdown,
         if (perMonitor && api.getDpiForWindow != null) Capability.perMonitorDpi,
       },

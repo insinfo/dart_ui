@@ -255,6 +255,8 @@ void main() {
         containsAll(<Capability>[
           Capability.window,
           Capability.multipleWindows,
+          Capability.pointerInput,
+          Capability.scrollInput,
           Capability.orderlyShutdown,
         ]),
       );

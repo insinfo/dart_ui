@@ -74,7 +74,7 @@ geometria pronta.
 
 `ManualDispatcher` tem relógio virtual próprio — **nada nesta camada chama
 `DateTime.now`**, então nenhum teste pode ficar intermitente por tempo. É a
-base dos testes do framework e do futuro backend headless.
+base dos testes do framework e do backend headless.
 
 Políticas, todas testadas: erros propagam com a pilha original e nunca corrompem
 a fila, porque todo callback é desenfileirado e todo timer marcado como disparado

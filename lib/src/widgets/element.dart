@@ -2,6 +2,8 @@ library;
 
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
+import '../platform/input_events.dart';
+import 'pointer_router.dart';
 import 'widget.dart';
 
 enum ElementLifecycle { initial, active, defunct }
@@ -18,6 +20,7 @@ final class BuildOwner {
   final PipelineOwner pipelineOwner;
   final void Function()? onBuildScheduled;
   final _WidgetRenderView _renderView = _WidgetRenderView();
+  final PointerRouter _pointerRouter = PointerRouter();
 
   final List<Element> _dirtyElements = <Element>[];
   Element? _rootElement;
@@ -34,6 +37,16 @@ final class BuildOwner {
   bool get hasScheduledBuilds => _dirtyElements.isNotEmpty;
 
   List<Element> get dirtyElements => List<Element>.unmodifiable(_dirtyElements);
+
+  /// Routes a backend pointer event through this owner's current render tree.
+  ///
+  /// Layout must have been flushed before input is dispatched so hit testing
+  /// observes current geometry. Returns false when the point hits no render
+  /// node.
+  bool dispatchPointerEvent(PointerEvent event) {
+    _throwIfDisposed();
+    return _pointerRouter.route(event, root: _renderView);
+  }
 
   /// Mounts or reconciles the root and brings all scheduled builds up to date.
   Element? updateRoot(Widget? widget) {

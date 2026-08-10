@@ -7,6 +7,7 @@ import 'package:dart_ui/src/backends/x11/x11_protocol.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/platform/input_events.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:test/test.dart';
 
@@ -67,6 +68,7 @@ X11RawEvent _raw({
   int mode = 0,
   int atom = 0,
   int data0 = 0,
+  int timestamp = 0,
 }) {
   return X11RawEvent()
     ..type = type
@@ -79,7 +81,8 @@ X11RawEvent _raw({
     ..height = height
     ..mode = mode
     ..atom = atom
-    ..data0 = data0;
+    ..data0 = data0
+    ..timestamp = timestamp;
 }
 
 void main() {
@@ -172,11 +175,16 @@ void main() {
 
       _withNativeEvent((event) {
         event[0] = xcbMotionNotify;
-        writeU32(event, 4, 0xdeadbeef);
+        writeU32(event, 4, 1234);
         writeU32(event, 12, 14);
+        writeU16(event, 24, -15);
+        writeU16(event, 26, 27);
         raw.decodeFrom(event);
       });
       expect(raw.window, 14);
+      expect(raw.timestamp, 1234);
+      expect(raw.x, -15);
+      expect(raw.y, 27);
     });
 
     test('decodes errors and describes the failed request', () {
@@ -234,6 +242,119 @@ void main() {
   });
 
   group('X11EventTranslator', () {
+    test('normalises core pointer events into logical coordinates', () {
+      final move = X11EventTranslator.translateCorePointer(
+        _raw(
+          type: xcbMotionNotify,
+          x: -30,
+          y: 45,
+          timestamp: 1234,
+        ),
+        windowId: const NativeWindowId(7),
+        generation: 3,
+        scale: 1.5,
+      ) as PointerMoveEvent;
+
+      expect(move.windowId, const NativeWindowId(7));
+      expect(move.generation, 3);
+      expect(move.timestamp, const Duration(milliseconds: 1234));
+      expect(move.pointerId, 0);
+      expect(move.kind, PointerKind.mouse);
+      expect(move.logicalPosition, const Offset(-20, 30));
+
+      final down = X11EventTranslator.translateCorePointer(
+        _raw(type: xcbButtonPress, detail: 3, x: 20, y: 10),
+        windowId: const NativeWindowId(7),
+        generation: 3,
+        scale: 2,
+      ) as PointerDownEvent;
+      expect(down.button, PointerButton.secondary);
+      expect(down.logicalPosition, const Offset(10, 5));
+
+      final up = X11EventTranslator.translateCorePointer(
+        _raw(type: xcbButtonRelease, detail: 2),
+        windowId: const NativeWindowId(7),
+        generation: 3,
+        scale: 2,
+      ) as PointerUpEvent;
+      expect(up.button, PointerButton.middle);
+    });
+
+    test('normalises crossings and rejects unknown buttons', () {
+      expect(
+        X11EventTranslator.translateCorePointer(
+          _raw(type: xcbEnterNotify),
+          windowId: const NativeWindowId(1),
+          generation: 0,
+          scale: 1,
+        ),
+        isA<WindowPointerEnterEvent>(),
+      );
+      expect(
+        X11EventTranslator.translateCorePointer(
+          _raw(type: xcbLeaveNotify),
+          windowId: const NativeWindowId(1),
+          generation: 0,
+          scale: 1,
+        ),
+        isA<WindowPointerLeaveEvent>(),
+      );
+      for (final detail in <int>[10]) {
+        expect(
+          X11EventTranslator.translateCorePointer(
+            _raw(type: xcbButtonPress, detail: detail),
+            windowId: const NativeWindowId(1),
+            generation: 0,
+            scale: 1,
+          ),
+          isNull,
+        );
+      }
+    });
+
+    test('normalises core wheel presses as line scroll events', () {
+      const expectedDeltas = <int, Offset>{
+        4: Offset(0, -1),
+        5: Offset(0, 1),
+        6: Offset(-1, 0),
+        7: Offset(1, 0),
+      };
+
+      for (final entry in expectedDeltas.entries) {
+        final scroll = X11EventTranslator.translateCorePointer(
+          _raw(
+            type: xcbButtonPress,
+            detail: entry.key,
+            x: -30,
+            y: 45,
+            timestamp: 4321,
+          ),
+          windowId: const NativeWindowId(17),
+          generation: 9,
+          scale: 1.5,
+        ) as PointerScrollEvent;
+
+        expect(scroll.windowId, const NativeWindowId(17));
+        expect(scroll.generation, 9);
+        expect(scroll.timestamp, const Duration(milliseconds: 4321));
+        expect(scroll.pointerId, 0);
+        expect(scroll.kind, PointerKind.mouse);
+        expect(scroll.logicalPosition, const Offset(-20, 30));
+        expect(scroll.scrollDelta, entry.value);
+        expect(scroll.scrollDeltaUnit, ScrollDeltaUnit.lines);
+
+        expect(
+          X11EventTranslator.translateCorePointer(
+            _raw(type: xcbButtonRelease, detail: entry.key),
+            windowId: const NativeWindowId(17),
+            generation: 9,
+            scale: 1.5,
+          ),
+          isNull,
+        );
+      }
+    });
+
     test('coalesces configure events into the final geometry', () {
       final state = _windowState();
       final pending = X11PendingWindowEvents();
@@ -505,7 +626,7 @@ void main() {
       expect(pending.exposed, isFalse);
     });
 
-    test('tracks map state and consumes deferred input without side effects',
+    test('tracks map state and consumes input without pending side effects',
         () {
       final state = _windowState();
       final pending = X11PendingWindowEvents();

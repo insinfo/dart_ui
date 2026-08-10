@@ -463,6 +463,10 @@ final class X11WindowingBackend implements WindowingBackend {
           ? 'core BGRA PutImage presentation is available'
           : 'core BGRA PutImage presentation is unavailable',
     ));
+    diagnostics.add(const BackendDiagnostic.note(
+      'core mouse motion, buttons, crossings and wheel are normalized; '
+      'keyboard input awaits XKB integration',
+    ));
   }
 
   void _resolveScale(
@@ -490,6 +494,8 @@ final class X11WindowingBackend implements WindowingBackend {
           ? <Capability>{
               Capability.window,
               Capability.multipleWindows,
+              Capability.pointerInput,
+              Capability.scrollInput,
               Capability.orderlyShutdown,
               if (_supportsCpuPresentation) Capability.cpuPresentation,
             }

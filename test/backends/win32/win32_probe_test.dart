@@ -105,6 +105,8 @@ void main() {
       expect(result.supports(Capability.multipleWindows), isTrue);
       expect(result.supports(Capability.cpuPresentation), isTrue);
       expect(result.supports(Capability.partialPresent), isTrue);
+      expect(result.supports(Capability.keyboardInput), isTrue);
+      expect(result.supports(Capability.pointerInput), isTrue);
       expect(result.supports(Capability.orderlyShutdown), isTrue);
     });
 

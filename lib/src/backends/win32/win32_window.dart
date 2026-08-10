@@ -4,12 +4,10 @@
 ///
 /// Deferred, and documented here because this is where a caller meets them:
 ///
-///   * **Input.** WM_MOUSEMOVE, the button and wheel messages and the keyboard
-///     messages are received and passed to `DefWindowProcW` untouched. There is
-///     no input event in `window_events.dart` to carry them, and inventing one
-///     inside a backend is how two backends end up with different input
-///     vocabularies. The routing cost is one FFI call and no allocation, which
-///     is what section 6.5 asks of the hot path.
+///   * **Wheel and extended pointer input.** Core mouse movement/buttons and
+///     keyboard transitions are normalized into the common input contract.
+///     Wheel, high-resolution pointer data and device-specific state remain
+///     deferred until their common contracts exist.
 ///   * **IME** (roadmap 13.7). WM_IME_* is unhandled, so composition falls back
 ///     to whatever `DefWindowProcW` does. Text input in CJK and with dead keys
 ///     will be wrong until the text-composition contract exists.

@@ -22,6 +22,7 @@
 /// name from common code.
 library;
 
+export 'src/backends/headless/headless_backend.dart';
 export 'src/foundation/diagnostics.dart';
 export 'src/foundation/lifecycle.dart';
 export 'src/geometry/offset.dart';
@@ -68,4 +69,5 @@ export 'src/scheduler/timer_handle.dart';
 export 'src/scheduler/ui_dispatcher.dart';
 export 'src/widgets/basic.dart' hide RenderColoredBox;
 export 'src/widgets/element.dart';
+export 'src/widgets/pointer_router.dart';
 export 'src/widgets/widget.dart';

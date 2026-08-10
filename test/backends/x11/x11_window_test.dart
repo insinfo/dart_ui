@@ -11,6 +11,7 @@ import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/platform/input_events.dart';
 import 'package:dart_ui/src/platform/native_window.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
@@ -203,6 +204,8 @@ X11RawEvent _raw({
   int y = 0,
   int width = 0,
   int height = 0,
+  int detail = 0,
+  int timestamp = 0,
 }) {
   return X11RawEvent()
     ..type = type
@@ -211,7 +214,9 @@ X11RawEvent _raw({
     ..x = x
     ..y = y
     ..width = width
-    ..height = height;
+    ..height = height
+    ..detail = detail
+    ..timestamp = timestamp;
 }
 
 void main() {
@@ -345,6 +350,41 @@ void main() {
     expect(resized.generation, 1);
     expect(resized.clientSize, const Size(320, 240));
     expect(resized.renderScale, 2);
+  });
+
+  test('core pointer input is emitted immediately in logical coordinates',
+      () async {
+    final client = _FakeX11WindowClient();
+    final window = _createWindow(client, scale: 2);
+    addTearDown(window.dispose);
+    final events = <PlatformWindowEvent>[];
+    final subscription = window.events.listen(events.add);
+    addTearDown(subscription.cancel);
+
+    window.handleRawEvent(
+      _raw(
+        type: xcbMotionNotify,
+        x: -20,
+        y: 30,
+        timestamp: 99,
+      ),
+    );
+    window.handleRawEvent(
+      _raw(type: xcbButtonPress, detail: 1, x: 40, y: 10),
+    );
+    window.handleRawEvent(_raw(type: xcbEnterNotify));
+    window.handleRawEvent(_raw(type: xcbLeaveNotify));
+    await Future<void>.delayed(Duration.zero);
+
+    expect(events, hasLength(4));
+    final move = events[0] as PointerMoveEvent;
+    expect(move.logicalPosition, const Offset(-10, 15));
+    expect(move.timestamp, const Duration(milliseconds: 99));
+    final down = events[1] as PointerDownEvent;
+    expect(down.logicalPosition, const Offset(20, 5));
+    expect(down.button, PointerButton.primary);
+    expect(events[2], isA<WindowPointerEnterEvent>());
+    expect(events[3], isA<WindowPointerLeaveEvent>());
   });
 
   test('CPU surface is replaced on resize and freed before its XID', () {

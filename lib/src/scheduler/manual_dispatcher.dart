@@ -1,6 +1,6 @@
 /// A dispatcher with no clock, no thread and no event loop of its own.
 ///
-/// This is the backbone of the framework's tests and of the future headless
+/// This is the backbone of the framework's tests and of the headless
 /// backend, so its value is entirely in being *exact*: the same inputs must
 /// produce the same interleaving on a fast machine, on a loaded CI runner and
 /// under a debugger. Nothing here reads the wall clock. Time only moves when

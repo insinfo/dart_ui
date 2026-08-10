@@ -5359,6 +5359,23 @@ Criar o vocabulário comum sem dependência de plataforma.
 
 ## Fase 2 — Scheduler, dispatcher abstrato e backend headless
 
+### Estado auditado em 2026-08-09
+
+- `HeadlessWindowingBackend` implementa o mesmo contrato dos backends nativos,
+  com probe sempre disponível, múltiplas janelas, lifecycle idempotente e
+  reinicialização sem FFI;
+- `HeadlessWindow` oferece `MemorySurfaceDescriptor`, escala configurável,
+  coordenadas client/screen, show/hide, título, cursor, resize com nova
+  generation, redraw/damage, fechamento e injeção de input normalizado;
+- `pumpEvents()` drena uma fila FIFO sem relógio de parede, inclusive trabalho
+  gerado por listeners durante o pump; close e shutdown preservam a ordem dos
+  eventos e fecham os streams depois da notificação final;
+- testes determinísticos cobrem surface → `CpuRendererBackend` → framebuffer,
+  descarte de input stale, eventos, múltiplas janelas e shutdown;
+- o gate continua aberto para integrar `ManualDispatcher` ao pulse completo,
+  virtual surface screenshot/PNG, golden harness, clipboard/text input falsos,
+  input replay e semantic recorder.
+
 ### Objetivo
 
 Ter uma aplicação sem janela real capaz de executar build/layout/paint.
@@ -5486,6 +5503,15 @@ Se este spike falhar por limitação real de callback/thread, parar expansão e 
 
 ## Fase 5 — Win32 CPU vertical slice
 
+### Estado auditado em 2026-08-09
+
+- janela Win32, DPI, DIB retido, apresentação GDI com damage/resize e replay de
+  `DisplayList` estão integrados e cobertos por testes portáveis;
+- mouse core e transições de teclado são normalizados no contrato comum; o
+  probe agora anuncia `pointerInput` e `keyboardInput` de forma coerente;
+- wheel, foco de widgets, clipboard, semantics, texto real e o Button vertical
+  completo ainda mantêm o gate aberto.
+
 ### Objetivo
 
 Primeira aplicação interativa completa.
@@ -5531,6 +5557,21 @@ Esse exemplo é o primeiro marco público interno. Nenhum outro backend deve ava
 ---
 
 ## Fase 6 — Núcleo de widgets profissional
+
+### Estado auditado em 2026-08-09
+
+- Widget/Element/State, keys, reconciliação, lifecycle, build scheduler e a
+  ligação com a árvore de `RenderObject` já possuem testes portáveis;
+- widgets declarativos iniciais incluem `ColoredBox`, `Padding`, `Align`,
+  `Text` e `GestureDetector`; `Align` preserva Element/RenderObject durante
+  updates e encaminha alignment/widthFactor/heightFactor ao layout;
+- `PointerRouter` liga eventos normalizados ao hit-test deepest-first, faz
+  bubbling e cancelamento de captura; `BuildOwner.dispatchPointerEvent()` e
+  `GestureDetector.onTap` completam a primeira interação declarativa real;
+- layout, painting e hit-test têm infraestrutura funcional, mas texto continua
+  recusando pintura até existir shaping/rasterização reais;
+- foco, routed events, styles, templates, semantics e controles profissionais
+  mantêm o gate da fase aberto.
 
 ### Objetivo
 
@@ -5658,7 +5699,11 @@ Tornar edição de texto uma capacidade central, não um adendo.
 - `X11CpuPresenter` rasteriza `DisplayList` diretamente no buffer nativo,
   reenvia pixels em Expose e repete a lista retida na surface de um resize,
   sempre revalidando identidade e generation antes de apresentar;
-- setenta e quatro testes X11 portáveis cobrem conexão, layouts ABI, limites
+- mouse core normaliza Motion, botões 1/2/3/8/9 e Enter/Leave para os eventos
+  comuns, preservando timestamp, coordenadas lógicas, window id e generation;
+  wheel 4/5/6/7 produz scroll vertical/horizontal em linhas, enquanto teclado
+  continua reservado ao XKB;
+- setenta e oito testes X11 portáveis cobrem conexão, layouts ABI, limites
   core/BIG-REQUESTS, fragmentação sem gaps, surface, damage, resize/lifecycle,
   presenter, decoder, tradução, coalescimento, roteamento, generation e
   descarte;

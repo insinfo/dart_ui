@@ -275,7 +275,16 @@ final class X11Window with DisposableMixin implements NativeWindow {
   /// Accumulates one decoded event. Called only by the owning backend.
   bool handleRawEvent(X11RawEvent raw) {
     if (isDisposed) return false;
-    return X11EventTranslator.apply(raw, _protocol, _pending);
+    final consumed = X11EventTranslator.apply(raw, _protocol, _pending);
+    if (!consumed) return false;
+    final pointerEvent = X11EventTranslator.translateCorePointer(
+      raw,
+      windowId: id,
+      generation: generation,
+      scale: _scale,
+    );
+    if (pointerEvent != null) _emit(pointerEvent);
+    return true;
   }
 
   /// Resolves coalesced state and emits at most one event of each kind.

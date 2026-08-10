@@ -57,6 +57,45 @@ void main() {
       target.dispose();
     });
 
+    test('align widget positions its child and updates in place', () {
+      final BuildOwner owner = _owner();
+      final Element root = owner.updateRoot(
+        const Align(
+          alignment: Alignment.bottomRight,
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+          ),
+        ),
+      )!;
+      final RenderAlign render =
+          (root as RenderObjectElement).renderObject as RenderAlign;
+
+      owner.pipelineOwner.flushLayout();
+
+      expect(render.size, const Size(20, 10));
+      expect(render.child!.size, const Size(4, 2));
+      expect(render.child!.offsetFromParent, const Offset(16, 8));
+
+      owner.updateRoot(
+        const Align(
+          alignment: Alignment.topLeft,
+          widthFactor: 2,
+          heightFactor: 3,
+          child: Padding(
+            padding: EdgeInsets.symmetric(horizontal: 2, vertical: 1),
+          ),
+        ),
+      );
+      owner.pipelineOwner.flushLayout();
+
+      expect(owner.rootElement, same(root));
+      expect(owner.renderRoot, same(render));
+      expect(render.alignment, Alignment.topLeft);
+      expect(render.widthFactor, 2);
+      expect(render.heightFactor, 3);
+      expect(render.child!.offsetFromParent, Offset.zero);
+    });
+
     test('same type and key preserve elements and render objects', () {
       final BuildOwner owner = _owner();
       final Element root = owner.updateRoot(
@@ -166,17 +205,20 @@ void main() {
       );
     });
 
-    test('gesture callbacks refuse the missing pointer router explicitly', () {
+    test('gesture callbacks mount a render-tree pointer target', () {
       final BuildOwner owner = _owner();
 
-      expect(
-        () => owner.updateRoot(
-          GestureDetector(
-            onTap: () {},
-            child: const ColoredBox(color: 1),
-          ),
+      owner.updateRoot(
+        GestureDetector(
+          onTap: () {},
+          child: const ColoredBox(color: 1),
         ),
-        throwsUnsupportedError,
+      );
+
+      expect(owner.renderRoot, isA<RenderTapGestureDetector>());
+      expect(
+        (owner.renderRoot as RenderSingleChildBox).child,
+        isA<RenderColoredBox>(),
       );
     });
   });
