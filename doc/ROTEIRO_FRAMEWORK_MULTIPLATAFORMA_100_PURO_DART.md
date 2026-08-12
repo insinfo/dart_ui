@@ -5573,6 +5573,86 @@ Esse exemplo é o primeiro marco público interno. Nenhum outro backend deve ava
 - foco, routed events, styles, templates, semantics e controles profissionais
   mantêm o gate da fase aberto.
 
+### Estado auditado em 2026-08-12
+
+- `InheritedWidget`/`InheritedElement` publicam valores por subárvore com mapa
+  copiado uma vez por escopo, registro de dependentes e notificação seletiva
+  via `updateShouldNotify`; `BuildContext` expõe
+  `dependOnInheritedWidgetOfExactType`, `getInheritedWidgetOfExactType`,
+  `findAncestorWidgetOfExactType` e `visitAncestorElements`, sem service
+  locator global (seção 24.8);
+- o sistema de propriedades da seção 24.6 existe com os oito níveis de
+  precedência (animação → local → binding → template → trigger → style →
+  herdado → default), `coerce`/`validate`, invalidação declarada por
+  propriedade e escrita por nível que nunca sobrescreve um nível mais forte;
+- `MultiChildRenderObjectWidget`/`Element` reconciliam listas por prefixo,
+  sufixo e chave, e reordenam os filhos do render container por permutação
+  (`RenderBoxContainer.reorderChildren`) em vez de destruir e recriar; `Column`,
+  `Row`, `Stack` e `SizedBox` passam a existir sobre `RenderFlex`/`RenderStack`;
+- foco é uma árvore real: `FocusNode`, `FocusScopeNode`, `FocusManager`,
+  restauração por escopo, `:focus-visible` distinto de `:focused`, modal
+  trapping, janela ativa/inativa e ordem de tabulação derivada da **árvore de
+  render** (ordem visual), não da ordem de build;
+- `ShortcutMap → Intent → Action` com mapas encadeados; `BuildOwner`
+  despacha teclado na ordem controle focado → atalhos → travessia, e
+  `KeyboardEventTarget.handleKeyEvent` passou a devolver se consumiu o evento;
+- estilos com seletores de tipo/classe/chave/pseudo-classe/descendente/filho,
+  especificidade determinística, regras com e sem estado aplicadas nos níveis
+  `style` e `trigger`, e `ResourceDictionary` hierárquico com cache, fallback e
+  detecção de ciclo de alias;
+- temas entregam base neutra clara/escura, Fluent-like, alto contraste e
+  densidade compacta/confortável, com `ControlTemplate`/`TemplateRegistry`;
+- scroll possui `ScrollPosition` puro (extents, clamping, chaining pelo delta
+  não consumido, linhas vs pixels, página, overscroll, fling determinístico,
+  scrollbar, reveal) e `RenderViewport` com clip e hit-test recortados;
+- popups têm posicionamento puro estilo `xdg_positioner` (flip → slide →
+  resize, nessa ordem), escolha entre superfície própria e janela nativa, e uma
+  pilha com dismissal em cascata, light-dismiss, grab e Escape por nível;
+- os controles do gate existem sem controle nativo: `Button`, `ToggleButton`,
+  `CheckBox` (tri-state), `Radio`, `Switch`, `Slider`, `ProgressBar`,
+  `TextField`/`PasswordField` (seleção, caret, undo/redo, Ctrl+A/Z/Y),
+  `ScrollViewer`, `ListBox` virtualizado, `Dialog`, `Menu` e `Tooltip`;
+- a virtualização segue a seção 29.5: planejador puro (`ListVirtualization`)
+  com extents uniformes ou variáveis por soma de prefixos, cache antes/depois,
+  âncora de scroll, e realização por chave estável — 10 000 itens realizam
+  menos de 20 render objects e a semântica anuncia a contagem **total**;
+- a árvore semântica é separada da visual: `SemanticsProvider`,
+  `SemanticsOwner` com ids estáveis por identidade de render object, poda,
+  atualização incremental (added/updated/removed), merge de descendentes,
+  `isBlocking` para modais e ordem de leitura por `sortKey`;
+- diagnóstico de erro nomeia o caminho de widgets (`FrameworkError`), com
+  `ErrorReporter` que por padrão registra **e** relança, e contenção opcional
+  para o shell; o dev overlay reporta média, p99 nearest-rank, frames fora do
+  orçamento e um histograma contra a linha de 16,6 ms;
+- gate fechado: a galeria monta headless e no Win32 CPU a partir da **mesma
+  árvore de widgets**; a suíte de golden compara display lists estáveis por
+  tema e uma delas rasteriza para pixels reais; a operação é integralmente por
+  teclado (Tab/Shift+Tab com wrap, Space/Enter, setas em slider e lista);
+  semântica cobre todos os papéis; 963 testes portáveis passam com
+  `dart analyze` limpo;
+- o benchmark de 10 000 nós (`benchmark/widget_tree_benchmark.dart`) reporta,
+  com asserts desligados: cold build 11,2 ms, rebuild integral 2,5 ms,
+  `setState` em uma folha 0,97 ms, layout 0,89 ms, paint 0,93 ms, hit-test
+  36 µs, scroll de lista de 10 000 itens 0,32 ms e semântica 1,35 ms —
+  o caso que importa (`setState` numa folha) fica bem dentro de um frame;
+- `example/gallery_win32.dart --frames 30` abriu janela Win32 real, apresentou
+  30 frames por DIB, e reportou `WIN32_GALLERY=PASS`, 20 controles próprios do
+  framework e 21 nós semânticos, sem nenhum controle nativo;
+- a regra de camadas passou a ser testada (`test/architecture/layering_test.dart`):
+  nenhum arquivo do core importa backend e nenhum identificador de plataforma
+  (`HWND`, `WndProc`, `xcb_`, `NSWindow`, `objc_msgSend`, `IOSurface`, …)
+  aparece fora de `lib/src/backends`. Quatro arestas anteriores à Fase 6
+  continuam registradas como exceções nomeadas e justificadas, e o teste falha
+  se qualquer uma delas desaparecer ou se surgir uma nova:
+  `rendering/render_object.dart → layout` (typedef de compatibilidade),
+  `scheduler/frame_scheduler.dart → layout` e `→ graphics` (o coordenador de
+  frames dirige o `PipelineOwner`, logo está acima de layout e deveria morar
+  numa camada de aplicação) e `platform/native_window.dart → rendering` (as
+  seções 9.3/9.7 acoplam janela e superfície);
+- pendências reconhecidas: texto continua com a fonte de células fixas de
+  `lib/src/text/placeholder_font.dart` até a Fase 7 entregar shaping real, e
+  animação de estilo (seção 28.7) ainda não tem transições.
+
 ### Objetivo
 
 Estabilizar o framework acima das plataformas.
@@ -5631,6 +5711,70 @@ Estabilizar o framework acima das plataformas.
 ---
 
 ## Fase 7 — Texto, shaping e IME Windows
+
+### Estado auditado em 2026-08-12
+
+- o parser OpenType existe em Dart puro, sem FreeType nem HarfBuzz em runtime:
+  `sfnt.dart` valida o diretório de tabelas uma única vez — offset e tamanho de
+  cada registro contra o tamanho do arquivo — para que nenhum parser de tabela
+  precise reconferir a própria faixa; `font_data.dart` é um cursor big-endian
+  com verificação de limites em toda leitura, de modo que fonte malformada
+  produz `FontFormatException` nomeada em vez de `RangeError` vindo do fundo de
+  um parser (seção 30.8);
+- `head`, `maxp`, `hhea`, `hmtx`, `loca`, `cvt `, `fpgm` e `prep` estão
+  parseados; `hmtx` trata a cauda comprimida, onde glifos além de
+  `numberOfHMetrics` herdam o último avanço — errar isso colapsa toda fonte
+  monoespaçada, que rotineiramente declara um único par;
+- `cmap` implementa os formatos 0, 4, 6 e 12, com a política de preferência de
+  subtabela (Unicode completo → BMP → Mac Roman). O formato 4 é resolvido em um
+  mapa plano ordenado no momento do parse, o que remove de vez a aritmética de
+  `idRangeOffset` — o campo mais implementado errado do formato — do caminho de
+  consulta;
+- `glyf` decodifica **sob demanda**, um glifo por vez, direto em `Path`: o
+  quadrático do TrueType encontra `PathBuilder.quadraticBezierTo` sem modelo
+  intermediário, e a transformação de cada componente de um glifo composto é
+  aplicada ponto a ponto na emissão, produzindo um `Path` por glifo em vez de
+  um por componente. Compostos têm limite de profundidade, porque uma fonte que
+  se auto-referencia é estouro de pilha guiado por entrada não confiável;
+- o **interpretador de bytecode TrueType** está implementado em
+  `lib/src/text/truetype/`, com estado gráfico, zonas (twilight e glyph),
+  phantom points e os grupos de opcodes de pilha, aritmética, controle de
+  fluxo, estado gráfico, memória e movimentação de pontos. O ADR 0003 registra
+  que omitir hinting foi proposto e recusado, e — importante — que os phantom
+  points deixam de ser opcionais por causa disso: o avanço passa a ser a
+  distância entre pp1 e pp2 depois do programa rodar, não `hmtx` direto;
+- rasterização de glifo reusa o `ScanlineFiller` sem alteração alguma: ele já
+  era acumulação analítica de área exata, a mesma família do rasterizador
+  smooth do FreeType, então um glifo é preenchido pelo mesmo código que
+  preenche qualquer caminho. `rendering/text/glyph_raster.dart` é só a mudança
+  de coordenadas (escala e inversão de y) e a alocação da máscara;
+- shaping Latin em `shaper.dart` com kerning pela tabela `kern` legada, medido
+  em DejaVu 48px: "To" fecha 8,16px e "AV" 3,07px, e o teste exige que o
+  deslocamento seja o valor da tabela escalado, não apenas que tenha encolhido.
+  `GlyphRun` carrega índices de cluster desde a primeira versão, porque cursor,
+  seleção e a reordenação que árabe e índico exigem dependem deles e adicioná-
+  los depois significaria mexer em todas as camadas acima;
+- a display list ganhou tabela de fontes (`addFont`/`fontAt`). O tamanho vive
+  no `fontId`, que interna um par (face, tamanho): um shaper molda *num*
+  tamanho, então id, offsets e tamanho são uma decisão indivisível, e um
+  formato capaz de expressá-los separadamente é capaz de expressá-los em
+  desacordo;
+- o backend CPU compõe máscaras de cobertura tingidas pela paint através do
+  mesmo `_fillSpan` que o preenchimento antialiasado usa, o que torna a
+  paridade com `fillRect` estrutural em vez de coincidente. O cache de glifos
+  tem chave (face, glifo, tamanho em 1/64px, bucket subpixel em quartos),
+  evicção LRU sob orçamento em bytes, e métricas de acerto/erro/evicção;
+- descoberta de fontes do sistema em Dart puro, sem DirectWrite, fontconfig ou
+  Core Text — varredura de diretório mais leitura do arquivo. Verificado nesta
+  máquina: 483 arquivos encontrados, `segoeui.ttf` selecionada;
+- três fontes de teste versionadas com licença permissiva (Roboto Apache-2.0,
+  DejaVu, Ahem público), escolhidas para exercitar `loca` curto **e** longo,
+  presença e ausência de `kern`, e métricas exatas. Nada de `C:\Windows\Fonts`,
+  que é proprietário. `NOTICE` na raiz registra o que é derivado e o que foi
+  apenas lido como referência;
+- pendente para fechar o gate: bidi (UAX #9), quebra de linha (UAX #14),
+  GSUB/GPOS além de kerning, fallback de fonte, CFF/CFF2, IME por IMM32,
+  edição multilinha e o corpus comparado com HarfBuzz como oráculo de teste.
 
 ### Objetivo
 

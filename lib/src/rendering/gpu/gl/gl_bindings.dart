@@ -7,6 +7,24 @@
 /// dispatch table per context, and this is that subset - buffers, vertex
 /// arrays, textures, framebuffers, shaders, blend, scissor.
 ///
+/// ## Why the table is built from a resolver and not from a library handle
+///
+/// Looking every entry point up in the shared library works on exactly one
+/// platform family. Windows is the counter-example that forces the design:
+/// `opengl32.dll` exports OpenGL 1.1 and nothing later, because everything
+/// since 1.1 is a *driver* entry point reached through `wglGetProcAddress`,
+/// which only answers with a context already current - and may answer with a
+/// different address for a different pixel format. A dispatch table built by
+/// `DynamicLibrary.lookupFunction` therefore cannot populate there at all:
+/// `glCreateShader`, `glGenBuffers` and `glGenVertexArrays` are simply not
+/// symbols in that DLL.
+///
+/// So [GlApi] takes a [GlProcResolver] - one function from a name to an
+/// address - and the context that was just made current supplies it. On
+/// Windows that is the driver's `wglGetProcAddress` with the DLL's exports as
+/// a fallback for the 1.1 subset; elsewhere it is a plain symbol lookup, and
+/// on EGL it may be `eglGetProcAddress`. None of that is visible here.
+///
 /// ## No package:ffi
 ///
 /// `dart_ui` depends on `meta` and nothing else, and adding a dependency is
@@ -20,7 +38,7 @@
 ///
 /// ## Everything can fail, nothing may throw during a probe
 ///
-/// [GlLibrary.open] and [GlApi.bind] report what was missing instead of
+/// [GlLibrary.open] and [missingGlSymbols] report what was missing instead of
 /// raising. That is what lets `GlRendererBackend.probe()` honour the rule in
 /// section 6.6: a machine without a driver gets a named diagnostic and a
 /// fallback to the CPU renderer, not a stack trace.
@@ -36,6 +54,16 @@ import 'dart:io';
 
 const int glNoError = 0;
 const int glFalseValue = 0;
+
+/// The two errors that leave GL in an undefined state.
+///
+/// Every other error in the registry is defined to have "no other side effect
+/// than to set the error flag" - the offending command is ignored and the
+/// context carries on. These two are not: after either, the contents of every
+/// object are undefined, which is what makes them device loss and the others
+/// merely bugs. See `GlRenderDevice._checkError`.
+const int glOutOfMemory = 0x0505;
+const int glContextLost = 0x0507;
 
 const int glTriangles = 0x0004;
 const int glUnsignedByte = 0x1401;
@@ -70,6 +98,7 @@ const int glTextureMagFilter = 0x2800;
 const int glTextureWrapS = 0x2802;
 const int glTextureWrapT = 0x2803;
 const int glNearest = 0x2600;
+const int glLinear = 0x2601;
 const int glClampToEdge = 0x812F;
 
 const int glRgba = 0x1908;
@@ -87,6 +116,7 @@ const int glPackAlignment = 0x0D05;
 const int glVendor = 0x1F00;
 const int glRenderer = 0x1F01;
 const int glVersion = 0x1F02;
+const int glShadingLanguageVersion = 0x8B8C;
 const int glMaxTextureSize = 0x0D33;
 
 // ---------------------------------------------------------------------------
@@ -138,15 +168,24 @@ final class NativeHeap {
 
   static DynamicLibrary? _crtLibrary() {
     if (!Platform.isWindows) return null;
-    try {
-      return DynamicLibrary.open('msvcrt.dll');
-    } on Object {
-      return null;
+    for (final name in const <String>['msvcrt.dll', 'ucrtbase.dll']) {
+      try {
+        return DynamicLibrary.open(name);
+      } on Object {
+        continue;
+      }
     }
+    return null;
   }
 
-  /// [bytes] of zeroed-on-first-use native memory. The caller owns it and
-  /// must pass it to [release].
+  /// [bytes] of native memory - **bytes**, not elements of `T`.
+  ///
+  /// The type parameter only casts the result. `allocate<Int32>(16)` is four
+  /// integers, not sixteen, and writing sixteen into it corrupts the heap in
+  /// a way that surfaces much later and somewhere else. Every attribute list
+  /// in this renderer goes through [allocateInt32] or [allocatePointers] for
+  /// exactly that reason; reach for this one only when the size is already a
+  /// byte count.
   Pointer<T> allocate<T extends NativeType>(int bytes) {
     final pointer = _malloc(bytes);
     if (pointer == nullptr) {
@@ -154,6 +193,14 @@ final class NativeHeap {
     }
     return pointer.cast<T>();
   }
+
+  /// [count] 32-bit integers. The size every GL and EGL attribute list is in.
+  Pointer<Int32> allocateInt32(int count) =>
+      allocate<Int32>(count * sizeOf<Int32>());
+
+  /// [count] machine pointers, for the out-parameters GL and EGL fill in.
+  Pointer<Pointer<T>> allocatePointers<T extends NativeType>(int count) =>
+      allocate<Pointer<T>>(count * sizeOf<Pointer<Void>>());
 
   void release(Pointer<NativeType> pointer) {
     if (pointer == nullptr) return;
@@ -216,11 +263,9 @@ final class GlLibraryLoad {
 final class GlLibrary {
   /// Candidates per platform, most specific first.
   ///
-  /// Windows is listed even though this backend cannot yet create a context
-  /// there: `opengl32.dll` loads fine and exports GL 1.1, so the probe gets
-  /// to report the *real* obstacle - the missing modern entry points and the
-  /// missing offscreen context - instead of "library not found", which would
-  /// send a reader looking for a driver install that is already present.
+  /// On Windows the library that answers exports GL 1.1 and the WGL entry
+  /// points; everything modern comes from the resolver the context builds on
+  /// top of it. See the library comment.
   static List<String> candidates() {
     if (Platform.isWindows) return const <String>['opengl32.dll'];
     if (Platform.isMacOS) {
@@ -250,9 +295,26 @@ final class GlLibrary {
 // The dispatch table
 // ---------------------------------------------------------------------------
 
-/// Symbols [GlApi.bind] needs. Checked before any of them is bound, so a
-/// partial driver produces one report naming all of them rather than a throw
-/// on the first.
+/// A name to an address, or [nullptr] when this context has no such entry
+/// point. Never throws: a missing symbol is an answer, not a failure.
+typedef GlProcResolver = Pointer<Void> Function(String name);
+
+/// A resolver that only looks in [library]'s export table.
+///
+/// Correct wherever the GL library exports the whole API - Mesa, and any
+/// `libGL.so` - and deliberately not enough on Windows, where it finds only
+/// the 1.1 subset and is used as the *fallback* half of a WGL resolver.
+GlProcResolver libraryProcResolver(DynamicLibrary library) => (String name) {
+      try {
+        return library.lookup<Void>(name);
+      } on Object {
+        return nullptr;
+      }
+    };
+
+/// Symbols [GlApi] needs. Checked before any of them is bound, so a partial
+/// driver produces one report naming all of them rather than a throw on the
+/// first.
 const List<String> kRequiredGlSymbols = <String>[
   'glGetError',
   'glGetString',
@@ -308,253 +370,327 @@ const List<String> kRequiredGlSymbols = <String>[
   'glReadPixels',
 ];
 
-/// Names in [kRequiredGlSymbols] that [library] does not export.
+/// Names in [kRequiredGlSymbols] that [resolve] cannot find.
 ///
-/// On Windows this is expected to be long: `opengl32.dll` exports GL 1.1 and
-/// everything since is reached through `wglGetProcAddress`, which needs a
-/// current context, which needs a window. Reporting the list is exactly the
-/// point - it names why this backend is unavailable there.
-List<String> missingGlSymbols(DynamicLibrary library) {
+/// Must be called with the context current on any platform whose resolver
+/// asks the driver rather than the export table - which is all of them that
+/// matter. Reporting the whole list at once is the point: a driver missing
+/// vertex array objects and framebuffer objects should say so in one probe,
+/// not one crash at a time.
+List<String> missingGlSymbols(GlProcResolver resolve) {
   final missing = <String>[];
   for (final symbol in kRequiredGlSymbols) {
+    Pointer<Void> address;
     try {
-      if (!library.providesSymbol(symbol)) missing.add(symbol);
+      address = resolve(symbol);
     } on Object {
-      missing.add(symbol);
+      address = nullptr;
     }
+    if (address == nullptr) missing.add(symbol);
   }
   return missing;
 }
 
 /// The bound entry points.
 ///
-/// Every field is `late final`, so a symbol is looked up the first time it is
-/// called and a missing one throws *there* rather than at construction. That
-/// is why [missingGlSymbols] exists and why the backend runs it before it
-/// builds one of these: the probe has to name every missing symbol at once,
-/// and lazy binding alone would report them one crash at a time.
+/// Every field is `late final`, so an entry point is resolved the first time
+/// it is called and a missing one throws *there* rather than at construction.
+/// That is why [missingGlSymbols] exists and why the backend runs it before
+/// it builds one of these: the probe has to name every missing symbol at
+/// once, and lazy binding alone would report them one crash at a time.
 final class GlApi {
-  GlApi(this.library);
+  GlApi(this.resolveProc);
 
-  final DynamicLibrary library;
+  /// Where the addresses come from. Bound to the context that was current
+  /// when this table was built; using it under a different context is
+  /// undefined on Windows, which is why a device owns exactly one of each.
+  final GlProcResolver resolveProc;
 
-  late final int Function() getError =
-      library.lookupFunction<Uint32 Function(), int Function()>('glGetError');
+  Pointer<Void> _proc(String name) {
+    final address = resolveProc(name);
+    if (address == nullptr) {
+      throw StateError(
+        'the GL entry point $name could not be resolved; the probe is '
+        'supposed to have refused this device before anything called it',
+      );
+    }
+    return address;
+  }
 
-  late final Pointer<Uint8> Function(int) getString = library.lookupFunction<
-      Pointer<Uint8> Function(Uint32),
-      Pointer<Uint8> Function(int)>('glGetString');
+  late final int Function() getError = _proc('glGetError')
+      .cast<NativeFunction<Uint32 Function()>>()
+      .asFunction<int Function()>();
+
+  late final Pointer<Uint8> Function(int) getString = _proc('glGetString')
+      .cast<NativeFunction<Pointer<Uint8> Function(Uint32)>>()
+      .asFunction<Pointer<Uint8> Function(int)>();
 
   late final void Function(int, Pointer<Int32>) getIntegerv =
-      library.lookupFunction<Void Function(Uint32, Pointer<Int32>),
-          void Function(int, Pointer<Int32>)>('glGetIntegerv');
+      _proc('glGetIntegerv')
+          .cast<NativeFunction<Void Function(Uint32, Pointer<Int32>)>>()
+          .asFunction<void Function(int, Pointer<Int32>)>();
 
-  late final void Function(int, int, int, int) viewport =
-      library.lookupFunction<Void Function(Int32, Int32, Int32, Int32),
-          void Function(int, int, int, int)>('glViewport');
+  late final void Function(int, int, int, int) viewport = _proc('glViewport')
+      .cast<NativeFunction<Void Function(Int32, Int32, Int32, Int32)>>()
+      .asFunction<void Function(int, int, int, int)>();
 
-  late final void Function(int, int, int, int) scissor = library.lookupFunction<
-      Void Function(Int32, Int32, Int32, Int32),
-      void Function(int, int, int, int)>('glScissor');
+  late final void Function(int, int, int, int) scissor = _proc('glScissor')
+      .cast<NativeFunction<Void Function(Int32, Int32, Int32, Int32)>>()
+      .asFunction<void Function(int, int, int, int)>();
 
-  late final void Function(int) enable = library
-      .lookupFunction<Void Function(Uint32), void Function(int)>('glEnable');
+  late final void Function(int) enable = _proc('glEnable')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
-  late final void Function(int) disable = library
-      .lookupFunction<Void Function(Uint32), void Function(int)>('glDisable');
+  late final void Function(int) disable = _proc('glDisable')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
-  late final void Function(int, int) blendFunc = library.lookupFunction<
-      Void Function(Uint32, Uint32), void Function(int, int)>('glBlendFunc');
+  late final void Function(int, int) blendFunc = _proc('glBlendFunc')
+      .cast<NativeFunction<Void Function(Uint32, Uint32)>>()
+      .asFunction<void Function(int, int)>();
 
   late final void Function(double, double, double, double) clearColor =
-      library.lookupFunction<Void Function(Float, Float, Float, Float),
-          void Function(double, double, double, double)>('glClearColor');
+      _proc('glClearColor')
+          .cast<NativeFunction<Void Function(Float, Float, Float, Float)>>()
+          .asFunction<void Function(double, double, double, double)>();
 
-  late final void Function(int) clear = library
-      .lookupFunction<Void Function(Uint32), void Function(int)>('glClear');
+  late final void Function(int) clear = _proc('glClear')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
-  late final void Function() finish =
-      library.lookupFunction<Void Function(), void Function()>('glFinish');
+  late final void Function() finish = _proc('glFinish')
+      .cast<NativeFunction<Void Function()>>()
+      .asFunction<void Function()>();
 
   late final void Function(int, Pointer<Uint32>) genBuffers =
-      library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
-          void Function(int, Pointer<Uint32>)>('glGenBuffers');
+      _proc('glGenBuffers')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
 
   late final void Function(int, Pointer<Uint32>) deleteBuffers =
-      library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
-          void Function(int, Pointer<Uint32>)>('glDeleteBuffers');
+      _proc('glDeleteBuffers')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
 
-  late final void Function(int, int) bindBuffer = library.lookupFunction<
-      Void Function(Uint32, Uint32), void Function(int, int)>('glBindBuffer');
+  late final void Function(int, int) bindBuffer = _proc('glBindBuffer')
+      .cast<NativeFunction<Void Function(Uint32, Uint32)>>()
+      .asFunction<void Function(int, int)>();
 
   late final void Function(int, int, Pointer<Void>, int) bufferData =
-      library.lookupFunction<
-          Void Function(Uint32, IntPtr, Pointer<Void>, Uint32),
-          void Function(int, int, Pointer<Void>, int)>('glBufferData');
+      _proc('glBufferData')
+          .cast<
+              NativeFunction<
+                  Void Function(Uint32, IntPtr, Pointer<Void>, Uint32)>>()
+          .asFunction<void Function(int, int, Pointer<Void>, int)>();
 
   late final void Function(int, Pointer<Uint32>) genVertexArrays =
-      library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
-          void Function(int, Pointer<Uint32>)>('glGenVertexArrays');
+      _proc('glGenVertexArrays')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
 
   late final void Function(int, Pointer<Uint32>) deleteVertexArrays =
-      library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
-          void Function(int, Pointer<Uint32>)>('glDeleteVertexArrays');
+      _proc('glDeleteVertexArrays')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
 
-  late final void Function(int) bindVertexArray =
-      library.lookupFunction<Void Function(Uint32), void Function(int)>(
-          'glBindVertexArray');
+  late final void Function(int) bindVertexArray = _proc('glBindVertexArray')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
   late final void Function(int) enableVertexAttribArray =
-      library.lookupFunction<Void Function(Uint32), void Function(int)>(
-          'glEnableVertexAttribArray');
+      _proc('glEnableVertexAttribArray')
+          .cast<NativeFunction<Void Function(Uint32)>>()
+          .asFunction<void Function(int)>();
 
   late final void Function(int, int, int, int, int, Pointer<Void>)
-      vertexAttribPointer = library.lookupFunction<
-          Void Function(Uint32, Int32, Uint32, Uint8, Int32, Pointer<Void>),
-          void Function(
-              int, int, int, int, int, Pointer<Void>)>('glVertexAttribPointer');
+      vertexAttribPointer = _proc('glVertexAttribPointer')
+          .cast<
+              NativeFunction<
+                  Void Function(Uint32, Int32, Uint32, Uint8, Int32,
+                      Pointer<Void>)>>()
+          .asFunction<void Function(int, int, int, int, int, Pointer<Void>)>();
 
-  late final int Function(int) createShader =
-      library.lookupFunction<Uint32 Function(Uint32), int Function(int)>(
-          'glCreateShader');
+  late final int Function(int) createShader = _proc('glCreateShader')
+      .cast<NativeFunction<Uint32 Function(Uint32)>>()
+      .asFunction<int Function(int)>();
 
-  late final void Function(int) deleteShader =
-      library.lookupFunction<Void Function(Uint32), void Function(int)>(
-          'glDeleteShader');
+  late final void Function(int) deleteShader = _proc('glDeleteShader')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
   late final void Function(int, int, Pointer<Pointer<Uint8>>, Pointer<Int32>)
-      shaderSource = library.lookupFunction<
-          Void Function(Uint32, Int32, Pointer<Pointer<Uint8>>, Pointer<Int32>),
-          void Function(int, int, Pointer<Pointer<Uint8>>,
-              Pointer<Int32>)>('glShaderSource');
+      shaderSource = _proc('glShaderSource')
+          .cast<
+              NativeFunction<
+                  Void Function(Uint32, Int32, Pointer<Pointer<Uint8>>,
+                      Pointer<Int32>)>>()
+          .asFunction<
+              void Function(
+                  int, int, Pointer<Pointer<Uint8>>, Pointer<Int32>)>();
 
-  late final void Function(int) compileShader =
-      library.lookupFunction<Void Function(Uint32), void Function(int)>(
-          'glCompileShader');
+  late final void Function(int) compileShader = _proc('glCompileShader')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
   late final void Function(int, int, Pointer<Int32>) getShaderiv =
-      library.lookupFunction<Void Function(Uint32, Uint32, Pointer<Int32>),
-          void Function(int, int, Pointer<Int32>)>('glGetShaderiv');
+      _proc('glGetShaderiv')
+          .cast<
+              NativeFunction<Void Function(Uint32, Uint32, Pointer<Int32>)>>()
+          .asFunction<void Function(int, int, Pointer<Int32>)>();
 
   late final void Function(int, int, Pointer<Int32>, Pointer<Uint8>)
-      getShaderInfoLog = library.lookupFunction<
-          Void Function(Uint32, Int32, Pointer<Int32>, Pointer<Uint8>),
-          void Function(
-              int, int, Pointer<Int32>, Pointer<Uint8>)>('glGetShaderInfoLog');
+      getShaderInfoLog = _proc('glGetShaderInfoLog')
+          .cast<
+              NativeFunction<
+                  Void Function(
+                      Uint32, Int32, Pointer<Int32>, Pointer<Uint8>)>>()
+          .asFunction<
+              void Function(int, int, Pointer<Int32>, Pointer<Uint8>)>();
 
-  late final int Function() createProgram = library
-      .lookupFunction<Uint32 Function(), int Function()>('glCreateProgram');
+  late final int Function() createProgram = _proc('glCreateProgram')
+      .cast<NativeFunction<Uint32 Function()>>()
+      .asFunction<int Function()>();
 
-  late final void Function(int) deleteProgram =
-      library.lookupFunction<Void Function(Uint32), void Function(int)>(
-          'glDeleteProgram');
+  late final void Function(int) deleteProgram = _proc('glDeleteProgram')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
-  late final void Function(int, int) attachShader = library.lookupFunction<
-      Void Function(Uint32, Uint32), void Function(int, int)>('glAttachShader');
+  late final void Function(int, int) attachShader = _proc('glAttachShader')
+      .cast<NativeFunction<Void Function(Uint32, Uint32)>>()
+      .asFunction<void Function(int, int)>();
 
   late final void Function(int, int, Pointer<Uint8>) bindAttribLocation =
-      library.lookupFunction<Void Function(Uint32, Uint32, Pointer<Uint8>),
-          void Function(int, int, Pointer<Uint8>)>('glBindAttribLocation');
+      _proc('glBindAttribLocation')
+          .cast<
+              NativeFunction<Void Function(Uint32, Uint32, Pointer<Uint8>)>>()
+          .asFunction<void Function(int, int, Pointer<Uint8>)>();
 
-  late final void Function(int) linkProgram =
-      library.lookupFunction<Void Function(Uint32), void Function(int)>(
-          'glLinkProgram');
+  late final void Function(int) linkProgram = _proc('glLinkProgram')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
   late final void Function(int, int, Pointer<Int32>) getProgramiv =
-      library.lookupFunction<Void Function(Uint32, Uint32, Pointer<Int32>),
-          void Function(int, int, Pointer<Int32>)>('glGetProgramiv');
+      _proc('glGetProgramiv')
+          .cast<
+              NativeFunction<Void Function(Uint32, Uint32, Pointer<Int32>)>>()
+          .asFunction<void Function(int, int, Pointer<Int32>)>();
 
   late final void Function(int, int, Pointer<Int32>, Pointer<Uint8>)
-      getProgramInfoLog = library.lookupFunction<
-          Void Function(Uint32, Int32, Pointer<Int32>, Pointer<Uint8>),
-          void Function(
-              int, int, Pointer<Int32>, Pointer<Uint8>)>('glGetProgramInfoLog');
+      getProgramInfoLog = _proc('glGetProgramInfoLog')
+          .cast<
+              NativeFunction<
+                  Void Function(
+                      Uint32, Int32, Pointer<Int32>, Pointer<Uint8>)>>()
+          .asFunction<
+              void Function(int, int, Pointer<Int32>, Pointer<Uint8>)>();
 
-  late final void Function(int) useProgram =
-      library.lookupFunction<Void Function(Uint32), void Function(int)>(
-          'glUseProgram');
+  late final void Function(int) useProgram = _proc('glUseProgram')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
   late final int Function(int, Pointer<Uint8>) getUniformLocation =
-      library.lookupFunction<Int32 Function(Uint32, Pointer<Uint8>),
-          int Function(int, Pointer<Uint8>)>('glGetUniformLocation');
+      _proc('glGetUniformLocation')
+          .cast<NativeFunction<Int32 Function(Uint32, Pointer<Uint8>)>>()
+          .asFunction<int Function(int, Pointer<Uint8>)>();
 
-  late final void Function(int, double, double) uniform2f =
-      library.lookupFunction<Void Function(Int32, Float, Float),
-          void Function(int, double, double)>('glUniform2f');
+  late final void Function(int, double, double) uniform2f = _proc('glUniform2f')
+      .cast<NativeFunction<Void Function(Int32, Float, Float)>>()
+      .asFunction<void Function(int, double, double)>();
 
-  late final void Function(int, int) uniform1i = library.lookupFunction<
-      Void Function(Int32, Int32), void Function(int, int)>('glUniform1i');
+  late final void Function(int, int) uniform1i = _proc('glUniform1i')
+      .cast<NativeFunction<Void Function(Int32, Int32)>>()
+      .asFunction<void Function(int, int)>();
 
   late final void Function(int, Pointer<Uint32>) genTextures =
-      library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
-          void Function(int, Pointer<Uint32>)>('glGenTextures');
+      _proc('glGenTextures')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
 
   late final void Function(int, Pointer<Uint32>) deleteTextures =
-      library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
-          void Function(int, Pointer<Uint32>)>('glDeleteTextures');
+      _proc('glDeleteTextures')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
 
-  late final void Function(int, int) bindTexture = library.lookupFunction<
-      Void Function(Uint32, Uint32), void Function(int, int)>('glBindTexture');
+  late final void Function(int, int) bindTexture = _proc('glBindTexture')
+      .cast<NativeFunction<Void Function(Uint32, Uint32)>>()
+      .asFunction<void Function(int, int)>();
 
-  late final void Function(
-          int, int, int, int, int, int, int, int, Pointer<Void>) texImage2D =
-      library.lookupFunction<
-          Void Function(Uint32, Int32, Int32, Int32, Int32, Int32, Uint32,
-              Uint32, Pointer<Void>),
-          void Function(int, int, int, int, int, int, int, int,
-              Pointer<Void>)>('glTexImage2D');
+  late final void Function(int, int, int, int, int, int, int, int,
+      Pointer<Void>) texImage2D = _proc('glTexImage2D')
+      .cast<
+          NativeFunction<
+              Void Function(Uint32, Int32, Int32, Int32, Int32, Int32, Uint32,
+                  Uint32, Pointer<Void>)>>()
+      .asFunction<
+          void Function(
+              int, int, int, int, int, int, int, int, Pointer<Void>)>();
 
-  late final void Function(
-          int, int, int, int, int, int, int, int, Pointer<Void>) texSubImage2D =
-      library.lookupFunction<
-          Void Function(Uint32, Int32, Int32, Int32, Int32, Int32, Uint32,
-              Uint32, Pointer<Void>),
-          void Function(int, int, int, int, int, int, int, int,
-              Pointer<Void>)>('glTexSubImage2D');
+  late final void Function(int, int, int, int, int, int, int, int,
+      Pointer<Void>) texSubImage2D = _proc('glTexSubImage2D')
+      .cast<
+          NativeFunction<
+              Void Function(Uint32, Int32, Int32, Int32, Int32, Int32, Uint32,
+                  Uint32, Pointer<Void>)>>()
+      .asFunction<
+          void Function(
+              int, int, int, int, int, int, int, int, Pointer<Void>)>();
 
   late final void Function(int, int, int) texParameteri =
-      library.lookupFunction<Void Function(Uint32, Uint32, Int32),
-          void Function(int, int, int)>('glTexParameteri');
+      _proc('glTexParameteri')
+          .cast<NativeFunction<Void Function(Uint32, Uint32, Int32)>>()
+          .asFunction<void Function(int, int, int)>();
 
-  late final void Function(int) activeTexture =
-      library.lookupFunction<Void Function(Uint32), void Function(int)>(
-          'glActiveTexture');
+  late final void Function(int) activeTexture = _proc('glActiveTexture')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
-  late final void Function(int, int) pixelStorei = library.lookupFunction<
-      Void Function(Uint32, Int32), void Function(int, int)>('glPixelStorei');
+  late final void Function(int, int) pixelStorei = _proc('glPixelStorei')
+      .cast<NativeFunction<Void Function(Uint32, Int32)>>()
+      .asFunction<void Function(int, int)>();
 
   late final void Function(int, Pointer<Uint32>) genFramebuffers =
-      library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
-          void Function(int, Pointer<Uint32>)>('glGenFramebuffers');
+      _proc('glGenFramebuffers')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
 
   late final void Function(int, Pointer<Uint32>) deleteFramebuffers =
-      library.lookupFunction<Void Function(Int32, Pointer<Uint32>),
-          void Function(int, Pointer<Uint32>)>('glDeleteFramebuffers');
+      _proc('glDeleteFramebuffers')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
 
-  late final void Function(int, int) bindFramebuffer = library.lookupFunction<
-      Void Function(Uint32, Uint32),
-      void Function(int, int)>('glBindFramebuffer');
+  late final void Function(int, int) bindFramebuffer =
+      _proc('glBindFramebuffer')
+          .cast<NativeFunction<Void Function(Uint32, Uint32)>>()
+          .asFunction<void Function(int, int)>();
 
   late final void Function(int, int, int, int, int) framebufferTexture2D =
-      library.lookupFunction<
-          Void Function(Uint32, Uint32, Uint32, Uint32, Int32),
-          void Function(int, int, int, int, int)>('glFramebufferTexture2D');
+      _proc('glFramebufferTexture2D')
+          .cast<
+              NativeFunction<
+                  Void Function(Uint32, Uint32, Uint32, Uint32, Int32)>>()
+          .asFunction<void Function(int, int, int, int, int)>();
 
   late final int Function(int) checkFramebufferStatus =
-      library.lookupFunction<Uint32 Function(Uint32), int Function(int)>(
-          'glCheckFramebufferStatus');
+      _proc('glCheckFramebufferStatus')
+          .cast<NativeFunction<Uint32 Function(Uint32)>>()
+          .asFunction<int Function(int)>();
 
   late final void Function(int, int, int, Pointer<Void>) drawElements =
-      library.lookupFunction<
-          Void Function(Uint32, Int32, Uint32, Pointer<Void>),
-          void Function(int, int, int, Pointer<Void>)>('glDrawElements');
+      _proc('glDrawElements')
+          .cast<
+              NativeFunction<
+                  Void Function(Uint32, Int32, Uint32, Pointer<Void>)>>()
+          .asFunction<void Function(int, int, int, Pointer<Void>)>();
 
   late final void Function(int, int, int, int, int, int, Pointer<Void>)
-      readPixels = library.lookupFunction<
-          Void Function(
-              Int32, Int32, Int32, Int32, Uint32, Uint32, Pointer<Void>),
-          void Function(
-              int, int, int, int, int, int, Pointer<Void>)>('glReadPixels');
+      readPixels = _proc('glReadPixels')
+          .cast<
+              NativeFunction<
+                  Void Function(Int32, Int32, Int32, Int32, Uint32, Uint32,
+                      Pointer<Void>)>>()
+          .asFunction<
+              void Function(int, int, int, int, int, int, Pointer<Void>)>();
 
   /// The GL string for [name], or an empty string when the driver refuses.
   String stringOf(int name) => readNativeUtf8(getString(name));

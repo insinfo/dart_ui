@@ -14,7 +14,8 @@
 ///   scheduler   <- foundation
 ///   graphics    <- foundation, geometry
 ///   platform    <- foundation, geometry, scheduler
-///   rendering   <- foundation, geometry, graphics
+///   text        <- foundation, geometry, graphics
+///   rendering   <- foundation, geometry, graphics, text
 ///   layout      <- foundation, geometry, graphics
 ///   widgets     <- layout
 ///
@@ -23,8 +24,11 @@
 library;
 
 export 'src/backends/headless/headless_backend.dart';
+export 'src/backends/headless/headless_test_support.dart';
+export 'src/diagnostics/dev_overlay.dart';
 export 'src/foundation/diagnostics.dart';
 export 'src/foundation/lifecycle.dart';
+export 'src/gallery/gallery.dart';
 export 'src/geometry/offset.dart';
 export 'src/geometry/path.dart';
 export 'src/geometry/rect.dart';
@@ -46,15 +50,19 @@ export 'src/layout/render_constrained_box.dart';
 export 'src/layout/render_flex.dart';
 export 'src/layout/render_padding.dart';
 export 'src/layout/render_stack.dart';
+export 'src/layout/render_viewport.dart';
 export 'src/platform/backend_selection.dart';
 export 'src/platform/input_events.dart';
 export 'src/platform/native_window.dart';
+export 'src/platform/system_fonts.dart';
 export 'src/platform/window_events.dart';
+export 'src/rendering/cpu_canvas.dart';
 export 'src/rendering/cpu_renderer.dart';
 export 'src/rendering/framebuffer.dart';
 export 'src/rendering/path/coverage_span_sink.dart';
 export 'src/rendering/path/fill_rule.dart';
 export 'src/rendering/path/scanline_filler.dart';
+export 'src/rendering/path/stroker.dart';
 export 'src/rendering/raster/blend.dart';
 export 'src/rendering/raster/clip_stack.dart';
 export 'src/rendering/raster/rasterizer.dart';
@@ -63,11 +71,29 @@ export 'src/rendering/renderer.dart';
 export 'src/rendering/replay/display_list_player.dart';
 export 'src/rendering/replay/recording_sink.dart';
 export 'src/rendering/replay/replay_state.dart';
+export 'src/rendering/text/font_registry.dart';
+export 'src/rendering/text/text_painter.dart';
 export 'src/scheduler/dispatcher_priority.dart';
+export 'src/scheduler/frame_scheduler.dart';
 export 'src/scheduler/manual_dispatcher.dart';
 export 'src/scheduler/timer_handle.dart';
 export 'src/scheduler/ui_dispatcher.dart';
+export 'src/text/shaper.dart';
+export 'src/text/typeface.dart';
+export 'src/widgets/actions.dart';
 export 'src/widgets/basic.dart' hide RenderColoredBox;
+export 'src/widgets/control.dart';
+export 'src/widgets/controls.dart';
 export 'src/widgets/element.dart';
+export 'src/widgets/errors.dart';
+export 'src/widgets/focus.dart';
+export 'src/widgets/focus_scope.dart';
+export 'src/widgets/keyboard_router.dart';
+export 'src/widgets/list_box.dart';
 export 'src/widgets/pointer_router.dart';
+export 'src/widgets/popup.dart';
+export 'src/widgets/properties.dart';
+export 'src/widgets/semantics.dart';
+export 'src/widgets/style.dart';
+export 'src/widgets/theme.dart';
 export 'src/widgets/widget.dart';

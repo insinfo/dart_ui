@@ -238,25 +238,26 @@ void main() {
       expect(pixelAt(target.framebuffer, 8, 8).$1, 0);
     });
 
-    test('a stroke-styled path is refused rather than filled', () async {
-      final target = await targetOf(8, 8);
+    test('a stroke-styled path draws its outline, not its enclosed region',
+        () async {
+      final target = await targetOf(16, 16);
       final list = DisplayList();
       final paint = list.addPaint(
         colorArgb: 0xFFFFFFFF,
         style: paintStyleStroke,
-        strokeWidth: 1,
+        strokeWidth: 2,
       );
       list.drawPath(
-        list.addPath(Path.rect(const Rect.fromLTRB(1, 1, 7, 7))),
+        list.addPath(Path.rect(const Rect.fromLTRB(4, 4, 12, 12))),
         paint,
       );
 
-      // Filling the enclosed region would draw a solid block where a border
-      // was asked for - wrong output that looks deliberate.
-      expect(
-        () => target.renderDisplayList(list, clearColor: 0),
-        throwsA(isA<UnsupportedCapabilityError>()),
-      );
+      await target.renderDisplayList(list, clearColor: 0);
+
+      // The border, and only the border. Filling the enclosed region would
+      // draw a solid block where a frame was asked for.
+      expect(pixelAt(target.framebuffer, 8, 4).$1, 255);
+      expect(pixelAt(target.framebuffer, 8, 8).$1, 0);
     });
   });
 
@@ -313,7 +314,8 @@ void main() {
       expect(pixelAt(target.framebuffer, 17, 17).$1, 0);
     });
 
-    test('a stroke-styled rounded rect is refused, by the player', () async {
+    test('a stroke-styled rounded rect is a frame with rounded corners',
+        () async {
       final target = await targetOf(20, 20);
       final list = DisplayList();
       final paint = list.addPaint(
@@ -321,37 +323,243 @@ void main() {
         style: paintStyleStroke,
         strokeWidth: 2,
       );
-      list.drawRRect(
-        2,
-        2,
-        18,
-        18,
-        4,
-        4,
-        4,
-        4,
-        4,
-        4,
-        4,
-        4,
-        paint,
-      );
+      list.drawRRect(2, 2, 18, 18, 4, 4, 4, 4, 4, 4, 4, 4, paint);
 
-      // Two layers refuse this and they are not redundant. The player rejects
-      // drawRRect with a non-fill style because it has no stroke primitive to
-      // emit to; the sink rejects it again for paths, which the player passes
-      // through untouched. Whichever fires, nothing gets filled as a solid
-      // block where a border was asked for.
+      await target.renderDisplayList(list, clearColor: 0xFF000000);
+
+      // Ink on the straight part of the top edge, which the 2-wide pen
+      // straddles: rows 1 and 2.
+      expect(pixelAt(target.framebuffer, 10, 1).$1, 255);
+      expect(pixelAt(target.framebuffer, 10, 2).$1, 255);
+      // Not inside, and not outside.
+      expect(pixelAt(target.framebuffer, 10, 5).$1, 0);
+      expect(pixelAt(target.framebuffer, 10, 10).$1, 0);
+      expect(pixelAt(target.framebuffer, 10, 0).$1, 0);
+      // The corner is still round. The centreline's corner arc has radius 4
+      // about (6, 6) and the pen reaches 1 either side of it, so ink lives
+      // between radius 3 and 5: pixel (1, 1), whose centre is 6.36 out, is
+      // clear, and pixel (2, 2) at 4.95 is only grazed. A mitred square
+      // corner - which is what stroking the bounding box would give - fills
+      // both of them solid.
+      expect(pixelAt(target.framebuffer, 1, 1).$1, 0);
+      expect(pixelAt(target.framebuffer, 2, 2).$1, inExclusiveRange(0, 255));
+    });
+  });
+
+  group('strokes put ink where the pen sweeps', () {
+    /// A one-segment open contour.
+    Path segment(double x0, double y0, double x1, double y1) =>
+        (PathBuilder()
+              ..moveTo(x0, y0)
+              ..lineTo(x1, y1))
+            .build();
+
+    /// The alpha of the column at [x], top to bottom.
+    List<int> column(Framebuffer buffer, int x, int height) => <int>[
+          for (var y = 0; y < height; y++) pixelAt(buffer, x, y).$4,
+        ];
+
+    test('a horizontal line is width tall and centred on the centreline',
+        () async {
+      // The bug this is here for: offsetting to one side only. That produces a
+      // line of the right thickness sitting half a width off the geometry it
+      // was meant to trace, which looks like a layout bug, not a stroker one.
+      final target = await targetOf(16, 16);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0xFFFFFFFF,
+        style: paintStyleStroke,
+        strokeWidth: 4,
+      );
+      list.drawPath(list.addPath(segment(2, 8, 14, 8)), paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      // Rows 6..9 inclusive: the pen spans y in [6, 10], four pixels, two
+      // either side of y = 8. Full coverage, so exactly 255 - the edges land
+      // on pixel boundaries and nothing is antialiased.
       expect(
-        () => target.renderDisplayList(list, clearColor: 0),
-        throwsA(
-          predicate<Object>(
-            (e) => e.toString().toLowerCase().contains('stroke'),
-            'an error naming stroking as the missing piece',
-          ),
-        ),
+        column(target.framebuffer, 8, 16),
+        <int>[0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 0, 0, 0],
       );
     });
+
+    test('an open contour ends square at its endpoint: the butt cap default',
+        () async {
+      // Cap, join and miter limit have no operand in the display list, so the
+      // sink supplies StrokeStyle's defaults. This pins the one that is
+      // visible on a plain line, so a change to the default is a failing test
+      // rather than a picture nobody compares.
+      final target = await targetOf(16, 16);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0xFFFFFFFF,
+        style: paintStyleStroke,
+        strokeWidth: 4,
+      );
+      list.drawPath(list.addPath(segment(4, 8, 12, 8)), paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      // Ink up to the endpoint and not one pixel past it. A square cap would
+      // reach x = 14 and a round cap would reach it with a curve.
+      expect(pixelAt(target.framebuffer, 4, 8).$4, 255);
+      expect(pixelAt(target.framebuffer, 11, 8).$4, 255);
+      expect(pixelAt(target.framebuffer, 3, 8).$4, 0);
+      expect(pixelAt(target.framebuffer, 12, 8).$4, 0);
+    });
+
+    test('a stroked rectangle is a frame, hollow in the middle', () async {
+      final target = await targetOf(20, 20);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0xFFFFFFFF,
+        style: paintStyleStroke,
+        strokeWidth: 2,
+      );
+      list.drawRect(5, 5, 15, 15, paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      final buffer = target.framebuffer;
+      // The pen straddles each edge: rows/columns 4 and 5 on the near side,
+      // 14 and 15 on the far one.
+      for (final int x in <int>[4, 5, 14, 15]) {
+        expect(pixelAt(buffer, x, 10).$4, 255, reason: 'vertical edge at $x');
+        expect(pixelAt(buffer, 10, x).$4, 255, reason: 'horizontal edge at $x');
+      }
+      // Inside the frame and outside it, both clear.
+      expect(pixelAt(buffer, 10, 10).$4, 0);
+      expect(pixelAt(buffer, 10, 7).$4, 0);
+      expect(pixelAt(buffer, 10, 3).$4, 0);
+      expect(pixelAt(buffer, 10, 16).$4, 0);
+      // The corner is mitred, so the outer corner pixel of the frame is ink
+      // where a naive four-line stroke would leave a notch.
+      expect(pixelAt(buffer, 4, 4).$4, 255);
+    });
+
+    test('fillAndStroke draws both halves, and the stroke is not swallowed',
+        () async {
+      // What the pixels can and cannot show. With one colour per paint - the
+      // wire format has no second one - a fill drawn *over* the stroke is
+      // indistinguishable from a stroke drawn over the fill: same colour, and
+      // source-over composition of a colour with itself is commutative. So a
+      // "the overlap is the stroke's colour" assertion is not writable here.
+      //
+      // What is writable, with a translucent paint, is that the band the two
+      // halves share was composited TWICE - which is the observable that dies
+      // if either half is skipped, and the reason the sink draws the fill
+      // first is documented at drawDevicePath. A caller who wants a border in
+      // a different colour issues two commands, which is the case the order
+      // will matter for the moment a paint can carry two colours.
+      final target = await targetOf(20, 20);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0x80FFFFFF,
+        style: paintStyleFillAndStroke,
+        strokeWidth: 4,
+      );
+      list.drawRect(5, 5, 15, 15, paint);
+
+      await target.renderDisplayList(list, clearColor: 0xFF000000);
+
+      final buffer = target.framebuffer;
+      final int fillOnly = pixelAt(buffer, 10, 9).$1;
+      final int strokeOnly = pixelAt(buffer, 10, 3).$1;
+      final int both = pixelAt(buffer, 10, 6).$1;
+
+      // The fill: the shape's interior, which the pen never reaches.
+      expect(fillOnly, greaterThan(0));
+      // The stroke's outer half: outside the rectangle entirely, so only a
+      // stroke can have put ink there.
+      expect(strokeOnly, greaterThan(0));
+      // The stroke's inner half, over the fill.
+      expect(both, greaterThan(fillOnly));
+      expect(both, greaterThan(strokeOnly));
+      // Beyond the pen's outer edge, nothing.
+      expect(pixelAt(buffer, 10, 2).$1, 0);
+    });
+
+    test('stroke width scales with the device transform', () async {
+      // Stroking happens in local space and the outline is transformed, so a
+      // border thickens with the subtree it belongs to - a 2 px rule inside a
+      // 2x scaled scene is 4 device pixels. The alternative, a width fixed in
+      // device pixels, would make every border in a zoomed UI hairline-thin.
+      final target = await targetOf(32, 32);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0xFFFFFFFF,
+        style: paintStyleStroke,
+        strokeWidth: 2,
+      );
+      list.drawPath(list.addPath(segment(2, 8, 14, 8)), paint);
+
+      await target.renderDisplayList(
+        list,
+        clearColor: 0,
+        deviceTransform: const Transform2D.scaling(2, 2),
+      );
+
+      final List<int> alphas = column(target.framebuffer, 16, 32);
+      final int inked = alphas.where((int a) => a != 0).length;
+      expect(inked, 4, reason: 'a 2-unit pen under 2x is 4 device pixels');
+      // Still centred, now on the transformed centreline y = 16.
+      expect(alphas.indexWhere((int a) => a != 0), 14);
+      expect(alphas.lastIndexWhere((int a) => a != 0), 17);
+    });
+
+    test('a non-uniform scale stretches the pen, not just its width', () async {
+      // The outline is transformed, so the pen is an ellipse under scale(3, 1)
+      // and a vertical line comes out three times as wide while a horizontal
+      // one does not thicken at all. A single scalar width scaled by "the"
+      // device scale - whichever axis it picked - cannot express this.
+      final target = await targetOf(32, 16);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0xFFFFFFFF,
+        style: paintStyleStroke,
+        strokeWidth: 2,
+      );
+      list.drawPath(list.addPath(segment(4, 2, 4, 14)), paint);
+
+      await target.renderDisplayList(
+        list,
+        clearColor: 0,
+        deviceTransform: const Transform2D.scaling(3, 1),
+      );
+
+      final List<int> row = <int>[
+        for (var x = 0; x < 32; x++) pixelAt(target.framebuffer, x, 8).$4,
+      ];
+      expect(row.where((int a) => a != 0).length, 6);
+      expect(row.indexWhere((int a) => a != 0), 9);
+      expect(row.lastIndexWhere((int a) => a != 0), 14);
+    });
+
+    test('a zero-width stroke draws nothing rather than throwing', () async {
+      // A width animating through zero is not a programming error the frame
+      // can react to, so it is a stroke of no width - not a hairline, and not
+      // an exception in the middle of a paint.
+      final target = await targetOf(8, 8);
+      final list = DisplayList();
+      final paint = list.addPaint(
+        colorArgb: 0xFFFFFFFF,
+        style: paintStyleStroke,
+      );
+      list
+        ..drawPath(list.addPath(Path.rect(const Rect.fromLTRB(1, 1, 7, 7))),
+            paint)
+        ..drawRect(1, 1, 7, 7, paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      for (var y = 0; y < 8; y++) {
+        for (var x = 0; x < 8; x++) {
+          expect(pixelAt(target.framebuffer, x, y).$4, 0);
+        }
+      }
+    });
+
   });
 
   group('MemoryRenderTarget', () {

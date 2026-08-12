@@ -151,6 +151,7 @@ final class Win32Api {
   // -------------------------------------------------------------------------
 
   late final int Function() getLastError;
+  late final int Function() getCurrentThreadId;
   late final int Function(Pointer<Uint16>) getModuleHandleW;
   late final int Function() _getProcessHeap;
   late final Pointer<Void> Function(int, int, int) _heapAlloc;
@@ -159,6 +160,9 @@ final class Win32Api {
   void _bindKernel32() {
     getLastError = _kernel32
         .lookupFunction<Uint32 Function(), int Function()>('GetLastError');
+    getCurrentThreadId =
+        _kernel32.lookupFunction<Uint32 Function(), int Function()>(
+            'GetCurrentThreadId');
     getModuleHandleW = _kernel32.lookupFunction<
         IntPtr Function(Pointer<Uint16>),
         int Function(Pointer<Uint16>)>('GetModuleHandleW');
@@ -199,6 +203,7 @@ final class Win32Api {
   late final int Function(int, int) showWindow;
   late final int Function(int) updateWindow;
   late final int Function(int, int, int, int) defWindowProcW;
+  late final int Function(int) getKeyState;
   late final int Function(Pointer<Msg>, int, int, int, int) peekMessageW;
   late final int Function(Pointer<Msg>) translateMessage;
   late final int Function(Pointer<Msg>) dispatchMessageW;
@@ -223,6 +228,12 @@ final class Win32Api {
   late final int Function(int, Pointer<Uint32>, int, int, int)
       msgWaitForMultipleObjectsEx;
   late final int Function(Pointer<TrackMouseEventStruct>) trackMouseEvent;
+
+  /// Mouse capture. Without it a drag that leaves the window stops delivering
+  /// WM_MOUSEMOVE, and a slider being dragged simply freezes.
+  late final int Function(int) setCapture;
+  late final int Function() releaseCapture;
+  late final int Function() getCapture;
 
   late final int Function(
           int,
@@ -262,6 +273,9 @@ final class Win32Api {
     defWindowProcW = _user32.lookupFunction<
         IntPtr Function(IntPtr, Uint32, IntPtr, IntPtr),
         int Function(int, int, int, int)>('DefWindowProcW');
+    getKeyState =
+        _user32.lookupFunction<Int16 Function(Uint32), int Function(int)>(
+            'GetKeyState');
     peekMessageW = _user32.lookupFunction<
         Int32 Function(Pointer<Msg>, IntPtr, Uint32, Uint32, Uint32),
         int Function(Pointer<Msg>, int, int, int, int)>('PeekMessageW');
@@ -343,6 +357,13 @@ final class Win32Api {
     trackMouseEvent = _user32.lookupFunction<
         Int32 Function(Pointer<TrackMouseEventStruct>),
         int Function(Pointer<TrackMouseEventStruct>)>('TrackMouseEvent');
+    setCapture =
+        _user32.lookupFunction<IntPtr Function(IntPtr), int Function(int)>(
+            'SetCapture');
+    releaseCapture = _user32
+        .lookupFunction<Int32 Function(), int Function()>('ReleaseCapture');
+    getCapture =
+        _user32.lookupFunction<IntPtr Function(), int Function()>('GetCapture');
     setTimer = _user32.lookupFunction<
         IntPtr Function(
             IntPtr,
@@ -416,6 +437,15 @@ final class Win32Api {
   int Function()? getDpiForSystem;
   int Function(Pointer<Win32Rect>, int, int, int, int)?
       adjustWindowRectExForDpi;
+  int Function(int)? openClipboard;
+  int Function()? closeClipboard;
+  int Function()? emptyClipboard;
+  int Function(int)? getClipboardData;
+  int Function(int, int)? setClipboardData;
+  int Function(int, int)? globalAlloc;
+  int Function(int)? globalLock;
+  int Function(int)? globalUnlock;
+  int Function(int)? globalFree;
 
   /// Which awareness API to call. Decided once, reported by the probe.
   late final Win32DpiAwarenessApi dpiAwarenessApi;
@@ -476,6 +506,65 @@ final class Win32Api {
           int Function(Pointer<Win32Rect>, int, int, int,
               int)>('AdjustWindowRectExForDpi'),
     );
+    openClipboard = tryLookup(
+      _user32,
+      'OpenClipboard',
+      (library) =>
+          library.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+              'OpenClipboard'),
+    );
+    closeClipboard = tryLookup(
+      _user32,
+      'CloseClipboard',
+      (library) => library
+          .lookupFunction<Int32 Function(), int Function()>('CloseClipboard'),
+    );
+    emptyClipboard = tryLookup(
+      _user32,
+      'EmptyClipboard',
+      (library) => library
+          .lookupFunction<Int32 Function(), int Function()>('EmptyClipboard'),
+    );
+    getClipboardData = tryLookup(
+      _user32,
+      'GetClipboardData',
+      (library) =>
+          library.lookupFunction<IntPtr Function(Uint32), int Function(int)>(
+              'GetClipboardData'),
+    );
+    setClipboardData = tryLookup(
+      _user32,
+      'SetClipboardData',
+      (library) => library.lookupFunction<IntPtr Function(Uint32, IntPtr),
+          int Function(int, int)>('SetClipboardData'),
+    );
+    globalAlloc = tryLookup(
+      _kernel32,
+      'GlobalAlloc',
+      (library) => library.lookupFunction<IntPtr Function(Uint32, IntPtr),
+          int Function(int, int)>('GlobalAlloc'),
+    );
+    globalLock = tryLookup(
+      _kernel32,
+      'GlobalLock',
+      (library) =>
+          library.lookupFunction<IntPtr Function(IntPtr), int Function(int)>(
+              'GlobalLock'),
+    );
+    globalUnlock = tryLookup(
+      _kernel32,
+      'GlobalUnlock',
+      (library) =>
+          library.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+              'GlobalUnlock'),
+    );
+    globalFree = tryLookup(
+      _kernel32,
+      'GlobalFree',
+      (library) =>
+          library.lookupFunction<IntPtr Function(IntPtr), int Function(int)>(
+              'GlobalFree'),
+    );
 
     dpiAwarenessApi = setProcessDpiAwarenessContext != null
         ? Win32DpiAwarenessApi.perMonitorV2
@@ -490,6 +579,17 @@ final class Win32Api {
   /// taken. Copied into every probe result so the log explains the machine.
   List<BackendDiagnostic> get bindingDiagnostics =>
       List<BackendDiagnostic>.unmodifiable(_optionalDiagnostics);
+
+  bool get clipboardSupported =>
+      openClipboard != null &&
+      closeClipboard != null &&
+      emptyClipboard != null &&
+      getClipboardData != null &&
+      setClipboardData != null &&
+      globalAlloc != null &&
+      globalLock != null &&
+      globalUnlock != null &&
+      globalFree != null;
 
   // -------------------------------------------------------------------------
   // Derived helpers

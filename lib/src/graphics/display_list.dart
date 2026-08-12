@@ -83,6 +83,9 @@ final class DisplayList {
   final List<Object> _images = <Object>[];
   final Map<Object, int> _imageIds = <Object, int>{};
 
+  final List<Object> _fonts = <Object>[];
+  final Map<Object, int> _fontIds = <Object, int>{};
+
   /// Backing store of the word stream. Only the first [opLength] words are
   /// meaningful; the rest is arena capacity.
   Uint32List get opBuffer => _ops;
@@ -113,6 +116,8 @@ final class DisplayList {
 
   int get imageCount => _images.length;
 
+  int get fontCount => _fonts.length;
+
   /// Rewinds the write cursors and drops the resource tables, keeping every
   /// buffer.
   ///
@@ -130,6 +135,8 @@ final class DisplayList {
     _pathIds.clear();
     _images.clear();
     _imageIds.clear();
+    _fonts.clear();
+    _fontIds.clear();
   }
 
   // ---------------------------------------------------------------------
@@ -214,9 +221,39 @@ final class DisplayList {
   /// Interns an image. Equality follows the same rule as [addPath].
   int addImage(Object image) => _intern(image, _images, _imageIds);
 
+  /// Interns the font a [drawGlyphRun] draws with, and returns its id.
+  ///
+  /// ## Why the size is in the id and not in the opcode
+  ///
+  /// A `fontId` names a *face at a size*, not a face. The opcode carries no
+  /// size operand, and this is the design rather than an omission.
+  ///
+  /// The alternative was a float operand holding the pixel size. It loses on
+  /// three counts. First, a glyph run is the output of a shaper, and a shaper
+  /// shapes *at a size*: the glyph ids it chose, the offsets it computed and
+  /// the size it did both at are one indivisible decision, so splitting the
+  /// size back out invites a run whose offsets and size disagree - text that
+  /// is subtly mis-spaced with nothing in the stream saying so. Second, the
+  /// glyph offsets in the float stream are device-space coordinates and the
+  /// float buffer is documented as carrying exactly that; a pixel size is not
+  /// a coordinate, and its presence would move every offset by one slot, so
+  /// [glyphRunFloatSlots] and every reader of it would change to encode
+  /// something the reader can already reach through the resource table.
+  /// Third, and decisive: the renderer needs a *scaled* face to rasterize -
+  /// metrics and outlines at that size - so a size operand would only be a
+  /// number it has to pair back up with a face before it can do anything. The
+  /// id already is that pair.
+  ///
+  /// Equality follows the same rule as [addPath]: the resource's own `==`.
+  /// Two draws sharing one face-at-size object share an id, which is what lets
+  /// a frame of body text intern one font and a glyph cache key off it.
+  int addFont(Object font) => _intern(font, _fonts, _fontIds);
+
   Object pathAt(int id) => _paths[id];
 
   Object imageAt(int id) => _images[id];
+
+  Object fontAt(int id) => _fonts[id];
 
   int _intern(Object resource, List<Object> table, Map<Object, int> ids) {
     final int? existing = ids[resource];
@@ -420,6 +457,9 @@ final class DisplayList {
   }
 
   /// Appends a shaped run.
+  ///
+  /// [fontId] comes from [addFont] and names a face at a size; see there for
+  /// why no size travels in the operands.
   ///
   /// [glyphIds] and [glyphOffsets] are borrowed, not retained: their contents
   /// are copied into the arena, so the shaper can keep reusing one scratch

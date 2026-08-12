@@ -35,6 +35,18 @@ enum GpuTextureFormat {
   int get bytesPerPixel => this == alpha8 ? 1 : 4;
 }
 
+/// How a texture is sampled between texel centres.
+///
+/// A per-texture property and not a device-wide setting, because the two
+/// textures this renderer creates want opposite answers. The coverage-mask
+/// atlas is drawn at exactly one texel per pixel (see [GpuMaskAtlas]), so
+/// [nearest] reproduces the CPU rasteriser's coverage byte for byte and
+/// [linear] would blur it against the padding around each slot. An image is
+/// drawn at whatever scale the layout produced, and [nearest] there is the
+/// blocky, shimmering resampling that makes a scaled photograph look like a
+/// bug in the renderer.
+enum GpuTextureFilter { nearest, linear }
+
 /// Reserved id meaning "this batch samples no texture".
 ///
 /// Zero rather than -1 because it is also the value GL uses for the default
@@ -54,6 +66,7 @@ abstract interface class GpuTextureHandle {
   int get width;
   int get height;
   GpuTextureFormat get format;
+  GpuTextureFilter get filter;
 
   /// False once the owning device was lost or the texture was released.
   bool get isValid;
@@ -65,11 +78,16 @@ abstract interface class GpuTextureHandle {
 /// compressed uploads - is a backend detail that no batching code needs, and
 /// adding it here would make a second backend implement it before it could
 /// draw its first rectangle.
+///
+/// An implementation narrows the handle type with `covariant`: a device may
+/// only be handed textures it created, and a runtime check for that is worse
+/// than a compile-time one at every call site inside the backend.
 abstract interface class GpuTextureAllocator {
   GpuTextureHandle createTexture({
     required int width,
     required int height,
     required GpuTextureFormat format,
+    GpuTextureFilter filter,
   });
 
   /// Replaces a rectangle of [texture] with [pixels].
@@ -77,7 +95,9 @@ abstract interface class GpuTextureAllocator {
   /// [bytesPerRow] is carried explicitly for the same reason
   /// [Framebuffer.bytesPerRow] is: a staging buffer's stride is not always
   /// `width * bytesPerPixel`, and recomputing it at the call site is how a
-  /// skewed upload gets written.
+  /// skewed upload gets written. [pixels] starts at the first byte of the
+  /// first row to upload, so a caller with a larger staging image passes a
+  /// `sublistView` rather than a separate offset.
   void uploadRegion(
     GpuTextureHandle texture, {
     required int x,

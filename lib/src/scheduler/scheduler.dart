@@ -9,6 +9,7 @@
 library;
 
 export 'dispatcher_priority.dart';
+export 'frame_scheduler.dart';
 export 'manual_dispatcher.dart';
 export 'timer_handle.dart';
 export 'ui_dispatcher.dart';

@@ -48,6 +48,25 @@ final class GpuDeviceState {
     _lossCount++;
   }
 
+  /// Declares the device healthy again, returning whether it was lost.
+  ///
+  /// The counterpart to [markLost], and the reason loss is a state rather
+  /// than a terminal condition: every cause in the library comment - a driver
+  /// update, a TDR, a GPU switch - is survivable, and a renderer that cannot
+  /// come back from one turns a two-second stall into a dead window. The
+  /// caller owns the hard part: it must have recreated every driver object
+  /// first, because the Dart-side handles outlived resources the driver
+  /// freed.
+  ///
+  /// [lossCount] deliberately does not go back down. A target derives its
+  /// generation from it, so a frame begun before the loss must still present
+  /// as stale after the recovery.
+  bool recover() {
+    if (_diagnostic == null) return false;
+    _diagnostic = null;
+    return true;
+  }
+
   /// The result a present must return while the device is lost, or null when
   /// the caller should carry on.
   ///

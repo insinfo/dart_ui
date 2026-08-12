@@ -9,6 +9,8 @@ library;
 
 import 'dart:typed_data';
 
+import '../geometry/rect.dart';
+
 /// Byte order and alpha handling of a [Framebuffer].
 ///
 /// Premultiplied only. Straight alpha needs a divide per pixel at composite
@@ -125,6 +127,31 @@ final class Framebuffer {
         pixels[index] = blue;
         pixels[index + 1] = green;
         pixels[index + 2] = red;
+        pixels[index + 3] = alpha;
+        index += 4;
+      }
+    }
+  }
+
+  /// Replaces only the pixels intersecting [rect], preserving the rest.
+  void clearRect(Rect rect, int blue, int green, int red, int alpha) {
+    final left = rect.left.floor().clamp(0, width);
+    final top = rect.top.floor().clamp(0, height);
+    final right = rect.right.ceil().clamp(0, width);
+    final bottom = rect.bottom.ceil().clamp(0, height);
+    if (right <= left || bottom <= top) return;
+    for (var y = top; y < bottom; y++) {
+      var index = y * bytesPerRow + left * 4;
+      for (var x = left; x < right; x++) {
+        if (format == PixelFormat.bgra8888Premultiplied) {
+          pixels[index] = blue;
+          pixels[index + 1] = green;
+          pixels[index + 2] = red;
+        } else {
+          pixels[index] = red;
+          pixels[index + 1] = green;
+          pixels[index + 2] = blue;
+        }
         pixels[index + 3] = alpha;
         index += 4;
       }

@@ -1,0 +1,67 @@
+dart_ui
+Copyright 2026 Isaque Neves Santana
+
+This product includes software developed as part of the projects listed below.
+Each entry states what was taken and under which license, because "we looked at
+it" and "we derived from it" are different obligations and only the second one
+belongs in this file.
+
+================================================================================
+Typography  (https://github.com/LayoutFarm/Typography)
+Copyright 2016-present, WinterDev
+Licensed under the Apache License, Version 2.0
+================================================================================
+
+The OpenType parsing and text-layout code under `lib/src/text/` is derived from
+Typography, by way of the Dart port in the `dart_graphics` project. Adapted for
+dart_ui: glyph outlines are decoded lazily rather than parsing every glyph at
+load time, outlines are emitted into dart_ui's own `Path` rather than a separate
+glyph point model, and the dependency on `vector_math` was removed.
+
+A copy of the Apache License 2.0 is included at `test/fonts/Apache-2.0.txt`.
+
+================================================================================
+Roboto  (https://fonts.google.com/specimen/Roboto)
+Copyright 2011 Google Inc.
+Licensed under the Apache License, Version 2.0
+================================================================================
+
+`test/fonts/Roboto-Regular.ttf` is redistributed unmodified as a test fixture.
+
+================================================================================
+DejaVu Fonts  (https://dejavu-fonts.github.io/)
+Bitstream Vera Fonts Copyright 2003 Bitstream, Inc.
+DejaVu changes are in the public domain; Arev fonts Copyright 2006 Tavmjong Bah
+================================================================================
+
+`test/fonts/DejaVuSans.ttf` is redistributed unmodified as a test fixture.
+
+================================================================================
+Ahem  (W3C test suite font)
+Public domain
+================================================================================
+
+`test/fonts/ahem.ttf` is redistributed unmodified as a test fixture.
+
+================================================================================
+Read, but not derived from
+================================================================================
+
+The following were studied as references for file formats and algorithms. No
+code from any of them was copied or mechanically translated into dart_ui, and
+none of them is a runtime dependency. They are recorded here so that the
+distinction is on the record rather than in someone's memory.
+
+  FreeType      FTL / GPLv2      referencias/freetype-master
+  HarfBuzz      Old MIT          referencias/harfbuzz-main
+  Skia          BSD-3-Clause     referencias/skia
+  Flutter       BSD-3-Clause     referencias/flutter-master, referencias/engine-main
+  Vello, wgpu   MIT / Apache-2.0 referencias/vello-main, referencias/wgpu-trunk
+  Avalonia      MIT              referencias/Avalonia
+  Cairo         LGPL-2.1 / MPL   referencias/cairo-1.18.4
+  OpenJFX       GPLv2 + CE       referencias/jfx
+
+The OpenType and Unicode specifications are the primary sources for
+`lib/src/text/`; where a reference clarified how real-world fonts deviate from
+the specification, the observation is attributed in a comment at the point of
+use.

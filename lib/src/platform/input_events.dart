@@ -19,6 +19,12 @@ enum PointerKind { mouse, touch, stylus }
 
 enum PointerButton { primary, secondary, middle, forward, back }
 
+/// Modifier state sampled for a key transition.
+enum KeyModifier { shift, control, alt, meta, capsLock, numLock, scrollLock }
+
+/// Physical location of a key when the keyboard exposes left/right variants.
+enum KeyLocation { standard, left, right, numpad }
+
 /// The coordinate unit used by a [PointerScrollEvent.scrollDelta].
 enum ScrollDeltaUnit { pixels, lines }
 
@@ -129,6 +135,9 @@ sealed class KeyEvent extends PlatformInputEvent {
     required super.timestamp,
     required this.physicalKey,
     required this.logicalKey,
+    this.modifiers = const <KeyModifier>{},
+    this.isRepeat = false,
+    this.location = KeyLocation.standard,
   });
 
   /// The OS-specific physical scan code.
@@ -136,6 +145,13 @@ sealed class KeyEvent extends PlatformInputEvent {
 
   /// The OS-specific logical virtual key code (ignoring modifiers for now).
   final int logicalKey;
+
+  final Set<KeyModifier> modifiers;
+
+  /// True when the OS reports this transition as keyboard auto-repeat.
+  final bool isRepeat;
+
+  final KeyLocation location;
 }
 
 final class KeyDownEvent extends KeyEvent {
@@ -145,6 +161,9 @@ final class KeyDownEvent extends KeyEvent {
     required super.timestamp,
     required super.physicalKey,
     required super.logicalKey,
+    super.modifiers,
+    super.isRepeat,
+    super.location,
   });
 }
 
@@ -155,5 +174,8 @@ final class KeyUpEvent extends KeyEvent {
     required super.timestamp,
     required super.physicalKey,
     required super.logicalKey,
+    super.modifiers,
+    super.isRepeat,
+    super.location,
   });
 }

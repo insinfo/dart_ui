@@ -288,22 +288,54 @@ final class GpuRasterSink implements RasterSink {
       );
     }
 
-    final left = deviceRect.left > clip.left ? deviceRect.left : clip.left;
-    final top = deviceRect.top > clip.top ? deviceRect.top : clip.top;
-    final right = deviceRect.right < clip.right ? deviceRect.right : clip.right;
-    final bottom =
+    var left = deviceRect.left > clip.left ? deviceRect.left : clip.left;
+    var top = deviceRect.top > clip.top ? deviceRect.top : clip.top;
+    var right = deviceRect.right < clip.right ? deviceRect.right : clip.right;
+    var bottom =
         deviceRect.bottom < clip.bottom ? deviceRect.bottom : clip.bottom;
     if (right <= left || bottom <= top) return;
 
+    // Same two-rectangle treatment [fillDeviceRect] gives a solid fill, and
+    // for the same reason. Handing the fragment stage a shape rect equal to a
+    // *fractional* quad makes `boxCoverage` return a fraction on every edge
+    // pixel the rasteriser did visit, and zero on the ones it did not - so an
+    // image at x = 10.3 loses its leftmost column and darkens the next one.
+    // That reads as a seam between two adjacent images, which is exactly what
+    // a scrolled list of thumbnails is.
+    final double quadLeft;
+    final double quadTop;
+    final double quadRight;
+    final double quadBottom;
+    if (paint.antiAlias) {
+      quadLeft = left.floorToDouble();
+      quadTop = top.floorToDouble();
+      quadRight = right.ceilToDouble();
+      quadBottom = bottom.ceilToDouble();
+    } else {
+      left = pixelEdge(left).toDouble();
+      top = pixelEdge(top).toDouble();
+      right = pixelEdge(right).toDouble();
+      bottom = pixelEdge(bottom).toDouble();
+      if (right <= left || bottom <= top) return;
+      quadLeft = left;
+      quadTop = top;
+      quadRight = right;
+      quadBottom = bottom;
+    }
+
     // The clip is folded into the *source* coordinates too, so a partially
     // clipped image samples the part of itself that survived rather than
-    // squeezing the whole image into the visible box.
+    // squeezing the whole image into the visible box. The mapping is taken at
+    // the *quad's* corners, not the shape's: the snap above moved them, and
+    // reusing the shape's texture coordinates there would stretch the image
+    // by up to a pixel per edge.
     final scaleU = (sourceRect.right - sourceRect.left) / deviceRect.width;
     final scaleV = (sourceRect.bottom - sourceRect.top) / deviceRect.height;
-    final srcLeft = sourceRect.left + (left - deviceRect.left) * scaleU;
-    final srcTop = sourceRect.top + (top - deviceRect.top) * scaleV;
-    final srcRight = sourceRect.right - (deviceRect.right - right) * scaleU;
-    final srcBottom = sourceRect.bottom - (deviceRect.bottom - bottom) * scaleV;
+    final srcLeft = sourceRect.left + (quadLeft - deviceRect.left) * scaleU;
+    final srcTop = sourceRect.top + (quadTop - deviceRect.top) * scaleV;
+    final srcRight = sourceRect.right - (deviceRect.right - quadRight) * scaleU;
+    final srcBottom =
+        sourceRect.bottom - (deviceRect.bottom - quadBottom) * scaleV;
 
     final alpha = (paint.argbColor >> 24) & 0xFF;
     _setState(
@@ -313,10 +345,10 @@ final class GpuRasterSink implements RasterSink {
       clip,
     );
     batcher.addQuad(
-      left: left,
-      top: top,
-      right: right,
-      bottom: bottom,
+      left: quadLeft,
+      top: quadTop,
+      right: quadRight,
+      bottom: quadBottom,
       u0: srcLeft / texture.width,
       v0: srcTop / texture.height,
       u1: srcRight / texture.width,
@@ -328,6 +360,8 @@ final class GpuRasterSink implements RasterSink {
       green: alpha / 255.0,
       blue: alpha / 255.0,
       alpha: alpha / 255.0,
+      // The unsnapped rect: the difference between it and the quad above is
+      // the antialiased fringe.
       shapeLeft: left,
       shapeTop: top,
       shapeRight: right,
@@ -410,16 +444,25 @@ final class GpuRasterSink implements RasterSink {
   static double _channel(int argb, int shift, int alpha) =>
       ((argb >> shift) & 0xFF) * alpha / (255.0 * 255.0);
 
-  /// The filler produces the region an outline encloses, so a stroke-styled
-  /// paint would come out as a solid shape where a border was asked for -
-  /// wrong output that looks deliberate. Same refusal the CPU sink makes.
+  /// The mask atlas rasterises the region an outline encloses, so a
+  /// stroke-styled paint would come out as a solid shape where a border was
+  /// asked for - wrong output that looks deliberate.
+  ///
+  /// No longer the same refusal the CPU sink makes: that one now converts the
+  /// centreline with `PathStroker` and rasterises the outline instead, and
+  /// says so, so a message here claiming stroking "is not implemented" would
+  /// send a reader looking for a stroker that exists. What is missing is on
+  /// this side - the conversion is CPU geometry the GPU path has no stage for
+  /// yet, and the player hands a stroked rectangle here as a path expecting
+  /// exactly that.
   void _requireFill(ReplayPaint paint, String what) {
     if (paint.style == paintStyleFill) return;
     throw UnsupportedCapabilityError(
       backendName: backendName,
       capability: Capability.cpuPresentation,
-      detail: 'stroking is not implemented; a stroke-styled $what would be '
-          'filled as its enclosed region',
+      detail: 'stroking is not implemented on the GPU path; the CPU sink '
+          'strokes through PathStroker and nothing here calls it, so a '
+          'stroke-styled $what would be filled as its enclosed region',
     );
   }
 }

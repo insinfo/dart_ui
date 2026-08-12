@@ -112,15 +112,15 @@ void main() {
 
     test('does not claim what it defers', () {
       final result = backend.probe();
-      // Every one of these is unimplemented; claiming them would turn a
-      // truthful "no" into a runtime surprise.
+      // Text composition and richer desktop services remain unimplemented;
+      // Unicode clipboard is now part of the Win32 vertical slice.
       expect(result.supports(Capability.textComposition), isFalse);
-      expect(result.supports(Capability.clipboardText), isFalse);
+      expect(result.supports(Capability.clipboardText), isTrue);
       expect(result.supports(Capability.clipboardImage), isFalse);
       expect(result.supports(Capability.dragAndDrop), isFalse);
       expect(result.supports(Capability.accessibility), isFalse);
       expect(result.supports(Capability.vsync), isFalse);
-      // ... and the deferral is written down, not just absent.
+      // The remaining deferral is written down, not just absent.
       expect(
         result.diagnostics.map((d) => d.message).join('\n'),
         contains('clipboard'),

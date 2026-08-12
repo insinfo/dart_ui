@@ -42,12 +42,28 @@
 /// coverage pass. The same holds for the rounded-rectangle radii, which are
 /// scaled by the transform's axis lengths and are only a faithful description
 /// of the shape while the transform is axis-aligned.
+///
+/// ## A stroked rectangle leaves here as a path
+///
+/// [RasterSink.fillDeviceRect] and [RasterSink.fillDeviceRRect] receive
+/// *device* geometry and no matrix, which is fine for a fill and impossible
+/// for a stroke: [ReplayPaint.strokeWidth] is in the coordinates the command
+/// was written in, so turning it into a device width needs the transform that
+/// those two methods deliberately do not carry. Rather than widen them - and
+/// with them every sink that implements them - a rectangle or rounded
+/// rectangle drawn with a stroke-bearing style is rebuilt here as its
+/// *centreline path* in local space and sent to [RasterSink.drawDevicePath],
+/// which does carry the matrix. One consequence is worth stating: the sink
+/// strokes in local units and transforms the outline, so a 2 px stroke under
+/// a 2x scale is 4 device pixels wide, exactly as the shape it outlines
+/// doubles.
 library;
 
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../../geometry/offset.dart';
+import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/transform2d.dart';
 import '../../graphics/display_list.dart';
@@ -80,6 +96,18 @@ final class ReplayPaint {
   /// In the coordinates the command was written in, not device pixels: the
   /// sink scales it, because only it knows whether it strokes geometry before
   /// or after transforming it.
+  ///
+  /// It is the *only* stroke attribute on the wire. The encoded paint record
+  /// is two ints and one float - colour, a flag word holding style, blend mode
+  /// and antialias, and this width - with no operand for cap, join or miter
+  /// limit, so a sink that strokes has to supply them. `StrokeStyle`'s
+  /// defaults (butt cap, miter join, miter limit 4) are the answer, and they
+  /// are not an arbitrary pick: they are the same defaults every drawing API
+  /// this list can be produced from starts a paint at, so nothing that can
+  /// currently be *encoded* renders differently for the omission. When a
+  /// producer grows a way to say otherwise, the flag word has free bits at
+  /// 3..7 for a cap and a join, and the miter limit needs a second float -
+  /// which is the change to make then, and dead wire format now.
   final double strokeWidth;
 
   /// One of the `blendMode*` constants.
@@ -127,6 +155,18 @@ abstract interface class ReplayResources {
   Object pathAt(int id);
 
   Object imageAt(int id);
+
+  /// The font interned under [id]: a face *at a size*, since the glyph-run
+  /// opcode carries no size of its own.
+  ///
+  /// Opaque here for the same reason [pathAt] is. The player positions a run
+  /// without ever asking what a glyph looks like - the offsets arrive already
+  /// computed - so it has no use for the face, and resolving the id is left to
+  /// the sink that will rasterize with it. That is why [RasterSink] receives
+  /// the raw `fontId`: a sink that draws text holds these resources anyway,
+  /// and one that does not should not be handed a face it has no rasterizer
+  /// for.
+  Object fontAt(int id);
 }
 
 /// [ReplayResources] backed by the list that encoded the stream.
@@ -155,6 +195,9 @@ final class DisplayListResources implements ReplayResources {
 
   @override
   Object imageAt(int id) => _list.imageAt(id);
+
+  @override
+  Object fontAt(int id) => _list.fontAt(id);
 }
 
 /// Where the player sends what survived transform, clip, and culling.
@@ -192,11 +235,17 @@ abstract interface class RasterSink {
   /// Exact when the transform is axis-aligned; the bounding box of the true
   /// shape otherwise. See the library comment - the fix is a new method, not
   /// a change to this one.
+  ///
+  /// The player only ever calls this with `paintStyleFill`; a stroke-bearing
+  /// style reaches [drawDevicePath] instead, because the width would need a
+  /// matrix this method does not carry.
   void fillDeviceRect(Rect deviceRect, Rect clip, ReplayPaint paint);
 
   /// Fills a rounded rectangle. [deviceRadii] holds eight values in the
   /// encoder's order - top-left x/y, top-right, bottom-right, bottom-left -
   /// scaled into device space. Borrowed: copy it to keep it.
+  ///
+  /// Fill styles only, for the reason [fillDeviceRect] gives.
   void fillDeviceRRect(
     Rect deviceRect,
     Rect clip,
@@ -210,6 +259,18 @@ abstract interface class RasterSink {
   /// local-to-device matrix it must be flattened with. The player cannot cull
   /// this against anything tighter than the clip, because the display list
   /// gives it no path bounds.
+  ///
+  /// Two exceptions to "never inspected", both from the same decision: a
+  /// stroked rectangle and a stroked rounded rectangle arrive here as a
+  /// centreline the player built, which is always a `Path` even when the
+  /// producer's own paths are some other object. See the library comment.
+  ///
+  /// This is also the only method that can be handed a stroke-bearing style,
+  /// and the only one that can act on one, since the width it carries is in
+  /// [transform]'s source space. With `paintStyleFillAndStroke` the fill is
+  /// drawn first and the stroke over it - the other order hides the inner
+  /// half of the stroke under the fill, and the shape comes out with a border
+  /// half the width that was asked for.
   void drawDevicePath(
     Object path,
     Transform2D transform,
@@ -300,6 +361,12 @@ final class DisplayListPlayer {
 
   /// Scratch for the rounded-rectangle radii handed to the sink.
   final Float32List _radii = Float32List(8);
+
+  /// Builds the centreline of a stroked rectangle. Reused rather than
+  /// allocated per command so that a frame full of borders grows its buffers
+  /// once; only the finished [Path] is new each time, and that one has to be,
+  /// since it leaves this object and a sink is entitled to keep it.
+  final PathBuilder _shapeBuilder = PathBuilder();
 
   // Sized once at the encoder's hard limit rather than grown, because that
   // limit exists precisely so a run cannot be unbounded; the pair costs 6 KB
@@ -446,19 +513,37 @@ final class DisplayListPlayer {
 
   void _drawRect(DisplayListReader reader, ReplayResources resources) {
     if (_state.clip.isEmpty) return;
-    final Rect device = _state.deviceBoundsOf(_rectOperand(reader, 0));
-    if (!device.intersects(_state.clip)) return;
     final ReplayPaint paint = _paint(reader.paintId, resources);
-    _requireFill(reader, paint);
+    final Rect local = _rectOperand(reader, 0);
+    if (_strokes(reader, paint)) {
+      _shapeBuilder.reset();
+      _shapeBuilder.addRect(local);
+      _drawCentreline(paint);
+      return;
+    }
+    final Rect device = _state.deviceBoundsOf(local);
+    if (!device.intersects(_state.clip)) return;
     sink.fillDeviceRect(device, _state.clip, paint);
   }
 
   void _drawRRect(DisplayListReader reader, ReplayResources resources) {
     if (_state.clip.isEmpty) return;
-    final Rect device = _state.deviceBoundsOf(_rectOperand(reader, 0));
-    if (!device.intersects(_state.clip)) return;
     final ReplayPaint paint = _paint(reader.paintId, resources);
-    _requireFill(reader, paint);
+    final Rect local = _rectOperand(reader, 0);
+    if (_strokes(reader, paint)) {
+      // Local radii, not the device ones computed below: the whole point of
+      // the path route is that the sink applies the transform itself, so
+      // pre-scaling here would apply it twice.
+      for (var i = 0; i < 8; i++) {
+        _radii[i] = reader.floatAt(4 + i);
+      }
+      _shapeBuilder.reset();
+      _shapeBuilder.addRoundedRectRadii(local, _radii);
+      _drawCentreline(paint);
+      return;
+    }
+    final Rect device = _state.deviceBoundsOf(local);
+    if (!device.intersects(_state.clip)) return;
 
     // Radii scale with the axis they belong to, so the x radii take the length
     // of the transformed x axis and the y radii that of the y axis. This is
@@ -557,18 +642,42 @@ final class DisplayListPlayer {
     return paint;
   }
 
-  /// Rejects the paint styles the rectangle primitives cannot express.
+  /// Whether [paint] puts ink outside the shape's own area.
   ///
-  /// A stroked rectangle is a frame of four thin rectangles, not a filled one;
-  /// drawing it as a fill would turn every border in a user interface into a
-  /// solid block, and it would look like a styling bug rather than a missing
-  /// primitive. So it fails here until the sink grows a stroke method.
-  void _requireFill(DisplayListReader reader, ReplayPaint paint) {
-    if (paint.style == paintStyleFill) return;
-    throw _unsupported(
-      reader,
-      'paint style ${paint.style} needs a stroke primitive; this sink can '
-      'only fill rectangles',
+  /// Also the one place a style byte is validated. The encoder rejects an
+  /// unknown style, so reaching the default here means a corrupt or
+  /// hand-written buffer, and guessing "probably a fill" would draw a solid
+  /// block wherever a future style meant something else.
+  bool _strokes(DisplayListReader reader, ReplayPaint paint) =>
+      switch (paint.style) {
+        paintStyleFill => false,
+        paintStyleStroke || paintStyleFillAndStroke => true,
+        _ => throw _unsupported(
+            reader,
+            'paint style ${paint.style} is not fill, stroke or fillAndStroke; '
+            'nothing here knows what it would draw',
+          ),
+      };
+
+  /// Sends the centreline just built into [_shapeBuilder] to the sink.
+  ///
+  /// Deliberately without the device-bounds cull the fill routes do. A stroke
+  /// reaches half its width outside the shape and a miter join further still,
+  /// so a cull here would have to inflate by the join's allowance to be safe -
+  /// and the sink's filler already culls the *outline's* real bounds against
+  /// the same clip, which is both exact and free.
+  ///
+  /// A `fillAndStroke` shape goes through here whole rather than being split
+  /// into a fast rectangle fill plus a stroke: the two halves must be drawn
+  /// under one paint, and splitting them would need a second [ReplayPaint]
+  /// that the id-keyed intern cache has no room for. The sink draws the fill
+  /// first; see `RasterSink.drawDevicePath`.
+  void _drawCentreline(ReplayPaint paint) {
+    sink.drawDevicePath(
+      _shapeBuilder.build(),
+      _state.transform,
+      _state.clip,
+      paint,
     );
   }
 

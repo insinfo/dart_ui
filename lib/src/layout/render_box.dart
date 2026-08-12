@@ -195,6 +195,42 @@ abstract class RenderBox {
   /// This node's bounds in its own coordinate space.
   Rect get bounds => Rect.fromLTWH(0, 0, size.width, size.height);
 
+  /// This node's origin in the root's coordinate space.
+  ///
+  /// Walks the parent chain accumulating offsets, so it is O(depth) and meant
+  /// for input handling rather than for the paint loop, which already carries
+  /// an offset down.
+  ///
+  /// Offsets only: there is no transform in this tree yet. When
+  /// `RenderTransform` arrives this becomes a matrix walk, and every caller
+  /// keeps working because none of them does the arithmetic itself.
+  Offset get globalOffset {
+    double dx = 0;
+    double dy = 0;
+    for (RenderBox? node = this; node != null; node = node._parent) {
+      final Offset offset = node.offsetFromParent;
+      dx += offset.dx;
+      dy += offset.dy;
+    }
+    return Offset(dx, dy);
+  }
+
+  /// Converts a point in the root's space into this node's own space.
+  ///
+  /// Deliberately unclamped: a pointer that has been dragged off a slider is
+  /// still meaningfully at "-40" on that slider's axis, and clamping here
+  /// would throw away the information the control needs to keep tracking it.
+  Offset globalToLocal(Offset position) {
+    final Offset origin = globalOffset;
+    return Offset(position.dx - origin.dx, position.dy - origin.dy);
+  }
+
+  /// Converts a point in this node's space into the root's space.
+  Offset localToGlobal(Offset position) {
+    final Offset origin = globalOffset;
+    return Offset(position.dx + origin.dx, position.dy + origin.dy);
+  }
+
   // -----------------------------------------------------------------------
   // Tree structure
   // -----------------------------------------------------------------------
@@ -665,6 +701,51 @@ abstract class RenderBoxContainer<T extends BoxParentData> extends RenderBox {
     while (_children.isNotEmpty) {
       dropChild(_children.removeLast());
     }
+  }
+
+  /// Permutes the existing children into [order].
+  ///
+  /// A permutation, not an assignment: [order] must contain exactly the
+  /// current children. That restriction is what lets this skip the
+  /// drop/adopt cycle - no parent link, parent data or attachment changes, so
+  /// a widget list that merely reordered does not tear down and rebuild the
+  /// render nodes it kept. A caller that got the set wrong is rejected here
+  /// rather than silently orphaning a node.
+  void reorderChildren(List<RenderBox> order) {
+    if (order.length != _children.length) {
+      throw StateError(
+        'reorderChildren expects a permutation: got ${order.length} nodes for '
+        '${_children.length} children of $runtimeType',
+      );
+    }
+    bool sameOrder = true;
+    for (int i = 0; i < order.length; i++) {
+      if (!identical(order[i], _children[i])) {
+        sameOrder = false;
+        break;
+      }
+    }
+    if (sameOrder) return;
+    final Set<RenderBox> seen = Set<RenderBox>.identity();
+    for (final RenderBox child in order) {
+      if (!identical(child._parent, this)) {
+        throw StateError(
+          'reorderChildren was given a ${child.runtimeType} that is not a '
+          'child of $runtimeType',
+        );
+      }
+      if (!seen.add(child)) {
+        // A repeated node would displace another one, which would then still
+        // point at this parent while no longer being in the list.
+        throw StateError(
+          'reorderChildren was given the same ${child.runtimeType} twice',
+        );
+      }
+    }
+    _children
+      ..clear()
+      ..addAll(order);
+    markNeedsLayout();
   }
 
   @override

@@ -25,10 +25,36 @@ final class PointerRouter {
 
   /// Hit-tests [root] and dispatches [event] deepest-first.
   ///
-  /// Returns whether any render node was hit. A hit does not imply that the
-  /// path contained a [PointerEventTarget]. The root must have completed its
+  /// Returns whether the event reached anything: a hit-tested node, or the
+  /// target holding this pointer's capture. The root must have completed its
   /// first layout, as hit testing depends on current render geometry.
   bool route(PointerEvent event, {required RenderBox root}) {
+    // ---- capture ----------------------------------------------------------
+    //
+    // A pointer that went down on a target belongs to that target until it is
+    // released, wherever it travels in between. This is the rule that makes a
+    // drag work at all: hit testing every move would hand the pointer to
+    // whatever happens to be underneath, so dragging a slider thumb past the
+    // edge of its track would silently stop moving it - and dragging across
+    // another button would light that button up.
+    //
+    // While captured, the hit-test path is not consulted for this pointer at
+    // all. Targets that need to know where the pointer *is* ask, using
+    // RenderBox.globalToLocal; targets that need to know whether it is inside
+    // them check their own bounds. Neither can be expressed by routing to
+    // whoever is underneath.
+    final List<PointerEventTarget>? captured = _captures[event.pointerId];
+    if (captured != null && event is! PointerDownEvent) {
+      _path.reset();
+      for (final PointerEventTarget target in captured) {
+        target.handlePointerEvent(event);
+      }
+      if (event is PointerUpEvent || event is PointerCancelEvent) {
+        _captures.remove(event.pointerId);
+      }
+      return true;
+    }
+
     _path.reset();
     final bool hit = root.hitTest(event.logicalPosition, path: _path) != null;
 
@@ -40,28 +66,40 @@ final class PointerRouter {
       return hit;
     }
 
-    if (event is PointerUpEvent || event is PointerCancelEvent) {
-      _dispatchPath(event);
-      final captured = _captures.remove(event.pointerId);
-      if (captured != null) {
-        final cancel = PointerCancelEvent(
-          windowId: event.windowId,
-          generation: event.generation,
-          timestamp: event.timestamp,
-          pointerId: event.pointerId,
-          kind: event.kind,
-          logicalPosition: event.logicalPosition,
-        );
-        for (final target in captured) {
-          if (!_pathContains(target)) target.handlePointerEvent(cancel);
-        }
-      }
-      return hit;
-    }
-
+    // No capture: an up or a move is offered to whatever is under it, which is
+    // the ordinary case of a pointer that never pressed anything.
     _dispatchPath(event);
     return hit;
   }
+
+  /// Whether [pointerId] is currently held by a target.
+  bool hasCapture(int pointerId) => _captures.containsKey(pointerId);
+
+  /// The targets holding [pointerId], deepest first.
+  List<PointerEventTarget> captureHolders(int pointerId) =>
+      List<PointerEventTarget>.unmodifiable(
+        _captures[pointerId] ?? const <PointerEventTarget>[],
+      );
+
+  /// Ends [target]'s hold on every pointer it captured.
+  ///
+  /// Section 27.4 calls this capture-lost, and it is what an unmounting
+  /// control must call: a capture held by a node that is no longer in the tree
+  /// swallows every subsequent event for that pointer, and the window stops
+  /// responding to the mouse with nothing in the logs.
+  void releaseCaptureFor(PointerEventTarget target) {
+    for (final int pointerId in _captures.keys.toList()) {
+      final List<PointerEventTarget> holders = _captures[pointerId]!;
+      if (!holders.any((PointerEventTarget held) => identical(held, target))) {
+        continue;
+      }
+      holders.removeWhere((PointerEventTarget held) => identical(held, target));
+      if (holders.isEmpty) _captures.remove(pointerId);
+    }
+  }
+
+  /// Drops every capture, for a window that lost focus or a tree teardown.
+  void releaseAllCaptures() => _captures.clear();
 
   void _dispatchPath(
     PointerEvent event, {
@@ -90,12 +128,5 @@ final class PointerRouter {
     for (final target in captured) {
       target.handlePointerEvent(cancel);
     }
-  }
-
-  bool _pathContains(PointerEventTarget target) {
-    for (int i = 0; i < _path.length; i++) {
-      if (identical(_path[i], target)) return true;
-    }
-    return false;
   }
 }

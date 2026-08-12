@@ -126,10 +126,24 @@ const int wmRbuttonup = 0x0205;
 const int wmMbuttondown = 0x0207;
 const int wmMbuttonup = 0x0208;
 const int wmMousewheel = 0x020A;
+
+/// Sent when this window loses the mouse capture, whether it released it or
+/// something else took it. Section 27.4 calls this capture-lost.
+const int wmCapturechanged = 0x0215;
 const int wmXbuttondown = 0x020B;
 const int wmXbuttonup = 0x020C;
 const int wmMouseleave = 0x02A3;
 const int wmDpichanged = 0x02E0;
+
+// Virtual keys used when sampling modifier state.
+const int vkShift = 0x10;
+const int vkControl = 0x11;
+const int vkMenu = 0x12;
+const int vkLwin = 0x5B;
+const int vkRwin = 0x5C;
+const int vkCapital = 0x14;
+const int vkNumlock = 0x90;
+const int vkScroll = 0x91;
 
 /// `TME_LEAVE`
 const int tmeLeave = 0x0002;
@@ -154,6 +168,9 @@ const int waInactive = 0;
 
 /// `HTCLIENT` - the hit-test code WM_SETCURSOR reports for the client area.
 const int htClient = 1;
+
+/// `MK_SHIFT`, held in the low word of mouse messages.
+const int mkShift = 0x0004;
 
 // ---------------------------------------------------------------------------
 // Message queue
@@ -234,6 +251,10 @@ const int logPixelsX = 88;
 const int biRgb = 0;
 const int dibRgbColors = 0;
 const int srccopy = 0x00CC0020;
+
+/// Clipboard and process-global memory constants.
+const int cfUnicodeText = 13;
+const int gmemMoveable = 0x0002;
 
 /// `HEAP_ZERO_MEMORY`.
 const int heapZeroMemory = 0x00000008;

@@ -2,6 +2,16 @@ import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
 
 void main() {
+  // Anything that measures or draws text needs a known face; the machine's own
+  // UI font would make these assertions mean something different per platform.
+  setUpAll(() {
+    expect(
+      FontRegistry.instance.useFontFile('test/fonts/Roboto-Regular.ttf'),
+      isTrue,
+    );
+  });
+  tearDownAll(FontRegistry.instance.reset);
+
   group('widget/render integration', () {
     test('mounts a real RenderBox tree under a stable pipeline root', () {
       final PipelineOwner pipeline = PipelineOwner(
@@ -195,14 +205,55 @@ void main() {
       expect(oldRender.owner, isNull);
     });
 
-    test('text refuses painting instead of silently emitting no glyphs', () {
+    test('text shapes one run and draws the glyphs it measured', () {
       final BuildOwner owner = _owner();
-      owner.updateRoot(const Text('not implemented'));
+      owner.updateRoot(const Text('TEXT'));
 
-      expect(
-        () => owner.pipelineOwner.drawFrame(DisplayList()),
-        throwsUnsupportedError,
+      final list = DisplayList();
+      owner.pipelineOwner.drawFrame(list);
+
+      // One run for four characters, and the ids in it are the ones the shaper
+      // produces for the same string in the same face - which is what fails if
+      // layout and paint ever stop going through the same font.
+      final ScaledTypeface font = FontRegistry.instance.uiFont(12)!;
+      final GlyphRun expected = LatinShaper().shape('TEXT', font);
+      final reader = DisplayListReader(list);
+      final List<List<int>> runs = <List<int>>[];
+      while (reader.moveNext()) {
+        if (reader.opcode != opDrawGlyphRun) continue;
+        final int count = reader.intAt(2);
+        runs.add(<int>[for (int i = 0; i < count; i++) reader.intAt(3 + i)]);
+      }
+
+      expect(runs, hasLength(1));
+      expect(runs.single, <int>[
+        for (int i = 0; i < expected.length; i++) expected.glyphIds[i],
+      ]);
+      // Tight 20x10 constraints, so the box is the constraint and not the text.
+      expect(owner.renderRoot!.size.width, 20);
+    });
+
+    test('text with no font reserves its box and draws nothing', () {
+      final FontRegistry installed = FontRegistry.instance;
+      FontRegistry.instance = FontRegistry(search: () => null);
+      addTearDown(() => FontRegistry.instance = installed);
+
+      final BuildOwner owner = BuildOwner(
+        pipelineOwner: PipelineOwner(
+          rootConstraints: BoxConstraints(maxWidth: 200, maxHeight: 50),
+        ),
       );
+      owner.updateRoot(const Text('TEXT'));
+      final list = DisplayList();
+      owner.pipelineOwner.drawFrame(list);
+
+      // The failure this guards against is a machine with no usable font
+      // collapsing every text node to nothing, which reflows the whole tree
+      // and looks like a layout bug rather than a missing font.
+      expect(owner.renderRoot!.size.width, greaterThan(0));
+      expect(owner.renderRoot!.size.height, greaterThan(0));
+      expect(list.commandCount, 0);
+      owner.dispose();
     });
 
     test('gesture callbacks mount a render-tree pointer target', () {
@@ -220,6 +271,39 @@ void main() {
         (owner.renderRoot as RenderSingleChildBox).child,
         isA<RenderColoredBox>(),
       );
+    });
+
+    test('Button paints its label and routes a click through Dart widgets', () {
+      var clicks = 0;
+      final BuildOwner owner = _owner();
+      owner.updateRoot(Button(label: 'OK', onPressed: () => clicks++));
+
+      final list = DisplayList();
+      owner.pipelineOwner.drawFrame(list);
+      expect(list.commandCount, greaterThan(0));
+
+      const windowId = NativeWindowId(1);
+      const down = PointerDownEvent(
+        windowId: windowId,
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: Offset(2, 2),
+        button: PointerButton.primary,
+      );
+      const up = PointerUpEvent(
+        windowId: windowId,
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: Offset(2, 2),
+        button: PointerButton.primary,
+      );
+      expect(owner.dispatchPointerEvent(down), isTrue);
+      expect(owner.dispatchPointerEvent(up), isTrue);
+      expect(clicks, 1);
     });
   });
 

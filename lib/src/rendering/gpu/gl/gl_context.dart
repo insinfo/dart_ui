@@ -1,19 +1,37 @@
-/// Getting a current OpenGL context without a window.
+/// Getting a current OpenGL context, with or without a window.
 ///
-/// The GPU renderer must be testable offscreen or it is not testable at all:
-/// CI has no display, and a golden test that needs a visible window is a
-/// golden test that does not run. So the only context this file knows how to
-/// create is an EGL pbuffer - a driver-owned offscreen surface - which is
-/// exactly the configuration `poc/poc_06_opengl` proved works on Linux under
-/// software Mesa.
+/// Two paths, because the two platforms this framework runs on disagree about
+/// what a context needs.
 ///
-/// ## What is deliberately not here
+///   * **EGL pbuffer**, for CI and for every offscreen test. The GPU renderer
+///     must be testable without a display or a compositor, or it is not
+///     testable at all - a golden test that needs a visible window is a
+///     golden test that does not run. This is the configuration
+///     `poc/poc_06_opengl` proved works on Linux under software Mesa, and it
+///     stays the default everywhere it is available.
+///   * **WGL**, for Windows, where there is no EGL. A modern context there is
+///     created from a device context that already carries a pixel format, and
+///     a pixel format can only be set on a window's device context - so a
+///     window has to exist first.
 ///
-///   * **WGL.** Creating a modern GL context on Windows requires an `HWND`
-///     and a pixel format set on its device context, even for offscreen
-///     rendering. Windows are owned by `lib/src/backends/win32`, so this file
-///     reports the obstacle by name and stops rather than reaching across
-///     that boundary.
+/// ## How WGL stays on the right side of the layering rule
+///
+/// It never names a window. [GlContextFactory.createForDeviceContext] takes
+/// the device context as a plain integer: an opaque handle whose meaning is
+/// the caller's business. `lib/src/backends/win32` owns the window, sets the
+/// pixel format on its device context and passes the number here; this file
+/// calls only entry points the GL library itself exports, so nothing under
+/// `lib/src/rendering` gains a dependency on a window system. The
+/// architecture test in `test/architecture/layering_test.dart` enforces that.
+///
+/// The obstacle the previous version of this file reported - "windows belong
+/// to another module" - was real. Its advice was not: it suggested installing
+/// ANGLE, which is a native runtime this framework does not ship and will not
+/// require. Handing an integer across a module boundary costs nothing and
+/// solves it.
+///
+/// ## What is still deliberately not here
+///
 ///   * **CGL/NSOpenGL.** Deprecated on macOS since 10.14, and the roadmap
 ///     (section 18) lists macOS OpenGL as legacy rather than a target. Metal
 ///     is the intended backend there.
@@ -52,11 +70,27 @@ const int _eglContextOpenglProfileMask = 0x30FD;
 const int _eglContextOpenglCoreProfileBit = 0x00000001;
 const int _eglDefaultDisplay = 0;
 
+// WGL_ARB_create_context, from the registry.
+const int _wglContextMajorVersion = 0x2091;
+const int _wglContextMinorVersion = 0x2092;
+const int _wglContextProfileMask = 0x9126;
+const int _wglContextCoreProfileBit = 0x00000001;
+
 /// A GL context that can be made current on this thread.
 abstract interface class GlContext {
   /// True when the context became current. False - never an exception -
   /// when the driver refused, which is one of the ways device loss shows up.
   bool makeCurrent();
+
+  /// Where this context's entry points come from.
+  ///
+  /// Belongs to the context and not to the library because on Windows the
+  /// answer depends on which context is current: `wglGetProcAddress` is
+  /// documented to return an address valid only for the pixel format of the
+  /// context that was current when it was called. A table built under one
+  /// context and used under another is the kind of bug that works on the
+  /// developer's single-GPU machine and crashes on a laptop that switches.
+  GlProcResolver get procAddress;
 
   /// Which client API the context actually gave us. `true` means desktop
   /// OpenGL and therefore GLSL `#version 330 core`; `false` means OpenGL ES
@@ -85,21 +119,28 @@ final class GlContextFactory {
   const GlContextFactory();
 
   /// Library names tried for EGL, in order.
+  ///
+  /// Empty on Windows: there is no system EGL there, and the WGL path is the
+  /// supported one. Naming a third-party redistributable here would make the
+  /// probe's answer depend on what happens to be sitting next to the
+  /// executable.
   static List<String> eglCandidates() {
-    if (Platform.isWindows) {
-      // ANGLE, if somebody dropped it next to the executable. Not shipped by
-      // this framework; listed so that a developer who has it gets a working
-      // context instead of a refusal.
-      return const <String>['libEGL.dll'];
-    }
+    if (Platform.isWindows) return const <String>[];
     if (Platform.isMacOS) return const <String>['libEGL.dylib'];
     return const <String>['libEGL.so.1', 'libEGL.so'];
   }
 
   /// Attempts to create a [width] x [height] pbuffer context.
   ///
+  /// [glLibrary] is the already-open GL library; its export table is the
+  /// first half of the context's [GlContext.procAddress].
+  ///
   /// Never throws. Every failure is a diagnostic.
-  GlContextAttempt create({required int width, required int height}) {
+  GlContextAttempt create({
+    required int width,
+    required int height,
+    required DynamicLibrary glLibrary,
+  }) {
     final diagnostics = <BackendDiagnostic>[];
 
     DynamicLibrary? egl;
@@ -135,7 +176,8 @@ final class GlContextFactory {
     }
 
     try {
-      return _createEgl(egl, eglName!, heap, width, height, diagnostics);
+      return _createEgl(
+          egl, eglName!, glLibrary, heap, width, height, diagnostics);
     } on Object catch (error, stack) {
       // A throw here is a bug in this file, not a missing driver - but the
       // probe contract says never throw, so it becomes a diagnostic that is
@@ -155,11 +197,11 @@ final class GlContextFactory {
     if (Platform.isWindows) {
       return const BackendDiagnostic(
         kind: DiagnosticKind.unsupportedPlatform,
-        message: 'no offscreen GL context on Windows without ANGLE',
-        detail: 'WGL needs an HWND and a pixel format on its device context '
-            'even to render offscreen; windows belong to '
-            'lib/src/backends/win32, so this backend does not create one. '
-            'Install ANGLE (libEGL.dll) or use the Direct3D backend',
+        message: 'Windows has no EGL; use the WGL path',
+        detail: 'a context here is created from a device context that already '
+            'carries a pixel format, which only a window can provide. '
+            'lib/src/backends/win32 makes one and calls '
+            'GlContextFactory.createForDeviceContext with its handle',
       );
     }
     if (Platform.isMacOS) {
@@ -182,6 +224,7 @@ final class GlContextFactory {
   GlContextAttempt _createEgl(
     DynamicLibrary egl,
     String eglName,
+    DynamicLibrary glLibrary,
     NativeHeap heap,
     int width,
     int height,
@@ -202,7 +245,7 @@ final class GlContextFactory {
       return GlContextAttempt(null, diagnostics);
     }
 
-    final versions = heap.allocate<Int32>(8);
+    final versions = heap.allocateInt32(2);
     try {
       if (api.initialize(display, versions, versions + 1) == 0) {
         diagnostics.add(_eglError(api, 'eglInitialize'));
@@ -223,9 +266,9 @@ final class GlContextFactory {
         }
       }
 
-      final configs = heap.allocate<Pointer<Void>>(1);
-      final configCount = heap.allocate<Int32>(1);
-      final configAttribs = heap.allocate<Int32>(16);
+      final configs = heap.allocatePointers<Void>(1);
+      final configCount = heap.allocateInt32(1);
+      final configAttribs = heap.allocateInt32(16);
       try {
         var i = 0;
         configAttribs[i++] = _eglSurfaceType;
@@ -250,7 +293,7 @@ final class GlContextFactory {
         }
         final config = configs[0];
 
-        final surfaceAttribs = heap.allocate<Int32>(8);
+        final surfaceAttribs = heap.allocateInt32(8);
         surfaceAttribs[0] = _eglWidth;
         surfaceAttribs[1] = width;
         surfaceAttribs[2] = _eglHeight;
@@ -276,6 +319,8 @@ final class GlContextFactory {
           display: display,
           surface: surface,
           context: context,
+          heap: heap,
+          glLibrary: glLibrary,
           isDesktopGl: desktop,
           description: 'EGL $eglVersion via $eglName, '
               '${desktop ? 'desktop GL' : 'GLES'} pbuffer ${width}x$height',
@@ -297,6 +342,209 @@ final class GlContextFactory {
     }
   }
 
+  /// Creates a context on an existing device context, for Windows.
+  ///
+  /// [deviceContext] is opaque here on purpose: it is whatever integer the
+  /// platform's `GetDC` returned, and this file neither knows nor may know
+  /// what it points at. The caller must already have chosen and set a pixel
+  /// format on it - a device context can only be given one once, and getting
+  /// that wrong produces a context that draws nowhere rather than an error.
+  ///
+  /// The two-step dance below is not ceremony. `wglCreateContextAttribsARB`
+  /// is itself an extension, so it can only be obtained from
+  /// `wglGetProcAddress`, which only answers with a context already current -
+  /// so a throwaway legacy context has to be created and made current first.
+  /// This is the sequence `poc/poc_06_opengl/bin/opengl_windows.dart` proves
+  /// works on this project's hardware.
+  ///
+  /// Never throws. Every failure is a diagnostic.
+  GlContextAttempt createForDeviceContext({
+    required int deviceContext,
+    required DynamicLibrary glLibrary,
+  }) {
+    final diagnostics = <BackendDiagnostic>[];
+    if (deviceContext == 0) {
+      diagnostics.add(const BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'a null device context cannot carry a GL context',
+      ));
+      return GlContextAttempt(null, diagnostics);
+    }
+
+    final heap = NativeHeap.tryBind(glLibrary);
+    if (heap == null) {
+      diagnostics.add(const BackendDiagnostic.missingSymbol(
+        'malloc',
+        detail: 'no native allocator could be bound, so no attribute list '
+            'and no entry-point name can be built',
+      ));
+      return GlContextAttempt(null, diagnostics);
+    }
+
+    _WglApi api;
+    try {
+      api = _WglApi(glLibrary);
+    } on Object catch (error) {
+      diagnostics.add(BackendDiagnostic.missingSymbol(
+        'wglCreateContext',
+        detail: 'the GL library does not export the WGL entry points: $error',
+      ));
+      return GlContextAttempt(null, diagnostics);
+    }
+
+    try {
+      return _createWgl(api, heap, deviceContext, diagnostics);
+    } on Object catch (error, stack) {
+      diagnostics.add(BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'WGL context creation threw',
+        detail: '$error\n$stack',
+      ));
+      return GlContextAttempt(null, diagnostics);
+    }
+  }
+
+  GlContextAttempt _createWgl(
+    _WglApi api,
+    NativeHeap heap,
+    int deviceContext,
+    List<BackendDiagnostic> diagnostics,
+  ) {
+    final legacy = api.createContext(deviceContext);
+    if (legacy == nullptr) {
+      diagnostics.add(const BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'wglCreateContext returned null',
+        detail: 'the device context has no pixel format, or the one it has '
+            'does not support OpenGL',
+      ));
+      return GlContextAttempt(null, diagnostics);
+    }
+    if (api.makeCurrent(deviceContext, legacy) == 0) {
+      api.deleteContext(legacy);
+      diagnostics.add(const BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'the bootstrap GL context could not be made current',
+      ));
+      return GlContextAttempt(null, diagnostics);
+    }
+
+    final resolver = _wglResolver(api, heap);
+    final createAttribs = resolver('wglCreateContextAttribsARB');
+    var context = legacy;
+    var description = 'WGL legacy context';
+    if (createAttribs != nullptr) {
+      final modern = _createModernWgl(
+        createAttribs
+            .cast<
+                NativeFunction<
+                    Pointer<Void> Function(IntPtr, Pointer<Void>,
+                        Pointer<Int32>)>>()
+            .asFunction<
+                Pointer<Void> Function(int, Pointer<Void>, Pointer<Int32>)>(),
+        heap,
+        deviceContext,
+      );
+      if (modern != null) {
+        // Unbind before deleting: deleting the current context is legal and
+        // leaves the driver holding it until the thread exits.
+        api
+          ..makeCurrent(0, nullptr)
+          ..deleteContext(legacy);
+        if (api.makeCurrent(deviceContext, modern.$1) == 0) {
+          api.deleteContext(modern.$1);
+          diagnostics.add(const BackendDiagnostic(
+            kind: DiagnosticKind.connectionFailed,
+            message: 'the core-profile GL context could not be made current',
+          ));
+          return GlContextAttempt(null, diagnostics);
+        }
+        context = modern.$1;
+        description = 'WGL ${modern.$2} context';
+      } else {
+        // Not fatal. A driver that refuses a core profile still runs this
+        // renderer's shaders through the compatibility profile, and saying so
+        // is more useful than failing on a machine that would have worked.
+        diagnostics.add(const BackendDiagnostic.note(
+          'wglCreateContextAttribsARB refused a 3.3 core profile; '
+          'continuing on the compatibility context',
+        ));
+      }
+    } else {
+      diagnostics.add(const BackendDiagnostic.note(
+        'WGL_ARB_create_context is absent; the context is whatever version '
+        'wglCreateContext gave, which on a modern driver is still 4.x '
+        'compatibility',
+      ));
+    }
+
+    return GlContextAttempt(
+      _WglContext(
+        api: api,
+        heap: heap,
+        deviceContext: deviceContext,
+        context: context,
+        description: '$description on device context '
+            '0x${deviceContext.toUnsigned(64).toRadixString(16)}',
+      ),
+      diagnostics,
+    );
+  }
+
+  /// Versions asked for, highest first, down to the one that is required.
+  ///
+  /// The renderer's GLSL is `#version 330 core`, so 3.3 is the floor and the
+  /// last entry must stay 3.3. The higher entries are not needed and are
+  /// asked for anyway, because a driver hands back *exactly* the version
+  /// requested rather than the best it has, and reporting "GL 3.3" on a
+  /// machine that offers 4.6 makes every later capability question harder to
+  /// answer. Nothing above 3.3 is used; the ladder only affects what the
+  /// context calls itself.
+  static const List<List<int>> _wglVersionLadder = <List<int>>[
+    <int>[4, 6],
+    <int>[3, 3],
+  ];
+
+  /// Walks the ladder in core profile, then retries 3.3 with no profile mask.
+  ///
+  /// Returns the context and the version string that produced it, or null.
+  (Pointer<Void>, String)? _createModernWgl(
+    Pointer<Void> Function(int, Pointer<Void>, Pointer<Int32>) create,
+    NativeHeap heap,
+    int deviceContext,
+  ) {
+    final attribs = heap.allocateInt32(16);
+    try {
+      for (final version in _wglVersionLadder) {
+        attribs[0] = _wglContextMajorVersion;
+        attribs[1] = version[0];
+        attribs[2] = _wglContextMinorVersion;
+        attribs[3] = version[1];
+        attribs[4] = _wglContextProfileMask;
+        attribs[5] = _wglContextCoreProfileBit;
+        attribs[6] = 0;
+        final core = create(deviceContext, nullptr, attribs);
+        if (core != nullptr) {
+          return (core, '${version[0]}.${version[1]} core');
+        }
+      }
+
+      // A driver that has no core profile at all still runs this renderer:
+      // the compatibility profile is a superset. Only refusing 3.3 outright
+      // is fatal, and that is handled by the caller.
+      attribs[0] = _wglContextMajorVersion;
+      attribs[1] = 3;
+      attribs[2] = _wglContextMinorVersion;
+      attribs[3] = 3;
+      attribs[4] = 0;
+      final compatibility = create(deviceContext, nullptr, attribs);
+      if (compatibility != nullptr) return (compatibility, '3.3');
+      return null;
+    } finally {
+      heap.release(attribs);
+    }
+  }
+
   /// Tries 3.3 core, then a bare major/minor, then no attributes at all.
   ///
   /// Three attempts because the attribute names differ across EGL versions:
@@ -310,7 +558,7 @@ final class GlContextFactory {
     Pointer<Void> config,
     bool desktop,
   ) {
-    final attribs = heap.allocate<Int32>(16);
+    final attribs = heap.allocateInt32(16);
     try {
       if (desktop) {
         var i = 0;
@@ -423,6 +671,10 @@ final class _EglApi {
 
   late final int Function() getError =
       library.lookupFunction<Int32 Function(), int Function()>('eglGetError');
+
+  late final Pointer<Void> Function(Pointer<Uint8>) getProcAddress =
+      library.lookupFunction<Pointer<Void> Function(Pointer<Uint8>),
+          Pointer<Void> Function(Pointer<Uint8>)>('eglGetProcAddress');
 }
 
 final class _EglContext implements GlContext {
@@ -431,17 +683,23 @@ final class _EglContext implements GlContext {
     required Pointer<Void> display,
     required Pointer<Void> surface,
     required Pointer<Void> context,
+    required NativeHeap heap,
+    required DynamicLibrary glLibrary,
     required this.isDesktopGl,
     required this.description,
   })  : _api = api,
         _display = display,
         _surface = surface,
-        _context = context;
+        _context = context,
+        _heap = heap,
+        _libraryResolver = libraryProcResolver(glLibrary);
 
   final _EglApi _api;
   final Pointer<Void> _display;
   final Pointer<Void> _surface;
   final Pointer<Void> _context;
+  final NativeHeap _heap;
+  final GlProcResolver _libraryResolver;
 
   @override
   final bool isDesktopGl;
@@ -450,6 +708,26 @@ final class _EglContext implements GlContext {
   final String description;
 
   bool _disposed = false;
+
+  /// The export table first, `eglGetProcAddress` second.
+  ///
+  /// That order and not the reverse: a Mesa `libGL.so` exports every entry
+  /// point this renderer uses, and `eglGetProcAddress` on EGL versions before
+  /// 1.5 is only *required* to answer for extensions - so asking it first
+  /// finds nothing on exactly the driver the CI runs.
+  @override
+  GlProcResolver get procAddress => (String name) {
+        final exported = _libraryResolver(name);
+        if (exported != nullptr) return exported;
+        final native = _heap.allocateUtf8(name);
+        try {
+          return _api.getProcAddress(native);
+        } on Object {
+          return nullptr;
+        } finally {
+          _heap.release(native);
+        }
+      };
 
   @override
   bool makeCurrent() {
@@ -469,5 +747,117 @@ final class _EglContext implements GlContext {
       ..destroyContext(_display, _context)
       ..destroySurface(_display, _surface)
       ..terminate(_display);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WGL
+// ---------------------------------------------------------------------------
+
+/// The four WGL entry points, all exported by the GL library itself.
+///
+/// Device contexts cross this boundary as `IntPtr`, never as a named platform
+/// type: the value is a number to everything in this directory.
+final class _WglApi {
+  _WglApi(DynamicLibrary library)
+      : createContext = library.lookupFunction<Pointer<Void> Function(IntPtr),
+            Pointer<Void> Function(int)>('wglCreateContext'),
+        makeCurrent = library.lookupFunction<
+            Int32 Function(IntPtr, Pointer<Void>),
+            int Function(int, Pointer<Void>)>('wglMakeCurrent'),
+        deleteContext = library.lookupFunction<Int32 Function(Pointer<Void>),
+            int Function(Pointer<Void>)>('wglDeleteContext'),
+        getProcAddress = library.lookupFunction<
+            Pointer<Void> Function(Pointer<Uint8>),
+            Pointer<Void> Function(Pointer<Uint8>)>('wglGetProcAddress'),
+        exports = libraryProcResolver(library);
+
+  final Pointer<Void> Function(int) createContext;
+  final int Function(int, Pointer<Void>) makeCurrent;
+  final int Function(Pointer<Void>) deleteContext;
+  final Pointer<Void> Function(Pointer<Uint8>) getProcAddress;
+
+  /// The GL library's own export table: OpenGL 1.1 and the WGL functions.
+  final GlProcResolver exports;
+}
+
+/// The driver first, the DLL's exports second.
+///
+/// Both halves are needed and neither is enough. `wglGetProcAddress` knows
+/// every entry point added since OpenGL 1.1 and is documented to return null
+/// for the 1.1 functions themselves, because those are dispatched by the
+/// system DLL rather than the driver - so `glGetError`, `glViewport`,
+/// `glTexImage2D` and a dozen more come from the export table. Modern drivers
+/// often answer for both, and some ancient ones signal failure with 1, 2, 3
+/// or -1 instead of null, which is why the sentinel check exists: casting one
+/// of those to a function pointer and calling it is an immediate crash with
+/// no diagnostic.
+GlProcResolver _wglResolver(_WglApi api, NativeHeap heap) => (String name) {
+      final native = heap.allocateUtf8(name);
+      Pointer<Void> address;
+      try {
+        address = api.getProcAddress(native);
+      } on Object {
+        address = nullptr;
+      } finally {
+        heap.release(native);
+      }
+      if (_isRealProcAddress(address)) return address;
+      return api.exports(name);
+    };
+
+bool _isRealProcAddress(Pointer<Void> address) {
+  final value = address.address;
+  return value != 0 &&
+      value != 1 &&
+      value != 2 &&
+      value != 3 &&
+      value != 0xFFFFFFFF &&
+      value != -1;
+}
+
+final class _WglContext implements GlContext {
+  _WglContext({
+    required _WglApi api,
+    required NativeHeap heap,
+    required int deviceContext,
+    required Pointer<Void> context,
+    required this.description,
+  })  : _api = api,
+        _deviceContext = deviceContext,
+        _context = context,
+        _resolver = _wglResolver(api, heap);
+
+  final _WglApi _api;
+  final int _deviceContext;
+  final Pointer<Void> _context;
+  final GlProcResolver _resolver;
+
+  @override
+  final String description;
+
+  /// Always true: WGL is desktop OpenGL by construction, so the renderer's
+  /// GLSL 330 dialect is the right one.
+  @override
+  bool get isDesktopGl => true;
+
+  @override
+  GlProcResolver get procAddress => _resolver;
+
+  bool _disposed = false;
+
+  @override
+  bool makeCurrent() {
+    if (_disposed) return false;
+    return _api.makeCurrent(_deviceContext, _context) != 0;
+  }
+
+  @override
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _api
+      ..makeCurrent(0, nullptr)
+      ..deleteContext(_context);
   }
 }

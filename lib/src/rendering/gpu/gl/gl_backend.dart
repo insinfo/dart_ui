@@ -51,12 +51,16 @@ import 'gl_bindings.dart';
 import 'gl_context.dart';
 import 'gl_shaders.dart';
 
-/// GL's own "your context died" error, from `GL_KHR_robustness` and core 4.5.
-const int _glContextLost = 0x0507;
-
 /// A texture object owned by a [GlRenderDevice].
 final class GlTexture implements GpuTextureHandle {
-  GlTexture._(this.id, this.width, this.height, this.format, this._state);
+  GlTexture._(
+    this.id,
+    this.width,
+    this.height,
+    this.format,
+    this.filter,
+    this._state,
+  );
 
   @override
   final int id;
@@ -70,6 +74,9 @@ final class GlTexture implements GpuTextureHandle {
   @override
   final GpuTextureFormat format;
 
+  @override
+  final GpuTextureFilter filter;
+
   final GpuDeviceState _state;
   bool _released = false;
 
@@ -80,11 +87,14 @@ final class GlTexture implements GpuTextureHandle {
   bool get isValid => !_released && !_state.isLost;
 
   @override
-  String toString() => 'GlTexture($id, ${width}x$height, ${format.name})';
+  String toString() =>
+      'GlTexture($id, ${width}x$height, ${format.name}, ${filter.name})';
 }
 
 /// An open GL context plus the objects every target shares.
-final class GlRenderDevice with DisposableMixin implements RenderDevice {
+final class GlRenderDevice
+    with DisposableMixin
+    implements RenderDevice, GpuTextureAllocator {
   GlRenderDevice._({
     required GlContext context,
     required GlApi gl,
@@ -110,7 +120,7 @@ final class GlRenderDevice with DisposableMixin implements RenderDevice {
   late final Pointer<Uint32> _names = _heap.allocate<Uint32>(4 * 4);
   late final Pointer<Int32> _status = _heap.allocate<Int32>(4 * 4);
   late final Pointer<Pointer<Uint8>> _stringSlot =
-      _heap.allocate<Pointer<Uint8>>(8);
+      _heap.allocatePointers<Uint8>(1);
   late final Pointer<Uint8> _log = _heap.allocate<Uint8>(_logCapacity);
   static const int _logCapacity = 4096;
 
@@ -178,19 +188,43 @@ final class GlRenderDevice with DisposableMixin implements RenderDevice {
   // Textures
   // -------------------------------------------------------------------
 
+  /// Creates an empty texture, or throws when the device cannot hold one.
+  ///
+  /// The size check is against the limit the device already queried, and it
+  /// throws rather than letting GL answer. Without it an oversized texture
+  /// raises `GL_INVALID_VALUE`, which [_checkError] would have to interpret -
+  /// and "this image is bigger than the GPU allows" is a caller error with an
+  /// obvious fix, not a driver fault.
+  @override
   GlTexture createTexture({
     required int width,
     required int height,
     required GpuTextureFormat format,
+    GpuTextureFilter filter = GpuTextureFilter.nearest,
   }) {
     throwIfDisposed();
+    if (width <= 0 || height <= 0) {
+      throw ArgumentError('a texture must have a positive size, got '
+          '${width}x$height');
+    }
+    if (width > _maxTextureSize || height > _maxTextureSize) {
+      throw UnsupportedCapabilityError(
+        backendName: GlRendererBackend.backendName,
+        capability: Capability.cpuPresentation,
+        detail: 'a ${width}x$height texture exceeds this device\'s '
+            'GL_MAX_TEXTURE_SIZE of $_maxTextureSize; the caller must tile '
+            'the image or scale it down',
+      );
+    }
     _makeCurrentOrLose();
     _gl.genTextures(1, _names);
     final name = _names[0];
+    final sampling =
+        filter == GpuTextureFilter.linear ? glLinear : glNearest;
     _gl
       ..bindTexture(glTexture2D, name)
-      ..texParameteri(glTexture2D, glTextureMinFilter, glNearest)
-      ..texParameteri(glTexture2D, glTextureMagFilter, glNearest)
+      ..texParameteri(glTexture2D, glTextureMinFilter, sampling)
+      ..texParameteri(glTexture2D, glTextureMagFilter, sampling)
       ..texParameteri(glTexture2D, glTextureWrapS, glClampToEdge)
       ..texParameteri(glTexture2D, glTextureWrapT, glClampToEdge)
       // Coverage masks are one byte per texel and their rows are not
@@ -201,23 +235,38 @@ final class GlRenderDevice with DisposableMixin implements RenderDevice {
     _gl.texImage2D(glTexture2D, 0, internal, width, height, 0, external,
         glUnsignedByte, nullptr);
     _checkError('glTexImage2D(${width}x$height, ${format.name})');
-    return GlTexture._(name, width, height, format, _state);
+    return GlTexture._(name, width, height, format, filter, _state);
   }
 
+  /// Uploads [height] rows of [pixels], each [bytesPerRow] bytes apart.
+  ///
+  /// Rows are copied one at a time into packed staging rather than handed to
+  /// the driver with `GL_UNPACK_ROW_LENGTH`, because that pixel-store
+  /// parameter does not exist in GLES 2 and this renderer must run there.
+  @override
   void uploadRegion(
-    GlTexture texture, {
+    covariant GlTexture texture, {
     required int x,
     required int y,
     required int width,
     required int height,
     required Uint8List pixels,
-    required int sourceOffset,
+    required int bytesPerRow,
   }) {
     if (width <= 0 || height <= 0) return;
     _makeCurrentOrLose();
-    final bytes = width * height * texture.format.bytesPerPixel;
+    final rowBytes = width * texture.format.bytesPerPixel;
+    final bytes = rowBytes * height;
     final staging = _ensurePixelStaging(bytes);
-    staging.asTypedList(bytes).setRange(0, bytes, pixels, sourceOffset);
+    final view = staging.asTypedList(bytes);
+    for (var row = 0; row < height; row++) {
+      view.setRange(
+        row * rowBytes,
+        row * rowBytes + rowBytes,
+        pixels,
+        row * bytesPerRow,
+      );
+    }
     final external = texture.format == GpuTextureFormat.alpha8 ? glRed : glRgba;
     _gl
       ..bindTexture(glTexture2D, texture.id)
@@ -227,7 +276,8 @@ final class GlRenderDevice with DisposableMixin implements RenderDevice {
     _checkError('glTexSubImage2D');
   }
 
-  void releaseTexture(GlTexture texture) {
+  @override
+  void releaseTexture(covariant GlTexture texture) {
     if (texture._released || _state.isLost || isDisposed) return;
     texture._released = true;
     _names[0] = texture.id;
@@ -503,7 +553,7 @@ final class GlRenderDevice with DisposableMixin implements RenderDevice {
       return BackendDiagnostic(
         kind: DiagnosticKind.incompatibleDevice,
         message: 'GL reported an error while creating the renderer objects',
-        detail: _state.lossDiagnostic?.detail,
+        detail: _lastError?.detail,
       );
     }
     return null;
@@ -561,34 +611,53 @@ final class GlRenderDevice with DisposableMixin implements RenderDevice {
       const BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
         message: 'the GL context could not be made current',
-        detail: 'the driver refused eglMakeCurrent, which is what a lost or '
-            'reset context looks like from here',
+        detail: 'the driver refused to make the context current, which is '
+            'what a lost or reset context looks like from here',
       ),
     );
-    return true == false;
+    return false;
   }
 
-  /// Drains GL's error queue and turns a context loss into device loss.
+  /// The last GL error this device saw that was not fatal, or null.
   ///
-  /// Returns true when something was wrong. Errors other than a context loss
-  /// are recorded as a loss too - not because every GL error is fatal, but
-  /// because this renderer issues a fixed, validated command stream, so an
-  /// error from it means the driver and this code disagree about something
-  /// fundamental and continuing would paint undefined pixels.
+  /// Kept rather than thrown so a caller can report it without the renderer
+  /// deciding that a recoverable mistake ends the device. Cleared by the next
+  /// clean [_checkError].
+  BackendDiagnostic? get lastError => _lastError;
+  BackendDiagnostic? _lastError;
+
+  /// Drains GL's error queue, and decides whether the device survived it.
+  ///
+  /// Returns true when something was wrong. Only two errors mark the device
+  /// lost, and the distinction is the spec's own: `GL_OUT_OF_MEMORY` and
+  /// `GL_CONTEXT_LOST` leave the contents of every object undefined, while
+  /// every other error is defined to have "no other side effect than to set
+  /// the error flag" - the command is ignored and the context is still valid.
+  ///
+  /// Treating all of them as loss, which this did, meant one oversized
+  /// texture or one bad enum turned a recoverable mistake into a device that
+  /// could never draw again and could not be recovered either. That is a
+  /// worse failure than the bug it was reporting.
   bool _checkError(String what) {
     final error = _gl.drainErrors();
-    if (error == glNoError) return false;
-    _state.markLost(
-      BackendDiagnostic(
-        kind: error == _glContextLost
-            ? DiagnosticKind.connectionFailed
-            : DiagnosticKind.incompatibleDevice,
-        message: error == _glContextLost
-            ? 'the GL context was lost'
-            : 'GL error during $what',
-        detail: '0x${error.toRadixString(16)}',
-      ),
+    if (error == glNoError) {
+      _lastError = null;
+      return false;
+    }
+    final fatal = error == glContextLost || error == glOutOfMemory;
+    final diagnostic = BackendDiagnostic(
+      kind: error == glContextLost
+          ? DiagnosticKind.connectionFailed
+          : DiagnosticKind.incompatibleDevice,
+      message: switch (error) {
+        glContextLost => 'the GL context was lost',
+        glOutOfMemory => 'the GL driver ran out of memory during $what',
+        _ => 'GL error during $what',
+      },
+      detail: '0x${error.toRadixString(16)}',
     );
+    _lastError = diagnostic;
+    if (fatal) _state.markLost(diagnostic);
     return true;
   }
 
@@ -660,12 +729,17 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       width: _maskAtlas.width,
       height: _maskAtlas.height,
       format: GpuTextureFormat.alpha8,
+      // One texel per pixel by construction, so nearest reproduces the CPU
+      // rasteriser's coverage byte exactly and linear would blur it.
+      filter: GpuTextureFilter.nearest,
     );
+    _images = GlImageCache(_device);
     _sink = GpuRasterSink(
       batcher: _batcher,
       backendName: 'opengl',
       maskAtlas: _maskAtlas,
       maskTextureId: _maskTexture.id,
+      imageResolver: _images,
     );
     _player = DisplayListPlayer(_sink);
     _createSurfaceObjects();
@@ -676,8 +750,13 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
 
   late final GpuMaskAtlas _maskAtlas;
   late final GlTexture _maskTexture;
+  late final GlImageCache _images;
   late final GpuRasterSink _sink;
   late final DisplayListPlayer _player;
+
+  /// The textures this target uploaded for drawn images. Exposed so a caller
+  /// that finished with a picture can drop them without disposing the target.
+  GlImageCache get images => _images;
 
   MemorySurfaceDescriptor _surface;
   late GlTexture _colorTexture;
@@ -743,14 +822,25 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       );
     }
 
-    _device._makeCurrentOrLose();
+    // Binding a framebuffer through a context that is not current writes into
+    // whichever context *is*, which on a shared-GPU machine is another
+    // application's. So the result is checked before anything is bound.
+    if (!_device._makeCurrentOrLose()) {
+      return _device.state.blockedPresent() ??
+          const PresentResult(
+            status: PresentStatus.deviceLost,
+            diagnostic: BackendDiagnostic(
+              kind: DiagnosticKind.connectionFailed,
+              message: 'the GL context could not be made current to present',
+            ),
+          );
+    }
     _device._gl.bindFramebuffer(glFramebuffer, _fbo);
 
     // One upload for everything the frame's masks wrote, over whole rows.
-    // Whole rows because the staging image's stride is the atlas width, so a
-    // narrower sub-rectangle would need GL_UNPACK_ROW_LENGTH - which is not
-    // in GLES 2 - or a repacking pass. Over-uploading a few kilobytes is the
-    // cheaper of the three.
+    // Whole rows because a narrower sub-rectangle would upload the same
+    // number of rows anyway once the stride is honoured, and the atlas is
+    // dirty in bands rather than columns.
     if (_maskAtlas.isDirty) {
       final top = _maskAtlas.dirtyTop;
       final height = _maskAtlas.dirtyBottom - top;
@@ -760,8 +850,11 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
         y: top,
         width: _maskAtlas.width,
         height: height,
-        pixels: _maskAtlas.pixels,
-        sourceOffset: top * _maskAtlas.width,
+        pixels: Uint8List.sublistView(
+          _maskAtlas.pixels,
+          top * _maskAtlas.width,
+        ),
+        bytesPerRow: _maskAtlas.width,
       );
       _maskAtlas.markUploaded();
     }
@@ -867,7 +960,109 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
   @override
   void onDispose() {
     _destroySurfaceObjects();
+    _images.clear();
     _device.releaseTexture(_maskTexture);
+  }
+}
+
+/// Uploads drawn images into textures, once each.
+///
+/// `GpuRasterSink` asks for one of these and, until now, nothing implemented
+/// the interface - so every `drawImage` on this backend threw. The display
+/// list interns an image as an opaque `Object`; the CPU renderer already
+/// fixes what that object is (a [Framebuffer]), and agreeing with it here is
+/// what lets one display list be drawn by either backend and compared.
+///
+/// The cache is keyed by identity and never evicts. That is honest rather
+/// than clever: an eviction policy needs a frame budget this framework does
+/// not measure yet, and a wrong one is worse than none because it re-uploads
+/// the image being animated. [clear] is the escape hatch, and the target
+/// calls it on dispose.
+final class GlImageCache implements GpuImageResolver {
+  GlImageCache(this._device);
+
+  final GlRenderDevice _device;
+  final Map<Object, GlTexture> _textures = Map<Object, GlTexture>.identity();
+
+  /// How many textures are held. For tests and for a memory report.
+  int get length => _textures.length;
+
+  @override
+  GpuTextureHandle? resolve(Object image) {
+    if (image is! Framebuffer) return null;
+    final cached = _textures[image];
+    if (cached != null && cached.isValid) return cached;
+
+    final GlTexture texture;
+    try {
+      texture = _device.createTexture(
+        width: image.width,
+        height: image.height,
+        format: GpuTextureFormat.rgba8888Premultiplied,
+        // Linear, unlike the mask atlas: an image is drawn at whatever scale
+        // the layout produced, and nearest sampling there is the blocky,
+        // shimmering resampling that reads as a renderer bug.
+        filter: GpuTextureFilter.linear,
+      );
+    } on UnsupportedCapabilityError {
+      // Larger than the device allows. Null is the sink's "this device cannot
+      // draw it", which becomes a named error rather than a dead texture.
+      return null;
+    }
+
+    _device.uploadRegion(
+      texture,
+      x: 0,
+      y: 0,
+      width: image.width,
+      height: image.height,
+      pixels: _asRgba(image),
+      bytesPerRow: image.width * 4,
+    );
+    _textures[image] = texture;
+    return texture;
+  }
+
+  /// Releases every texture. The next [resolve] re-uploads.
+  void clear() {
+    for (final texture in _textures.values) {
+      _device.releaseTexture(texture);
+    }
+    _textures.clear();
+  }
+
+  /// The image's bytes in the RGBA order `glTexImage2D` was told to expect.
+  ///
+  /// `GL_BGRA` as an upload format is desktop GL only and this renderer also
+  /// targets GLES, so a BGRA framebuffer is swizzled here instead of being
+  /// handed to the driver. Rows are repacked at the same time, because a
+  /// [Framebuffer] wrapping a platform surface routinely has a stride wider
+  /// than its width.
+  static Uint8List _asRgba(Framebuffer image) {
+    final packed = Uint8List(image.width * image.height * 4);
+    final swizzle = image.format == PixelFormat.bgra8888Premultiplied;
+    for (var y = 0; y < image.height; y++) {
+      final source = y * image.bytesPerRow;
+      final destination = y * image.width * 4;
+      if (!swizzle) {
+        packed.setRange(
+          destination,
+          destination + image.width * 4,
+          image.pixels,
+          source,
+        );
+        continue;
+      }
+      for (var x = 0; x < image.width; x++) {
+        final s = source + x * 4;
+        final d = destination + x * 4;
+        packed[d] = image.pixels[s + 2];
+        packed[d + 1] = image.pixels[s + 1];
+        packed[d + 2] = image.pixels[s];
+        packed[d + 3] = image.pixels[s + 3];
+      }
+    }
+    return packed;
   }
 }
 
@@ -921,34 +1116,16 @@ final class GlRendererBackend implements RendererBackend {
         ),
       );
     }
-    final library = load.library!;
 
-    final missing = missingGlSymbols(library);
-    if (missing.isNotEmpty) {
-      return BackendProbeResult(
-        backendName: backendName,
-        supported: false,
-        diagnostics: <BackendDiagnostic>[
-          BackendDiagnostic.missingSymbol(
-            missing.length > 6
-                ? '${missing.take(6).join(', ')} and ${missing.length - 6} '
-                    'more'
-                : missing.join(', '),
-            detail: '${load.name} exports '
-                '${kRequiredGlSymbols.length - missing.length} of '
-                '${kRequiredGlSymbols.length} required entry points. On '
-                'Windows this is expected: opengl32.dll exports GL 1.1 and '
-                'everything since must come from wglGetProcAddress with a '
-                'context current, which needs a window',
-          ),
-        ],
-      );
-    }
-
-    // A context is the only honest test. A driver can export every symbol and
-    // still have no device behind it - a headless container with Mesa
-    // installed but no DRM node is exactly that.
-    final attempt = const GlContextFactory().create(width: 16, height: 16);
+    // A context comes first, and the symbol check second. That order is
+    // forced by Windows, where a driver's entry points do not exist as
+    // symbols at all until a context is current - checking the export table
+    // first would report forty missing functions on a machine with a working
+    // OpenGL 4.6. It is also the more honest order everywhere else: a driver
+    // can export every symbol and still have no device behind it, which is
+    // what a container with Mesa installed but no DRM node is.
+    final attempt = const GlContextFactory()
+        .create(width: 16, height: 16, glLibrary: load.library!);
     final context = attempt.context;
     if (context == null) {
       return BackendProbeResult(
@@ -959,43 +1136,92 @@ final class GlRendererBackend implements RendererBackend {
     }
 
     try {
-      final gl = GlApi(library);
-      final version = gl.stringOf(glVersion);
-      final renderer = gl.stringOf(glRenderer);
-      final vendor = gl.stringOf(glVendor);
-      if (version.isEmpty) {
-        return BackendProbeResult(
-          backendName: backendName,
-          supported: false,
-          diagnostics: <BackendDiagnostic>[
-            ...attempt.diagnostics,
-            const BackendDiagnostic(
-              kind: DiagnosticKind.incompatibleDevice,
-              message: 'glGetString(GL_VERSION) returned nothing with a '
-                  'context current',
-            ),
-          ],
-        );
-      }
-      return BackendProbeResult(
-        backendName: backendName,
-        supported: true,
-        capabilities: const <Capability>{Capability.cpuPresentation},
-        diagnostics: <BackendDiagnostic>[
-          ...attempt.diagnostics,
-          BackendDiagnostic.note(
-            '$renderer, GL $version',
-            detail: 'vendor: $vendor; ${context.description}',
-          ),
-          const BackendDiagnostic.note(
-            'offscreen only: this backend renders to framebuffer objects and '
-            'has no windowed target yet',
-          ),
-        ],
-      );
+      return describeContext(context, attempt.diagnostics);
     } finally {
       context.dispose();
     }
+  }
+
+  /// What a live context reports about itself, as a probe result.
+  ///
+  /// Public because the Windows path creates its context elsewhere - a WGL
+  /// context needs a window, and windows live in `lib/src/backends` - and
+  /// then wants exactly this report about it.
+  static BackendProbeResult describeContext(
+    GlContext context, [
+    List<BackendDiagnostic> prior = const <BackendDiagnostic>[],
+  ]) {
+    if (!context.makeCurrent()) {
+      return BackendProbeResult(
+        backendName: backendName,
+        supported: false,
+        diagnostics: <BackendDiagnostic>[
+          ...prior,
+          const BackendDiagnostic(
+            kind: DiagnosticKind.connectionFailed,
+            message: 'the context could not be made current to be probed',
+          ),
+        ],
+      );
+    }
+
+    final gl = GlApi(context.procAddress);
+    final missing = missingGlSymbols(context.procAddress);
+    if (missing.isNotEmpty) {
+      return BackendProbeResult(
+        backendName: backendName,
+        supported: false,
+        diagnostics: <BackendDiagnostic>[
+          ...prior,
+          BackendDiagnostic.missingSymbol(
+            missing.length > 6
+                ? '${missing.take(6).join(', ')} and ${missing.length - 6} '
+                    'more'
+                : missing.join(', '),
+            detail: 'the context resolved '
+                '${kRequiredGlSymbols.length - missing.length} of '
+                '${kRequiredGlSymbols.length} required entry points: '
+                '${context.description}',
+          ),
+        ],
+      );
+    }
+
+    final version = gl.stringOf(glVersion);
+    final renderer = gl.stringOf(glRenderer);
+    final vendor = gl.stringOf(glVendor);
+    if (version.isEmpty) {
+      return BackendProbeResult(
+        backendName: backendName,
+        supported: false,
+        diagnostics: <BackendDiagnostic>[
+          ...prior,
+          const BackendDiagnostic(
+            kind: DiagnosticKind.incompatibleDevice,
+            message:
+                'glGetString(GL_VERSION) returned nothing with a context '
+                'current',
+          ),
+        ],
+      );
+    }
+    return BackendProbeResult(
+      backendName: backendName,
+      supported: true,
+      capabilities: const <Capability>{Capability.cpuPresentation},
+      diagnostics: <BackendDiagnostic>[
+        ...prior,
+        BackendDiagnostic.note(
+          '$renderer, GL $version',
+          detail: 'vendor: $vendor; ${context.description}; GLSL '
+              '${gl.stringOf(glShadingLanguageVersion)}',
+        ),
+        const BackendDiagnostic.note(
+          'offscreen only: this backend renders to framebuffer objects and '
+          'has no windowed target yet',
+        ),
+      ],
+    );
   }
 
   /// Opens a device, or throws [BackendSelectionError] carrying the probe.
@@ -1005,17 +1231,24 @@ final class GlRendererBackend implements RendererBackend {
   /// it cannot is a caller error that has to be loud.
   @override
   Future<RenderDevice> createDevice() async {
-    final report = probe();
-    if (!report.supported) {
+    final load = GlLibrary.open();
+    if (!load.isLoaded) {
       throw BackendSelectionError(
         requested: backendName,
-        attempts: <BackendProbeResult>[report],
+        attempts: <BackendProbeResult>[
+          BackendProbeResult.unsupported(
+            backendName,
+            BackendDiagnostic.missingLibrary(
+              load.attempted.join(', '),
+              detail: load.error,
+            ),
+          ),
+        ],
       );
     }
 
-    final load = GlLibrary.open();
-    final library = load.library!;
-    final attempt = const GlContextFactory().create(width: 16, height: 16);
+    final attempt = const GlContextFactory()
+        .create(width: 16, height: 16, glLibrary: load.library!);
     final context = attempt.context;
     if (context == null) {
       throw BackendSelectionError(
@@ -1029,8 +1262,31 @@ final class GlRendererBackend implements RendererBackend {
         ],
       );
     }
+    return adoptContext(context, load.library!);
+  }
 
-    final heap = NativeHeap.tryBind(library);
+  /// Builds a device on a context somebody else created.
+  ///
+  /// The seam the Windows path needs: `lib/src/backends/win32` owns the
+  /// window and the WGL context, and hands the finished context here rather
+  /// than this file learning what a window is. Takes ownership - the returned
+  /// device disposes the context.
+  ///
+  /// Throws [BackendSelectionError] carrying the reason, like [createDevice].
+  static GlRenderDevice adoptContext(
+    GlContext context,
+    DynamicLibrary glLibrary,
+  ) {
+    final report = describeContext(context);
+    if (!report.supported) {
+      context.dispose();
+      throw BackendSelectionError(
+        requested: backendName,
+        attempts: <BackendProbeResult>[report],
+      );
+    }
+
+    final heap = NativeHeap.tryBind(glLibrary);
     if (heap == null) {
       context.dispose();
       throw BackendSelectionError(
@@ -1048,8 +1304,7 @@ final class GlRendererBackend implements RendererBackend {
       );
     }
 
-    final gl = GlApi(library);
-    final maxSize = _queryMaxTextureSize(gl, heap);
+    final gl = GlApi(context.procAddress);
     final device = GlRenderDevice._(
       context: context,
       gl: gl,
@@ -1059,7 +1314,7 @@ final class GlRendererBackend implements RendererBackend {
         deviceDescription: gl.stringOf(glRenderer),
         driverVersion: gl.stringOf(glVersion),
       ),
-      maxTextureSize: maxSize,
+      maxTextureSize: _queryMaxTextureSize(gl, heap),
     );
     final failure = device._initialise();
     if (failure != null) {
@@ -1075,7 +1330,7 @@ final class GlRendererBackend implements RendererBackend {
   }
 
   static int _queryMaxTextureSize(GlApi gl, NativeHeap heap) {
-    final slot = heap.allocate<Int32>(4);
+    final slot = heap.allocateInt32(1);
     try {
       slot[0] = 0;
       gl.getIntegerv(glMaxTextureSize, slot);

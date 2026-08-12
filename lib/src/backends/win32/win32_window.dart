@@ -64,6 +64,13 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         _style = style,
         _exStyle = exStyle {
     _desktopDpi = api.systemDpi();
+    // The window class deliberately has no cursor (see Win32WindowClass), so
+    // WM_SETCURSOR belongs to us - which means a window that never calls
+    // setCursor() would answer that message with nothing and leave whatever
+    // the *previous* window put on screen: the resize arrow from dragging a
+    // border, or the app-starting spinner. Starting from a real arrow handle
+    // is what makes the client area look like a window rather than a hang.
+    _cursorHandle = _handleForCursor(SystemCursor.arrow);
     _token = Win32WindowRegistry.attach(this);
     // Acquisition order, released in reverse by [onDispose]: token, scratch
     // memory, event stream, HWND. Destroying the HWND last means WM_DESTROY
@@ -350,6 +357,12 @@ final class Win32Window with DisposableMixin implements NativeWindow {
   /// The cursor last requested, for tests and diagnostics.
   SystemCursor get cursor => _cursor;
 
+  /// The native `HCURSOR` this window answers `WM_SETCURSOR` with.
+  ///
+  /// Zero means the client area sets no cursor at all, which is the failure
+  /// this class must never be in: see the constructor.
+  int get cursorHandle => _cursorHandle;
+
   int _handleForCursor(SystemCursor cursor) {
     final cached = _cursorCache[cursor];
     if (cached != null) return cached;
@@ -516,8 +529,14 @@ final class Win32Window with DisposableMixin implements NativeWindow {
       case wmRbuttonup:
         return _onPointerUp(PointerButton.secondary, lParam);
 
+      case wmMousewheel:
+        return _onPointerScroll(wParam, lParam);
+
       case wmMouseleave:
         return _onPointerLeave();
+
+      case wmCapturechanged:
+        return _onCaptureLost();
 
       case wmKeydown:
       case wmSyskeydown:
@@ -559,6 +578,10 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         ),
       );
     }
+    _lastPointerPosition = _space.physicalToLogical(
+      win32SignedLoWord(lParam),
+      win32SignedHiWord(lParam),
+    );
     _emit(
       PointerMoveEvent(
         windowId: id,
@@ -567,16 +590,24 @@ final class Win32Window with DisposableMixin implements NativeWindow {
             Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
         pointerId: 0,
         kind: PointerKind.mouse,
-        logicalPosition: _space.physicalToLogical(
-          win32SignedLoWord(lParam),
-          win32SignedHiWord(lParam),
-        ),
+        logicalPosition: _lastPointerPosition,
       ),
     );
     return 0;
   }
 
+  /// Buttons currently held down, so capture is released exactly once - when
+  /// the last of them comes up rather than when the first does.
+  final Set<PointerButton> _heldButtons = <PointerButton>{};
+
   int _onPointerDown(PointerButton button, int lParam) {
+    // Mouse capture at the OS level. The framework's own capture routes an
+    // event to the control that took the pointer, but it can only route events
+    // that arrive - and Windows stops sending WM_MOUSEMOVE the instant the
+    // cursor leaves the window. Without this, dragging a slider off the edge
+    // of the window freezes it, which is the same bug one layer down.
+    if (_heldButtons.isEmpty && _hwnd != 0) _api.setCapture(_hwnd);
+    _heldButtons.add(button);
     _emit(
       PointerDownEvent(
         windowId: id,
@@ -596,6 +627,13 @@ final class Win32Window with DisposableMixin implements NativeWindow {
   }
 
   int _onPointerUp(PointerButton button, int lParam) {
+    _heldButtons.remove(button);
+    // Released only when the last button comes up: letting go of the right
+    // button in the middle of a left-drag must not end the drag. Held past the
+    // event so the framework still sees the release as captured.
+    if (_heldButtons.isEmpty && _api.getCapture() == _hwnd) {
+      _api.releaseCapture();
+    }
     _emit(
       PointerUpEvent(
         windowId: id,
@@ -614,6 +652,35 @@ final class Win32Window with DisposableMixin implements NativeWindow {
     return 0;
   }
 
+  /// The capture went away while a button was still down.
+  ///
+  /// It can be taken by anything - another window, a system drag, Alt+Tab -
+  /// and no release will ever arrive for the press we are holding. Without a
+  /// synthesized cancel the control stays armed forever: visibly stuck in its
+  /// pressed state, and ready to activate on some later unrelated click.
+  ///
+  /// Our own ReleaseCapture in [_onPointerUp] also lands here, and clears
+  /// [_heldButtons] *before* releasing precisely so that this does not fire a
+  /// cancel at the end of an ordinary click.
+  int _onCaptureLost() {
+    if (_heldButtons.isEmpty) return 0;
+    _heldButtons.clear();
+    _emit(
+      PointerCancelEvent(
+        windowId: id,
+        generation: _generation.current,
+        timestamp:
+            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: _lastPointerPosition,
+      ),
+    );
+    return 0;
+  }
+
+  Offset _lastPointerPosition = Offset.zero;
+
   int _onPointerLeave() {
     _trackingMouse = false;
     _emit(
@@ -625,6 +692,39 @@ final class Win32Window with DisposableMixin implements NativeWindow {
     return 0;
   }
 
+  int _onPointerScroll(int wParam, int lParam) {
+    var x = win32SignedLoWord(lParam);
+    var y = win32SignedHiWord(lParam);
+    _withScratchPoint((point) {
+      point.ref
+        ..x = x
+        ..y = y;
+      if (_api.screenToClient(_hwnd, point) != 0) {
+        x = point.ref.x;
+        y = point.ref.y;
+      }
+    });
+    final delta = win32SignedHiWord(wParam) / 120.0;
+    final position = _space.physicalToLogical(x, y);
+    _emit(
+      PointerScrollEvent(
+        windowId: id,
+        generation: _generation.current,
+        timestamp: _eventTimestamp(),
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: position,
+        scrollDelta:
+            (wParam & mkShift) != 0 ? Offset(delta, 0) : Offset(0, delta),
+        scrollDeltaUnit: ScrollDeltaUnit.lines,
+      ),
+    );
+    return 0;
+  }
+
+  Duration _eventTimestamp() =>
+      Duration(microseconds: DateTime.now().microsecondsSinceEpoch);
+
   int _onKeyDown(int wParam, int lParam) {
     _emit(
       KeyDownEvent(
@@ -634,6 +734,9 @@ final class Win32Window with DisposableMixin implements NativeWindow {
             Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
         physicalKey: (lParam >> 16) & 0xFF,
         logicalKey: wParam,
+        modifiers: _modifiers(),
+        isRepeat: ((lParam >> 30) & 1) != 0,
+        location: _keyLocation(wParam, lParam),
       ),
     );
     return 0;
@@ -648,9 +751,43 @@ final class Win32Window with DisposableMixin implements NativeWindow {
             Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
         physicalKey: (lParam >> 16) & 0xFF,
         logicalKey: wParam,
+        modifiers: _modifiers(),
+        location: _keyLocation(wParam, lParam),
       ),
     );
     return 0;
+  }
+
+  KeyLocation _keyLocation(int virtualKey, int lParam) {
+    final extended = ((lParam >> 24) & 1) != 0;
+    if (virtualKey == 0x10) {
+      return extended ? KeyLocation.right : KeyLocation.left;
+    }
+    if (virtualKey == 0x11) {
+      return extended ? KeyLocation.right : KeyLocation.left;
+    }
+    if (virtualKey == 0x12) {
+      return extended ? KeyLocation.right : KeyLocation.left;
+    }
+    if (extended && virtualKey >= 0x60 && virtualKey <= 0x69) {
+      return KeyLocation.numpad;
+    }
+    return KeyLocation.standard;
+  }
+
+  Set<KeyModifier> _modifiers() {
+    int state(int key) => _api.getKeyState(key);
+    final modifiers = <KeyModifier>{};
+    if ((state(vkShift) & 0x8000) != 0) modifiers.add(KeyModifier.shift);
+    if ((state(vkControl) & 0x8000) != 0) modifiers.add(KeyModifier.control);
+    if ((state(vkMenu) & 0x8000) != 0) modifiers.add(KeyModifier.alt);
+    if ((state(vkLwin) & 0x8000) != 0 || (state(vkRwin) & 0x8000) != 0) {
+      modifiers.add(KeyModifier.meta);
+    }
+    if ((state(vkCapital) & 1) != 0) modifiers.add(KeyModifier.capsLock);
+    if ((state(vkNumlock) & 1) != 0) modifiers.add(KeyModifier.numLock);
+    if ((state(vkScroll) & 1) != 0) modifiers.add(KeyModifier.scrollLock);
+    return modifiers;
   }
 
   int _onPaint(int hwnd) {

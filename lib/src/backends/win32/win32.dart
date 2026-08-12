@@ -6,7 +6,9 @@
 /// for `WndClassExW` is a caller that will break when the binding changes.
 library;
 
+export 'win32_abi.dart' show Win32AbiReport;
 export 'win32_backend.dart' show Win32WindowingBackend;
+export 'win32_clipboard.dart' show Win32Clipboard;
 export 'win32_coordinates.dart' show Win32CoordinateSpace, win32ScaleForDpi;
 export 'win32_cpu_presenter.dart' show Win32CpuPresenter;
 export 'win32_diagnostics.dart' show Win32Failure, Win32HandlerFault;

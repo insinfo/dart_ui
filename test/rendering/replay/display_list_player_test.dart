@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dart_ui/src/geometry/offset.dart';
+import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
@@ -407,25 +408,119 @@ void main() {
       );
     });
 
-    test('a stroked rectangle is refused rather than filled', () {
+    test('a paint style no encoder could write is refused, not guessed', () {
+      // Style 3 fits the two-bit field but names nothing; addPaint rejects it,
+      // so this can only arrive from a corrupt or hand-written buffer. Reading
+      // it as a fill would put a solid block on screen and blame the shape.
+      final list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF000000);
+      list.drawRect(0, 0, 10, 10, paint);
+
+      expect(
+        () => DisplayListPlayer(RecordingSink()).play(
+          DisplayListReader(list),
+          _PaintStyleOverride(DisplayListResources(list), 3),
+          deviceBounds: _surface,
+        ),
+        throwsA(
+          isA<UnsupportedCommandException>().having(
+            (e) => e.toString(),
+            'toString',
+            contains('paint style 3'),
+          ),
+        ),
+      );
+    });
+  });
+
+  group('stroked shapes become centrelines', () {
+    // The rectangle primitives take device geometry and no matrix, so they
+    // cannot express a stroke whose width is in local units. The player
+    // rebuilds those shapes as paths instead of widening every sink.
+
+    test('a stroked rect leaves as a path, in LOCAL space, with the matrix',
+        () {
       final list = DisplayList();
       final int paint = list.addPaint(
         colorArgb: 0xFF000000,
         style: paintStyleStroke,
         strokeWidth: 2,
       );
+      list
+        ..save()
+        ..transform2D(const Transform2D.scaling(2, 2))
+        ..drawRect(1, 1, 5, 5, paint)
+        ..restore();
+
+      final sink = _play(list);
+      expect(sink.allOf<FillRectCall>(), isEmpty);
+      final DrawPathCall call = sink.single<DrawPathCall>();
+      // Local, not device: the sink strokes before transforming, so a
+      // pre-scaled centreline would double the width a second time.
+      expect((call.path as Path).bounds, const Rect.fromLTRB(1, 1, 5, 5));
+      expect(call.transform, const Transform2D.scaling(2, 2));
+      expect(call.paint.strokeWidth, 2);
+      expect(call.paint.style, paintStyleStroke);
+    });
+
+    test('a stroked rounded rect keeps its radii unscaled', () {
+      final list = DisplayList();
+      final int paint = list.addPaint(
+        colorArgb: 0xFF000000,
+        style: paintStyleStroke,
+        strokeWidth: 1,
+      );
+      list
+        ..save()
+        ..transform2D(const Transform2D.scaling(3, 3))
+        ..drawRRect(0, 0, 10, 10, 4, 4, 4, 4, 4, 4, 4, 4, paint)
+        ..restore();
+
+      final sink = _play(list);
+      expect(sink.allOf<FillRRectCall>(), isEmpty);
+      final DrawPathCall call = sink.single<DrawPathCall>();
+      final Path path = call.path as Path;
+      expect(path.bounds, const Rect.fromLTRB(0, 0, 10, 10));
+      // A 4-unit corner: the leftmost point of the top edge sits 4 in from the
+      // corner. Scaled radii would have put it at 12 and bulged the shape.
+      expect(path.pointX(0), closeTo(4, 1e-6));
+      expect(call.transform, const Transform2D.scaling(3, 3));
+    });
+
+    test('fillAndStroke travels as one path so the sink can order the halves',
+        () {
+      final list = DisplayList();
+      final int paint = list.addPaint(
+        colorArgb: 0xFF000000,
+        style: paintStyleFillAndStroke,
+        strokeWidth: 2,
+      );
       list.drawRect(0, 0, 10, 10, paint);
 
-      expect(
-        () => _play(list),
-        throwsA(
-          isA<UnsupportedCommandException>().having(
-            (e) => e.toString(),
-            'toString',
-            contains('stroke'),
-          ),
-        ),
+      final sink = _play(list);
+      // Not a fast rect fill plus a path stroke: that would need a second
+      // ReplayPaint, and the id-keyed cache has one per paint id.
+      expect(sink.allOf<FillRectCall>(), isEmpty);
+      expect(sink.single<DrawPathCall>().paint.style, paintStyleFillAndStroke);
+    });
+
+    test('a stroke reaching into the clip is not culled away', () {
+      // The rect is entirely outside the clip; only the outer half of its
+      // stroke crosses into it. Culling on the un-inflated bounds - which is
+      // what the fill route does - would drop it.
+      final list = DisplayList();
+      final int paint = list.addPaint(
+        colorArgb: 0xFF000000,
+        style: paintStyleStroke,
+        strokeWidth: 4,
       );
+      list
+        ..save()
+        ..clipRect(0, 0, 10, 10)
+        ..drawRect(11, 0, 20, 10, paint)
+        ..restore();
+
+      expect(_play(list).allOf<DrawPathCall>(), hasLength(1));
     });
   });
 
@@ -495,4 +590,37 @@ void main() {
       );
     });
   });
+}
+
+/// Answers with a style the encoder cannot write, which is the only way to
+/// reach the player's "unknown paint style" branch without a corrupt buffer.
+final class _PaintStyleOverride implements ReplayResources {
+  _PaintStyleOverride(this._inner, this._style);
+
+  final ReplayResources _inner;
+  final int _style;
+
+  @override
+  int paintStyle(int id) => _style;
+
+  @override
+  int paintColor(int id) => _inner.paintColor(id);
+
+  @override
+  double paintStrokeWidth(int id) => _inner.paintStrokeWidth(id);
+
+  @override
+  int paintBlendMode(int id) => _inner.paintBlendMode(id);
+
+  @override
+  bool paintAntiAlias(int id) => _inner.paintAntiAlias(id);
+
+  @override
+  Object pathAt(int id) => _inner.pathAt(id);
+
+  @override
+  Object imageAt(int id) => _inner.imageAt(id);
+
+  @override
+  Object fontAt(int id) => _inner.fontAt(id);
 }

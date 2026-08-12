@@ -1,0 +1,377 @@
+/// Deterministic tools used by headless tests and golden harnesses.
+library;
+
+import 'dart:convert';
+import 'dart:typed_data';
+
+import '../../geometry/offset.dart';
+import '../../geometry/rect.dart';
+import '../../geometry/size.dart';
+import '../../platform/input_events.dart';
+import '../../platform/window_events.dart';
+import '../../rendering/framebuffer.dart';
+
+/// A framebuffer snapshot with a portable PNG representation.
+final class HeadlessScreenshot {
+  HeadlessScreenshot.fromFramebuffer(Framebuffer framebuffer)
+      : width = framebuffer.width,
+        height = framebuffer.height,
+        pixels = Uint8List.fromList(framebuffer.toPackedBytes()),
+        format = framebuffer.format;
+
+  const HeadlessScreenshot({
+    required this.width,
+    required this.height,
+    required this.pixels,
+    this.format = PixelFormat.bgra8888Premultiplied,
+  });
+
+  final int width;
+  final int height;
+  final Uint8List pixels;
+  final PixelFormat format;
+
+  /// Encodes rows as RGBA PNG without relying on a native image library.
+  Uint8List toPng() {
+    final raw = BytesBuilder(copy: false);
+    for (var y = 0; y < height; y++) {
+      raw.add(const <int>[0]);
+      for (var x = 0; x < width; x++) {
+        final index = (y * width + x) * 4;
+        if (format == PixelFormat.bgra8888Premultiplied) {
+          raw.add(<int>[
+            pixels[index + 2],
+            pixels[index + 1],
+            pixels[index],
+            pixels[index + 3]
+          ]);
+        } else {
+          raw.add(pixels.sublist(index, index + 4));
+        }
+      }
+    }
+    final ihdr = _bytes(
+        32,
+        (value) => value
+          ..addAll(_u32(width))
+          ..addAll(_u32(height))
+          ..add(8)
+          ..add(6)
+          ..add(0)
+          ..add(0)
+          ..add(0));
+    return Uint8List.fromList(<int>[
+      137,
+      80,
+      78,
+      71,
+      13,
+      10,
+      26,
+      10,
+      ..._chunk('IHDR', ihdr),
+      ..._chunk('IDAT', _deflate(raw.takeBytes())),
+      ..._chunk('IEND', const <int>[]),
+    ]);
+  }
+
+  int get checksum => _crc32(pixels);
+}
+
+/// Result of comparing two screenshots.
+final class GoldenComparison {
+  const GoldenComparison({
+    required this.match,
+    required this.differingPixels,
+    required this.maxChannelDelta,
+  });
+
+  final bool match;
+  final int differingPixels;
+  final int maxChannelDelta;
+
+  double differingPercent(int pixelCount) =>
+      pixelCount == 0 ? 0 : differingPixels * 100 / pixelCount;
+}
+
+GoldenComparison compareGolden(
+  HeadlessScreenshot actual,
+  HeadlessScreenshot expected, {
+  int maxChannelDelta = 0,
+  double differingPixelsPercent = 0,
+}) {
+  if (actual.width != expected.width || actual.height != expected.height) {
+    return const GoldenComparison(
+      match: false,
+      differingPixels: -1,
+      maxChannelDelta: -1,
+    );
+  }
+  var differing = 0;
+  var maximum = 0;
+  for (var i = 0; i < actual.pixels.length; i += 4) {
+    var pixelDiffers = false;
+    for (var channel = 0; channel < 4; channel++) {
+      final delta =
+          (actual.pixels[i + channel] - expected.pixels[i + channel]).abs();
+      if (delta > maximum) maximum = delta;
+      if (delta > maxChannelDelta) pixelDiffers = true;
+    }
+    if (pixelDiffers) differing++;
+  }
+  final percent = differing * 100 / (actual.width * actual.height);
+  return GoldenComparison(
+    match: maximum <= maxChannelDelta && percent <= differingPixelsPercent,
+    differingPixels: differing,
+    maxChannelDelta: maximum,
+  );
+}
+
+/// In-memory clipboard used by headless applications and tests.
+final class FakeClipboard {
+  String? _text;
+
+  String? get text => _text;
+
+  Future<void> writeText(String value) async => _text = value;
+
+  Future<String?> readText() async => _text;
+
+  Future<void> clear() async => _text = null;
+}
+
+/// Client of the deterministic text-input adapter.
+abstract interface class TextInputClient {
+  void onTextChanged(String text, int selectionStart, int selectionEnd);
+}
+
+/// Minimal composition/input adapter. It intentionally does not emulate IME.
+final class FakeTextInput {
+  TextInputClient? _client;
+  String _text = '';
+  int _selectionStart = 0;
+  int _selectionEnd = 0;
+
+  String get text => _text;
+  int get selectionStart => _selectionStart;
+  int get selectionEnd => _selectionEnd;
+
+  void attach(TextInputClient client) => _client = client;
+  void detach(TextInputClient client) {
+    if (identical(_client, client)) _client = null;
+  }
+
+  void setEditingValue(String text, int start, int end) {
+    if (start < 0 || end < start || end > text.length) {
+      throw RangeError('selection must be within the text');
+    }
+    _text = text;
+    _selectionStart = start;
+    _selectionEnd = end;
+    _client?.onTextChanged(text, start, end);
+  }
+}
+
+/// Immutable semantic entry captured by a headless test.
+final class SemanticRecord {
+  const SemanticRecord({
+    required this.id,
+    required this.role,
+    required this.bounds,
+    this.label,
+    this.value,
+    this.enabled = true,
+  });
+
+  final int id;
+  final String role;
+  final Rect bounds;
+  final String? label;
+  final String? value;
+  final bool enabled;
+
+  @override
+  bool operator ==(Object other) =>
+      other is SemanticRecord &&
+      other.id == id &&
+      other.role == role &&
+      other.bounds == bounds &&
+      other.label == label &&
+      other.value == value &&
+      other.enabled == enabled;
+
+  @override
+  int get hashCode => Object.hash(id, role, bounds, label, value, enabled);
+}
+
+/// Records a stable semantic snapshot without requiring an accessibility API.
+final class SemanticRecorder {
+  final List<SemanticRecord> _records = <SemanticRecord>[];
+
+  List<SemanticRecord> get records =>
+      List<SemanticRecord>.unmodifiable(_records);
+
+  void record(SemanticRecord record) => _records.add(record);
+
+  List<SemanticRecord> snapshot() => records;
+
+  void clear() => _records.clear();
+}
+
+/// A JSON-compatible, deterministic input trace.
+final class InputReplay {
+  InputReplay({required this.window, required List<PlatformInputEvent> events})
+      : events = List<PlatformInputEvent>.unmodifiable(events);
+
+  factory InputReplay.fromJson(String source,
+      {NativeWindowId windowId = const NativeWindowId(1)}) {
+    final map = jsonDecode(source) as Map<String, dynamic>;
+    if (map['version'] != 1) {
+      throw const FormatException('unsupported replay version');
+    }
+    final window = map['window'] as Map<String, dynamic>;
+    final size = Size((window['width'] as num).toDouble(),
+        (window['height'] as num).toDouble());
+    final events = <PlatformInputEvent>[];
+    for (final item in map['events'] as List<dynamic>) {
+      final event = item as Map<String, dynamic>;
+      final timestamp = Duration(microseconds: (event['t'] as num).toInt());
+      final position = Offset((event['x'] as num?)?.toDouble() ?? 0,
+          (event['y'] as num?)?.toDouble() ?? 0);
+      final type = event['type'] as String;
+      if (type == 'pointerMove') {
+        events.add(PointerMoveEvent(
+            windowId: windowId,
+            generation: 1,
+            timestamp: timestamp,
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: position));
+      } else if (type == 'pointerDown' || type == 'pointerUp') {
+        final button = (event['button'] as num?)?.toInt() == 2
+            ? PointerButton.secondary
+            : PointerButton.primary;
+        final common = type == 'pointerDown';
+        events.add(common
+            ? PointerDownEvent(
+                windowId: windowId,
+                generation: 1,
+                timestamp: timestamp,
+                pointerId: 0,
+                kind: PointerKind.mouse,
+                logicalPosition: position,
+                button: button)
+            : PointerUpEvent(
+                windowId: windowId,
+                generation: 1,
+                timestamp: timestamp,
+                pointerId: 0,
+                kind: PointerKind.mouse,
+                logicalPosition: position,
+                button: button));
+      } else {
+        throw FormatException('unsupported replay event: $type');
+      }
+    }
+    return InputReplay(window: size, events: events);
+  }
+
+  final Size window;
+  final List<PlatformInputEvent> events;
+
+  String toJson() => jsonEncode(<String, Object>{
+        'version': 1,
+        'window': <String, Object>{
+          'width': window.width,
+          'height': window.height,
+          'scale': 1.0
+        },
+        'events': events.map(_eventJson).toList(growable: false),
+      });
+}
+
+Map<String, Object> _eventJson(PlatformInputEvent event) {
+  final map = <String, Object>{'t': event.timestamp.inMicroseconds};
+  if (event is PointerMoveEvent) {
+    map.addAll(<String, Object>{
+      'type': 'pointerMove',
+      'x': event.logicalPosition.dx,
+      'y': event.logicalPosition.dy
+    });
+  } else if (event is PointerDownEvent || event is PointerUpEvent) {
+    final pointer = event as PointerEvent;
+    final button = event is PointerDownEvent
+        ? event.button
+        : (event as PointerUpEvent).button;
+    map.addAll(<String, Object>{
+      'type': event is PointerDownEvent ? 'pointerDown' : 'pointerUp',
+      'x': pointer.logicalPosition.dx,
+      'y': pointer.logicalPosition.dy,
+      'button': button.index + 1
+    });
+  }
+  return map;
+}
+
+List<int> _bytes(int length, void Function(List<int>) fill) {
+  final result = <int>[];
+  fill(result);
+  return result;
+}
+
+List<int> _u32(int value) => <int>[
+      (value >> 24) & 255,
+      (value >> 16) & 255,
+      (value >> 8) & 255,
+      value & 255
+    ];
+
+List<int> _chunk(String name, List<int> data) {
+  final type = ascii.encode(name);
+  return <int>[
+    ..._u32(data.length),
+    ...type,
+    ...data,
+    ..._u32(_crc32(Uint8List.fromList(<int>[...type, ...data])))
+  ];
+}
+
+List<int> _deflate(List<int> data) {
+  final output = <int>[120, 1];
+  var offset = 0;
+  while (offset < data.length) {
+    final length = (data.length - offset).clamp(0, 65535);
+    final finalBlock = offset + length == data.length;
+    output.add(finalBlock ? 1 : 0);
+    output.add(length & 255);
+    output.add((length >> 8) & 255);
+    final inverse = 65535 - length;
+    output.add(inverse & 255);
+    output.add((inverse >> 8) & 255);
+    output.addAll(data.sublist(offset, offset + length));
+    offset += length;
+  }
+  output.addAll(_u32(_adler32(data)));
+  return output;
+}
+
+int _adler32(List<int> data) {
+  var a = 1;
+  var b = 0;
+  for (final value in data) {
+    a = (a + value) % 65521;
+    b = (b + a) % 65521;
+  }
+  return (b << 16) | a;
+}
+
+int _crc32(List<int> data) {
+  var crc = 0xFFFFFFFF;
+  for (final value in data) {
+    crc ^= value;
+    for (var bit = 0; bit < 8; bit++) {
+      crc = (crc >> 1) ^ ((crc & 1) == 1 ? 0xEDB88320 : 0);
+    }
+  }
+  return crc ^ 0xFFFFFFFF;
+}

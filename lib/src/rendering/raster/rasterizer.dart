@@ -285,6 +285,75 @@ final class CpuRasterizer {
     }
   }
 
+  /// Composites an alpha8 coverage mask, tinted with [argbColor], with its
+  /// top-left corner at ([destinationLeft], [destinationTop]).
+  ///
+  /// This is the one shape [drawFramebuffer] cannot express. A glyph is not an
+  /// image: it carries no colour of its own, only how much of each pixel it
+  /// covers, and the colour comes from the paint at the point it is drawn -
+  /// which is what lets one cached mask serve black text, red text and the
+  /// same string in two themes. Compositing it as a premultiplied image would
+  /// need a coloured copy of the mask per colour, and every one of those
+  /// copies would be a rasterization the cache exists to avoid.
+  ///
+  /// [coverage] is `maskWidth * maskHeight` bytes, row-major, one byte per
+  /// pixel, in the same 0..255 scale `spanCoverage` and the scanline filler
+  /// produce - so a mask byte of 255 means the glyph covers that pixel
+  /// entirely. Such a pixel composites to exactly the bytes [fillRect] would
+  /// have written for the same colour: this routine folds coverage into the
+  /// premultiplied source with the same [mul255] the filler used, and 255 is
+  /// that scale's identity. The parity is not decorative - a stem's interior
+  /// and a hard rect fill of the same colour meeting at an edge would show a
+  /// seam if the two rounded differently.
+  ///
+  /// Clipping is against the *integer* clip. A mask pixel is whole - it has
+  /// already spent its fractional resolution on coverage - so there is no
+  /// fraction left for a fractional clip edge to cut into, and the hard-edged
+  /// rule is the one [drawFramebuffer] and [fillRect] use.
+  void blendCoverageMask(
+    Uint8List coverage,
+    int maskWidth,
+    int maskHeight,
+    int destinationLeft,
+    int destinationTop,
+    int argbColor,
+  ) {
+    final alpha = (argbColor >> 24) & 0xff;
+    if (alpha == 0 || maskWidth <= 0 || maskHeight <= 0) return;
+
+    final left = _max(destinationLeft, clip.left);
+    final top = _max(destinationTop, clip.top);
+    final right = _min(destinationLeft + maskWidth, clip.right);
+    final bottom = _min(destinationTop + maskHeight, clip.bottom);
+    if (right <= left || bottom <= top) return;
+
+    final red = premultiply((argbColor >> 16) & 0xff, alpha);
+    final green = premultiply((argbColor >> 8) & 0xff, alpha);
+    final blue = premultiply(argbColor & 0xff, alpha);
+    final c0 = _redIndex == 0 ? red : blue;
+    final c2 = _redIndex == 0 ? blue : red;
+
+    for (var y = top; y < bottom; y++) {
+      final rowBase = (y - destinationTop) * maskWidth - destinationLeft;
+      // Run-length, not per pixel. A glyph is mostly flat: the inside of a stem
+      // is a run of 255 and the space around it a run of 0, so grouping equal
+      // coverage turns the body of every glyph into the same span loop a solid
+      // fill takes, and confines the per-pixel work to the antialiased fringe.
+      var x = left;
+      while (x < right) {
+        final value = coverage[rowBase + x];
+        var end = x + 1;
+        while (end < right && coverage[rowBase + end] == value) {
+          end++;
+        }
+        if (value != 0) {
+          _fillSpan(y, x, end, c0, green, c2, alpha, value);
+        }
+        x = end;
+      }
+    }
+  }
+
   /// Composites [source] source-over at [destination]'s top-left corner.
   ///
   /// One source pixel per destination pixel: there is no scaling and no

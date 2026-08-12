@@ -27,7 +27,7 @@ final class PipelineOwner {
   /// plain callback rather than a stream because it must run synchronously
   /// with the mutation - a frame request that arrives one microtask late is a
   /// frame of latency on every interaction.
-  final void Function()? onNeedsVisualUpdate;
+  void Function()? onNeedsVisualUpdate;
 
   RenderBox? _root;
   BoxConstraints _rootConstraints;

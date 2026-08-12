@@ -23,6 +23,7 @@ import 'dart:io' show Platform;
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
 import '../../platform/native_window.dart';
+import 'win32_abi.dart';
 import 'win32_api.dart';
 import 'win32_constants.dart';
 import 'win32_diagnostics.dart';
@@ -99,6 +100,12 @@ final class Win32WindowingBackend implements WindowingBackend {
         detail: 'dpi api: ${api.dpiAwarenessApi.name}',
       ),
     );
+    diagnostics.add(
+      BackendDiagnostic.note(
+        'FFI ABI layout',
+        detail: Win32AbiReport.current().toString(),
+      ),
+    );
 
     final perMonitor = switch (api.dpiAwarenessApi) {
       Win32DpiAwarenessApi.perMonitorV2 => true,
@@ -146,11 +153,17 @@ final class Win32WindowingBackend implements WindowingBackend {
         ),
       );
     }
+    if (api.clipboardSupported) {
+      diagnostics.add(
+        const BackendDiagnostic.note('Unicode clipboard is available'),
+      );
+    }
 
     diagnostics.add(
       const BackendDiagnostic.note(
-        'core mouse and keyboard input are normalized; wheel, IME, clipboard, '
-        'drag-and-drop and accessibility are not implemented yet',
+        'core mouse, wheel and keyboard input plus Unicode clipboard are '
+        'normalized; IME, drag-and-drop and accessibility are not implemented '
+        'yet',
       ),
     );
     diagnostics.add(
@@ -170,6 +183,7 @@ final class Win32WindowingBackend implements WindowingBackend {
         Capability.partialPresent,
         Capability.keyboardInput,
         Capability.pointerInput,
+        if (api.clipboardSupported) Capability.clipboardText,
         Capability.orderlyShutdown,
         if (perMonitor && api.getDpiForWindow != null) Capability.perMonitorDpi,
       },

@@ -67,6 +67,11 @@
 /// [opDrawRRect] radii follow the bounds in the order top-left x/y,
 /// top-right x/y, bottom-right x/y, bottom-left x/y.
 ///
+/// [opDrawGlyphRun] carries no pixel size, and must not grow one: its `fontId`
+/// resolves to a face *at a size*, because the ids, the offsets and the size a
+/// shaper produced are one decision and a stream that can express them
+/// separately can express them disagreeing. See `DisplayList.addFont`.
+///
 /// [opDrawGlyphRun] is the only variable-arity opcode. Its third integer
 /// operand is the glyph count `n`, followed by `n` glyph ids; its float
 /// operands are the run origin followed by `n` (x, y) offsets relative to

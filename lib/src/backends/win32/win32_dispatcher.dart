@@ -62,10 +62,13 @@ final class Win32Dispatcher implements UiDispatcher {
     required int wakeWindowHandle,
     this.maxNativeMessagesPerPass = 32,
   })  : _api = api,
-        _wakeHandle = wakeWindowHandle;
+        _wakeHandle = wakeWindowHandle,
+        _ownerThreadId = api.getCurrentThreadId();
 
   final Win32Api _api;
   final int _wakeHandle;
+  final int _ownerThreadId;
+  final Stopwatch _clock = Stopwatch()..start();
 
   /// How many native messages to dispatch before re-examining Dart queues.
   final int maxNativeMessagesPerPass;
@@ -97,12 +100,9 @@ final class Win32Dispatcher implements UiDispatcher {
 
   @override
   bool get hasThreadAccess {
-    // Win32 messages are delivered to the thread that created the window.
-    // In Dart, the main isolate is NOT the process main thread, but the
-    // isolate's thread is the one that pumps, so checking is done by
-    // verifying we are on the same thread that created the wake window.
-    // For now, this is a simplification: true when the loop is running.
-    return _running;
+    // Win32 messages are delivered to the thread that created the window. The
+    // dispatcher may be idle between pumps, so running state is not affinity.
+    return _api.getCurrentThreadId() == _ownerThreadId;
   }
 
   @override
@@ -290,9 +290,7 @@ final class Win32Dispatcher implements UiDispatcher {
     }
   }
 
-  Duration _now() => Duration(
-        microseconds: DateTime.now().microsecondsSinceEpoch,
-      );
+  Duration _now() => _clock.elapsed;
 
   @override
   String toString() => 'Win32Dispatcher(running: $_running, '
