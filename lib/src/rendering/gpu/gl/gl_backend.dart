@@ -219,8 +219,7 @@ final class GlRenderDevice
     _makeCurrentOrLose();
     _gl.genTextures(1, _names);
     final name = _names[0];
-    final sampling =
-        filter == GpuTextureFilter.linear ? glLinear : glNearest;
+    final sampling = filter == GpuTextureFilter.linear ? glLinear : glNearest;
     _gl
       ..bindTexture(glTexture2D, name)
       ..texParameteri(glTexture2D, glTextureMinFilter, sampling)
@@ -1198,8 +1197,7 @@ final class GlRendererBackend implements RendererBackend {
           ...prior,
           const BackendDiagnostic(
             kind: DiagnosticKind.incompatibleDevice,
-            message:
-                'glGetString(GL_VERSION) returned nothing with a context '
+            message: 'glGetString(GL_VERSION) returned nothing with a context '
                 'current',
           ),
         ],

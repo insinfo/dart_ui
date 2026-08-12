@@ -1,0 +1,9 @@
+# Binary test fixtures. Git detects these correctly on its own, but stating it
+# means a machine with `core.autocrlf=true` cannot silently rewrite a byte
+# inside a font or a compressed conformance file - a corruption that would show
+# up as an inscrutable parse failure a long way from its cause.
+*.gz  binary
+*.ttf binary
+*.otf binary
+*.ttc binary
+*.png binary

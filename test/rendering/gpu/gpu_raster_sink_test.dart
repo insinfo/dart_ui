@@ -170,10 +170,10 @@ void main() {
       // The quad starts half a pixel left of the image, so u starts half a
       // texel before zero; clamp-to-edge makes that harmless and the scale
       // stays exactly one texel per pixel.
-      expect(buffer.vertexFloat(0, kGpuTexCoordOffset),
-          closeTo(-0.5 / 32, 1e-6));
-      expect(buffer.vertexFloat(1, kGpuTexCoordOffset),
-          closeTo(32.5 / 32, 1e-6));
+      expect(
+          buffer.vertexFloat(0, kGpuTexCoordOffset), closeTo(-0.5 / 32, 1e-6));
+      expect(
+          buffer.vertexFloat(1, kGpuTexCoordOffset), closeTo(32.5 / 32, 1e-6));
     });
 
     test('a clipped image samples the part of itself that survived', () {

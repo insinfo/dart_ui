@@ -507,8 +507,8 @@ final class GlApi {
       vertexAttribPointer = _proc('glVertexAttribPointer')
           .cast<
               NativeFunction<
-                  Void Function(Uint32, Int32, Uint32, Uint8, Int32,
-                      Pointer<Void>)>>()
+                  Void Function(
+                      Uint32, Int32, Uint32, Uint8, Int32, Pointer<Void>)>>()
           .asFunction<void Function(int, int, int, int, int, Pointer<Void>)>();
 
   late final int Function(int) createShader = _proc('glCreateShader')
@@ -535,18 +535,16 @@ final class GlApi {
 
   late final void Function(int, int, Pointer<Int32>) getShaderiv =
       _proc('glGetShaderiv')
-          .cast<
-              NativeFunction<Void Function(Uint32, Uint32, Pointer<Int32>)>>()
+          .cast<NativeFunction<Void Function(Uint32, Uint32, Pointer<Int32>)>>()
           .asFunction<void Function(int, int, Pointer<Int32>)>();
 
-  late final void Function(int, int, Pointer<Int32>, Pointer<Uint8>)
-      getShaderInfoLog = _proc('glGetShaderInfoLog')
-          .cast<
-              NativeFunction<
-                  Void Function(
-                      Uint32, Int32, Pointer<Int32>, Pointer<Uint8>)>>()
-          .asFunction<
-              void Function(int, int, Pointer<Int32>, Pointer<Uint8>)>();
+  late final void Function(
+      int, int, Pointer<Int32>, Pointer<Uint8>) getShaderInfoLog = _proc(
+          'glGetShaderInfoLog')
+      .cast<
+          NativeFunction<
+              Void Function(Uint32, Int32, Pointer<Int32>, Pointer<Uint8>)>>()
+      .asFunction<void Function(int, int, Pointer<Int32>, Pointer<Uint8>)>();
 
   late final int Function() createProgram = _proc('glCreateProgram')
       .cast<NativeFunction<Uint32 Function()>>()
@@ -562,8 +560,7 @@ final class GlApi {
 
   late final void Function(int, int, Pointer<Uint8>) bindAttribLocation =
       _proc('glBindAttribLocation')
-          .cast<
-              NativeFunction<Void Function(Uint32, Uint32, Pointer<Uint8>)>>()
+          .cast<NativeFunction<Void Function(Uint32, Uint32, Pointer<Uint8>)>>()
           .asFunction<void Function(int, int, Pointer<Uint8>)>();
 
   late final void Function(int) linkProgram = _proc('glLinkProgram')
@@ -572,18 +569,16 @@ final class GlApi {
 
   late final void Function(int, int, Pointer<Int32>) getProgramiv =
       _proc('glGetProgramiv')
-          .cast<
-              NativeFunction<Void Function(Uint32, Uint32, Pointer<Int32>)>>()
+          .cast<NativeFunction<Void Function(Uint32, Uint32, Pointer<Int32>)>>()
           .asFunction<void Function(int, int, Pointer<Int32>)>();
 
-  late final void Function(int, int, Pointer<Int32>, Pointer<Uint8>)
-      getProgramInfoLog = _proc('glGetProgramInfoLog')
-          .cast<
-              NativeFunction<
-                  Void Function(
-                      Uint32, Int32, Pointer<Int32>, Pointer<Uint8>)>>()
-          .asFunction<
-              void Function(int, int, Pointer<Int32>, Pointer<Uint8>)>();
+  late final void Function(
+      int, int, Pointer<Int32>, Pointer<Uint8>) getProgramInfoLog = _proc(
+          'glGetProgramInfoLog')
+      .cast<
+          NativeFunction<
+              Void Function(Uint32, Int32, Pointer<Int32>, Pointer<Uint8>)>>()
+      .asFunction<void Function(int, int, Pointer<Int32>, Pointer<Uint8>)>();
 
   late final void Function(int) useProgram = _proc('glUseProgram')
       .cast<NativeFunction<Void Function(Uint32)>>()
@@ -616,25 +611,27 @@ final class GlApi {
       .cast<NativeFunction<Void Function(Uint32, Uint32)>>()
       .asFunction<void Function(int, int)>();
 
-  late final void Function(int, int, int, int, int, int, int, int,
-      Pointer<Void>) texImage2D = _proc('glTexImage2D')
-      .cast<
-          NativeFunction<
-              Void Function(Uint32, Int32, Int32, Int32, Int32, Int32, Uint32,
-                  Uint32, Pointer<Void>)>>()
-      .asFunction<
-          void Function(
-              int, int, int, int, int, int, int, int, Pointer<Void>)>();
+  late final void Function(
+          int, int, int, int, int, int, int, int, Pointer<Void>) texImage2D =
+      _proc('glTexImage2D')
+          .cast<
+              NativeFunction<
+                  Void Function(Uint32, Int32, Int32, Int32, Int32, Int32,
+                      Uint32, Uint32, Pointer<Void>)>>()
+          .asFunction<
+              void Function(
+                  int, int, int, int, int, int, int, int, Pointer<Void>)>();
 
-  late final void Function(int, int, int, int, int, int, int, int,
-      Pointer<Void>) texSubImage2D = _proc('glTexSubImage2D')
-      .cast<
-          NativeFunction<
-              Void Function(Uint32, Int32, Int32, Int32, Int32, Int32, Uint32,
-                  Uint32, Pointer<Void>)>>()
-      .asFunction<
-          void Function(
-              int, int, int, int, int, int, int, int, Pointer<Void>)>();
+  late final void Function(
+          int, int, int, int, int, int, int, int, Pointer<Void>) texSubImage2D =
+      _proc('glTexSubImage2D')
+          .cast<
+              NativeFunction<
+                  Void Function(Uint32, Int32, Int32, Int32, Int32, Int32,
+                      Uint32, Uint32, Pointer<Void>)>>()
+          .asFunction<
+              void Function(
+                  int, int, int, int, int, int, int, int, Pointer<Void>)>();
 
   late final void Function(int, int, int) texParameteri =
       _proc('glTexParameteri')
@@ -676,21 +673,20 @@ final class GlApi {
           .cast<NativeFunction<Uint32 Function(Uint32)>>()
           .asFunction<int Function(int)>();
 
-  late final void Function(int, int, int, Pointer<Void>) drawElements =
-      _proc('glDrawElements')
-          .cast<
-              NativeFunction<
-                  Void Function(Uint32, Int32, Uint32, Pointer<Void>)>>()
-          .asFunction<void Function(int, int, int, Pointer<Void>)>();
+  late final void Function(int, int, int, Pointer<Void>) drawElements = _proc(
+          'glDrawElements')
+      .cast<
+          NativeFunction<Void Function(Uint32, Int32, Uint32, Pointer<Void>)>>()
+      .asFunction<void Function(int, int, int, Pointer<Void>)>();
 
-  late final void Function(int, int, int, int, int, int, Pointer<Void>)
-      readPixels = _proc('glReadPixels')
-          .cast<
-              NativeFunction<
-                  Void Function(Int32, Int32, Int32, Int32, Uint32, Uint32,
-                      Pointer<Void>)>>()
-          .asFunction<
-              void Function(int, int, int, int, int, int, Pointer<Void>)>();
+  late final void Function(
+      int, int, int, int, int, int, Pointer<Void>) readPixels = _proc(
+          'glReadPixels')
+      .cast<
+          NativeFunction<
+              Void Function(
+                  Int32, Int32, Int32, Int32, Uint32, Uint32, Pointer<Void>)>>()
+      .asFunction<void Function(int, int, int, int, int, int, Pointer<Void>)>();
 
   /// The GL string for [name], or an empty string when the driver refuses.
   String stringOf(int name) => readNativeUtf8(getString(name));

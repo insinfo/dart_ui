@@ -66,7 +66,8 @@ final class Typeface {
   /// An entry's absence is the common case and means "ask `hmtx`", which is an
   /// array read - see [advanceOf] for why that distinction is the difference
   /// between measuring a line in microseconds and in milliseconds.
-  final Map<_GlyphCacheKey, double> _hintedAdvances = <_GlyphCacheKey, double>{};
+  final Map<_GlyphCacheKey, double> _hintedAdvances =
+      <_GlyphCacheKey, double>{};
 
   /// Insertion order over [_hintedOutlines], for eviction.
   final List<_GlyphCacheKey> _hintedOrder = <_GlyphCacheKey>[];
@@ -89,8 +90,7 @@ final class Typeface {
   static const double maxHintedPixelSize = 24.0;
 
   /// Whether a glyph drawn at [ppem] should be hinted at all.
-  static bool shouldHint(double ppem) =>
-      ppem > 0 && ppem <= maxHintedPixelSize;
+  static bool shouldHint(double ppem) => ppem > 0 && ppem <= maxHintedPixelSize;
 
   /// Font design units per em.
   int get unitsPerEm => head.unitsPerEm;
@@ -276,7 +276,8 @@ final class ScaledTypeface {
   double get lineHeight => ascent + descent + lineGap;
 
   /// Advance width of [glyphId], in pixels.
-  double advanceOf(int glyphId) => typeface.advanceOf(glyphId, pixelSize) * scale;
+  double advanceOf(int glyphId) =>
+      typeface.advanceOf(glyphId, pixelSize) * scale;
 
   /// Total advance of [text] with no shaping: one glyph per code point, no
   /// kerning, no ligatures.

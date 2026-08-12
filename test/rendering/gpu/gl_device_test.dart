@@ -58,15 +58,16 @@ void main() {
     test('clears to the requested colour', () async {
       final target = session.target(4, 4);
       final list = DisplayList();
-      final result = await target.renderDisplayList(list,
-          clearColor: 0xFF204060);
+      final result =
+          await target.renderDisplayList(list, clearColor: 0xFF204060);
 
       expect(result.status, PresentStatus.presented);
       expect(_pixel(target.framebuffer, 0, 0), <int>[0x20, 0x40, 0x60, 0xFF]);
       target.dispose();
     }, skip: session.skipReason);
 
-    test('draws an aliased rectangle at exactly the pixels asked for', () async {
+    test('draws an aliased rectangle at exactly the pixels asked for',
+        () async {
       final target = session.target(8, 8);
       final list = DisplayList();
       final paint = list.addPaint(colorArgb: 0xFF3366CC, antiAlias: false);
@@ -218,8 +219,8 @@ final class _GlSession {
     try {
       return Platform.isWindows ? _openWindows() : _openEgl();
     } on Object catch (error) {
-      return _GlSession._(null, null, 'opening a GL device threw: $error',
-          null);
+      return _GlSession._(
+          null, null, 'opening a GL device threw: $error', null);
     }
   }
 
@@ -227,8 +228,8 @@ final class _GlSession {
     final attempt = Win32GlSurface.hidden();
     final surface = attempt.surface;
     if (surface == null) {
-      return _GlSession._(null, null,
-          'no GL surface: ${attempt.diagnostics.join('; ')}', null);
+      return _GlSession._(
+          null, null, 'no GL surface: ${attempt.diagnostics.join('; ')}', null);
     }
     final contextAttempt = surface.createContext();
     final context = contextAttempt.context;
@@ -260,9 +261,8 @@ final class _GlSession {
         .create(width: 16, height: 16, glLibrary: load.library!);
     final context = attempt.context;
     if (context == null) {
-      return _GlSession._(
-          null, null, 'no EGL context: ${attempt.diagnostics.join('; ')}',
-          null);
+      return _GlSession._(null, null,
+          'no EGL context: ${attempt.diagnostics.join('; ')}', null);
     }
     try {
       return _GlSession._(

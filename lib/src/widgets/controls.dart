@@ -1857,8 +1857,7 @@ final class RenderDialog extends RenderSingleChildBox with ControlBehavior {
       _title,
       Offset(
         rect.left + 4,
-        (titleBar.top + (titleBarHeight - labelLineHeight) / 2)
-            .roundToDouble(),
+        (titleBar.top + (titleBarHeight - labelLineHeight) / 2).roundToDouble(),
       ),
       theme.surfaceAlternate,
       maxWidth: rect.width - 8,

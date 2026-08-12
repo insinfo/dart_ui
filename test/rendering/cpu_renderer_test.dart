@@ -348,11 +348,10 @@ void main() {
 
   group('strokes put ink where the pen sweeps', () {
     /// A one-segment open contour.
-    Path segment(double x0, double y0, double x1, double y1) =>
-        (PathBuilder()
-              ..moveTo(x0, y0)
-              ..lineTo(x1, y1))
-            .build();
+    Path segment(double x0, double y0, double x1, double y1) => (PathBuilder()
+          ..moveTo(x0, y0)
+          ..lineTo(x1, y1))
+        .build();
 
     /// The alpha of the column at [x], top to bottom.
     List<int> column(Framebuffer buffer, int x, int height) => <int>[
@@ -547,8 +546,8 @@ void main() {
         style: paintStyleStroke,
       );
       list
-        ..drawPath(list.addPath(Path.rect(const Rect.fromLTRB(1, 1, 7, 7))),
-            paint)
+        ..drawPath(
+            list.addPath(Path.rect(const Rect.fromLTRB(1, 1, 7, 7))), paint)
         ..drawRect(1, 1, 7, 7, paint);
 
       await target.renderDisplayList(list, clearColor: 0);
@@ -559,7 +558,6 @@ void main() {
         }
       }
     });
-
   });
 
   group('MemoryRenderTarget', () {

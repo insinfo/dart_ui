@@ -186,8 +186,8 @@ final class Win32GlSurface {
     }
 
     try {
-      return _create(api, gdi, glLibrary, width, height, className,
-          diagnostics);
+      return _create(
+          api, gdi, glLibrary, width, height, className, diagnostics);
     } on Object catch (error, stack) {
       diagnostics.add(BackendDiagnostic(
         kind: DiagnosticKind.surfaceCreationFailed,
@@ -400,8 +400,8 @@ final class _Gdi32 {
         Int32 Function(IntPtr, Int32, Pointer<_PixelFormatDescriptor>),
         int Function(
             int, int, Pointer<_PixelFormatDescriptor>)>('SetPixelFormat');
-    swapBuffers = _gdi
-        .lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+    swapBuffers =
+        _gdi.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
             'SwapBuffers');
     defaultWindowProc =
         _user.lookup<NativeFunction<WndProcNative>>('DefWindowProcW');

@@ -31,7 +31,6 @@ import 'font_data.dart';
 import 'font_tables.dart';
 import 'sfnt.dart';
 
-
 /// Point flags in a simple glyph.
 const int _flagOnCurve = 0x01;
 const int _flagXShort = 0x02;
@@ -65,7 +64,8 @@ final Path _emptyPath = PathBuilder().build();
 
 /// Decodes glyph outlines on demand.
 final class GlyfTable {
-  GlyfTable._(this._data, this._tableOffset, this._tableLength, this._loca, this._hmtx);
+  GlyfTable._(
+      this._data, this._tableOffset, this._tableLength, this._loca, this._hmtx);
 
   final FontData _data;
   final int _tableOffset;
@@ -75,7 +75,8 @@ final class GlyfTable {
 
   int get glyphCount => _loca.glyphCount;
 
-  static GlyfTable parse(SfntFile file, LocaTable loca, {required HmtxTable hmtx}) {
+  static GlyfTable parse(SfntFile file, LocaTable loca,
+      {required HmtxTable hmtx}) {
     final TableRecord record = file.requireTable('glyf');
     return GlyfTable._(file.data, record.offset, record.length, loca, hmtx);
   }
@@ -90,7 +91,9 @@ final class GlyfTable {
     final PathBuilder builder = PathBuilder();
     double advance = _hmtx.advanceOf(glyphId).toDouble();
     try {
-      advance = _appendGlyph(builder, glyphId, _IdentityPlacement.instance, 0) ?? advance;
+      advance =
+          _appendGlyph(builder, glyphId, _IdentityPlacement.instance, 0) ??
+              advance;
     } on FontFormatException {
       return (path: _emptyPath, advance: advance);
     }
@@ -132,7 +135,8 @@ final class GlyfTable {
     reader.skip(6); // yMin, xMax, yMax - recomputed by Path.bounds
 
     if (numberOfContours >= 0) {
-      return _appendSimpleGlyph(builder, reader, numberOfContours, placement, glyphId, xMin);
+      return _appendSimpleGlyph(
+          builder, reader, numberOfContours, placement, glyphId, xMin);
     } else {
       _appendCompositeGlyph(builder, reader, placement, depth);
       return null;
@@ -200,14 +204,14 @@ final class GlyfTable {
     // Phantom Points: 4 pontos sintéticos no final (pp1, pp2, pp3, pp4)
     final double lsb = _hmtx.leftSideBearingOf(glyphId).toDouble();
     final double advance = _hmtx.advanceOf(glyphId).toDouble();
-    
+
     final double pp1x = xMin.toDouble() - lsb;
     final double pp2x = pp1x + advance;
 
     xs.addAll(<double>[pp1x, pp2x, 0.0, 0.0]);
     ys.addAll(<double>[0.0, 0.0, 0.0, 0.0]);
     flags.addAll(<int>[_flagOnCurve, _flagOnCurve, _flagOnCurve, _flagOnCurve]);
-    
+
     // Opcional: Aqui instanciaríamos o interpretador com a zone para ajustar ys e xs
     // if (instructions.isNotEmpty) {
     //   final interpreter = TrueTypeInterpreter(...);
@@ -236,7 +240,7 @@ final class GlyfTable {
       );
       contourStart = contourEnd + 1;
     }
-    
+
     return hintedAdvance;
   }
 
@@ -251,8 +255,8 @@ final class GlyfTable {
     // real ones. A fixed-length list throws on that append, and the throw
     // surfaces as every glyph failing to decode rather than as anything that
     // names phantom points.
-    final List<double> values = List<double>.filled(pointCount, 0,
-        growable: true);
+    final List<double> values =
+        List<double>.filled(pointCount, 0, growable: true);
     int accumulated = 0;
     for (int i = 0; i < pointCount; i++) {
       final int flag = flags[i];

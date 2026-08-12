@@ -438,8 +438,8 @@ final class GlContextFactory {
         createAttribs
             .cast<
                 NativeFunction<
-                    Pointer<Void> Function(IntPtr, Pointer<Void>,
-                        Pointer<Int32>)>>()
+                    Pointer<Void> Function(
+                        IntPtr, Pointer<Void>, Pointer<Int32>)>>()
             .asFunction<
                 Pointer<Void> Function(int, Pointer<Void>, Pointer<Int32>)>(),
         heap,

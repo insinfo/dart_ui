@@ -116,8 +116,8 @@ _Result _measureColdMeasure(List<int> bytes) {
 _Result _measureWarmMeasure(List<int> bytes) {
   final ScaledTypeface font = Typeface.parse(_asBytes(bytes)).atSize(12);
   font.measure(sample);
-  return _measure('measure a line, warm', budget: 60,
-      () => font.measure(sample));
+  return _measure(
+      'measure a line, warm', budget: 60, () => font.measure(sample));
 }
 
 /// Measuring at a size never used before, on a face already loaded.
@@ -139,8 +139,7 @@ _Result _measureShaping(List<int> bytes) {
   final ScaledTypeface font = Typeface.parse(_asBytes(bytes)).atSize(14);
   final LatinShaper shaper = LatinShaper();
   shaper.shape(sample, font);
-  return _measure('shape a line', budget: 80,
-      () => shaper.shape(sample, font));
+  return _measure('shape a line', budget: 80, () => shaper.shape(sample, font));
 }
 
 /// The same, with accents - so composite glyphs are measured rather than
@@ -149,7 +148,9 @@ _Result _measureAccentedShaping(List<int> bytes) {
   final ScaledTypeface font = Typeface.parse(_asBytes(bytes)).atSize(14);
   final LatinShaper shaper = LatinShaper();
   shaper.shape(accented, font);
-  return _measure('shape accented Portuguese', budget: 80,
+  return _measure(
+      'shape accented Portuguese',
+      budget: 80,
       () => shaper.shape(accented, font));
 }
 
@@ -162,8 +163,8 @@ _Result _measureGlyphRaster(List<int> bytes) {
   final GlyphRasterizer rasterizer = GlyphRasterizer();
   final int glyph = face.glyphForCodePoint(0x48);
   rasterizer.render(font, glyph);
-  return _measure('rasterize one glyph', budget: 300,
-      () => rasterizer.render(font, glyph));
+  return _measure(
+      'rasterize one glyph', budget: 300, () => rasterizer.render(font, glyph));
 }
 
 /// Shaping and encoding a paragraph into a display list.

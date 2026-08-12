@@ -26,7 +26,7 @@ final class GraphicsState {
   double controlValueCutIn = 0.0;
   int deltaBase = 9;
   int deltaShift = 3;
-  
+
   final TTVector dualProjectionVector = TTVector(1.0, 0.0);
   final TTVector freeVector = TTVector(1.0, 0.0);
   final TTVector projectionVector = TTVector(1.0, 0.0);
@@ -34,7 +34,7 @@ final class GraphicsState {
   int instructControl = 0;
   int loop = 1;
   double minimumDistance = 1.0;
-  
+
   int roundState = 1; // 1 = round to grid
 
   int rp0 = 0;
@@ -54,7 +54,7 @@ final class GraphicsState {
     controlValueCutIn = 17.0 / 16.0;
     deltaBase = 9;
     deltaShift = 3;
-    
+
     dualProjectionVector.x = 1.0;
     dualProjectionVector.y = 0.0;
     freeVector.x = 1.0;
@@ -93,14 +93,14 @@ final class Zone {
 
   final Float64List curX;
   final Float64List curY;
-  
+
   /// Original (unhinted) coordinates
   final Float64List orgX;
   final Float64List orgY;
-  
+
   /// Point tags (on-curve, touched-x, touched-y)
   final Uint8List tags;
-  
+
   /// Contour boundaries (necessary for IUP)
   List<int> contourEnds = const <int>[];
 }

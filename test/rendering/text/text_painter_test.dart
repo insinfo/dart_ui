@@ -30,13 +30,12 @@ Typeface _face(String name) =>
 Future<Framebuffer> _render(DisplayList list, Size size) async {
   final RenderDevice device = await const CpuRendererBackend().createDevice();
   final MemoryRenderTarget target = device.createTarget(
-        MemorySurfaceDescriptor(
-          pixelWidth: size.width.toInt(),
-          pixelHeight: size.height.toInt(),
-        ),
-      ) as MemoryRenderTarget;
-  final result =
-      await target.renderDisplayList(list, clearColor: 0xFFFFFFFF);
+    MemorySurfaceDescriptor(
+      pixelWidth: size.width.toInt(),
+      pixelHeight: size.height.toInt(),
+    ),
+  ) as MemoryRenderTarget;
+  final result = await target.renderDisplayList(list, clearColor: 0xFFFFFFFF);
   expect(result.isSuccess, isTrue, reason: 'render failed: $result');
   return target.framebuffer;
 }
@@ -91,7 +90,8 @@ void main() {
       // would match and nothing else would notice.
       Future<int> inkOf(String text) async {
         final DisplayList list = DisplayList();
-        final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
+        final int paint =
+            list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
         TextPainter().paint(
           list,
           text,
@@ -102,15 +102,15 @@ void main() {
         return _inkCount(await _render(list, const Size(260, 48)));
       }
 
-      expect(await inkOf('coracao acao'),
-          lessThan(await inkOf('coração ação')));
+      expect(
+          await inkOf('coracao acao'), lessThan(await inkOf('coração ação')));
     });
 
     test('nothing is drawn for an empty string', () async {
       final DisplayList list = DisplayList();
       final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
-      TextPainter().paint(
-          list, '', roboto.atSize(20), const Offset(4, 30), paint);
+      TextPainter()
+          .paint(list, '', roboto.atSize(20), const Offset(4, 30), paint);
 
       expect(list.commandCount, 0);
       expect(_inkCount(await _render(list, const Size(64, 40))), 0);
@@ -124,8 +124,8 @@ void main() {
       // origin at x=10, a 20 px 'X' must ink [10,30) x [24,44) precisely.
       final DisplayList list = DisplayList();
       final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
-      TextPainter().paint(
-          list, 'X', ahem.atSize(20), const Offset(10, 40), paint);
+      TextPainter()
+          .paint(list, 'X', ahem.atSize(20), const Offset(10, 40), paint);
 
       final Framebuffer frame = await _render(list, const Size(64, 64));
 
@@ -146,8 +146,8 @@ void main() {
         () async {
       final DisplayList list = DisplayList();
       final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
-      TextPainter().paintInBox(
-          list, 'X', ahem.atSize(20), const Offset(10, 10), paint);
+      TextPainter()
+          .paintInBox(list, 'X', ahem.atSize(20), const Offset(10, 10), paint);
 
       final Framebuffer frame = await _render(list, const Size(64, 64));
 
@@ -161,8 +161,8 @@ void main() {
         () async {
       final DisplayList list = DisplayList();
       final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
-      TextPainter().paint(
-          list, 'XX', ahem.atSize(10), const Offset(0, 20), paint);
+      TextPainter()
+          .paint(list, 'XX', ahem.atSize(10), const Offset(0, 20), paint);
 
       final Framebuffer frame = await _render(list, const Size(40, 32));
 
@@ -177,8 +177,8 @@ void main() {
     test('a run becomes one glyph-run command', () {
       final DisplayList list = DisplayList();
       final int paint = list.addPaint(colorArgb: 0xFF000000);
-      TextPainter().paint(
-          list, 'hello', roboto.atSize(16), const Offset(0, 20), paint);
+      TextPainter()
+          .paint(list, 'hello', roboto.atSize(16), const Offset(0, 20), paint);
 
       int glyphRuns = 0;
       final DisplayListReader reader = DisplayListReader(list);
@@ -210,8 +210,7 @@ void main() {
 
       // The whole string is one continuous band of ink: a wrong continuation
       // origin would leave a gap or an overlap at the seam.
-      final Framebuffer frame =
-          await _render(list, Size(run.width + 8, 16));
+      final Framebuffer frame = await _render(list, Size(run.width + 8, 16));
       final int seamX = (run.xOf(kMaxGlyphsPerRun) + 2).toInt();
       expect(frame.pixels[frame.offsetOf(seamX, 8)], lessThan(128));
     });
@@ -280,8 +279,8 @@ void main() {
       Future<Framebuffer> draw(int colour) async {
         final DisplayList list = DisplayList();
         final int paint = list.addPaint(colorArgb: colour, antiAlias: false);
-        TextPainter().paint(
-            list, 'X', ahem.atSize(16), const Offset(2, 20), paint);
+        TextPainter()
+            .paint(list, 'X', ahem.atSize(16), const Offset(2, 20), paint);
         return _render(list, const Size(32, 32));
       }
 
@@ -321,8 +320,8 @@ void main() {
 
       expect(run.length, 10);
       expect(run.width, greaterThan(20));
-      expect(_inkCount(await _render(list, const Size(200, 40))),
-          greaterThan(50));
+      expect(
+          _inkCount(await _render(list, const Size(200, 40))), greaterThan(50));
     });
   });
 

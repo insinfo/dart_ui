@@ -87,8 +87,8 @@ void main() {
 
       for (var i = 0; i < 32; i++) {
         final firstVertex = i * kGpuVerticesPerQuad;
-        expect(buffer.vertexFloat(firstVertex, kGpuPositionOffset),
-            i.toDouble());
+        expect(
+            buffer.vertexFloat(firstVertex, kGpuPositionOffset), i.toDouble());
       }
       expect(buffer.indexAt(31 * kGpuIndicesPerQuad), 31 * kGpuVerticesPerQuad);
     });
