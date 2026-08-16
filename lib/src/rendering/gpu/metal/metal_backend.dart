@@ -1,68 +1,79 @@
 /// The Metal backend's entry point, and an honest account of how far it goes.
 ///
-/// # NOTHING IN THIS FILE HAS BEEN EXECUTED ON A MAC
+/// # WHAT HAS RUN ON A MAC, AND WHAT HAS NOT
 ///
-/// ## What exists, and what does not
+/// The `macos-14` leg of `.github/workflows/framework.yml` is an Apple Silicon
+/// runner whose GPU reports itself as an `Apple Paravirtual device`, and every
+/// claim below is something a test asserted there on the last push. This file
+/// used to open with "nothing in this file has been executed on a Mac". That
+/// stopped being true, one measured step at a time.
 ///
-/// **Exists and is checked by tests that run on any platform:**
+/// **Runs on hardware, in CI, on every push:**
 ///
-///   * the Objective-C message layer, with the closed shape table and the
-///     encoding comparison - `lib/src/ffi/objc_runtime.dart`;
-///   * the Metal constants, structs, vertex layout, ownership table and
-///     translations from the shared GPU vocabulary - `metal_bindings.dart`;
-///   * the MSL for the three modes, with the same analytic coverage term as
-///     the GLSL and the HLSL - `metal_shaders.dart`;
-///   * the probe below.
+///   * the Objective-C message layer and the encoding comparison, now for all
+///     79 rows of `kMetalSelectors` - `lib/src/ffi/objc_runtime.dart`;
+///   * `MTLCreateSystemDefaultDevice` and one `MTLCommandQueue`;
+///   * the MSL of `metal_shaders.dart`, **compiled** by
+///     `newLibraryWithSource:options:error:`, with both entry points found;
+///   * one `MTLRenderPipelineState` per blend mode, built from the vertex
+///     descriptor `gpu_pipeline.dart` defines - and Metal refusing an
+///     incomplete descriptor, which is what makes it accepting the real one
+///     mean something;
+///   * an offscreen `MTLTexture` cleared, drawn into through the real
+///     `GpuRasterSink`, and read back with
+///     `getBytes:bytesPerRow:fromRegion:mipmapLevel:`;
+///   * **pixel parity against the CPU rasteriser**: 0 deviation on solid
+///     rectangles and on a clipped scene, 1 level on blended and antialiased
+///     pixels, with the arithmetic worked out in
+///     `test/rendering/gpu/metal/metal_cpu_parity_test.dart`.
 ///
-/// **Does not exist:** [MetalRenderDevice] and any [RenderTarget]. There is no
-/// `MTLDevice` opened, no pipeline state built, no frame encoded, no drawable
-/// presented.
+/// **Does not exist:** any presentation. There is no `CAMetalLayer` drawable,
+/// no `IOSurface` handed to a host process, no window. There is also no mask
+/// atlas, no glyph atlas and no layer stack on this path, so paths, rounded
+/// rectangles, text and compositing layers are refused by name rather than
+/// approximated.
 ///
-/// ## Why [probe] therefore reports unsupported even on a Mac
+/// ## What [probe] therefore says
 ///
-/// Because [createDevice] cannot return a device, and a probe that said
-/// `supported: true` would be a promise this backend cannot keep. Section 6.6
-/// of the roadmap puts it directly - faked capability is worse than absent
-/// capability - and a `RendererBackend` that probes green and then throws is
-/// the exact failure mode that rule exists to prevent: the selection policy
-/// would choose Metal over the CPU rasteriser and the application would not
-/// start.
-///
-/// The probe still does real work on a Mac. It loads the frameworks, asks for
-/// the system default device, reads its name and unified-memory flag, and
-/// reports all of it as [DiagnosticKind.note]s. So the probe is a *diagnostic*
-/// that is useful the day someone runs it on hardware - it will say what was
-/// found - while the `supported` flag stays false because the renderer is not
-/// finished.
+/// `supported: true` on a Mac where the device opens - because
+/// [createDevice] now returns a device that really draws - and
+/// [supportsSurface] answers **true only for a [MemorySurfaceDescriptor]**.
+/// That pair is the honest shape: the selection policy asks whether this
+/// backend can present to the surface at hand, and for a window the answer is
+/// still no. Section 6.6 - faked capability is worse than absent capability -
+/// is satisfied by narrowing the claim rather than by refusing everything, and
+/// the capability set says the same thing: [Capability.cpuPresentation] and
+/// **not** [Capability.gpuPresentation], because the pixels reach the caller
+/// through a readback and not through a swap.
 ///
 /// ## What finishing it means
 ///
-/// Concretely, and in the order they depend on each other:
+/// In the order the pieces depend on each other:
 ///
-///   1. `MetalRenderDevice implements RenderDevice, GpuTextureAllocator,
-///      GpuRecoveryHost` - `MTLDevice`, one `MTLCommandQueue`, the library
-///      compiled from [kMetalShaderSource], and one
-///      `MTLRenderPipelineState` per blend mode.
-///   2. A texture type implementing `GpuTextureHandle`, with an int id space
-///      shared with the layer targets, because `GpuBatcher` breaks batches by
-///      comparing texture ids as integers.
-///   3. A `GpuLayerTargetAllocator`, as `GlFramebufferPool` and `D3d11LayerPool`
-///      are for their backends.
-///   4. The two presenters ADR 0005 splits apart: the `IOSurface` one for
+///   1. a texture type implementing `GpuTextureHandle` and an image cache, so
+///      `drawImage` and the two atlases work - the sink refuses them today;
+///   2. a `GpuLayerTargetAllocator`, as `GlFramebufferPool` and
+///      `D3d11LayerPool` are for their backends, so `saveLayer` composites;
+///   3. the two presenters ADR 0005 splits apart: the `IOSurface` one for
 ///      `appkitNativeHost` and the `CAMetalLayer` one for the in-process
-///      backends.
+///      backends;
+///   4. device-loss recovery, which on Metal is not the same problem as on
+///      Direct3D: there is no `DXGI_ERROR_DEVICE_REMOVED` to observe.
 ///
-/// None of it is speculative work - every contract it must satisfy already
-/// exists and is exercised by three other backends. What is missing is a
-/// machine to run it on.
 library;
 
 import 'dart:io';
 
 import '../../../ffi/objc_runtime.dart';
 import '../../../foundation/diagnostics.dart';
+import '../../../foundation/lifecycle.dart';
+import '../../../geometry/rect.dart';
+import '../../../graphics/display_list.dart';
+import '../../framebuffer.dart';
 import '../../renderer.dart';
 import 'metal_bindings.dart';
+import 'metal_device.dart';
+import 'metal_offscreen.dart';
 
 /// Metal, as a [RendererBackend].
 ///
@@ -87,17 +98,19 @@ final class MetalRendererBackend implements RendererBackend {
 
   /// Whether this backend can present to [surface].
   ///
-  /// **False for everything**, and that is not a placeholder: this backend
-  /// cannot create a device, so there is no surface it can present to. A
-  /// method that answered `true` for a `MemorySurfaceDescriptor` would be
-  /// describing the backend that is intended rather than the one that is here,
-  /// and `RendererBackend` is consulted by selection policy that would act on
-  /// the answer.
+  /// **A memory surface, and nothing else.** That is not a placeholder either
+  /// way: a [MemorySurfaceDescriptor] is answered by rendering into an
+  /// `MTLTexture` and reading it back, which is implemented, measured against
+  /// the CPU rasteriser and running in CI. A window surface is answered no,
+  /// because no drawable is ever acquired and no `IOSurface` ever handed over -
+  /// ADR 0005's presenters do not exist yet.
   ///
-  /// When [MetalRenderDevice] lands, this grows the real answer: a memory
-  /// surface, and the `IOSurface`-backed window surface ADR 0005 describes.
+  /// The narrowing is the point. Selection policy asks this per surface, so a
+  /// backend that can do one of the two says so instead of claiming both or
+  /// refusing everything.
   @override
-  bool supportsSurface(NativeSurfaceDescriptor surface) => false;
+  bool supportsSurface(NativeSurfaceDescriptor surface) =>
+      surface is MemorySurfaceDescriptor;
 
   /// What this machine has, and why the backend still refuses.
   ///
@@ -157,51 +170,103 @@ final class MetalRendererBackend implements RendererBackend {
       );
     }
 
-    // Everything past here is a report, not a gate. The refusal at the bottom
-    // is unconditional.
+    // Everything past here is a report. The device is what decides.
     diagnostics.addAll(describeSystemDefaultDevice());
     diagnostics.add(const BackendDiagnostic.note(
       'binding provenance',
       detail: kMetalBindingProvenance,
     ));
 
+    // Opened and thrown away. A probe that reported `supported: true` from the
+    // presence of Metal.framework would be reporting the machine and not the
+    // backend, and this is the one question whose answer cannot be inferred:
+    // MTLCreateSystemDefaultDevice returns nil on a headless or virtualised Mac
+    // that has the framework and no GPU.
+    try {
+      MetalGpu.open().dispose();
+    } on Object catch (error) {
+      return BackendProbeResult(
+        backendName: backendName,
+        supported: false,
+        diagnostics: <BackendDiagnostic>[
+          ...diagnostics,
+          BackendDiagnostic(
+            kind: DiagnosticKind.incompatibleDevice,
+            message: 'Metal is present but no device could be opened',
+            detail: '$error',
+          ),
+        ],
+      );
+    }
+
     return BackendProbeResult(
       backendName: backendName,
-      supported: false,
+      supported: true,
+      // cpuPresentation and deliberately NOT gpuPresentation: the pixels this
+      // backend produces reach the caller through
+      // getBytes:bytesPerRow:fromRegion:mipmapLevel:, which is a readback, not
+      // a surface swap. Capability.gpuPresentation's own documentation calls
+      // that "cpu presentation with a GPU rasteriser bolted on", and claiming
+      // it here is exactly the overclaim section 6.6 forbids.
+      capabilities: const <Capability>{Capability.cpuPresentation},
       diagnostics: <BackendDiagnostic>[
         ...diagnostics,
         const BackendDiagnostic(
           kind: DiagnosticKind.rejectedByPolicy,
-          message: 'the Metal renderer has no device implementation yet, so '
-              'this backend refuses rather than claiming a capability it has '
-              'never exercised',
-          detail: 'Metal.framework and the Objective-C runtime are both '
-              'present on this machine and the bindings are in place; what is '
-              'missing is MetalRenderDevice and its render targets. Section '
-              '6.6 of the roadmap: faked capability is worse than absent '
-              'capability. A probe reporting supported: true here would make '
-              'the selection policy prefer Metal over the CPU rasteriser and '
-              'the application would fail to start. See the library comment '
-              'of metal_backend.dart for the four remaining pieces, and '
-              'doc/adr/0005-metal-sobre-iosurface-compartilhada.md for the '
-              'architecture they implement.',
+          message: 'this backend renders offscreen only: a memory surface is '
+              'supported and a window surface is not',
+          detail: 'MetalRenderDevice creates a target for a '
+              'MemorySurfaceDescriptor, renders a display list through the '
+              'shared GpuRasterSink and reads the texture back. What is '
+              'missing is presentation - the CAMetalLayer drawable and the '
+              'IOSurface hand-off of ADR 0005 - and the mask atlas, glyph '
+              'atlas and layer stack, so paths, rounded rectangles, text and '
+              'compositing saveLayers are refused by name rather than '
+              'approximated. supportsSurface() is where that shows up in '
+              'selection policy.',
         ),
       ],
     );
   }
 
-  /// Always throws [BackendSelectionError].
+  /// Opens a real [MetalRenderDevice], or throws [BackendSelectionError]
+  /// carrying the probe.
   ///
-  /// The throw carries the probe, so the caller's error names what was found
-  /// on the machine rather than only what is missing in the code - which is
-  /// the difference between "you have no GPU" and "this renderer is not
-  /// finished", and they call for opposite reactions.
+  /// The throw carries the probe so the caller's error names what was found on
+  /// the machine rather than only what failed - the difference between "you
+  /// have no GPU" and "this renderer is not finished", which call for opposite
+  /// reactions.
   @override
   Future<RenderDevice> createDevice() async {
-    throw BackendSelectionError(
-      requested: backendName,
-      attempts: <BackendProbeResult>[probe()],
-    );
+    final BackendProbeResult report = probe();
+    if (!report.supported) {
+      throw BackendSelectionError(
+        requested: backendName,
+        attempts: <BackendProbeResult>[report],
+      );
+    }
+    try {
+      return MetalRenderDevice.open();
+    } on Object catch (error) {
+      throw BackendSelectionError(
+        requested: backendName,
+        attempts: <BackendProbeResult>[
+          BackendProbeResult(
+            backendName: backendName,
+            supported: false,
+            diagnostics: <BackendDiagnostic>[
+              ...report.diagnostics,
+              BackendDiagnostic(
+                kind: DiagnosticKind.incompatibleDevice,
+                message: 'the probe found a device and createDevice could not '
+                    'open one, which is a defect rather than a machine',
+                detail: '$error',
+              ),
+            ],
+          ),
+        ],
+      );
+    }
   }
 
   /// What the system default `MTLDevice` says about itself, as notes.
@@ -276,4 +341,251 @@ final class MetalRendererBackend implements RendererBackend {
     if (utf8.address == 0) return 'unnamed';
     return objcReadCString(utf8.cast());
   }
+}
+
+// ---------------------------------------------------------------------------
+// The device, and the one kind of target it can make
+// ---------------------------------------------------------------------------
+
+/// An open `MTLDevice`, its queue and its pipeline states.
+///
+/// One shader compile and up to three pipeline states for the whole device,
+/// shared by every target it creates - which is why the cache lives here and
+/// not in the target, and why a test that renders several scenes pays for the
+/// compile once.
+final class MetalRenderDevice with DisposableMixin implements RenderDevice {
+  MetalRenderDevice._(this._gpu, this._pipelines);
+
+  /// Opens the system default device. Throws [MetalError] when there is none.
+  static MetalRenderDevice open() {
+    final MetalGpu gpu = MetalGpu.open();
+    try {
+      return MetalRenderDevice._(gpu, MetalPipelineCache.build(gpu));
+    } on Object {
+      // The shader failed to compile, which leaves the device open with
+      // nothing holding it. Released here, because there is no finaliser.
+      gpu.dispose();
+      rethrow;
+    }
+  }
+
+  final MetalGpu _gpu;
+  final MetalPipelineCache _pipelines;
+
+  /// What `-[MTLDevice name]` answered, read once at open time.
+  late final String deviceName = _gpu.name;
+
+  @override
+  RendererInfo get info => RendererInfo(
+        name: MetalRendererBackend.backendName,
+        deviceDescription: 'Metal on $deviceName, offscreen only',
+      );
+
+  /// What this device can do **today**, which is less than Metal can.
+  ///
+  /// Every `false` here is a decision with a reason, not a default:
+  ///
+  ///   * no partial present, because there is no present at all - a memory
+  ///     target reads the whole texture back;
+  ///   * no MSAA: the renderer antialiases analytically in the fragment stage
+  ///     and through the mask atlas, which is why `sampleCount` never leaves 1;
+  ///   * no compute, matching every other backend in this repository;
+  ///   * no external textures: `newTextureWithDescriptor:iosurface:plane:` is
+  ///     bound but never called, and claiming the capability would promise the
+  ///     `IOSurface` path of ADR 0005;
+  ///   * no linear colour: the pipeline's attachment is `rgba8Unorm`, not
+  ///     `rgba8Unorm_sRGB`, and the CPU rasteriser composites in the same
+  ///     space.
+  ///
+  /// [RendererCapabilities.maxTextureSize] is 8192, which is a **floor and not
+  /// a query**: every Metal GPU family guarantees at least that for a 2D
+  /// texture, and Apple family 3 and later allow 16384. Reporting the floor
+  /// cannot promise something a device refuses; reporting 16384 without asking
+  /// would.
+  @override
+  RendererCapabilities get capabilities => const RendererCapabilities(
+        supportsPartialPresent: false,
+        supportsMsaa: false,
+        supportsCompute: false,
+        supportsExternalTextures: false,
+        supportsLinearColor: false,
+        maxTextureSize: 8192,
+        formats: <PixelFormat>{PixelFormat.rgba8888Premultiplied},
+      );
+
+  /// Always false. Metal has no device-removed notification to observe - there
+  /// is no `DXGI_ERROR_DEVICE_REMOVED` here - and a field that flipped on
+  /// nothing would be a guess. When the recovery work of section 25 reaches
+  /// this backend it will have a source: `-[MTLCommandBuffer error]` with an
+  /// `MTLCommandBufferErrorDeviceRemoved` status.
+  @override
+  bool get isLost => false;
+
+  @override
+  RenderTarget createTarget(NativeSurfaceDescriptor surface) {
+    throwIfDisposed();
+    if (surface is! MemorySurfaceDescriptor) {
+      throw UnsupportedCapabilityError(
+        backendName: MetalRendererBackend.backendName,
+        capability: Capability.gpuPresentation,
+        detail: 'a ${surface.runtimeType} was asked for. This backend renders '
+            'into an MTLTexture and reads it back; '
+            'no CAMetalLayer drawable is acquired and no IOSurface is shared, '
+            'so there is no window surface it can present to. '
+            'MetalRendererBackend.supportsSurface answers the same question '
+            'before a target is asked for.',
+      );
+    }
+    if (surface.format != PixelFormat.rgba8888Premultiplied) {
+      throw UnsupportedCapabilityError(
+        backendName: MetalRendererBackend.backendName,
+        capability: Capability.cpuPresentation,
+        detail: 'a ${surface.format.name} memory surface was asked for, and '
+            'the colour texture is MTLPixelFormatRGBA8Unorm; the '
+            'readback is byte for byte that layout. A bgra8888 surface would '
+            'need either a second pipeline state - a pixel format is part of a '
+            'pipeline state identity in Metal - or a swizzle on the way out, '
+            'and neither is written. capabilities.formats says the same.',
+      );
+    }
+    return MetalMemoryTarget._(this, surface);
+  }
+
+  @override
+  void onDispose() {
+    _pipelines.dispose();
+    _gpu.dispose();
+  }
+}
+
+/// A [RenderTarget] that renders into an `MTLTexture` and reads it back.
+///
+/// The GPU work happens in [present], not in [beginFrame]: between the two the
+/// caller plays a display list into the batcher and nothing has reached the
+/// driver yet. That is the division `D3d11OffscreenTarget` makes, and it is
+/// what lets a frame be abandoned - a resize between the two calls makes the
+/// frame stale and the recorded batches are dropped.
+final class MetalMemoryTarget with DisposableMixin implements RenderTarget {
+  MetalMemoryTarget._(this._device, this._surface)
+      : _offscreen = MetalOffscreenTarget.create(
+          _device._gpu,
+          _device._pipelines,
+          width: _surface.pixelWidth,
+          height: _surface.pixelHeight,
+        );
+
+  final MetalRenderDevice _device;
+  MemorySurfaceDescriptor _surface;
+  MetalOffscreenTarget _offscreen;
+
+  int _generation = 0;
+  int? _pendingClear;
+
+  @override
+  NativeSurfaceDescriptor get surface => _surface;
+
+  @override
+  int get generation => _generation;
+
+  /// The pixels of the **last presented** frame.
+  ///
+  /// Handed to [Frame.cpuPixels] as well, where it is the buffer the readback
+  /// will land in - so during a frame it still holds the previous one's
+  /// pixels. That is the contract `D3d11OffscreenTarget` has, and it is stated
+  /// because the other reading - "this frame's pixels, before it was drawn" -
+  /// is the kind of thing a golden test passes silently.
+  Framebuffer get framebuffer => _offscreen.framebuffer;
+
+  @override
+  Frame beginFrame(FrameRequest request) {
+    throwIfDisposed();
+    _offscreen.beginFrame();
+    _pendingClear = request.clearColor;
+    return Frame(
+      target: this,
+      framebuffer: _offscreen.framebuffer,
+      damage: request.damage ??
+          Rect.fromLTWH(
+            0,
+            0,
+            _surface.pixelWidth.toDouble(),
+            _surface.pixelHeight.toDouble(),
+          ),
+      generation: _generation,
+    );
+  }
+
+  @override
+  Future<PresentResult> present(Frame frame) async {
+    throwIfDisposed();
+    if (frame.generation != _generation) {
+      return const PresentResult(
+        status: PresentStatus.stale,
+        diagnostic: BackendDiagnostic.note(
+          'frame belonged to a previous generation of the target',
+        ),
+      );
+    }
+    try {
+      _offscreen.submit(clearColor: _pendingClear);
+      _offscreen.readPixels();
+    } on MetalError catch (error) {
+      // A command buffer that ends in MTLCommandBufferStatusError is the one
+      // place this backend can learn that something went wrong on the GPU, and
+      // it is reported rather than thrown: a present is fallible by contract
+      // and the caller decides what to do about it.
+      return PresentResult(
+        status: PresentStatus.failed,
+        diagnostic: BackendDiagnostic(
+          kind: DiagnosticKind.incompatibleDevice,
+          message: 'the Metal command buffer did not complete',
+          detail: '$error',
+        ),
+      );
+    }
+    return const PresentResult(status: PresentStatus.presented);
+  }
+
+  /// Rasterises [list] into this target and presents it.
+  ///
+  /// Mirrors `MemoryRenderTarget.renderDisplayList` and
+  /// `D3d11OffscreenTarget.renderDisplayList` argument for argument, so a
+  /// parity test can swap one for another and compare the pixels.
+  Future<PresentResult> renderDisplayList(
+    DisplayList list, {
+    int? clearColor,
+  }) async {
+    final Frame frame = beginFrame(FrameRequest(clearColor: clearColor));
+    _offscreen.playDisplayList(list);
+    return present(frame);
+  }
+
+  @override
+  void resize(int pixelWidth, int pixelHeight, double scale) {
+    throwIfDisposed();
+    if (pixelWidth == _surface.pixelWidth &&
+        pixelHeight == _surface.pixelHeight &&
+        scale == _surface.scale) {
+      return;
+    }
+    // The generation moves first, so a frame begun against the old size is
+    // already stale by the time the texture is replaced.
+    _generation++;
+    _surface = MemorySurfaceDescriptor(
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      format: _surface.format,
+    );
+    _offscreen.dispose();
+    _offscreen = MetalOffscreenTarget.create(
+      _device._gpu,
+      _device._pipelines,
+      width: pixelWidth,
+      height: pixelHeight,
+    );
+  }
+
+  @override
+  void onDispose() => _offscreen.dispose();
 }

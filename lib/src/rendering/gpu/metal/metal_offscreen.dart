@@ -319,13 +319,34 @@ final class MetalOffscreenTarget {
   /// this backend instead of drawing something approximate. That is section
   /// 6.6 applied to a backend that is being built a piece at a time.
   void renderDisplayList(DisplayList list, {int? clearColor}) {
+    beginFrame();
+    playDisplayList(list);
+    submit(clearColor: clearColor);
+  }
+
+  /// Drops the previous frame's geometry, keeping the memory.
+  ///
+  /// Split out of [renderDisplayList] because a [RenderTarget] has to record
+  /// between `beginFrame` and `present` rather than in one call - see
+  /// `MetalMemoryTarget` in `metal_backend.dart`.
+  void beginFrame() {
     _checkAlive();
     _batcher.beginFrame();
+  }
+
+  /// Walks [list] into the batcher. No GPU work happens here.
+  void playDisplayList(DisplayList list) {
+    _checkAlive();
     _player.play(
       DisplayListReader(list),
       DisplayListResources(list),
       deviceBounds: Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
     );
+  }
+
+  /// Encodes the recorded batches into one pass and waits for it.
+  void submit({int? clearColor}) {
+    _checkAlive();
     encodePass(clearColor: clearColor, body: _drawBatches);
   }
 
