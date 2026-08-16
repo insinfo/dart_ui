@@ -11,7 +11,16 @@ import 'pointer_router.dart';
 import 'semantics.dart';
 import 'widget.dart';
 
-enum ElementLifecycle { initial, active, defunct }
+/// Where an element is in its life.
+///
+/// [inactive] is the state that makes a [GlobalKey] move possible. When a
+/// parent stops listing a child, the child is not destroyed on the spot: it is
+/// detached from the render tree, parked for the rest of the build scope, and
+/// only unmounted once the scope settles without anyone claiming it. Without
+/// that window, moving a subtree would depend on whether the destination
+/// happened to be reconciled before the source - and half the time the state
+/// would already be disposed by the time the new parent asked for it.
+enum ElementLifecycle { initial, active, inactive, defunct }
 
 /// Owns the element tree and drains dirty builds shallowest-first.
 final class BuildOwner {
@@ -51,6 +60,25 @@ final class BuildOwner {
   final List<Element> _dirtyElements = <Element>[];
   final List<MultiChildRenderObjectElement> _pendingRenderOrder =
       <MultiChildRenderObjectElement>[];
+
+  /// Parent-data widgets whose per-child configuration has not been written
+  /// onto a render object yet. Drained once the build scope settles, for the
+  /// same reason [_pendingRenderOrder] is: the render object a
+  /// `Expanded(child: SomeStatefulThing())` configures does not exist until
+  /// that child's own build has run, which is a later pass.
+  final List<ParentDataElement<BoxParentData>> _pendingParentData =
+      <ParentDataElement<BoxParentData>>[];
+
+  /// Elements detached from the tree during this build scope and not yet
+  /// unmounted. See [ElementLifecycle.inactive].
+  final List<Element> _inactiveElements = <Element>[];
+
+  /// Global keys taken by an element during this build scope, so that a second
+  /// widget claiming the same key is a named error rather than a registry that
+  /// answers with whichever build ran last.
+  final Map<GlobalKey<State<StatefulWidget>>, Element> _claimedGlobalKeys =
+      <GlobalKey<State<StatefulWidget>>, Element>{};
+
   Element? _rootElement;
   bool _building = false;
   bool _disposed = false;
@@ -192,6 +220,74 @@ final class BuildOwner {
     _pendingRenderOrder.add(element);
   }
 
+  /// Registers a [ParentDataWidget] whose configuration must reach a render
+  /// object once the current build scope settles.
+  void scheduleParentDataSync(ParentDataElement<BoxParentData> element) {
+    _throwIfDisposed();
+    _pendingParentData.add(element);
+  }
+
+  /// Records that [claimant] now carries [key], and rejects a second claim.
+  ///
+  /// "Second claim in the same build scope, by an element that is still
+  /// active" is the precise condition. A claim left over from an earlier scope
+  /// is not a conflict - that is the ordinary case of an element keeping its
+  /// key from frame to frame - and neither is a claim whose element has since
+  /// been detached, which is what a widget swapping type under a global key
+  /// looks like from here.
+  void _claimGlobalKey(GlobalKey<State<StatefulWidget>> key, Element claimant) {
+    final Element? previous = _claimedGlobalKeys[key];
+    if (previous != null && previous._lifecycle == ElementLifecycle.active) {
+      throw DuplicateGlobalKeyError(
+        key: key,
+        firstPath: previous.debugWidgetPath(),
+        secondPath: claimant.debugWidgetPath(),
+      );
+    }
+    _claimedGlobalKeys[key] = claimant;
+    key.internalRegister(claimant);
+  }
+
+  /// Hands [newParent] the existing element carrying [key], if there is one it
+  /// may legally reuse.
+  ///
+  /// This is the whole of "moving a subtree keeps its state": the element is
+  /// taken away from wherever it currently sits - in the tree or in the
+  /// inactive list - its render objects are unplugged and plugged in under the
+  /// new render parent, and its depth and inherited scope are recomputed.
+  /// Nothing in it is rebuilt that did not have to be.
+  ///
+  /// Returns null when the key names nothing reusable, in which case the caller
+  /// creates a fresh element and the state is genuinely lost - as it must be,
+  /// because a different widget type is a different thing.
+  Element? _retakeGlobalKey(
+    GlobalKey<State<StatefulWidget>> key,
+    Widget newWidget,
+    Element newParent,
+  ) {
+    final Element? candidate = key.currentElement;
+    if (candidate == null ||
+        candidate._lifecycle == ElementLifecycle.defunct ||
+        !identical(candidate._owner, this) ||
+        !Widget.canUpdate(candidate.widget, newWidget)) {
+      return null;
+    }
+    // Refuse to make an element its own descendant: the resulting cycle would
+    // be found much later, as a stack overflow in a visitor.
+    for (Element? ancestor = newParent;
+        ancestor != null;
+        ancestor = ancestor._parent) {
+      if (identical(ancestor, candidate)) return null;
+    }
+    _claimGlobalKey(key, candidate);
+    _inactiveElements.remove(candidate);
+    // Unconditionally, even for an inactive candidate: its old parent still
+    // lists it, and would unmount it on the way out.
+    candidate._parent?.forgetChild(candidate);
+    candidate._retakeInto(newParent);
+    return candidate;
+  }
+
   /// Rebuilds until no active dirty element remains.
   void buildScope() {
     _throwIfDisposed();
@@ -226,8 +322,49 @@ final class BuildOwner {
     } finally {
       _building = false;
     }
-    // After the tree has settled: every component child that was going to
-    // produce a render object has now done so, so the order is knowable.
+    // The tree has settled, so three things are finally knowable and none of
+    // them was knowable mid-scope. In order:
+    try {
+      // 1. Which detached elements nobody reclaimed. Done first so that the
+      //    two passes below never look at a subtree that is on its way out.
+      _flushInactive();
+      // 2. Which render object each parent-data widget was configuring: a
+      //    component child owns none until its own build has run.
+      _flushParentData();
+      // 3. What the render child order is, for the same reason.
+      _flushRenderOrder();
+    } finally {
+      // A scope that threw still ends the reservation window; leaving claims
+      // behind would turn one failure into a spurious duplicate on the next
+      // frame.
+      _claimedGlobalKeys.clear();
+    }
+  }
+
+  /// Unmounts everything detached during this scope that was not reclaimed.
+  void _flushInactive() {
+    while (_inactiveElements.isNotEmpty) {
+      final List<Element> batch = List<Element>.of(_inactiveElements);
+      _inactiveElements.clear();
+      for (final Element element in batch) {
+        // A reclaimed element is active again and must survive.
+        if (element._lifecycle == ElementLifecycle.inactive) element.unmount();
+      }
+    }
+  }
+
+  void _flushParentData() {
+    while (_pendingParentData.isNotEmpty) {
+      final List<ParentDataElement<BoxParentData>> batch =
+          List<ParentDataElement<BoxParentData>>.of(_pendingParentData);
+      _pendingParentData.clear();
+      for (final ParentDataElement<BoxParentData> element in batch) {
+        if (element.mounted) element.applyParentData();
+      }
+    }
+  }
+
+  void _flushRenderOrder() {
     while (_pendingRenderOrder.isNotEmpty) {
       final List<MultiChildRenderObjectElement> batch =
           List<MultiChildRenderObjectElement>.of(_pendingRenderOrder);
@@ -244,6 +381,12 @@ final class BuildOwner {
     _rootElement = null;
     _dirtyElements.clear();
     _pendingRenderOrder.clear();
+    _pendingParentData.clear();
+    _claimedGlobalKeys.clear();
+    for (final Element element in List<Element>.of(_inactiveElements)) {
+      if (element._lifecycle == ElementLifecycle.inactive) element.unmount();
+    }
+    _inactiveElements.clear();
     _keyboardRouter.clearFocusFromTree();
     focusManager.dispose();
     semanticsOwner.reset();
@@ -304,6 +447,8 @@ abstract class Element implements BuildContext {
     _depth = parent == null ? 0 : parent.depth + 1;
     _inheritedElements = parent?._inheritedElements;
     _lifecycle = ElementLifecycle.active;
+    final Key? key = widget.key;
+    if (key is GlobalKey) owner._claimGlobalKey(key, this);
     if (builds) {
       owner.scheduleBuildFor(this);
     } else {
@@ -312,9 +457,12 @@ abstract class Element implements BuildContext {
   }
 
   void unmount() {
-    if (_lifecycle != ElementLifecycle.active) {
+    if (_lifecycle == ElementLifecycle.defunct ||
+        _lifecycle == ElementLifecycle.initial) {
       throw StateError('$runtimeType is not mounted.');
     }
+    final Key? key = widget.key;
+    if (key is GlobalKey) key.internalUnregister(this);
     _lifecycle = ElementLifecycle.defunct;
     _dirty = false;
     _inDirtyList = false;
@@ -420,17 +568,126 @@ abstract class Element implements BuildContext {
 
   Element? updateChild(Element? child, Widget? newWidget) {
     if (newWidget == null) {
-      child?.unmount();
+      deactivateChild(child);
       return null;
     }
     if (child != null && Widget.canUpdate(child.widget, newWidget)) {
       child.update(newWidget);
       return child;
     }
-    child?.unmount();
+    // The old occupant goes first even when a retake is about to succeed: a
+    // single-child render parent has exactly one slot, and the incoming render
+    // object cannot be plugged in while the outgoing one is still in it.
+    deactivateChild(child);
+    final Key? key = newWidget.key;
+    if (key is GlobalKey) {
+      final Element? retaken = _owner!._retakeGlobalKey(key, newWidget, this);
+      if (retaken != null) {
+        retaken.update(newWidget);
+        return retaken;
+      }
+    }
     final Element replacement = newWidget.createElement();
     replacement.mount(this, _owner!);
     return replacement;
+  }
+
+  // -------------------------------------------------------------------------
+  // Detaching, reclaiming and reparenting
+  // -------------------------------------------------------------------------
+
+  /// Detaches [child] from the tree without destroying it yet.
+  ///
+  /// The child's render objects come out immediately - otherwise a container
+  /// that reordered its remaining children would be handed a render list that
+  /// still contains this one - but its [State] survives until the build scope
+  /// settles, so a global key elsewhere in the same frame can still claim it.
+  void deactivateChild(Element? child) => child?._deactivate();
+
+  void _deactivate() {
+    if (_lifecycle != ElementLifecycle.active) return;
+    detachRenderObjects();
+    _markInactive();
+    _owner!._inactiveElements.add(this);
+  }
+
+  void _markInactive() {
+    _lifecycle = ElementLifecycle.inactive;
+    visitChildren((Element child) => child._markInactive());
+  }
+
+  /// Removes [child] from this element's record of its children, leaving the
+  /// child itself intact.
+  ///
+  /// Called when a global key hands the child to a different parent. The
+  /// default is a no-op because a childless element has nothing to forget;
+  /// every element that stores children overrides it, and an element that
+  /// forgot to would keep unmounting a child it no longer owns.
+  void forgetChild(Element child) {}
+
+  /// Unplugs the render objects this element's subtree contributes to its
+  /// render parent.
+  ///
+  /// Stops at each [RenderObjectElement]: that node's own render subtree moves
+  /// with it and is not disassembled.
+  void detachRenderObjects() =>
+      visitChildren((Element child) => child.detachRenderObjects());
+
+  /// The inverse of [detachRenderObjects].
+  void attachRenderObjects() =>
+      visitChildren((Element child) => child.attachRenderObjects());
+
+  /// Re-registers every [ParentDataWidget] in this subtree, whose target render
+  /// parent may have changed underneath it.
+  void rescheduleParentData() =>
+      visitChildren((Element child) => child.rescheduleParentData());
+
+  /// Moves this element, and everything under it, to a new parent.
+  void _retakeInto(Element parent) {
+    detachRenderObjects();
+    _parent = parent;
+    _owner = parent._owner;
+    _refreshSubtree(parent._depth + 1, parent._inheritedElements);
+    attachRenderObjects();
+    rescheduleParentData();
+  }
+
+  /// Recomputes the two things a move invalidates for a whole subtree: how
+  /// deep it now sits, and which inherited widgets are visible from it.
+  void _refreshSubtree(int depth, Map<Type, InheritedElement>? inherited) {
+    _depth = depth;
+    _lifecycle = ElementLifecycle.active;
+    _adoptInheritedScope(inherited);
+    if (_dirty) _owner!.scheduleBuildFor(this);
+    visitChildren((Element child) {
+      child._owner = _owner;
+      child._refreshSubtree(depth + 1, _inheritedElements);
+    });
+  }
+
+  /// Takes [incoming] as the set of inherited widgets visible here, dropping
+  /// any dependency that the move put out of scope.
+  ///
+  /// A dependency that survived - the same [InheritedElement] is still the one
+  /// publishing that type - costs nothing. One that did not is deregistered and
+  /// the element is marked for rebuild, because it is currently displaying a
+  /// value it can no longer see.
+  void _adoptInheritedScope(Map<Type, InheritedElement>? incoming) {
+    _inheritedElements = incoming;
+    final Set<InheritedElement>? dependencies = _dependencies;
+    if (dependencies == null || dependencies.isEmpty) return;
+    final List<InheritedElement> stale = <InheritedElement>[];
+    for (final InheritedElement dependency in dependencies) {
+      if (!identical(incoming?[dependency.widget.runtimeType], dependency)) {
+        stale.add(dependency);
+      }
+    }
+    if (stale.isEmpty) return;
+    for (final InheritedElement dependency in stale) {
+      dependency._dependents.remove(this);
+      dependencies.remove(dependency);
+    }
+    markNeedsBuild();
   }
 }
 
@@ -450,6 +707,11 @@ abstract class ComponentElement extends Element {
   void visitChildren(void Function(Element child) visitor) {
     final Element? child = _child;
     if (child != null) visitor(child);
+  }
+
+  @override
+  void forgetChild(Element child) {
+    if (identical(_child, child)) _child = null;
   }
 
   @override
@@ -549,6 +811,20 @@ final class InheritedElement extends ComponentElement {
     _inheritedElements = visible;
   }
 
+  /// Republishes this value on top of whatever the new location inherits.
+  ///
+  /// Without this override a moved [InheritedWidget] would vanish from its own
+  /// subtree: the map it hands its descendants would be its new parent's,
+  /// which does not contain it.
+  @override
+  void _adoptInheritedScope(Map<Type, InheritedElement>? incoming) {
+    super._adoptInheritedScope(incoming);
+    _inheritedElements = <Type, InheritedElement>{
+      ...?incoming,
+      widget.runtimeType: this,
+    };
+  }
+
   @override
   void update(InheritedWidget newWidget) {
     final InheritedWidget oldWidget = widget;
@@ -591,6 +867,141 @@ abstract class RenderObjectWidget extends Widget {
 
   void updateRenderObject(
       BuildContext context, covariant RenderBox renderObject) {}
+}
+
+/// Configures how the *parent* of its child treats that child.
+///
+/// The third kind of widget, next to component and render-object widgets, and
+/// the only one that produces neither a render object nor a subtree of its own.
+/// It exists because some layout inputs do not belong to a child: a flex factor
+/// is not a property of a button, it is a property of the row's opinion about
+/// that button. Putting it on the button would mean every widget in the
+/// framework carries a `flex` field that only means something under one parent.
+///
+/// The plumbing is the interesting part. A parent-data widget writes into the
+/// [BoxParentData] the render parent installed on the child, which means:
+///
+///   * it must find that render parent - by walking *up* the element tree from
+///     itself to the nearest [RenderObjectElement], since component widgets in
+///     between are transparent to the render tree and so must be transparent
+///     here;
+///   * it must dirty that parent rather than the child. The child's own layout
+///     did not change; the parent's division of space did. Marking the child
+///     would in general stop at the child, because a child under tight
+///     constraints is a relayout boundary and the mark would never reach the
+///     node that actually has to redo its arithmetic;
+///   * it must be applied after the build scope settles, because
+///     `Expanded(child: SomeStatefulThing())` has no render object to configure
+///     until that child's own build has run - which is a later pass.
+///
+/// [T] is the parent-data type this widget knows how to fill in, and it is
+/// what makes a misplaced one a named failure: a child of a [Flex] carries
+/// `FlexParentData`, a child of a `Stack` carries `StackParentData`, and an
+/// `Expanded` that finds the wrong one says so, naming both widgets, instead of
+/// throwing a cast error from inside a layout pass three frames later.
+abstract class ParentDataWidget<T extends BoxParentData> extends Widget {
+  const ParentDataWidget({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  ParentDataElement<T> createElement() => ParentDataElement<T>(this);
+
+  /// The widget class that installs a [T] on its children, named in the error
+  /// message when this one is found somewhere else. Diagnostics only - the
+  /// check itself is on the parent data, so a subclass or a custom container
+  /// that installs the right record is accepted.
+  Type get typicalAncestorWidget;
+
+  /// Writes this widget's configuration into [parentData].
+  ///
+  /// Returns whether anything actually changed. Returning false is not an
+  /// optimisation detail: it is what keeps a rebuild that re-declares the same
+  /// `flex: 2` from dirtying the row's layout, and therefore what keeps a
+  /// `setState` in a leaf from costing a relayout of the whole toolbar.
+  bool applyParentData(T parentData);
+}
+
+/// Carries one [ParentDataWidget]'s configuration to a render object.
+///
+/// Transparent in every other respect: it builds its child and contributes no
+/// render object, so `Row(children: [Expanded(child: Button())])` reconciles,
+/// paints and hit tests exactly as `Row(children: [Button()])` would.
+final class ParentDataElement<T extends BoxParentData>
+    extends ComponentElement {
+  ParentDataElement(ParentDataWidget<T> super.widget);
+
+  @override
+  ParentDataWidget<T> get widget => super.widget as ParentDataWidget<T>;
+
+  @override
+  Widget build() => widget.child;
+
+  @override
+  void mount(Element? parent, BuildOwner owner) {
+    super.mount(parent, owner);
+    owner.scheduleParentDataSync(this);
+  }
+
+  @override
+  void update(covariant ParentDataWidget<T> newWidget) {
+    super.update(newWidget);
+    owner!.scheduleParentDataSync(this);
+  }
+
+  @override
+  void rescheduleParentData() {
+    owner?.scheduleParentDataSync(this);
+    super.rescheduleParentData();
+  }
+
+  /// The render object this widget's subtree contributes to its render parent.
+  ///
+  /// Zero of them while the child is still a component that has not built yet,
+  /// which is the case [BuildOwner] defers around; more than one is impossible,
+  /// because a component element has exactly one child.
+  List<RenderBox> get targets {
+    final List<RenderBox> found = <RenderBox>[];
+    collectRenderChildren(found);
+    return found;
+  }
+
+  /// The render-object element that owns the parent data being written.
+  RenderObjectElement? get renderAncestor {
+    for (Element? ancestor = parent;
+        ancestor != null;
+        ancestor = ancestor.parent) {
+      if (ancestor is RenderObjectElement) return ancestor;
+    }
+    return null;
+  }
+
+  /// Writes the configuration through, and dirties the render *parent* of each
+  /// configured node.
+  void applyParentData() {
+    final List<RenderBox> targets = this.targets;
+    if (targets.isEmpty) return;
+    for (final RenderBox target in targets) {
+      final BoxParentData? data = target.parentData;
+      final T? typed = data is T ? data : null;
+      if (typed == null) {
+        throw ParentDataError(
+          parentDataWidget: widget.runtimeType,
+          expectedParentData: T,
+          expectedAncestor: widget.typicalAncestorWidget,
+          actualAncestor: renderAncestor?.widget.runtimeType,
+          actualParentData: data?.runtimeType,
+          widgetPath: debugWidgetPath(),
+        );
+      }
+      if (!widget.applyParentData(typed)) continue;
+      // The parent, not the target: the target's own geometry is unchanged,
+      // and a target under tight constraints is a relayout boundary that would
+      // swallow the mark before it reached the node that has to redo the
+      // division of space.
+      target.parent?.markNeedsLayout();
+    }
+  }
 }
 
 abstract class SingleChildRenderObjectWidget extends RenderObjectWidget {
@@ -684,14 +1095,39 @@ class RenderObjectElement extends Element {
   @override
   void collectRenderChildren(List<RenderBox> into) => into.add(_renderObject);
 
+  /// This node's own render object comes out; its subtree stays plugged into
+  /// it, because the subtree travels with it.
+  @override
+  void detachRenderObjects() => _detachRenderObject();
+
+  @override
+  void attachRenderObjects() => _attachRenderObject();
+
   void _attachRenderObject() {
     Element? ancestor = parent;
+    // Every parent-data widget between here and the render parent configures
+    // *this* render object, and none of them knows that it just appeared: a
+    // `setState` that swaps the widget inside an `Expanded` builds a brand new
+    // render object with default parent data and never rebuilds the `Expanded`
+    // above it. Collecting them on the way up is what keeps the flex factor
+    // attached to the child rather than to the frame it was introduced in.
     while (ancestor != null && ancestor is! RenderObjectElement) {
+      if (ancestor is ParentDataElement<BoxParentData>) {
+        owner!.scheduleParentDataSync(ancestor);
+      }
       ancestor = ancestor.parent;
     }
     if (ancestor is RenderObjectElement) {
       _renderParent = ancestor;
       ancestor.insertRenderObjectChild(_renderObject);
+      // Appended, which is only the right position by luck. The container has
+      // not necessarily reconciled in this scope - a `setState` deep inside one
+      // of its component children can produce a brand new render object without
+      // the container hearing about it - so the order has to be re-derived from
+      // here rather than only where a child list was rebuilt.
+      if (ancestor is MultiChildRenderObjectElement) {
+        owner!.scheduleRenderOrderSync(ancestor);
+      }
       return;
     }
     owner!._renderView.child = _renderObject;
@@ -734,6 +1170,11 @@ final class SingleChildRenderObjectElement extends RenderObjectElement {
   void visitChildren(void Function(Element child) visitor) {
     final Element? child = _child;
     if (child != null) visitor(child);
+  }
+
+  @override
+  void forgetChild(Element child) {
+    if (identical(_child, child)) _child = null;
   }
 
   @override
@@ -787,7 +1228,11 @@ final class MultiChildRenderObjectElement extends RenderObjectElement {
   @override
   void update(RenderObjectWidget newWidget) {
     super.update(newWidget);
-    _children = _reconcile(_children, widget.children);
+    // A copy, because reconciliation can reach [forgetChild] on this very
+    // element - a global key elsewhere in the tree claiming one of these
+    // children - and mutating the list being indexed would shift every
+    // position after it.
+    _children = _reconcile(List<Element>.of(_children), widget.children);
     owner!.scheduleRenderOrderSync(this);
   }
 
@@ -797,6 +1242,9 @@ final class MultiChildRenderObjectElement extends RenderObjectElement {
       visitor(child);
     }
   }
+
+  @override
+  void forgetChild(Element child) => _children.remove(child);
 
   @override
   void unmount() {
@@ -887,11 +1335,14 @@ final class MultiChildRenderObjectElement extends RenderObjectElement {
       newChildren[i] = updateChild(match, newWidget);
     }
 
+    // Detached rather than destroyed: a global key later in this same build
+    // scope may still claim one of them. Whatever is left over when the scope
+    // settles is unmounted then.
     for (final Element leftover in keyed.values) {
-      leftover.unmount();
+      deactivateChild(leftover);
     }
     for (final Element leftover in retired) {
-      leftover.unmount();
+      deactivateChild(leftover);
     }
 
     // Finally the suffix, in order, so its builds run after the middle's.
@@ -908,6 +1359,103 @@ final class MultiChildRenderObjectElement extends RenderObjectElement {
         if (child != null) child,
     ];
   }
+}
+
+/// The element-tree violations that get a name instead of a cast failure.
+///
+/// Same reasoning as `layout_errors.dart`: a test asserts on a type, a
+/// development overlay renders one specially, and a bug report that says
+/// `ParentDataError` is worth more than one that says
+/// `type 'StackParentData' is not a subtype of type 'FlexParentData'` from
+/// inside a layout pass that ran two frames after the mistake was made. They
+/// extend [Error] because none of them is a condition an application can
+/// handle - every one is a tree that was built wrong.
+sealed class ElementError extends Error {
+  ElementError(this.message);
+
+  /// What went wrong, in prose, already naming the widgets involved.
+  final String message;
+
+  @override
+  String toString() => '$runtimeType: $message';
+}
+
+/// A [ParentDataWidget] was found somewhere its configuration means nothing.
+///
+/// The canonical case is an `Expanded` that is not inside a `Row` or `Column`.
+/// The message names *both* ends of the mistake - the parent-data widget and
+/// the render ancestor that was actually there - because either one alone
+/// leaves the reader hunting: "Expanded is misplaced" does not say where it
+/// ended up, and "Stack got the wrong child" does not say which one.
+final class ParentDataError extends ElementError {
+  ParentDataError({
+    required this.parentDataWidget,
+    required this.expectedParentData,
+    required this.expectedAncestor,
+    required this.actualAncestor,
+    required this.actualParentData,
+    required this.widgetPath,
+  }) : super(
+          '$parentDataWidget writes $expectedParentData, which only a '
+          '$expectedAncestor installs on its children, but '
+          '${actualAncestor == null ? 'this one has no render ancestor at all '
+              '(it installs ${actualParentData ?? 'nothing'})' : 'the nearest '
+              'render ancestor here is a $actualAncestor, which installs '
+              '${actualParentData ?? 'nothing'}'}. '
+          'Put the $parentDataWidget directly inside a $expectedAncestor'
+          '${actualAncestor == null ? '' : ', or use the parent-data widget '
+              'that $actualAncestor reads'}.\n'
+          '  at: ${widgetPath.reversed.join(' < ')}',
+        );
+
+  /// The misplaced widget's type, for example `Expanded`.
+  final Type parentDataWidget;
+
+  /// The per-child record it knows how to fill in.
+  final Type expectedParentData;
+
+  /// The widget type that would have installed that record.
+  final Type expectedAncestor;
+
+  /// The render ancestor that was actually there, or null when the widget was
+  /// not under one at all.
+  final Type? actualAncestor;
+
+  /// The per-child record that ancestor installed, or null when the child has
+  /// no render parent.
+  final Type? actualParentData;
+
+  /// The chain of widget types from the root down to the misplaced widget.
+  final List<String> widgetPath;
+}
+
+/// Two live widgets claimed the same [GlobalKey].
+///
+/// A global key is an identity, and an identity that names two things names
+/// neither. Detected at the moment the second widget claims it, which is the
+/// only moment at which both locations are still known; found later - when
+/// `currentState` answers with whichever build ran last - it is indistinguish-
+/// able from a state bug in the widget itself.
+final class DuplicateGlobalKeyError extends ElementError {
+  DuplicateGlobalKeyError({
+    required this.key,
+    required this.firstPath,
+    required this.secondPath,
+  }) : super(
+          'the same $key was claimed by two widgets in one build. A global key '
+          'is an identity: it names the element a dialog reaches for and the '
+          'subtree a move preserves, and it cannot name two of them.\n'
+          '  first:  ${firstPath.reversed.join(' < ')}\n'
+          '  second: ${secondPath.reversed.join(' < ')}',
+        );
+
+  final GlobalKey<State<StatefulWidget>> key;
+
+  /// Widget path of the element that already held the key.
+  final List<String> firstPath;
+
+  /// Widget path of the element that tried to take it.
+  final List<String> secondPath;
 }
 
 /// Stable root slot between element reconciliation and [PipelineOwner].

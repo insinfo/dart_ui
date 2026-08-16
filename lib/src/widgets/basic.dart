@@ -22,6 +22,7 @@ import '../platform/input_events.dart';
 import '../rendering/text/font_registry.dart';
 import '../text/shaper.dart';
 import '../text/typeface.dart';
+import 'directionality.dart';
 import 'element.dart';
 import 'pointer_router.dart';
 import 'theme.dart';
@@ -123,6 +124,26 @@ final class Flex extends MultiChildRenderObjectWidget {
   final layout.CrossAxisAlignment crossAxisAlignment;
   final layout.MainAxisSize mainAxisSize;
 
+  /// `maybeOf` rather than `of`, and the choice is not laziness.
+  ///
+  /// [Directionality.of] throws when nothing installed a direction, on the
+  /// argument that a silent left-to-right default is invisible to whoever
+  /// forgot it - they are almost certainly working in a left-to-right locale,
+  /// so it looks right on their machine and wrong only for people who cannot
+  /// report it in their language. That argument is about *deciding* a locale.
+  ///
+  /// A `Row` does not decide one. It forwards whatever the tree says to
+  /// [layout.RenderFlex.textDirection], which is nullable and documents null as
+  /// laying out left-to-right - the render layer's declared policy, because a
+  /// render object is assembled by tests and tools that have no locale to
+  /// offer. Passing `maybeOf` through honours that policy instead of inventing
+  /// a second one here; an application that wants the loud version installs a
+  /// [Directionality] and any descendant that genuinely needs a decision -
+  /// an icon that asked to mirror, a directional inset - calls `of` and gets
+  /// the named failure.
+  TextDirection? _directionOf(BuildContext context) =>
+      Directionality.maybeOf(context);
+
   @override
   layout.RenderFlex createRenderObject(BuildContext context) =>
       layout.RenderFlex(
@@ -130,6 +151,7 @@ final class Flex extends MultiChildRenderObjectWidget {
         mainAxisAlignment: mainAxisAlignment,
         crossAxisAlignment: crossAxisAlignment,
         mainAxisSize: mainAxisSize,
+        textDirection: _directionOf(context),
       );
 
   @override
@@ -141,7 +163,8 @@ final class Flex extends MultiChildRenderObjectWidget {
       ..direction = direction
       ..mainAxisAlignment = mainAxisAlignment
       ..crossAxisAlignment = crossAxisAlignment
-      ..mainAxisSize = mainAxisSize;
+      ..mainAxisSize = mainAxisSize
+      ..textDirection = _directionOf(context);
   }
 }
 
@@ -165,6 +188,83 @@ final class Row extends Flex {
     super.mainAxisSize,
     super.children,
   }) : super(direction: layout.Axis.horizontal);
+}
+
+/// Gives one child of a [Flex] a share of the space the inflexible children
+/// left over.
+///
+/// The share is proportional: two children with [flex] 1 and 3 split the
+/// remainder one quarter to three quarters, and a child that is not wrapped in
+/// one of these keeps its natural size and is measured first.
+///
+/// [fit] is the difference between this and [Expanded], and it is the whole
+/// difference. [layout.FlexFit.loose] - the default here - makes the share an
+/// upper bound: the child may be smaller, and the leftover stays empty. That is
+/// what a label that should not be stretched wants. [layout.FlexFit.tight] -
+/// what [Expanded] passes - makes the share exact, which is what a text field
+/// filling a toolbar wants.
+class Flexible extends ParentDataWidget<layout.FlexParentData> {
+  const Flexible({
+    super.key,
+    this.flex = 1,
+    this.fit = layout.FlexFit.loose,
+    required super.child,
+  }) : assert(flex >= 0, 'a flex factor is a share, and cannot be negative');
+
+  /// This child's weight in the division of the leftover space. Zero opts out
+  /// and is the same as not wrapping the child at all.
+  final int flex;
+
+  final layout.FlexFit fit;
+
+  @override
+  Type get typicalAncestorWidget => Flex;
+
+  @override
+  bool applyParentData(layout.FlexParentData parentData) {
+    if (parentData.flex == flex && parentData.fit == fit) return false;
+    parentData
+      ..flex = flex
+      ..fit = fit;
+    return true;
+  }
+}
+
+/// A [Flexible] that must fill its share exactly.
+///
+/// `Row(children: [Expanded(child: field), sendButton])` is the reason this
+/// layer exists: the button keeps its natural width, the field takes the whole
+/// rest of the row, and neither of them had to be told how wide the window is.
+final class Expanded extends Flexible {
+  const Expanded({super.key, super.flex, required super.child})
+      : super(fit: layout.FlexFit.tight);
+}
+
+/// Empty, flexible space in a [Flex].
+///
+/// The declarative spelling of "push everything after this to the far end". It
+/// is an [Expanded] around nothing, which is why it takes part in the same
+/// proportional division: two spacers with the default [flex] split the gap
+/// evenly, and `Spacer(flex: 2)` takes twice as much as its neighbour.
+///
+/// Not the same thing as `MainAxisAlignment.spaceBetween`: that distributes the
+/// free space by a rule the whole row shares, while a spacer puts a specific
+/// amount of it in a specific place - which is what a toolbar with a left
+/// group, a centred title and a right group actually needs.
+final class Spacer extends StatelessWidget {
+  const Spacer({super.key, this.flex = 1})
+      : assert(flex >= 0, 'a flex factor is a share, and cannot be negative');
+
+  final int flex;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+        flex: flex,
+        // Zero on both axes, then widened by the tight share the flex hands
+        // down: RenderConstrainedBox lets the parent win, so a spacer occupies
+        // its share of the main axis and no cross extent of its own.
+        child: const SizedBox(width: 0, height: 0),
+      );
 }
 
 /// Lays children out in a line that breaks when it runs out of room.
@@ -236,10 +336,11 @@ final class AspectRatio extends SingleChildRenderObjectWidget {
 /// Arranges children into rows and columns of sized tracks.
 ///
 /// Children are auto-placed in order, one per cell, row-major. Explicit
-/// placement and spans exist on the render node
-/// ([layout.RenderGrid.place]) but have no widget-layer spelling yet: that
-/// needs a parent-data widget, which needs the element layer to carry per-child
-/// configuration down, and neither is this file's to add.
+/// placement and spans exist on the render node ([layout.RenderGrid.place]) but
+/// have no widget-layer spelling yet. The machinery they need now exists -
+/// [ParentDataWidget], the same one [Expanded] and [Positioned] are built on -
+/// so the remaining work is a `GridPlacement` widget over whatever per-child
+/// record `RenderGrid` installs, not another layer.
 final class Grid extends MultiChildRenderObjectWidget {
   const Grid({
     super.key,
@@ -309,6 +410,71 @@ final class Stack extends MultiChildRenderObjectWidget {
     renderObject
       ..alignment = alignment
       ..fit = fit;
+  }
+}
+
+/// Pins one child of a [Stack] to its edges.
+///
+/// Any edge or extent given makes the child *positioned*, which takes it out of
+/// the stack's own sizing: a child pinned 20px from the right cannot also be
+/// what decides where the right edge is. Children with none of these set are
+/// sized normally and placed by the stack's alignment.
+///
+/// Giving both edges on an axis stretches the child between them, which is the
+/// one thing [Align] and [SizedBox] together cannot express: `left: 8,
+/// right: 8` is "as wide as the stack minus sixteen", at any stack width, with
+/// no arithmetic in the caller.
+final class Positioned extends ParentDataWidget<layout.StackParentData> {
+  const Positioned({
+    super.key,
+    this.left,
+    this.top,
+    this.right,
+    this.bottom,
+    this.width,
+    this.height,
+    required super.child,
+  });
+
+  /// Pins all four edges, so the child is exactly the stack's box, inset.
+  const Positioned.fill({
+    super.key,
+    this.left = 0,
+    this.top = 0,
+    this.right = 0,
+    this.bottom = 0,
+    required super.child,
+  })  : width = null,
+        height = null;
+
+  final double? left;
+  final double? top;
+  final double? right;
+  final double? bottom;
+  final double? width;
+  final double? height;
+
+  @override
+  Type get typicalAncestorWidget => Stack;
+
+  @override
+  bool applyParentData(layout.StackParentData parentData) {
+    if (parentData.left == left &&
+        parentData.top == top &&
+        parentData.right == right &&
+        parentData.bottom == bottom &&
+        parentData.width == width &&
+        parentData.height == height) {
+      return false;
+    }
+    parentData
+      ..left = left
+      ..top = top
+      ..right = right
+      ..bottom = bottom
+      ..width = width
+      ..height = height;
+    return true;
   }
 }
 

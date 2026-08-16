@@ -26,6 +26,96 @@ final class ValueKey<T> extends Key {
   String toString() => 'ValueKey<$T>($value)';
 }
 
+/// A key that identifies one element across the *whole* tree, not just among
+/// its siblings.
+///
+/// A [ValueKey] answers a local question - "is this the same list row as last
+/// frame?" - and is compared only against the widgets at the same position
+/// under the same parent. A [GlobalKey] answers two questions that nothing else
+/// in the framework can:
+///
+///   1. **Reach.** A dialog needs the [State] of a form that is nowhere near it
+///      in the tree. Without this the only route is an ambient service, which
+///      is the global locator section 24.8 exists to forbid; with it, the
+///      dialog holds a key and asks the key.
+///   2. **Move.** A subtree that changes parents - a panel dragged into another
+///      dock, a row promoted out of a group - is, positionally, a deletion and
+///      an unrelated insertion. Reconciliation would dispose every [State] in
+///      it and build a new one. A global key makes the element itself the thing
+///      being matched, so the subtree is *reparented* and its state, its
+///      scroll offsets and its render objects survive the move.
+///
+/// Identity, not value, is what a global key means, so equality is identity:
+/// two `GlobalKey()` instances are always different keys, and the same instance
+/// is always the same key. That is also why this cannot be `const` - a const
+/// instance would be canonicalised and two unrelated widgets would silently
+/// share one identity.
+///
+/// Exactly one live element may carry a given key at a time; a second is a
+/// [DuplicateGlobalKeyError] rather than a tree in which the registry answers
+/// with whichever widget was built last.
+final class GlobalKey<T extends State<StatefulWidget>> extends Key {
+  GlobalKey({this.debugLabel}) : super._();
+
+  /// A name for diagnostics. Never used for identity.
+  final String? debugLabel;
+
+  /// The one element currently carrying each live key.
+  ///
+  /// A map rather than a field on the key so that a key held by application
+  /// code cannot keep a defunct element alive: [Element.unmount] removes the
+  /// entry, and the key that outlives its tree simply answers null.
+  static final Map<GlobalKey<State<StatefulWidget>>, Element> _registry =
+      <GlobalKey<State<StatefulWidget>>, Element>{};
+
+  /// The element this key currently names, or null when nothing carries it.
+  ///
+  /// May be an element that has been detached from the tree during the current
+  /// build scope and not yet reclaimed; [currentContext] filters those out.
+  Element? get currentElement => _registry[this];
+
+  /// The build context of the element this key names, when it is mounted.
+  BuildContext? get currentContext {
+    final Element? element = _registry[this];
+    return element != null && element.mounted ? element : null;
+  }
+
+  /// The widget at this key's location, or null.
+  Widget? get currentWidget => currentContext?.widget;
+
+  /// The [State] at this key's location, when it is a [StatefulWidget] whose
+  /// state is a [T].
+  ///
+  /// This is the whole point of the "reach" half of a global key: a dialog with
+  /// a `GlobalKey<FormState>` calls `key.currentState?.validate()` and never
+  /// learns where the form is.
+  T? get currentState {
+    final Element? element = _registry[this];
+    if (element is! StatefulElement || !element.mounted) return null;
+    final State<StatefulWidget> state = element.state;
+    return state is T ? state : null;
+  }
+
+  /// Records [element] as the carrier of this key. Called by [Element.mount]
+  /// and by the reconciler when a subtree is reparented.
+  void internalRegister(Element element) => _registry[this] = element;
+
+  /// Drops [element]'s claim, if it still holds one.
+  ///
+  /// The identity test matters: a key whose element was replaced within one
+  /// build scope must not have the *new* element's registration removed when
+  /// the old one is finally unmounted at the end of that scope.
+  void internalUnregister(Element element) {
+    if (identical(_registry[this], element)) _registry.remove(this);
+  }
+
+  @override
+  String toString() {
+    final String label = debugLabel == null ? '' : ' $debugLabel';
+    return 'GlobalKey#${identityHashCode(this).toRadixString(16)}$label';
+  }
+}
+
 /// A handle to a mounted location in the widget tree.
 ///
 /// Section 24.8 of the roadmap requires the context to be the *only* route to
