@@ -184,6 +184,33 @@ final Pointer<ObjCObject> Function(Pointer<ObjCObject>) _autorelease =
     _runtime.lookupFunction<Pointer<ObjCObject> Function(Pointer<ObjCObject>),
         Pointer<ObjCObject> Function(Pointer<ObjCObject>)>('objc_autorelease');
 
+/// Three rules from Apple's own `metal-cpp` documentation that this binding
+/// has to obey, written down because none of them announces itself at runtime.
+///
+/// **A pool is per thread, and a thread without one leaks.** Apple states it
+/// plainly: the typical pool scope is one frame on the main thread, and *"you
+/// are required to [create additional pools] for any additional threads your
+/// program creates"*. That is not academic here. The recommended macOS backend
+/// draws from a **worker process** ([`doc/adr/0005`]), so the isolate that
+/// renders is never the thread AppKit drains, and every object returned by a
+/// method whose name does **not** begin with `alloc`/`new`/`copy`/
+/// `mutableCopy`/`Create` is autoreleased into a pool that will never exist
+/// unless this code pushes one. A frame's worth of descriptors and command
+/// buffers leaks per frame, silently, at a rate nothing reports.
+///
+/// **`OBJC_DEBUG_MISSING_POOLS=YES` turns that silence into a warning.** The
+/// Objective-C runtime prints when an object is autoreleased with no enclosing
+/// pool. It costs nothing to set in a smoke run on a Mac and is the only cheap
+/// way to catch the rule above, since a leak is invisible until it is large.
+///
+/// **Calling a method on `nullptr` is legal and does nothing.** Apple is
+/// explicit that `retain()` and `release()` on a null pointer are effectively
+/// no-ops - and equally explicit about the trap that follows: *"do not assume
+/// that because calling a method on a pointer did not result in a crash, that
+/// the pointed-to object is valid."* So a smoke test that sends a message and
+/// checks for absence of a crash proves **nothing** about whether the object
+/// exists. Every test here that touches a real object asserts a returned
+/// value, never merely survival.
 final Pointer<Void> Function() _autoreleasePoolPush =
     _runtime.lookupFunction<Pointer<Void> Function(), Pointer<Void> Function()>(
   'objc_autoreleasePoolPush',

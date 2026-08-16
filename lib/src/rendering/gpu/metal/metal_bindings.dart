@@ -41,10 +41,17 @@
 /// and enum values below were read from. It is **not** used to generate
 /// anything: it is the authority the hand transcription is checked against.
 ///
-/// The consultation was over a public mirror of those headers rather than the
-/// zip Apple distributes from developer.apple.com, because this machine has no
-/// Xcode. That is a weaker provenance than a pinned commit of a vendored
-/// header and it is recorded as such in [kMetalBindingProvenance].
+/// `metal-cpp` is **Apple's own**, published at `github.com/apple/metal-cpp`
+/// under Apache-2.0 - not a third-party mirror, and not something Xcode is
+/// needed to obtain. The provenance is therefore a pinned commit, and it is
+/// recorded as one in [kMetalBindingProvenance].
+///
+/// An earlier revision of this file described the source as "a public mirror
+/// rather than Apple's distribution" and filed that under weak provenance.
+/// That was wrong about the source, and the correction matters beyond
+/// bookkeeping: it turns "somebody's copy of the headers" into a commit hash
+/// anyone can check out and diff against, which is the difference between a
+/// claim and a verification.
 ///
 /// ## Two constants the POC had wrong, and what that proves
 ///
@@ -95,11 +102,16 @@ import 'metal_shaders.dart';
 const String kMetalBindingProvenance =
     'metal-cpp headers (MTLDevice.hpp, MTLTexture.hpp, MTLRenderPass.hpp, '
     'MTLRenderPipeline.hpp, MTLRenderCommandEncoder.hpp, MTLCommandBuffer.hpp, '
-    'MTLVertexDescriptor.hpp, MTLPixelFormat.hpp, MTLResource.hpp), read on '
-    '16 August 2026 from a public mirror of Apple\'s distribution rather than '
-    'from a pinned vendored copy - this machine has no Xcode. Enum values and '
-    'selector spellings come from there; the Objective-C type encodings in '
-    'kMetalSelectors are hand-derived from the C++ parameter types and have no '
+    'MTLVertexDescriptor.hpp, MTLPixelFormat.hpp, MTLResource.hpp) from '
+    'github.com/apple/metal-cpp - Apple\'s own C++ projection of Metal, '
+    'Apache-2.0 - at commit 27c4382b7151d55a51692cdcb27aaa98752240de '
+    '(macOS 27 / iOS 27), read on 16 August 2026. Enum values and selector '
+    'spellings come from there and a sample was re-checked against that '
+    'commit: LoadActionDontCare/Load/Clear = 0/1/2, StoreActionDontCare/Store '
+    '= 0/1, PixelFormatR8Unorm = 10, RGBA8Unorm = 70, BGRA8Unorm = 80, '
+    'BlendFactorZero/One/OneMinusSourceAlpha = 0/1/5. The Objective-C type '
+    'encodings in kMetalSelectors remain hand-derived from the C++ parameter '
+    'types - metal-cpp records types, not encoding strings - and have no '
     'upstream string to be compared against off a Mac.';
 
 /// Selectors whose type encoding is a derivation rather than a transcription.
