@@ -12,6 +12,25 @@ dependencies:
   # maos dele corromperia o estado do dispatcher.
   meta: ^1.16.0
 
+  # As definicoes de interop do navegador (DOM, canvas, WebGL2, WebGPU),
+  # geradas a partir do WebIDL e escritas sobre `dart:js_interop`. Entra como
+  # dependencia normal - e nao dev - porque `lib/src/backends/web` e
+  # `lib/src/rendering/gpu/{webgl,webgpu}` sao codigo de producao.
+  #
+  # `package:web` e nao `dart:html`: `dart:html` esta em depreciacao e nao
+  # existe sob dart2wasm, entao um backend escrito sobre ele compilaria por
+  # dart2js e falharia por wasm - exatamente a divergencia que a secao 6.6
+  # proibe. `package:web` e puro `dart:js_interop` e por isso e o unico que
+  # funciona nos dois compiladores.
+  #
+  # Nada disso alcanca a VM: nenhuma biblioteca alcancavel a partir de
+  # `lib/dart_ui.dart` importa `package:web`, e os pontos de escolha usam
+  # `if (dart.library.js_interop)` - ver
+  # `lib/src/backends/web/web_backend_entry.dart`. Um `dart compile exe` de um
+  # exemplo desktop continua funcionando porque o compilador nunca chega nesses
+  # arquivos.
+  web: ^1.1.0
+
 dev_dependencies:
   lints: ^5.1.0
   test: ^1.25.0

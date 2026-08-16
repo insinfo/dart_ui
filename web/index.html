@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>dart_ui gallery - WebGL2</title>
+<style>
+  /* The page is a frame for one canvas and nothing else, so the usual document
+     margins are removed rather than worked around. */
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #1b1b1f;
+    font: 13px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #e6e1e5;
+  }
+
+  /* The canvas is created by WebWindowingBackend.createWindow, which appends it
+     to <body> with an *inline* width and height taken from
+     ApplicationOptions.size. Inline styles beat a stylesheet rule, so there is
+     deliberately no width/height here: setting one would be a dead rule, and a
+     dead rule that looks like it controls the size is worse than none when
+     somebody later wonders why the canvas ignores it. To fill the page, set
+     ApplicationOptions.size from window.innerWidth/innerHeight instead, which
+     keeps one authority for the size.
+
+     `display: block` is set inline too and repeated here for a wrapped canvas
+     the page supplied itself: a canvas is inline by default, so the line box
+     around it adds a few pixels of descender space below it. */
+  body > canvas {
+    display: block;
+    /* The application draws its own cursors and handles its own gestures; the
+       text selection I-beam appearing over a drag is a browser default that
+       reads as a bug. */
+    -webkit-user-select: none;
+    user-select: none;
+    /* An element with tabindex="-1" shows a focus ring in some browsers when
+       clicked. The application draws its own focus indication. */
+    outline: none;
+  }
+
+  #boot {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-content: center;
+    text-align: center;
+    padding: 2rem;
+    /* Removed by the script once main() has started. Left in place if it never
+       does, which is what makes a failed load say something instead of showing
+       a black page. */
+  }
+
+  #boot code {
+    display: block;
+    margin-top: 0.75rem;
+    color: #ffb4ab;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+
+<div id="boot">
+  Loading the gallery&hellip;
+  <code id="boot-error"></code>
+</div>
+
+<script>
+  // Anything the Dart program throws before it can log for itself lands here.
+  // Without this a compile-time-fine, run-time-broken build shows an empty
+  // black page and the reason is only in the devtools console - which is the
+  // one place a person checking "does it work" does not look first.
+  window.addEventListener('error', function (event) {
+    var boot = document.getElementById('boot');
+    var slot = document.getElementById('boot-error');
+    if (boot) boot.style.display = 'grid';
+    if (slot) slot.textContent = String(event.message || event.error);
+  });
+</script>
+
+<!--
+  `defer` is load-bearing. WebWindowingBackend.createWindow appends its canvas to
+  document.body, and a script that ran during parsing would find no body to
+  append to - the failure it raises names this attribute, but not having to see
+  it is better.
+-->
+<script defer src="main.dart.js"></script>
+
+<script defer>
+  // The boot message is removed once a canvas exists, which is the first thing
+  // the application does that is visible from here. A timer rather than an
+  // event because the Dart side has no hook to fire one through, and the check
+  // is cheap.
+  (function () {
+    var tries = 0;
+    var timer = setInterval(function () {
+      if (document.querySelector('body > canvas')) {
+        var boot = document.getElementById('boot');
+        if (boot) boot.remove();
+        clearInterval(timer);
+      } else if (++tries > 100) {
+        // Ten seconds. The message stays, which is the point.
+        clearInterval(timer);
+      }
+    }, 100);
+  })();
+</script>
+
+</body>
+</html>
