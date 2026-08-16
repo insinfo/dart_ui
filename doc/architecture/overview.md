@@ -288,6 +288,176 @@ em `beginFrame`, e um glifo é justamente a coisa que se repete). Um run de
 texto vira **um** batch — medido em teste, porque um draw call por glifo não
 seria aceleração nenhuma.
 
+## Cobertura de mensagens do Win32
+
+Três bugs de produção seguidos tiveram a mesma raiz: uma mensagem que o
+`WndProc` não traduzia, com o widget certo já esperando do outro lado.
+`WM_CHAR` não era tratado, então o campo de texto derivava o caractere do
+virtual-key e `VK_NUMPAD1` (0x61) digitava `a`. `WM_LBUTTONDBLCLK` não era
+tratado, e como a classe usa `CS_DBLCLKS` o Windows manda essa mensagem **no
+lugar** do segundo `WM_LBUTTONDOWN` — o duplo clique não existia, por mais
+correta que fosse a contagem no `RenderTextField`. `WM_MBUTTONDOWN` não era
+tratado, então o botão do meio não tinha nem clique simples.
+
+Nenhum dos três foi pego por 2733 testes, e o motivo é estrutural: os testes de
+widget injetam `PointerDownEvent` / `KeyDownEvent` prontos, ou seja, injetam
+exatamente o passo que estava faltando. A única camada em que "o backend nunca
+produziu esse evento" é uma afirmação testável é o próprio `WndProc`, com um
+HWND real — que é o que `test/backends/win32/win32_mouse_input_test.dart`,
+`win32_text_input_test.dart` e `win32_message_coverage_test.dart` fazem.
+
+Esta seção é o levantamento completo, para que a próxima pessoa não precise
+redescobrir a lista. **Tratada** significa que há um `case` em
+`Win32Window.handleMessage`; o resto cai no arm `default`, que devolve
+`DefWindowProcW` — o que às vezes é a resposta certa e às vezes é o bug.
+
+### Tratadas
+
+| Mensagem | O que produz | Observação |
+| --- | --- | --- |
+| `WM_NCCREATE` | associa o token do `CREATESTRUCT` ao HWND | em `win32_window_class.dart`, antes de `GWLP_USERDATA` existir |
+| `WM_ERASEBKGND` | retorna 1 | metade da defesa contra o flash branco no resize; a outra metade é `hbrBackground = 0` na classe, e é por isso que as duas precisam continuar juntas — reintroduzir um brush de classe com este `case` ainda pintaria por cima do framebuffer entre o erase e o BitBlt. Fixado por teste |
+| `WM_PAINT` | `WindowExposedEvent` | valida a região *antes* de reportar, senão `pumpEvents` vira spin |
+| `WM_SIZE` | `WindowResizedEvent` + rebuild de surface | minimizado (0x0) só muda o estado |
+| `WM_MOVE` | `WindowMovedEvent` | |
+| `WM_DPICHANGED` | `WindowScaleChangedEvent` + `SetWindowPos` | **usa o retângulo sugerido pelo SO**; fixado por teste |
+| `WM_ACTIVATE` | `WindowActivationEvent` | também dá `reset()` no `TextInputAssembler` |
+| `WM_SETFOCUS` / `WM_KILLFOCUS` | `WindowActivationEvent`, deduplicado com o `WM_ACTIVATE` | acrescentado junto com múltiplas janelas: ativação e foco de teclado não são o mesmo evento quando duas janelas do mesmo aplicativo trocam o caret |
+| `WM_SETCURSOR` | `SetCursor` + retorna 1 para `HTCLIENT` | a classe registra `hCursor = 0` de propósito; o frame fica com o `DefWindowProcW`. Está ligado e fixado por teste |
+| `WM_CLOSE` | `WindowCloseRequestedEvent` | pedido, não ordem |
+| `WM_QUERYENDSESSION` / `WM_ENDSESSION` | `onSessionEnding` | |
+| `WM_DESTROY` / `WM_NCDESTROY` | `WindowClosedEvent`, solta o token | |
+| `WM_MOUSEMOVE` | `PointerMoveEvent` (+ `TrackMouseEvent` na primeira) | |
+| `WM_MOUSELEAVE` | `WindowPointerLeaveEvent` | |
+| `WM_CAPTURECHANGED` | `PointerCancelEvent` se havia botão preso | |
+| `WM_L/R/MBUTTONDOWN` / `UP` | `PointerDownEvent` / `PointerUpEvent` | com `SetCapture` no primeiro botão |
+| `WM_L/R/MBUTTONDBLCLK` | `PointerDownEvent(clickCount: 2)` | substitui o segundo down, não o acompanha |
+| `WM_MOUSEWHEEL` | `PointerScrollEvent` em linhas | coordenadas de tela convertidas com `ScreenToClient`; **o sinal está invertido**, ver abaixo |
+| `WM_KEYDOWN/UP`, `WM_SYSKEYDOWN/UP` | `KeyDownEvent` / `KeyUpEvent` | |
+| `WM_CHAR` | `TextInputEvent` | par surrogate remontado, controle descartado |
+| `WM_SYSCHAR`, `WM_DEADCHAR`, `WM_SYSDEADCHAR` | nada, de propósito | mnemônico de menu e metade morta de dead key não são texto |
+| `WM_QUIT` | encerra o pump | no laço do backend, não no `WndProc` |
+
+### Não tratadas, com consumidor esperando — são bugs
+
+| Mensagem | Consequência observável |
+| --- | --- |
+| `WM_MOUSEHWHEEL` (0x020E) | Um `ScrollViewer` com `ScrollAxis.horizontal` lê `event.scrollDelta.dx` (`widgets/controls.dart`). No Windows `dx` só é diferente de zero com Shift segurado, então roda inclinável e swipe lateral de trackpad **não rolam nada**. O X11 já preenche esse eixo (botões 6 e 7). |
+| `WM_MOUSEWHEEL`, sinal | `HIWORD(wParam)` positivo significa roda girada **para longe** do usuário, que rola **para cima**. O contrato do framework diz o contrário e diz em três lugares: `PointerScrollEvent.scrollDelta` documenta positivo como "toward increasing coordinates", `RenderScrollViewer` mapeia seta para baixo como `applyDelta(+lineExtent)`, e o X11 traduz botão 5 (roda para baixo) como `Offset(0, +1)`. `_onPointerScroll` não nega o valor, então **no Windows a roda rola ao contrário** de todo o resto do framework. |
+| `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` | O Windows entra em laço modal próprio: `DispatchMessageW` não retorna enquanto a borda estiver sendo arrastada, então `Win32Dispatcher._pumpNative` nunca volta para `_drainQueues` / `_fireDueTimers` e o lado Dart — onde moram layout, paint e present — congela. `WM_PAINT` até chega, mas só empilha `WindowExposedEvent` num stream que ninguém está drenando. Resultado: a janela mostra pixels velhos durante todo o arraste. |
+
+As duas primeiras correções ficam no mesmo lugar, `Win32Window._onPointerScroll`
+e o `switch` de `handleMessage`; a terceira precisa também do backend, porque
+quem tem de bombear um frame durante o laço modal é o dispatcher (um `SetTimer`
+armado no `WM_ENTERSIZEMOVE`, morto no `WM_EXITSIZEMOVE`, com `WM_TIMER`
+pedindo um frame). As constantes que faltavam já estão em
+`win32_constants.dart` (`wmMousehwheel`, `wmXbuttondblclk`, `wmEntersizemove`,
+`wmExitsizemove`, `wheelDelta`, `xbutton1`/`xbutton2`). O sinal é uma negação:
+
+```dart
+// WHEEL_DELTA positivo é roda para longe do usuário, que rola para cima; o
+// contrato aqui chama isso de negativo. WM_MOUSEHWHEEL já é positivo-para-a-
+// direita, que é o mesmo sinal do contrato, então só o vertical é negado.
+final raw = win32SignedHiWord(wParam) / wheelDelta;
+final delta = horizontal ? raw : -raw;
+final sideways = horizontal || (wParam & mkShift) != 0;
+```
+
+Vale fazer `WM_XBUTTON*` na mesma passada — ele é lacuna e não bug (ver abaixo),
+mas é o mesmo `switch` e três linhas. Ele deve devolver TRUE (1), não 0, e o
+botão vem de `HIWORD(wParam)`: `XBUTTON1` é `PointerButton.back` e `XBUTTON2` é
+`PointerButton.forward`, que é a mesma convenção dos botões 8 e 9 do X11.
+
+Os testes que pegam as duas primeiras vão em
+`test/backends/win32/win32_message_coverage_test.dart`, no mesmo padrão do
+resto do arquivo, e **foram executados contra o código atual: falham** com
+`Actual: <-1.0>` e com `Bad state: No element`.
+
+```dart
+test('the wheel scrolls the same way the Down arrow does', () async {
+  // Roda para perto do usuário é WHEEL_DELTA negativo e quer dizer "rolar
+  // para baixo", que é applyDelta(+lineExtent), que é dy positivo aqui.
+  await send(wmMousewheel, (-wheelDelta & 0xFFFF) << 16, 0);
+  expect(
+    events.whereType<PointerScrollEvent>().single.scrollDelta.dy,
+    greaterThan(0),
+  );
+});
+
+test('the horizontal wheel produces a horizontal scroll', () async {
+  await send(wmMousehwheel, wheelDelta << 16, _at(10, 10));
+  final PointerScrollEvent scroll =
+      events.whereType<PointerScrollEvent>().single;
+  expect(scroll.scrollDelta.dx, greaterThan(0));
+  expect(scroll.scrollDelta.dy, 0.0);
+});
+
+test('the side buttons press and release', () async {
+  await send(wmXbuttondown, xbutton1 << 16, _at(10, 10));
+  expect(
+    events.whereType<PointerDownEvent>().single.button,
+    PointerButton.back,
+  );
+  await send(wmXbuttonup, xbutton2 << 16, _at(10, 10));
+  expect(
+    events.whereType<PointerUpEvent>().single.button,
+    PointerButton.forward,
+  );
+});
+```
+
+### Não tratadas, sem consumidor — são lacunas
+
+| Mensagem | Por que ainda não dói, e o que falta |
+| --- | --- |
+| `WM_XBUTTONDOWN` / `UP` / `DBLCLK` | `PointerButton.back` e `.forward` existem no contrato e o X11 já os emite (botões 8 e 9); o Win32 não. Nenhum widget consome ainda, então hoje é divergência entre backends, não regressão visível. O botão vem em `HIWORD(wParam)` (`XBUTTON1`/`XBUTTON2`), não no id da mensagem, e o retorno correto é TRUE. |
+| `WM_GETMINMAXINFO` | Não há o que responder: `WindowOptions` não tem tamanho mínimo nem máximo. Consequência hoje: a janela encolhe até o layout quebrar. A correção começa em `platform/native_window.dart`, não no backend. |
+| `WM_SETTINGCHANGE` / `WM_THEMECHANGED` | `ThemeData.highContrast` existe, mas todo exemplo escolhe o tema por `argv` (`example/gallery_shell.dart`) e `window_events.dart` não tem evento de tema. Tratar antes do evento existir seria um `case` que joga o argumento fora. |
+| `WM_DISPLAYCHANGE` | Mudança de resolução que mexe na janela vem seguida de `WM_SIZE`/`WM_MOVE`/`WM_DPICHANGED`, que são tratadas. O que se perde é reler os limites dos monitores — e este backend ainda não tem módulo de telas nem fullscreen. |
+| `WM_SHOWWINDOW` | Não há evento de visibilidade no contrato; `hide()` também não emite nada. |
+| `WM_UNICHAR` | O protocolo pede responder TRUE a `UNICODE_NOCHAR`; o `DefWindowProcW` responde FALSE e quem envia cai de volta em `WM_CHAR`, que é tratada. É por isso que nada quebra. |
+| `WM_POWERBROADCAST`, `WM_INPUTLANGCHANGE`, `WM_GETDPISCALEDSIZE` | Sem consequência aqui: retomada de suspensão invalida a janela e vira `WM_PAINT`; o texto vem do `WM_CHAR` já traduzido pelo layout; e responder FALSE ao `WM_GETDPISCALEDSIZE` pede escala linear, que é o certo para um layout independente de escala. |
+| `WM_IME_*`, `WM_DROPFILES`, `WM_GETOBJECT`, `WM_POINTER*` / `WM_TOUCH` | Adiadas pelo roteiro (13.7, 13.9, 13.16 e Pointer API) e declaradas ausentes no `probe()`, que é a diferença entre uma lacuna e uma mentira. |
+
+### Não tratadas de propósito
+
+`WM_NCHITTEST`, `WM_NCCALCSIZE`, `WM_SYSCOMMAND` e `WM_MOUSEACTIVATE` são do
+`DefWindowProcW` e devem continuar sendo: a moldura aqui é a da plataforma
+(`WS_OVERLAPPEDWINDOW`), e é a resposta padrão que faz arrastar a barra de
+título, redimensionar pela borda e ativar a janela no primeiro clique
+funcionarem. Isso torna o arm `default` de `handleMessage` uma peça estrutural,
+não uma formalidade — um `default` que devolvesse 0 mataria a moldura inteira
+para o mouse sem que nenhuma outra mensagem parasse de funcionar. Há teste
+justamente para isso.
+
+O único efeito colateral visível é o *ding* do sistema em acordes Alt sem menu
+para casar, que é o que `SC_KEYMENU` faz com uma barra de menus vazia.
+
+### Armadilhas menores, todas sem consumidor hoje
+
+Duas em `Win32Window._keyLocation` — nada lê `KeyEvent.location` além do
+backend — erradas do jeito que só aparece quando alguém for depender delas:
+
+  * o ramo `extended && virtualKey >= 0x60 && virtualKey <= 0x69` é **código
+    morto**: o extended-key flag não é setado para `VK_NUMPAD0`-`VK_NUMPAD9` —
+    ele marca AltGr, Ctrl direito, as setas cinzas, NumLock, Divide e o Enter
+    do teclado numérico. Os próprios `VK_NUMPAD*` já identificam o bloco
+    numérico sem ajuda, então a condição só impede a resposta certa;
+  * o mesmo flag é usado para separar Shift esquerdo de direito, e o Windows
+    não o seta para Shift: a distinção está no scan code (0x2A contra 0x36).
+    `KeyLocation.right` para Shift, portanto, nunca é reportado.
+
+E uma no relógio dos eventos. `PlatformInputEvent.timestamp` está documentado
+como "monotonic timestamp of the event, as reported by the OS", e o Win32 usa
+`DateTime.now()` — que não é monotônico nem é do SO (`GetMessageTime()` é). Pior,
+usa **duas unidades**: ponteiro e teclado carimbam
+`Duration(milliseconds: millisecondsSinceEpoch)` e scroll e texto carimbam
+`Duration(microseconds: microsecondsSinceEpoch)`, então os dois grupos estão mil
+vezes afastados um do outro. Ninguém compara entre grupos hoje — `_countClick`
+em `controls.dart` só subtrai `PointerDownEvent` de `PointerDownEvent`, e o
+`since >= Duration.zero` que ele já tem absorve um salto de relógio para trás —
+mas o primeiro consumidor que cruzar os grupos vai encontrar isso.
+
 ## O que ainda não existe
 
 **Vulkan, Metal, Direct3D 11 e DirectComposition** existem apenas nos POCs.

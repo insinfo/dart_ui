@@ -116,10 +116,52 @@ const int wmQuit = 0x0012;
 const int wmErasebkgnd = 0x0014;
 const int wmEndsession = 0x0016;
 const int wmShowwindow = 0x0018;
+
+/// `WM_SETTINGCHANGE` (alias `WM_WININICHANGE`) - a system-wide setting moved
+/// while the process was running: light/dark mode, high contrast, the mouse
+/// wheel's lines-per-notch, the double-click time.
+///
+/// **Unhandled, and deliberately so for now**: nothing above the platform layer
+/// can receive it. `ThemeData.highContrast` exists but every example picks its
+/// theme from `argv` (`example/gallery_shell.dart`), and `window_events.dart`
+/// has no settings-changed event to carry the news. Wiring the message before
+/// the event exists would just be a `switch` arm that drops its argument. See
+/// the message-coverage audit in `doc/architecture/overview.md`.
+const int wmSettingchange = 0x001A;
+
 const int wmSetcursor = 0x0020;
+
+/// `WM_GETMINMAXINFO` - the chance to clamp how small or large the user may
+/// drag the window.
+///
+/// Unhandled, and there is nothing to answer it with: `WindowOptions` has no
+/// minimum or maximum size, so no caller has ever expressed one. The platform
+/// default therefore applies and a window can be dragged down to its caption
+/// buttons. Fixing this starts in `platform/native_window.dart`, not here.
 const int wmGetminmaxinfo = 0x0024;
+
+/// `WM_DISPLAYCHANGE` - the desktop's resolution or colour depth changed.
+///
+/// Unhandled. Consequence is mild here because a resolution change that moves
+/// or resizes the window is followed by WM_SIZE / WM_MOVE / WM_DPICHANGED,
+/// which are handled; what is lost is the chance to re-read monitor bounds,
+/// which this backend does not track yet (no screens module, no fullscreen).
+const int wmDisplaychange = 0x007E;
+
 const int wmNccreate = 0x0081;
 const int wmNcdestroy = 0x0082;
+
+/// `WM_NCHITTEST` - which part of the window a screen point is over.
+///
+/// Deliberately **not** handled: the frame is the platform's here (the class
+/// uses `WS_OVERLAPPEDWINDOW`), so `DefWindowProcW`'s answer is the correct
+/// one, and it is what makes dragging the caption and resizing the border
+/// work. A custom title bar would have to claim it - and would then also owe
+/// `WM_NCCALCSIZE`. The audit pins the current behaviour instead: the default
+/// arm of `handleMessage` must keep returning DefWindowProc's hit-test code,
+/// because an arm that returned 0 (`HTNOWHERE`) would make the whole frame
+/// dead to the mouse.
+const int wmNchittest = 0x0084;
 const int wmKeydown = 0x0100;
 const int wmKeyup = 0x0101;
 
@@ -143,6 +185,27 @@ const int wmSyschar = 0x0106;
 
 /// `WM_SYSDEADCHAR`, the [wmDeadchar] of an Alt chord.
 const int wmSysdeadchar = 0x0107;
+
+/// `WM_UNICHAR` - the UTF-32 sibling of [wmChar], sent by injectors and by a
+/// few non-IME input tools rather than by `TranslateMessage`.
+///
+/// Unhandled, and the *protocol* is the part that bites: a window is supposed
+/// to answer `wParam == UNICODE_NOCHAR` (0xFFFF) with TRUE to advertise that it
+/// speaks the message. `DefWindowProcW` answers FALSE, so senders fall back to
+/// WM_CHAR, which this backend does handle. The fallback is why nothing is
+/// visibly broken today; astral characters from such a sender arrive as a
+/// surrogate pair through [wmChar] and `TextInputAssembler` rejoins them.
+const int wmUnichar = 0x0109;
+
+/// `WM_SYSCOMMAND` - Close, Minimise, Maximise, Move, Size, and the Alt key
+/// opening the (non-existent) menu bar as `SC_KEYMENU`.
+///
+/// Deliberately left to `DefWindowProcW`: every one of those behaviours is the
+/// platform's, and claiming the message would mean re-implementing them. The
+/// one visible side effect is that Alt+key chords with no menu to match play
+/// the system ding, which is what `SC_KEYMENU` does when the menu bar is empty.
+const int wmSyscommand = 0x0112;
+
 const int wmMousemove = 0x0200;
 const int wmLbuttondown = 0x0201;
 const int wmLbuttonup = 0x0202;
@@ -169,15 +232,73 @@ const int wmMbuttonup = 0x0208;
 /// `WM_MBUTTONDBLCLK`, the [wmLbuttondblclk] of the middle button.
 const int wmMbuttondblclk = 0x0209;
 
+/// `WM_MOUSEWHEEL` - the vertical wheel, in screen coordinates.
+///
+/// `HIWORD(wParam)` is a **signed** multiple of [wheelDelta], and its sign is
+/// the trap: positive means the wheel was rotated *forward, away from the
+/// user*, which scrolls the content **up** - toward offset zero. The
+/// framework's contract is the opposite one, and says so out loud: positive
+/// `PointerScrollEvent.scrollDelta` moves toward increasing coordinates, Down
+/// arrow is `applyDelta(+lineExtent)`, and X11's wheel-down (button 5) is
+/// `Offset(0, +1)`. So a correct translation **negates** this word.
 const int wmMousewheel = 0x020A;
+
+const int wmXbuttondown = 0x020B;
+const int wmXbuttonup = 0x020C;
+
+/// `WM_XBUTTONDBLCLK`, the [wmLbuttondblclk] of a side button.
+const int wmXbuttondblclk = 0x020D;
+
+/// `WM_MOUSEHWHEEL` - the **horizontal** wheel: a tilt wheel, a trackpad's
+/// two-finger sideways swipe, or a thumb wheel. Screen coordinates, like
+/// [wmMousewheel].
+///
+/// Unlike [wmMousewheel] the sign needs no correction: positive means the wheel
+/// went *right*, which is toward increasing coordinates, which is what the
+/// framework's contract already calls positive.
+///
+/// Unhandled today, and this one has a consumer waiting: a `ScrollViewer` built
+/// with `ScrollAxis.horizontal` reads `event.scrollDelta.dx`
+/// (`widgets/controls.dart`), and X11 already fills it from core buttons 6 and
+/// 7. On Windows `dx` is non-zero only while Shift is held, so a horizontal
+/// list simply does not answer a horizontal wheel.
+const int wmMousehwheel = 0x020E;
 
 /// Sent when this window loses the mouse capture, whether it released it or
 /// something else took it. Section 27.4 calls this capture-lost.
 const int wmCapturechanged = 0x0215;
-const int wmXbuttondown = 0x020B;
-const int wmXbuttonup = 0x020C;
+
+/// `WM_ENTERSIZEMOVE` - the user grabbed the border or the caption and Windows
+/// is about to run its **own** modal message loop until they let go.
+///
+/// The consequence is specific to how this framework paints. `DispatchMessageW`
+/// does not return for the whole drag, so `Win32Dispatcher._pumpNative` never
+/// gets back to `_drainQueues` / `_fireDueTimers`, and the Dart side - which is
+/// where layout, paint and present live - is frozen. WM_PAINT still arrives,
+/// but all it does here is put a `WindowExposedEvent` on a stream nobody is
+/// draining. The window therefore shows stale pixels for the length of the
+/// drag. The standard cure is a `SetTimer` armed here and killed in
+/// [wmExitsizemove], with WM_TIMER pumping one frame.
+const int wmEntersizemove = 0x0231;
+
+/// `WM_EXITSIZEMOVE` - the modal loop of [wmEntersizemove] is over.
+const int wmExitsizemove = 0x0232;
+
 const int wmMouseleave = 0x02A3;
 const int wmDpichanged = 0x02E0;
+
+/// `WM_GETDPISCALEDSIZE` - asked just before [wmDpichanged] so a window can
+/// propose its own client size for the new scale.
+///
+/// Unhandled, and correctly so: answering FALSE (which `DefWindowProcW` does)
+/// tells Windows to scale the current size linearly, and this backend's layout
+/// is scale-independent, so linear is the right answer.
+const int wmGetdpiscaledsize = 0x02E4;
+
+/// `WM_THEMECHANGED` - the visual style changed. Unhandled for the same reason
+/// as [wmSettingchange]: there is no theme event above the platform layer to
+/// deliver it to.
+const int wmThemechanged = 0x031A;
 
 // Virtual keys used when sampling modifier state.
 const int vkShift = 0x10;
@@ -213,8 +334,33 @@ const int waInactive = 0;
 /// `HTCLIENT` - the hit-test code WM_SETCURSOR reports for the client area.
 const int htClient = 1;
 
+/// `HTCAPTION` - the title bar. Named so the audit can assert that
+/// WM_SETCURSOR over the *frame* is handed back to `DefWindowProcW`, which is
+/// what keeps the resize arrows on the border.
+const int htCaption = 2;
+
 /// `MK_SHIFT`, held in the low word of mouse messages.
 const int mkShift = 0x0004;
+
+/// `MK_XBUTTON1` / `MK_XBUTTON2`, the side buttons as reported in the low word
+/// of any mouse message while they are held.
+const int mkXbutton1 = 0x0020;
+const int mkXbutton2 = 0x0040;
+
+/// `XBUTTON1` / `XBUTTON2` - which side button a [wmXbuttondown] is about,
+/// carried in `HIWORD(wParam)` rather than encoded in the message id the way
+/// left, right and middle are.
+///
+/// XBUTTON1 is "back" and XBUTTON2 is "forward" on every mouse that ships with
+/// them, which is the mapping `PointerButton.back` / `PointerButton.forward`
+/// already exists for and the one the X11 backend already produces (core
+/// buttons 8 and 9).
+const int xbutton1 = 0x0001;
+const int xbutton2 = 0x0002;
+
+/// `WHEEL_DELTA` - one detent of a wheel. Both wheel messages report a signed
+/// multiple of this, and a high-resolution wheel reports fractions of it.
+const int wheelDelta = 120;
 
 // ---------------------------------------------------------------------------
 // Message queue
