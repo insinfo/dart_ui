@@ -17,11 +17,19 @@
 /// per primitive and so that adding antialiasing changed nothing for callers
 /// that already existed.
 ///
+/// BLEND MODE IS A PARAMETER, NOT A FIXED EQUATION. Every entry point takes a
+/// [CpuBlendMode] and defaults it to source-over. The mode is resolved from
+/// the display list's wire constant once, by `cpuBlendForMode`, and travels
+/// down as an enum; nothing here allocates per primitive and nothing tests the
+/// mode inside a per-pixel loop. See `blend.dart` for the three equations and
+/// for what `src` means on an antialiased boundary, which is the one place the
+/// answer is not obvious.
+///
 /// The antialiased path is not a second compositor. It computes a coverage
 /// byte per boundary pixel with `spanCoverage` - for an axis-aligned rectangle
 /// the exact product of the fractional overlap in x and in y - scales the
-/// premultiplied source by it, and hands the result to the same
-/// [blendPixelOver] everything else uses. Interior pixels have coverage 255,
+/// premultiplied source by it, and hands the result to the same three
+/// equations everything else uses. Interior pixels have coverage 255,
 /// which is the identity, so they run down the same span loop a hard-edged
 /// fill uses and pay nothing. That is the entire cost model: antialiasing is
 /// charged to the boundary of a shape, never to its area.
@@ -72,12 +80,18 @@ final class CpuRasterizer {
 
   void clipRect(Rect rect) => clip.intersect(rect);
 
-  /// Fills [rect] with [argbColor] composited source-over.
+  /// Fills [rect] with [argbColor] composited with [blendMode].
   ///
   /// [argbColor] is `0xAARRGGBB` with *straight* alpha, the form a colour
   /// arrives in from anything user-facing; it is premultiplied here, once per
   /// call rather than once per pixel. The framebuffer stays premultiplied
   /// throughout.
+  ///
+  /// [blendMode] defaults to source-over, which is what almost everything
+  /// paints with and what every caller wanted before the parameter existed.
+  /// The equation is chosen *once per call*, outside both loops - see the
+  /// switch below - so a fill costs the same per pixel as it did when
+  /// source-over was the only equation there was.
   ///
   /// Coverage is integer: each pixel is either fully in or fully out, edges
   /// rounded to the nearest pixel by [pixelEdge], and the clip that applies is
@@ -85,11 +99,22 @@ final class CpuRasterizer {
   /// coverage on the boundary; this one stays as it is because a hard edge is
   /// what a pixel-aligned fill wants, and most of what a UI paints is pixel
   /// aligned.
-  void fillRect(Rect rect, int argbColor) {
+  void fillRect(
+    Rect rect,
+    int argbColor, {
+    CpuBlendMode blendMode = CpuBlendMode.srcOver,
+  }) {
     final alpha = (argbColor >> 24) & 0xff;
     // Fully transparent draws are common enough in real UIs - a faded-out
     // layer, an animation at t=0 - to be worth leaving before any clipping
     // arithmetic happens at all.
+    //
+    // This holds for [CpuBlendMode.src] too, where a transparent source would
+    // otherwise *erase* the destination. That is deliberate and it is where
+    // `gpu_raster_sink.dart` stops as well: `fillDeviceRect` returns on alpha
+    // 0 before it looks at the blend mode, so an invisible primitive draws
+    // nothing on either backend. A layer is the opposite case, and
+    // [compositeLayer] says why.
     if (alpha == 0) return;
 
     final left = _max(pixelEdge(rect.left), clip.left);
@@ -106,34 +131,43 @@ final class CpuRasterizer {
     final c0 = _redIndex == 0 ? red : blue;
     final c2 = _redIndex == 0 ? blue : red;
 
-    if (alpha == 255) {
-      _fillOpaque(left, top, right, bottom, c0, green, c2);
-      return;
-    }
-
-    final inverse = 255 - alpha;
-    for (var y = top; y < bottom; y++) {
-      var offset = y * _bytesPerRow + left * 4;
-      for (var x = left; x < right; x++) {
-        _pixels[offset] = blendChannelOver(c0, _pixels[offset], inverse);
-        _pixels[offset + 1] =
-            blendChannelOver(green, _pixels[offset + 1], inverse);
-        _pixels[offset + 2] =
-            blendChannelOver(c2, _pixels[offset + 2], inverse);
-        _pixels[offset + 3] =
-            blendChannelOver(alpha, _pixels[offset + 3], inverse);
-        offset += 4;
-      }
+    switch (blendMode) {
+      case CpuBlendMode.srcOver:
+        if (alpha == 255) {
+          _fillReplace(left, top, right, bottom, c0, green, c2, 255);
+          return;
+        }
+        final inverse = 255 - alpha;
+        for (var y = top; y < bottom; y++) {
+          var offset = y * _bytesPerRow + left * 4;
+          for (var x = left; x < right; x++) {
+            _pixels[offset] = blendChannelOver(c0, _pixels[offset], inverse);
+            _pixels[offset + 1] =
+                blendChannelOver(green, _pixels[offset + 1], inverse);
+            _pixels[offset + 2] =
+                blendChannelOver(c2, _pixels[offset + 2], inverse);
+            _pixels[offset + 3] =
+                blendChannelOver(alpha, _pixels[offset + 3], inverse);
+            offset += 4;
+          }
+        }
+      case CpuBlendMode.src:
+        _fillReplace(left, top, right, bottom, c0, green, c2, alpha);
+      case CpuBlendMode.plus:
+        _fillPlus(left, top, right, bottom, c0, green, c2, alpha);
     }
   }
 
-  /// The opaque case of [fillRect], with the alpha test hoisted out.
+  /// Writes a constant premultiplied pixel over a rectangle: `ONE, ZERO`, and
+  /// also the opaque case of source-over, which is the same four bytes.
   ///
   /// `blendPixelOver` would take the same branch on every pixel of the span,
   /// and it would take it correctly - but the alpha of a solid fill is a
   /// constant, so the decision belongs outside both loops rather than inside
-  /// the inner one.
-  void _fillOpaque(
+  /// the inner one. The two callers reach it from opposite directions and
+  /// agree byte for byte, which is what makes an opaque `src` rectangle and an
+  /// opaque source-over one indistinguishable, as they must be.
+  void _fillReplace(
     int left,
     int top,
     int right,
@@ -141,6 +175,7 @@ final class CpuRasterizer {
     int c0,
     int c1,
     int c2,
+    int alpha,
   ) {
     for (var y = top; y < bottom; y++) {
       var offset = y * _bytesPerRow + left * 4;
@@ -148,7 +183,31 @@ final class CpuRasterizer {
         _pixels[offset] = c0;
         _pixels[offset + 1] = c1;
         _pixels[offset + 2] = c2;
-        _pixels[offset + 3] = 255;
+        _pixels[offset + 3] = alpha;
+        offset += 4;
+      }
+    }
+  }
+
+  /// Adds a constant premultiplied pixel into a rectangle, saturating.
+  ///
+  /// The destination is read here where [_fillReplace] only writes, so there
+  /// is no opaque short cut: `plus` against an opaque destination is exactly
+  /// the case that has to clamp.
+  void _fillPlus(
+    int left,
+    int top,
+    int right,
+    int bottom,
+    int c0,
+    int c1,
+    int c2,
+    int alpha,
+  ) {
+    for (var y = top; y < bottom; y++) {
+      var offset = y * _bytesPerRow + left * 4;
+      for (var x = left; x < right; x++) {
+        blendPixelPlus(_pixels, offset, c0, c1, c2, alpha);
         offset += 4;
       }
     }
@@ -171,7 +230,17 @@ final class CpuRasterizer {
   /// This clips against the *exact* clip rectangle, not the integer one, so a
   /// clip edge at 10.5 leaves column 10 half covered instead of chopping it.
   /// See [ClipStack] for why both exist.
-  void fillRectAntiAliased(Rect rect, int argbColor) {
+  ///
+  /// [blendMode] is carried through to [_fillSpan] unchanged. It is worth
+  /// reading [blendPixelSrc] before drawing an antialiased rectangle with
+  /// [CpuBlendMode.src]: on the boundary, "replace the destination" replaces
+  /// it with a *partially transparent* source, so the edge of such a fill
+  /// erases rather than blends.
+  void fillRectAntiAliased(
+    Rect rect,
+    int argbColor, {
+    CpuBlendMode blendMode = CpuBlendMode.srcOver,
+  }) {
     final alpha = (argbColor >> 24) & 0xff;
     if (alpha == 0) return;
 
@@ -213,28 +282,62 @@ final class CpuRasterizer {
       if (rowCoverage == 0) continue;
 
       if (singleColumn) {
-        _fillSpan(
-            y, x0, x1, c0, green, c2, alpha, mul255(leftCoverage, rowCoverage));
+        _fillSpan(y, x0, x1, c0, green, c2, alpha,
+            mul255(leftCoverage, rowCoverage), blendMode);
         continue;
       }
       _fillSpan(y, x0, x0 + 1, c0, green, c2, alpha,
-          mul255(leftCoverage, rowCoverage));
+          mul255(leftCoverage, rowCoverage), blendMode);
       // The interior. Its coverage is the row's, so a fully covered row runs
       // the identical loop `fillRect` runs, including the opaque byte-copy
       // case.
-      _fillSpan(y, x0 + 1, x1 - 1, c0, green, c2, alpha, rowCoverage);
+      _fillSpan(
+          y, x0 + 1, x1 - 1, c0, green, c2, alpha, rowCoverage, blendMode);
       _fillSpan(y, x1 - 1, x1, c0, green, c2, alpha,
-          mul255(rightCoverage, rowCoverage));
+          mul255(rightCoverage, rowCoverage), blendMode);
     }
   }
 
-  /// Composites a horizontal run of one colour at one coverage.
+  /// Composites a horizontal run of one colour at one coverage, with
+  /// [blendMode].
   ///
   /// [coverage] scales the already-premultiplied source: scaling all four
   /// channels including alpha is what keeps the result premultiplied, and it
   /// is done once for the run rather than once per pixel. Coverage 255 skips
   /// the scaling entirely, which is why an interior span costs exactly what it
   /// costs in [fillRect].
+  ///
+  /// The equation is picked once per span - every `case` below owns a whole
+  /// loop rather than sitting inside one - so a mode costs a predictable
+  /// branch per run of pixels and nothing per pixel. That is the same shape
+  /// [fillRect] uses and the reason both were written this way rather than
+  /// with a function pointer per pixel.
+  ///
+  /// ## A source that rounds away draws nothing, in every mode
+  ///
+  /// Two tests below leave without writing: zero coverage, and a scaled source
+  /// alpha of zero. Both are stated as rules rather than as optimisations,
+  /// because for [CpuBlendMode.src] they are the difference between leaving
+  /// the destination alone and erasing it.
+  ///
+  /// Zero coverage is the easy one: a pixel the shape does not touch is not
+  /// part of the shape, so `src` has nothing to replace there. It is also the
+  /// one place this backend and the GL one can be made to differ - a GPU draws
+  /// the shape's whole bounding quad, and `ONE, ZERO` erases the zero-coverage
+  /// corners of that quad. The CPU's answer is the one that means what `src`
+  /// is for.
+  ///
+  /// The second is the same rule one level down. `mul255(alpha, coverage)` of
+  /// zero leaves a premultiplied source that is zero in all four channels: it
+  /// carries no colour and no opacity, and the framework's answer to a source
+  /// that rounds away is uniformly to skip it - [fillRect] on a transparent
+  /// paint, [blendPixelOver] on alpha zero, `gpu_raster_sink.dart` on alpha
+  /// zero. Replacing the destination with it instead would erase a pixel the
+  /// shape covers by a fraction of a percent - a 25%-opaque paint at coverage
+  /// 1 of 255 rounds to zero - and that is a hole, not an edge. Skipping is
+  /// also what keeps this method, [fillRect] and `_CoverageToRasterizer` in
+  /// `cpu_renderer.dart` agreeing, which they must: they are three ways to
+  /// paint the same span.
   void _fillSpan(
     int y,
     int xStart,
@@ -244,6 +347,7 @@ final class CpuRasterizer {
     int c2,
     int alpha,
     int coverage,
+    CpuBlendMode blendMode,
   ) {
     // Coverage zero must not write. Blending with alpha 0 would be a no-op
     // arithmetically, but it would still read and write four bytes per pixel
@@ -256,7 +360,9 @@ final class CpuRasterizer {
     var s2 = c2;
     if (coverage != 255) {
       a = mul255(alpha, coverage);
-      // A faint colour under a slight coverage can round away completely.
+      // A faint colour under a slight coverage can round away completely. The
+      // colour channels are zero too whenever the alpha is: they are
+      // premultiplied, so each is at most the alpha.
       if (a == 0) return;
       s0 = mul255(c0, coverage);
       s1 = mul255(c1, coverage);
@@ -264,24 +370,39 @@ final class CpuRasterizer {
     }
 
     var offset = y * _bytesPerRow + xStart * 4;
-    if (a == 255) {
-      for (var x = xStart; x < xEnd; x++) {
-        _pixels[offset] = s0;
-        _pixels[offset + 1] = s1;
-        _pixels[offset + 2] = s2;
-        _pixels[offset + 3] = 255;
-        offset += 4;
-      }
-      return;
-    }
-
-    final inverse = 255 - a;
-    for (var x = xStart; x < xEnd; x++) {
-      _pixels[offset] = blendChannelOver(s0, _pixels[offset], inverse);
-      _pixels[offset + 1] = blendChannelOver(s1, _pixels[offset + 1], inverse);
-      _pixels[offset + 2] = blendChannelOver(s2, _pixels[offset + 2], inverse);
-      _pixels[offset + 3] = blendChannelOver(a, _pixels[offset + 3], inverse);
-      offset += 4;
+    switch (blendMode) {
+      case CpuBlendMode.srcOver:
+        if (a == 255) {
+          for (var x = xStart; x < xEnd; x++) {
+            _pixels[offset] = s0;
+            _pixels[offset + 1] = s1;
+            _pixels[offset + 2] = s2;
+            _pixels[offset + 3] = 255;
+            offset += 4;
+          }
+          return;
+        }
+        final inverse = 255 - a;
+        for (var x = xStart; x < xEnd; x++) {
+          _pixels[offset] = blendChannelOver(s0, _pixels[offset], inverse);
+          _pixels[offset + 1] =
+              blendChannelOver(s1, _pixels[offset + 1], inverse);
+          _pixels[offset + 2] =
+              blendChannelOver(s2, _pixels[offset + 2], inverse);
+          _pixels[offset + 3] =
+              blendChannelOver(a, _pixels[offset + 3], inverse);
+          offset += 4;
+        }
+      case CpuBlendMode.src:
+        for (var x = xStart; x < xEnd; x++) {
+          blendPixelSrc(_pixels, offset, s0, s1, s2, a);
+          offset += 4;
+        }
+      case CpuBlendMode.plus:
+        for (var x = xStart; x < xEnd; x++) {
+          blendPixelPlus(_pixels, offset, s0, s1, s2, a);
+          offset += 4;
+        }
     }
   }
 
@@ -310,14 +431,22 @@ final class CpuRasterizer {
   /// already spent its fractional resolution on coverage - so there is no
   /// fraction left for a fractional clip edge to cut into, and the hard-edged
   /// rule is the one [drawFramebuffer] and [fillRect] use.
+  ///
+  /// [blendMode] applies per mask pixel, through the same [_fillSpan] a
+  /// rectangle goes through, so a glyph run and a rectangle of the same colour
+  /// and mode land on the same bytes wherever the mask is fully covered. A run
+  /// of zero mask bytes is skipped in every mode - a glyph does not touch the
+  /// space around its stems, so `src` has nothing to replace there; see
+  /// [_fillSpan].
   void blendCoverageMask(
     Uint8List coverage,
     int maskWidth,
     int maskHeight,
     int destinationLeft,
     int destinationTop,
-    int argbColor,
-  ) {
+    int argbColor, {
+    CpuBlendMode blendMode = CpuBlendMode.srcOver,
+  }) {
     final alpha = (argbColor >> 24) & 0xff;
     if (alpha == 0 || maskWidth <= 0 || maskHeight <= 0) return;
 
@@ -347,7 +476,7 @@ final class CpuRasterizer {
           end++;
         }
         if (value != 0) {
-          _fillSpan(y, x, end, c0, green, c2, alpha, value);
+          _fillSpan(y, x, end, c0, green, c2, alpha, value, blendMode);
         }
         x = end;
       }
@@ -431,19 +560,18 @@ final class CpuRasterizer {
           s2 = mul255(s2, alpha);
           sa = mul255(sa, alpha);
         }
+        // The three equations themselves live in `blend.dart` and are shared
+        // with the per-primitive path below, which is the point: a layer
+        // composited with `plus` and a rectangle drawn with `plus` must round
+        // identically, and they cannot drift apart if there is one copy of the
+        // arithmetic.
         switch (blendMode) {
           case CpuBlendMode.srcOver:
             blendPixelOver(_pixels, dstOffset, s0, s1, s2, sa);
           case CpuBlendMode.src:
-            _pixels[dstOffset] = s0;
-            _pixels[dstOffset + 1] = s1;
-            _pixels[dstOffset + 2] = s2;
-            _pixels[dstOffset + 3] = sa;
+            blendPixelSrc(_pixels, dstOffset, s0, s1, s2, sa);
           case CpuBlendMode.plus:
-            _pixels[dstOffset] = addSaturating(s0, _pixels[dstOffset]);
-            _pixels[dstOffset + 1] = addSaturating(s1, _pixels[dstOffset + 1]);
-            _pixels[dstOffset + 2] = addSaturating(s2, _pixels[dstOffset + 2]);
-            _pixels[dstOffset + 3] = addSaturating(sa, _pixels[dstOffset + 3]);
+            blendPixelPlus(_pixels, dstOffset, s0, s1, s2, sa);
         }
         srcOffset += 4;
         dstOffset += 4;
@@ -466,7 +594,19 @@ final class CpuRasterizer {
   /// `PixelFormat`. Strides are taken from each buffer independently, and a
   /// format mismatch is handled by swapping red and blue as the pixels are
   /// read - both formats are premultiplied, so nothing else has to change.
-  void drawFramebuffer(Framebuffer source, Rect destination) {
+  ///
+  /// [blendMode] is chosen once per *row*, not once per pixel: the three cases
+  /// below each own the whole inner loop. A row is hundreds of pixels wide in
+  /// any blit worth measuring, so the branch is amortised to nothing, and the
+  /// duplication buys an inner loop with no test in it. Unlike a fill, the
+  /// source colour is different for every pixel here, so there is no
+  /// per-call scaling to hoist and the switch is as far out as it can go
+  /// without three copies of the addressing arithmetic.
+  void drawFramebuffer(
+    Framebuffer source,
+    Rect destination, {
+    CpuBlendMode blendMode = CpuBlendMode.srcOver,
+  }) {
     final originX = pixelEdge(destination.left);
     final originY = pixelEdge(destination.top);
 
@@ -498,17 +638,46 @@ final class CpuRasterizer {
     for (var y = top; y < bottom; y++) {
       var srcOffset = (y - originY) * srcBytesPerRow + (left - originX) * 4;
       var dstOffset = y * _bytesPerRow + left * 4;
-      for (var x = left; x < right; x++) {
-        blendPixelOver(
-          _pixels,
-          dstOffset,
-          src[srcOffset + read0],
-          src[srcOffset + 1],
-          src[srcOffset + read2],
-          src[srcOffset + 3],
-        );
-        srcOffset += 4;
-        dstOffset += 4;
+      switch (blendMode) {
+        case CpuBlendMode.srcOver:
+          for (var x = left; x < right; x++) {
+            blendPixelOver(
+              _pixels,
+              dstOffset,
+              src[srcOffset + read0],
+              src[srcOffset + 1],
+              src[srcOffset + read2],
+              src[srcOffset + 3],
+            );
+            srcOffset += 4;
+            dstOffset += 4;
+          }
+        case CpuBlendMode.src:
+          for (var x = left; x < right; x++) {
+            blendPixelSrc(
+              _pixels,
+              dstOffset,
+              src[srcOffset + read0],
+              src[srcOffset + 1],
+              src[srcOffset + read2],
+              src[srcOffset + 3],
+            );
+            srcOffset += 4;
+            dstOffset += 4;
+          }
+        case CpuBlendMode.plus:
+          for (var x = left; x < right; x++) {
+            blendPixelPlus(
+              _pixels,
+              dstOffset,
+              src[srcOffset + read0],
+              src[srcOffset + 1],
+              src[srcOffset + read2],
+              src[srcOffset + 3],
+            );
+            srcOffset += 4;
+            dstOffset += 4;
+          }
       }
     }
   }

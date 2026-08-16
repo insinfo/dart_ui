@@ -101,6 +101,7 @@ final class _CpuLayer {
     required this.drewBefore,
     required this.originX,
     required this.originY,
+    required this.outerIsolationBroken,
   })  : deviceBounds = Rect.zero,
         clip = Rect.zero,
         alpha = 0xFF,
@@ -120,6 +121,7 @@ final class _CpuLayer {
     required this.drewBefore,
     required this.originX,
     required this.originY,
+    required this.outerIsolationBroken,
   });
 
   /// The layer's pixels in device space, snapped outward to whole pixels.
@@ -152,6 +154,15 @@ final class _CpuLayer {
   /// The origin outside this layer, restored on pop.
   final double originX;
   final double originY;
+
+  /// Whether isolation was already broken outside this layer, restored on pop.
+  ///
+  /// A field on the layer rather than a parallel `List<bool>` - the GPU sink
+  /// keeps a separate stack because its layers live in `GpuLayerStack` and it
+  /// has nowhere else to put it. Here the layer object is already allocated,
+  /// once per `saveLayer` and never on a per-primitive path, so the state
+  /// belongs on it.
+  final bool outerIsolationBroken;
 
   bool get isOffscreen => buffer != null;
 }
@@ -362,6 +373,14 @@ final class _RasterizerSink implements RasterSink {
   /// second erases it.
   bool _drew = false;
 
+  /// Whether a *flattened* layer stands between the primitives being drawn now
+  /// and the nearest real offscreen buffer.
+  ///
+  /// The mirror of `GpuRasterSink._isolationBroken`, kept for the same reason
+  /// and refused in the same place: see [_blendFor]. It is read once per
+  /// primitive whose mode is not source-over, and never touched otherwise.
+  bool _isolationBroken = false;
+
   /// Layers currently open. A backend can assert it is zero after a frame.
   int get layerDepth => _open.length;
 
@@ -395,6 +414,7 @@ final class _RasterizerSink implements RasterSink {
   void _fillClipped(Rect deviceRect, Rect clip, ReplayPaint paint) {
     final visible = deviceRect.intersect(clip);
     if (visible.isEmpty) return;
+    final CpuBlendMode blend = _blendFor(paint);
     _drew = true;
     // The intersection happens in double space, so a clipped edge arrives here
     // fractional and comes out soft. Antialiasing everything is the right
@@ -407,10 +427,48 @@ final class _RasterizerSink implements RasterSink {
     // anyway, where the two produce identical bytes.
     final Rect local = _toLayer(visible);
     if (paint.antiAlias) {
-      _rasterizer.fillRectAntiAliased(local, paint.argbColor);
+      _rasterizer.fillRectAntiAliased(local, paint.argbColor, blendMode: blend);
     } else {
-      _rasterizer.fillRect(local, paint.argbColor);
+      _rasterizer.fillRect(local, paint.argbColor, blendMode: blend);
     }
+  }
+
+  /// The equation [paint] draws with, refusing what this backend cannot mean.
+  ///
+  /// Two refusals, one per line, and both of them by name:
+  ///
+  ///   * `cpuBlendForMode` throws on a mode the display list does not encode,
+  ///     rather than falling back to source-over. A silent fallback draws a
+  ///     wrong picture that looks like a paint bug, and - worse - it is the
+  ///     one failure a differential test cannot see, because the backend that
+  ///     substituted has stopped disagreeing.
+  ///   * A non-source-over mode inside a *flattened* layer is refused for
+  ///     exactly the reason `gpu_raster_sink.dart` refuses it: a `plus` or
+  ///     `src` primitive there blends against the parent's own pixels, where
+  ///     an isolating renderer would have blended it against transparency.
+  ///     Flattening an opaque source-over layer is an identity for every other
+  ///     primitive and is not one for these, so the layer has to be given a
+  ///     paint that forces an offscreen pass. Before this file honoured a
+  ///     primitive's blend mode the case could not arise here and the comment
+  ///     on [beginLayer] said so; honouring the mode is what created it.
+  ///
+  /// The order matters: an unknown mode is refused before anything is asked
+  /// about layers, so the message names the actual defect.
+  CpuBlendMode _blendFor(ReplayPaint paint) {
+    final CpuBlendMode mode = cpuBlendForMode(paint.blendMode);
+    if (mode != CpuBlendMode.srcOver && _isolationBroken) {
+      throw UnsupportedCapabilityError(
+        backendName: 'cpu',
+        capability: Capability.cpuPresentation,
+        detail: 'blend mode ${paint.blendMode} inside a flattened layer would '
+            'blend against the parent\'s pixels, where an isolating renderer '
+            'blends against transparency - the two are not the same picture, '
+            'and this is the one case where flattening an opaque source-over '
+            'layer is not an identity. Give the layer a paint that forces an '
+            'offscreen pass',
+      );
+    }
+    return mode;
   }
 
   @override
@@ -437,8 +495,9 @@ final class _RasterizerSink implements RasterSink {
     // the eight-value order is stated in one place instead of here.
     final builder = PathBuilder()
       ..addRoundedRectRadii(_toLayer(deviceRect), deviceRadii);
+    final CpuBlendMode blend = _blendFor(paint);
     _drew = true;
-    _spanSink.paint = paint;
+    _spanSink.begin(paint, blend);
     _filler.fill(builder.build(), _toLayer(clip), _spanSink);
   }
 
@@ -505,13 +564,16 @@ final class _RasterizerSink implements RasterSink {
   ///   * **No filters.** A layer carries an alpha and a blend mode; the
   ///     display list cannot encode a blur or a colour matrix, so there is
   ///     nothing to refuse yet.
-  ///   * **No isolation for a primitive's own blend mode.** The sink below
-  ///     composites every *primitive* source-over regardless of
-  ///     `paint.blendMode` - that predates layers and is unchanged here - so
-  ///     the one case where flattening an opaque source-over layer is not an
-  ///     identity (a `plus` primitive inside it, which `gpu_raster_sink.dart`
-  ///     refuses by name) cannot arise on this backend: nothing here can draw
-  ///     a `plus` primitive in the first place.
+  ///   * **No isolation for a primitive's own blend mode.** A flattened layer
+  ///     draws its contents straight into the parent, so a `plus` or `src`
+  ///     primitive inside one blends against the parent's pixels rather than
+  ///     against the transparency an isolating renderer would give it. That is
+  ///     refused by name in [_blendFor] rather than drawn, which is what
+  ///     `gpu_raster_sink.dart` does with the same case. It used to be
+  ///     unreachable here because this sink composited every primitive
+  ///     source-over whatever the paint said; honouring `paint.blendMode` is
+  ///     what made it reachable, and the refusal is what keeps the two
+  ///     backends from disagreeing about it.
   @override
   void beginLayer(Rect deviceBounds, Rect clip, ReplayPaint paint) {
     if (_open.length >= maxLayerDepth) {
@@ -543,7 +605,13 @@ final class _RasterizerSink implements RasterSink {
         drewBefore: _drew,
         originX: _originX,
         originY: _originY,
+        outerIsolationBroken: _isolationBroken,
       ));
+      // Only a *flattened* layer breaks isolation. A degenerate one admits no
+      // pixels at all, so nothing inside it can blend against anything, and
+      // `GpuLayerStack` classifies it as empty and leaves the flag alone for
+      // the same reason. The two cases share the branch above and part here.
+      if (!degenerate) _isolationBroken = true;
       _rasterizer
         ..save()
         ..clipRect(_toLayer(deviceBounds.intersect(clip)));
@@ -584,9 +652,15 @@ final class _RasterizerSink implements RasterSink {
       drewBefore: _drew,
       originX: _originX,
       originY: _originY,
+      outerIsolationBroken: _isolationBroken,
     );
     _open.add(layer);
     _offscreenDepth++;
+    // A real buffer is a real isolation boundary: whatever is drawn into it
+    // blends against the transparency it was cleared to, which is what an
+    // isolating renderer means. So the flag clears here even if an enclosing
+    // flattened layer had set it.
+    _isolationBroken = false;
 
     _setTarget(CpuRasterizer(buffer), left, top);
     _drew = false;
@@ -618,6 +692,7 @@ final class _RasterizerSink implements RasterSink {
           'which means a clip is still in force that should not be');
     }
     final _CpuLayer layer = _open.removeLast();
+    _isolationBroken = layer.outerIsolationBroken;
     if (!layer.isOffscreen) {
       _rasterizer.restore();
       _drew = _drew || layer.drewBefore;
@@ -663,6 +738,7 @@ final class _RasterizerSink implements RasterSink {
     }
     _open.clear();
     _offscreenDepth = 0;
+    _isolationBroken = false;
   }
 
   /// Points every draw below at [rasterizer], written against ([x], [y]).
@@ -740,8 +816,11 @@ final class _RasterizerSink implements RasterSink {
   /// still in device space and is moved here.
   void _fill(Path path, Transform2D transform, Rect clip, ReplayPaint paint) {
     if (path.isEmpty) return;
+    // Resolved once per fill, not once per span: the mode cannot change along
+    // a path, and `cpuBlendForMode` is a switch the span loop should never see.
+    final CpuBlendMode blend = _blendFor(paint);
     _drew = true;
-    _spanSink.paint = paint;
+    _spanSink.begin(paint, blend);
     _filler.fill(
       path,
       _toLayer(clip),
@@ -807,11 +886,12 @@ final class _RasterizerSink implements RasterSink {
     }
     // Clipping is the rasteriser's job here: it walks rows anyway, so folding
     // the clip into the blit costs nothing extra.
+    final CpuBlendMode blend = _blendFor(paint);
     _drew = true;
     _rasterizer
       ..save()
       ..clipRect(_toLayer(clip))
-      ..drawFramebuffer(image, _toLayer(deviceRect))
+      ..drawFramebuffer(image, _toLayer(deviceRect), blendMode: blend)
       ..restore();
   }
 
@@ -878,6 +958,10 @@ final class _RasterizerSink implements RasterSink {
     if ((argb >> 24) & 0xFF == 0) return;
 
     final ScaledTypeface font = _deviceFont(resource, transform);
+    // Once for the whole run, before any glyph is looked up: the mode is a
+    // property of the paint, and resolving it per glyph would put a switch on
+    // the per-glyph path for an answer that cannot change.
+    final CpuBlendMode blend = _blendFor(paint);
 
     _drew = true;
     _rasterizer
@@ -907,6 +991,7 @@ final class _RasterizerSink implements RasterSink {
         glyphPixelOrigin(penX) + mask.left - _originIntX,
         pixelEdge(penY) + mask.top - _originIntY,
         argb,
+        blendMode: blend,
       );
     }
     _rasterizer.restore();
@@ -955,16 +1040,38 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
   /// layer would still have to be threaded through the filler.
   CpuRasterizer rasterizer;
 
-  /// Set immediately before each fill. Mutable on purpose: a sink allocated
-  /// per draw would put an allocation on the path-drawing path.
-  ReplayPaint? paint;
+  /// Set immediately before each fill by [begin]. Mutable on purpose: a sink
+  /// allocated per draw would put an allocation on the path-drawing path.
+  ReplayPaint? _paint;
+
+  /// The equation [span] composites with, resolved once per fill.
+  ///
+  /// Held next to the paint rather than derived from it inside [span]:
+  /// `cpuBlendForMode` is a switch over a wire constant and a validation, and
+  /// a path a hundred scanlines tall would run it a hundred times for an
+  /// answer that is the same every time.
+  CpuBlendMode _blendMode = CpuBlendMode.srcOver;
+
+  /// Arms the sink for one fill. Paired with the `_filler.fill` call that
+  /// follows it, and the only way the two fields are set - they have to move
+  /// together, and a caller that set the paint and forgot the mode would paint
+  /// the previous shape's equation.
+  void begin(ReplayPaint paint, CpuBlendMode blendMode) {
+    _paint = paint;
+    _blendMode = blendMode;
+  }
 
   @override
   void span(int y, int xStart, int xEnd, int coverage) {
-    final current = paint;
+    final current = _paint;
     if (current == null) return;
     final argb = current.argbColor;
     final alpha = mul255((argb >> 24) & 0xFF, coverage);
+    // A colour too faint under a coverage too slight to survive rounding. It
+    // is dropped in every mode, including `src`: the span is reported because
+    // the shape touches the pixel, but this is the same "nothing to add"
+    // rounding `_fillSpan` applies, and `fillRect` below would refuse it
+    // anyway on its own alpha-zero test.
     if (alpha == 0) return;
     rasterizer.fillRect(
       Rect.fromLTRB(
@@ -974,6 +1081,7 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
         (y + 1).toDouble(),
       ),
       (alpha << 24) | (argb & 0x00FFFFFF),
+      blendMode: _blendMode,
     );
   }
 }

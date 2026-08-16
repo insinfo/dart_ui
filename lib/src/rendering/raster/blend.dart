@@ -100,13 +100,94 @@ void blendPixelOver(
   dst[offset + 3] = blendChannelOver(alpha, dst[offset + 3], inverse);
 }
 
-/// The composite equations this rasteriser can blend a finished layer with.
+/// Replaces the pixel at [offset] with a premultiplied source. GL: `ONE,
+/// ZERO`.
+///
+/// A replace, not a draw: the alpha goes too, so a source that is partly
+/// transparent makes the destination partly transparent rather than showing
+/// through it. Nothing is special-cased, and in particular `alpha == 0` is
+/// *not* skipped here - erasing the destination is the whole content of this
+/// equation, and the branch [blendPixelOver] takes there would turn it into a
+/// no-op. Whether a source that has rounded away to nothing should reach this
+/// function at all is the caller's question, and `rasterizer.dart` answers it
+/// in one place for all three modes.
+///
+/// ## What "replace" means under partial coverage
+///
+/// It means replace with the *coverage-scaled* source, not "lerp towards the
+/// source by the coverage". A caller that has scaled all four channels of a
+/// premultiplied source by a coverage byte and hands the result here writes a
+/// pixel that is `coverage` opaque, wherever the destination was opaque
+/// before. So an antialiased shape drawn with `src` cuts a soft hole in what
+/// was under it, and the fringe of that hole is *transparent*, not a mix of
+/// the two colours.
+///
+/// That is not a choice made for tidiness. `gl_shaders.dart` multiplies the
+/// premultiplied vertex colour by the coverage in the fragment shader and
+/// hands the product to a fixed-function `ONE, ZERO` blend, so the GPU writes
+/// exactly `src * coverage` and nothing of the destination survives. The
+/// alternative reading - `dst = src * c + dst * (1 - c)`, which is what Skia
+/// does, and which keeps an opaque destination opaque - is a *different*
+/// equation with a different name (`srcOver` against a pre-erased
+/// destination), and it is not the one this framework's GPU backend can
+/// express. Two backends with two readings of `src` is the divergence this
+/// whole file exists to prevent, so the CPU takes the one the GPU is capable
+/// of.
+@pragma('vm:prefer-inline')
+void blendPixelSrc(
+  Uint8List dst,
+  int offset,
+  int c0,
+  int c1,
+  int c2,
+  int alpha,
+) {
+  dst[offset] = c0;
+  dst[offset + 1] = c1;
+  dst[offset + 2] = c2;
+  dst[offset + 3] = alpha;
+}
+
+/// Adds a premultiplied source into the pixel at [offset], saturating. GL:
+/// `ONE, ONE`.
+///
+/// Every channel including alpha, and every one of them clamped rather than
+/// wrapped; see [addSaturating] for why the clamp is the equation and not a
+/// guard.
+///
+/// A premultiplied source with `alpha == 0` has zero in every colour channel
+/// too - `premultiply` scales each of them by that same alpha - so it adds
+/// nothing, and the caller that already knows the alpha is zero can skip the
+/// call. There is no branch here for it: unlike [blendPixelOver], which saves
+/// four multiplies by testing, this would save four adds.
+@pragma('vm:prefer-inline')
+void blendPixelPlus(
+  Uint8List dst,
+  int offset,
+  int c0,
+  int c1,
+  int c2,
+  int alpha,
+) {
+  dst[offset] = addSaturating(c0, dst[offset]);
+  dst[offset + 1] = addSaturating(c1, dst[offset + 1]);
+  dst[offset + 2] = addSaturating(c2, dst[offset + 2]);
+  dst[offset + 3] = addSaturating(alpha, dst[offset + 3]);
+}
+
+/// The composite equations this rasteriser can draw with.
 ///
 /// Three, and exactly the three the display list can encode. The enum exists
 /// instead of passing the wire constant down because the raster layer has no
 /// business validating a wire format twice: [cpuBlendForMode] is the one place
 /// an unknown mode is refused, and everything below it takes a value that
 /// cannot be anything else.
+///
+/// It is also what a primitive is drawn with, not only what a layer is
+/// composited with. The two used to be different: the rasteriser composited
+/// every *primitive* source-over regardless of the paint, and only a layer's
+/// composite honoured the mode. That made a `plus` rectangle a different
+/// picture on the two backends, which is what `test/differential` found.
 ///
 /// These are the *premultiplied* equations, on 8-bit channels, and they are
 /// written to agree term for term with the fixed-function factors

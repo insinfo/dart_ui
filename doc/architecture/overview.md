@@ -311,13 +311,25 @@ teste diferencial afirma as duas metades — os pixels exatos da CPU e a recusa
 da GPU — de propósito: no dia em que o atlas for ligado, aquela asserção falha
 e obriga a comparação a entrar junto, em vez de a lacuna sumir em silêncio.
 
-**Blend mode em primitivas diverge entre CPU e GPU.** A GPU honra
-`paint.blendMode` por primitiva; a CPU compõe source-over em `_fill`,
-`drawDeviceImage` e `drawDeviceGlyphRun`, ignorando o campo. Um retângulo
-`plus` desenha diferente nos dois caminhos hoje. Em *layers* os dois concordam
-(é o que a suíte diferencial mede, com desvio 0); é só no caminho por
-primitiva que a CPU está atrás. Corrigir exige passar o modo por todas as
-entradas do rasterizador.
+**Três divergências CPU↔GPU conhecidas, todas medidas.** Blend mode por
+primitiva foi corrigido e agora concorda com desvio 0 (retângulos `plus`
+sobrepostos, `src` translúcido, path com `plus`). Restam:
+
+  * **`src` sobre forma baseada em máscara** (path, rrect, glifo): desvio até
+    255. A GPU desenha o quad inteiro da máscara e o `ONE, ZERO` apaga os
+    pixels de cobertura zero **dentro** dele; a CPU não os toca. É semântica do
+    lado da GPU, em `gpu_raster_sink._drawMask`.
+  * **Retângulos antialiasados, qualquer modo**: desvio 1. Pré-existente e não
+    relacionado a blend — `raster/coverage.dart` quantiza posições em 1/255
+    enquanto o shader mantém float, o que `gl_shaders.dart` já documenta como
+    "limitado a um nível de cobertura por eixo". É por isso que toda cena de
+    retângulo da suíte diferencial usa `antiAlias: false`.
+  * **Alfa do paint em imagens**: `drawFramebuffer` na CPU ignora, a GPU
+    modula. Invisível nas cenas atuais porque todas usam `0xFFFFFFFF`.
+
+A suíte em `test/differential/` só contém cenas em que os dois concordam com
+tolerância **0**. As três acima estão de fora **por estarem erradas**, não por
+serem ruído, e é essa distinção que faz a tolerância 0 valer alguma coisa.
 
 **`Frame.framebuffer` é não-anulável**, e um target GPU com janela não tem
 pixels visíveis pela CPU. O `GlWindowTarget` carrega um placeholder 1×1 nunca

@@ -162,6 +162,31 @@ void main() {
       await _expectParity(session, _srcLayer(), tolerance: 0);
     });
 
+    test('rectangles composited with plus, overlapping: 0', () async {
+      // Until primitives honoured `paint.blendMode` on the CPU, this scene
+      // could not be written: the GPU added and the CPU drew source-over, so
+      // the two backends rendered different pictures and no test said so.
+      // Observed deviation: 0.
+      await _expectParity(session, _plusRects(), tolerance: 0);
+    });
+
+    test('a translucent rectangle composited with src: 0', () async {
+      // `src` replaces all four channels, alpha included. Both backends agree
+      // that the result is a half-transparent hole in an opaque surface -
+      // which is the reading `gl_shaders.dart` forces, since it hands
+      // `premultipliedColour * coverage` to a fixed-function ONE, ZERO blend
+      // and keeps none of the destination.
+      // Observed deviation: 0.
+      await _expectParity(session, _srcRect(), tolerance: 0);
+    });
+
+    test('a filled path composited with plus: 0', () async {
+      // The span loop rather than the rectangle loop: on the CPU those are two
+      // separate paint paths, and the mode has to reach both.
+      // Observed deviation: 0.
+      await _expectParity(session, _plusPath(), tolerance: 0);
+    });
+
     test('a rectangular clip: 0', () async {
       // A clip is a scissor on the GPU and a clip stack on the CPU, and the
       // two round a fractional edge with different code. The scene uses a
@@ -320,6 +345,66 @@ DisplayList _nestedLayers() {
     ..drawRect(6, 6, 18, 12, content)
     ..restore()
     ..restore();
+  return list;
+}
+
+/// Two `plus` rectangles that overlap, so the saturating add is on trial.
+///
+/// `0xC0` red over `0xC0` red is `0xFF`, not `0x80`: wrapping instead of
+/// clamping is the classic `plus` bug, and it only shows where two of them
+/// meet.
+DisplayList _plusRects() {
+  final list = DisplayList();
+  final base = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  final add = list.addPaint(
+    colorArgb: 0xC0CC3311,
+    antiAlias: false,
+    blendMode: blendModePlus,
+  );
+  list
+    ..drawRect(0, 0, 24, 24, base)
+    ..drawRect(2, 2, 16, 16, add)
+    ..drawRect(10, 10, 22, 22, add);
+  return list;
+}
+
+/// A translucent `src` rectangle over an opaque background.
+///
+/// `src` replaces the destination including its **alpha**, so the result is a
+/// half-transparent hole in an opaque surface - not a blend towards the paint.
+/// A backend that treated `src` as "source-over with the destination cleared"
+/// would keep the surface opaque and pass every other scene in this file.
+DisplayList _srcRect() {
+  final list = DisplayList();
+  final base = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  final replace = list.addPaint(
+    colorArgb: 0x80CC3311,
+    antiAlias: false,
+    blendMode: blendModeSrc,
+  );
+  list
+    ..drawRect(0, 0, 24, 24, base)
+    ..drawRect(4, 4, 20, 20, replace);
+  return list;
+}
+
+/// The union-by-winding path, drawn with `plus` onto a lit background.
+///
+/// The rect path and the span path are different loops on the CPU; this is the
+/// one that proves the span loop carries the mode too.
+DisplayList _plusPath() {
+  final builder = PathBuilder();
+  _addRectContour(builder, const Rect.fromLTRB(3, 3, 14, 14), clockwise: true);
+  _addRectContour(builder, const Rect.fromLTRB(9, 9, 20, 20), clockwise: true);
+
+  final list = DisplayList();
+  final background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  final paint = list.addPaint(
+    colorArgb: 0xFF443322,
+    blendMode: blendModePlus,
+  );
+  list.drawPath(list.addPath(builder.build()), paint);
   return list;
 }
 

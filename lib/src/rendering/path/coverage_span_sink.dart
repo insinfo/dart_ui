@@ -29,10 +29,21 @@ library;
 ///   * Every span lies inside the clip rectangle the fill was given.
 ///
 /// `coverage` is an alpha in the compositor's own units. It is the value that
-/// goes into `mul255(paintAlpha, coverage)` before `blendPixelOver`, which is
-/// why it is a byte rounded to nearest rather than a float: rounding once
-/// here, with the same rule `mul255` uses, keeps a full-coverage span exactly
-/// as opaque as the equivalent rectangle fill.
+/// goes into `mul255(paintAlpha, coverage)` before the composite equation,
+/// which is why it is a byte rounded to nearest rather than a float: rounding
+/// once here, with the same rule `mul255` uses, keeps a full-coverage span
+/// exactly as opaque as the equivalent rectangle fill.
+///
+/// ## Where the blend mode is, and why it is not here
+///
+/// A paint's blend mode is a property of the *fill*, not of a span: every span
+/// of one filled path composites with the same equation, and threading it
+/// through this method would put a value on the hot path that cannot change
+/// along it. So the sink that paints - `_CoverageToRasterizer` in
+/// `cpu_renderer.dart` - resolves the mode once when the fill starts and holds
+/// it, and this interface stays what it was: geometry and coverage, provable
+/// on its own against an exact area computation, and still usable by the sinks
+/// that do not paint at all (a clip mask, a damage region).
 abstract interface class CoverageSpanSink {
   /// One run of pixels on scanline [y], from [xStart] up to but not
   /// including [xEnd], each covered by [coverage] of 255.
