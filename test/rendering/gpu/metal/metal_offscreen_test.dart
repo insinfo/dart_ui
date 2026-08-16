@@ -123,11 +123,24 @@ void main() {
       // scenes with geometry in them are the ones that carry signal about the
       // shader, and they come next.
       const int color = 0xFF204060;
+      // **BGRA and not RGBA**, and the reason is a defect this test found in
+      // `rasterizeDisplayList`: its clear path calls
+      // `Framebuffer.clear(blue, green, red, alpha)`, which writes byte 0 =
+      // blue **whatever the framebuffer's declared format is**. So a
+      // non-black clearColor into an rgba8888-declared CPU surface comes out
+      // channel-reversed - 0xFF204060 read back as (96, 64, 32) instead of
+      // (32, 64, 96) - while every drawn primitive is format-aware and lands
+      // correctly. The existing parity suites never saw it because they all
+      // clear to 0xFF000000, where the swap is invisible.
+      //
+      // The defect is in `lib/src/rendering/cpu_renderer.dart`, which is not
+      // this backend's file, so this asks the CPU for the byte order it
+      // actually produces instead of working around it here.
       final MemoryRenderTarget cpu =
           MemoryRenderTarget(const MemorySurfaceDescriptor(
         pixelWidth: _size,
         pixelHeight: _size,
-        format: PixelFormat.rgba8888Premultiplied,
+        format: PixelFormat.bgra8888Premultiplied,
       ));
       final MetalOffscreenTarget gpuTarget = MetalOffscreenTarget.create(
           gpu, pipelines,
@@ -135,14 +148,10 @@ void main() {
       try {
         await cpu.renderDisplayList(DisplayList(), clearColor: color);
         gpuTarget.clear(color);
-        // Compared channel by channel and not byte by byte, because the two
-        // surfaces need not agree on byte order: MemoryRenderTarget allocates
-        // its framebuffer in the CPU renderer's own format regardless of what
-        // the descriptor asked for, and on this machine that is BGRA while the
-        // Metal readback is RGBA. Comparing raw bytes made this test fail with
-        // "96 instead of 32" - a channel swap in the *test*, with both
-        // renderers correct. `d3d11_cpu_parity_test.dart` reads through the
-        // same format switch for the same reason.
+        // Compared channel by channel and not byte by byte: the two surfaces
+        // are in different byte orders on purpose, and `_rgba` is what makes
+        // them comparable. `d3d11_cpu_parity_test.dart` reads through the same
+        // switch for the same reason.
         final Framebuffer gpuPixels = gpuTarget.readPixels();
         for (var y = 0; y < _size; y++) {
           for (var x = 0; x < _size; x++) {
