@@ -27,6 +27,7 @@ import '../rendering/text/font_registry.dart';
 import '../text/paragraph.dart' show Paragraph, TextBox;
 import '../text/shaper.dart' show UnsupportedScriptException;
 import '../text/typeface.dart' show ScaledTypeface;
+import 'context_menu.dart';
 import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
@@ -42,6 +43,13 @@ import 'widget.dart';
 /// installs a [ClipboardScope], writes a test double or handles a paste
 /// failure needs [Clipboard] and [ClipboardException] to say anything about it.
 export '../platform/clipboard.dart';
+
+/// The context menu travels with the controls that raise one. [TextField] opens
+/// its own from a secondary click, so a caller who wants that to work needs
+/// [ContextMenuScope] - and one who wants a menu of their own needs
+/// [ContextMenuRegion] and [MenuItem] together, which is why the two arrive
+/// from the same import rather than from opposite ends of the library.
+export 'context_menu.dart';
 
 /// The editing model is part of this file's contract, not an implementation
 /// detail of it: a caller that holds a [TextEditingController] needs
@@ -1605,6 +1613,58 @@ final class ClipboardScope extends InheritedWidget {
       !identical(clipboard, oldWidget.clipboard);
 }
 
+/// What a field does with its selection while some *other* control in the same
+/// window holds the keyboard.
+///
+/// ## There is no cross-platform consensus, so this is a property
+///
+/// It used to be a fixed policy in this file, justified by a claim that turns
+/// out to be false. The platforms actually split three ways:
+///
+///  * **Hidden.** A Win32 `EDIT` control hides its selection on losing focus;
+///    `ES_NOHIDESEL` exists precisely to *opt out* of that, which is the
+///    clearest possible statement of what the default is. WPF agrees -
+///    `TextBoxBase.IsInactiveSelectionHighlightEnabled` defaults to false - and
+///    so does every browser's `<input>`.
+///  * **Shown.** Avalonia's `TextBox.IsInactiveSelectionHighlightEnabled`
+///    defaults to **true**, and Avalonia also skips its clear-on-blur path
+///    entirely while a context menu is open, so that right-clicking a selection
+///    cannot destroy it.
+///
+/// Two respectable toolkits, opposite defaults. That is the definition of a
+/// thing that must be the application's choice.
+///
+/// ## What this is *not* evidence about
+///
+/// `NSColor.unemphasizedSelectedTextBackgroundColor` on macOS and GTK's
+/// `:backdrop` are **window-inactive** states: they describe a window that has
+/// lost activation to another application, not a control that has lost focus to
+/// its neighbour. Citing them here - as an earlier version of this comment did
+/// - is using window-level evidence to justify control-level behaviour, and
+/// they are listed now only so nobody reaches for them again.
+///
+/// ## The third state, named but not implemented
+///
+/// There are really three: this field focused, another control in this window
+/// focused, and **the whole window deactivated**. Only the first two exist
+/// here. The third has a home already - [FocusManager.isWindowActive], which
+/// the window backend sets from `WM_ACTIVATE` - and the socket for it is
+/// [RenderTextField.selectionColorFor], which would take a second bool and pick
+/// a third colour. Nothing calls it that way yet, and inventing the colour
+/// before there is a signal to drive it would be untestable.
+enum InactiveSelectionHighlight {
+  /// Not painted at all: the Win32, WPF and browser behaviour.
+  hidden,
+
+  /// Painted, muted. Keeps the range visible - so a user who selected a phrase
+  /// and then clicked something else can still see what the next command will
+  /// apply to - while making it unambiguous which field the keyboard is in.
+  dimmed,
+
+  /// Painted exactly as if focused: `ES_NOHIDESEL`.
+  visible,
+}
+
 final class TextField extends StatefulWidget {
   const TextField({
     super.key,
@@ -1613,10 +1673,25 @@ final class TextField extends StatefulWidget {
     this.obscure = false,
     this.readOnly = false,
     this.enabled = true,
+    this.inactiveSelection = InactiveSelectionHighlight.dimmed,
   });
 
   final TextEditingController controller;
   final String label;
+
+  /// How the selection is painted when another control holds the keyboard.
+  ///
+  /// Defaults to [InactiveSelectionHighlight.dimmed], which is the behaviour
+  /// this field has always had; it is defensible as a default because it is the
+  /// only one of the three that loses no information, and it is now only a
+  /// default rather than a law. An application that wants the Win32 and browser
+  /// behaviour asks for [InactiveSelectionHighlight.hidden].
+  ///
+  /// **The controller's range is never touched by any of these**: this decides
+  /// a colour, not a selection. Losing focus must not lose the selection, or
+  /// right-clicking a field - which moves focus to the menu - would silently
+  /// discard what the user was about to copy.
+  final InactiveSelectionHighlight inactiveSelection;
 
   /// Renders the value as bullets. Section 30.8 requires the *value* still be
   /// the real text; only the painting changes, so copy remains the caller's
@@ -1682,11 +1757,16 @@ final class _TextFieldState extends State<TextField> {
           obscure: widget.obscure,
           readOnly: widget.readOnly,
           enabled: widget.enabled,
+          inactiveSelection: widget.inactiveSelection,
           theme: Theme.of(context),
           // Read where the theme is read, and for the same reason: the field
           // must not be handed a clipboard by its parent, and must not reach
           // for a global one.
           clipboard: ClipboardScope.of(context),
+          // Null when no scope is installed, and that is a supported state: a
+          // field without one answers a secondary click by moving the caret and
+          // opening nothing, rather than failing.
+          contextMenu: ContextMenuScope.maybeOf(context),
           focusNode: _focusNode,
         ),
       );
@@ -1699,8 +1779,10 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
     required this.obscure,
     required this.readOnly,
     required this.enabled,
+    required this.inactiveSelection,
     required this.theme,
     required this.clipboard,
+    required this.contextMenu,
     required this.focusNode,
   });
 
@@ -1709,8 +1791,10 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
   final bool obscure;
   final bool readOnly;
   final bool enabled;
+  final InactiveSelectionHighlight inactiveSelection;
   final ThemeData theme;
   final Clipboard clipboard;
+  final ContextMenuController? contextMenu;
   final FocusNode focusNode;
 
   @override
@@ -1723,8 +1807,10 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
         obscure: obscure,
         readOnly: readOnly,
       )
+        ..inactiveSelection = inactiveSelection
         ..theme = theme
         ..clipboard = clipboard
+        ..contextMenu = contextMenu
         ..focusNode = focusNode
         ..enabled = enabled;
 
@@ -1738,8 +1824,10 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
       ..label = label
       ..obscure = obscure
       ..readOnly = readOnly
+      ..inactiveSelection = inactiveSelection
       ..theme = theme
       ..clipboard = clipboard
+      ..contextMenu = contextMenu
       ..focusNode = focusNode
       ..enabled = enabled;
   }
@@ -1764,9 +1852,24 @@ final class RenderTextField extends RenderBox
   String _label;
   bool _obscure;
   bool _readOnly;
+  InactiveSelectionHighlight _inactiveSelection =
+      InactiveSelectionHighlight.dimmed;
   Clipboard _clipboard = const UnavailableClipboard();
   ClipboardException? _lastClipboardError;
   Future<void> _clipboardWork = Future<void>.value();
+
+  /// What the last clipboard probe found, or null when the answer is not known
+  /// yet - which is a genuinely different state from "empty" and is why this is
+  /// a nullable bool rather than a bool. See [buildContextMenuItems].
+  bool? _clipboardHasText;
+
+  /// Whether the open context menu is *this* field's.
+  ///
+  /// Opening one moves the keyboard to the menu, so without this the field
+  /// would go inactive and dim the very selection the menu is about to copy.
+  /// Avalonia solves the same problem the same way, by exempting an open
+  /// context flyout from its lost-focus handling.
+  bool _menuOpen = false;
 
   /// Whether a drag begun on this field is still selecting.
   bool _dragging = false;
@@ -1839,6 +1942,22 @@ final class RenderTextField extends RenderBox
     _readOnly = value;
     markNeedsPaint();
   }
+
+  /// How the selection is painted while another control holds the keyboard.
+  InactiveSelectionHighlight get inactiveSelection => _inactiveSelection;
+
+  set inactiveSelection(InactiveSelectionHighlight value) {
+    if (value == _inactiveSelection) return;
+    _inactiveSelection = value;
+    markNeedsPaint();
+  }
+
+  /// Where a secondary click opens its menu, or null when no
+  /// [ContextMenuScope] encloses this field.
+  ///
+  /// A plain field: it is a route out, not state this control paints from, so
+  /// swapping it invalidates nothing.
+  ContextMenuController? contextMenu;
 
   /// Where Ctrl+C, Ctrl+X and Ctrl+V go.
   ///
@@ -1956,6 +2075,8 @@ final class RenderTextField extends RenderBox
     switch (event) {
       case PointerDownEvent(button: PointerButton.primary):
         _onSelectionPointerDown(event);
+      case PointerDownEvent(button: PointerButton.secondary):
+        _onContextMenuPointerDown(event);
       case PointerMoveEvent() when _dragging:
         // The pointer is captured by [ControlBehavior], so this arrives even
         // when it has left the field - which is exactly when a selection drag
@@ -1995,6 +2116,181 @@ final class RenderTextField extends RenderBox
         _controller.selectAll();
         _dragging = false;
     }
+  }
+
+  /// The secondary press: the caret rule, then the menu.
+  ///
+  /// **Inside the selection preserves it; outside it moves the caret.** That is
+  /// what every editor does and the reason is asymmetric: a right-click on a
+  /// selection is nearly always the first half of "copy this", so collapsing it
+  /// would destroy the thing the user is about to act on - and there is no
+  /// undo for a lost selection. A right-click *outside* one is the user
+  /// pointing somewhere else, and leaving the old selection in place would make
+  /// the menu's commands act on text nowhere near the pointer.
+  ///
+  /// The boundaries count as inside: the caret positions at each end of a
+  /// selection are part of it, and a press one pixel past the last selected
+  /// glyph is aimed at that glyph.
+  ///
+  /// Focus is taken first, whether or not a menu opens: the commands in the
+  /// menu act on *this* field, and Escape has to bring the keyboard back here.
+  void _onContextMenuPointerDown(PointerDownEvent event) {
+    if (focusOnPointerDown) focusNode?.requestFocus(FocusChangeReason.pointer);
+    final TextPosition position = _positionAt(event.logicalPosition);
+    final ({int start, int end}) range = _controller.orderedSelection;
+    final bool insideSelection = _controller.hasSelection &&
+        position.offset >= range.start &&
+        position.offset <= range.end;
+    if (!insideSelection) _controller.collapseToPosition(position);
+    openContextMenu(event.logicalPosition);
+  }
+
+  /// Opens this field's context menu with its corner at [globalPosition].
+  ///
+  /// A no-op with no [ContextMenuScope] above the field - the caret has already
+  /// moved by then, which is the half of a secondary click that does not need
+  /// an overlay.
+  void openContextMenu(Offset globalPosition) {
+    final ContextMenuController? menu = contextMenu;
+    if (menu == null || !enabled) return;
+    _probeClipboard(menu);
+    _menuOpen = true;
+    markNeedsPaint();
+    menu.open(
+      globalPosition: globalPosition,
+      itemsBuilder: buildContextMenuItems,
+      onClosed: () {
+        _menuOpen = false;
+        markNeedsPaint();
+      },
+    );
+  }
+
+  /// Asks the clipboard whether it holds pasteable text, without waiting.
+  ///
+  /// ## Why the question is asked at all, and what happens before it is
+  /// answered
+  ///
+  /// [Clipboard.readText] is asynchronous - on Windows it opens a buffer owned
+  /// by another process, which can be locked, slow, or held by an application
+  /// that is itself blocked - so "is Paste available" cannot be answered while
+  /// building a menu. The two honest options are to enable Paste always and let
+  /// it fail, or to ask and show the answer when it lands. **This does both, in
+  /// that order:** the probe starts when the menu opens, and until it answers
+  /// Paste is enabled.
+  ///
+  /// Optimistic while pending, for three reasons:
+  ///
+  ///  * **A disabled item is unreachable.** Not just unclickable - initial-
+  ///    letter navigation skips it and a screen reader announces it as
+  ///    unavailable. A user who right-clicks and immediately presses P would
+  ///    find nothing there, and would have no way to know it was a timing
+  ///    accident.
+  ///  * **The optimistic guess is nearly always right.** A clipboard with text
+  ///    in it is the ordinary case, and the read is normally sub-millisecond.
+  ///  * **The pessimistic guess has no recovery.** An enabled Paste that turns
+  ///    out to have nothing to paste refuses through exactly the path Ctrl+V
+  ///    refuses through, and names the reason in [lastClipboardError]. A
+  ///    disabled Paste that was wrong just does not work.
+  ///
+  /// **A failed probe leaves the item enabled**, because a probe that threw is
+  /// not evidence that the clipboard is empty - it is evidence that this one
+  /// read failed. Treating it as "empty" would turn one transient fault into a
+  /// permanently dead Paste, which is the same shape as the poisoned-queue bug
+  /// [_enqueueClipboard] exists to prevent.
+  ///
+  /// A read-only field starts no probe: it refuses to paste anyway, so a round
+  /// trip to another process whose answer can only be discarded is work nobody
+  /// asked for. [pasteFromClipboard] makes the same call for the same reason.
+  ///
+  /// The probe runs on the same serialised queue as every other clipboard
+  /// operation, so it cannot overlap a paste, and it deliberately does **not**
+  /// touch [lastClipboardError]: a probe is the framework's question, not the
+  /// user's, and a failed one must not be reported as a failed command.
+  void _probeClipboard(ContextMenuController menu) {
+    _clipboardHasText = null;
+    if (_readOnly) return;
+    _clipboardWork = _clipboardWork.then((void _) async {
+      try {
+        final String? text = await _clipboard.readText();
+        _clipboardHasText =
+            text != null && PastedText.forSingleLine(text).isNotEmpty;
+      } on Object {
+        _clipboardHasText = null;
+      }
+      if (menu.isOpen) menu.refresh();
+    });
+  }
+
+  /// The commands this field offers, with today's state baked into each one.
+  ///
+  /// Rebuilt every time the menu needs them - see
+  /// [ContextMenuController.refresh] - so the enablement below is always a
+  /// snapshot of *now* rather than of when the pointer went down.
+  ///
+  /// The rules, and the one place this is stricter than the keyboard:
+  ///
+  ///  * **Copy and Cut need a selection, and are refused outright by an
+  ///    obscured field.** The refusal already exists in [copySelection]; the
+  ///    menu reflects it rather than routing around it, because a menu that
+  ///    offered Copy on a password field and silently did nothing would be
+  ///    worse than one that says it cannot.
+  ///  * **Cut additionally needs a writable field.** This *is* stricter than
+  ///    Ctrl+X, which in a read-only field copies and reports success. That is
+  ///    the right behaviour for a chord - it makes Ctrl+X and Ctrl+C agree, and
+  ///    nothing on screen claimed otherwise - and the wrong behaviour for a row
+  ///    labelled **Cut**, which promises that the text will be removed. A menu
+  ///    is where enablement is *stated*, so a statement that will not come true
+  ///    does not belong in one. Avalonia draws the line in the same place
+  ///    (`CanCut` requires `!IsReadOnly`).
+  ///  * **Paste needs a writable field and a clipboard with something in it.**
+  ///    See [_probeClipboard] for what "has something in it" means before the
+  ///    answer arrives.
+  ///  * **Select all needs text.**
+  List<MenuItem> buildContextMenuItems() {
+    final bool hasSelection = _controller.hasSelection;
+    final bool canCopy = enabled && hasSelection && !_obscure;
+    return <MenuItem>[
+      MenuItem(
+        label: 'Cut',
+        shortcut: 'Ctrl+X',
+        enabled: canCopy && !_readOnly,
+        disabledReason: _obscure
+            ? 'the field is obscured; cutting would put its value on a buffer '
+                'every other process can read'
+            : _readOnly
+                ? 'the field is read-only'
+                : 'nothing is selected',
+        onSelected: () => _enqueueClipboard(cutSelection),
+      ),
+      MenuItem(
+        label: 'Copy',
+        shortcut: 'Ctrl+C',
+        enabled: canCopy,
+        disabledReason: _obscure
+            ? 'the field is obscured; copying would put its value on a buffer '
+                'every other process can read'
+            : 'nothing is selected',
+        onSelected: () => _enqueueClipboard(copySelection),
+      ),
+      MenuItem(
+        label: 'Paste',
+        shortcut: 'Ctrl+V',
+        enabled: enabled && !_readOnly && (_clipboardHasText ?? true),
+        disabledReason: _readOnly
+            ? 'the field is read-only'
+            : 'the clipboard holds no text this field can accept',
+        onSelected: () => _enqueueClipboard(pasteFromClipboard),
+      ),
+      const MenuItem.separator(),
+      MenuItem(
+        label: 'Select all',
+        shortcut: 'Ctrl+A',
+        enabled: enabled && _controller.value.isNotEmpty,
+        disabledReason: 'the field is empty',
+        onSelected: _controller.selectAll,
+      ),
+    ];
   }
 
   /// Which click of a multi-click this press is: 1, 2 or 3.
@@ -2168,6 +2464,20 @@ final class RenderTextField extends RenderBox
           return true;
         }
         return false;
+      case logicalKeyContextMenu:
+        // The dedicated Menu key. Claimed whether or not a scope is installed:
+        // its only meaning is "show the context menu for what has focus", so
+        // letting it fall through to an application shortcut would be wrong
+        // even when this field has nowhere to put a menu.
+        openContextMenu(_caretAnchor());
+        return true;
+      case logicalKeyF10:
+        // Shift+F10, the keyboard route on a keyboard with no Menu key. Bare
+        // F10 is left alone: on Windows it activates the window's menu bar,
+        // which is not this field's to claim.
+        if (!shift) return false;
+        openContextMenu(_caretAnchor());
+        return true;
       case logicalKeyTab:
       case logicalKeyEscape:
         // Declined on purpose: Tab belongs to traversal and Escape to whatever
@@ -2185,6 +2495,31 @@ final class RenderTextField extends RenderBox
     // precedence, not content: it decides who owns the keystroke, while the OS
     // decides what it says.
     return _mayProduceText(event.logicalKey);
+  }
+
+  /// Where a keyboard-opened menu is anchored: under the caret.
+  ///
+  /// Not the pointer, which may be anywhere on the screen or nowhere at all -
+  /// a menu opened by Shift+F10 that appeared next to a mouse the user is not
+  /// touching is a menu they will not find. Under the caret is where the thing
+  /// the commands act on actually is. Avalonia makes the same split, anchoring
+  /// a keyboard-raised menu to the control rather than to `PlacementMode`
+  /// `.Pointer`.
+  Offset _caretAnchor() {
+    final Paragraph? laid = paragraph;
+    final double caretX = laid != null
+        ? laid
+            .getCaretRect(
+              TextPosition(
+                _controller.selectionEnd,
+                affinity: _controller.affinity,
+              ),
+            )
+            .left
+        : labelOffsetOfIndex(displayText, _controller.selectionEnd);
+    return localToGlobal(
+      Offset(theme.effectiveControlPadding + caretX, size.height),
+    );
   }
 
   /// Whether a virtual key is one the keyboard layout may turn into text.
@@ -2419,30 +2754,33 @@ final class RenderTextField extends RenderBox
     }
   }
 
-  /// The selection colour of a field that does **not** hold the keyboard.
+  /// The colour of an inactive selection, when one is painted at all.
   ///
-  /// ## The policy, and why it is "dimmed" rather than "hidden"
+  /// ## The policy is [inactiveSelection]'s, not this method's
   ///
-  /// The bug was that the selection was painted at full strength whichever
-  /// field had focus, so clicking into a second field left two fields looking
-  /// selected and the user could not tell which one a keystroke would reach.
-  /// Two fixes were available and they are not equivalent:
+  /// The bug this replaced was that the selection was painted at full strength
+  /// whichever field had focus, so clicking into a second field left two fields
+  /// looking selected and the user could not tell which one a keystroke would
+  /// reach. The fix was to dim it - and then to *hard-code* dimming, on a
+  /// justification that does not survive checking:
   ///
-  ///  * **Hide it.** One line, and it loses information the user needs: after
-  ///    selecting a phrase and clicking a *Bold* button - or a font list, or a
-  ///    colour picker - the selection is still what the next command applies
-  ///    to, and a field showing nothing says the opposite.
-  ///  * **Dim it**, which is what the platforms do: a Windows edit control
-  ///    greys its selection when the control is not the focus, macOS has a
-  ///    named colour for it (`NSColor.unemphasizedSelectedTextBackgroundColor`)
-  ///    and GTK has the `:backdrop` state. The range stays visible, and the
-  ///    *emphasis* - not the existence - of the highlight is what tells the two
-  ///    fields apart. Together with the border, which is already the accent
-  ///    colour only on the focused field, there is no ambiguity left.
+  ///  * The claim that "a Windows edit control greys its selection when the
+  ///    control is not the focus" is **false**. A Win32 `EDIT` hides it; the
+  ///    `ES_NOHIDESEL` style exists to turn that off. WPF and browsers hide it
+  ///    too. Avalonia shows it. See [InactiveSelectionHighlight].
+  ///  * The macOS and GTK colours cited alongside it -
+  ///    `NSColor.unemphasizedSelectedTextBackgroundColor` and `:backdrop` - are
+  ///    **window-inactive** states, not control-unfocused ones. They were
+  ///    window-level evidence for a control-level rule.
+  ///  * The "select a phrase, then click *Bold*" argument was answering a
+  ///    different question. That flow works on real platforms because a command
+  ///    button **does not take focus**, so the field never becomes inactive at
+  ///    all. It is an argument about focus policy for toolbar buttons, and it
+  ///    belongs there rather than here.
   ///
-  /// So: dimmed. **The controller's selection is never touched** - discarding
-  /// the range on focus loss would break exactly the select-then-click-a-button
-  /// flow above - only the colour this paint uses changes.
+  /// So the policy is a property with a declared default, and this method is
+  /// only the colour arithmetic for one of its three values. **The controller's
+  /// selection is never touched by any of them.**
   ///
   /// ## How the colour is derived, and the one case it is wrong
   ///
@@ -2460,6 +2798,28 @@ final class RenderTextField extends RenderBox
   /// itself - high contrast picking something with contrast rather than
   /// something faded - which is a change to `theme.dart`, a file this work does
   /// not own.
+  /// The colour to paint the selection in right now, or null to paint none.
+  ///
+  /// The one place [inactiveSelection] is consulted, and therefore the socket
+  /// the third state named on [InactiveSelectionHighlight] plugs into: a window
+  /// that has lost activation entirely would arrive here as a second named
+  /// argument - `windowActive`, from [FocusManager.isWindowActive] - and pick a
+  /// third colour. Nothing sets it yet, so it is not a parameter yet.
+  ///
+  /// "Focused" here includes *this field's own context menu being open*. The
+  /// menu holds the keyboard while it is up, and dimming the selection at
+  /// exactly the moment the user is choosing **Copy** from a menu about that
+  /// selection would be the worst possible time to go quiet.
+  int? selectionColorFor({required int background}) {
+    if (hasFocus || _menuOpen) return theme.selection;
+    return switch (_inactiveSelection) {
+      InactiveSelectionHighlight.hidden => null,
+      InactiveSelectionHighlight.dimmed =>
+        _inactiveSelectionColor(theme.selection, background),
+      InactiveSelectionHighlight.visible => theme.selection,
+    };
+  }
+
   static int _inactiveSelectionColor(int selection, int background) {
     int mix(int shift) =>
         (((selection >> shift) & 0xFF) + ((background >> shift) & 0xFF)) ~/ 2;
@@ -2489,7 +2849,11 @@ final class RenderTextField extends RenderBox
     final int fillColor =
         enabled ? theme.surfaceAlternate : theme.disabledSurface;
     paintFill(list, rect, fillColor);
-    paintBorder(list, rect, hasFocus ? theme.accent : theme.border);
+    // A field whose own context menu is up still reads as the active one: the
+    // keyboard is on loan to the menu, not gone somewhere else. See
+    // [selectionColorFor].
+    final bool looksFocused = hasFocus || _menuOpen;
+    paintBorder(list, rect, looksFocused ? theme.accent : theme.border);
     final double padding = theme.effectiveControlPadding;
     final double textTop =
         (rect.top + (rect.height - labelLineHeight) / 2).roundToDouble();
@@ -2508,11 +2872,11 @@ final class RenderTextField extends RenderBox
         maxWidth: rect.width - padding * 2,
       );
     } else {
-      if (_controller.hasSelection && !_obscure) {
+      final int? selectionColor = _controller.hasSelection && !_obscure
+          ? selectionColorFor(background: fillColor)
+          : null;
+      if (selectionColor != null) {
         final ({int start, int end}) range = _controller.orderedSelection;
-        final int selectionColor = hasFocus
-            ? theme.selection
-            : _inactiveSelectionColor(theme.selection, fillColor);
         if (laid != null) {
           // **N rectangles, not one.** A logically contiguous selection that
           // crosses a direction boundary is drawn in two or three disjoint
@@ -2576,7 +2940,7 @@ final class RenderTextField extends RenderBox
         }
       }
     }
-    if (hasFocus && !_controller.hasSelection) {
+    if (looksFocused && !_controller.hasSelection) {
       // The caret's x comes from the paragraph *with its affinity*, which is
       // the whole reason the controller carries one: at a direction change the
       // same offset is the trailing edge of one run and the leading edge of
@@ -2924,25 +3288,58 @@ final class RenderDialog extends RenderSingleChildBox with ControlBehavior {
       );
 }
 
-/// One entry of a [Menu].
+/// One entry of a [Menu] or a [ContextMenu].
 final class MenuItem {
   const MenuItem({
     required this.label,
     this.onSelected,
     this.enabled = true,
     this.isSeparator = false,
+    this.disabledReason,
+    this.shortcut,
+    this.mnemonic,
   });
 
   const MenuItem.separator()
       : label = '',
         onSelected = null,
         enabled = false,
-        isSeparator = true;
+        isSeparator = true,
+        disabledReason = null,
+        shortcut = null,
+        mnemonic = null;
 
   final String label;
   final void Function()? onSelected;
   final bool enabled;
   final bool isSeparator;
+
+  /// Why this command is unavailable right now, for assistive technology.
+  ///
+  /// A dimmed item tells a sighted user *that* something is unavailable and
+  /// never *why*; the reason is usually the only thing they actually need
+  /// ("nothing is selected", "the field is read-only"). A screen reader has no
+  /// dimming to go on at all, so without this it gets neither half.
+  /// [RenderContextMenuItem] reports it as the node's hint.
+  final String? disabledReason;
+
+  /// The accelerator to show at the right of the row, as text: `Ctrl+C`.
+  ///
+  /// Display only. This does **not** bind anything - the control that owns the
+  /// command already binds it - and writing a chord here that nothing listens
+  /// for produces a menu that advertises a shortcut which does nothing.
+  final String? shortcut;
+
+  /// The letter that jumps to this item, when it is not [label]'s first one.
+  final String? mnemonic;
+
+  /// The letter initial-letter navigation matches, which is [mnemonic] or the
+  /// first character of [label].
+  String get mnemonicLetter {
+    final String? explicit = mnemonic;
+    if (explicit != null && explicit.isNotEmpty) return explicit[0];
+    return label.isEmpty ? '' : label[0];
+  }
 }
 
 /// A vertical list of commands, keyboard-navigable.

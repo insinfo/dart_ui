@@ -394,6 +394,86 @@ void main() {
       harness.dispose();
     });
   });
+
+  group('the context menu demonstration', () {
+    test('a right-click in the panel opens a menu with its commands', () {
+      final _Harness harness = _Harness();
+      harness.frame();
+
+      harness.model.contextMenu.open(
+        globalPosition: const Offset(30, 300),
+        itemsBuilder: () => <MenuItem>[const MenuItem(label: 'placeholder')],
+      );
+      harness.frame();
+      // Opened through the controller with placeholder items and then, in the
+      // gallery, re-opened by the region itself: this asserts the *wiring* -
+      // a scope exists, it hosts a popup, and the popup reaches the tree.
+      expect(harness.renderTypes, contains(RenderContextMenuSurface));
+
+      harness.model.contextMenu.close();
+      harness.frame();
+      expect(harness.renderTypes, isNot(contains(RenderContextMenuSurface)));
+      harness.dispose();
+    });
+
+    test('choosing a command changes what the gallery shows', () {
+      final _Harness harness = _Harness();
+      harness.frame();
+      expect(harness.model.lastContextCommand, isEmpty);
+
+      final RenderContextMenuRegion region =
+          harness.findRender<RenderContextMenuRegion>();
+      final Offset inside = region.localToGlobal(const Offset(4, 4));
+      harness.owner.dispatchPointerEvent(PointerDownEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: inside,
+        button: PointerButton.secondary,
+      ));
+      harness.frame();
+
+      final RenderContextMenuSurface menu =
+          harness.findRender<RenderContextMenuSurface>();
+      expect(
+        <String>[
+          for (final RenderBox child in menu.children)
+            if (child is RenderContextMenuItem) child.item.label,
+        ],
+        <String>['Refresh', 'Duplicate', 'Delete'],
+      );
+
+      harness
+        ..pressKey(logicalKeyArrowDown)
+        ..pressKey(logicalKeyEnter);
+
+      expect(harness.model.lastContextCommand, 'Refresh');
+      expect(harness.renderTypes, isNot(contains(RenderContextMenuSurface)));
+      harness.dispose();
+    });
+
+    test('the tab ring is unchanged: a menu region is not a control', () {
+      final _Harness harness = _Harness();
+      harness.frame();
+      final int before = harness.owner.focusManager.traversalRing().length;
+
+      harness.model.contextMenu.open(
+        globalPosition: const Offset(30, 300),
+        itemsBuilder: () => <MenuItem>[const MenuItem(label: 'Something')],
+      );
+      harness.frame();
+
+      expect(
+        harness.owner.focusManager.traversalRing().length,
+        before,
+        reason: 'the popup skips traversal, so Tab keeps its meaning: it moves '
+            'to the next control, which is what dismisses the menu',
+      );
+      harness.dispose();
+    });
+  });
 }
 
 /// Mounts the gallery in a headless owner and drives it like a window would.

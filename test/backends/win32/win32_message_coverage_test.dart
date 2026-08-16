@@ -40,6 +40,11 @@ import 'package:test/test.dart';
 /// `lParam` of a mouse message: y in the high word, x in the low word.
 int _at(int x, int y) => ((y & 0xFFFF) << 16) | (x & 0xFFFF);
 
+/// `wParam` of a wheel message: the signed detent count in the high word,
+/// scaled by `WHEEL_DELTA`, and the modifier keys in the low word.
+int _wheel(int detents, {int keys = 0}) =>
+    (((detents * wheelDelta) & 0xFFFF) << 16) | keys;
+
 void main() {
   // Runs everywhere, including Linux and macOS CI, because a wrong number here
   // would make the eventual handler dead code that nothing ever reaches - the
@@ -209,10 +214,7 @@ void main() {
       expect(scroll.logicalPosition.dx, closeTo(10, 1));
       expect(scroll.logicalPosition.dy, closeTo(10, 1));
       expect(scroll.scrollDeltaUnit, ScrollDeltaUnit.lines);
-      // One detent is one line. The *sign* is deliberately not asserted here:
-      // it is inverted today with respect to X11 and to the Down arrow key,
-      // and correcting it belongs to `Win32Window._onPointerScroll`. See the
-      // audit section of doc/architecture/overview.md.
+      // One detent is one line.
       expect(scroll.scrollDelta.dy.abs(), 1.0);
       expect(
         scroll.scrollDelta.dx,
@@ -221,15 +223,94 @@ void main() {
       );
     });
 
+    test('WM_MOUSEWHEEL agrees with the Down arrow about which way is down',
+        () async {
+      // The sign, which is the whole bug. WHEEL_DELTA positive means the wheel
+      // was rolled *away* from the user, which is scrolling **up**, while this
+      // framework calls down positive in three independent places:
+      // `PointerScrollEvent.scrollDelta` ("toward increasing coordinates"),
+      // `RenderScrollViewer` mapping Down to `applyDelta(+lineExtent)`, and
+      // the X11 backend mapping wheel-down (button 5) to `Offset(0, +1)`.
+      //
+      // Without the negation in `_onPointerScroll` both of these are exactly
+      // inverted, and the window scrolls the wrong way with no error anywhere.
+      await send(wmMousewheel, _wheel(1), 0);
+      expect(
+        events.whereType<PointerScrollEvent>().single.scrollDelta.dy,
+        -1.0,
+        reason: 'rolling away from the user scrolls up, toward smaller '
+            'coordinates',
+      );
+
+      await send(wmMousewheel, _wheel(-1), 0);
+      expect(
+        events.whereType<PointerScrollEvent>().single.scrollDelta.dy,
+        1.0,
+        reason: 'rolling toward the user scrolls down, which is the direction '
+            'X11 button 5 and the Down arrow already agree on',
+      );
+    });
+
     test('Shift+WM_MOUSEWHEEL is redirected to the horizontal axis', () async {
-      // The only path by which a horizontal ScrollViewer receives anything on
-      // Windows today, because WM_MOUSEHWHEEL is unhandled.
-      await send(wmMousewheel, (wheelDelta << 16) | mkShift, 0);
+      // A mouse with no tilt wheel: Shift turns the vertical wheel into a
+      // horizontal one, and it keeps the vertical message's sign.
+      await send(wmMousewheel, _wheel(1, keys: mkShift), 0);
       final PointerScrollEvent scroll =
           events.whereType<PointerScrollEvent>().single;
 
       expect(scroll.scrollDelta.dy, 0.0);
-      expect(scroll.scrollDelta.dx.abs(), 1.0);
+      expect(scroll.scrollDelta.dx, -1.0);
+    });
+
+    test('WM_MOUSEHWHEEL reaches the horizontal axis, positive to the right',
+        () async {
+      // The tilt wheel and a trackpad's sideways swipe. Unhandled before this,
+      // which left `ScrollAxis.horizontal` viewers - which read
+      // `scrollDelta.dx`, and which X11 already feeds from buttons 6 and 7 -
+      // answering nothing at all on Windows.
+      //
+      // The sign is the trap: unlike WM_MOUSEWHEEL, this message is already
+      // positive-to-the-right, which is toward increasing coordinates, so
+      // negating it the way the vertical axis must be negated would fix
+      // vertical scrolling by breaking horizontal scrolling.
+      await send(wmMousehwheel, _wheel(1), 0);
+      final PointerScrollEvent right =
+          events.whereType<PointerScrollEvent>().single;
+      expect(right.scrollDelta.dx, 1.0);
+      expect(right.scrollDelta.dy, 0.0);
+      expect(right.scrollDeltaUnit, ScrollDeltaUnit.lines);
+
+      await send(wmMousehwheel, _wheel(-1), 0);
+      expect(
+        events.whereType<PointerScrollEvent>().single.scrollDelta.dx,
+        -1.0,
+      );
+
+      // And it is genuinely handled rather than falling through: the default
+      // arm would put no event on the stream at all.
+      await send(wmMousehwheel, _wheel(2), 0);
+      expect(
+        events.whereType<PointerScrollEvent>().single.scrollDelta.dx,
+        2.0,
+        reason: 'two detents are two lines',
+      );
+    });
+
+    test('WM_MOUSEHWHEEL carries screen coordinates too', () async {
+      // Same trap as the vertical wheel, and a handler written by copying the
+      // button messages instead of the wheel one would inherit it.
+      final Offset screen = window.clientToScreen(const Offset(30, 20));
+      final int lParam = _at(
+        (screen.dx * window.renderScale).round(),
+        (screen.dy * window.renderScale).round(),
+      );
+
+      await send(wmMousehwheel, _wheel(1), lParam);
+      final PointerScrollEvent scroll =
+          events.whereType<PointerScrollEvent>().single;
+
+      expect(scroll.logicalPosition.dx, closeTo(30, 1));
+      expect(scroll.logicalPosition.dy, closeTo(20, 1));
     });
 
     test('WM_DPICHANGED moves to the rectangle Windows suggested', () async {

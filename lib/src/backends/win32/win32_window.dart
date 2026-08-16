@@ -42,12 +42,25 @@ import 'win32_dib_surface.dart';
 import 'win32_structs.dart';
 import 'win32_window_class.dart';
 
+/// `SWP_SHOWWINDOW`, `WS_DISABLED` and `HWND_TOP`.
+///
+/// Declared here rather than in `win32_constants.dart` because they are used
+/// by exactly one file and that file is this one; the shared constant list is
+/// for values more than one caller has to agree on.
+const int _swpShowwindow = 0x0040;
+const int _wsDisabled = 0x08000000;
+const int _hwndTop = 0;
+const int _wsExNoactivate = 0x08000000;
+const int _wsExTopmost = 0x00000008;
+
 /// A Win32 window.
 ///
 /// Sizes crossing this boundary are logical; sizes below it are physical
 /// pixels. The conversion happens once, in [Win32CoordinateSpace], and the
 /// fields are named `_pixelWidth` / `clientSize` so that a mix-up reads wrong.
-final class Win32Window with DisposableMixin implements NativeWindow {
+final class Win32Window
+    with DisposableMixin
+    implements NativeWindow, ActivatableWindow, EnableableWindow {
   Win32Window._({
     required Win32Api api,
     required Win32WindowClass windowClass,
@@ -56,6 +69,7 @@ final class Win32Window with DisposableMixin implements NativeWindow {
     required int dpi,
     required int style,
     required int exStyle,
+    required this.kind,
   })  : _api = api,
         _class = windowClass,
         _onClosed = onClosed,
@@ -92,13 +106,28 @@ final class Win32Window with DisposableMixin implements NativeWindow {
     required void Function(Win32Window window) onClosed,
     required void Function() onSessionEnding,
   }) {
-    var style = options.decorated ? wsOverlappedWindow : wsPopup;
+    final kind = options.kind;
+    final decorated = options.decorated && kind.isDecoratedByDefault;
+    var style = decorated ? wsOverlappedWindow : wsPopup;
     if (!options.resizable) {
       // A non-resizable window keeps its caption and buttons but loses the
       // sizing border, which is what "not resizable" means to a user.
       style &= ~(wsThickframe | wsMaximizebox);
     }
-    const exStyle = wsExAppwindow;
+    // An owned window is a tool window as far as the shell is concerned: it
+    // belongs to its owner and must not get its own taskbar button, or closing
+    // the owner leaves an orphaned entry the user can click.
+    final owner = options.owner;
+    final ownerHandle = owner is Win32Window ? owner.handle : 0;
+    var exStyle =
+        ownerHandle == 0 && kind.isTopLevel ? wsExAppwindow : wsExToolwindow;
+    if (!kind.takesActivation) {
+      // WS_EX_NOACTIVATE is what stops a menu from stealing the caret out of
+      // the window that opened it. Without it, `ShowWindow` on the popup sends
+      // the owner a WM_ACTIVATE(WA_INACTIVE) and every focus ring in it goes
+      // grey while the user is merely reading a menu.
+      exStyle |= _wsExNoactivate | _wsExTopmost;
+    }
 
     // The window is created at the system DPI and corrected once its real
     // monitor is known: GetDpiForWindow needs an HWND, so there is no way to
@@ -111,6 +140,7 @@ final class Win32Window with DisposableMixin implements NativeWindow {
       dpi: api.systemDpi(),
       style: style,
       exStyle: exStyle,
+      kind: kind,
     );
 
     final title = api.toUtf16(options.title);
@@ -126,7 +156,10 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         cwUseDefault,
         cwUseDefault,
         cwUseDefault,
-        0,
+        // hWndParent doubles as the *owner* for an overlapped or popup window,
+        // which is what makes a dialog float above the window that opened it,
+        // minimise with it and die with it. Zero for a top-level window.
+        ownerHandle,
         0,
         windowClass.instanceHandle,
         window._token,
@@ -171,6 +204,11 @@ final class Win32Window with DisposableMixin implements NativeWindow {
     if (options.visible) window.show();
     return window;
   }
+
+  /// What this window is: an ordinary top-level window, a dialog, a menu or a
+  /// tooltip. Decides its styles, whether showing it activates it, and whether
+  /// closing it can end the application.
+  final WindowKind kind;
 
   final Win32Api _api;
   final Win32WindowClass _class;
@@ -311,7 +349,15 @@ final class Win32Window with DisposableMixin implements NativeWindow {
   @override
   void show() {
     if (_hwnd == 0) return;
-    _api.showWindow(_hwnd, swShowNormal);
+    // SW_SHOWNOACTIVATE for a menu or a tooltip: showing one must not take the
+    // keyboard away from the window that opened it. That is not cosmetic - a
+    // text field whose window was deactivated stops blinking its caret and
+    // dims its selection, so a menu that activated itself would make every
+    // field look unfocused for as long as the menu was open.
+    _api.showWindow(
+      _hwnd,
+      kind.takesActivation ? swShowNormal : swShowNoActivate,
+    );
     _api.updateWindow(_hwnd);
   }
 
@@ -319,6 +365,95 @@ final class Win32Window with DisposableMixin implements NativeWindow {
   void hide() {
     if (_hwnd == 0) return;
     _api.showWindow(_hwnd, swHide);
+  }
+
+  /// Raises the window and asks for the keyboard.
+  ///
+  /// `SetWindowPos` to the top *without* `SWP_NOACTIVATE` is the activation
+  /// path, rather than `SetForegroundWindow`: the two do the same thing for a
+  /// window of the process the user is already in, and Windows refuses
+  /// foreground stealing from a process that is not - so
+  /// `SetForegroundWindow`'s extra power is exactly the power that gets
+  /// silently denied. Nothing here believes it worked: the application's focus
+  /// bookkeeping moves on the WM_ACTIVATE / WM_SETFOCUS that comes back.
+  @override
+  void activate() {
+    if (_hwnd == 0 || _destroyed) return;
+    if (!kind.takesActivation) return;
+    if (!isEnabled) {
+      // A disabled window cannot take the keyboard, and asking makes Windows
+      // beep at the user. Its modal child is what should be activated, and
+      // that is the application layer's decision, not this one's.
+      return;
+    }
+    _api.showWindow(_hwnd, swShowNormal);
+    if (_api.setWindowPos(
+          _hwnd,
+          _hwndTop,
+          0,
+          0,
+          0,
+          0,
+          swpNomove | swpNosize | _swpShowwindow,
+        ) ==
+        0) {
+      _record(win32CallFailed(
+        'SetWindowPos',
+        _api.getLastError(),
+        context: 'activating window 0x${_hwnd.toRadixString(16)}',
+      ));
+    }
+  }
+
+  /// Whether Windows will deliver mouse and keyboard input to this window.
+  @override
+  bool get isEnabled {
+    if (_hwnd == 0) return false;
+    return (_api.getWindowLongPtrW(_hwnd, gwlStyle) & _wsDisabled) == 0;
+  }
+
+  /// Turns platform input to this window on or off - the platform half of
+  /// modality.
+  ///
+  /// Implemented by toggling `WS_DISABLED` through `SetWindowLongPtrW` rather
+  /// than by `EnableWindow`, because `EnableWindow` is not among the symbols
+  /// this backend binds and the style bit *is* what `EnableWindow` sets. What
+  /// is given up by not calling it is the `WM_ENABLE` notification, which
+  /// nothing in this framework listens for: the application layer already
+  /// knows it opened the modal, and it refuses to route events to a blocked
+  /// window on its own account.
+  @override
+  void setEnabled(bool value) {
+    if (_hwnd == 0 || _destroyed) return;
+    final style = _api.getWindowLongPtrW(_hwnd, gwlStyle);
+    final next = value ? style & ~_wsDisabled : style | _wsDisabled;
+    if (next == style) return;
+    _api.setWindowLongPtrW(_hwnd, gwlStyle, next);
+  }
+
+  /// The last activation state reported upwards, or null before the first one.
+  ///
+  /// Nullable rather than false-by-default so that the very first message -
+  /// whichever of WM_ACTIVATE, WM_SETFOCUS or WM_KILLFOCUS arrives first - is
+  /// always reported. A window created behind another one really is inactive,
+  /// and swallowing that first "inactive" would leave the application
+  /// believing a background window had the keyboard.
+  bool? _activated;
+
+  /// Whether Windows last told us this window has the keyboard.
+  bool get isActivated => _activated ?? false;
+
+  void _reportActivation({required bool active}) {
+    if (_activated == active) return;
+    _activated = active;
+    _emit(
+      WindowActivationEvent(
+        windowId: id,
+        generation: _generation.current,
+        activation:
+            active ? WindowActivation.activated : WindowActivation.deactivated,
+      ),
+    );
   }
 
   /// Destroys the window. WM_DESTROY arrives synchronously from inside
@@ -470,15 +605,32 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         // keyboard: its low half is going to another window, and keeping the
         // high half would fuse it onto whatever is typed here next.
         if (win32LoWord(wParam) == waInactive) _textAssembler.reset();
-        _emit(
-          WindowActivationEvent(
-            windowId: id,
-            generation: _generation.current,
-            activation: win32LoWord(wParam) == waInactive
-                ? WindowActivation.deactivated
-                : WindowActivation.activated,
-          ),
-        );
+        _reportActivation(active: win32LoWord(wParam) != waInactive);
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
+      // WM_SETFOCUS and WM_KILLFOCUS are the *keyboard* half of activation,
+      // and they are handled as well as WM_ACTIVATE rather than instead of it
+      // because the two are not the same event and neither implies the other:
+      //
+      //   * WM_ACTIVATE is about the window the user is working in. It is what
+      //     the title bar renders and what the shell means by "the active
+      //     window". A window can be active and hand the caret to an owned
+      //     tool window without ever being deactivated.
+      //   * WM_SETFOCUS / WM_KILLFOCUS is about which HWND the keyboard is
+      //     actually wired to, which is the one a text field must obey. A
+      //     click on another window of the *same* application delivers these
+      //     without necessarily delivering WM_ACTIVATE first.
+      //
+      // Both are normalised into one [WindowActivationEvent], de-duplicated by
+      // [_reportActivation] so the pair that arrives together on an ordinary
+      // Alt+Tab is one event and not two.
+      case wmSetfocus:
+        _reportActivation(active: true);
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
+      case wmKillfocus:
+        _textAssembler.reset();
+        _reportActivation(active: false);
         return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
       case wmSetcursor:
@@ -560,7 +712,21 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         return _onPointerDown(PointerButton.middle, lParam, clickCount: 2);
 
       case wmMousewheel:
-        return _onPointerScroll(wParam, lParam);
+        return _onPointerScroll(wParam, lParam, horizontal: false);
+
+      // The tilt wheel and a trackpad's sideways swipe. Handled separately
+      // rather than folded into the arm above because the two disagree about
+      // sign: WM_MOUSEHWHEEL is already positive-to-the-right, which is the
+      // framework's own direction, while WM_MOUSEWHEEL is positive-away-from
+      // -the-user, which is the opposite of it. See [_onPointerScroll].
+      case wmMousehwheel:
+        return _onPointerScroll(wParam, lParam, horizontal: true);
+
+      // The tilt wheel and a trackpad's sideways swipe. Handled separately
+      // rather than folded into the arm above because the two disagree about
+      // sign: WM_MOUSEHWHEEL is already positive-to-the-right, which is the
+      // framework's own direction, while WM_MOUSEWHEEL is positive-away-from
+      // -the-user, which is the opposite of it. See [_onPointerScroll].
 
       case wmMouseleave:
         return _onPointerLeave();
@@ -745,7 +911,29 @@ final class Win32Window with DisposableMixin implements NativeWindow {
     return 0;
   }
 
-  int _onPointerScroll(int wParam, int lParam) {
+  /// `WM_MOUSEWHEEL` and `WM_MOUSEHWHEEL`, normalised into one event.
+  ///
+  /// Two things happen here that are easy to get wrong in opposite directions.
+  ///
+  /// **The coordinates are screen coordinates.** Alone among the mouse
+  /// messages, the wheel's `lParam` is relative to the desktop rather than to
+  /// the client area. Reading it like the others puts the scroll at the
+  /// window's position on the desktop instead of under the pointer, which on a
+  /// maximised window on a second monitor lands outside every scrollable there
+  /// is.
+  ///
+  /// **The vertical sign is inverted and the horizontal one is not.** Windows
+  /// makes `WHEEL_DELTA` positive when the wheel is rolled *away* from the
+  /// user, which is scrolling **up**; this framework's contract is the
+  /// opposite and says so in three independent places -
+  /// `PointerScrollEvent.scrollDelta` is documented as "toward increasing
+  /// coordinates", `RenderScrollViewer` maps Down to `applyDelta(+lineExtent)`,
+  /// and the X11 backend maps wheel-down (button 5) to `Offset(0, +1)`. So the
+  /// vertical word is negated. `WM_MOUSEHWHEEL` is already positive-to-the
+  /// -right, which *is* toward increasing coordinates, so it must not be - and
+  /// negating both, which is the natural way to write this, would leave
+  /// horizontal scrolling backwards in exchange for fixing vertical.
+  int _onPointerScroll(int wParam, int lParam, {required bool horizontal}) {
     var x = win32SignedLoWord(lParam);
     var y = win32SignedHiWord(lParam);
     _withScratchPoint((point) {
@@ -757,7 +945,11 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         y = point.ref.y;
       }
     });
-    final delta = win32SignedHiWord(wParam) / 120.0;
+    final detents = win32SignedHiWord(wParam) / wheelDelta;
+    // Shift+vertical wheel is the conventional stand-in for a horizontal wheel
+    // on a mouse that has none, and it inherits the vertical message's sign.
+    final onHorizontalAxis = horizontal || (wParam & mkShift) != 0;
+    final delta = horizontal ? detents : -detents;
     final position = _space.physicalToLogical(x, y);
     _emit(
       PointerScrollEvent(
@@ -767,8 +959,7 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         pointerId: 0,
         kind: PointerKind.mouse,
         logicalPosition: position,
-        scrollDelta:
-            (wParam & mkShift) != 0 ? Offset(delta, 0) : Offset(0, delta),
+        scrollDelta: onHorizontalAxis ? Offset(delta, 0) : Offset(0, delta),
         scrollDeltaUnit: ScrollDeltaUnit.lines,
       ),
     );

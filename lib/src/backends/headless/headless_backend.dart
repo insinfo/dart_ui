@@ -109,9 +109,29 @@ final class HeadlessWindowingBackend
       desktopScale: desktopScale,
       enqueueEvent: _enqueueEvent,
       onClosed: _removeWindow,
+      activateExclusively: _activateExclusively,
     );
     _windows.add(window);
     return window;
+  }
+
+  /// Gives one window the keyboard and takes it from every other.
+  ///
+  /// The desktop invariant, modelled rather than assumed: exactly one window of
+  /// a display server is active at a time, so activating one *deactivates* the
+  /// previous holder and the deactivation is a real queued event with a real
+  /// ordering. A headless test of cross-window focus is only worth anything if
+  /// the backend enforces this the way a window manager does.
+  ///
+  /// Note that creating a visible window does **not** go through here and emits
+  /// nothing: on every real platform a window is mapped first and activated
+  /// second, and the two are separate messages.
+  void _activateExclusively(HeadlessWindow window) {
+    for (final HeadlessWindow other in _windows) {
+      if (identical(other, window)) continue;
+      other._deactivate();
+    }
+    window._activate();
   }
 
   @override
@@ -170,7 +190,9 @@ final class HeadlessWindowingBackend
 }
 
 /// A virtual top-level window backed by a [MemorySurfaceDescriptor].
-final class HeadlessWindow with DisposableMixin implements NativeWindow {
+final class HeadlessWindow
+    with DisposableMixin
+    implements NativeWindow, ActivatableWindow, EnableableWindow {
   HeadlessWindow._({
     required NativeWindowId id,
     required WindowOptions options,
@@ -181,15 +203,23 @@ final class HeadlessWindow with DisposableMixin implements NativeWindow {
       PlatformWindowEvent event,
     ) enqueueEvent,
     required void Function(HeadlessWindow window) onClosed,
+    required void Function(HeadlessWindow window) activateExclusively,
   })  : _id = id,
         _clientSize = options.size,
         _position = options.position ?? Offset.zero,
         _title = options.title,
         _visible = options.visible,
+        // A window that is mapped at creation is the one the user is looking
+        // at, so it starts active - but silently, because no platform sends an
+        // activation message for a window that has not existed yet.
+        _active = options.visible && options.kind.takesActivation,
+        owner = options.owner,
+        kind = options.kind,
         _renderScale = renderScale,
         _desktopScale = desktopScale,
         _enqueueEvent = enqueueEvent,
-        _onClosed = onClosed {
+        _onClosed = onClosed,
+        _activateExclusively = activateExclusively {
     _surface = _createSurface();
   }
 
@@ -199,6 +229,21 @@ final class HeadlessWindow with DisposableMixin implements NativeWindow {
   final void Function(HeadlessWindow window, PlatformWindowEvent event)
       _enqueueEvent;
   final void Function(HeadlessWindow window) _onClosed;
+  final void Function(HeadlessWindow window) _activateExclusively;
+
+  /// The window this one belongs to, or null for a top-level window.
+  ///
+  /// Recorded rather than acted on: there is no window manager here to keep an
+  /// owned window above its owner, and the application layer is what closes
+  /// owned windows with their owner. Exposed so a test can assert the
+  /// relationship reached the backend at all.
+  final NativeWindow? owner;
+
+  /// What this window is. A [WindowKind.popup] or [WindowKind.tooltip] refuses
+  /// activation the way `WS_EX_NOACTIVATE` makes a real menu refuse it, so a
+  /// headless test of "opening a menu must not deactivate the window behind
+  /// it" is testing the same rule the Win32 backend enforces.
+  final WindowKind kind;
   final GenerationToken _generation = GenerationToken();
   final StreamController<PlatformWindowEvent> _events =
       StreamController<PlatformWindowEvent>.broadcast(sync: true);
@@ -208,6 +253,8 @@ final class HeadlessWindow with DisposableMixin implements NativeWindow {
   Offset _position;
   String _title;
   bool _visible;
+  bool _active;
+  bool _enabled = true;
   SystemCursor _cursor = SystemCursor.arrow;
 
   @override
@@ -249,16 +296,16 @@ final class HeadlessWindow with DisposableMixin implements NativeWindow {
   @override
   Stream<PlatformWindowEvent> get events => _events.stream;
 
+  /// Whether this window currently holds the keyboard.
+  bool get isActive => _active;
+
   @override
   void show() {
     throwIfDisposed();
     if (_visible) return;
     _visible = true;
-    _emit(WindowActivationEvent(
-      windowId: id,
-      generation: generation,
-      activation: WindowActivation.activated,
-    ));
+    if (!kind.takesActivation) return;
+    _activateExclusively(this);
   }
 
   @override
@@ -266,6 +313,45 @@ final class HeadlessWindow with DisposableMixin implements NativeWindow {
     throwIfDisposed();
     if (!_visible) return;
     _visible = false;
+    _deactivate();
+  }
+
+  /// Takes the keyboard, deactivating whichever window had it.
+  ///
+  /// A disabled window refuses, which is the platform half of modality: a
+  /// window blocked by a modal dialog cannot be clicked into focus.
+  @override
+  void activate() {
+    throwIfDisposed();
+    if (!_enabled || !kind.takesActivation) return;
+    _visible = true;
+    _activateExclusively(this);
+  }
+
+  @override
+  bool get isEnabled => _enabled;
+
+  @override
+  void setEnabled(bool value) {
+    throwIfDisposed();
+    if (value == _enabled) return;
+    _enabled = value;
+    if (!value) _deactivate();
+  }
+
+  void _activate() {
+    if (_active || isDisposed) return;
+    _active = true;
+    _emit(WindowActivationEvent(
+      windowId: id,
+      generation: generation,
+      activation: WindowActivation.activated,
+    ));
+  }
+
+  void _deactivate() {
+    if (!_active || isDisposed) return;
+    _active = false;
     _emit(WindowActivationEvent(
       windowId: id,
       generation: generation,
@@ -343,11 +429,14 @@ final class HeadlessWindow with DisposableMixin implements NativeWindow {
 
   /// Queues normalized synthetic input for the next backend event pump.
   ///
-  /// False means the event was stale or belonged to another window. Tests can
-  /// assert the drop explicitly instead of relying on a silent callback.
+  /// False means the event was stale, belonged to another window, or arrived
+  /// at a window the platform has been told to refuse input for - the modal
+  /// case. Tests can assert the drop explicitly instead of relying on a silent
+  /// callback.
   bool dispatchInput(PlatformInputEvent event) {
     throwIfDisposed();
     if (event.windowId != id || event.generation != generation) return false;
+    if (!_enabled) return false;
     _emit(event);
     return true;
   }

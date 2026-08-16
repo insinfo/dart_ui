@@ -17,6 +17,55 @@ import 'window_events.dart';
 
 enum WindowState { normal, minimised, maximised, fullscreen }
 
+/// What a window *is*, which decides far more than how it is decorated.
+///
+/// A desktop application is not a set of equal top-level windows: it is a few
+/// real windows plus a stream of short-lived surfaces - menus, tooltips,
+/// completion popups - that happen to be windows because they must be able to
+/// leave their owner's bounds. Modelling them as "a window with `decorated:
+/// false`" is what produces the two failures every toolkit hits:
+///
+///   * **the popup counts as a window**, so dismissing a menu closes the
+///     application. The exit policy has to be about top-level windows, not
+///     about the last window of any kind - see
+///     [WindowKind.isTopLevel];
+///   * **the popup takes activation**, so opening a menu deactivates the
+///     window behind it, the caret stops blinking and the selection dims. A
+///     popup must be shown without activating.
+///
+/// So the kind is declared at creation and every layer reads it.
+enum WindowKind {
+  /// An ordinary top-level window: decorated, in the taskbar, activatable, and
+  /// counted by [ApplicationOptions.exitWhenLastWindowClosed].
+  normal,
+
+  /// A decorated, activatable window that belongs to another one. Dialogs and
+  /// inspectors. Closing the last of these does *not* end the application.
+  dialog,
+
+  /// A menu or completion list: undecorated, never activated, dismissed when
+  /// focus goes anywhere that is not it or its owner.
+  popup,
+
+  /// A tooltip: like [popup], and additionally never focusable at all.
+  tooltip;
+
+  /// Whether closing this window can end the application.
+  bool get isTopLevel => this == WindowKind.normal;
+
+  /// Whether the platform should be asked to activate this window when it is
+  /// shown.
+  bool get takesActivation =>
+      this == WindowKind.normal || this == WindowKind.dialog;
+
+  /// Whether the window manager should draw a frame around it.
+  bool get isDecoratedByDefault => takesActivation;
+
+  /// Whether this window disappears when focus moves elsewhere.
+  bool get isDismissable =>
+      this == WindowKind.popup || this == WindowKind.tooltip;
+}
+
 enum SystemCursor {
   arrow,
   text,
@@ -39,6 +88,8 @@ final class WindowOptions {
     this.resizable = true,
     this.decorated = true,
     this.visible = true,
+    this.owner,
+    this.kind = WindowKind.normal,
   });
 
   /// In logical units. The backend multiplies by the scale of whichever
@@ -54,6 +105,60 @@ final class WindowOptions {
   final bool resizable;
   final bool decorated;
   final bool visible;
+
+  /// The window this one belongs to, or null for a top-level window.
+  ///
+  /// An owned window stays in front of its owner, minimises and restores with
+  /// it, and is destroyed when the owner is - which is what a dialog, an
+  /// inspector or a tool palette needs and what an unrelated second top-level
+  /// window must *not* have. Backends that have no concept of ownership ignore
+  /// it; the application layer still enforces its half (modal input blocking)
+  /// so the behaviour degrades to "correct but not integrated with the window
+  /// manager" rather than to "modal dialogs do not work".
+  ///
+  /// The window itself rather than its [NativeWindowId], because turning an id
+  /// back into a native handle is a lookup only the backend can do, and a
+  /// backend that was handed an id from *another* backend could not tell.
+  final NativeWindow? owner;
+
+  /// What this window is for. See [WindowKind]; the default is an ordinary
+  /// top-level window, so no existing caller changes behaviour.
+  final WindowKind kind;
+}
+
+/// A window that can ask the platform for keyboard focus.
+///
+/// Separate from [NativeWindow] rather than a method on it, because a backend
+/// that cannot honour the request must be able to say so by not implementing
+/// this - and because adding a method to the window contract would break every
+/// backend at once for a capability only some of them have. Test with a
+/// pattern, the way `ClipboardProvider` is tested for:
+///
+/// ```dart
+/// if (window case final ActivatableWindow window) window.activate();
+/// ```
+abstract interface class ActivatableWindow {
+  /// Raises the window and gives it the keyboard, if the platform allows it.
+  ///
+  /// Best effort by nature: Windows refuses foreground activation to a process
+  /// the user is not interacting with, and X11 window managers may honour or
+  /// ignore the request. The application's own focus bookkeeping is therefore
+  /// driven by the *activation event that comes back*, never by the fact that
+  /// this was called.
+  void activate();
+}
+
+/// A window whose input the platform can be told to refuse.
+///
+/// This is the half of modality the platform owns: a disabled window does not
+/// receive mouse or keyboard input, its title bar flashes when clicked, and
+/// the window manager knows it is blocked. The other half - refusing to route
+/// events that reach the framework anyway - belongs to the application layer,
+/// which enforces it whether or not the backend implements this.
+abstract interface class EnableableWindow {
+  bool get isEnabled;
+
+  void setEnabled(bool value);
 }
 
 /// A live window.
