@@ -951,6 +951,14 @@ enum MetalEncodingSource {
   /// `MTLRenderCommandEncoder`.
   protocolDeclaration,
 
+  /// `class_getInstanceMethod` on `object_getClass` of a **live instance** -
+  /// the class that really implements the method, which for Metal's descriptor
+  /// façades is a private subclass and not the class named in the header.
+  ///
+  /// The strongest of the four: a protocol declaration says what an
+  /// implementation must look like, while this is the implementation.
+  concreteClass,
+
   /// Nothing in the runtime declares it.
   notFound,
 }
@@ -991,10 +999,22 @@ final class MetalRuntimeEncoding {
 /// `continue`d, and passed - the exact shape of a check that reports coverage
 /// it does not have.
 ///
+/// [specimens] maps a receiver name to a **live instance** of it, and is what
+/// closes the descriptor classes: `MTLTextureDescriptor` and its relatives
+/// declare their properties in the header and implement them in a private
+/// subclass, so the only way to read `setWidth:`'s encoding is to ask an
+/// object what class it really is. `metalDescriptorSpecimens()` in
+/// `metal_device.dart` builds the map; it is a parameter rather than an import
+/// because the descriptors are built by the layer above this one.
+///
 /// Returns [MetalEncodingSource.notFound] rather than throwing when nothing
 /// declares it, and does the same off macOS: whether absence is a failure is
 /// the caller's decision.
-MetalRuntimeEncoding metalRuntimeEncoding(MetalSelector selector) {
+MetalRuntimeEncoding metalRuntimeEncoding(
+  MetalSelector selector, {
+  Map<String, Pointer<ObjCObject>> specimens =
+      const <String, Pointer<ObjCObject>>{},
+}) {
   if (!isMetalAvailable) {
     return MetalRuntimeEncoding(selector, MetalEncodingSource.notFound, null);
   }
@@ -1027,13 +1047,27 @@ MetalRuntimeEncoding metalRuntimeEncoding(MetalSelector selector) {
     }
   }
 
+  final Pointer<ObjCObject>? specimen = specimens[selector.receiver];
+  if (specimen != null && specimen != nullptr) {
+    final String? implemented =
+        objcMethodTypeEncoding(objcClassOfObject(specimen), selector.name);
+    if (implemented != null) {
+      return MetalRuntimeEncoding(
+          selector, MetalEncodingSource.concreteClass, implemented);
+    }
+  }
+
   return MetalRuntimeEncoding(selector, MetalEncodingSource.notFound, null);
 }
 
 /// [metalRuntimeEncoding] for every entry of [kMetalSelectors].
-List<MetalRuntimeEncoding> metalRuntimeEncodings() => <MetalRuntimeEncoding>[
+List<MetalRuntimeEncoding> metalRuntimeEncodings({
+  Map<String, Pointer<ObjCObject>> specimens =
+      const <String, Pointer<ObjCObject>>{},
+}) =>
+    <MetalRuntimeEncoding>[
       for (final MetalSelector selector in kMetalSelectors)
-        metalRuntimeEncoding(selector),
+        metalRuntimeEncoding(selector, specimens: specimens),
     ];
 
 // ---------------------------------------------------------------------------

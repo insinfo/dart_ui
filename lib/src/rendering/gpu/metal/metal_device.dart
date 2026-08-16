@@ -47,6 +47,7 @@ import 'dart:ffi';
 
 import '../../../ffi/native_memory.dart';
 import '../../../ffi/objc_runtime.dart';
+import '../gpu_pipeline.dart';
 import 'metal_bindings.dart';
 import 'metal_shaders.dart';
 
@@ -225,6 +226,319 @@ final class MetalGpu {
 }
 
 // ---------------------------------------------------------------------------
+// The pipeline - where the vertex layout stops being a comment
+// ---------------------------------------------------------------------------
+
+/// The `MTLVertexDescriptor` for the one interleaved layout, autoreleased.
+///
+/// Built from [kMetalVertexAttributes] and [kMetalVertexStride], which are
+/// themselves computed from `gpu_pipeline.dart` rather than restated - so the
+/// descriptor Metal validates is the shared layout and not a second opinion
+/// about it. A mismatch between this and the `[[attribute(n)]]` qualifiers in
+/// the MSL is one of the two things `newRenderPipelineStateWithDescriptor:`
+/// refuses outright, which is why building it is worth doing even before there
+/// is anything to draw.
+///
+/// **The caller must be inside an autorelease pool.**
+/// `+[MTLVertexDescriptor vertexDescriptor]` is a convenience constructor.
+/// [attributes] defaults to the shared layout and is a parameter for exactly
+/// one reason: a test hands in a deliberately incomplete one to check that
+/// Metal *refuses* it. A validator that accepts everything proves nothing
+/// about the descriptor it accepted.
+Pointer<ObjCObject> metalBuildVertexDescriptor({
+  List<MetalVertexAttribute> attributes = kMetalVertexAttributes,
+}) {
+  final Pointer<ObjCObject> cls = objcClass('MTLVertexDescriptor');
+  if (cls == nullptr) {
+    throw MetalError('the MTLVertexDescriptor class is not loaded');
+  }
+  final Pointer<ObjCObject> descriptor =
+      metalSendPointer(cls, 'vertexDescriptor');
+  if (descriptor == nullptr) {
+    throw MetalError('+[MTLVertexDescriptor vertexDescriptor] returned nil');
+  }
+
+  final Pointer<ObjCObject> slots = metalSendPointer(descriptor, 'attributes');
+  for (final MetalVertexAttribute attribute in attributes) {
+    final Pointer<ObjCObject> slot = metalSendPointer1(
+        slots, 'objectAtIndexedSubscript:', attribute.attributeIndex);
+    if (slot == nullptr) {
+      throw MetalError('vertex attribute ${attribute.attributeIndex} '
+          '(${attribute.name}) has no descriptor slot');
+    }
+    metalSendVoid1(slot, 'setFormat:', attribute.format);
+    metalSendVoid1(slot, 'setOffset:', attribute.byteOffset);
+    metalSendVoid1(slot, 'setBufferIndex:', kMetalVertexBufferIndex);
+  }
+
+  final Pointer<ObjCObject> layouts = metalSendPointer(descriptor, 'layouts');
+  final Pointer<ObjCObject> layout = metalSendPointer1(
+      layouts, 'objectAtIndexedSubscript:', kMetalVertexBufferIndex);
+  if (layout == nullptr) {
+    throw MetalError('buffer layout $kMetalVertexBufferIndex has no slot');
+  }
+  metalSendVoid1(layout, 'setStride:', kMetalVertexStride);
+  metalSendVoid1(layout, 'setStepFunction:', MtlVertexStepFunction.perVertex);
+  return descriptor;
+}
+
+/// One `MTLRenderPipelineState` per blend mode, built once and reused.
+///
+/// The state object is where Metal *validates*: the vertex descriptor against
+/// the `[[stage_in]]` struct, the attachment's pixel format against the
+/// fragment return type, the entry points against the library. An inconsistent
+/// description fails here, with Apple's message, rather than drawing something
+/// wrong - which is why this is a step of its own and not part of drawing.
+final class MetalPipelineCache {
+  MetalPipelineCache._(this._gpu, this._library, this._pixelFormat);
+
+  /// Compiles the shader library and holds it for the pipelines built from it.
+  ///
+  /// [pixelFormat] is an [MtlPixelFormat] member and is part of the pipeline's
+  /// identity in Metal: a state built for `rgba8Unorm` cannot be used in a pass
+  /// whose attachment is `bgra8Unorm`, and Metal raises rather than converting.
+  static MetalPipelineCache build(
+    MetalGpu gpu, {
+    int pixelFormat = MtlPixelFormat.rgba8Unorm,
+  }) {
+    final Pointer<ObjCObject> library = gpu.compileShaderLibrary();
+    return MetalPipelineCache._(gpu, library, pixelFormat);
+  }
+
+  final MetalGpu _gpu;
+  final Pointer<ObjCObject> _library;
+  final int _pixelFormat;
+
+  /// Keyed by the display list's blend-mode constant, which is what a
+  /// [GpuBatch] carries; the factors come from [gpuBlendForMode].
+  final Map<int, Pointer<ObjCObject>> _states = <int, Pointer<ObjCObject>>{};
+
+  bool _disposed = false;
+
+  /// The pipeline state for [blendMode], built on first use.
+  Pointer<ObjCObject> forBlendMode(int blendMode) {
+    if (_disposed) throw MetalError('this MetalPipelineCache was disposed');
+    final Pointer<ObjCObject>? cached = _states[blendMode];
+    if (cached != null) return cached;
+    final Pointer<ObjCObject> state = buildState(gpuBlendForMode(blendMode));
+    _states[blendMode] = state;
+    return state;
+  }
+
+  /// Builds one `MTLRenderPipelineState`, **+1**, uncached.
+  ///
+  /// [vertexDescriptor] is a factory rather than an object because the
+  /// descriptor is autoreleased and has to be born inside this method's pool.
+  /// It is a parameter so that a test can supply a wrong one and assert that
+  /// Metal refuses it; nothing in the renderer passes anything but the
+  /// default.
+  Pointer<ObjCObject> buildState(
+    GpuBlendState blend, {
+    Pointer<ObjCObject> Function() vertexDescriptor =
+        metalBuildVertexDescriptor,
+  }) {
+    final Pointer<ObjCObject> cls = objcClass('MTLRenderPipelineDescriptor');
+    if (cls == nullptr) {
+      throw MetalError('the MTLRenderPipelineDescriptor class is not loaded');
+    }
+    final Pointer<ObjCObject> vertexFunction =
+        _gpu.newFunction(_library, kMetalVertexEntryPoint);
+    final Pointer<ObjCObject> fragmentFunction =
+        _gpu.newFunction(_library, kMetalFragmentEntryPoint);
+    // The descriptor is +1 (alloc), the two functions are +1 (new...), and all
+    // three are dead the moment the state exists: a pipeline state retains
+    // everything it needs. Releasing them here rather than at teardown is what
+    // keeps the cache from holding two compiled functions per blend mode.
+    try {
+      return _withErrorOut((Pointer<Pointer<ObjCObject>> errorOut) {
+        return ObjCAutoreleasePool.run(() {
+          final Pointer<ObjCObject> descriptor =
+              metalSendPointer(metalSendPointer(cls, 'alloc'), 'init');
+          if (descriptor == nullptr) {
+            throw MetalError('[[MTLRenderPipelineDescriptor alloc] init] '
+                'returned nil');
+          }
+          try {
+            metalSendVoid1(
+                descriptor, 'setVertexFunction:', vertexFunction.address);
+            metalSendVoid1(
+                descriptor, 'setFragmentFunction:', fragmentFunction.address);
+            metalSendVoid1(
+                descriptor, 'setVertexDescriptor:', vertexDescriptor().address);
+
+            final Pointer<ObjCObject> attachment = metalSendPointer1(
+              metalSendPointer(descriptor, 'colorAttachments'),
+              'objectAtIndexedSubscript:',
+              0,
+            );
+            if (attachment == nullptr) {
+              throw MetalError('colorAttachments[0] is nil on a fresh '
+                  'MTLRenderPipelineDescriptor');
+            }
+            metalSendVoid1(attachment, 'setPixelFormat:', _pixelFormat);
+            // Always enabled, with the factors the shared vocabulary asks for.
+            // `src` is (one, zero), which is what a disabled blend does anyway,
+            // so there is one code path instead of two and no branch that can
+            // disagree with gpuBlendForMode.
+            metalSendVoid1(attachment, 'setBlendingEnabled:', 1);
+            final int source = metalBlendFactor(blend.source);
+            final int destination = metalBlendFactor(blend.destination);
+            metalSendVoid1(attachment, 'setSourceRGBBlendFactor:', source);
+            metalSendVoid1(
+                attachment, 'setDestinationRGBBlendFactor:', destination);
+            // The alpha factors are the same as the colour ones, which is what
+            // `glBlendFunc` means and what d3d11_backend.dart writes into its
+            // blend descriptor. Leaving them at their defaults is the classic
+            // way to get a surface whose colours are right and whose alpha is
+            // not - invisible until something composites the result.
+            metalSendVoid1(attachment, 'setSourceAlphaBlendFactor:', source);
+            metalSendVoid1(
+                attachment, 'setDestinationAlphaBlendFactor:', destination);
+            metalSendVoid1(
+                attachment, 'setRgbBlendOperation:', MtlBlendOperation.add);
+            metalSendVoid1(
+                attachment, 'setAlphaBlendOperation:', MtlBlendOperation.add);
+
+            final Pointer<ObjCObject> state = metalSendPointer2(
+              _gpu.device,
+              'newRenderPipelineStateWithDescriptor:error:',
+              descriptor.address,
+              errorOut.address,
+            );
+            if (state == nullptr) {
+              throw MetalError(
+                'newRenderPipelineStateWithDescriptor:error: returned nil for '
+                'blend (${blend.source.name}, ${blend.destination.name})',
+                detail: metalErrorDescription(errorOut.value) ??
+                    'no NSError was written, which should not happen',
+              );
+            }
+            return state;
+          } finally {
+            objcRelease(descriptor);
+          }
+        });
+      });
+    } finally {
+      objcRelease(fragmentFunction);
+      objcRelease(vertexFunction);
+    }
+  }
+
+  /// Releases every state and the library, states first.
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    for (final Pointer<ObjCObject> state in _states.values) {
+      objcRelease(state);
+    }
+    _states.clear();
+    objcRelease(_library);
+  }
+}
+
+/// Live instances of the Metal classes whose methods only exist on a private
+/// subclass, keyed by the name [MetalSelector.receiver] uses.
+///
+/// The 27 selectors [kMetalUnverifiedEncodings] used to name are all property
+/// accessors on descriptor classes, and Metal's descriptor classes are
+/// façades: `MTLTextureDescriptor` declares `width` in the header and some
+/// private subclass implements it, so `class_getInstanceMethod` on the class
+/// named in the header finds nothing. `object_getClass` on an *instance* finds
+/// the class that really implements them, which is a stronger answer than the
+/// header's anyway - it is the code that will actually run.
+///
+/// **The caller must be inside an autorelease pool**, and must call
+/// [metalReleaseSpecimens] afterwards for the two that are +1.
+Map<String, Pointer<ObjCObject>> metalDescriptorSpecimens() {
+  final Map<String, Pointer<ObjCObject>> specimens =
+      <String, Pointer<ObjCObject>>{};
+
+  void put(String receiver, Pointer<ObjCObject> object) {
+    if (object != nullptr) specimens[receiver] = object;
+  }
+
+  final Pointer<ObjCObject> textureDescriptorClass =
+      objcClass('MTLTextureDescriptor');
+  if (textureDescriptorClass != nullptr) {
+    put(
+      'MTLTextureDescriptor',
+      metalSendPointer4(
+        textureDescriptorClass,
+        'texture2DDescriptorWithPixelFormat:width:height:mipmapped:',
+        MtlPixelFormat.rgba8Unorm,
+        4,
+        4,
+        0,
+      ),
+    );
+  }
+
+  final Pointer<ObjCObject> passClass = objcClass('MTLRenderPassDescriptor');
+  if (passClass != nullptr) {
+    final Pointer<ObjCObject> pass =
+        metalSendPointer(passClass, 'renderPassDescriptor');
+    put('MTLRenderPassDescriptor', pass);
+    if (pass != nullptr) {
+      put(
+        'MTLRenderPassColorAttachmentDescriptor',
+        metalSendPointer1(metalSendPointer(pass, 'colorAttachments'),
+            'objectAtIndexedSubscript:', 0),
+      );
+    }
+  }
+
+  final Pointer<ObjCObject> pipelineClass =
+      objcClass('MTLRenderPipelineDescriptor');
+  if (pipelineClass != nullptr) {
+    // +1: alloc/init. Released by metalReleaseSpecimens.
+    final Pointer<ObjCObject> pipeline =
+        metalSendPointer(metalSendPointer(pipelineClass, 'alloc'), 'init');
+    put('MTLRenderPipelineDescriptor', pipeline);
+    if (pipeline != nullptr) {
+      put(
+        'MTLRenderPipelineColorAttachmentDescriptor',
+        metalSendPointer1(metalSendPointer(pipeline, 'colorAttachments'),
+            'objectAtIndexedSubscript:', 0),
+      );
+    }
+  }
+
+  final Pointer<ObjCObject> vertexClass = objcClass('MTLVertexDescriptor');
+  if (vertexClass != nullptr) {
+    final Pointer<ObjCObject> vertex =
+        metalSendPointer(vertexClass, 'vertexDescriptor');
+    put('MTLVertexDescriptor', vertex);
+    if (vertex != nullptr) {
+      put(
+        'MTLVertexAttributeDescriptor',
+        metalSendPointer1(metalSendPointer(vertex, 'attributes'),
+            'objectAtIndexedSubscript:', 0),
+      );
+      put(
+        'MTLVertexBufferLayoutDescriptor',
+        metalSendPointer1(metalSendPointer(vertex, 'layouts'),
+            'objectAtIndexedSubscript:', 0),
+      );
+    }
+  }
+
+  return specimens;
+}
+
+/// Releases the specimens that arrived with a +1 reference.
+///
+/// Only `MTLRenderPipelineDescriptor` does: everything else in
+/// [metalDescriptorSpecimens] comes from a convenience constructor or is a
+/// property of something that does, and releasing one of those would
+/// over-release an object Metal still owns.
+void metalReleaseSpecimens(Map<String, Pointer<ObjCObject>> specimens) {
+  final Pointer<ObjCObject>? pipeline =
+      specimens['MTLRenderPipelineDescriptor'];
+  if (pipeline != null) objcRelease(pipeline);
+}
+
+// ---------------------------------------------------------------------------
 // Sending, with the declared shape asserted at every call site
 // ---------------------------------------------------------------------------
 
@@ -271,6 +585,17 @@ Pointer<ObjCObject> metalSendPointer1(
   return objcSendPointer1(target, objcSelector(selector), a0);
 }
 
+/// `id result = [target selector:a0 x:a1]`.
+Pointer<ObjCObject> metalSendPointer2(
+  Pointer<ObjCObject> target,
+  String selector,
+  int a0,
+  int a1,
+) {
+  assert(_declaredShape(selector, ObjCSendShape.pointerReturn2));
+  return objcSendPointer2(target, objcSelector(selector), a0, a1);
+}
+
 /// `id result = [target selector:a0 x:a1 y:a2]`.
 Pointer<ObjCObject> metalSendPointer3(
   Pointer<ObjCObject> target,
@@ -281,6 +606,25 @@ Pointer<ObjCObject> metalSendPointer3(
 ) {
   assert(_declaredShape(selector, ObjCSendShape.pointerReturn3));
   return objcSendPointer3(target, objcSelector(selector), a0, a1, a2);
+}
+
+/// `id result = [target selector:a0 x:a1 y:a2 z:a3]`.
+Pointer<ObjCObject> metalSendPointer4(
+  Pointer<ObjCObject> target,
+  String selector,
+  int a0,
+  int a1,
+  int a2,
+  int a3,
+) {
+  assert(_declaredShape(selector, ObjCSendShape.pointerReturn4));
+  return objcSendPointer4(target, objcSelector(selector), a0, a1, a2, a3);
+}
+
+/// `[target selector:a0]`, returning nothing.
+void metalSendVoid1(Pointer<ObjCObject> target, String selector, int a0) {
+  assert(_declaredShape(selector, ObjCSendShape.voidReturn1));
+  objcSendVoid1(target, objcSelector(selector), a0);
 }
 
 // ---------------------------------------------------------------------------

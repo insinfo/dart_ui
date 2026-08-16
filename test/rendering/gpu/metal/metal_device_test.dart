@@ -20,6 +20,9 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:dart_ui/src/ffi/objc_runtime.dart';
+import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_pipeline.dart';
+import 'package:dart_ui/src/rendering/gpu/metal/metal_bindings.dart';
 import 'package:dart_ui/src/rendering/gpu/metal/metal_device.dart';
 import 'package:dart_ui/src/rendering/gpu/metal/metal_shaders.dart';
 import 'package:test/test.dart';
@@ -118,6 +121,61 @@ void main() {
         );
       } finally {
         objcRelease(library);
+      }
+    }, skip: _needsMac);
+
+    test('the vertex descriptor is the shared layout, and Metal accepts it',
+        () {
+      // The pipeline state is where Metal validates: the vertex descriptor
+      // against the `[[stage_in]]` struct, the attachment format against the
+      // fragment return type, the entry points against the library. An offset
+      // or a format that disagreed with gpu_pipeline.dart fails here with
+      // Apple's message instead of drawing a quad with its colour read out of
+      // the shape rectangle.
+      final MetalPipelineCache pipelines = MetalPipelineCache.build(gpu);
+      try {
+        for (final int blendMode in <int>[
+          blendModeSrcOver,
+          blendModeSrc,
+          blendModePlus,
+        ]) {
+          final Pointer<ObjCObject> state = pipelines.forBlendMode(blendMode);
+          expect(state, isNot(nullptr), reason: 'blend mode $blendMode');
+        }
+        // Cached, not rebuilt: the same request has to answer with the same
+        // object, or every draw call would leak a pipeline state.
+        expect(pipelines.forBlendMode(blendModeSrcOver),
+            pipelines.forBlendMode(blendModeSrcOver));
+      } finally {
+        pipelines.dispose();
+      }
+    }, skip: _needsMac);
+
+    test('a vertex descriptor missing an attribute is refused by Metal', () {
+      // The negative half, and the reason the positive one means anything: if
+      // Metal accepted any descriptor at all, the test above would prove
+      // nothing about the layout. The MSL declares four `[[attribute(n)]]`
+      // inputs; a descriptor that describes only the first is exactly what a
+      // layout change nobody propagated looks like, and Metal names the
+      // attribute it could not find.
+      final MetalPipelineCache pipelines = MetalPipelineCache.build(gpu);
+      try {
+        Object? thrown;
+        try {
+          pipelines.buildState(
+            const GpuBlendState(GpuBlendFactor.one, GpuBlendFactor.zero),
+            vertexDescriptor: () => metalBuildVertexDescriptor(
+              attributes: kMetalVertexAttributes.take(1).toList(),
+            ),
+          );
+        } on Object catch (error) {
+          thrown = error;
+        }
+        expect(thrown, isA<MetalError>());
+        print('metal on an incomplete vertex descriptor: '
+            '${(thrown! as MetalError).detail}');
+      } finally {
+        pipelines.dispose();
       }
     }, skip: _needsMac);
 
