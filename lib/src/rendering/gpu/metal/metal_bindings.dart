@@ -1,14 +1,28 @@
 /// Metal, bound by hand, to the checklist section 11.4 sets for a binding
 /// package.
 ///
-/// # NOTHING IN THIS FILE HAS BEEN EXECUTED ON A MAC
+/// # WRITTEN WITHOUT A MAC, VERIFIED ON A MAC ON EVERY PUSH
 ///
-/// It was written on Windows. No Metal call in this framework has ever run.
-/// What *is* verified is stated per item below and covered by
-/// `test/rendering/gpu/metal/metal_bindings_test.dart`, which runs anywhere;
-/// everything else is a transcription with a stated source. Section 6.6 -
-/// faked capability is worse than absent capability - is the reason that
-/// distinction is drawn item by item instead of once at the top.
+/// It was written on Windows, from headers, with no Apple hardware in the
+/// loop - and that is a statement about its *authorship*, which is where the
+/// mistakes come from, not about whether it has ever run. It has. The
+/// `macos-14` leg of `.github/workflows/framework.yml` is an Apple Silicon
+/// machine, the tests gated on `Platform.isMacOS` run there on every push, and
+/// in run `31963523618` that leg reported **zero** `needs a Mac` skips. Three
+/// facts came back from it, and they are the reason the paragraph above this
+/// one used to say "nothing in this file has been executed on a Mac" and no
+/// longer does:
+///
+///   * every symbol in [kMetalRequiredSymbols] resolves in `Metal.framework`;
+///   * `MTLCreateSystemDefaultDevice()` returns a device that answers its own
+///     name - so the runner has a usable **GPU**, not merely the framework;
+///   * `method_getTypeEncoding` agrees with the encodings declared below,
+///     selector by selector, to the extent [kMetalUnverifiedEncodings]
+///     records.
+///
+/// Section 6.6 - faked capability is worse than absent capability - is why the
+/// distinction is drawn item by item below instead of once at the top, and why
+/// the exceptions are named rather than averaged away.
 ///
 /// ## Section 11.4's checklist, answered
 ///
@@ -17,11 +31,11 @@
 /// | Generator config file | **None.** No generator ran - see below. |
 /// | Header version / commit | [kMetalBindingProvenance] |
 /// | Reproducible script | **None.** See below. |
-/// | Manual override list | The whole file. [kMetalUnverifiedEncodings] names the transcriptions with no upstream to check against. |
-/// | Symbol test | [kMetalRequiredSymbols], asserted only on macOS |
+/// | Manual override list | The whole file. [kMetalUnverifiedEncodings] names the selectors the runtime cannot be asked about, and is asserted to be exactly that set. |
+/// | Symbol test | [kMetalRequiredSymbols], run on the macOS leg of CI |
 /// | Size test | every struct in this file, asserted on any platform |
 /// | Offset test | every struct field, by writing a sentinel and finding it |
-/// | Minimal call test | macOS only, skipped elsewhere with a stated reason |
+/// | Minimal call test | run on the macOS leg of CI; a device answers its name |
 /// | Ignored-API report | [kMetalDeliberatelyUnbound] |
 /// | Ownership documentation | [MetalSelector.returnsOwned], one row per selector |
 ///
@@ -110,20 +124,67 @@ const String kMetalBindingProvenance =
     'commit: LoadActionDontCare/Load/Clear = 0/1/2, StoreActionDontCare/Store '
     '= 0/1, PixelFormatR8Unorm = 10, RGBA8Unorm = 70, BGRA8Unorm = 80, '
     'BlendFactorZero/One/OneMinusSourceAlpha = 0/1/5. The Objective-C type '
-    'encodings in kMetalSelectors remain hand-derived from the C++ parameter '
-    'types - metal-cpp records types, not encoding strings - and have no '
-    'upstream string to be compared against off a Mac.';
+    'encodings in kMetalSelectors are hand-derived from the C++ parameter '
+    'types, because metal-cpp records types and not encoding strings - but '
+    'they are NOT unverified: the macos-14 leg of the Framework workflow is a '
+    'real Mac, and method_getTypeEncoding reads them back on every push, for '
+    'every selector the runtime will answer for. The ones it will not are '
+    'named in kMetalUnverifiedEncodings and nowhere else.';
 
-/// Selectors whose type encoding is a derivation rather than a transcription.
+/// The selectors the runtime will not answer for, `Receiver.selector` each.
 ///
-/// The encoding strings in [kMetalSelectors] are built from `metal-cpp`'s C++
-/// parameter types, because `metal-cpp` records types and not encodings. The
-/// derivation is mechanical for a word argument and is where a mistake would
-/// hide for the rest. On a Mac, `objcMethodTypeEncoding` reads the real string
-/// out of the class and the guessing stops; that check is mechanism 3 of
-/// `objc_runtime.dart` and it is the one that needs hardware.
+/// **Measured, not decreed.** This list used to read `every entry in
+/// kMetalSelectors`, on the theory that a derived encoding had no upstream to
+/// be checked against. It had one all along: the Objective-C runtime, on the
+/// Mac that CI provides. `metalRuntimeEncoding` asks it about all 78, and
+/// `metal_bindings_test.dart` asserts that the ones it cannot answer for are
+/// **exactly** the ones below - so this list cannot silently grow, and a
+/// selector that starts resolving must be deleted from it.
+///
+/// ## Why these 27 and not others
+///
+/// Every one of them is a property accessor on a Metal *descriptor* class, and
+/// those classes are façades. `MTLTextureDescriptor`,
+/// `MTLRenderPipelineDescriptor`, `MTLVertexDescriptor` and the attachment
+/// descriptors declare their properties in the header, but the objects Metal
+/// actually hands out are instances of private subclasses that implement them.
+/// So `class_getInstanceMethod(MTLTextureDescriptor, @selector(setWidth:))`
+/// returns null - the base class genuinely has no such method - while
+/// `+texture2DDescriptorWithPixelFormat:width:height:mipmapped:`, a real class
+/// method on the same class, is found and checked.
+///
+/// The way to close this is `object_getClass` on a live descriptor, which is
+/// bound in `objc_runtime.dart` and needs the descriptors to be built first.
+/// Until then these encodings rest on the two mechanisms that need no
+/// hardware: the shape table and the colon count.
 const List<String> kMetalUnverifiedEncodings = <String>[
-  'every entry in kMetalSelectors',
+  'MTLTextureDescriptor.setPixelFormat:',
+  'MTLTextureDescriptor.setWidth:',
+  'MTLTextureDescriptor.setHeight:',
+  'MTLTextureDescriptor.setUsage:',
+  'MTLTextureDescriptor.setStorageMode:',
+  'MTLRenderPassDescriptor.colorAttachments',
+  'MTLRenderPassColorAttachmentDescriptor.setTexture:',
+  'MTLRenderPassColorAttachmentDescriptor.setLoadAction:',
+  'MTLRenderPassColorAttachmentDescriptor.setStoreAction:',
+  'MTLRenderPassColorAttachmentDescriptor.setClearColor:',
+  'MTLRenderPipelineDescriptor.setVertexFunction:',
+  'MTLRenderPipelineDescriptor.setFragmentFunction:',
+  'MTLRenderPipelineDescriptor.setVertexDescriptor:',
+  'MTLRenderPipelineColorAttachmentDescriptor.setBlendingEnabled:',
+  'MTLRenderPipelineColorAttachmentDescriptor.setSourceRGBBlendFactor:',
+  'MTLRenderPipelineColorAttachmentDescriptor.setDestinationRGBBlendFactor:',
+  'MTLRenderPipelineColorAttachmentDescriptor.setSourceAlphaBlendFactor:',
+  'MTLRenderPipelineColorAttachmentDescriptor.setDestinationAlphaBlendFactor:',
+  'MTLRenderPipelineColorAttachmentDescriptor.setRgbBlendOperation:',
+  'MTLRenderPipelineColorAttachmentDescriptor.setAlphaBlendOperation:',
+  'MTLVertexDescriptor.attributes',
+  'MTLVertexDescriptor.layouts',
+  'MTLVertexAttributeDescriptor.setFormat:',
+  'MTLVertexAttributeDescriptor.setOffset:',
+  'MTLVertexAttributeDescriptor.setBufferIndex:',
+  'MTLVertexBufferLayoutDescriptor.setStride:',
+  'MTLVertexBufferLayoutDescriptor.setStepFunction:',
 ];
 
 /// C symbols that must resolve for this backend to start.
@@ -645,6 +706,12 @@ const List<MetalSelector> kMetalSelectors = <MetalSelector>[
   MetalSelector('description', '@@:', ObjCSendShape.pointerReturn0,
       returnsOwned: false, receiver: 'NSObject'),
   MetalSelector('UTF8String', '*@:', ObjCSendShape.pointerReturn0,
+      returnsOwned: false, receiver: 'NSString'),
+  // `+[NSString stringWithUTF8String:]`, the only way a Dart string reaches a
+  // method that takes an NSString - the shader source, and every entry-point
+  // name. A convenience constructor, so the result is **autoreleased** and the
+  // caller has to be inside a pool; see metal_device.dart.
+  MetalSelector('stringWithUTF8String:', '@@:*', ObjCSendShape.pointerReturn1,
       returnsOwned: false, receiver: 'NSString'),
   MetalSelector('localizedDescription', '@@:', ObjCSendShape.pointerReturn0,
       returnsOwned: false, receiver: 'NSError'),

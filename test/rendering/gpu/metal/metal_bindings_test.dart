@@ -578,9 +578,18 @@ void main() {
     test('provenance names a source and admits its weakness', () {
       expect(kMetalBindingProvenance, contains('metal-cpp'));
       expect(kMetalBindingProvenance, contains('16 August 2026'));
-      // The honest half: the encodings are derived, not transcribed.
+      // The honest half: the encodings are derived, not transcribed - and the
+      // other honest half, that being derived no longer means being unchecked.
       expect(kMetalBindingProvenance, contains('hand-derived'));
-      expect(kMetalUnverifiedEncodings, isNotEmpty);
+      expect(kMetalBindingProvenance, contains('method_getTypeEncoding'));
+      // Every entry names a receiver and a selector, so it can be held against
+      // the runtime's answer rather than read as prose.
+      for (final String entry in kMetalUnverifiedEncodings) {
+        expect(entry, contains('.'), reason: entry);
+        final String selector = entry.split('.').last;
+        expect(kMetalSelectorsByName.containsKey(selector), isTrue,
+            reason: '$entry names a selector that is not in the table');
+      }
     });
 
     test('the ignored-API report is a list of decisions, not an oversight', () {
@@ -704,6 +713,20 @@ void main() {
       expect(divergent, isEmpty,
           reason: 'the runtime disagrees with this file:\n'
               '${divergent.join('\n')}');
+
+      // And the list of what could not be checked is itself checked. This is
+      // what turns kMetalUnverifiedEncodings from a disclaimer into a
+      // measurement: it may not quietly grow, and a selector that starts
+      // resolving has to be deleted from it.
+      expect(
+        missing
+            .map((MetalRuntimeEncoding e) =>
+                '${e.selector.receiver}.${e.selector.name}')
+            .toSet(),
+        kMetalUnverifiedEncodings.toSet(),
+        reason: 'kMetalUnverifiedEncodings must name exactly the selectors the '
+            'runtime will not answer for',
+      );
     }, skip: _needsMac);
   });
 }
