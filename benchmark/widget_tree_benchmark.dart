@@ -61,6 +61,27 @@ void main(List<String> arguments) {
     ..writeln('  -> median ${_us(setState.median)}, '
         '${setState.median <= 16667 ? 'PASS' : 'FAIL'}');
 
+  // Machine-readable, for `tool/check_budgets.dart`. The human table above
+  // stays: a gate that only prints PASS/FAIL tells you that something got
+  // slower and not which case, and the first thing anyone does after a red
+  // budget is look for the number next to it.
+  //
+  // The mapping is here rather than in `budgets.dart` because the case names
+  // are this file's own wording and change when a case changes. An id that
+  // nothing emits is reported as missing by the checker rather than silently
+  // skipped, which is what keeps a renamed case from quietly leaving the gate.
+  const Map<String, String> ids = <String, String>{
+    'rebuild, nothing changed': 'widget.rebuild-unchanged',
+    'setState on one leaf': 'widget.setState-one-leaf',
+    'layout, all dirty': 'widget.layout-only',
+    'hit-test one pointer': 'widget.hit-test',
+  };
+  stdout.writeln();
+  for (final _Result result in results) {
+    final String? id = ids[result.name];
+    if (id != null) stdout.writeln('BUDGET $id ${result.median}');
+  }
+
   if (setState.median > 16667) exitCode = 1;
 }
 

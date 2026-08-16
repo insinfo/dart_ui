@@ -10,6 +10,8 @@ on:
   push:
     paths:
       - 'lib/**'
+      - 'benchmark/**'
+      - 'tool/check_budgets.dart'
       - 'bin/**'
       - 'test/**'
       - 'pubspec.yaml'
@@ -18,6 +20,8 @@ on:
   pull_request:
     paths:
       - 'lib/**'
+      - 'benchmark/**'
+      - 'tool/check_budgets.dart'
       - 'bin/**'
       - 'test/**'
       - 'pubspec.yaml'
@@ -103,3 +107,18 @@ jobs:
           DART
           dart compile exe build/aot_smoke.dart -o build/aot_smoke
           ./build/aot_smoke | grep -q '^AOT_SMOKE=true$'
+
+      # Section 36.3's budgets, enforced rather than printed.
+      #
+      # The suite proves the framework computes the right answer; almost
+      # nothing proved what it costs. With five GPU backends in the tree and no
+      # rendering budget, a regression in submit or present could reach a
+      # release with nobody able to name the commit.
+      #
+      # Runs on all three legs on purpose. The ceilings in benchmark/budgets.dart
+      # are loose enough to survive a shared runner - they catch a regression in
+      # *kind* (an accidental quadratic, a cache that stopped hitting), not a
+      # ten-percent drift - and the three platforms disagree about absolute
+      # numbers in ways that are themselves worth seeing in the log.
+      - name: Performance budgets
+        run: dart run tool/check_budgets.dart

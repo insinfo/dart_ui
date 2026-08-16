@@ -78,6 +78,18 @@ void main(List<String> arguments) {
     ..writeln()
     ..writeln(_cacheReport(fontBytes));
 
+  // Machine-readable, for `tool/check_budgets.dart`. See the note on the same
+  // block in `widget_tree_benchmark.dart` for why the id mapping lives beside
+  // the case names rather than in `budgets.dart`.
+  const Map<String, String> ids = <String, String>{
+    'shape a line': 'text.shape-line',
+  };
+  stdout.writeln();
+  for (final _Result result in results) {
+    final String? id = ids[result.name];
+    if (id != null) stdout.writeln('BUDGET $id ${result.median}');
+  }
+
   if (failed) {
     stderr.writeln('\nAt least one case is over budget. Either something got '
         'slower, or the budget is wrong - decide which before changing '
