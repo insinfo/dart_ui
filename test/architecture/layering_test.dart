@@ -36,6 +36,10 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   'animation': <String>['foundation', 'geometry', 'scheduler'],
   'text': <String>['foundation', 'geometry', 'graphics'],
   'platform': <String>['foundation', 'geometry', 'scheduler'],
+  // Gesture recognizers sit above raw pointer events and the injected
+  // scheduler used by deadlines, but below render objects and widgets. The
+  // GestureDetector that owns a render object lives in `widgets`.
+  'gestures': <String>['geometry', 'platform', 'scheduler'],
   // rendering may know what a glyph is, because rasterizing one is its job.
   // The reverse is forbidden: section 22.7 requires the font parser to stay
   // independent of any renderer, so `text` must never appear to depend on
@@ -73,6 +77,7 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'foundation',
     'geometry',
     'graphics',
+    'gestures',
     'layout',
     'platform',
     'rendering',

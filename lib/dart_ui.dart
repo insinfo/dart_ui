@@ -14,6 +14,7 @@
 ///   scheduler   <- foundation
 ///   graphics    <- foundation, geometry
 ///   platform    <- foundation, geometry, scheduler
+///   gestures    <- geometry, platform, scheduler
 ///   text        <- foundation, geometry, graphics
 ///   rendering   <- foundation, geometry, graphics, text
 ///   layout      <- foundation, geometry, graphics, rendering, text
@@ -53,11 +54,16 @@ export 'src/geometry/path.dart';
 export 'src/geometry/rect.dart';
 export 'src/geometry/size.dart';
 export 'src/geometry/transform2d.dart';
+export 'src/gestures/gestures.dart';
 export 'src/graphics/display_list.dart';
 export 'src/graphics/display_list_debug.dart';
 export 'src/graphics/display_list_geometry.dart';
 export 'src/graphics/display_list_opcodes.dart';
 export 'src/graphics/display_list_reader.dart';
+export 'src/graphics/image/decoded_image.dart';
+export 'src/graphics/image/image_errors.dart';
+export 'src/graphics/image/inflate.dart';
+export 'src/graphics/image/png.dart';
 export 'src/layout/alignment.dart';
 export 'src/layout/box_constraints.dart';
 export 'src/layout/edge_insets.dart';
@@ -126,6 +132,9 @@ export 'src/widgets/element.dart';
 export 'src/widgets/errors.dart';
 export 'src/widgets/focus.dart';
 export 'src/widgets/focus_scope.dart';
+export 'src/widgets/gesture_detector.dart';
+export 'src/widgets/icon.dart';
+export 'src/widgets/image.dart';
 export 'src/widgets/keyboard_router.dart';
 export 'src/widgets/list_box.dart';
 export 'src/widgets/pointer_router.dart';

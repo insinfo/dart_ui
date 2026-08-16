@@ -18,13 +18,11 @@ import '../layout/render_grid.dart' as layout;
 import '../layout/render_padding.dart' as layout;
 import '../layout/render_stack.dart' as layout;
 import '../layout/render_wrap.dart' as layout;
-import '../platform/input_events.dart';
 import '../rendering/text/font_registry.dart';
 import '../text/shaper.dart';
 import '../text/typeface.dart';
 import 'directionality.dart';
 import 'element.dart';
-import 'pointer_router.dart';
 import 'theme.dart';
 import 'widget.dart';
 
@@ -506,80 +504,6 @@ final class SizedBox extends SingleChildRenderObjectWidget {
         minHeight: height ?? 0,
         maxHeight: height ?? double.infinity,
       );
-}
-
-/// Recognizes a primary-button tap inside its child's hit-test region.
-final class GestureDetector extends SingleChildRenderObjectWidget {
-  const GestureDetector({super.key, this.onTap, required super.child});
-
-  final void Function()? onTap;
-
-  @override
-  RenderTapGestureDetector createRenderObject(BuildContext context) =>
-      RenderTapGestureDetector(onTap: onTap);
-
-  @override
-  void updateRenderObject(
-    BuildContext context,
-    covariant RenderTapGestureDetector renderObject,
-  ) {
-    renderObject.onTap = onTap;
-  }
-}
-
-/// Render-tree endpoint for [GestureDetector].
-///
-/// Hit testing remains delegated to the child, so a detector around a
-/// transparent, non-hittable subtree does not invent an interactive region.
-final class RenderTapGestureDetector extends RenderSingleChildBox
-    implements PointerEventTarget {
-  RenderTapGestureDetector({void Function()? onTap}) : _onTap = onTap;
-
-  void Function()? _onTap;
-  int? _primaryPointer;
-
-  void Function()? get onTap => _onTap;
-
-  set onTap(void Function()? value) {
-    _onTap = value;
-    if (value == null) _primaryPointer = null;
-  }
-
-  @override
-  void performLayout() {
-    final RenderBox? child = this.child;
-    if (child == null) {
-      size = constraints.smallest;
-      return;
-    }
-    child.layout(constraints, parentUsesSize: true);
-    size = constraints.constrain(child.size);
-  }
-
-  @override
-  void handlePointerEvent(PointerEvent event) {
-    if (_onTap == null) return;
-    switch (event) {
-      case PointerDownEvent(button: PointerButton.primary):
-        _primaryPointer = event.pointerId;
-      case PointerUpEvent(button: PointerButton.primary):
-        if (_primaryPointer != event.pointerId) return;
-        _primaryPointer = null;
-        // The pointer was captured on the press, so this release arrives even
-        // when it landed elsewhere. A tap is a press *and* a release on the
-        // same thing; dragging away and letting go is how a user takes it back.
-        if (!hasSize || !size.contains(globalToLocal(event.logicalPosition))) {
-          return;
-        }
-        _onTap?.call();
-      case PointerCancelEvent():
-        if (_primaryPointer == event.pointerId) _primaryPointer = null;
-      case PointerMoveEvent():
-      case PointerScrollEvent():
-      case PointerDownEvent():
-      case PointerUpEvent():
-    }
-  }
 }
 
 /// Text configuration. Shaping and glyph painting remain a renderer concern.

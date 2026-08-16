@@ -106,6 +106,30 @@ void main() {
       expect(controller.status, AnimationStatus.dismissed);
     });
 
+    test('gesture, image and icon APIs are nameable', () {
+      final GestureArenaManager arena = GestureArenaManager();
+      const IconData iconData = IconData(
+        0x2190,
+        matchTextDirection: true,
+      );
+      final DecodedImage image = DecodedImage.filled(
+        width: 2,
+        height: 1,
+        argb: 0xFF336699,
+      );
+      final Widget detector = GestureDetector(
+        onTap: () {},
+        child: const Icon(iconData),
+      );
+      final Image imageWidget = Image(image, fit: BoxFit.cover);
+
+      expect(arena.openArenaCount, 0);
+      expect(detector, isA<GestureDetector>());
+      expect(imageWidget.image, same(image));
+      expect(decodePng, isA<Function>());
+      expect(inflateZlib, isA<Function>());
+    });
+
     test('the application shell is nameable', () {
       // Not started - starting needs a backend and a window. Naming the types
       // is the point: an application has to be able to declare them.

@@ -15,7 +15,6 @@ library;
 import 'dart:math' as math;
 
 import 'package:dart_ui/dart_ui.dart';
-import 'package:dart_ui/src/layout/render_proxy_box.dart';
 import 'package:test/test.dart';
 
 import 'helpers.dart';

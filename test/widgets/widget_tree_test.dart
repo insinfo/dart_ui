@@ -266,7 +266,7 @@ void main() {
         ),
       );
 
-      expect(owner.renderRoot, isA<RenderTapGestureDetector>());
+      expect(owner.renderRoot, isA<RenderGestureDetector>());
       expect(
         (owner.renderRoot as RenderSingleChildBox).child,
         isA<RenderColoredBox>(),

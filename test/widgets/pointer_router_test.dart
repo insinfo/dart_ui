@@ -78,7 +78,7 @@ void main() {
       expect(taps, 0);
     });
 
-    test('bubbles deepest-first through nested gesture render nodes', () {
+    test('the innermost detector wins a nested tap', () {
       final BuildOwner owner = _owner();
       final List<String> calls = <String>[];
       owner.updateRoot(
@@ -95,7 +95,7 @@ void main() {
       owner.dispatchPointerEvent(_down(const Offset(5, 5)));
       owner.dispatchPointerEvent(_up(const Offset(5, 5)));
 
-      expect(calls, <String>['inner', 'outer']);
+      expect(calls, <String>['inner']);
     });
 
     test('an in-place widget update changes the callback', () {

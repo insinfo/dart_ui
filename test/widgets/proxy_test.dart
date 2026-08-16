@@ -14,7 +14,6 @@ import 'dart:math' as math;
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/layout/render_proxy_box.dart' as layout;
-import 'package:dart_ui/src/widgets/proxy.dart';
 import 'package:test/test.dart';
 
 // `pixelAt` and `memoryTarget` rather than a second copy of each here: a test
