@@ -361,7 +361,14 @@ void main() {
         list.addPaint(colorArgb: 0xFF000000, antiAlias: false),
         isNot(base),
       );
-      expect(list.paintCount, 6);
+      expect(
+        list.addPaint(
+          colorArgb: 0xFF000000,
+          fillRule: pathFillRuleEvenOdd,
+        ),
+        isNot(base),
+      );
+      expect(list.paintCount, 7);
     });
 
     test('paints differing below float32 precision are one paint', () {
@@ -383,12 +390,14 @@ void main() {
         strokeWidth: 3.25,
         blendMode: blendModeSrc,
         antiAlias: false,
+        fillRule: pathFillRuleEvenOdd,
       );
       expect(list.paintColor(id), 0xDEADBEEF);
       expect(list.paintStyle(id), paintStyleFillAndStroke);
       expect(list.paintStrokeWidth(id), 3.25);
       expect(list.paintBlendMode(id), blendModeSrc);
       expect(list.paintAntiAlias(id), isFalse);
+      expect(list.paintFillRule(id), pathFillRuleEvenOdd);
     });
 
     test('a paint id outside the table is refused', () {

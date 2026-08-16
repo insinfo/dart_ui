@@ -11,11 +11,13 @@ import 'dart:typed_data';
 
 import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
+import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_batcher.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_glyph_atlas.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_mask_atlas.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_pipeline.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_raster_sink.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_texture.dart';
@@ -119,11 +121,9 @@ void main() {
       expect(batch.scissorBottom, 51);
     });
 
-    test('a stroke is refused rather than filled, and says whose gap it is',
-        () {
-      // The CPU sink strokes now; this one does not. A message that only said
-      // "stroking is not implemented" would send a reader looking for a
-      // stroker that exists, so it has to name the side that is missing.
+    test('the fill-only primitive redirects strokes to the path API', () {
+      // DisplayListPlayer performs that redirect because only the path method
+      // carries the local-to-device transform needed to scale stroke width.
       final sink = _sink();
       expect(
         () => sink.fillDeviceRect(const Rect.fromLTRB(0, 0, 10, 10), _wideClip,
@@ -228,6 +228,30 @@ void main() {
             const Rect.fromLTRB(0, 0, 8, 8), _wideClip, _opaque),
         throwsA(isA<UnsupportedCapabilityError>()),
       );
+    });
+  });
+
+  group('drawDevicePath', () {
+    test('expands strokes with the shared stroker before mask rasterization',
+        () {
+      final GpuMaskAtlas atlas = GpuMaskAtlas(width: 64, height: 64);
+      final GpuRasterSink sink = GpuRasterSink(
+        batcher: GpuBatcher()..beginFrame(),
+        backendName: 'test',
+        maskAtlas: atlas,
+        maskTextureId: 17,
+      );
+      sink.drawDevicePath(
+        Path.rect(const Rect.fromLTRB(10, 10, 30, 30)),
+        Transform2D.identity,
+        _wideClip,
+        _paint(style: paintStyleStroke, strokeWidth: 4),
+      );
+
+      expect(sink.batcher.quadCount, 1);
+      expect(sink.batcher.batchAt(0).textureId, 17);
+      expect(atlas.rasterizationCount, 1);
+      expect(_quad(sink), <double>[8, 8, 32, 32]);
     });
   });
 
@@ -691,13 +715,16 @@ ReplayPaint _paint({
   int argb = 0xFF204080,
   int style = paintStyleFill,
   bool antiAlias = true,
+  double strokeWidth = 0,
+  int fillRule = pathFillRuleNonZero,
 }) =>
     ReplayPaint(
       argbColor: argb,
       style: style,
-      strokeWidth: 0,
+      strokeWidth: strokeWidth,
       blendMode: blendModeSrcOver,
       antiAlias: antiAlias,
+      fillRule: fillRule,
     );
 
 /// Float32 rounds a decimal literal, so an exact match would only ever be

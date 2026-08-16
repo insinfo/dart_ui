@@ -56,6 +56,8 @@ import '../../geometry/rect.dart';
 import '../../geometry/transform2d.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../text/typeface.dart';
+import '../path/fill_rule.dart';
+import '../path/stroker.dart';
 import '../raster/clip_stack.dart' show pixelEdge;
 import '../replay/display_list_player.dart';
 import '../text/glyph_cache.dart' show glyphPixelOrigin, glyphSubpixelBucket;
@@ -192,6 +194,11 @@ final class GpuRasterSink implements RasterSink {
   int _originIntX = 0;
   int _originIntY = 0;
 
+  /// Converts a centreline stroke to the same fillable outline the CPU sink
+  /// uses. The resulting path then follows the ordinary GPU mask-atlas route;
+  /// no backend-specific stroke shader or tessellator is required.
+  final PathStroker _stroker = PathStroker();
+
   /// Whether a *flattened* layer stands between the primitives being drawn now
   /// and the nearest real offscreen target.
   ///
@@ -323,8 +330,51 @@ final class GpuRasterSink implements RasterSink {
             '${path.runtimeType}',
       );
     }
-    _requireFill(paint, 'paths');
-    _drawMask(path, transform, clip, paint, 'path');
+    switch (paint.style) {
+      case paintStyleFill:
+        _drawMask(
+          path,
+          transform,
+          clip,
+          paint,
+          'path',
+          rule: _fillRule(paint),
+        );
+        break;
+      case paintStyleStroke:
+        _drawMask(
+          _stroker.stroke(path, StrokeStyle(width: paint.strokeWidth)),
+          transform,
+          clip,
+          paint,
+          'path stroke',
+        );
+        break;
+      case paintStyleFillAndStroke:
+        _drawMask(
+          path,
+          transform,
+          clip,
+          paint,
+          'path fill',
+          rule: _fillRule(paint),
+        );
+        _drawMask(
+          _stroker.stroke(path, StrokeStyle(width: paint.strokeWidth)),
+          transform,
+          clip,
+          paint,
+          'path stroke',
+        );
+        break;
+      default:
+        throw UnsupportedCapabilityError(
+          backendName: backendName,
+          capability: Capability.gpuPresentation,
+          detail: 'paint style ${paint.style} is not fill, stroke or '
+              'fillAndStroke',
+        );
+    }
   }
 
   /// Rasterises [path] into the mask atlas and batches the quad that samples
@@ -341,8 +391,9 @@ final class GpuRasterSink implements RasterSink {
     Transform2D transform,
     Rect clip,
     ReplayPaint paint,
-    String what,
-  ) {
+    String what, {
+    FillRule rule = FillRule.nonZero,
+  }) {
     final alpha = (paint.argbColor >> 24) & 0xFF;
     if (alpha == 0) return;
 
@@ -357,10 +408,20 @@ final class GpuRasterSink implements RasterSink {
       );
     }
 
-    var result = atlas.rasterizeMask(path, transform: transform, clip: clip);
+    var result = atlas.rasterizeMask(
+      path,
+      transform: transform,
+      clip: clip,
+      rule: rule,
+    );
     if (result.status == MaskRasterStatus.needsFlush) {
       _flushAtlases(atlas, null, 'a $what');
-      result = atlas.rasterizeMask(path, transform: transform, clip: clip);
+      result = atlas.rasterizeMask(
+        path,
+        transform: transform,
+        clip: clip,
+        rule: rule,
+      );
       if (result.status == MaskRasterStatus.needsFlush) {
         // Documented as impossible on [MaskRasterStatus.needsFlush]: the atlas
         // was emptied and the shape was already known to fit an empty one. A
@@ -378,7 +439,7 @@ final class GpuRasterSink implements RasterSink {
     if (result.status == MaskRasterStatus.empty) return;
     // Larger than an empty atlas. Flushing cannot help; tiling can.
     if (result.status == MaskRasterStatus.tooLarge) {
-      _drawMaskTiled(atlas, path, transform, clip, paint, what, alpha);
+      _drawMaskTiled(atlas, path, transform, clip, paint, what, alpha, rule);
       return;
     }
     _batchMask(result, clip, paint, alpha);
@@ -417,6 +478,7 @@ final class GpuRasterSink implements RasterSink {
     ReplayPaint paint,
     String what,
     int alpha,
+    FillRule rule,
   ) {
     final Rect visible = transform.transformRect(path.bounds).intersect(clip);
     if (visible.isEmpty) return;
@@ -458,11 +520,16 @@ final class GpuRasterSink implements RasterSink {
         // boundary falls inside a pixel - a fractional split would rasterise
         // the same pixel twice and blend its coverage twice.
         final Rect tile = Rect.fromLTRB(x, y, tileRight, tileBottom);
-        var result =
-            atlas.rasterizeMask(path, transform: transform, clip: tile);
+        var result = atlas.rasterizeMask(path,
+            transform: transform, clip: tile, rule: rule);
         if (result.status == MaskRasterStatus.needsFlush) {
           _flushAtlases(atlas, null, 'a tile of a $what');
-          result = atlas.rasterizeMask(path, transform: transform, clip: tile);
+          result = atlas.rasterizeMask(
+            path,
+            transform: transform,
+            clip: tile,
+            rule: rule,
+          );
         }
         if (result.status == MaskRasterStatus.empty) continue;
         if (!result.isOk) {
@@ -477,6 +544,16 @@ final class GpuRasterSink implements RasterSink {
       }
     }
   }
+
+  FillRule _fillRule(ReplayPaint paint) => switch (paint.fillRule) {
+        pathFillRuleNonZero => FillRule.nonZero,
+        pathFillRuleEvenOdd => FillRule.evenOdd,
+        _ => throw UnsupportedCapabilityError(
+            backendName: backendName,
+            capability: Capability.gpuPresentation,
+            detail: 'unknown path fill rule ${paint.fillRule}',
+          ),
+      };
 
   /// Writes the quad that samples a finished mask.
   void _batchMask(

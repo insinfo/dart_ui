@@ -156,6 +156,7 @@ final class DisplayList {
     double strokeWidth = 0.0,
     int blendMode = blendModeSrcOver,
     bool antiAlias = true,
+    int fillRule = pathFillRuleNonZero,
   }) {
     if (style < 0 || style >= kPaintStyleCount) {
       throw ArgumentError.value(style, 'style', 'unknown paint style');
@@ -163,10 +164,15 @@ final class DisplayList {
     if (blendMode < 0 || blendMode >= kBlendModeCount) {
       throw ArgumentError.value(blendMode, 'blendMode', 'unknown blend mode');
     }
+    if (fillRule < 0 || fillRule >= kPathFillRuleCount) {
+      throw ArgumentError.value(fillRule, 'fillRule', 'unknown path fill rule');
+    }
     _ensurePaintCapacity(_paintCount + 1);
 
-    final int flags =
-        (style & 0x3) | (antiAlias ? 0x4 : 0x0) | ((blendMode & 0xFF) << 8);
+    final int flags = (style & 0x3) |
+        (antiAlias ? 0x4 : 0x0) |
+        ((fillRule & 0x1) << 3) |
+        ((blendMode & 0xFF) << 8);
     final int base = _paintCount * 2;
     // Written before the lookup so the comparison runs against the exact
     // values that would be stored, quantisation included.
@@ -202,6 +208,8 @@ final class DisplayList {
 
   bool paintAntiAlias(int id) =>
       (_paintInts[_checkPaint(id) * 2 + 1] & 0x4) != 0;
+
+  int paintFillRule(int id) => (_paintInts[_checkPaint(id) * 2 + 1] >> 3) & 0x1;
 
   int paintBlendMode(int id) =>
       (_paintInts[_checkPaint(id) * 2 + 1] >> 8) & 0xFF;

@@ -83,6 +83,7 @@ final class ReplayPaint {
     required this.strokeWidth,
     required this.blendMode,
     required this.antiAlias,
+    this.fillRule = pathFillRuleNonZero,
   });
 
   /// Non-premultiplied 0xAARRGGBB, exactly as the encoder stored it. The
@@ -115,6 +116,10 @@ final class ReplayPaint {
 
   final bool antiAlias;
 
+  /// One of the `pathFillRule*` constants. Stroke outlines always override
+  /// this to non-zero because that is part of the stroker's contract.
+  final int fillRule;
+
   @override
   bool operator ==(Object other) =>
       other is ReplayPaint &&
@@ -122,16 +127,17 @@ final class ReplayPaint {
       other.style == style &&
       other.strokeWidth == strokeWidth &&
       other.blendMode == blendMode &&
-      other.antiAlias == antiAlias;
+      other.antiAlias == antiAlias &&
+      other.fillRule == fillRule;
 
   @override
-  int get hashCode =>
-      Object.hash(argbColor, style, strokeWidth, blendMode, antiAlias);
+  int get hashCode => Object.hash(
+      argbColor, style, strokeWidth, blendMode, antiAlias, fillRule);
 
   @override
   String toString() => 'ReplayPaint(0x${argbColor.toRadixString(16)}, '
       'style: $style, strokeWidth: $strokeWidth, blend: $blendMode, '
-      'aa: $antiAlias)';
+      'aa: $antiAlias, fillRule: $fillRule)';
 }
 
 /// The resource tables an encoded list's ids point into.
@@ -148,6 +154,7 @@ abstract interface class ReplayResources {
   double paintStrokeWidth(int id);
   int paintBlendMode(int id);
   bool paintAntiAlias(int id);
+  int paintFillRule(int id);
 
   /// The path object that was interned under [id]. Opaque to the player -
   /// the display list stores paths as `Object` and offers no bounds, which is
@@ -189,6 +196,9 @@ final class DisplayListResources implements ReplayResources {
 
   @override
   bool paintAntiAlias(int id) => _list.paintAntiAlias(id);
+
+  @override
+  int paintFillRule(int id) => _list.paintFillRule(id);
 
   @override
   Object pathAt(int id) => _list.pathAt(id);
@@ -637,6 +647,7 @@ final class DisplayListPlayer {
       strokeWidth: resources.paintStrokeWidth(id),
       blendMode: resources.paintBlendMode(id),
       antiAlias: resources.paintAntiAlias(id),
+      fillRule: resources.paintFillRule(id),
     );
     _paints[id] = paint;
     return paint;

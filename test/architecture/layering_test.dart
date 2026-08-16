@@ -33,7 +33,11 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // implementation of that order is how the order stops being one rule.
   'ffi': <String>['foundation'],
   'scheduler': <String>['foundation'],
-  'graphics': <String>['foundation', 'geometry'],
+  // Native image codecs live behind conditional imports in graphics. They
+  // may use the OS-neutral ABI helpers, while platform/window types remain
+  // forbidden here and the stub keeps those imports out of unsupported
+  // targets.
+  'graphics': <String>['ffi', 'foundation', 'geometry'],
   // Animation sits above the scheduler because time enters it through a frame
   // callback rather than through a clock it reads itself; see
   // `animation/clock.dart`. It knows geometry because a tween interpolates an

@@ -37,6 +37,22 @@ sealed class ImageDecodeException implements Exception {
   String toString() => '$runtimeType: $message';
 }
 
+/// No supported signature matched the bytes passed to the format dispatcher.
+final class UnsupportedImageFormatException extends ImageDecodeException {
+  const UnsupportedImageFormatException(super.message);
+}
+
+/// The JPEG stream is malformed, truncated, or uses a feature the decoder
+/// cannot represent.
+final class JpegDecodeException extends ImageDecodeException {
+  const JpegDecodeException(super.message);
+}
+
+/// The WebP container or VP8/VP8L payload is malformed or unsupported.
+final class WebPDecodeException extends ImageDecodeException {
+  const WebPDecodeException(super.message);
+}
+
 /// The first eight bytes are not the PNG signature.
 ///
 /// The cheapest check there is, done before anything is allocated, and the one

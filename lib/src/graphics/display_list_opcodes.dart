@@ -179,6 +179,11 @@ const int paintStyleStroke = 1;
 const int paintStyleFillAndStroke = 2;
 const int kPaintStyleCount = 3;
 
+/// Path fill rule, carried in bit 3 of a paint's flag word.
+const int pathFillRuleNonZero = 0;
+const int pathFillRuleEvenOdd = 1;
+const int kPathFillRuleCount = 2;
+
 const int blendModeSrcOver = 0;
 const int blendModeSrc = 1;
 const int blendModePlus = 2;

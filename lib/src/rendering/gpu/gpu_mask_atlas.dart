@@ -85,9 +85,10 @@
 ///     constructed without the hook still turns the signal into a named error,
 ///     because drawing the shape from a recycled atlas would draw it wrong.
 ///     The protocol is spelled out on [MaskRasterStatus.needsFlush].
-///   * **No strokes.** Same reason as the CPU path: filling a stroke-styled
-///     paint would draw the region the outline encloses, which looks
-///     deliberate and is wrong.
+///   * **Stroke expansion happens before this layer.** [GpuRasterSink] uses
+///     the shared `PathStroker` to turn a centreline into a fillable outline;
+///     this atlas therefore remains concerned with coverage and fill rules,
+///     independent of how geometry was produced.
 ///   * **No path clipping.** The clip is still a rectangle. This file is
 ///     literally the machinery a clip mask needs - the next user of it.
 library;

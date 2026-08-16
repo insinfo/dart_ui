@@ -12,7 +12,7 @@
 ///   foundation  <- depends on nothing
 ///   geometry    <- depends on nothing
 ///   scheduler   <- foundation
-///   graphics    <- foundation, geometry
+///   graphics    <- ffi, foundation, geometry
 ///   platform    <- foundation, geometry, scheduler
 ///   gestures    <- geometry, platform, scheduler
 ///   text        <- foundation, geometry, graphics
@@ -55,6 +55,7 @@ export 'src/backends/headless/headless_test_support.dart';
 export 'src/diagnostics/dev_overlay.dart';
 export 'src/foundation/diagnostics.dart';
 export 'src/foundation/lifecycle.dart';
+export 'src/foundation/lru_cache.dart';
 export 'src/gallery/gallery.dart';
 export 'src/geometry/offset.dart';
 export 'src/geometry/path.dart';
@@ -71,6 +72,10 @@ export 'src/graphics/image/decoded_image.dart';
 export 'src/graphics/image/image_errors.dart';
 export 'src/graphics/image/inflate.dart';
 export 'src/graphics/image/png.dart';
+export 'src/graphics/image/raster_codec.dart';
+export 'src/graphics/image/raster_formats.dart';
+export 'src/graphics/svg/svg_path.dart';
+export 'src/graphics/svg/svg_picture.dart';
 export 'src/layout/alignment.dart';
 export 'src/layout/box_constraints.dart';
 export 'src/layout/edge_insets.dart';
@@ -153,6 +158,7 @@ export 'src/widgets/proxy.dart';
 export 'src/widgets/safe_area.dart';
 export 'src/widgets/semantics.dart';
 export 'src/widgets/style.dart';
+export 'src/widgets/svg.dart';
 export 'src/widgets/theme.dart';
 export 'src/widgets/widget.dart';
 

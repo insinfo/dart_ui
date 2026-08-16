@@ -21,6 +21,26 @@ glyph point model, and the dependency on `vector_math` was removed.
 A copy of the Apache License 2.0 is included at `test/fonts/Apache-2.0.txt`.
 
 ================================================================================
+image  (https://github.com/brendan-duncan/image)
+Copyright (c) 2013-2022 Brendan Duncan
+Licensed under the MIT License
+================================================================================
+
+`package:image` is a runtime dependency used as the portable JPEG/WebP decode
+fallback when a native platform codec is unavailable. Its types do not cross
+dart_ui's public image API. The license is included at
+`licenses/image-LICENSE.txt`.
+
+================================================================================
+xml  (https://github.com/renggli/dart-xml)
+Copyright (c) 2006-2023 Lukas Renggli
+Licensed under the MIT License
+================================================================================
+
+`package:xml` is a runtime dependency used to parse SVG XML. The license is
+included at `licenses/xml-LICENSE.txt`.
+
+================================================================================
 Roboto  (https://fonts.google.com/specimen/Roboto)
 Copyright 2011 Google Inc.
 Licensed under the Apache License, Version 2.0

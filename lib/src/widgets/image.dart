@@ -51,6 +51,7 @@ import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../graphics/image/decoded_image.dart';
 import '../graphics/image/png.dart';
+import '../graphics/image/raster_formats.dart';
 import '../layout/alignment.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
@@ -245,6 +246,75 @@ final class Image extends RenderObjectWidget {
   }) =>
       Image(
         decodePng(bytes, order: order, limits: limits),
+        key: key,
+        width: width,
+        height: height,
+        fit: fit,
+        alignment: alignment,
+      );
+
+  /// Detects PNG, JPEG, or WebP from [bytes], decodes it, and draws it.
+  ///
+  /// Prefer decoding once with [decodeImage] and using the ordinary
+  /// constructor for large assets or widgets rebuilt frequently.
+  factory Image.memory(
+    Uint8List bytes, {
+    Key? key,
+    double? width,
+    double? height,
+    BoxFit fit = BoxFit.contain,
+    Alignment alignment = Alignment.center,
+    ImageChannelOrder order = ImageChannelOrder.bgra,
+    PngLimits pngLimits = const PngLimits(),
+    RasterImageLimits limits = const RasterImageLimits(),
+  }) =>
+      Image(
+        decodeImage(
+          bytes,
+          order: order,
+          pngLimits: pngLimits,
+          limits: limits,
+        ),
+        key: key,
+        width: width,
+        height: height,
+        fit: fit,
+        alignment: alignment,
+      );
+
+  /// Decodes JPEG bytes and draws the first image.
+  factory Image.jpeg(
+    Uint8List bytes, {
+    Key? key,
+    double? width,
+    double? height,
+    BoxFit fit = BoxFit.contain,
+    Alignment alignment = Alignment.center,
+    ImageChannelOrder order = ImageChannelOrder.bgra,
+    RasterImageLimits limits = const RasterImageLimits(),
+  }) =>
+      Image(
+        decodeJpeg(bytes, order: order, limits: limits),
+        key: key,
+        width: width,
+        height: height,
+        fit: fit,
+        alignment: alignment,
+      );
+
+  /// Decodes the first frame of a WebP image and draws it.
+  factory Image.webp(
+    Uint8List bytes, {
+    Key? key,
+    double? width,
+    double? height,
+    BoxFit fit = BoxFit.contain,
+    Alignment alignment = Alignment.center,
+    ImageChannelOrder order = ImageChannelOrder.bgra,
+    RasterImageLimits limits = const RasterImageLimits(),
+  }) =>
+      Image(
+        decodeWebP(bytes, order: order, limits: limits),
         key: key,
         width: width,
         height: height,

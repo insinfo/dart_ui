@@ -784,17 +784,29 @@ final class _RasterizerSink implements RasterSink {
     final Transform2D local = _toLayerTransform(transform);
     switch (paint.style) {
       case paintStyleFill:
-        _fill(path, local, clip, paint);
+        _fill(path, local, clip, paint, rule: _fillRule(paint));
       case paintStyleStroke:
-        _fill(_outlineOf(path, transform, paint), local, clip, paint);
+        _fill(
+          _outlineOf(path, transform, paint),
+          local,
+          clip,
+          paint,
+          rule: FillRule.nonZero,
+        );
       case paintStyleFillAndStroke:
         // Order is load-bearing, not incidental. The stroke straddles the
         // centreline, so its inner half lies inside the region the fill
         // covers; drawing the fill second paints over that half and the
         // border comes out half as wide as it was asked for - and only on
         // the inside, so it also looks like a positioning bug.
-        _fill(path, local, clip, paint);
-        _fill(_outlineOf(path, transform, paint), local, clip, paint);
+        _fill(path, local, clip, paint, rule: _fillRule(paint));
+        _fill(
+          _outlineOf(path, transform, paint),
+          local,
+          clip,
+          paint,
+          rule: FillRule.nonZero,
+        );
       default:
         throw UnsupportedCapabilityError(
           backendName: 'cpu',
@@ -814,7 +826,13 @@ final class _RasterizerSink implements RasterSink {
   ///
   /// [transform] is already in the current target's coordinates; [clip] is
   /// still in device space and is moved here.
-  void _fill(Path path, Transform2D transform, Rect clip, ReplayPaint paint) {
+  void _fill(
+    Path path,
+    Transform2D transform,
+    Rect clip,
+    ReplayPaint paint, {
+    required FillRule rule,
+  }) {
     if (path.isEmpty) return;
     // Resolved once per fill, not once per span: the mode cannot change along
     // a path, and `cpuBlendForMode` is a switch the span loop should never see.
@@ -825,10 +843,20 @@ final class _RasterizerSink implements RasterSink {
       path,
       _toLayer(clip),
       _spanSink,
-      rule: FillRule.nonZero,
+      rule: rule,
       transform: transform,
     );
   }
+
+  FillRule _fillRule(ReplayPaint paint) => switch (paint.fillRule) {
+        pathFillRuleNonZero => FillRule.nonZero,
+        pathFillRuleEvenOdd => FillRule.evenOdd,
+        _ => throw UnsupportedCapabilityError(
+            backendName: 'cpu',
+            capability: Capability.cpuPresentation,
+            detail: 'unknown path fill rule ${paint.fillRule}',
+          ),
+      };
 
   /// The outline swept by the pen along [path], in [path]'s own coordinates.
   ///

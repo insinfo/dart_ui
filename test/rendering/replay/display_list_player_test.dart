@@ -616,6 +616,9 @@ final class _PaintStyleOverride implements ReplayResources {
   bool paintAntiAlias(int id) => _inner.paintAntiAlias(id);
 
   @override
+  int paintFillRule(int id) => _inner.paintFillRule(id);
+
+  @override
   Object pathAt(int id) => _inner.pathAt(id);
 
   @override

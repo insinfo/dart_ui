@@ -3444,7 +3444,26 @@ Pipeline:
 9. mip/resize conforme backend;
 10. eviction.
 
-Suportar inicialmente PNG, JPEG, WebP quando biblioteca Dart existente for suficiente. Decodificadores nativos podem ser plugins opcionais.
+Suportar inicialmente PNG, JPEG e WebP com uma política **native-first**:
+
+- Windows: WIC (`windowscodecs.dll`) para PNG/JPEG/WebP disponíveis no SO;
+- macOS: ImageIO/CoreGraphics para PNG/JPEG/WebP;
+- Linux: TurboJPEG para JPEG quando `libturbojpeg.so` estiver instalada;
+- navegador: `createImageBitmap` pela API assíncrona;
+- headless, CI, biblioteca ausente ou falha do codec nativo: implementação
+  100% Dart (`dart_ui` para PNG e `package:image` para JPEG/WebP).
+
+O resultado de todos os caminhos é `DecodedImage` em RGBA/BGRA
+pré-multiplicado, sem expor tipos do SO ou de dependências. A orientação EXIF
+é normalizada antes da entrega e limites de bytes, dimensão e pixels são
+aplicados antes da alocação da superfície. `preferNative: false` existe para
+testes determinísticos e diagnóstico; não é a política normal de produção.
+
+O SVG permanece vetorial: o parser produz `Path`, `fill-rule`, fill/stroke e
+transformações consumidos pelo mesmo display list dos demais widgets. Assim,
+o backend atual usa máscaras analíticas cacheadas, enquanto tessellation,
+stencil-then-cover ou compute raster podem ser adicionados futuramente sem
+alterar o widget ou o formato SVG.
 
 ## 23.11 Shaders e assets
 

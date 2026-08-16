@@ -34,3 +34,22 @@ O cabeçalho de um `.exe` também pode ser inspecionado diretamente:
 dart run dart_ui pe example/hello_world.exe --info
 dart run dart_ui pe example/hello_world.exe --gui
 ```
+
+## Imagens e SVG
+
+JPEG, PNG e WebP usam os codecs otimizados da plataforma primeiro: WIC no
+Windows, ImageIO/CoreGraphics no macOS, TurboJPEG no Linux e
+`createImageBitmap` no navegador. Se o codec não existir ou falhar, o mesmo
+contrato cai para o decodificador Dart; headless e CI não dependem de uma
+biblioteca nativa instalada.
+
+```dart
+final DecodedImage photo = await decodeImageAsync(bytes);
+final Widget icon = Svg.string(svgSource);
+```
+
+O decode aplica limites contra imagens hostis, orientação EXIF e converte uma
+única vez para pixels pré-multiplicados. SVG suporta paths completos
+(`M/L/H/V/C/S/Q/T/A/Z`), formas básicas, transformações, fill, stroke,
+`currentColor` e regras non-zero/even-odd. Gradientes, filtros, texto SVG,
+`<use>` e folhas CSS externas continuam fora deste primeiro recorte.
