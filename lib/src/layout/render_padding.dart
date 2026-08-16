@@ -1,6 +1,8 @@
 /// Insets a child inside its parent.
 library;
 
+import 'dart:math' as math;
+
 import '../geometry/size.dart';
 import 'box_constraints.dart';
 import 'edge_insets.dart';
@@ -30,6 +32,35 @@ final class RenderPadding extends RenderSingleChildBox {
     _padding = value;
     markNeedsLayout();
   }
+
+  // The insets are added on both sides of every intrinsic, and subtracted from
+  // the cross extent handed to the child: a label asked "how tall are you at
+  // 100px wide" inside 8px of horizontal padding only has 84px to work with.
+  // Subtracting nothing from an unbounded cross extent is deliberate -
+  // `infinity - 8` is still infinity, which is the honest answer.
+
+  @override
+  double computeMinIntrinsicWidth(double height) =>
+      _padding.horizontal +
+      (child?.getMinIntrinsicWidth(_less(height, _padding.vertical)) ?? 0.0);
+
+  @override
+  double computeMaxIntrinsicWidth(double height) =>
+      _padding.horizontal +
+      (child?.getMaxIntrinsicWidth(_less(height, _padding.vertical)) ?? 0.0);
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      _padding.vertical +
+      (child?.getMinIntrinsicHeight(_less(width, _padding.horizontal)) ?? 0.0);
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      _padding.vertical +
+      (child?.getMaxIntrinsicHeight(_less(width, _padding.horizontal)) ?? 0.0);
+
+  static double _less(double extent, double inset) =>
+      extent.isFinite ? math.max(0.0, extent - inset) : extent;
 
   @override
   void performLayout() {

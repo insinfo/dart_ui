@@ -5,13 +5,13 @@
 /// anything, which is what makes layout a single top-down walk rather than a
 /// fixpoint iteration.
 ///
-/// Intrinsic sizing (`getMinIntrinsicWidth` and friends) is deliberately
-/// absent. It is the escape hatch from that rule - a second, bottom-up query
-/// pass - and every node that supports it pays for it in complexity whether or
-/// not anybody calls it. Nothing in this tree needs it yet; when something
-/// does (a table column, or shrink-wrapping text to its longest word), it
-/// arrives as an explicit opt-in protocol with its own caching, not as a
-/// default every [RenderBox] must implement.
+/// Intrinsic sizing (`getMinIntrinsicWidth` and friends) is the one sanctioned
+/// exception, and it is deliberately *not* expressed as a constraint. It is a
+/// second, bottom-up query pass, it lives on `RenderBox` rather than here, and
+/// it is fenced in by a cache, an invalidation rule and a hard ban on calling
+/// `layout` from inside one - see the intrinsic section of `render_box.dart`.
+/// A grid track sized to its widest cell is what forced it; nothing else in
+/// this file changed because of it.
 library;
 
 import 'dart:math' as math;

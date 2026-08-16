@@ -2,18 +2,22 @@ library;
 
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
+import '../geometry/size.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../layout/alignment.dart';
 import '../layout/box_constraints.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_align.dart' as layout;
+import '../layout/render_aspect_ratio.dart' as layout;
 import '../layout/render_box.dart';
 import '../layout/render_colored_box.dart' as layout;
 import '../layout/render_constrained_box.dart' as layout;
 import '../layout/render_flex.dart' as layout;
+import '../layout/render_grid.dart' as layout;
 import '../layout/render_padding.dart' as layout;
 import '../layout/render_stack.dart' as layout;
+import '../layout/render_wrap.dart' as layout;
 import '../platform/input_events.dart';
 import '../rendering/text/font_registry.dart';
 import '../text/shaper.dart';
@@ -161,6 +165,124 @@ final class Row extends Flex {
     super.mainAxisSize,
     super.children,
   }) : super(direction: layout.Axis.horizontal);
+}
+
+/// Lays children out in a line that breaks when it runs out of room.
+final class Wrap extends MultiChildRenderObjectWidget {
+  const Wrap({
+    super.key,
+    this.direction = layout.Axis.horizontal,
+    this.spacing = 0.0,
+    this.runSpacing = 0.0,
+    this.alignment = layout.MainAxisAlignment.start,
+    this.runAlignment = layout.MainAxisAlignment.start,
+    this.crossAxisAlignment = layout.WrapCrossAlignment.start,
+    super.children,
+  });
+
+  final layout.Axis direction;
+  final double spacing;
+  final double runSpacing;
+  final layout.MainAxisAlignment alignment;
+  final layout.MainAxisAlignment runAlignment;
+  final layout.WrapCrossAlignment crossAxisAlignment;
+
+  @override
+  layout.RenderWrap createRenderObject(BuildContext context) =>
+      layout.RenderWrap(
+        direction: direction,
+        spacing: spacing,
+        runSpacing: runSpacing,
+        alignment: alignment,
+        runAlignment: runAlignment,
+        crossAxisAlignment: crossAxisAlignment,
+      );
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant layout.RenderWrap renderObject,
+  ) {
+    renderObject
+      ..direction = direction
+      ..spacing = spacing
+      ..runSpacing = runSpacing
+      ..alignment = alignment
+      ..runAlignment = runAlignment
+      ..crossAxisAlignment = crossAxisAlignment;
+  }
+}
+
+/// Forces its child into a box of a fixed width-to-height ratio.
+final class AspectRatio extends SingleChildRenderObjectWidget {
+  const AspectRatio({super.key, required this.aspectRatio, super.child});
+
+  /// Width divided by height.
+  final double aspectRatio;
+
+  @override
+  layout.RenderAspectRatio createRenderObject(BuildContext context) =>
+      layout.RenderAspectRatio(aspectRatio: aspectRatio);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant layout.RenderAspectRatio renderObject,
+  ) {
+    renderObject.aspectRatio = aspectRatio;
+  }
+}
+
+/// Arranges children into rows and columns of sized tracks.
+///
+/// Children are auto-placed in order, one per cell, row-major. Explicit
+/// placement and spans exist on the render node
+/// ([layout.RenderGrid.place]) but have no widget-layer spelling yet: that
+/// needs a parent-data widget, which needs the element layer to carry per-child
+/// configuration down, and neither is this file's to add.
+final class Grid extends MultiChildRenderObjectWidget {
+  const Grid({
+    super.key,
+    required this.columns,
+    this.rows = const <layout.GridTrack>[],
+    this.columnGap = 0.0,
+    this.rowGap = 0.0,
+    this.fit = layout.GridFit.stretch,
+    this.alignment = Alignment.center,
+    super.children,
+  });
+
+  final List<layout.GridTrack> columns;
+  final List<layout.GridTrack> rows;
+  final double columnGap;
+  final double rowGap;
+  final layout.GridFit fit;
+  final Alignment alignment;
+
+  @override
+  layout.RenderGrid createRenderObject(BuildContext context) =>
+      layout.RenderGrid(
+        columns: columns,
+        rows: rows,
+        columnGap: columnGap,
+        rowGap: rowGap,
+        fit: fit,
+        alignment: alignment,
+      );
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant layout.RenderGrid renderObject,
+  ) {
+    renderObject
+      ..columns = columns
+      ..rows = rows
+      ..columnGap = columnGap
+      ..rowGap = rowGap
+      ..fit = fit
+      ..alignment = alignment;
+  }
 }
 
 /// Overlays children, last on top.
@@ -379,17 +501,61 @@ final class RenderText extends RenderBox {
   /// The face this line is drawn in, or null when the machine has none.
   ScaledTypeface? get font => FontRegistry.instance.uiFont(_fontSize);
 
-  @override
-  void performLayout() {
+  /// The box this line needs, measured through the same shaper paint uses.
+  Size get _naturalSize {
     final ScaledTypeface? face = font;
     // With no face the estimated box is still reserved, so a missing font
     // shows up as blank text rather than as a tree that has collapsed to
     // nothing. See FontRegistry.estimatedSize.
-    size = constraints.constrain(
-      face == null
-          ? FontRegistry.estimatedSize(_text, _fontSize)
-          : uiTextPainter.measure(_text, face),
-    );
+    return face == null
+        ? FontRegistry.estimatedSize(_text, _fontSize)
+        : uiTextPainter.measure(_text, face);
+  }
+
+  @override
+  void performLayout() {
+    size = constraints.constrain(_naturalSize);
+  }
+
+  // --- intrinsics ---------------------------------------------------------
+  //
+  // Minimum and maximum are the same number, and that is not laziness. This
+  // node does not wrap: whatever width it is given, it lays out the whole
+  // string on one line. Reporting a smaller minimum would be a lie a parent
+  // acts on - a grid column would size itself to the "longest word", this node
+  // would then draw the whole line anyway, and the text would be clipped by
+  // `paint` below with no way to tell from the layout that anything was wrong.
+  // A shrinkable minimum becomes correct on the day this node wraps, and not a
+  // moment sooner; it belongs with the paragraph node of section 30.
+
+  @override
+  double computeMinIntrinsicWidth(double height) => _naturalSize.width;
+
+  @override
+  double computeMaxIntrinsicWidth(double height) => _naturalSize.width;
+
+  @override
+  double computeMinIntrinsicHeight(double width) => _naturalSize.height;
+
+  @override
+  double computeMaxIntrinsicHeight(double width) => _naturalSize.height;
+
+  /// The face's ascent: the distance from the top of the line box down to the
+  /// line the letters sit on. `paint` below draws the run at exactly this
+  /// offset, so what a row aligns to and what is drawn cannot disagree.
+  ///
+  /// With no face the ascent is estimated from the same 1.2 line-height ratio
+  /// `FontRegistry` uses, for the same reason it estimates a box at all: a
+  /// missing font must look like a missing font, not like a collapsed layout.
+  @override
+  double? computeDistanceToActualBaseline(TextBaseline baseline) {
+    final ScaledTypeface? face = font;
+    final double ascent =
+        face?.ascent ?? FontRegistry.estimatedLineHeight(_fontSize) / 1.2;
+    // An ideographic baseline sits at the bottom of the em box rather than on
+    // the letters' feet. Without an OS/2 baseline table to read, the bottom of
+    // the line box is the closest honest answer.
+    return baseline == TextBaseline.alphabetic ? ascent : size.height;
   }
 
   @override

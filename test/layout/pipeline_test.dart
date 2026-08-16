@@ -247,11 +247,17 @@ void main() {
       );
       owner.root = _RestlessBox();
 
+      // Was `isA<StateError>()`. Section 25.7 asks this failure to be
+      // *named* and to carry a reduced diagnostic tree, which a StateError
+      // cannot do: a caller wanting to tell this apart from the twenty other
+      // StateErrors the render tree throws had to match on words in a message.
+      // The message still says "did not settle", so the assertion below is the
+      // old one plus the type. See `layout_cycle_test.dart` for the rest.
       expect(
         () => owner.flushLayout(),
         throwsA(
-          isA<StateError>().having(
-            (StateError e) => e.message,
+          isA<LayoutCycleError>().having(
+            (LayoutCycleError e) => e.message,
             'message',
             contains('did not settle'),
           ),

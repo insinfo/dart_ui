@@ -81,6 +81,7 @@ import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
+import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import 'gl_bindings.dart';
 import 'gl_context.dart';
@@ -98,7 +99,7 @@ final class GlTexture implements GpuTextureHandle {
     this.format,
     this.filter,
     this._state,
-  );
+  ) : _bornAtLossCount = _state.lossCount;
 
   @override
   final int id;
@@ -118,11 +119,27 @@ final class GlTexture implements GpuTextureHandle {
   final GpuDeviceState _state;
   bool _released = false;
 
-  /// A texture is invalid the moment its device is lost: the name is still an
-  /// integer but the driver freed what it pointed at, and binding it is
-  /// undefined rather than an error.
+  /// [GpuDeviceState.lossCount] when this name was generated.
+  ///
+  /// The field that makes device loss survivable rather than merely
+  /// observable. `isLost` goes back to false when the device is recovered, so
+  /// a validity check that asked only that question would declare every
+  /// pre-loss texture healthy again the moment recovery finished - and those
+  /// names point at memory the driver freed. Binding one is undefined output,
+  /// which is the failure this whole file is trying not to have. `lossCount`
+  /// never goes down, so comparing it is the check that survives a recovery.
+  final int _bornAtLossCount;
+
+  /// A texture is invalid the moment its device is lost, and stays invalid
+  /// across the recovery: the name is still an integer but the driver freed
+  /// what it pointed at, and binding it is undefined rather than an error.
   @override
-  bool get isValid => !_released && !_state.isLost;
+  bool get isValid =>
+      !_released && !_state.isLost && _state.lossCount == _bornAtLossCount;
+
+  /// Whether the driver still owns this name, so a delete is legal.
+  bool get _isDeletable =>
+      !_released && !_state.isLost && _state.lossCount == _bornAtLossCount;
 
   @override
   String toString() =>
@@ -153,10 +170,24 @@ final class _DrawState {
   }
 }
 
+/// A target that can put its GPU resources back after a device loss.
+///
+/// Implemented by [GlOffscreenTarget] and by `GlWindowTarget`, which live in
+/// different libraries; the device holds them through this interface so it can
+/// walk every live target's inventory without knowing what kind each one is.
+///
+/// Registration is the target's own job - see [GlRenderDevice.registerTarget] -
+/// because a target created and disposed between two losses must not appear in
+/// the second one's inventory.
+abstract interface class GlRecoverableTarget {
+  /// This target's resources, in the order they should be rebuilt.
+  Iterable<GpuRecoverableResource> recoverableResources();
+}
+
 /// An open GL context plus the objects every target shares.
 final class GlRenderDevice
     with DisposableMixin
-    implements RenderDevice, GpuTextureAllocator {
+    implements RenderDevice, GpuTextureAllocator, GpuRecoveryHost {
   GlRenderDevice._({
     required GlContext context,
     required GlApi gl,
@@ -219,6 +250,159 @@ final class GlRenderDevice
 
   @override
   bool get isLost => _state.isLost;
+
+  // -------------------------------------------------------------------
+  // Device-loss recovery - see gpu_recovery.dart for the eight steps
+  // -------------------------------------------------------------------
+
+  final Set<GlRecoverableTarget> _targets = <GlRecoverableTarget>{};
+
+  /// Whether step 1 of a recovery has closed submissions.
+  bool _submissionsStopped = false;
+
+  /// How many submissions were refused because a recovery was in progress.
+  ///
+  /// Exposed because "submissions stopped" is invisible from the pixels: a
+  /// device that went on issuing draws into a dead driver produces the same
+  /// blank frame as one that correctly refused, and only this number tells the
+  /// two apart.
+  int get blockedSubmissionCount => _blockedSubmissionCount;
+  int _blockedSubmissionCount = 0;
+
+  /// Whether submissions are currently closed by a recovery in progress.
+  bool get submissionsStopped => _submissionsStopped;
+
+  @override
+  String get backendName => GlRendererBackend.backendName;
+
+  @override
+  GpuDeviceState get deviceState => _state;
+
+  /// Registers [target] so a recovery can rebuild what it owns.
+  ///
+  /// Called by the target's constructor. A target that is never registered
+  /// survives a recovery with textures the driver has freed, which is exactly
+  /// the silent failure the loss generation on [GlTexture] turns into a named
+  /// refusal - so the worst case is a target that refuses to draw, not one
+  /// that draws garbage.
+  void registerTarget(GlRecoverableTarget target) => _targets.add(target);
+
+  void unregisterTarget(GlRecoverableTarget target) => _targets.remove(target);
+
+  /// Step 1: nothing more goes to the driver until the device is back.
+  @override
+  void stopSubmissions() => _submissionsStopped = true;
+
+  /// Step 3: forget the shared pipeline objects without calling the driver.
+  ///
+  /// No `glDeleteProgram`, no `glDeleteBuffers`. The names point at memory a
+  /// lost context has already freed; deleting them is undefined, and on a
+  /// driver that has since recycled the names it deletes somebody else's
+  /// objects. Zero is GL's "no object" for all four, so the fields are simply
+  /// reset - [_initialise] generates new ones.
+  @override
+  void discardNativeResources() {
+    _program = 0;
+    _vao = 0;
+    _vbo = 0;
+    _ebo = 0;
+    _uniformViewport = -1;
+    _uniformTexture = -1;
+    _uniformMode = -1;
+    _uniformYFlip = -1;
+    _drawState.reset();
+    _lastError = null;
+  }
+
+  /// Step 4: bring the context back and recompile everything shared.
+  ///
+  /// ## What this can and cannot recreate, stated
+  ///
+  /// It does **not** create a new `GlContext`. On this backend the context is
+  /// owned by whoever created it - `GlContextFactory` for the offscreen path,
+  /// `lib/src/backends/win32` for a window - and a renderer that destroyed and
+  /// rebuilt a window's context would have to destroy the window with it, which
+  /// is the one thing `renderer.dart` promises device loss does not do.
+  ///
+  /// What it recreates is every GL *object*, which is what a reset actually
+  /// destroys: `GL_ARB_robustness` describes exactly this state, where
+  /// `glGetGraphicsResetStatus` reports a reset, every object is gone and the
+  /// context handle survives to be made current again. That is the case this
+  /// recovers from, and it is the common one - a TDR, a driver update, a GPU
+  /// switch.
+  ///
+  /// The case it cannot recover from is a context that will not go current at
+  /// all, and it says so by name instead of pretending: the diagnostic names
+  /// the context and tells the owner it has to build a new device, which means
+  /// a new context, which only the platform layer can do.
+  @override
+  BackendDiagnostic? recreateDevice() {
+    if (isDisposed) {
+      return const BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'a disposed GL device cannot be recovered',
+        detail: 'the owner must create a new device through '
+            'GlRendererBackend.createDevice or adoptContext',
+      );
+    }
+    // Cleared before anything is attempted, because every call below refuses
+    // while the state says lost - makeCurrentOrLose returns false, createTexture
+    // would produce dead names. Put back if the recreation fails, so the
+    // coordinator's contract ("failed means still lost") holds.
+    final bool wasLost = _state.isLost;
+    final BackendDiagnostic? cause = _state.lossDiagnostic;
+    _state.recover();
+
+    if (!_context.makeCurrent()) {
+      final BackendDiagnostic failure = BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'the GL context could not be made current again, so this '
+            'device cannot be recovered',
+        detail: 'the context is ${_context.description}. A context that will '
+            'not go current is gone rather than reset, and only the code that '
+            'created it can make another - for a window that is '
+            'lib/src/backends/win32 or lib/src/backends/x11. The original '
+            'loss was: ${cause ?? 'not recorded'}',
+      );
+      _state.markLost(failure);
+      return failure;
+    }
+
+    // Any error the dead context left queued belongs to the previous device
+    // and would otherwise be reported against the first call made on the new
+    // one.
+    _gl.drainErrors();
+
+    final BackendDiagnostic? failure = _initialise();
+    if (failure != null) {
+      _state.markLost(failure);
+      return failure;
+    }
+    _submissionsStopped = false;
+    if (!wasLost) {
+      // Recovering a device that was not lost is a caller error rather than a
+      // silent success: it means somebody ran the recovery on a healthy device
+      // and threw away every atlas for nothing.
+      return const BackendDiagnostic(
+        kind: DiagnosticKind.note,
+        message: 'the GL device was not lost when the recovery ran',
+      );
+    }
+    return null;
+  }
+
+  /// Step 5's inventory: everything every live target owns.
+  ///
+  /// The device itself contributes nothing, because everything it owns - the
+  /// program, the VAO and the two buffers - is rebuilt by [_initialise] inside
+  /// step 4 rather than being a resource with a source of its own.
+  @override
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    for (final GlRecoverableTarget target
+        in List<GlRecoverableTarget>.of(_targets)) {
+      yield* target.recoverableResources();
+    }
+  }
 
   /// What this device can do, answered field by field.
   ///
@@ -382,10 +566,20 @@ final class GlRenderDevice
     checkError('glTexSubImage2D');
   }
 
+  /// Deletes [texture]'s name, or forgets it when the driver already has.
+  ///
+  /// The name is marked released either way. Only the `glDeleteTextures` is
+  /// conditional, and on the texture's own loss generation rather than on the
+  /// device's current one: after a recovery the device is healthy again while a
+  /// pre-loss name still points at freed memory, and deleting it would hand the
+  /// driver an integer that may since have been handed back out to somebody
+  /// else's texture.
   @override
   void releaseTexture(covariant GlTexture texture) {
-    if (texture._released || _state.isLost || isDisposed) return;
+    if (texture._released) return;
+    final bool deletable = texture._isDeletable;
     texture._released = true;
+    if (!deletable || isDisposed) return;
     scratchNames[0] = texture.id;
     _gl.deleteTextures(1, scratchNames);
   }
@@ -439,6 +633,13 @@ final class GlRenderDevice
     int surfaceFramebuffer = 0,
     int firstBatch = 0,
   }) {
+    // Step 1 of a recovery closed the door. Checked before makeCurrentOrLose
+    // rather than after, because the whole point is that no call reaches the
+    // driver - including the one that asks it to make a context current.
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      return false;
+    }
     if (!makeCurrentOrLose()) return false;
 
     // Bound here rather than left to the caller, which is a change of contract
@@ -668,6 +869,10 @@ final class GlRenderDevice
   /// renderer in a coordinate system that disagrees with every rectangle the
   /// layout produced.
   bool _readPixels(Framebuffer destination) {
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      return false;
+    }
     if (!makeCurrentOrLose()) return false;
     final width = destination.width;
     final height = destination.height;
@@ -987,10 +1192,47 @@ final class GlRenderDevice
 }
 
 /// A render target backed by a framebuffer object.
-final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
+final class GlOffscreenTarget
+    with DisposableMixin
+    implements RenderTarget, GlRecoverableTarget {
   GlOffscreenTarget._(this._device, MemorySurfaceDescriptor surface)
       : _surface = surface {
     _maskAtlas = GpuMaskAtlas();
+    _glyphAtlas = GpuGlyphAtlas();
+    _fonts = GlFontResolver();
+    _images = GlImageCache(_device);
+    _buildAtlasObjects();
+    final BackendDiagnostic? failure = _createSurfaceObjects();
+    if (failure != null) _device.state.markLost(failure);
+    _device.registerTarget(this);
+  }
+
+  final GlRenderDevice _device;
+  final GpuBatcher _batcher = GpuBatcher();
+
+  late final GpuMaskAtlas _maskAtlas;
+  late final GpuGlyphAtlas _glyphAtlas;
+  late final GlFontResolver _fonts;
+  late final GlImageCache _images;
+
+  // Not final: a device loss destroys every one of these, and a recovery
+  // rebuilds them. The sink in particular is rebuilt rather than mutated,
+  // because it carries the mask and glyph texture *ids* as final fields and a
+  // recreated texture has a new name - a sink that kept the old id would batch
+  // every mask against a texture the driver has freed.
+  late GlTexture _maskTexture;
+  late GlTexture _glyphTexture;
+  late GlFramebufferPool _layerPool;
+  late GpuLayerStack _layers;
+  late GpuRasterSink _sink;
+  late DisplayListPlayer _player;
+
+  /// Creates the atlas textures and everything downstream of their ids.
+  ///
+  /// Shared by the constructor and by the recovery, so the two cannot drift:
+  /// a rebuild that forgot the layer pool or wired the sink to a stale texture
+  /// id would draw a frame that is subtly wrong rather than one that fails.
+  void _buildAtlasObjects() {
     _maskTexture = _device.createTexture(
       width: _maskAtlas.width,
       height: _maskAtlas.height,
@@ -999,7 +1241,6 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       // rasteriser's coverage byte exactly and linear would blur it.
       filter: GpuTextureFilter.nearest,
     );
-    _glyphAtlas = GpuGlyphAtlas();
     _glyphTexture = _device.createTexture(
       width: _glyphAtlas.width,
       height: _glyphAtlas.height,
@@ -1010,8 +1251,6 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       // grid - which is the soft, muddy text a bitmap cache is blamed for.
       filter: GpuTextureFilter.nearest,
     );
-    _fonts = GlFontResolver();
-    _images = GlImageCache(_device);
     _layerPool = GlFramebufferPool(
       factory: GlDeviceFramebufferFactory(
         gl: _device._gl,
@@ -1043,22 +1282,89 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       onAtlasFlush: _flushAtlases,
     );
     _player = DisplayListPlayer(_sink);
-    _createSurfaceObjects();
   }
 
-  final GlRenderDevice _device;
-  final GpuBatcher _batcher = GpuBatcher();
+  // -------------------------------------------------------------------
+  // Device-loss recovery
+  // -------------------------------------------------------------------
 
-  late final GpuMaskAtlas _maskAtlas;
-  late final GlTexture _maskTexture;
-  late final GpuGlyphAtlas _glyphAtlas;
-  late final GlTexture _glyphTexture;
-  late final GlFontResolver _fonts;
-  late final GlImageCache _images;
-  late final GlFramebufferPool _layerPool;
-  late final GpuLayerStack _layers;
-  late final GpuRasterSink _sink;
-  late final DisplayListPlayer _player;
+  /// Step 5's inventory for this target, in rebuild order.
+  ///
+  /// The atlases come first because the sink is rebuilt with them and the
+  /// surface's own objects do not depend on it; the images come last because
+  /// they are the only entries whose answer can be
+  /// [GpuResourceRecovery.orphaned], and a reader of a failed recovery's report
+  /// should see the device's own objects accounted for before the caller's.
+  @override
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    yield CallbackGpuResource.fixed(
+      resourceName: 'opengl offscreen atlases '
+          '(mask ${_maskAtlas.width}x${_maskAtlas.height}, glyph '
+          '${_glyphAtlas.width}x${_glyphAtlas.height})',
+      // A cache with no authoritative content: the mask atlas is rewritten
+      // every frame from the path geometry, and the glyph atlas is
+      // re-rasterised from font outlines that never left Dart.
+      recovery: GpuResourceRecovery.rebuilt,
+      onDiscard: _discardAtlasObjects,
+      onRepopulate: _repopulateAtlasObjects,
+    );
+    yield CallbackGpuResource.fixed(
+      resourceName: 'opengl offscreen surface '
+          '${_surface.pixelWidth}x${_surface.pixelHeight}',
+      recovery: GpuResourceRecovery.recreated,
+      onDiscard: _forgetSurfaceObjects,
+      onRepopulate: _createSurfaceObjects,
+    );
+    yield* _images.recoverableResources();
+  }
+
+  /// Step 3 for this target: drop the handles, draw nothing, call nothing.
+  void _discardAtlasObjects() {
+    // The frame in flight goes with the device. Its batches reference texture
+    // names the driver has freed, and its layer targets are gone; presenting it
+    // after the recovery would draw a frame recorded for a dead device.
+    _batcher.beginFrame();
+    _submittedBatches = 0;
+    _pendingClear = null;
+    _layers.endFrame();
+    _layerPool.dispose();
+    _device
+      ..releaseTexture(_maskTexture)
+      ..releaseTexture(_glyphTexture);
+    // The staging bytes go with the texture: an entry that outlived it would
+    // claim a glyph is resident in a texture that no longer exists.
+    // Both atlases are caches that outlive a frame, so both have to be told
+    // their texels are gone. The mask atlas is the one that is easy to miss:
+    // its `beginFrame` deliberately *keeps* every cached mask, so a static
+    // rounded rectangle drawn before the loss would be found resident,
+    // re-batched against a texture that was never re-uploaded, and drawn as
+    // nothing at all - a frame that differs from the pre-loss one by exactly
+    // the shapes the cache was working for.
+    _maskAtlas.recycle();
+    _glyphAtlas.clear();
+  }
+
+  BackendDiagnostic? _repopulateAtlasObjects() {
+    try {
+      _buildAtlasObjects();
+    } on UnsupportedCapabilityError catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the recovered GL device refused an atlas texture',
+        detail: '$error',
+      );
+    }
+    return _device.lastError;
+  }
+
+  void _forgetSurfaceObjects() {
+    // No glDeleteFramebuffers and no releaseTexture that reaches the driver:
+    // both names point at memory a lost context already freed. The texture is
+    // marked released so nothing draws with it, and the framebuffer name is
+    // simply forgotten.
+    _fbo = 0;
+    _device.releaseTexture(_colorTexture);
+  }
 
   /// How many batches of the current frame have already been drawn.
   ///
@@ -1345,7 +1651,8 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       format: _surface.format,
     );
     _destroySurfaceObjects();
-    _createSurfaceObjects();
+    final BackendDiagnostic? failure = _createSurfaceObjects();
+    if (failure != null) _device.state.markLost(failure);
   }
 
   /// Rasterises [list] into this target and presents it.
@@ -1378,17 +1685,33 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
     return present(frame);
   }
 
-  void _createSurfaceObjects() {
+  /// Allocates the readback buffer, the colour texture and the FBO.
+  ///
+  /// Returns a diagnostic instead of marking the device lost, because it is
+  /// called from two places that want opposite things: the constructor and
+  /// [resize] turn a failure into a loss, and a *recovery* must not - a
+  /// recovery that marked the device lost again would be indistinguishable
+  /// from a second GPU reset and would burn one of the policy's attempts on
+  /// its own bug.
+  BackendDiagnostic? _createSurfaceObjects() {
     _readback = Framebuffer.allocate(
       width: _surface.pixelWidth,
       height: _surface.pixelHeight,
       format: _surface.format,
     );
-    _colorTexture = _device.createTexture(
-      width: _surface.pixelWidth,
-      height: _surface.pixelHeight,
-      format: GpuTextureFormat.rgba8888Premultiplied,
-    );
+    try {
+      _colorTexture = _device.createTexture(
+        width: _surface.pixelWidth,
+        height: _surface.pixelHeight,
+        format: GpuTextureFormat.rgba8888Premultiplied,
+      );
+    } on UnsupportedCapabilityError catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'the device refused the offscreen colour texture',
+        detail: '$error',
+      );
+    }
     final gl = _device._gl;
     gl.genFramebuffers(1, _device.scratchNames);
     _fbo = _device.scratchNames[0];
@@ -1398,17 +1721,16 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
           glFramebuffer, glColorAttachment0, glTexture2D, _colorTexture.id, 0);
     final status = gl.checkFramebufferStatus(glFramebuffer);
     if (status != glFramebufferComplete) {
-      _device.state.markLost(
-        BackendDiagnostic(
-          kind: DiagnosticKind.surfaceCreationFailed,
-          message: 'the offscreen framebuffer is incomplete',
-          detail: 'glCheckFramebufferStatus returned '
-              '0x${status.toRadixString(16)} for '
-              '${_surface.pixelWidth}x${_surface.pixelHeight}',
-        ),
+      return BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'the offscreen framebuffer is incomplete',
+        detail: 'glCheckFramebufferStatus returned '
+            '0x${status.toRadixString(16)} for '
+            '${_surface.pixelWidth}x${_surface.pixelHeight}',
       );
     }
     _device.checkError('framebuffer creation');
+    return _device.lastError;
   }
 
   void _destroySurfaceObjects() {
@@ -1422,6 +1744,7 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
 
   @override
   void onDispose() {
+    _device.unregisterTarget(this);
     _destroySurfaceObjects();
     _images.clear();
     // After endFrame has returned every target: the pool only deletes what is
@@ -1472,34 +1795,137 @@ final class GlFontResolver implements GpuFontResolver {
   }
 }
 
-/// Uploads drawn images into textures, once each.
+/// One image this cache uploaded, and whether it could do it again.
+final class _GlImageEntry {
+  _GlImageEntry({
+    required this.index,
+    required this.image,
+    required this.width,
+    required this.height,
+    required this.texture,
+    required this.source,
+  });
+
+  /// Weak, and only so [GlImageCache.clear] can undo the [Expando]
+  /// association: an entry left behind in the expando would answer a later
+  /// `resolve` with "no texture and no source", which reads as an orphaned
+  /// image rather than as a cache that was emptied on purpose.
+  final WeakReference<Framebuffer> image;
+
+  /// Position in the cache's insertion order. Part of the resource name, so a
+  /// diagnostic identifies *which* image could not be restored.
+  final int index;
+  final int width;
+  final int height;
+
+  /// Null once the device that made it was lost, or once it was released.
+  GlTexture? texture;
+
+  /// The bytes, or null when the retention policy dropped them.
+  Framebuffer? source;
+
+  bool get isRecoverable => source != null;
+
+  String get name => 'opengl image #$index (${width}x$height)';
+}
+
+/// Uploads drawn images into textures, once each, and can do it again.
 ///
-/// `GpuRasterSink` asks for one of these and, until now, nothing implemented
-/// the interface - so every `drawImage` on this backend threw. The display
-/// list interns an image as an opaque `Object`; the CPU renderer already
-/// fixes what that object is (a [Framebuffer]), and agreeing with it here is
-/// what lets one display list be drawn by either backend and compared.
+/// `GpuRasterSink` asks for one of these. The display list interns an image as
+/// an opaque `Object`; the CPU renderer fixes what that object is (a
+/// [Framebuffer]), and agreeing with it here is what lets one display list be
+/// drawn by either backend and compared.
 ///
-/// The cache is keyed by identity and never evicts. That is honest rather
-/// than clever: an eviction policy needs a frame budget this framework does
-/// not measure yet, and a wrong one is worse than none because it re-uploads
-/// the image being animated. [clear] is the escape hatch, and the target
-/// calls it on dispose.
+/// ## Lookup is weak, retention is explicit
+///
+/// The cache used to be a `Map<Object, GlTexture>.identity()`, which conflated
+/// two things: finding the texture for an image, and keeping the image alive.
+/// The map key did both, so "drop the source to save memory" was not
+/// expressible - the key would have gone on holding it.
+///
+/// So the lookup is an [Expando], whose keys are weak and hold nothing, and the
+/// retention is a field on the entry. [GpuImageSourceRetention.retain] holds
+/// the source and the texture comes back after a device loss;
+/// [GpuImageSourceRetention.uploadOnly] does not and it cannot. [dropSource]
+/// makes the same trade for one image after the fact, for a caller that
+/// uploaded a large bitmap and has decided it will never need to re-upload it.
+///
+/// The entry list never evicts, exactly as before: an eviction policy needs a
+/// frame budget this framework does not measure yet, and a wrong one is worse
+/// than none because it re-uploads the image being animated. [clear] is the
+/// escape hatch, and the target calls it on dispose.
 final class GlImageCache implements GpuImageResolver {
-  GlImageCache(this._device);
+  GlImageCache(
+    this._device, {
+    this.retention = GpuImageSourceRetention.retain,
+  });
 
   final GlRenderDevice _device;
-  final Map<Object, GlTexture> _textures = Map<Object, GlTexture>.identity();
 
-  /// How many textures are held. For tests and for a memory report.
-  int get length => _textures.length;
+  /// What happens to an image's bytes after it is uploaded. See the enum for
+  /// the memory cost of each answer.
+  final GpuImageSourceRetention retention;
+
+  /// Weak-keyed, so the cache's lookup structure holds no image alive. The
+  /// strong reference, when there is one, is [_GlImageEntry.source].
+  final Expando<_GlImageEntry> _byImage = Expando<_GlImageEntry>();
+
+  final List<_GlImageEntry> _entries = <_GlImageEntry>[];
+
+  /// How many entries are held. For tests and for a memory report.
+  int get length => _entries.length;
+
+  /// How many bytes of image source this cache is keeping alive.
+  ///
+  /// The number the retention policy is about. Zero under
+  /// [GpuImageSourceRetention.uploadOnly].
+  int get retainedSourceBytes {
+    var bytes = 0;
+    for (final _GlImageEntry entry in _entries) {
+      if (entry.source != null) bytes += entry.width * entry.height * 4;
+    }
+    return bytes;
+  }
+
+  /// Entries whose source is gone, so a device loss would strand them.
+  int get unrecoverableCount =>
+      _entries.where((_GlImageEntry e) => !e.isRecoverable).length;
 
   @override
   GpuTextureHandle? resolve(Object image) {
     if (image is! Framebuffer) return null;
-    final cached = _textures[image];
-    if (cached != null && cached.isValid) return cached;
+    final _GlImageEntry? cached = _byImage[image];
+    if (cached != null) {
+      final GlTexture? texture = cached.texture;
+      if (texture != null && texture.isValid) return texture;
+      if (!cached.isRecoverable) {
+        // The honest refusal. The texture died with the device and the bytes
+        // that made it are gone, so there is nothing to upload. Null is the
+        // sink's "this device cannot draw it", which becomes a named error.
+        return null;
+      }
+    }
 
+    final GlTexture? texture = _upload(image);
+    if (texture == null) return null;
+    if (cached != null) {
+      cached.texture = texture;
+      return texture;
+    }
+    final entry = _GlImageEntry(
+      index: _entries.length,
+      image: WeakReference<Framebuffer>(image),
+      width: image.width,
+      height: image.height,
+      texture: texture,
+      source: retention == GpuImageSourceRetention.retain ? image : null,
+    );
+    _entries.add(entry);
+    _byImage[image] = entry;
+    return texture;
+  }
+
+  GlTexture? _upload(Framebuffer image) {
     final GlTexture texture;
     try {
       texture = _device.createTexture(
@@ -1526,16 +1952,78 @@ final class GlImageCache implements GpuImageResolver {
       pixels: _asRgba(image),
       bytesPerRow: image.width * 4,
     );
-    _textures[image] = texture;
     return texture;
   }
 
-  /// Releases every texture. The next [resolve] re-uploads.
-  void clear() {
-    for (final texture in _textures.values) {
-      _device.releaseTexture(texture);
+  /// Forgets the bytes of [image] while keeping its texture.
+  ///
+  /// The escape hatch for the memory cost [GpuImageSourceRetention.retain]
+  /// documents, and the reason a resource can be genuinely unrecoverable in
+  /// this renderer rather than only in theory. After this call the texture goes
+  /// on drawing exactly as before - and a device loss strands it, because there
+  /// is no second copy of the pixels anywhere.
+  ///
+  /// Returns false when [image] was never uploaded here.
+  bool dropSource(Object image) {
+    if (image is! Framebuffer) return false;
+    final _GlImageEntry? entry = _byImage[image];
+    if (entry == null) return false;
+    entry.source = null;
+    return true;
+  }
+
+  /// This cache's contribution to step 5's inventory: one resource per image.
+  ///
+  /// Per image and not one for the whole cache, because the answer differs per
+  /// image: one entry with its source is [GpuResourceRecovery.reuploaded] while
+  /// the one next to it is [GpuResourceRecovery.orphaned], and a single
+  /// resource for the cache could only report the pessimistic answer for both.
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    for (final _GlImageEntry entry in List<_GlImageEntry>.of(_entries)) {
+      yield CallbackGpuResource(
+        resourceName: entry.name,
+        recoveryOf: () => entry.isRecoverable
+            ? GpuResourceRecovery.reuploaded
+            : GpuResourceRecovery.orphaned,
+        onDiscard: () => entry.texture = null,
+        onRepopulate: () {
+          final Framebuffer? source = entry.source;
+          if (source == null) {
+            return BackendDiagnostic(
+              kind: DiagnosticKind.incompatibleDevice,
+              message: '${entry.name} cannot be re-uploaded',
+              detail: 'its source was dropped, so the only copy of the pixels '
+                  'died with the device',
+            );
+          }
+          final GlTexture? texture = _upload(source);
+          if (texture == null) {
+            return BackendDiagnostic(
+              kind: DiagnosticKind.incompatibleDevice,
+              message: '${entry.name} could not be re-uploaded',
+              detail: 'the recreated device refused a '
+                  '${entry.width}x${entry.height} texture',
+            );
+          }
+          entry.texture = texture;
+          return null;
+        },
+      );
     }
-    _textures.clear();
+  }
+
+  /// Releases every texture and forgets every source. The next [resolve]
+  /// re-uploads from whatever the caller still holds.
+  void clear() {
+    for (final _GlImageEntry entry in _entries) {
+      final GlTexture? texture = entry.texture;
+      if (texture != null) _device.releaseTexture(texture);
+      entry.texture = null;
+      entry.source = null;
+      final Framebuffer? image = entry.image.target;
+      if (image != null) _byImage[image] = null;
+    }
+    _entries.clear();
   }
 
   /// The image's bytes in the RGBA order `glTexImage2D` was told to expect.

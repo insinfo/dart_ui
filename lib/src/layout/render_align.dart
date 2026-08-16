@@ -73,6 +73,27 @@ final class RenderAlign extends RenderSingleChildBox {
     }
   }
 
+  // The factors are the only thing alignment adds to an intrinsic. Position is
+  // not an extent: a child centred in whatever space it is given wants exactly
+  // as much content width as it did before it was centred, so the proxy
+  // defaults inherited from RenderSingleChildBox are already right without one.
+
+  @override
+  double computeMinIntrinsicWidth(double height) =>
+      super.computeMinIntrinsicWidth(height) * (_widthFactor ?? 1.0);
+
+  @override
+  double computeMaxIntrinsicWidth(double height) =>
+      super.computeMaxIntrinsicWidth(height) * (_widthFactor ?? 1.0);
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      super.computeMinIntrinsicHeight(width) * (_heightFactor ?? 1.0);
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      super.computeMaxIntrinsicHeight(width) * (_heightFactor ?? 1.0);
+
   @override
   void performLayout() {
     final BoxConstraints constraints = this.constraints;

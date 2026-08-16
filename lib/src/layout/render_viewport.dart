@@ -253,6 +253,44 @@ class RenderViewport extends RenderSingleChildBox {
     markNeedsLayout();
   }
 
+  // Intrinsics stop at the scroll axis. A viewport's whole job is to make the
+  // content's extent along that axis irrelevant to its parent, so reporting the
+  // content's height as this node's intrinsic height would undo the scrolling:
+  // a column that sized itself to a viewport's max-content height would be as
+  // tall as the document. The minimum is therefore zero and the maximum is
+  // zero too, which reads as "I will take whatever you give me". The cross axis
+  // is a genuine requirement - the content really cannot be narrower - so it is
+  // delegated unchanged.
+
+  @override
+  double computeMinIntrinsicWidth(double height) =>
+      _position.axis == ScrollAxis.horizontal
+          ? 0.0
+          : super.computeMinIntrinsicWidth(height);
+
+  @override
+  double computeMaxIntrinsicWidth(double height) =>
+      _position.axis == ScrollAxis.horizontal
+          ? 0.0
+          : super.computeMaxIntrinsicWidth(height);
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      _position.axis == ScrollAxis.vertical
+          ? 0.0
+          : super.computeMinIntrinsicHeight(width);
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      _position.axis == ScrollAxis.vertical
+          ? 0.0
+          : super.computeMaxIntrinsicHeight(width);
+
+  /// None. A scrolled child's baseline moves every frame, and a row that
+  /// aligned to it would twitch as the content scrolled.
+  @override
+  double? computeDistanceToActualBaseline(TextBaseline baseline) => null;
+
   @override
   void performLayout() {
     final RenderBox? child = this.child;

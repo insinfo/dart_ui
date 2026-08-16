@@ -117,6 +117,38 @@ final class RenderStack extends RenderBoxContainer<StackParentData> {
     markNeedsLayout();
   }
 
+  // A stack wants as much room as its largest *non-positioned* child, which is
+  // the same set that decides its size during layout. Positioned children are
+  // excluded for the same reason they are excluded there: a child pinned 20px
+  // from the right edge has no natural contribution to a width it is measured
+  // against.
+
+  double _largestIntrinsic(double Function(RenderBox child) measure) {
+    double extent = 0.0;
+    for (int i = 0; i < childCount; i++) {
+      final RenderBox child = childAt(i);
+      if (childParentData(child).isPositioned) continue;
+      extent = math.max(extent, measure(child));
+    }
+    return extent;
+  }
+
+  @override
+  double computeMinIntrinsicWidth(double height) =>
+      _largestIntrinsic((RenderBox c) => c.getMinIntrinsicWidth(height));
+
+  @override
+  double computeMaxIntrinsicWidth(double height) =>
+      _largestIntrinsic((RenderBox c) => c.getMaxIntrinsicWidth(height));
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      _largestIntrinsic((RenderBox c) => c.getMinIntrinsicHeight(width));
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      _largestIntrinsic((RenderBox c) => c.getMaxIntrinsicHeight(width));
+
   @override
   void performLayout() {
     final BoxConstraints constraints = this.constraints;

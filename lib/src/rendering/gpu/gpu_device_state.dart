@@ -58,9 +58,19 @@ final class GpuDeviceState {
   /// first, because the Dart-side handles outlived resources the driver
   /// freed.
   ///
-  /// [lossCount] deliberately does not go back down. A target derives its
-  /// generation from it, so a frame begun before the loss must still present
-  /// as stale after the recovery.
+  /// [lossCount] deliberately does not go back down, and two things depend on
+  /// that. A target derives its generation from it, so a frame begun before
+  /// the loss must still present as stale after the recovery. And every
+  /// texture handle records the count it was born at, so a name created on the
+  /// dead device stays invalid forever instead of coming back to life the
+  /// instant [isLost] goes false - which is the difference between a recovered
+  /// renderer and one that binds memory the driver has freed.
+  ///
+  /// The caller that gets this right is `GpuRecoveryCoordinator` in
+  /// `gpu_recovery.dart`: it stops submissions, discards every handle, has the
+  /// backend recreate the device - which is where this is called - and only
+  /// then rebuilds the resources. Calling it from anywhere else means claiming
+  /// all of that was done.
   bool recover() {
     if (_diagnostic == null) return false;
     _diagnostic = null;

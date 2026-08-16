@@ -35,6 +35,36 @@ final class RenderConstrainedBox extends RenderSingleChildBox {
     markNeedsLayout();
   }
 
+  // An intrinsic here is the child's, clamped into the extra constraints. When
+  // those are tight on an axis - which is what a `SizedBox(width: 40)` is - the
+  // clamp collapses to the fixed extent and the child is never consulted at
+  // all, which is both correct and the reason a fixed-size cell in a grid does
+  // not drag a whole subtree into the measuring pass.
+
+  @override
+  double computeMinIntrinsicWidth(double height) =>
+      _additionalConstraints.constrainWidth(
+        child?.getMinIntrinsicWidth(height) ?? 0.0,
+      );
+
+  @override
+  double computeMaxIntrinsicWidth(double height) =>
+      _additionalConstraints.constrainWidth(
+        child?.getMaxIntrinsicWidth(height) ?? 0.0,
+      );
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      _additionalConstraints.constrainHeight(
+        child?.getMinIntrinsicHeight(width) ?? 0.0,
+      );
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      _additionalConstraints.constrainHeight(
+        child?.getMaxIntrinsicHeight(width) ?? 0.0,
+      );
+
   @override
   void performLayout() {
     final BoxConstraints inner = _additionalConstraints.enforce(constraints);

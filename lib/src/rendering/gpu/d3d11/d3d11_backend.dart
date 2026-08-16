@@ -57,6 +57,7 @@ import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
+import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import 'd3d11_bindings.dart';
 import 'd3d11_shaders.dart';
@@ -80,7 +81,7 @@ final class D3d11Texture implements GpuTextureHandle {
     this.texture,
     this.view,
     this._state,
-  );
+  ) : _bornAtLossCount = _state.lossCount;
 
   @override
   final int id;
@@ -106,10 +107,21 @@ final class D3d11Texture implements GpuTextureHandle {
   final GpuDeviceState _state;
   bool _released = false;
 
-  /// A texture dies with its device: the driver freed the resource, and the
-  /// pointer that survives points at memory that is no longer a texture.
+  /// [GpuDeviceState.lossCount] when this texture was created.
+  ///
+  /// Without it, a recovered device would declare every pre-loss texture valid
+  /// again the instant `isLost` went back to false - and those COM pointers
+  /// belong to an `ID3D11Device` that no longer exists. `lossCount` never goes
+  /// down, so comparing it is the check that survives a recovery. See
+  /// `GlTexture` for the same field and the same argument.
+  final int _bornAtLossCount;
+
+  /// A texture dies with its device and stays dead across a recovery: the
+  /// driver freed the resource, and the pointer that survives points at memory
+  /// that is no longer a texture.
   @override
-  bool get isValid => !_released && !_state.isLost;
+  bool get isValid =>
+      !_released && !_state.isLost && _state.lossCount == _bornAtLossCount;
 
   @override
   String toString() =>
@@ -236,9 +248,18 @@ final class _DrawState {
 }
 
 /// An open D3D11 device plus the pipeline objects every target shares.
+/// A target that can put its GPU resources back after a device loss.
+///
+/// The D3D11 twin of `GlRecoverableTarget`, and it exists for the same reason:
+/// [D3d11WindowTarget] lives in another library, so the device holds its
+/// targets through an interface rather than by type.
+abstract interface class D3d11RecoverableTarget {
+  Iterable<GpuRecoverableResource> recoverableResources();
+}
+
 final class D3d11RenderDevice
     with DisposableMixin
-    implements RenderDevice, GpuTextureAllocator {
+    implements RenderDevice, GpuTextureAllocator, GpuRecoveryHost {
   D3d11RenderDevice._({
     required D3d11Api api,
     required this.device,
@@ -255,15 +276,24 @@ final class D3d11RenderDevice
   /// resources with it; see `gl_backend.dart`'s library comment for the whole
   /// argument about promoting device-to-target plumbing rather than using
   /// `part`.
-  final D3d11Device device;
+  ///
+  /// **Not final, and not cacheable.** [recreateDevice] replaces it with a
+  /// genuinely new `ID3D11Device` after a loss - which is the difference
+  /// between this backend and the GL one, where a context belongs to the
+  /// platform and only its objects can be rebuilt. A caller that stored this
+  /// pointer across a frame is holding a device that may have been released;
+  /// read it fresh every time, as every method in this file does.
+  D3d11Device device;
 
   /// The immediate context. Every draw in this backend goes through it, and it
   /// is single-threaded by construction: `D3D11CreateDevice` was not asked for
   /// `SINGLETHREADED`, but nothing here touches it from a second isolate.
-  final D3d11DeviceContext context;
+  ///
+  /// Replaced with [device] on a recovery, and carrying the same warning.
+  D3d11DeviceContext context;
 
-  final RendererInfo _info;
-  final int _featureLevel;
+  RendererInfo _info;
+  int _featureLevel;
   final GpuDeviceState _state = GpuDeviceState();
 
   /// Long-lived native scratch, allocated once so that a frame performs no
@@ -271,7 +301,11 @@ final class D3d11RenderDevice
   final NativeArena _arena = NativeArena();
 
   /// Every COM reference this device owns, released last-acquired-first.
-  final ComBag _objects = ComBag();
+  ///
+  /// Replaced rather than reused on a recovery: a [ComBag] is a
+  /// `DisposableMixin` and refuses `keep` once disposed, so releasing the dead
+  /// device's objects means the next `_initialise` needs a fresh bag.
+  ComBag _objects = ComBag();
 
   ComObject? _vertexShader;
   ComObject? _pixelShader;
@@ -626,6 +660,13 @@ final class D3d11RenderDevice
     GpuLayerStack? layers,
     int firstBatch = 0,
   }) {
+    // Step 1 of a recovery closed the door: no draw may reach the driver while
+    // the device is being replaced, and the render-target pointer the caller is
+    // holding belongs to the device that died.
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      return false;
+    }
     if (_state.isLost) return false;
 
     _bindRenderTarget(surfaceRenderTarget);
@@ -1009,31 +1050,31 @@ final class D3d11RenderDevice
   /// caller reading only the immediate HRESULT sees a stream of unrelated
   /// errors. Called after a present and after a failed map.
   ///
-  /// ## What recovery still needs, stated rather than implied
+  /// ## What happens after this returns true
   ///
-  /// [GpuDeviceState] models loss and recovery, and this backend reports the
-  /// loss honestly: `isLost` goes true, in-flight frames present as
-  /// [PresentStatus.deviceLost], and every [D3d11Texture] answers
-  /// `isValid == false`. What it does **not** do is come back. Recovery needs
-  /// three things this file does not have:
+  /// Detection and recovery are separate on purpose, and this method is only
+  /// the first. It records the loss: `isLost` goes true, in-flight frames
+  /// present as [PresentStatus.deviceLost], and every [D3d11Texture] answers
+  /// `isValid == false` - permanently, because the check is against the loss
+  /// *generation* and not against the current state.
   ///
-  ///   1. A new `ID3D11Device` and immediate context, and a re-run of
-  ///      `_initialise` to recompile the shaders and rebuild the pipeline
-  ///      objects. Cheap and mechanical.
-  ///   2. Every window target's swap chain recreated - a swap chain belongs to
-  ///      the device that made it - and every offscreen target's textures with
-  ///      it. The targets survive as Dart objects, so this is a re-entry point
-  ///      they would have to grow.
-  ///   3. Every *uploaded* texture re-uploaded. The mask atlas can regenerate
-  ///      itself because it is rebuilt per frame, and the glyph atlas can be
-  ///      cleared and re-rasterised, but [D3d11ImageCache] holds textures whose
-  ///      only copy of the pixels is the caller's `Framebuffer` - which it does
-  ///      still hold, by identity, so this one is possible too.
+  /// Nothing here recovers. The owner drives that through
+  /// `GpuRecoveryCoordinator` in `gpu_recovery.dart`, which calls
+  /// [stopSubmissions], [discardNativeResources], [recreateDevice] and then
+  /// every resource's `repopulate` in that order. Keeping the two apart is what
+  /// makes a present able to report a loss without deciding, in the middle of a
+  /// frame, to spend forty milliseconds building a device.
   ///
-  /// None of it is written, so the honest claim is: **this backend detects and
-  /// reports device loss, and does not recover from it.** The owner must build
-  /// a new device. Saying so is the point of [GpuDeviceState.recover] existing
-  /// and this file not calling it.
+  /// The three things recovery needs, and where each now is:
+  ///
+  ///   1. A new `ID3D11Device`, context and pipeline - [recreateDevice].
+  ///   2. Every target's resources - `D3d11RecoverableTarget`. The one
+  ///      exception is a window target's **swap chain**, which belongs to the
+  ///      platform code that owns the window and is reported as
+  ///      [GpuResourceRecovery.orphaned] rather than silently reused.
+  ///   3. Every uploaded texture - [D3d11ImageCache], which keeps the source
+  ///      `Framebuffer` unless the caller dropped it with `dropSource`, and
+  ///      names the ones it cannot rebuild.
   bool checkDeviceRemoved(String what) {
     if (_state.isLost) return true;
     final int reason = hresult(device.getDeviceRemovedReason(device.pointer));
@@ -1049,6 +1090,179 @@ final class D3d11RenderDevice
   /// Records a loss the caller diagnosed itself - a present that returned a
   /// removal code, a test that wants the loss path without a real GPU reset.
   void markLost(BackendDiagnostic reason) => _state.markLost(reason);
+
+  // -------------------------------------------------------------------
+  // Recovery - the eight steps of section 23.12, see gpu_recovery.dart
+  // -------------------------------------------------------------------
+
+  final Set<D3d11RecoverableTarget> _targets = <D3d11RecoverableTarget>{};
+
+  bool _submissionsStopped = false;
+
+  /// How many submissions were refused because a recovery was in progress.
+  /// Invisible from the pixels, which is why it is counted: a device that went
+  /// on issuing draws into a removed device produces the same blank frame as
+  /// one that correctly refused.
+  int get blockedSubmissionCount => _blockedSubmissionCount;
+  int _blockedSubmissionCount = 0;
+
+  bool get submissionsStopped => _submissionsStopped;
+
+  @override
+  String get backendName => D3d11RendererBackend.backendName;
+
+  @override
+  GpuDeviceState get deviceState => _state;
+
+  void registerTarget(D3d11RecoverableTarget target) => _targets.add(target);
+
+  void unregisterTarget(D3d11RecoverableTarget target) =>
+      _targets.remove(target);
+
+  /// Step 1.
+  @override
+  void stopSubmissions() => _submissionsStopped = true;
+
+  /// Step 3: release every COM reference this device holds.
+  ///
+  /// ## Why this calls the API and the GL backend's twin does not
+  ///
+  /// The two APIs want opposite things after a loss, and doing either one's
+  /// thing on the other is a bug. A GL name is an integer the driver has
+  /// already freed, so `glDeleteTextures` on it is undefined and may delete a
+  /// name the driver has since handed back out - `GlRenderDevice`'s
+  /// `discardNativeResources` therefore *forgets* rather than deletes.
+  ///
+  /// A COM pointer is reference counted by the runtime, and `Release` is the
+  /// one call that still works on an object whose device was removed - it is
+  /// how the refcount reaches zero and the memory is freed. Skipping it leaks
+  /// the whole pipeline: two shaders, an input layout, a rasteriser state, two
+  /// samplers, a constant buffer, one blend state per blend mode, and every
+  /// texture. On a device that resets four times before the CPU fallback that
+  /// is four whole renderers' worth of objects held for the life of the
+  /// process.
+  @override
+  void discardNativeResources() {
+    for (final D3d11Texture texture in _texturesById.values.toList()) {
+      releaseTexture(texture);
+    }
+    _texturesById.clear();
+    _vertexBuffer?.dispose();
+    _vertexBuffer = null;
+    _vertexBufferBytes = 0;
+    _indexBuffer?.dispose();
+    _indexBuffer = null;
+    _indexBufferBytes = 0;
+    _blendStates.clear();
+    _objects.dispose();
+    _objects = ComBag();
+    _vertexShader = null;
+    _pixelShader = null;
+    _inputLayout = null;
+    _rasterizerState = null;
+    _samplerPoint = null;
+    _samplerLinear = null;
+    _constantBuffer = null;
+    // The factory belongs to the removed device's adapter. Keeping it would
+    // make the next swap chain be created by a factory for a device that is
+    // gone, which is the two-GPU laptop failure `dxgiFactory` documents.
+    _factory?.dispose();
+    _factory = null;
+    _drawState.reset();
+    _constantsWidth = -1;
+    _constantsHeight = -1;
+    _constantsMode = -1;
+  }
+
+  /// Step 4: a genuinely new `ID3D11Device`, its context, and the pipeline.
+  ///
+  /// Unlike the GL backend, this really does create a new device - that is what
+  /// `D3D11CreateDevice` is for and it is the documented recovery from
+  /// `DXGI_ERROR_DEVICE_REMOVED`. The window is untouched: a swap chain belongs
+  /// to a device and is recreated by its target, but the `HWND` outlives every
+  /// device made for it, which is exactly the split `renderer.dart` describes.
+  ///
+  /// The adapter may have changed underneath - that is what unplugging an
+  /// external GPU is - so [info], [featureLevel] and [capabilities] are all
+  /// re-derived from the new device rather than carried over. A renderer that
+  /// kept the old feature level would go on allowing 16384-pixel textures on an
+  /// adapter whose limit is 8192.
+  @override
+  BackendDiagnostic? recreateDevice() {
+    if (isDisposed) {
+      return const BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'a disposed Direct3D 11 device cannot be recovered',
+      );
+    }
+    final BackendDiagnostic? cause = _state.lossDiagnostic;
+
+    // The old device and context, released before the new ones are asked for:
+    // a removed device holds its adapter's resources until its refcount
+    // reaches zero, and creating the replacement first would mean both exist
+    // at once on a machine that has just run out of whatever killed the first.
+    if (!_state.isLost) {
+      // A recovery of a healthy device would otherwise release a device that
+      // is still drawing.
+      unbindTargets();
+      context.flush(context.pointer);
+    }
+    context.dispose();
+    device.dispose();
+
+    final _DeviceAttempt attempt = D3d11RendererBackend._createRawDevice(_api);
+    if (attempt.device == null) {
+      final failure = BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'no Direct3D 11 device could be created to replace the lost '
+            'one',
+        detail: '${attempt.diagnostics.join('; ')}. The original loss was: '
+            '${cause ?? 'not recorded'}',
+      );
+      _state.recover();
+      _state.markLost(failure);
+      return failure;
+    }
+
+    device = attempt.device!;
+    context = attempt.context!;
+    _featureLevel = attempt.featureLevel;
+    _info = RendererInfo(
+      name: D3d11RendererBackend.backendName,
+      deviceDescription: D3d11RendererBackend._adapterDescription(device) ??
+          'Direct3D 11 (${attempt.driverTypeName})',
+      driverVersion: 'feature level '
+          '${d3dFeatureLevelName(attempt.featureLevel)}',
+    );
+
+    // Cleared only now, and only once a device exists: every creation call
+    // below refuses while the state says lost.
+    _state.recover();
+
+    final BackendDiagnostic? failure = _initialise();
+    if (failure != null) {
+      _state.markLost(failure);
+      return failure;
+    }
+    _submissionsStopped = false;
+    return null;
+  }
+
+  /// Step 5's inventory: everything every live target owns.
+  ///
+  /// The device's own pipeline objects are not here because [_initialise]
+  /// rebuilt them inside step 4; they have no Dart-side source beyond the HLSL
+  /// this backend compiles at run time, which is a property worth naming - see
+  /// [D3d11RendererBackend.shaderCompilationPolicy]. Compiling at run time is
+  /// what makes a recovery able to produce shaders at all; an embedded-bytecode
+  /// backend would have to keep the blobs alive across the loss.
+  @override
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    for (final D3d11RecoverableTarget target
+        in List<D3d11RecoverableTarget>.of(_targets)) {
+      yield* target.recoverableResources();
+    }
+  }
 
   // -------------------------------------------------------------------
   // Setup and teardown
@@ -1359,25 +1573,40 @@ final class D3d11RenderDevice
 }
 
 /// A render target backed by a texture the CPU can read back.
-final class D3d11OffscreenTarget with DisposableMixin implements RenderTarget {
+final class D3d11OffscreenTarget
+    with DisposableMixin
+    implements RenderTarget, D3d11RecoverableTarget {
   D3d11OffscreenTarget(this._device, MemorySurfaceDescriptor surface)
       : _surface = surface {
     _maskAtlas = GpuMaskAtlas();
+    _glyphAtlas = GpuGlyphAtlas();
+    _fonts = D3d11FontResolver();
+    _images = D3d11ImageCache(_device);
+    _buildAtlasObjects();
+    final BackendDiagnostic? failure = _createSurfaceObjects();
+    if (failure != null) _device.markLost(failure);
+    _device.registerTarget(this);
+  }
+
+  /// Creates the atlas textures and everything downstream of their ids.
+  ///
+  /// Shared by the constructor and by the recovery, for the reason
+  /// `gl_backend.dart` gives: the sink holds the two texture ids as final
+  /// fields, so rebuilding a texture means rebuilding the sink, and two copies
+  /// of that wiring would drift.
+  void _buildAtlasObjects() {
     _maskTexture = _device.createTexture(
       width: _maskAtlas.width,
       height: _maskAtlas.height,
       format: GpuTextureFormat.alpha8,
       filter: GpuTextureFilter.nearest,
     );
-    _glyphAtlas = GpuGlyphAtlas();
     _glyphTexture = _device.createTexture(
       width: _glyphAtlas.width,
       height: _glyphAtlas.height,
       format: GpuTextureFormat.alpha8,
       filter: GpuTextureFilter.nearest,
     );
-    _fonts = D3d11FontResolver();
-    _images = D3d11ImageCache(_device);
     _layerPool = D3d11LayerPool(_device);
     _layers = GpuLayerStack(
       allocator: _layerPool,
@@ -1396,22 +1625,92 @@ final class D3d11OffscreenTarget with DisposableMixin implements RenderTarget {
       onAtlasFlush: _flushAtlases,
     );
     _player = DisplayListPlayer(_sink);
-    _createSurfaceObjects();
   }
+
+  // -------------------------------------------------------------------
+  // Device-loss recovery
+  // -------------------------------------------------------------------
+
+  /// Step 5's inventory for this target, in rebuild order.
+  @override
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    yield CallbackGpuResource.fixed(
+      resourceName: 'direct3d11 offscreen atlases '
+          '(mask ${_maskAtlas.width}x${_maskAtlas.height}, glyph '
+          '${_glyphAtlas.width}x${_glyphAtlas.height})',
+      // Caches: the mask atlas is rewritten every frame from path geometry and
+      // the glyph atlas is re-rasterised from outlines that never left Dart.
+      recovery: GpuResourceRecovery.rebuilt,
+      onDiscard: _discardAtlasObjects,
+      onRepopulate: _repopulateAtlasObjects,
+    );
+    yield CallbackGpuResource.fixed(
+      resourceName: 'direct3d11 offscreen surface '
+          '${_surface.pixelWidth}x${_surface.pixelHeight}',
+      recovery: GpuResourceRecovery.recreated,
+      onDiscard: _forgetSurfaceObjects,
+      onRepopulate: _createSurfaceObjects,
+    );
+    yield* _images.recoverableResources();
+  }
+
+  void _discardAtlasObjects() {
+    // The frame in flight goes with the device: its batches name textures the
+    // removed device owned, so it must never be submitted after the recovery.
+    _batcher.beginFrame();
+    _submittedBatches = 0;
+    _pendingClear = null;
+    _layers.endFrame();
+    _layerPool.dispose();
+    _device
+      ..releaseTexture(_maskTexture)
+      ..releaseTexture(_glyphTexture);
+    // Both atlases are caches that outlive a frame, so both have to be told
+    // their texels are gone. The mask atlas is the one that is easy to miss:
+    // its `beginFrame` deliberately *keeps* every cached mask, so a static
+    // rounded rectangle drawn before the loss would be found resident,
+    // re-batched against a texture that was never re-uploaded, and drawn as
+    // nothing at all - a frame that differs from the pre-loss one by exactly
+    // the shapes the cache was working for.
+    _maskAtlas.recycle();
+    _glyphAtlas.clear();
+  }
+
+  BackendDiagnostic? _repopulateAtlasObjects() {
+    try {
+      _buildAtlasObjects();
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the recreated Direct3D 11 device refused an atlas texture',
+        detail: '$error',
+      );
+    }
+    return null;
+  }
+
+  /// Releases the surface COM references without touching the removed device.
+  ///
+  /// `Release` is legal on an object whose device was removed - see
+  /// [D3d11RenderDevice.discardNativeResources] for why that is the opposite of
+  /// what GL wants - so this is the same code the healthy path runs.
+  void _forgetSurfaceObjects() => _destroySurfaceObjects();
 
   final D3d11RenderDevice _device;
   final GpuBatcher _batcher = GpuBatcher();
 
   late final GpuMaskAtlas _maskAtlas;
-  late final D3d11Texture _maskTexture;
   late final GpuGlyphAtlas _glyphAtlas;
-  late final D3d11Texture _glyphTexture;
   late final D3d11FontResolver _fonts;
   late final D3d11ImageCache _images;
-  late final D3d11LayerPool _layerPool;
-  late final GpuLayerStack _layers;
-  late final GpuRasterSink _sink;
-  late final DisplayListPlayer _player;
+
+  // Not final: a device loss destroys all six and a recovery rebuilds them.
+  late D3d11Texture _maskTexture;
+  late D3d11Texture _glyphTexture;
+  late D3d11LayerPool _layerPool;
+  late GpuLayerStack _layers;
+  late GpuRasterSink _sink;
+  late DisplayListPlayer _player;
 
   int _submittedBatches = 0;
   int? _pendingClear;
@@ -1658,7 +1957,8 @@ final class D3d11OffscreenTarget with DisposableMixin implements RenderTarget {
       format: _surface.format,
     );
     _destroySurfaceObjects();
-    _createSurfaceObjects();
+    final BackendDiagnostic? failure = _createSurfaceObjects();
+    if (failure != null) _device.markLost(failure);
   }
 
   /// Rasterises [list] into this target and presents it.
@@ -1688,12 +1988,32 @@ final class D3d11OffscreenTarget with DisposableMixin implements RenderTarget {
     return present(frame);
   }
 
-  void _createSurfaceObjects() {
+  /// Allocates the readback buffer, the colour texture, the render-target view
+  /// and the staging texture.
+  ///
+  /// Returns a diagnostic rather than throwing, because it is called from three
+  /// places that want different things: the constructor and [resize] turn a
+  /// failure into a device loss, and a *recovery* must not - a recovery that
+  /// marked the device lost again would look exactly like a second GPU reset
+  /// and would spend one of the policy's attempts on its own bug.
+  BackendDiagnostic? _createSurfaceObjects() {
     _readback = Framebuffer.allocate(
       width: _surface.pixelWidth,
       height: _surface.pixelHeight,
       format: _surface.format,
     );
+    try {
+      return _createSurfaceObjectsOrThrow();
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'the offscreen surface objects could not be created',
+        detail: '$error',
+      );
+    }
+  }
+
+  BackendDiagnostic? _createSurfaceObjectsOrThrow() {
     _colorTexture = _device._createTexture(
       width: _surface.pixelWidth,
       height: _surface.pixelHeight,
@@ -1725,6 +2045,7 @@ final class D3d11OffscreenTarget with DisposableMixin implements RenderTarget {
     );
     _stagingTexture =
         ComObject(_device._out.value, interfaceName: 'ID3D11Texture2D');
+    return null;
   }
 
   void _destroySurfaceObjects() {
@@ -1735,6 +2056,7 @@ final class D3d11OffscreenTarget with DisposableMixin implements RenderTarget {
 
   @override
   void onDispose() {
+    _device.unregisterTarget(this);
     _destroySurfaceObjects();
     _images.clear();
     _layers.endFrame();
@@ -1766,26 +2088,106 @@ final class D3d11FontResolver implements GpuFontResolver {
   }
 }
 
-/// Uploads drawn images into textures, once each.
+/// One image this cache uploaded, and whether it could do it again.
+final class _D3d11ImageEntry {
+  _D3d11ImageEntry({
+    required this.index,
+    required this.image,
+    required this.width,
+    required this.height,
+    required this.texture,
+    required this.source,
+  });
+
+  final int index;
+
+  /// Weak, and only so [D3d11ImageCache.clear] can undo the [Expando]
+  /// association. See `_GlImageEntry` for the whole argument.
+  final WeakReference<Framebuffer> image;
+  final int width;
+  final int height;
+
+  D3d11Texture? texture;
+  Framebuffer? source;
+
+  bool get isRecoverable => source != null;
+
+  String get name => 'direct3d11 image #$index (${width}x$height)';
+}
+
+/// Uploads drawn images into textures, once each, and can do it again.
 ///
-/// Keyed by identity and never evicts, exactly like `GlImageCache`: an
-/// eviction policy needs a frame budget this framework does not measure yet,
-/// and a wrong one re-uploads the image being animated.
+/// The D3D11 twin of `GlImageCache`, structurally identical and for the same
+/// reasons: the lookup is a weak-keyed [Expando] so it holds nothing alive, and
+/// the retention of the source bytes is an explicit policy rather than a side
+/// effect of the map key. See [GpuImageSourceRetention] for what each answer
+/// costs and what a device loss does to a texture whose source is gone.
+///
+/// The entry list never evicts: an eviction policy needs a frame budget this
+/// framework does not measure yet, and a wrong one re-uploads the image being
+/// animated.
 final class D3d11ImageCache implements GpuImageResolver {
-  D3d11ImageCache(this._device);
+  D3d11ImageCache(
+    this._device, {
+    this.retention = GpuImageSourceRetention.retain,
+  });
 
   final D3d11RenderDevice _device;
-  final Map<Object, D3d11Texture> _textures =
-      Map<Object, D3d11Texture>.identity();
 
-  int get length => _textures.length;
+  final GpuImageSourceRetention retention;
+
+  final Expando<_D3d11ImageEntry> _byImage = Expando<_D3d11ImageEntry>();
+  final List<_D3d11ImageEntry> _entries = <_D3d11ImageEntry>[];
+
+  int get length => _entries.length;
+
+  /// How many bytes of image source this cache is keeping alive. Zero under
+  /// [GpuImageSourceRetention.uploadOnly].
+  int get retainedSourceBytes {
+    var bytes = 0;
+    for (final _D3d11ImageEntry entry in _entries) {
+      if (entry.source != null) bytes += entry.width * entry.height * 4;
+    }
+    return bytes;
+  }
+
+  /// Entries whose source is gone, so a device loss would strand them.
+  int get unrecoverableCount =>
+      _entries.where((_D3d11ImageEntry e) => !e.isRecoverable).length;
 
   @override
   GpuTextureHandle? resolve(Object image) {
     if (image is! Framebuffer) return null;
-    final D3d11Texture? cached = _textures[image];
-    if (cached != null && cached.isValid) return cached;
+    final _D3d11ImageEntry? cached = _byImage[image];
+    if (cached != null) {
+      final D3d11Texture? texture = cached.texture;
+      if (texture != null && texture.isValid) return texture;
+      // The texture died with the device and the bytes that made it are gone.
+      // Null is the sink's "this device cannot draw it", which becomes a named
+      // error rather than a wrong picture.
+      if (!cached.isRecoverable) return null;
+    }
 
+    final D3d11Texture? texture = _upload(image);
+    if (texture == null) return null;
+    if (cached != null) {
+      cached.texture = texture;
+      return texture;
+    }
+    final entry = _D3d11ImageEntry(
+      index: _entries.length,
+      image: WeakReference<Framebuffer>(image),
+      width: image.width,
+      height: image.height,
+      texture: texture,
+      source: retention == GpuImageSourceRetention.retain ? image : null,
+    );
+    _entries.add(entry);
+    _byImage[image] = entry;
+    return texture;
+  }
+
+  D3d11Texture? _upload(Framebuffer image) {
     final D3d11Texture texture;
     try {
       texture = _device.createTexture(
@@ -1807,15 +2209,66 @@ final class D3d11ImageCache implements GpuImageResolver {
       pixels: _asRgba(image),
       bytesPerRow: image.width * 4,
     );
-    _textures[image] = texture;
     return texture;
   }
 
-  void clear() {
-    for (final texture in _textures.values) {
-      _device.releaseTexture(texture);
+  /// Forgets the bytes of [image] while keeping its texture. After this call a
+  /// device loss strands the texture, and the recovery names it rather than
+  /// drawing with a pointer into a released device.
+  bool dropSource(Object image) {
+    if (image is! Framebuffer) return false;
+    final _D3d11ImageEntry? entry = _byImage[image];
+    if (entry == null) return false;
+    entry.source = null;
+    return true;
+  }
+
+  /// This cache's contribution to step 5's inventory: one resource per image,
+  /// because one entry can be recoverable while the one next to it is not.
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    for (final _D3d11ImageEntry entry in List<_D3d11ImageEntry>.of(_entries)) {
+      yield CallbackGpuResource(
+        resourceName: entry.name,
+        recoveryOf: () => entry.isRecoverable
+            ? GpuResourceRecovery.reuploaded
+            : GpuResourceRecovery.orphaned,
+        onDiscard: () => entry.texture = null,
+        onRepopulate: () {
+          final Framebuffer? source = entry.source;
+          if (source == null) {
+            return BackendDiagnostic(
+              kind: DiagnosticKind.incompatibleDevice,
+              message: '${entry.name} cannot be re-uploaded',
+              detail: 'its source was dropped, so the only copy of the pixels '
+                  'died with the device',
+            );
+          }
+          final D3d11Texture? texture = _upload(source);
+          if (texture == null) {
+            return BackendDiagnostic(
+              kind: DiagnosticKind.incompatibleDevice,
+              message: '${entry.name} could not be re-uploaded',
+              detail: 'the recreated device refused a '
+                  '${entry.width}x${entry.height} texture',
+            );
+          }
+          entry.texture = texture;
+          return null;
+        },
+      );
     }
-    _textures.clear();
+  }
+
+  void clear() {
+    for (final _D3d11ImageEntry entry in _entries) {
+      final D3d11Texture? texture = entry.texture;
+      if (texture != null) _device.releaseTexture(texture);
+      entry.texture = null;
+      entry.source = null;
+      final Framebuffer? image = entry.image.target;
+      if (image != null) _byImage[image] = null;
+    }
+    _entries.clear();
   }
 
   /// The image's bytes in the R8G8B8A8 order the texture was created with.

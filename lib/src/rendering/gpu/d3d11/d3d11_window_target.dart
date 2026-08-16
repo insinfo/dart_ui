@@ -49,13 +49,14 @@
 ///
 /// ## What this target cannot give a caller
 ///
-/// [Frame.framebuffer] is non-nullable in `lib/src/rendering/renderer.dart`, and
-/// a windowed GPU target genuinely has no CPU-visible pixels to put there. The
-/// frame therefore carries a 1x1 placeholder, exactly as the GL window target
-/// does, and for the same reason: `Frame` was designed around the CPU
-/// rasteriser, where the framebuffer *is* the surface. It is called out here so
-/// the placeholder is never mistaken for the window's contents. Nothing in the
-/// draw path reads it.
+/// A windowed GPU target genuinely has no CPU-visible pixels: they are in a
+/// swap chain's back buffer. [Frame.framebuffer] used to be non-nullable, so
+/// this target carried a 1x1 placeholder that nothing read.
+///
+/// That placeholder is gone. `Frame` stores the framebuffer nullably and
+/// exposes [Frame.cpuPixels] for callers that handle "there are none", keeping
+/// [Frame.framebuffer] as a non-null accessor that raises a named failure. This
+/// target passes no framebuffer at all.
 ///
 /// ## Absent by name, not by omission
 ///
@@ -69,13 +70,18 @@
 /// None of them are bound. The consequence, stated rather than discovered: no
 /// per-visual transform, and no transparent or non-rectangular window.
 ///
-/// **Device loss is detected and reported, never recovered from.** See
-/// `D3d11RenderDevice.checkDeviceRemoved`, which lists the three things
-/// recovery would need. This target's contribution to that list is the second
-/// one: a swap chain belongs to the device that created it, so a recovered
-/// device would need every window target to rebuild its chain. There is no
-/// re-entry point for that here, and inventing a half-working one would be the
-/// pretended capability section 6.6 forbids.
+/// **Device loss is recovered from, except for the swap chain.** The device
+/// and every atlas this target owns come back - see `gpu_recovery.dart` for the
+/// eight steps and [recoverableResources] for this target's inventory. The swap
+/// chain does not, and that is a boundary rather than an omission: a chain
+/// belongs to the device that created it, and the chain here was created by the
+/// platform code that owns the window
+/// (`lib/src/backends/win32/d3d11/win32_d3d11_surface.dart`) and reaches this
+/// class as a [D3d11SwapChain] interface with no `recreate` on it. So the
+/// recovery names the chain as unrecoverable, and the owner has to rebuild the
+/// window surface and its target. Naming it is the point: a half-working
+/// re-entry point that presented to a chain belonging to a released device
+/// would be the pretended capability section 6.6 forbids.
 library;
 
 import 'dart:async';
@@ -97,12 +103,15 @@ import '../gpu_glyph_atlas.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_raster_sink.dart';
+import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import 'd3d11_backend.dart';
 import 'd3d11_surface_descriptor.dart';
 
 /// A render target backed by a swap chain's back buffer.
-final class D3d11WindowTarget with DisposableMixin implements RenderTarget {
+final class D3d11WindowTarget
+    with DisposableMixin
+    implements RenderTarget, D3d11RecoverableTarget {
   /// Wraps [surface] for [device].
   ///
   /// Public - unlike [D3d11OffscreenTarget]'s constructor, which is also public,
@@ -120,6 +129,19 @@ final class D3d11WindowTarget with DisposableMixin implements RenderTarget {
       : _surface = surface,
         _observedWindowGeneration = surface.generation.current {
     _maskAtlas = GpuMaskAtlas();
+    _glyphAtlas = GpuGlyphAtlas();
+    _fonts = D3d11FontResolver();
+    _images = D3d11ImageCache(_device);
+    _buildAtlasObjects();
+    _device.registerTarget(this);
+  }
+
+  /// Creates the atlas textures and everything downstream of their ids.
+  ///
+  /// Shared by the constructor and by [_repopulateAtlasObjects]: the sink holds
+  /// the two texture ids as final fields, so a recovery has to rebuild the sink
+  /// rather than the textures alone.
+  void _buildAtlasObjects() {
     _maskTexture = _device.createTexture(
       width: _maskAtlas.width,
       height: _maskAtlas.height,
@@ -132,15 +154,12 @@ final class D3d11WindowTarget with DisposableMixin implements RenderTarget {
     // symmetry is the point: a window is where text is actually read, so a
     // backend whose *test* target drew glyphs and whose *window* target refused
     // them would pass every golden test and show a blank panel on screen.
-    _glyphAtlas = GpuGlyphAtlas();
     _glyphTexture = _device.createTexture(
       width: _glyphAtlas.width,
       height: _glyphAtlas.height,
       format: GpuTextureFormat.alpha8,
       filter: GpuTextureFilter.nearest,
     );
-    _fonts = D3d11FontResolver();
-    _images = D3d11ImageCache(_device);
     _layerPool = D3d11LayerPool(_device);
     _layers = GpuLayerStack(
       allocator: _layerPool,
@@ -165,15 +184,93 @@ final class D3d11WindowTarget with DisposableMixin implements RenderTarget {
   final GpuBatcher _batcher = GpuBatcher();
 
   late final GpuMaskAtlas _maskAtlas;
-  late final D3d11Texture _maskTexture;
   late final GpuGlyphAtlas _glyphAtlas;
-  late final D3d11Texture _glyphTexture;
   late final D3d11FontResolver _fonts;
   late final D3d11ImageCache _images;
-  late final D3d11LayerPool _layerPool;
-  late final GpuLayerStack _layers;
-  late final GpuRasterSink _sink;
-  late final DisplayListPlayer _player;
+
+  // Not final: a device loss destroys all six and a recovery rebuilds them.
+  late D3d11Texture _maskTexture;
+  late D3d11Texture _glyphTexture;
+  late D3d11LayerPool _layerPool;
+  late GpuLayerStack _layers;
+  late GpuRasterSink _sink;
+  late DisplayListPlayer _player;
+
+  // -------------------------------------------------------------------
+  // Device-loss recovery
+  // -------------------------------------------------------------------
+
+  /// Step 5's inventory for this target.
+  ///
+  /// The last entry is the interesting one and it always answers
+  /// [GpuResourceRecovery.orphaned]: an `IDXGISwapChain1` belongs to the device
+  /// that created it, and the one here was created by the platform code that
+  /// owns the window. This class holds it as a [D3d11SwapChain] interface with
+  /// no `recreate` on it, so it cannot honestly claim to rebuild one. Naming it
+  /// makes the recovery report say `recoveredWithLosses` and tell the owner
+  /// exactly what it has to do - rebuild the window surface and its target -
+  /// instead of leaving a device that draws into a chain the driver released.
+  @override
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    yield CallbackGpuResource.fixed(
+      resourceName: 'direct3d11 window atlases '
+          '(mask ${_maskAtlas.width}x${_maskAtlas.height}, glyph '
+          '${_glyphAtlas.width}x${_glyphAtlas.height})',
+      recovery: GpuResourceRecovery.rebuilt,
+      onDiscard: _discardAtlasObjects,
+      onRepopulate: _repopulateAtlasObjects,
+    );
+    yield* _images.recoverableResources();
+    yield CallbackGpuResource.fixed(
+      resourceName: 'direct3d11 window swap chain '
+          '(${_surface.pixelWidth}x${_surface.pixelHeight}, '
+          '${_surface.kind})',
+      recovery: GpuResourceRecovery.orphaned,
+      onDiscard: () {},
+      onRepopulate: () => const BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'a swap chain cannot be recreated from the renderer',
+        detail: 'it belongs to the device that made it and to the window it '
+            'presents to; rebuild it through '
+            'lib/src/backends/win32/d3d11/win32_d3d11_surface.dart and create '
+            'a new target for the new descriptor',
+      ),
+    );
+  }
+
+  void _discardAtlasObjects() {
+    // The frame in flight goes with the device.
+    _batcher.beginFrame();
+    _submittedBatches = 0;
+    _pendingClear = null;
+    _layers.endFrame();
+    _layerPool.dispose();
+    _device
+      ..releaseTexture(_maskTexture)
+      ..releaseTexture(_glyphTexture);
+    // Both atlases are caches that outlive a frame, so both have to be told
+    // their texels are gone. The mask atlas is the one that is easy to miss:
+    // its `beginFrame` deliberately *keeps* every cached mask, so a static
+    // rounded rectangle drawn before the loss would be found resident,
+    // re-batched against a texture that was never re-uploaded, and drawn as
+    // nothing at all - a frame that differs from the pre-loss one by exactly
+    // the shapes the cache was working for.
+    _maskAtlas.recycle();
+    _glyphAtlas.clear();
+  }
+
+  BackendDiagnostic? _repopulateAtlasObjects() {
+    try {
+      _buildAtlasObjects();
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the recreated Direct3D 11 device refused an atlas texture',
+        detail: '$error',
+      );
+    }
+    return null;
+  }
 
   /// How many batches of the current frame have already been drawn. See
   /// [GpuRasterSink.onAtlasFlush]: a batch drawn twice blends twice.
@@ -271,9 +368,8 @@ final class D3d11WindowTarget with DisposableMixin implements RenderTarget {
     _pendingClear = request.clearColor;
     return Frame(
       target: this,
-      // Not the window's pixels. See the library comment: `Frame` requires a
-      // Framebuffer and a windowed GPU target has none to give.
-      framebuffer: _placeholder,
+      // No framebuffer, and that is the truth rather than an omission: the
+      // pixels are in the swap chain's back buffer. See the library comment.
       damage: request.damage ?? _surfaceRect,
       generation: generation,
     );
@@ -584,17 +680,9 @@ final class D3d11WindowTarget with DisposableMixin implements RenderTarget {
         ),
       );
 
-  /// The one pixel [Frame] insists on. Allocated once per class rather than per
-  /// frame, because allocating a throwaway buffer sixty times a second to
-  /// satisfy a type is worse than allocating it once.
-  static final Framebuffer _placeholder = Framebuffer.allocate(
-    width: 1,
-    height: 1,
-    format: PixelFormat.rgba8888Premultiplied,
-  );
-
   @override
   void onDispose() {
+    _device.unregisterTarget(this);
     _images.clear();
     // After endFrame has returned every target: the pool only destroys what is
     // idle, so disposing mid-frame would leak the ones still in flight.

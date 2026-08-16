@@ -18,6 +18,13 @@
 ///   3. **Dirt propagates up only as far as a relayout boundary.** See
 ///      [RenderBox.markNeedsLayout] - that comment is the most important one
 ///      in this file.
+///
+/// There is one sanctioned exception to rule 1, and it is section 25.6's:
+/// [RenderBox.getMaxIntrinsicWidth] and its three siblings are a *bottom-up
+/// query*. They exist because "this column is as wide as its widest cell" is
+/// otherwise inexpressible, and they are fenced in hard - see the intrinsic
+/// section below for the cache, the invalidation and the rule that a query may
+/// never call [RenderBox.layout].
 library;
 
 import 'dart:collection';
@@ -29,6 +36,7 @@ import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/display_list.dart';
 import 'box_constraints.dart';
+import 'layout_errors.dart';
 import 'pipeline.dart';
 
 /// Bookkeeping a parent keeps about one of its children.
@@ -74,6 +82,20 @@ final class HitTestPath {
       'HitTestPath(${_entries.map((RenderBox e) => e.runtimeType).join(' <- ')})';
 }
 
+/// Which horizontal line through a piece of text counts as "the baseline".
+///
+/// Two members, because that is how many the font formats distinguish in
+/// practice: Latin, Greek and Cyrillic letters sit *on* the alphabetic
+/// baseline, while CJK glyphs are centred in an em box whose bottom is the
+/// ideographic baseline. Aligning a Latin label to an ideographic baseline
+/// leaves it visibly low, which is why the choice is a parameter rather than an
+/// assumption.
+enum TextBaseline { alphabetic, ideographic }
+
+/// The four questions [RenderBox] can be asked about its content's natural
+/// size. Private because it is a cache key, not a concept a caller needs.
+enum _IntrinsicDimension { minWidth, maxWidth, minHeight, maxHeight }
+
 /// A node in the render tree that lays out under [BoxConstraints].
 ///
 /// Subclasses implement [performLayout] and usually [paint]. Everything else
@@ -90,6 +112,14 @@ abstract class RenderBox {
   /// through every layout call.
   static RenderBox? _nodeInLayout;
 
+  /// How many intrinsic queries are on the stack, anywhere in the tree.
+  ///
+  /// Non-zero means the current call chain started at
+  /// [getMinIntrinsicWidth] or a sibling, which makes [layout] illegal - see
+  /// the intrinsic section for why that has to be an error and not a
+  /// convention.
+  static int _intrinsicsDepth = 0;
+
   RenderBox? _parent;
   PipelineOwner? _owner;
   int _depth = 0;
@@ -100,6 +130,20 @@ abstract class RenderBox {
   bool _parentUsesSize = false;
   bool _needsLayout = true;
   bool _needsPaint = true;
+
+  /// Answers to intrinsic queries, keyed by which question and its argument.
+  ///
+  /// Lazily created: a tree in which nobody asks an intrinsic question pays one
+  /// null field per node and nothing else. Cleared by [markNeedsLayout], which
+  /// is the whole of the invalidation story.
+  Map<(_IntrinsicDimension, double), double>? _intrinsicCache;
+
+  /// One-entry baseline cache. A flex asks every child for the same
+  /// [TextBaseline] once per layout, so a single slot has the same hit rate as
+  /// a map and allocates nothing.
+  double? _cachedBaseline;
+  TextBaseline? _cachedBaselineKind;
+  bool _hasCachedBaseline = false;
 
   /// Written by the parent when it adopts this node, read by the parent when
   /// it positions and paints it. Null exactly when this node has no parent.
@@ -359,6 +403,9 @@ abstract class RenderBox {
   /// early return is what makes a full top-down walk from the root cheap
   /// enough to be the fallback path.
   void layout(BoxConstraints constraints, {bool parentUsesSize = false}) {
+    if (_intrinsicsDepth > 0) {
+      throw LayoutDuringIntrinsicError(this);
+    }
     final RenderBox? parent = _parent;
 
     // --- the relayout boundary rule ---------------------------------------
@@ -439,6 +486,13 @@ abstract class RenderBox {
   }
 
   void _runPerformLayout() {
+    // Both caches describe the geometry that is about to be replaced. Clearing
+    // them here rather than after means a performLayout that queries its own
+    // children sees this pass's answers, not the previous frame's.
+    _intrinsicCache?.clear();
+    _hasCachedBaseline = false;
+    _cachedBaseline = null;
+    _cachedBaselineKind = null;
     final RenderBox? previous = _nodeInLayout;
     _nodeInLayout = this;
     try {
@@ -463,6 +517,15 @@ abstract class RenderBox {
         'when its children overflow it.',
       );
     }
+    // Section 25.7 lists "medida infinita inválida" among the things layout
+    // must detect. An infinite extent satisfies an unbounded constraint, so the
+    // check above lets it through - and then it is stored, painted, hit tested
+    // and multiplied into every ancestor's arithmetic. See
+    // [BoxConstraints.largestFinite] for what a node with no content of its own
+    // is supposed to do instead.
+    if (!result.width.isFinite || !result.height.isFinite) {
+      throw InfiniteMeasureError(this, result);
+    }
     _needsLayout = false;
     markNeedsPaint();
   }
@@ -481,6 +544,31 @@ abstract class RenderBox {
   /// registers itself with the pipeline as a root of the next layout pass. See
   /// the long comment in [layout] for what makes that sound.
   void markNeedsLayout() {
+    // --- intrinsic invalidation ------------------------------------------
+    //
+    // Done before the `_needsLayout` early return, because an intrinsic query
+    // is legal on an already-dirty node and may have refilled the cache since
+    // it was marked.
+    //
+    // The `_parent!.markNeedsLayout()` is the subtle half. An ancestor's
+    // intrinsic width is a function of its children's, so an ancestor may be
+    // holding a cached answer derived from the one being dropped here - and
+    // unlike layout dirt, that dependency does *not* stop at a relayout
+    // boundary: a boundary promises the parent's **size** cannot change, not
+    // that its *content's natural width* cannot. Propagating unconditionally
+    // when this node had cached answers is what keeps a stale intrinsic from
+    // outliving the content it measured. Nodes nobody ever queried keep the
+    // boundary rule untouched, which is all of them in a tree that uses no
+    // intrinsics.
+    final Map<(_IntrinsicDimension, double), double>? cache = _intrinsicCache;
+    if (cache != null && cache.isNotEmpty) {
+      cache.clear();
+      _parent?.markNeedsLayout();
+    }
+    _hasCachedBaseline = false;
+    _cachedBaseline = null;
+    _cachedBaselineKind = null;
+
     if (_needsLayout) return;
     _needsLayout = true;
     final RenderBox? boundary = _relayoutBoundary;
@@ -513,6 +601,169 @@ abstract class RenderBox {
     _relayoutBoundary = null;
     visitChildren((RenderBox child) => child._clearRelayoutBoundarySubtree());
   }
+
+  // -----------------------------------------------------------------------
+  // Intrinsic measurement (roadmap 25.6)
+  // -----------------------------------------------------------------------
+  //
+  // The four `get*Intrinsic*` methods answer "how wide/tall does your content
+  // want to be", independently of any constraint this node has been given.
+  // They are the escape hatch from "constraints go down, sizes come up", and
+  // the whole point of a grid track sized `auto` or a shrink-wrapping column.
+  //
+  // Three rules make them affordable and honest:
+  //
+  //   1. **Cached, per question and per argument.** An intrinsic query
+  //      recurses into every descendant. A grid asking each of its N columns
+  //      for a max-content width would otherwise re-walk overlapping subtrees
+  //      once per column, and a nested flex turns that into an exponential
+  //      blow-up. The cache is keyed by (which question, its argument) rather
+  //      than by a constraint object, because that pair *is* the whole input.
+  //
+  //   2. **Invalidated with layout, never separately.** [markNeedsLayout]
+  //      drops this node's cache and, when there was one to drop, forces the
+  //      mark up to the parent even across a relayout boundary. A cache that
+  //      survives its content produces a silently stale layout, which is worse
+  //      than a slow one; see the comment there.
+  //
+  //   3. **A query may not call [layout].** Intrinsics are a measurement, not
+  //      a positioning: they run outside any layout pass, they must not write
+  //      a child's size, and a child laid out under a constraint invented for
+  //      a measurement would be left holding geometry no parent asked for.
+  //      [layout] throws [LayoutDuringIntrinsicError] rather than trusting the
+  //      convention. A subclass that cannot answer without laying out has a
+  //      design problem and must say so - by returning a documented
+  //      approximation, not by reaching for `layout`.
+  //
+  // A leaf's default is zero on all four, which is the right answer for a node
+  // with no content: it lets any parent shrink it away.
+
+  /// The smallest width at which this node's content can be drawn without
+  /// losing something that cannot be recovered - for a paragraph, the width of
+  /// its longest unbreakable word.
+  ///
+  /// [height] is the height the caller intends to impose, or [double.infinity]
+  /// when it has not decided. Nodes whose width does not depend on their height
+  /// ignore it.
+  double getMinIntrinsicWidth(double height) =>
+      _intrinsic(_IntrinsicDimension.minWidth, height);
+
+  /// The width at which this node's content needs no compression at all - for
+  /// a paragraph, the width of the whole text on one line.
+  double getMaxIntrinsicWidth(double height) =>
+      _intrinsic(_IntrinsicDimension.maxWidth, height);
+
+  /// The smallest height at which the content still fits, given [width].
+  double getMinIntrinsicHeight(double width) =>
+      _intrinsic(_IntrinsicDimension.minHeight, width);
+
+  /// The height the content wants, given [width].
+  double getMaxIntrinsicHeight(double width) =>
+      _intrinsic(_IntrinsicDimension.maxHeight, width);
+
+  double _intrinsic(_IntrinsicDimension dimension, double argument) {
+    if (argument.isNaN) {
+      throw ArgumentError.value(
+        argument,
+        'argument',
+        'an intrinsic query with a NaN cross extent produces a NaN size, and '
+            'the box that finally disappears will be nowhere near this call',
+      );
+    }
+    final Map<(_IntrinsicDimension, double), double> cache =
+        _intrinsicCache ??= <(_IntrinsicDimension, double), double>{};
+    final double? cached = cache[(dimension, argument)];
+    if (cached != null) return cached;
+
+    final double result;
+    _intrinsicsDepth++;
+    try {
+      result = switch (dimension) {
+        _IntrinsicDimension.minWidth => computeMinIntrinsicWidth(argument),
+        _IntrinsicDimension.maxWidth => computeMaxIntrinsicWidth(argument),
+        _IntrinsicDimension.minHeight => computeMinIntrinsicHeight(argument),
+        _IntrinsicDimension.maxHeight => computeMaxIntrinsicHeight(argument),
+      };
+    } finally {
+      _intrinsicsDepth--;
+    }
+    if (!result.isFinite || result < 0.0) {
+      throw InvalidIntrinsicError(this, dimension.name, argument, result);
+    }
+    cache[(dimension, argument)] = result;
+    return result;
+  }
+
+  /// Override to answer [getMinIntrinsicWidth]. Must not call [layout].
+  @protected
+  double computeMinIntrinsicWidth(double height) => 0.0;
+
+  /// Override to answer [getMaxIntrinsicWidth]. Must not call [layout].
+  @protected
+  double computeMaxIntrinsicWidth(double height) => 0.0;
+
+  /// Override to answer [getMinIntrinsicHeight]. Must not call [layout].
+  @protected
+  double computeMinIntrinsicHeight(double width) => 0.0;
+
+  /// Override to answer [getMaxIntrinsicHeight]. Must not call [layout].
+  @protected
+  double computeMaxIntrinsicHeight(double width) => 0.0;
+
+  // -----------------------------------------------------------------------
+  // Baseline
+  // -----------------------------------------------------------------------
+
+  /// How far below this node's top edge the given text baseline sits.
+  ///
+  /// Only meaningful after this node has been laid out, and in practice only
+  /// called by a parent from inside its own `performLayout`, between laying a
+  /// child out and positioning it - which is exactly the window in which the
+  /// child has a size and the parent has not yet committed to an offset.
+  ///
+  /// [onlyReal] separates the two questions a caller can have. False - the
+  /// default - means "give me a line to align to", and a node with no text in
+  /// it answers with its bottom edge, so a coloured box in a row of labels sits
+  /// on the same line rather than jumping to the top. True means "do you
+  /// actually have text", and answers null when there is none; a flex needs
+  /// that distinction, because a row of nothing but boxes has no baseline to
+  /// align to at all and must fall back to another rule.
+  double? getDistanceToBaseline(
+    TextBaseline baseline, {
+    bool onlyReal = false,
+  }) {
+    if (!hasSize) {
+      throw StateError(
+        '$runtimeType was asked for a baseline before it was laid out. A '
+        'baseline is a property of a line of text that has been measured, so '
+        'lay the child out first and query it afterwards.',
+      );
+    }
+    final double? actual;
+    if (_hasCachedBaseline && _cachedBaselineKind == baseline) {
+      actual = _cachedBaseline;
+    } else {
+      actual = computeDistanceToActualBaseline(baseline);
+      if (actual != null && (!actual.isFinite || actual.isNaN)) {
+        throw StateError(
+          '$runtimeType reported a baseline of $actual, which is not a '
+          'position. Return null when there is no text to align to.',
+        );
+      }
+      _cachedBaseline = actual;
+      _cachedBaselineKind = baseline;
+      _hasCachedBaseline = true;
+    }
+    if (actual == null && !onlyReal) return size.height;
+    return actual;
+  }
+
+  /// Override to report a real baseline; null means "this node has no text".
+  ///
+  /// Called at most once per baseline per layout - see [getDistanceToBaseline]
+  /// for the cache - so an implementation may do real work here.
+  @protected
+  double? computeDistanceToActualBaseline(TextBaseline baseline) => null;
 
   // -----------------------------------------------------------------------
   // Paint
@@ -640,6 +891,41 @@ abstract class RenderSingleChildBox extends RenderBox {
     if (child != null) visitor(child);
   }
 
+  // The proxy defaults: a wrapper's content is its child's content. Subclasses
+  // that add extent (padding) or clamp it (a constrained box) override these;
+  // the ones that only move the child - alignment, a gesture detector, a
+  // coloured background - are correct as they stand.
+
+  @override
+  double computeMinIntrinsicWidth(double height) =>
+      _child?.getMinIntrinsicWidth(height) ?? 0.0;
+
+  @override
+  double computeMaxIntrinsicWidth(double height) =>
+      _child?.getMaxIntrinsicWidth(height) ?? 0.0;
+
+  @override
+  double computeMinIntrinsicHeight(double width) =>
+      _child?.getMinIntrinsicHeight(width) ?? 0.0;
+
+  @override
+  double computeMaxIntrinsicHeight(double width) =>
+      _child?.getMaxIntrinsicHeight(width) ?? 0.0;
+
+  /// The child's baseline, moved by wherever this node put the child.
+  ///
+  /// The `+ offset.dy` is the reason this cannot be a plain delegation: a
+  /// padded label's baseline is lower in the padding node's space than in the
+  /// label's own, by exactly the top inset.
+  @override
+  double? computeDistanceToActualBaseline(TextBaseline baseline) {
+    final RenderBox? child = _child;
+    if (child == null || !child.hasSize) return null;
+    final double? result =
+        child.getDistanceToBaseline(baseline, onlyReal: true);
+    return result == null ? null : result + child.offsetFromParent.dy;
+  }
+
   @override
   void paint(DisplayList list, Offset offset) {
     final RenderBox? child = _child;
@@ -754,6 +1040,29 @@ abstract class RenderBoxContainer<T extends BoxParentData> extends RenderBox {
       visitor(_children[i]);
     }
   }
+
+  /// The first child that has a real baseline, in paint order, shifted by
+  /// where this node put it.
+  ///
+  /// "First" rather than "highest" or "lowest": a container of several lines of
+  /// text aligns to its first line, which is what a reader's eye follows across
+  /// a row of such containers. A subclass whose children are not in reading
+  /// order overrides this.
+  @protected
+  double? defaultComputeDistanceToFirstActualBaseline(TextBaseline baseline) {
+    for (int i = 0; i < _children.length; i++) {
+      final RenderBox child = _children[i];
+      if (!child.hasSize) continue;
+      final double? result =
+          child.getDistanceToBaseline(baseline, onlyReal: true);
+      if (result != null) return result + child.offsetFromParent.dy;
+    }
+    return null;
+  }
+
+  @override
+  double? computeDistanceToActualBaseline(TextBaseline baseline) =>
+      defaultComputeDistanceToFirstActualBaseline(baseline);
 
   @override
   void paint(DisplayList list, Offset offset) {
