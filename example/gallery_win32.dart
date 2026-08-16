@@ -50,6 +50,9 @@ Future<void> main(List<String> arguments) async {
             final presenter = Win32CpuPresenter(window as Win32Window);
             return (
               present: presenter.renderDisplayList,
+              // The synchronous path, which is what makes live resize possible:
+              // see `ApplicationOptions.liveResize`.
+              presentNow: presenter.renderDisplayListNow,
               release: presenter.dispose,
             );
           },

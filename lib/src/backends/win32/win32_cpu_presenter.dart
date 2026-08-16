@@ -73,6 +73,30 @@ final class Win32CpuPresenter with DisposableMixin {
     int? clearColor,
     Transform2D? deviceTransform,
     Rect? damage,
+  }) =>
+      Future<PresentResult>.value(
+        renderDisplayListNow(
+          list,
+          clearColor: clearColor,
+          deviceTransform: deviceTransform,
+          damage: damage,
+        ),
+      );
+
+  /// [renderDisplayList] with the future taken off.
+  ///
+  /// Not an optimisation and not a second implementation: the body was always
+  /// synchronous - there is no `await` anywhere between recording and the
+  /// `BitBlt` - and the `async` only ever deferred the *answer*. That is
+  /// harmless in the frame loop and fatal during a border drag, where the
+  /// isolate is inside `DispatchMessageW` for the whole gesture and nothing
+  /// waiting on a microtask will run until it ends. See
+  /// [SynchronousDisplayListPresentCallback].
+  PresentResult renderDisplayListNow(
+    DisplayList list, {
+    int? clearColor,
+    Transform2D? deviceTransform,
+    Rect? damage,
   }) {
     throwIfDisposed();
     _displayList = list;
@@ -82,10 +106,10 @@ final class Win32CpuPresenter with DisposableMixin {
     return _renderRetained(revision, damage: damage);
   }
 
-  Future<PresentResult> _renderRetained(
+  PresentResult _renderRetained(
     int revision, {
     Rect? damage,
-  }) async {
+  }) {
     final list = _displayList;
     final surface = _surfaceProvider();
     if (list == null || surface == null) {
@@ -149,7 +173,7 @@ final class Win32CpuPresenter with DisposableMixin {
       if (_displayList == null) return;
       _automaticWork = _automaticWork.then((_) async {
         if (isDisposed || revision != _revision) return;
-        final result = await _renderRetained(revision);
+        final result = _renderRetained(revision);
         final diagnostic = result.diagnostic;
         if (!result.isSuccess && diagnostic != null) {
           _onDiagnostic?.call(diagnostic);

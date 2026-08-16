@@ -316,9 +316,12 @@ redescobrir a lista. **Tratada** significa que há um `case` em
 | Mensagem | O que produz | Observação |
 | --- | --- | --- |
 | `WM_NCCREATE` | associa o token do `CREATESTRUCT` ao HWND | em `win32_window_class.dart`, antes de `GWLP_USERDATA` existir |
-| `WM_ERASEBKGND` | retorna 1 | metade da defesa contra o flash branco no resize; a outra metade é `hbrBackground = 0` na classe, e é por isso que as duas precisam continuar juntas — reintroduzir um brush de classe com este `case` ainda pintaria por cima do framebuffer entre o erase e o BitBlt. Fixado por teste |
+| `WM_ERASEBKGND` | pinta a faixa ainda não desenhada e retorna 1 | metade da defesa contra o flash branco no resize; a outra metade é `hbrBackground = 0` na classe, e é por isso que as duas precisam continuar juntas — reintroduzir um brush de classe com este `case` ainda pintaria por cima do framebuffer entre o erase e o BitBlt. Fixado por teste |
 | `WM_PAINT` | `WindowExposedEvent` | valida a região *antes* de reportar, senão `pumpEvents` vira spin |
-| `WM_SIZE` | `WindowResizedEvent` + rebuild de surface | minimizado (0x0) só muda o estado |
+| `WM_SIZE` | `WindowResizedEvent` + rebuild de surface + **frame síncrono ou fundo do tema** | minimizado (0x0) só muda o estado; ver "Resize ao vivo" abaixo |
+| `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` | marcam o laço modal do SO | é a única coisa que distingue um `WM_SIZE` de dentro do laço - onde nada mais roda - de um de fora |
+| `WM_GETMINMAXINFO` | escreve `ptMinTrackSize` / `ptMaxTrackSize` de `WindowOptions.minimumSize` / `maximumSize` | só os campos configurados; o resto continua sendo o padrão da plataforma |
+| `WM_XBUTTONDOWN` / `UP` / `DBLCLK` | `PointerDownEvent` / `PointerUpEvent` com `PointerButton.back` / `.forward` | o botão vem em `HIWORD(wParam)`, não no id da mensagem, e o retorno é TRUE |
 | `WM_MOVE` | `WindowMovedEvent` | |
 | `WM_DPICHANGED` | `WindowScaleChangedEvent` + `SetWindowPos` | **usa o retângulo sugerido pelo SO**; fixado por teste |
 | `WM_ACTIVATE` | `WindowActivationEvent` | também dá `reset()` no `TextInputAssembler` |
@@ -344,13 +347,13 @@ redescobrir a lista. **Tratada** significa que há um `case` em
 | --- | --- |
 | `WM_MOUSEHWHEEL` (0x020E) | Um `ScrollViewer` com `ScrollAxis.horizontal` lê `event.scrollDelta.dx` (`widgets/controls.dart`). No Windows `dx` só é diferente de zero com Shift segurado, então roda inclinável e swipe lateral de trackpad **não rolam nada**. O X11 já preenche esse eixo (botões 6 e 7). |
 | `WM_MOUSEWHEEL`, sinal | `HIWORD(wParam)` positivo significa roda girada **para longe** do usuário, que rola **para cima**. O contrato do framework diz o contrário e diz em três lugares: `PointerScrollEvent.scrollDelta` documenta positivo como "toward increasing coordinates", `RenderScrollViewer` mapeia seta para baixo como `applyDelta(+lineExtent)`, e o X11 traduz botão 5 (roda para baixo) como `Offset(0, +1)`. `_onPointerScroll` não nega o valor, então **no Windows a roda rola ao contrário** de todo o resto do framework. |
-| `WM_ENTERSIZEMOVE` / `WM_EXITSIZEMOVE` | O Windows entra em laço modal próprio: `DispatchMessageW` não retorna enquanto a borda estiver sendo arrastada, então `Win32Dispatcher._pumpNative` nunca volta para `_drainQueues` / `_fireDueTimers` e o lado Dart — onde moram layout, paint e present — congela. `WM_PAINT` até chega, mas só empilha `WindowExposedEvent` num stream que ninguém está drenando. Resultado: a janela mostra pixels velhos durante todo o arraste. |
 
-As duas primeiras correções ficam no mesmo lugar, `Win32Window._onPointerScroll`
-e o `switch` de `handleMessage`; a terceira precisa também do backend, porque
-quem tem de bombear um frame durante o laço modal é o dispatcher (um `SetTimer`
-armado no `WM_ENTERSIZEMOVE`, morto no `WM_EXITSIZEMOVE`, com `WM_TIMER`
-pedindo um frame). As constantes que faltavam já estão em
+
+As duas correções ficam no mesmo lugar, `Win32Window._onPointerScroll` e o
+`switch` de `handleMessage`. **As duas estão feitas.** O fundo preto no resize,
+que era o terceiro item, virou a seção "Resize ao vivo" abaixo: um `SetTimer`
+não resolveria, porque `WM_TIMER` também é entregue *pelo laço modal* e o
+callback do timer é Dart — ele iria para a fila que ninguém drena. As constantes que faltavam já estão em
 `win32_constants.dart` (`wmMousehwheel`, `wmXbuttondblclk`, `wmEntersizemove`,
 `wmExitsizemove`, `wheelDelta`, `xbutton1`/`xbutton2`). O sinal é uma negação:
 
@@ -410,8 +413,6 @@ test('the side buttons press and release', () async {
 
 | Mensagem | Por que ainda não dói, e o que falta |
 | --- | --- |
-| `WM_XBUTTONDOWN` / `UP` / `DBLCLK` | `PointerButton.back` e `.forward` existem no contrato e o X11 já os emite (botões 8 e 9); o Win32 não. Nenhum widget consome ainda, então hoje é divergência entre backends, não regressão visível. O botão vem em `HIWORD(wParam)` (`XBUTTON1`/`XBUTTON2`), não no id da mensagem, e o retorno correto é TRUE. |
-| `WM_GETMINMAXINFO` | Não há o que responder: `WindowOptions` não tem tamanho mínimo nem máximo. Consequência hoje: a janela encolhe até o layout quebrar. A correção começa em `platform/native_window.dart`, não no backend. |
 | `WM_SETTINGCHANGE` / `WM_THEMECHANGED` | `ThemeData.highContrast` existe, mas todo exemplo escolhe o tema por `argv` (`example/gallery_shell.dart`) e `window_events.dart` não tem evento de tema. Tratar antes do evento existir seria um `case` que joga o argumento fora. |
 | `WM_DISPLAYCHANGE` | Mudança de resolução que mexe na janela vem seguida de `WM_SIZE`/`WM_MOVE`/`WM_DPICHANGED`, que são tratadas. O que se perde é reler os limites dos monitores — e este backend ainda não tem módulo de telas nem fullscreen. |
 | `WM_SHOWWINDOW` | Não há evento de visibilidade no contrato; `hide()` também não emite nada. |
@@ -433,30 +434,103 @@ justamente para isso.
 O único efeito colateral visível é o *ding* do sistema em acordes Alt sem menu
 para casar, que é o que `SC_KEYMENU` faz com uma barra de menus vazia.
 
-### Armadilhas menores, todas sem consumidor hoje
+### Resize ao vivo, e por que ele é opcional
 
-Duas em `Win32Window._keyLocation` — nada lê `KeyEvent.location` além do
-backend — erradas do jeito que só aparece quando alguém for depender delas:
+O bug relatado: arrastar a borda deixava a área nova **preta** até soltar o
+mouse. Não é lentidão. Entre `WM_ENTERSIZEMOVE` e `WM_EXITSIZEMOVE` o Windows
+roda um laço modal **dentro do SO**; `DispatchMessageW` não retorna, então o
+`Win32Dispatcher` nunca volta de `_pumpNative` para `_drainQueues`, o loop de
+eventos do Dart não roda *nenhuma* vez, e todo listener de todo evento de
+janela mora exatamente lá. `WM_SIZE` chega, o `WindowResizedEvent` é enfileirado
+num broadcast stream que ninguém está drenando, e o frame que preencheria os
+pixels novos é desenhado depois do arraste.
 
-  * o ramo `extended && virtualKey >= 0x60 && virtualKey <= 0x69` é **código
+A correção tem duas metades, e as duas são obrigatórias:
+
+**1. Um frame síncrono, chamado de dentro do handler.** É o que o POC-01 faz em
+doze linhas. Aqui a mesma ideia é `LiveResizeWindow` (em
+`platform/native_window.dart`): a janela chama um callback de dentro de
+`_onSize`, e `ApplicationWindow.drawFrameSynchronously` faz build, layout,
+paint e present **sem nenhum `await`**. `drawFrame` não serve: é `async`, e
+tudo depois do primeiro `await` roda numa microtask que não será agendada até o
+arraste acabar — inclusive o `finally` que limpa `_inFrame`, o que deixaria a
+janela recusando frames pelo resto do processo. Por isso existe
+`SynchronousSurfacePresenter` / `WindowHost.presentNow`: o caminho do
+`Win32CpuPresenter` já era todo síncrono por baixo, mas nada no *tipo* dizia
+isso, e "por acaso não tem await" não é contrato.
+
+O frame síncrono só roda dentro do laço modal (`_inSizeMove`), não é reentrante
+(`_inLiveFrame`, com as mensagens recusadas contadas em
+`liveResizeFramesSuppressed`) e respeita a geração: cada `WM_SIZE` invalida o
+`GenerationToken`, e `presentNow` recusa um frame começado antes dela
+exatamente como o caminho assíncrono recusa.
+
+**2. Uma cor onde nenhum frame chegou.** `ApplicationOptions.liveResize: false`
+tem de ser melhor que o estado anterior, não igual. A conclusão da investigação
+de `WM_ERASEBKGND` + `hbrBackground` é que **o lugar óbvio não funciona**:
+`WM_ERASEBKGND` não é enviado pelo despacho de `WM_PAINT`, é enviado por
+`BeginPaint`, e `Win32Window._onPaint` deliberadamente não chama `BeginPaint` —
+lê o retângulo de update e valida, porque a apresentação aqui é assíncrona e não
+passa pelo DC do paint. Uma correção que morasse só ali seria código morto que
+passa no próprio teste. Então a faixa é pintada em `WM_SIZE`, no momento em que
+ela é criada, com `GetDC` + `FillRect` e um brush por janela vindo de
+`WindowOptions.backgroundColor`; `WM_ERASEBKGND` faz a mesma coisa e continua
+respondendo 1, para os caminhos que realmente o enviam (`RedrawWindow` com
+`RDW_ERASENOW`, `ScrollWindow`). Nunca a área toda: só o que está fora do
+retângulo já apresentado, senão seria o flash de cor chapada que o
+`hbrBackground = 0` existe para evitar.
+
+**O custo, medido.** `example/benchmark_live_resize.dart`, árvore da galeria,
+200 mensagens sintéticas pelo `WndProc` real, `dart run` (JIT):
+
+```
+liveResize=on   5883 us por WM_SIZE   200 frames   ~170 fps
+liveResize=off    49 us por WM_SIZE     0 frames
+```
+
+O frame é a diferença inteira. O número que decide não é a razão e sim o
+absoluto: 5,8 ms cabe folgado num quadro de 16,7 ms, então arrastar essa árvore
+desenha todos os passos e continua acima de 60 fps. Por isso o default é
+**ligado**. Uma árvore de 30 ms de layout faria o mesmo arraste parecer 30 fps,
+e é para essa aplicação que a opção existe.
+
+Verificado no laço modal real do SO (`WM_SYSCOMMAND`/`SC_SIZE`), lendo os
+pixels da janela com `GetPixel` logo depois: com a opção ligada, os pontos da
+faixa nova trazem o conteúdo desenhado; com ela desligada, trazem a cor de
+fundo do tema (`0xF3F3F3`); com o `_paintExposedRegion` removido, trazem
+`0x000000` — o preto do relato.
+
+### Armadilhas menores — fechadas
+
+Duas estavam em `Win32Window._keyLocation`, erradas do jeito que só aparece
+quando alguém for depender delas, e as duas estão corrigidas:
+
+  * o ramo `extended && virtualKey >= 0x60 && virtualKey <= 0x69` era **código
     morto**: o extended-key flag não é setado para `VK_NUMPAD0`-`VK_NUMPAD9` —
     ele marca AltGr, Ctrl direito, as setas cinzas, NumLock, Divide e o Enter
     do teclado numérico. Os próprios `VK_NUMPAD*` já identificam o bloco
-    numérico sem ajuda, então a condição só impede a resposta certa;
-  * o mesmo flag é usado para separar Shift esquerdo de direito, e o Windows
+    numérico sem ajuda, então a condição só impedia a resposta certa.
+    Agora o bloco inteiro `VK_NUMPAD0`..`VK_DIVIDE` é `KeyLocation.numpad`,
+    incondicionalmente, mais o `VK_RETURN` extended, que é o Enter do teclado
+    numérico;
+  * o mesmo flag era usado para separar Shift esquerdo de direito, e o Windows
     não o seta para Shift: a distinção está no scan code (0x2A contra 0x36).
-    `KeyLocation.right` para Shift, portanto, nunca é reportado.
+    `KeyLocation.right` para Shift nunca era reportado. Agora vem do scan code.
+    Ctrl e Alt continuam usando o flag, que para eles é o critério certo.
 
-E uma no relógio dos eventos. `PlatformInputEvent.timestamp` está documentado
-como "monotonic timestamp of the event, as reported by the OS", e o Win32 usa
-`DateTime.now()` — que não é monotônico nem é do SO (`GetMessageTime()` é). Pior,
-usa **duas unidades**: ponteiro e teclado carimbam
-`Duration(milliseconds: millisecondsSinceEpoch)` e scroll e texto carimbam
-`Duration(microseconds: microsecondsSinceEpoch)`, então os dois grupos estão mil
-vezes afastados um do outro. Ninguém compara entre grupos hoje — `_countClick`
-em `controls.dart` só subtrai `PointerDownEvent` de `PointerDownEvent`, e o
-`since >= Duration.zero` que ele já tem absorve um salto de relógio para trás —
-mas o primeiro consumidor que cruzar os grupos vai encontrar isso.
+E uma no relógio dos eventos, também fechada. `PlatformInputEvent.timestamp`
+está documentado como "monotonic timestamp of the event, as reported by the OS",
+e o Win32 usava `DateTime.now()` — que não é monotônico, não é do SO, e não é
+sequer sobre *aquela mensagem*: era o instante em que o handler por acaso
+rodou. Os quatro caminhos (ponteiro, teclado, scroll, texto) agora carimbam
+`Duration(milliseconds: GetMessageTime())`, que é o carimbo do próprio SO para
+a mensagem em despacho. Quatro eventos derivados de uma mensagem passam a ter
+timestamps **iguais**, não apenas próximos, e o valor é tempo desde o boot em
+vez de tempo desde 1970 — o que o `_countClick` de `controls.dart` compara faz
+sentido nas duas pontas. `GetMessageTime` é um contador de 32 bits com sinal e
+dá a volta a cada ~24,8 dias de uptime; quem subtrai dois deles através da volta
+vê intervalo negativo, que é exatamente o caso que o `since >= Duration.zero`
+do `_countClick` já trata.
 
 ## O que ainda não existe
 

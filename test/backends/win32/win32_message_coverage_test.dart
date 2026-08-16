@@ -45,6 +45,11 @@ int _at(int x, int y) => ((y & 0xFFFF) << 16) | (x & 0xFFFF);
 int _wheel(int detents, {int keys = 0}) =>
     (((detents * wheelDelta) & 0xFFFF) << 16) | keys;
 
+/// `lParam` of a key message: repeat count in the low word, scan code in bits
+/// 16-23, the extended-key flag in bit 24.
+int _key({required int scanCode, bool extended = false}) =>
+    1 | ((scanCode & 0xFF) << 16) | (extended ? 1 << 24 : 0);
+
 void main() {
   // Runs everywhere, including Linux and macOS CI, because a wrong number here
   // would make the eventual handler dead code that nothing ever reaches - the
@@ -311,6 +316,169 @@ void main() {
 
       expect(scroll.logicalPosition.dx, closeTo(30, 1));
       expect(scroll.logicalPosition.dy, closeTo(20, 1));
+    });
+
+    test('the side buttons press and release', () async {
+      // The one mouse family whose button is not in the message id: XBUTTON1
+      // and XBUTTON2 ride in the high word of wParam, so one case serves both
+      // and reading the message id instead would report the same button twice.
+      //
+      // Unhandled before this, which made Back and Forward work on X11 (core
+      // buttons 8 and 9) and not on Windows - a divergence between backends,
+      // which is worse than a gap in both.
+      await send(wmXbuttondown, xbutton1 << 16, _at(10, 10));
+      expect(
+        events.whereType<PointerDownEvent>().single.button,
+        PointerButton.back,
+      );
+
+      await send(wmXbuttonup, xbutton1 << 16, _at(10, 10));
+      expect(
+        events.whereType<PointerUpEvent>().single.button,
+        PointerButton.back,
+      );
+
+      await send(wmXbuttondown, xbutton2 << 16, _at(10, 10));
+      expect(
+        events.whereType<PointerDownEvent>().single.button,
+        PointerButton.forward,
+      );
+
+      await send(wmXbuttonup, xbutton2 << 16, _at(10, 10));
+      expect(
+        events.whereType<PointerUpEvent>().single.button,
+        PointerButton.forward,
+      );
+    });
+
+    test('the side buttons answer TRUE, unlike every other mouse message',
+        () async {
+      // Documented protocol: a handler of WM_XBUTTON* returns TRUE. It is the
+      // only mouse message where the return value carries information, and it
+      // is how a sender learns nobody wanted the press.
+      expect(await send(wmXbuttondown, xbutton1 << 16, _at(10, 10)), 1);
+      expect(await send(wmXbuttonup, xbutton1 << 16, _at(10, 10)), 1);
+      expect(await send(wmXbuttondblclk, xbutton2 << 16, _at(10, 10)), 1);
+      expect(
+        withoutHandler(wmXbuttondown, xbutton1 << 16, _at(10, 10)),
+        isNot(1),
+        reason: 'DefWindowProcW answers FALSE, so this assertion is not '
+            'passing on the default arm',
+      );
+    });
+
+    test('the second press of a side-button double click is not lost',
+        () async {
+      // CS_DBLCLKS again: Windows sends WM_XBUTTONDBLCLK *instead of* the
+      // second WM_XBUTTONDOWN. Unhandled, the framework would see one press
+      // where the user made two - the exact bug WM_LBUTTONDBLCLK had.
+      await send(wmXbuttondblclk, xbutton1 << 16, _at(10, 10));
+      final PointerDownEvent down = events.whereType<PointerDownEvent>().single;
+      expect(down.button, PointerButton.back);
+      expect(down.clickCount, 2);
+    });
+
+    test('KeyLocation.numpad is reachable at all', () async {
+      // It was not. The branch required the extended-key flag, and Windows
+      // never sets it for VK_NUMPAD0-VK_NUMPAD9 - the flag marks AltGr, right
+      // Ctrl, the grey navigation cluster, NumLock, keypad Divide and keypad
+      // Enter. The two halves of the condition were mutually exclusive, so no
+      // key on any keyboard could produce KeyLocation.numpad.
+      await send(wmKeydown, 0x60, _key(scanCode: 0x52));
+      expect(
+        events.whereType<KeyDownEvent>().single.location,
+        KeyLocation.numpad,
+        reason: 'VK_NUMPAD0 with the extended flag clear - which is how the '
+            'keypad always arrives',
+      );
+
+      await send(wmKeydown, 0x6F, _key(scanCode: 0x35, extended: true));
+      expect(
+        events.whereType<KeyDownEvent>().single.location,
+        KeyLocation.numpad,
+        reason: 'keypad Divide is extended, and is still the keypad',
+      );
+
+      await send(wmKeydown, vkReturn, _key(scanCode: 0x1C, extended: true));
+      expect(
+        events.whereType<KeyDownEvent>().single.location,
+        KeyLocation.numpad,
+        reason: 'keypad Enter shares VK_RETURN with the main one and is told '
+            'apart only by the flag',
+      );
+
+      await send(wmKeydown, vkReturn, _key(scanCode: 0x1C));
+      expect(
+        events.whereType<KeyDownEvent>().single.location,
+        KeyLocation.standard,
+      );
+    });
+
+    test('the two Shift keys are told apart by scan code, not by the flag',
+        () async {
+      // Windows never sets the extended-key flag for VK_SHIFT. Asking it
+      // reported every Shift as left, so KeyLocation.right was unreachable for
+      // the one modifier a text editor is most likely to ask about.
+      await send(wmKeydown, vkShift, _key(scanCode: scanCodeRightShift));
+      expect(
+        events.whereType<KeyDownEvent>().single.location,
+        KeyLocation.right,
+      );
+
+      await send(wmKeydown, vkShift, _key(scanCode: 0x2A));
+      expect(
+        events.whereType<KeyDownEvent>().single.location,
+        KeyLocation.left,
+      );
+
+      // Ctrl and Alt genuinely do use the flag, and must keep using it.
+      await send(wmKeydown, vkControl, _key(scanCode: 0x1D, extended: true));
+      expect(
+        events.whereType<KeyDownEvent>().single.location,
+        KeyLocation.right,
+      );
+      await send(wmKeydown, vkControl, _key(scanCode: 0x1D));
+      expect(
+        events.whereType<KeyDownEvent>().single.location,
+        KeyLocation.left,
+      );
+    });
+
+    test('all four input paths stamp the same clock in the same unit',
+        () async {
+      // `PlatformInputEvent.timestamp` is documented as "monotonic timestamp of
+      // the event, as reported by the OS". Before this, pointer and key events
+      // read `DateTime.now().millisecondsSinceEpoch` while scroll and text read
+      // `microsecondsSinceEpoch` - two readings of a clock that is neither
+      // monotonic nor the OS's opinion about the message, taken at whatever
+      // instant the handler happened to run.
+      await send(wmMousemove, 0, _at(5, 5));
+      final Duration pointer =
+          events.whereType<PointerMoveEvent>().single.timestamp;
+      await send(wmKeydown, 0x41, _key(scanCode: 0x1E));
+      final Duration key = events.whereType<KeyDownEvent>().single.timestamp;
+      await send(wmMousewheel, _wheel(1), 0);
+      final Duration scroll =
+          events.whereType<PointerScrollEvent>().single.timestamp;
+      await send(wmChar, 0x41);
+      final Duration text = events.whereType<TextInputEvent>().single.timestamp;
+
+      // One message time, four events derived from it, so they are equal -
+      // not merely close. With two different readings of `DateTime.now()` they
+      // could not be: the four calls are microseconds apart and two of them
+      // truncate to a millisecond.
+      expect(<Duration>[key, scroll, text], everyElement(pointer));
+
+      // And it is the OS's uptime clock, not the wall clock. Anything derived
+      // from `DateTime.now()` lands more than fifty years after the epoch,
+      // which is the cheapest possible way to say "this is the wrong clock".
+      expect(
+        pointer,
+        lessThan(const Duration(days: 3650)),
+        reason: 'GetMessageTime counts from boot; DateTime.now() counts from '
+            '1970, and a Duration of 55 years is not a monotonic OS timestamp',
+      );
+      expect(pointer, greaterThanOrEqualTo(Duration.zero));
     });
 
     test('WM_DPICHANGED moves to the rectangle Windows suggested', () async {

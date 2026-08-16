@@ -69,6 +69,27 @@ typedef DisplayListPresentCallback = Future<PresentResult> Function(
   Rect? damage,
 });
 
+/// The same thing with the future taken off, for the one caller that cannot
+/// have one.
+///
+/// A frame driven from inside a platform handler - see [LiveResizeWindow] - has
+/// no event loop to come back to: the isolate is parked inside a native call
+/// for the whole of a border drag, so a `Future` that completes "immediately"
+/// completes *after the drag*, which is exactly too late. A presenter that
+/// happens to do all its work before its first `await` is not enough either,
+/// because nothing in the type says so and nothing stops the next edit from
+/// adding one.
+///
+/// So the synchronous path is a separate, declared shape. Both Win32 and X11
+/// CPU presenters are already this shape underneath; this is what lets a caller
+/// depend on it.
+typedef SynchronousDisplayListPresentCallback = PresentResult Function(
+  DisplayList list, {
+  int? clearColor,
+  Transform2D? deviceTransform,
+  Rect? damage,
+});
+
 /// A backend presenter reduced to the two things a host needs from it.
 ///
 /// Handed as a record so a caller can build one from an existing object's
@@ -78,8 +99,13 @@ typedef DisplayListPresentCallback = Future<PresentResult> Function(
 /// final presenter = Win32CpuPresenter(window as Win32Window);
 /// return (present: presenter.renderDisplayList, release: presenter.dispose);
 /// ```
+/// [presentNow] is nullable rather than absent, and the null is a real answer:
+/// a backend that has no synchronous path says so, and
+/// [ApplicationOptions.liveResize] then degrades to the erase-background
+/// fallback instead of pretending.
 typedef RetainedCpuPresenter = ({
   DisplayListPresentCallback present,
+  SynchronousDisplayListPresentCallback? presentNow,
   void Function() release,
 });
 
@@ -134,6 +160,36 @@ abstract interface class SurfacePresenter implements Disposable {
   /// get one back on the next frame either, and retrying forever is how a
   /// dead GPU turns into a hung process.
   Future<bool> recoverFromDeviceLoss();
+}
+
+/// A presenter that can also draw without yielding to the event loop.
+///
+/// Separate from [SurfacePresenter] rather than a method on it, for the reason
+/// [ActivatableWindow] is separate from [NativeWindow]: a presenter that cannot
+/// do this must be able to say so by not implementing it, and adding a method
+/// to the presenter contract would break every implementation at once for a
+/// capability only some of them have. Tested for with a pattern:
+///
+/// ```dart
+/// if (presenter case final SynchronousSurfacePresenter sync) ...
+/// ```
+///
+/// See [SynchronousDisplayListPresentCallback] for why the future has to go.
+abstract interface class SynchronousSurfacePresenter {
+  /// Whether [presentNow] will actually do anything.
+  ///
+  /// A presenter can implement this interface and still be handed no
+  /// synchronous callback - [CallbackSurfacePresenter] is exactly that case -
+  /// so the type alone is not the answer.
+  bool get canPresentNow;
+
+  /// [SurfacePresenter.present], finished before it returns.
+  PresentResult presentNow(
+    DisplayList list, {
+    int? clearColor,
+    Transform2D? deviceTransform,
+    Rect? damage,
+  });
 }
 
 /// One frame's claim on a window's surface.
@@ -350,6 +406,91 @@ final class WindowHost with DisposableMixin {
       );
     }
 
+    if (result.isSuccess) {
+      _framesPresented++;
+    } else {
+      final diagnostic = result.diagnostic;
+      if (diagnostic != null) onDiagnostic?.call(diagnostic);
+    }
+    return result;
+  }
+
+  /// Whether [presentNow] can do anything but reject.
+  ///
+  /// A pattern rather than `is`, for the same reason [Application.clipboard]
+  /// uses one: [SynchronousSurfacePresenter] is not a subtype of
+  /// [SurfacePresenter], and `is` only promotes to a subtype of the declared
+  /// type.
+  bool get canPresentSynchronously =>
+      _synchronousPresenter?.canPresentNow ?? false;
+
+  SynchronousSurfacePresenter? get _synchronousPresenter {
+    if (_presenter case final SynchronousSurfacePresenter presenter) {
+      return presenter;
+    }
+    return null;
+  }
+
+  /// [present], without the await - for a frame driven from inside a platform
+  /// handler.
+  ///
+  /// The generation rule is *identical* and deliberately so: a frame begun
+  /// before a resize is rejected here exactly as it is there. It needs stating
+  /// because the temptation is to skip it - "nothing can have changed, nothing
+  /// yielded" - and that is wrong in the one case this method exists for. A
+  /// live-resize frame lays out and paints while the user is still dragging,
+  /// and Windows delivers the next `WM_SIZE` from inside `SetWindowPos` calls
+  /// that layout itself can make. There is only one check rather than two
+  /// because nothing suspends between them.
+  ///
+  /// Rejects rather than throws when the presenter has no synchronous path, so
+  /// a caller can offer live resize on every backend and get it on the ones
+  /// that can do it.
+  PresentResult presentNow(
+    HostFrame frame,
+    DisplayList list, {
+    int? clearColor,
+  }) {
+    throwIfDisposed();
+    final presenter = _synchronousPresenter;
+    if (presenter == null || !presenter.canPresentNow) {
+      _framesRejected++;
+      return const PresentResult(
+        status: PresentStatus.stale,
+        diagnostic: BackendDiagnostic.note(
+          'frame dropped; this presenter has no synchronous path',
+          detail: 'live resize needs a presenter that finishes before it '
+              'returns, because the isolate is inside a native call',
+        ),
+      );
+    }
+    if (!_generation.accepts(frame.generation)) {
+      _framesRejected++;
+      return PresentResult(
+        status: PresentStatus.stale,
+        diagnostic: BackendDiagnostic.note(
+          'frame from generation ${frame.generation} dropped; the window host '
+          'is at generation ${_generation.current}',
+          detail: 'the surface was reallocated between beginFrame and present',
+        ),
+      );
+    }
+    if (!isPresentable) {
+      _framesRejected++;
+      return const PresentResult(
+        status: PresentStatus.stale,
+        diagnostic: BackendDiagnostic.note(
+          'frame dropped; the window has no presentable client area',
+        ),
+      );
+    }
+
+    final result = presenter.presentNow(
+      list,
+      clearColor: clearColor,
+      deviceTransform: frame.deviceTransform,
+      damage: frame.damage,
+    );
     if (result.isSuccess) {
       _framesPresented++;
     } else {
@@ -659,17 +800,19 @@ final class RenderTargetPresenter
 /// everywhere" stops being true.
 final class CallbackSurfacePresenter
     with DisposableMixin
-    implements SurfacePresenter {
+    implements SurfacePresenter, SynchronousSurfacePresenter {
   CallbackSurfacePresenter({
     required this.info,
     required DisplayListPresentCallback present,
     required void Function() release,
+    SynchronousDisplayListPresentCallback? presentNow,
     void Function({
       required int pixelWidth,
       required int pixelHeight,
       required double scale,
     })? onSurfaceResized,
   })  : _present = present,
+        _presentNow = presentNow,
         _release = release,
         _onSurfaceResized = onSurfaceResized;
 
@@ -679,6 +822,7 @@ final class CallbackSurfacePresenter
     required this.info,
     required RetainedCpuPresenter presenter,
   })  : _present = presenter.present,
+        _presentNow = presenter.presentNow,
         _release = presenter.release,
         _onSurfaceResized = null;
 
@@ -686,6 +830,7 @@ final class CallbackSurfacePresenter
   final RendererInfo info;
 
   final DisplayListPresentCallback _present;
+  final SynchronousDisplayListPresentCallback? _presentNow;
   final void Function() _release;
   final void Function({
     required int pixelWidth,
@@ -702,6 +847,34 @@ final class CallbackSurfacePresenter
   }) {
     throwIfDisposed();
     return _present(
+      list,
+      clearColor: clearColor,
+      deviceTransform: deviceTransform,
+      damage: damage,
+    );
+  }
+
+  @override
+  bool get canPresentNow => _presentNow != null && !isDisposed;
+
+  @override
+  PresentResult presentNow(
+    DisplayList list, {
+    int? clearColor,
+    Transform2D? deviceTransform,
+    Rect? damage,
+  }) {
+    throwIfDisposed();
+    final present = _presentNow;
+    if (present == null) {
+      return const PresentResult(
+        status: PresentStatus.stale,
+        diagnostic: BackendDiagnostic.note(
+          'this retained presenter was built without a synchronous path',
+        ),
+      );
+    }
+    return present(
       list,
       clearColor: clearColor,
       deviceTransform: deviceTransform,

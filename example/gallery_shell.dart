@@ -37,6 +37,20 @@ ApplicationOptions galleryOptions(
       frameBudget: frameBudget ?? intArgument(arguments, '--frames') ?? 0,
       showDevOverlay: !arguments.contains('--no-overlay'),
       suspendWhenDeactivated: false,
+      // Drawing while the user drags a border, unless `--no-live-resize` says
+      // otherwise. The flag is here so a gallery can be run both ways without
+      // an edit - which is how the cost in the option's own documentation was
+      // measured.
+      liveResize: !arguments.contains('--no-live-resize'),
+      // A floor for the drag. The gallery's own layout is a two-column shell
+      // with a fixed sidebar; below this it stops being a window and starts
+      // being an overflow diagnostic per frame.
+      minimumSize: const Size(480, 360),
+      // The strip a resize exposes before the frame catches up gets the
+      // theme's own surface colour rather than whatever was in video memory.
+      // With live resize on there is nothing to see; with it off this is the
+      // difference between a grey window and a black one.
+      windowBackgroundColor: galleryTheme(arguments).surface,
       arguments: arguments,
       environment: Platform.environment,
       // Contained rather than fatal: one control whose build throws must not

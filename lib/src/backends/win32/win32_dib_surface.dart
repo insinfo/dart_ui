@@ -56,10 +56,12 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
     required int bitmap,
     required int previousBitmap,
     required Pointer<Uint8> pixels,
+    required void Function(int width, int height)? onFullPresent,
   })  : _api = api,
         _memoryDc = memoryDc,
         _bitmap = bitmap,
-        _pixels = pixels {
+        _pixels = pixels,
+        _onFullPresent = onFullPresent {
     // Reverse order matters here and is not theoretical: deleting the bitmap
     // while it is still selected into the DC leaks it, and GDI reports nothing
     // when you do.
@@ -87,6 +89,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
     required int pixelHeight,
     required double scale,
     required int generation,
+    void Function(int width, int height)? onFullPresent,
   }) {
     assert(pixelWidth > 0 && pixelHeight > 0);
 
@@ -148,6 +151,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
         bitmap: bitmap,
         previousBitmap: previousBitmap,
         pixels: bits.value.cast<Uint8>(),
+        onFullPresent: onFullPresent,
       );
     } finally {
       api.allocator
@@ -165,6 +169,14 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
   final int _memoryDc;
   final int _bitmap;
   final Pointer<Uint8> _pixels;
+
+  /// Told when a *whole* surface has reached the window.
+  ///
+  /// Only the full blit counts. The window uses this to know how much of its
+  /// client area has real pixels in it, so that `WM_ERASEBKGND` can paint the
+  /// strip a resize just exposed and leave the rest alone - and a damage-only
+  /// blit says nothing about the rest of the area.
+  final void Function(int width, int height)? _onFullPresent;
 
   @override
   String get kind => 'win32-dib';
@@ -217,6 +229,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
     var top = 0;
     var right = pixelWidth;
     var bottom = pixelHeight;
+    final full = damage == null;
     if (damage != null) {
       final space = Win32CoordinateSpace(
         clientOriginX: 0,
@@ -259,6 +272,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
         context: '${right - left}x${bottom - top} at ($left, $top)',
       );
     }
+    if (full) _onFullPresent?.call(pixelWidth, pixelHeight);
     return null;
   }
 

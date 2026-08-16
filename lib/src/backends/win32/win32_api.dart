@@ -244,6 +244,24 @@ final class Win32Api {
       setTimer;
   late final int Function(int, int) killTimer;
 
+  /// The OS clock for the message currently being dispatched, in milliseconds
+  /// since the system started.
+  ///
+  /// This is what `PlatformInputEvent.timestamp` is documented to carry -
+  /// "monotonic timestamp of the event, as reported by the OS" - and it is
+  /// neither of the things `DateTime.now()` is: it does not move when the user
+  /// changes the clock, and it is the same number the OS stamped the message
+  /// with rather than the number the handler happened to run at. It is only
+  /// meaningful inside a `WndProc`, which is the only place this backend reads
+  /// it.
+  late final int Function() getMessageTime;
+
+  /// A system colour, as a `COLORREF` (`0x00BBGGRR`).
+  late final int Function(int) getSysColor;
+
+  /// Paints [rect] of a DC with a brush - the one call `WM_ERASEBKGND` needs.
+  late final int Function(int, Pointer<Win32Rect>, int) fillRect;
+
   void _bindUser32() {
     registerClassExW = _user32.lookupFunction<
         Uint16 Function(Pointer<WndClassExW>),
@@ -381,6 +399,14 @@ final class Win32Api {
                         IntPtr, Uint32, IntPtr, Uint32)>>)>('SetTimer');
     killTimer = _user32.lookupFunction<Int32 Function(IntPtr, IntPtr),
         int Function(int, int)>('KillTimer');
+    getMessageTime = _user32
+        .lookupFunction<Int32 Function(), int Function()>('GetMessageTime');
+    getSysColor =
+        _user32.lookupFunction<Uint32 Function(Int32), int Function(int)>(
+            'GetSysColor');
+    fillRect = _user32.lookupFunction<
+        Int32 Function(IntPtr, Pointer<Win32Rect>, IntPtr),
+        int Function(int, Pointer<Win32Rect>, int)>('FillRect');
   }
 
   // -------------------------------------------------------------------------
@@ -401,6 +427,10 @@ final class Win32Api {
   late final int Function(int, int) selectObject;
   late final int Function(int, int, int, int, int, int, int, int, int) bitBlt;
   late final int Function(int, int) getDeviceCaps;
+
+  /// A solid brush over a `COLORREF`. Owned by the caller: unlike a system
+  /// brush it must be handed to [deleteObject].
+  late final int Function(int) createSolidBrush;
 
   void _bindGdi32() {
     createCompatibleDC =
@@ -424,6 +454,9 @@ final class Win32Api {
         int Function(int, int, int, int, int, int, int, int, int)>('BitBlt');
     getDeviceCaps = _gdi32.lookupFunction<Int32 Function(IntPtr, Int32),
         int Function(int, int)>('GetDeviceCaps');
+    createSolidBrush =
+        _gdi32.lookupFunction<IntPtr Function(Uint32), int Function(int)>(
+            'CreateSolidBrush');
   }
 
   // -------------------------------------------------------------------------

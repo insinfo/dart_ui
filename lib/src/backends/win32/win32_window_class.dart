@@ -172,17 +172,30 @@ final class Win32WindowClass {
         api.allocator.free(descriptor);
       }
       if (atom != 0) break;
-      if (lastError != 1410) break; // Only ERROR_CLASS_ALREADY_EXISTS retries.
+      // ERROR_CLASS_ALREADY_EXISTS, or *no reason at all*. The second is not
+      // padding: a class name lives in the window station and is shared by
+      // every thread of the process, so two isolates of one `dart test` run
+      // registering and unregistering `DartUiWindow` at the same time can make
+      // `RegisterClassExW` fail while leaving the thread's last error at
+      // ERROR_SUCCESS. That is indistinguishable from a name collision from
+      // here and has the same cure - a name nobody else is using - so the two
+      // are handled together rather than one being a retry and the other a
+      // hard failure that only shows up when the suite is busy.
+      if (lastError != 1410 && lastError != 0) break;
 
       // A previous run left the class behind - a process that crashed with a
-      // window open, or a hot restart. Take a fresh name rather than failing.
+      // window open, a hot restart, or another isolate of the same process.
+      // Take a fresh name rather than failing. The thread id disambiguates
+      // between isolates, which a per-isolate counter alone cannot: two
+      // isolates counting from 1 would collide again on the retry.
       api.heapRelease(namePointer);
-      name = '$baseName.${++_suffix}';
+      name = '$baseName.${api.getCurrentThreadId()}.${++_suffix}';
       namePointer = api.toUtf16(name);
       diagnostics.add(
         BackendDiagnostic.note(
-          'window class $baseName already registered; using $name',
-          detail: 'GetLastError=1410 (ERROR_CLASS_ALREADY_EXISTS)',
+          'window class $baseName was not available; using $name',
+          detail: 'GetLastError=$lastError'
+              '${lastError == 1410 ? ' (ERROR_CLASS_ALREADY_EXISTS)' : ''}',
         ),
       );
     }

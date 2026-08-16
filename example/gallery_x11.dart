@@ -51,6 +51,11 @@ Future<void> main(List<String> arguments) async {
             final presenter = X11CpuPresenter(window as X11Window);
             return (
               present: presenter.renderDisplayList,
+              // No synchronous path here yet. X11 has no equivalent of the
+              // modal resize loop that makes one necessary on Windows - the
+              // window manager resizes, ConfigureNotify arrives on the socket
+              // like any other event, and the ordinary frame loop draws it.
+              presentNow: null,
               release: presenter.dispose,
             );
           },

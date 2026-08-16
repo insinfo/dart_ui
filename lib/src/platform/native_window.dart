@@ -85,9 +85,12 @@ final class WindowOptions {
     required this.size,
     this.title = 'dart_ui',
     this.position,
+    this.minimumSize,
+    this.maximumSize,
     this.resizable = true,
     this.decorated = true,
     this.visible = true,
+    this.backgroundColor,
     this.owner,
     this.kind = WindowKind.normal,
   });
@@ -102,9 +105,47 @@ final class WindowOptions {
   /// window should do.
   final Offset? position;
 
+  /// The smallest client area the user may drag this window down to, in
+  /// logical units, or null for the platform's own floor.
+  ///
+  /// Null is not the same as "no minimum" in practice, and that is the point of
+  /// stating it: the platform floor is about the *frame* - Windows will not let
+  /// the caption buttons be clipped - and it says nothing at all about the
+  /// client area, so a window with no minimum can be dragged to a client area a
+  /// few pixels tall. Every layout below then runs against constraints it was
+  /// never designed for: scroll offsets collapse, text measures to zero lines,
+  /// and a `SizedBox` that no longer fits overflows into a diagnostic on every
+  /// frame of the drag. The fix is a number, declared once by whoever knows
+  /// what the tree needs, and enforced by the window manager rather than
+  /// repaired afterwards.
+  ///
+  /// A backend that cannot express one ignores it, which degrades to today's
+  /// behaviour rather than to a broken window.
+  final Size? minimumSize;
+
+  /// The largest client area the user may drag this window up to, or null for
+  /// the platform's own ceiling (the work area of the monitor).
+  final Size? maximumSize;
+
   final bool resizable;
   final bool decorated;
   final bool visible;
+
+  /// What the platform should put in the client area when *nobody has drawn
+  /// there yet*: the strip a window grows into before the first frame at the
+  /// new size arrives, and the whole client area between the window appearing
+  /// and its first frame.
+  ///
+  /// Premultiplied BGRA packed into a 32-bit int - the same encoding as
+  /// [ApplicationOptions.clearColor] - or null to let the backend use the
+  /// system's window colour.
+  ///
+  /// This exists because "the backend never paints, every pixel comes from the
+  /// framebuffer" is only true once there *is* a framebuffer covering the
+  /// pixel. During a resize there is not: the window grows first and the frame
+  /// follows, and whatever the platform leaves in the gap is what the user
+  /// sees. On Windows that is uninitialised video memory, which reads as black.
+  final int? backgroundColor;
 
   /// The window this one belongs to, or null for a top-level window.
   ///
@@ -146,6 +187,62 @@ abstract interface class ActivatableWindow {
   /// driven by the *activation event that comes back*, never by the fact that
   /// this was called.
   void activate();
+}
+
+/// What a [LiveResizeWindow] hands its owner when the geometry has already
+/// changed and nothing has drawn yet.
+///
+/// Called **synchronously, from inside the platform's own resize handler**, so
+/// the implementation may not await anything: see [LiveResizeWindow].
+typedef LiveResizeCallback = void Function({
+  required Size logicalSize,
+  required double renderScale,
+});
+
+/// A window that can have one whole frame produced from inside its resize
+/// handler.
+///
+/// ## The problem this exists for
+///
+/// Dragging a window border on Windows enters a *modal loop inside the OS*:
+/// `DispatchMessageW` does not return between `WM_ENTERSIZEMOVE` and
+/// `WM_EXITSIZEMOVE`, and the loop delivers `WM_SIZE` and `WM_PAINT` from in
+/// there. Every event this framework normally produces travels through a
+/// broadcast `StreamController`, whose listeners run on a *later* turn of the
+/// Dart event loop - a turn that cannot happen, because the isolate is parked
+/// inside a native call. So the window grows, no layout runs, no frame is
+/// painted, nothing is presented, and the area the window just grew into stays
+/// whatever the platform put there. On Windows that reads as black.
+///
+/// It is not a scheduling bug that a faster frame loop would fix. The Dart
+/// queue is not slow, it is *unreachable*, and the only code that runs while it
+/// is unreachable is code the OS calls directly. Hence a callback invoked from
+/// the handler itself, which is exactly what POC-01 does in twelve lines:
+/// resize the framebuffer, call the paint callback, invalidate.
+///
+/// ## What an implementer of the callback must obey
+///
+///   * **Never await.** An `await` inside the callback hands control to a
+///     microtask queue that will not be drained until the drag is over, so the
+///     work would land after the modal loop rather than during it - which is
+///     the very failure being fixed. Anything after the first suspension point
+///     is dead code for the duration of the drag.
+///   * **Never re-enter.** The callback runs while a platform handler is on the
+///     stack, and a frame that starts a second frame is exactly the reentrancy
+///     `ManualDispatcher` already throws on. Guard and return.
+///   * **Adopt the size that was passed**, rather than waiting for the resize
+///     *event*: that event is queued on the stream nobody is draining.
+abstract interface class LiveResizeWindow {
+  /// Installs (or removes, with null) the callback the window invokes from
+  /// inside its resize handler.
+  ///
+  /// One callback, replaced rather than added to: a second subscriber would be
+  /// a second frame per resize message, which is the cost this whole feature is
+  /// optional to avoid.
+  void setLiveResizeCallback(LiveResizeCallback? callback);
+
+  /// Whether the platform is currently inside its own modal resize/move loop.
+  bool get isLiveResizing;
 }
 
 /// A window whose input the platform can be told to refuse.

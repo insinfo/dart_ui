@@ -105,6 +105,36 @@ final class Win32Point extends Struct {
   external int y;
 }
 
+/// `MINMAXINFO`, the structure `WM_GETMINMAXINFO` hands out for the handler to
+/// *write into*.
+///
+/// The message is unusual in that lParam is an out-parameter: Windows fills the
+/// five points with the defaults it would apply, the handler overwrites the
+/// ones it has an opinion about, and returning 0 means "use what is now in
+/// there". Every field left alone therefore keeps the platform default, which
+/// is why a window that only wants a minimum size touches exactly one point.
+///
+/// [ptMinTrackSize] and [ptMaxTrackSize] are the two that bound *dragging a
+/// border*, which is the whole reason this exists: without them a user can drag
+/// a window down to the caption buttons and every layout below has to cope with
+/// a 1-pixel client area.
+final class MinMaxInfo extends Struct {
+  /// Reserved; Windows neither reads nor writes it.
+  external Win32Point ptReserved;
+
+  /// The size the window takes when maximised.
+  external Win32Point ptMaxSize;
+
+  /// The position it takes when maximised.
+  external Win32Point ptMaxPosition;
+
+  /// The smallest the user may drag the *window* (frame included) to.
+  external Win32Point ptMinTrackSize;
+
+  /// The largest the user may drag the window to.
+  external Win32Point ptMaxTrackSize;
+}
+
 /// `CREATESTRUCTW`. Only [lpCreateParams] is read - it carries the registry
 /// token that turns an HWND back into a Dart object.
 final class CreateStructW extends Struct {

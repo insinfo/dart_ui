@@ -307,6 +307,10 @@ final class ApplicationOptions {
     this.allowExperimentalBackends = false,
     this.suspendWhenDeactivated = false,
     this.exitWhenLastWindowClosed = true,
+    this.liveResize = true,
+    this.minimumSize,
+    this.maximumSize,
+    this.windowBackgroundColor,
     this.gpuPresentationCapability = kGpuPresentationCapability,
     this.arguments = const <String>[],
     this.environment = const <String, String>{},
@@ -393,6 +397,77 @@ final class ApplicationOptions {
   /// has no windows - so a windowless headless application must be driven by
   /// hand rather than by [Application.run].
   final bool exitWhenLastWindowClosed;
+
+  /// Whether a window may draw a whole frame from inside the platform's own
+  /// resize handler.
+  ///
+  /// **True by default**, and the default is the interesting half.
+  ///
+  /// ### What it costs
+  ///
+  /// One complete frame - build, layout, paint, present - per resize message,
+  /// on the thread the window manager is dragging, with no chance to coalesce
+  /// two messages into one frame the way the ordinary loop does. Windows sends
+  /// a `WM_SIZE` per mouse movement during a drag, so this is a frame per
+  /// mouse movement.
+  ///
+  /// `example/benchmark_live_resize.dart` measures both sides of it on the
+  /// gallery tree, through the real `WndProc` of a real HWND. On this machine,
+  /// 200 synthetic resize messages under `dart run` (JIT, no AOT):
+  ///
+  /// ```
+  /// liveResize=on   5883 us per WM_SIZE   200 frames   ~170 fps
+  /// liveResize=off    49 us per WM_SIZE     0 frames
+  /// ```
+  ///
+  /// So the frame is the whole difference - 5.8 ms of it - and the number that
+  /// decides is not the ratio but the absolute: 5.8 ms is comfortably inside a
+  /// 16.7 ms frame, so a drag of this tree stays above 60 fps while drawing
+  /// every step. A tree that takes 30 ms to lay out would make the same drag
+  /// feel like 30 fps, and *that* is the application this option exists for.
+  ///
+  /// ### Why it is on anyway
+  ///
+  /// Because the alternative is not "a cheaper resize", it is **no resize**.
+  /// Dragging a border on Windows runs a modal loop inside the OS, and while
+  /// it runs the Dart event loop does not: not slowly, at all. Every frame the
+  /// framework would normally draw is queued behind a `DispatchMessageW` that
+  /// does not return until the user lets go of the mouse. So with this off, the
+  /// window shows the pixels it had when the drag started for the whole drag,
+  /// and the strip it grows into shows [windowBackgroundColor]. That is a
+  /// correct, cheap, and visibly unfinished window; every other desktop toolkit
+  /// pays this cost, and a framework whose windows do not repaint while being
+  /// resized reads as broken rather than as fast.
+  ///
+  /// Turn it off for a tree whose frame is too expensive to run at pointer
+  /// rate, or when the platform's own frame is the only thing that must stay
+  /// responsive. See [LiveResizeWindow] for the mechanism and for what a
+  /// backend has to implement to offer it; a backend that offers nothing
+  /// ignores this flag rather than failing.
+  final bool liveResize;
+
+  /// The smallest and largest client area the user may drag a window to, in
+  /// logical units, or null for the platform's own bounds. Applied to every
+  /// window [openWindow] creates unless that call overrides them.
+  ///
+  /// Worth setting on any real application: without a minimum, a window can be
+  /// dragged down to a client area a few pixels tall, and every layout below
+  /// then runs against constraints nothing was designed for.
+  final Size? minimumSize;
+  final Size? maximumSize;
+
+  /// What the platform paints where no frame has drawn yet - the strip a
+  /// window grows into mid-resize, and the client area before the first frame.
+  ///
+  /// Premultiplied BGRA in a 32-bit int, the same encoding as [clearColor], or
+  /// null for the system's window colour. Distinct from [clearColor], which is
+  /// what the *renderer* clears the framebuffer to: this one is used at moments
+  /// when there is no framebuffer covering the pixel at all, which is exactly
+  /// when [clearColor] cannot help.
+  ///
+  /// Set it to the tree's own background and a resize stops showing a colour
+  /// the application never chose.
+  final int? windowBackgroundColor;
 
   /// Passed through to [selectPresentation]. Defaults to
   /// [kGpuPresentationCapability]; setting it to null makes every GPU path
@@ -689,6 +764,27 @@ final class ApplicationWindow with DisposableMixin {
     pipelineOwner.flushLayout();
   }
 
+  /// Whether there is geometry for a pointer to be tested against.
+  ///
+  /// False in exactly one window of time and it is a real one: between the
+  /// platform showing the window and this window's first frame. The platform
+  /// delivers input the instant the window exists - a `WM_MOUSEMOVE` arrives
+  /// for a window that merely appeared under a stationary cursor - while the
+  /// tree is only mounted and laid out by [drawFrame]. Hit-testing then reaches
+  /// a root whose `size` has never been computed, and `RenderBox.size` throws
+  /// rather than inventing one, which is correct of it and fatal here: the
+  /// throw escapes through a stream listener and takes the process down.
+  ///
+  /// So the event is dropped, counted, and a frame is requested. Dropped rather
+  /// than queued because a pointer position is only meaningful against a
+  /// layout, and the layout it would be tested against does not exist yet;
+  /// whatever the pointer is over will be reported by the next move.
+  bool get _isHitTestable {
+    if (!_rootMounted) return false;
+    final RenderBox? root = buildOwner.renderRoot;
+    return root != null && root.hasSize;
+  }
+
   /// Builds, lays out, paints and presents exactly one frame of this window.
   ///
   /// The build/layout/paint half is driven through [FrameScheduler]: this
@@ -795,6 +891,109 @@ final class ApplicationWindow with DisposableMixin {
         requestFrame();
       }
       return result;
+    } finally {
+      _inFrame = false;
+    }
+  }
+
+  /// One whole frame with no suspension point anywhere in it.
+  ///
+  /// Installed on the native window as a [LiveResizeCallback] when
+  /// [ApplicationOptions.liveResize] is on, and called *from inside the
+  /// platform's resize handler* - which is the only reason it exists in this
+  /// shape. [drawFrame] cannot be used there: it is `async`, and everything
+  /// after its first `await` runs on a microtask that will not be scheduled
+  /// until the platform's modal loop ends, so the pixels would land after the
+  /// drag rather than during it. The `finally` that clears [_inFrame] is on the
+  /// far side of that await too, which would leave the window believing a frame
+  /// was in flight for the rest of the drag and refusing every later one.
+  ///
+  /// Three rules, all of them things that go wrong quietly:
+  ///
+  ///   * **it adopts the size it was handed** rather than waiting for the
+  ///     [WindowResizedEvent]. That event is real and will arrive - queued on a
+  ///     stream nobody is draining - and by then the drag is over;
+  ///   * **it never re-enters.** A resize delivered while this is on the stack
+  ///     (layout can call `SetWindowPos`, and Windows sends `WM_SIZE` from
+  ///     inside it) is coalesced into a request for the next frame, the same
+  ///     answer [drawFrame] gives, rather than a second frame on top of the
+  ///     first. `ManualDispatcher` throws on exactly this, and a throw here
+  ///     would cross an FFI boundary;
+  ///   * **it respects the generation.** [WindowHost.presentNow] rejects a
+  ///     frame begun before the surface it was begun against was replaced,
+  ///     which during a drag is not a corner case: the size changes on every
+  ///     message.
+  ///
+  /// Silent about failure by design - it has no caller to return to but the OS.
+  /// A rejected or skipped frame leaves [needsFrame] set, so the ordinary loop
+  /// draws it as soon as the drag lets go of the event loop.
+  void drawFrameSynchronously({
+    required Size logicalSize,
+    required double renderScale,
+  }) {
+    if (isDisposed) return;
+    if (_inFrame) {
+      requestFrame();
+      return;
+    }
+    if (!host.canPresentSynchronously) {
+      requestFrame();
+      return;
+    }
+
+    // Before anything is laid out: this is what the async path would have done
+    // on the WindowResizedEvent, and it is also what invalidates the previous
+    // generation, so a frame from before this resize can no longer present.
+    host.surfaceChanged(logicalSize: logicalSize, renderScale: renderScale);
+    if (!host.isPresentable) {
+      _needsFrame = true;
+      return;
+    }
+    pipelineOwner.rootConstraints = BoxConstraints.tight(logicalSize);
+
+    application._noteDrawing();
+    _inFrame = true;
+    _needsFrame = false;
+    final stopwatch = Stopwatch()..start();
+    try {
+      if (!_rootMounted) {
+        buildOwner.updateRoot(_mountableRoot);
+        _rootMounted = true;
+      }
+      final build = stopwatch.elapsedMicroseconds;
+
+      _painted = null;
+      var pass = 0;
+      while (pass++ < _maxSettlePasses) {
+        buildOwner.buildScope();
+        scheduler.scheduleFrame();
+        scheduler.pump();
+        if (!buildOwner.hasScheduledBuilds && !pipelineOwner.needsLayout) break;
+      }
+      final list = _painted;
+      if (list == null) {
+        // Never throws out of here: the stack above this frame is the OS's.
+        _needsFrame = true;
+        return;
+      }
+      final paint = stopwatch.elapsedMicroseconds - build;
+
+      final result = host.presentNow(
+        host.beginFrame(),
+        list,
+        clearColor: clearColor ?? application.options.clearColor,
+      );
+      stopwatch.stop();
+      if (result.isSuccess) {
+        _framesPresented++;
+        application._recordFrame(FrameTiming(
+          build: build,
+          paint: paint,
+          raster: stopwatch.elapsedMicroseconds - build - paint,
+        ));
+      } else {
+        _needsFrame = true;
+      }
     } finally {
       _inFrame = false;
     }
@@ -1228,10 +1427,13 @@ final class Application with DisposableMixin {
     String? title,
     Size? size,
     Offset? position,
+    Size? minimumSize,
+    Size? maximumSize,
     bool visible = true,
     bool resizable = true,
     bool decorated = true,
     int? clearColor,
+    int? backgroundColor,
     NativeWindowId? owner,
     WindowKind kind = WindowKind.normal,
     bool modal = false,
@@ -1282,9 +1484,15 @@ final class Application with DisposableMixin {
         title: title ?? options.title,
         size: size ?? options.size,
         position: position,
+        minimumSize: minimumSize ?? options.minimumSize,
+        maximumSize: maximumSize ?? options.maximumSize,
         resizable: resizable,
         decorated: decorated,
         visible: visible,
+        backgroundColor: backgroundColor ??
+            options.windowBackgroundColor ??
+            clearColor ??
+            options.clearColor,
         owner: ownerWindow?.nativeWindow,
         kind: kind,
       ));
@@ -1370,6 +1578,30 @@ final class Application with DisposableMixin {
         _teardownOrder.add('events');
         unawaited(subscription.cancel());
       });
+
+      // --- e. live resize ------------------------------------------------
+      // The one hook that is *not* a stream, and cannot be: it is called from
+      // inside the platform's resize handler, at a moment when no stream in
+      // this isolate will be delivered for as long as the drag lasts. See
+      // [ApplicationOptions.liveResize] for the policy and [LiveResizeWindow]
+      // for the mechanism.
+      //
+      // A pattern rather than `is`, because LiveResizeWindow is deliberately
+      // not a subtype of NativeWindow: a backend that cannot do this says so by
+      // not implementing it, and gets the ordinary asynchronous path.
+      if (options.liveResize && host.canPresentSynchronously) {
+        if (native case final LiveResizeWindow live) {
+          live.setLiveResizeCallback(appWindow.drawFrameSynchronously);
+          // Registered after the window itself, so it is cleared *before* the
+          // handle is destroyed: a callback into a half-disposed tree from a
+          // WM_SIZE that DestroyWindow itself sends is the classic teardown
+          // crash.
+          bag.add(live, () {
+            _teardownOrder.add('liveResize');
+            live.setLiveResizeCallback(null);
+          });
+        }
+      }
     } on Object {
       bag.dispose();
       rethrow;
@@ -1750,6 +1982,14 @@ final class Application with DisposableMixin {
         // during a resize, when the previous frame's geometry is the reason
         // this frame exists.
         window._settleForInput();
+        if (!window._isHitTestable) {
+          // The window is on screen and its tree has never been laid out. See
+          // [ApplicationWindow._isHitTestable]; this is a startup race, not a
+          // routing bug, which is why it asks for a frame on the way out.
+          _eventsDropped++;
+          window.requestFrame();
+          return false;
+        }
         final handled = window.buildOwner.dispatchPointerEvent(event);
         window.requestFrame();
         return handled;

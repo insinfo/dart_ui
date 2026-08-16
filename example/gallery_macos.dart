@@ -85,6 +85,9 @@ Future<void> main(List<String> arguments) async {
                     // time.
                     frameGeneration: macosWindow.generation,
                   ),
+              // AppKit resizes through the run loop like every other event, so
+              // there is no modal loop to draw around and no synchronous path.
+              presentNow: null,
               release: macosWindow.dispose,
             );
           },

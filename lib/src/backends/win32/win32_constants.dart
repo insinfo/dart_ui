@@ -310,6 +310,33 @@ const int vkCapital = 0x14;
 const int vkNumlock = 0x90;
 const int vkScroll = 0x91;
 
+/// `VK_RETURN`. Shared by the main Enter and the keypad's, which are told apart
+/// by the extended-key flag - the one place that flag really does mark the
+/// keypad.
+const int vkReturn = 0x0D;
+
+/// The numeric keypad's own virtual keys, `VK_NUMPAD0` through `VK_DIVIDE`.
+///
+/// A contiguous block: NUMPAD0-9 (0x60-0x69), then MULTIPLY, ADD, SEPARATOR,
+/// SUBTRACT, DECIMAL and DIVIDE (0x6A-0x6F). Every one of them is produced
+/// **only** by the keypad, which is why `KeyLocation.numpad` needs no help from
+/// the extended-key flag - and why asking for that flag as well made the whole
+/// range unreachable.
+const int vkNumpad0 = 0x60;
+const int vkDivide = 0x6F;
+
+/// The scan code of the *right* Shift key.
+///
+/// Windows reports both Shifts as `VK_SHIFT` and never sets the extended-key
+/// flag for either, so this is the only thing that tells them apart. Left Shift
+/// is 0x2A.
+const int scanCodeRightShift = 0x36;
+
+/// `COLOR_WINDOW` - the system's window-background colour, used when no
+/// background was configured for a window. Anything is better than the
+/// uninitialised video memory a window shows otherwise.
+const int colorWindow = 5;
+
 /// `TME_LEAVE`
 const int tmeLeave = 0x0002;
 

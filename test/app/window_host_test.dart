@@ -274,6 +274,141 @@ void main() {
     });
   });
 
+  group('the synchronous present', () {
+    test('obeys the generation rule exactly as the asynchronous one does',
+        () async {
+      // The temptation is to skip the check here - "nothing yielded, nothing
+      // can have changed" - and it is wrong in the one case this method exists
+      // for. A live-resize frame lays out while the user is still dragging, and
+      // Windows sends the next WM_SIZE from inside SetWindowPos calls that
+      // layout itself makes, on this very stack.
+      window = await openWindow();
+      final presenter = _RecordingPresenter();
+      final host = WindowHost(window: window, presenter: presenter);
+
+      final frame = host.beginFrame();
+      host.surfaceChanged(logicalSize: const Size(80, 60));
+
+      final result = host.presentNow(frame, DisplayList());
+      expect(result.status, PresentStatus.stale);
+      expect(
+        presenter.presents,
+        0,
+        reason: 'rejected means the display list never reached the presenter, '
+            'not merely that a status code came back',
+      );
+      expect(host.framesRejected, 1);
+      expect(host.framesPresented, 0);
+
+      // A frame begun after the resize goes through.
+      expect(
+        host.presentNow(host.beginFrame(), DisplayList()).status,
+        PresentStatus.presented,
+      );
+      expect(presenter.synchronousPresents, 1);
+      expect(host.framesPresented, 1);
+    });
+
+    test('a minimised window rejects a synchronous frame too', () async {
+      window = await openWindow();
+      final host = WindowHost(
+        window: window,
+        presenter: _RecordingPresenter(),
+      );
+      final frame = host.beginFrame();
+      host.surfaceChanged(logicalSize: Size.zero);
+
+      expect(host.presentNow(frame, DisplayList()).status, PresentStatus.stale);
+    });
+
+    test('a presenter with no synchronous path refuses rather than throws',
+        () async {
+      // What a backend that cannot draw inside its resize handler looks like.
+      // `ApplicationOptions.liveResize` may be on for the whole application, so
+      // this has to be an answer rather than a failure.
+      window = await openWindow();
+      final host = WindowHost(
+        window: window,
+        presenter: _RecordingPresenter(canPresentNow: false),
+      );
+
+      expect(host.canPresentSynchronously, isFalse);
+      final result = host.presentNow(host.beginFrame(), DisplayList());
+      expect(result.status, PresentStatus.stale);
+      expect(result.diagnostic?.message, contains('synchronous'));
+    });
+
+    test('a presenter that never claimed the interface is refused as well',
+        () async {
+      window = await openWindow();
+      final host = WindowHost(
+        window: window,
+        presenter: CallbackSurfacePresenter.retained(
+          info: const RendererInfo(name: 'async only', deviceDescription: 'x'),
+          presenter: (
+            present: (
+              DisplayList list, {
+              int? clearColor,
+              Transform2D? deviceTransform,
+              Rect? damage,
+            }) async =>
+                const PresentResult(status: PresentStatus.presented),
+            presentNow: null,
+            release: () {},
+          ),
+        ),
+      );
+
+      expect(host.canPresentSynchronously, isFalse);
+      expect(
+        host.presentNow(host.beginFrame(), DisplayList()).status,
+        PresentStatus.stale,
+      );
+    });
+
+    test('and a retained presenter that has one is used', () async {
+      window = await openWindow();
+      var synchronous = 0;
+      final host = WindowHost(
+        window: window,
+        presenter: CallbackSurfacePresenter.retained(
+          info: const RendererInfo(name: 'both', deviceDescription: 'x'),
+          presenter: (
+            present: (
+              DisplayList list, {
+              int? clearColor,
+              Transform2D? deviceTransform,
+              Rect? damage,
+            }) async =>
+                const PresentResult(status: PresentStatus.presented),
+            presentNow: (
+              DisplayList list, {
+              int? clearColor,
+              Transform2D? deviceTransform,
+              Rect? damage,
+            }) {
+              synchronous++;
+              return const PresentResult(status: PresentStatus.presented);
+            },
+            release: () {},
+          ),
+        ),
+      );
+
+      expect(host.canPresentSynchronously, isTrue);
+      expect(
+        host.presentNow(host.beginFrame(), DisplayList()).status,
+        PresentStatus.presented,
+      );
+      expect(
+        synchronous,
+        1,
+        reason: 'and it ran before presentNow returned, which is the entire '
+            'contract: there is no event loop to come back to',
+      );
+    });
+  });
+
   group('CallbackSurfacePresenter', () {
     test('forwards a display list and releases exactly what it was given',
         () async {
@@ -291,6 +426,7 @@ void main() {
             seen.add(clearColor);
             return const PresentResult(status: PresentStatus.presented);
           },
+          presentNow: null,
           release: () => released++,
         ),
       );
@@ -313,14 +449,21 @@ void main() {
 /// A presenter that draws nothing and remembers everything.
 final class _RecordingPresenter
     with DisposableMixin
-    implements SurfacePresenter {
-  _RecordingPresenter({this.onPresent});
+    implements SurfacePresenter, SynchronousSurfacePresenter {
+  _RecordingPresenter({this.onPresent, this.canPresentNow = true});
 
   /// Runs inside [present], which is how a test simulates an event arriving
   /// while a frame is in flight.
   final void Function()? onPresent;
 
+  /// Whether this double claims the synchronous path. False is the shape of a
+  /// backend that has no live-resize support, which must be a refusal rather
+  /// than a crash.
+  @override
+  final bool canPresentNow;
+
   int presents = 0;
+  int synchronousPresents = 0;
   int recoveries = 0;
   final List<List<num>> resizes = <List<num>>[];
 
@@ -340,6 +483,19 @@ final class _RecordingPresenter
     Rect? damage,
   }) async {
     presents++;
+    onPresent?.call();
+    return const PresentResult(status: PresentStatus.presented);
+  }
+
+  @override
+  PresentResult presentNow(
+    DisplayList list, {
+    int? clearColor,
+    Transform2D? deviceTransform,
+    Rect? damage,
+  }) {
+    presents++;
+    synchronousPresents++;
     onPresent?.call();
     return const PresentResult(status: PresentStatus.presented);
   }

@@ -35,19 +35,21 @@
 /// A mismatch is [PresentStatus.stale], which the roadmap defines as normal:
 /// dropping one frame during a resize is what a correct renderer does.
 ///
-/// ## What this target cannot give a caller
+/// ## What this target cannot give a caller, and how it now says so
 ///
-/// [Frame.framebuffer] is non-nullable in `lib/src/rendering/renderer.dart`,
-/// and a windowed GPU target genuinely has no CPU-visible pixels to put there.
-/// The frame therefore carries a 1x1 placeholder. That is a mismatch in the
-/// `renderer.dart` contract rather than a shortcut here - `Frame` was designed
-/// around the CPU rasteriser, where the framebuffer *is* the surface - and
-/// fixing it means making the field nullable or splitting `Frame`, which is a
-/// change to a file this class does not own. It is called out here so the
-/// placeholder is never mistaken for the window's contents. Nothing in the
-/// draw path reads it: [beginFrame] takes its damage rectangle from the
-/// descriptor's pixel size, and [renderDisplayList] takes its device bounds
-/// from the same place.
+/// A windowed GPU target genuinely has no CPU-visible pixels: they are in a
+/// back buffer the driver owns, and reading them back per frame is the thing
+/// section 23 forbids. [Frame.framebuffer] used to be non-nullable, so this
+/// class carried a 1x1 placeholder framebuffer that nothing ever read and that
+/// only this comment stopped anyone from mistaking for the window's contents.
+///
+/// That placeholder is gone. `Frame` now stores the framebuffer nullably and
+/// exposes [Frame.cpuPixels] for callers that handle "there are none", keeping
+/// [Frame.framebuffer] as a non-null accessor that raises a named failure
+/// instead of handing back one meaningless pixel. This target passes no
+/// framebuffer at all. Nothing in the draw path is affected: [beginFrame] takes
+/// its damage rectangle from the descriptor's pixel size, and
+/// [renderDisplayList] takes its device bounds from the same place.
 library;
 
 import 'dart:async';
@@ -67,6 +69,7 @@ import '../gpu_glyph_atlas.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_raster_sink.dart';
+import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import 'gl_backend.dart';
 import 'gl_bindings.dart';
@@ -74,7 +77,9 @@ import 'gl_framebuffer_pool.dart';
 import 'gl_surface_descriptor.dart';
 
 /// A render target backed by a window's back buffer.
-final class GlWindowTarget with DisposableMixin implements RenderTarget {
+final class GlWindowTarget
+    with DisposableMixin
+    implements RenderTarget, GlRecoverableTarget {
   /// Wraps [surface] for [device].
   ///
   /// The constructor is public - unlike [GlOffscreenTarget]'s - because this
@@ -93,6 +98,21 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
       : _surface = surface,
         _observedWindowGeneration = surface.generation.current {
     _maskAtlas = GpuMaskAtlas();
+    _glyphAtlas = GpuGlyphAtlas();
+    _fonts = GlFontResolver();
+    _images = GlImageCache(_device);
+    _buildAtlasObjects();
+    _device.registerTarget(this);
+  }
+
+  /// Creates the atlas textures and everything downstream of their ids.
+  ///
+  /// Shared by the constructor and by [_repopulateAtlasObjects], for the reason
+  /// `gl_backend.dart` gives for its copy: the sink holds the mask and glyph
+  /// texture ids as final fields, so a recovery has to rebuild the sink rather
+  /// than the textures alone, and a rebuild that drifted from the constructor
+  /// would draw a frame that is subtly wrong instead of one that fails.
+  void _buildAtlasObjects() {
     _maskTexture = _device.createTexture(
       width: _maskAtlas.width,
       height: _maskAtlas.height,
@@ -109,7 +129,6 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
     // mask atlas: an atlas is written during a frame and recycled mid-frame
     // when it fills, and two targets sharing one would recycle each other's
     // texels out from under quads already in a vertex buffer.
-    _glyphAtlas = GpuGlyphAtlas();
     _glyphTexture = _device.createTexture(
       width: _glyphAtlas.width,
       height: _glyphAtlas.height,
@@ -118,8 +137,6 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
       // one pixel, and a linear tap would resample coverage already on grid.
       filter: GpuTextureFilter.nearest,
     );
-    _fonts = GlFontResolver();
-    _images = GlImageCache(_device);
     // Layers cost the same here as on the offscreen target and are wired the
     // same way: a pool of framebuffer objects, a device-independent stack, and
     // one flush hook shared by both atlases. Without them a `saveLayer` with
@@ -162,15 +179,77 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
   final GpuBatcher _batcher = GpuBatcher();
 
   late final GpuMaskAtlas _maskAtlas;
-  late final GlTexture _maskTexture;
   late final GpuGlyphAtlas _glyphAtlas;
-  late final GlTexture _glyphTexture;
   late final GlFontResolver _fonts;
   late final GlImageCache _images;
-  late final GlFramebufferPool _layerPool;
-  late final GpuLayerStack _layers;
-  late final GpuRasterSink _sink;
-  late final DisplayListPlayer _player;
+
+  // Not final: a device loss destroys all six and a recovery rebuilds them.
+  late GlTexture _maskTexture;
+  late GlTexture _glyphTexture;
+  late GlFramebufferPool _layerPool;
+  late GpuLayerStack _layers;
+  late GpuRasterSink _sink;
+  late DisplayListPlayer _player;
+
+  // -------------------------------------------------------------------
+  // Device-loss recovery
+  // -------------------------------------------------------------------
+
+  /// Step 5's inventory for this target.
+  ///
+  /// Shorter than [GlOffscreenTarget]'s by exactly one entry, and the missing
+  /// one is the point: an offscreen target owns its colour texture and its
+  /// framebuffer object, and a window target owns neither. Framebuffer 0 is the
+  /// *window's* back buffer; the driver reallocates it when the context is
+  /// restored and nothing on this side creates or destroys it. A recovery that
+  /// tried to recreate it would be recreating the window.
+  @override
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    yield CallbackGpuResource.fixed(
+      resourceName: 'opengl window atlases '
+          '(mask ${_maskAtlas.width}x${_maskAtlas.height}, glyph '
+          '${_glyphAtlas.width}x${_glyphAtlas.height})',
+      recovery: GpuResourceRecovery.rebuilt,
+      onDiscard: _discardAtlasObjects,
+      onRepopulate: _repopulateAtlasObjects,
+    );
+    yield* _images.recoverableResources();
+  }
+
+  void _discardAtlasObjects() {
+    // The frame in flight goes with the device: its batches name textures the
+    // driver has freed, so it must never be submitted after the recovery.
+    _batcher.beginFrame();
+    _submittedBatches = 0;
+    _pendingClear = null;
+    _layers.endFrame();
+    _layerPool.dispose();
+    _device
+      ..releaseTexture(_maskTexture)
+      ..releaseTexture(_glyphTexture);
+    // Both atlases are caches that outlive a frame, so both have to be told
+    // their texels are gone. The mask atlas is the one that is easy to miss:
+    // its `beginFrame` deliberately *keeps* every cached mask, so a static
+    // rounded rectangle drawn before the loss would be found resident,
+    // re-batched against a texture that was never re-uploaded, and drawn as
+    // nothing at all - a frame that differs from the pre-loss one by exactly
+    // the shapes the cache was working for.
+    _maskAtlas.recycle();
+    _glyphAtlas.clear();
+  }
+
+  BackendDiagnostic? _repopulateAtlasObjects() {
+    try {
+      _buildAtlasObjects();
+    } on UnsupportedCapabilityError catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the recovered GL device refused an atlas texture',
+        detail: '$error',
+      );
+    }
+    return _device.lastError;
+  }
 
   /// How many batches of the current frame have already been drawn. See
   /// [GpuRasterSink.onAtlasFlush]: a batch drawn twice blends twice.
@@ -262,9 +341,9 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
     _pendingClear = request.clearColor;
     return Frame(
       target: this,
-      // Not the window's pixels. See the library comment: `Frame` requires a
-      // Framebuffer and a windowed GPU target has none to give.
-      framebuffer: _placeholder,
+      // No framebuffer, and that is the truth rather than an omission: the
+      // pixels are in the window's back buffer and never come back across the
+      // bus. See the library comment.
       damage: request.damage ?? _surfaceRect,
       generation: generation,
     );
@@ -544,17 +623,9 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
         ),
       );
 
-  /// The one pixel [Frame] insists on. Allocated once per target rather than
-  /// per frame, because allocating a throwaway buffer sixty times a second to
-  /// satisfy a type is worse than allocating it once.
-  static final Framebuffer _placeholder = Framebuffer.allocate(
-    width: 1,
-    height: 1,
-    format: PixelFormat.rgba8888Premultiplied,
-  );
-
   @override
   void onDispose() {
+    _device.unregisterTarget(this);
     _images.clear();
     // After endFrame has returned every target: the pool only deletes what is
     // idle, so disposing mid-frame would leak the ones still in flight.

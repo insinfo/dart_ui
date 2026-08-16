@@ -18,8 +18,6 @@
 ///   * **Fullscreen.** [WindowState.fullscreen] is never reported; the
 ///     borderless-on-monitor-bounds dance needs monitor enumeration, which
 ///     belongs with the screens module of 13.1.
-///   * **Minimum and maximum sizes.** WM_GETMINMAXINFO is unhandled, so the
-///     platform defaults apply.
 library;
 
 import 'dart:async';
@@ -60,7 +58,11 @@ const int _wsExTopmost = 0x00000008;
 /// fields are named `_pixelWidth` / `clientSize` so that a mix-up reads wrong.
 final class Win32Window
     with DisposableMixin
-    implements NativeWindow, ActivatableWindow, EnableableWindow {
+    implements
+        NativeWindow,
+        ActivatableWindow,
+        EnableableWindow,
+        LiveResizeWindow {
   Win32Window._({
     required Win32Api api,
     required Win32WindowClass windowClass,
@@ -70,14 +72,26 @@ final class Win32Window
     required int style,
     required int exStyle,
     required this.kind,
+    required Size? minimumSize,
+    required Size? maximumSize,
+    required int? backgroundColor,
   })  : _api = api,
         _class = windowClass,
         _onClosed = onClosed,
         _onSessionEnding = onSessionEnding,
         _dpi = dpi,
         _style = style,
-        _exStyle = exStyle {
+        _exStyle = exStyle,
+        _minimumSize = minimumSize,
+        _maximumSize = maximumSize {
     _desktopDpi = api.systemDpi();
+    // A brush of our own rather than the class's `hbrBackground`, and the two
+    // are not interchangeable: a class brush is painted by `DefWindowProcW`
+    // over the *whole* update region, which during a resize includes every
+    // pixel the framebuffer already owns - that is the flash the class comment
+    // refuses. This one is used by [_onEraseBackground], which paints only the
+    // strip nothing has drawn into yet.
+    _backgroundBrush = _createBackgroundBrush(api, backgroundColor);
     // The window class deliberately has no cursor (see Win32WindowClass), so
     // WM_SETCURSOR belongs to us - which means a window that never calls
     // setCursor() would answer that message with nothing and leave whatever
@@ -96,6 +110,31 @@ final class Win32Window
       ..add(_scratchPoint, () => api.allocator.free(_scratchPoint))
       ..add(_events, _events.close)
       ..add(this, _destroyHandle);
+    if (_backgroundBrush != 0) {
+      // A GDI object, not a system brush: this one is ours to delete, and a
+      // window per second that leaked one would exhaust the process's GDI
+      // handle quota long before its memory.
+      _resources.add(
+          _backgroundBrush, () => api.deleteObject(_backgroundBrush));
+    }
+  }
+
+  /// A solid brush for [color], or for the system's window colour when null.
+  ///
+  /// Never left at zero when the API can produce one: zero is exactly the
+  /// state that makes a newly exposed strip show whatever was in video memory,
+  /// which is the black this window is trying to stop showing.
+  static int _createBackgroundBrush(Win32Api api, int? color) {
+    // Premultiplied BGRA packed as 0xAARRGGBB (little-endian byte order B,G,R,A)
+    // on this side; COLORREF is 0x00BBGGRR on the other. The swap is the whole
+    // conversion - GDI has no alpha here, and the framebuffer's own alpha is
+    // meaningless against an opaque window.
+    final colorRef = color == null
+        ? api.getSysColor(colorWindow)
+        : ((color >> 16) & 0xFF) |
+            (((color >> 8) & 0xFF) << 8) |
+            ((color & 0xFF) << 16);
+    return api.createSolidBrush(colorRef);
   }
 
   /// Creates the window, or throws [Win32Failure] naming the call that failed.
@@ -141,6 +180,9 @@ final class Win32Window
       style: style,
       exStyle: exStyle,
       kind: kind,
+      minimumSize: options.minimumSize,
+      maximumSize: options.maximumSize,
+      backgroundColor: options.backgroundColor,
     );
 
     final title = api.toUtf16(options.title);
@@ -245,6 +287,32 @@ final class Win32Window
   Win32DibSurface? _surface;
   bool _destroyed = false;
 
+  final Size? _minimumSize;
+  final Size? _maximumSize;
+  late final int _backgroundBrush;
+
+  /// The client area, in physical pixels, that something has actually
+  /// presented into.
+  ///
+  /// Not the same as [pixelSize], and the difference is the bug: a resize makes
+  /// the client area bigger *first* and the frame follows, so between the two
+  /// there is a strip of window that no framebuffer has ever covered. This is
+  /// the rectangle that has been covered, and [_onEraseBackground] paints
+  /// exactly what is outside it.
+  int _paintedWidth = 0;
+  int _paintedHeight = 0;
+
+  /// Whether Windows is inside its own modal resize/move loop.
+  bool _inSizeMove = false;
+
+  /// The synchronous frame hook, and the guard that stops it re-entering. See
+  /// [LiveResizeWindow].
+  LiveResizeCallback? _liveResizeCallback;
+  bool _inLiveFrame = false;
+  int _liveResizeFrames = 0;
+  int _liveResizeFramesSuppressed = 0;
+  int _backgroundFills = 0;
+
   /// System cursors are shared objects owned by the OS: loading the same one
   /// twice returns the same handle and destroying one is forbidden. Caching
   /// keeps `setCursor` off the loader entirely after the first use.
@@ -271,6 +339,43 @@ final class Win32Window
   /// Whether work stamped with [generation] still applies. The public form of
   /// the comparison every late callback has to make.
   bool isCurrent(int generation) => _generation.accepts(generation);
+
+  @override
+  void setLiveResizeCallback(LiveResizeCallback? callback) =>
+      _liveResizeCallback = callback;
+
+  @override
+  bool get isLiveResizing => _inSizeMove;
+
+  /// Frames driven synchronously out of `WM_SIZE` since this window opened.
+  ///
+  /// The number that makes "the modal loop really is being painted through"
+  /// checkable rather than asserted.
+  int get liveResizeFrames => _liveResizeFrames;
+
+  /// Resize messages that wanted a synchronous frame and were refused because
+  /// one was already running.
+  ///
+  /// Counted rather than merely returned from, because a suppressed frame and
+  /// a frame that was never asked for look identical from outside, and only one
+  /// of the two is the reentrancy guard doing its job.
+  int get liveResizeFramesSuppressed => _liveResizeFramesSuppressed;
+
+  /// The client area, in physical pixels, that has actually been presented
+  /// into. See [_paintedWidth].
+  ({int width, int height}) get paintedPixelSize =>
+      (width: _paintedWidth, height: _paintedHeight);
+
+  /// The brush the not-yet-drawn strip is filled with. Zero only when GDI
+  /// refused to make one.
+  int get backgroundBrush => _backgroundBrush;
+
+  /// How many times the background brush has actually been put on pixels.
+  ///
+  /// Exposed because the alternative claim - "the exposed strip is painted" -
+  /// is otherwise only checkable by reading the screen, and a fill that stopped
+  /// happening would look exactly like a fill that had nothing to do.
+  int get backgroundFills => _backgroundFills;
 
   @override
   Size get clientSize =>
@@ -584,15 +689,35 @@ final class Win32Window
   int handleMessage(int hwnd, int msg, int wParam, int lParam) {
     switch (msg) {
       case wmErasebkgnd:
-        // Claim the erase so Windows does not paint the background between the
-        // erase and the present, which is what makes a resize flicker.
-        return 1;
+        return _onEraseBackground(wParam);
 
       case wmPaint:
         return _onPaint(hwnd);
 
       case wmSize:
         return _onSize(wParam, lParam);
+
+      case wmGetminmaxinfo:
+        return _onGetMinMaxInfo(lParam);
+
+      // The two ends of the OS's own modal loop. Windows does not return from
+      // `DispatchMessageW` between them, so between them nothing on the Dart
+      // side runs unless the platform calls it directly - which is what
+      // [LiveResizeWindow] exists to arrange, and why the flag has to be set
+      // here rather than inferred from WM_SIZE.
+      case wmEntersizemove:
+        _inSizeMove = true;
+        return 0;
+
+      case wmExitsizemove:
+        _inSizeMove = false;
+        // The queued events - one WindowResizedEvent per mouse movement, plus
+        // the exposures - are about to be drained all at once by a message loop
+        // that can finally return. Asking for a repaint here is what makes the
+        // *last* size the one that gets a properly scheduled frame, whether or
+        // not live resize drew anything during the drag.
+        requestRedraw();
+        return 0;
 
       case wmMove:
         return _onMove(lParam);
@@ -711,6 +836,28 @@ final class Win32Window
       case wmMbuttondblclk:
         return _onPointerDown(PointerButton.middle, lParam, clickCount: 2);
 
+      // The two side buttons, and the one family of mouse message whose button
+      // is *not* in the message id: `XBUTTON1` and `XBUTTON2` arrive in the
+      // high word of wParam, so one case has to serve both. The X11 backend
+      // already emits these from buttons 8 and 9, which made the gap a
+      // divergence between backends rather than a missing feature - and a
+      // divergence is the kind of bug that surfaces as "back works on Linux".
+      //
+      // These three are also the only mouse messages that must answer TRUE:
+      // the documented protocol says a handler returns TRUE, and DefWindowProcW
+      // returns FALSE, which is how a sender learns nobody wanted it.
+      case wmXbuttondown:
+        _onPointerDown(_sideButton(wParam), lParam);
+        return 1;
+
+      case wmXbuttonup:
+        _onPointerUp(_sideButton(wParam), lParam);
+        return 1;
+
+      case wmXbuttondblclk:
+        _onPointerDown(_sideButton(wParam), lParam, clickCount: 2);
+        return 1;
+
       case wmMousewheel:
         return _onPointerScroll(wParam, lParam, horizontal: false);
 
@@ -804,8 +951,7 @@ final class Win32Window
       PointerMoveEvent(
         windowId: id,
         generation: _generation.current,
-        timestamp:
-            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        timestamp: _eventTimestamp(),
         pointerId: 0,
         kind: PointerKind.mouse,
         logicalPosition: _lastPointerPosition,
@@ -813,6 +959,18 @@ final class Win32Window
     );
     return 0;
   }
+
+  /// Which side button a `WM_XBUTTON*` message is about.
+  ///
+  /// `XBUTTON1` is the one nearer the user's thumb-rest, which every desktop
+  /// and every browser maps to Back; `XBUTTON2` is Forward. That is the same
+  /// assignment the X11 backend makes for buttons 8 and 9, which is the point:
+  /// a framework whose Back button depended on the platform would be worse than
+  /// one that had none.
+  static PointerButton _sideButton(int wParam) =>
+      win32HiWord(wParam) == xbutton2
+          ? PointerButton.forward
+          : PointerButton.back;
 
   /// Buttons currently held down, so capture is released exactly once - when
   /// the last of them comes up rather than when the first does.
@@ -830,8 +988,7 @@ final class Win32Window
       PointerDownEvent(
         windowId: id,
         generation: _generation.current,
-        timestamp:
-            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        timestamp: _eventTimestamp(),
         pointerId: 0,
         kind: PointerKind.mouse,
         logicalPosition: _space.physicalToLogical(
@@ -857,8 +1014,7 @@ final class Win32Window
       PointerUpEvent(
         windowId: id,
         generation: _generation.current,
-        timestamp:
-            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        timestamp: _eventTimestamp(),
         pointerId: 0,
         kind: PointerKind.mouse,
         logicalPosition: _space.physicalToLogical(
@@ -888,8 +1044,7 @@ final class Win32Window
       PointerCancelEvent(
         windowId: id,
         generation: _generation.current,
-        timestamp:
-            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        timestamp: _eventTimestamp(),
         pointerId: 0,
         kind: PointerKind.mouse,
         logicalPosition: _lastPointerPosition,
@@ -966,16 +1121,35 @@ final class Win32Window
     return 0;
   }
 
-  Duration _eventTimestamp() =>
-      Duration(microseconds: DateTime.now().microsecondsSinceEpoch);
+  /// The one clock every input event of this backend is stamped with.
+  ///
+  /// Two things were wrong before, and they compounded. The clock was
+  /// `DateTime.now()`, which `PlatformInputEvent.timestamp` explicitly is not
+  /// allowed to be - it is documented as "monotonic timestamp of the event, as
+  /// reported by the OS", and `DateTime.now()` is neither monotonic (the user
+  /// can move it, NTP does move it) nor the OS's opinion about *this message*.
+  /// And it was read in two different units in the same class: pointer and key
+  /// events stamped milliseconds-since-epoch while scroll and text stamped
+  /// microseconds-since-epoch, so the two families of event were a literal
+  /// factor of 1000 apart in a field whose whole purpose is to be subtracted.
+  /// Nothing crossed the two groups yet, which is the only reason it had not
+  /// produced a bug - `_countClick` compares a down to a down.
+  ///
+  /// `GetMessageTime` is the OS's own stamp for the message being dispatched,
+  /// in milliseconds since the system started. It moves forward with the
+  /// system clock frozen, and it is the same value for every event derived
+  /// from one message. It is a 32-bit signed count, so it wraps every ~24.8
+  /// days of uptime; a consumer that subtracts two of them across the wrap sees
+  /// a negative interval, which is precisely the case `_countClick` already
+  /// guards with `since >= Duration.zero`.
+  Duration _eventTimestamp() => Duration(milliseconds: _api.getMessageTime());
 
   int _onKeyDown(int wParam, int lParam) {
     _emit(
       KeyDownEvent(
         windowId: id,
         generation: _generation.current,
-        timestamp:
-            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        timestamp: _eventTimestamp(),
         physicalKey: (lParam >> 16) & 0xFF,
         logicalKey: wParam,
         modifiers: _modifiers(),
@@ -991,8 +1165,7 @@ final class Win32Window
       KeyUpEvent(
         windowId: id,
         generation: _generation.current,
-        timestamp:
-            Duration(milliseconds: DateTime.now().millisecondsSinceEpoch),
+        timestamp: _eventTimestamp(),
         physicalKey: (lParam >> 16) & 0xFF,
         logicalKey: wParam,
         modifiers: _modifiers(),
@@ -1030,20 +1203,43 @@ final class Win32Window
     return 0;
   }
 
+  /// Which physical key produced [virtualKey], for the keys that exist twice.
+  ///
+  /// Two of the three rules Windows uses are *not* the extended-key flag, and
+  /// writing all three as if they were is how this ended up with a branch that
+  /// could never be taken:
+  ///
+  ///   * **Ctrl and Alt** really are told apart by the extended flag: right
+  ///     Ctrl and right Alt (which is AltGr on most layouts) are extended keys.
+  ///   * **Shift is not.** Windows never sets the extended flag for `VK_SHIFT`;
+  ///     the two Shifts differ by *scan code*, 0x2A on the left and 0x36 on the
+  ///     right. Asking the flag therefore reported every Shift as left, and
+  ///     `KeyLocation.right` for Shift was unreachable.
+  ///   * **The numeric keypad is not either.** The flag marks AltGr, right
+  ///     Ctrl, the grey arrow/navigation cluster, NumLock, keypad Divide and
+  ///     keypad Enter - and it is deliberately *clear* for `VK_NUMPAD0` -
+  ///     `VK_NUMPAD9`, because those virtual keys already say "keypad" by
+  ///     existing. Requiring the flag as well made `KeyLocation.numpad` dead
+  ///     code: no key in the range can ever satisfy both halves.
+  ///
+  /// So the keypad is the whole `VK_NUMPAD0`..`VK_DIVIDE` block, unconditional,
+  /// plus the one keypad key that shares a virtual key with a standard one -
+  /// Enter, which is `VK_RETURN` with the extended flag set.
   KeyLocation _keyLocation(int virtualKey, int lParam) {
     final extended = ((lParam >> 24) & 1) != 0;
-    if (virtualKey == 0x10) {
+    final scanCode = (lParam >> 16) & 0xFF;
+    if (virtualKey == vkShift) {
+      return scanCode == scanCodeRightShift
+          ? KeyLocation.right
+          : KeyLocation.left;
+    }
+    if (virtualKey == vkControl || virtualKey == vkMenu) {
       return extended ? KeyLocation.right : KeyLocation.left;
     }
-    if (virtualKey == 0x11) {
-      return extended ? KeyLocation.right : KeyLocation.left;
-    }
-    if (virtualKey == 0x12) {
-      return extended ? KeyLocation.right : KeyLocation.left;
-    }
-    if (extended && virtualKey >= 0x60 && virtualKey <= 0x69) {
+    if (virtualKey >= vkNumpad0 && virtualKey <= vkDivide) {
       return KeyLocation.numpad;
     }
+    if (virtualKey == vkReturn && extended) return KeyLocation.numpad;
     return KeyLocation.standard;
   }
 
@@ -1117,7 +1313,217 @@ final class Win32Window
         renderScale: renderScale,
       ),
     );
+    // A frame, or failing that a colour. The window has just grown and there
+    // is a strip of it that no framebuffer has ever covered; something has to
+    // put pixels there before the user sees it, and this handler is the last
+    // code that runs before they do.
+    if (!_drawLiveResizeFrame()) _paintExposedRegion();
     return 0;
+  }
+
+  /// Produces one whole frame, synchronously, from inside this handler.
+  ///
+  /// The event emitted just above will not be delivered until the Dart event
+  /// loop runs again, and during a border drag it does not run again until the
+  /// drag ends: `DispatchMessageW` is inside the OS's modal loop and the
+  /// isolate is inside `DispatchMessageW`. Anything that goes through the
+  /// stream is therefore *queued*, and the window shows stale pixels - or, in
+  /// the strip it has just grown into, none at all - for the whole drag.
+  ///
+  /// This is the one path that does not go through the queue. It is only taken
+  /// while the modal loop is actually running ([_inSizeMove]), because outside
+  /// it the ordinary asynchronous path works and is cheaper: a synchronous
+  /// frame is a build, a layout, a paint and a present on the mouse's thread,
+  /// with no chance to coalesce two resize messages into one frame.
+  ///
+  /// Returns whether a frame was actually drawn, because the caller's fallback
+  /// depends on it: the strip is filled with a flat colour exactly when no
+  /// frame is going to cover it, and filling it first and then drawing over it
+  /// would be a flat-colour flash under every frame of the drag.
+  bool _drawLiveResizeFrame() {
+    final callback = _liveResizeCallback;
+    if (callback == null || !_inSizeMove) return false;
+    if (_destroyed || isDisposed || _hwnd == 0) return false;
+    if (_pixelWidth <= 0 || _pixelHeight <= 0) return false;
+    if (_inLiveFrame) {
+      // Re-entered: a frame is already on the stack and something inside it
+      // resized the window again. Starting a second one is the reentrancy that
+      // `ManualDispatcher` throws on, and throwing here would cross the FFI
+      // boundary; the message that was refused is counted instead, and the
+      // resize it carried is already in `_pixelWidth` for the outer frame to
+      // finish against.
+      _liveResizeFramesSuppressed++;
+      return false;
+    }
+    _inLiveFrame = true;
+    try {
+      _liveResizeFrames++;
+      callback(logicalSize: clientSize, renderScale: renderScale);
+      // "Drew" means "covered the strip", which is what the caller is asking.
+      // A frame that was rejected on generation left the strip untouched, and
+      // the flat colour is then better than what is there.
+      return _paintedWidth >= _pixelWidth && _paintedHeight >= _pixelHeight;
+    } finally {
+      _inLiveFrame = false;
+    }
+  }
+
+  /// `WM_GETMINMAXINFO`: the only chance to bound a drag *before* it happens.
+  ///
+  /// Windows fills the structure with its own defaults and then asks; whatever
+  /// is in it when the handler returns 0 is what the user is allowed to drag
+  /// to. Only the two track sizes are touched, so every default that was not
+  /// configured survives - a window with a minimum but no maximum still
+  /// maximises to the work area.
+  ///
+  /// The sizes cross this boundary as logical client sizes and have to leave it
+  /// as physical *window* sizes, which is two conversions and not one: the
+  /// scale, and then the frame. `AdjustWindowRectExForDpi` is what supplies the
+  /// second, the same call [_applyClientBounds] uses, so a minimum of 320x240
+  /// means 320x240 of client area at any DPI rather than 320x240 minus a
+  /// caption.
+  int _onGetMinMaxInfo(int lParam) {
+    final minimum = _minimumSize;
+    final maximum = _maximumSize;
+    if (lParam == 0 || (minimum == null && maximum == null)) return 0;
+    final info = Pointer<MinMaxInfo>.fromAddress(lParam);
+    if (minimum != null) {
+      final frame = _windowSizeForClient(minimum);
+      info.ref.ptMinTrackSize
+        ..x = frame.width
+        ..y = frame.height;
+    }
+    if (maximum != null) {
+      final frame = _windowSizeForClient(maximum);
+      info.ref.ptMaxTrackSize
+        ..x = frame.width
+        ..y = frame.height;
+    }
+    return 0;
+  }
+
+  /// A logical client size as the physical window size that contains it.
+  ({int width, int height}) _windowSizeForClient(Size logical) {
+    final pixels = _space.logicalSizeToPhysical(logical);
+    var width = pixels.width;
+    var height = pixels.height;
+    _withScratchRect((rect) {
+      rect.ref
+        ..left = 0
+        ..top = 0
+        ..right = pixels.width
+        ..bottom = pixels.height;
+      if (_api.adjustWindowRect(rect, _style, _exStyle, _dpi) == 0) return;
+      width = rect.ref.right - rect.ref.left;
+      height = rect.ref.bottom - rect.ref.top;
+    });
+    return (width: width, height: height);
+  }
+
+  /// `WM_ERASEBKGND`, and the reason the answer is no longer a bare `return 1`.
+  ///
+  /// Returning 1 means "the background is erased, do not touch it". Together
+  /// with `hbrBackground = 0` on the class that used to mean *nobody* painted
+  /// the background, which is right for every pixel the framebuffer covers and
+  /// wrong for every pixel it does not. During a drag of the bottom-right
+  /// corner the window grows first and the frame follows, so there is a strip
+  /// of client area that no framebuffer has ever covered, and what Windows
+  /// leaves there is uninitialised - black, in practice. That is the bug the
+  /// user reported.
+  ///
+  /// The fix is not a class brush. A class brush would have `DefWindowProcW`
+  /// paint the *whole* update region, which after a resize is the whole client
+  /// area, so every frame would be preceded by a full-window flash of flat
+  /// colour - which is exactly what the class comment refuses and what the
+  /// existing test pins. So the erase stays ours, and it paints only what is
+  /// outside [_paintedWidth] x [_paintedHeight]: the strip nothing has drawn
+  /// into. Where the framebuffer has already been, nothing happens and there is
+  /// nothing to flash.
+  ///
+  /// Still returns 1 in every case, including when there is no brush: the
+  /// contract with `DefWindowProcW` is unchanged, only the pixels are.
+  ///
+  /// ### And why this is not where the fix lives
+  ///
+  /// It is not reached on the path that matters, and finding that out is the
+  /// reason [_paintExposedRegion] exists. `WM_ERASEBKGND` is not sent by
+  /// dispatching `WM_PAINT`; it is sent by **`BeginPaint`**, and [_onPaint]
+  /// deliberately does not call `BeginPaint` - it reads the update rectangle
+  /// and validates, because presentation here is asynchronous and does not go
+  /// through the paint DC. So during a real drag this handler never runs at
+  /// all, and a fix that lived only here would have been dead code that
+  /// passed its own test.
+  ///
+  /// It is still handled, because the paths that *do* send it are real -
+  /// `RedrawWindow` with `RDW_ERASE | RDW_ERASENOW`, `ScrollWindow`, and any
+  /// future return to `BeginPaint` - and because answering 0 would hand the
+  /// erase to `DefWindowProcW`, which is what the class comment refuses.
+  int _onEraseBackground(int hdc) {
+    if (hdc != 0) _fillExposedRegion(hdc);
+    return 1;
+  }
+
+  /// Paints the strip a resize just exposed, immediately, at the moment it is
+  /// exposed.
+  ///
+  /// This is the reachable half of the pair. `WM_SIZE` is the last code of ours
+  /// that runs before the user sees the bigger window - inside the modal loop
+  /// there is nothing after it - so the colour has to go on here rather than
+  /// wait for a paint message that may not be delivered for another whole
+  /// gesture. See [_onEraseBackground] for why the obvious place does not work.
+  void _paintExposedRegion() {
+    if (_backgroundBrush == 0 || _hwnd == 0 || _destroyed) return;
+    if (_paintedWidth >= _pixelWidth && _paintedHeight >= _pixelHeight) return;
+    final hdc = _api.getDC(_hwnd);
+    if (hdc == 0) return;
+    try {
+      _fillExposedRegion(hdc);
+    } finally {
+      _api.releaseDC(_hwnd, hdc);
+    }
+  }
+
+  /// Fills the client area outside [_paintedWidth] x [_paintedHeight] on [hdc].
+  ///
+  /// Two rectangles rather than one, and never the whole client area: the part
+  /// a framebuffer has already covered keeps its pixels. Painting all of it
+  /// would be the full-window flash of flat colour that `hbrBackground = 0`
+  /// exists to prevent - the window would blink to grey on every message of a
+  /// drag instead of only growing into it.
+  void _fillExposedRegion(int hdc) {
+    final brush = _backgroundBrush;
+    if (brush == 0) return;
+    final width = _pixelWidth;
+    final height = _pixelHeight;
+    final painted = _paintedWidth;
+    final paintedHeight = _paintedHeight;
+    if (painted >= width && paintedHeight >= height) return;
+    _backgroundFills++;
+    _withScratchRect((rect) {
+      if (painted < width) {
+        rect.ref
+          ..left = painted
+          ..top = 0
+          ..right = width
+          ..bottom = height;
+        _api.fillRect(hdc, rect, brush);
+      }
+      if (paintedHeight < height) {
+        rect.ref
+          ..left = 0
+          ..top = paintedHeight
+          ..right = painted < width ? painted : width
+          ..bottom = height;
+        _api.fillRect(hdc, rect, brush);
+      }
+    });
+  }
+
+  /// A full-surface present landed: the client area is covered out to
+  /// [width] x [height] and [_onEraseBackground] has that much less to do.
+  void _notePresented(int width, int height) {
+    _paintedWidth = width;
+    _paintedHeight = height;
   }
 
   int _onMove(int lParam) {
@@ -1243,6 +1649,7 @@ final class Win32Window
         pixelHeight: _pixelHeight,
         scale: renderScale,
         generation: _generation.current,
+        onFullPresent: _notePresented,
       );
     } on Win32Failure catch (failure) {
       // A failed surface is not a failed window: the window still exists and

@@ -80,6 +80,7 @@ Future<void> main(List<String> arguments) async {
           final presenter = Win32CpuPresenter(window as Win32Window);
           return (
             present: presenter.renderDisplayList,
+            presentNow: presenter.renderDisplayListNow,
             release: presenter.dispose,
           );
         },
