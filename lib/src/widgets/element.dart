@@ -571,6 +571,39 @@ abstract class Element implements BuildContext {
       deactivateChild(child);
       return null;
     }
+    // The identical-widget short circuit, and what it is worth.
+    //
+    // [Element.update] ends in an unconditional `markNeedsBuild()`, so without
+    // this a parent that rebuilt dragged its whole subtree with it whether or
+    // not anything below had changed. That made a claim this framework makes
+    // elsewhere untrue: an `InheritedWidget`'s dependency set decided who was
+    // *notified*, while in practice everyone was *rebuilt*. Changing the locale
+    // rebuilt the screen; so did a `setState` three levels up.
+    //
+    // `identical` and not `==`: two widgets that compare equal may still be
+    // different instances holding different closures, and a `const` widget -
+    // which is the case that matters, because a `const` subtree is rebuilt into
+    // the same instance every time - is identical by construction. Using `==`
+    // would also run user-defined operators during layout-critical work.
+    //
+    // The one thing this must not swallow is a child that is dirty for its own
+    // reasons: its own `setState`, or an inherited dependency that changed.
+    // It does not. Both of those already put the element in the owner's dirty
+    // list through `markNeedsBuild`, and returning early here leaves it there,
+    // so the same `buildScope` rebuilds it. What is skipped is only the
+    // *parent-driven* rebuild of a subtree the parent did not change.
+    //
+    // Skipping `update` also skips its overrides, which is correct in each
+    // case rather than merely tolerable: `StatefulElement.didUpdateWidget`
+    // would be handed a widget identical to the one it already has,
+    // `InheritedElement.updateShouldNotify(w, w)` cannot honestly answer true,
+    // and a `ParentDataWidget` that did not change writes the same parent data.
+    // A render object that appears *later* under a stable `ParentDataWidget`
+    // is a different case and is handled where it happens, in
+    // `_attachRenderObject`.
+    if (child != null && identical(child.widget, newWidget)) {
+      return child;
+    }
     if (child != null && Widget.canUpdate(child.widget, newWidget)) {
       child.update(newWidget);
       return child;
@@ -1042,7 +1075,27 @@ class RenderObjectElement extends Element {
   }
 
   @override
-  void performRebuild() {}
+  void performRebuild() {
+    // A render object element that is rebuilt has to push its widget into its
+    // render object. This was empty, and the emptiness was invisible for as
+    // long as `updateChild` rebuilt every child unconditionally: the parent
+    // always reached [update], and [update] does this same call, so the only
+    // path that ever ran was the parent-driven one.
+    //
+    // The path that did *not* run is the one that matters for an
+    // `InheritedWidget`. `Directionality.maybeOf` registers a dependency, so
+    // flipping the ambient direction marks every dependent `Flex` dirty - and
+    // a dirty render object element whose `performRebuild` does nothing keeps
+    // the direction it was built with. The dependency machinery worked and
+    // then dropped the result on the floor.
+    //
+    // Calling it here can repeat the call in the frame where a widget both
+    // changed and was marked dirty. That is a redundant write of the same
+    // properties, not a second effect: `updateRenderObject` is a setter run,
+    // and every setter in the render tree already compares before marking
+    // anything needing layout or paint.
+    widget.updateRenderObject(this, _renderObject);
+  }
 
   @override
   void unmount() {

@@ -468,13 +468,18 @@ void main() {
       // and it is the one an application can act on: where the widget is put
       // decides what a language switch costs.
       expect(outsideBuilds, 1);
-      // And the honest half. The widget below the scope that reads nothing was
-      // rebuilt anyway, because `Element.updateChild` in `widgets/element.dart`
-      // has no widget-identity short circuit: a rebuilt parent always rebuilds
-      // its child. The inherited-widget dependency set therefore decides who is
-      // *notified*, not who is rebuilt. Asserted rather than described so that
-      // adding such a short circuit shows up here as a deliberate change.
-      expect(independentBuilds, 2);
+      // And the half that used to be dishonest. This asserted 2: the widget
+      // below the scope that reads nothing was rebuilt anyway, because
+      // `Element.updateChild` had no widget-identity short circuit, so a
+      // rebuilt parent always dragged its whole subtree along and the
+      // dependency set decided who was *notified* rather than who was rebuilt.
+      //
+      // The short circuit was added, and this is the deliberate change the old
+      // comment asked for: a `const` child is now identical across rebuilds and
+      // is skipped. The scoping claim above is therefore true in both
+      // directions - what is outside the scope is untouched, and what is inside
+      // it but depends on nothing is untouched too.
+      expect(independentBuilds, 1);
     });
 
     test('setting the same locale again costs nothing at all', () {
