@@ -138,6 +138,52 @@ void main() {
       );
       expect(position.velocity, 0);
     });
+
+    test('a fling runs to a standstill, not to the second tick', () {
+      // The regression this pins: `applyDelta` used to return
+      // `delta - consumed`, and `(pixels + delta) - pixels` is not exactly
+      // `delta` in binary floating point. A step that consumed everything left
+      // about -1.8e-15 behind, `tickMomentum` read any non-zero remainder as
+      // "hit an edge", and every fling died on its second tick - 31 px of a
+      // 265 px throw. The momentum written for `fling` was unreachable in
+      // practice, and the previous test could not see it: one tick is all it
+      // checks, and the first tick was the one that worked.
+      final position = ScrollPosition()
+        ..applyViewportGeometry(viewportExtent: 100, contentExtent: 10000)
+        ..fling(1000);
+
+      var ticks = 0;
+      while (position.tickMomentum(const Duration(milliseconds: 16))) {
+        ticks++;
+        // A guard, not an expectation: without it a regression that never
+        // decays hangs the suite instead of failing it.
+        if (ticks > 500) break;
+      }
+
+      // 1000 px/s decaying by 0.94 per 16 ms step is a geometric series, so
+      // the total is arithmetic rather than a recorded number:
+      //   16 * (1 - 0.94^79) / 0.06 = 264.66
+      expect(ticks, 78);
+      expect(position.pixels, closeTo(264.657, 0.01));
+    });
+
+    test('a step that consumes everything reports no remainder', () {
+      // The property underneath the test above, stated on its own: chaining
+      // (section 27.8) hands the *unconsumed* part to the outer scrollable, so
+      // a residue here would scroll an ancestor by 1e-15 on every step of a
+      // gesture that was in fact fully consumed.
+      final position = ScrollPosition()
+        ..applyViewportGeometry(viewportExtent: 100, contentExtent: 10000);
+
+      // Deliberately values whose sum is not representable exactly.
+      expect(position.applyDelta(0.1), 0.0);
+      expect(position.applyDelta(0.2), 0.0);
+      expect(position.applyDelta(15.999999), 0.0);
+
+      // And at the edge the remainder is the genuine overflow, not zero.
+      position.jumpTo(position.maxScrollExtent);
+      expect(position.applyDelta(25), 25.0);
+    });
   });
 
   group('RenderViewport', () {

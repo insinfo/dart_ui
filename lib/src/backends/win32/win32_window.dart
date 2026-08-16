@@ -32,6 +32,7 @@ import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
+import 'uia/uia_bridge.dart';
 import 'win32_api.dart';
 import 'win32_constants.dart';
 import 'win32_coordinates.dart';
@@ -884,6 +885,17 @@ final class Win32Window
       case wmKeydown:
       case wmSyskeydown:
         return _onKeyDown(wParam, lParam);
+
+      case wmGetobject:
+        // lParam == UiaRootObjectId (-25) is a UI Automation client asking for
+        // a provider. Anything else - OBJID_CLIENT above all - is MSAA and
+        // belongs to DefWindowProcW, which is what a null answer means. The
+        // returned LRESULT is a cookie from UiaReturnRawElementProvider, not a
+        // pointer: return it unchanged.
+        final int? provider =
+            Win32UiaBridge.handleGetObject(hwnd, wParam, lParam);
+        if (provider != null) return provider;
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
       case wmKeyup:
       case wmSyskeyup:

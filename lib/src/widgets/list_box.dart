@@ -13,7 +13,10 @@
 ///     exist?" with no widgets, no render tree and no clock. Anchor arithmetic,
 ///     cache windows and variable extents are therefore testable directly,
 ///     which matters because off-by-one errors here look like items flickering
-///     at the edge of a scroll rather than like an exception;
+///     at the edge of a scroll rather than like an exception. It **lives in
+///     `virtualization.dart`** and is re-exported here: a selectable list is
+///     one consumer of that planner, and [ListView] is another. Moving it out
+///     is what stopped "virtualization" meaning "the inside of a ListBox";
 ///   * [ListBox] realizes exactly that window, keyed by item index. Stable keys
 ///     are what make a scrolled-past item's element and state be *reused* for
 ///     the item that takes its place, rather than rebuilt - and what keeps
@@ -39,203 +42,14 @@ import 'focus_scope.dart';
 import 'semantics.dart';
 import 'style.dart';
 import 'theme.dart';
+import 'virtualization.dart';
 import 'widget.dart';
 
-/// The window of items that must exist for one scroll offset.
-final class RealizedRange {
-  const RealizedRange({
-    required this.firstVisible,
-    required this.lastVisible,
-    required this.firstRealized,
-    required this.lastRealized,
-    required this.leadingExtent,
-  });
-
-  /// The first and last item actually inside the viewport.
-  final int firstVisible;
-  final int lastVisible;
-
-  /// The realized window, which includes the cache on both sides.
-  final int firstRealized;
-  final int lastRealized;
-
-  /// The distance from the start of the content to [firstRealized], which is
-  /// what positions the realized block inside a viewport that believes the
-  /// whole list is present.
-  final double leadingExtent;
-
-  int get realizedCount =>
-      lastRealized < firstRealized ? 0 : lastRealized - firstRealized + 1;
-
-  bool contains(int index) => index >= firstRealized && index <= lastRealized;
-
-  @override
-  bool operator ==(Object other) =>
-      other is RealizedRange &&
-      other.firstVisible == firstVisible &&
-      other.lastVisible == lastVisible &&
-      other.firstRealized == firstRealized &&
-      other.lastRealized == lastRealized &&
-      other.leadingExtent == leadingExtent;
-
-  @override
-  int get hashCode => Object.hash(
-        firstVisible,
-        lastVisible,
-        firstRealized,
-        lastRealized,
-        leadingExtent,
-      );
-
-  @override
-  String toString() => 'RealizedRange(visible $firstVisible..$lastVisible, '
-      'realized $firstRealized..$lastRealized)';
-}
-
-/// Turns a scroll offset into a set of indices to realize.
-///
-/// Extents may be uniform or per-item. Uniform is the fast path and answers in
-/// constant time; a variable-extent list accumulates a prefix sum once and then
-/// binary-searches it, so scrolling stays logarithmic rather than linear in the
-/// item count.
-final class ListVirtualization {
-  ListVirtualization({
-    required this.itemCount,
-    required this.estimatedExtent,
-    this.cacheExtent = 0,
-    List<double>? extents,
-  }) : _extents = extents {
-    if (_extents != null && _extents.length != itemCount) {
-      throw ArgumentError.value(
-        _extents.length,
-        'extents',
-        'must have one entry per item ($itemCount)',
-      );
-    }
-    if (_extents != null) _buildPrefixSums();
-  }
-
-  final int itemCount;
-
-  /// The extent assumed for an item whose real extent is not known.
-  ///
-  /// This is what makes a 10 000-item list have a scrollbar before a single
-  /// item has been measured; it is an estimate and the scrollbar corrects as
-  /// items are realized.
-  final double estimatedExtent;
-
-  /// How far beyond the viewport items are kept realized, in pixels.
-  ///
-  /// Not an optimization: without it, the item entering the viewport is built
-  /// during the frame that scrolls to it, which is exactly the frame that has
-  /// no time to spare.
-  final double cacheExtent;
-
-  final List<double>? _extents;
-  List<double>? _prefixSums;
-
-  bool get hasVariableExtents => _extents != null;
-
-  /// The total scrollable extent.
-  double get totalExtent {
-    final List<double>? sums = _prefixSums;
-    if (sums != null) return sums.last;
-    return itemCount * estimatedExtent;
-  }
-
-  /// The offset of item [index] from the start of the content.
-  double offsetOf(int index) {
-    final int clamped = index.clamp(0, itemCount);
-    final List<double>? sums = _prefixSums;
-    if (sums != null) return sums[clamped];
-    return clamped * estimatedExtent;
-  }
-
-  /// The extent of item [index].
-  double extentOf(int index) {
-    final List<double>? extents = _extents;
-    if (extents == null) return estimatedExtent;
-    return extents[index.clamp(0, itemCount - 1)];
-  }
-
-  /// The item at content offset [offset], clamped into range.
-  int indexAt(double offset) {
-    if (itemCount == 0) return 0;
-    final List<double>? sums = _prefixSums;
-    if (sums == null) {
-      return (offset / estimatedExtent).floor().clamp(0, itemCount - 1);
-    }
-    // Binary search the prefix sums: the last index whose start is <= offset.
-    int low = 0;
-    int high = itemCount - 1;
-    while (low < high) {
-      final int mid = (low + high + 1) ~/ 2;
-      if (sums[mid] <= offset) {
-        low = mid;
-      } else {
-        high = mid - 1;
-      }
-    }
-    return low;
-  }
-
-  /// The window to realize for a viewport of [viewportExtent] at [scrollOffset].
-  RealizedRange rangeFor({
-    required double scrollOffset,
-    required double viewportExtent,
-  }) {
-    if (itemCount == 0) {
-      return const RealizedRange(
-        firstVisible: 0,
-        lastVisible: -1,
-        firstRealized: 0,
-        lastRealized: -1,
-        leadingExtent: 0,
-      );
-    }
-    final double top = scrollOffset.clamp(0.0, double.infinity);
-    final int firstVisible = indexAt(top);
-    final int lastVisible = indexAt(top + viewportExtent);
-    final int firstRealized = indexAt(top - cacheExtent);
-    final int lastRealized = indexAt(top + viewportExtent + cacheExtent);
-    return RealizedRange(
-      firstVisible: firstVisible,
-      lastVisible: lastVisible,
-      firstRealized: firstRealized,
-      lastRealized: lastRealized,
-      leadingExtent: offsetOf(firstRealized),
-    );
-  }
-
-  /// The scroll offset that brings [index] fully into view from
-  /// [scrollOffset], or null when it already is.
-  ///
-  /// This is the scroll anchor: keyboard navigation to an item just below the
-  /// fold must scroll by exactly one item, not centre the list.
-  double? scrollToReveal(
-    int index, {
-    required double scrollOffset,
-    required double viewportExtent,
-  }) {
-    final double start = offsetOf(index);
-    final double end = start + extentOf(index);
-    if (start < scrollOffset) return start;
-    if (end > scrollOffset + viewportExtent) return end - viewportExtent;
-    return null;
-  }
-
-  void _buildPrefixSums() {
-    final List<double> extents = _extents!;
-    final List<double> sums = List<double>.filled(itemCount + 1, 0);
-    double running = 0;
-    for (int i = 0; i < itemCount; i++) {
-      sums[i] = running;
-      running += extents[i];
-    }
-    sums[itemCount] = running;
-    _prefixSums = sums;
-  }
-}
+// Re-exported so that the public surface is exactly what it was before the
+// planner moved out of this file: `ListVirtualization` and `RealizedRange` were
+// already part of the contract, and an extraction that renamed the import a
+// caller needs would be a breaking change dressed up as a refactor.
+export 'virtualization.dart';
 
 /// A scrollable, virtualized, selectable list.
 final class ListBox extends StatefulWidget {

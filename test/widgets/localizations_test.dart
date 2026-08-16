@@ -22,7 +22,6 @@ library;
 import 'dart:async';
 
 import 'package:dart_ui/dart_ui.dart';
-import 'package:dart_ui/src/widgets/localizations.dart';
 import 'package:test/test.dart';
 
 void main() {

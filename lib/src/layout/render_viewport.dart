@@ -148,7 +148,21 @@ final class ScrollPosition {
       _pixels = clamped;
       _notify();
     }
-    return delta - consumed;
+    // `target - clamped`, not `delta - consumed`, and the difference is not
+    // cosmetic. The two are equal in arithmetic and not in floating point:
+    // `(pixels + delta) - pixels` is not exactly `delta`, so `delta - consumed`
+    // left a residue near 1e-15 on a step that in fact consumed everything.
+    // `_clamp` returns its argument *unchanged* when nothing is out of range,
+    // so `target - clamped` is exactly `0.0` in that case, by identity rather
+    // than by luck.
+    //
+    // What that residue cost: `tickMomentum` reads a non-zero remainder as
+    // "hit an edge" and stops the fling. Every fling therefore died on its
+    // second tick - 31 px of a 265 px throw - and the momentum written for
+    // `ScrollPosition.fling` was, in practice, unreachable. A tolerance would
+    // also have worked and would have needed a number nobody can justify; this
+    // needs none.
+    return target - clamped;
   }
 
   /// Converts a platform scroll delta into pixels and applies it.
