@@ -729,23 +729,25 @@ void main() {
 
       // And the list of what could not be checked is itself checked. This is
       // what turns kMetalUnverifiedEncodings from a disclaimer into a
-      // measurement: it may not quietly grow. The direction that is asserted
-      // is the one that matters - nothing may be unverified that is not
-      // declared unverified - while an entry that has *started* resolving is
-      // printed, because deleting it is a source change and not a test result.
+      // measurement: it names exactly the selectors the runtime would not
+      // answer for, and it is currently empty because there are none. It may
+      // neither grow silently nor keep a row that has started resolving.
       final Set<String> missingNames = missing
           .map((MetalRuntimeEncoding e) =>
               '${e.selector.receiver}.${e.selector.name}')
           .toSet();
-      final Set<String> declared = kMetalUnverifiedEncodings.toSet();
-      for (final String stale in declared.difference(missingNames)) {
-        print('  NOW RESOLVES, delete from kMetalUnverifiedEncodings: $stale');
-      }
       expect(
-        missingNames.difference(declared),
-        isEmpty,
-        reason: 'these selectors could not be read back from the runtime and '
-            'are not declared in kMetalUnverifiedEncodings',
+        missingNames,
+        kMetalUnverifiedEncodings.toSet(),
+        reason: 'kMetalUnverifiedEncodings must name exactly the selectors the '
+            'runtime will not answer for. Empty means every row of '
+            'kMetalSelectors was read back and compared.',
+      );
+      // Every source except notFound is a real answer from the runtime, so
+      // this is the count that the provenance comment claims.
+      expect(
+        found.where((MetalRuntimeEncoding e) => e.isFound).length,
+        kMetalSelectors.length,
       );
     }, skip: _needsMac);
   });

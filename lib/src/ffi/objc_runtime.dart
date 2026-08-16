@@ -797,6 +797,12 @@ const List<ObjCAbiClass> _argsA3w = <ObjCAbiClass>[
   ObjCAbiClass.word,
   ObjCAbiClass.word,
 ];
+const List<ObjCAbiClass> _args2wA1w = <ObjCAbiClass>[
+  ObjCAbiClass.word,
+  ObjCAbiClass.word,
+  ObjCAbiClass.aggregate,
+  ObjCAbiClass.word,
+];
 
 /// Every message shape this framework is allowed to send.
 ///
@@ -902,7 +908,19 @@ enum ObjCSendShape {
   /// arm64 the 48-byte `MTLRegion` is passed indirectly, so `mipmapLevel`
   /// lands in `x3` and not in `x2`, and a caller that guessed would upload
   /// every texture at the wrong mip level.
-  voidReturnRegionLevelBytesStride(ObjCAbiClass.none, _argsA3w);
+  voidReturnRegionLevelBytesStride(ObjCAbiClass.none, _argsA3w),
+
+  /// `void (*)(id, SEL, void*, NSUInteger, MTLRegion, NSUInteger)` -
+  /// `-[MTLTexture getBytes:bytesPerRow:fromRegion:mipmapLevel:]`, the
+  /// readback that makes a rendered texture comparable against the CPU
+  /// rasteriser.
+  ///
+  /// The mirror image of [voidReturnRegionLevelBytesStride] and a separate
+  /// member for exactly that reason: the two selectors take the same four
+  /// values in the opposite order, so one shape could not serve both and a
+  /// call site that reused the upload's shape for the readback would hand the
+  /// driver a destination pointer where it expects a rectangle.
+  voidReturnBytesStrideRegionLevel(ObjCAbiClass.none, _args2wA1w);
 
   const ObjCSendShape(this._returnClass, this._declaredArguments);
 
@@ -1261,6 +1279,10 @@ typedef _VRegionN = Void Function(Pointer<ObjCObject>, Pointer<ObjCSelector>,
     ObjCWord6, UintPtr, Pointer<Void>, UintPtr);
 typedef _VRegionD = void Function(Pointer<ObjCObject>, Pointer<ObjCSelector>,
     ObjCWord6, int, Pointer<Void>, int);
+typedef _VGetBytesN = Void Function(Pointer<ObjCObject>, Pointer<ObjCSelector>,
+    Pointer<Void>, UintPtr, ObjCWord6, UintPtr);
+typedef _VGetBytesD = void Function(Pointer<ObjCObject>, Pointer<ObjCSelector>,
+    Pointer<Void>, int, ObjCWord6, int);
 
 final _VD2D _sendVoidDouble2 =
     _sendBase.cast<NativeFunction<_VD2N>>().asFunction<_VD2D>();
@@ -1272,6 +1294,8 @@ final _VW4D _sendVoidWord4 =
     _sendBase.cast<NativeFunction<_VW4N>>().asFunction<_VW4D>();
 final _VRegionD _sendVoidRegion =
     _sendBase.cast<NativeFunction<_VRegionN>>().asFunction<_VRegionD>();
+final _VGetBytesD _sendVoidGetBytes =
+    _sendBase.cast<NativeFunction<_VGetBytesN>>().asFunction<_VGetBytesD>();
 
 /// `void` result, one [ObjCDouble2] by value.
 void objcSendVoidDouble2(
@@ -1316,6 +1340,20 @@ void objcSendVoidRegion(
   int bytesPerRow,
 ) =>
     _sendVoidRegion(target, selector, region, mipmapLevel, bytes, bytesPerRow);
+
+/// `void` result, a destination pointer and a stride followed by an
+/// [ObjCWord6] and a level - exactly `-[MTLTexture
+/// getBytes:bytesPerRow:fromRegion:mipmapLevel:]`.
+void objcSendVoidGetBytes(
+  Pointer<ObjCObject> target,
+  Pointer<ObjCSelector> selector,
+  Pointer<Void> bytes,
+  int bytesPerRow,
+  ObjCWord6 region,
+  int mipmapLevel,
+) =>
+    _sendVoidGetBytes(
+        target, selector, bytes, bytesPerRow, region, mipmapLevel);
 
 /// Builds an [ObjCDouble2] without a heap allocation.
 ///

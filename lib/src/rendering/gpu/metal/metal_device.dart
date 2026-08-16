@@ -621,10 +621,79 @@ Pointer<ObjCObject> metalSendPointer4(
   return objcSendPointer4(target, objcSelector(selector), a0, a1, a2, a3);
 }
 
+/// `[target selector]`, returning nothing.
+void metalSendVoid(Pointer<ObjCObject> target, String selector) {
+  assert(_declaredShape(selector, ObjCSendShape.voidReturn0));
+  objcSendVoid(target, objcSelector(selector));
+}
+
 /// `[target selector:a0]`, returning nothing.
 void metalSendVoid1(Pointer<ObjCObject> target, String selector, int a0) {
   assert(_declaredShape(selector, ObjCSendShape.voidReturn1));
   objcSendVoid1(target, objcSelector(selector), a0);
+}
+
+/// `[target selector:a0 x:a1]`, returning nothing.
+void metalSendVoid2(
+    Pointer<ObjCObject> target, String selector, int a0, int a1) {
+  assert(_declaredShape(selector, ObjCSendShape.voidReturn2));
+  objcSendVoid2(target, objcSelector(selector), a0, a1);
+}
+
+/// `[target selector:a0 x:a1 y:a2]`, returning nothing.
+void metalSendVoid3(
+    Pointer<ObjCObject> target, String selector, int a0, int a1, int a2) {
+  assert(_declaredShape(selector, ObjCSendShape.voidReturn3));
+  objcSendVoid3(target, objcSelector(selector), a0, a1, a2);
+}
+
+/// `[target selector:a0 x:a1 y:a2 z:a3 w:a4]`, returning nothing.
+void metalSendVoid5(Pointer<ObjCObject> target, String selector, int a0, int a1,
+    int a2, int a3, int a4) {
+  assert(_declaredShape(selector, ObjCSendShape.voidReturn5));
+  objcSendVoid5(target, objcSelector(selector), a0, a1, a2, a3, a4);
+}
+
+/// `NSUInteger result = [target selector]`.
+int metalSendUnsigned(Pointer<ObjCObject> target, String selector) {
+  assert(_declaredShape(selector, ObjCSendShape.unsignedReturn0));
+  return objcSendUnsigned(target, objcSelector(selector));
+}
+
+/// `[target selector:aggregate]` for a four-`double` argument.
+void metalSendDouble4(
+    Pointer<ObjCObject> target, String selector, ObjCDouble4 value) {
+  assert(_declaredShape(selector, ObjCSendShape.voidReturnDouble4));
+  objcSendVoidDouble4(target, objcSelector(selector), value);
+}
+
+/// `[target selector:aggregate]` for a six-`double` argument.
+void metalSendDouble6(
+    Pointer<ObjCObject> target, String selector, ObjCDouble6 value) {
+  assert(_declaredShape(selector, ObjCSendShape.voidReturnDouble6));
+  objcSendVoidDouble6(target, objcSelector(selector), value);
+}
+
+/// `[target selector:aggregate]` for a four-`NSUInteger` argument.
+void metalSendWord4(
+    Pointer<ObjCObject> target, String selector, ObjCWord4 value) {
+  assert(_declaredShape(selector, ObjCSendShape.voidReturnWord4));
+  objcSendVoidWord4(target, objcSelector(selector), value);
+}
+
+/// `-[MTLTexture getBytes:bytesPerRow:fromRegion:mipmapLevel:]`.
+void metalSendGetBytes(
+  Pointer<ObjCObject> target,
+  String selector,
+  Pointer<Void> bytes,
+  int bytesPerRow,
+  ObjCWord6 region,
+  int mipmapLevel,
+) {
+  assert(
+      _declaredShape(selector, ObjCSendShape.voidReturnBytesStrideRegionLevel));
+  objcSendVoidGetBytes(
+      target, objcSelector(selector), bytes, bytesPerRow, region, mipmapLevel);
 }
 
 // ---------------------------------------------------------------------------

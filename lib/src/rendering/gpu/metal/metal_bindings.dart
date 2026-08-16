@@ -17,8 +17,10 @@
 ///   * `MTLCreateSystemDefaultDevice()` returns a device that answers its own
 ///     name - so the runner has a usable **GPU**, not merely the framework;
 ///   * `method_getTypeEncoding` agrees with the encodings declared below,
-///     selector by selector, to the extent [kMetalUnverifiedEncodings]
-///     records.
+///     for **every** row of [kMetalSelectors] - through the class, the
+///     metaclass, the protocol or a live instance, whichever declares it.
+///     [kMetalUnverifiedEncodings] is empty and is asserted to be exactly the
+///     set that could not be read.
 ///
 /// Section 6.6 - faked capability is worse than absent capability - is why the
 /// distinction is drawn item by item below instead of once at the top, and why
@@ -127,65 +129,39 @@ const String kMetalBindingProvenance =
     'encodings in kMetalSelectors are hand-derived from the C++ parameter '
     'types, because metal-cpp records types and not encoding strings - but '
     'they are NOT unverified: the macos-14 leg of the Framework workflow is a '
-    'real Mac, and method_getTypeEncoding reads them back on every push, for '
-    'every selector the runtime will answer for. The ones it will not are '
-    'named in kMetalUnverifiedEncodings and nowhere else.';
+    'real Mac, and method_getTypeEncoding reads back every row of '
+    'kMetalSelectors on every push - through the class, the metaclass, the '
+    'protocol, or a live instance, whichever declares it. '
+    'kMetalUnverifiedEncodings is empty, and a test asserts that it names '
+    'exactly the rows the runtime would not answer for.';
 
 /// The selectors the runtime will not answer for, `Receiver.selector` each.
 ///
-/// **Measured, not decreed.** This list used to read `every entry in
-/// kMetalSelectors`, on the theory that a derived encoding had no upstream to
-/// be checked against. It had one all along: the Objective-C runtime, on the
-/// Mac that CI provides. `metalRuntimeEncoding` asks it about all 78, and
-/// `metal_bindings_test.dart` asserts that the ones it cannot answer for are
-/// **exactly** the ones below - so this list cannot silently grow, and a
-/// selector that starts resolving must be deleted from it.
+/// **Empty, and emptied by measurement rather than by decree.** The history is
+/// the point, because it is a worked example of the difference between "cannot
+/// be checked" and "was not checked":
 ///
-/// ## Why these 27 and not others
+///   1. It read `every entry in kMetalSelectors`, on the theory that a derived
+///      encoding had no upstream to be compared against. It had one all along -
+///      the Objective-C runtime, on the Mac that CI provides.
+///   2. Asking `objc_getClass` for every receiver brought it to **27**: two
+///      thirds of Metal is `@protocol` and has no class, which the first check
+///      silently skipped while reporting success. `protocol_getMethodDescription`
+///      covered those.
+///   3. The remaining 27 were property accessors on Metal's *descriptor*
+///      classes, which are façades: `MTLTextureDescriptor` declares `width` in
+///      the header and a private subclass implements it, so
+///      `class_getInstanceMethod` on the class named in the header genuinely
+///      finds nothing. `object_getClass` on a **live descriptor** finds the
+///      class that really implements it - a stronger answer than the header's,
+///      because it is the code that will run. That took it to zero.
 ///
-/// Every one of them is a property accessor on a Metal *descriptor* class, and
-/// those classes are façades. `MTLTextureDescriptor`,
-/// `MTLRenderPipelineDescriptor`, `MTLVertexDescriptor` and the attachment
-/// descriptors declare their properties in the header, but the objects Metal
-/// actually hands out are instances of private subclasses that implement them.
-/// So `class_getInstanceMethod(MTLTextureDescriptor, @selector(setWidth:))`
-/// returns null - the base class genuinely has no such method - while
-/// `+texture2DDescriptorWithPixelFormat:width:height:mipmapped:`, a real class
-/// method on the same class, is found and checked.
-///
-/// The way to close this is `object_getClass` on a live descriptor, which is
-/// bound in `objc_runtime.dart` and needs the descriptors to be built first.
-/// Until then these encodings rest on the two mechanisms that need no
-/// hardware: the shape table and the colon count.
-const List<String> kMetalUnverifiedEncodings = <String>[
-  'MTLTextureDescriptor.setPixelFormat:',
-  'MTLTextureDescriptor.setWidth:',
-  'MTLTextureDescriptor.setHeight:',
-  'MTLTextureDescriptor.setUsage:',
-  'MTLTextureDescriptor.setStorageMode:',
-  'MTLRenderPassDescriptor.colorAttachments',
-  'MTLRenderPassColorAttachmentDescriptor.setTexture:',
-  'MTLRenderPassColorAttachmentDescriptor.setLoadAction:',
-  'MTLRenderPassColorAttachmentDescriptor.setStoreAction:',
-  'MTLRenderPassColorAttachmentDescriptor.setClearColor:',
-  'MTLRenderPipelineDescriptor.setVertexFunction:',
-  'MTLRenderPipelineDescriptor.setFragmentFunction:',
-  'MTLRenderPipelineDescriptor.setVertexDescriptor:',
-  'MTLRenderPipelineColorAttachmentDescriptor.setBlendingEnabled:',
-  'MTLRenderPipelineColorAttachmentDescriptor.setSourceRGBBlendFactor:',
-  'MTLRenderPipelineColorAttachmentDescriptor.setDestinationRGBBlendFactor:',
-  'MTLRenderPipelineColorAttachmentDescriptor.setSourceAlphaBlendFactor:',
-  'MTLRenderPipelineColorAttachmentDescriptor.setDestinationAlphaBlendFactor:',
-  'MTLRenderPipelineColorAttachmentDescriptor.setRgbBlendOperation:',
-  'MTLRenderPipelineColorAttachmentDescriptor.setAlphaBlendOperation:',
-  'MTLVertexDescriptor.attributes',
-  'MTLVertexDescriptor.layouts',
-  'MTLVertexAttributeDescriptor.setFormat:',
-  'MTLVertexAttributeDescriptor.setOffset:',
-  'MTLVertexAttributeDescriptor.setBufferIndex:',
-  'MTLVertexBufferLayoutDescriptor.setStride:',
-  'MTLVertexBufferLayoutDescriptor.setStepFunction:',
-];
+/// So all 79 rows of [kMetalSelectors] are read back from the runtime on every
+/// push and compared class by class, and `metal_bindings_test.dart` asserts
+/// that this list is **exactly** the set that could not be read. It cannot
+/// quietly grow: a selector the runtime stops answering for fails the macOS
+/// leg until it is named here with a reason.
+const List<String> kMetalUnverifiedEncodings = <String>[];
 
 /// C symbols that must resolve for this backend to start.
 ///
@@ -781,6 +757,15 @@ const List<MetalSelector> kMetalSelectors = <MetalSelector>[
       'replaceRegion:mipmapLevel:withBytes:bytesPerRow:',
       'v@:{MTLRegion={MTLOrigin=QQQ}{MTLSize=QQQ}}Q^vQ',
       ObjCSendShape.voidReturnRegionLevelBytesStride,
+      returnsOwned: false,
+      receiver: 'MTLTexture'),
+  // The readback. Same four values as replaceRegion: and in the opposite
+  // order, which is why it has a shape of its own: reusing the upload's shape
+  // would put the destination pointer where the rectangle belongs.
+  MetalSelector(
+      'getBytes:bytesPerRow:fromRegion:mipmapLevel:',
+      'v@:^vQ{MTLRegion={MTLOrigin=QQQ}{MTLSize=QQQ}}Q',
+      ObjCSendShape.voidReturnBytesStrideRegionLevel,
       returnsOwned: false,
       receiver: 'MTLTexture'),
   MetalSelector('width', 'Q@:', ObjCSendShape.unsignedReturn0,
