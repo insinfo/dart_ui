@@ -43,15 +43,6 @@
 ///
 /// ## What is not compared here, and why
 ///
-/// **Text.** The GL backend wires no `GpuGlyphAtlas` - neither
-/// `GlOffscreenTarget` nor `GlWindowTarget` passes one to its `GpuRasterSink`
-/// - so a glyph run through the GPU path is refused by name rather than drawn.
-/// That refusal is a declared limit, not a divergence, and the text test below
-/// asserts *both* halves of it: the CPU draws the run at exactly the pixels
-/// Ahem's solid blocks predict, and the GPU says by name that it cannot. The
-/// day the GL backend grows a glyph atlas, the refusal assertion fails and
-/// whoever wired it has to turn the comparison on.
-///
 /// **Even-odd fills.** The display list has no fill-rule operand: a `Path` is
 /// an opaque interned object with no rule attached, and both sinks fill
 /// non-zero. So an even-odd scene cannot be *encoded*, and the pair of path
@@ -191,7 +182,7 @@ void main() {
   });
 
   group('a glyph run', () {
-    test('draws Ahem blocks on the CPU and is refused by name on the GPU',
+    test('lands on the exact pixels Ahem predicts, fractional rows included',
         () async {
       // Ahem's letters are solid boxes, so the CPU's output can be asserted as
       // exact pixels rather than as "some ink appeared". The box runs from
@@ -221,21 +212,27 @@ void main() {
       expect(_rgba(cpu.framebuffer, 10, 6), (0, 0, 0, 0xFF));
       expect(_rgba(cpu.framebuffer, 10, 16), (0, 0, 0, 0xFF));
       cpu.dispose();
+    });
 
-      // And the GPU refuses, by name, because no GL target wires a glyph
-      // atlas. This is a declared limit rather than a divergence - the
-      // difference matters, because a backend that dropped the run silently
-      // would produce a *comparison* that passes on a blank rectangle.
+    test('and the GPU stages the same run through a glyph atlas: 0', () async {
+      // Until the GL targets wired a `GpuGlyphAtlas`, this assertion was its
+      // own opposite: it required the GPU to *refuse* the run by name, so that
+      // a declared limit could not be mistaken for agreement on a blank
+      // rectangle. Wiring the atlas made the refusal false, the assertion
+      // failed, and turning the comparison on was the fix - which is the whole
+      // reason it was written that way round.
       //
-      // When the GL backend grows a glyph atlas this assertion fails, and the
-      // right fix is to delete it and add the run to the parity list above.
-      final gpu = session.target(_size, _size);
-      await expectLater(
-        () => gpu.renderDisplayList(list, clearColor: _clear),
-        throwsA(isA<UnsupportedCapabilityError>()
-            .having((e) => e.detail, 'detail', contains('glyph atlas'))),
+      // Both backends rasterise coverage with the same `GlyphRasterizer`; the
+      // GPU only stages it in an atlas texture first. Both snap the baseline
+      // to a whole pixel and keep x subpixel, so the fractional rows 7 and 15
+      // asserted above have to survive the round trip through the atlas.
+      // Observed deviation: 0.
+      final Typeface ahem = Typeface.parse(_ahemBytes());
+      await _expectParity(
+        session,
+        _textScene(ahem.atSize(8), ahem.glyphForCodePoint(0x58)),
+        tolerance: 0,
       );
-      gpu.dispose();
     }, skip: session.skipReason);
   });
 }

@@ -63,6 +63,7 @@ import '../../framebuffer.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
+import '../gpu_glyph_atlas.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_raster_sink.dart';
@@ -100,6 +101,24 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
       // rasteriser's coverage byte exactly and linear would blur it.
       filter: GpuTextureFilter.nearest,
     );
+    // Text is wired here exactly as it is on the offscreen target, and that
+    // symmetry is the point: a window is where text is actually read, so a
+    // backend whose *test* target drew glyphs and whose *window* target
+    // refused them would pass every golden test and show a blank panel on
+    // screen. One atlas per target rather than one per device, matching the
+    // mask atlas: an atlas is written during a frame and recycled mid-frame
+    // when it fills, and two targets sharing one would recycle each other's
+    // texels out from under quads already in a vertex buffer.
+    _glyphAtlas = GpuGlyphAtlas();
+    _glyphTexture = _device.createTexture(
+      width: _glyphAtlas.width,
+      height: _glyphAtlas.height,
+      format: GpuTextureFormat.alpha8,
+      // Nearest: a glyph quad is placed on whole pixels so that one texel is
+      // one pixel, and a linear tap would resample coverage already on grid.
+      filter: GpuTextureFilter.nearest,
+    );
+    _fonts = GlFontResolver();
     _images = GlImageCache(_device);
     // Layers cost the same here as on the offscreen target and are wired the
     // same way: a pool of framebuffer objects, a device-independent stack, and
@@ -130,6 +149,9 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
       maskAtlas: _maskAtlas,
       maskTextureId: _maskTexture.id,
       imageResolver: _images,
+      glyphAtlas: _glyphAtlas,
+      glyphTextureId: _glyphTexture.id,
+      fontResolver: _fonts,
       layerStack: _layers,
       onAtlasFlush: _flushAtlases,
     );
@@ -141,6 +163,9 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
 
   late final GpuMaskAtlas _maskAtlas;
   late final GlTexture _maskTexture;
+  late final GpuGlyphAtlas _glyphAtlas;
+  late final GlTexture _glyphTexture;
+  late final GlFontResolver _fonts;
   late final GlImageCache _images;
   late final GlFramebufferPool _layerPool;
   late final GpuLayerStack _layers;
@@ -155,6 +180,16 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
   /// for a test that asserts the same layer drawn on ten frames created one
   /// framebuffer; reuse is invisible from the pixels.
   GlFramebufferPool get layerPool => _layerPool;
+
+  /// The glyph coverage this target keeps between frames, for the same kind of
+  /// question [layerPool] answers: whether a static screen stopped rasterising
+  /// after its first frame, and whether a full atlas was recycled mid-frame.
+  GpuGlyphAtlas get glyphAtlas => _glyphAtlas;
+
+  /// `glTexSubImage2D` calls this target has made for glyph coverage. A frame
+  /// that redraws the same text must not increase it.
+  int get glyphUploadCount => _glyphUploadCount;
+  int _glyphUploadCount = 0;
 
   GlWindowSurfaceDescriptor _surface;
   int? _pendingClear;
@@ -215,6 +250,10 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
     throwIfDisposed();
     _batcher.beginFrame();
     _maskAtlas.beginFrame();
+    // Keeps every glyph and advances the counter its LRU compares against; a
+    // target that forgot it would leave every plot pinned to the frame in
+    // progress and report the atlas permanently full.
+    _glyphAtlas.beginFrame();
     _layers.beginFrame(
       surfaceWidth: _surface.pixelWidth,
       surfaceHeight: _surface.pixelHeight,
@@ -270,6 +309,7 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
     _device.api.bindFramebuffer(glFramebuffer, 0);
 
     _uploadMaskAtlas();
+    _uploadGlyphAtlas();
 
     final int? clear = _pendingClear;
     _pendingClear = null;
@@ -397,9 +437,13 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
     Transform2D deviceTransform = Transform2D.identity,
   }) async {
     final frame = beginFrame(FrameRequest(clearColor: clearColor));
+    // One resource table, walked by the player and read by the sink's font
+    // resolver, so the two cannot disagree about which face an id names.
+    final resources = DisplayListResources(list);
+    _fonts.bind(resources);
     _player.play(
       DisplayListReader(list),
-      DisplayListResources(list),
+      resources,
       deviceBounds: _surfaceRect,
       deviceTransform: deviceTransform,
     );
@@ -433,12 +477,46 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
     _maskAtlas.markUploaded();
   }
 
+  /// Sends the plots this frame wrote glyphs into, and nothing else.
+  ///
+  /// One `glTexSubImage2D` per dirty plot, so a window redrawing the same
+  /// label sixty times a second uploads nothing at all after the first frame -
+  /// which is the entire reason the glyph atlas survives [beginFrame] while
+  /// the mask atlas does not.
+  ///
+  /// Orientation: an atlas is *uploaded*, not rendered into, so `uYFlip` and
+  /// its two constants do not apply - they invert the projection of a pass
+  /// whose output is sampled later. `glTexSubImage2D` puts the first row it is
+  /// given at texture row `y`, and the staging image is top-down, so atlas row
+  /// `y` is texture coordinate `y / height`, which is what the sink computes
+  /// for the *top* edge of a glyph quad. See `gl_backend.dart`'s copy of this
+  /// method for the long form of the argument.
+  void _uploadGlyphAtlas() {
+    if (!_glyphAtlas.isDirty) return;
+    final int width = _glyphAtlas.width;
+    _glyphAtlas.forEachDirtyRegion((int x, int y, int regionWidth, int height) {
+      _glyphUploadCount++;
+      _device.uploadRegion(
+        _glyphTexture,
+        x: x,
+        y: y,
+        width: regionWidth,
+        height: height,
+        pixels: Uint8List.sublistView(_glyphAtlas.pixels, y * width + x),
+        bytesPerRow: width,
+      );
+    });
+    _glyphAtlas.markUploaded();
+  }
+
   /// The backend's half of the atlas flush protocol - see
   /// [GpuRasterSink.onAtlasFlush]. Upload first, because the batches about to
   /// be drawn sample texels that so far exist only in the staging image;
-  /// submit second, and remember how far it got.
+  /// submit second, and remember how far it got. Both atlases, because a batch
+  /// about to be issued may sample a glyph and a mask this frame wrote.
   void _flushAtlases() {
     _uploadMaskAtlas();
+    _uploadGlyphAtlas();
     final int? clear = _pendingClear;
     _pendingClear = null;
     _device.submit(
@@ -482,6 +560,12 @@ final class GlWindowTarget with DisposableMixin implements RenderTarget {
     // idle, so disposing mid-frame would leak the ones still in flight.
     _layers.endFrame();
     _layerPool.dispose();
-    _device.releaseTexture(_maskTexture);
+    _device
+      ..releaseTexture(_maskTexture)
+      ..releaseTexture(_glyphTexture);
+    // The staging bytes go with the texture: an entry that outlived it would
+    // say a glyph is resident in a texture the driver has freed.
+    _glyphAtlas.clear();
+    _fonts.bind(null);
   }
 }

@@ -23,6 +23,7 @@
 library;
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/win32/win32_gl_surface.dart';
 import 'package:dart_ui/src/backends/x11/x11_gl_surface.dart';
@@ -35,6 +36,7 @@ import 'package:dart_ui/src/rendering/gpu/gl/gl_context.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_surface_descriptor.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_window_target.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
+import 'package:dart_ui/src/text/typeface.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -107,6 +109,54 @@ void main() {
       expect(session.surface!.swapCount, greaterThan(0),
           reason: 'a windowed present that never reaches SwapBuffers is the '
               'readback path wearing a different name');
+      target.dispose();
+    }, skip: session.skipReason);
+
+    test('draws a glyph run rather than refusing it by name', () async {
+      // Until this target wired a GpuGlyphAtlas, a run reaching it threw
+      // UnsupportedCapabilityError - and a window is where text is actually
+      // read, so an offscreen target that drew glyphs and a window target that
+      // refused them would have passed every golden test and shown a blank
+      // panel on screen. Nothing here can read the pixels back; what the
+      // atlas *drew* is checked against the CPU renderer in
+      // `gl_glyph_device_test.dart`, and what is checked here is that the run
+      // reached SwapBuffers and that a second frame of the same text costs no
+      // upload at all.
+      final target = session.target(96, 48);
+      final face =
+          Typeface.parse(File('test/fonts/DejaVuSans.ttf').readAsBytesSync());
+      final list = DisplayList();
+      final ink = list.addPaint(colorArgb: 0xFFFFFFFF);
+      list.drawGlyphRun(
+        list.addFont(face.atSize(20)),
+        ink,
+        6,
+        32,
+        Int32List.fromList(<int>[
+          for (final int rune in 'window'.runes) face.glyphForCodePoint(rune),
+        ]),
+        Float32List.fromList(<double>[
+          for (var i = 0; i < 6; i++) ...<double>[i * 12.0, 0],
+        ]),
+        6,
+      );
+
+      final swapsBefore = session.surface!.swapCount;
+      final result =
+          await target.renderDisplayList(list, clearColor: 0xFF102030);
+      expect(result.status, PresentStatus.presented,
+          reason: '${result.diagnostic}');
+      expect(session.surface!.swapCount - swapsBefore, 1);
+      expect(target.glyphAtlas.entryCount, greaterThan(0),
+          reason: 'the run has to have gone through the atlas');
+      final uploads = target.glyphUploadCount;
+      expect(uploads, greaterThan(0));
+
+      await target.renderDisplayList(list, clearColor: 0xFF102030);
+      expect(target.glyphUploadCount, uploads,
+          reason: 'a cache hit dirties nothing, so a static label costs no '
+              'upload after its first frame - which is the whole reason the '
+              'glyph atlas survives beginFrame');
       target.dispose();
     }, skip: session.skipReason);
 

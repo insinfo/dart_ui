@@ -58,6 +58,17 @@ const int kModeTexturedImage = 2;
 /// [Framebuffer] and a rasterised mask are laid out in and converting them
 /// would cost a copy per upload.
 ///
+/// Both atlases are *uploaded* rather than rendered into, and that is what
+/// keeps them out of this uniform entirely. `glTexSubImage2D` writes the first
+/// row of the bytes it is handed at the texture row it was given, so a
+/// top-down staging image becomes a top-down texture, and the `v` a quad
+/// carries for its top edge is `y / height` - the row the glyph or mask was
+/// rasterised into. Nothing is flipped anywhere on that path. A backend that
+/// reached for [kYFlipTopDown] when wiring the glyph atlas would draw every
+/// letter upside down, and the test that ought to catch it does not if it uses
+/// a face whose glyphs are symmetric: Ahem draws solid squares, and a square
+/// is its own mirror image.
+///
 /// The two conventions meet at a layer. A pass that renders into a texture and
 /// is then *sampled* must leave the image top-down like every other texture,
 /// so it inverts its projection ([kYFlipTopDown]) - and, in `gl_backend.dart`,

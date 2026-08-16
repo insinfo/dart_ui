@@ -70,11 +70,13 @@ import '../../../geometry/rect.dart';
 import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
+import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
 import '../gpu_device_state.dart';
+import '../gpu_glyph_atlas.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_pipeline.dart';
@@ -218,13 +220,30 @@ final class GlRenderDevice
   @override
   bool get isLost => _state.isLost;
 
+  /// What this device can do, answered field by field.
+  ///
+  /// **Text.** Every target this device builds - [GlOffscreenTarget] and
+  /// [GlWindowTarget] alike - carries a [GpuGlyphAtlas], the alpha8 texture it
+  /// stages into and a [GlFontResolver], so a glyph run is drawn here rather
+  /// than refused. None of the five booleans below is the field that says so,
+  /// which is stated because the previous shape of this class invited the
+  /// opposite reading: `supportsExternalTextures: false` is about *foreign*
+  /// textures and has never had anything to do with glyphs, and a reader
+  /// looking for "can this device draw text" would otherwise find no answer at
+  /// all and assume the pessimistic one. The probe report says it in prose -
+  /// see [GlRendererBackend.describeContext] - because [Capability] has no
+  /// member for text rendering and inventing one here would mean changing an
+  /// enum every backend switches on.
+  ///
+  /// The rest are honest answers to their own questions. Partial present is
+  /// false because an FBO target redraws whole; MSAA is false because nothing
+  /// here asks for a multisample renderbuffer, and the antialiasing is
+  /// analytic instead (see gpu_mask_atlas.dart) - which is also how glyph
+  /// coverage reaches the screen, one texel per pixel out of the atlas;
+  /// compute is false because the subset in gl_bindings.dart deliberately
+  /// stops before compute shaders.
   @override
   RendererCapabilities get capabilities => RendererCapabilities(
-        // Honest answers. Partial present is false because an FBO target
-        // redraws whole; MSAA is false because nothing here asks for a
-        // multisample renderbuffer, and the antialiasing is analytic instead
-        // (see gpu_mask_atlas.dart); compute is false because the subset in
-        // gl_bindings.dart deliberately stops before compute shaders.
         supportsPartialPresent: false,
         supportsMsaa: false,
         supportsCompute: false,
@@ -980,6 +999,18 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       // rasteriser's coverage byte exactly and linear would blur it.
       filter: GpuTextureFilter.nearest,
     );
+    _glyphAtlas = GpuGlyphAtlas();
+    _glyphTexture = _device.createTexture(
+      width: _glyphAtlas.width,
+      height: _glyphAtlas.height,
+      format: GpuTextureFormat.alpha8,
+      // Nearest, for the mask atlas's reason and one of its own: a glyph quad
+      // is placed on whole pixels precisely so that one texel is one pixel,
+      // and a linear tap would resample coverage that already sits on the
+      // grid - which is the soft, muddy text a bitmap cache is blamed for.
+      filter: GpuTextureFilter.nearest,
+    );
+    _fonts = GlFontResolver();
     _images = GlImageCache(_device);
     _layerPool = GlFramebufferPool(
       factory: GlDeviceFramebufferFactory(
@@ -1005,6 +1036,9 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       maskAtlas: _maskAtlas,
       maskTextureId: _maskTexture.id,
       imageResolver: _images,
+      glyphAtlas: _glyphAtlas,
+      glyphTextureId: _glyphTexture.id,
+      fontResolver: _fonts,
       layerStack: _layers,
       onAtlasFlush: _flushAtlases,
     );
@@ -1017,6 +1051,9 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
 
   late final GpuMaskAtlas _maskAtlas;
   late final GlTexture _maskTexture;
+  late final GpuGlyphAtlas _glyphAtlas;
+  late final GlTexture _glyphTexture;
+  late final GlFontResolver _fonts;
   late final GlImageCache _images;
   late final GlFramebufferPool _layerPool;
   late final GpuLayerStack _layers;
@@ -1035,6 +1072,26 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
   /// The textures this target uploaded for drawn images. Exposed so a caller
   /// that finished with a picture can drop them without disposing the target.
   GlImageCache get images => _images;
+
+  /// The glyph coverage this target keeps between frames.
+  ///
+  /// Exposed for the same kind of question [layerPool] answers and for no
+  /// drawing: whether the second frame of a static screen rasterised anything
+  /// ([GpuGlyphAtlas.missCount]) and whether a full atlas was recycled
+  /// mid-frame ([GpuGlyphAtlas.plotRecycleCount]). Both are invisible from the
+  /// pixels - an atlas that re-rasterised every glyph on every frame produces
+  /// identical output and spends the frame budget doing it.
+  GpuGlyphAtlas get glyphAtlas => _glyphAtlas;
+
+  /// `glTexSubImage2D` calls this target has made for glyph coverage.
+  ///
+  /// The number the incremental-upload claim rests on. A second frame drawing
+  /// the text of the first must not increase it: nothing was written, so
+  /// nothing is dirty, so there is nothing to send. Counted per *region*, not
+  /// per frame or per glyph, because the region is what the driver is asked
+  /// for - see [_uploadGlyphAtlas].
+  int get glyphUploadCount => _glyphUploadCount;
+  int _glyphUploadCount = 0;
 
   /// Where layers get their offscreen targets.
   ///
@@ -1081,6 +1138,11 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
     throwIfDisposed();
     _batcher.beginFrame();
     _maskAtlas.beginFrame();
+    // Advances the frame counter the glyph atlas's LRU compares against, and
+    // keeps every glyph. Skipping it would leave every plot looking used by
+    // the frame in progress, so nothing could ever be evicted and the atlas
+    // would report itself permanently full - see gpu_glyph_atlas.dart.
+    _glyphAtlas.beginFrame();
     _layers.beginFrame(
       surfaceWidth: _readback.width,
       surfaceHeight: _readback.height,
@@ -1132,6 +1194,7 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
     }
     _device._gl.bindFramebuffer(glFramebuffer, _fbo);
     _uploadMaskAtlas();
+    _uploadGlyphAtlas();
 
     final int? clear = _pendingClear;
     _pendingClear = null;
@@ -1179,6 +1242,57 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
     _maskAtlas.markUploaded();
   }
 
+  /// Sends the plots the frame wrote into, and nothing else.
+  ///
+  /// ## Why this is per region and not one upload
+  ///
+  /// The glyph atlas outlives the frame - that is the whole reason it is not
+  /// the mask atlas - so on a static screen the honest amount of data to move
+  /// is *zero*, and a full-texture upload would move a megabyte instead. The
+  /// atlas therefore hands out one rectangle per plot it wrote into, and each
+  /// becomes one `glTexSubImage2D`. Per plot rather than per glyph because a
+  /// driver call costs more than the untouched texels in between, and per plot
+  /// rather than per atlas because two glyphs admitted into opposite corners
+  /// would otherwise union into the whole thing.
+  ///
+  /// ## Orientation, declared
+  ///
+  /// The atlas is **uploaded**, not rendered into, so [kYFlipTopDown] has
+  /// nothing to do with it: that uniform exists for a pass whose *output*
+  /// lands in a texture something else samples, and it inverts the projection
+  /// of the geometry being drawn. Here the texels are handed to the driver
+  /// directly. `glTexSubImage2D` writes the first row of the pointer it is
+  /// given at texture row `y`, and [GpuGlyphAtlas.pixels] is row-major
+  /// top-down like every mask this renderer produces, so atlas row `y` is
+  /// texture row `y` is texture coordinate `y / height` - which is exactly the
+  /// `v` `gpu_raster_sink.dart` computes for the top edge of a glyph's quad.
+  /// Top edge to top row: the coverage comes out the way it was rasterised.
+  ///
+  /// This is the same convention `_uploadMaskAtlas` above has always used, and
+  /// it is stated rather than inherited because getting it wrong draws text
+  /// upside down or mirrored, and the failure hides: Ahem's glyphs are solid
+  /// squares, so the test that would notice has to use a face whose glyphs are
+  /// asymmetric.
+  void _uploadGlyphAtlas() {
+    if (!_glyphAtlas.isDirty) return;
+    final int width = _glyphAtlas.width;
+    _glyphAtlas.forEachDirtyRegion((int x, int y, int regionWidth, int height) {
+      _glyphUploadCount++;
+      _device.uploadRegion(
+        _glyphTexture,
+        x: x,
+        y: y,
+        width: regionWidth,
+        height: height,
+        // A view, not a copy: `uploadRegion` repacks rows into its own staging
+        // buffer anyway, and this is the offset of the region's first texel.
+        pixels: Uint8List.sublistView(_glyphAtlas.pixels, y * width + x),
+        bytesPerRow: width,
+      );
+    });
+    _glyphAtlas.markUploaded();
+  }
+
   /// The backend's half of the atlas flush protocol - see
   /// [GpuRasterSink.onAtlasFlush] for the whole of it and for why the order
   /// below is the only safe one.
@@ -1192,8 +1306,15 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
   /// The clear travels with the *first* submission of a frame, whichever one
   /// that is, so a frame whose atlas filled up before its first present still
   /// starts from the requested background instead of the last frame's pixels.
+  /// Both atlases are uploaded, not just the one that ran out: the sink closed
+  /// its open batch before calling this, and the batches about to be issued
+  /// may sample a glyph *and* a mask this frame wrote. The sink calls
+  /// `markUploaded` on both afterwards, which the two methods below have
+  /// already done - it is idempotent, and doing it here as well is what makes
+  /// each of them correct when called from [present] too.
   void _flushAtlases() {
     _uploadMaskAtlas();
+    _uploadGlyphAtlas();
     final int? clear = _pendingClear;
     _pendingClear = null;
     _device.submit(
@@ -1237,9 +1358,15 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
     Transform2D deviceTransform = Transform2D.identity,
   }) async {
     final frame = beginFrame(FrameRequest(clearColor: clearColor));
+    // The sink is handed a font *id* and resolves it through the same resource
+    // table the player walks, so the two cannot disagree about which face an
+    // id names. Bound per list rather than per target because a target draws
+    // whatever list it is given.
+    final resources = DisplayListResources(list);
+    _fonts.bind(resources);
     _player.play(
       DisplayListReader(list),
-      DisplayListResources(list),
+      resources,
       deviceBounds: Rect.fromLTWH(
         0,
         0,
@@ -1301,7 +1428,47 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
     // idle, so disposing mid-frame would leak the ones still in flight.
     _layers.endFrame();
     _layerPool.dispose();
-    _device.releaseTexture(_maskTexture);
+    _device
+      ..releaseTexture(_maskTexture)
+      ..releaseTexture(_glyphTexture);
+    // The staging bytes go with the texture: keeping the entries would say a
+    // glyph is resident in a texture that no longer exists.
+    _glyphAtlas.clear();
+    _fonts.bind(null);
+  }
+}
+
+/// Turns the display list's interned font ids into faces for the sink.
+///
+/// The sink is handed a raw `fontId` because the player never asks what a
+/// glyph looks like - see [ReplayResources.fontAt] - so somebody who *does*
+/// have to rasterise has to be able to look one up. That somebody is a target,
+/// and the table it looks it up in is the one the player is walking, which is
+/// why this holds a [ReplayResources] rather than a map of its own: a second
+/// table would be a second answer to "what is font 3", and the two would
+/// disagree the first time a list was replayed with different resources.
+///
+/// [bind] is called before each play and with null on dispose. An unbound
+/// resolver answers null, which the sink turns into a named refusal rather
+/// than a wrong face - and that is the honest answer, because a font id means
+/// nothing without the list that interned it.
+final class GlFontResolver implements GpuFontResolver {
+  ReplayResources? _resources;
+
+  /// Points this resolver at the table [resources] ids belong to, or at
+  /// nothing when it is null.
+  void bind(ReplayResources? resources) => _resources = resources;
+
+  @override
+  ScaledTypeface? resolveFont(int fontId) {
+    final ReplayResources? resources = _resources;
+    if (resources == null) return null;
+    final Object font = resources.fontAt(fontId);
+    // Not a cast: the display list stores a font as an opaque `Object`, and a
+    // list built by something that interned another kind of face must be
+    // refused by name rather than crash with a type error in the middle of a
+    // frame.
+    return font is ScaledTypeface ? font : null;
   }
 }
 
@@ -1604,6 +1771,23 @@ final class GlRendererBackend implements RendererBackend {
           '$renderer, GL $version',
           detail: 'vendor: $vendor; ${context.description}; GLSL '
               '${gl.stringOf(glShadingLanguageVersion)}',
+        ),
+        // Text, reported because nothing else in this result can say it.
+        // [Capability] has no member for glyph rendering and
+        // [RendererCapabilities] has no field for it, so until this note
+        // existed a reader of a probe report had no way to tell a device that
+        // draws text from one that refuses a run by name - and this backend
+        // was, for several sections, the second kind. It is a note rather than
+        // a capability because adding an enum member is a change every backend
+        // switches on; see [GlRenderDevice.capabilities].
+        const BackendDiagnostic.note(
+          'text: drawn on the GPU from a resident alpha8 glyph atlas',
+          detail: 'every target this backend builds wires a GpuGlyphAtlas, the '
+              'texture it stages into and a GpuFontResolver, so a glyph run is '
+              'rasterised once and cached across frames rather than refused. '
+              'Coverage only - no colour glyphs, no SDF, and text under a '
+              'rotated, skewed or non-uniformly scaled transform is still '
+              'refused by name',
         ),
         BackendDiagnostic.note(
           windowed
