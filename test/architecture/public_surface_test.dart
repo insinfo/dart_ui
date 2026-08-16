@@ -130,6 +130,21 @@ void main() {
       expect(inflateZlib, isA<Function>());
     });
 
+    test('window media and safe-area APIs are nameable', () {
+      const MediaQueryData data = MediaQueryData(
+        size: Size(800, 600),
+        devicePixelRatio: 2,
+        padding: EdgeInsets.only(top: 24),
+      );
+      const Widget child = SizedBox(width: 1, height: 1);
+      const Widget safe = SafeArea(child: child);
+      const Widget query = MediaQuery(data: data, child: safe);
+
+      expect(data.orientation, Orientation.landscape);
+      expect(query, isA<MediaQuery>());
+      expect(safe, isA<SafeArea>());
+    });
+
     test('the application shell is nameable', () {
       // Not started - starting needs a backend and a window. Naming the types
       // is the point: an application has to be able to declare them.

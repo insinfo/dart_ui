@@ -161,6 +161,7 @@ import '../widgets/control.dart';
 import '../widgets/controls.dart' show ClipboardScope;
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
+import '../widgets/media_query.dart';
 import '../widgets/widget.dart';
 import 'window_host.dart';
 
@@ -606,6 +607,7 @@ final class ApplicationWindow with DisposableMixin {
   Widget _rootWidget;
   DisplayList? _painted;
   bool _rootMounted = false;
+  MediaQueryData? _mountedMediaQueryData;
   bool _needsFrame = true;
   bool _inFrame = false;
   bool _minimised = false;
@@ -728,10 +730,33 @@ final class ApplicationWindow with DisposableMixin {
   /// missing wrapper. An application that wants a different presentation - a
   /// real popup window, once windows are cheap enough to use for menus - passes
   /// its own scope further down; the nearest one wins.
-  Widget get _mountableRoot => ClipboardScope(
+  MediaQueryData get _mediaQueryData => MediaQueryData(
+        size: host.logicalSize,
+        devicePixelRatio: host.renderScale,
+      );
+
+  Widget get _mountableRoot {
+    final MediaQueryData media = _mediaQueryData;
+    _mountedMediaQueryData = media;
+    return MediaQuery(
+      data: media,
+      child: ClipboardScope(
         clipboard: application.clipboard,
         child: ContextMenuScope(child: _rootWidget),
-      );
+      ),
+    );
+  }
+
+  /// Replaces only the framework-owned root wrappers when window metrics move.
+  ///
+  /// The application widget remains the same object, so its element and every
+  /// state below it survive a resize or DPI change. Dependents of [MediaQuery]
+  /// rebuild through the ordinary inherited-widget path.
+  void _syncMediaQuery() {
+    if (!_rootMounted) return;
+    if (_mountedMediaQueryData == _mediaQueryData) return;
+    buildOwner.updateRoot(_mountableRoot);
+  }
 
   /// Marks this window's next frame dirty. Idempotent; many mutations coalesce
   /// into one. Never touches any other window - that is the whole point of the
@@ -950,6 +975,7 @@ final class ApplicationWindow with DisposableMixin {
       return;
     }
     pipelineOwner.rootConstraints = BoxConstraints.tight(logicalSize);
+    _syncMediaQuery();
 
     application._noteDrawing();
     _inFrame = true;
@@ -2054,6 +2080,7 @@ final class Application with DisposableMixin {
     if (size != null) {
       window.pipelineOwner.rootConstraints = BoxConstraints.tight(size);
     }
+    window._syncMediaQuery();
     if (outcome.needsFrame) window.requestFrame();
     _syncSuspension();
     return outcome.needsFrame ||

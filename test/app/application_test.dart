@@ -201,6 +201,43 @@ void main() {
     });
   });
 
+  group('window media', () {
+    test('size and render scale stay live in the root MediaQuery', () async {
+      final List<MediaQueryData> seen = <MediaQueryData>[];
+      final application = await _start(
+        size: const Size(8, 6),
+        renderScale: 1.5,
+        root: _MediaProbe(seen.add),
+      );
+      await application.drawFrame();
+
+      expect(seen.last.size, const Size(8, 6));
+      expect(seen.last.devicePixelRatio, 1.5);
+
+      final window = _window(application);
+      window.setBounds(const Rect.fromLTWH(0, 0, 20, 10));
+      application.backend.pumpEvents();
+      await application.drawFrame();
+
+      expect(seen.last.size, const Size(20, 10));
+      expect(seen.last.devicePixelRatio, 1.5);
+
+      application.handleEvent(WindowScaleChangedEvent(
+        windowId: window.id,
+        generation: window.generation,
+        renderScale: 2,
+        desktopScale: 2,
+      ));
+      await application.drawFrame();
+
+      expect(seen.last.size, const Size(20, 10));
+      expect(seen.last.devicePixelRatio, 2);
+
+      application.dispose();
+      await application.closed;
+    });
+  });
+
   group('input routing', () {
     test('a click reaches the widget under it and no other', () async {
       final pressed = <String>[];
@@ -603,6 +640,18 @@ final class _TwoButtons extends StatelessWidget {
           ],
         ),
       );
+}
+
+final class _MediaProbe extends StatelessWidget {
+  const _MediaProbe(this.onBuild);
+
+  final void Function(MediaQueryData data) onBuild;
+
+  @override
+  Widget build(BuildContext context) {
+    onBuild(MediaQuery.of(context));
+    return const ColoredBox(color: _background);
+  }
 }
 
 /// A backend that is present in the candidate list and cannot run, which is
