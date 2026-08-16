@@ -47,6 +47,7 @@ final class D3d12RendererBackend implements RendererBackend {
   RendererInfo get info => const RendererInfo(
         name: backendName,
         deviceDescription: 'Direct3D 12 over DXGI, flip-model swap chains',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   @override

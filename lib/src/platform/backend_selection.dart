@@ -33,6 +33,11 @@ enum RejectionReason {
 
   /// The caller asked for a different backend by name.
   notRequested,
+
+  /// The candidate is healthy, but the active high-level policy excludes its
+  /// class. For example, [RenderingPolicy.cpuOnly] excludes GPU paths even
+  /// when their probes succeed.
+  rejectedByPolicy,
 }
 
 final class BackendCandidate {
@@ -360,6 +365,27 @@ enum PresentationKind {
   cpu,
 }
 
+/// High-level choice between hardware and software presentation paths.
+///
+/// This policy deliberately knows nothing about Direct3D, Metal, OpenGL or a
+/// particular rasterization algorithm. Those are candidate details. Keeping
+/// the decision at the GPU/CPU boundary lets new renderer implementations join
+/// selection without adding another branch here.
+enum RenderingPolicy {
+  /// Prefer the candidate order supplied by the platform resolver. A normal
+  /// resolver places GPU paths first and keeps a CPU path as the final
+  /// fallback.
+  auto,
+
+  /// Accept GPU presentation only. Failure is reported instead of falling
+  /// back to software.
+  gpuOnly,
+
+  /// Accept CPU presentation only. Useful for deterministic diagnostics,
+  /// remote sessions and machines where power use matters more than fill rate.
+  cpuOnly,
+}
+
 /// The capability a GPU presentation path must advertise.
 ///
 /// This is the extension point [selectPresentation] hangs its GPU branch on,
@@ -415,6 +441,7 @@ final class PresentationSelection {
     required this.requested,
     required this.overrideSource,
     required this.gpuPresentationCapability,
+    required this.renderingPolicy,
   });
 
   /// Null when nothing qualified. [describe] then says what was tried.
@@ -428,6 +455,8 @@ final class PresentationSelection {
   /// unwired. Reported because "no GPU path qualified" means something very
   /// different in the two cases.
   final Capability? gpuPresentationCapability;
+
+  final RenderingPolicy renderingPolicy;
 
   bool get isSuccess => chosen != null;
 
@@ -461,6 +490,7 @@ final class PresentationSelection {
       '  gpu capability: ${gpuPresentationCapability?.name ?? 'none supplied '
           '(see kGpuPresentationCapability)'}',
     );
+    buffer.writeln('  rendering policy: ${renderingPolicy.name}');
     if (rejected.isEmpty) {
       buffer.writeln('  passed over: none');
     } else {
@@ -500,6 +530,7 @@ PresentationSelection selectPresentation(
   Map<String, String> environment = const <String, String>{},
   bool allowExperimental = false,
   Capability? gpuPresentationCapability = kGpuPresentationCapability,
+  RenderingPolicy renderingPolicy = RenderingPolicy.auto,
 }) {
   final override = resolveSelectionOverride(
     explicit: requested,
@@ -531,6 +562,21 @@ PresentationSelection selectPresentation(
         name: candidate.name,
         reason: RejectionReason.notRequested,
         probe: candidate.probe,
+      ));
+      continue;
+    }
+    final bool excludedByPolicy = switch (renderingPolicy) {
+      RenderingPolicy.auto => false,
+      RenderingPolicy.gpuOnly => candidate.kind != PresentationKind.gpu,
+      RenderingPolicy.cpuOnly => candidate.kind != PresentationKind.cpu,
+    };
+    if (excludedByPolicy) {
+      rejected.add(BackendRejection(
+        name: candidate.name,
+        reason: RejectionReason.rejectedByPolicy,
+        probe: candidate.probe,
+        detail: '${renderingPolicy.name} excludes ${candidate.kind.name} '
+            'presentation paths',
       ));
       continue;
     }
@@ -584,6 +630,7 @@ PresentationSelection selectPresentation(
     requested: pinned,
     overrideSource: override.source,
     gpuPresentationCapability: gpuPresentationCapability,
+    renderingPolicy: renderingPolicy,
   );
 }
 

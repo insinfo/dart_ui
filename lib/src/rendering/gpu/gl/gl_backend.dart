@@ -2071,6 +2071,7 @@ final class GlRendererBackend implements RendererBackend {
   RendererInfo get info => const RendererInfo(
         name: backendName,
         deviceDescription: 'OpenGL via EGL, offscreen framebuffer objects',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   /// Both descriptors this backend knows how to build a target for.
@@ -2382,6 +2383,7 @@ final class GlRendererBackend implements RendererBackend {
         name: backendName,
         deviceDescription: gl.stringOf(glRenderer),
         driverVersion: gl.stringOf(glVersion),
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       ),
       maxTextureSize: _queryMaxTextureSize(gl, heap),
     );

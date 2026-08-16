@@ -138,6 +138,7 @@ library;
 import 'dart:async';
 
 import '../diagnostics/dev_overlay.dart';
+import '../foundation/collections.dart';
 import '../foundation/diagnostics.dart';
 import '../foundation/lifecycle.dart';
 import '../geometry/offset.dart';
@@ -156,12 +157,15 @@ import '../rendering/cpu_renderer.dart';
 import '../rendering/renderer.dart';
 import '../scheduler/frame_scheduler.dart';
 import '../scheduler/manual_dispatcher.dart';
+import '../text/shaper.dart' show TextDirection;
 import '../widgets/context_menu.dart' show ContextMenuScope;
 import '../widgets/control.dart';
 import '../widgets/controls.dart' show ClipboardScope;
+import '../widgets/dart_ui_app.dart';
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
 import '../widgets/media_query.dart';
+import '../widgets/theme.dart';
 import '../widgets/widget.dart';
 import 'window_host.dart';
 
@@ -216,6 +220,8 @@ final class PresentationPathEntry {
     required this.kind,
     required this.probe,
     required this.attach,
+    required this.rasterizationApproach,
+    this.compatibleWindowingBackends,
     this.experimental = false,
   });
 
@@ -228,10 +234,13 @@ final class PresentationPathEntry {
     required String deviceDescription,
     required RetainedCpuPresenter Function(NativeWindow window) create,
     BackendProbeResult Function()? probe,
+    Set<String>? compatibleWindowingBackends,
   }) =>
       PresentationPathEntry(
         name: name,
         kind: PresentationKind.cpu,
+        rasterizationApproach: RasterizationApproach.softwareScanline,
+        compatibleWindowingBackends: compatibleWindowingBackends,
         probe: probe ??
             () => BackendProbeResult(
                   backendName: name,
@@ -253,6 +262,7 @@ final class PresentationPathEntry {
           info: RendererInfo(
             name: name,
             deviceDescription: deviceDescription,
+            rasterizationApproach: RasterizationApproach.softwareScanline,
           ),
           presenter: create(window),
         ),
@@ -269,13 +279,54 @@ final class PresentationPathEntry {
       PresentationPathEntry(
         name: name ?? backend.info.name,
         kind: PresentationKind.cpu,
+        rasterizationApproach: backend.info.rasterizationApproach,
         probe: backend.probe,
         attach: (NativeWindow window) =>
             RenderTargetPresenter.attach(backend: backend, window: window),
       );
 
+  /// A renderer that replays display lists directly into a native window.
+  ///
+  /// This is the extension seam for GPU rasterization families. A backend may
+  /// use analytic coverage, tessellation, stencil-and-cover, compute tiles, or
+  /// a custom strategy; application and compositor code only see the common
+  /// [RendererBackend] and [DisplayListRenderTarget] contracts.
+  factory PresentationPathEntry.directRenderer({
+    required RendererBackend backend,
+    required RendererWindowAttachmentFactory createAttachment,
+    String? name,
+    Set<String>? compatibleWindowingBackends,
+    bool experimental = false,
+  }) =>
+      PresentationPathEntry(
+        name: name ?? backend.info.name,
+        kind: PresentationKind.gpu,
+        rasterizationApproach: backend.info.rasterizationApproach,
+        compatibleWindowingBackends: compatibleWindowingBackends,
+        experimental: experimental,
+        probe: backend.probe,
+        attach: (NativeWindow window) => RenderTargetPresenter.attachToWindow(
+          backend: backend,
+          window: window,
+          createAttachment: createAttachment,
+        ),
+      );
+
   final String name;
   final PresentationKind kind;
+
+  /// How arbitrary vector paths reach pixels on this path.
+  ///
+  /// Selection does not branch on this value. It is observable metadata and
+  /// the registration point for future tessellation, stencil-and-cover and
+  /// compute implementations under the same presentation contract.
+  final RasterizationApproach rasterizationApproach;
+
+  /// Windowing backend entry names this path can attach to, or null when it is
+  /// portable. The check happens after windowing selection but before a native
+  /// window is created, preventing a retained native presenter from winning a
+  /// headless fallback and failing later on a type cast.
+  final Set<String>? compatibleWindowingBackends;
 
   /// Asked once, during selection. Must not throw: a probe that throws takes
   /// the whole selection down instead of losing one candidate.
@@ -287,6 +338,20 @@ final class PresentationPathEntry {
   final Future<SurfacePresenter> Function(NativeWindow window) attach;
 
   final bool experimental;
+
+  BackendProbeResult probeForWindowingBackend(String backendName) {
+    final Set<String>? compatible = compatibleWindowingBackends;
+    if (compatible == null || compatible.contains(backendName)) return probe();
+    return BackendProbeResult.unsupported(
+      name,
+      BackendDiagnostic(
+        kind: DiagnosticKind.rejectedByPolicy,
+        message: '$name cannot attach to the selected $backendName windowing '
+            'backend',
+        detail: 'compatible windowing backends: ${compatible.join(', ')}',
+      ),
+    );
+  }
 }
 
 /// Everything an application can be configured with before it starts.
@@ -313,12 +378,130 @@ final class ApplicationOptions {
     this.maximumSize,
     this.windowBackgroundColor,
     this.gpuPresentationCapability = kGpuPresentationCapability,
+    this.renderingPolicy = RenderingPolicy.auto,
+    this.theme = ThemeData.neutralLight,
+    this.textDirection = TextDirection.leftToRight,
+    this.headlessRenderScale = 1.0,
     this.arguments = const <String>[],
     this.environment = const <String, String>{},
     this.clipboard,
     this.onError,
     this.onDiagnostic,
-  });
+  }) : assert(headlessRenderScale > 0);
+
+  /// Builds the common application options directly from process arguments.
+  ///
+  /// Recognised flags are `--dark`, `--light`, `--gpu`, `--cpu`,
+  /// `--headless`, `--scale N` and `--frames N`. Backend and presentation
+  /// flags remain in [arguments] and are interpreted by the ordinary selection
+  /// machinery, so there is only one precedence rule for them.
+  factory ApplicationOptions.fromArguments(
+    List<String> arguments, {
+    String title = 'dart_ui',
+    Size size = const Size(800, 600),
+    bool visible = false,
+    int? clearColor,
+    bool showDevOverlay = false,
+    Duration devOverlayInterval = const Duration(milliseconds: 500),
+    Duration idleTimeout = const Duration(milliseconds: 250),
+    int frameBudget = 0,
+    String? requestedBackend,
+    String? requestedPresentation,
+    List<String> preferredBackends = const <String>[],
+    List<String> preferredPresentations = const <String>[],
+    Set<Capability> requiredCapabilities = const <Capability>{
+      Capability.window,
+    },
+    bool allowExperimentalBackends = false,
+    bool suspendWhenDeactivated = false,
+    bool exitWhenLastWindowClosed = true,
+    bool liveResize = true,
+    Size? minimumSize,
+    Size? maximumSize,
+    int? windowBackgroundColor,
+    Capability? gpuPresentationCapability = kGpuPresentationCapability,
+    RenderingPolicy renderingPolicy = RenderingPolicy.auto,
+    ThemeData theme = ThemeData.neutralLight,
+    TextDirection textDirection = TextDirection.leftToRight,
+    double headlessRenderScale = 1.0,
+    Map<String, String> environment = const <String, String>{},
+    Clipboard? clipboard,
+    void Function(FrameworkError error)? onError,
+    void Function(BackendDiagnostic diagnostic)? onDiagnostic,
+  }) {
+    final bool dark = arguments.contains('--dark');
+    final bool light = arguments.contains('--light');
+    if (dark && light) {
+      throw ArgumentError('use only one of --dark and --light');
+    }
+    final bool gpu = arguments.contains('--gpu');
+    final bool cpu = arguments.contains('--cpu');
+    if (gpu && cpu) {
+      throw ArgumentError('use only one of --gpu and --cpu');
+    }
+
+    final String? framesValue = _argumentValue(arguments, '--frames');
+    final int parsedFrames = framesValue == null
+        ? frameBudget
+        : _parseNonNegativeInt(framesValue, '--frames');
+    final String? scaleValue = _argumentValue(arguments, '--scale');
+    final double parsedScale = scaleValue == null
+        ? headlessRenderScale
+        : _parsePositiveDouble(scaleValue, '--scale');
+    final String? backendArgument = _argumentValue(arguments, '--backend');
+    final bool headless = arguments.contains('--headless');
+    if (headless && backendArgument != null && backendArgument != 'headless') {
+      throw ArgumentError('--headless conflicts with --backend '
+          '$backendArgument');
+    }
+    if (headless &&
+        requestedBackend != null &&
+        requestedBackend != 'headless') {
+      throw ArgumentError('--headless conflicts with requestedBackend '
+          '$requestedBackend');
+    }
+
+    return ApplicationOptions(
+      title: title,
+      size: size,
+      visible: visible,
+      clearColor: clearColor,
+      showDevOverlay: showDevOverlay,
+      devOverlayInterval: devOverlayInterval,
+      idleTimeout: idleTimeout,
+      frameBudget: parsedFrames,
+      requestedBackend: headless ? 'headless' : requestedBackend,
+      requestedPresentation: requestedPresentation,
+      preferredBackends: preferredBackends,
+      preferredPresentations: preferredPresentations,
+      requiredCapabilities: requiredCapabilities,
+      allowExperimentalBackends: allowExperimentalBackends,
+      suspendWhenDeactivated: suspendWhenDeactivated,
+      exitWhenLastWindowClosed: exitWhenLastWindowClosed,
+      liveResize: liveResize,
+      minimumSize: minimumSize,
+      maximumSize: maximumSize,
+      windowBackgroundColor: windowBackgroundColor,
+      gpuPresentationCapability: gpuPresentationCapability,
+      renderingPolicy: gpu
+          ? RenderingPolicy.gpuOnly
+          : cpu
+              ? RenderingPolicy.cpuOnly
+              : renderingPolicy,
+      theme: dark
+          ? ThemeData.neutralDark
+          : light
+              ? ThemeData.neutralLight
+              : theme,
+      textDirection: textDirection,
+      headlessRenderScale: parsedScale,
+      arguments: List<String>.unmodifiable(arguments),
+      environment: environment,
+      clipboard: clipboard,
+      onError: onError,
+      onDiagnostic: onDiagnostic,
+    );
+  }
 
   final String title;
 
@@ -471,10 +654,23 @@ final class ApplicationOptions {
   final int? windowBackgroundColor;
 
   /// Passed through to [selectPresentation]. Defaults to
-  /// [kGpuPresentationCapability]; setting it to null makes every GPU path
-  /// rejected by name rather than silently outranked, which is the right
-  /// setting for an application that wants to prove it is on the CPU path.
+  /// [kGpuPresentationCapability]. Set [renderingPolicy] to
+  /// [RenderingPolicy.cpuOnly] to require software rendering. A null value is
+  /// reserved for hosts that have not wired a GPU capability vocabulary and
+  /// therefore cannot verify GPU candidates.
   final Capability? gpuPresentationCapability;
+
+  /// Whether presentation may use GPU paths, CPU paths, or the ranked
+  /// GPU-first chain supplied by the resolver.
+  final RenderingPolicy renderingPolicy;
+
+  /// Defaults installed by the framework-owned [DartUiApp] wrapper.
+  final ThemeData theme;
+  final TextDirection textDirection;
+
+  /// Pixel scale used when the automatically selected backend is headless.
+  /// Native windows obtain their scale from the operating system.
+  final double headlessRenderScale;
 
   /// The process arguments, consulted for `--backend` and `--presentation`.
   final List<String> arguments;
@@ -507,6 +703,44 @@ final class ApplicationOptions {
 
   /// Where a non-fatal presentation failure goes.
   final void Function(BackendDiagnostic diagnostic)? onDiagnostic;
+}
+
+String? _argumentValue(List<String> arguments, String flag) {
+  for (var index = 0; index < arguments.length; index++) {
+    final String argument = arguments[index];
+    if (argument.startsWith('$flag=')) {
+      final String value = argument.substring(flag.length + 1);
+      if (value.isEmpty) {
+        throw ArgumentError('$flag requires a value');
+      }
+      return value;
+    }
+    if (argument == flag) {
+      if (index + 1 >= arguments.length ||
+          arguments[index + 1].startsWith('-')) {
+        throw ArgumentError('$flag requires a value');
+      }
+      return arguments[index + 1];
+    }
+  }
+  return null;
+}
+
+int _parseNonNegativeInt(String source, String flag) {
+  final int? value = int.tryParse(source);
+  if (value == null || value < 0) {
+    throw ArgumentError.value(source, flag, 'expected a non-negative integer');
+  }
+  return value;
+}
+
+double _parsePositiveDouble(String source, String flag) {
+  final double? value = double.tryParse(source);
+  if (value == null || !value.isFinite || value <= 0) {
+    throw ArgumentError.value(
+        source, flag, 'expected a finite positive number');
+  }
+  return value;
 }
 
 /// Mounts a widget tree on a real window and runs it to completion.
@@ -742,7 +976,13 @@ final class ApplicationWindow with DisposableMixin {
       data: media,
       child: ClipboardScope(
         clipboard: application.clipboard,
-        child: ContextMenuScope(child: _rootWidget),
+        child: ContextMenuScope(
+          child: DartUiApp(
+            theme: application.options.theme,
+            textDirection: application.options.textDirection,
+            home: _rootWidget,
+          ),
+        ),
       ),
     );
   }
@@ -1086,9 +1326,13 @@ final class Application with DisposableMixin {
     required this.windowingSelection,
     required this.presentationSelection,
     required PresentationPathEntry presentationPath,
+    required List<PresentationPathEntry> presentationPaths,
+    required Map<String, BackendProbeResult> presentationProbes,
     required DisposableBag resources,
     required List<String> teardownOrder,
   })  : _presentationPath = presentationPath,
+        _presentationPaths = presentationPaths,
+        _presentationProbes = presentationProbes,
         _resources = resources,
         _teardownOrder = teardownOrder;
 
@@ -1143,13 +1387,20 @@ final class Application with DisposableMixin {
     final backend = instances[windowingSelection.chosen!.name]!;
 
     // --- 2. presentation path ------------------------------------------
+    final Map<String, BackendProbeResult> presentationProbes =
+        <String, BackendProbeResult>{
+      for (final path in paths)
+        path.name: path.probeForWindowingBackend(
+          windowingSelection.chosen!.name,
+        ),
+    };
     final presentationSelection = selectPresentation(
       <PresentationCandidate>[
         for (final path in paths)
           PresentationCandidate(
             name: path.name,
             kind: path.kind,
-            probe: path.probe(),
+            probe: presentationProbes[path.name]!,
             experimental: path.experimental,
           ),
       ],
@@ -1159,6 +1410,7 @@ final class Application with DisposableMixin {
       arguments: options.arguments,
       environment: options.environment,
       gpuPresentationCapability: options.gpuPresentationCapability,
+      renderingPolicy: options.renderingPolicy,
     );
     if (!presentationSelection.isSuccess) throw presentationSelection.toError();
     final path = paths.firstWhere(
@@ -1184,6 +1436,8 @@ final class Application with DisposableMixin {
         windowingSelection: windowingSelection,
         presentationSelection: presentationSelection,
         presentationPath: path,
+        presentationPaths: List<PresentationPathEntry>.unmodifiable(paths),
+        presentationProbes: presentationProbes,
         resources: resources,
         teardownOrder: teardown,
       );
@@ -1208,9 +1462,11 @@ final class Application with DisposableMixin {
   /// The full windowing report - chosen, and every candidate passed over with
   /// the named reason. Worth logging on every startup, not only on failure.
   final BackendSelection windowingSelection;
-  final PresentationSelection presentationSelection;
+  PresentationSelection presentationSelection;
 
-  final PresentationPathEntry _presentationPath;
+  PresentationPathEntry _presentationPath;
+  final List<PresentationPathEntry> _presentationPaths;
+  final Map<String, BackendProbeResult> _presentationProbes;
   final DisposableBag _resources;
   final List<String> _teardownOrder;
   final FrameStatistics statistics = FrameStatistics();
@@ -1528,7 +1784,42 @@ final class Application with DisposableMixin {
       });
 
       // --- b. presenter and host ---------------------------------------
-      final presenter = await _presentationPath.attach(native);
+      late SurfacePresenter presenter;
+      while (true) {
+        try {
+          presenter = await _presentationPath.attach(native);
+          break;
+        } on Object catch (error) {
+          // A pinned path is a demand, not a preference. Falling back would
+          // make --presentation useful for neither testing nor diagnostics.
+          // Existing windows also keep their renderer: silently changing the
+          // renderer only for a later window would make one application have
+          // two different visual contracts.
+          if (presentationSelection.requested != null || _windows.isNotEmpty) {
+            rethrow;
+          }
+          final String failedName = _presentationPath.name;
+          final BackendDiagnostic failure = BackendDiagnostic(
+            kind: DiagnosticKind.surfaceCreationFailed,
+            message: '$failedName passed its probe but could not attach to '
+                'the ${windowingSelection.chosen!.name} window',
+            detail: '$error',
+          );
+          options.onDiagnostic?.call(failure);
+          _presentationProbes[failedName] = BackendProbeResult.unsupported(
+            failedName,
+            failure,
+          );
+          presentationSelection = _selectPresentation();
+          if (!presentationSelection.isSuccess) {
+            throw presentationSelection.toError();
+          }
+          _presentationPath = _presentationPaths.firstWhere(
+            (PresentationPathEntry entry) =>
+                entry.name == presentationSelection.chosen!.name,
+          );
+        }
+      }
       final host = WindowHost(
         window: native,
         presenter: presenter,
@@ -1656,6 +1947,25 @@ final class Application with DisposableMixin {
     }
     return appWindow;
   }
+
+  PresentationSelection _selectPresentation() => selectPresentation(
+        <PresentationCandidate>[
+          for (final path in _presentationPaths)
+            PresentationCandidate(
+              name: path.name,
+              kind: path.kind,
+              probe: _presentationProbes[path.name]!,
+              experimental: path.experimental,
+            ),
+        ],
+        requested: options.requestedPresentation,
+        preferred: options.preferredPresentations,
+        allowExperimental: options.allowExperimentalBackends,
+        arguments: options.arguments,
+        environment: options.environment,
+        gpuPresentationCapability: options.gpuPresentationCapability,
+        renderingPolicy: options.renderingPolicy,
+      );
 
   /// Closes every live popup and tooltip, optionally sparing one subtree.
   ///
@@ -2224,8 +2534,4 @@ final class Application with DisposableMixin {
   String toString() => 'Application(state: ${_state.name}, '
       'backend: ${backend.name}, windows: ${_windows.length}, '
       'frames: $framesPresented)';
-}
-
-extension _LastOrNull<T> on List<T> {
-  T? get lastOrNull => isEmpty ? null : this[length - 1];
 }

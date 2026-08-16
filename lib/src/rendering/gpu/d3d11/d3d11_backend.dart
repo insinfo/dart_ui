@@ -1233,6 +1233,7 @@ final class D3d11RenderDevice
           'Direct3D 11 (${attempt.driverTypeName})',
       driverVersion: 'feature level '
           '${d3dFeatureLevelName(attempt.featureLevel)}',
+      rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
     );
 
     // Cleared only now, and only once a device exists: every creation call
@@ -2316,6 +2317,7 @@ final class D3d11RendererBackend implements RendererBackend {
   RendererInfo get info => const RendererInfo(
         name: backendName,
         deviceDescription: 'Direct3D 11 via DXGI',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   /// Why the HLSL is compiled at run time instead of embedded as bytecode.
@@ -2514,6 +2516,7 @@ final class D3d11RendererBackend implements RendererBackend {
             'Direct3D 11 (${attempt.driverTypeName})',
         driverVersion: 'feature level '
             '${d3dFeatureLevelName(attempt.featureLevel)}',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       ),
     );
     final BackendDiagnostic? failure = device._initialise();

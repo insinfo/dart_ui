@@ -284,6 +284,7 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
         driverVersion:
             'Vulkan ${vkVersionText(gpu.physicalDevice.apiVersion)}, driver '
             '0x${gpu.physicalDevice.driverVersion.toRadixString(16)}',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   @override
@@ -1409,6 +1410,7 @@ final class VulkanRendererBackend implements RendererBackend {
   RendererInfo get info => const RendererInfo(
         name: backendName,
         deviceDescription: 'Vulkan',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   @override

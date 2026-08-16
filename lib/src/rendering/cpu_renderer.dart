@@ -1280,6 +1280,7 @@ final class CpuRenderDevice with DisposableMixin implements RenderDevice {
   RendererInfo get info => const RendererInfo(
         name: 'cpu',
         deviceDescription: 'software scanline rasteriser',
+        rasterizationApproach: RasterizationApproach.softwareScanline,
       );
 
   @override
@@ -1326,6 +1327,7 @@ final class CpuRendererBackend implements RendererBackend {
   RendererInfo get info => const RendererInfo(
         name: 'cpu',
         deviceDescription: 'software scanline rasteriser',
+        rasterizationApproach: RasterizationApproach.softwareScanline,
       );
 
   @override

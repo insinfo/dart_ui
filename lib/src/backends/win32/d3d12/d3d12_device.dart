@@ -944,6 +944,7 @@ final class D3d12RenderDevice
         name: backendName,
         deviceDescription: _adapterDescription,
         driverVersion: 'feature level $featureLevelText',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   /// What this device can do, answered field by field.

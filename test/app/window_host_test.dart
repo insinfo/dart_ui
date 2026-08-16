@@ -344,7 +344,11 @@ void main() {
       final host = WindowHost(
         window: window,
         presenter: CallbackSurfacePresenter.retained(
-          info: const RendererInfo(name: 'async only', deviceDescription: 'x'),
+          info: const RendererInfo(
+            name: 'async only',
+            deviceDescription: 'x',
+            rasterizationApproach: RasterizationApproach.softwareScanline,
+          ),
           presenter: (
             present: (
               DisplayList list, {
@@ -372,7 +376,11 @@ void main() {
       final host = WindowHost(
         window: window,
         presenter: CallbackSurfacePresenter.retained(
-          info: const RendererInfo(name: 'both', deviceDescription: 'x'),
+          info: const RendererInfo(
+            name: 'both',
+            deviceDescription: 'x',
+            rasterizationApproach: RasterizationApproach.softwareScanline,
+          ),
           presenter: (
             present: (
               DisplayList list, {
@@ -415,7 +423,11 @@ void main() {
       var released = 0;
       final seen = <int?>[];
       final presenter = CallbackSurfacePresenter.retained(
-        info: const RendererInfo(name: 'fake', deviceDescription: 'test'),
+        info: const RendererInfo(
+          name: 'fake',
+          deviceDescription: 'test',
+          rasterizationApproach: RasterizationApproach.softwareScanline,
+        ),
         presenter: (
           present: (
             DisplayList list, {
@@ -472,8 +484,11 @@ final class _RecordingPresenter
   bool recoverySucceeds = true;
 
   @override
-  RendererInfo get info =>
-      const RendererInfo(name: 'recording', deviceDescription: 'test double');
+  RendererInfo get info => const RendererInfo(
+        name: 'recording',
+        deviceDescription: 'test double',
+        rasterizationApproach: RasterizationApproach.custom,
+      );
 
   @override
   Future<PresentResult> present(
@@ -529,6 +544,7 @@ final class _MemoryHostileBackend implements RendererBackend {
   RendererInfo get info => const RendererInfo(
         name: 'picky',
         deviceDescription: 'wants a swapchain and will not take memory',
+        rasterizationApproach: RasterizationApproach.custom,
       );
 
   @override

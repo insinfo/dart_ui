@@ -226,6 +226,7 @@ final class WebGlRenderDevice
       info: RendererInfo(
         name: WebGlRendererBackend.backendName,
         deviceDescription: describeWebGlContext(gl),
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       ),
       maxTextureSize: maxTextureSize,
     );
@@ -2086,6 +2087,7 @@ final class WebGlRendererBackend implements RendererBackend {
   RendererInfo get info => const RendererInfo(
         name: backendName,
         deviceDescription: 'WebGL2 on an HTML canvas',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   /// Both descriptors this backend knows how to build a target for.

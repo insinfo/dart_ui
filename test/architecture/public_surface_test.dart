@@ -152,6 +152,13 @@ void main() {
       expect(options, isA<ApplicationOptions>());
       expect(runApp, isA<Function>());
       expect(ApplicationLifecycleState.values, isNotEmpty);
+      expect(RenderingPolicy.values, isNotEmpty);
+      expect(RasterizationApproach.values, isNotEmpty);
+      expect(PlatformBackendResolver.defaultBackends(), isNotEmpty);
+      const Widget app = DartUiApp(
+        home: SizedBox(width: 1, height: 1),
+      );
+      expect(app, isA<DartUiApp>());
     });
 
     test('rendering contracts are nameable without naming a backend', () {

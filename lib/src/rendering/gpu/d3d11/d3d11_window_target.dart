@@ -111,7 +111,7 @@ import 'd3d11_surface_descriptor.dart';
 /// A render target backed by a swap chain's back buffer.
 final class D3d11WindowTarget
     with DisposableMixin
-    implements RenderTarget, D3d11RecoverableTarget {
+    implements DisplayListRenderTarget, D3d11RecoverableTarget {
   /// Wraps [surface] for [device].
   ///
   /// Public - unlike [D3d11OffscreenTarget]'s constructor, which is also public,
@@ -576,6 +576,7 @@ final class D3d11WindowTarget
   /// a caller - or a test - can swap one target for the other and compare what
   /// happened, which is the only way to check that the windowed path draws the
   /// same geometry as the path the parity tests cover.
+  @override
   Future<PresentResult> renderDisplayList(
     DisplayList list, {
     int? clearColor,

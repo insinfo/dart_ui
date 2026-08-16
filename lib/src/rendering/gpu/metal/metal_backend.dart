@@ -94,6 +94,7 @@ final class MetalRendererBackend implements RendererBackend {
         deviceDescription:
             'Metal via the Objective-C runtime, rendering into a shared '
             'IOSurface (ADR 0005)',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   /// Whether this backend can present to [surface].
@@ -379,6 +380,7 @@ final class MetalRenderDevice with DisposableMixin implements RenderDevice {
   RendererInfo get info => RendererInfo(
         name: MetalRendererBackend.backendName,
         deviceDescription: 'Metal on $deviceName, offscreen only',
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 
   /// What this device can do **today**, which is less than Metal can.

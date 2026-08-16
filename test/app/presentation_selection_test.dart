@@ -36,6 +36,37 @@ PresentationCandidate path(
 
 void main() {
   group('the GPU extension point', () {
+    test('rendering policy can force either presentation family', () {
+      final List<PresentationCandidate> candidates = <PresentationCandidate>[
+        path(
+          'gpu',
+          kind: PresentationKind.gpu,
+          capabilities: const <Capability>{Capability.gpuPresentation},
+        ),
+        path(
+          'cpu',
+          capabilities: const <Capability>{Capability.cpuPresentation},
+        ),
+      ];
+
+      final PresentationSelection cpu = selectPresentation(
+        candidates,
+        renderingPolicy: RenderingPolicy.cpuOnly,
+      );
+      final PresentationSelection gpu = selectPresentation(
+        candidates,
+        renderingPolicy: RenderingPolicy.gpuOnly,
+      );
+
+      expect(cpu.chosen?.name, 'cpu');
+      expect(
+        cpu.rejected.single.reason,
+        RejectionReason.rejectedByPolicy,
+      );
+      expect(gpu.chosen?.name, 'gpu');
+      expect(gpu.renderingPolicy, RenderingPolicy.gpuOnly);
+    });
+
     test('by default a GPU path is verified against gpuPresentation', () {
       final selection = selectPresentation(<PresentationCandidate>[
         path(

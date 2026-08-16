@@ -79,7 +79,7 @@ import 'gl_surface_descriptor.dart';
 /// A render target backed by a window's back buffer.
 final class GlWindowTarget
     with DisposableMixin
-    implements RenderTarget, GlRecoverableTarget {
+    implements DisplayListRenderTarget, GlRecoverableTarget {
   /// Wraps [surface] for [device].
   ///
   /// The constructor is public - unlike [GlOffscreenTarget]'s - because this
@@ -510,6 +510,7 @@ final class GlWindowTarget
   /// caller - or a test - can swap one target for the other and compare what
   /// happened, which is the only way to check that the windowed path draws the
   /// same geometry as the path the golden tests cover.
+  @override
   Future<PresentResult> renderDisplayList(
     DisplayList list, {
     int? clearColor,

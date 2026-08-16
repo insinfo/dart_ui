@@ -37,12 +37,19 @@
 /// 6.2 exists to prevent.
 library;
 
+import 'src/app/application.dart' as app;
+import 'src/backends/default_platform_resolver_stub.dart'
+    if (dart.library.io) 'src/backends/default_platform_resolver.dart';
+import 'src/widgets/widget.dart';
+
 export 'src/animation/animation.dart';
 export 'src/animation/clock.dart';
 export 'src/animation/curves.dart';
 export 'src/animation/keyframes.dart';
 export 'src/animation/simulation.dart';
-export 'src/app/app.dart';
+export 'src/app/app.dart' hide runApp;
+export 'src/backends/default_platform_resolver_stub.dart'
+    if (dart.library.io) 'src/backends/default_platform_resolver.dart';
 export 'src/backends/headless/headless_backend.dart';
 export 'src/backends/headless/headless_test_support.dart';
 export 'src/diagnostics/dev_overlay.dart';
@@ -127,6 +134,7 @@ export 'src/widgets/actions.dart';
 export 'src/widgets/basic.dart' hide RenderColoredBox;
 export 'src/widgets/control.dart';
 export 'src/widgets/controls.dart';
+export 'src/widgets/dart_ui_app.dart';
 export 'src/widgets/directionality.dart';
 export 'src/widgets/element.dart';
 export 'src/widgets/errors.dart';
@@ -147,3 +155,25 @@ export 'src/widgets/semantics.dart';
 export 'src/widgets/style.dart';
 export 'src/widgets/theme.dart';
 export 'src/widgets/widget.dart';
+
+/// Mounts [rootWidget] using production platform defaults.
+///
+/// Supplying [backends] or [presentations] keeps the low-level injection seam
+/// available for tests, custom platforms and experimental renderers. Omitting
+/// them selects the native window backend, ranks registered direct GPU paths
+/// first (D3D11/OpenGL today), and retains CPU/headless paths as diagnosed
+/// fallbacks.
+Future<app.Application> runApp(
+  Widget rootWidget, {
+  List<app.WindowingBackendEntry>? backends,
+  List<app.PresentationPathEntry>? presentations,
+  app.ApplicationOptions options = const app.ApplicationOptions(),
+}) =>
+    app.runApp(
+      rootWidget,
+      backends:
+          backends ?? PlatformBackendResolver.defaultBackends(options: options),
+      presentations:
+          presentations ?? PlatformBackendResolver.defaultPresentations(),
+      options: options,
+    );

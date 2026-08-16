@@ -109,6 +109,25 @@ typedef RetainedCpuPresenter = ({
   void Function() release,
 });
 
+/// A native surface created for a renderer device and borrowed window.
+///
+/// The release callback owns API objects such as a swapchain or GL context,
+/// never the window. It is separate from [RenderTarget.dispose] because a
+/// target owns shader resources while the platform adapter owns the object
+/// that connects those resources to the compositor.
+typedef RendererWindowAttachment = ({
+  RenderDevice device,
+  NativeSurfaceDescriptor surface,
+  void Function() releaseSurface,
+  bool releaseSurfaceBeforeDevice,
+});
+
+typedef RendererWindowAttachmentFactory = Future<RendererWindowAttachment>
+    Function(
+  RendererBackend backend,
+  NativeWindow window,
+);
+
 /// Anything that can turn a display list into presented pixels for one window.
 ///
 /// The interface is narrow on purpose. A host needs to draw, to be told the
@@ -656,10 +675,18 @@ final class RenderTargetPresenter
     required RenderDevice device,
     required RenderTarget target,
     required NativeSurfaceDescriptor surface,
+    NativeWindow? window,
+    RendererWindowAttachmentFactory? attachmentFactory,
+    void Function()? releaseSurface,
+    bool releaseSurfaceBeforeDevice = true,
   })  : _backend = backend,
         _device = device,
         _target = target,
-        _surface = surface;
+        _surface = surface,
+        _window = window,
+        _attachmentFactory = attachmentFactory,
+        _releaseSurface = releaseSurface ?? _doNothing,
+        _releaseSurfaceBeforeDevice = releaseSurfaceBeforeDevice;
 
   /// Opens a device on [backend] and binds it to a surface of [window].
   ///
@@ -710,10 +737,51 @@ final class RenderTargetPresenter
     );
   }
 
+  /// Opens a device and lets a platform adapter connect it to [window].
+  ///
+  /// This is the production GPU seam. The common presenter still owns replay,
+  /// resize, device-loss recovery and teardown; the platform callback only
+  /// turns an opaque native window into the renderer's surface descriptor.
+  static Future<RenderTargetPresenter> attachToWindow({
+    required RendererBackend backend,
+    required NativeWindow window,
+    required RendererWindowAttachmentFactory createAttachment,
+  }) async {
+    RendererWindowAttachment? attachment;
+    try {
+      attachment = await createAttachment(backend, window);
+      final RenderTarget target =
+          attachment.device.createTarget(attachment.surface);
+      return RenderTargetPresenter._(
+        backend: backend,
+        device: attachment.device,
+        target: target,
+        surface: attachment.surface,
+        window: window,
+        attachmentFactory: createAttachment,
+        releaseSurface: attachment.releaseSurface,
+        releaseSurfaceBeforeDevice: attachment.releaseSurfaceBeforeDevice,
+      );
+    } on Object {
+      if (attachment case final RendererWindowAttachment value) {
+        _disposeAttachedDevice(
+          device: value.device,
+          releaseSurface: value.releaseSurface,
+          releaseSurfaceBeforeDevice: value.releaseSurfaceBeforeDevice,
+        );
+      }
+      rethrow;
+    }
+  }
+
   final RendererBackend _backend;
   RenderDevice _device;
   RenderTarget _target;
   NativeSurfaceDescriptor _surface;
+  final NativeWindow? _window;
+  final RendererWindowAttachmentFactory? _attachmentFactory;
+  void Function() _releaseSurface;
+  bool _releaseSurfaceBeforeDevice;
 
   RenderDevice get device => _device;
   RenderTarget get target => _target;
@@ -741,7 +809,15 @@ final class RenderTargetPresenter
         ),
       );
     }
-    final frame = _target.beginFrame(FrameRequest(damage: damage));
+    final RenderTarget target = _target;
+    if (target is DisplayListRenderTarget) {
+      return target.renderDisplayList(
+        list,
+        clearColor: clearColor,
+        deviceTransform: deviceTransform ?? Transform2D.identity,
+      );
+    }
+    final frame = target.beginFrame(FrameRequest(damage: damage));
     // The clear goes to the rasteriser rather than to `FrameRequest`, so that
     // exactly one thing clears the buffer. Both would work and the second
     // would be pure waste - a full-surface memset on every frame.
@@ -752,7 +828,7 @@ final class RenderTargetPresenter
       damage: damage,
       deviceTransform: deviceTransform ?? Transform2D.identity,
     );
-    return _target.present(frame);
+    return target.present(frame);
   }
 
   @override
@@ -774,10 +850,60 @@ final class RenderTargetPresenter
   Future<bool> recoverFromDeviceLoss() async {
     throwIfDisposed();
     _target.dispose();
-    _device.dispose();
-    _device = await _backend.createDevice();
-    if (_device.isLost) return false;
-    _target = _device.createTarget(_surface);
+    final void Function() oldRelease = _releaseSurface;
+    _releaseSurface = _doNothing;
+    _disposeAttachedDevice(
+      device: _device,
+      releaseSurface: oldRelease,
+      releaseSurfaceBeforeDevice: _releaseSurfaceBeforeDevice,
+    );
+    final RendererWindowAttachmentFactory? factory = _attachmentFactory;
+    final NativeWindow? window = _window;
+    if (factory != null && window != null) {
+      final RendererWindowAttachment attachment = await factory(
+        _backend,
+        window,
+      );
+      if (attachment.device.isLost) {
+        _disposeAttachedDevice(
+          device: attachment.device,
+          releaseSurface: attachment.releaseSurface,
+          releaseSurfaceBeforeDevice: attachment.releaseSurfaceBeforeDevice,
+        );
+        return false;
+      }
+      late final RenderTarget target;
+      try {
+        target = attachment.device.createTarget(attachment.surface);
+      } on Object {
+        _disposeAttachedDevice(
+          device: attachment.device,
+          releaseSurface: attachment.releaseSurface,
+          releaseSurfaceBeforeDevice: attachment.releaseSurfaceBeforeDevice,
+        );
+        rethrow;
+      }
+      _device = attachment.device;
+      _surface = attachment.surface;
+      _releaseSurface = attachment.releaseSurface;
+      _releaseSurfaceBeforeDevice = attachment.releaseSurfaceBeforeDevice;
+      _target = target;
+    } else {
+      final RenderDevice device = await _backend.createDevice();
+      if (device.isLost) {
+        device.dispose();
+        return false;
+      }
+      late final RenderTarget target;
+      try {
+        target = device.createTarget(_surface);
+      } on Object {
+        device.dispose();
+        rethrow;
+      }
+      _device = device;
+      _target = target;
+    }
     return true;
   }
 
@@ -785,8 +911,39 @@ final class RenderTargetPresenter
   /// the device must outlive it.
   @override
   void onDispose() {
-    _target.dispose();
-    _device.dispose();
+    final void Function() release = _releaseSurface;
+    _releaseSurface = _doNothing;
+    try {
+      _target.dispose();
+    } finally {
+      _disposeAttachedDevice(
+        device: _device,
+        releaseSurface: release,
+        releaseSurfaceBeforeDevice: _releaseSurfaceBeforeDevice,
+      );
+    }
+  }
+}
+
+void _doNothing() {}
+
+void _disposeAttachedDevice({
+  required RenderDevice device,
+  required void Function() releaseSurface,
+  required bool releaseSurfaceBeforeDevice,
+}) {
+  if (releaseSurfaceBeforeDevice) {
+    try {
+      releaseSurface();
+    } finally {
+      device.dispose();
+    }
+    return;
+  }
+  try {
+    device.dispose();
+  } finally {
+    releaseSurface();
   }
 }
 

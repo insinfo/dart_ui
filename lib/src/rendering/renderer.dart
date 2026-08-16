@@ -23,7 +23,36 @@ import 'dart:async';
 import '../foundation/diagnostics.dart';
 import '../foundation/lifecycle.dart';
 import '../geometry/rect.dart';
+import '../geometry/transform2d.dart';
+import '../graphics/display_list.dart';
 import 'framebuffer.dart';
+
+/// How a renderer turns arbitrary vector shapes into covered pixels.
+///
+/// This is descriptive metadata, not a switch in widget or compositor code.
+/// A future tessellating, stencil-and-cover or compute renderer implements the
+/// existing [RendererBackend] contract and reports its approach here; the
+/// display list, layout tree and presentation selection remain unchanged.
+enum RasterizationApproach {
+  /// Pure-Dart scanlines write coverage directly into a CPU framebuffer.
+  softwareScanline,
+
+  /// Axis-aligned boxes use analytic shader coverage while paths and glyphs
+  /// are cached in persistent coverage atlases.
+  analyticCoverageAtlas,
+
+  /// Curves are tessellated into triangle meshes before submission.
+  tessellatedMeshes,
+
+  /// Path winding is accumulated in stencil and followed by a cover pass.
+  stencilThenCover,
+
+  /// Binning and coverage are produced by compute shaders.
+  computeTiles,
+
+  /// A backend-specific approach outside the standard families above.
+  custom,
+}
 
 /// What the caller wants to draw into.
 ///
@@ -73,6 +102,7 @@ final class RendererInfo {
   const RendererInfo({
     required this.name,
     required this.deviceDescription,
+    required this.rasterizationApproach,
     this.driverVersion,
   });
 
@@ -85,6 +115,9 @@ final class RendererInfo {
   final String deviceDescription;
 
   final String? driverVersion;
+
+  /// The vector rasterization family used by this renderer.
+  final RasterizationApproach rasterizationApproach;
 
   @override
   String toString() => driverVersion == null
@@ -247,6 +280,20 @@ abstract interface class RenderTarget implements Disposable {
   Future<PresentResult> present(Frame frame);
 
   void resize(int pixelWidth, int pixelHeight, double scale);
+}
+
+/// A target that consumes a display list directly instead of CPU pixels.
+///
+/// Windowed GPU targets implement this contract. Keeping it beside
+/// [RenderTarget] lets the application presenter select the correct replay
+/// route without naming a graphics API: software targets expose a framebuffer;
+/// direct targets replay through their own batcher and shaders.
+abstract interface class DisplayListRenderTarget implements RenderTarget {
+  Future<PresentResult> renderDisplayList(
+    DisplayList list, {
+    int? clearColor,
+    Transform2D deviceTransform = Transform2D.identity,
+  });
 }
 
 /// An open connection to whatever draws.
