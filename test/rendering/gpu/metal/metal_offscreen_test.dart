@@ -30,14 +30,17 @@ const int _size = 24;
 
 void main() {
   late MetalGpu gpu;
+  late MetalPipelineCache pipelines;
 
   setUpAll(() {
     if (!Platform.isMacOS) return;
     gpu = MetalGpu.open();
+    pipelines = MetalPipelineCache.build(gpu);
   });
 
   tearDownAll(() {
     if (!Platform.isMacOS) return;
+    pipelines.dispose();
     gpu.dispose();
   });
 
@@ -47,8 +50,9 @@ void main() {
       // uses: opaque, and different in all three channels, so a channel swap
       // is visible rather than symmetric.
       const int color = 0xFF204060;
-      final MetalOffscreenTarget target =
-          MetalOffscreenTarget.create(gpu, width: _size, height: _size);
+      final MetalOffscreenTarget target = MetalOffscreenTarget.create(
+          gpu, pipelines,
+          width: _size, height: _size);
       try {
         target.clear(color);
         final Framebuffer result = target.readPixels();
@@ -93,7 +97,7 @@ void main() {
       // 0x20 and would look right in every opaque scene.
       const int color = 0x80402010;
       final MetalOffscreenTarget target =
-          MetalOffscreenTarget.create(gpu, width: 4, height: 4);
+          MetalOffscreenTarget.create(gpu, pipelines, width: 4, height: 4);
       try {
         target.clear(color);
         final Framebuffer result = target.readPixels();
@@ -125,16 +129,51 @@ void main() {
         pixelHeight: _size,
         format: PixelFormat.rgba8888Premultiplied,
       ));
-      final MetalOffscreenTarget gpuTarget =
-          MetalOffscreenTarget.create(gpu, width: _size, height: _size);
+      final MetalOffscreenTarget gpuTarget = MetalOffscreenTarget.create(
+          gpu, pipelines,
+          width: _size, height: _size);
       try {
         await cpu.renderDisplayList(DisplayList(), clearColor: color);
         gpuTarget.clear(color);
-        expect(gpuTarget.readPixels().pixels, cpu.framebuffer.pixels);
+        // Compared channel by channel and not byte by byte, because the two
+        // surfaces need not agree on byte order: MemoryRenderTarget allocates
+        // its framebuffer in the CPU renderer's own format regardless of what
+        // the descriptor asked for, and on this machine that is BGRA while the
+        // Metal readback is RGBA. Comparing raw bytes made this test fail with
+        // "96 instead of 32" - a channel swap in the *test*, with both
+        // renderers correct. `d3d11_cpu_parity_test.dart` reads through the
+        // same format switch for the same reason.
+        final Framebuffer gpuPixels = gpuTarget.readPixels();
+        for (var y = 0; y < _size; y++) {
+          for (var x = 0; x < _size; x++) {
+            expect(_rgba(gpuPixels, x, y), _rgba(cpu.framebuffer, x, y),
+                reason: 'pixel ($x, $y)');
+          }
+        }
       } finally {
         gpuTarget.dispose();
         cpu.dispose();
       }
     }, skip: _needsMac);
   });
+}
+
+/// A pixel as (r, g, b, a), whatever byte order the surface uses.
+(int, int, int, int) _rgba(Framebuffer buffer, int x, int y) {
+  final int i = buffer.offsetOf(x, y);
+  final pixels = buffer.pixels;
+  return switch (buffer.format) {
+    PixelFormat.bgra8888Premultiplied => (
+        pixels[i + 2],
+        pixels[i + 1],
+        pixels[i],
+        pixels[i + 3]
+      ),
+    PixelFormat.rgba8888Premultiplied => (
+        pixels[i],
+        pixels[i + 1],
+        pixels[i + 2],
+        pixels[i + 3]
+      ),
+  };
 }

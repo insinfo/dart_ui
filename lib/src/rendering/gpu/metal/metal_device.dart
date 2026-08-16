@@ -681,6 +681,21 @@ void metalSendWord4(
   objcSendVoidWord4(target, objcSelector(selector), value);
 }
 
+/// `-[MTLTexture replaceRegion:mipmapLevel:withBytes:bytesPerRow:]`.
+void metalSendReplaceRegion(
+  Pointer<ObjCObject> target,
+  String selector,
+  ObjCWord6 region,
+  int mipmapLevel,
+  Pointer<Void> bytes,
+  int bytesPerRow,
+) {
+  assert(
+      _declaredShape(selector, ObjCSendShape.voidReturnRegionLevelBytesStride));
+  objcSendVoidRegion(
+      target, objcSelector(selector), region, mipmapLevel, bytes, bytesPerRow);
+}
+
 /// `-[MTLTexture getBytes:bytesPerRow:fromRegion:mipmapLevel:]`.
 void metalSendGetBytes(
   Pointer<ObjCObject> target,
