@@ -94,6 +94,7 @@ Future<void> main() async {
       const PresentationPathEntry(
         name: WebGlRendererBackend.backendName,
         kind: PresentationKind.gpu,
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
         probe: _probeWebGl2,
         attach: WebGlCanvasPresenter.attach,
       ),
