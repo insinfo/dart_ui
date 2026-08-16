@@ -149,6 +149,45 @@ final Pointer<Uint8> Function(Pointer<Void>) _methodGetTypeEncoding =
     _runtime.lookupFunction<Pointer<Uint8> Function(Pointer<Void>),
         Pointer<Uint8> Function(Pointer<Void>)>('method_getTypeEncoding');
 
+/// `Method class_getClassMethod(Class, SEL)`.
+///
+/// The metaclass half of [_classGetInstanceMethod]. `+[NSObject alloc]` and
+/// `+[MTLRenderPassDescriptor renderPassDescriptor]` are class methods, and
+/// asking `class_getInstanceMethod` for either returns null - which reads as
+/// "this selector does not exist" when it means "you asked the wrong side of
+/// the class pair".
+final Pointer<Void> Function(Pointer<ObjCObject>, Pointer<ObjCSelector>)
+    _classGetClassMethod = _runtime.lookupFunction<
+        Pointer<Void> Function(Pointer<ObjCObject>, Pointer<ObjCSelector>),
+        Pointer<Void> Function(Pointer<ObjCObject>,
+            Pointer<ObjCSelector>)>('class_getClassMethod');
+
+/// `Class object_getClass(id)`.
+final Pointer<ObjCObject> Function(Pointer<ObjCObject>) _objectGetClass =
+    _runtime.lookupFunction<Pointer<ObjCObject> Function(Pointer<ObjCObject>),
+        Pointer<ObjCObject> Function(Pointer<ObjCObject>)>('object_getClass');
+
+/// `Protocol* objc_getProtocol(const char*)`.
+final Pointer<ObjCObject> Function(Pointer<Uint8>) _getProtocol =
+    _runtime.lookupFunction<Pointer<ObjCObject> Function(Pointer<Uint8>),
+        Pointer<ObjCObject> Function(Pointer<Uint8>)>('objc_getProtocol');
+
+/// `struct objc_method_description protocol_getMethodDescription(Protocol*,
+/// SEL, BOOL isRequiredMethod, BOOL isInstanceMethod)`.
+///
+/// A **struct return by value**, and one of the few this file can afford: it is
+/// a plain C function, so `dart:ffi` applies the platform's aggregate rule to
+/// [ObjCMethodDescription] itself. The prohibition stated at the top is on
+/// struct returns through `objc_msgSend`, which needs a different trampoline
+/// per architecture; nothing of the sort applies here.
+final ObjCMethodDescription Function(
+        Pointer<ObjCObject>, Pointer<ObjCSelector>, int, int)
+    _protocolGetMethodDescription = _runtime.lookupFunction<
+        ObjCMethodDescription Function(
+            Pointer<ObjCObject>, Pointer<ObjCSelector>, Uint8, Uint8),
+        ObjCMethodDescription Function(Pointer<ObjCObject>,
+            Pointer<ObjCSelector>, int, int)>('protocol_getMethodDescription');
+
 /// `Class objc_allocateClassPair(Class superclass, const char* name, size_t)`.
 final Pointer<ObjCObject> Function(Pointer<ObjCObject>, Pointer<Uint8>, int)
     _allocateClassPair = _runtime.lookupFunction<
@@ -377,6 +416,85 @@ String? objcMethodTypeEncoding(
   final Pointer<Uint8> encoding = _methodGetTypeEncoding(method);
   if (encoding == nullptr) return null;
   return objcReadCString(encoding);
+}
+
+/// The type encoding the runtime records for `+[cls selector]` - the class
+/// method, not the instance one.
+String? objcClassMethodTypeEncoding(
+  Pointer<ObjCObject> cls,
+  String selector,
+) {
+  if (cls == nullptr) return null;
+  final Pointer<Void> method =
+      _classGetClassMethod(cls, objcSelector(selector));
+  if (method == nullptr) return null;
+  final Pointer<Uint8> encoding = _methodGetTypeEncoding(method);
+  if (encoding == nullptr) return null;
+  return objcReadCString(encoding);
+}
+
+/// `object_getClass` - the class an instance really is.
+///
+/// Not the same as `-[NSObject class]`, which a proxy may lie about, and the
+/// only way to reach the *implementation* of a protocol method: `MTLDevice` is
+/// a protocol, and the object `MTLCreateSystemDefaultDevice` returns is some
+/// private concrete class that conforms to it.
+Pointer<ObjCObject> objcClassOfObject(Pointer<ObjCObject> object) {
+  if (object == nullptr) return nullptr;
+  return _objectGetClass(object);
+}
+
+/// `struct objc_method_description` - a selector and its type encoding.
+final class ObjCMethodDescription extends Struct {
+  external Pointer<ObjCSelector> name;
+  external Pointer<Uint8> types;
+}
+
+/// The protocol named [name], or `nullptr` when nothing has declared it.
+///
+/// Most of Metal is protocols rather than classes - `MTLDevice`, `MTLTexture`,
+/// `MTLCommandBuffer` and `MTLRenderCommandEncoder` are all `@protocol`, and
+/// `objc_getClass("MTLDevice")` returns nil for every one of them. A check that
+/// only knew about classes would silently skip two thirds of this framework's
+/// selectors and report that it had verified them.
+Pointer<ObjCObject> objcProtocol(String name) {
+  final Pointer<Uint8> text = objcAllocateCString(name);
+  try {
+    return _getProtocol(text);
+  } finally {
+    objcFreeCString(text);
+  }
+}
+
+/// The type encoding [protocol] declares for [selector], or null.
+///
+/// A protocol keeps four separate method lists - required/optional crossed with
+/// instance/class - and `protocol_getMethodDescription` answers for exactly one
+/// of them. All four are tried, because the split is not visible from the
+/// selector and a method declared optional would otherwise read as absent. A
+/// `@property` ends up in these lists as its accessors, which is how
+/// `-[MTLDevice name]` is found.
+String? objcProtocolMethodTypeEncoding(
+  Pointer<ObjCObject> protocol,
+  String selector,
+) {
+  if (protocol == nullptr) return null;
+  final Pointer<ObjCSelector> sel = objcSelector(selector);
+  for (final bool required in <bool>[true, false]) {
+    for (final bool instance in <bool>[true, false]) {
+      final ObjCMethodDescription description = _protocolGetMethodDescription(
+        protocol,
+        sel,
+        required ? 1 : 0,
+        instance ? 1 : 0,
+      );
+      // A miss is `{nil, nil}`, not an error. Both fields are checked because
+      // the encoding is the only half a caller can use.
+      if (description.name == nullptr || description.types == nullptr) continue;
+      return objcReadCString(description.types);
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

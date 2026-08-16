@@ -861,6 +861,115 @@ final Map<String, MetalSelector> kMetalSelectorsByName =
 });
 
 // ---------------------------------------------------------------------------
+// Reading the encodings back out of the runtime - the check that needs the Mac
+// ---------------------------------------------------------------------------
+
+/// Where an encoding read back from the runtime was found.
+///
+/// Recorded rather than discarded because the three places are not equally
+/// strong, and a report that said only "checked" would hide the difference
+/// between reading a class's implementation and reading a protocol's
+/// declaration.
+enum MetalEncodingSource {
+  /// `class_getInstanceMethod` on the class named by [MetalSelector.receiver].
+  instanceMethod,
+
+  /// `class_getClassMethod` on the same class. `+[NSObject alloc]` and
+  /// `+[MTLRenderPassDescriptor renderPassDescriptor]` live here, and asking
+  /// the instance side for either returns null - which reads as "absent".
+  classMethod,
+
+  /// `protocol_getMethodDescription`. Most of Metal is `@protocol`, so this is
+  /// the branch that covers `MTLDevice`, `MTLTexture`, `MTLCommandBuffer` and
+  /// `MTLRenderCommandEncoder`.
+  protocolDeclaration,
+
+  /// Nothing in the runtime declares it.
+  notFound,
+}
+
+/// One selector's encoding as the runtime states it.
+final class MetalRuntimeEncoding {
+  const MetalRuntimeEncoding(this.selector, this.source, this.encoding);
+
+  final MetalSelector selector;
+  final MetalEncodingSource source;
+
+  /// The runtime's string, frame offsets included, or null when [source] is
+  /// [MetalEncodingSource.notFound].
+  final String? encoding;
+
+  bool get isFound => encoding != null;
+
+  @override
+  String toString() => '${selector.receiver}.${selector.name}: '
+      '${encoding ?? '<not found>'} (${source.name})';
+}
+
+/// Asks the Objective-C runtime what [selector] really is.
+///
+/// Three lookups in order, because a Metal selector can be declared in three
+/// different places and a check that knew only one of them would skip most of
+/// [kMetalSelectors] while reporting success:
+///
+///   1. an instance method of the class named by [MetalSelector.receiver];
+///   2. a class method of the same class;
+///   3. a method of the **protocol** of that name.
+///
+/// Step 3 is the one that matters. `objc_getClass("MTLDevice")` returns nil -
+/// `MTLDevice` is a protocol, as are `MTLTexture`, `MTLBuffer`, `MTLLibrary`,
+/// `MTLCommandQueue`, `MTLCommandBuffer`, `MTLRenderCommandEncoder` and
+/// `CAMetalDrawable`. The first version of the on-Mac encoding test asked
+/// `objc_getClass` for every receiver, found no class for two thirds of them,
+/// `continue`d, and passed - the exact shape of a check that reports coverage
+/// it does not have.
+///
+/// Returns [MetalEncodingSource.notFound] rather than throwing when nothing
+/// declares it, and does the same off macOS: whether absence is a failure is
+/// the caller's decision.
+MetalRuntimeEncoding metalRuntimeEncoding(MetalSelector selector) {
+  if (!isMetalAvailable) {
+    return MetalRuntimeEncoding(selector, MetalEncodingSource.notFound, null);
+  }
+  // CAMetalLayer and CAMetalDrawable are QuartzCore's, and Metal does not pull
+  // QuartzCore in. Loading it here rather than in the test keeps the whole
+  // resolution rule in one place.
+  tryLoadQuartzCore();
+
+  final Pointer<ObjCObject> cls = objcClass(selector.receiver);
+  if (cls != nullptr) {
+    final String? instance = objcMethodTypeEncoding(cls, selector.name);
+    if (instance != null) {
+      return MetalRuntimeEncoding(
+          selector, MetalEncodingSource.instanceMethod, instance);
+    }
+    final String? classMethod = objcClassMethodTypeEncoding(cls, selector.name);
+    if (classMethod != null) {
+      return MetalRuntimeEncoding(
+          selector, MetalEncodingSource.classMethod, classMethod);
+    }
+  }
+
+  final Pointer<ObjCObject> protocol = objcProtocol(selector.receiver);
+  if (protocol != nullptr) {
+    final String? declared =
+        objcProtocolMethodTypeEncoding(protocol, selector.name);
+    if (declared != null) {
+      return MetalRuntimeEncoding(
+          selector, MetalEncodingSource.protocolDeclaration, declared);
+    }
+  }
+
+  return MetalRuntimeEncoding(selector, MetalEncodingSource.notFound, null);
+}
+
+/// [metalRuntimeEncoding] for every entry of [kMetalSelectors].
+List<MetalRuntimeEncoding> metalRuntimeEncodings() => <MetalRuntimeEncoding>[
+      for (final MetalSelector selector in kMetalSelectors)
+        metalRuntimeEncoding(selector),
+    ];
+
+// ---------------------------------------------------------------------------
 // The uniform block, mirrored - checklist items "size test" and "offset test"
 // ---------------------------------------------------------------------------
 

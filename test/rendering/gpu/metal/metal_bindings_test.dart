@@ -653,25 +653,57 @@ void main() {
 
     test('the runtime agrees with the encodings this file declares', () {
       // Mechanism 3 of objc_runtime.dart, and the only one that can fail in a
-      // way the other two cannot see: it reads the encoding the class really
-      // declares instead of the one transcribed here. Selectors whose class is
-      // not loaded are skipped rather than failed, because a protocol has no
-      // class to ask.
-      var checked = 0;
-      for (final MetalSelector selector in kMetalSelectors) {
-        final Pointer<ObjCObject> cls = objcClass(selector.receiver);
-        if (cls.address == 0) continue;
-        final String? real = objcMethodTypeEncoding(cls, selector.name);
+      // way the other two cannot see: it reads the encoding the runtime really
+      // records instead of the one transcribed here.
+      //
+      // The previous version of this test asked `objc_getClass` for every
+      // receiver and `continue`d when there was none - so it skipped
+      // MTLDevice, MTLTexture, MTLBuffer, MTLLibrary, MTLCommandQueue,
+      // MTLCommandBuffer, MTLRenderCommandEncoder and CAMetalDrawable, every
+      // one of which is a `@protocol` and has no class, and then reported that
+      // it had checked the file. metalRuntimeEncoding() looks in all three
+      // places; this asserts on whatever it finds and names what it did not.
+      final List<MetalRuntimeEncoding> found = metalRuntimeEncodings();
+      expect(found.length, kMetalSelectors.length);
+
+      final List<String> divergent = <String>[];
+      for (final MetalRuntimeEncoding entry in found) {
+        final String? real = entry.encoding;
         if (real == null) continue;
-        checked++;
-        expect(
-          parseObjCTypeEncoding(real),
-          parseObjCTypeEncoding(selector.encoding),
-          reason: '${selector.receiver}.${selector.name}: the runtime says '
-              '"$real", this file says "${selector.encoding}"',
-        );
+        final ObjCSignature fromRuntime = parseObjCTypeEncoding(real);
+        final ObjCSignature declared =
+            parseObjCTypeEncoding(entry.selector.encoding);
+        if (fromRuntime != declared) {
+          divergent.add('${entry.selector.receiver}.${entry.selector.name}: '
+              'runtime "$real" -> $fromRuntime, this file '
+              '"${entry.selector.encoding}" -> $declared');
+        }
       }
-      printOnFailure('$checked selector(s) checked against the runtime');
+
+      final List<MetalRuntimeEncoding> missing = found
+          .where((MetalRuntimeEncoding e) => !e.isFound)
+          .toList(growable: false);
+
+      // Printed rather than merely counted: this is the run that establishes
+      // which selectors the runtime can be asked about at all, and the answer
+      // has to come out of a CI log.
+      final Map<MetalEncodingSource, int> bySource =
+          <MetalEncodingSource, int>{};
+      for (final MetalRuntimeEncoding e in found) {
+        bySource[e.source] = (bySource[e.source] ?? 0) + 1;
+      }
+      final String tally = bySource.entries
+          .map((MapEntry<MetalEncodingSource, int> e) =>
+              '${e.key.name}=${e.value}')
+          .join(', ');
+      print('metal encoding coverage: ${found.length} selector(s); $tally');
+      for (final MetalRuntimeEncoding e in missing) {
+        print('  NOT FOUND: ${e.selector.receiver}.${e.selector.name}');
+      }
+
+      expect(divergent, isEmpty,
+          reason: 'the runtime disagrees with this file:\n'
+              '${divergent.join('\n')}');
     }, skip: _needsMac);
   });
 }
