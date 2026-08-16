@@ -231,14 +231,34 @@ void main() {
       final FontRegistry registry = _fixtureRegistry();
 
       // U+0645 ARABIC LETTER MEEM. Roboto has no Arabic at all; DejaVu does,
-      // and declares the Arabic bit, so the coverage filter reaches it first.
+      // and declares the Arabic bit, so the coverage filter reaches it.
       final FallbackResolution arabic =
           registry.resolveCodePoint(0x0645, script: Script.arab);
 
       expect(arabic.found, isTrue);
       expect(arabic.face!.familyName, 'DejaVu Sans');
       expect(arabic.face!.glyphForCodePoint(0x0645), arabic.glyph);
-      expect(arabic.step, FontFallbackStep.coverageScan);
+
+      // Which *step* answers is platform-dependent, and pinning one of them
+      // was a Windows-only accident that failed on Linux CI: the Arabic
+      // preference list is `Segoe UI, Tahoma, Arial` on Windows and
+      // `DejaVu Sans, Liberation Sans` on Linux. The fixture index holds
+      // DejaVu, so Linux resolves at the named-family step and Windows falls
+      // through to the scan. Both are correct, and both must land on the same
+      // face - which is the claim this test actually makes.
+      //
+      // Derived from the registry rather than from `Platform`, so the
+      // assertion stays exact instead of accepting either answer.
+      final bool preferenceNamesFixture = FontRegistry.fallbackFamiliesFor(
+        Script.arab,
+      ).any((String family) => registry.faceFor(family) != null);
+
+      expect(
+        arabic.step,
+        preferenceNamesFixture
+            ? FontFallbackStep.scriptPreference
+            : FontFallbackStep.coverageScan,
+      );
     });
 
     test('the coverage bit orders the search and the cmap decides it', () {
