@@ -1,0 +1,174 @@
+# ffigen configuration for the Vulkan backend's FFI bindings.
+#
+# Run it through `tool/generate_vulkan_bindings.dart`, never by hand: the three
+# `@...@` placeholders below are absolute paths that differ on every machine,
+# and the script fills them in from the pinned header checkout and from the
+# LLVM location it found. Running `ffigen --config` on this file directly will
+# fail on the placeholders, which is deliberate - a config with a hard-coded
+# `D:\...` in it is a config that only regenerates on one person's laptop.
+#
+#   dart run tool/generate_vulkan_bindings.dart
+#   dart run tool/generate_vulkan_bindings.dart --verify-existing
+#
+# ---------------------------------------------------------------------------
+# Report of ignored APIs (section 11.4)
+# ---------------------------------------------------------------------------
+#
+# `vulkan_core.h` at the pinned commit declares roughly 1,400 structures, 900
+# commands and 500 enumerations. This configuration generates **65 structures,
+# 2 unions and the enumerations those structures' fields refer to**, and
+# nothing else. What is deliberately left out, and why:
+#
+#   * **Every command.** `functions.include` matches nothing on purpose.
+#     ffigen binds a command by `DynamicLibrary.lookup`, and that is the wrong
+#     way to reach a Vulkan command: the specification requires instance-level
+#     and device-level commands to be resolved through `vkGetInstanceProcAddr`
+#     and `vkGetDeviceProcAddr` so the loader's trampoline can dispatch on the
+#     handle. See the library comment of `vulkan_library.dart`. The dispatch
+#     tables in `vulkan_bindings.dart` are therefore a **manual override**, and
+#     `vulkan_symbol_test.dart` is what proves each of them resolves.
+#   * **Every extension beyond `VK_EXT_debug_utils`.** Swapchain, surface,
+#     video, ray tracing, mesh shading, cooperative matrices and the rest.
+#     This backend renders offscreen; when a swapchain arrives, the four
+#     `VkSwapchain*`/`VkSurface*` structures join the list below and the
+#     regenerated file is the diff.
+#   * **`VkPhysicalDeviceFeatures`, sparse residency, queries, events,
+#     pipeline caches, secondary command buffers, multi-view, depth/stencil.**
+#     Not named anywhere in `lib/src/rendering/gpu/vulkan/`.
+#   * **Macros.** `macros.include` matches nothing. The handful this backend
+#     needs - `VK_WHOLE_SIZE`, `VK_SUBPASS_EXTERNAL`, `VK_MAKE_API_VERSION` -
+#     are `~0ULL` and bit-shift expressions that libclang does not evaluate for
+#     ffigen, so they are **manual overrides** in `vulkan_constants.dart`,
+#     each with the header line it came from quoted beside it.
+#
+# Anything in the ignored set that a future change needs is added to a list
+# below and regenerated. Nothing here is hand-edited; the file says so at the
+# top and `--verify-existing` enforces it.
+name: VulkanFfi
+description: >-
+  Vulkan structures and enumerants used by the dart_ui Vulkan backend.
+  Generated - do not edit. See tool/generate_vulkan_bindings.dart.
+output: '@OUTPUT@'
+llvm-path:
+  - '@LLVM@'
+headers:
+  entry-points:
+    - '@HEADERS@\vulkan\vulkan_core.h'
+compiler-opts:
+  - '-I@HEADERS@'
+# Enumerations become `sealed class VkResult { static const VK_SUCCESS = 0; }`
+# and struct fields stay plain `int`, rather than becoming Dart enums with a
+# generated `fromValue` switch. Two reasons, both about this API in
+# particular: half of these "enums" are bitmasks that are combined with `|`,
+# which a Dart enum cannot express at all; and `VkStructureType` has some
+# fifteen hundred members, so a `fromValue` switch over it would be the
+# largest function in the repository and would run on every struct read.
+enums:
+  as-int:
+    include:
+      - '.*'
+# Matched against nothing. `a^` is a regular expression that cannot match: `a`
+# followed by a start-of-input assertion.
+functions:
+  include:
+    - 'a^'
+globals:
+  include:
+    - 'a^'
+macros:
+  include:
+    - 'a^'
+unnamed-enums:
+  include:
+    - 'a^'
+typedefs:
+  include:
+    - 'a^'
+unions:
+  include:
+    - 'VkClearValue'
+    - 'VkClearColorValue'
+structs:
+  include:
+    # -- geometry ----------------------------------------------------------
+    - 'VkExtent2D'
+    - 'VkExtent3D'
+    - 'VkOffset2D'
+    - 'VkOffset3D'
+    - 'VkRect2D'
+    - 'VkViewport'
+    # -- instance ----------------------------------------------------------
+    - 'VkApplicationInfo'
+    - 'VkInstanceCreateInfo'
+    - 'VkLayerProperties'
+    - 'VkExtensionProperties'
+    # -- physical device ---------------------------------------------------
+    - 'VkPhysicalDeviceProperties'
+    - 'VkQueueFamilyProperties'
+    - 'VkFormatProperties'
+    - 'VkPhysicalDeviceMemoryProperties'
+    # -- logical device ----------------------------------------------------
+    - 'VkDeviceQueueCreateInfo'
+    - 'VkDeviceCreateInfo'
+    # -- memory ------------------------------------------------------------
+    - 'VkMemoryAllocateInfo'
+    - 'VkMemoryRequirements'
+    - 'VkMappedMemoryRange'
+    # -- buffers and images ------------------------------------------------
+    - 'VkBufferCreateInfo'
+    - 'VkImageCreateInfo'
+    - 'VkImageViewCreateInfo'
+    - 'VkSamplerCreateInfo'
+    - 'VkBufferCopy'
+    - 'VkBufferImageCopy'
+    # -- synchronisation ---------------------------------------------------
+    - 'VkFenceCreateInfo'
+    - 'VkSemaphoreCreateInfo'
+    # An event is the only Vulkan primitive the *host* can signal while the
+    # device is already waiting on it, which is what `vulkan_fence_test.dart`
+    # needs to stop the queue on purpose. See that file.
+    - 'VkEventCreateInfo'
+    - 'VkMemoryBarrier'
+    - 'VkImageMemoryBarrier'
+    # -- commands ----------------------------------------------------------
+    - 'VkCommandPoolCreateInfo'
+    - 'VkCommandBufferAllocateInfo'
+    - 'VkCommandBufferBeginInfo'
+    - 'VkSubmitInfo'
+    # -- render pass -------------------------------------------------------
+    - 'VkAttachmentDescription'
+    - 'VkAttachmentReference'
+    - 'VkSubpassDescription'
+    - 'VkSubpassDependency'
+    - 'VkRenderPassCreateInfo'
+    - 'VkFramebufferCreateInfo'
+    - 'VkRenderPassBeginInfo'
+    # -- pipeline ----------------------------------------------------------
+    - 'VkShaderModuleCreateInfo'
+    - 'VkPipelineShaderStageCreateInfo'
+    - 'VkVertexInputBindingDescription'
+    - 'VkVertexInputAttributeDescription'
+    - 'VkPipelineVertexInputStateCreateInfo'
+    - 'VkPipelineInputAssemblyStateCreateInfo'
+    - 'VkPipelineViewportStateCreateInfo'
+    - 'VkPipelineRasterizationStateCreateInfo'
+    - 'VkPipelineMultisampleStateCreateInfo'
+    - 'VkPipelineColorBlendAttachmentState'
+    - 'VkPipelineColorBlendStateCreateInfo'
+    - 'VkPipelineDynamicStateCreateInfo'
+    - 'VkPushConstantRange'
+    - 'VkPipelineLayoutCreateInfo'
+    - 'VkGraphicsPipelineCreateInfo'
+    # -- descriptors -------------------------------------------------------
+    - 'VkDescriptorSetLayoutBinding'
+    - 'VkDescriptorSetLayoutCreateInfo'
+    - 'VkDescriptorPoolSize'
+    - 'VkDescriptorPoolCreateInfo'
+    - 'VkDescriptorSetAllocateInfo'
+    - 'VkDescriptorImageInfo'
+    - 'VkWriteDescriptorSet'
+    # -- debug utils -------------------------------------------------------
+    - 'VkDebugUtilsMessengerCreateInfoEXT'
+    - 'VkDebugUtilsMessengerCallbackDataEXT'
+    - 'VkDebugUtilsLabelEXT'
+    - 'VkDebugUtilsObjectNameInfoEXT'
