@@ -63,7 +63,19 @@ jobs:
       - name: Analyze
         run: dart analyze lib test
 
+      # OBJC_DEBUG_MISSING_POOLS makes the Objective-C runtime print when an
+      # object is autoreleased with no enclosing pool. It matters here and
+      # nowhere else: a pool is per *thread*, and the macOS backend of ADR 0005
+      # renders from a worker process, so the isolate that draws is never the
+      # thread AppKit drains. Every Metal object that does not come from
+      # alloc/new/copy/mutableCopy/Create is autoreleased into a pool that has
+      # to be pushed by our own code, and a leak from forgetting one is
+      # invisible until it is large. The variable is free on the other two legs
+      # - nothing reads it - so it is set unconditionally rather than guarded,
+      # which keeps the three legs running the identical command.
       - name: Test
+        env:
+          OBJC_DEBUG_MISSING_POOLS: 'YES'
         run: dart test test --reporter=expanded
 
       # The framework must stay AOT-compilable on every platform from day one.
