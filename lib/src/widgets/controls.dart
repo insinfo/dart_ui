@@ -13,6 +13,7 @@
 /// replaced by a template without touching the control.
 library;
 
+import '../foundation/diagnostics.dart' show UnsupportedCapabilityError;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
@@ -20,6 +21,7 @@ import '../graphics/display_list.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
 import '../layout/render_viewport.dart';
+import '../platform/clipboard.dart';
 import '../platform/input_events.dart';
 import '../rendering/text/font_registry.dart';
 import '../text/paragraph.dart' show Paragraph, TextBox;
@@ -35,6 +37,11 @@ import 'style.dart';
 import 'text_editing.dart';
 import 'theme.dart';
 import 'widget.dart';
+
+/// The clipboard contract travels with the control that uses it: a caller who
+/// installs a [ClipboardScope], writes a test double or handles a paste
+/// failure needs [Clipboard] and [ClipboardException] to say anything about it.
+export '../platform/clipboard.dart';
 
 /// The editing model is part of this file's contract, not an implementation
 /// detail of it: a caller that holds a [TextEditingController] needs
@@ -1551,6 +1558,53 @@ final class RenderProgressBar extends RenderBox with ControlBehavior {
 // Text entry
 // ---------------------------------------------------------------------------
 
+/// The Insert key, `VK_INSERT`.
+///
+/// Private to this file rather than added beside the other key constants in
+/// `focus.dart`: that file belongs to focus and traversal, and the only reason
+/// this key exists here is the pre-Ctrl+X clipboard idiom - Ctrl+Insert to
+/// copy, Shift+Insert to paste, Shift+Delete to cut - which people who learned
+/// it on a terminal still use daily.
+const int _logicalKeyInsert = 0x2D;
+
+/// Publishes the platform clipboard to a subtree.
+///
+/// The same shape as [Theme], and installed at the same place - the
+/// application wraps the root widget in one - because a clipboard is ambient in
+/// exactly the way a theme is: every text field needs it, none of them should
+/// be handed one by its parent, and a global would make it impossible for a
+/// test to run two applications in one process with different clipboards.
+///
+/// A subtree with no scope above it gets an [UnavailableClipboard], so a
+/// control mounted alone in a widget test still works and a Ctrl+V in it fails
+/// by name instead of throwing on a null.
+final class ClipboardScope extends InheritedWidget {
+  const ClipboardScope({
+    super.key,
+    required this.clipboard,
+    required super.child,
+  });
+
+  final Clipboard clipboard;
+
+  /// The nearest clipboard, or one that fails by name when there is none.
+  static Clipboard of(BuildContext context) =>
+      maybeOf(context) ??
+      const UnavailableClipboard(
+        'no ClipboardScope is installed above this control; an application '
+        'installs one from ApplicationOptions.clipboard',
+      );
+
+  /// The nearest clipboard, or null - for a caller that wants to hide a menu
+  /// item rather than show one that will fail.
+  static Clipboard? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<ClipboardScope>()?.clipboard;
+
+  @override
+  bool updateShouldNotify(ClipboardScope oldWidget) =>
+      !identical(clipboard, oldWidget.clipboard);
+}
+
 final class TextField extends StatefulWidget {
   const TextField({
     super.key,
@@ -1629,6 +1683,10 @@ final class _TextFieldState extends State<TextField> {
           readOnly: widget.readOnly,
           enabled: widget.enabled,
           theme: Theme.of(context),
+          // Read where the theme is read, and for the same reason: the field
+          // must not be handed a clipboard by its parent, and must not reach
+          // for a global one.
+          clipboard: ClipboardScope.of(context),
           focusNode: _focusNode,
         ),
       );
@@ -1642,6 +1700,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
     required this.readOnly,
     required this.enabled,
     required this.theme,
+    required this.clipboard,
     required this.focusNode,
   });
 
@@ -1651,6 +1710,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
   final bool readOnly;
   final bool enabled;
   final ThemeData theme;
+  final Clipboard clipboard;
   final FocusNode focusNode;
 
   @override
@@ -1664,6 +1724,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
         readOnly: readOnly,
       )
         ..theme = theme
+        ..clipboard = clipboard
         ..focusNode = focusNode
         ..enabled = enabled;
 
@@ -1678,6 +1739,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
       ..obscure = obscure
       ..readOnly = readOnly
       ..theme = theme
+      ..clipboard = clipboard
       ..focusNode = focusNode
       ..enabled = enabled;
   }
@@ -1702,6 +1764,45 @@ final class RenderTextField extends RenderBox
   String _label;
   bool _obscure;
   bool _readOnly;
+  Clipboard _clipboard = const UnavailableClipboard();
+  ClipboardException? _lastClipboardError;
+  Future<void> _clipboardWork = Future<void>.value();
+
+  /// Whether a drag begun on this field is still selecting.
+  bool _dragging = false;
+
+  /// 1, 2 or 3: how many clicks the last press was part of.
+  int _clickCount = 0;
+  Duration _lastClickAt = Duration.zero;
+  Offset _lastClickPosition = Offset.zero;
+
+  /// The modifiers reported by the most recent key transition.
+  ///
+  /// **This is a workaround and it is the one place a Shift+click can be
+  /// wrong.** [PointerEvent] in this framework carries no modifier set - only
+  /// [KeyEvent] does - so the only way to know whether Shift was down when the
+  /// mouse went down is to remember what the last key transition said. That is
+  /// accurate for the ordinary sequence (press Shift, click) *while this field
+  /// has focus*, because pressing Shift is itself a key transition that arrives
+  /// here. It is wrong in exactly one case: Shift was already held before this
+  /// field got focus, so no key event has reached it yet, and the click
+  /// collapses the caret instead of extending. The real fix is a modifier set
+  /// on [PointerEvent], which every backend already samples - `win32_window`
+  /// calls `GetKeyState` for each key event and could do the same for each
+  /// mouse message - and which this work does not own.
+  Set<KeyModifier> _modifiers = const <KeyModifier>{};
+
+  /// How long after a click a second one still counts as a double click.
+  ///
+  /// 500 ms is the Windows default (`GetDoubleClickTime`). The user's actual
+  /// setting is a platform query no backend exposes yet, so it is a constant
+  /// here rather than silently different per machine.
+  static const Duration _multiClickInterval = Duration(milliseconds: 500);
+
+  /// How far the pointer may move between clicks of one multi-click, in
+  /// logical units. Without it, two clicks at opposite ends of the field count
+  /// as a double click and select a word nobody pointed at.
+  static const double _multiClickSlop = 4;
 
   TextEditingController get controller => _controller;
 
@@ -1735,6 +1836,40 @@ final class RenderTextField extends RenderBox
     _readOnly = value;
     markNeedsPaint();
   }
+
+  /// Where Ctrl+C, Ctrl+X and Ctrl+V go.
+  ///
+  /// Defaults to [UnavailableClipboard] rather than to null, so that a field
+  /// mounted without a [ClipboardScope] answers a paste with a named failure in
+  /// [lastClipboardError] instead of dereferencing a null - and so that no call
+  /// site has to test for absence.
+  Clipboard get clipboard => _clipboard;
+
+  set clipboard(Clipboard value) {
+    if (identical(value, _clipboard)) return;
+    _clipboard = value;
+  }
+
+  /// Why the last clipboard operation did not happen, or null if the last one
+  /// did.
+  ///
+  /// Holds both kinds of "no": a real backend failure ([ClipboardException]
+  /// from the port - the Windows clipboard held by another process) and a
+  /// refusal by this field's own policy (copy from an obscured field, paste
+  /// into a read-only one). Both are the same question for a caller - *why did
+  /// my Ctrl+V do nothing* - and answering it needs a reason, not a bool.
+  ///
+  /// This is where the asynchrony surfaces: the key that started the operation
+  /// was consumed frames before this is set. See [clipboardSettled].
+  ClipboardException? get lastClipboardError => _lastClipboardError;
+
+  /// Completes when every clipboard operation started so far has finished.
+  ///
+  /// Clipboard operations are queued and run one after another, so two quick
+  /// pastes apply in the order they were typed rather than racing. A test
+  /// awaits this after synthesizing Ctrl+V; nothing in the frame loop does,
+  /// because a frame must never block on another process.
+  Future<void> get clipboardSettled => _clipboardWork;
 
   /// What is painted: the value, or one bullet per character.
   String get displayText =>
@@ -1780,14 +1915,128 @@ final class RenderTextField extends RenderBox
   @override
   bool hitTestSelf(Offset position) => true;
 
+  /// Mouse selection: press to anchor, drag to extend, release to finish.
+  ///
+  /// The four gestures a text field owes the mouse, and what each does here:
+  ///
+  ///  * **Press and drag.** The press anchors the selection where it landed and
+  ///    every move extends it, so the base stays put and only the extent
+  ///    follows the pointer. A backwards drag therefore produces a *reversed*
+  ///    [TextSelection] and stays reversed - which is not a detail: the next
+  ///    Shift+Left has to shrink or grow depending on which end the user
+  ///    dragged from, and normalising here would throw that away.
+  ///  * **Shift+click** extends from the existing anchor instead of moving it,
+  ///    which is the same operation as a drag with a very long pause in the
+  ///    middle. See [_modifiers] for the one case where the Shift is missed.
+  ///  * **Double click** selects the UAX #29 word segment under the pointer;
+  ///    see [TextMotion.wordAt] for the boundary tie-break.
+  ///  * **Triple click** selects everything. There is one line, so "the
+  ///    paragraph" and "all of it" are the same range.
+  ///
+  /// **Two limits, declared rather than discovered:**
+  ///
+  ///  * **A drag past the edge selects to the end and stops there. There is no
+  ///    auto-scroll**, because there is nothing to scroll: this field has no
+  ///    horizontal offset of its own - overlong text is *clipped* by
+  ///    `paintLabel` - so text past the edge cannot be brought into view by any
+  ///    means, and a repeating timer that extended the selection into text the
+  ///    user cannot see would be worse than stopping. A scrolling field would
+  ///    add the offset first and the auto-scroll on top of it.
+  ///  * **Dragging after a double click extends by character, not by word.**
+  ///    The word-granularity drag every editor has needs the anchor to be a
+  ///    *range* rather than an offset, which is a change to what the controller
+  ///    stores.
   @override
   void handlePointerEvent(PointerEvent event) {
     super.handlePointerEvent(event);
-    if (!enabled || event is! PointerDownEvent) return;
-    // Place the caret where the click landed. The text painted is not the text
-    // stored when the field is obscured, so the hit test measures what is on
-    // screen; anything else puts the caret at the wrong bullet.
-    final Offset local = globalToLocal(event.logicalPosition);
+    if (!enabled) return;
+    switch (event) {
+      case PointerDownEvent(button: PointerButton.primary):
+        _onSelectionPointerDown(event);
+      case PointerMoveEvent() when _dragging:
+        // The pointer is captured by [ControlBehavior], so this arrives even
+        // when it has left the field - which is exactly when a selection drag
+        // is most in need of it.
+        _extendSelectionTo(event.logicalPosition);
+      case PointerUpEvent(button: PointerButton.primary):
+      case PointerCancelEvent():
+        // The selection built so far stands. A cancelled drag is the pointer
+        // being taken away, not the user changing their mind, and throwing the
+        // selection away would lose work with no way to get it back.
+        _dragging = false;
+      default:
+        break;
+    }
+  }
+
+  void _onSelectionPointerDown(PointerDownEvent event) {
+    final TextPosition position = _positionAt(event.logicalPosition);
+    switch (_countClick(event)) {
+      case 1:
+        if (_modifiers.contains(KeyModifier.shift)) {
+          _controller.setSelection(
+            _controller.selectionStart,
+            position.offset,
+            affinity: position.affinity,
+          );
+        } else {
+          _controller.collapseToPosition(position);
+        }
+        _dragging = true;
+      case 2:
+        final TextRange word =
+            TextMotion.wordAt(_controller.value, position.offset);
+        _controller.setSelection(word.start, word.end);
+        _dragging = false;
+      default:
+        _controller.selectAll();
+        _dragging = false;
+    }
+  }
+
+  /// Which click of a multi-click this press is: 1, 2 or 3.
+  ///
+  /// Time *and* distance, because either alone is wrong: two clicks a second
+  /// apart at the same pixel are two clicks, and two fast clicks at opposite
+  /// ends of the field are also two clicks. A fourth click starts the cycle
+  /// again at one, which is what Windows does.
+  int _countClick(PointerDownEvent event) {
+    final Duration since = event.timestamp - _lastClickAt;
+    final Offset moved = event.logicalPosition - _lastClickPosition;
+    final bool continues = since >= Duration.zero &&
+        since <= _multiClickInterval &&
+        moved.dx.abs() <= _multiClickSlop &&
+        moved.dy.abs() <= _multiClickSlop;
+    _clickCount = continues ? _clickCount % 3 + 1 : 1;
+    _lastClickAt = event.timestamp;
+    _lastClickPosition = event.logicalPosition;
+    return _clickCount;
+  }
+
+  void _extendSelectionTo(Offset globalPosition) {
+    final TextPosition position = _positionAt(globalPosition);
+    if (position.offset == _controller.selectionEnd &&
+        position.affinity == _controller.affinity) {
+      // A mouse move that does not change the selection must not notify: the
+      // controller's listeners include a repaint, and a drag across one glyph
+      // would otherwise cost a frame per motion event.
+      return;
+    }
+    _controller.setSelection(
+      _controller.selectionStart,
+      position.offset,
+      affinity: position.affinity,
+    );
+  }
+
+  /// The text position under a point in root coordinates.
+  ///
+  /// The text painted is not the text stored when the field is obscured, so the
+  /// hit test measures what is on screen; anything else puts the caret at the
+  /// wrong bullet. Beyond either edge the paragraph clamps to the end of the
+  /// line, which is what makes a drag off the field select to the extreme.
+  TextPosition _positionAt(Offset globalPosition) {
+    final Offset local = globalToLocal(globalPosition);
     final double x = local.dx - theme.effectiveControlPadding;
     final Paragraph? laid = paragraph;
     if (laid != null) {
@@ -1795,16 +2044,18 @@ final class RenderTextField extends RenderBox
       // boundary was hit, so a click on the right half of an emoji lands after
       // it rather than between its surrogates, and the affinity it returns is
       // what puts the caret on the correct side of a direction change.
-      _controller.collapseToPosition(laid.getPositionForOffset(Offset(x, 0)));
-      return;
+      return laid.getPositionForOffset(Offset(x, 0));
     }
-    final int index =
-        labelIndexAtOffset(displayText, x).clamp(0, _controller.value.length);
-    _controller.collapseTo(index);
+    return TextPosition(
+      labelIndexAtOffset(displayText, x).clamp(0, _controller.value.length),
+    );
   }
 
   @override
   bool handleKeyEvent(KeyEvent event) {
+    // Every transition, press *and* release, so that the modifier state a
+    // Shift+click reads is the current one. See [_modifiers].
+    _modifiers = event.modifiers;
     if (!enabled || event is! KeyDownEvent) return false;
     final bool shift = event.modifiers.contains(KeyModifier.shift);
     final bool control = event.modifiers.contains(KeyModifier.control);
@@ -1822,6 +2073,25 @@ final class RenderTextField extends RenderBox
           return true;
         case 0x59: // Ctrl+Y
           if (!_readOnly) _controller.redo();
+          return true;
+        // The clipboard chords, claimed whether or not they end up doing
+        // anything. A refused copy - from an obscured field - that returned
+        // false would fall through to the application's shortcut map, and
+        // Ctrl+C aimed at a password would fire whatever the application bound
+        // to it. Claiming is about precedence, and the precedence is the
+        // field's either way; the *reason* the operation did nothing goes to
+        // [lastClipboardError].
+        case 0x43: // Ctrl+C
+          _enqueueClipboard(copySelection);
+          return true;
+        case 0x58: // Ctrl+X
+          _enqueueClipboard(cutSelection);
+          return true;
+        case 0x56: // Ctrl+V
+          _enqueueClipboard(pasteFromClipboard);
+          return true;
+        case _logicalKeyInsert: // Ctrl+Insert: copy, the older spelling
+          _enqueueClipboard(copySelection);
           return true;
         case logicalKeyArrowLeft:
           _controller.moveCaretByWord(-1, extend: shift);
@@ -1860,9 +2130,26 @@ final class RenderTextField extends RenderBox
         _controller.deleteBackward();
         return true;
       case logicalKeyDelete:
+        // Shift+Delete is cut, the pre-Ctrl+X spelling that Windows still
+        // honours everywhere. With no selection it cuts nothing rather than
+        // falling back to a forward delete: a chord that deletes a character
+        // *and* leaves the clipboard untouched is the surprising one.
+        if (shift) {
+          _enqueueClipboard(cutSelection);
+          return true;
+        }
         if (_readOnly) return true;
         _controller.deleteForward();
         return true;
+      case _logicalKeyInsert:
+        // Shift+Insert is paste. Plain Insert is declined: it means overtype,
+        // which this field does not implement, and claiming it would stop an
+        // application binding it to something that does.
+        if (shift) {
+          _enqueueClipboard(pasteFromClipboard);
+          return true;
+        }
+        return false;
       case logicalKeyTab:
       case logicalKeyEscape:
         // Declined on purpose: Tab belongs to traversal and Escape to whatever
@@ -1919,6 +2206,166 @@ final class RenderTextField extends RenderBox
     if (!enabled || _readOnly) return false;
     _controller.replaceSelection(event.text);
     return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Clipboard
+  // -------------------------------------------------------------------------
+
+  /// Puts the selected text on the clipboard. Returns whether it got there.
+  ///
+  /// Three rules that are easy to get wrong and are each a test:
+  ///
+  ///  * **An empty selection copies nothing and leaves the clipboard alone.**
+  ///    Writing the empty string would destroy whatever the user copied a
+  ///    moment ago, and Ctrl+C with no selection is something people press by
+  ///    accident constantly.
+  ///  * **An obscured field refuses.** A password field renders bullets
+  ///    precisely so the value cannot be read off the screen; handing the same
+  ///    value to a process-global buffer that every other application can read
+  ///    - and that clipboard managers write to disk - gives it away by another
+  ///    door. Every platform's password field refuses this, and so does this
+  ///    one. Pasting *into* one is still allowed: the secret is moving toward
+  ///    the field, not out of it, which is how password managers work.
+  ///  * **A failed write is not a silent no-op.** The reason lands in
+  ///    [lastClipboardError].
+  Future<bool> copySelection() async {
+    if (!enabled) return false;
+    if (_obscure) {
+      return _refuse(
+        'copy',
+        'the field is obscured; copying would put its value on a buffer every '
+            'other process can read',
+      );
+    }
+    if (!_controller.hasSelection) {
+      return _refuse(
+        'copy',
+        'the selection is empty; the clipboard was left as it was rather than '
+            'being emptied',
+      );
+    }
+    return _write(_controller.selectedText);
+  }
+
+  /// Copies the selection and then removes it.
+  ///
+  /// **The write happens first and the delete only if it succeeded**, so a
+  /// clipboard held by another process cannot cost the user their text. In a
+  /// [readOnly] field the copy still happens and the delete does not: the text
+  /// is readable on screen, so there is nothing to protect by refusing to copy
+  /// it, and refusing would only make Ctrl+X in a read-only field behave
+  /// differently from Ctrl+C for no reason the user can see. In an [obscure]
+  /// field the whole operation is refused, for the reason on [copySelection].
+  Future<bool> cutSelection() async {
+    if (!enabled) return false;
+    if (_obscure) {
+      return _refuse(
+        'cut',
+        'the field is obscured; cutting would put its value on a buffer every '
+            'other process can read',
+      );
+    }
+    if (!_controller.hasSelection) {
+      return _refuse('cut', 'the selection is empty; nothing was cut');
+    }
+    if (!await _write(_controller.selectedText)) return false;
+    if (_readOnly) {
+      // Copied, not cut. Reported as a success - the clipboard does hold the
+      // text - with the reason the text is still on screen.
+      _lastClipboardError = null;
+      return true;
+    }
+    _controller.replaceSelection('');
+    return true;
+  }
+
+  /// Replaces the selection with the clipboard's text.
+  ///
+  /// The caret lands **after** the inserted text, the whole insertion is
+  /// **one** undo entry - `replaceSelection` pushes exactly one, so a single
+  /// Ctrl+Z takes back the entire paste rather than one character of it - and
+  /// the text is put through [PastedText.forSingleLine] first, which is where
+  /// the line-break policy and the "no half a character" rule live.
+  ///
+  /// Nothing happens, and no undo entry is pushed, when the clipboard holds no
+  /// text or holds only characters the policy drops. A read-only field refuses
+  /// without reading: the read is a round trip to another process, and starting
+  /// one whose result can only be thrown away is work the user did not ask for.
+  Future<bool> pasteFromClipboard() async {
+    if (!enabled) return false;
+    if (_readOnly) {
+      return _refuse('paste', 'the field is read-only');
+    }
+    final String? raw = await _read();
+    if (raw == null) return false;
+    final String text = PastedText.forSingleLine(raw);
+    if (text.isEmpty) {
+      return _refuse(
+        'paste',
+        'the clipboard held no text this field can accept',
+      );
+    }
+    _controller.replaceSelection(text);
+    return true;
+  }
+
+  /// Runs [operation] after everything already queued.
+  ///
+  /// Serialised rather than fired in parallel: two Ctrl+V presses one frame
+  /// apart must insert in the order they were typed, and two overlapping reads
+  /// of the Windows clipboard would have the second fail on the lock the first
+  /// is holding.
+  void _enqueueClipboard(Future<bool> Function() operation) {
+    _clipboardWork = _clipboardWork.then((void _) => operation());
+  }
+
+  Future<bool> _write(String text) async {
+    try {
+      await _clipboard.writeText(text);
+      _lastClipboardError = null;
+      return true;
+    } on ClipboardException catch (error) {
+      _lastClipboardError = error;
+      return false;
+    } on UnsupportedCapabilityError catch (error) {
+      _lastClipboardError = ClipboardException(
+        operation: 'writeText',
+        reason: error.toString(),
+      );
+      return false;
+    }
+  }
+
+  Future<String?> _read() async {
+    try {
+      final String? text = await _clipboard.readText();
+      _lastClipboardError = text == null
+          ? const ClipboardException(
+              operation: 'paste',
+              reason: 'the clipboard holds no text',
+            )
+          : null;
+      return text;
+    } on ClipboardException catch (error) {
+      _lastClipboardError = error;
+      return null;
+    } on UnsupportedCapabilityError catch (error) {
+      _lastClipboardError = ClipboardException(
+        operation: 'readText',
+        reason: error.toString(),
+      );
+      return null;
+    }
+  }
+
+  /// Records why an operation did not happen and reports that it did not.
+  bool _refuse(String operation, String reason) {
+    _lastClipboardError = ClipboardException(
+      operation: operation,
+      reason: reason,
+    );
+    return false;
   }
 
   @override

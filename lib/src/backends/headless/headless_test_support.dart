@@ -7,6 +7,7 @@ import 'dart:typed_data';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/clipboard.dart';
 import '../../platform/input_events.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/framebuffer.dart';
@@ -128,15 +129,89 @@ GoldenComparison compareGolden(
 }
 
 /// In-memory clipboard used by headless applications and tests.
-final class FakeClipboard {
+///
+/// The whole point of it is to make the three answers a real clipboard can give
+/// reachable from a test without a second process:
+///
+///  * **text**, including text with the `\r\n` a Windows text file carries and
+///    the astral characters a code-unit-counting implementation cuts in half;
+///  * **nothing** - [readText] returns null, which is *not* the same as the
+///    empty string and callers must not conflate them;
+///  * **a failure** - [failWith], because on Windows the clipboard is a
+///    process-global lock and `OpenClipboard` really does fail while a
+///    clipboard-manager utility holds it. That path is the one most likely to
+///    be written without a test, and the one where "retry until it works"
+///    turns a copy into a hang.
+///
+/// [writeText] and [readText] are asynchronous because [Clipboard] is; see that
+/// contract for why the port cannot be synchronous even though this
+/// implementation answers immediately.
+final class FakeClipboard implements Clipboard {
   String? _text;
+  ClipboardException? _readFailure;
+  ClipboardException? _writeFailure;
+  int _reads = 0;
+  int _writes = 0;
 
+  /// What a paste would find, without going through [readText].
   String? get text => _text;
 
-  Future<void> writeText(String value) async => _text = value;
+  /// How many times each direction was actually exercised.
+  ///
+  /// A copy that is refused must not touch the clipboard at all, and "the text
+  /// did not change" cannot prove that - the field might have written the same
+  /// string back. These counters can.
+  int get reads => _reads;
+  int get writes => _writes;
 
-  Future<String?> readText() async => _text;
+  /// Puts [value] on the clipboard as another application would have, without
+  /// counting as a [writes] and without being blocked by [failWith].
+  void seedText(String? value) => _text = value;
 
+  /// Makes every subsequent operation fail with [error].
+  ///
+  /// Defaults to the Windows failure this exists to reproduce: another process
+  /// holds the clipboard and `OpenClipboard` returned zero.
+  void failWith([ClipboardException? error]) {
+    final ClipboardException failure = error ??
+        const ClipboardException(
+          backend: 'fake',
+          operation: 'OpenClipboard',
+          reason: 'another process holds the clipboard lock',
+        );
+    _readFailure = failure;
+    _writeFailure = failure;
+  }
+
+  /// Fails only reads, or only writes - the asymmetric case where a cut must
+  /// not delete the text it could not copy.
+  void failReadsWith(ClipboardException error) => _readFailure = error;
+  void failWritesWith(ClipboardException error) => _writeFailure = error;
+
+  /// Stops failing. The contents are untouched.
+  void recover() {
+    _readFailure = null;
+    _writeFailure = null;
+  }
+
+  @override
+  Future<void> writeText(String value) async {
+    _writes++;
+    final ClipboardException? failure = _writeFailure;
+    if (failure != null) throw failure;
+    _text = value;
+  }
+
+  @override
+  Future<String?> readText() async {
+    _reads++;
+    final ClipboardException? failure = _readFailure;
+    if (failure != null) throw failure;
+    return _text;
+  }
+
+  /// Empties it, as `EmptyClipboard` does. Never a failure here: a test that
+  /// wants an empty clipboard should get one.
   Future<void> clear() async => _text = null;
 }
 

@@ -20,6 +20,13 @@ import 'package:test/test.dart';
 const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   'foundation': <String>[],
   'geometry': <String>[],
+  // Raw native-ABI plumbing: COM vtables, GUIDs, HRESULTs, a native
+  // allocator. It sits this low because it names no operating system and no
+  // window - it manipulates pointers and integers, and the identifier ban
+  // below applies to it like any other core layer. It knows `foundation`
+  // because ordered teardown is `DisposableBag`'s job and a second
+  // implementation of that order is how the order stops being one rule.
+  'ffi': <String>['foundation'],
   'scheduler': <String>['foundation'],
   'graphics': <String>['foundation', 'geometry'],
   // Animation sits above the scheduler because time enters it through a frame
@@ -33,7 +40,12 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // The reverse is forbidden: section 22.7 requires the font parser to stay
   // independent of any renderer, so `text` must never appear to depend on
   // `rendering`.
+  // `ffi` is here for the same reason `dart:ffi` itself is: a GPU backend that
+  // talks to a driver is native-ABI code, and the Direct3D 11 backend calls
+  // COM vtables. It is an ABI dependency, not a platform one - nothing in
+  // `ffi` names a window, a display server or an operating system.
   'rendering': <String>[
+    'ffi',
     'foundation',
     'geometry',
     'graphics',

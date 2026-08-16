@@ -520,6 +520,37 @@ final class TextMotion {
     return at;
   }
 
+  /// The word-segment [offset] falls in - what a **double click** selects.
+  ///
+  /// A range rather than a motion, because selecting a word is not two moves:
+  /// `previousWord` skips whitespace and `nextWord` skips to the *start* of the
+  /// following segment, so composing them would select a word plus the space
+  /// after it and would select the wrong thing entirely inside punctuation.
+  /// This is the UAX #29 segment itself, from `WordBreaks`, with nothing added.
+  ///
+  /// **The tie at a boundary is decided downstream.** An offset that already
+  /// sits on a word boundary belongs to two segments, and this returns the one
+  /// that *starts* there - the word to the right of the click - except at the
+  /// very end of the text, where there is no segment to the right and the last
+  /// one is returned instead. Declared rather than left to emerge, because the
+  /// case is reachable: a double click that lands within half a glyph of a
+  /// word's edge hit-tests to exactly this offset.
+  ///
+  /// A segment of spaces or of punctuation is a segment like any other, so
+  /// double-clicking the gap between two words selects the gap. That is what
+  /// UAX #29 segmentation says is there, and inventing a rule that jumps to a
+  /// neighbouring word would make the selection depend on which pixel was hit.
+  static TextRange wordAt(String text, int offset) {
+    if (text.isEmpty) return const TextRange(0, 0);
+    final int at = offset.clamp(0, text.length);
+    if (at >= text.length) {
+      return TextRange(WordBreaks.previous(text, text.length), text.length);
+    }
+    final int start =
+        WordBreaks.isBoundary(text, at) ? at : WordBreaks.previous(text, at);
+    return TextRange(start, WordBreaks.next(text, start));
+  }
+
   /// Whether `[start, end)` is entirely whitespace.
   ///
   /// The set is written out rather than taken from a Unicode property because
@@ -547,4 +578,111 @@ final class TextMotion {
       unit == 0x202F || // narrow no-break space
       unit == 0x205F || // medium mathematical space
       unit == 0x3000; // ideographic space
+}
+
+// ---------------------------------------------------------------------------
+// Text arriving from outside the field
+// ---------------------------------------------------------------------------
+
+/// Text from the clipboard, made fit for a field that has one line.
+///
+/// Everything else that enters a field has already been filtered: a keystroke
+/// arrives as a `TextInputEvent`, whose contract forbids control characters and
+/// half-delivered surrogate pairs, and an input method commits through
+/// [TextEditingController.commitText]. The clipboard is the one door with no
+/// such guarantee - whatever any other application put there arrives verbatim,
+/// including the `\r\n` of a text file, the `\t` of a spreadsheet cell, and, on
+/// Windows, whatever UTF-16 a program wrote into a `CF_UNICODETEXT` handle
+/// without checking it. So the filtering happens here, at that door, once.
+///
+/// ## The line-break policy, chosen and stated
+///
+/// Every field in this framework is single-line: there is no `maxLines`, and
+/// `RenderTextField` lays out one line's worth of height. Pasting `a\r\nb` has
+/// three plausible answers and this one takes the third:
+///
+///  1. **Truncate at the first break.** What the classic Win32 single-line edit
+///    control does. Rejected: it silently drops text the user explicitly asked
+///    to paste, and the loss is invisible - the field looks like it worked.
+///  2. **Refuse the paste.** Rejected: the user is left with no way to get the
+///    text in at all and no idea why nothing happened.
+///  3. **Turn each break into one space.** Chosen. Nothing is lost, the result
+///    is a single line by construction, and the words either side of the break
+///    stay separate words - which deleting the break entirely (the HTML
+///    `<input>` sanitisation rule) does not: `Rua da Praia\nCentro` becomes
+///    `Rua da PraiaCentro`, one nonsense word that also breaks word-wise caret
+///    motion over it.
+///
+/// A CRLF pair is **one** break and becomes **one** space, so a Windows text
+/// file does not paste with doubled spacing. The breaks recognised are the ones
+/// UAX #14 treats as mandatory: CR, LF, CRLF, VT, FF, NEL (U+0085), LS
+/// (U+2028) and PS (U+2029). A tab becomes a space too - a single-line field
+/// has no tab stops to advance to, so a literal tab would paint as a missing
+/// glyph or as nothing at all.
+///
+/// ## What is dropped rather than replaced
+///
+///  * **Every other C0 and C1 control**, by the same rule
+///    `TextInputAssembler` applies to typing: they have no printed form, so a
+///    field holding one shows nothing and quietly carries a character that
+///    every later `substring` has to account for.
+///  * **Unpaired surrogates.** Half a character is not a character.
+///    [TextEditingValue] rejects a caret between the halves of a pair, so a
+///    lone surrogate pasted into the middle of a field would raise on the next
+///    keystroke rather than merely look wrong. A high surrogate is kept only
+///    when its low half follows immediately.
+///
+/// What is emphatically *not* touched: everything with a printed form,
+/// including combining marks, ZWJ (U+200D, which holds emoji sequences
+/// together), bidirectional controls and the no-break space. Those are content.
+final class PastedText {
+  const PastedText._();
+
+  /// [text] with line breaks and tabs folded to spaces and non-text dropped.
+  ///
+  /// Returns the empty string when nothing survives, which callers treat as
+  /// "there was nothing to paste" - the same as an empty clipboard - rather
+  /// than pushing an undo entry for an edit that changes nothing.
+  static String forSingleLine(String text) {
+    final StringBuffer out = StringBuffer();
+    for (int i = 0; i < text.length; i++) {
+      final int unit = text.codeUnitAt(i);
+      if (unit == 0x0D) {
+        // CRLF is one break. Consuming the LF here is what stops a Windows
+        // text file pasting with two spaces between every line.
+        if (i + 1 < text.length && text.codeUnitAt(i + 1) == 0x0A) i++;
+        out.write(' ');
+        continue;
+      }
+      if (_isBreak(unit) || unit == 0x09) {
+        out.write(' ');
+        continue;
+      }
+      if (unit >= 0xD800 && unit <= 0xDBFF) {
+        final int next = i + 1 < text.length ? text.codeUnitAt(i + 1) : 0;
+        if (next >= 0xDC00 && next <= 0xDFFF) {
+          out
+            ..writeCharCode(unit)
+            ..writeCharCode(next);
+          i++;
+        }
+        // Else: a high surrogate with no low half. Dropped.
+        continue;
+      }
+      // A low surrogate reaching here has no high half before it, because a
+      // valid pair was consumed whole above.
+      if (unit >= 0xDC00 && unit <= 0xDFFF) continue;
+      if (unit < 0x20 || (unit >= 0x7F && unit <= 0x9F)) continue;
+      out.writeCharCode(unit);
+    }
+    return out.toString();
+  }
+
+  static bool _isBreak(int unit) =>
+      unit == 0x0A || // LF
+      unit == 0x0B || // VT
+      unit == 0x0C || // FF
+      unit == 0x85 || // NEL
+      unit == 0x2028 || // LINE SEPARATOR
+      unit == 0x2029; // PARAGRAPH SEPARATOR
 }

@@ -80,6 +80,7 @@ import '../layout/box_constraints.dart';
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
 import '../platform/backend_selection.dart';
+import '../platform/clipboard.dart';
 import '../platform/input_events.dart';
 import '../platform/native_window.dart';
 import '../platform/window_events.dart';
@@ -88,6 +89,7 @@ import '../rendering/renderer.dart';
 import '../scheduler/frame_scheduler.dart';
 import '../scheduler/manual_dispatcher.dart';
 import '../widgets/control.dart';
+import '../widgets/controls.dart' show ClipboardScope;
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
 import '../widgets/widget.dart';
@@ -235,6 +237,7 @@ final class ApplicationOptions {
     this.gpuPresentationCapability = kGpuPresentationCapability,
     this.arguments = const <String>[],
     this.environment = const <String, String>{},
+    this.clipboard,
     this.onError,
     this.onDiagnostic,
   });
@@ -313,6 +316,23 @@ final class ApplicationOptions {
   /// never at the mercy of a variable exported in the shell that launched it.
   /// A `main` that wants the real environment passes it.
   final Map<String, String> environment;
+
+  /// The system clipboard the widget tree will use, or null for none.
+  ///
+  /// Supplied by the caller for the same reason [WindowingBackendEntry] is: the
+  /// clipboard is a platform service, this file is not allowed to name a
+  /// backend, and a `main` that already chose `Win32WindowingBackend` is the
+  /// one place that can also build a `Win32Clipboard` over the same
+  /// `Win32Api`. Null leaves the tree with an [UnavailableClipboard], so a
+  /// Ctrl+V in an application that was never given one fails by name rather
+  /// than doing nothing.
+  ///
+  /// **Pending.** The tidier seam is a `clipboard` member on the
+  /// `WindowingBackend` contract, so choosing a backend would choose its
+  /// clipboard too. It is not done here because that interface is implemented
+  /// by every backend and every test double, and adding a member to it is a
+  /// change across files this work does not own.
+  final Clipboard? clipboard;
 
   /// Where a build/layout/paint failure goes. Null installs a reporter that
   /// contains the error - the frame still draws, minus the failed subtree -
@@ -637,9 +657,27 @@ final class Application with DisposableMixin {
   void updateRoot(Widget widget) {
     throwIfDisposed();
     _rootWidget = widget;
-    if (_rootMounted) buildOwner.updateRoot(widget);
+    if (_rootMounted) buildOwner.updateRoot(_mountableRoot);
     requestFrame();
   }
+
+  /// The clipboard this application's widget tree can reach.
+  ///
+  /// Never null: an application started without one gets an
+  /// [UnavailableClipboard], whose operations fail with a message that says so.
+  /// That is the section 6.6 answer - a named failure at the Ctrl+V - rather
+  /// than a silent no-op the user would read as "the clipboard is empty".
+  Clipboard get clipboard => options.clipboard ?? const UnavailableClipboard();
+
+  /// The root as the tree actually mounts it.
+  ///
+  /// Wrapped in a [ClipboardScope] here rather than left to the caller for the
+  /// same reason the theme is inherited rather than passed: every text field
+  /// needs the clipboard, none of them should be handed one by its parent, and
+  /// an application that forgot the wrapper would have a Ctrl+V that silently
+  /// did nothing in half its screens.
+  Widget get _mountableRoot =>
+      ClipboardScope(clipboard: clipboard, child: _rootWidget);
 
   /// Marks the next frame dirty. Idempotent; many mutations coalesce into one.
   void requestFrame() {
@@ -814,7 +852,7 @@ final class Application with DisposableMixin {
     final stopwatch = Stopwatch()..start();
     try {
       if (!_rootMounted) {
-        buildOwner.updateRoot(_rootWidget);
+        buildOwner.updateRoot(_mountableRoot);
         _rootMounted = true;
       }
       final build = stopwatch.elapsedMicroseconds;

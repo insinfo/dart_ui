@@ -1,19 +1,37 @@
-/// Unicode text clipboard adapter using user32/kernel32 directly.
+/// The Windows implementation of the [Clipboard] port: `CF_UNICODETEXT`
+/// through user32/kernel32, with no wrapper library.
+///
+/// Windows is the one target where the clipboard genuinely is synchronous:
+/// `OpenClipboard` takes a process-global lock, `GetClipboardData` hands back a
+/// global memory handle that is already populated, and both return before the
+/// call does. The futures here therefore complete on the spot. They are futures
+/// anyway because [Clipboard] is asynchronous for X11 and Wayland, where the
+/// data has to be negotiated with another process - see that contract for why
+/// shaping the port around this backend would be a mistake.
+///
+/// **The lock is the failure mode that matters.** `OpenClipboard` fails while
+/// any other process holds the clipboard, which happens routinely: clipboard
+/// managers open it on every change. The answer here is one attempt and a named
+/// [ClipboardException], never a retry loop - a loop turns a failed Ctrl+C into
+/// a frozen window - and never a silent null, which would tell the caller the
+/// clipboard was empty when it was merely busy.
 library;
 
 import 'dart:ffi';
 
 import '../../foundation/diagnostics.dart';
+import '../../platform/clipboard.dart';
 import 'win32_api.dart';
 import 'win32_constants.dart';
 
-final class Win32Clipboard {
+final class Win32Clipboard implements Clipboard {
   const Win32Clipboard(this.api);
 
   final Win32Api api;
 
   bool get isSupported => api.clipboardSupported;
 
+  @override
   Future<void> writeText(String value) async {
     _requireSupported();
     _open();
@@ -40,10 +58,14 @@ final class Win32Clipboard {
     }
   }
 
+  @override
   Future<String?> readText() async {
     _requireSupported();
     _open();
     try {
+      // Null rather than an exception for both of these: a clipboard holding a
+      // bitmap and nothing else is not a failure, it simply has no text, and
+      // the port draws that line deliberately.
       final handle = api.getClipboardData!(cfUnicodeText);
       if (handle == 0) return null;
       final address = api.globalLock!(handle);
@@ -56,6 +78,10 @@ final class Win32Clipboard {
           if (unit == 0) break;
           units.add(unit);
         }
+        // Returned verbatim, surrogate pairs and CRLF and all: sanitising is
+        // the field's policy (`PastedText`), not the transport's, and a
+        // transport that quietly rewrote what another application wrote would
+        // make the two disagree about what is on the clipboard.
         return String.fromCharCodes(units);
       } finally {
         api.globalUnlock!(handle);
@@ -66,7 +92,15 @@ final class Win32Clipboard {
   }
 
   void _open() {
-    if (api.openClipboard!(0) == 0) _fail('OpenClipboard');
+    if (api.openClipboard!(0) == 0) {
+      throw const ClipboardException(
+        backend: 'win32',
+        operation: 'OpenClipboard',
+        reason: 'another process holds the clipboard lock; the clipboard is '
+            'process-global on Windows and this call is not retried, because '
+            'a retry loop turns a busy clipboard into a frozen window',
+      );
+    }
   }
 
   void _requireSupported() {
@@ -79,5 +113,9 @@ final class Win32Clipboard {
     }
   }
 
-  Never _fail(String function) => throw StateError('$function failed');
+  Never _fail(String function) => throw ClipboardException(
+        backend: 'win32',
+        operation: function,
+        reason: 'the call returned a failure code',
+      );
 }
