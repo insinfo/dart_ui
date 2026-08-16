@@ -66,10 +66,6 @@ void main() {
       expect(_isAllOneColour(before), isFalse,
           reason: 'a blank frame would make the comparison meaningless');
 
-      // The pointer to the device that is about to die, kept only to prove the
-      // recovery really replaced it rather than reusing it.
-      final int deadDevice = device.device.pointer.address;
-
       device.markLost(const BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
         message: 'a test asked for the loss path',
@@ -79,11 +75,27 @@ void main() {
       printOnFailure('$report');
       expect(report.isRecovered, isTrue, reason: '$report');
       expect(device.isLost, isFalse);
-      expect(device.device.pointer.address, isNot(deadDevice),
-          reason: 'D3D11 recovery must create a new ID3D11Device, not reuse '
-              'the removed one');
-      // GetDeviceRemovedReason is the only reliable question, and the new
-      // device answers S_OK.
+
+      // What is *not* asserted here, and why: this used to compare the address
+      // of `ID3D11Device` before and after and require it to change. That is
+      // not evidence. The old device is released before the new one is made,
+      // so the allocator is free to hand the same block back - which is
+      // exactly what happened on the CI runner, where the test failed with
+      // `Expected: not <2889392971168> / Actual: <2889392971168>` while the
+      // recovery had in fact worked. It passed on a developer machine only
+      // because a different allocation pattern happened to move the block.
+      // Pointer identity after a free proves nothing in either direction.
+      //
+      // What the report says it did is evidence, and it is checked instead:
+      // every resource the coordinator discarded came back, and nothing was
+      // orphaned.
+      expect(report.discardedCount, greaterThan(0),
+          reason: 'a recovery that discarded nothing did not rebuild the '
+              'device, so the rest of this test would prove nothing');
+      expect(report.repopulatedCount, greaterThan(0));
+      expect(report.unrecoverableResources, isEmpty, reason: '$report');
+      // And the device answers as a live one: a removed device reports its
+      // removal reason forever, so S_OK here cannot come from the dead one.
       expect(device.checkDeviceRemoved('after a recovery'), isFalse);
 
       expect(
