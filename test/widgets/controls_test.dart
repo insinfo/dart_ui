@@ -216,22 +216,30 @@ void main() {
     test('TextField edits by keyboard and moves its caret', () {
       final controller = TextEditingController();
       final owner = _owner();
+      final input = FakeTextInput();
       owner.updateRoot(TextField(controller: controller));
       owner.pipelineOwner.drawFrame(DisplayList());
 
       final field = owner.renderRoot! as RenderTextField;
       owner.requestKeyboardFocus(field);
 
+      // Typing is two events per character, as it is on every platform: the
+      // key (which this field claims, so no shortcut steals it) and the text
+      // the layout produced from it. This test used to send only the key and
+      // expect 'AB', which is the bug - it passed because virtual keys 0x41
+      // and 0x42 happen to equal 'A' and 'B' in ASCII.
       owner
         ..dispatchKeyEvent(_key(65))
-        ..dispatchKeyEvent(_key(66));
-      expect(controller.value, 'AB');
+        ..dispatchTextInputEvent(input.typeText('a'))
+        ..dispatchKeyEvent(_key(66))
+        ..dispatchTextInputEvent(input.typeText('b'));
+      expect(controller.value, 'ab', reason: 'lower case, because no Shift');
 
       owner.dispatchKeyEvent(_key(logicalKeyArrowLeft));
       expect(controller.selectionEnd, 1);
 
       owner.dispatchKeyEvent(_key(logicalKeyBackspace));
-      expect(controller.value, 'B');
+      expect(controller.value, 'b');
     });
 
     test('a text field declines Tab so traversal can have it', () {

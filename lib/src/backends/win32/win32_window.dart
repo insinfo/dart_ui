@@ -466,6 +466,10 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         return _onDpiChanged(wParam, lParam);
 
       case wmActivate:
+        // A half-delivered surrogate pair cannot survive the window losing the
+        // keyboard: its low half is going to another window, and keeping the
+        // high half would fuse it onto whatever is typed here next.
+        if (win32LoWord(wParam) == waInactive) _textAssembler.reset();
         _emit(
           WindowActivationEvent(
             windowId: id,
@@ -545,6 +549,28 @@ final class Win32Window with DisposableMixin implements NativeWindow {
       case wmKeyup:
       case wmSyskeyup:
         return _onKeyUp(wParam, lParam);
+
+      case wmChar:
+        return _onChar(wParam);
+
+      case wmSyschar:
+      case wmDeadchar:
+      case wmSysdeadchar:
+        // Declared rather than left to fall through the default arm, because
+        // "the default arm happens to do the right thing" is not a decision
+        // anybody can review. None of the three is text:
+        //
+        //   * WM_SYSCHAR is an Alt chord - a menu mnemonic. Typing `f` for
+        //     Alt+F would insert into the document while the user was opening
+        //     a menu.
+        //   * WM_DEADCHAR / WM_SYSDEADCHAR is the accent half of a dead-key
+        //     sequence. Inserting it would give `´a` where the user typed `á`;
+        //     the composed character arrives afterwards as its own WM_CHAR.
+        //
+        // Handed to DefWindowProcW, which is what keeps system mnemonics
+        // working and keeps the dead-key state machine in the OS where it
+        // belongs.
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
       default:
         // Every input message lands here: one call out, nothing allocated.
@@ -753,6 +779,34 @@ final class Win32Window with DisposableMixin implements NativeWindow {
         logicalKey: wParam,
         modifiers: _modifiers(),
         location: _keyLocation(wParam, lParam),
+      ),
+    );
+    return 0;
+  }
+
+  /// Holds a high surrogate between the two WM_CHAR messages that make up one
+  /// astral character. See [TextInputAssembler] for both rules it applies.
+  final TextInputAssembler _textAssembler = TextInputAssembler();
+
+  /// `WM_CHAR`: the text the keyboard layout produced, and the only place this
+  /// backend gets text from.
+  ///
+  /// Windows has already applied the layout, Shift, CapsLock, NumLock, AltGr
+  /// and any pending dead key by the time this arrives, which is precisely
+  /// what no amount of virtual-key arithmetic can reproduce. `wParam` is one
+  /// UTF-16 code unit, so an emoji arrives as two messages and is emitted as
+  /// one event; a control character - Backspace, Tab, Enter, Escape,
+  /// Ctrl+letter - is not text and is emitted as nothing, because it reached
+  /// the framework already, as a [KeyDownEvent].
+  int _onChar(int wParam) {
+    final String? text = _textAssembler.accept(wParam & 0xFFFF);
+    if (text == null) return 0;
+    _emit(
+      TextInputEvent(
+        windowId: id,
+        generation: _generation.current,
+        timestamp: _eventTimestamp(),
+        text: text,
       ),
     );
     return 0;

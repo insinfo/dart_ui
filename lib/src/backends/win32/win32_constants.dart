@@ -115,9 +115,27 @@ const int wmNccreate = 0x0081;
 const int wmNcdestroy = 0x0082;
 const int wmKeydown = 0x0100;
 const int wmKeyup = 0x0101;
+
+/// `WM_CHAR` - one UTF-16 code unit, produced by `TranslateMessage` from the
+/// key that is being pressed *after* Windows applied the keyboard layout,
+/// Shift, CapsLock, NumLock, AltGr and any pending dead key. This is the only
+/// truthful source of typed text; a virtual key code is not one.
 const int wmChar = 0x0102;
+
+/// `WM_DEADCHAR` - the accent half of a dead-key sequence. Not text: the
+/// composed character arrives later as its own [wmChar].
+const int wmDeadchar = 0x0103;
+
 const int wmSyskeydown = 0x0104;
 const int wmSyskeyup = 0x0105;
+
+/// `WM_SYSCHAR` - the character form of an Alt chord. Not text either: Alt+F
+/// is a menu mnemonic, and inserting `f` for it would type into the document
+/// while the user was aiming at a menu.
+const int wmSyschar = 0x0106;
+
+/// `WM_SYSDEADCHAR`, the [wmDeadchar] of an Alt chord.
+const int wmSysdeadchar = 0x0107;
 const int wmMousemove = 0x0200;
 const int wmLbuttondown = 0x0201;
 const int wmLbuttonup = 0x0202;

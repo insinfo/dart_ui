@@ -109,6 +109,29 @@ enum HostWindowEventKind {
 }
 
 /// Input as the host's local `NSEvent` monitor saw it.
+///
+/// ## Typed text is missing from this protocol, and named here rather than
+/// discovered later
+///
+/// [keyDown] carries a `keyCode`, which is hardware: it says which key moved,
+/// not what it means. What the key *means* depends on the layout, on dead
+/// keys, on the Option modifier and on any active input method, and on macOS
+/// only one thing knows the answer:
+///
+///   * the host view must adopt **`NSTextInputClient`** and pass its key
+///     events to **`-[NSView interpretKeyEvents:]`**, which is what makes
+///     AppKit call back into
+///     **`-insertText:replacementRange:`** with the finished characters (and
+///     `-setMarkedText:...` while an IME is still composing);
+///   * that string then needs a record of its own on this wire -
+///     `INPUT=text:<utf8>` alongside the existing `INPUT=keyDown:...` - which
+///     `MacosWindow` would turn into a `TextInputEvent`.
+///
+/// Neither half exists yet: `dart_ui_macos_host.m` does not implement
+/// `NSTextInputClient`, so there is nothing to carry. Until it does, this
+/// backend reports keys and no text, which is why typing into a macOS window
+/// does nothing rather than something wrong. Deriving the character from
+/// `keyCode` here is specifically forbidden - see `TextInputEvent`.
 enum HostInputKind {
   keyDown,
   keyUp,

@@ -769,6 +769,219 @@ void main() {
     });
   });
 
+  /// The bug a user reported from `example/gallery_win32.dart`: with NumLock
+  /// on, the numeric keypad's 1/2/3 typed `abc`; with NumLock off, 2/3 typed
+  /// `("`. The cause was one line - `String.fromCharCode(event.logicalKey)` -
+  /// treating a Win32 virtual-key code as a code point. `VK_NUMPAD1` is 0x61,
+  /// which is `a`; `VK_DOWN` is 0x28, which is `(`.
+  ///
+  /// It survived because virtual keys 0x41-0x5A are the ASCII capitals, so
+  /// letters appeared to work, and because every test in this suite injected
+  /// key events directly and none of them ever went through the platform's
+  /// text channel.
+  group('a key is not a character', () {
+    setUpAll(() {
+      expect(
+        FontRegistry.instance.useFontFile('test/fonts/Roboto-Regular.ttf'),
+        isTrue,
+      );
+    });
+    tearDownAll(FontRegistry.instance.reset);
+
+    test('the numeric keypad types nothing on its own, NumLock or not', () {
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField();
+
+      // VK_NUMPAD1/2/3 with NumLock on. These used to type 'abc'.
+      for (final int key in <int>[0x61, 0x62, 0x63]) {
+        bound.field.handleKeyEvent(_key(key));
+      }
+      expect(
+        bound.controller.value,
+        isEmpty,
+        reason: 'the keypad used to type "abc" because 0x61 is the code for '
+            '"a"; what the keys actually say is up to the layout and arrives '
+            'as a TextInputEvent',
+      );
+    });
+
+    test('the arrow and navigation keys never insert punctuation', () {
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField();
+
+      // NumLock off turns the same physical keys into VK_END (0x23),
+      // VK_DOWN (0x28) and VK_NEXT (0x22), which used to type '#(" '.
+      bound.field
+        ..handleKeyEvent(_key(logicalKeyEnd))
+        ..handleKeyEvent(_key(logicalKeyArrowDown))
+        ..handleKeyEvent(_key(logicalKeyPageDown));
+
+      expect(bound.controller.value, isEmpty);
+    });
+
+    test('a plain letter key claims the keystroke but types nothing', () {
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField();
+
+      expect(
+        bound.field.handleKeyEvent(_key(0x41)),
+        isTrue,
+        reason: 'claimed, so an application shortcut bound to a bare letter '
+            'cannot steal a keystroke aimed at the document',
+      );
+      expect(
+        bound.controller.value,
+        isEmpty,
+        reason: 'and claiming is not typing: the character comes from the OS',
+      );
+    });
+
+    test('a function key is left for the application', () {
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField();
+
+      // F1 (0x70) produces no character on any layout, so a Help shortcut has
+      // to keep working from inside a focused field.
+      expect(bound.field.handleKeyEvent(_key(0x70)), isFalse);
+      expect(bound.controller.value, isEmpty);
+    });
+  });
+
+  group('text comes from the platform, whole', () {
+    setUpAll(() {
+      expect(
+        FontRegistry.instance.useFontFile('test/fonts/Roboto-Regular.ttf'),
+        isTrue,
+      );
+    });
+    tearDownAll(FontRegistry.instance.reset);
+
+    test('case comes from the layout, not from the key code', () {
+      final input = FakeTextInput();
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField();
+
+      // The same key, twice, with the same virtual key code. Only the OS knows
+      // that Shift was down for the second one - the old code could produce
+      // capitals and nothing else.
+      bound.field
+        ..handleTextInput(input.typeText('a'))
+        ..handleTextInput(input.typeText('A'));
+
+      expect(bound.controller.value, 'aA');
+    });
+
+    test('a non-US layout types the characters it prints', () {
+      final input = FakeTextInput();
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField();
+
+      // 'ç' is on the key a US layout calls ';' (VK_OEM_1, 0xBA), and '€' is
+      // AltGr+E. No arithmetic on a virtual key could reach either.
+      bound.field
+        ..handleTextInput(input.typeText('ç'))
+        ..handleTextInput(input.typeText('€'));
+
+      expect(bound.controller.value, 'ç€');
+    });
+
+    test('an astral character delivered in two units becomes one', () {
+      final input = FakeTextInput();
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField();
+
+      // U+1F600 arrives as U+D83D then U+DE00, one platform message each.
+      final TextInputEvent? first = input.feedCodeUnit(0xD83D);
+      final TextInputEvent? second = input.feedCodeUnit(0xDE00);
+      expect(first, isNull, reason: 'half a character is not an event');
+      bound.field.handleTextInput(second!);
+
+      expect(bound.controller.value, _emoji);
+      expect(bound.controller.value.length, 2, reason: 'two code units');
+      expect(bound.controller.value.runes.length, 1);
+      expect(
+        bound.controller.selectionEnd,
+        2,
+        reason: 'the caret is after the whole character, not between its '
+            'surrogates - an offset TextEditingValue would refuse',
+      );
+    });
+
+    test('text replaces the selection and snaps the caret', () {
+      final input = FakeTextInput();
+      final controller = TextEditingController('alpha beta')
+        ..setSelection(0, 5);
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField(controller: controller);
+
+      bound.field.handleTextInput(input.typeText('x'));
+
+      expect(controller.value, 'x beta');
+      expect(controller.selectionEnd, 1);
+    });
+
+    test('a read-only field declines text', () {
+      final input = FakeTextInput();
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField(readOnly: true);
+
+      expect(bound.field.handleTextInput(input.typeText('a')), isFalse);
+      expect(bound.controller.value, isEmpty);
+    });
+
+    test('a control character never reaches the field at all', () {
+      final input = FakeTextInput();
+      final ({RenderTextField field, TextEditingController controller}) bound =
+          _boundField();
+
+      // Backspace, Tab, Enter, Escape and Ctrl+A, as the platform delivers
+      // them on the text channel. Each one produces no event, so the field is
+      // never offered the chance to insert U+0001 into the document.
+      for (final int unit in <int>[0x08, 0x09, 0x0D, 0x1B, 0x01]) {
+        final TextInputEvent? event = input.feedCodeUnit(unit);
+        expect(event, isNull, reason: 'code unit $unit is not text');
+      }
+      expect(bound.controller.value, isEmpty);
+    });
+
+    test('text follows focus, by the same route the keys take', () {
+      final input = FakeTextInput();
+      final controller = TextEditingController();
+      final owner = _owner();
+      owner.updateRoot(TextField(controller: controller));
+      owner.pipelineOwner.drawFrame(DisplayList());
+      final field = owner.renderRoot! as RenderTextField;
+
+      expect(
+        owner.dispatchTextInputEvent(input.typeText('a')),
+        isFalse,
+        reason: 'nothing is focused, so nobody is typing',
+      );
+      expect(controller.value, isEmpty);
+
+      owner.requestKeyboardFocus(field);
+      expect(owner.dispatchTextInputEvent(input.typeText('a')), isTrue);
+      expect(controller.value, 'a');
+
+      owner.clearKeyboardFocus(field);
+      expect(owner.dispatchTextInputEvent(input.typeText('b')), isFalse);
+      expect(controller.value, 'a');
+      owner.dispose();
+    });
+
+    test('a focused control that is not a text field declines text', () {
+      final input = FakeTextInput();
+      final owner = _owner();
+      owner.updateRoot(Button(label: 'OK', onPressed: () {}));
+      owner.pipelineOwner.drawFrame(DisplayList());
+      final button = owner.renderRoot! as RenderButton;
+      owner.requestKeyboardFocus(button);
+
+      expect(owner.dispatchTextInputEvent(input.typeText('a')), isFalse);
+      owner.dispose();
+    });
+  });
+
   group('the caret and the selection come from a laid-out paragraph', () {
     // DejaVu rather than Roboto because these cases need Hebrew coverage; the
     // point of the group is text whose visual order is not its logical order.
@@ -922,6 +1135,20 @@ List<DrawRectCommand> _rectsWithColor(DisplayList list, int color) =>
 BuildOwner _owner({Size size = const Size(200, 60)}) => BuildOwner(
       pipelineOwner: PipelineOwner(rootConstraints: BoxConstraints.tight(size)),
     );
+
+/// A mounted, focused [RenderTextField] and the controller behind it.
+({RenderTextField field, TextEditingController controller}) _boundField({
+  TextEditingController? controller,
+  bool readOnly = false,
+}) {
+  final TextEditingController bound = controller ?? TextEditingController();
+  final BuildOwner owner = _owner();
+  owner.updateRoot(TextField(controller: bound, readOnly: readOnly));
+  owner.pipelineOwner.drawFrame(DisplayList());
+  final RenderTextField field = owner.renderRoot! as RenderTextField;
+  owner.requestKeyboardFocus(field);
+  return (field: field, controller: bound);
+}
 
 PointerDownEvent _pointerDown(Offset at) => PointerDownEvent(
       windowId: const NativeWindowId(1),

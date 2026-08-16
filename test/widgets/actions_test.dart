@@ -161,12 +161,22 @@ void main() {
     owner.pipelineOwner.drawFrame(DisplayList());
     owner.requestKeyboardFocus(owner.renderRoot! as RenderTextField);
 
-    // The field wants 'S' as text, so the shortcut must not fire.
+    // The field claims the 'S' key because the layout is about to turn it into
+    // text, so the shortcut must not fire - but the key itself inserts
+    // nothing. The character arrives separately, from the platform.
     owner.dispatchKeyEvent(_key(0x53));
-    expect(controller.value, 'S');
+    expect(saves, 0);
+    expect(
+      controller.value,
+      isEmpty,
+      reason: 'a virtual key code is not a character',
+    );
+
+    owner.dispatchTextInputEvent(FakeTextInput().typeText('s'));
+    expect(controller.value, 's');
     expect(saves, 0);
 
-    // Escape is declined by the field, so the shortcut chain sees it.
+    // With nothing focused the shortcut chain sees the key.
     owner.clearKeyboardFocus(owner.renderRoot! as RenderTextField);
     owner.dispatchKeyEvent(_key(0x53));
     expect(saves, 1);

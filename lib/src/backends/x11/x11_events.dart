@@ -26,6 +26,29 @@
 /// deferred to the module that owns XKB keymaps; XInput2 device state,
 /// high-resolution scroll axes, selections/clipboard and XDND are also
 /// intentionally deferred.
+///
+/// ## Text input: the contract exists, this backend's source of it does not
+///
+/// [TextInputEvent] is the platform-neutral contract for typed text, and it is
+/// deliberately *not* derivable from a key code - see its documentation for
+/// why. This backend emits neither [KeyEvent] nor [TextInputEvent] yet, and
+/// the missing piece has a name rather than a shrug:
+///
+///   * **`xkb_state_key_get_utf8` from libxkbcommon**, driven by an
+///     `xkb_state` kept current from `xcb_xkb_*` events, is what turns the
+///     `detail` field of an [xcbKeyPress] into characters. It is the XCB-era
+///     equivalent of Xlib's `Xutf8LookupString`/`XmbLookupString`; those two
+///     need an `XIC` on an Xlib `Display`, and this backend speaks raw XCB, so
+///     they are not reachable from here without also opening libX11.
+///   * The result is UTF-8, so it is decoded to a Dart [String] directly and
+///     fed to a [TextInputEvent] whole. [TextInputAssembler] is for the
+///     UTF-16-per-message platforms (Win32); X11 does not need it.
+///   * Composition (`ibus`/`fcitx` over XIM or the text-input-v3 protocol)
+///     stays deferred with the rest of IME.
+///
+/// Until libxkbcommon is bound, [xcbKeyPress] is consumed and dropped below,
+/// which is why typing into an X11 window does nothing at all rather than
+/// doing something wrong.
 library;
 
 import 'dart:ffi';
@@ -493,6 +516,12 @@ abstract final class X11EventTranslator {
       case xcbEnterNotify:
       case xcbLeaveNotify:
         // Consumed, nothing allocated. This is the flood path.
+        //
+        // KeyPress is where `xkb_state_key_get_utf8(state, raw.detail)` will
+        // hang, producing the UTF-8 for one `TextInputEvent`; see the library
+        // comment. Dropping the event is the honest interim behaviour - the
+        // alternative, deriving a character from `raw.detail`, is the exact
+        // bug the Win32 backend was just cured of.
         return true;
 
       default:

@@ -95,6 +95,17 @@ final class BuildOwner {
     return focusManager.handleTraversalKey(event);
   }
 
+  /// Routes translated text through this tree.
+  ///
+  /// Only step 1 of [dispatchKeyEvent]'s three: text is not a shortcut and not
+  /// a traversal command, so the focused control either takes it or nothing
+  /// does. The key that produced this text was already offered to the shortcut
+  /// map and to traversal on its own way through.
+  bool dispatchTextInputEvent(TextInputEvent event) {
+    _throwIfDisposed();
+    return _keyboardRouter.routeTextInput(event);
+  }
+
   /// Builds the semantic tree for the current render tree.
   ///
   /// Layout must have run: semantics carries bounds, and bounds before layout

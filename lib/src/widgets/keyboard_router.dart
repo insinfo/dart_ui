@@ -14,6 +14,19 @@ abstract interface class KeyboardEventTarget {
   bool handleKeyEvent(KeyEvent event);
 }
 
+/// A render-tree object that can consume *text*, as opposed to keys.
+///
+/// Separate from [KeyboardEventTarget] rather than another method on it, and
+/// deliberately so: almost nothing accepts text - a button, a slider and a
+/// menu never do - while nearly every control accepts keys. A control that
+/// does not implement this simply never sees a [TextInputEvent], and the two
+/// interfaces travel the same focus route, so the target that gets the keys is
+/// the target that gets the text they produced.
+abstract interface class TextInputTarget {
+  /// Inserts [event] and reports whether it was consumed.
+  bool handleTextInput(TextInputEvent event);
+}
+
 /// Owns keyboard focus for one window/render tree.
 ///
 /// Focus is deliberately a small service instead of a platform concern. The
@@ -49,5 +62,19 @@ final class KeyboardRouter {
     final target = _focusedTarget;
     if (target == null) return false;
     return target.handleKeyEvent(event);
+  }
+
+  /// Sends translated text to the current focus target.
+  ///
+  /// The same route as [route], and that is the point: the control the user is
+  /// typing into is the focused one, so text must not travel by a path of its
+  /// own that could disagree about where focus is. A focused target that is
+  /// not a [TextInputTarget] declines by construction - a button cannot
+  /// swallow the text somebody meant for the field behind it - and the false
+  /// it returns lets a caller keep looking.
+  bool routeTextInput(TextInputEvent event) {
+    final KeyboardEventTarget? target = _focusedTarget;
+    if (target == null || target is! TextInputTarget) return false;
+    return (target as TextInputTarget).handleTextInput(event);
   }
 }

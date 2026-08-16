@@ -179,3 +179,135 @@ final class KeyUpEvent extends KeyEvent {
     super.location,
   });
 }
+
+/// Text the platform produced from the user's keyboard, already translated.
+///
+/// **A key is not a character, and a character cannot be derived from a key.**
+/// That is the distinction every platform draws and this framework now draws
+/// with it - Win32 splits `WM_KEYDOWN` from `WM_CHAR`, X11 splits `KeyPress`
+/// from `xkb_state_key_get_utf8`, AppKit splits `keyDown:` from
+/// `NSTextInputClient.insertText:` - and the reason is that only the OS knows
+/// the answer:
+///
+///   * the **layout** decides what a key means: the key labelled `;` on a US
+///     keyboard is `ç` on a Brazilian ABNT2 one, and there is no table in this
+///     repository that could know which is plugged in;
+///   * **dead keys and AltGr** mean one character can take two keystrokes and
+///     one keystroke can produce no character at all;
+///   * **Shift and CapsLock** decide case, so the same key is `a` or `A`;
+///   * **NumLock** decides whether the numeric keypad sends digits or
+///     navigation, so the *same* virtual key is `1` or `End`;
+///   * an **input method** can turn a dozen keystrokes into one ideograph, or
+///     into none while it is still composing.
+///
+/// The historical bug this type exists to end: [KeyEvent.logicalKey] is a
+/// virtual-key code, and `String.fromCharCode(logicalKey)` happens to be right
+/// for `A`-`Z` because those virtual keys equal their ASCII letters. Everything
+/// else it touched was wrong - `VK_NUMPAD1` (0x61) typed `a`, `VK_DOWN` (0x28)
+/// typed `(`, and no accented character could ever be typed at all.
+///
+/// So the two live side by side and neither derives from the other:
+///
+///   * [KeyEvent] is **hardware**: shortcuts, chords, navigation, key repeat.
+///     [KeyEvent.logicalKey] remains correct for exactly that.
+///   * [TextInputEvent] is **content**: what the layout produced, as a
+///     [String], for insertion into a document.
+///
+/// A backend that cannot translate text must emit no [TextInputEvent] at all
+/// rather than guessing from a key code.
+final class TextInputEvent extends PlatformInputEvent {
+  TextInputEvent({
+    required super.windowId,
+    required super.generation,
+    required super.timestamp,
+    required this.text,
+  }) {
+    if (text.isEmpty) {
+      throw ArgumentError.value(text, 'text', 'must not be empty');
+    }
+  }
+
+  /// The characters to insert, in logical order.
+  ///
+  /// Never empty, never a control character, and never half of a surrogate
+  /// pair: those three are the platform layer's job to filter, because a
+  /// consumer that had to re-check them would be re-implementing
+  /// [TextInputAssembler] at every call site. An astral character - an emoji -
+  /// arrives here whole even where the OS delivered it one UTF-16 unit at a
+  /// time.
+  final String text;
+
+  @override
+  String toString() => 'TextInputEvent(${text.runes.map(
+        (int rune) =>
+            'U+${rune.toRadixString(16).toUpperCase().padLeft(4, '0')}',
+      ).join(' ')})';
+}
+
+/// Turns a platform's UTF-16 character stream into [TextInputEvent.text].
+///
+/// Every backend that reports text one UTF-16 code unit at a time needs the
+/// same two rules, and getting either wrong is a user-visible bug, so they live
+/// here once instead of once per backend:
+///
+///  1. **Control characters are not text.** Windows sends `WM_CHAR` for
+///     Backspace (0x08), Tab (0x09), Enter (0x0D) and Escape (0x1B), and sends
+///     Ctrl+letter as 0x01-0x1A, so Ctrl+A would insert U+0001 into the
+///     document. The criterion is Unicode general category `Cc` - U+0000 to
+///     U+001F and U+007F to U+009F - which is exactly the set that has no
+///     printed form. Those keystrokes are still delivered as [KeyEvent]s,
+///     which is where an editor handles them.
+///  2. **A surrogate pair is one character.** UTF-16 delivers an astral
+///     character - any emoji - as a high surrogate followed by a low one, in
+///     two separate messages. Emitting them separately would put half a
+///     character into the document, and this repository's `TextEditingValue`
+///     rejects an offset that lands between them, so it would raise rather
+///     than merely corrupt. The high half is therefore held until its low half
+///     arrives.
+///
+/// An unpaired surrogate is dropped in both directions: a lone low surrogate
+/// with nothing held, and a held high surrogate followed by anything other
+/// than a low one. Neither is a character, and no completion for them will
+/// ever arrive.
+final class TextInputAssembler {
+  int _highSurrogate = 0;
+
+  /// Whether a high surrogate is waiting for its low half.
+  bool get isPending => _highSurrogate != 0;
+
+  /// Accepts one UTF-16 code unit, returning the completed character or null.
+  ///
+  /// Null means "nothing to report yet or ever": a held high surrogate, a
+  /// control character, or an unpaired surrogate.
+  String? accept(int codeUnit) {
+    final int unit = codeUnit & 0xFFFF;
+    if (unit >= 0xD800 && unit <= 0xDBFF) {
+      // A second high surrogate abandons the first: two highs in a row cannot
+      // be a pair, and keeping the older one would pair it with a low half
+      // that belongs to a different character.
+      _highSurrogate = unit;
+      return null;
+    }
+    final int high = _highSurrogate;
+    _highSurrogate = 0;
+    if (unit >= 0xDC00 && unit <= 0xDFFF) {
+      if (high == 0) return null;
+      return String.fromCharCodes(<int>[high, unit]);
+    }
+    if (isTextInputControlUnit(unit)) return null;
+    return String.fromCharCode(unit);
+  }
+
+  /// Forgets a half-delivered character.
+  ///
+  /// Called when the stream can no longer be trusted to continue - focus left
+  /// the window, the window is being destroyed - so that the next character
+  /// typed is not fused with the orphan.
+  void reset() => _highSurrogate = 0;
+}
+
+/// Whether [unit] is a C0 or C1 control, which no backend may report as text.
+///
+/// See [TextInputAssembler] for why the boundary is drawn here.
+bool isTextInputControlUnit(int unit) =>
+    unit < 0x20 || (unit >= 0x7F && unit <= 0x9F);

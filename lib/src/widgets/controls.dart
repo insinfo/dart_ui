@@ -29,6 +29,7 @@ import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'keyboard_router.dart';
 import 'semantics.dart';
 import 'style.dart';
 import 'text_editing.dart';
@@ -1682,7 +1683,9 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
   }
 }
 
-final class RenderTextField extends RenderBox with ControlBehavior {
+final class RenderTextField extends RenderBox
+    with ControlBehavior
+    implements TextInputTarget {
   RenderTextField({
     required TextEditingController controller,
     required String label,
@@ -1868,11 +1871,54 @@ final class RenderTextField extends RenderBox with ControlBehavior {
         return false;
     }
     if (_readOnly) return false;
-    if (event.logicalKey >= 0x20 && event.logicalKey <= 0x7E) {
-      _controller.replaceSelection(String.fromCharCode(event.logicalKey));
-      return true;
-    }
-    return false;
+    // Claimed, and deliberately *without* inserting anything.
+    //
+    // This is not where text comes from - [handleTextInput] is - but a key
+    // that the layout is about to turn into a character still belongs to this
+    // field, or an application that bound a bare letter as a shortcut would
+    // steal every keystroke aimed at the document. Claiming is about
+    // precedence, not content: it decides who owns the keystroke, while the OS
+    // decides what it says.
+    return _mayProduceText(event.logicalKey);
+  }
+
+  /// Whether a virtual key is one the keyboard layout may turn into text.
+  ///
+  /// A bounded allow-list rather than a guess at the character, because the
+  /// character is not knowable here - the whole point of the split. Every key
+  /// in it is a key that carries a printed legend on some layout somewhere:
+  /// space, the digit row, the letter block, the numeric keypad (whose digits
+  /// only reach us with NumLock on), and the OEM keys that hold punctuation
+  /// and move around between layouts. Anything else - function keys, Insert,
+  /// Pause, the modifiers themselves - never produces a character, so an
+  /// application shortcut bound to one keeps working from inside a field.
+  static bool _mayProduceText(int virtualKey) =>
+      virtualKey == logicalKeySpace ||
+      (virtualKey >= 0x30 && virtualKey <= 0x39) || // 0-9
+      (virtualKey >= 0x41 && virtualKey <= 0x5A) || // A-Z
+      (virtualKey >= 0x60 && virtualKey <= 0x6F) || // numpad digits, operators
+      (virtualKey >= 0xBA && virtualKey <= 0xC0) || // OEM punctuation
+      (virtualKey >= 0xDB && virtualKey <= 0xDF) || // OEM brackets, quotes
+      virtualKey == 0xE2; // OEM_102, the extra key on ISO keyboards
+
+  /// Inserts what the platform's keyboard layout produced.
+  ///
+  /// The entire content of a typed character arrives here and nowhere else.
+  /// The field used to build the character out of [KeyEvent.logicalKey], which
+  /// is a virtual-key code: it typed `a` for the numeric keypad's `1`, `(` for
+  /// the down arrow, could produce only capitals, and could not produce `ç`,
+  /// `€` or anything behind a dead key at all. See [TextInputEvent] for why no
+  /// arithmetic on a key code can be made to work.
+  ///
+  /// [TextEditingController.replaceSelection] does the rest: it replaces the
+  /// selection if there is one and snaps the caret onto a grapheme cluster
+  /// boundary afterwards, so typing an accent onto a letter leaves the caret
+  /// after the pair rather than inside it.
+  @override
+  bool handleTextInput(TextInputEvent event) {
+    if (!enabled || _readOnly) return false;
+    _controller.replaceSelection(event.text);
+    return true;
   }
 
   @override

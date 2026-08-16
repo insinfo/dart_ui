@@ -711,6 +711,18 @@ final class Application with DisposableMixin {
         requestFrame();
         return handled;
 
+      case TextInputEvent():
+        // Text follows the key that produced it, on the same focus route and
+        // in the same frame budget. It is a separate arm rather than part of
+        // the key arm because the backend produced it separately: the OS
+        // applied the layout, the dead keys and the lock state, and this
+        // framework is not entitled to a second opinion about what the user
+        // typed.
+        _settleForInput();
+        final handled = buildOwner.dispatchTextInputEvent(event);
+        requestFrame();
+        return handled;
+
       default:
         return _handleWindowEvent(event);
     }

@@ -146,7 +146,27 @@ abstract interface class TextInputClient {
 }
 
 /// Minimal composition/input adapter. It intentionally does not emulate IME.
+///
+/// It does emulate the one thing every native backend has and no test had
+/// until now: **the platform's text channel**. A headless test that wants to
+/// type has to synthesize a [TextInputEvent], because a key event no longer
+/// produces text - that was the bug. Injecting `KeyDownEvent(logicalKey: 0x41)`
+/// and expecting an `A` is exactly what let the numeric keypad type `abc` for
+/// years without a single test noticing.
 final class FakeTextInput {
+  FakeTextInput({
+    this.windowId = const NativeWindowId(1),
+    this.generation = 1,
+  });
+
+  /// Stamped onto every synthesized event, so it survives the staleness check
+  /// in `HeadlessWindow.dispatchInput`.
+  final NativeWindowId windowId;
+  final int generation;
+
+  final TextInputAssembler _assembler = TextInputAssembler();
+  Duration _clock = Duration.zero;
+
   TextInputClient? _client;
   String _text = '';
   int _selectionStart = 0;
@@ -159,6 +179,72 @@ final class FakeTextInput {
   void attach(TextInputClient client) => _client = client;
   void detach(TextInputClient client) {
     if (identical(_client, client)) _client = null;
+  }
+
+  /// The event a backend would emit once its layout translated [text].
+  ///
+  /// Rejects what no backend is allowed to emit - a control character, an
+  /// unpaired surrogate - so that a test cannot prove a behaviour the real
+  /// path would never reach. Use [feedCodeUnit] to exercise a character that
+  /// arrives in pieces.
+  TextInputEvent typeText(String text) {
+    if (text.isEmpty) {
+      throw ArgumentError.value(text, 'text', 'must not be empty');
+    }
+    for (final int rune in text.runes) {
+      if (rune <= 0xFFFF && isTextInputControlUnit(rune)) {
+        throw ArgumentError.value(
+          text,
+          'text',
+          'control character U+${rune.toRadixString(16).padLeft(4, '0')}: '
+              'no backend reports one as text',
+        );
+      }
+      if (rune >= 0xD800 && rune <= 0xDFFF) {
+        throw ArgumentError.value(
+          text,
+          'text',
+          'unpaired surrogate: half a character is not text',
+        );
+      }
+    }
+    return _event(text);
+  }
+
+  /// Feeds one UTF-16 code unit the way `WM_CHAR` does, one message each.
+  ///
+  /// Returns null while the character is incomplete - the high half of a
+  /// surrogate pair - or when the unit is not text at all. This is how a
+  /// headless test reproduces an emoji arriving in two pieces, and how it
+  /// asserts that Ctrl+A's 0x01 inserts nothing.
+  TextInputEvent? feedCodeUnit(int codeUnit) {
+    final String? text = _assembler.accept(codeUnit);
+    return text == null ? null : _event(text);
+  }
+
+  /// Feeds a whole UTF-16 sequence, returning only the completed characters.
+  List<TextInputEvent> feedCodeUnits(Iterable<int> codeUnits) {
+    final events = <TextInputEvent>[];
+    for (final unit in codeUnits) {
+      final event = feedCodeUnit(unit);
+      if (event != null) events.add(event);
+    }
+    return events;
+  }
+
+  /// Forgets a half-delivered character, as a window losing focus does.
+  void resetComposition() => _assembler.reset();
+
+  TextInputEvent _event(String text) {
+    // A monotonic synthetic clock: real timestamps come from the OS, and a
+    // test that used the wall clock would not be deterministic.
+    _clock += const Duration(milliseconds: 1);
+    return TextInputEvent(
+      windowId: windowId,
+      generation: generation,
+      timestamp: _clock,
+      text: text,
+    );
   }
 
   void setEditingValue(String text, int start, int end) {
