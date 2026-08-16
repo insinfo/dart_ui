@@ -156,6 +156,7 @@ import '../rendering/cpu_renderer.dart';
 import '../rendering/renderer.dart';
 import '../scheduler/frame_scheduler.dart';
 import '../scheduler/manual_dispatcher.dart';
+import '../widgets/context_menu.dart' show ContextMenuScope;
 import '../widgets/control.dart';
 import '../widgets/controls.dart' show ClipboardScope;
 import '../widgets/element.dart';
@@ -637,8 +638,25 @@ final class ApplicationWindow with DisposableMixin {
   /// an application that forgot the wrapper would have a Ctrl+V that silently
   /// did nothing in half its screens. The clipboard is the *application's*, so
   /// every window of one application pastes from the same place.
-  Widget get _mountableRoot =>
-      ClipboardScope(clipboard: application.clipboard, child: _rootWidget);
+  /// The [ContextMenuScope] is **per window**, unlike the clipboard.
+  ///
+  /// The clipboard is the application's, so one instance serves every window.
+  /// A context menu is a popup with a position, and a position only means
+  /// anything inside one window: two windows showing one menu would fight over
+  /// where it is, and closing the window that owns it would leave the other
+  /// pointing at a dismissed popup. So each window gets its own controller,
+  /// which also means dismissing a menu in one window cannot dismiss another's.
+  ///
+  /// Installed here rather than left to the caller for the reason the clipboard
+  /// is: a `TextField` outside a scope answers a right-click by moving the
+  /// caret and opening nothing, which reads as a broken field rather than as a
+  /// missing wrapper. An application that wants a different presentation - a
+  /// real popup window, once windows are cheap enough to use for menus - passes
+  /// its own scope further down; the nearest one wins.
+  Widget get _mountableRoot => ClipboardScope(
+        clipboard: application.clipboard,
+        child: ContextMenuScope(child: _rootWidget),
+      );
 
   /// Marks this window's next frame dirty. Idempotent; many mutations coalesce
   /// into one. Never touches any other window - that is the whole point of the
