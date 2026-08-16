@@ -3,6 +3,11 @@
 .packages
 build/
 
+# Locally compiled example artifacts. Release artifacts belong under build/.
+example/*.exe
+example/*.desktop
+example/*.app/
+
 # Lockfiles are generated for this prototype workspace.
 pubspec.lock
 

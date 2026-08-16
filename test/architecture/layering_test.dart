@@ -18,6 +18,11 @@ import 'package:test/test.dart';
 /// A layer may import itself and anything *earlier* in this list, and nothing
 /// else. `backends` is deliberately absent: no core layer may name one.
 const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
+  // Package tooling is reachable only from bin/dart_ui.dart and deliberately
+  // imports no runtime framework layer. Keeping it declared here means a
+  // future convenient import cannot silently couple build tooling to widgets
+  // or a native backend.
+  'tooling': <String>[],
   'foundation': <String>[],
   'geometry': <String>[],
   // Raw native-ABI plumbing: COM vtables, GUIDs, HRESULTs, a native

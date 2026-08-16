@@ -6,6 +6,7 @@ on:
   push:
     paths:
       - '.github/workflows/ci.yml'
+      - 'bin/**'
       - 'lib/**'
       - 'test/**'
       - 'tool/**'
@@ -16,6 +17,7 @@ on:
   pull_request:
     paths:
       - '.github/workflows/ci.yml'
+      - 'bin/**'
       - 'lib/**'
       - 'test/**'
       - 'tool/**'

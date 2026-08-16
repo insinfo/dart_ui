@@ -10,6 +10,7 @@ on:
   push:
     paths:
       - 'lib/**'
+      - 'bin/**'
       - 'test/**'
       - 'pubspec.yaml'
       - 'analysis_options.yaml'
@@ -17,6 +18,7 @@ on:
   pull_request:
     paths:
       - 'lib/**'
+      - 'bin/**'
       - 'test/**'
       - 'pubspec.yaml'
       - 'analysis_options.yaml'
@@ -58,10 +60,10 @@ jobs:
       # Formatting is a gate, not a suggestion: a diff that is half reformatted
       # hides the change that matters during review.
       - name: Check formatting
-        run: dart format --line-length 80 --output=none --set-exit-if-changed lib test
+        run: dart format --line-length 80 --output=none --set-exit-if-changed bin lib test
 
       - name: Analyze
-        run: dart analyze lib test
+        run: dart analyze bin lib test
 
       # OBJC_DEBUG_MISSING_POOLS makes the Objective-C runtime print when an
       # object is autoreleased with no enclosing pool. It matters here and
