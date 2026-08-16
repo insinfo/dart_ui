@@ -65,6 +65,9 @@ void main() {
       expect((pixel >> 16) & 0xFF, closeTo(10, 2));
       expect((pixel >> 8) & 0xFF, closeTo(20, 2));
       expect(pixel & 0xFF, closeTo(30, 2));
+    } else if (Platform.isMacOS) {
+      expect(result.isNative, isTrue);
+      expect(result.codecName, contains('ImageIO'));
     }
     final RasterDecodeResult fallback = decodeImageWithCodec(
       _jpeg(),
