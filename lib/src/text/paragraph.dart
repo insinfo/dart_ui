@@ -73,12 +73,38 @@
 ///  * **Justification expands U+0020 only.** No kashida, no letter-spacing, no
 ///    shrinking. A line with no spaces cannot be justified and is left aligned
 ///    to the paragraph's start edge.
-///  * **Trailing whitespace is trimmed from the line's laid-out content.** It
-///    is not measured for fitting, not aligned, and has no glyphs, which is
-///    what makes a centred line look centred. [TextLine.endIncludingWhitespace]
-///    still reports it so that editing can put a caret after it, at the line's
-///    trailing edge. UAX #9 L1 re-levels exactly that whitespace, and since it
-///    is not laid out, L1 has no observable effect here.
+///  * **Trailing whitespace is trimmed from the line's laid-out content, for
+///    width only.** It is not measured for fitting, not aligned, not justified
+///    and has no glyphs, which is what makes a centred line look centred and
+///    what keeps a space typed at the end of a line from shoving the text
+///    sideways. [TextLine.width], [TextLine.end] and [Paragraph.longestLine]
+///    all describe the trimmed content.
+///
+///    **Caret and selection measure it anyway.** Trimming answers "how wide is
+///    this line"; it is not an answer to "where is the cursor", and a text
+///    field where typing a space moves nothing is the bug that conflating the
+///    two produces. [Paragraph.getCaretRect] advances through every trailing
+///    space, [Paragraph.getBoxesForSelection] covers the ones inside the
+///    selection and [Paragraph.getPositionForOffset] can return an offset after
+///    them. The whitespace *hangs*: it extends past the line's trailing edge
+///    without widening [TextLine.width], so on a centred or right-aligned line
+///    the text stays where it is and only the caret moves - and a caret after a
+///    trailing space can sit outside [TextLine.bounds], which is precisely what
+///    hanging means. CSS calls the same thing "hanging whitespace".
+///
+///    UAX #9 L1 re-levels that whitespace to the paragraph's own level, and
+///    since it is not laid out that has no effect on the glyphs - but it is
+///    exactly the rule that says *which end* it hangs off: the paragraph's
+///    trailing edge, rightwards under a left-to-right base direction and
+///    leftwards under a right-to-left one, whatever the direction of the runs
+///    that precede it on the line.
+///
+///    At a soft wrap the whitespace belongs to the line before the break
+///    ([TextLine.endIncludingWhitespace]), and the offset after it is on two
+///    lines at once: [TextAffinity.upstream] is the End-of-line position that
+///    hangs off the first line, [TextAffinity.downstream] is the start of the
+///    second. Affinity, not the whitespace, decides - so the break creates no
+///    phantom duplicate of the next line's first position.
 ///  * **Tab stops are measured along the line in logical order.** A tab inside
 ///    right-to-left text advances the logical pen, not the visual one. Tabs and
 ///    bidi genuinely disagree about what "the next stop" means and no
@@ -441,7 +467,8 @@ final class TextLine {
     required this.height,
     required this.baseline,
     required this.spans,
-  });
+    required Float64List trailingAdvances,
+  }) : _trailingAdvances = trailingAdvances;
 
   final int lineNumber;
 
@@ -455,6 +482,18 @@ final class TextLine {
   /// on a line that wrapped after a space.
   final int endIncludingWhitespace;
 
+  /// How far past the line's trailing edge each trailing-whitespace offset is.
+  ///
+  /// `_trailingAdvances[k]` is the distance from the trailing edge to the
+  /// caret for offset `end + k`, so it has `endIncludingWhitespace - end + 1`
+  /// entries and its first is always zero. A *distance*, not an x, because the
+  /// direction it is walked in is the paragraph's, not the line's - see
+  /// [Paragraph._trailingWhitespaceX].
+  ///
+  /// Measured even though the whitespace is not laid out: [width] deliberately
+  /// excludes it, and a caret deliberately does not.
+  final Float64List _trailingAdvances;
+
   /// Whether the line ends at a mandatory break (a newline, or the end of the
   /// paragraph) rather than because it ran out of room.
   final bool hardBreak;
@@ -463,6 +502,11 @@ final class TextLine {
   final double left;
 
   /// Advance width of the laid-out content, after justification.
+  ///
+  /// Trailing whitespace is **not** in it, and adding a space at the end of a
+  /// line must not change it. A caret placed after that space still moves; the
+  /// two are different questions and [Paragraph.getCaretRect] answers the
+  /// other one.
   final double width;
 
   /// Distance from the paragraph's top to this line's top.
@@ -641,8 +685,6 @@ final class Paragraph {
   }
 
   double _caretX(TextLine line, int offset, TextAffinity affinity) {
-    if (line.spans.isEmpty) return line.left;
-
     GlyphSpan? best;
     for (final GlyphSpan span in line.spans) {
       if (span.isEllipsis) continue;
@@ -656,13 +698,53 @@ final class Paragraph {
     }
     if (best != null) return best.edgeOf(offset);
 
-    // No span owns the offset with that affinity: it is at one end of the line,
-    // or inside trimmed trailing whitespace. Fall back to whichever end of the
-    // line the paragraph's direction puts it at.
+    // No span owns the offset with that affinity, so it is at one end of the
+    // line or inside the trailing whitespace the line trimmed. Trimming is a
+    // decision about the line's *width*; it is not a decision about where a
+    // caret goes, and this is the branch where the two part company.
+    //
+    // The span search comes first on purpose. At `offset == line.end` on a line
+    // whose last logical run is right-to-left, the upstream position is that
+    // run's trailing edge - somewhere in the middle of the line - and only the
+    // downstream position is the whitespace's leading edge at the line's own
+    // trailing edge.
+    if (offset > line.start && offset >= line.end) {
+      return _trailingWhitespaceX(line, offset);
+    }
+    if (line.spans.isEmpty) return line.left;
     if (offset <= line.start) {
       return baseDirection.isRightToLeft ? line.left + line.width : line.left;
     }
     return baseDirection.isRightToLeft ? line.left : line.left + line.width;
+  }
+
+  /// The x of a caret at [offset], which lies in [line]'s trailing whitespace.
+  ///
+  /// The whitespace hangs off the line's trailing edge: it was never laid out,
+  /// so it occupies no width and moved no glyph, but each space in it still
+  /// advances the caret by its own advance. Two trailing spaces are therefore
+  /// two distinct caret positions, which is the whole point - a text field
+  /// where the second space does not move the cursor looks broken, because it
+  /// is.
+  ///
+  /// *Which* edge it hangs off is UAX #9 L1's answer, not the last run's: L1
+  /// re-levels trailing whitespace to the paragraph level, so it trails the
+  /// paragraph. Rightwards from `left + width` under a left-to-right base
+  /// direction, leftwards from `left` under a right-to-left one - even when the
+  /// run just before it went the other way.
+  ///
+  /// Alignment is applied to the line, not to the whitespace: `left` already
+  /// carries it, so a centred or right-aligned line keeps its glyphs exactly
+  /// where they were and only the caret hangs further out. Under
+  /// [TextAlign.right] that puts the caret past the paragraph's right edge,
+  /// which is correct and is what a caller that clips has to scroll to.
+  double _trailingWhitespaceX(TextLine line, int offset) {
+    final Float64List advances = line._trailingAdvances;
+    final int index = (offset - line.end).clamp(0, advances.length - 1);
+    final double advance = advances[index];
+    return baseDirection.isRightToLeft
+        ? line.left - advance
+        : line.left + line.width + advance;
   }
 
   /// The text position nearest to [point], in paragraph coordinates.
@@ -672,6 +754,11 @@ final class Paragraph {
   /// returned affinity says which side of the boundary was hit, so feeding the
   /// result straight back to [getCaretRect] puts the caret where the user
   /// clicked even at a direction boundary.
+  ///
+  /// The line's trailing whitespace is a candidate like any other, even though
+  /// it has no span: a click to the right of the last space returns the end of
+  /// the text, not the end of the trimmed content. Anything else makes a click
+  /// past the caret the user can see move the caret backwards.
   TextPosition getPositionForOffset(Offset point) {
     if (lines.isEmpty) return const TextPosition(0);
 
@@ -683,40 +770,73 @@ final class Paragraph {
       }
     }
     final TextLine line = lines[lineIndex];
-    if (line.spans.isEmpty) return TextPosition(line.start);
+    final bool hasWhitespace = line.endIncludingWhitespace > line.end;
+    if (line.spans.isEmpty && !hasWhitespace) return TextPosition(line.start);
 
-    // Pick the span horizontally, clamping past both ends of the line rather
-    // than reporting a miss: a drag that leaves the line still selects to its
-    // edge.
-    GlyphSpan target = line.spans.first;
-    for (final GlyphSpan span in line.spans) {
-      if (span.isEllipsis) continue;
-      target = span;
-      if (point.dx < span.right) break;
-    }
-    if (target.isEllipsis) return TextPosition(line.end);
-
-    // Walk the span's boundaries and take the closest. Offsets inside a cluster
-    // share their cluster's edge, so ties resolve to the cluster start and a
-    // caret never lands mid-cluster.
     final double dx = point.dx;
-    int bestOffset = target.start;
+    int bestOffset = line.start;
     double bestDistance = double.infinity;
-    for (int offset = target.start; offset <= target.end; offset++) {
-      if (offset != target.start &&
-          offset != target.end &&
-          !GraphemeBreaks.isBoundary(text, offset)) {
-        continue;
+    int lastOffset = line.start;
+
+    if (line.spans.isNotEmpty) {
+      // Pick the span horizontally, clamping past both ends of the line rather
+      // than reporting a miss: a drag that leaves the line still selects to its
+      // edge.
+      GlyphSpan target = line.spans.first;
+      for (final GlyphSpan span in line.spans) {
+        if (span.isEllipsis) continue;
+        target = span;
+        if (point.dx < span.right) break;
       }
-      final double distance = (target.edgeOf(offset) - dx).abs();
-      if (distance < bestDistance) {
-        bestDistance = distance;
-        bestOffset = offset;
+      if (target.isEllipsis) return TextPosition(line.end);
+
+      // Walk the span's boundaries and take the closest. Offsets inside a
+      // cluster share their cluster's edge, so ties resolve to the cluster
+      // start and a caret never lands mid-cluster.
+      bestOffset = target.start;
+      lastOffset = target.end;
+      for (int offset = target.start; offset <= target.end; offset++) {
+        if (offset != target.start &&
+            offset != target.end &&
+            !GraphemeBreaks.isBoundary(text, offset)) {
+          continue;
+        }
+        final double distance = (target.edgeOf(offset) - dx).abs();
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestOffset = offset;
+        }
       }
     }
+
+    // Then the trailing whitespace, which is measured here but was not laid
+    // out. A strict `<` keeps a tie with the span's own trailing edge on the
+    // span, so `line.end` still reports its span's direction rather than the
+    // paragraph's.
+    if (hasWhitespace) {
+      for (int offset = line.end;
+          offset <= line.endIncludingWhitespace;
+          offset++) {
+        if (offset != line.end &&
+            offset != line.endIncludingWhitespace &&
+            !GraphemeBreaks.isBoundary(text, offset)) {
+          continue;
+        }
+        final double distance = (_trailingWhitespaceX(line, offset) - dx).abs();
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestOffset = offset;
+          lastOffset = line.endIncludingWhitespace;
+        }
+      }
+    }
+
     return TextPosition(
       bestOffset,
-      affinity: bestOffset == target.end
+      // Upstream at the far end of the line keeps the position on *this* line:
+      // at a soft wrap the same offset is also the next line's start, and the
+      // downstream reading of it is that other place.
+      affinity: bestOffset == lastOffset
           ? TextAffinity.upstream
           : TextAffinity.downstream,
     );
@@ -734,15 +854,22 @@ final class Paragraph {
   /// Rectangles come out in visual order within each line, and adjacent ones
   /// that touch are merged so that a plain left-to-right selection is one box.
   /// The ellipsis is never included: it stands for text that was removed.
+  ///
+  /// Selected trailing whitespace **is** included, hanging off the line's
+  /// trailing edge, even though it is not part of [TextLine.width]. Selecting
+  /// `"ab "` and seeing a highlight that stops after the `b` reads as the
+  /// space not being selected, and then deleting the selection surprises the
+  /// user by taking a character the highlight never showed.
   List<TextBox> getBoxesForSelection(int start, int end) {
     final int from = start.clamp(0, text.length);
     final int to = end.clamp(0, text.length);
     if (from >= to) return const <TextBox>[];
 
     final List<TextBox> boxes = <TextBox>[];
+    final List<TextBox> row = <TextBox>[];
     for (final TextLine line in lines) {
       if (line.endIncludingWhitespace <= from || line.start >= to) continue;
-      TextBox? pending;
+      row.clear();
       for (final GlyphSpan span in line.spans) {
         if (span.isEllipsis) continue;
         final int a = math.max(from, span.start);
@@ -750,32 +877,82 @@ final class Paragraph {
         if (a >= b) continue;
         final double e1 = span.edgeOf(a);
         final double e2 = span.edgeOf(b);
-        final Rect rect = Rect.fromLTRB(
-          math.min(e1, e2),
-          line.top,
-          math.max(e1, e2),
-          line.top + line.height,
-        );
+        row.add(TextBox(
+          Rect.fromLTRB(
+            math.min(e1, e2),
+            line.top,
+            math.max(e1, e2),
+            line.top + line.height,
+          ),
+          span.direction,
+        ));
+      }
+
+      // The whitespace hangs off the paragraph's trailing edge (UAX #9 L1), so
+      // it is the last box in visual order under a left-to-right base direction
+      // and the first under a right-to-left one. Inserting it in the wrong
+      // place would not just misorder the list, it would stop the merge below
+      // from joining it to the run it touches.
+      final TextBox? trailing = _trailingWhitespaceBox(line, from, to);
+      if (trailing != null) {
+        if (baseDirection.isRightToLeft) {
+          row.insert(0, trailing);
+        } else {
+          row.add(trailing);
+        }
+      }
+
+      TextBox? pending;
+      for (final TextBox box in row) {
         if (pending != null &&
-            pending.direction == span.direction &&
-            (rect.left - pending.rect.right).abs() < _epsilon) {
+            pending.direction == box.direction &&
+            (box.rect.left - pending.rect.right).abs() < _epsilon) {
           pending = TextBox(
             Rect.fromLTRB(
               pending.rect.left,
-              rect.top,
-              rect.right,
-              rect.bottom,
+              box.rect.top,
+              box.rect.right,
+              box.rect.bottom,
             ),
-            span.direction,
+            box.direction,
           );
           continue;
         }
         if (pending != null) boxes.add(pending);
-        pending = TextBox(rect, span.direction);
+        pending = box;
       }
       if (pending != null) boxes.add(pending);
     }
     return boxes;
+  }
+
+  /// The rectangle covering the part of `[from, to)` that falls in [line]'s
+  /// trailing whitespace, or null when there is none to draw.
+  ///
+  /// Null rather than an empty rectangle when the whitespace has no width,
+  /// which is the case for the newline that ends a hard-broken line: a
+  /// selection running through it should not sprout a hairline box at the end
+  /// of every line it crosses.
+  TextBox? _trailingWhitespaceBox(TextLine line, int from, int to) {
+    if (line.endIncludingWhitespace <= line.end) return null;
+    final int a = math.max(from, line.end);
+    final int b = math.min(to, line.endIncludingWhitespace);
+    if (a >= b) return null;
+    final double e1 = _trailingWhitespaceX(line, a);
+    final double e2 = _trailingWhitespaceX(line, b);
+    if ((e2 - e1).abs() < _epsilon) return null;
+    return TextBox(
+      Rect.fromLTRB(
+        math.min(e1, e2),
+        line.top,
+        math.max(e1, e2),
+        line.top + line.height,
+      ),
+      // The paragraph's direction, not the last run's: L1 gave the whitespace
+      // the paragraph level, and a highlight over it grows the way the
+      // paragraph does.
+      baseDirection,
+    );
   }
 
   @override
@@ -1477,6 +1654,19 @@ final class _ParagraphBuilder {
       descent = font.descent;
       gap = font.lineGap;
     }
+    // The trailing whitespace, measured after everything that must ignore it.
+    // It is deliberately outside `pen`: the line width, the alignment offset
+    // and the justification above are all already decided, so measuring here
+    // cannot move a glyph. `_advance` carries the pen so that a trailing tab -
+    // not trimmable today, but one edit away from being - would still land on
+    // its stop rather than on its nominal advance.
+    final Float64List trailingAdvances = Float64List(range.end - end + 1);
+    double whitespacePen = lineWidth;
+    for (int k = 1; k < trailingAdvances.length; k++) {
+      whitespacePen = _advance(whitespacePen, end + k - 1, end + k);
+      trailingAdvances[k] = whitespacePen - lineWidth;
+    }
+
     final double natural = ascent + descent + gap;
     final double height = natural * style.heightMultiplier;
     // The multiplier's extra is split above and below rather than dropped below
@@ -1497,6 +1687,7 @@ final class _ParagraphBuilder {
       height: height,
       baseline: top + leading + ascent,
       spans: List<GlyphSpan>.unmodifiable(ordered),
+      trailingAdvances: trailingAdvances,
     );
   }
 }

@@ -658,7 +658,12 @@ void main() {
       final Paragraph p = Paragraph.single('aaa bbb', a10, maxWidth: 35);
       final List<TextBox> boxes = p.getBoxesForSelection(1, 6);
       expect(boxes.length, 2);
-      expect(boxes[0].rect, const Rect.fromLTRB(10, 0, 30, 10));
+      // 10..40, not 10..30: offset 3 is the space at the wrap, it is inside
+      // [1, 6), and a highlight that stopped at 30 would claim the space is
+      // not selected while deleting the selection still removes it. The space
+      // hangs past the line's 30 px width, which is why the box is wider than
+      // `lines[0].width` - see the trailing whitespace group.
+      expect(boxes[0].rect, const Rect.fromLTRB(10, 0, 40, 10));
       expect(boxes[1].rect, const Rect.fromLTRB(0, 10, 20, 20));
     });
 
@@ -683,6 +688,290 @@ void main() {
       final List<TextBox> boxes = p.getBoxesForSelection(0, 9);
       expect(boxes.length, 1);
       expect(boxes.single.rect.right, lessThanOrEqualTo(40.0));
+    });
+  });
+
+  group('trailing whitespace: trimmed for width, measured for the caret', () {
+    // The reported bug: typing a space in a text field did nothing visible.
+    // The controller inserted it, but the paragraph trimmed it from the line
+    // and the caret was placed at the trimmed edge, so the cursor did not move
+    // until the *next* character arrived and made the space appear
+    // retroactively. Both halves are asserted here, because fixing the caret
+    // by untrimming the line would swap this bug for a worse one: a centred
+    // line that jumps sideways when you type a space.
+
+    test('the caret advances through one, then two trailing spaces', () {
+      final Paragraph p = Paragraph.single('ab  ', a10);
+      expect(p.lines.single.end, 2);
+      expect(p.lines.single.endIncludingWhitespace, 4);
+
+      final List<double> x = <double>[
+        for (int i = 0; i <= 4; i++) p.getCaretRect(TextPosition(i)).left,
+      ];
+      expect(x, <double>[0, 10, 20, 30, 40]);
+      for (int i = 1; i < x.length; i++) {
+        expect(x[i], greaterThan(x[i - 1]),
+            reason: 'caret $i did not move past caret ${i - 1}');
+      }
+      expect(x.toSet().length, x.length, reason: 'no two carets coincide');
+    });
+
+    test('the caret rect stays on the line the whitespace belongs to', () {
+      final Paragraph p = Paragraph.single('ab ', a10);
+      final Rect caret = p.getCaretRect(const TextPosition(3));
+      expect(caret.top, 0.0);
+      expect(caret.bottom, 10.0);
+      expect(caret.width, 0.0);
+    });
+
+    test('Roboto: the space moves the caret and does not widen the line', () {
+      // The exact case from the report, at the size the gallery uses. The
+      // controller holds "ab " and offset 3 has to be a different place from
+      // offset 2 - it was not, which is what made the space invisible.
+      final TextStyle r = TextStyle(font: roboto.atSize(16));
+      final ScaledTypeface font = r.font;
+      final double space =
+          font.advanceOf(font.typeface.glyphForCodePoint(0x20));
+      expect(space, greaterThan(0));
+
+      final Paragraph none = Paragraph.single('ab', r);
+      final Paragraph one = Paragraph.single('ab ', r);
+      final Paragraph two = Paragraph.single('ab  ', r);
+
+      // The half that must not regress: a trailing space is not width.
+      expect(one.longestLine, none.longestLine);
+      expect(two.longestLine, none.longestLine);
+      expect(one.lines.single.width, none.lines.single.width);
+      expect(two.lines.single.width, none.lines.single.width);
+
+      // The half that was broken: it is still a caret position.
+      final double end = none.getCaretRect(const TextPosition(2)).left;
+      expect(one.getCaretRect(const TextPosition(2)).left, end);
+      expect(one.getCaretRect(const TextPosition(3)).left,
+          closeTo(end + space, 1e-9));
+      expect(two.getCaretRect(const TextPosition(3)).left,
+          closeTo(end + space, 1e-9));
+      expect(two.getCaretRect(const TextPosition(4)).left,
+          closeTo(end + 2 * space, 1e-9));
+    });
+
+    test('a line of nothing but spaces still walks a caret across them', () {
+      // No span owns any of these offsets: the line laid out nothing at all.
+      final Paragraph p = Paragraph.single('   ', a10);
+      expect(p.lines.single.width, 0.0);
+      expect(p.lines.single.spans, isEmpty);
+      expect(
+        <double>[
+          for (int i = 0; i <= 3; i++) p.getCaretRect(TextPosition(i)).left,
+        ],
+        <double>[0, 10, 20, 30],
+      );
+    });
+
+    test('a selection covering a trailing space draws over it', () {
+      final Paragraph p = Paragraph.single('ab ', a10);
+      final List<TextBox> whole = p.getBoxesForSelection(0, 3);
+      expect(whole.length, 1, reason: 'the space merges with the text');
+      expect(whole.single.rect, const Rect.fromLTRB(0, 0, 30, 10));
+      expect(whole.single.direction, TextDirection.leftToRight);
+
+      // The space on its own is still a rectangle with width in it.
+      final List<TextBox> onlySpace = p.getBoxesForSelection(2, 3);
+      expect(onlySpace.length, 1);
+      expect(onlySpace.single.rect, const Rect.fromLTRB(20, 0, 30, 10));
+
+      // And stopping before it does not.
+      expect(p.getBoxesForSelection(0, 2).single.rect,
+          const Rect.fromLTRB(0, 0, 20, 10));
+    });
+
+    test('a selected newline does not sprout a hairline box', () {
+      // The mandatory break is trailing whitespace too, and it has no width.
+      // Emitting a zero-width rectangle for it would put a one-pixel artefact
+      // at the end of every line a multi-line selection crosses.
+      final Paragraph p = Paragraph.single('a\nb', a10);
+      final List<TextBox> boxes = p.getBoxesForSelection(0, 3);
+      expect(boxes.length, 2);
+      expect(boxes[0].rect, const Rect.fromLTRB(0, 0, 10, 10));
+      expect(boxes[1].rect, const Rect.fromLTRB(0, 10, 10, 20));
+    });
+
+    test('a click right of the last space lands after it', () {
+      final Paragraph p = Paragraph.single('ab  ', a10);
+      expect(p.getPositionForOffset(const Offset(400, 5)).offset, 4,
+          reason: 'the end of the text, not the end of the trimmed content');
+      expect(p.getPositionForOffset(const Offset(35, 5)).offset, 3,
+          reason: 'between the two spaces');
+      expect(p.getPositionForOffset(const Offset(26, 5)).offset, 3);
+      expect(p.getPositionForOffset(const Offset(24, 5)).offset, 2);
+
+      // Round trip: every hit inside the whitespace comes back to itself. The
+      // last caret is at 40, so the walk stops half an em past it - beyond
+      // that there is nothing left to snap to and the hit clamps.
+      for (double x = 21; x <= 45; x += 2) {
+        final TextPosition hit = p.getPositionForOffset(Offset(x, 5));
+        expect((p.getCaretRect(hit).left - x).abs(), lessThanOrEqualTo(5.0),
+            reason: 'hit at $x came back at ${p.getCaretRect(hit).left}');
+      }
+    });
+
+    test('centre and right keep the glyphs still and move only the caret', () {
+      Paragraph laid(String text, TextAlign align) => Paragraph.single(
+            text,
+            a10,
+            maxWidth: 100,
+            paragraphStyle: ParagraphStyle(align: align),
+          );
+
+      for (final TextAlign align in <TextAlign>[
+        TextAlign.center,
+        TextAlign.right,
+      ]) {
+        final Paragraph plain = laid('ab', align);
+        final Paragraph spaced = laid('ab ', align);
+        expect(spaced.lines.single.left, plain.lines.single.left,
+            reason: '$align moved the text when a space was typed');
+        expect(spaced.lines.single.spans.first.left,
+            plain.lines.single.spans.first.left);
+        expect(spaced.lines.single.width, 20.0);
+      }
+
+      // Centred: the 20 px line sits at 40..60 and the space hangs to 70.
+      expect(laid('ab ', TextAlign.center).lines.single.left, 40.0);
+      expect(
+        laid('ab ', TextAlign.center).getCaretRect(const TextPosition(3)).left,
+        70.0,
+      );
+      // Right aligned: the line ends exactly on the 100 px edge, so the caret
+      // after the space hangs *past* it. That is what hanging whitespace means
+      // and a caller that clips has to scroll to it, exactly as it would for a
+      // caret past the right edge of an over-long line.
+      expect(laid('ab ', TextAlign.right).lines.single.left, 80.0);
+      expect(
+        laid('ab ', TextAlign.right).getCaretRect(const TextPosition(3)).left,
+        110.0,
+      );
+    });
+
+    test('under a right-to-left base the caret walks the other way', () {
+      // UAX #9 L1 re-levels trailing whitespace to the paragraph level, so it
+      // trails the *paragraph*: leftwards here, off the line's left edge.
+      final Paragraph p = Paragraph.single(
+        'אב  ',
+        a10,
+        maxWidth: 100,
+        paragraphStyle:
+            const ParagraphStyle(baseDirection: TextDirection.rightToLeft),
+      );
+      expect(p.baseDirection, TextDirection.rightToLeft);
+      expect(p.lines.single.left, 80.0, reason: 'start-aligned under RTL');
+      expect(p.lines.single.width, 20.0, reason: 'the spaces are not width');
+
+      expect(
+        <double>[
+          for (int i = 0; i <= 4; i++) p.getCaretRect(TextPosition(i)).left,
+        ],
+        <double>[100, 90, 80, 70, 60],
+      );
+
+      final List<TextBox> boxes = p.getBoxesForSelection(2, 4);
+      expect(boxes.length, 1);
+      expect(boxes.single.rect, const Rect.fromLTRB(60, 0, 80, 10));
+      expect(boxes.single.direction, TextDirection.rightToLeft);
+    });
+
+    test('a real right-to-left script hangs its trailing space to the left',
+        () {
+      final Paragraph p = Paragraph.single('$_heb ', d10);
+      expect(p.baseDirection, TextDirection.rightToLeft);
+      final TextLine line = p.lines.single;
+      expect(line.end, 3);
+      expect(line.endIncludingWhitespace, 4);
+      expect(Paragraph.single(_heb, d10).longestLine, line.width);
+      expect(p.getCaretRect(const TextPosition(3)).left, line.left);
+      expect(p.getCaretRect(const TextPosition(4)).left, lessThan(line.left),
+          reason: 'the space is to the left of the line, not to the right');
+    });
+
+    test('the trailing edge of a right-to-left run is not the line edge', () {
+      // "ab אב " under an LTR base: offset 5 upstream is the trailing edge of
+      // the Hebrew run, in the middle of the line at 30. Offset 5 downstream is
+      // the leading edge of the whitespace, which L1 put at the line's own
+      // trailing edge at 50. The span search has to win the upstream case or
+      // the caret jumps to the end of the line every time it crosses back out
+      // of a right-to-left island.
+      final Paragraph p = Paragraph.single('ab $_heb ', a10);
+      expect(p.lines.single.end, 6);
+      expect(p.lines.single.width, 60.0);
+      expect(
+        p
+            .getCaretRect(
+                const TextPosition(6, affinity: TextAffinity.upstream))
+            .left,
+        30.0,
+      );
+      expect(p.getCaretRect(const TextPosition(6)).left, 60.0);
+      expect(p.getCaretRect(const TextPosition(7)).left, 70.0);
+    });
+
+    test('the whitespace at a wrap stays on the line above it', () {
+      // The case that breaks an implementation that only adds the width of the
+      // space: at a soft break the offset after the space belongs to two lines
+      // at once, and the answer is affinity, not geometry.
+      final Paragraph p = Paragraph.single('aaa bbb', a10, maxWidth: 35);
+      expect(p.lines.length, 2);
+      expect(p.lines[0].end, 3);
+      expect(p.lines[0].endIncludingWhitespace, 4);
+      expect(p.lines[1].start, 4);
+
+      // Offset 3 - before the space - is on the first line and inside its box.
+      final Rect before = p.getCaretRect(const TextPosition(3));
+      expect(before.top, 0.0);
+      expect(before.left, 30.0);
+      expect(p.lines[0].bounds.right, 30.0);
+
+      // Offset 4 downstream is the second line's start; upstream is the End
+      // position on the first line, past the space. Different places, both
+      // real, and neither is a duplicate of the other.
+      final Rect downstream = p.getCaretRect(const TextPosition(4));
+      final Rect upstream = p.getCaretRect(
+        const TextPosition(4, affinity: TextAffinity.upstream),
+      );
+      expect(downstream.top, 10.0);
+      expect(downstream.left, 0.0);
+      expect(upstream.top, 0.0);
+      expect(upstream.left, 40.0);
+      expect(upstream, isNot(downstream));
+
+      // And no offset on the first line is a phantom copy of the second line's
+      // first caret position.
+      for (int i = 0; i <= 4; i++) {
+        final Rect r = p.getCaretRect(TextPosition(i));
+        expect(r == downstream, i == 4,
+            reason: 'offset $i duplicated the second line\'s start');
+      }
+    });
+
+    test('two spaces at a wrap are two positions on the line above', () {
+      final Paragraph p = Paragraph.single('aaa  bbb', a10, maxWidth: 35);
+      expect(p.lines.length, 2);
+      expect(p.lines[0].end, 3);
+      expect(p.lines[0].endIncludingWhitespace, 5);
+      expect(p.lines[1].start, 5);
+      expect(p.lines[0].width, 30.0, reason: 'still not measured for width');
+
+      final Rect first = p.getCaretRect(const TextPosition(4));
+      expect(first.top, 0.0, reason: 'between the two spaces, first line');
+      expect(first.left, 40.0);
+      expect(
+        p
+            .getCaretRect(
+                const TextPosition(5, affinity: TextAffinity.upstream))
+            .left,
+        50.0,
+      );
+      expect(p.getCaretRect(const TextPosition(5)).left, 0.0);
+      expect(p.getCaretRect(const TextPosition(5)).top, 10.0);
     });
   });
 
