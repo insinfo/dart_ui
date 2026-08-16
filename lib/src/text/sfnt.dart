@@ -18,12 +18,16 @@ enum SfntFlavour {
   /// `0x00010000` - TrueType outlines in a `glyf` table.
   trueType,
 
-  /// `OTTO` - PostScript outlines in a `CFF ` table.
+  /// `OTTO` - PostScript outlines in a `CFF `/`CFF2` table.
   ///
   /// A different outline format entirely: cubic charstrings with their own
-  /// interpreter, subroutines and hint machinery. Recognised here so the
-  /// failure is a clear "not supported yet" rather than a confusing absence of
-  /// `glyf`.
+  /// interpreter, subroutines and hint machinery, all of which live in
+  /// `cff.dart`.
+  ///
+  /// **This tag is a hint, not a rule.** Variable CFF2 faces ship under both
+  /// `OTTO` and `0x00010000`, and a few tools emit `OTTO` over a `glyf` table.
+  /// So nothing decides which parser to use from this value; [outlineTable]
+  /// answers that from the directory, which is the only authority.
   cff,
 
   /// `ttcf` - a collection of faces sharing tables.
@@ -71,6 +75,20 @@ final class SfntFile {
   Iterable<String> get tableTags => _tables.keys;
 
   bool hasTable(String tag) => _tables.containsKey(tag);
+
+  /// Which table actually holds this face's outlines: `glyf`, `CFF `, `CFF2`,
+  /// or null when it holds none.
+  ///
+  /// Answered from the directory rather than from [flavour], because the
+  /// version tag lies often enough to matter - see [SfntFlavour.cff]. `glyf`
+  /// wins when a malformed file carries both, since that is the path with a
+  /// hinting interpreter behind it.
+  String? get outlineTable {
+    if (_tables.containsKey('glyf')) return 'glyf';
+    if (_tables.containsKey('CFF ')) return 'CFF ';
+    if (_tables.containsKey('CFF2')) return 'CFF2';
+    return null;
+  }
 
   TableRecord? tableRecord(String tag) => _tables[tag];
 

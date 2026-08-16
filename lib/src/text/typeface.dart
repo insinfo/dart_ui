@@ -15,6 +15,7 @@ library;
 import 'dart:typed_data';
 
 import '../geometry/path.dart';
+import 'cff.dart';
 import 'cmap.dart';
 import 'font_data.dart';
 import 'font_tables.dart';
@@ -32,8 +33,15 @@ final class Typeface {
     required this.hhea,
     required this.hmtx,
     required this.cmap,
-    required GlyfTable glyf,
-  }) : _glyf = glyf;
+    required this.name,
+    required this.os2,
+    required this.post,
+    required this.verticalMetrics,
+    required this.identityIssues,
+    required GlyfTable? glyf,
+    required CffFont? cff,
+  })  : _glyf = glyf,
+        _cff = cff;
 
   final SfntFile sfnt;
   final HeadTable head;
@@ -41,7 +49,70 @@ final class Typeface {
   final HheaTable hhea;
   final HmtxTable hmtx;
   final CmapTable cmap;
-  final GlyfTable _glyf;
+
+  /// `name` - the strings this face is *selected* by, or null when the file
+  /// carries no such table.
+  ///
+  /// Null is legal and rare: a face without `name` has no family, so a font
+  /// manager can only ever address it by path. Nothing here needs it to draw.
+  final NameTable? name;
+
+  /// `OS/2` - weight, width, style bits and the coverage summary, or null.
+  ///
+  /// The one table font *matching* cannot do without. When it is absent the
+  /// style axes are inferred from `head.macStyle` and said to be inferred; see
+  /// [declaresStyle], which exists so a matcher can prefer a face that states
+  /// its weight over one that had a weight guessed for it.
+  final Os2Table? os2;
+
+  /// `post` - fixed pitch, italic angle, underline placement, glyph names.
+  final PostTable? post;
+
+  /// The line box this face asks for, in font units, resolved once.
+  ///
+  /// Resolved by [VerticalMetrics.resolve], which is the whole reason these
+  /// three tables are parsed here rather than by each caller: `hhea`, `sTypo*`
+  /// and `usWin*` disagree in most real fonts, and the choice between them
+  /// changes the height of every paragraph. Making it once, at parse time,
+  /// means a face cannot lay out at two different heights in one process.
+  final VerticalMetrics verticalMetrics;
+
+  /// Everything that went wrong while reading the *identity* tables.
+  ///
+  /// Empty for a well-formed face, which is the overwhelming case.
+  ///
+  /// The split this list encodes: `head`, `maxp`, `hhea`, `hmtx`, `cmap` and
+  /// the outlines are load-bearing, and a malformed one of those throws, because
+  /// a face that cannot be drawn correctly must not be drawn incorrectly. The
+  /// three identity tables are advisory - a face with a corrupt `name` still
+  /// draws perfectly - so refusing the whole file over one of them would trade
+  /// "this font sorts oddly in a font menu" for "this application shows no
+  /// text". They are therefore skipped, and **recorded here**: silence would
+  /// leave a face indexed as Regular 400 with nobody able to find out that its
+  /// `OS/2` was unreadable.
+  final List<String> identityIssues;
+
+  /// TrueType outlines, when the face has a `glyf` table.
+  ///
+  /// Exactly one of [_glyf] and [_cff] is non-null. They are the two outline
+  /// formats OpenType allows and a file carries one or the other; a file with
+  /// both is malformed, and [Typeface.parse] prefers `glyf` in that case
+  /// because that is the path with a hinting interpreter behind it.
+  final GlyfTable? _glyf;
+
+  /// PostScript outlines, when the face has a `CFF `/`CFF2` table.
+  final CffFont? _cff;
+
+  /// The CFF container, for callers that need glyph names, CIDs or the hint
+  /// parameters. Null for a TrueType face.
+  CffFont? get cff => _cff;
+
+  /// Whether this face's outlines are PostScript charstrings rather than
+  /// TrueType quadratics.
+  ///
+  /// Worth exposing because it changes what a caller can expect: a CFF outline
+  /// contains cubics, and it is never hinted by this engine (see [outlineOf]).
+  bool get isCff => _cff != null;
 
   /// Unhinted outlines, keyed by glyph id alone.
   ///
@@ -97,31 +168,86 @@ final class Typeface {
 
   int get glyphCount => maxp.numGlyphs;
 
-  /// Parses [bytes] as a font face.
+  /// Parses [bytes] as a font face, TrueType or CFF.
   ///
-  /// Throws [FontFormatException] for anything malformed, and specifically for
-  /// a CFF font: those carry PostScript charstrings rather than a `glyf`
-  /// table, which is a different outline format and a separate interpreter.
-  /// Refusing by name beats failing later with a missing table.
+  /// Which outline format the face uses is decided by the tables it actually
+  /// carries, not by the sfnt version tag. The tag is a good hint and a bad
+  /// rule: variable CFF2 faces ship under both `OTTO` and `0x00010000`, and a
+  /// handful of tools emit `OTTO` over a `glyf` table. Reading the directory
+  /// costs nothing here and removes a whole class of "this font opens
+  /// everywhere except in ours".
+  ///
+  /// Throws [FontFormatException] for a malformed file and
+  /// [CffUnsupportedFeature] for a well-formed CFF that uses something this
+  /// engine refuses to guess at - a variable CFF2 above all. Both are thrown,
+  /// rather than degraded to a blank face, because a font that cannot be drawn
+  /// correctly must not be drawn incorrectly.
   factory Typeface.parse(Uint8List bytes, {int faceIndex = 0}) {
     final FontData data = FontData(bytes);
     final SfntFile sfnt = SfntFile.parse(data, faceIndex: faceIndex);
-
-    if (sfnt.flavour == SfntFlavour.cff) {
-      throw const FontFormatException(
-        'this is a CFF/OpenType font (OTTO). Its outlines are PostScript '
-        'charstrings in a "CFF " table, which needs a different interpreter '
-        'from the TrueType "glyf" outlines supported today',
-      );
-    }
 
     final HeadTable head = HeadTable.parse(sfnt);
     final MaxpTable maxp = MaxpTable.parse(sfnt);
     final HheaTable hhea = HheaTable.parse(sfnt);
     final CmapTable cmap = CmapTable.parse(sfnt);
     final HmtxTable hmtx = HmtxTable.parse(sfnt, hhea, maxp);
-    final LocaTable loca = LocaTable.parse(sfnt, head, maxp);
-    final GlyfTable glyf = GlyfTable.parse(sfnt, loca, hmtx: hmtx);
+
+    GlyfTable? glyf;
+    CffFont? cff;
+    switch (sfnt.outlineTable) {
+      case 'glyf':
+        final LocaTable loca = LocaTable.parse(sfnt, head, maxp);
+        glyf = GlyfTable.parse(sfnt, loca, hmtx: hmtx);
+      case 'CFF ':
+      case 'CFF2':
+        // unitsPerEm is passed so the charstrings' FontMatrix is folded into
+        // the output and CFF outlines arrive in the same units `glyf` ones do.
+        // See the "Units" section of `cff.dart`.
+        cff = CffFont.fromSfnt(sfnt, unitsPerEm: head.unitsPerEm);
+      default:
+        throw const FontFormatException(
+          'the face has neither a "glyf" nor a "CFF "/"CFF2" table, so it '
+          'carries no outlines at all',
+        );
+    }
+
+    // The identity tables. Each is optional by specification and advisory in
+    // practice, so a failure is collected rather than thrown - see
+    // [identityIssues] for the rule and why it differs from the tables above.
+    final List<String> issues = <String>[];
+    final NameTable? name = _optional(
+      () => NameTable.parse(sfnt),
+      'name',
+      issues,
+    );
+    final Os2Table? os2 = _optional(
+      () => Os2Table.parse(sfnt),
+      'OS/2',
+      issues,
+    );
+    final PostTable? post = _optional(
+      () => PostTable.parse(sfnt),
+      'post',
+      issues,
+    );
+
+    // A face with no usable line box at all: `hhea` empty and no `OS/2` to
+    // fall back to. Recorded rather than thrown for the same reason - it is a
+    // face that draws glyphs and cannot say how tall a line of them is, and a
+    // caller that cares reads [identityIssues] or
+    // [VerticalMetrics.source].
+    VerticalMetrics metrics;
+    try {
+      metrics = VerticalMetrics.resolve(hhea: hhea, os2: os2);
+    } on FontFormatException catch (error) {
+      issues.add('vertical metrics: ${error.message}');
+      metrics = VerticalMetrics(
+        ascent: hhea.ascender,
+        descent: hhea.descender,
+        lineGap: hhea.lineGap,
+        source: VerticalMetricsSource.horizontalHeader,
+      );
+    }
 
     return Typeface._(
       sfnt: sfnt,
@@ -130,9 +256,65 @@ final class Typeface {
       hhea: hhea,
       hmtx: hmtx,
       cmap: cmap,
+      name: name,
+      os2: os2,
+      post: post,
+      verticalMetrics: metrics,
+      identityIssues: List<String>.unmodifiable(issues),
       glyf: glyf,
+      cff: cff,
     );
   }
+
+  /// Runs [parse] for an advisory table, recording a failure instead of
+  /// propagating it.
+  static T? _optional<T>(T? Function() parse, String tag, List<String> issues) {
+    try {
+      return parse();
+    } on FontFormatException catch (error) {
+      issues.add('$tag: ${error.message}');
+      return null;
+    }
+  }
+
+  // --- identity, for font matching -----------------------------------------
+
+  /// The family a user means - name 16, else name 1 - or null.
+  String? get familyName => name?.family;
+
+  /// The style within [familyName] - name 17, else name 2 - or null.
+  String? get subfamilyName => name?.subfamily;
+
+  /// Whether the face states its own style axes, rather than having them
+  /// inferred.
+  ///
+  /// False means [weightClass], [widthClass] and [isItalic] below came from
+  /// `head.macStyle`, which can only say bold and italic: a Semibold Condensed
+  /// face with no `OS/2` is indistinguishable from Regular there. A matcher
+  /// should break ties in favour of a face that declares its axes, because the
+  /// alternative is choosing a face on a number nobody wrote.
+  bool get declaresStyle => os2 != null;
+
+  /// 1..1000, where 400 is Regular and 700 is Bold.
+  ///
+  /// Falls back to 700/400 from `head.macStyle` when there is no `OS/2`. That
+  /// is an inference, not a reading - see [declaresStyle].
+  int get weightClass => os2?.weightClass ?? (head.isBold ? 700 : 400);
+
+  /// 1..9, where 5 is Normal. Falls back to 5, since `head` cannot express
+  /// width at all.
+  int get widthClass => os2?.widthClass ?? 5;
+
+  /// Whether the face slants. `OS/2.fsSelection` wins over `head.macStyle`
+  /// when both are present, per the note on [Os2Table.isItalic].
+  bool get isItalic => os2?.isItalic ?? head.isItalic;
+
+  /// Whether the slant is a shear rather than a separate italic design.
+  ///
+  /// Always false without `OS/2`: bit 9 has no equivalent in `head`, and
+  /// reporting "oblique" for a face that never said so would let a matcher
+  /// substitute it where a true italic was asked for.
+  bool get isOblique => os2?.isOblique ?? false;
 
   /// The glyph for [codePoint], or [notdefGlyph] when the face lacks it.
   int glyphForCodePoint(int codePoint) => cmap.glyphFor(codePoint);
@@ -147,6 +329,39 @@ final class Typeface {
     }
     return true;
   }
+
+  /// Whether this face has a glyph for [codePoint]. The authoritative answer.
+  ///
+  /// One binary search in `cmap`, no allocation, safe to call per candidate
+  /// face during fallback. Contrast [declaresCodePoint], which is cheaper still
+  /// and only a claim.
+  bool coversCodePoint(int codePoint) =>
+      cmap.glyphFor(codePoint) != notdefGlyph;
+
+  /// Whether `OS/2` *claims* coverage of [codePoint]'s block.
+  ///
+  /// The cheap first pass of font fallback: four masked reads against a
+  /// coverage summary the manufacturer wrote, versus opening and searching a
+  /// `cmap`. It is a filter and never a verdict - fonts set bits for blocks
+  /// they half-cover, subsetters strip glyphs and leave the bits behind, and
+  /// entire scripts encoded after 2008 have no bit at all. False here on a face
+  /// that would in fact render the character is normal. **The truth is
+  /// [coversCodePoint]**, and every fallback decision must end there.
+  ///
+  /// Faces with no `OS/2` answer false, which is why a fallback chain must
+  /// still try them by `cmap` before giving up.
+  bool declaresCodePoint(int codePoint) =>
+      os2?.declaresCodePoint(codePoint) ?? false;
+
+  /// The glyph for [baseCodePoint] under [variationSelector], or null.
+  ///
+  /// Format 14 of `cmap`, which is what decides text versus emoji presentation
+  /// for a `U+FE0E`/`U+FE0F` pair and which ideographic variant a CJK sequence
+  /// draws. Null means the face declares nothing about the pair; the caller
+  /// then drops the selector and renders the base alone, as Unicode prescribes,
+  /// or looks for another face. See [CmapTable.glyphForVariation].
+  int? glyphForVariation(int baseCodePoint, int variationSelector) =>
+      cmap.glyphForVariation(baseCodePoint, variationSelector);
 
   /// Advance width of [glyphId], in font units.
   ///
@@ -181,15 +396,27 @@ final class Typeface {
   /// on the way out, so that this value is the font's data and nothing else.
   /// The flip belongs to [ScaledTypeface], with the rest of the device
   /// transform.
+  ///
+  /// A CFF face ignores [ppem] entirely and always takes the unhinted path.
+  /// PostScript hinting is a different mechanism from TrueType's - declarative
+  /// zones and stem widths interpreted by the rasteriser, not a bytecode
+  /// program - and none of it is implemented. The hint data *is* parsed and
+  /// reachable through [cff]; **it is simply not applied**, so CFF text at
+  /// small sizes is unhinted. Saying so here beats letting a caller infer it
+  /// from a `ppem` argument that quietly does nothing.
   Path outlineOf(int glyphId, [double ppem = 0.0]) {
+    final GlyfTable? glyf = _glyf;
+
     // Unhinted: the design outline, which is the same whatever size it will be
     // drawn at. One entry per glyph, shared by every size.
-    if (!shouldHint(ppem)) {
+    if (glyf == null || !shouldHint(ppem)) {
       final Path? cached = _outlines[glyphId];
       if (cached != null) return cached;
-      final GlyphOutline decoded = _glyf.decode(glyphId);
-      _outlines[glyphId] = decoded.path;
-      return decoded.path;
+      final Path path = glyf == null
+          ? _cff!.outlineOf(glyphId).path
+          : glyf.decode(glyphId).path;
+      _outlines[glyphId] = path;
+      return path;
     }
 
     final _GlyphCacheKey key = (glyphId: glyphId, ppem: ppem);
@@ -199,7 +426,7 @@ final class Typeface {
     // TODO: pass ppem into decode once the interpreter runs fpgm and prep;
     // until then this produces the same geometry as the unhinted path and the
     // two caches simply hold equal values.
-    final GlyphOutline decoded = _glyf.decode(glyphId);
+    final GlyphOutline decoded = glyf.decode(glyphId);
     _rememberHinted(key, decoded);
     return decoded.path;
   }
@@ -234,7 +461,15 @@ final class Typeface {
       );
 
   /// Whether [glyphId] draws anything. False for a space.
-  bool hasOutline(int glyphId) => _glyf.hasOutline(glyphId);
+  ///
+  /// Cheap for `glyf` - a `loca` length - and not cheap for CFF, where the
+  /// only way to know is to interpret the charstring. The CFF answer routes
+  /// through [outlineOf] so that the decode is cached rather than repeated.
+  bool hasOutline(int glyphId) {
+    final GlyfTable? glyf = _glyf;
+    if (glyf != null) return glyf.hasOutline(glyphId);
+    return !outlineOf(glyphId).isEmpty;
+  }
 
   /// This face at [pixelSize] pixels per em.
   ScaledTypeface atSize(double pixelSize) => ScaledTypeface(this, pixelSize);
@@ -261,16 +496,27 @@ final class ScaledTypeface {
   final double scale;
 
   /// Distance from the baseline to the top of the line, in pixels.
-  double get ascent => typeface.hhea.ascender * scale;
+  ///
+  /// Taken from [Typeface.verticalMetrics], **not** from `hhea` directly: a
+  /// font states its line box up to three times and the three disagree, so the
+  /// choice is made once by [VerticalMetrics.resolve] and every size shares it.
+  /// For a font that sets `USE_TYPO_METRICS` this is materially shorter than
+  /// `hhea` - the designer said so - and for every other font it is `hhea`
+  /// exactly, which is what the rest of the industry draws.
+  double get ascent => typeface.verticalMetrics.ascent * scale;
 
   /// Distance from the baseline to the bottom, in pixels, **positive down**.
   ///
-  /// `hhea.descender` is negative in a well-formed font because y is up there;
-  /// negating it here means every caller adds ascent and descent rather than
-  /// having to remember which one is signed.
-  double get descent => -typeface.hhea.descender * scale;
+  /// The resolved descent is negative in a well-formed font because y is up
+  /// there; negating it here means every caller adds ascent and descent rather
+  /// than having to remember which one is signed.
+  double get descent => -typeface.verticalMetrics.descent * scale;
 
-  double get lineGap => typeface.hhea.lineGap * scale;
+  double get lineGap => typeface.verticalMetrics.lineGap * scale;
+
+  /// Which of the three sources the line box above came from, for a diagnostic
+  /// that would otherwise be "this paragraph is taller than the designer's".
+  VerticalMetricsSource get metricsSource => typeface.verticalMetrics.source;
 
   /// The distance between consecutive baselines.
   double get lineHeight => ascent + descent + lineGap;

@@ -17,12 +17,31 @@
 ///   text        <- foundation, geometry, graphics
 ///   rendering   <- foundation, geometry, graphics, text
 ///   layout      <- foundation, geometry, graphics
-///   widgets     <- layout
+///   animation   <- foundation, geometry, scheduler
+///   widgets     <- layout, animation
+///   app         <- everything above, no backend
 ///
 /// No layer here may import a backend, and no backend may be referenced by
-/// name from common code.
+/// name from common code. `test/architecture/layering_test.dart` enforces
+/// this by reading the imports, so a violation fails the suite rather than
+/// waiting to be noticed in review.
+///
+/// Two things deliberately stay out of this file. The **generated Unicode
+/// tables** under `src/text/tables/` are data with a regeneration command
+/// (`tool/generate_unicode_tables.dart`), not API - the algorithms that read
+/// them are exported instead. The **GPU backend internals** under
+/// `src/rendering/gpu/` are reached through the `RendererBackend` contract in
+/// `src/rendering/renderer.dart`; exporting the OpenGL types by name would
+/// invite callers to write against one backend, which is the coupling section
+/// 6.2 exists to prevent.
 library;
 
+export 'src/animation/animation.dart';
+export 'src/animation/clock.dart';
+export 'src/animation/curves.dart';
+export 'src/animation/keyframes.dart';
+export 'src/animation/simulation.dart';
+export 'src/app/app.dart';
 export 'src/backends/headless/headless_backend.dart';
 export 'src/backends/headless/headless_test_support.dart';
 export 'src/diagnostics/dev_overlay.dart';
@@ -79,10 +98,19 @@ export 'src/scheduler/manual_dispatcher.dart';
 export 'src/scheduler/timer_handle.dart';
 export 'src/scheduler/ui_dispatcher.dart';
 export 'src/text/bidi.dart';
+export 'src/text/case_mapping.dart';
+export 'src/text/cff.dart';
+export 'src/text/font_tables.dart';
 export 'src/text/grapheme.dart';
 export 'src/text/line_break.dart';
+export 'src/text/normalize.dart';
+export 'src/text/paragraph.dart';
+export 'src/text/script.dart';
 export 'src/text/shaper.dart';
+export 'src/text/shapers/arabic.dart';
+export 'src/text/shapers/script_models.dart';
 export 'src/text/typeface.dart';
+export 'src/text/word_break.dart';
 export 'src/widgets/actions.dart';
 export 'src/widgets/basic.dart' hide RenderColoredBox;
 export 'src/widgets/control.dart';

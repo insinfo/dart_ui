@@ -22,6 +22,11 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   'geometry': <String>[],
   'scheduler': <String>['foundation'],
   'graphics': <String>['foundation', 'geometry'],
+  // Animation sits above the scheduler because time enters it through a frame
+  // callback rather than through a clock it reads itself; see
+  // `animation/clock.dart`. It knows geometry because a tween interpolates an
+  // Offset, and nothing else.
+  'animation': <String>['foundation', 'geometry', 'scheduler'],
   'text': <String>['foundation', 'geometry', 'graphics'],
   'platform': <String>['foundation', 'geometry', 'scheduler'],
   // rendering may know what a glyph is, because rasterizing one is its job.
@@ -37,6 +42,7 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   ],
   'layout': <String>['foundation', 'geometry', 'graphics', 'rendering'],
   'widgets': <String>[
+    'animation',
     'foundation',
     'geometry',
     'graphics',
@@ -58,6 +64,23 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   ],
   'gallery': <String>[
     'foundation',
+    'geometry',
+    'graphics',
+    'layout',
+    'platform',
+    'rendering',
+    'scheduler',
+    'text',
+    'widgets',
+  ],
+  // The application shell sits above everything, which is precisely why it is
+  // listed last and why `backends` is still absent from its row: `runApp` has
+  // to assemble a backend without being allowed to name one, and the entries
+  // it is handed are the seam that makes that possible.
+  'app': <String>[
+    'diagnostics',
+    'foundation',
+    'gallery',
     'geometry',
     'graphics',
     'layout',

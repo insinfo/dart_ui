@@ -7,25 +7,57 @@
 /// only be reasoned about, because the whole point of this stage is to find
 /// out whether the abstraction above it is right.
 ///
-/// ## The target is offscreen on purpose
+/// ## Two targets, and only one of them reads pixels back
 ///
 /// [GlOffscreenTarget] renders into a framebuffer object, not a window. That
-/// makes the entire GPU path testable with no display server, no compositor
-/// and no window manager - the same property that makes the CPU renderer
-/// testable - and it is the configuration a golden test needs. A windowed
-/// target is a different class with the same interface: it swaps a
-/// window-system surface in for the FBO and does not read pixels back. Its
-/// absence here is a scope decision, not an oversight; windows belong to
-/// `lib/src/backends/*`.
+/// makes the GPU path testable with no display server, no compositor and no
+/// window manager - the same property that makes the CPU renderer testable -
+/// and it is the configuration a golden test needs.
 ///
-/// ## Readback
-///
-/// This target reads its pixels back on present, which section 25 of the
-/// roadmap forbids for a *production* GPU backend ("backend GPU não deve
-/// fazer readback por frame"). That rule is about presenting to a screen. An
+/// It reads its pixels back on present, which section 23 of the roadmap
+/// forbids for a *production* GPU backend ("backend GPU não deve fazer
+/// readback por frame"). That rule is about presenting to a screen. An
 /// offscreen target whose only consumer is a test or an image export has
-/// nowhere else to put the pixels, and the rule does not apply to it. A
-/// windowed target must not inherit this method.
+/// nowhere else to put the pixels, and the rule does not apply to it.
+///
+/// `GlWindowTarget`, in `gl_window_target.dart`, is the target the rule *is*
+/// about. It binds framebuffer 0 - the window's own back buffer - draws into
+/// it and swaps. It does not read pixels back, and `_readPixels` is
+/// deliberately left private to this file so it cannot.
+///
+/// ## Why the window target is a separate library and not a `part`
+///
+/// It needs [submit], [makeCurrentOrLose], [checkError] and [scratchNames],
+/// all of which were private to this file. Two ways to give it them:
+///
+///   1. `part` / `part of`, which would put both classes in one library and
+///      keep every one of those members private.
+///   2. Promote the four members to public API of [GlRenderDevice].
+///
+/// This file chose **(2)**, for two reasons and one that decided it.
+///
+/// The reason that decided it: `part` is not an idiom this repository uses.
+/// There is not one `part` or `part of` directive anywhere under `lib/`, and
+/// introducing the first one inside the GPU backend would make this directory
+/// read differently from the other forty. A layering rule that is enforced by
+/// a test (`test/architecture/layering_test.dart`) and a file convention that
+/// is enforced by nothing are both conventions; breaking the second one for
+/// local convenience is how the first one eventually gets broken too.
+///
+/// The two supporting reasons. First, `part` files cannot have their own
+/// imports, so `gl_window_target.dart` would have to import through this file
+/// and the dependency of the window target on `gl_surface_descriptor.dart`
+/// would become invisible at its top. Second, these four members are not
+/// accidental internals: a target *is* the thing that submits geometry and
+/// makes a context current, so "the device's API to its targets" is a real
+/// interface that deserves a name and a doc comment rather than a language
+/// loophole. Each of them below says so explicitly and says what a caller must
+/// not assume.
+///
+/// The cost is stated rather than glossed: these members are now reachable by
+/// anything that imports this file, including application code that has no
+/// business calling them. They are documented as device-to-target plumbing and
+/// nothing outside `lib/src/rendering/gpu/gl` calls them.
 library;
 
 import 'dart:async';
@@ -43,13 +75,17 @@ import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
 import '../gpu_device_state.dart';
+import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_texture.dart';
 import 'gl_bindings.dart';
 import 'gl_context.dart';
+import 'gl_framebuffer_pool.dart';
 import 'gl_shaders.dart';
+import 'gl_surface_descriptor.dart';
+import 'gl_window_target.dart';
 
 /// A texture object owned by a [GlRenderDevice].
 final class GlTexture implements GpuTextureHandle {
@@ -91,6 +127,30 @@ final class GlTexture implements GpuTextureHandle {
       'GlTexture($id, ${width}x$height, ${format.name}, ${filter.name})';
 }
 
+/// The GL state [GlRenderDevice.submit] has already sent, so it does not send
+/// it again.
+///
+/// A mutable object rather than three locals because the loop that reads it is
+/// now split across passes, and passing three `var`s in and back out of
+/// `_drawBatches` would either allocate a record per pass or silently reset
+/// the filter at every layer boundary - which would re-bind the same texture
+/// and re-send the same blend function once per layer, for nothing.
+///
+/// -1 is "unknown", and it is not a legal value for any of the three: a
+/// texture name of 0 means *no texture* and is legal, blend modes and pipeline
+/// modes are non-negative.
+final class _DrawState {
+  int textureId = -1;
+  int mode = -1;
+  int blendMode = -1;
+
+  void reset() {
+    textureId = -1;
+    mode = -1;
+    blendMode = -1;
+  }
+}
+
 /// An open GL context plus the objects every target shares.
 final class GlRenderDevice
     with DisposableMixin
@@ -114,10 +174,18 @@ final class GlRenderDevice
   final int _maxTextureSize;
   final GpuDeviceState _state = GpuDeviceState();
 
-  // Scratch native memory, allocated once. Every GL call that returns a name
-  // or a status writes through one of these, so a frame performs no native
-  // allocation at all.
-  late final Pointer<Uint32> _names = _heap.allocate<Uint32>(4 * 4);
+  /// Scratch native memory for the `GLuint*` out-parameters, allocated once.
+  ///
+  /// Every GL call that returns a name - `glGenTextures`, `glGenFramebuffers`,
+  /// `glDeleteBuffers` - writes through this, so a frame performs no native
+  /// allocation at all. Four slots because nothing here asks for more than
+  /// four names at a time.
+  ///
+  /// Public for the reason given in the library comment: a target lives in
+  /// another file and must be able to create and delete its own GL objects
+  /// without every one of them costing a `malloc`. Callers may write to it and
+  /// must assume nothing survives the next device call.
+  late final Pointer<Uint32> scratchNames = _heap.allocate<Uint32>(4 * 4);
   late final Pointer<Int32> _status = _heap.allocate<Int32>(4 * 4);
   late final Pointer<Pointer<Uint8>> _stringSlot =
       _heap.allocatePointers<Uint8>(1);
@@ -138,6 +206,7 @@ final class GlRenderDevice
   int _uniformViewport = -1;
   int _uniformTexture = -1;
   int _uniformMode = -1;
+  int _uniformYFlip = -1;
 
   GpuDeviceState get state => _state;
 
@@ -168,20 +237,39 @@ final class GlRenderDevice
         },
       );
 
+  /// Builds the target that matches [surface], or names what is missing.
+  ///
+  /// Two descriptors are understood and they produce different classes rather
+  /// than one class with a flag, because the two present in opposite ways: a
+  /// [MemorySurfaceDescriptor] becomes a [GlOffscreenTarget] that renders to a
+  /// framebuffer object and reads it back, and a [GlWindowSurfaceDescriptor]
+  /// becomes a [GlWindowTarget] that renders to framebuffer 0 and swaps.
+  ///
+  /// Anything else throws. It does **not** quietly build an offscreen target
+  /// for an unrecognised descriptor - that is the silent fallback section 6.6
+  /// exists to forbid, and it is the worst possible one here: the frame would
+  /// render perfectly and appear nowhere, which reads as a bug in the scene
+  /// rather than a bug in the backend selection.
   @override
   RenderTarget createTarget(NativeSurfaceDescriptor surface) {
     throwIfDisposed();
-    if (surface is! MemorySurfaceDescriptor) {
-      throw UnsupportedCapabilityError(
-        backendName: 'opengl',
-        capability: Capability.cpuPresentation,
-        detail: 'this device creates offscreen framebuffer targets from '
-            'memory surface descriptors, not ${surface.kind}; a windowed '
-            'target needs a window-system surface, which lives in '
-            'lib/src/backends',
-      );
+    if (surface is MemorySurfaceDescriptor) {
+      return GlOffscreenTarget._(this, surface);
     }
-    return GlOffscreenTarget._(this, surface);
+    if (surface is GlWindowSurfaceDescriptor) {
+      return GlWindowTarget(this, surface);
+    }
+    throw UnsupportedCapabilityError(
+      backendName: GlRendererBackend.backendName,
+      capability: Capability.gpuPresentation,
+      detail: 'this device builds an offscreen target from a '
+          'MemorySurfaceDescriptor and a windowed target from a '
+          'GlWindowSurfaceDescriptor; it was handed a ${surface.kind} '
+          '(${surface.runtimeType}), which it has no way to present to. A '
+          'window descriptor is built by the platform code that owns the '
+          'window - lib/src/backends/win32/win32_gl_surface.dart or '
+          'lib/src/backends/x11/x11_gl_surface.dart',
+    );
   }
 
   // -------------------------------------------------------------------
@@ -192,7 +280,7 @@ final class GlRenderDevice
   ///
   /// The size check is against the limit the device already queried, and it
   /// throws rather than letting GL answer. Without it an oversized texture
-  /// raises `GL_INVALID_VALUE`, which [_checkError] would have to interpret -
+  /// raises `GL_INVALID_VALUE`, which [checkError] would have to interpret -
   /// and "this image is bigger than the GPU allows" is a caller error with an
   /// obvious fix, not a driver fault.
   @override
@@ -210,15 +298,15 @@ final class GlRenderDevice
     if (width > _maxTextureSize || height > _maxTextureSize) {
       throw UnsupportedCapabilityError(
         backendName: GlRendererBackend.backendName,
-        capability: Capability.cpuPresentation,
+        capability: Capability.gpuPresentation,
         detail: 'a ${width}x$height texture exceeds this device\'s '
             'GL_MAX_TEXTURE_SIZE of $_maxTextureSize; the caller must tile '
             'the image or scale it down',
       );
     }
-    _makeCurrentOrLose();
-    _gl.genTextures(1, _names);
-    final name = _names[0];
+    makeCurrentOrLose();
+    _gl.genTextures(1, scratchNames);
+    final name = scratchNames[0];
     final sampling = filter == GpuTextureFilter.linear ? glLinear : glNearest;
     _gl
       ..bindTexture(glTexture2D, name)
@@ -233,7 +321,7 @@ final class GlRenderDevice
     final external = format == GpuTextureFormat.alpha8 ? glRed : glRgba;
     _gl.texImage2D(glTexture2D, 0, internal, width, height, 0, external,
         glUnsignedByte, nullptr);
-    _checkError('glTexImage2D(${width}x$height, ${format.name})');
+    checkError('glTexImage2D(${width}x$height, ${format.name})');
     return GlTexture._(name, width, height, format, filter, _state);
   }
 
@@ -253,7 +341,7 @@ final class GlRenderDevice
     required int bytesPerRow,
   }) {
     if (width <= 0 || height <= 0) return;
-    _makeCurrentOrLose();
+    makeCurrentOrLose();
     final rowBytes = width * texture.format.bytesPerPixel;
     final bytes = rowBytes * height;
     final staging = _ensurePixelStaging(bytes);
@@ -272,40 +360,86 @@ final class GlRenderDevice
       ..pixelStorei(glUnpackAlignment, 1)
       ..texSubImage2D(glTexture2D, 0, x, y, width, height, external,
           glUnsignedByte, staging.cast<Void>());
-    _checkError('glTexSubImage2D');
+    checkError('glTexSubImage2D');
   }
 
   @override
   void releaseTexture(covariant GlTexture texture) {
     if (texture._released || _state.isLost || isDisposed) return;
     texture._released = true;
-    _names[0] = texture.id;
-    _gl.deleteTextures(1, _names);
+    scratchNames[0] = texture.id;
+    _gl.deleteTextures(1, scratchNames);
   }
 
   // -------------------------------------------------------------------
   // Frame submission
   // -------------------------------------------------------------------
 
-  /// Issues one batch list into the currently bound framebuffer.
+  /// Issues a batch list, switching render targets where [layers] says to.
+  ///
+  /// Device-to-target plumbing, public because targets live in other files;
+  /// see the library comment for why that is a promoted member and not a
+  /// `part`. It is not application API.
+  ///
+  /// ## Two things this has to get right, and one it must not change
+  ///
+  /// **Where the batches go.** Without layers a frame is one target and one
+  /// loop, and the caller's own binding is what everything lands in - that is
+  /// the whole reason one method serves both targets: [GlOffscreenTarget]
+  /// binds its framebuffer object first, [GlWindowTarget] binds framebuffer 0.
+  /// With layers a frame is a *sequence* of (target, batch range) pairs, and
+  /// this walks it, binding [GpuRenderPass.target] or - for the surface's own
+  /// runs - [surfaceFramebuffer], which is why that argument exists: the
+  /// caller's binding has to be restorable after a layer pass, and this file
+  /// must not guess whether it was 0.
+  ///
+  /// **Which way up each pass is.** See [kYFlipTopDown]: a pass rendering into
+  /// a texture that will be sampled is written top-down, which inverts both
+  /// the projection and the scissor's y. Getting it backwards draws every
+  /// layer upside down.
+  ///
+  /// [firstBatch] is what makes a mid-frame flush possible: an atlas that
+  /// filled up mid-frame has to have the batches recorded so far *issued*
+  /// before its texels are recycled, and the rest of the frame is submitted
+  /// afterwards from where this left off. A batch drawn twice blends twice, so
+  /// the caller owns that cursor and this honours it - including inside a
+  /// pass, whose clear only runs when its own first batch is being drawn.
+  ///
+  /// [surfaceWidth] and [surfaceHeight] are physical pixels and set both the
+  /// viewport and the scissor clamp of the surface's passes, so passing the
+  /// logical size silently renders a quarter of a HiDPI window.
   ///
   /// Returns false when the device was lost on the way, which the caller
   /// turns into [PresentStatus.deviceLost].
-  bool _submit(
+  bool submit(
     GpuBatcher batcher,
     int surfaceWidth,
     int surfaceHeight,
-    int? clearColor,
-  ) {
-    if (!_makeCurrentOrLose()) return false;
+    int? clearColor, {
+    GpuLayerStack? layers,
+    int surfaceFramebuffer = 0,
+    int firstBatch = 0,
+  }) {
+    if (!makeCurrentOrLose()) return false;
 
+    // Bound here rather than left to the caller, which is a change of contract
+    // worth stating: a mid-frame flush calls this from inside the player's
+    // walk, where the last binding may well be a layer target this same method
+    // left behind, and a clear issued into it would erase a layer instead of
+    // the surface. Both targets pass their own framebuffer - 0 is the window's
+    // back buffer and is the default because that is what a window target
+    // binds.
     _gl
+      ..bindFramebuffer(glFramebuffer, surfaceFramebuffer)
       ..viewport(0, 0, surfaceWidth, surfaceHeight)
       ..disable(glDepthTest)
       ..disable(glCullFace)
       ..enable(glBlend)
       ..disable(glScissorTest);
 
+    // A caller resuming after a mid-frame flush passes null: the surface was
+    // cleared by the submission that opened the frame, and clearing again
+    // would erase everything drawn before the flush.
     if (clearColor != null) {
       // The clear colour arrives packed the way FrameRequest documents it -
       // premultiplied BGRA in a 32-bit int - and glClearColor wants
@@ -320,23 +454,111 @@ final class GlRenderDevice
         ..clear(glColorBufferBit);
     }
 
-    if (batcher.batchCount == 0) return !_state.isLost;
+    final int batchCount = batcher.batchCount;
+    if (batchCount <= firstBatch) return !_state.isLost;
 
     _uploadGeometry(batcher);
 
     _gl
       ..useProgram(_program)
-      ..uniform2f(
-          _uniformViewport, surfaceWidth.toDouble(), surfaceHeight.toDouble())
       ..uniform1i(_uniformTexture, 0)
       ..activeTexture(glTexture0)
       ..bindVertexArray(_vao)
       ..enable(glScissorTest);
 
-    var boundTexture = -1;
-    var boundMode = -1;
-    var boundBlend = -1;
-    for (var i = 0; i < batcher.batchCount; i++) {
+    // Bound GL state carried *across* passes on purpose: a texture binding, a
+    // blend function and the mode uniform are context state, not framebuffer
+    // state, so switching target does not invalidate them and re-sending them
+    // per pass would cost a driver call per layer for nothing.
+    final _DrawState state = _drawState..reset();
+
+    final int passCount = layers?.passCount ?? 0;
+    if (passCount == 0) {
+      _drawBatches(
+        batcher,
+        firstBatch,
+        batchCount,
+        surfaceWidth,
+        surfaceHeight,
+        kYFlipDefault,
+        state,
+      );
+    } else {
+      for (var p = 0; p < passCount; p++) {
+        final GpuRenderPass pass = layers!.passAt(p);
+        final int end = layers.passEnd(p, batchCount);
+        if (end <= firstBatch) continue;
+        final int start =
+            pass.firstBatch < firstBatch ? firstBatch : pass.firstBatch;
+        // Only when this submission is the one that opens the pass: a pass
+        // resumed after a mid-frame flush has already been cleared, and
+        // clearing it again would erase what was just drawn into it.
+        final bool clears = pass.clearsTarget && start == pass.firstBatch;
+        // An *empty* pass that clears is not a contradiction and must not be
+        // skipped: a layer whose first act is to open a nested layer records
+        // no batches of its own until that one closes, and its target still
+        // has to lose the previous tenant's pixels before the nested
+        // composite is drawn into it.
+        if (end <= start && !clears) continue;
+
+        final GpuLayerTarget? target = pass.target;
+        _gl
+          ..bindFramebuffer(
+              glFramebuffer, target == null ? surfaceFramebuffer : target.id)
+          ..viewport(0, 0, pass.viewportWidth, pass.viewportHeight);
+
+        if (clears) {
+          // A layer composites what it drew over *transparency*. The scissor
+          // is off for the clear because glClear obeys it, and the whole
+          // target - including the slack a pooled target has past the layer's
+          // own size - has to lose the previous tenant's pixels.
+          _gl
+            ..disable(glScissorTest)
+            ..clearColor(0, 0, 0, 0)
+            ..clear(glColorBufferBit)
+            ..enable(glScissorTest);
+        }
+        if (end <= start) continue;
+
+        _drawBatches(
+          batcher,
+          start,
+          end,
+          pass.viewportWidth,
+          pass.viewportHeight,
+          pass.rendersTopDown ? kYFlipTopDown : kYFlipDefault,
+          state,
+        );
+      }
+      // The caller bound its own framebuffer before calling and is entitled to
+      // find it bound afterwards - it reads pixels back or swaps it next.
+      _gl.bindFramebuffer(glFramebuffer, surfaceFramebuffer);
+    }
+
+    _gl.disable(glScissorTest);
+    checkError('draw');
+    return !_state.isLost;
+  }
+
+  /// Issues batches `[first, last)` into whatever is bound, at [viewportWidth]
+  /// by [viewportHeight] and in the orientation [yFlip] names.
+  void _drawBatches(
+    GpuBatcher batcher,
+    int first,
+    int last,
+    int viewportWidth,
+    int viewportHeight,
+    int yFlip,
+    _DrawState state,
+  ) {
+    _gl.uniform2f(
+      _uniformViewport,
+      viewportWidth.toDouble(),
+      viewportHeight.toDouble(),
+    );
+    _gl.uniform1i(_uniformYFlip, yFlip);
+
+    for (var i = first; i < last; i++) {
       final batch = batcher.batchAt(i);
       var left = batch.scissorLeft;
       var top = batch.scissorTop;
@@ -344,16 +566,24 @@ final class GlRenderDevice
       var bottom = batch.scissorBottom;
       if (left < 0) left = 0;
       if (top < 0) top = 0;
-      if (right > surfaceWidth) right = surfaceWidth;
-      if (bottom > surfaceHeight) bottom = surfaceHeight;
+      if (right > viewportWidth) right = viewportWidth;
+      if (bottom > viewportHeight) bottom = viewportHeight;
       if (right <= left || bottom <= top) continue;
 
-      // GL's scissor origin is the bottom-left corner, device space's is the
-      // top-left. Same flip the vertex shader applies to positions.
-      _gl.scissor(left, surfaceHeight - bottom, right - left, bottom - top);
+      // GL's scissor origin is the bottom-left corner and device space's is
+      // the top-left, so the y is flipped - *unless* this pass already
+      // inverted its projection to write the target top-down, in which case
+      // device row 0 is framebuffer row 0 and flipping again would scissor
+      // the mirror image of the batch's clip.
+      _gl.scissor(
+        left,
+        yFlip == kYFlipTopDown ? top : viewportHeight - bottom,
+        right - left,
+        bottom - top,
+      );
 
-      if (batch.blendMode != boundBlend) {
-        boundBlend = batch.blendMode;
+      if (batch.blendMode != state.blendMode) {
+        state.blendMode = batch.blendMode;
         final blend = gpuBlendForMode(batch.blendMode);
         _gl.blendFunc(_glFactor(blend.source), _glFactor(blend.destination));
       }
@@ -362,12 +592,12 @@ final class GlRenderDevice
         GpuPipelineKind.coverageMask => kModeCoverageMask,
         GpuPipelineKind.texturedImage => kModeTexturedImage,
       };
-      if (mode != boundMode) {
-        boundMode = mode;
+      if (mode != state.mode) {
+        state.mode = mode;
         _gl.uniform1i(_uniformMode, mode);
       }
-      if (batch.textureId != boundTexture) {
-        boundTexture = batch.textureId;
+      if (batch.textureId != state.textureId) {
+        state.textureId = batch.textureId;
         _gl.bindTexture(glTexture2D, batch.textureId);
       }
       _gl.drawElements(
@@ -377,11 +607,11 @@ final class GlRenderDevice
         Pointer<Void>.fromAddress(batch.indexOffset * 4),
       );
     }
-
-    _gl.disable(glScissorTest);
-    _checkError('draw');
-    return !_state.isLost;
   }
+
+  /// The redundant-state filter, reused across submissions rather than
+  /// rebuilt: [submit] runs per frame and this must not allocate.
+  final _DrawState _drawState = _DrawState();
 
   void _uploadGeometry(GpuBatcher batcher) {
     final buffer = batcher.buffer;
@@ -408,7 +638,7 @@ final class GlRenderDevice
       ..bindBuffer(glElementArrayBuffer, _ebo)
       ..bufferData(glElementArrayBuffer, indexBytes, indexStaging.cast<Void>(),
           glDynamicDraw);
-    _checkError('glBufferData');
+    checkError('glBufferData');
   }
 
   /// Reads the bound framebuffer into [destination], flipping rows.
@@ -419,7 +649,7 @@ final class GlRenderDevice
   /// renderer in a coordinate system that disagrees with every rectangle the
   /// layout produced.
   bool _readPixels(Framebuffer destination) {
-    if (!_makeCurrentOrLose()) return false;
+    if (!makeCurrentOrLose()) return false;
     final width = destination.width;
     final height = destination.height;
     final bytes = width * height * 4;
@@ -428,7 +658,7 @@ final class GlRenderDevice
       ..pixelStorei(glPackAlignment, 1)
       ..readPixels(
           0, 0, width, height, glRgba, glUnsignedByte, staging.cast<Void>());
-    if (_checkError('glReadPixels')) return false;
+    if (checkError('glReadPixels')) return false;
 
     final source = staging.asTypedList(bytes);
     final swizzle = destination.format == PixelFormat.bgra8888Premultiplied;
@@ -468,7 +698,7 @@ final class GlRenderDevice
   /// Returns a diagnostic on failure instead of throwing, so device creation
   /// can report it the same way a probe does.
   BackendDiagnostic? _initialise() {
-    if (!_makeCurrentOrLose()) {
+    if (!makeCurrentOrLose()) {
       return const BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
         message: 'the GL context could not be made current',
@@ -521,23 +751,26 @@ final class GlRenderDevice
     _uniformViewport = _uniformLocation('uViewport');
     _uniformTexture = _uniformLocation('uTexture');
     _uniformMode = _uniformLocation('uMode');
-    if (_uniformViewport < 0 || _uniformMode < 0) {
+    _uniformYFlip = _uniformLocation('uYFlip');
+    if (_uniformViewport < 0 || _uniformMode < 0 || _uniformYFlip < 0) {
       return const BackendDiagnostic(
         kind: DiagnosticKind.incompatibleDevice,
         message: 'the linked program is missing a uniform the renderer needs',
-        detail: 'uViewport or uMode was optimised away, which means the '
-            'shader source and this file have drifted apart',
+        detail: 'uViewport, uMode or uYFlip was optimised away, which means '
+            'the shader source and this file have drifted apart. uYFlip in '
+            'particular decides which way up a layer is drawn, and a driver '
+            'that folded it away would render every layer mirrored',
       );
     }
 
     _gl
-      ..genVertexArrays(1, _names)
-      ..bindVertexArray(_names[0]);
-    _vao = _names[0];
-    _gl.genBuffers(1, _names);
-    _vbo = _names[0];
-    _gl.genBuffers(1, _names);
-    _ebo = _names[0];
+      ..genVertexArrays(1, scratchNames)
+      ..bindVertexArray(scratchNames[0]);
+    _vao = scratchNames[0];
+    _gl.genBuffers(1, scratchNames);
+    _vbo = scratchNames[0];
+    _gl.genBuffers(1, scratchNames);
+    _ebo = scratchNames[0];
 
     const stride = kGpuFloatsPerVertex * 4;
     _gl
@@ -548,7 +781,7 @@ final class GlRenderDevice
     _attribute(kAttributeColor, 4, kGpuColorOffset * 4, stride);
     _attribute(kAttributeShapeRect, 4, kGpuShapeRectOffset * 4, stride);
 
-    if (_checkError('device initialisation')) {
+    if (checkError('device initialisation')) {
       return BackendDiagnostic(
         kind: DiagnosticKind.incompatibleDevice,
         message: 'GL reported an error while creating the renderer objects',
@@ -603,7 +836,17 @@ final class GlRenderDevice
     return readNativeUtf8(_log, limit: _logCapacity);
   }
 
-  bool _makeCurrentOrLose() {
+  /// Makes this device's context current, or marks the device lost.
+  ///
+  /// Device-to-target plumbing, public for the reason the library comment
+  /// gives. Every target must call it before touching GL, and the result must
+  /// be checked rather than assumed: issuing a GL call through a context that
+  /// is not current does not fail, it writes into whichever context *is*,
+  /// which on a machine running two GL applications is the other one's.
+  ///
+  /// Never throws. A driver that refuses is device loss, which is a state the
+  /// caller reports, not an exception it catches.
+  bool makeCurrentOrLose() {
     if (_state.isLost) return false;
     if (_context.makeCurrent()) return true;
     _state.markLost(
@@ -621,7 +864,7 @@ final class GlRenderDevice
   ///
   /// Kept rather than thrown so a caller can report it without the renderer
   /// deciding that a recoverable mistake ends the device. Cleared by the next
-  /// clean [_checkError].
+  /// clean [checkError].
   BackendDiagnostic? get lastError => _lastError;
   BackendDiagnostic? _lastError;
 
@@ -637,7 +880,12 @@ final class GlRenderDevice
   /// texture or one bad enum turned a recoverable mistake into a device that
   /// could never draw again and could not be recovered either. That is a
   /// worse failure than the bug it was reporting.
-  bool _checkError(String what) {
+  ///
+  /// Device-to-target plumbing, public for the reason the library comment
+  /// gives: a target creates GL objects of its own and has to be able to ask
+  /// whether the driver accepted them. [what] is pasted verbatim into the
+  /// diagnostic, so it should name the call, not the module.
+  bool checkError(String what) {
     final error = _gl.drainErrors();
     if (error == glNoError) {
       _lastError = null;
@@ -694,22 +942,22 @@ final class GlRenderDevice
     // them already anyway.
     if (!_state.isLost && _context.makeCurrent()) {
       if (_vbo != 0) {
-        _names[0] = _vbo;
-        _gl.deleteBuffers(1, _names);
+        scratchNames[0] = _vbo;
+        _gl.deleteBuffers(1, scratchNames);
       }
       if (_ebo != 0) {
-        _names[0] = _ebo;
-        _gl.deleteBuffers(1, _names);
+        scratchNames[0] = _ebo;
+        _gl.deleteBuffers(1, scratchNames);
       }
       if (_vao != 0) {
-        _names[0] = _vao;
-        _gl.deleteVertexArrays(1, _names);
+        scratchNames[0] = _vao;
+        _gl.deleteVertexArrays(1, scratchNames);
       }
       if (_program != 0) _gl.deleteProgram(_program);
     }
     _context.dispose();
     _heap
-      ..release(_names)
+      ..release(scratchNames)
       ..release(_status)
       ..release(_stringSlot)
       ..release(_log)
@@ -733,12 +981,32 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       filter: GpuTextureFilter.nearest,
     );
     _images = GlImageCache(_device);
+    _layerPool = GlFramebufferPool(
+      factory: GlDeviceFramebufferFactory(
+        gl: _device._gl,
+        scratchNames: _device.scratchNames,
+        makeCurrent: _device.makeCurrentOrLose,
+        onError: (String what) => _device.state.markLost(
+          BackendDiagnostic(
+            kind: DiagnosticKind.surfaceCreationFailed,
+            message: 'a layer target could not be created',
+            detail: what,
+          ),
+        ),
+      ),
+    );
+    _layers = GpuLayerStack(
+      allocator: _layerPool,
+      backendName: GlRendererBackend.backendName,
+    );
     _sink = GpuRasterSink(
       batcher: _batcher,
-      backendName: 'opengl',
+      backendName: GlRendererBackend.backendName,
       maskAtlas: _maskAtlas,
       maskTextureId: _maskTexture.id,
       imageResolver: _images,
+      layerStack: _layers,
+      onAtlasFlush: _flushAtlases,
     );
     _player = DisplayListPlayer(_sink);
     _createSurfaceObjects();
@@ -750,12 +1018,35 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
   late final GpuMaskAtlas _maskAtlas;
   late final GlTexture _maskTexture;
   late final GlImageCache _images;
+  late final GlFramebufferPool _layerPool;
+  late final GpuLayerStack _layers;
   late final GpuRasterSink _sink;
   late final DisplayListPlayer _player;
+
+  /// How many batches of the current frame have already been drawn.
+  ///
+  /// Zero for a frame with no mid-frame flush, which is every frame whose
+  /// atlases had room. When one does fill up, [_flushAtlases] issues what has
+  /// been recorded and moves this forward, and [present] draws the rest from
+  /// here - a batch drawn twice blends twice, which on a source-over fill
+  /// darkens it and on a `plus` one doubles it.
+  int _submittedBatches = 0;
 
   /// The textures this target uploaded for drawn images. Exposed so a caller
   /// that finished with a picture can drop them without disposing the target.
   GlImageCache get images => _images;
+
+  /// Where layers get their offscreen targets.
+  ///
+  /// Exposed for two things and neither is drawing: a memory report, and a
+  /// test that asserts the same layer drawn on ten frames created one
+  /// framebuffer. Reuse is invisible from the pixels - a pool that allocated
+  /// per frame would produce identical output and a stuttering frame time.
+  GlFramebufferPool get layerPool => _layerPool;
+
+  /// The layer stack this target's sink drives, for a caller that wants to
+  /// know how deep a frame went or how many passes it cost.
+  GpuLayerStack get layers => _layers;
 
   MemorySurfaceDescriptor _surface;
   late GlTexture _colorTexture;
@@ -790,6 +1081,11 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
     throwIfDisposed();
     _batcher.beginFrame();
     _maskAtlas.beginFrame();
+    _layers.beginFrame(
+      surfaceWidth: _readback.width,
+      surfaceHeight: _readback.height,
+    );
+    _submittedBatches = 0;
     _pendingClear = request.clearColor;
     return Frame(
       target: this,
@@ -824,7 +1120,7 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
     // Binding a framebuffer through a context that is not current writes into
     // whichever context *is*, which on a shared-GPU machine is another
     // application's. So the result is checked before anything is bound.
-    if (!_device._makeCurrentOrLose()) {
+    if (!_device.makeCurrentOrLose()) {
       return _device.state.blockedPresent() ??
           const PresentResult(
             status: PresentStatus.deviceLost,
@@ -835,40 +1131,81 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
           );
     }
     _device._gl.bindFramebuffer(glFramebuffer, _fbo);
+    _uploadMaskAtlas();
 
-    // One upload for everything the frame's masks wrote, over whole rows.
-    // Whole rows because a narrower sub-rectangle would upload the same
-    // number of rows anyway once the stride is honoured, and the atlas is
-    // dirty in bands rather than columns.
-    if (_maskAtlas.isDirty) {
-      final top = _maskAtlas.dirtyTop;
-      final height = _maskAtlas.dirtyBottom - top;
-      _device.uploadRegion(
-        _maskTexture,
-        x: 0,
-        y: top,
-        width: _maskAtlas.width,
-        height: height,
-        pixels: Uint8List.sublistView(
-          _maskAtlas.pixels,
-          top * _maskAtlas.width,
-        ),
-        bytesPerRow: _maskAtlas.width,
-      );
-      _maskAtlas.markUploaded();
-    }
-
-    final drawn = _device._submit(
+    final int? clear = _pendingClear;
+    _pendingClear = null;
+    final drawn = _device.submit(
       _batcher,
       _readback.width,
       _readback.height,
-      _pendingClear,
+      clear,
+      layers: _layers,
+      surfaceFramebuffer: _fbo,
+      firstBatch: _submittedBatches,
     );
+    _submittedBatches = _batcher.batchCount;
+    // After the draws and never before: until they are issued, the composite
+    // quads are still going to sample those layer textures.
+    _layers.endFrame();
     if (drawn) _device._readPixels(_readback);
 
     final lost = _device.state.blockedPresent();
     if (lost != null) return lost;
     return const PresentResult(status: PresentStatus.presented);
+  }
+
+  /// Uploads what the frame's masks wrote, over whole rows.
+  ///
+  /// Whole rows because a narrower sub-rectangle would upload the same number
+  /// of rows anyway once the stride is honoured, and the atlas is dirty in
+  /// bands rather than columns.
+  void _uploadMaskAtlas() {
+    if (!_maskAtlas.isDirty) return;
+    final top = _maskAtlas.dirtyTop;
+    final height = _maskAtlas.dirtyBottom - top;
+    _device.uploadRegion(
+      _maskTexture,
+      x: 0,
+      y: top,
+      width: _maskAtlas.width,
+      height: height,
+      pixels: Uint8List.sublistView(
+        _maskAtlas.pixels,
+        top * _maskAtlas.width,
+      ),
+      bytesPerRow: _maskAtlas.width,
+    );
+    _maskAtlas.markUploaded();
+  }
+
+  /// The backend's half of the atlas flush protocol - see
+  /// [GpuRasterSink.onAtlasFlush] for the whole of it and for why the order
+  /// below is the only safe one.
+  ///
+  /// Upload first: the batches about to be drawn sample texels this frame
+  /// wrote, which so far exist only in the atlas's staging image. Submit
+  /// second, and remember how far it got, because the sink is about to hand
+  /// those texels to a different mask and the rest of the frame is drawn from
+  /// [_submittedBatches] afterwards.
+  ///
+  /// The clear travels with the *first* submission of a frame, whichever one
+  /// that is, so a frame whose atlas filled up before its first present still
+  /// starts from the requested background instead of the last frame's pixels.
+  void _flushAtlases() {
+    _uploadMaskAtlas();
+    final int? clear = _pendingClear;
+    _pendingClear = null;
+    _device.submit(
+      _batcher,
+      _readback.width,
+      _readback.height,
+      clear,
+      layers: _layers,
+      surfaceFramebuffer: _fbo,
+      firstBatch: _submittedBatches,
+    );
+    _submittedBatches = _batcher.batchCount;
   }
 
   @override
@@ -926,8 +1263,8 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
       format: GpuTextureFormat.rgba8888Premultiplied,
     );
     final gl = _device._gl;
-    gl.genFramebuffers(1, _device._names);
-    _fbo = _device._names[0];
+    gl.genFramebuffers(1, _device.scratchNames);
+    _fbo = _device.scratchNames[0];
     gl
       ..bindFramebuffer(glFramebuffer, _fbo)
       ..framebufferTexture2D(
@@ -944,13 +1281,13 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
         ),
       );
     }
-    _device._checkError('framebuffer creation');
+    _device.checkError('framebuffer creation');
   }
 
   void _destroySurfaceObjects() {
     if (_fbo != 0 && !_device.state.isLost) {
-      _device._names[0] = _fbo;
-      _device._gl.deleteFramebuffers(1, _device._names);
+      _device.scratchNames[0] = _fbo;
+      _device._gl.deleteFramebuffers(1, _device.scratchNames);
     }
     _fbo = 0;
     _device.releaseTexture(_colorTexture);
@@ -960,6 +1297,10 @@ final class GlOffscreenTarget with DisposableMixin implements RenderTarget {
   void onDispose() {
     _destroySurfaceObjects();
     _images.clear();
+    // After endFrame has returned every target: the pool only deletes what is
+    // idle, so disposing mid-frame would leak the ones still in flight.
+    _layers.endFrame();
+    _layerPool.dispose();
     _device.releaseTexture(_maskTexture);
   }
 }
@@ -1077,9 +1418,18 @@ final class GlRendererBackend implements RendererBackend {
         deviceDescription: 'OpenGL via EGL, offscreen framebuffer objects',
       );
 
+  /// Both descriptors this backend knows how to build a target for.
+  ///
+  /// [GlWindowSurfaceDescriptor] is included even though [probe] on this
+  /// machine may not be able to *create* one: the two questions are different.
+  /// This one is "given such a surface, could you present to it", and the
+  /// answer is yes on every platform where a GL context exists, because the
+  /// descriptor carries its own [GlSwapChain]. Whether a window can be made in
+  /// the first place is the windowing backend's question, not the renderer's.
   @override
   bool supportsSurface(NativeSurfaceDescriptor surface) =>
-      surface is MemorySurfaceDescriptor;
+      surface is MemorySurfaceDescriptor ||
+      surface is GlWindowSurfaceDescriptor;
 
   /// Whether OpenGL can run here, and if not, exactly what was missing.
   ///
@@ -1116,6 +1466,13 @@ final class GlRendererBackend implements RendererBackend {
       );
     }
 
+    // What this machine can do about *windows*, asked before a context is
+    // created because the answer does not depend on one and because it must
+    // appear in the report even when no context could be made at all. This is
+    // the part that used to lie: the old probe hard-coded "offscreen only" no
+    // matter what the machine offered.
+    final windowing = GlContextFactory.probeWindowPresentation();
+
     // A context comes first, and the symbol check second. That order is
     // forced by Windows, where a driver's entry points do not exist as
     // symbols at all until a context is current - checking the export table
@@ -1130,12 +1487,19 @@ final class GlRendererBackend implements RendererBackend {
       return BackendProbeResult(
         backendName: backendName,
         supported: false,
-        diagnostics: attempt.diagnostics,
+        diagnostics: <BackendDiagnostic>[
+          ...attempt.diagnostics,
+          windowing.diagnostic,
+        ],
       );
     }
 
     try {
-      return describeContext(context, attempt.diagnostics);
+      return describeContext(
+        context,
+        <BackendDiagnostic>[...attempt.diagnostics, windowing.diagnostic],
+        windowing.available,
+      );
     } finally {
       context.dispose();
     }
@@ -1146,9 +1510,18 @@ final class GlRendererBackend implements RendererBackend {
   /// Public because the Windows path creates its context elsewhere - a WGL
   /// context needs a window, and windows live in `lib/src/backends` - and
   /// then wants exactly this report about it.
+  ///
+  /// [windowPresentation] overrides what the context says about itself, for
+  /// the caller that knows more than the context does. The pbuffer probe uses
+  /// it to report that *the machine* can present to a window even though the
+  /// throwaway context it created cannot, which is the difference between
+  /// "this machine has no GPU presentation" and "the probe did not ask for
+  /// any". Null means "believe the context", which is what the Windows path
+  /// wants.
   static BackendProbeResult describeContext(
     GlContext context, [
     List<BackendDiagnostic> prior = const <BackendDiagnostic>[],
+    bool? windowPresentation,
   ]) {
     if (!context.makeCurrent()) {
       return BackendProbeResult(
@@ -1203,10 +1576,28 @@ final class GlRendererBackend implements RendererBackend {
         ],
       );
     }
+    // The truthful part. Every GL context can present a CPU framebuffer,
+    // because GlOffscreenTarget reads the FBO back into one - that is what
+    // cpuPresentation means and it is always available here. gpuPresentation
+    // is the claim that used to be missing entirely: it means a
+    // GlWindowSurfaceDescriptor can be handed to createTarget and the pixels
+    // will reach a screen without a readback.
+    final windowed = windowPresentation ?? context.presentsToWindow;
     return BackendProbeResult(
       backendName: backendName,
       supported: true,
-      capabilities: const <Capability>{Capability.cpuPresentation},
+      capabilities: <Capability>{
+        Capability.cpuPresentation,
+        if (windowed) ...<Capability>[
+          Capability.gpuPresentation,
+          // Swap interval control comes with the swap on both WGL and EGL. It
+          // is claimed with the swap and not separately because there is no
+          // configuration in which one exists and the other does not; a
+          // driver that refuses the *request* reports that at the call, which
+          // is why GlSwapChain.setSwapInterval returns a bool.
+          Capability.vsync,
+        ],
+      },
       diagnostics: <BackendDiagnostic>[
         ...prior,
         BackendDiagnostic.note(
@@ -1214,9 +1605,17 @@ final class GlRendererBackend implements RendererBackend {
           detail: 'vendor: $vendor; ${context.description}; GLSL '
               '${gl.stringOf(glShadingLanguageVersion)}',
         ),
-        const BackendDiagnostic.note(
-          'offscreen only: this backend renders to framebuffer objects and '
-          'has no windowed target yet',
+        BackendDiagnostic.note(
+          windowed
+              ? 'windowed presentation: GlWindowTarget binds framebuffer 0 and '
+                  'swaps it, with no per-frame readback'
+              : 'offscreen only: no window-system surface is reachable from '
+                  'here, so createTarget accepts MemorySurfaceDescriptor and '
+                  'refuses GlWindowSurfaceDescriptor',
+          detail: context.presentsToWindow
+              ? 'the probed context owns a window surface'
+              : 'the probed context is a pbuffer; a windowed context is '
+                  'created by the platform code that owns the window',
         ),
       ],
     );

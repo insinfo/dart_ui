@@ -23,21 +23,38 @@
 /// alternative - a message-only window - does not work: `HWND_MESSAGE`
 /// windows have no device context that accepts a pixel format.
 ///
-/// ## What is not here yet
+/// ## Two ways in, and the trap they share
 ///
-/// A windowed *target*. This surface can swap its buffers and set a swap
-/// interval, which is everything a presenting GL target needs from the window
-/// system, but nothing above it draws into a window's back buffer yet - the
-/// GL backend renders into a framebuffer object and reads it back. Presenting
-/// through [swapBuffers] is the seam that path will use, and it is here
-/// because leaving it out would make this file an offscreen-only workaround
-/// rather than the platform half of a GL backend.
+/// [Win32GlSurface.hidden] makes its own window. [Win32GlSurface.forWindow]
+/// adopts one somebody else already made - a real, visible application window
+/// - so that `GlWindowTarget` can swap its back buffer.
+///
+/// Both have to set a pixel format, and **a window's pixel format can only be
+/// set once**. `SetPixelFormat` is documented that way and the failure is
+/// quiet: the second call returns zero and `GetLastError` says
+/// `ERROR_INVALID_PIXEL_FORMAT`, or, on some drivers, it returns success and
+/// changes nothing. A caller that ignores it gets a context created against a
+/// format the window does not have, which draws into nowhere. So
+/// [Win32GlSurface.forWindow] asks `GetPixelFormat` first and adopts an
+/// existing format rather than fighting it, and says in its diagnostics which
+/// of the two happened. The corollary is worth stating: a window that was
+/// given a non-OpenGL pixel format by someone else can never carry a GL
+/// context and must be recreated - that is a caller error this file reports
+/// and cannot fix.
+///
+/// This is also why a GL window must be created with `CS_OWNDC`. Without it
+/// the device context returned by `GetDC` is a temporary from a system cache,
+/// and the pixel format set on one is not the pixel format the next call
+/// returns.
 library;
 
 import 'dart:ffi';
 
 import '../../foundation/diagnostics.dart';
+import '../../foundation/lifecycle.dart';
+import '../../rendering/framebuffer.dart';
 import '../../rendering/gpu/gl/gl_context.dart';
+import '../../rendering/gpu/gl/gl_surface_descriptor.dart';
 import 'win32_api.dart';
 import 'win32_constants.dart';
 import 'win32_structs.dart';
@@ -109,7 +126,7 @@ final class _PixelFormatDescriptor extends Struct {
   external int dwDamageMask;
 }
 
-/// What [Win32GlSurface.hidden] found.
+/// What [Win32GlSurface.hidden] or [Win32GlSurface.forWindow] found.
 final class Win32GlSurfaceAttempt {
   const Win32GlSurfaceAttempt(this.surface, this.diagnostics);
 
@@ -119,27 +136,45 @@ final class Win32GlSurfaceAttempt {
   final List<BackendDiagnostic> diagnostics;
 }
 
-/// A window that exists only to carry an OpenGL pixel format.
-final class Win32GlSurface {
+/// A window carrying an OpenGL pixel format, and the swap chain over it.
+///
+/// Implements [GlSwapChain] so `GlWindowTarget` can present through it without
+/// the renderer ever learning what a window is - the interface is declared in
+/// `lib/src/rendering/gpu/gl/gl_surface_descriptor.dart`, which is allowed to
+/// describe presenting and forbidden to name a window type.
+final class Win32GlSurface implements GlSwapChain {
   Win32GlSurface._({
     required Win32Api api,
     required _Gdi32 gdi,
     required int windowHandle,
     required int deviceContext,
-    required Pointer<Uint16> className,
+    required Pointer<Uint16>? className,
     required this.pixelFormat,
     required this.glLibrary,
+    required bool ownsWindow,
   })  : _api = api,
         _gdi = gdi,
         _windowHandle = windowHandle,
         _deviceContext = deviceContext,
-        _className = className;
+        _className = className,
+        _ownsWindow = ownsWindow;
 
   final Win32Api _api;
   final _Gdi32 _gdi;
   final int _windowHandle;
   final int _deviceContext;
-  final Pointer<Uint16> _className;
+
+  /// Null when the window came from somewhere else: there is no class name to
+  /// release because this file did not register one.
+  final Pointer<Uint16>? _className;
+
+  /// Whether [dispose] destroys the window.
+  ///
+  /// False for [forWindow]. Destroying a window this object merely borrowed
+  /// would take the application's window down with the renderer, which is the
+  /// opposite of the lifetime `renderer.dart` describes - "a target is bound
+  /// to a window and dies with it, while the device outlives both".
+  final bool _ownsWindow;
 
   /// The format index the driver chose. Reported because a machine that picks
   /// a software format is a machine whose "GPU" renderer runs on the CPU.
@@ -153,6 +188,12 @@ final class Win32GlSurface {
   /// An integer on purpose: this is the value that crosses into
   /// `lib/src/rendering`, where naming what it points at is forbidden.
   int get deviceContext => _deviceContext;
+
+  /// The window, as an opaque integer, for the same reason.
+  ///
+  /// Goes into [GlWindowSurfaceDescriptor.nativeHandle], which documents at
+  /// length why it is a number rather than a type.
+  int get windowHandle => _windowHandle;
 
   bool _disposed = false;
 
@@ -196,6 +237,155 @@ final class Win32GlSurface {
       ));
       return Win32GlSurfaceAttempt(null, diagnostics);
     }
+  }
+
+  /// Adopts a window somebody else created, so GL can present into it.
+  ///
+  /// This is the entry point a real application uses:
+  /// `lib/src/backends/win32/win32_window.dart` owns a visible window, and a
+  /// `GlWindowTarget` over it needs exactly three things from this file - a
+  /// device context with an OpenGL pixel format, a GL context on it, and
+  /// something that can call `SwapBuffers`.
+  ///
+  /// [windowHandle] is the window, as an integer. The type is not named even
+  /// here, where naming it would be legal, because the value's only journey is
+  /// from the window that made it to `GetDC`, and giving it a name would
+  /// invite code that assumes more about it than that.
+  ///
+  /// ## The pixel format is set at most once, and possibly not at all
+  ///
+  /// `GetPixelFormat` is asked first. A non-zero answer means the window
+  /// already has one - because a previous surface adopted it, or because
+  /// something else in the process did - and it is adopted as-is: calling
+  /// `SetPixelFormat` a second time on the same window is documented to fail,
+  /// and the failure mode when it is ignored is a context that draws into
+  /// nowhere rather than an error. When the format is adopted rather than
+  /// chosen, a note says so, because a format this file did not pick may not
+  /// be double-buffered and a single-buffered window makes `SwapBuffers` a
+  /// no-op.
+  ///
+  /// Never throws. Every failure is a diagnostic. Does **not** take ownership
+  /// of the window: [dispose] releases the device context and stops there.
+  static Win32GlSurfaceAttempt forWindow(int windowHandle) {
+    final diagnostics = <BackendDiagnostic>[];
+    if (windowHandle == 0) {
+      diagnostics.add(const BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'a null window handle cannot carry a GL surface',
+      ));
+      return Win32GlSurfaceAttempt(null, diagnostics);
+    }
+
+    final load = Win32Api.load();
+    final api = load.api;
+    if (api == null) return Win32GlSurfaceAttempt(null, load.diagnostics);
+
+    final DynamicLibrary glLibrary;
+    final _Gdi32 gdi;
+    try {
+      glLibrary = DynamicLibrary.open('opengl32.dll');
+      gdi = _Gdi32();
+    } on Object catch (error) {
+      diagnostics.add(BackendDiagnostic.missingLibrary(
+        'opengl32.dll / gdi32.dll',
+        detail: '$error',
+      ));
+      return Win32GlSurfaceAttempt(null, diagnostics);
+    }
+
+    try {
+      return _adopt(api, gdi, glLibrary, windowHandle, diagnostics);
+    } on Object catch (error, stack) {
+      diagnostics.add(BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'adopting the window for GL threw',
+        detail: '$error\n$stack',
+      ));
+      return Win32GlSurfaceAttempt(null, diagnostics);
+    }
+  }
+
+  static Win32GlSurfaceAttempt _adopt(
+    Win32Api api,
+    _Gdi32 gdi,
+    DynamicLibrary glLibrary,
+    int windowHandle,
+    List<BackendDiagnostic> diagnostics,
+  ) {
+    if (api.isWindow(windowHandle) == 0) {
+      diagnostics.add(BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'the handle is not a live window',
+        detail: '0x${windowHandle.toUnsigned(64).toRadixString(16)}; it was '
+            'closed, or it never was one',
+      ));
+      return Win32GlSurfaceAttempt(null, diagnostics);
+    }
+
+    final deviceContext = api.getDC(windowHandle);
+    if (deviceContext == 0) {
+      diagnostics.add(BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'the window has no device context',
+        detail: 'GetLastError=${api.getLastError()}',
+      ));
+      return Win32GlSurfaceAttempt(null, diagnostics);
+    }
+
+    final existing = gdi.getPixelFormat(deviceContext);
+    var chosen = existing;
+    if (existing == 0) {
+      final format = api.allocator<_PixelFormatDescriptor>();
+      format.ref
+        ..nSize = sizeOf<_PixelFormatDescriptor>()
+        ..nVersion = 1
+        ..dwFlags = _pfdDrawToWindow | _pfdSupportOpengl | _pfdDoublebuffer
+        ..iPixelType = _pfdTypeRgba
+        ..cColorBits = 32
+        ..cAlphaBits = 8
+        ..cDepthBits = 24
+        ..cStencilBits = 8
+        ..iLayerType = _pfdMainPlane;
+      chosen = gdi.choosePixelFormat(deviceContext, format);
+      final applied =
+          chosen == 0 ? 0 : gdi.setPixelFormat(deviceContext, chosen, format);
+      api.allocator.free(format);
+      if (chosen == 0 || applied == 0) {
+        api.releaseDC(windowHandle, deviceContext);
+        diagnostics.add(BackendDiagnostic(
+          kind: DiagnosticKind.incompatibleDevice,
+          message: chosen == 0
+              ? 'no OpenGL-capable pixel format on this window'
+              : 'the OpenGL pixel format could not be applied to this window',
+          detail: 'GetLastError=${api.getLastError()}. A window can be given a '
+              'pixel format exactly once; if something else in this process '
+              'already gave this one a non-OpenGL format, it has to be '
+              'recreated',
+        ));
+        return Win32GlSurfaceAttempt(null, diagnostics);
+      }
+    } else {
+      diagnostics.add(BackendDiagnostic.note(
+        'the window already had pixel format $existing, which was adopted',
+        detail: 'SetPixelFormat may only be called once per window, so this '
+            'format was not chosen by dart_ui. If it is not double-buffered, '
+            'SwapBuffers will succeed and show nothing',
+      ));
+    }
+
+    return Win32GlSurfaceAttempt(
+      Win32GlSurface._(
+        api: api,
+        gdi: gdi,
+        windowHandle: windowHandle,
+        deviceContext: deviceContext,
+        className: null,
+        pixelFormat: chosen,
+        glLibrary: glLibrary,
+        ownsWindow: false,
+      ),
+      diagnostics,
+    );
   }
 
   static Win32GlSurfaceAttempt _create(
@@ -321,6 +511,7 @@ final class Win32GlSurface {
         className: name,
         pixelFormat: chosen,
         glLibrary: glLibrary,
+        ownsWindow: true,
       ),
       diagnostics,
     );
@@ -337,8 +528,96 @@ final class Win32GlSurface {
         glLibrary: glLibrary,
       );
 
+  /// Describes this window to the renderer, as the thing a target draws into.
+  ///
+  /// The bridge the GL backend was missing: `GlRenderDevice.createTarget`
+  /// takes a `NativeSurfaceDescriptor`, and until [GlWindowSurfaceDescriptor]
+  /// existed the only one in the framework was a block of memory. Everything
+  /// crossing here is either a number or an interface declared in the
+  /// rendering layer, so the layering rule holds.
+  ///
+  /// [generation] is the *window's* token. Pass the one the window already
+  /// owns - `NativeWindow.generation` is driven by one - so that a resize
+  /// invalidates in-flight frames without the window and the renderer having
+  /// to agree on a protocol. A fresh token is created when none is given,
+  /// which is right only for a window nobody else resizes, such as the hidden
+  /// one in a test.
+  ///
+  /// The size is in physical pixels and is the caller's to get right: this
+  /// file could call `GetClientRect`, and deliberately does not, because the
+  /// window owner already tracks its client size and a second source of truth
+  /// for it is how a renderer ends up one resize behind.
+  GlWindowSurfaceDescriptor describeSurface({
+    required int pixelWidth,
+    required int pixelHeight,
+    double scale = 1.0,
+    GenerationToken? generation,
+    PixelFormat format = PixelFormat.rgba8888Premultiplied,
+  }) =>
+      GlWindowSurfaceDescriptor(
+        nativeHandle: _windowHandle,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        swapChain: this,
+        generation: generation ?? GenerationToken(),
+        scale: scale,
+        format: format,
+        description: 'Win32 window, WGL pixel format $pixelFormat',
+      );
+
+  /// False once [dispose] ran or the window went away underneath us.
+  ///
+  /// `IsWindow` is asked rather than assumed because a window can be destroyed
+  /// by its own message loop between two frames, and `SwapBuffers` on a stale
+  /// device context is undefined rather than an error.
+  @override
+  bool get isPresentable => !_disposed && _api.isWindow(_windowHandle) != 0;
+
   /// Presents the back buffer. Only meaningful once something draws into it.
-  bool swapBuffers() => _gdi.swapBuffers(_deviceContext) != 0;
+  ///
+  /// Must be called with the GL context current. `SwapBuffers` is defined
+  /// against the device context passed to it, but the driver flushes the
+  /// calling thread's current context as part of it, and swapping without one
+  /// current presents whatever was in the buffer before.
+  @override
+  bool swapBuffers() {
+    if (_disposed) return false;
+    return _gdi.swapBuffers(_deviceContext) != 0;
+  }
+
+  /// Nothing to do: a window's back buffer is resized by the window system.
+  ///
+  /// The method exists because `GlSwapChain` declares it and because EGL is
+  /// not always as obliging. Returning null unconditionally is the honest
+  /// answer here rather than a stub - there is no WGL call that resizes a back
+  /// buffer, because the back buffer is not a WGL object. It belongs to the
+  /// device context, and the device context belongs to the window.
+  ///
+  /// One consequence worth stating: a swap issued before the window system has
+  /// finished resizing presents at the old size and is not an error anywhere.
+  /// That is what the generation token on the descriptor is for.
+  @override
+  BackendDiagnostic? reconfigure({
+    required int pixelWidth,
+    required int pixelHeight,
+  }) {
+    if (_disposed) {
+      return const BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'this GL surface was disposed and cannot be resized',
+      );
+    }
+    if (_api.isWindow(_windowHandle) == 0) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'the window is gone, so its back buffer cannot follow a '
+            'resize',
+        detail: '0x${_windowHandle.toUnsigned(64).toRadixString(16)} to '
+            '${pixelWidth}x$pixelHeight',
+      );
+    }
+    return null;
+  }
 
   /// Asks the driver to hold the swap for [interval] vertical blanks.
   ///
@@ -346,6 +625,7 @@ final class Win32GlSurface {
   /// desktop session - rather than pretending vsync is on. Requires a context
   /// to be current: `wglSwapIntervalEXT` is an extension entry point like any
   /// other and cannot be resolved without one.
+  @override
   bool setSwapInterval(int interval) {
     final address = _wglProc('wglSwapIntervalEXT');
     if (address == nullptr) return false;
@@ -371,15 +651,24 @@ final class Win32GlSurface {
     }
   }
 
-  /// Releases the window. The class registration is left behind on purpose:
-  /// unregistering it would break any other surface still using it, and a
-  /// process holds at most one such class for its whole life.
+  /// Releases the device context, and the window only if this made it.
+  ///
+  /// The class registration is left behind on purpose: unregistering it would
+  /// break any other surface still using it, and a process holds at most one
+  /// such class for its whole life.
+  ///
+  /// A surface from [forWindow] never destroys the window. It borrowed it, and
+  /// destroying a borrowed window would close the application's own window the
+  /// first time a renderer was torn down and rebuilt - which is exactly what a
+  /// device loss does.
   void dispose() {
     if (_disposed) return;
     _disposed = true;
     _api.releaseDC(_windowHandle, _deviceContext);
+    if (!_ownsWindow) return;
     _api.destroyWindow(_windowHandle);
-    _api.heapRelease(_className);
+    final className = _className;
+    if (className != null) _api.heapRelease(className);
   }
 }
 
@@ -400,6 +689,9 @@ final class _Gdi32 {
         Int32 Function(IntPtr, Int32, Pointer<_PixelFormatDescriptor>),
         int Function(
             int, int, Pointer<_PixelFormatDescriptor>)>('SetPixelFormat');
+    getPixelFormat =
+        _gdi.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+            'GetPixelFormat');
     swapBuffers =
         _gdi.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
             'SwapBuffers');
@@ -414,6 +706,13 @@ final class _Gdi32 {
       choosePixelFormat;
   late final int Function(int, int, Pointer<_PixelFormatDescriptor>)
       setPixelFormat;
+
+  /// The format index already on a device context, or 0 for none.
+  ///
+  /// The guard that makes [Win32GlSurface.forWindow] safe: a window's pixel
+  /// format may only be set once, so this is how a second surface over the
+  /// same window learns to leave it alone.
+  late final int Function(int) getPixelFormat;
   late final int Function(int) swapBuffers;
   late final Pointer<NativeFunction<WndProcNative>> defaultWindowProc;
 }

@@ -51,6 +51,7 @@ final class ThemeData {
     required this.selection,
     this.density = ThemeDensity.comfortable,
     this.highContrast = false,
+    this.reducedMotion = false,
     this.cornerRadius = 3.0,
     this.controlHeight = 28.0,
     this.controlPadding = 8.0,
@@ -80,6 +81,41 @@ final class ThemeData {
   /// because it changes *rules* as well as colours: focus rings widen and
   /// borders stop being optional.
   final bool highContrast;
+
+  /// Whether transitions should jump to their final value instead of animating.
+  ///
+  /// Section 32.4 requires the framework to respect a reduced-motion
+  /// preference, and it is a genuine accessibility need rather than a taste:
+  /// large or repeated motion triggers nausea and migraine in people with
+  /// vestibular disorders, and for them an animated interface is not merely
+  /// busier, it is unusable.
+  ///
+  /// ## What it does, precisely
+  ///
+  /// It shortens transitions to nothing. A [StyleTransitionRunner] constructed
+  /// with `reducedMotion: true` writes no [PropertyPrecedence.animation] value
+  /// at all: the style layer already holds the destination, so leaving that
+  /// slot empty *is* arriving instantly.
+  ///
+  /// ## What it deliberately does not do
+  ///
+  /// **It does not stop the clock.** The [AnimationClock] keeps ticking and
+  /// the frame loop keeps running, for three reasons:
+  ///
+  ///   * reduced motion is a request to remove *decorative* motion, not to
+  ///     freeze the interface. A progress spinner, a caret blink and a video
+  ///     scrubber are all animations, and stopping them would remove
+  ///     information rather than distraction;
+  ///   * the flag can be toggled at runtime, and a stopped clock would have to
+  ///     be restarted with a rebased timestamp - a step that is easy to forget
+  ///     and whose failure looks like a mysteriously frozen window;
+  ///   * an animation that is *running* when the flag flips must still land on
+  ///     its final value. That is a job for the transition runner, which knows
+  ///     what the final value is; a clock cannot know.
+  ///
+  /// Turning the flag off does not replay anything. Motion that was skipped is
+  /// skipped; only subsequent changes animate.
+  final bool reducedMotion;
 
   final double cornerRadius;
   final double controlHeight;
@@ -114,6 +150,7 @@ final class ThemeData {
     ThemeBrightness? brightness,
     ThemeDensity? density,
     bool? highContrast,
+    bool? reducedMotion,
     double? cornerRadius,
     double? controlHeight,
     double? fontSize,
@@ -135,6 +172,7 @@ final class ThemeData {
         selection: selection,
         density: density ?? this.density,
         highContrast: highContrast ?? this.highContrast,
+        reducedMotion: reducedMotion ?? this.reducedMotion,
         cornerRadius: cornerRadius ?? this.cornerRadius,
         controlHeight: controlHeight ?? this.controlHeight,
         controlPadding: controlPadding,
@@ -161,6 +199,7 @@ final class ThemeData {
       other.selection == selection &&
       other.density == density &&
       other.highContrast == highContrast &&
+      other.reducedMotion == reducedMotion &&
       other.cornerRadius == cornerRadius &&
       other.controlHeight == controlHeight &&
       other.controlPadding == controlPadding &&
@@ -176,7 +215,7 @@ final class ThemeData {
         Object.hash(foreground, foregroundSecondary, disabledForeground),
         Object.hash(disabledSurface, focusRing, selection),
         density,
-        highContrast,
+        Object.hash(highContrast, reducedMotion),
         Object.hash(
             cornerRadius, controlHeight, controlPadding, focusRingWidth),
         fontSize,

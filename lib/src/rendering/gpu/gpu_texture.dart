@@ -112,6 +112,13 @@ abstract interface class GpuTextureAllocator {
 }
 
 /// A rectangle reserved inside an atlas, in texels.
+///
+/// It carries its **size**, not only its origin. That is the difference
+/// between a slot that can be given back and one that cannot: [ShelfAtlas.free]
+/// has to know how much space is returning, the mask atlas has to know how
+/// many texels to clear before it fills them, and an upload has to know the
+/// region. See the consolidation record on [ShelfAtlas] for the two-field
+/// version this replaced and why it lost.
 final class AtlasSlot {
   const AtlasSlot(this.x, this.y, this.width, this.height);
 
@@ -124,7 +131,8 @@ final class AtlasSlot {
   String toString() => 'AtlasSlot($x, $y, $width x $height)';
 }
 
-/// A shelf packer: rows of equal height, filled left to right.
+/// A shelf packer: rows of equal height, filled left to right, with a free
+/// list per shelf.
 ///
 /// Chosen over a full skyline or MaxRects packer because the things going in
 /// are glyph and shape coverage masks, whose heights cluster tightly (a line
@@ -132,14 +140,63 @@ final class AtlasSlot {
 /// heights). Shelf packing wastes the difference between the tallest item on
 /// a shelf and the rest, which for that distribution is small, and it costs
 /// one linear scan over a handful of shelves per allocation instead of a
-/// rectangle-set maintenance pass. When a profile ever shows the waste
-/// mattering, the replacement is a drop-in: [allocate] and [reset] are the
-/// whole interface.
+/// rectangle-set maintenance pass.
 ///
-/// Nothing here frees an individual slot. Freeing implies compaction, and
-/// compaction implies moving texels other draw calls already reference. The
-/// atlas is reset wholesale instead - see [GpuMaskAtlas] for the frame-local
-/// policy that makes that acceptable and for what it costs.
+/// ## This is the only shelf packer in the tree
+///
+/// There used to be two - `gpu_shelf_atlas.dart` and this one - and
+/// `doc/architecture/overview.md` records that as debt to close before the
+/// GPU path grows. They differed in five ways, and each one is settled here
+/// rather than left as an alias:
+///
+///   1. **The slot type.** The other one returned `AtlasSlot(x, y)` with no
+///      size. Kept the size: without it nothing can be freed, cleared or
+///      uploaded without the caller re-deriving numbers the packer already
+///      knew, and a caller that re-derives them is a caller that can get them
+///      wrong.
+///   2. **Padding.** The other one had none. Kept [padding], because a mask
+///      sampled with linear filtering instead of nearest would otherwise
+///      bleed into its neighbour - a one-glyph-in-a-thousand ghost edge that
+///      is close to unfindable once shipped.
+///   3. **Shelf choice.** The other one took the *first* shelf that fits.
+///      Kept best fit by shelf height: first fit drops a 4 px mask onto a
+///      40 px shelf and burns 36 rows of that column until the atlas is
+///      reset, which is precisely the waste a persistent atlas accumulates.
+///   4. **Refusal.** The other one compared the *unpadded* size against the
+///      atlas, so an item exactly as wide as the atlas was accepted and then
+///      placed one padding-width past the right edge. Kept the padded
+///      comparison.
+///   5. **Storage.** The other one used three parallel `List<int>`; this one
+///      used one flat `List<int>` of stride three. Both lost: a shelf now
+///      owns a free list, so it is a small object. That costs one object per
+///      *shelf* (a handful per atlas), never one per allocation, and the
+///      allocation path is not the per-primitive path anyway - see
+///      [GpuMaskAtlas], where the per-primitive path is a cache lookup that
+///      never reaches this class.
+///
+/// ## Freeing, and what it does not do
+///
+/// [free] returns a slot's texels to the shelf it came from. The space
+/// becomes either a rollback of the shelf's frontier (when the slot was the
+/// last one on it) or a hole in that shelf's free list, coalesced with any
+/// neighbouring hole, and reusable by a later allocation that is short enough
+/// for the shelf and narrow enough for the hole. A shelf whose last live slot
+/// is freed resets its frontier, and trailing empty shelves are dropped
+/// outright so that draining the atlas returns it to exactly its initial
+/// state.
+///
+/// What [free] deliberately does not do is **move anything**. Texels stay
+/// where they are, because a slot's coordinates are already inside a vertex
+/// buffer somewhere. Repacking is therefore a separate, caller-driven act at
+/// a frame boundary - [reset] plus re-allocation, with the caller copying its
+/// own pixels - and [fragmentation] is the number that says when it is worth
+/// doing. See `GpuMaskAtlas.compact`.
+///
+/// Slots are not generation-tagged. Freeing the same slot twice is caught
+/// while its space is still free, and is **not** caught once that space has
+/// been handed to another allocation; the second free would then silently
+/// hand one region to two owners. The one caller in this repository frees
+/// each slot exactly once, from the single object that owns it.
 final class ShelfAtlas {
   ShelfAtlas({
     required this.width,
@@ -159,18 +216,59 @@ final class ShelfAtlas {
   /// in a thousand and is close to unfindable.
   final int padding;
 
-  /// `y`, `height`, `nextX` per shelf, flat so that a scan touches one array.
-  final List<int> _shelves = <int>[];
+  final List<_Shelf> _shelves = <_Shelf>[];
 
   int _nextShelfY = 0;
+  int _liveCount = 0;
+  int _usedArea = 0;
 
-  int get shelfCount => _shelves.length ~/ 3;
+  int get shelfCount => _shelves.length;
 
-  /// Reserves [w] by [h] texels, or returns null when the atlas is full.
+  /// Slots handed out and not yet freed.
+  int get liveCount => _liveCount;
+
+  /// Texels those slots occupy, **counting their padding**, because padding
+  /// is space no other slot can use.
+  int get usedArea => _usedArea;
+
+  /// Rows the packer has committed to shelves, whether or not they carry
+  /// anything. New shelves can only open below this.
+  int get reservedRows => _nextShelfY;
+
+  /// [reservedRows] as an area. The denominator of [fragmentation].
+  int get reservedArea => _nextShelfY * width;
+
+  /// The fraction of the committed rows that is not carrying a live slot,
+  /// in `0..1`; zero for an atlas with no shelves open.
+  ///
+  /// This counts both kinds of shelf waste - the holes inside a shelf and the
+  /// rows a shelf reserved above its shortest items - because repacking
+  /// recovers both and nothing else does. It deliberately ignores the rows
+  /// below [reservedRows], which are free and need no repack to be used.
+  double get fragmentation {
+    final reserved = reservedArea;
+    if (reserved == 0) return 0;
+    return (reserved - _usedArea) / reserved;
+  }
+
+  /// The largest slot this atlas could ever hold, padding included.
+  ///
+  /// A caller that gets null from [allocate] uses these to tell "full right
+  /// now, try again after a flush" from "will never fit, stop asking".
+  int get maxSlotWidth => width - padding * 2;
+  int get maxSlotHeight => height - padding * 2;
+
+  /// Whether [w] by [h] could fit into an *empty* atlas of this size.
+  bool canEverFit(int w, int h) =>
+      w > 0 && h > 0 && w <= maxSlotWidth && h <= maxSlotHeight;
+
+  /// Reserves [w] by [h] texels, or returns null when the atlas has no room.
   ///
   /// Null rather than an exception: fullness is an expected steady state for
-  /// a caller that knows how to flush and reset, and only a caller that does
-  /// not know how can turn it into an error. See [GpuMaskAtlas.rasterize].
+  /// a caller that knows how to free or flush, and only a caller that does
+  /// not know how can turn it into an error. Null does not say *why* - use
+  /// [canEverFit] for that, and see [MaskRasterStatus] for the three-way
+  /// answer the mask atlas builds on top of the two.
   AtlasSlot? allocate(int w, int h) {
     if (w <= 0 || h <= 0) return null;
     final paddedWidth = w + padding * 2;
@@ -181,30 +279,122 @@ final class ShelfAtlas {
     // onto a 40 px shelf and wastes 36 px of column for the rest of the
     // frame; scanning a handful of shelves to find the tightest one that
     // still fits is cheaper than that waste by orders of magnitude.
-    var bestIndex = -1;
+    //
+    // Within the chosen shelf, best fit again - the tightest *hole* that
+    // holds the item, falling back to the shelf's frontier. Reusing the
+    // tightest hole is what stops a run of small masks from eating the one
+    // wide hole a large mask will need.
+    var bestShelf = -1;
     var bestHeight = 1 << 30;
-    for (var i = 0; i < _shelves.length; i += 3) {
-      final shelfHeight = _shelves[i + 1];
-      if (shelfHeight < paddedHeight || shelfHeight >= bestHeight) continue;
-      if (_shelves[i + 2] + paddedWidth > width) continue;
-      bestIndex = i;
-      bestHeight = shelfHeight;
+    var bestHole = -1;
+    var bestHoleWidth = 0;
+    for (var i = 0; i < _shelves.length; i++) {
+      final shelf = _shelves[i];
+      if (shelf.height < paddedHeight || shelf.height >= bestHeight) continue;
+
+      var hole = -1;
+      var holeWidth = 1 << 30;
+      final holes = shelf.holes;
+      for (var k = 0; k < holes.length; k += 2) {
+        final candidate = holes[k + 1];
+        if (candidate < paddedWidth || candidate >= holeWidth) continue;
+        hole = k;
+        holeWidth = candidate;
+      }
+      if (hole < 0 && shelf.nextX + paddedWidth > width) continue;
+
+      bestShelf = i;
+      bestHeight = shelf.height;
+      bestHole = hole;
+      bestHoleWidth = holeWidth;
     }
 
-    if (bestIndex >= 0) {
-      final x = _shelves[bestIndex + 2];
-      _shelves[bestIndex + 2] = x + paddedWidth;
-      return AtlasSlot(x + padding, _shelves[bestIndex] + padding, w, h);
+    if (bestShelf >= 0) {
+      final shelf = _shelves[bestShelf];
+      final int x;
+      if (bestHole >= 0) {
+        x = shelf.holes[bestHole];
+        final remaining = bestHoleWidth - paddedWidth;
+        if (remaining > 0) {
+          shelf.holes[bestHole] = x + paddedWidth;
+          shelf.holes[bestHole + 1] = remaining;
+        } else {
+          shelf.holes.removeRange(bestHole, bestHole + 2);
+        }
+      } else {
+        x = shelf.nextX;
+        shelf.nextX = x + paddedWidth;
+      }
+      shelf.liveCount++;
+      _liveCount++;
+      _usedArea += paddedWidth * paddedHeight;
+      return AtlasSlot(x + padding, shelf.y + padding, w, h);
     }
 
     if (_nextShelfY + paddedHeight > height) return null;
-    final y = _nextShelfY;
+    final shelf = _Shelf(_nextShelfY, paddedHeight)
+      ..nextX = paddedWidth
+      ..liveCount = 1;
+    _shelves.add(shelf);
     _nextShelfY += paddedHeight;
-    _shelves
-      ..add(y)
-      ..add(paddedHeight)
-      ..add(paddedWidth);
-    return AtlasSlot(padding, y + padding, w, h);
+    _liveCount++;
+    _usedArea += paddedWidth * paddedHeight;
+    return AtlasSlot(padding, shelf.y + padding, w, h);
+  }
+
+  /// Returns [slot]'s texels, padding included, to the shelf they came from.
+  ///
+  /// Throws rather than shrugging when [slot] is not a live allocation of
+  /// this atlas: a free that lands on the wrong shelf, or a second free of
+  /// the same slot, ends with two masks writing the same texels, and that
+  /// surfaces as one shape wearing another's coverage - the hardest class of
+  /// rendering bug to trace back to its cause. Section 6.6: explicit failure,
+  /// never silent.
+  void free(AtlasSlot slot) {
+    final x = slot.x - padding;
+    final y = slot.y - padding;
+    final paddedWidth = slot.width + padding * 2;
+    final paddedHeight = slot.height + padding * 2;
+
+    final shelf = _shelfAt(y);
+    if (shelf == null ||
+        paddedHeight > shelf.height ||
+        x < 0 ||
+        x + paddedWidth > shelf.nextX) {
+      throw ArgumentError.value(
+        slot,
+        'slot',
+        'not a live allocation of this ${width}x$height atlas',
+      );
+    }
+    final holes = shelf.holes;
+    for (var k = 0; k < holes.length; k += 2) {
+      if (x < holes[k] + holes[k + 1] && holes[k] < x + paddedWidth) {
+        throw ArgumentError.value(
+          slot,
+          'slot',
+          'already free; freeing it twice would hand these texels to two '
+              'masks at once',
+        );
+      }
+    }
+
+    shelf.liveCount--;
+    _liveCount--;
+    _usedArea -= paddedWidth * paddedHeight;
+    _addHole(shelf, x, paddedWidth);
+
+    if (shelf.liveCount == 0) {
+      shelf.nextX = 0;
+      shelf.holes.clear();
+      // Trailing empty shelves are removed, not kept as empty rows: a
+      // drained atlas must be indistinguishable from a fresh one, or a caller
+      // that frees everything still cannot allocate a full-height item.
+      while (_shelves.isNotEmpty && _shelves.last.liveCount == 0) {
+        _nextShelfY = _shelves.last.y;
+        _shelves.removeLast();
+      }
+    }
   }
 
   /// Forgets every allocation. The texels are not cleared - the caller that
@@ -213,5 +403,77 @@ final class ShelfAtlas {
   void reset() {
     _shelves.clear();
     _nextShelfY = 0;
+    _liveCount = 0;
+    _usedArea = 0;
   }
+
+  @override
+  String toString() => 'ShelfAtlas(${width}x$height, pad $padding, '
+      '${_shelves.length} shelves, $_liveCount live, '
+      'fragmentation ${(fragmentation * 100).round()}%)';
+
+  _Shelf? _shelfAt(int y) {
+    for (var i = 0; i < _shelves.length; i++) {
+      if (_shelves[i].y == y) return _shelves[i];
+    }
+    return null;
+  }
+
+  /// Records `[x, x + w)` as free on [shelf], merging it with whatever it
+  /// touches.
+  ///
+  /// Merging is not an optimisation here, it is the difference between a
+  /// shelf that can take a wide mask again and one that only ever fits the
+  /// exact sizes it already held: two adjacent 10-texel holes must be able to
+  /// hold a 20-texel item, or a scrolling list of same-sized rows would
+  /// fragment the atlas into unusable stripes within a second.
+  void _addHole(_Shelf shelf, int x, int w) {
+    final holes = shelf.holes;
+    var i = 0;
+    while (i < holes.length && holes[i] < x) {
+      i += 2;
+    }
+    holes
+      ..insert(i, w)
+      ..insert(i, x);
+
+    if (i + 2 < holes.length && holes[i] + holes[i + 1] == holes[i + 2]) {
+      holes[i + 1] += holes[i + 3];
+      holes.removeRange(i + 2, i + 4);
+    }
+    if (i >= 2 && holes[i - 2] + holes[i - 1] == holes[i]) {
+      holes[i - 1] += holes[i + 1];
+      holes.removeRange(i, i + 2);
+      i -= 2;
+    }
+    // A hole that reaches the frontier is not a hole, it is unused shelf.
+    // Rolling the frontier back is what lets a shelf that filled and drained
+    // take a full-width item again.
+    if (holes[i] + holes[i + 1] == shelf.nextX) {
+      shelf.nextX = holes[i];
+      holes.removeRange(i, i + 2);
+    }
+  }
+}
+
+/// One row of the packer: a fixed height, a frontier, and its holes.
+final class _Shelf {
+  _Shelf(this.y, this.height);
+
+  final int y;
+
+  /// Padded height of the first item placed here; every later item on this
+  /// shelf is at most this tall, and the difference is waste that
+  /// `ShelfAtlas.fragmentation` counts.
+  final int height;
+
+  /// First x no allocation has ever reached on this shelf.
+  int nextX = 0;
+
+  int liveCount = 0;
+
+  /// `x, width` pairs of freed runs below [nextX], sorted by x, never
+  /// adjacent to each other (see `ShelfAtlas._addHole`) and never touching
+  /// [nextX].
+  final List<int> holes = <int>[];
 }

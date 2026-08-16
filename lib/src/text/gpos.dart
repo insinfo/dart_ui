@@ -21,22 +21,23 @@
 ///
 /// * **Type 1**, single adjustment, both formats.
 /// * **Type 2**, pair adjustment, both formats - modern kerning.
+/// * **Type 3**, cursive attachment - the exit of one glyph joined to the
+///   entry of the next, which is how Arabic and Nastaliq keep a connected
+///   baseline through a word.
 /// * **Type 4**, mark-to-base - an accent onto a letter.
+/// * **Type 5**, mark-to-ligature - a mark onto one *component* of a ligature,
+///   which is what keeps a vowel sign over the half of a lam-alef it belongs
+///   to instead of over the middle of the pair.
 /// * **Type 6**, mark-to-mark - an accent onto an accent, which is what makes
 ///   a stack of two come out stacked instead of superimposed.
 /// * **Types 7 and 8**, context and chained context positioning.
 /// * **Type 9**, extension, for the same reason `GSUB` needs type 7.
 ///
-/// Not implemented, and each absence is a script rather than a detail:
-///
-/// * **Type 3**, cursive attachment. Joins the exit of one glyph to the entry
-///   of the next, which is how Arabic and Nastaliq keep a connected baseline.
-///   A font that needs it needs an Arabic shaper, which does not exist here.
-/// * **Type 5**, mark-to-ligature. Places a mark on one *component* of a
-///   ligature, which requires the shaper to remember which component of which
-///   ligature each mark belonged to - state that ligature substitution would
-///   have to record. Marks on ligatures currently fall through to
-///   mark-to-base, which attaches them to the ligature as a whole.
+/// All eight defined types are implemented. What is *not* here is the shaping
+/// that surrounds them: no Arabic joining pass decides which glyphs a cursive
+/// lookup will see, and no bidi or script itemization runs above this. The
+/// tables do what the font says; choosing the glyphs to say it about is
+/// section 30's job.
 ///
 /// ## Device tables are read past, not applied
 ///
@@ -93,19 +94,41 @@ final class GposTable {
   /// [buffer] must already hold each glyph's unadjusted advance; `GPOS` states
   /// adjustments, not absolutes, and a subtable that only sets an advance for
   /// the pairs it knows about would otherwise zero every other glyph.
+  ///
+  /// [rightToLeft] is the direction of the **run**, and exactly one subtable
+  /// type reads it: cursive attachment, where it decides which of the two
+  /// joined glyphs keeps its advance and which gives it up. It is *not* the
+  /// same switch as a lookup's own `RIGHT_TO_LEFT` flag - see [_cursive],
+  /// which uses both, for different decisions.
+  ///
+  /// Stated aloud because it is a live gap: `shaper.dart` does not pass it
+  /// today, so a right-to-left run is currently joined as though it were
+  /// left-to-right. Nothing shows it yet - a cursive font needs the Arabic
+  /// joining pass that section 30 owns before any run reaches this with
+  /// cursive lookups selected - and the day it does, this is the parameter
+  /// that has to be threaded rather than a rule that has to be rewritten.
   void apply(
     GlyphBuffer buffer, {
     required Set<String> features,
     String script = 'latn',
     String? language,
     GdefTable? gdef,
+    bool rightToLeft = false,
   }) {
+    // Held for the duration of one call rather than threaded through the ten
+    // methods between here and [_cursive]. A table is shared between runs but
+    // `apply` is not re-entrant - it neither yields nor calls back out - so
+    // "the direction of the run being positioned" is well defined throughout.
+    _rightToLeft = rightToLeft;
     final List<int> lookups =
         header.lookupsFor(features, script: script, language: language);
     for (final int index in lookups) {
       _runLookup(index, buffer, gdef);
     }
   }
+
+  /// The direction of the run [apply] is currently positioning.
+  bool _rightToLeft = false;
 
   void _runLookup(int lookupIndex, GlyphBuffer buffer, GdefTable? gdef) {
     final Lookup lookup = header.lookupList.lookups[lookupIndex];
@@ -158,11 +181,15 @@ final class GposTable {
   Coverage? _readLeadingCoverage(int type, int offset) {
     final FontReader reader = _data.readerAt(offset, table: 'GPOS');
     switch (type) {
-      // Types 4 and 6 lead with the *mark* coverage, which is the one the
-      // cursor sits on when they apply.
+      // Types 4, 5 and 6 lead with the *mark* coverage, which is the one the
+      // cursor sits on when they apply; type 3 leads with the coverage of the
+      // glyph whose entry anchor is being sought, which is likewise the glyph
+      // under the cursor.
       case 1:
       case 2:
+      case 3:
       case 4:
+      case 5:
       case 6:
         reader.skip(2); // positioning format
         return _cache.coverage(offset + reader.readUint16());
@@ -209,8 +236,12 @@ final class GposTable {
         return _single(offset, buffer, index);
       case 2:
         return _pair(offset, filter, buffer, index);
+      case 3:
+        return _cursive(offset, lookup, filter, buffer, index);
       case 4:
         return _markToBase(offset, buffer, index, gdef);
+      case 5:
+        return _markToLigature(offset, buffer, index, gdef);
       case 6:
         return _markToMark(offset, lookup, buffer, index, gdef);
       case 7:
@@ -220,8 +251,8 @@ final class GposTable {
       case 9:
         return _extension(offset, lookup, filter, buffer, index, gdef, depth);
       default:
-        // Types 3 and 5, and anything a later revision adds. The spec's own
-        // instruction for an unrecognised type is to skip it.
+        // Anything a later revision adds. The spec's own instruction for an
+        // unrecognised type is to skip it.
         return -1;
     }
   }
@@ -365,6 +396,126 @@ final class GposTable {
     }
   }
 
+  /// Type 3: the exit of one glyph joined to the entry of the next.
+  ///
+  /// A cursive font does not draw letters that happen to touch; it draws
+  /// letters with a declared *exit* point where the stroke leaves and a
+  /// declared *entry* point where the next stroke arrives, and this subtable
+  /// is the instruction to make those two points coincide. Without it, Arabic
+  /// renders as a row of disconnected letterforms sitting on the baseline -
+  /// legible to nobody, and the more so in Nastaliq, where the whole word
+  /// cascades downwards and every letter's height depends on the one after.
+  ///
+  /// The cursor sits on the *second* glyph of the pair, which is the one whose
+  /// entry anchor is wanted, and the first is found by stepping backwards over
+  /// whatever the lookup's flags hide - marks, usually, since a vowel sign
+  /// between two letters must not break the join.
+  ///
+  /// ## Two directions, and they are not the same thing
+  ///
+  /// **The run's direction** ([apply]'s `rightToLeft`) decides where the
+  /// in-stream correction goes. Joining two glyphs means one of them loses the
+  /// gap between its origin and its anchor, and it has to be the one on the
+  /// trailing side of the pen or the pair moves as a whole: in a
+  /// left-to-right run the first glyph's advance is cut back to its exit
+  /// anchor and the second is pulled back onto it; in a right-to-left run it
+  /// is the mirror image.
+  ///
+  /// **The lookup's `RIGHT_TO_LEFT` flag** decides something else entirely:
+  /// which of the two glyphs *moves vertically* to meet the other. With the
+  /// flag set the earlier glyph is the child and is displaced onto the later
+  /// one's entry height; with it clear - the ordinary case - the later glyph
+  /// is the child and rises or falls onto the earlier one's exit height. The
+  /// flag is a property of the lookup, written by the font's designer to say
+  /// which end of a joined run is the fixed one, and a font may perfectly well
+  /// set it in a left-to-right run or leave it clear in Arabic. Treating the
+  /// flag as "this is Arabic" and using the paragraph direction instead
+  /// inverts the connection on exactly the fonts that bothered to say.
+  ///
+  /// The chain that results - child pointing at parent, letter after letter -
+  /// is recorded rather than applied, because the parent may still move; see
+  /// [GlyphBuffer.attachCursive].
+  int _cursive(
+    int offset,
+    Lookup lookup,
+    GlyphFilter filter,
+    GlyphBuffer buffer,
+    int index,
+  ) {
+    final FontReader reader = _data.readerAt(offset, table: 'GPOS');
+    final int format = reader.readUint16();
+    if (format != 1) {
+      throw FontFormatException(
+        'cursive attachment format $format is not defined',
+        offset: offset,
+        table: 'GPOS',
+      );
+    }
+    final int coverageOffset = reader.readUint16();
+    final int recordCount = reader.readUint16();
+    final Coverage coverage = _cache.coverage(offset + coverageOffset);
+
+    final int entryIndex = coverage.indexOf(buffer.glyphs[index]);
+    if (entryIndex < 0 || entryIndex >= recordCount) return -1;
+    // A record with no entry anchor is a glyph that nothing may join *to* -
+    // an isolated or final form. Legal, common, and not an error.
+    final int entryOffset = _entryExitAnchor(offset, entryIndex, entry: true);
+    if (entryOffset == 0) return -1;
+
+    final int previous = buffer.previousVisible(index - 1, filter);
+    if (previous < 0) return -1;
+    final int exitIndex = coverage.indexOf(buffer.glyphs[previous]);
+    if (exitIndex < 0 || exitIndex >= recordCount) return -1;
+    // Likewise: no exit anchor means the previous glyph does not join
+    // forwards, so the pair simply is not joined.
+    final int exitOffset = _entryExitAnchor(offset, exitIndex, entry: false);
+    if (exitOffset == 0) return -1;
+
+    final _Anchor entry = _anchor(offset + entryOffset);
+    final _Anchor exit = _anchor(offset + exitOffset);
+
+    // In-stream: whichever glyph trails the pen gives up the distance between
+    // its origin and its anchor. Note the assignment rather than an addition -
+    // the joined advance *is* the anchor's abscissa, not an adjustment to
+    // whatever the advance was.
+    if (_rightToLeft) {
+      final double back = exit.x + buffer.xOffsets[previous];
+      buffer.xAdvances[previous] -= back;
+      buffer.xOffsets[previous] -= back;
+      buffer.xAdvances[index] = entry.x + buffer.xOffsets[index];
+    } else {
+      buffer.xAdvances[previous] = exit.x + buffer.xOffsets[previous];
+      final double back = entry.x + buffer.xOffsets[index];
+      buffer.xAdvances[index] -= back;
+      buffer.xOffsets[index] -= back;
+    }
+
+    // Cross-stream: one of the two is the child and takes the whole vertical
+    // difference. The subtraction is written from the child's point of view,
+    // which is why swapping the roles also flips its sign.
+    int child = previous;
+    int parent = index;
+    double cross = (entry.y - exit.y).toDouble();
+    if (!lookup.rightToLeft) {
+      child = index;
+      parent = previous;
+      cross = -cross;
+    }
+    buffer.attachCursive(child, parent, cross);
+    return index + 1;
+  }
+
+  /// The entry or exit anchor offset of one `EntryExitRecord`.
+  ///
+  /// The record array follows the subtable's three header words, and each
+  /// record is two offsets - entry then exit - relative to the subtable, not
+  /// to the array. Zero means the record has no anchor of that kind.
+  int _entryExitAnchor(int offset, int recordIndex, {required bool entry}) =>
+      _data
+          .readerAt(offset + 6 + recordIndex * 4 + (entry ? 0 : 2),
+              table: 'GPOS')
+          .readUint16();
+
   /// Type 4: a mark's anchor onto a base glyph's anchor.
   ///
   /// The base is found by searching backwards for the nearest glyph that is
@@ -419,6 +570,108 @@ final class GposTable {
     if (baseAnchor == null) return -1;
 
     _attach(buffer, index, base, baseAnchor, markAnchor);
+    return index + 1;
+  }
+
+  /// Type 5: a mark's anchor onto one component of a ligature.
+  ///
+  /// The same shape as mark-to-base with one extra question: *which part* of
+  /// the ligature. An "fi" is one glyph, but a font that lets you put a dot
+  /// under the "i" of it has to be able to say "under the second half", and a
+  /// lam-alef with a fatha over the lam is the case that makes this a
+  /// correctness bug rather than a refinement - attached to the ligature as a
+  /// whole, the vowel lands over the wrong letter.
+  ///
+  /// The answer cannot come from this subtable, because by the time it runs
+  /// the components no longer exist. It comes from [GlyphBuffer.ligatureIds]
+  /// and [GlyphBuffer.ligatureComponents], which ligature substitution wrote
+  /// while it still knew - see [GlyphBuffer.ligate].
+  ///
+  /// Two fallbacks, both named rather than silent:
+  ///
+  /// * A mark that carries no component number, or one belonging to a
+  ///   *different* ligature, is attached to the **last** component. That is
+  ///   the spec's own recommendation and HarfBuzz's behaviour: a mark that
+  ///   trails a ligature it was never part of is being attached at the end of
+  ///   it, which is where a trailing mark visually belongs.
+  /// * A component whose anchor for this mark class is null has no attachment
+  ///   point, so nothing is attached. Null anchors are ordinary in this table
+  ///   - most components accept only some classes of mark - and they are the
+  ///   reason a row is a list of offsets rather than a list of anchors.
+  int _markToLigature(
+    int offset,
+    GlyphBuffer buffer,
+    int index,
+    GdefTable? gdef,
+  ) {
+    final FontReader reader = _data.readerAt(offset, table: 'GPOS');
+    final int format = reader.readUint16();
+    if (format != 1) {
+      throw FontFormatException(
+        'mark-to-ligature format $format is not defined',
+        offset: offset,
+        table: 'GPOS',
+      );
+    }
+    final int markCoverageOffset = reader.readUint16();
+    final int ligatureCoverageOffset = reader.readUint16();
+    final int markClassCount = reader.readUint16();
+    final int markArrayOffset = reader.readUint16();
+    final int ligatureArrayOffset = reader.readUint16();
+
+    final int markIndex = _cache
+        .coverage(offset + markCoverageOffset)
+        .indexOf(buffer.glyphs[index]);
+    if (markIndex < 0) return -1;
+
+    // The same backwards search mark-to-base makes, and for the same reason:
+    // "the thing this mark belongs to" is the nearest non-mark, whatever the
+    // lookup's own flags say about what it steps over.
+    final int ligature =
+        buffer.previousVisible(index - 1, GlyphFilter.marksOnly.withGdef(gdef));
+    if (ligature < 0) return -1;
+    final int ligatureIndex = _cache
+        .coverage(offset + ligatureCoverageOffset)
+        .indexOf(buffer.glyphs[ligature]);
+    if (ligatureIndex < 0) return -1;
+
+    final (int markClass, _Anchor? markAnchor) =
+        _markRecord(offset + markArrayOffset, markIndex);
+    if (markAnchor == null || markClass >= markClassCount) return -1;
+
+    final int arrayOffset = offset + ligatureArrayOffset;
+    final FontReader array = _data.readerAt(arrayOffset, table: 'GPOS');
+    final int ligatureCount = array.readUint16();
+    if (ligatureIndex >= ligatureCount) return -1;
+    array.skip(ligatureIndex * 2);
+    final int attachOffset = array.readUint16();
+    if (attachOffset == 0) return -1;
+
+    final int attachAt = arrayOffset + attachOffset;
+    final FontReader attach = _data.readerAt(attachAt, table: 'GPOS');
+    final int componentCount = attach.readUint16();
+    if (componentCount == 0) return -1;
+
+    final int ligatureId = buffer.ligatureIds[ligature];
+    final int markComponent = buffer.ligatureComponents[index];
+    int component = componentCount - 1;
+    if (ligatureId != 0 &&
+        ligatureId == buffer.ligatureIds[index] &&
+        markComponent > 0 &&
+        markComponent <= componentCount) {
+      // One-based in the buffer, zero-based as a row index. A component number
+      // past the end of the table - a font whose ligature has more components
+      // than it published anchors for - falls back to the last row rather than
+      // reading past it.
+      component = markComponent - 1;
+    }
+
+    attach.skip((component * markClassCount + markClass) * 2);
+    final int anchorOffset = attach.readUint16();
+    if (anchorOffset == 0) return -1;
+
+    _attach(
+        buffer, index, ligature, _anchor(attachAt + anchorOffset), markAnchor);
     return index + 1;
   }
 

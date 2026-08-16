@@ -19,6 +19,7 @@ import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
 import 'package:dart_ui/src/rendering/text/text_painter.dart';
+import 'package:dart_ui/src/text/paragraph.dart';
 import 'package:dart_ui/src/text/shaper.dart';
 import 'package:dart_ui/src/text/typeface.dart';
 import 'package:test/test.dart';
@@ -332,5 +333,174 @@ void main() {
 
     expect(run.glyphIds, isA<Int32List>());
     expect(run.positions, isA<Float32List>());
+  });
+
+  group('the default shaper', () {
+    test('is the OpenType one, so GSUB and GPOS actually run', () {
+      // The line this file exists to guard. LatinShaper applies neither table,
+      // so a decomposed accent is drawn at its nominal advance - which for a
+      // zero-advance combining mark is the left edge of the letter it belongs
+      // to - and no ligature ever forms.
+      expect(TextPainter().shaper, isA<OpenTypeShaper>());
+    });
+
+    test('a decomposed accent is positioned over its base, not at its left',
+        () {
+      final ScaledTypeface font = dejaVu.atSize(64);
+      final GlyphRun positioned = TextPainter().shaper.shape('á', font);
+      final GlyphRun unpositioned = LatinShaper().shape('á', font);
+
+      expect(positioned.length, 2);
+      expect(unpositioned.xOf(1),
+          closeTo(font.advanceOf(positioned.glyphIds[0]), 1.0));
+      expect(positioned.xOf(1), isNot(closeTo(unpositioned.xOf(1), 0.5)));
+      expect(positioned.xOf(1), greaterThan(0.0));
+    });
+
+    test('an explicit shaper is still honoured, for both APIs', () {
+      final Shaper latin = LatinShaper();
+      final TextPainter painter = TextPainter(shaper: latin);
+      expect(identical(painter.shaper, latin), isTrue);
+      expect(identical(painter.paragraphs.shaper, latin), isTrue);
+    });
+  });
+
+  group('paragraphs reach the framebuffer', () {
+    test('a wrapped paragraph draws each line at its own baseline', () async {
+      // Ahem at 20 px: every glyph is a 20 px box, 16 px above the baseline and
+      // 4 below, so a two-line paragraph drawn with its top-left at (0, 0) inks
+      // exactly [0, 40) x [0, 20) on line 0 and [0, 20) x [20, 40) on line 1.
+      final TextPainter painter = TextPainter();
+      final Paragraph paragraph =
+          painter.layout('aa b', ahem.atSize(20), maxWidth: 45);
+      expect(paragraph.lines.length, 2);
+      expect(paragraph.lines[0].width, 40.0);
+      expect(paragraph.lines[1].top, 20.0);
+
+      final DisplayList list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
+      painter.paintParagraph(list, paragraph, Offset.zero, paint);
+
+      final Framebuffer frame = await _render(list, const Size(64, 64));
+      bool isInk(int x, int y) => frame.pixels[frame.offsetOf(x, y)] < 128;
+
+      expect(isInk(1, 1), isTrue, reason: 'top-left of line 0');
+      expect(isInk(39, 19), isTrue, reason: 'bottom-right of line 0');
+      expect(isInk(1, 21), isTrue, reason: 'top-left of line 1');
+      expect(isInk(21, 21), isFalse, reason: 'line 1 is only one glyph wide');
+      expect(isInk(41, 1), isFalse, reason: 'nothing past line 0');
+    });
+
+    test('the top-left offset moves the whole paragraph', () async {
+      final TextPainter painter = TextPainter();
+      final Paragraph paragraph = painter.layout('X', ahem.atSize(20));
+
+      final DisplayList list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
+      painter.paintParagraph(list, paragraph, const Offset(10, 10), paint);
+
+      final Framebuffer frame = await _render(list, const Size(64, 64));
+      expect(frame.pixels[frame.offsetOf(10, 10)], lessThan(128));
+      expect(frame.pixels[frame.offsetOf(9, 10)], greaterThan(128));
+      expect(frame.pixels[frame.offsetOf(10, 9)], greaterThan(128));
+      expect(frame.pixels[frame.offsetOf(29, 29)], lessThan(128));
+      expect(frame.pixels[frame.offsetOf(30, 30)], greaterThan(128));
+    });
+
+    test('alignment moves the ink, not only the metrics', () async {
+      final TextPainter painter = TextPainter();
+      final Paragraph paragraph = painter.layout(
+        'X',
+        ahem.atSize(20),
+        maxWidth: 60,
+        style: const ParagraphStyle(align: TextAlign.right),
+      );
+      expect(paragraph.lines.single.left, 40.0);
+
+      final DisplayList list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
+      painter.paintParagraph(list, paragraph, Offset.zero, paint);
+
+      final Framebuffer frame = await _render(list, const Size(64, 32));
+      expect(frame.pixels[frame.offsetOf(41, 5)], lessThan(128));
+      expect(frame.pixels[frame.offsetOf(39, 5)], greaterThan(128));
+    });
+
+    test('a right-to-left run draws in visual order', () async {
+      // Two Hebrew letters in Ahem, which has no Hebrew glyphs, would be two
+      // identical boxes and prove nothing - so this checks the *positions* the
+      // painter emitted instead: the logically first character is drawn on the
+      // right.
+      final TextPainter painter = TextPainter();
+      final Paragraph paragraph = painter.layout('אב', dejaVu.atSize(20));
+      final GlyphSpan span = paragraph.lines.single.spans.single;
+
+      expect(span.direction, TextDirection.rightToLeft);
+      expect(span.glyphs.clusters[0], 1, reason: 'rightmost glyph is offset 1');
+      expect(span.glyphs.xOf(0), 0.0);
+      expect(span.edgeOf(0), closeTo(span.right, 1e-9));
+      expect(span.edgeOf(2), closeTo(span.left, 1e-9));
+    });
+
+    test('an empty paragraph emits no commands', () async {
+      final TextPainter painter = TextPainter();
+      final DisplayList list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF000000);
+      painter.paintParagraph(
+        list,
+        painter.layout('', ahem.atSize(20)),
+        Offset.zero,
+        paint,
+      );
+      expect(list.commandCount, 0);
+    });
+
+    test('drawing twice does not re-shape', () {
+      // The point of laying out once: the spans hold their own copies of the
+      // glyphs, so a scrolling list that redraws a line it already measured
+      // pays for encoding and nothing else.
+      final TextPainter painter = TextPainter();
+      final Paragraph first = painter.layout('hello', roboto.atSize(16));
+      final Paragraph second = painter.layout('hello', roboto.atSize(16));
+      expect(identical(first, second), isTrue);
+      expect(painter.paragraphs.hitCount, 1);
+    });
+  });
+
+  group('paragraph measurement', () {
+    test('measureParagraph reports the longest line, not the width asked for',
+        () {
+      final TextPainter painter = TextPainter();
+      final Size size =
+          painter.measureParagraph('aa bb', ahem.atSize(10), maxWidth: 35);
+      expect(size.width, 20.0);
+      expect(size.height, 20.0);
+    });
+
+    test('the measured box is the box the ink fits in', () async {
+      final TextPainter painter = TextPainter();
+      final Paragraph paragraph =
+          painter.layout('aa bb', ahem.atSize(10), maxWidth: 35);
+      final Size size = paragraph.size;
+
+      final DisplayList list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
+      painter.paintParagraph(list, paragraph, Offset.zero, paint);
+      final Framebuffer frame = await _render(list, const Size(64, 64));
+
+      int rightmost = -1;
+      int lowest = -1;
+      for (int y = 0; y < frame.height; y++) {
+        for (int x = 0; x < frame.width; x++) {
+          if (frame.pixels[frame.offsetOf(x, y)] < 128) {
+            if (x > rightmost) rightmost = x;
+            if (y > lowest) lowest = y;
+          }
+        }
+      }
+      expect(rightmost, lessThan(size.width));
+      expect(lowest, lessThan(size.height));
+      expect(rightmost, greaterThan(size.width - 2));
+    });
   });
 }

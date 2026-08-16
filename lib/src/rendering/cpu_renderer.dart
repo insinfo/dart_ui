@@ -38,6 +38,245 @@ import 'replay/display_list_player.dart';
 import 'text/glyph_cache.dart';
 import 'text/glyph_raster.dart';
 
+/// How deep `saveLayer` may nest on the CPU before it is refused by name.
+///
+/// Eight, and the same number `GpuLayerStack.kDefaultMaxLayerDepth` uses. The
+/// two limits do not have to agree - the CPU's cost per level is a
+/// `Uint8List`, not video memory, and a CPU layer's buffer is released at
+/// [RasterSink.endLayer] rather than at the end of the frame - but they are
+/// kept equal on purpose: a scene that renders on one backend and is refused
+/// by the other is the worst kind of divergence, because it does not look like
+/// a rendering difference at all.
+///
+/// No real interface nests opacity more than three or four deep. A dialog
+/// fading inside a page fading inside a transition is three; eight leaves
+/// headroom over the deepest legitimate case and still catches the runaway - a
+/// `saveLayer` inside a build loop - on the frame it starts.
+const int kMaxCpuLayerDepth = 8;
+
+/// Raised when layers nest deeper than [kMaxCpuLayerDepth].
+///
+/// A named error rather than an assertion or a silent clamp, per section 6.6,
+/// and the counterpart of `GpuLayerDepthExceededError`. Without it a runaway
+/// tree has three ways to end and all of them are worse: the Dart stack
+/// overflows inside the player, one buffer per level is allocated until the
+/// process runs out of memory, or - if the limit were a silent clamp - a
+/// layer's contents are drawn into its grandparent at the wrong opacity with
+/// no diagnostic anywhere.
+final class CpuLayerDepthExceededError extends Error {
+  CpuLayerDepthExceededError({
+    required this.depth,
+    required this.maxDepth,
+  });
+
+  /// Named in the message, per section 6.6.
+  String get backendName => 'cpu';
+
+  /// The depth the caller tried to reach - always [maxDepth] + 1.
+  final int depth;
+
+  final int maxDepth;
+
+  @override
+  String toString() => 'CpuLayerDepthExceededError: $backendName refuses to '
+      'open layer $depth; the limit is $maxDepth nested layers. Every open '
+      'level holds its own offscreen buffer, so the limit bounds memory rather '
+      'than taste. A tree this deep is almost always a saveLayer inside a '
+      'loop; a legitimate one raises the limit and pays for it.';
+}
+
+/// One open layer on the CPU sink's stack.
+///
+/// A class rather than parallel lists because a layer is opened and closed
+/// once per `saveLayer`, not once per primitive: there is no hot path here to
+/// keep an allocation off. The fields are what [_RasterizerSink.endLayer]
+/// needs to put the pixels back where they came from, and they are captured at
+/// push time rather than re-derived at pop time - re-deriving the geometry is
+/// how a composite ends up half a pixel from the contents it holds.
+final class _CpuLayer {
+  /// An empty or flattened layer: a clip on the parent's own target, and
+  /// nothing else. The two cases are indistinguishable from here on, because
+  /// an empty layer is a flattened one whose clip admits nothing.
+  _CpuLayer.flattened({
+    required this.drewBefore,
+    required this.originX,
+    required this.originY,
+  })  : deviceBounds = Rect.zero,
+        clip = Rect.zero,
+        alpha = 0xFF,
+        blendMode = CpuBlendMode.srcOver,
+        buffer = null,
+        poolSlot = -1,
+        parent = null;
+
+  _CpuLayer.offscreen({
+    required this.deviceBounds,
+    required this.clip,
+    required this.alpha,
+    required this.blendMode,
+    required this.buffer,
+    required this.poolSlot,
+    required this.parent,
+    required this.drewBefore,
+    required this.originX,
+    required this.originY,
+  });
+
+  /// The layer's pixels in device space, snapped outward to whole pixels.
+  final Rect deviceBounds;
+
+  /// The clip in force when the layer opened, in device space. The composite
+  /// obeys it: the contents were already clipped, but the composite is drawn
+  /// in the parent's space.
+  final Rect clip;
+
+  final int alpha;
+  final CpuBlendMode blendMode;
+
+  /// Null for a flattened layer, which has no buffer to composite.
+  final Framebuffer? buffer;
+
+  /// Slot in [CpuLayerBufferPool], or -1 when the buffer was allocated privately
+  /// because the slot was already in use.
+  final int poolSlot;
+
+  /// The rasteriser drawing resumes into. Null for a flattened layer, which
+  /// never left it.
+  final CpuRasterizer? parent;
+
+  /// Whether anything had been drawn into the *parent* before this layer
+  /// opened, so closing it restores the parent's answer rather than inheriting
+  /// the child's.
+  final bool drewBefore;
+
+  /// The origin outside this layer, restored on pop.
+  final double originX;
+  final double originY;
+
+  bool get isOffscreen => buffer != null;
+}
+
+/// The backing stores layer buffers are cut out of, reused across layers and
+/// across frames.
+///
+/// ## The policy, stated
+///
+/// One slot per *offscreen nesting depth*, grown on demand and never shrunk,
+/// shared by every CPU surface in the isolate. A layer at depth `d` takes slot
+/// `d` and gives it back at `endLayer`.
+///
+/// That is a different policy from `gl_framebuffer_pool.dart`'s, and the
+/// difference is forced rather than chosen. A GPU layer's target has to live
+/// until the frame is *submitted*, because the composite quad has only been
+/// recorded when the layer closes - so peak GPU layer memory is proportional
+/// to the number of layers in a frame, and a pool keyed by size class is the
+/// only way to make a hundred sibling layers share anything. A CPU layer is
+/// composited *immediately* at `endLayer`, so its buffer is free one statement
+/// later: a hundred sibling layers reuse one slot, and only nesting costs a
+/// second. Keying by depth rather than by size is therefore both simpler and
+/// tighter here.
+///
+/// ## What it costs, bounded
+///
+/// A slot grows to the largest layer that depth has ever held and stays there.
+/// The player clips a layer's bounds to the device bounds before this sink
+/// sees them, so a slot can never exceed the surface, and the whole pool is
+/// bounded by `kMaxCpuLayerDepth` surfaces - eight, and only for a process
+/// that actually nested eight deep. Capacity is rounded up to a power of two,
+/// with a 4 KiB floor, so a layer that grows by a pixel a frame - a list one
+/// row taller each time, which is the case that defeats an exact-size pool -
+/// reallocates a logarithmic number of times rather than every frame.
+///
+/// ## Re-entrancy
+///
+/// A slot in use hands back null and the caller allocates privately. Rendering
+/// is synchronous and a sink never calls back into the player, so this cannot
+/// currently happen; the guard costs a bool and turns a future re-entrant
+/// caller into a slow frame instead of two layers writing over each other.
+final class CpuLayerBufferPool {
+  CpuLayerBufferPool._();
+
+  /// Process-wide, for the same reason `GlyphCache.shared` is: a sink lives
+  /// for one frame, so a pool it owned would be thrown away with it and every
+  /// frame would allocate again.
+  ///
+  /// Statics are per-isolate in Dart, so two isolates rendering at once hold
+  /// two pools and share nothing - which is the correct answer, since they
+  /// share no surfaces either.
+  static final CpuLayerBufferPool shared = CpuLayerBufferPool._();
+
+  final List<Uint8List> _slots = <Uint8List>[];
+  final List<bool> _busy = <bool>[];
+  int _allocationCount = 0;
+
+  /// Stores allocated since construction. The number a reuse test asserts:
+  /// drawing the same layer on ten frames must leave this at one. Reuse is
+  /// invisible from the pixels - a pool that allocated per frame would produce
+  /// identical output and a slower frame - so it is only observable here.
+  int get allocationCount => _allocationCount;
+
+  /// Bytes retained right now, which is what a memory report wants.
+  int get retainedBytes {
+    var total = 0;
+    for (var i = 0; i < _slots.length; i++) {
+      total += _slots[i].length;
+    }
+    return total;
+  }
+
+  /// Slots that have ever been handed out, which is the deepest nesting this
+  /// isolate has reached.
+  int get slotCount => _slots.length;
+
+  /// Smallest allocation, 32x32 pixels. Below this the rounding saves nothing
+  /// and the object header is a bigger share of the cost than the pixels.
+  static const int _minBytes = 32 * 32 * 4;
+
+  /// A store of at least [minBytes] for [slot], or null if the slot is busy.
+  ///
+  /// Called by the CPU sink when a layer opens. Public only because Dart has
+  /// no visibility between "this file" and "this package"; nothing outside
+  /// `cpu_renderer.dart` should call it, and a caller that does must pair it
+  /// with [give].
+  Uint8List? take(int slot, int minBytes) {
+    while (_slots.length <= slot) {
+      _slots.add(_empty);
+      _busy.add(false);
+    }
+    if (_busy[slot]) return null;
+    Uint8List store = _slots[slot];
+    if (store.length < minBytes) {
+      store = Uint8List(_capacityFor(minBytes));
+      _slots[slot] = store;
+      _allocationCount++;
+    }
+    _busy[slot] = true;
+    return store;
+  }
+
+  /// Returns [slot] for reuse. Paired with [take], once per layer.
+  void give(int slot) => _busy[slot] = false;
+
+  /// Drops every retained store that is not in use. For a caller that knows
+  /// the screen has stopped using layers and would rather have the memory back
+  /// than the next frame's allocation.
+  void trim() {
+    for (var i = 0; i < _slots.length; i++) {
+      if (!_busy[i]) _slots[i] = _empty;
+    }
+  }
+
+  static final Uint8List _empty = Uint8List(0);
+
+  static int _capacityFor(int bytes) {
+    var capacity = _minBytes;
+    while (capacity < bytes) {
+      capacity *= 2;
+    }
+    return capacity;
+  }
+}
+
 /// Bridges the player's device-space calls onto the rasteriser.
 ///
 /// The player guarantees `clip` is non-empty and overlaps the primitive, but
@@ -45,10 +284,20 @@ import 'text/glyph_raster.dart';
 /// than trusting the player keeps the rasteriser's clip stack the single
 /// authority on what is on screen.
 final class _RasterizerSink implements RasterSink {
-  _RasterizerSink(this._rasterizer, this._resources, this._glyphs)
-      : _spanSink = _CoverageToRasterizer(_rasterizer);
+  _RasterizerSink(
+    CpuRasterizer rasterizer,
+    this._resources,
+    this._glyphs, {
+    this.maxLayerDepth = kMaxCpuLayerDepth,
+  })  : _rasterizer = rasterizer,
+        _spanSink = _CoverageToRasterizer(rasterizer);
 
-  final CpuRasterizer _rasterizer;
+  /// The rasteriser every draw below goes through: the surface's, or the
+  /// innermost open offscreen layer's.
+  CpuRasterizer _rasterizer;
+
+  /// How deep `saveLayer` may nest before [CpuLayerDepthExceededError].
+  final int maxLayerDepth;
 
   /// Held only for [fontAt]. The player resolves paths and images itself but
   /// hands a glyph run's font through as an id, because a sink with no glyph
@@ -79,9 +328,74 @@ final class _RasterizerSink implements RasterSink {
 
   final _CoverageToRasterizer _spanSink;
 
+  /// Open layers, innermost last. Empty between frames, or the player and this
+  /// sink disagree about how many clips are in force.
+  final List<_CpuLayer> _open = <_CpuLayer>[];
+
+  /// Open layers that took a buffer. Indexes the buffer pool's slots, so a
+  /// flattened layer - which takes none - does not shift the numbering and
+  /// make two frames disagree about which slot a depth owns.
+  int _offscreenDepth = 0;
+
+  /// The device-space corner every coordinate below is written relative to:
+  /// the innermost offscreen layer's whole-pixel top-left, or the origin when
+  /// none is open. Whole pixels always; see [beginLayer].
+  double _originX = 0;
+  double _originY = 0;
+
+  /// The same origin as integers, for the glyph path. Not a cache - that path
+  /// is integral end to end, and may only subtract a whole number of pixels or
+  /// the coverage it rasterised stops landing on the pixel it was made for.
+  int _originIntX = 0;
+  int _originIntY = 0;
+
+  /// True exactly when the origin is not (0, 0), so the common case - no layer
+  /// open - pays a comparison instead of a `Rect` per primitive.
+  bool _shifted = false;
+
+  /// Whether anything has been drawn into the innermost open layer.
+  ///
+  /// Mirrors `GpuLayer.drewSomething`, and it is not an optimisation: the GPU
+  /// skips the composite of a layer that batched nothing, and with
+  /// [CpuBlendMode.src] "skip the composite" and "composite a transparent
+  /// layer" are different pictures - the first leaves the parent alone, the
+  /// second erases it.
+  bool _drew = false;
+
+  /// Layers currently open. A backend can assert it is zero after a frame.
+  int get layerDepth => _open.length;
+
+  /// [rect] in the coordinates the current target is indexed by.
+  ///
+  /// Allocates one `Rect` per primitive *while a layer is open* and none
+  /// otherwise. That is the cost of a layer-sized buffer instead of a
+  /// surface-sized one, it is charged only to frames that use layers, and the
+  /// alternative - a full-surface allocation and a full-surface clear for a
+  /// badge in a corner - is worse on every frame that has one.
+  Rect _toLayer(Rect rect) =>
+      _shifted ? rect.translate(-_originX, -_originY) : rect;
+
+  /// [transform] with the layer origin folded into its translation.
+  ///
+  /// Post-multiplying by a translation only ever moves `tx`/`ty`, so this is
+  /// `Transform2D.translation(-ox, -oy).multiply(transform)` written without
+  /// the intermediate matrix. The linear part is untouched, which matters:
+  /// the stroker's tolerance and the glyph size are both derived from it.
+  Transform2D _toLayerTransform(Transform2D transform) => _shifted
+      ? Transform2D(
+          transform.a,
+          transform.b,
+          transform.c,
+          transform.d,
+          transform.tx - _originX,
+          transform.ty - _originY,
+        )
+      : transform;
+
   void _fillClipped(Rect deviceRect, Rect clip, ReplayPaint paint) {
     final visible = deviceRect.intersect(clip);
     if (visible.isEmpty) return;
+    _drew = true;
     // The intersection happens in double space, so a clipped edge arrives here
     // fractional and comes out soft. Antialiasing everything is the right
     // default for a UI: the shapes are axis-aligned most of the time, where
@@ -91,10 +405,11 @@ final class _RasterizerSink implements RasterSink {
     // paint.antiAlias exists to turn it OFF - for a caller who has measured
     // that a particular fill is on a hot path and lands on integer bounds
     // anyway, where the two produce identical bytes.
+    final Rect local = _toLayer(visible);
     if (paint.antiAlias) {
-      _rasterizer.fillRectAntiAliased(visible, paint.argbColor);
+      _rasterizer.fillRectAntiAliased(local, paint.argbColor);
     } else {
-      _rasterizer.fillRect(visible, paint.argbColor);
+      _rasterizer.fillRect(local, paint.argbColor);
     }
   }
 
@@ -120,9 +435,11 @@ final class _RasterizerSink implements RasterSink {
     // The radii arrive already in device space and in the encoder's order, so
     // addRoundedRectRadii consumes the borrowed scratch buffer directly and
     // the eight-value order is stated in one place instead of here.
-    final builder = PathBuilder()..addRoundedRectRadii(deviceRect, deviceRadii);
+    final builder = PathBuilder()
+      ..addRoundedRectRadii(_toLayer(deviceRect), deviceRadii);
+    _drew = true;
     _spanSink.paint = paint;
-    _filler.fill(builder.build(), clip, _spanSink);
+    _filler.fill(builder.build(), _toLayer(clip), _spanSink);
   }
 
   /// Refuses a stroke on the primitives that cannot carry one.
@@ -148,18 +465,226 @@ final class _RasterizerSink implements RasterSink {
     );
   }
 
+  /// Opens a layer, taking an offscreen buffer when one is needed.
+  ///
+  /// The three outcomes are the three `gpu_layer_stack.dart` defines, decided
+  /// by the same tests in the same order, because a layer that is offscreen on
+  /// one backend and flattened on the other is a difference no golden can
+  /// explain:
+  ///
+  ///   * **empty** - the bounds survived nothing. Nothing is allocated; the
+  ///     pair is still delivered by the player, so an empty clip is pushed and
+  ///     everything inside is culled by it.
+  ///   * **flattened** - alpha 255 and source-over. Compositing such a layer
+  ///     back is the identity, so its contents go straight into the parent and
+  ///     the layer is exactly its clip. This is what this method used to do to
+  ///     *every* layer, and it is correct only here.
+  ///   * **offscreen** - anything else. A buffer is taken, cleared to
+  ///     transparency, and every primitive until the matching [endLayer] is
+  ///     written into it with the layer's whole-pixel corner subtracted.
+  ///
+  /// ## The bounds are snapped outward, and that is load-bearing
+  ///
+  /// `floor` on the left and top, `ceil` on the right and bottom - the same
+  /// convention `GpuLayerStack.push` uses, and it has to be the same one. The
+  /// snapped left/top become the origin every coordinate inside the layer is
+  /// written against, and a *fractional* origin would shift every glyph mask
+  /// and every coverage span inside the layer by a fraction of a pixel
+  /// relative to the coverage that was rasterised for them. That is the
+  /// sub-pixel resampling that makes text inside an opacity animation look
+  /// softer than the same text outside it.
+  ///
+  /// Snapping outward rather than to the nearest pixel is what guarantees the
+  /// buffer contains every pixel the layer's contents can touch: the player
+  /// has already clipped those contents to the *unsnapped* bounds, so an
+  /// inward snap would cut a partially covered edge column that the composite
+  /// then could not restore.
+  ///
+  /// ## What this does not do, said plainly
+  ///
+  ///   * **No filters.** A layer carries an alpha and a blend mode; the
+  ///     display list cannot encode a blur or a colour matrix, so there is
+  ///     nothing to refuse yet.
+  ///   * **No isolation for a primitive's own blend mode.** The sink below
+  ///     composites every *primitive* source-over regardless of
+  ///     `paint.blendMode` - that predates layers and is unchanged here - so
+  ///     the one case where flattening an opaque source-over layer is not an
+  ///     identity (a `plus` primitive inside it, which `gpu_raster_sink.dart`
+  ///     refuses by name) cannot arise on this backend: nothing here can draw
+  ///     a `plus` primitive in the first place.
   @override
   void beginLayer(Rect deviceBounds, Rect clip, ReplayPaint paint) {
-    // A layer with no offscreen buffer behind it is just a clip. That is
-    // correct for opaque, source-over layers and wrong for a layer with
-    // opacity or a blend mode, which needs compositing after the fact.
-    _rasterizer
-      ..save()
-      ..clipRect(deviceBounds.intersect(clip));
+    if (_open.length >= maxLayerDepth) {
+      throw CpuLayerDepthExceededError(
+        depth: _open.length + 1,
+        maxDepth: maxLayerDepth,
+      );
+    }
+
+    final double left = deviceBounds.left.floorToDouble();
+    final double top = deviceBounds.top.floorToDouble();
+    final double right = deviceBounds.right.ceilToDouble();
+    final double bottom = deviceBounds.bottom.ceilToDouble();
+    final bool degenerate = !(right > left) ||
+        !(bottom > top) ||
+        !left.isFinite ||
+        !top.isFinite ||
+        !right.isFinite ||
+        !bottom.isFinite;
+
+    final int alpha = (paint.argbColor >> 24) & 0xFF;
+    final int blendMode = paint.blendMode;
+
+    if (degenerate || (alpha == 0xFF && blendMode == blendModeSrcOver)) {
+      // Empty and flattened are the same code: a clip on the target already in
+      // hand. They differ only in that an empty one clips everything away,
+      // which the intersection below does on its own.
+      _open.add(_CpuLayer.flattened(
+        drewBefore: _drew,
+        originX: _originX,
+        originY: _originY,
+      ));
+      _rasterizer
+        ..save()
+        ..clipRect(_toLayer(deviceBounds.intersect(clip)));
+      return;
+    }
+
+    final int width = (right - left).round();
+    final int height = (bottom - top).round();
+    final Framebuffer surface = _rasterizer.target;
+    final int slot = _offscreenDepth;
+    final Uint8List? pooled =
+        CpuLayerBufferPool.shared.take(slot, width * height * 4);
+    final Framebuffer buffer = Framebuffer.wrap(
+      pooled ?? Uint8List(width * height * 4),
+      width: width,
+      height: height,
+      // Tightly packed, never the pooled allocation's own stride: rows that
+      // are contiguous are what let the clear below take the word path and
+      // what keeps a small layer's rows in one cache line's worth of strides.
+      bytesPerRow: width * 4,
+      // The parent's format, so the composite is a straight copy of channels
+      // rather than a swizzle per pixel - and so a layer inside a layer keeps
+      // the surface's order all the way down.
+      format: surface.format,
+    );
+    // A pooled buffer holds the previous tenant's pixels, and a layer
+    // composites what it drew *over transparency*, not over a ghost.
+    buffer.clear(0, 0, 0, 0);
+
+    final _CpuLayer layer = _CpuLayer.offscreen(
+      deviceBounds: Rect.fromLTRB(left, top, right, bottom),
+      clip: clip,
+      alpha: alpha,
+      blendMode: cpuBlendForMode(blendMode),
+      buffer: buffer,
+      poolSlot: pooled == null ? -1 : slot,
+      parent: _rasterizer,
+      drewBefore: _drew,
+      originX: _originX,
+      originY: _originY,
+    );
+    _open.add(layer);
+    _offscreenDepth++;
+
+    _setTarget(CpuRasterizer(buffer), left, top);
+    _drew = false;
+    // The layer's own contents are clipped to the *unsnapped* bounds, so an
+    // antialiased shape drawn to the layer's edge keeps the fractional
+    // coverage it would have had on the surface. The buffer is one pixel
+    // wider than that wherever the bounds were fractional; those pixels are
+    // cleared, composited, and contribute nothing.
+    _rasterizer.clipRect(_toLayer(deviceBounds.intersect(clip)));
   }
 
+  /// Closes the innermost layer and composites it into its parent.
+  ///
+  /// The composite is one blit of the layer's buffer at the layer's opacity
+  /// and blend mode, scissored to the clip that was in force when the layer
+  /// opened - the contents were already clipped, but the composite is drawn in
+  /// the parent's space and has to obey the parent's clip. It is exactly the
+  /// arithmetic `gpu_raster_sink.dart` writes into a textured quad, because a
+  /// finished layer is an image.
+  ///
+  /// A layer nothing drew into takes its buffer back and composites nothing,
+  /// matching `GpuLayerStack.pop`. See [_drew] for why that is a correctness
+  /// rule rather than a saved blit.
   @override
-  void endLayer() => _rasterizer.restore();
+  void endLayer() {
+    if (_open.isEmpty) {
+      throw StateError('cpu: endLayer() without a matching beginLayer(); the '
+          'player and this sink disagree about how many layers are open, '
+          'which means a clip is still in force that should not be');
+    }
+    final _CpuLayer layer = _open.removeLast();
+    if (!layer.isOffscreen) {
+      _rasterizer.restore();
+      _drew = _drew || layer.drewBefore;
+      return;
+    }
+
+    final bool drewInside = _drew;
+    _offscreenDepth--;
+    _setTarget(layer.parent!, layer.originX, layer.originY);
+    _drew = layer.drewBefore;
+
+    if (drewInside) {
+      final Rect bounds = layer.deviceBounds;
+      _rasterizer
+        ..save()
+        ..clipRect(_toLayer(layer.clip))
+        ..compositeLayer(
+          layer.buffer!,
+          (bounds.left - _originX).toInt(),
+          (bounds.top - _originY).toInt(),
+          layer.alpha,
+          layer.blendMode,
+        )
+        ..restore();
+      _drew = true;
+    }
+    if (layer.poolSlot >= 0) CpuLayerBufferPool.shared.give(layer.poolSlot);
+  }
+
+  /// Gives back every buffer still held by an open layer.
+  ///
+  /// Defensive rather than decorative, and the same duty
+  /// `GpuLayerStack.beginFrame` performs for the same reason: a frame that
+  /// threw half way - an unsupported primitive, a depth limit, a corrupt list
+  /// - never reached its last [endLayer], and a pool slot left marked in use
+  /// is never reused again. Leaking one slot per failed frame turns a
+  /// recoverable error into a renderer that allocates a fresh buffer for every
+  /// layer forever, with nothing to point at the frame that caused it.
+  void releaseOpenLayers() {
+    for (var i = 0; i < _open.length; i++) {
+      final int slot = _open[i].poolSlot;
+      if (slot >= 0) CpuLayerBufferPool.shared.give(slot);
+    }
+    _open.clear();
+    _offscreenDepth = 0;
+  }
+
+  /// Points every draw below at [rasterizer], written against ([x], [y]).
+  ///
+  /// The integer copy of the origin is a requirement rather than a cache: the
+  /// glyph path is integral end to end and may only subtract whole pixels.
+  /// The assert states that the bounds really were snapped, because rounding
+  /// here instead would misplace a whole layer by a pixel and leave nothing
+  /// to find it by.
+  void _setTarget(CpuRasterizer rasterizer, double x, double y) {
+    assert(
+      x == x.roundToDouble() && y == y.roundToDouble(),
+      'a layer origin must be a whole pixel; got $x, $y',
+    );
+    _rasterizer = rasterizer;
+    _spanSink.rasterizer = rasterizer;
+    _originX = x;
+    _originY = y;
+    _originIntX = x.toInt();
+    _originIntY = y.toInt();
+    _shifted = x != 0 || y != 0;
+  }
 
   @override
   void drawDevicePath(
@@ -176,19 +701,24 @@ final class _RasterizerSink implements RasterSink {
             '${path.runtimeType}',
       );
     }
+    // The layer origin is folded into the matrix once, here, rather than into
+    // the geometry: stroking happens in the path's own coordinates and only
+    // the outline is transformed, so a shift applied to the path would be
+    // applied before the stroke and scaled by the matrix on the way out.
+    final Transform2D local = _toLayerTransform(transform);
     switch (paint.style) {
       case paintStyleFill:
-        _fill(path, transform, clip, paint);
+        _fill(path, local, clip, paint);
       case paintStyleStroke:
-        _fill(_outlineOf(path, transform, paint), transform, clip, paint);
+        _fill(_outlineOf(path, transform, paint), local, clip, paint);
       case paintStyleFillAndStroke:
         // Order is load-bearing, not incidental. The stroke straddles the
         // centreline, so its inner half lies inside the region the fill
         // covers; drawing the fill second paints over that half and the
         // border comes out half as wide as it was asked for - and only on
         // the inside, so it also looks like a positioning bug.
-        _fill(path, transform, clip, paint);
-        _fill(_outlineOf(path, transform, paint), transform, clip, paint);
+        _fill(path, local, clip, paint);
+        _fill(_outlineOf(path, transform, paint), local, clip, paint);
       default:
         throw UnsupportedCapabilityError(
           backendName: 'cpu',
@@ -205,12 +735,16 @@ final class _RasterizerSink implements RasterSink {
   /// stroke outline *requires* it: the inner side of a join crosses itself and
   /// a closed contour becomes two wound against each other, both of which
   /// even-odd would turn inside out. See `stroker.dart`.
+  ///
+  /// [transform] is already in the current target's coordinates; [clip] is
+  /// still in device space and is moved here.
   void _fill(Path path, Transform2D transform, Rect clip, ReplayPaint paint) {
     if (path.isEmpty) return;
+    _drew = true;
     _spanSink.paint = paint;
     _filler.fill(
       path,
-      clip,
+      _toLayer(clip),
       _spanSink,
       rule: FillRule.nonZero,
       transform: transform,
@@ -273,10 +807,11 @@ final class _RasterizerSink implements RasterSink {
     }
     // Clipping is the rasteriser's job here: it walks rows anyway, so folding
     // the clip into the blit costs nothing extra.
+    _drew = true;
     _rasterizer
       ..save()
-      ..clipRect(clip)
-      ..drawFramebuffer(image, deviceRect)
+      ..clipRect(_toLayer(clip))
+      ..drawFramebuffer(image, _toLayer(deviceRect))
       ..restore();
   }
 
@@ -344,9 +879,10 @@ final class _RasterizerSink implements RasterSink {
 
     final ScaledTypeface font = _deviceFont(resource, transform);
 
+    _drew = true;
     _rasterizer
       ..save()
-      ..clipRect(clip);
+      ..clipRect(_toLayer(clip));
     for (var i = 0; i < glyphCount; i++) {
       final double penX = deviceOrigin.dx + deviceOffsets[i * 2];
       final double penY = deviceOrigin.dy + deviceOffsets[i * 2 + 1];
@@ -358,12 +894,18 @@ final class _RasterizerSink implements RasterSink {
       if (mask.isEmpty) continue;
       // The mask's own left/top are offsets from the pen, and top is negative
       // because a glyph rises above the baseline.
+      //
+      // The subpixel bucket and the whole-pixel origin are both taken from the
+      // *device* pen and only then moved into the layer, by a whole number of
+      // pixels. Quantising in layer space would give the same answer for a
+      // whole-pixel origin and a different one the moment that assumption
+      // slipped, which is exactly the bug the assert in [_setTarget] guards.
       _rasterizer.blendCoverageMask(
         mask.coverage,
         mask.width,
         mask.height,
-        glyphPixelOrigin(penX) + mask.left,
-        pixelEdge(penY) + mask.top,
+        glyphPixelOrigin(penX) + mask.left - _originIntX,
+        pixelEdge(penY) + mask.top - _originIntY,
         argb,
       );
     }
@@ -406,9 +948,12 @@ final class _RasterizerSink implements RasterSink {
 /// span-level entry point on the rasteriser would remove even that, and is the
 /// obvious next optimisation if paths ever show up in a profile.
 final class _CoverageToRasterizer implements CoverageSpanSink {
-  _CoverageToRasterizer(this._rasterizer);
+  _CoverageToRasterizer(this.rasterizer);
 
-  final CpuRasterizer _rasterizer;
+  /// Where spans land. Mutable because a layer moves it: the same span sink
+  /// serves the surface and every layer's buffer, and a sink allocated per
+  /// layer would still have to be threaded through the filler.
+  CpuRasterizer rasterizer;
 
   /// Set immediately before each fill. Mutable on purpose: a sink allocated
   /// per draw would put an allocation on the path-drawing path.
@@ -421,7 +966,7 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
     final argb = current.argbColor;
     final alpha = mul255((argb >> 24) & 0xFF, coverage);
     if (alpha == 0) return;
-    _rasterizer.fillRect(
+    rasterizer.fillRect(
       Rect.fromLTRB(
         xStart.toDouble(),
         y.toDouble(),
@@ -442,6 +987,12 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
 ///
 /// [glyphCache] defaults to [GlyphCache.shared], because a cache that did not
 /// outlive the frame would rasterize every glyph again on the next one.
+///
+/// [maxLayerDepth] bounds `saveLayer` nesting; past it the frame raises
+/// [CpuLayerDepthExceededError] rather than allocating a buffer per level for
+/// a tree that has run away. It is a parameter rather than a constant so that
+/// a caller with a genuinely deep scene can pay for it, and so the refusal is
+/// testable without a nine-level display list.
 void rasterizeDisplayList(
   DisplayList list,
   Framebuffer framebuffer, {
@@ -449,6 +1000,7 @@ void rasterizeDisplayList(
   Rect? damage,
   Transform2D deviceTransform = Transform2D.identity,
   GlyphCache? glyphCache,
+  int maxLayerDepth = kMaxCpuLayerDepth,
 }) {
   if (clearColor != null) {
     final blue = clearColor & 0xFF;
@@ -463,26 +1015,38 @@ void rasterizeDisplayList(
   }
   final rasterizer = CpuRasterizer(framebuffer);
   final resources = DisplayListResources(list);
-  DisplayListPlayer(
-    _RasterizerSink(rasterizer, resources, glyphCache ?? GlyphCache.shared),
-  ).play(
-    DisplayListReader(list),
+  final sink = _RasterizerSink(
+    rasterizer,
     resources,
-    deviceBounds: (damage ??
-            Rect.fromLTWH(
-              0,
-              0,
-              framebuffer.width.toDouble(),
-              framebuffer.height.toDouble(),
-            ))
-        .intersect(Rect.fromLTWH(
-      0,
-      0,
-      framebuffer.width.toDouble(),
-      framebuffer.height.toDouble(),
-    )),
-    deviceTransform: deviceTransform,
+    glyphCache ?? GlyphCache.shared,
+    maxLayerDepth: maxLayerDepth,
   );
+  try {
+    DisplayListPlayer(sink).play(
+      DisplayListReader(list),
+      resources,
+      deviceBounds: (damage ??
+              Rect.fromLTWH(
+                0,
+                0,
+                framebuffer.width.toDouble(),
+                framebuffer.height.toDouble(),
+              ))
+          .intersect(Rect.fromLTWH(
+        0,
+        0,
+        framebuffer.width.toDouble(),
+        framebuffer.height.toDouble(),
+      )),
+      deviceTransform: deviceTransform,
+    );
+  } finally {
+    // Nothing is caught - a frame that cannot be interpreted must not be
+    // half-drawn and the caller has to hear about it - but the layer buffers
+    // an aborted frame is still holding have to go back, or the pool loses a
+    // slot per failure. See [_RasterizerSink.releaseOpenLayers].
+    sink.releaseOpenLayers();
+  }
 }
 
 /// A render target backed by plain memory.
@@ -585,6 +1149,7 @@ final class MemoryRenderTarget with DisposableMixin implements RenderTarget {
     int? clearColor,
     Transform2D deviceTransform = Transform2D.identity,
     GlyphCache? glyphCache,
+    int maxLayerDepth = kMaxCpuLayerDepth,
   }) async {
     final frame = beginFrame(const FrameRequest());
     rasterizeDisplayList(
@@ -593,6 +1158,7 @@ final class MemoryRenderTarget with DisposableMixin implements RenderTarget {
       clearColor: clearColor,
       deviceTransform: deviceTransform,
       glyphCache: glyphCache,
+      maxLayerDepth: maxLayerDepth,
     );
     return present(frame);
   }

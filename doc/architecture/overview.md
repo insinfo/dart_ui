@@ -4,12 +4,16 @@ Este documento descreve **o que existe em `lib/`**, não o alvo. O alvo é o
 [roteiro](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md); quando os dois
 divergirem, o roteiro descreve a intenção e este arquivo descreve o código.
 
-**Estado em 9 de agosto de 2026:** oito camadas comuns, **663 testes** e gate
-próprio rodando em push nas três plataformas (formato, análise, testes e
+**Estado em 15 de agosto de 2026:** onze camadas comuns, **~2.400 testes** e
+gate próprio rodando em push nas três plataformas (formato, análise, testes e
 compilação AOT). O caminho **Widget → Element → RenderBox → layout → display
-list → rasterização CPU → framebuffer** está fechado e testado. No Windows, o
-`Win32CpuPresenter` continua o caminho até uma DIB e `BitBlt`, sem cópia
-intermediária do frame.
+list → rasterização → framebuffer** está fechado e testado, e agora existe em
+duas implementações: CPU e OpenGL. No Windows, o `Win32CpuPresenter` continua o
+caminho até uma DIB e `BitBlt`, sem cópia intermediária do frame; o
+`GlWindowTarget` apresenta por swap de buffers, sem readback por frame.
+
+`runApp` monta tudo isso — seleção de backend, janela, superfície, renderer,
+scheduler, árvore e roteamento de input — e é por onde uma aplicação entra.
 
 ## Por que um package só
 
@@ -26,10 +30,13 @@ foundation   diagnostics, lifecycle          (não depende de nada)
 geometry     Offset, Size, Rect, Transform2D (não depende de nada)
 scheduler    prioridades, dispatcher         (foundation)
 graphics     display list                    (foundation, geometry)
-platform     eventos de janela               (foundation, geometry)
-rendering    contratos + renderer de CPU     (foundation, geometry, graphics)
+platform     eventos de janela, fontes       (foundation, geometry, scheduler)
+text         Unicode, OpenType, parágrafo    (foundation, geometry, graphics)
+rendering    contratos + CPU + OpenGL        (foundation, geometry, graphics, text)
 layout       árvore de render                (foundation, geometry, graphics)
-widgets      reconciliação + estado          (layout)
+animation    relógio, curvas, simulações     (foundation, geometry, scheduler)
+widgets      reconciliação + estado          (layout, animation)
+app          runApp, WindowHost              (tudo acima, nenhum backend)
 backends     adaptadores Win32/X11/macOS     (platform, rendering)
 ```
 
@@ -184,13 +191,14 @@ em fronteira inteira é exatamente certo. É por isso que um span de cobertura
 total compõe bit a bit igual a um preenchimento de retângulo, e o primeiro
 teste exige justamente isso.
 
-**Limites declarados onde o chamador esbarra neles:** stroke, caps, joins e
-dash **não existem** — um path com paint de stroke é **recusado**, não
-preenchido, porque preencher a região que o contorno encerra desenharia um
-bloco sólido onde se pediu uma borda; retângulos arredondados via `drawRRect`
-preenchem a caixa (via `Path` eles saem corretos); `saveLayer` é um clip até
-existir buffer offscreen para compor; texto **lança**. O `probe()` do backend
-diz isso em voz alta.
+**Limites declarados onde o chamador esbarra neles.** Stroke, caps, joins e
+dash existem (`rendering/path/stroker.dart`), e texto desenha — as duas coisas
+que esta seção dizia não existirem. O que resta declarado: retângulos
+arredondados via `drawRRect` preenchem a caixa (via `Path` saem corretos), e
+`clipPath` ainda é recusado, com clip retangular apenas. O `probe()` do backend
+diz isso em voz alta, e a regra é sempre a mesma — recusar por nome é melhor
+que aproximar, porque preencher a região que um contorno encerra desenharia um
+bloco sólido onde se pediu uma borda.
 
 ### `layout/`
 
@@ -235,30 +243,102 @@ O caso de hit test é o que vale além disso: uma árvore pode renderizar
 perfeitamente e ainda rotear cliques para o nó errado, então o teste exige que
 o acerto caia na mesma caixa cuja cor está sob aquele pixel.
 
+### `text/`
+
+A camada mais densa do repositório, e a que mais depende de dados externos
+serem verificáveis. As tabelas Unicode não são escritas à mão: saem de
+`tool/generate_unicode_tables.dart`, que lê `referencias/unicode/ucd.nounihan.flat.xml`
+(UCD 17.0.0) e cobre U+0000..U+10FFFF **sem lacuna** — o gerador se recusa a
+emitir uma tabela cuja cobertura não seja exatamente 1.114.112 code points.
+`--verify-existing` re-deriva as tabelas já comitadas e compara byte a byte,
+então "gerado do UCD" deixou de ser uma alegação e virou um comando.
+
+BiDi (UAX #9), grapheme clusters (UAX #29), quebra de linha (UAX #14) e
+itemização de script (UAX #24) têm conformance contra os arquivos de teste do
+próprio UCD. **Normalização (UAX #15) e word break não têm** — `NormalizationTest.txt`
+e `WordBreakTest.txt` não estão em `referencias/unicode/`, e os casos são
+escritos à mão citando a fonte. Essa assimetria é deliberada e está registrada
+aqui porque, de fora, as quatro suítes parecem ter o mesmo grau de garantia.
+
+Fontes: TrueType (`glyf` + interpretador de hinting) e CFF/CFF2 (charstrings
+Type 2). GSUB e GPOS têm **todos os 8 tipos de lookup cada**. O shaping despacha
+por script; árabe tem máquina de joining própria. Um script cujo modelo não
+existe — devanágari, tailandês — **lança** em vez de ser moldado pelo caminho
+default, porque o default produz glifos em ordem errada e não um erro; a
+contenção de `widgets/errors.dart` transforma isso num placeholder naquela
+subárvore, não numa janela morta.
+
+`Paragraph` é onde tudo se encontra, na ordem que a UAX #9 exige: resolver BiDi
+do parágrafo inteiro → itemizar → segmentar → moldar → quebrar → **reordenar
+visualmente por linha, depois da quebra**. Inverter as duas últimas dá texto
+bidi errado apenas em parágrafos que quebram, que é o bug que passa em todo
+teste de uma linha.
+
+### `rendering/gpu/`
+
+OpenGL, via WGL no Windows e EGL no Linux. `GlWindowTarget` apresenta por swap;
+`_readPixels` continua privado de propósito, para que o caminho de janela seja
+*estruturalmente* incapaz de herdar o readback por frame que a seção 23 proíbe.
+
+Três atlas, todos com a mesma disciplina: chave que inclui tudo que muda os
+pixels, eviction LRU que nunca despeja algo que o frame corrente já desenhou, e
+"cheio" como **sinal de flush**, não como falha do frame. O de glifos é
+persistente entre frames (o de máscaras não podia servir: ele reseta o packer
+em `beginFrame`, e um glifo é justamente a coisa que se repete). Um run de
+texto vira **um** batch — medido em teste, porque um draw call por glifo não
+seria aceleração nenhuma.
+
 ## O que ainda não existe
 
-O núcleo de widgets ainda é deliberadamente pequeno: `ColoredBox`, `Padding`,
-stateless/stateful, chaves e reconciliação single-child. Não há roteador de
-pointer, foco, eventos roteados, inherited context, propriedades, estilos,
-templates, semântica ou controles. `GestureDetector` com callback e pintura de
-`Text` falham explicitamente; aceitar e não produzir comportamento seria uma
-capacidade falsa.
+**Vulkan, Metal, Direct3D 11 e DirectComposition** existem apenas nos POCs.
+A ordem aqui é deliberada: OpenGL foi levado a ter janela, layers, atlas e
+paridade com a CPU **antes** de uma segunda API entrar, porque até então
+`MemorySurfaceDescriptor` era o único `NativeSurfaceDescriptor` que existia — uma
+abstração de superfície validada por zero backends com janela real não é uma
+abstração, é um palpite.
 
-O vertical Win32 agora apresenta pixels reais e reage a resize/DPI/expose, mas
-ainda não satisfaz o gate completo da Fase 5: faltam Button com hit-test,
-captura, foco por Tab, Enter/Space, texto centralizado, semântica, clipboard,
-screenshot e verificação de leak. O exemplo `examples/hello_button` demonstra
-a ligação estrutural e estados visuais da janela inteira, não declara ser esse
-Button final.
+**Recuperação de perda de device.** `GpuDeviceState.recover()` existe e nunca é
+chamado; não há orquestrador que descarte handles, recrie o contexto e repovoe
+recursos, nem `RendererEvent`/`DeviceLost` da seção 23.12. `_checkError` já
+distingue `GL_CONTEXT_LOST` de erro recuperável, então a metade difícil está
+feita.
 
-X11 possui bindings, dispatcher e estrutura de backend em `lib/`, mas ainda
-não implementa `createWindow`. No macOS, `appkitNativeHost` já liga a fachada a
-uma janela/pool IOSurface e inclui o host protocolo v4; a compilação e o smoke
-reais dessa implementação ainda dependem do gate remoto macOS. SkyLight e
-`appkitSignal` permanecem somente nos POCs. O subsistema OpenGL atual é um
-spike offscreen não exportado, sem target de janela e sem suíte própria. Há
-também dois packers `ShelfAtlas` divergentes; eles precisam ser consolidados e
-testados antes de qualquer expansão de GPU.
+**Texto na GPU está implementado e não está ligado.** `GpuRasterSink` desenha
+runs de glifos por atlas, e um run vira um batch — testado. Mas nenhum target
+GL constrói um `GpuGlyphAtlas` e o passa ao sink, então por um device GL real
+um run é recusado por nome. É uma ligação de construtor, não um algoritmo. O
+teste diferencial afirma as duas metades — os pixels exatos da CPU e a recusa
+da GPU — de propósito: no dia em que o atlas for ligado, aquela asserção falha
+e obriga a comparação a entrar junto, em vez de a lacuna sumir em silêncio.
 
-Pelo roteiro, a ordem imediata continua sendo fechar a Fase 5 e o núcleo da
-Fase 6 antes de aprofundar GPU, X11 ou macOS.
+**Blend mode em primitivas diverge entre CPU e GPU.** A GPU honra
+`paint.blendMode` por primitiva; a CPU compõe source-over em `_fill`,
+`drawDeviceImage` e `drawDeviceGlyphRun`, ignorando o campo. Um retângulo
+`plus` desenha diferente nos dois caminhos hoje. Em *layers* os dois concordam
+(é o que a suíte diferencial mede, com desvio 0); é só no caminho por
+primitiva que a CPU está atrás. Corrigir exige passar o modo por todas as
+entradas do rasterizador.
+
+**`Frame.framebuffer` é não-anulável**, e um target GPU com janela não tem
+pixels visíveis pela CPU. O `GlWindowTarget` carrega um placeholder 1×1 nunca
+lido. A correção é tornar o campo anulável ou partir o `Frame`; está anotada
+porque um placeholder é exatamente o tipo de coisa que vira permanente.
+
+**Do texto:** COLR/CPAL, CBDT e sbix (emoji colorido), fontes variáveis
+(`fvar`/`gvar`/`avar`), shaping índico/USE, escrita vertical CJK, `BASE`, e
+hinting de CFF — os parâmetros de hint são parseados e nunca aplicados, então
+texto CFF sai sem hinting em todo tamanho. IME nativo não existe em nenhum
+backend; o contrato (`TextEditingValue.composing`) está pronto e documentado
+por plataforma.
+
+**Do layout:** Grid, Wrap, medição intrínseca, baselines, `PaintContext`,
+repaint boundaries e damage tracking. O `flushPaint` ainda repercorre a árvore
+inteira.
+
+**Dos backends:** X11 e macOS têm código escrito que **não foi executado** —
+não há máquina Linux nem Mac aqui. O caminho EGL de janela, `x11_gl_surface.dart`
+e as galerias X11/macOS compilam e analisam limpo, e nada além disso foi
+provado. Trate a primeira execução como bring-up, não como regressão.
+
+Pelo roteiro, a ordem imediata é fechar a recuperação de device e o
+`PaintContext` antes de abrir uma segunda API de GPU.

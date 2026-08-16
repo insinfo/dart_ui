@@ -12,6 +12,7 @@ import 'dart:typed_data';
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/text/cmap.dart';
 import 'package:dart_ui/src/text/font_data.dart';
+import 'package:dart_ui/src/text/font_tables.dart';
 import 'package:dart_ui/src/text/sfnt.dart';
 import 'package:dart_ui/src/text/typeface.dart';
 import 'package:test/test.dart';
@@ -147,6 +148,84 @@ void main() {
       expect(scaled.lineHeight, greaterThan(scaled.ascent));
     });
 
+    test('the line box comes from the resolved metrics, not from hhea alone',
+        () {
+      // Roboto states its line box twice and the two disagree: `hhea` says
+      // 1900 / -500 / 0 and `OS/2` says sTypo 1536 / -512 / 102. The rule in
+      // VerticalMetrics.resolve picks `hhea` here because Roboto's fsSelection
+      // is 0x40 - REGULAR set, USE_TYPO_METRICS (bit 7) **clear** - so the font
+      // never asked for its typographic metrics to be used. Reading the typo
+      // triple anyway would silently shorten every paragraph in the framework
+      // by (1900+500-1536-512-102)/2048 = 12.7% and disagree with every other
+      // text stack on the machine.
+      final Typeface roboto = _roboto();
+
+      expect(roboto.hhea.ascender, 1900);
+      expect(roboto.hhea.descender, -500);
+      expect(roboto.os2!.typoAscender, 1536);
+      expect(roboto.os2!.useTypographicMetrics, isFalse);
+      expect(roboto.verticalMetrics.source,
+          VerticalMetricsSource.horizontalHeader);
+
+      // 2048 units per em, so 16 px scales by 16/2048 = 0.0078125 exactly and
+      // the arithmetic below is exact in binary floating point.
+      final ScaledTypeface scaled = roboto.atSize(16);
+      expect(scaled.ascent, 1900 * 16 / 2048);
+      expect(scaled.descent, 500 * 16 / 2048);
+      expect(scaled.lineGap, 0);
+      expect(scaled.lineHeight, closeTo(18.75, 1e-12));
+      expect(scaled.metricsSource, VerticalMetricsSource.horizontalHeader);
+    });
+
+    test('a font that sets USE_TYPO_METRICS gets the shorter line it asked for',
+        () {
+      // The other half of the policy, which no fixture in test/fonts exercises:
+      // all three of them leave bit 7 clear. Gabriola and Cascadia set it, so
+      // the assertion is that the *typographic* triple is what a scaled face
+      // reports - the font stating "my sTypo values are the line box" and being
+      // believed.
+      Typeface? typographic;
+      for (final String path in <String>[
+        'C:/Windows/Fonts/Gabriola.ttf',
+        'C:/Windows/Fonts/CascadiaCode.ttf',
+        'C:/Windows/Fonts/Rubik.ttf',
+      ]) {
+        final File file = File(path);
+        if (!file.existsSync()) continue;
+        final Typeface face = Typeface.parse(file.readAsBytesSync());
+        if (face.os2?.useTypographicMetrics ?? false) {
+          typographic = face;
+          break;
+        }
+      }
+      if (typographic == null) {
+        markTestSkipped('no font setting USE_TYPO_METRICS on this machine');
+        return;
+      }
+
+      final Os2Table os2 = typographic.os2!;
+      expect(typographic.verticalMetrics.source,
+          VerticalMetricsSource.typographic);
+      expect(typographic.verticalMetrics.ascent, os2.typoAscender);
+      expect(typographic.verticalMetrics.descent, os2.typoDescender);
+      expect(typographic.verticalMetrics.lineGap, os2.typoLineGap);
+
+      final double scale = 16 / typographic.unitsPerEm;
+      final ScaledTypeface scaled = typographic.atSize(16);
+      expect(scaled.ascent, os2.typoAscender * scale);
+      expect(scaled.descent, -os2.typoDescender * scale);
+      expect(scaled.metricsSource, VerticalMetricsSource.typographic);
+
+      // Worth recording, because it is not what one expects: every font on the
+      // machine this was written on that sets bit 7 also makes `hhea` repeat
+      // the typographic triple, which is precisely what a font *should* do once
+      // it has nominated one line box. So the numbers alone cannot tell the two
+      // branches apart, and the assertion that carries weight is which field
+      // was read - [VerticalMetricsSource] - not what it contained. The fonts
+      // where the triples diverge are the badly behaved ones, and those are the
+      // ones that make the rule worth having.
+    });
+
     test('Ahem has the exact metrics its design promises', () {
       // Every Ahem glyph is a solid em box: one em advance, ascent 0.8 em,
       // descent 0.2 em. That is what makes it worth having as a fixture -
@@ -252,6 +331,63 @@ void main() {
     });
   });
 
+  group('identity', () {
+    test('a face knows the family and style it is selected by', () {
+      final Typeface roboto = _roboto();
+
+      // The 16/17 rule: Roboto-Regular carries name 1 = "Roboto" and no name
+      // 16, so both spellings agree here. What matters is that the face
+      // answers with a *name* rather than with its file name.
+      expect(roboto.familyName, 'Roboto');
+      expect(roboto.subfamilyName, 'Regular');
+      expect(roboto.name!.postScriptName, 'Roboto-Regular');
+      expect(roboto.weightClass, 400);
+      expect(roboto.widthClass, 5);
+      expect(roboto.isItalic, isFalse);
+      expect(roboto.isOblique, isFalse);
+      expect(roboto.declaresStyle, isTrue);
+      expect(roboto.identityIssues, isEmpty);
+
+      final Typeface dejaVu = _dejaVu();
+      expect(dejaVu.familyName, 'DejaVu Sans');
+      expect(dejaVu.subfamilyName, 'Book');
+      // post 2.0 stores glyph names; Roboto ships 3.0, which stores none.
+      expect(dejaVu.post!.hasGlyphNames, isTrue);
+      expect(roboto.post!.hasGlyphNames, isFalse);
+    });
+
+    test('an OS/2 claim is a hint and the cmap is the answer', () {
+      // The categorical fallback test, on a real font. DejaVu Sans sets the
+      // Thai coverage bit and has no Thai glyph whatsoever; Ahem sets the Greek
+      // bit and has no Greek. A fallback that trusted the bit would hand back a
+      // face full of .notdef, which is why every candidate is confirmed through
+      // the cmap.
+      final Typeface dejaVu = _dejaVu();
+      expect(dejaVu.declaresCodePoint(0x0E01), isTrue, reason: 'claims Thai');
+      expect(dejaVu.coversCodePoint(0x0E01), isFalse, reason: 'has no Thai');
+
+      final Typeface ahem = _ahem();
+      expect(ahem.declaresCodePoint(0x03B1), isTrue, reason: 'claims Greek');
+      expect(ahem.coversCodePoint(0x03B1), isFalse);
+
+      // And the reverse direction: a character with no assigned range bit at
+      // all, which DejaVu draws perfectly well. Excluding a face because it
+      // failed the bit test would lose this.
+      expect(Os2Table.rangeForCodePoint(0x1F600), isNull);
+      expect(dejaVu.declaresCodePoint(0x1F600), isFalse);
+      expect(dejaVu.coversCodePoint(0x1F600), isTrue);
+    });
+
+    test('a variation selector is answered by the font or by nobody', () {
+      // None of the three fixtures carries cmap format 14, and the honest
+      // answer to "which glyph for this pair" is then null - not the base
+      // glyph, which would look like the font had declared a preference.
+      final Typeface roboto = _roboto();
+      expect(roboto.cmap.variationSelectors, isNull);
+      expect(roboto.glyphForVariation(0x263A, 0xFE0F), isNull);
+    });
+  });
+
   group('glyph outlines', () {
     test('a simple glyph decodes to a closed path with real bounds', () {
       final Typeface face = _roboto();
@@ -344,24 +480,32 @@ void main() {
     });
   });
 
-  group('refusals', () {
-    test('a CFF font is refused by name, not by a missing table', () {
-      // OTTO fonts exist on every desktop; failing with "no glyf table" would
-      // send the reader looking in the wrong place entirely.
+  group('outline formats', () {
+    test('a CFF font opens and reports itself as CFF', () {
+      // This test used to assert the opposite: that an OTTO font was refused
+      // by name. It is inverted rather than deleted because the refusal was
+      // the *observable* consequence of having no charstring interpreter, and
+      // the thing worth keeping under test is that opening an OTTO file now
+      // takes the CFF path rather than failing on a missing `glyf`. The
+      // charstring interpreter itself is tested in `cff_test.dart`.
       final File otf = File('C:/Windows/Fonts/Academico-Regular.otf');
       if (!otf.existsSync()) {
         markTestSkipped('needs a CFF font; none found on this machine');
         return;
       }
 
-      expect(
-        () => Typeface.parse(otf.readAsBytesSync()),
-        throwsA(isA<FontFormatException>().having(
-          (FontFormatException e) => e.message,
-          'message',
-          contains('CFF'),
-        )),
-      );
+      final Typeface face = Typeface.parse(otf.readAsBytesSync());
+      expect(face.isCff, isTrue);
+      expect(face.cff, isNotNull);
+      expect(face.sfnt.outlineTable, 'CFF ');
+      expect(face.outlineOf(face.glyphForCodePoint(0x41)).isEmpty, isFalse);
+    });
+
+    test('a TrueType font stays on the glyf path', () {
+      final Typeface face = _roboto();
+      expect(face.isCff, isFalse);
+      expect(face.cff, isNull);
+      expect(face.sfnt.outlineTable, 'glyf');
     });
   });
 

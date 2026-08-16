@@ -50,8 +50,34 @@ const int kModeSolid = 0;
 const int kModeCoverageMask = 1;
 const int kModeTexturedImage = 2;
 
+/// Values of the `uYFlip` uniform: the orientation convention, declared.
+///
+/// OpenGL's framebuffer origin is the **bottom-left** corner. Every texture
+/// this renderer samples - an uploaded image, the coverage atlas, the glyph
+/// atlas - is stored **top-down**, row 0 first, because that is the order a
+/// [Framebuffer] and a rasterised mask are laid out in and converting them
+/// would cost a copy per upload.
+///
+/// The two conventions meet at a layer. A pass that renders into a texture and
+/// is then *sampled* must leave the image top-down like every other texture,
+/// so it inverts its projection ([kYFlipTopDown]) - and, in `gl_backend.dart`,
+/// its scissor rectangle with it. A pass that renders into a surface which is
+/// *presented* or *read back* - a window's back buffer, or the offscreen
+/// target's readback framebuffer - keeps GL's native orientation
+/// ([kYFlipDefault]), because `SwapBuffers` and the row flip in `_readPixels`
+/// both already expect it.
+///
+/// Getting this backwards does not fail, it draws every layer upside down,
+/// which is exactly the kind of wrong picture that looks like a bug in the
+/// scene. It is a uniform rather than two programs because a program switch
+/// per pass costs more than an int compare per vertex that is uniform across
+/// the whole draw call.
+const int kYFlipDefault = 0;
+const int kYFlipTopDown = 1;
+
 const String _vertexBody = '''
 uniform vec2 uViewport;
+uniform int uYFlip;
 
 void main() {
   vTexCoord = aTexCoord;
@@ -62,9 +88,15 @@ void main() {
   // surface; normalised device coordinates are y-up with the origin in the
   // middle. The flip lives here, once, instead of in every backend that
   // computes a rectangle.
+  float ndcY = 1.0 - aPosition.y / uViewport.y * 2.0;
+  // ...and is inverted again when the pass renders into a texture something
+  // else will sample. See kYFlipTopDown for the whole argument; in one line,
+  // GL stores a rendered image bottom-up and every texture this renderer
+  // samples is top-down, so a layer target has to be written upside down to
+  // come out the right way up.
   gl_Position = vec4(
     aPosition.x / uViewport.x * 2.0 - 1.0,
-    1.0 - aPosition.y / uViewport.y * 2.0,
+    uYFlip == 0 ? ndcY : -ndcY,
     0.0,
     1.0);
 }

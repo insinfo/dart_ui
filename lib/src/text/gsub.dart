@@ -24,11 +24,9 @@
 /// * **Type 6**, chained context substitution, all three formats. `calt`,
 ///   `clig` and most of the interesting parts of `ccmp` are made of these.
 /// * **Type 7**, extension - see below.
-///
-/// **Type 8**, reverse chaining single substitution, is not implemented. It
-/// exists to substitute right-to-left in one pass and is used almost entirely
-/// by Nastaliq-style Arabic and by a few `rclt` implementations; a font that
-/// needs it needs an Arabic shaper too, and that is a larger absence.
+/// * **Type 8**, reverse chaining contextual single substitution - the one
+///   lookup that runs backwards. See [GsubTable._reverseChainSingle] for why
+///   the direction is the whole point of it.
 ///
 /// ## Extension is not optional
 ///
@@ -106,6 +104,10 @@ final class GsubTable {
   void _runLookup(int lookupIndex, GlyphBuffer buffer, GdefTable? gdef) {
     final Lookup lookup = header.lookupList.lookups[lookupIndex];
     final GlyphFilter filter = GlyphFilter(lookup, gdef);
+    if (_isReverse(lookup)) {
+      _runReverseLookup(lookup, filter, buffer, gdef);
+      return;
+    }
     int index = 0;
     while (index < buffer.length) {
       if (!filter.skips(buffer.glyphs[index])) {
@@ -119,6 +121,57 @@ final class GsubTable {
         }
       }
       index++;
+    }
+  }
+
+  /// Whether [lookup] is a type 8, directly or through an extension.
+  ///
+  /// The question has to be asked of the *wrapped* type, because a font
+  /// compiler that outgrew 16-bit offsets wraps every lookup it emits,
+  /// including the reverse one. A shaper that only checked `lookup.type`
+  /// would run a wrapped type 8 forwards, which is not a crash and not an
+  /// exception - it is Nastaliq text substituted in the wrong order.
+  ///
+  /// Only the first subtable is consulted, as HarfBuzz does: the spec requires
+  /// every subtable of a lookup to have the same type, so a lookup that
+  /// disagreed with itself is malformed and the first subtable is as good an
+  /// answer as any.
+  ///
+  /// Memoised by subtable offset, because [_applyNested] asks it once per
+  /// nested application - which is once per matched glyph of a contextual
+  /// rule - and the answer is a property of the bytes, which do not change.
+  bool _isReverse(Lookup lookup) {
+    if (lookup.type == 8) return true;
+    if (lookup.type != 7 || lookup.subtableOffsets.isEmpty) return false;
+    final int offset = lookup.subtableOffsets.first;
+    final bool? known = _wrapsReverse[offset];
+    if (known != null) return known;
+    final FontReader reader = _data.readerAt(offset, table: 'GSUB');
+    reader.skip(2); // extension format
+    final bool reverse = reader.readUint16() == 8;
+    _wrapsReverse[offset] = reverse;
+    return reverse;
+  }
+
+  final Map<int, bool> _wrapsReverse = <int, bool>{};
+
+  /// Sweeps [buffer] back to front with a type 8 lookup.
+  ///
+  /// The only backwards sweep in `GSUB`, and the ordering is the feature
+  /// rather than an implementation detail - see [_reverseChainSingle].
+  ///
+  /// Nothing here has to compensate for a changing buffer length, because a
+  /// reverse chaining lookup substitutes one glyph for one glyph and can do
+  /// nothing else: it has no sequence lookup records to call anything with.
+  void _runReverseLookup(
+    Lookup lookup,
+    GlyphFilter filter,
+    GlyphBuffer buffer,
+    GdefTable? gdef,
+  ) {
+    for (int index = buffer.length - 1; index >= 0; index--) {
+      if (filter.skips(buffer.glyphs[index])) continue;
+      _applyLookup(lookup, filter, buffer, index, gdef, 0);
     }
   }
 
@@ -164,6 +217,9 @@ final class GsubTable {
       case 2:
       case 3:
       case 4:
+      // Type 8's coverage is the input coverage, in the same slot: the glyph
+      // under the cursor is the one glyph it substitutes.
+      case 8:
         reader.skip(2); // substitution format
         return _cache.coverage(offset + reader.readUint16());
       case 5:
@@ -208,6 +264,13 @@ final class GsubTable {
     if (depth >= _maxRecursionDepth) return 0;
     if (lookupIndex >= header.lookupList.length) return 0;
     final Lookup lookup = header.lookupList.lookups[lookupIndex];
+    // The spec forbids a contextual rule from calling a reverse chaining
+    // lookup, and the reason is not arbitrary: a type 8 lookup is defined by
+    // the order its whole sweep runs in, and there is no such thing as running
+    // one at a single position on somebody else's behalf. Refusing it by name
+    // here is the difference between "this font's rule does nothing" and "this
+    // font's rule substitutes in an order nobody specified".
+    if (_isReverse(lookup)) return 0;
     final GlyphFilter filter = GlyphFilter(lookup, gdef);
     final int before = buffer.length;
     _applyLookup(lookup, filter, buffer, index, gdef, depth + 1);
@@ -239,10 +302,12 @@ final class GsubTable {
         return _chainContext(offset, filter, buffer, index, gdef, depth);
       case 7:
         return _extension(offset, lookup, filter, buffer, index, gdef, depth);
+      case 8:
+        return _reverseChainSingle(offset, filter, buffer, index);
       default:
-        // Type 8 and anything a later spec revision adds. Ignoring an unknown
-        // type is the spec's own instruction and is why a font may use a new
-        // lookup type without breaking old shapers.
+        // Anything a later spec revision adds. Ignoring an unknown type is the
+        // spec's own instruction and is why a font may use a new lookup type
+        // without breaking old shapers.
         return -1;
     }
   }
@@ -598,6 +663,105 @@ final class GsubTable {
           table: 'GSUB',
         );
     }
+  }
+
+  /// Type 8: one glyph for one glyph, decided by context, applied backwards.
+  ///
+  /// Structurally this is a chained context rule whose input is exactly one
+  /// glyph and whose action is a direct substitution rather than a list of
+  /// nested lookups. Everything that makes it worth having is in the word
+  /// *reverse*.
+  ///
+  /// ## Why the order is the feature
+  ///
+  /// [_runReverseLookup] walks the buffer from the last glyph to the first,
+  /// and each substitution it makes is immediately visible to the glyphs still
+  /// to be processed - which are the ones *before* it, and which see it as
+  /// lookahead. So a font can write a single rule that propagates a decision
+  /// leftwards along a whole word: the final letter picks its shape, the
+  /// letter before it picks a shape that fits the one just chosen, and so on
+  /// to the start of the word. That is exactly how Nastaliq Arabic chooses the
+  /// height of each letter in a descending ligature chain, and it is why the
+  /// spec gives this its own lookup type instead of letting a type 6 do it -
+  /// a forward sweep would decide each letter against the *unsubstituted*
+  /// letter after it, which for a font that relies on the propagation means
+  /// every letter but the last one is wrong.
+  ///
+  /// ## It cannot call anything
+  ///
+  /// There are no sequence lookup records in this format, so there is nothing
+  /// to recurse into - and the spec separately forbids other lookups from
+  /// calling *it*, which [_applyNested] enforces. The recursion depth counter
+  /// the other contextual types carry is therefore absent here rather than
+  /// merely unused.
+  ///
+  /// ## Which way is "backtrack"
+  ///
+  /// Backtrack means "earlier in [GlyphBuffer]", full stop, and lookahead
+  /// means "later in it". The buffer is in **logical order** for the whole of
+  /// substitution and positioning - `shaper.dart` reverses it into visual
+  /// order once, at the very end - so for right-to-left text the backtrack
+  /// glyphs are the ones that will be drawn to the *right*. Reading the rule
+  /// as visual instead of logical mirrors every Arabic contextual rule in the
+  /// font, which is a failure that still produces plausible glyphs.
+  ///
+  /// Within the backtrack array itself the order is nearest-first, as it is
+  /// for type 6; [matchBacktrack] owns that detail.
+  int _reverseChainSingle(
+    int offset,
+    GlyphFilter filter,
+    GlyphBuffer buffer,
+    int index,
+  ) {
+    final FontReader reader = _data.readerAt(offset, table: 'GSUB');
+    final int format = reader.readUint16();
+    if (format != 1) {
+      throw FontFormatException(
+        'reverse chaining substitution format $format is not defined',
+        offset: offset,
+        table: 'GSUB',
+      );
+    }
+    final int coverageOffset = reader.readUint16();
+    final int coverageIndex =
+        _cache.coverage(offset + coverageOffset).indexOf(buffer.glyphs[index]);
+    if (coverageIndex < 0) return -1;
+
+    final int backtrackCount = reader.readUint16();
+    final Uint16List backtrack = reader.readUint16List(backtrackCount);
+    final int lookaheadCount = reader.readUint16();
+    final Uint16List lookahead = reader.readUint16List(lookaheadCount);
+    final int glyphCount = reader.readUint16();
+    // The substitute array is indexed by coverage index, so a font whose two
+    // arrays disagree in length has no answer for this glyph. Refusing to
+    // apply is the only reading that cannot substitute a glyph id read from
+    // whatever bytes follow the table.
+    if (coverageIndex >= glyphCount) return -1;
+
+    if (!matchBacktrack(
+      buffer,
+      filter,
+      index,
+      backtrackCount,
+      (int element, int glyph) =>
+          _cache.coverage(offset + backtrack[element]).covers(glyph),
+    )) {
+      return -1;
+    }
+    if (!matchLookahead(
+      buffer,
+      filter,
+      index,
+      lookaheadCount,
+      (int element, int glyph) =>
+          _cache.coverage(offset + lookahead[element]).covers(glyph),
+    )) {
+      return -1;
+    }
+
+    reader.skip(coverageIndex * 2);
+    buffer.substitute(index, reader.readUint16());
+    return index + 1;
   }
 
   /// Walks the rules of a format 1 or 2 context rule set.

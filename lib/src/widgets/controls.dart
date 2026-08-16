@@ -21,14 +21,26 @@ import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
 import '../layout/render_viewport.dart';
 import '../platform/input_events.dart';
+import '../rendering/text/font_registry.dart';
+import '../text/paragraph.dart' show Paragraph, TextBox;
+import '../text/shaper.dart' show UnsupportedScriptException;
+import '../text/typeface.dart' show ScaledTypeface;
 import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
 import 'semantics.dart';
 import 'style.dart';
+import 'text_editing.dart';
 import 'theme.dart';
 import 'widget.dart';
+
+/// The editing model is part of this file's contract, not an implementation
+/// detail of it: a caller that holds a [TextEditingController] needs
+/// [TextEditingValue], [TextSelection] and [TextRange] to say anything about
+/// it. Re-exported here rather than added to `lib/dart_ui.dart` so the whole
+/// text-editing surface arrives with the control that uses it.
+export 'text_editing.dart';
 
 // ---------------------------------------------------------------------------
 // Observable values and text editing state
@@ -66,126 +78,407 @@ class ValueNotifier<T> {
   }
 }
 
-/// Text plus a selection, which are one value and not two.
+/// Text, a selection and an IME composing region, which are one value and not
+/// three.
 ///
 /// Keeping them together is what makes an edit atomic: replacing a selection
 /// changes the text and collapses the caret in a single notification, so no
-/// listener can observe a caret pointing past the end of the string.
+/// listener can observe a caret pointing past the end of the string. The whole
+/// triple is available as a [TextEditingValue] through [editingValue], which is
+/// the unit an input method reads and writes.
+///
+/// ## Every offset here is a grapheme cluster boundary
+///
+/// This class used to move its caret and delete by one **UTF-16 code unit**,
+/// which put the caret between the halves of a surrogate pair and let one
+/// backspace cut `😀` in half or strip the accent off a decomposed `á` and
+/// leave it hanging on the letter before. Motion now goes through [TextMotion],
+/// which goes through `GraphemeBreaks` (UAX #29), and every offset that enters
+/// this class from outside is snapped to a cluster boundary - see
+/// [setSelection] for the direction it snaps and why.
+///
+/// The invariant is *also* checked, not merely maintained: [_pushUndo] and
+/// [editingValue] both build a [TextEditingValue], whose constructor throws on
+/// a mid-cluster offset. So the undo stack doubles as an assertion that this
+/// controller has never put its caret somewhere illegal.
+///
+/// ## Limits, stated out loud
+///
+///  * **Motion is logical.** Left means "toward offset zero", not "toward the
+///    left edge of the screen". In bidirectional text those differ, and the
+///    caret will jump across a direction boundary rather than sliding along it.
+///    Visual-order motion needs the reordered runs of a laid-out line; see
+///    `text_editing.dart`.
+///  * **No line motion.** Up, Down and wrap-aware Home/End need the line array
+///    of a `Paragraph`. Home and End here go to the ends of the whole value.
+///  * **The undo stack is unbounded and per-edit.** No coalescing of runs of
+///    typing into one entry, and no cap, so a very long session holds every
+///    intermediate string. Both are real and both are deliberate for now: the
+///    coalescing policy is a timing question, and a cap without one silently
+///    throws away the entries a user is most likely to want.
 final class TextEditingController extends ValueNotifier<String> {
   TextEditingController([super.value = '']) {
-    _selectionStart = _value.length;
-    _selectionEnd = _value.length;
+    _base = _value.length;
+    _extent = _value.length;
   }
 
-  int _selectionStart = 0;
-  int _selectionEnd = 0;
-  final List<({String text, int start, int end})> _undo =
-      <({String text, int start, int end})>[];
-  final List<({String text, int start, int end})> _redo =
-      <({String text, int start, int end})>[];
+  int _base = 0;
+  int _extent = 0;
+  TextAffinity _affinity = TextAffinity.downstream;
+  TextRange _composing = TextRange.empty;
+  final List<TextEditingValue> _undo = <TextEditingValue>[];
+  final List<TextEditingValue> _redo = <TextEditingValue>[];
 
-  int get selectionStart => _selectionStart;
+  /// The anchor of the selection: the end Shift does *not* move.
+  int get selectionStart => _base;
 
-  int get selectionEnd => _selectionEnd;
+  /// The moving end of the selection, and where the caret is drawn.
+  int get selectionEnd => _extent;
 
-  bool get hasSelection => _selectionStart != _selectionEnd;
+  bool get hasSelection => _base != _extent;
 
   /// The selection with its ends ordered, which is what every edit needs.
-  ({int start, int end}) get orderedSelection =>
-      _selectionStart <= _selectionEnd
-          ? (start: _selectionStart, end: _selectionEnd)
-          : (start: _selectionEnd, end: _selectionStart);
+  ({int start, int end}) get orderedSelection => _base <= _extent
+      ? (start: _base, end: _extent)
+      : (start: _extent, end: _base);
 
   String get selectedText {
     final ({int start, int end}) range = orderedSelection;
     return value.substring(range.start, range.end);
   }
 
-  @override
-  set value(String value) {
-    super.value = value;
-    _clampSelection();
+  /// The caret's side of its offset; see [TextSelection.affinity].
+  TextAffinity get affinity => _affinity;
+
+  /// The region an input method is composing into, or [TextRange.empty].
+  TextRange get composing => _composing;
+
+  bool get isComposing => _composing.isValid;
+
+  /// The whole editing state as one immutable value.
+  ///
+  /// Building it validates it, so reading this getter is also a self-check.
+  TextEditingValue get editingValue => TextEditingValue(
+        text: _value,
+        selection: TextSelection(
+          baseOffset: _base,
+          extentOffset: _extent,
+          affinity: _affinity,
+        ),
+        composing: _composing,
+      );
+
+  /// Replaces the whole editing state in one notification.
+  ///
+  /// This is the atomic apply point an IME bridge should use when it has a
+  /// complete new state rather than a delta. It does **not** push an undo
+  /// entry: like `value =`, it is an assignment of state rather than a user
+  /// edit, and a bridge that wants the change to be undoable pushes its own
+  /// entry by going through [replaceSelection] or [commitText] instead.
+  set editingValue(TextEditingValue next) {
+    if (next == editingValue) return;
+    _value = next.text;
+    _base = next.selection.baseOffset;
+    _extent = next.selection.extentOffset;
+    _affinity = next.selection.affinity;
+    _composing = next.composing;
+    notifyListeners();
   }
 
-  void setSelection(int start, int end) {
-    _selectionStart = start.clamp(0, value.length);
-    _selectionEnd = end.clamp(0, value.length);
+  /// Replaces the text, keeping the selection where it still fits.
+  ///
+  /// The order matters and it changed: the selection is repaired *before*
+  /// listeners are told, so no listener can see a caret pointing past the end
+  /// of the new string. Any composing region is dropped, because the input
+  /// method's idea of which characters it owns cannot survive a wholesale
+  /// replacement it did not make.
+  @override
+  set value(String value) {
+    if (value == _value) return;
+    _value = value;
+    _composing = TextRange.empty;
+    _normalizeSelection();
+    notifyListeners();
+  }
+
+  /// Places the selection, snapping both ends onto grapheme cluster
+  /// boundaries.
+  ///
+  /// Snapping rather than throwing, because this is where arbitrary offsets
+  /// legitimately arrive: a hit test, a restored document, an accessibility
+  /// client. The direction is **down** - an offset inside a cluster becomes
+  /// that cluster's start - which is declared rather than "nearest" because
+  /// nearest is not well defined for a seven-code-point family emoji, and
+  /// because a selection that only ever shrinks toward the start cannot swallow
+  /// a character the caller never named. Callers that want the invariant
+  /// *enforced* instead of repaired build a [TextEditingValue].
+  void setSelection(
+    int start,
+    int end, {
+    TextAffinity affinity = TextAffinity.downstream,
+  }) {
+    _base = TextMotion.snapDown(_value, start);
+    _extent = TextMotion.snapDown(_value, end);
+    _affinity = affinity;
     notifyListeners();
   }
 
   void collapseTo(int offset) => setSelection(offset, offset);
 
+  /// Collapses the caret to a position that already carries an affinity, which
+  /// is what `Paragraph.getPositionForOffset` returns from a hit test.
+  void collapseToPosition(TextPosition position) => setSelection(
+        position.offset,
+        position.offset,
+        affinity: position.affinity,
+      );
+
   void selectAll() => setSelection(0, value.length);
 
   /// Replaces the selection with [replacement] and collapses the caret after
   /// it.
+  ///
+  /// The caret snaps **up** afterwards, not down: typing `a` in front of a lone
+  /// combining accent makes the two into one cluster, and the caret belongs
+  /// after the accent rather than in front of the letter that was just typed.
   void replaceSelection(String replacement) {
     final ({int start, int end}) range = orderedSelection;
     _pushUndo();
     final String next =
         '${value.substring(0, range.start)}$replacement${value.substring(range.end)}';
     _value = next;
-    _selectionStart = range.start + replacement.length;
-    _selectionEnd = _selectionStart;
+    _collapseTo(TextMotion.snapUp(next, range.start + replacement.length));
+    _composing = TextRange.empty;
     notifyListeners();
   }
 
-  /// Deletes backwards: the selection if there is one, otherwise one character.
+  /// Deletes backwards: the selection if there is one, otherwise **one
+  /// grapheme cluster**.
+  ///
+  /// One cluster, so backspace over `👨‍👩‍👧` removes the whole family rather
+  /// than the last of its three faces, and backspace over decomposed `á`
+  /// removes letter and accent together instead of leaving an orphan.
   void deleteBackward() {
     if (hasSelection) {
       replaceSelection('');
       return;
     }
-    if (_selectionStart == 0) return;
-    _pushUndo();
-    _value = value.substring(0, _selectionStart - 1) +
-        value.substring(_selectionStart);
-    _selectionStart -= 1;
-    _selectionEnd = _selectionStart;
-    notifyListeners();
+    _deleteRange(TextMotion.previousCluster(_value, _extent), _extent);
   }
 
-  /// Deletes forwards, the Delete key.
+  /// Deletes forwards, the Delete key, one grapheme cluster at a time.
   void deleteForward() {
     if (hasSelection) {
       replaceSelection('');
       return;
     }
-    if (_selectionStart >= value.length) return;
-    _pushUndo();
-    _value = value.substring(0, _selectionStart) +
-        value.substring(_selectionStart + 1);
-    notifyListeners();
+    _deleteRange(_extent, TextMotion.nextCluster(_value, _extent));
   }
 
-  /// Moves the caret by [delta], extending the selection when [extend].
+  /// Ctrl+Backspace: deletes back to the start of the previous word, taking the
+  /// whitespace in between with it.
+  ///
+  /// At offset zero this does nothing at all - no notification, no undo entry -
+  /// rather than deleting "the empty word", which is the shape of bug that
+  /// leaves an undo stack full of no-ops.
+  void deleteWordBackward() {
+    if (hasSelection) {
+      replaceSelection('');
+      return;
+    }
+    _deleteRange(TextMotion.previousWord(_value, _extent), _extent);
+  }
+
+  /// Ctrl+Delete: deletes forward to the start of the next word.
+  void deleteWordForward() {
+    if (hasSelection) {
+      replaceSelection('');
+      return;
+    }
+    _deleteRange(_extent, TextMotion.nextWord(_value, _extent));
+  }
+
+  /// Moves the caret by [delta] **grapheme clusters**, extending the selection
+  /// when [extend].
+  ///
+  /// The unit changed: [delta] used to be a count of UTF-16 code units, so
+  /// `moveCaret(1)` could land inside a surrogate pair. It is now a count of
+  /// user-perceived characters, which is what an arrow key means. The sign is
+  /// the direction and the magnitude is the number of clusters, so
+  /// `moveCaret(-3)` is three presses of Left.
   void moveCaret(int delta, {bool extend = false}) {
-    final int target = (_selectionEnd + delta).clamp(0, value.length);
+    int target = _extent;
+    for (int i = 0; i < delta.abs(); i++) {
+      target = delta < 0
+          ? TextMotion.previousCluster(_value, target)
+          : TextMotion.nextCluster(_value, target);
+    }
     if (extend) {
-      _selectionEnd = target;
+      _extent = target;
     } else {
       // Collapsing a selection with an arrow key lands on the edge you moved
       // toward, which is what every platform's text field does.
       final ({int start, int end}) range = orderedSelection;
-      final int base =
-          hasSelection ? (delta < 0 ? range.start : range.end) : target;
-      _selectionStart = base;
-      _selectionEnd = base;
+      _collapseTo(
+          hasSelection ? (delta < 0 ? range.start : range.end) : target);
     }
+    _affinity = TextAffinity.downstream;
+    notifyListeners();
+  }
+
+  /// Ctrl+Left and Ctrl+Right: moves the caret one word, extending when
+  /// [extend].
+  ///
+  /// [direction] is a sign, not a count: negative is toward the start. Zero
+  /// does nothing rather than being read as "one step in some direction".
+  ///
+  /// Unlike [moveCaret], a word move with a selection and without [extend] does
+  /// not merely collapse to the edge - it moves a whole word from the extent,
+  /// which is what Ctrl+Left does in every editor that has both keys.
+  ///
+  /// **Cost.** Bounded per press: `WordBreaks` reconstructs its rule context
+  /// from a bounded point - back over the run of regional indicators plus two
+  /// items, for the three-character rules WB7, WB7c and WB11 - so a press costs
+  /// the segment it crosses and not the paragraph. The one unbounded-looking
+  /// part is skipping blank segments, which costs one bounded step per blank
+  /// line crossed; see [TextMotion.nextWord].
+  void moveCaretByWord(int direction, {bool extend = false}) {
+    if (direction == 0) return;
+    final int target = direction < 0
+        ? TextMotion.previousWord(_value, _extent)
+        : TextMotion.nextWord(_value, _extent);
+    if (extend) {
+      _extent = target;
+    } else {
+      _collapseTo(target);
+    }
+    _affinity = TextAffinity.downstream;
     notifyListeners();
   }
 
   void moveCaretToStart({bool extend = false}) {
-    _selectionEnd = 0;
-    if (!extend) _selectionStart = 0;
+    _extent = 0;
+    if (!extend) _base = 0;
+    _affinity = TextAffinity.downstream;
     notifyListeners();
   }
 
   void moveCaretToEnd({bool extend = false}) {
-    _selectionEnd = value.length;
-    if (!extend) _selectionStart = value.length;
+    _extent = value.length;
+    if (!extend) _base = value.length;
+    // Upstream: the caret at the end of the text belongs to the run that ends
+    // there, which is the only answer that keeps it beside the last character
+    // when that character is right-to-left.
+    _affinity = TextAffinity.upstream;
     notifyListeners();
   }
+
+  // -------------------------------------------------------------------------
+  // Input method composition
+  // -------------------------------------------------------------------------
+
+  /// Replaces the composing region - or the selection, when no composition is
+  /// under way - with the input method's provisional text.
+  ///
+  /// This is the one call every backend's "set composition string" path lands
+  /// on: `WM_IME_COMPOSITION`/`GCS_COMPSTR` on Win32, the XIM preedit-draw
+  /// callback on X11, `setMarkedText:selectedRange:replacementRange:` on macOS.
+  ///
+  /// [caretOffset] is the caret's position **within** [composingText], in code
+  /// units, which is how all three platforms report it; null puts the caret at
+  /// its end.
+  ///
+  /// A composing session pushes **one** undo entry, taken when the session
+  /// starts. Pushing one per keystroke of a Japanese conversion would make a
+  /// single Ctrl+Z undo one hiragana of a word the user experienced as one
+  /// action.
+  ///
+  /// If the platform hands back a span that cuts a cluster - which it can, when
+  /// the surrounding text combines with the provisional text - the region is
+  /// widened outwards to whole clusters. Widened rather than narrowed: a
+  /// narrowed region would paint part of the provisional text as though it were
+  /// already committed.
+  void replaceComposingRegion(String composingText, {int? caretOffset}) {
+    final int start;
+    final int end;
+    if (_composing.isValid) {
+      start = _composing.start;
+      end = _composing.end;
+    } else {
+      final ({int start, int end}) range = orderedSelection;
+      start = range.start;
+      end = range.end;
+      _pushUndo();
+    }
+    final String next =
+        '${_value.substring(0, start)}$composingText${_value.substring(end)}';
+    _value = next;
+    if (composingText.isEmpty) {
+      _composing = TextRange.empty;
+    } else {
+      _composing = TextRange(
+        TextMotion.snapDown(next, start),
+        TextMotion.snapUp(next, start + composingText.length),
+      );
+    }
+    _collapseTo(
+      TextMotion.snapUp(
+        next,
+        start +
+            (caretOffset ?? composingText.length)
+                .clamp(0, composingText.length),
+      ),
+    );
+    notifyListeners();
+  }
+
+  /// Accepts the provisional text as it stands and ends the composition.
+  ///
+  /// The text does not change; the region stops being provisional and the caret
+  /// moves to its end. This is the `GCS_RESULTSTR` path once the result string
+  /// has already been applied, and macOS's `insertText:` when the marked text
+  /// and the inserted text are the same string.
+  void commitComposing() {
+    if (!_composing.isValid) return;
+    _collapseTo(_composing.end);
+    _composing = TextRange.empty;
+    notifyListeners();
+  }
+
+  /// Commits [text] over the composing region, or over the selection when
+  /// nothing is composing.
+  ///
+  /// macOS `insertText:replacementRange:`; Win32 `GCS_RESULTSTR`; an X11
+  /// commit string.
+  void commitText(String text) {
+    if (!_composing.isValid) {
+      replaceSelection(text);
+      return;
+    }
+    final int start = _composing.start;
+    final String next =
+        '${_value.substring(0, start)}$text${_value.substring(_composing.end)}';
+    _value = next;
+    _composing = TextRange.empty;
+    _collapseTo(TextMotion.snapUp(next, start + text.length));
+    notifyListeners();
+  }
+
+  /// Drops the composing region without touching the text or the caret.
+  ///
+  /// `WM_IME_ENDCOMPOSITION`, XIM preedit-done, `unmarkText`. Distinct from
+  /// [commitComposing], which also moves the caret to the end of the region:
+  /// this one is "the input method has stopped telling me about this span",
+  /// which can happen with the caret anywhere.
+  void clearComposing() {
+    if (!_composing.isValid) return;
+    _composing = TextRange.empty;
+    notifyListeners();
+  }
+
+  // -------------------------------------------------------------------------
+  // Undo
+  // -------------------------------------------------------------------------
 
   bool get canUndo => _undo.isNotEmpty;
 
@@ -193,34 +486,65 @@ final class TextEditingController extends ValueNotifier<String> {
 
   void undo() {
     if (_undo.isEmpty) return;
-    _redo.add((text: _value, start: _selectionStart, end: _selectionEnd));
-    final ({String text, int start, int end}) previous = _undo.removeLast();
-    _value = previous.text;
-    _selectionStart = previous.start;
-    _selectionEnd = previous.end;
-    notifyListeners();
+    _redo.add(editingValue);
+    _restore(_undo.removeLast());
   }
 
   void redo() {
     if (_redo.isEmpty) return;
-    _undo.add((text: _value, start: _selectionStart, end: _selectionEnd));
-    final ({String text, int start, int end}) next = _redo.removeLast();
-    _value = next.text;
-    _selectionStart = next.start;
-    _selectionEnd = next.end;
+    _undo.add(editingValue);
+    _restore(_redo.removeLast());
+  }
+
+  /// Restores a recorded state, **without** its composing region.
+  ///
+  /// A composing region belongs to a live input-method session, and undoing
+  /// back into one would leave the field painting an underline that no IME is
+  /// behind and that nothing will ever clear.
+  void _restore(TextEditingValue state) {
+    _value = state.text;
+    _base = state.selection.baseOffset;
+    _extent = state.selection.extentOffset;
+    _affinity = state.selection.affinity;
+    _composing = TextRange.empty;
     notifyListeners();
   }
 
   void _pushUndo() {
-    _undo.add((text: _value, start: _selectionStart, end: _selectionEnd));
+    // Built through TextEditingValue on purpose: its constructor rejects a
+    // mid-cluster offset, so every edit path is checked against the invariant
+    // rather than trusted to have kept it.
+    _undo.add(editingValue);
     // A new edit invalidates the redo branch; keeping it would let redo
     // resurrect text the user has since replaced.
     _redo.clear();
   }
 
-  void _clampSelection() {
-    _selectionStart = _selectionStart.clamp(0, _value.length);
-    _selectionEnd = _selectionEnd.clamp(0, _value.length);
+  /// Removes `[from, to)`, collapsing the caret where the text was.
+  ///
+  /// Silent and free when the range is empty, which is what makes backspace at
+  /// offset zero and Delete at the end do nothing at all rather than pushing an
+  /// undo entry that restores the same string.
+  void _deleteRange(int from, int to) {
+    if (from >= to) return;
+    _pushUndo();
+    _value = _value.substring(0, from) + _value.substring(to);
+    _collapseTo(from);
+    _composing = TextRange.empty;
+    notifyListeners();
+  }
+
+  void _collapseTo(int offset) {
+    _base = offset;
+    _extent = offset;
+    _affinity = TextAffinity.downstream;
+  }
+
+  /// Brings the selection back inside the text and onto cluster boundaries
+  /// after the text has changed underneath it.
+  void _normalizeSelection() {
+    _base = TextMotion.snapDown(_value, _base.clamp(0, _value.length));
+    _extent = TextMotion.snapDown(_value, _extent.clamp(0, _value.length));
   }
 }
 
@@ -1413,6 +1737,38 @@ final class RenderTextField extends RenderBox with ControlBehavior {
   String get displayText =>
       _obscure ? '*' * _controller.value.length : _controller.value;
 
+  /// [displayText] laid out: the source of every caret, selection and hit-test
+  /// coordinate this field uses.
+  ///
+  /// A `Paragraph` rather than the single shaped run [ControlBehavior] measures
+  /// labels with, because a run has one direction and a caret does not. At a
+  /// direction boundary an offset has two positions on the line, a selection
+  /// that crosses one is several disjoint rectangles, and a hit test has to
+  /// snap to a grapheme cluster - three things a single run cannot express and
+  /// this does. The layout goes through `uiTextPainter`'s cache, so redrawing
+  /// an unchanged field re-shapes nothing.
+  ///
+  /// **Null in two cases, both of which fall back to the single-run geometry
+  /// and both of which are wrong for bidirectional text - stated here rather
+  /// than hidden:**
+  ///
+  ///  * No face is installed, in which case nothing is drawn either.
+  ///  * The text contains a script whose shaping model is not implemented.
+  ///    `sharedShaper`'s documented policy is to throw rather than render
+  ///    wrongly, and that policy is right for a paragraph the caller asked for;
+  ///    it is not right for a *caret*, which would take down the whole frame
+  ///    over text the label painter is still willing to draw. So exactly one
+  ///    named exception is caught, and only around layout.
+  Paragraph? get paragraph {
+    final ScaledTypeface? font = labelFont;
+    if (font == null) return null;
+    try {
+      return uiTextPainter.layout(displayText, font);
+    } on UnsupportedScriptException {
+      return null;
+    }
+  }
+
   @override
   void performLayout() => size = constraints.constrain(
         Size(160, theme.effectiveControlHeight),
@@ -1425,12 +1781,20 @@ final class RenderTextField extends RenderBox with ControlBehavior {
   void handlePointerEvent(PointerEvent event) {
     super.handlePointerEvent(event);
     if (!enabled || event is! PointerDownEvent) return;
-    // Place the caret at the character boundary nearest the click. The text
-    // painted is not the text stored when the field is obscured, so the hit
-    // test measures what is on screen; anything else puts the caret at the
-    // wrong bullet.
-    final double x =
-        globalToLocal(event.logicalPosition).dx - theme.effectiveControlPadding;
+    // Place the caret where the click landed. The text painted is not the text
+    // stored when the field is obscured, so the hit test measures what is on
+    // screen; anything else puts the caret at the wrong bullet.
+    final Offset local = globalToLocal(event.logicalPosition);
+    final double x = local.dx - theme.effectiveControlPadding;
+    final Paragraph? laid = paragraph;
+    if (laid != null) {
+      // The paragraph snaps to a grapheme cluster and reports which side of the
+      // boundary was hit, so a click on the right half of an emoji lands after
+      // it rather than between its surrogates, and the affinity it returns is
+      // what puts the caret on the correct side of a direction change.
+      _controller.collapseToPosition(laid.getPositionForOffset(Offset(x, 0)));
+      return;
+    }
     final int index =
         labelIndexAtOffset(displayText, x).clamp(0, _controller.value.length);
     _controller.collapseTo(index);
@@ -1442,6 +1806,10 @@ final class RenderTextField extends RenderBox with ControlBehavior {
     final bool shift = event.modifiers.contains(KeyModifier.shift);
     final bool control = event.modifiers.contains(KeyModifier.control);
     if (control) {
+      // Ctrl turns the four editing keys into their word-wise forms, and Shift
+      // still extends. Routed here rather than inside the plain switch below so
+      // that an unhandled Ctrl chord falls through to `false` and reaches
+      // whatever above this field owns application shortcuts.
       switch (event.logicalKey) {
         case 0x41: // Ctrl+A
           _controller.selectAll();
@@ -1451,6 +1819,21 @@ final class RenderTextField extends RenderBox with ControlBehavior {
           return true;
         case 0x59: // Ctrl+Y
           if (!_readOnly) _controller.redo();
+          return true;
+        case logicalKeyArrowLeft:
+          _controller.moveCaretByWord(-1, extend: shift);
+          return true;
+        case logicalKeyArrowRight:
+          _controller.moveCaretByWord(1, extend: shift);
+          return true;
+        case logicalKeyBackspace:
+          // Swallowed even when read-only: a read-only field that let
+          // Ctrl+Backspace through would fire an application shortcut the user
+          // aimed at the text.
+          if (!_readOnly) _controller.deleteWordBackward();
+          return true;
+        case logicalKeyDelete:
+          if (!_readOnly) _controller.deleteWordForward();
           return true;
         default:
           return false;
@@ -1510,51 +1893,111 @@ final class RenderTextField extends RenderBox with ControlBehavior {
     final double textTop =
         (rect.top + (rect.height - labelLineHeight) / 2).roundToDouble();
     final String text = displayText;
+    // One layout for the whole paint: selection boxes, the composing underline
+    // and the caret all read the same geometry, so they cannot disagree about
+    // where a character is.
+    final Paragraph? laid = paragraph;
+    final double left = rect.left + padding;
     if (text.isEmpty && _label.isNotEmpty) {
       paintLabel(
         list,
         _label,
-        Offset(rect.left + padding, textTop),
+        Offset(left, textTop),
         theme.foregroundSecondary,
         maxWidth: rect.width - padding * 2,
       );
     } else {
       if (_controller.hasSelection && !_obscure) {
         final ({int start, int end}) range = _controller.orderedSelection;
-        // Both edges come from the shaped run, so the highlight ends where the
-        // last selected glyph ends rather than a rounded number of cells later.
-        final double from = labelOffsetOfIndex(text, range.start);
-        final double to = labelOffsetOfIndex(text, range.end);
-        paintFill(
-          list,
-          Rect.fromLTWH(
-            rect.left + padding + from,
-            textTop - 1,
-            to - from,
-            labelLineHeight + 2,
-          ),
-          theme.selection,
-        );
+        if (laid != null) {
+          // **N rectangles, not one.** A logically contiguous selection that
+          // crosses a direction boundary is drawn in two or three disjoint
+          // pieces, because the characters between its ends are somewhere else
+          // on the line entirely. One rectangle would either miss selected text
+          // or highlight text that is not selected, and there is no third
+          // option.
+          for (final TextBox box
+              in laid.getBoxesForSelection(range.start, range.end)) {
+            paintFill(
+              list,
+              Rect.fromLTWH(
+                left + box.rect.left,
+                textTop - 1,
+                box.rect.width,
+                labelLineHeight + 2,
+              ),
+              theme.selection,
+            );
+          }
+        } else {
+          // No paragraph: no face, or a script the shaper will not shape. Both
+          // edges still come from the shaped run, so the highlight ends where
+          // the last selected glyph ends - but this is the single-run path and
+          // it is only correct for text of one direction.
+          final double from = labelOffsetOfIndex(text, range.start);
+          final double to = labelOffsetOfIndex(text, range.end);
+          paintFill(
+            list,
+            Rect.fromLTWH(
+                left + from, textTop - 1, to - from, labelLineHeight + 2),
+            theme.selection,
+          );
+        }
       }
       paintLabel(
         list,
         text,
-        Offset(rect.left + padding, textTop),
+        Offset(left, textTop),
         foregroundColor(),
         maxWidth: rect.width - padding * 2,
       );
+      // The composing region, underlined. Provisional text has to look
+      // provisional or the user cannot tell what the input method still owns,
+      // and the same N-rectangle argument applies: a composition inside
+      // right-to-left text is not one span on screen.
+      if (_controller.isComposing && !_obscure && laid != null) {
+        final TextRange composing = _controller.composing;
+        for (final TextBox box
+            in laid.getBoxesForSelection(composing.start, composing.end)) {
+          paintFill(
+            list,
+            Rect.fromLTWH(
+              left + box.rect.left,
+              textTop + labelLineHeight,
+              box.rect.width,
+              1,
+            ),
+            theme.foreground,
+          );
+        }
+      }
     }
     if (hasFocus && !_controller.hasSelection) {
+      // The caret's x comes from the paragraph *with its affinity*, which is
+      // the whole reason the controller carries one: at a direction change the
+      // same offset is the trailing edge of one run and the leading edge of
+      // another, and those are different places on the line.
+      //
+      // Only the x is taken. The vertical placement stays with the control's
+      // single-line metrics because the text beside it is drawn by
+      // `paintLabel`, which owns that baseline; a caret positioned from the
+      // paragraph's line box and text positioned from the label painter would
+      // be two independent answers to the same question. Making them one
+      // answer means painting the text through the paragraph too, which is a
+      // change to `ControlBehavior` - a file this work does not own.
+      final double caretX = laid != null
+          ? laid
+              .getCaretRect(
+                TextPosition(
+                  _controller.selectionEnd,
+                  affinity: _controller.affinity,
+                ),
+              )
+              .left
+          : labelOffsetOfIndex(text, _controller.selectionEnd);
       paintFill(
         list,
-        Rect.fromLTWH(
-          rect.left +
-              padding +
-              labelOffsetOfIndex(text, _controller.selectionEnd),
-          textTop - 1,
-          1,
-          labelLineHeight + 2,
-        ),
+        Rect.fromLTWH(left + caretX, textTop - 1, 1, labelLineHeight + 2),
         theme.foreground,
       );
     }

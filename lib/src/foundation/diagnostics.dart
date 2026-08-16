@@ -24,6 +24,23 @@ enum Capability {
   /// A CPU framebuffer can be presented.
   cpuPresentation,
 
+  /// A GPU-rendered surface can be presented without a CPU round trip.
+  ///
+  /// Distinct from [cpuPresentation] and not implied by it. A backend that
+  /// renders on the GPU and then reads the pixels back into a CPU framebuffer
+  /// to hand them to the window system has *cpu* presentation with a GPU
+  /// rasteriser bolted on; section 23 of the roadmap forbids exactly that per
+  /// frame in production. This capability means the opposite: the pixels the
+  /// GPU wrote are handed to the compositor as they are, by swapping a
+  /// window-system surface.
+  ///
+  /// It exists because the GL backend used to report every GPU failure as
+  /// `cpuPresentation` - the only presentation value there was - so a probe
+  /// report could not distinguish "this machine cannot show a CPU framebuffer"
+  /// from "this machine has no GPU swapchain", which are different problems
+  /// with different fixes.
+  gpuPresentation,
+
   /// Only the damaged region needs to be presented.
   partialPresent,
 

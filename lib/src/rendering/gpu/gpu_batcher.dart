@@ -25,8 +25,11 @@
 ///   * A `saveLayer` does not appear here at all. The player already
 ///     intersects a layer's bounds into the clip it passes with every
 ///     primitive, so a layer that is only a clip breaks batches exactly as a
-///     clip does. A layer that needs a real offscreen pass is refused by the
-///     sink rather than approximated - see `gpu_raster_sink.dart`.
+///     clip does. A layer that needs a real offscreen pass is cut into its own
+///     render pass by `gpu_layer_stack.dart`, which slices this batcher's
+///     output by batch index rather than reordering it - so batching stays
+///     oblivious to layers, and a pass boundary is just a range of batches
+///     drawn into a different target. See `gpu_raster_sink.dart`.
 ///   * Ordering is preserved absolutely. Batches are emitted in the order
 ///     their first quad arrived and are never reordered to merge two runs of
 ///     the same state with a different state between them. Reordering is

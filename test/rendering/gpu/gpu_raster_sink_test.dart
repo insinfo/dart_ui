@@ -6,16 +6,21 @@
 /// grey. It needs no device: everything below it is a typed array.
 library;
 
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dart_ui/src/foundation/diagnostics.dart';
+import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
+import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_batcher.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_glyph_atlas.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_pipeline.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_raster_sink.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_texture.dart';
 import 'package:dart_ui/src/rendering/replay/display_list_player.dart';
+import 'package:dart_ui/src/text/typeface.dart';
 import 'package:test/test.dart';
 
 const ReplayPaint _opaque = ReplayPaint(
@@ -244,13 +249,443 @@ void main() {
       expect(() => _sink().endLayer(), throwsStateError);
     });
   });
+
+  group('drawDeviceGlyphRun', () {
+    late Typeface ahem;
+    late ScaledTypeface font;
+    late int letterX;
+    late int letterY;
+    late int space;
+
+    setUp(() {
+      // Ahem's letters are solid em-square blocks, so a glyph's quad is a
+      // rectangle whose corners can be named exactly: 16x17 at 16 px, sitting
+      // 13 px above the baseline.
+      ahem = Typeface.parse(File('test/fonts/ahem.ttf').readAsBytesSync());
+      font = ahem.atSize(16);
+      letterX = ahem.glyphForCodePoint(0x58);
+      letterY = ahem.glyphForCodePoint(0x59);
+      space = ahem.glyphForCodePoint(0x20);
+    });
+
+    test('a run of repeated glyphs is one batch, not one per glyph', () {
+      // The reason the atlas exists. A draw call per glyph would be no
+      // acceleration at all, and nothing downstream can tell the difference
+      // except a profile - so it is asserted here.
+      final atlas = GpuGlyphAtlas();
+      final sink = _sink(glyphAtlas: atlas, fonts: _FixedFont(font));
+
+      _drawRun(
+        sink,
+        ids: List<int>.filled(8, letterX),
+        offsets: <double>[
+          for (var i = 0; i < 8; i++) ...<double>[i * 16.0, 0],
+        ],
+      );
+
+      expect(sink.batcher.batchCount, 1);
+      expect(sink.batcher.quadCount, 8);
+      final batch = sink.batcher.batchAt(0);
+      expect(batch.quadCount, 8);
+      expect(batch.pipeline, GpuPipelineKind.coverageMask);
+      expect(batch.textureId, _glyphTextureId);
+      // Eight quads out of one rasterisation: the repeats are cache hits.
+      expect(atlas.missCount, 1);
+      expect(atlas.hitCount, 7);
+    });
+
+    test('the quad is whole pixels around the mask, at one texel per pixel',
+        () {
+      final atlas = GpuGlyphAtlas();
+      final sink = _sink(glyphAtlas: atlas, fonts: _FixedFont(font));
+      _drawRun(sink, ids: <int>[letterX], offsets: <double>[0, 0]);
+
+      // Pen at (10, 30); the mask is 16x17 and starts 13 px above the
+      // baseline, so the quad is exactly that box on whole pixels.
+      expect(_quad(sink), <double>[10, 17, 26, 34]);
+      final entry = atlas.acquire(font, letterX)!;
+      final buffer = sink.batcher.buffer;
+      expect(buffer.vertexFloat(0, kGpuTexCoordOffset),
+          closeTo(entry.x * atlas.texelWidth, 1e-9));
+      expect(buffer.vertexFloat(2, kGpuTexCoordOffset),
+          closeTo((entry.x + 16) * atlas.texelWidth, 1e-9));
+      // Sixteen texels across sixteen pixels: any other ratio resamples the
+      // coverage and gives the soft, muddy text bitmap caches are known for.
+      final double u0 = buffer.vertexFloat(0, kGpuTexCoordOffset);
+      final double u1 = buffer.vertexFloat(2, kGpuTexCoordOffset);
+      expect((u1 - u0) * atlas.width, closeTo(16, 1e-6));
+    });
+
+    test('the shape rect equals the quad, so coverage comes only from the mask',
+        () {
+      // Letting the analytic term run as well would shave the outer row and
+      // column off every glyph - text that looks a little too light.
+      final sink = _sink(glyphAtlas: GpuGlyphAtlas(), fonts: _FixedFont(font));
+      _drawRun(sink, ids: <int>[letterX], offsets: <double>[0, 0]);
+
+      expect(_shape(sink), _quad(sink));
+    });
+
+    test('offsets inside one subpixel bucket give one variant and one quad',
+        () {
+      // The rule: the fraction picks the variant, the *quantised* whole pixel
+      // places the quad. Two pens a hundredth of a pixel apart must not move
+      // the glyph, or text shimmers as a list scrolls.
+      final atlas = GpuGlyphAtlas();
+      final sink = _sink(glyphAtlas: atlas, fonts: _FixedFont(font));
+      _drawRun(sink,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          origin: const Offset(10.02, 30));
+      _drawRun(sink,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          origin: const Offset(10.1, 30));
+
+      expect(atlas.missCount, 1, reason: 'both pens are in bucket 0');
+      expect(_quadAt(sink, 0), _quadAt(sink, 1));
+      expect(_quadAt(sink, 0)[0], 10);
+    });
+
+    test('a different bucket is a different variant at the same whole pixel',
+        () {
+      final atlas = GpuGlyphAtlas();
+      final sink = _sink(glyphAtlas: atlas, fonts: _FixedFont(font));
+      _drawRun(sink,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          origin: const Offset(10.02, 30));
+      _drawRun(sink,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          origin: const Offset(10.2, 30));
+
+      expect(atlas.missCount, 2, reason: '0.2 px rounds into bucket 1');
+      final buffer = sink.batcher.buffer;
+      expect(
+        buffer.vertexFloat(4, kGpuTexCoordOffset),
+        isNot(closeTo(buffer.vertexFloat(0, kGpuTexCoordOffset), 1e-9)),
+        reason: 'the two variants are different texels',
+      );
+      // Same whole pixel: the offset lives in the mask, not in the position.
+      expect(_quadAt(sink, 1)[0], 10);
+      // The shifted variant is one column wider, and that column is drawn.
+      expect(_quadAt(sink, 1)[2], 27);
+    });
+
+    test('a pen that rounds up to the next pixel moves the quad, not the mask',
+        () {
+      // glyphSubpixelBucket and glyphPixelOrigin have to be read as a pair:
+      // 10.9 rounds to bucket 0 *of pixel 11*, and using bucket 0 with pixel
+      // 10 would put the glyph a pixel to the left of where it was measured.
+      final atlas = GpuGlyphAtlas();
+      final sink = _sink(glyphAtlas: atlas, fonts: _FixedFont(font));
+      _drawRun(sink,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          origin: const Offset(10.0, 30));
+      _drawRun(sink,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          origin: const Offset(10.9, 30));
+
+      expect(atlas.missCount, 1, reason: 'both are bucket 0');
+      expect(_quadAt(sink, 0)[0], 10);
+      expect(_quadAt(sink, 1)[0], 11);
+    });
+
+    test('a blank glyph draws nothing but still batches with its neighbours',
+        () {
+      final sink = _sink(glyphAtlas: GpuGlyphAtlas(), fonts: _FixedFont(font));
+      _drawRun(sink,
+          ids: <int>[letterX, space, letterY],
+          offsets: <double>[0, 0, 16, 0, 32, 0]);
+
+      expect(sink.batcher.quadCount, 2, reason: 'the space has no coverage');
+      expect(sink.batcher.batchCount, 1);
+    });
+
+    test('a glyph outside the clip emits no quad', () {
+      final sink = _sink(glyphAtlas: GpuGlyphAtlas(), fonts: _FixedFont(font));
+      _drawRun(
+        sink,
+        ids: <int>[letterX],
+        offsets: <double>[0, 0],
+        clip: const Rect.fromLTRB(200, 200, 300, 300),
+      );
+
+      expect(sink.batcher.batchCount, 0, reason: 'and no empty draw call');
+    });
+
+    test('a partly clipped glyph is trimmed in texels as well as pixels', () {
+      // Trimming the quad without trimming the texture coordinates squeezes
+      // the whole glyph into what is left of it.
+      final atlas = GpuGlyphAtlas();
+      final sink = _sink(glyphAtlas: atlas, fonts: _FixedFont(font));
+      _drawRun(
+        sink,
+        ids: <int>[letterX],
+        offsets: <double>[0, 0],
+        clip: const Rect.fromLTRB(14, 0, 1000, 1000),
+      );
+
+      final entry = atlas.acquire(font, letterX)!;
+      expect(_quad(sink), <double>[14, 17, 26, 34]);
+      expect(
+        sink.batcher.buffer.vertexFloat(0, kGpuTexCoordOffset),
+        closeTo((entry.x + 4) * atlas.texelWidth, 1e-9),
+      );
+    });
+
+    test('the paint colour is premultiplied, and transparent text is skipped',
+        () {
+      final sink = _sink(glyphAtlas: GpuGlyphAtlas(), fonts: _FixedFont(font));
+      _drawRun(sink,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          paint: _paint(argb: 0x80FF0000));
+
+      const alpha = 0x80 / 255.0;
+      final buffer = sink.batcher.buffer;
+      expect(buffer.vertexFloat(0, kGpuColorOffset), closeTo(alpha, 1e-6));
+      expect(buffer.vertexFloat(0, kGpuColorOffset + 1), 0);
+
+      final invisible =
+          _sink(glyphAtlas: GpuGlyphAtlas(), fonts: _FixedFont(font));
+      _drawRun(invisible,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          paint: _paint(argb: 0x00FF0000));
+      expect(invisible.batcher.batchCount, 0);
+    });
+
+    test('a uniform scale scales the font, not the mask', () {
+      // Resampling a mask is what gives bitmap glyph caches their soft,
+      // muddy reputation; the outline was kept precisely to avoid it.
+      final atlas = GpuGlyphAtlas();
+      final sink = _sink(glyphAtlas: atlas, fonts: _FixedFont(font));
+      _drawRun(
+        sink,
+        ids: <int>[letterX],
+        offsets: <double>[0, 0],
+        transform: const Transform2D.scaling(2, 2),
+      );
+
+      expect(atlas.isResident(ahem.atSize(32), letterX), isTrue);
+      final quad = _quad(sink);
+      expect(quad[2] - quad[0], 32);
+    });
+
+    test('a rotated transform is refused rather than drawn upright', () {
+      final sink = _sink(glyphAtlas: GpuGlyphAtlas(), fonts: _FixedFont(font));
+      expect(
+        () => _drawRun(
+          sink,
+          ids: <int>[letterX],
+          offsets: <double>[0, 0],
+          transform: const Transform2D(0, 1, -1, 0, 0, 0),
+        ),
+        throwsA(isA<UnsupportedCapabilityError>()),
+      );
+    });
+
+    test('stroked text is refused, and says why the coverage cannot serve', () {
+      final sink = _sink(glyphAtlas: GpuGlyphAtlas(), fonts: _FixedFont(font));
+      expect(
+        () => _drawRun(sink,
+            ids: <int>[letterX],
+            offsets: <double>[0, 0],
+            paint: _paint(style: paintStyleStroke)),
+        throwsA(isA<UnsupportedCapabilityError>()
+            .having((e) => e.detail, 'detail', contains('outline'))),
+      );
+    });
+
+    test('a device with no glyph atlas says so instead of drawing nothing', () {
+      // And no longer claims a shaper and an outline source are what is
+      // missing: both exist, and this used to throw UnimplementedError saying
+      // otherwise.
+      final sink = _sink(fonts: _FixedFont(font));
+      expect(
+        () => _drawRun(sink, ids: <int>[letterX], offsets: <double>[0, 0]),
+        throwsA(isA<UnsupportedCapabilityError>()
+            .having((e) => e.detail, 'detail', contains('glyph atlas'))),
+      );
+    });
+
+    test('a device with no font resolver says so too', () {
+      final sink = _sink(glyphAtlas: GpuGlyphAtlas());
+      expect(
+        () => _drawRun(sink, ids: <int>[letterX], offsets: <double>[0, 0]),
+        throwsA(isA<UnsupportedCapabilityError>()
+            .having((e) => e.detail, 'detail', contains('GpuFontResolver'))),
+      );
+    });
+
+    test('a full atlas with no flush handler fails by name, not silently', () {
+      // Dropping the rest of the run would leave a hole in a word that reads
+      // as a font bug.
+      final atlas = GpuGlyphAtlas(width: 32, height: 32, plotSize: 32);
+      final sink = _sink(glyphAtlas: atlas, fonts: _FixedFont(font));
+      expect(
+        () => _drawRun(sink,
+            ids: <int>[letterX, letterY], offsets: <double>[0, 0, 16, 0]),
+        throwsA(isA<UnsupportedCapabilityError>()
+            .having((e) => e.detail, 'detail', contains('full'))),
+      );
+    });
+
+    test('a full atlas with a handler flushes and finishes the run', () {
+      // One 16 px ahem glyph fills a 32 px plot, so the second glyph of this
+      // run cannot be placed until the first batch has been issued.
+      final atlas = GpuGlyphAtlas(width: 32, height: 32, plotSize: 32);
+      var flushes = 0;
+      final sink = _sink(
+        glyphAtlas: atlas,
+        fonts: _FixedFont(font),
+        // The backend's half of the protocol is upload-then-submit; the sink
+        // marks both atlases uploaded and recycles the full one afterwards, so
+        // a handler that only counts is a complete one here.
+        onAtlasFlush: () => flushes++,
+      );
+      _drawRun(sink,
+          ids: <int>[letterX, letterY], offsets: <double>[0, 0, 16, 0]);
+
+      expect(flushes, 1);
+      expect(sink.batcher.quadCount, 2, reason: 'no glyph was dropped');
+      // Two batches, because the first one was submitted before the texels it
+      // samples were overwritten.
+      expect(sink.batcher.batchCount, 2);
+      expect(sink.batcher.batchAt(0).quadCount, 1);
+      expect(sink.batcher.batchAt(1).quadCount, 1);
+    });
+
+    test('a run longer than the whole atlas keeps every glyph', () {
+      // Four plots, one 16 px ahem glyph each, and a run of twelve distinct
+      // letters: the atlas turns over twice in the middle of one run. A
+      // dropped glyph here is a hole in a word, which reads as a font bug.
+      final atlas = GpuGlyphAtlas(width: 64, height: 64, plotSize: 32);
+      var flushes = 0;
+      final sink = _sink(
+        glyphAtlas: atlas,
+        fonts: _FixedFont(font),
+        onAtlasFlush: () => flushes++,
+      );
+
+      final ids = <int>[
+        for (var i = 0; i < 12; i++) ahem.glyphForCodePoint(0x41 + i),
+      ];
+      _drawRun(
+        sink,
+        ids: ids,
+        offsets: <double>[
+          for (var i = 0; i < 12; i++) ...<double>[i * 16.0, 0],
+        ],
+      );
+
+      expect(sink.batcher.quadCount, 12, reason: 'no glyph was dropped');
+      expect(flushes, greaterThan(1));
+      // One batch per flush cycle plus the first: every quad in a batch
+      // samples texels that were still resident when it was issued.
+      expect(sink.batcher.batchCount, flushes + 1);
+      var total = 0;
+      for (var i = 0; i < sink.batcher.batchCount; i++) {
+        total += sink.batcher.batchAt(i).quadCount;
+      }
+      expect(total, 12);
+    });
+
+    test('a glyph too large for a plot names tiling, not flushing', () {
+      final atlas = GpuGlyphAtlas(width: 64, height: 64, plotSize: 32);
+      var flushes = 0;
+      final sink = _sink(
+        glyphAtlas: atlas,
+        fonts: _FixedFont(ahem.atSize(64)),
+        onAtlasFlush: () => flushes++,
+      );
+      expect(
+        () => _drawRun(sink, ids: <int>[letterX], offsets: <double>[0, 0]),
+        throwsA(isA<UnsupportedCapabilityError>()
+            .having((e) => e.detail, 'detail', contains('tiling'))),
+      );
+      expect(flushes, 0, reason: 'flushing cannot fix a glyph that never fits');
+    });
+
+    test('text and paths do not batch together', () {
+      // Different textures, so merging them would sample whichever happened
+      // to be bound - the reason the two atlases carry separate ids.
+      final sink = _sink(
+        glyphAtlas: GpuGlyphAtlas(),
+        fonts: _FixedFont(font),
+      );
+      sink.fillDeviceRect(const Rect.fromLTRB(0, 0, 4, 4), _wideClip, _opaque);
+      _drawRun(sink, ids: <int>[letterX], offsets: <double>[0, 0]);
+
+      expect(sink.batcher.batchCount, 2);
+      expect(sink.batcher.batchAt(1).textureId, _glyphTextureId);
+    });
+  });
 }
 
-GpuRasterSink _sink({GpuImageResolver? resolver}) => GpuRasterSink(
+/// The id the test backend "bound" its glyph atlas to. Any non-zero value; it
+/// only has to differ from [kNoTexture] and from the mask atlas's.
+const int _glyphTextureId = 11;
+
+GpuRasterSink _sink({
+  GpuImageResolver? resolver,
+  GpuGlyphAtlas? glyphAtlas,
+  GpuFontResolver? fonts,
+  void Function()? onAtlasFlush,
+}) =>
+    GpuRasterSink(
       batcher: GpuBatcher()..beginFrame(),
       backendName: 'test',
       imageResolver: resolver,
+      glyphAtlas: glyphAtlas,
+      glyphTextureId: glyphAtlas == null ? kNoTexture : _glyphTextureId,
+      fontResolver: fonts,
+      onAtlasFlush: onAtlasFlush,
     );
+
+/// Feeds a run through the sink the way the player does.
+///
+/// The typed arrays are deliberately longer than the run: the sink's contract
+/// is that they are borrowed scratch buffers and that only the first
+/// [ids].length entries mean anything.
+void _drawRun(
+  GpuRasterSink sink, {
+  required List<int> ids,
+  required List<double> offsets,
+  Offset origin = const Offset(10, 30),
+  Rect clip = _wideClip,
+  ReplayPaint paint = _opaque,
+  Transform2D? transform,
+}) {
+  final glyphIds = Int32List(ids.length + 4)..setRange(0, ids.length, ids);
+  final deviceOffsets = Float32List((ids.length + 4) * 2)
+    ..setRange(0, offsets.length, offsets);
+  sink.drawDeviceGlyphRun(
+    0,
+    origin,
+    transform ?? Transform2D.identity,
+    glyphIds,
+    deviceOffsets,
+    ids.length,
+    clip,
+    paint,
+  );
+}
+
+/// Every font id resolves to the same face, which is all a sink test needs
+/// from the display list's resource table.
+final class _FixedFont implements GpuFontResolver {
+  _FixedFont(this._font);
+
+  final ScaledTypeface _font;
+
+  @override
+  ScaledTypeface? resolveFont(int fontId) => _font;
+}
 
 ReplayPaint _paint({
   int argb = 0xFF204080,
@@ -271,13 +706,18 @@ Matcher _near(List<double> values) =>
     equals(<Matcher>[for (final v in values) closeTo(v, 1e-5)]);
 
 /// The quad's left, top, right, bottom, read off its four corners.
-List<double> _quad(GpuRasterSink sink) {
+List<double> _quad(GpuRasterSink sink) => _quadAt(sink, 0);
+
+/// The [index]th quad of the frame. A quad is four vertices, written
+/// top-left, top-right, bottom-right, bottom-left.
+List<double> _quadAt(GpuRasterSink sink, int index) {
   final buffer = sink.batcher.buffer;
+  final int first = index * kGpuVerticesPerQuad;
   return <double>[
-    buffer.vertexFloat(0, kGpuPositionOffset),
-    buffer.vertexFloat(0, kGpuPositionOffset + 1),
-    buffer.vertexFloat(2, kGpuPositionOffset),
-    buffer.vertexFloat(2, kGpuPositionOffset + 1),
+    buffer.vertexFloat(first, kGpuPositionOffset),
+    buffer.vertexFloat(first, kGpuPositionOffset + 1),
+    buffer.vertexFloat(first + 2, kGpuPositionOffset),
+    buffer.vertexFloat(first + 2, kGpuPositionOffset + 1),
   ];
 }
 

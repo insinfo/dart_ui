@@ -47,6 +47,7 @@ import 'dart:io';
 
 import '../../../foundation/diagnostics.dart';
 import 'gl_bindings.dart';
+import 'gl_surface_descriptor.dart';
 
 // EGL constants, from the registry. Same values poc_06 uses.
 const int _eglNone = 0x3038;
@@ -58,6 +59,11 @@ const int _eglRedSize = 0x3024;
 const int _eglSurfaceType = 0x3033;
 const int _eglRenderableType = 0x3040;
 const int _eglPbufferBit = 0x0001;
+
+/// `EGL_WINDOW_BIT`. The bit that makes the difference between a config a
+/// pbuffer can use and one `eglCreateWindowSurface` will accept - see
+/// [GlContextFactory.createForWindowSurface].
+const int _eglWindowBit = 0x0004;
 const int _eglOpenglBit = 0x0008;
 const int _eglOpenglEs2Bit = 0x0004;
 const int _eglHeight = 0x3056;
@@ -69,6 +75,9 @@ const int _eglContextMinorVersion = 0x30FB;
 const int _eglContextOpenglProfileMask = 0x30FD;
 const int _eglContextOpenglCoreProfileBit = 0x00000001;
 const int _eglDefaultDisplay = 0;
+const int _eglNativeVisualId = 0x302E;
+const int _eglRenderBuffer = 0x3086;
+const int _eglBackBuffer = 0x3084;
 
 // WGL_ARB_create_context, from the registry.
 const int _wglContextMajorVersion = 0x2091;
@@ -98,6 +107,19 @@ abstract interface class GlContext {
   /// a detail the renderer can ignore.
   bool get isDesktopGl;
 
+  /// Whether this context draws into a window-system surface.
+  ///
+  /// True means framebuffer 0 is a window's back buffer and swapping it puts
+  /// pixels on a screen, which is what `Capability.gpuPresentation` reports and
+  /// what `GlWindowTarget` needs. False means framebuffer 0 is a pbuffer or an
+  /// invisible scratch surface: the renderer still works, but the only way its
+  /// output leaves the GPU is a readback.
+  ///
+  /// Asked rather than assumed because the two look identical from GL's side -
+  /// the same `glViewport`, the same `glClear` - and the difference only shows
+  /// up as a frame that renders correctly and appears nowhere.
+  bool get presentsToWindow;
+
   /// For the probe report and for bug reports.
   String get description;
 
@@ -114,9 +136,153 @@ final class GlContextAttempt {
   final List<BackendDiagnostic> diagnostics;
 }
 
+/// What [GlContextFactory.createForWindowSurface] found.
+///
+/// Separate from [GlContextAttempt] because a windowed attempt produces a
+/// second thing: the [GlSwapChain] that presents the surface. Returning them
+/// together rather than letting the caller fish the swap chain out of the
+/// context is deliberate - the surface and the context are created in one
+/// transaction and either both exist or neither does, and a two-call API would
+/// let a caller hold one without the other.
+final class GlWindowContextAttempt {
+  const GlWindowContextAttempt(
+    this.context,
+    this.swapChain,
+    this.diagnostics, {
+    this.nativeVisualId,
+  });
+
+  /// Null when no context could be created; [diagnostics] then says why.
+  /// Non-null exactly when [swapChain] is.
+  final GlContext? context;
+
+  /// How the window's back buffer reaches the screen. Owned by [context]:
+  /// disposing the context destroys the surface this presents, and using it
+  /// afterwards reports failure rather than crashing.
+  final GlSwapChain? swapChain;
+
+  /// The X visual (or platform equivalent) the chosen EGL config wants.
+  ///
+  /// Reported and not enforced, because this file cannot enforce it: the
+  /// window already exists by the time it gets here, and on X11 a window whose
+  /// visual disagrees with the config's makes `eglCreateWindowSurface` fail
+  /// with `EGL_BAD_MATCH`. When that happens this value is the first thing a
+  /// bug report needs - it says which visual the window should have been
+  /// created with.
+  final int? nativeVisualId;
+
+  final List<BackendDiagnostic> diagnostics;
+}
+
+/// Whether this machine has the entry points a windowed GL target needs.
+///
+/// Not "is there a window" - that is the windowing backend's question and this
+/// file may not ask it. This is the narrower one a renderer probe can answer
+/// honestly without a display server: are the calls that swap a window's back
+/// buffer present in the driver at all.
+final class GlWindowPresentationProbe {
+  const GlWindowPresentationProbe(this.available, this.diagnostic);
+
+  /// True when a [GlSwapChain] can exist on this machine.
+  final bool available;
+
+  /// Always populated, including when [available] is true - a probe that only
+  /// explains its failures leaves the successful case unauditable, and "why
+  /// did it decide it could" is a question bug reports ask.
+  final BackendDiagnostic diagnostic;
+}
+
 /// Creates offscreen GL contexts, or explains why it cannot.
 final class GlContextFactory {
   const GlContextFactory();
+
+  /// What this machine can do about presenting GL to a window.
+  ///
+  /// Called by `GlRendererBackend.probe`, which before this reported
+  /// "offscreen only" unconditionally - a hard-coded answer that was wrong on
+  /// every machine with a working driver, and that the probe had no way of
+  /// correcting because the only context it ever created was a pbuffer.
+  ///
+  /// Never throws, never creates a window, never needs a display server.
+  static GlWindowPresentationProbe probeWindowPresentation() {
+    if (Platform.isWindows) {
+      // WGL, and only the parts the GL library itself exports. Every WGL
+      // context is created from a device context that carries a pixel format,
+      // and the only device context that can is a window's - so a WGL context
+      // that exists at all is one whose framebuffer 0 is a window's back
+      // buffer. The swap itself is issued by the platform code that owns the
+      // window; this only certifies that the context half is there.
+      try {
+        final library = DynamicLibrary.open('opengl32.dll');
+        _WglApi(library);
+        return const GlWindowPresentationProbe(
+          true,
+          BackendDiagnostic.note(
+            'windowed presentation is available through WGL',
+            detail: 'opengl32.dll exports the WGL entry points; a target needs '
+                'a window from lib/src/backends/win32, which builds the '
+                'GlWindowSurfaceDescriptor and its swap chain',
+          ),
+        );
+      } on Object catch (error) {
+        return GlWindowPresentationProbe(
+          false,
+          BackendDiagnostic.missingSymbol(
+            'wglCreateContext',
+            detail: 'opengl32.dll did not load or does not export the WGL '
+                'entry points, so no GL context can reach a window here: '
+                '$error',
+          ),
+        );
+      }
+    }
+
+    final candidates = eglCandidates();
+    if (candidates.isEmpty) {
+      return GlWindowPresentationProbe(false, _platformAdvice());
+    }
+    for (final candidate in candidates) {
+      final DynamicLibrary egl;
+      try {
+        egl = DynamicLibrary.open(candidate);
+      } on Object {
+        continue;
+      }
+      try {
+        final api = _EglApi(egl);
+        // Reading each late field forces the lookup; values are discarded.
+        api.createWindowSurface;
+        api.swapBuffers;
+        api.swapInterval;
+        return GlWindowPresentationProbe(
+          true,
+          BackendDiagnostic.note(
+            'windowed presentation is available through EGL',
+            detail: '$candidate exports eglCreateWindowSurface, eglSwapBuffers '
+                'and eglSwapInterval; a target needs a window from '
+                'lib/src/backends/x11, and the window must have been created '
+                'with a visual the chosen EGL config accepts',
+          ),
+        );
+      } on Object catch (error) {
+        return GlWindowPresentationProbe(
+          false,
+          BackendDiagnostic.missingSymbol(
+            'eglCreateWindowSurface / eglSwapBuffers / eglSwapInterval',
+            detail: '$candidate loaded but does not export them: $error',
+          ),
+        );
+      }
+    }
+    return GlWindowPresentationProbe(
+      false,
+      BackendDiagnostic.missingLibrary(
+        candidates.join(', '),
+        detail: 'no EGL implementation answered, so nothing here can swap a '
+            "window's back buffer",
+      ),
+    );
+  }
 
   /// Library names tried for EGL, in order.
   ///
@@ -336,6 +502,260 @@ final class GlContextFactory {
           ..release(configs)
           ..release(configCount)
           ..release(configAttribs);
+      }
+    } finally {
+      heap.release(versions);
+    }
+  }
+
+  /// Creates a context whose default framebuffer is a window's back buffer.
+  ///
+  /// [nativeWindow] is opaque here for the same reason a device context is:
+  /// it is `EGLNativeWindowType`, whatever that happens to be on this
+  /// platform, and `lib/src/rendering` may not name a window type. On X11 -
+  /// the only platform this path targets today - it is the `xcb_window_t` of
+  /// an already-mapped window, which is the same XID an Xlib `Window` is, so
+  /// the value crosses from `lib/src/backends/x11` unchanged.
+  ///
+  /// ## The config is chosen differently from the pbuffer one, and must be
+  ///
+  /// [create] asks for `EGL_SURFACE_TYPE = EGL_PBUFFER_BIT`. This asks for
+  /// `EGL_WINDOW_BIT`, and the difference is not cosmetic: the two sets of
+  /// configs overlap but neither contains the other. A driver routinely
+  /// offers pbuffer-only configs (no visual attached, so no window can use
+  /// them) and window-only configs (backed by a scanout format a pbuffer
+  /// cannot allocate). Reusing the pbuffer config here produces
+  /// `EGL_BAD_MATCH` from `eglCreateWindowSurface` on a good driver, and on a
+  /// permissive one produces a surface that renders and never scans out -
+  /// which is the failure that looks like a renderer bug for a week.
+  ///
+  /// ## What this cannot check, said out loud
+  ///
+  /// On X11 the window's *visual* must match the config's
+  /// `EGL_NATIVE_VISUAL_ID`. The window already exists by the time this is
+  /// called, so there is nothing to do about a mismatch except report it: the
+  /// chosen config's visual id comes back in
+  /// [GlWindowContextAttempt.nativeVisualId] so the caller can compare it
+  /// against the visual it created the window with. Creating the window with
+  /// the right visual is the window owner's job, and it needs the config to
+  /// know which one - a chicken-and-egg the EGL spec resolves by expecting the
+  /// window owner to run `eglChooseConfig` first. This framework's X11 backend
+  /// creates its windows with the root visual, which is the common case and is
+  /// what a 32-bit RGBA config usually matches; when it does not, this is the
+  /// number that says so.
+  ///
+  /// Never throws. Every failure is a diagnostic.
+  GlWindowContextAttempt createForWindowSurface({
+    required int nativeWindow,
+    required DynamicLibrary glLibrary,
+  }) {
+    final diagnostics = <BackendDiagnostic>[];
+    if (nativeWindow == 0) {
+      diagnostics.add(const BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'a null native window cannot carry an EGL surface',
+      ));
+      return GlWindowContextAttempt(null, null, diagnostics);
+    }
+
+    DynamicLibrary? egl;
+    String? eglName;
+    for (final candidate in eglCandidates()) {
+      try {
+        egl = DynamicLibrary.open(candidate);
+        eglName = candidate;
+        break;
+      } on Object catch (error) {
+        diagnostics.add(
+          BackendDiagnostic.missingLibrary(candidate, detail: '$error'),
+        );
+      }
+    }
+    if (egl == null) {
+      diagnostics.add(_platformAdvice());
+      return GlWindowContextAttempt(null, null, diagnostics);
+    }
+
+    final heap = NativeHeap.tryBind(egl);
+    if (heap == null) {
+      diagnostics.add(const BackendDiagnostic.missingSymbol(
+        'malloc',
+        detail: 'no native allocator could be bound from the EGL library, the '
+            'process or the C runtime, so no attribute list can be built',
+      ));
+      return GlWindowContextAttempt(null, null, diagnostics);
+    }
+
+    try {
+      return _createEglWindow(
+          egl, eglName!, glLibrary, heap, nativeWindow, diagnostics);
+    } on Object catch (error, stack) {
+      // A throw here is a bug in this file, not a missing driver. The contract
+      // says never throw, so it becomes a diagnostic that is obviously ours.
+      diagnostics.add(BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'EGL window context creation threw',
+        detail: '$error\n$stack',
+      ));
+      return GlWindowContextAttempt(null, null, diagnostics);
+    }
+  }
+
+  GlWindowContextAttempt _createEglWindow(
+    DynamicLibrary egl,
+    String eglName,
+    DynamicLibrary glLibrary,
+    NativeHeap heap,
+    int nativeWindow,
+    List<BackendDiagnostic> diagnostics,
+  ) {
+    final api = _EglApi(egl);
+
+    // The three window entry points are resolved before anything is created,
+    // so an EGL that cannot present to a window says so by name instead of
+    // failing halfway through with a surface already allocated.
+    try {
+      // Reading each late field forces the lookup; the values are discarded.
+      api.createWindowSurface;
+      api.swapBuffers;
+      api.swapInterval;
+    } on Object catch (error) {
+      diagnostics.add(BackendDiagnostic.missingSymbol(
+        'eglCreateWindowSurface / eglSwapBuffers / eglSwapInterval',
+        detail: 'library: $eglName; $error',
+      ));
+      return GlWindowContextAttempt(null, null, diagnostics);
+    }
+
+    final display =
+        api.getDisplay(Pointer<Void>.fromAddress(_eglDefaultDisplay));
+    if (display.address == 0) {
+      diagnostics.add(BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'eglGetDisplay returned EGL_NO_DISPLAY',
+        detail: 'library: $eglName',
+      ));
+      return GlWindowContextAttempt(null, null, diagnostics);
+    }
+
+    final versions = heap.allocateInt32(2);
+    try {
+      if (api.initialize(display, versions, versions + 1) == 0) {
+        diagnostics.add(_eglError(api, 'eglInitialize'));
+        return GlWindowContextAttempt(null, null, diagnostics);
+      }
+      final eglVersion = '${versions[0]}.${versions[1]}';
+
+      var desktop = true;
+      if (api.bindApi(_eglOpenglApi) == 0) {
+        desktop = false;
+        if (api.bindApi(_eglOpenglEsApi) == 0) {
+          diagnostics.add(_eglError(api, 'eglBindAPI'));
+          return GlWindowContextAttempt(null, null, diagnostics);
+        }
+      }
+
+      final configs = heap.allocatePointers<Void>(1);
+      final configCount = heap.allocateInt32(1);
+      final configAttribs = heap.allocateInt32(16);
+      final scratch = heap.allocateInt32(1);
+      try {
+        var i = 0;
+        configAttribs[i++] = _eglSurfaceType;
+        // The one line this method exists for.
+        configAttribs[i++] = _eglWindowBit;
+        configAttribs[i++] = _eglRenderableType;
+        configAttribs[i++] = desktop ? _eglOpenglBit : _eglOpenglEs2Bit;
+        configAttribs[i++] = _eglRedSize;
+        configAttribs[i++] = 8;
+        configAttribs[i++] = _eglGreenSize;
+        configAttribs[i++] = 8;
+        configAttribs[i++] = _eglBlueSize;
+        configAttribs[i++] = 8;
+        configAttribs[i++] = _eglAlphaSize;
+        configAttribs[i++] = 8;
+        configAttribs[i++] = _eglNone;
+
+        if (api.chooseConfig(display, configAttribs, configs, 1, configCount) ==
+                0 ||
+            configCount[0] < 1) {
+          diagnostics.add(_eglError(api, 'eglChooseConfig(EGL_WINDOW_BIT)'));
+          return GlWindowContextAttempt(null, null, diagnostics);
+        }
+        final config = configs[0];
+
+        int? visualId;
+        scratch[0] = 0;
+        if (api.getConfigAttrib(display, config, _eglNativeVisualId, scratch) !=
+            0) {
+          visualId = scratch[0];
+        }
+
+        // EGL_RENDER_BUFFER is spelled out rather than left to default. The
+        // default for a window surface *is* EGL_BACK_BUFFER, but a
+        // single-buffered surface would make eglSwapBuffers a no-op and the
+        // renderer would show a half-drawn frame, which is worth two integers
+        // to rule out.
+        final surfaceAttribs = heap.allocateInt32(4);
+        surfaceAttribs[0] = _eglRenderBuffer;
+        surfaceAttribs[1] = _eglBackBuffer;
+        surfaceAttribs[2] = _eglNone;
+        final surface = api.createWindowSurface(
+            display, config, nativeWindow, surfaceAttribs);
+        heap.release(surfaceAttribs);
+        if (surface.address == 0) {
+          diagnostics.add(_eglError(api, 'eglCreateWindowSurface'));
+          diagnostics.add(BackendDiagnostic(
+            kind: DiagnosticKind.surfaceCreationFailed,
+            message: 'the window did not accept an EGL surface',
+            detail: 'native window 0x'
+                '${nativeWindow.toUnsigned(64).toRadixString(16)}; the config '
+                'wants native visual '
+                '${visualId == null ? 'unknown' : '0x'
+                    '${visualId.toUnsigned(32).toRadixString(16)}'}. An '
+                'EGL_BAD_MATCH here means the window was created with a '
+                'different visual',
+          ));
+          return GlWindowContextAttempt(null, null, diagnostics);
+        }
+
+        final context = _createContext(api, heap, display, config, desktop);
+        if (context.address == 0) {
+          api.destroySurface(display, surface);
+          diagnostics.add(_eglError(api, 'eglCreateContext'));
+          return GlWindowContextAttempt(null, null, diagnostics);
+        }
+
+        final glContext = _EglContext(
+          api: api,
+          display: display,
+          surface: surface,
+          context: context,
+          heap: heap,
+          glLibrary: glLibrary,
+          isDesktopGl: desktop,
+          presentsToWindow: true,
+          description: 'EGL $eglVersion via $eglName, '
+              '${desktop ? 'desktop GL' : 'GLES'} window surface on 0x'
+              '${nativeWindow.toUnsigned(64).toRadixString(16)}',
+        );
+        if (!glContext.makeCurrent()) {
+          diagnostics.add(_eglError(api, 'eglMakeCurrent'));
+          glContext.dispose();
+          return GlWindowContextAttempt(null, null, diagnostics);
+        }
+        return GlWindowContextAttempt(
+          glContext,
+          glContext,
+          diagnostics,
+          nativeVisualId: visualId,
+        );
+      } finally {
+        heap
+          ..release(configs)
+          ..release(configCount)
+          ..release(configAttribs)
+          ..release(scratch);
       }
     } finally {
       heap.release(versions);
@@ -641,6 +1061,55 @@ final class _EglApi {
           Pointer<Void> Function(Pointer<Void>, Pointer<Void>,
               Pointer<Int32>)>('eglCreatePbufferSurface');
 
+  /// `eglCreateWindowSurface(display, config, EGLNativeWindowType, attribs)`.
+  ///
+  /// The native window is declared `IntPtr` and not a pointer, because
+  /// `EGLNativeWindowType` is not one thing: on the X11 platform it is a
+  /// `Window`, an XID, which is a 32-bit value carried in a `long`; on Wayland
+  /// it is a `struct wl_egl_window*`; on Android an `ANativeWindow*`. All of
+  /// them are word-sized, and `IntPtr` is the only Dart type that is
+  /// word-sized on every one of them without this file having to name a
+  /// window type - which `test/architecture/layering_test.dart` forbids
+  /// anyway.
+  late final Pointer<Void> Function(
+          Pointer<Void>, Pointer<Void>, int, Pointer<Int32>)
+      createWindowSurface = library.lookupFunction<
+          Pointer<Void> Function(
+              Pointer<Void>, Pointer<Void>, IntPtr, Pointer<Int32>),
+          Pointer<Void> Function(Pointer<Void>, Pointer<Void>, int,
+              Pointer<Int32>)>('eglCreateWindowSurface');
+
+  /// `eglSwapBuffers(display, surface)`. The whole point of a window surface.
+  late final int Function(Pointer<Void>, Pointer<Void>) swapBuffers =
+      library.lookupFunction<Int32 Function(Pointer<Void>, Pointer<Void>),
+          int Function(Pointer<Void>, Pointer<Void>)>('eglSwapBuffers');
+
+  /// `eglSwapInterval(display, interval)`.
+  ///
+  /// Unlike WGL's, this is core EGL rather than an extension, so it always
+  /// resolves - but it is still allowed to fail, and a driver that clamps the
+  /// interval reports success while ignoring the value.
+  late final int Function(Pointer<Void>, int) swapInterval =
+      library.lookupFunction<Int32 Function(Pointer<Void>, Int32),
+          int Function(Pointer<Void>, int)>('eglSwapInterval');
+
+  /// `eglQuerySurface(display, surface, attribute, out)`.
+  ///
+  /// Used to ask what size the driver thinks a window surface is, which is the
+  /// only reliable way to find out whether it tracked a resize or not.
+  late final int Function(Pointer<Void>, Pointer<Void>, int, Pointer<Int32>)
+      querySurface = library.lookupFunction<
+          Int32 Function(Pointer<Void>, Pointer<Void>, Int32, Pointer<Int32>),
+          int Function(Pointer<Void>, Pointer<Void>, int,
+              Pointer<Int32>)>('eglQuerySurface');
+
+  /// `eglGetConfigAttrib(display, config, attribute, out)`.
+  late final int Function(Pointer<Void>, Pointer<Void>, int, Pointer<Int32>)
+      getConfigAttrib = library.lookupFunction<
+          Int32 Function(Pointer<Void>, Pointer<Void>, Int32, Pointer<Int32>),
+          int Function(Pointer<Void>, Pointer<Void>, int,
+              Pointer<Int32>)>('eglGetConfigAttrib');
+
   late final Pointer<Void> Function(
           Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Int32>)
       createContext = library.lookupFunction<
@@ -677,7 +1146,19 @@ final class _EglApi {
           Pointer<Void> Function(Pointer<Uint8>)>('eglGetProcAddress');
 }
 
-final class _EglContext implements GlContext {
+/// An EGL context, over a pbuffer or over a window.
+///
+/// One class for both because everything except the surface is identical, and
+/// because being the [GlSwapChain] as well as the [GlContext] is the honest
+/// shape: on EGL the thing that swaps is the surface the context is bound to,
+/// so splitting them would mean two objects with the same lifetime, one of
+/// which is only valid while the other is current.
+///
+/// A pbuffer context implements [GlSwapChain] too - it has to, they are the
+/// same class - and refuses every call with a diagnostic rather than
+/// pretending. [presentsToWindow] is how a caller tells the two apart before
+/// asking.
+final class _EglContext implements GlContext, GlSwapChain {
   _EglContext({
     required _EglApi api,
     required Pointer<Void> display,
@@ -687,6 +1168,7 @@ final class _EglContext implements GlContext {
     required DynamicLibrary glLibrary,
     required this.isDesktopGl,
     required this.description,
+    this.presentsToWindow = false,
   })  : _api = api,
         _display = display,
         _surface = surface,
@@ -705,9 +1187,87 @@ final class _EglContext implements GlContext {
   final bool isDesktopGl;
 
   @override
+  final bool presentsToWindow;
+
+  @override
   final String description;
 
   bool _disposed = false;
+
+  @override
+  bool get isPresentable => !_disposed && presentsToWindow;
+
+  @override
+  bool swapBuffers() {
+    if (!isPresentable) return false;
+    return _api.swapBuffers(_display, _surface) != 0;
+  }
+
+  @override
+  bool setSwapInterval(int interval) {
+    if (!isPresentable) return false;
+    // eglSwapInterval is defined against the surface currently bound to the
+    // calling thread's context, so the context has to be current first. Doing
+    // it here rather than requiring it of the caller keeps the GlSwapChain
+    // interface free of a precondition only one implementation has.
+    if (!makeCurrent()) return false;
+    return _api.swapInterval(_display, interval) != 0;
+  }
+
+  /// An EGL window surface tracks its native window, so this normally has
+  /// nothing to do - and it verifies that instead of assuming it.
+  ///
+  /// The verification is the point. `eglQuerySurface` reports what the driver
+  /// believes the surface is, and a driver that has not noticed the resize
+  /// answers with the old size; rendering a frame at the new size into it
+  /// produces a scaled or clipped image with no error anywhere. Reporting the
+  /// disagreement turns that into a named failure, which the target escalates
+  /// to device loss.
+  ///
+  /// It deliberately does *not* destroy and recreate the surface to force the
+  /// issue. Recreating an EGL surface invalidates every binding made against
+  /// it and has to be followed by a fresh `eglMakeCurrent`; doing that on
+  /// every resize, on the overwhelming majority of drivers that did not need
+  /// it, would trade a rare bug for a common one.
+  @override
+  BackendDiagnostic? reconfigure({
+    required int pixelWidth,
+    required int pixelHeight,
+  }) {
+    if (!isPresentable) {
+      return const BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'this EGL surface cannot be resized',
+        detail: 'it is a pbuffer or it has been disposed, so it has no window '
+            'whose size it could follow',
+      );
+    }
+    final slot = _heap.allocateInt32(2);
+    try {
+      slot[0] = -1;
+      slot[1] = -1;
+      final gotWidth = _api.querySurface(_display, _surface, _eglWidth, slot);
+      final gotHeight =
+          _api.querySurface(_display, _surface, _eglHeight, slot + 1);
+      if (gotWidth == 0 || gotHeight == 0) {
+        // Not fatal by itself: a driver that will not answer the query may
+        // still be tracking the window correctly. Reported as a note-free
+        // null so the frame goes on, because refusing to draw over a failed
+        // *query* would be worse than the bug it is looking for.
+        return null;
+      }
+      if (slot[0] == pixelWidth && slot[1] == pixelHeight) return null;
+      return BackendDiagnostic(
+        kind: DiagnosticKind.surfaceCreationFailed,
+        message: 'the EGL window surface did not follow its window',
+        detail: 'the window is ${pixelWidth}x$pixelHeight but the driver '
+            'reports the surface as ${slot[0]}x${slot[1]}; drawing into it '
+            'would be scaled or clipped with no error reported',
+      );
+    } finally {
+      _heap.release(slot);
+    }
+  }
 
   /// The export table first, `eglGetProcAddress` second.
   ///
@@ -840,6 +1400,18 @@ final class _WglContext implements GlContext {
   /// GLSL 330 dialect is the right one.
   @override
   bool get isDesktopGl => true;
+
+  /// Always true, and that is not the same as "always useful".
+  ///
+  /// A WGL context is created from a device context, and the only device
+  /// context that can carry a pixel format is a window's - so every WGL
+  /// context this framework makes is bound to a window's back buffer and
+  /// `SwapBuffers` on it does present. What the window does with those pixels
+  /// is a separate question: `Win32GlSurface.hidden` deliberately never calls
+  /// `ShowWindow`, so its swaps go to a window nobody can see. That is a
+  /// property of the window, not of the context, and this file cannot see it.
+  @override
+  bool get presentsToWindow => true;
 
   @override
   GlProcResolver get procAddress => _resolver;

@@ -354,6 +354,103 @@ final class CpuRasterizer {
     }
   }
 
+  /// Composites a finished layer's pixels back into this surface.
+  ///
+  /// This is the second half of `saveLayer`, and the one that cannot be
+  /// expressed as any other call here. [drawFramebuffer] blits source-over at
+  /// full opacity; a layer is blitted at *its own* opacity and with *its own*
+  /// blend mode, and both of those are properties of the composite rather than
+  /// of anything inside the layer. That is the whole reason a layer needs a
+  /// buffer of its own: [alpha] applies to the layer's contents as a finished
+  /// image, not to each primitive in it, and the two differ wherever those
+  /// primitives overlap.
+  ///
+  /// ## Contract
+  ///
+  ///   * [source] is premultiplied, and its own `width`/`height` are the
+  ///     layer's pixel size. A pooled buffer larger than the layer must be
+  ///     handed in as a tight view of the used region, never as the whole
+  ///     allocation - the extra was never rendered into and compositing it
+  ///     would paint the previous tenant's pixels.
+  ///   * [destinationLeft] and [destinationTop] are **whole pixels**, because
+  ///     a layer's bounds are snapped outward before its buffer is sized. A
+  ///     fractional destination would resample the layer through a phase shift
+  ///     and soften every glyph inside it; there is no such argument to pass.
+  ///   * [alpha] is 0..255 and scales all four channels through the same
+  ///     [mul255] the rest of this file uses. Scaling alpha along with colour
+  ///     is what keeps the result premultiplied, and reusing `mul255` is what
+  ///     makes a layer at alpha 255 composite bit-identically to a plain blit.
+  ///   * Clipping is against the **integer** clip. The layer's edges are whole
+  ///     pixels by construction, so there is no fraction left for the exact
+  ///     clip to cut into, and the parent's own clip has already been narrowed
+  ///     by the caller.
+  ///
+  /// One pixel of the source is read per pixel of the destination: no scaling
+  /// and no filtering, the same rule [drawFramebuffer] states, and the reason
+  /// the GPU side binds its layer texture with nearest filtering.
+  void compositeLayer(
+    Framebuffer source,
+    int destinationLeft,
+    int destinationTop,
+    int alpha,
+    CpuBlendMode blendMode,
+  ) {
+    // srcOver and plus with nothing to add are exact identities, so the whole
+    // walk is skipped. src is *not*: replacing the destination with a fully
+    // transparent layer erases it, which is what `ONE, ZERO` does on the GPU
+    // as well.
+    if (alpha == 0 && blendMode != CpuBlendMode.src) return;
+
+    final left = _max(destinationLeft, clip.left);
+    final top = _max(destinationTop, clip.top);
+    final right = _min(destinationLeft + source.width, clip.right);
+    final bottom = _min(destinationTop + source.height, clip.bottom);
+    if (right <= left || bottom <= top) return;
+
+    final src = source.pixels;
+    final srcBytesPerRow = source.bytesPerRow;
+    // Resolved before the loops, exactly as [drawFramebuffer] does it: a
+    // format mismatch costs an index rather than a branch per pixel.
+    final srcRedIndex =
+        source.format == PixelFormat.bgra8888Premultiplied ? 2 : 0;
+    final read0 = srcRedIndex == _redIndex ? 0 : 2;
+    final read2 = 2 - read0;
+
+    for (var y = top; y < bottom; y++) {
+      var srcOffset =
+          (y - destinationTop) * srcBytesPerRow + (left - destinationLeft) * 4;
+      var dstOffset = y * _bytesPerRow + left * 4;
+      for (var x = left; x < right; x++) {
+        var s0 = src[srcOffset + read0];
+        var s1 = src[srcOffset + 1];
+        var s2 = src[srcOffset + read2];
+        var sa = src[srcOffset + 3];
+        if (alpha != 255) {
+          s0 = mul255(s0, alpha);
+          s1 = mul255(s1, alpha);
+          s2 = mul255(s2, alpha);
+          sa = mul255(sa, alpha);
+        }
+        switch (blendMode) {
+          case CpuBlendMode.srcOver:
+            blendPixelOver(_pixels, dstOffset, s0, s1, s2, sa);
+          case CpuBlendMode.src:
+            _pixels[dstOffset] = s0;
+            _pixels[dstOffset + 1] = s1;
+            _pixels[dstOffset + 2] = s2;
+            _pixels[dstOffset + 3] = sa;
+          case CpuBlendMode.plus:
+            _pixels[dstOffset] = addSaturating(s0, _pixels[dstOffset]);
+            _pixels[dstOffset + 1] = addSaturating(s1, _pixels[dstOffset + 1]);
+            _pixels[dstOffset + 2] = addSaturating(s2, _pixels[dstOffset + 2]);
+            _pixels[dstOffset + 3] = addSaturating(sa, _pixels[dstOffset + 3]);
+        }
+        srcOffset += 4;
+        dstOffset += 4;
+      }
+    }
+  }
+
   /// Composites [source] source-over at [destination]'s top-left corner.
   ///
   /// One source pixel per destination pixel: there is no scaling and no

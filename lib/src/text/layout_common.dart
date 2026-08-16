@@ -401,6 +401,14 @@ final class Lookup {
   static const int flagUseMarkFilteringSet = 0x0010;
   static const int markAttachmentTypeMask = 0xFF00;
 
+  /// Whether the lookup declares itself right-to-left.
+  ///
+  /// Read by exactly one subtable, `GPOS` cursive attachment, where it names
+  /// which glyph of a joined pair is the one that moves. It is *not* the
+  /// direction of the text: the spec defines it only for that subtable, and
+  /// every other lookup ignores it however the font sets it.
+  bool get rightToLeft => flags & flagRightToLeft != 0;
+
   bool get ignoreBaseGlyphs => flags & flagIgnoreBaseGlyphs != 0;
   bool get ignoreLigatures => flags & flagIgnoreLigatures != 0;
   bool get ignoreMarks => flags & flagIgnoreMarks != 0;
@@ -793,6 +801,56 @@ final class GlyphBuffer {
   /// behind. See [resolveAttachments].
   final List<int> attachedTo = <int>[];
 
+  /// For a cursively joined glyph, the index of the glyph whose baseline it
+  /// follows; -1 otherwise. Written only by [attachCursive].
+  ///
+  /// Separate from [attachedTo] because the two attachments are different
+  /// relations and a glyph may be in both: a mark hangs off a base and moves
+  /// with *all* of it, while a cursively joined glyph inherits only the cross
+  /// -stream (vertical, in horizontal layout) displacement of its neighbour -
+  /// the in-stream part of a cursive join is expressed as advances, not as an
+  /// offset. Merging the two into one field would make an Arabic letter that
+  /// both joins and carries an accent inherit its neighbour's advances twice.
+  ///
+  /// Unlike [attachedTo], the parent may lie *after* the child: which of the
+  /// two glyphs of a cursive pair moves is decided by the lookup's
+  /// `RIGHT_TO_LEFT` flag, not by buffer order. See [attachCursive].
+  final List<int> cursiveAttachedTo = <int>[];
+
+  /// Which ligature, if any, each glyph belongs to. Zero means "none".
+  ///
+  /// Assigned by [ligate]: the ligature glyph and every mark that was standing
+  /// between the components it swallowed share one non-zero id. Only equality
+  /// is meaningful - the value itself is a serial number, not an index.
+  ///
+  /// This exists for `GPOS` mark-to-ligature attachment, which has to answer
+  /// "which component of *this* ligature was this mark sitting on". Without
+  /// the id, a mark that follows a ligature it never belonged to would be
+  /// attached to one of its components anyway.
+  final List<int> ligatureIds = <int>[];
+
+  /// Which component of [ligatureIds]'s ligature a glyph belongs to, counted
+  /// from one; zero for a glyph that is not a mark inside a ligature.
+  ///
+  /// The ligature glyph itself carries zero, because it is the ligature rather
+  /// than a component of it. A mark carries the one-based number of the
+  /// component it followed, which is the number `GPOS` type 5 indexes a
+  /// `LigatureAttach` row by (minus one, the file being zero-based).
+  final List<int> ligatureComponents = <int>[];
+
+  /// How many components each glyph is made of. One for an ordinary glyph.
+  ///
+  /// Only a ligature glyph has more, and it is tracked because ligatures nest:
+  /// a font that forms "ffi" as "ff" plus "i" must number a mark after the "i"
+  /// as component 3, not component 2. Keeping the count is the only way to
+  /// know that the first component of the outer ligature was worth two.
+  final List<int> ligatureComponentCounts = <int>[];
+
+  /// The serial number [ligate] will stamp on the next ligature it forms.
+  ///
+  /// Starts at one, because zero is [ligatureIds]'s "no ligature".
+  int _nextLigatureId = 1;
+
   int get length => glyphs.length;
 
   bool get isEmpty => glyphs.isEmpty;
@@ -805,6 +863,11 @@ final class GlyphBuffer {
     xOffsets.clear();
     yOffsets.clear();
     attachedTo.clear();
+    cursiveAttachedTo.clear();
+    ligatureIds.clear();
+    ligatureComponents.clear();
+    ligatureComponentCounts.clear();
+    _nextLigatureId = 1;
   }
 
   /// Appends a glyph with no positioning yet.
@@ -816,9 +879,18 @@ final class GlyphBuffer {
     xOffsets.add(0);
     yOffsets.add(0);
     attachedTo.add(-1);
+    cursiveAttachedTo.add(-1);
+    ligatureIds.add(0);
+    ligatureComponents.add(0);
+    ligatureComponentCounts.add(1);
   }
 
   /// Replaces the glyph at [index], keeping its cluster.
+  ///
+  /// Ligature bookkeeping is kept as it stands: a single substitution that
+  /// swaps a glyph for a contextual variant has not changed which component of
+  /// which ligature it is, and clearing it here would detach every mark inside
+  /// a ligature that a later `calt` lookup happens to touch.
   void substitute(int index, int glyph) => glyphs[index] = glyph;
 
   /// Replaces the glyph at [index] with [replacements], all in its cluster.
@@ -829,6 +901,14 @@ final class GlyphBuffer {
     }
     glyphs[index] = replacements[0];
     final int cluster = clusters[index];
+    // Every piece inherits the ligature membership of the glyph it came out
+    // of, and none of them is a ligature any more, so each is worth one
+    // component. A decomposition inside a ligature - a font that splits a
+    // ligature component into a letter and a mark - therefore keeps its marks
+    // pointing at the component they were part of.
+    final int ligatureId = ligatureIds[index];
+    final int component = ligatureComponents[index];
+    ligatureComponentCounts[index] = 1;
     for (int i = 1; i < replacements.length; i++) {
       glyphs.insert(index + i, replacements[i]);
       clusters.insert(index + i, cluster);
@@ -837,6 +917,10 @@ final class GlyphBuffer {
       xOffsets.insert(index + i, 0);
       yOffsets.insert(index + i, 0);
       attachedTo.insert(index + i, -1);
+      cursiveAttachedTo.insert(index + i, -1);
+      ligatureIds.insert(index + i, ligatureId);
+      ligatureComponents.insert(index + i, component);
+      ligatureComponentCounts.insert(index + i, 1);
     }
   }
 
@@ -847,6 +931,33 @@ final class GlyphBuffer {
   /// does, by staying where it is while the components around it are deleted -
   /// which also leaves it *after* the ligature, where a mark on a ligature
   /// belongs.
+  ///
+  /// ## The component bookkeeping
+  ///
+  /// The surviving marks are the reason this method does more than delete.
+  /// A mark that stood between the first and second component of a ligature
+  /// belongs to the *first* component and must be drawn over that part of the
+  /// glyph; one that stood between the second and third belongs to the second.
+  /// After the merge nothing in the buffer says so any more - the components
+  /// are gone - so it is recorded here, as [ligatureIds] plus
+  /// [ligatureComponents], and read back by `GPOS` mark-to-ligature.
+  ///
+  /// Getting this wrong is not a crash, it is an accent on the wrong half of
+  /// an Arabic lam-alef, so the numbering is spelled out: components are
+  /// counted from one, a component that was itself a ligature counts for as
+  /// many components as it was made of (see [ligatureComponentCounts]), and a
+  /// mark keeps its position *within* the component it already belonged to.
+  ///
+  /// Marks that follow the last component are re-numbered too, but only while
+  /// they belonged to that same component's own ligature - a mark that has
+  /// nothing to do with this ligature must not be adopted by it.
+  ///
+  /// One documented departure from the general case: a ligature whose
+  /// components are all marks - some fonts compose accent clusters that way -
+  /// is given ordinary ligature props here rather than being left alone as
+  /// HarfBuzz leaves it. Distinguishing the case needs `GDEF` classes, which
+  /// this method does not have; the cost is that a mark-on-mark-ligature may
+  /// resolve to the last component instead of its own.
   void ligate(List<int> positions, int ligature) {
     final int first = positions.first;
     final int last = positions.last;
@@ -854,7 +965,58 @@ final class GlyphBuffer {
     for (final int position in positions) {
       if (clusters[position] < cluster) cluster = clusters[position];
     }
+
+    final int ligatureId = _nextLigatureId++;
+    int totalComponents = 0;
+    for (final int position in positions) {
+      totalComponents += ligatureComponentCounts[position];
+    }
+
+    // Walked before any deletion, while `positions` still addresses the
+    // components: every glyph strictly between two consecutive components is a
+    // glyph the match stepped over, which is to say a mark.
+    int lastComponentCount = ligatureComponentCounts[first];
+    int componentsSoFar = lastComponentCount;
+    int lastComponentId = ligatureIds[first];
+    for (int k = 1; k < positions.length; k++) {
+      for (int i = positions[k - 1] + 1; i < positions[k]; i++) {
+        final int own = ligatureComponents[i];
+        // Zero means "not already inside a ligature", and such a mark sits at
+        // the end of the component it follows.
+        final int within = own == 0 ? lastComponentCount : own;
+        ligatureIds[i] = ligatureId;
+        ligatureComponents[i] = componentsSoFar -
+            lastComponentCount +
+            (within < lastComponentCount ? within : lastComponentCount);
+      }
+      lastComponentId = ligatureIds[positions[k]];
+      lastComponentCount = ligatureComponentCounts[positions[k]];
+      componentsSoFar += lastComponentCount;
+    }
+
+    // Marks after the final component. They are already past everything this
+    // ligature matched, so they are only ours if they belonged to the ligature
+    // the final component itself was.
+    if (lastComponentId != 0) {
+      for (int i = last + 1; i < glyphs.length; i++) {
+        if (ligatureIds[i] != lastComponentId) break;
+        final int own = ligatureComponents[i];
+        if (own == 0) break;
+        ligatureIds[i] = ligatureId;
+        ligatureComponents[i] = componentsSoFar -
+            lastComponentCount +
+            (own < lastComponentCount ? own : lastComponentCount);
+      }
+    }
+
     glyphs[first] = ligature;
+    ligatureIds[first] = ligatureId;
+    // Zero, not one: the ligature glyph *is* the ligature, and a mark-to
+    // -ligature lookup asking "which component" of the ligature glyph itself
+    // would otherwise be told "the first".
+    ligatureComponents[first] = 0;
+    ligatureComponentCounts[first] = totalComponents;
+
     // Everything between the outermost components is now one indivisible unit
     // of text, so it is one cluster. Leaving the intermediate marks with their
     // own cluster indices would offer a caret position inside a glyph.
@@ -874,6 +1036,10 @@ final class GlyphBuffer {
     xOffsets.removeAt(index);
     yOffsets.removeAt(index);
     attachedTo.removeAt(index);
+    cursiveAttachedTo.removeAt(index);
+    ligatureIds.removeAt(index);
+    ligatureComponents.removeAt(index);
+    ligatureComponentCounts.removeAt(index);
   }
 
   /// The next position at or after [index] that [filter] does not hide.
@@ -892,6 +1058,45 @@ final class GlyphBuffer {
     return -1;
   }
 
+  /// Records that [child] follows [parent]'s baseline, [crossOffset] away.
+  ///
+  /// The cross-stream half of a cursive join - in horizontal layout, the
+  /// vertical one. The in-stream half is expressed by the caller as advances
+  /// and needs no bookkeeping; this half does, because a cursive join is
+  /// *transitive*: three joined Arabic letters form a chain in which the third
+  /// is placed relative to the second, which is itself placed relative to the
+  /// first. Adding the offsets as the links are made would be wrong, since a
+  /// later lookup may still move the parent, so the link is recorded and the
+  /// accumulated displacement is computed once by [resolveAttachments].
+  ///
+  /// [child] is the glyph that *moves*, and it is not always the later one -
+  /// see the `RIGHT_TO_LEFT` rule documented on `GPOS`'s cursive subtable.
+  ///
+  /// If [child] already had a parent, its existing chain is *reversed* rather
+  /// than dropped, so that everything hanging off it comes along into the new
+  /// tree. Dropping it would leave a previously joined letter behind on the
+  /// baseline; keeping both links would make the graph cyclic. The reversal
+  /// stops if it reaches [parent], which is the case where the old chain
+  /// already leads to the new parent and reversing it would close a cycle.
+  void attachCursive(int child, int parent, double crossOffset) {
+    _reverseCursiveChain(child, parent);
+    cursiveAttachedTo[child] = parent;
+    // Assigned, not accumulated: the anchors state where the two glyphs are
+    // relative to each other, so a second cursive lookup over the same pair
+    // replaces the join rather than doubling it.
+    yOffsets[child] = crossOffset;
+  }
+
+  void _reverseCursiveChain(int index, int newParent) {
+    final int parent = cursiveAttachedTo[index];
+    if (parent < 0) return;
+    cursiveAttachedTo[index] = -1;
+    if (parent == newParent) return;
+    _reverseCursiveChain(parent, newParent);
+    yOffsets[parent] = -yOffsets[index];
+    cursiveAttachedTo[parent] = index;
+  }
+
   /// Turns every recorded attachment into an absolute offset.
   ///
   /// A mark's offset is stored relative to the glyph it attaches to, because
@@ -900,11 +1105,20 @@ final class GlyphBuffer {
   /// advances that separate the two glyphs - the mark is drawn at the pen,
   /// which has already moved past the base by the time it gets there.
   ///
-  /// Order matters. Marks are resolved front to back so that a mark attached
-  /// to a mark reads a base that is already absolute, which is what makes a
-  /// stack of two accents sit above one another instead of both above the
-  /// letter.
+  /// Order matters, twice.
+  ///
+  /// Cursive chains are resolved *first*, because a mark attached to a letter
+  /// that a cursive join lifted off the baseline has to inherit that lift; a
+  /// mark resolved against an unresolved letter sits at the height the letter
+  /// used to be.
+  ///
+  /// Marks are then resolved front to back so that a mark attached to a mark
+  /// reads a base that is already absolute, which is what makes a stack of two
+  /// accents sit above one another instead of both above the letter.
   void resolveAttachments({bool rightToLeft = false}) {
+    for (int i = 0; i < glyphs.length; i++) {
+      _resolveCursiveAt(i);
+    }
     for (int i = 0; i < glyphs.length; i++) {
       final int base = attachedTo[i];
       if (base < 0) continue;
@@ -925,6 +1139,28 @@ final class GlyphBuffer {
     }
   }
 
+  /// Adds the accumulated cursive displacement of [index]'s ancestors to it.
+  ///
+  /// Depth-first, and the link is cleared *before* recursing rather than
+  /// after. That is what makes the pass idempotent - a glyph reached twice,
+  /// once from the outer loop and once as somebody's parent, is only added in
+  /// once - and it is also the cycle guard: a chain that somehow points back
+  /// at itself terminates at the already-cleared node instead of recursing
+  /// until the stack runs out. A cycle cannot arise from [attachCursive],
+  /// which reverses rather than duplicates links, but the buffer is public and
+  /// the failure mode of the alternative is a hang.
+  ///
+  /// Only the cross-stream offset propagates. The in-stream part of a cursive
+  /// join lives in the advances, which the pen accumulates on its own; adding
+  /// it here would move each joined glyph by the whole chain's width.
+  void _resolveCursiveAt(int index) {
+    final int parent = cursiveAttachedTo[index];
+    if (parent < 0) return;
+    cursiveAttachedTo[index] = -1;
+    _resolveCursiveAt(parent);
+    yOffsets[index] += yOffsets[parent];
+  }
+
   /// Reverses the run, for right-to-left output.
   ///
   /// Substitution and positioning both run in logical order - that is the
@@ -934,7 +1170,17 @@ final class GlyphBuffer {
   void reverse() {
     _reverseInts(glyphs);
     _reverseInts(clusters);
+    // The two attachment arrays hold *indices*, which reversing invalidates.
+    // They are reversed anyway rather than left behind, because
+    // [resolveAttachments] has already emptied them by the time this runs -
+    // the arrays are all -1 and reversing keeps them the same length as the
+    // rest. The ligature arrays hold no indices and survive intact, which is
+    // what lets a caller inspect a reversed run's ligature membership.
     _reverseInts(attachedTo);
+    _reverseInts(cursiveAttachedTo);
+    _reverseInts(ligatureIds);
+    _reverseInts(ligatureComponents);
+    _reverseInts(ligatureComponentCounts);
     _reverseDoubles(xAdvances);
     _reverseDoubles(yAdvances);
     _reverseDoubles(xOffsets);

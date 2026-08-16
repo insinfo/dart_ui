@@ -13,8 +13,20 @@
 ///
 /// Styles write into [PropertyStore] at the `style` and `trigger` precedence
 /// levels, which is why a hover rule cannot clobber a local assignment.
+///
+/// Section 28.7 adds the fourth thing: a **transition**, so that a value
+/// changed by a pseudo-class is reached over time instead of instantly. That
+/// lives at the end of this file, in [PropertyTransition] and
+/// [StyleTransitionRunner], and it is the one writer of
+/// [PropertyPrecedence.animation] in the framework.
 library;
 
+import '../animation/animation.dart';
+import '../animation/clock.dart';
+import '../animation/curves.dart';
+import '../geometry/offset.dart';
+import '../geometry/rect.dart';
+import '../geometry/size.dart';
 import 'properties.dart';
 
 /// The states a selector can test, per section 28.3.
@@ -387,4 +399,394 @@ final class ResourceDictionary {
 
   /// Whether [key] resolves anywhere in the chain.
   bool contains(String key) => lookup<Object?>(key) != null;
+}
+
+/// One property that animates instead of jumping when a style changes it.
+///
+/// Section 28.7 names the properties worth transitioning - colour, opacity,
+/// transform, border, shadow, and size "with caution". Nothing here restricts
+/// *which* property may be declared; the caution is the caller's, because a
+/// transition on a layout-invalidating property re-runs layout on every frame
+/// of it, which the [UiProperty.invalidation] of that property already says.
+///
+/// [lerp] is supplied rather than inferred. A registry mapping types to
+/// interpolators would have to be consulted per frame and could not handle a
+/// type this layer has never seen, so the transition carries its own.
+final class PropertyTransition<T> {
+  const PropertyTransition({
+    required this.property,
+    required this.duration,
+    required this.lerp,
+    this.curve = Curves.easeOut,
+  });
+
+  final UiProperty<T> property;
+
+  /// How long the change takes. [Duration.zero] means "do not animate", which
+  /// is legal and is how a single property opts out of a transition set.
+  final Duration duration;
+
+  /// The easing applied to progress. [Curves.easeOut] by default because a
+  /// state transition should *settle*: the control has already responded, and
+  /// what is left is it coming to rest.
+  final Curve curve;
+
+  final T Function(T a, T b, double t) lerp;
+
+  // The four operations below exist so the runner can hold a
+  // `PropertyTransition<Object?>` and still have `T` bound correctly at
+  // runtime. Dart generics are covariant, so the runner may *store* a
+  // `PropertyTransition<int>` in a `PropertyTransition<Object?>` slot - and
+  // would then fail at the call site when it passed an `Object?` into an
+  // `int` parameter. Routing through instance methods keeps the cast inside
+  // the object that knows its own type argument.
+
+  /// [lerp], reached through an erased signature.
+  Object? lerpErased(Object? a, Object? b, double t) => lerp(a as T, b as T, t);
+
+  /// The effective value of [property] on [store].
+  Object? readFrom(PropertyStore store) => store.read<T>(property);
+
+  /// Writes [value] at [PropertyPrecedence.animation].
+  bool writeAnimated(PropertyStore store, Object? value) => store.write<T>(
+        property,
+        value as T,
+        precedence: PropertyPrecedence.animation,
+      );
+
+  /// Drops the animation slot, revealing whatever the styles put underneath.
+  bool clearAnimated(PropertyStore store) => store.clear<T>(
+        property,
+        precedence: PropertyPrecedence.animation,
+      );
+
+  @override
+  String toString() => 'PropertyTransition(${property.name}, $duration)';
+}
+
+/// Ready-made transitions for the types the framework already interpolates.
+abstract final class PropertyTransitions {
+  static PropertyTransition<double> ofDouble(
+    UiProperty<double> property, {
+    required Duration duration,
+    Curve curve = Curves.easeOut,
+  }) =>
+      PropertyTransition<double>(
+        property: property,
+        duration: duration,
+        curve: curve,
+        lerp: DoubleTween.interpolate,
+      );
+
+  /// A `0xAARRGGBB` colour. See [ColorTween] for why the interpolation is
+  /// premultiplied and what that saves you from.
+  static PropertyTransition<int> ofColor(
+    UiProperty<int> property, {
+    required Duration duration,
+    Curve curve = Curves.easeOut,
+  }) =>
+      PropertyTransition<int>(
+        property: property,
+        duration: duration,
+        curve: curve,
+        lerp: ColorTween.interpolate,
+      );
+
+  static PropertyTransition<Offset> ofOffset(
+    UiProperty<Offset> property, {
+    required Duration duration,
+    Curve curve = Curves.easeOut,
+  }) =>
+      PropertyTransition<Offset>(
+        property: property,
+        duration: duration,
+        curve: curve,
+        lerp: Offset.lerp,
+      );
+
+  static PropertyTransition<Size> ofSize(
+    UiProperty<Size> property, {
+    required Duration duration,
+    Curve curve = Curves.easeOut,
+  }) =>
+      PropertyTransition<Size>(
+        property: property,
+        duration: duration,
+        curve: curve,
+        lerp: Size.lerp,
+      );
+
+  static PropertyTransition<Rect> ofRect(
+    UiProperty<Rect> property, {
+    required Duration duration,
+    Curve curve = Curves.easeOut,
+  }) =>
+      PropertyTransition<Rect>(
+        property: property,
+        duration: duration,
+        curve: curve,
+        lerp: Rect.lerp,
+      );
+}
+
+/// One transition in flight. Pre-allocated, never created per frame.
+final class _RunningTransition {
+  bool active = false;
+  Object? begin;
+  Object? end;
+  Object? current;
+  double elapsedMicros = 0.0;
+}
+
+/// Applies styles to a [PropertyStore] and animates the properties that
+/// declare a transition.
+///
+/// ## The mechanism, and why [PropertyPrecedence.animation] is the right slot
+///
+/// `properties.dart` reserves the strongest precedence level for a running
+/// animation and, until now, nothing wrote to it. It is the right slot for
+/// exactly the reason its own documentation gives: a transition must win over
+/// the style that triggered it. Consider hovering a button whose hover rule
+/// sets the background to blue. The rule lands at `trigger`; if the transition
+/// wrote at `trigger` too the two would fight, and if it wrote at `local` it
+/// would be indistinguishable from - and would destroy - a user assignment.
+///
+/// Writing at `animation` means the style layer underneath is *already* the
+/// final value, which is what makes the ending free: when the transition
+/// finishes it clears its slot, and the value beneath is the one it was
+/// heading for. Nothing is restored, because nothing was overwritten.
+///
+/// ## Interruption
+///
+/// The case implementations get wrong: a second state change arriving while a
+/// transition is running. The new animation must start from the value **on
+/// screen right now**, not from the value the interrupted transition started
+/// at. Moving a pointer on and off a button faster than the transition lasts
+/// otherwise makes the colour snap backwards on every crossing.
+///
+/// [apply] handles it by snapshotting the *effective* value before it touches
+/// anything. Since a running transition owns the `animation` slot, that
+/// snapshot is by construction the displayed value - mid-interpolation or not.
+///
+/// A re-apply that resolves to the same destination is not an interruption and
+/// does not restart the clock: [apply] detects it and lets the running
+/// transition continue. Without that check, a style pass that ran every frame
+/// would reset the elapsed time every frame and the transition would never
+/// finish.
+///
+/// ## Reduced motion
+///
+/// When [reducedMotion] is set, [apply] does not animate: it leaves the
+/// `animation` slot empty so the style value is the effective value
+/// immediately. See `ThemeData.reducedMotion` for the accessibility argument
+/// and for what that flag deliberately does *not* do.
+///
+/// ## Declared limits
+///
+/// * The runner animates only properties it was constructed with. A property
+///   with no declared transition changes instantly, which is the right default
+///   - the alternative is a framework that animates layout nobody asked it to.
+/// * It holds one [PropertyStore]: one runner per styled element, not one per
+///   application. The cost is a fixed-size array of the declared transitions.
+final class StyleTransitionRunner implements AnimationTicker {
+  StyleTransitionRunner({
+    required this.store,
+    required List<PropertyTransition<Object?>> transitions,
+    AnimationClock? clock,
+    bool reducedMotion = false,
+  })  : _transitions =
+            List<PropertyTransition<Object?>>.unmodifiable(transitions),
+        _running = List<_RunningTransition>.generate(
+          transitions.length,
+          (int _) => _RunningTransition(),
+          growable: false,
+        ),
+        _before = List<Object?>.filled(transitions.length, null),
+        _reducedMotion = reducedMotion,
+        _clock = clock {
+    for (int i = 0; i < _transitions.length; i++) {
+      for (int j = i + 1; j < _transitions.length; j++) {
+        if (identical(_transitions[i].property, _transitions[j].property)) {
+          throw ArgumentError(
+            'two transitions declared for the same property '
+            '"${_transitions[i].property.name}"; they would fight over the '
+            'animation slot and the winner would depend on list order',
+          );
+        }
+      }
+    }
+    _clock?.addTicker(this);
+  }
+
+  final PropertyStore store;
+
+  final List<PropertyTransition<Object?>> _transitions;
+
+  /// Parallel to [_transitions]: index `i` is the state of transition `i`.
+  /// Allocated once, so a frame of transitions allocates nothing
+  /// (section 6.5).
+  final List<_RunningTransition> _running;
+
+  /// Scratch for [apply]'s before-snapshot. Also allocated once.
+  final List<Object?> _before;
+
+  final AnimationClock? _clock;
+
+  bool _reducedMotion;
+  int _activeCount = 0;
+  Duration? _origin;
+
+  List<PropertyTransition<Object?>> get transitions => _transitions;
+
+  /// How many transitions are currently in flight.
+  int get activeTransitionCount => _activeCount;
+
+  @override
+  bool get isTicking => _activeCount > 0;
+
+  /// Whether transitions are being skipped for accessibility.
+  bool get reducedMotion => _reducedMotion;
+
+  /// Turning this on finishes every transition in flight *now*, rather than
+  /// letting the current ones run out. A user who just asked the system to
+  /// stop animating should not have to sit through the animation that was
+  /// already playing.
+  set reducedMotion(bool value) {
+    if (_reducedMotion == value) return;
+    _reducedMotion = value;
+    if (value) finishAll();
+  }
+
+  /// Applies [styles] for [target] to [store], animating what it can.
+  ///
+  /// Returns the merged invalidation, exactly as [Styles.applyTo] does, so a
+  /// caller can substitute this for a direct call without changing how it
+  /// reacts.
+  PropertyInvalidation apply(Styles styles, StyleTarget target) {
+    // 1. What is on screen right now. For a transition in flight this is the
+    //    interpolated value, because the animation slot is the winning one -
+    //    which is the whole reason interruption works.
+    for (int i = 0; i < _transitions.length; i++) {
+      _before[i] = _transitions[i].readFrom(store);
+    }
+
+    // 2. Uncover the style layer so step 3 can see where the styles want the
+    //    property to be. There is no "read the slot underneath" accessor on
+    //    PropertyStore, so the slot has to be dropped and, when the transition
+    //    continues, written back.
+    for (int i = 0; i < _transitions.length; i++) {
+      if (_running[i].active) _transitions[i].clearAnimated(store);
+    }
+
+    PropertyInvalidation invalidation = styles.applyTo(target, store);
+
+    // 3. Decide, per property: continue, retarget, or nothing.
+    for (int i = 0; i < _transitions.length; i++) {
+      final PropertyTransition<Object?> transition = _transitions[i];
+      final _RunningTransition state = _running[i];
+      final Object? goal = transition.readFrom(store);
+      final Object? from = _before[i];
+
+      if (state.active && goal == state.end) {
+        // Same destination as before: not an interruption. Put back what the
+        // transition was showing and let it keep running.
+        transition.writeAnimated(store, state.current);
+        continue;
+      }
+
+      if (state.active) {
+        state.active = false;
+        _activeCount--;
+      }
+
+      if (goal == from) continue;
+      if (_reducedMotion || transition.duration <= Duration.zero) {
+        // The animation slot is already empty, so `goal` is the effective
+        // value. Jumping straight to the end is literally doing nothing.
+        continue;
+      }
+
+      if (_activeCount == 0) {
+        // First transition of this burst: forget the old origin so the next
+        // tick establishes a fresh baseline instead of charging this
+        // transition for however long the runner sat idle.
+        _origin = null;
+      }
+      state
+        ..active = true
+        ..begin = from
+        ..end = goal
+        ..current = from
+        ..elapsedMicros = 0.0;
+      _activeCount++;
+      transition.writeAnimated(store, from);
+      invalidation = mergeInvalidation(
+        invalidation,
+        transition.property.invalidation,
+      );
+    }
+
+    if (_activeCount > 0) _clock?.requestFrame();
+    return invalidation;
+  }
+
+  @override
+  void tick(Duration timestamp) {
+    final Duration origin = _origin ?? timestamp;
+    _origin = timestamp;
+    if (_activeCount == 0) return;
+    final double deltaMicros = (timestamp - origin).inMicroseconds.toDouble();
+    if (deltaMicros <= 0.0) return;
+
+    for (int i = 0; i < _transitions.length; i++) {
+      final _RunningTransition state = _running[i];
+      if (!state.active) continue;
+      final PropertyTransition<Object?> transition = _transitions[i];
+      state.elapsedMicros += deltaMicros;
+      final double durationMicros =
+          transition.duration.inMicroseconds.toDouble();
+      final double progress =
+          (state.elapsedMicros / durationMicros).clamp(0.0, 1.0);
+      if (progress >= 1.0) {
+        _finish(i);
+        continue;
+      }
+      final Object? value = transition.lerpErased(
+        state.begin,
+        state.end,
+        transition.curve.transform(progress),
+      );
+      state.current = value;
+      transition.writeAnimated(store, value);
+    }
+  }
+
+  /// Ends every transition in flight, leaving each property at its final
+  /// value.
+  void finishAll() {
+    for (int i = 0; i < _transitions.length; i++) {
+      if (_running[i].active) _finish(i);
+    }
+  }
+
+  /// Unregisters from the clock and lands any transition in flight.
+  void dispose() {
+    finishAll();
+    _clock?.removeTicker(this);
+  }
+
+  /// Ends transition [index] by dropping the animation slot.
+  ///
+  /// Nothing is written: the style layer underneath already holds the target,
+  /// so clearing *is* landing on it - and because it is the same value, the
+  /// store reports no change and notifies nobody. A transition therefore ends
+  /// without a final redundant repaint.
+  void _finish(int index) {
+    final _RunningTransition state = _running[index];
+    state
+      ..active = false
+      ..current = state.end;
+    _activeCount--;
+    _transitions[index].clearAnimated(store);
+  }
 }

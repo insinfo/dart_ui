@@ -1,16 +1,29 @@
 /// The join between shaping and drawing.
 ///
 /// Everything below this point exists and is tested: a parser turns font bytes
-/// into a [Typeface], a shaper turns a string into positioned glyphs, and a
-/// rasterizer turns a glyph into coverage. Everything above it draws by
-/// appending to a [DisplayList]. This file is the twenty lines that connect
-/// them, and the reason it is worth its own file is that it is the only place
-/// that knows the run-splitting rule and the baseline convention - both of
-/// which are easy to get subtly wrong and hard to notice.
+/// into a [Typeface], a shaper turns a string into positioned glyphs, a
+/// paragraph turns a string into lines of positioned runs, and a rasterizer
+/// turns a glyph into coverage. Everything above it draws by appending to a
+/// [DisplayList]. This file is the lines that connect them, and the reason it
+/// is worth its own file is that it is the only place that knows the
+/// run-splitting rule and the baseline convention - both of which are easy to
+/// get subtly wrong and hard to notice.
 ///
 /// It lives under `rendering/` rather than `text/` for the reason section 22.7
 /// gives: the font parser must not know about renderers. A display list is a
-/// rendering concept, so the file that emits one belongs on this side.
+/// rendering concept, so the file that emits one belongs on this side. That is
+/// also why [Paragraph] itself carries no drawing code: it produces geometry,
+/// and [paintParagraph] here is the only thing that turns it into opcodes.
+///
+/// ## Two levels of API, and which one to use
+///
+/// [paint] and [measure] take a string and a face and do the smallest correct
+/// thing: one run, one line, no wrapping, no alignment, no bidi. They are what
+/// a diagnostics overlay and a single-line label want.
+///
+/// [layout], [paintParagraph] and [measureParagraph] go through [Paragraph],
+/// which is bidi, script itemization, line breaking, alignment and the caret
+/// and selection queries. Anything a user can type into should use those.
 library;
 
 import 'dart:typed_data';
@@ -19,6 +32,7 @@ import '../../geometry/offset.dart';
 import '../../geometry/size.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
+import '../../text/paragraph.dart';
 import '../../text/shaper.dart';
 import '../../text/typeface.dart';
 
@@ -27,11 +41,35 @@ import '../../text/typeface.dart';
 /// Holds a [Shaper], which holds reusable buffers, so one painter per layout
 /// context rather than one per string.
 final class TextPainter {
-  TextPainter({Shaper? shaper}) : _shaper = shaper ?? LatinShaper();
+  /// [shaper] replaces the default for **both** levels of the API: the
+  /// single-run calls use it directly, and the paragraph calls use it for every
+  /// script instead of picking one per run.
+  TextPainter({Shaper? shaper, ParagraphCache? paragraphCache})
+      : _shaper = shaper ?? sharedShaper,
+        paragraphs = paragraphCache ?? ParagraphCache(shaper: shaper);
 
+  /// The shaper the single-run API uses.
+  ///
+  /// [OpenTypeShaper] rather than [LatinShaper], and the difference is not
+  /// cosmetic: [LatinShaper] runs neither `GSUB` nor `GPOS`, so no ligature
+  /// ever forms and a decomposed accent is drawn at its nominal advance -
+  /// which for a zero-advance combining mark means at the *left edge* of the
+  /// letter it belongs to. Every label in the framework drew that way until
+  /// this line changed.
+  ///
+  /// [paint] and [measure] call it with the default script, `latn`, because
+  /// choosing a script per run is itemization and itemization needs a
+  /// paragraph. Non-Latin text should go through [layout], which itemizes.
   final Shaper _shaper;
 
   Shaper get shaper => _shaper;
+
+  /// Laid-out paragraphs, keyed as [ParagraphCache] documents.
+  ///
+  /// Per painter rather than global for the same reason the shaper is: a
+  /// painter is the unit of layout context, and two of them may legitimately
+  /// disagree about which shaper they use.
+  final ParagraphCache paragraphs;
 
   /// Appends [text] to [list], with the **left end of its baseline** at
   /// [origin].
@@ -135,4 +173,78 @@ final class TextPainter {
     final GlyphRun run = _shaper.shape(text, font);
     return Size(run.width, font.lineHeight);
   }
+
+  // -------------------------------------------------------------------------
+  // Paragraphs
+  // -------------------------------------------------------------------------
+
+  /// Lays [text] out into lines, through the cache.
+  ///
+  /// The result is immutable and shared: a caller must not assume it owns it,
+  /// and must not hold it across a change to the face registry, because the
+  /// entry it came from keys on the [ScaledTypeface] that was passed in.
+  Paragraph layout(
+    String text,
+    ScaledTypeface font, {
+    double maxWidth = double.infinity,
+    ParagraphStyle style = const ParagraphStyle(),
+  }) =>
+      paragraphs.single(
+        text,
+        TextStyle(font: font),
+        paragraphStyle: style,
+        maxWidth: maxWidth,
+      );
+
+  /// The same, for text whose style changes part way through.
+  Paragraph layoutSpans(
+    List<TextSpan> spans, {
+    double maxWidth = double.infinity,
+    ParagraphStyle style = const ParagraphStyle(),
+  }) =>
+      paragraphs.layout(spans: spans, style: style, maxWidth: maxWidth);
+
+  /// Appends [paragraph] to [list] with its **top-left** at [topLeft].
+  ///
+  /// Top-left rather than baseline, unlike [paint]: a paragraph has as many
+  /// baselines as it has lines, and each line's is already recorded in
+  /// [TextLine.baseline] relative to the paragraph's top. Asking the caller for
+  /// the first baseline would make the second line's position depend on a
+  /// number the caller had no way to compute.
+  ///
+  /// Allocates nothing that layout did not already allocate, apart from the
+  /// per-command typed lists [emitRun] builds: the spans hold their own copies
+  /// of the shaped glyphs, so redrawing a laid-out paragraph never re-shapes.
+  void paintParagraph(
+    DisplayList list,
+    Paragraph paragraph,
+    Offset topLeft,
+    int paintId,
+  ) {
+    for (final TextLine line in paragraph.lines) {
+      final double baseline = topLeft.dy + line.baseline;
+      for (final GlyphSpan span in line.spans) {
+        if (span.glyphs.isEmpty) continue;
+        emitRun(
+          list,
+          span.glyphs,
+          Offset(topLeft.dx + span.left, baseline),
+          paintId,
+        );
+      }
+    }
+  }
+
+  /// The box [text] occupies once wrapped to [maxWidth].
+  ///
+  /// The width is the longest line, not [maxWidth]: a caller reserving space
+  /// wants what the text needs, and a caller that already decided the width did
+  /// not need to ask.
+  Size measureParagraph(
+    String text,
+    ScaledTypeface font, {
+    double maxWidth = double.infinity,
+    ParagraphStyle style = const ParagraphStyle(),
+  }) =>
+      layout(text, font, maxWidth: maxWidth, style: style).size;
 }

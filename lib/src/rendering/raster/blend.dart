@@ -16,6 +16,8 @@ library;
 
 import 'dart:typed_data';
 
+import '../../graphics/display_list_opcodes.dart';
+
 /// Multiplies an 8-bit [value] by an 8-bit [alpha] treated as a fraction of
 /// 255, rounded to nearest.
 ///
@@ -96,4 +98,62 @@ void blendPixelOver(
   dst[offset + 1] = blendChannelOver(c1, dst[offset + 1], inverse);
   dst[offset + 2] = blendChannelOver(c2, dst[offset + 2], inverse);
   dst[offset + 3] = blendChannelOver(alpha, dst[offset + 3], inverse);
+}
+
+/// The composite equations this rasteriser can blend a finished layer with.
+///
+/// Three, and exactly the three the display list can encode. The enum exists
+/// instead of passing the wire constant down because the raster layer has no
+/// business validating a wire format twice: [cpuBlendForMode] is the one place
+/// an unknown mode is refused, and everything below it takes a value that
+/// cannot be anything else.
+///
+/// These are the *premultiplied* equations, on 8-bit channels, and they are
+/// written to agree term for term with the fixed-function factors
+/// `gpu_pipeline.dart` hands OpenGL for the same mode. That correspondence is
+/// the whole point: a layer composited on the CPU and the same layer
+/// composited by a driver have to land on the same byte, and they only can if
+/// both sides start from the same equation.
+enum CpuBlendMode {
+  /// `dst = src + dst * (1 - srcAlpha)`. GL: `ONE, ONE_MINUS_SRC_ALPHA`.
+  srcOver,
+
+  /// `dst = src`, alpha included - a replace, not a draw. GL: `ONE, ZERO`.
+  src,
+
+  /// `dst = min(255, src + dst)` per channel. GL: `ONE, ONE`, whose fixed
+  /// function clamps to [0, 1] in exactly the same place.
+  plus,
+}
+
+/// The equation one of the display list's `blendMode*` constants means here.
+///
+/// Throws rather than falling back to source-over, mirroring
+/// `gpuBlendForMode`. A blend mode that quietly becomes source-over draws a
+/// picture that is wrong in a way that looks like a paint bug, and a mode the
+/// two backends resolve differently is precisely what a differential test can
+/// no longer detect once one of them has a silent default.
+CpuBlendMode cpuBlendForMode(int blendMode) => switch (blendMode) {
+      blendModeSrcOver => CpuBlendMode.srcOver,
+      blendModeSrc => CpuBlendMode.src,
+      blendModePlus => CpuBlendMode.plus,
+      _ => throw ArgumentError.value(
+          blendMode,
+          'blendMode',
+          'no CPU blend equation; the display list encodes only srcOver, src '
+              'and plus, and a new mode must be given an equation here rather '
+              'than falling back to srcOver',
+        ),
+    };
+
+/// Saturating 8-bit addition, the arithmetic [CpuBlendMode.plus] is defined by.
+///
+/// The clamp is not a defensive check: `plus` on two opaque whites really does
+/// overflow, and GL's fixed-function blend clamps the same sum to 1.0 before
+/// it is quantised back to a byte. Wrapping instead - which a bare
+/// `Uint8List` store would do - turns a bright overlap into a black one.
+@pragma('vm:prefer-inline')
+int addSaturating(int a, int b) {
+  final sum = a + b;
+  return sum > 255 ? 255 : sum;
 }
