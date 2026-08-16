@@ -104,8 +104,21 @@ final class Framebuffer {
   /// The word view is only valid when the buffer's rows are 4-byte aligned,
   /// which a Uint8List does not promise; [Uint32List.view] throws otherwise,
   /// and the byte loop stays as the fallback rather than as dead code.
+  /// The channel arguments are **semantic**, not byte positions: `red` is red
+  /// whatever [format] puts in byte 0. This was not always true, and the way
+  /// it failed is worth keeping written down. [clearRect], five lines below,
+  /// branched on [format] while this method wrote blue-green-red-alpha
+  /// unconditionally, so the two neighbours disagreed and a non-black clear
+  /// into an `rgba8888` surface came back with red and blue swapped, while
+  /// every *drawn* primitive was format-aware ([CpuRasterizer] picks its red
+  /// index from the target's format). The reason no suite noticed: every
+  /// parity and golden test clears to `0xFF000000`, where the swap is
+  /// invisible. It surfaced only when the Metal work cleared to a colour.
   void clear(int blue, int green, int red, int alpha) {
-    final packed = _packWord(blue, green, red, alpha);
+    final bgra = format == PixelFormat.bgra8888Premultiplied;
+    final byte0 = bgra ? blue : red;
+    final byte2 = bgra ? red : blue;
+    final packed = _packWord(byte0, green, byte2, alpha);
     if (bytesPerRow % 4 == 0 && pixels.offsetInBytes % 4 == 0) {
       final words = Uint32List.view(
         pixels.buffer,
@@ -124,9 +137,9 @@ final class Framebuffer {
     for (var y = 0; y < height; y++) {
       var index = y * bytesPerRow;
       for (var x = 0; x < width; x++) {
-        pixels[index] = blue;
+        pixels[index] = byte0;
         pixels[index + 1] = green;
-        pixels[index + 2] = red;
+        pixels[index + 2] = byte2;
         pixels[index + 3] = alpha;
         index += 4;
       }

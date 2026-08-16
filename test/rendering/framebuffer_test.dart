@@ -89,6 +89,66 @@ void main() {
     });
   });
 
+  group('clear respects the pixel format', () {
+    // The bug these cover: `clear` wrote blue-green-red-alpha unconditionally
+    // while `clearRect`, five lines below it in the same class, branched on
+    // the format. A non-black clear into an rgba8888 surface therefore came
+    // back with red and blue swapped, while every drawn primitive was
+    // format-aware. Nothing caught it because every parity and golden suite
+    // in the repository clears to 0xFF000000, where the swap cannot be seen.
+
+    test('bgra puts blue in byte 0 and red in byte 2', () {
+      final buffer = Framebuffer.allocate(
+        width: 2,
+        height: 1,
+      )..clear(0x11, 0x22, 0x33, 0xFF);
+
+      expect(buffer.format, PixelFormat.bgra8888Premultiplied);
+      expect(buffer.pixels.take(4), <int>[0x11, 0x22, 0x33, 0xFF]);
+    });
+
+    test('rgba puts red in byte 0 and blue in byte 2', () {
+      final buffer = Framebuffer.allocate(
+        width: 2,
+        height: 1,
+        format: PixelFormat.rgba8888Premultiplied,
+      )..clear(0x11, 0x22, 0x33, 0xFF);
+
+      // Same semantic arguments, mirrored bytes. Asserting the literal bytes
+      // rather than "not the bgra order" is what makes this a test of the
+      // format rather than of the branch.
+      expect(buffer.pixels.take(4), <int>[0x33, 0x22, 0x11, 0xFF]);
+    });
+
+    // The property that would have caught the defect on its own: clearing
+    // everything and clearing a rectangle that covers everything are the same
+    // picture. It holds for either format, and it holds without anyone having
+    // to know which byte is which.
+    for (final format in PixelFormat.values) {
+      test('clear and a full-surface clearRect agree in $format', () {
+        final whole = Framebuffer.allocate(
+          width: 3,
+          height: 2,
+          format: format,
+        )..clear(0x11, 0x22, 0x33, 0xFF);
+
+        final byRect = Framebuffer.allocate(
+          width: 3,
+          height: 2,
+          format: format,
+        )..clearRect(
+            const Rect.fromLTRB(0, 0, 3, 2),
+            0x11,
+            0x22,
+            0x33,
+            0xFF,
+          );
+
+        expect(whole.toPackedBytes(), byRect.toPackedBytes());
+      });
+    }
+  });
+
   group('clear fast path', () {
     test('the word path and the byte path agree, byte for byte', () {
       // clear() takes a 32-bit store when the rows are aligned and falls back
