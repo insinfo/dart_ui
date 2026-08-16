@@ -14,23 +14,32 @@
 /// if this file were the first, a difference would be an open question, and
 /// with three prior witnesses agreeing it is a defect in this backend.
 ///
-/// ## The tolerance, declared before it was measured
+/// ## The tolerance, measured: **0 where nothing blends, 1 where it does**
 ///
-/// A non-zero tolerance is *justifiable* here and it is worth saying why
-/// before saying whether it was needed. The CPU folds 8-bit channels through
-/// `mul255`, which is exact round-to-nearest of `v * a / 255`. The GPU
-/// multiplies 32-bit floats in a fragment shader, quantises once at the end,
-/// and hands the result to a fixed-function blend unit; Metal's specification
-/// does not promise bit-exact agreement with anyone's integer arithmetic, and
-/// a value that lands on a rounding tie may go either way. The
-/// Direct3D 11 parity file measured exactly that: one scene, one level, at the
-/// three fractions whose coverage times 255 is a half-integer.
+/// Two of the four scenes match exactly and two differ by one level, and the
+/// difference is understood rather than tolerated. It is stated in full on the
+/// alpha scene below, and in one line here: the CPU folds 8-bit channels
+/// through `mul255` **twice** for a source-over - once premultiplying the
+/// source, once attenuating the destination - and each rounds; Metal evaluates
+/// the whole expression in floating point and quantises **once**. On a pixel
+/// whose exact answer is 57.47 levels the CPU says 58 and Metal says 57. Both
+/// are within half a level of the truth and Metal is the closer of the two.
 ///
-/// So the tolerance is declared per scene and the **observed** deviation is
-/// recorded next to it. What a tolerance must never become is the place a
-/// failure is made to go away: a scene that has been exact and stops being
-/// exact is a regression, and a margin wide enough to cover both destroys the
-/// only signal this file produces.
+/// That is also why the Direct3D 11 run of the same scenes measured 0 and this
+/// one does not: Direct3D converts a pixel shader's output to the render
+/// target's format *before* blending, which reproduces the CPU's first
+/// rounding by accident. Metal, on this device, does not. Neither behaviour is
+/// a defect and the difference is not visible at 8 bits per channel to anyone
+/// but a test.
+///
+/// Every tolerance here is a **ceiling with a worked example next to it**, not
+/// a margin. What a tolerance must never become is the place a failure is made
+/// to go away: a scene that has been exact and stops being exact is a
+/// regression, and the two exact scenes below are what would catch it.
+///
+/// The device these numbers came from is an `Apple Paravirtual device` - the
+/// GPU a `macos-14` GitHub runner exposes - and it is worth recording, because
+/// "Metal rounds a blend this way" is a statement about a driver.
 ///
 /// ## What is compared, and what this backend cannot draw yet
 ///
@@ -81,7 +90,7 @@ void main() {
   });
 
   group('the CPU and Metal render the same display list', () {
-    test('solid, pixel-aligned rectangles', () async {
+    test('solid, pixel-aligned rectangles: 0', () async {
       // The floor of the whole comparison. Both backends round an aliased
       // rectangle's edges with `pixelEdge` and write a constant colour, so
       // there is no arithmetic left for a driver to round differently - and no
@@ -93,17 +102,41 @@ void main() {
       await _expectParity(gpu, pipelines, _solidRects(), tolerance: 0);
     }, skip: _needsMac);
 
-    test('rectangles with alpha, overlapping', () async {
+    test('rectangles with alpha, overlapping: 1, and Metal is the closer one',
+        () async {
       // Source-over on premultiplied bytes, three times over, including where
       // two translucent rectangles overlap. That overlap is where a backend
       // that premultiplied at the wrong moment diverges first, and where a
       // pipeline descriptor that set the colour blend factors and left the
       // alpha ones at their defaults would show up - which is exactly the
       // mistake metal_device.dart sets both pairs to avoid.
-      await _expectParity(gpu, pipelines, _alphaRects(), tolerance: 0);
+      //
+      // **Observed deviation: 1, on 196 pixels, and it was worked out rather
+      // than tolerated.** Take pixel (2, 2), where 0x80CC3311 lies over the
+      // opaque 0xFF204060 background, green channel:
+      //
+      //   * the exact answer is 51 * 128/255 + 64 * 127/255
+      //     = 25.60 + 31.87 = **57.47** levels;
+      //   * the CPU produces **58**: `mul255` rounds the premultiplied source
+      //     to 26 and the attenuated destination to 32, then adds. Two
+      //     roundings, each up;
+      //   * Metal produces **57**: the whole expression is evaluated in
+      //     floating point and quantised once, at the end.
+      //
+      // So neither is wrong - Metal is 0.47 from the truth and the CPU is 0.53
+      // - and the difference is *where the arithmetic is quantised*, not what
+      // it computes. That also explains why the Direct3D 11 run of the same
+      // scene measured 0: Direct3D converts a pixel shader's output to the
+      // render target's format **before** blending, which reproduces the CPU's
+      // first rounding, and Metal on this device does not.
+      //
+      // The tolerance is a ceiling, not a margin. If this scene ever exceeds
+      // 1, or if the solid scene above ever needs any tolerance at all,
+      // something moved and this file is where it will be seen first.
+      await _expectParity(gpu, pipelines, _alphaRects(), tolerance: 1);
     }, skip: _needsMac);
 
-    test('a rectangle whose edges are all fractional', () async {
+    test('a rectangle whose edges are all fractional: 1 on 2 pixels', () async {
       // The analytic coverage term on all four edges at once. The CPU computes
       // exact area coverage in `ScanlineFiller`; `boxCoverage` in the MSL
       // computes it from an interpolated device position that is only the
@@ -113,12 +146,22 @@ void main() {
       //
       // The four fractions are 0.8, 0.6, 0.6 and 0.2 of a pixel, each of which
       // multiplies out to a whole number of 8-bit levels (204, 153, 153, 51),
-      // so no edge sits on a rounding boundary and the byte both sides
-      // quantise to is unambiguous.
-      await _expectParity(gpu, pipelines, _fractionalRect(), tolerance: 0);
+      // so no edge sits on a rounding boundary.
+      //
+      // **Observed deviation: 1, on exactly 2 of the 576 pixels** - (3, 5) and
+      // (3, 17), both in the x = 3 column, which is the 0.8-covered left edge,
+      // and both in a row whose own coverage is fractional too. So the two
+      // pixels that differ are the ones where *two* fractional coverages
+      // multiply, which is where the second rounding of the CPU's `mul255`
+      // chain lands on the other side of a half from Metal's single one - the
+      // same mechanism worked out in the scene above, at a tenth of the
+      // frequency. The 574 pixels with one fractional edge or none match
+      // exactly, which is the useful half of this measurement: the coverage
+      // *term* agrees, and only its quantisation does not.
+      await _expectParity(gpu, pipelines, _fractionalRect(), tolerance: 1);
     }, skip: _needsMac);
 
-    test('a clip with a half-pixel edge', () async {
+    test('a clip with a half-pixel edge: 0', () async {
       // A clip is an MTLScissorRect here and a clip stack on the CPU. Metal's
       // scissor origin is the top-left corner of the render target, the same
       // as device space's, so the rectangle is used as the batcher computed it
