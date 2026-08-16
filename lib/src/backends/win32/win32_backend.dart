@@ -22,9 +22,11 @@ import 'dart:io' show Platform;
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../platform/clipboard.dart';
 import '../../platform/native_window.dart';
 import 'win32_abi.dart';
 import 'win32_api.dart';
+import 'win32_clipboard.dart';
 import 'win32_constants.dart';
 import 'win32_diagnostics.dart';
 import 'win32_structs.dart';
@@ -32,11 +34,43 @@ import 'win32_window.dart';
 import 'win32_window_class.dart';
 
 /// Creates and owns Win32 windows.
-final class Win32WindowingBackend implements WindowingBackend {
+final class Win32WindowingBackend
+    implements WindowingBackend, ClipboardProvider {
   Win32WindowingBackend();
 
   @override
   String get name => 'win32';
+
+  /// The Windows clipboard, over the same `Win32Api` the windows use.
+  ///
+  /// This is the seam that makes Ctrl+C and Ctrl+V work in an application that
+  /// configured nothing: the shell asks the backend it selected, and this is
+  /// the backend answering. See [ClipboardProvider].
+  ///
+  /// Two honest refusals rather than a null, so the reason survives to
+  /// `RenderTextField.lastClipboardError`:
+  ///
+  ///  * before [initialize] there is no loaded API to talk to;
+  ///  * a Windows build without the user32/kernel32 clipboard symbols has no
+  ///    clipboard at all, and `Capability.clipboardText` is correspondingly
+  ///    absent from [probe].
+  @override
+  Clipboard get clipboard {
+    final api = _api;
+    if (api == null) {
+      return const UnavailableClipboard(
+        'the win32 backend has not been initialized, so no clipboard has been '
+        'opened yet',
+      );
+    }
+    if (!api.clipboardSupported) {
+      return const UnavailableClipboard(
+        'this Windows build exposes no Unicode clipboard symbols; the win32 '
+        'backend does not report Capability.clipboardText either',
+      );
+    }
+    return Win32Clipboard(api);
+  }
 
   /// Not final: a bag is single-use, and a backend may legitimately be
   /// initialised again after a shutdown (a test suite does it per test).

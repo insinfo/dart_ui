@@ -998,9 +998,15 @@ void main() {
         ..setSelection(1, 3);
       final owner = _owner();
       owner.updateRoot(TextField(controller: controller));
+      owner.pipelineOwner.drawFrame(DisplayList());
+      final field = owner.renderRoot! as RenderTextField;
+      // The *active* selection colour is what this counts, and only a field
+      // holding the keyboard paints it; an unfocused one paints the range
+      // dimmed. Focused here rather than asserted around, because a selection
+      // in the field the user is typing in is the case being described.
+      _giveKeyboard(field);
       final list = DisplayList();
       owner.pipelineOwner.drawFrame(list);
-      final field = owner.renderRoot! as RenderTextField;
 
       final Paragraph laid = field.paragraph!;
       final List<TextBox> boxes = laid.getBoxesForSelection(1, 3);
@@ -1024,6 +1030,8 @@ void main() {
       final controller = TextEditingController('abcd')..setSelection(1, 3);
       final owner = _owner();
       owner.updateRoot(TextField(controller: controller));
+      owner.pipelineOwner.drawFrame(DisplayList());
+      _giveKeyboard(owner.renderRoot! as RenderTextField);
       final list = DisplayList();
       owner.pipelineOwner.drawFrame(list);
 
@@ -1116,6 +1124,14 @@ void main() {
     });
   });
 }
+
+/// Gives [field] the keyboard the way clicking in it would.
+///
+/// Deliberately not `BuildOwner.requestKeyboardFocus`: that points the key
+/// router at a target without moving `FocusNode.hasPrimaryFocus`, and painting
+/// reads the node. A field that never took real focus paints no caret and
+/// paints its selection in the dimmed, unfocused colour.
+void _giveKeyboard(RenderTextField field) => field.focusNode!.requestFocus();
 
 /// The rectangles the field painted in the theme's selection colour.
 int _selectionRects(DisplayList list, ThemeData theme) {

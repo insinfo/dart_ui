@@ -1792,11 +1792,14 @@ final class RenderTextField extends RenderBox
   /// mouse message - and which this work does not own.
   Set<KeyModifier> _modifiers = const <KeyModifier>{};
 
-  /// How long after a click a second one still counts as a double click.
+  /// How long after a click a second one still counts as a double click, **on
+  /// a platform that did not count for us**.
   ///
-  /// 500 ms is the Windows default (`GetDoubleClickTime`). The user's actual
-  /// setting is a platform query no backend exposes yet, so it is a constant
-  /// here rather than silently different per machine.
+  /// 500 ms is the Windows default (`GetDoubleClickTime`), and it is only ever
+  /// a fallback: when [PointerDownEvent.clickCount] is above 1 the platform
+  /// already matched the two presses against the interval and the rectangle the
+  /// *user* configured, and that answer wins over this constant. X11 reports no
+  /// count, so this is what a click there is measured against.
   static const Duration _multiClickInterval = Duration(milliseconds: 500);
 
   /// How far the pointer may move between clicks of one multi-click, in
@@ -1996,17 +1999,32 @@ final class RenderTextField extends RenderBox
 
   /// Which click of a multi-click this press is: 1, 2 or 3.
   ///
-  /// Time *and* distance, because either alone is wrong: two clicks a second
-  /// apart at the same pixel are two clicks, and two fast clicks at opposite
-  /// ends of the field are also two clicks. A fourth click starts the cycle
-  /// again at one, which is what Windows does.
+  /// **The platform's own answer wins when it has one.**
+  /// [PointerDownEvent.clickCount] above 1 means the OS matched this press
+  /// against the previous one using the double-click interval *and* the
+  /// double-click rectangle from the user's settings - which on Windows is
+  /// `GetDoubleClickTime()` and `SM_CXDOUBLECLK`, both of them accessibility
+  /// settings that somebody with a tremor really does change. Re-deciding it
+  /// here against [_multiClickInterval] and [_multiClickSlop] would quietly
+  /// override that, and a user who set a 900 ms interval would find the
+  /// double click they configured stops working inside this framework.
+  ///
+  /// Without a platform count it is time *and* distance, because either alone
+  /// is wrong: two clicks a second apart at the same pixel are two clicks, and
+  /// two fast clicks at opposite ends of the field are also two clicks.
+  ///
+  /// A fourth click starts the cycle again at one, which is what Windows does.
+  /// Note that the *third* click of a triple always lands on the fallback path
+  /// even on Windows: there is no `WM_LBUTTONTRIPLECLK`, so the OS counts to
+  /// two and no further.
   int _countClick(PointerDownEvent event) {
     final Duration since = event.timestamp - _lastClickAt;
     final Offset moved = event.logicalPosition - _lastClickPosition;
-    final bool continues = since >= Duration.zero &&
-        since <= _multiClickInterval &&
-        moved.dx.abs() <= _multiClickSlop &&
-        moved.dy.abs() <= _multiClickSlop;
+    final bool continues = event.clickCount > 1 ||
+        (since >= Duration.zero &&
+            since <= _multiClickInterval &&
+            moved.dx.abs() <= _multiClickSlop &&
+            moved.dy.abs() <= _multiClickSlop);
     _clickCount = continues ? _clickCount % 3 + 1 : 1;
     _lastClickAt = event.timestamp;
     _lastClickPosition = event.logicalPosition;
@@ -2316,8 +2334,50 @@ final class RenderTextField extends RenderBox
   /// apart must insert in the order they were typed, and two overlapping reads
   /// of the Windows clipboard would have the second fail on the lock the first
   /// is holding.
+  ///
+  /// ## Why the failure is swallowed *here*, and what "swallowed" means
+  ///
+  /// This used to be `_clipboardWork.then((_) => operation())` with no error
+  /// handler, and that shape has two failure modes, both of which the user hit
+  /// at once:
+  ///
+  ///  1. **The error escaped.** A future produced by `then` with nobody
+  ///     listening for its error is an unhandled asynchronous error: it reaches
+  ///     `Zone.handleUncaughtError`, which in a test fails an unrelated test and
+  ///     in the gallery prints a `_microtaskLoop` stack trace over the running
+  ///     application.
+  ///  2. **The chain stayed poisoned.** `_clipboardWork` was left holding the
+  ///     rejected future, and every later `then` on it short-circuits straight
+  ///     to that same error - so *one* failed Ctrl+V permanently disabled copy,
+  ///     cut and paste in that field, silently, for the life of the process.
+  ///     That is the part a user notices: the clipboard "just stops working".
+  ///
+  /// So the link is wrapped in a `try` that cannot rethrow, which makes both
+  /// impossible by construction: [_clipboardWork] can only ever complete
+  /// *normally*, so it can never be poisoned and never carries an error for
+  /// anybody to leave unhandled. The failure is not lost - it becomes
+  /// [lastClipboardError], which is observable state a caller can read and a
+  /// test can assert, rather than an exception thrown at nobody several
+  /// microtasks after the keystroke that caused it.
   void _enqueueClipboard(Future<bool> Function() operation) {
-    _clipboardWork = _clipboardWork.then((void _) => operation());
+    _clipboardWork = _clipboardWork.then((void _) async {
+      try {
+        await operation();
+      } on ClipboardException catch (error) {
+        // A port failure that got past the guards in [_write] / [_read] - a
+        // Clipboard implementation that throws from somewhere else in its
+        // contract, for instance.
+        _lastClipboardError = error;
+      } on Object catch (error) {
+        // Anything at all: a backend throwing a type this file has never heard
+        // of is still not a reason to take down the frame loop or to break the
+        // next paste. Named, not hidden.
+        _lastClipboardError = ClipboardException(
+          operation: 'clipboard',
+          reason: 'the operation failed with an unexpected error: $error',
+        );
+      }
+    });
   }
 
   Future<bool> _write(String text) async {
@@ -2359,6 +2419,56 @@ final class RenderTextField extends RenderBox
     }
   }
 
+  /// The selection colour of a field that does **not** hold the keyboard.
+  ///
+  /// ## The policy, and why it is "dimmed" rather than "hidden"
+  ///
+  /// The bug was that the selection was painted at full strength whichever
+  /// field had focus, so clicking into a second field left two fields looking
+  /// selected and the user could not tell which one a keystroke would reach.
+  /// Two fixes were available and they are not equivalent:
+  ///
+  ///  * **Hide it.** One line, and it loses information the user needs: after
+  ///    selecting a phrase and clicking a *Bold* button - or a font list, or a
+  ///    colour picker - the selection is still what the next command applies
+  ///    to, and a field showing nothing says the opposite.
+  ///  * **Dim it**, which is what the platforms do: a Windows edit control
+  ///    greys its selection when the control is not the focus, macOS has a
+  ///    named colour for it (`NSColor.unemphasizedSelectedTextBackgroundColor`)
+  ///    and GTK has the `:backdrop` state. The range stays visible, and the
+  ///    *emphasis* - not the existence - of the highlight is what tells the two
+  ///    fields apart. Together with the border, which is already the accent
+  ///    colour only on the focused field, there is no ambiguity left.
+  ///
+  /// So: dimmed. **The controller's selection is never touched** - discarding
+  /// the range on focus loss would break exactly the select-then-click-a-button
+  /// flow above - only the colour this paint uses changes.
+  ///
+  /// ## How the colour is derived, and the one case it is wrong
+  ///
+  /// Half way between [ThemeData.selection] and the field's own fill, per
+  /// channel, un-premultiplied 0xAARRGGBB. That keeps it recognisably the
+  /// selection colour, always lands between the two colours the field already
+  /// uses, and needs no new palette entry.
+  ///
+  /// **In a high-contrast theme, muting a colour is the wrong instinct** - that
+  /// theme exists to remove exactly this kind of subtlety. It is still done
+  /// here, because leaving high contrast at full strength would keep the
+  /// reported bug alive for the users most affected by it, and the focused
+  /// field's accent border remains an unmuted focus signal. The tidier answer
+  /// is a `selectionInactive` entry on [ThemeData] that each palette sets for
+  /// itself - high contrast picking something with contrast rather than
+  /// something faded - which is a change to `theme.dart`, a file this work does
+  /// not own.
+  static int _inactiveSelectionColor(int selection, int background) {
+    int mix(int shift) =>
+        (((selection >> shift) & 0xFF) + ((background >> shift) & 0xFF)) ~/ 2;
+    return (((selection >> 24) & 0xFF) << 24) |
+        (mix(16) << 16) |
+        (mix(8) << 8) |
+        mix(0);
+  }
+
   /// Records why an operation did not happen and reports that it did not.
   bool _refuse(String operation, String reason) {
     _lastClipboardError = ClipboardException(
@@ -2376,11 +2486,9 @@ final class RenderTextField extends RenderBox
       size.width,
       size.height,
     );
-    paintFill(
-      list,
-      rect,
-      enabled ? theme.surfaceAlternate : theme.disabledSurface,
-    );
+    final int fillColor =
+        enabled ? theme.surfaceAlternate : theme.disabledSurface;
+    paintFill(list, rect, fillColor);
     paintBorder(list, rect, hasFocus ? theme.accent : theme.border);
     final double padding = theme.effectiveControlPadding;
     final double textTop =
@@ -2402,6 +2510,9 @@ final class RenderTextField extends RenderBox
     } else {
       if (_controller.hasSelection && !_obscure) {
         final ({int start, int end}) range = _controller.orderedSelection;
+        final int selectionColor = hasFocus
+            ? theme.selection
+            : _inactiveSelectionColor(theme.selection, fillColor);
         if (laid != null) {
           // **N rectangles, not one.** A logically contiguous selection that
           // crosses a direction boundary is drawn in two or three disjoint
@@ -2419,7 +2530,7 @@ final class RenderTextField extends RenderBox
                 box.rect.width,
                 labelLineHeight + 2,
               ),
-              theme.selection,
+              selectionColor,
             );
           }
         } else {
@@ -2433,7 +2544,7 @@ final class RenderTextField extends RenderBox
             list,
             Rect.fromLTWH(
                 left + from, textTop - 1, to - from, labelLineHeight + 2),
-            theme.selection,
+            selectionColor,
           );
         }
       }

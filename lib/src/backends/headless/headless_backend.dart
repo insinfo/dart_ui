@@ -15,13 +15,16 @@ import '../../foundation/lifecycle.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/clipboard.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
+import 'headless_test_support.dart' show FakeClipboard;
 
 /// An always-available in-memory windowing backend.
-final class HeadlessWindowingBackend implements WindowingBackend {
+final class HeadlessWindowingBackend
+    implements WindowingBackend, ClipboardProvider {
   HeadlessWindowingBackend({
     this.renderScale = 1,
     this.desktopScale = 1,
@@ -32,6 +35,16 @@ final class HeadlessWindowingBackend implements WindowingBackend {
 
   @override
   String get name => 'headless';
+
+  /// The in-memory clipboard every headless application gets by default.
+  ///
+  /// Typed as [FakeClipboard] rather than [Clipboard] on purpose: a test that
+  /// drives copy and paste through the shell needs to seed it, read it back and
+  /// make it fail on demand, and a test that had to install its own clipboard
+  /// to do so would no longer be exercising the *default* path - which is the
+  /// path that was broken.
+  @override
+  final FakeClipboard clipboard = FakeClipboard();
 
   /// Physical pixels allocated for each logical unit.
   final double renderScale;

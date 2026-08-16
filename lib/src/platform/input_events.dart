@@ -57,9 +57,33 @@ final class PointerDownEvent extends PointerEvent {
     required super.kind,
     required super.logicalPosition,
     required this.button,
+    this.clickCount = 1,
   });
 
   final PointerButton button;
+
+  /// Which press of a multi-click this is, **as the platform counted it**.
+  ///
+  /// 1 for an ordinary press, 2 when the platform itself decided this press
+  /// continues the previous one. It exists because that decision is not a
+  /// constant a widget may invent:
+  ///
+  ///  * Windows registers the class with `CS_DBLCLKS` and answers the second
+  ///    press with `WM_LBUTTONDBLCLK`, having matched it against
+  ///    `GetDoubleClickTime()` and the `SM_CXDOUBLECLK`/`SM_CYDOUBLECLK`
+  ///    rectangle - both of which the user sets in the mouse control panel, and
+  ///    both of which are **accessibility settings**: somebody with a tremor or
+  ///    reduced dexterity raises the interval precisely because 500 ms is not
+  ///    long enough for them. A widget that re-derives the count from a fixed
+  ///    interval silently overrides that.
+  ///  * macOS reports `NSEvent.clickCount` for the same reason, and X11 reports
+  ///    none at all - which is why this defaults to 1 rather than being
+  ///    required, and why a consumer must still be able to count for itself.
+  ///
+  /// It stops at 2 on Windows: there is no `WM_LBUTTONTRIPLECLK`, so a third
+  /// press arrives as an ordinary down and a triple click is the consumer's own
+  /// arithmetic either way.
+  final int clickCount;
 }
 
 final class PointerUpEvent extends PointerEvent {

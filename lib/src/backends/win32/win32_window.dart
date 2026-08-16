@@ -533,6 +533,32 @@ final class Win32Window with DisposableMixin implements NativeWindow {
       case wmRbuttonup:
         return _onPointerUp(PointerButton.secondary, lParam);
 
+      case wmMbuttondown:
+        return _onPointerDown(PointerButton.middle, lParam);
+
+      case wmMbuttonup:
+        return _onPointerUp(PointerButton.middle, lParam);
+
+      // The second press of a double click, which Windows sends *instead of* a
+      // second `WM_BUTTONDOWN` because the class carries `CS_DBLCLKS`. Not
+      // handling these is not a missing feature, it is a **lost press**: the
+      // framework saw one down where the user made two, so no amount of
+      // counting downstream could ever reach two. See [wmLbuttondblclk].
+      //
+      // Emitted as an ordinary down, so every consumer that only cares about
+      // presses keeps working unchanged, and `clickCount: 2` carries the one
+      // thing this message knows and a Dart timer cannot: that *Windows*
+      // matched the two presses, using the interval and the rectangle the user
+      // configured.
+      case wmLbuttondblclk:
+        return _onPointerDown(PointerButton.primary, lParam, clickCount: 2);
+
+      case wmRbuttondblclk:
+        return _onPointerDown(PointerButton.secondary, lParam, clickCount: 2);
+
+      case wmMbuttondblclk:
+        return _onPointerDown(PointerButton.middle, lParam, clickCount: 2);
+
       case wmMousewheel:
         return _onPointerScroll(wParam, lParam);
 
@@ -626,7 +652,7 @@ final class Win32Window with DisposableMixin implements NativeWindow {
   /// the last of them comes up rather than when the first does.
   final Set<PointerButton> _heldButtons = <PointerButton>{};
 
-  int _onPointerDown(PointerButton button, int lParam) {
+  int _onPointerDown(PointerButton button, int lParam, {int clickCount = 1}) {
     // Mouse capture at the OS level. The framework's own capture routes an
     // event to the control that took the pointer, but it can only route events
     // that arrive - and Windows stops sending WM_MOUSEMOVE the instant the
@@ -647,6 +673,7 @@ final class Win32Window with DisposableMixin implements NativeWindow {
           win32SignedHiWord(lParam),
         ),
         button: button,
+        clickCount: clickCount,
       ),
     );
     return 0;

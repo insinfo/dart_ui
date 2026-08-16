@@ -317,21 +317,17 @@ final class ApplicationOptions {
   /// A `main` that wants the real environment passes it.
   final Map<String, String> environment;
 
-  /// The system clipboard the widget tree will use, or null for none.
+  /// Overrides the clipboard the widget tree would otherwise get.
   ///
-  /// Supplied by the caller for the same reason [WindowingBackendEntry] is: the
-  /// clipboard is a platform service, this file is not allowed to name a
-  /// backend, and a `main` that already chose `Win32WindowingBackend` is the
-  /// one place that can also build a `Win32Clipboard` over the same
-  /// `Win32Api`. Null leaves the tree with an [UnavailableClipboard], so a
-  /// Ctrl+V in an application that was never given one fails by name rather
-  /// than doing nothing.
+  /// **Null is the normal value and no longer means "no clipboard".** The
+  /// selected backend supplies one when it is a [ClipboardProvider] - the Win32
+  /// and headless backends are - so the default path copies and pastes with
+  /// nothing configured here. See [Application.clipboard] for the full order.
   ///
-  /// **Pending.** The tidier seam is a `clipboard` member on the
-  /// `WindowingBackend` contract, so choosing a backend would choose its
-  /// clipboard too. It is not done here because that interface is implemented
-  /// by every backend and every test double, and adding a member to it is a
-  /// change across files this work does not own.
+  /// Setting it is for the cases where the backend's answer is not the one
+  /// wanted: a test that needs a clipboard which fails on demand while the rest
+  /// of the application runs on the real backend, an application that routes
+  /// copy through its own history, or a backend that has no clipboard yet.
   final Clipboard? clipboard;
 
   /// Where a build/layout/paint failure goes. Null installs a reporter that
@@ -663,11 +659,38 @@ final class Application with DisposableMixin {
 
   /// The clipboard this application's widget tree can reach.
   ///
-  /// Never null: an application started without one gets an
-  /// [UnavailableClipboard], whose operations fail with a message that says so.
-  /// That is the section 6.6 answer - a named failure at the Ctrl+V - rather
-  /// than a silent no-op the user would read as "the clipboard is empty".
-  Clipboard get clipboard => options.clipboard ?? const UnavailableClipboard();
+  /// Resolved in three steps, and the middle one is the whole fix:
+  ///
+  ///  1. [ApplicationOptions.clipboard], when the caller supplied one. An
+  ///     explicit choice still wins - that is what makes a test able to inject
+  ///     a failing clipboard into an application running on a real backend.
+  ///  2. **Otherwise the clipboard of the backend that was selected**, when
+  ///     that backend is a [ClipboardProvider] - which the Win32 backend and
+  ///     the headless backend both are. Choosing a backend chooses its
+  ///     clipboard, so the default path works with nothing configured. Before
+  ///     this, an application that did not pass one - `example/gallery_win32
+  ///     .dart`, and every other example - had every Ctrl+C and Ctrl+V in it
+  ///     fail against an [UnavailableClipboard], which is the bug this closes.
+  ///  3. Failing both, an [UnavailableClipboard]: a backend with no clipboard
+  ///     (X11 today) still yields a *named* failure at the Ctrl+V rather than a
+  ///     null or a silent no-op the user would read as "the clipboard is
+  ///     empty".
+  ///
+  /// Never null in any of the three.
+  Clipboard get clipboard {
+    final Clipboard? configured = options.clipboard;
+    if (configured != null) return configured;
+    // A pattern rather than `is`: [ClipboardProvider] is not a subtype of
+    // `WindowingBackend` - deliberately, so that no existing implementation had
+    // to change - and Dart only promotes to a subtype of the declared type.
+    if (backend case final ClipboardProvider provider) {
+      return provider.clipboard;
+    }
+    return UnavailableClipboard(
+      'the ${backend.name} backend provides no clipboard, and none was passed '
+      'through ApplicationOptions.clipboard',
+    );
+  }
 
   /// The root as the tree actually mounts it.
   ///

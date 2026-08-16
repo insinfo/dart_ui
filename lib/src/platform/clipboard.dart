@@ -93,6 +93,34 @@ abstract interface class Clipboard {
   Future<void> writeText(String text);
 }
 
+/// A windowing backend that can hand out the platform's clipboard.
+///
+/// ## Why an extra interface instead of a member on `WindowingBackend`
+///
+/// The clipboard *is* a property of the backend - the Win32 backend already
+/// loads the user32 symbols `Win32Clipboard` needs, and only it knows whether
+/// they were there - so "choose a backend" should mean "choose its clipboard",
+/// and the application shell must not have to name a backend to wire one up.
+/// Before this existed, `ApplicationOptions.clipboard` was the only route, and
+/// an application that did not pass one got an [UnavailableClipboard]: every
+/// Ctrl+C and Ctrl+V in it failed, which is exactly the bug this closes. The
+/// default path now works with nothing configured.
+///
+/// It is a **separate** interface rather than a member on `WindowingBackend`
+/// because that contract is implemented by every backend *and by every test
+/// double in the suite*, and adding a required member to it would break each
+/// one for a capability most of them do not have. Backends that have a
+/// clipboard declare it; the rest are unchanged, and the shell falls back to
+/// [UnavailableClipboard] for them - a named failure, not a null.
+abstract interface class ClipboardProvider {
+  /// The clipboard for this backend.
+  ///
+  /// Never null: a backend whose platform clipboard is unavailable returns an
+  /// [UnavailableClipboard] carrying the reason, so the failure keeps its
+  /// explanation instead of collapsing into "no clipboard was configured".
+  Clipboard get clipboard;
+}
+
 /// A clipboard operation that did not happen, named.
 ///
 /// Carries the *operation* rather than only a message because the operation is

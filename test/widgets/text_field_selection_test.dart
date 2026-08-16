@@ -214,6 +214,180 @@ void main() {
     });
   });
 
+  group('a double click the platform counted', () {
+    // These are the widget half of the double-click fix. The backend half is
+    // `test/backends/win32/win32_mouse_input_test.dart`, which proves the
+    // second press exists at all; this proves the field believes the count the
+    // platform put on it rather than re-deciding with a constant of its own.
+    //
+    // Why that matters: `GetDoubleClickTime()` is a *user* setting, raised by
+    // people whose hands do not manage two clicks in 500 ms. A field that
+    // measured the interval itself would silently ignore it, and the person
+    // who most needed the setting would be the one it stopped working for.
+
+    test('selects the word even when the field would have timed out', () {
+      final _Field field = _Field('hello world')..osDoubleClickBetween(1, 2);
+
+      expect(field.controller.selectedText, 'hello');
+      expect(field.controller.selectionStart, 0);
+      expect(field.controller.selectionEnd, 5);
+    });
+
+    test('stops at the punctuation, in the middle of the value', () {
+      // Three seconds after the first press, so nothing but the reported count
+      // can be doing the work here.
+      final _Field field = _Field('olá, mundo')..osDoubleClickBetween(7, 8);
+
+      expect(field.controller.selectedText, 'mundo');
+      expect(field.controller.selectionStart, 6);
+      expect(field.controller.selectionEnd, 11);
+    });
+
+    test('keeps a decomposed accent with the letter it sits on', () {
+      // `ola` + U+0301 COMBINING ACUTE ACCENT: four code units, one word, and
+      // the comma is not part of it. A selection that ended at 3 would cut a
+      // grapheme cluster in half.
+      final _Field field = _Field('olá, mundo')..osDoubleClickBetween(1, 2);
+
+      expect(field.controller.selectionStart, 0);
+      expect(field.controller.selectionEnd, 4);
+      expect(field.controller.selectedText, 'olá');
+    });
+
+    test('takes a whole emoji, not one of its surrogates', () {
+      // GRINNING FACE is two code units and one segment. Selecting 2..3 would
+      // be half a character, which `TextEditingValue` refuses outright.
+      final _Field field = _Field('a \u{1F600} b')..osDoubleClickBetween(2, 4);
+
+      expect(field.controller.selectionStart, 2);
+      expect(field.controller.selectionEnd, 4);
+      expect(field.controller.selectedText, '\u{1F600}');
+    });
+
+    test('a platform double click still cycles back on the fourth', () {
+      final _Field field = _Field('hello world')
+        ..osDoubleClickBetween(1, 2)
+        // Third: no platform count, inside the fallback window.
+        ..clickAgainAt(const Duration(seconds: 3, milliseconds: 100))
+        // Fourth: the platform counted this pair too, and four clicks start
+        // over at one - which is what Windows itself does.
+        ..clickAgainAt(
+          const Duration(seconds: 3, milliseconds: 200),
+          clickCount: 2,
+        );
+
+      expect(field.controller.hasSelection, isFalse);
+    });
+
+    test('a third click after a platform double selects the whole value', () {
+      final _Field field = _Field('olá, mundo')
+        ..osDoubleClickBetween(7, 8)
+        ..clickAgainAt(const Duration(seconds: 3, milliseconds: 100));
+
+      expect(field.controller.selectionStart, 0);
+      expect(field.controller.selectionEnd, 11);
+      expect(field.controller.selectedText, 'olá, mundo');
+    });
+
+    test('a press with no reported count is still measured by the field', () {
+      // The fallback has to keep working: X11 reports no count at all, and a
+      // field that only believed a platform count would never double click
+      // there.
+      final _Field field = _Field('hello world')..doubleClickBetween(7, 8);
+
+      expect(field.controller.selectedText, 'world');
+    });
+  });
+
+  group('a selection in a field that lost the keyboard', () {
+    // The reported bug: clicking into a second field left the first one still
+    // painting its selection at full strength, so two fields looked selected
+    // at once and nothing on screen said which one a keystroke would reach.
+    // The caret already checked `hasFocus`; the selection did not.
+    //
+    // The policy is *dimmed, not hidden* - what Windows and macOS do - so the
+    // range stays visible for the select-then-click-a-toolbar-button flow, and
+    // the controller is never touched.
+
+    test('is not painted in the active selection colour', () {
+      final _TwoFields fields = _TwoFields('hello world', 'second field')
+        ..doubleClickFirst()
+        ..clickSecond();
+
+      final DisplayList list = fields.paint();
+      expect(
+        _rectsWithColor(list, ThemeData.neutralLight.selection),
+        isEmpty,
+        reason: 'the field that has the keyboard has no selection, and the '
+            'field that has a selection does not have the keyboard',
+      );
+    });
+
+    test('is still painted, in a colour between selection and surface', () {
+      final _TwoFields fields = _TwoFields('hello world', 'second field')
+        ..doubleClickFirst()
+        ..clickSecond();
+
+      final DisplayList list = fields.paint();
+      final int dimmed = _dimmed(ThemeData.neutralLight);
+      expect(
+        _rectsWithColor(list, dimmed),
+        isNotEmpty,
+        reason: 'hiding the range would lose what a formatting command would '
+            'apply to',
+      );
+    });
+
+    test('the controller still holds the range, unchanged', () {
+      final _TwoFields fields = _TwoFields('hello world', 'second field')
+        ..doubleClickFirst();
+
+      final int start = fields.firstController.selectionStart;
+      final int end = fields.firstController.selectionEnd;
+      expect(fields.firstController.selectedText, 'hello');
+
+      fields.clickSecond();
+
+      expect(fields.firstController.selectionStart, start);
+      expect(fields.firstController.selectionEnd, end);
+      expect(
+        fields.firstController.selectedText,
+        'hello',
+        reason: 'losing the range on focus loss would break selecting text and '
+            'then clicking a button that acts on it',
+      );
+    });
+
+    test('comes back to full strength when the field is clicked again', () {
+      final _TwoFields fields = _TwoFields('hello world', 'second field')
+        ..doubleClickFirst()
+        ..clickSecond()
+        ..doubleClickFirst();
+
+      final DisplayList list = fields.paint();
+      expect(
+          _rectsWithColor(list, ThemeData.neutralLight.selection), isNotEmpty);
+      expect(_rectsWithColor(list, _dimmed(ThemeData.neutralLight)), isEmpty);
+    });
+
+    test('the focused field paints a caret and the other does not', () {
+      // The other half of the same signal, asserted so the two cannot drift:
+      // exactly one field shows a caret at any time.
+      final _TwoFields fields = _TwoFields('hello world', 'second field')
+        ..doubleClickFirst()
+        ..clickSecond();
+
+      final DisplayList list = fields.paint();
+      final List<DrawRectCommand> carets =
+          _rectsWithColor(list, ThemeData.neutralLight.foreground)
+              .where((DrawRectCommand rect) => rect.right - rect.left == 1)
+              .toList();
+      expect(carets, hasLength(1));
+      // And it is in the second field, which is the one below.
+      expect(carets.single.top, greaterThan(fields.second.size.height / 2));
+    });
+  });
+
   group('the word a double click selects', () {
     test('is the UAX #29 segment, with the tie at a boundary going right', () {
       expect(TextMotion.wordAt('hello world', 2), const TextRange(0, 5));
@@ -285,7 +459,11 @@ final class _Field {
 
   void move(int offset) => moveTo(positionOf(offset));
 
-  void downAt(Offset position, {Duration at = Duration.zero}) =>
+  void downAt(
+    Offset position, {
+    Duration at = Duration.zero,
+    int clickCount = 1,
+  }) =>
       owner.dispatchPointerEvent(PointerDownEvent(
         windowId: const NativeWindowId(1),
         generation: 1,
@@ -294,6 +472,7 @@ final class _Field {
         kind: PointerKind.mouse,
         logicalPosition: position,
         button: PointerButton.primary,
+        clickCount: clickCount,
       ));
 
   void upAt(Offset position, {Duration at = Duration.zero}) =>
@@ -332,6 +511,28 @@ final class _Field {
     upAt(_lastClick, at: at);
   }
 
+  /// One more click at the same point, at [at], optionally carrying the count
+  /// the platform put on it.
+  void clickAgainAt(Duration at, {int clickCount = 1}) {
+    downAt(_lastClick, at: at, clickCount: clickCount);
+    upAt(_lastClick, at: at);
+  }
+
+  /// Two clicks at one point where the **platform** reported the second as the
+  /// second, which is what a Win32 `WM_LBUTTONDBLCLK` arrives as.
+  ///
+  /// The timestamps are deliberately far enough apart that the field's own
+  /// 500 ms fallback would call them two separate clicks: the point of the
+  /// case is that the platform's answer, made with the user's configured
+  /// interval, is the one that decides.
+  void osDoubleClickBetween(int a, int b) {
+    _lastClick = between(a, b);
+    downAt(_lastClick);
+    upAt(_lastClick);
+    downAt(_lastClick, at: const Duration(seconds: 3), clickCount: 2);
+    upAt(_lastClick, at: const Duration(seconds: 3));
+  }
+
   /// Presses and holds Shift, as the keyboard would report it.
   ///
   /// A real Shift press is a key event like any other; the field learns the
@@ -355,3 +556,125 @@ final class _Field {
 
   Offset _lastClick = Offset.zero;
 }
+
+/// Two stacked [TextField]s in one tree, so focus can move between them.
+///
+/// One [BuildOwner] rather than two, because focus is per owner: two owners
+/// would each have their own focused control and the case under test - one
+/// field losing the keyboard to another - could not happen at all.
+final class _TwoFields {
+  _TwoFields(String first, String second)
+      : firstController = TextEditingController(first),
+        secondController = TextEditingController(second) {
+    owner.updateRoot(
+      Column(
+        children: <Widget>[
+          TextField(controller: firstController),
+          TextField(controller: secondController),
+        ],
+      ),
+    );
+    owner.pipelineOwner.drawFrame(DisplayList());
+
+    final List<RenderTextField> found = <RenderTextField>[];
+    void walk(RenderBox node) {
+      if (node is RenderTextField) found.add(node);
+      node.visitChildren(walk);
+    }
+
+    walk(owner.renderRoot!);
+    expect(found, hasLength(2));
+    this.first = found.first;
+    this.second = found.last;
+  }
+
+  final BuildOwner owner = BuildOwner(
+    pipelineOwner: PipelineOwner(
+      rootConstraints: BoxConstraints.tight(const Size(220, 120)),
+    ),
+  );
+  final TextEditingController firstController;
+  final TextEditingController secondController;
+  late final RenderTextField first;
+  late final RenderTextField second;
+
+  /// A fresh frame, so the assertions read what the *current* focus paints.
+  DisplayList paint() {
+    final DisplayList list = DisplayList();
+    owner.pipelineOwner.drawFrame(list);
+    return list;
+  }
+
+  /// Double clicks inside the first word of the top field, which both focuses
+  /// it - a press requests focus, as it does in a real window - and selects.
+  void doubleClickFirst() {
+    final Offset at = _inside(first, 1, 2);
+    _down(at, Duration.zero);
+    _up(at);
+    _down(at, const Duration(milliseconds: 100));
+    _up(at);
+  }
+
+  /// One click in the bottom field: the keyboard moves, and nothing tells the
+  /// first field to throw its selection away.
+  void clickSecond() {
+    final Offset at = _inside(second, 0, 1);
+    _down(at, const Duration(seconds: 5));
+    _up(at);
+  }
+
+  /// A point between the carets for [a] and [b] of [field], in the owner's
+  /// coordinates - computed rather than written down, for the reason at the
+  /// top of this file.
+  Offset _inside(RenderTextField field, int a, int b) {
+    final double padding = ThemeData.neutralLight.effectiveControlPadding;
+    double caret(int offset) =>
+        field.paragraph!.getCaretRect(TextPosition(offset)).left;
+    return field.localToGlobal(
+      Offset(padding + (caret(a) + caret(b)) / 2, field.size.height / 2),
+    );
+  }
+
+  void _down(Offset at, Duration timestamp) =>
+      owner.dispatchPointerEvent(PointerDownEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: timestamp,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: at,
+        button: PointerButton.primary,
+      ));
+
+  void _up(Offset at) => owner.dispatchPointerEvent(PointerUpEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: at,
+        button: PointerButton.primary,
+      ));
+}
+
+/// The unfocused selection colour: half way between the theme's selection and
+/// the field's own fill, per channel.
+///
+/// Recomputed here rather than read off the render object, so the test states
+/// the policy instead of echoing whatever the implementation happens to do.
+int _dimmed(ThemeData theme) {
+  int mix(int shift) =>
+      (((theme.selection >> shift) & 0xFF) +
+          ((theme.surfaceAlternate >> shift) & 0xFF)) ~/
+      2;
+  return (((theme.selection >> 24) & 0xFF) << 24) |
+      (mix(16) << 16) |
+      (mix(8) << 8) |
+      mix(0);
+}
+
+List<DrawRectCommand> _rectsWithColor(DisplayList list, int color) =>
+    expandDisplayList(list)
+        .whereType<DrawRectCommand>()
+        .where((DrawRectCommand rect) => list.paintColor(rect.paintId) == color)
+        .toList();

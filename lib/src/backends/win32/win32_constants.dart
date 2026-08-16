@@ -17,6 +17,13 @@ const int csVredraw = 0x0001;
 const int csHredraw = 0x0002;
 
 /// `CS_DBLCLKS` - deliver WM_LBUTTONDBLCLK instead of a second down.
+///
+/// Kept, and the reason is the whole of the double-click fix: with this style
+/// Windows matches the second press against `GetDoubleClickTime()` and the
+/// `SM_CXDOUBLECLK` rectangle *the user configured*, and tells us the answer.
+/// Dropping the style would restore a plain second `WM_LBUTTONDOWN` and throw
+/// that answer away, leaving every control to guess with a constant. So the
+/// style stays and the `*DBLCLK` messages are handled - see [wmLbuttondblclk].
 const int csDblclks = 0x0008;
 
 /// `CS_OWNDC` - a private device context per window.
@@ -139,10 +146,29 @@ const int wmSysdeadchar = 0x0107;
 const int wmMousemove = 0x0200;
 const int wmLbuttondown = 0x0201;
 const int wmLbuttonup = 0x0202;
+
+/// `WM_LBUTTONDBLCLK` - the **second** press of a double click, sent *instead
+/// of* a second `WM_LBUTTONDOWN` because the class carries [csDblclks].
+///
+/// "Instead of" is the trap, and it is what broke double click here: a window
+/// that handles only `WM_LBUTTONDOWN` sees one press where the user made two,
+/// so nothing downstream can ever count to two. The message is not an extra
+/// notification on top of a down - it *replaces* it - so the backend turns it
+/// into an ordinary `PointerDownEvent` carrying `clickCount: 2`.
+const int wmLbuttondblclk = 0x0203;
+
 const int wmRbuttondown = 0x0204;
 const int wmRbuttonup = 0x0205;
+
+/// `WM_RBUTTONDBLCLK`, the [wmLbuttondblclk] of the right button.
+const int wmRbuttondblclk = 0x0206;
+
 const int wmMbuttondown = 0x0207;
 const int wmMbuttonup = 0x0208;
+
+/// `WM_MBUTTONDBLCLK`, the [wmLbuttondblclk] of the middle button.
+const int wmMbuttondblclk = 0x0209;
+
 const int wmMousewheel = 0x020A;
 
 /// Sent when this window loses the mouse capture, whether it released it or
