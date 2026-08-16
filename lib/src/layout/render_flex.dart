@@ -12,6 +12,7 @@ import 'dart:math' as math;
 
 import '../geometry/offset.dart';
 import '../geometry/size.dart';
+import '../text/shaper.dart' show TextDirection;
 import 'box_constraints.dart';
 import 'render_box.dart';
 
@@ -25,11 +26,18 @@ enum Axis {
 
 /// How leftover main-axis space is distributed.
 ///
-/// All six positions assume left-to-right and top-to-bottom. There is no
-/// `verticalDirection` and no text-direction resolution: `start` is the
-/// physical left or top edge. A right-to-left row is a documented gap, and
-/// filling it means threading a directionality value down from the widget
-/// layer rather than changing anything here.
+/// These six names are **logical**, not physical. On a horizontal flex,
+/// [start] is the edge the text begins at: the left edge under
+/// [TextDirection.leftToRight] and the *right* edge under
+/// [TextDirection.rightToLeft]. On a vertical flex [start] is always the top,
+/// because there is no `verticalDirection` here and reading direction does not
+/// turn a column upside down.
+///
+/// The distribution arithmetic is direction-free - [distributeFreeSpace] does
+/// not take a [TextDirection] and never will. A right-to-left row gets exactly
+/// the same leading space and the same gaps; [RenderFlex] mirrors the finished
+/// offsets. That is what keeps [spaceBetween] meaning "equal gaps" in both
+/// locales while the children still come out in the opposite order.
 enum MainAxisAlignment {
   start,
   end,
@@ -48,6 +56,13 @@ enum MainAxisAlignment {
 }
 
 /// How children are placed and sized across the main axis.
+///
+/// [start] and [end] are logical here too, and which axis that affects is the
+/// opposite of [MainAxisAlignment]'s. A row's cross axis is vertical, so its
+/// [start] is always the top. A **column's** cross axis is horizontal, so its
+/// [start] is the left edge under [TextDirection.leftToRight] and the right
+/// edge under [TextDirection.rightToLeft]. A column does not reverse, but the
+/// side its children align to does.
 enum CrossAxisAlignment {
   start,
   end,
@@ -173,10 +188,36 @@ final class FlexParentData extends BoxParentData {
 /// which is the opposite of the main-axis policy for the reason that makes the
 /// two different - the main axis is a shared budget, and the cross axis is not.
 ///
-/// ## Not implemented
+/// ## Direction
 ///
-/// There is still no `verticalDirection` and no text-direction resolution; see
-/// [MainAxisAlignment].
+/// [textDirection] is resolved once, at the end of layout, by mirroring the
+/// finished offsets along **one** axis - never by reversing the child list.
+/// Reversing the list would change which child is measured first, which is
+/// observable through the last-flex-child remainder rule above and would make
+/// a right-to-left row round its pixels differently from its left-to-right
+/// mirror image. Mirroring offsets cannot: the two layouts are the same
+/// arithmetic, reflected.
+///
+/// Which axis gets mirrored depends on [direction], and it is exactly one:
+///
+///   * a **row** mirrors its *main* axis - the first child ends up on the
+///     right - and leaves the cross axis alone, because a row's cross axis is
+///     vertical and no reading direction affects up and down;
+///   * a **column** mirrors its *cross* axis - `CrossAxisAlignment.start`
+///     puts children against the right edge - and leaves the main axis alone,
+///     because a column in Arabic still reads top to bottom.
+///
+/// Never affected by [textDirection], in either direction: child order,
+/// measurement, the sizes children are given, [MainAxisSize], the flex
+/// division, [overflow], the intrinsic queries, and
+/// [CrossAxisAlignment.baseline] - a baseline offset is vertical, and the only
+/// flex that may use it is a row, whose cross axis is the unmirrored one.
+/// [CrossAxisAlignment.stretch] and `center` are unaffected in practice too:
+/// both are symmetric, so mirroring them is the identity.
+///
+/// There is still no `verticalDirection`: a column reads top to bottom in
+/// every locale this framework targets, and inventing a flag for it would
+/// invite `MainAxisAlignment.start` to mean the bottom.
 final class RenderFlex extends RenderBoxContainer<FlexParentData> {
   RenderFlex({
     Axis direction = Axis.horizontal,
@@ -184,18 +225,42 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
     CrossAxisAlignment crossAxisAlignment = CrossAxisAlignment.start,
     MainAxisSize mainAxisSize = MainAxisSize.max,
     TextBaseline textBaseline = TextBaseline.alphabetic,
+    TextDirection? textDirection,
   })  : _direction = direction,
         _mainAxisAlignment = mainAxisAlignment,
         _crossAxisAlignment = crossAxisAlignment,
         _mainAxisSize = mainAxisSize,
-        _textBaseline = textBaseline;
+        _textBaseline = textBaseline,
+        _textDirection = textDirection;
 
   Axis _direction;
   MainAxisAlignment _mainAxisAlignment;
   CrossAxisAlignment _crossAxisAlignment;
   MainAxisSize _mainAxisSize;
   TextBaseline _textBaseline;
+  TextDirection? _textDirection;
   double _overflow = 0;
+
+  /// The reading direction the logical `start`/`end` names resolve against.
+  ///
+  /// Null means unresolved, and unresolved lays out as
+  /// [TextDirection.leftToRight]. That is deliberate and it is *not* the same
+  /// policy the widget layer uses, where a missing `Directionality` is a named
+  /// error. The two layers are answering different questions. A render tree is
+  /// a machine for turning constraints into physical coordinates; it is
+  /// assembled directly by tests, by tools and by nodes that have no locale at
+  /// all, and it has no widget path to name in an error message. Refusing to
+  /// lay out would make every one of those callers pass a value they have no
+  /// opinion about. The widget layer is where a locale is a *decision*, so the
+  /// diagnostic for forgetting to make one lives there - see
+  /// `Directionality.of`.
+  TextDirection? get textDirection => _textDirection;
+
+  set textDirection(TextDirection? value) {
+    if (value == _textDirection) return;
+    _textDirection = value;
+    markNeedsLayout();
+  }
 
   /// Where the baseline this node aligns to sits, when
   /// [crossAxisAlignment] is [CrossAxisAlignment.baseline]. Ignored otherwise.
@@ -292,6 +357,18 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
   }
 
   bool get _isHorizontal => _direction == Axis.horizontal;
+
+  /// Whether the reading direction runs right to left. Null resolves to
+  /// left-to-right; see [textDirection].
+  bool get _isRtl => _textDirection == TextDirection.rightToLeft;
+
+  /// Whether the main axis is mirrored: a right-to-left **row**, and nothing
+  /// else. A column's main axis is vertical and untouched.
+  bool get _flipMain => _isRtl && _isHorizontal;
+
+  /// Whether the cross axis is mirrored: a right-to-left **column**, whose
+  /// cross axis is the horizontal one.
+  bool get _flipCross => _isRtl && !_isHorizontal;
 
   double _mainOf(Size size) => _isHorizontal ? size.width : size.height;
 
@@ -459,10 +536,19 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
     final (double leading, double between) =
         distributeFreeSpace(_mainAxisAlignment, remaining, count);
 
+    // Positions are computed in *logical* space - `start` at zero, running
+    // toward `end` - and reflected afterwards when the direction calls for it.
+    // Everything above this loop, including the free-space arithmetic, is
+    // direction-free; see the class comment for why the reflection happens
+    // here rather than by walking the children backwards.
+    final bool flipMain = _flipMain;
+    final bool flipCross = _flipCross;
     double position = leading;
     for (int i = 0; i < count; i++) {
       final RenderBox child = childAt(i);
       final Size childSize = child.size;
+      final double childMain = _mainOf(childSize);
+      final double childCross = _crossOf(childSize);
       final double cross;
       if (_crossAxisAlignment == CrossAxisAlignment.baseline) {
         // Read from the child's own cache, filled by the pass above.
@@ -470,11 +556,18 @@ final class RenderFlex extends RenderBoxContainer<FlexParentData> {
             child.getDistanceToBaseline(_textBaseline, onlyReal: true);
         cross = distance == null ? 0.0 : maxBaseline - distance;
       } else {
-        cross = _crossOffset(actualCross, _crossOf(childSize));
+        cross = _crossOffset(actualCross, childCross);
       }
-      childParentData(child).offset =
-          _isHorizontal ? Offset(position, cross) : Offset(cross, position);
-      position += _mainOf(childSize) + between;
+      // Reflect about the box's own extent, which turns a leading-edge
+      // distance into a trailing-edge one and leaves the child's size alone.
+      final double mainOffset =
+          flipMain ? actualMain - position - childMain : position;
+      final double crossOffset =
+          flipCross ? actualCross - cross - childCross : cross;
+      childParentData(child).offset = _isHorizontal
+          ? Offset(mainOffset, crossOffset)
+          : Offset(crossOffset, mainOffset);
+      position += childMain + between;
     }
   }
 

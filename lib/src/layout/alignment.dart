@@ -9,6 +9,22 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../text/shaper.dart' show TextDirection;
+
+/// An alignment that may or may not depend on the reading direction.
+///
+/// The same two-type split as `edge_insets.dart`, for the same reason:
+/// [Alignment] names physical edges and never moves, [AlignmentDirectional]
+/// names the leading and trailing edges of the reading order and resolves.
+sealed class AlignmentGeometry {
+  const AlignmentGeometry();
+
+  /// -1 is the top edge, 1 the bottom edge. Never directional.
+  double get y;
+
+  /// The physical alignment this describes when the text runs [direction].
+  Alignment resolve(TextDirection direction);
+}
 
 /// A point in a box, in a coordinate system where the box spans -1 to 1 on
 /// both axes.
@@ -21,11 +37,10 @@ import '../geometry/size.dart';
 /// caller may be extrapolating on purpose. Only NaN is rejected, because it
 /// silently poisons every offset derived from it.
 ///
-/// Directionality is not modelled: `x == -1` is the physical left edge, not
-/// the leading edge of the reading order. Right-to-left support belongs with
-/// the layer that carries the locale; see `edge_insets.dart` for the same
-/// deferral.
-final class Alignment {
+/// `x == -1` is the physical left edge, in every locale. The leading edge of
+/// the reading order is [AlignmentDirectional.start] instead; see
+/// `edge_insets.dart` for the same split and the reasoning behind it.
+final class Alignment extends AlignmentGeometry {
   Alignment(this.x, this.y) {
     if (x.isNaN || y.isNaN) {
       throw ArgumentError(
@@ -53,7 +68,13 @@ final class Alignment {
   final double x;
 
   /// -1 is the top edge, 1 the bottom edge.
+  @override
   final double y;
+
+  /// Returns `this`: a physical alignment does not move in a right-to-left
+  /// subtree. Only [AlignmentDirectional] does.
+  @override
+  Alignment resolve(TextDirection direction) => this;
 
   /// Where a [child]-sized box goes inside a [parent]-sized box, as a
   /// displacement from the parent's origin.
@@ -96,4 +117,74 @@ final class Alignment {
 
   @override
   String toString() => 'Alignment($x, $y)';
+}
+
+/// An alignment whose horizontal axis is the reading order: `start == -1` is
+/// the edge a line of text begins at, `start == 1` the edge it ends at.
+///
+/// Under [TextDirection.leftToRight] this is [Alignment] with `x == start`;
+/// under [TextDirection.rightToLeft] the axis is negated, so
+/// `AlignmentDirectional.centerStart` pins to the *right*.
+///
+/// Extrapolation past -1..1 survives the flip, and that matters: a panel that
+/// slides in from the leading edge is written as an animated `start` from -2
+/// to -1 and comes in from the correct side in both locales without the
+/// animation knowing which locale it is in. Negating the axis is linear, so a
+/// resolved lerp and a lerped resolve agree.
+final class AlignmentDirectional extends AlignmentGeometry {
+  AlignmentDirectional(this.start, this.y) {
+    if (start.isNaN || y.isNaN) {
+      throw ArgumentError(
+        'AlignmentDirectional($start, $y) is NaN. Every offset computed from '
+        'it would be NaN too, and a box positioned at NaN simply disappears.',
+      );
+    }
+  }
+
+  /// Built without the NaN check, for the constants below.
+  const AlignmentDirectional._(this.start, this.y);
+
+  static const AlignmentDirectional topStart = AlignmentDirectional._(-1, -1);
+  static const AlignmentDirectional topCenter = AlignmentDirectional._(0, -1);
+  static const AlignmentDirectional topEnd = AlignmentDirectional._(1, -1);
+  static const AlignmentDirectional centerStart = AlignmentDirectional._(-1, 0);
+  static const AlignmentDirectional center = AlignmentDirectional._(0, 0);
+  static const AlignmentDirectional centerEnd = AlignmentDirectional._(1, 0);
+  static const AlignmentDirectional bottomStart = AlignmentDirectional._(-1, 1);
+  static const AlignmentDirectional bottomCenter = AlignmentDirectional._(0, 1);
+  static const AlignmentDirectional bottomEnd = AlignmentDirectional._(1, 1);
+
+  /// -1 is the leading edge of the reading order, 1 the trailing edge.
+  final double start;
+
+  @override
+  final double y;
+
+  @override
+  Alignment resolve(TextDirection direction) => switch (direction) {
+        TextDirection.leftToRight => Alignment(start, y),
+        TextDirection.rightToLeft => Alignment(-start, y),
+      };
+
+  static AlignmentDirectional lerp(
+    AlignmentDirectional a,
+    AlignmentDirectional b,
+    double t,
+  ) {
+    final double inverse = 1.0 - t;
+    return AlignmentDirectional(
+      a.start * inverse + b.start * t,
+      a.y * inverse + b.y * t,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is AlignmentDirectional && other.start == start && other.y == y;
+
+  @override
+  int get hashCode => Object.hash(start, y);
+
+  @override
+  String toString() => 'AlignmentDirectional($start, $y)';
 }

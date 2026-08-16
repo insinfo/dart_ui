@@ -16,7 +16,7 @@
 ///   platform    <- foundation, geometry, scheduler
 ///   text        <- foundation, geometry, graphics
 ///   rendering   <- foundation, geometry, graphics, text
-///   layout      <- foundation, geometry, graphics
+///   layout      <- foundation, geometry, graphics, rendering, text
 ///   animation   <- foundation, geometry, scheduler
 ///   widgets     <- layout, animation
 ///   app         <- everything above, no backend
@@ -120,6 +120,7 @@ export 'src/widgets/actions.dart';
 export 'src/widgets/basic.dart' hide RenderColoredBox;
 export 'src/widgets/control.dart';
 export 'src/widgets/controls.dart';
+export 'src/widgets/directionality.dart';
 export 'src/widgets/element.dart';
 export 'src/widgets/errors.dart';
 export 'src/widgets/focus.dart';

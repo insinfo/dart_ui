@@ -52,7 +52,22 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'platform',
     'text',
   ],
-  'layout': <String>['foundation', 'geometry', 'graphics', 'rendering'],
+  // `text` is here for exactly one type: [TextDirection]. Reading direction is
+  // a property of text, and it is the input that turns a logical `start` edge
+  // into a physical `left` one - so a layout that resolves `EdgeInsetsDirectional`
+  // or lays a right-to-left row out has to name it. The alternative was a
+  // second copy of the enum in `layout`, which is how a framework ends up with
+  // two incompatible spellings of right-to-left and a conversion function
+  // between them. No cycle is introduced and no new code becomes reachable:
+  // `layout` already depends on `rendering`, and `rendering` already depends
+  // on `text`.
+  'layout': <String>[
+    'foundation',
+    'geometry',
+    'graphics',
+    'rendering',
+    'text',
+  ],
   'widgets': <String>[
     'animation',
     'foundation',
