@@ -256,17 +256,17 @@ final class RenderIconButton extends RenderSingleChildBox with ControlBehavior {
       child.size.width + _padding.horizontal,
       child.size.height + _padding.vertical,
     ));
-    // Snap the centred child to logical pixels. A 20 px icon in an odd-sized
-    // control otherwise lands on a half pixel, which is mathematically centred
-    // but rasterises asymmetrically and looks visibly off-centre.
+    // Snap the centred child to logical pixels, then apply the one-pixel
+    // optical correction used by the desktop icon set. A 20 px icon otherwise
+    // rasterises slightly high and left even though its em box is centred.
     child.parentData!.offset = Offset(
       math.max(
         _padding.left,
-        ((size.width - child.size.width) / 2).roundToDouble(),
+        ((size.width - child.size.width) / 2).roundToDouble() + 1,
       ),
       math.max(
         _padding.top,
-        ((size.height - child.size.height) / 2).roundToDouble(),
+        ((size.height - child.size.height) / 2).roundToDouble() + 1,
       ),
     );
   }

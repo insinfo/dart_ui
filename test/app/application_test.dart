@@ -16,6 +16,8 @@
 ///     widget an event reached, and on the words in a failure message.
 library;
 
+import 'dart:io' show sleep;
+
 import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
 
@@ -108,6 +110,42 @@ void main() {
       await application.drawPendingFrames();
 
       expect(progress.animationValue, greaterThan(0));
+      application.dispose();
+      await application.closed;
+    });
+
+    test('native event waits are capped while a spinner is active', () async {
+      final _WaitingHeadlessBackend backend = _WaitingHeadlessBackend();
+      final Application application = await Application.start(
+        rootWidget: const Center(child: CircularProgressIndicator()),
+        backends: <WindowingBackendEntry>[
+          WindowingBackendEntry(name: 'headless', create: () => backend),
+        ],
+        options: const ApplicationOptions(
+          size: Size(64, 64),
+          idleTimeout: Duration(milliseconds: 250),
+        ),
+      );
+      // Closing after a few real frame intervals distinguishes the fixed loop
+      // from the old one: previously it blocked for the whole 250 ms idle
+      // timeout, so the close timer won and only the initial frame existed.
+      Future<void>.delayed(
+        const Duration(milliseconds: 90),
+        application.requestClose,
+      );
+
+      await application.run();
+
+      final RenderProgressIndicator progress =
+          _findRender<RenderProgressIndicator>(
+        application.buildOwner.renderRoot!,
+      );
+      expect(application.framesPresented, greaterThanOrEqualTo(3));
+      expect(progress.animationValue, greaterThan(0));
+      expect(
+        backend.positiveTimeouts,
+        everyElement(lessThanOrEqualTo(const Duration(microseconds: 16667))),
+      );
       application.dispose();
       await application.closed;
     });
@@ -721,4 +759,43 @@ final class _UnavailableBackend implements WindowingBackend {
 
   @override
   void wake() {}
+}
+
+/// A headless backend whose event pump models a real synchronous native wait.
+/// It makes Dart timers unable to run until [pumpEvents] returns, exactly like
+/// MsgWaitForMultipleObjectsEx on Windows.
+final class _WaitingHeadlessBackend implements WindowingBackend {
+  final HeadlessWindowingBackend _delegate = HeadlessWindowingBackend();
+  final List<Duration> positiveTimeouts = <Duration>[];
+
+  @override
+  String get name => _delegate.name;
+
+  @override
+  BackendProbeResult probe() => _delegate.probe();
+
+  @override
+  Future<void> initialize() => _delegate.initialize();
+
+  @override
+  Future<void> shutdown() => _delegate.shutdown();
+
+  @override
+  Future<NativeWindow> createWindow(WindowOptions options) =>
+      _delegate.createWindow(options);
+
+  @override
+  List<NativeWindow> get windows => _delegate.windows;
+
+  @override
+  bool pumpEvents({Duration timeout = Duration.zero}) {
+    if (timeout > Duration.zero) {
+      positiveTimeouts.add(timeout);
+      sleep(timeout);
+    }
+    return _delegate.pumpEvents();
+  }
+
+  @override
+  void wake() => _delegate.wake();
 }

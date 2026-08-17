@@ -115,7 +115,7 @@ void main() {
     );
   });
 
-  test('IconButton centres the actual icon box in its hit target', () {
+  test('IconButton applies its one-pixel optical correction', () {
     final BuildOwner owner = _mount(
       Center(
         child: IconButton(
@@ -135,8 +135,8 @@ void main() {
       Offset(icon.size.width / 2, icon.size.height / 2),
     );
 
-    expect(iconCenter.dx, closeTo(buttonCenter.dx, 0.01));
-    expect(iconCenter.dy, closeTo(buttonCenter.dy, 0.01));
+    expect(iconCenter.dx, closeTo(buttonCenter.dx + 1, 0.01));
+    expect(iconCenter.dy, closeTo(buttonCenter.dy + 1, 0.01));
   });
 
   test('circular progress has progress semantics and paints deterministically',

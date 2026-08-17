@@ -885,6 +885,15 @@ final class ApplicationWindow with DisposableMixin {
 
   bool get needsFrame => _needsFrame;
 
+  /// Whether this window is waiting for the next animation pulse.
+  ///
+  /// The application loop uses this to shorten its native event wait. A Dart
+  /// [Timer] cannot fire while the isolate is synchronously blocked inside
+  /// `pumpEvents`, so waiting the ordinary 250 ms idle interval would turn a
+  /// nominal 60 Hz animation into a visibly frozen 4 Hz one.
+  bool get hasPendingAnimationFrame =>
+      _animationWakeTimer != null || scheduler.hasArmedNextFrame;
+
   /// Whether the platform says this window has the keyboard.
   ///
   /// Distinct from [hasKeyboardFocus]: this is the last activation the platform
@@ -2519,8 +2528,22 @@ final class Application with DisposableMixin {
         _state == ApplicationLifecycleState.suspended) {
       final wantsFrame = _state == ApplicationLifecycleState.running &&
           (needsFrame || _overlayIsStale);
+      // Dart timers run on this isolate and cannot interrupt the synchronous
+      // native message wait. While an animation is armed, cap that wait to one
+      // frame interval so the timer gets a turn at roughly 60 Hz instead of
+      // only after the normal 250 ms idle timeout.
+      Duration pumpTimeout = wantsFrame ? Duration.zero : options.idleTimeout;
+      if (!wantsFrame && _state == ApplicationLifecycleState.running) {
+        for (final ApplicationWindow window in _windows) {
+          if (!window.isSuspended &&
+              window.hasPendingAnimationFrame &&
+              window.scheduler.frameInterval < pumpTimeout) {
+            pumpTimeout = window.scheduler.frameInterval;
+          }
+        }
+      }
       if (!backend.pumpEvents(
-        timeout: wantsFrame ? Duration.zero : options.idleTimeout,
+        timeout: pumpTimeout,
       )) {
         break;
       }
