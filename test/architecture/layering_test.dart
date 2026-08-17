@@ -38,6 +38,17 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // forbidden here and the stub keeps those imports out of unsupported
   // targets.
   'graphics': <String>['ffi', 'foundation', 'geometry'],
+  // Cryptographic primitives are portable core code. The optional native
+  // accelerator reaches only the OS-neutral ABI helpers and falls back to
+  // the pure-Dart implementation on unsupported targets.
+  'crypto': <String>['ffi'],
+  // PDF is a document/graphics format layer: it consumes geometry and display
+  // lists and delegates hashes/ciphers to the crypto layer, while remaining
+  // independent from layout, widgets and platform backends.
+  'pdf': <String>['crypto', 'geometry', 'graphics'],
+  // CorelDRAW parsing shares the PDF byte reader/exporter and the portable
+  // vector/image primitives. It likewise stays below layout and widgets.
+  'cdr': <String>['geometry', 'graphics', 'pdf'],
   // Animation sits above the scheduler because time enters it through a frame
   // callback rather than through a clock it reads itself; see
   // `animation/clock.dart`. It knows geometry because a tween interpolates an
@@ -83,12 +94,14 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   ],
   'widgets': <String>[
     'animation',
+    'cdr',
     'foundation',
     'geometry',
     'graphics',
     'gestures',
     'layout',
     'platform',
+    'pdf',
     'rendering',
     'scheduler',
     'text',
