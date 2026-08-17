@@ -19,11 +19,16 @@ import '../../pdf/gfx/pdf_gfx_state.dart';
 import '../../pdf/gfx/pdf_matrix.dart';
 import '../../pdf/gfx/pdf_output_device.dart';
 import '../../pdf/render/pdf_page_renderer.dart';
+import '../../pdf/render/pdf_text_layout.dart';
+import '../../platform/input_events.dart';
 import '../../rendering/text/font_registry.dart';
 import '../../text/typeface.dart';
 import '../element.dart';
 import '../image.dart' show framebufferFromImage;
+import '../media_query.dart';
+import '../pointer_router.dart';
 import '../widget.dart';
+import 'pdf_view_controller.dart';
 
 /// Paints one PDF page through the framework's ordinary display-list pipeline.
 final class PdfPageView extends RenderObjectWidget {
@@ -32,11 +37,19 @@ final class PdfPageView extends RenderObjectWidget {
     required this.page,
     this.scale = 1.0,
     this.backgroundColor = 0xFFFFFFFF,
+    this.textLayout,
+    this.selection,
+    this.enableTextSelection = false,
+    this.onSelectionChanged,
   }) : assert(scale > 0);
 
   final PdfPage page;
   final double scale;
   final int backgroundColor;
+  final PdfPageTextLayout? textLayout;
+  final PdfTextSelection? selection;
+  final bool enableTextSelection;
+  final void Function(int baseOffset, int extentOffset)? onSelectionChanged;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
@@ -46,6 +59,11 @@ final class PdfPageView extends RenderObjectWidget {
         page,
         scale: scale,
         backgroundColor: backgroundColor,
+        devicePixelRatio: MediaQuery.maybeOf(context)?.devicePixelRatio ?? 1,
+        textLayout: textLayout,
+        selection: selection,
+        enableTextSelection: enableTextSelection,
+        onSelectionChanged: onSelectionChanged,
       );
 
   @override
@@ -56,22 +74,43 @@ final class PdfPageView extends RenderObjectWidget {
     renderObject
       ..page = page
       ..scale = scale
-      ..backgroundColor = backgroundColor;
+      ..backgroundColor = backgroundColor
+      ..devicePixelRatio = MediaQuery.maybeOf(context)?.devicePixelRatio ?? 1
+      ..textLayout = textLayout
+      ..selection = selection
+      ..enableTextSelection = enableTextSelection
+      ..onSelectionChanged = onSelectionChanged;
   }
 }
 
-final class RenderPdfPage extends RenderBox {
+final class RenderPdfPage extends RenderBox implements PointerEventTarget {
   RenderPdfPage(
     PdfPage page, {
     double scale = 1.0,
     int backgroundColor = 0xFFFFFFFF,
+    double devicePixelRatio = 1,
+    PdfPageTextLayout? textLayout,
+    PdfTextSelection? selection,
+    bool enableTextSelection = false,
+    this.onSelectionChanged,
   })  : _page = page,
         _scale = scale,
-        _backgroundColor = backgroundColor;
+        _backgroundColor = backgroundColor,
+        _devicePixelRatio = devicePixelRatio,
+        _textLayout = textLayout,
+        _selection = selection,
+        _enableTextSelection = enableTextSelection;
 
   PdfPage _page;
   double _scale;
   int _backgroundColor;
+  double _devicePixelRatio;
+  PdfPageTextLayout? _textLayout;
+  PdfTextSelection? _selection;
+  bool _enableTextSelection;
+  void Function(int baseOffset, int extentOffset)? onSelectionChanged;
+  int? _selectionPointer;
+  int _selectionAnchor = 0;
   final Map<Object, DecodedImage> _decodedImages = <Object, DecodedImage>{};
   final Map<String, Typeface?> _embeddedFonts = <String, Typeface?>{};
 
@@ -105,6 +144,38 @@ final class RenderPdfPage extends RenderBox {
     markNeedsPaint();
   }
 
+  double get devicePixelRatio => _devicePixelRatio;
+
+  set devicePixelRatio(double value) {
+    if (value == _devicePixelRatio) return;
+    _devicePixelRatio = value > 0 && value.isFinite ? value : 1;
+    markNeedsPaint();
+  }
+
+  PdfPageTextLayout? get textLayout => _textLayout;
+
+  set textLayout(PdfPageTextLayout? value) {
+    if (identical(value, _textLayout)) return;
+    _textLayout = value;
+    markNeedsPaint();
+  }
+
+  PdfTextSelection? get selection => _selection;
+
+  set selection(PdfTextSelection? value) {
+    if (identical(value, _selection)) return;
+    _selection = value;
+    markNeedsPaint();
+  }
+
+  bool get enableTextSelection => _enableTextSelection;
+
+  set enableTextSelection(bool value) {
+    if (value == _enableTextSelection) return;
+    _enableTextSelection = value;
+    if (!value) _selectionPointer = null;
+  }
+
   Size get _naturalSize => Size(page.width * scale, page.height * scale);
 
   @override
@@ -126,6 +197,77 @@ final class RenderPdfPage extends RenderBox {
   bool hitTestSelf(Offset position) => true;
 
   @override
+  void handlePointerEvent(PointerEvent event) {
+    if (!enableTextSelection || textLayout == null) return;
+    switch (event) {
+      case PointerDownEvent(
+          button: PointerButton.primary,
+          kind: PointerKind.mouse,
+        ):
+      case PointerDownEvent(
+          button: PointerButton.primary,
+          kind: PointerKind.stylus,
+        ):
+        final int position = _textPositionAt(event.logicalPosition);
+        if (event.clickCount >= 2) {
+          final ({int start, int end}) word = _wordAt(position);
+          _selectionPointer = null;
+          onSelectionChanged?.call(word.start, word.end);
+        } else {
+          _selectionPointer = event.pointerId;
+          _selectionAnchor = position;
+          onSelectionChanged?.call(position, position);
+        }
+      case PointerMoveEvent() when event.pointerId == _selectionPointer:
+        onSelectionChanged?.call(
+          _selectionAnchor,
+          _textPositionAt(event.logicalPosition),
+        );
+      case PointerUpEvent() when event.pointerId == _selectionPointer:
+      case PointerCancelEvent() when event.pointerId == _selectionPointer:
+        _selectionPointer = null;
+      default:
+        break;
+    }
+  }
+
+  int _textPositionAt(Offset globalPosition) {
+    final Offset local = globalToLocal(globalPosition) / scale;
+    return textLayout!.positionForOffset(local);
+  }
+
+  ({int start, int end}) _wordAt(int position) {
+    final String text = textLayout!.text;
+    if (text.isEmpty) return (start: 0, end: 0);
+    int start = position.clamp(0, text.length);
+    int end = start;
+    const List<int> punctuation = <int>[
+      0x2E,
+      0x2C,
+      0x3B,
+      0x3A,
+      0x21,
+      0x3F,
+      0x28,
+      0x29,
+      0x5B,
+      0x5D,
+      0x7B,
+      0x7D,
+      0x22,
+    ];
+    bool isWord(int codeUnit) =>
+        codeUnit > 32 && !punctuation.contains(codeUnit);
+    while (start > 0 && isWord(text.codeUnitAt(start - 1))) {
+      start--;
+    }
+    while (end < text.length && isWord(text.codeUnitAt(end))) {
+      end++;
+    }
+    return (start: start, end: end);
+  }
+
+  @override
   void paint(DisplayList list, Offset offset) {
     if (size.isEmpty) return;
     final Rect bounds =
@@ -140,11 +282,29 @@ final class RenderPdfPage extends RenderBox {
     list
       ..save()
       ..clipRect(bounds.left, bounds.top, bounds.right, bounds.bottom);
+    final PdfTextSelection? selected = selection;
+    final PdfPageTextLayout? layout = textLayout;
+    if (selected != null &&
+        layout != null &&
+        selected.pageNumber == page.pageNumber) {
+      final int highlight = list.addPaint(colorArgb: 0x663B82F6);
+      for (final Rect rect in layout.selectionRects(
+          selected.baseOffset, selected.extentOffset)) {
+        list.drawRect(
+          offset.dx + rect.left * scale,
+          offset.dy + rect.top * scale,
+          offset.dx + rect.right * scale,
+          offset.dy + rect.bottom * scale,
+          highlight,
+        );
+      }
+    }
     final _PdfDisplayListOutputDevice device = _PdfDisplayListOutputDevice(
       list: list,
       page: page,
-      pageToDevice: _pageTransform(page, offset, scale),
+      pageToDevice: pdfPageTransform(page, offset, scale),
       renderScale: scale,
+      devicePixelRatio: devicePixelRatio,
       decodedImages: _decodedImages,
       embeddedFonts: _embeddedFonts,
     );
@@ -153,51 +313,13 @@ final class RenderPdfPage extends RenderBox {
   }
 }
 
-Transform2D _pageTransform(PdfPage page, Offset offset, double scale) {
-  final Rect crop = page.cropBox;
-  final int rotation = ((page.rotation % 360) + 360) % 360;
-  return switch (rotation) {
-    90 => Transform2D(
-        0,
-        scale,
-        scale,
-        0,
-        offset.dx - crop.top * scale,
-        offset.dy - crop.left * scale,
-      ),
-    180 => Transform2D(
-        -scale,
-        0,
-        0,
-        scale,
-        offset.dx + crop.right * scale,
-        offset.dy - crop.top * scale,
-      ),
-    270 => Transform2D(
-        0,
-        -scale,
-        -scale,
-        0,
-        offset.dx + crop.bottom * scale,
-        offset.dy + crop.right * scale,
-      ),
-    _ => Transform2D(
-        scale,
-        0,
-        0,
-        -scale,
-        offset.dx - crop.left * scale,
-        offset.dy + crop.bottom * scale,
-      ),
-  };
-}
-
 final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
   _PdfDisplayListOutputDevice({
     required this.list,
     required this.page,
     required this.pageToDevice,
     required this.renderScale,
+    required this.devicePixelRatio,
     required this.decodedImages,
     required this.embeddedFonts,
   });
@@ -206,6 +328,7 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
   final PdfPage page;
   final Transform2D pageToDevice;
   final double renderScale;
+  final double devicePixelRatio;
   final Map<Object, DecodedImage> decodedImages;
   final Map<String, Typeface?> embeddedFonts;
   final List<Transform2D> _stack = <Transform2D>[];
@@ -277,7 +400,12 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
   }
 
   @override
-  void drawText(String text, PdfGfxState state, PdfMatrix textMatrix) {
+  void drawText(
+    String text,
+    PdfGfxState state,
+    PdfMatrix textMatrix, {
+    double? advance,
+  }) {
     if (text.isEmpty || state.textRenderMode == PdfTextRenderMode.invisible) {
       return;
     }
@@ -376,24 +504,24 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
     decodedImages[key] = decoded;
 
     final Rect device = _deviceTransform.transformRect(dstRect);
-    final int pixelWidth = device.width.round().clamp(1, 8192);
-    final int pixelHeight = device.height.round().clamp(1, 8192);
+    final int pixelWidth =
+        (device.width * devicePixelRatio).round().clamp(1, 8192);
+    final int pixelHeight =
+        (device.height * devicePixelRatio).round().clamp(1, 8192);
     final DecodedImage pixels =
         decoded.width == pixelWidth && decoded.height == pixelHeight
             ? decoded
             : decoded.resample(width: pixelWidth, height: pixelHeight);
-    final int left = device.left.round();
-    final int top = device.top.round();
     list.drawImage(
       list.addImage(framebufferFromImage(pixels)),
       0,
       0,
       pixels.width.toDouble(),
       pixels.height.toDouble(),
-      left.toDouble(),
-      top.toDouble(),
-      (left + pixels.width).toDouble(),
-      (top + pixels.height).toDouble(),
+      device.left,
+      device.top,
+      device.right,
+      device.bottom,
       list.addPaint(
         colorArgb: _withOpacity(0xFFFFFFFF, state.fillAlpha),
       ),

@@ -61,4 +61,75 @@ void main() {
 
     expect(_argbAt(surface, 18, 18), 0xFF2563EB);
   });
+
+  test('mouse drag reports a selectable range from PDF text geometry', () {
+    final PdfDocumentBuilder builder = PdfDocumentBuilder();
+    builder.addPage(width: 300, height: 100).drawText(
+          'Texto selecionavel',
+          const Offset(30, 40),
+          fontSize: 16,
+        );
+    final PdfPage page = PdfDocument.fromBytes(builder.build()).getPage(1);
+    final PdfPageTextLayout layout = PdfTextExtractor(page).extract();
+    final Rect bounds = layout.fragments.single.bounds;
+    int base = -1;
+    int extent = -1;
+    final BuildOwner owner = BuildOwner(
+      pipelineOwner: PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(300, 100)),
+      ),
+    );
+    addTearDown(owner.dispose);
+    owner.updateRoot(PdfPageView(
+      page: page,
+      textLayout: layout,
+      enableTextSelection: true,
+      onSelectionChanged: (int nextBase, int nextExtent) {
+        base = nextBase;
+        extent = nextExtent;
+      },
+    ));
+    owner.pipelineOwner.flushLayout();
+
+    owner
+        .dispatchPointerEvent(_down(Offset(bounds.left + 1, bounds.center.dy)));
+    owner.dispatchPointerEvent(
+      _move(Offset(bounds.right - 1, bounds.center.dy)),
+    );
+    owner.dispatchPointerEvent(_up(Offset(bounds.right - 1, bounds.center.dy)));
+
+    expect(base, 0);
+    expect(extent, greaterThan(10));
+  });
 }
+
+const NativeWindowId _window = NativeWindowId(1);
+
+PointerDownEvent _down(Offset position) => PointerDownEvent(
+      windowId: _window,
+      generation: 1,
+      timestamp: Duration.zero,
+      pointerId: 1,
+      kind: PointerKind.mouse,
+      logicalPosition: position,
+      button: PointerButton.primary,
+    );
+
+PointerMoveEvent _move(Offset position) => PointerMoveEvent(
+      windowId: _window,
+      generation: 1,
+      timestamp: const Duration(milliseconds: 10),
+      pointerId: 1,
+      kind: PointerKind.mouse,
+      logicalPosition: position,
+    );
+
+PointerUpEvent _up(Offset position) => PointerUpEvent(
+      windowId: _window,
+      generation: 1,
+      timestamp: const Duration(milliseconds: 20),
+      pointerId: 1,
+      kind: PointerKind.mouse,
+      logicalPosition: position,
+      button: PointerButton.primary,
+    );

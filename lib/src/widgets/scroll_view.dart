@@ -187,6 +187,7 @@ final class Scrollable extends SingleChildRenderObjectWidget {
     required this.position,
     required Widget super.child,
     this.dragEnabled = true,
+    this.mouseDragEnabled = true,
     this.wheelEnabled = true,
     this.dispatcher,
     this.friction = defaultScrollFriction,
@@ -198,6 +199,11 @@ final class Scrollable extends SingleChildRenderObjectWidget {
   /// Whether a press-and-drag scrolls. False for a desktop list that should
   /// only answer the wheel and the scrollbar.
   final bool dragEnabled;
+
+  /// Whether a mouse primary-button drag scrolls. Disabling this while
+  /// keeping [dragEnabled] true leaves touch/stylus scrolling available for
+  /// surfaces that reserve mouse dragging for selection (such as a PDF page).
+  final bool mouseDragEnabled;
 
   /// Whether the wheel scrolls.
   final bool wheelEnabled;
@@ -215,6 +221,7 @@ final class Scrollable extends SingleChildRenderObjectWidget {
       RenderScrollGestures(
         position: position,
         dragEnabled: dragEnabled,
+        mouseDragEnabled: mouseDragEnabled,
         wheelEnabled: wheelEnabled,
         dispatcher: dispatcher ?? GestureScope.of(context),
         friction: friction,
@@ -229,6 +236,7 @@ final class Scrollable extends SingleChildRenderObjectWidget {
     renderObject
       ..position = position
       ..dragEnabled = dragEnabled
+      ..mouseDragEnabled = mouseDragEnabled
       ..wheelEnabled = wheelEnabled
       ..dispatcher = dispatcher ?? GestureScope.of(context)
       ..friction = friction
@@ -242,6 +250,7 @@ final class RenderScrollGestures extends RenderSingleChildBox
   RenderScrollGestures({
     required ScrollPosition position,
     this.dragEnabled = true,
+    this.mouseDragEnabled = true,
     this.wheelEnabled = true,
     UiDispatcher? dispatcher,
     double friction = defaultScrollFriction,
@@ -254,6 +263,9 @@ final class RenderScrollGestures extends RenderSingleChildBox
 
   /// Whether a drag scrolls this view.
   bool dragEnabled;
+
+  /// Whether mouse drags participate in scrolling.
+  bool mouseDragEnabled;
 
   /// Whether the wheel scrolls this view.
   bool wheelEnabled;
@@ -347,7 +359,10 @@ final class RenderScrollGestures extends RenderSingleChildBox
       binding.signalResolver.register(event, applyWheel);
       return;
     }
-    if (!dragEnabled) return;
+    if (!dragEnabled ||
+        (!mouseDragEnabled && event.kind == PointerKind.mouse)) {
+      return;
+    }
     _drag ??= _createDrag();
     _drag!.routeEvent(event);
   }
@@ -458,6 +473,7 @@ final class SingleChildScrollView extends StatefulWidget {
     this.scrollbar = ScrollbarVisibility.always,
     this.scrollbarThickness = 8.0,
     this.dragEnabled = true,
+    this.mouseDragEnabled = true,
     this.dispatcher,
   });
 
@@ -471,6 +487,7 @@ final class SingleChildScrollView extends StatefulWidget {
   final ScrollbarVisibility scrollbar;
   final double scrollbarThickness;
   final bool dragEnabled;
+  final bool mouseDragEnabled;
   final UiDispatcher? dispatcher;
 
   @override
@@ -489,6 +506,7 @@ final class _SingleChildScrollViewState extends State<SingleChildScrollView> {
     final Widget scrollable = Scrollable(
       position: _position,
       dragEnabled: widget.dragEnabled,
+      mouseDragEnabled: widget.mouseDragEnabled,
       dispatcher: widget.dispatcher,
       child: _ViewportWidget(position: _position, child: widget.child),
     );
@@ -541,6 +559,7 @@ final class ListView extends StatefulWidget {
     this.scrollbar = ScrollbarVisibility.always,
     this.scrollbarThickness = 8.0,
     this.dragEnabled = true,
+    this.mouseDragEnabled = true,
     this.dispatcher,
   })  : itemCount = children.length,
         itemBuilder = _builderOver(children);
@@ -557,6 +576,7 @@ final class ListView extends StatefulWidget {
     this.scrollbar = ScrollbarVisibility.always,
     this.scrollbarThickness = 8.0,
     this.dragEnabled = true,
+    this.mouseDragEnabled = true,
     this.dispatcher,
   });
 
@@ -594,6 +614,7 @@ final class ListView extends StatefulWidget {
   final ScrollbarVisibility scrollbar;
   final double scrollbarThickness;
   final bool dragEnabled;
+  final bool mouseDragEnabled;
   final UiDispatcher? dispatcher;
 
   static Widget Function(BuildContext, int) _builderOver(
@@ -680,6 +701,7 @@ final class _ListViewState extends State<ListView> {
     final Widget scrollable = Scrollable(
       position: _position,
       dragEnabled: widget.dragEnabled,
+      mouseDragEnabled: widget.mouseDragEnabled,
       dispatcher: widget.dispatcher,
       child: _VirtualList(
         position: _position,

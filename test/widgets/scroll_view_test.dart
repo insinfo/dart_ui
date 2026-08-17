@@ -286,6 +286,27 @@ void main() {
   });
 
   group('drag and fling', () {
+    test('mouse drag can be reserved for selection without disabling wheel',
+        () {
+      final harness = _Harness(ListView.builder(
+        itemCount: 100,
+        itemExtent: 20,
+        mouseDragEnabled: false,
+        scrollbar: ScrollbarVisibility.never,
+        itemBuilder: (BuildContext context, int index) =>
+            const SizedBox(height: 20),
+      ));
+
+      harness.pointer(_down(const Offset(10, 90)));
+      harness.pointer(_move(const Offset(10, 30), millis: 20));
+      harness.pointer(_up(const Offset(10, 30), millis: 30));
+      expect(harness.position.pixels, 0);
+
+      harness.pointer(_wheel(const Offset(10, 50), 40));
+      expect(harness.position.pixels, 40);
+      harness.dispose();
+    });
+
     test('a drag moves the content by the distance dragged past the slop', () {
       final harness = _Harness(_countedList(1000));
 

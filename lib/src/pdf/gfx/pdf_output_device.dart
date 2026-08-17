@@ -42,7 +42,17 @@ abstract class PdfOutputDevice {
   });
 
   /// Desenha um glifo ou texto posicionado.
-  void drawText(String text, PdfGfxState state, PdfMatrix textMatrix);
+  ///
+  /// [advance] is the exact horizontal displacement calculated from the PDF
+  /// font metrics, character spacing and horizontal scaling. Output devices
+  /// that only paint may ignore it; text-aware devices use it to preserve the
+  /// selectable/searchable geometry without measuring a substitute UI font.
+  void drawText(
+    String text,
+    PdfGfxState state,
+    PdfMatrix textMatrix, {
+    double? advance,
+  });
 }
 
 /// Implementação padrão em memória que grava chamadas em operações vetoriais.
@@ -92,7 +102,12 @@ class PdfMemoryOutputDevice extends PdfOutputDevice {
   }
 
   @override
-  void drawText(String text, PdfGfxState state, PdfMatrix textMatrix) {
+  void drawText(
+    String text,
+    PdfGfxState state,
+    PdfMatrix textMatrix, {
+    double? advance,
+  }) {
     commands.add(
         'drawText("$text", font: ${state.fontName}, size: ${state.fontSize})');
   }

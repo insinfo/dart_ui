@@ -550,7 +550,6 @@ class PdfContentInterpreter {
 
   void _showText(PdfToken token) {
     final String text = _decodeText(token);
-    device.drawText(text, _state, _state.textMatrix);
     final Uint8List bytes = token.stringBytes ?? Uint8List(0);
     final List<int> codes = _textCodes(bytes);
     var advance = 0.0;
@@ -560,7 +559,14 @@ class PdfContentInterpreter {
       advance += _state.charSpacing;
       if (code == 0x20) advance += _state.wordSpacing;
     }
-    _moveText(advance * (_state.horizontalScaling / 100));
+    advance *= _state.horizontalScaling / 100;
+    device.drawText(
+      text,
+      _state,
+      _state.textMatrix,
+      advance: advance,
+    );
+    _moveText(advance);
   }
 
   void _moveText(double distance) {
