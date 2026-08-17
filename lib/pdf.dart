@@ -26,4 +26,5 @@ export 'src/pdf/gfx/pdf_output_device.dart';
 export 'src/pdf/io/byte_reader.dart';
 export 'src/pdf/render/pdf_page_renderer.dart';
 export 'src/pdf/sign/pdf_signer.dart';
+export 'src/widgets/pdf/pdf_page_view.dart';
 export 'src/widgets/pdf/pdf_view.dart';

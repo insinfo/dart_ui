@@ -6,6 +6,7 @@ import '../basic.dart';
 import '../proxy.dart';
 import '../scroll_view.dart';
 import '../widget.dart';
+import 'pdf_page_view.dart';
 
 /// Widget visual para navegação e renderização de arquivos PDF.
 /// Suporta virtualização de páginas, pan e zoom interativo.
@@ -56,13 +57,7 @@ class PdfView extends StatelessWidget {
           child: Center(
             child: ColoredBox(
               color: 0xFFFFFFFF,
-              child: SizedBox(
-                width: page.width,
-                height: page.height,
-                child: Center(
-                  child: Text('Página ${page.pageNumber}'),
-                ),
-              ),
+              child: PdfPageView(page: page),
             ),
           ),
         );

@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
+import '../format/pdf_object.dart';
 import 'pdf_gfx_state.dart';
 import 'pdf_matrix.dart';
 
@@ -31,8 +32,14 @@ abstract class PdfOutputDevice {
   }
 
   /// Desenha uma imagem raster (XObject de imagem) no retângulo de destino [dstRect].
-  void drawImage(Uint8List imageBytes, int width, int height, Rect dstRect,
-      PdfGfxState state);
+  void drawImage(
+    Uint8List imageBytes,
+    int width,
+    int height,
+    Rect dstRect,
+    PdfGfxState state, {
+    PdfDict? imageDictionary,
+  });
 
   /// Desenha um glifo ou texto posicionado.
   void drawText(String text, PdfGfxState state, PdfMatrix textMatrix);
@@ -73,8 +80,14 @@ class PdfMemoryOutputDevice extends PdfOutputDevice {
   }
 
   @override
-  void drawImage(Uint8List imageBytes, int width, int height, Rect dstRect,
-      PdfGfxState state) {
+  void drawImage(
+    Uint8List imageBytes,
+    int width,
+    int height,
+    Rect dstRect,
+    PdfGfxState state, {
+    PdfDict? imageDictionary,
+  }) {
     commands.add('drawImage(${width}x$height, rect: $dstRect)');
   }
 

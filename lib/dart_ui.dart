@@ -96,6 +96,7 @@ export 'src/layout/render_stack.dart';
 export 'src/layout/render_viewport.dart';
 export 'src/layout/render_wrap.dart';
 export 'src/platform/backend_selection.dart';
+export 'src/platform/file_picker.dart';
 export 'src/platform/input_events.dart';
 export 'src/platform/native_window.dart';
 export 'src/platform/system_fonts.dart';

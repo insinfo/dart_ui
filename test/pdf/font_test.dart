@@ -1,7 +1,10 @@
-import 'package:test/test.dart';
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:dart_ui/src/pdf/font/pdf_cmap.dart';
 import 'package:dart_ui/src/pdf/font/pdf_type1_font.dart';
 import 'package:dart_ui/src/pdf/format/pdf_object.dart';
+import 'package:test/test.dart';
 
 void main() {
   group('PDF Font Subsystem', () {
@@ -39,6 +42,30 @@ void main() {
 
       // Um cid inexistente
       expect(cmap.getUnicode(0x0099), isNull);
+    });
+
+    test('PdfCMap parses ToUnicode code spaces, chars and ranges', () {
+      final cmap = PdfCMap.parse(
+        Uint8List.fromList(
+          latin1.encode('''
+            1 begincodespacerange
+            <0000> <FFFF>
+            endcodespacerange
+            2 beginbfchar
+            <0001> <0041>
+            <0002> <00E7>
+            endbfchar
+            1 beginbfrange
+            <0010> <0012> <0061>
+            endbfrange
+          '''),
+        ),
+      );
+
+      expect(
+        cmap.decode(Uint8List.fromList(<int>[0, 1, 0, 2, 0, 0x10, 0, 0x12])),
+        'Açac',
+      );
     });
   });
 }

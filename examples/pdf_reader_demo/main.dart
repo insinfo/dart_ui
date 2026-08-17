@@ -1,4 +1,3 @@
-import 'dart:typed_data';
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/pdf.dart';
 
@@ -13,130 +12,121 @@ class PdfReaderDemoApp extends StatefulWidget {
 
 class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
   final TextEditingController _searchController = TextEditingController();
-  late final PdfDocument _pdfDocument;
-  bool _isLoading = true;
+  PdfDocument? _document;
+  String? _fileName;
+  String? _error;
+  bool _isLoading = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _loadPdf();
-  }
-
-  void _loadPdf() {
-    // Cria um arquivo PDF dummy na memória
-    final dummyPdfBytes = Uint8List.fromList([
-      0x25,
-      0x50,
-      0x44,
-      0x46,
-      0x2D,
-      0x31,
-      0x2E,
-      0x37,
-      0x0A,
-      0x78,
-      0x72,
-      0x65,
-      0x66,
-      0x0A,
-      0x30,
-      0x20,
-      0x30,
-      0x0A,
-      0x74,
-      0x72,
-      0x61,
-      0x69,
-      0x6C,
-      0x65,
-      0x72,
-      0x0A,
-      0x3C,
-      0x3C,
-      0x3E,
-      0x3E,
-      0x0A,
-      0x73,
-      0x74,
-      0x61,
-      0x72,
-      0x74,
-      0x78,
-      0x72,
-      0x65,
-      0x66,
-      0x0A,
-      0x39,
-      0x0A,
-      0x25,
-      0x25,
-      0x45,
-      0x4F,
-      0x46,
-      0x0A
-    ]);
-
-    _pdfDocument = PdfDocument.fromBytes(dummyPdfBytes);
+  Future<void> _openPdf() async {
+    if (_isLoading) return;
     setState(() {
-      _isLoading = false;
+      _isLoading = true;
+      _error = null;
     });
+    try {
+      final PickedFile? selected = await FilePicker.openFile(
+        title: 'Abrir documento PDF',
+        filters: const <FilePickerFilter>[
+          FilePickerFilter(
+            label: 'Documentos PDF (*.pdf)',
+            extensions: <String>['pdf'],
+          ),
+          FilePickerFilter(
+            label: 'Todos os arquivos (*.*)',
+            extensions: <String>['*'],
+          ),
+        ],
+      );
+      if (!mounted || selected == null) {
+        if (mounted) setState(() => _isLoading = false);
+        return;
+      }
+      final PdfDocument document = PdfDocument.fromBytes(selected.bytes);
+      if (!mounted) return;
+      setState(() {
+        _document = document;
+        _fileName = selected.name;
+        _isLoading = false;
+      });
+    } on Object catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _error = 'Não foi possível abrir o PDF: $error';
+      });
+    }
   }
 
   void _onSearch() {
+    if (_document == null || _searchController.value.isEmpty) return;
+    // PdfTextSearcher will consume this value when selection/search lands.
     print('Procurando por: ${_searchController.value}');
-    // Lógica real acionaria PdfTextSearcher e injetaria um HighlightAnnotation.
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const ColoredBox(
-        color: 0xFFF1F5F9,
-        child: Center(
-          child: Text('Carregando PDF...', fontSize: 24),
-        ),
-      );
-    }
-
+    final PdfDocument? document = _document;
     return ColoredBox(
-      color: 0xFFF1F5F9, // Slate 100
+      color: 0xFFF1F5F9,
       child: Column(
-        children: [
-          // Barra de Ferramentas Superior
+        children: <Widget>[
           ColoredBox(
             color: 0xFFFFFFFF,
             child: Padding(
-              padding: const EdgeInsets.all(8.0),
+              padding: const EdgeInsets.all(8),
               child: Row(
-                children: [
+                children: <Widget>[
+                  Button(
+                    label: _isLoading ? 'Abrindo...' : 'Abrir PDF',
+                    onPressed: _isLoading ? null : _openPdf,
+                  ),
+                  const SizedBox(width: 8),
                   Expanded(
-                    child: TextField(
-                      controller: _searchController,
-                      // placeholder: 'Pesquisar no PDF...', // Assumindo que TextField pode ter placeholder
-                    ),
+                    child: TextField(controller: _searchController),
                   ),
                   const SizedBox(width: 8),
                   Button(
                     label: 'Buscar',
-                    onPressed: _onSearch,
+                    onPressed: document == null ? null : _onSearch,
                   ),
                 ],
               ),
             ),
           ),
-
-          // Visualizador de PDF (Preenche o resto da tela)
-          Expanded(
-            child: PdfView(
-              document: _pdfDocument,
-              // O Axis vem de package:dart_ui/dart_ui.dart caso exporte render_flex.dart
-              scrollDirection: Axis.vertical,
-              enableTextSelection: true,
-              enablePinchZoom: true,
+          if (_fileName != null)
+            ColoredBox(
+              color: 0xFFE2E8F0,
+              child: Padding(
+                padding: const EdgeInsets.all(6),
+                child: Text(
+                  '$_fileName - ${document?.pageCount ?? 0} página(s)',
+                ),
+              ),
             ),
-          ),
+          Expanded(child: _content(document)),
         ],
       ),
+    );
+  }
+
+  Widget _content(PdfDocument? document) {
+    if (_isLoading) {
+      return const Center(child: Text('Carregando PDF...', fontSize: 20));
+    }
+    final String? error = _error;
+    if (error != null) {
+      return Center(child: Text(error, fontSize: 14));
+    }
+    if (document == null) {
+      return const Center(
+        child: Text('Clique em "Abrir PDF" para selecionar um documento.'),
+      );
+    }
+    return PdfView(
+      document: document,
+      scrollDirection: Axis.vertical,
+      enableTextSelection: true,
+      enablePinchZoom: true,
     );
   }
 }

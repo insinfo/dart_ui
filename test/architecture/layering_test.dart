@@ -55,7 +55,7 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // Offset, and nothing else.
   'animation': <String>['foundation', 'geometry', 'scheduler'],
   'text': <String>['foundation', 'geometry', 'graphics'],
-  'platform': <String>['foundation', 'geometry', 'scheduler'],
+  'platform': <String>['ffi', 'foundation', 'geometry', 'scheduler'],
   // Gesture recognizers sit above raw pointer events and the injected
   // scheduler used by deadlines, but below render objects and widgets. The
   // GestureDetector that owns a render object lives in `widgets`.

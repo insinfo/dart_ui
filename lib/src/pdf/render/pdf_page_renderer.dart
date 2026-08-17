@@ -10,7 +10,11 @@ class PdfPageRenderer {
   PdfPageRenderer(this.page);
 
   /// Executa a interpretação gráfica da página enviando os comandos para o [device].
-  void render(PdfOutputDevice device, {double scale = 1.0}) {
+  void render(
+    PdfOutputDevice device, {
+    double scale = 1.0,
+    bool applyPageRotation = true,
+  }) {
     device.saveState();
 
     // Aplica escala global
@@ -19,7 +23,7 @@ class PdfPageRenderer {
     }
 
     // Aplica rotação da página se houver
-    if (page.rotation != 0) {
+    if (applyPageRotation && page.rotation != 0) {
       final rad = page.rotation * 3.141592653589793 / 180.0;
       device.transform(PdfMatrix.rotation(rad));
     }
