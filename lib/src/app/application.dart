@@ -144,6 +144,7 @@ import '../foundation/lifecycle.dart';
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/pipeline.dart';
@@ -400,7 +401,7 @@ final class ApplicationOptions {
     String title = 'dart_ui',
     Size size = const Size(800, 600),
     bool visible = false,
-    int? clearColor,
+    Color? clearColor,
     bool showDevOverlay = false,
     Duration devOverlayInterval = const Duration(milliseconds: 500),
     Duration idleTimeout = const Duration(milliseconds: 250),
@@ -418,7 +419,7 @@ final class ApplicationOptions {
     bool liveResize = true,
     Size? minimumSize,
     Size? maximumSize,
-    int? windowBackgroundColor,
+    Color? windowBackgroundColor,
     Capability? gpuPresentationCapability = kGpuPresentationCapability,
     RenderingPolicy renderingPolicy = RenderingPolicy.auto,
     ThemeData theme = ThemeData.neutralLight,
@@ -517,10 +518,10 @@ final class ApplicationOptions {
   /// running and the first frame follows immediately.
   final bool visible;
 
-  /// Premultiplied BGRA packed into a 32-bit int, or null to leave whatever
+  /// The renderer clear colour, or null to leave whatever
   /// the previous frame left. Null is only safe when the tree paints an opaque
   /// background of its own - the gallery does.
-  final int? clearColor;
+  final Color? clearColor;
 
   final bool showDevOverlay;
 
@@ -643,15 +644,14 @@ final class ApplicationOptions {
   /// What the platform paints where no frame has drawn yet - the strip a
   /// window grows into mid-resize, and the client area before the first frame.
   ///
-  /// Premultiplied BGRA in a 32-bit int, the same encoding as [clearColor], or
-  /// null for the system's window colour. Distinct from [clearColor], which is
+  /// Null uses the system's window colour. Distinct from [clearColor], which is
   /// what the *renderer* clears the framebuffer to: this one is used at moments
   /// when there is no framebuffer covering the pixel at all, which is exactly
   /// when [clearColor] cannot help.
   ///
   /// Set it to the tree's own background and a resize stops showing a colour
   /// the application never chose.
-  final int? windowBackgroundColor;
+  final Color? windowBackgroundColor;
 
   /// Passed through to [selectPresentation]. Defaults to
   /// [kGpuPresentationCapability]. Set [renderingPolicy] to
@@ -834,7 +834,7 @@ final class ApplicationWindow with DisposableMixin {
   final bool isModal;
 
   /// This window's clear colour, defaulting to the application's.
-  final int? clearColor;
+  final Color? clearColor;
 
   final DisposableBag _resources;
 
@@ -846,6 +846,8 @@ final class ApplicationWindow with DisposableMixin {
   bool _inFrame = false;
   bool _minimised = false;
   bool _active = false;
+  Timer? _animationWakeTimer;
+  bool _animationFrameDue = false;
   int _framesPresented = 0;
   int _controlCount = 0;
   int _semanticNodeCount = 0;
@@ -1012,6 +1014,31 @@ final class ApplicationWindow with DisposableMixin {
     requestFrame();
   }
 
+  void _scheduleAnimationWake(Duration delay) {
+    if (isDisposed || _animationWakeTimer != null) return;
+    _animationWakeTimer = Timer(delay, () {
+      _animationWakeTimer = null;
+      if (isDisposed) return;
+      _animationFrameDue = true;
+      requestFrame();
+      // The application loop may currently be blocked inside the native
+      // backend's event wait. Marking the frame dirty is not enough in that
+      // case: no Dart code gets another turn until a platform event arrives.
+      // Wake the wait explicitly so timer-driven animations keep moving even
+      // while the user is completely idle.
+      application.backend.wake();
+    });
+  }
+
+  void _consumeAnimationFrame() {
+    if (!_animationFrameDue || !scheduler.hasArmedNextFrame) return;
+    _animationFrameDue = false;
+    final Duration due = scheduler.dispatcher.nextTimerDue ??
+        scheduler.dispatcher.elapsed + scheduler.frameInterval;
+    final Duration remaining = due - scheduler.dispatcher.elapsed;
+    scheduler.advance(remaining.isNegative ? Duration.zero : remaining);
+  }
+
   /// Asks the platform to give this window the keyboard, and records the move.
   void focus() => application.focusWindow(id);
 
@@ -1097,6 +1124,7 @@ final class ApplicationWindow with DisposableMixin {
       final build = stopwatch.elapsedMicroseconds;
 
       _painted = null;
+      _consumeAnimationFrame();
       var pass = 0;
       while (true) {
         if (pass++ >= _maxSettlePasses) {
@@ -1125,7 +1153,7 @@ final class ApplicationWindow with DisposableMixin {
       final result = await host.present(
         frame,
         list,
-        clearColor: clearColor ?? application.options.clearColor,
+        clearColor: (clearColor ?? application.options.clearColor)?.value,
       );
       stopwatch.stop();
 
@@ -1230,6 +1258,7 @@ final class ApplicationWindow with DisposableMixin {
       final build = stopwatch.elapsedMicroseconds;
 
       _painted = null;
+      _consumeAnimationFrame();
       var pass = 0;
       while (pass++ < _maxSettlePasses) {
         buildOwner.buildScope();
@@ -1248,7 +1277,7 @@ final class ApplicationWindow with DisposableMixin {
       final result = host.presentNow(
         host.beginFrame(),
         list,
-        clearColor: clearColor ?? application.options.clearColor,
+        clearColor: (clearColor ?? application.options.clearColor)?.value,
       );
       stopwatch.stop();
       if (result.isSuccess) {
@@ -1293,6 +1322,8 @@ final class ApplicationWindow with DisposableMixin {
     // is gone.
     _controlCount = _countControls(buildOwner.renderRoot);
     _semanticNodeCount = buildOwner.buildSemantics().nodes.length;
+    _animationWakeTimer?.cancel();
+    _animationWakeTimer = null;
     _resources.dispose();
     _painted = null;
     // A disposed window owes nobody a frame. Leaving this set would make
@@ -1715,8 +1746,8 @@ final class Application with DisposableMixin {
     bool visible = true,
     bool resizable = true,
     bool decorated = true,
-    int? clearColor,
-    int? backgroundColor,
+    Color? clearColor,
+    Color? backgroundColor,
     NativeWindowId? owner,
     WindowKind kind = WindowKind.normal,
     bool modal = false,
@@ -1772,10 +1803,11 @@ final class Application with DisposableMixin {
         resizable: resizable,
         decorated: decorated,
         visible: visible,
-        backgroundColor: backgroundColor ??
-            options.windowBackgroundColor ??
-            clearColor ??
-            options.clearColor,
+        backgroundColor: (backgroundColor ??
+                options.windowBackgroundColor ??
+                clearColor ??
+                options.clearColor)
+            ?.value,
         owner: ownerWindow?.nativeWindow,
         kind: kind,
       ));
@@ -1845,6 +1877,8 @@ final class Application with DisposableMixin {
         dispatcher: ManualDispatcher(),
         pipelineOwner: pipelineOwner,
         onFrame: (DisplayList list) => appWindow._onPainted(list),
+        onNextFrameScheduled: (Duration delay) =>
+            appWindow._scheduleAnimationWake(delay),
       );
       bag.add(scheduler, () {
         _teardownOrder.add('scheduler');
@@ -2366,6 +2400,10 @@ final class Application with DisposableMixin {
       _keyboardFocus == null || _keyboardFocus == window.id;
 
   bool _handleWindowEvent(ApplicationWindow window, PlatformWindowEvent event) {
+    if (event is WindowPointerLeaveEvent) {
+      window.buildOwner.clearPointerHover();
+      window.requestFrame();
+    }
     final outcome = window.host.handleEvent(event);
 
     if (outcome.closeRequested) {

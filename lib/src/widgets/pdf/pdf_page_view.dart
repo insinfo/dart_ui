@@ -8,6 +8,7 @@ import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
 import '../../geometry/transform2d.dart';
+import '../../graphics/color.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/image/decoded_image.dart';
@@ -36,7 +37,7 @@ final class PdfPageView extends RenderObjectWidget {
     super.key,
     required this.page,
     this.scale = 1.0,
-    this.backgroundColor = 0xFFFFFFFF,
+    this.backgroundColor = const Color(0xFFFFFFFF),
     this.textLayout,
     this.selection,
     this.enableTextSelection = false,
@@ -45,7 +46,7 @@ final class PdfPageView extends RenderObjectWidget {
 
   final PdfPage page;
   final double scale;
-  final int backgroundColor;
+  final Color backgroundColor;
   final PdfPageTextLayout? textLayout;
   final PdfTextSelection? selection;
   final bool enableTextSelection;
@@ -58,7 +59,7 @@ final class PdfPageView extends RenderObjectWidget {
   RenderPdfPage createRenderObject(BuildContext context) => RenderPdfPage(
         page,
         scale: scale,
-        backgroundColor: backgroundColor,
+        backgroundColor: backgroundColor.value,
         devicePixelRatio: MediaQuery.maybeOf(context)?.devicePixelRatio ?? 1,
         textLayout: textLayout,
         selection: selection,
@@ -74,7 +75,7 @@ final class PdfPageView extends RenderObjectWidget {
     renderObject
       ..page = page
       ..scale = scale
-      ..backgroundColor = backgroundColor
+      ..backgroundColor = backgroundColor.value
       ..devicePixelRatio = MediaQuery.maybeOf(context)?.devicePixelRatio ?? 1
       ..textLayout = textLayout
       ..selection = selection
@@ -282,23 +283,6 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     list
       ..save()
       ..clipRect(bounds.left, bounds.top, bounds.right, bounds.bottom);
-    final PdfTextSelection? selected = selection;
-    final PdfPageTextLayout? layout = textLayout;
-    if (selected != null &&
-        layout != null &&
-        selected.pageNumber == page.pageNumber) {
-      final int highlight = list.addPaint(colorArgb: 0x663B82F6);
-      for (final Rect rect in layout.selectionRects(
-          selected.baseOffset, selected.extentOffset)) {
-        list.drawRect(
-          offset.dx + rect.left * scale,
-          offset.dy + rect.top * scale,
-          offset.dx + rect.right * scale,
-          offset.dy + rect.bottom * scale,
-          highlight,
-        );
-      }
-    }
     final _PdfDisplayListOutputDevice device = _PdfDisplayListOutputDevice(
       list: list,
       page: page,
@@ -309,6 +293,31 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
       embeddedFonts: _embeddedFonts,
     );
     PdfPageRenderer(page).render(device, applyPageRotation: false);
+
+    // Selection is an overlay and must be painted after every PDF operator.
+    // Real office documents often place an opaque image, white rectangle or
+    // form XObject after their text. Painting the highlight first meant those
+    // later operators covered it even though copying used the correct range —
+    // most visibly on standalone bold headings.
+    final PdfTextSelection? selected = selection;
+    final PdfPageTextLayout? layout = textLayout;
+    final ({int start, int end})? selectedRange =
+        selected == null || layout == null
+            ? null
+            : selected.rangeForPage(page.pageNumber, layout.text.length);
+    if (selectedRange != null) {
+      final int highlight = list.addPaint(colorArgb: 0x663B82F6);
+      for (final Rect rect
+          in layout!.selectionRects(selectedRange.start, selectedRange.end)) {
+        list.drawRect(
+          offset.dx + rect.left * scale,
+          offset.dy + rect.top * scale,
+          offset.dx + rect.right * scale,
+          offset.dy + rect.bottom * scale,
+          highlight,
+        );
+      }
+    }
     list.restore();
   }
 }

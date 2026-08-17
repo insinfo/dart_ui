@@ -41,10 +41,15 @@
 ///    surface that scrolls by gesture only.
 library;
 
+import 'dart:math' as math;
+
 import '../geometry/offset.dart';
+import '../geometry/path.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
+import '../graphics/display_list_opcodes.dart' show paintStyleStroke;
 import '../layout/render_box.dart';
 import '../layout/render_viewport.dart';
 import '../platform/input_events.dart';
@@ -54,6 +59,7 @@ import 'basic.dart';
 import 'control.dart';
 import 'element.dart';
 import 'gesture_detector.dart';
+import 'pointer_router.dart';
 import 'proxy.dart';
 import 'semantics.dart';
 import 'theme.dart';
@@ -83,8 +89,8 @@ final class Scrollbar extends StatefulWidget {
     required this.position,
     required this.child,
     this.visibility = ScrollbarVisibility.always,
-    this.thickness = 8.0,
-    this.minThumbExtent = 16.0,
+    this.thickness,
+    this.minThumbExtent,
     this.interactive = true,
     this.fadeDelay = const Duration(milliseconds: 600),
     this.fadeDuration = const Duration(milliseconds: 200),
@@ -96,10 +102,10 @@ final class Scrollbar extends StatefulWidget {
   final ScrollbarVisibility visibility;
 
   /// How wide (or, for a horizontal bar, how tall) the track is.
-  final double thickness;
+  final double? thickness;
 
   /// The smallest thumb that is still worth grabbing.
-  final double minThumbExtent;
+  final double? minThumbExtent;
 
   /// Whether the thumb answers the pointer. False makes it an indicator.
   final bool interactive;
@@ -204,6 +210,15 @@ final class _ScrollbarState extends State<Scrollbar> {
       return widget.child;
     }
     final bool vertical = widget.position.axis == ScrollAxis.vertical;
+    final ThemeData theme = Theme.of(context);
+    final ScrollbarThemeData scrollbarTheme = theme.scrollbarTheme;
+    final double thickness = widget.thickness ?? scrollbarTheme.thickness;
+    final double hoveredThickness = math.max(
+      thickness,
+      scrollbarTheme.hoveredThickness,
+    );
+    final double hitExtent =
+        hoveredThickness + scrollbarTheme.crossAxisMargin * 2;
     return Stack(
       children: <Widget>[
         widget.child,
@@ -212,14 +227,16 @@ final class _ScrollbarState extends State<Scrollbar> {
           right: 0,
           top: vertical ? 0 : null,
           bottom: 0,
-          width: vertical ? widget.thickness : null,
-          height: vertical ? null : widget.thickness,
+          width: vertical ? hitExtent : null,
+          height: vertical ? null : hitExtent,
           child: Opacity(
             opacity: _opacity,
             child: _ScrollbarTrack(
               position: widget.position,
-              theme: Theme.of(context),
-              minThumbExtent: widget.minThumbExtent,
+              theme: theme,
+              thickness: thickness,
+              minThumbExtent:
+                  widget.minThumbExtent ?? scrollbarTheme.minThumbLength,
               interactive: widget.interactive,
             ),
           ),
@@ -235,18 +252,21 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
   const _ScrollbarTrack({
     required this.position,
     required this.theme,
+    required this.thickness,
     required this.minThumbExtent,
     required this.interactive,
   });
 
   final ScrollPosition position;
   final ThemeData theme;
+  final double thickness;
   final double minThumbExtent;
   final bool interactive;
 
   @override
   RenderScrollbar createRenderObject(BuildContext context) => RenderScrollbar(
         position: position,
+        thickness: thickness,
         minThumbExtent: minThumbExtent,
         interactive: interactive,
       )..theme = theme;
@@ -258,6 +278,7 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
   ) {
     object
       ..position = position
+      ..thickness = thickness
       ..minThumbExtent = minThumbExtent
       ..interactive = interactive
       ..theme = theme;
@@ -265,18 +286,23 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
 }
 
 /// Draws the track and the thumb, and lets the pointer move the thumb.
-final class RenderScrollbar extends RenderBox with ControlBehavior {
+final class RenderScrollbar extends RenderBox
+    with ControlBehavior
+    implements PointerEventBarrier {
   RenderScrollbar({
     required ScrollPosition position,
+    double thickness = 6,
     double minThumbExtent = 16.0,
     bool interactive = true,
   })  : _position = position,
+        _thickness = thickness,
         _minThumbExtent = minThumbExtent,
         _interactive = interactive {
     _position.addListener(_onScrolled);
   }
 
   ScrollPosition _position;
+  double _thickness;
   double _minThumbExtent;
   bool _interactive;
 
@@ -294,6 +320,14 @@ final class RenderScrollbar extends RenderBox with ControlBehavior {
   }
 
   double get minThumbExtent => _minThumbExtent;
+
+  double get thickness => _thickness;
+
+  set thickness(double value) {
+    if (value == _thickness) return;
+    _thickness = value;
+    markNeedsPaint();
+  }
 
   set minThumbExtent(double value) {
     if (value == _minThumbExtent) return;
@@ -316,6 +350,24 @@ final class RenderScrollbar extends RenderBox with ControlBehavior {
   double get trackExtent =>
       hasSize ? (_vertical ? size.height : size.width) : 0;
 
+  double get buttonExtent {
+    final ScrollbarThemeData config = theme.scrollbarTheme;
+    if (!config.showButtons) return 0;
+    final double available =
+        math.max(0, trackExtent - config.mainAxisMargin * 2);
+    return math.min(config.buttonExtent, available / 2);
+  }
+
+  double get trackMainStart =>
+      theme.scrollbarTheme.mainAxisMargin + buttonExtent;
+
+  double get usableTrackExtent => math.max(
+        0,
+        trackExtent -
+            theme.scrollbarTheme.mainAxisMargin * 2 -
+            buttonExtent * 2,
+      );
+
   /// Where the thumb sits along the track, in pixels, or null when the content
   /// fits and there is nothing to draw.
   ///
@@ -326,7 +378,7 @@ final class RenderScrollbar extends RenderBox with ControlBehavior {
   /// when the content does.
   ({double start, double extent})? get thumbMetrics {
     final ({double start, double extent})? thumb = _position.thumb;
-    final double track = trackExtent;
+    final double track = usableTrackExtent;
     if (thumb == null || track <= 0) return null;
     final double extent = (thumb.extent * track).clamp(_minThumbExtent, track);
     final double free = track - extent;
@@ -343,7 +395,7 @@ final class RenderScrollbar extends RenderBox with ControlBehavior {
   double get dragScale {
     final ({double start, double extent})? metrics = thumbMetrics;
     if (metrics == null) return 0;
-    final double free = trackExtent - metrics.extent;
+    final double free = usableTrackExtent - metrics.extent;
     if (free <= 0) return 0;
     return _position.maxScrollExtent / free;
   }
@@ -376,10 +428,22 @@ final class RenderScrollbar extends RenderBox with ControlBehavior {
     super.handlePointerEvent(event);
     if (!_interactive || !hasSize) return;
     final Offset local = globalToLocal(event.logicalPosition);
-    final double main = _vertical ? local.dy : local.dx;
+    final double rawMain = _vertical ? local.dy : local.dx;
+    final double main = rawMain - trackMainStart;
     if (event is PointerDownEvent && event.button == PointerButton.primary) {
       final ({double start, double extent})? metrics = thumbMetrics;
       if (metrics == null) return;
+      final double buttons = buttonExtent;
+      if (buttons > 0) {
+        if (rawMain < trackMainStart) {
+          _position.applyDelta(-defaultLineExtent);
+          return;
+        }
+        if (rawMain >= trackExtent - trackMainStart) {
+          _position.applyDelta(defaultLineExtent);
+          return;
+        }
+      }
       if (main >= metrics.start && main <= metrics.start + metrics.extent) {
         _dragPointer = event.pointerId;
         _dragOrigin = main;
@@ -408,31 +472,151 @@ final class RenderScrollbar extends RenderBox with ControlBehavior {
   void paint(DisplayList list, Offset offset) {
     final ({double start, double extent})? metrics = thumbMetrics;
     if (metrics == null) return;
-    final Rect track = Rect.fromLTWH(
-      offset.dx,
-      offset.dy,
-      size.width,
-      size.height,
-    );
-    paintFill(list, track, theme.surface);
-    paintFill(
+    final ScrollbarThemeData config = theme.scrollbarTheme;
+    final bool active = isHovered || _dragPointer != null;
+    final double visualThickness =
+        active ? math.max(_thickness, config.hoveredThickness) : _thickness;
+    final double mainStart = trackMainStart;
+    final Rect track = _vertical
+        ? Rect.fromLTWH(
+            offset.dx + size.width - config.crossAxisMargin - visualThickness,
+            offset.dy + mainStart,
+            visualThickness,
+            usableTrackExtent,
+          )
+        : Rect.fromLTWH(
+            offset.dx + mainStart,
+            offset.dy + size.height - config.crossAxisMargin - visualThickness,
+            usableTrackExtent,
+            visualThickness,
+          );
+    if (config.trackVisibility || active) {
+      _paintRounded(
+        list,
+        track,
+        config.trackColor ?? theme.disabledSurface.withAlpha(0x38),
+        config.radius,
+      );
+    }
+    if (buttonExtent > 0) {
+      _paintButtons(list, offset, visualThickness, config);
+    }
+    final Rect thumb = _vertical
+        ? Rect.fromLTWH(
+            track.left,
+            track.top + metrics.start,
+            visualThickness,
+            metrics.extent,
+          )
+        : Rect.fromLTWH(
+            track.left + metrics.start,
+            track.top,
+            metrics.extent,
+            visualThickness,
+          );
+    _paintRounded(
       list,
-      _vertical
-          ? Rect.fromLTWH(
-              track.left,
-              track.top + metrics.start,
-              size.width,
-              metrics.extent,
-            )
-          : Rect.fromLTWH(
-              track.left + metrics.start,
-              track.top,
-              metrics.extent,
-              size.height,
-            ),
-      isHovered || _dragPointer != null
-          ? theme.accentHovered
-          : theme.foregroundSecondary,
+      thumb,
+      active
+          ? config.hoveredThumbColor ?? theme.foreground.withAlpha(0xB8)
+          : config.thumbColor ?? theme.foregroundSecondary.withAlpha(0x78),
+      config.radius,
+    );
+  }
+
+  void _paintButtons(
+    DisplayList list,
+    Offset offset,
+    double visualThickness,
+    ScrollbarThemeData config,
+  ) {
+    final double crossStart = _vertical
+        ? offset.dx + size.width - config.crossAxisMargin - visualThickness
+        : offset.dy + size.height - config.crossAxisMargin - visualThickness;
+    final Rect startButton = _vertical
+        ? Rect.fromLTWH(
+            crossStart,
+            offset.dy + config.mainAxisMargin,
+            visualThickness,
+            buttonExtent,
+          )
+        : Rect.fromLTWH(
+            offset.dx + config.mainAxisMargin,
+            crossStart,
+            buttonExtent,
+            visualThickness,
+          );
+    final Rect endButton = _vertical
+        ? Rect.fromLTWH(
+            crossStart,
+            offset.dy + trackExtent - config.mainAxisMargin - buttonExtent,
+            visualThickness,
+            buttonExtent,
+          )
+        : Rect.fromLTWH(
+            offset.dx + trackExtent - config.mainAxisMargin - buttonExtent,
+            crossStart,
+            buttonExtent,
+            visualThickness,
+          );
+    final Color fill = config.buttonColor ??
+        config.trackColor ??
+        theme.disabledSurface.withAlpha(0x88);
+    _paintRounded(list, startButton, fill, config.radius);
+    _paintRounded(list, endButton, fill, config.radius);
+    final Color icon = config.buttonIconColor ?? theme.foregroundSecondary;
+    _paintArrow(list, startButton, icon, towardsEnd: false);
+    _paintArrow(list, endButton, icon, towardsEnd: true);
+  }
+
+  void _paintArrow(
+    DisplayList list,
+    Rect rect,
+    Color color, {
+    required bool towardsEnd,
+  }) {
+    final double sign = towardsEnd ? 1 : -1;
+    final PathBuilder builder = PathBuilder();
+    if (_vertical) {
+      builder
+        ..moveTo(rect.center.dx - 2.5, rect.center.dy - sign * 1.5)
+        ..lineTo(rect.center.dx, rect.center.dy + sign * 1.5)
+        ..lineTo(rect.center.dx + 2.5, rect.center.dy - sign * 1.5);
+    } else {
+      builder
+        ..moveTo(rect.center.dx - sign * 1.5, rect.center.dy - 2.5)
+        ..lineTo(rect.center.dx + sign * 1.5, rect.center.dy)
+        ..lineTo(rect.center.dx - sign * 1.5, rect.center.dy + 2.5);
+    }
+    list.drawPath(
+      list.addPath(builder.build()),
+      list.addPaint(
+        colorArgb: color.value,
+        style: paintStyleStroke,
+        strokeWidth: 1.5,
+        antiAlias: true,
+      ),
+    );
+  }
+
+  static void _paintRounded(
+    DisplayList list,
+    Rect rect,
+    Color color,
+    double configuredRadius,
+  ) {
+    final double radius = math.min(
+      configuredRadius,
+      math.min(rect.width, rect.height) / 2,
+    );
+    list.drawRRectUniform(
+      rect.left,
+      rect.top,
+      rect.right,
+      rect.bottom,
+      radius,
+      radius,
+      list.addPaint(colorArgb: color.value, antiAlias: true),
     );
   }
 

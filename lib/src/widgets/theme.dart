@@ -12,6 +12,7 @@
 /// [ControlTemplate] turns them into a visual subtree.
 library;
 
+import '../graphics/color.dart';
 import '../rendering/text/font_registry.dart';
 import 'style.dart';
 import 'widget.dart';
@@ -51,47 +52,47 @@ final class ColorScheme {
   });
 
   const ColorScheme.light({
-    this.primary = 0xFF2563EB,
-    this.onPrimary = 0xFFFFFFFF,
-    this.surface = 0xFFFFFFFF,
-    this.onSurface = 0xFF172033,
-    this.surfaceContainer = 0xFFF1F5F9,
-    this.outline = 0xFFCBD5E1,
-    this.error = 0xFFB3261E,
-    this.onError = 0xFFFFFFFF,
+    this.primary = const Color(0xFF2563EB),
+    this.onPrimary = const Color(0xFFFFFFFF),
+    this.surface = const Color(0xFFFFFFFF),
+    this.onSurface = const Color(0xFF172033),
+    this.surfaceContainer = const Color(0xFFF1F5F9),
+    this.outline = const Color(0xFFCBD5E1),
+    this.error = const Color(0xFFB3261E),
+    this.onError = const Color(0xFFFFFFFF),
   }) : brightness = Brightness.light;
 
   const ColorScheme.dark({
-    this.primary = 0xFF8AB4FF,
-    this.onPrimary = 0xFF002E69,
-    this.surface = 0xFF111827,
-    this.onSurface = 0xFFF1F5F9,
-    this.surfaceContainer = 0xFF1F2937,
-    this.outline = 0xFF475569,
-    this.error = 0xFFFFB4AB,
-    this.onError = 0xFF690005,
+    this.primary = const Color(0xFF8AB4FF),
+    this.onPrimary = const Color(0xFF002E69),
+    this.surface = const Color(0xFF111827),
+    this.onSurface = const Color(0xFFF1F5F9),
+    this.surfaceContainer = const Color(0xFF1F2937),
+    this.outline = const Color(0xFF475569),
+    this.error = const Color(0xFFFFB4AB),
+    this.onError = const Color(0xFF690005),
   }) : brightness = Brightness.dark;
 
   final Brightness brightness;
-  final int primary;
-  final int onPrimary;
-  final int surface;
-  final int onSurface;
-  final int surfaceContainer;
-  final int outline;
-  final int error;
-  final int onError;
+  final Color primary;
+  final Color onPrimary;
+  final Color surface;
+  final Color onSurface;
+  final Color surfaceContainer;
+  final Color outline;
+  final Color error;
+  final Color onError;
 
   ColorScheme copyWith({
     Brightness? brightness,
-    int? primary,
-    int? onPrimary,
-    int? surface,
-    int? onSurface,
-    int? surfaceContainer,
-    int? outline,
-    int? error,
-    int? onError,
+    Color? primary,
+    Color? onPrimary,
+    Color? surface,
+    Color? onSurface,
+    Color? surfaceContainer,
+    Color? outline,
+    Color? error,
+    Color? onError,
   }) =>
       ColorScheme(
         brightness: brightness ?? this.brightness,
@@ -134,7 +135,7 @@ final class TextStyle {
     this.fontWeight,
   });
 
-  final int? color;
+  final Color? color;
   final double? fontSize;
   final String? fontFamily;
   final FontWeight? fontWeight;
@@ -149,7 +150,7 @@ final class TextStyle {
         );
 
   TextStyle copyWith({
-    int? color,
+    Color? color,
     double? fontSize,
     String? fontFamily,
     FontWeight? fontWeight,
@@ -182,7 +183,7 @@ final class TextTheme {
 final class IconThemeData {
   const IconThemeData({this.color, this.size});
 
-  final int? color;
+  final Color? color;
   final double? size;
 
   IconThemeData merge(IconThemeData? other) => other == null
@@ -200,36 +201,111 @@ final class ProgressIndicatorThemeData {
     this.circularTrackColor,
   });
 
-  final int? color;
-  final int? linearTrackColor;
-  final int? circularTrackColor;
+  final Color? color;
+  final Color? linearTrackColor;
+  final Color? circularTrackColor;
+}
+
+/// Visual defaults for framework scrollbars.
+///
+/// The nullable colours inherit from the surrounding [ThemeData]. Metrics are
+/// deliberately independent: a slim resting thumb can still grow to a generous
+/// pointer target while hovered or dragged.
+final class ScrollbarThemeData {
+  const ScrollbarThemeData({
+    this.thumbColor,
+    this.hoveredThumbColor,
+    this.trackColor,
+    this.thickness = 6,
+    this.hoveredThickness = 10,
+    this.radius = 999,
+    this.minThumbLength = 36,
+    this.mainAxisMargin = 4,
+    this.crossAxisMargin = 3,
+    this.trackVisibility = true,
+    this.showButtons = true,
+    this.buttonExtent = 16,
+    this.buttonColor,
+    this.buttonIconColor,
+  });
+
+  final Color? thumbColor;
+  final Color? hoveredThumbColor;
+  final Color? trackColor;
+  final double thickness;
+  final double hoveredThickness;
+  final double radius;
+  final double minThumbLength;
+  final double mainAxisMargin;
+  final double crossAxisMargin;
+  final bool trackVisibility;
+  final bool showButtons;
+  final double buttonExtent;
+  final Color? buttonColor;
+  final Color? buttonIconColor;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ScrollbarThemeData &&
+      other.thumbColor == thumbColor &&
+      other.hoveredThumbColor == hoveredThumbColor &&
+      other.trackColor == trackColor &&
+      other.thickness == thickness &&
+      other.hoveredThickness == hoveredThickness &&
+      other.radius == radius &&
+      other.minThumbLength == minThumbLength &&
+      other.mainAxisMargin == mainAxisMargin &&
+      other.crossAxisMargin == crossAxisMargin &&
+      other.trackVisibility == trackVisibility &&
+      other.showButtons == showButtons &&
+      other.buttonExtent == buttonExtent &&
+      other.buttonColor == buttonColor &&
+      other.buttonIconColor == buttonIconColor;
+
+  @override
+  int get hashCode => Object.hash(
+        thumbColor,
+        hoveredThumbColor,
+        trackColor,
+        thickness,
+        hoveredThickness,
+        radius,
+        minThumbLength,
+        mainAxisMargin,
+        crossAxisMargin,
+        trackVisibility,
+        showButtons,
+        buttonExtent,
+        buttonColor,
+        buttonIconColor,
+      );
 }
 
 /// The named palette and metrics of one theme.
 ///
-/// Colours are 0xAARRGGBB, matching the display list. They are plain ints on
-/// purpose: a colour class would add an allocation to every paint call for a
-/// value the rasterizer immediately decomposes again.
+/// Colours use the Flutter-shaped immutable [Color] value type. Conversion to
+/// packed 0xAARRGGBB integers happens only at the display-list boundary.
 final class ThemeData {
   const ThemeData({
     this.name = 'dart-ui-light',
     this.brightness = Brightness.light,
-    this.accent = 0xFF2563EB,
-    this.accentPressed = 0xFF1D4ED8,
-    this.accentHovered = 0xFF3B82F6,
-    this.surface = 0xFFF8FAFC,
-    this.surfaceAlternate = 0xFFFFFFFF,
-    this.border = 0xFFCBD5E1,
-    this.foreground = 0xFF172033,
-    this.foregroundSecondary = 0xFF64748B,
-    this.disabledForeground = 0xFF94A3B8,
-    this.disabledSurface = 0xFFE2E8F0,
-    this.focusRing = 0xFF2563EB,
-    this.selection = 0xFFBFDBFE,
+    this.accent = const Color(0xFF2563EB),
+    this.accentPressed = const Color(0xFF1D4ED8),
+    this.accentHovered = const Color(0xFF3B82F6),
+    this.surface = const Color(0xFFF8FAFC),
+    this.surfaceAlternate = const Color(0xFFFFFFFF),
+    this.border = const Color(0xFFCBD5E1),
+    this.foreground = const Color(0xFF172033),
+    this.foregroundSecondary = const Color(0xFF64748B),
+    this.disabledForeground = const Color(0xFF94A3B8),
+    this.disabledSurface = const Color(0xFFE2E8F0),
+    this.focusRing = const Color(0xFF2563EB),
+    this.selection = const Color(0xFFBFDBFE),
     this.colorScheme = const ColorScheme.light(),
     this.textTheme = const TextTheme(),
     this.iconTheme = const IconThemeData(size: 20),
     this.progressIndicatorTheme = const ProgressIndicatorThemeData(),
+    this.scrollbarTheme = const ScrollbarThemeData(),
     this.useMaterial3 = true,
     this.density = ThemeDensity.comfortable,
     this.highContrast = false,
@@ -247,20 +323,21 @@ final class ThemeData {
   final TextTheme textTheme;
   final IconThemeData iconTheme;
   final ProgressIndicatorThemeData progressIndicatorTheme;
+  final ScrollbarThemeData scrollbarTheme;
   final bool useMaterial3;
 
-  final int accent;
-  final int accentPressed;
-  final int accentHovered;
-  final int surface;
-  final int surfaceAlternate;
-  final int border;
-  final int foreground;
-  final int foregroundSecondary;
-  final int disabledForeground;
-  final int disabledSurface;
-  final int focusRing;
-  final int selection;
+  final Color accent;
+  final Color accentPressed;
+  final Color accentHovered;
+  final Color surface;
+  final Color surfaceAlternate;
+  final Color border;
+  final Color foreground;
+  final Color foregroundSecondary;
+  final Color disabledForeground;
+  final Color disabledSurface;
+  final Color focusRing;
+  final Color selection;
 
   final ThemeDensity density;
 
@@ -345,6 +422,7 @@ final class ThemeData {
     TextTheme? textTheme,
     IconThemeData? iconTheme,
     ProgressIndicatorThemeData? progressIndicatorTheme,
+    ScrollbarThemeData? scrollbarTheme,
     bool? useMaterial3,
   }) =>
       ThemeData(
@@ -355,6 +433,7 @@ final class ThemeData {
         iconTheme: iconTheme ?? this.iconTheme,
         progressIndicatorTheme:
             progressIndicatorTheme ?? this.progressIndicatorTheme,
+        scrollbarTheme: scrollbarTheme ?? this.scrollbarTheme,
         useMaterial3: useMaterial3 ?? this.useMaterial3,
         accent: accent,
         accentPressed: accentPressed,
@@ -402,7 +481,8 @@ final class ThemeData {
       other.controlHeight == controlHeight &&
       other.controlPadding == controlPadding &&
       other.focusRingWidth == focusRingWidth &&
-      other.fontSize == fontSize;
+      other.fontSize == fontSize &&
+      other.scrollbarTheme == scrollbarTheme;
 
   @override
   int get hashCode => Object.hash(
@@ -416,7 +496,7 @@ final class ThemeData {
         Object.hash(highContrast, reducedMotion),
         Object.hash(
             cornerRadius, controlHeight, controlPadding, focusRingWidth),
-        fontSize,
+        Object.hash(fontSize, scrollbarTheme),
       );
 
   /// The neutral base: no platform's look, and the one every test uses so a
@@ -424,18 +504,18 @@ final class ThemeData {
   static const ThemeData neutralLight = ThemeData(
     name: 'neutral-light',
     brightness: ThemeBrightness.light,
-    accent: 0xFF2D6CDF,
-    accentPressed: 0xFF1F4FA8,
-    accentHovered: 0xFF4682E8,
-    surface: 0xFFF3F3F3,
-    surfaceAlternate: 0xFFFFFFFF,
-    border: 0xFFB8B8B8,
-    foreground: 0xFF111111,
-    foregroundSecondary: 0xFF555555,
-    disabledForeground: 0xFF9A9A9A,
-    disabledSurface: 0xFFE6E6E6,
-    focusRing: 0xFF1F4FA8,
-    selection: 0xFFBBD6FF,
+    accent: Color(0xFF2D6CDF),
+    accentPressed: Color(0xFF1F4FA8),
+    accentHovered: Color(0xFF4682E8),
+    surface: Color(0xFFF3F3F3),
+    surfaceAlternate: Color(0xFFFFFFFF),
+    border: Color(0xFFB8B8B8),
+    foreground: Color(0xFF111111),
+    foregroundSecondary: Color(0xFF555555),
+    disabledForeground: Color(0xFF9A9A9A),
+    disabledSurface: Color(0xFFE6E6E6),
+    focusRing: Color(0xFF1F4FA8),
+    selection: Color(0xFFBBD6FF),
     colorScheme: ColorScheme.light(),
     cornerRadius: 3,
     controlHeight: 28,
@@ -446,20 +526,20 @@ final class ThemeData {
   static const ThemeData neutralDark = ThemeData(
     name: 'neutral-dark',
     brightness: ThemeBrightness.dark,
-    accent: 0xFF4C8DFF,
-    accentPressed: 0xFF2F6ACC,
-    accentHovered: 0xFF6BA3FF,
-    surface: 0xFF202020,
-    surfaceAlternate: 0xFF2B2B2B,
-    border: 0xFF4A4A4A,
-    foreground: 0xFFF2F2F2,
-    foregroundSecondary: 0xFFBFBFBF,
-    disabledForeground: 0xFF6E6E6E,
-    disabledSurface: 0xFF303030,
-    focusRing: 0xFF8AB8FF,
-    selection: 0xFF2C4E7A,
+    accent: Color(0xFF4C8DFF),
+    accentPressed: Color(0xFF2F6ACC),
+    accentHovered: Color(0xFF6BA3FF),
+    surface: Color(0xFF202020),
+    surfaceAlternate: Color(0xFF2B2B2B),
+    border: Color(0xFF4A4A4A),
+    foreground: Color(0xFFF2F2F2),
+    foregroundSecondary: Color(0xFFBFBFBF),
+    disabledForeground: Color(0xFF6E6E6E),
+    disabledSurface: Color(0xFF303030),
+    focusRing: Color(0xFF8AB8FF),
+    selection: Color(0xFF2C4E7A),
     colorScheme: ColorScheme.dark(),
-    iconTheme: IconThemeData(color: 0xFFF2F2F2, size: 20),
+    iconTheme: IconThemeData(color: Color(0xFFF2F2F2), size: 20),
     cornerRadius: 3,
     controlHeight: 28,
     controlPadding: 8,
@@ -472,20 +552,30 @@ final class ThemeData {
   static const ThemeData materialDark = ThemeData(
     name: 'dart-ui-dark',
     brightness: Brightness.dark,
-    accent: 0xFF8AB4FF,
-    accentPressed: 0xFF669DF6,
-    accentHovered: 0xFFA8C7FA,
-    surface: 0xFF111827,
-    surfaceAlternate: 0xFF182235,
-    border: 0xFF475569,
-    foreground: 0xFFF1F5F9,
-    foregroundSecondary: 0xFFCBD5E1,
-    disabledForeground: 0xFF64748B,
-    disabledSurface: 0xFF273449,
-    focusRing: 0xFF8AB4FF,
-    selection: 0xFF1E4976,
-    colorScheme: ColorScheme.dark(),
-    iconTheme: IconThemeData(color: 0xFFF1F5F9, size: 20),
+    accent: Color(0xFF2563EB),
+    accentPressed: Color(0xFF1D4ED8),
+    accentHovered: Color(0xFF3B82F6),
+    surface: Color(0xFF111827),
+    surfaceAlternate: Color(0xFF182235),
+    border: Color(0xFF475569),
+    foreground: Color(0xFFF1F5F9),
+    foregroundSecondary: Color(0xFFCBD5E1),
+    disabledForeground: Color(0xFF64748B),
+    disabledSurface: Color(0xFF273449),
+    focusRing: Color(0xFF60A5FA),
+    selection: Color(0xFF1E4976),
+    colorScheme: ColorScheme.dark(
+      primary: Color(0xFF2563EB),
+      onPrimary: Color(0xFFFFFFFF),
+    ),
+    iconTheme: IconThemeData(color: Color(0xFFF1F5F9), size: 20),
+    scrollbarTheme: ScrollbarThemeData(
+      thumbColor: Color(0xB38FA3B8),
+      hoveredThumbColor: Color(0xE6CBD5E1),
+      trackColor: Color(0x55334455),
+      buttonColor: Color(0x66334455),
+      buttonIconColor: Color(0xFFF1F5F9),
+    ),
   );
 
   /// A Fluent-*like* light theme: squarer corners, flatter surfaces. Built
@@ -493,19 +583,19 @@ final class ThemeData {
   static const ThemeData fluentLight = ThemeData(
     name: 'fluent-light',
     brightness: ThemeBrightness.light,
-    accent: 0xFF0078D4,
-    accentPressed: 0xFF005A9E,
-    accentHovered: 0xFF106EBE,
-    surface: 0xFFFAFAFA,
-    surfaceAlternate: 0xFFFFFFFF,
-    border: 0xFFD1D1D1,
-    foreground: 0xFF201F1E,
-    foregroundSecondary: 0xFF605E5C,
-    disabledForeground: 0xFFA19F9D,
-    disabledSurface: 0xFFF3F2F1,
-    focusRing: 0xFF005A9E,
-    selection: 0xFFCCE4F7,
-    colorScheme: ColorScheme.light(primary: 0xFF0078D4),
+    accent: Color(0xFF0078D4),
+    accentPressed: Color(0xFF005A9E),
+    accentHovered: Color(0xFF106EBE),
+    surface: Color(0xFFFAFAFA),
+    surfaceAlternate: Color(0xFFFFFFFF),
+    border: Color(0xFFD1D1D1),
+    foreground: Color(0xFF201F1E),
+    foregroundSecondary: Color(0xFF605E5C),
+    disabledForeground: Color(0xFFA19F9D),
+    disabledSurface: Color(0xFFF3F2F1),
+    focusRing: Color(0xFF005A9E),
+    selection: Color(0xFFCCE4F7),
+    colorScheme: ColorScheme.light(primary: Color(0xFF0078D4)),
     cornerRadius: 2.0,
     controlHeight: 32.0,
   );
@@ -515,25 +605,25 @@ final class ThemeData {
   static const ThemeData highContrastDark = ThemeData(
     name: 'high-contrast-dark',
     brightness: ThemeBrightness.dark,
-    accent: 0xFFFFFF00,
-    accentPressed: 0xFFFFD700,
-    accentHovered: 0xFFFFFF66,
-    surface: 0xFF000000,
-    surfaceAlternate: 0xFF000000,
-    border: 0xFFFFFFFF,
-    foreground: 0xFFFFFFFF,
-    foregroundSecondary: 0xFFFFFFFF,
-    disabledForeground: 0xFF3FF23F,
-    disabledSurface: 0xFF000000,
-    focusRing: 0xFFFFFF00,
-    selection: 0xFF1AEBFF,
+    accent: Color(0xFFFFFF00),
+    accentPressed: Color(0xFFFFD700),
+    accentHovered: Color(0xFFFFFF66),
+    surface: Color(0xFF000000),
+    surfaceAlternate: Color(0xFF000000),
+    border: Color(0xFFFFFFFF),
+    foreground: Color(0xFFFFFFFF),
+    foregroundSecondary: Color(0xFFFFFFFF),
+    disabledForeground: Color(0xFF3FF23F),
+    disabledSurface: Color(0xFF000000),
+    focusRing: Color(0xFFFFFF00),
+    selection: Color(0xFF1AEBFF),
     colorScheme: ColorScheme.dark(
-      primary: 0xFFFFFF00,
-      onPrimary: 0xFF000000,
-      surface: 0xFF000000,
-      onSurface: 0xFFFFFFFF,
-      surfaceContainer: 0xFF000000,
-      outline: 0xFFFFFFFF,
+      primary: Color(0xFFFFFF00),
+      onPrimary: Color(0xFF000000),
+      surface: Color(0xFF000000),
+      onSurface: Color(0xFFFFFFFF),
+      surfaceContainer: Color(0xFF000000),
+      outline: Color(0xFFFFFFFF),
     ),
     highContrast: true,
     focusRingWidth: 3.0,

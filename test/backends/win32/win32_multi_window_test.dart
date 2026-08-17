@@ -21,6 +21,7 @@ import 'package:dart_ui/src/backends/win32/win32_cpu_presenter.dart';
 import 'package:dart_ui/src/backends/win32/win32_window.dart';
 import 'package:dart_ui/src/backends/win32/win32_window_class.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/graphics/color.dart';
 import 'package:dart_ui/src/platform/native_window.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:dart_ui/src/widgets/basic.dart';
@@ -31,8 +32,8 @@ import 'package:test/test.dart';
 /// rather than written as a bare 1 in five places.
 const int _waActive = 1;
 
-const int _colourA = 0xFF3060A0;
-const int _colourB = 0xFFA06030;
+const Color _colourA = Color(0xFF3060A0);
+const Color _colourB = Color(0xFFA06030);
 
 void main() {
   group('two real Win32 windows in one application', () {

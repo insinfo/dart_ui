@@ -1,7 +1,13 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/pdf.dart';
+
+PdfDocument _parsePdfBytes(Uint8List bytes) => PdfDocument.fromBytes(bytes);
+
+Future<PdfDocument> _loadPdfPath(String path) async =>
+    PdfDocument.fromBytes(await File(path).readAsBytes());
 
 void main(List<String> arguments) {
   FrameworkFonts.install();
@@ -21,6 +27,7 @@ class PdfReaderDemoApp extends StatefulWidget {
 
 class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocusNode = FocusNode(debugLabel: 'PDF search');
   final PdfViewController _pdfController = PdfViewController(
     minimumZoom: 0.25,
     maximumZoom: 4,
@@ -38,28 +45,56 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
     _pdfController.addListener(_onReaderChanged);
     final String? initialPath = widget.initialPath;
     if (initialPath != null) {
-      try {
-        final File file = File(initialPath);
-        final PdfDocument document =
-            PdfDocument.fromBytes(file.readAsBytesSync());
-        _document = document;
-        _fileName = file.uri.pathSegments.last;
-        _status = 'Documento aberto. Clique com o botão direito para copiar.';
-        _pdfController.attachDocument(document);
-      } on Object catch (error) {
-        _error = 'Não foi possível abrir o PDF: $error';
-      }
+      _isLoading = true;
+      _openInitialPath(initialPath);
     }
   }
 
   @override
   void dispose() {
     _pdfController.removeListener(_onReaderChanged);
+    _searchFocusNode.dispose();
     super.dispose();
   }
 
   void _onReaderChanged(PdfViewState state) {
     if (mounted) setState(() {});
+  }
+
+  Future<void> _openInitialPath(String path) async {
+    try {
+      final PdfDocument document = await compute<String, PdfDocument>(
+        _loadPdfPath,
+        path,
+        debugLabel: 'dart_ui.pdf.load',
+      );
+      if (!mounted) return;
+      _showDocument(
+        document,
+        File(path).uri.pathSegments.last,
+      );
+    } on Object catch (error) {
+      _showLoadError(error);
+    }
+  }
+
+  void _showDocument(PdfDocument document, String fileName) {
+    if (!mounted) return;
+    setState(() {
+      _document = document;
+      _fileName = fileName;
+      _isLoading = false;
+      _status = 'Documento aberto. Arraste sobre o texto para selecioná-lo.';
+    });
+    _pdfController.attachDocument(document);
+  }
+
+  void _showLoadError(Object error) {
+    if (!mounted) return;
+    setState(() {
+      _isLoading = false;
+      _error = 'Não foi possível abrir o PDF: $error';
+    });
   }
 
   Future<void> _openPdf() async {
@@ -86,21 +121,15 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
         if (mounted) setState(() => _isLoading = false);
         return;
       }
-      final PdfDocument document = PdfDocument.fromBytes(selected.bytes);
+      final PdfDocument document = await compute<Uint8List, PdfDocument>(
+        _parsePdfBytes,
+        selected.bytes,
+        debugLabel: 'dart_ui.pdf.parse',
+      );
       if (!mounted) return;
-      setState(() {
-        _document = document;
-        _fileName = selected.name;
-        _isLoading = false;
-        _status = 'Documento aberto. Arraste sobre o texto para selecioná-lo.';
-      });
-      _pdfController.attachDocument(document);
+      _showDocument(document, selected.name);
     } on Object catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _isLoading = false;
-        _error = 'Não foi possível abrir o PDF: $error';
-      });
+      _showLoadError(error);
     }
   }
 
@@ -167,124 +196,144 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
         color: theme.colorScheme.surfaceContainer,
         child: Column(
           children: <Widget>[
-            DecoratedBox(
-              decoration: BoxDecoration(
-                color: theme.surfaceAlternate,
-                border: BoxBorder(color: theme.border, width: 1),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.all(10),
-                child: Column(
-                  children: <Widget>[
-                    Row(
-                      children: <Widget>[
-                        IconButton(
-                          icon: const Icon(Icons.folderOpen),
-                          tooltip: _isLoading ? 'Abrindo PDF' : 'Abrir PDF',
-                          onPressed: _isLoading ? null : _openPdf,
-                        ),
-                        const SizedBox(width: 12),
-                        IconButton(
-                          icon: const Icon(Icons.navigateBefore),
-                          tooltip: 'Página anterior',
-                          onPressed: document == null || reader.currentPage <= 1
-                              ? null
-                              : () => _pdfController
-                                  .goToPage(reader.currentPage - 1),
-                        ),
-                        const SizedBox(width: 6),
-                        SizedBox(
-                          width: 68,
-                          child: Center(
-                            child: Text(
-                              document == null
-                                  ? '- / -'
-                                  : '${reader.currentPage} / ${reader.pageCount}',
-                            ),
+            Toolbar(
+              showBorder: false,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: <Widget>[
+                  ToolbarGroup(
+                    children: <Widget>[
+                      IconButton(
+                        icon: const Icon(TablerIcons.folderOpen),
+                        tooltip: _isLoading ? 'Abrindo PDF' : 'Abrir PDF',
+                        onPressed: _isLoading ? null : _openPdf,
+                      ),
+                    ],
+                  ),
+                  const ToolbarDivider(),
+                  ToolbarGroup(
+                    spacing: 2,
+                    children: <Widget>[
+                      IconButton(
+                        icon: const Icon(TablerIcons.chevronLeft),
+                        tooltip: 'Página anterior',
+                        onPressed: document == null || reader.currentPage <= 1
+                            ? null
+                            : () =>
+                                _pdfController.goToPage(reader.currentPage - 1),
+                      ),
+                      SizedBox(
+                        width: 72,
+                        height: 40,
+                        child: Center(
+                          child: Text(
+                            document == null
+                                ? '- / -'
+                                : '${reader.currentPage} / ${reader.pageCount}',
                           ),
                         ),
-                        const SizedBox(width: 6),
-                        IconButton(
-                          icon: const Icon(Icons.navigateNext),
-                          tooltip: 'Próxima página',
-                          onPressed: document == null ||
-                                  reader.currentPage >= reader.pageCount
-                              ? null
-                              : () => _pdfController
-                                  .goToPage(reader.currentPage + 1),
-                        ),
-                        const SizedBox(width: 12),
-                        IconButton(
-                          icon: const Icon(Icons.zoomOut),
-                          tooltip: 'Reduzir zoom',
-                          onPressed:
-                              document == null ? null : _pdfController.zoomOut,
-                        ),
-                        const SizedBox(width: 6),
-                        Button(
+                      ),
+                      IconButton(
+                        icon: const Icon(TablerIcons.chevronRight),
+                        tooltip: 'Próxima página',
+                        onPressed: document == null ||
+                                reader.currentPage >= reader.pageCount
+                            ? null
+                            : () =>
+                                _pdfController.goToPage(reader.currentPage + 1),
+                      ),
+                    ],
+                  ),
+                  const ToolbarDivider(),
+                  ToolbarGroup(
+                    spacing: 4,
+                    children: <Widget>[
+                      IconButton(
+                        icon: const Icon(TablerIcons.zoomOut),
+                        tooltip: 'Reduzir zoom',
+                        onPressed:
+                            document == null ? null : _pdfController.zoomOut,
+                      ),
+                      SizedBox(
+                        width: 72,
+                        height: 40,
+                        child: Button(
                           label: '${(reader.zoom * 100).round()}%',
                           onPressed: document == null
                               ? null
                               : _pdfController.resetZoom,
                         ),
-                        const SizedBox(width: 6),
-                        IconButton(
-                          icon: const Icon(Icons.zoomIn),
-                          tooltip: 'Aumentar zoom',
-                          onPressed:
-                              document == null ? null : _pdfController.zoomIn,
-                        ),
-                        const SizedBox(width: 12),
-                        IconButton(
-                          icon: const Icon(Icons.fitScreen),
-                          tooltip: 'Ajustar à largura',
-                          onPressed: document == null ? null : _fitWidth,
-                        ),
-                        const SizedBox(width: 6),
-                        Button(
+                      ),
+                      IconButton(
+                        icon: const Icon(TablerIcons.zoomIn),
+                        tooltip: 'Aumentar zoom',
+                        onPressed:
+                            document == null ? null : _pdfController.zoomIn,
+                      ),
+                    ],
+                  ),
+                  const ToolbarDivider(),
+                  ToolbarGroup(
+                    spacing: 4,
+                    children: <Widget>[
+                      IconButton(
+                        icon: const Icon(TablerIcons.arrowsMaximize),
+                        tooltip: 'Ajustar à largura',
+                        onPressed: document == null ? null : _fitWidth,
+                      ),
+                      SizedBox(
+                        width: 76,
+                        height: 40,
+                        child: Button(
                           label: 'Página',
                           onPressed: document == null ? null : _fitPage,
                         ),
-                        const Spacer(),
-                        IconButton(
-                          icon: Icon(
-                            _darkMode ? Icons.lightMode : Icons.darkMode,
-                          ),
-                          tooltip: _darkMode ? 'Modo claro' : 'Modo escuro',
-                          onPressed: () => setState(() {
-                            _darkMode = !_darkMode;
-                          }),
-                        ),
-                      ],
+                      ),
+                    ],
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: Icon(
+                      _darkMode ? TablerIcons.sun : TablerIcons.moon,
                     ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: <Widget>[
-                        const Text('Localizar:'),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: TextField(controller: _searchController),
-                        ),
-                        const SizedBox(width: 6),
-                        IconButton(
-                          icon: const Icon(Icons.search),
-                          tooltip: reader.searchMatch == null
-                              ? 'Buscar'
-                              : 'Próxima ocorrência',
-                          onPressed: document == null ? null : _onSearch,
-                        ),
-                        const SizedBox(width: 6),
-                        IconButton(
-                          icon: const Icon(Icons.contentCopy),
-                          tooltip: 'Copiar seleção',
-                          onPressed: _pdfController.hasSelection
-                              ? _copySelection
-                              : null,
-                        ),
-                      ],
+                    tooltip: _darkMode ? 'Modo claro' : 'Modo escuro',
+                    onPressed: () => setState(() {
+                      _darkMode = !_darkMode;
+                    }),
+                  ),
+                ],
+              ),
+            ),
+            Toolbar(
+              height: 54,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: <Widget>[
+                  const Text('Localizar:'),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: TextField(
+                      controller: _searchController,
+                      focusNode: _searchFocusNode,
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(width: 6),
+                  IconButton(
+                    icon: const Icon(TablerIcons.search),
+                    tooltip: reader.searchMatch == null
+                        ? 'Buscar'
+                        : 'Próxima ocorrência',
+                    onPressed: document == null ? null : _onSearch,
+                  ),
+                  const SizedBox(width: 2),
+                  IconButton(
+                    icon: const Icon(TablerIcons.copy),
+                    tooltip: 'Copiar seleção',
+                    onPressed:
+                        _pdfController.hasSelection ? _copySelection : null,
+                  ),
+                ],
               ),
             ),
             ColoredBox(
@@ -292,9 +341,9 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
               child: Padding(
                 padding: const EdgeInsets.only(
                   left: 12,
-                  top: 7,
+                  top: 8,
                   right: 12,
-                  bottom: 7,
+                  bottom: 8,
                 ),
                 child: Row(
                   children: <Widget>[
@@ -303,9 +352,20 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                         _fileName == null
                             ? 'Leitor PDF'
                             : '$_fileName  •  ${document?.pageCount ?? 0} páginas',
+                        style: theme.textTheme.bodyMedium.copyWith(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                     ),
-                    if (_status != null) Text(_status!),
+                    if (_status != null)
+                      Text(
+                        _status!,
+                        style: TextStyle(
+                          color: theme.foregroundSecondary,
+                          fontSize: 13,
+                        ),
+                      ),
                   ],
                 ),
               ),
@@ -369,6 +429,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
       pageSpacing: 20,
       enableTextSelection: true,
       enablePinchZoom: true,
+      onTextSelectionStarted: _searchFocusNode.unfocus,
       backgroundColor: theme.colorScheme.surfaceContainer,
     );
   }

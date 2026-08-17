@@ -16,6 +16,7 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
@@ -28,6 +29,7 @@ import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
 import 'menu.dart';
+import 'scrollbar.dart';
 import 'semantics.dart';
 import 'style.dart';
 import 'theme.dart';
@@ -199,7 +201,7 @@ final class RenderButton extends RenderBox with ControlBehavior {
       list,
       _label,
       rect,
-      enabled ? theme.surfaceAlternate : theme.disabledForeground,
+      enabled ? theme.colorScheme.onPrimary : theme.disabledForeground,
     );
     paintFocusRing(list, rect);
   }
@@ -400,7 +402,7 @@ final class RenderToggle extends RenderBox with ControlBehavior {
           rect,
           _value ? surfaceColor(normal: theme.accentPressed) : surfaceColor(),
         );
-        paintCenteredLabel(list, _label, rect, theme.surfaceAlternate);
+        paintCenteredLabel(list, _label, rect, theme.colorScheme.onPrimary);
         paintFocusRing(list, rect);
       case ToggleStyle.checkBox:
         _paintIndicator(list, rect, square: true);
@@ -433,7 +435,7 @@ final class RenderToggle extends RenderBox with ControlBehavior {
         enabled ? theme.accent : theme.disabledForeground,
       );
     } else if (_value) {
-      final int mark = enabled ? theme.accent : theme.disabledForeground;
+      final Color mark = enabled ? theme.accent : theme.disabledForeground;
       if (square) {
         paintFill(
           list,
@@ -1078,10 +1080,13 @@ final class _ScrollViewerState extends State<ScrollViewer> {
       widget.controller ?? ScrollPosition(axis: widget.axis);
 
   @override
-  Widget build(BuildContext context) => _ScrollViewerRenderWidget(
+  Widget build(BuildContext context) => Scrollbar(
         position: _position,
-        theme: Theme.of(context),
-        child: widget.child,
+        child: _ScrollViewerRenderWidget(
+          position: _position,
+          theme: Theme.of(context),
+          child: widget.child,
+        ),
       );
 }
 
@@ -1113,8 +1118,6 @@ final class _ScrollViewerRenderWidget extends SingleChildRenderObjectWidget {
 /// A viewport that also handles wheel, keyboard and scrollbar painting.
 final class RenderScrollViewer extends RenderViewport with ControlBehavior {
   RenderScrollViewer({required super.position, super.child});
-
-  static const double scrollbarThickness = 8.0;
 
   @override
   bool get focusOnPointerDown => false;
@@ -1155,33 +1158,6 @@ final class RenderScrollViewer extends RenderViewport with ControlBehavior {
 
   @override
   bool hitTestSelf(Offset position) => true;
-
-  @override
-  void paint(DisplayList list, Offset offset) {
-    super.paint(list, offset);
-    final ({double start, double extent})? thumb = position.thumb;
-    if (thumb == null) return;
-    final bool vertical = position.axis == ScrollAxis.vertical;
-    final double trackExtent = vertical ? size.height : size.width;
-    final Rect track = vertical
-        ? Rect.fromLTWH(offset.dx + size.width - scrollbarThickness, offset.dy,
-            scrollbarThickness, size.height)
-        : Rect.fromLTWH(offset.dx, offset.dy + size.height - scrollbarThickness,
-            size.width, scrollbarThickness);
-    paintFill(list, track, theme.surface);
-    final double thumbStart = (thumb.start * trackExtent).roundToDouble();
-    final double thumbExtent =
-        (thumb.extent * trackExtent).clamp(12.0, trackExtent);
-    paintFill(
-      list,
-      vertical
-          ? Rect.fromLTWH(track.left, track.top + thumbStart,
-              scrollbarThickness, thumbExtent)
-          : Rect.fromLTWH(track.left + thumbStart, track.top, thumbExtent,
-              scrollbarThickness),
-      isHovered ? theme.accentHovered : theme.foregroundSecondary,
-    );
-  }
 
   @override
   SemanticsConfiguration describeSemantics() => SemanticsConfiguration(
@@ -1321,7 +1297,7 @@ final class RenderDialog extends RenderSingleChildBox with ControlBehavior {
         rect.left + 4,
         (titleBar.top + (titleBarHeight - labelLineHeight) / 2).roundToDouble(),
       ),
-      theme.surfaceAlternate,
+      theme.colorScheme.onPrimary,
       maxWidth: rect.width - 8,
     );
     super.paint(list, offset);

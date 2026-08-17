@@ -48,7 +48,7 @@ void main() {
 
       expect(cdrView.document, equals(cdrDoc));
       expect(cdrView.enablePanZoom, isTrue);
-      expect(cdrView.backgroundColor, equals(0xFFFFFFFF));
+      expect(cdrView.backgroundColor, equals(const Color(0xFFFFFFFF)));
 
       final owner = _mount(cdrView);
       addTearDown(owner.dispose);

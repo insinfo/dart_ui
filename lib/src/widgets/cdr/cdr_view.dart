@@ -1,4 +1,5 @@
 import '../../cdr/document/cdr_document.dart';
+import '../../graphics/color.dart';
 import '../basic.dart';
 import '../proxy.dart';
 import '../widget.dart';
@@ -6,13 +7,13 @@ import '../widget.dart';
 class CdrView extends StatelessWidget {
   final CdrDocument document;
   final bool enablePanZoom;
-  final int backgroundColor;
+  final Color backgroundColor;
 
   const CdrView({
     super.key,
     required this.document,
     this.enablePanZoom = true,
-    this.backgroundColor = 0xFFFFFFFF,
+    this.backgroundColor = const Color(0xFFFFFFFF),
   });
 
   @override

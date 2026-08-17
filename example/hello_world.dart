@@ -28,7 +28,7 @@ final class _HelloWorldAppState extends State<HelloWorldApp> {
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: 0xFFF4F6F8,
+        color: const Color(0xFFF4F6F8),
       child: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,

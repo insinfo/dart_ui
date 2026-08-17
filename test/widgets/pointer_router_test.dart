@@ -9,7 +9,7 @@ void main() {
       owner.updateRoot(
         GestureDetector(
           onTap: () => taps++,
-          child: const ColoredBox(color: 1),
+          child: const ColoredBox(color: Color(1)),
         ),
       );
       owner.pipelineOwner.flushLayout();
@@ -26,7 +26,7 @@ void main() {
       owner.updateRoot(
         GestureDetector(
           onTap: () => taps++,
-          child: const ColoredBox(color: 1),
+          child: const ColoredBox(color: Color(1)),
         ),
       );
       owner.pipelineOwner.flushLayout();
@@ -42,7 +42,7 @@ void main() {
       owner.updateRoot(
         GestureDetector(
           onTap: () => taps++,
-          child: const ColoredBox(color: 1),
+          child: const ColoredBox(color: Color(1)),
         ),
       );
       owner.pipelineOwner.flushLayout();
@@ -65,7 +65,7 @@ void main() {
       owner.updateRoot(
         GestureDetector(
           onTap: () => taps++,
-          child: const ColoredBox(color: 1),
+          child: const ColoredBox(color: Color(1)),
         ),
       );
       owner.pipelineOwner.flushLayout();
@@ -86,7 +86,7 @@ void main() {
           onTap: () => calls.add('outer'),
           child: GestureDetector(
             onTap: () => calls.add('inner'),
-            child: const ColoredBox(color: 1),
+            child: const ColoredBox(color: Color(1)),
           ),
         ),
       );
@@ -104,14 +104,14 @@ void main() {
       owner.updateRoot(
         GestureDetector(
           onTap: () => calls.add('old'),
-          child: const ColoredBox(color: 1),
+          child: const ColoredBox(color: Color(1)),
         ),
       );
       final RenderBox renderObject = owner.renderRoot!;
       owner.updateRoot(
         GestureDetector(
           onTap: () => calls.add('new'),
-          child: const ColoredBox(color: 2),
+          child: const ColoredBox(color: Color(2)),
         ),
       );
       owner.pipelineOwner.flushLayout();
@@ -121,6 +121,41 @@ void main() {
 
       expect(owner.renderRoot, same(renderObject));
       expect(calls, <String>['new']);
+    });
+
+    test('moving between sibling controls clears the previous hover', () {
+      final BuildOwner owner = BuildOwner(
+        pipelineOwner: PipelineOwner(
+          rootConstraints: BoxConstraints.tight(const Size(80, 40)),
+        ),
+      );
+      addTearDown(owner.dispose);
+      owner.updateRoot(Row(
+        children: <Widget>[
+          IconButton(icon: const Icon(Icons.search), onPressed: () {}),
+          IconButton(icon: const Icon(Icons.close), onPressed: () {}),
+        ],
+      ));
+      owner.pipelineOwner.flushLayout();
+      final List<RenderIconButton> buttons = <RenderIconButton>[];
+      void collect(RenderBox node) {
+        if (node is RenderIconButton) buttons.add(node);
+        node.visitChildren(collect);
+      }
+
+      collect(owner.renderRoot!);
+      expect(buttons, hasLength(2));
+
+      owner.dispatchPointerEvent(_move(const Offset(20, 20)));
+      expect(buttons[0].isHovered, isTrue);
+      expect(buttons[1].isHovered, isFalse);
+
+      owner.dispatchPointerEvent(_move(const Offset(60, 20)));
+      expect(buttons[0].isHovered, isFalse);
+      expect(buttons[1].isHovered, isTrue);
+
+      owner.clearPointerHover();
+      expect(buttons[1].isHovered, isFalse);
     });
   });
 }
@@ -159,4 +194,14 @@ PointerUpEvent _up(
       kind: PointerKind.mouse,
       logicalPosition: position,
       button: button,
+    );
+
+PointerMoveEvent _move(Offset position, {int pointerId = 0}) =>
+    PointerMoveEvent(
+      windowId: const NativeWindowId(1),
+      generation: 1,
+      timestamp: Duration.zero,
+      pointerId: pointerId,
+      kind: PointerKind.mouse,
+      logicalPosition: position,
     );

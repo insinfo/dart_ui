@@ -471,7 +471,7 @@ final class SingleChildScrollView extends StatefulWidget {
     this.axis = ScrollAxis.vertical,
     this.controller,
     this.scrollbar = ScrollbarVisibility.always,
-    this.scrollbarThickness = 8.0,
+    this.scrollbarThickness,
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.dispatcher,
@@ -485,7 +485,7 @@ final class SingleChildScrollView extends StatefulWidget {
   final ScrollPosition? controller;
 
   final ScrollbarVisibility scrollbar;
-  final double scrollbarThickness;
+  final double? scrollbarThickness;
   final bool dragEnabled;
   final bool mouseDragEnabled;
   final UiDispatcher? dispatcher;
@@ -557,7 +557,7 @@ final class ListView extends StatefulWidget {
     this.controller,
     this.axis = ScrollAxis.vertical,
     this.scrollbar = ScrollbarVisibility.always,
-    this.scrollbarThickness = 8.0,
+    this.scrollbarThickness,
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.dispatcher,
@@ -574,7 +574,7 @@ final class ListView extends StatefulWidget {
     this.controller,
     this.axis = ScrollAxis.vertical,
     this.scrollbar = ScrollbarVisibility.always,
-    this.scrollbarThickness = 8.0,
+    this.scrollbarThickness,
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.dispatcher,
@@ -612,7 +612,7 @@ final class ListView extends StatefulWidget {
   final ScrollPosition? controller;
   final ScrollAxis axis;
   final ScrollbarVisibility scrollbar;
-  final double scrollbarThickness;
+  final double? scrollbarThickness;
   final bool dragEnabled;
   final bool mouseDragEnabled;
   final UiDispatcher? dispatcher;

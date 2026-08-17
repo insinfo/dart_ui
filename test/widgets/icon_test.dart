@@ -17,6 +17,7 @@ import 'dart:io';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/graphics/color.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/layout/box_constraints.dart';
 import 'package:dart_ui/src/layout/pipeline.dart';
@@ -24,6 +25,7 @@ import 'package:dart_ui/src/layout/render_box.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/text/font_registry.dart';
+import 'package:dart_ui/src/rendering/text/framework_fonts.dart';
 import 'package:dart_ui/src/rendering/text/glyph_cache.dart';
 import 'package:dart_ui/src/text/shaper.dart';
 import 'package:dart_ui/src/text/typeface.dart';
@@ -137,6 +139,8 @@ void main() {
         family: 'DejaVuIcons',
         source: 'dejavu-icons',
       );
+    final FrameworkFontLoadResult bundled = FrameworkFonts.install();
+    expect(bundled.tablerIconFontLoaded, isTrue);
   });
   tearDownAll(FontRegistry.instance.reset);
 
@@ -219,10 +223,32 @@ void main() {
     });
   });
 
+  group('bundled icon optical alignment', () {
+    test('Tabler ink is centred inside the declared square', () {
+      for (final IconData icon in <IconData>[
+        TablerIcons.folderOpen,
+        TablerIcons.search,
+        TablerIcons.sun,
+        TablerIcons.zoomIn,
+      ]) {
+        final Framebuffer surface = _render(
+          Icon(icon, size: 20, color: const Color(0xFF000000)),
+          const Size(20, 20),
+        );
+        final Rect? ink = _inkBounds(surface);
+        expect(ink, isNotNull, reason: '$icon must be present in the font');
+        expect(ink!.center.dx, closeTo(10, 1), reason: '$icon horizontally');
+        expect(ink.center.dy, closeTo(10, 1), reason: '$icon vertically');
+      }
+    });
+  });
+
   group('the glyph route, in exact pixels', () {
     test('Ahem at 40 fills its box precisely and nothing outside it', () {
       final Framebuffer surface = _render(
-          const Icon(block, size: 40, color: 0xFF000000), const Size(40, 40));
+        const Icon(block, size: 40, color: Color(0xFF000000)),
+        const Size(40, 40),
+      );
 
       expect(_inkBounds(surface), const Rect.fromLTRB(0, 0, 40, 40));
       // Every pixel, not just the bounds: Ahem's box is pixel aligned here, so
@@ -237,7 +263,7 @@ void main() {
     test('the icon is centred in a box larger than it', () {
       final Framebuffer surface = _render(
         const Align(
-          child: Icon(block, size: 20, color: 0xFF000000),
+          child: Icon(block, size: 20, color: Color(0xFF000000)),
         ),
         const Size(60, 60),
       );
@@ -250,7 +276,7 @@ void main() {
       // the bottom eight rows and nothing above them. A baseline computed from
       // the top of the box, or with the ascent added twice, moves this.
       final Framebuffer surface = _render(
-        const Icon(descender, size: 40, color: 0xFF000000),
+        const Icon(descender, size: 40, color: Color(0xFF000000)),
         const Size(40, 40),
       );
       expect(_inkBounds(surface), const Rect.fromLTRB(0, 32, 40, 40));
@@ -273,14 +299,14 @@ void main() {
     test('the colour is the paint\'s, so one cached mask serves every theme',
         () {
       final Framebuffer red = _render(
-        const Icon(block, size: 8, color: 0xFFFF0000),
+        const Icon(block, size: 8, color: Color(0xFFFF0000)),
         const Size(8, 8),
       );
       expect(_redAt(red, 4, 4), 255);
       expect(_blueAt(red, 4, 4), 0);
 
       final Framebuffer blue = _render(
-        const Icon(block, size: 8, color: 0xFF0000FF),
+        const Icon(block, size: 8, color: Color(0xFF0000FF)),
         const Size(8, 8),
       );
       expect(_redAt(blue, 4, 4), 0);
@@ -289,7 +315,7 @@ void main() {
 
     test('a fully transparent icon draws nothing at all', () {
       final Framebuffer surface = _render(
-        const Icon(block, size: 20, color: 0x00000000),
+        const Icon(block, size: 20, color: Color(0x00000000)),
         const Size(20, 20),
       );
       expect(_inkBounds(surface), isNull);
@@ -297,7 +323,7 @@ void main() {
 
     test('half alpha composites, it does not replace', () {
       final Framebuffer surface = _render(
-        const Icon(block, size: 8, color: 0x80000000),
+        const Icon(block, size: 8, color: Color(0x80000000)),
         const Size(8, 8),
       );
       // Black at alpha 128 over white: 0 + mul255(255, 127) = 127.
@@ -380,7 +406,7 @@ void main() {
         const Icon(
           arrow,
           size: 40,
-          color: 0xFF000000,
+          color: Color(0xFF000000),
           textDirection: TextDirection.leftToRight,
         ),
         box,
@@ -389,7 +415,7 @@ void main() {
         const Icon(
           arrow,
           size: 40,
-          color: 0xFF000000,
+          color: Color(0xFF000000),
           textDirection: TextDirection.rightToLeft,
         ),
         box,
@@ -415,7 +441,7 @@ void main() {
         const Icon(
           fixedArrow,
           size: 40,
-          color: 0xFF000000,
+          color: Color(0xFF000000),
           textDirection: TextDirection.leftToRight,
         ),
         const Size(40, 40),
@@ -424,7 +450,7 @@ void main() {
         const Icon(
           fixedArrow,
           size: 40,
-          color: 0xFF000000,
+          color: Color(0xFF000000),
           textDirection: TextDirection.rightToLeft,
         ),
         const Size(40, 40),
@@ -439,7 +465,7 @@ void main() {
       // non-mirroring one would show up as a jitter when a control switched.
       final Rect? glyphRoute = _inkBounds(
         _render(
-          const Icon(fixedArrow, size: 40, color: 0xFF000000),
+          const Icon(fixedArrow, size: 40, color: Color(0xFF000000)),
           const Size(40, 40),
         ),
       );
@@ -448,7 +474,7 @@ void main() {
           const Icon(
             arrow,
             size: 40,
-            color: 0xFF000000,
+            color: Color(0xFF000000),
             textDirection: TextDirection.leftToRight,
           ),
           const Size(40, 40),
@@ -467,14 +493,14 @@ void main() {
       final Framebuffer ltr = _render(
         const Directionality(
           textDirection: TextDirection.leftToRight,
-          child: Icon(arrow, size: 40, color: 0xFF000000),
+          child: Icon(arrow, size: 40, color: Color(0xFF000000)),
         ),
         const Size(40, 40),
       );
       final Framebuffer rtl = _render(
         const Directionality(
           textDirection: TextDirection.rightToLeft,
-          child: Icon(arrow, size: 40, color: 0xFF000000),
+          child: Icon(arrow, size: 40, color: Color(0xFF000000)),
         ),
         const Size(40, 40),
       );
@@ -494,7 +520,7 @@ void main() {
           child: Icon(
             arrow,
             size: 40,
-            color: 0xFF000000,
+            color: Color(0xFF000000),
             textDirection: TextDirection.leftToRight,
           ),
         ),
@@ -504,7 +530,7 @@ void main() {
         const Icon(
           arrow,
           size: 40,
-          color: 0xFF000000,
+          color: Color(0xFF000000),
           textDirection: TextDirection.leftToRight,
         ),
         const Size(40, 40),
@@ -519,7 +545,7 @@ void main() {
       expect(
         _inkBounds(
           _render(
-            const Icon(block, size: 20, color: 0xFF000000),
+            const Icon(block, size: 20, color: Color(0xFF000000)),
             const Size(20, 20),
           ),
         ),

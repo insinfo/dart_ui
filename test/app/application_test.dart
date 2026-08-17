@@ -20,8 +20,8 @@ import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
 
 /// Opaque BGRA, packed the way `clearColor` and `ColoredBox` both take it.
-const int _background = 0xFF102030;
-const int _foreground = 0xFFCC4400;
+const Color _background = Color(0xFF102030);
+const Color _foreground = Color(0xFFCC4400);
 
 void main() {
   group('runApp produces pixels', () {
@@ -41,11 +41,11 @@ void main() {
       // the corners and the middle are each exactly one known colour. Reading
       // bytes rather than a checksum: a checksum that changed would say only
       // that something moved.
-      expect(_pixelAt(framebuffer, 0, 0), _background);
-      expect(_pixelAt(framebuffer, 7, 5), _background);
-      expect(_pixelAt(framebuffer, 1, 1), _background);
-      expect(_pixelAt(framebuffer, 2, 2), _foreground);
-      expect(_pixelAt(framebuffer, 5, 3), _foreground);
+      expect(_pixelAt(framebuffer, 0, 0), _background.value);
+      expect(_pixelAt(framebuffer, 7, 5), _background.value);
+      expect(_pixelAt(framebuffer, 1, 1), _background.value);
+      expect(_pixelAt(framebuffer, 2, 2), _foreground.value);
+      expect(_pixelAt(framebuffer, 5, 3), _foreground.value);
 
       application.dispose();
       await application.closed;
@@ -84,6 +84,30 @@ void main() {
       expect(application.statistics.count, 3);
       expect(application.state, ApplicationLifecycleState.closing);
 
+      application.dispose();
+      await application.closed;
+    });
+
+    test('indeterminate progress wakes and advances the native frame loop',
+        () async {
+      final application = await _start(
+        size: const Size(64, 64),
+        root: const Center(child: CircularProgressIndicator()),
+      );
+      await application.drawFrame();
+      final RenderProgressIndicator progress =
+          _findRender<RenderProgressIndicator>(
+              application.buildOwner.renderRoot!);
+      expect(progress.animationValue, 0);
+
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      expect(application.needsFrame, isTrue);
+      await application.drawPendingFrames();
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      expect(application.needsFrame, isTrue);
+      await application.drawPendingFrames();
+
+      expect(progress.animationValue, greaterThan(0));
       application.dispose();
       await application.closed;
     });
@@ -127,8 +151,8 @@ void main() {
       final framebuffer = _framebufferOf(application);
       expect(framebuffer.width, 20);
       expect(framebuffer.height, 10);
-      expect(_pixelAt(framebuffer, 0, 0), _background);
-      expect(_pixelAt(framebuffer, 10, 5), _foreground);
+      expect(_pixelAt(framebuffer, 0, 0), _background.value);
+      expect(_pixelAt(framebuffer, 10, 5), _foreground.value);
       expect(application.framesPresented, 2);
 
       application.dispose();
@@ -193,8 +217,8 @@ void main() {
       expect(framebuffer.height, 12);
       // The 2px logical border is now 4 device pixels, so what was foreground
       // at logical (2,2) is at device (4,4) and device (3,3) is still border.
-      expect(_pixelAt(framebuffer, 3, 3), _background);
-      expect(_pixelAt(framebuffer, 4, 4), _foreground);
+      expect(_pixelAt(framebuffer, 3, 3), _background.value);
+      expect(_pixelAt(framebuffer, 4, 4), _foreground.value);
 
       application.dispose();
       await application.closed;
@@ -578,6 +602,18 @@ Framebuffer _framebufferOf(Application application) =>
     ((application.host.presenter as RenderTargetPresenter).target
             as MemoryRenderTarget)
         .framebuffer;
+
+T _findRender<T extends RenderBox>(RenderBox root) {
+  T? result;
+  void visit(RenderBox node) {
+    if (node is T) result ??= node;
+    if (result == null) node.visitChildren(visit);
+  }
+
+  visit(root);
+  if (result == null) throw StateError('$T not found');
+  return result!;
+}
 
 /// The pixel at [x],[y] as packed ARGB, from the BGRA byte order the
 /// framebuffer stores.

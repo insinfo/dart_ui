@@ -166,7 +166,7 @@ void main() {
     if (!Platform.isWindows) return;
 
     final Application application = await Application.start(
-      rootWidget: const ColoredBox(color: 0xFF123456),
+        rootWidget: const ColoredBox(color: Color(0xFF123456)),
       backends: PlatformBackendResolver.defaultBackends(),
       presentations: PlatformBackendResolver.defaultPresentations(),
       options: const ApplicationOptions(size: Size(64, 48)),
@@ -216,6 +216,6 @@ final class _AmbientProbe extends StatelessWidget {
       media: MediaQuery.of(context),
       focusScope: FocusScope.of(context),
     ));
-    return const ColoredBox(color: 0xFF102030);
+    return const ColoredBox(color: Color(0xFF102030));
   }
 }

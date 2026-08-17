@@ -10,10 +10,14 @@ export 'framework_fonts_base.dart' show FrameworkFontLoadResult;
 /// Web implementation. Network assets are asynchronous, so callers fetch the
 /// two packaged files and pass their bytes to [installFromBytes].
 abstract final class FrameworkFonts {
-  static const String uiFamily = 'Roboto';
-  static const String iconFamily = 'Material Icons';
-  static const String uiFileName = 'Roboto-Regular.ttf';
+  static const String uiFamily = 'Inter';
+  static const String iconFamily = 'Tabler Icons';
+  static const String materialIconFamily = 'Material Icons';
+  static const String uiFileName = 'Inter-Regular.ttf';
+  static const String uiMediumFileName = 'Inter-Medium.ttf';
+  static const String uiSemiBoldFileName = 'Inter-SemiBold.ttf';
   static const String iconFileName = 'MaterialIcons-Regular.ttf';
+  static const String tablerIconFileName = 'TablerIcons.ttf';
 
   static FrameworkFontLoadResult install({
     String? assetDirectory,
@@ -28,12 +32,18 @@ abstract final class FrameworkFonts {
   static FrameworkFontLoadResult installFromBytes({
     required Uint8List uiFont,
     required Uint8List iconFont,
+    Uint8List? uiMediumFont,
+    Uint8List? uiSemiBoldFont,
+    Uint8List? tablerIconFont,
     FontRegistry? registry,
     String? source,
   }) =>
       installFrameworkFontBytes(
         uiFont: uiFont,
         iconFont: iconFont,
+        uiMediumFont: uiMediumFont,
+        uiSemiBoldFont: uiSemiBoldFont,
+        tablerIconFont: tablerIconFont,
         registry: registry ?? FontRegistry.instance,
         source: source,
       );

@@ -16,6 +16,7 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../graphics/display_list_opcodes.dart' show paintStyleStroke;
@@ -33,7 +34,11 @@ import 'theme.dart';
 
 /// Behaviour shared by controls: states, activation, focus and painting.
 mixin ControlBehavior on RenderBox
-    implements PointerEventTarget, KeyboardEventTarget, SemanticsProvider {
+    implements
+        PointerEventTarget,
+        HoverEventTarget,
+        KeyboardEventTarget,
+        SemanticsProvider {
   ThemeData _theme = ThemeData.neutralLight;
   FocusNode? _focusNode;
   bool _enabled = true;
@@ -227,6 +232,9 @@ mixin ControlBehavior on RenderBox
   /// this, and a router that does not simply never clears hover.
   void clearHover() => _setHovered(false);
 
+  @override
+  void handleHoverChanged(bool hovered) => _setHovered(enabled && hovered);
+
   void _setHovered(bool value) {
     if (value == _hovered) return;
     _hovered = value;
@@ -246,7 +254,7 @@ mixin ControlBehavior on RenderBox
   // ---------------------------------------------------------------------
 
   /// The control's background for its current state.
-  int surfaceColor({int? normal, int? hovered, int? pressed}) {
+  Color surfaceColor({Color? normal, Color? hovered, Color? pressed}) {
     if (!_enabled) return _theme.disabledSurface;
     if (_pressed) return pressed ?? _theme.accentPressed;
     if (_hovered) return hovered ?? _theme.accentHovered;
@@ -254,12 +262,12 @@ mixin ControlBehavior on RenderBox
   }
 
   /// The control's text colour for its current state.
-  int foregroundColor({int? normal}) =>
+  Color foregroundColor({Color? normal}) =>
       _enabled ? (normal ?? _theme.foreground) : _theme.disabledForeground;
 
   /// Fills [rect] with [color].
-  void paintFill(DisplayList list, Rect rect, int color) {
-    final int paint = list.addPaint(colorArgb: color, antiAlias: false);
+  void paintFill(DisplayList list, Rect rect, Color color) {
+    final int paint = list.addPaint(colorArgb: color.value, antiAlias: false);
     list.drawRectangle(rect, paint);
   }
 
@@ -267,7 +275,7 @@ mixin ControlBehavior on RenderBox
   void paintRoundedFill(
     DisplayList list,
     Rect rect,
-    int color,
+    Color color,
     double radius,
   ) {
     if (radius <= 0) {
@@ -281,14 +289,14 @@ mixin ControlBehavior on RenderBox
       rect.bottom,
       radius,
       radius,
-      list.addPaint(colorArgb: color, antiAlias: true),
+      list.addPaint(colorArgb: color.value, antiAlias: true),
     );
   }
 
   void paintRoundedBorder(
     DisplayList list,
     Rect rect,
-    int color,
+    Color color,
     double radius, {
     double width = 1,
   }) {
@@ -305,7 +313,7 @@ mixin ControlBehavior on RenderBox
       radius,
       radius,
       list.addPaint(
-        colorArgb: color,
+        colorArgb: color.value,
         style: paintStyleStroke,
         strokeWidth: width,
         antiAlias: true,
@@ -318,8 +326,9 @@ mixin ControlBehavior on RenderBox
   /// Four fills rather than a stroked rect: the display list's stroke path is
   /// still the rasterizer's concern, and a border must land on exact pixels or
   /// a golden test becomes a comparison of antialiasing.
-  void paintBorder(DisplayList list, Rect rect, int color, {double width = 1}) {
-    final int paint = list.addPaint(colorArgb: color, antiAlias: false);
+  void paintBorder(DisplayList list, Rect rect, Color color,
+      {double width = 1}) {
+    final int paint = list.addPaint(colorArgb: color.value, antiAlias: false);
     list
       ..drawRectangle(
           Rect.fromLTWH(rect.left, rect.top, rect.width, width), paint)
@@ -397,7 +406,7 @@ mixin ControlBehavior on RenderBox
     DisplayList list,
     String text,
     Offset origin,
-    int color, {
+    Color color, {
     double maxWidth = double.infinity,
   }) {
     if (text.isEmpty) return;
@@ -406,7 +415,7 @@ mixin ControlBehavior on RenderBox
     // Antialiased: a glyph reaches the rasterizer as a coverage mask either
     // way, and recording the paint as hard-edged would mislead any backend
     // that does honour the flag.
-    final int paint = list.addPaint(colorArgb: color, antiAlias: true);
+    final int paint = list.addPaint(colorArgb: color.value, antiAlias: true);
     // Shaped once and then both measured and drawn from that one run: shaping
     // to decide whether to clip and shaping again to draw would double the
     // cost of every label on screen.
@@ -442,7 +451,7 @@ mixin ControlBehavior on RenderBox
     DisplayList list,
     String text,
     Rect rect,
-    int color,
+    Color color,
   ) {
     if (text.isEmpty) return;
     final Size box = measureLabel(text);
@@ -515,26 +524,27 @@ mixin ControlBehavior on RenderBox
   }
 }
 
-/// Lightens or darkens a 0xAARRGGBB colour by [amount] per channel.
-int adjustColor(int color, int amount) {
-  int channel(int shift) => (((color >> shift) & 0xFF) + amount).clamp(0, 255);
-  return (color & 0xFF000000) |
+/// Lightens or darkens [color] by [amount] per channel.
+Color adjustColor(Color color, int amount) {
+  final int value = color.value;
+  int channel(int shift) => (((value >> shift) & 0xFF) + amount).clamp(0, 255);
+  return Color((value & 0xFF000000) |
       (channel(16) << 16) |
       (channel(8) << 8) |
-      channel(0);
+      channel(0));
 }
 
 /// Mixes [a] and [b], with [t] running 0 to 1.
-int blendColor(int a, int b, double t) {
+Color blendColor(Color a, Color b, double t) {
   final double ratio = t.clamp(0.0, 1.0);
   int channel(int shift) {
-    final int from = (a >> shift) & 0xFF;
-    final int to = (b >> shift) & 0xFF;
+    final int from = (a.value >> shift) & 0xFF;
+    final int to = (b.value >> shift) & 0xFF;
     return (from + (to - from) * ratio).round().clamp(0, 255);
   }
 
-  return (channel(24) << 24) |
+  return Color((channel(24) << 24) |
       (channel(16) << 16) |
       (channel(8) << 8) |
-      channel(0);
+      channel(0));
 }

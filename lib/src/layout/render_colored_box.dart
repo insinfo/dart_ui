@@ -6,6 +6,7 @@ library;
 
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import 'render_box.dart';
@@ -17,14 +18,13 @@ import 'render_box.dart';
 /// whatever it is given, because that is the only sensible reading of "a
 /// coloured area with no content".
 final class RenderColoredBox extends RenderSingleChildBox {
-  RenderColoredBox({required int color, super.child}) : _color = color;
+  RenderColoredBox({required Color color, super.child}) : _color = color;
 
-  int _color;
+  Color _color;
 
-  /// 0xAARRGGBB, the form the display list's paint table takes.
-  int get color => _color;
+  Color get color => _color;
 
-  set color(int value) {
+  set color(Color value) {
     if (value == _color) return;
     _color = value;
     // Colour cannot move anything, so layout stays clean. This is the one
@@ -52,7 +52,7 @@ final class RenderColoredBox extends RenderSingleChildBox {
 
   @override
   void paint(DisplayList list, Offset offset) {
-    final int paintId = list.addPaint(colorArgb: _color);
+    final int paintId = list.addPaint(colorArgb: _color.value);
     list.drawRectangle(
       Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height),
       paintId,

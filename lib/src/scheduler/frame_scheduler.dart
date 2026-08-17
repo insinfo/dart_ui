@@ -47,6 +47,7 @@ final class FrameScheduler {
     PipelineOwner? pipelineOwner,
     this.frameInterval = const Duration(microseconds: 16667),
     required this.onFrame,
+    this.onNextFrameScheduled,
   })  : dispatcher = dispatcher ?? ManualDispatcher(),
         pipelineOwner = pipelineOwner ?? PipelineOwner() {
     if (frameInterval <= Duration.zero) {
@@ -66,6 +67,10 @@ final class FrameScheduler {
   final ManualDispatcher dispatcher;
   final PipelineOwner pipelineOwner;
   final void Function(DisplayList displayList) onFrame;
+
+  /// Wakes an owning platform loop when a timer-driven animation frame is
+  /// armed. Tests normally leave this null and advance virtual time directly.
+  final void Function(Duration delay)? onNextFrameScheduled;
 
   /// The nominal gap between two continuous frames. 16667 microseconds is
   /// 60 Hz; a test that wants round numbers should pass its own.
@@ -147,6 +152,7 @@ final class FrameScheduler {
     if (_nextFrameArmed || _frameScheduled) return;
     _nextFrameArmed = true;
     dispatcher.schedule(frameInterval, _handleTimedFrame);
+    onNextFrameScheduled?.call(frameInterval);
   }
 
   void pump() {

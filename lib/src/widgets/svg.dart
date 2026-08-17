@@ -5,6 +5,7 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../geometry/transform2d.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../graphics/display_list_opcodes.dart';
@@ -39,7 +40,7 @@ final class Svg extends RenderObjectWidget {
     BoxFit fit = BoxFit.contain,
     Alignment alignment = Alignment.center,
     SvgLimits limits = const SvgLimits(),
-    int currentColor = 0xFF000000,
+    Color currentColor = const Color(0xFF000000),
   }) {
     final Object effectiveKey = cacheKey ??
         (
@@ -54,7 +55,7 @@ final class Svg extends RenderObjectWidget {
         effectiveKey,
         source,
         limits: limits,
-        currentColor: currentColor,
+        currentColor: currentColor.value,
       ),
       key: key,
       width: width,

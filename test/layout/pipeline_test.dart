@@ -13,9 +13,9 @@ import 'package:test/test.dart';
 import 'helpers.dart';
 
 void main() {
-  const int red = 0xFFFF0000;
-  const int green = 0xFF00FF00;
-  const int blue = 0xFF0000FF;
+  const Color red = Color(0xFFFF0000);
+  const Color green = Color(0xFF00FF00);
+  const Color blue = Color(0xFF0000FF);
 
   group('pixels', () {
     test('a padded coloured box paints where layout put it', () async {

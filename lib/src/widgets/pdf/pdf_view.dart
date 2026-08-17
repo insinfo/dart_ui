@@ -1,14 +1,20 @@
 library;
 
+import '../../geometry/offset.dart';
 import '../../gestures/scale.dart';
+import '../../graphics/color.dart';
 import '../../layout/edge_insets.dart';
+import '../../layout/render_box.dart';
 import '../../layout/render_flex.dart';
 import '../../layout/render_viewport.dart';
 import '../../pdf/document/pdf_document.dart';
+import '../../platform/input_events.dart';
 import '../basic.dart';
 import '../context_menu.dart';
+import '../element.dart';
 import '../gesture_detector.dart';
 import '../menu.dart';
+import '../pointer_router.dart';
 import '../proxy.dart';
 import '../scroll_view.dart';
 import '../text_field.dart' show ClipboardScope;
@@ -31,9 +37,10 @@ final class PdfView extends StatefulWidget {
     this.enableTextSelection = false,
     this.enableContextMenu = true,
     this.enablePinchZoom = false,
-    this.backgroundColor = 0xFFF1F5F9,
-    this.pageColor = 0xFFFFFFFF,
+    this.backgroundColor = const Color(0xFFF1F5F9),
+    this.pageColor = const Color(0xFFFFFFFF),
     this.onPageChanged,
+    this.onTextSelectionStarted,
   })  : assert(pageSpacing >= 0),
         assert(initialZoom > 0),
         assert(minimumZoom > 0),
@@ -49,11 +56,17 @@ final class PdfView extends StatefulWidget {
   final bool enableTextSelection;
   final bool enableContextMenu;
   final bool enablePinchZoom;
-  final int backgroundColor;
-  final int pageColor;
+  final Color backgroundColor;
+  final Color pageColor;
 
   /// Called with the one-based page number when the visible page changes.
   final void Function(int pageNumber)? onPageChanged;
+
+  /// Called when a primary pointer starts a text selection.
+  ///
+  /// An editor commonly uses this to unfocus its search field without making
+  /// the PDF surface itself a keyboard control.
+  final void Function()? onTextSelectionStarted;
 
   @override
   State<PdfView> createState() => _PdfViewState();
@@ -228,7 +241,7 @@ final class _PdfViewState extends State<PdfView> {
               textLayout: widget.enableTextSelection
                   ? _controller.textLayoutFor(index + 1)
                   : null,
-              selection: selection?.pageNumber == index + 1 ? selection : null,
+              selection: selection,
               enableTextSelection: widget.enableTextSelection,
               onSelectionChanged: widget.enableTextSelection
                   ? (int base, int extent) =>
@@ -239,6 +252,17 @@ final class _PdfViewState extends State<PdfView> {
         );
       },
     );
+    if (widget.enableTextSelection) {
+      reader = _PdfSelectionRegion(
+        document: widget.document,
+        controller: _controller,
+        position: _position,
+        scrollDirection: widget.scrollDirection,
+        pageSpacing: widget.pageSpacing,
+        onSelectionStarted: widget.onTextSelectionStarted,
+        child: reader,
+      );
+    }
     if (widget.enablePinchZoom) {
       reader = GestureDetector(
         behavior: GestureHitTestBehavior.deferToChild,
@@ -267,7 +291,7 @@ final class _PdfViewState extends State<PdfView> {
             MenuItem(
               label: 'Selecionar tudo',
               shortcut: 'Ctrl+A',
-              onSelected: () => _controller.selectAll(_controller.currentPage),
+              onSelected: _controller.selectAll,
             ),
             if (hasSelection) ...<MenuItem>[
               const MenuItem.separator(),
@@ -282,5 +306,192 @@ final class _PdfViewState extends State<PdfView> {
       );
     }
     return ColoredBox(color: widget.backgroundColor, child: reader);
+  }
+}
+
+final class _PdfSelectionRegion extends SingleChildRenderObjectWidget {
+  const _PdfSelectionRegion({
+    required this.document,
+    required this.controller,
+    required this.position,
+    required this.scrollDirection,
+    required this.pageSpacing,
+    required this.onSelectionStarted,
+    required super.child,
+  });
+
+  final PdfDocument document;
+  final PdfViewController controller;
+  final ScrollPosition position;
+  final Axis scrollDirection;
+  final double pageSpacing;
+  final void Function()? onSelectionStarted;
+
+  @override
+  RenderPdfSelectionRegion createRenderObject(BuildContext context) =>
+      RenderPdfSelectionRegion(
+        document: document,
+        controller: controller,
+        position: position,
+        scrollDirection: scrollDirection,
+        pageSpacing: pageSpacing,
+        onSelectionStarted: onSelectionStarted,
+      );
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant RenderPdfSelectionRegion object,
+  ) {
+    object
+      ..document = document
+      ..controller = controller
+      ..position = position
+      ..scrollDirection = scrollDirection
+      ..pageSpacing = pageSpacing
+      ..onSelectionStarted = onSelectionStarted;
+  }
+}
+
+/// Owns a drag selection at document level, so pointer capture can cross from
+/// the page where the drag began into neighbouring pages.
+final class RenderPdfSelectionRegion extends RenderSingleChildBox
+    implements PointerEventTarget {
+  RenderPdfSelectionRegion({
+    required PdfDocument document,
+    required PdfViewController controller,
+    required ScrollPosition position,
+    required Axis scrollDirection,
+    required double pageSpacing,
+    this.onSelectionStarted,
+    super.child,
+  })  : _document = document,
+        _controller = controller,
+        _position = position,
+        _scrollDirection = scrollDirection,
+        _pageSpacing = pageSpacing;
+
+  PdfDocument _document;
+  PdfViewController _controller;
+  ScrollPosition _position;
+  Axis _scrollDirection;
+  double _pageSpacing;
+  void Function()? onSelectionStarted;
+  int? _pointer;
+  int _anchorPage = 1;
+  int _anchorOffset = 0;
+
+  bool get _vertical => _scrollDirection == Axis.vertical;
+
+  set document(PdfDocument value) => _document = value;
+  set controller(PdfViewController value) => _controller = value;
+  set position(ScrollPosition value) => _position = value;
+  set scrollDirection(Axis value) => _scrollDirection = value;
+  set pageSpacing(double value) => _pageSpacing = value;
+
+  @override
+  void performLayout() {
+    final RenderBox? child = this.child;
+    if (child == null) {
+      size = constraints.smallest;
+      return;
+    }
+    child.layout(constraints, parentUsesSize: true);
+    size = constraints.constrain(child.size);
+    child.parentData!.offset = Offset.zero;
+  }
+
+  @override
+  bool hitTestSelf(Offset position) => false;
+
+  @override
+  void handlePointerEvent(PointerEvent event) {
+    switch (event) {
+      case PointerDownEvent(
+          button: PointerButton.primary,
+          kind: PointerKind.mouse || PointerKind.stylus,
+          clickCount: 1,
+        ):
+        final ({int page, int offset})? hit =
+            _textPositionAt(event.logicalPosition);
+        if (hit == null) return;
+        _pointer = event.pointerId;
+        _anchorPage = hit.page;
+        _anchorOffset = hit.offset;
+        onSelectionStarted?.call();
+        _controller.selectTextRange(
+          _anchorPage,
+          _anchorOffset,
+          hit.page,
+          hit.offset,
+        );
+      case PointerMoveEvent() when event.pointerId == _pointer:
+        _autoScroll(event.logicalPosition);
+        final ({int page, int offset})? hit =
+            _textPositionAt(event.logicalPosition);
+        if (hit == null) return;
+        _controller.selectTextRange(
+          _anchorPage,
+          _anchorOffset,
+          hit.page,
+          hit.offset,
+        );
+      case PointerUpEvent() when event.pointerId == _pointer:
+      case PointerCancelEvent() when event.pointerId == _pointer:
+        _pointer = null;
+      default:
+        break;
+    }
+  }
+
+  void _autoScroll(Offset globalPosition) {
+    final Offset local = globalToLocal(globalPosition);
+    final double coordinate = _vertical ? local.dy : local.dx;
+    final double extent = _vertical ? size.height : size.width;
+    final double overflow = coordinate < 0
+        ? coordinate
+        : coordinate > extent
+            ? coordinate - extent
+            : 0;
+    if (overflow != 0) {
+      _position.applyDelta(overflow.clamp(-32.0, 32.0));
+    }
+  }
+
+  ({int page, int offset})? _textPositionAt(Offset globalPosition) {
+    if (_document.pageCount == 0 || !hasSize) return null;
+    final Offset local = globalToLocal(globalPosition);
+    final double contentMain =
+        (_vertical ? local.dy : local.dx) + _position.pixels;
+    var cursor = 0.0;
+    for (var pageNumber = 1; pageNumber <= _document.pageCount; pageNumber++) {
+      final page = _document.getPage(pageNumber);
+      final double zoom = _controller.zoom;
+      final double pageMain = (_vertical ? page.height : page.width) * zoom;
+      final bool last = pageNumber == _document.pageCount;
+      if (contentMain <= cursor + pageMain + (last ? 0 : _pageSpacing)) {
+        final double pageCross = (_vertical ? page.width : page.height) * zoom;
+        final double viewportCross = _vertical ? size.width : size.height;
+        final double crossStart = (viewportCross - pageCross) / 2;
+        final double main = (contentMain - cursor).clamp(0.0, pageMain);
+        final double cross = ((_vertical ? local.dx : local.dy) - crossStart)
+            .clamp(0.0, pageCross);
+        final Offset pageOffset = _vertical
+            ? Offset(cross / zoom, main / zoom)
+            : Offset(main / zoom, cross / zoom);
+        return (
+          page: pageNumber,
+          offset: _controller
+              .textLayoutFor(pageNumber)
+              .positionForOffset(pageOffset),
+        );
+      }
+      cursor += pageMain + _pageSpacing;
+    }
+    final int lastPage = _document.pageCount;
+    return (
+      page: lastPage,
+      offset: _controller.textLayoutFor(lastPage).text.length,
+    );
   }
 }

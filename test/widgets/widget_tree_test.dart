@@ -22,8 +22,8 @@ void main() {
 
       owner.updateRoot(
         const ColoredBox(
-          color: 0xFF112233,
-          child: ColoredBox(color: 0xFF445566),
+          color: Color(0xFF112233),
+          child: ColoredBox(color: Color(0xFF445566)),
         ),
       );
 
@@ -44,10 +44,10 @@ void main() {
       final BuildOwner owner = _owner();
       owner.updateRoot(
         const ColoredBox(
-          color: 0xFF000000,
+          color: Color(0xFF000000),
           child: Padding(
             padding: EdgeInsets.all(4),
-            child: ColoredBox(color: 0xFFFFFFFF),
+            child: ColoredBox(color: Color(0xFFFFFFFF)),
           ),
         ),
       );
@@ -111,10 +111,10 @@ void main() {
       final Element root = owner.updateRoot(
         const ColoredBox(
           key: ValueKey<String>('outer'),
-          color: 0xFF000001,
+          color: Color(0xFF000001),
           child: ColoredBox(
             key: ValueKey<String>('inner'),
-            color: 0xFF000002,
+            color: Color(0xFF000002),
           ),
         ),
       )!;
@@ -125,10 +125,10 @@ void main() {
       owner.updateRoot(
         const ColoredBox(
           key: ValueKey<String>('outer'),
-          color: 0xFF000003,
+          color: Color(0xFF000003),
           child: ColoredBox(
             key: ValueKey<String>('inner'),
-            color: 0xFF000004,
+            color: Color(0xFF000004),
           ),
         ),
       );
@@ -137,16 +137,16 @@ void main() {
       expect(_onlyChild(root), same(child));
       expect(owner.renderRoot, same(rootRender));
       expect((rootRender as RenderSingleChildBox).child, same(childRender));
-      expect((rootRender as RenderColoredBox).color, 0xFF000003);
-      expect((childRender as RenderColoredBox).color, 0xFF000004);
+      expect((rootRender as RenderColoredBox).color, const Color(0xFF000003));
+      expect((childRender as RenderColoredBox).color, const Color(0xFF000004));
     });
 
     test('a changed key replaces and fully detaches the old subtree', () {
       final BuildOwner owner = _owner();
       final Element root = owner.updateRoot(
         const ColoredBox(
-          color: 1,
-          child: ColoredBox(key: ValueKey<int>(1), color: 2),
+          color: Color(1),
+          child: ColoredBox(key: ValueKey<int>(1), color: Color(2)),
         ),
       )!;
       final Element oldChild = _onlyChild(root);
@@ -155,8 +155,8 @@ void main() {
 
       owner.updateRoot(
         const ColoredBox(
-          color: 1,
-          child: ColoredBox(key: ValueKey<int>(2), color: 3),
+          color: Color(1),
+          child: ColoredBox(key: ValueKey<int>(2), color: Color(3)),
         ),
       );
 
@@ -175,9 +175,9 @@ void main() {
       final BuildOwner owner = _owner();
       owner.updateRoot(
         const ColoredBox(
-          color: 1,
+          color: Color(1),
           child: _Passthrough(
-            child: ColoredBox(color: 2),
+            child: ColoredBox(color: Color(2)),
           ),
         ),
       );
@@ -262,7 +262,7 @@ void main() {
       owner.updateRoot(
         GestureDetector(
           onTap: () {},
-          child: const ColoredBox(color: 1),
+          child: const ColoredBox(color: Color(1)),
         ),
       );
 
@@ -378,7 +378,7 @@ void main() {
 
     test('disposing BuildOwner tears down both trees idempotently', () {
       final BuildOwner owner = _owner();
-      owner.updateRoot(const ColoredBox(color: 1));
+      owner.updateRoot(const ColoredBox(color: Color(1)));
       final Element element = owner.rootElement!;
       final RenderBox render = owner.renderRoot!;
 
@@ -390,7 +390,9 @@ void main() {
       expect(render.owner, isNull);
       expect(owner.pipelineOwner.root, isNull);
       expect(
-          () => owner.updateRoot(const ColoredBox(color: 2)), throwsStateError);
+        () => owner.updateRoot(const ColoredBox(color: Color(2))),
+        throwsStateError,
+      );
     });
   });
 }
@@ -433,7 +435,7 @@ final class _CounterState extends State<_CounterWidget> {
   @override
   Widget build(BuildContext context) {
     buildCount++;
-    return ColoredBox(color: value);
+    return ColoredBox(color: Color(value));
   }
 }
 
@@ -451,7 +453,7 @@ final class _SwitchingState extends State<_SwitchingWidget> {
 
   @override
   Widget build(BuildContext context) =>
-      text ? const Text('now text') : const ColoredBox(color: 1);
+      text ? const Text('now text') : const ColoredBox(color: Color(1));
 }
 
 final class _NestedWidget extends StatefulWidget {
@@ -494,7 +496,7 @@ final class _NestedChildState extends State<_NestedChild> {
   @override
   Widget build(BuildContext context) {
     widget.owner.builds.add('child');
-    return const ColoredBox(color: 1);
+    return const ColoredBox(color: Color(1));
   }
 }
 
@@ -523,7 +525,7 @@ final class _LifecycleState extends State<_LifecycleWidget> {
   @override
   Widget build(BuildContext context) {
     widget.log.add('build:${widget.label}');
-    return const ColoredBox(color: 1);
+    return const ColoredBox(color: Color(1));
   }
 
   @override

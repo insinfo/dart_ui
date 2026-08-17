@@ -16,6 +16,23 @@ abstract interface class PointerEventTarget {
   void handlePointerEvent(PointerEvent event);
 }
 
+/// Stops a hit-tested pointer event from bubbling to ancestor targets.
+///
+/// Overlay controls such as a scrollbar are interaction surfaces in their own
+/// right. A press on their thumb must not also begin a drag selection in the
+/// scrollable document below them.
+abstract interface class PointerEventBarrier implements PointerEventTarget {}
+
+/// A render node that has a persistent pointer-hover visual state.
+///
+/// Pointer moves are hit-tested independently. Without an explicit leave
+/// notification, the node that was under the previous move never learns that
+/// the pointer is now over a sibling and remains visually hovered forever.
+/// The router diffs the old and new hit paths and reports both transitions.
+abstract interface class HoverEventTarget {
+  void handleHoverChanged(bool hovered);
+}
+
 /// Connects backend [PointerEvent]s to the render nodes under their position.
 ///
 /// One path is retained and reset for every event so dispatch itself does not
@@ -34,6 +51,8 @@ final class PointerRouter {
   final HitTestPath _path = HitTestPath();
   final Map<int, List<PointerEventTarget>> _captures =
       <int, List<PointerEventTarget>>{};
+  final Map<int, List<HoverEventTarget>> _hoverPaths =
+      <int, List<HoverEventTarget>>{};
 
   /// Where gesture recognizers under this router negotiate.
   GestureArenaManager get gestureArena => _gestures.arena;
@@ -129,6 +148,10 @@ final class PointerRouter {
     _path.reset();
     final bool hit = root.hitTest(event.logicalPosition, path: _path) != null;
 
+    if (event is PointerMoveEvent) {
+      _updateHoverPath(event.pointerId);
+    }
+
     if (event is PointerDownEvent) {
       _cancelCapture(event.pointerId, event);
       final targets = <PointerEventTarget>[];
@@ -167,10 +190,33 @@ final class PointerRouter {
       holders.removeWhere((PointerEventTarget held) => identical(held, target));
       if (holders.isEmpty) _captures.remove(pointerId);
     }
+    if (target is HoverEventTarget) {
+      final HoverEventTarget hoverTarget = target as HoverEventTarget;
+      for (final int pointerId in _hoverPaths.keys.toList()) {
+        final List<HoverEventTarget> path = _hoverPaths[pointerId]!;
+        final bool removed = path.removeWhereIdentical(hoverTarget);
+        if (removed) hoverTarget.handleHoverChanged(false);
+        if (path.isEmpty) _hoverPaths.remove(pointerId);
+      }
+    }
   }
 
   /// Drops every capture, for a window that lost focus or a tree teardown.
-  void releaseAllCaptures() => _captures.clear();
+  void releaseAllCaptures() {
+    _captures.clear();
+    clearHover();
+  }
+
+  /// Clears all hover visuals, for a pointer-leave or window deactivation.
+  void clearHover() {
+    final Set<HoverEventTarget> notified = Set<HoverEventTarget>.identity();
+    for (final List<HoverEventTarget> path in _hoverPaths.values) {
+      for (final HoverEventTarget target in path) {
+        if (notified.add(target)) target.handleHoverChanged(false);
+      }
+    }
+    _hoverPaths.clear();
+  }
 
   void _dispatchPath(
     PointerEvent event, {
@@ -181,7 +227,32 @@ final class PointerRouter {
       if (entry case final PointerEventTarget target) {
         target.handlePointerEvent(event);
         captureInto?.add(target);
+        if (target is PointerEventBarrier) break;
       }
+    }
+  }
+
+  void _updateHoverPath(int pointerId) {
+    final List<HoverEventTarget> next = <HoverEventTarget>[
+      for (int i = 0; i < _path.length; i++)
+        if (_path[i] case final HoverEventTarget target) target,
+    ];
+    final List<HoverEventTarget> previous =
+        _hoverPaths[pointerId] ?? const <HoverEventTarget>[];
+    for (final HoverEventTarget target in previous) {
+      if (!next.any((HoverEventTarget item) => identical(item, target))) {
+        target.handleHoverChanged(false);
+      }
+    }
+    for (final HoverEventTarget target in next) {
+      if (!previous.any((HoverEventTarget item) => identical(item, target))) {
+        target.handleHoverChanged(true);
+      }
+    }
+    if (next.isEmpty) {
+      _hoverPaths.remove(pointerId);
+    } else {
+      _hoverPaths[pointerId] = next;
     }
   }
 
@@ -203,5 +274,13 @@ final class PointerRouter {
     for (final target in captured) {
       target.handlePointerEvent(cancel);
     }
+  }
+}
+
+extension on List<HoverEventTarget> {
+  bool removeWhereIdentical(HoverEventTarget target) {
+    final int before = length;
+    removeWhere((HoverEventTarget item) => identical(item, target));
+    return length != before;
   }
 }

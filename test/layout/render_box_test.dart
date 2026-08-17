@@ -300,7 +300,8 @@ void main() {
     test('attaching a subtree gives every node the owner and a depth', () {
       final leaf = FixedBox(const Size(10, 10));
       final inner = RenderPadding(padding: EdgeInsets.zero, child: leaf);
-      final outer = RenderColoredBox(color: 0xFF000000, child: inner);
+      final outer =
+          RenderColoredBox(color: const Color(0xFF000000), child: inner);
       final owner = ownerWith(outer);
 
       expect(leaf.owner, same(owner));
@@ -329,10 +330,11 @@ void main() {
   group('hit testing', () {
     // A 100x100 blue box, 10px of padding, then an 80x80 red box inside it.
     (RenderColoredBox, RenderPadding, RenderColoredBox) nestedTree() {
-      final inner = RenderColoredBox(color: 0xFFFF0000);
+      final inner = RenderColoredBox(color: const Color(0xFFFF0000));
       final padding =
           RenderPadding(padding: const EdgeInsets.all(10), child: inner);
-      final outer = RenderColoredBox(color: 0xFF0000FF, child: padding);
+      final outer =
+          RenderColoredBox(color: const Color(0xFF0000FF), child: padding);
       final owner = PipelineOwner(
         rootConstraints: BoxConstraints.tight(const Size(100, 100)),
       );

@@ -77,4 +77,48 @@ void main() {
     expect(rects.single.width, greaterThan(0));
     expect(rects.single.width, lessThan(fragment.bounds.width));
   });
+
+  test('visual reading order includes titles emitted out of stream order', () {
+    final PdfDocumentBuilder builder = PdfDocumentBuilder();
+    final page = builder.addPage(width: 300, height: 240);
+    page.drawText('Paragrafo inferior', const Offset(30, 180), fontSize: 12);
+    page.drawText('TITULO INTERMEDIARIO', const Offset(30, 90), fontSize: 18);
+    page.drawText('Paragrafo superior', const Offset(30, 45), fontSize: 12);
+
+    final PdfPageTextLayout layout = PdfTextExtractor(
+      PdfDocument.fromBytes(builder.build()).getPage(1),
+    ).extract();
+
+    expect(
+      layout.text,
+      'Paragrafo superior\nTITULO INTERMEDIARIO\nParagrafo inferior',
+    );
+    expect(
+      layout.selectionRects(0, layout.text.length),
+      hasLength(3),
+      reason: 'the visually intermediate title must not be skipped',
+    );
+  });
+
+  test('controller selects and copies continuously across pages', () {
+    final PdfViewController controller = PdfViewController()
+      ..attachDocument(_document());
+    final int secondEnd = controller.textLayoutFor(2).text.length;
+
+    controller.selectTextRange(1, 0, 2, secondEnd);
+
+    final PdfTextSelection selection = controller.selection!;
+    expect(selection.basePageNumber, 1);
+    expect(selection.extentPageNumber, 2);
+    expect(selection.rangeForPage(1, 100), (start: 0, end: 100));
+    expect(selection.rangeForPage(2, secondEnd), (start: 0, end: secondEnd));
+    expect(controller.selectedText, contains('Primeira pagina'));
+    expect(controller.selectedText, contains('\n'));
+    expect(controller.selectedText, contains('Segunda pagina'));
+
+    controller.selectTextRange(2, secondEnd, 1, 0);
+    expect(controller.selection!.isForward, isFalse);
+    expect(controller.selectedText, contains('Primeira pagina'));
+    expect(controller.selectedText, contains('Segunda pagina'));
+  });
 }

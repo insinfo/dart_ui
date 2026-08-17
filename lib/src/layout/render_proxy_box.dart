@@ -43,6 +43,7 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../geometry/transform2d.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../graphics/display_list_opcodes.dart';
@@ -539,8 +540,7 @@ final class RenderClipRRect extends RenderProxyBox {
 final class BoxBorder {
   const BoxBorder({required this.color, required this.width});
 
-  /// 0xAARRGGBB, the form the display list's paint table takes.
-  final int color;
+  final Color color;
 
   final double width;
 
@@ -570,10 +570,10 @@ final class BoxBorder {
 final class BoxDecoration {
   const BoxDecoration({this.color, this.border, this.radius = 0.0});
 
-  /// The fill, 0xAARRGGBB, or null for no fill at all. Null and a fully
+  /// The fill, or null for no fill at all. Null and a fully
   /// transparent colour are the same picture and different commands: null emits
   /// nothing, `0x00000000` emits a draw the rasterizer then blends to nothing.
-  final int? color;
+  final Color? color;
 
   final BoxBorder? border;
 
@@ -649,9 +649,9 @@ final class RenderDecoratedBox extends RenderProxyBox {
       final double radius =
           decoration.radius < limit ? decoration.radius : limit;
 
-      final int? fill = decoration.color;
+      final Color? fill = decoration.color;
       if (fill != null) {
-        final int paintId = list.addPaint(colorArgb: fill);
+        final int paintId = list.addPaint(colorArgb: fill.value);
         if (radius > 0) {
           list.drawRRectUniform(
             bounds.left,
@@ -675,7 +675,7 @@ final class RenderDecoratedBox extends RenderProxyBox {
         final Rect stroked = bounds.deflate(inset);
         if (!stroked.isEmpty) {
           final int paintId = list.addPaint(
-            colorArgb: border.color,
+            colorArgb: border.color.value,
             style: paintStyleStroke,
             strokeWidth: border.width,
           );

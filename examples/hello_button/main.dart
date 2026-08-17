@@ -23,15 +23,17 @@ void main() async {
   var pressed = false;
 
   Widget view() => ColoredBox(
-        color: 0xFF18212F,
+        color: const Color(0xFF18212F),
         child: Padding(
           padding: const EdgeInsets.all(48),
           child: ColoredBox(
-            color: pressed
-                ? 0xFF2F80ED
-                : hovered
-                    ? 0xFF4C9AFF
-                    : 0xFF3B82F6,
+            color: Color(
+              pressed
+                  ? 0xFF2F80ED
+                  : hovered
+                      ? 0xFF4C9AFF
+                      : 0xFF3B82F6,
+            ),
           ),
         ),
       );

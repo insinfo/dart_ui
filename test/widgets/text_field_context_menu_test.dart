@@ -366,7 +366,7 @@ void main() {
     test('the field paints the active selection colour, not the dim one', () {
       final _Field field = _Field('hello world');
       field.render.controller.setSelection(0, 5);
-      final int active = ThemeData.neutralLight.selection;
+      final Color active = ThemeData.neutralLight.selection;
 
       field.rightClickNow(2);
       field.frame();
@@ -412,7 +412,12 @@ void main() {
       field.render.controller.setSelection(0, 5);
       field.render.focusNode!.unfocus();
 
-      expect(field.render.selectionColorFor(background: 0xFFFFFFFF), isNull);
+      expect(
+        field.render.selectionColorFor(
+          background: const Color(0xFFFFFFFF),
+        ),
+        isNull,
+      );
     });
 
     test('visible paints the focused colour', () {
@@ -424,7 +429,9 @@ void main() {
       field.render.focusNode!.unfocus();
 
       expect(
-        field.render.selectionColorFor(background: 0xFFFFFFFF),
+        field.render.selectionColorFor(
+          background: const Color(0xFFFFFFFF),
+        ),
         ThemeData.neutralLight.selection,
       );
     });
@@ -434,8 +441,8 @@ void main() {
       field.render.controller.setSelection(0, 5);
       field.render.focusNode!.unfocus();
 
-      final int background = ThemeData.neutralLight.surfaceAlternate;
-      final int dimmed = field.render.selectionColorFor(
+      final Color background = ThemeData.neutralLight.surfaceAlternate;
+      final Color dimmed = field.render.selectionColorFor(
         background: background,
       )!;
       expect(dimmed, isNot(ThemeData.neutralLight.selection));

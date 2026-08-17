@@ -16,10 +16,10 @@ import 'package:test/test.dart';
 // itself about channel order.
 import '../layout/helpers.dart';
 
-const int _background = 0xFF000000;
-const int _bottomColor = 0xFFCC3311;
-const int _middleColor = 0xFF117744;
-const int _topColor = 0xFF3366CC;
+const Color _background = Color(0xFF000000);
+const Color _bottomColor = Color(0xFFCC3311);
+const Color _middleColor = Color(0xFF117744);
+const Color _topColor = Color(0xFF3366CC);
 
 const (int, int, int, int) _backgroundPixel = (0x00, 0x00, 0x00, 0xFF);
 const (int, int, int, int) _bottomPixel = (0xCC, 0x33, 0x11, 0xFF);
@@ -56,12 +56,12 @@ void main() {
     pipeline.drawFrame(list);
     final MemoryRenderTarget target = await memoryTarget(side, side);
     addTearDown(target.dispose);
-    await target.renderDisplayList(list, clearColor: _background);
+    await target.renderDisplayList(list, clearColor: _background.value);
     return target.framebuffer;
   }
 
   OverlayEntry filled(
-    int color, {
+    Color color, {
     bool opaque = false,
     bool maintainState = false,
   }) =>
@@ -101,7 +101,7 @@ void main() {
       mount(<OverlayEntry>[bottom, top]);
 
       expect(
-        () => overlay.insert(filled(1), above: bottom, below: top),
+        () => overlay.insert(filled(const Color(1)), above: bottom, below: top),
         throwsArgumentError,
       );
     });
@@ -398,7 +398,7 @@ final class _Probe extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     onBuild(context);
-    return const ColoredBox(color: 0xFF000000);
+    return const ColoredBox(color: Color(0xFF000000));
   }
 }
 

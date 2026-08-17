@@ -8,6 +8,7 @@ import '../geometry/offset.dart';
 import '../geometry/path.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_opcodes.dart' show paintStyleStroke;
 import '../layout/render_box.dart';
@@ -29,8 +30,8 @@ final class LinearProgressIndicator extends StatelessWidget {
   }) : assert(value == null || (value >= 0 && value <= 1));
 
   final double? value;
-  final int? backgroundColor;
-  final int? color;
+  final Color? backgroundColor;
+  final Color? color;
   final double minHeight;
   final String? semanticsLabel;
   final String? semanticsValue;
@@ -70,8 +71,8 @@ final class CircularProgressIndicator extends StatefulWidget {
         assert(size > 0);
 
   final double? value;
-  final int? backgroundColor;
-  final int? color;
+  final Color? backgroundColor;
+  final Color? color;
   final double strokeWidth;
   final double size;
   final String? semanticsLabel;
@@ -169,8 +170,8 @@ final class _ProgressRenderWidget extends RenderObjectWidget {
   final bool circular;
   final double extent;
   final double strokeWidth;
-  final int color;
-  final int trackColor;
+  final Color color;
+  final Color trackColor;
   final String? semanticsLabel;
   final String? semanticsValue;
 
@@ -215,8 +216,8 @@ final class RenderProgressIndicator extends RenderBox
   bool circular = false;
   double extent = 4;
   double strokeWidth = 4;
-  int color = 0xFF2563EB;
-  int trackColor = 0xFFE2E8F0;
+  Color color = const Color(0xFF2563EB);
+  Color trackColor = const Color(0xFFE2E8F0);
   String? semanticsLabel;
   String? semanticsValue;
 
@@ -261,7 +262,7 @@ final class RenderProgressIndicator extends RenderBox
       track.bottom,
       radius,
       radius,
-      list.addPaint(colorArgb: trackColor, antiAlias: true),
+      list.addPaint(colorArgb: trackColor.value, antiAlias: true),
     );
     final double fraction = value ?? animationValue;
     final double width = size.width * fraction.clamp(0.0, 1.0);
@@ -275,7 +276,7 @@ final class RenderProgressIndicator extends RenderBox
       fill.bottom,
       fillRadius,
       fillRadius,
-      list.addPaint(colorArgb: color, antiAlias: true),
+      list.addPaint(colorArgb: color.value, antiAlias: true),
     );
   }
 
@@ -285,7 +286,7 @@ final class RenderProgressIndicator extends RenderBox
     double radius,
     double start,
     double sweep,
-    int arcColor,
+    Color arcColor,
   ) {
     final int segments = math.max(8, (48 * sweep.abs() / (math.pi * 2)).ceil());
     final PathBuilder builder = PathBuilder();
@@ -300,7 +301,7 @@ final class RenderProgressIndicator extends RenderBox
       }
     }
     final int paint = list.addPaint(
-      colorArgb: arcColor,
+      colorArgb: arcColor.value,
       style: paintStyleStroke,
       strokeWidth: strokeWidth,
       antiAlias: true,

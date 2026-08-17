@@ -221,7 +221,9 @@ Widget _wideTree(int leaves) {
       Row(children: <Widget>[
         for (int column = 0; column < perRow; column++)
           const SizedBox(
-              width: 4, height: 4, child: ColoredBox(color: 0xFF204080)),
+                width: 4,
+                height: 4,
+                child: ColoredBox(color: Color(0xFF204080))),
       ]),
   ]);
 }
@@ -235,7 +237,9 @@ Widget _treeWithOneMutableLeaf(int leaves, _Counter counter) {
       Row(children: <Widget>[
         for (int column = 0; column < perRow; column++)
           const SizedBox(
-              width: 4, height: 4, child: ColoredBox(color: 0xFF204080)),
+                width: 4,
+                height: 4,
+                child: ColoredBox(color: Color(0xFF204080))),
       ]),
   ]);
 }

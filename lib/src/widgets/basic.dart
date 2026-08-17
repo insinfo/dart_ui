@@ -3,6 +3,7 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../layout/alignment.dart';
@@ -68,7 +69,7 @@ final class ColoredBox extends SingleChildRenderObjectWidget {
     super.child,
   });
 
-  final int color;
+  final Color color;
 
   @override
   layout.RenderColoredBox createRenderObject(BuildContext context) =>
@@ -549,8 +550,8 @@ final class Text extends RenderObjectWidget {
   /// The pixel size to draw at, or null to take the ambient theme's.
   final double? fontSize;
 
-  /// `0xAARRGGBB`, overriding [style] and the ambient text style.
-  final int? color;
+  /// Overrides [style] and the ambient text style.
+  final Color? color;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
@@ -561,7 +562,7 @@ final class Text extends RenderObjectWidget {
     return RenderText(
       text,
       fontSize: resolved.fontSize ?? kDefaultUiFontSize,
-      color: resolved.color ?? 0xFF111111,
+      color: resolved.color ?? const Color(0xFF111111),
       fontFamily: resolved.fontFamily,
       fontWeight: resolved.fontWeight?.value ?? 400,
     );
@@ -576,24 +577,18 @@ final class Text extends RenderObjectWidget {
     renderObject
       ..text = text
       ..fontSize = resolved.fontSize ?? kDefaultUiFontSize
-      ..color = resolved.color ?? 0xFF111111
+      ..color = resolved.color ?? const Color(0xFF111111)
       ..fontFamily = resolved.fontFamily
       ..fontWeight = resolved.fontWeight?.value ?? 400;
   }
 
-  /// The theme's font size, read **without** registering a dependency.
-  ///
-  /// A render-object element does not build, so subscribing it to the theme
-  /// would schedule a rebuild that can never run. Reading it without a
-  /// subscription is correct here because a theme swap rebuilds the subtree
-  /// that installed it, which reaches this widget through its parent.
+  /// Resolves and subscribes to the ambient styles. Render-object elements
+  /// push inherited changes through `updateRenderObject`, which is essential
+  /// for const labels retained across a light/dark theme switch.
   TextStyle _styleFrom(BuildContext context) {
-    final ThemeData theme =
-        context.getInheritedWidgetOfExactType<Theme>()?.data ??
-            ThemeData.neutralLight;
+    final ThemeData theme = Theme.of(context);
     final TextStyle ambient =
-        context.getInheritedWidgetOfExactType<DefaultTextStyle>()?.style ??
-            theme.textTheme.bodyMedium;
+        DefaultTextStyle.maybeOf(context) ?? theme.textTheme.bodyMedium;
     final TextStyle merged = ambient.merge(style);
     return merged.copyWith(
       color: color ?? merged.color ?? theme.foreground,
@@ -612,7 +607,7 @@ final class Text extends RenderObjectWidget {
 final class RenderText extends RenderBox {
   RenderText(
     String text, {
-    int color = 0xFF111111,
+    Color color = const Color(0xFF111111),
     double fontSize = kDefaultUiFontSize,
     String? fontFamily,
     int fontWeight = 400,
@@ -623,7 +618,7 @@ final class RenderText extends RenderBox {
         _fontWeight = fontWeight;
 
   String _text;
-  int _color;
+  Color _color;
   double _fontSize;
   String? _fontFamily;
   int _fontWeight;
@@ -636,9 +631,9 @@ final class RenderText extends RenderBox {
     markNeedsLayout();
   }
 
-  int get color => _color;
+  Color get color => _color;
 
-  set color(int value) {
+  set color(Color value) {
     if (value == _color) return;
     _color = value;
     markNeedsPaint();
@@ -671,7 +666,9 @@ final class RenderText extends RenderBox {
   /// The face this line is drawn in, or null when the machine has none.
   ScaledTypeface? get font {
     final String? family = _fontFamily;
-    if (family == null) return FontRegistry.instance.uiFont(_fontSize);
+    if (family == null) {
+      return FontRegistry.instance.uiFont(_fontSize, weight: _fontWeight);
+    }
     return FontRegistry.instance
         .faceFor(family, weight: _fontWeight)
         ?.atSize(_fontSize);
@@ -741,7 +738,7 @@ final class RenderText extends RenderBox {
   void paint(DisplayList list, Offset offset) {
     final ScaledTypeface? face = font;
     if (_text.isEmpty || face == null) return;
-    final int paint = list.addPaint(colorArgb: _color, antiAlias: true);
+    final int paint = list.addPaint(colorArgb: _color.value, antiAlias: true);
     final GlyphRun run = uiTextPainter.shaper.shape(_text, face);
     // Clipped to the box layout gave it, which may be narrower than the text
     // asked for: a constrained parent must not have text spill out of it.

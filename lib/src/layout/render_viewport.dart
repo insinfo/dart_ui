@@ -24,9 +24,11 @@ enum ScrollAxis { vertical, horizontal }
 
 /// How far a scroll gesture moves per unit when the platform reports lines.
 ///
-/// The value is the framework's, not the platform's: a backend that knows a
-/// better one (Windows' `SPI_GETWHEELSCROLLLINES`) passes pixels instead.
-const double defaultLineExtent = 16.0;
+/// The value is the framework's fallback for one detent. Desktop systems
+/// conventionally move three text lines per detent; using a single 16-pixel
+/// line made long documents feel three times slower than their native peers.
+/// A backend with an exact platform preference can still report pixels.
+const double defaultLineExtent = 48.0;
 
 /// Where a scrollable is, how far it may go, and what happens at the edges.
 final class ScrollPosition {

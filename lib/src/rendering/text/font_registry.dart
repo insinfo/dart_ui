@@ -343,12 +343,13 @@ final class FontRegistry {
   /// "text is missing and nobody knows why".
   String? _source;
 
-  /// One [ScaledTypeface] per size.
+  /// One [ScaledTypeface] per size and requested weight.
   ///
   /// Bounded by how many distinct sizes an application uses - a handful - and
   /// worth keeping because the glyph cache and the display list's font table
   /// both key on the scaled face, and every control asks for one per paint.
-  final Map<double, ScaledTypeface> _sized = <double, ScaledTypeface>{};
+  final Map<(double, int), ScaledTypeface> _sized =
+      <(double, int), ScaledTypeface>{};
 
   /// Faces this registry has parsed, by [SystemFontFace.key].
   ///
@@ -393,10 +394,13 @@ final class FontRegistry {
   ///
   /// Null is the honest answer and callers must handle it; see
   /// [estimatedSize] for what they should reserve when they get it.
-  ScaledTypeface? uiFont(double pixelSize) {
+  ScaledTypeface? uiFont(double pixelSize, {int weight = 400}) {
     final Typeface? face = uiTypeface;
     if (face == null) return null;
-    return _sized[pixelSize] ??= face.atSize(pixelSize);
+    final Typeface resolved = weight == face.weightClass
+        ? face
+        : faceFor(face.familyName ?? '', weight: weight) ?? face;
+    return _sized[(pixelSize, weight)] ??= resolved.atSize(pixelSize);
   }
 
   /// The unsized interface face, discovering it on first use.

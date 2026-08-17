@@ -96,7 +96,7 @@ Future<void> main(List<String> arguments) async {
     rootWidget: _panel(
       theme: theme,
       title: 'Window A - editor',
-      accent: 0xFF2D6CDF,
+      accent: const Color(0xFF2D6CDF),
       controller: TextEditingController('type here'),
     ),
     backends: backends,
@@ -117,7 +117,7 @@ Future<void> main(List<String> arguments) async {
     rootWidget: _panel(
       theme: theme,
       title: 'Window B - inspector',
-      accent: 0xFFB4531A,
+      accent: const Color(0xFFB4531A),
       controller: TextEditingController('a different tree'),
     ),
     title: 'dart_ui - window B',
@@ -154,7 +154,7 @@ Future<void> main(List<String> arguments) async {
           rootWidget: _panel(
             theme: theme,
             title: 'Modal - owned by A',
-            accent: 0xFF7A2D8F,
+            accent: const Color(0xFF7A2D8F),
             controller: TextEditingController('A is blocked'),
           ),
           title: 'dart_ui - modal',
@@ -265,13 +265,13 @@ String _focusReport(Application application) {
 Widget _panel({
   required ThemeData theme,
   required String title,
-  required int accent,
+  required Color accent,
   required TextEditingController controller,
 }) =>
     Theme(
       data: theme,
       child: ColoredBox(
-        color: 0xFF1B1D21,
+        color: const Color(0xFF1B1D21),
         child: Padding(
           padding: const EdgeInsets.all(16),
           child: Column(

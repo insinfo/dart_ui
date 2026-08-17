@@ -173,6 +173,21 @@ void main() {
       expect(harness.labels, <String>['Two']);
       harness.dispose();
     });
+
+    test('an overlay outside an inner dark theme uses the opener theme', () {
+      final _Harness harness = _Harness(innerTheme: ThemeData.materialDark)
+        ..frame()
+        ..rightClick(const Offset(40, 30))
+        ..frame();
+
+      expect(harness.controller.theme, ThemeData.materialDark);
+      expect(harness.surface!.theme, ThemeData.materialDark);
+      expect(
+        harness.itemRenders.first.theme.colorScheme.brightness,
+        Brightness.dark,
+      );
+      harness.dispose();
+    });
   });
 
   group('placement against the work area', () {
@@ -601,8 +616,9 @@ final class _Probe extends StatelessWidget {
 
 /// A 300x200 window holding a button and a right-clickable region.
 final class _Harness {
-  _Harness({bool visitsDisabledItems = true})
-      : _visitsDisabledItems = visitsDisabledItems {
+  _Harness({bool visitsDisabledItems = true, ThemeData? innerTheme})
+      : _visitsDisabledItems = visitsDisabledItems,
+        _innerTheme = innerTheme ?? ThemeData.neutralLight {
     owner = BuildOwner(
       pipelineOwner: PipelineOwner(
         rootConstraints: BoxConstraints.tight(const Size(300, 200)),
@@ -612,6 +628,7 @@ final class _Harness {
   }
 
   final bool _visitsDisabledItems;
+  final ThemeData _innerTheme;
   late final BuildOwner owner;
   final ContextMenuController controller = ContextMenuController();
   final List<String> chosen = <String>[];
@@ -619,29 +636,32 @@ final class _Harness {
 
   Widget _root() => ContextMenuScope(
         controller: controller,
-        child: ContextMenuRegion(
-          itemsBuilder: () => <MenuItem>[
-            MenuItem(
-              label: 'Refresh',
-              shortcut: 'F5',
-              onSelected: () => chosen.add('Refresh'),
-            ),
-            MenuItem(
-              label: 'Duplicate',
-              onSelected: () => chosen.add('Duplicate'),
-            ),
-            const MenuItem.separator(),
-            MenuItem(
-              label: 'Delete',
-              enabled: false,
-              disabledReason: 'nothing here is selected',
-              onSelected: () => chosen.add('Delete'),
-            ),
-          ],
-          child: Column(
-            children: <Widget>[
-              Button(label: 'Behind', onPressed: () => buttonPresses++),
+        child: Theme(
+          data: _innerTheme,
+          child: ContextMenuRegion(
+            itemsBuilder: () => <MenuItem>[
+              MenuItem(
+                label: 'Refresh',
+                shortcut: 'F5',
+                onSelected: () => chosen.add('Refresh'),
+              ),
+              MenuItem(
+                label: 'Duplicate',
+                onSelected: () => chosen.add('Duplicate'),
+              ),
+              const MenuItem.separator(),
+              MenuItem(
+                label: 'Delete',
+                enabled: false,
+                disabledReason: 'nothing here is selected',
+                onSelected: () => chosen.add('Delete'),
+              ),
             ],
+            child: Column(
+              children: <Widget>[
+                Button(label: 'Behind', onPressed: () => buttonPresses++),
+              ],
+            ),
           ),
         ),
       );

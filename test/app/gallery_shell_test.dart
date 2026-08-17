@@ -37,7 +37,7 @@ void main() {
         options: const ApplicationOptions(
           title: 'gallery',
           size: galleryDesignSize,
-          clearColor: 0xFF000000,
+        clearColor: const Color(0xFF000000),
         ),
       );
 

@@ -125,14 +125,9 @@ final class _PdfTextOutputDevice extends PdfOutputDevice {
   final Transform2D _pageToView;
   final List<Transform2D> _stack = <Transform2D>[];
   final List<PdfTextFragment> _fragments = <PdfTextFragment>[];
-  final StringBuffer _text = StringBuffer();
   Transform2D _ctm = Transform2D.identity;
 
-  PdfPageTextLayout get layout => PdfPageTextLayout(
-        pageNumber: page.pageNumber,
-        text: _text.toString(),
-        fragments: List<PdfTextFragment>.unmodifiable(_fragments),
-      );
+  PdfPageTextLayout get layout => _layoutInVisualReadingOrder();
 
   @override
   void saveState() => _stack.add(_ctm);
@@ -167,33 +162,101 @@ final class _PdfTextOutputDevice extends PdfOutputDevice {
     ));
     if (bounds.isEmpty) return;
 
-    final PdfTextFragment? previous =
-        _fragments.isEmpty ? null : _fragments.last;
-    if (previous != null) {
-      final double lineTolerance =
-          math.max(previous.bounds.height, bounds.height) * 0.55;
-      final bool sameLine =
-          (previous.bounds.center.dy - bounds.center.dy).abs() <= lineTolerance;
-      if (!sameLine) {
-        _text.write('\n');
-      } else {
-        final double gap = bounds.left - previous.bounds.right;
-        final double spaceThreshold =
-            math.min(previous.bounds.height, bounds.height) * 0.12;
-        if (gap > spaceThreshold &&
-            !previous.text.endsWith(' ') &&
-            !text.startsWith(' ')) {
-          _text.write(' ');
-        }
-      }
-    }
-    final int start = _text.length;
-    _text.write(text);
     _fragments.add(PdfTextFragment(
       text: text,
-      textStart: start,
+      // Content-stream order is not reading order. Stable offsets are assigned
+      // after every fragment has been grouped into visual lines.
+      textStart: 0,
       bounds: bounds,
     ));
+  }
+
+  PdfPageTextLayout _layoutInVisualReadingOrder() {
+    if (_fragments.isEmpty) {
+      return PdfPageTextLayout(
+        pageNumber: page.pageNumber,
+        text: '',
+        fragments: const <PdfTextFragment>[],
+      );
+    }
+
+    // PDF producers commonly emit headings, paragraphs, decorations and
+    // footers in independent content streams. Operator order therefore bears
+    // little relation to reading order. Group by visual lines first, then sort
+    // top-to-bottom and left-to-right so selection cannot skip a title merely
+    // because that title was painted later in the stream.
+    final List<PdfTextFragment> byVertical =
+        List<PdfTextFragment>.of(_fragments)
+          ..sort((PdfTextFragment a, PdfTextFragment b) {
+            final int vertical =
+                a.bounds.center.dy.compareTo(b.bounds.center.dy);
+            return vertical != 0
+                ? vertical
+                : a.bounds.left.compareTo(b.bounds.left);
+          });
+    final List<_VisualTextLine> lines = <_VisualTextLine>[];
+    for (final PdfTextFragment fragment in byVertical) {
+      _VisualTextLine? closest;
+      double closestDistance = double.infinity;
+      for (final _VisualTextLine line in lines.reversed) {
+        final double distance =
+            (line.centerY - fragment.bounds.center.dy).abs();
+        final double tolerance =
+            math.max(line.height, fragment.bounds.height) * 0.55;
+        final double overlap = math.min(line.bottom, fragment.bounds.bottom) -
+            math.max(line.top, fragment.bounds.top);
+        if ((overlap > 0 || distance <= tolerance) &&
+            distance < closestDistance) {
+          closest = line;
+          closestDistance = distance;
+        }
+        if (line.bottom + tolerance < fragment.bounds.top) break;
+      }
+      if (closest == null) {
+        closest = _VisualTextLine();
+        lines.add(closest);
+      }
+      closest.add(fragment);
+    }
+    lines.sort((_VisualTextLine a, _VisualTextLine b) {
+      final int vertical = a.centerY.compareTo(b.centerY);
+      return vertical != 0 ? vertical : a.left.compareTo(b.left);
+    });
+
+    final StringBuffer text = StringBuffer();
+    final List<PdfTextFragment> ordered = <PdfTextFragment>[];
+    for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      if (lineIndex > 0) text.write('\n');
+      final List<PdfTextFragment> fragments = lines[lineIndex].fragments
+        ..sort((PdfTextFragment a, PdfTextFragment b) =>
+            a.bounds.left.compareTo(b.bounds.left));
+      PdfTextFragment? previous;
+      for (final PdfTextFragment fragment in fragments) {
+        if (previous != null) {
+          final double gap = fragment.bounds.left - previous.bounds.right;
+          final double spaceThreshold =
+              math.min(previous.bounds.height, fragment.bounds.height) * 0.12;
+          if (gap > spaceThreshold &&
+              !previous.text.endsWith(' ') &&
+              !fragment.text.startsWith(' ')) {
+            text.write(' ');
+          }
+        }
+        final int start = text.length;
+        text.write(fragment.text);
+        ordered.add(PdfTextFragment(
+          text: fragment.text,
+          textStart: start,
+          bounds: fragment.bounds,
+        ));
+        previous = fragment;
+      }
+    }
+    return PdfPageTextLayout(
+      pageNumber: page.pageNumber,
+      text: text.toString(),
+      fragments: List<PdfTextFragment>.unmodifiable(ordered),
+    );
   }
 
   @override
@@ -214,6 +277,23 @@ final class _PdfTextOutputDevice extends PdfOutputDevice {
     PdfGfxState state, {
     PdfDict? imageDictionary,
   }) {}
+}
+
+final class _VisualTextLine {
+  final List<PdfTextFragment> fragments = <PdfTextFragment>[];
+  double top = double.infinity;
+  double bottom = double.negativeInfinity;
+  double left = double.infinity;
+
+  double get height => bottom - top;
+  double get centerY => (top + bottom) / 2;
+
+  void add(PdfTextFragment fragment) {
+    fragments.add(fragment);
+    top = math.min(top, fragment.bounds.top);
+    bottom = math.max(bottom, fragment.bounds.bottom);
+    left = math.min(left, fragment.bounds.left);
+  }
 }
 
 Transform2D _asTransform(PdfMatrix matrix) => Transform2D(

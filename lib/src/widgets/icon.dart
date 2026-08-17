@@ -77,8 +77,10 @@ import 'dart:typed_data';
 
 import '../geometry/offset.dart';
 import '../geometry/path.dart';
+import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../geometry/transform2d.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/render_box.dart';
 import '../rendering/text/font_registry.dart';
@@ -185,8 +187,8 @@ final class Icon extends RenderObjectWidget {
   /// [kDefaultIconSize].
   final double? size;
 
-  /// `0xAARRGGBB`, or null to take the ambient theme's foreground.
-  final int? color;
+  /// The glyph colour, or null to take the ambient icon theme.
+  final Color? color;
 
   /// The reading order, overriding the ambient [Directionality].
   ///
@@ -218,43 +220,35 @@ final class Icon extends RenderObjectWidget {
       ..textDirection = _directionFrom(context);
   }
 
-  /// The theme's foreground, read **without** registering a dependency, for the
-  /// reason `Text._sizeFrom` gives: a render-object element does not build, so
-  /// subscribing it to the theme would schedule a rebuild that can never run.
-  int _colorFrom(BuildContext context) =>
-      color ??
-      context.getInheritedWidgetOfExactType<IconTheme>()?.data.color ??
-      context.getInheritedWidgetOfExactType<Theme>()?.data.iconTheme.color ??
-      context.getInheritedWidgetOfExactType<Theme>()?.data.foreground ??
-      0xFF111111;
+  /// Resolves from both icon and application themes and subscribes to them.
+  /// Render-object elements can rebuild inherited values through
+  /// `updateRenderObject`; without the dependency, a const icon retained the
+  /// light palette after a live switch to dark mode.
+  Color _colorFrom(BuildContext context) {
+    final IconThemeData? local = IconTheme.maybeOf(context);
+    final ThemeData? theme =
+        context.dependOnInheritedWidgetOfExactType<Theme>()?.data;
+    return color ??
+        local?.color ??
+        theme?.iconTheme.color ??
+        theme?.foreground ??
+        const Color(0xFF111111);
+  }
 
-  double _sizeFrom(BuildContext context) =>
-      size ??
-      context.getInheritedWidgetOfExactType<IconTheme>()?.data.size ??
-      context.getInheritedWidgetOfExactType<Theme>()?.data.iconTheme.size ??
-      kDefaultIconSize;
+  double _sizeFrom(BuildContext context) {
+    final IconThemeData? local = IconTheme.maybeOf(context);
+    final ThemeData? theme =
+        context.dependOnInheritedWidgetOfExactType<Theme>()?.data;
+    return size ?? local?.size ?? theme?.iconTheme.size ?? kDefaultIconSize;
+  }
 
-  /// The ambient reading direction, read the same way and for the same reason.
-  ///
-  /// Deliberately **not** [Directionality.of], even though the policy is
-  /// identical: `of` registers a dependency, and a dependency on a render-object
-  /// element schedules a rebuild that this element's `performRebuild` does
-  /// nothing with. The value still tracks a direction change, because changing a
-  /// [Directionality] rebuilds its dependents and this icon is reached through
-  /// whichever of them built it - the same chain `Text` relies on for its font
-  /// size.
-  ///
-  /// The *failure* is `of`'s, though, and on purpose: an icon that asked to
-  /// follow the reading order and was given none is a bug, not a reason to
-  /// quietly stop mirroring for the users who would notice.
+  /// The ambient reading direction. Directional icons subscribe so a retained
+  /// const subtree is repainted when the locale changes.
   TextDirection _directionFrom(BuildContext context) {
     final TextDirection? explicit = textDirection;
     if (explicit != null) return explicit;
     if (!icon.matchTextDirection) return TextDirection.leftToRight;
-    final Directionality? scope =
-        context.getInheritedWidgetOfExactType<Directionality>();
-    if (scope == null) throw MissingDirectionalityError('Icon($icon)');
-    return scope.textDirection;
+    return Directionality.of(context);
   }
 }
 
@@ -263,7 +257,7 @@ final class RenderIcon extends RenderBox {
   RenderIcon(
     IconData icon, {
     double size = kDefaultIconSize,
-    int color = 0xFF111111,
+    Color color = const Color(0xFF111111),
     TextDirection textDirection = TextDirection.leftToRight,
   })  : _icon = icon,
         _iconSize = size,
@@ -272,7 +266,7 @@ final class RenderIcon extends RenderBox {
 
   IconData _icon;
   double _iconSize;
-  int _color;
+  Color _color;
   TextDirection _textDirection;
 
   /// The resolved face, cleared whenever anything it was resolved from
@@ -301,9 +295,9 @@ final class RenderIcon extends RenderBox {
     markNeedsLayout();
   }
 
-  int get color => _color;
+  Color get color => _color;
 
-  set color(int value) {
+  set color(Color value) {
     if (value == _color) return;
     _color = value;
     markNeedsPaint();
@@ -430,9 +424,36 @@ final class RenderIcon extends RenderBox {
     return (_iconSize - emHeight) / 2 + face.ascent;
   }
 
-  /// Where the pen goes, so that the glyph's advance is centred horizontally.
-  double _penOffset(ScaledTypeface face, int glyph) =>
-      (_iconSize - face.advanceOf(glyph)) / 2;
+  /// Centres the glyph's actual ink instead of its advance/em box.
+  ///
+  /// Icon fonts frequently keep asymmetric side bearings and vertical font
+  /// metrics for compatibility. Centring those metrics makes a geometrically
+  /// symmetric icon look visibly shifted inside a square button.
+  ({double penX, double baselineY}) _glyphPlacement(
+    ScaledTypeface face,
+    int glyph,
+    Offset offset,
+  ) {
+    final String? family = _icon.fontFamily;
+    if (family != Icons.materialFontFamily &&
+        family != TablerIcons.fontFamily) {
+      return (
+        penX: offset.dx + (_iconSize - face.advanceOf(glyph)) / 2,
+        baselineY: offset.dy + _baselineOffset,
+      );
+    }
+    final Rect bounds = face.typeface.outlineOf(glyph).bounds;
+    if (bounds.isEmpty) {
+      return (
+        penX: offset.dx + (_iconSize - face.advanceOf(glyph)) / 2,
+        baselineY: offset.dy + _baselineOffset,
+      );
+    }
+    return (
+      penX: offset.dx + _iconSize / 2 - bounds.center.dx * face.scale,
+      baselineY: offset.dy + _iconSize / 2 + bounds.center.dy * face.scale,
+    );
+  }
 
   @override
   bool hitTestSelf(Offset position) => false;
@@ -442,11 +463,13 @@ final class RenderIcon extends RenderBox {
     final ScaledTypeface face = font ?? (throw _missingFont());
     final int glyph = face.typeface.glyphForCodePoint(_icon.codePoint);
     if (glyph == notdefGlyph) return;
-    if ((_color >> 24) & 0xFF == 0) return;
+    if (_color.alpha == 0) return;
 
-    final double penX = offset.dx + _penOffset(face, glyph);
-    final double baselineY = offset.dy + _baselineOffset;
-    final int paintId = list.addPaint(colorArgb: _color, antiAlias: true);
+    final ({double penX, double baselineY}) glyphPlacement =
+        _glyphPlacement(face, glyph, offset);
+    final double penX = glyphPlacement.penX;
+    final double baselineY = glyphPlacement.baselineY;
+    final int paintId = list.addPaint(colorArgb: _color.value, antiAlias: true);
 
     if (!drawsAsPath) {
       // The ordinary route: one glyph, one run, through the cache every label
@@ -585,4 +608,44 @@ abstract final class Icons {
 
   /// `U+00D7` MULTIPLICATION SIGN - close.
   static const IconData close = IconData(0xD7);
+}
+
+/// Named glyphs from the bundled Tabler Icons 3.46 outline font.
+///
+/// Tabler uses a consistent 24-unit visual grid and is distributed under the
+/// MIT license. This focused public set covers common application chrome; more
+/// names can be added without changing [Icon] or the font-loading contract.
+abstract final class TablerIcons {
+  static const String fontFamily = 'Tabler Icons';
+
+  static const IconData adjustments = IconData(0xEA03, fontFamily: fontFamily);
+  static const IconData arrowsMaximize =
+      IconData(0xEA28, fontFamily: fontFamily);
+  static const IconData chevronLeft = IconData(
+    0xEA60,
+    fontFamily: fontFamily,
+    matchTextDirection: true,
+  );
+  static const IconData chevronRight = IconData(
+    0xEA61,
+    fontFamily: fontFamily,
+    matchTextDirection: true,
+  );
+  static const IconData columns = IconData(0xEB83, fontFamily: fontFamily);
+  static const IconData copy = IconData(0xEA7A, fontFamily: fontFamily);
+  static const IconData cursorText = IconData(0xEE6D, fontFamily: fontFamily);
+  static const IconData download = IconData(0xEA96, fontFamily: fontFamily);
+  static const IconData fileText = IconData(0xEAA2, fontFamily: fontFamily);
+  static const IconData focus = IconData(0xEBD3, fontFamily: fontFamily);
+  static const IconData folder = IconData(0xEAAD, fontFamily: fontFamily);
+  static const IconData folderOpen = IconData(0xFAF7, fontFamily: fontFamily);
+  static const IconData hand = IconData(0xEC2E, fontFamily: fontFamily);
+  static const IconData moon = IconData(0xEAF8, fontFamily: fontFamily);
+  static const IconData printer = IconData(0xEB0E, fontFamily: fontFamily);
+  static const IconData rotateClockwise =
+      IconData(0xEB15, fontFamily: fontFamily);
+  static const IconData search = IconData(0xEB1C, fontFamily: fontFamily);
+  static const IconData sun = IconData(0xEB30, fontFamily: fontFamily);
+  static const IconData zoomIn = IconData(0xEB56, fontFamily: fontFamily);
+  static const IconData zoomOut = IconData(0xEB57, fontFamily: fontFamily);
 }

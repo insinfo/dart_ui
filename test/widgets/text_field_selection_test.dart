@@ -329,7 +329,7 @@ void main() {
         ..clickSecond();
 
       final DisplayList list = fields.paint();
-      final int dimmed = _dimmed(ThemeData.neutralLight);
+      final Color dimmed = _dimmed(ThemeData.neutralLight);
       expect(
         _rectsWithColor(list, dimmed),
         isNotEmpty,
@@ -662,19 +662,21 @@ final class _TwoFields {
 ///
 /// Recomputed here rather than read off the render object, so the test states
 /// the policy instead of echoing whatever the implementation happens to do.
-int _dimmed(ThemeData theme) {
-  int mix(int shift) =>
-      (((theme.selection >> shift) & 0xFF) +
-          ((theme.surfaceAlternate >> shift) & 0xFF)) ~/
-      2;
-  return (((theme.selection >> 24) & 0xFF) << 24) |
-      (mix(16) << 16) |
-      (mix(8) << 8) |
-      mix(0);
+Color _dimmed(ThemeData theme) {
+  int mix(int selected, int background) => (selected + background) ~/ 2;
+  return Color.fromARGB(
+    theme.selection.alpha,
+    mix(theme.selection.red, theme.surfaceAlternate.red),
+    mix(theme.selection.green, theme.surfaceAlternate.green),
+    mix(theme.selection.blue, theme.surfaceAlternate.blue),
+  );
 }
 
-List<DrawRectCommand> _rectsWithColor(DisplayList list, int color) =>
+List<DrawRectCommand> _rectsWithColor(DisplayList list, Color color) =>
     expandDisplayList(list)
         .whereType<DrawRectCommand>()
-        .where((DrawRectCommand rect) => list.paintColor(rect.paintId) == color)
+        .where(
+          (DrawRectCommand rect) =>
+              list.paintColor(rect.paintId) == color.value,
+        )
         .toList();

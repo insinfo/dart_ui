@@ -10,10 +10,14 @@ export 'framework_fonts_base.dart' show FrameworkFontLoadResult;
 
 /// Locates and installs the fonts distributed with dart_ui.
 abstract final class FrameworkFonts {
-  static const String uiFamily = 'Roboto';
-  static const String iconFamily = 'Material Icons';
-  static const String uiFileName = 'Roboto-Regular.ttf';
+  static const String uiFamily = 'Inter';
+  static const String iconFamily = 'Tabler Icons';
+  static const String materialIconFamily = 'Material Icons';
+  static const String uiFileName = 'Inter-Regular.ttf';
+  static const String uiMediumFileName = 'Inter-Medium.ttf';
+  static const String uiSemiBoldFileName = 'Inter-SemiBold.ttf';
   static const String iconFileName = 'MaterialIcons-Regular.ttf';
+  static const String tablerIconFileName = 'TablerIcons.ttf';
 
   /// Loads from a source checkout or an explicitly packaged asset directory.
   static FrameworkFontLoadResult install({
@@ -33,9 +37,12 @@ abstract final class FrameworkFonts {
       uiFont: File(
         '${directory.path}${Platform.pathSeparator}$uiFileName',
       ).readAsBytesSync(),
+      uiMediumFont: _readOptional(directory, uiMediumFileName),
+      uiSemiBoldFont: _readOptional(directory, uiSemiBoldFileName),
       iconFont: File(
         '${directory.path}${Platform.pathSeparator}$iconFileName',
       ).readAsBytesSync(),
+      tablerIconFont: _readOptional(directory, tablerIconFileName),
       registry: target,
       source: directory.path,
     );
@@ -45,12 +52,18 @@ abstract final class FrameworkFonts {
   static FrameworkFontLoadResult installFromBytes({
     required Uint8List uiFont,
     required Uint8List iconFont,
+    Uint8List? uiMediumFont,
+    Uint8List? uiSemiBoldFont,
+    Uint8List? tablerIconFont,
     FontRegistry? registry,
     String? source,
   }) =>
       installFrameworkFontBytes(
         uiFont: uiFont,
         iconFont: iconFont,
+        uiMediumFont: uiMediumFont,
+        uiSemiBoldFont: uiSemiBoldFont,
+        tablerIconFont: tablerIconFont,
         registry: registry ?? FontRegistry.instance,
         source: source,
       );
@@ -71,5 +84,11 @@ abstract final class FrameworkFonts {
       }
     }
     return null;
+  }
+
+  static Uint8List? _readOptional(Directory directory, String fileName) {
+    final File file =
+        File('${directory.path}${Platform.pathSeparator}$fileName');
+    return file.existsSync() ? file.readAsBytesSync() : null;
   }
 }

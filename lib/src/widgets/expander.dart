@@ -366,7 +366,7 @@ final class RenderExpanderHeader extends RenderBox with ControlBehavior {
     const int steps = 4;
     const double unit = 2;
     final int paint = list.addPaint(
-      colorArgb: foregroundColor(),
+      colorArgb: foregroundColor().value,
       antiAlias: false,
     );
     final double centreX = (box.left + box.width / 2).roundToDouble();

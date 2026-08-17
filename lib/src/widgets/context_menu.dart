@@ -94,9 +94,12 @@
 ///    only to a [TextInputTarget], and a menu is not one.
 library;
 
+import 'dart:math' as math;
+
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../layout/box_constraints.dart';
@@ -155,6 +158,7 @@ final class ContextMenuController {
   ContextMenuItemsBuilder? _builder;
   List<MenuItem> _items = const <MenuItem>[];
   Offset _anchor = Offset.zero;
+  ThemeData? _theme;
   void Function()? _onClosed;
   bool _open = false;
 
@@ -165,6 +169,14 @@ final class ContextMenuController {
 
   /// Where the menu was asked to appear, in the layer's coordinates.
   Offset get anchor => _anchor;
+
+  /// The theme captured at the control that opened the menu.
+  ///
+  /// A scope is normally installed around the whole application window while
+  /// applications are free to place a more specific (and dynamically dark)
+  /// [Theme] below it. Keeping the opener's theme here makes the overlay look
+  /// like the control it belongs to instead of the scope's outer fallback.
+  ThemeData? get theme => _theme;
 
   /// Where the menu actually ended up, or null when it is closed or has not
   /// been laid out yet.
@@ -186,6 +198,7 @@ final class ContextMenuController {
   void open({
     required Offset globalPosition,
     required ContextMenuItemsBuilder itemsBuilder,
+    ThemeData? theme,
     void Function()? onClosed,
   }) {
     if (_open) close();
@@ -195,6 +208,7 @@ final class ContextMenuController {
         : layer.globalToLocal(globalPosition);
     _builder = itemsBuilder;
     _items = itemsBuilder();
+    _theme = theme;
     _onClosed = onClosed;
     _open = true;
     _notify();
@@ -219,6 +233,7 @@ final class ContextMenuController {
     _open = false;
     _builder = null;
     _items = const <MenuItem>[];
+    _theme = null;
     final void Function()? closed = _onClosed;
     _onClosed = null;
     _notify();
@@ -402,9 +417,12 @@ final class _ContextMenuScopeState extends State<ContextMenuScope> {
           controller: _controller,
           content: widget.child,
           menu: _controller.isOpen
-              ? ContextMenu(
-                  items: _controller.items,
-                  onDismiss: _controller.close,
+              ? Theme(
+                  data: _controller.theme ?? Theme.of(context),
+                  child: ContextMenu(
+                    items: _controller.items,
+                    onDismiss: _controller.close,
+                  ),
                 )
               : null,
         ),
@@ -956,8 +974,18 @@ final class RenderContextMenuSurface extends RenderBoxContainer<BoxParentData>
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surfaceAlternate);
-    paintBorder(list, rect, theme.border);
+    paintRoundedFill(
+      list,
+      rect,
+      theme.colorScheme.surface,
+      theme.cornerRadius,
+    );
+    paintRoundedBorder(
+      list,
+      rect,
+      theme.colorScheme.outline,
+      theme.cornerRadius,
+    );
     super.paint(list, offset);
     paintFocusRing(list, rect);
   }
@@ -1037,7 +1065,10 @@ final class RenderContextMenuItem extends RenderBox with ControlBehavior {
   /// The height of one item. Fixed rather than derived from the theme's control
   /// height: a menu row is not a button, and a 24px-tall row of commands reads
   /// as a list where a 32px one reads as a stack of buttons.
-  static const double itemHeight = 20.0;
+  // Keep the desktop density of native menus. Four common commands plus a
+  // separator still fit inside a compact 120 logical-pixel work area, which
+  // also keeps the last command reachable when a window is very small.
+  static const double itemHeight = 28.0;
 
   /// The gap kept between a label and its accelerator text, so the two never
   /// look like one string.
@@ -1126,12 +1157,20 @@ final class RenderContextMenuItem extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    if (_highlighted) paintFill(list, rect, theme.accent);
-    final int color = !_item.enabled
+    if (_highlighted) {
+      paintRoundedFill(
+        list,
+        Rect.fromLTWH(
+            rect.left + 4, rect.top + 2, rect.width - 8, rect.height - 4),
+        theme.colorScheme.primary,
+        math.min(theme.cornerRadius, 6),
+      );
+    }
+    final Color color = !_item.enabled
         ? theme.disabledForeground
         : _highlighted
-            ? theme.surfaceAlternate
-            : theme.foreground;
+            ? theme.colorScheme.onPrimary
+            : theme.colorScheme.onSurface;
     final double padding = theme.effectiveControlPadding;
     final double top =
         (rect.top + (rect.height - labelLineHeight) / 2).roundToDouble();
@@ -1217,15 +1256,15 @@ final class _ContextMenuSeparatorWidget extends RenderObjectWidget {
 /// announce, so it contributes no node at all rather than an empty one for a
 /// screen reader to read out as "group".
 final class RenderContextMenuSeparator extends RenderBox {
-  RenderContextMenuSeparator({required int color}) : _color = color;
+  RenderContextMenuSeparator({required Color color}) : _color = color;
 
   static const double separatorHeight = 5.0;
 
-  int _color;
+  Color _color;
 
-  int get color => _color;
+  Color get color => _color;
 
-  set color(int value) {
+  set color(Color value) {
     if (value == _color) return;
     _color = value;
     markNeedsPaint();
@@ -1244,7 +1283,7 @@ final class RenderContextMenuSeparator extends RenderBox {
 
   @override
   void paint(DisplayList list, Offset offset) {
-    final int paint = list.addPaint(colorArgb: _color, antiAlias: false);
+    final int paint = list.addPaint(colorArgb: _color.value, antiAlias: false);
     list.drawRectangle(
       Rect.fromLTWH(
         offset.dx + 2,
@@ -1296,6 +1335,7 @@ final class ContextMenuRegion extends StatelessWidget {
           : (Offset position) => controller.open(
                 globalPosition: position,
                 itemsBuilder: itemsBuilder,
+                theme: Theme.of(context),
               ),
       child: child,
     );

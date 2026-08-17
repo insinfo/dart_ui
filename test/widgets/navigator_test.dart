@@ -16,10 +16,10 @@ import '../layout/helpers.dart';
 const Duration _frame = Duration(milliseconds: 10);
 const Duration _transition = Duration(milliseconds: 100);
 
-const int _background = 0xFF000000;
-const int _homeColor = 0xFFCC3311;
-const int _detailColor = 0xFF3366CC;
-const int _dialogColor = 0xFF117744;
+const Color _background = Color(0xFF000000);
+const Color _homeColor = Color(0xFFCC3311);
+const Color _detailColor = Color(0xFF3366CC);
+const Color _dialogColor = Color(0xFF117744);
 
 const (int, int, int, int) _backgroundPixel = (0x00, 0x00, 0x00, 0xFF);
 const (int, int, int, int) _homePixel = (0xCC, 0x33, 0x11, 0xFF);
@@ -104,7 +104,7 @@ void main() {
     pipeline.drawFrame(list);
     final MemoryRenderTarget target = await memoryTarget(side, side);
     addTearDown(target.dispose);
-    await target.renderDisplayList(list, clearColor: _background);
+    await target.renderDisplayList(list, clearColor: _background.value);
     return target.framebuffer;
   }
 
@@ -777,7 +777,7 @@ void main() {
 
 /// A page route painting one colour, with the hooks the tests need.
 FadePageRoute<T> _page<T extends Object?>(
-  int color, {
+  Color color, {
   RouteSettings settings = const RouteSettings(),
   Widget? child,
   FocusNode? focusNode,
@@ -805,7 +805,7 @@ final class _CountingRoute extends PageRoute<void> {
   _CountingRoute({required this.color})
       : super(transitionDuration: _transition);
 
-  final int color;
+  final Color color;
   int disposeCount = 0;
 
   @override
@@ -859,7 +859,7 @@ final class _Tappable extends StatelessWidget {
   const _Tappable({required this.onTap, required this.color});
 
   final void Function() onTap;
-  final int color;
+  final Color color;
 
   @override
   Widget build(BuildContext context) =>

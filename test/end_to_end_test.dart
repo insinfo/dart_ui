@@ -63,7 +63,7 @@ void main() {
     final target = await render(
       RenderPadding(
         padding: const EdgeInsets.all(4),
-        child: RenderColoredBox(color: 0xFF00FF00),
+        child: RenderColoredBox(color: const Color(0xFF00FF00)),
       ),
       16,
       16,
@@ -81,8 +81,8 @@ void main() {
   test('a flex row divides the surface where the flex factors say', () async {
     final target = await render(
       RenderFlex()
-        ..add(RenderColoredBox(color: 0xFFFF0000), flex: 1)
-        ..add(RenderColoredBox(color: 0xFF0000FF), flex: 3),
+        ..add(RenderColoredBox(color: const Color(0xFFFF0000)), flex: 1)
+        ..add(RenderColoredBox(color: const Color(0xFF0000FF)), flex: 3),
       16,
       4,
     );
@@ -100,7 +100,7 @@ void main() {
         alignment: Alignment.bottomRight,
         child: RenderConstrainedBox(
           additionalConstraints: BoxConstraints.tight(const Size(4, 4)),
-          child: RenderColoredBox(color: 0xFFFFFFFF),
+          child: RenderColoredBox(color: const Color(0xFFFFFFFF)),
         ),
       ),
       12,
@@ -118,7 +118,7 @@ void main() {
     // The claim worth checking is that layout, painting and hit testing share
     // one coordinate system. A tree can render correctly and still route
     // clicks to the wrong node.
-    final child = RenderColoredBox(color: 0xFF00FF00);
+    final child = RenderColoredBox(color: const Color(0xFF00FF00));
     final root = RenderPadding(
       padding: const EdgeInsets.all(4),
       child: child,

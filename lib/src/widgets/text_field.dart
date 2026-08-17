@@ -21,6 +21,7 @@ import '../foundation/value_notifier.dart';
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/render_box.dart';
 import '../platform/clipboard.dart';
@@ -634,6 +635,7 @@ final class TextField extends StatefulWidget {
   const TextField({
     super.key,
     required this.controller,
+    this.focusNode,
     this.label = '',
     this.obscure = false,
     this.readOnly = false,
@@ -642,6 +644,7 @@ final class TextField extends StatefulWidget {
   });
 
   final TextEditingController controller;
+  final FocusNode? focusNode;
   final String label;
 
   /// How the selection is painted when another control holds the keyboard.
@@ -683,7 +686,11 @@ final class PasswordField extends StatelessWidget {
 }
 
 final class _TextFieldState extends State<TextField> {
-  late final FocusNode _focusNode = FocusNode(debugLabel: 'TextField');
+  FocusNode? _ownedFocusNode;
+
+  FocusNode get _focusNode =>
+      widget.focusNode ??
+      (_ownedFocusNode ??= FocusNode(debugLabel: 'TextField'));
 
   @override
   void initState() {
@@ -703,7 +710,7 @@ final class _TextFieldState extends State<TextField> {
   @override
   void dispose() {
     widget.controller.removeListener(_onTextChanged);
-    _focusNode.dispose();
+    _ownedFocusNode?.dispose();
     super.dispose();
   }
 
@@ -1124,6 +1131,7 @@ final class RenderTextField extends RenderBox
     menu.open(
       globalPosition: globalPosition,
       itemsBuilder: buildContextMenuItems,
+      theme: theme,
       onClosed: () {
         _menuOpen = false;
         markNeedsPaint();
@@ -1775,7 +1783,7 @@ final class RenderTextField extends RenderBox
   /// menu holds the keyboard while it is up, and dimming the selection at
   /// exactly the moment the user is choosing **Copy** from a menu about that
   /// selection would be the worst possible time to go quiet.
-  int? selectionColorFor({required int background}) {
+  Color? selectionColorFor({required Color background}) {
     if (hasFocus || _menuOpen) return theme.selection;
     return switch (_inactiveSelection) {
       InactiveSelectionHighlight.hidden => null,
@@ -1785,13 +1793,14 @@ final class RenderTextField extends RenderBox
     };
   }
 
-  static int _inactiveSelectionColor(int selection, int background) {
-    int mix(int shift) =>
-        (((selection >> shift) & 0xFF) + ((background >> shift) & 0xFF)) ~/ 2;
-    return (((selection >> 24) & 0xFF) << 24) |
-        (mix(16) << 16) |
-        (mix(8) << 8) |
-        mix(0);
+  static Color _inactiveSelectionColor(Color selection, Color background) {
+    int mix(int selected, int behind) => (selected + behind) ~/ 2;
+    return Color.fromARGB(
+      selection.alpha,
+      mix(selection.red, background.red),
+      mix(selection.green, background.green),
+      mix(selection.blue, background.blue),
+    );
   }
 
   /// Records why an operation did not happen and reports that it did not.
@@ -1811,7 +1820,7 @@ final class RenderTextField extends RenderBox
       size.width,
       size.height,
     );
-    final int fillColor =
+    final Color fillColor =
         enabled ? theme.surfaceAlternate : theme.disabledSurface;
     paintFill(list, rect, fillColor);
     // A field whose own context menu is up still reads as the active one: the
@@ -1837,7 +1846,7 @@ final class RenderTextField extends RenderBox
         maxWidth: rect.width - padding * 2,
       );
     } else {
-      final int? selectionColor = _controller.hasSelection && !_obscure
+      final Color? selectionColor = _controller.hasSelection && !_obscure
           ? selectionColorFor(background: fillColor)
           : null;
       if (selectionColor != null) {

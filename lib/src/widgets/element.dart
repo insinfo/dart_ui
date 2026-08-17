@@ -104,6 +104,12 @@ final class BuildOwner {
     return _pointerRouter.route(event, root: _renderView);
   }
 
+  /// Removes persistent hover state when the pointer leaves this window.
+  void clearPointerHover() {
+    _throwIfDisposed();
+    _pointerRouter.clearHover();
+  }
+
   /// Routes a normalized key event through this tree.
   ///
   /// The order is the whole contract, and it is the order every desktop

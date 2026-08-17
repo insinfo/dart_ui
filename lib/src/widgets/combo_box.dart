@@ -1157,7 +1157,7 @@ final class RenderComboBoxField extends RenderBox
     final double top =
         (box.top + (box.height - rows * bar) / 2).roundToDouble();
     final int paint = list.addPaint(
-      colorArgb: foregroundColor(),
+      colorArgb: foregroundColor().value,
       antiAlias: false,
     );
     final double centre = (box.left + box.width / 2).roundToDouble();

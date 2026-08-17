@@ -4,23 +4,62 @@ import '../../foundation/value_notifier.dart';
 import '../../pdf/document/pdf_document.dart';
 import '../../pdf/render/pdf_text_layout.dart';
 
-/// A text range selected on one PDF page.
+/// A text range selected across one or more PDF pages.
 final class PdfTextSelection {
   const PdfTextSelection({
-    required this.pageNumber,
+    required int pageNumber,
+    required this.baseOffset,
+    required this.extentOffset,
+    required this.text,
+  })  : basePageNumber = pageNumber,
+        extentPageNumber = pageNumber;
+
+  const PdfTextSelection.range({
+    required this.basePageNumber,
+    required this.extentPageNumber,
     required this.baseOffset,
     required this.extentOffset,
     required this.text,
   });
 
-  final int pageNumber;
+  final int basePageNumber;
+  final int extentPageNumber;
   final int baseOffset;
   final int extentOffset;
   final String text;
 
-  int get start => baseOffset < extentOffset ? baseOffset : extentOffset;
-  int get end => baseOffset > extentOffset ? baseOffset : extentOffset;
-  bool get isCollapsed => baseOffset == extentOffset;
+  /// Compatibility spelling for single-page callers and the active end of a
+  /// multi-page selection.
+  int get pageNumber => extentPageNumber;
+
+  bool get isForward =>
+      basePageNumber < extentPageNumber ||
+      basePageNumber == extentPageNumber && baseOffset <= extentOffset;
+
+  int get startPageNumber => isForward ? basePageNumber : extentPageNumber;
+  int get endPageNumber => isForward ? extentPageNumber : basePageNumber;
+  int get start => isForward ? baseOffset : extentOffset;
+  int get end => isForward ? extentOffset : baseOffset;
+  bool get isCollapsed =>
+      basePageNumber == extentPageNumber && baseOffset == extentOffset;
+
+  /// The ordered text offsets painted on [pageNumber], or null when that page
+  /// is outside this selection.
+  ({int start, int end})? rangeForPage(int pageNumber, int textLength) {
+    if (pageNumber < startPageNumber || pageNumber > endPageNumber) {
+      return null;
+    }
+    if (startPageNumber == endPageNumber) {
+      return (
+        start: start.clamp(0, textLength),
+        end: end.clamp(0, textLength),
+      );
+    }
+    return (
+      start: pageNumber == startPageNumber ? start.clamp(0, textLength) : 0,
+      end: pageNumber == endPageNumber ? end.clamp(0, textLength) : textLength,
+    );
+  }
 }
 
 /// One search hit in a PDF document.
@@ -173,20 +212,51 @@ final class PdfViewController extends ValueNotifier<PdfViewState> {
   }
 
   void selectText(int pageNumber, int baseOffset, int extentOffset) {
-    final PdfPageTextLayout layout = textLayoutFor(pageNumber);
-    final int base = baseOffset.clamp(0, layout.text.length);
-    final int extent = extentOffset.clamp(0, layout.text.length);
-    final int start = base < extent ? base : extent;
-    final int end = base > extent ? base : extent;
+    selectTextRange(pageNumber, baseOffset, pageNumber, extentOffset);
+  }
+
+  /// Selects text from an anchor on one page to an extent on another.
+  void selectTextRange(
+    int basePageNumber,
+    int baseOffset,
+    int extentPageNumber,
+    int extentOffset,
+  ) {
+    final PdfPageTextLayout baseLayout = textLayoutFor(basePageNumber);
+    final PdfPageTextLayout extentLayout = textLayoutFor(extentPageNumber);
+    final int base = baseOffset.clamp(0, baseLayout.text.length);
+    final int extent = extentOffset.clamp(0, extentLayout.text.length);
+    final PdfTextSelection provisional = PdfTextSelection.range(
+      basePageNumber: basePageNumber,
+      extentPageNumber: extentPageNumber,
+      baseOffset: base,
+      extentOffset: extent,
+      text: '',
+    );
     _replace(
-      selection: PdfTextSelection(
-        pageNumber: pageNumber,
+      selection: PdfTextSelection.range(
+        basePageNumber: basePageNumber,
+        extentPageNumber: extentPageNumber,
         baseOffset: base,
         extentOffset: extent,
-        text: layout.text.substring(start, end),
+        text: _textForSelection(provisional),
       ),
       clearSearchMatch: true,
     );
+  }
+
+  String _textForSelection(PdfTextSelection selection) {
+    final StringBuffer result = StringBuffer();
+    for (var page = selection.startPageNumber;
+        page <= selection.endPageNumber;
+        page++) {
+      final PdfPageTextLayout layout = textLayoutFor(page);
+      final ({int start, int end}) range =
+          selection.rangeForPage(page, layout.text.length)!;
+      if (result.isNotEmpty) result.write('\n');
+      result.write(layout.text.substring(range.start, range.end));
+    }
+    return result.toString();
   }
 
   void clearSelection() {
@@ -194,10 +264,23 @@ final class PdfViewController extends ValueNotifier<PdfViewState> {
     _replace(clearSelection: true);
   }
 
-  /// Selects all extracted text on [pageNumber].
-  void selectAll(int pageNumber) {
-    final PdfPageTextLayout layout = textLayoutFor(pageNumber);
-    selectText(pageNumber, 0, layout.text.length);
+  /// Selects all extracted text in the document, or only [pageNumber] when it
+  /// is supplied for compatibility with earlier releases.
+  void selectAll([int? pageNumber]) {
+    final PdfDocument? document = _document;
+    if (document == null || document.pageCount == 0) return;
+    if (pageNumber != null) {
+      final PdfPageTextLayout layout = textLayoutFor(pageNumber);
+      selectText(pageNumber, 0, layout.text.length);
+      return;
+    }
+    final int lastPage = document.pageCount;
+    selectTextRange(
+      1,
+      0,
+      lastPage,
+      textLayoutFor(lastPage).text.length,
+    );
   }
 
   /// Finds the next match, wrapping once at the end of the document.

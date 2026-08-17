@@ -2,6 +2,7 @@
 .dart_tool/
 .packages
 build/
+tmp/
 
 # Locally compiled example artifacts. Release artifacts belong under build/.
 example/*.exe

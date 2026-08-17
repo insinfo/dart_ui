@@ -616,8 +616,8 @@ void main() {
       final Framebuffer buffer = await _render(
         RenderDecoratedBox(
           decoration: const BoxDecoration(
-            color: 0xFF3366CC,
-            border: BoxBorder(color: 0xFFCC3311, width: 2),
+            color: Color(0xFF3366CC),
+            border: BoxBorder(color: Color(0xFFCC3311), width: 2),
           ),
           child: _Probe(preferred: const Size(16, 16)),
         ),
@@ -639,7 +639,7 @@ void main() {
       // and the centre is inside, which is the whole claim.
       final Framebuffer buffer = await _render(
         RenderDecoratedBox(
-          decoration: const BoxDecoration(color: _content, radius: 8),
+          decoration: const BoxDecoration(color: Color(_content), radius: 8),
           child: _Probe(preferred: const Size(16, 16)),
         ),
       );
@@ -656,7 +656,7 @@ void main() {
     test('emits a rounded rectangle for the fill when there is a radius', () {
       final List<DisplayListCommand> commands = _commands(
         RenderDecoratedBox(
-          decoration: const BoxDecoration(color: _content, radius: 4),
+          decoration: const BoxDecoration(color: Color(_content), radius: 4),
           child: _Probe(preferred: const Size(16, 16)),
         ),
       );
@@ -672,9 +672,9 @@ void main() {
       final List<DisplayListCommand> commands = _commands(
         RenderDecoratedBox(
           decoration: const BoxDecoration(
-            color: _content,
+            color: Color(_content),
             radius: 4,
-            border: BoxBorder(color: 0xFF000000, width: 2),
+            border: BoxBorder(color: Color(0xFF000000), width: 2),
           ),
           child: _Probe(preferred: const Size(16, 16)),
         ),
@@ -706,7 +706,7 @@ void main() {
       // surface, and going inert as alpha reaches zero would make a fade
       // change behaviour halfway through.
       final RenderDecoratedBox node = RenderDecoratedBox(
-        decoration: const BoxDecoration(color: 0x00000000),
+        decoration: const BoxDecoration(color: Color(0x00000000)),
         child: _Probe(preferred: const Size(16, 16)),
       );
       node.layout(BoxConstraints.tight(const Size(16, 16)));

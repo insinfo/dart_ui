@@ -21,8 +21,8 @@ import 'package:test/test.dart';
 // disagree with itself about channel order.
 import '../layout/helpers.dart';
 
-const int _background = 0xFF204060;
-const int _content = 0xFFCC3311;
+const Color _background = Color(0xFF204060);
+const Color _content = Color(0xFFCC3311);
 
 const (int, int, int, int) _backgroundPixel = (0x20, 0x40, 0x60, 0xFF);
 const (int, int, int, int) _contentPixel = (0xCC, 0x33, 0x11, 0xFF);
@@ -51,7 +51,7 @@ void main() {
 
     final MemoryRenderTarget target = await memoryTarget(side, side);
     addTearDown(target.dispose);
-    await target.renderDisplayList(list, clearColor: _background);
+    await target.renderDisplayList(list, clearColor: _background.value);
     return target.framebuffer;
   }
 
@@ -338,7 +338,7 @@ void main() {
       final Framebuffer buffer = await frame(
         const DecoratedBox(
           decoration: BoxDecoration(
-            color: 0xFF3366CC,
+            color: const Color(0xFF3366CC),
             border: BoxBorder(color: _content, width: 2),
           ),
           child: SizedBox(width: 16, height: 16),
@@ -365,25 +365,28 @@ void main() {
 
       owner.updateRoot(
         const DecoratedBox(
-          decoration: BoxDecoration(color: 0xFF00FF00, radius: 4),
+          decoration: const BoxDecoration(
+            color: Color(0xFF00FF00),
+            radius: 4,
+          ),
         ),
       );
       pipeline.flushLayout();
 
       expect(owner.renderRoot, same(node));
-      expect(node.decoration.color, 0xFF00FF00);
+      expect(node.decoration.color, const Color(0xFF00FF00));
       expect(node.decoration.radius, 4);
     });
 
     test('an equal decoration is not a change', () {
       const BoxDecoration a = BoxDecoration(
         color: _content,
-        border: BoxBorder(color: 0xFF000000, width: 1),
+        border: const BoxBorder(color: Color(0xFF000000), width: 1),
         radius: 3,
       );
       const BoxDecoration b = BoxDecoration(
         color: _content,
-        border: BoxBorder(color: 0xFF000000, width: 1),
+        border: const BoxBorder(color: Color(0xFF000000), width: 1),
         radius: 3,
       );
 

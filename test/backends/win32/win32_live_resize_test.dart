@@ -536,7 +536,7 @@ void main() {
 
     Future<Application> start({required bool liveResize}) async {
       application = await Application.start(
-        rootWidget: const ColoredBox(color: 0xFF3060A0),
+        rootWidget: const ColoredBox(color: Color(0xFF3060A0)),
         backends: <WindowingBackendEntry>[
           const WindowingBackendEntry(
             name: 'win32',
@@ -560,7 +560,7 @@ void main() {
         options: ApplicationOptions(
           title: 'drag',
           size: const Size(240, 160),
-          clearColor: 0xFF101010,
+      clearColor: const Color(0xFF101010),
           liveResize: liveResize,
         ),
       );

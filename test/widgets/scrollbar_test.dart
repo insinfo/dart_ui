@@ -18,20 +18,17 @@ void main() {
 
       final RenderScrollbar bar = harness.bar;
       expect(bar.trackExtent, 100);
-      // A quarter of the content is visible, so the thumb is a quarter of the
-      // track, and it starts at the top because the offset is zero.
-      expect(bar.thumbMetrics!.extent, 25);
+      // The viewport fraction is widened to the modern 36 px grab target.
+      expect(bar.thumbMetrics!.extent, 36);
       expect(bar.thumbMetrics!.start, 0);
 
       position.jumpTo(150);
       harness.frame();
 
-      // 150 of 400 content units is 37.5 of 100 track units.
-      expect(bar.thumbMetrics!.start, 37.5);
-      expect(harness.rects, <Rect>[
-        const Rect.fromLTRB(192, 0, 200, 100),
-        const Rect.fromLTRB(192, 37.5, 200, 62.5),
-      ]);
+      // The thumb travels through the 24 px left after margins, arrow buttons
+      // and its minimum. The channel and both line-step buttons remain drawn.
+      expect(bar.thumbMetrics!.start, 12);
+      expect(harness.rects.last, const Rect.fromLTRB(191, 32, 197, 68));
       harness.dispose();
     });
 
@@ -44,7 +41,8 @@ void main() {
       harness.frame();
 
       final RenderScrollbar bar = harness.bar;
-      expect(bar.thumbMetrics!.start + bar.thumbMetrics!.extent, 100);
+      expect(bar.thumbMetrics!.start + bar.thumbMetrics!.extent,
+          bar.usableTrackExtent);
       harness.dispose();
     });
 
@@ -55,13 +53,13 @@ void main() {
       final harness = _Harness(position);
 
       final RenderScrollbar bar = harness.bar;
-      expect(bar.thumbMetrics!.extent, 16, reason: 'the declared minimum');
+      expect(bar.thumbMetrics!.extent, 36, reason: 'the themed minimum');
 
       // And the widened thumb still reaches the end exactly at the end, which
       // is what a naive `start = fraction * track` gets wrong.
       position.jumpTo(position.maxScrollExtent);
       harness.frame();
-      expect(bar.thumbMetrics!.start, 84);
+      expect(bar.thumbMetrics!.start, 24);
       harness.dispose();
     });
 
@@ -84,14 +82,13 @@ void main() {
           ScrollPosition(viewportExtent: 100, contentExtent: 400);
       final harness = _Harness(position);
 
-      // The thumb is 25 long in a 100 track, so it has 75 to travel while the
-      // content has 300. One pixel of thumb is four pixels of content.
-      expect(harness.bar.dragScale, 4);
+      // The inset, widened thumb has 24 px to travel for 300 content pixels.
+      expect(harness.bar.dragScale, closeTo(300 / 24, 1e-9));
 
-      harness.pointer(_down(const Offset(196, 10)));
-      harness.pointer(_move(const Offset(196, 20)));
+      harness.pointer(_down(const Offset(196, 25)));
+      harness.pointer(_move(const Offset(196, 35)));
 
-      expect(position.pixels, 40, reason: 'ten pixels of thumb, four each');
+      expect(position.pixels, closeTo(125, 1e-9));
 
       // And the whole track is exactly the whole content.
       harness.pointer(_move(const Offset(196, 85)));
@@ -104,14 +101,60 @@ void main() {
           ScrollPosition(viewportExtent: 100, contentExtent: 400);
       final harness = _Harness(position);
 
-      harness.pointer(_down(const Offset(196, 90)));
+      harness.pointer(_down(const Offset(196, 70)));
       // One page is a viewport minus a line of context, kept by ScrollPosition.
       expect(position.pixels, 100 - defaultLineExtent);
 
       harness.pointer(_up(const Offset(196, 90)));
-      harness.pointer(_down(const Offset(196, 2)));
+      harness.pointer(_down(const Offset(196, 21)));
       expect(position.pixels, 0);
       harness.dispose();
+    });
+
+    test('start and end buttons move by one desktop wheel step', () {
+      final ScrollPosition position =
+          ScrollPosition(viewportExtent: 100, contentExtent: 400);
+      final harness = _Harness(position);
+
+      harness.pointer(_down(const Offset(196, 90)));
+      harness.pointer(_up(const Offset(196, 90)));
+      expect(position.pixels, defaultLineExtent);
+
+      harness.pointer(_down(const Offset(196, 10)));
+      harness.pointer(_up(const Offset(196, 10)));
+      expect(position.pixels, 0);
+      harness.dispose();
+    });
+
+    test('thumb interaction does not leak into an ancestor gesture surface',
+        () {
+      final ScrollPosition position =
+          ScrollPosition(viewportExtent: 100, contentExtent: 400);
+      var ancestorTaps = 0;
+      final BuildOwner owner = BuildOwner(
+        pipelineOwner: PipelineOwner(
+          rootConstraints: BoxConstraints.tight(const Size(200, 100)),
+        ),
+      );
+      addTearDown(owner.dispose);
+      owner.updateRoot(
+        GestureDetector(
+          onTap: () => ancestorTaps++,
+          child: Scrollbar(
+            position: position,
+            child: const SizedBox(width: 200, height: 100),
+          ),
+        ),
+      );
+      owner.pipelineOwner.flushLayout();
+
+      owner.dispatchPointerEvent(_down(const Offset(196, 25)));
+      owner.dispatchPointerEvent(_move(const Offset(196, 35)));
+      owner.dispatchPointerEvent(_up(const Offset(196, 35)));
+
+      expect(position.pixels, greaterThan(0));
+      expect(ancestorTaps, 0,
+          reason: 'the scrollbar is an opaque pointer interaction');
     });
 
     test('a release ends the drag rather than leaving it armed', () {
@@ -119,12 +162,12 @@ void main() {
           ScrollPosition(viewportExtent: 100, contentExtent: 400);
       final harness = _Harness(position);
 
-      harness.pointer(_down(const Offset(196, 10)));
-      harness.pointer(_move(const Offset(196, 20)));
-      harness.pointer(_up(const Offset(196, 20)));
+      harness.pointer(_down(const Offset(196, 25)));
+      harness.pointer(_move(const Offset(196, 35)));
+      harness.pointer(_up(const Offset(196, 35)));
       harness.pointer(_move(const Offset(196, 60)));
 
-      expect(position.pixels, 40,
+      expect(position.pixels, closeTo(125, 1e-9),
           reason: 'the move after the release is not '
               'part of the drag');
       harness.dispose();
@@ -139,7 +182,8 @@ void main() {
       harness.pointer(_move(const Offset(196, 20)));
 
       expect(position.pixels, 0);
-      expect(harness.rects, hasLength(2), reason: 'still drawn, just inert');
+      expect(harness.rects, hasLength(4),
+          reason: 'channel, buttons and thumb are still drawn, just inert');
       harness.dispose();
     });
   });
@@ -150,7 +194,7 @@ void main() {
           ScrollPosition(viewportExtent: 100, contentExtent: 400);
       final harness = _Harness(position);
 
-      expect(harness.rects, hasLength(2));
+      expect(harness.rects, hasLength(4));
       harness.dispose();
     });
 
@@ -184,13 +228,13 @@ void main() {
 
       position.jumpTo(50);
       harness.frame();
-      expect(harness.rects, hasLength(2), reason: 'it appeared');
+      expect(harness.rects, hasLength(4), reason: 'it appeared');
 
       // Still up while the delay runs, because a scrollbar that vanished the
       // instant the finger stopped would be gone before it was read.
       dispatcher.advance(const Duration(milliseconds: 500));
       harness.frame();
-      expect(harness.rects, hasLength(2));
+      expect(harness.rects, hasLength(4));
 
       // The delay expires and the fade runs to zero.
       dispatcher.advance(const Duration(milliseconds: 400));
@@ -200,7 +244,7 @@ void main() {
       // And a second scroll brings it back.
       position.jumpTo(80);
       harness.frame();
-      expect(harness.rects, hasLength(2));
+      expect(harness.rects, hasLength(4));
       expect(dispatcher.pendingTimerCount, 1, reason: 'one fade armed');
       harness.dispose();
     });
@@ -215,7 +259,7 @@ void main() {
 
       // No dispatcher was supplied and none is in scope, so there is no way to
       // schedule the fade - and the safe failure is a bar that is visible.
-      expect(harness.rects, hasLength(2));
+      expect(harness.rects, hasLength(4));
       harness.dispose();
     });
   });
@@ -247,8 +291,8 @@ void main() {
 
       expect(position.contentExtent, 20000);
       final List<Rect> rects = _rectsIn(display);
-      // The track and the thumb, drawn over the list.
-      expect(rects.last, const Rect.fromLTRB(192, 0, 200, 16));
+      // Only the rounded thumb is visible until the pointer enters the track.
+      expect(rects.last, const Rect.fromLTRB(191, 20, 197, 56));
       owner.dispose();
     });
   });
@@ -319,7 +363,7 @@ List<Rect> _rectsIn(DisplayList list) {
   final reader = DisplayListReader(list);
   final List<Rect> rects = <Rect>[];
   while (reader.moveNext()) {
-    if (reader.opcode != opDrawRect) continue;
+    if (reader.opcode != opDrawRect && reader.opcode != opDrawRRect) continue;
     rects.add(
       Rect.fromLTRB(
         reader.floatAt(0),

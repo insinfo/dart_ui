@@ -3,6 +3,7 @@ import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/gestures/binding.dart';
 import 'package:dart_ui/src/gestures/drag.dart';
 import 'package:dart_ui/src/gestures/tap.dart';
+import 'package:dart_ui/src/graphics/color.dart';
 import 'package:dart_ui/src/layout/box_constraints.dart';
 import 'package:dart_ui/src/layout/pipeline.dart';
 import 'package:dart_ui/src/layout/render_box.dart';
@@ -30,7 +31,7 @@ import 'gesture_test_support.dart';
     behavior: behavior,
     child: RenderConstrainedBox(
       additionalConstraints: BoxConstraints.tight(size),
-      child: RenderColoredBox(color: 0xFF000000),
+      child: RenderColoredBox(color: const Color(0xFF000000)),
     ),
   );
   final RenderBox root = outer == null ? detector : (outer..child = detector);
@@ -214,7 +215,7 @@ void main() {
       final inner = RenderGestureDetector(
         child: RenderConstrainedBox(
           additionalConstraints: BoxConstraints.tight(const Size(100, 100)),
-          child: RenderColoredBox(color: 0xFF000000),
+          child: RenderColoredBox(color: const Color(0xFF000000)),
         ),
       );
       final outer = RenderGestureDetector(child: inner);

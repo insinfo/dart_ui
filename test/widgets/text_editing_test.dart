@@ -1142,10 +1142,13 @@ int _selectionRects(DisplayList list, ThemeData theme) {
   return _rectsWithColor(list, theme.selection).length;
 }
 
-List<DrawRectCommand> _rectsWithColor(DisplayList list, int color) =>
+List<DrawRectCommand> _rectsWithColor(DisplayList list, Color color) =>
     expandDisplayList(list)
         .whereType<DrawRectCommand>()
-        .where((DrawRectCommand rect) => list.paintColor(rect.paintId) == color)
+        .where(
+          (DrawRectCommand rect) =>
+              list.paintColor(rect.paintId) == color.value,
+        )
         .toList();
 
 BuildOwner _owner({Size size = const Size(200, 60)}) => BuildOwner(
