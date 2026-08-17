@@ -99,6 +99,28 @@ import 'widget.dart';
 /// rather than a theme lookup - the same trade `kDefaultUiFontSize` makes.
 const double kDefaultIconSize = 16.0;
 
+/// Supplies size and colour defaults to descendant [Icon] widgets.
+final class IconTheme extends InheritedWidget {
+  const IconTheme({
+    super.key,
+    required this.data,
+    required super.child,
+  });
+
+  final IconThemeData data;
+
+  static IconThemeData of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<IconTheme>()?.data ??
+      const IconThemeData();
+
+  static IconThemeData? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<IconTheme>()?.data;
+
+  @override
+  bool updateShouldNotify(IconTheme oldWidget) =>
+      !identical(data, oldWidget.data);
+}
+
 /// Which glyph, in which font, an icon is.
 ///
 /// Two integers and a string: cheap to compare, safe to hold in a `const`, and
@@ -179,7 +201,7 @@ final class Icon extends RenderObjectWidget {
   @override
   RenderIcon createRenderObject(BuildContext context) => RenderIcon(
         icon,
-        size: size ?? kDefaultIconSize,
+        size: _sizeFrom(context),
         color: _colorFrom(context),
         textDirection: _directionFrom(context),
       );
@@ -191,7 +213,7 @@ final class Icon extends RenderObjectWidget {
   ) {
     renderObject
       ..icon = icon
-      ..iconSize = size ?? kDefaultIconSize
+      ..iconSize = _sizeFrom(context)
       ..color = _colorFrom(context)
       ..textDirection = _directionFrom(context);
   }
@@ -201,8 +223,16 @@ final class Icon extends RenderObjectWidget {
   /// subscribing it to the theme would schedule a rebuild that can never run.
   int _colorFrom(BuildContext context) =>
       color ??
+      context.getInheritedWidgetOfExactType<IconTheme>()?.data.color ??
+      context.getInheritedWidgetOfExactType<Theme>()?.data.iconTheme.color ??
       context.getInheritedWidgetOfExactType<Theme>()?.data.foreground ??
       0xFF111111;
+
+  double _sizeFrom(BuildContext context) =>
+      size ??
+      context.getInheritedWidgetOfExactType<IconTheme>()?.data.size ??
+      context.getInheritedWidgetOfExactType<Theme>()?.data.iconTheme.size ??
+      kDefaultIconSize;
 
   /// The ambient reading direction, read the same way and for the same reason.
   ///
@@ -489,6 +519,47 @@ final class RenderIcon extends RenderBox {
 /// installed at all - `test/fonts/DejaVuSans.ttf` carries all seven. A subset
 /// face may not, which is what [RenderIcon.hasGlyph] is for.
 abstract final class Icons {
+  static const String materialFontFamily = 'Material Icons';
+
+  static const IconData article =
+      IconData(0xEF42, fontFamily: materialFontFamily);
+  static const IconData contentCopy =
+      IconData(0xE14D, fontFamily: materialFontFamily);
+  static const IconData darkMode =
+      IconData(0xE51C, fontFamily: materialFontFamily);
+  static const IconData fitScreen =
+      IconData(0xEA10, fontFamily: materialFontFamily);
+  static const IconData folderOpen =
+      IconData(0xE2C8, fontFamily: materialFontFamily);
+  static const IconData fullscreen =
+      IconData(0xE5D0, fontFamily: materialFontFamily);
+  static const IconData fullscreenExit =
+      IconData(0xE5D1, fontFamily: materialFontFamily);
+  static const IconData lightMode =
+      IconData(0xE518, fontFamily: materialFontFamily);
+  static const IconData moreVert =
+      IconData(0xE5D4, fontFamily: materialFontFamily);
+  static const IconData navigateBefore = IconData(
+    0xE408,
+    fontFamily: materialFontFamily,
+    matchTextDirection: true,
+  );
+  static const IconData navigateNext = IconData(
+    0xE409,
+    fontFamily: materialFontFamily,
+    matchTextDirection: true,
+  );
+  static const IconData refresh =
+      IconData(0xE5D5, fontFamily: materialFontFamily);
+  static const IconData search =
+      IconData(0xE8B6, fontFamily: materialFontFamily);
+  static const IconData selectAll =
+      IconData(0xE162, fontFamily: materialFontFamily);
+  static const IconData zoomIn =
+      IconData(0xE8FF, fontFamily: materialFontFamily);
+  static const IconData zoomOut =
+      IconData(0xE900, fontFamily: materialFontFamily);
+
   /// `U+2713` CHECK MARK - a checked box.
   static const IconData check = IconData(0x2713);
 

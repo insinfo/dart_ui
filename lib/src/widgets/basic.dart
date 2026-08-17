@@ -506,30 +506,79 @@ final class SizedBox extends SingleChildRenderObjectWidget {
       );
 }
 
+/// Supplies a default style to descendant [Text] widgets.
+///
+/// This mirrors the useful core of Flutter's API and lets compound controls
+/// colour arbitrary text children without reaching into those children.
+final class DefaultTextStyle extends InheritedWidget {
+  const DefaultTextStyle({
+    super.key,
+    required this.style,
+    required super.child,
+  });
+
+  final TextStyle style;
+
+  static TextStyle of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<DefaultTextStyle>()?.style ??
+      const TextStyle();
+
+  static TextStyle? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<DefaultTextStyle>()?.style;
+
+  @override
+  bool updateShouldNotify(DefaultTextStyle oldWidget) =>
+      !identical(style, oldWidget.style);
+}
+
 /// Text configuration. Shaping and glyph painting remain a renderer concern.
 final class Text extends RenderObjectWidget {
-  const Text(this.text, {super.key, this.fontSize});
+  const Text(
+    this.text, {
+    super.key,
+    this.style,
+    this.fontSize,
+    this.color,
+  });
 
   final String text;
 
+  /// Flutter-compatible style surface. Explicit legacy fields below win.
+  final TextStyle? style;
+
   /// The pixel size to draw at, or null to take the ambient theme's.
   final double? fontSize;
+
+  /// `0xAARRGGBB`, overriding [style] and the ambient text style.
+  final int? color;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
 
   @override
-  RenderText createRenderObject(BuildContext context) =>
-      RenderText(text, fontSize: _sizeFrom(context));
+  RenderText createRenderObject(BuildContext context) {
+    final TextStyle resolved = _styleFrom(context);
+    return RenderText(
+      text,
+      fontSize: resolved.fontSize ?? kDefaultUiFontSize,
+      color: resolved.color ?? 0xFF111111,
+      fontFamily: resolved.fontFamily,
+      fontWeight: resolved.fontWeight?.value ?? 400,
+    );
+  }
 
   @override
   void updateRenderObject(
     BuildContext context,
     covariant RenderText renderObject,
   ) {
+    final TextStyle resolved = _styleFrom(context);
     renderObject
       ..text = text
-      ..fontSize = _sizeFrom(context);
+      ..fontSize = resolved.fontSize ?? kDefaultUiFontSize
+      ..color = resolved.color ?? 0xFF111111
+      ..fontFamily = resolved.fontFamily
+      ..fontWeight = resolved.fontWeight?.value ?? 400;
   }
 
   /// The theme's font size, read **without** registering a dependency.
@@ -538,10 +587,19 @@ final class Text extends RenderObjectWidget {
   /// would schedule a rebuild that can never run. Reading it without a
   /// subscription is correct here because a theme swap rebuilds the subtree
   /// that installed it, which reaches this widget through its parent.
-  double _sizeFrom(BuildContext context) =>
-      fontSize ??
-      context.getInheritedWidgetOfExactType<Theme>()?.data.fontSize ??
-      kDefaultUiFontSize;
+  TextStyle _styleFrom(BuildContext context) {
+    final ThemeData theme =
+        context.getInheritedWidgetOfExactType<Theme>()?.data ??
+            ThemeData.neutralLight;
+    final TextStyle ambient =
+        context.getInheritedWidgetOfExactType<DefaultTextStyle>()?.style ??
+            theme.textTheme.bodyMedium;
+    final TextStyle merged = ambient.merge(style);
+    return merged.copyWith(
+      color: color ?? merged.color ?? theme.foreground,
+      fontSize: fontSize ?? merged.fontSize ?? theme.fontSize,
+    );
+  }
 }
 
 /// A single-line text leaf.
@@ -556,13 +614,19 @@ final class RenderText extends RenderBox {
     String text, {
     int color = 0xFF111111,
     double fontSize = kDefaultUiFontSize,
+    String? fontFamily,
+    int fontWeight = 400,
   })  : _text = text,
         _color = color,
-        _fontSize = fontSize;
+        _fontSize = fontSize,
+        _fontFamily = fontFamily,
+        _fontWeight = fontWeight;
 
   String _text;
   int _color;
   double _fontSize;
+  String? _fontFamily;
+  int _fontWeight;
 
   String get text => _text;
 
@@ -588,8 +652,30 @@ final class RenderText extends RenderBox {
     markNeedsLayout();
   }
 
+  String? get fontFamily => _fontFamily;
+
+  set fontFamily(String? value) {
+    if (value == _fontFamily) return;
+    _fontFamily = value;
+    markNeedsLayout();
+  }
+
+  int get fontWeight => _fontWeight;
+
+  set fontWeight(int value) {
+    if (value == _fontWeight) return;
+    _fontWeight = value;
+    markNeedsLayout();
+  }
+
   /// The face this line is drawn in, or null when the machine has none.
-  ScaledTypeface? get font => FontRegistry.instance.uiFont(_fontSize);
+  ScaledTypeface? get font {
+    final String? family = _fontFamily;
+    if (family == null) return FontRegistry.instance.uiFont(_fontSize);
+    return FontRegistry.instance
+        .faceFor(family, weight: _fontWeight)
+        ?.atSize(_fontSize);
+  }
 
   /// The box this line needs, measured through the same shaper paint uses.
   Size get _naturalSize {

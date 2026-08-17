@@ -194,6 +194,12 @@ final class PdfViewController extends ValueNotifier<PdfViewState> {
     _replace(clearSelection: true);
   }
 
+  /// Selects all extracted text on [pageNumber].
+  void selectAll(int pageNumber) {
+    final PdfPageTextLayout layout = textLayoutFor(pageNumber);
+    selectText(pageNumber, 0, layout.text.length);
+  }
+
   /// Finds the next match, wrapping once at the end of the document.
   PdfSearchMatch? findNext(String query) {
     final PdfDocument? document = _document;

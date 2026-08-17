@@ -248,6 +248,12 @@ final class TextStyle {
       'TextStyle($font${language == null ? '' : ', $language'})';
 }
 
+/// Unambiguous public name for paragraph shaping styles.
+///
+/// Widget text uses the Flutter-compatible `widgets.TextStyle`; paragraph
+/// callers that provide an already-scaled face use this name.
+typedef ParagraphTextStyle = TextStyle;
+
 /// A stretch of text sharing one style.
 ///
 /// The paragraph's text is the spans concatenated, in order. Spans exist so a

@@ -6,9 +6,12 @@ import '../../layout/render_flex.dart';
 import '../../layout/render_viewport.dart';
 import '../../pdf/document/pdf_document.dart';
 import '../basic.dart';
+import '../context_menu.dart';
 import '../gesture_detector.dart';
+import '../menu.dart';
 import '../proxy.dart';
 import '../scroll_view.dart';
+import '../text_field.dart' show ClipboardScope;
 import '../widget.dart';
 import 'pdf_page_view.dart';
 import 'pdf_view_controller.dart';
@@ -26,6 +29,7 @@ final class PdfView extends StatefulWidget {
     this.minimumZoom = 0.25,
     this.maximumZoom = 5,
     this.enableTextSelection = false,
+    this.enableContextMenu = true,
     this.enablePinchZoom = false,
     this.backgroundColor = 0xFFF1F5F9,
     this.pageColor = 0xFFFFFFFF,
@@ -43,6 +47,7 @@ final class PdfView extends StatefulWidget {
   final double minimumZoom;
   final double maximumZoom;
   final bool enableTextSelection;
+  final bool enableContextMenu;
   final bool enablePinchZoom;
   final int backgroundColor;
   final int pageColor;
@@ -239,6 +244,40 @@ final class _PdfViewState extends State<PdfView> {
         behavior: GestureHitTestBehavior.deferToChild,
         onScaleStart: _onScaleStart,
         onScaleUpdate: _onScaleUpdate,
+        child: reader,
+      );
+    }
+    if (widget.enableTextSelection && widget.enableContextMenu) {
+      reader = ContextMenuRegion(
+        itemsBuilder: () {
+          final bool hasSelection = _controller.hasSelection;
+          return <MenuItem>[
+            MenuItem(
+              label: 'Copiar',
+              shortcut: 'Ctrl+C',
+              enabled: hasSelection,
+              disabledReason: hasSelection ? null : 'Nenhum texto selecionado',
+              onSelected: hasSelection
+                  ? () {
+                      ClipboardScope.of(context)
+                          .writeText(_controller.selectedText);
+                    }
+                  : null,
+            ),
+            MenuItem(
+              label: 'Selecionar tudo',
+              shortcut: 'Ctrl+A',
+              onSelected: () => _controller.selectAll(_controller.currentPage),
+            ),
+            if (hasSelection) ...<MenuItem>[
+              const MenuItem.separator(),
+              MenuItem(
+                label: 'Limpar seleção',
+                onSelected: _controller.clearSelection,
+              ),
+            ],
+          ];
+        },
         child: reader,
       );
     }

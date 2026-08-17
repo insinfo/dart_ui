@@ -588,7 +588,17 @@ List<List<int>> _glyphRuns(DisplayList list) {
 /// A stable signature of a display list: what a golden compares.
 String _signature(DisplayList list) {
   final DisplayListReader reader = DisplayListReader(list);
-  final StringBuffer buffer = StringBuffer();
+  final StringBuffer buffer = StringBuffer('paints:');
+  for (var id = 0; id < list.paintCount; id++) {
+    buffer
+      ..write(list.paintColor(id))
+      ..write('/')
+      ..write(list.paintStyle(id))
+      ..write('/')
+      ..write(list.paintStrokeWidth(id).toStringAsFixed(3))
+      ..write(',');
+  }
+  buffer.write(';commands:');
   while (reader.moveNext()) {
     buffer.write(reader.opcode);
     buffer.write(':');

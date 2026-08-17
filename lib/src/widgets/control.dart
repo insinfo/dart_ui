@@ -18,6 +18,7 @@ import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
+import '../graphics/display_list_opcodes.dart' show paintStyleStroke;
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
 import '../rendering/text/font_registry.dart';
@@ -260,6 +261,56 @@ mixin ControlBehavior on RenderBox
   void paintFill(DisplayList list, Rect rect, int color) {
     final int paint = list.addPaint(colorArgb: color, antiAlias: false);
     list.drawRectangle(rect, paint);
+  }
+
+  /// Antialiased fill for modern controls whose theme requests rounded chrome.
+  void paintRoundedFill(
+    DisplayList list,
+    Rect rect,
+    int color,
+    double radius,
+  ) {
+    if (radius <= 0) {
+      paintFill(list, rect, color);
+      return;
+    }
+    list.drawRRectUniform(
+      rect.left,
+      rect.top,
+      rect.right,
+      rect.bottom,
+      radius,
+      radius,
+      list.addPaint(colorArgb: color, antiAlias: true),
+    );
+  }
+
+  void paintRoundedBorder(
+    DisplayList list,
+    Rect rect,
+    int color,
+    double radius, {
+    double width = 1,
+  }) {
+    if (radius <= 0) {
+      paintBorder(list, rect, color, width: width);
+      return;
+    }
+    final double inset = width / 2;
+    list.drawRRectUniform(
+      rect.left + inset,
+      rect.top + inset,
+      rect.right - inset,
+      rect.bottom - inset,
+      radius,
+      radius,
+      list.addPaint(
+        colorArgb: color,
+        style: paintStyleStroke,
+        strokeWidth: width,
+        antiAlias: true,
+      ),
+    );
   }
 
   /// Strokes a one-pixel border by painting four edges.

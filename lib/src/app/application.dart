@@ -980,6 +980,7 @@ final class ApplicationWindow with DisposableMixin {
           child: DartUiApp(
             theme: application.options.theme,
             textDirection: application.options.textDirection,
+            frameScheduler: scheduler,
             home: _rootWidget,
           ),
         ),

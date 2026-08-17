@@ -26,7 +26,184 @@ enum ThemeDensity {
   double get scale => this == ThemeDensity.compact ? 0.82 : 1.0;
 }
 
-enum ThemeBrightness { light, dark }
+/// Whether a theme uses a light or dark colour palette.
+///
+/// The name intentionally matches Flutter's public contract so widgets can be
+/// ported without translating an otherwise identical enum at every boundary.
+enum Brightness { light, dark }
+
+/// Compatibility spelling used by the first pre-release dart_ui themes.
+typedef ThemeBrightness = Brightness;
+
+/// Material-style semantic colours used by widgets that should not need to
+/// know the framework's older palette field names.
+final class ColorScheme {
+  const ColorScheme({
+    required this.brightness,
+    required this.primary,
+    required this.onPrimary,
+    required this.surface,
+    required this.onSurface,
+    required this.surfaceContainer,
+    required this.outline,
+    required this.error,
+    required this.onError,
+  });
+
+  const ColorScheme.light({
+    this.primary = 0xFF2563EB,
+    this.onPrimary = 0xFFFFFFFF,
+    this.surface = 0xFFFFFFFF,
+    this.onSurface = 0xFF172033,
+    this.surfaceContainer = 0xFFF1F5F9,
+    this.outline = 0xFFCBD5E1,
+    this.error = 0xFFB3261E,
+    this.onError = 0xFFFFFFFF,
+  }) : brightness = Brightness.light;
+
+  const ColorScheme.dark({
+    this.primary = 0xFF8AB4FF,
+    this.onPrimary = 0xFF002E69,
+    this.surface = 0xFF111827,
+    this.onSurface = 0xFFF1F5F9,
+    this.surfaceContainer = 0xFF1F2937,
+    this.outline = 0xFF475569,
+    this.error = 0xFFFFB4AB,
+    this.onError = 0xFF690005,
+  }) : brightness = Brightness.dark;
+
+  final Brightness brightness;
+  final int primary;
+  final int onPrimary;
+  final int surface;
+  final int onSurface;
+  final int surfaceContainer;
+  final int outline;
+  final int error;
+  final int onError;
+
+  ColorScheme copyWith({
+    Brightness? brightness,
+    int? primary,
+    int? onPrimary,
+    int? surface,
+    int? onSurface,
+    int? surfaceContainer,
+    int? outline,
+    int? error,
+    int? onError,
+  }) =>
+      ColorScheme(
+        brightness: brightness ?? this.brightness,
+        primary: primary ?? this.primary,
+        onPrimary: onPrimary ?? this.onPrimary,
+        surface: surface ?? this.surface,
+        onSurface: onSurface ?? this.onSurface,
+        surfaceContainer: surfaceContainer ?? this.surfaceContainer,
+        outline: outline ?? this.outline,
+        error: error ?? this.error,
+        onError: onError ?? this.onError,
+      );
+}
+
+/// Font weights follow the numeric OpenType/CSS scale used by Flutter.
+final class FontWeight {
+  const FontWeight._(this.value);
+
+  final int value;
+
+  static const FontWeight w100 = FontWeight._(100);
+  static const FontWeight w200 = FontWeight._(200);
+  static const FontWeight w300 = FontWeight._(300);
+  static const FontWeight w400 = FontWeight._(400);
+  static const FontWeight w500 = FontWeight._(500);
+  static const FontWeight w600 = FontWeight._(600);
+  static const FontWeight w700 = FontWeight._(700);
+  static const FontWeight w800 = FontWeight._(800);
+  static const FontWeight w900 = FontWeight._(900);
+  static const FontWeight normal = w400;
+  static const FontWeight bold = w700;
+}
+
+/// The stable, portable subset of Flutter's TextStyle contract.
+final class TextStyle {
+  const TextStyle({
+    this.color,
+    this.fontSize,
+    this.fontFamily,
+    this.fontWeight,
+  });
+
+  final int? color;
+  final double? fontSize;
+  final String? fontFamily;
+  final FontWeight? fontWeight;
+
+  TextStyle merge(TextStyle? other) => other == null
+      ? this
+      : TextStyle(
+          color: other.color ?? color,
+          fontSize: other.fontSize ?? fontSize,
+          fontFamily: other.fontFamily ?? fontFamily,
+          fontWeight: other.fontWeight ?? fontWeight,
+        );
+
+  TextStyle copyWith({
+    int? color,
+    double? fontSize,
+    String? fontFamily,
+    FontWeight? fontWeight,
+  }) =>
+      TextStyle(
+        color: color ?? this.color,
+        fontSize: fontSize ?? this.fontSize,
+        fontFamily: fontFamily ?? this.fontFamily,
+        fontWeight: fontWeight ?? this.fontWeight,
+      );
+}
+
+final class TextTheme {
+  const TextTheme({
+    this.bodyMedium = const TextStyle(fontSize: 14),
+    this.titleMedium =
+        const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+    this.titleLarge =
+        const TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+    this.labelLarge =
+        const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+  });
+
+  final TextStyle bodyMedium;
+  final TextStyle titleMedium;
+  final TextStyle titleLarge;
+  final TextStyle labelLarge;
+}
+
+final class IconThemeData {
+  const IconThemeData({this.color, this.size});
+
+  final int? color;
+  final double? size;
+
+  IconThemeData merge(IconThemeData? other) => other == null
+      ? this
+      : IconThemeData(
+          color: other.color ?? color,
+          size: other.size ?? size,
+        );
+}
+
+final class ProgressIndicatorThemeData {
+  const ProgressIndicatorThemeData({
+    this.color,
+    this.linearTrackColor,
+    this.circularTrackColor,
+  });
+
+  final int? color;
+  final int? linearTrackColor;
+  final int? circularTrackColor;
+}
 
 /// The named palette and metrics of one theme.
 ///
@@ -35,32 +212,42 @@ enum ThemeBrightness { light, dark }
 /// value the rasterizer immediately decomposes again.
 final class ThemeData {
   const ThemeData({
-    required this.name,
-    required this.brightness,
-    required this.accent,
-    required this.accentPressed,
-    required this.accentHovered,
-    required this.surface,
-    required this.surfaceAlternate,
-    required this.border,
-    required this.foreground,
-    required this.foregroundSecondary,
-    required this.disabledForeground,
-    required this.disabledSurface,
-    required this.focusRing,
-    required this.selection,
+    this.name = 'dart-ui-light',
+    this.brightness = Brightness.light,
+    this.accent = 0xFF2563EB,
+    this.accentPressed = 0xFF1D4ED8,
+    this.accentHovered = 0xFF3B82F6,
+    this.surface = 0xFFF8FAFC,
+    this.surfaceAlternate = 0xFFFFFFFF,
+    this.border = 0xFFCBD5E1,
+    this.foreground = 0xFF172033,
+    this.foregroundSecondary = 0xFF64748B,
+    this.disabledForeground = 0xFF94A3B8,
+    this.disabledSurface = 0xFFE2E8F0,
+    this.focusRing = 0xFF2563EB,
+    this.selection = 0xFFBFDBFE,
+    this.colorScheme = const ColorScheme.light(),
+    this.textTheme = const TextTheme(),
+    this.iconTheme = const IconThemeData(size: 20),
+    this.progressIndicatorTheme = const ProgressIndicatorThemeData(),
+    this.useMaterial3 = true,
     this.density = ThemeDensity.comfortable,
     this.highContrast = false,
     this.reducedMotion = false,
-    this.cornerRadius = 3.0,
-    this.controlHeight = 28.0,
-    this.controlPadding = 8.0,
+    this.cornerRadius = 8.0,
+    this.controlHeight = 36.0,
+    this.controlPadding = 10.0,
     this.focusRingWidth = 2.0,
-    this.fontSize = kDefaultUiFontSize,
+    this.fontSize = 14.0,
   });
 
   final String name;
   final ThemeBrightness brightness;
+  final ColorScheme colorScheme;
+  final TextTheme textTheme;
+  final IconThemeData iconTheme;
+  final ProgressIndicatorThemeData progressIndicatorTheme;
+  final bool useMaterial3;
 
   final int accent;
   final int accentPressed;
@@ -154,10 +341,21 @@ final class ThemeData {
     double? cornerRadius,
     double? controlHeight,
     double? fontSize,
+    ColorScheme? colorScheme,
+    TextTheme? textTheme,
+    IconThemeData? iconTheme,
+    ProgressIndicatorThemeData? progressIndicatorTheme,
+    bool? useMaterial3,
   }) =>
       ThemeData(
         name: name ?? this.name,
         brightness: brightness ?? this.brightness,
+        colorScheme: colorScheme ?? this.colorScheme,
+        textTheme: textTheme ?? this.textTheme,
+        iconTheme: iconTheme ?? this.iconTheme,
+        progressIndicatorTheme:
+            progressIndicatorTheme ?? this.progressIndicatorTheme,
+        useMaterial3: useMaterial3 ?? this.useMaterial3,
         accent: accent,
         accentPressed: accentPressed,
         accentHovered: accentHovered,
@@ -238,6 +436,11 @@ final class ThemeData {
     disabledSurface: 0xFFE6E6E6,
     focusRing: 0xFF1F4FA8,
     selection: 0xFFBBD6FF,
+    colorScheme: ColorScheme.light(),
+    cornerRadius: 3,
+    controlHeight: 28,
+    controlPadding: 8,
+    fontSize: kDefaultUiFontSize,
   );
 
   static const ThemeData neutralDark = ThemeData(
@@ -255,6 +458,34 @@ final class ThemeData {
     disabledSurface: 0xFF303030,
     focusRing: 0xFF8AB8FF,
     selection: 0xFF2C4E7A,
+    colorScheme: ColorScheme.dark(),
+    iconTheme: IconThemeData(color: 0xFFF2F2F2, size: 20),
+    cornerRadius: 3,
+    controlHeight: 28,
+    controlPadding: 8,
+    fontSize: kDefaultUiFontSize,
+  );
+
+  /// Modern defaults for new applications.
+  static const ThemeData materialLight = ThemeData();
+
+  static const ThemeData materialDark = ThemeData(
+    name: 'dart-ui-dark',
+    brightness: Brightness.dark,
+    accent: 0xFF8AB4FF,
+    accentPressed: 0xFF669DF6,
+    accentHovered: 0xFFA8C7FA,
+    surface: 0xFF111827,
+    surfaceAlternate: 0xFF182235,
+    border: 0xFF475569,
+    foreground: 0xFFF1F5F9,
+    foregroundSecondary: 0xFFCBD5E1,
+    disabledForeground: 0xFF64748B,
+    disabledSurface: 0xFF273449,
+    focusRing: 0xFF8AB4FF,
+    selection: 0xFF1E4976,
+    colorScheme: ColorScheme.dark(),
+    iconTheme: IconThemeData(color: 0xFFF1F5F9, size: 20),
   );
 
   /// A Fluent-*like* light theme: squarer corners, flatter surfaces. Built
@@ -274,6 +505,7 @@ final class ThemeData {
     disabledSurface: 0xFFF3F2F1,
     focusRing: 0xFF005A9E,
     selection: 0xFFCCE4F7,
+    colorScheme: ColorScheme.light(primary: 0xFF0078D4),
     cornerRadius: 2.0,
     controlHeight: 32.0,
   );
@@ -295,6 +527,14 @@ final class ThemeData {
     disabledSurface: 0xFF000000,
     focusRing: 0xFFFFFF00,
     selection: 0xFF1AEBFF,
+    colorScheme: ColorScheme.dark(
+      primary: 0xFFFFFF00,
+      onPrimary: 0xFF000000,
+      surface: 0xFF000000,
+      onSurface: 0xFFFFFFFF,
+      surfaceContainer: 0xFF000000,
+      outline: 0xFFFFFFFF,
+    ),
     highContrast: true,
     focusRingWidth: 3.0,
   );

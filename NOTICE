@@ -47,6 +47,18 @@ Licensed under the Apache License, Version 2.0
 ================================================================================
 
 `test/fonts/Roboto-Regular.ttf` is redistributed unmodified as a test fixture.
+`assets/fonts/Roboto-Regular.ttf` is redistributed unmodified as the default
+framework interface font.
+
+================================================================================
+Material Icons  (https://github.com/google/material-design-icons)
+Copyright Google LLC
+Licensed under the Apache License, Version 2.0
+================================================================================
+
+`assets/fonts/MaterialIcons-Regular.ttf` is redistributed unmodified as the
+framework's scalable icon font. The common license text for Roboto and Material
+Icons is included at `assets/fonts/Apache-2.0.txt`.
 
 ================================================================================
 DejaVu Fonts  (https://dejavu-fonts.github.io/)

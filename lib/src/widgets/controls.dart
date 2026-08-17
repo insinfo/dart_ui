@@ -178,12 +178,23 @@ final class RenderButton extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    paintFill(list, rect, surfaceColor());
+    paintRoundedFill(list, rect, surfaceColor(), theme.cornerRadius);
     if (theme.highContrast || !enabled) {
-      paintBorder(
-          list, rect, enabled ? theme.border : theme.disabledForeground);
+      paintRoundedBorder(
+        list,
+        rect,
+        enabled ? theme.border : theme.disabledForeground,
+        theme.cornerRadius,
+      );
     }
-    if (isDefault && enabled) paintBorder(list, rect, theme.focusRing);
+    if (isDefault && enabled) {
+      paintRoundedBorder(
+        list,
+        rect,
+        theme.focusRing,
+        theme.cornerRadius,
+      );
+    }
     paintCenteredLabel(
       list,
       _label,

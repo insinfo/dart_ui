@@ -74,7 +74,7 @@ void main() {
       final ScaledTypeface scaled = ScaledTypeface(face, 16);
       final Paragraph paragraph = Paragraph.single(
         'Hello',
-        TextStyle(font: scaled),
+        ParagraphTextStyle(font: scaled),
         maxWidth: 1000,
       );
 
