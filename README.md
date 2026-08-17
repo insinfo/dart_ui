@@ -111,6 +111,22 @@ seleciona texto continuamente entre páginas e copia pelo menu de contexto:
 dart run examples/pdf_reader_demo/main.dart
 ```
 
+O rodapé de diagnóstico do leitor informa o modo do Dart e a cadeia gráfica
+realmente selecionada, por exemplo `AOT • GPU/direct3d11 • win32`. Para comparar
+o mesmo documento no Windows sem depender da seleção automática:
+
+```shell
+dart run examples/pdf_reader_demo/main.dart --presentation direct3d11
+dart run examples/pdf_reader_demo/main.dart --presentation opengl
+dart run examples/pdf_reader_demo/main.dart --presentation win32-dib
+```
+
+`--gpu` e `--cpu` também restringem a categoria de apresentação. Uma aplicação
+pode consultar os mesmos dados publicamente com
+`ApplicationInfo.of(context)`; código fora da árvore de widgets pode usar
+`Application.instance.runtimeInfo`. O resultado inclui JIT/AOT, backend de
+janela, apresentação CPU/GPU, renderer ativo e escalas lógica/física.
+
 `PdfViewController` expõe navegação, busca e seleção; `PdfTextSelection`
 registra página e deslocamento tanto da âncora quanto da extensão. A seleção é
 mantida quando cruza páginas e o texto copiado preserva as quebras entre elas.

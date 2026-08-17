@@ -78,7 +78,11 @@ final class PdfPageTextLayout {
     for (final PdfTextFragment fragment in fragments) {
       final int localStart = math.max(start, fragment.textStart);
       final int localEnd = math.min(end, fragment.textEnd);
-      if (localStart >= localEnd || fragment.text.isEmpty) continue;
+      // A standalone whitespace showing operator has geometry but no visible
+      // ink. Painting its often very narrow box creates the orphan vertical
+      // blue bars seen in office-generated PDFs. Spaces between visible
+      // fragments are still covered when the neighbouring boxes are merged.
+      if (localStart >= localEnd || fragment.text.trim().isEmpty) continue;
       final double from =
           (localStart - fragment.textStart) / fragment.text.length;
       final double to = (localEnd - fragment.textStart) / fragment.text.length;
@@ -89,7 +93,37 @@ final class PdfPageTextLayout {
         fragment.bounds.bottom,
       ));
     }
-    return result;
+    return _mergeSelectionRects(result);
+  }
+
+  /// Joins adjacent fragment boxes into the visual bands users expect.
+  ///
+  /// Many PDF producers emit one text-showing operation per character. The
+  /// extractor must retain those fragments for precise hit testing, but
+  /// painting every fragment independently creates a picket-fence of blue
+  /// boxes and darker seams where translucent rectangles overlap. Fragments
+  /// on the same visual line are therefore joined across normal word-space
+  /// gaps. Large gaps remain separate so columns and unrelated blocks do not
+  /// acquire highlight over their empty area.
+  List<Rect> _mergeSelectionRects(List<Rect> rects) {
+    if (rects.length < 2) return rects;
+    final List<Rect> merged = <Rect>[rects.first];
+    for (final Rect next in rects.skip(1)) {
+      final Rect current = merged.last;
+      final double overlap = math.min(current.bottom, next.bottom) -
+          math.max(current.top, next.top);
+      final double smallerHeight = math.min(current.height, next.height);
+      final bool sameVisualLine =
+          smallerHeight > 0 && overlap >= smallerHeight * 0.5;
+      final double horizontalGap = next.left - current.right;
+      final double normalSpace = math.max(1.0, smallerHeight * 0.75);
+      if (sameVisualLine && horizontalGap <= normalSpace) {
+        merged[merged.length - 1] = current.union(next);
+      } else {
+        merged.add(next);
+      }
+    }
+    return merged;
   }
 
   int _offsetInside(PdfTextFragment fragment, Offset position) {

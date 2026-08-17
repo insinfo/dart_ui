@@ -78,6 +78,99 @@ void main() {
     expect(rects.single.width, lessThan(fragment.bounds.width));
   });
 
+  test('selection joins character fragments into one visual band per line', () {
+    const PdfPageTextLayout layout = PdfPageTextLayout(
+      pageNumber: 1,
+      text: 'AB CD\nEF',
+      fragments: <PdfTextFragment>[
+        PdfTextFragment(
+          text: 'A',
+          textStart: 0,
+          bounds: Rect.fromLTRB(10, 10, 18, 22),
+        ),
+        PdfTextFragment(
+          text: 'B',
+          textStart: 1,
+          bounds: Rect.fromLTRB(18, 10.5, 26, 22.5),
+        ),
+        PdfTextFragment(
+          text: 'C',
+          textStart: 3,
+          bounds: Rect.fromLTRB(30, 9.5, 38, 22),
+        ),
+        PdfTextFragment(
+          text: 'D',
+          textStart: 4,
+          bounds: Rect.fromLTRB(38, 10, 46, 23),
+        ),
+        PdfTextFragment(
+          text: 'E',
+          textStart: 6,
+          bounds: Rect.fromLTRB(10, 30, 18, 42),
+        ),
+        PdfTextFragment(
+          text: 'F',
+          textStart: 7,
+          bounds: Rect.fromLTRB(18, 30, 26, 42),
+        ),
+      ],
+    );
+
+    expect(
+      layout.selectionRects(0, layout.text.length),
+      const <Rect>[
+        Rect.fromLTRB(10, 9.5, 46, 23),
+        Rect.fromLTRB(10, 30, 26, 42),
+      ],
+    );
+  });
+
+  test('selection keeps unrelated columns as separate bands', () {
+    const PdfPageTextLayout layout = PdfPageTextLayout(
+      pageNumber: 1,
+      text: 'A B',
+      fragments: <PdfTextFragment>[
+        PdfTextFragment(
+          text: 'A',
+          textStart: 0,
+          bounds: Rect.fromLTRB(10, 10, 18, 22),
+        ),
+        PdfTextFragment(
+          text: 'B',
+          textStart: 2,
+          bounds: Rect.fromLTRB(60, 10, 68, 22),
+        ),
+      ],
+    );
+
+    expect(layout.selectionRects(0, layout.text.length), hasLength(2));
+  });
+
+  test('selection does not paint orphan boxes for whitespace-only fragments',
+      () {
+    const PdfPageTextLayout layout = PdfPageTextLayout(
+      pageNumber: 1,
+      text: 'A   ',
+      fragments: <PdfTextFragment>[
+        PdfTextFragment(
+          text: 'A',
+          textStart: 0,
+          bounds: Rect.fromLTRB(10, 10, 18, 22),
+        ),
+        PdfTextFragment(
+          text: '   ',
+          textStart: 1,
+          bounds: Rect.fromLTRB(80, 40, 82, 52),
+        ),
+      ],
+    );
+
+    expect(
+      layout.selectionRects(0, layout.text.length),
+      const <Rect>[Rect.fromLTRB(10, 10, 18, 22)],
+    );
+  });
+
   test('visual reading order includes titles emitted out of stream order', () {
     final PdfDocumentBuilder builder = PdfDocumentBuilder();
     final page = builder.addPage(width: 300, height: 240);

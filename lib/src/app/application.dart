@@ -168,6 +168,7 @@ import '../widgets/errors.dart';
 import '../widgets/media_query.dart';
 import '../widgets/theme.dart';
 import '../widgets/widget.dart';
+import 'application_info.dart';
 import 'window_host.dart';
 
 /// Where an application is in its life.
@@ -943,6 +944,21 @@ final class ApplicationWindow with DisposableMixin {
       ? _semanticNodeCount
       : buildOwner.buildSemantics().nodes.length;
 
+  /// Execution mode and the renderer actually attached to this window.
+  ApplicationRuntimeInfo get runtimeInfo {
+    final PresentationCandidate presentation =
+        application.presentationSelection.chosen!;
+    return ApplicationRuntimeInfo(
+      dartRuntimeMode: DartRuntimeMode.current,
+      windowingBackend: application.windowingSelection.chosen!.name,
+      presentationBackend: presentation.name,
+      presentationKind: presentation.kind,
+      renderer: host.presenter.info,
+      renderScale: host.renderScale,
+      desktopScale: host.desktopScale,
+    );
+  }
+
   /// Replaces this window's root widget. Reconciles rather than remounting
   /// when the widget type and key allow it, so state survives a theme change.
   void updateRoot(Widget widget) {
@@ -985,14 +1001,17 @@ final class ApplicationWindow with DisposableMixin {
     _mountedMediaQueryData = media;
     return MediaQuery(
       data: media,
-      child: ClipboardScope(
-        clipboard: application.clipboard,
-        child: ContextMenuScope(
-          child: DartUiApp(
-            theme: application.options.theme,
-            textDirection: application.options.textDirection,
-            frameScheduler: scheduler,
-            home: _rootWidget,
+      child: ApplicationInfo(
+        data: runtimeInfo,
+        child: ClipboardScope(
+          clipboard: application.clipboard,
+          child: ContextMenuScope(
+            child: DartUiApp(
+              theme: application.options.theme,
+              textDirection: application.options.textDirection,
+              frameScheduler: scheduler,
+              home: _rootWidget,
+            ),
           ),
         ),
       ),
@@ -1594,6 +1613,9 @@ final class Application with DisposableMixin {
 
   PipelineOwner get pipelineOwner => primaryWindow.pipelineOwner;
   ManualDispatcher get dispatcher => primaryWindow.dispatcher;
+
+  /// Execution mode and renderer information for the primary window.
+  ApplicationRuntimeInfo get runtimeInfo => primaryWindow.runtimeInfo;
 
   ApplicationLifecycleState get state => _state;
 

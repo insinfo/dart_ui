@@ -596,6 +596,32 @@ void main() {
       application.dispose();
       await application.closed;
     });
+
+    test('publishes execution mode and the attached renderer to widgets',
+        () async {
+      ApplicationRuntimeInfo? observed;
+      final Application application = await _start(
+        size: const Size(16, 12),
+        renderScale: 1.5,
+        root: _ApplicationInfoProbe((ApplicationRuntimeInfo info) {
+          observed = info;
+        }),
+      );
+
+      await application.drawFrame();
+
+      expect(observed, application.runtimeInfo);
+      expect(observed!.dartRuntimeMode, DartRuntimeMode.current);
+      expect(observed!.windowingBackend, 'headless');
+      expect(observed!.presentationBackend, 'cpu');
+      expect(observed!.presentationKind, PresentationKind.cpu);
+      expect(observed!.renderer.name, 'cpu');
+      expect(observed!.renderScale, 1.5);
+      expect(observed!.shortDescription, contains('CPU/cpu'));
+
+      application.dispose();
+      await application.closed;
+    });
   });
 }
 
@@ -724,6 +750,18 @@ final class _MediaProbe extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     onBuild(MediaQuery.of(context));
+    return const ColoredBox(color: _background);
+  }
+}
+
+final class _ApplicationInfoProbe extends StatelessWidget {
+  const _ApplicationInfoProbe(this.onBuild);
+
+  final void Function(ApplicationRuntimeInfo info) onBuild;
+
+  @override
+  Widget build(BuildContext context) {
+    onBuild(ApplicationInfo.of(context));
     return const ColoredBox(color: _background);
   }
 }

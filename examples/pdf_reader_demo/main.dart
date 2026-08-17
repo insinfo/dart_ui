@@ -16,9 +16,33 @@ void main(List<String> arguments) {
   // painted page for the whole scan; warming it here runs the scan in a
   // background isolate while the user picks a file or the document parses.
   FontRegistry.warmSystemFonts();
-  runApp(PdfReaderDemoApp(
-    initialPath: arguments.isEmpty ? null : arguments.first,
-  ));
+  final ApplicationOptions options = ApplicationOptions.fromArguments(
+    arguments,
+    environment: Platform.environment,
+    title: 'dart_ui PDF Reader',
+  );
+  runApp(
+    PdfReaderDemoApp(initialPath: _initialPdfPath(arguments)),
+    options: options,
+  );
+}
+
+String? _initialPdfPath(List<String> arguments) {
+  const Set<String> optionsWithValue = <String>{
+    '--backend',
+    '--presentation',
+    '--scale',
+    '--frames',
+  };
+  for (var index = 0; index < arguments.length; index++) {
+    final String argument = arguments[index];
+    if (optionsWithValue.contains(argument)) {
+      index++;
+      continue;
+    }
+    if (!argument.startsWith('--')) return argument;
+  }
+  return null;
 }
 
 class PdfReaderDemoApp extends StatefulWidget {
@@ -195,6 +219,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
     final PdfViewState reader = _pdfController.value;
     final ThemeData theme =
         _darkMode ? ThemeData.materialDark : ThemeData.materialLight;
+    final ApplicationRuntimeInfo runtime = ApplicationInfo.of(context);
     return Theme(
       data: theme,
       child: ColoredBox(
@@ -350,27 +375,52 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                   right: 12,
                   bottom: 8,
                 ),
-                child: Row(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
-                    Expanded(
-                      child: Text(
-                        _fileName == null
-                            ? 'Leitor PDF'
-                            : '$_fileName  •  ${document?.pageCount ?? 0} páginas',
-                        style: theme.textTheme.bodyMedium.copyWith(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
+                    Row(
+                      children: <Widget>[
+                        Expanded(
+                          child: Text(
+                            _fileName == null
+                                ? 'Leitor PDF'
+                                : '$_fileName  •  ${document?.pageCount ?? 0} páginas',
+                            style: theme.textTheme.bodyMedium.copyWith(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
                         ),
-                      ),
+                        if (_status != null)
+                          Text(
+                            _status!,
+                            style: TextStyle(
+                              color: theme.foregroundSecondary,
+                              fontSize: 13,
+                            ),
+                          ),
+                      ],
                     ),
-                    if (_status != null)
-                      Text(
-                        _status!,
-                        style: TextStyle(
+                    const SizedBox(height: 3),
+                    Row(
+                      children: <Widget>[
+                        Icon(
+                          runtime.presentationKind == PresentationKind.gpu
+                              ? PhosphorIcons.graphicsCard
+                              : PhosphorIcons.cpu,
+                          size: 14,
                           color: theme.foregroundSecondary,
-                          fontSize: 13,
                         ),
-                      ),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Execução/renderização: ${runtime.shortDescription}',
+                          style: TextStyle(
+                            color: theme.foregroundSecondary,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),
