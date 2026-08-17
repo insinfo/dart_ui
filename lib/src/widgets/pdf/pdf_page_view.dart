@@ -39,6 +39,7 @@ final class PdfPageView extends RenderObjectWidget {
     this.scale = 1.0,
     this.backgroundColor = const Color(0xFFFFFFFF),
     this.textLayout,
+    this.textLayoutResolver,
     this.selection,
     this.enableTextSelection = false,
     this.onSelectionChanged,
@@ -48,6 +49,19 @@ final class PdfPageView extends RenderObjectWidget {
   final double scale;
   final Color backgroundColor;
   final PdfPageTextLayout? textLayout;
+
+  /// Produces this page's text layout the first time it is actually needed.
+  ///
+  /// Extracting a layout re-interprets the page's whole content stream, which
+  /// is tens of milliseconds per page - too much to spend on every page a
+  /// viewer realizes just in case the user later selects text on it. A
+  /// resolver defers that cost to the first selection gesture, search hit or
+  /// selection paint, and pages the user never touches never pay it.
+  ///
+  /// Ignored when [textLayout] is provided. The resolver must be pure: called
+  /// once per page identity and cached, so it must return the same layout for
+  /// the same [page].
+  final PdfPageTextLayout? Function()? textLayoutResolver;
   final PdfTextSelection? selection;
   final bool enableTextSelection;
   final void Function(int baseOffset, int extentOffset)? onSelectionChanged;
@@ -62,6 +76,7 @@ final class PdfPageView extends RenderObjectWidget {
         backgroundColor: backgroundColor.value,
         devicePixelRatio: MediaQuery.maybeOf(context)?.devicePixelRatio ?? 1,
         textLayout: textLayout,
+        textLayoutResolver: textLayoutResolver,
         selection: selection,
         enableTextSelection: enableTextSelection,
         onSelectionChanged: onSelectionChanged,
@@ -77,6 +92,7 @@ final class PdfPageView extends RenderObjectWidget {
       ..scale = scale
       ..backgroundColor = backgroundColor.value
       ..devicePixelRatio = MediaQuery.maybeOf(context)?.devicePixelRatio ?? 1
+      ..textLayoutResolver = textLayoutResolver
       ..textLayout = textLayout
       ..selection = selection
       ..enableTextSelection = enableTextSelection
@@ -91,6 +107,7 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     int backgroundColor = 0xFFFFFFFF,
     double devicePixelRatio = 1,
     PdfPageTextLayout? textLayout,
+    PdfPageTextLayout? Function()? textLayoutResolver,
     PdfTextSelection? selection,
     bool enableTextSelection = false,
     this.onSelectionChanged,
@@ -99,6 +116,7 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
         _backgroundColor = backgroundColor,
         _devicePixelRatio = devicePixelRatio,
         _textLayout = textLayout,
+        _textLayoutResolver = textLayoutResolver,
         _selection = selection,
         _enableTextSelection = enableTextSelection;
 
@@ -107,6 +125,7 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
   int _backgroundColor;
   double _devicePixelRatio;
   PdfPageTextLayout? _textLayout;
+  PdfPageTextLayout? Function()? _textLayoutResolver;
   PdfTextSelection? _selection;
   bool _enableTextSelection;
   void Function(int baseOffset, int extentOffset)? onSelectionChanged;
@@ -122,6 +141,10 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     _page = value;
     _decodedImages.clear();
     _embeddedFonts.clear();
+    // A lazily resolved layout belongs to the page it was extracted from; the
+    // new page's layout is re-resolved on demand. An explicit layout is the
+    // widget's to replace and is left for its setter.
+    if (_textLayoutResolver != null) _textLayout = null;
     markNeedsLayout();
   }
 
@@ -153,12 +176,26 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     markNeedsPaint();
   }
 
-  PdfPageTextLayout? get textLayout => _textLayout;
+  /// This page's text layout, resolving it on first use when a resolver is
+  /// installed. Null when there is neither an explicit layout nor a resolver.
+  PdfPageTextLayout? get textLayout =>
+      _textLayout ??= _textLayoutResolver?.call();
 
   set textLayout(PdfPageTextLayout? value) {
+    // In resolver mode the widget passes null; that must not wipe a layout
+    // that was already lazily resolved (and repaint) on every update.
+    if (value == null && _textLayoutResolver != null) return;
     if (identical(value, _textLayout)) return;
     _textLayout = value;
     markNeedsPaint();
+  }
+
+  /// Replacing the resolver alone invalidates nothing: for one page identity
+  /// every resolver must produce the same layout, so a new closure from a
+  /// rebuild changes no pixels. The [page] setter clears the cached layout
+  /// when the page itself changes.
+  set textLayoutResolver(PdfPageTextLayout? Function()? value) {
+    _textLayoutResolver = value;
   }
 
   PdfTextSelection? get selection => _selection;
@@ -199,7 +236,13 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
 
   @override
   void handlePointerEvent(PointerEvent event) {
-    if (!enableTextSelection || textLayout == null) return;
+    if (!enableTextSelection) return;
+    // Hover moves reach here too, and with a lazy resolver installed reading
+    // [textLayout] extracts it. Only a selection interaction is worth that:
+    // a press resolves it below, and moves/ups matter only mid-drag, which a
+    // press has already gated through [_selectionPointer].
+    if (event is PointerDownEvent && textLayout == null) return;
+    if (event is! PointerDownEvent && _selectionPointer == null) return;
     switch (event) {
       case PointerDownEvent(
           button: PointerButton.primary,
@@ -300,7 +343,10 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     // later operators covered it even though copying used the correct range —
     // most visibly on standalone bold headings.
     final PdfTextSelection? selected = selection;
-    final PdfPageTextLayout? layout = textLayout;
+    // The layout is only read behind the selection check: with a lazy
+    // resolver installed, touching [textLayout] extracts it, and a page with
+    // nothing selected must not pay for an extraction it does not need.
+    final PdfPageTextLayout? layout = selected == null ? null : textLayout;
     final ({int start, int end})? selectedRange =
         selected == null || layout == null
             ? null

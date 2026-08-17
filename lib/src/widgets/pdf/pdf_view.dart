@@ -238,8 +238,13 @@ final class _PdfViewState extends State<PdfView> {
               page: page,
               scale: _controller.zoom,
               backgroundColor: widget.pageColor,
-              textLayout: widget.enableTextSelection
-                  ? _controller.textLayoutFor(index + 1)
+              // A resolver, not an eager extraction: extracting text layout
+              // re-interprets the page's whole content stream, and paying
+              // that for every realized page made the first frame of a
+              // freshly opened document visibly slow. The controller caches
+              // per page, so selection, search and this resolver agree.
+              textLayoutResolver: widget.enableTextSelection
+                  ? () => _controller.textLayoutFor(index + 1)
                   : null,
               selection: selection,
               enableTextSelection: widget.enableTextSelection,

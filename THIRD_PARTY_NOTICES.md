@@ -12,6 +12,12 @@ Tabler Icons is Copyright (c) 2020-2026 Paweł Kuna and is distributed under
 the MIT License. The complete license is included at
 `assets/fonts/TablerIcons-MIT.txt`.
 
+## Phosphor Icons
+
+Phosphor Icons is Copyright (c) 2020-2021 Phosphor Icons and is distributed
+under the MIT License. The complete license is included at
+`assets/fonts/PhosphorIcons-MIT.txt`.
+
 ## docking_flutter
 
 The docking layout public model and behavior were adapted for dart_ui from

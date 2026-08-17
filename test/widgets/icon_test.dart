@@ -33,6 +33,7 @@ import 'package:dart_ui/src/widgets/basic.dart';
 import 'package:dart_ui/src/widgets/directionality.dart';
 import 'package:dart_ui/src/widgets/element.dart';
 import 'package:dart_ui/src/widgets/icon.dart';
+import 'package:dart_ui/src/widgets/phosphor_icons.dart';
 import 'package:dart_ui/src/widgets/widget.dart';
 import 'package:test/test.dart';
 
@@ -141,6 +142,7 @@ void main() {
       );
     final FrameworkFontLoadResult bundled = FrameworkFonts.install();
     expect(bundled.tablerIconFontLoaded, isTrue);
+    expect(bundled.phosphorIconFontLoaded, isTrue);
   });
   tearDownAll(FontRegistry.instance.reset);
 
@@ -230,6 +232,24 @@ void main() {
         TablerIcons.search,
         TablerIcons.sun,
         TablerIcons.zoomIn,
+      ]) {
+        final Framebuffer surface = _render(
+          Icon(icon, size: 20, color: const Color(0xFF000000)),
+          const Size(20, 20),
+        );
+        final Rect? ink = _inkBounds(surface);
+        expect(ink, isNotNull, reason: '$icon must be present in the font');
+        expect(ink!.center.dx, closeTo(10, 1), reason: '$icon horizontally');
+        expect(ink.center.dy, closeTo(10, 1), reason: '$icon vertically');
+      }
+    });
+
+    test('Phosphor ink is centred inside the declared square', () {
+      for (final IconData icon in <IconData>[
+        PhosphorIcons.floppyDisk,
+        PhosphorIcons.folderOpen,
+        PhosphorIcons.magnifyingGlass,
+        PhosphorIcons.moon,
       ]) {
         final Framebuffer surface = _render(
           Icon(icon, size: 20, color: const Color(0xFF000000)),

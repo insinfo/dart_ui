@@ -11,6 +11,11 @@ Future<PdfDocument> _loadPdfPath(String path) async =>
 
 void main(List<String> arguments) {
   FrameworkFonts.install();
+  // PDFs resolve non-embedded fonts (Arial and friends) by family name, which
+  // needs the machine's font index. Building it lazily would block the first
+  // painted page for the whole scan; warming it here runs the scan in a
+  // background isolate while the user picks a file or the document parses.
+  FontRegistry.warmSystemFonts();
   runApp(PdfReaderDemoApp(
     initialPath: arguments.isEmpty ? null : arguments.first,
   ));
@@ -204,7 +209,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                   ToolbarGroup(
                     children: <Widget>[
                       IconButton(
-                        icon: const Icon(TablerIcons.folderOpen),
+                        icon: const Icon(PhosphorIcons.folderOpen),
                         tooltip: _isLoading ? 'Abrindo PDF' : 'Abrir PDF',
                         onPressed: _isLoading ? null : _openPdf,
                       ),
@@ -215,7 +220,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                     spacing: 2,
                     children: <Widget>[
                       IconButton(
-                        icon: const Icon(TablerIcons.chevronLeft),
+                        icon: const Icon(PhosphorIcons.caretLeft),
                         tooltip: 'Página anterior',
                         onPressed: document == null || reader.currentPage <= 1
                             ? null
@@ -234,7 +239,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                         ),
                       ),
                       IconButton(
-                        icon: const Icon(TablerIcons.chevronRight),
+                        icon: const Icon(PhosphorIcons.caretRight),
                         tooltip: 'Próxima página',
                         onPressed: document == null ||
                                 reader.currentPage >= reader.pageCount
@@ -249,7 +254,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                     spacing: 4,
                     children: <Widget>[
                       IconButton(
-                        icon: const Icon(TablerIcons.zoomOut),
+                        icon: const Icon(PhosphorIcons.magnifyingGlassMinus),
                         tooltip: 'Reduzir zoom',
                         onPressed:
                             document == null ? null : _pdfController.zoomOut,
@@ -265,7 +270,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                         ),
                       ),
                       IconButton(
-                        icon: const Icon(TablerIcons.zoomIn),
+                        icon: const Icon(PhosphorIcons.magnifyingGlassPlus),
                         tooltip: 'Aumentar zoom',
                         onPressed:
                             document == null ? null : _pdfController.zoomIn,
@@ -277,7 +282,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                     spacing: 4,
                     children: <Widget>[
                       IconButton(
-                        icon: const Icon(TablerIcons.arrowsMaximize),
+                        icon: const Icon(PhosphorIcons.arrowsOut),
                         tooltip: 'Ajustar à largura',
                         onPressed: document == null ? null : _fitWidth,
                       ),
@@ -294,7 +299,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                   const Spacer(),
                   IconButton(
                     icon: Icon(
-                      _darkMode ? TablerIcons.sun : TablerIcons.moon,
+                      _darkMode ? PhosphorIcons.sun : PhosphorIcons.moon,
                     ),
                     tooltip: _darkMode ? 'Modo claro' : 'Modo escuro',
                     onPressed: () => setState(() {
@@ -320,7 +325,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                   ),
                   const SizedBox(width: 6),
                   IconButton(
-                    icon: const Icon(TablerIcons.search),
+                    icon: const Icon(PhosphorIcons.magnifyingGlass),
                     tooltip: reader.searchMatch == null
                         ? 'Buscar'
                         : 'Próxima ocorrência',
@@ -328,7 +333,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
                   ),
                   const SizedBox(width: 2),
                   IconButton(
-                    icon: const Icon(TablerIcons.copy),
+                    icon: const Icon(PhosphorIcons.copy),
                     tooltip: 'Copiar seleção',
                     onPressed:
                         _pdfController.hasSelection ? _copySelection : null,

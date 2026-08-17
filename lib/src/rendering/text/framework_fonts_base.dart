@@ -11,6 +11,7 @@ final class FrameworkFontLoadResult {
     required this.iconFontLoaded,
     this.uiVariantFontsLoaded = 0,
     this.tablerIconFontLoaded = false,
+    this.phosphorIconFontLoaded = false,
     required this.directory,
   });
 
@@ -18,9 +19,14 @@ final class FrameworkFontLoadResult {
   final bool iconFontLoaded;
   final int uiVariantFontsLoaded;
   final bool tablerIconFontLoaded;
+  final bool phosphorIconFontLoaded;
   final String? directory;
 
-  bool get isComplete => uiFontLoaded && iconFontLoaded && tablerIconFontLoaded;
+  bool get isComplete =>
+      uiFontLoaded &&
+      iconFontLoaded &&
+      tablerIconFontLoaded &&
+      phosphorIconFontLoaded;
 }
 
 FrameworkFontLoadResult installFrameworkFontBytes({
@@ -29,6 +35,7 @@ FrameworkFontLoadResult installFrameworkFontBytes({
   Uint8List? uiMediumFont,
   Uint8List? uiSemiBoldFont,
   Uint8List? tablerIconFont,
+  Uint8List? phosphorIconFont,
   required FontRegistry registry,
   String? source,
 }) {
@@ -36,6 +43,7 @@ FrameworkFontLoadResult installFrameworkFontBytes({
   var iconsLoaded = false;
   var uiVariantsLoaded = 0;
   var tablerLoaded = false;
+  var phosphorLoaded = false;
   try {
     registry.useTypeface(
       Typeface.parse(uiFont),
@@ -90,11 +98,24 @@ FrameworkFontLoadResult installFrameworkFontBytes({
       tablerLoaded = false;
     }
   }
+  if (phosphorIconFont != null) {
+    try {
+      registry.registerTypeface(
+        Typeface.parse(phosphorIconFont),
+        family: 'Phosphor',
+        source: source == null ? 'bundled Phosphor' : '$source/Phosphor.ttf',
+      );
+      phosphorLoaded = true;
+    } on Object {
+      phosphorLoaded = false;
+    }
+  }
   return FrameworkFontLoadResult(
     uiFontLoaded: uiLoaded,
     iconFontLoaded: iconsLoaded,
     uiVariantFontsLoaded: uiVariantsLoaded,
     tablerIconFontLoaded: tablerLoaded,
+    phosphorIconFontLoaded: phosphorLoaded,
     directory: source,
   );
 }

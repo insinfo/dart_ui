@@ -436,7 +436,8 @@ final class RenderIcon extends RenderBox {
   ) {
     final String? family = _icon.fontFamily;
     if (family != Icons.materialFontFamily &&
-        family != TablerIcons.fontFamily) {
+        family != TablerIcons.fontFamily &&
+        family != 'Phosphor') {
       return (
         penX: offset.dx + (_iconSize - face.advanceOf(glyph)) / 2,
         baselineY: offset.dy + _baselineOffset,

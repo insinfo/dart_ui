@@ -42,6 +42,7 @@ library;
 import 'dart:io';
 import 'dart:typed_data';
 
+import '../../foundation/compute.dart';
 import '../../geometry/size.dart';
 import '../../platform/system_fonts.dart';
 import '../../text/cmap.dart';
@@ -525,6 +526,48 @@ final class FontRegistry {
   /// an injected index bypasses it entirely.
   SystemFontIndex get systemFonts =>
       _injectedIndex ?? SystemFonts.cachedIndex(reader: _faceReader);
+
+  static Future<void>? _systemFontWarmup;
+
+  /// Builds the machine's font index in a background isolate and installs it.
+  ///
+  /// [systemFonts] is synchronous: the first family lookup that needs the
+  /// index blocks the UI thread for the whole scan - a third of a second on a
+  /// well-stocked Windows machine, and the dominant cost of the first painted
+  /// PDF page, whose non-embedded fonts resolve through [faceFor]. Calling
+  /// this early - at application start, or when a document begins loading -
+  /// pays for the scan off-thread and in parallel with whatever else the
+  /// application is doing, so that by the time the first lookup happens the
+  /// index is already cached.
+  ///
+  /// Idempotent and safe to fire-and-forget: repeated calls share one warmup,
+  /// a scan that already ran makes this a no-op, and on a platform without
+  /// isolates it degrades to doing nothing - the synchronous path still
+  /// answers exactly as before. The index is plain values, which is what
+  /// makes it sendable; see [SystemFonts.installIndex].
+  static Future<void> warmSystemFonts() =>
+      _systemFontWarmup ??= _warmSystemFonts();
+
+  static Future<void> _warmSystemFonts() async {
+    if (SystemFonts.hasCachedIndex) return;
+    try {
+      final SystemFontIndex index = await compute<int, SystemFontIndex>(
+        _buildSystemFontIndex,
+        4096,
+        debugLabel: 'dart_ui.fonts.index',
+      );
+      SystemFonts.installIndex(index);
+    } on Object {
+      // No isolates on this platform, or the scan failed: the lazy
+      // synchronous path in [systemFonts] still answers.
+    }
+  }
+
+  static SystemFontIndex _buildSystemFontIndex(int maxFiles) =>
+      SystemFontIndex.build(
+        files: const SystemFonts().list(maxFiles: maxFiles),
+        reader: readSystemFontFaces,
+      );
 
   /// Parses the file behind [face], or returns null if it cannot be read.
   ///

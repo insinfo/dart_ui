@@ -66,7 +66,7 @@ final translucent = color.withOpacity(0.4);
 
 Theme(
   data: ThemeData.materialDark,
-  child: const Icon(TablerIcons.search),
+  child: const Icon(PhosphorIcons.magnifyingGlass),
 );
 ```
 
@@ -78,8 +78,11 @@ Flutter. `ThemeData.materialLight` e `ThemeData.materialDark` fornecem os
 modos claro e escuro modernos.
 
 `FrameworkFonts.install()` registra Inter Regular/Medium/SemiBold, Material
-Icons e Tabler Icons a partir de `assets/fonts`. Licenças e atribuições estão
-em `THIRD_PARTY_NOTICES.md` e ao lado dos próprios arquivos.
+Icons, Tabler Icons e os 1.512 ícones regulares do Phosphor Icons 2.1.2 a
+partir de `assets/fonts`. A API é direta — por exemplo,
+`Icon(PhosphorIcons.floppyDisk)` — e todos os glifos são vetoriais e escaláveis.
+Licenças e atribuições estão em `THIRD_PARTY_NOTICES.md` e ao lado dos próprios
+arquivos.
 
 ## Processamento em segundo plano
 

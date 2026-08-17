@@ -786,6 +786,22 @@ final class SystemFonts {
   /// Whether [cachedIndex] has already paid for a scan.
   static bool get hasCachedIndex => _cachedIndex != null;
 
+  /// Installs a pre-built [index] as the cached one.
+  ///
+  /// The seam that lets the scan run somewhere other than the UI thread: an
+  /// index is plain values ([SystemFontFace] is strings, integers and
+  /// booleans), so a background isolate can pay for [SystemFontIndex.build]
+  /// and send the result here. First one in wins - if a synchronous
+  /// [cachedIndex] call already built one, the machine's font list has not
+  /// changed in between and the existing index is just as true, so the
+  /// late arrival is dropped rather than allowed to invalidate lookups
+  /// already made against the first. Returns whether [index] was installed.
+  static bool installIndex(SystemFontIndex index) {
+    if (_cachedIndex != null) return false;
+    _cachedIndex = index;
+    return true;
+  }
+
   /// Drops the cached index so the next [cachedIndex] rebuilds it.
   ///
   /// The only invalidation there is - see [cachedIndex] for why it is manual.

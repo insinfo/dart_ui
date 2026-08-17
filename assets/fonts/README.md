@@ -9,6 +9,10 @@ distributed under the SIL Open Font License 1.1. The original license is in
 distributed under the MIT License; the original notice is in
 `TablerIcons-MIT.txt`.
 
+`Phosphor.ttf` contains all 1,512 regular glyphs from Phosphor Icons Web
+2.1.2. It is distributed under the MIT License; the original notice is in
+`PhosphorIcons-MIT.txt`.
+
 `MaterialIcons-Regular.ttf` is the classic Material Icons font distributed by
 Google. Material Icons are licensed under the Apache License 2.0.
 
@@ -20,6 +24,7 @@ Sources:
 
 - https://github.com/rsms/inter/releases/tag/v4.1
 - https://github.com/tabler/tabler-icons/releases/tag/v3.46.0
+- https://github.com/phosphor-icons/web/tree/v2.1.2
 - https://fonts.google.com/specimen/Roboto
 - https://github.com/google/material-design-icons
 - https://developers.google.com/fonts/docs/material_icons

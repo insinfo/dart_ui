@@ -630,10 +630,20 @@ final class _ListViewState extends State<ListView> {
   /// How many items to assume fit on screen before the first layout has said.
   ///
   /// Only ever used for one build: the viewport reports its real extent during
-  /// layout and the list rebuilds against it. Guessing high would build items
-  /// that are immediately discarded; guessing low would paint a partly empty
-  /// list for one frame.
+  /// layout and the list rebuilds against it inside the same settle loop, so
+  /// the guess never reaches the screen. Guessing high builds items that are
+  /// immediately discarded; guessing low costs one extra settle pass.
   static const int _initialWindowItems = 8;
+
+  /// The ceiling on that guess, in pixels.
+  ///
+  /// Eight items is a plausible screenful of 40-pixel rows, but the estimate
+  /// scales with the items and not with the screen: eight 860-pixel PDF pages
+  /// are seven thousand pixels of items built, painted once and immediately
+  /// discarded - which was the dominant cost of a freshly opened document's
+  /// first frame. No screen is assumed taller than this until one has been
+  /// measured.
+  static const double _initialViewportCeiling = 1024;
 
   late final ScrollPosition _position =
       widget.controller ?? ScrollPosition(axis: widget.axis);
@@ -688,7 +698,14 @@ final class _ListViewState extends State<ListView> {
 
   double get _viewportExtent {
     final double measured = _position.viewportExtent;
-    return measured > 0 ? measured : _estimate * _initialWindowItems;
+    if (measured > 0) return measured;
+    final double guessed = _estimate * _initialWindowItems;
+    if (guessed <= _initialViewportCeiling) return guessed;
+    // At least one full item, so a list of items taller than the ceiling
+    // still realizes something to measure.
+    return _estimate > _initialViewportCeiling
+        ? _estimate
+        : _initialViewportCeiling;
   }
 
   @override

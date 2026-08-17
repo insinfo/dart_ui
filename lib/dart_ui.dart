@@ -164,6 +164,7 @@ export 'src/widgets/localizations.dart';
 export 'src/widgets/media_query.dart';
 export 'src/widgets/navigator.dart';
 export 'src/widgets/overlay.dart';
+export 'src/widgets/phosphor_icons.dart';
 export 'src/widgets/pointer_router.dart';
 export 'src/widgets/popup.dart';
 export 'src/widgets/progress_indicator.dart';

@@ -26,8 +26,7 @@ BuildOwner _mount(Widget root, {Size size = const Size(400, 300)}) {
 }
 
 void main() {
-  test('bundled Inter, Material and Tabler fonts install deterministically',
-      () {
+  test('bundled UI and icon fonts install deterministically', () {
     final FontRegistry registry = FontRegistry(search: () => null);
     final FrameworkFontLoadResult result = FrameworkFonts.install(
       assetDirectory: 'assets/fonts',
@@ -47,6 +46,18 @@ void main() {
     expect(tabler, isNotNull);
     expect(tabler!.glyphForCodePoint(TablerIcons.copy.codePoint), isNot(0));
     expect(tabler.glyphForCodePoint(TablerIcons.zoomIn.codePoint), isNot(0));
+    expect(result.phosphorIconFontLoaded, isTrue);
+    final Typeface? phosphor =
+        registry.faceFor(FrameworkFonts.phosphorIconFamily);
+    expect(phosphor, isNotNull);
+    expect(
+      phosphor!.glyphForCodePoint(PhosphorIcons.floppyDisk.codePoint),
+      isNot(0),
+    );
+    expect(
+      phosphor.glyphForCodePoint(PhosphorIcons.magnifyingGlass.codePoint),
+      isNot(0),
+    );
   });
 
   test('modern ThemeData exposes Flutter-shaped semantic contracts', () {
