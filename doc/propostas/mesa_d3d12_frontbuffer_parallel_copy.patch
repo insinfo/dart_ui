@@ -1,0 +1,181 @@
+diff --git a/src/gallium/drivers/d3d12/d3d12_screen.cpp b/src/gallium/drivers/d3d12/d3d12_screen.cpp
+index af1d2f2..271ebba 100644
+--- a/src/gallium/drivers/d3d12/d3d12_screen.cpp
++++ b/src/gallium/drivers/d3d12/d3d12_screen.cpp
+@@ -46,6 +46,7 @@
+ #include "util/u_memory.h"
+ #include "util/u_screen.h"
+ #include "util/u_dl.h"
++#include "util/os_time.h"
+ #include "util/mesa-blake3.h"
+ 
+ #include "frontend/sw_winsys.h"
+@@ -62,6 +63,7 @@
+ #endif
+ 
+ #include <vector>
++#include <stdio.h>
+ 
+ #include <dxguids/dxguids.h>
+ static GUID OpenGLOn12CreatorID = { 0x6bb3cd34, 0x0d19, 0x45ab, { 0x97, 0xed, 0xd7, 0x20, 0xba, 0x3d, 0xfc, 0x80 } };
+@@ -674,6 +676,8 @@ d3d12_deinit_screen(struct d3d12_screen *screen)
+ void
+ d3d12_destroy_screen(struct d3d12_screen *screen)
+ {
++   if (util_queue_is_initialized(&screen->frontbuffer_copy_queue))
++      util_queue_destroy(&screen->frontbuffer_copy_queue);
+    slab_destroy_parent(&screen->transfer_pool);
+    mtx_destroy(&screen->submit_mutex);
+    mtx_destroy(&screen->pending_free_lock);
+@@ -692,6 +696,28 @@ d3d12_destroy_screen(struct d3d12_screen *screen)
+    FREE(screen);
+ }
+ 
++struct d3d12_frontbuffer_copy_job {
++   void *dst;
++   const void *src;
++   enum pipe_format format;
++   unsigned dst_stride;
++   int src_stride;
++   unsigned width;
++   unsigned first_row;
++   unsigned row_count;
++   struct util_queue_fence fence;
++};
++
++static void
++d3d12_frontbuffer_copy_job_execute(void *data, void *, int)
++{
++   struct d3d12_frontbuffer_copy_job *job =
++      (struct d3d12_frontbuffer_copy_job *)data;
++   util_copy_rect(job->dst, job->format, job->dst_stride,
++                  0, job->first_row, job->width, job->row_count,
++                  job->src, job->src_stride, 0, job->first_row);
++}
++
+ static void
+ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
+                         struct pipe_context *pctx,
+@@ -701,6 +727,11 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
+                         unsigned nboxes,
+                         struct pipe_box *sub_box)
+ {
++   const bool trace_timing = debug_get_bool_option("D3D12_FRONTBUFFER_TIMING", false);
++   const int64_t start_ns = trace_timing ? os_time_get_nano() : 0;
++   int64_t mapped_ns = start_ns;
++   int64_t copied_ns = start_ns;
++   int64_t unmapped_ns = start_ns;
+    struct d3d12_screen *screen = d3d12_screen(pscreen);
+    struct sw_winsys *winsys = screen->winsys;
+    struct d3d12_resource *res = d3d12_resource(pres);
+@@ -741,13 +772,51 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
+                                         u_minify(pres->width0, level),
+                                         u_minify(pres->height0, level),
+                                         &transfer);
++      mapped_ns = trace_timing ? os_time_get_nano() : 0;
+       if (res_map) {
+-         util_copy_rect((uint8_t*)map, pres->format, res->dt_stride, 0, 0,
+-                        transfer->box.width, transfer->box.height,
+-                        (const uint8_t*)res_map, transfer->stride, 0, 0);
++         const uint64_t copy_bytes =
++            (uint64_t)transfer->box.width * transfer->box.height *
++            util_format_get_blocksize(pres->format);
++         const uint64_t parallel_min_bytes = (uint64_t)debug_get_num_option(
++            "D3D12_FRONTBUFFER_PARALLEL_MIN_BYTES", 512 * 1024);
++         const unsigned copy_threads =
++            copy_bytes >= parallel_min_bytes &&
++            util_format_get_blockheight(pres->format) == 1 ?
++            MIN2(MAX2(screen->frontbuffer_copy_threads, 1u),
++                 (unsigned)transfer->box.height) : 1;
++         if (copy_threads == 1) {
++            util_copy_rect((uint8_t*)map, pres->format, res->dt_stride, 0, 0,
++                           transfer->box.width, transfer->box.height,
++                           (const uint8_t*)res_map, transfer->stride, 0, 0);
++         } else {
++            std::vector<struct d3d12_frontbuffer_copy_job> jobs(copy_threads);
++            for (unsigned i = 0; i < copy_threads; ++i) {
++               const unsigned first_row = transfer->box.height * i / copy_threads;
++               const unsigned last_row = transfer->box.height * (i + 1) / copy_threads;
++               jobs[i].dst = map;
++               jobs[i].src = res_map;
++               jobs[i].format = pres->format;
++               jobs[i].dst_stride = res->dt_stride;
++               jobs[i].src_stride = transfer->stride;
++               jobs[i].width = transfer->box.width;
++               jobs[i].first_row = first_row;
++               jobs[i].row_count = last_row - first_row;
++               util_queue_fence_init(&jobs[i].fence);
++               util_queue_add_job(&screen->frontbuffer_copy_queue, &jobs[i],
++                                  &jobs[i].fence,
++                                  d3d12_frontbuffer_copy_job_execute,
++                                  nullptr, 0);
++            }
++            for (auto &job : jobs) {
++               util_queue_fence_wait(&job.fence);
++               util_queue_fence_destroy(&job.fence);
++            }
++         }
++         copied_ns = trace_timing ? os_time_get_nano() : 0;
+          pipe_texture_unmap(pctx, transfer);
+       }
+       winsys->displaytarget_unmap(winsys, res->dt);
++      unmapped_ns = trace_timing ? os_time_get_nano() : 0;
+    }
+ 
+ #if defined(_WIN32) && !defined(_GAMING_XBOX) && defined(HAVE_GALLIUM_D3D12_GRAPHICS)
+@@ -761,6 +830,16 @@ d3d12_flush_frontbuffer(struct pipe_screen * pscreen,
+ #endif
+ 
+    winsys->displaytarget_display(winsys, res->dt, winsys_drawable_handle, nboxes, sub_box);
++   if (trace_timing) {
++      const int64_t displayed_ns = os_time_get_nano();
++      fprintf(stderr,
++              "D3D12 frontbuffer: map_wait=%.3f ms copy=%.3f ms unmap=%.3f ms display=%.3f ms total=%.3f ms\n",
++              (mapped_ns - start_ns) / 1000000.0,
++              (copied_ns - mapped_ns) / 1000000.0,
++              (unmapped_ns - copied_ns) / 1000000.0,
++              (displayed_ns - unmapped_ns) / 1000000.0,
++              (displayed_ns - start_ns) / 1000000.0);
++   }
+ }
+ 
+ #ifndef _GAMING_XBOX
+@@ -1405,6 +1484,17 @@ d3d12_init_screen_base(struct d3d12_screen *screen, struct sw_winsys *winsys, LU
+ 
+    slab_create_parent(&screen->transfer_pool, sizeof(struct d3d12_transfer), 16);
+ 
++   const int64_t requested_frontbuffer_threads =
++      debug_get_num_option("D3D12_FRONTBUFFER_THREADS", 1);
++   screen->frontbuffer_copy_threads =
++      (unsigned)CLAMP(requested_frontbuffer_threads, 1, 64);
++   if (winsys && screen->frontbuffer_copy_threads > 1 &&
++       !util_queue_init(&screen->frontbuffer_copy_queue, "d3d12-fb", 128,
++                        screen->frontbuffer_copy_threads,
++                        UTIL_QUEUE_INIT_RESIZE_IF_FULL, nullptr)) {
++      screen->frontbuffer_copy_threads = 1;
++   }
++
+    screen->base.get_vendor = d3d12_get_vendor;
+    screen->base.get_device_vendor = d3d12_get_device_vendor;
+    screen->base.get_screen_fd = d3d12_screen_get_fd;
+diff --git a/src/gallium/drivers/d3d12/d3d12_screen.h b/src/gallium/drivers/d3d12/d3d12_screen.h
+index d5d8e90..9f28d8a 100644
+--- a/src/gallium/drivers/d3d12/d3d12_screen.h
++++ b/src/gallium/drivers/d3d12/d3d12_screen.h
+@@ -27,6 +27,7 @@
+ #include "pipe/p_screen.h"
+ 
+ #include "util/slab.h"
++#include "util/u_queue.h"
+ #include "d3d12_descriptor_pool.h"
+ 
+ #include "util/list.h"
+@@ -108,6 +109,8 @@ struct d3d12_screen {
+    mtx_t varying_info_mutex;
+ 
+    struct slab_parent_pool transfer_pool;
++   struct util_queue frontbuffer_copy_queue;
++   unsigned frontbuffer_copy_threads;
+    struct pb_manager *bufmgr;
+    struct pb_manager *cache_bufmgr;
+    struct pb_manager *slab_cache_bufmgr;

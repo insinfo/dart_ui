@@ -172,6 +172,9 @@ src/gallium/drivers/d3d12/d3d12_screen.cpp
 src/gallium/drivers/d3d12/d3d12_screen.h
 ```
 
+The exact tested diff is preserved as
+[`mesa_d3d12_frontbuffer_parallel_copy.patch`](mesa_d3d12_frontbuffer_parallel_copy.patch).
+
 I can submit the patch as a merge request after feedback on the preferred
 configuration mechanism (`driconf`, environment option, or automatic selection
 for the DXG winsys).

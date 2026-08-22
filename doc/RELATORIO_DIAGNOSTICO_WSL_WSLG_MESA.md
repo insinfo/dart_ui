@@ -328,6 +328,8 @@ outras distribuições Linux nativas, no WSLg e em servidores X externos.
 - VHD WSLg corrigido:
   `D:\wslg-dev\artifacts\system_x64-wslg-1.0.79-weston-retry.vhd`.
 - Capturas: `D:\wslg-dev\artifacts\poc02-mesa-26.3-*.png`.
+- Patch Mesa reproduzível:
+  [`doc/propostas/mesa_d3d12_frontbuffer_parallel_copy.patch`](propostas/mesa_d3d12_frontbuffer_parallel_copy.patch).
 - Log Intel:
   `C:\ProgramData\Intel\GFXInstaller\Installer\IntelGFX_20260822_173438_Install.log`.
 
@@ -349,6 +351,8 @@ outras distribuições Linux nativas, no WSLg e em servidores X externos.
 
 - WSLg, readback D3D12 e proposta de external-image:
   [`microsoft/wslg#1498`](https://github.com/microsoft/wslg/issues/1498).
+- Resultado do teste VM→host com `OpenSharedHandleByName`:
+  [comentário em `microsoft/wslg#1498`](https://github.com/microsoft/wslg/issues/1498#issuecomment-5382899700).
 - Complemento na issue de Vulkan do WSLg com os resultados Dozen:
   [`microsoft/wslg#40`](https://github.com/microsoft/wslg/issues/40#issuecomment-5382834263).
 - Defeito `virtio-fs`/SectionFs:
