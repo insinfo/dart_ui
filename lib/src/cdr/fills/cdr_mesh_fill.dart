@@ -1,5 +1,5 @@
-import 'cdr_fill.dart';
 import '../../geometry/offset.dart';
+import 'cdr_fill.dart';
 
 /// Um nó da malha (Mesh Node).
 class CdrMeshNode {

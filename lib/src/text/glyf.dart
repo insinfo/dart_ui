@@ -224,7 +224,7 @@ final class GlyfTable {
     int contourStart = 0;
     for (final int contourEnd in contourEnds) {
       if (contourEnd < contourStart || contourEnd >= pointCount) {
-        throw FontFormatException(
+        throw const FontFormatException(
           'contour ends out of bounds',
           table: 'glyf',
         );

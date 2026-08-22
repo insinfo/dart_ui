@@ -1,5 +1,6 @@
-import 'dart:typed_data';
 import 'dart:convert';
+import 'dart:typed_data';
+
 import '../../crypto/crypto.dart';
 
 /// Gerencia a alocação de espaço e o cálculo de /ByteRange no documento PDF.

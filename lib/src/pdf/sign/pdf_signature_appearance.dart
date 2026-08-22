@@ -1,5 +1,5 @@
-import '../../graphics/display_list.dart';
 import '../../geometry/rect.dart';
+import '../../graphics/display_list.dart';
 
 /// Constrói a aparência visual da assinatura (Appearance Stream /AP /N).
 class PdfSignatureAppearanceBuilder {

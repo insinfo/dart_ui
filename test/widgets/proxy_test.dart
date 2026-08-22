@@ -338,7 +338,7 @@ void main() {
       final Framebuffer buffer = await frame(
         const DecoratedBox(
           decoration: BoxDecoration(
-            color: const Color(0xFF3366CC),
+            color: Color(0xFF3366CC),
             border: BoxBorder(color: _content, width: 2),
           ),
           child: SizedBox(width: 16, height: 16),
@@ -365,7 +365,7 @@ void main() {
 
       owner.updateRoot(
         const DecoratedBox(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: Color(0xFF00FF00),
             radius: 4,
           ),
@@ -381,12 +381,12 @@ void main() {
     test('an equal decoration is not a change', () {
       const BoxDecoration a = BoxDecoration(
         color: _content,
-        border: const BoxBorder(color: Color(0xFF000000), width: 1),
+        border: BoxBorder(color: Color(0xFF000000), width: 1),
         radius: 3,
       );
       const BoxDecoration b = BoxDecoration(
         color: _content,
-        border: const BoxBorder(color: Color(0xFF000000), width: 1),
+        border: BoxBorder(color: Color(0xFF000000), width: 1),
         radius: 3,
       );
 

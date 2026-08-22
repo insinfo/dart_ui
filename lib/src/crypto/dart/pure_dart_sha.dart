@@ -480,7 +480,9 @@ class PureDartSha {
 
       // Variáveis de trabalho
       final v = Uint32List(16);
-      for (var i = 0; i < 16; i++) v[i] = h[i];
+      for (var i = 0; i < 16; i++) {
+        v[i] = h[i];
+      }
 
       for (var i = 0; i < 80; i++) {
         // Sigma_1(e) = ROTR(14) ^ ROTR(18) ^ ROTR(41)

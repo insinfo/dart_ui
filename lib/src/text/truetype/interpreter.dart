@@ -465,8 +465,9 @@ final class TrueTypeInterpreter {
       case 0x44: // WCVTP
         final int cvtVal = _pop();
         final int cvtIdx = _pop();
-        if (_cvt != null && cvtIdx >= 0 && cvtIdx < _cvt!.length)
+        if (_cvt != null && cvtIdx >= 0 && cvtIdx < _cvt!.length) {
           _cvt![cvtIdx] = cvtVal;
+        }
         break;
       case 0x45: // RCVT
         final int cIdx = _pop();
@@ -477,8 +478,9 @@ final class TrueTypeInterpreter {
       case 0x70: // WCVTF
         final int cvtValF = _pop();
         final int cvtIdxF = _pop();
-        if (_cvt != null && cvtIdxF >= 0 && cvtIdxF < _cvt!.length)
+        if (_cvt != null && cvtIdxF >= 0 && cvtIdxF < _cvt!.length) {
           _cvt![cvtIdxF] = cvtValF;
+        }
         break;
 
       // ----------------------------------------------------
@@ -766,7 +768,7 @@ final class TrueTypeInterpreter {
         final Zone z = _gs.zp0 == 0 ? _twilightZone : _glyphZone!;
         double dist = _cvt != null ? _cvt![cvtIdx].toDouble() : 0.0;
         if (round) {
-          double orgDist = _project(z.orgX[p], z.orgY[p]);
+          final double orgDist = _project(z.orgX[p], z.orgY[p]);
           if ((dist - orgDist).abs() > _gs.controlValueCutIn) dist = orgDist;
           dist = _round(dist);
         }
@@ -829,16 +831,18 @@ final class TrueTypeInterpreter {
             refZ.curY[refP] - refZ.orgY[refP]);
         if (_gs.zp2 == 0) {
           for (int i = 0; i < targetZ.curX.length; i++) {
-            if (i != refP || refZ != targetZ)
+            if (i != refP || refZ != targetZ) {
               _movePointAlongFreeVector(targetZ, i, shift);
+            }
           }
         } else if (contour >= 0 && contour < targetZ.contourEnds.length) {
           final int start =
               contour == 0 ? 0 : targetZ.contourEnds[contour - 1] + 1;
           final int end = targetZ.contourEnds[contour];
           for (int i = start; i <= end; i++) {
-            if (i != refP || refZ != targetZ)
+            if (i != refP || refZ != targetZ) {
               _movePointAlongFreeVector(targetZ, i, shift);
+            }
           }
         }
         break;
@@ -865,7 +869,7 @@ final class TrueTypeInterpreter {
 
       case 0x38: // SHPIX
         final double disp = _cvt != null ? _cvt![_pop()].toDouble() : 0.0;
-        double shift = disp / 64.0;
+        final double shift = disp / 64.0;
         for (int i = 0; i < _gs.loop; i++) {
           final int p = _pop();
           final Zone z = _gs.zp2 == 0 ? _twilightZone : _glyphZone!;
@@ -887,16 +891,16 @@ final class TrueTypeInterpreter {
         final Zone z1 = _gs.zp1 == 0 ? _twilightZone : _glyphZone!;
         final Zone z2 = _gs.zp2 == 0 ? _twilightZone : _glyphZone!;
 
-        double oldRange = _dualProject(z1.orgX[_gs.rp2] - z0.orgX[_gs.rp1],
+        final double oldRange = _dualProject(z1.orgX[_gs.rp2] - z0.orgX[_gs.rp1],
             z1.orgY[_gs.rp2] - z0.orgY[_gs.rp1]);
-        double curRange = _project(z1.curX[_gs.rp2] - z0.curX[_gs.rp1],
+        final double curRange = _project(z1.curX[_gs.rp2] - z0.curX[_gs.rp1],
             z1.curY[_gs.rp2] - z0.curY[_gs.rp1]);
 
         for (int i = 0; i < _gs.loop; i++) {
           final int p = _pop();
-          double orgDist = _dualProject(
+          final double orgDist = _dualProject(
               z2.orgX[p] - z0.orgX[_gs.rp1], z2.orgY[p] - z0.orgY[_gs.rp1]);
-          double curDist = _project(
+          final double curDist = _project(
               z2.curX[p] - z0.curX[_gs.rp1], z2.curY[p] - z0.curY[_gs.rp1]);
 
           double newDist = 0.0;

@@ -72,8 +72,9 @@ class PdfSecurityHandler {
   }
 
   Uint8List _computeObjectKey(int objNum, int objGen) {
-    if (revision >= 5)
+    if (revision >= 5) {
       return encryptionKey; // PDF 2.0 / AES-256 usa a chave direta
+    }
 
     // Para algoritmos mais antigos, a chave do objeto é um MD5 da encryptionKey + objNum + objGen
     final data = Uint8List(encryptionKey.length + 5);

@@ -1,13 +1,13 @@
-import 'package:test/test.dart';
 import 'package:dart_ui/src/cdr/fills/cdr_fill.dart';
 import 'package:dart_ui/src/cdr/fills/cdr_gradient_fill.dart';
 import 'package:dart_ui/src/cdr/fills/cdr_mesh_fill.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
+import 'package:test/test.dart';
 
 void main() {
   group('CDR Fills & Gradients', () {
     test('CdrSolidFill holds exact ARGB', () {
-      final solid = CdrSolidFill(0xFF112233);
+      const solid = CdrSolidFill(0xFF112233);
       expect(solid.colorArgb, equals(0xFF112233));
     });
 
@@ -15,8 +15,8 @@ void main() {
       final gradient = CdrGradientFill(
         type: CdrGradientType.radial,
         stops: [
-          CdrColorStop(1.0, 0xFFFFFFFF),
-          CdrColorStop(0.0, 0xFF000000),
+          const CdrColorStop(1.0, 0xFFFFFFFF),
+          const CdrColorStop(0.0, 0xFF000000),
         ],
       );
 
@@ -29,10 +29,10 @@ void main() {
 
     test('CdrMeshFill creates nodes', () {
       final nodes = <CdrMeshNode>[
-        CdrMeshNode(const Offset(0, 0), 0xFFFF0000),
-        CdrMeshNode(const Offset(10, 0), 0xFF00FF00),
-        CdrMeshNode(const Offset(0, 10), 0xFF0000FF),
-        CdrMeshNode(const Offset(10, 10), 0xFFFFFF00),
+        const CdrMeshNode(Offset(0, 0), 0xFFFF0000),
+        const CdrMeshNode(Offset(10, 0), 0xFF00FF00),
+        const CdrMeshNode(Offset(0, 10), 0xFF0000FF),
+        const CdrMeshNode(Offset(10, 10), 0xFFFFFF00),
       ];
 
       final mesh = CdrMeshFill(1, 1, nodes);

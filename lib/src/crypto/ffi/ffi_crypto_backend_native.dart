@@ -1,9 +1,10 @@
 import 'dart:ffi';
 import 'dart:io';
 import 'dart:typed_data';
+
+import '../../ffi/native_memory.dart';
 import '../crypto_backend.dart';
 import '../dart/pure_dart_crypto_backend.dart';
-import '../../ffi/native_memory.dart';
 
 // --- macOS CommonCrypto Bindings ---
 typedef _CcDigestC = Pointer<Uint8> Function(

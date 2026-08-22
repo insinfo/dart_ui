@@ -7,7 +7,7 @@
 > **Integração nativa:** `dart:ffi`, sem biblioteca intermediária escrita pelo projeto em C, C++, Objective-C ou Swift  
 > **Modelo de widgets:** widgets, layout, estilos, eventos, composição e acessibilidade implementados em Dart  
 > **Backends planejados:** Win32, GDI, Direct2D, Direct3D 11, DirectComposition, X11/XCB, Wayland, GTK opcional, OpenGL, Vulkan, AppKit, Core Graphics e Metal  
-> **Referências arquiteturais principais:** Avalonia, OpenJFX/JavaFX, `dart_graphics`, `marlin`, `win32` e demais referências locais
+> **Referências arquiteturais principais:** Avalonia, OpenJFX/JavaFX, Flutter, `dart_graphics`, `marlin`, `win32` e demais referências locais
 
 ---
 

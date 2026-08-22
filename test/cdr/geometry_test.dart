@@ -1,14 +1,14 @@
-import 'package:test/test.dart';
 import 'package:dart_ui/src/cdr/geometry/cdr_bezier_evaluator.dart';
+import 'package:test/test.dart';
 
 void main() {
   group('CDR Geometry Subsystem', () {
     test('computeSymmetricalControlPoint calculates mirror vector', () {
-      final anchorX = 100.0;
-      final anchorY = 100.0;
+      const anchorX = 100.0;
+      const anchorY = 100.0;
 
-      final prevCx = 90.0;
-      final prevCy = 90.0;
+      const prevCx = 90.0;
+      const prevCy = 90.0;
 
       // Vetor (prev -> anchor) é (+10, +10)
       // O próximo controle deve ser anchor + vetor = (110, 110)
@@ -21,12 +21,12 @@ void main() {
 
     test('computeSmoothControlPoint maintains angle but applies new length',
         () {
-      final anchorX = 100.0;
-      final anchorY = 100.0;
+      const anchorX = 100.0;
+      const anchorY = 100.0;
 
       // prev (90, 100), dx=10, dy=0. Normal é (1, 0).
-      final prevCx = 90.0;
-      final prevCy = 100.0;
+      const prevCx = 90.0;
+      const prevCy = 100.0;
 
       // Nova distância deve ser de 50 pixels a partir do anchorX, na mesma direção (1, 0)
       final nextC = CdrBezierEvaluator.computeSmoothControlPoint(
