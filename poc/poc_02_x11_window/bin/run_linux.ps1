@@ -18,6 +18,13 @@
 .PARAMETER Distro
   Nome da distribuição WSL. O padrão é Ubuntu.
 
+.PARAMETER Display
+  DISPLAY X11 explícito. Quando omitido, usa WSLg normalmente e seleciona
+  automaticamente o VcXsrv em :1 se o Weston estiver em COPY MODE.
+
+.PARAMETER WslgOnly
+  Não usa o fallback automático do VcXsrv, mesmo em COPY MODE.
+
 .EXAMPLE
   .\bin\run_linux.ps1
   .\bin\run_linux.ps1 --continuous
@@ -31,7 +38,9 @@ param(
     [switch]$Aot,
     [switch]$Compile,
     [switch]$Gdb,
+    [switch]$WslgOnly,
     [string]$Distro = "Ubuntu",
+    [string]$Display,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$DartArgs
 )
@@ -48,8 +57,56 @@ function ConvertTo-BashLiteral([string]$Value) {
     return $quote + $Value.Replace($quote, $escapedQuote) + $quote
 }
 
+function Test-TcpPort([int]$Port) {
+    $client = [System.Net.Sockets.TcpClient]::new()
+    try {
+        $client.Connect("127.0.0.1", $Port)
+        return $true
+    } catch {
+        return $false
+    } finally {
+        $client.Dispose()
+    }
+}
+
+function Start-VcXsrvDisplay {
+    $port = 6001
+    if (-not (Test-TcpPort $port)) {
+        $candidates = @(
+            (Join-Path $env:ProgramFiles "VcXsrv\vcxsrv.exe"),
+            (Join-Path ${env:ProgramFiles(x86)} "VcXsrv\vcxsrv.exe")
+        )
+        $vcXsrv = $candidates |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_) } |
+            Select-Object -First 1
+        if (-not $vcXsrv) {
+            throw "WSLg esta em COPY MODE e o VcXsrv nao foi encontrado. " +
+                  "Instale com: winget install --id marha.VcXsrv --exact"
+        }
+        Write-Host "🖥️  Iniciando VcXsrv no display :1..." -ForegroundColor Yellow
+        Start-Process -FilePath $vcXsrv `
+            -ArgumentList @(':1', '-multiwindow', '-clipboard', '-wgl', '-ac',
+                            '-silent-dup-error') `
+            -WindowStyle Hidden | Out-Null
+        for ($attempt = 0; $attempt -lt 20; $attempt++) {
+            Start-Sleep -Milliseconds 250
+            if (Test-TcpPort $port) { break }
+        }
+        if (-not (Test-TcpPort $port)) {
+            throw "VcXsrv iniciou, mas nao abriu a porta X11 6001."
+        }
+    }
+
+    $routes = (& wsl.exe -d "$Distro" -- ip route show default 2>$null) -join "`n"
+    $gatewayMatch = [regex]::Match($routes, 'default\s+via\s+([0-9.]+)')
+    if (-not $gatewayMatch.Success) {
+        throw "Nao foi possivel descobrir o gateway do WSL para o VcXsrv."
+    }
+    return "$($gatewayMatch.Groups[1].Value):1.0"
+}
+
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "  POC-02: Executando no Linux (Ubuntu / WSLg)" -ForegroundColor Cyan
+Write-Host "  POC-02: Executando no Linux (WSL / X11)" -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 Write-Host "Diretorio: $pocDir" -ForegroundColor DarkGray
 
@@ -112,12 +169,24 @@ if ($Compile -and -not $Gdb) {
 }
 
 $westonLog = (& wsl.exe -d "$Distro" -- cat /mnt/wslg/weston.log 2>$null) -join "`n"
-if ($westonLog -match 'enable_copy_warning_title = 1') {
+$copyMode = $westonLog -match 'enable_copy_warning_title = 1'
+if ($copyMode) {
     Write-Warning "WSLg iniciou em [WARN:COPY MODE]. A janela pode aparecer apenas como icone transparente; veja microsoft/wslg#1456."
 }
 
+$selectedDisplay = $Display
+if (-not $selectedDisplay -and $copyMode -and -not $WslgOnly) {
+    $selectedDisplay = Start-VcXsrvDisplay
+    Write-Host "✅ Fallback X11 ativo: DISPLAY=$selectedDisplay" -ForegroundColor Green
+}
+
 # Monta o comando de execução
-$envPrefix = 'export DISPLAY="${DISPLAY:-:0}"; ' +
+$displayExport = if ($selectedDisplay) {
+    'export DISPLAY=' + (ConvertTo-BashLiteral $selectedDisplay) + '; '
+} else {
+    'export DISPLAY="${DISPLAY:-:0}"; '
+}
+$envPrefix = $displayExport +
              'export LD_LIBRARY_PATH="/usr/lib/wsl/lib:${LD_LIBRARY_PATH}"; ' +
              'export GALLIUM_DRIVER="d3d12"; ' +
              'export MESA_LOG_FILE=/dev/null; '

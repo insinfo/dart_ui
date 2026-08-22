@@ -57,6 +57,10 @@ o `package_config.json` do Dart para Windows ou um binário AOT desatualizado.
 
 # Escolher outra distribuição WSL
 .\poc\poc_02_x11_window\bin\run_linux.ps1 -Distro openSUSE-Tumbleweed --frames 60
+
+# Forçar um DISPLAY específico ou impedir o fallback
+.\poc\poc_02_x11_window\bin\run_linux.ps1 -Display 172.28.80.1:1.0 --continuous
+.\poc\poc_02_x11_window\bin\run_linux.ps1 -WslgOnly --frames 60
 ```
 
 Se apenas o ícone surgir na barra de tarefas, com miniatura vazia e título
@@ -64,3 +68,9 @@ Se apenas o ícone surgir na barra de tarefas, com miniatura vazia e título
 do WSLg falhou. Esse problema é acompanhado em
 [microsoft/wslg#1456](https://github.com/microsoft/wslg/issues/1456) e também
 ocorre com aplicações X11 que não usam Dart ou OpenGL.
+
+Quando detecta esse estado, o script procura o VcXsrv instalado no Windows,
+inicia o servidor no display `:1`, descobre o gateway atual da distribuição
+e redireciona a POC automaticamente. O Mesa continua no WSL com
+`GALLIUM_DRIVER=d3d12`; no ambiente validado o renderer permaneceu
+`D3D12 (Intel(R) UHD Graphics)`, sem fallback para `llvmpipe`.
