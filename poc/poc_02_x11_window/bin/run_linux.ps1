@@ -25,6 +25,10 @@
 .PARAMETER WslgOnly
   Não usa o fallback automático do VcXsrv, mesmo em COPY MODE.
 
+.PARAMETER GalliumDriver
+  Driver Mesa: auto, d3d12 ou llvmpipe. O modo auto usa D3D12 no WSLg e
+  llvmpipe no VcXsrv, evitando o readback D3D12 extremamente lento sem DRI3.
+
 .EXAMPLE
   .\bin\run_linux.ps1
   .\bin\run_linux.ps1 --continuous
@@ -41,6 +45,8 @@ param(
     [switch]$WslgOnly,
     [string]$Distro = "Ubuntu",
     [string]$Display,
+    [ValidateSet("auto", "d3d12", "llvmpipe")]
+    [string]$GalliumDriver = "auto",
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$DartArgs
 )
@@ -175,9 +181,27 @@ if ($copyMode) {
 }
 
 $selectedDisplay = $Display
+$usingVcXsrvFallback = $false
 if (-not $selectedDisplay -and $copyMode -and -not $WslgOnly) {
     $selectedDisplay = Start-VcXsrvDisplay
+    $usingVcXsrvFallback = $true
     Write-Host "✅ Fallback X11 ativo: DISPLAY=$selectedDisplay" -ForegroundColor Green
+}
+
+$externalDisplay = $usingVcXsrvFallback -or
+                   ($selectedDisplay -and -not $selectedDisplay.StartsWith(':'))
+$resolvedGalliumDriver = if ($GalliumDriver -ne "auto") {
+    $GalliumDriver
+} elseif ($externalDisplay) {
+    "llvmpipe"
+} else {
+    "d3d12"
+}
+if ($externalDisplay -and $resolvedGalliumDriver -eq "llvmpipe") {
+    Write-Host "✅ Mesa llvmpipe selecionado para apresentacao X11 sem DRI3 " `
+               "(evita o readback lento do D3D12)." -ForegroundColor Green
+} else {
+    Write-Host "🎨 Mesa GALLIUM_DRIVER=$resolvedGalliumDriver" -ForegroundColor Cyan
 }
 
 # Monta o comando de execução
@@ -188,7 +212,8 @@ $displayExport = if ($selectedDisplay) {
 }
 $envPrefix = $displayExport +
              'export LD_LIBRARY_PATH="/usr/lib/wsl/lib:${LD_LIBRARY_PATH}"; ' +
-             'export GALLIUM_DRIVER="d3d12"; ' +
+             'export GALLIUM_DRIVER=' +
+             (ConvertTo-BashLiteral $resolvedGalliumDriver) + '; ' +
              'export MESA_LOG_FILE=/dev/null; '
 
 if ($Gdb) {

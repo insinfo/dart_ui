@@ -61,6 +61,10 @@ o `package_config.json` do Dart para Windows ou um binário AOT desatualizado.
 # Forçar um DISPLAY específico ou impedir o fallback
 .\poc\poc_02_x11_window\bin\run_linux.ps1 -Display 172.28.80.1:1.0 --continuous
 .\poc\poc_02_x11_window\bin\run_linux.ps1 -WslgOnly --frames 60
+
+# Comparar os drivers Mesa no mesmo VcXsrv
+.\poc\poc_02_x11_window\bin\run_linux.ps1 -GalliumDriver d3d12 --frames 120 --uncapped
+.\poc\poc_02_x11_window\bin\run_linux.ps1 -GalliumDriver llvmpipe --frames 120 --uncapped
 ```
 
 Se apenas o ícone surgir na barra de tarefas, com miniatura vazia e título
@@ -72,5 +76,10 @@ ocorre com aplicações X11 que não usam Dart ou OpenGL.
 Quando detecta esse estado, o script procura o VcXsrv instalado no Windows,
 inicia o servidor no display `:1`, descobre o gateway atual da distribuição
 e redireciona a POC automaticamente. O Mesa continua no WSL com
-`GALLIUM_DRIVER=d3d12`; no ambiente validado o renderer permaneceu
-`D3D12 (Intel(R) UHD Graphics)`, sem fallback para `llvmpipe`.
+o renderer selecionado explicitamente no terminal.
+
+Sem DRI3, o D3D12 consegue renderizar, mas precisa ler cada frame da GPU de
+volta para a CPU antes de enviá-lo ao VcXsrv. Na medição de 640×480 isso fez
+`eglSwapBuffers` bloquear por aproximadamente 109 ms: 8,9 FPS. O llvmpipe
+elimina esse readback e atingiu 300 FPS sem pacing no mesmo teste. Por isso o
+modo `auto` usa D3D12 no WSLg nativo e llvmpipe somente no fallback VcXsrv.

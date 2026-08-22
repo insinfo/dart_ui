@@ -177,12 +177,12 @@ const int _glLinkStatus = 0x8B82;
 
 void main(List<String> args) {
   print('╔════════════════════════════════════════════════════════════════╗');
-  print('║  POC-02: Native X11 / OpenGL Window Demo (WSLg / Ubuntu)       ║');
+  print('║  POC-02: Native X11 / OpenGL Window Demo (Linux / WSL)         ║');
   print('║  Pure Dart FFI: XCB (Windowing) + EGL (Context) + OpenGL / ES  ║');
   print('╚════════════════════════════════════════════════════════════════╝\n');
 
   if (!Platform.isLinux) {
-    print('❌ Error: This demo runs on Linux (e.g. Ubuntu under WSLg).');
+    print('❌ Error: This demo runs on Linux (for example under WSL).');
     exit(1);
   }
 
@@ -205,6 +205,8 @@ void main(List<String> args) {
   int targetFrames =
       300; // ~5 seconds at 60fps (pass --frames 0 or --continuous for infinite)
   bool continuous = false;
+  bool vsync = true;
+  int frameDelayMilliseconds = 16;
 
   for (var i = 0; i < args.length; i++) {
     final arg = args[i];
@@ -217,6 +219,14 @@ void main(List<String> args) {
       windowWidth = int.tryParse(args[++i]) ?? windowWidth;
     } else if (arg == '--height' && i + 1 < args.length) {
       windowHeight = int.tryParse(args[++i]) ?? windowHeight;
+    } else if (arg == '--no-vsync') {
+      vsync = false;
+    } else if (arg == '--uncapped') {
+      vsync = false;
+      frameDelayMilliseconds = 0;
+    } else if (arg == '--frame-delay' && i + 1 < args.length) {
+      frameDelayMilliseconds = int.tryParse(args[++i]) ?? 16;
+      if (frameDelayMilliseconds < 0) frameDelayMilliseconds = 0;
     } else if (arg == '--help' || arg == '-h') {
       print('Usage: dart run bin/main_linux.dart [options]');
       print('Options:');
@@ -226,6 +236,9 @@ void main(List<String> args) {
           '  --continuous, -c  Run continuously until closed or ESC is pressed');
       print('  --width <w>       Window width in pixels (default: 640)');
       print('  --height <h>      Window height in pixels (default: 480)');
+      print('  --no-vsync        Request EGL swap interval 0');
+      print('  --uncapped        Disable VSync and the 16 ms frame delay');
+      print('  --frame-delay <n> Minimum frame interval in ms (default: 16)');
       exit(0);
     }
   }
@@ -454,7 +467,7 @@ void main(List<String> args) {
     }
   }
 
-  setWindowTitle('POC-02: Dart OpenGL Window (WSLg / Ubuntu)');
+  setWindowTitle('POC-02: Dart OpenGL Window (Linux / WSL)');
 
   // Configure WM_HINTS (NormalState / Visible)
   final wmHintsStr = 'WM_HINTS'.toNativeUtf8();
@@ -609,8 +622,11 @@ void main(List<String> args) {
   }
   print('✅ EGL Context is now current.');
 
-  // Enable VSync (swapInterval 1)
-  eglSwapInterval(eglDisplay, 1);
+  final requestedSwapInterval = vsync ? 1 : 0;
+  final swapIntervalAccepted =
+      eglSwapInterval(eglDisplay, requestedSwapInterval) != 0;
+  print('EGL swap interval: $requestedSwapInterval '
+      '(${swapIntervalAccepted ? 'accepted' : 'rejected'})');
 
   // 5. Query OpenGL Information
   final glGetString = resolveGlSymbol('glGetString')
@@ -625,9 +641,6 @@ void main(List<String> args) {
   final glClear = resolveGlSymbol('glClear')
       .cast<NativeFunction<Void Function(Uint32)>>()
       .asFunction<void Function(int)>();
-  final glFlush = resolveGlSymbol('glFlush')
-      .cast<NativeFunction<Void Function()>>()
-      .asFunction<void Function()>();
   final glDisable = resolveGlSymbol('glDisable')
       .cast<NativeFunction<Void Function(Uint32)>>()
       .asFunction<void Function(int)>();
@@ -901,7 +914,7 @@ void main() {
   }
 
   // 7. Render Loop
-  print('\n🚀 Starting OpenGL Animation Loop on Linux/WSLg...');
+  print('\n🚀 Starting OpenGL Animation Loop on Linux/X11...');
   print('👉 Controls: Press ESC / Q in the window or close it to exit.');
   if (!continuous) {
     print('👉 Rendering $targetFrames frames (or run with --continuous)...\n');
@@ -915,8 +928,10 @@ void main() {
   final stopwatch = Stopwatch()..start();
   final fpsTimer = Stopwatch()..start();
   var lastFpsReport = 0;
+  var swapWaitMicroseconds = 0;
 
   while (running) {
+    final frameStartMicroseconds = stopwatch.elapsedMicroseconds;
     // Handle X11 events
     while (true) {
       final event = xcbPollForEvent(connection);
@@ -963,25 +978,35 @@ void main() {
 
     // Draw Triangle
     glDrawArrays(_glTriangles, 0, 3);
-    glFlush();
-
     // Swap EGL buffers
+    final swapStart = Stopwatch()..start();
     if (eglSwapBuffers(eglDisplay, eglSurface) == 0) {
       print('⚠️ eglSwapBuffers returned 0; surface might be invalidated.');
       break;
     }
-    xcbFlush(connection);
+    swapWaitMicroseconds += swapStart.elapsedMicroseconds;
 
-    // Frame rate pacing (~60 FPS) to allow smooth compositing without burning CPU
-    sleep(const Duration(milliseconds: 16));
+    if (frameDelayMilliseconds > 0) {
+      final targetFrameMicroseconds = frameDelayMilliseconds * 1000;
+      final frameWorkMicroseconds =
+          stopwatch.elapsedMicroseconds - frameStartMicroseconds;
+      final remainingMicroseconds =
+          targetFrameMicroseconds - frameWorkMicroseconds;
+      if (remainingMicroseconds > 0) {
+        sleep(Duration(microseconds: remainingMicroseconds));
+      }
+    }
 
     frameCount++;
 
     // FPS reporting every second
     if (fpsTimer.elapsedMilliseconds - lastFpsReport >= 1000) {
       final fps = (frameCount * 1000.0) / fpsTimer.elapsedMilliseconds;
-      stdout.write(
-          '\r✨ Frame $frameCount | FPS: ${fps.toStringAsFixed(1)} | Time: ${elapsedSeconds.toStringAsFixed(1)}s  ');
+      final averageSwapMs =
+          frameCount == 0 ? 0.0 : swapWaitMicroseconds / frameCount / 1000.0;
+      stdout.write('\r✨ Frame $frameCount | FPS: ${fps.toStringAsFixed(1)} | '
+          'Swap: ${averageSwapMs.toStringAsFixed(1)} ms | '
+          'Time: ${elapsedSeconds.toStringAsFixed(1)}s  ');
       lastFpsReport = fpsTimer.elapsedMilliseconds;
     }
 
