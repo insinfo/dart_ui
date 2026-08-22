@@ -67,6 +67,11 @@ o `package_config.json` do Dart para Windows ou um binário AOT desatualizado.
 .\poc\poc_02_x11_window\bin\run_linux.ps1 -GalliumDriver llvmpipe --frames 120 --uncapped
 ```
 
+A compilação AOT também gera `bin/main_linux.aot.debug`, com os símbolos Dart
+separados. O arquivo é local e não deve ser versionado. Ele pode ser usado para
+simbolizar endereços AOT sem modificar o executável: aplicar `objcopy` depois da
+compilação invalida o trailer interno do executável Dart.
+
 Se apenas o ícone surgir na barra de tarefas, com miniatura vazia e título
 `[WARN:COPY MODE]`, a janela foi mapeada corretamente mas o transporte gráfico
 do WSLg falhou. Esse problema é acompanhado em
@@ -83,3 +88,6 @@ volta para a CPU antes de enviá-lo ao VcXsrv. Na medição de 640×480 isso fez
 `eglSwapBuffers` bloquear por aproximadamente 109 ms: 8,9 FPS. O llvmpipe
 elimina esse readback e atingiu 300 FPS sem pacing no mesmo teste. Por isso o
 modo `auto` usa D3D12 no WSLg nativo e llvmpipe somente no fallback VcXsrv.
+
+O diagnóstico ETW/GDB do reset incorreto de `node_id` do `virtiofs` está em
+[`doc/DIAGNOSTICO_WSLG_VIRTIOFS_BUILD_26200.md`](../../doc/DIAGNOSTICO_WSLG_VIRTIOFS_BUILD_26200.md).

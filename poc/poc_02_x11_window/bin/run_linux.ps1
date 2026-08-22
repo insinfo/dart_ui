@@ -13,7 +13,8 @@
   Executa dart pub get e compila o AOT, sem iniciar a aplicação.
 
 .PARAMETER Gdb
-  Inicia a execução dentro do depurador GDB no WSL.
+  Inicia a execução dentro do depurador GDB no WSL. A compilação gera
+  bin/main_linux.aot.debug para simbolizar o código AOT.
 
 .PARAMETER Distro
   Nome da distribuição WSL. O padrão é Ubuntu.
@@ -153,7 +154,9 @@ $buildCmd = 'if command -v dart >/dev/null 2>&1; then DART=dart; ' +
             'elif [ -x "$HOME/dart-sdk/bin/dart" ]; then DART="$HOME/dart-sdk/bin/dart"; ' +
             'else echo "ERRO: Dart SDK nao encontrado no WSL."; exit 1; fi; ' +
             '$DART pub get && ' +
-            '$DART compile exe bin/main_linux.dart -o bin/main_linux.aot'
+            '$DART compile exe bin/main_linux.dart ' +
+            '--save-debugging-info=bin/main_linux.aot.debug ' +
+            '-o bin/main_linux.aot'
 $buildExitCode = 1
 try {
     & wsl.exe -d "$Distro" --cd "$pocDir" -e bash -c $buildCmd
@@ -170,6 +173,7 @@ if ($buildExitCode -ne 0) {
     exit $buildExitCode
 }
 Write-Host "✅ AOT atualizado: bin/main_linux.aot" -ForegroundColor Green
+Write-Host "✅ Simbolos AOT: bin/main_linux.aot.debug" -ForegroundColor Green
 if ($Compile -and -not $Gdb) {
     exit 0
 }
