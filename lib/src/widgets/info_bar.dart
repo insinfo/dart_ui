@@ -35,8 +35,6 @@ import 'basic.dart';
 import 'control.dart';
 import 'controls.dart';
 import 'element.dart';
-import 'icon.dart';
-import 'phosphor_icons.dart';
 import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
@@ -71,13 +69,6 @@ final class InfoBar extends StatelessWidget {
         InfoBarSeverity.error => theme.colorScheme.error,
       };
 
-  static IconData _iconFor(InfoBarSeverity severity) => switch (severity) {
-        InfoBarSeverity.info => PhosphorIcons.info,
-        InfoBarSeverity.success => PhosphorIcons.checkCircle,
-        InfoBarSeverity.warning => PhosphorIcons.warning,
-        InfoBarSeverity.error => PhosphorIcons.xCircle,
-      };
-
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -99,7 +90,9 @@ final class InfoBar extends StatelessWidget {
               child: const SizedBox(width: 3, height: 36),
             ),
             const SizedBox(width: 8),
-            Icon(_iconFor(severity), size: 16, color: accent),
+            // A drawn glyph rather than an icon font: the banner must render
+            // identically headless, where no icon face is registered.
+            _SeverityDot(color: accent),
             const SizedBox(width: 8),
             Expanded(
               child: Padding(
@@ -124,6 +117,60 @@ final class InfoBar extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The severity glyph: a filled circle in the severity's accent.
+final class _SeverityDot extends RenderObjectWidget {
+  const _SeverityDot({required this.color});
+
+  final Color color;
+
+  @override
+  RenderObjectElement createElement() => RenderObjectElement(this);
+
+  @override
+  RenderSeverityDot createRenderObject(BuildContext context) =>
+      RenderSeverityDot()..color = color;
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant RenderSeverityDot object,
+  ) {
+    object.color = color;
+  }
+}
+
+final class RenderSeverityDot extends RenderBox with ControlBehavior {
+  Color _color = const Color(0xFF000000);
+
+  Color get color => _color;
+
+  set color(Color value) {
+    if (value == _color) return;
+    _color = value;
+    markNeedsPaint();
+  }
+
+  @override
+  bool get focusOnPointerDown => false;
+
+  @override
+  void performLayout() => size = constraints.constrain(const Size(10, 10));
+
+  @override
+  void paint(DisplayList list, Offset offset) => paintRoundedFill(
+        list,
+        Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height),
+        _color,
+        size.width / 2,
+      );
+
+  @override
+  SemanticsConfiguration describeSemantics() => const SemanticsConfiguration(
+        // Decorative: the chrome's label already says the severity.
+        role: SemanticsRole.generic,
+      );
 }
 
 /// The banner's border and its single semantic node.
