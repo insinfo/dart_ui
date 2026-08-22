@@ -226,3 +226,52 @@ C:\Users\pmro\AppData\Local\Temp\wsl-devicehost-nodeid-20260822-074709\weston-af
 O ETL oficial teve zero indicação de perda de buffers. Antes de anexar
 publicamente, ele deve ser compactado e revisado por conter PII, paths e IDs da
 VM.
+
+## Validação do WSLg privado com retry do Weston
+
+Foi compilada a imagem oficial do `microsoft/wslg` 1.0.79 com um patch local no
+Weston. O probe de memória compartilhada é repetido uma vez após falha e cada
+tentativa usa um GUID novo. Isso evita tanto o `FUSE_ROOT_ID` inválido na
+primeira tentativa quanto `EEXIST` caso o servidor tenha criado o nome apesar
+do retorno `EIO`.
+
+Artefato instalado como system distro:
+
+```text
+D:\wslg-dev\artifacts\system_x64-wslg-1.0.79-weston-retry.vhd
+SHA256 ED168DE3D1608A926D4B279314FF6D759D2EE7985A1A6763AA10E0FF92E7395B
+```
+
+Configuração do host em `%USERPROFILE%\.wslconfig`:
+
+```ini
+[wsl2]
+systemDistro=D:\\wslg-dev\\artifacts\\system_x64-wslg-1.0.79-weston-retry.vhd
+```
+
+Após `wsl --shutdown`, o log confirmou a sequência prevista:
+
+```text
+rdp_allocate_shared_memory: Failed to open ... Input/output error
+RDP backend: use_gfxredir = 1
+```
+
+A janela RAIL tornou-se visível. Isso valida o retry como contorno funcional e
+reforça que a correção definitiva pertence ao contador de handles do OpenVMM.
+
+### EGL/X11 após restaurar gfxredir
+
+O Xwayland dessa imagem anuncia `Present` e `MIT-SHM`, mas não `DRI3`. Há dois
+resultados distintos para a mesma POC AOT:
+
+```text
+GALLIUM_DRIVER=d3d12     D3D12 (Intel UHD), quadro preto, ~8,9 FPS, swap ~112 ms
+GALLIUM_DRIVER=llvmpipe  triângulo visível, ~63 FPS, swap ~1,6 ms
+```
+
+Logo, o quadro preto não é uma recaída do virtio-fs: é o caminho de apresentação
+EGL/X11 do Mesa D3D12 sem DRI3. O `run_linux.ps1` agora usa o último valor de
+`use_gfxredir` para detectar COPY MODE e, no modo `auto`, consulta as extensões
+do DISPLAY antes de selecionar o driver. Sem DRI3 ele escolhe `llvmpipe`; o modo
+`-GalliumDriver d3d12` continua disponível para reproduzir e comparar o caminho
+experimental acelerado.

@@ -21,6 +21,8 @@ const int _xcbKeyPress = 2;
 const int _xcbClientMessage = 33;
 const int _xcbPropModeReplace = 0;
 const int _xcbAtomAtom = 4;
+const int _xcbGcForeground = 1 << 2;
+const int _xcbImageFormatZPixmap = 2;
 
 final class _XcbScreen extends Struct {
   @Uint32()
@@ -149,6 +151,7 @@ const int _eglOpenglEs2Bit = 0x0004;
 const int _eglContextClientVersion = 0x3098;
 const int _eglOpenglApi = 0x30A2;
 const int _eglOpenglEsApi = 0x30A0;
+const int _eglPlatformXcbExt = 0x31DC;
 
 // ============================================================================
 // OpenGL Constants
@@ -170,6 +173,8 @@ const int _glVertexShader = 0x8B31;
 const int _glFragmentShader = 0x8B30;
 const int _glCompileStatus = 0x8B81;
 const int _glLinkStatus = 0x8B82;
+const int _glBgra = 0x80E1;
+const int _glUnsignedByte = 0x1401;
 
 // ============================================================================
 // Main Application
@@ -207,6 +212,8 @@ void main(List<String> args) {
   bool continuous = false;
   bool vsync = true;
   int frameDelayMilliseconds = 16;
+  final useX11ReadbackBridge =
+      Platform.environment['POC02_X11_READBACK'] == '1';
 
   for (var i = 0; i < args.length; i++) {
     final arg = args[i];
@@ -270,6 +277,18 @@ void main(List<String> args) {
       _XcbScreenIterator Function(Pointer<Void>)>('xcb_setup_roots_iterator');
   final xcbGenerateId = xcb.lookupFunction<Uint32 Function(Pointer<Void>),
       int Function(Pointer<Void>)>('xcb_generate_id');
+  final xcbCreateGc = xcb.lookupFunction<
+      Void Function(Pointer<Void>, Uint32, Uint32, Uint32, Pointer<Uint32>),
+      void Function(Pointer<Void>, int, int, int, Pointer<Uint32>)>(
+    'xcb_create_gc',
+  );
+  final xcbFreeGc = xcb.lookupFunction<Void Function(Pointer<Void>, Uint32),
+      void Function(Pointer<Void>, int)>('xcb_free_gc');
+  final xcbPutImage = xcb.lookupFunction<
+      Void Function(Pointer<Void>, Uint8, Uint32, Uint32, Uint16, Uint16, Int16,
+          Int16, Uint8, Uint8, Uint32, Pointer<Uint8>),
+      void Function(Pointer<Void>, int, int, int, int, int, int, int, int, int,
+          int, Pointer<Uint8>)>('xcb_put_image');
   final xcbCreateWindow = xcb.lookupFunction<
       Void Function(Pointer<Void>, Uint8, Uint32, Uint32, Int16, Int16, Uint16,
           Uint16, Uint16, Uint16, Uint32, Uint32, Pointer<Uint32>),
@@ -307,6 +326,16 @@ void main(List<String> args) {
   final eglGetDisplay = egl.lookupFunction<
       Pointer<Void> Function(Pointer<Void>),
       Pointer<Void> Function(Pointer<Void>)>('eglGetDisplay');
+  Pointer<Void> Function(int, Pointer<Void>, Pointer<IntPtr>)?
+      eglGetPlatformDisplay;
+  try {
+    eglGetPlatformDisplay = egl.lookupFunction<
+        Pointer<Void> Function(Uint32, Pointer<Void>, Pointer<IntPtr>),
+        Pointer<Void> Function(
+            int, Pointer<Void>, Pointer<IntPtr>)>('eglGetPlatformDisplay');
+  } catch (_) {
+    eglGetPlatformDisplay = null;
+  }
   final eglInitialize = egl.lookupFunction<
       Int32 Function(Pointer<Void>, Pointer<Int32>, Pointer<Int32>),
       int Function(
@@ -418,6 +447,20 @@ void main(List<String> args) {
   );
   calloc.free(valueList);
 
+  var readbackGc = 0;
+  if (useX11ReadbackBridge) {
+    readbackGc = xcbGenerateId(connection);
+    final gcValues = calloc<Uint32>()..value = screen.whitePixel;
+    xcbCreateGc(
+      connection,
+      readbackGc,
+      windowId,
+      _xcbGcForeground,
+      gcValues,
+    );
+    calloc.free(gcValues);
+  }
+
   // Set Window Title via _NET_WM_NAME and WM_NAME
   void setWindowTitle(String title) {
     final titleUtf8 = title.toNativeUtf8();
@@ -467,7 +510,9 @@ void main(List<String> args) {
     }
   }
 
-  setWindowTitle('POC-02: Dart OpenGL Window (Linux / WSL)');
+  setWindowTitle(useX11ReadbackBridge
+      ? 'POC-02: D3D12 + XCB readback bridge (Linux / WSL)'
+      : 'POC-02: Dart OpenGL Window (Linux / WSL)');
 
   // Configure WM_HINTS (NormalState / Visible)
   final wmHintsStr = 'WM_HINTS'.toNativeUtf8();
@@ -527,7 +572,18 @@ void main(List<String> args) {
       '✅ X11 Window created and mapped: ID 0x${windowId.toRadixString(16)} (${windowWidth}x$windowHeight)');
 
   // 4. Initialize EGL
-  final eglDisplay = eglGetDisplay(nullptr);
+  var eglDisplay = eglGetPlatformDisplay?.call(
+        _eglPlatformXcbExt,
+        connection,
+        nullptr,
+      ) ??
+      nullptr;
+  if (eglDisplay == nullptr) {
+    eglDisplay = eglGetDisplay(nullptr);
+    print('ℹ️ EGL XCB platform unavailable; using default X11 display.');
+  } else {
+    print('✅ EGL display uses the same native XCB connection as the window.');
+  }
   if (eglDisplay == nullptr || eglDisplay.address == 0) {
     print('❌ Error: eglGetDisplay failed.');
     exit(1);
@@ -622,7 +678,7 @@ void main(List<String> args) {
   }
   print('✅ EGL Context is now current.');
 
-  final requestedSwapInterval = vsync ? 1 : 0;
+  final requestedSwapInterval = useX11ReadbackBridge ? 0 : (vsync ? 1 : 0);
   final swapIntervalAccepted =
       eglSwapInterval(eglDisplay, requestedSwapInterval) != 0;
   print('EGL swap interval: $requestedSwapInterval '
@@ -644,6 +700,12 @@ void main(List<String> args) {
   final glDisable = resolveGlSymbol('glDisable')
       .cast<NativeFunction<Void Function(Uint32)>>()
       .asFunction<void Function(int)>();
+  final glReadPixels = resolveGlSymbol('glReadPixels')
+      .cast<
+          NativeFunction<
+              Void Function(
+                  Int32, Int32, Int32, Int32, Uint32, Uint32, Pointer<Void>)>>()
+      .asFunction<void Function(int, int, int, int, int, int, Pointer<Void>)>();
 
   // Ensure depth test and face culling do not cull the 2D triangle
   glDisable(0x0B71 /* GL_DEPTH_TEST */);
@@ -660,6 +722,19 @@ void main(List<String> args) {
   print(' Version:      ${getGlStringSafe(_glVersion)}');
   print(' GLSL Version: ${getGlStringSafe(_glShadingLanguageVersion)}');
   print('═════════════════════════════════════════════════════════\n');
+
+  final frameBytes = windowWidth * windowHeight * 4;
+  final rowBytes = windowWidth * 4;
+  final readbackPixels =
+      useX11ReadbackBridge ? calloc<Uint8>(frameBytes) : nullptr;
+  final x11Pixels = useX11ReadbackBridge ? calloc<Uint8>(frameBytes) : nullptr;
+  late final Pointer<Void> Function(Pointer<Void>, Pointer<Void>, int) memcpy;
+  if (useX11ReadbackBridge) {
+    memcpy = DynamicLibrary.process().lookupFunction<
+        Pointer<Void> Function(Pointer<Void>, Pointer<Void>, IntPtr),
+        Pointer<Void> Function(Pointer<Void>, Pointer<Void>, int)>('memcpy');
+    print('✅ Ponte D3D12 readback → XCB PutImage ativa (BGRA, Dart FFI).');
+  }
 
   // 6. Set up Shader Program & Animated Rotating Rainbow Triangle
   final glCreateShader = resolveGlSymbol('glCreateShader')
@@ -928,7 +1003,41 @@ void main() {
   final stopwatch = Stopwatch()..start();
   final fpsTimer = Stopwatch()..start();
   var lastFpsReport = 0;
-  var swapWaitMicroseconds = 0;
+  var presentWaitMicroseconds = 0;
+
+  void publishReadback(Pointer<Uint8> sourcePixels) {
+    for (var destinationRow = 0;
+        destinationRow < windowHeight;
+        destinationRow++) {
+      final sourceRow = windowHeight - 1 - destinationRow;
+      memcpy(
+        (x11Pixels + destinationRow * rowBytes).cast(),
+        (sourcePixels + sourceRow * rowBytes).cast(),
+        rowBytes,
+      );
+    }
+    const rowsPerRequest = 32;
+    for (var y = 0; y < windowHeight; y += rowsPerRequest) {
+      final rows = math.min(rowsPerRequest, windowHeight - y);
+      xcbPutImage(
+        connection,
+        _xcbImageFormatZPixmap,
+        windowId,
+        readbackGc,
+        windowWidth,
+        rows,
+        0,
+        y,
+        0,
+        rootDepth,
+        rows * rowBytes,
+        x11Pixels + y * rowBytes,
+      );
+    }
+    if (xcbFlush(connection) <= 0) {
+      throw StateError('xcb_flush failed while publishing readback frame');
+    }
+  }
 
   while (running) {
     final frameStartMicroseconds = stopwatch.elapsedMicroseconds;
@@ -978,13 +1087,18 @@ void main() {
 
     // Draw Triangle
     glDrawArrays(_glTriangles, 0, 3);
-    // Swap EGL buffers
-    final swapStart = Stopwatch()..start();
-    if (eglSwapBuffers(eglDisplay, eglSurface) == 0) {
+    final presentStart = Stopwatch()..start();
+    if (useX11ReadbackBridge) {
+      // Xwayland without DRI3 cannot import the Mesa/D3D12 window buffer.
+      // Read the GPU result and publish it through the X11 core image path.
+      glReadPixels(0, 0, windowWidth, windowHeight, _glBgra, _glUnsignedByte,
+          readbackPixels.cast());
+      publishReadback(readbackPixels);
+    } else if (eglSwapBuffers(eglDisplay, eglSurface) == 0) {
       print('⚠️ eglSwapBuffers returned 0; surface might be invalidated.');
       break;
     }
-    swapWaitMicroseconds += swapStart.elapsedMicroseconds;
+    presentWaitMicroseconds += presentStart.elapsedMicroseconds;
 
     if (frameDelayMilliseconds > 0) {
       final targetFrameMicroseconds = frameDelayMilliseconds * 1000;
@@ -1002,10 +1116,10 @@ void main() {
     // FPS reporting every second
     if (fpsTimer.elapsedMilliseconds - lastFpsReport >= 1000) {
       final fps = (frameCount * 1000.0) / fpsTimer.elapsedMilliseconds;
-      final averageSwapMs =
-          frameCount == 0 ? 0.0 : swapWaitMicroseconds / frameCount / 1000.0;
+      final averagePresentMs =
+          frameCount == 0 ? 0.0 : presentWaitMicroseconds / frameCount / 1000.0;
       stdout.write('\r✨ Frame $frameCount | FPS: ${fps.toStringAsFixed(1)} | '
-          'Swap: ${averageSwapMs.toStringAsFixed(1)} ms | '
+          'Present: ${averagePresentMs.toStringAsFixed(1)} ms | '
           'Time: ${elapsedSeconds.toStringAsFixed(1)}s  ');
       lastFpsReport = fpsTimer.elapsedMilliseconds;
     }
@@ -1026,12 +1140,15 @@ void main() {
   }
   calloc.free(vboPtr);
   calloc.free(vaoPtr);
+  if (readbackPixels != nullptr) calloc.free(readbackPixels);
+  if (x11Pixels != nullptr) calloc.free(x11Pixels);
 
   eglMakeCurrent(eglDisplay, nullptr, nullptr, nullptr);
   eglDestroySurface(eglDisplay, eglSurface);
   eglDestroyContext(eglDisplay, eglContext);
   eglTerminate(eglDisplay);
 
+  if (readbackGc != 0) xcbFreeGc(connection, readbackGc);
   xcbDestroyWindow(connection, windowId);
   xcbDisconnect(connection);
 

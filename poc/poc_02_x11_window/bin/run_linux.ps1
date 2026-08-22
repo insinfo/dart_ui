@@ -27,8 +27,16 @@
   Não usa o fallback automático do VcXsrv, mesmo em COPY MODE.
 
 .PARAMETER GalliumDriver
-  Driver Mesa: auto, d3d12 ou llvmpipe. O modo auto usa D3D12 no WSLg e
-  llvmpipe no VcXsrv, evitando o readback D3D12 extremamente lento sem DRI3.
+  Driver Mesa: auto, d3d12 ou llvmpipe. O modo auto só usa D3D12 quando o
+  servidor X11 anuncia DRI3 ou quando a build Mesa corrigida está disponível.
+
+.PARAMETER MesaPrefix
+  Prefixo de uma instalação Mesa isolada. O padrão auto usa
+  /opt/mesa-26.3-git quando disponível e nunca substitui os pacotes da distro.
+
+.PARAMETER D3D12FrontbufferThreads
+  Quantidade de trabalhadores persistentes usada pela correção experimental do
+  frontbuffer D3D12. O padrão 32 foi o melhor resultado nesta máquina.
 
 .EXAMPLE
   .\bin\run_linux.ps1
@@ -48,6 +56,9 @@ param(
     [string]$Display,
     [ValidateSet("auto", "d3d12", "llvmpipe")]
     [string]$GalliumDriver = "auto",
+    [string]$MesaPrefix = "auto",
+    [ValidateRange(1, 64)]
+    [int]$D3D12FrontbufferThreads = 32,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$DartArgs
 )
@@ -179,9 +190,19 @@ if ($Compile -and -not $Gdb) {
 }
 
 $westonLog = (& wsl.exe -d "$Distro" -- cat /mnt/wslg/weston.log 2>$null) -join "`n"
-$copyMode = $westonLog -match 'enable_copy_warning_title = 1'
+$gfxredirMatches = [regex]::Matches(
+    $westonLog,
+    'RDP backend: use_gfxredir\s*=\s*([01])'
+)
+$copyMode = if ($gfxredirMatches.Count -gt 0) {
+    $gfxredirMatches[$gfxredirMatches.Count - 1].Groups[1].Value -eq '0'
+} else {
+    $westonLog -match '\[WARN:COPY MODE\]'
+}
 if ($copyMode) {
     Write-Warning "WSLg iniciou em [WARN:COPY MODE]. A janela pode aparecer apenas como icone transparente; veja microsoft/wslg#1456."
+} elseif ($gfxredirMatches.Count -gt 0) {
+    Write-Host "✅ WSLg gfxredir ativo (memoria compartilhada funcionando)." -ForegroundColor Green
 }
 
 $selectedDisplay = $Display
@@ -194,18 +215,53 @@ if (-not $selectedDisplay -and $copyMode -and -not $WslgOnly) {
 
 $externalDisplay = $usingVcXsrvFallback -or
                    ($selectedDisplay -and -not $selectedDisplay.StartsWith(':'))
+$displayToProbe = if ($selectedDisplay) { $selectedDisplay } else { ':0' }
+$dri3ProbeCmd = 'DISPLAY=' + (ConvertTo-BashLiteral $displayToProbe) +
+                ' xdpyinfo -queryExtensions 2>/dev/null'
+$x11Extensions = (& wsl.exe -d "$Distro" -- bash -c $dri3ProbeCmd 2>$null) -join "`n"
+$supportsDri3 = $x11Extensions -match '(?m)^\s*DRI3\b'
+
+$mesaCandidate = if ($MesaPrefix -eq "auto") {
+    "/opt/mesa-26.3-git"
+} else {
+    $MesaPrefix.TrimEnd('/')
+}
+$mesaManifest = "$mesaCandidate/share/glvnd/egl_vendor.d/50_mesa.json"
+$mesaProbeCmd = 'test -f ' + (ConvertTo-BashLiteral $mesaManifest)
+& wsl.exe -d "$Distro" -- bash -c $mesaProbeCmd 2>$null
+$customMesaAvailable = $LASTEXITCODE -eq 0
+if ($MesaPrefix -ne "auto" -and -not $customMesaAvailable) {
+    throw "MesaPrefix invalido: nao existe $mesaManifest na distro $Distro."
+}
+$resolvedMesaPrefix = if ($customMesaAvailable) { $mesaCandidate } else { $null }
+
 $resolvedGalliumDriver = if ($GalliumDriver -ne "auto") {
     $GalliumDriver
-} elseif ($externalDisplay) {
+} elseif ($customMesaAvailable) {
+    "d3d12"
+} elseif ($externalDisplay -or -not $supportsDri3) {
     "llvmpipe"
 } else {
     "d3d12"
 }
-if ($externalDisplay -and $resolvedGalliumDriver -eq "llvmpipe") {
-    Write-Host "✅ Mesa llvmpipe selecionado para apresentacao X11 sem DRI3 " `
-               "(evita o readback lento do D3D12)." -ForegroundColor Green
+$useX11ReadbackBridge = $resolvedGalliumDriver -eq "d3d12" -and
+                        -not $supportsDri3 -and
+                        -not $customMesaAvailable
+if ($resolvedGalliumDriver -eq "llvmpipe" -and -not $supportsDri3) {
+    Write-Host "✅ Mesa llvmpipe selecionado: X11 DISPLAY=$displayToProbe nao anuncia DRI3 " `
+               "(evita quadro preto/readback lento do D3D12)." -ForegroundColor Green
+} elseif ($useX11ReadbackBridge) {
+    Write-Host "✅ D3D12 ativo com ponte GPU readback -> XCB PutImage: " `
+               "X11 DISPLAY=$displayToProbe nao anuncia DRI3." -ForegroundColor Green
 } else {
     Write-Host "🎨 Mesa GALLIUM_DRIVER=$resolvedGalliumDriver" -ForegroundColor Cyan
+}
+if ($resolvedMesaPrefix) {
+    Write-Host "✅ Mesa isolado: $resolvedMesaPrefix" -ForegroundColor Green
+    if ($resolvedGalliumDriver -eq "d3d12") {
+        Write-Host "✅ Workaround D3D12: $D3D12FrontbufferThreads trabalhadores " `
+                   "persistentes para o frontbuffer." -ForegroundColor Green
+    }
 }
 
 # Monta o comando de execução
@@ -214,11 +270,28 @@ $displayExport = if ($selectedDisplay) {
 } else {
     'export DISPLAY="${DISPLAY:-:0}"; '
 }
+$mesaEnvironment = if ($resolvedMesaPrefix) {
+    $mesaLibDir = "$resolvedMesaPrefix/lib/x86_64-linux-gnu"
+    'export LD_LIBRARY_PATH=' + (ConvertTo-BashLiteral "$mesaLibDir`:/usr/lib/wsl/lib") +
+    ':"${LD_LIBRARY_PATH}"; ' +
+    'export LIBGL_DRIVERS_PATH=' + (ConvertTo-BashLiteral "$mesaLibDir/dri") + '; ' +
+    'export __EGL_VENDOR_LIBRARY_FILENAMES=' +
+    (ConvertTo-BashLiteral "$resolvedMesaPrefix/share/glvnd/egl_vendor.d/50_mesa.json") + '; '
+} else {
+    'export LD_LIBRARY_PATH="/usr/lib/wsl/lib:${LD_LIBRARY_PATH}"; '
+}
 $envPrefix = $displayExport +
-             'export LD_LIBRARY_PATH="/usr/lib/wsl/lib:${LD_LIBRARY_PATH}"; ' +
+             $mesaEnvironment +
              'export GALLIUM_DRIVER=' +
              (ConvertTo-BashLiteral $resolvedGalliumDriver) + '; ' +
              'export MESA_LOG_FILE=/dev/null; '
+if ($resolvedMesaPrefix -and $resolvedGalliumDriver -eq "d3d12") {
+    $envPrefix += 'export D3D12_FRONTBUFFER_THREADS=' +
+                  (ConvertTo-BashLiteral $D3D12FrontbufferThreads.ToString()) + '; '
+}
+if ($useX11ReadbackBridge) {
+    $envPrefix += 'export POC02_X11_READBACK=1; '
+}
 
 if ($Gdb) {
     Write-Host "🐞 Iniciando no GDB..." -ForegroundColor Magenta

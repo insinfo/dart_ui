@@ -65,6 +65,9 @@ o `package_config.json` do Dart para Windows ou um binário AOT desatualizado.
 # Comparar os drivers Mesa no mesmo VcXsrv
 .\poc\poc_02_x11_window\bin\run_linux.ps1 -GalliumDriver d3d12 --frames 120 --uncapped
 .\poc\poc_02_x11_window\bin\run_linux.ps1 -GalliumDriver llvmpipe --frames 120 --uncapped
+
+# Usar o Mesa instrumentado/corrigido e controlar a copia paralela
+.\poc\poc_02_x11_window\bin\run_linux.ps1 -MesaPrefix /opt/mesa-26.3-git -D3D12FrontbufferThreads 32 --frames 300
 ```
 
 A compilação AOT também gera `bin/main_linux.aot.debug`, com os símbolos Dart
@@ -83,11 +86,21 @@ inicia o servidor no display `:1`, descobre o gateway atual da distribuição
 e redireciona a POC automaticamente. O Mesa continua no WSL com
 o renderer selecionado explicitamente no terminal.
 
-Sem DRI3, o D3D12 consegue renderizar, mas precisa ler cada frame da GPU de
-volta para a CPU antes de enviá-lo ao VcXsrv. Na medição de 640×480 isso fez
-`eglSwapBuffers` bloquear por aproximadamente 109 ms: 8,9 FPS. O llvmpipe
-elimina esse readback e atingiu 300 FPS sem pacing no mesmo teste. Por isso o
-modo `auto` usa D3D12 no WSLg nativo e llvmpipe somente no fallback VcXsrv.
+No Mesa D3D12, tanto o EGL/X11 quanto o EGL/Wayland do WSLg terminam em um
+frontbuffer de memória de sistema. A primeira leitura de cada recurso D3D12
+mapeado custou 103–149 ms em 640×480; publicar o resultado no X11 custou apenas
+0,7–2,5 ms. Portanto, DRI3 ausente expõe a limitação, mas o gargalo dominante
+não está no protocolo X11 nem na versão do OpenGL.
+
+O Mesa experimental instalado em `/opt/mesa-26.3-git` divide a cópia do
+frontbuffer entre workers persistentes. Com 32 workers, a mesma POC atingiu
+aproximadamente 30–40 FPS em 640×480, contra 7–9 FPS no caminho serial. O script
+detecta esse prefixo automaticamente e configura `D3D12_FRONTBUFFER_THREADS`;
+`-MesaPrefix system` força as bibliotecas da distribuição. Sem o Mesa corrigido,
+o modo automático ainda pode selecionar `llvmpipe` como fallback funcional.
 
 O diagnóstico ETW/GDB do reset incorreto de `node_id` do `virtiofs` está em
 [`doc/DIAGNOSTICO_WSLG_VIRTIOFS_BUILD_26200.md`](../../doc/DIAGNOSTICO_WSLG_VIRTIOFS_BUILD_26200.md).
+O relatório consolidado de WSL, WSLg, Mesa, OpenGL, Vulkan e dos experimentos de
+compartilhamento está em
+[`doc/RELATORIO_DIAGNOSTICO_WSL_WSLG_MESA.md`](../../doc/RELATORIO_DIAGNOSTICO_WSL_WSLG_MESA.md).
