@@ -75,6 +75,8 @@ workspace:
   - poc/poc_03_appkit_window
   - poc/poc_19_event_loop_metrics
   - poc/poc_20_macos_three_backends
+  - poc/poc_21_x11_transport_matrix
+  - poc/poc_22_x11_gpu_presentation
   - mvp/mvp_01_win32_counter
   - mvp/mvp_02_x11_counter
   - mvp/mvp_03_appkit_counter

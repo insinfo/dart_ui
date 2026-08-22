@@ -1,0 +1,802 @@
+import 'dart:typed_data';
+
+import 'package:dart_ui/src/backends/wayland/wayland_connection.dart';
+import 'package:dart_ui/src/backends/wayland/wayland_events.dart';
+import 'package:dart_ui/src/backends/wayland/wayland_protocol.dart';
+import 'package:dart_ui/src/backends/wayland/wayland_shm.dart';
+import 'package:dart_ui/src/backends/wayland/wayland_transport.dart';
+import 'package:dart_ui/src/backends/wayland/wayland_wire.dart';
+import 'package:test/test.dart';
+
+const String _sampleKeymap = '''
+xkb_keymap {
+xkb_keycodes { <AC01> = 38; };
+xkb_symbols { key <AC01> { [ a, A ] }; };
+};
+''';
+
+void main() {
+  late _FakeCompositor compositor;
+  late _FakeAllocator allocator;
+
+  setUp(() {
+    compositor = _FakeCompositor();
+    allocator = _FakeAllocator();
+  });
+
+  WaylandConnection openOk() {
+    final attempt = WaylandConnection.open(
+      transport: compositor,
+      allocator: allocator,
+    );
+    expect(attempt.succeeded, isTrue, reason: attempt.diagnostics.join('\n'));
+    final connection = attempt.connection! as WaylandConnection;
+    // The seat capabilities arrive during the final handshake roundtrip and
+    // queue get_pointer/get_keyboard. Flush them here so each test starts
+    // with an idle protocol connection and can inspect only its own requests.
+    connection.flush();
+    return connection;
+  }
+
+  group('handshake', () {
+    test('binds the required globals over two roundtrips', () {
+      final connection = openOk();
+
+      expect(connection.isValid, isTrue);
+      expect(
+        connection.globalInterfaces,
+        containsAll(<String>[
+          'wl_compositor',
+          'wl_shm',
+          'wl_seat',
+          'wl_output',
+          'xdg_wm_base',
+        ]),
+      );
+      expect(compositor.boundInterfaces,
+          containsAll(<String>['wl_compositor', 'wl_shm', 'xdg_wm_base']));
+      expect(connection.shmFormats, contains(wlShmFormatArgb8888));
+      expect(connection.supportsShmPresentation, isTrue);
+      connection.dispose();
+      expect(compositor.isDisposed, isTrue);
+    });
+
+    test('a compositor without xdg_wm_base is refused with the reason', () {
+      compositor.advertiseWmBase = false;
+      final attempt = WaylandConnection.open(
+        transport: compositor,
+        allocator: allocator,
+      );
+
+      expect(attempt.succeeded, isFalse);
+      expect(
+        attempt.diagnostics.map((d) => d.message),
+        anyElement(contains('lacks required globals')),
+      );
+      expect(compositor.isDisposed, isTrue,
+          reason: 'a refused connection must not leak its transport');
+    });
+
+    test('missing wl_shm keeps the connection but not CPU presentation', () {
+      compositor.advertiseShm = false;
+      final connection = openOk();
+
+      expect(connection.supportsShmPresentation, isFalse);
+      expect(() => connection.createShmBuffer(pixelWidth: 4, pixelHeight: 4),
+          throwsStateError);
+    });
+
+    test('output scale feeds the buffer scale hint', () {
+      compositor.outputScale = 2;
+      final connection = openOk();
+      expect(connection.bufferScaleHint, 2);
+    });
+  });
+
+  group('toplevel lifecycle', () {
+    test('creation issues the canonical request sequence', () {
+      final connection = openOk();
+      compositor.requests.clear();
+      final ids = connection.createToplevel(const WaylandToplevelRequest(
+        width: 640,
+        height: 480,
+        title: 'janela',
+        appId: 'dart_ui',
+        resizable: true,
+      ));
+
+      final opcodesBySender =
+          compositor.requests.map((r) => (r.objectId, r.opcode)).toList();
+      expect(opcodesBySender, <(int, int)>[
+        (compositor.compositorId, wlCompositorRequestCreateSurface),
+        (compositor.wmBaseId, xdgWmBaseRequestGetXdgSurface),
+        (ids.xdgSurfaceId, xdgSurfaceRequestGetToplevel),
+        (ids.toplevelId, xdgToplevelRequestSetTitle),
+        (ids.toplevelId, xdgToplevelRequestSetAppId),
+        (ids.surfaceId, wlSurfaceRequestCommit),
+      ]);
+      final title = WaylandMessageReader(compositor.requests[3].payload);
+      expect(title.readString(), 'janela');
+    });
+
+    test('a fixed-size toplevel pins min and max to the same box', () {
+      final connection = openOk();
+      compositor.requests.clear();
+      connection.createToplevel(const WaylandToplevelRequest(
+        width: 300,
+        height: 200,
+        title: 't',
+        appId: 'dart_ui',
+        resizable: false,
+      ));
+
+      final sizes = compositor.requests
+          .where((r) =>
+              r.opcode == xdgToplevelRequestSetMinSize ||
+              r.opcode == xdgToplevelRequestSetMaxSize)
+          .map((r) {
+        final reader = WaylandMessageReader(r.payload);
+        return (r.opcode, reader.readInt(), reader.readInt());
+      }).toList();
+      expect(sizes, <(int, int, int)>[
+        (xdgToplevelRequestSetMinSize, 300, 200),
+        (xdgToplevelRequestSetMaxSize, 300, 200),
+      ]);
+    });
+
+    test('configure events surface with the wl_surface id attached', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      compositor.sendToplevelConfigure(ids.toplevelId, 800, 600,
+          states: <int>[xdgToplevelStateActivated]);
+      compositor.sendSurfaceConfigure(ids.xdgSurfaceId, 7);
+
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.xdgToplevelConfigure);
+      expect(raw.surfaceId, ids.surfaceId);
+      expect(raw.width, 800);
+      expect(raw.stateFlags, 1 << xdgToplevelStateActivated);
+
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.xdgSurfaceConfigure);
+      expect(raw.surfaceId, ids.surfaceId);
+      expect(raw.serial, 7);
+
+      expect(connection.pollEventInto(raw), isFalse);
+    });
+
+    test('ack_configure goes to the xdg_surface with the serial', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      compositor.requests.clear();
+      connection.ackConfigure(ids, 41);
+      connection.flush();
+
+      final ack = compositor.requests.single;
+      expect(ack.objectId, ids.xdgSurfaceId);
+      expect(ack.opcode, xdgSurfaceRequestAckConfigure);
+      expect(WaylandMessageReader(ack.payload).readUint(), 41);
+    });
+
+    test('close events route through the toplevel mapping', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      compositor.sendToplevelClose(ids.toplevelId);
+
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.xdgToplevelClose);
+      expect(raw.surfaceId, ids.surfaceId);
+    });
+
+    test('destruction tears down role, xdg surface and surface in order', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      compositor.requests.clear();
+      connection.destroyToplevel(ids);
+
+      expect(
+        compositor.requests.map((r) => (r.objectId, r.opcode)).toList(),
+        <(int, int)>[
+          (ids.toplevelId, xdgToplevelRequestDestroy),
+          (ids.xdgSurfaceId, xdgSurfaceRequestDestroy),
+          (ids.surfaceId, wlSurfaceRequestDestroy),
+        ],
+      );
+    });
+
+    test('ids confirmed dead by delete_id are recycled', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      connection.destroyToplevel(ids);
+      compositor.sendDeleteId(ids.toplevelId);
+
+      // Drain the delete_id (it produces no window event).
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isFalse);
+
+      final next = connection.createToplevel(_request());
+      expect(
+        <int>[next.surfaceId, next.xdgSurfaceId, next.toplevelId],
+        contains(ids.toplevelId),
+      );
+    });
+  });
+
+  group('wl_shm presentation', () {
+    test('a buffer costs one pool, one buffer and the pool destroy', () {
+      final connection = openOk();
+      compositor.requests.clear();
+      final buffer = connection.createShmBuffer(pixelWidth: 16, pixelHeight: 8);
+
+      expect(allocator.allocated.single.byteLength, 16 * 8 * 4);
+      final createPool = compositor.requests[0];
+      expect(createPool.objectId, compositor.shmId);
+      expect(createPool.opcode, wlShmRequestCreatePool);
+      expect(createPool.fds, <int>[allocator.allocated.single.fd],
+          reason: 'the pool fd must ride as ancillary data');
+      final poolReader = WaylandMessageReader(createPool.payload);
+      final poolId = poolReader.readNewId();
+      expect(poolReader.readInt(), 16 * 8 * 4);
+
+      final createBuffer = compositor.requests[1];
+      expect(createBuffer.objectId, poolId);
+      final bufferReader = WaylandMessageReader(createBuffer.payload);
+      bufferReader.readNewId();
+      expect(bufferReader.readInt(), 0); // offset
+      expect(bufferReader.readInt(), 16); // width
+      expect(bufferReader.readInt(), 8); // height
+      expect(bufferReader.readInt(), 64); // stride
+      expect(bufferReader.readUint(), wlShmFormatArgb8888);
+
+      expect(compositor.requests[2].objectId, poolId);
+      expect(compositor.requests[2].opcode, wlShmPoolRequestDestroy);
+
+      expect(buffer.framebuffer.width, 16);
+      expect(buffer.framebuffer.pixels, same(allocator.allocated.single.bytes));
+    });
+
+    test('present attaches, damages in buffer pixels and commits', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      final buffer = connection.createShmBuffer(pixelWidth: 16, pixelHeight: 8);
+      compositor.requests.clear();
+
+      final failure = connection.presentShmBuffer(
+        surfaceId: ids.surfaceId,
+        buffer: buffer,
+        damage: const WaylandCpuDamage(x: 1, y: 2, width: 3, height: 4),
+        bufferScale: 1,
+      );
+
+      expect(failure, isNull);
+      expect(
+        compositor.requests.map((r) => (r.objectId, r.opcode)).toList(),
+        <(int, int)>[
+          (ids.surfaceId, wlSurfaceRequestAttach),
+          (ids.surfaceId, wlSurfaceRequestDamageBuffer),
+          (ids.surfaceId, wlSurfaceRequestCommit),
+        ],
+      );
+      final damage = WaylandMessageReader(compositor.requests[1].payload);
+      expect(
+        <int>[
+          damage.readInt(),
+          damage.readInt(),
+          damage.readInt(),
+          damage.readInt(),
+        ],
+        <int>[1, 2, 3, 4],
+      );
+    });
+
+    test('a scaled present sets the buffer scale first', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      final buffer = connection.createShmBuffer(pixelWidth: 16, pixelHeight: 8);
+      compositor.requests.clear();
+
+      connection.presentShmBuffer(
+        surfaceId: ids.surfaceId,
+        buffer: buffer,
+        damage: const WaylandCpuDamage(x: 0, y: 0, width: 16, height: 8),
+        bufferScale: 2,
+      );
+
+      expect(compositor.requests.first.opcode, wlSurfaceRequestSetBufferScale);
+      expect(
+        WaylandMessageReader(compositor.requests.first.payload).readInt(),
+        2,
+      );
+    });
+
+    test('destroying a buffer frees protocol object and memory', () {
+      final connection = openOk();
+      final buffer = connection.createShmBuffer(pixelWidth: 4, pixelHeight: 4);
+      compositor.requests.clear();
+      connection.destroyShmBuffer(buffer);
+      connection.destroyShmBuffer(buffer); // idempotent
+
+      expect(compositor.requests.single.opcode, wlBufferRequestDestroy);
+      expect(allocator.allocated.single.isDisposed, isTrue);
+
+      final failure = connection.presentShmBuffer(
+        surfaceId: 3,
+        buffer: buffer,
+        damage: const WaylandCpuDamage(x: 0, y: 0, width: 1, height: 1),
+        bufferScale: 1,
+      );
+      expect(failure, isNotNull, reason: 'a released buffer must be refused');
+    });
+  });
+
+  group('input routing', () {
+    test('pointer focus attaches surface ids to focus-free events', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      connection.flush(); // deliver get_pointer from the capabilities event
+      compositor.sendPointerEnter(ids.surfaceId, 10, x: 4.5, y: 5.5);
+      compositor.sendPointerMotion(100, x: 6.0, y: 7.0);
+      compositor.sendPointerButton(11, 120, btnLeft, pressed: true);
+      compositor.sendPointerLeave(ids.surfaceId, 12);
+      compositor.sendPointerMotion(130, x: 1.0, y: 1.0);
+
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.pointerEnter);
+      expect(raw.surfaceId, ids.surfaceId);
+      expect(raw.x, 4.5);
+
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.pointerMotion);
+      expect(raw.surfaceId, ids.surfaceId);
+      expect(raw.x, 6.0);
+
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.pointerButton);
+      expect(raw.key, btnLeft);
+      expect(raw.x, 6.0, reason: 'buttons reuse the last motion position');
+
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.pointerLeave);
+
+      expect(connection.pollEventInto(raw), isFalse,
+          reason: 'motion without focus must be dropped, not misrouted');
+    });
+
+    test('the keymap fd is mapped, parsed and closed', () {
+      allocator.sharedMemory[555] = _keymapBytes();
+      compositor.keymapFd = 555;
+      compositor.keymapSize = _keymapBytes().length;
+      final connection = openOk();
+      connection.flush(); // deliver get_keyboard
+      // Let the keymap event arrive.
+      final raw = WaylandRawEvent();
+      connection.pollEventInto(raw);
+
+      expect(connection.keymap, isNotNull);
+      expect(connection.keymap!.source, 'xkb-v1');
+      expect(compositor.closedFds, contains(555));
+    });
+
+    test('an unreadable keymap falls back to evdev US and says so', () {
+      compositor.keymapFd = 556; // not registered with the allocator
+      compositor.keymapSize = 128;
+      final connection = openOk();
+      connection.flush();
+      final raw = WaylandRawEvent();
+      connection.pollEventInto(raw);
+
+      expect(connection.keymap!.source, 'evdev-us-fallback');
+      expect(connection.recentErrors, isNotEmpty);
+    });
+
+    test('modifiers update connection state without surfacing events', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      connection.flush();
+      compositor.sendKeyboardEnter(ids.surfaceId, 20);
+      compositor.sendKeyboardModifiers(21, depressed: 0x01);
+      compositor.sendKeyboardKey(22, 300, 30, pressed: true);
+
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.keyboardEnter);
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.keyboardKey);
+      expect(raw.surfaceId, ids.surfaceId);
+      expect(raw.key, 30);
+      expect(connection.modifiers.shift, isTrue);
+    });
+  });
+
+  group('failure paths', () {
+    test('wl_display.error poisons the connection with the story', () {
+      final connection = openOk();
+      compositor.sendDisplayError(7, wlDisplayErrorInvalidMethod, 'bad call');
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isFalse);
+
+      expect(connection.isValid, isFalse);
+      expect(connection.recentErrors.single, contains('invalid_method'));
+      expect(connection.recentErrors.single, contains('bad call'));
+    });
+
+    test('ping is answered with pong immediately', () {
+      final connection = openOk();
+      compositor.requests.clear();
+      compositor.sendPing(99);
+      final raw = WaylandRawEvent();
+      connection.pollEventInto(raw);
+
+      final pong = compositor.requests.single;
+      expect(pong.objectId, compositor.wmBaseId);
+      expect(pong.opcode, xdgWmBaseRequestPong);
+      expect(WaylandMessageReader(pong.payload).readUint(), 99);
+    });
+  });
+}
+
+WaylandToplevelRequest _request() => const WaylandToplevelRequest(
+      width: 640,
+      height: 480,
+      title: 'test',
+      appId: 'dart_ui',
+      resizable: true,
+    );
+
+Uint8List _keymapBytes() =>
+    Uint8List.fromList(<int>[..._sampleKeymap.codeUnits, 0]);
+
+// ---------------------------------------------------------------------------
+// Fakes
+// ---------------------------------------------------------------------------
+
+final class _FakeShmMemory implements WaylandShmMemory {
+  _FakeShmMemory(this.fd, this.byteLength) : bytes = Uint8List(byteLength);
+
+  @override
+  final int fd;
+  final int byteLength;
+
+  @override
+  final Uint8List bytes;
+
+  @override
+  bool isDisposed = false;
+
+  @override
+  void dispose() => isDisposed = true;
+}
+
+final class _FakeAllocator implements WaylandShmAllocator {
+  final List<_FakeShmMemory> allocated = <_FakeShmMemory>[];
+  final Map<int, Uint8List> sharedMemory = <int, Uint8List>{};
+  int _nextFd = 100;
+
+  @override
+  bool get isAvailable => true;
+
+  @override
+  WaylandShmMemory allocate(int byteLength) {
+    final memory = _FakeShmMemory(_nextFd++, byteLength);
+    allocated.add(memory);
+    return memory;
+  }
+
+  @override
+  Uint8List? readSharedMemory(int fd, int byteLength) {
+    final bytes = sharedMemory[fd];
+    if (bytes == null) return null;
+    return Uint8List.fromList(bytes);
+  }
+}
+
+/// One request the client sent, with the fds that rode along.
+final class _Request {
+  _Request(this.objectId, this.opcode, this.payload, this.fds);
+
+  final int objectId;
+  final int opcode;
+  final Uint8List payload;
+  final List<int> fds;
+}
+
+/// An in-memory transport whose other end is a scripted mini-compositor: it
+/// parses the client's requests on flush, answers the handshake, and lets the
+/// test inject events. No socket, no FFI, no Linux.
+final class _FakeCompositor implements WaylandTransport {
+  bool advertiseWmBase = true;
+  bool advertiseShm = true;
+  int outputScale = 1;
+  int keymapFd = -1;
+  int keymapSize = 0;
+
+  final List<_Request> requests = <_Request>[];
+  final List<int> closedFds = <int>[];
+  final List<String> boundInterfaces = <String>[];
+
+  int registryId = 0;
+  int compositorId = 0;
+  int shmId = 0;
+  int seatId = 0;
+  int wmBaseId = 0;
+  int outputId = 0;
+  int pointerId = 0;
+  int keyboardId = 0;
+
+  final WaylandWireDecoder _outDecoder = WaylandWireDecoder();
+  final WaylandWireMessage _outMessage = WaylandWireMessage();
+  final List<int> _pendingOutFds = <int>[];
+  final BytesBuilder _inbound = BytesBuilder(copy: true);
+  final List<int> _inboundFds = <int>[];
+  final WaylandMessageWriter _events = WaylandMessageWriter();
+
+  bool _disposed = false;
+
+  @override
+  bool get isOpen => !_disposed;
+
+  @override
+  bool get isDisposed => _disposed;
+
+  @override
+  void dispose() => _disposed = true;
+
+  @override
+  void queueMessage(Uint8List bytes, List<int> fds) {
+    _outDecoder.addBytes(bytes);
+    _pendingOutFds.addAll(fds);
+  }
+
+  @override
+  bool flush() {
+    while (_outDecoder.nextMessage(_outMessage)) {
+      final payload = Uint8List.fromList(_outMessage.payload);
+      final fds = _takeFdsFor(_outMessage.objectId, _outMessage.opcode);
+      requests.add(
+        _Request(_outMessage.objectId, _outMessage.opcode, payload, fds),
+      );
+      _handleRequest(_outMessage.objectId, _outMessage.opcode, payload, fds);
+    }
+    return true;
+  }
+
+  List<int> _takeFdsFor(int objectId, int opcode) {
+    // Only wl_shm.create_pool carries an fd in this backend; hand the queued
+    // descriptors to exactly that request, in order.
+    if (objectId == shmId && opcode == wlShmRequestCreatePool) {
+      final fds = List<int>.of(_pendingOutFds);
+      _pendingOutFds.clear();
+      return fds;
+    }
+    return const <int>[];
+  }
+
+  @override
+  int receive(WaylandWireDecoder decoder, List<int> receivedFds) {
+    if (_inbound.isEmpty) return 0;
+    final bytes = _inbound.takeBytes();
+    decoder.addBytes(bytes);
+    receivedFds.addAll(_inboundFds);
+    _inboundFds.clear();
+    return bytes.length;
+  }
+
+  @override
+  bool waitForActivity(int timeoutMilliseconds) => false;
+
+  @override
+  bool signalWake() => true;
+
+  @override
+  void closeFd(int fd) => closedFds.add(fd);
+
+  void _handleRequest(
+    int objectId,
+    int opcode,
+    Uint8List payload,
+    List<int> fds,
+  ) {
+    if (objectId == wlDisplayObjectId) {
+      final reader = WaylandMessageReader(payload);
+      if (opcode == wlDisplayRequestGetRegistry) {
+        registryId = reader.readNewId();
+        _announceGlobals();
+      } else if (opcode == wlDisplayRequestSync) {
+        final callbackId = reader.readNewId();
+        _event(callbackId, wlCallbackEventDone, (w) => w.putUint(0));
+      }
+      return;
+    }
+    if (objectId == registryId && opcode == wlRegistryRequestBind) {
+      final reader = WaylandMessageReader(payload);
+      reader.readUint(); // name
+      final interface = reader.readString();
+      reader.readUint(); // version
+      final newId = reader.readNewId();
+      boundInterfaces.add(interface);
+      switch (interface) {
+        case wlCompositorInterfaceName:
+          compositorId = newId;
+        case wlShmInterfaceName:
+          shmId = newId;
+          _event(
+              shmId, wlShmEventFormat, (w) => w.putUint(wlShmFormatArgb8888));
+          _event(
+              shmId, wlShmEventFormat, (w) => w.putUint(wlShmFormatXrgb8888));
+        case wlSeatInterfaceName:
+          seatId = newId;
+          _event(
+            seatId,
+            wlSeatEventCapabilities,
+            (w) => w.putUint(
+              wlSeatCapabilityPointer | wlSeatCapabilityKeyboard,
+            ),
+          );
+        case wlOutputInterfaceName:
+          outputId = newId;
+          if (outputScale > 1) {
+            _event(outputId, wlOutputEventScale, (w) => w.putInt(outputScale));
+          }
+        case xdgWmBaseInterfaceName:
+          wmBaseId = newId;
+      }
+      return;
+    }
+    if (objectId == seatId) {
+      final reader = WaylandMessageReader(payload);
+      if (opcode == wlSeatRequestGetPointer) {
+        pointerId = reader.readNewId();
+      } else if (opcode == wlSeatRequestGetKeyboard) {
+        keyboardId = reader.readNewId();
+        if (keymapFd >= 0) {
+          _inboundFds.add(keymapFd);
+          _event(keyboardId, wlKeyboardEventKeymap, (w) {
+            w.putUint(wlKeyboardKeymapFormatXkbV1);
+            w.putFd(keymapFd);
+            w.putUint(keymapSize);
+          });
+        }
+      }
+    }
+  }
+
+  void _announceGlobals() {
+    var name = 1;
+    void global(String interface, int version) {
+      final thisName = name++;
+      _event(registryId, wlRegistryEventGlobal, (w) {
+        w.putUint(thisName);
+        w.putString(interface);
+        w.putUint(version);
+      });
+    }
+
+    global(wlCompositorInterfaceName, 5);
+    if (advertiseShm) global(wlShmInterfaceName, 1);
+    global(wlSeatInterfaceName, 7);
+    global(wlOutputInterfaceName, 3);
+    if (advertiseWmBase) global(xdgWmBaseInterfaceName, 4);
+  }
+
+  void _event(
+    int objectId,
+    int opcode,
+    void Function(WaylandMessageWriter writer) fill,
+  ) {
+    _events.begin(objectId, opcode);
+    fill(_events);
+    _events.fds.clear(); // server fds travel via _inboundFds directly
+    _inbound.add(_events.take());
+  }
+
+  // -- test-injected events -------------------------------------------------
+
+  void sendToplevelConfigure(
+    int toplevelId,
+    int width,
+    int height, {
+    List<int> states = const <int>[],
+  }) {
+    final array = Uint8List(states.length * 4);
+    final data = ByteData.sublistView(array);
+    for (var i = 0; i < states.length; i++) {
+      data.setUint32(i * 4, states[i], Endian.little);
+    }
+    _event(toplevelId, xdgToplevelEventConfigure, (w) {
+      w.putInt(width);
+      w.putInt(height);
+      w.putArray(array);
+    });
+  }
+
+  void sendSurfaceConfigure(int xdgSurfaceId, int serial) {
+    _event(xdgSurfaceId, xdgSurfaceEventConfigure, (w) => w.putUint(serial));
+  }
+
+  void sendToplevelClose(int toplevelId) {
+    _event(toplevelId, xdgToplevelEventClose, (_) {});
+  }
+
+  void sendDeleteId(int id) {
+    _event(wlDisplayObjectId, wlDisplayEventDeleteId, (w) => w.putUint(id));
+  }
+
+  void sendDisplayError(int objectId, int code, String message) {
+    _event(wlDisplayObjectId, wlDisplayEventError, (w) {
+      w.putObject(objectId);
+      w.putUint(code);
+      w.putString(message);
+    });
+  }
+
+  void sendPing(int serial) {
+    _event(wmBaseId, xdgWmBaseEventPing, (w) => w.putUint(serial));
+  }
+
+  void sendPointerEnter(int surfaceId, int serial,
+      {required double x, required double y}) {
+    _event(pointerId, wlPointerEventEnter, (w) {
+      w.putUint(serial);
+      w.putObject(surfaceId);
+      w.putFixed(x);
+      w.putFixed(y);
+    });
+  }
+
+  void sendPointerLeave(int surfaceId, int serial) {
+    _event(pointerId, wlPointerEventLeave, (w) {
+      w.putUint(serial);
+      w.putObject(surfaceId);
+    });
+  }
+
+  void sendPointerMotion(int time, {required double x, required double y}) {
+    _event(pointerId, wlPointerEventMotion, (w) {
+      w.putUint(time);
+      w.putFixed(x);
+      w.putFixed(y);
+    });
+  }
+
+  void sendPointerButton(int serial, int time, int button,
+      {required bool pressed}) {
+    _event(pointerId, wlPointerEventButton, (w) {
+      w.putUint(serial);
+      w.putUint(time);
+      w.putUint(button);
+      w.putUint(
+          pressed ? wlPointerButtonStatePressed : wlPointerButtonStateReleased);
+    });
+  }
+
+  void sendKeyboardEnter(int surfaceId, int serial) {
+    _event(keyboardId, wlKeyboardEventEnter, (w) {
+      w.putUint(serial);
+      w.putObject(surfaceId);
+      w.putArray(Uint8List(0));
+    });
+  }
+
+  void sendKeyboardModifiers(int serial, {int depressed = 0}) {
+    _event(keyboardId, wlKeyboardEventModifiers, (w) {
+      w.putUint(serial);
+      w.putUint(depressed);
+      w.putUint(0);
+      w.putUint(0);
+      w.putUint(0);
+    });
+  }
+
+  void sendKeyboardKey(int serial, int time, int key, {required bool pressed}) {
+    _event(keyboardId, wlKeyboardEventKey, (w) {
+      w.putUint(serial);
+      w.putUint(time);
+      w.putUint(key);
+      w.putUint(
+          pressed ? wlKeyboardKeyStatePressed : wlKeyboardKeyStateReleased);
+    });
+  }
+}

@@ -85,6 +85,7 @@ import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/gpu/webgl/webgl_surface_descriptor.dart';
+import '../../rendering/gpu/webgpu/webgpu_surface_descriptor.dart';
 import '../../rendering/renderer.dart';
 import 'dom_input_translation.dart';
 
@@ -230,18 +231,33 @@ final class WebWindow with DisposableMixin implements NativeWindow {
   @override
   WindowState get state => WindowState.normal;
 
-  /// The one surface a canvas offers.
+  /// The surfaces a canvas offers, in preference order.
   ///
-  /// Only a WebGL2 descriptor, and no CPU one. That is not an omission: a
-  /// canvas can hold exactly one context for its lifetime, so offering both a
-  /// GPU and a CPU surface would be offering a choice that cannot be taken
-  /// twice - asking for the second after the first would return null and read
-  /// as a driver failure. A page that wants CPU rasterisation puts a
-  /// `2d` context on its own canvas; this backend is the GPU one.
+  /// Two GPU descriptors over the *same* element, and no CPU one. The CPU
+  /// omission is not an oversight: a canvas can hold exactly one context for
+  /// its lifetime, so offering a CPU surface next to a GPU one would be
+  /// offering a choice that cannot be taken twice - asking for the second
+  /// after the first would return null and read as a driver failure. A page
+  /// that wants CPU rasterisation puts a `2d` context on its own canvas.
+  ///
+  /// The two GPU descriptors do not have that problem, but only because of an
+  /// ordering discipline that lives elsewhere and is worth naming here: the
+  /// WebGPU presenter asks the adapter and the device for everything they can
+  /// refuse *before* it calls `getContext('webgpu')`, and `getContext` with
+  /// an id the browser does not recognise returns null without claiming the
+  /// element. So on a browser without WebGPU the first descriptor costs
+  /// nothing and the canvas is still virgin for the WebGL2 one; on a browser
+  /// with it, the WebGL2 descriptor simply goes unused. See
+  /// `WebGpuCanvasTarget.open`.
   @override
   List<NativeSurfaceDescriptor> get surfaces => isDisposed
       ? const <NativeSurfaceDescriptor>[]
       : <NativeSurfaceDescriptor>[
+          WebGpuCanvasSurfaceDescriptor(
+            canvas: canvas,
+            generation: _generation,
+            scale: _renderScale,
+          ),
           WebGlCanvasSurfaceDescriptor(
             canvas: canvas,
             generation: _generation,

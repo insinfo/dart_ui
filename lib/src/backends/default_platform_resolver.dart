@@ -9,6 +9,7 @@ import 'dart:io';
 
 import '../app/application.dart';
 import '../foundation/diagnostics.dart';
+import '../foundation/lifecycle.dart';
 import '../geometry/rect.dart';
 import '../geometry/transform2d.dart';
 import '../graphics/display_list.dart';
@@ -20,6 +21,11 @@ import '../rendering/gpu/gl/gl_backend.dart';
 import '../rendering/renderer.dart';
 import 'headless/headless_backend.dart';
 import 'macos/macos.dart';
+import 'wayland/wayland_backend.dart';
+import 'wayland/wayland_cpu_presenter.dart';
+import 'wayland/wayland_window.dart';
+import 'win32/d2d/d2d_backend.dart';
+import 'win32/d2d/d2d_targets.dart';
 import 'win32/d3d11/win32_d3d11_surface.dart';
 import 'win32/win32.dart';
 import 'win32/win32_gl_surface.dart';
@@ -44,6 +50,17 @@ final class PlatformBackendResolver {
         const WindowingBackendEntry(
           name: 'win32',
           create: Win32WindowingBackend.new,
+        ),
+      // Wayland is probed first: its probe only succeeds when the session
+      // variables point at a compositor that actually answers the registry
+      // handshake, so an X11 session falls through with the reason on record.
+      if (platform == 'linux')
+        WindowingBackendEntry(
+          name: 'wayland',
+          create: options.environment.isEmpty
+              ? WaylandWindowingBackend.new
+              : () =>
+                  WaylandWindowingBackend(environment: options.environment),
         ),
       if (platform == 'linux')
         WindowingBackendEntry(
@@ -80,6 +97,11 @@ final class PlatformBackendResolver {
       if (platform == 'windows') ...<PresentationPathEntry>[
         _win32D3d11(),
         _win32OpenGl(),
+        // After the established GPU paths so the default picture on a stock
+        // machine does not change while Direct2D is new, and before the DIB
+        // presenter so a machine whose D3D11/GL probes fail still gets an
+        // accelerated path. `--presentation=direct2d` pins it by name.
+        _win32Direct2d(),
         PresentationPathEntry.retainedCpu(
           name: 'win32-dib',
           deviceDescription: 'GDI DIB section, BGRA8888 top-down',
@@ -97,6 +119,20 @@ final class PlatformBackendResolver {
       ],
       if (platform == 'linux') ...<PresentationPathEntry>[
         _x11OpenGl(),
+        PresentationPathEntry.retainedCpu(
+          name: 'wayland-shm',
+          deviceDescription: 'wl_shm ARGB8888 shared memory, BGRA8888',
+          compatibleWindowingBackends: const <String>{'wayland'},
+          create: (NativeWindow window) {
+            final WaylandCpuPresenter presenter =
+                WaylandCpuPresenter(window as WaylandWindow);
+            return (
+              present: presenter.renderDisplayList,
+              presentNow: null,
+              release: presenter.dispose,
+            );
+          },
+        ),
         PresentationPathEntry.retainedCpu(
           name: 'x11-putimage',
           deviceDescription: 'X11 core PutImage, BGRA8888',
@@ -155,6 +191,38 @@ final class PlatformBackendResolver {
             scale: native.renderScale,
           ),
           releaseSurface: surface.dispose,
+          releaseSurfaceBeforeDevice: true,
+        );
+      },
+    );
+  }
+
+  static PresentationPathEntry _win32Direct2d() {
+    const D2dRendererBackend renderer = D2dRendererBackend();
+    return PresentationPathEntry.directRenderer(
+      backend: renderer,
+      compatibleWindowingBackends: const <String>{'win32'},
+      createAttachment: (RendererBackend backend, NativeWindow native) async {
+        final RenderDevice rawDevice = await backend.createDevice();
+        if (rawDevice is! D2dRenderDevice || native is! Win32Window) {
+          rawDevice.dispose();
+          throw StateError('direct2d requires D2dRenderDevice and '
+              'Win32Window; got ${rawDevice.runtimeType} and '
+              '${native.runtimeType}');
+        }
+        return (
+          device: rawDevice,
+          surface: Win32D2dSurfaceDescriptor(
+            windowHandle: native.handle,
+            pixelWidth: _pixelWidth(native),
+            pixelHeight: _pixelHeight(native),
+            scale: native.renderScale,
+            generation: GenerationToken(),
+            description: 'Win32 window, ID2D1HwndRenderTarget',
+          ),
+          // The render target is owned by the target the device creates, so
+          // there is no separate surface object to release here.
+          releaseSurface: _doNothing,
           releaseSurfaceBeforeDevice: true,
         );
       },

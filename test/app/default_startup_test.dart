@@ -66,11 +66,18 @@ void main() {
 
       expect(
         paths.map((PresentationPathEntry path) => path.name),
-        <String>['direct3d11', 'opengl', 'win32-dib', 'headless-cpu'],
+        <String>[
+          'direct3d11',
+          'opengl',
+          'direct2d',
+          'win32-dib',
+          'headless-cpu',
+        ],
       );
       expect(paths[0].kind, PresentationKind.gpu);
       expect(paths[1].kind, PresentationKind.gpu);
-      expect(paths[2].kind, PresentationKind.cpu);
+      expect(paths[2].kind, PresentationKind.gpu);
+      expect(paths[3].kind, PresentationKind.cpu);
       expect(
         paths[0].rasterizationApproach,
         RasterizationApproach.analyticCoverageAtlas,
@@ -89,7 +96,7 @@ void main() {
 
       expect(
         paths.map((PresentationPathEntry path) => path.name),
-        <String>['opengl', 'x11-putimage', 'headless-cpu'],
+        <String>['opengl', 'wayland-shm', 'x11-putimage', 'headless-cpu'],
       );
       expect(paths.first.kind, PresentationKind.gpu);
     });
@@ -166,7 +173,7 @@ void main() {
     if (!Platform.isWindows) return;
 
     final Application application = await Application.start(
-        rootWidget: const ColoredBox(color: Color(0xFF123456)),
+      rootWidget: const ColoredBox(color: Color(0xFF123456)),
       backends: PlatformBackendResolver.defaultBackends(),
       presentations: PlatformBackendResolver.defaultPresentations(),
       options: const ApplicationOptions(size: Size(64, 48)),

@@ -45,8 +45,10 @@ import 'dart:js_interop';
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/web/web_fonts.dart';
 import 'package:dart_ui/src/backends/web/web_gl_presenter.dart';
+import 'package:dart_ui/src/backends/web/web_gpu_presenter.dart';
 import 'package:dart_ui/src/backends/web/web_window.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_backend.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_backend.dart';
 import 'package:web/web.dart' as web;
 
 /// Asks whether this browser has WebGL2.
@@ -58,6 +60,15 @@ import 'package:web/web.dart' as web;
 /// so a browser without WebGL2 produces a named rejection in the startup report
 /// rather than an exception out of `Application.start`.
 BackendProbeResult _probeWebGl2() => const WebGlRendererBackend().probe();
+
+/// Asks whether this browser has WebGPU at all.
+///
+/// A top-level function for [_probeWebGl2]'s reason. The probe is synchronous
+/// and WebGPU's real answers are not, so it checks only that `navigator.gpu`
+/// exists; the adapter is requested inside `WebGpuCanvasPresenter.attach`,
+/// and a refusal there is what the fallback below exists for - see the
+/// presentations list in `main`.
+BackendProbeResult _probeWebGpu() => const WebGpuRendererBackend().probe();
 
 /// The face the gallery draws its labels in.
 ///
@@ -90,7 +101,21 @@ Future<void> main() async {
         create: WebWindowingBackend.new,
       ),
     ],
+    // Preference order, and the fallback between the two entries is the
+    // selection machinery's own: an `attach` that throws is recorded against
+    // its path's name and the next entry is tried. WebGPU asks the adapter
+    // and the device for everything they can refuse before touching the
+    // canvas, so a browser that says no leaves the element virgin for the
+    // WebGL2 entry - and the startup report logged below names which one won
+    // and why the other did not.
     presentations: <PresentationPathEntry>[
+      const PresentationPathEntry(
+        name: WebGpuRendererBackend.backendName,
+        kind: PresentationKind.gpu,
+        rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
+        probe: _probeWebGpu,
+        attach: WebGpuCanvasPresenter.attach,
+      ),
       const PresentationPathEntry(
         name: WebGlRendererBackend.backendName,
         kind: PresentationKind.gpu,
@@ -100,7 +125,10 @@ Future<void> main() async {
       ),
     ],
     options: ApplicationOptions(
-      title: 'dart_ui gallery - WebGL2',
+      // No API in the name: which of the two GPU paths won is the startup
+      // report's job to say, and a title that claimed one would lie half the
+      // time.
+      title: 'dart_ui gallery - web',
       size: galleryDesignSize,
       // No frame budget: this is interactive, not a smoke run. The loop below
       // stops when the page goes away.

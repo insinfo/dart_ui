@@ -31,11 +31,17 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/web/dom_input_translation.dart';
 import 'package:dart_ui/src/backends/web/web_gl_presenter.dart';
+import 'package:dart_ui/src/backends/web/web_gpu_presenter.dart';
 import 'package:dart_ui/src/backends/web/web_window.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_backend.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_canvas_target.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_framebuffer_pool.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_surface_descriptor.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_backend.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_canvas_target.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_interop.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_surface_descriptor.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/wgsl_shaders.dart';
 
 /// Referenced from [main] so neither compiler can drop the libraries above.
 ///
@@ -68,6 +74,16 @@ String describeWebBackend() {
     ..writeln(const WebGlRendererBackend().info)
     ..writeln(WebGlRendererBackend.backendName)
     ..writeln(WebGlFontResolver().resolveFont(0))
+    // wgsl_shaders.dart and webgpu_interop.dart: the pure half and the
+    // interop half of the WebGPU backend.
+    ..writeln(kWgslShaderModuleSource.length)
+    ..writeln(kWebGpuContextId)
+    ..writeln(webGpuClearValue(0xFF000000).a)
+    // webgpu_backend.dart.
+    ..writeln(const WebGpuRendererBackend().info)
+    ..writeln(WebGpuRendererBackend.backendName)
+    ..writeln(WebGpuFontResolver().resolveFont(0))
+    ..writeln(WebGpuLayerTargetPool.bucket(30))
     // web_window.dart.
     ..writeln(WebWindowingBackend.backendName)
     ..writeln(kWebCursorNames[SystemCursor.hand])
@@ -93,6 +109,11 @@ List<Type> webBackendTypes() => <Type>[
       WebGlCanvasSurfaceDescriptor,
       WebGlFramebufferPool,
       WebGlImageCache,
+      WebGpuRenderDevice,
+      WebGpuCanvasTarget,
+      WebGpuCanvasPresenter,
+      WebGpuCanvasSurfaceDescriptor,
+      WebGpuImageCache,
       WebWindow,
       WebWindowingBackend,
     ];

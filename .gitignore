@@ -8,6 +8,7 @@ tmp/
 examples/**/*.exe
 examples/**/*.desktop
 examples/**/*.app/
+poc/**/bin/*.aot
 
 # Lockfiles are generated for this prototype workspace.
 pubspec.lock
