@@ -554,16 +554,27 @@ política de frequência do processador.
 
 ## 7. Resultados
 
-O código foi criado em um host Windows, onde não existe socket X11 nem libxcb.
-Por isso esta versão do relatório não apresenta números Linux fabricados.
+### Reteste AOT no WSLg em 22 de agosto de 2026
 
-Tabela a preencher com o JSON produzido pelo executável AOT:
+O executável foi compilado com Dart Linux 3.6.2 e executado três vezes contra o
+Xwayland nativo do WSLg em `DISPLAY=:0`, com `gfxredir` ativo. A tabela apresenta
+a mediana das três execuções completas:
 
 | Backend | conexão | NoOp/s | RTT médio | PutImage MB/s |
 |---|---:|---:|---:|---:|
-| libxcb FFI | pendente | pendente | pendente | pendente |
-| dart:io Socket | pendente | pendente | pendente | pendente |
-| libc socket FFI | pendente | pendente | pendente | pendente |
+| libxcb FFI | 769 us | 17,50 milhões | 35,4 us | 1.370 |
+| dart:io Socket | 923 us | 82,37 milhões | 70,4 us | 1.068 |
+| libc socket FFI | 353 us | 90,01 milhões | 33,1 us | 460 |
+
+Cada execução mediu 100 mil `NoOperation`, mil round-trips e 300 imagens
+128×128. A primeira conexão libxcb fria levou 7,1 ms; as seguintes ficaram
+abaixo de 1 ms. A variação de `PutImage` foi alta, especialmente no transporte
+libc, portanto três amostras comprovam funcionamento e ordem de grandeza, mas
+não substituem as 20 repetições alternadas recomendadas para números de entrega.
+
+O defeito de readback Mesa/D3D12 do WSLg não contamina esta matriz: os três
+caminhos medem protocolo X11 core e transporte CPU. O compositor e o agendamento
+do Xwayland ainda influenciam RTT e consumo final das requisições.
 
 Critérios para interpretar diferenças:
 

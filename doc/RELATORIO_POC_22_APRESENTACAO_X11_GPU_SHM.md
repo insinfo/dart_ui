@@ -59,6 +59,37 @@ seleção padrão produziu:
 Todos os quatro backends concluíram em AOT. Os valores de EGL e Vulkan nessa
 tabela são CPU e não devem ser comparados como desempenho de GPU.
 
+### Reteste AOT após a correção do WSLg e o Mesa experimental
+
+Em 22 de agosto de 2026, o ambiente já estava em WSL 2.9.4.0, kernel
+6.18.35.2-1, WSLg 1.0.79, driver Intel 32.0.101.7088 e `gfxredir` ativo. Os
+executáveis AOT foram executados diretamente em `DISPLAY=:0`.
+
+| Backend | Implementação | Quadros | FPS | Latência média |
+|---|---|---:|---:|---:|
+| PutImage | CPU/libxcb, mediana de 3 execuções | 600 | 5.277 | 189,5 us |
+| MIT-SHM | `memfd`/`mmap`, mediana de 3 execuções | 600 | 25.732 | 38,9 us |
+| EGL/OpenGL serial | Mesa 26.3 D3D12/Intel, 1 worker | 120 | 12,3 | 81,1 ms |
+| EGL/OpenGL mitigado | Mesa 26.3 D3D12/Intel, 32 workers | 600 | 50,6 | 19,7 ms |
+| Vulkan/Dozen | D3D12/Intel | 600 | 12,1 | 82,6 ms |
+| Vulkan/Lavapipe | llvmpipe CPU | 600 | 1.607 | 622,2 us |
+
+Os números PutImage/MIT-SHM medem a taxa em que o servidor consome as
+requisições ou libera os buffers compartilhados; não representam a frequência
+física do monitor. Mesmo assim, confirmam a vantagem estrutural do MIT-SHM e
+continuam válidos apesar do bug de apresentação D3D12.
+
+O OpenGL serial reproduz diretamente o gargalo de readback. O protótipo Mesa
+com `D3D12_FRONTBUFFER_THREADS=32` melhorou a taxa em aproximadamente 4,1 vezes,
+mas ainda copia GPU→CPU e não deve ser descrito como zero-copy.
+
+O Dozen produziu o JSON completo antes de receber `SIGSEGV` durante o teardown.
+Assim, a medição de apresentação foi concluída, porém esse processo não conta
+como execução limpa. O Lavapipe encerrou normalmente. A diferença alta a favor
+do renderer CPU neste teste simples ocorre porque a imagem é apenas limpa com
+uma cor; ela não significa que llvmpipe será mais rápido em cargas gráficas
+reais.
+
 ## OpenGL: seleção do driver e crash no encerramento
 
 Após a atualização para Mesa 25.2.8, a seleção automática passou a usar
