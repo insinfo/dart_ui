@@ -199,6 +199,50 @@ const int wlKeyboardKeyStatePressed = 1;
 const int evdevToXkbKeycodeOffset = 8;
 
 // ---------------------------------------------------------------------------
+// wl_data_device_manager, wl_data_device, wl_data_source, wl_data_offer.
+// ---------------------------------------------------------------------------
+
+const String wlDataDeviceManagerInterfaceName = 'wl_data_device_manager';
+const int wlDataDeviceManagerBindVersion = 1;
+
+const int wlDataDeviceManagerRequestCreateDataSource = 0;
+const int wlDataDeviceManagerRequestGetDataDevice = 1;
+
+const int wlDataDeviceRequestStartDrag = 0;
+const int wlDataDeviceRequestSetSelection = 1;
+
+const int wlDataDeviceEventDataOffer = 0;
+const int wlDataDeviceEventEnter = 1;
+const int wlDataDeviceEventLeave = 2;
+const int wlDataDeviceEventMotion = 3;
+const int wlDataDeviceEventDrop = 4;
+const int wlDataDeviceEventSelection = 5;
+
+const int wlDataSourceRequestOffer = 0;
+const int wlDataSourceRequestDestroy = 1;
+
+const int wlDataSourceEventTarget = 0;
+const int wlDataSourceEventSend = 1;
+const int wlDataSourceEventCancelled = 2;
+
+const int wlDataOfferRequestAccept = 0;
+const int wlDataOfferRequestReceive = 1;
+const int wlDataOfferRequestDestroy = 2;
+
+const int wlDataOfferEventOffer = 0;
+
+/// The MIME types this backend offers and accepts for clipboard text. The
+/// first is the canonical modern spelling; the others are what GTK/Qt clients
+/// have historically published, accepted here so pasting from them works.
+const String wlClipboardTextMime = 'text/plain;charset=utf-8';
+const List<String> wlClipboardAcceptedTextMimes = <String>[
+  wlClipboardTextMime,
+  'text/plain;charset=UTF-8',
+  'UTF8_STRING',
+  'text/plain',
+];
+
+// ---------------------------------------------------------------------------
 // wl_output.
 // ---------------------------------------------------------------------------
 

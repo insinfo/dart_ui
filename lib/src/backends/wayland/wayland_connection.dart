@@ -23,6 +23,7 @@ import 'dart:typed_data';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../platform/clipboard.dart';
 import '../../rendering/framebuffer.dart';
 import 'wayland_events.dart';
 import 'wayland_keymap.dart';
@@ -66,6 +67,38 @@ abstract interface class WaylandWindowClient
   /// The integer buffer scale windows should render at: the largest
   /// `wl_output.scale` seen, 1 until any output reports.
   int get bufferScaleHint;
+
+  /// `wl_keyboard.repeat_info`: repeats per second (0 disables) and the
+  /// initial hold before the first repeat. The backend's repeat engine reads
+  /// these; the compositor never repeats for a Wayland client.
+  int get repeatRateHz;
+  int get repeatDelayMilliseconds;
+}
+
+/// The selection (clipboard) operations a Wayland connection offers.
+///
+/// A separate interface for the same reason [WaylandCpuClient] is one: the
+/// backend pattern-matches for it, and fakes that do not care about the
+/// clipboard implement one interface fewer.
+abstract interface class WaylandSelectionClient {
+  /// Whether `wl_data_device_manager` was bound over a seat, which is what a
+  /// working clipboard needs.
+  bool get supportsClipboard;
+
+  /// Takes the selection with [text] behind it, serving `send` requests from
+  /// other clients until cancelled. Throws [ClipboardException] when the
+  /// compositor cannot grant it - no data device, or no input serial yet
+  /// (Wayland only hands the selection to a client the user recently
+  /// interacted with).
+  void setClipboardText(String text);
+
+  /// The selection's text, null when it holds none in any accepted MIME.
+  ///
+  /// Serving our own selection short-circuits without a round trip - asking
+  /// the compositor to pipe our own bytes back through ourselves is the
+  /// classic single-threaded clipboard deadlock. Throws [ClipboardException]
+  /// when the transfer fails or the owner goes silent past the timeout.
+  Future<String?> readClipboardText();
 }
 
 /// Everything needed to create one toplevel, in logical (surface) units.
@@ -139,6 +172,10 @@ enum _ObjectKind {
   xdgWmBase,
   xdgSurface,
   xdgToplevel,
+  dataDeviceManager,
+  dataDevice,
+  dataSource,
+  dataOffer,
 }
 
 /// A live Wayland display connection.
@@ -242,9 +279,11 @@ final class WaylandConnection
   @override
   final WaylandModifiersState modifiers = WaylandModifiersState();
 
-  /// `wl_keyboard.repeat_info`, stored for a future repeat timer. No repeat
-  /// events are synthesised yet; that limitation is documented in the backend.
+  /// Latest settings received through `wl_keyboard.repeat_info`.
+  @override
   int repeatRateHz = 0;
+
+  @override
   int repeatDelayMilliseconds = 0;
 
   // Outputs and their integer scales.
@@ -353,10 +392,11 @@ final class WaylandConnection
       switch (interface) {
         case wlCompositorInterfaceName:
           if (_compositorId != 0) break;
-          _compositorVersion =
-              version < wlCompositorBindVersion ? version : wlCompositorBindVersion;
-          _compositorId =
-              _bind(name, interface, _compositorVersion, _ObjectKind.compositor);
+          _compositorVersion = version < wlCompositorBindVersion
+              ? version
+              : wlCompositorBindVersion;
+          _compositorId = _bind(
+              name, interface, _compositorVersion, _ObjectKind.compositor);
         case wlShmInterfaceName:
           if (_shmId != 0) break;
           _shmId = _bind(name, interface, wlShmBindVersion, _ObjectKind.shm);
@@ -373,8 +413,8 @@ final class WaylandConnection
           _outputScales[outputId] = 1;
         case xdgWmBaseInterfaceName:
           if (_wmBaseId != 0) break;
-          _wmBaseId =
-              _bind(name, interface, xdgWmBaseBindVersion, _ObjectKind.xdgWmBase);
+          _wmBaseId = _bind(
+              name, interface, xdgWmBaseBindVersion, _ObjectKind.xdgWmBase);
       }
     }
     if (_seatId == 0) {
@@ -547,7 +587,11 @@ final class WaylandConnection
         return false;
       case _ObjectKind.buffer:
         if (message.opcode == wlBufferEventRelease) {
-          _buffersById[objectId]?.busy = false;
+          final buffer = _buffersById[objectId];
+          if (buffer != null) {
+            buffer.busy = false;
+            if (buffer.released) _finalizeShmBuffer(buffer);
+          }
         }
         return false;
       case _ObjectKind.seat:
@@ -586,6 +630,10 @@ final class WaylandConnection
         return _handleToplevelEvent(objectId, message, into);
       case _ObjectKind.compositor:
       case _ObjectKind.shmPool:
+      case _ObjectKind.dataDeviceManager:
+      case _ObjectKind.dataDevice:
+      case _ObjectKind.dataSource:
+      case _ObjectKind.dataOffer:
         return false;
     }
   }
@@ -1107,6 +1155,16 @@ final class WaylandConnection
     }
     if (buffer.released) return;
     buffer.released = true;
+    if (buffer.busy) return;
+    _finalizeShmBuffer(buffer);
+  }
+
+  /// Finishes a destroy requested by the surface. A busy `wl_buffer` must
+  /// remain alive until `wl_buffer.release`; freeing its mapping earlier lets
+  /// the compositor read unmapped memory during resize or shutdown.
+  void _finalizeShmBuffer(_WaylandNativeShmBuffer buffer) {
+    if (buffer.destroyed) return;
+    buffer.destroyed = true;
     _buffersById.remove(buffer.bufferId);
     try {
       if (!isDisposed && _transport.isOpen) {
@@ -1195,7 +1253,8 @@ final class WaylandConnection
 
   @override
   void onDispose() {
-    for (final buffer in List<_WaylandNativeShmBuffer>.of(_buffersById.values)) {
+    for (final buffer
+        in List<_WaylandNativeShmBuffer>.of(_buffersById.values)) {
       buffer.released = true;
       buffer.memory.dispose();
     }
@@ -1225,11 +1284,13 @@ final class _WaylandNativeShmBuffer implements WaylandShmBufferHandle {
   final int bufferId;
   final WaylandShmMemory memory;
   bool released = false;
+  bool destroyed = false;
 
-  /// True between a commit and the compositor's release. A commit while busy
-  /// is tolerated (the compositor copies shm buffers promptly in practice);
-  /// a second buffer per surface is the future fix, not a guess here.
+  /// True between a commit and the compositor's release.
   bool busy = false;
+
+  @override
+  bool get isBusy => busy;
 
   @override
   final Framebuffer framebuffer;

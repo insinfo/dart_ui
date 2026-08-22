@@ -143,6 +143,11 @@ para um `RasterSink`; `CpuRasterizer` transforma primitivas de dispositivo em
 bytes. `MemoryRenderTarget` é o que torna testável tudo que vier acima — um
 teste golden não precisa de janela, GPU nem display server.
 
+A próxima geração vetorial está especificada em
+[`ACELERACAO_GPU_VETORIAL.md`](ACELERACAO_GPU_VETORIAL.md): sparse strips
+híbridos como piso vertex/fragment, máscaras densas como fallback/cache e
+tesselação ou compute como modos escolhidos por custo e capacidade.
+
 O arredondamento do blend (`mul255`) foi verificado exaustivamente nos 65536
 pares contra `(v * a + 127) ~/ 255`: idêntico bit a bit, sem divisão. A
 equivalência é teste, não afirmação.

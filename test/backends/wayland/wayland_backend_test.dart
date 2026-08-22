@@ -8,6 +8,7 @@ import 'package:dart_ui/src/backends/wayland/wayland_shm.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_window.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/platform/input_events.dart';
 import 'package:dart_ui/src/platform/native_window.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
@@ -68,8 +69,8 @@ void main() {
       );
       final result = backend.probe();
       expect(result.supported, isFalse);
-      expect(result.diagnostics.single.kind,
-          DiagnosticKind.unsupportedPlatform);
+      expect(
+          result.diagnostics.single.kind, DiagnosticKind.unsupportedPlatform);
     });
 
     test('is unsupported without session variables, with the reason', () {
@@ -162,9 +163,11 @@ void main() {
   group('windows and the event pump', () {
     late _FakeWaylandClient client;
     late WaylandWindowingBackend backend;
+    late int nowMilliseconds;
 
     setUp(() async {
       client = _FakeWaylandClient();
+      nowMilliseconds = 0;
       backend = WaylandWindowingBackend(
         isLinux: true,
         environment: _waylandSession,
@@ -172,6 +175,7 @@ void main() {
           connection: client,
           diagnostics: const <BackendDiagnostic>[],
         ),
+        monotonicMilliseconds: () => nowMilliseconds,
       );
       await backend.initialize();
     });
@@ -263,8 +267,7 @@ void main() {
       expect(window.cpuSurface!.pixelWidth, 640);
 
       client.scale = 2;
-      client.script(WaylandRawEvent()
-        ..type = WaylandRawEventType.scaleChanged);
+      client.script(WaylandRawEvent()..type = WaylandRawEventType.scaleChanged);
       final events = <PlatformWindowEvent>[];
       window.events.listen(events.add);
       backend.pumpEvents();
@@ -292,6 +295,35 @@ void main() {
 
       expect(firstEvents, isEmpty);
       expect(secondEvents.single, isA<WindowPointerEnterEvent>());
+    });
+
+    test('key repeat follows compositor delay/rate and clamps blocking wait',
+        () async {
+      final window = await createWindow();
+      final events = <PlatformWindowEvent>[];
+      window.events.listen(events.add);
+      client
+        ..repeatRateHz = 20
+        ..repeatDelayMilliseconds = 300;
+      client.script(WaylandRawEvent()
+        ..type = WaylandRawEventType.keyboardKey
+        ..surfaceId = window.surfaceId
+        ..key = 30 // evdev KEY_A
+        ..state = 1);
+
+      backend.pumpEvents();
+      backend.pumpEvents(timeout: const Duration(seconds: 1));
+      expect(client.waitTimeouts.last, 300,
+          reason: 'the event wait must wake for the repeat deadline');
+
+      nowMilliseconds = 300;
+      backend.pumpEvents();
+      await Future<void>.delayed(Duration.zero);
+
+      final downs = events.whereType<KeyDownEvent>().toList();
+      expect(downs, hasLength(2));
+      expect(downs.first.isRepeat, isFalse);
+      expect(downs.last.isRepeat, isTrue);
     });
 
     test('a lost connection stops the pump with a diagnostic', () async {
@@ -337,6 +369,9 @@ final class _FakeShmBuffer implements WaylandShmBufferHandle {
 
   @override
   final Framebuffer framebuffer;
+
+  @override
+  bool get isBusy => false;
 }
 
 final class _FakeWaylandClient
@@ -358,6 +393,7 @@ final class _FakeWaylandClient
   final List<_FakeShmBuffer> buffers = <_FakeShmBuffer>[];
   final List<WaylandCpuDamage> presentedDamage = <WaylandCpuDamage>[];
   final List<WaylandRawEvent> _scripted = <WaylandRawEvent>[];
+  final List<int> waitTimeouts = <int>[];
 
   void script(WaylandRawEvent event) => _scripted.add(event);
 
@@ -434,7 +470,10 @@ final class _FakeWaylandClient
   }
 
   @override
-  bool waitForActivity(int timeoutMilliseconds) => false;
+  bool waitForActivity(int timeoutMilliseconds) {
+    waitTimeouts.add(timeoutMilliseconds);
+    return false;
+  }
 
   @override
   int flush() => 1;
@@ -450,6 +489,12 @@ final class _FakeWaylandClient
 
   @override
   int get bufferScaleHint => scale;
+
+  @override
+  int repeatRateHz = 25;
+
+  @override
+  int repeatDelayMilliseconds = 400;
 
   @override
   bool get supportsShmPresentation => shmSupported;

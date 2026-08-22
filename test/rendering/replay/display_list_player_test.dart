@@ -9,6 +9,7 @@ import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_geometry.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
 import 'package:dart_ui/src/graphics/display_list_reader.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:dart_ui/src/rendering/replay/display_list_player.dart';
 import 'package:dart_ui/src/rendering/replay/recording_sink.dart';
 import 'package:dart_ui/src/rendering/replay/replay_state.dart';
@@ -32,6 +33,35 @@ RecordingSink _play(
 }
 
 void main() {
+  test('gradient paint is refused explicitly until replay is implemented', () {
+    final list = DisplayList();
+    final paint = list.addPaint(
+      colorArgb: 0,
+      gradient: LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 100,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0xFFFF0000),
+          GradientStop(1, 0xFF0000FF),
+        ],
+      ),
+    );
+    list.drawRect(0, 0, 100, 20, paint);
+
+    expect(
+      () => _play(list),
+      throwsA(
+        isA<UnsupportedError>().having(
+          (error) => error.message,
+          'message',
+          contains('instead of being rendered as an incorrect solid colour'),
+        ),
+      ),
+    );
+  });
+
   group('transform', () {
     test('nested scopes compose, and restore drops the inner one', () {
       final list = DisplayList();
@@ -617,6 +647,9 @@ final class _PaintStyleOverride implements ReplayResources {
 
   @override
   int paintFillRule(int id) => _inner.paintFillRule(id);
+
+  @override
+  Gradient? paintGradient(int id) => _inner.paintGradient(id);
 
   @override
   Object pathAt(int id) => _inner.pathAt(id);

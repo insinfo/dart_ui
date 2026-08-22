@@ -36,6 +36,7 @@ library;
 import 'dart:typed_data';
 
 import 'display_list_opcodes.dart';
+import 'gradient.dart';
 
 /// Builder and owner of an encoded display list.
 ///
@@ -86,6 +87,13 @@ final class DisplayList {
   final List<Object> _fonts = <Object>[];
   final Map<Object, int> _fontIds = <Object, int>{};
 
+  /// Gradient table: interned [Gradient] objects, referenced from a paint's
+  /// flag word. Objects rather than flat arrays because a frame holds a
+  /// handful of gradients where it holds thousands of paints - the same trade
+  /// the path and image tables made, argued in `gradient.dart`.
+  final List<Gradient> _gradients = <Gradient>[];
+  final Map<Gradient, int> _gradientIds = <Gradient, int>{};
+
   /// Backing store of the word stream. Only the first [opLength] words are
   /// meaningful; the rest is arena capacity.
   Uint32List get opBuffer => _ops;
@@ -118,6 +126,8 @@ final class DisplayList {
 
   int get fontCount => _fonts.length;
 
+  int get gradientCount => _gradients.length;
+
   /// Rewinds the write cursors and drops the resource tables, keeping every
   /// buffer.
   ///
@@ -137,6 +147,8 @@ final class DisplayList {
     _imageIds.clear();
     _fonts.clear();
     _fontIds.clear();
+    _gradients.clear();
+    _gradientIds.clear();
   }
 
   // ---------------------------------------------------------------------
@@ -150,6 +162,14 @@ final class DisplayList {
   /// paints that differ only below float32 precision therefore collapse to
   /// one id, which is correct - the renderer can never see a difference the
   /// buffer cannot hold. Nothing about the caller's object identity matters.
+  ///
+  /// [gradient] turns the paint into a gradient fill: the [Gradient] is
+  /// interned by value in the gradient table, its kind and id are packed into
+  /// the flag word (bits 4..5 and 16..31), and the paint dedup then works
+  /// unchanged because two equal gradients share one id and therefore one
+  /// flag word. When a gradient is set the paint's [colorArgb] is **not
+  /// sampled** - the stop colours carry the alpha; see `gradient.dart`. The
+  /// solid path pays exactly one null test for this parameter.
   int addPaint({
     required int colorArgb,
     int style = paintStyleFill,
@@ -157,6 +177,7 @@ final class DisplayList {
     int blendMode = blendModeSrcOver,
     bool antiAlias = true,
     int fillRule = pathFillRuleNonZero,
+    Gradient? gradient,
   }) {
     if (style < 0 || style >= kPaintStyleCount) {
       throw ArgumentError.value(style, 'style', 'unknown paint style');
@@ -169,10 +190,16 @@ final class DisplayList {
     }
     _ensurePaintCapacity(_paintCount + 1);
 
+    var shaderBits = 0;
+    if (gradient != null) {
+      final int gradientId = _internGradient(gradient);
+      shaderBits = ((gradient.shaderKind & 0x3) << 4) | (gradientId << 16);
+    }
     final int flags = (style & 0x3) |
         (antiAlias ? 0x4 : 0x0) |
         ((fillRule & 0x1) << 3) |
-        ((blendMode & 0xFF) << 8);
+        ((blendMode & 0xFF) << 8) |
+        shaderBits;
     final int base = _paintCount * 2;
     // Written before the lookup so the comparison runs against the exact
     // values that would be stored, quantisation included.
@@ -215,6 +242,39 @@ final class DisplayList {
       (_paintInts[_checkPaint(id) * 2 + 1] >> 8) & 0xFF;
 
   double paintStrokeWidth(int id) => _paintFloats[_checkPaint(id)];
+
+  /// One of `shaderKindSolid`, `shaderKindLinear`, `shaderKindRadial` from
+  /// `gradient.dart`. Bits 4..5 of the flag word.
+  int paintShaderKind(int id) =>
+      (_paintInts[_checkPaint(id) * 2 + 1] >> 4) & 0x3;
+
+  /// The gradient table id of a non-solid paint. Only meaningful when
+  /// [paintShaderKind] is not solid; a solid paint reports 0.
+  int paintGradientId(int id) =>
+      (_paintInts[_checkPaint(id) * 2 + 1] >> 16) & 0xFFFF;
+
+  /// The [Gradient] behind [id]'s paint, or null for a solid paint. This is
+  /// the accessor replay code reads; the id-level pair above exists for wire
+  /// round-trip tests.
+  Gradient? paintGradient(int id) => paintShaderKind(id) == shaderKindSolid
+      ? null
+      : _gradients[paintGradientId(id)];
+
+  Gradient gradientAt(int id) => _gradients[id];
+
+  int _internGradient(Gradient gradient) {
+    final int? existing = _gradientIds[gradient];
+    if (existing != null) return existing;
+    if (_gradients.length >= kMaxGradientsPerList) {
+      throw StateError(
+          'too many gradients in one display list ($kMaxGradientsPerList); '
+          'the paint flag word carries a 16-bit gradient id');
+    }
+    final int id = _gradients.length;
+    _gradients.add(gradient);
+    _gradientIds[gradient] = id;
+    return id;
+  }
 
   /// Interns a path and returns its id.
   ///

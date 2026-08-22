@@ -26,14 +26,11 @@
 ///   * **Frame-callback pacing is not wired.** Commits happen when the
 ///     framework presents; `wl_callback` is implemented for `sync` but no
 ///     frame throttling uses it yet.
-///   * **Single shm buffer per surface.** The compositor may still be reading
-///     the buffer when the next frame is rasterised into it; compositors copy
-///     shm promptly so this shows as, at worst, transient tearing. A proper
-///     multi-buffer swapchain keyed on `wl_buffer.release` is the next step.
 ///   * **Keyboard input is the minimal xkb subset.** First group, two shift
-///     levels, no dead keys, no compose, no IME, no key repeat; unresolvable
-///     keys deliver [KeyEvent]s but never guessed text. `wayland_keymap.dart`
-///     carries the details.
+///     levels, no dead keys, no compose and no IME. Client-side key repeat is
+///     driven by `wl_keyboard.repeat_info`; unresolvable keys deliver
+///     [KeyEvent]s but never guessed text. `wayland_keymap.dart` carries the
+///     details.
 ///   * **No client-side decorations and no xdg-decoration.** On compositors
 ///     that do not draw server-side frames (GNOME) windows appear borderless.
 ///   * **Clipboard, drag-and-drop, cursors and popups are deferred**, exactly
@@ -47,8 +44,10 @@ import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import 'wayland_connection.dart';
 import 'wayland_events.dart';
+import 'wayland_key_repeat.dart';
 import 'wayland_libc.dart';
 import 'wayland_memfd.dart';
+import 'wayland_protocol.dart';
 import 'wayland_shm.dart';
 import 'wayland_transport.dart';
 import 'wayland_window.dart';
@@ -126,12 +125,19 @@ final class WaylandWindowingBackend implements WindowingBackend {
     String? operatingSystem,
     Map<String, String>? environment,
     WaylandConnectionOpener? connectionOpener,
+    int Function()? monotonicMilliseconds,
   })  : _isLinux = isLinux ?? Platform.isLinux,
         _operatingSystem = operatingSystem ?? Platform.operatingSystem,
         _environment = Map<String, String>.unmodifiable(
           environment ?? Platform.environment,
         ),
-        _connectionOpener = connectionOpener ?? _openNativeConnection;
+        _connectionOpener = connectionOpener ?? _openNativeConnection,
+        _monotonicMilliseconds =
+            monotonicMilliseconds ?? _defaultMonotonicMilliseconds;
+
+  static final Stopwatch _monotonicClock = Stopwatch()..start();
+  static int _defaultMonotonicMilliseconds() =>
+      _monotonicClock.elapsedMilliseconds;
 
   @override
   String get name => 'wayland';
@@ -143,9 +149,11 @@ final class WaylandWindowingBackend implements WindowingBackend {
   final String _operatingSystem;
   final Map<String, String> _environment;
   final WaylandConnectionOpener _connectionOpener;
+  final int Function() _monotonicMilliseconds;
 
   WaylandWindowClient? _connection;
   final WaylandRawEvent _rawEvent = WaylandRawEvent();
+  final WaylandKeyRepeat _keyRepeat = WaylandKeyRepeat();
   int _nextWindowId = 1;
   bool _initialized = false;
   bool _quitRequested = false;
@@ -239,8 +247,7 @@ final class WaylandWindowingBackend implements WindowingBackend {
   Future<void> initialize() async {
     if (_initialized) return;
 
-    final resolution =
-        _isLinux ? resolveWaylandSocketPath(_environment) : null;
+    final resolution = _isLinux ? resolveWaylandSocketPath(_environment) : null;
     if (resolution?.path == null) {
       final result = probe();
       throw BackendSelectionError(
@@ -298,6 +305,7 @@ final class WaylandWindowingBackend implements WindowingBackend {
   Future<void> shutdown() async {
     if (!_initialized && _connection == null) return;
     _initialized = false;
+    _keyRepeat.cancel();
 
     Object? firstError;
     StackTrace? firstStack;
@@ -363,15 +371,27 @@ final class WaylandWindowingBackend implements WindowingBackend {
     _requireInitialized('pumpEvents');
     if (_quitRequested) return false;
     final connection = _connection!;
+    _keyRepeat.configure(
+      rateHz: connection.repeatRateHz,
+      delayMilliseconds: connection.repeatDelayMilliseconds,
+    );
     var drained = _drainQueuedEvents(connection);
+    drained += _deliverDueRepeats();
     if (drained == 0 && timeout != Duration.zero) {
-      final milliseconds = timeout.isNegative
+      var milliseconds = timeout.isNegative
           ? -1
           : timeout.inMicroseconds == 0
               ? 0
               : (timeout.inMicroseconds / 1000).ceil();
+      final untilRepeat =
+          _keyRepeat.millisecondsUntilDue(_monotonicMilliseconds());
+      if (untilRepeat != null &&
+          (milliseconds < 0 || untilRepeat < milliseconds)) {
+        milliseconds = untilRepeat;
+      }
       connection.waitForActivity(milliseconds);
       drained += _drainQueuedEvents(connection);
+      drained += _deliverDueRepeats();
     }
     if (!connection.isValid) {
       if (!_serverDisconnected) {
@@ -400,6 +420,7 @@ final class WaylandWindowingBackend implements WindowingBackend {
     var drained = 0;
     while (drained < budget && connection.pollEventInto(_rawEvent)) {
       drained++;
+      _updateKeyRepeat(_rawEvent);
       if (_rawEvent.surfaceId == 0) {
         // Display-wide events (an output scale change) concern every window.
         for (final window in _windows) {
@@ -412,7 +433,67 @@ final class WaylandWindowingBackend implements WindowingBackend {
     return drained;
   }
 
+  void _updateKeyRepeat(WaylandRawEvent raw) {
+    switch (raw.type) {
+      case WaylandRawEventType.keyboardKey:
+        if (raw.state == wlKeyboardKeyStatePressed) {
+          if (_isRepeatableEvdevKey(raw.key)) {
+            _keyRepeat.onKeyDown(
+              raw.key,
+              raw.surfaceId,
+              _monotonicMilliseconds(),
+            );
+          }
+        } else if (raw.state == wlKeyboardKeyStateReleased) {
+          _keyRepeat.onKeyUp(raw.key);
+        }
+      case WaylandRawEventType.keyboardLeave:
+        _keyRepeat.cancel();
+      case WaylandRawEventType.xdgToplevelClose:
+        if (raw.surfaceId == _keyRepeat.armedSurfaceId) _keyRepeat.cancel();
+      default:
+        break;
+    }
+  }
+
+  int _deliverDueRepeats() {
+    final count = _keyRepeat.takeDueRepeats(_monotonicMilliseconds());
+    if (count == 0) return 0;
+    final window = _windowsBySurfaceId[_keyRepeat.armedSurfaceId];
+    if (window == null) {
+      _keyRepeat.cancel();
+      return 0;
+    }
+    for (var i = 0; i < count; i++) {
+      _rawEvent
+        ..reset()
+        ..type = WaylandRawEventType.keyboardKey
+        ..surfaceId = _keyRepeat.armedSurfaceId
+        ..timeMilliseconds = _monotonicMilliseconds()
+        ..key = _keyRepeat.armedKey
+        ..state = wlKeyboardKeyStatePressed
+        ..repeat = true;
+      window.handleRawEvent(_rawEvent);
+    }
+    return count;
+  }
+
+  /// Modifier and lock keys never auto-repeat. The evdev codes are stable;
+  /// every other key is left eligible because navigation/function keys may
+  /// legitimately repeat even when they produce no text.
+  static bool _isRepeatableEvdevKey(int key) =>
+      key != 29 && // Control_L
+      key != 42 && // Shift_L
+      key != 54 && // Shift_R
+      key != 56 && // Alt_L
+      key != 58 && // Caps_Lock
+      key != 97 && // Control_R
+      key != 100 && // Alt_R / AltGr
+      key != 125 && // Super_L
+      key != 126; // Super_R
+
   void _onWindowClosed(WaylandWindow window) {
+    if (_keyRepeat.armedSurfaceId == window.surfaceId) _keyRepeat.cancel();
     _windowsBySurfaceId.remove(window.surfaceId);
     _windows.remove(window);
     if (_initialized && _windows.isEmpty) _quitRequested = true;
@@ -494,7 +575,8 @@ final class WaylandWindowingBackend implements WindowingBackend {
     ));
     diagnostics.add(const BackendDiagnostic.note(
       'pointer motion, buttons, crossings and axis scroll are normalized; '
-      'keyboard uses the minimal xkb text subset (no dead keys/compose/IME)',
+      'keyboard uses the minimal xkb text subset with client-side repeat '
+      '(no dead keys/compose/IME)',
     ));
   }
 

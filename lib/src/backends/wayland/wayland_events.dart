@@ -88,6 +88,11 @@ final class WaylandRawEvent {
   int modsLocked = 0;
   int modsGroup = 0;
 
+  /// True for a [WaylandRawEventType.keyboardKey] synthesised by the key
+  /// repeat engine. Wayland compositors do not repeat keys for clients; the
+  /// backend does, from `wl_keyboard.repeat_info`.
+  bool repeat = false;
+
   void reset() {
     type = WaylandRawEventType.none;
     surfaceId = 0;
@@ -106,6 +111,7 @@ final class WaylandRawEvent {
     modsLatched = 0;
     modsLocked = 0;
     modsGroup = 0;
+    repeat = false;
   }
 }
 
@@ -382,6 +388,7 @@ abstract final class WaylandEventTranslator {
             physicalKey: xkbKeycode,
             logicalKey: keysym,
             modifiers: modifierSet,
+            isRepeat: raw.repeat,
           )
         : KeyUpEvent(
             windowId: windowId,

@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
 import 'package:dart_ui/src/graphics/display_list_reader.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:test/test.dart';
 
 /// A resource with value equality, to show that interning follows the
@@ -321,6 +322,63 @@ void main() {
   });
 
   group('resource interning', () {
+    test('equal gradients share both gradient and paint ids', () {
+      final list = DisplayList();
+      LinearGradient gradient() => LinearGradient(
+            startX: 0,
+            startY: 0,
+            endX: 100,
+            endY: 0,
+            stops: const <GradientStop>[
+              GradientStop(0, 0xFFFF0000),
+              GradientStop(1, 0xFF0000FF),
+            ],
+          );
+
+      final first = list.addPaint(colorArgb: 0, gradient: gradient());
+      final second = list.addPaint(colorArgb: 0, gradient: gradient());
+
+      expect(second, first);
+      expect(list.paintCount, 1);
+      expect(list.gradientCount, 1);
+      expect(list.paintShaderKind(first), shaderKindLinear);
+      expect(list.paintGradientId(first), 0);
+      expect(list.paintGradient(first), gradient());
+    });
+
+    test('gradient kind and identity are independent paint fields', () {
+      final list = DisplayList();
+      final linear = LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 10,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0xFF000000),
+          GradientStop(1, 0xFFFFFFFF),
+        ],
+      );
+      final radial = RadialGradient(
+        centerX: 5,
+        centerY: 5,
+        radius: 5,
+        stops: const <GradientStop>[
+          GradientStop(0, 0xFF000000),
+          GradientStop(1, 0xFFFFFFFF),
+        ],
+      );
+
+      final solid = list.addPaint(colorArgb: 0xFF000000);
+      final linearPaint = list.addPaint(colorArgb: 0, gradient: linear);
+      final radialPaint = list.addPaint(colorArgb: 0, gradient: radial);
+
+      expect(list.paintShaderKind(solid), shaderKindSolid);
+      expect(list.paintGradient(solid), isNull);
+      expect(list.paintShaderKind(linearPaint), shaderKindLinear);
+      expect(list.paintShaderKind(radialPaint), shaderKindRadial);
+      expect(linearPaint, isNot(radialPaint));
+      expect(list.gradientCount, 2);
+    });
     test('identical paints collapse to one id', () {
       final list = DisplayList();
       final int a = list.addPaint(
@@ -473,6 +531,7 @@ void main() {
       expect(list.paintCount, 0);
       expect(list.pathCount, 0);
       expect(list.imageCount, 0);
+      expect(list.gradientCount, 0);
       expect(DisplayListReader(list).moveNext(), isFalse);
     });
 

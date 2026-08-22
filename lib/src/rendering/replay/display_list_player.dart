@@ -69,6 +69,7 @@ import '../../geometry/transform2d.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/display_list_reader.dart';
+import '../../graphics/gradient.dart';
 import 'replay_state.dart';
 
 /// A paint, resolved out of the resource table and flattened.
@@ -155,6 +156,7 @@ abstract interface class ReplayResources {
   int paintBlendMode(int id);
   bool paintAntiAlias(int id);
   int paintFillRule(int id);
+  Gradient? paintGradient(int id);
 
   /// The path object that was interned under [id]. Opaque to the player -
   /// the display list stores paths as `Object` and offers no bounds, which is
@@ -199,6 +201,9 @@ final class DisplayListResources implements ReplayResources {
 
   @override
   int paintFillRule(int id) => _list.paintFillRule(id);
+
+  @override
+  Gradient? paintGradient(int id) => _list.paintGradient(id);
 
   @override
   Object pathAt(int id) => _list.pathAt(id);
@@ -641,6 +646,14 @@ final class DisplayListPlayer {
     }
     final ReplayPaint? cached = _paints[id];
     if (cached != null) return cached;
+    final gradient = resources.paintGradient(id);
+    if (gradient != null) {
+      throw UnsupportedError(
+        'gradient paint replay is not implemented yet; the display-list '
+        'resource was preserved as $gradient instead of being rendered as '
+        'an incorrect solid colour',
+      );
+    }
     final ReplayPaint paint = ReplayPaint(
       argbColor: resources.paintColor(id),
       style: resources.paintStyle(id),

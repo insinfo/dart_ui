@@ -593,6 +593,15 @@ final class _FakeCompositor implements WaylandTransport {
   @override
   void closeFd(int fd) => closedFds.add(fd);
 
+  @override
+  ({int readFd, int writeFd})? createPipe() => null;
+
+  @override
+  bool writeAllToFd(int fd, Uint8List bytes) => false;
+
+  @override
+  Uint8List? readAllFromFd(int fd, {int timeoutMilliseconds = 2000}) => null;
+
   void _handleRequest(
     int objectId,
     int opcode,

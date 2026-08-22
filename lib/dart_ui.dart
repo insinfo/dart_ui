@@ -71,6 +71,7 @@ export 'src/graphics/display_list_debug.dart';
 export 'src/graphics/display_list_geometry.dart';
 export 'src/graphics/display_list_opcodes.dart';
 export 'src/graphics/display_list_reader.dart';
+export 'src/graphics/gradient.dart';
 export 'src/graphics/image/decoded_image.dart';
 export 'src/graphics/image/image_errors.dart';
 export 'src/graphics/image/inflate.dart';

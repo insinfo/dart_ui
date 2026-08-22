@@ -41,3 +41,12 @@ the MIT License:
 > LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 > SOFTWARE.
+
+## Vello (referência arquitetural)
+
+O protótipo `SparseStripGenerator` é uma implementação Dart independente do
+conceito de sparse strips estudado no projeto Vello, Copyright 2020 the Vello
+Authors. Nenhum código Rust foi portado. O material de referência local em
+`referencias/vello-main` é oferecido sob Apache-2.0 ou MIT, à escolha; os textos
+completos estão em `referencias/vello-main/LICENSE-APACHE` e
+`referencias/vello-main/LICENSE-MIT`.

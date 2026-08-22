@@ -148,6 +148,46 @@ void main() {
       expect(client.destroyed, hasLength(1));
       expect(surface.present, throwsStateError);
     });
+
+    test('rotates through free buffers while committed slots are busy', () {
+      final surface = create();
+
+      final first = surface.framebuffer;
+      expect(surface.present(), isNull);
+      final second = surface.framebuffer;
+      expect(second, isNot(same(first)));
+      expect(surface.present(), isNull);
+      final third = surface.framebuffer;
+      expect(third, isNot(same(first)));
+      expect(third, isNot(same(second)));
+      expect(surface.slotCount, 3);
+      expect(surface.busyReuseCount, 0);
+    });
+
+    test('reuses a released slot before growing the swapchain again', () {
+      final surface = create();
+      final first = client.created.single;
+      surface.framebuffer;
+      surface.present();
+      surface.framebuffer;
+      surface.present();
+
+      first.busy = false; // models wl_buffer.release
+      expect(surface.framebuffer, same(first.framebuffer));
+      expect(surface.slotCount, 2);
+    });
+
+    test('counts the bounded tearing fallback when every slot is busy', () {
+      final surface = create();
+      for (var i = 0; i < 3; i++) {
+        surface.framebuffer;
+        surface.present();
+      }
+
+      surface.framebuffer;
+      expect(surface.slotCount, 3);
+      expect(surface.busyReuseCount, 1);
+    });
   });
 }
 
@@ -163,6 +203,11 @@ final class _FakeBuffer implements WaylandShmBufferHandle {
 
   @override
   final Framebuffer framebuffer;
+
+  bool busy = false;
+
+  @override
+  bool get isBusy => busy;
 }
 
 final class _FakeCpuClient implements WaylandCpuClient {
@@ -214,6 +259,7 @@ final class _FakeCpuClient implements WaylandCpuClient {
   }) {
     final error = presentError;
     if (error != null) throw error;
+    (buffer as _FakeBuffer).busy = true;
     presented.add(
       (surfaceId: surfaceId, damage: damage, bufferScale: bufferScale),
     );

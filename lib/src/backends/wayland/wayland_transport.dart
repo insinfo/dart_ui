@@ -46,6 +46,22 @@ abstract interface class WaylandTransport implements Disposable {
 
   /// Closes a descriptor the compositor handed over (a keymap fd, once read).
   void closeFd(int fd);
+
+  /// A fresh pipe for a clipboard transfer, or null when the host cannot make
+  /// one. The read end is handed to `wl_data_offer.receive`-style reads; the
+  /// write end serves `wl_data_source.send`. Both ends are close-on-exec.
+  ({int readFd, int writeFd})? createPipe();
+
+  /// Writes all of [bytes] to [fd]. Returns false on any failure - the peer
+  /// closing its end mid-paste is normal, not exceptional, and the caller
+  /// only needs to know the transfer did not complete.
+  bool writeAllToFd(int fd, Uint8List bytes);
+
+  /// Reads [fd] to end-of-file, waiting at most [timeoutMilliseconds] for
+  /// each chunk, and returns the bytes. Null when the transfer failed or the
+  /// writer went silent past the timeout - a hung clipboard owner must cost a
+  /// bounded wait, never a frozen isolate.
+  Uint8List? readAllFromFd(int fd, {int timeoutMilliseconds = 2000});
 }
 
 /// The outcome of trying to open the compositor socket.
@@ -83,8 +99,7 @@ final class WaylandSocketTransport
         message: 'Wayland socket path exceeds sockaddr_un capacity',
         detail: socketPath,
       ));
-      return WaylandTransportAttempt(
-          transport: null, diagnostics: diagnostics);
+      return WaylandTransportAttempt(transport: null, diagnostics: diagnostics);
     }
 
     final fd = libc.socket(afUnix, sockStream | sockCloexec, 0);
@@ -94,8 +109,7 @@ final class WaylandSocketTransport
         message: 'socket(AF_UNIX) failed',
         detail: 'errno=${libc.errno}',
       ));
-      return WaylandTransportAttempt(
-          transport: null, diagnostics: diagnostics);
+      return WaylandTransportAttempt(transport: null, diagnostics: diagnostics);
     }
 
     final address = libc.allocateZeroed(sockaddrUnSize);
@@ -105,8 +119,7 @@ final class WaylandSocketTransport
         kind: DiagnosticKind.connectionFailed,
         message: 'malloc failed while preparing sockaddr_un',
       ));
-      return WaylandTransportAttempt(
-          transport: null, diagnostics: diagnostics);
+      return WaylandTransportAttempt(transport: null, diagnostics: diagnostics);
     }
     writeU16(address, 0, afUnix);
     for (var i = 0; i < encodedPath.length; i++) {
@@ -122,16 +135,14 @@ final class WaylandSocketTransport
         message: 'connect to Wayland socket failed',
         detail: '$socketPath (errno=$connectErrno)',
       ));
-      return WaylandTransportAttempt(
-          transport: null, diagnostics: diagnostics);
+      return WaylandTransportAttempt(transport: null, diagnostics: diagnostics);
     }
 
     final transport = WaylandSocketTransport._(libc, fd);
     if (!transport._allocateScratch(diagnostics) ||
         !transport._openWakePipe(diagnostics)) {
       transport.dispose();
-      return WaylandTransportAttempt(
-          transport: null, diagnostics: diagnostics);
+      return WaylandTransportAttempt(transport: null, diagnostics: diagnostics);
     }
     diagnostics.add(BackendDiagnostic.note('connected to $socketPath'));
     return WaylandTransportAttempt(
@@ -261,9 +272,7 @@ final class WaylandSocketTransport
       final chunk = bytes.length - offset > _ioBufferSize
           ? _ioBufferSize
           : bytes.length - offset;
-      _ioBuffer
-          .asTypedList(_ioBufferSize)
-          .setRange(0, chunk, bytes, offset);
+      _ioBuffer.asTypedList(_ioBufferSize).setRange(0, chunk, bytes, offset);
       final sent = _sendChunk(chunk, fdsPending ? _outgoingFds : null);
       if (sent < 0) {
         _broken = true;
@@ -423,6 +432,74 @@ final class WaylandSocketTransport
   @override
   void closeFd(int fd) {
     if (fd >= 0) _libc.closeFd(fd);
+  }
+
+  @override
+  ({int readFd, int writeFd})? createPipe() {
+    if (isDisposed) return null;
+    final fds = _libc.allocateZeroed(8).cast<Int32>();
+    if (fds == nullptr) return null;
+    // O_CLOEXEC only: the read side is polled before every read, so blocking
+    // descriptors are fine and keep the write side simple for the peer.
+    final result = _libc.pipe2(fds, oCloexec);
+    if (result != 0) {
+      _libc.free(fds.cast<Uint8>());
+      return null;
+    }
+    final pipe = (readFd: fds[0], writeFd: fds[1]);
+    _libc.free(fds.cast<Uint8>());
+    return pipe;
+  }
+
+  @override
+  bool writeAllToFd(int fd, Uint8List bytes) {
+    if (isDisposed || fd < 0) return false;
+    var offset = 0;
+    while (offset < bytes.length) {
+      final chunk = bytes.length - offset > _ioBufferSize
+          ? _ioBufferSize
+          : bytes.length - offset;
+      _ioBuffer.asTypedList(_ioBufferSize).setRange(0, chunk, bytes, offset);
+      final written = _libc.write(fd, _ioBuffer, chunk);
+      if (written < 0) {
+        if (_libc.errno == eintr) continue;
+        // EPIPE when the reader gave up mid-paste: a failed transfer, not a
+        // crash. SIGPIPE cannot fire here - the Dart VM ignores it.
+        return false;
+      }
+      if (written == 0) return false;
+      offset += written;
+    }
+    return true;
+  }
+
+  @override
+  Uint8List? readAllFromFd(int fd, {int timeoutMilliseconds = 2000}) {
+    if (isDisposed || fd < 0) return null;
+    final builder = BytesBuilder(copy: true);
+    while (true) {
+      // Poll before each read so a writer that stalls forever costs one
+      // timeout, never a blocked isolate.
+      writeU32(_pollScratch, 0, fd);
+      writeU16(_pollScratch, 4, pollIn);
+      writeU16(_pollScratch, 6, 0);
+      final ready = _libc.poll(_pollScratch, 1, timeoutMilliseconds);
+      if (ready < 0) {
+        if (_libc.errno == eintr) continue;
+        return null;
+      }
+      if (ready == 0) return null; // timeout: the owner went silent.
+      // POLLHUP still delivers the buffered tail through read(2); the
+      // zero-byte read after it is the EOF that finishes the transfer, so
+      // revents needs no inspection here.
+      final received = _libc.read(fd, _ioBuffer, _ioBufferSize);
+      if (received < 0) {
+        if (_libc.errno == eintr) continue;
+        return null;
+      }
+      if (received == 0) return builder.takeBytes(); // EOF: transfer complete.
+      builder.add(Uint8List.fromList(_ioBuffer.asTypedList(received)));
+    }
   }
 
   @override

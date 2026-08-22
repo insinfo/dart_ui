@@ -107,6 +107,11 @@ abstract interface class WaylandShmAllocator {
 /// [framebuffer] until it calls [WaylandCpuClient.destroyShmBuffer].
 abstract interface class WaylandShmBufferHandle {
   Framebuffer get framebuffer;
+
+  /// True from the commit that attached this buffer until the compositor's
+  /// `wl_buffer.release`. Writing into a busy buffer is the tearing the
+  /// protocol warns about; [WaylandShmSurface] consults this to rotate.
+  bool get isBusy;
 }
 
 /// A device-pixel rectangle submitted as damage from an shm buffer.
@@ -169,27 +174,51 @@ abstract interface class WaylandCpuSurface implements NativeSurfaceDescriptor {
   BackendDiagnostic? present({Rect? damage});
 }
 
-/// A tightly packed BGRA shm buffer committed to one `wl_surface`.
+/// A small swapchain of tightly packed BGRA shm buffers committed to one
+/// `wl_surface`.
 ///
 /// One instance belongs to exactly one window size and generation, the same
 /// replace-not-mutate rule as `X11PutImageSurface`: a resize creates a new
 /// surface for the new configure, so a frame holding the previous object is
 /// rejected by identity and [generation] before touching released memory.
-final class WaylandShmSurface with DisposableMixin implements WaylandCpuSurface {
+///
+/// ## Why more than one buffer
+///
+/// The protocol says a committed buffer belongs to the compositor until it
+/// sends `wl_buffer.release`; writing into it meanwhile is exactly the
+/// transient tearing the first version of this backend documented as a
+/// limitation. The fix is rotation, not copying: [framebuffer] hands the
+/// rasteriser a buffer the compositor is *not* holding - the last committed
+/// one when it was already released (the common case under compositors that
+/// copy shm promptly), a second or third slot when it was not - and only when
+/// every slot of a full swapchain is still busy does it fall back to reusing
+/// the oldest committed slot, counting that in [busyReuseCount] instead of
+/// hiding it.
+final class WaylandShmSurface
+    with DisposableMixin
+    implements WaylandCpuSurface {
   WaylandShmSurface._({
     required WaylandCpuClient client,
-    required WaylandShmBufferHandle buffer,
+    required WaylandShmBufferHandle firstSlot,
     required this.surfaceId,
     required this.pixelWidth,
     required this.pixelHeight,
     required this.scale,
     required this.bufferScale,
     required this.generation,
+    required int maximumSlots,
   })  : _client = client,
-        _buffer = buffer;
+        _maximumSlots = maximumSlots {
+    _slots.add(firstSlot);
+  }
 
   /// Allocates a surface or throws without leaking a partially accepted
   /// buffer. Presentation capability is checked before allocation.
+  /// The default swapchain depth. Two slots cover the well-behaved case
+  /// (draw into one while the compositor holds the other); the third absorbs
+  /// a compositor that holds a frame across a vblank.
+  static const int defaultMaximumSlots = 3;
+
   static WaylandShmSurface create({
     required WaylandCpuClient client,
     required int surfaceId,
@@ -198,6 +227,7 @@ final class WaylandShmSurface with DisposableMixin implements WaylandCpuSurface 
     required double scale,
     required int bufferScale,
     required int generation,
+    int maximumSlots = defaultMaximumSlots,
   }) {
     if (!client.supportsShmPresentation) {
       throw UnsupportedCapabilityError(
@@ -225,7 +255,31 @@ final class WaylandShmSurface with DisposableMixin implements WaylandCpuSurface 
       throw ArgumentError.value(
           generation, 'generation', 'must be non-negative');
     }
+    if (maximumSlots < 1) {
+      throw ArgumentError.value(maximumSlots, 'maximumSlots', 'must be >= 1');
+    }
 
+    final buffer = _allocateSlot(client, pixelWidth, pixelHeight);
+    return WaylandShmSurface._(
+      client: client,
+      firstSlot: buffer,
+      surfaceId: surfaceId,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+      scale: scale,
+      bufferScale: bufferScale,
+      generation: generation,
+      maximumSlots: maximumSlots,
+    );
+  }
+
+  /// Allocates one slot and validates it, or throws without leaking a
+  /// partially accepted buffer.
+  static WaylandShmBufferHandle _allocateSlot(
+    WaylandCpuClient client,
+    int pixelWidth,
+    int pixelHeight,
+  ) {
     final buffer = client.createShmBuffer(
       pixelWidth: pixelWidth,
       pixelHeight: pixelHeight,
@@ -245,16 +299,7 @@ final class WaylandShmSurface with DisposableMixin implements WaylandCpuSurface 
           'got ${framebuffer.format.name}',
         );
       }
-      return WaylandShmSurface._(
-        client: client,
-        buffer: buffer,
-        surfaceId: surfaceId,
-        pixelWidth: pixelWidth,
-        pixelHeight: pixelHeight,
-        scale: scale,
-        bufferScale: bufferScale,
-        generation: generation,
-      );
+      return buffer;
     } on Object {
       client.destroyShmBuffer(buffer);
       rethrow;
@@ -262,7 +307,23 @@ final class WaylandShmSurface with DisposableMixin implements WaylandCpuSurface 
   }
 
   final WaylandCpuClient _client;
-  final WaylandShmBufferHandle _buffer;
+  final int _maximumSlots;
+
+  /// Every slot this surface owns, in allocation order.
+  final List<WaylandShmBufferHandle> _slots = <WaylandShmBufferHandle>[];
+
+  /// The slot the rasteriser is currently drawing into, selected by the
+  /// [framebuffer] getter and committed by the next [present].
+  WaylandShmBufferHandle? _drawTarget;
+
+  /// The slot most recently committed; what an expose re-commits, and the
+  /// preferred draw target once the compositor releases it.
+  WaylandShmBufferHandle? _lastCommitted;
+
+  /// How many times a frame had to be drawn into a still-busy buffer because
+  /// the whole swapchain was held by the compositor. Nonzero means potential
+  /// transient tearing - counted instead of silent, per section 6.6.
+  int busyReuseCount = 0;
 
   @override
   String get kind => 'wayland-shm';
@@ -286,12 +347,61 @@ final class WaylandShmSurface with DisposableMixin implements WaylandCpuSurface 
   @override
   final int generation;
 
+  /// How many slots exist right now. Grows on demand up to the maximum.
+  int get slotCount => _slots.length;
+
+  /// The buffer the next frame should be rasterised into.
+  ///
+  /// Selection order: the currently acquired draw target, then the last
+  /// committed slot if the compositor has released it, then any other free
+  /// slot, then a freshly allocated slot while the swapchain is not full, and
+  /// only as a last resort the oldest slot even though it is busy.
   @override
-  Framebuffer get framebuffer => _buffer.framebuffer;
+  Framebuffer get framebuffer => _acquireDrawTarget().framebuffer;
+
+  WaylandShmBufferHandle _acquireDrawTarget() {
+    throwIfDisposed();
+    final acquired = _drawTarget;
+    if (acquired != null) return acquired;
+
+    WaylandShmBufferHandle? chosen;
+    final lastCommitted = _lastCommitted;
+    if (lastCommitted != null && !lastCommitted.isBusy) {
+      chosen = lastCommitted;
+    } else {
+      for (final slot in _slots) {
+        if (!slot.isBusy) {
+          chosen = slot;
+          break;
+        }
+      }
+    }
+    if (chosen == null && _slots.length < _maximumSlots) {
+      try {
+        chosen = _allocateSlot(_client, pixelWidth, pixelHeight);
+        _slots.add(chosen);
+      } on Object {
+        // Growth is an optimisation; failing it degrades to reuse below.
+        chosen = null;
+      }
+    }
+    if (chosen == null) {
+      // Every slot is still with the compositor. Reusing the oldest is the
+      // pre-swapchain behaviour, now counted instead of constant.
+      busyReuseCount++;
+      chosen = _slots.first;
+    }
+    _drawTarget = chosen;
+    return chosen;
+  }
 
   /// Commits the full buffer, or the outward-rounded intersection of [damage]
   /// with this surface. [damage] is in logical client coordinates; a no-op
   /// (empty or fully clipped damage) is a successful presentation.
+  ///
+  /// Commits the acquired draw target when one exists (a frame was just
+  /// rasterised); otherwise re-commits the last committed slot, which is what
+  /// an expose without new pixels means.
   @override
   BackendDiagnostic? present({Rect? damage}) {
     throwIfDisposed();
@@ -303,13 +413,22 @@ final class WaylandShmSurface with DisposableMixin implements WaylandCpuSurface 
         message: 'Wayland shm presentation became unavailable',
       );
     }
+    final target = _drawTarget ?? _lastCommitted ?? _acquireDrawTarget();
     try {
-      return _client.presentShmBuffer(
+      final failure = _client.presentShmBuffer(
         surfaceId: surfaceId,
-        buffer: _buffer,
+        buffer: target,
         damage: region,
         bufferScale: bufferScale,
       );
+      if (failure == null) {
+        _lastCommitted = target;
+        // Move the committed slot to the back so `_slots.first` stays the
+        // least recently committed - the least bad candidate for forced reuse.
+        if (_slots.remove(target)) _slots.add(target);
+        if (identical(_drawTarget, target)) _drawTarget = null;
+      }
+      return failure;
     } on Object catch (error) {
       return BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
@@ -354,10 +473,22 @@ final class WaylandShmSurface with DisposableMixin implements WaylandCpuSurface 
           : value;
 
   @override
-  void onDispose() => _client.destroyShmBuffer(_buffer);
+  void onDispose() {
+    // The client defers the actual wl_buffer.destroy of a busy slot until the
+    // compositor releases it, which is what makes disposing mid-flight (a
+    // resize while a frame is on screen) safe. See
+    // `WaylandConnection.destroyShmBuffer`.
+    for (final slot in _slots) {
+      _client.destroyShmBuffer(slot);
+    }
+    _slots.clear();
+    _drawTarget = null;
+    _lastCommitted = null;
+  }
 
   @override
   String toString() => 'WaylandShmSurface('
       '${pixelWidth}x$pixelHeight @ $scale, '
-      'surface: $surfaceId, generation: $generation)';
+      'surface: $surfaceId, generation: $generation, '
+      'slots: ${_slots.length}/$_maximumSlots)';
 }
