@@ -14,11 +14,13 @@ library;
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' show pid;
+import 'dart:typed_data';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
 import '../../rendering/framebuffer.dart';
 import 'x11_bindings.dart';
+import 'x11_drag_drop.dart';
 import 'x11_events.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
@@ -48,6 +50,11 @@ const List<String> x11WellKnownAtoms = <String>[
   '_NET_WM_WINDOW_TYPE_NORMAL',
   '_NET_ACTIVE_WINDOW',
   '_MOTIF_WM_HINTS',
+  // Drag and drop. Spread rather than spelled out again so that the state
+  // machine in `x11_drag_drop.dart` and this batch cannot drift apart - an
+  // XDND atom that is in one list and not the other is a drag that silently
+  // never starts.
+  ...x11XdndAtoms,
 ];
 
 /// Extensions the probe asks about by name.
@@ -170,7 +177,7 @@ final class X11ConnectionAttempt {
 /// A live X display connection.
 final class X11Connection
     with DisposableMixin
-    implements X11WindowClient, X11CpuClient {
+    implements X11WindowClient, X11CpuClient, X11DragDropClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
   /// Opens `$DISPLAY`, or reports exactly what stopped it.
@@ -318,6 +325,15 @@ final class X11Connection
   /// every comparison against them false rather than accidentally true.
   final Map<String, int> atoms = <String, int>{};
 
+  /// The reverse map, filled by [atomName].
+  ///
+  /// XDND names the types a source offers by atom, and this framework's
+  /// contract names them by MIME string, so every drag from an application
+  /// that offers something unusual needs the server to spell an atom back.
+  /// An empty string is cached for an atom the server does not know, so a
+  /// nonexistent atom costs one round trip rather than one per position event.
+  final Map<int, String> atomNames = <int, String>{};
+
   /// Which of [x11QueriedExtensions] the server reported as present.
   @override
   final Set<String> extensions = <String>{};
@@ -397,10 +413,12 @@ final class X11Connection
     return true;
   }
 
+  /// Words in [valueScratch]. Covers the longest value list this backend sends
+  /// (WM_SIZE_HINTS is 18) with room to spare.
+  static const int _valueScratchWords = 32;
+
   bool _allocateScratch(List<BackendDiagnostic> diagnostics) {
-    // 32 words covers the longest value list this backend sends
-    // (WM_SIZE_HINTS is 18) with room to spare.
-    final values = libc.allocateZeroed(32 * 4);
+    final values = libc.allocateZeroed(_valueScratchWords * 4);
     final event = libc.allocateZeroed(32);
     final poll = libc.allocateZeroed(2 * pollFdSize);
     final wake = libc.allocateZeroed(64);
@@ -686,6 +704,317 @@ final class X11Connection
     return value;
   }
 
+  /// The name of an interned atom, or null when the server does not know it.
+  ///
+  /// One round trip on a miss, none on a hit. The forward map is filled in as
+  /// well: a source that drags `application/x-my-thing` gives us the atom
+  /// first, and without this the [atom] lookup for the same name would answer
+  /// zero and the drop would be refused for a type we can see it offering.
+  @override
+  String? atomName(int value) {
+    if (value == 0) return null;
+    final cached = atomNames[value];
+    if (cached != null) return cached.isEmpty ? null : cached;
+    final cookie = xcb.getAtomName(_handle, value);
+    final reply = xcb.getAtomNameReply(_handle, cookie, errorScratch);
+    if (reply == nullptr) {
+      _drainReplyError('GetAtomName($value)');
+      atomNames[value] = '';
+      return null;
+    }
+    try {
+      final length = xcb.getAtomNameLength(reply);
+      if (length <= 0) {
+        atomNames[value] = '';
+        return null;
+      }
+      final bytes = xcb.getAtomNameName(reply);
+      // Atom names are ISO 8859-1 by the protocol, and every one that matters
+      // here is ASCII; decoding as UTF-8 would throw on a stray high byte from
+      // some other client's private atom.
+      final buffer = StringBuffer();
+      for (var index = 0; index < length; index++) {
+        buffer.writeCharCode(bytes[index]);
+      }
+      final name = buffer.toString();
+      atomNames[value] = name;
+      final existing = atoms[name];
+      if (existing == null || existing == 0) atoms[name] = value;
+      return name;
+    } finally {
+      libc.free(reply);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Properties and selections (XDND; see `x11_drag_drop.dart`)
+  // -------------------------------------------------------------------------
+
+  @override
+  void setWindowProperty32(
+    int window,
+    int property,
+    int type,
+    List<int> values,
+  ) {
+    throwIfDisposed();
+    if (window == 0 || property == 0 || type == 0) return;
+    if (values.length > _valueScratchWords) {
+      throw ArgumentError.value(
+        values.length,
+        'values',
+        'the X11 property scratch buffer holds $_valueScratchWords words',
+      );
+    }
+    for (var index = 0; index < values.length; index++) {
+      valueScratch[index] = values[index] & 0xffffffff;
+    }
+    xcb.changeProperty(
+      _handle,
+      xcbPropModeReplace,
+      window,
+      property,
+      type,
+      32,
+      values.length,
+      valueScratch.cast<Uint8>(),
+    );
+  }
+
+  @override
+  void deleteWindowProperty(int window, int property) {
+    if (isDisposed || window == 0 || property == 0) return;
+    xcb.deleteProperty(_handle, window, property);
+  }
+
+  /// Encodes a 32-byte `ClientMessage` into [eventScratch] and sends it.
+  ///
+  /// Propagate is false and the event mask is empty, which is what makes the
+  /// server deliver the event to [destination] itself instead of walking up to
+  /// whichever ancestor happens to have selected for something.
+  @override
+  void sendClientMessage({
+    required int destination,
+    required int window,
+    required int type,
+    required List<int> data,
+  }) {
+    throwIfDisposed();
+    if (destination == 0 || type == 0) return;
+    for (var index = 0; index < 32; index++) {
+      eventScratch[index] = 0;
+    }
+    eventScratch[0] = xcbClientMessage;
+    eventScratch[1] = xdndClientMessageFormat;
+    writeU32(eventScratch, 4, window);
+    writeU32(eventScratch, 8, type);
+    for (var index = 0; index < xdndClientMessageWordCount; index++) {
+      writeU32(
+        eventScratch,
+        12 + index * 4,
+        index < data.length ? data[index] & 0xffffffff : 0,
+      );
+    }
+    xcb.sendEvent(_handle, 0, destination, 0, eventScratch);
+  }
+
+  @override
+  void convertSelection({
+    required int requestor,
+    required int selection,
+    required int target,
+    required int property,
+    required int time,
+  }) {
+    throwIfDisposed();
+    if (requestor == 0 || selection == 0 || target == 0) return;
+    xcb.convertSelection(
+      _handle,
+      requestor,
+      selection,
+      target,
+      property,
+      time,
+    );
+  }
+
+  @override
+  X11PropertyValue? readPropertyBytes(
+    int window,
+    int property, {
+    required int type,
+    bool delete = false,
+  }) {
+    final reply = _getPropertyReply(
+      window,
+      property,
+      type,
+      maxWords: _selectionMaxWords,
+      delete: delete,
+    );
+    if (reply == null) return null;
+    try {
+      final length = xcb.getPropertyValueLength(reply);
+      final value = xcb.getPropertyValue(reply);
+      final bytes = Uint8List(length < 0 ? 0 : length);
+      for (var index = 0; index < bytes.length; index++) {
+        bytes[index] = value[index];
+      }
+      return X11PropertyValue(
+        // xcb_get_property_reply_t: response_type, format, sequence, length,
+        // type, bytes_after, value_len.
+        type: readU32(reply, 8),
+        format: reply[1],
+        bytes: bytes,
+      );
+    } finally {
+      libc.free(reply);
+    }
+  }
+
+  @override
+  List<int> readPropertyCardinals(
+    int window,
+    int property, {
+    required int type,
+  }) =>
+      getCardinalProperty(window, property, type, <int>[]);
+
+  @override
+  int getSelectionOwner(int selection) {
+    throwIfDisposed();
+    if (selection == 0) return xcbNone;
+    final cookie = xcb.getSelectionOwner(_handle, selection);
+    final reply = xcb.getSelectionOwnerReply(_handle, cookie, errorScratch);
+    if (reply == nullptr) {
+      _drainReplyError('GetSelectionOwner($selection)');
+      return xcbNone;
+    }
+    try {
+      return readU32(reply, 8);
+    } finally {
+      libc.free(reply);
+    }
+  }
+
+  @override
+  void setSelectionOwner(int owner, int selection, int time) {
+    throwIfDisposed();
+    if (selection == 0) return;
+    xcb.setSelectionOwner(_handle, owner, selection, time);
+  }
+
+  /// `ChangeProperty` with format 8, for a selection owner handing over bytes.
+  ///
+  /// Allocated per call rather than written into [valueScratch]: a dropped
+  /// file list is routinely longer than the 128 bytes that buffer holds, and
+  /// silently truncating a payload is the worst of the available failures -
+  /// the destination gets a valid-looking `text/uri-list` with the last path
+  /// cut in half.
+  @override
+  void setWindowPropertyBytes(
+    int window,
+    int property,
+    int type,
+    Uint8List bytes,
+  ) {
+    throwIfDisposed();
+    if (window == 0 || property == 0 || type == 0) return;
+    final buffer = libc.allocateZeroed(bytes.isEmpty ? 1 : bytes.length);
+    if (buffer == nullptr) {
+      recordError('malloc failed for a ${bytes.length}-byte selection value');
+      return;
+    }
+    try {
+      if (bytes.isNotEmpty) {
+        buffer.asTypedList(bytes.length).setAll(0, bytes);
+      }
+      xcb.changeProperty(
+        _handle,
+        xcbPropModeReplace,
+        window,
+        property,
+        type,
+        8,
+        bytes.length,
+        buffer,
+      );
+      // Flushed before the buffer is freed: `xcb_change_property` copies into
+      // the connection's own output queue, but the flush is what guarantees the
+      // request is out before the SelectionNotify that announces it.
+      xcb.flush(_handle);
+    } finally {
+      libc.free(buffer);
+    }
+  }
+
+  /// `SendEvent` of a 32-byte `SelectionNotify`.
+  ///
+  /// The layout is fixed by the core protocol: type at 0, then pad, sequence,
+  /// time at 4, requestor at 8, selection at 12, target at 16, property at 20.
+  /// A property of [xcbNone] is the refusal, and sending it is required - see
+  /// [X11XdndSource.handleSelectionRequest].
+  @override
+  void sendSelectionNotify({
+    required int requestor,
+    required int selection,
+    required int target,
+    required int property,
+    required int time,
+  }) {
+    throwIfDisposed();
+    if (requestor == 0) return;
+    for (var index = 0; index < 32; index++) {
+      eventScratch[index] = 0;
+    }
+    eventScratch[0] = xcbSelectionNotify;
+    writeU32(eventScratch, 4, time);
+    writeU32(eventScratch, 8, requestor);
+    writeU32(eventScratch, 12, selection);
+    writeU32(eventScratch, 16, target);
+    writeU32(eventScratch, 20, property);
+    xcb.sendEvent(_handle, 0, requestor, 0, eventScratch);
+  }
+
+  /// `QueryPointer`, for the source half's descent through the window tree.
+  ///
+  /// Null when the reply failed or the pointer is on another screen - the
+  /// `same_screen` byte at offset 1. Both mean "there is no target here", and
+  /// treating a cross-screen pointer as a hit would send XDND messages to a
+  /// window the user is not over.
+  @override
+  X11PointerLocation? queryPointer(int window) {
+    throwIfDisposed();
+    if (window == 0) return null;
+    final cookie = xcb.queryPointer(_handle, window);
+    final reply = xcb.queryPointerReply(_handle, cookie, errorScratch);
+    if (reply == nullptr) {
+      _drainReplyError('QueryPointer($window)');
+      return null;
+    }
+    try {
+      if (reply[1] == 0) return null;
+      return X11PointerLocation(
+        child: readU32(reply, 12),
+        rootX: readI16(reply, 16),
+        rootY: readI16(reply, 18),
+      );
+    } finally {
+      libc.free(reply);
+    }
+  }
+
+  /// The largest `GetProperty` this connection may ask for, in 32-bit words.
+  ///
+  /// `long_length` is counted in words and the reply cannot exceed the server's
+  /// maximum request length, so asking for more is how a large drop comes back
+  /// silently truncated with no error anywhere.
+  int get _selectionMaxWords {
+    const replyHeaderWords = 8;
+    final limit = maximumRequestUnits - replyHeaderWords;
+    return limit > 0 ? limit : 16384;
+  }
+
   /// Reads a property as bytes, or null when it is absent or unreadable.
   ///
   /// [maxWords] is in 32-bit units, as the protocol counts them.
@@ -694,11 +1023,12 @@ final class X11Connection
     int property,
     int type, {
     int maxWords = 16384,
+    bool delete = false,
   }) {
     if (property == 0) return null;
     final cookie = xcb.getProperty(
       _handle,
-      0,
+      delete ? 1 : 0,
       window,
       property,
       type,

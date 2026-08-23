@@ -67,9 +67,25 @@ void main() {
     });
 
     test('unknown names collapse to NoSymbol, never to a guess', () {
-      expect(xkbKeysymFromName('dead_acute'), xkbNoSymbol);
+      expect(xkbKeysymFromName('Arabic_hamza_above'), xkbNoSymbol);
       expect(xkbKeysymFromName('NoSymbol'), xkbNoSymbol);
       expect(xkbKeysymFromName(''), xkbNoSymbol);
+    });
+
+    test('the dead keys resolve, from the shared Compose name list', () {
+      // They used to be NoSymbol, and that was the honest answer while nothing
+      // could compose them. Now `compose_sequences.dart` can, and a keymap that
+      // named `dead_acute` while a Compose file also named it had to agree on
+      // its value - one table is how they agree.
+      expect(xkbKeysymFromName('dead_acute'), 0xfe51);
+      expect(xkbKeysymFromName('dead_tilde'), 0xfe53);
+      expect(xkbKeysymFromName('Multi_key'), 0xff20);
+      expect(
+        xkbKeysymToText(xkbKeysymFromName('dead_acute')),
+        isNull,
+        reason: 'a dead key still has no text of its own; that is what makes '
+            'it dead, and it is why the compose engine has to see it',
+      );
     });
   });
 

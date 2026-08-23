@@ -27,11 +27,17 @@
 #     handle. See the library comment of `vulkan_library.dart`. The dispatch
 #     tables in `vulkan_bindings.dart` are therefore a **manual override**, and
 #     `vulkan_symbol_test.dart` is what proves each of them resolves.
-#   * **Every extension beyond `VK_EXT_debug_utils`.** Swapchain, surface,
-#     video, ray tracing, mesh shading, cooperative matrices and the rest.
-#     This backend renders offscreen; when a swapchain arrives, the four
-#     `VkSwapchain*`/`VkSurface*` structures join the list below and the
-#     regenerated file is the diff.
+#   * **Every extension beyond `VK_EXT_debug_utils`, `VK_KHR_surface` and
+#     `VK_KHR_swapchain`.** Video, ray tracing, mesh shading, cooperative
+#     matrices and the rest. The swapchain arrived: the four
+#     `VkSwapchain*`/`VkSurface*` structures are in the list below and the
+#     regenerated file was the diff, exactly as this note promised. What still
+#     cannot be generated is the *platform* half - `VkWin32SurfaceCreateInfoKHR`
+#     lives in `vulkan_win32.h`, needs `windows.h` to parse, and names `HWND`,
+#     which `test/architecture/layering_test.dart` forbids any file under
+#     `lib/src` outside `backends/` from naming. Those three structures are
+#     **manual overrides** in `vulkan_wsi_platform.dart`, each with the header
+#     lines it came from quoted beside it.
 #   * **`VkPhysicalDeviceFeatures`, sparse residency, queries, events,
 #     pipeline caches, secondary command buffers, multi-view, depth/stencil.**
 #     Not named anywhere in `lib/src/rendering/gpu/vulkan/`.
@@ -172,3 +178,16 @@ structs:
     - 'VkDebugUtilsMessengerCallbackDataEXT'
     - 'VkDebugUtilsLabelEXT'
     - 'VkDebugUtilsObjectNameInfoEXT'
+    # -- window system integration (VK_KHR_surface, VK_KHR_swapchain) -------
+    #
+    # The swapchain arrived, so these join the list exactly as the ignored-API
+    # report above said they would. All four are declared in `vulkan_core.h`
+    # and name no window-system type, which is why they can be generated at
+    # all: the *platform* surface create-infos cannot, because
+    # `VkWin32SurfaceCreateInfoKHR` names `HWND` and
+    # `VkWaylandSurfaceCreateInfoKHR` names `wl_display*`. Those are manual
+    # overrides in `vulkan_wsi_platform.dart`, for the reason recorded there.
+    - 'VkSurfaceCapabilitiesKHR'
+    - 'VkSurfaceFormatKHR'
+    - 'VkSwapchainCreateInfoKHR'
+    - 'VkPresentInfoKHR'

@@ -23,19 +23,28 @@ import 'dart:io' show Platform;
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
 import '../../platform/clipboard.dart';
+import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart';
+import '../../platform/text_input.dart';
 import 'win32_abi.dart';
 import 'win32_api.dart';
 import 'win32_clipboard.dart';
 import 'win32_constants.dart';
 import 'win32_diagnostics.dart';
+import 'win32_drag_drop.dart';
+import 'win32_ime.dart';
+import 'win32_ole.dart';
 import 'win32_structs.dart';
 import 'win32_window.dart';
 import 'win32_window_class.dart';
 
 /// Creates and owns Win32 windows.
 final class Win32WindowingBackend
-    implements WindowingBackend, ClipboardProvider {
+    implements
+        WindowingBackend,
+        ClipboardProvider,
+        DragDropProvider,
+        TextInputProvider {
   Win32WindowingBackend();
 
   @override
@@ -71,6 +80,67 @@ final class Win32WindowingBackend
     }
     return Win32Clipboard(api);
   }
+
+  /// OLE drag and drop, over ole32 loaded on demand.
+  ///
+  /// The same seam as [clipboard], with the same two honest refusals: no API
+  /// before [initialize], and an [UnavailableDragDrop] naming ole32 when the
+  /// drag-and-drop entry points could not be bound. Built once and kept,
+  /// because it owns the `IDropTarget` vtables and the OLE apartment
+  /// reference - one set for every window of this backend.
+  @override
+  DragDropBackend get dragAndDrop {
+    final existing = _dragAndDrop;
+    if (existing != null) return existing;
+    final api = _api;
+    if (api == null) {
+      return const UnavailableDragDrop(
+        name: 'win32',
+        reason: 'the win32 backend has not been initialized, so ole32 has not '
+            'been loaded and no window can be registered yet',
+      );
+    }
+    final created = Win32DragDropBackend.create(api);
+    for (final diagnostic in created.diagnostics) {
+      _diagnostics.add(diagnostic);
+    }
+    return _dragAndDrop = created.backend;
+  }
+
+  DragDropBackend? _dragAndDrop;
+
+  /// IMM32 composition, over imm32 loaded on demand.
+  ///
+  /// The same seam as [clipboard] and [dragAndDrop], with the same two honest
+  /// refusals: no API before [initialize], and an [UnavailableTextInput]
+  /// naming imm32 when it could not be bound. Built once and kept, because a
+  /// `TextInputScope` publishes it to every tree and its `updateShouldNotify`
+  /// is an identity check - a fresh object per call would notify every text
+  /// field in the window that nothing had changed.
+  ///
+  /// **Losing this is not losing typing.** Plain text comes from `WM_CHAR`,
+  /// which the window handles whether or not imm32 ever loaded; what is lost
+  /// is composition, which is CJK and the framework-drawn preedit.
+  @override
+  TextInputBackend get textInput {
+    final TextInputBackend? existing = _textInput;
+    if (existing != null) return existing;
+    final api = _api;
+    if (api == null) {
+      return const UnavailableTextInput(
+        name: 'win32',
+        reason: 'the win32 backend has not been initialized, so imm32 has not '
+            'been loaded and no window can be composed into yet',
+      );
+    }
+    final created = Win32TextInputBackend.create(api);
+    for (final diagnostic in created.diagnostics) {
+      _diagnostics.add(diagnostic);
+    }
+    return _textInput = created.backend;
+  }
+
+  TextInputBackend? _textInput;
 
   /// Not final: a bag is single-use, and a backend may legitimately be
   /// initialised again after a shutdown (a test suite does it per test).
@@ -193,11 +263,45 @@ final class Win32WindowingBackend
       );
     }
 
+    // Probed rather than assumed: ole32 is always present on a real Windows
+    // install, and the one place that stops being true - a stripped container
+    // image, a Nano Server host - is exactly where a capability claimed on
+    // faith turns into a drop that silently never arrives.
+    final oleResult = Win32OleApi.load();
+    final oleLoaded = oleResult.api != null;
+    diagnostics.addAll(oleResult.diagnostics);
+    if (oleLoaded) {
+      diagnostics.add(
+        const BackendDiagnostic.note(
+          'ole32 drag-and-drop entry points are available; windows can be '
+          'registered as OLE drop targets',
+        ),
+      );
+    }
+
+    // Probed for ole32's reason: imm32 is present on every real Windows
+    // install and absent exactly where a capability claimed on faith turns
+    // into a text field that mysteriously cannot type Japanese.
+    final immResult = Imm32Api.load();
+    final immLoaded = immResult.api != null;
+    diagnostics.addAll(immResult.diagnostics);
+    if (immLoaded) {
+      diagnostics.add(
+        const BackendDiagnostic.note(
+          'imm32 composition entry points are available; WM_IME_* is handled '
+          'and the preedit is drawn by the framework rather than by the IME',
+        ),
+      );
+    }
+
     diagnostics.add(
-      const BackendDiagnostic.note(
-        'core mouse, wheel and keyboard input plus Unicode clipboard are '
-        'normalized; IME, drag-and-drop and accessibility are not implemented '
-        'yet',
+      BackendDiagnostic.note(
+        'core mouse, wheel and keyboard input, the Unicode clipboard, OLE '
+        'drag and drop in both directions and IMM32 composition are '
+        'normalized; the IME cannot read surrounding text '
+        '(WM_IME_REQUEST/IMR_DOCUMENTFEED is unanswered) and accessibility is '
+        'partial${immLoaded ? '' : '; imm32 did not load, so there is no '
+            'composition at all'}',
       ),
     );
     diagnostics.add(
@@ -218,6 +322,14 @@ final class Win32WindowingBackend
         Capability.keyboardInput,
         Capability.pointerInput,
         if (api.clipboardSupported) Capability.clipboardText,
+        // Both halves: `IDropTarget` receives a drop and `DoDragDrop` starts
+        // one. The capability is claimed on ole32 having loaded, because that
+        // is the single thing either half needs and the only thing that can
+        // actually be missing on a stripped Windows image.
+        if (oleLoaded) Capability.dragAndDrop,
+        // Claimed on imm32 having bound, because that is the single thing
+        // composition needs and the only thing that can actually be missing.
+        if (immLoaded) Capability.textComposition,
         Capability.orderlyShutdown,
         if (perMonitor && api.getDpiForWindow != null) Capability.perMonitorDpi,
       },
@@ -375,6 +487,17 @@ final class Win32WindowingBackend
       window.dispose();
     }
     _windows.clear();
+
+    // Drop targets go with the windows, and before the class: RevokeDragDrop
+    // on a destroyed HWND answers DRAGDROP_E_NOTREGISTERED and leaves the OLE
+    // runtime holding a pointer into this process. `Win32Window.dispose` above
+    // has already destroyed the handles, so this is the *application's* last
+    // chance to have revoked them - which is why the registration also lives
+    // in the window's own disposable bag, and this is only the backstop.
+    if (_dragAndDrop case final Win32DragDropBackend backend) {
+      await backend.dispose();
+    }
+    _dragAndDrop = null;
 
     _resources.dispose();
     _windowClass = null;

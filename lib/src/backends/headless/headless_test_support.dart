@@ -216,7 +216,14 @@ final class FakeClipboard implements Clipboard {
 }
 
 /// Client of the deterministic text-input adapter.
-abstract interface class TextInputClient {
+///
+/// Named `Observer` rather than `Client` since `lib/src/platform/text_input.dart`
+/// landed: that file's [TextInputClient] is the *port* an input method composes
+/// into - preedit, commit, surrounding text - and this one is a test double's
+/// change notification with nothing in common but the word. Two types with one
+/// name in the same public export is an ambiguity a caller has to resolve at
+/// every import, and the port owns the better claim to the name.
+abstract interface class FakeTextInputObserver {
   void onTextChanged(String text, int selectionStart, int selectionEnd);
 }
 
@@ -242,7 +249,7 @@ final class FakeTextInput {
   final TextInputAssembler _assembler = TextInputAssembler();
   Duration _clock = Duration.zero;
 
-  TextInputClient? _client;
+  FakeTextInputObserver? _client;
   String _text = '';
   int _selectionStart = 0;
   int _selectionEnd = 0;
@@ -251,8 +258,8 @@ final class FakeTextInput {
   int get selectionStart => _selectionStart;
   int get selectionEnd => _selectionEnd;
 
-  void attach(TextInputClient client) => _client = client;
-  void detach(TextInputClient client) {
+  void attach(FakeTextInputObserver client) => _client = client;
+  void detach(FakeTextInputObserver client) {
     if (identical(_client, client)) _client = null;
   }
 

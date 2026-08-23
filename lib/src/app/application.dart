@@ -151,18 +151,24 @@ import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
 import '../platform/backend_selection.dart';
 import '../platform/clipboard.dart';
+import '../platform/drag_drop.dart';
 import '../platform/input_events.dart';
 import '../platform/native_window.dart';
+import '../platform/text_input.dart';
 import '../platform/window_events.dart';
 import '../rendering/cpu_renderer.dart';
+import '../rendering/render_diagnostics.dart';
+import '../rendering/render_policy.dart';
 import '../rendering/renderer.dart';
 import '../scheduler/frame_scheduler.dart';
 import '../scheduler/manual_dispatcher.dart';
 import '../text/shaper.dart' show TextDirection;
 import '../widgets/context_menu.dart' show ContextMenuScope;
 import '../widgets/control.dart';
-import '../widgets/controls.dart' show ClipboardScope;
+import '../widgets/controls.dart' show ClipboardScope, TextInputScope;
 import '../widgets/dart_ui_app.dart';
+import '../widgets/drag_drop.dart'
+    show DragDropScope, WidgetTreeDropTarget;
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
 import '../widgets/media_query.dart';
@@ -381,12 +387,15 @@ final class ApplicationOptions {
     this.windowBackgroundColor,
     this.gpuPresentationCapability = kGpuPresentationCapability,
     this.renderingPolicy = RenderingPolicy.auto,
+    this.renderPolicy = RenderPolicy.defaults,
     this.theme = ThemeData.neutralLight,
     this.textDirection = TextDirection.leftToRight,
     this.headlessRenderScale = 1.0,
     this.arguments = const <String>[],
     this.environment = const <String, String>{},
     this.clipboard,
+    this.dragAndDrop,
+    this.textInput,
     this.onError,
     this.onDiagnostic,
   }) : assert(headlessRenderScale > 0);
@@ -423,11 +432,14 @@ final class ApplicationOptions {
     Color? windowBackgroundColor,
     Capability? gpuPresentationCapability = kGpuPresentationCapability,
     RenderingPolicy renderingPolicy = RenderingPolicy.auto,
+    RenderPolicy renderPolicy = RenderPolicy.defaults,
     ThemeData theme = ThemeData.neutralLight,
     TextDirection textDirection = TextDirection.leftToRight,
     double headlessRenderScale = 1.0,
     Map<String, String> environment = const <String, String>{},
     Clipboard? clipboard,
+    DragDropBackend? dragAndDrop,
+    TextInputBackend? textInput,
     void Function(FrameworkError error)? onError,
     void Function(BackendDiagnostic diagnostic)? onDiagnostic,
   }) {
@@ -490,6 +502,7 @@ final class ApplicationOptions {
           : cpu
               ? RenderingPolicy.cpuOnly
               : renderingPolicy,
+      renderPolicy: renderPolicy,
       theme: dark
           ? ThemeData.neutralDark
           : light
@@ -500,6 +513,8 @@ final class ApplicationOptions {
       arguments: List<String>.unmodifiable(arguments),
       environment: environment,
       clipboard: clipboard,
+      dragAndDrop: dragAndDrop,
+      textInput: textInput,
       onError: onError,
       onDiagnostic: onDiagnostic,
     );
@@ -665,6 +680,19 @@ final class ApplicationOptions {
   /// GPU-first chain supplied by the resolver.
   final RenderingPolicy renderingPolicy;
 
+  /// Budgets, the quality trade and the per-strategy kill switches.
+  ///
+  /// Deliberately *not* the same thing as [renderingPolicy], which chooses a
+  /// presentation path - CPU or GPU - before a frame exists. This one is about
+  /// what the GPU renderer does once it has one, and it never chooses a
+  /// backend: see [RenderPolicy] for why "pick your renderer" is the wrong
+  /// shape for a decision that varies per draw inside one frame.
+  ///
+  /// [Application.start] installs it into [RenderPolicyScope] and reports
+  /// anything it changed through [onDiagnostic], so a support log names the
+  /// routes an operator turned off.
+  final RenderPolicy renderPolicy;
+
   /// Defaults installed by the framework-owned [DartUiApp] wrapper.
   final ThemeData theme;
   final TextDirection textDirection;
@@ -696,6 +724,22 @@ final class ApplicationOptions {
   /// of the application runs on the real backend, an application that routes
   /// copy through its own history, or a backend that has no clipboard yet.
   final Clipboard? clipboard;
+
+  /// Overrides the drag and drop the widget tree would otherwise get.
+  ///
+  /// Null is the normal value and means "the selected backend's", exactly as
+  /// [clipboard] does. Setting it is for a test that wants a [FakeDragDrop] in
+  /// an application otherwise running on the real backend, or for an
+  /// application that routes drops through its own policy.
+  final DragDropBackend? dragAndDrop;
+
+  /// Overrides the input method the widget tree would otherwise get.
+  ///
+  /// Null is the normal value and means "the selected backend's", exactly as
+  /// [clipboard] and [dragAndDrop] do. Setting it is for a test that wants a
+  /// scripted input method in an application otherwise running on the real
+  /// backend.
+  final TextInputBackend? textInput;
 
   /// Where a build/layout/paint failure goes. Null installs a reporter that
   /// contains the error - the frame still draws, minus the failed subtree -
@@ -1005,12 +1049,27 @@ final class ApplicationWindow with DisposableMixin {
         data: runtimeInfo,
         child: ClipboardScope(
           clipboard: application.clipboard,
-          child: ContextMenuScope(
-            child: DartUiApp(
-              theme: application.options.theme,
-              textDirection: application.options.textDirection,
-              frameScheduler: scheduler,
-              home: _rootWidget,
+          child: DragDropScope(
+            dragAndDrop: application.dragAndDrop,
+            // The window as well as the backend: starting a drag needs an
+            // origin, and this is the only place in the tree that knows what
+            // window it is in. See [DragDropScope.window].
+            window: nativeWindow,
+            child: TextInputScope(
+              textInput: application.textInput,
+              // The window again, and for a stronger reason than the drag's:
+              // a composition belongs to one HWND or one wl_surface, so a
+              // field that could not name its window would have nothing to
+              // attach an input method to.
+              window: nativeWindow,
+              child: ContextMenuScope(
+                child: DartUiApp(
+                  theme: application.options.theme,
+                  textDirection: application.options.textDirection,
+                  frameScheduler: scheduler,
+                  home: _rootWidget,
+                ),
+              ),
             ),
           ),
         ),
@@ -1422,6 +1481,14 @@ final class Application with DisposableMixin {
         ? <PresentationPathEntry>[PresentationPathEntry.cpuRenderer()]
         : presentations;
 
+    // Before any probe, because a kill switch has to be in force for the very
+    // first frame a backend draws - and because reporting it beside the probes
+    // is what makes a support log self-contained.
+    RenderPolicyScope.install(options.renderPolicy);
+    for (final BackendDiagnostic diagnostic in options.renderPolicy.describe()) {
+      options.onDiagnostic?.call(diagnostic);
+    }
+
     // --- 1. windowing backend ------------------------------------------
     final instances = <String, WindowingBackend>{};
     final candidates = <BackendCandidate>[];
@@ -1733,6 +1800,70 @@ final class Application with DisposableMixin {
     );
   }
 
+  /// The drag and drop this application's windows register with.
+  ///
+  /// Resolved exactly the way [clipboard] is, and for the same three reasons:
+  /// an explicit override wins, otherwise the selected backend supplies its own
+  /// when it is a [DragDropProvider], and failing both the answer is an
+  /// [UnavailableDragDrop] that names the backend, and that object is what the
+  /// `DragDropScope` publishes to every tree. So a control that *asks* - to
+  /// start a drag, or to register a target of its own - gets a
+  /// [DragDropException] saying which backend has no drag and drop, instead of
+  /// a null or a silence. [openWindow] does not ask: a platform without drag
+  /// and drop is a fact, not a per-window failure to report.
+  ///
+  /// Cached rather than rebuilt per call, because the answer is published to
+  /// every window through a `DragDropScope` whose `updateShouldNotify` is an
+  /// identity check: a fresh [UnavailableDragDrop] on each rebuild would
+  /// notify every dependent in the tree that nothing had changed.
+  DragDropBackend get dragAndDrop => _dragAndDrop ??= _resolveDragAndDrop();
+
+  DragDropBackend? _dragAndDrop;
+
+  DragDropBackend _resolveDragAndDrop() {
+    final DragDropBackend? configured = options.dragAndDrop;
+    if (configured != null) return configured;
+    // A pattern rather than `is`, for [ClipboardProvider]'s reason.
+    if (backend case final DragDropProvider provider) {
+      return provider.dragAndDrop;
+    }
+    return UnavailableDragDrop(
+      name: backend.name,
+      reason: 'the ${backend.name} backend has no drag and drop, and none was '
+          'passed through ApplicationOptions.dragAndDrop',
+    );
+  }
+
+  /// The platform's input method, resolved exactly as [dragAndDrop] is.
+  ///
+  /// An explicit override wins, the selected backend supplies its own when it
+  /// is a [TextInputProvider], and failing both the answer is an
+  /// [UnavailableTextInput] naming the backend. That object is what
+  /// `TextInputScope` publishes to every tree, so a field on a platform with no
+  /// IME carries the reason rather than a null - and goes on typing, because
+  /// plain text comes from `TextInputEvent` and never through here.
+  ///
+  /// Cached for `TextInputScope.updateShouldNotify`'s sake: it is an identity
+  /// check, and a fresh [UnavailableTextInput] per rebuild would tell every
+  /// text field in the tree that its input method had changed.
+  TextInputBackend get textInput => _textInput ??= _resolveTextInput();
+
+  TextInputBackend? _textInput;
+
+  TextInputBackend _resolveTextInput() {
+    final TextInputBackend? configured = options.textInput;
+    if (configured != null) return configured;
+    if (backend case final TextInputProvider provider) {
+      return provider.textInput;
+    }
+    return UnavailableTextInput(
+      name: backend.name,
+      reason: 'the ${backend.name} backend has no input method, and none was '
+          'passed through ApplicationOptions.textInput; plain typing still '
+          'works, composition does not',
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Opening and closing
   // ---------------------------------------------------------------------------
@@ -1983,6 +2114,48 @@ final class Application with DisposableMixin {
             _teardownOrder.add('liveResize');
             live.setLiveResizeCallback(null);
           });
+        }
+      }
+
+      // --- f. drag and drop ----------------------------------------------
+      // Registered here rather than by the caller for the reason the clipboard
+      // scope is installed here: a `DropTarget` widget cannot register the
+      // window it happens to be mounted in, and an application that forgot to
+      // would have a drop zone that never receives anything - a silent failure
+      // with nothing to grep for.
+      //
+      // A backend that has none is skipped rather than tried and caught: an
+      // [UnavailableDragDrop] is not a failure to report per window, it is a
+      // fact about the platform that the scope in `_mountableRoot` already
+      // carries - a control that asks for it gets that object and the reason
+      // in its message. Reporting it here would put one note per window in
+      // every headless run's diagnostics for a feature nobody asked for.
+      //
+      // A *real* registration failure is different and is reported, but is
+      // still never fatal: losing a whole window because OLE refused would be
+      // the worse trade. The registration is revoked through the bag, before
+      // the window handle goes, because `RevokeDragDrop` on a dead HWND leaves
+      // OLE holding a pointer into this process.
+      final DragDropBackend dragDropBackend = dragAndDrop;
+      if (dragDropBackend is! UnavailableDragDrop) {
+        try {
+          final DropTargetRegistration registration =
+              await dragDropBackend.registerDropTarget(
+            window: native,
+            handler: WidgetTreeDropTarget(buildOwner),
+          );
+          bag.add(registration, () {
+            _teardownOrder.add('dragAndDrop');
+            unawaited(registration.revoke());
+          });
+        } on DragDropException catch (error) {
+          options.onDiagnostic?.call(
+            BackendDiagnostic(
+              kind: DiagnosticKind.note,
+              message: 'this window could not be registered as a drop target',
+              detail: '$error',
+            ),
+          );
         }
       }
     } on Object {
@@ -2611,8 +2784,21 @@ final class Application with DisposableMixin {
     _state = ApplicationLifecycleState.closing;
     _tearingDown = true;
     _resources.dispose();
+    // The policy is process-wide, so a disposed application has to put it
+    // back: otherwise one test's kill switch configures every test that runs
+    // after it in the same isolate, which is the failure mode a global exists
+    // to earn its way past.
+    RenderPolicyScope.reset();
     _state = ApplicationLifecycleState.closed;
   }
+
+  /// What the renderer recorded about the last frame it drew.
+  ///
+  /// [FrameRenderDiagnostics.empty] unless [ApplicationOptions.renderPolicy]
+  /// turned recording on, and in that case reading it is the only thing that
+  /// allocates - see `render_diagnostics.dart`.
+  FrameRenderDiagnostics get renderDiagnostics =>
+      RenderPolicyScope.diagnostics.snapshot();
 
   @override
   String toString() => 'Application(state: ${_state.name}, '

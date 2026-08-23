@@ -78,6 +78,7 @@ import '../../framebuffer.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gl/gl_shaders.dart';
+import '../gl/gl_sparse_executor.dart';
 import '../gpu_batcher.dart';
 import '../gpu_device_state.dart';
 import '../gpu_glyph_atlas.dart';
@@ -88,7 +89,9 @@ import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import '../gpu_vertex_buffer.dart';
+import '../vector/sparse_strip_draw_plan.dart';
 import 'webgl_framebuffer_pool.dart';
+import 'webgl_sparse_driver.dart';
 import 'webgl_surface_descriptor.dart';
 
 /// The GLSL this backend compiles.
@@ -196,9 +199,11 @@ final class WebGlRenderDevice
     required web.WebGL2RenderingContext gl,
     required RendererInfo info,
     required int maxTextureSize,
+    required bool sparseStripsRequested,
   })  : _gl = gl,
         _info = info,
-        _maxTextureSize = maxTextureSize;
+        _maxTextureSize = maxTextureSize,
+        _sparseStripsRequested = sparseStripsRequested;
 
   /// Wraps an already-created WebGL2 context.
   ///
@@ -213,9 +218,16 @@ final class WebGlRenderDevice
   /// throws: a browser that will not compile the shader is a machine this
   /// backend cannot run on, which section 6.6 says must be reported rather than
   /// raised.
+  /// [enableExperimentalSparseStrips] is the opt-in `gl_backend.dart` spells
+  /// the same way, and it buys the same thing: a second, independent pipeline
+  /// - the GLES dialect of the sparse shader, its own VAO and its own alpha
+  /// pages - reachable only through [submitSparseStrips]. Nothing about the
+  /// dense path changes, and a context adopted without the flag never compiles
+  /// the sparse program at all.
   static ({WebGlRenderDevice? device, BackendDiagnostic? failure}) adoptContext(
-    web.WebGL2RenderingContext gl,
-  ) {
+    web.WebGL2RenderingContext gl, {
+    bool enableExperimentalSparseStrips = false,
+  }) {
     final int maxTextureSize = _intParameter(
       gl,
       web.WebGL2RenderingContext.MAX_TEXTURE_SIZE,
@@ -229,11 +241,17 @@ final class WebGlRenderDevice
         rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       ),
       maxTextureSize: maxTextureSize,
+      sparseStripsRequested: enableExperimentalSparseStrips,
     );
     final BackendDiagnostic? failure = device._initialise();
     if (failure != null) {
       device.dispose();
       return (device: null, failure: failure);
+    }
+    final BackendDiagnostic? sparseFailure = device._initialiseSparseStrips();
+    if (sparseFailure != null) {
+      device.dispose();
+      return (device: null, failure: sparseFailure);
     }
     return (device: device, failure: null);
   }
@@ -241,7 +259,16 @@ final class WebGlRenderDevice
   final web.WebGL2RenderingContext _gl;
   final RendererInfo _info;
   final int _maxTextureSize;
+  final bool _sparseStripsRequested;
   final GpuDeviceState _state = GpuDeviceState();
+
+  WebGlSparseDriver? _sparseDriver;
+  SparseGlExecutor? _sparseExecutor;
+
+  /// True only when the caller explicitly opted in and the context accepted
+  /// the sparse program. The dense path never consults it; it is the fact a
+  /// strategy selector needs before it can prefer sparse strips for a draw.
+  bool get experimentalSparseStripsEnabled => _sparseExecutor != null;
 
   /// The context, for the targets that issue their own calls.
   ///
@@ -336,6 +363,11 @@ final class WebGlRenderDevice
     _uniformYFlip = null;
     _drawState.reset();
     _lastError = null;
+    // The opt-in inventory is separate from the dense one and forgets itself
+    // the same way; a device that never enabled it has nothing to forget.
+    if (_sparseExecutor != null && !_sparseExecutor!.isDisposed) {
+      _sparseExecutor!.discardNativeResources();
+    }
     // The integer numbering goes too. Every `WebGLTexture` it named died with
     // the context, and an id that resolved to one of them would let a batch
     // recorded before the loss bind a dead object and draw nothing.
@@ -394,6 +426,11 @@ final class WebGlRenderDevice
     if (failure != null) {
       _state.markLost(failure);
       return failure;
+    }
+    final BackendDiagnostic? sparseFailure = _initialiseSparseStrips();
+    if (sparseFailure != null) {
+      _state.markLost(sparseFailure);
+      return sparseFailure;
     }
     _submissionsStopped = false;
     if (!wasLost) {
@@ -794,6 +831,104 @@ final class WebGlRenderDevice
     _gl.disable(web.WebGL2RenderingContext.SCISSOR_TEST);
     checkError('draw');
     return !_state.isLost;
+  }
+
+  // -------------------------------------------------------------------
+  // Experimental sparse strips
+  // -------------------------------------------------------------------
+
+  /// Explicit sparse-strip submission seam.
+  ///
+  /// The display-list renderer does not call this method, exactly as it does
+  /// not call `GlRenderDevice.submitSparseStrips`. A caller opts in while
+  /// adopting the context and then hands over a plan, so the established dense
+  /// atlas path stays the default on every browser.
+  ///
+  /// [surfaceFramebuffer] is the attachment, `null` being the default
+  /// framebuffer - the same convention [submit] uses and for the same reason:
+  /// this file must not guess whether the caller had bound one.
+  ///
+  /// Refusals are transactional. The feature check, the recovery check, the
+  /// context check and every material check happen before a buffer is written
+  /// or a draw is issued, so a caller that catches the error can fall back to
+  /// the coverage atlas with the target's contents, the blend state and the
+  /// submission order untouched. What this method *does* change on the way in
+  /// is the same state [submit] sets on every frame - framebuffer, viewport,
+  /// depth, cull and scissor - which the next dense submission sets again
+  /// before it draws anything.
+  SparseGlExecutionStats submitSparseStrips(
+    SparseStripDrawPlan plan, {
+    required List<SparseGlMaterial> materials,
+    required int viewportWidth,
+    required int viewportHeight,
+    int yFlip = kYFlipDefault,
+    web.WebGLFramebuffer? surfaceFramebuffer,
+  }) {
+    final SparseGlExecutor? executor = _sparseExecutor;
+    if (executor == null) {
+      throw StateError(
+        'sparse strips are disabled; adopt the WebGL2 context with '
+        'enableExperimentalSparseStrips: true',
+      );
+    }
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      throw StateError('WebGL2 submissions are stopped during device recovery');
+    }
+    if (!checkContextAlive()) {
+      throw StateError('the WebGL2 context is lost');
+    }
+    const int fb = web.WebGL2RenderingContext.FRAMEBUFFER;
+    _gl
+      ..bindFramebuffer(fb, surfaceFramebuffer)
+      ..viewport(0, 0, viewportWidth, viewportHeight)
+      ..disable(web.WebGL2RenderingContext.DEPTH_TEST)
+      ..disable(web.WebGL2RenderingContext.CULL_FACE)
+      ..disable(web.WebGL2RenderingContext.SCISSOR_TEST);
+    final SparseGlExecutionStats stats = executor.submit(
+      plan,
+      materials: materials,
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight,
+      yFlip: yFlip,
+    );
+    if (checkError('sparse-strip draw')) {
+      throw StateError('${_lastError ?? 'the sparse WebGL2 draw failed'}');
+    }
+    return stats;
+  }
+
+  /// Compiles the sparse program, or says why the context refused it.
+  ///
+  /// Returns a diagnostic rather than throwing, so an opt-in the context
+  /// rejects reports itself the way a probe does and [adoptContext] hands it
+  /// back instead of raising out of device creation.
+  BackendDiagnostic? _initialiseSparseStrips() {
+    if (!_sparseStripsRequested) return null;
+    final WebGlSparseDriver driver = _sparseDriver ??= WebGlSparseDriver(this);
+    final SparseGlExecutor executor = _sparseExecutor ??= SparseGlExecutor(
+      driver,
+      textureAllocator: this,
+    );
+    try {
+      // `desktop: false` for `_kWebGlUsesEsDialect`'s reason: GLSL ES 3.00 is
+      // exactly the language WebGL2 accepts.
+      executor.initialize(desktop: !_kWebGlUsesEsDialect);
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the opt-in sparse WebGL2 pipeline could not be initialized',
+        detail: '$error',
+      );
+    }
+    if (checkError('sparse WebGL2 initialisation')) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'WebGL2 rejected the opt-in sparse renderer objects',
+        detail: _lastError?.detail,
+      );
+    }
+    return null;
   }
 
   void _drawBatches(
@@ -1238,6 +1373,20 @@ final class WebGlRenderDevice
 
   @override
   void onDispose() {
+    // The opt-in inventory first, and only through its executor: it is the one
+    // that knows which pages, buffers and programs exist. A lost context gets
+    // the loss variant, which forgets the handles rather than deleting objects
+    // the browser already reclaimed.
+    final SparseGlExecutor? sparse = _sparseExecutor;
+    if (sparse != null && !sparse.isDisposed) {
+      if (_state.isLost || _gl.isContextLost()) {
+        sparse.disposeAfterDeviceLoss();
+      } else {
+        sparse.dispose();
+      }
+    }
+    _sparseExecutor = null;
+    _sparseDriver = null;
     // Only when the context is still usable. On a lost context every delete is
     // a no-op anyway, and the objects are gone.
     if (!_state.isLost && !_gl.isContextLost()) {
@@ -1518,6 +1667,15 @@ final class WebGlOffscreenTarget
   /// The last pixels read back. Golden and parity tests read this after
   /// [present].
   Framebuffer get framebuffer => _readback;
+
+  /// This target's framebuffer object, for an alternative executor's seam.
+  ///
+  /// The dense renderer never needs it - [present] binds `_fbo` itself - but
+  /// `WebGlRenderDevice.submitSparseStrips` takes an attachment, and a test
+  /// that wants to compare sparse pixels against the CPU rasteriser has to be
+  /// able to name the one this target reads back from. Null before the surface
+  /// objects exist and after a context loss discards them.
+  web.WebGLFramebuffer? get debugFramebuffer => _fbo;
 
   @override
   NativeSurfaceDescriptor get surface => _surface;

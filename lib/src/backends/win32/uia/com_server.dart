@@ -84,6 +84,11 @@ typedef ComServerSelfNative = Int32 Function(Pointer<Void>);
 /// shape at the ABI and are deliberately not distinguished here.
 typedef ComServerPointerNative = Int32 Function(Pointer<Void>, Pointer<Void>);
 
+/// `HRESULT Method(void* self, void* a, void* b)` - `IDataObject::GetData`,
+/// and every other method whose arguments are two structures by reference.
+typedef ComServerPointerPointerNative = Int32 Function(
+    Pointer<Void>, Pointer<Void>, Pointer<Void>);
+
 /// `HRESULT Method(void* self, int32 n, void* p)` - `GetPropertyValue`,
 /// `GetPatternProvider`, `Navigate`.
 typedef ComServerIntPointerNative = Int32 Function(
@@ -93,6 +98,61 @@ typedef ComServerIntPointerNative = Int32 Function(
 /// `ElementProviderFromPoint`.
 typedef ComServerPointPointerNative = Int32 Function(
     Pointer<Void>, Double, Double, Pointer<Void>);
+
+/// `HRESULT Method(void* self, DWORD state, POINTL pt, DWORD* out)` -
+/// `IDropTarget::DragOver`.
+///
+/// **`POINTL` is declared as one `Int64`, and that is the correct ABI, not a
+/// shortcut.** It is a struct of two `LONG`s, so eight bytes, and the Windows
+/// x64 calling convention passes a POD struct of exactly eight bytes "as if it
+/// were an integer of the same size" - one register, no hidden pointer. On x86
+/// it is pushed as eight bytes, which an `Int64` also is. Declaring it as two
+/// separate `Int32` parameters would consume *two* argument registers and shift
+/// every parameter after it, which is how a drop lands at coordinates in the
+/// billions. The x is the low half; see `win32_drag_drop.dart`.
+typedef ComServerStatePointOutNative = Int32 Function(
+    Pointer<Void>, Uint32, Int64, Pointer<Uint32>);
+
+/// `HRESULT Method(void* self, IUnknown* object, DWORD state, POINTL pt,
+/// DWORD* out)` - `IDropTarget::DragEnter` and `IDropTarget::Drop`.
+///
+/// See [ComServerStatePointOutNative] for why the point is an `Int64`.
+typedef ComServerObjectStatePointOutNative = Int32 Function(
+    Pointer<Void>, Pointer<Void>, Uint32, Int64, Pointer<Uint32>);
+
+/// `HRESULT Method(void* self, DWORD n)` - `IDropSource::GiveFeedback`,
+/// `IEnumFORMATETC::Skip`, `IDataObject::DUnadvise`.
+///
+/// Not spellable as [ComServerPointerNative] with the argument ignored: a
+/// `DWORD` occupies the low half of an argument register and the high half is
+/// whatever the caller last had there, so a callee that declared a pointer
+/// would read a 64-bit value out of a 32-bit argument. It is never *used* in
+/// the stubs, but a mismatched callee shape is undefined behaviour whether or
+/// not the value is looked at.
+typedef ComServerIntNative = Int32 Function(Pointer<Void>, Uint32);
+
+/// `HRESULT Method(void* self, BOOL a, DWORD b)` -
+/// `IDropSource::QueryContinueDrag`.
+///
+/// `BOOL` is a signed 32-bit int in every Windows header, so it is `Int32` and
+/// not `Uint32`; the key state beside it really is unsigned.
+typedef ComServerIntIntNative = Int32 Function(Pointer<Void>, Int32, Uint32);
+
+/// `HRESULT Method(void* self, ULONG celt, void* rgelt, ULONG* pceltFetched)` -
+/// `IEnumFORMATETC::Next`, and every other COM enumerator's `Next`.
+typedef ComServerCountPointerOutNative = Int32 Function(
+    Pointer<Void>, Uint32, Pointer<Void>, Pointer<Uint32>);
+
+/// `HRESULT Method(void* self, void* a, void* b, BOOL c)` -
+/// `IDataObject::SetData`, whose third argument is `fRelease`.
+typedef ComServerPointerPointerFlagNative = Int32 Function(
+    Pointer<Void>, Pointer<Void>, Pointer<Void>, Int32);
+
+/// `HRESULT Method(void* self, void* a, DWORD n, void* b, DWORD* out)` -
+/// `IDataObject::DAdvise`, which is `(FORMATETC*, DWORD advf, IAdviseSink*,
+/// DWORD* pdwConnection)`.
+typedef ComServerPointerIntPointerOutNative = Int32 Function(
+    Pointer<Void>, Pointer<Void>, Uint32, Pointer<Void>, Pointer<Uint32>);
 
 // ---------------------------------------------------------------------------
 // Method descriptions
@@ -122,6 +182,13 @@ final class ComPointerMethod<T extends Object> extends ComMethod<T> {
   final int Function(T target, Pointer<Void> argument) call;
 }
 
+/// `HRESULT f(self, void* a, void* b)`.
+final class ComPointerPointerMethod<T extends Object> extends ComMethod<T> {
+  const ComPointerPointerMethod(super.name, this.call);
+
+  final int Function(T target, Pointer<Void> first, Pointer<Void> second) call;
+}
+
 /// `HRESULT f(self, int32 n, void* p)`.
 final class ComIntPointerMethod<T extends Object> extends ComMethod<T> {
   const ComIntPointerMethod(super.name, this.call);
@@ -134,6 +201,89 @@ final class ComPointPointerMethod<T extends Object> extends ComMethod<T> {
   const ComPointPointerMethod(super.name, this.call);
 
   final int Function(T target, double x, double y, Pointer<Void> argument) call;
+}
+
+/// `HRESULT f(self, uint32 state, int64 packedPoint, uint32* out)`.
+///
+/// The point arrives packed because the ABI packs it; [ComServerStatePointOutNative]
+/// explains why, and unpacking it is one line in the implementation rather than
+/// a struct declaration that FFI would have to marshal.
+final class ComStatePointOutMethod<T extends Object> extends ComMethod<T> {
+  const ComStatePointOutMethod(super.name, this.call);
+
+  final int Function(T target, int state, int packedPoint, Pointer<Uint32> out)
+      call;
+}
+
+/// `HRESULT f(self, void* object, uint32 state, int64 packedPoint,
+/// uint32* out)`.
+final class ComObjectStatePointOutMethod<T extends Object>
+    extends ComMethod<T> {
+  const ComObjectStatePointOutMethod(super.name, this.call);
+
+  final int Function(
+    T target,
+    Pointer<Void> object,
+    int state,
+    int packedPoint,
+    Pointer<Uint32> out,
+  ) call;
+}
+
+/// `HRESULT f(self, uint32 value)`.
+final class ComIntMethod<T extends Object> extends ComMethod<T> {
+  const ComIntMethod(super.name, this.call);
+
+  final int Function(T target, int value) call;
+}
+
+/// `HRESULT f(self, int32 a, uint32 b)`.
+final class ComIntIntMethod<T extends Object> extends ComMethod<T> {
+  const ComIntIntMethod(super.name, this.call);
+
+  final int Function(T target, int first, int second) call;
+}
+
+/// `HRESULT f(self, uint32 count, void* buffer, uint32* fetched)`.
+///
+/// The enumerator shape. [fetched] is genuinely allowed to be null when the
+/// caller asked for exactly one element, which is why it is a `Pointer` the
+/// implementation has to test rather than an out value the framework unpacks.
+final class ComCountPointerOutMethod<T extends Object> extends ComMethod<T> {
+  const ComCountPointerOutMethod(super.name, this.call);
+
+  final int Function(
+    T target,
+    int count,
+    Pointer<Void> buffer,
+    Pointer<Uint32> fetched,
+  ) call;
+}
+
+/// `HRESULT f(self, void* a, void* b, int32 flag)`.
+final class ComPointerPointerFlagMethod<T extends Object> extends ComMethod<T> {
+  const ComPointerPointerFlagMethod(super.name, this.call);
+
+  final int Function(
+    T target,
+    Pointer<Void> first,
+    Pointer<Void> second,
+    int flag,
+  ) call;
+}
+
+/// `HRESULT f(self, void* a, uint32 n, void* b, uint32* out)`.
+final class ComPointerIntPointerOutMethod<T extends Object>
+    extends ComMethod<T> {
+  const ComPointerIntPointerOutMethod(super.name, this.call);
+
+  final int Function(
+    T target,
+    Pointer<Void> first,
+    int value,
+    Pointer<Void> second,
+    Pointer<Uint32> out,
+  ) call;
 }
 
 /// One interface: its identifier, its name and its methods after `IUnknown`.
@@ -311,8 +461,19 @@ final class ComServerClass<T extends Object> with DisposableMixin {
       slots.add(switch (method) {
         ComSelfMethod<T>() => _bindSelf(spec, method),
         ComPointerMethod<T>() => _bindPointer(spec, method),
+        ComPointerPointerMethod<T>() => _bindPointerPointer(spec, method),
         ComIntPointerMethod<T>() => _bindIntPointer(spec, method),
         ComPointPointerMethod<T>() => _bindPointPointer(spec, method),
+        ComStatePointOutMethod<T>() => _bindStatePointOut(spec, method),
+        ComObjectStatePointOutMethod<T>() =>
+          _bindObjectStatePointOut(spec, method),
+        ComIntMethod<T>() => _bindInt(spec, method),
+        ComIntIntMethod<T>() => _bindIntInt(spec, method),
+        ComCountPointerOutMethod<T>() => _bindCountPointerOut(spec, method),
+        ComPointerPointerFlagMethod<T>() =>
+          _bindPointerPointerFlag(spec, method),
+        ComPointerIntPointerOutMethod<T>() =>
+          _bindPointerIntPointerOut(spec, method),
       });
     }
     final Pointer<IntPtr> vtable =
@@ -438,6 +599,23 @@ final class ComServerClass<T extends Object> with DisposableMixin {
         ),
       );
 
+  int _bindPointerPointer(
+    ComInterfaceSpec<T> spec,
+    ComPointerPointerMethod<T> method,
+  ) =>
+      _keep(
+        NativeCallable<ComServerPointerPointerNative>.isolateLocal(
+          (Pointer<Void> self, Pointer<Void> first, Pointer<Void> second) =>
+              _guard(
+            spec,
+            method,
+            self,
+            (_, T target) => method.call(target, first, second),
+          ),
+          exceptionalReturn: eFail,
+        ),
+      );
+
   int _bindIntPointer(
     ComInterfaceSpec<T> spec,
     ComIntPointerMethod<T> method,
@@ -466,6 +644,137 @@ final class ComServerClass<T extends Object> with DisposableMixin {
             method,
             self,
             (_, T target) => method.call(target, x, y, argument),
+          ),
+          exceptionalReturn: eFail,
+        ),
+      );
+
+  int _bindStatePointOut(
+    ComInterfaceSpec<T> spec,
+    ComStatePointOutMethod<T> method,
+  ) =>
+      _keep(
+        NativeCallable<ComServerStatePointOutNative>.isolateLocal(
+          (Pointer<Void> self, int state, int point, Pointer<Uint32> out) =>
+              _guard(
+            spec,
+            method,
+            self,
+            (_, T target) => method.call(target, state, point, out),
+          ),
+          exceptionalReturn: eFail,
+        ),
+      );
+
+  int _bindObjectStatePointOut(
+    ComInterfaceSpec<T> spec,
+    ComObjectStatePointOutMethod<T> method,
+  ) =>
+      _keep(
+        NativeCallable<ComServerObjectStatePointOutNative>.isolateLocal(
+          (
+            Pointer<Void> self,
+            Pointer<Void> object,
+            int state,
+            int point,
+            Pointer<Uint32> out,
+          ) =>
+              _guard(
+            spec,
+            method,
+            self,
+            (_, T target) => method.call(target, object, state, point, out),
+          ),
+          exceptionalReturn: eFail,
+        ),
+      );
+
+  int _bindInt(ComInterfaceSpec<T> spec, ComIntMethod<T> method) => _keep(
+        NativeCallable<ComServerIntNative>.isolateLocal(
+          (Pointer<Void> self, int value) => _guard(
+            spec,
+            method,
+            self,
+            (_, T target) => method.call(target, value),
+          ),
+          exceptionalReturn: eFail,
+        ),
+      );
+
+  int _bindIntInt(ComInterfaceSpec<T> spec, ComIntIntMethod<T> method) => _keep(
+        NativeCallable<ComServerIntIntNative>.isolateLocal(
+          (Pointer<Void> self, int first, int second) => _guard(
+            spec,
+            method,
+            self,
+            (_, T target) => method.call(target, first, second),
+          ),
+          exceptionalReturn: eFail,
+        ),
+      );
+
+  int _bindCountPointerOut(
+    ComInterfaceSpec<T> spec,
+    ComCountPointerOutMethod<T> method,
+  ) =>
+      _keep(
+        NativeCallable<ComServerCountPointerOutNative>.isolateLocal(
+          (
+            Pointer<Void> self,
+            int count,
+            Pointer<Void> buffer,
+            Pointer<Uint32> fetched,
+          ) =>
+              _guard(
+            spec,
+            method,
+            self,
+            (_, T target) => method.call(target, count, buffer, fetched),
+          ),
+          exceptionalReturn: eFail,
+        ),
+      );
+
+  int _bindPointerPointerFlag(
+    ComInterfaceSpec<T> spec,
+    ComPointerPointerFlagMethod<T> method,
+  ) =>
+      _keep(
+        NativeCallable<ComServerPointerPointerFlagNative>.isolateLocal(
+          (
+            Pointer<Void> self,
+            Pointer<Void> first,
+            Pointer<Void> second,
+            int flag,
+          ) =>
+              _guard(
+            spec,
+            method,
+            self,
+            (_, T target) => method.call(target, first, second, flag),
+          ),
+          exceptionalReturn: eFail,
+        ),
+      );
+
+  int _bindPointerIntPointerOut(
+    ComInterfaceSpec<T> spec,
+    ComPointerIntPointerOutMethod<T> method,
+  ) =>
+      _keep(
+        NativeCallable<ComServerPointerIntPointerOutNative>.isolateLocal(
+          (
+            Pointer<Void> self,
+            Pointer<Void> first,
+            int value,
+            Pointer<Void> second,
+            Pointer<Uint32> out,
+          ) =>
+              _guard(
+            spec,
+            method,
+            self,
+            (_, T target) => method.call(target, first, value, second, out),
           ),
           exceptionalReturn: eFail,
         ),

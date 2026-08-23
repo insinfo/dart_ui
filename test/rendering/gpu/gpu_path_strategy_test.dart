@@ -124,12 +124,59 @@ void main() {
   test('tessellator refusal prevents retained mesh selection', () {
     final decision = selector.select(
       workload(stable: true, tessellationEligible: false),
+      const GpuPathStrategyCapabilities(tessellation: true),
+    );
+    expect(decision.strategy, GpuPathStrategy.coverageAtlas);
+  });
+
+  test('a large uncached mask prefers stencil over a fresh dense upload', () {
+    // 256x256 is 65 536 bytes of alpha8 the CPU would have to rasterise and
+    // upload. A stencil-capable pass replaces that with perimeter geometry, so
+    // above the threshold the mask stops being the cheap answer.
+    final decision = selector.select(
+      workload(stable: true, tessellationEligible: false),
       const GpuPathStrategyCapabilities(
         tessellation: true,
         stencil: true,
       ),
     );
+    expect(decision.strategy, GpuPathStrategy.stencilThenCover);
+    expect(decision.reason, contains('65536'));
+  });
+
+  test('a small mask keeps the atlas even where stencil exists', () {
+    // 64x64 is 4 096 bytes: below the threshold the two extra passes cost more
+    // than the upload they replace.
+    final decision = selector.select(
+      workload(
+        width: 64,
+        height: 64,
+        stable: true,
+        tessellationEligible: false,
+      ),
+      const GpuPathStrategyCapabilities(stencil: true),
+    );
     expect(decision.strategy, GpuPathStrategy.coverageAtlas);
+  });
+
+  test('a cached mask beats stencil at any size', () {
+    // The cache hit costs no rasterisation and no upload at all, so there is
+    // nothing left for stencil to save.
+    final decision = selector.select(
+      workload(width: 1024, height: 1024, cacheHit: true, stable: true),
+      const GpuPathStrategyCapabilities(stencil: true),
+    );
+    expect(decision.strategy, GpuPathStrategy.coverageAtlas);
+  });
+
+  test('the stencil threshold is configurable and pins its own boundary', () {
+    const tuned = GpuPathStrategySelector(stencilMinimumDenseMaskBytes: 65537);
+    final decision = tuned.select(
+      workload(stable: true, tessellationEligible: false),
+      const GpuPathStrategyCapabilities(stencil: true),
+    );
+    expect(decision.strategy, GpuPathStrategy.coverageAtlas,
+        reason: 'one byte over the mask keeps it on the dense route');
   });
 
   test('tessellation requires explicit eligibility evidence', () {

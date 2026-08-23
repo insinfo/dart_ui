@@ -67,7 +67,12 @@ final class WebGlSession {
   /// size is irrelevant; 1x1 is the smallest thing that still gets a real
   /// context. A detached canvas is never laid out or composited, which is what
   /// makes this cheap enough to do at the top of every file.
-  static WebGlSession open() {
+  ///
+  /// [enableExperimentalSparseStrips] is passed straight through to
+  /// [WebGlRenderDevice.adoptContext]. Only `webgl_sparse_device_test.dart`
+  /// sets it: the flag compiles a second program and a device that never asked
+  /// for it must stay byte-for-byte the device every other file here opens.
+  static WebGlSession open({bool enableExperimentalSparseStrips = false}) {
     try {
       final web.HTMLCanvasElement canvas =
           web.document.createElement('canvas') as web.HTMLCanvasElement;
@@ -94,7 +99,10 @@ final class WebGlSession {
         );
       }
       final ({WebGlRenderDevice? device, BackendDiagnostic? failure}) opened =
-          WebGlRenderDevice.adoptContext(gl);
+          WebGlRenderDevice.adoptContext(
+        gl,
+        enableExperimentalSparseStrips: enableExperimentalSparseStrips,
+      );
       final WebGlRenderDevice? device = opened.device;
       if (device == null) {
         return WebGlSession._(

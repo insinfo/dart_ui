@@ -78,8 +78,11 @@ import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import '../gpu_vertex_buffer.dart';
+import '../vector/sparse_strip_draw_plan.dart';
 import '../webgl/webgl_framebuffer_pool.dart' show WebGlObjectTable;
 import 'webgpu_interop.dart';
+import 'webgpu_sparse_driver.dart';
+import 'webgpu_sparse_executor.dart';
 import 'webgpu_surface_descriptor.dart';
 import 'wgsl_shaders.dart';
 
@@ -189,10 +192,12 @@ final class WebGpuRenderDevice
     required String surfaceFormat,
     required RendererInfo info,
     required int maxTextureSize,
+    required bool sparseStripsRequested,
   })  : _gpuDevice = device,
         _surfaceFormat = surfaceFormat,
         _info = info,
-        _maxTextureSize = maxTextureSize;
+        _maxTextureSize = maxTextureSize,
+        _sparseStripsRequested = sparseStripsRequested;
 
   /// Wraps an already-requested `GPUDevice`.
   ///
@@ -215,10 +220,18 @@ final class WebGpuRenderDevice
   /// Returns the device, or a diagnostic naming what refused. Never throws,
   /// per section 6.6: a browser that will not build the renderer objects is a
   /// machine this backend cannot run on, which is reported, not raised.
+  /// [enableExperimentalSparseStrips] is the opt-in `gl_backend.dart` spells
+  /// the same way. It creates a second, independent pipeline inventory - the
+  /// module, layouts, samplers and stand-in textures of
+  /// `webgpu_sparse_driver.dart` - and it changes nothing about the dense
+  /// path: the display-list renderer never reaches [submitSparseStrips], so a
+  /// device adopted without the flag is byte-for-byte the device this backend
+  /// has always built.
   static ({WebGpuRenderDevice? device, BackendDiagnostic? failure}) adoptDevice(
     GPUDevice gpuDevice, {
     required String surfaceFormat,
     String? deviceDescription,
+    bool enableExperimentalSparseStrips = false,
   }) {
     final int maxTextureSize = _readMaxTextureSize(gpuDevice);
     final WebGpuRenderDevice device = WebGpuRenderDevice._(
@@ -231,11 +244,17 @@ final class WebGpuRenderDevice
         rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       ),
       maxTextureSize: maxTextureSize,
+      sparseStripsRequested: enableExperimentalSparseStrips,
     );
     final BackendDiagnostic? failure = device._initialise();
     if (failure != null) {
       device.dispose();
       return (device: null, failure: failure);
+    }
+    final BackendDiagnostic? sparseFailure = device._initialiseSparseStrips();
+    if (sparseFailure != null) {
+      device.dispose();
+      return (device: null, failure: sparseFailure);
     }
     device._watchDevice(gpuDevice);
     return (device: device, failure: null);
@@ -245,7 +264,17 @@ final class WebGpuRenderDevice
   final String _surfaceFormat;
   RendererInfo _info;
   final int _maxTextureSize;
+  final bool _sparseStripsRequested;
   final GpuDeviceState _state = GpuDeviceState();
+
+  WebGpuSparseDriver? _sparseDriver;
+  WebGpuSparseExecutor? _sparseExecutor;
+
+  /// True only when the caller explicitly opted in and the device accepted the
+  /// sparse module. Nothing in the dense path consults it; it is the answer a
+  /// strategy selector needs before it can prefer sparse strips over the
+  /// coverage atlas for a given draw.
+  bool get experimentalSparseStripsEnabled => _sparseExecutor != null;
 
   /// The device, for the targets that configure a canvas context on it and
   /// for the layer pool that creates render textures. Device-to-target
@@ -355,6 +384,11 @@ final class WebGpuRenderDevice
     _pipelines.clear();
     _textureBindGroups.clear();
     _lastError = null;
+    // The opt-in inventory is separate from the dense one and forgets itself
+    // the same way; a device that never enabled it has nothing to forget.
+    if (_sparseExecutor != null && !_sparseExecutor!.isDisposed) {
+      _sparseExecutor!.discardNativeResources();
+    }
     // The integer numbering goes too, for `webgl_backend.dart`'s reason: every
     // view it named died with the device, and an id that resolved to one would
     // let a pre-loss batch bind a dead object and draw nothing.
@@ -430,6 +464,14 @@ final class WebGpuRenderDevice
     if (failure != null) {
       _state.markLost(failure);
       return failure;
+    }
+    // The sparse driver holds the device it created its objects on, so it has
+    // to be pointed at the replacement before its module is rebuilt.
+    _sparseDriver?.adoptDevice(_gpuDevice);
+    final BackendDiagnostic? sparseFailure = _initialiseSparseStrips();
+    if (sparseFailure != null) {
+      _state.markLost(sparseFailure);
+      return sparseFailure;
     }
     _submissionsStopped = false;
     _watchDevice(_gpuDevice);
@@ -893,6 +935,88 @@ final class WebGpuRenderDevice
   }
 
   // -------------------------------------------------------------------
+  // Experimental sparse strips
+  // -------------------------------------------------------------------
+
+  /// Explicit sparse-strip submission seam.
+  ///
+  /// The display-list renderer does not call this method, exactly as it does
+  /// not call `GlRenderDevice.submitSparseStrips`. A caller opts in while
+  /// adopting the device and then hands over a plan; consequently the
+  /// established dense atlas path stays the default even on a browser that
+  /// would run the sparse pipeline perfectly well.
+  ///
+  /// [target] is the attachment - a canvas's current texture view, or a
+  /// texture the caller made in [surfaceFormat]. Pipelines are built for that
+  /// one format, which is why the parameter is a view and not a descriptor.
+  /// [clearColor] is the packed premultiplied BGRA integer the rest of the
+  /// renderer carries; null loads the target, which is what drawing into an
+  /// already-composed frame requires.
+  ///
+  /// Refusals are transactional: a disabled feature, a stopped submission, a
+  /// lost device, a bad viewport and every material check happen before a
+  /// single buffer is written, so a caller that catches the error can fall
+  /// back to the coverage atlas with the target, the queue and the submission
+  /// order exactly as they were.
+  WebGpuSparseExecutionStats submitSparseStrips(
+    SparseStripDrawPlan plan, {
+    required List<SparseWebGpuMaterial> materials,
+    required int viewportWidth,
+    required int viewportHeight,
+    required GPUTextureView target,
+    int? clearColor,
+  }) {
+    final WebGpuSparseExecutor? executor = _sparseExecutor;
+    final WebGpuSparseDriver? driver = _sparseDriver;
+    if (executor == null || driver == null) {
+      throw StateError(
+        'sparse strips are disabled; adopt the WebGPU device with '
+        'enableExperimentalSparseStrips: true',
+      );
+    }
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      throw StateError('WebGPU submissions are stopped during device recovery');
+    }
+    if (!checkDeviceAlive()) {
+      throw StateError('the WebGPU device is lost');
+    }
+    driver.stageTarget(target, clearColor: clearColor);
+    return executor.submit(
+      plan,
+      materials: materials,
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight,
+    );
+  }
+
+  /// Creates the sparse driver and compiles its module, or says why not.
+  ///
+  /// Returns a diagnostic rather than throwing, so an opt-in that the device
+  /// refuses reports itself the way a probe does and `adoptDevice` can hand it
+  /// back instead of raising out of device creation.
+  BackendDiagnostic? _initialiseSparseStrips() {
+    if (!_sparseStripsRequested) return null;
+    final WebGpuSparseDriver driver = _sparseDriver ??= WebGpuSparseDriver(
+      device: _gpuDevice,
+      targetFormat: _surfaceFormat,
+      sampledTextures: sampledTextures,
+    );
+    final WebGpuSparseExecutor executor = _sparseExecutor ??=
+        WebGpuSparseExecutor(driver, textureAllocator: this);
+    try {
+      executor.initialize();
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the opt-in sparse WebGPU pipeline could not be initialized',
+        detail: '$error',
+      );
+    }
+    return null;
+  }
+
+  // -------------------------------------------------------------------
   // Pipelines and bind groups
   // -------------------------------------------------------------------
 
@@ -1269,6 +1393,21 @@ final class WebGpuRenderDevice
   @override
   void onDispose() {
     _detachDeviceListeners(_gpuDevice);
+    // Before the device is destroyed, and only through the executor: it is the
+    // one that knows which pages and buffers exist. A lost device gets the
+    // loss variant, which forgets the handles rather than destroying objects
+    // the browser already reclaimed.
+    final WebGpuSparseExecutor? sparse = _sparseExecutor;
+    if (sparse != null && !sparse.isDisposed) {
+      if (_state.isLost) {
+        sparse.disposeAfterDeviceLoss();
+      } else {
+        sparse.dispose();
+        _sparseDriver?.disposeResources();
+      }
+    }
+    _sparseExecutor = null;
+    _sparseDriver = null;
     _uniformBuffer?.destroy();
     _vertexBuffer?.destroy();
     _indexBuffer?.destroy();

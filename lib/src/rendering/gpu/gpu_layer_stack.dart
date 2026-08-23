@@ -94,6 +94,81 @@ library;
 import '../../geometry/rect.dart';
 import '../../graphics/display_list_opcodes.dart';
 
+/// What a render pass's framebuffer actually carries besides colour.
+///
+/// ## Why this is a property of the *pass* and not of the device
+///
+/// Stencil bits and sample count are the two facts that decide whether a draw
+/// can be executed by something other than the dense coverage atlas, and
+/// neither belongs to the device: the same GL context has a default
+/// framebuffer with no stencil, an offscreen target that was created with
+/// stencil8, and a pooled layer target that is colour-only. A renderer that
+/// asked the *device* "do you have stencil?" would get one answer and be wrong
+/// for two of the three targets - and being wrong here is not a refusal, it is
+/// a stencil-then-cover draw issued against a framebuffer with no stencil
+/// buffer, which draws the cover quad unmasked. That is a wrong picture that
+/// looks deliberate.
+///
+/// So the descriptor of a pass carries it, every pass gets it from the target
+/// it will actually bind, and a strategy selector reads it per draw.
+///
+/// Colour is not described here because a pass without a colour attachment is
+/// not a pass this renderer can produce: every path through [GpuLayerStack]
+/// either targets the surface or a colour texture from the allocator.
+final class GpuPassAttachments {
+  const GpuPassAttachments({
+    this.depthBits = 0,
+    this.stencilBits = 0,
+    this.sampleCount = 1,
+  })  : assert(depthBits >= 0),
+        assert(stencilBits >= 0),
+        assert(sampleCount >= 1);
+
+  /// What every existing target reports until it says otherwise, and what the
+  /// dense renderer has always assumed.
+  static const GpuPassAttachments colorOnly = GpuPassAttachments();
+
+  final int depthBits;
+  final int stencilBits;
+
+  /// Samples per pixel, 1 for a single-sample target. Geometric antialiasing -
+  /// approach B's fringe-free mesh and approach C's antialiased cover - is
+  /// exactly the thing that needs this to be greater than one.
+  final int sampleCount;
+
+  bool get hasDepth => depthBits != 0;
+  bool get hasStencil => stencilBits != 0;
+  bool get isMultisampled => sampleCount > 1;
+
+  @override
+  bool operator ==(Object other) =>
+      other is GpuPassAttachments &&
+      other.depthBits == depthBits &&
+      other.stencilBits == stencilBits &&
+      other.sampleCount == sampleCount;
+
+  @override
+  int get hashCode => Object.hash(depthBits, stencilBits, sampleCount);
+
+  @override
+  String toString() => 'GpuPassAttachments(depth $depthBits, stencil '
+      '$stencilBits, $sampleCount sample${sampleCount == 1 ? '' : 's'})';
+}
+
+/// A [GpuLayerTarget] that knows what it was allocated with.
+///
+/// Deliberately a *second* interface rather than a member of [GpuLayerTarget].
+/// Five backends and several tests implement that interface, and every one of
+/// them is correct as colour-only single-sample - which is what
+/// [GpuPassAttachments.colorOnly] says. Adding a required member would force
+/// each of them to restate a fact they already satisfy, and the compiler error
+/// would land in files this change has no business touching. A target that has
+/// more than colour implements this as well and the stack believes it; one
+/// that does not keeps the default and nothing about its behaviour moves.
+abstract interface class GpuAttachmentAwareTarget {
+  GpuPassAttachments get passAttachments;
+}
+
 /// An offscreen colour target a layer renders into.
 ///
 /// Deliberately four integers and no methods. The GPU-side object is a
@@ -103,6 +178,10 @@ import '../../graphics/display_list_opcodes.dart';
 /// *allocated* size - which is at least the requested size and usually larger,
 /// because an allocator that hands out exactly the requested pixels never
 /// reuses anything (see `gl_framebuffer_pool.dart`).
+///
+/// A target with a stencil buffer or more than one sample additionally
+/// implements [GpuAttachmentAwareTarget]; one that does not is read as
+/// [GpuPassAttachments.colorOnly].
 abstract interface class GpuLayerTarget {
   /// The backend's own handle. Opaque here; on GL it is the framebuffer name.
   int get id;
@@ -139,6 +218,40 @@ abstract interface class GpuLayerTargetAllocator {
   /// composite quad has only been recorded by then.
   void releaseLayerTarget(GpuLayerTarget target);
 }
+
+/// An allocator that can hand out layer targets with more than colour.
+///
+/// A second interface for the reason [GpuAttachmentAwareTarget] is one: four
+/// backends and several tests implement [GpuLayerTargetAllocator] correctly as
+/// colour-only, and adding a parameter to its method would break every one of
+/// them to restate a fact they already satisfy. An allocator that can do more
+/// implements this as well; one that cannot keeps answering the plain method
+/// and the stack asks it for nothing else.
+abstract interface class GpuAttachmentAwareAllocator {
+  /// A target of at least [width] by [height] carrying [attachments].
+  ///
+  /// May return a target with *more* than was asked for - a pool that already
+  /// holds a stencil8 target of the right size may hand it back for a
+  /// colour-only request - but never less: the stack reads what it got from
+  /// [GpuAttachmentAwareTarget] rather than assuming the request was honoured,
+  /// so an allocator that quietly downgrades produces a pass descriptor that
+  /// tells the truth and a promotion that is refused, not a wrong picture.
+  GpuLayerTarget acquireLayerTargetWith(
+    int width,
+    int height,
+    GpuPassAttachments attachments,
+  );
+}
+
+/// What a layer of this size should be allocated with.
+///
+/// Called once per offscreen layer, before its target is acquired. See
+/// [GpuLayerStack.layerAttachmentPolicy] for why the answer cannot be derived
+/// from the layer's contents.
+typedef GpuLayerAttachmentPolicy = GpuPassAttachments Function(
+  int width,
+  int height,
+);
 
 /// Raised when layers nest deeper than the declared limit.
 ///
@@ -236,10 +349,11 @@ final class GpuLayer {
   /// draw call at all.
   final int firstBatch;
 
-  /// Whether anything was actually batched inside this layer. False makes the
-  /// composite a no-op the caller must skip - not merely to save a draw call,
-  /// but because a target nothing rendered into holds the previous tenant's
-  /// pixels and the pass that would have cleared it was dropped with it.
+  /// Whether any dense batch or retained vector command was recorded inside
+  /// this layer. False makes the composite a no-op the caller must skip - not
+  /// merely to save a draw call, but because a target nothing rendered into
+  /// holds the previous tenant's pixels and the pass that would have cleared
+  /// it was dropped with it.
   bool get drewSomething => _drewSomething;
   bool _drewSomething = false;
 
@@ -288,6 +402,7 @@ final class GpuRenderPass {
   int _viewportHeight = 0;
   bool _clearsTarget = false;
   bool _rendersTopDown = false;
+  GpuPassAttachments _attachments = GpuPassAttachments.colorOnly;
 
   /// The target this run draws into, or null for the surface the frame is
   /// being rendered to. Null rather than a sentinel id because the surface's
@@ -316,12 +431,20 @@ final class GpuRenderPass {
   /// already the top-left corner it changes nothing.
   bool get rendersTopDown => _rendersTopDown;
 
+  /// What the framebuffer this pass binds carries besides colour.
+  ///
+  /// Taken from the target the pass will actually bind - the surface's own
+  /// attachments for the base pass, the layer target's for a layer pass - so a
+  /// per-draw strategy decision can be made without asking a device a question
+  /// only a framebuffer can answer. See [GpuPassAttachments].
+  GpuPassAttachments get attachments => _attachments;
+
   @override
   String toString() => 'GpuRenderPass(${_target == null ? 'surface' : 'target '
           '${_target!.id}'}, from batch $_firstBatch, viewport '
       '${_viewportWidth}x$_viewportHeight'
       '${_clearsTarget ? ', clears' : ''}'
-      '${_rendersTopDown ? ', top-down' : ''})';
+      '${_rendersTopDown ? ', top-down' : ''}, $_attachments)';
 }
 
 /// The stack of open layers, and the passes they cut a frame into.
@@ -330,7 +453,35 @@ final class GpuLayerStack {
     required this.allocator,
     this.backendName = 'gpu',
     this.maxDepth = kDefaultMaxLayerDepth,
+    this.layerAttachmentPolicy,
   }) : assert(maxDepth > 0);
+
+  /// What to allocate a layer target with, or null for colour-only.
+  ///
+  /// ## Why this is a policy and not a deduction
+  ///
+  /// The honest thing to allocate would be exactly what the layer's contents
+  /// turn out to need, and that is not knowable here: the target is acquired
+  /// when the layer *opens*, and nothing has been recorded into it yet. The
+  /// display list would have to be scanned ahead - past nested layers, past
+  /// clips that may cull everything - to find out whether some path inside
+  /// will want a stencil buffer. That scan costs more than the memory it would
+  /// save, and it would have to agree exactly with the selector's own answer
+  /// later or the promotion would be refused anyway.
+  ///
+  /// So the decision is made from the one fact available at push time - the
+  /// layer's size - plus whatever the backend knows about itself. A backend
+  /// whose device has no stencil-then-cover executor returns colour-only and
+  /// nothing changes. One that has it asks for stencil and samples only above
+  /// a size where a promoted draw could plausibly pay for them, because a
+  /// multisampled target costs `samples * 5` bytes per pixel and an interface
+  /// opens far more small layers than large ones.
+  ///
+  /// Getting it wrong is never a wrong picture, only a wrong cost: a layer
+  /// that was given attachments and did not need them wasted memory, and one
+  /// that needed them and did not get them has its contents drawn by the dense
+  /// coverage atlas, which is the parity route.
+  final GpuLayerAttachmentPolicy? layerAttachmentPolicy;
 
   /// Eight, and the number is a memory budget rather than a guess.
   ///
@@ -363,8 +514,26 @@ final class GpuLayerStack {
 
   int _surfaceWidth = 0;
   int _surfaceHeight = 0;
+  GpuPassAttachments _surfaceAttachments = GpuPassAttachments.colorOnly;
   double _originX = 0;
   double _originY = 0;
+
+  /// What the surface being rendered into carries besides colour, as the
+  /// backend declared it at [beginFrame].
+  GpuPassAttachments get surfaceAttachments => _surfaceAttachments;
+
+  /// The attachments a pass binding [target] renders against.
+  ///
+  /// Null is the surface. A target that does not describe itself is read as
+  /// colour-only, which is what every allocator in this repository hands the
+  /// stack today - see [GpuAttachmentAwareTarget].
+  GpuPassAttachments attachmentsOf(GpuLayerTarget? target) {
+    if (target == null) return _surfaceAttachments;
+    if (target is GpuAttachmentAwareTarget) {
+      return (target as GpuAttachmentAwareTarget).passAttachments;
+    }
+    return GpuPassAttachments.colorOnly;
+  }
 
   /// Layers currently open. Zero between frames, or the player and this stack
   /// disagree about a clip.
@@ -397,6 +566,34 @@ final class GpuLayerStack {
 
   Iterable<GpuRenderPass> get passes => _passPool.take(_passCount);
 
+  /// Pass receiving newly recorded work, including experimental vector work.
+  ///
+  /// Exposed as representation only: it does not submit or mutate a backend.
+  GpuRenderPass get currentPass {
+    if (_passCount == 0) {
+      throw StateError('beginFrame() must create a pass before recording');
+    }
+    return _passPool[_passCount - 1];
+  }
+
+  int get currentPassIndex {
+    if (_passCount == 0) {
+      throw StateError('beginFrame() must create a pass before recording');
+    }
+    return _passCount - 1;
+  }
+
+  /// Keeps a vector-only offscreen layer alive when it has no dense batches.
+  ///
+  /// Until experimental vector commands share the dense batch counter,
+  /// [pop] cannot infer this fact from `batchIndex`. The command stream calls
+  /// this before appending work into the current pass. Flattened layers still
+  /// target their nearest offscreen ancestor, exactly like dense batches.
+  void markCurrentPassHasVectorWork() {
+    final GpuLayer? layer = _innermostOffscreen;
+    if (layer != null) layer._drewSomething = true;
+  }
+
   /// Whether this frame needs more than the one implicit surface pass.
   ///
   /// A backend reads it to keep the no-layer path exactly as it was: one
@@ -418,10 +615,22 @@ final class GpuLayerStack {
   /// than decorative: a frame that threw halfway - an unsupported primitive,
   /// a full atlas - never reached [endFrame], and leaking one target per
   /// failed frame turns a recoverable error into an allocator that fills up.
-  void beginFrame({required int surfaceWidth, required int surfaceHeight}) {
+  /// [surfaceAttachments] describes the framebuffer the *base* pass binds -
+  /// the window's back buffer or an offscreen target's own FBO. It defaults to
+  /// colour-only, which is what this stack assumed before the field existed
+  /// and what a backend that has not looked still gets. A backend that
+  /// declares stencil or samples here is declaring something it has actually
+  /// created: the value reaches a strategy selector as permission to issue a
+  /// stencil pass.
+  void beginFrame({
+    required int surfaceWidth,
+    required int surfaceHeight,
+    GpuPassAttachments surfaceAttachments = GpuPassAttachments.colorOnly,
+  }) {
     endFrame();
     _surfaceWidth = surfaceWidth;
     _surfaceHeight = surfaceHeight;
+    _surfaceAttachments = surfaceAttachments;
     _originX = 0;
     _originY = 0;
     _passCount = 0;
@@ -432,6 +641,7 @@ final class GpuLayerStack {
       viewportHeight: surfaceHeight,
       clearsTarget: false,
       rendersTopDown: false,
+      attachments: surfaceAttachments,
     );
   }
 
@@ -519,7 +729,7 @@ final class GpuLayerStack {
 
     final int width = (right - left).round();
     final int height = (bottom - top).round();
-    final GpuLayerTarget target = allocator.acquireLayerTarget(width, height);
+    final GpuLayerTarget target = _acquireTarget(width, height);
     _acquired.add(target);
 
     final GpuLayer layer = _pushOpen(
@@ -544,6 +754,11 @@ final class GpuLayerStack {
       viewportHeight: height,
       clearsTarget: true,
       rendersTopDown: true,
+      // From the target the allocator actually handed over, not from the
+      // surface: a pooled colour-only layer target has no stencil even when
+      // the window does, and a pass that claimed otherwise would let a
+      // stencil-then-cover draw run against a framebuffer with no stencil.
+      attachments: attachmentsOf(target),
     );
     return layer;
   }
@@ -570,7 +785,8 @@ final class GpuLayerStack {
     _originY = layer.parentOriginY;
     if (layer.kind != GpuLayerKind.offscreen) return layer;
 
-    layer._drewSomething = batchIndex > layer.firstBatch;
+    layer._drewSomething =
+        layer._drewSomething || batchIndex > layer.firstBatch;
     if (!layer.drewSomething) {
       // The pass this layer appended is necessarily the last one, because a
       // nested layer would have appended and then removed or resumed its own.
@@ -589,6 +805,7 @@ final class GpuLayerStack {
       // would erase everything drawn before the layer opened.
       clearsTarget: false,
       rendersTopDown: _innermostOffscreen != null,
+      attachments: attachmentsOf(_innermostOffscreen?.target),
     );
     return layer;
   }
@@ -604,6 +821,30 @@ final class GpuLayerStack {
     _open.clear();
     _originX = 0;
     _originY = 0;
+  }
+
+  /// Acquires a layer target, asking for attachments only when both the policy
+  /// wants some and the allocator can supply them.
+  ///
+  /// The plain method is the fallback in both directions, so an allocator that
+  /// predates this and a backend that declares no policy each keep exactly the
+  /// behaviour they had.
+  GpuLayerTarget _acquireTarget(int width, int height) {
+    final GpuLayerAttachmentPolicy? policy = layerAttachmentPolicy;
+    if (policy == null) return allocator.acquireLayerTarget(width, height);
+    final GpuPassAttachments wanted = policy(width, height);
+    if (wanted == GpuPassAttachments.colorOnly) {
+      return allocator.acquireLayerTarget(width, height);
+    }
+    final GpuLayerTargetAllocator current = allocator;
+    if (current is! GpuAttachmentAwareAllocator) {
+      // Asking for something this allocator cannot express and then drawing as
+      // if it had been given is the failure mode; falling back to colour-only
+      // costs a promotion and nothing else.
+      return allocator.acquireLayerTarget(width, height);
+    }
+    return (current as GpuAttachmentAwareAllocator)
+        .acquireLayerTargetWith(width, height, wanted);
   }
 
   GpuLayer? get _innermostOffscreen {
@@ -625,6 +866,7 @@ final class GpuLayerStack {
     required int viewportHeight,
     required bool clearsTarget,
     required bool rendersTopDown,
+    required GpuPassAttachments attachments,
   }) {
     if (_passCount == _passPool.length) _passPool.add(GpuRenderPass._());
     _passPool[_passCount++]
@@ -633,6 +875,7 @@ final class GpuLayerStack {
       .._viewportWidth = viewportWidth
       .._viewportHeight = viewportHeight
       .._clearsTarget = clearsTarget
-      .._rendersTopDown = rendersTopDown;
+      .._rendersTopDown = rendersTopDown
+      .._attachments = attachments;
   }
 }

@@ -50,3 +50,18 @@ Authors. Nenhum código Rust foi portado. O material de referência local em
 `referencias/vello-main` é oferecido sob Apache-2.0 ou MIT, à escolha; os textos
 completos estão em `referencias/vello-main/LICENSE-APACHE` e
 `referencias/vello-main/LICENSE-MIT`.
+
+## Vello — sparse strip rasteriser (`vello_common`)
+
+`lib/src/rendering/gpu/vector/native_strip_rasterizer.dart` ports the sparse
+strip pipeline from Vello's `vello_common` crate — specifically the tile
+generation of `tile.rs` (the per-crossing top-edge winding bit) and the
+analytic area accumulation of `strip.rs` (the trapezoidal coverage loop, the
+winding carried rightwards, and the sparse-fill handling between strips).
+
+The port is scalar rather than SIMD, omits the off-viewport culling, and emits
+into this repository's own `StripBuffer` instead of Vello's packed wire format;
+the algorithm is otherwise faithful. Deviations are listed in the file's
+library comment.
+
+Vello is licensed Apache-2.0 OR MIT. Copyright 2025 the Vello Authors.

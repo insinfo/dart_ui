@@ -4,6 +4,7 @@ import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
 import 'actions.dart';
+import 'drag_drop.dart';
 import 'errors.dart';
 import 'focus.dart';
 import 'keyboard_router.dart';
@@ -35,6 +36,7 @@ final class BuildOwner {
   final void Function()? onBuildScheduled;
   final _WidgetRenderView _renderView = _WidgetRenderView();
   final PointerRouter _pointerRouter = PointerRouter();
+  final DragRouter _dragRouter = DragRouter();
   final KeyboardRouter _keyboardRouter = KeyboardRouter();
 
   /// Focus for this tree. One per owner, because focus is per window: two
@@ -109,6 +111,39 @@ final class BuildOwner {
     _throwIfDisposed();
     _pointerRouter.clearHover();
   }
+
+  /// Offers a drag that is over this window to the widget under it.
+  ///
+  /// One method for the platform's *enter* and *over* both: which widget the
+  /// drag entered is a question only the hit test can answer, and the answer
+  /// changes on a move as readily as on the first event, so the distinction the
+  /// platform draws between the two does not survive into the tree. See
+  /// [DragRouter].
+  ///
+  /// Returns what the window must tell the source. Synchronous, and it must
+  /// stay so: `IDropTarget::DragOver` writes its answer before it returns.
+  DropResponse dispatchDragUpdate(DragSessionEvent event) {
+    _throwIfDisposed();
+    final RenderBox? root = _renderView.child;
+    if (root == null) return const DropResponse.reject();
+    return _dragRouter.update(event, root: root);
+  }
+
+  /// The drag left this window or ended without a drop.
+  void dispatchDragLeave() {
+    _throwIfDisposed();
+    _dragRouter.leave();
+  }
+
+  /// The user dropped on this window; the widget that accepted performs it.
+  Future<DragAction> dispatchDrop(DragSessionEvent event) {
+    _throwIfDisposed();
+    return _dragRouter.drop(event);
+  }
+
+  /// The widget currently under an accepted drag, or null. Diagnostics and
+  /// tests.
+  DragEventTarget? get activeDropTarget => _dragRouter.activeTarget;
 
   /// Routes a normalized key event through this tree.
   ///

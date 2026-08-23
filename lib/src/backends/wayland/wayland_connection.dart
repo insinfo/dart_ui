@@ -24,12 +24,18 @@ import 'dart:typed_data';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../geometry/offset.dart';
 import '../../platform/clipboard.dart';
+import '../../platform/native_window.dart';
 import '../../rendering/framebuffer.dart';
+import 'wayland_cursor.dart';
+import 'wayland_drag_drop.dart';
 import 'wayland_events.dart';
 import 'wayland_keymap.dart';
+import 'wayland_positioner.dart';
 import 'wayland_protocol.dart';
 import 'wayland_shm.dart';
+import 'wayland_text_input.dart';
 import 'wayland_transport.dart';
 import 'wayland_wire.dart';
 
@@ -53,6 +59,64 @@ abstract interface class WaylandWindowClient
   void setToplevelTitle(WaylandToplevelIds ids, String title);
   void ackConfigure(WaylandToplevelIds ids, int serial);
   void hideToplevel(WaylandToplevelIds ids);
+
+  /// Creates an `xdg_popup` anchored to [request]'s parent.
+  ///
+  /// Throws [StateError] when the parent is gone or the compositor refused.
+  /// The popup is not mapped until it is committed and configured, exactly
+  /// like a toplevel.
+  WaylandToplevelIds createPopup(WaylandPopupRequest request);
+
+  /// Takes an explicit grab for [ids], so that a click anywhere outside the
+  /// popup chain dismisses it with `popup_done`.
+  ///
+  /// Wayland only grants this to a popup created in response to recent user
+  /// input, and only for the serial of that input; a grab requested without
+  /// one is a protocol error, so a missing serial means no grab rather than a
+  /// killed connection. Returns whether the grab was requested.
+  bool grabPopup(WaylandToplevelIds ids);
+
+  /// Whether the compositor offers `zxdg_decoration_manager_v1`, which is
+  /// what decides if the framework has to draw the window frame itself.
+  bool get supportsServerSideDecorations;
+
+  /// Asks for server-side decorations on [ids]. The answer arrives as a
+  /// [WaylandRawEventType.decorationConfigure]; a compositor without the
+  /// protocol never answers, which is the documented client-side default.
+  void requestServerSideDecoration(WaylandToplevelIds ids);
+
+  /// Installs [cursor] on the pointer, loading it from the user's theme the
+  /// first time it is asked for. A no-op when no cursor manager is attached.
+  void applyCursor(SystemCursor cursor);
+
+  /// A bare `wl_surface` with no role, for a cursor or a drag icon.
+  ///
+  /// Returns 0 when the compositor is unavailable. The caller owns it and
+  /// must [destroyBareSurface] it.
+  int createBareSurface();
+
+  void destroyBareSurface(int surfaceId);
+
+  /// `wl_pointer.set_cursor` with the serial of the pointer enter.
+  ///
+  /// A [surfaceId] of 0 hides the pointer, which is what the protocol means
+  /// by a null surface - there is no separate "hide cursor" request. Returns
+  /// false when there is no pointer or no enter serial yet, which is the
+  /// normal state before the pointer has ever been over a window.
+  bool setPointerCursor({
+    required int surfaceId,
+    required int hotspotX,
+    required int hotspotY,
+  });
+
+  /// Asks for one `wl_surface.frame` callback on [surfaceId].
+  ///
+  /// The compositor answers when it is ready for the *next* frame, which is
+  /// the only throttling signal Wayland gives a client: there is no vblank to
+  /// query and no swap that blocks. The request must be followed by a commit
+  /// to take effect, so [presentShmBuffer] emits it as part of the same
+  /// transaction. Returns the callback object id, or 0 when unavailable.
+  int requestFrameCallback(int surfaceId);
 
   bool pollEventInto(WaylandRawEvent target);
   bool waitForActivity(int timeoutMilliseconds);
@@ -127,6 +191,28 @@ final class WaylandToplevelRequest {
   final int? maximumHeight;
 }
 
+/// Everything needed to create one `xdg_popup`.
+final class WaylandPopupRequest {
+  const WaylandPopupRequest({
+    required this.parent,
+    required this.positioner,
+    this.grab = true,
+  });
+
+  /// The parent surface's ids. A submenu passes the *parent popup's* ids,
+  /// which is what makes a nested chain: xdg-shell requires each popup in a
+  /// chain to be the child of the one before it, and dismissing any of them
+  /// dismisses the rest.
+  final WaylandToplevelIds parent;
+
+  final WaylandPositionerSpec positioner;
+
+  /// Whether to take an explicit grab, which is what makes a click outside
+  /// dismiss the popup. Menus want it; a tooltip must not have it, because a
+  /// grab steals input from the window under the pointer.
+  final bool grab;
+}
+
 /// The three protocol objects one toplevel window is made of.
 final class WaylandToplevelIds {
   const WaylandToplevelIds({
@@ -173,16 +259,29 @@ enum _ObjectKind {
   xdgWmBase,
   xdgSurface,
   xdgToplevel,
+  xdgPositioner,
+  xdgPopup,
+  xdgDecorationManager,
+  xdgToplevelDecoration,
+  frameCallback,
   dataDeviceManager,
   dataDevice,
   dataSource,
   dataOffer,
+  textInputManager,
+  textInput,
 }
 
 /// A live Wayland display connection.
 final class WaylandConnection
     with DisposableMixin
-    implements WaylandWindowClient, WaylandCpuClient, WaylandSelectionClient {
+    implements
+        WaylandWindowClient,
+        WaylandCpuClient,
+        WaylandSelectionClient,
+        WaylandCursorClient,
+        WaylandDragDropClient,
+        WaylandTextInputClient {
   WaylandConnection._(this._transport, this._allocator);
 
   /// Performs the registry handshake, or reports exactly what stopped it.
@@ -258,7 +357,18 @@ final class WaylandConnection
   int _seatId = 0;
   int _wmBaseId = 0;
   int _dataDeviceManagerId = 0;
+
+  /// The version actually bound. Drag actions and `wl_data_offer.finish`
+  /// exist only from version 3.
+  int _dataDeviceManagerVersion = 0;
   int _dataDeviceId = 0;
+
+  /// `zwp_text_input_manager_v3` and the single per-seat `zwp_text_input_v3`
+  /// it hands out. Zero when the compositor advertises no input method, which
+  /// is the whole of the availability test - the protocol has no capability
+  /// event of its own.
+  int _textInputManagerId = 0;
+  int _textInputId = 0;
 
   /// wl_shm formats the compositor advertised.
   final Set<int> _shmFormats = <int>{};
@@ -269,6 +379,10 @@ final class WaylandConnection
 
   // Input focus, resolved so motion/key events can carry their surface.
   int _pointerFocusSurfaceId = 0;
+
+  /// The serial of the most recent `wl_pointer.enter`, which is the only
+  /// serial `set_cursor` accepts.
+  int _pointerEnterSerial = 0;
   int _keyboardFocusSurfaceId = 0;
   int _lastInputSerial = 0;
   double _pointerX = 0;
@@ -303,6 +417,19 @@ final class WaylandConnection
 
   // Callbacks whose done event arrived.
   final Set<int> _completedCallbacks = <int>{};
+
+  // Frame callbacks in flight, mapped back to the surface that asked.
+  final Map<int, int> _surfaceByFrameCallback = <int, int>{};
+
+  // Popup routing and the parent chain, so dismissing one dismisses its
+  // descendants the way xdg-shell requires.
+  final Map<int, int> _surfaceByPopup = <int, int>{};
+  final Map<int, int> _popupParents = <int, int>{};
+
+  // xdg-decoration.
+  int _decorationManagerId = 0;
+  final Map<int, int> _decorationsByToplevel = <int, int>{};
+  final Map<int, int> _surfaceByDecoration = <int, int>{};
 
   // Clipboard ownership and offers. A data source remains alive after a new
   // source replaces it: the compositor owns that transition and retires the
@@ -431,14 +558,34 @@ final class WaylandConnection
               name, interface, xdgWmBaseBindVersion, _ObjectKind.xdgWmBase);
         case wlDataDeviceManagerInterfaceName:
           if (_dataDeviceManagerId != 0) break;
-          final bindVersion = version < wlDataDeviceManagerBindVersion
+          // Version 3 is what makes drag actions - copy versus move - and
+          // wl_data_offer.finish exist at all; below it a drop cannot be
+          // negotiated. Binding lower would silently disable half of DnD.
+          final bindVersion = version < wlDataDeviceManagerDragBindVersion
               ? version
-              : wlDataDeviceManagerBindVersion;
+              : wlDataDeviceManagerDragBindVersion;
+          _dataDeviceManagerVersion = bindVersion;
           _dataDeviceManagerId = _bind(
             name,
             interface,
             bindVersion,
             _ObjectKind.dataDeviceManager,
+          );
+        case zwpTextInputManagerV3InterfaceName:
+          if (_textInputManagerId != 0) break;
+          _textInputManagerId = _bind(
+            name,
+            interface,
+            zwpTextInputManagerV3BindVersion,
+            _ObjectKind.textInputManager,
+          );
+        case xdgDecorationManagerInterfaceName:
+          if (_decorationManagerId != 0) break;
+          _decorationManagerId = _bind(
+            name,
+            interface,
+            xdgDecorationManagerBindVersion,
+            _ObjectKind.xdgDecorationManager,
           );
       }
     }
@@ -449,6 +596,20 @@ final class WaylandConnection
         wlDataDeviceManagerRequestGetDataDevice,
       );
       _writer.putNewId(_dataDeviceId);
+      _writer.putObject(_seatId);
+      _queueMessage();
+    }
+    if (_textInputManagerId != 0 && _seatId != 0) {
+      // One `zwp_text_input_v3` for the seat, not one per surface: the object
+      // is per-seat by design and its `enter`/`leave` events name which of this
+      // client's surfaces the input method is aimed at, exactly as
+      // `wl_data_device` does for drags.
+      _textInputId = _allocateId(_ObjectKind.textInput);
+      _writer.begin(
+        _textInputManagerId,
+        zwpTextInputManagerV3RequestGetTextInput,
+      );
+      _writer.putNewId(_textInputId);
       _writer.putObject(_seatId);
       _queueMessage();
     }
@@ -615,6 +776,20 @@ final class WaylandConnection
           _forgetObject(objectId);
         }
         return false;
+      case _ObjectKind.frameCallback:
+        if (message.opcode != wlCallbackEventDone) return false;
+        final surfaceId = _surfaceByFrameCallback.remove(objectId) ?? 0;
+        _forgetObject(objectId);
+        if (surfaceId == 0) return false;
+        return _deliver(into, (WaylandRawEvent event) {
+          event
+            ..type = WaylandRawEventType.frameDone
+            ..surfaceId = surfaceId
+            // wl_callback.done carries the compositor's frame time in
+            // milliseconds, which is the clock a pacer should measure with.
+            ..timeMilliseconds =
+                WaylandMessageReader(message.payload).readUint();
+        });
       case _ObjectKind.shm:
         if (message.opcode == wlShmEventFormat) {
           _shmFormats.add(WaylandMessageReader(message.payload).readUint());
@@ -656,6 +831,9 @@ final class WaylandConnection
       case _ObjectKind.dataOffer:
         _handleDataOfferEvent(objectId, message);
         return false;
+      case _ObjectKind.textInput:
+        _handleTextInputEvent(message);
+        return false;
       case _ObjectKind.surface:
         return _handleSurfaceEvent(objectId, message, into);
       case _ObjectKind.xdgSurface:
@@ -672,9 +850,24 @@ final class WaylandConnection
         return false;
       case _ObjectKind.xdgToplevel:
         return _handleToplevelEvent(objectId, message, into);
+      case _ObjectKind.xdgPopup:
+        return _handlePopupEvent(objectId, message, into);
+      case _ObjectKind.xdgToplevelDecoration:
+        if (message.opcode != xdgToplevelDecorationEventConfigure) return false;
+        final surfaceId = _surfaceByDecoration[objectId] ?? 0;
+        if (surfaceId == 0) return false;
+        return _deliver(into, (WaylandRawEvent event) {
+          event
+            ..type = WaylandRawEventType.decorationConfigure
+            ..surfaceId = surfaceId
+            ..state = WaylandMessageReader(message.payload).readUint();
+        });
       case _ObjectKind.compositor:
       case _ObjectKind.shmPool:
+      case _ObjectKind.xdgPositioner:
+      case _ObjectKind.xdgDecorationManager:
       case _ObjectKind.dataDeviceManager:
+      case _ObjectKind.textInputManager:
         return false;
     }
   }
@@ -801,12 +994,87 @@ final class WaylandConnection
     }
   }
 
+  bool _handlePopupEvent(
+    int popupId,
+    WaylandWireMessage message,
+    WaylandRawEvent? into,
+  ) {
+    final surfaceId = _surfaceByPopup[popupId] ?? 0;
+    if (surfaceId == 0) return false;
+    switch (message.opcode) {
+      case xdgPopupEventConfigure:
+        final reader = WaylandMessageReader(message.payload);
+        final x = reader.readInt();
+        final y = reader.readInt();
+        final width = reader.readInt();
+        final height = reader.readInt();
+        return _deliver(into, (WaylandRawEvent event) {
+          event
+            ..type = WaylandRawEventType.popupConfigure
+            ..surfaceId = surfaceId
+            ..x = x.toDouble()
+            ..y = y.toDouble()
+            ..width = width
+            ..height = height;
+        });
+      case xdgPopupEventPopupDone:
+        // Dismissing a popup dismisses everything nested below it, and the
+        // compositor only names the one it decided on, so the chain is walked
+        // here - deepest first, ending with the popup named, which is the
+        // order a menu must tear its submenus down in.
+        final chain = <int>[
+          for (final child in _descendantPopups(popupId))
+            if (_surfaceByPopup[child] != null) _surfaceByPopup[child]!,
+          surfaceId,
+        ];
+        var filled = false;
+        for (final dismissed in chain) {
+          if (!filled && into != null) {
+            filled = true;
+            into
+              ..type = WaylandRawEventType.popupDone
+              ..surfaceId = dismissed;
+            continue;
+          }
+          _deliver(null, (WaylandRawEvent event) {
+            event
+              ..type = WaylandRawEventType.popupDone
+              ..surfaceId = dismissed;
+          });
+        }
+        return filled;
+      default:
+        return false;
+    }
+  }
+
+  /// Every popup whose parent chain reaches [popupId], deepest first.
+  List<int> _descendantPopups(int popupId) {
+    final found = <int>[];
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (final entry in _popupParents.entries) {
+        if (found.contains(entry.key)) continue;
+        if (entry.value == popupId || found.contains(entry.value)) {
+          found.add(entry.key);
+          changed = true;
+        }
+      }
+    }
+    return found.reversed.toList();
+  }
+
   bool _handlePointerEvent(WaylandWireMessage message, WaylandRawEvent? into) {
     final reader = WaylandMessageReader(message.payload);
     switch (message.opcode) {
       case wlPointerEventEnter:
         final serial = reader.readUint();
         _rememberInputSerial(serial);
+        // set_cursor must quote the serial of the *enter* that gave us the
+        // pointer, not any later input serial: the compositor rejects a
+        // cursor set with a stale or unrelated serial.
+        _pointerEnterSerial = serial;
         final surfaceId = reader.readObject();
         _pointerFocusSurfaceId = surfaceId;
         _pointerX = reader.readFixed();
@@ -1089,6 +1357,7 @@ final class WaylandConnection
         }
         _objects[id] = _ObjectKind.dataOffer;
         _dataOffers[id] = _WaylandDataOffer(id);
+        dragDrop?.onDataOffer(id);
       case wlDataDeviceEventSelection:
         final id = reader.readObject();
         final previous = _selectionOfferId;
@@ -1100,29 +1369,54 @@ final class WaylandConnection
         _ownedClipboardText = null;
         if (previous != 0 && previous != id) _destroyDataOffer(previous);
       case wlDataDeviceEventEnter:
-        reader.readUint(); // serial
-        reader.readObject(); // surface
-        reader.readFixed(); // x
-        reader.readFixed(); // y
+        final serial = reader.readUint();
+        _rememberInputSerial(serial);
+        final surfaceId = reader.readObject();
+        final x = reader.readFixed();
+        final y = reader.readFixed();
         final offerId = reader.readObject();
-        // Drag-and-drop is not exposed by this backend yet. Explicitly retire
-        // its offer instead of retaining an object the application can never
-        // consume.
-        if (offerId != 0 && offerId != _selectionOfferId) {
-          _destroyDataOffer(offerId);
+        final drag = dragDrop;
+        if (drag == null) {
+          // Nothing can consume a drop, so retire the offer rather than
+          // retaining an object the application will never see.
+          if (offerId != 0 && offerId != _selectionOfferId) {
+            _destroyDataOffer(offerId);
+          }
+          return;
         }
+        _dragEnterSerial = serial;
+        drag.onDragEnter(
+          serial: serial,
+          surfaceId: surfaceId,
+          offerId: offerId,
+          position: Offset(x, y),
+        );
+      case wlDataDeviceEventMotion:
+        reader.readUint(); // time
+        final x = reader.readFixed();
+        final y = reader.readFixed();
+        dragDrop?.onDragMotion(Offset(x, y));
+      case wlDataDeviceEventLeave:
+        dragDrop?.onDragLeave();
+      case wlDataDeviceEventDrop:
+        dragDrop?.onDrop();
       default:
-        // Drag-and-drop enter/leave/motion/drop are intentionally ignored;
-        // clipboard selection is the only operation this interface promises.
         break;
     }
   }
 
   void _handleDataOfferEvent(int offerId, WaylandWireMessage message) {
-    if (message.opcode != wlDataOfferEventOffer) return;
-    final offer = _dataOffers[offerId];
-    if (offer == null) return;
-    offer.mimeTypes.add(WaylandMessageReader(message.payload).readString());
+    final reader = WaylandMessageReader(message.payload);
+    switch (message.opcode) {
+      case wlDataOfferEventOffer:
+        final mime = reader.readString();
+        _dataOffers[offerId]?.mimeTypes.add(mime);
+        dragDrop?.onOfferMime(offerId, mime);
+      case wlDataOfferEventSourceActions:
+        dragDrop?.onOfferSourceActions(offerId, reader.readUint());
+      case wlDataOfferEventAction:
+        dragDrop?.onOfferAction(offerId, reader.readUint());
+    }
   }
 
   void _handleDataSourceEvent(int sourceId, WaylandWireMessage message) {
@@ -1131,6 +1425,13 @@ final class WaylandConnection
         final reader = WaylandMessageReader(message.payload, _receivedFds);
         final mime = reader.readString();
         final fd = reader.readFd();
+        // A drag source and a clipboard source are both wl_data_source; the
+        // drag manager owns the ones it created.
+        final drag = dragDrop;
+        if (drag != null && drag.isDragging) {
+          drag.onSourceSend(sourceId, mime, fd);
+          return;
+        }
         try {
           final text = _clipboardSources[sourceId];
           if (text != null && wlClipboardAcceptedTextMimes.contains(mime)) {
@@ -1144,7 +1445,21 @@ final class WaylandConnection
         } finally {
           _transport.closeFd(fd);
         }
+      case wlDataSourceEventAction:
+        dragDrop?.onSourceAction(
+          sourceId,
+          WaylandMessageReader(message.payload).readUint(),
+        );
+      case wlDataSourceEventDndDropPerformed:
+        dragDrop?.onSourceDropPerformed(sourceId);
+      case wlDataSourceEventDndFinished:
+        dragDrop?.onSourceFinished(sourceId);
       case wlDataSourceEventCancelled:
+        final drag = dragDrop;
+        if (drag != null && drag.isDragging) {
+          drag.onSourceCancelled(sourceId);
+          return;
+        }
         _clipboardSources.remove(sourceId);
         if (_activeClipboardSourceId == sourceId) {
           _activeClipboardSourceId = 0;
@@ -1305,9 +1620,26 @@ final class WaylandConnection
   @override
   void destroyToplevel(WaylandToplevelIds ids) {
     if (isDisposed) return;
+    final isPopup = _surfaceByPopup.containsKey(ids.toplevelId);
+    // A decoration object outlives neither its toplevel nor the protocol's
+    // ordering rule: it must go before the role object it decorates.
+    final decorationId = _decorationsByToplevel.remove(ids.toplevelId);
+    if (decorationId != null) {
+      _writer.begin(decorationId, xdgToplevelDecorationRequestDestroy);
+      _queueMessage();
+      _surfaceByDecoration.remove(decorationId);
+      _forgetObject(decorationId);
+    }
     // Reverse creation order, as xdg-shell requires: role object first.
-    _writer.begin(ids.toplevelId, xdgToplevelRequestDestroy);
+    _writer.begin(
+      ids.toplevelId,
+      isPopup ? xdgPopupRequestDestroy : xdgToplevelRequestDestroy,
+    );
     _queueMessage();
+    if (isPopup) {
+      _surfaceByPopup.remove(ids.toplevelId);
+      _popupParents.remove(ids.toplevelId);
+    }
     _writer.begin(ids.xdgSurfaceId, xdgSurfaceRequestDestroy);
     _queueMessage();
     _writer.begin(ids.surfaceId, wlSurfaceRequestDestroy);
@@ -1317,6 +1649,455 @@ final class WaylandConnection
     _surfaceByToplevel.remove(ids.toplevelId);
     if (_pointerFocusSurfaceId == ids.surfaceId) _pointerFocusSurfaceId = 0;
     if (_keyboardFocusSurfaceId == ids.surfaceId) _keyboardFocusSurfaceId = 0;
+  }
+
+  @override
+  WaylandToplevelIds createPopup(WaylandPopupRequest request) {
+    throwIfDisposed();
+    if (!isValid) throw StateError('Wayland connection is not valid');
+    if (_wmBaseId == 0) {
+      throw StateError('xdg_wm_base is unavailable; popups need xdg-shell');
+    }
+
+    // The positioner is a short-lived description, not an object the popup
+    // keeps: it is configured, consumed by get_popup and destroyed at once.
+    final positionerId = _allocateId(_ObjectKind.xdgPositioner);
+    _writer.begin(_wmBaseId, xdgWmBaseRequestCreatePositioner);
+    _writer.putNewId(positionerId);
+    _queueMessage();
+    _configurePositioner(positionerId, request.positioner);
+
+    final surfaceId = _allocateId(_ObjectKind.surface);
+    _writer.begin(_compositorId, wlCompositorRequestCreateSurface);
+    _writer.putNewId(surfaceId);
+    _queueMessage();
+
+    final xdgSurfaceId = _allocateId(_ObjectKind.xdgSurface);
+    _writer.begin(_wmBaseId, xdgWmBaseRequestGetXdgSurface);
+    _writer.putNewId(xdgSurfaceId);
+    _writer.putObject(surfaceId);
+    _queueMessage();
+
+    final popupId = _allocateId(_ObjectKind.xdgPopup);
+    _writer.begin(xdgSurfaceId, xdgSurfaceRequestGetPopup);
+    _writer.putNewId(popupId);
+    _writer.putObject(request.parent.xdgSurfaceId);
+    _writer.putObject(positionerId);
+    _queueMessage();
+
+    _writer.begin(positionerId, xdgPositionerRequestDestroy);
+    _queueMessage();
+    _forgetObject(positionerId);
+
+    final ids = WaylandToplevelIds(
+      surfaceId: surfaceId,
+      xdgSurfaceId: xdgSurfaceId,
+      toplevelId: popupId,
+    );
+    _surfaceByXdgSurface[xdgSurfaceId] = surfaceId;
+    _surfaceByPopup[popupId] = surfaceId;
+    _popupParents[popupId] = request.parent.toplevelId;
+
+    if (request.grab) grabPopup(ids);
+
+    // The empty commit that asks for the first configure, same as a toplevel.
+    _writer.begin(surfaceId, wlSurfaceRequestCommit);
+    _queueMessage();
+
+    if (flush() < 0 || !isValid) {
+      _surfaceByXdgSurface.remove(xdgSurfaceId);
+      _surfaceByPopup.remove(popupId);
+      _popupParents.remove(popupId);
+      throw StateError('Wayland connection failed while creating a popup');
+    }
+    return ids;
+  }
+
+  void _configurePositioner(int positionerId, WaylandPositionerSpec spec) {
+    _writer.begin(positionerId, xdgPositionerRequestSetSize);
+    _writer.putInt(spec.width);
+    _writer.putInt(spec.height);
+    _queueMessage();
+
+    _writer.begin(positionerId, xdgPositionerRequestSetAnchorRect);
+    _writer.putInt(spec.anchorX);
+    _writer.putInt(spec.anchorY);
+    _writer.putInt(spec.anchorWidth);
+    _writer.putInt(spec.anchorHeight);
+    _queueMessage();
+
+    _writer.begin(positionerId, xdgPositionerRequestSetAnchor);
+    _writer.putUint(spec.anchor);
+    _queueMessage();
+
+    _writer.begin(positionerId, xdgPositionerRequestSetGravity);
+    _writer.putUint(spec.gravity);
+    _queueMessage();
+
+    _writer.begin(positionerId, xdgPositionerRequestSetConstraintAdjustment);
+    _writer.putUint(spec.constraintAdjustment);
+    _queueMessage();
+
+    if (spec.offsetX != 0 || spec.offsetY != 0) {
+      _writer.begin(positionerId, xdgPositionerRequestSetOffset);
+      _writer.putInt(spec.offsetX);
+      _writer.putInt(spec.offsetY);
+      _queueMessage();
+    }
+  }
+
+  @override
+  bool grabPopup(WaylandToplevelIds ids) {
+    if (isDisposed || !isValid) return false;
+    // A grab without an input serial is a protocol error that kills the
+    // connection, so a popup opened programmatically simply goes ungrabbed.
+    if (_lastInputSerial == 0 || _seatId == 0) {
+      recordError('xdg_popup.grab skipped: no input serial yet, so the '
+          'compositor would reject the grab and close the connection');
+      return false;
+    }
+    _writer.begin(ids.toplevelId, xdgPopupRequestGrab);
+    _writer.putObject(_seatId);
+    _writer.putUint(_lastInputSerial);
+    _queueMessage();
+    return true;
+  }
+
+  @override
+  bool get supportsServerSideDecorations => _decorationManagerId != 0;
+
+  @override
+  void requestServerSideDecoration(WaylandToplevelIds ids) {
+    if (isDisposed || _decorationManagerId == 0) return;
+    if (_decorationsByToplevel.containsKey(ids.toplevelId)) return;
+    final decorationId = _allocateId(_ObjectKind.xdgToplevelDecoration);
+    _writer.begin(
+      _decorationManagerId,
+      xdgDecorationManagerRequestGetToplevelDecoration,
+    );
+    _writer.putNewId(decorationId);
+    _writer.putObject(ids.toplevelId);
+    _queueMessage();
+    _writer.begin(decorationId, xdgToplevelDecorationRequestSetMode);
+    _writer.putUint(xdgToplevelDecorationModeServerSide);
+    _queueMessage();
+    _decorationsByToplevel[ids.toplevelId] = decorationId;
+    _surfaceByDecoration[decorationId] = ids.surfaceId;
+    flush();
+  }
+
+  /// The cursor manager, installed by the backend once the theme is resolved.
+  ///
+  /// Null when cursors could not be set up at all (no `wl_shm`, no theme on
+  /// disk); [applyCursor] is then a no-op and the compositor's own default
+  /// pointer stays, which is the correct degradation.
+  WaylandCursorManager? cursorManager;
+
+  @override
+  void applyCursor(SystemCursor cursor) {
+    cursorManager?.apply(cursor);
+  }
+
+  /// The drag-and-drop state machine, installed by the backend when the
+  /// compositor offers a data device. Null disables drops entirely, and the
+  /// offers that arrive anyway are retired rather than leaked.
+  WaylandDragDropManager? dragDrop;
+
+  /// The serial of the most recent `wl_data_device.enter`, which `accept` and
+  /// `set_actions` must quote.
+  int _dragEnterSerial = 0;
+
+  /// The `zwp_text_input_v3` state machine, installed by the backend when the
+  /// compositor offers the protocol. Null means the events that arrive anyway
+  /// are dropped rather than queued for a manager that will never exist.
+  WaylandTextInputManager? textInput;
+
+  // -------------------------------------------------------------------------
+  // WaylandTextInputClient
+  // -------------------------------------------------------------------------
+
+  @override
+  bool get supportsTextInput => _textInputId != 0;
+
+  void _handleTextInputEvent(WaylandWireMessage message) {
+    final WaylandTextInputManager? manager = textInput;
+    if (manager == null) return;
+    final reader = WaylandMessageReader(message.payload);
+    switch (message.opcode) {
+      case zwpTextInputV3EventEnter:
+        manager.onEnter(reader.readObject());
+      case zwpTextInputV3EventLeave:
+        manager.onLeave(reader.readObject());
+      case zwpTextInputV3EventPreeditString:
+        // The string is nullable in the XML: a zero-length word means "no
+        // preedit", which is not the same as the empty string only because the
+        // protocol allows a `done` that says nothing about the preedit at all.
+        final String text = reader.readString();
+        final int cursorBegin = reader.readInt();
+        final int cursorEnd = reader.readInt();
+        manager.onPreeditString(text, cursorBegin, cursorEnd);
+      case zwpTextInputV3EventCommitString:
+        manager.onCommitString(reader.readString());
+      case zwpTextInputV3EventDeleteSurroundingText:
+        manager.onDeleteSurroundingText(reader.readUint(), reader.readUint());
+      case zwpTextInputV3EventDone:
+        manager.onDone(reader.readUint());
+    }
+  }
+
+  @override
+  void textInputEnable() {
+    if (!_canSendTextInput) return;
+    _writer.begin(_textInputId, zwpTextInputV3RequestEnable);
+    _queueMessage();
+  }
+
+  @override
+  void textInputDisable() {
+    if (!_canSendTextInput) return;
+    _writer.begin(_textInputId, zwpTextInputV3RequestDisable);
+    _queueMessage();
+  }
+
+  @override
+  void textInputSetSurroundingText(
+    String text,
+    int cursorBytes,
+    int anchorBytes,
+  ) {
+    if (!_canSendTextInput) return;
+    _writer.begin(_textInputId, zwpTextInputV3RequestSetSurroundingText);
+    _writer.putString(text);
+    _writer.putInt(cursorBytes);
+    _writer.putInt(anchorBytes);
+    _queueMessage();
+  }
+
+  @override
+  void textInputSetTextChangeCause(int cause) {
+    if (!_canSendTextInput) return;
+    _writer.begin(_textInputId, zwpTextInputV3RequestSetTextChangeCause);
+    _writer.putUint(cause);
+    _queueMessage();
+  }
+
+  @override
+  void textInputSetContentType(int hint, int purpose) {
+    if (!_canSendTextInput) return;
+    _writer.begin(_textInputId, zwpTextInputV3RequestSetContentType);
+    _writer.putUint(hint);
+    _writer.putUint(purpose);
+    _queueMessage();
+  }
+
+  @override
+  void textInputSetCursorRectangle(int x, int y, int width, int height) {
+    if (!_canSendTextInput) return;
+    _writer.begin(_textInputId, zwpTextInputV3RequestSetCursorRectangle);
+    _writer.putInt(x);
+    _writer.putInt(y);
+    // A zero-extent rectangle is legal and useless: a compositor placing a
+    // candidate window below it has nothing to place it below. One logical
+    // unit is the floor, which is what a collapsed caret actually is.
+    _writer.putInt(width < 1 ? 1 : width);
+    _writer.putInt(height < 1 ? 1 : height);
+    _queueMessage();
+  }
+
+  /// `commit`, which is what makes every staged request above take effect.
+  ///
+  /// Flushed on the spot rather than left in the queue: the compositor's reply
+  /// carries the count of commits it has received, and a commit sitting in a
+  /// buffer while the input method answers the *previous* state is precisely
+  /// the staleness the manager then has to discard.
+  @override
+  void textInputCommit() {
+    if (!_canSendTextInput) return;
+    _writer.begin(_textInputId, zwpTextInputV3RequestCommit);
+    _queueMessage();
+    flush();
+  }
+
+  bool get _canSendTextInput =>
+      !isDisposed && isValid && _textInputId != 0;
+
+  // -------------------------------------------------------------------------
+  // WaylandDragDropClient
+  // -------------------------------------------------------------------------
+
+  @override
+  bool get supportsDragAndDrop => _dataDeviceId != 0;
+
+  @override
+  void acceptOffer(int offerId, int serial, String? mimeType) {
+    if (isDisposed || !isValid || offerId == 0) return;
+    _writer.begin(offerId, wlDataOfferRequestAccept);
+    _writer.putUint(serial == 0 ? _dragEnterSerial : serial);
+    if (mimeType == null) {
+      // A null string - length word 0, no bytes - is how the protocol spells
+      // "I refuse this drag", and it is what makes the cursor say so.
+      _writer.putUint(0);
+    } else {
+      _writer.putString(mimeType);
+    }
+    _queueMessage();
+    flush();
+  }
+
+  @override
+  void setOfferActions(int offerId, int actions, int preferredAction) {
+    if (isDisposed || !isValid || offerId == 0) return;
+    _writer.begin(offerId, wlDataOfferRequestSetActions);
+    _writer.putUint(actions);
+    _writer.putUint(preferredAction);
+    _queueMessage();
+    flush();
+  }
+
+  @override
+  Future<Uint8List?> receiveOffer(int offerId, String mimeType) async {
+    if (isDisposed || !isValid || offerId == 0) return null;
+    final pipe = _transport.createPipe();
+    if (pipe == null) return null;
+    _writer.begin(offerId, wlDataOfferRequestReceive);
+    _writer.putString(mimeType);
+    _writer.putFd(pipe.writeFd);
+    _queueMessage();
+    flush();
+    // Our copy of the write end must go before the read: while this process
+    // holds it, the pipe never reaches EOF and the read below would block
+    // until the timeout even after the peer finished.
+    _transport.closeFd(pipe.writeFd);
+    try {
+      return _transport.readAllFromFd(pipe.readFd);
+    } finally {
+      _transport.closeFd(pipe.readFd);
+    }
+  }
+
+  @override
+  void finishOffer(int offerId) {
+    if (isDisposed || !isValid || offerId == 0) return;
+    // finish() does not exist before version 3; sending it there is a
+    // protocol error that would kill the connection.
+    if (_dataDeviceManagerVersion < wlDataDeviceManagerDragBindVersion) return;
+    _writer.begin(offerId, wlDataOfferRequestFinish);
+    _queueMessage();
+    flush();
+  }
+
+  @override
+  void destroyOffer(int offerId) => _destroyDataOffer(offerId);
+
+  @override
+  int startDrag({
+    required int originSurfaceId,
+    required int iconSurfaceId,
+    required List<String> mimeTypes,
+    required int actions,
+  }) {
+    if (isDisposed || !isValid || _dataDeviceManagerId == 0) return 0;
+    if (_dataDeviceId == 0 || _lastInputSerial == 0) {
+      recordError('wl_data_device.start_drag needs an input serial; a drag '
+          'must begin from a real gesture');
+      return 0;
+    }
+    final sourceId = _allocateId(_ObjectKind.dataSource);
+    _writer.begin(
+      _dataDeviceManagerId,
+      wlDataDeviceManagerRequestCreateDataSource,
+    );
+    _writer.putNewId(sourceId);
+    _queueMessage();
+    for (final mime in mimeTypes) {
+      _writer.begin(sourceId, wlDataSourceRequestOffer);
+      _writer.putString(mime);
+      _queueMessage();
+    }
+    if (_dataDeviceManagerVersion >= wlDataDeviceManagerDragBindVersion) {
+      _writer.begin(sourceId, wlDataSourceRequestSetActions);
+      _writer.putUint(actions);
+      _queueMessage();
+    }
+    _writer.begin(_dataDeviceId, wlDataDeviceRequestStartDrag);
+    _writer.putObject(sourceId);
+    _writer.putObject(originSurfaceId);
+    _writer.putObject(iconSurfaceId);
+    _writer.putUint(_lastInputSerial);
+    _queueMessage();
+    if (flush() < 0) return 0;
+    return sourceId;
+  }
+
+  @override
+  bool sendDragData(int fd, Uint8List bytes) {
+    try {
+      if (isDisposed) return false;
+      return _transport.writeAllToFd(fd, bytes);
+    } finally {
+      // Always closed: a writer that leaves the fd open leaves the reader
+      // blocked forever, which the user sees as the other application hanging.
+      _transport.closeFd(fd);
+    }
+  }
+
+  @override
+  void destroyDataSource(int sourceId) {
+    if (isDisposed || sourceId == 0) return;
+    _writer.begin(sourceId, wlDataSourceRequestDestroy);
+    _queueMessage();
+    _forgetObject(sourceId);
+    flush();
+  }
+
+  @override
+  int createBareSurface() {
+    if (isDisposed || !isValid || _compositorId == 0) return 0;
+    final surfaceId = _allocateId(_ObjectKind.surface);
+    _writer.begin(_compositorId, wlCompositorRequestCreateSurface);
+    _writer.putNewId(surfaceId);
+    _queueMessage();
+    return surfaceId;
+  }
+
+  @override
+  void destroyBareSurface(int surfaceId) {
+    if (isDisposed || surfaceId == 0) return;
+    _writer.begin(surfaceId, wlSurfaceRequestDestroy);
+    _queueMessage();
+    _forgetObject(surfaceId);
+    flush();
+  }
+
+  @override
+  bool setPointerCursor({
+    required int surfaceId,
+    required int hotspotX,
+    required int hotspotY,
+  }) {
+    if (isDisposed || !isValid) return false;
+    if (_pointerId == 0 || _pointerEnterSerial == 0) return false;
+    _writer.begin(_pointerId, wlPointerRequestSetCursor);
+    _writer.putUint(_pointerEnterSerial);
+    // A null surface is how the protocol spells "hide the pointer"; there is
+    // no separate request for it.
+    _writer.putObject(surfaceId);
+    _writer.putInt(hotspotX);
+    _writer.putInt(hotspotY);
+    _queueMessage();
+    flush();
+    return true;
+  }
+
+  @override
+  int requestFrameCallback(int surfaceId) {
+    if (isDisposed || !isValid || surfaceId == 0) return 0;
+    final callbackId = _allocateId(_ObjectKind.frameCallback);
+    _surfaceByFrameCallback[callbackId] = surfaceId;
+    _writer.begin(surfaceId, wlSurfaceRequestFrame);
+    _writer.putNewId(callbackId);
+    _queueMessage();
+    return callbackId;
   }
 
   @override
@@ -1522,6 +2303,14 @@ final class WaylandConnection
 
   @override
   void onDispose() {
+    // Before the buffers: the cursor manager holds some of them, and the drag
+    // manager may still be holding an offer whose destroy needs a live socket.
+    dragDrop?.dispose();
+    dragDrop = null;
+    textInput?.dispose();
+    textInput = null;
+    cursorManager?.dispose();
+    cursorManager = null;
     for (final buffer
         in List<_WaylandNativeShmBuffer>.of(_buffersById.values)) {
       buffer.released = true;

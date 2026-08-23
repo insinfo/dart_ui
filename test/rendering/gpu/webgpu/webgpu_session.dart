@@ -44,7 +44,15 @@ final class WebGpuSession {
   /// `WebGpuRendererBackend.createDevice` opens one, and the canvas-target
   /// tests open their own detached canvas next to it. Never throws - a
   /// browser without WebGPU is a skip, not an error.
-  static Future<WebGpuSession> open() async {
+  ///
+  /// [enableExperimentalSparseStrips] is passed straight through to
+  /// [WebGpuRenderDevice.adoptDevice]. Only `webgpu_sparse_device_test.dart`
+  /// sets it: the flag compiles a second shader module and builds a second
+  /// pipeline inventory, and a device that never asked for it must stay
+  /// byte-for-byte the device every other file here opens.
+  static Future<WebGpuSession> open({
+    bool enableExperimentalSparseStrips = false,
+  }) async {
     try {
       final ({
         GPU? gpu,
@@ -64,6 +72,7 @@ final class WebGpuSession {
         answer.device!,
         surfaceFormat: answer.gpu!.getPreferredCanvasFormat(),
         deviceDescription: describeWebGpuAdapter(answer.adapter),
+        enableExperimentalSparseStrips: enableExperimentalSparseStrips,
       );
       final WebGpuRenderDevice? device = opened.device;
       if (device == null) {

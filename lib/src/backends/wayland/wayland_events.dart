@@ -26,6 +26,7 @@ library;
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/compose_sequences.dart';
 import '../../platform/input_events.dart';
 import '../../platform/window_events.dart';
 import 'wayland_keymap.dart';
@@ -48,6 +49,22 @@ enum WaylandRawEventType {
   keyboardModifiers,
   surfaceEnterOutput,
   scaleChanged,
+
+  /// `wl_callback.done` for a `wl_surface.frame` request: the compositor is
+  /// ready for the next frame on that surface.
+  frameDone,
+
+  /// `xdg_popup.configure`: the compositor's authoritative placement, after
+  /// whatever flip/slide/resize the positioner allowed.
+  popupConfigure,
+
+  /// `xdg_popup.popup_done`: the compositor dismissed the popup (a click
+  /// outside a grab, Escape, the parent losing focus). Not a request - the
+  /// popup is already gone and must be destroyed.
+  popupDone,
+
+  /// `zxdg_toplevel_decoration_v1.configure`: which side draws the frame.
+  decorationConfigure,
 }
 
 /// One decoded Wayland event, reused across the pump. Never retained.
@@ -149,6 +166,16 @@ final class WaylandWindowProtocolState {
   bool maximized = false;
   bool fullscreen = false;
   bool destroyed = false;
+
+  /// The compositor's chosen popup origin, parent-surface relative. Only
+  /// meaningful for a popup role; a toplevel never learns its position.
+  int popupX = 0;
+  int popupY = 0;
+
+  /// True once `zxdg_toplevel_decoration_v1` confirmed server-side mode. False
+  /// means the framework draws the frame itself, which is also the state when
+  /// the compositor offers no decoration protocol at all.
+  bool serverSideDecorated = false;
 }
 
 /// Everything one pump decided, before any framework event object exists.
@@ -160,6 +187,18 @@ final class WaylandPendingWindowEvents {
   bool closeRequested = false;
   bool destroyed = false;
   bool scaleDirty = false;
+
+  /// The compositor released the frame throttle for this surface.
+  bool frameDone = false;
+
+  /// The compositor placed (or re-placed) a popup.
+  bool popupMoved = false;
+
+  /// The compositor dismissed a popup; it is already gone.
+  bool popupDismissed = false;
+
+  /// The decoration mode was negotiated or changed.
+  bool decorationChanged = false;
 
   /// The configure serial to `ack_configure` before the next commit, or -1.
   /// Later configures overwrite earlier ones within a pump: acking the newest
@@ -173,6 +212,10 @@ final class WaylandPendingWindowEvents {
       !closeRequested &&
       !destroyed &&
       !scaleDirty &&
+      !frameDone &&
+      !popupMoved &&
+      !popupDismissed &&
+      !decorationChanged &&
       ackSerial < 0;
 
   void reset() {
@@ -183,6 +226,10 @@ final class WaylandPendingWindowEvents {
     closeRequested = false;
     destroyed = false;
     scaleDirty = false;
+    frameDone = false;
+    popupMoved = false;
+    popupDismissed = false;
+    decorationChanged = false;
     ackSerial = -1;
   }
 }
@@ -226,6 +273,37 @@ abstract final class WaylandEventTranslator {
 
       case WaylandRawEventType.surfaceEnterOutput:
         pending.scaleDirty = true;
+        return true;
+
+      case WaylandRawEventType.frameDone:
+        pending.frameDone = true;
+        return true;
+
+      case WaylandRawEventType.popupConfigure:
+        // The compositor's placement is authoritative and needs no ack of its
+        // own; the xdg_surface.configure that follows carries the serial.
+        state.popupX = raw.x.round();
+        state.popupY = raw.y.round();
+        if (raw.width > 0 && raw.height > 0) {
+          if (raw.width != state.width || raw.height != state.height) {
+            state.width = raw.width;
+            state.height = raw.height;
+            pending.resized = true;
+          }
+        }
+        pending.popupMoved = true;
+        return true;
+
+      case WaylandRawEventType.popupDone:
+        // Already dismissed by the compositor: this is a teardown, not a
+        // request the application may refuse.
+        pending.popupDismissed = true;
+        return true;
+
+      case WaylandRawEventType.decorationConfigure:
+        state.serverSideDecorated =
+            raw.state == xdgToplevelDecorationModeServerSide;
+        pending.decorationChanged = true;
         return true;
 
       case WaylandRawEventType.pointerEnter:
@@ -368,6 +446,7 @@ abstract final class WaylandEventTranslator {
     required WaylandXkbKeymap? keymap,
     required WaylandModifiersState modifiers,
     required void Function(PlatformWindowEvent event) emit,
+    ComposeEngine? compose,
   }) {
     if (raw.type != WaylandRawEventType.keyboardKey) return;
     final xkbKeycode = raw.key + evdevToXkbKeycodeOffset;
@@ -401,6 +480,39 @@ abstract final class WaylandEventTranslator {
     if (!pressed || modifiers.control || modifiers.alt || modifiers.meta) {
       return;
     }
+    // Dead keys and Compose sequences, before the keymap gets a look in.
+    //
+    // Wayland delivers keysyms, not characters: `dead_acute` then `a` is two
+    // keysyms and one character, and the compositor will not join them - that
+    // is the client's job unless an input method is in the loop. A dead key
+    // that reached `textFor` below would produce either nothing (it has no
+    // Latin-1 value) or, worse on a layout that maps it to `'`, the bare
+    // accent - which is exactly what a dead key exists to suppress.
+    //
+    // A modifier keysym is never fed: Shift is held *during* half the
+    // sequences in the table (`<dead_tilde> <A>`), so feeding it would break
+    // the sequence the user is in the middle of.
+    if (compose != null && !_isModifierKeysym(keysym)) {
+      final ComposeResult result = compose.accept(keysym);
+      switch (result.status) {
+        case ComposeStatus.composed:
+          emit(TextInputEvent(
+            windowId: windowId,
+            generation: generation,
+            timestamp: timestamp,
+            text: result.text!,
+          ));
+          return;
+        case ComposeStatus.pending:
+        case ComposeStatus.invalid:
+          // Consumed and produced nothing. The `KeyEvent` above still went
+          // out, so a shortcut bound to the physical key keeps working; what
+          // must not happen is text.
+          return;
+        case ComposeStatus.pass:
+          break;
+      }
+    }
     final text = keymap?.textFor(
       xkbKeycode,
       shift: modifiers.shift,
@@ -415,6 +527,15 @@ abstract final class WaylandEventTranslator {
       text: text,
     ));
   }
+
+  /// Whether [keysym] is a modifier, which a compose sequence must never see.
+  ///
+  /// The X11 modifier block is `0xffe1`-`0xffee` (the two Shifts, the two
+  /// Controls, CapsLock, ShiftLock, the two Metas, Alts, Supers and Hypers).
+  /// `ISO_Level3_Shift` (`0xfe03`) is the AltGr a Brazilian or German layout
+  /// uses to *reach* half the dead keys, so it is excluded too.
+  static bool _isModifierKeysym(int keysym) =>
+      (keysym >= 0xffe1 && keysym <= 0xffee) || keysym == 0xfe03;
 
   static Set<KeyModifier> _modifierSet(WaylandModifiersState modifiers) {
     if (modifiers.depressed == 0 &&
@@ -454,7 +575,18 @@ abstract final class WaylandEventTranslator {
     required int logicalHeight,
     required double renderScale,
     required void Function(PlatformWindowEvent event) emit,
+    int popupX = 0,
+    int popupY = 0,
   }) {
+    if (pending.popupMoved) {
+      // The one Wayland window that does learn its position: a popup's
+      // configure carries the parent-relative origin the compositor chose.
+      emit(WindowMovedEvent(
+        windowId: windowId,
+        generation: generation,
+        screenPosition: Offset(popupX.toDouble(), popupY.toDouble()),
+      ));
+    }
     if (pending.resized) {
       emit(WindowResizedEvent(
         windowId: windowId,
@@ -489,6 +621,11 @@ abstract final class WaylandEventTranslator {
         windowId: windowId,
         generation: generation,
       ));
+    }
+    if (pending.popupDismissed) {
+      // popup_done is not a request: the surface is already unmapped, so the
+      // application is told it closed rather than asked whether it may.
+      emit(WindowClosedEvent(windowId: windowId, generation: generation));
     }
     if (pending.destroyed) {
       emit(WindowClosedEvent(windowId: windowId, generation: generation));

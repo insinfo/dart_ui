@@ -410,6 +410,105 @@ void main() {
       expect(() => stack.pop(batchIndex: 0), throwsStateError);
     });
   });
+
+  group('layer attachments', () {
+    GpuLayer push(GpuLayerStack stack, {int size = 40}) => stack.push(
+          deviceBounds: Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()),
+          clip: const Rect.fromLTRB(0, 0, 1000, 1000),
+          alpha: 128,
+          blendMode: blendModeSrcOver,
+          batchIndex: 0,
+        );
+
+    test('colour-only by default, and the plain method is what is called', () {
+      // The behaviour every backend had before a policy existed, and still has
+      // when it declares none.
+      final allocator = _AttachmentSpyAllocator();
+      final stack = GpuLayerStack(allocator: allocator)
+        ..beginFrame(surfaceWidth: 100, surfaceHeight: 100);
+      push(stack);
+      expect(allocator.requests, <GpuPassAttachments?>[null]);
+      expect(stack.currentPass.attachments, GpuPassAttachments.colorOnly);
+    });
+
+    test('a policy asking for colour-only also takes the plain method', () {
+      // Not a detail: an allocator that has never seen the richer request must
+      // keep receiving the one it implements for the common case.
+      final allocator = _AttachmentSpyAllocator();
+      final stack = GpuLayerStack(
+        allocator: allocator,
+        layerAttachmentPolicy: (_, __) => GpuPassAttachments.colorOnly,
+      )..beginFrame(surfaceWidth: 100, surfaceHeight: 100);
+      push(stack);
+      expect(allocator.requests, <GpuPassAttachments?>[null]);
+    });
+
+    test('a policy asking for more reaches an allocator that can supply it',
+        () {
+      const wanted = GpuPassAttachments(stencilBits: 8, sampleCount: 4);
+      final allocator = _AttachmentSpyAllocator()..supplied = wanted;
+      final stack = GpuLayerStack(
+        allocator: allocator,
+        layerAttachmentPolicy: (_, __) => wanted,
+      )..beginFrame(surfaceWidth: 100, surfaceHeight: 100);
+      push(stack);
+      expect(allocator.requests, <GpuPassAttachments?>[wanted]);
+      expect(stack.currentPass.attachments, wanted,
+          reason: 'the pass has to describe the target that was handed over, '
+              'because that is what a strategy decision reads');
+    });
+
+    test('the pass reports what was supplied, not what was asked for', () {
+      // An allocator may downgrade - a driver that refuses a multisampled
+      // target, a pool that hands back a colour-only one. Believing the
+      // *request* here would let a stencil draw run against a framebuffer with
+      // no stencil, which is the one failure this whole descriptor exists to
+      // prevent.
+      final allocator = _AttachmentSpyAllocator()
+        ..supplied = GpuPassAttachments.colorOnly;
+      final stack = GpuLayerStack(
+        allocator: allocator,
+        layerAttachmentPolicy: (_, __) =>
+            const GpuPassAttachments(stencilBits: 8, sampleCount: 4),
+      )..beginFrame(surfaceWidth: 100, surfaceHeight: 100);
+      push(stack);
+      expect(stack.currentPass.attachments, GpuPassAttachments.colorOnly);
+    });
+
+    test('an allocator that cannot answer the richer request still works', () {
+      // The compatibility guarantee: four backends implement only the plain
+      // interface, and a policy must not make the stack unable to open a layer
+      // on any of them.
+      final allocator = _SpyAllocator();
+      final stack = GpuLayerStack(
+        allocator: allocator,
+        layerAttachmentPolicy: (_, __) =>
+            const GpuPassAttachments(stencilBits: 8, sampleCount: 4),
+      )..beginFrame(surfaceWidth: 100, surfaceHeight: 100);
+      final GpuLayer layer = push(stack);
+      expect(layer.kind, GpuLayerKind.offscreen);
+      expect(allocator.acquired, 1);
+      expect(stack.currentPass.attachments, GpuPassAttachments.colorOnly);
+    });
+
+    test('the policy sees the layer size, not the surface size', () {
+      // The size is the only fact available at push time, which is why the
+      // policy is expressed in terms of it - see the doc on
+      // GpuLayerStack.layerAttachmentPolicy.
+      final List<List<int>> seen = <List<int>>[];
+      final stack = GpuLayerStack(
+        allocator: _AttachmentSpyAllocator(),
+        layerAttachmentPolicy: (int width, int height) {
+          seen.add(<int>[width, height]);
+          return GpuPassAttachments.colorOnly;
+        },
+      )..beginFrame(surfaceWidth: 1000, surfaceHeight: 1000);
+      push(stack, size: 64);
+      expect(seen, <List<int>>[
+        <int>[64, 64]
+      ]);
+    });
+  });
 }
 
 /// An allocator made of integers, which is the whole point: "the stack asked
@@ -454,4 +553,56 @@ final class _FakeTarget implements GpuLayerTarget {
 
   @override
   final int height;
+}
+
+/// A spy that can also answer the richer request, and records which one it
+/// was asked for.
+final class _AttachmentSpyAllocator
+    implements GpuLayerTargetAllocator, GpuAttachmentAwareAllocator {
+  final List<GpuPassAttachments?> requests = <GpuPassAttachments?>[];
+
+  /// What this allocator actually hands back, which is not required to be what
+  /// was asked for - a real pool may round up or refuse and downgrade.
+  GpuPassAttachments supplied = GpuPassAttachments.colorOnly;
+
+  @override
+  GpuLayerTarget acquireLayerTarget(int width, int height) {
+    requests.add(null);
+    return _FakeTarget(1, 101, width, height);
+  }
+
+  @override
+  GpuLayerTarget acquireLayerTargetWith(
+    int width,
+    int height,
+    GpuPassAttachments attachments,
+  ) {
+    requests.add(attachments);
+    return _AttachmentFakeTarget(2, 102, width, height, supplied);
+  }
+
+  @override
+  void releaseLayerTarget(GpuLayerTarget target) {}
+}
+
+final class _AttachmentFakeTarget
+    implements GpuLayerTarget, GpuAttachmentAwareTarget {
+  _AttachmentFakeTarget(
+    this.id,
+    this.textureId,
+    this.width,
+    this.height,
+    this.passAttachments,
+  );
+
+  @override
+  final int id;
+  @override
+  final int textureId;
+  @override
+  final int width;
+  @override
+  final int height;
+  @override
+  final GpuPassAttachments passAttachments;
 }

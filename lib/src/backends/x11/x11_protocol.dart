@@ -32,6 +32,9 @@ const int xcbMapNotify = 19;
 const int xcbReparentNotify = 21;
 const int xcbConfigureNotify = 22;
 const int xcbPropertyNotify = 28;
+const int xcbSelectionClear = 29;
+const int xcbSelectionRequest = 30;
+const int xcbSelectionNotify = 31;
 const int xcbClientMessage = 33;
 const int xcbMappingNotify = 34;
 const int xcbGenericEvent = 35;
@@ -119,6 +122,14 @@ const int xcbImageFormatZPixmap = 2;
 const int xcbNone = 0;
 const int xcbCurrentTime = 0;
 
+/// `XCB_GET_PROPERTY_TYPE_ANY`: read the property whatever its type is.
+///
+/// Named rather than written as `0` because a GetProperty that names a type
+/// the owner did not use succeeds with an *empty* value and a reply that
+/// reports the real type - which reads exactly like "the source sent nothing"
+/// and is the classic way a selection transfer appears to silently fail.
+const int xcbGetPropertyTypeAny = 0;
+
 /// `XCB_INPUT_FOCUS_POINTER_ROOT`, used when revoking focus.
 const int xcbInputFocusPointerRoot = 1;
 
@@ -129,6 +140,10 @@ const int xcbInputFocusPointerRoot = 1;
 
 const int xcbAtomAtom = 4;
 const int xcbAtomCardinal = 6;
+
+/// `XA_INTEGER`. ICCCM 2.6.2 types the answer to a `TIMESTAMP` conversion with
+/// it, which is the one place this backend produces an INTEGER property.
+const int xcbAtomInteger = 19;
 const int xcbAtomResourceManager = 23;
 const int xcbAtomString = 31;
 const int xcbAtomWindow = 33;
@@ -167,6 +182,73 @@ const int netWmStateToggle = 2;
 const int icccmWmStateWithdrawn = 0;
 const int icccmWmStateNormal = 1;
 const int icccmWmStateIconic = 3;
+
+// ---------------------------------------------------------------------------
+// XDND (freedesktop drag-and-drop). The protocol is entirely ClientMessages
+// and properties, so these are the only numbers in it; the atom *names* are in
+// `x11_drag_drop.dart` next to the state machine that sends them.
+// ---------------------------------------------------------------------------
+
+/// The version this destination advertises in `XdndAware`.
+///
+/// 5 rather than the newest-imaginable: 5 is what has been current since 2002
+/// and is what GTK, Qt, Motif and every file manager speak. There is no 6.
+const int xdndVersion = 5;
+
+/// The oldest source version this destination will talk to.
+///
+/// 3 is where the protocol became what it is today - version 2 has a different
+/// `XdndEnter` layout and no `XdndActionList`, and no source that old is still
+/// in circulation. Refusing below 3 is refusing to guess at a layout that
+/// cannot be tested against anything.
+const int xdndMinimumVersion = 3;
+
+/// `XdndEnter` `data.l[1]`: the source's protocol version is the high byte.
+const int xdndEnterVersionShift = 24;
+
+/// `XdndEnter` `data.l[1]` bit 0: the source offers more than three types and
+/// the real list is in the `XdndTypeList` property on the source window.
+const int xdndEnterMoreTypesBit = 1 << 0;
+
+/// How many type atoms `XdndEnter` carries inline, in `data.l[2..4]`.
+const int xdndEnterInlineTypeCount = 3;
+
+/// `XdndStatus` `data.l[1]` bit 0: this destination will accept a drop.
+const int xdndStatusAcceptBit = 1 << 0;
+
+/// `XdndStatus` `data.l[1]` bit 1: send an `XdndPosition` for every pointer
+/// motion, ignoring the rectangle in `data.l[2..3]`.
+const int xdndStatusWantPositionBit = 1 << 1;
+
+/// `XdndFinished` `data.l[1]` bit 0: the drop was accepted and the data was
+/// transferred. Version 5 only; older sources ignore the whole word, which is
+/// why a *move* must never be reported to a version 4 source as performed.
+const int xdndFinishedAcceptedBit = 1 << 0;
+
+/// The first version whose `XdndFinished` carries `data.l[1..2]` at all.
+///
+/// A version 3 or 4 destination sends only `data.l[0]`, so the remaining words
+/// hold whatever `SendEvent` padded them with. A source that read them would
+/// decide at random whether the drop it just performed succeeded - which is why
+/// [X11DragDropManager] treats a pre-5 finish as "accepted, with the action the
+/// last `XdndStatus` agreed to" instead of guessing from uninitialised bytes.
+const int xdndFinishedVersionedReply = 5;
+
+/// How deep the source's `QueryPointer` walk from the root may go.
+///
+/// The walk terminates on its own - each step descends into a child of the
+/// previous window - but a server that answered with a cycle, or a window
+/// hierarchy being reparented underneath the walk, would spin forever inside
+/// one pointer motion. Sixteen is far past any real desktop: a client window
+/// inside a frame inside the root is three.
+const int xdndPointerWalkDepthLimit = 16;
+
+/// A ClientMessage carrying five 32-bit words has format 32. XDND messages are
+/// all of this shape, and one arriving with any other format is not XDND.
+const int xdndClientMessageFormat = 32;
+
+/// The five `data.l` words every XDND ClientMessage carries.
+const int xdndClientMessageWordCount = 5;
 
 // ---------------------------------------------------------------------------
 // Standard cursor font glyph indices (`X11/cursorfont.h`). The glyph, not the
@@ -266,6 +348,8 @@ String x11RequestName(int majorOpcode) {
       return 'CreateWindow';
     case 2:
       return 'ChangeWindowAttributes';
+    case 3:
+      return 'GetWindowAttributes';
     case 8:
       return 'MapWindow';
     case 10:
@@ -274,14 +358,28 @@ String x11RequestName(int majorOpcode) {
       return 'ConfigureWindow';
     case 14:
       return 'GetGeometry';
+    case 15:
+      return 'QueryTree';
     case 16:
       return 'InternAtom';
+    case 17:
+      return 'GetAtomName';
     case 18:
       return 'ChangeProperty';
+    case 19:
+      return 'DeleteProperty';
     case 20:
       return 'GetProperty';
+    case 22:
+      return 'SetSelectionOwner';
+    case 23:
+      return 'GetSelectionOwner';
+    case 24:
+      return 'ConvertSelection';
     case 25:
       return 'SendEvent';
+    case 38:
+      return 'QueryPointer';
     case 40:
       return 'TranslateCoordinates';
     case 42:

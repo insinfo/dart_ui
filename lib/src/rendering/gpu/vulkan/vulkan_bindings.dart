@@ -510,6 +510,11 @@ typedef VkCmdSetScissorNative = Void Function(
 typedef VkCmdSetScissorDart = void Function(
     Pointer<VkCommandBuffer_T>, int, int, Pointer<VkRect2D>);
 
+typedef VkCmdDrawNative = Void Function(
+    Pointer<VkCommandBuffer_T>, Uint32, Uint32, Uint32, Uint32);
+typedef VkCmdDrawDart = void Function(
+    Pointer<VkCommandBuffer_T>, int, int, int, int);
+
 typedef VkCmdDrawIndexedNative = Void Function(
     Pointer<VkCommandBuffer_T>, Uint32, Uint32, Uint32, Int32, Uint32);
 typedef VkCmdDrawIndexedDart = void Function(
@@ -640,6 +645,7 @@ final class VulkanDeviceApi {
     'vkCmdBindDescriptorSets',
     'vkCmdSetViewport',
     'vkCmdSetScissor',
+    'vkCmdDraw',
     'vkCmdDrawIndexed',
     'vkCmdPushConstants',
     'vkCmdCopyBuffer',
@@ -768,6 +774,11 @@ final class VulkanDeviceApi {
   late final VkCmdBindDescriptorSetsDart cmdBindDescriptorSets;
   late final VkCmdSetViewportDart cmdSetViewport;
   late final VkCmdSetScissorDart cmdSetScissor;
+  /// `vkCmdDraw`. Non-indexed, and the only draw the sparse-strip pipeline
+  /// uses: its quad is four vertices built from `gl_VertexIndex`, so there is
+  /// no index buffer to bind and `firstInstance` is what selects the command's
+  /// slice of the instance array.
+  late final VkCmdDrawDart cmdDraw;
   late final VkCmdDrawIndexedDart cmdDrawIndexed;
   late final VkCmdPushConstantsDart cmdPushConstants;
   late final VkCmdCopyBufferDart cmdCopyBuffer;
@@ -987,6 +998,7 @@ final class VulkanDeviceApi {
         .asFunction<VkCmdSetViewportDart>();
     cmdSetScissor = _proc<VkCmdSetScissorNative>('vkCmdSetScissor')
         .asFunction<VkCmdSetScissorDart>();
+    cmdDraw = _proc<VkCmdDrawNative>('vkCmdDraw').asFunction<VkCmdDrawDart>();
     cmdDrawIndexed = _proc<VkCmdDrawIndexedNative>('vkCmdDrawIndexed')
         .asFunction<VkCmdDrawIndexedDart>();
     cmdPushConstants = _proc<VkCmdPushConstantsNative>('vkCmdPushConstants')

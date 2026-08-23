@@ -36,11 +36,16 @@ import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
 import '../../../rendering/framebuffer.dart';
+import '../../../rendering/gpu/d3d12/d3d12_sparse_executor.dart';
+import '../../../rendering/gpu/d3d12/d3d12_vector_path_recorder.dart';
 import '../../../rendering/gpu/gpu_batcher.dart';
 import '../../../rendering/gpu/gpu_glyph_atlas.dart';
 import '../../../rendering/gpu/gpu_mask_atlas.dart';
+import '../../../rendering/gpu/gpu_path_planning.dart';
+import '../../../rendering/gpu/gpu_path_strategy.dart';
 import '../../../rendering/gpu/gpu_raster_sink.dart';
 import '../../../rendering/gpu/gpu_texture.dart';
+import '../../../rendering/gpu/vector/sparse_strip_draw_plan.dart';
 import '../../../rendering/renderer.dart';
 import '../../../rendering/replay/display_list_player.dart';
 import 'd3d12_com.dart';
@@ -70,6 +75,40 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
     );
     _fonts = D3d12FontResolver();
     _images = D3d12ImageCache(_device);
+    // The experimental vector route is wired only when the device was opened
+    // with it. A production device leaves both fields null, the sink consults
+    // neither, and the dense path below is bit-for-bit the one that shipped.
+    if (_device.experimentalSparseStripsEnabled) {
+      final D3d12VectorPathRecorder recorder = D3d12VectorPathRecorder();
+      _vectorRecorder = recorder;
+      _planning = GpuPathPlanningTelemetry(
+        selector: _device.experimentalPathStrategySelector,
+        // Per draw rather than per device, and both traits matter here:
+        //
+        //   * sparse coverage *is* analytic antialiasing, so it is a correct
+        //     answer for an antialiased fill and the wrong picture for an
+        //     aliased one;
+        //   * a gradient has no resolved material on this route, and the
+        //     recorder would refuse it at commit time - saying so here keeps
+        //     the selector from proposing a route that cannot be taken.
+        //
+        // Compute follows the device flag, because the device really did build
+        // a compute pipeline; the recorder still refuses the candidate by name,
+        // because no pass composites its coverage. See
+        // `d3d12_vector_path_recorder.dart`.
+        capabilitiesProbe: (GpuPathDrawTraits traits) =>
+            GpuPathStrategyCapabilities(
+          sparseStrips: traits.antiAlias && !traits.hasGradient,
+          // Approach D antialiases by supersampling and has no gradient
+          // material on this route either, so it is offered under exactly the
+          // same two conditions as the sparse strips it composites through.
+          compute: _device.experimentalComputeTilesEnabled &&
+              traits.antiAlias &&
+              !traits.hasGradient,
+        ),
+        sparseMetricsProbe: recorder.probeSparseMetrics,
+      );
+    }
     _sink = GpuRasterSink(
       batcher: _batcher,
       backendName: D3d12RenderDevice.backendName,
@@ -82,6 +121,8 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
       // No layer stack: this device refuses a saveLayer that needs a real
       // offscreen pass, by name, rather than flattening it. See the scope
       // section of d3d12_device.dart.
+      pathPlanningTelemetry: _planning,
+      pathCommandRecorder: _vectorRecorder,
       onAtlasFlush: _flushAtlases,
     );
     _player = DisplayListPlayer(_sink);
@@ -111,6 +152,14 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
   int _submittedBatches = 0;
   int? _pendingClear;
   bool _recording = false;
+  D3d12VectorPathRecorder? _vectorRecorder;
+  GpuPathPlanningTelemetry? _planning;
+  int _submittedVectorCommands = 0;
+  int _composedComputeDraws = 0;
+  SparseStripDrawPlan? _pendingSparsePlan;
+  List<SparseD3d12Material> _pendingSparseMaterials =
+      const <SparseD3d12Material>[];
+  SparseD3d12ExecutionStats? _lastSparseStats;
 
   /// The last pixels read back. Golden and parity tests read this after
   /// [present].
@@ -123,6 +172,42 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
 
   /// The glyph coverage this target keeps between frames.
   GpuGlyphAtlas get glyphAtlas => _glyphAtlas;
+
+  /// How many draws this target has composited through approach D.
+  ///
+  /// Cumulative across frames rather than per frame: it exists so a test can
+  /// assert that the compute route really ran, and a counter that reset would
+  /// read zero for a frame that promoted nothing without distinguishing that
+  /// from a route that is silently never taken.
+  int get composedComputeDraws => _composedComputeDraws;
+
+  /// What the last sparse-strip submission actually sent, or null.
+  SparseD3d12ExecutionStats? get lastSparseStats => _lastSparseStats;
+
+  /// The transactional selector-to-executor bridge, or null on a device that
+  /// was not opened with the experimental sparse pipeline.
+  D3d12VectorPathRecorder? get vectorRecorder => _vectorRecorder;
+
+  /// The strategy decisions the sink observed, or null. Advisory: the recorder
+  /// decides what really drew, and the event records that separately.
+  GpuPathPlanningTelemetry? get pathPlanning => _planning;
+
+  /// Queues one experimental sparse-strip submission for the next [present].
+  ///
+  /// Queued rather than executed, because a sparse pass has to land *after* the
+  /// dense batches of the same frame and inside the same open command list -
+  /// and only [present] knows when that is. This is the offscreen counterpart
+  /// of `GlRenderDevice.submitSparseStrips`: a caller opts in explicitly, the
+  /// display list never reaches it, and a target with nothing queued behaves
+  /// exactly as it did before.
+  void enqueueSparseStrips(
+    SparseStripDrawPlan plan, {
+    required List<SparseD3d12Material> materials,
+  }) {
+    throwIfDisposed();
+    _pendingSparsePlan = plan;
+    _pendingSparseMaterials = materials;
+  }
 
   @override
   NativeSurfaceDescriptor get surface => _surface;
@@ -151,6 +236,10 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
     _batcher.beginFrame();
     _maskAtlas.beginFrame();
     _glyphAtlas.beginFrame();
+    _vectorRecorder
+      ?..resetForFrame()
+      ..setTargetSize(_readback.width, _readback.height);
+    _submittedVectorCommands = 0;
     _submittedBatches = 0;
     _pendingClear = request.clearColor;
     return Frame(
@@ -203,17 +292,23 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
     _uploadMaskAtlas();
     _uploadGlyphAtlas();
 
-    final int? clear = _pendingClear;
-    _pendingClear = null;
-    final bool drawn = _device.submit(
-      _batcher,
-      _readback.width,
-      _readback.height,
-      clear,
-      renderTargetView: _renderTargetView,
-      firstBatch: _submittedBatches,
-    );
-    _submittedBatches = _batcher.batchCount;
+    final bool drawn = _submitOrdered(_batcher.batchCount);
+
+    // After the dense batches and before the readback: the sparse pass belongs
+    // in display-list order at the end of the frame, and it has to be recorded
+    // on the list that is about to be closed rather than on a later one.
+    final SparseStripDrawPlan? sparse = _pendingSparsePlan;
+    _pendingSparsePlan = null;
+    if (drawn && sparse != null) {
+      _lastSparseStats = _device.submitSparseStrips(
+        sparse,
+        materials: _pendingSparseMaterials,
+        viewportWidth: _readback.width,
+        viewportHeight: _readback.height,
+        renderTargetView: _renderTargetView,
+      );
+    }
+    _pendingSparseMaterials = const <SparseD3d12Material>[];
 
     final D3d12Texture? colour = _colorTexture;
     if (drawn && colour != null) {
@@ -354,17 +449,76 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
     if (!_recording) return;
     _uploadMaskAtlas();
     _uploadGlyphAtlas();
+    _submitOrdered(_batcher.batchCount);
+  }
+
+  /// Issues everything recorded up to [endBatch], dense and vector, in order.
+  ///
+  /// The whole point of the interleave: a vector command names the first dense
+  /// batch that must run *after* it, so the dense range before that boundary is
+  /// issued first, then the command, then the rest. Grouping all the dense work
+  /// ahead of all the vector work would composite the frame in the wrong order,
+  /// and on an opaque scene it would look almost right.
+  ///
+  /// Called from [present] and from the atlas-flush hook, which is why it takes
+  /// an upper bound and remembers how far it got: a batch drawn twice blends
+  /// twice.
+  bool _submitOrdered(int endBatch) {
+    final D3d12VectorPathRecorder? recorder = _vectorRecorder;
+    var cursor = _submittedBatches;
+    if (recorder != null) {
+      while (_submittedVectorCommands < recorder.commandCount) {
+        final D3d12VectorPathCommand command =
+            recorder.commandAt(_submittedVectorCommands);
+        if (command.batchIndex > endBatch) break;
+        // Even when the range is empty this call is not: it binds the render
+        // target and performs the frame's one clear, which has to happen
+        // before the first vector command rather than after it.
+        if (!_submitDense(cursor, command.batchIndex)) return false;
+        cursor = command.batchIndex;
+        switch (command) {
+          case D3d12SparsePathCommand(:final plan, :final material):
+            _lastSparseStats = _device.submitSparseStrips(
+              plan,
+              materials: <SparseD3d12Material>[material],
+              viewportWidth: _readback.width,
+              viewportHeight: _readback.height,
+              renderTargetView: _renderTargetView,
+            );
+          case D3d12ComputeTilePathCommand(
+              :final plan,
+              :final material,
+              :final sampleGrid,
+            ):
+            _composedComputeDraws += _device.submitComputeTilesComposited(
+              plan,
+              materials: <SparseD3d12Material>[material],
+              viewportWidth: _readback.width,
+              viewportHeight: _readback.height,
+              renderTargetView: _renderTargetView,
+              sampleGrid: sampleGrid,
+            );
+        }
+        _submittedVectorCommands++;
+      }
+    }
+    final bool drawn = _submitDense(cursor, endBatch);
+    _submittedBatches = endBatch;
+    return drawn;
+  }
+
+  bool _submitDense(int firstBatch, int endBatch) {
     final int? clear = _pendingClear;
     _pendingClear = null;
-    _device.submit(
+    return _device.submit(
       _batcher,
       _readback.width,
       _readback.height,
       clear,
       renderTargetView: _renderTargetView,
-      firstBatch: _submittedBatches,
+      firstBatch: firstBatch,
+      endBatch: endBatch,
     );
-    _submittedBatches = _batcher.batchCount;
   }
 
   @override

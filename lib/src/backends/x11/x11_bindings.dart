@@ -302,6 +302,15 @@ typedef XcbGlyphD = XcbCookie Function(
     Pointer<Void>, int, int, int, int, int, int, int, int, int, int, int);
 typedef XcbFocusN = XcbCookie Function(Pointer<Void>, Uint8, Uint32, Uint32);
 typedef XcbFocusD = XcbCookie Function(Pointer<Void>, int, int, int);
+typedef XcbDelPropN = XcbCookie Function(Pointer<Void>, Uint32, Uint32);
+typedef XcbDelPropD = XcbCookie Function(Pointer<Void>, int, int);
+typedef XcbSetOwnerN = XcbCookie Function(
+    Pointer<Void>, Uint32, Uint32, Uint32);
+typedef XcbSetOwnerD = XcbCookie Function(Pointer<Void>, int, int, int);
+typedef XcbCnvSelN = XcbCookie Function(
+    Pointer<Void>, Uint32, Uint32, Uint32, Uint32, Uint32);
+typedef XcbCnvSelD = XcbCookie Function(
+    Pointer<Void>, int, int, int, int, int);
 
 /// Bound libxcb. Constructed only after every symbol has been verified.
 final class XcbBindings {
@@ -371,11 +380,20 @@ final class XcbBindings {
     'xcb_configure_window',
     'xcb_intern_atom',
     'xcb_intern_atom_reply',
+    'xcb_get_atom_name',
+    'xcb_get_atom_name_reply',
+    'xcb_get_atom_name_name',
+    'xcb_get_atom_name_name_length',
     'xcb_change_property',
+    'xcb_delete_property',
     'xcb_get_property',
     'xcb_get_property_reply',
     'xcb_get_property_value',
     'xcb_get_property_value_length',
+    'xcb_set_selection_owner',
+    'xcb_get_selection_owner',
+    'xcb_get_selection_owner_reply',
+    'xcb_convert_selection',
     'xcb_send_event',
     'xcb_create_gc',
     'xcb_create_gc_checked',
@@ -386,6 +404,8 @@ final class XcbBindings {
     'xcb_query_extension_reply',
     'xcb_translate_coordinates',
     'xcb_translate_coordinates_reply',
+    'xcb_query_pointer',
+    'xcb_query_pointer_reply',
     'xcb_get_geometry',
     'xcb_get_geometry_reply',
     'xcb_open_font',
@@ -452,12 +472,23 @@ final class XcbBindings {
       library.lookupFunction<XcbInternN, XcbInternD>('xcb_intern_atom');
   late final XcbChgPropD changeProperty =
       library.lookupFunction<XcbChgPropN, XcbChgPropD>('xcb_change_property');
+  late final XcbDelPropD deleteProperty =
+      library.lookupFunction<XcbDelPropN, XcbDelPropD>('xcb_delete_property');
+  late final XcbSetOwnerD setSelectionOwner =
+      library.lookupFunction<XcbSetOwnerN, XcbSetOwnerD>(
+          'xcb_set_selection_owner');
+  late final XcbCnvSelD convertSelection =
+      library.lookupFunction<XcbCnvSelN, XcbCnvSelD>('xcb_convert_selection');
   late final XcbGetPropD getProperty =
       library.lookupFunction<XcbGetPropN, XcbGetPropD>('xcb_get_property');
   late final XcbPValD getPropertyValue =
       library.lookupFunction<XcbPValN, XcbPValD>('xcb_get_property_value');
   late final XcbPLnD getPropertyValueLength =
       library.lookupFunction<XcbPLnN, XcbPLnD>('xcb_get_property_value_length');
+  late final XcbPValD getAtomNameName =
+      library.lookupFunction<XcbPValN, XcbPValD>('xcb_get_atom_name_name');
+  late final XcbPLnD getAtomNameLength =
+      library.lookupFunction<XcbPLnN, XcbPLnD>('xcb_get_atom_name_name_length');
   late final XcbSendEvtD sendEvent =
       library.lookupFunction<XcbSendEvtN, XcbSendEvtD>('xcb_send_event');
   late final XcbCrtGcD createGc =
@@ -495,8 +526,20 @@ final class XcbBindings {
   late final XcbWinD freeGc = _win('xcb_free_gc');
   late final XcbWinD closeFont = _win('xcb_close_font');
   late final XcbWinD freeCursor = _win('xcb_free_cursor');
+  // Both take a single 32-bit resource after the connection, so they share the
+  // window cookie shape: an atom and a selection are both `uint32` on the wire.
+  late final XcbWinD getAtomName = _win('xcb_get_atom_name');
+  late final XcbWinD getSelectionOwner = _win('xcb_get_selection_owner');
+  // `xcb_query_pointer` takes one window after the connection, so it shares the
+  // window cookie shape too. It is the request an XDND *source* walks the
+  // window tree with, once per pointer motion of a drag it started.
+  late final XcbWinD queryPointer = _win('xcb_query_pointer');
   late final XcbReplyD internAtomReply = _reply('xcb_intern_atom_reply');
+  late final XcbReplyD getAtomNameReply = _reply('xcb_get_atom_name_reply');
+  late final XcbReplyD getSelectionOwnerReply =
+      _reply('xcb_get_selection_owner_reply');
   late final XcbReplyD getPropertyReply = _reply('xcb_get_property_reply');
+  late final XcbReplyD queryPointerReply = _reply('xcb_query_pointer_reply');
   late final XcbReplyD queryExtensionReply =
       _reply('xcb_query_extension_reply');
   late final XcbReplyD translateCoordinatesReply =

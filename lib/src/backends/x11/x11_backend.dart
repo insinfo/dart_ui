@@ -34,11 +34,13 @@ library;
 import 'dart:io' show Platform;
 
 import '../../foundation/diagnostics.dart';
-
+import '../../geometry/offset.dart';
+import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import 'x11_bindings.dart';
 import 'x11_connection.dart';
+import 'x11_drag_drop.dart';
 import 'x11_events.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
@@ -53,7 +55,7 @@ import 'x11_window.dart';
 typedef X11ConnectionOpener = X11ConnectionAttempt Function(String display);
 
 /// Creates and owns X11 windows.
-final class X11WindowingBackend implements WindowingBackend {
+final class X11WindowingBackend implements WindowingBackend, DragDropProvider {
   X11WindowingBackend({
     bool? isLinux,
     String? operatingSystem,
@@ -78,6 +80,9 @@ final class X11WindowingBackend implements WindowingBackend {
   final X11ConnectionOpener _connectionOpener;
 
   X11WindowClient? _connection;
+  X11DragDropManager? _dragDropManager;
+  X11XdndSource? _dragSource;
+  X11DragDropBackend? _dragDrop;
   X11ScaleResolution? _scale;
   final X11RawEvent _rawEvent = X11RawEvent();
   int _nextWindowId = 1;
@@ -93,6 +98,7 @@ final class X11WindowingBackend implements WindowingBackend {
   // ignore: prefer_final_fields
   bool _hasXkb = false;
   bool _supportsCpuPresentation = false;
+  bool _supportsDragAndDrop = false;
 
   /// The resolved scale, available after [probe] or [initialize].
   X11ScaleResolution? get scale => _scale;
@@ -259,6 +265,7 @@ final class X11WindowingBackend implements WindowingBackend {
       detail: 'core PutImage presentation is used on compatible visuals',
     ));
     _connection = connection;
+    _installDragAndDrop(connection, diagnostics);
     _initialized = true;
     _quitRequested = false;
     _serverDisconnected = false;
@@ -269,6 +276,15 @@ final class X11WindowingBackend implements WindowingBackend {
   Future<void> shutdown() async {
     if (!_initialized && _connection == null) return;
     _initialized = false;
+
+    // Before the windows: a pending selection transfer holds a Completer that
+    // nothing will ever answer once the socket is gone, and a drop handler
+    // awaiting it would never see its future complete.
+    _dragDropManager?.dispose();
+    _dragDropManager = null;
+    _dragSource?.dispose();
+    _dragSource = null;
+    _dragDrop = null;
 
     Object? firstError;
     StackTrace? firstStack;
@@ -378,6 +394,11 @@ final class X11WindowingBackend implements WindowingBackend {
         connection.recordError(_rawEvent.describeError());
         continue;
       }
+      // Offered to XDND before anything is routed by window. A SelectionNotify
+      // is addressed to a window but is *about* a transfer, so `_windowsByXid`
+      // is the wrong index for it, and an XDND ClientMessage consumed here must
+      // not also reach the window's WM_PROTOCOLS handling.
+      if (_offerToDragAndDrop(_rawEvent)) continue;
       if (_rawEvent.type == xcbPropertyNotify &&
           _rawEvent.window == connection.root) {
         for (final window in _windows) {
@@ -393,7 +414,162 @@ final class X11WindowingBackend implements WindowingBackend {
   void _onWindowClosed(X11Window window) {
     _windowsByXid.remove(window.xcbWindow);
     _windows.remove(window);
+    // The XdndAware property dies with the window, but the manager's session
+    // does not: a drag that was over this window has to stop being tracked, or
+    // the next `XdndPosition` would be answered on behalf of a dead target.
+    _dragDropManager?.unregisterWindow(window.xcbWindow);
     if (_initialized && _windows.isEmpty) _quitRequested = true;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Drag and drop
+  // ---------------------------------------------------------------------------
+
+  /// Never null: a connection that cannot speak XDND answers with an
+  /// [UnavailableDragDrop] carrying the reason, so a registration fails where
+  /// the caller can see it instead of producing a drop that never arrives.
+  @override
+  DragDropBackend get dragAndDrop =>
+      _dragDrop ??
+      UnavailableDragDrop(
+        name: 'xdnd',
+        reason: _initialized
+            ? 'this X11 connection does not implement the XDND client seam'
+            : 'x11.dragAndDrop before initialize()',
+      );
+
+  void _installDragAndDrop(
+    X11WindowClient connection,
+    List<BackendDiagnostic> diagnostics,
+  ) {
+    if (connection is! X11DragDropClient) {
+      // A note, not a failure: the windowing backend is perfectly usable
+      // without drag and drop, and `dragAndDrop` already names the reason at
+      // the moment a caller tries to register a target.
+      diagnostics.add(const BackendDiagnostic.note(
+        'XDND is unavailable on this X11 connection',
+        detail: 'the connection does not implement X11DragDropClient',
+      ));
+      return;
+    }
+    final manager = X11DragDropManager(
+      connection as X11DragDropClient,
+      rootToClient: _rootToClient,
+      scaleOf: _windowScale,
+    );
+    final source = X11XdndSource(connection as X11DragDropClient);
+    _dragDropManager = manager;
+    _dragSource = source;
+    _dragDrop = X11DragDropBackend(
+      manager: manager,
+      xcbWindowOf: _xcbWindowOf,
+    )
+      ..source = source
+      ..rootWindow = connection.root
+      ..currentTime = () => _lastEventTime;
+    diagnostics.add(const BackendDiagnostic.note(
+      'XDND is available in both directions',
+      detail: 'protocol version $xdndVersion, sources from '
+          '$xdndMinimumVersion up; a drag started here owns XdndSelection and '
+          'serves the payload from SelectionRequest',
+    ));
+  }
+
+  /// The newest server timestamp seen, which every XDND message must carry.
+  ///
+  /// X refuses a `SetSelectionOwner` with a stale time and ignores an
+  /// `XdndDrop` that carries one, so guessing - or worse, sending
+  /// `CurrentTime` - is how a drag silently fails to take its own selection.
+  /// Updated from every event that carries a time; see [_recordEventTime].
+  int _lastEventTime = 0;
+
+  /// Remembers the newest server time an event carried.
+  void _recordEventTime(X11RawEvent raw) {
+    if (raw.timestamp > _lastEventTime) _lastEventTime = raw.timestamp;
+  }
+
+  /// Gives one decoded event to the XDND machines. True when it was consumed.
+  ///
+  /// The **source** is offered every event first, and that order is the whole
+  /// of the arbitration between the two halves: a drag started here owns the
+  /// `XdndStatus`, `XdndFinished`, `SelectionRequest` and `SelectionClear` that
+  /// answer it, while everything else belongs to the destination. Offering them
+  /// to the destination first would let a status meant for our own drag be
+  /// mistaken for a message from a foreign source.
+  bool _offerToDragAndDrop(X11RawEvent raw) {
+    _recordEventTime(raw);
+    final source = _dragSource;
+    if (source != null) {
+      switch (raw.type) {
+        case xcbClientMessage:
+          if (source.handleClientMessage(
+            type: raw.atom,
+            window: raw.window,
+            data: <int>[raw.data0, raw.data1, raw.data2, raw.data3, raw.data4],
+          )) {
+            return true;
+          }
+        case xcbSelectionRequest:
+          if (source.handleSelectionRequest(
+            requestor: raw.requestor,
+            selection: raw.selection,
+            target: raw.target,
+            property: raw.property,
+            time: raw.timestamp,
+          )) {
+            return true;
+          }
+        case xcbSelectionClear:
+          if (source.handleSelectionClear(raw.selection)) return true;
+        default:
+          break;
+      }
+    }
+    final manager = _dragDropManager;
+    if (manager == null) return false;
+    switch (raw.type) {
+      case xcbClientMessage:
+        return manager.handleClientMessage(
+          window: raw.window,
+          messageType: raw.atom,
+          format: raw.detail,
+          data0: raw.data0,
+          data1: raw.data1,
+          data2: raw.data2,
+          data3: raw.data3,
+          data4: raw.data4,
+        );
+      case xcbSelectionNotify:
+        return manager.handleSelectionNotify(
+          requestor: raw.window,
+          selection: raw.selection,
+          target: raw.target,
+          property: raw.property,
+        );
+      default:
+        return false;
+    }
+  }
+
+  /// `XdndPosition` reports root-window device pixels; a handler hit-tests in
+  /// the same logical client-area units a `PointerEvent` carries.
+  Offset _rootToClient(int xcbWindow, int rootX, int rootY) {
+    final window = _windowsByXid[xcbWindow];
+    if (window == null) {
+      return Offset(rootX.toDouble(), rootY.toDouble());
+    }
+    final scale = window.renderScale;
+    return window.screenToClient(Offset(rootX / scale, rootY / scale));
+  }
+
+  double _windowScale(int xcbWindow) =>
+      _windowsByXid[xcbWindow]?.renderScale ?? _scale?.scale ?? 1.0;
+
+  int _xcbWindowOf(NativeWindow window) {
+    for (final candidate in _windows) {
+      if (identical(candidate, window)) return candidate.xcbWindow;
+    }
+    return 0;
   }
 
   @override
@@ -453,6 +629,10 @@ final class X11WindowingBackend implements WindowingBackend {
     final cpuClient =
         connection is X11CpuClient ? connection as X11CpuClient : null;
     _supportsCpuPresentation = cpuClient?.supportsBgraPutImage ?? false;
+    // XDND rides on the core protocol, so there is no extension to detect: the
+    // only question is whether this connection exposes the requests the state
+    // machine needs, which is exactly what the seam says.
+    _supportsDragAndDrop = connection is X11DragDropClient;
     _resolveScale(connection, diagnostics);
     diagnostics.add(BackendDiagnostic.note(
       'extensions: randr=${_hasRandr ? "yes" : "no"}, '
@@ -463,9 +643,27 @@ final class X11WindowingBackend implements WindowingBackend {
           ? 'core BGRA PutImage presentation is available'
           : 'core BGRA PutImage presentation is unavailable',
     ));
+    diagnostics.add(BackendDiagnostic.note(
+      _supportsDragAndDrop
+          ? 'XDND drop targets are available; dragging out is not implemented'
+          : 'XDND is unavailable on this connection',
+    ));
     diagnostics.add(const BackendDiagnostic.note(
       'core mouse motion, buttons, crossings and wheel are normalized; '
       'keyboard input awaits XKB integration',
+    ));
+    diagnostics.add(const BackendDiagnostic.note(
+      'no input method: neither XIM nor dead-key composition',
+      detail: 'and the blocker is the keyboard, not the IME. KeyPress and '
+          'KeyRelease are consumed and dropped in x11_events.dart, so this '
+          'backend emits no KeyEvent and no TextInputEvent and does not claim '
+          'Capability.keyboardInput either - there is nothing yet for a '
+          'composition to compose. The dead-key engine in '
+          'platform/compose_sequences.dart is written and reads this machine\'s '
+          'own Compose tables; wiring it here is one call once '
+          'xkb_state_key_get_utf8 produces the first character. CJK needs XIM '
+          'or ibus over the input-context protocol and stays out of scope; '
+          'see doc/architecture/overview.md.',
     ));
   }
 
@@ -498,6 +696,7 @@ final class X11WindowingBackend implements WindowingBackend {
               Capability.scrollInput,
               Capability.orderlyShutdown,
               if (_supportsCpuPresentation) Capability.cpuPresentation,
+              if (_supportsDragAndDrop) Capability.dragAndDrop,
             }
           : const <Capability>{},
       diagnostics: diagnostics,

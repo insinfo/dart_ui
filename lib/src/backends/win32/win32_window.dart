@@ -52,6 +52,22 @@ const int _hwndTop = 0;
 const int _wsExNoactivate = 0x08000000;
 const int _wsExTopmost = 0x00000008;
 
+/// Whoever currently owns this window's input context.
+///
+/// Declared here rather than in `win32_ime.dart` so that the window does not
+/// have to import the IMM32 bridge: a window with no text field in it must not
+/// drag imm32 and the whole text-input port into its dependencies, and this
+/// backend's own tests construct windows with no IME at all.
+///
+/// [handleImeMessage] returns the `LRESULT` to answer with, or **null** to let
+/// `DefWindowProcW` have the message. Null is not "I failed": `WM_IME_NOTIFY`
+/// and `WM_IME_CHAR` genuinely belong to the platform, and a handler that
+/// swallowed them with a 0 would break the candidate list it is trying to
+/// position.
+abstract interface class Win32ImeMessageHandler {
+  int? handleImeMessage(int hwnd, int msg, int wParam, int lParam);
+}
+
 /// A Win32 window.
 ///
 /// Sizes crossing this boundary are logical; sizes below it are physical
@@ -325,6 +341,19 @@ final class Win32Window
 
   /// The window class this window belongs to, for diagnostics.
   String get className => _class.name;
+
+  /// Who sees this window's `WM_IME_*` messages, or null.
+  ///
+  /// Set by `Win32TextInputConnection` when a text field takes focus and
+  /// cleared when it detaches. Null is the ordinary state and means the input
+  /// method behaves exactly as it did before this backend learned about IMM32:
+  /// `DefWindowProcW` draws its own composition window, which is a working -
+  /// if duplicated-looking - IME rather than a dead one.
+  ///
+  /// A plain field, not a setter with side effects: the connection owns the
+  /// input context, and a window that also tried to manage it would be a second
+  /// opinion about whether a composition is in progress.
+  Win32ImeMessageHandler? imeHandler;
 
   /// Non-fatal failures this window has seen. Bounded: a window that fails to
   /// present every frame must not turn into a memory leak.
@@ -904,6 +933,19 @@ final class Win32Window
       case wmChar:
         return _onChar(wParam);
 
+      // The input-method family. Routed as a block to whoever holds the input
+      // context - see [imeHandler] - and handed to `DefWindowProcW` when
+      // nobody does, which is the behaviour this window had before IMM32 was
+      // wired up at all.
+      case wmImeSetcontext:
+      case wmImeStartcomposition:
+      case wmImeComposition:
+      case wmImeEndcomposition:
+      case wmImeNotify:
+      case wmImeChar:
+      case wmImeRequest:
+        return _onImeMessage(hwnd, msg, wParam, lParam);
+
       case wmSyschar:
       case wmDeadchar:
       case wmSysdeadchar:
@@ -1157,6 +1199,14 @@ final class Win32Window
   Duration _eventTimestamp() => Duration(milliseconds: _api.getMessageTime());
 
   int _onKeyDown(int wParam, int lParam) {
+    // `VK_PROCESSKEY` is Windows saying "the input method has already taken
+    // this keystroke; there is no key here". Emitting it would be actively
+    // wrong rather than merely useless: every key of a Japanese conversion
+    // arrives as this one virtual key, so an application shortcut bound to a
+    // bare letter would fire on every keystroke of the word being composed,
+    // and focus traversal would see a stream of unclaimed keys. The real
+    // effect of those keystrokes reaches the framework as `WM_IME_COMPOSITION`.
+    if (wParam == vkProcesskey) return 0;
     _emit(
       KeyDownEvent(
         windowId: id,
@@ -1185,6 +1235,40 @@ final class Win32Window
       ),
     );
     return 0;
+  }
+
+  /// Offers one `WM_IME_*` message to [imeHandler], then to the platform.
+  ///
+  /// Two rules, both of which are the difference between a working IME and a
+  /// broken window:
+  ///
+  ///   * **An exception must not escape.** The shared WndProc catches at the
+  ///     top and answers `DefWindowProcW`, which for `WM_IME_SETCONTEXT` means
+  ///     forwarding it with the IME's own composition window switched *on* -
+  ///     so the preedit would be drawn twice by a window that had merely
+  ///     thrown. The failure is recorded and the message is still answered.
+  ///   * **`null` means "not mine".** A handler that does not claim a message
+  ///     gets the platform's behaviour rather than a swallowed 0, because
+  ///     `WM_IME_NOTIFY` and `WM_IME_CHAR` genuinely belong to
+  ///     `DefWindowProcW`.
+  int _onImeMessage(int hwnd, int msg, int wParam, int lParam) {
+    final Win32ImeMessageHandler? handler = imeHandler;
+    if (handler != null) {
+      try {
+        final int? answer = handler.handleImeMessage(hwnd, msg, wParam, lParam);
+        if (answer != null) return answer;
+      } on Object catch (error) {
+        _record(
+          BackendDiagnostic(
+            kind: DiagnosticKind.note,
+            message: 'the input-method handler threw while handling '
+                'message 0x${msg.toRadixString(16)}',
+            detail: '$error',
+          ),
+        );
+      }
+    }
+    return _api.defWindowProcW(hwnd, msg, wParam, lParam);
   }
 
   /// Holds a high surrogate between the two WM_CHAR messages that make up one
@@ -1622,6 +1706,11 @@ final class Win32Window
     // Last message this HWND will ever receive: the token must go now, or a
     // recycled HWND could resolve to a dead window.
     Win32WindowRegistry.detach(_token);
+    // The input context dies with the HWND, so a handler left here would call
+    // ImmGetContext on a destroyed window on its way out. Dropped before the
+    // handle is zeroed so the connection's own detach, whenever it runs, finds
+    // nothing to undo rather than a handle it must not touch.
+    imeHandler = null;
     _hwnd = 0;
   }
 

@@ -44,6 +44,7 @@ import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../geometry/transform2d.dart';
 import '../graphics/color.dart';
+import '../graphics/content_hint.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../graphics/display_list_opcodes.dart';
@@ -852,6 +853,64 @@ final class RenderRepaintBoundary extends RenderProxyBox {
   void paint(DisplayList list, Offset offset) {
     _paintCount++;
     super.paint(list, offset);
+  }
+}
+
+/// Declares what its subtree *is*, for the renderer's per-draw selector.
+///
+/// The counterpart of [RenderRepaintBoundary] in placement and its opposite in
+/// substance: that one is a marker with nothing behind it, this one carries a
+/// value that reaches the rasteriser. Both are invisible to layout, both wrap
+/// exactly one child, and both are about where you put them.
+///
+/// ## What it emits, and what it deliberately does not
+///
+/// It pushes a [ContentHint] onto the display list's hint side table around
+/// its child's paint and pops it afterwards. It emits **no command**: the op
+/// and float streams of a hinted subtree are word-for-word the streams of the
+/// same subtree unhinted, which is the mechanical form of the promise that a
+/// hint cannot change the picture. See `DisplayList.pushContentHint` for why
+/// that is a side table and not an opcode.
+///
+/// An empty hint short-circuits entirely - no push, no pop, no span - so
+/// wrapping a subtree in a `ContentHint()` that declares nothing costs one
+/// comparison per paint and leaves no trace in the encoded list.
+///
+/// ## Nesting
+///
+/// Per field, through [ContentHint.inheritFrom]. A canvas declared
+/// [ContentMotionHint.transforming] containing a widget that declares only
+/// [RenderQualityHint.preferSpeed] leaves the inner subtree transforming *and*
+/// speed-preferring, rather than silently dropping the motion its parent
+/// declared. The nearest enclosing declaration of each field wins.
+final class RenderContentHint extends RenderProxyBox {
+  RenderContentHint({ContentHint hint = ContentHint.none, super.child})
+      : _hint = hint;
+
+  ContentHint _hint;
+
+  /// The advice this subtree declares. [ContentHint.none] declares nothing and
+  /// makes this node a plain proxy.
+  ContentHint get hint => _hint;
+
+  set hint(ContentHint value) {
+    if (_hint == value) return;
+    _hint = value;
+    // Paint only. A hint changes what the rasteriser is told, never what is
+    // measured, so marking layout dirty here would make an animation's
+    // start and end reflow the window for nothing.
+    markNeedsPaint();
+  }
+
+  @override
+  void paint(DisplayList list, Offset offset) {
+    if (_hint.isEmpty) {
+      super.paint(list, offset);
+      return;
+    }
+    list.pushContentHint(_hint);
+    super.paint(list, offset);
+    list.popContentHint();
   }
 }
 

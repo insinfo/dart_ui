@@ -176,6 +176,37 @@ void main() {
   });
 
   group('GpuMaskAtlas cache', () {
+    test('read-only cache probe predicts a hit without touching statistics',
+        () {
+      final atlas = GpuMaskAtlas(width: 64, height: 64);
+      final path = _rect(const Rect.fromLTRB(2, 3, 12, 13));
+
+      expect(
+        atlas.containsMask(
+          path,
+          transform: Transform2D.identity,
+          clip: _clip,
+        ),
+        isFalse,
+      );
+      _draw(atlas, path);
+      final int hits = atlas.cacheHitCount;
+      final int lookups = atlas.maskLookupCount;
+      expect(
+        atlas.containsMask(
+          path,
+          transform: const Transform2D.translation(5, 7),
+          clip: _clip,
+        ),
+        isTrue,
+        reason: 'whole-pixel translation preserves the coverage bytes',
+      );
+      expect(atlas.cacheHitCount, hits);
+      expect(atlas.maskLookupCount, lookups);
+      expect(atlas.isDirty, isTrue,
+          reason: 'the existing miss dirtied it, not the probe');
+    });
+
     test('the same shape twice in one frame rasterises once', () {
       final atlas = GpuMaskAtlas(width: 64, height: 64);
       final path = _rect(const Rect.fromLTRB(2, 3, 12, 13));

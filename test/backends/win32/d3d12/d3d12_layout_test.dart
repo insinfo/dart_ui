@@ -71,6 +71,10 @@ void main() {
       'D3D12_INPUT_LAYOUT_DESC': 16,
       'D3D12_CACHED_PIPELINE_STATE': 16,
       'D3D12_GRAPHICS_PIPELINE_STATE_DESC': 656,
+      // Five fields where the graphics description has twenty-five: a root
+      // signature pointer, a shader bytecode, a node mask, a cached PSO and
+      // the flags, padded to eight because CachedPSO begins with a pointer.
+      'D3D12_COMPUTE_PIPELINE_STATE_DESC': 56,
       'D3D12_DESCRIPTOR_RANGE': 20,
       'D3D12_ROOT_PARAMETER': 32,
       'D3D12_STATIC_SAMPLER_DESC': 52,
@@ -109,6 +113,8 @@ void main() {
       'D3D12_CACHED_PIPELINE_STATE': sizeOf<D3d12CachedPipelineState>(),
       'D3D12_GRAPHICS_PIPELINE_STATE_DESC':
           sizeOf<D3d12GraphicsPipelineStateDesc>(),
+      'D3D12_COMPUTE_PIPELINE_STATE_DESC':
+          sizeOf<D3d12ComputePipelineStateDesc>(),
       'D3D12_DESCRIPTOR_RANGE': sizeOf<D3d12DescriptorRange>(),
       'D3D12_ROOT_PARAMETER': sizeOf<D3d12RootParameter>(),
       'D3D12_STATIC_SAMPLER_DESC': sizeOf<D3d12StaticSamplerDesc>(),

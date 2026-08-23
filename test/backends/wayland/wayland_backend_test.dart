@@ -7,6 +7,8 @@ import 'package:dart_ui/src/backends/wayland/wayland_keymap.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_shm.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_window.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
+import 'package:dart_ui/src/geometry/offset.dart';
+import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/platform/input_events.dart';
 import 'package:dart_ui/src/platform/native_window.dart';
@@ -350,6 +352,301 @@ void main() {
       expect(await backend.clipboard.readText(), 'texto Wayland');
     });
 
+    group('popups', () {
+      test('a menu becomes an xdg_popup anchored to its owner', () async {
+        final owner = await createWindow();
+        final menu = await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          title: 'menu',
+          kind: WindowKind.popup,
+          owner: owner,
+          position: const Offset(12, 40),
+        )) as WaylandWindow;
+
+        expect(menu.isPopup, isTrue);
+        expect(client.createRequests, hasLength(1),
+            reason: 'a popup must not create a second toplevel');
+        final request = client.popupRequests.single;
+        expect(request.parent, owner.toplevelIds);
+        expect(request.positioner.anchorX, 12);
+        expect(request.positioner.anchorY, 40);
+        expect(request.positioner.width, 180);
+        expect(request.positioner.height, 240);
+        expect(request.grab, isTrue);
+      });
+
+      test('a tooltip is a popup that never grabs', () async {
+        final owner = await createWindow();
+        final tooltip = await backend.createWindow(WindowOptions(
+          size: const Size(120, 32),
+          kind: WindowKind.tooltip,
+          owner: owner,
+        )) as WaylandWindow;
+
+        expect(tooltip.isPopup, isTrue);
+        expect(client.popupRequests.single.grab, isFalse,
+            reason: 'a grab would steal input from the window beneath');
+      });
+
+      test('a submenu parents to the popup above it, not to the toplevel',
+          () async {
+        final owner = await createWindow();
+        final menu = await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          kind: WindowKind.popup,
+          owner: owner,
+        )) as WaylandWindow;
+        await backend.createWindow(WindowOptions(
+          size: const Size(180, 200),
+          kind: WindowKind.popup,
+          owner: menu,
+        ));
+
+        expect(client.popupRequests.last.parent, menu.toplevelIds,
+            reason: 'xdg-shell requires a popup chain, not siblings');
+      });
+
+      test('a dismissable window without an owner stays a toplevel', () async {
+        // Nothing to anchor to: a popup with no parent is not expressible.
+        final orphan = await backend.createWindow(const WindowOptions(
+          size: Size(100, 100),
+          kind: WindowKind.popup,
+        )) as WaylandWindow;
+
+        expect(orphan.isPopup, isFalse);
+        expect(client.popupRequests, isEmpty);
+      });
+
+      test('popup configure reports the compositor placement as a move',
+          () async {
+        final owner = await createWindow();
+        final menu = await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          kind: WindowKind.popup,
+          owner: owner,
+        )) as WaylandWindow;
+        final events = <PlatformWindowEvent>[];
+        menu.events.listen(events.add);
+
+        // The compositor flipped it above the anchor and shortened it.
+        client.script(WaylandRawEvent()
+          ..type = WaylandRawEventType.popupConfigure
+          ..surfaceId = menu.surfaceId
+          ..x = 12
+          ..y = -180
+          ..width = 180
+          ..height = 180);
+        backend.pumpEvents();
+        await Future<void>.delayed(Duration.zero);
+
+        final moved = events.whereType<WindowMovedEvent>().single;
+        expect(moved.screenPosition, const Offset(12, -180));
+        expect(menu.clientSize, const Size(180, 180));
+        expect(events.whereType<WindowResizedEvent>(), hasLength(1));
+      });
+
+      test('popup_done closes the window without asking the application',
+          () async {
+        final owner = await createWindow();
+        final menu = await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          kind: WindowKind.popup,
+          owner: owner,
+        )) as WaylandWindow;
+        final events = <PlatformWindowEvent>[];
+        menu.events.listen(events.add);
+
+        client.script(WaylandRawEvent()
+          ..type = WaylandRawEventType.popupDone
+          ..surfaceId = menu.surfaceId);
+        backend.pumpEvents();
+        await Future<void>.delayed(Duration.zero);
+
+        expect(events.whereType<WindowClosedEvent>(), hasLength(1));
+        expect(events.whereType<WindowCloseRequestedEvent>(), isEmpty,
+            reason: 'the surface is already gone; this is not a request');
+        expect(backend.windows, isNot(contains(menu)));
+      });
+
+      test('a popup ignores setTitle rather than erroring on the role',
+          () async {
+        final owner = await createWindow();
+        final menu = await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          kind: WindowKind.popup,
+          owner: owner,
+        )) as WaylandWindow;
+
+        menu.setTitle('ignored');
+
+        expect(client.titles, isEmpty);
+      });
+    });
+
+    group('xdg-decoration', () {
+      test('a decorated toplevel asks for a server-side frame', () async {
+        await createWindow();
+        expect(client.decorationRequests, hasLength(1));
+      });
+
+      test('an undecorated window never asks', () async {
+        await backend.createWindow(const WindowOptions(
+          size: Size(200, 100),
+          decorated: false,
+        ));
+        expect(client.decorationRequests, isEmpty);
+      });
+
+      test('the window reports client-side until the compositor agrees',
+          () async {
+        final window = await createWindow();
+        expect(window.hasServerSideDecorations, isFalse,
+            reason: 'the framework must draw its own frame until told '
+                'otherwise');
+
+        client.script(WaylandRawEvent()
+          ..type = WaylandRawEventType.decorationConfigure
+          ..surfaceId = window.surfaceId
+          ..state = 2); // server-side
+        backend.pumpEvents();
+
+        expect(window.hasServerSideDecorations, isTrue);
+      });
+
+      test('a client-side answer leaves the framework drawing the frame',
+          () async {
+        final window = await createWindow();
+        client.script(WaylandRawEvent()
+          ..type = WaylandRawEventType.decorationConfigure
+          ..surfaceId = window.surfaceId
+          ..state = 1); // client-side
+        backend.pumpEvents();
+
+        expect(window.hasServerSideDecorations, isFalse);
+      });
+
+      test('a compositor without the protocol is never asked', () async {
+        client.decorationsSupported = false;
+        await createWindow();
+        expect(client.decorationRequests, isEmpty);
+      });
+    });
+
+    group('frame pacing', () {
+      Future<WaylandWindow> configuredWindow() async {
+        final window = await createWindow();
+        configure(window, 640, 480, 1);
+        backend.pumpEvents();
+        return window;
+      }
+
+      void frameDone(WaylandWindow window) {
+        client.script(WaylandRawEvent()
+          ..type = WaylandRawEventType.frameDone
+          ..surfaceId = window.surfaceId);
+        backend.pumpEvents();
+      }
+
+      test('the first present commits and arms a frame callback', () async {
+        final window = await configuredWindow();
+
+        expect(window.present(), isNull);
+        expect(client.presentedDamage, hasLength(1));
+        expect(client.frameCallbackSurfaces, <int>[window.surfaceId]);
+        expect(window.isFrameThrottled, isTrue);
+      });
+
+      test('presents while a callback is in flight are coalesced, not sent',
+          () async {
+        final window = await configuredWindow();
+        window.present();
+        final committed = client.presentedDamage.length;
+
+        window.present(damage: const Rect.fromLTRB(0, 0, 10, 10));
+        window.present(damage: const Rect.fromLTRB(20, 20, 30, 30));
+
+        expect(client.presentedDamage, hasLength(committed),
+            reason: 'nothing may reach the compositor while throttled');
+        expect(window.throttledFrameCount, 2);
+      });
+
+      test('the frame callback replays coalesced damage as one expose',
+          () async {
+        final window = await configuredWindow();
+        final events = <PlatformWindowEvent>[];
+        window.events.listen(events.add);
+        window.present();
+        window.present(damage: const Rect.fromLTRB(0, 0, 10, 10));
+        window.present(damage: const Rect.fromLTRB(20, 20, 30, 30));
+
+        frameDone(window);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(window.isFrameThrottled, isFalse);
+        final exposes = events.whereType<WindowExposedEvent>().toList();
+        expect(exposes, hasLength(1),
+            reason: 'a storm of presents costs one frame per compositor tick');
+        // The union of both rectangles, so no damaged pixel is missed.
+        expect(exposes.single.dirtyRect, const Rect.fromLTRB(0, 0, 30, 30));
+      });
+
+      test('a full repaint absorbs every rectangle coalesced with it',
+          () async {
+        final window = await configuredWindow();
+        final events = <PlatformWindowEvent>[];
+        window.events.listen(events.add);
+        window.present();
+        window.present(damage: const Rect.fromLTRB(0, 0, 10, 10));
+        window.present();
+
+        frameDone(window);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(
+          events.whereType<WindowExposedEvent>().single.dirtyRect,
+          isNull,
+          reason: 'null damage means everything and cannot be narrowed',
+        );
+      });
+
+      test('a callback with nothing coalesced emits no expose', () async {
+        final window = await configuredWindow();
+        final events = <PlatformWindowEvent>[];
+        window.events.listen(events.add);
+        window.present();
+
+        frameDone(window);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(events.whereType<WindowExposedEvent>(), isEmpty);
+        expect(window.isFrameThrottled, isFalse);
+      });
+
+      test('the next present after a callback reaches the compositor',
+          () async {
+        final window = await configuredWindow();
+        window.present();
+        frameDone(window);
+
+        expect(window.present(), isNull);
+        expect(client.presentedDamage, hasLength(2));
+        expect(client.frameCallbackSurfaces, hasLength(2));
+      });
+
+      test('a compositor that cannot arm a callback is never throttled',
+          () async {
+        client.frameCallbackResult = 0;
+        final window = await configuredWindow();
+
+        window.present();
+        window.present();
+
+        expect(window.isFrameThrottled, isFalse);
+        expect(client.presentedDamage, hasLength(2),
+            reason: 'without pacing, every present must still be committed');
+      });
+    });
+
     test('setTitle and hide are forwarded', () async {
       final window = await createWindow();
       window.setTitle('novo título');
@@ -456,6 +753,67 @@ final class _FakeWaylandClient
 
   @override
   void hideToplevel(WaylandToplevelIds ids) => hiddenToplevels.add(ids);
+
+  final List<WaylandPopupRequest> popupRequests = <WaylandPopupRequest>[];
+  final List<WaylandToplevelIds> grabbedPopups = <WaylandToplevelIds>[];
+  final List<WaylandToplevelIds> decorationRequests = <WaylandToplevelIds>[];
+  bool decorationsSupported = true;
+
+  @override
+  WaylandToplevelIds createPopup(WaylandPopupRequest request) {
+    popupRequests.add(request);
+    return WaylandToplevelIds(
+      surfaceId: _nextId++,
+      xdgSurfaceId: _nextId++,
+      toplevelId: _nextId++,
+    );
+  }
+
+  @override
+  bool grabPopup(WaylandToplevelIds ids) {
+    grabbedPopups.add(ids);
+    return true;
+  }
+
+  @override
+  bool get supportsServerSideDecorations => decorationsSupported;
+
+  @override
+  void requestServerSideDecoration(WaylandToplevelIds ids) {
+    if (!decorationsSupported) return;
+    decorationRequests.add(ids);
+  }
+
+  final List<SystemCursor> appliedCursors = <SystemCursor>[];
+
+  @override
+  void applyCursor(SystemCursor cursor) => appliedCursors.add(cursor);
+
+  @override
+  int createBareSurface() => _nextId++;
+
+  @override
+  void destroyBareSurface(int surfaceId) {}
+
+  @override
+  bool setPointerCursor({
+    required int surfaceId,
+    required int hotspotX,
+    required int hotspotY,
+  }) =>
+      true;
+
+  final List<int> frameCallbackSurfaces = <int>[];
+  int nextFrameCallbackId = 900;
+
+  /// Set to 0 to model a compositor/connection that cannot arm a callback.
+  int frameCallbackResult = -1;
+
+  @override
+  int requestFrameCallback(int surfaceId) {
+    frameCallbackSurfaces.add(surfaceId);
+    return frameCallbackResult < 0 ? nextFrameCallbackId++ : frameCallbackResult;
+  }
 
   @override
   bool pollEventInto(WaylandRawEvent target) {

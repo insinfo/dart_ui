@@ -26,11 +26,14 @@ import '../../foundation/lifecycle.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/compose_sequences.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
+import '../../widgets/popup.dart';
 import 'wayland_connection.dart';
 import 'wayland_events.dart';
+import 'wayland_positioner.dart';
 import 'wayland_shm.dart';
 
 final class WaylandWindow with DisposableMixin implements NativeWindow {
@@ -42,6 +45,7 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
     required int logicalHeight,
     required bool visible,
     required void Function(WaylandWindow window) onClosed,
+    this.isPopup = false,
   })  : _client = client,
         _cpuClient = client is WaylandCpuClient ? client as WaylandCpuClient : null,
         _id = id,
@@ -68,6 +72,49 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
     final height = _clampExtent(options.size.height.round());
     final minimum = options.minimumSize;
     final maximum = options.maximumSize;
+
+    // A menu, a combo list or a tooltip becomes a real xdg_popup rather than
+    // a second toplevel. That is not a nicety on Wayland: a toplevel gets a
+    // taskbar entry and its own activation, and there is no way to position
+    // one, so a "popup" built from a toplevel would appear in the middle of
+    // the screen with a title bar. Popups need a parent; without one there is
+    // nothing to anchor to, so the window falls back to a toplevel and says so
+    // through the diagnostic the caller can read.
+    final owner = options.owner;
+    if (options.kind.isDismissable && owner is WaylandWindow) {
+      final request = PopupRequest(
+        // No screen position exists on Wayland; the framework's requested
+        // position is interpreted parent-relative, which is what an anchor
+        // rect is. A zero-size rect at that point is the caret-like anchor
+        // WaylandPositionerSpec widens to one pixel.
+        anchorRect: Rect.fromLTWH(
+          options.position?.dx ?? 0,
+          options.position?.dy ?? 0,
+          0,
+          0,
+        ),
+        size: Size(width.toDouble(), height.toDouble()),
+      );
+      final popupIds = client.createPopup(WaylandPopupRequest(
+        parent: owner.toplevelIds,
+        positioner: WaylandPositionerSpec.fromRequest(request),
+        // A tooltip must never grab: a grab takes input away from the window
+        // under the pointer, and a tooltip is precisely the popup the user is
+        // not interacting with.
+        grab: options.kind == WindowKind.popup,
+      ));
+      return WaylandWindow._(
+        client: client,
+        toplevelIds: popupIds,
+        id: id,
+        logicalWidth: width,
+        logicalHeight: height,
+        visible: options.visible,
+        onClosed: onClosed,
+        isPopup: true,
+      );
+    }
+
     final ids = client.createToplevel(WaylandToplevelRequest(
       width: width,
       height: height,
@@ -81,6 +128,13 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
       maximumHeight:
           maximum == null ? null : _clampExtent(maximum.height.round()),
     ));
+    // Ask for a server-side frame when the application wanted a decorated
+    // window and the compositor speaks xdg-decoration. Without the protocol
+    // (GNOME does not implement it) the answer never comes and
+    // [hasServerSideDecorations] stays false, which is the framework's signal
+    // to draw the frame itself.
+    if (options.decorated) client.requestServerSideDecoration(ids);
+
     return WaylandWindow._(
       client: client,
       toplevelIds: ids,
@@ -105,15 +159,50 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
 
   WaylandShmSurface? _surface;
 
-  /// The wl_surface/xdg_surface/xdg_toplevel triple this window is made of.
+  /// The wl_surface/xdg_surface/xdg_toplevel (or xdg_popup) triple this
+  /// window is made of.
   final WaylandToplevelIds toplevelIds;
+
+  /// Whether the role object is an `xdg_popup` rather than an
+  /// `xdg_toplevel`. A popup has a position, no title and no decorations,
+  /// and is dismissed by the compositor rather than closed by the user.
+  final bool isPopup;
 
   bool _visible;
   bool _closedEventEmitted = false;
   SystemCursor _cursor = SystemCursor.arrow;
 
+  /// Whether the pointer is currently over this window, which is what decides
+  /// whether this window may set the cursor.
+  bool _pointerInside = false;
+
+  /// True between a commit that asked for a `wl_surface.frame` callback and
+  /// that callback firing. See [present].
+  bool _frameCallbackPending = false;
+
+  /// Damage coalesced while throttled, or null when none is pending.
+  Rect? _throttledDamage;
+
+  /// Set when a throttled present asked for a full repaint, which no
+  /// rectangle can narrow.
+  bool _throttledDamageIsFull = false;
+
+  /// Set by a frame callback that found coalesced damage waiting; emitted as
+  /// one expose after the surface for this generation exists.
+  bool _replayThrottledExpose = false;
+  Rect? _throttledExposeDamage;
+
   /// The wl_surface protocol id the backend routes raw events by.
   int get surfaceId => toplevelIds.surfaceId;
+
+  /// Whether the compositor draws this window's frame.
+  ///
+  /// False means the framework must draw its own title bar and borders - the
+  /// state on every compositor without `zxdg_decoration_manager_v1`, and on
+  /// those that have it but chose client-side mode. It is deliberately a
+  /// question the window answers rather than an assumption, because getting it
+  /// wrong produces either two title bars or none.
+  bool get hasServerSideDecorations => _protocol.serverSideDecorated;
 
   @override
   NativeWindowId get id => _id;
@@ -199,6 +288,9 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
   @override
   void setTitle(String value) {
     throwIfDisposed();
+    // xdg_popup has no title: the request would be an error on the role
+    // object, and a menu has nowhere to show one anyway.
+    if (isPopup) return;
     _client.setToplevelTitle(toplevelIds, value);
   }
 
@@ -221,10 +313,11 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
   @override
   void setCursor(SystemCursor cursor) {
     throwIfDisposed();
-    // The cursor-shape/wl_cursor surface work is deferred; remembering the
-    // request keeps the contract deterministic without pretending a native
-    // cursor was installed - the same posture the X11 backend takes.
     _cursor = cursor;
+    // Only the window the pointer is actually in may set the cursor: a
+    // background window doing so would fight the foreground one for a
+    // per-pointer piece of state.
+    if (_pointerInside) _client.applyCursor(cursor);
   }
 
   @override
@@ -241,6 +334,18 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
   }
 
   /// Commits the retained CPU framebuffer to the compositor.
+  /// Commits the retained CPU framebuffer, unless the compositor has not yet
+  /// released the frame throttle.
+  ///
+  /// Wayland gives a client exactly one pacing signal - the `wl_surface.frame`
+  /// callback, which fires when the compositor wants the *next* frame - and no
+  /// blocking swap to hide behind. Committing faster than that signal does not
+  /// draw faster: the extra buffers are discarded by the compositor, having
+  /// cost a full rasterisation each. So a present that arrives while a frame
+  /// callback is still in flight is *coalesced*, not dropped: its damage is
+  /// unioned into [_throttledDamage] and replayed as one expose when
+  /// [WaylandRawEventType.frameDone] arrives. Nothing is silently lost, and a
+  /// mouse-move storm costs one frame per compositor tick.
   BackendDiagnostic? present({Rect? damage}) {
     throwIfDisposed();
     final surface = _surface;
@@ -252,9 +357,42 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
       _record(failure);
       return failure;
     }
+    if (_frameCallbackPending) {
+      _noteThrottledDamage(damage);
+      throttledFrameCount++;
+      return null;
+    }
     final failure = surface.present(damage: damage);
-    if (failure != null) _record(failure);
-    return failure;
+    if (failure != null) {
+      _record(failure);
+      return failure;
+    }
+    // The request only takes effect on a commit, and `present` just made one;
+    // asking now attaches the callback to the frame that was committed.
+    if (_client.requestFrameCallback(surfaceId) != 0) {
+      _frameCallbackPending = true;
+      _client.flush();
+    }
+    return null;
+  }
+
+  /// Whether a commit would be coalesced rather than sent right now.
+  bool get isFrameThrottled => _frameCallbackPending;
+
+  /// How many presents have been coalesced by the throttle. A diagnostic
+  /// counter rather than a silent behaviour, per section 6.6.
+  int throttledFrameCount = 0;
+
+  void _noteThrottledDamage(Rect? damage) {
+    // A null damage means "everything", and it absorbs every rectangle.
+    if (damage == null) {
+      _throttledDamageIsFull = true;
+      _throttledDamage = null;
+      return;
+    }
+    if (_throttledDamageIsFull) return;
+    final existing = _throttledDamage;
+    _throttledDamage = existing == null ? damage : existing.union(damage);
   }
 
   /// No global coordinates exist on Wayland; the identity mapping is the only
@@ -265,11 +403,32 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
   @override
   Offset clientToScreen(Offset clientPosition) => clientPosition;
 
+  /// Dead-key and Compose handling for this window's keyboard, or null.
+  ///
+  /// Installed by the backend from the machine's own X11 Compose table. Null on
+  /// a machine with none, which is the state every keystroke was already in:
+  /// the keymap subset produces the character directly and no sequence is ever
+  /// pending.
+  ///
+  /// Per window rather than per connection, because a half-typed sequence must
+  /// not survive the keyboard moving to another of this application's windows -
+  /// the second half of that dead key was aimed somewhere else.
+  ComposeEngine? composeEngine;
+
   /// Accumulates one decoded event. Called only by the owning backend.
   bool handleRawEvent(WaylandRawEvent raw) {
     if (isDisposed) return false;
     final consumed = WaylandEventTranslator.apply(raw, _protocol, _pending);
     if (!consumed) return false;
+    if (raw.type == WaylandRawEventType.pointerEnter) {
+      _pointerInside = true;
+      // The cursor is per-enter state: a pointer that re-entered without a
+      // set_cursor shows the compositor's default, so this window's choice is
+      // re-asserted on every crossing.
+      _client.applyCursor(_cursor);
+    } else if (raw.type == WaylandRawEventType.pointerLeave) {
+      _pointerInside = false;
+    }
     final pointerEvent = WaylandEventTranslator.translatePointer(
       raw,
       windowId: id,
@@ -284,6 +443,7 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
         keymap: _client.keymap,
         modifiers: _client.modifiers,
         emit: _emit,
+        compose: composeEngine,
       );
     }
     return true;
@@ -308,6 +468,19 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
     if (_pending.ackSerial >= 0) {
       _client.ackConfigure(toplevelIds, _pending.ackSerial);
       _pending.ackSerial = -1;
+    }
+    if (_pending.frameDone) {
+      _pending.frameDone = false;
+      _frameCallbackPending = false;
+      // Whatever was coalesced while throttled becomes one expose, which is
+      // what the presenter already knows how to answer with a re-commit.
+      if (_throttledDamageIsFull || _throttledDamage != null) {
+        _replayThrottledExpose = true;
+        _throttledExposeDamage =
+            _throttledDamageIsFull ? null : _throttledDamage;
+        _throttledDamage = null;
+        _throttledDamageIsFull = false;
+      }
     }
     final destroyed = _pending.destroyed;
     final needsSurface = _protocol.configured &&
@@ -339,10 +512,27 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
       logicalHeight: _protocol.height,
       renderScale: renderScale,
       emit: _emit,
+      popupX: _protocol.popupX,
+      popupY: _protocol.popupY,
     );
+    // popup_done means the surface is already unmapped by the compositor, so
+    // the window follows it into teardown rather than lingering as a live
+    // object nothing can present to.
+    final dismissed = _pending.popupDismissed;
+    if (dismissed) _closedEventEmitted = true;
+    if (_replayThrottledExpose && !destroyed) {
+      final damage = _throttledExposeDamage;
+      _replayThrottledExpose = false;
+      _throttledExposeDamage = null;
+      _emit(WindowExposedEvent(
+        windowId: id,
+        generation: generation,
+        dirtyRect: damage,
+      ));
+    }
     if (destroyed) _closedEventEmitted = true;
     _pending.reset();
-    if (destroyed) dispose();
+    if (destroyed || dismissed) dispose();
   }
 
   bool _emitScaleChange = false;

@@ -10,6 +10,79 @@ import 'gpu_path_workload_builder.dart';
 import 'vector/sparse_strip_draw_plan.dart';
 
 typedef GpuPathStabilityProbe = bool Function(Path path);
+
+/// The properties of one draw that change which routes are *correct* for it,
+/// as opposed to merely cheaper.
+///
+/// Both are about the paint rather than the geometry, which is why neither
+/// belongs in [GpuPathWorkload]: a workload describes what the shape costs, and
+/// two draws of the same shape can have different answers here.
+final class GpuPathDrawTraits {
+  const GpuPathDrawTraits({this.antiAlias = true, this.hasGradient = false});
+
+  /// Whether the fill needs a coverage fringe. A route that produces none is
+  /// a correct answer for an aliased fill and a visibly wrong one otherwise.
+  final bool antiAlias;
+
+  /// Whether the paint carries a gradient shader.
+  ///
+  /// This one does not merely narrow the choice, it can *invert* it: the dense
+  /// coverage atlas stores alpha and modulates it by a single colour, so it
+  /// cannot draw a gradient at all. A pass that reports `coverageAtlas` for a
+  /// gradient draw is promising a picture it would render as a flat fill.
+  final bool hasGradient;
+
+  @override
+  bool operator ==(Object other) =>
+      other is GpuPathDrawTraits &&
+      other.antiAlias == antiAlias &&
+      other.hasGradient == hasGradient;
+
+  @override
+  int get hashCode => Object.hash(antiAlias, hasGradient);
+
+  @override
+  String toString() =>
+      'GpuPathDrawTraits(antiAlias: $antiAlias, hasGradient: $hasGradient)';
+}
+
+/// What the *current* render pass can execute for a draw of this kind.
+///
+/// Capabilities are not constant across a frame, and they are not constant
+/// across draws within a pass either. Two things decide together:
+///
+///   * the pass's attachments - stencil-then-cover needs a stencil buffer, and
+///     geometric antialiasing needs samples - which differ between the surface
+///     and a pooled layer target inside the same frame;
+///   * the draw's own [GpuPathDrawTraits].
+///
+/// A fixed [GpuPathPlanningTelemetry.candidateCapabilities] can only describe
+/// the device. This describes the target and the draw. See
+/// `gpu_layer_stack.dart`'s `GpuPassAttachments`.
+typedef GpuPathCapabilitiesProbe = GpuPathStrategyCapabilities Function(
+  GpuPathDrawTraits traits,
+);
+
+/// Whether the dense atlas would by now be caching this draw, had an
+/// experimental route not been taking it. See `gpu_path_repetition.dart` for
+/// why that is a different question from `denseMaskCacheHit`, and for the
+/// measurement that made it necessary.
+/// How many (segment, tile) crossings the sparse encoder had to visit for the
+/// draw the sparse metrics were just measured for.
+///
+/// Separate from `sparseMetricsProbe` rather than folded into its result,
+/// because that result type is shared with backends that do not measure this
+/// and adding a field there would have them reporting a number they never
+/// computed. Null means "not measured", which the selector reads as a reason
+/// to keep the older transfer-bytes rule.
+typedef GpuPathCrossingsProbe = int? Function();
+
+typedef GpuPathRepetitionProbe = bool Function(
+  Path path,
+  Transform2D localToTarget,
+  Rect clip,
+  FillRule fillRule,
+);
 typedef GpuSparseMetricsProbe = SparseStripPlanMetrics? Function(
   Path path,
   Transform2D localToTarget,
@@ -17,9 +90,14 @@ typedef GpuSparseMetricsProbe = SparseStripPlanMetrics? Function(
   FillRule fillRule,
 );
 
-/// One advisory decision and the strategy that actually produced its pixels.
-final class GpuPathPlanningEvent {
-  const GpuPathPlanningEvent({
+/// A selector result that has not affected the command stream yet.
+///
+/// Planning and execution are deliberately separate. An experimental backend
+/// first obtains this immutable proposal, then attempts to record a complete
+/// ordered command. Only after that attempt does [GpuPathPlanningTelemetry]
+/// publish an event naming the strategy that really owns the pixels.
+final class GpuPathPlanningProposal {
+  const GpuPathPlanningProposal({
     required this.label,
     required this.workload,
     required this.candidate,
@@ -28,9 +106,29 @@ final class GpuPathPlanningEvent {
   final String label;
   final GpuPathWorkload workload;
   final GpuPathStrategyDecision candidate;
+}
 
-  /// Planning is observation-only until a backend wires a complete executor.
-  GpuPathStrategy get executedStrategy => GpuPathStrategy.coverageAtlas;
+/// One advisory decision and the strategy that actually produced its pixels.
+final class GpuPathPlanningEvent {
+  const GpuPathPlanningEvent({
+    required this.label,
+    required this.workload,
+    required this.candidate,
+    this.executedStrategy = GpuPathStrategy.coverageAtlas,
+  });
+
+  final String label;
+  final GpuPathWorkload workload;
+  final GpuPathStrategyDecision candidate;
+
+  /// The strategy that was actually recorded for ordered submission.
+  ///
+  /// Coverage-atlas remains the default so an observer attached to the
+  /// established dense replay reports the truth without any extra argument.
+  /// Experimental dispatch supplies its accepted strategy only after it has
+  /// successfully recorded a complete command; a rejected or partial plan
+  /// must leave this as coverage rather than claiming pixels it never drew.
+  final GpuPathStrategy executedStrategy;
 
   bool get candidateDiffersFromExecution =>
       candidate.strategy != executedStrategy;
@@ -48,16 +146,36 @@ final class GpuPathPlanningTelemetry {
     this.builder = const GpuPathWorkloadBuilder(),
     this.selector = const GpuPathStrategySelector(),
     this.candidateCapabilities = const GpuPathStrategyCapabilities(),
+    this.capabilitiesProbe,
     this.stabilityProbe,
+    this.repetitionProbe,
     this.sparseMetricsProbe,
+    this.crossingsProbe,
     this.onEvent,
   });
 
   final GpuPathWorkloadBuilder builder;
   final GpuPathStrategySelector selector;
+
+  /// The device-wide answer, used when [capabilitiesProbe] is null.
   final GpuPathStrategyCapabilities candidateCapabilities;
+
+  /// Per-draw capabilities of the pass being recorded into, when the backend
+  /// can tell them apart from the device's. A probe that throws is contained
+  /// like any other planning failure: the draw stays on the dense atlas.
+  final GpuPathCapabilitiesProbe? capabilitiesProbe;
+
   final GpuPathStabilityProbe? stabilityProbe;
+
+  /// Asked once per observed draw, before the sparse cost is even measured.
+  /// Null means every draw is treated as fresh, which is what this class did
+  /// before the probe existed.
+  final GpuPathRepetitionProbe? repetitionProbe;
   final GpuSparseMetricsProbe? sparseMetricsProbe;
+
+  /// Asked immediately after [sparseMetricsProbe], so it reports the encode
+  /// that probe just performed.
+  final GpuPathCrossingsProbe? crossingsProbe;
   final void Function(GpuPathPlanningEvent event)? onEvent;
 
   int observationCount = 0;
@@ -66,16 +184,43 @@ final class GpuPathPlanningTelemetry {
   Object? lastError;
   StackTrace? lastStackTrace;
 
-  void observe({
+  GpuPathPlanningEvent? observe({
     required String label,
     required Path path,
     required Transform2D localToTarget,
     required Rect clip,
     required FillRule fillRule,
     required bool denseMaskCacheHit,
+    GpuPathDrawTraits traits = const GpuPathDrawTraits(),
+    GpuPathStrategy executedStrategy = GpuPathStrategy.coverageAtlas,
+  }) {
+    final GpuPathPlanningProposal? proposal = plan(
+      label: label,
+      path: path,
+      localToTarget: localToTarget,
+      clip: clip,
+      fillRule: fillRule,
+      denseMaskCacheHit: denseMaskCacheHit,
+      traits: traits,
+    );
+    if (proposal == null) return null;
+    return complete(proposal, executedStrategy: executedStrategy);
+  }
+
+  /// Selects a candidate without publishing an execution event.
+  GpuPathPlanningProposal? plan({
+    required String label,
+    required Path path,
+    required Transform2D localToTarget,
+    required Rect clip,
+    required FillRule fillRule,
+    required bool denseMaskCacheHit,
+    GpuPathDrawTraits traits = const GpuPathDrawTraits(),
   }) {
     observationCount++;
     try {
+      final GpuPathStrategyCapabilities capabilities =
+          capabilitiesProbe?.call(traits) ?? candidateCapabilities;
       final workload = builder.build(
         path,
         bounds: localToTarget.transformRect(path.bounds),
@@ -83,29 +228,58 @@ final class GpuPathPlanningTelemetry {
         localToTarget: localToTarget,
         geometryStable: stabilityProbe?.call(path) ?? false,
         denseMaskCacheHit: denseMaskCacheHit,
-        sparseMetrics:
-            sparseMetricsProbe?.call(path, localToTarget, clip, fillRule),
+        denseMaskLikelyCacheable:
+            repetitionProbe?.call(path, localToTarget, clip, fillRule) ?? false,
+        // Measured only where the answer can be acted on. The sparse probe
+        // rasterises the path to find out how large its encoding is, and doing
+        // that for a pass that cannot execute sparse strips would spend the
+        // CPU cost of the route without any chance of its benefit.
+        sparseMetrics: capabilities.sparseStrips
+            ? sparseMetricsProbe?.call(path, localToTarget, clip, fillRule)
+            : null,
+        // After the metrics probe and only when it ran: it reports the encode
+        // that probe just performed.
+        tileCrossings:
+            capabilities.sparseStrips ? crossingsProbe?.call() : null,
       );
-      final event = GpuPathPlanningEvent(
+      final proposal = GpuPathPlanningProposal(
         label: label,
         workload: workload,
-        candidate: selector.select(workload, candidateCapabilities),
+        candidate: selector.select(workload, capabilities),
       );
-      lastEvent = event;
       lastError = null;
       lastStackTrace = null;
-      try {
-        onEvent?.call(event);
-      } catch (error, stackTrace) {
-        failureCount++;
-        lastError = error;
-        lastStackTrace = stackTrace;
-      }
+      return proposal;
     } catch (error, stackTrace) {
       failureCount++;
       lastEvent = null;
       lastError = error;
       lastStackTrace = stackTrace;
+      return null;
     }
+  }
+
+  /// Publishes [proposal] after ordered recording chose its real executor.
+  GpuPathPlanningEvent complete(
+    GpuPathPlanningProposal proposal, {
+    required GpuPathStrategy executedStrategy,
+  }) {
+    final event = GpuPathPlanningEvent(
+      label: proposal.label,
+      workload: proposal.workload,
+      candidate: proposal.candidate,
+      executedStrategy: executedStrategy,
+    );
+    lastEvent = event;
+    lastError = null;
+    lastStackTrace = null;
+    try {
+      onEvent?.call(event);
+    } catch (error, stackTrace) {
+      failureCount++;
+      lastError = error;
+      lastStackTrace = stackTrace;
+    }
+    return event;
   }
 }

@@ -23,34 +23,57 @@
 ///
 /// ## What this cannot do yet, said plainly
 ///
-///   * **Frame-callback pacing is not wired.** Commits happen when the
-///     framework presents; `wl_callback` is implemented for `sync` but no
-///     frame throttling uses it yet.
 ///   * **Keyboard input is the minimal xkb subset.** First group, two shift
 ///     levels, no dead keys, no compose and no IME. Client-side key repeat is
 ///     driven by `wl_keyboard.repeat_info`; unresolvable keys deliver
 ///     [KeyEvent]s but never guessed text. `wayland_keymap.dart` carries the
 ///     details.
-///   * **No client-side decorations and no xdg-decoration.** On compositors
-///     that do not draw server-side frames (GNOME) windows appear borderless.
-///   * **Drag-and-drop, cursors and popups are deferred.** Text clipboard is
-///     implemented through wl_data_device with bounded pipe transfers.
+///   * **Client-side decorations are negotiated but not drawn here.**
+///     `zxdg_decoration_manager_v1` is used to ask for a server-side frame;
+///     when the compositor has no such protocol (GNOME) the window reports
+///     [WaylandWindow.hasServerSideDecorations] as false and the framework
+///     must draw its own frame. Nothing in this backend paints one.
+///   * **Drag and drop carries no drag icon.** Receiving is complete and
+///     starting a drag works, but `DragRequest.feedback` is ignored: a drag
+///     icon is a `wl_surface` with an shm buffer of its own, which
+///     `wayland_drag_drop_backend.dart` names in a TODO rather than emulating
+///     badly. The compositor's own cursor is used instead.
+///   * **No touch, no primary selection, no fractional scale.** `wl_touch`,
+///     `zwp_primary_selection_v1` and `wp_fractional_scale_v1` are unbound;
+///     scaling is integer only.
+///
+/// What *is* wired end to end: xdg-shell toplevels and popups, `wl_shm`
+/// presentation with a release-driven buffer swapchain, `wl_surface.frame`
+/// pacing, clipboard text, key repeat, and pointer cursors loaded from the
+/// user's XCursor theme.
 library;
 
-import 'dart:io' show Platform;
+import 'dart:async';
+import 'dart:io' show File, Platform;
 
 import '../../foundation/diagnostics.dart';
 import '../../platform/clipboard.dart';
+import '../../platform/compose_sequences.dart';
+import '../../platform/compose_sequences_platform_stub.dart'
+    if (dart.library.io) '../../platform/compose_sequences_platform_io.dart'
+    as compose_platform;
+import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart';
+import '../../platform/text_input.dart';
 import '../../platform/window_events.dart';
 import 'wayland_clipboard.dart';
 import 'wayland_connection.dart';
+import 'wayland_cursor.dart';
+import 'wayland_cursor_theme.dart';
+import 'wayland_drag_drop.dart';
+import 'wayland_drag_drop_backend.dart';
 import 'wayland_events.dart';
 import 'wayland_key_repeat.dart';
 import 'wayland_libc.dart';
 import 'wayland_memfd.dart';
 import 'wayland_protocol.dart';
 import 'wayland_shm.dart';
+import 'wayland_text_input.dart';
 import 'wayland_transport.dart';
 import 'wayland_window.dart';
 
@@ -122,7 +145,11 @@ WaylandSocketPathResolution resolveWaylandSocketPath(
 
 /// Creates and owns Wayland windows.
 final class WaylandWindowingBackend
-    implements WindowingBackend, ClipboardProvider {
+    implements
+        WindowingBackend,
+        ClipboardProvider,
+        DragDropProvider,
+        TextInputProvider {
   WaylandWindowingBackend({
     bool? isLinux,
     String? operatingSystem,
@@ -163,6 +190,17 @@ final class WaylandWindowingBackend
   bool _serverDisconnected = false;
   bool _supportsCpuPresentation = false;
   bool _supportsClipboard = false;
+  bool _supportsDragAndDrop = false;
+  bool _supportsTextInput = false;
+
+  /// The machine's Compose table, read once at [initialize].
+  ///
+  /// Read once rather than per window because it is a file on disk that does
+  /// not change while the application runs, and parsing the standard
+  /// `en_US.UTF-8` table is a few thousand lines.
+  ComposeTable _composeTable = ComposeTable.empty;
+  WaylandDragDropBackend? _dragDrop;
+  WaylandTextInputBackend? _textInput;
 
   @override
   Clipboard get clipboard {
@@ -174,6 +212,48 @@ final class WaylandWindowingBackend
     return const UnavailableClipboard(
       'the active Wayland compositor exposes no usable '
       'wl_data_device_manager clipboard',
+    );
+  }
+
+  /// Drag and drop over `wl_data_device`, or a named refusal.
+  ///
+  /// Only ever non-[UnavailableDragDrop] after [initialize] has run: unlike
+  /// the clipboard, whose whole state is one round trip, a drag needs the
+  /// manager to be listening from the first `data_offer` the compositor sends,
+  /// and installing it at probe time would attach a state machine to a
+  /// connection that is about to be closed.
+  @override
+  DragDropBackend get dragAndDrop {
+    final WaylandDragDropBackend? backend = _dragDrop;
+    if (backend != null) return backend;
+    return const UnavailableDragDrop(
+      name: 'wayland',
+      reason: 'the active Wayland compositor exposes no usable '
+          'wl_data_device_manager, so no drop can be received and no drag '
+          'started',
+    );
+  }
+
+  /// Input methods over `zwp_text_input_v3`, or a named refusal.
+  ///
+  /// Only ever non-[UnavailableTextInput] after [initialize], for
+  /// [dragAndDrop]'s reason: the state machine has to be listening from the
+  /// compositor's first `enter`, and installing it at probe time would attach
+  /// it to a connection that is about to be closed.
+  ///
+  /// **A refusal here is not a keyboard that does not work.** Plain typing
+  /// comes from `wl_keyboard` and the xkb subset in `wayland_keymap.dart`;
+  /// what is missing without this is composition - CJK, and any method that
+  /// needs a preedit.
+  @override
+  TextInputBackend get textInput {
+    final WaylandTextInputBackend? backend = _textInput;
+    if (backend != null) return backend;
+    return const UnavailableTextInput(
+      name: 'wayland',
+      reason: 'the active Wayland compositor advertises no '
+          'zwp_text_input_manager_v3, so no input method can be reached; '
+          'plain typing still works through wl_keyboard',
     );
   }
 
@@ -307,6 +387,44 @@ final class WaylandWindowingBackend
           requested: name, attempts: <BackendProbeResult>[result]);
     }
 
+    _installCursorManager(connection, diagnostics);
+    if (connection is WaylandConnection && connection.supportsDragAndDrop) {
+      final WaylandDragDropManager manager = WaylandDragDropManager(connection);
+      connection.dragDrop = manager;
+      _dragDrop = WaylandDragDropBackend(manager);
+      diagnostics.add(const BackendDiagnostic.note(
+        'drag and drop is available through wl_data_device',
+        detail: 'reachable as DragDropProvider.dragAndDrop; drag icons '
+            '(DragRequest.feedback) are not drawn',
+      ));
+    } else {
+      _dragDrop = null;
+    }
+    if (connection is WaylandConnection && connection.supportsTextInput) {
+      final WaylandTextInputManager manager =
+          WaylandTextInputManager(connection);
+      connection.textInput = manager;
+      _textInput = WaylandTextInputBackend(manager);
+      diagnostics.add(const BackendDiagnostic.note(
+        'input methods are available through zwp_text_input_v3',
+        detail: 'reachable as TextInputProvider.textInput; v3 carries no '
+            'preedit styling, so the whole preedit is underlined as one run',
+      ));
+    } else {
+      _textInput = null;
+    }
+    if (!_supportsTextInput) {
+      _composeTable = compose_platform.loadSystemComposeTable();
+      diagnostics.add(BackendDiagnostic.note(
+        _composeTable.isEmpty
+            ? 'no X11 Compose table was found; dead keys will not compose'
+            : 'dead keys compose from the X11 Compose table '
+                '(${_composeTable.sequenceCount} sequences, '
+                '${_composeTable.skippedSequences} lines not understood)',
+      ));
+    } else {
+      _composeTable = ComposeTable.empty;
+    }
     diagnostics.add(const BackendDiagnostic.note(
       'Wayland window lifecycle initialized',
       detail: 'xdg-shell toplevels with wl_shm presentation',
@@ -323,6 +441,10 @@ final class WaylandWindowingBackend
     if (!_initialized && _connection == null) return;
     _initialized = false;
     _keyRepeat.cancel();
+    // The manager dies with the connection below; dropping the port half here
+    // keeps `dragAndDrop` from handing out a backend over a dead socket.
+    _dragDrop = null;
+    _textInput = null;
 
     Object? firstError;
     StackTrace? firstStack;
@@ -367,6 +489,16 @@ final class WaylandWindowingBackend
       options: options,
       onClosed: _onWindowClosed,
     );
+    // Dead keys, from the machine's own Compose table.
+    //
+    // Only when there is no input method: a compositor with
+    // `zwp_text_input_v3` has one, and an input method already composes dead
+    // keys itself. Running both would apply the accent twice - `´` then `a`
+    // becoming `áa` or `á´` depending on which ran first - which is why this is
+    // the *fallback* the roadmap's section 16.8 asks for and not an addition.
+    if (!_supportsTextInput && !_composeTable.isEmpty) {
+      window.composeEngine = ComposeEngine(_composeTable);
+    }
     if (_windowsBySurfaceId.containsKey(window.surfaceId)) {
       window.dispose();
       throw StateError(
@@ -572,6 +704,38 @@ final class WaylandWindowingBackend
     }
   }
 
+  /// Attaches a cursor manager to a live connection, if cursors are possible.
+  ///
+  /// Kept out of [WaylandConnection] because locating a theme is filesystem
+  /// policy, not protocol: the connection knows how to upload pixels, and
+  /// this decides which pixels the user asked for.
+  void _installCursorManager(
+    WaylandWindowClient connection,
+    List<BackendDiagnostic> diagnostics,
+  ) {
+    if (connection is! WaylandConnection) return;
+    final resolution = resolveWaylandCursorTheme(_environment);
+    connection.cursorManager = WaylandCursorManager(
+      client: connection,
+      fileSystem: const _IoCursorFileSystem(),
+      resolution: resolution,
+      timer: _cursorTimer,
+    );
+    diagnostics.add(BackendDiagnostic.note(
+      'cursor theme: ${resolution.themeName} at ${resolution.size}px',
+      detail: '${resolution.searchPaths.length} search path(s); '
+          'themes are read from disk on first use',
+    ));
+  }
+
+  /// The animation timer for cursors. A plain [Timer] rather than the
+  /// dispatcher's, because a cursor frame must keep ticking while the
+  /// application is idle and the dispatcher is parked in `poll`.
+  static void Function() _cursorTimer(Duration delay, void Function() tick) {
+    final timer = Timer(delay, tick);
+    return timer.cancel;
+  }
+
   void _inspectConnection(
     WaylandBackendConnection connection,
     List<BackendDiagnostic> diagnostics,
@@ -583,6 +747,14 @@ final class WaylandWindowingBackend
         ? connection as WaylandSelectionClient
         : null;
     _supportsClipboard = selectionClient?.supportsClipboard ?? false;
+    final dragClient = connection is WaylandDragDropClient
+        ? connection as WaylandDragDropClient
+        : null;
+    _supportsDragAndDrop = dragClient?.supportsDragAndDrop ?? false;
+    final textInputClient = connection is WaylandTextInputClient
+        ? connection as WaylandTextInputClient
+        : null;
+    _supportsTextInput = textInputClient?.supportsTextInput ?? false;
     final globals = connection.globalInterfaces;
     diagnostics.add(BackendDiagnostic.note(
       'globals: seat=${globals.contains('wl_seat') ? "yes" : "no"}, '
@@ -599,10 +771,22 @@ final class WaylandWindowingBackend
           ? 'wl_data_device text clipboard is available'
           : 'wl_data_device text clipboard is unavailable',
     ));
-    diagnostics.add(const BackendDiagnostic.note(
+    diagnostics.add(BackendDiagnostic.note(
+      _supportsDragAndDrop
+          ? 'wl_data_device drag and drop is available'
+          : 'wl_data_device drag and drop is unavailable',
+    ));
+    diagnostics.add(BackendDiagnostic.note(
+      _supportsTextInput
+          ? 'zwp_text_input_v3 is available'
+          : 'zwp_text_input_v3 is unavailable',
+    ));
+    diagnostics.add(BackendDiagnostic.note(
       'pointer motion, buttons, crossings and axis scroll are normalized; '
       'keyboard uses the minimal xkb text subset with client-side repeat '
-      '(no dead keys/compose/IME)',
+      '(no dead keys/compose)'
+      '${_supportsTextInput ? '; composition is handled by the input method '
+          'through zwp_text_input_v3' : '; and no input method'}',
     ));
   }
 
@@ -624,6 +808,8 @@ final class WaylandWindowingBackend
               if (_supportsCpuPresentation) Capability.cpuPresentation,
               if (_supportsCpuPresentation) Capability.partialPresent,
               if (_supportsClipboard) Capability.clipboardText,
+              if (_supportsDragAndDrop) Capability.dragAndDrop,
+              if (_supportsTextInput) Capability.textComposition,
             }
           : const <Capability>{},
       diagnostics: diagnostics,
@@ -650,4 +836,28 @@ final class WaylandWindowingBackend
   @override
   String toString() => 'WaylandWindowingBackend(initialized: $_initialized, '
       'windows: ${_windows.length})';
+}
+
+/// The real filesystem, behind the seam the cursor loader is tested against.
+final class _IoCursorFileSystem implements CursorFileSystem {
+  const _IoCursorFileSystem();
+
+  @override
+  bool fileExists(String path) {
+    try {
+      return File(path).existsSync();
+    } on Object {
+      // An unreadable directory is "no cursor here", not a crash on hover.
+      return false;
+    }
+  }
+
+  @override
+  List<int>? readFile(String path) {
+    try {
+      return File(path).readAsBytesSync();
+    } on Object {
+      return null;
+    }
+  }
 }

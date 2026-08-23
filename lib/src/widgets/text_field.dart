@@ -26,6 +26,8 @@ import '../graphics/display_list.dart';
 import '../layout/render_box.dart';
 import '../platform/clipboard.dart';
 import '../platform/input_events.dart';
+import '../platform/native_window.dart';
+import '../platform/text_input.dart';
 import '../rendering/text/font_registry.dart';
 import '../text/paragraph.dart' show Paragraph, TextBox;
 import '../text/shaper.dart' show UnsupportedScriptException;
@@ -494,6 +496,40 @@ final class TextEditingController extends ValueNotifier<String> {
     _redo.clear();
   }
 
+  /// Deletes [beforeLength] units before the caret and [afterLength] after it.
+  ///
+  /// `zwp_text_input_v3.delete_surrounding_text`, which an input method uses to
+  /// replace text it did not compose - a Korean method rewriting the previous
+  /// syllable, a predictive method correcting the word before the caret.
+  ///
+  /// Three rules, each of which is a bug when broken:
+  ///
+  ///  * **Both lengths are clamped, never refused.** A method that asks to
+  ///    delete more than exists is not malfunctioning; it is working from a
+  ///    document snapshot that has since changed. Refusing leaves its idea of
+  ///    the text permanently ahead of this one's, and the next thing it sends
+  ///    lands in the wrong place.
+  ///  * **The boundaries snap outward to whole clusters.** A length that cuts
+  ///    a surrogate pair or separates a letter from its combining accent would
+  ///    leave the text well-formed and meaningless, and `TextEditingValue`
+  ///    rejects the offsets outright.
+  ///  * **Any composing region goes.** The characters around the caret are
+  ///    changing, so the input method's idea of which span it owns is now
+  ///    wrong; keeping the range would underline text that nothing will clear.
+  void deleteSurrounding({required int beforeLength, required int afterLength}) {
+    if (beforeLength <= 0 && afterLength <= 0) return;
+    final ({int start, int end}) range = orderedSelection;
+    final int from = TextMotion.snapDown(
+      value,
+      (range.start - beforeLength).clamp(0, value.length),
+    );
+    final int to = TextMotion.snapUp(
+      value,
+      (range.end + afterLength).clamp(0, value.length),
+    );
+    _deleteRange(from, to);
+  }
+
   /// Removes `[from, to)`, collapsing the caret where the text was.
   ///
   /// Silent and free when the range is empty, which is what makes backspace at
@@ -577,6 +613,99 @@ final class ClipboardScope extends InheritedWidget {
   @override
   bool updateShouldNotify(ClipboardScope oldWidget) =>
       !identical(clipboard, oldWidget.clipboard);
+}
+
+/// One run of a preedit, ready to paint: a document range and how the input
+/// method wants it drawn.
+///
+/// The style-to-pixels mapping lives here rather than in `text_input_types.dart`
+/// because it is a *rendering* decision and the port must not carry one: the
+/// same [ImeCompositionStyle] should be able to look different in a different
+/// theme, and a platform enum that dictated a thickness would be a platform
+/// enum dictating a design.
+final class _CompositionRun {
+  const _CompositionRun(this.start, this.end, this.style);
+
+  final int start;
+  final int end;
+  final ImeCompositionStyle style;
+
+  /// How thick the underline is, in logical units.
+  ///
+  /// Two pixels for the clause under conversion and one for everything else,
+  /// which is the convention every desktop IME host uses and which survives
+  /// being drawn at 1x. A *colour* difference alone would be invisible to a
+  /// user who cannot distinguish it, and this is the one cue that says which
+  /// clause the arrow keys are moving through.
+  double get thickness => switch (style) {
+        ImeCompositionStyle.targetConverted ||
+        ImeCompositionStyle.targetNotConverted =>
+          2,
+        _ => 1,
+      };
+
+  /// The underline colour.
+  ///
+  /// An error run is drawn in the theme's danger colour when it has one:
+  /// `ATTR_INPUT_ERROR` means the method could not convert those characters,
+  /// and a user who cannot see that will keep typing into a run that will never
+  /// become anything.
+  Color color(ThemeData theme) => switch (style) {
+        ImeCompositionStyle.error => theme.colorScheme.error,
+        _ => theme.foreground,
+      };
+}
+
+/// Publishes the platform's input method, and the window it belongs to, to a
+/// subtree.
+///
+/// The shape of [ClipboardScope], installed in the same place and for the same
+/// reason - every text field needs it, none of them should be handed one by its
+/// parent - with one difference that is not cosmetic: **the window travels with
+/// it**. An input method is attached to a window, not to an application: a
+/// composition belongs to one `HWND` or one `wl_surface`, and a field that
+/// could not name its own window would have nothing to attach to. That is the
+/// same argument `DragDropScope` makes for carrying [window], and it is why
+/// this cannot simply hang off the application the way the clipboard does.
+///
+/// A subtree with no scope above it composes nothing at all and keeps working:
+/// plain typing arrives as `TextInputEvent` from the platform's own keyboard
+/// translation and never goes through here. See
+/// [RenderTextField.textInputError] for how a field reports the difference.
+final class TextInputScope extends InheritedWidget {
+  const TextInputScope({
+    super.key,
+    required this.textInput,
+    required this.window,
+    required super.child,
+  });
+
+  final TextInputBackend textInput;
+
+  /// The window this subtree is mounted in, or null in a test that mounted a
+  /// tree with no window behind it.
+  ///
+  /// Null disables composition rather than failing: a headless widget test has
+  /// no window and must still be able to type.
+  final NativeWindow? window;
+
+  /// The nearest input method, or one that refuses by name when there is none.
+  static TextInputBackend of(BuildContext context) =>
+      maybeOf(context)?.textInput ??
+      const UnavailableTextInput(
+        name: 'none',
+        reason: 'no TextInputScope is installed above this control; an '
+            'application installs one from the backend it selected',
+      );
+
+  /// The nearest scope, for a caller that needs the window as well.
+  static TextInputScope? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<TextInputScope>();
+
+  @override
+  bool updateShouldNotify(TextInputScope oldWidget) =>
+      !identical(textInput, oldWidget.textInput) ||
+      !identical(window, oldWidget.window);
 }
 
 /// What a field does with its selection while some *other* control in the same
@@ -739,6 +868,10 @@ final class _TextFieldState extends State<TextField> {
           // field without one answers a secondary click by moving the caret and
           // opening nothing, rather than failing.
           contextMenu: ContextMenuScope.maybeOf(context),
+          // Null when no scope is installed, which is the state of every
+          // headless widget test: the field then composes nothing and types
+          // exactly as it does today. See [TextInputScope].
+          textInputScope: TextInputScope.maybeOf(context),
           focusNode: _focusNode,
         ),
       );
@@ -755,6 +888,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
     required this.theme,
     required this.clipboard,
     required this.contextMenu,
+    required this.textInputScope,
     required this.focusNode,
   });
 
@@ -767,6 +901,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
   final ThemeData theme;
   final Clipboard clipboard;
   final ContextMenuController? contextMenu;
+  final TextInputScope? textInputScope;
   final FocusNode focusNode;
 
   @override
@@ -784,7 +919,10 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
         ..clipboard = clipboard
         ..contextMenu = contextMenu
         ..focusNode = focusNode
-        ..enabled = enabled;
+        ..enabled = enabled
+        // Last: attaching the input method reads the configuration, which
+        // `obscure` and `enabled` decide.
+        ..setTextInput(textInputScope?.textInput, textInputScope?.window);
 
   @override
   void updateRenderObject(
@@ -801,13 +939,14 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
       ..clipboard = clipboard
       ..contextMenu = contextMenu
       ..focusNode = focusNode
-      ..enabled = enabled;
+      ..enabled = enabled
+      ..setTextInput(textInputScope?.textInput, textInputScope?.window);
   }
 }
 
 final class RenderTextField extends RenderBox
     with ControlBehavior
-    implements TextInputTarget {
+    implements TextInputTarget, TextInputClient {
   RenderTextField({
     required TextEditingController controller,
     required String label,
@@ -827,6 +966,39 @@ final class RenderTextField extends RenderBox
   InactiveSelectionHighlight _inactiveSelection =
       InactiveSelectionHighlight.dimmed;
   Clipboard _clipboard = const UnavailableClipboard();
+
+  /// The platform's input method, and the window it composes into.
+  ///
+  /// Both null is the ordinary state of a widget test and of any tree mounted
+  /// without a [TextInputScope]: the field then composes nothing, and typing -
+  /// which arrives as [TextInputEvent] from the platform's own keyboard
+  /// translation - is unaffected.
+  TextInputBackend? _textInput;
+  NativeWindow? _textInputWindow;
+  TextInputConnection? _textInputConnection;
+
+  /// The clauses of the current preedit, as the input method described them.
+  ///
+  /// Empty while nothing is composing **and** while composing on a platform
+  /// that reports no clauses at all - `zwp_text_input_v3` removed the styling
+  /// its predecessor had. The two are not distinguished on purpose: a renderer
+  /// that has no clauses underlines the whole preedit, which is right in both
+  /// cases.
+  List<ImeCompositionClause> _compositionClauses =
+      const <ImeCompositionClause>[];
+
+  /// Whether the input method asked for no caret inside the preedit.
+  bool _hidesCompositionCaret = false;
+
+  /// Why the last input-method operation did not happen, or null.
+  ///
+  /// The shape of [lastClipboardError] and for its reason: "this field does not
+  /// compose" is a question a caller can ask, and answering it needs the reason
+  /// rather than a bool. A field on a backend with no IME carries the
+  /// [TextInputException] that `attach` refused with.
+  TextInputException? get textInputError => _textInputError;
+  TextInputException? _textInputError;
+
   ClipboardException? _lastClipboardError;
   Future<void> _clipboardWork = Future<void>.value();
 
@@ -1451,11 +1623,22 @@ final class RenderTextField extends RenderBox
         if (!shift) return false;
         openContextMenu(_caretAnchor());
         return true;
-      case logicalKeyTab:
       case logicalKeyEscape:
-        // Declined on purpose: Tab belongs to traversal and Escape to whatever
-        // is dismissible above, and a text field that ate them would strand a
-        // keyboard user inside it.
+        // Escape means "abandon what the input method is composing" **while**
+        // it is composing, and nothing at all otherwise. Claimed only in the
+        // first case: a field that ate every Escape would strand a keyboard
+        // user inside a dialog it cannot dismiss, and one that never claimed it
+        // would close the dialog out from under a half-typed Japanese word.
+        // Every platform's own edit control draws the line here.
+        if (_controller.isComposing) {
+          _textInputConnection?.cancelComposition();
+          _clearComposition();
+          return true;
+        }
+        return false;
+      case logicalKeyTab:
+        // Declined on purpose: Tab belongs to traversal, and a text field that
+        // ate it would strand a keyboard user inside it.
         return false;
     }
     if (_readOnly) return false;
@@ -1530,8 +1713,293 @@ final class RenderTextField extends RenderBox
   @override
   bool handleTextInput(TextInputEvent event) {
     if (!enabled || _readOnly) return false;
+    // A keystroke that produced text while an input method was composing is
+    // not a second opinion about the preedit - it is the platform having
+    // decided the method did not want this key. Dropping the composition first
+    // keeps the two from interleaving; without it the character lands *inside*
+    // the underlined span and the IME goes on owning a range it no longer
+    // recognises.
+    if (_controller.isComposing) {
+      _textInputConnection?.cancelComposition();
+      _clearComposition();
+    }
     _controller.replaceSelection(event.text);
+    _syncTextInputState();
     return true;
+  }
+
+  // -------------------------------------------------------------------------
+  // Input method
+  // -------------------------------------------------------------------------
+
+  /// Points this field at a platform input method, or at none.
+  ///
+  /// Called by the widget on every build with whatever [TextInputScope] is
+  /// above it. Identity-compared on both halves, because a rebuild that changed
+  /// nothing must not tear down a live composition - which is exactly what
+  /// re-attaching does.
+  void setTextInput(TextInputBackend? backend, NativeWindow? window) {
+    if (identical(backend, _textInput) && identical(window, _textInputWindow)) {
+      return;
+    }
+    _releaseTextInput();
+    _textInput = backend;
+    _textInputWindow = window;
+    // Only when this field already has the keyboard: attaching an unfocused
+    // field would point the input method at a field the user is not typing in.
+    if (hasFocus) _attachTextInput();
+  }
+
+  /// Whether a platform input method is attached and switched on for this
+  /// field right now.
+  bool get isTextInputAttached => _textInputConnection?.isEnabled ?? false;
+
+  void _attachTextInput() {
+    final TextInputBackend? backend = _textInput;
+    final NativeWindow? window = _textInputWindow;
+    if (backend == null || window == null) return;
+    // Asked rather than tried: `attach` throws by design on a backend with no
+    // input method (see [UnavailableTextInput]), and a field that took that
+    // exception on every focus change would turn a known platform fact into a
+    // per-keystroke failure.
+    if (!backend.supportsComposition) return;
+    if (_textInputConnection != null) return;
+    try {
+      final TextInputConnection connection =
+          backend.attach(window: window, client: this);
+      _textInputConnection = connection;
+      connection.enable();
+      _textInputError = null;
+    } on TextInputException catch (error) {
+      _textInputError = error;
+    }
+  }
+
+  void _releaseTextInput() {
+    final TextInputConnection? connection = _textInputConnection;
+    if (connection == null) return;
+    _textInputConnection = null;
+    // Disable before detach: the order matters on Win32, where detaching
+    // restores the window's default input context and a composition still in
+    // flight would be handed to nobody.
+    connection.disable();
+    connection.detach();
+    _clearComposition();
+  }
+
+  /// Drops a composition **and the provisional text with it**.
+  ///
+  /// Not [TextEditingController.clearComposing], which forgets the range and
+  /// leaves the characters behind: those characters were never accepted by
+  /// anybody, and leaving them turns a cancelled Japanese conversion into a
+  /// document full of hiragana the user never asked for. A cancelled preedit
+  /// leaves no trace, which is what every platform's own edit control does.
+  ///
+  /// Usually a no-op by the time it runs: a connection that was told to cancel
+  /// answers with `updateComposition(ImeComposition.none)`, which does this
+  /// through the ordinary path. It is here for the case with no connection at
+  /// all - a field whose backend has no input method, which can still have a
+  /// composing range left over from a test or a previous backend.
+  void _clearComposition() {
+    _compositionClauses = const <ImeCompositionClause>[];
+    _hidesCompositionCaret = false;
+    if (_controller.isComposing) _controller.replaceComposingRegion('');
+  }
+
+  @override
+  TextInputConfiguration get textInputConfiguration {
+    if (_obscure) return TextInputConfiguration.password;
+    if (_readOnly || !enabled) {
+      // Not a purpose but a refusal: `isSensitive` is what every backend reads
+      // to decide whether to compose at all, and a field that cannot be typed
+      // into must not have an input method aimed at it. Spelled as a hint
+      // rather than as an invented `readOnly` purpose, so the enumeration stays
+      // the protocol's.
+      return const TextInputConfiguration(
+        hints: <ImeContentHint>{ImeContentHint.sensitiveData},
+      );
+    }
+    return const TextInputConfiguration();
+  }
+
+  /// The text around the caret, **with the preedit taken back out**.
+  ///
+  /// The provisional characters live in [TextEditingController.value] so that
+  /// they are laid out and drawn in place, but they belong to the input method
+  /// and not to the document. Sending them back would make the method see its
+  /// own output as context, and on Wayland it is an explicit protocol
+  /// violation. See [ImeSurroundingText] for the other two rules.
+  @override
+  ImeSurroundingText get surroundingText {
+    if (textInputConfiguration.isSensitive) return ImeSurroundingText.empty;
+    final String text = _controller.value;
+    if (!_controller.isComposing) {
+      return ImeSurroundingText(
+        text: text,
+        cursor: _controller.selectionEnd.clamp(0, text.length),
+        anchor: _controller.selectionStart.clamp(0, text.length),
+      );
+    }
+    final TextRange composing = _controller.composing;
+    final String without =
+        text.substring(0, composing.start) + text.substring(composing.end);
+    int shift(int offset) {
+      if (offset <= composing.start) return offset;
+      if (offset >= composing.end) {
+        return offset - (composing.end - composing.start);
+      }
+      // A caret inside the preedit has no place in a document that does not
+      // contain it; where the preedit starts is the only honest answer.
+      return composing.start;
+    }
+
+    return ImeSurroundingText(
+      text: without,
+      cursor: shift(_controller.selectionEnd).clamp(0, without.length),
+      anchor: shift(_controller.selectionStart).clamp(0, without.length),
+    );
+  }
+
+  /// Where the caret is, in the window's client coordinates.
+  ///
+  /// The caret and not the field: a candidate window opens *below this
+  /// rectangle*, and handing over the whole control would put the list under
+  /// the wrong place on a wide field. Zero-sized before the first layout, which
+  /// is a state a focus change can genuinely reach.
+  @override
+  Rect get caretRect {
+    if (!hasSize) return Rect.zero;
+    final Rect local = _localCaretRect();
+    final Offset topLeft = localToGlobal(Offset(local.left, local.top));
+    return Rect.fromLTWH(topLeft.dx, topLeft.dy, local.width, local.height);
+  }
+
+  /// The caret rectangle in this render object's own coordinates.
+  ///
+  /// Shared with [paint] so that the caret the user sees and the caret the
+  /// candidate window is anchored to cannot disagree - which they did in every
+  /// toolkit that computed them in two places.
+  Rect _localCaretRect() {
+    final double padding = theme.effectiveControlPadding;
+    final double lineHeight = labelLineHeight;
+    final double textTop = ((size.height - lineHeight) / 2).roundToDouble();
+    final Paragraph? laid = paragraph;
+    final double caretX = laid != null
+        ? laid
+            .getCaretRect(
+              TextPosition(
+                _controller.selectionEnd,
+                affinity: _controller.affinity,
+              ),
+            )
+            .left
+        : labelOffsetOfIndex(displayText, _controller.selectionEnd);
+    return Rect.fromLTWH(padding + caretX, textTop - 1, 1, lineHeight + 2);
+  }
+
+  /// Whether an input-method callback is mid-flight.
+  ///
+  /// The edits an IME asks for must not push state back at the platform on
+  /// their way through: see [_syncTextInputState] for the Wayland serial rule
+  /// that makes an extra commit here a real bug rather than a wasted call.
+  bool _applyingImeEdit = false;
+
+  /// Runs an input-method edit without letting it notify the platform back.
+  void _applyImeEdit(void Function() body) {
+    _applyingImeEdit = true;
+    try {
+      body();
+    } finally {
+      _applyingImeEdit = false;
+    }
+  }
+
+  @override
+  void updateComposition(ImeComposition composition) {
+    if (!enabled || _readOnly) return;
+    _compositionClauses = composition.clauses;
+    _hidesCompositionCaret = composition.hasHiddenCursor;
+    _applyImeEdit(
+      () => _controller.replaceComposingRegion(
+        composition.text,
+        // The caret goes to the end of the preedit when the method asked for
+        // none: it has to be *somewhere*, and the end is where the next
+        // keystroke lands. Only the painting of it is suppressed.
+        caretOffset: composition.hasHiddenCursor
+            ? composition.text.length
+            : composition.cursorStart,
+      ),
+    );
+    if (composition.isEmpty) {
+      _compositionClauses = const <ImeCompositionClause>[];
+      _hidesCompositionCaret = false;
+    }
+  }
+
+  @override
+  void commitText(String text) {
+    if (!enabled || _readOnly) return;
+    _compositionClauses = const <ImeCompositionClause>[];
+    _hidesCompositionCaret = false;
+    _applyImeEdit(() => _controller.commitText(text));
+  }
+
+  @override
+  void deleteSurroundingText({
+    required int beforeLength,
+    required int afterLength,
+  }) {
+    if (!enabled || _readOnly) return;
+    _applyImeEdit(
+      () => _controller.deleteSurrounding(
+        beforeLength: beforeLength,
+        afterLength: afterLength,
+      ),
+    );
+  }
+
+  /// Tells the platform that the caret or the document moved.
+  ///
+  /// Called for edits **this field** made - typing, deleting, moving the caret,
+  /// pasting - and deliberately *not* from inside the input method's own
+  /// callbacks.
+  ///
+  /// The asymmetry is the Wayland serial rule. A `commit` bumps the count every
+  /// `done` event's serial is compared against, so pushing state from inside
+  /// the three callbacks a single `done` may call in sequence would leave the
+  /// client's count ahead of the compositor's replies and make the next
+  /// `delete_surrounding_text` look stale and be discarded - which is the
+  /// classic text-input-v3 bug. `WaylandTextInputManager` pushes once, after
+  /// the whole transaction has been applied, which is step 4 of the protocol's
+  /// own ordering.
+  void _syncTextInputState() {
+    if (_applyingImeEdit) return;
+    _textInputConnection?.updateEditingState();
+  }
+
+  /// Observes focus for the input method, on top of what [ControlBehavior]
+  /// already does with it.
+  ///
+  /// The mixin's own listener repaints; this one attaches and detaches. A
+  /// second listener rather than an override because the mixin's is private,
+  /// and keeping them apart means a repaint can never be lost to an exception
+  /// thrown while attaching.
+  @override
+  set focusNode(FocusNode? value) {
+    final FocusNode? previous = focusNode;
+    if (identical(value, previous)) return;
+    previous?.removeListener(_onImeFocusChanged);
+    super.focusNode = value;
+    value?.addListener(_onImeFocusChanged);
+    _onImeFocusChanged(value);
+  }
+
+  void _onImeFocusChanged(FocusNode? node) {
+    if (hasFocus) {
+      _attachTextInput();
+    } else {
+      _releaseTextInput();
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1897,24 +2365,43 @@ final class RenderTextField extends RenderBox
       // provisional or the user cannot tell what the input method still owns,
       // and the same N-rectangle argument applies: a composition inside
       // right-to-left text is not one span on screen.
+      //
+      // The *thickness* is the input method's, not a constant: it reports one
+      // attribute per code unit of the preedit and the runs of equal attributes
+      // are its clauses, so the clause the candidate window is currently about
+      // is drawn thicker than the rest. A Japanese conversion of four clauses
+      // is unusable without that distinction - the arrow keys move between
+      // clauses and nothing on screen would say which one they are on.
+      //
+      // `zwp_text_input_v3` reports no clauses at all (v3 dropped v2's
+      // styling), so there the list is empty and the whole preedit gets one
+      // plain underline. That is the fallback and not a bug; see
+      // [ImeComposition.clauses].
       if (_controller.isComposing && !_obscure && laid != null) {
         final TextRange composing = _controller.composing;
-        for (final TextBox box
-            in laid.getBoxesForSelection(composing.start, composing.end)) {
-          paintFill(
-            list,
-            Rect.fromLTWH(
-              left + box.rect.left,
-              textTop + labelLineHeight,
-              box.rect.width,
-              1,
-            ),
-            theme.foreground,
-          );
+        for (final _CompositionRun run in _compositionRuns(composing)) {
+          for (final TextBox box
+              in laid.getBoxesForSelection(run.start, run.end)) {
+            paintFill(
+              list,
+              Rect.fromLTWH(
+                left + box.rect.left,
+                textTop + labelLineHeight,
+                box.rect.width,
+                run.thickness,
+              ),
+              run.color(theme),
+            );
+          }
         }
       }
     }
-    if (looksFocused && !_controller.hasSelection) {
+    // `_hidesCompositionCaret` is an explicit request, not a missing value: an
+    // input method that draws its own caret in the candidate window asks for
+    // the document's to be hidden (`cursor_begin == cursor_end == -1` on
+    // Wayland), and two carets on screen is exactly the confusion it is trying
+    // to avoid.
+    if (looksFocused && !_controller.hasSelection && !_hidesCompositionCaret) {
       // The caret's x comes from the paragraph *with its affinity*, which is
       // the whole reason the controller carries one: at a direction change the
       // same offset is the trailing edge of one run and the leading edge of
@@ -1945,11 +2432,62 @@ final class RenderTextField extends RenderBox
     }
   }
 
-  void _onValueChanged(String value) => markNeedsPaint();
+  /// The preedit split into the runs the input method described, in document
+  /// offsets.
+  ///
+  /// One run covering the whole region when no clauses were reported, which is
+  /// every Wayland composition and every Win32 one before the first
+  /// `GCS_COMPATTR`. Clause offsets are relative to the preedit and are
+  /// translated here, clamped to the region: the platform's idea of the preedit
+  /// length and this document's can differ by a frame when an edit raced the
+  /// message, and a clause that ran past the end would ask the paragraph for
+  /// boxes it has no glyphs for.
+  List<_CompositionRun> _compositionRuns(TextRange composing) {
+    if (_compositionClauses.isEmpty) {
+      return <_CompositionRun>[
+        _CompositionRun(composing.start, composing.end,
+            ImeCompositionStyle.input),
+      ];
+    }
+    final runs = <_CompositionRun>[];
+    for (final ImeCompositionClause clause in _compositionClauses) {
+      final int start =
+          (composing.start + clause.start).clamp(composing.start, composing.end);
+      final int end =
+          (composing.start + clause.end).clamp(composing.start, composing.end);
+      if (end > start) runs.add(_CompositionRun(start, end, clause.style));
+    }
+    return runs.isEmpty
+        ? <_CompositionRun>[
+            _CompositionRun(
+                composing.start, composing.end, ImeCompositionStyle.input),
+          ]
+        : runs;
+  }
+
+  void _onValueChanged(String value) {
+    markNeedsPaint();
+    // The caret rectangle and the surrounding text are both functions of this
+    // value, so an edit is exactly when the input method needs to hear about
+    // them - the candidate window follows the caret, and contextual conversion
+    // needs the words around it. See [_syncTextInputState] for why the IME's
+    // own edits do not travel this way.
+    _syncTextInputState();
+  }
 
   @override
   void detach() {
     _controller.removeListener(_onValueChanged);
+    // Before the render object leaves the tree, not after: on Win32 the
+    // connection restores the window's default input context on its way out,
+    // and a field that dropped its reference first would leave IMM32 pointed
+    // at a client that no longer exists.
+    _releaseTextInput();
+    // The mixin removes *its* focus listener in `super.detach()`; this one is
+    // ours and it is not the same subscription. A field that left it behind
+    // would keep a detached render object reachable from a node that outlives
+    // it, and would re-attach an input method from a tree that is gone.
+    focusNode?.removeListener(_onImeFocusChanged);
     super.detach();
   }
 

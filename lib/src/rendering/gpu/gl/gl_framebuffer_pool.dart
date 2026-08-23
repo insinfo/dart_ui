@@ -128,7 +128,7 @@ final class GlFramebufferAttachments {
 /// Implements [GpuLayerTarget] so the device-independent layer stack can hold
 /// it without knowing that `id` is a GL framebuffer name and `textureId` is a
 /// GL texture name.
-final class GlFramebuffer implements GpuLayerTarget {
+final class GlFramebuffer implements GpuLayerTarget, GpuAttachmentAwareTarget {
   GlFramebuffer({
     required this.id,
     required this.textureId,
@@ -169,6 +169,15 @@ final class GlFramebuffer implements GpuLayerTarget {
 
   /// Estimated bytes reserved by every attachment, including MSAA resolve.
   int get byteSize => attachments.byteSize(width, height);
+
+  /// The same facts in the backend-neutral vocabulary a render pass carries,
+  /// so a strategy selector reading [GpuRenderPass.attachments] sees what this
+  /// target was really created with rather than a global assumption.
+  @override
+  GpuPassAttachments get passAttachments => GpuPassAttachments(
+        stencilBits: attachments.stencilBits,
+        sampleCount: attachments.sampleCount,
+      );
 
   @override
   String toString() =>
@@ -238,7 +247,8 @@ final class GlFramebufferBudgetError extends Error {
 }
 
 /// Keeps offscreen colour targets alive between layers and between frames.
-final class GlFramebufferPool implements GpuLayerTargetAllocator {
+final class GlFramebufferPool
+    implements GpuLayerTargetAllocator, GpuAttachmentAwareAllocator {
   GlFramebufferPool({
     required this.factory,
     this.maxIdleBytes = kDefaultMaxIdleBytes,
@@ -314,6 +324,38 @@ final class GlFramebufferPool implements GpuLayerTargetAllocator {
   @override
   GpuLayerTarget acquireLayerTarget(int width, int height) =>
       acquireFramebuffer(width, height);
+
+  /// Layer targets with stencil and samples, for a stack whose policy asked.
+  ///
+  /// Falls back to colour-only rather than raising when the driver refuses the
+  /// richer target: the caller's layer still has to be drawn, and it will be
+  /// drawn by the dense coverage atlas - which is the parity route - instead of
+  /// by a promoted vector executor. The stack reads what it actually got from
+  /// [GpuAttachmentAwareTarget], so the pass descriptor stays truthful either
+  /// way and the refusal happens in the selector rather than in a driver call.
+  @override
+  GpuLayerTarget acquireLayerTargetWith(
+    int width,
+    int height,
+    GpuPassAttachments attachments,
+  ) {
+    final GlFramebufferAttachments requested = GlFramebufferAttachments(
+      stencilBits: attachments.stencilBits,
+      sampleCount: attachments.sampleCount,
+    );
+    if (requested == GlFramebufferAttachments.colorOnly) {
+      return acquireFramebuffer(width, height);
+    }
+    try {
+      return acquireFramebuffer(width, height, attachments: requested);
+    } on GlFramebufferBudgetError {
+      // The budget is a real limit and the honest answer to it is not a
+      // smaller target of the wrong kind - rethrow so the frame reports it.
+      rethrow;
+    } on Object {
+      return acquireFramebuffer(width, height);
+    }
+  }
 
   /// Acquires a target whose attachments are part of its reuse key.
   ///

@@ -66,15 +66,24 @@ import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
 import '../gpu_glyph_atlas.dart';
+import '../gpu_gradient.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
+import '../gpu_path_strategy.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
+import '../gpu_vector_command_stream.dart';
+import '../gpu_vector_submission_cursor.dart';
+import '../vector/sparse_strip_draw_plan.dart';
+import '../vector/stencil_cover_draw_plan.dart';
+import '../vector/vector_plan_cache.dart';
 import 'gl_backend.dart';
 import 'gl_bindings.dart';
 import 'gl_framebuffer_pool.dart';
 import 'gl_surface_descriptor.dart';
+import 'gl_vector_path_recorder.dart';
+import 'gl_vector_replay.dart';
 
 /// A render target backed by a window's back buffer.
 final class GlWindowTarget
@@ -159,7 +168,37 @@ final class GlWindowTarget
     _layers = GpuLayerStack(
       allocator: _layerPool,
       backendName: GlRendererBackend.backendName,
+      // Stencil and samples for a layer big enough that a promoted draw
+      // inside it could pay for them. See `GpuLayerStack.layerAttachmentPolicy`
+      // for why the answer cannot be derived from the layer's contents, and
+      // `glLayerAttachmentsFor` for the size threshold.
+      layerAttachmentPolicy: (int width, int height) => glLayerAttachmentsFor(
+        width: width,
+        height: height,
+        stencilCoverEnabled: _device.experimentalStencilCoverEnabled,
+      ),
     );
+    // The same wiring the offscreen target builds, from the same description,
+    // so a golden test and the screen take the same route through the
+    // renderer. See `gl_vector_replay.dart`.
+    final GlVectorReplay? vector = GlVectorReplay.create(
+      layers: _layers,
+      sparseEnabled: _device.experimentalSparseStripsEnabled,
+      stencilEnabled: _device.experimentalStencilCoverEnabled,
+      tessellationEnabled: _device.experimentalCpuTessellationEnabled,
+      queryStencil: (int framebuffer) => _device.queryStencilCoverCapabilities(
+          surfaceFramebuffer: framebuffer),
+      // A window renders into the default framebuffer, whose attachments came
+      // from the pixel format the context was created with - this backend
+      // never creates it and so can only ask.
+      surfaceFramebuffer: () => 0,
+      // Rebuilt with the wiring, so a device loss cannot leave a gradient
+      // binding pointing at a texture name the driver already freed.
+      gradientCache: GpuGradientCache(allocator: _device),
+    );
+    _vector = vector;
+    _vectorStream = vector?.stream;
+    _vectorRecorder = vector?.recorder;
     _sink = GpuRasterSink(
       batcher: _batcher,
       backendName: GlRendererBackend.backendName,
@@ -171,6 +210,8 @@ final class GlWindowTarget
       fontResolver: _fonts,
       layerStack: _layers,
       onAtlasFlush: _flushAtlases,
+      pathPlanningTelemetry: vector?.telemetry,
+      pathCommandRecorder: vector?.recorder,
     );
     _player = DisplayListPlayer(_sink);
   }
@@ -190,6 +231,10 @@ final class GlWindowTarget
   late GpuLayerStack _layers;
   late GpuRasterSink _sink;
   late DisplayListPlayer _player;
+  GlVectorReplay? _vector;
+  GpuVectorCommandStream<ReplayPaint, GlVectorPathPayload>? _vectorStream;
+  GlVectorPathRecorder? _vectorRecorder;
+  final GpuVectorSubmissionCursor _vectorCursor = GpuVectorSubmissionCursor();
 
   // -------------------------------------------------------------------
   // Device-loss recovery
@@ -224,6 +269,10 @@ final class GlWindowTarget
     _pendingClear = null;
     _layers.endFrame();
     _layerPool.discardAfterDeviceLoss();
+    // The gradient ramps go with the context. `clear` skips handles that
+    // are already invalid, so this frees what survived and forgets the
+    // rest; the rebuild below installs a fresh cache either way.
+    _vector?.dispose();
     _device
       ..releaseTexture(_maskTexture)
       ..releaseTexture(_glyphTexture);
@@ -269,6 +318,27 @@ final class GlWindowTarget
   /// that redraws the same text must not increase it.
   int get glyphUploadCount => _glyphUploadCount;
   int _glyphUploadCount = 0;
+
+  int get experimentalVectorCommandCount =>
+      _vectorStream?.vectorCommandCount ?? 0;
+  int get experimentalVectorAcceptedCount =>
+      _vectorRecorder?.acceptedCount ?? 0;
+
+  /// The strategy that owned the last observed path's pixels, and the one the
+  /// selector proposed for it. See `gl_backend.dart` for why both are exposed.
+  GpuPathStrategy? get lastExecutedPathStrategy =>
+      _vector?.telemetry.lastEvent?.executedStrategy;
+  GpuPathStrategy? get lastCandidatePathStrategy =>
+      _vector?.telemetry.lastEvent?.candidate.strategy;
+
+  /// The sparse encodings this target retains between draws and frames.
+  ///
+  /// Exposed for the question pixels cannot answer: whether the second frame
+  /// of a static scene rasterised its coverage again. A cache that missed
+  /// every time draws an identical picture and spends the frame budget doing
+  /// it - see `vector_plan_cache.dart`.
+  VectorPlanCache<SparseStripDrawPlan>? get sparsePlanCache =>
+      _vector?.recorder.sparsePlanCache;
 
   GlWindowSurfaceDescriptor _surface;
   int? _pendingClear;
@@ -324,6 +394,39 @@ final class GlWindowTarget
   bool get needsResize =>
       _surface.generation.current != _observedWindowGeneration;
 
+  /// The attachments of the window's default framebuffer, asked once.
+  ///
+  /// This backend does not create framebuffer 0 - the pixel format the context
+  /// was made with did - so the only honest way to know whether it carries
+  /// stencil is to ask the driver. The answer cannot change while the context
+  /// lives, so it is cached; a lost device rebuilds this target and the next
+  /// frame asks again.
+  ///
+  /// Colour-only when approach C is off, because the query lives on the
+  /// stencil-cover driver and a target with no stencil executor has nothing to
+  /// do with the answer. A driver that refuses the query is also read as
+  /// colour-only: that is a refusal to promote, and the dense atlas draws
+  /// every path either way.
+  GpuPassAttachments _defaultFramebufferAttachments() {
+    final GpuPassAttachments? cached = _surfaceAttachments;
+    if (cached != null) return cached;
+    if (!_device.experimentalStencilCoverEnabled) {
+      return _surfaceAttachments = GpuPassAttachments.colorOnly;
+    }
+    try {
+      final StencilCoverCapabilities capabilities =
+          _device.queryStencilCoverCapabilities();
+      return _surfaceAttachments = GpuPassAttachments(
+        stencilBits: capabilities.stencilBits,
+        sampleCount: capabilities.sampleCount,
+      );
+    } catch (_) {
+      return _surfaceAttachments = GpuPassAttachments.colorOnly;
+    }
+  }
+
+  GpuPassAttachments? _surfaceAttachments;
+
   @override
   Frame beginFrame(FrameRequest request) {
     throwIfDisposed();
@@ -336,7 +439,10 @@ final class GlWindowTarget
     _layers.beginFrame(
       surfaceWidth: _surface.pixelWidth,
       surfaceHeight: _surface.pixelHeight,
+      surfaceAttachments: _defaultFramebufferAttachments(),
     );
+    _vector?.beginFrame();
+    _vectorCursor.reset();
     _submittedBatches = 0;
     _pendingClear = request.clearColor;
     return Frame(
@@ -392,16 +498,30 @@ final class GlWindowTarget
 
     final int? clear = _pendingClear;
     _pendingClear = null;
-    final drawn = _device.submit(
-      _batcher,
-      _surface.pixelWidth,
-      _surface.pixelHeight,
-      clear,
-      layers: _layers,
-      // Framebuffer 0 is this target's surface, and submit rebinds it after
-      // every layer pass so the swap below finds the back buffer bound.
-      firstBatch: _submittedBatches,
-    );
+    final vectorStream = _vectorStream;
+    final bool drawn;
+    if (vectorStream == null) {
+      drawn = _device.submit(
+        _batcher,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+        clear,
+        layers: _layers,
+        // Framebuffer 0 is this target's surface, and submit rebinds it after
+        // every layer pass so the swap below finds the back buffer bound.
+        firstBatch: _submittedBatches,
+      );
+    } else {
+      vectorStream.finish(totalBatchCount: _batcher.batchCount);
+      drawn = _device.submitOrderedPaths(
+        _batcher,
+        vectorStream,
+        _vectorCursor,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+        clear,
+      );
+    }
     _submittedBatches = _batcher.batchCount;
     // After the draws and never before: until they are issued, the composite
     // quads are still going to sample those layer textures.
@@ -599,14 +719,27 @@ final class GlWindowTarget
     _uploadGlyphAtlas();
     final int? clear = _pendingClear;
     _pendingClear = null;
-    _device.submit(
-      _batcher,
-      _surface.pixelWidth,
-      _surface.pixelHeight,
-      clear,
-      layers: _layers,
-      firstBatch: _submittedBatches,
-    );
+    final vectorStream = _vectorStream;
+    if (vectorStream == null) {
+      _device.submit(
+        _batcher,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+        clear,
+        layers: _layers,
+        firstBatch: _submittedBatches,
+      );
+    } else {
+      vectorStream.snapshot(totalBatchCount: _batcher.batchCount);
+      _device.submitOrderedPaths(
+        _batcher,
+        vectorStream,
+        _vectorCursor,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+        clear,
+      );
+    }
     _submittedBatches = _batcher.batchCount;
   }
 
@@ -632,6 +765,7 @@ final class GlWindowTarget
     // idle, so disposing mid-frame would leak the ones still in flight.
     _layers.endFrame();
     _layerPool.dispose();
+    _vector?.dispose();
     _device
       ..releaseTexture(_maskTexture)
       ..releaseTexture(_glyphTexture);

@@ -65,7 +65,9 @@ import 'gpu_batcher.dart';
 import 'gpu_glyph_atlas.dart';
 import 'gpu_layer_stack.dart';
 import 'gpu_mask_atlas.dart';
+import 'gpu_path_dispatch.dart';
 import 'gpu_path_planning.dart';
+import 'gpu_path_strategy.dart';
 import 'gpu_pipeline.dart';
 import 'gpu_texture.dart';
 
@@ -94,7 +96,24 @@ abstract interface class GpuFontResolver {
 }
 
 /// Batches the player's device-space primitives for a GPU backend.
-final class GpuRasterSink implements RasterSink {
+///
+/// ## Gradients, and why the marker moved here from the player
+///
+/// [GradientRasterSink] used to be the player's gate: a sink that did not
+/// implement it never saw a gradient paint at all. That was the right shape
+/// while *no* GPU backend could draw one, and the wrong shape the moment one
+/// could, because the answer is no longer a property of this class - it is a
+/// property of the device and of the pass a particular draw lands in. An
+/// OpenGL context with the sparse executor can draw a gradient path; the same
+/// class on a device without it cannot.
+///
+/// So the marker is declared here and the refusal moved *inside*: a gradient
+/// that no route accepts raises [UnsupportedCapabilityError] naming the
+/// backend and saying what was missing. That is strictly more informative than
+/// the player's message and keeps the invariant it existed to protect - a
+/// gradient is drawn as a gradient or refused out loud, and is never quietly
+/// flattened to the paint's fallback colour.
+final class GpuRasterSink implements RasterSink, GradientRasterSink {
   GpuRasterSink({
     required this.batcher,
     required this.backendName,
@@ -107,6 +126,7 @@ final class GpuRasterSink implements RasterSink {
     this.onAtlasFlush,
     this.layerStack,
     this.pathPlanningTelemetry,
+    this.pathCommandRecorder,
   })  : assert(
           maskAtlas == null || maskTextureId != kNoTexture,
           'a mask atlas needs a texture id, or every mask would batch as if '
@@ -185,6 +205,14 @@ final class GpuRasterSink implements RasterSink {
   /// decisions before any incomplete executor is allowed to affect pixels.
   final GpuPathPlanningTelemetry? pathPlanningTelemetry;
 
+  /// Optional transactional bridge from the selector to ordered vector work.
+  ///
+  /// It is deliberately separate from telemetry: planning may be enabled to
+  /// measure candidates while this remains null. A recorder can only promote
+  /// a candidate after retaining a complete command; refusal or failure keeps
+  /// the established coverage-atlas path below as the pixel-producing route.
+  final GpuPathCommandRecorder? pathCommandRecorder;
+
   int _layerDepth = 0;
 
   /// Nesting depth of unbalanced [beginLayer] calls. A backend can assert on
@@ -231,6 +259,23 @@ final class GpuRasterSink implements RasterSink {
   @override
   void fillDeviceRect(Rect deviceRect, Rect clip, ReplayPaint paint) {
     _requireFill(paint, 'rectangles');
+    if (paint.gradient != null) {
+      // The solid pipeline modulates one vertex colour; there is nowhere in it
+      // for a ramp. A gradient rectangle is therefore drawn as a *path*, which
+      // is the route that has a gradient material - the same route a gradient
+      // rounded rectangle already took. The coverage is identical either way:
+      // the scanline filler's analytic area for an axis-aligned rectangle is
+      // the same quantity `boxCoverage` computes in the fragment shader.
+      final builder = PathBuilder()..addRect(deviceRect);
+      _drawMask(
+        builder.build(),
+        Transform2D.identity,
+        clip,
+        paint,
+        'gradient rectangle',
+      );
+      return;
+    }
     final alpha = (paint.argbColor >> 24) & 0xFF;
     if (alpha == 0) return;
 
@@ -403,8 +448,12 @@ final class GpuRasterSink implements RasterSink {
     String what, {
     FillRule rule = FillRule.nonZero,
   }) {
+    final bool hasGradient = paint.gradient != null;
     final alpha = (paint.argbColor >> 24) & 0xFF;
-    if (alpha == 0) return;
+    // A gradient carries its own alpha in the ramp, so the paint's alpha
+    // channel says nothing about whether it is visible - the CPU replay reads
+    // the ramp for a gradient too. Only a solid fill can be skipped here.
+    if (alpha == 0 && !hasGradient) return;
 
     final atlas = maskAtlas;
     if (atlas == null) {
@@ -417,24 +466,90 @@ final class GpuRasterSink implements RasterSink {
       );
     }
 
+    final Rect visible = transform.transformRect(path.bounds).intersect(clip);
     final GpuPathPlanningTelemetry? planning = pathPlanningTelemetry;
-    final int cacheHitsBefore = planning == null ? 0 : atlas.cacheHitCount;
+    final GpuPathPlanningProposal? proposal =
+        planning == null || visible.isEmpty
+            ? null
+            : planning.plan(
+                label: what,
+                path: path,
+                localToTarget: transform,
+                clip: clip,
+                fillRule: rule,
+                denseMaskCacheHit: atlas.containsMask(
+                  path,
+                  transform: transform,
+                  clip: clip,
+                  rule: rule,
+                ),
+                // What the paint asks for decides which routes are *correct*
+                // for this draw, as opposed to merely cheaper - see
+                // [GpuPathDrawTraits].
+                traits: GpuPathDrawTraits(
+                  antiAlias: paint.antiAlias,
+                  hasGradient: hasGradient,
+                ),
+              );
+
+    if (proposal != null) {
+      var executed = GpuPathStrategy.coverageAtlas;
+      final GpuPathCommandRecorder? recorder = pathCommandRecorder;
+      final GpuPathStrategy candidate = proposal.candidate.strategy;
+      if (recorder != null &&
+          candidate != GpuPathStrategy.coverageAtlas &&
+          candidate != GpuPathStrategy.analyticPrimitive) {
+        // A command at this batch index must not merge a later dense quad into
+        // the batch that precedes it. Closing is harmless on refusal: it can
+        // cost one draw call, but it can never change pixels.
+        batcher.flush();
+        try {
+          final accepted = recorder.tryRecord(
+            GpuPathDispatchRequest(
+              proposal: proposal,
+              path: path,
+              localToTarget: transform,
+              clip: clip,
+              fillRule: rule,
+              paint: paint,
+              batchIndex: batcher.batchCount,
+            ),
+          );
+          if (accepted) executed = candidate;
+        } catch (_) {
+          // Experimental dispatch is never allowed to make the universal
+          // dense path unavailable. Diagnostics remain available through the
+          // recorder and planning telemetry owned by the backend.
+        }
+      }
+      planning!.complete(proposal, executedStrategy: executed);
+      if (executed != GpuPathStrategy.coverageAtlas) return;
+    }
+    // Everything below rasterises coverage into an alpha8 atlas and modulates
+    // it by one colour, which is a picture a gradient does not have. Reaching
+    // here with one means no route accepted it, and the honest answer is to
+    // say so rather than to fill the shape with the paint's fallback colour -
+    // a flat shape where a ramp was asked for reads as a paint bug, not a
+    // renderer limitation.
+    if (hasGradient) {
+      throw UnsupportedCapabilityError(
+        backendName: backendName,
+        capability: Capability.gpuPresentation,
+        detail: 'a gradient $what could not be routed to a shader that samples '
+            'a ramp: ${paint.gradient}. The dense coverage atlas stores one '
+            'alpha per texel and modulates it by a single colour, so drawing '
+            'it here would produce a flat fill. This device needs the sparse '
+            'strip executor and a gradient cache '
+            '(enableExperimentalSparseStrips), or the paint has a shader '
+            'transform that cannot be inverted.',
+      );
+    }
     var result = atlas.rasterizeMask(
       path,
       transform: transform,
       clip: clip,
       rule: rule,
     );
-    if (planning != null && result.status != MaskRasterStatus.empty) {
-      planning.observe(
-        label: what,
-        path: path,
-        localToTarget: transform,
-        clip: clip,
-        fillRule: rule,
-        denseMaskCacheHit: atlas.cacheHitCount > cacheHitsBefore,
-      );
-    }
     if (result.status == MaskRasterStatus.needsFlush) {
       _flushAtlases(atlas, null, 'a $what');
       result = atlas.rasterizeMask(
@@ -628,6 +743,13 @@ final class GpuRasterSink implements RasterSink {
     Rect clip,
     ReplayPaint paint,
   ) {
+    _refuseGradient(
+      paint,
+      'a drawn image',
+      'drawImage uses the image pixels as its source rather than a geometry '
+          'shader, so the two colours would have to be combined by a rule the '
+          'display list does not encode',
+    );
     final resolver = imageResolver;
     final texture = resolver?.resolve(image);
     if (texture == null || !texture.isValid) {
@@ -754,6 +876,12 @@ final class GpuRasterSink implements RasterSink {
   /// frame renders, it just renders the wrong picture.
   @override
   void beginLayer(Rect deviceBounds, Rect clip, ReplayPaint paint) {
+    _refuseGradient(
+      paint,
+      'a saveLayer composite',
+      'a layer is composited with one opacity and one blend mode, and a ramp '
+          'is neither',
+    );
     final int alpha = (paint.argbColor >> 24) & 0xFF;
     final int blendMode = paint.blendMode;
     final GpuLayerStack? stack = layerStack;
@@ -942,6 +1070,13 @@ final class GpuRasterSink implements RasterSink {
     Rect clip,
     ReplayPaint paint,
   ) {
+    _refuseGradient(
+      paint,
+      'a glyph run',
+      'the glyph atlas stores coverage that is modulated by one colour, and '
+          'a per-glyph ramp would need a second shader this device does not '
+          'build',
+    );
     final atlas = glyphAtlas;
     final resolver = fontResolver;
     if (atlas == null || resolver == null) {
@@ -1245,6 +1380,25 @@ final class GpuRasterSink implements RasterSink {
   /// this side - the conversion is CPU geometry the GPU path has no stage for
   /// yet, and the player hands a stroked rectangle here as a path expecting
   /// exactly that.
+  /// Refuses a gradient on a route that has no shader to sample one.
+  ///
+  /// Images, glyph runs and layer composites are all textured quads whose
+  /// colour comes from a texture or a modulation factor; none of them has a
+  /// slot for a ramp, and the display list cannot express what a gradient
+  /// would even mean for two of them (the CPU renderer refuses the same three
+  /// by name). The refusal is stated here so a caller reads which primitive
+  /// was involved rather than a generic message from three call sites.
+  void _refuseGradient(ReplayPaint paint, String what, String because) {
+    if (paint.gradient == null) return;
+    throw UnsupportedCapabilityError(
+      backendName: backendName,
+      capability: Capability.gpuPresentation,
+      detail: 'a gradient paint on $what is not defined: $because. The '
+          'display-list resource was preserved as ${paint.gradient} instead '
+          'of being rendered as an incorrect solid colour.',
+    );
+  }
+
   void _requireFill(ReplayPaint paint, String what) {
     if (paint.style == paintStyleFill) return;
     throw UnsupportedCapabilityError(

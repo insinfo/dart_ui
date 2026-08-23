@@ -36,12 +36,15 @@ import 'vulkan_bindings.dart';
 import 'vulkan_constants.dart';
 import 'vulkan_ffi.g.dart';
 import 'vulkan_library.dart';
+import 'vulkan_surface_descriptor.dart';
+import 'vulkan_wsi_bindings.dart';
 
 /// What the caller wants of an instance.
 final class VulkanInstanceOptions {
   const VulkanInstanceOptions({
     this.validation = false,
     this.applicationName = 'dart_ui',
+    this.surfaces = const <VulkanSurfacePlatform>{},
   });
 
   /// Whether to enable `VK_LAYER_KHRONOS_validation` and the debug messenger
@@ -49,6 +52,23 @@ final class VulkanInstanceOptions {
   final bool validation;
 
   final String applicationName;
+
+  /// Window-system platforms this instance must be able to create a surface
+  /// for.
+  ///
+  /// Empty - the default - means an offscreen instance: no `VK_KHR_surface`,
+  /// no platform extension, and [VulkanInstance.surfaceApi] is null. That is
+  /// not a limitation being tolerated, it is the same policy the validation
+  /// layer has and for the same reason: **an extension is enabled when, and
+  /// only when, the caller asks for it.** Enabling `VK_KHR_surface`
+  /// speculatively would make every offscreen test on every runner depend on a
+  /// loader that has it, to buy nothing.
+  ///
+  /// A platform whose extension the loader does not report is a diagnostic and
+  /// not a failure: the instance is still created, and
+  /// [VulkanSurfaceApi.supports] answers false for it, so the caller falls back
+  /// to offscreen rather than losing Vulkan entirely.
+  final Set<VulkanSurfacePlatform> surfaces;
 }
 
 /// An instance, or the diagnostics explaining why there is none.
@@ -74,12 +94,33 @@ final class VulkanInstance {
     required this.messages,
     required NativeCallable<_DebugCallbackNative>? callback,
     required Pointer<VkDebugUtilsMessengerEXT_T> messenger,
+    this.surfaceApi,
+    this.enabledExtensions = const <String>[],
   })  : _callback = callback,
         _messenger = messenger;
 
   final VulkanLibrary library;
   final Pointer<VkInstance_T> handle;
   final VulkanInstanceApi api;
+
+  /// The `VK_KHR_surface` command table, or null on an offscreen instance.
+  ///
+  /// Null is the answer for every instance created without
+  /// [VulkanInstanceOptions.surfaces], which is most of them, and a caller that
+  /// needs a window checks it rather than assuming.
+  final VulkanSurfaceApi? surfaceApi;
+
+  /// The instance extensions actually enabled, in the order they were asked
+  /// for. Empty is normal.
+  final List<String> enabledExtensions;
+
+  /// Whether this instance can create a surface for [platform].
+  ///
+  /// Both halves have to be true - the extension enabled *and* its creator
+  /// resolved - and asking them separately is how a caller ends up with a
+  /// non-null table whose function pointer is null.
+  bool supportsSurface(VulkanSurfacePlatform platform) =>
+      surfaceApi != null && surfaceApi!.supports(platform);
 
   /// Whether `VK_LAYER_KHRONOS_validation` is actually loaded, as opposed to
   /// having been asked for. A test that means to assert "the layer said
@@ -154,6 +195,41 @@ final class VulkanInstance {
       ));
     }
 
+    // `VK_KHR_surface` is the base every platform extension sits on, so it
+    // goes in exactly once and only when at least one platform survived.
+    if (options.surfaces.isNotEmpty) {
+      if (!availableExtensions.contains(vkKhrSurfaceExtension)) {
+        diagnostics.add(BackendDiagnostic(
+          kind: DiagnosticKind.missingLibrary,
+          message: 'a window surface was asked for and $vkKhrSurfaceExtension '
+              'is not available; this instance can only render offscreen',
+          detail: 'available: ${availableExtensions.join(', ')}',
+        ));
+      } else {
+        final List<String> platformExtensions = <String>[];
+        for (final VulkanSurfacePlatform platform in options.surfaces) {
+          final String name = platform.instanceExtension;
+          if (availableExtensions.contains(name)) {
+            platformExtensions.add(name);
+          } else {
+            diagnostics.add(BackendDiagnostic(
+              kind: DiagnosticKind.missingLibrary,
+              message: '${platform.name} surfaces were asked for and $name is '
+                  'not available on this loader',
+            ));
+          }
+        }
+        // Only if something can actually be created with it. `VK_KHR_surface`
+        // alone creates no surface, and enabling it for nothing would make the
+        // diagnostics say a window is possible when it is not.
+        if (platformExtensions.isNotEmpty) {
+          extensions
+            ..add(vkKhrSurfaceExtension)
+            ..addAll(platformExtensions);
+        }
+      }
+    }
+
     final NativeArena arena = NativeArena();
     Pointer<VkInstance_T> handle = nullptr;
     try {
@@ -196,6 +272,21 @@ final class VulkanInstance {
       handle = out.value;
 
       final VulkanInstanceApi api = VulkanInstanceApi.bind(library, handle);
+      // Null when `VK_KHR_surface` was not enabled, and also when it was and
+      // the loader still did not resolve all five - which happens with a
+      // mismatched layer in the chain and is worth a diagnostic rather than a
+      // crash at the first present.
+      final VulkanSurfaceApi? surfaceApi =
+          extensions.contains(vkKhrSurfaceExtension)
+              ? VulkanSurfaceApi.bind(library, handle)
+              : null;
+      if (extensions.contains(vkKhrSurfaceExtension) && surfaceApi == null) {
+        diagnostics.add(const BackendDiagnostic(
+          kind: DiagnosticKind.missingSymbol,
+          message: '$vkKhrSurfaceExtension was enabled and its commands did '
+              'not all resolve; this instance can only render offscreen',
+        ));
+      }
       final List<String> messages = <String>[];
       NativeCallable<_DebugCallbackNative>? callback;
       Pointer<VkDebugUtilsMessengerEXT_T> messenger = nullptr;
@@ -253,6 +344,8 @@ final class VulkanInstance {
           library: library,
           handle: handle,
           api: api,
+          surfaceApi: surfaceApi,
+          enabledExtensions: List<String>.unmodifiable(extensions),
           validationEnabled: validation,
           messages: messages,
           callback: callback,

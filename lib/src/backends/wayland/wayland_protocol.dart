@@ -229,6 +229,47 @@ const int wlDataOfferRequestAccept = 0;
 const int wlDataOfferRequestReceive = 1;
 const int wlDataOfferRequestDestroy = 2;
 
+/// Drag-and-drop additions in `wl_data_device_manager` version 3. Binding at
+/// version 3 is what makes actions - copy versus move - expressible at all;
+/// below it a drop has no negotiated action and the source cannot tell
+/// whether the data was taken.
+const int wlDataDeviceManagerDragBindVersion = 3;
+
+const int wlDataSourceRequestSetActions = 2;
+const int wlDataOfferRequestFinish = 3;
+const int wlDataOfferRequestSetActions = 4;
+
+const int wlDataSourceEventDndDropPerformed = 3;
+const int wlDataSourceEventDndFinished = 4;
+const int wlDataSourceEventAction = 5;
+
+const int wlDataOfferEventSourceActions = 1;
+const int wlDataOfferEventAction = 2;
+
+const int wlDataDeviceRequestRelease = 2;
+
+/// `wl_data_device_manager.dnd_action` bitmask.
+const int wlDataDeviceManagerDndActionNone = 0;
+const int wlDataDeviceManagerDndActionCopy = 1 << 0;
+const int wlDataDeviceManagerDndActionMove = 1 << 1;
+const int wlDataDeviceManagerDndActionAsk = 1 << 2;
+
+/// Names for the action bitmask, so a diagnostic reads as words.
+String wlDndActionName(int action) {
+  switch (action) {
+    case wlDataDeviceManagerDndActionNone:
+      return 'none';
+    case wlDataDeviceManagerDndActionCopy:
+      return 'copy';
+    case wlDataDeviceManagerDndActionMove:
+      return 'move';
+    case wlDataDeviceManagerDndActionAsk:
+      return 'ask';
+    default:
+      return 'actions 0x${action.toRadixString(16)}';
+  }
+}
+
 const int wlDataOfferEventOffer = 0;
 
 /// The MIME types this backend offers and accepts for clipboard text. The
@@ -298,6 +339,73 @@ const int xdgToplevelEventClose = 1;
 const int xdgToplevelEventConfigureBounds = 2;
 const int xdgToplevelEventWmCapabilities = 3;
 
+// ---------------------------------------------------------------------------
+// xdg_positioner and xdg_popup.
+// ---------------------------------------------------------------------------
+
+const String xdgPositionerInterfaceName = 'xdg_positioner';
+const String xdgPopupInterfaceName = 'xdg_popup';
+
+const int xdgPositionerRequestDestroy = 0;
+const int xdgPositionerRequestSetSize = 1;
+const int xdgPositionerRequestSetAnchorRect = 2;
+const int xdgPositionerRequestSetAnchor = 3;
+const int xdgPositionerRequestSetGravity = 4;
+const int xdgPositionerRequestSetConstraintAdjustment = 5;
+const int xdgPositionerRequestSetOffset = 6;
+const int xdgPositionerRequestSetReactive = 7;
+const int xdgPositionerRequestSetParentSize = 8;
+const int xdgPositionerRequestSetParentConfigure = 9;
+
+/// `xdg_positioner.anchor` and `.gravity` share this enumeration.
+const int xdgPositionerAnchorNone = 0;
+const int xdgPositionerAnchorTop = 1;
+const int xdgPositionerAnchorBottom = 2;
+const int xdgPositionerAnchorLeft = 3;
+const int xdgPositionerAnchorRight = 4;
+const int xdgPositionerAnchorTopLeft = 5;
+const int xdgPositionerAnchorBottomLeft = 6;
+const int xdgPositionerAnchorTopRight = 7;
+const int xdgPositionerAnchorBottomRight = 8;
+
+/// `xdg_positioner.constraint_adjustment` bits.
+const int xdgPositionerConstraintAdjustmentNone = 0;
+const int xdgPositionerConstraintAdjustmentSlideX = 1 << 0;
+const int xdgPositionerConstraintAdjustmentSlideY = 1 << 1;
+const int xdgPositionerConstraintAdjustmentFlipX = 1 << 2;
+const int xdgPositionerConstraintAdjustmentFlipY = 1 << 3;
+const int xdgPositionerConstraintAdjustmentResizeX = 1 << 4;
+const int xdgPositionerConstraintAdjustmentResizeY = 1 << 5;
+
+const int xdgPopupRequestDestroy = 0;
+const int xdgPopupRequestGrab = 1;
+const int xdgPopupRequestReposition = 2;
+
+const int xdgPopupEventConfigure = 0;
+const int xdgPopupEventPopupDone = 1;
+const int xdgPopupEventRepositioned = 2;
+
+// ---------------------------------------------------------------------------
+// zxdg_decoration_manager_v1 (xdg-decoration, unstable v1).
+// ---------------------------------------------------------------------------
+
+const String xdgDecorationManagerInterfaceName =
+    'zxdg_decoration_manager_v1';
+const int xdgDecorationManagerBindVersion = 1;
+
+const int xdgDecorationManagerRequestDestroy = 0;
+const int xdgDecorationManagerRequestGetToplevelDecoration = 1;
+
+const int xdgToplevelDecorationRequestDestroy = 0;
+const int xdgToplevelDecorationRequestSetMode = 1;
+const int xdgToplevelDecorationRequestUnsetMode = 2;
+
+const int xdgToplevelDecorationEventConfigure = 0;
+
+/// `zxdg_toplevel_decoration_v1.mode`.
+const int xdgToplevelDecorationModeClientSide = 1;
+const int xdgToplevelDecorationModeServerSide = 2;
+
 /// `xdg_toplevel.state` values inside the configure `states` array.
 const int xdgToplevelStateMaximized = 1;
 const int xdgToplevelStateFullscreen = 2;
@@ -320,3 +428,86 @@ String wlDisplayErrorName(int code) {
       return 'display error $code';
   }
 }
+
+// ---------------------------------------------------------------------------
+// zwp_text_input_manager_v3 / zwp_text_input_v3 (text-input, unstable v3).
+// ---------------------------------------------------------------------------
+
+/// The input-method protocol every current compositor implements.
+///
+/// Version 1 is the only version there has ever been, which is why the bind
+/// version below is not clamped against anything: `text-input-unstable-v3` has
+/// had one revision since 2017 and an unstable protocol is replaced rather than
+/// extended.
+///
+/// A compositor that advertises neither this nor its `v1`/`v2` predecessors has
+/// no input method at all; there is deliberately no fallback to `v2` here,
+/// because `v2` is a *different* protocol (it carries preedit styling and a
+/// `zwp_input_method_v2` counterpart) rather than an older spelling of this
+/// one, and supporting both would mean two state machines for one feature.
+const String zwpTextInputManagerV3InterfaceName = 'zwp_text_input_manager_v3';
+const String zwpTextInputV3InterfaceName = 'zwp_text_input_v3';
+const int zwpTextInputManagerV3BindVersion = 1;
+
+const int zwpTextInputManagerV3RequestDestroy = 0;
+const int zwpTextInputManagerV3RequestGetTextInput = 1;
+
+const int zwpTextInputV3RequestDestroy = 0;
+const int zwpTextInputV3RequestEnable = 1;
+const int zwpTextInputV3RequestDisable = 2;
+const int zwpTextInputV3RequestSetSurroundingText = 3;
+const int zwpTextInputV3RequestSetTextChangeCause = 4;
+const int zwpTextInputV3RequestSetContentType = 5;
+const int zwpTextInputV3RequestSetCursorRectangle = 6;
+const int zwpTextInputV3RequestCommit = 7;
+
+const int zwpTextInputV3EventEnter = 0;
+const int zwpTextInputV3EventLeave = 1;
+const int zwpTextInputV3EventPreeditString = 2;
+const int zwpTextInputV3EventCommitString = 3;
+const int zwpTextInputV3EventDeleteSurroundingText = 4;
+const int zwpTextInputV3EventDone = 5;
+
+/// `zwp_text_input_v3.change_cause`: who moved the text.
+///
+/// Sent with `set_surrounding_text` so the input method can tell its own edit
+/// from the user's. A method that believes the user moved the caret abandons
+/// its conversion; one that knows it moved the caret itself keeps going.
+const int zwpTextInputV3ChangeCauseInputMethod = 0;
+const int zwpTextInputV3ChangeCauseOther = 1;
+
+/// `zwp_text_input_v3.content_hint` bits.
+const int zwpTextInputV3ContentHintNone = 0x0;
+const int zwpTextInputV3ContentHintCompletion = 0x1;
+const int zwpTextInputV3ContentHintSpellcheck = 0x2;
+const int zwpTextInputV3ContentHintAutoCapitalization = 0x4;
+const int zwpTextInputV3ContentHintLowercase = 0x8;
+const int zwpTextInputV3ContentHintUppercase = 0x10;
+const int zwpTextInputV3ContentHintTitlecase = 0x20;
+const int zwpTextInputV3ContentHintHiddenText = 0x40;
+const int zwpTextInputV3ContentHintSensitiveData = 0x80;
+const int zwpTextInputV3ContentHintLatin = 0x100;
+const int zwpTextInputV3ContentHintMultiline = 0x200;
+
+/// `zwp_text_input_v3.content_purpose` values.
+const int zwpTextInputV3ContentPurposeNormal = 0;
+const int zwpTextInputV3ContentPurposeAlpha = 1;
+const int zwpTextInputV3ContentPurposeDigits = 2;
+const int zwpTextInputV3ContentPurposeNumber = 3;
+const int zwpTextInputV3ContentPurposePhone = 4;
+const int zwpTextInputV3ContentPurposeUrl = 5;
+const int zwpTextInputV3ContentPurposeEmail = 6;
+const int zwpTextInputV3ContentPurposeName = 7;
+const int zwpTextInputV3ContentPurposePassword = 8;
+const int zwpTextInputV3ContentPurposePin = 9;
+const int zwpTextInputV3ContentPurposeDate = 10;
+const int zwpTextInputV3ContentPurposeTime = 11;
+const int zwpTextInputV3ContentPurposeDatetime = 12;
+const int zwpTextInputV3ContentPurposeTerminal = 13;
+
+/// The cap `set_surrounding_text` must stay under.
+///
+/// The protocol says the message must not exceed 4000 bytes, and a client that
+/// exceeds it is disconnected - not warned. So a large document is clipped
+/// around the caret before it is sent; see `WaylandTextInputManager`.
+const int zwpTextInputV3SurroundingTextMaxBytes = 4000;

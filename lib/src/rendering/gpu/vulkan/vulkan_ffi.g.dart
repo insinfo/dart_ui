@@ -6604,6 +6604,8 @@ sealed class VkHostImageCopyFlagBits {
   static const VK_HOST_IMAGE_COPY_FLAG_BITS_MAX_ENUM = 2147483647;
 }
 
+final class VkSurfaceKHR_T extends ffi.Opaque {}
+
 sealed class VkPresentModeKHR {
   static const VK_PRESENT_MODE_IMMEDIATE_KHR = 0;
   static const VK_PRESENT_MODE_MAILBOX_KHR = 1;
@@ -6659,6 +6661,45 @@ sealed class VkCompositeAlphaFlagBitsKHR {
   static const VK_COMPOSITE_ALPHA_FLAG_BITS_MAX_ENUM_KHR = 2147483647;
 }
 
+final class VkSurfaceCapabilitiesKHR extends ffi.Struct {
+  @ffi.Uint32()
+  external int minImageCount;
+
+  @ffi.Uint32()
+  external int maxImageCount;
+
+  external VkExtent2D currentExtent;
+
+  external VkExtent2D minImageExtent;
+
+  external VkExtent2D maxImageExtent;
+
+  @ffi.Uint32()
+  external int maxImageArrayLayers;
+
+  @ffi.Uint32()
+  external int supportedTransforms;
+
+  @ffi.UnsignedInt()
+  external int currentTransform;
+
+  @ffi.Uint32()
+  external int supportedCompositeAlpha;
+
+  @ffi.Uint32()
+  external int supportedUsageFlags;
+}
+
+final class VkSurfaceFormatKHR extends ffi.Struct {
+  @ffi.UnsignedInt()
+  external int format;
+
+  @ffi.UnsignedInt()
+  external int colorSpace;
+}
+
+final class VkSwapchainKHR_T extends ffi.Opaque {}
+
 sealed class VkSwapchainCreateFlagBitsKHR {
   static const VK_SWAPCHAIN_CREATE_SPLIT_INSTANCE_BIND_REGIONS_BIT_KHR = 1;
   static const VK_SWAPCHAIN_CREATE_PROTECTED_BIT_KHR = 2;
@@ -6679,6 +6720,78 @@ sealed class VkDeviceGroupPresentModeFlagBitsKHR {
   static const VK_DEVICE_GROUP_PRESENT_MODE_SUM_BIT_KHR = 4;
   static const VK_DEVICE_GROUP_PRESENT_MODE_LOCAL_MULTI_DEVICE_BIT_KHR = 8;
   static const VK_DEVICE_GROUP_PRESENT_MODE_FLAG_BITS_MAX_ENUM_KHR = 2147483647;
+}
+
+final class VkSwapchainCreateInfoKHR extends ffi.Struct {
+  @ffi.UnsignedInt()
+  external int sType;
+
+  external ffi.Pointer<ffi.Void> pNext;
+
+  @ffi.Uint32()
+  external int flags;
+
+  external ffi.Pointer<VkSurfaceKHR_T> surface;
+
+  @ffi.Uint32()
+  external int minImageCount;
+
+  @ffi.UnsignedInt()
+  external int imageFormat;
+
+  @ffi.UnsignedInt()
+  external int imageColorSpace;
+
+  external VkExtent2D imageExtent;
+
+  @ffi.Uint32()
+  external int imageArrayLayers;
+
+  @ffi.Uint32()
+  external int imageUsage;
+
+  @ffi.UnsignedInt()
+  external int imageSharingMode;
+
+  @ffi.Uint32()
+  external int queueFamilyIndexCount;
+
+  external ffi.Pointer<ffi.Uint32> pQueueFamilyIndices;
+
+  @ffi.UnsignedInt()
+  external int preTransform;
+
+  @ffi.UnsignedInt()
+  external int compositeAlpha;
+
+  @ffi.UnsignedInt()
+  external int presentMode;
+
+  @ffi.Uint32()
+  external int clipped;
+
+  external ffi.Pointer<VkSwapchainKHR_T> oldSwapchain;
+}
+
+final class VkPresentInfoKHR extends ffi.Struct {
+  @ffi.UnsignedInt()
+  external int sType;
+
+  external ffi.Pointer<ffi.Void> pNext;
+
+  @ffi.Uint32()
+  external int waitSemaphoreCount;
+
+  external ffi.Pointer<ffi.Pointer<VkSemaphore_T>> pWaitSemaphores;
+
+  @ffi.Uint32()
+  external int swapchainCount;
+
+  external ffi.Pointer<ffi.Pointer<VkSwapchainKHR_T>> pSwapchains;
+
+  external ffi.Pointer<ffi.Uint32> pImageIndices;
+
+  external ffi.Pointer<ffi.Int> pResults;
 }
 
 sealed class VkDisplayPlaneAlphaFlagBitsKHR {

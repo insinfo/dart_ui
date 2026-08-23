@@ -101,6 +101,7 @@ import '../../geometry/transform2d.dart';
 import '../path/coverage_span_sink.dart';
 import '../path/fill_rule.dart';
 import '../path/scanline_filler.dart';
+import '../render_policy.dart';
 import 'gpu_pipeline.dart';
 import 'gpu_texture.dart';
 
@@ -330,6 +331,22 @@ final class GpuMaskAtlas {
         pixels = Uint8List(width * height),
         _packer = ShelfAtlas(width: width, height: height);
 
+  /// The atlas [policy] budgets for.
+  ///
+  /// The page is square and a power of two - see
+  /// [RenderPolicy.maskAtlasSide] - so `pixels.length` is at most
+  /// [RenderPolicy.maskAtlasByteBudget] and usually below it. The budget is a
+  /// ceiling, not a target: rounding up to reach it would make a field named
+  /// "budget" the one thing that could exceed itself.
+  ///
+  /// This is the whole observable effect of the budget. Everything else about
+  /// the atlas - eviction, compaction, the hit rate - follows from how much
+  /// space there is.
+  factory GpuMaskAtlas.forPolicy(RenderPolicy policy) {
+    final int side = policy.maskAtlasSide;
+    return GpuMaskAtlas(width: side, height: side);
+  }
+
   final int width;
   final int height;
 
@@ -463,6 +480,51 @@ final class GpuMaskAtlas {
     _dirtyBottom = 0;
   }
 
+  /// Whether the exact coverage bytes for this draw are already resident.
+  ///
+  /// This is a read-only planning query: it does not increment lookup/hit
+  /// counters, change LRU order or dirty the atlas. A strategy selector uses
+  /// it before choosing between the retained dense mask and an experimental
+  /// vector command. Calling [rasterizeMask] merely to learn the same fact
+  /// would already allocate a slot and perform CPU rasterization, making the
+  /// alternative strategy pay A's cost even when A was not selected.
+  bool containsMask(
+    Path path, {
+    required Transform2D transform,
+    required Rect clip,
+    FillRule rule = FillRule.nonZero,
+    bool antiAlias = true,
+  }) {
+    final Rect visible = transform.transformRect(path.bounds).intersect(clip);
+    if (visible.isEmpty ||
+        !visible.left.isFinite ||
+        !visible.top.isFinite ||
+        !visible.right.isFinite ||
+        !visible.bottom.isFinite) {
+      return false;
+    }
+    final int left = visible.left.floor();
+    final int top = visible.top.floor();
+    final int w = visible.right.ceil() - left;
+    final int h = visible.bottom.ceil() - top;
+    if (w <= 0 || h <= 0 || !_packer.canEverFit(w, h)) return false;
+    final double dx = transform.tx - left;
+    final double dy = transform.ty - top;
+    final int hash = _hashKey(path, transform, dx, dy, w, h, rule, antiAlias);
+    return _findCachedEntry(
+          hash,
+          path,
+          transform,
+          dx,
+          dy,
+          w,
+          h,
+          rule,
+          antiAlias,
+        ) !=
+        null;
+  }
+
   /// Drops every cached mask and returns the whole atlas to its empty state.
   ///
   /// The second half of the [MaskRasterStatus.needsFlush] cycle, and the
@@ -593,12 +655,21 @@ final class GpuMaskAtlas {
     final dy = transform.ty - top;
     final hash = _hashKey(path, transform, dx, dy, w, h, rule, antiAlias);
 
-    for (var entry = _buckets[hash]; entry != null; entry = entry.nextInChain) {
-      if (entry.matches(path, transform, dx, dy, w, h, rule, antiAlias)) {
-        _hits++;
-        _touch(entry);
-        return _resultFor(entry, left, top);
-      }
+    final _MaskEntry? cached = _findCachedEntry(
+      hash,
+      path,
+      transform,
+      dx,
+      dy,
+      w,
+      h,
+      rule,
+      antiAlias,
+    );
+    if (cached != null) {
+      _hits++;
+      _touch(cached);
+      return _resultFor(cached, left, top);
     }
 
     final slot = _allocate(w, h);
@@ -653,6 +724,25 @@ final class GpuMaskAtlas {
   // -------------------------------------------------------------------
   // Allocation and eviction
   // -------------------------------------------------------------------
+
+  _MaskEntry? _findCachedEntry(
+    int hash,
+    Path path,
+    Transform2D transform,
+    double dx,
+    double dy,
+    int w,
+    int h,
+    FillRule rule,
+    bool antiAlias,
+  ) {
+    for (var entry = _buckets[hash]; entry != null; entry = entry.nextInChain) {
+      if (entry.matches(path, transform, dx, dy, w, h, rule, antiAlias)) {
+        return entry;
+      }
+    }
+    return null;
+  }
 
   /// A slot for a `w` by `h` mask, evicting as far as the policy allows.
   ///

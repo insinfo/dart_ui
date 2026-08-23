@@ -101,10 +101,27 @@ const int d3d12TextureLayoutRowMajor = 1;
 const int d3d12ResourceFlagNone = 0;
 const int d3d12ResourceFlagAllowRenderTarget = 1;
 
-/// `D3D12_RESOURCE_STATES`. The five this backend transitions between.
+/// `D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS`.
+///
+/// Required by any buffer a compute shader writes through a UAV, and it must
+/// be declared at creation: a resource created without it can never be bound
+/// as one, and the runtime says so at bind time rather than at creation.
+const int d3d12ResourceFlagAllowUnorderedAccess = 4;
+
+/// `D3D12_RESOURCE_STATES`. The ones this backend transitions between.
 const int d3d12ResourceStateCommon = 0;
 const int d3d12ResourceStatePresent = 0;
 const int d3d12ResourceStateRenderTarget = 4;
+
+/// `D3D12_RESOURCE_STATE_UNORDERED_ACCESS`. What a buffer a compute shader
+/// writes has to be in, and the state a UAV barrier orders against.
+const int d3d12ResourceStateUnorderedAccess = 0x8;
+
+/// `D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE`. The read state for a
+/// buffer a compute shader samples; already implied by
+/// [d3d12ResourceStateGenericRead], which is what an upload-heap buffer is
+/// permanently in.
+const int d3d12ResourceStateNonPixelShaderResource = 0x40;
 const int d3d12ResourceStatePixelShaderResource = 0x80;
 const int d3d12ResourceStateCopyDest = 0x400;
 const int d3d12ResourceStateCopySource = 0x800;
@@ -144,8 +161,13 @@ const int d3d12DepthWriteMaskZero = 0;
 const int d3d12ComparisonFuncAlways = 8;
 const int d3d12StencilOpKeep = 1;
 
-/// `D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA`.
+/// `D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA` and `..._PER_INSTANCE_DATA`.
+///
+/// The second is what makes the sparse-strip pipeline instanced: an element
+/// declared per-instance advances once per quad and its step rate is one,
+/// which is the Direct3D spelling of `glVertexAttribDivisor(location, 1)`.
 const int d3d12InputPerVertexData = 0;
+const int d3d12InputPerInstanceData = 1;
 
 /// `D3D12_INDEX_BUFFER_STRIP_CUT_VALUE_DISABLED`.
 const int d3d12IndexBufferStripCutDisabled = 0;
@@ -156,6 +178,11 @@ const int d3d12IndexBufferStripCutDisabled = 0;
 const int d3d12PrimitiveTopologyTypeTriangle = 3;
 const int d3dPrimitiveTopologyTriangleList = 4;
 
+/// `D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP`. The *type* in the pipeline state is
+/// still `..._TYPE_TRIANGLE`: strip versus list is an input-assembler setting
+/// and not a pipeline one, which is why one pipeline state object serves both.
+const int d3dPrimitiveTopologyTriangleStrip = 5;
+
 /// `D3D12_PIPELINE_STATE_FLAG_NONE`.
 const int d3d12PipelineStateFlagNone = 0;
 
@@ -163,14 +190,35 @@ const int d3d12PipelineStateFlagNone = 0;
 const int d3d12RootParameterTypeDescriptorTable = 0;
 const int d3d12RootParameterTypeConstants = 1;
 
-/// `D3D12_DESCRIPTOR_RANGE_TYPE_SRV`.
+/// `D3D12_ROOT_PARAMETER_TYPE_CBV` / `_SRV` / `_UAV`: a *root descriptor*, an
+/// address in the root signature rather than an index into a heap.
+///
+/// The compute path uses these instead of a descriptor table, and the reason is
+/// not brevity: a root SRV or UAV takes a GPU virtual address directly, so a
+/// buffer reserved out of the frame's upload arena can be bound the moment it
+/// is written, with no descriptor to create, no shader-visible heap slot to
+/// find and no lifetime to keep in step with the heap. The restriction that
+/// comes with it is real and is respected: root descriptors address only raw or
+/// structured buffers, never a typed one and never a texture.
+const int d3d12RootParameterTypeCbv = 2;
+const int d3d12RootParameterTypeSrv = 3;
+const int d3d12RootParameterTypeUav = 4;
+
+/// `D3D12_DESCRIPTOR_RANGE_TYPE_SRV` and `..._UAV`.
 const int d3d12DescriptorRangeTypeSrv = 0;
+const int d3d12DescriptorRangeTypeUav = 1;
 
 /// `D3D12_SHADER_VISIBILITY`.
 const int d3d12ShaderVisibilityAll = 0;
 const int d3d12ShaderVisibilityPixel = 5;
 
-/// `D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT`.
+/// `D3D12_ROOT_SIGNATURE_FLAG_NONE` and
+/// `..._ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT`.
+///
+/// A compute root signature must use the first: the input-assembler flag names
+/// a stage a compute pipeline does not have, and the runtime refuses the
+/// combination rather than ignoring it.
+const int d3d12RootSignatureFlagNone = 0;
 const int d3d12RootSignatureFlagAllowInputAssemblerInputLayout = 1;
 
 /// `D3D_ROOT_SIGNATURE_VERSION_1_0`.
@@ -188,6 +236,9 @@ const int d3d12StaticBorderColorTransparentBlack = 0;
 
 /// `D3D12_SRV_DIMENSION_TEXTURE2D` and the default component mapping.
 const int d3d12SrvDimensionTexture2d = 4;
+
+/// `D3D12_UAV_DIMENSION_TEXTURE2D`.
+const int d3d12UavDimensionTexture2d = 4;
 
 /// `D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING`, expanded.
 ///
@@ -221,6 +272,17 @@ const int dxgiFormatR32G32Float = 16;
 const int dxgiFormatR8G8B8A8Unorm = 28;
 const int dxgiFormatR8Unorm = 61;
 const int dxgiFormatR32Uint = 42;
+
+/// `DXGI_FORMAT_R32_FLOAT`, the format the compute coverage texture uses.
+///
+/// Four bytes per coverage sample where one would do, and the reason is a
+/// guarantee rather than a preference: `R32_FLOAT`, `R32_UINT` and `R32_SINT`
+/// are the three formats every Direct3D 12 device must support for a **typed
+/// UAV store**. `R8_UNORM` would be a quarter of the memory, but whether a
+/// compute shader may store into it is a capability this backend does not
+/// query - and a store to an unsupported format is undefined rather than
+/// refused. See `d3d12_compute_tile_shader.dart`.
+const int dxgiFormatR32Float = 41;
 
 /// `DXGI_USAGE_RENDER_TARGET_OUTPUT`.
 const int dxgiUsageRenderTargetOutput = 0x20;
@@ -627,6 +689,32 @@ final class D3d12GraphicsPipelineStateDesc extends Struct {
   external int flags;
 }
 
+/// `D3D12_COMPUTE_PIPELINE_STATE_DESC`. 56 bytes.
+///
+/// Five fields where the graphics description has twenty-five, and the
+/// difference is the whole point of a separate creation call: a compute
+/// pipeline has no input layout, no blend state, no rasteriser and no render
+/// target format, so none of them can be got wrong here.
+///
+/// [pad0] and [tail] are the alignment the compiler would insert: `CachedPSO`
+/// begins with a pointer and is therefore eight-byte aligned, and the structure
+/// is padded to a multiple of eight. Both are named rather than implied,
+/// because a structure whose declared size differs from the runtime's is read
+/// past its end.
+final class D3d12ComputePipelineStateDesc extends Struct {
+  external Pointer<Void> rootSignature;
+  external D3d12ShaderBytecode cs;
+  @Uint32()
+  external int nodeMask;
+  @Uint32()
+  external int pad0;
+  external D3d12CachedPipelineState cachedPso;
+  @Uint32()
+  external int flags;
+  @Uint32()
+  external int tail;
+}
+
 /// `D3D12_DESCRIPTOR_RANGE`.
 final class D3d12DescriptorRange extends Struct {
   @Uint32()
@@ -762,6 +850,40 @@ final class D3d12ShaderResourceViewDesc extends Struct {
   external int tail0;
   @Uint32()
   external int tail1;
+}
+
+/// `D3D12_UNORDERED_ACCESS_VIEW_DESC` narrowed to its `Texture2D` arm.
+///
+/// The same union-alignment trap [D3d12ShaderResourceViewDesc] documents at
+/// length, and for the same reason: the union's widest member is
+/// `D3D12_BUFFER_UAV`, whose first field is a `UINT64`. Here the two leading
+/// `UINT`s already fill eight bytes, so the union starts at 8 with no pad -
+/// which is *why* this structure needs none and its neighbour does. The
+/// `Texture2D` arm is `{MipSlice, PlaneSlice}`; the rest of the 32-byte union
+/// stays zero. 40 bytes total.
+final class D3d12UnorderedAccessViewDesc extends Struct {
+  @Uint32()
+  external int format;
+  @Uint32()
+  external int viewDimension;
+
+  @Uint32()
+  external int mipSlice;
+  @Uint32()
+  external int planeSlice;
+
+  @Uint32()
+  external int tail0;
+  @Uint32()
+  external int tail1;
+  @Uint32()
+  external int tail2;
+  @Uint32()
+  external int tail3;
+  @Uint32()
+  external int tail4;
+  @Uint32()
+  external int tail5;
 }
 
 /// `D3D12_SUBRESOURCE_FOOTPRINT`.

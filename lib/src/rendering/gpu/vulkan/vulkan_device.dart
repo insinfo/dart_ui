@@ -38,6 +38,7 @@ import 'vulkan_ffi.g.dart';
 import 'vulkan_instance.dart';
 import 'vulkan_library.dart';
 import 'vulkan_memory.dart';
+import 'vulkan_wsi_bindings.dart';
 
 /// A device, or the diagnostics explaining why there is none.
 final class VulkanDeviceAttempt {
@@ -60,6 +61,10 @@ final class VulkanDevice {
     required this.api,
     required this.queue,
     required this.queueFamily,
+    required this.presentQueue,
+    required this.presentQueueFamily,
+    required this.enabledExtensions,
+    required this.swapchainApi,
     required this.allocator,
     required List<_FrameSlot> slots,
   }) : _slots = slots;
@@ -77,6 +82,43 @@ final class VulkanDevice {
   final VulkanDeviceApi api;
   final Pointer<VkQueue_T> queue;
   final int queueFamily;
+
+  /// The queue `vkQueuePresentKHR` is called on.
+  ///
+  /// Identical to [queue] on every desktop driver seen so far, and deliberately
+  /// not *assumed* to be: Vulkan permits a physical device whose graphics
+  /// family cannot present and whose presenting family cannot draw, and a
+  /// backend that presented on the graphics queue there would fail validation
+  /// and then fail to show anything. When the two families coincide the two
+  /// fields hold the same handle and nothing extra is created.
+  final Pointer<VkQueue_T> presentQueue;
+
+  /// The family [presentQueue] came from. Equal to [queueFamily] unless the
+  /// device forced them apart.
+  final int presentQueueFamily;
+
+  /// Whether the two queues are one queue.
+  ///
+  /// Load-bearing for a swapchain: images shared between two families need
+  /// `VK_SHARING_MODE_CONCURRENT` and the family list, and getting that wrong
+  /// is undefined behaviour rather than an error.
+  bool get hasUnifiedQueues => queueFamily == presentQueueFamily;
+
+  /// Device extensions this device was created with, in the order asked for.
+  ///
+  /// Kept because "was `VK_KHR_swapchain` enabled?" has to be answerable after
+  /// the fact: the command table for it resolves to null either way, and a null
+  /// function pointer cannot say whether the extension was refused or never
+  /// requested.
+  final List<String> enabledExtensions;
+
+  /// The `VK_KHR_swapchain` command table, or null when the extension was not
+  /// enabled - which is the normal state of an offscreen device.
+  final VulkanSwapchainApi? swapchainApi;
+
+  /// Whether this device can create a swapchain at all.
+  bool get canPresent => swapchainApi != null;
+
   final VulkanMemoryAllocator allocator;
 
   final List<_FrameSlot> _slots;
@@ -118,9 +160,20 @@ final class VulkanDevice {
   int _waitCount = 0;
 
   /// Opens a device on [physical], reporting rather than throwing.
+  /// [extensions] are device extensions to enable; one that the device does not
+  /// report is refused here rather than at `vkCreateDevice`, so the diagnostic
+  /// names the extension instead of returning
+  /// `VK_ERROR_EXTENSION_NOT_PRESENT`.
+  ///
+  /// [presentQueueFamily] is the family a swapchain will present on. Null means
+  /// the graphics family, which is the answer on every desktop driver; a caller
+  /// that has a surface asks it for the family and passes it, and this method
+  /// creates a second queue only when it differs.
   static VulkanDeviceAttempt open(
     VulkanPhysicalDevice physical, {
     int framesInFlight = kDefaultFramesInFlight,
+    List<String> extensions = const <String>[],
+    int? presentQueueFamily,
   }) {
     if (framesInFlight < 1) {
       throw ArgumentError.value(
@@ -139,29 +192,72 @@ final class VulkanDevice {
       return VulkanDeviceAttempt(null, diagnostics);
     }
 
+    final int present = presentQueueFamily ?? family;
+    if (present < 0 || present >= physical.queueFamilyFlags.length) {
+      diagnostics.add(BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: '${physical.name} has no queue family $present to present on',
+        detail: 'the device reports ${physical.queueFamilyFlags.length} '
+            'families',
+      ));
+      return VulkanDeviceAttempt(null, diagnostics);
+    }
+
+    if (extensions.isNotEmpty) {
+      final Set<String> available = physical.extensionNames().toSet();
+      final List<String> missing = <String>[
+        for (final String name in extensions)
+          if (!available.contains(name)) name,
+      ];
+      if (missing.isNotEmpty) {
+        diagnostics.add(BackendDiagnostic(
+          kind: DiagnosticKind.missingLibrary,
+          message: '${physical.name} does not support '
+              '${missing.join(', ')}',
+          detail: 'asked for ${extensions.join(', ')}',
+        ));
+        return VulkanDeviceAttempt(null, diagnostics);
+      }
+    }
+
     final NativeArena arena = NativeArena();
     try {
       final Pointer<Float> priorities = arena<Float>();
       priorities.value = 1;
 
+      // One queue create-info per *distinct* family. Naming the same family
+      // twice is not a redundancy Vulkan tolerates - it is
+      // `VK_ERROR_INITIALIZATION_FAILED`, or a validation error saying so.
+      final bool unified = present == family;
+      final int queueInfoCount = unified ? 1 : 2;
       final Pointer<VkDeviceQueueCreateInfo> queueInfo =
-          arena<VkDeviceQueueCreateInfo>();
-      queueInfo.ref
+          arena<VkDeviceQueueCreateInfo>(queueInfoCount);
+      queueInfo[0]
         ..sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
         ..queueFamilyIndex = family
         ..queueCount = 1
         ..pQueuePriorities = priorities;
+      if (!unified) {
+        queueInfo[1]
+          ..sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO
+          ..queueFamilyIndex = present
+          ..queueCount = 1
+          ..pQueuePriorities = priorities;
+      }
 
       final Pointer<VkDeviceCreateInfo> info = arena<VkDeviceCreateInfo>();
       info.ref
         ..sType = VkStructureType.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO
-        ..queueCreateInfoCount = 1
-        ..pQueueCreateInfos = queueInfo;
+        ..queueCreateInfoCount = queueInfoCount
+        ..pQueueCreateInfos = queueInfo
+        ..enabledExtensionCount = extensions.length
+        ..ppEnabledExtensionNames = _stringArray(arena, extensions);
       // No features are enabled. Everything this renderer draws - one vertex
       // format, one blend mode family, sampled 2D images - is guaranteed by
       // core Vulkan 1.0 with every feature off, and enabling a feature the
       // device does not have is `VK_ERROR_FEATURE_NOT_PRESENT` at creation.
-      // No device extensions either, until a swapchain needs VK_KHR_swapchain.
+      // Extensions are a different matter and are checked against the device's
+      // own list above, so a refusal names what was missing.
 
       final Pointer<Pointer<VkDevice_T>> out = arena<Pointer<VkDevice_T>>();
       final int result = physical.instance.api
@@ -187,6 +283,12 @@ final class VulkanDevice {
 
       final Pointer<Pointer<VkQueue_T>> queueOut = arena<Pointer<VkQueue_T>>();
       api.getDeviceQueue(device, family, 0, queueOut);
+      final Pointer<VkQueue_T> graphicsQueue = queueOut.value;
+      Pointer<VkQueue_T> presentQueue = graphicsQueue;
+      if (present != family) {
+        api.getDeviceQueue(device, present, 0, queueOut);
+        presentQueue = queueOut.value;
+      }
 
       final List<_FrameSlot> slots = <_FrameSlot>[];
       for (var i = 0; i < framesInFlight; i++) {
@@ -206,8 +308,10 @@ final class VulkanDevice {
       }
 
       diagnostics.add(BackendDiagnostic.note(
-        'Vulkan device on ${physical.name}, queue family $family, '
-        '$framesInFlight frames in flight',
+        'Vulkan device on ${physical.name}, queue family $family'
+        '${present == family ? '' : ' (present on $present)'}, '
+        '$framesInFlight frames in flight'
+        '${extensions.isEmpty ? '' : ', extensions ${extensions.join(', ')}'}',
       ));
 
       return VulkanDeviceAttempt(
@@ -215,8 +319,14 @@ final class VulkanDevice {
           physicalDevice: physical,
           handle: device,
           api: api,
-          queue: queueOut.value,
+          queue: graphicsQueue,
           queueFamily: family,
+          presentQueue: presentQueue,
+          presentQueueFamily: present,
+          enabledExtensions: List<String>.unmodifiable(extensions),
+          swapchainApi: extensions.contains(vkKhrSwapchainExtension)
+              ? VulkanSwapchainApi.bind(physical.instance.api, device)
+              : null,
           allocator: VulkanMemoryAllocator(
             api,
             device,
@@ -231,6 +341,22 @@ final class VulkanDevice {
     } finally {
       arena.dispose();
     }
+  }
+
+  /// A `const char* const*` for [values], or null when there are none.
+  ///
+  /// The twin of the one in `vulkan_instance.dart`. Duplicated rather than
+  /// shared because sharing it would mean exporting an arena-allocating helper
+  /// from a file whose public surface is a device, and four lines is a cheaper
+  /// coupling than that.
+  static Pointer<Pointer<Char>> _stringArray(
+      NativeArena arena, List<String> values) {
+    if (values.isEmpty) return nullptr;
+    final Pointer<Pointer<Char>> array = arena<Pointer<Char>>(values.length);
+    for (var i = 0; i < values.length; i++) {
+      array[i] = arena.allocateAscii(values[i]).cast<Char>();
+    }
+    return array;
   }
 
   /// Waits for this slot's previous frame, resets its pool, and opens its

@@ -89,6 +89,7 @@ const int _opEntryPoint = 15;
 const int _opExecutionMode = 16;
 const int _opCapability = 17;
 const int _opTypeVoid = 19;
+const int _opTypeBool = 20;
 const int _opTypeInt = 21;
 const int _opTypeFloat = 22;
 const int _opTypeVector = 23;
@@ -111,11 +112,28 @@ const int _opVectorShuffle = 79;
 const int _opCompositeConstruct = 80;
 const int _opCompositeExtract = 81;
 const int _opImageSampleImplicitLod = 87;
+const int _opImageSampleExplicitLod = 88;
+const int _opImageFetch = 95;
+const int _opImage = 100;
+const int _opConvertFToS = 110;
+const int _opConvertSToF = 111;
+const int _opFNegate = 127;
 const int _opFAdd = 129;
 const int _opFSub = 131;
 const int _opFMul = 133;
 const int _opFDiv = 136;
 const int _opVectorTimesScalar = 142;
+const int _opDot = 148;
+const int _opLogicalOr = 166;
+const int _opLogicalAnd = 167;
+const int _opSelect = 169;
+const int _opIEqual = 170;
+const int _opFOrdEqual = 180;
+const int _opFOrdLessThan = 184;
+const int _opFOrdGreaterThan = 186;
+const int _opFOrdLessThanEqual = 188;
+const int _opShiftRightLogical = 194;
+const int _opBitwiseAnd = 199;
 const int _opLabel = 248;
 const int _opReturn = 253;
 
@@ -148,6 +166,16 @@ const int kSpirvDecorationOffset = 35;
 
 const int kSpirvBuiltInPosition = 0;
 
+/// `SpvBuiltInVertexIndex`. Vulkan's `gl_VertexIndex`, which is a *signed*
+/// 32-bit integer; the unsigned `VertexId` of OpenGL is a different builtin
+/// and is not available to a Vulkan shader at all.
+const int kSpirvBuiltInVertexIndex = 42;
+
+/// `SpvImageOperandsLodMask`. Not optional for [SpirvFunction.fetch]: an
+/// `OpImageFetch` from a non-multisampled image must state its level, and one
+/// that omits the operand is a module the validator rejects.
+const int kSpirvImageOperandsLod = 0x2;
+
 const int kSpirvDim2D = 1;
 const int kSpirvImageFormatUnknown = 0;
 
@@ -162,6 +190,9 @@ const String kGlslStd450 = 'GLSL.std.450';
 /// Written out rather than transcribing the whole set for the same reason
 /// `vulkan_constants.dart` gives: a number nobody uses is a number nobody
 /// checks.
+const int kGlslStd450Floor = 8;
+const int kGlslStd450Fract = 10;
+const int kGlslStd450Sqrt = 31;
 const int kGlslStd450FMin = 37;
 const int kGlslStd450FMax = 40;
 const int kGlslStd450FClamp = 43;
@@ -249,6 +280,13 @@ final class SpirvBuilder {
 
   int typeFloat(int width) => _intern('float$width', (int id) {
         _write(_declarations, _opTypeFloat, <int>[id, width]);
+      });
+
+  /// `OpTypeBool`. A *value* type only: SPIR-V forbids a bool in any storage
+  /// class a shader interface can reach, and nothing below wants one there. It
+  /// exists so [SpirvFunction.select] has a condition to take.
+  int typeBool() => _intern('bool', (int id) {
+        _write(_declarations, _opTypeBool, <int>[id]);
       });
 
   int typeVector(int component, int count) =>
@@ -424,6 +462,89 @@ final class SpirvFunction {
   int sample(int type, int sampledImage, int coordinate) =>
       _value(_opImageSampleImplicitLod, type, <int>[sampledImage, coordinate]);
 
+  /// `OpImageSampleExplicitLod` with a Lod operand, which is what the HLSL
+  /// twin's `SampleLevel` is.
+  ///
+  /// Explicit rather than implicit because every image this renderer samples
+  /// has exactly one level, so the two give the same texel - and an explicit
+  /// level needs no derivatives, which keeps the fetch legal wherever it ends
+  /// up standing.
+  int sampleLod(int type, int sampledImage, int coordinate, int lod) => _value(
+      _opImageSampleExplicitLod,
+      type,
+      <int>[sampledImage, coordinate, kSpirvImageOperandsLod, lod]);
+
+  /// `OpImage`: the image inside a sampled image.
+  ///
+  /// [fetch] needs one, because a fetch bypasses the sampler entirely and
+  /// SPIR-V spells that by taking the image operand rather than the pair.
+  int image(int imageType, int sampledImage) =>
+      _value(_opImage, imageType, <int>[sampledImage]);
+
+  /// `OpImageFetch` at [lod], which is GLSL's `texelFetch`.
+  ///
+  /// [coordinate] is an integer vector and [image] is an image, not a sampled
+  /// image - pass [SpirvFunction.image] of the loaded descriptor. The whole
+  /// point over [sample] is that no filtering, no normalisation and no
+  /// addressing mode stands between the coordinate and the texel.
+  int fetch(int type, int image, int coordinate, int lod) => _value(
+      _opImageFetch, type, <int>[image, coordinate, kSpirvImageOperandsLod, lod]);
+
+  int negate(int type, int value) => _value(_opFNegate, type, <int>[value]);
+
+  /// `OpDot`. Not [multiply] followed by extracts: a dot product of two
+  /// vectors has a *scalar* result type, which `OpFMul` cannot produce.
+  int dot(int type, int a, int b) => _value(_opDot, type, <int>[a, b]);
+
+  int bitwiseAnd(int type, int a, int b) =>
+      _value(_opBitwiseAnd, type, <int>[a, b]);
+
+  int shiftRight(int type, int value, int shift) =>
+      _value(_opShiftRightLogical, type, <int>[value, shift]);
+
+  int convertToSigned(int type, int value) =>
+      _value(_opConvertFToS, type, <int>[value]);
+
+  int convertToFloat(int type, int value) =>
+      _value(_opConvertSToF, type, <int>[value]);
+
+  /// `OpFOrdEqual`. *Ordered*, so a NaN operand compares false - which is what
+  /// GLSL's `==` does and what every guard below relies on.
+  int equalFloat(int boolType, int a, int b) =>
+      _value(_opFOrdEqual, boolType, <int>[a, b]);
+
+  int lessThanFloat(int boolType, int a, int b) =>
+      _value(_opFOrdLessThan, boolType, <int>[a, b]);
+
+  int greaterThanFloat(int boolType, int a, int b) =>
+      _value(_opFOrdGreaterThan, boolType, <int>[a, b]);
+
+  int lessThanOrEqualFloat(int boolType, int a, int b) =>
+      _value(_opFOrdLessThanEqual, boolType, <int>[a, b]);
+
+  int equalInt(int boolType, int a, int b) =>
+      _value(_opIEqual, boolType, <int>[a, b]);
+
+  int logicalAnd(int boolType, int a, int b) =>
+      _value(_opLogicalAnd, boolType, <int>[a, b]);
+
+  int logicalOr(int boolType, int a, int b) =>
+      _value(_opLogicalOr, boolType, <int>[a, b]);
+
+  /// `OpSelect`, which is how this builder writes a conditional at all.
+  ///
+  /// It is not a branch: **both** [whenTrue] and [whenFalse] are evaluated,
+  /// and only the result is chosen. That is exactly what makes it usable here
+  /// - the builder emits one straight-line block and never has to track which
+  /// block it is writing into - and it is also the thing to keep in mind when
+  /// reading the shaders: a division that would be `0 / 0` on the path not
+  /// taken really does execute and really does produce a NaN. Selecting it
+  /// away is safe, because `OpSelect` propagates nothing from the operand it
+  /// discards. Guarding *before* the arithmetic, as a branch would, is not
+  /// available and is not needed.
+  int select(int type, int condition, int whenTrue, int whenFalse) =>
+      _value(_opSelect, type, <int>[condition, whenTrue, whenFalse]);
+
   int extInst(int type, int set, int instruction, List<int> operands) =>
       _value(_opExtInst, type, <int>[set, instruction, ...operands]);
 
@@ -537,6 +658,7 @@ List<String> validateSpirvStructure(Uint32List words) {
 const Map<int, int> _resultIdPosition = <int, int>{
   _opExtInstImport: 0,
   _opTypeVoid: 0,
+  _opTypeBool: 0,
   _opTypeInt: 0,
   _opTypeFloat: 0,
   _opTypeVector: 0,
@@ -558,9 +680,26 @@ const Map<int, int> _resultIdPosition = <int, int>{
   _opCompositeConstruct: 1,
   _opCompositeExtract: 1,
   _opImageSampleImplicitLod: 1,
+  _opImageSampleExplicitLod: 1,
+  _opImageFetch: 1,
+  _opImage: 1,
+  _opConvertFToS: 1,
+  _opConvertSToF: 1,
+  _opFNegate: 1,
   _opFAdd: 1,
   _opFSub: 1,
   _opFMul: 1,
   _opFDiv: 1,
   _opVectorTimesScalar: 1,
+  _opDot: 1,
+  _opLogicalOr: 1,
+  _opLogicalAnd: 1,
+  _opSelect: 1,
+  _opIEqual: 1,
+  _opFOrdEqual: 1,
+  _opFOrdLessThan: 1,
+  _opFOrdGreaterThan: 1,
+  _opFOrdLessThanEqual: 1,
+  _opShiftRightLogical: 1,
+  _opBitwiseAnd: 1,
 };

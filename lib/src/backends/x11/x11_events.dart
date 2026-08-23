@@ -23,9 +23,14 @@
 ///     runner has Xvfb and no window manager.
 ///
 /// The core mouse bootstrap is normalised here. Keyboard input remains
-/// deferred to the module that owns XKB keymaps; XInput2 device state,
-/// high-resolution scroll axes, selections/clipboard and XDND are also
-/// intentionally deferred.
+/// deferred to the module that owns XKB keymaps; XInput2 device state and
+/// high-resolution scroll axes are also intentionally deferred.
+///
+/// XDND and the selection transfer it rides on are *decoded* here and handled
+/// in `x11_drag_drop.dart`: [X11RawEvent] carries all five ClientMessage words
+/// and the SelectionNotify fields, and the backend offers those two event types
+/// to the drag-and-drop manager before routing anything by window. The
+/// clipboard - the other user of selections - is still deferred.
 ///
 /// ## Text input: the contract exists, this backend's source of it does not
 ///
@@ -101,9 +106,39 @@ final class X11RawEvent {
   /// ClientMessage `type`, PropertyNotify `atom`.
   int atom = 0;
 
-  /// First word of a ClientMessage payload. For WM_PROTOCOLS this is the
-  /// protocol atom, which is the only ClientMessage field this backend reads.
+  /// The five words of a ClientMessage payload, `data.l[0..4]`.
+  ///
+  /// WM_PROTOCOLS needs only [data0] - the protocol atom - which is why this
+  /// used to stop there. XDND needs all five: `XdndEnter` packs the source
+  /// window, a version-and-flags word and three type atoms into them, and
+  /// `XdndPosition` packs the root coordinates into [data2] and the timestamp
+  /// into [data3]. Decoding four more words costs four loads on a message type
+  /// that arrives a handful of times per drag, not per pointer sample.
   int data0 = 0;
+  int data1 = 0;
+  int data2 = 0;
+  int data3 = 0;
+  int data4 = 0;
+
+  /// SelectionNotify/SelectionRequest/SelectionClear `selection` atom.
+  ///
+  /// The selection events are the reason [window] alone is not enough to route
+  /// an event: they are addressed to a window but they are *about* a selection,
+  /// and two different transfers on the same window are told apart by
+  /// [selection], [target] and [property] rather than by the window.
+  int selection = 0;
+
+  /// SelectionNotify/SelectionRequest `target`: the type the requestor asked
+  /// the selection to be converted to.
+  int target = 0;
+
+  /// SelectionNotify/SelectionRequest `property`: where the answer was put, or
+  /// [xcbNone] when the owner refused the conversion.
+  int property = 0;
+
+  /// SelectionRequest `requestor`: who wants the data. For a SelectionNotify
+  /// the requestor is us and is reported through [window].
+  int requestor = 0;
 
   /// Error only: the request that failed and the resource it named.
   int errorCode = 0;
@@ -133,6 +168,14 @@ final class X11RawEvent {
     mode = 0;
     atom = 0;
     data0 = 0;
+    data1 = 0;
+    data2 = 0;
+    data3 = 0;
+    data4 = 0;
+    selection = 0;
+    target = 0;
+    property = 0;
+    requestor = 0;
     timestamp = 0;
     errorCode = 0;
     majorOpcode = 0;
@@ -183,6 +226,33 @@ final class X11RawEvent {
         window = readU32(event, 4);
         atom = readU32(event, 8);
         data0 = readU32(event, 12);
+        data1 = readU32(event, 16);
+        data2 = readU32(event, 20);
+        data3 = readU32(event, 24);
+        data4 = readU32(event, 28);
+      case xcbSelectionNotify:
+        // Byte 4 is the *timestamp*, not a window - which is why these three
+        // event types cannot fall through to the default branch below. Doing so
+        // reported a server millisecond count as the window the event was for,
+        // and every selection reply was then routed to nothing.
+        timestamp = readU32(event, 4);
+        window = readU32(event, 8);
+        selection = readU32(event, 12);
+        target = readU32(event, 16);
+        property = readU32(event, 20);
+        requestor = window;
+      case xcbSelectionRequest:
+        timestamp = readU32(event, 4);
+        // `owner` is us; that is the window the request is addressed to.
+        window = readU32(event, 8);
+        requestor = readU32(event, 12);
+        selection = readU32(event, 16);
+        target = readU32(event, 20);
+        property = readU32(event, 24);
+      case xcbSelectionClear:
+        timestamp = readU32(event, 4);
+        window = readU32(event, 8);
+        selection = readU32(event, 12);
       case xcbMotionNotify:
       case xcbKeyPress:
       case xcbKeyRelease:
@@ -461,9 +531,11 @@ abstract final class X11EventTranslator {
         return true;
 
       case xcbClientMessage:
-        // WM_PROTOCOLS/WM_DELETE_WINDOW is the only ClientMessage this backend
-        // answers. XDND and the selection protocols also arrive here and are
-        // deliberately dropped until those modules exist.
+        // WM_PROTOCOLS/WM_DELETE_WINDOW is the only ClientMessage the *window*
+        // answers. XDND messages also arrive here, and are consumed by
+        // `X11DragDropManager` before the backend routes the event to a window;
+        // one reaching this point is either not XDND or arrived for a window
+        // with no drop target, and either way there is nothing to do with it.
         if (raw.detail == 32 &&
             state.wmProtocols != 0 &&
             raw.atom == state.wmProtocols &&

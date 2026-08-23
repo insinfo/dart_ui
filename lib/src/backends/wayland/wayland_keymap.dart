@@ -21,6 +21,7 @@
 /// still produce [KeyEvent]s with their keycode; they produce no text.
 library;
 
+import '../../platform/compose_sequences.dart';
 import 'wayland_protocol.dart';
 
 /// No keysym. Comparisons against it are always false, the same posture the
@@ -92,7 +93,11 @@ int xkbKeysymFromName(String name) {
     final parsed = int.tryParse(name.substring(2), radix: 16);
     if (parsed != null && parsed > 0) return parsed;
   }
-  return _namedKeysyms[name] ?? xkbNoSymbol;
+  // The dead keys and `Multi_key` come from the Compose table's own name list
+  // rather than being duplicated here: a keymap that names `dead_acute` and a
+  // Compose file that names `dead_acute` have to agree on its value, and one
+  // table is how they agree.
+  return _namedKeysyms[name] ?? composeNamedKeysyms[name] ?? xkbNoSymbol;
 }
 
 const Map<String, int> _namedKeysyms = <String, int>{

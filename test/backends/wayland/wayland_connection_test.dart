@@ -3,11 +3,15 @@ import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/wayland/wayland_connection.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_events.dart';
+import 'package:dart_ui/src/backends/wayland/wayland_positioner.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_protocol.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_shm.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_transport.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_wire.dart';
+import 'package:dart_ui/src/geometry/rect.dart';
+import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/platform/clipboard.dart';
+import 'package:dart_ui/src/widgets/popup.dart';
 import 'package:test/test.dart';
 
 const String _sampleKeymap = '''
@@ -555,6 +559,327 @@ void main() {
     });
   });
 
+  group('popups', () {
+    WaylandPositionerSpec spec({
+      int width = 180,
+      int height = 240,
+      Set<PopupAdjustment> adjustments = const <PopupAdjustment>{
+        PopupAdjustment.flipY,
+        PopupAdjustment.slideX,
+      },
+    }) =>
+        WaylandPositionerSpec.fromRequest(PopupRequest(
+          anchorRect: const Rect.fromLTWH(10, 20, 100, 30),
+          size: Size(width.toDouble(), height.toDouble()),
+          adjustments: adjustments,
+        ));
+
+    test('creation configures a positioner and consumes it at once', () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      // A grab needs an input serial; give the connection one.
+      connection.flush();
+      compositor.requests.clear();
+
+      final popup = connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(),
+        grab: false,
+      ));
+
+      final opcodes =
+          compositor.requests.map((r) => (r.objectId, r.opcode)).toList();
+      // The positioner's id is the new_id inside create_positioner, not the
+      // sender - the sender is xdg_wm_base.
+      final positionerId =
+          WaylandMessageReader(compositor.requests.first.payload).readNewId();
+      expect(opcodes, <(int, int)>[
+        (compositor.wmBaseId, xdgWmBaseRequestCreatePositioner),
+        (positionerId, xdgPositionerRequestSetSize),
+        (positionerId, xdgPositionerRequestSetAnchorRect),
+        (positionerId, xdgPositionerRequestSetAnchor),
+        (positionerId, xdgPositionerRequestSetGravity),
+        (positionerId, xdgPositionerRequestSetConstraintAdjustment),
+        (compositor.compositorId, wlCompositorRequestCreateSurface),
+        (compositor.wmBaseId, xdgWmBaseRequestGetXdgSurface),
+        (popup.xdgSurfaceId, xdgSurfaceRequestGetPopup),
+        (positionerId, xdgPositionerRequestDestroy),
+        (popup.surfaceId, wlSurfaceRequestCommit),
+      ]);
+    });
+
+    test('the positioner carries the translated geometry', () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      compositor.requests.clear();
+      connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(width: 200, height: 300),
+        grab: false,
+      ));
+
+      final positionerId =
+          WaylandMessageReader(compositor.requests.first.payload).readNewId();
+      final size = compositor.requests.firstWhere((r) =>
+          r.objectId == positionerId &&
+          r.opcode == xdgPositionerRequestSetSize);
+      final sizeReader = WaylandMessageReader(size.payload);
+      expect(sizeReader.readInt(), 200);
+      expect(sizeReader.readInt(), 300);
+
+      final rect = compositor.requests.firstWhere((r) =>
+          r.objectId == positionerId &&
+          r.opcode == xdgPositionerRequestSetAnchorRect);
+      final rectReader = WaylandMessageReader(rect.payload);
+      expect(
+        <int>[
+          rectReader.readInt(),
+          rectReader.readInt(),
+          rectReader.readInt(),
+          rectReader.readInt(),
+        ],
+        <int>[10, 20, 100, 30],
+      );
+    });
+
+    test('get_popup names the parent xdg_surface', () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      compositor.requests.clear();
+      final popup = connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(),
+        grab: false,
+      ));
+
+      final getPopup = compositor.requests.firstWhere(
+          (r) => r.objectId == popup.xdgSurfaceId &&
+              r.opcode == xdgSurfaceRequestGetPopup);
+      final reader = WaylandMessageReader(getPopup.payload);
+      expect(reader.readNewId(), popup.toplevelId);
+      expect(reader.readObject(), parent.xdgSurfaceId,
+          reason: 'a popup is parented to the xdg_surface, not the toplevel');
+    });
+
+    test('a grab is skipped, with a reason, until the user has acted', () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      compositor.requests.clear();
+
+      final popup = connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(),
+      ));
+
+      expect(
+        compositor.requests.where((r) =>
+            r.objectId == popup.toplevelId &&
+            r.opcode == xdgPopupRequestGrab),
+        isEmpty,
+        reason: 'grabbing without an input serial kills the connection',
+      );
+      expect(connection.recentErrors.last, contains('no input serial'));
+    });
+
+    test('a grab is taken with the latest input serial once one exists', () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      connection.flush();
+      compositor.sendPointerEnter(parent.surfaceId, 10, x: 1, y: 1);
+      compositor.sendPointerButton(77, 100, btnLeft, pressed: true);
+      final raw = WaylandRawEvent();
+      while (connection.pollEventInto(raw)) {}
+      compositor.requests.clear();
+
+      final popup = connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(),
+      ));
+
+      final grab = compositor.requests.firstWhere((r) =>
+          r.objectId == popup.toplevelId && r.opcode == xdgPopupRequestGrab);
+      final reader = WaylandMessageReader(grab.payload);
+      expect(reader.readObject(), compositor.seatId);
+      expect(reader.readUint(), 77,
+          reason: 'the grab must quote the serial of the click that opened it');
+    });
+
+    test('configure surfaces the compositor placement, not the request', () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      final popup = connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(),
+        grab: false,
+      ));
+      // The compositor flipped the popup upwards and narrowed it.
+      compositor.sendPopupConfigure(popup.toplevelId, 10, -240, 180, 200);
+
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.popupConfigure);
+      expect(raw.surfaceId, popup.surfaceId);
+      expect(raw.x, 10);
+      expect(raw.y, -240);
+      expect(raw.width, 180);
+      expect(raw.height, 200);
+    });
+
+    test('popup_done dismisses the whole nested chain, deepest first', () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      final menu = connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(),
+        grab: false,
+      ));
+      final submenu = connection.createPopup(WaylandPopupRequest(
+        parent: menu,
+        positioner: spec(),
+        grab: false,
+      ));
+      final subsubmenu = connection.createPopup(WaylandPopupRequest(
+        parent: submenu,
+        positioner: spec(),
+        grab: false,
+      ));
+
+      compositor.sendPopupDone(menu.toplevelId);
+
+      final dismissed = <int>[];
+      final raw = WaylandRawEvent();
+      while (connection.pollEventInto(raw)) {
+        if (raw.type == WaylandRawEventType.popupDone) {
+          dismissed.add(raw.surfaceId);
+        }
+      }
+      expect(dismissed, <int>[
+        subsubmenu.surfaceId,
+        submenu.surfaceId,
+        menu.surfaceId,
+      ]);
+    });
+
+    test('destroying a popup uses xdg_popup.destroy, not toplevel.destroy',
+        () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      final popup = connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(),
+        grab: false,
+      ));
+      compositor.requests.clear();
+
+      connection.destroyToplevel(popup);
+
+      expect(
+        compositor.requests.map((r) => (r.objectId, r.opcode)).toList(),
+        <(int, int)>[
+          (popup.toplevelId, xdgPopupRequestDestroy),
+          (popup.xdgSurfaceId, xdgSurfaceRequestDestroy),
+          (popup.surfaceId, wlSurfaceRequestDestroy),
+        ],
+      );
+    });
+
+    test('a popup without xdg_wm_base cannot be created', () {
+      compositor.advertiseWmBase = false;
+      final attempt = WaylandConnection.open(
+        transport: compositor,
+        allocator: allocator,
+      );
+      expect(attempt.succeeded, isFalse,
+          reason: 'no shell means no windows at all, popups included');
+    });
+  });
+
+  group('xdg-decoration', () {
+    test('is advertised and negotiated to server-side when available', () {
+      final connection = openOk();
+      expect(connection.supportsServerSideDecorations, isTrue);
+
+      final ids = connection.createToplevel(_request());
+      compositor.requests.clear();
+      connection.requestServerSideDecoration(ids);
+
+      final get = compositor.requests.firstWhere((r) =>
+          r.opcode == xdgDecorationManagerRequestGetToplevelDecoration);
+      final reader = WaylandMessageReader(get.payload);
+      reader.readNewId();
+      expect(reader.readObject(), ids.toplevelId);
+
+      final setMode = compositor.requests.firstWhere((r) =>
+          r.objectId == compositor.lastDecorationId &&
+          r.opcode == xdgToplevelDecorationRequestSetMode);
+      expect(
+        WaylandMessageReader(setMode.payload).readUint(),
+        xdgToplevelDecorationModeServerSide,
+      );
+    });
+
+    test('the configure answer reaches the window as a raw event', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      connection.requestServerSideDecoration(ids);
+      compositor.sendDecorationConfigure(
+        compositor.lastDecorationId,
+        xdgToplevelDecorationModeServerSide,
+      );
+
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.type, WaylandRawEventType.decorationConfigure);
+      expect(raw.surfaceId, ids.surfaceId);
+      expect(raw.state, xdgToplevelDecorationModeServerSide);
+    });
+
+    test('a compositor that answers client-side is reported as such', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      connection.requestServerSideDecoration(ids);
+      compositor.sendDecorationConfigure(
+        compositor.lastDecorationId,
+        xdgToplevelDecorationModeClientSide,
+      );
+
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isTrue);
+      expect(raw.state, xdgToplevelDecorationModeClientSide);
+    });
+
+    test('without the global, the request is a silent no-op', () {
+      compositor.advertiseDecoration = false;
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      compositor.requests.clear();
+
+      connection.requestServerSideDecoration(ids);
+
+      expect(connection.supportsServerSideDecorations, isFalse);
+      expect(compositor.requests, isEmpty,
+          reason: 'the framework draws its own frame instead');
+    });
+
+    test('destroying the toplevel destroys its decoration first', () {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      connection.requestServerSideDecoration(ids);
+      final decorationId = compositor.lastDecorationId;
+      compositor.requests.clear();
+
+      connection.destroyToplevel(ids);
+
+      expect(
+        compositor.requests.first,
+        isA<_Request>()
+            .having((r) => r.objectId, 'objectId', decorationId)
+            .having((r) => r.opcode, 'opcode',
+                xdgToplevelDecorationRequestDestroy),
+      );
+    });
+  });
+
   group('failure paths', () {
     test('wl_display.error poisons the connection with the story', () {
       final connection = openOk();
@@ -652,6 +977,7 @@ final class _Request {
 /// test inject events. No socket, no FFI, no Linux.
 final class _FakeCompositor implements WaylandTransport {
   bool advertiseWmBase = true;
+  bool advertiseDecoration = true;
   bool advertiseShm = true;
   bool advertiseDataDevice = true;
   bool failPipeRead = false;
@@ -672,6 +998,8 @@ final class _FakeCompositor implements WaylandTransport {
   int pointerId = 0;
   int keyboardId = 0;
   int dataDeviceManagerId = 0;
+  int decorationManagerId = 0;
+  int lastDecorationId = 0;
   int dataDeviceId = 0;
   int selectionSourceId = 0;
   int selectionSerial = 0;
@@ -826,6 +1154,8 @@ final class _FakeCompositor implements WaylandTransport {
           wmBaseId = newId;
         case wlDataDeviceManagerInterfaceName:
           dataDeviceManagerId = newId;
+        case xdgDecorationManagerInterfaceName:
+          decorationManagerId = newId;
       }
       return;
     }
@@ -844,6 +1174,12 @@ final class _FakeCompositor implements WaylandTransport {
           });
         }
       }
+    }
+    if (decorationManagerId != 0 && objectId == decorationManagerId) {
+      if (opcode == xdgDecorationManagerRequestGetToplevelDecoration) {
+        lastDecorationId = WaylandMessageReader(payload).readNewId();
+      }
+      return;
     }
     if (objectId == dataDeviceManagerId) {
       final reader = WaylandMessageReader(payload);
@@ -894,6 +1230,7 @@ final class _FakeCompositor implements WaylandTransport {
     global(wlOutputInterfaceName, 3);
     if (advertiseWmBase) global(xdgWmBaseInterfaceName, 4);
     if (advertiseDataDevice) global(wlDataDeviceManagerInterfaceName, 3);
+    if (advertiseDecoration) global(xdgDecorationManagerInterfaceName, 1);
   }
 
   void _event(
@@ -954,6 +1291,30 @@ final class _FakeCompositor implements WaylandTransport {
 
   void sendSurfaceConfigure(int xdgSurfaceId, int serial) {
     _event(xdgSurfaceId, xdgSurfaceEventConfigure, (w) => w.putUint(serial));
+  }
+
+  void sendPopupConfigure(
+    int popupId,
+    int x,
+    int y,
+    int width,
+    int height,
+  ) {
+    _event(popupId, xdgPopupEventConfigure, (w) {
+      w.putInt(x);
+      w.putInt(y);
+      w.putInt(width);
+      w.putInt(height);
+    });
+  }
+
+  void sendPopupDone(int popupId) {
+    _event(popupId, xdgPopupEventPopupDone, (_) {});
+  }
+
+  void sendDecorationConfigure(int decorationId, int mode) {
+    _event(decorationId, xdgToplevelDecorationEventConfigure,
+        (w) => w.putUint(mode));
   }
 
   void sendToplevelClose(int toplevelId) {

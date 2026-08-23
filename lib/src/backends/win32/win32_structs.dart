@@ -235,3 +235,41 @@ final class TrackMouseEventStruct extends Struct {
   @Uint32()
   external int dwHoverTime;
 }
+
+/// `COMPOSITIONFORM`, where IMM32 should put the preedit it draws itself.
+///
+/// This backend draws the preedit in the document, so the form is only ever
+/// set to keep the *IME's* idea of the caret in the same place as ours: a
+/// method that shows a floating tooltip - a hardware IME, a handwriting panel -
+/// anchors it here, and a form left at the origin puts that tooltip in the
+/// window's top-left corner.
+///
+/// Both `ptCurrentPos` and `rcArea` are in **client** coordinates, physical
+/// pixels, which is why the caller converts through `Win32CoordinateSpace`.
+final class CompositionForm extends Struct {
+  @Uint32()
+  external int dwStyle;
+
+  external Win32Point ptCurrentPos;
+
+  external Win32Rect rcArea;
+}
+
+/// `CANDIDATEFORM`, where the candidate list opens.
+///
+/// The list is the IME's window, not ours, and this is the whole of the
+/// framework's influence over it. `CFS_EXCLUDE` with a real `rcArea` is what
+/// keeps it from covering the caret it belongs to; `CFS_CANDIDATEPOS` alone
+/// gives a position with no exclusion zone, and the list then routinely lands
+/// on top of the text being composed.
+final class CandidateForm extends Struct {
+  @Uint32()
+  external int dwIndex;
+
+  @Uint32()
+  external int dwStyle;
+
+  external Win32Point ptCurrentPos;
+
+  external Win32Rect rcArea;
+}

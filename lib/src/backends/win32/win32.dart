@@ -13,5 +13,11 @@ export 'win32_coordinates.dart' show Win32CoordinateSpace, win32ScaleForDpi;
 export 'win32_cpu_presenter.dart' show Win32CpuPresenter;
 export 'win32_diagnostics.dart' show Win32Failure, Win32HandlerFault;
 export 'win32_dib_surface.dart' show Win32CpuSurface, Win32DibSurface;
-export 'win32_window.dart' show Win32Window;
+// The connection and the backend, not `Imm32Api`: the raw imm32 bindings are
+// as much an implementation detail as `WndClassExW`, and a caller that reached
+// for `ImmGetContext` would be holding an `HIMC` this file's lock discipline
+// no longer covers.
+export 'win32_ime.dart'
+    show Win32TextInputBackend, Win32TextInputConnection;
+export 'win32_window.dart' show Win32ImeMessageHandler, Win32Window;
 export 'win32_window_class.dart' show Win32WindowRegistry;

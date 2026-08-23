@@ -53,13 +53,26 @@ final class D3d12Session {
   /// Off by default because it costs several times the driver call on every
   /// call and would make every test in the suite pay for the one file that
   /// needs it; `d3d12_barrier_test.dart` opens its own session with it on.
-  static D3d12Session open({bool debugLayer = false, bool window = false}) {
+  /// [sparseStrips] opts the device into the experimental sparse-strip
+  /// pipeline, which compiles a second shader pair and builds three more
+  /// pipeline state objects. Off by default so the files that do not exercise
+  /// it do not pay for it, and so a machine whose compiler refuses that HLSL
+  /// still runs every other Direct3D 12 test.
+  static D3d12Session open({
+    bool debugLayer = false,
+    bool window = false,
+    bool sparseStrips = false,
+    bool computeTiles = false,
+  }) {
     if (!Platform.isWindows) {
       return D3d12Session._(null, 'Direct3D 12 exists only on Windows', null);
     }
     try {
-      final D3d12DeviceAttempt attempt =
-          D3d12RenderDevice.open(debugLayer: debugLayer);
+      final D3d12DeviceAttempt attempt = D3d12RenderDevice.open(
+        debugLayer: debugLayer,
+        enableExperimentalSparseStrips: sparseStrips,
+        enableExperimentalComputeTiles: computeTiles,
+      );
       final D3d12RenderDevice? device = attempt.device;
       if (device == null) {
         return D3d12Session._(

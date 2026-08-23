@@ -197,6 +197,129 @@ const int wmSysdeadchar = 0x0107;
 /// surrogate pair through [wmChar] and `TextInputAssembler` rejoins them.
 const int wmUnichar = 0x0109;
 
+// ---------------------------------------------------------------------------
+// IMM32: the input-method messages.
+// ---------------------------------------------------------------------------
+
+/// `WM_IME_STARTCOMPOSITION` - the input method is about to show a preedit.
+///
+/// **Must be swallowed**, not passed to `DefWindowProcW`. The default handler's
+/// response is to create the IME's own composition window and draw the preedit
+/// in it, on top of the client area, in a font of its choosing. A framework
+/// that draws the composition itself - which this one does, underlined, in the
+/// document's own font and layout - would then show it twice.
+const int wmImeStartcomposition = 0x010D;
+
+/// `WM_IME_ENDCOMPOSITION` - the preedit is over. Swallowed, for
+/// [wmImeStartcomposition]'s reason.
+const int wmImeEndcomposition = 0x010E;
+
+/// `WM_IME_COMPOSITION` - *something about the composition changed*, with
+/// `lParam` a bitmask of which parts.
+///
+/// The message carries no text. What it carries is permission to *read* the
+/// text, with `ImmGetCompositionStringW`, and that permission expires when the
+/// handler returns - which is why the Win32 bridge reads inside the WndProc and
+/// pushes a finished value upwards instead of handing out a lazy accessor.
+const int wmImeComposition = 0x010F;
+
+/// `WM_IME_SETCONTEXT` - the window is gaining or losing the input context.
+///
+/// `lParam` is a bitmask of the IME UI elements `DefWindowProcW` should draw.
+/// Clearing [iscShowUiCompositionWindow] before forwarding hides the platform's own
+/// composition window; forwarding the message at all is still required, because
+/// it is also what associates the context with the window.
+const int wmImeSetcontext = 0x0281;
+
+/// `WM_IME_NOTIFY` - the candidate list opened, moved or closed.
+///
+/// Forwarded to `DefWindowProcW`: this backend lets the IME draw its own
+/// candidate window and only says *where*, so there is nothing to claim here.
+/// Named rather than left to the default arm so that the decision is on the
+/// record.
+const int wmImeNotify = 0x0282;
+
+/// `WM_IME_REQUEST` - the OS asking the application a question.
+///
+/// `IMR_DOCUMENTFEED` (7) is how an IMM32 method obtains surrounding text, and
+/// `IMR_RECONVERTSTRING` (4) is reconversion. Neither is answered yet; see
+/// `TextInputBackend.usesSurroundingText`, which reports false on Win32 for
+/// exactly this reason.
+const int wmImeRequest = 0x0288;
+
+/// `WM_IME_CHAR` - a composed character from a method that did not go through
+/// the composition messages.
+///
+/// Forwarded to `DefWindowProcW`, which turns it into an ordinary [wmChar].
+/// Handling it here as well would insert every such character twice.
+const int wmImeChar = 0x0286;
+
+/// `GCS_*`, the bits of `WM_IME_COMPOSITION`'s `lParam` and the index
+/// `ImmGetCompositionStringW` is asked for.
+const int gcsCompreadstr = 0x0001;
+const int gcsCompstr = 0x0008;
+const int gcsCompattr = 0x0010;
+const int gcsCompclause = 0x0020;
+const int gcsCursorpos = 0x0080;
+const int gcsDeltastart = 0x0100;
+const int gcsResultstr = 0x0800;
+const int gcsResultclause = 0x1000;
+
+/// `ATTR_*`, one byte per code unit of the composition string, from
+/// `ImmGetCompositionStringW(GCS_COMPATTR)`.
+const int imeAttrInput = 0x00;
+const int imeAttrTargetConverted = 0x01;
+const int imeAttrConverted = 0x02;
+const int imeAttrTargetNotconverted = 0x03;
+const int imeAttrInputError = 0x04;
+const int imeAttrFixedconverted = 0x05;
+
+/// `ISC_*`, the IME UI elements named in `WM_IME_SETCONTEXT`'s `lParam`.
+///
+/// Clearing [iscShowUiCompositionWindow] is what stops `DefWindowProcW`
+/// drawing the platform's composition window over ours.
+/// [iscShowUiCandidateWindow] is deliberately *left set*: the candidate list is
+/// the IME's to draw and this framework has no widget for it.
+const int iscShowUiCandidateWindow = 0x00000001;
+const int iscShowUiAllCandidateWindow = 0x0000000F;
+const int iscShowUiGuideline = 0x40000000;
+const int iscShowUiCompositionWindow = 0x80000000;
+
+/// `NI_COMPOSITIONSTR` and its `CPS_*` actions, for `ImmNotifyIME`.
+const int niCompositionstr = 0x0015;
+const int cpsComplete = 0x0001;
+const int cpsConvert = 0x0002;
+const int cpsRevert = 0x0003;
+const int cpsCancel = 0x0004;
+
+/// `CFS_*`, the style word of `COMPOSITIONFORM` and `CANDIDATEFORM`.
+///
+/// [cfsCandidatepos] places the candidate list at a point; [cfsExclude] also
+/// hands the IME a rectangle it must not cover, which is what keeps the list
+/// from being drawn on top of the caret it belongs to.
+const int cfsDefault = 0x0000;
+const int cfsPoint = 0x0002;
+const int cfsForcePosition = 0x0020;
+const int cfsCandidatepos = 0x0040;
+const int cfsExclude = 0x0080;
+
+/// `IACE_*` for `ImmAssociateContextEx`.
+///
+/// [iaceDefault] restores the window's default context - which is how
+/// composition is turned back *on* after a password field turned it off - and
+/// [iaceIgnorenocontext] stops the call failing on a window that never had one.
+const int iaceChildren = 0x0001;
+const int iaceDefault = 0x0010;
+const int iaceIgnorenocontext = 0x0020;
+
+/// The value `ImmGetCompositionStringW` returns for a failed call.
+///
+/// `IMM_ERROR_NODATA` (-1) and `IMM_ERROR_GENERAL` (-2) are both negative,
+/// which is the only distinction a caller needs: a negative length is not a
+/// length.
+const int immErrorNodata = -1;
+const int immErrorGeneral = -2;
+
 /// `WM_SYSCOMMAND` - Close, Minimise, Maximise, Move, Size, and the Alt key
 /// opening the (non-existent) menu bar as `SC_KEYMENU`.
 ///
@@ -299,6 +422,14 @@ const int wmGetdpiscaledsize = 0x02E4;
 /// as [wmSettingchange]: there is no theme event above the platform layer to
 /// deliver it to.
 const int wmThemechanged = 0x031A;
+
+/// `VK_PROCESSKEY` - the virtual key Windows sends for a keystroke an input
+/// method has already consumed.
+///
+/// Not a key. It is the OS reporting that the keystroke went to the IME and
+/// that whatever it did will arrive as `WM_IME_COMPOSITION` instead. See
+/// `Win32Window._onKeyDown`, which drops it.
+const int vkProcesskey = 0xE5;
 
 // Virtual keys used when sampling modifier state.
 const int vkShift = 0x10;

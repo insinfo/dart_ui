@@ -16,6 +16,7 @@ import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
 import '../../platform/clipboard.dart';
+import '../../platform/drag_drop.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
@@ -24,7 +25,7 @@ import 'headless_test_support.dart' show FakeClipboard;
 
 /// An always-available in-memory windowing backend.
 final class HeadlessWindowingBackend
-    implements WindowingBackend, ClipboardProvider {
+    implements WindowingBackend, ClipboardProvider, DragDropProvider {
   HeadlessWindowingBackend({
     this.renderScale = 1,
     this.desktopScale = 1,
@@ -45,6 +46,27 @@ final class HeadlessWindowingBackend
   /// path that was broken.
   @override
   final FakeClipboard clipboard = FakeClipboard();
+
+  /// There is no drag and drop here, said out loud.
+  ///
+  /// Unlike [clipboard], which a headless run can simulate perfectly because a
+  /// clipboard is just a string this process holds, a drag comes from *another
+  /// application* - and there is no other application. So this is a named
+  /// refusal rather than an in-memory pretence, and registering a drop target
+  /// on a headless window throws a [DragDropException] that says which backend
+  /// declined.
+  ///
+  /// A test that wants to drive the whole stack installs a [FakeDragDrop]
+  /// through `ApplicationOptions.dragAndDrop`; a test that only wants the
+  /// routing drives `BuildOwner.dispatchDragUpdate` directly, which is where
+  /// the hit testing actually lives.
+  @override
+  DragDropBackend get dragAndDrop => const UnavailableDragDrop(
+        name: 'headless',
+        reason: 'a headless run has no other application to drag from; pass a '
+            'FakeDragDrop through ApplicationOptions.dragAndDrop to simulate '
+            'one',
+      );
 
   /// Physical pixels allocated for each logical unit.
   final double renderScale;

@@ -6831,3 +6831,68 @@ possui stencil.
 655 testes GPU passaram; 19 foram ignorados por plataforma/capacidade.
 Na suíte completa, 4.620 testes passaram e 22 foram ignorados.
 ```
+
+## 16. Checkpoint — replay vetorial ordenado e promoção real de B
+
+**Data:** 22 de agosto de 2026
+
+### Fechado nesta rodada
+
+- O planejamento do path foi dividido em `plan` e `complete`: telemetria só
+  declara B/C/D depois que um comando completo entrou no stream. Recusa ou
+  exceção executa e reporta o atlas A.
+- `GpuMaskAtlas.containsMask` consulta a chave exata sem rasterizar, alterar
+  LRU, dirty state ou contadores. Assim o seletor roda antes do custo CPU de A.
+- `GpuPathCommandRecorder` e `GpuPathDispatchRequest` formam o commit
+  transacional entre replay e executor. O sink fecha o batch anterior, tenta
+  promover e retorna antes de rasterizar a máscara somente em sucesso.
+- `GpuVectorCommandStream` intercala ranges densos e comandos vetoriais com
+  ordem total, target, viewport, clip, orientação e origem de `saveLayer`.
+  Layers somente vetoriais e ancestrais flattened preservam seus passes.
+- `snapshot` e `GpuVectorSubmissionCursor` tornam flush de atlas incremental:
+  um prefixo pode ser submetido sem desenhar novamente batches, vetores ou
+  clears quando o restante do frame chegar.
+- A abordagem B possui executor GL 3.3/ES 3.0 real com VBO/IBO retidos,
+  transform, clip, blend, lifecycle e device loss. Sob
+  `enableExperimentalCpuTessellation`, paths sólidos e aliased elegíveis são
+  promovidos automaticamente pela `DisplayList`; AA/gradiente/recusa voltam a
+  A antes de qualquer chamada nativa.
+- O submitter misto GL restaura programa, VAO, scissor e cache de estado ao
+  alternar `dense -> B -> dense`. A ordem foi comprovada por pixels no driver
+  Intel, além de um teste fim a fim partindo de uma `DisplayList`.
+- A fase inicial de D ganhou encoding de segmentos, cena, bins CSR, comandos,
+  métricas e referência CPU non-zero/even-odd. Ela é neutra de API e ainda não
+  anuncia compute antes dos shaders, barriers e bindings reais.
+
+### Limites preservados
+
+- B automático exige `antiAlias=false`; AA geométrico/MSAA ainda precisa do
+  sample count no descriptor do pass ou de fringe analítico.
+- Sparse e C possuem executores GL reais e payloads ordenáveis, mas continuam
+  explícitos: sparse precisa incluir AA/material no custo pré-seleção e C
+  precisa validar stencil/MSAA por target, inclusive layers.
+- D ainda é plano/referência, não executor GPU. Nenhum backend declara compute
+  por causa desta etapa.
+
+### Próxima sequência
+
+1. Colocar sample count e attachments no descriptor comum do pass para liberar
+   B com MSAA e C por target sem hipótese global.
+2. Integrar sparse ao replay com custo calculado uma vez e material sólido ou
+   gradiente resolvido antes do commit.
+3. Implementar kernels D em D3D12/Vulkan primeiro, com prefix scan, fine raster
+   e barriers explícitas; usar o plano CPU como oracle de paridade.
+4. Medir A/sparse/B/C/D nas cenas da POC-23 e promover somente limiares que
+   vencerem CPU, upload e GPU combinados na Intel UHD.
+
+### Validação focada
+
+```text
+dart analyze
+No issues found
+
+Driver GL real: 34 testes passaram; 1 skip esperado (default FBO sem stencil).
+Replay/dispatcher/stream/cursor e recorder GL: testes direcionados aprovados.
+Suíte GPU: 690 testes passaram; 19 foram ignorados por plataforma/capacidade.
+Suíte completa: 4.655 testes passaram; 22 foram ignorados.
+```

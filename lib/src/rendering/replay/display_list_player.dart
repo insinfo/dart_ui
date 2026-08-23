@@ -66,6 +66,7 @@ import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/transform2d.dart';
+import '../../graphics/content_hint.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/display_list_reader.dart';
@@ -357,6 +358,25 @@ abstract interface class RasterSink {
   );
 }
 
+/// A sink that also wants the application's advice about the subtree.
+///
+/// **Additional, never required.** This is the same shape as
+/// `GpuAttachmentAwareTarget` in `rendering/gpu`, and for the same reason: six
+/// sinks in this repository implement [RasterSink], only one of them will ever
+/// have a strategy selector to advise, and widening [RasterSink] itself would
+/// give the other five a method about a decision they do not make.
+///
+/// A sink that implements this is told the hint in force **before** the first
+/// command it covers, and again at every change, including the change back to
+/// [ContentHint.none] when a subtree closes. A sink that does not implement it
+/// is not called and cannot behave differently - which is the mechanical half
+/// of the promise that a hint never changes the image.
+abstract interface class ContentHintAwareSink {
+  /// The advice now in force. Called only when the value actually changes, so
+  /// an implementation may store it and compare against nothing.
+  void onContentHintChanged(ContentHint hint);
+}
+
 /// A command that decodes correctly but that this player will not execute.
 ///
 /// Always thrown, never skipped. A skipped command is a picture that is quietly
@@ -392,9 +412,26 @@ final class UnsupportedCommandException implements Exception {
 /// survives [play] so that a steady-state frame allocates only the geometry
 /// objects it hands to the sink.
 final class DisplayListPlayer {
-  DisplayListPlayer(this.sink);
+  DisplayListPlayer(this.sink) : _hintSink = _hintSinkOf(sink);
+
+  static ContentHintAwareSink? _hintSinkOf(RasterSink sink) {
+    if (sink is ContentHintAwareSink) return sink;
+    return null;
+  }
 
   final RasterSink sink;
+
+  /// [sink] again when it wants hints, resolved once at construction so the
+  /// walk never repeats a type test per command.
+  final ContentHintAwareSink? _hintSink;
+
+  /// The hint table of the list being replayed, and the forward cursor into
+  /// it. `spanCount == 0` for every list that declared nothing, and that is
+  /// the only test a hintless frame pays: one integer comparison per command,
+  /// no allocation, no call.
+  ContentHintSpans _hints = ContentHintSpans.empty;
+  int _hintCursor = 0;
+  ContentHint _contentHint = ContentHint.none;
 
   final ReplayState _state = ReplayState();
 
@@ -426,6 +463,13 @@ final class DisplayListPlayer {
   /// throws and the surrounding code wants to report where the walk was.
   ReplayState get state => _state;
 
+  /// The application's advice covering the command last executed.
+  ///
+  /// Readable by anything holding the player, so a sink that does not want to
+  /// implement [ContentHintAwareSink] - a diagnostic dump, a test - can still
+  /// ask. Always [ContentHint.none] for a list that declared nothing.
+  ContentHint get contentHint => _contentHint;
+
   /// Replays [reader] from the start.
   ///
   /// [deviceBounds] is the surface, and becomes the root clip; [deviceTransform]
@@ -442,18 +486,24 @@ final class DisplayListPlayer {
     ReplayResources resources, {
     required Rect deviceBounds,
     Transform2D deviceTransform = Transform2D.identity,
+    ContentHintSpans contentHints = ContentHintSpans.empty,
   }) {
     _state.reset(
       deviceBounds: deviceBounds,
       deviceTransform: deviceTransform,
     );
+    _hints = contentHints;
+    _hintCursor = 0;
+    _contentHint = ContentHint.none;
     // Resource ids are frame-local: a cached paint from the previous list
     // would answer with the wrong colour under the same id.
     _paints.clear();
     _layerCount = 0;
 
     reader.rewind();
+    final int hintSpans = contentHints.spanCount;
     while (reader.moveNext()) {
+      if (hintSpans != 0) _advanceContentHint(hintSpans, reader.headerOffset);
       switch (reader.opcode) {
         case opSave:
           _state.save();
@@ -502,6 +552,24 @@ final class DisplayListPlayer {
     if (_state.saveDepth != 0) {
       throw UnbalancedSaveException(_state.saveDepth);
     }
+  }
+
+  /// Moves the hint cursor up to [wordOffset] and notifies a hint-aware sink.
+  ///
+  /// A `while` rather than an `if` because two spans can start at the same
+  /// word only if one covers no commands, and the encoder already collapses
+  /// those - but a hand-built span table is a legal input and must not desync
+  /// the cursor.
+  void _advanceContentHint(int spanCount, int wordOffset) {
+    ContentHint hint = _contentHint;
+    while (_hintCursor < spanCount &&
+        _hints.spanStart(_hintCursor) <= wordOffset) {
+      hint = _hints.spanHint(_hintCursor);
+      _hintCursor++;
+    }
+    if (identical(hint, _contentHint) || hint == _contentHint) return;
+    _contentHint = hint;
+    _hintSink?.onContentHintChanged(hint);
   }
 
   // ---------------------------------------------------------------------

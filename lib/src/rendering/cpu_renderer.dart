@@ -26,6 +26,9 @@ import '../graphics/display_list_opcodes.dart';
 import '../graphics/display_list_reader.dart';
 import '../graphics/gradient.dart';
 import '../graphics/gradient_lut.dart';
+import '../graphics/image/decoded_image.dart';
+import '../graphics/video/video_color_conversion.dart';
+import '../graphics/video/video_frame.dart';
 import '../text/typeface.dart';
 import 'framebuffer.dart';
 import 'path/coverage_span_sink.dart';
@@ -954,11 +957,16 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
             'image pixels as its source rather than a geometry shader',
       );
     }
+    if (image is VideoFrame) {
+      _drawVideoFrame(image, sourceRect, deviceRect, clip, paint);
+      return;
+    }
     if (image is! Framebuffer) {
       throw ArgumentError.value(
         image,
         'image',
-        'the CPU renderer draws Framebuffer images; got ${image.runtimeType}',
+        'the CPU renderer draws Framebuffer and VideoFrame images; got '
+            '${image.runtimeType}',
       );
     }
     // Clipping is the rasteriser's job here: it walks rows anyway, so folding
@@ -970,6 +978,110 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
       ..clipRect(_toLayer(clip))
       ..drawFramebuffer(image, _toLayer(deviceRect), blendMode: blend)
       ..restore();
+  }
+
+  /// The headless and golden-test path for a video frame.
+  ///
+  /// Correct rather than fast, and that is the whole job: this is what runs
+  /// where there is no driver, so a golden image of a video frame is produced
+  /// here and the GPU path is measured against it. The conversion is
+  /// [convertVideoFrameToRgba], which is also what the GL shader is a
+  /// translation of - see the parity note in `video_color_conversion.dart`.
+  ///
+  /// Two limits are inherited from the existing image path rather than
+  /// invented here, and both are worth naming. The blit does not **scale**, so
+  /// a frame drawn into a rectangle of a different size lands at its own size
+  /// from the destination's top-left corner - exactly what `drawDeviceImage`
+  /// already does with a `Framebuffer`. And the source rectangle is honoured
+  /// as a **crop**, in whole pixels, which is more than the `Framebuffer` path
+  /// does and is the part a video editor actually needs.
+  ///
+  /// The paint's alpha is folded into the conversion instead of being applied
+  /// afterwards. It costs three multiplies on a path that is already reading
+  /// every pixel, and it leaves the result premultiplied, which is what the
+  /// blit below expects.
+  void _drawVideoFrame(
+    VideoFrame frame,
+    Rect sourceRect,
+    Rect deviceRect,
+    Rect clip,
+    ReplayPaint paint,
+  ) {
+    final int alpha = (paint.argbColor >> 24) & 0xFF;
+    if (alpha == 0) return;
+
+    final VideoRegion region = VideoRegion(
+      sourceRect.left.floor(),
+      sourceRect.top.floor(),
+      sourceRect.right.ceil(),
+      sourceRect.bottom.ceil(),
+    ).intersect(VideoRegion.wholeFrame(frame.width, frame.height));
+    if (region.isEmpty) return;
+
+    final Framebuffer surface = _rasterizer.target;
+    final Framebuffer converted = _convertedVideoFrame(
+      frame,
+      region,
+      alpha,
+      surface.format,
+    );
+
+    final CpuBlendMode blend = _blendFor(paint);
+    _drew = true;
+    _rasterizer
+      ..save()
+      ..clipRect(_toLayer(clip))
+      ..drawFramebuffer(converted, _toLayer(deviceRect), blendMode: blend)
+      ..restore();
+  }
+
+  /// One converted frame, remembered.
+  ///
+  /// A single slot and not a map: the case it exists for is one frame drawn
+  /// more than once in a list - a picture-in-picture, the same still under a
+  /// transition - and that is consecutive. A map would hold whole decoded
+  /// frames alive past the moment they were drawn, which for 1080p is eight
+  /// megabytes per entry.
+  VideoFrame? _videoCacheFrame;
+  VideoRegion? _videoCacheRegion;
+  int _videoCacheAlpha = -1;
+  PixelFormat? _videoCacheFormat;
+  Framebuffer? _videoCacheResult;
+
+  Framebuffer _convertedVideoFrame(
+    VideoFrame frame,
+    VideoRegion region,
+    int alpha,
+    PixelFormat format,
+  ) {
+    final Framebuffer? cached = _videoCacheResult;
+    if (cached != null &&
+        _videoCacheFrame == frame &&
+        _videoCacheRegion == region &&
+        _videoCacheAlpha == alpha &&
+        _videoCacheFormat == format) {
+      return cached;
+    }
+    final Framebuffer result = Framebuffer(
+      width: region.width,
+      height: region.height,
+      bytesPerRow: region.width * 4,
+      format: format,
+      pixels: convertVideoFrameToRgba(
+        frame,
+        region: region,
+        order: format == PixelFormat.bgra8888Premultiplied
+            ? ImageChannelOrder.bgra
+            : ImageChannelOrder.rgba,
+        opacity: alpha,
+      ),
+    );
+    _videoCacheFrame = frame;
+    _videoCacheRegion = region;
+    _videoCacheAlpha = alpha;
+    _videoCacheFormat = format;
+    _videoCacheResult = result;
+    return result;
   }
 
   /// Draws a shaped run as one cached coverage mask per glyph.

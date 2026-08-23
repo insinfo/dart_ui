@@ -10,6 +10,7 @@ library;
 import 'dart:io' show Platform;
 
 import 'package:dart_ui/src/backends/win32/win32_backend.dart';
+import 'package:dart_ui/src/backends/win32/win32_ime.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:test/test.dart';
 
@@ -108,22 +109,37 @@ void main() {
       expect(result.supports(Capability.keyboardInput), isTrue);
       expect(result.supports(Capability.pointerInput), isTrue);
       expect(result.supports(Capability.orderlyShutdown), isTrue);
+      // The destination half of OLE drag and drop: a window can be registered
+      // as an `IDropTarget`. Dragging *out* of the application is still
+      // deferred, and `Win32DragDropBackend.canStartDrag` says so.
+      expect(result.supports(Capability.dragAndDrop), isTrue);
     });
 
     test('does not claim what it defers', () {
       final result = backend.probe();
-      // Text composition and richer desktop services remain unimplemented;
-      // Unicode clipboard is now part of the Win32 vertical slice.
-      expect(result.supports(Capability.textComposition), isFalse);
+      // Richer desktop services remain unimplemented; the Unicode clipboard
+      // and IMM32 composition are both part of the Win32 vertical slice now.
       expect(result.supports(Capability.clipboardText), isTrue);
       expect(result.supports(Capability.clipboardImage), isFalse);
-      expect(result.supports(Capability.dragAndDrop), isFalse);
       expect(result.supports(Capability.accessibility), isFalse);
       expect(result.supports(Capability.vsync), isFalse);
       // The remaining deferral is written down, not just absent.
       expect(
         result.diagnostics.map((d) => d.message).join('\n'),
         contains('clipboard'),
+      );
+    });
+
+    test('text composition is claimed on imm32 having bound, and on nothing '
+        'else', () {
+      final result = backend.probe();
+      expect(
+        result.supports(Capability.textComposition),
+        Imm32Api.load().api != null,
+        reason: 'imm32 is the single thing composition needs and the only '
+            'thing that can actually be missing on a stripped Windows image; '
+            'claiming it on faith turns into a field that mysteriously cannot '
+            'type Japanese',
       );
     });
 

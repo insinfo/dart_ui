@@ -40,7 +40,9 @@ final class GpuPathWorkloadBuilder {
     int? pixelHeight,
     bool geometryStable = false,
     bool denseMaskCacheHit = false,
+    bool denseMaskLikelyCacheable = false,
     SparseStripPlanMetrics? sparseMetrics,
+    int? tileCrossings,
     double flattenTolerance = kDefaultFlattenTolerance,
     Transform2D localToTarget = Transform2D.identity,
   }) {
@@ -93,6 +95,8 @@ final class GpuPathWorkloadBuilder {
       isAnalyticPrimitive: _isAxisAlignedRectangle(path) &&
           _preservesAxisAlignment(localToTarget),
       denseMaskCacheHit: denseMaskCacheHit,
+      denseMaskLikelyCacheable: denseMaskLikelyCacheable,
+      tileCrossings: tileCrossings,
       geometryStable: geometryStable,
       hasSelfIntersections: eligibility.hasSelfIntersections,
       tessellationEligible: eligibility.isEligible,

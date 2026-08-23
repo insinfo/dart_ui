@@ -7,6 +7,7 @@ import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
 import 'package:dart_ui/src/graphics/display_list_reader.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_batcher.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_mask_atlas.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_path_dispatch.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_path_planning.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_path_strategy.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_pipeline.dart';
@@ -17,6 +18,63 @@ import 'package:dart_ui/src/rendering/replay/display_list_player.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('proposal is not published until execution is completed', () {
+    final events = <GpuPathPlanningEvent>[];
+    final telemetry = GpuPathPlanningTelemetry(
+      candidateCapabilities: const GpuPathStrategyCapabilities(
+        tessellation: true,
+      ),
+      stabilityProbe: (_) => true,
+      onEvent: events.add,
+    );
+    final proposal = telemetry.plan(
+      label: 'ordered icon',
+      path: _triangle(),
+      localToTarget: Transform2D.identity,
+      clip: const Rect.fromLTRB(0, 0, 32, 32),
+      fillRule: FillRule.nonZero,
+      denseMaskCacheHit: false,
+    );
+
+    expect(proposal, isNotNull);
+    expect(proposal!.candidate.strategy, GpuPathStrategy.tessellatedMesh);
+    expect(telemetry.lastEvent, isNull);
+    expect(events, isEmpty);
+
+    final event = telemetry.complete(
+      proposal,
+      executedStrategy: GpuPathStrategy.coverageAtlas,
+    );
+    expect(event.candidateDiffersFromExecution, isTrue);
+    expect(telemetry.lastEvent, same(event));
+    expect(events, <GpuPathPlanningEvent>[event]);
+  });
+
+  test('an accepted experimental execution is reported explicitly', () {
+    final telemetry = GpuPathPlanningTelemetry(
+      candidateCapabilities: const GpuPathStrategyCapabilities(
+        tessellation: true,
+      ),
+      stabilityProbe: (_) => true,
+    );
+    final path = _triangle();
+
+    final event = telemetry.observe(
+      label: 'retained icon',
+      path: path,
+      localToTarget: Transform2D.identity,
+      clip: const Rect.fromLTRB(0, 0, 32, 32),
+      fillRule: FillRule.nonZero,
+      denseMaskCacheHit: false,
+      executedStrategy: GpuPathStrategy.tessellatedMesh,
+    );
+
+    expect(event, isNotNull);
+    expect(event!.executedStrategy, GpuPathStrategy.tessellatedMesh);
+    expect(event.candidateDiffersFromExecution, isFalse);
+    expect(telemetry.lastEvent, same(event));
+  });
+
   test('display-list replay observes decisions but draws the same dense masks',
       () {
     final events = <GpuPathPlanningEvent>[];
@@ -101,6 +159,97 @@ void main() {
         telemetry.lastEvent!.candidate.strategy, GpuPathStrategy.sparseStrips);
     expect(
         telemetry.lastEvent!.executedStrategy, GpuPathStrategy.coverageAtlas);
+  });
+
+  test('accepted recorder owns pixels and preserves dense batch order', () {
+    final events = <GpuPathPlanningEvent>[];
+    final recorder = _RecordingPathRecorder(accept: true);
+    final telemetry = GpuPathPlanningTelemetry(
+      candidateCapabilities: const GpuPathStrategyCapabilities(
+        tessellation: true,
+      ),
+      stabilityProbe: (_) => true,
+      onEvent: events.add,
+    );
+    final atlas = GpuMaskAtlas(width: 64, height: 64);
+    final batcher = GpuBatcher()..beginFrame();
+    final sink = GpuRasterSink(
+      batcher: batcher,
+      backendName: 'dispatch-test',
+      maskAtlas: atlas,
+      maskTextureId: 4,
+      pathPlanningTelemetry: telemetry,
+      pathCommandRecorder: recorder,
+    );
+
+    sink
+      ..fillDeviceRect(
+        const Rect.fromLTRB(0, 0, 4, 4),
+        const Rect.fromLTRB(0, 0, 64, 64),
+        _paint,
+      )
+      ..drawDevicePath(
+        _triangle(),
+        Transform2D.identity,
+        const Rect.fromLTRB(0, 0, 64, 64),
+        _paint,
+      )
+      ..fillDeviceRect(
+        const Rect.fromLTRB(8, 0, 12, 4),
+        const Rect.fromLTRB(0, 0, 64, 64),
+        _paint,
+      );
+
+    expect(recorder.requests, hasLength(1));
+    expect(recorder.requests.single.batchIndex, 1);
+    expect(
+      recorder.requests.single.candidateStrategy,
+      GpuPathStrategy.tessellatedMesh,
+    );
+    expect(events.single.executedStrategy, GpuPathStrategy.tessellatedMesh);
+    expect(atlas.rasterizationCount, 0);
+    expect(batcher.quadCount, 2);
+    expect(batcher.batchCount, 2);
+  });
+
+  test('recorder refusal and exception both retain the dense fallback', () {
+    for (final recorder in <_RecordingPathRecorder>[
+      _RecordingPathRecorder(accept: false),
+      _RecordingPathRecorder(accept: false, throwOnRecord: true),
+    ]) {
+      final telemetry = GpuPathPlanningTelemetry(
+        candidateCapabilities: const GpuPathStrategyCapabilities(
+          tessellation: true,
+        ),
+        stabilityProbe: (_) => true,
+      );
+      final atlas = GpuMaskAtlas(width: 64, height: 64);
+      final sink = GpuRasterSink(
+        batcher: GpuBatcher()..beginFrame(),
+        backendName: 'dispatch-test',
+        maskAtlas: atlas,
+        maskTextureId: 8,
+        pathPlanningTelemetry: telemetry,
+        pathCommandRecorder: recorder,
+      );
+
+      expect(
+        () => sink.drawDevicePath(
+          _triangle(),
+          Transform2D.identity,
+          const Rect.fromLTRB(0, 0, 64, 64),
+          _paint,
+        ),
+        returnsNormally,
+      );
+      expect(recorder.requests, hasLength(1));
+      expect(atlas.rasterizationCount, 1);
+      expect(sink.batcher.quadCount, 1);
+      expect(
+        telemetry.lastEvent!.executedStrategy,
+        GpuPathStrategy.coverageAtlas,
+      );
+    }
   });
 
   test('advisory seam reports A, C and D while execution stays dense', () {
@@ -231,6 +380,24 @@ void main() {
     expect(telemetry.lastEvent, isNull);
     expect(telemetry.lastError, isA<StateError>());
   });
+}
+
+final class _RecordingPathRecorder implements GpuPathCommandRecorder {
+  _RecordingPathRecorder({
+    required this.accept,
+    this.throwOnRecord = false,
+  });
+
+  final bool accept;
+  final bool throwOnRecord;
+  final List<GpuPathDispatchRequest> requests = <GpuPathDispatchRequest>[];
+
+  @override
+  bool tryRecord(GpuPathDispatchRequest request) {
+    requests.add(request);
+    if (throwOnRecord) throw StateError('experimental executor failed');
+    return accept;
+  }
 }
 
 const ReplayPaint _paint = ReplayPaint(

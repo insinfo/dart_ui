@@ -55,22 +55,29 @@ import '../../../foundation/diagnostics.dart';
 import '../../../foundation/lifecycle.dart';
 import '../../../graphics/display_list_opcodes.dart';
 import '../../../rendering/framebuffer.dart';
+import '../../../rendering/gpu/d3d12/d3d12_compute_tile_executor.dart';
 import '../../../rendering/gpu/d3d12/d3d12_shaders.dart';
+import '../../../rendering/gpu/d3d12/d3d12_sparse_executor.dart';
 import '../../../rendering/gpu/d3d12/d3d12_surface_descriptor.dart';
 import '../../../rendering/gpu/gpu_batcher.dart';
 import '../../../rendering/gpu/gpu_device_state.dart';
+import '../../../rendering/gpu/gpu_path_strategy.dart';
 import '../../../rendering/gpu/gpu_pipeline.dart';
 import '../../../rendering/gpu/gpu_raster_sink.dart';
 import '../../../rendering/gpu/gpu_texture.dart';
+import '../../../rendering/gpu/vector/compute_tile_scene.dart';
+import '../../../rendering/gpu/vector/sparse_strip_draw_plan.dart';
 import '../../../rendering/renderer.dart';
 import '../../../rendering/replay/display_list_player.dart';
 import '../../../text/typeface.dart';
 import 'd3d12_arena.dart';
 import 'd3d12_com.dart';
+import 'd3d12_compute_tile_driver.dart';
 import 'd3d12_frame_ring.dart';
 import 'd3d12_interfaces.dart';
 import 'd3d12_library.dart';
 import 'd3d12_offscreen_target.dart';
+import 'd3d12_sparse_driver.dart';
 import 'd3d12_structs.dart';
 import 'd3d12_window_target.dart';
 
@@ -138,6 +145,16 @@ final class D3d12Texture implements GpuTextureHandle {
   /// when they are.
   bool _isRenderTarget = false;
 
+  /// Whether this texture is written by a compute shader through a UAV.
+  ///
+  /// Excluded from the bulk transition into `PIXEL_SHADER_RESOURCE` for the
+  /// same reason a render target is, and the failure is worse: a coverage
+  /// texture moved to a read state behind the dispatch's back makes the very
+  /// next `Dispatch` an illegal write, and the debug layer reports it against
+  /// the dispatch rather than against the barrier. Its state is moved
+  /// explicitly, twice per composed draw, by the compute-tile driver.
+  bool _isUnorderedAccess = false;
+
   bool _released = false;
 
   @override
@@ -146,6 +163,27 @@ final class D3d12Texture implements GpuTextureHandle {
   @override
   String toString() =>
       'D3d12Texture($id, ${width}x$height, ${format.name}, ${filter.name})';
+}
+
+/// A coverage texture and the two descriptor indices that view it.
+///
+/// The pair exists because the two views live in the same shader-visible heap
+/// but at different slots, and both have to be released together: a UAV slot
+/// left behind would be handed to the next texture while still describing a
+/// resource that no longer exists.
+final class D3d12ComputeCoverageTexture {
+  const D3d12ComputeCoverageTexture._(this.texture, this.unorderedAccessIndex);
+
+  /// The resource. Its [D3d12Texture.id] is the *shader resource* descriptor
+  /// index, which is what the composite pass binds.
+  final D3d12Texture texture;
+
+  /// The descriptor index of the unordered-access view, which is what the
+  /// dispatch binds.
+  final int unorderedAccessIndex;
+
+  int get width => texture.width;
+  int get height => texture.height;
 }
 
 /// What [D3d12RenderDevice.open] found, whether or not it succeeded.
@@ -176,6 +214,8 @@ final class D3d12RenderDevice
     required String adapterDescription,
     required D3d12InfoQueue? infoQueue,
     required List<BackendDiagnostic> notes,
+    required bool sparseStripsRequested,
+    required bool computeTilesRequested,
   })  : _library = library,
         _factory = factory,
         _device = device,
@@ -184,7 +224,9 @@ final class D3d12RenderDevice
         _featureLevel = featureLevel,
         _adapterDescription = adapterDescription,
         _infoQueue = infoQueue,
-        _notes = notes;
+        _notes = notes,
+        _sparseStripsRequested = sparseStripsRequested,
+        _computeTilesRequested = computeTilesRequested;
 
   static const String backendName = 'direct3d12';
 
@@ -221,6 +263,48 @@ final class D3d12RenderDevice
   final D3d12InfoQueue? _infoQueue;
   final List<BackendDiagnostic> _notes;
   final GpuDeviceState _state = GpuDeviceState();
+
+  /// Whether the caller asked for the opt-in sparse-strip executor.
+  ///
+  /// A field rather than a lazily-built object: a renderer that compiled a
+  /// second pair of shaders and built three more pipeline state objects the
+  /// first time somebody happened to call [submitSparseStrips] would stall on a
+  /// driver compile inside a frame, which is the cost `d3d12_shaders.dart` says
+  /// this backend does not pay.
+  final bool _sparseStripsRequested;
+  D3d12SparseDriver? _sparseDriver;
+  SparseD3d12Executor? _sparseExecutor;
+
+  /// Whether the caller asked for the opt-in compute-tile executor, for the
+  /// same reason [_sparseStripsRequested] is a field.
+  final bool _computeTilesRequested;
+  D3d12ComputeTileDriver? _computeTileDriver;
+  ComputeTileD3d12Executor? _computeTileExecutor;
+
+  /// The one storage texture every composed draw writes and then samples.
+  ///
+  /// One for the device rather than one per target: it is transient within a
+  /// draw - written, read, and never looked at again - so two targets can share
+  /// it as long as neither is mid-composite, which single-threaded frame
+  /// submission guarantees.
+  D3d12ComputeCoverageTexture? _computeCoverage;
+
+  /// The per-draw strategy policy this device's targets plan with.
+  ///
+  /// Device level rather than target level because the thresholds it carries
+  /// are about what this hardware is good at, not about which surface is being
+  /// drawn into. A target reads it when it builds its planning telemetry, so a
+  /// change takes effect for targets created afterwards - which is the only
+  /// point at which changing it is safe, because a plan measured under one
+  /// policy must not be executed under another.
+  GpuPathStrategySelector experimentalPathStrategySelector =
+      const GpuPathStrategySelector();
+
+  /// Whether an opt-in sparse-strip pipeline exists on this device.
+  bool get experimentalSparseStripsEnabled => _sparseExecutor != null;
+
+  /// Whether an opt-in compute-tile pipeline exists on this device.
+  bool get experimentalComputeTilesEnabled => _computeTileExecutor != null;
 
   late final D3d12DescriptorHeap _rtvHeap;
   late final D3d12DescriptorHeap _srvHeap;
@@ -304,6 +388,8 @@ final class D3d12RenderDevice
   static D3d12DeviceAttempt open({
     bool debugLayer = false,
     int frameCount = D3d12FrameRing.kDefaultFrameCount,
+    bool enableExperimentalSparseStrips = false,
+    bool enableExperimentalComputeTiles = false,
   }) {
     final List<BackendDiagnostic> diagnostics = <BackendDiagnostic>[];
     final D3d12LibraryLoad load = D3d12Library.open();
@@ -314,7 +400,14 @@ final class D3d12RenderDevice
     diagnostics.addAll(load.diagnostics);
 
     try {
-      return _open(library, debugLayer, frameCount, diagnostics);
+      return _open(
+        library,
+        debugLayer,
+        frameCount,
+        enableExperimentalSparseStrips,
+        enableExperimentalComputeTiles,
+        diagnostics,
+      );
     } on Object catch (error, stack) {
       diagnostics.add(BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
@@ -329,6 +422,8 @@ final class D3d12RenderDevice
     D3d12Library library,
     bool wantDebugLayer,
     int frameCount,
+    bool sparseStripsRequested,
+    bool computeTilesRequested,
     List<BackendDiagnostic> diagnostics,
   ) {
     var debugEnabled = false;
@@ -427,12 +522,28 @@ final class D3d12RenderDevice
         adapterDescription: chosen.description,
         infoQueue: infoQueue,
         notes: diagnostics,
+        sparseStripsRequested: sparseStripsRequested,
+        computeTilesRequested: computeTilesRequested,
       );
 
       final BackendDiagnostic? failure = renderDevice._initialise();
       if (failure != null) {
         renderDevice.dispose();
         diagnostics.add(failure);
+        return D3d12DeviceAttempt(null, diagnostics);
+      }
+      final BackendDiagnostic? sparseFailure =
+          renderDevice._initialiseSparseStrips();
+      if (sparseFailure != null) {
+        renderDevice.dispose();
+        diagnostics.add(sparseFailure);
+        return D3d12DeviceAttempt(null, diagnostics);
+      }
+      final BackendDiagnostic? computeFailure =
+          renderDevice._initialiseComputeTiles();
+      if (computeFailure != null) {
+        renderDevice.dispose();
+        diagnostics.add(computeFailure);
         return D3d12DeviceAttempt(null, diagnostics);
       }
       return D3d12DeviceAttempt(renderDevice, diagnostics);
@@ -653,6 +764,60 @@ final class D3d12RenderDevice
     });
   }
 
+  /// Builds the opt-in sparse-strip root signature and pipeline states, or
+  /// names why it could not.
+  ///
+  /// Runs at device creation and never inside a frame, for the reason the field
+  /// comment gives. Returns a diagnostic rather than throwing, so a machine
+  /// whose compiler refuses the sparse HLSL reports it exactly the way a
+  /// missing adapter is reported.
+  BackendDiagnostic? _initialiseSparseStrips() {
+    // Compute composition draws its coverage quad through the sparse pipeline -
+    // an alpha instance whose page happens to be target-sized - so asking for
+    // compute builds the sparse objects too. Requiring the caller to ask for
+    // both would be exporting an implementation detail as an API rule.
+    if (!_sparseStripsRequested && !_computeTilesRequested) return null;
+    final D3d12SparseDriver driver = _sparseDriver ??= D3d12SparseDriver(this);
+    final SparseD3d12Executor executor =
+        _sparseExecutor ??= SparseD3d12Executor(driver, textureAllocator: this);
+    try {
+      executor.initialize();
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the opt-in sparse Direct3D 12 pipeline could not be '
+            'initialized',
+        detail: '$error',
+      );
+    }
+    return null;
+  }
+
+  /// Builds the opt-in compute-tile root signature and pipeline state, or names
+  /// why it could not.
+  ///
+  /// Runs at device creation, like [_initialiseSparseStrips]. A machine whose
+  /// compiler refuses `cs_5_0` - or a driver that refuses a compute pipeline -
+  /// reports it here rather than at the first dispatch.
+  BackendDiagnostic? _initialiseComputeTiles() {
+    if (!_computeTilesRequested) return null;
+    final D3d12ComputeTileDriver driver =
+        _computeTileDriver ??= D3d12ComputeTileDriver(this);
+    final ComputeTileD3d12Executor executor =
+        _computeTileExecutor ??= ComputeTileD3d12Executor(driver);
+    try {
+      executor.initialize();
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the opt-in compute-tile Direct3D 12 pipeline could not be '
+            'initialized',
+        detail: '$error',
+      );
+    }
+    return null;
+  }
+
   BackendDiagnostic _heapFailure(String which, int hr) => BackendDiagnostic(
         kind: DiagnosticKind.incompatibleDevice,
         message: 'the $which descriptor heap could not be created',
@@ -751,6 +916,23 @@ final class D3d12RenderDevice
     _rootSignature = out.value;
     return null;
   }
+
+  /// Compiles one HLSL stage with the device's own `D3DCompile` binding.
+  ///
+  /// Public because the experimental sparse-strip and compute-tile executors
+  /// live in other files and must not open a second path to the compiler: the
+  /// flags, the source name and the verbatim error text are decisions this
+  /// device already made, and two copies of them is two answers to "why did
+  /// the shader fail".
+  ///
+  /// Returns a [D3dBlob] on success, a [BackendDiagnostic] on failure.
+  Object compileShader(
+    D3d12Arena arena,
+    String source,
+    String entryPoint,
+    String target,
+  ) =>
+      _compile(arena, source, entryPoint, target);
 
   /// Returns a [D3dBlob] on success, a [BackendDiagnostic] on failure.
   Object _compile(
@@ -955,13 +1137,19 @@ final class D3d12RenderDevice
   /// rectangle can only save rasterisation. MSAA is false because nothing here
   /// creates a multisample resource, and the antialiasing is analytic instead
   /// - `boxCoverage` in the pixel shader and the coverage-mask atlas.
-  /// Compute is false because this backend creates only direct queues and
-  /// graphics pipeline states.
+  ///
+  /// Compute follows [experimentalComputeTilesEnabled] and is therefore false
+  /// unless the caller asked for the opt-in tile executor. It is not a constant
+  /// any more, and the reason is honesty in both directions: a device that has
+  /// built a compute root signature and a compute pipeline state *does* support
+  /// compute, and one that has not must not claim to - a selector that read a
+  /// hard-coded `true` would choose approach D on a device with nothing to
+  /// execute it.
   @override
-  RendererCapabilities get capabilities => const RendererCapabilities(
+  RendererCapabilities get capabilities => RendererCapabilities(
         supportsPartialPresent: false,
         supportsMsaa: false,
-        supportsCompute: false,
+        supportsCompute: experimentalComputeTilesEnabled,
         supportsExternalTextures: false,
         supportsLinearColor: false,
         maxTextureSize: kMaxTextureSize,
@@ -997,15 +1185,33 @@ final class D3d12RenderDevice
   /// asked - it is the only way to tell a genuinely removed device (a driver
   /// update, a TDR, a GPU switch) from a bug in this backend, and both arrive
   /// here as the same failed call.
-  void markLost(String message, {String? detail}) => _state.markLost(
-        BackendDiagnostic(
-          kind: DiagnosticKind.connectionFailed,
-          message: message,
-          detail: detail ??
-              'GetDeviceRemovedReason: '
-                  '${hresultText(_device.getDeviceRemovedReason(_device.pointer))}',
-        ),
-      );
+  void markLost(String message, {String? detail}) {
+    _state.markLost(
+      BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: message,
+        detail: detail ??
+            'GetDeviceRemovedReason: '
+                '${hresultText(_device.getDeviceRemovedReason(_device.pointer))}',
+      ),
+    );
+    // Every object a removed device created is invalid, and releasing one
+    // through the removed device is undefined - the pointer may already have
+    // been recycled. The experimental executor therefore *forgets* its root
+    // signature, pipeline states and alpha pages rather than releasing them,
+    // and a recovered device rebuilds them through _initialiseSparseStrips.
+    final SparseD3d12Executor? executor = _sparseExecutor;
+    if (executor != null && !executor.isDisposed) {
+      executor.discardNativeResources();
+    }
+    final ComputeTileD3d12Executor? compute = _computeTileExecutor;
+    if (compute != null && !compute.isDisposed) {
+      compute.discardNativeResources();
+    }
+    // The coverage texture belonged to the removed device too. Forgetting the
+    // handle without releasing it is the same rule the executors follow.
+    _computeCoverage = null;
+  }
 
   @override
   RenderTarget createTarget(NativeSurfaceDescriptor surface) {
@@ -1058,6 +1264,28 @@ final class D3d12RenderDevice
   /// Points [handle] at [resource] as a render target.
   void createRenderTargetView(Pointer<Void> resource, int handle) => _device
       .createRenderTargetView(_device.pointer, resource, nullptr, handle);
+
+  /// The shader-visible descriptor heap, for a `SetDescriptorHeaps` issued by
+  /// an executor that records into this device's command list.
+  ///
+  /// Exposed rather than duplicated: a second shader-visible heap would mean
+  /// re-creating every view in it, and `SetDescriptorHeaps` may name only one
+  /// CBV/SRV/UAV heap at a time - so an executor that brought its own would
+  /// unbind the atlases the dense path is about to sample.
+  Pointer<Void> get shaderVisibleHeap => _srvHeap.pointer;
+
+  /// The GPU descriptor handle of [textureId], which is that texture's index in
+  /// [shaderVisibleHeap]. Index 0 is the 1x1 placeholder.
+  int gpuDescriptorHandleFor(int textureId) =>
+      _srvHeap.gpuHandleStart + textureId * _srvStride;
+
+  /// Moves every live texture into `PIXEL_SHADER_RESOURCE`.
+  ///
+  /// Public for the experimental executors, which sample textures this device
+  /// created - alpha pages, gradient ramps - from a pass this device's own
+  /// [submit] does not record. Idempotent: a texture already in that state
+  /// contributes no barrier.
+  void prepareTexturesForSampling() => _prepareTexturesForSampling();
 
   // -------------------------------------------------------------------
   // Textures
@@ -1116,6 +1344,8 @@ final class D3d12RenderDevice
     required GpuTextureFilter filter,
     int? forcedIndex,
     bool renderTarget = false,
+    bool unorderedAccess = false,
+    int? dxgiFormatOverride,
   }) {
     final int index;
     if (forcedIndex != null) {
@@ -1128,9 +1358,10 @@ final class D3d12RenderDevice
       return null;
     }
 
-    final int dxgiFormat = format == GpuTextureFormat.alpha8
-        ? dxgiFormatR8Unorm
-        : kD3d12SurfaceFormat;
+    final int dxgiFormat = dxgiFormatOverride ??
+        (format == GpuTextureFormat.alpha8
+            ? dxgiFormatR8Unorm
+            : kD3d12SurfaceFormat);
 
     return D3d12Arena.using(_library.allocator, (D3d12Arena arena) {
       final Pointer<D3d12HeapProperties> heap =
@@ -1154,7 +1385,9 @@ final class D3d12RenderDevice
         ..layout = d3d12TextureLayoutUnknown
         ..flags = renderTarget
             ? d3d12ResourceFlagAllowRenderTarget
-            : d3d12ResourceFlagNone;
+            : unorderedAccess
+                ? d3d12ResourceFlagAllowUnorderedAccess
+                : d3d12ResourceFlagNone;
       desc.ref.sampleDesc
         ..count = 1
         ..quality = 0;
@@ -1164,7 +1397,9 @@ final class D3d12RenderDevice
       final Pointer<Pointer<Void>> out = arena.allocatePointers(1);
       final int initialState = renderTarget
           ? d3d12ResourceStateRenderTarget
-          : d3d12ResourceStateCopyDest;
+          : unorderedAccess
+              ? d3d12ResourceStateUnorderedAccess
+              : d3d12ResourceStateCopyDest;
       final int hr = _device.createCommittedResource(
         _device.pointer,
         heap,
@@ -1210,7 +1445,8 @@ final class D3d12RenderDevice
         _state,
       )
         .._resourceState = initialState
-        .._isRenderTarget = renderTarget;
+        .._isRenderTarget = renderTarget
+        .._isUnorderedAccess = unorderedAccess;
       _textures.add(texture);
       _samplers[index] = filter == GpuTextureFilter.linear
           ? kD3d12SamplerLinear
@@ -1229,6 +1465,81 @@ final class D3d12RenderDevice
         filter: GpuTextureFilter.nearest,
         renderTarget: true,
       );
+
+  /// A target-sized single-channel float texture a compute shader writes and a
+  /// pixel shader then samples: the coverage approach D produces.
+  ///
+  /// `R32_FLOAT` rather than `R8_UNORM`, and the reason is in
+  /// `d3d12_structs.dart`: it is one of the three formats every Direct3D 12
+  /// device must support for a typed UAV store, and this backend does not query
+  /// the capability that would let it use the smaller one.
+  ///
+  /// Two descriptors are created for it in the one shader-visible heap - an SRV
+  /// at [D3d12Texture.id] so the composite pixel shader can `Load` it, and a
+  /// UAV at the returned index so the dispatch can write it. Two views of one
+  /// resource, never bound at the same time; [transitionTexture] is what makes
+  /// that safe.
+  ///
+  /// Returns null when the resource or a descriptor could not be obtained.
+  D3d12ComputeCoverageTexture? createComputeCoverageTexture(
+    int width,
+    int height,
+  ) {
+    final D3d12Texture? texture = _allocateTexture(
+      width: width,
+      height: height,
+      // The nominal format is never consulted: nothing uploads to this texture
+      // and nothing reads its bytesPerPixel. The DXGI format below is what the
+      // views actually carry.
+      format: GpuTextureFormat.alpha8,
+      filter: GpuTextureFilter.nearest,
+      unorderedAccess: true,
+      dxgiFormatOverride: dxgiFormatR32Float,
+    );
+    if (texture == null) return null;
+
+    final int? uavIndex = _freeSrv.isNotEmpty
+        ? _freeSrv.removeLast()
+        : (_nextSrv < kTextureCapacity ? _nextSrv++ : null);
+    if (uavIndex == null) {
+      releaseTexture(texture);
+      return null;
+    }
+    D3d12Arena.using(_library.allocator, (D3d12Arena arena) {
+      final Pointer<D3d12UnorderedAccessViewDesc> view =
+          arena<D3d12UnorderedAccessViewDesc>(
+              sizeOf<D3d12UnorderedAccessViewDesc>());
+      view.ref
+        ..format = dxgiFormatR32Float
+        ..viewDimension = d3d12UavDimensionTexture2d
+        ..mipSlice = 0
+        ..planeSlice = 0;
+      _device.createUnorderedAccessView(
+        _device.pointer,
+        texture._resource,
+        nullptr,
+        view,
+        _srvHeap.cpuHandleStart + uavIndex * _srvStride,
+      );
+    });
+    return D3d12ComputeCoverageTexture._(texture, uavIndex);
+  }
+
+  /// Releases a coverage texture and both of its descriptors.
+  void releaseComputeCoverageTexture(D3d12ComputeCoverageTexture coverage) {
+    // The UAV slot first, and pointed at the placeholder rather than left
+    // dangling, for the reason releaseTexture gives about the SRV one.
+    if (!_state.isLost) _pointAtPlaceholder(coverage.unorderedAccessIndex);
+    _freeSrv.add(coverage.unorderedAccessIndex);
+    releaseTexture(coverage.texture);
+  }
+
+  /// Moves [texture] into [state] on the open command list.
+  ///
+  /// Public for the compute-tile driver, which owns the only textures this
+  /// device does not transition in bulk - see [D3d12Texture._isUnorderedAccess].
+  void transitionTexture(D3d12Texture texture, int state) =>
+      _transition(texture, state);
 
   /// The underlying resource of [texture]. Device-to-target plumbing.
   Pointer<Void> resourceOf(D3d12Texture texture) => texture._resource;
@@ -1409,6 +1720,7 @@ final class D3d12RenderDevice
     var pending = 0;
     for (final D3d12Texture texture in _textures) {
       if (!texture._isRenderTarget &&
+          !texture._isUnorderedAccess &&
           texture._resourceState != d3d12ResourceStatePixelShaderResource) {
         pending++;
       }
@@ -1418,6 +1730,7 @@ final class D3d12RenderDevice
     var index = 0;
     for (final D3d12Texture texture in _textures) {
       if (texture._isRenderTarget ||
+          texture._isUnorderedAccess ||
           texture._resourceState == d3d12ResourceStatePixelShaderResource) {
         continue;
       }
@@ -1557,6 +1870,7 @@ final class D3d12RenderDevice
     int? clearColor, {
     required int renderTargetView,
     int firstBatch = 0,
+    int? endBatch,
   }) {
     if (_state.isLost || !_frames.isRecording) return false;
     final D3d12GraphicsCommandList list = _frames.list;
@@ -1576,7 +1890,12 @@ final class D3d12RenderDevice
           list.pointer, renderTargetView, _clearColor, 0, nullptr);
     }
 
-    final int batchCount = batcher.batchCount;
+    // A half-open upper bound, so an experimental vector command can be drawn
+    // *between* two dense batches instead of after all of them. Null means "to
+    // the end", which is what every caller that has no vector work passes.
+    final int batchCount = endBatch == null
+        ? batcher.batchCount
+        : (endBatch < batcher.batchCount ? endBatch : batcher.batchCount);
     if (batchCount <= firstBatch) return true;
 
     if (!_uploadGeometry(batcher)) return false;
@@ -1682,6 +2001,212 @@ final class D3d12RenderDevice
     return true;
   }
 
+  /// Explicit sparse-strip submission seam.
+  ///
+  /// The display-list renderer does not call this method, and that is the whole
+  /// shape of the opt-in: a caller has to open the device with
+  /// `enableExperimentalSparseStrips: true` and then hand over a plan, so the
+  /// established dense atlas path stays the default even on hardware that
+  /// would run this faster.
+  ///
+  /// The command list must already be open and [renderTargetView] must already
+  /// be in `RENDER_TARGET` state, exactly as [submit] requires - and for the
+  /// same reason: only the caller knows whether the resource came from a swap
+  /// chain or is its own texture.
+  SparseD3d12ExecutionStats submitSparseStrips(
+    SparseStripDrawPlan plan, {
+    required List<SparseD3d12Material> materials,
+    required int viewportWidth,
+    required int viewportHeight,
+    required int renderTargetView,
+  }) {
+    throwIfDisposed();
+    final SparseD3d12Executor? executor = _sparseExecutor;
+    if (executor == null) {
+      throw StateError(
+        'sparse strips are disabled; open the Direct3D 12 device with '
+        'enableExperimentalSparseStrips: true',
+      );
+    }
+    if (_state.isLost) {
+      throw StateError('the Direct3D 12 device is lost');
+    }
+    if (!_frames.isRecording) {
+      throw StateError(
+        'no Direct3D 12 command list is open for a sparse-strip submission',
+      );
+    }
+    _rtvSlot.value = renderTargetView;
+    _frames.list
+        .omSetRenderTargets(_frames.list.pointer, 1, _rtvSlot, 0, nullptr);
+    final SparseD3d12ExecutionStats stats = executor.submit(
+      plan,
+      materials: materials,
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight,
+    );
+    // The sparse pass replaced the root signature, the pipeline state, the
+    // topology and the scissor. A dense range issued after it re-sends all of
+    // them at the top of `submit`, but the redundant-state filter would still
+    // believe its own record, so it is invalidated here rather than there.
+    _drawState.reset();
+    return stats;
+  }
+
+  /// Explicit compute-tile submission seam.
+  ///
+  /// Opt-in exactly like [submitSparseStrips], and additionally *outside* a
+  /// frame: this pass opens its own command list and waits for the GPU, because
+  /// it ends by reading the coverage buffer on the CPU. See the library comment
+  /// of `d3d12_compute_tile_driver.dart`.
+  /// Rasterises [plan] with the tile shader and **composites it into the render
+  /// target**, in draw order, inside the caller's open command list.
+  ///
+  /// This is the pass that makes approach D produce pixels. Per draw:
+  ///
+  ///   1. the coverage texture is moved into `UNORDERED_ACCESS`;
+  ///   2. one dispatch writes that draw's coverage into it - and only that
+  ///      draw's, which is what keeps two overlapping promoted paths from
+  ///      reading each other's coverage;
+  ///   3. it is moved into `PIXEL_SHADER_RESOURCE`, which is also the
+  ///      synchronisation the read needs: a transition out of
+  ///      `UNORDERED_ACCESS` is ordered after every write the dispatch issued,
+  ///      so no separate UAV barrier is required;
+  ///   4. a single quad over the draw's pixel bounds is composited through the
+  ///      sparse pipeline, with the draw's material and blend.
+  ///
+  /// The texture is never cleared between draws, and that is safe rather than
+  /// lucky: step 4 draws exactly the rectangle step 2 promises to have written
+  /// every pixel of. See [ComputeTileD3d12Executor.dispatchDrawCoverage].
+  ///
+  /// The command list must already be recording and [renderTargetView] must
+  /// already be in `RENDER_TARGET` state, exactly as [submit] requires.
+  int submitComputeTilesComposited(
+    ComputeTilePlan plan, {
+    required List<SparseD3d12Material> materials,
+    required int viewportWidth,
+    required int viewportHeight,
+    required int renderTargetView,
+    int sampleGrid = 4,
+  }) {
+    throwIfDisposed();
+    final ComputeTileD3d12Executor? compute = _computeTileExecutor;
+    final SparseD3d12Executor? sparse = _sparseExecutor;
+    if (compute == null) {
+      throw StateError(
+        'compute tiles are disabled; open the Direct3D 12 device with '
+        'enableExperimentalComputeTiles: true',
+      );
+    }
+    if (sparse == null) {
+      throw StateError(
+        'the compute composition quad is drawn by the sparse pipeline, which '
+        'is not built on this device',
+      );
+    }
+    if (_state.isLost) throw StateError('the Direct3D 12 device is lost');
+    if (!_frames.isRecording) {
+      throw StateError(
+        'no Direct3D 12 command list is open for a compute composition',
+      );
+    }
+    if (plan.drawCount == 0 || plan.commandCount == 0) return 0;
+
+    final D3d12ComputeCoverageTexture coverage =
+        _ensureComputeCoverage(viewportWidth, viewportHeight);
+
+    _rtvSlot.value = renderTargetView;
+    _frames.list
+        .omSetRenderTargets(_frames.list.pointer, 1, _rtvSlot, 0, nullptr);
+
+    var composed = 0;
+    for (var draw = 0; draw < plan.drawCount; draw++) {
+      if (draw >= materials.length) {
+        throw RangeError.range(draw, 0, materials.length - 1, 'materialIndex');
+      }
+      _transition(coverage.texture, d3d12ResourceStateUnorderedAccess);
+      final ComputeTileCompositeRect? rect = compute.dispatchDrawCoverage(
+        plan,
+        draw: draw,
+        coverageDescriptorIndex: coverage.unorderedAccessIndex,
+        sampleGrid: sampleGrid,
+      );
+      if (rect == null) continue;
+      _transition(coverage.texture, d3d12ResourceStatePixelShaderResource);
+      sparse.submitCoverageQuad(
+        coverageTexture: coverage.texture.id,
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        material: materials[draw],
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+      );
+      composed++;
+    }
+    _drawState.reset();
+    return composed;
+  }
+
+  /// The coverage texture, grown to the largest surface this device has
+  /// composed into and reused after that.
+  ///
+  /// Grown rather than resized to fit exactly: a target that shrinks by a pixel
+  /// would otherwise reallocate a full-surface texture and wait for the GPU to
+  /// be idle, mid-frame.
+  D3d12ComputeCoverageTexture _ensureComputeCoverage(int width, int height) {
+    final D3d12ComputeCoverageTexture? existing = _computeCoverage;
+    if (existing != null &&
+        existing.width >= width &&
+        existing.height >= height) {
+      return existing;
+    }
+    final int newWidth = existing == null || width > existing.width
+        ? width
+        : existing.width;
+    final int newHeight = existing == null || height > existing.height
+        ? height
+        : existing.height;
+    if (existing != null) {
+      // The GPU may still be reading it. Nothing else here is in flight during
+      // a resize - a target resize already waited - but the ring's idle wait is
+      // the only honest answer to "is anybody still using this".
+      _frames.waitIdle();
+      releaseComputeCoverageTexture(existing);
+      _computeCoverage = null;
+    }
+    final D3d12ComputeCoverageTexture? created =
+        createComputeCoverageTexture(newWidth, newHeight);
+    if (created == null) {
+      throw UnsupportedCapabilityError(
+        backendName: backendName,
+        capability: Capability.gpuPresentation,
+        detail: 'a ${newWidth}x$newHeight R32_FLOAT compute coverage texture '
+            'could not be created; approach D has nowhere to write',
+      );
+    }
+    return _computeCoverage = created;
+  }
+
+  ComputeTileCoverage submitComputeTiles(
+    ComputeTilePlan plan, {
+    int sampleGrid = 4,
+  }) {
+    throwIfDisposed();
+    final ComputeTileD3d12Executor? executor = _computeTileExecutor;
+    if (executor == null) {
+      throw StateError(
+        'compute tiles are disabled; open the Direct3D 12 device with '
+        'enableExperimentalComputeTiles: true',
+      );
+    }
+    if (_state.isLost) {
+      throw StateError('the Direct3D 12 device is lost');
+    }
+    return executor.submit(plan, sampleGrid: sampleGrid);
+  }
+
   int _samplerFor(int textureIndex) =>
       textureIndex >= 0 && textureIndex < kTextureCapacity
           ? _samplers[textureIndex]
@@ -1739,6 +2264,35 @@ final class D3d12RenderDevice
   @override
   void onDispose() {
     _frames.waitIdle();
+    // Before the textures, because the executor hands its alpha pages back
+    // through releaseTexture and a page released twice is a double release.
+    final SparseD3d12Executor? sparse = _sparseExecutor;
+    if (sparse != null && !sparse.isDisposed) {
+      if (_state.isLost) {
+        sparse.disposeAfterDeviceLoss();
+      } else {
+        sparse.dispose();
+      }
+    }
+    _sparseExecutor = null;
+    _sparseDriver?.dispose();
+    _sparseDriver = null;
+    final ComputeTileD3d12Executor? compute = _computeTileExecutor;
+    if (compute != null && !compute.isDisposed) {
+      if (_state.isLost) {
+        compute.disposeAfterDeviceLoss();
+      } else {
+        compute.dispose();
+      }
+    }
+    _computeTileExecutor = null;
+    _computeTileDriver?.dispose();
+    _computeTileDriver = null;
+    final D3d12ComputeCoverageTexture? coverage = _computeCoverage;
+    _computeCoverage = null;
+    if (coverage != null && !_state.isLost) {
+      releaseComputeCoverageTexture(coverage);
+    }
     for (final D3d12Texture texture in _textures.toList()) {
       texture._released = true;
       ComObject(texture._resource).release();

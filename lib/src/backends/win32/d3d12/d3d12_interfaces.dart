@@ -101,6 +101,18 @@ final class D3d12Device {
                     Pointer<D3d12GraphicsPipelineStateDesc>,
                     Pointer<Guid>,
                     Pointer<Pointer<Void>>)>(),
+        createComputePipelineState = comMethod<
+                Int32 Function(
+                    Pointer<Void>,
+                    Pointer<D3d12ComputePipelineStateDesc>,
+                    Pointer<Guid>,
+                    Pointer<Pointer<Void>>)>(pointer, 11)
+            .asFunction<
+                int Function(
+                    Pointer<Void>,
+                    Pointer<D3d12ComputePipelineStateDesc>,
+                    Pointer<Guid>,
+                    Pointer<Pointer<Void>>)>(),
         createCommandList = comMethod<
                 Int32 Function(
                     Pointer<Void>,
@@ -134,6 +146,20 @@ final class D3d12Device {
             .asFunction<
                 void Function(Pointer<Void>, Pointer<Void>,
                     Pointer<D3d12ShaderResourceViewDesc>, int)>(),
+        createUnorderedAccessView = comMethod<
+                Void Function(
+                    Pointer<Void>,
+                    Pointer<Void>,
+                    Pointer<Void>,
+                    Pointer<D3d12UnorderedAccessViewDesc>,
+                    IntPtr)>(pointer, 19)
+            .asFunction<
+                void Function(
+                    Pointer<Void>,
+                    Pointer<Void>,
+                    Pointer<Void>,
+                    Pointer<D3d12UnorderedAccessViewDesc>,
+                    int)>(),
         createRenderTargetView = comMethod<
                 Void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>,
                     IntPtr)>(pointer, 20)
@@ -178,6 +204,14 @@ final class D3d12Device {
       createCommandAllocator;
   final int Function(Pointer<Void>, Pointer<D3d12GraphicsPipelineStateDesc>,
       Pointer<Guid>, Pointer<Pointer<Void>>) createGraphicsPipelineState;
+
+  /// The compute half of pipeline creation, slot 11.
+  ///
+  /// A separate call and not a flag on the graphics one: a compute pipeline
+  /// has no input layout, no blend state and no render target, so there is no
+  /// description they could share.
+  final int Function(Pointer<Void>, Pointer<D3d12ComputePipelineStateDesc>,
+      Pointer<Guid>, Pointer<Pointer<Void>>) createComputePipelineState;
   final int Function(Pointer<Void>, int, int, Pointer<Void>, Pointer<Void>,
       Pointer<Guid>, Pointer<Pointer<Void>>) createCommandList;
   final int Function(Pointer<Void>, Pointer<D3d12DescriptorHeapDesc>,
@@ -187,6 +221,11 @@ final class D3d12Device {
       Pointer<Pointer<Void>>) createRootSignature;
   final void Function(Pointer<Void>, Pointer<Void>,
       Pointer<D3d12ShaderResourceViewDesc>, int) createShaderResourceView;
+
+  /// Slot 19. The second argument is the *counter* resource, which is only for
+  /// an append/consume buffer and is null for every view this backend creates.
+  final void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>,
+      Pointer<D3d12UnorderedAccessViewDesc>, int) createUnorderedAccessView;
   final void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>, int)
       createRenderTargetView;
   final int Function(
@@ -278,11 +317,25 @@ final class D3d12GraphicsCommandList {
                     Pointer<Void>, Pointer<Void>, Pointer<Void>)>(pointer, 10)
             .asFunction<
                 int Function(Pointer<Void>, Pointer<Void>, Pointer<Void>)>(),
+        drawInstanced = comMethod<
+                Void Function(Pointer<Void>, Uint32, Uint32, Uint32,
+                    Uint32)>(pointer, 12)
+            .asFunction<void Function(Pointer<Void>, int, int, int, int)>(),
         drawIndexedInstanced = comMethod<
                 Void Function(Pointer<Void>, Uint32, Uint32, Uint32, Int32,
                     Uint32)>(pointer, 13)
             .asFunction<
                 void Function(Pointer<Void>, int, int, int, int, int)>(),
+        dispatch =
+            comMethod<Void Function(Pointer<Void>, Uint32, Uint32, Uint32)>(
+                    pointer, 14)
+                .asFunction<void Function(Pointer<Void>, int, int, int)>(),
+        copyBufferRegion = comMethod<
+                Void Function(Pointer<Void>, Pointer<Void>, Uint64,
+                    Pointer<Void>, Uint64, Uint64)>(pointer, 15)
+            .asFunction<
+                void Function(Pointer<Void>, Pointer<Void>, int, Pointer<Void>,
+                    int, int)>(),
         copyTextureRegion = comMethod<
                 Void Function(
                     Pointer<Void>,
@@ -328,17 +381,34 @@ final class D3d12GraphicsCommandList {
                     Pointer<Void>, Uint32, Pointer<Pointer<Void>>)>(pointer, 28)
             .asFunction<
                 void Function(Pointer<Void>, int, Pointer<Pointer<Void>>)>(),
+        setComputeRootSignature =
+            comMethod<Void Function(Pointer<Void>, Pointer<Void>)>(pointer, 29)
+                .asFunction<void Function(Pointer<Void>, Pointer<Void>)>(),
         setGraphicsRootSignature =
             comMethod<Void Function(Pointer<Void>, Pointer<Void>)>(pointer, 30)
                 .asFunction<void Function(Pointer<Void>, Pointer<Void>)>(),
+        setComputeRootDescriptorTable =
+            comMethod<Void Function(Pointer<Void>, Uint32, Uint64)>(pointer, 31)
+                .asFunction<void Function(Pointer<Void>, int, int)>(),
         setGraphicsRootDescriptorTable =
             comMethod<Void Function(Pointer<Void>, Uint32, Uint64)>(pointer, 32)
                 .asFunction<void Function(Pointer<Void>, int, int)>(),
+        setComputeRoot32BitConstants = comMethod<
+                Void Function(Pointer<Void>, Uint32, Uint32, Pointer<Void>,
+                    Uint32)>(pointer, 35)
+            .asFunction<
+                void Function(Pointer<Void>, int, int, Pointer<Void>, int)>(),
         setGraphicsRoot32BitConstants = comMethod<
                 Void Function(Pointer<Void>, Uint32, Uint32, Pointer<Void>,
                     Uint32)>(pointer, 36)
             .asFunction<
                 void Function(Pointer<Void>, int, int, Pointer<Void>, int)>(),
+        setComputeRootShaderResourceView =
+            comMethod<Void Function(Pointer<Void>, Uint32, Uint64)>(pointer, 39)
+                .asFunction<void Function(Pointer<Void>, int, int)>(),
+        setComputeRootUnorderedAccessView =
+            comMethod<Void Function(Pointer<Void>, Uint32, Uint64)>(pointer, 41)
+                .asFunction<void Function(Pointer<Void>, int, int)>(),
         iaSetIndexBuffer = comMethod<
                 Void Function(
                     Pointer<Void>, Pointer<D3d12IndexBufferView>)>(pointer, 43)
@@ -367,8 +437,28 @@ final class D3d12GraphicsCommandList {
 
   final int Function(Pointer<Void>) close;
   final int Function(Pointer<Void>, Pointer<Void>, Pointer<Void>) reset;
+
+  /// `DrawInstanced(VertexCountPerInstance, InstanceCount,
+  /// StartVertexLocation, StartInstanceLocation)`.
+  ///
+  /// The last argument is the one core OpenGL 3.3 does not have, and it is why
+  /// the sparse-strip executor here issues one draw per command instead of
+  /// re-pointing a vertex attribute before each of them: it offsets the
+  /// per-instance fetch, which is exactly what a base-instance draw is for.
+  final void Function(Pointer<Void>, int, int, int, int) drawInstanced;
   final void Function(Pointer<Void>, int, int, int, int, int)
       drawIndexedInstanced;
+
+  /// `Dispatch(ThreadGroupCountX, Y, Z)`. Legal on a direct queue: a direct
+  /// command list supports compute as well as graphics, so the compute tile
+  /// pass needs no second queue and no second allocator ring.
+  final void Function(Pointer<Void>, int, int, int) dispatch;
+
+  /// `CopyBufferRegion(dst, dstOffset, src, srcOffset, bytes)`. How a
+  /// default-heap UAV result reaches a readback buffer the CPU can map.
+  final void Function(
+          Pointer<Void>, Pointer<Void>, int, Pointer<Void>, int, int)
+      copyBufferRegion;
   final void Function(
       Pointer<Void>,
       Pointer<D3d12TextureCopyLocation>,
@@ -386,10 +476,21 @@ final class D3d12GraphicsCommandList {
       resourceBarrier;
   final void Function(Pointer<Void>, int, Pointer<Pointer<Void>>)
       setDescriptorHeaps;
+  final void Function(Pointer<Void>, Pointer<Void>) setComputeRootSignature;
   final void Function(Pointer<Void>, Pointer<Void>) setGraphicsRootSignature;
+  final void Function(Pointer<Void>, int, int) setComputeRootDescriptorTable;
   final void Function(Pointer<Void>, int, int) setGraphicsRootDescriptorTable;
   final void Function(Pointer<Void>, int, int, Pointer<Void>, int)
+      setComputeRoot32BitConstants;
+  final void Function(Pointer<Void>, int, int, Pointer<Void>, int)
       setGraphicsRoot32BitConstants;
+
+  /// Root descriptors: a GPU virtual address in the root signature rather than
+  /// an index into a descriptor heap. Raw and structured buffers only.
+  final void Function(Pointer<Void>, int, int)
+      setComputeRootShaderResourceView;
+  final void Function(Pointer<Void>, int, int)
+      setComputeRootUnorderedAccessView;
   final void Function(Pointer<Void>, Pointer<D3d12IndexBufferView>)
       iaSetIndexBuffer;
   final void Function(Pointer<Void>, int, int, Pointer<D3d12VertexBufferView>)

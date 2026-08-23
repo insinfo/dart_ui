@@ -423,7 +423,8 @@ test('the side buttons press and release', () async {
 | `WM_SHOWWINDOW` | Não há evento de visibilidade no contrato; `hide()` também não emite nada. |
 | `WM_UNICHAR` | O protocolo pede responder TRUE a `UNICODE_NOCHAR`; o `DefWindowProcW` responde FALSE e quem envia cai de volta em `WM_CHAR`, que é tratada. É por isso que nada quebra. |
 | `WM_POWERBROADCAST`, `WM_INPUTLANGCHANGE`, `WM_GETDPISCALEDSIZE` | Sem consequência aqui: retomada de suspensão invalida a janela e vira `WM_PAINT`; o texto vem do `WM_CHAR` já traduzido pelo layout; e responder FALSE ao `WM_GETDPISCALEDSIZE` pede escala linear, que é o certo para um layout independente de escala. |
-| `WM_IME_*`, `WM_DROPFILES`, `WM_GETOBJECT`, `WM_POINTER*` / `WM_TOUCH` | Adiadas pelo roteiro (13.7, 13.9, 13.16 e Pointer API) e declaradas ausentes no `probe()`, que é a diferença entre uma lacuna e uma mentira. |
+| `WM_DROPFILES`, `WM_POINTER*` / `WM_TOUCH` | Adiadas pelo roteiro (13.9 e Pointer API) e declaradas ausentes no `probe()`, que é a diferença entre uma lacuna e uma mentira. |
+| `WM_IME_REQUEST` | **Tratada como "não é minha"**, e a consequência tem nome: `IMR_DOCUMENTFEED` é como um IME IMM32 obtém o texto ao redor do cursor para conversão contextual, e `IMR_RECONVERTSTRING` é reconversão. Nenhuma das duas é respondida, então `TextInputBackend.usesSurroundingText` reporta `false` no Win32 e um IME japonês converte cada frase sem saber o que veio antes. É uma lacuna real, não um esquecimento. |
 
 ### Não tratadas de propósito
 
@@ -588,9 +589,70 @@ porque um placeholder é exatamente o tipo de coisa que vira permanente.
 **Do texto:** COLR/CPAL, CBDT e sbix (emoji colorido), fontes variáveis
 (`fvar`/`gvar`/`avar`), shaping índico/USE, escrita vertical CJK, `BASE`, e
 hinting de CFF — os parâmetros de hint são parseados e nunca aplicados, então
-texto CFF sai sem hinting em todo tamanho. IME nativo não existe em nenhum
-backend; o contrato (`TextEditingValue.composing`) está pronto e documentado
-por plataforma.
+texto CFF sai sem hinting em todo tamanho.
+
+## Composição de texto (IME), por plataforma
+
+O contrato é `lib/src/platform/text_input.dart`: `TextInputClient` é o campo em
+que o método de entrada compõe, `TextInputConnection` é a associação viva com
+uma janela, e `TextInputBackend` é o que cada plataforma implementa. Segue a
+forma do porte de drag-and-drop, inclusive nas assimetrias — que estão
+modeladas, não suavizadas.
+
+| | Win32 (IMM32) | Wayland (`zwp_text_input_v3`) | X11 | headless / web |
+| --- | --- | --- | --- | --- |
+| pré-edição | sim, desenhada pelo framework | sim | **não** | não |
+| estilo por cláusula | sim (`GCS_COMPATTR`) | **não existe no v3** | — | — |
+| texto ao redor | **não** (`WM_IME_REQUEST` não respondida) | sim | — | — |
+| `delete_surrounding_text` | não existe no protocolo | sim | — | — |
+| retângulo do cursor | `ImmSetCandidateWindow` | `set_cursor_rectangle` | — | — |
+| teclas mortas | o SO compõe (`WM_DEADCHAR` → `WM_CHAR`) | tabela Compose do X11, quando não há IME | — | o navegador compõe |
+| `Capability.textComposition` | quando `imm32` carrega | quando o compositor anuncia o protocolo | nunca | nunca |
+
+Três consequências que valem repetir porque cada uma já foi bug em algum
+toolkit:
+
+* **O `serial` do `done` do Wayland é uma contagem de `commit`s**, não um token.
+  Um `done` atrasado descreve um estado que o cliente já substituiu, e o
+  `delete_surrounding_text` dele está medido em bytes contra um texto ao redor
+  que não vale mais. `WaylandTextInputManager` descarta a deleção e aplica as
+  strings, que são absolutas. Errar isso parece um IME que come uma letra de
+  vez em quando.
+* **`ImmGetCompositionStringW` só vale dentro do `WM_IME_COMPOSITION`.** O
+  bridge Win32 lê tudo dentro do `WndProc` e empurra um valor imutável para
+  cima; nada devolve acessor preguiçoso e nada faz `await`.
+* **A pré-edição não entra em `set_surrounding_text`.** Os caracteres
+  provisórios são do método de entrada, não do documento; devolvê-los faz o
+  método ver a própria saída como contexto e no Wayland é violação de
+  protocolo.
+
+### X11: a decisão, com a evidência
+
+**O backend X11 não ganha IME, e a razão não é XIM ser caro — é que não há
+teclado.** `x11_events.dart` consome `xcbKeyPress`/`xcbKeyRelease` e os
+descarta; o backend não emite `KeyEvent` nem `TextInputEvent`, e
+`x11_backend.dart` nem reivindica `Capability.keyboardInput`. Compor teclas que
+nunca chegam seria construir o telhado antes das paredes.
+
+XIM sobre o protocolo cru continua caro e frágil pelos motivos de sempre — é um
+protocolo próprio sobre `ClientMessage` e propriedades, com negociação de
+ordem de bytes e um servidor externo que pode morrer no meio —, mas isso é
+secundário: a dependência que falta é `libxkbcommon` (ou equivalente) para
+`xkb_state_key_get_utf8`, que é o que produz o primeiro caractere.
+
+O que **foi** feito, porque é a metade útil e serve às duas plataformas:
+`lib/src/platform/compose_sequences.dart` lê as tabelas Compose do próprio X11
+(`$XCOMPOSEFILE`, `~/.XCompose`, `/usr/share/X11/locale/<locale>/Compose`,
+com `include` e `%L`/`%H`/`%S`) e resolve teclas mortas. **Está ligado no
+Wayland**, onde o teclado existe e o `wl_keyboard` entrega keysyms sem compor,
+e só quando o compositor **não** oferece `zwp_text_input_v3` — rodar os dois
+aplicaria o acento duas vezes. No X11 a tabela fica disponível e desligada até
+o teclado existir.
+
+**Fica de fora no X11, explicitamente:** CJK (chinês, japonês, coreano),
+qualquer pré-edição, e a acentuação por tecla morta — esta última só até o
+teclado XKB do backend chegar, quando é ligar o `ComposeEngine` no mesmo ponto
+em que o Wayland liga.
 
 **Do layout:** Grid, Wrap, medição intrínseca, baselines, `PaintContext`,
 repaint boundaries e damage tracking. O `flushPaint` ainda repercorre a árvore

@@ -129,6 +129,15 @@ const int glDrawFramebufferBinding = 0x8CA6;
 const int glColorAttachment0 = 0x8CE0;
 const int glStencilAttachment = 0x8D20;
 const int glFramebufferAttachmentStencilSize = 0x8217;
+
+/// `GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE`, and the only attachment query that
+/// is legal before you know whether the attachment exists. See
+/// `gl_stencil_cover_driver.dart`: asking for a size on a `GL_NONE` attachment
+/// raises `GL_INVALID_OPERATION`, and a GL error is sticky.
+const int glFramebufferAttachmentObjectType = 0x8CD0;
+
+/// `GL_NONE`, the object type of an attachment that is not present.
+const int glNone = 0;
 const int glFramebufferComplete = 0x8CD5;
 const int glRenderbuffer = 0x8D41;
 const int glStencilIndex8 = 0x8D48;

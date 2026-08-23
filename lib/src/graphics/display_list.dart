@@ -35,6 +35,7 @@ library;
 
 import 'dart:typed_data';
 
+import 'content_hint.dart';
 import 'display_list_opcodes.dart';
 import 'gradient.dart';
 
@@ -77,6 +78,15 @@ final class DisplayList {
   /// first time a hash is seen, so a frame that reuses last frame's palette
   /// pays nothing after the first few commands.
   final Map<int, List<int>> _paintBuckets = <int, List<int>>{};
+
+  // Content hints. See [pushContentHint] for why they are a side table and
+  // not an opcode.
+  Uint32List _hintStarts = Uint32List(4);
+  Uint32List _hintValues = Uint32List(4);
+  int _hintSpanCount = 0;
+  Uint32List _hintStack = Uint32List(8);
+  int _hintDepth = 0;
+  ContentHintSpans? _hintView;
 
   final List<Object> _paths = <Object>[];
   final Map<Object, int> _pathIds = <Object, int>{};
@@ -149,6 +159,8 @@ final class DisplayList {
     _fontIds.clear();
     _gradients.clear();
     _gradientIds.clear();
+    _hintSpanCount = 0;
+    _hintDepth = 0;
   }
 
   // ---------------------------------------------------------------------
@@ -337,6 +349,111 @@ final class DisplayList {
       throw RangeError.index(id, this, 'paintId', 'no such paint', _paintCount);
     }
     return id;
+  }
+
+  // ---------------------------------------------------------------------
+  // Content hints
+  // ---------------------------------------------------------------------
+
+  /// The hint side table, for a replayer that wants to read it.
+  ///
+  /// One object for the life of the list rather than one per frame, because
+  /// [reset] keeps the arena and so does this.
+  ContentHintSpans get contentHints =>
+      _hintView ??= _DisplayListContentHints(this);
+
+  /// True when anything was ever declared. The cheap test a replayer uses to
+  /// skip hint bookkeeping altogether.
+  bool get hasContentHints => _hintSpanCount > 0;
+
+  /// Open push/pop pairs. Exposed so a caller can assert its own balance;
+  /// [reset] returns it to zero.
+  int get contentHintDepth => _hintDepth;
+
+  /// Declares [hint] over every command encoded until the matching
+  /// [popContentHint].
+  ///
+  /// ## Why this is not an opcode
+  ///
+  /// It was the first design and it is the wrong one. An opcode pair would
+  /// change the wire format, which means a reader change, a debug-dump change
+  /// and - decisively - a new method on `RasterSink`, an
+  /// `abstract interface class` that six sinks in this repository implement.
+  /// Every one of them would have to acquire a body for a command that says
+  /// nothing about pixels.
+  ///
+  /// Worse, it would put advice *in* the stream that defines the picture. The
+  /// contract in `content_hint.dart` is that a wrong hint can never change the
+  /// image, and the strongest possible form of that promise is that the bytes
+  /// which describe the image do not move: the op and float streams a hinted
+  /// subtree produces are identical, word for word, to the ones it produces
+  /// unhinted. A side table gives that by construction rather than by
+  /// discipline, and `test/graphics/content_hint_test.dart` asserts it.
+  ///
+  /// The table is a run-length encoding over word offsets: each entry is the
+  /// op-stream offset at which a hint took effect, and it stays in effect
+  /// until the next entry. A pair that encloses no commands, or that repeats
+  /// the value already in force, records nothing at all - so a tree full of
+  /// hints around empty subtrees still leaves `hasContentHints` false.
+  ///
+  /// Nesting resolves per field through [ContentHint.inheritFrom]: an inner
+  /// declaration overrides the outer one where it says something and inherits
+  /// it where it does not.
+  void pushContentHint(ContentHint hint) {
+    final ContentHint merged = _hintDepth == 0
+        ? hint
+        : hint.inheritFrom(ContentHint.unpack(_hintStack[_hintDepth - 1]));
+    if (_hintDepth == _hintStack.length) {
+      final Uint32List grown = Uint32List(_hintStack.length * 2);
+      grown.setRange(0, _hintDepth, _hintStack);
+      _hintStack = grown;
+      _bufferGrowths++;
+    }
+    _hintStack[_hintDepth++] = merged.packed;
+    _recordHint(merged.packed);
+  }
+
+  /// Closes the innermost [pushContentHint].
+  ///
+  /// Throws [StateError] on an unbalanced pop: a hint that leaked past its
+  /// subtree would advise the rest of the frame, and the symptom - some
+  /// unrelated widget picking a strange route - is a long way from the cause.
+  void popContentHint() {
+    if (_hintDepth == 0) {
+      throw StateError('popContentHint without a matching pushContentHint');
+    }
+    _hintDepth--;
+    _recordHint(_hintDepth == 0 ? 0 : _hintStack[_hintDepth - 1]);
+  }
+
+  void _recordHint(int packed) {
+    // A span that would start where the previous one starts covers no
+    // commands: overwrite instead of appending, so a push/pop pair around an
+    // empty subtree leaves no trace.
+    if (_hintSpanCount > 0 && _hintStarts[_hintSpanCount - 1] == _opLength) {
+      _hintValues[_hintSpanCount - 1] = packed;
+      final int previous =
+          _hintSpanCount > 1 ? _hintValues[_hintSpanCount - 2] : 0;
+      if (previous == packed) _hintSpanCount--;
+      return;
+    }
+    if (_hintSpanCount == 0
+        ? packed == 0
+        : _hintValues[_hintSpanCount - 1] == packed) {
+      return;
+    }
+    if (_hintSpanCount == _hintStarts.length) {
+      final Uint32List starts = Uint32List(_hintStarts.length * 2);
+      final Uint32List values = Uint32List(_hintValues.length * 2);
+      starts.setRange(0, _hintSpanCount, _hintStarts);
+      values.setRange(0, _hintSpanCount, _hintValues);
+      _hintStarts = starts;
+      _hintValues = values;
+      _bufferGrowths++;
+    }
+    _hintStarts[_hintSpanCount] = _opLength;
+    _hintValues[_hintSpanCount] = packed;
+    _hintSpanCount++;
   }
 
   // ---------------------------------------------------------------------
@@ -645,5 +762,39 @@ final class DisplayList {
       capacity *= 2;
     }
     return capacity;
+  }
+}
+
+/// The [ContentHintSpans] face of a [DisplayList].
+///
+/// Separate from the list so that the two accessors a replayer needs do not
+/// become two more names on the encoder's own surface, which is already the
+/// widest type in `graphics`.
+final class _DisplayListContentHints implements ContentHintSpans {
+  const _DisplayListContentHints(this._list);
+
+  final DisplayList _list;
+
+  @override
+  int get spanCount => _list._hintSpanCount;
+
+  @override
+  int spanStart(int index) => _list._hintStarts[_check(index)];
+
+  @override
+  ContentHint spanHint(int index) =>
+      ContentHint.unpack(_list._hintValues[_check(index)]);
+
+  int _check(int index) {
+    if (index < 0 || index >= _list._hintSpanCount) {
+      throw RangeError.index(
+        index,
+        this,
+        'index',
+        'no such hint span',
+        _list._hintSpanCount,
+      );
+    }
+    return index;
   }
 }

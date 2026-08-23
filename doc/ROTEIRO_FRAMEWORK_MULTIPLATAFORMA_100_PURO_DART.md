@@ -1478,25 +1478,49 @@ Não derivar texto apenas de keycode.
 
 Fases:
 
-1. suporte `WM_IME_*` com IMM32;
-2. composição, candidato e caret;
-3. integração com `TextInputClient`;
-4. evolução opcional para TSF.
+1. suporte `WM_IME_*` com IMM32 — **feito** (`lib/src/backends/win32/win32_ime.dart`);
+2. composição, candidato e caret — **feito**;
+3. integração com `TextInputClient` — **feito** (`RenderTextField` implementa o
+   contrato; `TextInputScope` publica o backend e a janela na árvore);
+4. evolução opcional para TSF — **não feita**, e continua opcional: IMM32 é a
+   camada de compatibilidade que o próprio TSF emula, e cobre composição,
+   candidatos e teclas mortas. O que só o TSF alcança é painel de escrita à mão
+   e ditado.
 
-Contrato comum:
+Contrato comum, como ficou em `lib/src/platform/text_input.dart` — mais próximo
+do esboço abaixo do que dele, com três diferenças que são achados e não gosto:
 
 ```dart
 abstract interface class TextInputClient {
-  TextEditingValue get value;
-  Rect get caretRect;
-  TextRange get composingRange;
+  TextInputConfiguration get textInputConfiguration;
+  ImeSurroundingText get surroundingText;  // sem a pré-edição dentro
+  Rect get caretRect;                      // coordenadas do cliente, lógicas
 
-  void updateEditingValue(TextEditingValue value);
+  void updateComposition(ImeComposition composition);
   void commitText(String text);
-  void setComposingRegion(TextRange range);
-  void deleteSurroundingText(int before, int after);
+  void deleteSurroundingText({required int beforeLength, required int afterLength});
 }
 ```
+
+1. **Não há `updateEditingValue` nem `setComposingRegion` separados.** Uma
+   `ImeComposition` carrega texto, cláusulas de estilo e o cursor *dentro* da
+   pré-edição de uma vez, porque as três só significam alguma coisa juntas —
+   é o mesmo argumento que fez `TextEditingValue` ser um valor e não três
+   campos.
+2. **`caretRect` é do cursor e em coordenadas do cliente**, não da tela. O
+   Wayland nunca informa a posição de uma surface no desktop, então um
+   retângulo de tela lá não é inconveniente: é inexprimível. E `CANDIDATEFORM`
+   do Win32 já é relativo ao cliente, então a conversão que se evitaria é
+   nenhuma nos dois lados.
+3. **`deleteSurroundingText` fica no contrato mesmo sem existir no Win32 nem no
+   XIM**, porque no Wayland ela não é opcional: um método que a pede e é
+   ignorado duplica os caracteres que queria substituir.
+
+O que **não** entrou, cada um com motivo: reconversão (`IMR_RECONVERTSTRING` só
+existe no Win32; um porte com uma implementação não é porte), desenhar a janela
+de candidatos (é da plataforma nas três), e "começar a compor" (nenhum dos três
+protocolos tem essa operação — a composição começa porque o usuário apertou uma
+tecla que o método reivindicou).
 
 Testar:
 
@@ -1789,7 +1813,7 @@ Regras:
 - [ ] DPI por monitor;
 - [ ] CPU/GDI;
 - [ ] mouse, teclado, pointer;
-- [ ] IME;
+- [x] IME (IMM32: composição, cláusulas, posicionamento de candidatos, cancelamento; `WM_IME_REQUEST`/`IMR_DOCUMENTFEED` **não** respondida, então o método não lê texto ao redor);
 - [ ] clipboard;
 - [ ] drag-and-drop;
 - [ ] cursor;
@@ -1905,10 +1929,35 @@ dart_ui_backend_x11/
 ├── x11_screens.dart
 ├── x11_cursor.dart
 ├── x11_shm_surface.dart
-├── x11_ime.dart
+├── x11_ime.dart          (não escrito — ver abaixo)
 ├── x11_accessibility.dart
 └── x11_diagnostics.dart
 ```
+
+### 15.2.1 IME no X11: decisão registrada
+
+`x11_ime.dart` **não foi escrito**, e a razão não é XIM ser caro — é que o
+backend X11 não tem teclado. `x11_events.dart` consome `xcbKeyPress` /
+`xcbKeyRelease` e os descarta; nenhum `KeyEvent` nem `TextInputEvent` sai daqui,
+e `x11_backend.dart` sequer reivindica `Capability.keyboardInput`. Compor teclas
+que nunca chegam seria o telhado antes das paredes. A dependência que falta é
+`libxkbcommon` para `xkb_state_key_get_utf8` (§15.7), não um servidor de método
+de entrada.
+
+Foi implementada a metade que serve às duas plataformas Linux:
+`lib/src/platform/compose_sequences.dart` lê as tabelas Compose do próprio X11
+(`$XCOMPOSEFILE`, `~/.XCompose`, `/usr/share/X11/locale/<locale>/Compose`, com
+`include` e as substituições `%L`/`%H`/`%S`) e resolve teclas mortas e a tecla
+Compose. Está **ligada no Wayland** — onde o teclado existe e o `wl_keyboard`
+entrega keysyms sem compor — e apenas quando o compositor não oferece
+`zwp_text_input_v3`, porque um método de entrada já compõe teclas mortas e rodar
+os dois aplicaria o acento duas vezes. No X11 a tabela existe e fica desligada
+até o teclado chegar; ligá-la depois é uma linha no mesmo ponto em que o Wayland
+a liga.
+
+**Fica de fora no X11, explicitamente:** CJK (chinês, japonês, coreano),
+qualquer pré-edição, e — até o teclado XKB existir — também a acentuação por
+tecla morta.
 
 ## 15.3 Conexão e setup
 
@@ -2429,7 +2478,7 @@ Criar interface comum e backend D-Bus. A primeira versão pode usar FFI para GIO
 - [ ] pointer/touch;
 - [ ] clipboard;
 - [ ] drag-and-drop;
-- [ ] text-input-v3;
+- [x] text-input-v3 (enable/disable, surrounding text, content type, cursor rectangle, commit com contagem de serial; preedit/commit/delete_surrounding aplicados na ordem do protocolo, com o `done` atrasado descartando só a deleção);
 - [ ] scaling inteiro/fracionário;
 - [ ] EGL ou Vulkan;
 - [ ] portais;

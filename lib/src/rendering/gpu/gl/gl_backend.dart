@@ -77,14 +77,21 @@ import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
 import '../gpu_device_state.dart';
 import '../gpu_glyph_atlas.dart';
+import '../gpu_gradient.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
+import '../gpu_path_repetition.dart';
+import '../gpu_path_strategy.dart';
 import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
+import '../gpu_vector_command_stream.dart';
+import '../gpu_vector_submission_cursor.dart';
+import '../vector/cpu_tessellation.dart';
 import '../vector/sparse_strip_draw_plan.dart';
 import '../vector/stencil_cover_draw_plan.dart';
+import '../vector/vector_plan_cache.dart';
 import 'gl_bindings.dart';
 import 'gl_context.dart';
 import 'gl_framebuffer_pool.dart';
@@ -94,6 +101,10 @@ import 'gl_sparse_executor.dart';
 import 'gl_stencil_cover_driver.dart';
 import 'gl_stencil_cover_executor.dart';
 import 'gl_surface_descriptor.dart';
+import 'gl_tessellated_driver.dart';
+import 'gl_tessellated_executor.dart';
+import 'gl_vector_path_recorder.dart';
+import 'gl_vector_replay.dart';
 import 'gl_window_target.dart';
 
 /// A texture object owned by a [GlRenderDevice].
@@ -191,6 +202,40 @@ abstract interface class GlRecoverableTarget {
 }
 
 /// An open GL context plus the objects every target shares.
+/// How hard this backend should try to use sparse strips.
+///
+/// ## Why a policy and not a boolean
+///
+/// Sparse strips stopped being an experiment when the cost rule that selects
+/// them was measured rather than guessed - see
+/// `GpuPathStrategySelector.sparseCrossingCostInDensePixels`. But "on by
+/// default" and "on because the caller asked" cannot be the same state, and
+/// the difference is what happens on a driver without instanced arrays:
+///
+///   * a caller who *asked* for sparse and cannot have it wants to hear so,
+///     loudly, because their reason for asking is now unmet;
+///   * a caller who asked for nothing wants a working renderer, and the
+///     absence of one optional route is not a reason to refuse the backend.
+///
+/// A boolean has to pick one of those and be wrong for the other. Before this
+/// existed the flag meant [required], so turning it on by default would have
+/// made a missing symbol fail the whole GL backend.
+enum GlSparseStripsPolicy {
+  /// Use sparse strips when the driver supports them, and quietly do without
+  /// when it does not. The default, and what production should want.
+  auto,
+
+  /// Never build the sparse executor. The kill switch: it exists so that a
+  /// regression traced to this route can be turned off without a rebuild of
+  /// the caller's expectations, and so a bisect has something to toggle.
+  disabled,
+
+  /// Build it or refuse the backend. For tests and for a caller measuring the
+  /// route specifically, where silently getting the dense path instead would
+  /// make the measurement meaningless.
+  required,
+}
+
 final class GlRenderDevice
     with DisposableMixin
     implements RenderDevice, GpuTextureAllocator, GpuRecoveryHost {
@@ -201,28 +246,42 @@ final class GlRenderDevice
     required RendererInfo info,
     required int maxTextureSize,
     required bool sparseStripsRequested,
+    required bool sparseStripsRequired,
     required bool stencilCoverRequested,
+    required bool cpuTessellationRequested,
   })  : _context = context,
         _gl = gl,
         _heap = heap,
         _info = info,
         _maxTextureSize = maxTextureSize,
         _sparseStripsRequested = sparseStripsRequested,
-        _stencilCoverRequested = stencilCoverRequested;
+        _sparseStripsRequired = sparseStripsRequired,
+        _stencilCoverRequested = stencilCoverRequested,
+        _cpuTessellationRequested = cpuTessellationRequested;
 
   final GlContext _context;
   final GlApi _gl;
   final NativeHeap _heap;
   final RendererInfo _info;
   final int _maxTextureSize;
-  final bool _sparseStripsRequested;
+  /// Whether the sparse executor should exist. Cleared when an *automatic*
+  /// attempt fails, which is what keeps a missing optimisation from becoming a
+  /// missing renderer.
+  bool _sparseStripsRequested;
+
+  /// Whether the caller demanded it. A required route that cannot be built is
+  /// an error; an automatic one is simply absent. See [GlSparseStripsPolicy].
+  final bool _sparseStripsRequired;
   final bool _stencilCoverRequested;
+  final bool _cpuTessellationRequested;
   final GpuDeviceState _state = GpuDeviceState();
 
   GlApiSparseDriver? _sparseDriver;
   SparseGlExecutor? _sparseExecutor;
   GlApiStencilCoverDriver? _stencilCoverDriver;
   StencilCoverGlExecutor? _stencilCoverExecutor;
+  GlApiTessellatedDriver? _tessellatedDriver;
+  TessellatedGlExecutor? _tessellatedExecutor;
 
   /// True only when the caller explicitly opted in and the current context
   /// exposed instancing plus the sparse uniforms used by the adapter.
@@ -232,6 +291,11 @@ final class GlRenderDevice
   /// GL symbols compiled successfully. Each submission still validates the
   /// stencil/MSAA attachments of the framebuffer it binds.
   bool get experimentalStencilCoverEnabled => _stencilCoverExecutor != null;
+
+  /// True only when retained CPU tessellation was explicitly requested.
+  /// Eligible aliased solid paths may then select it through ordered replay;
+  /// without the opt-in the display-list route remains byte-for-byte dense.
+  bool get experimentalCpuTessellationEnabled => _tessellatedExecutor != null;
 
   /// Queries the attachments of one currently selectable framebuffer.
   ///
@@ -375,6 +439,7 @@ final class GlRenderDevice
   void discardNativeResources() {
     _sparseExecutor?.discardNativeResources();
     _stencilCoverExecutor?.discardNativeResources();
+    _tessellatedExecutor?.discardNativeResources();
     _program = 0;
     _vao = 0;
     _vbo = 0;
@@ -453,13 +518,25 @@ final class GlRenderDevice
     }
     final BackendDiagnostic? sparseFailure = _initialiseSparseStrips();
     if (sparseFailure != null) {
-      _state.markLost(sparseFailure);
-      return sparseFailure;
+      if (_sparseStripsRequired) {
+        _state.markLost(sparseFailure);
+        return sparseFailure;
+      }
+      // Optional route, failed recovery: drop it and carry on with the dense
+      // atlas. Marking the device lost here would turn "this driver cannot
+      // rebuild an optimisation" into "this renderer cannot draw", which is
+      // exactly the regression turning sparse on by default must not cause.
+      _disableSparseStrips();
     }
     final BackendDiagnostic? stencilFailure = _initialiseStencilCover();
     if (stencilFailure != null) {
       _state.markLost(stencilFailure);
       return stencilFailure;
+    }
+    final BackendDiagnostic? tessellationFailure = _initialiseCpuTessellation();
+    if (tessellationFailure != null) {
+      _state.markLost(tessellationFailure);
+      return tessellationFailure;
     }
     _submissionsStopped = false;
     if (!wasLost) {
@@ -832,6 +909,7 @@ final class GlRenderDevice
           pass.rendersTopDown ? kYFlipTopDown : kYFlipDefault,
           state,
         );
+        _resolveLayerTarget(target);
       }
       // The caller bound its own framebuffer before calling and is entitled to
       // find it bound afterwards - it reads pixels back or swaps it next.
@@ -841,6 +919,248 @@ final class GlRenderDevice
     _gl.disable(glScissorTest);
     checkError('draw');
     return !_state.isLost;
+  }
+
+  /// Issues an incrementally snapshot mixed dense/vector command stream.
+  ///
+  /// This is the opt-in replay counterpart of [submit]. The stream has already
+  /// retained every experimental payload without native side effects, and the
+  /// cursor makes atlas-pressure submissions resumable: dense batches, vector
+  /// ordinals and offscreen clears are each issued once across snapshots.
+  bool submitOrderedPaths(
+    GpuBatcher batcher,
+    GpuVectorCommandStream<ReplayPaint, GlVectorPathPayload> stream,
+    GpuVectorSubmissionCursor cursor,
+    int surfaceWidth,
+    int surfaceHeight,
+    int? clearColor, {
+    int surfaceFramebuffer = 0,
+  }) {
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      return false;
+    }
+    if (!makeCurrentOrLose()) return false;
+
+    _gl
+      ..bindFramebuffer(glFramebuffer, surfaceFramebuffer)
+      ..viewport(0, 0, surfaceWidth, surfaceHeight)
+      ..disable(glDepthTest)
+      ..disable(glCullFace)
+      ..disable(glScissorTest);
+    if (clearColor != null) {
+      _gl
+        ..clearColor(
+          ((clearColor >> 16) & 0xFF) / 255.0,
+          ((clearColor >> 8) & 0xFF) / 255.0,
+          (clearColor & 0xFF) / 255.0,
+          ((clearColor >> 24) & 0xFF) / 255.0,
+        )
+        ..clear(glColorBufferBit);
+    }
+
+    if (batcher.batchCount > cursor.nextDenseBatch) {
+      _uploadGeometry(batcher);
+    }
+    final _DrawState denseState = _drawState..reset();
+    const GpuOrderedSubmissionWalker().submit(
+      stream: stream,
+      cursor: cursor,
+      beginPass: (pass, clearTarget) {
+        final int framebuffer = pass.target?.id ?? surfaceFramebuffer;
+        _gl
+          ..bindFramebuffer(glFramebuffer, framebuffer)
+          ..viewport(0, 0, pass.viewportWidth, pass.viewportHeight);
+        if (clearTarget) {
+          _gl
+            ..disable(glScissorTest)
+            ..clearColor(0, 0, 0, 0)
+            ..clear(glColorBufferBit);
+        }
+      },
+      submitDense: (pass, range) {
+        // Every experimental executor owns and then releases its program/VAO.
+        // Rebind the dense pipeline for each resumed range; _DrawState still
+        // avoids redundant texture/blend/mode changes within that range.
+        _gl
+          ..useProgram(_program)
+          ..uniform1i(_uniformTexture, 0)
+          ..activeTexture(glTexture0)
+          ..bindVertexArray(_vao)
+          ..enable(glBlend)
+          ..enable(glScissorTest);
+        _drawBatches(
+          batcher,
+          range.firstBatch,
+          range.endBatch,
+          pass.viewportWidth,
+          pass.viewportHeight,
+          pass.rendersTopDown ? kYFlipTopDown : kYFlipDefault,
+          denseState,
+        );
+      },
+      submitVector: (pass, command) {
+        final int framebuffer = pass.target?.id ?? surfaceFramebuffer;
+        final ReplayPaint paint = command.material;
+        final int yFlip = pass.rendersTopDown ? kYFlipTopDown : kYFlipDefault;
+        switch (command.payload) {
+          case GlSparsePathPayload(:final plan, :final gradient):
+            submitSparseStrips(
+              plan,
+              materials: <SparseGlMaterial>[
+                // A gradient carries its colour in the ramp, including alpha -
+                // the CPU replay reads the paint's own alpha channel for a
+                // gradient too, so modulating here as well would darken it
+                // twice. See `_CpuGradientShader` in `cpu_renderer.dart`.
+                if (gradient != null)
+                  SparseGlMaterial.gradient(
+                    gradientBinding: gradient.binding,
+                    gradientParameters: gradient.parameters,
+                    blendMode: paint.blendMode,
+                  )
+                else
+                  _solidMaterial(paint),
+              ],
+              viewportWidth: pass.viewportWidth,
+              viewportHeight: pass.viewportHeight,
+              yFlip: yFlip,
+              surfaceFramebuffer: framebuffer,
+            );
+          case GlTessellatedPathPayload(
+              :final mesh,
+              :final localToTarget,
+              :final clip,
+            ):
+            submitTessellatedPath(
+              mesh,
+              material: _tessellatedMaterial(paint),
+              viewportWidth: pass.viewportWidth,
+              viewportHeight: pass.viewportHeight,
+              yFlip: yFlip,
+              localToTarget: localToTarget,
+              clip: clip.intersect(command.effectiveTargetClip),
+              surfaceFramebuffer: framebuffer,
+            );
+          case GlStencilPathPayload(:final plan):
+            submitStencilCover(
+              plan,
+              materials: <StencilGlMaterial>[_stencilMaterial(paint)],
+              viewportWidth: pass.viewportWidth,
+              viewportHeight: pass.viewportHeight,
+              yFlip: yFlip,
+              surfaceFramebuffer: framebuffer,
+            );
+        }
+        denseState.reset();
+      },
+      endPass: (pass) => _resolveLayerTarget(pass.target),
+    );
+
+    _gl
+      ..bindFramebuffer(glFramebuffer, surfaceFramebuffer)
+      ..disable(glScissorTest);
+    if (checkError('ordered dense/vector draw')) return false;
+    return !_state.isLost;
+  }
+
+  /// Resolves a multisampled layer target so the composite can sample it.
+  ///
+  /// Called at the end of every pass that drew into a layer target, and a
+  /// no-op for the surface and for single-sample targets - which is every
+  /// layer target unless the stack's attachment policy asked for more.
+  ///
+  /// **Why the end of every pass and not the end of the layer.** A layer's
+  /// batches are not one contiguous run: a nested layer splits them, and a
+  /// mid-frame atlas flush splits them again. Resolving whenever a pass that
+  /// wrote into the target finishes is therefore the only placement that is
+  /// correct without tracking which pass was the last, and resolving twice is
+  /// harmless - the second blit copies the same finished pixels. What matters
+  /// is the ordering it guarantees: the composite quad that samples this
+  /// target belongs to the *parent's* pass, which is appended after this one,
+  /// so it can never be drawn before the resolve that feeds it.
+  void _resolveLayerTarget(GpuLayerTarget? target) {
+    if (target is! GlFramebuffer) return;
+    if (!target.attachments.isMultisampled) return;
+    _layerResolveCount++;
+    final GlFramebufferFactory factory = _resolveFactory;
+    if (factory is GlAttachmentFramebufferFactory) {
+      factory.resolveFramebuffer(target);
+    }
+  }
+
+  /// The factory used to resolve multisampled layer targets.
+  ///
+  /// The device does not own the layer pool - each target does - so this is
+  /// built once from the same GL entry points the pools use. Resolving through
+  /// the pool instead would mean the device holding a reference to whichever
+  /// target's pool happened to allocate the framebuffer.
+  late final GlFramebufferFactory _resolveFactory = GlDeviceFramebufferFactory(
+    gl: _gl,
+    scratchNames: scratchNames,
+    makeCurrent: makeCurrentOrLose,
+  );
+
+  /// Multisample resolves this device has issued for layer targets. Invisible
+  /// from the pixels - a missing one is - so a test asserts the count.
+  int get layerResolveCount => _layerResolveCount;
+  int _layerResolveCount = 0;
+
+  /// The paint's premultiplied colour, for a route with no gradient material.
+  ///
+  /// Approaches B and C hand the rasteriser geometry and one solid colour, so
+  /// a gradient reaching either of them would be drawn as its otherwise-unused
+  /// fallback colour. `GlVectorPathRecorder` refuses that combination before a
+  /// command is recorded, and `GlVectorReplay` never reports those routes as
+  /// capable for a gradient draw; this is the assertion that both held.
+  static (double, double, double, double) _premultipliedPaint(
+    ReplayPaint paint,
+  ) {
+    if (paint.gradient != null) {
+      throw UnsupportedError(
+        'ordered GL path replay requires a resolved gradient material; the '
+        'recorder must not accept a gradient paint for this route',
+      );
+    }
+    final double alpha = ((paint.argbColor >> 24) & 0xFF) / 255.0;
+    return (
+      ((paint.argbColor >> 16) & 0xFF) / 255.0 * alpha,
+      ((paint.argbColor >> 8) & 0xFF) / 255.0 * alpha,
+      (paint.argbColor & 0xFF) / 255.0 * alpha,
+      alpha,
+    );
+  }
+
+  static SparseGlMaterial _solidMaterial(ReplayPaint paint) {
+    final (double, double, double, double) color = _premultipliedPaint(paint);
+    return SparseGlMaterial(
+      red: color.$1,
+      green: color.$2,
+      blue: color.$3,
+      alpha: color.$4,
+      blendMode: paint.blendMode,
+    );
+  }
+
+  static TessellatedGlMaterial _tessellatedMaterial(ReplayPaint paint) {
+    final (double, double, double, double) color = _premultipliedPaint(paint);
+    return TessellatedGlMaterial(
+      red: color.$1,
+      green: color.$2,
+      blue: color.$3,
+      alpha: color.$4,
+      blendMode: paint.blendMode,
+    );
+  }
+
+  static StencilGlMaterial _stencilMaterial(ReplayPaint paint) {
+    final (double, double, double, double) color = _premultipliedPaint(paint);
+    return StencilGlMaterial(
+      red: color.$1,
+      green: color.$2,
+      blue: color.$3,
+      alpha: color.$4,
+      blendMode: paint.blendMode,
+    );
   }
 
   /// Explicit sparse-strip submission seam.
@@ -936,6 +1256,69 @@ final class GlRenderDevice
     );
     if (checkError('stencil-cover draw')) {
       throw StateError('${lastError ?? 'the stencil-cover GL draw failed'}');
+    }
+    return stats;
+  }
+
+  /// Explicit approach-B submission seam for a retained tessellated mesh.
+  ///
+  /// Besides ordered replay, callers can use this seam to evaluate a retained
+  /// mesh independently. The analytic atlas remains the default unless the GL
+  /// context was adopted with experimental CPU tessellation enabled.
+  TessellatedGlExecutionStats submitTessellatedPath(
+    TessellatedPathMesh mesh, {
+    required TessellatedGlMaterial material,
+    required int viewportWidth,
+    required int viewportHeight,
+    int yFlip = 0,
+    Transform2D localToTarget = Transform2D.identity,
+    Rect? clip,
+    int surfaceFramebuffer = 0,
+  }) {
+    final TessellatedGlExecutor? executor = _tessellatedExecutor;
+    if (executor == null) {
+      throw StateError(
+        'CPU tessellation is disabled; adopt the GL context with '
+        'enableExperimentalCpuTessellation: true',
+      );
+    }
+    if (surfaceFramebuffer < 0) {
+      throw ArgumentError.value(
+        surfaceFramebuffer,
+        'surfaceFramebuffer',
+        'must be non-negative',
+      );
+    }
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      throw StateError('GL submissions are stopped during device recovery');
+    }
+    if (!makeCurrentOrLose()) throw StateError('the GL context is lost');
+    _gl
+      ..bindFramebuffer(glDrawFramebuffer, surfaceFramebuffer)
+      ..viewport(0, 0, viewportWidth, viewportHeight)
+      ..disable(glDepthTest)
+      ..disable(glCullFace);
+    _requireCompleteDrawFramebuffer(surfaceFramebuffer);
+    late final TessellatedGlExecutionStats stats;
+    try {
+      stats = executor.submit(
+        mesh,
+        material: material,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+        yFlip: yFlip,
+        localToTarget: localToTarget,
+        clip: clip,
+      );
+    } finally {
+      // The explicit executor owns its program, VAO, blend and scissor state.
+      // Invalidate the dense cache even after an exception so a following
+      // dense batch rebinds state instead of trusting stale Dart values.
+      _drawState.reset();
+    }
+    if (checkError('CPU-tessellated GL draw')) {
+      throw StateError('${lastError ?? 'the tessellated GL draw failed'}');
     }
     return stats;
   }
@@ -1204,6 +1587,20 @@ final class GlRenderDevice
     return null;
   }
 
+  /// Drops the sparse route after an *automatic* attempt failed.
+  ///
+  /// The dense atlas draws every one of these paths correctly, and a caller
+  /// who asked for a renderer rather than for this route specifically should
+  /// get one. Only reachable when the policy is not
+  /// [GlSparseStripsPolicy.required].
+  void _disableSparseStrips() {
+    _sparseExecutor?.dispose();
+    _sparseExecutor = null;
+    _sparseDriver?.disposeHostResources();
+    _sparseDriver = null;
+    _sparseStripsRequested = false;
+  }
+
   BackendDiagnostic? _initialiseSparseStrips() {
     if (!_sparseStripsRequested) return null;
     final GlApiSparseDriver driver =
@@ -1251,6 +1648,32 @@ final class GlRenderDevice
       return BackendDiagnostic(
         kind: DiagnosticKind.incompatibleDevice,
         message: 'GL rejected the opt-in stencil-cover renderer objects',
+        detail: lastError?.detail,
+      );
+    }
+    return null;
+  }
+
+  BackendDiagnostic? _initialiseCpuTessellation() {
+    if (!_cpuTessellationRequested) return null;
+    final GlApiTessellatedDriver driver =
+        _tessellatedDriver ??= GlApiTessellatedDriver(_gl, _heap);
+    final TessellatedGlExecutor executor =
+        _tessellatedExecutor ??= TessellatedGlExecutor(driver);
+    try {
+      executor.initialize(desktop: _context.isDesktopGl);
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the opt-in CPU-tessellated GL pipeline could not be '
+            'initialized',
+        detail: '$error',
+      );
+    }
+    if (checkError('CPU-tessellated GL initialisation')) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'GL rejected the opt-in CPU-tessellated renderer objects',
         detail: lastError?.detail,
       );
     }
@@ -1409,6 +1832,7 @@ final class GlRenderDevice
     if (!_state.isLost && _context.makeCurrent()) {
       _sparseExecutor?.dispose();
       _stencilCoverExecutor?.dispose();
+      _tessellatedExecutor?.dispose();
       if (_vbo != 0) {
         scratchNames[0] = _vbo;
         _gl.deleteBuffers(1, scratchNames);
@@ -1429,9 +1853,13 @@ final class GlRenderDevice
       if (_stencilCoverExecutor != null && !_stencilCoverExecutor!.isDisposed) {
         _stencilCoverExecutor!.disposeAfterDeviceLoss();
       }
+      if (_tessellatedExecutor != null && !_tessellatedExecutor!.isDisposed) {
+        _tessellatedExecutor!.disposeAfterDeviceLoss();
+      }
     }
     _sparseDriver?.disposeHostResources();
     _stencilCoverDriver?.disposeHostResources();
+    _tessellatedDriver?.disposeHostResources();
     _context.dispose();
     _heap
       ..release(scratchNames)
@@ -1479,6 +1907,10 @@ final class GlOffscreenTarget
   late GpuLayerStack _layers;
   late GpuRasterSink _sink;
   late DisplayListPlayer _player;
+  GlVectorReplay? _vector;
+  GpuVectorCommandStream<ReplayPaint, GlVectorPathPayload>? _vectorStream;
+  GlVectorPathRecorder? _vectorRecorder;
+  final GpuVectorSubmissionCursor _vectorCursor = GpuVectorSubmissionCursor();
 
   /// Creates the atlas textures and everything downstream of their ids.
   ///
@@ -1521,7 +1953,34 @@ final class GlOffscreenTarget
     _layers = GpuLayerStack(
       allocator: _layerPool,
       backendName: GlRendererBackend.backendName,
+      // Stencil and samples for a layer big enough that a promoted draw
+      // inside it could pay for them. See `GpuLayerStack.layerAttachmentPolicy`
+      // for why the answer cannot be derived from the layer's contents, and
+      // `glLayerAttachmentsFor` for the size threshold.
+      layerAttachmentPolicy: (int width, int height) => glLayerAttachmentsFor(
+        width: width,
+        height: height,
+        stencilCoverEnabled: _device.experimentalStencilCoverEnabled,
+      ),
     );
+    final GlVectorReplay? vector = GlVectorReplay.create(
+      layers: _layers,
+      sparseEnabled: _device.experimentalSparseStripsEnabled,
+      stencilEnabled: _device.experimentalStencilCoverEnabled,
+      tessellationEnabled: _device.experimentalCpuTessellationEnabled,
+      queryStencil: (int framebuffer) => _device.queryStencilCoverCapabilities(
+          surfaceFramebuffer: framebuffer),
+      // The framebuffer an executor will actually bind, which is the
+      // multisampled one when there is one. Querying the resolve target
+      // instead would report no stencil and refuse every promotion.
+      surfaceFramebuffer: () => _drawFramebuffer,
+      // Rebuilt with the wiring, so a device loss cannot leave a gradient
+      // binding pointing at a texture name the driver already freed.
+      gradientCache: GpuGradientCache(allocator: _device),
+    );
+    _vector = vector;
+    _vectorStream = vector?.stream;
+    _vectorRecorder = vector?.recorder;
     _sink = GpuRasterSink(
       batcher: _batcher,
       backendName: GlRendererBackend.backendName,
@@ -1533,6 +1992,8 @@ final class GlOffscreenTarget
       fontResolver: _fonts,
       layerStack: _layers,
       onAtlasFlush: _flushAtlases,
+      pathPlanningTelemetry: vector?.telemetry,
+      pathCommandRecorder: vector?.recorder,
     );
     _player = DisplayListPlayer(_sink);
   }
@@ -1581,6 +2042,10 @@ final class GlOffscreenTarget
     _pendingClear = null;
     _layers.endFrame();
     _layerPool.discardAfterDeviceLoss();
+    // The gradient ramps go with the context. `clear` skips handles that
+    // are already invalid, so this frees what survived and forgets the
+    // rest; the rebuild below installs a fresh cache either way.
+    _vector?.dispose();
     _device
       ..releaseTexture(_maskTexture)
       ..releaseTexture(_glyphTexture);
@@ -1642,6 +2107,30 @@ final class GlOffscreenTarget
   /// identical output and spends the frame budget doing it.
   GpuGlyphAtlas get glyphAtlas => _glyphAtlas;
 
+  /// What the dense coverage atlas has cost this target in transfers.
+  ///
+  /// The dense route's cost is proportional to the *area* of every shape it
+  /// rasterises, and that area leaves Dart as an alpha8 upload once per frame
+  /// that dirtied the atlas. Neither number is visible in the pixels - a
+  /// backend uploading the whole atlas every frame draws the same picture - so
+  /// preferring one route over the other has to be argued from counters like
+  /// these rather than from frame time alone, which mixes in everything else
+  /// the frame did. The sparse route's counterpart is
+  /// `SparseStripPlanMetrics.alphaUploadBytes`.
+  ///
+  /// Whole rows, not sub-rectangles: `_uploadMaskAtlas` sends whole atlas rows
+  /// because a narrower one costs the same number of rows once the stride is
+  /// honoured.
+  int get maskUploadCount => _maskUploadCount;
+  int _maskUploadCount = 0;
+
+  int get maskUploadBytes => _maskUploadBytes;
+  int _maskUploadBytes = 0;
+
+  /// The dense atlas this target rasterises coverage into, for a test that
+  /// needs to know whether a shape was rasterised again or found resident.
+  GpuMaskAtlas get maskAtlas => _maskAtlas;
+
   /// `glTexSubImage2D` calls this target has made for glyph coverage.
   ///
   /// The number the incremental-upload claim rests on. A second frame drawing
@@ -1664,9 +2153,81 @@ final class GlOffscreenTarget
   /// know how deep a frame went or how many passes it cost.
   GpuLayerStack get layers => _layers;
 
+  /// Accepted automatic B commands in the current frame (opt-in devices).
+  int get experimentalVectorCommandCount =>
+      _vectorStream?.vectorCommandCount ?? 0;
+  int get experimentalVectorAcceptedCount =>
+      _vectorRecorder?.acceptedCount ?? 0;
+
+  /// The strategy that really owned the pixels of the last observed path.
+  ///
+  /// Null when nothing was observed or the device runs no experimental
+  /// executor. Exposed because "this path took route C" is otherwise invisible
+  /// from the pixels - and a test that only compared pixels would pass just as
+  /// happily if every promotion had silently fallen back to the dense atlas,
+  /// which is exactly the regression worth catching.
+  GpuPathStrategy? get lastExecutedPathStrategy =>
+      _vector?.telemetry.lastEvent?.executedStrategy;
+
+  /// The candidate the selector proposed for that same path, which differs
+  /// from [lastExecutedPathStrategy] whenever a recorder refused it.
+  GpuPathStrategy? get lastCandidatePathStrategy =>
+      _vector?.telemetry.lastEvent?.candidate.strategy;
+
+  /// Where this target's gradient ramps live, or null when it has no executor
+  /// that can sample one.
+  ///
+  /// Exposed for the question pixels cannot answer: whether the second draw of
+  /// the same gradient uploaded a second ramp. A cache that missed every time
+  /// produces an identical image and spends the frame budget doing it.
+  GpuGradientCache? get gradientCache => _vector?.gradientCache;
+
+  /// The sparse encodings this target retains between draws and frames.
+  ///
+  /// Exposed for the question pixels cannot answer: whether the second frame
+  /// of a static scene rasterised its coverage again. A cache that missed
+  /// every time draws an identical picture and spends the frame budget doing
+  /// it - see `vector_plan_cache.dart`.
+  VectorPlanCache<SparseStripDrawPlan>? get sparsePlanCache =>
+      _vector?.recorder.sparsePlanCache;
+
+  /// How often this target has seen each draw come back, which is what keeps
+  /// a promoted route from starving the dense atlas it competes with.
+  GpuPathRepetitionTracker? get pathRepetition => _vector?.repetition;
+
   MemorySurfaceDescriptor _surface;
   late GlTexture _colorTexture;
   int _fbo = 0;
+
+  /// The multisampled draw framebuffer and its colour renderbuffer, or 0 when
+  /// this target draws straight into [_fbo]. See [_attachStencilIfRequested].
+  int _multisampleFbo = 0;
+  int _multisampleColor = 0;
+
+  /// The stencil buffer, attached to the multisampled framebuffer when there
+  /// is one and to [_fbo] otherwise. Zero on a colour-only target.
+  int _stencilRenderbuffer = 0;
+
+  /// What [_fbo] carries, declared to the layer stack at [beginFrame] so a
+  /// per-draw strategy decision reads a fact instead of a global assumption.
+  GpuPassAttachments _surfaceAttachments = GpuPassAttachments.colorOnly;
+
+  /// Exposed so a test can assert this target really is what it claims: an
+  /// attachment nothing verified is exactly the kind of claim that lets a
+  /// stencil pass run against a framebuffer with no stencil.
+  GpuPassAttachments get surfaceAttachments => _surfaceAttachments;
+
+  /// The framebuffer object this target's passes draw into, so a test can ask
+  /// the *driver* what it carries rather than believing [surfaceAttachments].
+  ///
+  /// The multisampled one when there is one - that is the framebuffer the
+  /// descriptor describes and the one an executor binds. [_fbo], which holds
+  /// the single-sample texture the pixels are resolved into, carries no
+  /// stencil and would answer the question about the wrong object.
+  ///
+  /// Not for drawing: nothing outside this file binds it.
+  int get debugFramebuffer => _drawFramebuffer;
+
   late Framebuffer _readback;
   int _generation = 0;
 
@@ -1705,7 +2266,10 @@ final class GlOffscreenTarget
     _layers.beginFrame(
       surfaceWidth: _readback.width,
       surfaceHeight: _readback.height,
+      surfaceAttachments: _surfaceAttachments,
     );
+    _vector?.beginFrame();
+    _vectorCursor.reset();
     _submittedBatches = 0;
     _pendingClear = request.clearColor;
     return Frame(
@@ -1751,26 +2315,46 @@ final class GlOffscreenTarget
             ),
           );
     }
-    _device._gl.bindFramebuffer(glFramebuffer, _fbo);
+    _device._gl.bindFramebuffer(glFramebuffer, _drawFramebuffer);
     _uploadMaskAtlas();
     _uploadGlyphAtlas();
 
     final int? clear = _pendingClear;
     _pendingClear = null;
-    final drawn = _device.submit(
-      _batcher,
-      _readback.width,
-      _readback.height,
-      clear,
-      layers: _layers,
-      surfaceFramebuffer: _fbo,
-      firstBatch: _submittedBatches,
-    );
+    final vectorStream = _vectorStream;
+    final bool drawn;
+    if (vectorStream == null) {
+      drawn = _device.submit(
+        _batcher,
+        _readback.width,
+        _readback.height,
+        clear,
+        layers: _layers,
+        surfaceFramebuffer: _drawFramebuffer,
+        firstBatch: _submittedBatches,
+      );
+    } else {
+      vectorStream.finish(totalBatchCount: _batcher.batchCount);
+      drawn = _device.submitOrderedPaths(
+        _batcher,
+        vectorStream,
+        _vectorCursor,
+        _readback.width,
+        _readback.height,
+        clear,
+        surfaceFramebuffer: _drawFramebuffer,
+      );
+    }
     _submittedBatches = _batcher.batchCount;
     // After the draws and never before: until they are issued, the composite
     // quads are still going to sample those layer textures.
     _layers.endFrame();
-    if (drawn) _device._readPixels(_readback);
+    if (drawn) {
+      // After every pass and before the readback: the samples only become a
+      // readable, sampleable image once they are resolved.
+      _resolveMultisample();
+      _device._readPixels(_readback);
+    }
 
     final lost = _device.state.blockedPresent();
     if (lost != null) return lost;
@@ -1786,6 +2370,8 @@ final class GlOffscreenTarget
     if (!_maskAtlas.isDirty) return;
     final top = _maskAtlas.dirtyTop;
     final height = _maskAtlas.dirtyBottom - top;
+    _maskUploadCount++;
+    _maskUploadBytes += _maskAtlas.width * height;
     _device.uploadRegion(
       _maskTexture,
       x: 0,
@@ -1876,15 +2462,29 @@ final class GlOffscreenTarget
     _uploadGlyphAtlas();
     final int? clear = _pendingClear;
     _pendingClear = null;
-    _device.submit(
-      _batcher,
-      _readback.width,
-      _readback.height,
-      clear,
-      layers: _layers,
-      surfaceFramebuffer: _fbo,
-      firstBatch: _submittedBatches,
-    );
+    final vectorStream = _vectorStream;
+    if (vectorStream == null) {
+      _device.submit(
+        _batcher,
+        _readback.width,
+        _readback.height,
+        clear,
+        layers: _layers,
+        surfaceFramebuffer: _drawFramebuffer,
+        firstBatch: _submittedBatches,
+      );
+    } else {
+      vectorStream.snapshot(totalBatchCount: _batcher.batchCount);
+      _device.submitOrderedPaths(
+        _batcher,
+        vectorStream,
+        _vectorCursor,
+        _readback.width,
+        _readback.height,
+        clear,
+        surfaceFramebuffer: _drawFramebuffer,
+      );
+    }
     _submittedBatches = _batcher.batchCount;
   }
 
@@ -1972,6 +2572,7 @@ final class GlOffscreenTarget
       ..bindFramebuffer(glFramebuffer, _fbo)
       ..framebufferTexture2D(
           glFramebuffer, glColorAttachment0, glTexture2D, _colorTexture.id, 0);
+    _attachStencilIfRequested();
     final status = gl.checkFramebufferStatus(glFramebuffer);
     if (status != glFramebufferComplete) {
       return BackendDiagnostic(
@@ -1986,11 +2587,252 @@ final class GlOffscreenTarget
     return _device.lastError;
   }
 
-  void _destroySurfaceObjects() {
-    if (_fbo != 0 && !_device.state.isLost) {
-      _device.scratchNames[0] = _fbo;
-      _device._gl.deleteFramebuffers(1, _device.scratchNames);
+  /// Gives this target's framebuffer a stencil buffer when approach C is
+  /// enabled, and declares what it ended up with.
+  ///
+  /// The default framebuffer of a hidden GL context routinely has neither
+  /// stencil nor samples - it is measured as having neither on the Intel UHD
+  /// this was written against - so a stencil-then-cover executor that only
+  /// ever saw framebuffer 0 could never be exercised, and the pass descriptor
+  /// would honestly report "colour-only" forever. This target *creates* its
+  /// framebuffer, so it can create one that carries stencil, and then the
+  /// attachments it declares are a fact rather than a hope.
+  ///
+  /// ## Multisampled, and why that is the whole point
+  ///
+  /// A filled path in this renderer is analytically antialiased on every
+  /// route: the CPU rasteriser, the dense atlas and the sparse encoder all
+  /// take their coverage from one `ScanlineFiller`. A **one-sample** cover
+  /// pass produces a binary edge instead, measured at 144 levels of difference
+  /// over 572 boundary pixels, which is why `gl_vector_replay.dart` refuses
+  /// approach C below four samples. Creating the samples here is what makes
+  /// that capability reachable instead of permanently theoretical.
+  ///
+  /// So [_fbo] keeps the single-sample colour texture and becomes the
+  /// **resolve** target, and a second framebuffer with multisampled colour and
+  /// stencil renderbuffers becomes what the frame actually draws into. One
+  /// `glBlitFramebuffer` at the end of [present] moves the pixels across; see
+  /// [_resolveMultisample] for why it cannot be skipped.
+  ///
+  /// Every step is checked, and every failure falls back rather than raising:
+  /// a driver with no `GL_MAX_SAMPLES` of four, or one that reports the
+  /// framebuffer incomplete, leaves the target single-sample stencil8 - or
+  /// colour-only if even that fails. The target then declares what it really
+  /// has, the selector believes it, and those paths go through the dense
+  /// atlas exactly as before. Nothing here can make a frame fail to render.
+  void _attachStencilIfRequested() {
+    _surfaceAttachments = GpuPassAttachments.colorOnly;
+    if (!_device.experimentalStencilCoverEnabled) return;
+    final gl = _device._gl;
+    if (!GlDeviceFramebufferFactory.supportsAttachments(gl)) return;
+    if (_createMultisampleTarget(gl)) return;
+    // Single-sample stencil8 on the resolve framebuffer itself. Enough for an
+    // explicit approach-C caller to bind, not enough for the selector to
+    // promote into - which is the truthful pair of facts.
+    _device.scratchNames[0] = 0;
+    gl.genRenderbuffers(1, _device.scratchNames);
+    final int renderbuffer = _device.scratchNames[0];
+    if (renderbuffer == 0) return;
+    gl
+      ..bindFramebuffer(glFramebuffer, _fbo)
+      ..bindRenderbuffer(glRenderbuffer, renderbuffer)
+      ..renderbufferStorage(
+        glRenderbuffer,
+        glStencilIndex8,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+      )
+      ..framebufferRenderbuffer(
+        glFramebuffer,
+        glStencilAttachment,
+        glRenderbuffer,
+        renderbuffer,
+      );
+    if (gl.checkFramebufferStatus(glFramebuffer) != glFramebufferComplete) {
+      _device.scratchNames[0] = renderbuffer;
+      gl.deleteRenderbuffers(1, _device.scratchNames);
+      gl.getError();
+      return;
     }
+    _stencilRenderbuffer = renderbuffer;
+    _surfaceAttachments = const GpuPassAttachments(stencilBits: 8);
+  }
+
+  /// Builds the multisampled draw framebuffer, or reports that it could not.
+  ///
+  /// False leaves nothing behind: every object created on the way is deleted
+  /// and the GL error queue is drained, because a sticky error picked up by an
+  /// unrelated `checkError` later is what turns a failed *optional* allocation
+  /// into a device this backend believes is lost. See
+  /// `gl_stencil_cover_driver.dart` for the measured instance of that.
+  bool _createMultisampleTarget(GlApi gl) {
+    _device.scratchNames[0] = 0;
+    gl.getIntegerv(glMaxSamples, _device.scratchNames.cast<Int32>());
+    final int maxSamples = _device.scratchNames.cast<Int32>()[0];
+    if (maxSamples < _minimumSampleCount) {
+      gl.getError();
+      return false;
+    }
+    // As many samples as the driver offers, up to the cap. The count is not a
+    // constant because it is the only lever this route has on edge quality:
+    // coverage from N samples takes N+1 values, so the gap against the
+    // analytic routes shrinks as 1/N. It is measured, not assumed - see the
+    // deviation table in `doc/architecture/ACELERACAO_GPU_VETORIAL.md`.
+    final int samples =
+        maxSamples < _preferredSampleCount ? maxSamples : _preferredSampleCount;
+
+    final int drawFbo = _genName(gl.genFramebuffers);
+    final int colour = _genName(gl.genRenderbuffers);
+    final int stencil = _genName(gl.genRenderbuffers);
+    if (drawFbo == 0 || colour == 0 || stencil == 0) {
+      _deleteMultisampleObjects(drawFbo, colour, stencil);
+      gl.getError();
+      return false;
+    }
+
+    final int width = _surface.pixelWidth;
+    final int height = _surface.pixelHeight;
+    gl
+      ..bindFramebuffer(glFramebuffer, drawFbo)
+      ..bindRenderbuffer(glRenderbuffer, colour)
+      ..renderbufferStorageMultisample(
+        glRenderbuffer,
+        samples,
+        glRgba8,
+        width,
+        height,
+      )
+      ..framebufferRenderbuffer(
+        glFramebuffer,
+        glColorAttachment0,
+        glRenderbuffer,
+        colour,
+      )
+      ..bindRenderbuffer(glRenderbuffer, stencil)
+      ..renderbufferStorageMultisample(
+        glRenderbuffer,
+        samples,
+        glStencilIndex8,
+        width,
+        height,
+      )
+      ..framebufferRenderbuffer(
+        glFramebuffer,
+        glStencilAttachment,
+        glRenderbuffer,
+        stencil,
+      );
+
+    final bool complete =
+        gl.checkFramebufferStatus(glFramebuffer) == glFramebufferComplete;
+    // Restored before anything can observe it, and before the completeness
+    // result is acted on: `_createSurfaceObjects` checks `_fbo` next and would
+    // otherwise be checking whichever framebuffer this left bound.
+    gl.bindFramebuffer(glFramebuffer, _fbo);
+    if (!complete || gl.getError() != glNoError) {
+      _deleteMultisampleObjects(drawFbo, colour, stencil);
+      gl.getError();
+      gl.bindFramebuffer(glFramebuffer, _fbo);
+      return false;
+    }
+
+    _multisampleFbo = drawFbo;
+    _multisampleColor = colour;
+    _stencilRenderbuffer = stencil;
+    _surfaceAttachments = GpuPassAttachments(
+      stencilBits: 8,
+      sampleCount: samples,
+    );
+    return true;
+  }
+
+  /// Copies the multisampled draw buffer into the sampleable colour texture.
+  ///
+  /// Called once per present, after every pass and before the readback.
+  /// `glReadPixels` cannot read a multisample renderbuffer at all, so without
+  /// this the readback returns nothing usable - and the composite of a layer
+  /// samples a texture, which a multisample renderbuffer is not.
+  ///
+  /// Both bindings are set explicitly and the single framebuffer binding is
+  /// restored afterwards, so a caller that had its own read framebuffer bound
+  /// does not find this one in its place.
+  void _resolveMultisample() {
+    if (_multisampleFbo == 0) return;
+    final gl = _device._gl;
+    gl
+      ..bindFramebuffer(glReadFramebuffer, _multisampleFbo)
+      ..bindFramebuffer(glDrawFramebuffer, _fbo)
+      ..blitFramebuffer(
+        0,
+        0,
+        _readback.width,
+        _readback.height,
+        0,
+        0,
+        _readback.width,
+        _readback.height,
+        glColorBufferBit,
+        glNearest,
+      )
+      ..bindFramebuffer(glFramebuffer, _fbo);
+  }
+
+  /// The framebuffer this frame's passes draw into: the multisampled one when
+  /// there is one, and the resolve target otherwise.
+  int get _drawFramebuffer => _multisampleFbo != 0 ? _multisampleFbo : _fbo;
+
+  int _genName(void Function(int, Pointer<Uint32>) generate) {
+    _device.scratchNames[0] = 0;
+    generate(1, _device.scratchNames);
+    return _device.scratchNames[0];
+  }
+
+  void _deleteMultisampleObjects(int fbo, int colour, int stencil) {
+    final gl = _device._gl;
+    if (fbo != 0) {
+      _device.scratchNames[0] = fbo;
+      gl.deleteFramebuffers(1, _device.scratchNames);
+    }
+    for (final int name in <int>[colour, stencil]) {
+      if (name == 0) continue;
+      _device.scratchNames[0] = name;
+      gl.deleteRenderbuffers(1, _device.scratchNames);
+    }
+  }
+
+  /// Four: what `StencilCoverRequirements.forDraw` demands of an antialiased
+  /// cover pass, and the minimum every GL 3.3 driver must support for RGBA8.
+  /// Below this the selector refuses approach C outright.
+  static const int _minimumSampleCount = 4;
+
+  /// Sixteen, taken when the driver offers it - the Intel UHD this was
+  /// measured against does.
+  ///
+  /// The count is the only lever a cover pass has on edge quality: coverage
+  /// from N samples takes N+1 values, so the gap against the analytic routes
+  /// shrinks as 1/N. The cap is memory rather than quality - multisampled
+  /// colour plus stencil cost about `samples * 5` bytes per pixel, so 16x on a
+  /// 4K surface is around 660 MiB and stops being a sensible default long
+  /// before it stops improving edges. At the sizes this target is used at -
+  /// offscreen readback, golden tests, image export - it is a few megabytes.
+  static const int _preferredSampleCount = 16;
+
+  void _destroySurfaceObjects() {
+    if (!_device.state.isLost) {
+      if (_fbo != 0) {
+        _device.scratchNames[0] = _fbo;
+        _device._gl.deleteFramebuffers(1, _device.scratchNames);
+      }
+      _deleteMultisampleObjects(
+        _multisampleFbo,
+        _multisampleColor,
+        _stencilRenderbuffer,
+      );
+    }
+    _multisampleFbo = 0;
+    _multisampleColor = 0;
+    _stencilRenderbuffer = 0;
+    _surfaceAttachments = GpuPassAttachments.colorOnly;
     _fbo = 0;
     _device.releaseTexture(_colorTexture);
   }
@@ -2004,6 +2846,7 @@ final class GlOffscreenTarget
     // idle, so disposing mid-frame would leak the ones still in flight.
     _layers.endFrame();
     _layerPool.dispose();
+    _vector?.dispose();
     _device
       ..releaseTexture(_maskTexture)
       ..releaseTexture(_glyphTexture);
@@ -2600,8 +3443,16 @@ final class GlRendererBackend implements RendererBackend {
     GlContext context,
     DynamicLibrary glLibrary, {
     bool enableExperimentalSparseStrips = false,
+    GlSparseStripsPolicy sparseStrips = GlSparseStripsPolicy.auto,
     bool enableExperimentalStencilCover = false,
+    bool enableExperimentalCpuTessellation = false,
   }) {
+    // The old boolean meant "build it or refuse the backend", which is
+    // [GlSparseStripsPolicy.required]. Callers that pass it keep exactly that,
+    // so a test measuring the route still fails loudly if it is unavailable.
+    final GlSparseStripsPolicy sparsePolicy = enableExperimentalSparseStrips
+        ? GlSparseStripsPolicy.required
+        : sparseStrips;
     final report = describeContext(context);
     if (!report.supported) {
       context.dispose();
@@ -2630,23 +3481,32 @@ final class GlRendererBackend implements RendererBackend {
     }
 
     final gl = GlApi(context.procAddress);
-    if (enableExperimentalSparseStrips) {
+    // Resolved once, here, so the rest of the device sees a plain "is it on"
+    // and cannot re-derive the policy differently.
+    var sparseRequested = sparsePolicy != GlSparseStripsPolicy.disabled;
+    if (sparseRequested) {
       final List<String> missing = missingSparseGlSymbols(context.procAddress);
       if (missing.isNotEmpty) {
-        context.dispose();
-        throw BackendSelectionError(
-          requested: backendName,
-          attempts: <BackendProbeResult>[
-            BackendProbeResult.unsupported(
-              backendName,
-              BackendDiagnostic.missingSymbol(
-                missing.join(', '),
-                detail: 'required only because experimental sparse strips '
-                    'were explicitly enabled',
+        if (sparsePolicy == GlSparseStripsPolicy.required) {
+          context.dispose();
+          throw BackendSelectionError(
+            requested: backendName,
+            attempts: <BackendProbeResult>[
+              BackendProbeResult.unsupported(
+                backendName,
+                BackendDiagnostic.missingSymbol(
+                  missing.join(', '),
+                  detail: 'required only because sparse strips were '
+                      'explicitly required',
+                ),
               ),
-            ),
-          ],
-        );
+            ],
+          );
+        }
+        // Automatic: a driver without instanced arrays keeps the dense
+        // coverage atlas, which draws every one of these paths correctly. The
+        // backend is not refused over a missing *optimisation*.
+        sparseRequested = false;
       }
     }
     if (enableExperimentalStencilCover) {
@@ -2680,8 +3540,10 @@ final class GlRendererBackend implements RendererBackend {
         rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       ),
       maxTextureSize: _queryMaxTextureSize(gl, heap),
-      sparseStripsRequested: enableExperimentalSparseStrips,
+      sparseStripsRequested: sparseRequested,
+      sparseStripsRequired: sparsePolicy == GlSparseStripsPolicy.required,
       stencilCoverRequested: enableExperimentalStencilCover,
+      cpuTessellationRequested: enableExperimentalCpuTessellation,
     );
     final failure = device._initialise();
     if (failure != null) {
@@ -2710,6 +3572,17 @@ final class GlRendererBackend implements RendererBackend {
         requested: backendName,
         attempts: <BackendProbeResult>[
           BackendProbeResult.unsupported(backendName, stencilFailure),
+        ],
+      );
+    }
+    final BackendDiagnostic? tessellationFailure =
+        device._initialiseCpuTessellation();
+    if (tessellationFailure != null) {
+      device.dispose();
+      throw BackendSelectionError(
+        requested: backendName,
+        attempts: <BackendProbeResult>[
+          BackendProbeResult.unsupported(backendName, tessellationFailure),
         ],
       );
     }

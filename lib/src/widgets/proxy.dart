@@ -15,11 +15,13 @@ library;
 
 import '../geometry/offset.dart';
 import '../geometry/transform2d.dart';
+import '../graphics/content_hint.dart';
 import '../layout/alignment.dart';
 import '../layout/render_proxy_box.dart' as layout;
 import 'element.dart';
 import 'widget.dart';
 
+export '../graphics/content_hint.dart';
 export '../layout/render_proxy_box.dart' show BoxBorder, BoxDecoration;
 
 /// Fades its child.
@@ -300,6 +302,83 @@ final class RepaintBoundary extends SingleChildRenderObjectWidget {
   @override
   layout.RenderRepaintBoundary createRenderObject(BuildContext context) =>
       layout.RenderRepaintBoundary();
+}
+
+/// Tells the renderer what this subtree is, so it can stop guessing.
+///
+/// The per-draw selector chooses well from what it can measure, and what it
+/// cannot measure is the future. A panel that has been still for a second and
+/// a panel one frame into a pinch-zoom look identical to it and want opposite
+/// answers: cache the first, and never write a cache entry for the second,
+/// because every entry it writes is dead before anything reads it.
+///
+/// This is where an application says which one it is looking at. It is CSS's
+/// `will-change` in intent and [RepaintBoundary] in shape: wrap a subtree,
+/// declare a value, and everything inside inherits it until something inside
+/// declares otherwise.
+///
+/// ```dart
+/// // A video editor: static chrome and an animating canvas, same frame.
+/// Row(children: <Widget>[
+///   const ContentHintScope.staticContent(child: Toolbar(...)),
+///   ContentHintScope.animating(child: PreviewCanvas(frame: frame)),
+/// ])
+/// ```
+///
+/// ## It is advice, and a wrong answer is only slow
+///
+/// Declaring a still panel [ContentHintScope.animating] costs frame time - the
+/// atlas stops being credited for a cache it would have got - and cannot draw
+/// anything different, because the hint never reaches a capability and never
+/// reaches a correctness fact. `content_hint.dart` states the contract and
+/// `test/widgets/content_hint_test.dart` asserts the image is identical with
+/// and without.
+///
+/// ## Where to put one
+///
+/// At the boundary of a *behaviour*, not on every leaf. One around the canvas
+/// of an editor and one around its chrome is the whole of a typical
+/// application; a hint on every shape inside the canvas says nothing more and
+/// pushes a span per shape into the display list.
+final class ContentHintScope extends SingleChildRenderObjectWidget {
+  const ContentHintScope({
+    super.key,
+    this.hint = ContentHint.none,
+    super.child,
+  });
+
+  /// The subtree repeats frame to frame: cache it.
+  const ContentHintScope.staticContent({Key? key, Widget? child})
+      : this(key: key, hint: ContentHint.staticContent, child: child);
+
+  /// The geometry is new every frame: do not pay to cache it.
+  const ContentHintScope.animating({Key? key, Widget? child})
+      : this(key: key, hint: ContentHint.animating, child: child);
+
+  /// The geometry repeats but the matrix does not - zoom, pinch, pan.
+  ///
+  /// Distinct from [ContentHintScope.animating] on purpose: a retained mesh is
+  /// keyed on local coordinates and survives a moving transform, while a dense
+  /// mask is keyed on device coordinates and misses every frame. One boolean
+  /// could not have said both.
+  const ContentHintScope.transforming({Key? key, Widget? child})
+      : this(key: key, hint: ContentHint.transforming, child: child);
+
+  /// What this subtree declares. Fields left unspecified inherit from the
+  /// nearest enclosing [ContentHintScope].
+  final ContentHint hint;
+
+  @override
+  layout.RenderContentHint createRenderObject(BuildContext context) =>
+      layout.RenderContentHint(hint: hint);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant layout.RenderContentHint renderObject,
+  ) {
+    renderObject.hint = hint;
+  }
 }
 
 /// Shows or hides its child, keeping or releasing the space it occupied.

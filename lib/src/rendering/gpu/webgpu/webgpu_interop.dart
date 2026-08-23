@@ -245,8 +245,28 @@ extension type GPURenderPassEncoder._(JSObject _) implements JSObject {
   /// Nothing is flipped here, and `wgsl_shaders.dart` says why GL's flip does
   /// not apply.
   external void setScissorRect(int x, int y, int width, int height);
+
+  /// Framebuffer coordinates as well, and the sparse path sets it explicitly:
+  /// a render pass's default viewport is the whole attachment, which is only
+  /// the same rectangle as the caller's viewport when the target happens to be
+  /// exactly that size.
+  external void setViewport(
+    num x,
+    num y,
+    num width,
+    num height,
+    num minDepth,
+    num maxDepth,
+  );
   external void drawIndexed(int indexCount,
       [int instanceCount, int firstIndex]);
+
+  /// Non-indexed draw. The sparse-strip pipeline builds its unit quad from
+  /// `@builtin(vertex_index)`, so there is no index buffer to bind, and
+  /// [firstInstance] is what lets a command range be drawn without rebinding
+  /// the vertex attributes the way GL 3.3 has to.
+  external void draw(int vertexCount,
+      [int instanceCount, int firstVertex, int firstInstance]);
   external void end();
 }
 
@@ -388,8 +408,13 @@ extension type GPUVertexAttribute._(JSObject _) implements JSObject {
 }
 
 extension type GPUVertexBufferLayout._(JSObject _) implements JSObject {
+  /// [stepMode] is `'vertex'` by default and `'instance'` for the sparse-strip
+  /// buffer, whose every record describes a whole quad rather than a corner.
+  /// It is optional here rather than required because the dense path relies on
+  /// the specification's own default and passing it would be noise.
   external factory GPUVertexBufferLayout({
     int arrayStride,
+    String stepMode,
     JSArray<GPUVertexAttribute> attributes,
   });
 }

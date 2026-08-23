@@ -36,12 +36,16 @@ import 'package:dart_ui/src/backends/web/web_window.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_backend.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_canvas_target.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_framebuffer_pool.dart';
+import 'package:dart_ui/src/rendering/gpu/webgl/webgl_sparse_driver.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_surface_descriptor.dart';
 import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_backend.dart';
 import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_canvas_target.dart';
 import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_interop.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_sparse_driver.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_sparse_executor.dart';
 import 'package:dart_ui/src/rendering/gpu/webgpu/webgpu_surface_descriptor.dart';
 import 'package:dart_ui/src/rendering/gpu/webgpu/wgsl_shaders.dart';
+import 'package:dart_ui/src/rendering/gpu/webgpu/wgsl_sparse_shaders.dart';
 
 /// Referenced from [main] so neither compiler can drop the libraries above.
 ///
@@ -79,6 +83,13 @@ String describeWebBackend() {
     ..writeln(kWgslShaderModuleSource.length)
     ..writeln(kWebGpuContextId)
     ..writeln(webGpuClearValue(0xFF000000).a)
+    // wgsl_sparse_shaders.dart: the pure half of the experimental sparse
+    // path, which reaches `gl_sparse_strips.dart` and through it the
+    // backend-neutral plan. That chain is exactly the kind of shared library a
+    // `dart:ffi` import could sneak into without any VM test noticing.
+    ..writeln(kWgslSparseShaderModuleSource.length)
+    ..writeln(kWebGpuSparseUniformSliceSize)
+    ..writeln(wgslSparseFragmentEntryPoint(coverageMode: 0, paintMode: 0))
     // webgpu_backend.dart.
     ..writeln(const WebGpuRendererBackend().info)
     ..writeln(WebGpuRendererBackend.backendName)
@@ -109,6 +120,13 @@ List<Type> webBackendTypes() => <Type>[
       WebGlCanvasSurfaceDescriptor,
       WebGlFramebufferPool,
       WebGlImageCache,
+      // The experimental sparse-strip adapters, one per web backend. Both are
+      // reachable only through an opt-in seam, which is precisely why their
+      // libraries would otherwise never be compiled by anything.
+      WebGlSparseDriver,
+      WebGpuSparseDriver,
+      WebGpuSparseExecutor,
+      SparseWebGpuMaterial,
       WebGpuRenderDevice,
       WebGpuCanvasTarget,
       WebGpuCanvasPresenter,

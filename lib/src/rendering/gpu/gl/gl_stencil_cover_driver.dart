@@ -392,7 +392,31 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
     return _gl.getError() == glNoError ? front : 0;
   }
 
+  /// Stencil bits of [attachment] on the bound draw framebuffer, or 0.
+  ///
+  /// The object type is asked for first, and that ordering is required rather
+  /// than defensive. `GL_FRAMEBUFFER_ATTACHMENT_STENCIL_SIZE` is only a legal
+  /// query when the attachment exists: on an attachment whose object type is
+  /// `GL_NONE`, the specification says the call generates
+  /// `GL_INVALID_OPERATION` - and a GL error is *sticky*. Asking anyway
+  /// therefore does not merely return a wrong number; it leaves an error in
+  /// the queue that the next unrelated `checkError` picks up, and that one
+  /// marks the device lost. It was measured doing exactly that: a colour-only
+  /// FBO queried here poisoned every following test in the file, which read as
+  /// a driver that had stopped drawing.
+  ///
+  /// A colour-only framebuffer having no stencil is an ordinary answer - it is
+  /// what every pooled layer target reports - so it is answered with 0 and no
+  /// error at all.
   int _attachmentStencilBits(int attachment) {
+    _status[0] = glNone;
+    _gl.getFramebufferAttachmentParameteriv(
+      glDrawFramebuffer,
+      attachment,
+      glFramebufferAttachmentObjectType,
+      _status,
+    );
+    if (_gl.getError() != glNoError || _status[0] == glNone) return 0;
     _status[0] = 0;
     _gl.getFramebufferAttachmentParameteriv(
       glDrawFramebuffer,
@@ -400,7 +424,7 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
       glFramebufferAttachmentStencilSize,
       _status,
     );
-    return _status[0];
+    return _gl.getError() == glNoError ? _status[0] : 0;
   }
 
   int _compile(int type, String source) {
