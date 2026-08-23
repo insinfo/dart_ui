@@ -9,7 +9,9 @@ library;
 
 import 'dart:typed_data';
 
+import '../gpu_gradient.dart';
 import '../gpu_pipeline.dart';
+import '../gpu_texture.dart';
 import '../vector/sparse_strip_draw_plan.dart';
 import 'gl_sparse_strips.dart';
 
@@ -21,7 +23,34 @@ final class SparseGlMaterial {
     required this.blue,
     required this.alpha,
     required this.blendMode,
-  }) {
+  })  : gradientBinding = null,
+        gradientParameters = null {
+    _validateColor(red, green, blue, alpha);
+    gpuBlendForMode(blendMode);
+  }
+
+  /// A gradient material using the cache binding and canonical parameter
+  /// layout shared by every GPU backend.
+  SparseGlMaterial.gradient({
+    required this.gradientBinding,
+    required this.gradientParameters,
+    required this.blendMode,
+  })  : red = 0,
+        green = 0,
+        blue = 0,
+        alpha = 0 {
+    if (gradientBinding == null || gradientParameters == null) {
+      throw ArgumentError('gradient binding and parameters are required');
+    }
+    gpuBlendForMode(blendMode);
+  }
+
+  static void _validateColor(
+    double red,
+    double green,
+    double blue,
+    double alpha,
+  ) {
     for (final (String, double) channel in <(String, double)>[
       ('red', red),
       ('green', green),
@@ -35,7 +64,6 @@ final class SparseGlMaterial {
     if (red > alpha || green > alpha || blue > alpha) {
       throw ArgumentError('colour channels must be premultiplied by alpha');
     }
-    gpuBlendForMode(blendMode);
   }
 
   final double red;
@@ -43,6 +71,10 @@ final class SparseGlMaterial {
   final double blue;
   final double alpha;
   final int blendMode;
+  final GpuGradientBinding? gradientBinding;
+  final GpuGradientShaderParameters? gradientParameters;
+
+  bool get isGradient => gradientBinding != null;
 }
 
 /// Narrow, fakeable surface over the GL calls the experimental executor uses.
@@ -91,6 +123,13 @@ abstract interface class SparseGlDriver {
     double green,
     double blue,
     double alpha,
+  );
+
+  void useSolidPaint();
+
+  void useGradientPaint(
+    GpuGradientBinding binding,
+    GpuGradientShaderParameters parameters,
   );
 
   void setSparseMode(int mode);
@@ -228,15 +267,23 @@ final class SparseGlExecutor {
       for (var command = 0; command < submission.commandCount; command++) {
         final SparseGlMaterial material =
             materials[submission.commandMaterial(command)];
-        _driver
-          ..setBlendState(gpuBlendForMode(material.blendMode))
-          ..setPremultipliedColor(
-            material.red,
-            material.green,
-            material.blue,
-            material.alpha,
-          )
-          ..setSparseMode(submission.commandMode(command));
+        _driver.setBlendState(gpuBlendForMode(material.blendMode));
+        if (material.isGradient) {
+          _driver.useGradientPaint(
+            material.gradientBinding!,
+            material.gradientParameters!,
+          );
+        } else {
+          _driver
+            ..useSolidPaint()
+            ..setPremultipliedColor(
+              material.red,
+              material.green,
+              material.blue,
+              material.alpha,
+            );
+        }
+        _driver.setSparseMode(submission.commandMode(command));
         if (submission.commandMode(command) == kSparseGlModeAlpha) {
           _driver.bindAlpha8Texture(
             _alphaTextures[submission.commandAtlasPage(command)],
@@ -336,6 +383,27 @@ final class SparseGlExecutor {
           0,
           materials.length - 1,
           'materialIndex',
+        );
+      }
+      final SparseGlMaterial value = materials[material];
+      if (!value.isGradient) continue;
+      final GpuGradientBinding binding = value.gradientBinding!;
+      final GpuGradientShaderParameters parameters = value.gradientParameters!;
+      if (binding.gradient != parameters.gradient) {
+        throw ArgumentError(
+          'gradient binding LUT does not match shader parameters',
+        );
+      }
+      final GpuTextureHandle texture = binding.texture;
+      if (texture.id == kNoTexture ||
+          !texture.isValid ||
+          binding.lutSize < 2 ||
+          texture.width != binding.lutSize ||
+          texture.height != 1 ||
+          texture.format != GpuTextureFormat.rgba8888Straight ||
+          texture.filter != GpuTextureFilter.linear) {
+        throw StateError(
+          'gradient material has an invalid or incompatible LUT texture',
         );
       }
     }

@@ -75,3 +75,14 @@ compilação/link, upload, draw instanciado, descarte de nomes após device loss
 recriação. A adoção exige `enableExperimentalSparseStrips: true`; os símbolos
 novos permanecem fora do probe obrigatório e o renderer denso continua sendo
 o padrão.
+
+O shader sparse também consome agora o contrato comum de gradientes
+(`GpuGradientBinding` + `GpuGradientShaderParameters`) para linear,
+radial/focal e os três spreads. A LUT permanece straight-alpha e é
+premultiplicada antes da cobertura. A entrada de shader rejeita overflow na
+conversão float32 e texture name zero antes de abrir o pass. A ligação
+replay→seletor foi adicionada
+somente como telemetria: ela mede o candidato mas registra explicitamente que
+o atlas denso ainda executou os pixels, evitando promover um experimento por
+acidente. Uma falha nova também invalida `lastEvent`, impedindo que consumidores
+confundam a última decisão válida com a observação que falhou.

@@ -16,27 +16,40 @@
 /// enforces the difference.
 library;
 
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:dart_ui/src/backends/win32/win32_gl_surface.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
+import 'package:dart_ui/src/geometry/path.dart';
+import 'package:dart_ui/src/geometry/rect.dart';
+import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_backend.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_bindings.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_context.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_sparse_executor.dart';
+import 'package:dart_ui/src/rendering/gpu/gl/gl_stencil_cover_executor.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_gradient.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_recovery.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_texture.dart';
 import 'package:dart_ui/src/rendering/gpu/vector/sparse_strip_draw_plan.dart';
 import 'package:dart_ui/src/rendering/gpu/vector/sparse_strips.dart';
+import 'package:dart_ui/src/rendering/gpu/vector/stencil_cover_draw_plan.dart';
+import 'package:dart_ui/src/rendering/path/fill_rule.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
+import 'package:dart_ui/src/rendering/replay/display_list_player.dart';
 import 'package:test/test.dart';
 
 void main() {
   final session = _GlSession.open();
-  final sparseSession = _GlSession.open(enableExperimentalSparseStrips: true);
+  final sparseSession = _GlSession.open(
+    enableExperimentalSparseStrips: true,
+    enableExperimentalStencilCover: true,
+  );
 
   group('a live GL device', () {
     tearDownAll(session.close);
@@ -51,6 +64,8 @@ void main() {
       expect(device.capabilities.maxTextureSize, greaterThanOrEqualTo(2048));
       expect(device.experimentalSparseStripsEnabled, isFalse,
           reason: 'the dense renderer must remain the default');
+      expect(device.experimentalStencilCoverEnabled, isFalse,
+          reason: 'experimental stencil must remain opt-in');
       printOnFailure('${device.info.deviceDescription} / '
           '${device.info.driverVersion}');
     }, skip: session.skipReason);
@@ -211,9 +226,80 @@ void main() {
     test('compiles, links and owns its native objects', () {
       final GlRenderDevice device = sparseSession.device!;
       expect(device.experimentalSparseStripsEnabled, isTrue);
+      expect(device.experimentalStencilCoverEnabled, isTrue);
       expect(device.makeCurrentOrLose(), isTrue);
       expect(
           missingSparseGlSymbols(sparseSession.context!.procAddress), isEmpty);
+    }, skip: sparseSession.skipReason);
+
+    test('executes stencil-then-cover when framebuffer zero has stencil', () {
+      final GlRenderDevice device = sparseSession.device!;
+      final StencilCoverCapabilities capabilities =
+          device.queryStencilCoverCapabilities();
+      if (capabilities.stencilBits < 1) {
+        markTestSkipped('the live default framebuffer has no stencil bits');
+        return;
+      }
+      final StencilCoverDrawPlan plan = StencilCoverDrawPlan()
+        ..append(
+          Path.rect(const Rect.fromLTRB(0, 0, 8, 8)),
+          clip: const Rect.fromLTRB(0, 0, 16, 16),
+          materialIndex: 0,
+          fillRule: FillRule.evenOdd,
+          capabilities: capabilities,
+          antiAlias: false,
+        );
+
+      final StencilCoverGlExecutionStats stats = device.submitStencilCover(
+        plan,
+        materials: <StencilGlMaterial>[
+          StencilGlMaterial(red: 0.5, green: 0, blue: 0, alpha: 0.5),
+        ],
+        viewportWidth: 16,
+        viewportHeight: 16,
+      );
+
+      expect(stats.draws, 1);
+      expect(stats.commands, 3);
+      expect(stats.accumulationTriangles, 2);
+      expect(device.isLost, isFalse);
+    }, skip: sparseSession.skipReason);
+
+    test('stencil capability queries restore binding and reject invalid FBOs',
+        () {
+      final GlRenderDevice device = sparseSession.device!;
+      expect(device.makeCurrentOrLose(), isTrue);
+      final GlApi gl = device.api;
+      final Pointer<Uint32> slot = device.scratchNames;
+      gl.genFramebuffers(1, slot);
+      final int incompleteFramebuffer = slot[0];
+      expect(incompleteFramebuffer, isNonZero);
+      try {
+        gl.bindFramebuffer(glDrawFramebuffer, incompleteFramebuffer);
+        device.queryStencilCoverCapabilities();
+        slot[0] = 0;
+        gl.getIntegerv(glDrawFramebufferBinding, slot.cast<Int32>());
+        expect(slot[0], incompleteFramebuffer);
+
+        gl.bindFramebuffer(glDrawFramebuffer, 0);
+        expect(
+          () => device.queryStencilCoverCapabilities(
+            surfaceFramebuffer: incompleteFramebuffer,
+          ),
+          throwsStateError,
+        );
+        slot[0] = incompleteFramebuffer;
+        gl.getIntegerv(glDrawFramebufferBinding, slot.cast<Int32>());
+        expect(slot[0], 0);
+        expect(
+          () => device.queryStencilCoverCapabilities(surfaceFramebuffer: -1),
+          throwsArgumentError,
+        );
+      } finally {
+        gl.bindFramebuffer(glDrawFramebuffer, 0);
+        slot[0] = incompleteFramebuffer;
+        gl.deleteFramebuffers(1, slot);
+      }
     }, skip: sparseSession.skipReason);
 
     test('uploads alpha8 data and issues a real instanced draw', () {
@@ -248,6 +334,58 @@ void main() {
       expect(device.isLost, isFalse);
     }, skip: sparseSession.skipReason);
 
+    test('binds the canonical gradient LUT and parameters on a real draw', () {
+      final GlRenderDevice device = sparseSession.device!;
+      final RadialGradient gradient = RadialGradient(
+        centerX: 8,
+        centerY: 8,
+        radius: 8,
+        focusX: 6,
+        focusY: 8,
+        stops: const <GradientStop>[
+          GradientStop(0, 0x80FF0000),
+          GradientStop(1, 0xFF0000FF),
+        ],
+        spread: GradientSpread.reflect,
+      );
+      final GpuGradientCache cache = GpuGradientCache(
+        allocator: device,
+        lutSize: 16,
+      );
+      final GpuGradientBinding binding = cache.resolve(gradient);
+      final GpuGradientShaderParameters parameters =
+          GpuGradientShaderParameters.fromPaint(ReplayPaint(
+        argbColor: 0,
+        style: paintStyleFill,
+        strokeWidth: 0,
+        blendMode: blendModeSrcOver,
+        antiAlias: true,
+        gradient: gradient,
+        shaderTransform: const Transform2D.translation(1, 2),
+      ));
+      final SparseStripDrawPlan plan = SparseStripDrawPlan()
+        ..append(StripBuffer()..addFill(0, 0, 16), materialIndex: 0);
+
+      try {
+        final SparseGlExecutionStats stats = device.submitSparseStrips(
+          plan,
+          materials: <SparseGlMaterial>[
+            SparseGlMaterial.gradient(
+              gradientBinding: binding,
+              gradientParameters: parameters,
+              blendMode: blendModeSrcOver,
+            ),
+          ],
+          viewportWidth: 16,
+          viewportHeight: 16,
+        );
+        expect(stats.drawCalls, 1);
+        expect(device.isLost, isFalse);
+      } finally {
+        cache.clear();
+      }
+    }, skip: sparseSession.skipReason);
+
     test('rebuilds the sparse program and objects after device loss', () {
       final GlRenderDevice device = sparseSession.device!;
       device.state.markLost(const BackendDiagnostic(
@@ -260,6 +398,7 @@ void main() {
 
       expect(report.isRecovered, isTrue, reason: '$report');
       expect(device.experimentalSparseStripsEnabled, isTrue);
+      expect(device.experimentalStencilCoverEnabled, isTrue);
       final SparseStripDrawPlan plan = SparseStripDrawPlan()
         ..append(StripBuffer()..addFill(0, 0, 2), materialIndex: 0);
       expect(
@@ -302,18 +441,30 @@ final class _GlSession {
 
   final Win32GlSurface? _surface;
 
-  static _GlSession open({bool enableExperimentalSparseStrips = false}) {
+  static _GlSession open({
+    bool enableExperimentalSparseStrips = false,
+    bool enableExperimentalStencilCover = false,
+  }) {
     try {
       return Platform.isWindows
-          ? _openWindows(enableExperimentalSparseStrips)
-          : _openEgl(enableExperimentalSparseStrips);
+          ? _openWindows(
+              enableExperimentalSparseStrips,
+              enableExperimentalStencilCover,
+            )
+          : _openEgl(
+              enableExperimentalSparseStrips,
+              enableExperimentalStencilCover,
+            );
     } on Object catch (error) {
       return _GlSession._(
           null, null, 'opening a GL device threw: $error', null);
     }
   }
 
-  static _GlSession _openWindows(bool enableExperimentalSparseStrips) {
+  static _GlSession _openWindows(
+    bool enableExperimentalSparseStrips,
+    bool enableExperimentalStencilCover,
+  ) {
     final attempt = Win32GlSurface.hidden();
     final surface = attempt.surface;
     if (surface == null) {
@@ -333,6 +484,7 @@ final class _GlSession {
           context,
           surface.glLibrary,
           enableExperimentalSparseStrips: enableExperimentalSparseStrips,
+          enableExperimentalStencilCover: enableExperimentalStencilCover,
         ),
         context,
         null,
@@ -344,7 +496,10 @@ final class _GlSession {
     }
   }
 
-  static _GlSession _openEgl(bool enableExperimentalSparseStrips) {
+  static _GlSession _openEgl(
+    bool enableExperimentalSparseStrips,
+    bool enableExperimentalStencilCover,
+  ) {
     final load = GlLibrary.open();
     if (!load.isLoaded) {
       return _GlSession._(
@@ -363,6 +518,7 @@ final class _GlSession {
           context,
           load.library!,
           enableExperimentalSparseStrips: enableExperimentalSparseStrips,
+          enableExperimentalStencilCover: enableExperimentalStencilCover,
         ),
         context,
         null,

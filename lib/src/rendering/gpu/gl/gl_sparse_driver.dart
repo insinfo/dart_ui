@@ -4,9 +4,11 @@ library;
 import 'dart:ffi';
 import 'dart:typed_data';
 
+import '../gpu_gradient.dart';
 import '../gpu_pipeline.dart';
 import 'gl_bindings.dart';
 import 'gl_sparse_executor.dart';
+import 'gl_sparse_strips.dart';
 
 /// Maps the narrow, fakeable sparse contract to a context-bound [GlApi].
 ///
@@ -40,6 +42,15 @@ final class GlApiSparseDriver implements SparseGlDriver {
   int _color = -1;
   int _mode = -1;
   int _alphaAtlas = -1;
+  int _paintMode = -1;
+  int _gradientLut = -1;
+  int _gradientKind = -1;
+  int _gradientSpread = -1;
+  int _gradientLookup = -1;
+  int _targetToLocal0 = -1;
+  int _targetToLocal1 = -1;
+  int _gradientGeometry0 = -1;
+  int _gradientGeometry1 = -1;
   bool _disposed = false;
 
   /// Whether the current context exposes the three entry points that are not
@@ -96,8 +107,31 @@ final class GlApiSparseDriver implements SparseGlDriver {
     _color = _uniform(program, 'uColor');
     _mode = _uniform(program, 'uMode');
     _alphaAtlas = _uniform(program, 'uAlphaAtlas');
-    if (<int>[_viewport, _yFlip, _color, _mode, _alphaAtlas]
-        .any((int value) => value < 0)) {
+    _paintMode = _uniform(program, 'uPaintMode');
+    _gradientLut = _uniform(program, 'uGradientLut');
+    _gradientKind = _uniform(program, 'uGradientKind');
+    _gradientSpread = _uniform(program, 'uGradientSpread');
+    _gradientLookup = _uniform(program, 'uGradientLookup');
+    _targetToLocal0 = _uniform(program, 'uTargetToLocal0');
+    _targetToLocal1 = _uniform(program, 'uTargetToLocal1');
+    _gradientGeometry0 = _uniform(program, 'uGradientGeometry0');
+    _gradientGeometry1 = _uniform(program, 'uGradientGeometry1');
+    if (<int>[
+      _viewport,
+      _yFlip,
+      _color,
+      _mode,
+      _alphaAtlas,
+      _paintMode,
+      _gradientLut,
+      _gradientKind,
+      _gradientSpread,
+      _gradientLookup,
+      _targetToLocal0,
+      _targetToLocal1,
+      _gradientGeometry0,
+      _gradientGeometry1,
+    ].any((int value) => value < 0)) {
       _gl.deleteProgram(program);
       _program = 0;
       throw StateError('the sparse GL program is missing a required uniform');
@@ -256,6 +290,7 @@ final class GlApiSparseDriver implements SparseGlDriver {
           _viewport, viewportWidth.toDouble(), viewportHeight.toDouble())
       ..uniform1i(_yFlip, yFlip)
       ..uniform1i(_alphaAtlas, 0)
+      ..uniform1i(_gradientLut, 1)
       ..enable(glBlend);
   }
 
@@ -273,6 +308,61 @@ final class GlApiSparseDriver implements SparseGlDriver {
     double alpha,
   ) =>
       _gl.uniform4f(_color, red, green, blue, alpha);
+
+  @override
+  void useSolidPaint() => _gl.uniform1i(_paintMode, kSparseGlPaintSolid);
+
+  @override
+  void useGradientPaint(
+    GpuGradientBinding binding,
+    GpuGradientShaderParameters parameters,
+  ) {
+    final Float32List scalars = parameters.scalars;
+    const int transform = GpuGradientUniformOffset.targetToLocal;
+    const int geometry = GpuGradientUniformOffset.geometry;
+    _gl
+      ..uniform1i(_paintMode, kSparseGlPaintGradient)
+      ..uniform1i(
+        _gradientKind,
+        scalars[GpuGradientUniformOffset.kind].toInt(),
+      )
+      ..uniform1i(_gradientSpread, binding.spread.index)
+      ..uniform2f(
+        _gradientLookup,
+        binding.lookupScale,
+        binding.lookupBias,
+      )
+      ..uniform4f(
+        _targetToLocal0,
+        scalars[transform],
+        scalars[transform + 2],
+        scalars[transform + 4],
+        0,
+      )
+      ..uniform4f(
+        _targetToLocal1,
+        scalars[transform + 1],
+        scalars[transform + 3],
+        scalars[transform + 5],
+        0,
+      )
+      ..uniform4f(
+        _gradientGeometry0,
+        scalars[geometry],
+        scalars[geometry + 1],
+        scalars[geometry + 2],
+        scalars[geometry + 3],
+      )
+      ..uniform4f(
+        _gradientGeometry1,
+        scalars[geometry + 4],
+        scalars[geometry + 5],
+        scalars[geometry + 6],
+        scalars[geometry + 7],
+      )
+      ..activeTexture(glTexture0 + 1)
+      ..bindTexture(glTexture2D, binding.texture.id);
+  }
 
   @override
   void setSparseMode(int mode) => _gl.uniform1i(_mode, mode);
@@ -318,6 +408,7 @@ final class GlApiSparseDriver implements SparseGlDriver {
     // attribute rebases from leaking into whichever path runs next.
     _gl
       ..bindVertexArray(0)
+      ..activeTexture(glTexture0)
       ..useProgram(0);
   }
 
@@ -402,6 +493,15 @@ final class GlApiSparseDriver implements SparseGlDriver {
     _color = -1;
     _mode = -1;
     _alphaAtlas = -1;
+    _paintMode = -1;
+    _gradientLut = -1;
+    _gradientKind = -1;
+    _gradientSpread = -1;
+    _gradientLookup = -1;
+    _targetToLocal0 = -1;
+    _targetToLocal1 = -1;
+    _gradientGeometry0 = -1;
+    _gradientGeometry1 = -1;
   }
 
   static int _glFactor(GpuBlendFactor factor) => switch (factor) {

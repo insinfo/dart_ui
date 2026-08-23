@@ -31,6 +31,10 @@ const int kSparseGlAttributeAtlasOrigin = 1;
 const int kSparseGlModeSolid = 0;
 const int kSparseGlModeAlpha = 1;
 
+/// Material source, independent from whether coverage is solid or alpha8.
+const int kSparseGlPaintSolid = 0;
+const int kSparseGlPaintGradient = 1;
+
 /// `mode, material, atlasPage, firstInstance, instanceCount`.
 const int kSparseGlCommandStride = 5;
 
@@ -75,6 +79,15 @@ const List<String> kSparseGlUniformNames = <String>[
   'uColor',
   'uMode',
   'uAlphaAtlas',
+  'uPaintMode',
+  'uGradientLut',
+  'uGradientKind',
+  'uGradientSpread',
+  'uGradientLookup',
+  'uTargetToLocal0',
+  'uTargetToLocal1',
+  'uGradientGeometry0',
+  'uGradientGeometry1',
 ];
 
 const String _sparseVertexBody = '''
@@ -88,6 +101,7 @@ void main() {
                      float((gl_VertexID >> 1) & 1));
   vec2 devicePosition = aQuadRect.xy + corner * aQuadRect.zw;
   vAtlasTexel = aAtlasOrigin + corner * aQuadRect.zw;
+  vTargetPosition = devicePosition;
   float ndcY = 1.0 - devicePosition.y / uViewport.y * 2.0;
   gl_Position = vec4(
       devicePosition.x / uViewport.x * 2.0 - 1.0,
@@ -101,6 +115,56 @@ const String _sparseFragmentBody = '''
 uniform vec4 uColor;
 uniform int uMode;
 uniform sampler2D uAlphaAtlas;
+uniform int uPaintMode;
+uniform sampler2D uGradientLut;
+uniform int uGradientKind;
+uniform int uGradientSpread;
+uniform vec2 uGradientLookup;
+uniform vec4 uTargetToLocal0;
+uniform vec4 uTargetToLocal1;
+uniform vec4 uGradientGeometry0;
+uniform vec4 uGradientGeometry1;
+
+float gradientParameter(vec2 targetPosition) {
+  vec2 local = vec2(
+      dot(uTargetToLocal0.xyz, vec3(targetPosition, 1.0)),
+      dot(uTargetToLocal1.xyz, vec3(targetPosition, 1.0)));
+  if (uGradientKind == 1) {
+    vec2 direction = uGradientGeometry0.zw - uGradientGeometry0.xy;
+    float lengthSquared = dot(direction, direction);
+    return lengthSquared == 0.0
+        ? 0.0
+        : dot(local - uGradientGeometry0.xy, direction) / lengthSquared;
+  }
+
+  vec2 center = uGradientGeometry0.xy;
+  float radius = uGradientGeometry0.z;
+  vec2 focus = vec2(uGradientGeometry0.w, uGradientGeometry1.x);
+  vec2 ray = local - focus;
+  if (all(equal(ray, vec2(0.0)))) return 0.0;
+  if (all(equal(focus, center))) return length(ray) / radius;
+  vec2 focusFromCenter = focus - center;
+  float a = dot(ray, ray);
+  float b = 2.0 * dot(focusFromCenter, ray);
+  float c = dot(focusFromCenter, focusFromCenter) - radius * radius;
+  float discriminant = b * b - 4.0 * a * c;
+  if (a == 0.0 || discriminant < 0.0) return 0.0;
+  float root = sqrt(discriminant);
+  float first = (-b - root) / (2.0 * a);
+  float second = (-b + root) / (2.0 * a);
+  float scale = max(first > 0.0 ? first : 0.0,
+                    second > 0.0 ? second : 0.0);
+  return scale > 0.0 ? 1.0 / scale : 0.0;
+}
+
+float spreadGradient(float parameter) {
+  if (uGradientSpread == 1) return fract(parameter);
+  if (uGradientSpread == 2) {
+    float repeated = mod(parameter, 2.0);
+    return repeated <= 1.0 ? repeated : 2.0 - repeated;
+  }
+  return clamp(parameter, 0.0, 1.0);
+}
 
 void main() {
   float coverage = 1.0;
@@ -110,7 +174,15 @@ void main() {
     // names the exact alpha8 texel without normalised-UV rounding or filtering.
     coverage = texelFetch(uAlphaAtlas, ivec2(floor(vAtlasTexel)), 0).r;
   }
-  fragColor = uColor * coverage;
+  if (uPaintMode == 1) {
+    float parameter = spreadGradient(gradientParameter(vTargetPosition));
+    float coordinate = parameter * uGradientLookup.x + uGradientLookup.y;
+    vec4 straight = texture(uGradientLut, vec2(coordinate, 0.5));
+    straight.rgb *= straight.a;
+    fragColor = straight * coverage;
+  } else {
+    fragColor = uColor * coverage;
+  }
 }
 ''';
 
@@ -120,12 +192,14 @@ String sparseGlVertexShaderSource({required bool desktop}) => desktop
         'layout(location = 0) in vec4 aQuadRect;\n'
         'layout(location = 1) in vec2 aAtlasOrigin;\n'
         'out vec2 vAtlasTexel;\n'
+        'out vec2 vTargetPosition;\n'
         '$_sparseVertexBody'
     : '#version 300 es\n'
         'precision highp float;\n'
         'layout(location = 0) in vec4 aQuadRect;\n'
         'layout(location = 1) in vec2 aAtlasOrigin;\n'
         'out vec2 vAtlasTexel;\n'
+        'out vec2 vTargetPosition;\n'
         '$_sparseVertexBody';
 
 /// Sparse-strip fragment shader. The uniform branch is coherent for a whole
@@ -133,11 +207,13 @@ String sparseGlVertexShaderSource({required bool desktop}) => desktop
 String sparseGlFragmentShaderSource({required bool desktop}) => desktop
     ? '#version 330 core\n'
         'in vec2 vAtlasTexel;\n'
+        'in vec2 vTargetPosition;\n'
         'out vec4 fragColor;\n'
         '$_sparseFragmentBody'
     : '#version 300 es\n'
         'precision highp float;\n'
         'in vec2 vAtlasTexel;\n'
+        'in vec2 vTargetPosition;\n'
         'out vec4 fragColor;\n'
         '$_sparseFragmentBody';
 

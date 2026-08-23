@@ -122,8 +122,14 @@ reset. Tudo continua explicitamente opt-in por
 probe nem o caminho denso padrão.
 
 Os próximos componentes são propagar clip/layer/material do replay até essa
-entrada explícita, adicionar gradientes no shader, comparar pixels em
-framebuffer real e portar o layout para HLSL, MSL, SPIR-V e WGSL.
+entrada explícita, comparar pixels em framebuffer real e portar o layout para
+HLSL, MSL, SPIR-V e WGSL. O shader GL experimental já consome a mesma
+`GpuGradientBinding`/`GpuGradientShaderParameters` do contrato comum: linear,
+radial/focal e pad/repeat/reflect amostram a LUT straight-alpha, premultiplicam
+e só então aplicam a cobertura sparse. Binding e parâmetros de gradientes
+diferentes, texture name zero e scalars que deixam de ser finitos ao estreitar
+de `double` para float32 são recusados antes do pass. Isso impede que valores
+finitos em Dart virem `Inf` silenciosamente no shader.
 
 ### 3. Tesselação/AA geométrico
 
@@ -150,8 +156,20 @@ por draw (clear, accumulate e cover). Non-zero usa increment/decrement wrap por
 face; even-odd inverte o bit zero; o cover testa e zera stencil. Capacidade de
 stencil, MSAA, clear limitado e operações obrigatórias são validadas antes da
 emissão. Coordenadas não finitas e o limite de triângulos geram recusas
-tipadas e transacionais. Falta implementar o executor de estado fixo nos
-backends e sua integração no replay.
+tipadas e transacionais.
+
+`StencilCoverGlExecutor` e `GlApiStencilCoverDriver` executam esse contrato em
+GL 3.3/ES 3.0. Os bindings opcionais não entram no probe denso; a ativação
+exige `enableExperimentalStencilCover`. Lifecycle e device loss estão ligados
+ao `GlRenderDevice`, e cada submissão consulta novamente os attachments do FBO
+selecionado. Em perfil core o tamanho do stencil é obtido por
+`glGetFramebufferAttachmentParameteriv`, não pelo `GL_STENCIL_BITS` legado.
+Consultas preservam o draw-FBO anterior, rejeitam IDs negativos e verificam
+`glCheckFramebufferStatus` antes de interpretar stencil/MSAA; um FBO
+incompleto nunca produz capacidades residuais.
+O FBO offscreen atual ainda não cria attachment stencil/MSAA, portanto C só
+roda em targets que já forneçam esses attachments; integrar essa variante ao
+pool e ao replay continua pendente.
 
 ### 5. Tile/compute
 
@@ -207,6 +225,9 @@ representação da cena ou a correção do renderer.
 `GpuPathStrategySelector` já materializa essa política e produz uma razão
 diagnosticável para cada decisão. `GpuPathWorkloadBuilder` agora obtém do
 `Path`, do transform, do clip, da inspeção de tesselação e das métricas sparse
-um workload coerente para esse seletor. Até replay, paridade em framebuffer e
-benchmarks passarem os critérios, sparse strips permanece experimental e a
-máscara densa continua o fallback correto.
+um workload coerente para esse seletor. `GpuPathPlanningTelemetry` já observa
+o replay real, inclusive o hit efetivo do atlas, e registra o candidato
+A/sparse/B/C/D; por contrato, `executedStrategy` continua sendo o atlas denso.
+Falhas do planejamento são contidas e nunca quebram o frame. Até dispatch,
+paridade em framebuffer e benchmarks passarem os critérios, os novos caminhos
+permanecem experimentais e a máscara densa continua o fallback correto.

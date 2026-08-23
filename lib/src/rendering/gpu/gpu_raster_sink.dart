@@ -65,6 +65,7 @@ import 'gpu_batcher.dart';
 import 'gpu_glyph_atlas.dart';
 import 'gpu_layer_stack.dart';
 import 'gpu_mask_atlas.dart';
+import 'gpu_path_planning.dart';
 import 'gpu_pipeline.dart';
 import 'gpu_texture.dart';
 
@@ -105,6 +106,7 @@ final class GpuRasterSink implements RasterSink {
     this.fontResolver,
     this.onAtlasFlush,
     this.layerStack,
+    this.pathPlanningTelemetry,
   })  : assert(
           maskAtlas == null || maskTextureId != kNoTexture,
           'a mask atlas needs a texture id, or every mask would batch as if '
@@ -175,6 +177,13 @@ final class GpuRasterSink implements RasterSink {
   /// deliberate: a backend that has not wired the flush cycle cannot silently
   /// drop half a paragraph or half a frame's shapes.
   final void Function()? onAtlasFlush;
+
+  /// Optional advisory planning for real path draws.
+  ///
+  /// It cannot change execution: every observed draw still continues through
+  /// [_drawMask]. This is the safe rollout seam for comparing A/sparse/B/C/D
+  /// decisions before any incomplete executor is allowed to affect pixels.
+  final GpuPathPlanningTelemetry? pathPlanningTelemetry;
 
   int _layerDepth = 0;
 
@@ -408,12 +417,24 @@ final class GpuRasterSink implements RasterSink {
       );
     }
 
+    final GpuPathPlanningTelemetry? planning = pathPlanningTelemetry;
+    final int cacheHitsBefore = planning == null ? 0 : atlas.cacheHitCount;
     var result = atlas.rasterizeMask(
       path,
       transform: transform,
       clip: clip,
       rule: rule,
     );
+    if (planning != null && result.status != MaskRasterStatus.empty) {
+      planning.observe(
+        label: what,
+        path: path,
+        localToTarget: transform,
+        clip: clip,
+        fillRule: rule,
+        denseMaskCacheHit: atlas.cacheHitCount > cacheHitsBefore,
+      );
+    }
     if (result.status == MaskRasterStatus.needsFlush) {
       _flushAtlases(atlas, null, 'a $what');
       result = atlas.rasterizeMask(

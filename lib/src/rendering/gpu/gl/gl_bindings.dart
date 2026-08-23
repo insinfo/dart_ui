@@ -72,11 +72,25 @@ const int glUnsignedInt = 0x1405;
 const int glFloat = 0x1406;
 
 const int glColorBufferBit = 0x00004000;
+const int glStencilBufferBit = 0x00000400;
 
 const int glBlend = 0x0BE2;
 const int glScissorTest = 0x0C11;
 const int glCullFace = 0x0B44;
 const int glDepthTest = 0x0B71;
+const int glStencilTest = 0x0B90;
+
+const int glFront = 0x0404;
+const int glBack = 0x0405;
+const int glCw = 0x0900;
+const int glCcw = 0x0901;
+const int glAlways = 0x0207;
+const int glEqual = 0x0202;
+const int glNotEqual = 0x0205;
+const int glKeep = 0x1E00;
+const int glInvert = 0x150A;
+const int glIncrementWrap = 0x8507;
+const int glDecrementWrap = 0x8508;
 
 const int glZero = 0;
 const int glOne = 1;
@@ -108,8 +122,14 @@ const int glRed = 0x1903;
 const int glR8 = 0x8229;
 
 const int glFramebuffer = 0x8D40;
+const int glDrawFramebuffer = 0x8CA9;
+const int glDrawFramebufferBinding = 0x8CA6;
 const int glColorAttachment0 = 0x8CE0;
+const int glStencilAttachment = 0x8D20;
+const int glFramebufferAttachmentStencilSize = 0x8217;
 const int glFramebufferComplete = 0x8CD5;
+const int glFrontLeft = 0x0400;
+const int glBackLeft = 0x0402;
 
 const int glUnpackAlignment = 0x0CF5;
 const int glPackAlignment = 0x0D05;
@@ -119,6 +139,8 @@ const int glRenderer = 0x1F01;
 const int glVersion = 0x1F02;
 const int glShadingLanguageVersion = 0x8B8C;
 const int glMaxTextureSize = 0x0D33;
+const int glStencilBits = 0x0D57;
+const int glSamples = 0x80A9;
 
 // ---------------------------------------------------------------------------
 // Native memory
@@ -380,6 +402,18 @@ const List<String> kSparseGlRequiredSymbols = <String>[
   'glDrawArraysInstanced',
 ];
 
+/// Additional symbols used only by the opt-in stencil-then-cover executor.
+const List<String> kStencilCoverGlRequiredSymbols = <String>[
+  'glColorMask',
+  'glClearStencil',
+  'glStencilMask',
+  'glStencilFunc',
+  'glStencilOpSeparate',
+  'glFrontFace',
+  'glDrawArrays',
+  'glGetFramebufferAttachmentParameteriv',
+];
+
 /// Names in [kRequiredGlSymbols] that [resolve] cannot find.
 ///
 /// Must be called with the context current on any platform whose resolver
@@ -405,6 +439,21 @@ List<String> missingGlSymbols(GlProcResolver resolve) {
 List<String> missingSparseGlSymbols(GlProcResolver resolve) {
   final missing = <String>[];
   for (final symbol in kSparseGlRequiredSymbols) {
+    Pointer<Void> address;
+    try {
+      address = resolve(symbol);
+    } on Object {
+      address = nullptr;
+    }
+    if (address == nullptr) missing.add(symbol);
+  }
+  return missing;
+}
+
+/// Names in [kStencilCoverGlRequiredSymbols] that [resolve] cannot find.
+List<String> missingStencilCoverGlSymbols(GlProcResolver resolve) {
+  final missing = <String>[];
+  for (final symbol in kStencilCoverGlRequiredSymbols) {
     Pointer<Void> address;
     try {
       address = resolve(symbol);
@@ -481,6 +530,31 @@ final class GlApi {
           .asFunction<void Function(double, double, double, double)>();
 
   late final void Function(int) clear = _proc('glClear')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
+
+  late final void Function(int, int, int, int) colorMask = _proc('glColorMask')
+      .cast<NativeFunction<Void Function(Uint8, Uint8, Uint8, Uint8)>>()
+      .asFunction<void Function(int, int, int, int)>();
+
+  late final void Function(int) clearStencil = _proc('glClearStencil')
+      .cast<NativeFunction<Void Function(Int32)>>()
+      .asFunction<void Function(int)>();
+
+  late final void Function(int) stencilMask = _proc('glStencilMask')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
+
+  late final void Function(int, int, int) stencilFunc = _proc('glStencilFunc')
+      .cast<NativeFunction<Void Function(Uint32, Int32, Uint32)>>()
+      .asFunction<void Function(int, int, int)>();
+
+  late final void Function(int, int, int, int) stencilOpSeparate =
+      _proc('glStencilOpSeparate')
+          .cast<NativeFunction<Void Function(Uint32, Uint32, Uint32, Uint32)>>()
+          .asFunction<void Function(int, int, int, int)>();
+
+  late final void Function(int) frontFace = _proc('glFrontFace')
       .cast<NativeFunction<Void Function(Uint32)>>()
       .asFunction<void Function(int)>();
 
@@ -714,6 +788,18 @@ final class GlApi {
       .cast<
           NativeFunction<Void Function(Uint32, Int32, Uint32, Pointer<Void>)>>()
       .asFunction<void Function(int, int, int, Pointer<Void>)>();
+
+  late final void Function(int, int, int) drawArrays = _proc('glDrawArrays')
+      .cast<NativeFunction<Void Function(Uint32, Int32, Int32)>>()
+      .asFunction<void Function(int, int, int)>();
+
+  late final void Function(int, int, int, Pointer<Int32>)
+      getFramebufferAttachmentParameteriv =
+      _proc('glGetFramebufferAttachmentParameteriv')
+          .cast<
+              NativeFunction<
+                  Void Function(Uint32, Uint32, Uint32, Pointer<Int32>)>>()
+          .asFunction<void Function(int, int, int, Pointer<Int32>)>();
 
   late final void Function(int, int, int, int) drawArraysInstanced =
       _proc('glDrawArraysInstanced')

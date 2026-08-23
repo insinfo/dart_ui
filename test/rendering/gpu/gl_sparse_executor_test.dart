@@ -1,13 +1,18 @@
 import 'dart:ffi';
 import 'dart:typed_data';
 
+import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_bindings.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_sparse_executor.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_sparse_strips.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_gradient.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_pipeline.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_texture.dart';
 import 'package:dart_ui/src/rendering/gpu/vector/sparse_strip_draw_plan.dart';
 import 'package:dart_ui/src/rendering/gpu/vector/sparse_strips.dart';
+import 'package:dart_ui/src/rendering/replay/display_list_player.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -259,6 +264,228 @@ void main() {
     expect(driver.deletedBuffers, <int>[9]);
     expect(driver.deletedTextures, <int>[11]);
   });
+
+  test('gradient materials reuse canonical cache bindings and parameters', () {
+    final LinearGradient gradient = LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 8,
+      endY: 0,
+      stops: const <GradientStop>[
+        GradientStop(0, 0x80FF0000),
+        GradientStop(1, 0xFF0000FF),
+      ],
+      spread: GradientSpread.reflect,
+    );
+    final _GradientAllocator allocator = _GradientAllocator();
+    final GpuGradientCache cache = GpuGradientCache(
+      allocator: allocator,
+      lutSize: 8,
+    );
+    final GpuGradientBinding binding = cache.resolve(gradient);
+    final GpuGradientShaderParameters parameters =
+        GpuGradientShaderParameters.fromPaint(ReplayPaint(
+      argbColor: 0,
+      style: paintStyleFill,
+      strokeWidth: 0,
+      blendMode: blendModeSrcOver,
+      antiAlias: true,
+      gradient: gradient,
+      shaderTransform: const Transform2D.translation(2, 3),
+    ));
+    final SparseStripDrawPlan plan = SparseStripDrawPlan()
+      ..append(StripBuffer()..addFill(0, 0, 4), materialIndex: 0)
+      ..append(StripBuffer()..addFill(4, 0, 4), materialIndex: 1);
+    final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
+    final SparseGlExecutor executor = SparseGlExecutor(driver)
+      ..initialize(desktop: true);
+
+    executor.submit(
+      plan,
+      materials: <SparseGlMaterial>[
+        SparseGlMaterial.gradient(
+          gradientBinding: binding,
+          gradientParameters: parameters,
+          blendMode: blendModeSrcOver,
+        ),
+        SparseGlMaterial(
+          red: 1,
+          green: 1,
+          blue: 1,
+          alpha: 1,
+          blendMode: blendModeSrcOver,
+        ),
+      ],
+      viewportWidth: 8,
+      viewportHeight: 4,
+      yFlip: 0,
+    );
+
+    expect(allocator.uploads, 1);
+    expect(driver.gradientBindings, <GpuGradientBinding>[binding]);
+    expect(
+        driver.gradientParameters, <GpuGradientShaderParameters>[parameters]);
+    expect(driver.paintEvents, <String>['gradient:40', 'solid']);
+  });
+
+  test('invalidated gradient LUT is rejected before opening a pass', () {
+    final LinearGradient gradient = LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 1,
+      endY: 0,
+      stops: const <GradientStop>[
+        GradientStop(0, 0xFF000000),
+        GradientStop(1, 0xFFFFFFFF),
+      ],
+    );
+    final _GradientAllocator allocator = _GradientAllocator();
+    final GpuGradientBinding binding =
+        GpuGradientCache(allocator: allocator).resolve(gradient);
+    (binding.texture as _GradientTexture).valid = false;
+    final GpuGradientShaderParameters parameters =
+        GpuGradientShaderParameters.fromPaint(ReplayPaint(
+      argbColor: 0,
+      style: paintStyleFill,
+      strokeWidth: 0,
+      blendMode: blendModeSrcOver,
+      antiAlias: true,
+      gradient: gradient,
+    ));
+    final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
+    final SparseGlExecutor executor = SparseGlExecutor(driver)
+      ..initialize(desktop: true);
+
+    expect(
+      () => executor.submit(
+        SparseStripDrawPlan()
+          ..append(StripBuffer()..addFill(0, 0, 1), materialIndex: 0),
+        materials: <SparseGlMaterial>[
+          SparseGlMaterial.gradient(
+            gradientBinding: binding,
+            gradientParameters: parameters,
+            blendMode: blendModeSrcOver,
+          ),
+        ],
+        viewportWidth: 1,
+        viewportHeight: 1,
+        yFlip: 0,
+      ),
+      throwsStateError,
+    );
+    expect(driver.events, isNot(contains(startsWith('begin:'))));
+  });
+
+  test('forged zero-name gradient LUT is rejected before opening a pass', () {
+    final LinearGradient gradient = LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 1,
+      endY: 0,
+      stops: const <GradientStop>[
+        GradientStop(0, 0xFF000000),
+        GradientStop(1, 0xFFFFFFFF),
+      ],
+    );
+    final GpuGradientBinding binding = GpuGradientBinding(
+      gradient: gradient,
+      texture: _GradientTexture(
+        kNoTexture,
+        8,
+        1,
+        GpuTextureFormat.rgba8888Straight,
+        GpuTextureFilter.linear,
+      ),
+      lutSize: 8,
+    );
+    final GpuGradientShaderParameters parameters =
+        GpuGradientShaderParameters.fromPaint(ReplayPaint(
+      argbColor: 0,
+      style: paintStyleFill,
+      strokeWidth: 0,
+      blendMode: blendModeSrcOver,
+      antiAlias: true,
+      gradient: gradient,
+    ));
+    final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
+    final SparseGlExecutor executor = SparseGlExecutor(driver)
+      ..initialize(desktop: true);
+
+    expect(
+      () => executor.submit(
+        SparseStripDrawPlan()
+          ..append(StripBuffer()..addFill(0, 0, 1), materialIndex: 0),
+        materials: <SparseGlMaterial>[
+          SparseGlMaterial.gradient(
+            gradientBinding: binding,
+            gradientParameters: parameters,
+            blendMode: blendModeSrcOver,
+          ),
+        ],
+        viewportWidth: 1,
+        viewportHeight: 1,
+        yFlip: 0,
+      ),
+      throwsStateError,
+    );
+    expect(driver.events, isNot(contains(startsWith('begin:'))));
+  });
+
+  test('mismatched gradient LUT and geometry are rejected before the pass', () {
+    final LinearGradient lutGradient = LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 1,
+      endY: 0,
+      stops: const <GradientStop>[
+        GradientStop(0, 0xFF000000),
+        GradientStop(1, 0xFFFFFFFF),
+      ],
+    );
+    final LinearGradient parameterGradient = LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 8,
+      endY: 0,
+      stops: const <GradientStop>[
+        GradientStop(0, 0xFFFF0000),
+        GradientStop(1, 0xFF0000FF),
+      ],
+    );
+    final GpuGradientBinding binding =
+        GpuGradientCache(allocator: _GradientAllocator()).resolve(lutGradient);
+    final GpuGradientShaderParameters parameters =
+        GpuGradientShaderParameters.fromPaint(ReplayPaint(
+      argbColor: 0,
+      style: paintStyleFill,
+      strokeWidth: 0,
+      blendMode: blendModeSrcOver,
+      antiAlias: true,
+      gradient: parameterGradient,
+    ));
+    final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
+    final SparseGlExecutor executor = SparseGlExecutor(driver)
+      ..initialize(desktop: true);
+
+    expect(
+      () => executor.submit(
+        SparseStripDrawPlan()
+          ..append(StripBuffer()..addFill(0, 0, 1), materialIndex: 0),
+        materials: <SparseGlMaterial>[
+          SparseGlMaterial.gradient(
+            gradientBinding: binding,
+            gradientParameters: parameters,
+            blendMode: blendModeSrcOver,
+          ),
+        ],
+        viewportWidth: 1,
+        viewportHeight: 1,
+        yFlip: 0,
+      ),
+      throwsArgumentError,
+    );
+    expect(driver.events, isNot(contains(startsWith('begin:'))));
+  });
 }
 
 final class _FakeSparseGlDriver implements SparseGlDriver {
@@ -275,6 +502,10 @@ final class _FakeSparseGlDriver implements SparseGlDriver {
   final List<int> deletedPrograms = <int>[];
   final List<int> deletedBuffers = <int>[];
   final List<int> deletedTextures = <int>[];
+  final List<String> paintEvents = <String>[];
+  final List<GpuGradientBinding> gradientBindings = <GpuGradientBinding>[];
+  final List<GpuGradientShaderParameters> gradientParameters =
+      <GpuGradientShaderParameters>[];
   int programCreates = 0;
   int bufferCreates = 0;
   int textureCreates = 0;
@@ -349,6 +580,19 @@ final class _FakeSparseGlDriver implements SparseGlDriver {
   ) {}
 
   @override
+  void useSolidPaint() => paintEvents.add('solid');
+
+  @override
+  void useGradientPaint(
+    GpuGradientBinding binding,
+    GpuGradientShaderParameters parameters,
+  ) {
+    gradientBindings.add(binding);
+    gradientParameters.add(parameters);
+    paintEvents.add('gradient:${binding.texture.id}');
+  }
+
+  @override
   void setSparseMode(int mode) => modes.add(mode);
 
   @override
@@ -390,4 +634,54 @@ final class _FakeSparseGlDriver implements SparseGlDriver {
 
   @override
   void deleteTexture(int texture) => deletedTextures.add(texture);
+}
+
+final class _GradientTexture implements GpuTextureHandle {
+  _GradientTexture(this.id, this.width, this.height, this.format, this.filter);
+
+  @override
+  final int id;
+  @override
+  final int width;
+  @override
+  final int height;
+  @override
+  final GpuTextureFormat format;
+  @override
+  final GpuTextureFilter filter;
+  bool valid = true;
+
+  @override
+  bool get isValid => valid;
+}
+
+final class _GradientAllocator implements GpuTextureAllocator {
+  int uploads = 0;
+
+  @override
+  GpuTextureHandle createTexture({
+    required int width,
+    required int height,
+    required GpuTextureFormat format,
+    GpuTextureFilter filter = GpuTextureFilter.nearest,
+  }) =>
+      _GradientTexture(40, width, height, format, filter);
+
+  @override
+  void uploadRegion(
+    GpuTextureHandle texture, {
+    required int x,
+    required int y,
+    required int width,
+    required int height,
+    required Uint8List pixels,
+    required int bytesPerRow,
+  }) {
+    uploads++;
+  }
+
+  @override
+  void releaseTexture(GpuTextureHandle texture) {
+    (texture as _GradientTexture).valid = false;
+  }
 }

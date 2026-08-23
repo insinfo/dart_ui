@@ -6715,3 +6715,70 @@ No issues found
 65 testes direcionados de GL sparse, seletor/workload, tesselação B e
 stencil C passaram.
 ```
+
+## 14. Checkpoint — gradiente sparse, executor stencil GL e replay observado
+
+**Data:** 22 de agosto de 2026
+
+### Fechado nesta rodada
+
+- O shader sparse GLSL 3.30/ES 3.00 usa `GpuGradientBinding` e
+  `GpuGradientShaderParameters` diretamente. Linear, radial/focal e
+  pad/repeat/reflect amostram a LUT RGBA straight-alpha, premultiplicam e
+  aplicam cobertura alpha8. LUT/parâmetros de gradientes diferentes ou textura
+  invalidada por device loss são recusados antes de abrir o pass.
+- `GpuPathPlanningTelemetry` foi ligado opcionalmente ao `_drawMask` real do
+  `GpuRasterSink`. Ele observa Path/transform/clip/fill rule, hit verdadeiro do
+  atlas e custos sparse, registra o candidato A–D e mantém
+  `executedStrategy = coverageAtlas`. Erros de planejamento/callback não
+  interrompem o frame; sem a opção não há planejamento adicional.
+- `StencilCoverGlExecutor` reproduz clear→accumulate→cover para non-zero e
+  even-odd. `GlApiStencilCoverDriver` implementa shaders, VAO/VBO, scissor,
+  masks/ops separados por face, blend, consulta de stencil/MSAA e lifecycle.
+- A abordagem C é opt-in no `GlRenderDevice` por
+  `enableExperimentalStencilCover`; inicialização, descarte sem deletes no
+  contexto perdido e recriação estão ligados ao recovery do device.
+- A consulta de stencil foi corrigida para perfil core: usa o attachment do
+  framebuffer por `glGetFramebufferAttachmentParameteriv`, tentando
+  BACK_LEFT/FRONT_LEFT no target padrão. `GL_STENCIL_BITS` devolvia estado
+  inválido/residual nesse perfil.
+- A consulta agora preserva o draw-FBO anterior, recusa identificadores
+  negativos e só lê stencil/MSAA depois de confirmar framebuffer completo.
+  O teste real cobre restauração de binding e recusa de FBO incompleto.
+- Uniforms de gradiente são validados depois da conversão para float32;
+  overflow de um `double` finito para `Inf` e texture name zero são recusados
+  antes do pass. Falha de planejamento limpa o evento anterior da telemetria.
+
+### Limitações honestas
+
+- O pool/FBO offscreen GL atual cria somente cor, sem stencil ou MSAA. O
+  executor C recusa corretamente esse target; a próxima variante do pool deve
+  declarar attachments e contabilizá-los no orçamento.
+- A telemetria já mede decisões no replay, mas ainda não despacha sparse/B/C/D.
+  O atlas denso continua produzindo todos os pixels de produção.
+- O gradiente sparse foi compilado e desenhado no driver real, mas ainda falta
+  paridade de framebuffer por pixel e propagação automática de layer origin.
+- `GpuTextureHandle.id` só é único dentro de um device. O próximo contrato de
+  binding deve carregar owner/generation para recusar uma LUT válida criada
+  por outro backend ou contexto GL antes de chegar a `glBindTexture`.
+
+### Próxima sequência
+
+1. Adicionar uma variante stencil/MSAA ao `GlFramebufferPool`, com size class,
+   bytes reais e recovery, e validar C por pixels non-zero/even-odd.
+2. Transformar a telemetria em dispatch experimental somente quando executor,
+   target, material e clip estiverem completos; qualquer recusa volta ao atlas.
+3. Integrar origem de layer/material do replay ao gradiente sparse e comparar
+   saída contra CPU/atlas em framebuffer real.
+4. Portar sparse/C para os backends modernos e só então iniciar o executor D
+   compute com limiar sustentado por benchmark.
+
+### Validação
+
+```text
+dart analyze
+No issues found
+
+644 testes GPU passaram; 19 foram ignorados por plataforma/capacidade.
+Na suíte completa, 4.609 testes passaram e 22 foram ignorados.
+```

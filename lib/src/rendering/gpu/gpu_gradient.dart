@@ -20,14 +20,16 @@ import 'gpu_texture.dart';
 /// A resident, immutable lookup ramp and the texture that owns its texels.
 final class GpuGradientBinding {
   const GpuGradientBinding({
+    required this.gradient,
     required this.texture,
     required this.lutSize,
-    required this.spread,
   });
 
+  /// Value whose stops were uploaded into [texture].
+  final Gradient gradient;
   final GpuTextureHandle texture;
   final int lutSize;
-  final GradientSpread spread;
+  GradientSpread get spread => gradient.spread;
 
   /// Scale and bias from a spread-adjusted 0..1 parameter to texture space.
   ///
@@ -138,9 +140,9 @@ final class GpuGradientCache {
     }
 
     final binding = GpuGradientBinding(
+      gradient: gradient,
       texture: texture,
       lutSize: lutSize,
-      spread: gradient.spread,
     );
     _bindings[gradient] = binding;
     return binding;
@@ -191,6 +193,15 @@ final class GpuGradientShaderParameters {
     final geometry = gradient.geometry;
     for (var i = 0; i < geometry.length; i++) {
       _scalars[GpuGradientUniformOffset.geometry + i] = geometry[i];
+    }
+    for (var i = 0; i < _scalars.length; i++) {
+      if (!_scalars[i].isFinite) {
+        throw ArgumentError.value(
+          _scalars[i],
+          'gradient scalar $i',
+          'must remain finite after conversion to float32',
+        );
+      }
     }
   }
 

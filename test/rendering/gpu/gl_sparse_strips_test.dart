@@ -16,6 +16,9 @@ void main() {
         expect(vertex, contains('uYFlip == 0 ? ndcY : -ndcY'));
         expect(fragment, contains('texelFetch'));
         expect(fragment, contains('uColor * coverage'));
+        expect(fragment, contains('gradientParameter'));
+        expect(fragment, contains('uGradientLut'));
+        expect(fragment, contains('straight.rgb *= straight.a'));
       }
     });
 

@@ -21,6 +21,7 @@ void main() {
       expect(cache.length, 1);
       expect(allocator.creates, 1);
       expect(allocator.uploads, 1);
+      expect(first.gradient, _linear());
       expect(first.texture.format, GpuTextureFormat.rgba8888Straight);
       expect(first.texture.filter, GpuTextureFilter.linear);
       expect(first.lookupBias, closeTo(1 / 6, 1e-12));
@@ -184,6 +185,31 @@ void main() {
         _paint(_linear(), Transform2D.identity),
       );
       expect(() => parameters.scalars[0] = 99, throwsUnsupportedError);
+    });
+
+    test('rejects finite doubles that overflow float32 shader uniforms', () {
+      final hugeGeometry = LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 1e300,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0xFF000000),
+          GradientStop(1, 0xFFFFFFFF),
+        ],
+      );
+      expect(
+        () => GpuGradientShaderParameters.fromPaint(
+          _paint(hugeGeometry, Transform2D.identity),
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => GpuGradientShaderParameters.fromPaint(
+          _paint(_linear(), const Transform2D.scaling(1e-300, 1)),
+        ),
+        throwsArgumentError,
+      );
     });
   });
 }

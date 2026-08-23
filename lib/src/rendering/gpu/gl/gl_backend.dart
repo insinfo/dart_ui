@@ -84,12 +84,15 @@ import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import '../vector/sparse_strip_draw_plan.dart';
+import '../vector/stencil_cover_draw_plan.dart';
 import 'gl_bindings.dart';
 import 'gl_context.dart';
 import 'gl_framebuffer_pool.dart';
 import 'gl_shaders.dart';
 import 'gl_sparse_driver.dart';
 import 'gl_sparse_executor.dart';
+import 'gl_stencil_cover_driver.dart';
+import 'gl_stencil_cover_executor.dart';
 import 'gl_surface_descriptor.dart';
 import 'gl_window_target.dart';
 
@@ -198,12 +201,14 @@ final class GlRenderDevice
     required RendererInfo info,
     required int maxTextureSize,
     required bool sparseStripsRequested,
+    required bool stencilCoverRequested,
   })  : _context = context,
         _gl = gl,
         _heap = heap,
         _info = info,
         _maxTextureSize = maxTextureSize,
-        _sparseStripsRequested = sparseStripsRequested;
+        _sparseStripsRequested = sparseStripsRequested,
+        _stencilCoverRequested = stencilCoverRequested;
 
   final GlContext _context;
   final GlApi _gl;
@@ -211,14 +216,67 @@ final class GlRenderDevice
   final RendererInfo _info;
   final int _maxTextureSize;
   final bool _sparseStripsRequested;
+  final bool _stencilCoverRequested;
   final GpuDeviceState _state = GpuDeviceState();
 
   GlApiSparseDriver? _sparseDriver;
   SparseGlExecutor? _sparseExecutor;
+  GlApiStencilCoverDriver? _stencilCoverDriver;
+  StencilCoverGlExecutor? _stencilCoverExecutor;
 
   /// True only when the caller explicitly opted in and the current context
   /// exposed instancing plus the sparse uniforms used by the adapter.
   bool get experimentalSparseStripsEnabled => _sparseExecutor != null;
+
+  /// True only when the caller explicitly enabled approach C and its optional
+  /// GL symbols compiled successfully. Each submission still validates the
+  /// stencil/MSAA attachments of the framebuffer it binds.
+  bool get experimentalStencilCoverEnabled => _stencilCoverExecutor != null;
+
+  /// Queries the attachments of one currently selectable framebuffer.
+  ///
+  /// Unlike context features, stencil bits and sample count belong to the
+  /// framebuffer. This intentionally performs a fresh query after binding the
+  /// requested target, so callers can build a plan with truthful capabilities
+  /// instead of reusing the default framebuffer's answer for an offscreen FBO.
+  StencilCoverCapabilities queryStencilCoverCapabilities({
+    int surfaceFramebuffer = 0,
+  }) {
+    final GlApiStencilCoverDriver? driver = _stencilCoverDriver;
+    if (driver == null) {
+      throw StateError(
+        'stencil-then-cover is disabled; adopt the GL context with '
+        'enableExperimentalStencilCover: true',
+      );
+    }
+    if (surfaceFramebuffer < 0) {
+      throw ArgumentError.value(
+        surfaceFramebuffer,
+        'surfaceFramebuffer',
+        'must be non-negative',
+      );
+    }
+    if (!makeCurrentOrLose()) throw StateError('the GL context is lost');
+    _status[0] = 0;
+    _gl.getIntegerv(glDrawFramebufferBinding, _status);
+    if (checkError('query current draw framebuffer')) {
+      throw StateError('${lastError ?? 'the draw framebuffer query failed'}');
+    }
+    final int previousDrawFramebuffer = _status[0];
+    try {
+      _gl.bindFramebuffer(glDrawFramebuffer, surfaceFramebuffer);
+      _requireCompleteDrawFramebuffer(surfaceFramebuffer);
+      final StencilCoverCapabilities capabilities = driver.capabilities;
+      if (checkError('query stencil-cover capabilities')) {
+        throw StateError(
+          '${lastError ?? 'the stencil-cover capability query failed'}',
+        );
+      }
+      return capabilities;
+    } finally {
+      _gl.bindFramebuffer(glDrawFramebuffer, previousDrawFramebuffer);
+    }
+  }
 
   /// Scratch native memory for the `GLuint*` out-parameters, allocated once.
   ///
@@ -316,6 +374,7 @@ final class GlRenderDevice
   @override
   void discardNativeResources() {
     _sparseExecutor?.discardNativeResources();
+    _stencilCoverExecutor?.discardNativeResources();
     _program = 0;
     _vao = 0;
     _vbo = 0;
@@ -396,6 +455,11 @@ final class GlRenderDevice
     if (sparseFailure != null) {
       _state.markLost(sparseFailure);
       return sparseFailure;
+    }
+    final BackendDiagnostic? stencilFailure = _initialiseStencilCover();
+    if (stencilFailure != null) {
+      _state.markLost(stencilFailure);
+      return stencilFailure;
     }
     _submissionsStopped = false;
     if (!wasLost) {
@@ -826,6 +890,65 @@ final class GlRenderDevice
     return stats;
   }
 
+  /// Explicit approach-C submission seam.
+  ///
+  /// Like [submitSparseStrips], this is never called by the production
+  /// display-list path. The selected framebuffer must carry stencil, and an
+  /// antialiased plan additionally requires at least four samples; the
+  /// executor queries those framebuffer-dependent facts after it is bound.
+  StencilCoverGlExecutionStats submitStencilCover(
+    StencilCoverDrawPlan plan, {
+    required List<StencilGlMaterial> materials,
+    required int viewportWidth,
+    required int viewportHeight,
+    int yFlip = 0,
+    int surfaceFramebuffer = 0,
+  }) {
+    final StencilCoverGlExecutor? executor = _stencilCoverExecutor;
+    if (executor == null) {
+      throw StateError(
+        'stencil-then-cover is disabled; adopt the GL context with '
+        'enableExperimentalStencilCover: true',
+      );
+    }
+    if (surfaceFramebuffer < 0) {
+      throw ArgumentError.value(
+        surfaceFramebuffer,
+        'surfaceFramebuffer',
+        'must be non-negative',
+      );
+    }
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      throw StateError('GL submissions are stopped during device recovery');
+    }
+    if (!makeCurrentOrLose()) {
+      throw StateError('the GL context is lost');
+    }
+    _gl.bindFramebuffer(glDrawFramebuffer, surfaceFramebuffer);
+    _requireCompleteDrawFramebuffer(surfaceFramebuffer);
+    final StencilCoverGlExecutionStats stats = executor.submit(
+      plan,
+      materials: materials,
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight,
+      yFlip: yFlip,
+    );
+    if (checkError('stencil-cover draw')) {
+      throw StateError('${lastError ?? 'the stencil-cover GL draw failed'}');
+    }
+    return stats;
+  }
+
+  void _requireCompleteDrawFramebuffer(int surfaceFramebuffer) {
+    final int status = _gl.checkFramebufferStatus(glDrawFramebuffer);
+    if (status == glFramebufferComplete) return;
+    throw StateError(
+      'stencil-cover framebuffer $surfaceFramebuffer is incomplete: '
+      'glCheckFramebufferStatus returned 0x${status.toRadixString(16)}',
+    );
+  }
+
   /// Issues batches `[first, last)` into whatever is bound, at [viewportWidth]
   /// by [viewportHeight] and in the orientation [yFlip] names.
   void _drawBatches(
@@ -1106,6 +1229,32 @@ final class GlRenderDevice
     return null;
   }
 
+  BackendDiagnostic? _initialiseStencilCover() {
+    if (!_stencilCoverRequested) return null;
+    final GlApiStencilCoverDriver driver =
+        _stencilCoverDriver ??= GlApiStencilCoverDriver(_gl, _heap);
+    final StencilCoverGlExecutor executor =
+        _stencilCoverExecutor ??= StencilCoverGlExecutor(driver);
+    try {
+      executor.initialize(desktop: _context.isDesktopGl);
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the opt-in stencil-cover GL pipeline could not be '
+            'initialized',
+        detail: '$error',
+      );
+    }
+    if (checkError('stencil-cover GL initialisation')) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'GL rejected the opt-in stencil-cover renderer objects',
+        detail: lastError?.detail,
+      );
+    }
+    return null;
+  }
+
   void _attribute(int index, int size, int offset, int stride) {
     _gl
       ..enableVertexAttribArray(index)
@@ -1257,6 +1406,7 @@ final class GlRenderDevice
     // them already anyway.
     if (!_state.isLost && _context.makeCurrent()) {
       _sparseExecutor?.dispose();
+      _stencilCoverExecutor?.dispose();
       if (_vbo != 0) {
         scratchNames[0] = _vbo;
         _gl.deleteBuffers(1, scratchNames);
@@ -1270,10 +1420,16 @@ final class GlRenderDevice
         _gl.deleteVertexArrays(1, scratchNames);
       }
       if (_program != 0) _gl.deleteProgram(_program);
-    } else if (_sparseExecutor != null && !_sparseExecutor!.isDisposed) {
-      _sparseExecutor!.disposeAfterDeviceLoss();
+    } else {
+      if (_sparseExecutor != null && !_sparseExecutor!.isDisposed) {
+        _sparseExecutor!.disposeAfterDeviceLoss();
+      }
+      if (_stencilCoverExecutor != null && !_stencilCoverExecutor!.isDisposed) {
+        _stencilCoverExecutor!.disposeAfterDeviceLoss();
+      }
     }
     _sparseDriver?.disposeHostResources();
+    _stencilCoverDriver?.disposeHostResources();
     _context.dispose();
     _heap
       ..release(scratchNames)
@@ -2442,6 +2598,7 @@ final class GlRendererBackend implements RendererBackend {
     GlContext context,
     DynamicLibrary glLibrary, {
     bool enableExperimentalSparseStrips = false,
+    bool enableExperimentalStencilCover = false,
   }) {
     final report = describeContext(context);
     if (!report.supported) {
@@ -2490,6 +2647,26 @@ final class GlRendererBackend implements RendererBackend {
         );
       }
     }
+    if (enableExperimentalStencilCover) {
+      final List<String> missing =
+          missingStencilCoverGlSymbols(context.procAddress);
+      if (missing.isNotEmpty) {
+        context.dispose();
+        throw BackendSelectionError(
+          requested: backendName,
+          attempts: <BackendProbeResult>[
+            BackendProbeResult.unsupported(
+              backendName,
+              BackendDiagnostic.missingSymbol(
+                missing.join(', '),
+                detail: 'required only because experimental '
+                    'stencil-then-cover was explicitly enabled',
+              ),
+            ),
+          ],
+        );
+      }
+    }
     final device = GlRenderDevice._(
       context: context,
       gl: gl,
@@ -2502,6 +2679,7 @@ final class GlRendererBackend implements RendererBackend {
       ),
       maxTextureSize: _queryMaxTextureSize(gl, heap),
       sparseStripsRequested: enableExperimentalSparseStrips,
+      stencilCoverRequested: enableExperimentalStencilCover,
     );
     final failure = device._initialise();
     if (failure != null) {
@@ -2520,6 +2698,16 @@ final class GlRendererBackend implements RendererBackend {
         requested: backendName,
         attempts: <BackendProbeResult>[
           BackendProbeResult.unsupported(backendName, sparseFailure),
+        ],
+      );
+    }
+    final BackendDiagnostic? stencilFailure = device._initialiseStencilCover();
+    if (stencilFailure != null) {
+      device.dispose();
+      throw BackendSelectionError(
+        requested: backendName,
+        attempts: <BackendProbeResult>[
+          BackendProbeResult.unsupported(backendName, stencilFailure),
         ],
       );
     }
