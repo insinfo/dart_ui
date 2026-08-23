@@ -19,11 +19,27 @@ import 'gpu_texture.dart';
 
 /// A resident, immutable lookup ramp and the texture that owns its texels.
 final class GpuGradientBinding {
-  const GpuGradientBinding({
+  const GpuGradientBinding._({
     required this.gradient,
     required this.texture,
     required this.lutSize,
-  });
+    required GpuTextureAllocator owner,
+  }) : _owner = owner;
+
+  /// Whether this binding still belongs to, and is usable by, [allocator].
+  ///
+  /// Texture object names are only unique within one device. Comparing the
+  /// allocator by identity prevents a GL executor from binding a live texture
+  /// created by another GL context or by another backend whose integer name
+  /// happens to collide. [GpuTextureHandle.isValid] supplies the generation
+  /// half of the check: handles from before a device loss stay invalid after
+  /// recovery even when the native driver recycles their names.
+  bool isUsableBy(GpuTextureAllocator allocator) =>
+      identical(_owner, allocator) && texture.isValid;
+
+  /// Kept private with the constructor so a caller cannot forge an owner for a
+  /// texture obtained from a different allocator.
+  final GpuTextureAllocator _owner;
 
   /// Value whose stops were uploaded into [texture].
   final Gradient gradient;
@@ -139,10 +155,11 @@ final class GpuGradientCache {
       rethrow;
     }
 
-    final binding = GpuGradientBinding(
+    final binding = GpuGradientBinding._(
       gradient: gradient,
       texture: texture,
       lutSize: lutSize,
+      owner: allocator,
     );
     _bindings[gradient] = binding;
     return binding;

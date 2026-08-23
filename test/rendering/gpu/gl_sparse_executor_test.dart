@@ -297,8 +297,10 @@ void main() {
       ..append(StripBuffer()..addFill(0, 0, 4), materialIndex: 0)
       ..append(StripBuffer()..addFill(4, 0, 4), materialIndex: 1);
     final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
-    final SparseGlExecutor executor = SparseGlExecutor(driver)
-      ..initialize(desktop: true);
+    final SparseGlExecutor executor = SparseGlExecutor(
+      driver,
+      textureAllocator: allocator,
+    )..initialize(desktop: true);
 
     executor.submit(
       plan,
@@ -353,8 +355,10 @@ void main() {
       gradient: gradient,
     ));
     final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
-    final SparseGlExecutor executor = SparseGlExecutor(driver)
-      ..initialize(desktop: true);
+    final SparseGlExecutor executor = SparseGlExecutor(
+      driver,
+      textureAllocator: allocator,
+    )..initialize(desktop: true);
 
     expect(
       () => executor.submit(
@@ -376,7 +380,7 @@ void main() {
     expect(driver.events, isNot(contains(startsWith('begin:'))));
   });
 
-  test('forged zero-name gradient LUT is rejected before opening a pass', () {
+  test('gradient LUT from another allocator is rejected before the pass', () {
     final LinearGradient gradient = LinearGradient(
       startX: 0,
       startY: 0,
@@ -387,17 +391,10 @@ void main() {
         GradientStop(1, 0xFFFFFFFF),
       ],
     );
-    final GpuGradientBinding binding = GpuGradientBinding(
-      gradient: gradient,
-      texture: _GradientTexture(
-        kNoTexture,
-        8,
-        1,
-        GpuTextureFormat.rgba8888Straight,
-        GpuTextureFilter.linear,
-      ),
-      lutSize: 8,
-    );
+    final _GradientAllocator owner = _GradientAllocator();
+    final _GradientAllocator otherDevice = _GradientAllocator();
+    final GpuGradientBinding binding =
+        GpuGradientCache(allocator: owner).resolve(gradient);
     final GpuGradientShaderParameters parameters =
         GpuGradientShaderParameters.fromPaint(ReplayPaint(
       argbColor: 0,
@@ -408,8 +405,10 @@ void main() {
       gradient: gradient,
     ));
     final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
-    final SparseGlExecutor executor = SparseGlExecutor(driver)
-      ..initialize(desktop: true);
+    final SparseGlExecutor executor = SparseGlExecutor(
+      driver,
+      textureAllocator: otherDevice,
+    )..initialize(desktop: true);
 
     expect(
       () => executor.submit(
@@ -429,6 +428,25 @@ void main() {
       throwsStateError,
     );
     expect(driver.events, isNot(contains(startsWith('begin:'))));
+  });
+
+  test('zero-name gradient LUT is rejected while the binding is built', () {
+    final _GradientAllocator allocator =
+        _GradientAllocator(textureId: kNoTexture);
+    final GpuGradientCache cache = GpuGradientCache(allocator: allocator);
+    final LinearGradient gradient = LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 1,
+      endY: 0,
+      stops: const <GradientStop>[
+        GradientStop(0, 0xFF000000),
+        GradientStop(1, 0xFFFFFFFF),
+      ],
+    );
+
+    expect(() => cache.resolve(gradient), throwsStateError);
+    expect(allocator.uploads, 0);
   });
 
   test('mismatched gradient LUT and geometry are rejected before the pass', () {
@@ -452,8 +470,9 @@ void main() {
         GradientStop(1, 0xFF0000FF),
       ],
     );
+    final _GradientAllocator allocator = _GradientAllocator();
     final GpuGradientBinding binding =
-        GpuGradientCache(allocator: _GradientAllocator()).resolve(lutGradient);
+        GpuGradientCache(allocator: allocator).resolve(lutGradient);
     final GpuGradientShaderParameters parameters =
         GpuGradientShaderParameters.fromPaint(ReplayPaint(
       argbColor: 0,
@@ -464,8 +483,10 @@ void main() {
       gradient: parameterGradient,
     ));
     final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
-    final SparseGlExecutor executor = SparseGlExecutor(driver)
-      ..initialize(desktop: true);
+    final SparseGlExecutor executor = SparseGlExecutor(
+      driver,
+      textureAllocator: allocator,
+    )..initialize(desktop: true);
 
     expect(
       () => executor.submit(
@@ -656,6 +677,9 @@ final class _GradientTexture implements GpuTextureHandle {
 }
 
 final class _GradientAllocator implements GpuTextureAllocator {
+  _GradientAllocator({this.textureId = 40});
+
+  final int textureId;
   int uploads = 0;
 
   @override
@@ -665,7 +689,7 @@ final class _GradientAllocator implements GpuTextureAllocator {
     required GpuTextureFormat format,
     GpuTextureFilter filter = GpuTextureFilter.nearest,
   }) =>
-      _GradientTexture(40, width, height, format, filter);
+      _GradientTexture(textureId, width, height, format, filter);
 
   @override
   void uploadRegion(

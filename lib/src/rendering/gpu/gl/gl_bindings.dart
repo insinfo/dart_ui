@@ -122,12 +122,17 @@ const int glRed = 0x1903;
 const int glR8 = 0x8229;
 
 const int glFramebuffer = 0x8D40;
+const int glReadFramebuffer = 0x8CA8;
 const int glDrawFramebuffer = 0x8CA9;
+const int glReadFramebufferBinding = 0x8CAA;
 const int glDrawFramebufferBinding = 0x8CA6;
 const int glColorAttachment0 = 0x8CE0;
 const int glStencilAttachment = 0x8D20;
 const int glFramebufferAttachmentStencilSize = 0x8217;
 const int glFramebufferComplete = 0x8CD5;
+const int glRenderbuffer = 0x8D41;
+const int glStencilIndex8 = 0x8D48;
+const int glMaxSamples = 0x8D57;
 const int glFrontLeft = 0x0400;
 const int glBackLeft = 0x0402;
 
@@ -414,6 +419,17 @@ const List<String> kStencilCoverGlRequiredSymbols = <String>[
   'glGetFramebufferAttachmentParameteriv',
 ];
 
+/// Additional symbols used only by attachment-aware/MSAA framebuffer pools.
+const List<String> kAttachmentFramebufferGlRequiredSymbols = <String>[
+  'glGenRenderbuffers',
+  'glDeleteRenderbuffers',
+  'glBindRenderbuffer',
+  'glRenderbufferStorage',
+  'glRenderbufferStorageMultisample',
+  'glFramebufferRenderbuffer',
+  'glBlitFramebuffer',
+];
+
 /// Names in [kRequiredGlSymbols] that [resolve] cannot find.
 ///
 /// Must be called with the context current on any platform whose resolver
@@ -454,6 +470,21 @@ List<String> missingSparseGlSymbols(GlProcResolver resolve) {
 List<String> missingStencilCoverGlSymbols(GlProcResolver resolve) {
   final missing = <String>[];
   for (final symbol in kStencilCoverGlRequiredSymbols) {
+    Pointer<Void> address;
+    try {
+      address = resolve(symbol);
+    } on Object {
+      address = nullptr;
+    }
+    if (address == nullptr) missing.add(symbol);
+  }
+  return missing;
+}
+
+/// Names in [kAttachmentFramebufferGlRequiredSymbols] not resolved by GL.
+List<String> missingAttachmentFramebufferGlSymbols(GlProcResolver resolve) {
+  final missing = <String>[];
+  for (final symbol in kAttachmentFramebufferGlRequiredSymbols) {
     Pointer<Void> address;
     try {
       address = resolve(symbol);
@@ -782,6 +813,48 @@ final class GlApi {
       _proc('glCheckFramebufferStatus')
           .cast<NativeFunction<Uint32 Function(Uint32)>>()
           .asFunction<int Function(int)>();
+
+  late final void Function(int, Pointer<Uint32>) genRenderbuffers =
+      _proc('glGenRenderbuffers')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
+
+  late final void Function(int, Pointer<Uint32>) deleteRenderbuffers =
+      _proc('glDeleteRenderbuffers')
+          .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()
+          .asFunction<void Function(int, Pointer<Uint32>)>();
+
+  late final void Function(int, int) bindRenderbuffer =
+      _proc('glBindRenderbuffer')
+          .cast<NativeFunction<Void Function(Uint32, Uint32)>>()
+          .asFunction<void Function(int, int)>();
+
+  late final void Function(int, int, int, int) renderbufferStorage =
+      _proc('glRenderbufferStorage')
+          .cast<NativeFunction<Void Function(Uint32, Uint32, Int32, Int32)>>()
+          .asFunction<void Function(int, int, int, int)>();
+
+  late final void Function(
+      int, int, int, int, int) renderbufferStorageMultisample = _proc(
+          'glRenderbufferStorageMultisample')
+      .cast<
+          NativeFunction<Void Function(Uint32, Int32, Uint32, Int32, Int32)>>()
+      .asFunction<void Function(int, int, int, int, int)>();
+
+  late final void Function(int, int, int, int) framebufferRenderbuffer =
+      _proc('glFramebufferRenderbuffer')
+          .cast<NativeFunction<Void Function(Uint32, Uint32, Uint32, Uint32)>>()
+          .asFunction<void Function(int, int, int, int)>();
+
+  late final void Function(int, int, int, int, int, int, int, int, int, int)
+      blitFramebuffer = _proc('glBlitFramebuffer')
+          .cast<
+              NativeFunction<
+                  Void Function(Int32, Int32, Int32, Int32, Int32, Int32, Int32,
+                      Int32, Uint32, Uint32)>>()
+          .asFunction<
+              void Function(
+                  int, int, int, int, int, int, int, int, int, int)>();
 
   late final void Function(int, int, int, Pointer<Void>) drawElements = _proc(
           'glDrawElements')

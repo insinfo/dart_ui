@@ -22,6 +22,8 @@ void main() {
       expect(allocator.creates, 1);
       expect(allocator.uploads, 1);
       expect(first.gradient, _linear());
+      expect(first.isUsableBy(allocator), isTrue);
+      expect(first.isUsableBy(_Allocator()), isFalse);
       expect(first.texture.format, GpuTextureFormat.rgba8888Straight);
       expect(first.texture.filter, GpuTextureFilter.linear);
       expect(first.lookupBias, closeTo(1 / 6, 1e-12));

@@ -223,7 +223,7 @@ final class GlWindowTarget
     _submittedBatches = 0;
     _pendingClear = null;
     _layers.endFrame();
-    _layerPool.dispose();
+    _layerPool.discardAfterDeviceLoss();
     _device
       ..releaseTexture(_maskTexture)
       ..releaseTexture(_glyphTexture);

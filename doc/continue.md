@@ -6751,26 +6751,17 @@ stencil C passaram.
 
 ### Limitações honestas
 
-- O pool/FBO offscreen GL atual cria somente cor, sem stencil ou MSAA. O
-  executor C recusa corretamente esse target; a próxima variante do pool deve
-  declarar attachments e contabilizá-los no orçamento.
 - A telemetria já mede decisões no replay, mas ainda não despacha sparse/B/C/D.
   O atlas denso continua produzindo todos os pixels de produção.
-- O gradiente sparse foi compilado e desenhado no driver real, mas ainda falta
-  paridade de framebuffer por pixel e propagação automática de layer origin.
-- `GpuTextureHandle.id` só é único dentro de um device. O próximo contrato de
-  binding deve carregar owner/generation para recusar uma LUT válida criada
-  por outro backend ou contexto GL antes de chegar a `glBindTexture`.
+- MSAA ainda não é usado automaticamente por layers: seu resolve precisa
+  entrar na ordem dos passes antes do batch que amostra a textura.
 
 ### Próxima sequência
 
-1. Adicionar uma variante stencil/MSAA ao `GlFramebufferPool`, com size class,
-   bytes reais e recovery, e validar C por pixels non-zero/even-odd.
-2. Transformar a telemetria em dispatch experimental somente quando executor,
+1. Transformar a telemetria em dispatch experimental somente quando executor,
    target, material e clip estiverem completos; qualquer recusa volta ao atlas.
-3. Integrar origem de layer/material do replay ao gradiente sparse e comparar
-   saída contra CPU/atlas em framebuffer real.
-4. Portar sparse/C para os backends modernos e só então iniciar o executor D
+2. Inserir resolve MSAA na sequência de passes antes do composite da layer.
+3. Portar sparse/C para os backends modernos e só então iniciar o executor D
    compute com limiar sustentado por benchmark.
 
 ### Validação
@@ -6781,4 +6772,62 @@ No issues found
 
 644 testes GPU passaram; 19 foram ignorados por plataforma/capacidade.
 Na suíte completa, 4.609 testes passaram e 22 foram ignorados.
+```
+
+## 15. Checkpoint — attachments GL, ownership e paridade de gradiente
+
+**Data:** 22 de agosto de 2026
+
+### Fechado nesta rodada
+
+- `GlFramebufferPool` agora usa `GlFramebufferAttachments` na chave de reuse.
+  Cor, stencil8, quantidade de amostras e textura de resolve entram no custo
+  do size class e nos limites idle/total.
+- `GlDeviceFramebufferFactory` cria FBO single-sample com `STENCIL_INDEX8`.
+  O teste live confirmou framebuffer completo, pelo menos 8 bits de stencil e
+  uma submissão stencil-then-cover bem-sucedida nesse target offscreen.
+- A variante MSAA cria color/stencil renderbuffers e FBO/texture de resolve,
+  mas exige `resolveFramebuffer` explícito. Layers continuam pedindo
+  color-only; nenhum composite amostra MSAA não resolvido.
+- O pool rastreia ownership, recusa foreign target e double-release, elimina
+  resultado incompatível da factory e inclui targets in-flight no dispose.
+  Em device loss, `discardAfterDeviceLoss` esquece nomes sem chamadas GL; os
+  targets window/offscreen usam esse caminho.
+- `GpuGradientBinding` só nasce no cache e guarda a identidade exata do
+  allocator. O executor recusa LUT de outro backend/device, mesmo com o mesmo
+  ID nativo, e handles invalidados por uma geração perdida.
+- Dois testes GL reais comparam todos os 256 pixels RGBA premultiplicados com
+  `GradientLut` e `GpuGradientShaderParameters`: linear/repeat com alpha e
+  transform; radial focal/reflect com alpha, origem de layer e `yFlip=1`.
+  A tolerância máxima é 2 por canal e nenhum desvio de produção foi encontrado.
+
+### Limitação preservada de propósito
+
+O executor experimental ainda não é inserido automaticamente no replay. Uma
+chamada imediata durante `_drawMask` pode ultrapassar batches já gravados ou
+desenhar no target errado dentro de `saveLayer`. A próxima integração precisa
+representar sparse/stencil como comandos ordenados de `GpuRenderPass`, com
+fallback decidido antes de qualquer efeito nativo.
+
+### Próxima sequência
+
+1. Estender o stream de passes com um comando vetorial experimental que
+   preserve ordem, target, viewport, clip e layer origin.
+2. Gerar `SparseStripDrawPlan` retido a partir do path real e só promovê-lo
+   quando selector, material e target aceitarem; recusas continuam no atlas.
+3. Resolver MSAA antes do batch composite que amostra a layer e validar pixels
+   non-zero/even-odd com quatro amostras.
+4. Portar o mesmo contrato de owner/generation e materiais para
+   Vulkan/D3D12/Metal/WebGPU.
+
+### Validação
+
+```text
+dart analyze
+No issues found
+
+60 testes focados passaram; 1 foi ignorado porque o framebuffer padrão não
+possui stencil.
+655 testes GPU passaram; 19 foram ignorados por plataforma/capacidade.
+Na suíte completa, 4.620 testes passaram e 22 foram ignorados.
 ```

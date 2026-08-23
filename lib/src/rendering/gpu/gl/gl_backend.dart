@@ -1208,8 +1208,10 @@ final class GlRenderDevice
     if (!_sparseStripsRequested) return null;
     final GlApiSparseDriver driver =
         _sparseDriver ??= GlApiSparseDriver(_gl, _heap);
-    final SparseGlExecutor executor =
-        _sparseExecutor ??= SparseGlExecutor(driver);
+    final SparseGlExecutor executor = _sparseExecutor ??= SparseGlExecutor(
+      driver,
+      textureAllocator: this,
+    );
     try {
       executor.initialize(desktop: _context.isDesktopGl);
     } on Object catch (error) {
@@ -1578,7 +1580,7 @@ final class GlOffscreenTarget
     _submittedBatches = 0;
     _pendingClear = null;
     _layers.endFrame();
-    _layerPool.dispose();
+    _layerPool.discardAfterDeviceLoss();
     _device
       ..releaseTexture(_maskTexture)
       ..releaseTexture(_glyphTexture);

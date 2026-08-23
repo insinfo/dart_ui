@@ -167,9 +167,12 @@ selecionado. Em perfil core o tamanho do stencil é obtido por
 Consultas preservam o draw-FBO anterior, rejeitam IDs negativos e verificam
 `glCheckFramebufferStatus` antes de interpretar stencil/MSAA; um FBO
 incompleto nunca produz capacidades residuais.
-O FBO offscreen atual ainda não cria attachment stencil/MSAA, portanto C só
-roda em targets que já forneçam esses attachments; integrar essa variante ao
-pool e ao replay continua pendente.
+O pool GL agora possui uma variante explícita por descriptor: tamanho,
+stencil e amostras fazem parte da chave e do orçamento; stencil8 single-sample
+foi validado em driver real. MSAA possui renderbuffers e resolve explícito,
+mas não é entregue silenciosamente ao `GpuLayerStack`, pois o composite
+precisa ordenar o resolve antes de amostrar a textura. Integrar essa sequência
+ao replay continua pendente.
 
 ### 5. Tile/compute
 

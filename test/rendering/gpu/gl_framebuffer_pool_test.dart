@@ -8,10 +8,27 @@
 /// once.
 library;
 
+import 'dart:ffi';
+
+import 'package:dart_ui/src/rendering/gpu/gl/gl_bindings.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_framebuffer_pool.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('attachment symbols remain optional for the dense framebuffer pool', () {
+    expect(
+      missingAttachmentFramebufferGlSymbols(
+        (String name) => name == 'glBlitFramebuffer'
+            ? nullptr
+            : Pointer<Void>.fromAddress(1),
+      ),
+      <String>['glBlitFramebuffer'],
+    );
+    for (final String symbol in kAttachmentFramebufferGlRequiredSymbols) {
+      expect(kRequiredGlSymbols, isNot(contains(symbol)));
+    }
+  });
+
   group('size classes', () {
     test('small sizes round to a power of two, with a floor', () {
       // Below 256 the number of classes is what matters: a screen of chips and
@@ -52,6 +69,38 @@ void main() {
   });
 
   group('reuse', () {
+    test('attachment layout is part of the reuse key', () {
+      final _SpyFactory factory = _SpyFactory();
+      final GlFramebufferPool pool = GlFramebufferPool(factory: factory);
+      final GlFramebuffer color = pool.acquireFramebuffer(100, 60);
+      pool.releaseLayerTarget(color);
+
+      final GlFramebuffer stencil = pool.acquireFramebuffer(
+        100,
+        60,
+        attachments: GlFramebufferAttachments.stencil8,
+      );
+
+      expect(identical(color, stencil), isFalse);
+      expect(pool.createCount, 2);
+      expect(stencil.attachments.stencilBits, 8);
+      expect(factory.attachmentCreates, 1);
+    });
+
+    test('MSAA target requires explicit resolve before texture sampling', () {
+      final _SpyFactory factory = _SpyFactory();
+      final GlFramebufferPool pool = GlFramebufferPool(factory: factory);
+      final GlFramebuffer target = pool.acquireFramebuffer(
+        32,
+        32,
+        attachments: GlFramebufferAttachments.stencil8Msaa4,
+      );
+
+      expect(target.resolveFramebufferId, isNonZero);
+      pool.resolveFramebuffer(target);
+      expect(factory.resolved, <int>[target.id]);
+    });
+
     test('a released target answers the next request of its class', () {
       final factory = _SpyFactory();
       final pool = GlFramebufferPool(factory: factory);
@@ -119,6 +168,35 @@ void main() {
   });
 
   group('budgets', () {
+    test('stencil and MSAA allocations pay their real relative budget', () {
+      expect(
+        GlFramebufferAttachments.stencil8.byteSize(32, 32),
+        32 * 32 * 5,
+      );
+      expect(
+        GlFramebufferAttachments.stencil8Msaa4.byteSize(32, 32),
+        32 * 32 * 24,
+      );
+      final GlFramebufferPool pool = GlFramebufferPool(
+        factory: _SpyFactory(),
+        maxIdleBytes: 32 * 32 * 24,
+        maxTotalBytes: 32 * 32 * 24,
+      );
+      pool.acquireFramebuffer(
+        32,
+        32,
+        attachments: GlFramebufferAttachments.stencil8Msaa4,
+      );
+      expect(
+        () => pool.acquireFramebuffer(
+          1,
+          1,
+          attachments: GlFramebufferAttachments.stencil8,
+        ),
+        throwsA(isA<GlFramebufferBudgetError>()),
+      );
+    });
+
     test('idle memory over the budget is deleted, oldest first', () {
       // 256x256x4 is 256 KiB; a budget of 300 KiB holds exactly one.
       final factory = _SpyFactory();
@@ -198,6 +276,29 @@ void main() {
       pool.dispose();
       expect(factory.deleted.length, 2, reason: 'nothing left to delete');
     });
+
+    test('device loss forgets idle and in-flight names without deletion', () {
+      final _SpyFactory factory = _SpyFactory();
+      final GlFramebufferPool pool = GlFramebufferPool(factory: factory);
+      final GlFramebuffer idle = pool.acquireFramebuffer(32, 32);
+      pool.releaseLayerTarget(idle);
+      final GlFramebuffer inFlight = pool.acquireFramebuffer(
+        32,
+        32,
+        attachments: GlFramebufferAttachments.stencil8,
+      );
+
+      pool.discardAfterDeviceLoss();
+
+      expect(pool.liveBytes, 0);
+      expect(pool.idleBytes, 0);
+      expect(pool.discardCount, 2);
+      expect(factory.deleted, isEmpty);
+      expect(
+        () => pool.releaseLayerTarget(inFlight),
+        throwsArgumentError,
+      );
+    });
   });
 
   group('refusals', () {
@@ -216,6 +317,24 @@ void main() {
       );
     });
 
+    test('an incompatible factory result is deleted before it can be pooled',
+        () {
+      final _SpyFactory factory =
+          _SpyFactory(returnIncompatibleAttachment: true);
+      final GlFramebufferPool pool = GlFramebufferPool(factory: factory);
+      expect(
+        () => pool.acquireFramebuffer(
+          64,
+          64,
+          attachments: GlFramebufferAttachments.stencil8,
+        ),
+        throwsStateError,
+      );
+      expect(factory.deleted, hasLength(1));
+      expect(pool.liveBytes, 0);
+      expect(pool.createCount, 0);
+    });
+
     test('a foreign target is refused rather than pooled', () {
       // Two allocators wired to one layer stack would otherwise show up as a
       // framebuffer leak in one and a double free in the other.
@@ -223,22 +342,35 @@ void main() {
       expect(
         () => pool.releaseLayerTarget(
             GlFramebuffer(id: 9, textureId: 9, width: 8, height: 8)),
-        returnsNormally,
+        throwsArgumentError,
       );
+    });
+
+    test('a framebuffer cannot be released twice', () {
+      final GlFramebufferPool pool = GlFramebufferPool(factory: _SpyFactory());
+      final GlFramebuffer target = pool.acquireFramebuffer(8, 8);
+      pool.releaseLayerTarget(target);
+      expect(() => pool.releaseLayerTarget(target), throwsStateError);
     });
   });
 }
 
 /// A factory that hands out integers and remembers what it was asked for.
-final class _SpyFactory implements GlFramebufferFactory {
-  _SpyFactory({this.refuse = false});
+final class _SpyFactory implements GlAttachmentFramebufferFactory {
+  _SpyFactory({
+    this.refuse = false,
+    this.returnIncompatibleAttachment = false,
+  });
 
   /// Stands in for a driver that will not create a framebuffer - out of
   /// memory, or an incomplete attachment.
   final bool refuse;
+  final bool returnIncompatibleAttachment;
 
   final List<List<int>> created = <List<int>>[];
   final List<int> deleted = <int>[];
+  final List<int> resolved = <int>[];
+  int attachmentCreates = 0;
   int _nextName = 1;
 
   @override
@@ -253,6 +385,34 @@ final class _SpyFactory implements GlFramebufferFactory {
       height: height,
     );
   }
+
+  @override
+  GlFramebuffer? createAttachmentFramebuffer(
+    int width,
+    int height,
+    GlFramebufferAttachments attachments,
+  ) {
+    if (refuse) return null;
+    attachmentCreates++;
+    created.add(<int>[width, height]);
+    final int name = _nextName++;
+    return GlFramebuffer(
+      id: name,
+      textureId: name + 1000,
+      width: width,
+      height: height,
+      attachments: returnIncompatibleAttachment
+          ? GlFramebufferAttachments.colorOnly
+          : attachments,
+      colorRenderbufferId: attachments.isMultisampled ? name + 2000 : 0,
+      stencilRenderbufferId: attachments.hasStencil ? name + 3000 : 0,
+      resolveFramebufferId: attachments.isMultisampled ? name + 4000 : 0,
+    );
+  }
+
+  @override
+  void resolveFramebuffer(GlFramebuffer framebuffer) =>
+      resolved.add(framebuffer.id);
 
   @override
   void deleteFramebuffer(GlFramebuffer framebuffer) =>

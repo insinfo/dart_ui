@@ -1,8 +1,7 @@
 /// Experimental OpenGL lifecycle and executor for sparse-strip submissions.
 ///
-/// It is intentionally not wired into [GlRenderDevice] yet. The executor is
-/// complete enough to own a program, instance VBO and alpha8 texture pages,
-/// but is reached only by an explicit caller. That keeps the established
+/// It is wired into [GlRenderDevice] only behind an explicit feature flag and
+/// reached through an explicit submission method. That keeps the established
 /// dense-mask renderer unchanged while the sparse path gains fake-driver and
 /// live-driver coverage.
 library;
@@ -171,10 +170,15 @@ final class SparseGlExecutionStats {
 
 /// Owns and executes the experimental sparse GL pipeline.
 final class SparseGlExecutor {
-  SparseGlExecutor(this._driver, {SparseGlSubmission? submission})
-      : submission = submission ?? SparseGlSubmission();
+  SparseGlExecutor(
+    this._driver, {
+    GpuTextureAllocator? textureAllocator,
+    SparseGlSubmission? submission,
+  })  : _textureAllocator = textureAllocator,
+        submission = submission ?? SparseGlSubmission();
 
   final SparseGlDriver _driver;
+  final GpuTextureAllocator? _textureAllocator;
   final SparseGlSubmission submission;
   final List<int> _alphaTextures = <int>[];
 
@@ -395,8 +399,14 @@ final class SparseGlExecutor {
         );
       }
       final GpuTextureHandle texture = binding.texture;
+      final GpuTextureAllocator? textureAllocator = _textureAllocator;
+      if (textureAllocator == null || !binding.isUsableBy(textureAllocator)) {
+        throw StateError(
+          'gradient material LUT does not belong to this GL device or its '
+          'native generation is no longer valid',
+        );
+      }
       if (texture.id == kNoTexture ||
-          !texture.isValid ||
           binding.lutSize < 2 ||
           texture.width != binding.lutSize ||
           texture.height != 1 ||

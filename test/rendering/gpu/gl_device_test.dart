@@ -18,19 +18,24 @@ library;
 
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/win32/win32_gl_surface.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
+import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
 import 'package:dart_ui/src/graphics/gradient.dart';
+import 'package:dart_ui/src/graphics/gradient_lut.dart';
+import 'package:dart_ui/src/graphics/image/decoded_image.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_backend.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_bindings.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_context.dart';
+import 'package:dart_ui/src/rendering/gpu/gl/gl_framebuffer_pool.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_sparse_executor.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_stencil_cover_executor.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_gradient.dart';
@@ -265,6 +270,60 @@ void main() {
       expect(device.isLost, isFalse);
     }, skip: sparseSession.skipReason);
 
+    test('creates a complete stencil FBO and executes approach C into it', () {
+      final GlRenderDevice device = sparseSession.device!;
+      if (missingAttachmentFramebufferGlSymbols(
+              sparseSession.context!.procAddress)
+          .isNotEmpty) {
+        markTestSkipped('the live driver lacks attachment framebuffer calls');
+        return;
+      }
+      final GlFramebufferPool pool = GlFramebufferPool(
+        factory: GlDeviceFramebufferFactory(
+          gl: device.api,
+          scratchNames: device.scratchNames,
+          makeCurrent: device.makeCurrentOrLose,
+        ),
+      );
+      final GlFramebuffer target = pool.acquireFramebuffer(
+        16,
+        16,
+        attachments: GlFramebufferAttachments.stencil8,
+      );
+      try {
+        final StencilCoverCapabilities capabilities =
+            device.queryStencilCoverCapabilities(
+          surfaceFramebuffer: target.id,
+        );
+        expect(capabilities.stencilBits, greaterThanOrEqualTo(8));
+        expect(capabilities.sampleCount, 1);
+        final StencilCoverDrawPlan plan = StencilCoverDrawPlan()
+          ..append(
+            Path.rect(const Rect.fromLTRB(2, 2, 14, 14)),
+            clip: const Rect.fromLTRB(0, 0, 16, 16),
+            materialIndex: 0,
+            fillRule: FillRule.nonZero,
+            capabilities: capabilities,
+            antiAlias: false,
+          );
+        final StencilCoverGlExecutionStats stats = device.submitStencilCover(
+          plan,
+          materials: <StencilGlMaterial>[
+            StencilGlMaterial(red: 0, green: 0.5, blue: 0, alpha: 0.5),
+          ],
+          viewportWidth: 16,
+          viewportHeight: 16,
+          surfaceFramebuffer: target.id,
+        );
+        expect(stats.coverDraws, 1);
+        expect(device.isLost, isFalse);
+      } finally {
+        pool
+          ..releaseLayerTarget(target)
+          ..dispose();
+      }
+    }, skip: sparseSession.skipReason);
+
     test('stencil capability queries restore binding and reject invalid FBOs',
         () {
       final GlRenderDevice device = sparseSession.device!;
@@ -384,6 +443,74 @@ void main() {
       } finally {
         cache.clear();
       }
+    }, skip: sparseSession.skipReason);
+
+    test('linear repeat gradient matches reference pixels with alpha', () {
+      final GlRenderDevice device = sparseSession.device!;
+      final LinearGradient gradient = LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 4,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0x2020E040),
+          GradientStop(0.35, 0xA0E02080),
+          GradientStop(1, 0xFF2040E0),
+        ],
+        spread: GradientSpread.repeat,
+      );
+      final ReplayPaint gradientPaint = ReplayPaint(
+        argbColor: 0,
+        style: paintStyleFill,
+        strokeWidth: 0,
+        blendMode: blendModeSrc,
+        antiAlias: true,
+        gradient: gradient,
+        shaderTransform: const Transform2D.translation(-1, 0),
+      );
+
+      _expectSparseGradientParity(
+        device,
+        gradient,
+        gradientPaint,
+        targetOriginInDevice: Offset.zero,
+        yFlip: 0,
+      );
+    }, skip: sparseSession.skipReason);
+
+    test('focused radial reflect gradient matches layer-local pixels', () {
+      final GlRenderDevice device = sparseSession.device!;
+      final RadialGradient gradient = RadialGradient(
+        centerX: 6,
+        centerY: 4,
+        radius: 6,
+        focusX: 3,
+        focusY: 4,
+        stops: const <GradientStop>[
+          GradientStop(0, 0x4040FF20),
+          GradientStop(0.5, 0xC0FF2040),
+          GradientStop(1, 0xFF2040FF),
+        ],
+        spread: GradientSpread.reflect,
+      );
+      final ReplayPaint paint = ReplayPaint(
+        argbColor: 0,
+        style: paintStyleFill,
+        strokeWidth: 0,
+        blendMode: blendModeSrc,
+        antiAlias: true,
+        gradient: gradient,
+        shaderTransform: const Transform2D.translation(10, 20),
+      );
+
+      _expectSparseGradientParity(
+        device,
+        gradient,
+        paint,
+        targetOriginInDevice: const Offset(8, 16),
+        // Layer targets are rendered top-down in texture memory.
+        yFlip: 1,
+      );
     }, skip: sparseSession.skipReason);
 
     test('rebuilds the sparse program and objects after device loss', () {
@@ -550,4 +677,222 @@ List<int> _pixel(Framebuffer framebuffer, int x, int y) {
     framebuffer.pixels[offset + 2],
     framebuffer.pixels[offset + 3],
   ];
+}
+
+void _expectSparseGradientParity(
+  GlRenderDevice device,
+  Gradient gradient,
+  ReplayPaint paint, {
+  required Offset targetOriginInDevice,
+  required int yFlip,
+}) {
+  const int width = 16;
+  const int height = 16;
+  const int lutSize = 64;
+  final _SparsePixelSurface surface = _SparsePixelSurface.create(
+    device,
+    width,
+    height,
+  );
+  final GpuGradientCache cache = GpuGradientCache(
+    allocator: device,
+    lutSize: lutSize,
+  );
+  try {
+    final GpuGradientBinding binding = cache.resolve(gradient);
+    final GpuGradientShaderParameters parameters =
+        GpuGradientShaderParameters.fromPaint(
+      paint,
+      targetOriginInDevice: targetOriginInDevice,
+    );
+    final SparseStripDrawPlan plan = SparseStripDrawPlan();
+    for (var y = 0; y < height; y += kStripHeight) {
+      plan.append(
+        StripBuffer()..addFill(0, y, width),
+        materialIndex: 0,
+      );
+    }
+    surface.clear();
+    device.submitSparseStrips(
+      plan,
+      materials: <SparseGlMaterial>[
+        SparseGlMaterial.gradient(
+          gradientBinding: binding,
+          gradientParameters: parameters,
+          blendMode: blendModeSrc,
+        ),
+      ],
+      viewportWidth: width,
+      viewportHeight: height,
+      yFlip: yFlip,
+      surfaceFramebuffer: surface.framebuffer,
+    );
+    final Uint8List actual = surface.readTargetOrder(yFlip: yFlip);
+    final GradientLut lut = GradientLut(gradient, size: lutSize);
+    for (var y = 0; y < height; y++) {
+      for (var x = 0; x < width; x++) {
+        final int expected = lut.sampleArgb(
+          parameters.parameterAtTarget(x + 0.5, y + 0.5),
+        );
+        final int alpha = expected >> 24 & 0xFF;
+        final List<int> channels = <int>[
+          premultiplyChannel(expected >> 16 & 0xFF, alpha),
+          premultiplyChannel(expected >> 8 & 0xFF, alpha),
+          premultiplyChannel(expected & 0xFF, alpha),
+          alpha,
+        ];
+        final int offset = (y * width + x) * 4;
+        for (var channel = 0; channel < 4; channel++) {
+          final int difference =
+              (actual[offset + channel] - channels[channel]).abs();
+          if (difference > 2) {
+            fail(
+              'sparse gradient differs at ($x, $y) channel $channel: '
+              'GPU=${actual[offset + channel]}, reference=${channels[channel]}, '
+              'delta=$difference, yFlip=$yFlip, origin=$targetOriginInDevice',
+            );
+          }
+        }
+      }
+    }
+  } finally {
+    cache.clear();
+    surface.dispose();
+  }
+}
+
+final class _SparsePixelSurface {
+  _SparsePixelSurface._(
+    this.device,
+    this.width,
+    this.height,
+    this.texture,
+    this.framebuffer,
+    this.heap,
+  );
+
+  factory _SparsePixelSurface.create(
+    GlRenderDevice device,
+    int width,
+    int height,
+  ) {
+    if (!device.makeCurrentOrLose()) {
+      throw StateError('the GL context could not be made current');
+    }
+    final GlApi gl = device.api;
+    final Pointer<Uint32> names = device.scratchNames;
+    gl.genTextures(1, names);
+    final int texture = names[0];
+    gl.bindTexture(glTexture2D, texture);
+    gl.texParameteri(glTexture2D, glTextureMinFilter, glNearest);
+    gl.texParameteri(glTexture2D, glTextureMagFilter, glNearest);
+    gl.texParameteri(glTexture2D, glTextureWrapS, glClampToEdge);
+    gl.texParameteri(glTexture2D, glTextureWrapT, glClampToEdge);
+    gl.texImage2D(
+      glTexture2D,
+      0,
+      glRgba8,
+      width,
+      height,
+      0,
+      glRgba,
+      glUnsignedByte,
+      nullptr,
+    );
+    gl.genFramebuffers(1, names);
+    final int framebuffer = names[0];
+    gl.bindFramebuffer(glFramebuffer, framebuffer);
+    gl.framebufferTexture2D(
+      glFramebuffer,
+      glColorAttachment0,
+      glTexture2D,
+      texture,
+      0,
+    );
+    final int status = gl.checkFramebufferStatus(glFramebuffer);
+    if (status != glFramebufferComplete) {
+      names[0] = framebuffer;
+      gl.deleteFramebuffers(1, names);
+      names[0] = texture;
+      gl.deleteTextures(1, names);
+      throw StateError(
+        'gradient parity framebuffer is incomplete: '
+        '0x${status.toRadixString(16)}',
+      );
+    }
+    final NativeHeap? heap = NativeHeap.tryBind(null);
+    if (heap == null) {
+      names[0] = framebuffer;
+      gl.deleteFramebuffers(1, names);
+      names[0] = texture;
+      gl.deleteTextures(1, names);
+      throw StateError('no native heap for gradient parity readback');
+    }
+    return _SparsePixelSurface._(
+      device,
+      width,
+      height,
+      texture,
+      framebuffer,
+      heap,
+    );
+  }
+
+  final GlRenderDevice device;
+  final int width;
+  final int height;
+  final int texture;
+  final int framebuffer;
+  final NativeHeap heap;
+
+  void clear() {
+    device.api
+      ..bindFramebuffer(glFramebuffer, framebuffer)
+      ..disable(glScissorTest)
+      ..clearColor(0, 0, 0, 0)
+      ..clear(glColorBufferBit);
+  }
+
+  Uint8List readTargetOrder({required int yFlip}) {
+    final int byteCount = width * height * 4;
+    final Pointer<Uint8> native = heap.allocate<Uint8>(byteCount);
+    try {
+      device.api
+        ..bindFramebuffer(glFramebuffer, framebuffer)
+        ..pixelStorei(glPackAlignment, 1)
+        ..finish()
+        ..readPixels(
+          0,
+          0,
+          width,
+          height,
+          glRgba,
+          glUnsignedByte,
+          native.cast<Void>(),
+        );
+      final Uint8List source = native.asTypedList(byteCount);
+      final Uint8List result = Uint8List(byteCount);
+      for (var targetY = 0; targetY < height; targetY++) {
+        final int framebufferY = yFlip == 0 ? height - 1 - targetY : targetY;
+        result.setRange(
+          targetY * width * 4,
+          (targetY + 1) * width * 4,
+          source,
+          framebufferY * width * 4,
+        );
+      }
+      return result;
+    } finally {
+      heap.release(native);
+    }
+  }
+
+  void dispose() {
+    if (!device.makeCurrentOrLose()) return;
+    final Pointer<Uint32> names = device.scratchNames;
+    names[0] = framebuffer;
+    device.api.deleteFramebuffers(1, names);
+    names[0] = texture;
+    device.api.deleteTextures(1, names);
+  }
 }
