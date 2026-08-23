@@ -1,12 +1,12 @@
 /// Backend-neutral CPU tessellation for retained GPU meshes.
 ///
 /// This is the deliberately narrow first implementation of approach B. It
-/// accepts one closed, simple contour made exclusively from `moveTo`,
-/// `lineTo`, and `close`, then triangulates it with ear clipping. Curves are
-/// rejected as [TessellationRejection.curvesRequireFlattening]: the caller
-/// must choose and account for a device-space flattening tolerance before it
-/// asks this layer to retain geometry. Multiple contours (and therefore
-/// holes), open contours, and self-intersections are also rejected by name.
+/// accepts one closed, simple contour and triangulates it with ear clipping.
+/// Quadratic and cubic curves are flattened explicitly in local space before
+/// polygon validation. The tolerance is therefore retained in the cache key:
+/// moving or scaling a mesh does not rebuild it, while asking for a finer
+/// local approximation does. Multiple contours (and therefore holes), open
+/// contours, and self-intersections are rejected by name.
 ///
 /// The result contains only float32 XY vertices and uint32 triangle indices.
 /// That contract maps directly to OpenGL, D3D, Metal, Vulkan, and WebGPU
@@ -14,6 +14,7 @@
 /// tessellator or its cache key.
 library;
 
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../../../geometry/path.dart';
@@ -22,7 +23,7 @@ import '../../path/fill_rule.dart';
 
 /// A reason a [Path] cannot enter the conservative retained-mesh route.
 enum TessellationRejection {
-  curvesRequireFlattening,
+  segmentLimitExceeded,
   multipleContoursUnsupported,
   openContourUnsupported,
   nonFiniteCoordinate,
@@ -44,8 +45,8 @@ final class TessellationUnsupportedError extends UnsupportedError {
 /// [Path] equality is content-based. The mesh stays in local coordinates, so
 /// a per-draw transform is intentionally absent: moving or scaling an object
 /// must reuse its VBO and update only a transform uniform. The fill rule and
-/// flattening tolerance are present because they affect topology once the
-/// explicitly separate curve-flattening stage is connected.
+/// flattening tolerance are present because curve approximation affects the
+/// retained topology.
 final class TessellatedPathCacheKey {
   const TessellatedPathCacheKey(
     this.path, {
@@ -73,6 +74,8 @@ final class CpuTessellationMetrics {
   const CpuTessellationMetrics({
     required this.sourceVerbCount,
     required this.sourcePointCount,
+    required this.sourceCurveCount,
+    required this.flattenedSegmentCount,
     required this.vertexCount,
     required this.triangleCount,
     required this.removedVertexCount,
@@ -82,13 +85,19 @@ final class CpuTessellationMetrics {
 
   final int sourceVerbCount;
   final int sourcePointCount;
+
+  /// Quadratic plus cubic verbs in the source path.
+  final int sourceCurveCount;
+
+  /// Closed polygon edges after curve flattening and before simplification.
+  final int flattenedSegmentCount;
   final int vertexCount;
   final int triangleCount;
 
   /// Consecutive duplicate and redundant collinear points omitted safely.
   final int removedVertexCount;
 
-  /// Area in transformed coordinates. Positive means the emitted triangle
+  /// Area in retained local coordinates. Positive means the emitted triangle
   /// indices use the tessellator's canonical winding.
   final double signedArea;
 
@@ -124,6 +133,66 @@ final class TessellatedPathMesh {
   int get triangleCount => indices.length ~/ 3;
 }
 
+/// Retains local meshes by path content, fill rule, and flattening tolerance.
+///
+/// There is intentionally no transform argument: translation, scale, and
+/// rotation belong in a per-draw GPU uniform and reuse the same VBO. A caller
+/// that needs a different local approximation asks with a different
+/// [flattenTolerance], which necessarily produces a different key.
+final class CpuTessellatedPathCache {
+  CpuTessellatedPathCache({
+    CpuPathTessellator tessellator = const CpuPathTessellator(),
+  }) : _tessellator = tessellator;
+
+  final CpuPathTessellator _tessellator;
+  final Map<TessellatedPathCacheKey, TessellatedPathMesh> _meshes =
+      <TessellatedPathCacheKey, TessellatedPathMesh>{};
+
+  int hitCount = 0;
+  int missCount = 0;
+
+  int get length => _meshes.length;
+
+  int get retainedBytes {
+    var total = 0;
+    for (final mesh in _meshes.values) {
+      total += mesh.metrics.retainedBytes;
+    }
+    return total;
+  }
+
+  TessellatedPathMesh resolve(
+    Path path, {
+    FillRule fillRule = FillRule.nonZero,
+    double flattenTolerance = kDefaultFlattenTolerance,
+  }) {
+    final key = TessellatedPathCacheKey(
+      path,
+      fillRule: fillRule,
+      flattenTolerance: flattenTolerance,
+    );
+    final cached = _meshes[key];
+    if (cached != null) {
+      hitCount++;
+      return cached;
+    }
+    final mesh = _tessellator.tessellate(
+      path,
+      fillRule: fillRule,
+      flattenTolerance: flattenTolerance,
+    );
+    _meshes[mesh.cacheKey] = mesh;
+    missCount++;
+    return mesh;
+  }
+
+  void clear() {
+    _meshes.clear();
+    hitCount = 0;
+    missCount = 0;
+  }
+}
+
 /// Eligibility result that can be computed before allocating GPU buffers.
 final class CpuTessellationEligibility {
   const CpuTessellationEligibility._({
@@ -139,9 +208,15 @@ final class CpuTessellationEligibility {
   final TessellationRejection? rejection;
 }
 
-/// Ear-clips simple line-only paths into retained triangle meshes.
+/// Flattens and ear-clips simple paths into retained triangle meshes.
 final class CpuPathTessellator {
-  const CpuPathTessellator();
+  const CpuPathTessellator({
+    this.maxFlattenedSegments = kDefaultMaxTessellationSegments,
+  }) : assert(maxFlattenedSegments > 0);
+
+  /// Hard per-path limit. Flattening refuses instead of silently clamping a
+  /// curve or allocating an attacker-controlled number of points.
+  final int maxFlattenedSegments;
 
   /// Classifies the exact same input contract [tessellate] enforces.
   ///
@@ -149,10 +224,16 @@ final class CpuPathTessellator {
   /// [hasSelfIntersections] can be copied into its workload, and
   /// [isEligible] gates whether `tessellatedMesh` is advertised at all.
   CpuTessellationEligibility inspect(
-    Path path,
-  ) {
+    Path path, {
+    double flattenTolerance = kDefaultFlattenTolerance,
+  }) {
     try {
-      final _Polygon polygon = _readPolygon(path);
+      _validateOptions(flattenTolerance);
+      final _Polygon polygon = _readPolygon(
+        path,
+        flattenTolerance: flattenTolerance,
+        maxFlattenedSegments: maxFlattenedSegments,
+      );
       if (polygon.points.isEmpty) {
         return const CpuTessellationEligibility._(
           isEligible: true,
@@ -198,19 +279,17 @@ final class CpuPathTessellator {
     FillRule fillRule = FillRule.nonZero,
     double flattenTolerance = kDefaultFlattenTolerance,
   }) {
-    if (!flattenTolerance.isFinite || flattenTolerance <= 0) {
-      throw ArgumentError.value(
-        flattenTolerance,
-        'flattenTolerance',
-        'must be finite and positive',
-      );
-    }
+    _validateOptions(flattenTolerance);
     final TessellatedPathCacheKey key = TessellatedPathCacheKey(
       path,
       fillRule: fillRule,
       flattenTolerance: flattenTolerance,
     );
-    final _Polygon polygon = _readPolygon(path);
+    final _Polygon polygon = _readPolygon(
+      path,
+      flattenTolerance: flattenTolerance,
+      maxFlattenedSegments: maxFlattenedSegments,
+    );
     final List<_Point> points = polygon.points;
 
     if (points.isEmpty) {
@@ -222,6 +301,8 @@ final class CpuPathTessellator {
         metrics: CpuTessellationMetrics(
           sourceVerbCount: path.verbCount,
           sourcePointCount: path.pointCount,
+          sourceCurveCount: polygon.sourceCurveCount,
+          flattenedSegmentCount: polygon.flattenedSegmentCount,
           vertexCount: 0,
           triangleCount: 0,
           removedVertexCount: 0,
@@ -270,6 +351,8 @@ final class CpuPathTessellator {
       metrics: CpuTessellationMetrics(
         sourceVerbCount: path.verbCount,
         sourcePointCount: path.pointCount,
+        sourceCurveCount: polygon.sourceCurveCount,
+        flattenedSegmentCount: polygon.flattenedSegmentCount,
         vertexCount: points.length,
         triangleCount: triangles.length ~/ 3,
         removedVertexCount: polygon.rawPointCount - points.length,
@@ -278,7 +361,27 @@ final class CpuPathTessellator {
       ),
     );
   }
+
+  void _validateOptions(double flattenTolerance) {
+    if (!flattenTolerance.isFinite || flattenTolerance <= 0) {
+      throw ArgumentError.value(
+        flattenTolerance,
+        'flattenTolerance',
+        'must be finite and positive',
+      );
+    }
+    if (maxFlattenedSegments <= 0) {
+      throw ArgumentError.value(
+        maxFlattenedSegments,
+        'maxFlattenedSegments',
+        'must be positive',
+      );
+    }
+  }
 }
+
+/// Default retained-mesh complexity budget for one path.
+const int kDefaultMaxTessellationSegments = 65536;
 
 final class _Point {
   const _Point(this.x, this.y);
@@ -288,15 +391,48 @@ final class _Point {
 }
 
 final class _Polygon {
-  const _Polygon(this.points, this.rawPointCount, this.epsilon);
+  const _Polygon(
+    this.points,
+    this.rawPointCount,
+    this.epsilon,
+    this.sourceCurveCount,
+    this.flattenedSegmentCount,
+  );
 
   final List<_Point> points;
   final int rawPointCount;
   final double epsilon;
+  final int sourceCurveCount;
+  final int flattenedSegmentCount;
 }
 
-_Polygon _readPolygon(Path path) {
-  if (path.isEmpty) return const _Polygon(<_Point>[], 0, 0);
+_Polygon _readPolygon(
+  Path path, {
+  required double flattenTolerance,
+  required int maxFlattenedSegments,
+}) {
+  if (path.isEmpty) return const _Polygon(<_Point>[], 0, 0, 0, 0);
+
+  var sourceCurveCount = 0;
+  for (var point = 0; point < path.pointCount; point++) {
+    _readPoint(path, point);
+  }
+  for (var verb = 0; verb < path.verbCount; verb++) {
+    final value = path.verbAt(verb);
+    if (value == verbQuadraticTo || value == verbCubicTo) {
+      sourceCurveCount++;
+    }
+  }
+  if (sourceCurveCount > 0) {
+    _preflightFlattening(
+      path,
+      flattenTolerance: flattenTolerance,
+      maxFlattenedSegments: maxFlattenedSegments,
+    );
+    final sink = _TessellationPolylineSink(maxFlattenedSegments);
+    path.flattenTo(sink, tolerance: flattenTolerance);
+    return sink.build(sourceCurveCount);
+  }
 
   final List<_Point> raw = <_Point>[];
   var pointIndex = 0;
@@ -317,11 +453,7 @@ _Polygon _readPolygon(Path path) {
       case verbLineTo:
         raw.add(_readPoint(path, pointIndex++));
       case verbQuadraticTo || verbCubicTo:
-        throw TessellationUnsupportedError(
-          TessellationRejection.curvesRequireFlattening,
-          'quadratic and cubic verbs must be flattened explicitly before '
-          'retaining a mesh',
-        );
+        throw StateError('curve count and verb walk disagreed');
       case verbClose:
         closed = true;
     }
@@ -334,6 +466,13 @@ _Polygon _readPolygon(Path path) {
   }
 
   final int rawCount = raw.length;
+  if (rawCount > maxFlattenedSegments) {
+    throw TessellationUnsupportedError(
+      TessellationRejection.segmentLimitExceeded,
+      '$rawCount closed-contour segments exceed the configured limit of '
+      '$maxFlattenedSegments',
+    );
+  }
   final double scale = _coordinateScale(raw);
   final double epsilon = scale * scale * 1e-12;
   final List<_Point> points = _simplify(raw, epsilon);
@@ -343,7 +482,186 @@ _Polygon _readPolygon(Path path) {
       'fewer than three distinct non-collinear vertices remain',
     );
   }
-  return _Polygon(points, rawCount, epsilon);
+  return _Polygon(points, rawCount, epsilon, 0, rawCount);
+}
+
+/// Computes the exact segment counts [Path.flattenTo] will request before it
+/// emits any points.
+///
+/// Path's general raster flattening route clamps each curve at
+/// [kMaxSegmentsPerCurve] so a frame cannot stall. A retained mesh must not
+/// silently accept that degraded tolerance: it refuses before calling the
+/// shared flattener when either the per-curve clamp or this tessellator's
+/// per-path budget would be crossed.
+void _preflightFlattening(
+  Path path, {
+  required double flattenTolerance,
+  required int maxFlattenedSegments,
+}) {
+  var point = 0;
+  var currentX = 0.0;
+  var currentY = 0.0;
+  var total = 0;
+  for (var verbIndex = 0; verbIndex < path.verbCount; verbIndex++) {
+    switch (path.verbAt(verbIndex)) {
+      case verbMoveTo:
+        currentX = path.pointX(point);
+        currentY = path.pointY(point++);
+      case verbLineTo:
+        currentX = path.pointX(point);
+        currentY = path.pointY(point++);
+        total++;
+      case verbQuadraticTo:
+        final controlX = path.pointX(point);
+        final controlY = path.pointY(point);
+        final endX = path.pointX(point + 1);
+        final endY = path.pointY(point + 1);
+        point += 2;
+        final ddx = currentX - 2 * controlX + endX;
+        final ddy = currentY - 2 * controlY + endY;
+        final deviation = math.sqrt(ddx * ddx + ddy * ddy);
+        total += _checkedCurveSegments(
+          deviation / (4 * flattenTolerance),
+          maxFlattenedSegments,
+        );
+        currentX = endX;
+        currentY = endY;
+      case verbCubicTo:
+        final control1X = path.pointX(point);
+        final control1Y = path.pointY(point);
+        final control2X = path.pointX(point + 1);
+        final control2Y = path.pointY(point + 1);
+        final endX = path.pointX(point + 2);
+        final endY = path.pointY(point + 2);
+        point += 3;
+        final d0x = currentX - 2 * control1X + control2X;
+        final d0y = currentY - 2 * control1Y + control2Y;
+        final d1x = control1X - 2 * control2X + endX;
+        final d1y = control1Y - 2 * control2Y + endY;
+        final magnitude0 = d0x * d0x + d0y * d0y;
+        final magnitude1 = d1x * d1x + d1y * d1y;
+        final deviation =
+            math.sqrt(magnitude0 > magnitude1 ? magnitude0 : magnitude1);
+        total += _checkedCurveSegments(
+          3 * deviation / (4 * flattenTolerance),
+          maxFlattenedSegments,
+        );
+        currentX = endX;
+        currentY = endY;
+      case verbClose:
+        total++;
+    }
+    if (total > maxFlattenedSegments) {
+      throw TessellationUnsupportedError(
+        TessellationRejection.segmentLimitExceeded,
+        'flattening needs $total segments, above the configured per-path '
+        'limit of $maxFlattenedSegments',
+      );
+    }
+  }
+}
+
+int _checkedCurveSegments(double ratio, int maxFlattenedSegments) {
+  if (!(ratio > 0)) return 1;
+  if (!ratio.isFinite) {
+    throw TessellationUnsupportedError(
+      TessellationRejection.segmentLimitExceeded,
+      'the requested tolerance produces an unbounded curve segment count',
+    );
+  }
+  final root = math.sqrt(ratio);
+  final curveLimit = math.min(kMaxSegmentsPerCurve, maxFlattenedSegments);
+  if (root > curveLimit) {
+    throw TessellationUnsupportedError(
+      TessellationRejection.segmentLimitExceeded,
+      'one curve needs more than $curveLimit segments; refusing instead of '
+      'silently clamping the requested local-space tolerance',
+    );
+  }
+  final count = root.ceil();
+  return count < 1 ? 1 : count;
+}
+
+/// Receives [Path.flattenTo] directly, enforcing the retained-mesh budget
+/// while points are produced rather than after an oversized list exists.
+final class _TessellationPolylineSink implements PolylineSink {
+  _TessellationPolylineSink(this.maxSegments);
+
+  final int maxSegments;
+  final List<_Point> _points = <_Point>[];
+  var _contourCount = 0;
+  var _segmentCount = 0;
+  var _closed = false;
+
+  @override
+  void moveTo(double x, double y) {
+    _contourCount++;
+    if (_contourCount > 1) {
+      throw TessellationUnsupportedError(
+        TessellationRejection.multipleContoursUnsupported,
+        'holes and disjoint contours need contour classification',
+      );
+    }
+    _addPoint(x, y);
+  }
+
+  @override
+  void lineTo(double x, double y) {
+    _addSegment();
+    _addPoint(x, y);
+  }
+
+  @override
+  void close() {
+    _closed = true;
+    _addSegment();
+  }
+
+  void _addPoint(double x, double y) {
+    if (!x.isFinite || !y.isFinite) {
+      throw TessellationUnsupportedError(
+        TessellationRejection.nonFiniteCoordinate,
+        'curve flattening produced a non-finite local coordinate',
+      );
+    }
+    _points.add(_Point(x, y));
+  }
+
+  void _addSegment() {
+    _segmentCount++;
+    if (_segmentCount > maxSegments) {
+      throw TessellationUnsupportedError(
+        TessellationRejection.segmentLimitExceeded,
+        'flattening needs more than the configured $maxSegments segments',
+      );
+    }
+  }
+
+  _Polygon build(int sourceCurveCount) {
+    if (!_closed) {
+      throw TessellationUnsupportedError(
+        TessellationRejection.openContourUnsupported,
+        'the retained-mesh prototype requires an explicit close verb',
+      );
+    }
+    final rawCount = _points.length;
+    final scale = _coordinateScale(_points);
+    final epsilon = scale * scale * 1e-12;
+    final points = _simplify(_points, epsilon);
+    if (points.length < 3) {
+      throw TessellationUnsupportedError(
+        TessellationRejection.degenerateContour,
+        'fewer than three distinct non-collinear vertices remain',
+      );
+    }
+    return _Polygon(
+      points,
+      rawCount,
+      epsilon,
+      sourceCurveCount,
+      _segmentCount,
+    );
+  }
 }
 
 _Point _readPoint(Path path, int index) {

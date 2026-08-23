@@ -22,6 +22,8 @@ void main() {
       expect(_meshArea(mesh), closeTo(50, 1e-9));
       expect(mesh.metrics.signedArea, closeTo(50, 1e-9));
       expect(mesh.metrics.isConvex, isTrue);
+      expect(mesh.metrics.sourceCurveCount, 0);
+      expect(mesh.metrics.flattenedSegmentCount, 4);
       expect(mesh.metrics.vertexBytes, 32);
       expect(mesh.metrics.indexBytes, 24);
       expect(mesh.metrics.retainedBytes, 56);
@@ -117,6 +119,41 @@ void main() {
       expect(a.cacheKey, isNot(otherTolerance.cacheKey));
     });
 
+    test('retained cache reuses local mesh across draws and path instances',
+        () {
+      final cache = CpuTessellatedPathCache();
+      final first = _polygon(<(double, double)>[
+        (2, 3),
+        (12, 3),
+        (2, 13),
+      ]);
+      final equivalent = _polygon(<(double, double)>[
+        (2, 3),
+        (12, 3),
+        (2, 13),
+      ]);
+
+      final mesh = cache.resolve(first, flattenTolerance: 0.25);
+      final reused = cache.resolve(equivalent, flattenTolerance: 0.25);
+      final finer = cache.resolve(equivalent, flattenTolerance: 0.125);
+
+      expect(reused, same(mesh));
+      expect(finer, isNot(same(mesh)));
+      expect(cache.length, 2);
+      expect(cache.hitCount, 1);
+      expect(cache.missCount, 2);
+      expect(cache.retainedBytes,
+          mesh.metrics.retainedBytes + finer.metrics.retainedBytes);
+      expect(mesh.bounds, const Rect.fromLTRB(2, 3, 12, 13),
+          reason: 'the mesh remains local; draw transforms are GPU state');
+
+      cache.clear();
+      expect(cache.length, 0);
+      expect(cache.retainedBytes, 0);
+      expect(cache.hitCount, 0);
+      expect(cache.missCount, 0);
+    });
+
     test('empty path has a reusable empty mesh', () {
       final TessellatedPathMesh mesh = tessellator.tessellate(Path.empty);
       expect(mesh.vertexCount, 0);
@@ -125,27 +162,50 @@ void main() {
       expect(tessellator.inspect(Path.empty).isEligible, isTrue);
     });
 
-    test('rejects curves by name instead of flattening implicitly', () {
-      final Path curve = (PathBuilder()
+    test('flattens quadratic and cubic curves explicitly in local space', () {
+      final Path quadratic = (PathBuilder()
             ..moveTo(0, 0)
             ..quadraticBezierTo(5, 10, 10, 0)
+            ..lineTo(10, 10)
+            ..lineTo(0, 10)
+            ..close())
+          .build();
+      final Path cubic = (PathBuilder()
+            ..moveTo(0, 0)
+            ..cubicTo(2, 8, 8, 8, 10, 0)
+            ..lineTo(10, 10)
+            ..lineTo(0, 10)
             ..close())
           .build();
 
-      expect(
-        () => tessellator.tessellate(curve),
-        throwsA(
-          isA<TessellationUnsupportedError>().having(
-            (TessellationUnsupportedError error) => error.rejection,
-            'rejection',
-            TessellationRejection.curvesRequireFlattening,
-          ),
-        ),
-      );
-      expect(
-        tessellator.inspect(curve).rejection,
-        TessellationRejection.curvesRequireFlattening,
-      );
+      for (final path in <Path>[quadratic, cubic]) {
+        final mesh = tessellator.tessellate(path, flattenTolerance: 0.1);
+        expect(mesh.metrics.sourceCurveCount, 1);
+        expect(mesh.metrics.flattenedSegmentCount, greaterThan(4));
+        expect(mesh.metrics.vertexCount, greaterThan(4));
+        expect(mesh.metrics.triangleCount, mesh.metrics.vertexCount - 2);
+        expect(mesh.cacheKey.flattenTolerance, 0.1);
+        expect(tessellator.inspect(path, flattenTolerance: 0.1).isEligible,
+            isTrue);
+      }
+    });
+
+    test('tolerance changes topology and remains part of the cache key', () {
+      final path = (PathBuilder()
+            ..moveTo(0, 0)
+            ..cubicTo(0, 100, 100, 100, 100, 0)
+            ..lineTo(100, 100)
+            ..lineTo(0, 100)
+            ..close())
+          .build();
+
+      final coarse = tessellator.tessellate(path, flattenTolerance: 8);
+      final fine = tessellator.tessellate(path, flattenTolerance: 0.125);
+      expect(fine.vertexCount, greaterThan(coarse.vertexCount));
+      expect(fine.metrics.flattenedSegmentCount,
+          greaterThan(coarse.metrics.flattenedSegmentCount));
+      expect(fine.cacheKey, isNot(coarse.cacheKey));
+      expect(fine.cacheKey.path, same(path));
     });
 
     test('rejects multiple/open contours by name', () {
@@ -206,6 +266,74 @@ void main() {
           flattenTolerance: 0,
         ),
         throwsArgumentError,
+      );
+    });
+
+    test('refuses flattening before its configured segment budget explodes',
+        () {
+      const limited = CpuPathTessellator(maxFlattenedSegments: 4);
+      final path = (PathBuilder()
+            ..moveTo(0, 0)
+            ..quadraticBezierTo(50, 100, 100, 0)
+            ..lineTo(100, 100)
+            ..lineTo(0, 100)
+            ..close())
+          .build();
+
+      expect(
+        () => limited.tessellate(path, flattenTolerance: 0.01),
+        throwsA(
+          isA<TessellationUnsupportedError>().having(
+            (error) => error.rejection,
+            'rejection',
+            TessellationRejection.segmentLimitExceeded,
+          ),
+        ),
+      );
+      expect(
+        limited.inspect(path, flattenTolerance: 0.01).rejection,
+        TessellationRejection.segmentLimitExceeded,
+      );
+    });
+
+    test('refuses rather than accepting Path per-curve quality clamping', () {
+      final path = (PathBuilder()
+            ..moveTo(0, 0)
+            ..quadraticBezierTo(500000, 1000000, 1000000, 0)
+            ..lineTo(1000000, 1000000)
+            ..lineTo(0, 1000000)
+            ..close())
+          .build();
+
+      expect(
+        () => tessellator.tessellate(path, flattenTolerance: 0.000001),
+        throwsA(
+          isA<TessellationUnsupportedError>().having(
+            (error) => error.rejection,
+            'rejection',
+            TessellationRejection.segmentLimitExceeded,
+          ),
+        ),
+      );
+    });
+
+    test('rejects non-finite curve control points before flattening', () {
+      final path = (PathBuilder()
+            ..moveTo(0, 0)
+            ..quadraticBezierTo(double.infinity, 4, 8, 0)
+            ..lineTo(0, 8)
+            ..close())
+          .build();
+
+      expect(
+        () => tessellator.tessellate(path),
+        throwsA(
+          isA<TessellationUnsupportedError>().having(
+            (error) => error.rejection,
+            'rejection',
+            TessellationRejection.nonFiniteCoordinate,
+          ),
+        ),
       );
     });
   });

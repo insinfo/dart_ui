@@ -67,7 +67,11 @@ Os testes em `test/rendering/gpu/vector` provam:
 Isso prova o formato, não performance GPU. A promoção depende dos critérios em
 `doc/architecture/ACELERACAO_GPU_VETORIAL.md`.
 
-O executor OpenGL experimental acrescenta evidência estrutural: shaders
+O executor OpenGL experimental acrescenta evidência estrutural e real: shaders
 GLSL 3.30/ES 3.00, instancing, uploads alpha8 por região, page-runs ordenados,
-blend premultiplicado e lifecycle idempotente são testados por fake driver. Os
-símbolos novos permanecem fora do probe obrigatório do caminho denso.
+blend premultiplicado e lifecycle idempotente são testados por fake driver. O
+`GlApiSparseDriver` também foi exercitado em contexto GL real, incluindo
+compilação/link, upload, draw instanciado, descarte de nomes após device loss e
+recriação. A adoção exige `enableExperimentalSparseStrips: true`; os símbolos
+novos permanecem fora do probe obrigatório e o renderer denso continua sendo
+o padrão.

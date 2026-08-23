@@ -6672,3 +6672,46 @@ dart test
    tolerância na chave, e depois suporte classificado a múltiplos contornos.
 5. Iniciar C com um contrato stencil-then-cover testável; D somente após medir
    A/sparse/B nas mesmas cenas.
+
+## 13. Checkpoint — device sparse real, curvas B, plano C e workload real
+
+**Data:** 22 de agosto de 2026
+
+### Fechado nesta rodada
+
+- `GlApiSparseDriver` implementa o contrato do executor sobre `GlApi`: compila
+  e liga GLSL, mantém VAO/VBO, páginas R8, staging nativo, uniforms, atributos
+  instanciados, blend e draws. O recurso é opt-in em `GlRenderDevice`; o probe
+  e o renderer denso não mudam quando a flag está desligada.
+- Device loss descarta nomes GL sem tentar deletá-los no contexto perdido e
+  recria programa, buffer, VAO e páginas na recuperação. Testes com contexto
+  GL real cobrem compilação, upload, draw instanciado e rebuild.
+- `CpuPathTessellator` agora achata quadráticas/cúbicas em espaço local, recusa
+  estouro do orçamento de 65.536 segmentos antes de degradar qualidade e
+  oferece cache retido por Path/fill rule/tolerância.
+- `StencilCoverDrawPlan` implementa o contrato portátil de C: clear,
+  accumulate e cover, winding non-zero por faces, paridade even-odd, requisitos
+  de stencil/MSAA e recusas transacionais para geometria inválida/complexa.
+- `GpuPathWorkloadBuilder` transforma Path, bounds/clip/transform, inspeção B e
+  métricas sparse reais em uma única entrada coerente para o seletor A–D.
+
+### Próxima sequência
+
+1. Propagar draws reais da display list até o workload/selector e chamar o
+   executor sparse somente sob feature flag, mantendo fallback denso.
+2. Implementar o executor GL de stencil-then-cover e testes de framebuffer
+   para non-zero/even-odd com MSAA.
+3. Ligar `GpuGradientBinding` ao shader sparse e medir pixels/tempo contra o
+   atlas denso em cenas idênticas.
+4. Portar os contratos aprovados para D3D12/Vulkan/Metal/WebGPU; iniciar D
+   compute apenas com benchmarks que mostrem o limiar de compensação.
+
+### Validação focada
+
+```text
+dart analyze
+No issues found
+
+65 testes direcionados de GL sparse, seletor/workload, tesselação B e
+stencil C passaram.
+```

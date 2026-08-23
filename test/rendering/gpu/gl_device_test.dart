@@ -21,16 +21,22 @@ import 'dart:io';
 import 'package:dart_ui/src/backends/win32/win32_gl_surface.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
+import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_backend.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_bindings.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_context.dart';
+import 'package:dart_ui/src/rendering/gpu/gl/gl_sparse_executor.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_recovery.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_texture.dart';
+import 'package:dart_ui/src/rendering/gpu/vector/sparse_strip_draw_plan.dart';
+import 'package:dart_ui/src/rendering/gpu/vector/sparse_strips.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
 import 'package:test/test.dart';
 
 void main() {
   final session = _GlSession.open();
+  final sparseSession = _GlSession.open(enableExperimentalSparseStrips: true);
 
   group('a live GL device', () {
     tearDownAll(session.close);
@@ -43,6 +49,8 @@ void main() {
       expect(device.info.deviceDescription, isNotEmpty);
       expect(device.info.driverVersion, isNotEmpty);
       expect(device.capabilities.maxTextureSize, greaterThanOrEqualTo(2048));
+      expect(device.experimentalSparseStripsEnabled, isFalse,
+          reason: 'the dense renderer must remain the default');
       printOnFailure('${device.info.deviceDescription} / '
           '${device.info.driverVersion}');
     }, skip: session.skipReason);
@@ -196,6 +204,85 @@ void main() {
         ..releaseTexture(image);
     }, skip: session.skipReason);
   });
+
+  group('the opt-in sparse GL component on a live driver', () {
+    tearDownAll(sparseSession.close);
+
+    test('compiles, links and owns its native objects', () {
+      final GlRenderDevice device = sparseSession.device!;
+      expect(device.experimentalSparseStripsEnabled, isTrue);
+      expect(device.makeCurrentOrLose(), isTrue);
+      expect(
+          missingSparseGlSymbols(sparseSession.context!.procAddress), isEmpty);
+    }, skip: sparseSession.skipReason);
+
+    test('uploads alpha8 data and issues a real instanced draw', () {
+      final GlRenderDevice device = sparseSession.device!;
+      final StripBuffer strips = StripBuffer()..addFill(1, 1, 4);
+      final int alpha = strips.reserveAlphas(4 * kStripHeight);
+      strips.alphas.fillRange(alpha, alpha + 4 * kStripHeight, 128);
+      strips.addStrip(2, 4, 4, alpha);
+      final SparseStripDrawPlan plan = SparseStripDrawPlan(
+        atlasWidth: 8,
+        atlasHeight: 8,
+      )..append(strips, materialIndex: 0);
+
+      final SparseGlExecutionStats stats = device.submitSparseStrips(
+        plan,
+        materials: <SparseGlMaterial>[
+          SparseGlMaterial(
+            red: 0.25,
+            green: 0.5,
+            blue: 0.75,
+            alpha: 1,
+            blendMode: blendModeSrcOver,
+          ),
+        ],
+        viewportWidth: 16,
+        viewportHeight: 16,
+      );
+
+      expect(stats.drawCalls, 2);
+      expect(stats.instances, 2);
+      expect(stats.alphaUploads, 1);
+      expect(device.isLost, isFalse);
+    }, skip: sparseSession.skipReason);
+
+    test('rebuilds the sparse program and objects after device loss', () {
+      final GlRenderDevice device = sparseSession.device!;
+      device.state.markLost(const BackendDiagnostic(
+        kind: DiagnosticKind.connectionFailed,
+        message: 'sparse GL recovery test',
+      ));
+
+      final GpuRecoveryReport report =
+          GpuRecoveryCoordinator(host: device).recover();
+
+      expect(report.isRecovered, isTrue, reason: '$report');
+      expect(device.experimentalSparseStripsEnabled, isTrue);
+      final SparseStripDrawPlan plan = SparseStripDrawPlan()
+        ..append(StripBuffer()..addFill(0, 0, 2), materialIndex: 0);
+      expect(
+        device
+            .submitSparseStrips(
+              plan,
+              materials: <SparseGlMaterial>[
+                SparseGlMaterial(
+                  red: 1,
+                  green: 1,
+                  blue: 1,
+                  alpha: 1,
+                  blendMode: blendModeSrcOver,
+                ),
+              ],
+              viewportWidth: 16,
+              viewportHeight: 16,
+            )
+            .drawCalls,
+        1,
+      );
+    }, skip: sparseSession.skipReason);
+  });
 }
 
 /// One GL device for the whole file, or the reason there is none.
@@ -215,16 +302,18 @@ final class _GlSession {
 
   final Win32GlSurface? _surface;
 
-  static _GlSession open() {
+  static _GlSession open({bool enableExperimentalSparseStrips = false}) {
     try {
-      return Platform.isWindows ? _openWindows() : _openEgl();
+      return Platform.isWindows
+          ? _openWindows(enableExperimentalSparseStrips)
+          : _openEgl(enableExperimentalSparseStrips);
     } on Object catch (error) {
       return _GlSession._(
           null, null, 'opening a GL device threw: $error', null);
     }
   }
 
-  static _GlSession _openWindows() {
+  static _GlSession _openWindows(bool enableExperimentalSparseStrips) {
     final attempt = Win32GlSurface.hidden();
     final surface = attempt.surface;
     if (surface == null) {
@@ -240,7 +329,11 @@ final class _GlSession {
     }
     try {
       return _GlSession._(
-        GlRendererBackend.adoptContext(context, surface.glLibrary),
+        GlRendererBackend.adoptContext(
+          context,
+          surface.glLibrary,
+          enableExperimentalSparseStrips: enableExperimentalSparseStrips,
+        ),
         context,
         null,
         surface,
@@ -251,7 +344,7 @@ final class _GlSession {
     }
   }
 
-  static _GlSession _openEgl() {
+  static _GlSession _openEgl(bool enableExperimentalSparseStrips) {
     final load = GlLibrary.open();
     if (!load.isLoaded) {
       return _GlSession._(
@@ -266,7 +359,11 @@ final class _GlSession {
     }
     try {
       return _GlSession._(
-        GlRendererBackend.adoptContext(context, load.library!),
+        GlRendererBackend.adoptContext(
+          context,
+          load.library!,
+          enableExperimentalSparseStrips: enableExperimentalSparseStrips,
+        ),
         context,
         null,
         null,

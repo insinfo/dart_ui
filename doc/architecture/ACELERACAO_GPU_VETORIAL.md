@@ -1,7 +1,8 @@
 # Aceleração vetorial previsível: direção Vello + Impeller
 
 **Estado em 22 de agosto de 2026:** formato sparse-strip, executor OpenGL
-instanciado opt-in, tessellator inicial da abordagem B, seletor A–D e contrato
+instanciado opt-in ligado ao device real, tessellator com curvas/cache da
+abordagem B, plano stencil-then-cover da abordagem C, seletor A–D e contrato
 GPU de gradientes implementados e testados. O renderer padrão ainda usa o
 atlas denso enquanto os novos caminhos acumulam paridade e benchmarks.
 
@@ -108,16 +109,21 @@ Componentes concluídos:
 3. métricas de upload, instâncias, páginas, draws e capacidade retida;
 4. seletor determinístico por capacidade/custo entre A, sparse, B, C e D;
 5. LUT RGBA8 de gradiente compartilhável pela CPU e pelos shaders.
+6. `GpuPathWorkloadBuilder`, que deriva dimensões, geometria, elegibilidade e
+   custos medidos de objetos reais em vez de aceitar estimativas incompatíveis.
 
 O primeiro consumidor real está em `gl_sparse_executor.dart`. Ele mantém VBO
 instanciado de seis floats, programa GLSL 3.30/ES 3.00, páginas alpha8, uploads
-parciais e comandos ordenados por batch/material/page-run. Os símbolos de
-instancing são opcionais e não alteram o probe do renderer denso. A ativação
-automática permanece bloqueada até integrar lifecycle ao `GlRenderDevice`,
-clips/layers e benchmarks comparativos.
+parciais e comandos ordenados por batch/material/page-run. O
+`GlApiSparseDriver` traduz esse contrato para chamadas reais de `GlApi`; o
+`GlRenderDevice` compila, desenha, descarta nomes perdidos e os recria após
+reset. Tudo continua explicitamente opt-in por
+`enableExperimentalSparseStrips`: os símbolos de instancing não alteram o
+probe nem o caminho denso padrão.
 
-Próximos componentes são o shader strip/fill em GLSL, suas variantes HLSL,
-MSL, SPIR-V e WGSL, e a integração do plano com `GpuRasterSink`.
+Os próximos componentes são propagar clip/layer/material do replay até essa
+entrada explícita, adicionar gradientes no shader, comparar pixels em
+framebuffer real e portar o layout para HLSL, MSL, SPIR-V e WGSL.
 
 ### 3. Tesselação/AA geométrico
 
@@ -125,20 +131,35 @@ CPU tessela paths e envia triângulos; MSAA ou AA analítico resolve bordas.
 Favorece geometria pequena/reutilizada e APIs como Metal/Vulkan/D3D12. Deve
 usar o mesmo paint/layer contract, não um segundo renderer.
 
-`CpuPathTessellator` implementa o primeiro subconjunto: um contorno simples,
-fechado e formado por linhas, convexo ou côncavo, triangulado por ear clipping.
-A malha fica em coordenadas locais (`Float32List` XY + `Uint32List`), portanto
-uma transformação por frame não invalida o VBO. Curvas não achatadas, holes,
-múltiplos contornos, abertura, auto-interseção e degeneração são recusados por
-um motivo tipado. O seletor só escolhe B após elegibilidade explícita.
+`CpuPathTessellator` implementa um contorno simples fechado, convexo ou
+côncavo, triangulado por ear clipping. Quadráticas e cúbicas são achatadas com
+tolerância explícita e limite de 65.536 segmentos; exceder o orçamento recusa
+o draw sem aceitar silenciosamente o clamp do flattener geral. A malha fica em
+coordenadas locais (`Float32List` XY + `Uint32List`) e
+`CpuTessellatedPathCache` a retém por conteúdo/fill rule/tolerância, portanto
+uma transformação por frame não invalida o VBO. Holes, múltiplos contornos,
+abertura, auto-interseção e degeneração ainda são recusados por motivo tipado.
+Como a tolerância é local, o chamador deve derivá-la da escala máxima prevista
+quando o erro exigido for expresso em pixels de device.
 
-### 4. Tile/compute
+### 4. Stencil-then-cover
+
+`StencilCoverDrawPlan` materializa a abordagem C sem depender da API: arenas
+tipadas de triângulos-fan assinados, bounds de cover e três comandos ordenados
+por draw (clear, accumulate e cover). Non-zero usa increment/decrement wrap por
+face; even-odd inverte o bit zero; o cover testa e zera stencil. Capacidade de
+stencil, MSAA, clear limitado e operações obrigatórias são validadas antes da
+emissão. Coordenadas não finitas e o limite de triângulos geram recusas
+tipadas e transacionais. Falta implementar o executor de estado fixo nos
+backends e sua integração no replay.
+
+### 5. Tile/compute
 
 Flatten, binning, prefix sums e rasterização em compute, semelhante ao Vello
 clássico. Só é escolhido quando compute, storage buffers e sincronização são
 confiáveis. WebGL2, drivers limitados e o fallback WSL continuam no modo 2.
 
-### 5. Primitivas analíticas
+### 6. Primitivas analíticas
 
 Retângulos, rounded rects, círculos e linhas simples podem ser avaliados no
 fragment shader sem máscara. É o caminho mais barato e deve vencer antes de
@@ -184,6 +205,8 @@ representação da cena ou a correção do renderer.
 - ausência de regressão no Linux sem WSL e em GPUs sem compute.
 
 `GpuPathStrategySelector` já materializa essa política e produz uma razão
-diagnosticável para cada decisão. Até os shaders e benchmarks passarem os
-critérios, sparse strips permanece experimental e a máscara densa continua o
-fallback correto.
+diagnosticável para cada decisão. `GpuPathWorkloadBuilder` agora obtém do
+`Path`, do transform, do clip, da inspeção de tesselação e das métricas sparse
+um workload coerente para esse seletor. Até replay, paridade em framebuffer e
+benchmarks passarem os critérios, sparse strips permanece experimental e a
+máscara densa continua o fallback correto.

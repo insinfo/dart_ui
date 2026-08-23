@@ -206,6 +206,59 @@ void main() {
     expect(driver.events, contains('end'));
     expect(driver.events.last, 'end');
   });
+
+  test('device loss discards names without deleting and rebuilds lazily', () {
+    final StripBuffer source = StripBuffer();
+    final int alpha = source.reserveAlphas(kStripHeight);
+    source.addStrip(0, 0, 1, alpha);
+    final SparseStripDrawPlan plan = SparseStripDrawPlan()
+      ..append(source, materialIndex: 0);
+    final List<SparseGlMaterial> materials = <SparseGlMaterial>[
+      SparseGlMaterial(
+        red: 1,
+        green: 1,
+        blue: 1,
+        alpha: 1,
+        blendMode: blendModeSrcOver,
+      ),
+    ];
+    final _FakeSparseGlDriver driver = _FakeSparseGlDriver();
+    final SparseGlExecutor executor = SparseGlExecutor(driver)
+      ..initialize(desktop: true);
+    executor.submit(
+      plan,
+      materials: materials,
+      viewportWidth: 4,
+      viewportHeight: 4,
+      yFlip: 0,
+    );
+
+    executor.discardNativeResources();
+
+    expect(executor.isInitialized, isFalse);
+    expect(executor.retainedAlphaPageCount, 0);
+    expect(driver.events, contains('discard'));
+    expect(driver.deletedPrograms, isEmpty);
+    expect(driver.deletedBuffers, isEmpty);
+    expect(driver.deletedTextures, isEmpty);
+
+    executor.initialize(desktop: true);
+    executor.submit(
+      plan,
+      materials: materials,
+      viewportWidth: 4,
+      viewportHeight: 4,
+      yFlip: 0,
+    );
+    expect(driver.programCreates, 2);
+    expect(driver.bufferCreates, 2);
+    expect(driver.textureCreates, 2);
+
+    executor.dispose();
+    expect(driver.deletedPrograms, <int>[7]);
+    expect(driver.deletedBuffers, <int>[9]);
+    expect(driver.deletedTextures, <int>[11]);
+  });
 }
 
 final class _FakeSparseGlDriver implements SparseGlDriver {
@@ -325,6 +378,9 @@ final class _FakeSparseGlDriver implements SparseGlDriver {
 
   @override
   void endSparsePass() => events.add('end');
+
+  @override
+  void discardNativeResources() => events.add('discard');
 
   @override
   void deleteProgram(int program) => deletedPrograms.add(program);

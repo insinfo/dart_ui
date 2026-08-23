@@ -104,9 +104,9 @@ final class GpuPathWorkload {
 
   /// The CPU tessellator accepted the path's topology and verb contract.
   ///
-  /// This is distinct from [hasSelfIntersections]: phase-one tessellation also
-  /// refuses holes, multiple/open contours, and curves that have not gone
-  /// through an explicit flattening stage. The conservative default is false:
+  /// This is distinct from [hasSelfIntersections]: the conservative
+  /// tessellator also refuses holes, multiple/open contours and paths that
+  /// exceed the configured curve-flattening budget. The default is false:
   /// callers must opt in from `CpuPathTessellator.inspect` or equivalent
   /// evidence before a retained mesh can be selected.
   final bool tessellationEligible;

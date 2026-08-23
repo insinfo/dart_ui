@@ -110,6 +110,9 @@ abstract interface class SparseGlDriver {
   });
 
   void endSparsePass();
+
+  /// Forgets names invalidated by device loss without deleting them.
+  void discardNativeResources();
 }
 
 /// Counts work actually sent to [SparseGlDriver].
@@ -280,6 +283,24 @@ final class SparseGlExecutor {
     if (_program != 0) _driver.deleteProgram(_program);
     _instanceBuffer = 0;
     _program = 0;
+    _disposed = true;
+  }
+
+  /// Forgets driver objects destroyed by a reset and permits reinitialisation.
+  void discardNativeResources() {
+    _throwIfDisposed();
+    _driver.discardNativeResources();
+    _alphaTextures.clear();
+    _program = 0;
+    _instanceBuffer = 0;
+    _atlasWidth = 0;
+    _atlasHeight = 0;
+  }
+
+  /// Disposes after a lost context, where issuing delete calls is undefined.
+  void disposeAfterDeviceLoss() {
+    if (_disposed) return;
+    discardNativeResources();
     _disposed = true;
   }
 

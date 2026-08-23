@@ -83,10 +83,13 @@ import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
+import '../vector/sparse_strip_draw_plan.dart';
 import 'gl_bindings.dart';
 import 'gl_context.dart';
 import 'gl_framebuffer_pool.dart';
 import 'gl_shaders.dart';
+import 'gl_sparse_driver.dart';
+import 'gl_sparse_executor.dart';
 import 'gl_surface_descriptor.dart';
 import 'gl_window_target.dart';
 
@@ -194,18 +197,28 @@ final class GlRenderDevice
     required NativeHeap heap,
     required RendererInfo info,
     required int maxTextureSize,
+    required bool sparseStripsRequested,
   })  : _context = context,
         _gl = gl,
         _heap = heap,
         _info = info,
-        _maxTextureSize = maxTextureSize;
+        _maxTextureSize = maxTextureSize,
+        _sparseStripsRequested = sparseStripsRequested;
 
   final GlContext _context;
   final GlApi _gl;
   final NativeHeap _heap;
   final RendererInfo _info;
   final int _maxTextureSize;
+  final bool _sparseStripsRequested;
   final GpuDeviceState _state = GpuDeviceState();
+
+  GlApiSparseDriver? _sparseDriver;
+  SparseGlExecutor? _sparseExecutor;
+
+  /// True only when the caller explicitly opted in and the current context
+  /// exposed instancing plus the sparse uniforms used by the adapter.
+  bool get experimentalSparseStripsEnabled => _sparseExecutor != null;
 
   /// Scratch native memory for the `GLuint*` out-parameters, allocated once.
   ///
@@ -302,6 +315,7 @@ final class GlRenderDevice
   /// reset - [_initialise] generates new ones.
   @override
   void discardNativeResources() {
+    _sparseExecutor?.discardNativeResources();
     _program = 0;
     _vao = 0;
     _vbo = 0;
@@ -377,6 +391,11 @@ final class GlRenderDevice
     if (failure != null) {
       _state.markLost(failure);
       return failure;
+    }
+    final BackendDiagnostic? sparseFailure = _initialiseSparseStrips();
+    if (sparseFailure != null) {
+      _state.markLost(sparseFailure);
+      return sparseFailure;
     }
     _submissionsStopped = false;
     if (!wasLost) {
@@ -760,6 +779,53 @@ final class GlRenderDevice
     return !_state.isLost;
   }
 
+  /// Explicit sparse-strip submission seam.
+  ///
+  /// The display-list renderer does not call this method. A caller has to opt
+  /// in while adopting the context and then explicitly provide a sparse plan;
+  /// consequently the established dense atlas path remains the default even
+  /// on hardware that supports instancing.
+  SparseGlExecutionStats submitSparseStrips(
+    SparseStripDrawPlan plan, {
+    required List<SparseGlMaterial> materials,
+    required int viewportWidth,
+    required int viewportHeight,
+    int yFlip = 0,
+    int surfaceFramebuffer = 0,
+  }) {
+    final SparseGlExecutor? executor = _sparseExecutor;
+    if (executor == null) {
+      throw StateError(
+        'sparse strips are disabled; adopt the GL context with '
+        'enableExperimentalSparseStrips: true',
+      );
+    }
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      throw StateError('GL submissions are stopped during device recovery');
+    }
+    if (!makeCurrentOrLose()) {
+      throw StateError('the GL context is lost');
+    }
+    _gl
+      ..bindFramebuffer(glFramebuffer, surfaceFramebuffer)
+      ..viewport(0, 0, viewportWidth, viewportHeight)
+      ..disable(glDepthTest)
+      ..disable(glCullFace)
+      ..disable(glScissorTest);
+    final SparseGlExecutionStats stats = executor.submit(
+      plan,
+      materials: materials,
+      viewportWidth: viewportWidth,
+      viewportHeight: viewportHeight,
+      yFlip: yFlip,
+    );
+    if (checkError('sparse-strip draw')) {
+      throw StateError('${lastError ?? 'the sparse GL draw failed'}');
+    }
+    return stats;
+  }
+
   /// Issues batches `[first, last)` into whatever is bound, at [viewportWidth]
   /// by [viewportHeight] and in the orientation [yFlip] names.
   void _drawBatches(
@@ -1015,6 +1081,31 @@ final class GlRenderDevice
     return null;
   }
 
+  BackendDiagnostic? _initialiseSparseStrips() {
+    if (!_sparseStripsRequested) return null;
+    final GlApiSparseDriver driver =
+        _sparseDriver ??= GlApiSparseDriver(_gl, _heap);
+    final SparseGlExecutor executor =
+        _sparseExecutor ??= SparseGlExecutor(driver);
+    try {
+      executor.initialize(desktop: _context.isDesktopGl);
+    } on Object catch (error) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the opt-in sparse GL pipeline could not be initialized',
+        detail: '$error',
+      );
+    }
+    if (checkError('sparse GL initialisation')) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'GL rejected the opt-in sparse renderer objects',
+        detail: lastError?.detail,
+      );
+    }
+    return null;
+  }
+
   void _attribute(int index, int size, int offset, int stride) {
     _gl
       ..enableVertexAttribArray(index)
@@ -1165,6 +1256,7 @@ final class GlRenderDevice
     // objects through a lost context is undefined, and the driver has freed
     // them already anyway.
     if (!_state.isLost && _context.makeCurrent()) {
+      _sparseExecutor?.dispose();
       if (_vbo != 0) {
         scratchNames[0] = _vbo;
         _gl.deleteBuffers(1, scratchNames);
@@ -1178,7 +1270,10 @@ final class GlRenderDevice
         _gl.deleteVertexArrays(1, scratchNames);
       }
       if (_program != 0) _gl.deleteProgram(_program);
+    } else if (_sparseExecutor != null && !_sparseExecutor!.isDisposed) {
+      _sparseExecutor!.disposeAfterDeviceLoss();
     }
+    _sparseDriver?.disposeHostResources();
     _context.dispose();
     _heap
       ..release(scratchNames)
@@ -2345,8 +2440,9 @@ final class GlRendererBackend implements RendererBackend {
   /// Throws [BackendSelectionError] carrying the reason, like [createDevice].
   static GlRenderDevice adoptContext(
     GlContext context,
-    DynamicLibrary glLibrary,
-  ) {
+    DynamicLibrary glLibrary, {
+    bool enableExperimentalSparseStrips = false,
+  }) {
     final report = describeContext(context);
     if (!report.supported) {
       context.dispose();
@@ -2375,6 +2471,25 @@ final class GlRendererBackend implements RendererBackend {
     }
 
     final gl = GlApi(context.procAddress);
+    if (enableExperimentalSparseStrips) {
+      final List<String> missing = missingSparseGlSymbols(context.procAddress);
+      if (missing.isNotEmpty) {
+        context.dispose();
+        throw BackendSelectionError(
+          requested: backendName,
+          attempts: <BackendProbeResult>[
+            BackendProbeResult.unsupported(
+              backendName,
+              BackendDiagnostic.missingSymbol(
+                missing.join(', '),
+                detail: 'required only because experimental sparse strips '
+                    'were explicitly enabled',
+              ),
+            ),
+          ],
+        );
+      }
+    }
     final device = GlRenderDevice._(
       context: context,
       gl: gl,
@@ -2386,6 +2501,7 @@ final class GlRendererBackend implements RendererBackend {
         rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       ),
       maxTextureSize: _queryMaxTextureSize(gl, heap),
+      sparseStripsRequested: enableExperimentalSparseStrips,
     );
     final failure = device._initialise();
     if (failure != null) {
@@ -2394,6 +2510,16 @@ final class GlRendererBackend implements RendererBackend {
         requested: backendName,
         attempts: <BackendProbeResult>[
           BackendProbeResult.unsupported(backendName, failure),
+        ],
+      );
+    }
+    final BackendDiagnostic? sparseFailure = device._initialiseSparseStrips();
+    if (sparseFailure != null) {
+      device.dispose();
+      throw BackendSelectionError(
+        requested: backendName,
+        attempts: <BackendProbeResult>[
+          BackendProbeResult.unsupported(backendName, sparseFailure),
         ],
       );
     }
