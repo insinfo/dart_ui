@@ -66,6 +66,7 @@ const int glOutOfMemory = 0x0505;
 const int glContextLost = 0x0507;
 
 const int glTriangles = 0x0004;
+const int glTriangleStrip = 0x0005;
 const int glUnsignedByte = 0x1401;
 const int glUnsignedInt = 0x1405;
 const int glFloat = 0x1406;
@@ -370,6 +371,15 @@ const List<String> kRequiredGlSymbols = <String>[
   'glReadPixels',
 ];
 
+/// Additional core GL 3.3 / ES 3.0 symbols used only by the experimental
+/// sparse-strip executor. Keeping these out of [kRequiredGlSymbols] means an
+/// unused experiment cannot make the established dense renderer fail probe.
+const List<String> kSparseGlRequiredSymbols = <String>[
+  'glVertexAttribDivisor',
+  'glUniform4f',
+  'glDrawArraysInstanced',
+];
+
 /// Names in [kRequiredGlSymbols] that [resolve] cannot find.
 ///
 /// Must be called with the context current on any platform whose resolver
@@ -380,6 +390,21 @@ const List<String> kRequiredGlSymbols = <String>[
 List<String> missingGlSymbols(GlProcResolver resolve) {
   final missing = <String>[];
   for (final symbol in kRequiredGlSymbols) {
+    Pointer<Void> address;
+    try {
+      address = resolve(symbol);
+    } on Object {
+      address = nullptr;
+    }
+    if (address == nullptr) missing.add(symbol);
+  }
+  return missing;
+}
+
+/// Names in [kSparseGlRequiredSymbols] that [resolve] cannot find.
+List<String> missingSparseGlSymbols(GlProcResolver resolve) {
+  final missing = <String>[];
+  for (final symbol in kSparseGlRequiredSymbols) {
     Pointer<Void> address;
     try {
       address = resolve(symbol);
@@ -511,6 +536,11 @@ final class GlApi {
                       Uint32, Int32, Uint32, Uint8, Int32, Pointer<Void>)>>()
           .asFunction<void Function(int, int, int, int, int, Pointer<Void>)>();
 
+  late final void Function(int, int) vertexAttribDivisor =
+      _proc('glVertexAttribDivisor')
+          .cast<NativeFunction<Void Function(Uint32, Uint32)>>()
+          .asFunction<void Function(int, int)>();
+
   late final int Function(int) createShader = _proc('glCreateShader')
       .cast<NativeFunction<Uint32 Function(Uint32)>>()
       .asFunction<int Function(int)>();
@@ -592,6 +622,12 @@ final class GlApi {
   late final void Function(int, double, double) uniform2f = _proc('glUniform2f')
       .cast<NativeFunction<Void Function(Int32, Float, Float)>>()
       .asFunction<void Function(int, double, double)>();
+
+  late final void Function(
+      int, double, double, double, double) uniform4f = _proc(
+          'glUniform4f')
+      .cast<NativeFunction<Void Function(Int32, Float, Float, Float, Float)>>()
+      .asFunction<void Function(int, double, double, double, double)>();
 
   late final void Function(int, int) uniform1i = _proc('glUniform1i')
       .cast<NativeFunction<Void Function(Int32, Int32)>>()
@@ -678,6 +714,11 @@ final class GlApi {
       .cast<
           NativeFunction<Void Function(Uint32, Int32, Uint32, Pointer<Void>)>>()
       .asFunction<void Function(int, int, int, Pointer<Void>)>();
+
+  late final void Function(int, int, int, int) drawArraysInstanced =
+      _proc('glDrawArraysInstanced')
+          .cast<NativeFunction<Void Function(Uint32, Int32, Int32, Int32)>>()
+          .asFunction<void Function(int, int, int, int)>();
 
   late final void Function(
       int, int, int, int, int, int, Pointer<Void>) readPixels = _proc(

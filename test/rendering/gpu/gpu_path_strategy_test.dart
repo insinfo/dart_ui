@@ -13,6 +13,7 @@ void main() {
     bool cacheHit = false,
     bool stable = false,
     bool selfIntersects = false,
+    bool tessellationEligible = true,
     int? sparseBytes,
     int? sparseUploadBytes,
     int? sparseInstanceBytes,
@@ -27,6 +28,7 @@ void main() {
         denseMaskCacheHit: cacheHit,
         geometryStable: stable,
         hasSelfIntersections: selfIntersects,
+        tessellationEligible: tessellationEligible,
         sparseEncodedBytes: sparseBytes,
         sparseUploadBytes: sparseUploadBytes,
         sparseInstanceBytes: sparseInstanceBytes,
@@ -117,6 +119,30 @@ void main() {
       ),
     );
     expect(decision.strategy, GpuPathStrategy.stencilThenCover);
+  });
+
+  test('tessellator refusal prevents retained mesh selection', () {
+    final decision = selector.select(
+      workload(stable: true, tessellationEligible: false),
+      const GpuPathStrategyCapabilities(
+        tessellation: true,
+        stencil: true,
+      ),
+    );
+    expect(decision.strategy, GpuPathStrategy.coverageAtlas);
+  });
+
+  test('tessellation requires explicit eligibility evidence', () {
+    final decision = selector.select(
+      const GpuPathWorkload(
+        pixelWidth: 32,
+        pixelHeight: 32,
+        segmentCount: 4,
+        geometryStable: true,
+      ),
+      const GpuPathStrategyCapabilities(tessellation: true),
+    );
+    expect(decision.strategy, GpuPathStrategy.coverageAtlas);
   });
 
   test('atlas remains the universal fallback on existing GPUs', () {

@@ -78,6 +78,7 @@ final class GpuPathWorkload {
     this.denseMaskCacheHit = false,
     this.geometryStable = false,
     this.hasSelfIntersections = false,
+    this.tessellationEligible = false,
     this.sparseEncodedBytes,
     this.sparseUploadBytes,
     this.sparseInstanceBytes,
@@ -100,6 +101,15 @@ final class GpuPathWorkload {
 
   /// Conservative hint: simple tessellation is risky, stencil/coverage is not.
   final bool hasSelfIntersections;
+
+  /// The CPU tessellator accepted the path's topology and verb contract.
+  ///
+  /// This is distinct from [hasSelfIntersections]: phase-one tessellation also
+  /// refuses holes, multiple/open contours, and curves that have not gone
+  /// through an explicit flattening stage. The conservative default is false:
+  /// callers must opt in from `CpuPathTessellator.inspect` or equivalent
+  /// evidence before a retained mesh can be selected.
+  final bool tessellationEligible;
 
   /// Measured output of the sparse encoder, when it has already run or a cache
   /// has its previous size. Null means its cost is unknown.
@@ -249,6 +259,7 @@ final class GpuPathStrategySelector {
     }
 
     if (workload.geometryStable &&
+        workload.tessellationEligible &&
         !workload.hasSelfIntersections &&
         capabilities.tessellation &&
         workload.segmentCount <= tessellationSegmentLimit) {
@@ -283,7 +294,9 @@ final class GpuPathStrategySelector {
         'stencil is the available arbitrary-path route',
       );
     }
-    if (capabilities.tessellation && !workload.hasSelfIntersections) {
+    if (capabilities.tessellation &&
+        workload.tessellationEligible &&
+        !workload.hasSelfIntersections) {
       return const GpuPathStrategyDecision(
         GpuPathStrategy.tessellatedMesh,
         'tessellation is the available safe route for this geometry',

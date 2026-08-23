@@ -6635,3 +6635,40 @@ dart test
   bounding box; paths transformados preservam a geometria.
 - Gradiente usado como paint de `drawImage` ou do composite de `saveLayer`
   permanece indefinido e é recusado por nome.
+
+## 12. Checkpoint — executor sparse GL, gradiente GPU e tesselação B
+
+**Data:** 22 de agosto de 2026
+
+### Fechado nesta rodada
+
+- `SparseGlSubmission` converte o plano sparse em instâncias de seis floats e
+  comandos ordenados por material e página, sem converter para o layout legado
+  de doze floats por vértice.
+- Shaders GLSL desktop 3.30 e ES 3.00 desenham fills sólidos e cobertura alpha8
+  com `texelFetch`, preservando texel/pixel exato.
+- `SparseGlExecutor` possui programa, VBO e páginas alpha8; executa uploads
+  parciais e `glDrawArraysInstanced`, fecha o pass mesmo se um draw falhar e
+  mantém descarte idempotente. Continua opt-in, fora do renderer padrão.
+- Bindings de instancing são opcionais e não mudam o probe GL existente.
+- `GpuGradientCache` adiciona textura `rgba8888Straight`, deduplicação por
+  valor, filtro linear, centros de texel, liberação e recuperação de device.
+- `GpuGradientShaderParameters` materializa as matrizes local↔target, origem de
+  layer e geometria linear/radial/focal para futuros adapters GLSL/HLSL/MSL,
+  SPIR-V e WGSL. `GpuRasterSink` ainda não anuncia suporte prematuramente.
+- `CpuPathTessellator` triangula polígonos simples convexos/côncavos por ear
+  clipping, produz malha local portátil e métricas de retenção. Recusas de
+  topologia são tipadas e alimentam a elegibilidade do seletor.
+
+### Próxima sequência
+
+1. Criar o adapter `SparseGlDriver` sobre `GlApi` e integrá-lo ao lifecycle de
+   `GlRenderDevice`, ainda atrás de feature flag/capability.
+2. Propagar clip/layer origin e material do replay até o plano sparse; comparar
+   a saída contra `GpuMaskAtlas` em framebuffer real.
+3. Implementar shader de gradiente no executor sparse/GL usando
+   `GpuGradientBinding` e `GpuGradientShaderParameters`.
+4. Adicionar flatten explícito de quadráticas/cúbicas antes de B, incluindo a
+   tolerância na chave, e depois suporte classificado a múltiplos contornos.
+5. Iniciar C com um contrato stencil-then-cover testável; D somente após medir
+   A/sparse/B nas mesmas cenas.

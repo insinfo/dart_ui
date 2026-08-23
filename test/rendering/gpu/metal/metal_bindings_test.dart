@@ -364,6 +364,8 @@ void main() {
           isNot(MtlPixelFormat.a8Unorm));
       expect(metalPixelFormat(GpuTextureFormat.rgba8888Premultiplied),
           MtlPixelFormat.rgba8Unorm);
+      expect(metalPixelFormat(GpuTextureFormat.rgba8888Straight),
+          MtlPixelFormat.rgba8Unorm);
     });
 
     test('every GpuBlendFactor has a Metal factor', () {

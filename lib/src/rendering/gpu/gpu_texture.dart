@@ -17,16 +17,24 @@ import 'dart:typed_data';
 
 /// Byte layout of a GPU texture.
 ///
-/// Only two, because only two are needed: coverage masks are one byte per
-/// pixel, and images are the same premultiplied 32-bit pixels [Framebuffer]
-/// already commits to. A backend that prefers a different internal format
-/// converts at upload; it must not push that choice up here, because the mask
-/// atlas writes its staging bytes with the CPU rasteriser and cannot know.
+/// The alpha interpretation is explicit because it affects interpolation:
+/// coverage masks are one byte per pixel, images are premultiplied 32-bit
+/// pixels, and gradient ramps are straight-alpha 32-bit pixels. A backend that
+/// prefers a different internal format converts at upload; it must not push
+/// that choice up here, because staging producers cannot know device policy.
 enum GpuTextureFormat {
   /// One byte per pixel, sampled as coverage. The shader multiplies the
   /// premultiplied vertex colour by it, which is exactly what
   /// `CoverageSpanSink` consumers do on the CPU.
   alpha8,
+
+  /// Straight-alpha RGBA texels.
+  ///
+  /// Gradient lookup tables use this format because the framework's gradient
+  /// contract interpolates straight sRGB channels and premultiplies only
+  /// after sampling. Treating the same bytes as a premultiplied image changes
+  /// translucent ramps and breaks CPU/GPU parity.
+  rgba8888Straight,
 
   /// Blue, green, red, alpha or the reverse - the channel order is the
   /// backend's business, matching `PixelFormat`. Premultiplied either way.

@@ -15,6 +15,7 @@ void main() {
   group('GpuTextureFormat', () {
     test('a coverage mask is one byte and an image is four', () {
       expect(GpuTextureFormat.alpha8.bytesPerPixel, 1);
+      expect(GpuTextureFormat.rgba8888Straight.bytesPerPixel, 4);
       expect(GpuTextureFormat.rgba8888Premultiplied.bytesPerPixel, 4);
     });
 

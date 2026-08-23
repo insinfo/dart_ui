@@ -1176,6 +1176,7 @@ int metalBlendFactor(GpuBlendFactor factor) => switch (factor) {
 /// would draw. The failure looks like a broken rasteriser, not a wrong enum.
 int metalPixelFormat(GpuTextureFormat format) => switch (format) {
       GpuTextureFormat.alpha8 => MtlPixelFormat.r8Unorm,
+      GpuTextureFormat.rgba8888Straight => MtlPixelFormat.rgba8Unorm,
       GpuTextureFormat.rgba8888Premultiplied => MtlPixelFormat.rgba8Unorm,
     };
 

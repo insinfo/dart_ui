@@ -1,8 +1,9 @@
 # Aceleração vetorial previsível: direção Vello + Impeller
 
-**Estado em 22 de agosto de 2026:** formato sparse-strip, plano de submissão
-GPU, seletor A–D e LUT de gradientes implementados e testados; shaders sparse
-por API ainda são experimentais.
+**Estado em 22 de agosto de 2026:** formato sparse-strip, executor OpenGL
+instanciado opt-in, tessellator inicial da abordagem B, seletor A–D e contrato
+GPU de gradientes implementados e testados. O renderer padrão ainda usa o
+atlas denso enquanto os novos caminhos acumulam paridade e benchmarks.
 
 ## Objetivo
 
@@ -95,7 +96,7 @@ D não está disponível.
 `ScanlineFiller -> GpuMaskAtlas -> quad`. Favorece formas estáticas já em
 cache, é simples e está provado por paridade. Continua obrigatório.
 
-### 2. Sparse strips híbrido (plano de submissão implementado)
+### 2. Sparse strips híbrido (executor OpenGL experimental)
 
 CPU/Dart faz flatten e cobertura; GPU faz fine raster/composição. Favorece UI,
 paths grandes e dispositivos sem compute. O formato intermediário já existe.
@@ -108,6 +109,13 @@ Componentes concluídos:
 4. seletor determinístico por capacidade/custo entre A, sparse, B, C e D;
 5. LUT RGBA8 de gradiente compartilhável pela CPU e pelos shaders.
 
+O primeiro consumidor real está em `gl_sparse_executor.dart`. Ele mantém VBO
+instanciado de seis floats, programa GLSL 3.30/ES 3.00, páginas alpha8, uploads
+parciais e comandos ordenados por batch/material/page-run. Os símbolos de
+instancing são opcionais e não alteram o probe do renderer denso. A ativação
+automática permanece bloqueada até integrar lifecycle ao `GlRenderDevice`,
+clips/layers e benchmarks comparativos.
+
 Próximos componentes são o shader strip/fill em GLSL, suas variantes HLSL,
 MSL, SPIR-V e WGSL, e a integração do plano com `GpuRasterSink`.
 
@@ -116,6 +124,13 @@ MSL, SPIR-V e WGSL, e a integração do plano com `GpuRasterSink`.
 CPU tessela paths e envia triângulos; MSAA ou AA analítico resolve bordas.
 Favorece geometria pequena/reutilizada e APIs como Metal/Vulkan/D3D12. Deve
 usar o mesmo paint/layer contract, não um segundo renderer.
+
+`CpuPathTessellator` implementa o primeiro subconjunto: um contorno simples,
+fechado e formado por linhas, convexo ou côncavo, triangulado por ear clipping.
+A malha fica em coordenadas locais (`Float32List` XY + `Uint32List`), portanto
+uma transformação por frame não invalida o VBO. Curvas não achatadas, holes,
+múltiplos contornos, abertura, auto-interseção e degeneração são recusados por
+um motivo tipado. O seletor só escolhe B após elegibilidade explícita.
 
 ### 4. Tile/compute
 
@@ -137,9 +152,11 @@ do paint. `GradientLut` produz RGBA8 sRGB straight-alpha com interpolação e
 rounding determinísticos; a premultiplicação ocorre na composição final. O
 replay CPU usa a inversa local↔device e respeita clip e `saveLayer`.
 
-A implementação GPU consumirá a mesma LUT e parâmetros de geometria em buffer
-de paint. Sinks nativos/GPU ainda não integrados recusam gradientes
-explicitamente; nunca os tratam silenciosamente como cor sólida.
+`GpuGradientCache` já deduplica e envia essa LUT como textura 1×N straight
+RGBA, recriando-a após device loss. `GpuGradientShaderParameters` fornece
+matrizes local↔target, origem de layer, geometria linear/radial/focal e layout
+lógico comum às APIs. Sinks nativos/GPU ainda não integrados recusam
+gradientes explicitamente; nunca os tratam silenciosamente como cor sólida.
 
 ## Seleção por custo, não por plataforma
 
