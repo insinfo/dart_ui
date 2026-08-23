@@ -114,6 +114,7 @@ void main() {
           Capability.pointerInput,
           Capability.scrollInput,
           Capability.keyboardInput,
+          Capability.clipboardText,
           Capability.cpuPresentation,
           Capability.orderlyShutdown,
         ]),
@@ -342,6 +343,13 @@ void main() {
       expect(client.wakeCalls, 1);
     });
 
+    test('backend clipboard delegates text to the Wayland selection client',
+        () async {
+      await backend.clipboard.writeText('texto Wayland');
+      expect(client.clipboardText, 'texto Wayland');
+      expect(await backend.clipboard.readText(), 'texto Wayland');
+    });
+
     test('setTitle and hide are forwarded', () async {
       final window = await createWindow();
       window.setTitle('novo título');
@@ -375,9 +383,11 @@ final class _FakeShmBuffer implements WaylandShmBufferHandle {
 }
 
 final class _FakeWaylandClient
-    implements WaylandWindowClient, WaylandCpuClient {
+    implements WaylandWindowClient, WaylandCpuClient, WaylandSelectionClient {
   bool isValidFlag = true;
   bool shmSupported = true;
+  bool clipboardSupported = true;
+  String? clipboardText;
   int scale = 1;
   int wakeCalls = 0;
   int _nextId = 10;
@@ -495,6 +505,15 @@ final class _FakeWaylandClient
 
   @override
   int repeatDelayMilliseconds = 400;
+
+  @override
+  bool get supportsClipboard => clipboardSupported;
+
+  @override
+  void setClipboardText(String text) => clipboardText = text;
+
+  @override
+  Future<String?> readClipboardText() async => clipboardText;
 
   @override
   bool get supportsShmPresentation => shmSupported;

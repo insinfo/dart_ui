@@ -63,6 +63,128 @@ void main() {
   });
 
   group('display list to pixels', () {
+    test('linear gradient follows transform and survives the clip', () async {
+      final target = await targetOf(12, 2);
+      final list = DisplayList();
+      final gradient = LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 4,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, opaqueRed),
+          GradientStop(1, opaqueBlue),
+        ],
+      );
+      final paint = list.addPaint(colorArgb: 0, gradient: gradient);
+      list
+        ..transform2D(const Transform2D(2, 0, 0, 1, 2, 0))
+        ..clipRectangle(const Rect.fromLTRB(1, 0, 3, 2))
+        ..drawRectangle(const Rect.fromLTRB(0, 0, 4, 2), paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      expect(pixelAt(target.framebuffer, 3, 0), (0, 0, 0, 0));
+      final expected = GradientLut(gradient).sampleArgb((4.5 - 2) / 8);
+      expect(
+        pixelAt(target.framebuffer, 4, 0),
+        (
+          (expected >> 16) & 0xFF,
+          (expected >> 8) & 0xFF,
+          expected & 0xFF,
+          (expected >> 24) & 0xFF,
+        ),
+      );
+      expect(pixelAt(target.framebuffer, 8, 0), (0, 0, 0, 0));
+    });
+
+    test('radial gradient samples from centre to radius', () async {
+      final target = await targetOf(5, 5);
+      final list = DisplayList();
+      final gradient = RadialGradient(
+        centerX: 2.5,
+        centerY: 2.5,
+        radius: 2.5,
+        stops: const <GradientStop>[
+          GradientStop(0, opaqueRed),
+          GradientStop(1, opaqueBlue),
+        ],
+      );
+      final paint = list.addPaint(colorArgb: 0, gradient: gradient);
+      list.drawRectangle(const Rect.fromLTRB(0, 0, 5, 5), paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      expect(pixelAt(target.framebuffer, 2, 2), (255, 0, 0, 255));
+      final edge = pixelAt(target.framebuffer, 4, 2);
+      expect(edge.$1, closeTo(51, 2));
+      expect(edge.$3, closeTo(204, 2));
+      expect(edge.$4, 255);
+    });
+
+    test('gradient coordinates remain device-correct inside an offscreen layer',
+        () async {
+      final target = await targetOf(8, 2);
+      final list = DisplayList();
+      final layerPaint = list.addPaint(colorArgb: 0x80FFFFFF);
+      final gradient = LinearGradient(
+        startX: 2,
+        startY: 0,
+        endX: 6,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, opaqueRed),
+          GradientStop(1, opaqueBlue),
+        ],
+      );
+      final fill = list.addPaint(colorArgb: 0, gradient: gradient);
+      list
+        ..saveLayer(2, 0, 6, 2, layerPaint)
+        ..drawRectangle(const Rect.fromLTRB(2, 0, 6, 2), fill)
+        ..restore();
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      final left = pixelAt(target.framebuffer, 2, 0);
+      final right = pixelAt(target.framebuffer, 5, 0);
+      expect(left.$1, greaterThan(left.$3));
+      expect(right.$3, greaterThan(right.$1));
+      expect(left.$4, 128);
+      expect(right.$4, 128);
+      expect(pixelAt(target.framebuffer, 1, 0), (0, 0, 0, 0));
+    });
+
+    test('gradient shades path coverage rather than its bounding rectangle',
+        () async {
+      final target = await targetOf(6, 6);
+      final list = DisplayList();
+      final gradient = LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 6,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, opaqueRed),
+          GradientStop(1, opaqueBlue),
+        ],
+      );
+      final paint = list.addPaint(colorArgb: 0, gradient: gradient);
+      final path = (PathBuilder()
+            ..moveTo(0, 0)
+            ..lineTo(6, 0)
+            ..lineTo(0, 6)
+            ..close())
+          .build();
+      list.drawPath(list.addPath(path), paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      final inside = pixelAt(target.framebuffer, 1, 1);
+      expect(inside.$1, greaterThan(inside.$3));
+      expect(inside.$4, 255);
+      expect(pixelAt(target.framebuffer, 5, 5), (0, 0, 0, 0));
+    });
+
     test('a filled rect lands where the encoder said', () async {
       final target = await targetOf(8, 8);
       final list = DisplayList();

@@ -9,6 +9,7 @@ import '../geometry/rect.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../graphics/display_list_opcodes.dart';
+import '../graphics/gradient.dart';
 import 'cpu_renderer.dart';
 import 'framebuffer.dart';
 import 'raster/blend.dart';
@@ -135,6 +136,7 @@ final class CpuCanvas {
     double strokeWidth = 0,
     int blendMode = blendModeSrcOver,
     bool antiAlias = true,
+    Gradient? gradient,
   }) =>
       displayList.addPaint(
         colorArgb: colorArgb,
@@ -142,6 +144,7 @@ final class CpuCanvas {
         strokeWidth: strokeWidth,
         blendMode: blendMode,
         antiAlias: antiAlias,
+        gradient: gradient,
       );
 
   void fillRect(Rect rect, int paintId) {
@@ -252,9 +255,10 @@ final class CpuCanvas {
 
   /// Paints a linear gradient directly into the retained pixel target.
   ///
-  /// This is intentionally a canvas primitive rather than a display-list
-  /// opcode until gradient resource serialization is finalized. Colors use
-  /// the public `0xAARRGGBB` convention and are premultiplied at the boundary.
+  /// This predates display-list gradient paints and remains as a direct-pixel
+  /// convenience for adapters. Retained scenes should pass a [Gradient] to
+  /// [paint], so replay preserves transforms, clips, paths and layers. Colors
+  /// use the public `0xAARRGGBB` convention and are premultiplied at the edge.
   void fillLinearGradient(
     Rect rect,
     int startColor,

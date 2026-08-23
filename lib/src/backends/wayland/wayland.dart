@@ -8,6 +8,7 @@
 library;
 
 export 'wayland_backend.dart';
+export 'wayland_clipboard.dart';
 export 'wayland_connection.dart';
 export 'wayland_cpu_presenter.dart';
 export 'wayland_dispatcher.dart';

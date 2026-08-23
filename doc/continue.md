@@ -6587,3 +6587,51 @@ dart test
 6. Medir separadamente geração Dart, bytes de upload, GPU e apresentação em
    Linux normal, WSLg, Windows e macOS. Um problema de presenter WSLg nunca
    deve contaminar o contrato do renderer comum.
+
+## 11. Checkpoint — seletor A–D, plano sparse, gradientes e clipboard
+
+**Data:** 22 de agosto de 2026
+
+### Implementado
+
+- `GpuPathStrategySelector` escolhe por draw entre primitiva analítica, atlas
+  denso, sparse strips, tesselação, stencil-then-cover e compute/tile.
+- A escolha considera capacidades, cache, geometria estável, complexidade,
+  auto-interseção e custos sparse medidos de upload, instâncias, páginas e
+  draws. A decisão inclui uma razão legível para diagnóstico.
+- `SparseStripDrawPlan` transforma a cobertura analítica em atlas alpha8
+  paginado, uploads por shelf row, instâncias solid/alpha e batches ordenados.
+  Strips maiores que a página são divididos sem alterar a cobertura; arenas
+  são reutilizadas por high-water mark.
+- `GradientLut` cria uma rampa sRGB straight-alpha determinística, com pad,
+  repeat, reflect e hard stops. O replay CPU agora aplica gradientes lineares e
+  radiais a retângulos, rounded rects, paths, strokes e texto, inclusive dentro
+  de layers e sob transformações.
+- Sinks GPU/native sem suporte de LUT recusam gradientes explicitamente; não há
+  fallback visual incorreto para a cor sólida do paint.
+- Clipboard Wayland foi ligado a `wl_data_device`: ownership, offers, fontes,
+  quatro MIME textuais, leitura externa por pipe e atalho seguro para a própria
+  seleção. Transferências têm deadline total de 2 s e teto de 64 MiB; FDs são
+  fechados em sucesso e erro.
+
+### Próxima sequência
+
+1. Implementar o consumidor GLSL do `SparseStripDrawPlan` no `GpuRasterSink`,
+   incluindo os dois pipelines solid/alpha e upload parcial do atlas.
+2. Portar o mesmo layout para HLSL, MSL, SPIR-V e WGSL, sem duplicar o modelo
+   de custo ou a geração Dart.
+3. Fazer os sinks GPU implementarem `GradientRasterSink`, com upload/cache de
+   `GradientLut` e parâmetros local→device em uniform/storage buffer.
+4. Implementar protótipos B/C/D atrás do mesmo seletor: VBO tessellated retido,
+   winding em stencil e binning/raster compute.
+5. Ligar frame callbacks Wayland ao pacing e adicionar benchmarks que separem
+   preparação Dart, bytes transferidos, tempo GPU e apresentação.
+
+### Limitações conscientes
+
+- O plano sparse já é consumível por qualquer API, mas ainda não emite draw
+  real; máscara densa continua o renderer GPU de produção.
+- Retângulos rotacionados/skewed mantêm a aproximação antiga do player por
+  bounding box; paths transformados preservam a geometria.
+- Gradiente usado como paint de `drawImage` ou do composite de `saveLayer`
+  permanece indefinido e é recusado por nome.

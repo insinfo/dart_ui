@@ -1,7 +1,8 @@
 # Aceleração vetorial previsível: direção Vello + Impeller
 
-**Estado em 22 de agosto de 2026:** formato sparse-strip e contrato de
-gradientes implementados e testados; consumidor GPU ainda experimental.
+**Estado em 22 de agosto de 2026:** formato sparse-strip, plano de submissão
+GPU, seletor A–D e LUT de gradientes implementados e testados; shaders sparse
+por API ainda são experimentais.
 
 ## Objetivo
 
@@ -71,26 +72,44 @@ estrutura, não um benchmark de GPU.
 Não foi adotada a arquitetura compute-first do Vello clássico nesta fase. Ela
 é um modo futuro para GPUs fortes, não o contrato mínimo.
 
-## Modos de renderização planejados
+## Abordagens de renderização 2D coexistentes
+
+As quatro abordagens não são backends mutuamente exclusivos. A seleção ocorre
+por draw: a mesma janela pode usar retângulo analítico, ícone cacheado,
+tesselação retida e compute para um SVG deformável no mesmo frame.
+
+| Abordagem | Implementação e uso preferido | Limitação principal |
+|---|---|---|
+| A. Atlas + shader analítico | primitivas fechadas no fragment shader; paths pelo `GpuMaskAtlas`; glifos em atlas. É o padrão de UI e o fallback de paridade | paths deformados exigem nova rasterização/upload |
+| B. Tesselação CPU | curvas viram malhas retidas; vence em geometria estável, simples e sem auto-interseção | AA de borda e regras complexas elevam custo/risco |
+| C. Stencil-then-cover | winding no stencil e cover posterior; indicado para path dinâmico arbitrário | múltiplos passes e banda de stencil/fill-rate |
+| D. Compute/tile | flatten, binning e cobertura na GPU; indicado para vetores dinâmicos complexos | requer API moderna e tem custo fixo maior |
+
+O sparse-strip híbrido é uma ponte adicional dentro de A: conserva a mesma
+cobertura analítica da CPU, mas envia somente bordas alpha8 e interiores como
+quads sólidos. Ele requer apenas vertex/fragment e por isso cobre hardware onde
+D não está disponível.
 
 ### 1. Máscara densa (existente, fallback)
 
 `ScanlineFiller -> GpuMaskAtlas -> quad`. Favorece formas estáticas já em
 cache, é simples e está provado por paridade. Continua obrigatório.
 
-### 2. Sparse strips híbrido (em implementação)
+### 2. Sparse strips híbrido (plano de submissão implementado)
 
 CPU/Dart faz flatten e cobertura; GPU faz fine raster/composição. Favorece UI,
 paths grandes e dispositivos sem compute. O formato intermediário já existe.
 
-Próximos componentes:
+Componentes concluídos:
 
-1. atlas de alpha esparso e buffer de instâncias com upload por região;
-2. shader comum de strip/fill e variantes GLSL, HLSL, MSL, SPIR-V e WGSL;
-3. `SparseStripRasterSink` selecionável por capacidade/custo;
-4. clips e layers com o mesmo formato;
-5. LUT de gradiente compartilhada;
-6. benchmarks por cena e decisão automática denso versus esparso.
+1. atlas alpha8 paginado, uploads por shelf row e split de strips largos;
+2. instâncias compactas solid/alpha, batches ordenados e arenas reutilizáveis;
+3. métricas de upload, instâncias, páginas, draws e capacidade retida;
+4. seletor determinístico por capacidade/custo entre A, sparse, B, C e D;
+5. LUT RGBA8 de gradiente compartilhável pela CPU e pelos shaders.
+
+Próximos componentes são o shader strip/fill em GLSL, suas variantes HLSL,
+MSL, SPIR-V e WGSL, e a integração do plano com `GpuRasterSink`.
 
 ### 3. Tesselação/AA geométrico
 
@@ -114,12 +133,13 @@ qualquer general path pipeline.
 
 `Gradient`, `LinearGradient`, `RadialGradient` e `GradientStop` são valores
 imutáveis. O display list interna o gradiente e guarda kind/id nos bits livres
-do paint. Isso conclui o contrato de cena, não a reprodução.
+do paint. `GradientLut` produz RGBA8 sRGB straight-alpha com interpolação e
+rounding determinísticos; a premultiplicação ocorre na composição final. O
+replay CPU usa a inversa local↔device e respeita clip e `saveLayer`.
 
-A implementação GPU planejada usa uma LUT RGBA8 pré-multiplicada e parâmetros
-de geometria em buffer de paint. A CPU deve usar a mesma tabela/rounding para
-paridade. Até esse replay existir, um backend deve diagnosticar/fazer fallback;
-nunca tratar silenciosamente um gradiente como cor sólida.
+A implementação GPU consumirá a mesma LUT e parâmetros de geometria em buffer
+de paint. Sinks nativos/GPU ainda não integrados recusam gradientes
+explicitamente; nunca os tratam silenciosamente como cor sólida.
 
 ## Seleção por custo, não por plataforma
 
@@ -127,7 +147,8 @@ A escolha pertence ao renderer e usa fatos da cena/device:
 
 - primitiva analítica quando suportada;
 - máscara em cache quando o hit evita nova rasterização/upload;
-- sparse strips quando `encodedByteLength` é materialmente menor que a máscara;
+- sparse strips quando upload alpha + instâncias são materialmente menores que
+  a máscara e o número de páginas/draws permanece limitado;
 - tesselação quando uma malha reutilizável vence os texels;
 - compute quando o device e a carga justificam o pipeline.
 
@@ -145,5 +166,7 @@ representação da cena ou a correção do renderer.
 - ganho comprovado sobre máscara densa em cenas reais;
 - ausência de regressão no Linux sem WSL e em GPUs sem compute.
 
-Até esses critérios passarem, sparse strips é um backend experimental atrás de
-seleção explícita, e a máscara densa permanece o fallback correto.
+`GpuPathStrategySelector` já materializa essa política e produz uma razão
+diagnosticável para cada decisão. Até os shaders e benchmarks passarem os
+critérios, sparse strips permanece experimental e a máscara densa continua o
+fallback correto.

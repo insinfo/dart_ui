@@ -85,6 +85,8 @@ final class ReplayPaint {
     required this.blendMode,
     required this.antiAlias,
     this.fillRule = pathFillRuleNonZero,
+    this.gradient,
+    this.shaderTransform = Transform2D.identity,
   });
 
   /// Non-premultiplied 0xAARRGGBB, exactly as the encoder stored it. The
@@ -121,6 +123,27 @@ final class ReplayPaint {
   /// this to non-zero because that is part of the stroker's contract.
   final int fillRule;
 
+  /// Optional gradient shader in the command's local coordinate space.
+  final Gradient? gradient;
+
+  /// Maps [gradient]'s local geometry into device space for this draw.
+  ///
+  /// Solid paints retain the identity value and continue to use the interned
+  /// paint object. A gradient paint receives the replay state's current
+  /// transform because its geometry must follow the shape through nesting.
+  final Transform2D shaderTransform;
+
+  ReplayPaint withShaderTransform(Transform2D transform) => ReplayPaint(
+        argbColor: argbColor,
+        style: style,
+        strokeWidth: strokeWidth,
+        blendMode: blendMode,
+        antiAlias: antiAlias,
+        fillRule: fillRule,
+        gradient: gradient,
+        shaderTransform: transform,
+      );
+
   @override
   bool operator ==(Object other) =>
       other is ReplayPaint &&
@@ -129,17 +152,27 @@ final class ReplayPaint {
       other.strokeWidth == strokeWidth &&
       other.blendMode == blendMode &&
       other.antiAlias == antiAlias &&
-      other.fillRule == fillRule;
+      other.fillRule == fillRule &&
+      other.gradient == gradient &&
+      other.shaderTransform == shaderTransform;
 
   @override
-  int get hashCode => Object.hash(
-      argbColor, style, strokeWidth, blendMode, antiAlias, fillRule);
+  int get hashCode => Object.hash(argbColor, style, strokeWidth, blendMode,
+      antiAlias, fillRule, gradient, shaderTransform);
 
   @override
   String toString() => 'ReplayPaint(0x${argbColor.toRadixString(16)}, '
       'style: $style, strokeWidth: $strokeWidth, blend: $blendMode, '
-      'aa: $antiAlias, fillRule: $fillRule)';
+      'aa: $antiAlias, fillRule: $fillRule'
+      '${gradient == null ? '' : ', gradient: $gradient, shader: $shaderTransform'})';
 }
+
+/// Opt-in marker for sinks that understand [ReplayPaint.gradient].
+///
+/// Existing GPU and native sinks intentionally do not implement this yet, so
+/// they keep receiving the same explicit unsupported error instead of
+/// silently interpreting a gradient paint as its fallback solid colour.
+abstract interface class GradientRasterSink {}
 
 /// The resource tables an encoded list's ids point into.
 ///
@@ -645,13 +678,17 @@ final class DisplayListPlayer {
       _paints.add(null);
     }
     final ReplayPaint? cached = _paints[id];
-    if (cached != null) return cached;
-    final gradient = resources.paintGradient(id);
-    if (gradient != null) {
+    if (cached != null) {
+      return cached.gradient == null
+          ? cached
+          : cached.withShaderTransform(_state.transform);
+    }
+    final Gradient? gradient = resources.paintGradient(id);
+    if (gradient != null && sink is! GradientRasterSink) {
       throw UnsupportedError(
-        'gradient paint replay is not implemented yet; the display-list '
-        'resource was preserved as $gradient instead of being rendered as '
-        'an incorrect solid colour',
+        'gradient paint replay is not implemented by ${sink.runtimeType}; '
+        'the display-list resource was preserved as $gradient instead of '
+        'being rendered as an incorrect solid colour',
       );
     }
     final ReplayPaint paint = ReplayPaint(
@@ -661,9 +698,12 @@ final class DisplayListPlayer {
       blendMode: resources.paintBlendMode(id),
       antiAlias: resources.paintAntiAlias(id),
       fillRule: resources.paintFillRule(id),
+      gradient: gradient,
     );
     _paints[id] = paint;
-    return paint;
+    return gradient == null
+        ? paint
+        : paint.withShaderTransform(_state.transform);
   }
 
   /// Whether [paint] puts ink outside the shape's own area.

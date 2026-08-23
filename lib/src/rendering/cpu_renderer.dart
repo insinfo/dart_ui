@@ -24,6 +24,8 @@ import '../geometry/transform2d.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_opcodes.dart';
 import '../graphics/display_list_reader.dart';
+import '../graphics/gradient.dart';
+import '../graphics/gradient_lut.dart';
 import '../text/typeface.dart';
 import 'framebuffer.dart';
 import 'path/coverage_span_sink.dart';
@@ -294,7 +296,7 @@ final class CpuLayerBufferPool {
 /// only *overlaps* - so every call still applies it. Doing that here rather
 /// than trusting the player keeps the rasteriser's clip stack the single
 /// authority on what is on screen.
-final class _RasterizerSink implements RasterSink {
+final class _RasterizerSink implements RasterSink, GradientRasterSink {
   _RasterizerSink(
     CpuRasterizer rasterizer,
     this._resources,
@@ -338,6 +340,11 @@ final class _RasterizerSink implements RasterSink {
   final PathStroker _stroker = PathStroker();
 
   final _CoverageToRasterizer _spanSink;
+
+  /// One immutable LUT per value-interned gradient, retained across draws in
+  /// the frame. The display list already deduplicates gradients by value, so
+  /// this map normally contains only the handful of ramps in the scene.
+  final Map<Gradient, GradientLut> _gradientLuts = <Gradient, GradientLut>{};
 
   /// Open layers, innermost last. Empty between frames, or the player and this
   /// sink disagree about how many clips are in force.
@@ -415,7 +422,16 @@ final class _RasterizerSink implements RasterSink {
     final visible = deviceRect.intersect(clip);
     if (visible.isEmpty) return;
     final CpuBlendMode blend = _blendFor(paint);
+    final _CpuGradientShader? shader = _gradientShader(paint);
+    if (paint.gradient != null && shader == null) return;
     _drew = true;
+    if (shader != null) {
+      final Path rectPath =
+          (PathBuilder()..addRect(_toLayer(deviceRect))).build();
+      _spanSink.begin(paint, blend, shader: shader);
+      _filler.fill(rectPath, _toLayer(clip), _spanSink);
+      return;
+    }
     // The intersection happens in double space, so a clipped edge arrives here
     // fractional and comes out soft. Antialiasing everything is the right
     // default for a UI: the shapes are axis-aligned most of the time, where
@@ -431,6 +447,19 @@ final class _RasterizerSink implements RasterSink {
     } else {
       _rasterizer.fillRect(local, paint.argbColor, blendMode: blend);
     }
+  }
+
+  _CpuGradientShader? _gradientShader(ReplayPaint paint) {
+    final Gradient? gradient = paint.gradient;
+    if (gradient == null) return null;
+    final Transform2D? targetToLocal =
+        _toLayerTransform(paint.shaderTransform).invert();
+    if (targetToLocal == null) return null;
+    return _CpuGradientShader(
+      gradient,
+      _gradientLuts.putIfAbsent(gradient, () => GradientLut(gradient)),
+      targetToLocal,
+    );
   }
 
   /// The equation [paint] draws with, refusing what this backend cannot mean.
@@ -496,8 +525,10 @@ final class _RasterizerSink implements RasterSink {
     final builder = PathBuilder()
       ..addRoundedRectRadii(_toLayer(deviceRect), deviceRadii);
     final CpuBlendMode blend = _blendFor(paint);
+    final _CpuGradientShader? shader = _gradientShader(paint);
+    if (paint.gradient != null && shader == null) return;
     _drew = true;
-    _spanSink.begin(paint, blend);
+    _spanSink.begin(paint, blend, shader: shader);
     _filler.fill(builder.build(), _toLayer(clip), _spanSink);
   }
 
@@ -576,6 +607,14 @@ final class _RasterizerSink implements RasterSink {
   ///     backends from disagreeing about it.
   @override
   void beginLayer(Rect deviceBounds, Rect clip, ReplayPaint paint) {
+    if (paint.gradient != null) {
+      throw UnsupportedCapabilityError(
+        backendName: 'cpu',
+        capability: Capability.cpuPresentation,
+        detail: 'a gradient cannot be used as a saveLayer composite paint; '
+            'layer paints currently carry only opacity and blend mode',
+      );
+    }
     if (_open.length >= maxLayerDepth) {
       throw CpuLayerDepthExceededError(
         depth: _open.length + 1,
@@ -837,8 +876,10 @@ final class _RasterizerSink implements RasterSink {
     // Resolved once per fill, not once per span: the mode cannot change along
     // a path, and `cpuBlendForMode` is a switch the span loop should never see.
     final CpuBlendMode blend = _blendFor(paint);
+    final _CpuGradientShader? shader = _gradientShader(paint);
+    if (paint.gradient != null && shader == null) return;
     _drew = true;
-    _spanSink.begin(paint, blend);
+    _spanSink.begin(paint, blend, shader: shader);
     _filler.fill(
       path,
       _toLayer(clip),
@@ -905,6 +946,14 @@ final class _RasterizerSink implements RasterSink {
     Rect clip,
     ReplayPaint paint,
   ) {
+    if (paint.gradient != null) {
+      throw UnsupportedCapabilityError(
+        backendName: 'cpu',
+        capability: Capability.cpuPresentation,
+        detail: 'gradient image paints are not defined; drawImage uses the '
+            'image pixels as its source rather than a geometry shader',
+      );
+    }
     if (image is! Framebuffer) {
       throw ArgumentError.value(
         image,
@@ -983,13 +1032,15 @@ final class _RasterizerSink implements RasterSink {
     final int argb = paint.argbColor;
     // A fully transparent run still costs a rasterization per glyph if it is
     // not stopped here, and invisible text is common: a fade at t = 0.
-    if ((argb >> 24) & 0xFF == 0) return;
+    if (paint.gradient == null && (argb >> 24) & 0xFF == 0) return;
 
     final ScaledTypeface font = _deviceFont(resource, transform);
     // Once for the whole run, before any glyph is looked up: the mode is a
     // property of the paint, and resolving it per glyph would put a switch on
     // the per-glyph path for an answer that cannot change.
     final CpuBlendMode blend = _blendFor(paint);
+    final _CpuGradientShader? shader = _gradientShader(paint);
+    if (paint.gradient != null && shader == null) return;
 
     _drew = true;
     _rasterizer
@@ -1012,15 +1063,29 @@ final class _RasterizerSink implements RasterSink {
       // pixels. Quantising in layer space would give the same answer for a
       // whole-pixel origin and a different one the moment that assumption
       // slipped, which is exactly the bug the assert in [_setTarget] guards.
-      _rasterizer.blendCoverageMask(
-        mask.coverage,
-        mask.width,
-        mask.height,
-        glyphPixelOrigin(penX) + mask.left - _originIntX,
-        pixelEdge(penY) + mask.top - _originIntY,
-        argb,
-        blendMode: blend,
-      );
+      final int left = glyphPixelOrigin(penX) + mask.left - _originIntX;
+      final int top = pixelEdge(penY) + mask.top - _originIntY;
+      if (shader == null) {
+        _rasterizer.blendCoverageMask(
+          mask.coverage,
+          mask.width,
+          mask.height,
+          left,
+          top,
+          argb,
+          blendMode: blend,
+        );
+      } else {
+        _spanSink.begin(paint, blend, shader: shader);
+        for (var row = 0; row < mask.height; row++) {
+          for (var column = 0; column < mask.width; column++) {
+            final int coverage = mask.coverage[row * mask.width + column];
+            if (coverage != 0) {
+              _spanSink.pixel(top + row, left + column, coverage);
+            }
+          }
+        }
+      }
     }
     _rasterizer.restore();
   }
@@ -1060,6 +1125,61 @@ final class _RasterizerSink implements RasterSink {
 /// per-pixel, so this is on the order of the shape's height; a public
 /// span-level entry point on the rasteriser would remove even that, and is the
 /// obvious next optimisation if paths ever show up in a profile.
+final class _CpuGradientShader {
+  const _CpuGradientShader(this.gradient, this.lut, this.targetToLocal);
+
+  final Gradient gradient;
+  final GradientLut lut;
+  final Transform2D targetToLocal;
+
+  int sampleArgb(double targetX, double targetY) {
+    final double x = targetToLocal.a * targetX +
+        targetToLocal.c * targetY +
+        targetToLocal.tx;
+    final double y = targetToLocal.b * targetX +
+        targetToLocal.d * targetY +
+        targetToLocal.ty;
+    final double parameter = switch (gradient) {
+      final LinearGradient linear => _linearParameter(linear, x, y),
+      final RadialGradient radial => _radialParameter(radial, x, y),
+    };
+    return lut.sampleArgb(parameter);
+  }
+
+  static double _linearParameter(LinearGradient gradient, double x, double y) {
+    final double dx = gradient.endX - gradient.startX;
+    final double dy = gradient.endY - gradient.startY;
+    final double lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared == 0 || !lengthSquared.isFinite) return 0;
+    return ((x - gradient.startX) * dx + (y - gradient.startY) * dy) /
+        lengthSquared;
+  }
+
+  static double _radialParameter(RadialGradient gradient, double x, double y) {
+    final double dx = x - gradient.focusX;
+    final double dy = y - gradient.focusY;
+    if (dx == 0 && dy == 0) return 0;
+    if (!gradient.hasFocus) {
+      return math.sqrt(dx * dx + dy * dy) / gradient.radius;
+    }
+
+    // Intersect the ray from the focus through the sample with the outer
+    // circle. If Q = F + s(P-F), then the gradient parameter at P is 1/s.
+    final double vx = gradient.focusX - gradient.centerX;
+    final double vy = gradient.focusY - gradient.centerY;
+    final double a = dx * dx + dy * dy;
+    final double b = 2 * (vx * dx + vy * dy);
+    final double c = vx * vx + vy * vy - gradient.radius * gradient.radius;
+    final double discriminant = b * b - 4 * a * c;
+    if (a == 0 || discriminant < 0 || !discriminant.isFinite) return 0;
+    final double root = math.sqrt(discriminant);
+    final double first = (-b - root) / (2 * a);
+    final double second = (-b + root) / (2 * a);
+    final double s = math.max(first > 0 ? first : 0, second > 0 ? second : 0);
+    return s > 0 && s.isFinite ? 1 / s : 0;
+  }
+}
+
 final class _CoverageToRasterizer implements CoverageSpanSink {
   _CoverageToRasterizer(this.rasterizer);
 
@@ -1080,19 +1200,32 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
   /// answer that is the same every time.
   CpuBlendMode _blendMode = CpuBlendMode.srcOver;
 
+  _CpuGradientShader? _shader;
+
   /// Arms the sink for one fill. Paired with the `_filler.fill` call that
   /// follows it, and the only way the two fields are set - they have to move
   /// together, and a caller that set the paint and forgot the mode would paint
   /// the previous shape's equation.
-  void begin(ReplayPaint paint, CpuBlendMode blendMode) {
+  void begin(
+    ReplayPaint paint,
+    CpuBlendMode blendMode, {
+    _CpuGradientShader? shader,
+  }) {
     _paint = paint;
     _blendMode = blendMode;
+    _shader = shader;
   }
 
   @override
   void span(int y, int xStart, int xEnd, int coverage) {
     final current = _paint;
     if (current == null) return;
+    if (_shader != null) {
+      for (var x = xStart; x < xEnd; x++) {
+        pixel(y, x, coverage);
+      }
+      return;
+    }
     final argb = current.argbColor;
     final alpha = mul255((argb >> 24) & 0xFF, coverage);
     // A colour too faint under a coverage too slight to survive rounding. It
@@ -1111,6 +1244,38 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
       (alpha << 24) | (argb & 0x00FFFFFF),
       blendMode: _blendMode,
     );
+  }
+
+  /// Composites one already-covered pixel through the active gradient.
+  ///
+  /// Kept here so path spans and glyph masks use one channel-order and blend
+  /// implementation. Coordinates are in the current target (layer) space.
+  void pixel(int y, int x, int coverage) {
+    final _CpuGradientShader? shader = _shader;
+    if (shader == null || coverage == 0) return;
+    final clip = rasterizer.clip;
+    if (x < clip.left || x >= clip.right || y < clip.top || y >= clip.bottom) {
+      return;
+    }
+    final int argb = shader.sampleArgb(x + 0.5, y + 0.5);
+    final int alpha = mul255((argb >> 24) & 0xFF, coverage);
+    if (alpha == 0) return;
+    final int red = premultiply((argb >> 16) & 0xFF, alpha);
+    final int green = premultiply((argb >> 8) & 0xFF, alpha);
+    final int blue = premultiply(argb & 0xFF, alpha);
+    final Framebuffer target = rasterizer.target;
+    final bool bgra = target.format == PixelFormat.bgra8888Premultiplied;
+    final int offset = target.offsetOf(x, y);
+    final int first = bgra ? blue : red;
+    final int third = bgra ? red : blue;
+    switch (_blendMode) {
+      case CpuBlendMode.srcOver:
+        blendPixelOver(target.pixels, offset, first, green, third, alpha);
+      case CpuBlendMode.src:
+        blendPixelSrc(target.pixels, offset, first, green, third, alpha);
+      case CpuBlendMode.plus:
+        blendPixelPlus(target.pixels, offset, first, green, third, alpha);
+    }
   }
 }
 

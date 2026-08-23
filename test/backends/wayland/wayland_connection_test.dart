@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/wayland/wayland_connection.dart';
@@ -6,6 +7,7 @@ import 'package:dart_ui/src/backends/wayland/wayland_protocol.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_shm.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_transport.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_wire.dart';
+import 'package:dart_ui/src/platform/clipboard.dart';
 import 'package:test/test.dart';
 
 const String _sampleKeymap = '''
@@ -220,6 +222,148 @@ void main() {
       expect(
         <int>[next.surfaceId, next.xdgSurfaceId, next.toplevelId],
         contains(ids.toplevelId),
+      );
+    });
+  });
+
+  group('wl_data_device clipboard', () {
+    test('binds manager and creates a data device for the seat', () {
+      final connection = openOk();
+
+      expect(connection.supportsClipboard, isTrue);
+      expect(compositor.boundInterfaces,
+          contains(wlDataDeviceManagerInterfaceName));
+      expect(compositor.dataDeviceId, isPositive);
+    });
+
+    test('refuses ownership before receiving an input serial', () {
+      final connection = openOk();
+
+      expect(
+        () => connection.setClipboardText('not yet'),
+        throwsA(isA<ClipboardException>()),
+      );
+      expect(compositor.selectionSourceId, 0);
+    });
+
+    test('publishes and serves UTF-8 until the source is cancelled', () async {
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      compositor.sendPointerEnter(ids.surfaceId, 41, x: 1, y: 2);
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isTrue);
+
+      connection.setClipboardText('olá ✅');
+      final sourceId = compositor.selectionSourceId;
+      expect(sourceId, isPositive);
+      expect(compositor.selectionSerial, 41);
+      expect(compositor.sourceMimes[sourceId],
+          containsAll(wlClipboardAcceptedTextMimes));
+      expect(await connection.readClipboardText(), 'olá ✅',
+          reason: 'our own selection must not deadlock through a pipe');
+
+      compositor.sendSourceSend(sourceId, wlClipboardTextMime, 701);
+      expect(connection.pollEventInto(raw), isFalse);
+      expect(utf8.decode(compositor.writtenFds[701]!), 'olá ✅');
+      expect(compositor.closedFds, contains(701));
+
+      compositor.sendSourceCancelled(sourceId);
+      expect(connection.pollEventInto(raw), isFalse);
+      expect(
+        compositor.requests,
+        anyElement(
+          isA<_Request>()
+              .having((r) => r.objectId, 'objectId', sourceId)
+              .having(
+                (r) => r.opcode,
+                'opcode',
+                wlDataSourceRequestDestroy,
+              ),
+        ),
+      );
+      expect(await connection.readClipboardText(), isNull);
+    });
+
+    test('receives an external UTF-8 offer and closes both pipe ends',
+        () async {
+      final connection = openOk();
+      final offerId = compositor.sendSelectionOffer(
+        <String>[wlClipboardTextMime, 'image/png'],
+        utf8.encode('externo'),
+      );
+      final raw = WaylandRawEvent();
+      expect(connection.pollEventInto(raw), isFalse,
+          reason: 'selection protocol events are internal');
+
+      expect(await connection.readClipboardText(), 'externo');
+      expect(compositor.lastReceivedOfferId, offerId);
+      expect(compositor.lastReceivedMime, wlClipboardTextMime);
+      expect(compositor.closedFds, containsAll(<int>[800, 801]));
+    });
+
+    test('an offer without a text MIME is an empty clipboard', () async {
+      final connection = openOk();
+      compositor.sendSelectionOffer(<String>['image/png'], <int>[1, 2, 3]);
+      final raw = WaylandRawEvent();
+      connection.pollEventInto(raw);
+
+      expect(await connection.readClipboardText(), isNull);
+      expect(compositor.pipeCreations, 0,
+          reason: 'unsupported data must not open a transfer pipe');
+    });
+
+    test('replacing the selection destroys the previous offer', () {
+      final connection = openOk();
+      final first = compositor.sendSelectionOffer(
+        <String>[wlClipboardTextMime],
+        utf8.encode('one'),
+      );
+      final raw = WaylandRawEvent();
+      connection.pollEventInto(raw);
+      compositor.requests.clear();
+
+      compositor.sendSelectionOffer(
+        <String>[wlClipboardTextMime],
+        utf8.encode('two'),
+      );
+      connection.pollEventInto(raw);
+
+      expect(
+        compositor.requests,
+        contains(
+          isA<_Request>()
+              .having((r) => r.objectId, 'objectId', first)
+              .having((r) => r.opcode, 'opcode', wlDataOfferRequestDestroy),
+        ),
+      );
+    });
+
+    test('a stalled external owner is a failure and still closes its pipe',
+        () async {
+      final connection = openOk();
+      compositor.sendSelectionOffer(
+        <String>[wlClipboardTextMime],
+        utf8.encode('ignored'),
+      );
+      compositor.failPipeRead = true;
+      final raw = WaylandRawEvent();
+      connection.pollEventInto(raw);
+
+      await expectLater(
+        connection.readClipboardText(),
+        throwsA(isA<ClipboardException>()),
+      );
+      expect(compositor.closedFds, containsAll(<int>[800, 801]));
+    });
+
+    test('a compositor without data-device keeps windows but no clipboard', () {
+      compositor.advertiseDataDevice = false;
+      final connection = openOk();
+
+      expect(connection.supportsClipboard, isFalse);
+      expect(
+        () => connection.setClipboardText('x'),
+        throwsA(isA<ClipboardException>()),
       );
     });
   });
@@ -509,6 +653,8 @@ final class _Request {
 final class _FakeCompositor implements WaylandTransport {
   bool advertiseWmBase = true;
   bool advertiseShm = true;
+  bool advertiseDataDevice = true;
+  bool failPipeRead = false;
   int outputScale = 1;
   int keymapFd = -1;
   int keymapSize = 0;
@@ -525,6 +671,21 @@ final class _FakeCompositor implements WaylandTransport {
   int outputId = 0;
   int pointerId = 0;
   int keyboardId = 0;
+  int dataDeviceManagerId = 0;
+  int dataDeviceId = 0;
+  int selectionSourceId = 0;
+  int selectionSerial = 0;
+  int lastReceivedOfferId = 0;
+  String? lastReceivedMime;
+  int pipeCreations = 0;
+
+  final Map<int, Set<String>> sourceMimes = <int, Set<String>>{};
+  final Map<int, Uint8List> writtenFds = <int, Uint8List>{};
+  final Map<int, Uint8List> _selectionBytesByOffer = <int, Uint8List>{};
+  final Map<int, int> _readFdByWriteFd = <int, int>{};
+  final Map<int, Uint8List> _pipeBytesByReadFd = <int, Uint8List>{};
+  int _nextServerId = 0xff000001;
+  int _nextPipeReadFd = 800;
 
   final WaylandWireDecoder _outDecoder = WaylandWireDecoder();
   final WaylandWireMessage _outMessage = WaylandWireMessage();
@@ -564,9 +725,10 @@ final class _FakeCompositor implements WaylandTransport {
   }
 
   List<int> _takeFdsFor(int objectId, int opcode) {
-    // Only wl_shm.create_pool carries an fd in this backend; hand the queued
-    // descriptors to exactly that request, in order.
-    if (objectId == shmId && opcode == wlShmRequestCreatePool) {
+    // Both shm pool creation and data-offer receive carry one descriptor.
+    if ((objectId == shmId && opcode == wlShmRequestCreatePool) ||
+        (opcode == wlDataOfferRequestReceive &&
+            _selectionBytesByOffer.containsKey(objectId))) {
       final fds = List<int>.of(_pendingOutFds);
       _pendingOutFds.clear();
       return fds;
@@ -594,13 +756,24 @@ final class _FakeCompositor implements WaylandTransport {
   void closeFd(int fd) => closedFds.add(fd);
 
   @override
-  ({int readFd, int writeFd})? createPipe() => null;
+  ({int readFd, int writeFd})? createPipe() {
+    pipeCreations++;
+    final readFd = _nextPipeReadFd;
+    final writeFd = readFd + 1;
+    _nextPipeReadFd += 2;
+    _readFdByWriteFd[writeFd] = readFd;
+    return (readFd: readFd, writeFd: writeFd);
+  }
 
   @override
-  bool writeAllToFd(int fd, Uint8List bytes) => false;
+  bool writeAllToFd(int fd, Uint8List bytes) {
+    writtenFds[fd] = Uint8List.fromList(bytes);
+    return true;
+  }
 
   @override
-  Uint8List? readAllFromFd(int fd, {int timeoutMilliseconds = 2000}) => null;
+  Uint8List? readAllFromFd(int fd, {int timeoutMilliseconds = 2000}) =>
+      failPipeRead ? null : _pipeBytesByReadFd[fd];
 
   void _handleRequest(
     int objectId,
@@ -651,6 +824,8 @@ final class _FakeCompositor implements WaylandTransport {
           }
         case xdgWmBaseInterfaceName:
           wmBaseId = newId;
+        case wlDataDeviceManagerInterfaceName:
+          dataDeviceManagerId = newId;
       }
       return;
     }
@@ -670,6 +845,36 @@ final class _FakeCompositor implements WaylandTransport {
         }
       }
     }
+    if (objectId == dataDeviceManagerId) {
+      final reader = WaylandMessageReader(payload);
+      if (opcode == wlDataDeviceManagerRequestGetDataDevice) {
+        dataDeviceId = reader.readNewId();
+        reader.readObject(); // seat
+      } else if (opcode == wlDataDeviceManagerRequestCreateDataSource) {
+        sourceMimes[reader.readNewId()] = <String>{};
+      }
+      return;
+    }
+    final sourceMimeSet = sourceMimes[objectId];
+    if (sourceMimeSet != null && opcode == wlDataSourceRequestOffer) {
+      sourceMimeSet.add(WaylandMessageReader(payload).readString());
+      return;
+    }
+    if (objectId == dataDeviceId && opcode == wlDataDeviceRequestSetSelection) {
+      final reader = WaylandMessageReader(payload);
+      selectionSourceId = reader.readObject();
+      selectionSerial = reader.readUint();
+      return;
+    }
+    if (_selectionBytesByOffer.containsKey(objectId) &&
+        opcode == wlDataOfferRequestReceive) {
+      final reader = WaylandMessageReader(payload);
+      lastReceivedOfferId = objectId;
+      lastReceivedMime = reader.readString();
+      final writeFd = fds.single;
+      final readFd = _readFdByWriteFd[writeFd]!;
+      _pipeBytesByReadFd[readFd] = _selectionBytesByOffer[objectId]!;
+    }
   }
 
   void _announceGlobals() {
@@ -688,6 +893,7 @@ final class _FakeCompositor implements WaylandTransport {
     global(wlSeatInterfaceName, 7);
     global(wlOutputInterfaceName, 3);
     if (advertiseWmBase) global(xdgWmBaseInterfaceName, 4);
+    if (advertiseDataDevice) global(wlDataDeviceManagerInterfaceName, 3);
   }
 
   void _event(
@@ -702,6 +908,31 @@ final class _FakeCompositor implements WaylandTransport {
   }
 
   // -- test-injected events -------------------------------------------------
+
+  int sendSelectionOffer(List<String> mimes, List<int> bytes) {
+    final offerId = _nextServerId++;
+    _selectionBytesByOffer[offerId] = Uint8List.fromList(bytes);
+    _event(
+        dataDeviceId, wlDataDeviceEventDataOffer, (w) => w.putNewId(offerId));
+    for (final mime in mimes) {
+      _event(offerId, wlDataOfferEventOffer, (w) => w.putString(mime));
+    }
+    _event(
+        dataDeviceId, wlDataDeviceEventSelection, (w) => w.putObject(offerId));
+    return offerId;
+  }
+
+  void sendSourceSend(int sourceId, String mime, int fd) {
+    _inboundFds.add(fd);
+    _event(sourceId, wlDataSourceEventSend, (w) {
+      w.putString(mime);
+      w.putFd(fd);
+    });
+  }
+
+  void sendSourceCancelled(int sourceId) {
+    _event(sourceId, wlDataSourceEventCancelled, (_) {});
+  }
 
   void sendToplevelConfigure(
     int toplevelId,

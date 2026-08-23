@@ -19,6 +19,7 @@
 /// compositor.
 library;
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../foundation/diagnostics.dart';
@@ -181,7 +182,7 @@ enum _ObjectKind {
 /// A live Wayland display connection.
 final class WaylandConnection
     with DisposableMixin
-    implements WaylandWindowClient, WaylandCpuClient {
+    implements WaylandWindowClient, WaylandCpuClient, WaylandSelectionClient {
   WaylandConnection._(this._transport, this._allocator);
 
   /// Performs the registry handshake, or reports exactly what stopped it.
@@ -256,6 +257,8 @@ final class WaylandConnection
   int _shmId = 0;
   int _seatId = 0;
   int _wmBaseId = 0;
+  int _dataDeviceManagerId = 0;
+  int _dataDeviceId = 0;
 
   /// wl_shm formats the compositor advertised.
   final Set<int> _shmFormats = <int>{};
@@ -267,6 +270,7 @@ final class WaylandConnection
   // Input focus, resolved so motion/key events can carry their surface.
   int _pointerFocusSurfaceId = 0;
   int _keyboardFocusSurfaceId = 0;
+  int _lastInputSerial = 0;
   double _pointerX = 0;
   double _pointerY = 0;
 
@@ -299,6 +303,16 @@ final class WaylandConnection
 
   // Callbacks whose done event arrived.
   final Set<int> _completedCallbacks = <int>{};
+
+  // Clipboard ownership and offers. A data source remains alive after a new
+  // source replaces it: the compositor owns that transition and retires the
+  // old source with `cancelled`. Destroying it earlier can race an outstanding
+  // `send` request from another client.
+  final Map<int, String> _clipboardSources = <int, String>{};
+  final Map<int, _WaylandDataOffer> _dataOffers = <int, _WaylandDataOffer>{};
+  int _activeClipboardSourceId = 0;
+  int _selectionOfferId = 0;
+  String? _ownedClipboardText;
 
   // Window-relevant events decoded while something else was being waited for
   // (a roundtrip during init or resize). Drained first by [pollEventInto].
@@ -415,7 +429,28 @@ final class WaylandConnection
           if (_wmBaseId != 0) break;
           _wmBaseId = _bind(
               name, interface, xdgWmBaseBindVersion, _ObjectKind.xdgWmBase);
+        case wlDataDeviceManagerInterfaceName:
+          if (_dataDeviceManagerId != 0) break;
+          final bindVersion = version < wlDataDeviceManagerBindVersion
+              ? version
+              : wlDataDeviceManagerBindVersion;
+          _dataDeviceManagerId = _bind(
+            name,
+            interface,
+            bindVersion,
+            _ObjectKind.dataDeviceManager,
+          );
       }
+    }
+    if (_dataDeviceManagerId != 0 && _seatId != 0) {
+      _dataDeviceId = _allocateId(_ObjectKind.dataDevice);
+      _writer.begin(
+        _dataDeviceManagerId,
+        wlDataDeviceManagerRequestGetDataDevice,
+      );
+      _writer.putNewId(_dataDeviceId);
+      _writer.putObject(_seatId);
+      _queueMessage();
     }
     if (_seatId == 0) {
       diagnostics.add(const BackendDiagnostic.note(
@@ -612,6 +647,15 @@ final class WaylandConnection
         return _handlePointerEvent(message, into);
       case _ObjectKind.keyboard:
         return _handleKeyboardEvent(message, into);
+      case _ObjectKind.dataDevice:
+        _handleDataDeviceEvent(message);
+        return false;
+      case _ObjectKind.dataSource:
+        _handleDataSourceEvent(objectId, message);
+        return false;
+      case _ObjectKind.dataOffer:
+        _handleDataOfferEvent(objectId, message);
+        return false;
       case _ObjectKind.surface:
         return _handleSurfaceEvent(objectId, message, into);
       case _ObjectKind.xdgSurface:
@@ -631,9 +675,6 @@ final class WaylandConnection
       case _ObjectKind.compositor:
       case _ObjectKind.shmPool:
       case _ObjectKind.dataDeviceManager:
-      case _ObjectKind.dataDevice:
-      case _ObjectKind.dataSource:
-      case _ObjectKind.dataOffer:
         return false;
     }
   }
@@ -765,6 +806,7 @@ final class WaylandConnection
     switch (message.opcode) {
       case wlPointerEventEnter:
         final serial = reader.readUint();
+        _rememberInputSerial(serial);
         final surfaceId = reader.readObject();
         _pointerFocusSurfaceId = surfaceId;
         _pointerX = reader.readFixed();
@@ -779,6 +821,7 @@ final class WaylandConnection
         });
       case wlPointerEventLeave:
         final serial = reader.readUint();
+        _rememberInputSerial(serial);
         final surfaceId = reader.readObject();
         if (_pointerFocusSurfaceId == surfaceId) _pointerFocusSurfaceId = 0;
         return _deliver(into, (WaylandRawEvent event) {
@@ -803,6 +846,7 @@ final class WaylandConnection
       case wlPointerEventButton:
         if (_pointerFocusSurfaceId == 0) return false;
         final serial = reader.readUint();
+        _rememberInputSerial(serial);
         final time = reader.readUint();
         final button = reader.readUint();
         final state = reader.readUint();
@@ -850,6 +894,7 @@ final class WaylandConnection
         return false;
       case wlKeyboardEventEnter:
         final serial = reader.readUint();
+        _rememberInputSerial(serial);
         final surfaceId = reader.readObject();
         _keyboardFocusSurfaceId = surfaceId;
         return _deliver(into, (WaylandRawEvent event) {
@@ -860,6 +905,7 @@ final class WaylandConnection
         });
       case wlKeyboardEventLeave:
         final serial = reader.readUint();
+        _rememberInputSerial(serial);
         final surfaceId = reader.readObject();
         if (_keyboardFocusSurfaceId == surfaceId) _keyboardFocusSurfaceId = 0;
         modifiers.reset();
@@ -872,6 +918,7 @@ final class WaylandConnection
       case wlKeyboardEventKey:
         if (_keyboardFocusSurfaceId == 0) return false;
         final serial = reader.readUint();
+        _rememberInputSerial(serial);
         final time = reader.readUint();
         final key = reader.readUint();
         final state = reader.readUint();
@@ -885,7 +932,7 @@ final class WaylandConnection
             ..state = state;
         });
       case wlKeyboardEventModifiers:
-        reader.readUint(); // serial
+        _rememberInputSerial(reader.readUint());
         modifiers.update(
           depressed: reader.readUint(),
           latched: reader.readUint(),
@@ -900,6 +947,228 @@ final class WaylandConnection
       default:
         return false;
     }
+  }
+
+  void _rememberInputSerial(int serial) {
+    if (serial != 0) _lastInputSerial = serial;
+  }
+
+  // -------------------------------------------------------------------------
+  // wl_data_device clipboard
+  // -------------------------------------------------------------------------
+
+  @override
+  bool get supportsClipboard =>
+      _dataDeviceManagerId != 0 && _dataDeviceId != 0 && isValid;
+
+  @override
+  void setClipboardText(String text) {
+    throwIfDisposed();
+    if (!supportsClipboard) {
+      throw const ClipboardException(
+        operation: 'set_selection',
+        backend: 'wayland',
+        reason: 'the compositor advertised no usable wl_data_device_manager',
+      );
+    }
+    if (_lastInputSerial == 0) {
+      throw const ClipboardException(
+        operation: 'set_selection',
+        backend: 'wayland',
+        reason: 'no keyboard or pointer serial has been received; Wayland '
+            'requires recent user interaction before taking the selection',
+      );
+    }
+
+    final sourceId = _allocateId(_ObjectKind.dataSource);
+    _writer.begin(
+      _dataDeviceManagerId,
+      wlDataDeviceManagerRequestCreateDataSource,
+    );
+    _writer.putNewId(sourceId);
+    _queueMessage();
+    for (final mime in wlClipboardAcceptedTextMimes) {
+      _writer.begin(sourceId, wlDataSourceRequestOffer);
+      _writer.putString(mime);
+      _queueMessage();
+    }
+    _writer.begin(_dataDeviceId, wlDataDeviceRequestSetSelection);
+    _writer.putObject(sourceId);
+    _writer.putUint(_lastInputSerial);
+    _queueMessage();
+
+    if (flush() < 0 || !isValid) {
+      throw const ClipboardException(
+        operation: 'set_selection',
+        backend: 'wayland',
+        reason: 'the compositor connection failed while publishing the source',
+      );
+    }
+    _clipboardSources[sourceId] = text;
+    _activeClipboardSourceId = sourceId;
+    _ownedClipboardText = text;
+  }
+
+  @override
+  Future<String?> readClipboardText() async {
+    throwIfDisposed();
+    if (!supportsClipboard) {
+      throw const ClipboardException(
+        operation: 'readText',
+        backend: 'wayland',
+        reason: 'the compositor advertised no usable wl_data_device_manager',
+      );
+    }
+
+    // Feeding our bytes through a pipe would require this same single-threaded
+    // connection to service wl_data_source.send while blocked reading it.
+    final owned = _ownedClipboardText;
+    if (_activeClipboardSourceId != 0 && owned != null) return owned;
+
+    final offer = _dataOffers[_selectionOfferId];
+    if (offer == null) return null;
+    String? mime;
+    for (final accepted in wlClipboardAcceptedTextMimes) {
+      if (offer.mimeTypes.contains(accepted)) {
+        mime = accepted;
+        break;
+      }
+    }
+    if (mime == null) return null;
+
+    final pipe = _transport.createPipe();
+    if (pipe == null) {
+      throw const ClipboardException(
+        operation: 'receive',
+        backend: 'wayland',
+        reason: 'pipe2 failed while preparing the selection transfer',
+      );
+    }
+    var writeOpen = true;
+    try {
+      _writer.begin(offer.id, wlDataOfferRequestReceive);
+      _writer.putString(mime);
+      _writer.putFd(pipe.writeFd);
+      _queueMessage();
+      if (flush() < 0 || !isValid) {
+        throw const ClipboardException(
+          operation: 'receive',
+          backend: 'wayland',
+          reason: 'the compositor connection failed while requesting text',
+        );
+      }
+      // sendmsg duplicated the descriptor into the compositor. Keeping our
+      // copy open would prevent the read side from ever observing EOF.
+      _transport.closeFd(pipe.writeFd);
+      writeOpen = false;
+      final bytes = _transport.readAllFromFd(pipe.readFd);
+      if (bytes == null) {
+        throw const ClipboardException(
+          operation: 'receive',
+          backend: 'wayland',
+          reason: 'the selection owner failed, exceeded 64 MiB, or did not '
+              'finish within 2s',
+        );
+      }
+      return utf8.decode(bytes, allowMalformed: true);
+    } finally {
+      if (writeOpen) _transport.closeFd(pipe.writeFd);
+      _transport.closeFd(pipe.readFd);
+    }
+  }
+
+  void _handleDataDeviceEvent(WaylandWireMessage message) {
+    final reader = WaylandMessageReader(message.payload);
+    switch (message.opcode) {
+      case wlDataDeviceEventDataOffer:
+        final id = reader.readNewId();
+        if (id == 0 || _objects.containsKey(id)) {
+          _protocolError = true;
+          recordError('wl_data_device.data_offer reused invalid object $id');
+          return;
+        }
+        _objects[id] = _ObjectKind.dataOffer;
+        _dataOffers[id] = _WaylandDataOffer(id);
+      case wlDataDeviceEventSelection:
+        final id = reader.readObject();
+        final previous = _selectionOfferId;
+        _selectionOfferId = id;
+        // Any selection event means the compositor has chosen an owner. If it
+        // is not represented by our active source anymore, the local shortcut
+        // must not return stale text.
+        _activeClipboardSourceId = 0;
+        _ownedClipboardText = null;
+        if (previous != 0 && previous != id) _destroyDataOffer(previous);
+      case wlDataDeviceEventEnter:
+        reader.readUint(); // serial
+        reader.readObject(); // surface
+        reader.readFixed(); // x
+        reader.readFixed(); // y
+        final offerId = reader.readObject();
+        // Drag-and-drop is not exposed by this backend yet. Explicitly retire
+        // its offer instead of retaining an object the application can never
+        // consume.
+        if (offerId != 0 && offerId != _selectionOfferId) {
+          _destroyDataOffer(offerId);
+        }
+      default:
+        // Drag-and-drop enter/leave/motion/drop are intentionally ignored;
+        // clipboard selection is the only operation this interface promises.
+        break;
+    }
+  }
+
+  void _handleDataOfferEvent(int offerId, WaylandWireMessage message) {
+    if (message.opcode != wlDataOfferEventOffer) return;
+    final offer = _dataOffers[offerId];
+    if (offer == null) return;
+    offer.mimeTypes.add(WaylandMessageReader(message.payload).readString());
+  }
+
+  void _handleDataSourceEvent(int sourceId, WaylandWireMessage message) {
+    switch (message.opcode) {
+      case wlDataSourceEventSend:
+        final reader = WaylandMessageReader(message.payload, _receivedFds);
+        final mime = reader.readString();
+        final fd = reader.readFd();
+        try {
+          final text = _clipboardSources[sourceId];
+          if (text != null && wlClipboardAcceptedTextMimes.contains(mime)) {
+            if (!_transport.writeAllToFd(
+              fd,
+              Uint8List.fromList(utf8.encode(text)),
+            )) {
+              recordError('wl_data_source.send failed for $mime');
+            }
+          }
+        } finally {
+          _transport.closeFd(fd);
+        }
+      case wlDataSourceEventCancelled:
+        _clipboardSources.remove(sourceId);
+        if (_activeClipboardSourceId == sourceId) {
+          _activeClipboardSourceId = 0;
+          _ownedClipboardText = null;
+        }
+        _writer.begin(sourceId, wlDataSourceRequestDestroy);
+        _queueMessage();
+        flush();
+      default:
+        // target is advisory and does not change the bytes this text-only
+        // source can serve.
+        break;
+    }
+  }
+
+  void _destroyDataOffer(int id) {
+    final offer = _dataOffers.remove(id);
+    if (offer == null || isDisposed || !_transport.isOpen) return;
+    _writer.begin(id, wlDataOfferRequestDestroy);
+    _queueMessage();
+    flush();
+    // Event-created ids live in the server id range and receive no
+    // wl_display.delete_id acknowledgement after their destructor.
+    _forgetObject(id);
   }
 
   void _adoptKeymap(int format, int fd, int size) {
@@ -1265,6 +1534,13 @@ final class WaylandConnection
     _receivedFds.clear();
     _transport.dispose();
   }
+}
+
+final class _WaylandDataOffer {
+  _WaylandDataOffer(this.id);
+
+  final int id;
+  final Set<String> mimeTypes = <String>{};
 }
 
 final class _WaylandNativeShmBuffer implements WaylandShmBufferHandle {

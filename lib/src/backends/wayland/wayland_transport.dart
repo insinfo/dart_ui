@@ -15,6 +15,11 @@ import '../../foundation/lifecycle.dart';
 import 'wayland_libc.dart';
 import 'wayland_wire.dart';
 
+/// Clipboard pipes are untrusted IPC. A silent peer gets a short, total
+/// deadline and an owner cannot make the process accumulate unbounded text.
+const int waylandClipboardTransferTimeoutMilliseconds = 2000;
+const int waylandClipboardMaximumTransferBytes = 64 * 1024 * 1024;
+
 /// Moving bytes and descriptors, with a doorbell.
 ///
 /// Sending is buffered: [queueMessage] accumulates, [flush] writes. That is
@@ -52,16 +57,21 @@ abstract interface class WaylandTransport implements Disposable {
   /// write end serves `wl_data_source.send`. Both ends are close-on-exec.
   ({int readFd, int writeFd})? createPipe();
 
-  /// Writes all of [bytes] to [fd]. Returns false on any failure - the peer
-  /// closing its end mid-paste is normal, not exceptional, and the caller
-  /// only needs to know the transfer did not complete.
+  /// Writes all of [bytes] to [fd]. Returns false on any failure or when the
+  /// receiver stops draining the pipe for two seconds total. The peer closing
+  /// its end mid-paste is normal, not exceptional, and the caller only needs
+  /// to know the transfer did not complete.
   bool writeAllToFd(int fd, Uint8List bytes);
 
-  /// Reads [fd] to end-of-file, waiting at most [timeoutMilliseconds] for
-  /// each chunk, and returns the bytes. Null when the transfer failed or the
-  /// writer went silent past the timeout - a hung clipboard owner must cost a
-  /// bounded wait, never a frozen isolate.
-  Uint8List? readAllFromFd(int fd, {int timeoutMilliseconds = 2000});
+  /// Reads [fd] to end-of-file, waiting at most [timeoutMilliseconds] for the
+  /// entire transfer, and returns the bytes. Null when the transfer failed,
+  /// exceeded [waylandClipboardMaximumTransferBytes], or the writer went
+  /// silent past the deadline - a hung clipboard owner must cost a bounded
+  /// wait, never a frozen isolate.
+  Uint8List? readAllFromFd(
+    int fd, {
+    int timeoutMilliseconds = waylandClipboardTransferTimeoutMilliseconds,
+  });
 }
 
 /// The outcome of trying to open the compositor socket.
@@ -454,15 +464,35 @@ final class WaylandSocketTransport
   @override
   bool writeAllToFd(int fd, Uint8List bytes) {
     if (isDisposed || fd < 0) return false;
+    final flags = _libc.fcntl(fd, fGetfl, 0);
+    if (flags < 0 || _libc.fcntl(fd, fSetfl, flags | oNonblock) < 0) {
+      return false;
+    }
     var offset = 0;
+    final elapsed = Stopwatch()..start();
     while (offset < bytes.length) {
+      final remaining = waylandClipboardTransferTimeoutMilliseconds -
+          elapsed.elapsedMilliseconds;
+      if (remaining <= 0) return false;
+      writeU32(_pollScratch, 0, fd);
+      writeU16(_pollScratch, 4, pollOut);
+      writeU16(_pollScratch, 6, 0);
+      final ready = _libc.poll(_pollScratch, 1, remaining);
+      if (ready < 0) {
+        if (_libc.errno == eintr) continue;
+        return false;
+      }
+      if (ready == 0) return false;
+      final revents = readU16(_pollScratch, 6);
+      if ((revents & (pollErr | pollHup)) != 0) return false;
       final chunk = bytes.length - offset > _ioBufferSize
           ? _ioBufferSize
           : bytes.length - offset;
       _ioBuffer.asTypedList(_ioBufferSize).setRange(0, chunk, bytes, offset);
       final written = _libc.write(fd, _ioBuffer, chunk);
       if (written < 0) {
-        if (_libc.errno == eintr) continue;
+        final error = _libc.errno;
+        if (error == eintr || error == eagain) continue;
         // EPIPE when the reader gave up mid-paste: a failed transfer, not a
         // crash. SIGPIPE cannot fire here - the Dart VM ignores it.
         return false;
@@ -474,16 +504,22 @@ final class WaylandSocketTransport
   }
 
   @override
-  Uint8List? readAllFromFd(int fd, {int timeoutMilliseconds = 2000}) {
+  Uint8List? readAllFromFd(
+    int fd, {
+    int timeoutMilliseconds = waylandClipboardTransferTimeoutMilliseconds,
+  }) {
     if (isDisposed || fd < 0) return null;
     final builder = BytesBuilder(copy: true);
+    final elapsed = Stopwatch()..start();
     while (true) {
-      // Poll before each read so a writer that stalls forever costs one
-      // timeout, never a blocked isolate.
+      final remaining = timeoutMilliseconds - elapsed.elapsedMilliseconds;
+      if (remaining <= 0) return null;
+      // Poll before each read so a writer that stalls forever costs one total
+      // deadline, never an indefinitely blocked isolate.
       writeU32(_pollScratch, 0, fd);
       writeU16(_pollScratch, 4, pollIn);
       writeU16(_pollScratch, 6, 0);
-      final ready = _libc.poll(_pollScratch, 1, timeoutMilliseconds);
+      final ready = _libc.poll(_pollScratch, 1, remaining);
       if (ready < 0) {
         if (_libc.errno == eintr) continue;
         return null;
@@ -498,6 +534,9 @@ final class WaylandSocketTransport
         return null;
       }
       if (received == 0) return builder.takeBytes(); // EOF: transfer complete.
+      if (builder.length + received > waylandClipboardMaximumTransferBytes) {
+        return null;
+      }
       builder.add(Uint8List.fromList(_ioBuffer.asTypedList(received)));
     }
   }

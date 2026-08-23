@@ -41,6 +41,10 @@ enum RasterizationApproach {
   /// are cached in persistent coverage atlases.
   analyticCoverageAtlas,
 
+  /// The CPU emits compact four-scanline coverage strips and solid fill runs;
+  /// vertex/fragment shaders compose them without requiring compute support.
+  sparseStripsHybrid,
+
   /// Curves are tessellated into triangle meshes before submission.
   tessellatedMeshes,
 

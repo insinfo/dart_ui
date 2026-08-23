@@ -65,8 +65,11 @@ const int controlBufferSize = cmsgHeaderSize + maxAncillaryFds * 4;
 
 const int oCloexec = 0x80000;
 const int oNonblock = 0x800;
+const int fGetfl = 3;
+const int fSetfl = 4;
 
 const int pollIn = 0x0001;
+const int pollOut = 0x0004;
 const int pollErr = 0x0008;
 const int pollHup = 0x0010;
 
@@ -108,6 +111,8 @@ typedef _PollNative = Int32 Function(Pointer<Uint8>, UintPtr, Int32);
 typedef _PollDart = int Function(Pointer<Uint8>, int, int);
 typedef _Pipe2Native = Int32 Function(Pointer<Int32>, Int32);
 typedef _Pipe2Dart = int Function(Pointer<Int32>, int);
+typedef _FcntlNative = Int32 Function(Int32, Int32, Int32);
+typedef _FcntlDart = int Function(int, int, int);
 typedef _ReadNative = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
 typedef _ReadDart = int Function(int, Pointer<Uint8>, int);
 typedef _WriteNative = IntPtr Function(Int32, Pointer<Uint8>, IntPtr);
@@ -184,6 +189,7 @@ final class WaylandLibc {
     'close',
     'poll',
     'pipe2',
+    'fcntl',
     'read',
     'write',
     'ftruncate',
@@ -211,6 +217,8 @@ final class WaylandLibc {
       _library.lookupFunction<_PollNative, _PollDart>('poll');
   late final _Pipe2Dart _pipe2 =
       _library.lookupFunction<_Pipe2Native, _Pipe2Dart>('pipe2');
+  late final _FcntlDart _fcntl =
+      _library.lookupFunction<_FcntlNative, _FcntlDart>('fcntl');
   late final _ReadDart _read =
       _library.lookupFunction<_ReadNative, _ReadDart>('read');
   late final _WriteDart _write =
@@ -285,6 +293,8 @@ final class WaylandLibc {
       _poll(fds, count, timeoutMillis);
 
   int pipe2(Pointer<Int32> fds, int flags) => _pipe2(fds, flags);
+
+  int fcntl(int fd, int command, int argument) => _fcntl(fd, command, argument);
 
   int read(int fd, Pointer<Uint8> buffer, int count) =>
       _read(fd, buffer, count);

@@ -144,7 +144,7 @@ final class DrawGlyphRunCall extends RasterCall {
 }
 
 /// Records every call the player makes, in order.
-final class RecordingSink implements RasterSink {
+final class RecordingSink implements RasterSink, GradientRasterSink {
   final List<RasterCall> _calls = <RasterCall>[];
 
   /// The recording, oldest first.

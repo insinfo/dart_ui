@@ -33,15 +33,17 @@
 ///     details.
 ///   * **No client-side decorations and no xdg-decoration.** On compositors
 ///     that do not draw server-side frames (GNOME) windows appear borderless.
-///   * **Clipboard, drag-and-drop, cursors and popups are deferred**, exactly
-///     as their X11 counterparts are.
+///   * **Drag-and-drop, cursors and popups are deferred.** Text clipboard is
+///     implemented through wl_data_device with bounded pipe transfers.
 library;
 
 import 'dart:io' show Platform;
 
 import '../../foundation/diagnostics.dart';
+import '../../platform/clipboard.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
+import 'wayland_clipboard.dart';
 import 'wayland_connection.dart';
 import 'wayland_events.dart';
 import 'wayland_key_repeat.dart';
@@ -119,7 +121,8 @@ WaylandSocketPathResolution resolveWaylandSocketPath(
 }
 
 /// Creates and owns Wayland windows.
-final class WaylandWindowingBackend implements WindowingBackend {
+final class WaylandWindowingBackend
+    implements WindowingBackend, ClipboardProvider {
   WaylandWindowingBackend({
     bool? isLinux,
     String? operatingSystem,
@@ -159,6 +162,20 @@ final class WaylandWindowingBackend implements WindowingBackend {
   bool _quitRequested = false;
   bool _serverDisconnected = false;
   bool _supportsCpuPresentation = false;
+  bool _supportsClipboard = false;
+
+  @override
+  Clipboard get clipboard {
+    final Object? candidate = _connection;
+    if (candidate case final WaylandSelectionClient client
+        when client.supportsClipboard) {
+      return WaylandClipboard(client);
+    }
+    return const UnavailableClipboard(
+      'the active Wayland compositor exposes no usable '
+      'wl_data_device_manager clipboard',
+    );
+  }
 
   /// Everything worth noting since probe/init.
   List<BackendDiagnostic> get diagnostics =>
@@ -562,6 +579,10 @@ final class WaylandWindowingBackend implements WindowingBackend {
     final cpuClient =
         connection is WaylandCpuClient ? connection as WaylandCpuClient : null;
     _supportsCpuPresentation = cpuClient?.supportsShmPresentation ?? false;
+    final selectionClient = connection is WaylandSelectionClient
+        ? connection as WaylandSelectionClient
+        : null;
+    _supportsClipboard = selectionClient?.supportsClipboard ?? false;
     final globals = connection.globalInterfaces;
     diagnostics.add(BackendDiagnostic.note(
       'globals: seat=${globals.contains('wl_seat') ? "yes" : "no"}, '
@@ -572,6 +593,11 @@ final class WaylandWindowingBackend implements WindowingBackend {
       _supportsCpuPresentation
           ? 'wl_shm ARGB8888 presentation is available'
           : 'wl_shm ARGB8888 presentation is unavailable',
+    ));
+    diagnostics.add(BackendDiagnostic.note(
+      _supportsClipboard
+          ? 'wl_data_device text clipboard is available'
+          : 'wl_data_device text clipboard is unavailable',
     ));
     diagnostics.add(const BackendDiagnostic.note(
       'pointer motion, buttons, crossings and axis scroll are normalized; '
@@ -597,6 +623,7 @@ final class WaylandWindowingBackend implements WindowingBackend {
               Capability.orderlyShutdown,
               if (_supportsCpuPresentation) Capability.cpuPresentation,
               if (_supportsCpuPresentation) Capability.partialPresent,
+              if (_supportsClipboard) Capability.clipboardText,
             }
           : const <Capability>{},
       diagnostics: diagnostics,

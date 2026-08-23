@@ -33,7 +33,7 @@ RecordingSink _play(
 }
 
 void main() {
-  test('gradient paint is refused explicitly until replay is implemented', () {
+  test('gradient paint retains resource and current shader transform', () {
     final list = DisplayList();
     final paint = list.addPaint(
       colorArgb: 0,
@@ -48,15 +48,72 @@ void main() {
         ],
       ),
     );
-    list.drawRect(0, 0, 100, 20, paint);
+    list
+      ..transform2D(const Transform2D(2, 0, 0, 3, 7, 11))
+      ..drawRect(0, 0, 100, 20, paint);
+
+    final call = _play(list).single<FillRectCall>();
+    expect(call.paint.gradient, isA<LinearGradient>());
+    expect(call.paint.shaderTransform, const Transform2D(2, 0, 0, 3, 7, 11));
+  });
+
+  test('one cached gradient paint receives each draw transform', () {
+    final list = DisplayList();
+    final paint = list.addPaint(
+      colorArgb: 0,
+      gradient: LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 10,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0xFF000000),
+          GradientStop(1, 0xFFFFFFFF),
+        ],
+      ),
+    );
+    list
+      ..save()
+      ..transform2D(const Transform2D.translation(5, 0))
+      ..drawRect(0, 0, 10, 10, paint)
+      ..restore()
+      ..transform2D(const Transform2D.translation(20, 0))
+      ..drawRect(0, 0, 10, 10, paint);
+
+    final calls = _play(list).allOf<FillRectCall>();
+    expect(calls[0].paint.shaderTransform, const Transform2D.translation(5, 0));
+    expect(
+        calls[1].paint.shaderTransform, const Transform2D.translation(20, 0));
+  });
+
+  test('a sink without gradient support refuses instead of drawing solid', () {
+    final list = DisplayList();
+    final paint = list.addPaint(
+      colorArgb: 0xFFFF00FF,
+      gradient: LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 10,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0xFF000000),
+          GradientStop(1, 0xFFFFFFFF),
+        ],
+      ),
+    );
+    list.drawRect(0, 0, 10, 10, paint);
 
     expect(
-      () => _play(list),
+      () => DisplayListPlayer(_SolidOnlySink()).play(
+        DisplayListReader(list),
+        DisplayListResources(list),
+        deviceBounds: _surface,
+      ),
       throwsA(
         isA<UnsupportedError>().having(
           (error) => error.message,
           'message',
-          contains('instead of being rendered as an incorrect solid colour'),
+          allOf(contains('_SolidOnlySink'), contains('incorrect solid colour')),
         ),
       ),
     );
@@ -659,4 +716,53 @@ final class _PaintStyleOverride implements ReplayResources {
 
   @override
   Object fontAt(int id) => _inner.fontAt(id);
+}
+
+/// Deliberately does not opt into [GradientRasterSink].
+final class _SolidOnlySink implements RasterSink {
+  @override
+  void beginLayer(Rect deviceBounds, Rect clip, ReplayPaint paint) {}
+
+  @override
+  void endLayer() {}
+
+  @override
+  void fillDeviceRect(Rect deviceRect, Rect clip, ReplayPaint paint) {}
+
+  @override
+  void fillDeviceRRect(
+    Rect deviceRect,
+    Rect clip,
+    Float32List deviceRadii,
+    ReplayPaint paint,
+  ) {}
+
+  @override
+  void drawDevicePath(
+    Object path,
+    Transform2D transform,
+    Rect clip,
+    ReplayPaint paint,
+  ) {}
+
+  @override
+  void drawDeviceImage(
+    Object image,
+    Rect sourceRect,
+    Rect deviceRect,
+    Rect clip,
+    ReplayPaint paint,
+  ) {}
+
+  @override
+  void drawDeviceGlyphRun(
+    int fontId,
+    Offset deviceOrigin,
+    Transform2D transform,
+    Int32List glyphIds,
+    Float32List deviceOffsets,
+    int glyphCount,
+    Rect clip,
+    ReplayPaint paint,
+  ) {}
 }
