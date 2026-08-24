@@ -11,6 +11,7 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
@@ -138,8 +139,22 @@ final class _MenuRenderWidget extends RenderObjectWidget {
 final class RenderMenu extends RenderBox with ControlBehavior {
   RenderMenu({required List<MenuItem> items}) : _items = items;
 
-  static const double itemHeight = 20.0;
-  static const double separatorHeight = 5.0;
+  /// The height of one command row.
+  ///
+  /// The theme's row height, so a menu is as dense as the list beside it. A
+  /// menu with its own 20 px constant was a menu that stayed 20 px while every
+  /// other collection in the window followed the density switch.
+  double get itemHeight => theme.effectiveRowHeight;
+
+  /// A separator is a hairline with a half-row of air either side of it.
+  double get separatorHeight => (theme.effectiveGap * 2 + 1).roundToDouble();
+
+  /// The inset of a highlighted row from the pop-up's edge.
+  ///
+  /// A highlight that runs edge to edge inside a rounded pop-up cuts its own
+  /// corners off; inset by the gap it becomes a rounded pill sitting inside
+  /// the menu, which is the shape every current desktop menu draws.
+  double get highlightInset => 4;
 
   List<MenuItem> _items;
   int _highlighted = -1;
@@ -155,15 +170,34 @@ final class RenderMenu extends RenderBox with ControlBehavior {
   /// The item the keyboard cursor is on, or -1.
   int get highlightedIndex => _highlighted;
 
+  /// The gap between the widest label and the accelerator column.
+  ///
+  /// Without it "Fit zoom to page" and "Shift+F4" would touch, and the eye
+  /// would read them as one string.
+  double get shortcutGap => Spacing.xl;
+
+  /// The air above the first row and below the last.
+  double get verticalPadding => 4;
+
   @override
   void performLayout() {
-    double height = 0;
+    double height = verticalPadding * 2;
     double width = 0;
+    double shortcutWidth = 0;
     for (final MenuItem item in _items) {
       height += item.isSeparator ? separatorHeight : itemHeight;
       final double itemWidth = measureLabel(item.label).width;
       if (itemWidth > width) width = itemWidth;
+      final String? shortcut = item.shortcut;
+      if (shortcut != null && shortcut.isNotEmpty) {
+        final double accelerator = measureLabel(shortcut).width;
+        if (accelerator > shortcutWidth) shortcutWidth = accelerator;
+      }
     }
+    // The accelerator column is part of the menu's width, not an overhang: a
+    // menu that measured labels only would clip every shortcut it advertises,
+    // which is what [MenuItem.shortcut] was doing before this.
+    if (shortcutWidth > 0) width += shortcutGap + shortcutWidth;
     size = constraints.constrain(
       Size(width + theme.effectiveControlPadding * 2, height),
     );
@@ -174,7 +208,7 @@ final class RenderMenu extends RenderBox with ControlBehavior {
 
   /// The item index at [y] within this menu, or -1.
   int indexAt(double y) {
-    double cursor = 0;
+    double cursor = verticalPadding;
     for (int i = 0; i < _items.length; i++) {
       final double extent =
           _items[i].isSeparator ? separatorHeight : itemHeight;
@@ -252,44 +286,77 @@ final class RenderMenu extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surfaceAlternate);
-    paintBorder(list, rect, theme.border);
-    double y = offset.dy;
+    // A pop-up floats above the window, so it takes the raised surface, the
+    // large radius and a single hairline - not the boxed-in look of a 1 px
+    // grey rectangle around a white fill.
+    final double radius = theme.cornerRadiusLarge;
+    paintRoundedFill(list, rect, theme.surfaceRaised, radius);
+    paintRoundedBorder(list, rect, theme.border, radius);
+    final double inset = highlightInset;
+    double y = offset.dy + verticalPadding;
     for (int i = 0; i < _items.length; i++) {
       final MenuItem item = _items[i];
       if (item.isSeparator) {
         paintFill(
           list,
           Rect.fromLTWH(
-              offset.dx + 2, y + separatorHeight / 2, size.width - 4, 1),
-          theme.border,
+            offset.dx + inset,
+            (y + separatorHeight / 2).roundToDouble(),
+            size.width - inset * 2,
+            1,
+          ),
+          theme.borderSubtle,
         );
         y += separatorHeight;
         continue;
       }
+      final Rect row = Rect.fromLTWH(
+        offset.dx + inset,
+        y,
+        size.width - inset * 2,
+        itemHeight,
+      );
       if (i == _highlighted) {
-        paintFill(
+        paintRoundedFill(
           list,
-          Rect.fromLTWH(offset.dx + 1, y, size.width - 2, itemHeight),
-          theme.accent,
+          row,
+          theme.accentSubtle,
+          theme.cornerRadiusSmall,
         );
       }
+      final Color foreground =
+          !item.enabled ? theme.disabledForeground : theme.foreground;
+      final double baseline = labelTopIn(row);
       paintLabel(
         list,
         item.label,
-        Offset(
-          offset.dx + theme.effectiveControlPadding,
-          (y + (itemHeight - labelLineHeight) / 2).roundToDouble(),
-        ),
-        !item.enabled
-            ? theme.disabledForeground
-            : i == _highlighted
-                ? theme.surfaceAlternate
-                : theme.foreground,
+        Offset(offset.dx + theme.effectiveControlPadding, baseline),
+        foreground,
       );
+
+      // The accelerator, right-aligned in its own column and dimmer than the
+      // command: it is a reminder, not a second command.
+      final String? shortcut = item.shortcut;
+      if (shortcut != null && shortcut.isNotEmpty) {
+        final double shortcutWidth = measureLabel(shortcut).width;
+        paintLabel(
+          list,
+          shortcut,
+          Offset(
+            offset.dx +
+                size.width -
+                theme.effectiveControlPadding -
+                shortcutWidth,
+            baseline,
+          ),
+          !item.enabled
+              ? theme.disabledForeground
+              : theme.foregroundSecondary,
+        );
+      }
       y += itemHeight;
     }
-    paintFocusRing(list, rect);
+    paintFocusRing(list, rect, radius: radius);
   }
 
   @override

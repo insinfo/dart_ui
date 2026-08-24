@@ -1175,7 +1175,7 @@ final class RenderTextField extends RenderBox
 
   @override
   void performLayout() => size = constraints.constrain(
-        Size(160, theme.effectiveControlHeight),
+        Size(200, theme.effectiveControlHeight),
       );
 
   @override
@@ -2290,15 +2290,30 @@ final class RenderTextField extends RenderBox
     );
     final Color fillColor =
         enabled ? theme.surfaceAlternate : theme.disabledSurface;
-    paintFill(list, rect, fillColor);
+    final double radius = theme.cornerRadius;
+    paintRoundedFill(list, rect, fillColor, radius);
     // A field whose own context menu is up still reads as the active one: the
     // keyboard is on loan to the menu, not gone somewhere else. See
     // [selectionColorFor].
     final bool looksFocused = hasFocus || _menuOpen;
-    paintBorder(list, rect, looksFocused ? theme.accent : theme.border);
+    // Focused thickens the outline instead of only recolouring it: colour
+    // alone is not an accessible state signal, and 1.5 px reads as "active"
+    // even where the accent and the border have similar luminance.
+    paintRoundedBorder(
+      list,
+      rect,
+      !enabled
+          ? theme.disabledForeground
+          : looksFocused
+              ? theme.accent
+              : isHovered
+                  ? theme.foregroundSecondary
+                  : theme.borderStrong,
+      radius,
+      width: looksFocused ? 1.5 : 1,
+    );
     final double padding = theme.effectiveControlPadding;
-    final double textTop =
-        (rect.top + (rect.height - labelLineHeight) / 2).roundToDouble();
+    final double textTop = labelTopIn(rect);
     final String text = displayText;
     // One layout for the whole paint: selection boxes, the composing underline
     // and the caret all read the same geometry, so they cannot disagree about

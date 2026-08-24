@@ -126,7 +126,7 @@ void main() {
     );
   });
 
-  test('IconButton applies its one-pixel optical correction', () {
+  test('IconButton centres its icon exactly, with no optical fudge', () {
     final BuildOwner owner = _mount(
       Center(
         child: IconButton(
@@ -146,8 +146,17 @@ void main() {
       Offset(icon.size.width / 2, icon.size.height / 2),
     );
 
-    expect(iconCenter.dx, closeTo(buttonCenter.dx + 1, 0.01));
-    expect(iconCenter.dy, closeTo(buttonCenter.dy + 1, 0.01));
+    // Dead centre, and not centre plus one. The +1 this asserted was a fudge
+    // for [RenderIcon] centring a glyph's *em box* rather than its ink; the
+    // icon centres its ink and snaps the pen to whole pixels now, so the fudge
+    // had become a visible one-pixel drop on every button in a toolbar.
+    expect(iconCenter.dx, closeTo(buttonCenter.dx, 0.51));
+    expect(iconCenter.dy, closeTo(buttonCenter.dy, 0.51));
+
+    // The button is one control square, so a row of them lines up with the
+    // fields beside it instead of standing 40 px tall in a 32 px theme.
+    expect(button.size.width, ThemeData.neutralLight.effectiveControlHeight);
+    expect(button.size.height, ThemeData.neutralLight.effectiveControlHeight);
   });
 
   test('circular progress has progress semantics and paints deterministically',

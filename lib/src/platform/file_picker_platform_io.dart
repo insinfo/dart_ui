@@ -10,6 +10,7 @@ const int _ofnNoChangeDir = 0x00000008;
 const int _ofnPathMustExist = 0x00000800;
 const int _ofnFileMustExist = 0x00001000;
 const int _ofnExplorer = 0x00080000;
+const int _ofnOverwritePrompt = 0x00000002;
 const int _maxWindowsPathUnits = 32768;
 
 final class _OpenFileNameW extends Struct {
@@ -73,6 +74,12 @@ typedef _GetOpenFileNameWNative = Int32 Function(
   Pointer<_OpenFileNameW> value,
 );
 typedef _GetOpenFileNameWDart = int Function(
+  Pointer<_OpenFileNameW> value,
+);
+typedef _GetSaveFileNameWNative = Int32 Function(
+  Pointer<_OpenFileNameW> value,
+);
+typedef _GetSaveFileNameWDart = int Function(
   Pointer<_OpenFileNameW> value,
 );
 typedef _CommDlgExtendedErrorNative = Uint32 Function();
@@ -173,6 +180,203 @@ String? _openWindows({
       reason: 'the common file dialog reported an extended error',
     );
   });
+}
+
+
+/// Asks the platform where to write a file. See `FilePicker.saveFile`.
+Future<String?> saveFile({
+  required String title,
+  required String suggestedName,
+  required List<FilePickerFilter> filters,
+  required String? defaultExtension,
+  required int ownerWindowHandle,
+}) async {
+  if (Platform.isWindows) {
+    return _saveWindows(
+      title: title,
+      suggestedName: suggestedName,
+      filters: filters,
+      defaultExtension: defaultExtension,
+      ownerWindowHandle: ownerWindowHandle,
+    );
+  }
+  if (Platform.isMacOS) {
+    return _saveMacOS(title: title, suggestedName: suggestedName);
+  }
+  if (Platform.isLinux) {
+    return _saveLinux(
+      title: title,
+      suggestedName: suggestedName,
+      filters: filters,
+    );
+  }
+  throw FilePickerException(
+    operation: 'saveFile',
+    platform: Platform.operatingSystem,
+    reason: 'no desktop file-picker backend is available',
+  );
+}
+
+String? _saveWindows({
+  required String title,
+  required String suggestedName,
+  required List<FilePickerFilter> filters,
+  required String? defaultExtension,
+  required int ownerWindowHandle,
+}) {
+  final DynamicLibrary library;
+  try {
+    library = DynamicLibrary.open('comdlg32.dll');
+  } on Object catch (error) {
+    throw FilePickerException(
+      operation: 'load comdlg32.dll',
+      platform: 'windows',
+      reason: '$error',
+    );
+  }
+  final _GetSaveFileNameWDart getSaveFileName =
+      library.lookupFunction<_GetSaveFileNameWNative, _GetSaveFileNameWDart>(
+          'GetSaveFileNameW');
+  final _CommDlgExtendedErrorDart extendedError = library.lookupFunction<
+      _CommDlgExtendedErrorNative,
+      _CommDlgExtendedErrorDart>('CommDlgExtendedError');
+
+  return using((NativeArena arena) {
+    final Pointer<_OpenFileNameW> descriptor = arena<_OpenFileNameW>();
+    final Pointer<Uint16> fileBuffer = arena<Uint16>(_maxWindowsPathUnits);
+    // The dialog opens with whatever `lpstrFile` already holds, so the
+    // suggested name is written into the buffer rather than passed separately.
+    final List<int> seed = suggestedName.codeUnits;
+    for (var i = 0; i < seed.length && i < _maxWindowsPathUnits - 1; i++) {
+      fileBuffer[i] = seed[i];
+    }
+    fileBuffer[seed.length.clamp(0, _maxWindowsPathUnits - 1)] = 0;
+
+    final List<FilePickerFilter> effective = filters.isEmpty
+        ? const <FilePickerFilter>[
+            FilePickerFilter(label: 'All files', extensions: <String>['*']),
+          ]
+        : filters;
+    descriptor.ref
+      ..lStructSize = sizeOf<_OpenFileNameW>()
+      ..hwndOwner = ownerWindowHandle
+      ..lpstrFilter = arena.allocateUtf16(_windowsFilter(effective))
+      ..nFilterIndex = 1
+      ..lpstrFile = fileBuffer
+      ..nMaxFile = _maxWindowsPathUnits
+      ..lpstrTitle = arena.allocateUtf16(title)
+      ..lpstrDefExt = defaultExtension == null
+          ? nullptr
+          : arena.allocateUtf16(
+              defaultExtension.startsWith('.')
+                  ? defaultExtension.substring(1)
+                  : defaultExtension,
+            )
+      // OFN_OVERWRITEPROMPT is the one flag that must not be omitted: without
+      // it the dialog silently returns a path that already exists and the
+      // caller destroys the user's file with no warning at all.
+      ..flags = _ofnExplorer |
+          _ofnOverwritePrompt |
+          _ofnPathMustExist |
+          _ofnNoChangeDir;
+
+    if (getSaveFileName(descriptor) != 0) {
+      return readNativeUtf16(fileBuffer, limit: _maxWindowsPathUnits);
+    }
+    final int code = extendedError();
+    if (code == 0) return null;
+    throw FilePickerException(
+      operation: 'GetSaveFileNameW',
+      platform: 'windows',
+      errorCode: code,
+      reason: 'the common file dialog reported an extended error',
+    );
+  });
+}
+
+Future<String?> _saveMacOS({
+  required String title,
+  required String suggestedName,
+}) async {
+  final String escapedTitle =
+      title.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+  final String escapedName =
+      suggestedName.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+  final String nameClause =
+      escapedName.isEmpty ? '' : ' default name "$escapedName"';
+  final String script =
+      'POSIX path of (choose file name with prompt "$escapedTitle"$nameClause)';
+  final ProcessResult result =
+      await Process.run('/usr/bin/osascript', <String>['-e', script]);
+  if (result.exitCode == 0) return '${result.stdout}'.trim();
+  if ('${result.stderr}'.toLowerCase().contains('user canceled')) return null;
+  throw FilePickerException(
+    operation: 'NSSavePanel via osascript',
+    platform: 'macos',
+    errorCode: result.exitCode,
+    reason: '${result.stderr}'.trim(),
+  );
+}
+
+Future<String?> _saveLinux({
+  required String title,
+  required String suggestedName,
+  required List<FilePickerFilter> filters,
+}) async {
+  final List<_LinuxPickerCommand> commands = <_LinuxPickerCommand>[
+    _LinuxPickerCommand(
+      executable: 'zenity',
+      arguments: <String>[
+        '--file-selection',
+        '--save',
+        '--confirm-overwrite',
+        '--title=$title',
+        if (suggestedName.isNotEmpty) '--filename=$suggestedName',
+        for (final FilePickerFilter filter in filters)
+          '--file-filter=${filter.label} | ${filter.wildcardPattern}',
+      ],
+    ),
+    _LinuxPickerCommand(
+      executable: 'kdialog',
+      arguments: <String>[
+        '--getsavefilename',
+        suggestedName,
+        filters
+            .map((FilePickerFilter filter) =>
+                '${filter.wildcardPattern}|${filter.label}')
+            .join('\n'),
+        '--title',
+        title,
+      ],
+    ),
+    _LinuxPickerCommand(
+      executable: 'yad',
+      arguments: <String>['--file-selection', '--save', '--title=$title'],
+    ),
+  ];
+  final List<String> unavailable = <String>[];
+  for (final _LinuxPickerCommand command in commands) {
+    try {
+      final ProcessResult result =
+          await Process.run(command.executable, command.arguments);
+      if (result.exitCode == 0) return '${result.stdout}'.trim();
+      if (result.exitCode == 1) return null;
+      throw FilePickerException(
+        operation: command.executable,
+        platform: 'linux',
+        errorCode: result.exitCode,
+        reason: '${result.stderr}'.trim(),
+      );
+    } on ProcessException {
+      unavailable.add(command.executable);
+    }
+  }
+  throw FilePickerException(
+    operation: 'saveFile',
+    platform: 'linux',
+    reason: 'no supported desktop chooser is installed '
+        '(${unavailable.join(', ')} were not found)',
+  );
 }
 
 String _windowsFilter(List<FilePickerFilter> filters) {

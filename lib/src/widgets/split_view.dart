@@ -527,14 +527,38 @@ final class RenderSplitDivider extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    paintFill(
-      list,
-      rect,
-      isPressed || isDragging
-          ? theme.accentPressed
-          : (isHovered ? theme.accentHovered : theme.border),
-    );
-    paintFocusRing(list, rect);
+    // At rest the divider is one hairline down the middle of its grab strip,
+    // not a filled slab: 6 px of grey between two panels is the sash of a 1995
+    // window manager, and the strip still has to be 6 px wide to be aimable.
+    final bool active = isPressed || isDragging || isHovered;
+    if (active) {
+      paintRoundedFill(
+        list,
+        rect,
+        isPressed || isDragging ? theme.accent : theme.accentHovered,
+        rect.width < rect.height ? rect.width / 2 : rect.height / 2,
+      );
+    } else {
+      final bool vertical = rect.height >= rect.width;
+      paintFill(
+        list,
+        vertical
+            ? Rect.fromLTWH(
+                (rect.left + rect.width / 2 - 0.5).roundToDouble(),
+                rect.top,
+                1,
+                rect.height,
+              )
+            : Rect.fromLTWH(
+                rect.left,
+                (rect.top + rect.height / 2 - 0.5).roundToDouble(),
+                rect.width,
+                1,
+              ),
+        theme.border,
+      );
+    }
+    paintFocusRing(list, rect, radius: theme.cornerRadiusSmall);
   }
 
   @override

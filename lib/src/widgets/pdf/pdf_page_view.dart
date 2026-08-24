@@ -12,13 +12,13 @@ import '../../graphics/color.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/image/decoded_image.dart';
-import '../../graphics/image/raster_formats.dart';
 import '../../layout/render_box.dart';
 import '../../pdf/document/pdf_page.dart';
 import '../../pdf/format/pdf_object.dart';
 import '../../pdf/gfx/pdf_gfx_state.dart';
 import '../../pdf/gfx/pdf_matrix.dart';
 import '../../pdf/gfx/pdf_output_device.dart';
+import '../../pdf/render/pdf_image_decoder.dart';
 import '../../pdf/render/pdf_page_renderer.dart';
 import '../../pdf/render/pdf_text_layout.dart';
 import '../../platform/input_events.dart';
@@ -43,6 +43,7 @@ final class PdfPageView extends RenderObjectWidget {
     this.selection,
     this.enableTextSelection = false,
     this.onSelectionChanged,
+    this.onTap,
   }) : assert(scale > 0);
 
   final PdfPage page;
@@ -66,6 +67,13 @@ final class PdfPageView extends RenderObjectWidget {
   final bool enableTextSelection;
   final void Function(int baseOffset, int extentOffset)? onSelectionChanged;
 
+  /// Called with top-left page coordinates when the page is clicked.
+  ///
+  /// The callback is emitted only when press/release stay within click slop;
+  /// scrolling or dragging over the page does not accidentally reposition a
+  /// consumer's overlay.
+  final void Function(Offset pagePosition)? onTap;
+
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
 
@@ -80,6 +88,7 @@ final class PdfPageView extends RenderObjectWidget {
         selection: selection,
         enableTextSelection: enableTextSelection,
         onSelectionChanged: onSelectionChanged,
+        onTap: onTap,
       );
 
   @override
@@ -96,7 +105,8 @@ final class PdfPageView extends RenderObjectWidget {
       ..textLayout = textLayout
       ..selection = selection
       ..enableTextSelection = enableTextSelection
-      ..onSelectionChanged = onSelectionChanged;
+      ..onSelectionChanged = onSelectionChanged
+      ..onTap = onTap;
   }
 }
 
@@ -111,6 +121,7 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     PdfTextSelection? selection,
     bool enableTextSelection = false,
     this.onSelectionChanged,
+    void Function(Offset pagePosition)? onTap,
   })  : _page = page,
         _scale = scale,
         _backgroundColor = backgroundColor,
@@ -118,7 +129,8 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
         _textLayout = textLayout,
         _textLayoutResolver = textLayoutResolver,
         _selection = selection,
-        _enableTextSelection = enableTextSelection;
+        _enableTextSelection = enableTextSelection,
+        _onTap = onTap;
 
   PdfPage _page;
   double _scale;
@@ -129,7 +141,11 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
   PdfTextSelection? _selection;
   bool _enableTextSelection;
   void Function(int baseOffset, int extentOffset)? onSelectionChanged;
+  void Function(Offset pagePosition)? _onTap;
   int? _selectionPointer;
+  int? _tapPointer;
+  Offset _tapStart = Offset.zero;
+  bool _tapMoved = false;
   int _selectionAnchor = 0;
   final Map<Object, DecodedImage> _decodedImages = <Object, DecodedImage>{};
   final Map<String, Typeface?> _embeddedFonts = <String, Typeface?>{};
@@ -214,6 +230,13 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     if (!value) _selectionPointer = null;
   }
 
+  void Function(Offset pagePosition)? get onTap => _onTap;
+
+  set onTap(void Function(Offset pagePosition)? value) {
+    _onTap = value;
+    if (value == null) _tapPointer = null;
+  }
+
   Size get _naturalSize => Size(page.width * scale, page.height * scale);
 
   @override
@@ -236,6 +259,7 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
 
   @override
   void handlePointerEvent(PointerEvent event) {
+    _handlePageTap(event);
     if (!enableTextSelection) return;
     // Hover moves reach here too, and with a lazy resolver installed reading
     // [textLayout] extracts it. Only a selection interaction is worth that:
@@ -270,6 +294,30 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
       case PointerUpEvent() when event.pointerId == _selectionPointer:
       case PointerCancelEvent() when event.pointerId == _selectionPointer:
         _selectionPointer = null;
+      default:
+        break;
+    }
+  }
+
+  void _handlePageTap(PointerEvent event) {
+    if (_onTap == null) return;
+    switch (event) {
+      case PointerDownEvent(button: PointerButton.primary):
+        _tapPointer = event.pointerId;
+        _tapStart = event.logicalPosition;
+        _tapMoved = false;
+      case PointerMoveEvent() when event.pointerId == _tapPointer:
+        final delta = event.logicalPosition - _tapStart;
+        if (delta.dx.abs() > 6 || delta.dy.abs() > 6) _tapMoved = true;
+      case PointerUpEvent(button: PointerButton.primary)
+          when event.pointerId == _tapPointer:
+        final shouldTap = !_tapMoved;
+        _tapPointer = null;
+        if (shouldTap) {
+          _onTap?.call(globalToLocal(event.logicalPosition) / scale);
+        }
+      case PointerCancelEvent() when event.pointerId == _tapPointer:
+        _tapPointer = null;
       default:
         break;
     }
@@ -460,6 +508,7 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
     PdfGfxState state,
     PdfMatrix textMatrix, {
     double? advance,
+    List<double>? characterAdvances,
   }) {
     if (text.isEmpty || state.textRenderMode == PdfTextRenderMode.invisible) {
       return;
@@ -554,7 +603,13 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
     if (width <= 0 || height <= 0 || imageBytes.isEmpty) return;
     final Object key = imageDictionary ?? imageBytes;
     final DecodedImage? decoded = decodedImages[key] ??
-        _decodePdfImage(imageBytes, width, height, imageDictionary);
+        decodePdfImage(
+          bytes: imageBytes,
+          width: width,
+          height: height,
+          dictionary: imageDictionary,
+          resolver: page.resolver,
+        );
     if (decoded == null) return;
     decodedImages[key] = decoded;
 
@@ -581,87 +636,6 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
         colorArgb: _withOpacity(0xFFFFFFFF, state.fillAlpha),
       ),
     );
-  }
-
-  DecodedImage? _decodePdfImage(
-    Uint8List bytes,
-    int width,
-    int height,
-    PdfDict? dictionary,
-  ) {
-    if (sniffImageFormat(bytes) != null) {
-      try {
-        return decodeImage(bytes, preferNative: false);
-      } on Object {
-        return null;
-      }
-    }
-    final int bits =
-        dictionary?.getNumber('BitsPerComponent', page.resolver)?.toInt() ?? 8;
-    if (bits != 8) return null;
-    final String colorSpace = _colorSpaceName(dictionary) ??
-        (bytes.length >= width * height * 3 ? 'DeviceRGB' : 'DeviceGray');
-    final int components = switch (colorSpace) {
-      'DeviceRGB' || 'CalRGB' => 3,
-      'DeviceCMYK' => 4,
-      _ => 1,
-    };
-    if (bytes.length < width * height * components) return null;
-    final Uint8List pixels = Uint8List(width * height * 4);
-    for (var pixel = 0; pixel < width * height; pixel++) {
-      final int source = pixel * components;
-      final int target = pixel * 4;
-      int red;
-      int green;
-      int blue;
-      if (components == 1) {
-        red = green = blue = bytes[source];
-      } else if (components == 3) {
-        red = bytes[source];
-        green = bytes[source + 1];
-        blue = bytes[source + 2];
-      } else {
-        final double c = bytes[source] / 255;
-        final double m = bytes[source + 1] / 255;
-        final double y = bytes[source + 2] / 255;
-        final double k = bytes[source + 3] / 255;
-        red = (255 * (1 - c) * (1 - k)).round();
-        green = (255 * (1 - m) * (1 - k)).round();
-        blue = (255 * (1 - y) * (1 - k)).round();
-      }
-      pixels[target] = blue;
-      pixels[target + 1] = green;
-      pixels[target + 2] = red;
-      pixels[target + 3] = 255;
-    }
-    return DecodedImage(
-      width: width,
-      height: height,
-      order: ImageChannelOrder.bgra,
-      pixels: pixels,
-      hasAlpha: false,
-    );
-  }
-
-  String? _colorSpaceName(PdfDict? dictionary) {
-    final PdfObject? colorSpace =
-        dictionary?.getResolved('ColorSpace', page.resolver);
-    if (colorSpace is PdfName) return colorSpace.name;
-    if (colorSpace is PdfArray && colorSpace.length > 0) {
-      final PdfObject? family = colorSpace.getResolved(0, page.resolver);
-      if (family is PdfName && family.name == 'ICCBased') {
-        final PdfObject? profile = colorSpace.getResolved(1, page.resolver);
-        if (profile is PdfStream) {
-          return switch (profile.dict.getNumber('N', page.resolver)?.toInt()) {
-            1 => 'DeviceGray',
-            4 => 'DeviceCMYK',
-            _ => 'DeviceRGB',
-          };
-        }
-      }
-      if (family is PdfName) return family.name;
-    }
-    return null;
   }
 }
 

@@ -264,6 +264,99 @@ void main() {
     });
   });
 
+  group('two-dimensional stage', () {
+    test('both tracks stay on the outer viewport edges', () {
+      final horizontal = ScrollPosition(
+        axis: ScrollAxis.horizontal,
+        viewportExtent: 200,
+        contentExtent: 500,
+      );
+      final vertical = ScrollPosition(
+        viewportExtent: 100,
+        contentExtent: 800,
+      );
+      final owner = BuildOwner(
+        pipelineOwner: PipelineOwner(
+          rootConstraints: BoxConstraints.tight(const Size(200, 100)),
+        ),
+      );
+      addTearDown(owner.dispose);
+      owner.updateRoot(
+        TwoDimensionalScrollbar(
+          horizontalPosition: horizontal,
+          verticalPosition: vertical,
+          child: const SizedBox(width: 200, height: 100),
+        ),
+      );
+      owner.pipelineOwner.drawFrame(DisplayList());
+
+      final bars = <RenderScrollbar>[];
+      void collect(RenderBox node) {
+        if (node is RenderScrollbar) bars.add(node);
+        node.visitChildren(collect);
+      }
+
+      collect(owner.renderRoot!);
+      expect(bars, hasLength(2));
+      final verticalBar =
+          bars.singleWhere((bar) => bar.position.axis == ScrollAxis.vertical);
+      final horizontalBar = bars.singleWhere(
+        (bar) => bar.position.axis == ScrollAxis.horizontal,
+      );
+      final verticalOrigin = verticalBar.localToGlobal(Offset.zero);
+      final horizontalOrigin = horizontalBar.localToGlobal(Offset.zero);
+
+      expect(verticalOrigin.dy, 0);
+      expect(verticalBar.size.height, 100);
+      expect(verticalOrigin.dx + verticalBar.size.width, 200);
+      expect(horizontalOrigin.dx, 0);
+      expect(horizontalBar.size.width, 200);
+      expect(horizontalOrigin.dy + horizontalBar.size.height, 100);
+
+      horizontal.jumpTo(150);
+      owner.pipelineOwner.drawFrame(DisplayList());
+      expect(
+        verticalBar.localToGlobal(Offset.zero),
+        verticalOrigin,
+        reason: 'horizontal canvas movement must not move the vertical track',
+      );
+    });
+  });
+
+  group('the default configuration', () {
+    test('draws a bare thumb: no stepper arrows and no resting track', () {
+      final ScrollPosition position =
+          ScrollPosition(viewportExtent: 100, contentExtent: 400);
+      final owner = BuildOwner(
+        pipelineOwner: PipelineOwner(
+          rootConstraints: BoxConstraints.tight(const Size(200, 100)),
+        ),
+      );
+      owner.updateRoot(
+        Scrollbar(
+          position: position,
+          child: const SizedBox(width: 200, height: 100),
+        ),
+      );
+      DisplayList display = DisplayList();
+      for (int pass = 0; pass < 8; pass++) {
+        if (owner.hasScheduledBuilds) owner.buildScope();
+        display = DisplayList();
+        owner.pipelineOwner.drawFrame(display);
+        if (!owner.hasScheduledBuilds) break;
+      }
+
+      // One shape, and it is the thumb: a groove down the edge of every
+      // scrollable and a pair of two-pixel arrows at its ends are the 1995
+      // drawing of this control. Both remain available through
+      // [ScrollbarThemeData], and the geometry group above asks for them.
+      expect(_rectsIn(display), hasLength(1));
+      expect(ThemeData.neutralLight.scrollbarTheme.showButtons, isFalse);
+      expect(ThemeData.neutralLight.scrollbarTheme.trackVisibility, isFalse);
+      owner.dispose();
+    });
+  });
+
   group('inside a list', () {
     test('a long list gets the minimum thumb, at the top', () {
       final owner = BuildOwner(
@@ -291,8 +384,11 @@ void main() {
 
       expect(position.contentExtent, 20000);
       final List<Rect> rects = _rectsIn(display);
-      // Only the rounded thumb is visible until the pointer enters the track.
-      expect(rects.last, const Rect.fromLTRB(191, 20, 197, 56));
+      // Only the rounded thumb is visible until the pointer enters the track,
+      // and it starts at the top of the bar rather than 16 px down it: the
+      // default theme draws no stepper arrows, so the track is the whole
+      // height minus its margins.
+      expect(rects.last, const Rect.fromLTRB(191, 4, 197, 40));
       owner.dispose();
     });
   });
@@ -310,13 +406,25 @@ final class _Harness {
         rootConstraints: BoxConstraints.tight(const Size(200, 100)),
       ),
     );
+    // Stepper arrows and a resting track are off by default now - no current
+    // desktop draws either - so the geometry group below, which is *about*
+    // those two, asks for them explicitly. The default configuration has its
+    // own test at the end of this file.
     owner.updateRoot(
-      Scrollbar(
-        position: position,
-        visibility: visibility,
-        interactive: interactive,
-        dispatcher: dispatcher,
-        child: const SizedBox(width: 200, height: 100),
+      Theme(
+        data: ThemeData.neutralLight.copyWith(
+          scrollbarTheme: const ScrollbarThemeData(
+            trackVisibility: true,
+            showButtons: true,
+          ),
+        ),
+        child: Scrollbar(
+          position: position,
+          visibility: visibility,
+          interactive: interactive,
+          dispatcher: dispatcher,
+          child: const SizedBox(width: 200, height: 100),
+        ),
       ),
     );
     frame();

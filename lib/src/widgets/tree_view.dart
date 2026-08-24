@@ -39,6 +39,7 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
@@ -101,7 +102,7 @@ final class TreeView extends StatefulWidget {
     this.onToggle,
     this.selectedId,
     this.onSelected,
-    this.rowExtent = 24.0,
+    this.rowExtent,
     this.cacheExtent = 48.0,
     this.controller,
   });
@@ -120,7 +121,13 @@ final class TreeView extends StatefulWidget {
 
   final void Function(TreeNode node)? onSelected;
 
-  final double rowExtent;
+  /// The height of one row, or null for the theme's.
+  ///
+  /// Null is the right answer for almost every caller: a collection whose rows
+  /// are a number the caller made up is one that ignores the density switch,
+  /// and a window that mixes one of those with a themed one has two row
+  /// rhythms in it.
+  final double? rowExtent;
   final double cacheExtent;
   final ScrollPosition? controller;
 
@@ -208,7 +215,7 @@ final class _TreeViewState extends State<TreeView> {
       index,
       scrollOffset: _position.pixels,
       viewportExtent:
-          _viewportExtent > 0 ? _viewportExtent : widget.rowExtent * 8,
+          _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8,
     );
     if (target != null) _position.jumpTo(target);
   }
@@ -320,19 +327,28 @@ final class _TreeViewState extends State<TreeView> {
     }
   }
 
+  /// The resolved row height, refreshed by every build.
+  ///
+  /// Cached rather than read through `Theme.of` on demand: the keyboard and
+  /// scroll handlers need it outside a build, and an inherited lookup there
+  /// would register a dependency from the wrong phase.
+  double _rowExtent = 28;
+
   ListVirtualization get _virtualization => ListVirtualization(
         itemCount: _rows.length,
-        estimatedExtent: widget.rowExtent,
+        estimatedExtent: _rowExtent,
         cacheExtent: widget.cacheExtent,
       );
 
   @override
   Widget build(BuildContext context) {
     final TextDirection direction = Directionality.of(context);
+    final ThemeData theme = Theme.of(context);
+    _rowExtent = widget.rowExtent ?? theme.effectiveRowHeight;
     _rows = _flatten();
     final ListVirtualization virtualization = _virtualization;
     final double viewport =
-        _viewportExtent > 0 ? _viewportExtent : widget.rowExtent * 8;
+        _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8;
     final RealizedRange range = virtualization.rangeFor(
       scrollOffset: _position.pixels,
       viewportExtent: viewport,
@@ -342,7 +358,7 @@ final class _TreeViewState extends State<TreeView> {
       child: _TreeViewRenderWidget(
         position: _position,
         focusNode: _focusNode,
-        theme: Theme.of(context),
+        theme: theme,
         virtualization: virtualization,
         range: range,
         selectedIndex: _selectedIndex,
@@ -365,14 +381,14 @@ final class _TreeViewState extends State<TreeView> {
               label: _rows[index].node.label,
               depth: _rows[index].depth,
               index: index,
-              extent: widget.rowExtent,
+              extent: _rowExtent,
               expandable: _rows[index].node.isExpandable,
               expanded:
                   widget.expandedIds.contains(_rows[index].node.identity),
               selected: index == _selectedIndex,
               enabled: _rows[index].node.enabled,
               textDirection: direction,
-              theme: Theme.of(context),
+              theme: theme,
             ),
         ],
       ),
@@ -454,9 +470,6 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
   /// leaves aligned with their expandable siblings is what makes depth
   /// readable at a glance.
   static const double toggleExtent = 16;
-
-  /// The side of the plus/minus box. Odd, so its centre lines land on pixels.
-  static const double _glyphExtent = 9;
 
   String _label = '';
   int _level = 0;
@@ -561,10 +574,13 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    if (_selected) {
-      paintFill(list, rect, theme.selection);
-    } else if (isHovered && enabled) {
-      paintFill(list, rect, theme.surface);
+    if (_selected || (isHovered && enabled)) {
+      paintRoundedFill(
+        list,
+        Rect.fromLTWH(rect.left + 2, rect.top, rect.width - 4, rect.height),
+        _selected ? theme.selection : theme.hoverSurface,
+        theme.cornerRadiusSmall,
+      );
     }
     final bool rtl = _textDirection.isRightToLeft;
     final double indent = _level * indentPerLevel;
@@ -585,41 +601,47 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
         ? (offset.dx + size.width - labelStart - box.width)
             .clamp(offset.dx + 4, double.infinity)
         : offset.dx + labelStart;
-    final double labelY =
-        (offset.dy + (size.height - box.height) / 2).roundToDouble();
+    final double labelY = labelTopIn(rect);
     paintLabel(
       list,
       _label,
       Offset(labelX.roundToDouble(), labelY),
-      enabled ? theme.foreground : theme.disabledForeground,
+      !enabled
+          ? theme.disabledForeground
+          : _selected
+              ? theme.onSelection
+              : theme.foreground,
       maxWidth: labelWidth,
     );
   }
 
-  /// The classic plus/minus box: a bordered square with a horizontal bar, and
-  /// a vertical bar while collapsed. Pure rectangles on whole pixels, so a
-  /// golden test compares geometry rather than antialiasing.
+  /// A disclosure chevron: right while collapsed, down while expanded.
+  ///
+  /// Not the bordered plus/minus box this replaced. That box is the single
+  /// most recognisable mark of a 1995 tree control, and it also reads as a
+  /// second *button* inside the row rather than as the row's own state.
   void _paintToggle(DisplayList list, Rect gutter) {
-    final double left =
-        (gutter.left + (gutter.width - _glyphExtent) / 2).roundToDouble();
-    final double top =
-        (gutter.top + (gutter.height - _glyphExtent) / 2).roundToDouble();
-    final Rect box = Rect.fromLTWH(left, top, _glyphExtent, _glyphExtent);
-    paintFill(list, box, theme.surfaceAlternate);
-    paintBorder(list, box, theme.border);
-    final double mid = (_glyphExtent / 2).floorToDouble();
-    paintFill(
+    final double centreX = (gutter.left + gutter.width / 2).roundToDouble();
+    final double centreY = (gutter.top + gutter.height / 2).roundToDouble();
+    const double span = 3;
+    final Color mark =
+        enabled ? theme.foregroundSecondary : theme.disabledForeground;
+    paintPolylineMark(
       list,
-      Rect.fromLTWH(box.left + 2, box.top + mid, _glyphExtent - 4, 1),
-      enabled ? theme.foreground : theme.disabledForeground,
+      _expanded
+          ? <Offset>[
+              Offset(centreX - span, centreY - span / 2),
+              Offset(centreX, centreY + span / 2),
+              Offset(centreX + span, centreY - span / 2),
+            ]
+          : <Offset>[
+              Offset(centreX - span / 2, centreY - span),
+              Offset(centreX + span / 2, centreY),
+              Offset(centreX - span / 2, centreY + span),
+            ],
+      1.5,
+      mark,
     );
-    if (!_expanded) {
-      paintFill(
-        list,
-        Rect.fromLTWH(box.left + mid, box.top + 2, 1, _glyphExtent - 4),
-        enabled ? theme.foreground : theme.disabledForeground,
-      );
-    }
   }
 
   @override
@@ -785,13 +807,14 @@ final class RenderTreeView extends RenderBoxContainer<BoxParentData>
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surfaceAlternate);
+    final double radius = theme.cornerRadius;
+    paintRoundedFill(list, rect, theme.surfaceAlternate, radius);
     list.save();
     list.clipRect(rect.left, rect.top, rect.right, rect.bottom);
     super.paint(list, offset);
     list.restore();
-    paintBorder(list, rect, theme.border);
-    paintFocusRing(list, rect);
+    paintRoundedBorder(list, rect, theme.border, radius);
+    paintFocusRing(list, rect, radius: radius);
   }
 
   @override

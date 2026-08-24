@@ -19,7 +19,15 @@ final class DockingThemeData {
     this.cornerRadius = 6,
   });
 
+  /// Docking chrome built from a [ThemeData].
+  ///
+  /// The header height and the divider follow the theme's density now: a
+  /// compact application whose panel headers stayed 36 px tall had one band of
+  /// chrome that ignored the density switch, and it showed.
   factory DockingThemeData.fromTheme(ThemeData theme) => DockingThemeData(
+        headerHeight: theme.effectiveControlHeight,
+        dividerThickness: theme.effectiveGap,
+        cornerRadius: theme.cornerRadius,
         backgroundColor: theme.surface,
         headerColor: theme.surfaceAlternate,
         activeHeaderColor: theme.surface,
@@ -27,7 +35,6 @@ final class DockingThemeData {
         foregroundColor: theme.foreground,
         inactiveForegroundColor: theme.foregroundSecondary,
         accentColor: theme.accent,
-        cornerRadius: theme.cornerRadius,
       );
 
   final Color backgroundColor;

@@ -32,6 +32,10 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // because ordered teardown is `DisposableBag`'s job and a second
   // implementation of that order is how the order stops being one rule.
   'ffi': <String>['foundation'],
+  // Portable audio contracts depend only on lifecycle ownership. Native
+  // adapters use the OS-neutral ABI helpers; they never reach into a window or
+  // renderer backend.
+  'audio': <String>['ffi', 'foundation'],
   'scheduler': <String>['foundation'],
   // Native image codecs live behind conditional imports in graphics. They
   // may use the OS-neutral ABI helpers, while platform/window types remain

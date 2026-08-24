@@ -225,6 +225,10 @@ final class RenderChip extends RenderBox with ControlBehavior {
   /// The width the delete glyph owns at the end, when one is shown.
   static const double deleteExtent = 16;
 
+  /// The pill's own radius: half its height, always. A chip is a pill by
+  /// definition, and reading [ThemeData.cornerRadius] here would make it a
+  /// rounded rectangle in a square-cornered theme.
+
   String _label = '';
   bool _selected = false;
   void Function()? onPressed;

@@ -26,7 +26,7 @@ final class IconButton extends StatefulWidget {
     required this.icon,
     required this.onPressed,
     this.tooltip,
-    this.iconSize = 20,
+    this.iconSize,
     this.color,
     this.disabledColor,
     this.isSelected = false,
@@ -35,14 +35,17 @@ final class IconButton extends StatefulWidget {
     this.backgroundColor,
     this.hoverColor,
     this.selectedBackgroundColor,
-    this.padding = const EdgeInsets.all(8),
+    this.padding,
     this.constraints,
   });
 
   final Widget icon;
   final void Function()? onPressed;
   final String? tooltip;
-  final double iconSize;
+  /// Null takes the theme's icon size: 16 in a dense desktop theme, 20 in a
+  /// roomy one. A hard 20 made every toolbar in a compact theme too tall for
+  /// its own bar.
+  final double? iconSize;
   final Color? color;
   final Color? disabledColor;
   final bool isSelected;
@@ -51,7 +54,10 @@ final class IconButton extends StatefulWidget {
   final Color? backgroundColor;
   final Color? hoverColor;
   final Color? selectedBackgroundColor;
-  final EdgeInsets padding;
+  /// Null centres the icon in a square the size of one control, which is what
+  /// puts a row of icon buttons on the same rhythm as the text fields beside
+  /// them.
+  final EdgeInsets? padding;
   final BoxConstraints? constraints;
 
   @override
@@ -70,19 +76,26 @@ final class _IconButtonState extends State<IconButton> {
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
+    // A selected icon button is *marked*, not *primary*. Filling it with the
+    // accent turns a tool palette into a row of primary buttons; a wash of the
+    // accent behind an accent-coloured glyph is how every current desktop tool
+    // draws "this tool is active".
     final Color foreground = widget.onPressed == null
         ? widget.disabledColor ?? theme.disabledForeground
         : widget.isSelected
-            ? widget.selectedColor ?? theme.colorScheme.onPrimary
+            ? widget.selectedColor ?? theme.accent
             : widget.color ?? theme.iconTheme.color ?? theme.foreground;
+    final double glyph = widget.iconSize ?? theme.iconSize;
+    final double box = theme.effectiveControlHeight;
     return FocusAttachment(
       node: _focusNode,
       child: _IconButtonRenderWidget(
         onPressed: widget.onPressed,
         tooltip: widget.tooltip,
-        padding: widget.padding,
-        additionalConstraints:
-            widget.constraints ?? BoxConstraints(minWidth: 40, minHeight: 40),
+        padding: widget.padding ??
+            EdgeInsets.all(((box - glyph) / 2).roundToDouble()),
+        additionalConstraints: widget.constraints ??
+            BoxConstraints(minWidth: box, minHeight: box),
         isSelected: widget.isSelected,
         backgroundColor: widget.backgroundColor,
         hoverColor: widget.hoverColor,
@@ -90,7 +103,7 @@ final class _IconButtonState extends State<IconButton> {
         theme: theme,
         focusNode: _focusNode,
         child: IconTheme(
-          data: IconThemeData(color: foreground, size: widget.iconSize),
+          data: IconThemeData(color: foreground, size: glyph),
           child: widget.isSelected && widget.selectedIcon != null
               ? widget.selectedIcon!
               : widget.icon,
@@ -256,18 +269,14 @@ final class RenderIconButton extends RenderSingleChildBox with ControlBehavior {
       child.size.width + _padding.horizontal,
       child.size.height + _padding.vertical,
     ));
-    // Snap the centred child to logical pixels, then apply the one-pixel
-    // optical correction used by the desktop icon set. A 20 px icon otherwise
-    // rasterises slightly high and left even though its em box is centred.
+    // Snap the centred child to logical pixels. There is no optical fudge here
+    // any more: [RenderIcon] centres the glyph's *ink* and snaps the pen, so
+    // the icon is already where it looks like it should be, and the +1 that
+    // used to correct for that now shows up as a row of icons sitting one
+    // pixel low.
     child.parentData!.offset = Offset(
-      math.max(
-        _padding.left,
-        ((size.width - child.size.width) / 2).roundToDouble() + 1,
-      ),
-      math.max(
-        _padding.top,
-        ((size.height - child.size.height) / 2).roundToDouble() + 1,
-      ),
+      math.max(_padding.left, ((size.width - child.size.width) / 2).round().toDouble()),
+      math.max(_padding.top, ((size.height - child.size.height) / 2).round().toDouble()),
     );
   }
 
@@ -278,27 +287,19 @@ final class RenderIconButton extends RenderSingleChildBox with ControlBehavior {
   void paint(DisplayList list, Offset offset) {
     final Rect rect =
         Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height);
-    if (_isSelected || isPressed || isHovered || backgroundColor != null) {
-      final Color fill = _isSelected
-          ? selectedBackgroundColor ?? theme.accent
-          : isPressed
-              ? theme.disabledSurface
-              : isHovered
-                  ? hoverColor ?? theme.colorScheme.surfaceContainer
-                  : backgroundColor!;
-      list.drawRRectUniform(
-        rect.left,
-        rect.top,
-        rect.right,
-        rect.bottom,
-        theme.cornerRadius,
-        theme.cornerRadius,
-        list.addPaint(colorArgb: fill.value, antiAlias: true),
-      );
+    // Pressed wins over hovered wins over selected: the pointer's own feedback
+    // has to be visible on a button that is already marked.
+    final Color? fill = isPressed
+        ? theme.pressedSurface
+        : isHovered
+            ? hoverColor ?? theme.hoverSurface
+            : _isSelected
+                ? selectedBackgroundColor ?? theme.accentSubtle
+                : backgroundColor;
+    if (fill != null) {
+      paintRoundedFill(list, rect, fill, theme.cornerRadiusSmall);
     }
-    if (isFocusVisible) {
-      paintFocusRing(list, rect);
-    }
+    paintFocusRing(list, rect, radius: theme.cornerRadiusSmall);
     super.paint(list, offset);
   }
 

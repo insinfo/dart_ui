@@ -197,6 +197,46 @@ final class PlatformBackendResolver {
     );
   }
 
+  static BackendProbeResult _probeWin32OpenGl() {
+    final Win32GlSurfaceAttempt surfaceAttempt = Win32GlSurface.hidden(
+      className: 'DartUiOpenGlProbe',
+    );
+    final Win32GlSurface? surface = surfaceAttempt.surface;
+    if (surface == null) {
+      return BackendProbeResult(
+        backendName: GlRendererBackend.backendName,
+        supported: false,
+        diagnostics: surfaceAttempt.diagnostics,
+      );
+    }
+    final contextAttempt = surface.createContext();
+    final context = contextAttempt.context;
+    if (context == null) {
+      surface.dispose();
+      return BackendProbeResult(
+        backendName: GlRendererBackend.backendName,
+        supported: false,
+        diagnostics: <BackendDiagnostic>[
+          ...surfaceAttempt.diagnostics,
+          ...contextAttempt.diagnostics,
+        ],
+      );
+    }
+    try {
+      return GlRendererBackend.describeContext(
+        context,
+        <BackendDiagnostic>[
+          ...surfaceAttempt.diagnostics,
+          ...contextAttempt.diagnostics,
+        ],
+        true,
+      );
+    } finally {
+      context.dispose();
+      surface.dispose();
+    }
+  }
+
   static PresentationPathEntry _win32Direct2d() {
     const D2dRendererBackend renderer = D2dRendererBackend();
     return PresentationPathEntry.directRenderer(
@@ -233,6 +273,7 @@ final class PlatformBackendResolver {
     const GlRendererBackend renderer = GlRendererBackend();
     return PresentationPathEntry.directRenderer(
       backend: renderer,
+      probe: _probeWin32OpenGl,
       compatibleWindowingBackends: const <String>{'win32'},
       createAttachment: (RendererBackend _, NativeWindow native) async {
         if (native is! Win32Window) {

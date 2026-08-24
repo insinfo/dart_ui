@@ -27,9 +27,11 @@
 ///     source-over only; `src` and `plus` need `ID2D1DeviceContext`'s
 ///     primitive blend, which this first backend does not bind yet;
 ///   * stroked text, for the reason the CPU sink gives: the glyph route is a
-///     coverage mask, and a mask has no outline to stroke;
-///   * text under rotation or skew, matching the CPU sink, so the two
-///     backends disagree about nothing they both accept.
+///     coverage mask, and a mask has no outline to stroke.
+///
+/// Text under a rotated, skewed, mirrored or non-uniformly scaled transform is
+/// **not** on that list any more, and the comment that said it was is the
+/// pendency ADR 0007 recorded by name. See below.
 ///
 /// ## Glyphs come from the shared CPU rasteriser, not DirectWrite
 ///
@@ -41,6 +43,22 @@
 /// spelling of the glyph atlas the GPU backends keep. Masks are cached per
 /// (face, quantised size, glyph, subpixel bucket), so steady-state text costs
 /// one `FillOpacityMask` per glyph and no rasterisation.
+///
+/// ## And from the glyph's outline when a mask cannot carry the matrix
+///
+/// A mask is a rectangle of pixels: it can be blitted and nothing else. The
+/// moment the matrix rotates, skews, mirrors or scales the two axes
+/// differently, this sink leaves the bitmap route and fills each glyph's
+/// *outline* as an `ID2D1PathGeometry` under the full matrix - the same
+/// `FillGeometry` [drawDevicePath] uses, so a rotated letter and a rotated
+/// path beside it go through one rasteriser.
+///
+/// The criterion is [glyphMasksFit] and the matrix is [glyphOutlineTransform],
+/// both imported from `rendering/text/glyph_raster.dart` rather than restated
+/// here: the CPU renderer and the GPU sink import the same two functions, and
+/// a criterion copied into a third file is exactly how one backend ends up
+/// refusing a scene the other two draw. That is the divergence ADR 0007 left
+/// open on this backend and this is where it closes.
 library;
 
 import 'dart:ffi';
@@ -56,7 +74,8 @@ import '../../../rendering/framebuffer.dart';
 import '../../../rendering/raster/clip_stack.dart' show pixelEdge;
 import '../../../rendering/replay/display_list_player.dart';
 import '../../../rendering/text/glyph_cache.dart';
-import '../../../rendering/text/glyph_raster.dart' show GlyphMask;
+import '../../../rendering/text/glyph_raster.dart'
+    show GlyphMask, glyphMasksFit, glyphOutlineTransform;
 import '../../../text/typeface.dart';
 import '../d3d12/d3d12_com.dart';
 import 'd2d1_interfaces.dart';
@@ -70,7 +89,9 @@ import 'd2d1_structs.dart';
 /// would grow by a few entries per frame forever. Wholesale clearing rather
 /// than LRU because the cache exists for *intra*-frame repeats (an icon drawn
 /// forty times) and for paths the producer interned once; both survive a rare
-/// clear at no visible cost.
+/// clear at no visible cost. The clear happens after `EndDraw` rather than at
+/// the moment the limit is crossed - see `_geometryFor`, and note that a
+/// rotated run adds one entry per distinct glyph.
 const int kD2dGeometryCacheLimit = 512;
 
 /// Glyph bitmaps kept before the cache is emptied wholesale. At the typical
@@ -203,9 +224,21 @@ final class D2dRasterSink implements RasterSink {
   final Map<(Object, int), Pointer<Void>> _geometryCache =
       <(Object, int), Pointer<Void>>{};
 
+  /// Set when [_geometryFor] finds the cache over [kD2dGeometryCacheLimit];
+  /// acted on by [releaseFrameData], after `EndDraw`. See there.
+  bool _geometryEvictionPending = false;
+
   /// Glyph mask bitmaps by (face, quantised size, glyph id, subpixel bucket).
   final Map<(Typeface, int, int, int), _D2dGlyphBitmap> _glyphBitmaps =
       <(Typeface, int, int, int), _D2dGlyphBitmap>{};
+
+  /// How many glyph mask bitmaps are held, for tests and diagnostics.
+  ///
+  /// The cost model is asserted through this rather than assumed: a run the
+  /// outline route drew must leave it at 0, because the key here has nowhere
+  /// to record an angle and an entry made under one matrix would be blitted
+  /// upright under the next.
+  int get glyphBitmapCount => _glyphBitmaps.length;
 
   bool _disposed = false;
 
@@ -234,6 +267,13 @@ final class D2dRasterSink implements RasterSink {
       ComObject(bitmap).release();
     }
     _frameBitmaps.clear();
+    if (_geometryEvictionPending) {
+      _geometryEvictionPending = false;
+      for (final Pointer<Void> geometry in _geometryCache.values) {
+        ComObject(geometry).release();
+      }
+      _geometryCache.clear();
+    }
   }
 
   void dispose() {
@@ -525,6 +565,26 @@ final class D2dRasterSink implements RasterSink {
     final int argb = paint.argbColor;
     if ((argb >> 24) & 0xFF == 0) return;
 
+    // The one branch in this method, and it is not a refusal any more. A
+    // cached mask is a rectangle of pixels and can only be blitted; under a
+    // matrix that rotates, skews, mirrors or scales the axes differently the
+    // run is filled from its outlines instead. [glyphMasksFit] is the shared
+    // criterion, so this backend takes the same route for the same run as the
+    // CPU renderer and the GPU sink.
+    if (!glyphMasksFit(transform)) {
+      _drawGlyphRunAsOutlines(
+        resource,
+        deviceOrigin,
+        transform,
+        glyphIds,
+        deviceOffsets,
+        glyphCount,
+        clip,
+        paint,
+      );
+      return;
+    }
+
     final ScaledTypeface font = _deviceFont(resource, transform);
     final int sizeKey = (font.pixelSize * kSizeQuantum).round();
 
@@ -557,6 +617,93 @@ final class D2dRasterSink implements RasterSink {
       _target.fillOpacityMask(glyph.bitmap, brush, _rect, _sourceRect);
     }
     _target.setAntialiasMode(d2d1AntialiasModePerPrimitive);
+  }
+
+  /// Draws a run by filling each glyph's outline under the full matrix.
+  ///
+  /// The general case: rotation, skew, mirroring, per-axis scale and any
+  /// composition of them. Reached only when [glyphMasksFit] says a cached mask
+  /// cannot stand in - which is to say, never in the upright, uniformly scaled
+  /// case every interface is made of. See ADR 0007.
+  ///
+  /// ## Why the outline, and not a rotated bitmap
+  ///
+  /// `FillOpacityMask` can only place a mask axis-aligned, and even where a
+  /// transform could be smuggled in around it, rotating a rasterised mask
+  /// resamples an antialiased edge - the soft, smeared text bitmap glyph
+  /// caches are known for, visibly worse at 45 degrees than at 0. Filling the
+  /// outline instead puts text through the same `FillGeometry` as
+  /// [drawDevicePath], so a rotated letter and a rotated path drawn beside it
+  /// antialias identically because they are the same call.
+  ///
+  /// ## Where this differs from the CPU and GPU outline routes
+  ///
+  /// The *route* is chosen by the same function and the *matrix* is built by
+  /// the same function, so the three backends always agree about which run
+  /// takes which path and where each glyph lands. The coverage underneath is
+  /// Direct2D's own analytic rasteriser rather than `ScanlineFiller`, so
+  /// parity against the CPU here is a small declared tolerance on
+  /// antialiased edges and not the deviation of 0 that CPU-versus-OpenGL
+  /// measures - those two share one coverage implementation and this one does
+  /// not. `test/backends/win32/d2d/d2d_glyph_transform_test.dart` states the
+  /// measured number.
+  ///
+  /// ## Positioning, hinting and caching
+  ///
+  /// The pen is used exactly as it arrives, fraction and all: neither half of
+  /// the fast path's snapping survives a rotation - "the whole pixel to the
+  /// left" is no longer a direction the baseline runs in, and a *horizontal*
+  /// subpixel bucket is not the axis the stems need. Analytic coverage places
+  /// the glyph, as it does for every other shape.
+  ///
+  /// The outline is fetched **unhinted** - [Typeface.outlineOf] with no ppem,
+  /// where the mask route passes the pixel size - because hinting grid-fits
+  /// stems in the glyph's own axes and under a rotation those are not the
+  /// screen's. The geometry is cached by [_geometryFor] under the outline's
+  /// identity, and [Typeface] hands back one `Path` per glyph, so a run
+  /// spinning through a whole turn builds each `ID2D1PathGeometry` once.
+  void _drawGlyphRunAsOutlines(
+    ScaledTypeface font,
+    Offset deviceOrigin,
+    Transform2D transform,
+    Int32List glyphIds,
+    Float32List deviceOffsets,
+    int glyphCount,
+    Rect clip,
+    ReplayPaint paint,
+  ) {
+    // The *interned* face's scale, not a device-scaled one: the matrix below
+    // carries the device scale in its linear part, and folding it into the
+    // font as well would apply it twice.
+    final double fontScale = font.scale;
+    final Typeface face = font.typeface;
+
+    // Clip first, under the identity transform, so the axis-aligned device
+    // rectangle means what the player computed - the same order
+    // [drawDevicePath] states.
+    _ensureClip(clip);
+    final Pointer<Void> brush = _solidBrush(paint.argbColor);
+    for (var i = 0; i < glyphCount; i++) {
+      final Path outline = face.outlineOf(glyphIds[i]);
+      if (outline.isEmpty) continue;
+      // Non-zero winding, and not a default taken for convenience: TrueType
+      // and CFF both define a filled glyph by the non-zero winding of its
+      // contours - it is how the counter of an `o` comes out empty - and
+      // even-odd would fill the overlap wherever two contours of a composite
+      // glyph cross.
+      final Pointer<Void> geometry =
+          _geometryFor(outline, d2d1FillModeWinding);
+      _setTransform(
+        glyphOutlineTransform(
+          transform,
+          fontScale,
+          deviceOrigin.dx + deviceOffsets[i * 2],
+          deviceOrigin.dy + deviceOffsets[i * 2 + 1],
+        ),
+      );
+      _target.fillGeometry(geometry, brush);
+    }
+    _setIdentityTransform();
   }
 
   // -------------------------------------------------------------------------
@@ -761,11 +908,14 @@ final class D2dRasterSink implements RasterSink {
     final (Object, int) key = (path, fillMode);
     final Pointer<Void>? cached = _geometryCache[key];
     if (cached != null) return cached;
+    // Over the limit the cache is emptied - but *after* the frame, never in
+    // the middle of one. Direct2D batches commands, so a geometry handed to
+    // `FillGeometry` has to outlive the batch and not just the call, exactly
+    // the reason `_frameBitmaps` exists. One rotated paragraph is enough to
+    // cross the limit inside a single frame, so releasing here would free
+    // geometry the driver had not read yet.
     if (_geometryCache.length >= kD2dGeometryCacheLimit) {
-      for (final Pointer<Void> geometry in _geometryCache.values) {
-        ComObject(geometry).release();
-      }
-      _geometryCache.clear();
+      _geometryEvictionPending = true;
     }
     final Pointer<Void> geometry = _buildGeometry(path, fillMode);
     _geometryCache[key] = geometry;
@@ -955,22 +1105,20 @@ final class D2dRasterSink implements RasterSink {
     return glyph;
   }
 
-  /// [font] at the size the device transform asks for - the same rule, and
-  /// the same refusal, as the CPU sink's `_deviceFont`, so the two backends
-  /// accept exactly the same runs.
+  /// [font] at the size the device transform asks for - the same rule as the
+  /// CPU sink's `_deviceFont`, so the two backends size a run identically.
+  ///
+  /// Only ever called for a matrix [glyphMasksFit] has accepted, so the two
+  /// diagonal terms are equal and positive and there is one scale to take.
+  /// The assert says so rather than trusting the caller, because the failure
+  /// it guards is silent: `transform.a` alone under a non-uniform scale would
+  /// produce upright text at the wrong height.
   ScaledTypeface _deviceFont(ScaledTypeface font, Transform2D transform) {
+    assert(
+      glyphMasksFit(transform),
+      'a cached mask cannot serve $transform; the outline route handles it',
+    );
     final double a = transform.a;
-    final double d = transform.d;
-    if (transform.b != 0 || transform.c != 0 || a <= 0 || d <= 0 || a != d) {
-      throw UnsupportedCapabilityError(
-        backendName: backendName,
-        capability: Capability.gpuPresentation,
-        detail: 'text under a rotated, skewed, mirrored or non-uniformly '
-            'scaled transform is not implemented; the glyph rasterizer takes '
-            'a uniform scale, and drawing this run would silently produce '
-            'upright text (transform $transform)',
-      );
-    }
     if (a == 1) return font;
     return ScaledTypeface(font.typeface, font.pixelSize * a);
   }

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../font/pdf_cmap.dart';
+import '../font/pdf_type1_font.dart';
 import '../format/pdf_lexer.dart';
 import '../format/pdf_object.dart';
 import '../io/byte_reader.dart';
@@ -553,20 +554,52 @@ class PdfContentInterpreter {
     final Uint8List bytes = token.stringBytes ?? Uint8List(0);
     final List<int> codes = _textCodes(bytes);
     var advance = 0.0;
+    final List<double> codeAdvances = <double>[];
     for (var i = 0; i < codes.length; i++) {
       final int code = codes[i];
-      advance += _glyphWidth(code) / 1000 * _state.fontSize;
-      advance += _state.charSpacing;
-      if (code == 0x20) advance += _state.wordSpacing;
+      var glyphAdvance = _glyphWidth(code) / 1000 * _state.fontSize;
+      glyphAdvance += _state.charSpacing;
+      if (code == 0x20) glyphAdvance += _state.wordSpacing;
+      glyphAdvance *= _state.horizontalScaling / 100;
+      codeAdvances.add(glyphAdvance);
+      advance += glyphAdvance;
     }
-    advance *= _state.horizontalScaling / 100;
     device.drawText(
       text,
       _state,
       _state.textMatrix,
       advance: advance,
+      characterAdvances: _characterAdvances(text, codeAdvances, advance),
     );
     _moveText(advance);
+  }
+
+  List<double> _characterAdvances(
+    String text,
+    List<double> codeAdvances,
+    double total,
+  ) {
+    if (text.isEmpty) return const <double>[0];
+    final List<int> runes = text.runes.toList(growable: false);
+    final List<double> result = List<double>.filled(text.length + 1, 0);
+    if (runes.length != codeAdvances.length) {
+      for (var index = 1; index <= text.length; index++) {
+        result[index] = total * index / text.length;
+      }
+      return result;
+    }
+    var textOffset = 0;
+    var position = 0.0;
+    for (var index = 0; index < runes.length; index++) {
+      final int units = String.fromCharCode(runes[index]).length;
+      final double glyphAdvance = codeAdvances[index];
+      for (var unit = 1; unit <= units; unit++) {
+        result[textOffset + unit] = position + glyphAdvance * unit / units;
+      }
+      textOffset += units;
+      position += glyphAdvance;
+    }
+    return result;
   }
 
   void _moveText(double distance) {
@@ -606,6 +639,10 @@ class PdfContentInterpreter {
       if (widths != null && index >= 0 && index < widths.length) {
         return widths.getNumber(index, resolver)?.toDouble() ?? 500;
       }
+      final String? baseFont = font.getName('BaseFont', resolver)?.name;
+      final double? standard =
+          baseFont == null ? null : standardType1GlyphWidth(baseFont, code);
+      if (standard != null) return standard;
       return font
               .getDict('FontDescriptor', resolver)
               ?.getNumber('MissingWidth', resolver)

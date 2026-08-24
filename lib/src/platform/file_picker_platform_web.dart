@@ -67,3 +67,17 @@ Future<PickedFile?> openFile({
     ..click();
   return completer.future;
 }
+
+/// Always null: a browser exposes no path to save to.
+///
+/// Not an exception, because "there is no save dialog here" is a fact about the
+/// platform rather than a failure, and a caller that has a download fallback
+/// should be able to take it without catching.
+Future<String?> saveFile({
+  required String title,
+  required String suggestedName,
+  required List<FilePickerFilter> filters,
+  required String? defaultExtension,
+  required int ownerWindowHandle,
+}) async =>
+    null;

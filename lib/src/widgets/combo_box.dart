@@ -54,7 +54,6 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/display_list.dart';
-import '../graphics/display_list_geometry.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_viewport.dart';
@@ -502,7 +501,7 @@ final class ComboBox<T> extends StatefulWidget {
     this.onChanged,
     this.label,
     this.placeholder = '',
-    this.itemExtent = 22.0,
+    this.itemExtent,
     this.maxVisibleItems = 8,
     this.popupWidth,
     this.styleClasses = const <String>{},
@@ -523,7 +522,13 @@ final class ComboBox<T> extends StatefulWidget {
   /// What the closed field shows when [value] matches no item.
   final String placeholder;
 
-  final double itemExtent;
+  /// The height of one row, or null for the theme's.
+  ///
+  /// Null is the right answer for almost every caller: a list whose rows are a
+  /// number the caller made up is a list that ignores the density switch, and
+  /// a window that mixes one of those with a themed one has two row rhythms in
+  /// it. A number is for the rare list whose rows are not text.
+  final double? itemExtent;
 
   /// How many rows the drop-down shows before it scrolls.
   final int maxVisibleItems;
@@ -830,16 +835,24 @@ final class _ComboBoxState<T> extends State<ComboBox<T>> {
   // The popup
   // -------------------------------------------------------------------
 
+  /// The resolved row height, refreshed by every build.
+  ///
+  /// Cached rather than read through `Theme.of` on demand, because the arrow
+  /// keys and the scroll handlers need it outside a build and an inherited
+  /// lookup there would register a dependency from the wrong phase. The
+  /// starting value is only ever used before the first build.
+  double _itemExtent = 28;
+
   double get _popupHeight {
     final int rows = widget.items.length.clamp(1, widget.maxVisibleItems);
     // Two pixels for the list's own border, so the last row is not cut in half
     // by the frame the list paints around itself.
-    return rows * widget.itemExtent + 2;
+    return rows * _itemExtent + Spacing.sm;
   }
 
   ListVirtualization get _virtualization => ListVirtualization(
         itemCount: widget.items.length,
-        estimatedExtent: widget.itemExtent,
+        estimatedExtent: _itemExtent,
       );
 
   /// Scrolls the drop-down so the highlighted row is visible.
@@ -861,7 +874,7 @@ final class _ComboBoxState<T> extends State<ComboBox<T>> {
         height: _popupHeight,
         child: ListBox(
           itemCount: widget.items.length,
-          itemExtent: widget.itemExtent,
+          itemExtent: _itemExtent,
           controller: _scroll,
           selectedIndex: _highlighted < 0 ? null : _highlighted,
           onSelected: _onPopupSelected,
@@ -877,6 +890,7 @@ final class _ComboBoxState<T> extends State<ComboBox<T>> {
     // happen here rather than on the first click.
     final ComboBoxOverlay overlay = ComboBoxScope.of(context);
     if (!overlay.isOpen && _overlay != null) _overlay = null;
+    _itemExtent = widget.itemExtent ?? Theme.of(context).effectiveRowHeight;
     return FocusAttachment(
       node: _focusNode,
       child: _ComboBoxFieldWidget(
@@ -1056,7 +1070,11 @@ final class RenderComboBoxField extends RenderBox
   }
 
   /// The width the chevron and its breathing room occupy.
-  double get chevronExtent => theme.effectiveControlHeight * 0.7;
+  ///
+  /// Two thirds of a control - the same fraction [RenderExpander] uses, so the
+  /// two chevrons in one window are the same drawing at the same size.
+  double get chevronExtent =>
+      (theme.effectiveControlHeight * 0.66).roundToDouble();
 
   @override
   Set<PseudoClass> get controlStates => <PseudoClass>{
@@ -1095,21 +1113,28 @@ final class RenderComboBoxField extends RenderBox
       size.width,
       size.height,
     );
-    paintFill(
+    final double radius = theme.cornerRadius;
+    paintRoundedFill(
       list,
       rect,
       enabled
           ? (isPressed || _isOpen
-              ? theme.surfaceAlternate
-              : (isHovered ? theme.surface : theme.surfaceAlternate))
+              ? theme.pressedSurface
+              : (isHovered ? theme.hoverSurface : theme.surfaceAlternate))
           : theme.disabledSurface,
+      radius,
     );
-    paintBorder(
+    // The outline of something you can aim at is [borderStrong], not the
+    // hairline that separates two surfaces: a combo box drawn with the divider
+    // colour disappears into the bar it sits in.
+    paintRoundedBorder(
       list,
       rect,
       enabled
-          ? (_isOpen ? theme.accent : theme.border)
+          ? (_isOpen ? theme.accent : theme.borderStrong)
           : theme.disabledForeground,
+      radius,
+      width: _isOpen ? 1.5 : 1,
     );
 
     final double padding = theme.effectiveControlPadding;
@@ -1126,7 +1151,7 @@ final class RenderComboBoxField extends RenderBox
         rtl
             ? (textLeft + textWidth - labelBox.width).roundToDouble()
             : textLeft.roundToDouble(),
-        (rect.top + (rect.height - labelBox.height) / 2).roundToDouble(),
+        labelTopIn(rect),
       ),
       foregroundColor(),
       maxWidth: textWidth,
@@ -1143,32 +1168,31 @@ final class RenderComboBoxField extends RenderBox
         rect.height,
       ),
     );
-    paintFocusRing(list, rect);
+    paintFocusRing(list, rect, radius: radius);
   }
 
-  /// A downward chevron, drawn as a stack of one-pixel bars.
+  /// A downward chevron: two strokes meeting at a point.
   ///
-  /// Bars rather than a path: the display list's stroking is the rasterizer's
-  /// business, and a mark built from exact rectangles lands on exact pixels -
-  /// which is what lets a golden test compare pixels instead of antialiasing.
+  /// A stack of bars - which is what this drew before - is a solid triangle,
+  /// and a solid triangle in a combo box is the single most recognisable mark
+  /// of a 1995 interface. Two mitred strokes is the mark every current desktop
+  /// draws, and [paintPolylineMark] keeps it on the pixel grid.
   void _paintChevron(DisplayList list, Rect box) {
-    const double rows = 4;
-    const double bar = 2;
-    final double top =
-        (box.top + (box.height - rows * bar) / 2).roundToDouble();
-    final int paint = list.addPaint(
-      colorArgb: foregroundColor().value,
-      antiAlias: false,
+    final double span = (box.height * 0.28).clamp(3.0, 6.0).roundToDouble();
+    final double centreX = (box.left + box.width / 2).roundToDouble();
+    final double centreY = (box.top + box.height / 2).roundToDouble();
+    final double top = _isOpen ? centreY + span / 2 : centreY - span / 2;
+    final double tip = _isOpen ? centreY - span / 2 : centreY + span / 2;
+    paintPolylineMark(
+      list,
+      <Offset>[
+        Offset(centreX - span, top),
+        Offset(centreX, tip),
+        Offset(centreX + span, top),
+      ],
+      1.5,
+      enabled ? theme.foregroundSecondary : theme.disabledForeground,
     );
-    final double centre = (box.left + box.width / 2).roundToDouble();
-    for (int i = 0; i < rows; i++) {
-      final double half = (rows - i) * bar;
-      final double y = _isOpen ? top + (rows - 1 - i) * bar : top + i * bar;
-      list.drawRectangle(
-        Rect.fromLTWH(centre - half, y, half * 2, bar),
-        paint,
-      );
-    }
   }
 
   @override

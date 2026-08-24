@@ -472,6 +472,7 @@ final class SingleChildScrollView extends StatefulWidget {
     this.controller,
     this.scrollbar = ScrollbarVisibility.always,
     this.scrollbarThickness,
+    this.contentAlignment = ScrollContentAlignment.start,
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.dispatcher,
@@ -486,6 +487,7 @@ final class SingleChildScrollView extends StatefulWidget {
 
   final ScrollbarVisibility scrollbar;
   final double? scrollbarThickness;
+  final ScrollContentAlignment contentAlignment;
   final bool dragEnabled;
   final bool mouseDragEnabled;
   final UiDispatcher? dispatcher;
@@ -508,7 +510,11 @@ final class _SingleChildScrollViewState extends State<SingleChildScrollView> {
       dragEnabled: widget.dragEnabled,
       mouseDragEnabled: widget.mouseDragEnabled,
       dispatcher: widget.dispatcher,
-      child: _ViewportWidget(position: _position, child: widget.child),
+      child: _ViewportWidget(
+        position: _position,
+        contentAlignment: widget.contentAlignment,
+        child: widget.child,
+      ),
     );
     if (widget.scrollbar == ScrollbarVisibility.never) return scrollable;
     return Scrollbar(
@@ -522,20 +528,29 @@ final class _SingleChildScrollViewState extends State<SingleChildScrollView> {
 }
 
 final class _ViewportWidget extends SingleChildRenderObjectWidget {
-  const _ViewportWidget({required this.position, required Widget super.child});
+  const _ViewportWidget({
+    required this.position,
+    required this.contentAlignment,
+    required Widget super.child,
+  });
 
   final ScrollPosition position;
+  final ScrollContentAlignment contentAlignment;
 
   @override
-  RenderViewport createRenderObject(BuildContext context) =>
-      RenderViewport(position: position);
+  RenderViewport createRenderObject(BuildContext context) => RenderViewport(
+        position: position,
+        contentAlignment: contentAlignment,
+      );
 
   @override
   void updateRenderObject(
     BuildContext context,
     covariant RenderViewport object,
   ) {
-    object.position = position;
+    object
+      ..position = position
+      ..contentAlignment = contentAlignment;
   }
 }
 

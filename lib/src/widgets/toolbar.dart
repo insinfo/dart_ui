@@ -18,31 +18,57 @@ final class Toolbar extends StatelessWidget {
   const Toolbar({
     super.key,
     required this.child,
-    this.height = 60,
-    this.padding = const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    this.height,
+    this.padding,
     this.color,
     this.showBorder = true,
   });
 
   final Widget child;
-  final double height;
-  final EdgeInsets padding;
+
+  /// Null takes the theme's: one control tall plus a gap of air either side,
+  /// so a toolbar is as dense as the density says and not 60 px forever.
+  final double? height;
+
+  final EdgeInsets? padding;
   final Color? color;
+
+  /// Whether to draw the hairline along the bottom edge.
+  ///
+  /// The *bottom* edge only. A box drawn on all four sides of every bar is the
+  /// Windows 95 look in one line of code: stacked bars then show a two-pixel
+  /// double rule where they meet, and the window reads as a pile of boxes
+  /// instead of a set of surfaces.
   final bool showBorder;
 
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: color ?? theme.surfaceAlternate,
-        border: showBorder ? BoxBorder(color: theme.border, width: 1) : null,
-      ),
-      child: SizedBox(
-        height: height,
-        child: Padding(
-          padding: padding,
-          child: Center(child: child),
+    final double barHeight =
+        height ?? theme.effectiveControlHeight + theme.effectiveGap * 2;
+    return SizedBox(
+      height: barHeight,
+      child: DecoratedBox(
+        decoration: BoxDecoration(color: color ?? theme.surfaceAlternate),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Expanded(
+              child: Padding(
+                padding: padding ??
+                    EdgeInsets.symmetric(
+                      horizontal: theme.effectiveGap,
+                      vertical: Spacing.xs,
+                    ),
+                child: Center(child: child),
+              ),
+            ),
+            if (showBorder)
+              SizedBox(
+                height: 1,
+                child: ColoredBox(color: theme.border),
+              ),
+          ],
         ),
       ),
     );
@@ -54,7 +80,7 @@ final class ToolbarGroup extends StatelessWidget {
   const ToolbarGroup({
     super.key,
     this.children = const <Widget>[],
-    this.spacing = 4,
+    this.spacing = Spacing.xs,
   });
 
   final List<Widget> children;
@@ -75,20 +101,28 @@ final class ToolbarGroup extends StatelessWidget {
 
 /// A subtle separator between action groups.
 final class ToolbarDivider extends StatelessWidget {
-  const ToolbarDivider({super.key, this.height = 24, this.margin = 8});
+  const ToolbarDivider({super.key, this.height, this.margin});
 
-  final double height;
-  final double margin;
+  /// Null takes two thirds of a control's height: a rule as tall as the bar
+  /// touches both edges and turns the bar into two boxes.
+  final double? height;
+
+  final double? margin;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-        width: margin * 2 + 1,
-        child: Center(
-          child: SizedBox(
-            width: 1,
-            height: height,
-            child: ColoredBox(color: Theme.of(context).border),
-          ),
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final double gap = margin ?? theme.effectiveGap;
+    return SizedBox(
+      width: gap * 2 + 1,
+      child: Center(
+        child: SizedBox(
+          width: 1,
+          height: height ??
+              (theme.effectiveControlHeight * 0.6 / 2).roundToDouble() * 2,
+          child: ColoredBox(color: theme.border),
         ),
-      );
+      ),
+    );
+  }
 }

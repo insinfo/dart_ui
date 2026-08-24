@@ -12,3 +12,16 @@ Future<PickedFile?> openFile({
     reason: 'this target has no file-picker implementation',
   );
 }
+
+Future<String?> saveFile({
+  required String title,
+  required String suggestedName,
+  required List<FilePickerFilter> filters,
+  required String? defaultExtension,
+  required int ownerWindowHandle,
+}) async {
+  throw const FilePickerException(
+    operation: 'saveFile',
+    reason: 'this target has no file-picker implementation',
+  );
+}

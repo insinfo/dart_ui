@@ -528,12 +528,29 @@ final class RenderTabStrip extends RenderBoxContainer<BoxParentData>
       size.height,
     );
     paintFill(list, rect, theme.surfaceAlternate);
+    // The rule the tabs sit on, drawn under them so the strip has an edge even
+    // where no tab is selected.
+    paintFill(
+      list,
+      Rect.fromLTWH(rect.left, rect.bottom - 1, rect.width, 1),
+      theme.border,
+    );
     super.paint(list, offset);
     if (_indicatorRect.width > 0) {
-      paintFill(
+      // The indicator is a rounded bar inset from the header's edges, not a
+      // full-width slab: a slab under a tab is the 1995 drawing, and the inset
+      // is what makes the indicator read as belonging to the label above it.
+      final Rect bar = _indicatorRect.shift(offset);
+      paintRoundedFill(
         list,
-        _indicatorRect.shift(offset),
+        Rect.fromLTWH(
+          bar.left + Spacing.md,
+          bar.top,
+          (bar.width - Spacing.md * 2).clamp(0.0, double.infinity),
+          bar.height,
+        ),
         enabled ? theme.accent : theme.disabledForeground,
+        bar.height / 2,
       );
     }
     // The focus ring goes around the *selected header*, not the whole strip:
@@ -688,16 +705,24 @@ final class RenderTabHeader extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    if (_selected) {
-      paintFill(list, rect, theme.surface);
-    } else if (isHovered && enabled) {
-      paintFill(list, rect, theme.surface);
+    if (isHovered && enabled && !_selected) {
+      paintRoundedFill(
+        list,
+        Rect.fromLTWH(rect.left + 2, rect.top + 2, rect.width - 4,
+            rect.height - 4),
+        theme.hoverSurface,
+        theme.cornerRadiusSmall,
+      );
     }
     paintCenteredLabel(
       list,
       _label,
       rect,
-      enabled ? theme.foreground : theme.disabledForeground,
+      !enabled
+          ? theme.disabledForeground
+          : _selected
+              ? theme.accent
+              : theme.foregroundSecondary,
     );
   }
 

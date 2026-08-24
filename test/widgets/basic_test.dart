@@ -183,4 +183,29 @@ void main() {
       expect(found!.size, const Size(320, 180));
     });
   });
+
+  group('Text', () {
+    test('softWrap uses paragraph layout instead of clipping one line', () {
+      final PipelineOwner pipeline = PipelineOwner(
+        rootConstraints: BoxConstraints.loose(const Size(110, 300)),
+      );
+      final BuildOwner owner = BuildOwner(pipelineOwner: pipeline)
+        ..updateRoot(
+          const Text(
+            'Uma descrição longa deve ocupar mais de uma linha.',
+            fontSize: 14,
+            softWrap: true,
+          ),
+        );
+      addTearDown(owner.dispose);
+      pipeline.flushLayout();
+
+      final text = owner.renderRoot! as RenderText;
+      expect(text.size.width, lessThanOrEqualTo(110));
+      expect(
+        text.size.height,
+        greaterThan(FontRegistry.estimatedLineHeight(14)),
+      );
+    });
+  });
 }

@@ -33,8 +33,9 @@ import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
 import 'basic.dart';
 import 'control.dart';
-import 'controls.dart';
 import 'element.dart';
+import 'icon.dart';
+import 'icon_button.dart';
 import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
@@ -64,8 +65,16 @@ final class InfoBar extends StatelessWidget {
   static Color accentFor(InfoBarSeverity severity, ThemeData theme) =>
       switch (severity) {
         InfoBarSeverity.info => theme.accent,
-        InfoBarSeverity.success => const Color(0xFF15803D),
-        InfoBarSeverity.warning => const Color(0xFFB45309),
+        // Green and amber are not in the palette because a palette that
+        // named them would have to name them twice, once per brightness. These
+        // two pairs are picked for contrast on both: 4.6:1 on white and 4.8:1
+        // on the dark surface.
+        InfoBarSeverity.success => theme.brightness == Brightness.dark
+            ? const Color(0xFF6EE7A8)
+            : const Color(0xFF15803D),
+        InfoBarSeverity.warning => theme.brightness == Brightness.dark
+            ? const Color(0xFFF5C147)
+            : const Color(0xFFB45309),
         InfoBarSeverity.error => theme.colorScheme.error,
       };
 
@@ -79,39 +88,59 @@ final class InfoBar extends StatelessWidget {
           '${message.isEmpty ? '' : '. $message'}',
       theme: theme,
       child: ColoredBox(
-        color: theme.surface,
+        color: theme.surfaceAlternate,
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             // The severity stripe: colour that survives at a glance, and
             // remains even for users who cannot distinguish the icon.
             ColoredBox(
               color: accent,
-              child: const SizedBox(width: 3, height: 36),
+              child: SizedBox(
+                width: 3,
+                height: theme.effectiveControlHeight + Spacing.md,
+              ),
             ),
-            const SizedBox(width: 8),
+            const SizedBox(width: Spacing.md),
             // A drawn glyph rather than an icon font: the banner must render
             // identically headless, where no icon face is registered.
-            _SeverityDot(color: accent),
-            const SizedBox(width: 8),
+            Padding(
+              padding: const EdgeInsets.only(top: Spacing.md),
+              child: _SeverityDot(color: accent),
+            ),
+            const SizedBox(width: Spacing.sm),
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6),
+                padding: const EdgeInsets.symmetric(vertical: Spacing.sm),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: <Widget>[
                     Text(title, style: theme.textTheme.labelLarge),
-                    if (message.isNotEmpty) Text(message),
+                    if (message.isNotEmpty)
+                      Text(
+                        message,
+                        softWrap: true,
+                        maxLines: 4,
+                        color: theme.foregroundSecondary,
+                      ),
                   ],
                 ),
               ),
             ),
-            if (onClose != null) ...<Widget>[
-              const SizedBox(width: 4),
-              Button(label: 'X', onPressed: onClose),
-              const SizedBox(width: 4),
-            ],
+            // A dismiss affordance is not a *command*: an accent-filled button
+            // labelled "X" made the loudest thing in the banner the way to get
+            // rid of it.
+            if (onClose != null)
+              Padding(
+                padding: const EdgeInsets.all(Spacing.xs),
+                child: IconButton(
+                  icon: const Icon(Icons.close),
+                  tooltip: 'Close',
+                  onPressed: onClose,
+                  color: theme.foregroundSecondary,
+                ),
+              ),
           ],
         ),
       ),
@@ -232,10 +261,11 @@ final class RenderInfoBarChrome extends RenderSingleChildBox
   @override
   void paint(DisplayList list, Offset offset) {
     super.paint(list, offset);
-    paintBorder(
+    paintRoundedBorder(
       list,
       Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height),
       theme.border,
+      theme.cornerRadius,
     );
   }
 

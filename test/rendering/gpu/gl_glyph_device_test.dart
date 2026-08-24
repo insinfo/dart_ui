@@ -35,11 +35,24 @@
 /// are at the top), and asserts the asymmetry directly on the read-back
 /// pixels rather than only through the diff.
 ///
+/// ## Rotated text is compared here too, and why that is not a second harness
+///
+/// Under a transform that rotates, skews, mirrors or scales the axes
+/// differently, neither backend uses its glyph cache: a mask is a rectangle of
+/// pixels and can only be moved by whole pixels. Both fall back to filling the
+/// glyph's *outline* - the CPU through `ScanlineFiller` directly, the GPU
+/// through `GpuMaskAtlas`, which runs that same filler and uploads the
+/// coverage. So the rotated group below is comparing two consumers of one
+/// coverage implementation, which is exactly why it can declare a deviation of
+/// 0 rather than a tolerance, and exactly what makes it a *parity* test rather
+/// than a similarity test.
+///
 /// It skips rather than fails where no driver answers, because "this machine
 /// has no GPU" is not a defect in the renderer.
 library;
 
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/win32/win32_gl_surface.dart';
@@ -290,6 +303,148 @@ void main() {
     }, skip: session.skipReason);
   });
 
+  group('the same run under a transform no mask can carry', () {
+    // Every test in this group used to be impossible to write: both sinks
+    // threw `UnsupportedCapabilityError` for these matrices rather than draw
+    // upright text. What replaced the refusal is the outline route, and what
+    // is on trial here is that the two backends took it to the same pixels.
+
+    test('a quarter turn', () async {
+      // 90 degrees is the case a vertical tab label needs and the one where a
+      // wrong answer is least visible: a glyph rotated by exactly a quarter
+      // turn still lands on the pixel grid, so a backend that silently drew
+      // upright text would produce a *plausible* picture. Only the comparison
+      // catches it, and the ink-box assertion below states the shape.
+      //
+      // Observed deviation: 0.
+      final ScaledTypeface font = dejaVu.atSize(20);
+      final DisplayList list = _run(
+        font,
+        _glyphsFor(dejaVu, 'Vertical'),
+        originX: 6,
+        originY: 20,
+        advance: 12,
+        transform: _rotation(-math.pi / 2, 20, 20),
+      );
+      final _Rendered rendered =
+          await _renderBoth(session, list, 48, 128, tolerance: 0);
+      final _Ink ink = _Ink.of(rendered.gpu);
+      printOnFailure('ink box $ink');
+      expect(ink.height, greaterThan(ink.width * 2),
+          reason: 'a quarter turn makes a line of text taller than it is '
+              'wide; upright text here would be the other way round');
+      rendered.dispose();
+    }, skip: session.skipReason);
+
+    test('a 45 degree turn, where no glyph edge lands on the grid', () async {
+      // The angle with no special cases: every stem crosses pixels at an
+      // angle, so the coverage is fractional almost everywhere and the two
+      // backends have the largest possible surface to disagree over.
+      //
+      // Observed deviation: 0.
+      final ScaledTypeface font = dejaVu.atSize(24);
+      final DisplayList list = _run(
+        font,
+        _glyphsFor(dejaVu, 'Skew'),
+        originX: 10,
+        originY: 30,
+        advance: 15,
+        transform: _rotation(math.pi / 4, 40, 40),
+      );
+      await _expectParity(session, list, 96, 96, tolerance: 0);
+    }, skip: session.skipReason);
+
+    test('a mirror, which no positive scale can express', () async {
+      // scale(-1, 1): the determinant is negative, so every contour's winding
+      // reverses. A fill rule applied to the *untransformed* winding would
+      // empty the glyph and leave its counters solid - readable as a font
+      // problem rather than a matrix one.
+      //
+      // Observed deviation: 0.
+      final ScaledTypeface font = dejaVu.atSize(28);
+      final DisplayList list = _run(
+        font,
+        _glyphsFor(dejaVu, 'Rb'),
+        originX: 8,
+        originY: 34,
+        advance: 18,
+        transform: _scale(-1, 1, 32, 24),
+      );
+      await _expectParity(session, list, 64, 48, tolerance: 0);
+    }, skip: session.skipReason);
+
+    test('a non-uniform scale, where one mask cannot serve both axes',
+        () async {
+      // scale(1, 2.5). The refusal both sinks used to raise named this case
+      // alongside rotation for a reason: there is no single pixel size to
+      // rasterise a mask at, and picking either axis produces text of the
+      // right width and the wrong height.
+      //
+      // Observed deviation: 0.
+      final ScaledTypeface font = dejaVu.atSize(16);
+      final DisplayList list = _run(
+        font,
+        _glyphsFor(dejaVu, 'Tall'),
+        originX: 6,
+        originY: 16,
+        advance: 11,
+        transform: _scale(1, 2.5, 0, 8),
+      );
+      await _expectParity(session, list, 64, 64, tolerance: 0);
+    }, skip: session.skipReason);
+
+    test('the upright run it is a rotation of, so the fast path still agrees',
+        () async {
+      // The control. The whole point of the split is that the common case
+      // still goes through the glyph atlas, so this scene must keep passing
+      // through the *other* route while its rotated twin above passes through
+      // this one - and both must match the CPU.
+      //
+      // Observed deviation: 0.
+      final ScaledTypeface font = dejaVu.atSize(20);
+      final DisplayList list = _run(
+        font,
+        _glyphsFor(dejaVu, 'Vertical'),
+        originX: 6,
+        originY: 20,
+        advance: 12,
+      );
+      final GlOffscreenTarget target = session.target(128, 48);
+      await target.renderDisplayList(list, clearColor: _clear);
+      expect(target.glyphAtlas.missCount, greaterThan(0),
+          reason: 'an upright run must still be served by the glyph atlas; '
+              'if it is not, the fast path has been lost');
+      target.dispose();
+      await _expectParity(session, list, 128, 48, tolerance: 0);
+    }, skip: session.skipReason);
+
+    test('a rotated run leaves the glyph atlas untouched', () async {
+      // The cost model, asserted rather than assumed. A rotated run must not
+      // admit anything to the glyph atlas: a slot there is keyed by size
+      // alone, so an entry made under one matrix would be sampled under the
+      // next one and draw the previous frame's angle.
+      final ScaledTypeface font = dejaVu.atSize(20);
+      final GlOffscreenTarget target = session.target(96, 96);
+      await target.renderDisplayList(
+        _run(
+          font,
+          _glyphsFor(dejaVu, 'Turn'),
+          originX: 10,
+          originY: 30,
+          advance: 13,
+          transform: _rotation(math.pi / 4, 40, 40),
+        ),
+        clearColor: _clear,
+      );
+
+      expect(target.glyphAtlas.missCount, 0);
+      expect(target.glyphAtlas.hitCount, 0);
+      expect(_isUniform(target.framebuffer), isFalse,
+          reason: 'the run still has to have drawn something');
+      target.dispose();
+    }, skip: session.skipReason);
+  });
+
   group('what this device says about itself', () {
     test('the probe reports that it draws text', () {
       // The report is the only place that can say it: Capability has no member
@@ -341,6 +496,7 @@ DisplayList _run(
   double advance = 0,
   int argb = 0xFFFFFFFF,
   _Clip? clip,
+  List<double>? transform,
 }) {
   final list = DisplayList();
   final int ink = list.addPaint(colorArgb: argb);
@@ -348,6 +504,20 @@ DisplayList _run(
     list
       ..save()
       ..clipRect(clip.left, clip.top, clip.right, clip.bottom);
+  }
+  // Concatenated into the list rather than passed as a device transform, so
+  // the player resolves it exactly as a `Transform` widget's matrix would -
+  // the same code that decides the run's device origin and offsets.
+  if (transform != null) {
+    if (clip == null) list.save();
+    list.transform(
+      transform[0],
+      transform[1],
+      transform[2],
+      transform[3],
+      transform[4],
+      transform[5],
+    );
   }
   final offsets = Float32List(glyphs.length * 2);
   for (var i = 0; i < glyphs.length; i++) {
@@ -362,9 +532,28 @@ DisplayList _run(
     offsets,
     glyphs.length,
   );
-  if (clip != null) list.restore();
+  if (clip != null || transform != null) list.restore();
   return list;
 }
+
+/// `rotate(radians)` about ([pivotX], [pivotY]), as the six operands
+/// [DisplayList.transform] takes.
+List<double> _rotation(double radians, double pivotX, double pivotY) {
+  final double cos = math.cos(radians);
+  final double sin = math.sin(radians);
+  return <double>[
+    cos,
+    sin,
+    -sin,
+    cos,
+    pivotX - cos * pivotX + sin * pivotY,
+    pivotY - sin * pivotX - cos * pivotY,
+  ];
+}
+
+/// `scale(sx, sy)` about ([pivotX], [pivotY]). A negative factor mirrors.
+List<double> _scale(double sx, double sy, double pivotX, double pivotY) =>
+    <double>[sx, 0, 0, sy, pivotX * (1 - sx), pivotY * (1 - sy)];
 
 List<int> _glyphsFor(Typeface face, String text) => <int>[
       for (final int rune in text.runes) face.glyphForCodePoint(rune),

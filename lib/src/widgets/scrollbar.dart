@@ -77,6 +77,56 @@ enum ScrollbarVisibility {
   never,
 }
 
+/// Keeps horizontal and vertical scrollbars anchored to one visible stage.
+///
+/// The child owns the two scrollable viewports and drives [horizontalPosition]
+/// and [verticalPosition]. The tracks are intentionally composed *outside*
+/// that child: putting the vertical track inside horizontally scrolling
+/// content makes it travel with the canvas and disappear beyond the right
+/// edge, while putting the horizontal track inside vertically scrolling
+/// content has the symmetric bug.
+final class TwoDimensionalScrollbar extends StatelessWidget {
+  const TwoDimensionalScrollbar({
+    super.key,
+    required this.horizontalPosition,
+    required this.verticalPosition,
+    required this.child,
+    this.horizontalVisibility = ScrollbarVisibility.always,
+    this.verticalVisibility = ScrollbarVisibility.always,
+    this.horizontalThickness,
+    this.verticalThickness,
+    this.interactive = true,
+    this.dispatcher,
+  });
+
+  final ScrollPosition horizontalPosition;
+  final ScrollPosition verticalPosition;
+  final Widget child;
+  final ScrollbarVisibility horizontalVisibility;
+  final ScrollbarVisibility verticalVisibility;
+  final double? horizontalThickness;
+  final double? verticalThickness;
+  final bool interactive;
+  final UiDispatcher? dispatcher;
+
+  @override
+  Widget build(BuildContext context) => Scrollbar(
+        position: verticalPosition,
+        visibility: verticalVisibility,
+        thickness: verticalThickness,
+        interactive: interactive,
+        dispatcher: dispatcher,
+        child: Scrollbar(
+          position: horizontalPosition,
+          visibility: horizontalVisibility,
+          thickness: horizontalThickness,
+          interactive: interactive,
+          dispatcher: dispatcher,
+          child: child,
+        ),
+      );
+}
+
 /// Overlays a scrollbar on [child], driven by [position].
 ///
 /// The child is laid out at full size and the bar is painted over it rather

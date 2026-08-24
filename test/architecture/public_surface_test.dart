@@ -16,6 +16,22 @@ import 'package:test/test.dart';
 
 void main() {
   group('public surface', () {
+    test('portable audio contracts are nameable', () {
+      const AudioFormat format = AudioFormat(
+        sampleRate: 48000,
+        channels: 2,
+        sampleFormat: AudioSampleFormat.float32,
+      );
+      const AudioStreamRequest request = AudioStreamRequest(
+        preferredFormat: format,
+        preferredPeriodFrames: 128,
+      );
+
+      expect(format.bytesPerFrame, 8);
+      expect(request.direction, AudioDeviceDirection.output);
+      expect(AudioContainerFormat.values, contains(AudioContainerFormat.wave));
+    });
+
     test('geometry, graphics and layout types are nameable', () {
       const Offset offset = Offset(3, 4);
       const Size size = Size(10, 20);
@@ -176,6 +192,30 @@ void main() {
       addTearDown(target.dispose);
 
       expect(Capability.values, contains(Capability.gpuPresentation));
+    });
+
+    test('certificate provider contracts are platform-neutral and nameable',
+        () {
+      const CertificateOperationContext context =
+          CertificateOperationContext(nativeWindowHandle: 42);
+      CertificateProvider? provider;
+      CryptoIdentity? identity;
+      Pkcs11CertificateProvider? pkcs11;
+      WindowsCertificateProvider? windows;
+      MacOsCertificateProvider? macos;
+      LinuxCertificateDiscoveryResult? linux;
+      BoundedDraggable? draggable;
+
+      expect(context.nativeWindowHandle, 42);
+      expect(provider, isNull);
+      expect(identity, isNull);
+      expect(pkcs11, isNull);
+      expect(windows, isNull);
+      expect(macos, isNull);
+      expect(linux, isNull);
+      expect(draggable, isNull);
+      expect(CertificateProviderKind.values,
+          contains(CertificateProviderKind.pkcs11));
     });
   });
 }

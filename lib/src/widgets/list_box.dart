@@ -35,6 +35,7 @@ import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_viewport.dart';
 import '../platform/input_events.dart';
+import 'basic.dart';
 import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
@@ -57,7 +58,7 @@ final class ListBox extends StatefulWidget {
     super.key,
     required this.itemCount,
     required this.itemBuilder,
-    this.itemExtent = 20.0,
+    this.itemExtent,
     this.cacheExtent = 40.0,
     this.selectedIndex,
     this.onSelected,
@@ -70,7 +71,13 @@ final class ListBox extends StatefulWidget {
   /// few dozen times per frame, which is the entire point.
   final Widget Function(BuildContext context, int index) itemBuilder;
 
-  final double itemExtent;
+  /// The height of one row, or null for the theme's.
+  ///
+  /// Null is the right answer for almost every caller: a list whose rows are a
+  /// number the caller made up is a list that ignores the density switch, and
+  /// a window that mixes one of those with a themed one has two row rhythms in
+  /// it. A number is for the rare list whose rows are not text.
+  final double? itemExtent;
   final double cacheExtent;
   final int? selectedIndex;
   final void Function(int index)? onSelected;
@@ -104,20 +111,30 @@ final class _ListBoxState extends State<ListBox> {
     if (mounted) setState(() {});
   }
 
+  /// The resolved row height, refreshed by every build.
+  ///
+  /// Cached rather than read through `Theme.of` on demand, because the arrow
+  /// keys and the scroll handlers need it outside a build and an inherited
+  /// lookup there would register a dependency from the wrong phase. The
+  /// starting value is only ever used before the first build.
+  double _extent = 28;
+
   ListVirtualization get _virtualization => ListVirtualization(
         itemCount: widget.itemCount,
-        estimatedExtent: widget.itemExtent,
+        estimatedExtent: _extent,
         cacheExtent: widget.cacheExtent,
       );
 
   @override
   Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    _extent = widget.itemExtent ?? theme.effectiveRowHeight;
     final ListVirtualization virtualization = _virtualization;
     // Before the first layout the viewport extent is unknown; realizing one
     // screenful of items on the estimate is better than realizing none, which
     // would paint an empty list for one frame.
     final double viewport =
-        _viewportExtent > 0 ? _viewportExtent : widget.itemExtent * 8;
+        _viewportExtent > 0 ? _viewportExtent : _extent * 8;
     final RealizedRange range = virtualization.rangeFor(
       scrollOffset: _position.pixels,
       viewportExtent: viewport,
@@ -127,7 +144,7 @@ final class _ListBoxState extends State<ListBox> {
       child: _ListBoxRenderWidget(
         position: _position,
         focusNode: _focusNode,
-        theme: Theme.of(context),
+        theme: theme,
         virtualization: virtualization,
         range: range,
         selectedIndex: widget.selectedIndex,
@@ -148,9 +165,19 @@ final class _ListBoxState extends State<ListBox> {
             _ListItem(
               key: ValueKey<int>(index),
               index: index,
-              extent: widget.itemExtent,
+              extent: _extent,
               selected: index == widget.selectedIndex,
-              child: widget.itemBuilder(context, index),
+              // The selected row publishes its own text colour rather than
+              // recolouring the caller's widget: the row's content is built by
+              // the application, and the only honest way to say "text on this
+              // row is on a selected ground" is to say it to the subtree.
+              child: index == widget.selectedIndex
+                  ? DefaultTextStyle(
+                      style: theme.textTheme.bodyMedium
+                          .copyWith(color: theme.onSelection),
+                      child: widget.itemBuilder(context, index),
+                    )
+                  : widget.itemBuilder(context, index),
             ),
         ],
       ),
@@ -253,8 +280,8 @@ final class RenderListItem extends RenderSingleChildBox with ControlBehavior {
         parentUsesSize: true,
       );
       child.parentData!.offset = Offset(
-        theme.effectiveControlPadding / 2,
-        ((_extent - child.size.height) / 2).clamp(0.0, _extent),
+        theme.effectiveControlPadding,
+        ((_extent - child.size.height) / 2).roundToDouble().clamp(0.0, _extent),
       );
     }
     size = constraints.constrain(Size(width, _extent));
@@ -271,14 +298,22 @@ final class RenderListItem extends RenderSingleChildBox with ControlBehavior {
       size.width,
       size.height,
     );
-    if (_selected) {
-      paintFill(list, rect, theme.selection);
-    } else if (isHovered) {
-      paintFill(list, rect, theme.surface);
-    } else if (_index.isOdd) {
-      // Zebra striping from the *item index*, not from the realized position:
-      // striping by position makes the whole list flicker as it scrolls.
-      paintFill(list, rect, theme.surfaceAlternate);
+    // No zebra striping. Alternating row fills were how a 1995 list made its
+    // rows legible without any spacing to spare; with a themed row height
+    // there is spacing to spare, and the stripes only add noise behind the
+    // selection. Hover and selection are the two states worth drawing.
+    if (_selected || isHovered) {
+      paintRoundedFill(
+        list,
+        Rect.fromLTWH(
+          rect.left + 2,
+          rect.top,
+          rect.width - 4,
+          rect.height,
+        ),
+        _selected ? theme.selection : theme.hoverSurface,
+        theme.cornerRadiusSmall,
+      );
     }
     super.paint(list, offset);
   }
@@ -437,13 +472,14 @@ final class RenderListBox extends RenderBoxContainer<BoxParentData>
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surfaceAlternate);
+    final double radius = theme.cornerRadius;
+    paintRoundedFill(list, rect, theme.surfaceAlternate, radius);
     list.save();
     list.clipRect(rect.left, rect.top, rect.right, rect.bottom);
     super.paint(list, offset);
     list.restore();
-    paintBorder(list, rect, theme.border);
-    paintFocusRing(list, rect);
+    paintRoundedBorder(list, rect, theme.border, radius);
+    paintFocusRing(list, rect, radius: radius);
   }
 
   @override

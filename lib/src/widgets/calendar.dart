@@ -32,6 +32,7 @@ import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
+import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
 import '../platform/input_events.dart';
@@ -43,6 +44,8 @@ import 'directionality.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'icon.dart';
+import 'icon_button.dart';
 import 'localizations.dart';
 import 'semantics.dart';
 import 'theme.dart';
@@ -293,25 +296,38 @@ final class _CalendarState extends State<Calendar> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: <Widget>[
-            Button(
-              label: '<',
-              onPressed: () => _movePage(-1),
-            ),
-            Expanded(
-              child: Align(
-                child: Text(strings.monthTitle(_month)),
+        // The month strip: the title is the loud thing, and the two arrows are
+        // navigation. Filled accent buttons here - which is what `Button` gives
+        // - made "previous month" the most emphatic control on a date picker.
+        Padding(
+          padding: const EdgeInsets.symmetric(
+            horizontal: Spacing.xs,
+            vertical: Spacing.xs,
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: <Widget>[
+              IconButton(
+                icon: const Chevron(direction: ChevronDirection.back),
+                tooltip: 'Previous month',
+                onPressed: () => _movePage(-1),
               ),
-            ),
-            Button(
-              label: '>',
-              onPressed: () => _movePage(1),
-            ),
-          ],
+              Expanded(
+                child: Align(
+                  child: Text(
+                    strings.monthTitle(_month),
+                    style: theme.textTheme.titleSmall,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Chevron(direction: ChevronDirection.forward),
+                tooltip: 'Next month',
+                onPressed: () => _movePage(1),
+              ),
+            ],
+          ),
         ),
-        const SizedBox(height: 2),
         FocusAttachment(
           node: _focusNode,
           child: _CalendarGridWidget(
@@ -464,7 +480,7 @@ final class RenderCalendarGrid extends RenderBoxContainer<BoxParentData>
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surfaceAlternate);
+    paintRoundedFill(list, rect, theme.surfaceRaised, theme.cornerRadius);
     final double cell = _cellExtent;
     for (int i = 0; i < _weekdayAbbreviations.length && i < 7; i++) {
       final double x = _textDirection.isRightToLeft
@@ -478,8 +494,8 @@ final class RenderCalendarGrid extends RenderBoxContainer<BoxParentData>
       );
     }
     super.paint(list, offset);
-    paintBorder(list, rect, theme.border);
-    paintFocusRing(list, rect);
+    paintRoundedBorder(list, rect, theme.border, theme.cornerRadius);
+    paintFocusRing(list, rect, radius: theme.cornerRadius);
   }
 
   @override
@@ -624,25 +640,35 @@ final class RenderCalendarDay extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
+    // A day is a circle, the way every calendar draws one: a square selection
+    // in a 7-column grid tiles into a solid block the moment two days in a row
+    // are selected, and a filled square with a number in it is the 1995 look.
+    final double disc = (rect.width < rect.height ? rect.width : rect.height) -
+        Spacing.xs;
+    final Rect cell = Rect.fromLTWH(
+      (rect.left + (rect.width - disc) / 2).roundToDouble(),
+      (rect.top + (rect.height - disc) / 2).roundToDouble(),
+      disc,
+      disc,
+    );
     if (_selected) {
-      paintFill(list, rect, theme.selection);
+      paintRoundedFill(list, cell, theme.accent, disc / 2);
     } else if (isHovered && enabled) {
-      paintFill(list, rect, theme.surface);
+      paintRoundedFill(list, cell, theme.hoverSurface, disc / 2);
     }
-    if (_today) paintBorder(list, rect, theme.accent);
+    if (_today && !_selected) {
+      paintRoundedBorder(list, cell, theme.accent, disc / 2);
+    }
     // The keyboard cursor: a marker inside the cell, distinct from the
     // grid-level focus ring, so the cursor is visible while the ring marks
     // the grid as the focused control.
     if (_focused) {
-      paintBorder(
+      paintRoundedBorder(
         list,
-        Rect.fromLTWH(
-          rect.left + 1,
-          rect.top + 1,
-          rect.width - 2,
-          rect.height - 2,
-        ),
+        cell.deflate(1),
         theme.focusRing,
+        (disc - 2) / 2,
+        width: theme.focusRingWidth,
       );
     }
     paintCenteredLabel(
@@ -651,9 +677,11 @@ final class RenderCalendarDay extends RenderBox with ControlBehavior {
       rect,
       !enabled
           ? theme.disabledForeground
-          : _outsideMonth
-              ? theme.foregroundSecondary
-              : theme.foreground,
+          : _selected
+              ? theme.colorScheme.onPrimary
+              : _outsideMonth
+                  ? theme.disabledForeground
+                  : theme.foreground,
     );
   }
 

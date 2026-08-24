@@ -61,6 +61,8 @@ import '../path/stroker.dart';
 import '../raster/clip_stack.dart' show pixelEdge;
 import '../replay/display_list_player.dart';
 import '../text/glyph_cache.dart' show glyphPixelOrigin, glyphSubpixelBucket;
+import '../text/glyph_raster.dart'
+    show glyphMasksFit, glyphOutlineTransform;
 import 'gpu_batcher.dart';
 import 'gpu_glyph_atlas.dart';
 import 'gpu_layer_stack.dart';
@@ -1055,10 +1057,14 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
   ///   * Stroked text is refused, for the reason the CPU sink gives: what is
   ///     cached is coverage, and outlining coverage traces the antialiased
   ///     edge of a bitmap - the "furry text" artefact, not a stroke.
-  ///   * A rotated, skewed, mirrored or non-uniformly scaled transform is
-  ///     refused rather than approximated. The rasteriser takes a uniform
-  ///     scale and a horizontal offset, so such a run would come out upright:
-  ///     a wrong picture that looks deliberate.
+  ///   * A rotated, skewed, mirrored or non-uniformly scaled transform does
+  ///     not come through here at all. An atlas slot is a rectangle of texels
+  ///     sampled one-to-one against pixels, and that mapping is exactly what
+  ///     such a matrix destroys, so the run is filled from its outlines by
+  ///     [_drawGlyphRunAsOutlines] instead. [glyphMasksFit] is the criterion
+  ///     and the CPU sink imports the same function: text that draws on one
+  ///     backend and throws on the other is the divergence this whole file is
+  ///     written to avoid.
   @override
   void drawDeviceGlyphRun(
     int fontId,
@@ -1113,6 +1119,20 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
             'interned a face this device cannot rasterise',
       );
     }
+    if (!glyphMasksFit(transform)) {
+      _drawGlyphRunAsOutlines(
+        interned,
+        deviceOrigin,
+        transform,
+        glyphIds,
+        deviceOffsets,
+        glyphCount,
+        clip,
+        paint,
+      );
+      return;
+    }
+
     final ScaledTypeface font = _deviceFont(interned, transform);
 
     // Whole-pixel clip bounds in layer space, rounded outward to match the
@@ -1281,6 +1301,66 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
     fullGlyphs?.recycleAll();
   }
 
+  /// Draws a run by sending each glyph's outline down the *path* route.
+  ///
+  /// The GPU's answer to the same question `cpu_renderer.dart` answers with
+  /// [ScanlineFiller], and - this is the part worth stating - it is the same
+  /// answer. [GpuMaskAtlas.rasterizeMask] runs that identical filler and
+  /// uploads the coverage, so a rotated letter on this backend and the same
+  /// letter on the software backend are produced by one implementation of
+  /// coverage and differ only in how the bytes reach the surface. That is why
+  /// the parity test for rotated text can declare a deviation of 0 rather
+  /// than a tolerance.
+  ///
+  /// Each glyph is one [_drawMask] call, so each is a quad sampling a mask
+  /// slot, and they batch together exactly as the atlas route's quads do while
+  /// the pipeline, texture, blend and clip hold. The cost against the atlas
+  /// route is honest: one rasterization per glyph per frame instead of one
+  /// per glyph ever, because a mask is a function of the whole matrix and the
+  /// glyph atlas is keyed only by size. Rotated text is a label on a chart
+  /// axis or a collapsed tab, not a paragraph, and the alternative was
+  /// refusing to draw it.
+  ///
+  /// The outline is **unhinted**, for the reason the CPU sink gives at length
+  /// and ADR 0007 records: hinting fits stems to a grid the rotated glyph no
+  /// longer shares.
+  void _drawGlyphRunAsOutlines(
+    ScaledTypeface font,
+    Offset deviceOrigin,
+    Transform2D transform,
+    Int32List glyphIds,
+    Float32List deviceOffsets,
+    int glyphCount,
+    Rect clip,
+    ReplayPaint paint,
+  ) {
+    // The interned face's scale: the device scale rides in the matrix's linear
+    // part, and folding it into the font too would apply it twice.
+    final double fontScale = font.scale;
+    final Typeface face = font.typeface;
+    for (var i = 0; i < glyphCount; i++) {
+      final Path outline = face.outlineOf(glyphIds[i]);
+      if (outline.isEmpty) continue;
+      // Device space, not layer space: [_drawMask] does the layer shift
+      // itself, exactly as it does for a path.
+      _drawMask(
+        outline,
+        glyphOutlineTransform(
+          transform,
+          fontScale,
+          deviceOrigin.dx + deviceOffsets[i * 2],
+          deviceOrigin.dy + deviceOffsets[i * 2 + 1],
+        ),
+        clip,
+        paint,
+        'glyph',
+        // Non-zero: a glyph is defined by the winding of its contours, which
+        // is what leaves the counter of an `o` empty and what keeps the
+        // crossing contours of a composite glyph from cancelling.
+      );
+    }
+  }
+
   /// [font] at the size this device transform asks for.
   ///
   /// The **font** is scaled, not the mask: resampling an antialiased mask is
@@ -1288,20 +1368,19 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
   /// the outline is the entire reason it was kept. Returns [font] itself at
   /// unit scale, so the common case allocates nothing and hits the atlas under
   /// the key the caller interned. Mirrors `cpu_renderer.dart`'s rule exactly,
-  /// so a run refused on one backend is refused on the other.
+  /// so a run that takes the atlas route on one backend takes it on the other.
+  ///
+  /// Only ever called for a matrix [glyphMasksFit] has accepted, so both
+  /// diagonal terms are equal and positive and there is a single scale to
+  /// take. The assert states that rather than trusting the caller: reading
+  /// `transform.a` alone under a non-uniform scale would silently produce
+  /// upright text at the wrong height.
   ScaledTypeface _deviceFont(ScaledTypeface font, Transform2D transform) {
+    assert(
+      glyphMasksFit(transform),
+      'an atlas slot cannot serve $transform; the outline route handles it',
+    );
     final double a = transform.a;
-    final double d = transform.d;
-    if (transform.b != 0 || transform.c != 0 || a <= 0 || d <= 0 || a != d) {
-      throw UnsupportedCapabilityError(
-        backendName: backendName,
-        capability: Capability.gpuPresentation,
-        detail: 'text under a rotated, skewed, mirrored or non-uniformly '
-            'scaled transform is not implemented; the glyph rasteriser takes '
-            'a uniform scale, and drawing this run would silently produce '
-            'upright text (transform $transform)',
-      );
-    }
     if (a == 1) return font;
     return ScaledTypeface(font.typeface, font.pixelSize * a);
   }

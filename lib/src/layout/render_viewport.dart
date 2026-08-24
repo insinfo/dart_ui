@@ -30,6 +30,9 @@ enum ScrollAxis { vertical, horizontal }
 /// A backend with an exact platform preference can still report pixels.
 const double defaultLineExtent = 48.0;
 
+/// Placement of scroll content when it is smaller than its viewport.
+enum ScrollContentAlignment { start, center, end }
+
 /// Where a scrollable is, how far it may go, and what happens at the edges.
 final class ScrollPosition {
   ScrollPosition({
@@ -253,12 +256,17 @@ final class ScrollPosition {
 /// Open for extension: a scroll *viewer* is a viewport plus a scrollbar and
 /// input handling, and those belong to the control layer rather than here.
 class RenderViewport extends RenderSingleChildBox {
-  RenderViewport({required ScrollPosition position, super.child})
-      : _position = position {
+  RenderViewport({
+    required ScrollPosition position,
+    ScrollContentAlignment contentAlignment = ScrollContentAlignment.start,
+    super.child,
+  })  : _position = position,
+        _contentAlignment = contentAlignment {
     _position.addListener(_onPositionChanged);
   }
 
   ScrollPosition _position;
+  ScrollContentAlignment _contentAlignment;
 
   ScrollPosition get position => _position;
 
@@ -266,6 +274,14 @@ class RenderViewport extends RenderSingleChildBox {
     if (identical(value, _position)) return;
     _position.removeListener(_onPositionChanged);
     _position = value..addListener(_onPositionChanged);
+    markNeedsLayout();
+  }
+
+  ScrollContentAlignment get contentAlignment => _contentAlignment;
+
+  set contentAlignment(ScrollContentAlignment value) {
+    if (value == _contentAlignment) return;
+    _contentAlignment = value;
     markNeedsLayout();
   }
 
@@ -345,10 +361,20 @@ class RenderViewport extends RenderSingleChildBox {
       viewportExtent: viewportExtent,
       contentExtent: contentExtent,
     );
-    // The offset is negative: scrolling down moves the content up.
+    final double slack = (viewportExtent - contentExtent).clamp(
+      0.0,
+      double.infinity,
+    );
+    final double alignmentOffset = switch (_contentAlignment) {
+      ScrollContentAlignment.start => 0.0,
+      ScrollContentAlignment.center => slack / 2,
+      ScrollContentAlignment.end => slack,
+    };
+    // The scroll offset is negative; alignment contributes only while content
+    // is smaller than the viewport, when maxScrollExtent is zero.
     child.parentData!.offset = _position.axis == ScrollAxis.vertical
-        ? Offset(0, -_position.pixels)
-        : Offset(-_position.pixels, 0);
+        ? Offset(0, alignmentOffset - _position.pixels)
+        : Offset(alignmentOffset - _position.pixels, 0);
   }
 
   @override

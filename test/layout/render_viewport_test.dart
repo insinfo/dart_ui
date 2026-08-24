@@ -269,5 +269,44 @@ void main() {
       expect(position.contentExtent, 600);
       expect(position.maxScrollExtent, 500);
     });
+
+    test('horizontal content is centered only while it fits', () {
+      final owner = PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(100, 50)),
+      );
+      final position = ScrollPosition(axis: ScrollAxis.horizontal);
+      final child = _FixedBox(const Size(40, 50));
+      owner.root = RenderViewport(
+        position: position,
+        contentAlignment: ScrollContentAlignment.center,
+        child: child,
+      );
+      owner.drawFrame(DisplayList());
+
+      expect(child.offsetFromParent, const Offset(30, 0));
+      expect(position.maxScrollExtent, 0);
+    });
+
+    test('wide horizontal content scrolls instead of being cut or shrunk', () {
+      final owner = PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(100, 50)),
+      );
+      final position = ScrollPosition(axis: ScrollAxis.horizontal);
+      final child = _FixedBox(const Size(240, 50));
+      owner.root = RenderViewport(
+        position: position,
+        contentAlignment: ScrollContentAlignment.center,
+        child: child,
+      );
+      owner.drawFrame(DisplayList());
+
+      expect(child.size.width, 240);
+      expect(position.maxScrollExtent, 140);
+      expect(child.offsetFromParent, Offset.zero);
+
+      position.jumpTo(70);
+      owner.drawFrame(DisplayList());
+      expect(child.offsetFromParent, const Offset(-70, 0));
+    });
   });
 }

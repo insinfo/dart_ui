@@ -11,8 +11,12 @@
 library;
 
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
+import 'package:dart_ui/src/geometry/offset.dart';
+import 'package:dart_ui/src/geometry/rect.dart';
+import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/rendering/text/glyph_raster.dart';
 import 'package:dart_ui/src/text/typeface.dart';
 import 'package:test/test.dart';
@@ -194,6 +198,178 @@ void main() {
       expect(atOne.left, atZero.left + 1);
       expect(atOne.width, atZero.width);
       expect(_coverageOf(atOne), _coverageOf(atZero));
+    });
+  });
+
+  group('which route a matrix takes', () {
+    // [glyphMasksFit] is the single criterion both sinks import. Everything it
+    // accepts is drawn by blitting a cached mask; everything it rejects is
+    // drawn by filling the outline. A false negative costs a fill; a false
+    // positive costs a wrong picture - so these cases are named one by one
+    // rather than left to a rule of thumb.
+
+    test('the identity and a plain uniform scale take the mask', () {
+      expect(glyphMasksFit(Transform2D.identity), isTrue);
+      expect(glyphMasksFit(const Transform2D.scaling(2, 2)), isTrue);
+      expect(glyphMasksFit(const Transform2D.scaling(1.5, 1.5)), isTrue);
+      // A translation is not part of the criterion at all: the pen carries it,
+      // and a whole-pixel blit can be moved anywhere.
+      expect(glyphMasksFit(const Transform2D(3, 0, 0, 3, -40.5, 12)), isTrue);
+    });
+
+    test('rotation, skew, mirroring and anisotropy take the outline', () {
+      expect(glyphMasksFit(Transform2D.rotation(math.pi / 2)), isFalse,
+          reason: 'even a quarter turn, which lands back on the pixel grid');
+      expect(glyphMasksFit(Transform2D.rotation(0.001)), isFalse);
+      expect(glyphMasksFit(const Transform2D(1, 0, 0.4, 1, 0, 0)), isFalse,
+          reason: 'a horizontal skew - a synthetic italic');
+      expect(glyphMasksFit(const Transform2D.scaling(-1, 1)), isFalse,
+          reason: 'a mirror: no positive scale can express it');
+      expect(glyphMasksFit(const Transform2D.scaling(1, -1)), isFalse);
+      expect(glyphMasksFit(const Transform2D.scaling(2, 3)), isFalse,
+          reason: 'there is no single size to rasterise one mask at');
+      expect(glyphMasksFit(const Transform2D.scaling(0, 0)), isFalse,
+          reason: 'a collapsed matrix has no mask either');
+    });
+
+    test('a scale uniform only to within a rounding error still takes the '
+        'outline', () {
+      // The comparison is exact on purpose. There is no epsilon that is right
+      // at 8 px and at 200 px, and the outline route draws the near-uniform
+      // case correctly at the cost of a fill - which is the safe direction to
+      // be wrong in.
+      const double slightlyOff = 1.0000000000000002;
+      expect(glyphMasksFit(const Transform2D(1, 0, 0, slightlyOff, 0, 0)),
+          isFalse);
+    });
+  });
+
+  group('the outline transform', () {
+    // `glyphOutlineTransform` is the whole of the coordinate change the
+    // outline route makes: font units, y up, from the glyph's own origin, to
+    // device pixels, y down, under an arbitrary affine matrix. Every one of
+    // these tests is a place a sign or a factor going astray produces text
+    // that is upside down, mirrored, or the wrong size - and looks like a font
+    // bug rather than a matrix one.
+
+    test('under the identity it is scale-and-flip about the pen', () {
+      final Transform2D m =
+          glyphOutlineTransform(Transform2D.identity, 0.25, 100, 50);
+
+      // The glyph's origin is the pen.
+      expect(m.transformOffset(Offset.zero), const Offset(100, 50));
+      // A point one em to the right and one em up, in a 1000-upem face at
+      // scale 0.25: 250 px right, and 250 px *up*, which is -y on screen.
+      expect(m.transformOffset(const Offset(1000, 1000)),
+          const Offset(350, -200));
+    });
+
+    test('it agrees with the mask route wherever both are defined', () {
+      // The claim that makes the split safe: on a matrix [glyphMasksFit]
+      // accepts, the general route reduces to exactly the matrix
+      // [GlyphRasterizer.render] builds - `scale(s * k, -s * k)` about the
+      // pen. If these two ever diverged, a glyph would move as an animated
+      // scale crossed the threshold between them.
+      const Transform2D uniform = Transform2D.scaling(3, 3);
+      final Transform2D general = glyphOutlineTransform(uniform, 0.02, 7, 11);
+      const Transform2D mask = Transform2D(0.06, 0, 0, -0.06, 7, 11);
+
+      for (final Offset point in <Offset>[
+        Offset.zero,
+        const Offset(1000, 0),
+        const Offset(0, 700),
+        const Offset(-120, 940),
+      ]) {
+        expect(general.transformOffset(point), mask.transformOffset(point));
+      }
+    });
+
+    test('a quarter turn sends the glyph up the screen, not across it', () {
+      // Transform2D.rotation(pi / 2) maps (x, y) to (-y, x). Composed with the
+      // y flip the glyph already carries, a point *above* the baseline - the
+      // top of a capital - has to end up to the *right* of the pen.
+      final Transform2D m = glyphOutlineTransform(
+        Transform2D.rotation(math.pi / 2),
+        0.05,
+        20,
+        20,
+      );
+
+      final Offset top = m.transformOffset(const Offset(0, 1000));
+      expect(top.dx, closeTo(70, 1e-9),
+          reason: 'the cap height turned into a horizontal offset');
+      expect(top.dy, closeTo(20, 1e-9));
+
+      final Offset right = m.transformOffset(const Offset(1000, 0));
+      expect(right.dx, closeTo(20, 1e-9));
+      expect(right.dy, closeTo(70, 1e-9),
+          reason: 'the advance turned into a vertical one, downward');
+    });
+
+    test('a mirror reverses the winding, which the determinant reports', () {
+      // Not a curiosity: a negative determinant means every contour of the
+      // glyph runs the other way in device space. Non-zero winding is
+      // sign-agnostic and so the glyph still fills - which is why the outline
+      // route can use one rule for both - but a rasteriser that assumed a
+      // positive orientation would empty the letter and fill its counters.
+      final Transform2D upright =
+          glyphOutlineTransform(Transform2D.identity, 0.1, 0, 0);
+      final Transform2D mirrored =
+          glyphOutlineTransform(const Transform2D.scaling(-1, 1), 0.1, 0, 0);
+
+      expect(upright.determinant, lessThan(0),
+          reason: 'the y flip alone already reverses it once');
+      expect(mirrored.determinant, greaterThan(0),
+          reason: 'and the mirror reverses it back');
+    });
+
+    test('the pen is the translation and nothing else moves with it', () {
+      // The layer shift in `cpu_renderer.dart` subtracts a whole-pixel origin
+      // from the pen alone, on the strength of exactly this: a translation
+      // cannot touch the linear part.
+      final Transform2D at0 = glyphOutlineTransform(
+          Transform2D.rotation(0.3), 0.04, 0, 0);
+      final Transform2D at100 = glyphOutlineTransform(
+          Transform2D.rotation(0.3), 0.04, 100, -60);
+
+      expect(at100.a, at0.a);
+      expect(at100.b, at0.b);
+      expect(at100.c, at0.c);
+      expect(at100.d, at0.d);
+      expect(at100.tx, 100);
+      expect(at100.ty, -60);
+    });
+
+    test('a real glyph lands where the matrix says it should', () {
+      // The end-to-end check, on an outline rather than on synthetic points.
+      // Ahem's letter is a solid em box from -0.2 em to 0.8 em; a quarter turn
+      // must swap the extents of its bounding box about the pen.
+      final ScaledTypeface font = ahem.atSize(20);
+      final Rect fontUnits =
+          ahem.outlineOf(ahem.glyphForCodePoint(0x58)).bounds;
+
+      final Rect upright = glyphOutlineTransform(
+        Transform2D.identity,
+        font.scale,
+        0,
+        0,
+      ).transformRect(fontUnits);
+      final Rect turned = glyphOutlineTransform(
+        Transform2D.rotation(math.pi / 2),
+        font.scale,
+        0,
+        0,
+      ).transformRect(fontUnits);
+
+      expect(upright.width, closeTo(20, 1e-6));
+      expect(upright.height, closeTo(20, 1e-6));
+      expect(turned.width, closeTo(upright.height, 1e-6));
+      expect(turned.height, closeTo(upright.width, 1e-6));
+      // Upright the box rises above the baseline: its top is negative. Turned
+      // a quarter turn clockwise on screen, that same edge is now to the
+      // right of the pen.
+      expect(upright.top, closeTo(-16, 1e-6));
+      expect(turned.right, closeTo(16, 1e-6));
     });
   });
 

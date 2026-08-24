@@ -23,6 +23,23 @@
 ///   * the mask is allocated from the glyph's own device-space bounds, so a
 ///     glyph that sits above the baseline (almost all of them) produces a mask
 ///     whose origin is a negative y offset from the pen position.
+///
+/// ## Masks are not the only way a glyph is drawn
+///
+/// A mask is a rectangle of pixels, so it can only be *blitted* - moved by a
+/// whole number of pixels. That serves the case every interface is made of and
+/// nothing else: upright text, scaled uniformly and positively. The moment the
+/// matrix rotates, skews, mirrors or scales the two axes differently, the mask
+/// is the wrong representation, and the two sinks that draw text
+/// (`cpu_renderer.dart` and `gpu/gpu_raster_sink.dart`) fill the glyph's
+/// *outline* under the full matrix instead.
+///
+/// The two functions that decide and describe that split live here, next to
+/// the rasteriser they are about, and both sinks import them rather than
+/// re-deriving the rule: [glyphMasksFit] is the criterion, and
+/// [glyphOutlineTransform] is the matrix the outline route uses. A criterion
+/// copied into two files is exactly how one backend ends up accepting a scene
+/// the other refuses.
 library;
 
 import 'dart:typed_data';
@@ -33,6 +50,70 @@ import '../../geometry/transform2d.dart';
 import '../../text/typeface.dart';
 import '../path/coverage_span_sink.dart';
 import '../path/scanline_filler.dart';
+
+/// Whether a cached, axis-aligned coverage mask can stand in for the glyph
+/// under [transform].
+///
+/// True only for the transform a blit can express: no rotation and no skew
+/// (`b` and `c` are zero), no mirroring (both diagonal terms positive), and
+/// the same factor on both axes, because a mask is rasterised at one size and
+/// stretching it afterwards resamples an antialiased edge - the soft, muddy
+/// text that gives bitmap glyph caches their reputation.
+///
+/// This is the dividing line between the fast path and the general one, and
+/// it is deliberately conservative: everything it rejects is drawn correctly
+/// by the outline route, so a false negative costs time and a false positive
+/// would cost correctness.
+///
+/// Note that `a == d` is an exact comparison. A matrix that is uniform only to
+/// within a rounding error is *not* uniform enough for one mask to serve both
+/// axes, and there is no threshold that is right at every size; the outline
+/// route handles it exactly and costs a fill.
+bool glyphMasksFit(Transform2D transform) =>
+    transform.b == 0 &&
+    transform.c == 0 &&
+    transform.a > 0 &&
+    transform.d > 0 &&
+    transform.a == transform.d;
+
+/// The matrix that maps a glyph's outline, in font units, straight to the
+/// device pixels it covers under an arbitrary affine [deviceTransform].
+///
+/// Three things composed in one matrix, right to left:
+///
+///   1. **font units to text-space pixels, y flipped** - `fontScale` is
+///      [ScaledTypeface.scale], and the negation is the y-up to y-down change
+///      described in the library comment;
+///   2. **the linear part of [deviceTransform]** - rotation, skew, mirroring
+///      and per-axis scale. Only the linear part: the translation is already
+///      carried by the pen;
+///   3. **the pen**, as the translation, in whatever space the caller is
+///      filling into - device pixels, or a layer's own pixels once its origin
+///      has been subtracted.
+///
+/// Composed rather than applied, because [ScanlineFiller.fill] applies a
+/// matrix while it flattens: no transformed copy of the outline is ever
+/// allocated, which is what makes the outline route affordable enough to be a
+/// fallback rather than a refusal.
+///
+/// Under a matrix [glyphMasksFit] accepts this reduces to
+/// `scale(fontScale * k, -fontScale * k)` plus the pen, which is exactly the
+/// matrix [GlyphRasterizer.render] builds - so the two routes agree where they
+/// overlap, by construction rather than by coincidence.
+Transform2D glyphOutlineTransform(
+  Transform2D deviceTransform,
+  double fontScale,
+  double penX,
+  double penY,
+) =>
+    Transform2D(
+      deviceTransform.a * fontScale,
+      deviceTransform.b * fontScale,
+      -deviceTransform.c * fontScale,
+      -deviceTransform.d * fontScale,
+      penX,
+      penY,
+    );
 
 /// A rendered glyph: an 8-bit coverage mask and where to put it.
 ///
@@ -98,12 +179,18 @@ final class GlyphRasterizer {
   /// rasterizing, which is how text avoids snapping every stem to the pixel
   /// grid. It is the caller's job to quantise it - typically to quarters - so
   /// the cache has a bounded number of variants.
+  /// Hinting is asked for here and nowhere else, by passing the pixel size as
+  /// the ppem. A mask is rasterised on the pixel grid, upright and unrotated -
+  /// [glyphMasksFit] is what guarantees it - which is the only situation in
+  /// which grid-fitting a stem to a pixel boundary means anything. The outline
+  /// route in the two sinks deliberately asks for the *unhinted* outline: see
+  /// there, and see `doc/adr/0007`.
   GlyphMask render(
     ScaledTypeface font,
     int glyphId, {
     double subpixelOffsetX = 0,
   }) {
-    final Path outline = font.typeface.outlineOf(glyphId);
+    final Path outline = font.typeface.outlineOf(glyphId, font.pixelSize);
     if (outline.isEmpty) return GlyphMask.empty;
 
     // Font units to device pixels: scale, negate y, then shift by the

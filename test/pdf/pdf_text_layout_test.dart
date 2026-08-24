@@ -78,6 +78,26 @@ void main() {
     expect(rects.single.width, lessThan(fragment.bounds.width));
   });
 
+  test('standard Helvetica selection follows proportional glyph advances', () {
+    final PdfDocumentBuilder builder = PdfDocumentBuilder();
+    builder.addPage(width: 300, height: 100).drawText(
+          'WWWiii',
+          const Offset(30, 40),
+          fontSize: 10,
+        );
+    final PdfPageTextLayout layout = PdfTextExtractor(
+      PdfDocument.fromBytes(builder.build()).getPage(1),
+    ).extract();
+    final PdfTextFragment fragment = layout.fragments.single;
+
+    expect(fragment.characterOffsets, isNotNull);
+    expect(fragment.bounds.width, closeTo(34.98, 0.02));
+    final Rect wide = layout.selectionRects(0, 1).single;
+    final Rect narrow = layout.selectionRects(3, 4).single;
+    expect(wide.width, closeTo(9.44, 0.02));
+    expect(narrow.width, closeTo(2.22, 0.02));
+  });
+
   test('selection joins character fragments into one visual band per line', () {
     const PdfPageTextLayout layout = PdfPageTextLayout(
       pageNumber: 1,

@@ -368,14 +368,32 @@ void main() {
     });
 
     test('density changes control metrics', () {
-      expect(ThemeData.neutralLight.density, ThemeDensity.comfortable);
-      expect(ThemeData.neutralLight.effectiveControlHeight, 28.0);
-      expect(
-        ThemeData.neutralLight
-            .copyWith(density: ThemeDensity.compact)
-            .effectiveControlHeight,
-        closeTo(28.0 * 0.82, 1e-9),
-      );
+      // Three steps now, and the neutral theme sits on the middle one: the
+      // default screen of a desktop framework is a form, not a trading
+      // terminal. Each step is a whole number of pixels on the 4 px grid -
+      // 28 / 32 / 40 - because a control height of 26.24, which is what a
+      // 0.82 multiplier produced, cannot be aligned with anything.
+      expect(ThemeData.neutralLight.density, ThemeDensity.standard);
+      expect(ThemeData.neutralLight.effectiveControlHeight, 32.0);
+      expect(ThemeData.neutralLight.effectiveRowHeight, 28.0);
+      expect(ThemeData.neutralLight.effectiveControlPadding, 12.0);
+
+      final ThemeData compact =
+          ThemeData.neutralLight.copyWith(density: ThemeDensity.compact);
+      expect(compact.effectiveControlHeight, 28.0);
+      expect(compact.effectiveRowHeight, 24.0);
+      expect(compact.effectiveControlPadding, 8.0);
+
+      final ThemeData roomy =
+          ThemeData.neutralLight.copyWith(density: ThemeDensity.comfortable);
+      expect(roomy.effectiveControlHeight, 40.0);
+      expect(roomy.effectiveRowHeight, 36.0);
+      expect(roomy.effectiveControlPadding, 16.0);
+
+      // Type size is deliberately not part of density: a compact theme is one
+      // with tighter chrome, not one with smaller text.
+      expect(compact.fontSize, ThemeData.neutralLight.fontSize);
+      expect(roomy.fontSize, ThemeData.neutralLight.fontSize);
     });
   });
 }

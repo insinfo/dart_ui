@@ -9,10 +9,18 @@ class PdfPage {
   final PdfDict dict;
   final PdfResolver resolver;
 
+  /// Referência indireta do dicionário original da página.
+  ///
+  /// Escritores incrementais (assinaturas e anotações) precisam redefinir o
+  /// objeto sem reescrever o arquivo inteiro. PDFs sintéticos podem não ter
+  /// uma referência, por isso o valor é anulável.
+  final PdfRef? reference;
+
   PdfPage({
     required this.pageNumber,
     required this.dict,
     required this.resolver,
+    this.reference,
   });
 
   /// Dimensões da caixa de corte (/MediaBox) da página.

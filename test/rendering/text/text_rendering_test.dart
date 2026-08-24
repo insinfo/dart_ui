@@ -12,6 +12,7 @@
 library;
 
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dart_ui/src/foundation/diagnostics.dart';
@@ -108,6 +109,38 @@ List<int> _pixelAt(Framebuffer buffer, int x, int y) {
   final int offset = buffer.offsetOf(x, y);
   return buffer.pixels.sublist(offset, offset + 4);
 }
+
+/// The largest per-channel difference between two surfaces of the same size.
+///
+/// The repository's unit for a declared tolerance: "N levels in M pixels", so
+/// a test states what it observed rather than reaching for `closeTo` on an
+/// image.
+int _maxDeviation(Framebuffer a, Framebuffer b) {
+  expect(b.width, a.width);
+  expect(b.height, a.height);
+  var worst = 0;
+  for (var y = 0; y < a.height; y++) {
+    for (var x = 0; x < a.width; x++) {
+      final int left = a.offsetOf(x, y);
+      final int right = b.offsetOf(x, y);
+      for (var channel = 0; channel < 4; channel++) {
+        final int difference =
+            (a.pixels[left + channel] - b.pixels[right + channel]).abs();
+        if (difference > worst) worst = difference;
+      }
+    }
+  }
+  return worst;
+}
+
+/// Rotation by [radians] about ([cx], [cy]) rather than about the origin.
+///
+/// Written as the three-matrix composition instead of a hand-expanded one, so
+/// a reader can check it against the definition rather than against arithmetic.
+Transform2D _rotationAbout(double radians, double cx, double cy) =>
+    Transform2D.translation(cx, cy)
+        .multiply(Transform2D.rotation(radians))
+        .multiply(Transform2D.translation(-cx, -cy));
 
 /// A mask of uniform [coverage], for the parity and clipping assertions that
 /// are about the blit rather than about any particular glyph.
@@ -651,19 +684,182 @@ void main() {
     });
   });
 
-  group('what the CPU renderer refuses', () {
-    test('a rotated transform, rather than drawing upright text', () {
-      expect(
-        () => rasterizeDisplayList(
-          _runList(font, 'X', originX: 10, originY: 42),
-          _surface(),
-          deviceTransform: Transform2D.rotation(0.5),
-          glyphCache: GlyphCache(),
-        ),
-        throwsA(isA<UnsupportedCapabilityError>()),
+  group('text under a transform no cached mask can carry', () {
+    // The group that used to be one test in `what the CPU renderer refuses`.
+    // A mask is a rectangle of pixels and can only be blitted, so anything
+    // that rotates, skews, mirrors or scales the axes differently now fills
+    // the glyph's outline through the same `ScanlineFiller` a path uses.
+    //
+    // Ahem is what makes the assertions exact here as everywhere else in this
+    // file: its glyph is a solid em box, so the transformed ink is a
+    // transformed rectangle whose corners can be named. At 40 px the box spans
+    // one em to the right of the pen and rises 0.8 em above it, descending 0.2
+    // below - x in [pen.x, pen.x + 40), y in [pen.y - 32, pen.y + 8).
+
+    test('a quarter turn puts the box where the matrix says, not upright', () {
+      // Pen at (24, 24): the upright box is x in [24, 64), y in [-8, 32).
+      // Turned a quarter turn about the surface centre, (x, y) maps to
+      // (96 - y, x), so the box becomes x in (64, 104], y in [24, 64) - and
+      // the 96 px surface keeps the part below x = 96.
+      final Framebuffer surface = _surface();
+      rasterizeDisplayList(
+        _runList(font, 'X', originX: 24, originY: 24),
+        surface,
+        deviceTransform: _rotationAbout(math.pi / 2, 48, 48),
+        glyphCache: GlyphCache(),
       );
+
+      expect(_inkBounds(surface), const Rect.fromLTRB(64, 24, 96, 64));
+      expect(_pixelAt(surface, 70, 30), <int>[0, 0, 0, 255]);
+      expect(_pixelAt(surface, 60, 30), <int>[255, 255, 255, 255],
+          reason: 'upright text would have started at the pen, at x = 24');
     });
 
+    test('a mirror flips the run about the axis, and still fills', () {
+      // scale(-1, 1) about x = 48. The box at x in [24, 64) becomes
+      // x in (32, 72]. A fill rule applied to the untransformed winding would
+      // come out empty - the determinant is negative, so every contour
+      // reverses - which is why this asserts ink and not only its bounds.
+      final Framebuffer surface = _surface();
+      rasterizeDisplayList(
+        _runList(font, 'X', originX: 24, originY: 44),
+        surface,
+        deviceTransform: const Transform2D(-1, 0, 0, 1, 96, 0),
+        glyphCache: GlyphCache(),
+      );
+
+      expect(_inkBounds(surface), const Rect.fromLTRB(32, 12, 72, 52));
+      expect(_pixelAt(surface, 50, 30), <int>[0, 0, 0, 255],
+          reason: 'a mirrored glyph is still a filled glyph');
+    });
+
+    test('a non-uniform scale stretches one axis and not the other', () {
+      // scale(1, 2). The box is 40 by 40 upright; here it stays 40 wide and
+      // becomes 80 tall, from y = 2 * 4 down to y = 2 * 44. One cached mask
+      // cannot be both 40 and 80 tall, which is why this matrix is on the
+      // outline route alongside rotation.
+      final Framebuffer surface = _surface();
+      rasterizeDisplayList(
+        _runList(font, 'X', originX: 24, originY: 36),
+        surface,
+        deviceTransform: const Transform2D.scaling(1, 2),
+        glyphCache: GlyphCache(),
+      );
+
+      expect(_inkBounds(surface), const Rect.fromLTRB(24, 8, 64, 88));
+    });
+
+    test('the cached masks are left alone, because none of them would fit', () {
+      // The cost model, asserted. A rotated run must not admit anything to the
+      // glyph cache: its key is (face, size, glyph, subpixel bucket) with no
+      // room for an angle, so an entry made here would later be handed to an
+      // upright caller.
+      final GlyphCache cache = GlyphCache();
+      rasterizeDisplayList(
+        _runList(font, 'XY', originX: 10, originY: 30),
+        _surface(),
+        deviceTransform: Transform2D.rotation(0.5),
+        glyphCache: cache,
+      );
+
+      expect(cache.entryCount, 0);
+      expect(cache.missCount, 0);
+      expect(cache.hitCount, 0);
+    });
+
+    test('the same glyphs upright still go through the cache', () {
+      // The control for the test above: the split must not have cost the fast
+      // path, which is what every label in every interface takes.
+      final GlyphCache cache = GlyphCache();
+      rasterizeDisplayList(
+        _runList(font, 'XY', originX: 10, originY: 44),
+        _surface(),
+        glyphCache: cache,
+      );
+
+      expect(cache.missCount, greaterThan(0));
+      expect(cache.entryCount, greaterThan(0));
+    });
+
+    test('hinting is asked for upright and never under a rotation', () {
+      // ADR 0004 put a TrueType interpreter in this engine; ADR 0007 says
+      // where it may run. Hinting moves control points onto the *pixel* grid,
+      // in the glyph's own axes - which are the screen's axes only while the
+      // matrix is upright. Under a rotation those axes point somewhere else,
+      // so grid-fitting a stem aligns it to a line the pixels do not run
+      // along, and the stems of one word come out at visibly unequal weights.
+      //
+      // The two routes ask for the outline differently and this is where that
+      // shows: `ScaledTypeface.outlineOf` with a ppem for the mask route,
+      // without one for the outline route. Ahem is used at 16 px because
+      // `Typeface.maxHintedPixelSize` is 24 - the 40 px face the rest of this
+      // file uses is above the size at which hinting applies at all.
+      final Typeface face = _face('ahem.ttf');
+      final ScaledTypeface small = face.atSize(16);
+
+      rasterizeDisplayList(
+        _runList(small, 'X', originX: 10, originY: 40, advance: 16),
+        _surface(),
+        deviceTransform: Transform2D.rotation(0.5),
+        glyphCache: GlyphCache(),
+      );
+      expect(face.cacheSizes.hinted, 0,
+          reason: 'a rotated run must not run the hinting program, and must '
+              'not fill the hinted cache with outlines nothing will use');
+
+      rasterizeDisplayList(
+        _runList(small, 'X', originX: 10, originY: 40, advance: 16),
+        _surface(),
+        glyphCache: GlyphCache(),
+      );
+      expect(face.cacheSizes.hinted, 1,
+          reason: 'upright and below maxHintedPixelSize is exactly the case '
+              'hinting exists for');
+      expect(face.cacheSizes.advances, 0,
+          reason: 'this glyph program does not move the advance; if it ever '
+              'does, layout has to read the hinted value or text is measured '
+              'one way and drawn another');
+    });
+
+    test('a rotated glyph and the same outline as a path agree exactly', () {
+      // The claim that makes the outline route worth taking: text and paths
+      // are the same rasteriser, the same coverage and the same fill rule. Any
+      // divergence at all - a half-pixel offset, a different flatten
+      // tolerance, a fill rule that differs - shows up here as a difference.
+      //
+      // Declared tolerance: 0 levels, on every pixel of a 96 x 96 surface.
+      final Transform2D rotation = _rotationAbout(0.4, 48, 48);
+
+      final Framebuffer asText = _surface();
+      rasterizeDisplayList(
+        _runList(font, 'X', originX: 20, originY: 60),
+        asText,
+        deviceTransform: rotation,
+        glyphCache: GlyphCache(),
+      );
+
+      // The same glyph as a path, with the font-unit-to-pixel matrix written
+      // out by hand: scale, negate y, translate to the pen. That is
+      // `glyphOutlineTransform` spelled by a human, which is the point - if
+      // the renderer's version disagreed, this is where it would show.
+      final DisplayList list = DisplayList();
+      final int ink = list.addPaint(colorArgb: 0xFF000000);
+      final int outline = list.addPath(font.typeface.outlineOf(boxGlyph));
+      list
+        ..save()
+        ..transform(font.scale, 0, 0, -font.scale, 20, 60)
+        ..drawPath(outline, ink)
+        ..restore();
+      final Framebuffer asPath = _surface();
+      rasterizeDisplayList(list, asPath, deviceTransform: rotation);
+
+      expect(_inkBounds(asText), isNotNull,
+          reason: 'a comparison of two blank surfaces proves nothing');
+      expect(_maxDeviation(asText, asPath), 0);
+    });
+  });
+
+  group('what the CPU renderer refuses', () {
     test('a stroke-styled paint, rather than filling the outline', () {
       final DisplayList list = DisplayList();
       final int paint = list.addPaint(

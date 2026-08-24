@@ -209,6 +209,13 @@ final class BuildOwner {
 
   KeyboardEventTarget? get focusedTarget => _keyboardRouter.focusedTarget;
 
+  /// Which keyboard modifiers the last key transition in this window reported.
+  ///
+  /// For the controls that need to know whether Shift was down when a *pointer*
+  /// event arrived - a canvas extending a selection, a grid toggling a row.
+  /// See [KeyboardRouter.heldModifiers] for what it can and cannot answer.
+  Set<KeyModifier> get heldModifiers => _keyboardRouter.heldModifiers;
+
   void requestKeyboardFocus(KeyboardEventTarget target) {
     _throwIfDisposed();
     _keyboardRouter.requestFocus(target);

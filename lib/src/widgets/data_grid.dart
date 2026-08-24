@@ -33,7 +33,6 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/display_list.dart';
-import '../graphics/display_list_geometry.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
@@ -108,7 +107,7 @@ final class DataGrid extends StatefulWidget {
     required this.columns,
     required this.rowCount,
     required this.cellBuilder,
-    this.rowExtent = 24.0,
+    this.rowExtent,
     this.cacheExtent = 48.0,
     this.sort,
     this.onSortChanged,
@@ -126,7 +125,13 @@ final class DataGrid extends StatefulWidget {
   /// [rowCount].
   final Widget Function(BuildContext context, int row, int column) cellBuilder;
 
-  final double rowExtent;
+  /// The height of one row, or null for the theme's.
+  ///
+  /// Null is the right answer for almost every caller: a collection whose rows
+  /// are a number the caller made up is one that ignores the density switch,
+  /// and a window that mixes one of those with a themed one has two row
+  /// rhythms in it.
+  final double? rowExtent;
   final double cacheExtent;
 
   /// The current sort, or null for unsorted. The grid draws the arrow; the
@@ -245,7 +250,7 @@ final class _DataGridState extends State<DataGrid> {
       index,
       scrollOffset: _position.pixels,
       viewportExtent:
-          _viewportExtent > 0 ? _viewportExtent : widget.rowExtent * 8,
+          _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8,
     );
     if (target != null) _position.jumpTo(target);
   }
@@ -276,8 +281,8 @@ final class _DataGridState extends State<DataGrid> {
 
   int get _rowsPerPage {
     final double viewport =
-        _viewportExtent > 0 ? _viewportExtent : widget.rowExtent * 8;
-    return (viewport / widget.rowExtent).floor().clamp(1, 1 << 20);
+        _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8;
+    return (viewport / _rowExtent).floor().clamp(1, 1 << 20);
   }
 
   bool _handleKey(KeyEvent event) {
@@ -329,9 +334,16 @@ final class _DataGridState extends State<DataGrid> {
     }
   }
 
+  /// The resolved row height, refreshed by every build.
+  ///
+  /// Cached rather than read through `Theme.of` on demand: the keyboard and
+  /// scroll handlers need it outside a build, and an inherited lookup there
+  /// would register a dependency from the wrong phase.
+  double _rowExtent = 28;
+
   ListVirtualization get _virtualization => ListVirtualization(
         itemCount: widget.rowCount,
-        estimatedExtent: widget.rowExtent,
+        estimatedExtent: _rowExtent,
         cacheExtent: widget.cacheExtent,
       );
 
@@ -339,10 +351,11 @@ final class _DataGridState extends State<DataGrid> {
   Widget build(BuildContext context) {
     final TextDirection direction = Directionality.of(context);
     final ThemeData theme = Theme.of(context);
+    _rowExtent = widget.rowExtent ?? theme.effectiveRowHeight;
     final List<double> widths = _widths;
     final ListVirtualization virtualization = _virtualization;
     final double viewport =
-        _viewportExtent > 0 ? _viewportExtent : widget.rowExtent * 8;
+        _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8;
     final RealizedRange range = virtualization.rangeFor(
       scrollOffset: _position.pixels,
       viewportExtent: viewport,
@@ -384,7 +397,7 @@ final class _DataGridState extends State<DataGrid> {
                   _DataGridRowWidget(
                     key: ValueKey<int>(row),
                     index: row,
-                    extent: widget.rowExtent,
+                    extent: _rowExtent,
                     widths: widths,
                     selected: widget.selectedRows.contains(row),
                     textDirection: direction,
@@ -393,7 +406,18 @@ final class _DataGridState extends State<DataGrid> {
                       for (int column = 0;
                           column < widget.columns.length;
                           column++)
-                        widget.cellBuilder(context, row, column),
+                        // A selected row publishes its text colour to the
+                        // cells rather than recolouring them: the cell is the
+                        // application's widget, and the row is the only thing
+                        // that knows it is sitting on a selected ground.
+                        if (widget.selectedRows.contains(row))
+                          DefaultTextStyle(
+                            style: theme.textTheme.bodyMedium
+                                .copyWith(color: theme.onSelection),
+                            child: widget.cellBuilder(context, row, column),
+                          )
+                        else
+                          widget.cellBuilder(context, row, column),
                     ],
                   ),
               ],
@@ -618,10 +642,18 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
+    // The header is a *surface step*, not a box: one fill and one rule along
+    // the bottom, so the grid reads as a table with a heading rather than as
+    // two stacked frames.
     paintFill(list, rect, theme.surface);
+    paintFill(
+      list,
+      Rect.fromLTWH(rect.left, rect.bottom - 1, rect.width, 1),
+      theme.border,
+    );
     list.save();
     list.clipRect(rect.left, rect.top, rect.right, rect.bottom);
-    final double padding = theme.effectiveControlPadding / 2;
+    final double padding = theme.effectiveControlPadding;
     for (int i = 0; i < _columns.length && i < _widths.length; i++) {
       final double start = columnStart(i);
       final double columnWidth = _widths[i];
@@ -630,11 +662,8 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
       paintLabel(
         list,
         _columns[i].title,
-        Offset(
-          (offset.dx + start + padding).roundToDouble(),
-          (offset.dy + (size.height - labelLineHeight) / 2).roundToDouble(),
-        ),
-        theme.foreground,
+        Offset((offset.dx + start + padding).roundToDouble(), labelTopIn(rect)),
+        theme.foregroundSecondary,
         maxWidth: (columnWidth - padding * 2 - arrowSpace)
             .clamp(0.0, double.infinity),
       );
@@ -648,40 +677,48 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
           _sort!.direction,
         );
       }
-      // The boundary line doubles as the visual for the resize grip.
+      // The boundary line doubles as the visual for the resize grip. Drawn in
+      // the subtle colour: a column rule is a division *inside* one surface,
+      // and at the border colour it competes with the grid's own frame.
       final double edge = _textDirection.isRightToLeft ? start : start +
           columnWidth;
-      paintFill(
-        list,
-        Rect.fromLTWH(offset.dx + edge - 1, rect.top + 3, 1, size.height - 6),
-        theme.border,
-      );
+      if (i < _columns.length - 1) {
+        paintFill(
+          list,
+          Rect.fromLTWH(
+            offset.dx + edge - 1,
+            rect.top + Spacing.xs,
+            1,
+            size.height - Spacing.sm,
+          ),
+          theme.borderSubtle,
+        );
+      }
     }
     list.restore();
-    paintBorder(list, rect, theme.border);
   }
 
-  /// A pixel-art triangle: stacked one-pixel rows, exact on whole pixels.
+  /// The sort indicator: a chevron, the same mark the combo box and the tree
+  /// draw, in the accent so the sorted column is findable at a glance.
   void _paintSortArrow(
     DisplayList list,
     Offset center,
     DataGridSortDirection direction,
   ) {
-    const int rows = 4;
-    for (int i = 0; i < rows; i++) {
-      final int halfWidth =
-          direction == DataGridSortDirection.ascending ? i : rows - 1 - i;
-      final double y = (center.dy - rows / 2 + i).roundToDouble();
-      list.drawRectangle(
-        Rect.fromLTWH(
-          (center.dx - halfWidth).roundToDouble(),
-          y,
-          halfWidth * 2 + 1,
-          1,
-        ),
-        list.addPaint(colorArgb: theme.foreground.value, antiAlias: false),
-      );
-    }
+    const double span = 3;
+    final bool up = direction == DataGridSortDirection.ascending;
+    final double x = center.dx.roundToDouble();
+    final double y = center.dy.roundToDouble();
+    paintPolylineMark(
+      list,
+      <Offset>[
+        Offset(x - span, y + (up ? span / 2 : -span / 2)),
+        Offset(x, y + (up ? -span / 2 : span / 2)),
+        Offset(x + span, y + (up ? span / 2 : -span / 2)),
+      ],
+      1.5,
+      theme.accent,
+    );
   }
 
   @override
@@ -809,7 +846,7 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
         ? constraints.maxWidth
         : constraints.minWidth;
     size = constraints.constrain(Size(width, _extent));
-    final double padding = theme.effectiveControlPadding / 2;
+    final double padding = theme.effectiveControlPadding;
     double cumulative = 0;
     for (int i = 0; i < childCount; i++) {
       final double columnWidth = i < _widths.length ? _widths[i] : 0;
@@ -825,7 +862,7 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
           : cumulative;
       child.parentData!.offset = Offset(
         start + padding,
-        ((_extent - child.size.height) / 2).clamp(0.0, _extent),
+        ((_extent - child.size.height) / 2).roundToDouble().clamp(0.0, _extent),
       );
       cumulative += columnWidth;
     }
@@ -842,15 +879,22 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
       size.width,
       size.height,
     );
-    if (_selected) {
-      paintFill(list, rect, theme.selection);
-    } else if (isHovered && enabled) {
-      paintFill(list, rect, theme.surface);
-    } else if (_index.isOdd) {
-      // Zebra from the *row index*, not the realized position, so the
-      // stripes do not flicker as the grid scrolls.
-      paintFill(list, rect, theme.surface);
+    // Rows are separated by a hairline rather than by alternating fills. Zebra
+    // striping is a 1995 answer to rows too tight to tell apart; with a themed
+    // row height the rule is enough, and it survives a selection painted over
+    // it.
+    if (_selected || (isHovered && enabled)) {
+      paintFill(
+        list,
+        rect,
+        _selected ? theme.selection : theme.hoverSurface,
+      );
     }
+    paintFill(
+      list,
+      Rect.fromLTWH(rect.left, rect.bottom - 1, rect.width, 1),
+      theme.borderSubtle,
+    );
     super.paint(list, offset);
   }
 
@@ -1016,13 +1060,14 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surfaceAlternate);
+    final double radius = theme.cornerRadius;
+    paintRoundedFill(list, rect, theme.surfaceAlternate, radius);
     list.save();
     list.clipRect(rect.left, rect.top, rect.right, rect.bottom);
     super.paint(list, offset);
     list.restore();
-    paintBorder(list, rect, theme.border);
-    paintFocusRing(list, rect);
+    paintRoundedBorder(list, rect, theme.border, radius);
+    paintFocusRing(list, rect, radius: radius);
   }
 
   @override

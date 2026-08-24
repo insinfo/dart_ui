@@ -1103,10 +1103,13 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   /// already applied the transform to the pen positions, so only the size is
   /// left to carry.
   ///
-  /// A **rotated or skewed** transform is refused rather than approximated.
-  /// The glyph rasterizer takes a scale and a subpixel offset, so text under
-  /// such a matrix would silently come out upright - a wrong picture that
-  /// looks deliberate.
+  /// A **rotated, skewed, mirrored or non-uniformly scaled** transform leaves
+  /// this route entirely, for [_drawGlyphRunAsOutlines]. A mask is a rectangle
+  /// of pixels and can only be moved by whole pixels; under such a matrix the
+  /// glyph is filled from its outline instead, by the same [ScanlineFiller]
+  /// that fills every path. [glyphMasksFit] is the criterion, and it is shared
+  /// with the GPU sink so that the two backends cannot disagree about which
+  /// run takes which route.
   @override
   void drawDeviceGlyphRun(
     int fontId,
@@ -1145,6 +1148,20 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     // A fully transparent run still costs a rasterization per glyph if it is
     // not stopped here, and invisible text is common: a fade at t = 0.
     if (paint.gradient == null && (argb >> 24) & 0xFF == 0) return;
+
+    if (!glyphMasksFit(transform)) {
+      _drawGlyphRunAsOutlines(
+        resource,
+        deviceOrigin,
+        transform,
+        glyphIds,
+        deviceOffsets,
+        glyphCount,
+        clip,
+        paint,
+      );
+      return;
+    }
 
     final ScaledTypeface font = _deviceFont(resource, transform);
     // Once for the whole run, before any glyph is looked up: the mode is a
@@ -1202,24 +1219,119 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     _rasterizer.restore();
   }
 
+  /// Draws a run by filling each glyph's outline under the full matrix.
+  ///
+  /// The general case, and the one that makes software text agree with GPU
+  /// text under *any* affine transform: rotation, skew, mirroring, per-axis
+  /// scale and any composition of them. Reached only when [glyphMasksFit] says
+  /// a cached mask cannot stand in - which is to say, never in the upright,
+  /// uniformly scaled case that every interface is made of.
+  ///
+  /// ## Why the outline, and not a resampled mask
+  ///
+  /// Rotating a rasterized mask means resampling an antialiased edge, and the
+  /// result is the soft, smeared text bitmap glyph caches are known for -
+  /// visibly worse at 45 degrees than at 0, which is a rendering artefact
+  /// masquerading as a font problem. Filling the outline instead puts text
+  /// through the identical machinery as [drawDevicePath]: the same exact-area
+  /// coverage, the same fill rule, the same span sink, the same gradient
+  /// shader. A rotated letter and a rotated path drawn beside it antialias the
+  /// same way because they *are* the same code.
+  ///
+  /// ## What is cached and what is not
+  ///
+  /// The outline is cached, by [Typeface] itself, keyed by glyph id alone - it
+  /// is the design shape and does not depend on the matrix, so a run spinning
+  /// through a whole turn decodes each glyph once, ever. The rasterized result
+  /// is *not* cached, deliberately: it is a function of the full matrix and of
+  /// the fractional pen, so a cache keyed on those would miss on all but an
+  /// exactly repeated frame while charging every frame for the key.
+  /// [ScanlineFiller.fill] applies the matrix during flattening, so no
+  /// transformed copy of the outline is allocated either.
+  ///
+  /// Cost, stated plainly: one path fill per glyph, against one blit per glyph
+  /// on the fast path. That is the price of a correct picture where the
+  /// alternative was an exception, and only the runs that ask for it pay.
+  ///
+  /// ## Positioning, and why nothing is snapped here
+  ///
+  /// The fast path snaps the pen to a whole pixel and carries the fraction in
+  /// the mask's subpixel bucket. Neither half survives a rotation: "the whole
+  /// pixel to the left" is not a direction the baseline runs in any more, and
+  /// a *horizontal* subpixel offset is not the axis the stems need. So the pen
+  /// is used exactly as it arrives, fraction and all, and the analytic
+  /// coverage places the glyph - which is what the path rasterizer has always
+  /// done for every other shape.
+  ///
+  /// ## Hinting is off here, and that is not a shortcut
+  ///
+  /// The outline is fetched **unhinted** - [Typeface.outlineOf] with no ppem,
+  /// where the mask route passes the pixel size. TrueType hinting is a program
+  /// that moves control points onto the pixel grid; it is written in the
+  /// glyph's own axes and it assumes those axes are the screen's. Under a
+  /// rotation they are not, so grid-fitting a stem aligns it to a line the
+  /// pixels do not run along, and the result is worse than no hinting: stems
+  /// of visibly unequal weight along a rotated baseline, changing as the angle
+  /// animates. Every engine that hints turns it off once the matrix stops
+  /// being upright. See ADR 0007, and ADR 0004 for why hinting is here at all.
+  void _drawGlyphRunAsOutlines(
+    ScaledTypeface font,
+    Offset deviceOrigin,
+    Transform2D transform,
+    Int32List glyphIds,
+    Float32List deviceOffsets,
+    int glyphCount,
+    Rect clip,
+    ReplayPaint paint,
+  ) {
+    // The *interned* face's scale, not a device-scaled one: the matrix below
+    // carries the device scale in its linear part, and folding it into the
+    // font as well would apply it twice.
+    final double fontScale = font.scale;
+    final Typeface face = font.typeface;
+    for (var i = 0; i < glyphCount; i++) {
+      final Path outline = face.outlineOf(glyphIds[i]);
+      if (outline.isEmpty) continue;
+      // Into the layer's own pixels, by subtracting its whole-pixel origin
+      // from the pen only: a translation leaves the linear part alone.
+      //
+      // Non-zero winding, and not as a default taken for convenience.
+      // TrueType and CFF both define a filled glyph by the non-zero winding of
+      // its contours - it is how the counter of an `o` comes out empty - and
+      // even-odd would fill the overlap wherever two contours of a composite
+      // glyph cross.
+      _fill(
+        outline,
+        glyphOutlineTransform(
+          transform,
+          fontScale,
+          deviceOrigin.dx + deviceOffsets[i * 2] - _originX,
+          deviceOrigin.dy + deviceOffsets[i * 2 + 1] - _originY,
+        ),
+        clip,
+        paint,
+        rule: FillRule.nonZero,
+      );
+    }
+  }
+
   /// [font] at the size the device transform asks for.
   ///
   /// Returns [font] itself at unit scale, so the common case - no device pixel
   /// ratio, or one already folded into the layout - allocates nothing and hits
   /// the cache under the key the caller interned.
+  ///
+  /// Only ever called for a matrix [glyphMasksFit] has accepted, so the two
+  /// diagonal terms are equal and positive and there is one scale to take. The
+  /// assert says so rather than trusting the caller, because the failure it
+  /// guards is silent: `transform.a` alone under a non-uniform scale would
+  /// produce upright text at the wrong height.
   ScaledTypeface _deviceFont(ScaledTypeface font, Transform2D transform) {
+    assert(
+      glyphMasksFit(transform),
+      'a cached mask cannot serve $transform; the outline route handles it',
+    );
     final double a = transform.a;
-    final double d = transform.d;
-    if (transform.b != 0 || transform.c != 0 || a <= 0 || d <= 0 || a != d) {
-      throw UnsupportedCapabilityError(
-        backendName: 'cpu',
-        capability: Capability.cpuPresentation,
-        detail: 'text under a rotated, skewed, mirrored or non-uniformly '
-            'scaled transform is not implemented; the glyph rasterizer takes '
-            'a uniform scale, and drawing this run would silently produce '
-            'upright text (transform $transform)',
-      );
-    }
     if (a == 1) return font;
     return ScaledTypeface(font.typeface, font.pixelSize * a);
   }

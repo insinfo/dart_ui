@@ -20,6 +20,7 @@ import '../layout/render_padding.dart' as layout;
 import '../layout/render_stack.dart' as layout;
 import '../layout/render_wrap.dart' as layout;
 import '../rendering/text/font_registry.dart';
+import '../text/paragraph.dart' as paragraph;
 import '../text/shaper.dart';
 import '../text/typeface.dart';
 import 'directionality.dart';
@@ -540,7 +541,11 @@ final class Text extends RenderObjectWidget {
     this.style,
     this.fontSize,
     this.color,
-  });
+    this.softWrap = false,
+    this.maxLines,
+    this.ellipsis,
+  })  : assert(maxLines == null || maxLines > 0),
+        assert(ellipsis == null || maxLines != null);
 
   final String text;
 
@@ -552,6 +557,18 @@ final class Text extends RenderObjectWidget {
 
   /// Overrides [style] and the ambient text style.
   final Color? color;
+
+  /// Uses the paragraph engine to break text at the available width.
+  ///
+  /// False preserves the compact single-line label used by controls. Enable
+  /// it for descriptions, status messages and other prose in responsive UI.
+  final bool softWrap;
+
+  /// Maximum number of wrapped lines, or null for all lines.
+  final int? maxLines;
+
+  /// Text placed at the end when [maxLines] removes content.
+  final String? ellipsis;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
@@ -565,6 +582,10 @@ final class Text extends RenderObjectWidget {
       color: resolved.color ?? const Color(0xFF111111),
       fontFamily: resolved.fontFamily,
       fontWeight: resolved.fontWeight?.value ?? 400,
+      lineHeight: resolved.height,
+      softWrap: softWrap,
+      maxLines: maxLines,
+      ellipsis: ellipsis,
     );
   }
 
@@ -579,7 +600,11 @@ final class Text extends RenderObjectWidget {
       ..fontSize = resolved.fontSize ?? kDefaultUiFontSize
       ..color = resolved.color ?? const Color(0xFF111111)
       ..fontFamily = resolved.fontFamily
-      ..fontWeight = resolved.fontWeight?.value ?? 400;
+      ..fontWeight = resolved.fontWeight?.value ?? 400
+      ..lineHeight = resolved.height
+      ..softWrap = softWrap
+      ..maxLines = maxLines
+      ..ellipsis = ellipsis;
   }
 
   /// Resolves and subscribes to the ambient styles. Render-object elements
@@ -597,13 +622,13 @@ final class Text extends RenderObjectWidget {
   }
 }
 
-/// A single-line text leaf.
+/// A text leaf with an inexpensive single-line path and opt-in paragraph
+/// wrapping.
 ///
-/// One line, no wrapping, no alignment: paragraph layout is section 30's and
-/// this is the leaf everything else is built on. What it does guarantee is that
-/// layout and paint agree - both go through the same shaper, so the box
-/// reserved is the box drawn, and a label that measured one width and painted
-/// another cannot push the error into every container above it.
+/// Compact labels keep using the shaped-run path. Prose with [softWrap]
+/// enabled uses the same paragraph engine as rich document text. Both paths
+/// guarantee that layout and paint use the same shaping result, so a label
+/// cannot measure at one width and paint at another.
 final class RenderText extends RenderBox {
   RenderText(
     String text, {
@@ -611,23 +636,37 @@ final class RenderText extends RenderBox {
     double fontSize = kDefaultUiFontSize,
     String? fontFamily,
     int fontWeight = 400,
+    double? lineHeight,
+    bool softWrap = false,
+    int? maxLines,
+    String? ellipsis,
   })  : _text = text,
         _color = color,
         _fontSize = fontSize,
         _fontFamily = fontFamily,
-        _fontWeight = fontWeight;
+        _fontWeight = fontWeight,
+        _lineHeight = lineHeight,
+        _softWrap = softWrap,
+        _maxLines = maxLines,
+        _ellipsis = ellipsis;
 
   String _text;
   Color _color;
   double _fontSize;
   String? _fontFamily;
   int _fontWeight;
+  double? _lineHeight;
+  bool _softWrap;
+  int? _maxLines;
+  String? _ellipsis;
+  paragraph.Paragraph? _paragraph;
 
   String get text => _text;
 
   set text(String value) {
     if (value == _text) return;
     _text = value;
+    _paragraph = null;
     markNeedsLayout();
   }
 
@@ -644,6 +683,7 @@ final class RenderText extends RenderBox {
   set fontSize(double value) {
     if (value == _fontSize) return;
     _fontSize = value;
+    _paragraph = null;
     markNeedsLayout();
   }
 
@@ -652,6 +692,7 @@ final class RenderText extends RenderBox {
   set fontFamily(String? value) {
     if (value == _fontFamily) return;
     _fontFamily = value;
+    _paragraph = null;
     markNeedsLayout();
   }
 
@@ -660,6 +701,51 @@ final class RenderText extends RenderBox {
   set fontWeight(int value) {
     if (value == _fontWeight) return;
     _fontWeight = value;
+    _paragraph = null;
+    markNeedsLayout();
+  }
+
+  /// Leading as a multiple of [fontSize], or null for the face's own.
+  ///
+  /// Only wrapped text has leading to place - a single line has nothing to be
+  /// spaced from - so this changes the height of a [softWrap] paragraph and
+  /// nothing about a label.
+  double? get lineHeight => _lineHeight;
+
+  set lineHeight(double? value) {
+    if (value == _lineHeight) return;
+    _lineHeight = value;
+    _paragraph = null;
+    markNeedsLayout();
+  }
+
+  bool get softWrap => _softWrap;
+
+  set softWrap(bool value) {
+    if (value == _softWrap) return;
+    _softWrap = value;
+    _paragraph = null;
+    markNeedsLayout();
+  }
+
+  int? get maxLines => _maxLines;
+
+  set maxLines(int? value) {
+    if (value == _maxLines) return;
+    if (value != null && value <= 0) {
+      throw ArgumentError.value(value, 'maxLines', 'must be positive');
+    }
+    _maxLines = value;
+    _paragraph = null;
+    markNeedsLayout();
+  }
+
+  String? get ellipsis => _ellipsis;
+
+  set ellipsis(String? value) {
+    if (value == _ellipsis) return;
+    _ellipsis = value;
+    _paragraph = null;
     markNeedsLayout();
   }
 
@@ -687,31 +773,77 @@ final class RenderText extends RenderBox {
 
   @override
   void performLayout() {
-    size = constraints.constrain(_naturalSize);
+    final ScaledTypeface? face = font;
+    if (!_softWrap || face == null) {
+      _paragraph = null;
+      size = constraints.constrain(_naturalSize);
+      return;
+    }
+    _paragraph = uiTextPainter.layout(
+      _text,
+      face,
+      maxWidth:
+          constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity,
+      style: paragraph.ParagraphStyle(
+        maxLines: _maxLines,
+        ellipsis: _ellipsis,
+        heightMultiplier: _lineHeight ?? 1.0,
+      ),
+    );
+    size = constraints.constrain(_paragraph!.size);
   }
 
   // --- intrinsics ---------------------------------------------------------
   //
-  // Minimum and maximum are the same number, and that is not laziness. This
-  // node does not wrap: whatever width it is given, it lays out the whole
-  // string on one line. Reporting a smaller minimum would be a lie a parent
-  // acts on - a grid column would size itself to the "longest word", this node
-  // would then draw the whole line anyway, and the text would be clipped by
-  // `paint` below with no way to tell from the layout that anything was wrong.
-  // A shrinkable minimum becomes correct on the day this node wraps, and not a
-  // moment sooner; it belongs with the paragraph node of section 30.
+  // The default single-line path reports its full shaped width. Wrapped text
+  // delegates intrinsic measurements to paragraph layout, keeping parent
+  // sizing consistent with the lines that will actually be painted.
 
   @override
-  double computeMinIntrinsicWidth(double height) => _naturalSize.width;
+  double computeMinIntrinsicWidth(double height) {
+    final ScaledTypeface? face = font;
+    if (!_softWrap || face == null) return _naturalSize.width;
+    return uiTextPainter
+        .layout(
+          _text,
+          face,
+          maxWidth: 0,
+          style: paragraph.ParagraphStyle(
+            maxLines: _maxLines,
+            ellipsis: _ellipsis,
+            heightMultiplier: _lineHeight ?? 1.0,
+          ),
+        )
+        .size
+        .width;
+  }
 
   @override
   double computeMaxIntrinsicWidth(double height) => _naturalSize.width;
 
   @override
-  double computeMinIntrinsicHeight(double width) => _naturalSize.height;
+  double computeMinIntrinsicHeight(double width) => _intrinsicHeightFor(width);
 
   @override
-  double computeMaxIntrinsicHeight(double width) => _naturalSize.height;
+  double computeMaxIntrinsicHeight(double width) => _intrinsicHeightFor(width);
+
+  double _intrinsicHeightFor(double width) {
+    final ScaledTypeface? face = font;
+    if (!_softWrap || face == null) return _naturalSize.height;
+    return uiTextPainter
+        .layout(
+          _text,
+          face,
+          maxWidth: width.isFinite ? width : double.infinity,
+          style: paragraph.ParagraphStyle(
+            maxLines: _maxLines,
+            ellipsis: _ellipsis,
+            heightMultiplier: _lineHeight ?? 1.0,
+          ),
+        )
+        .size
+        .height;
+  }
 
   /// The face's ascent: the distance from the top of the line box down to the
   /// line the letters sit on. `paint` below draws the run at exactly this
@@ -739,6 +871,21 @@ final class RenderText extends RenderBox {
     final ScaledTypeface? face = font;
     if (_text.isEmpty || face == null) return;
     final int paint = list.addPaint(colorArgb: _color.value, antiAlias: true);
+    final laidOut = _paragraph;
+    if (_softWrap && laidOut != null) {
+      final bool clip =
+          laidOut.size.width > size.width || laidOut.size.height > size.height;
+      if (clip) {
+        list
+          ..save()
+          ..clipRectangle(
+            Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height),
+          );
+      }
+      uiTextPainter.paintParagraph(list, laidOut, offset, paint);
+      if (clip) list.restore();
+      return;
+    }
     final GlyphRun run = uiTextPainter.shaper.shape(_text, face);
     // Clipped to the box layout gave it, which may be narrower than the text
     // asked for: a constrained parent must not have text spill out of it.

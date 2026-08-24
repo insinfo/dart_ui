@@ -23,7 +23,6 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/display_list.dart';
-import '../graphics/display_list_geometry.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
 import 'control.dart';
@@ -265,7 +264,12 @@ final class RenderNumberBox extends RenderBox
     with ControlBehavior
     implements TextInputTarget {
   /// The width of the spin-button column.
-  static const double spinExtent = 18;
+  /// The width of the spin-button column.
+  ///
+  /// Two thirds of the control, so the two little chevrons stay a comfortable
+  /// pointer target as the density changes instead of staying 18 px forever.
+  double get spinExtent =>
+      (theme.effectiveControlHeight * 0.66).roundToDouble();
 
   String _text = '';
   bool _editing = false;
@@ -324,7 +328,7 @@ final class RenderNumberBox extends RenderBox
 
   @override
   void performLayout() => size = constraints.constrain(
-        Size(120, theme.effectiveControlHeight),
+        Size(128, theme.effectiveControlHeight),
       );
 
   @override
@@ -364,23 +368,37 @@ final class RenderNumberBox extends RenderBox
       size.width,
       size.height,
     );
-    paintFill(
+    final double radius = theme.cornerRadius;
+    paintRoundedFill(
       list,
       rect,
       enabled ? theme.surfaceAlternate : theme.disabledSurface,
+      radius,
     );
-    paintBorder(list, rect, hasFocus ? theme.accent : theme.border);
+    paintRoundedBorder(
+      list,
+      rect,
+      !enabled
+          ? theme.disabledForeground
+          : hasFocus
+              ? theme.accent
+              : isHovered
+                  ? theme.foregroundSecondary
+                  : theme.borderStrong,
+      radius,
+      width: hasFocus ? 1.5 : 1,
+    );
 
-    final double padding = theme.effectiveControlPadding / 2;
+    final double padding = theme.effectiveControlPadding;
+    // One padding, not two: the spin column already carries its own air on the
+    // side it sits on, and charging the text for it as well is what made a
+    // narrow spin box clip "297.0" into "297.(".
     final double textWidth =
-        (size.width - spinExtent - padding * 2).clamp(0.0, double.infinity);
+        (size.width - spinExtent - padding).clamp(0.0, double.infinity);
     paintLabel(
       list,
       _text,
-      Offset(
-        (rect.left + padding).roundToDouble(),
-        (rect.top + (size.height - labelLineHeight) / 2).roundToDouble(),
-      ),
+      Offset((rect.left + padding).roundToDouble(), labelTopIn(rect)),
       foregroundColor(),
       maxWidth: textWidth,
     );
@@ -403,33 +421,36 @@ final class RenderNumberBox extends RenderBox
 
     _paintSpinButton(list, _incrementRect.shift(offset), up: true);
     _paintSpinButton(list, _decrementRect.shift(offset), up: false);
-    paintFocusRing(list, rect);
+    paintFocusRing(list, rect, radius: radius);
   }
 
   void _paintSpinButton(DisplayList list, Rect rect, {required bool up}) {
     final bool armed = enabled && (up ? _canIncrement : _canDecrement);
-    paintFill(list, rect, theme.surface);
-    paintBorder(list, rect, theme.border);
-    // A pixel-art chevron: stacked one-pixel rows on exact coordinates.
-    const int rows = 3;
-    final double centerX = rect.left + rect.width / 2;
-    final double centerY = rect.top + rect.height / 2;
-    for (int i = 0; i < rows; i++) {
-      final int halfWidth = up ? rows - 1 - i : i;
-      list.drawRectangle(
-        Rect.fromLTWH(
-          (centerX - halfWidth).roundToDouble(),
-          (centerY - rows / 2 + i).roundToDouble(),
-          halfWidth * 2 + 1,
-          1,
-        ),
-        list.addPaint(
-          colorArgb: (armed ? theme.foreground : theme.disabledForeground)
-              .value,
-          antiAlias: false,
-        ),
+    // No box around the spinner. Two bordered half-height boxes stapled to the
+    // right edge of a field is the 1995 spin control; the two chevrons alone,
+    // on the field's own surface, is what a current one looks like - and the
+    // hit rectangles are unchanged, so nothing gets harder to click.
+    if (isHovered && armed) {
+      paintRoundedFill(
+        list,
+        Rect.fromLTWH(rect.left, rect.top + 1, rect.width - 2, rect.height - 2),
+        theme.hoverSurface,
+        theme.cornerRadiusSmall,
       );
     }
+    const double span = 3;
+    final double centerX = (rect.left + rect.width / 2).roundToDouble();
+    final double centerY = (rect.top + rect.height / 2).roundToDouble();
+    paintPolylineMark(
+      list,
+      <Offset>[
+        Offset(centerX - span, centerY + (up ? span / 2 : -span / 2)),
+        Offset(centerX, centerY + (up ? -span / 2 : span / 2)),
+        Offset(centerX + span, centerY + (up ? span / 2 : -span / 2)),
+      ],
+      1.5,
+      armed ? theme.foregroundSecondary : theme.disabledForeground,
+    );
   }
 
   @override

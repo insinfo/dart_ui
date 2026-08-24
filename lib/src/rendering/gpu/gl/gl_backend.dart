@@ -283,8 +283,14 @@ final class GlRenderDevice
   GlApiTessellatedDriver? _tessellatedDriver;
   TessellatedGlExecutor? _tessellatedExecutor;
 
-  /// True only when the caller explicitly opted in and the current context
-  /// exposed instancing plus the sparse uniforms used by the adapter.
+  /// Whether the sparse executor exists on this device.
+  ///
+  /// The name is a leftover from when it did: sparse strips are no longer an
+  /// experiment on GL and no longer need an opt-in. Under the default
+  /// [GlSparseStripsPolicy.auto] this is true on every context that exposes
+  /// instancing plus the sparse uniforms the adapter uses, and false on the
+  /// rest - so it reports the *driver*, not the caller's request. Only
+  /// [GlSparseStripsPolicy.disabled] makes it false unconditionally.
   bool get experimentalSparseStripsEnabled => _sparseExecutor != null;
 
   /// True only when the caller explicitly enabled approach C and its optional

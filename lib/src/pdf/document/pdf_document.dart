@@ -48,12 +48,20 @@ class PdfDocument {
     if (_catalog == null) return;
     final pagesRoot = _catalog!.getResolved('Pages', _xref);
     if (pagesRoot is PdfDict) {
-      _traversePagesNode(pagesRoot, <String, PdfObject>{});
+      final pagesReference = _catalog!['Pages'];
+      _traversePagesNode(
+        pagesRoot,
+        <String, PdfObject>{},
+        pagesReference is PdfRef ? pagesReference : null,
+      );
     }
   }
 
   void _traversePagesNode(
-      PdfDict node, Map<String, PdfObject> inheritedAttributes) {
+    PdfDict node,
+    Map<String, PdfObject> inheritedAttributes,
+    PdfRef? nodeReference,
+  ) {
     final currentInherited = Map<String, PdfObject>.from(inheritedAttributes);
 
     // Herança de atributos de nós pais (/MediaBox, /CropBox, /Rotate, /Resources)
@@ -69,9 +77,14 @@ class PdfDocument {
       final kids = node.getArray('Kids', _xref);
       if (kids != null) {
         for (var i = 0; i < kids.length; i++) {
+          final kidReference = kids[i];
           final kidObj = kids.getResolved(i, _xref);
           if (kidObj is PdfDict) {
-            _traversePagesNode(kidObj, currentInherited);
+            _traversePagesNode(
+              kidObj,
+              currentInherited,
+              kidReference is PdfRef ? kidReference : null,
+            );
           }
         }
       }
@@ -93,6 +106,7 @@ class PdfDocument {
         pageNumber: pageNumber,
         dict: pageDict,
         resolver: _xref,
+        reference: nodeReference,
       ));
     }
   }

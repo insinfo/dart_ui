@@ -101,6 +101,51 @@ void main() {
     expect(base, 0);
     expect(extent, greaterThan(10));
   });
+
+  test('a click reports page coordinates after undoing preview scale', () {
+    final PdfDocumentBuilder builder = PdfDocumentBuilder();
+    builder.addPage(width: 100, height: 100);
+    final PdfPage page = PdfDocument.fromBytes(builder.build()).getPage(1);
+    Offset? tapped;
+    final BuildOwner owner = BuildOwner(
+      pipelineOwner: PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(200, 200)),
+      ),
+    );
+    addTearDown(owner.dispose);
+    owner.updateRoot(PdfPageView(
+      page: page,
+      scale: 2,
+      onTap: (position) => tapped = position,
+    ));
+    owner.pipelineOwner.flushLayout();
+
+    owner.dispatchPointerEvent(_down(const Offset(80, 60)));
+    owner.dispatchPointerEvent(_up(const Offset(80, 60)));
+
+    expect(tapped, const Offset(40, 30));
+  });
+
+  test('dragging over a page is not mistaken for a click', () {
+    final PdfDocumentBuilder builder = PdfDocumentBuilder();
+    builder.addPage(width: 100, height: 100);
+    final PdfPage page = PdfDocument.fromBytes(builder.build()).getPage(1);
+    var taps = 0;
+    final BuildOwner owner = BuildOwner(
+      pipelineOwner: PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(100, 100)),
+      ),
+    );
+    addTearDown(owner.dispose);
+    owner.updateRoot(PdfPageView(page: page, onTap: (_) => taps++));
+    owner.pipelineOwner.flushLayout();
+
+    owner.dispatchPointerEvent(_down(const Offset(20, 20)));
+    owner.dispatchPointerEvent(_move(const Offset(40, 20)));
+    owner.dispatchPointerEvent(_up(const Offset(40, 20)));
+
+    expect(taps, 0);
+  });
 }
 
 const NativeWindowId _window = NativeWindowId(1);

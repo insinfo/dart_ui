@@ -18,15 +18,22 @@ import '../text/shaper.dart' show TextDirection;
 import '../widgets/badge.dart';
 import '../widgets/basic.dart';
 import '../widgets/calendar.dart';
+import '../widgets/combo_box.dart';
 import '../widgets/controls.dart';
 import '../widgets/data_grid.dart';
 import '../widgets/directionality.dart';
+import '../widgets/expander.dart';
 import '../widgets/focus.dart';
 import '../widgets/focus_scope.dart';
+import '../widgets/icon.dart';
+import '../widgets/icon_button.dart';
 import '../widgets/info_bar.dart';
 import '../widgets/list_box.dart';
 import '../widgets/number_box.dart';
+import '../widgets/phosphor_icons.dart';
+import '../widgets/tabs.dart';
 import '../widgets/theme.dart';
+import '../widgets/toolbar.dart';
 import '../widgets/tree_view.dart';
 import '../widgets/widget.dart';
 
@@ -115,12 +122,15 @@ final class GalleryState extends State<Gallery> {
           child: ColoredBox(
             color: widget.theme.surface,
             child: Padding(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(Spacing.md),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  const Text('Dart UI Gallery'),
-                  const SizedBox(height: 6),
+                  Text(
+                    'Dart UI Gallery',
+                    style: widget.theme.textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: Spacing.md),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: <Widget>[
@@ -132,9 +142,9 @@ final class GalleryState extends State<Gallery> {
                           _refresh();
                         },
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: Spacing.sm),
                       const Button(label: 'Disabled'),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: Spacing.sm),
                       ToggleButton(
                         label: 'Toggle',
                         value: model.switched,
@@ -145,7 +155,7 @@ final class GalleryState extends State<Gallery> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   Row(
                     children: <Widget>[
                       CheckBox(
@@ -157,7 +167,7 @@ final class GalleryState extends State<Gallery> {
                           _refresh();
                         },
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: Spacing.md),
                       Switch(
                         label: 'Switch',
                         value: model.switched,
@@ -168,7 +178,7 @@ final class GalleryState extends State<Gallery> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   Row(
                     children: <Widget>[
                       for (final String option in <String>[
@@ -177,7 +187,7 @@ final class GalleryState extends State<Gallery> {
                         'High'
                       ])
                         Padding(
-                          padding: const EdgeInsets.only(right: 10),
+                          padding: const EdgeInsets.only(right: Spacing.lg),
                           child: Radio<String>(
                             label: option,
                             value: option.toLowerCase(),
@@ -190,7 +200,7 @@ final class GalleryState extends State<Gallery> {
                         ),
                     ],
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   Slider(
                     value: model.sliderValue,
                     onChanged: (double value) {
@@ -198,15 +208,17 @@ final class GalleryState extends State<Gallery> {
                       _refresh();
                     },
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: Spacing.xs),
                   ProgressBar(value: model.sliderValue),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   TextField(controller: model.text, label: 'Name'),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: Spacing.xs),
                   PasswordField(controller: model.password, label: 'Secret'),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   SizedBox(
-                    height: 90,
+                    // Whole rows: a list that ends mid-row looks like a bug in
+                    // the scroll position rather than the edge of a box.
+                    height: widget.theme.effectiveRowHeight * 4 + 2,
                     child: ListBox(
                       itemCount: GalleryModel.listItemCount,
                       controller: model.listScroll,
@@ -219,7 +231,7 @@ final class GalleryState extends State<Gallery> {
                           Text('Item $index'),
                     ),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   // The context-menu demonstration: something to right-click that
                   // is not a text field, so the generic machinery is exercised by
                   // hand and not only through [TextField]'s own menu.
@@ -244,7 +256,7 @@ final class GalleryState extends State<Gallery> {
                     child: ColoredBox(
                       color: widget.theme.surfaceAlternate,
                       child: Padding(
-                        padding: const EdgeInsets.all(6),
+                        padding: const EdgeInsets.all(Spacing.sm),
                         child: Text(
                           model.lastContextCommand.isEmpty
                               ? 'Right-click here (or in a field)'
@@ -253,7 +265,7 @@ final class GalleryState extends State<Gallery> {
                       ),
                     ),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   if (model.menuVisible)
                     Menu(items: <MenuItem>[
                       MenuItem(
@@ -421,14 +433,17 @@ final class DataGalleryState extends State<DataGallery> {
           child: ColoredBox(
             color: widget.theme.surface,
             child: Padding(
-              padding: const EdgeInsets.all(8),
+              padding: const EdgeInsets.all(Spacing.md),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
-                  const Text('Data controls'),
-                  const SizedBox(height: 6),
+                  Text(
+                    'Data controls',
+                    style: widget.theme.textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: Spacing.md),
                   SizedBox(
-                    height: 96,
+                    height: widget.theme.effectiveRowHeight * 4 + 2,
                     child: TreeView(
                       nodes: DataGalleryModel.treeNodes,
                       controller: model.treeScroll,
@@ -448,9 +463,11 @@ final class DataGalleryState extends State<DataGallery> {
                       },
                     ),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   SizedBox(
-                    height: 110,
+                    height: widget.theme.effectiveControlHeight +
+                        widget.theme.effectiveRowHeight * 3 +
+                        2,
                     child: DataGrid(
                       columns: const <DataGridColumn>[
                         DataGridColumn(title: 'Name', width: 140),
@@ -483,7 +500,7 @@ final class DataGalleryState extends State<DataGallery> {
                       }),
                     ),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: <Widget>[
@@ -496,7 +513,7 @@ final class DataGalleryState extends State<DataGallery> {
                           _refresh();
                         },
                       ),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: Spacing.sm),
                       DatePicker(
                         selectedDate: model.date,
                         onDateSelected: (DateTime date) {
@@ -511,7 +528,7 @@ final class DataGalleryState extends State<DataGallery> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   if (model.infoBarVisible)
                     InfoBar(
                       title: 'Heads up',
@@ -522,15 +539,15 @@ final class DataGalleryState extends State<DataGallery> {
                         _refresh();
                       },
                     ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: <Widget>[
                       const Badge(label: '3'),
-                      const SizedBox(width: 8),
+                      const SizedBox(width: Spacing.sm),
                       for (final String tag in model.tags.split(', '))
                         Padding(
-                          padding: const EdgeInsets.only(right: 6),
+                          padding: const EdgeInsets.only(right: Spacing.sm),
                           child: Chip(
                             label: tag,
                             onDeleted: () {
@@ -545,7 +562,7 @@ final class DataGalleryState extends State<DataGallery> {
                       const Avatar(initials: 'DU'),
                     ],
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: Spacing.sm),
                   const Card(child: Text('Card content')),
                 ],
               ),
@@ -556,4 +573,234 @@ final class DataGalleryState extends State<DataGallery> {
       ),
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// The chrome gallery: the third page
+// ---------------------------------------------------------------------------
+
+/// State for the application-chrome controls: bars, tabs, drop-downs,
+/// disclosure and the date grid.
+///
+/// A third page for the same reason [DataGalleryModel] is a second one: these
+/// controls were the ones no page pictured, which is exactly how a toolbar
+/// ended up 60 px tall in a theme whose controls are 28, and how a combo box
+/// kept a 1995 solid triangle for a chevron. A control with no picture has no
+/// design review.
+final class ChromeGalleryModel {
+  ChromeGalleryModel();
+
+  String unit = 'mm';
+  int tab = 0;
+  bool expanded = true;
+  bool bold = true;
+  bool italic = false;
+  DateTime month = DateTime(2026, 3);
+  DateTime? day = DateTime(2026, 3, 18);
+
+  final ComboBoxOverlay overlay = ComboBoxOverlay();
+}
+
+/// The chrome page: a toolbar, a tab strip, a drop-down, an expander, a menu
+/// and a calendar, at whatever theme and density the caller passes.
+final class ChromeGallery extends StatefulWidget {
+  const ChromeGallery({
+    super.key,
+    required this.model,
+    this.theme = ThemeData.neutralLight,
+  });
+
+  final ChromeGalleryModel model;
+  final ThemeData theme;
+
+  @override
+  State<ChromeGallery> createState() => ChromeGalleryState();
+}
+
+final class ChromeGalleryState extends State<ChromeGallery> {
+  final FocusScopeNode _scope = FocusScopeNode(debugLabel: 'chrome-gallery');
+
+  /// Exposed for keyboard-only tests, exactly like [GalleryState.scope].
+  FocusScopeNode get scope => _scope;
+
+  void _refresh() => setState(() {});
+
+  @override
+  void dispose() {
+    _scope.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ChromeGalleryModel model = widget.model;
+    final ThemeData theme = widget.theme;
+    return Directionality(
+      textDirection: TextDirection.leftToRight,
+      child: Theme(
+        data: theme,
+        child: FocusScope(
+          node: _scope,
+          child: ComboBoxScope(
+            overlay: model.overlay,
+            child: ColoredBox(
+              color: theme.surface,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Toolbar(
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: <Widget>[
+                        ToolbarGroup(
+                          children: <Widget>[
+                            IconButton(
+                              icon: const Icon(PhosphorIcons.filePlus),
+                              tooltip: 'New',
+                              onPressed: _refresh,
+                            ),
+                            IconButton(
+                              icon: const Icon(PhosphorIcons.folderOpen),
+                              tooltip: 'Open',
+                              onPressed: _refresh,
+                            ),
+                            const IconButton(
+                              icon: Icon(PhosphorIcons.floppyDisk),
+                              tooltip: 'Save',
+                              onPressed: null,
+                            ),
+                          ],
+                        ),
+                        const ToolbarDivider(),
+                        ToolbarGroup(
+                          children: <Widget>[
+                            IconButton(
+                              icon: const Icon(PhosphorIcons.textB),
+                              tooltip: 'Bold',
+                              isSelected: model.bold,
+                              onPressed: () {
+                                model.bold = !model.bold;
+                                _refresh();
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(PhosphorIcons.textItalic),
+                              tooltip: 'Italic',
+                              isSelected: model.italic,
+                              onPressed: () {
+                                model.italic = !model.italic;
+                                _refresh();
+                              },
+                            ),
+                          ],
+                        ),
+                        const ToolbarDivider(),
+                        SizedBox(
+                          width: 96,
+                          child: ComboBox<String>(
+                            label: 'Units',
+                            items: const <ComboBoxItem<String>>[
+                              ComboBoxItem<String>(value: 'mm', label: 'mm'),
+                              ComboBoxItem<String>(value: 'cm', label: 'cm'),
+                              ComboBoxItem<String>(value: 'in', label: 'in'),
+                            ],
+                            value: model.unit,
+                            onChanged: (String value) {
+                              model.unit = value;
+                              _refresh();
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  SizedBox(
+                    height: theme.effectiveControlHeight * 3,
+                    child: Tabs(
+                      selectedIndex: model.tab,
+                      onSelected: (int index) {
+                        model.tab = index;
+                        _refresh();
+                      },
+                      tabs: const <TabItem>[
+                        TabItem(label: 'Document', content: _TabBody('Document')),
+                        TabItem(label: 'Page', content: _TabBody('Page')),
+                        TabItem(label: 'Export', content: _TabBody('Export')),
+                      ],
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.all(Spacing.md),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Expander(
+                          header: 'Appearance',
+                          expanded: model.expanded,
+                          onExpandedChanged: (bool value) {
+                            model.expanded = value;
+                            _refresh();
+                          },
+                          content: const Padding(
+                            padding: EdgeInsets.symmetric(
+                              vertical: Spacing.sm,
+                            ),
+                            child: Text('Everything inside a disclosure.'),
+                          ),
+                        ),
+                        const SizedBox(height: Spacing.md),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: <Widget>[
+                            Menu(items: <MenuItem>[
+                              MenuItem(
+                                label: 'Undo',
+                                shortcut: 'Ctrl+Z',
+                                onSelected: _refresh,
+                              ),
+                              MenuItem(
+                                label: 'Redo',
+                                shortcut: 'Ctrl+Y',
+                                onSelected: _refresh,
+                              ),
+                              const MenuItem.separator(),
+                              const MenuItem(label: 'Paste', enabled: false),
+                            ]),
+                            const SizedBox(width: Spacing.lg),
+                            Calendar(
+                              initialMonth: model.month,
+                              selectedDate: model.day,
+                              today: DateTime(2026, 3, 23),
+                              onDateSelected: (DateTime date) {
+                                model.day = date;
+                                _refresh();
+                              },
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The body of one chrome-gallery tab: enough to see that the strip switched.
+final class _TabBody extends StatelessWidget {
+  const _TabBody(this.name);
+
+  final String name;
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: const EdgeInsets.all(Spacing.md),
+        child: Text('$name settings'),
+      );
 }

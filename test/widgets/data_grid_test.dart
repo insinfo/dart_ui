@@ -39,9 +39,14 @@ void main() {
       final RenderDataGridRow row = harness.body.childAt(0) as RenderDataGridRow;
       expect(row.childCount, 2);
       // Column 0 starts at 0 and column 1 at 100; cells sit inside their
-      // column by half the control padding (4 px on the neutral theme).
-      expect(row.childAt(0).offsetFromParent.dx, 4);
-      expect(row.childAt(1).offsetFromParent.dx, 104);
+      // column by the theme's full control padding (12 px on the neutral
+      // theme). It was half of it, which is how a grid cell ended up with
+      // less air around its text than every other control in the window - the
+      // "half padding" idiom was a fourth spacing value that no token named.
+      const double padding = 12.0;
+      expect(padding, ThemeData.neutralLight.effectiveControlPadding);
+      expect(row.childAt(0).offsetFromParent.dx, padding);
+      expect(row.childAt(1).offsetFromParent.dx, 100 + padding);
       harness.dispose();
     });
   });

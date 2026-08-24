@@ -4,16 +4,185 @@ Este documento descreve **o que existe em `lib/`**, não o alvo. O alvo é o
 [roteiro](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md); quando os dois
 divergirem, o roteiro descreve a intenção e este arquivo descreve o código.
 
-**Estado em 15 de agosto de 2026:** onze camadas comuns, **~2.400 testes** e
+**Estado em 23 de agosto de 2026:** onze camadas comuns, **5.562 testes** e
 gate próprio rodando em push nas três plataformas (formato, análise, testes e
 compilação AOT). O caminho **Widget → Element → RenderBox → layout → display
-list → rasterização → framebuffer** está fechado e testado, e agora existe em
-duas implementações: CPU e OpenGL. No Windows, o `Win32CpuPresenter` continua o
-caminho até uma DIB e `BitBlt`, sem cópia intermediária do frame; o
-`GlWindowTarget` apresenta por swap de buffers, sem readback por frame.
+list → rasterização → framebuffer** está fechado e testado, e existe agora em
+sete implementações de renderização: CPU, OpenGL, Direct3D 11, Direct3D 12,
+Direct2D, Vulkan e Metal, mais WebGL2 e WebGPU no navegador — em graus de
+maturidade muito diferentes, que a tabela da seção seguinte separa. No Windows,
+o `Win32CpuPresenter` continua o caminho até uma DIB e `BitBlt`, sem cópia
+intermediária do frame; o `GlWindowTarget` apresenta por swap de buffers, sem
+readback por frame.
+
+> A frase acima é a de sempre; a **seção seguinte é a que responde "isso
+> funciona?"** em dois minutos, por plataforma, e nomeia o que não funciona.
+> O restante deste arquivo foi escrito ao longo de agosto e ainda descreve, em
+> alguns pontos, uma árvore anterior; onde ele e o *Estado executivo*
+> divergirem, o executivo é o mais novo e foi conferido no código.
 
 `runApp` monta tudo isso — seleção de backend, janela, superfície, renderer,
 scheduler, árvore e roteamento de input — e é por onde uma aplicação entra.
+
+---
+
+## Estado executivo — 23 de agosto de 2026
+
+Esta é a tabela de dois minutos. Cada célula foi conferida no código nesta data;
+o que não foi conferido está escrito como **não verificado**, e não como sim.
+
+**Medido nesta máquina hoje** (Windows 11 build 26200, Dart 3.6.2, Intel UHD),
+e a primeira coisa a dizer sobre a medição é que **ela se move**: numa passada
+`dart analyze` deu 38 issues, todos `info`; numa passada minutos depois deu 21
+issues incluindo **três `error`** — os três da frente de swapchain do Vulkan
+(`setClientSize`, `physicalSize`, `blendModeSrcOver`). `dart test` roda **5.562
+testes** com 28 `skip`, e o número de falhas também mudou entre duas execuções
+da mesma tarde (5, depois 12).
+
+Isso não é ruído de medição: é o estado real de uma árvore em edição enquanto
+os testes rodam, e o commit anterior (`cbe2497`, "wip: snapshot das frentes em
+andamento") já dizia isso no próprio texto. **Trate a lista nomeada de *Falhas
+abertas*, abaixo, como a medição — não o número.**
+
+### O que funciona hoje, por plataforma
+
+Legenda: **sim** existe e tem teste; **parcial** existe com limite nomeado;
+**não** não existe; **—** não se aplica.
+
+| | Windows (Win32) | Linux X11 | Linux Wayland | macOS (AppKit) | Web | Headless |
+|---|---|---|---|---|---|---|
+| janela + múltiplas janelas | sim | sim | sim | sim | sim (canvas) | sim |
+| apresentação CPU | sim, DIB + `BitBlt` | sim, `PutImage` | sim, `wl_shm` com swapchain de até 3 buffers | sim, IOSurface/CoreGraphics | — | sim, memória |
+| apresentação GPU | sim: D3D11, OpenGL/WGL, Direct2D | parcial: entrada EGL registrada e **nunca executada** | **não** | não (Metal só offscreen) | sim: WebGL2 e WebGPU | — |
+| mouse + roda | sim | sim | sim | sim | parcial | sim (injetado) |
+| **teclado** | sim | **não** | sim (subconjunto xkb) | sim | não verificado | sim |
+| **IME / composição** | sim, IMM32 | **não** | sim, `text-input-v3` | não | não | não |
+| teclas mortas / Compose | o SO compõe | não (tabela pronta, desligada) | sim, quando não há IME | — | o navegador compõe | — |
+| clipboard de texto | sim | **não** | sim | não | não | sim (falso) |
+| drag-and-drop | sim, OLE, dois sentidos | sim, XDND, dois sentidos | sim, `wl_data_device`, dois sentidos | não | não | não |
+| popups | sim | sim | sim, `xdg_positioner` | não verificado | — | sim |
+| DPI por monitor | sim | parcial: escala resolvida no probe | parcial: escala inteira, a maior dos outputs | não verificado | sim, `devicePixelRatio` | sim |
+| decoração de janela | sim, nativa | sim, nativa | parcial: negocia SSD e **não desenha CSD** | sim, nativa | — | — |
+| cursores | sim | sim | sim, parser XCursor próprio, animado | não verificado | sim | — |
+| acessibilidade exposta ao SO | parcial (ponte UIA) | não | não | não | não | não |
+
+A árvore semântica do framework existe e é testada; a linha acima mede outra
+coisa — se algum backend a **expõe ao sistema operacional**. Nenhum reivindica
+`Capability.accessibility` hoje.
+
+### APIs de sistema operacional
+
+| | Windows | Linux | macOS | Web |
+|---|---|---|---|---|
+| `StandardPaths` | sim, `SHGetKnownFolderPath` | sim, XDG + `user-dirs.dirs` | parcial: só convenção, sem `NSSearchPathForDirectoriesInDomains` | lança |
+| `Shell.openUrl` | sim, `ShellExecuteW` | sim, `xdg-open`/`gio`/`kde-open5` | sim, `/usr/bin/open` | sim, `window.open` |
+| `Shell.openPath` / revelar | sim | sim; revelar por D-Bus `FileManager1` | sim, `open -R` | lança |
+| `Trash` | sim, `SHFileOperationW` com `FOF_ALLOWUNDO` | parcial: spec freedesktop, **só a lixeira do home** | parcial: move para `~/.Trash`, sem "Put Back" | lança |
+| `SystemInfo` + tema escuro | sim, registro | sim, `gsettings` | sim, `defaults` | sim, `matchMedia` |
+| `NativeMessageBox` | sim, `MessageBoxW` | parcial: subprocesso `zenity`/`kdialog` | parcial: `osascript` | lança |
+| `FileWatcher` | sim, via `dart:io` | sim, via `dart:io` | sim, via `dart:io` | `isSupported == false` |
+| `FilePicker` (**só abrir**) | sim, `GetOpenFileNameW` | parcial: `zenity`/`kdialog`/`yad`, **sem portal XDG** | parcial: `osascript` | sim, `<input type=file>` |
+| fontes do sistema | sim, varredura executada | varredura escrita, **nunca executada** | varredura escrita, **nunca executada** | não: o arquivo importa `dart:io` |
+
+Não existem, e nenhum deles está começado: diálogo de salvar, seletor de
+diretório, seleção múltipla de arquivos, bandeja do sistema, notificações,
+portais XDG.
+
+### Renderização vetorial acelerada
+
+O documento canônico é
+[`ACELERACAO_GPU_VETORIAL.md`](ACELERACAO_GPU_VETORIAL.md); o que segue é só o
+estado, conferido no código, para quem precisa decidir sem abrir aquele:
+
+- o enum real é `GpuPathStrategy`, com seis valores — `analyticPrimitive`,
+  `coverageAtlas`, `sparseStrips`, `tessellatedMesh`, `stencilThenCover`,
+  `computeTiles`. **A–D são rótulos de documentação**, não identificadores;
+- o seletor `GpuPathStrategySelector.select` decide por **cruzamentos de tile
+  contra área**, com a taxa de câmbio medida em
+  `kDefaultSparseCrossingCostInDensePixels = 50`;
+- **sparse strips estão promovidas no OpenGL**: `GlSparseStripsPolicy.auto` é o
+  padrão de `GlRenderDevice.adoptContext`, e o antigo booleano passou a
+  significar `required`. Em **D3D12, WebGPU e WebGL2 continuam opt-in**
+  (`enableExperimentalSparseStrips = false`);
+- só o OpenGL tem B (tesselação retida) e C (stencil-then-cover); só o D3D12
+  tem D (compute tiles), e ali **o binning é de CPU** — o compute converte em
+  cobertura uma cena que já chegou binada, com supersampling em vez de área
+  analítica;
+- portes existentes do layout sparse: HLSL (D3D12), SPIR-V (Vulkan, emitido em
+  Dart por `SpirvBuilder`), WGSL (WebGPU) e WebGL2. **Não há MSL** — o
+  diretório `metal/` não contém uma linha de sparse.
+
+### Falhas abertas nesta árvore
+
+1. **Vulkan, frente de swapchain/WSI.** `test/rendering/gpu/vulkan/vulkan_window_test.dart`
+   e `.../zz_smoke_test.dart` **não compilam**: pedem `Win32Window.setClientSize`,
+   `Win32Window.physicalSize` e `blendModeSrcOver`, que não existem;
+2. **Camadas.** `test/architecture/layering_test.dart` acusa quatro arestas
+   novas: `geometry/bezier.dart`, `geometry/contour.dart` e
+   `geometry/shaping.dart` importam `graphics`, e
+   `graphics/vector/serialization/vector_pdf_exporter.dart` importa `pdf`. O
+   motor vetorial entrou em `geometry/` e trouxe a dependência junto;
+3. **Identificador de plataforma no núcleo.** O mesmo teste acusa
+   `crypto/windows/windows_certificate_store_platform_io.dart` por nomear
+   `kernel32` fora de `lib/src/backends`;
+4. **Dois testes que tinham ficado velhos, não dois bugs — corrigidos em
+   24/08/2026.** `test/rendering/gpu/gl_device_test.dart` exigia
+   `experimentalSparseStripsEnabled == false` "porque o renderer denso precisa
+   continuar sendo o padrão"; hoje afirma a política real,
+   `GlSparseStripsPolicy.auto` — sparse em todo driver que exporta os símbolos,
+   denso no resto. `test/rendering/text/text_rendering_test.dart` deixou de
+   exigir que o renderer de CPU **recuse** uma transformação rotacionada;
+5. **Editor vetorial.** `test/examples/vector_editor_interaction_test.dart` não
+   compila: pede `SelectionManager.handleGrabPixels` e
+   `VectorCanvasState.isEditingText`, que ainda não existem;
+6. **Regressões de métrica.** `test/widgets/controls_test.dart` (largura de
+   botão 65,28 onde esperava 61,28) e `test/widgets/data_grid_test.dart`
+   (o clique seleciona a linha 1 onde esperava a 2) — deslocamento de uma linha
+   e quatro pixels de padding, ambos em cima de edições em curso;
+7. **Dependente de tempo.** `test/app/application_test.dart` — "native event
+   waits are capped while a spinner is active" — falhou numa execução e passou
+   noutra.
+
+### Limitações que valem repetir
+
+- **X11 não tem teclado.** `x11_events.dart` consome `xcbKeyPress`/`xcbKeyRelease`
+  e os descarta; nenhum `KeyEvent` nem `TextInputEvent` sai dali, e o probe não
+  reivindica `Capability.keyboardInput`. Daí decorrem, e não são decisões
+  independentes: sem IME, sem teclas mortas, sem atalho. X11 também **não tem
+  clipboard** — não existe `x11_clipboard.dart`;
+- **texto rotacionado**: os **três** rasterizadores aceitam. Quando a matriz não
+  cabe em máscara, a CPU e o `GpuRasterSink` caem na rota de contorno
+  (`_drawGlyphRunAsOutlines`) e o **Direct2D** preenche o contorno com
+  `FillGeometry`. O critério (`glyphMasksFit`) e a matriz
+  (`glyphOutlineTransform`) são uma função só, compartilhada pelos três. CPU e
+  OpenGL têm paridade de desvio 0; o Direct2D, que usa o rasterizador do
+  `d2d1.dll`, tem tolerância declarada e medida;
+- Wayland **não tem GPU** — nem EGL, nem `linux-dmabuf`, nem Vulkan. Também não
+  tem touch, escala fracionária, seleção primária, ícone de arraste, nem
+  desenho de decoração própria quando o compositor recusa SSD;
+- Metal **não apresenta**: sem `CAMetalLayer`, sem atlas de máscara, sem atlas
+  de glifos e sem pilha de layers, então path, rrect, texto e layer são
+  recusados por nome. `supportsSurface` só aceita `MemorySurfaceDescriptor`;
+- Vulkan tem `VulkanWindowTarget` completo — semáforos por imagem, recriação
+  por `VK_ERROR_OUT_OF_DATE_KHR` — mas **não está no
+  `default_platform_resolver`**: uma aplicação normal não tem como escolhê-lo.
+  As **validation layers não estão instaladas nesta máquina**, então os testes
+  que as pedem provaram pixels, não validação;
+- vídeo é **contrato de plumbing**: `lib/src/graphics/video/` não decodifica
+  nada, e o único allocator (`GlVideoDevice`) não é referenciado por ninguém em
+  `lib/`. `RendererCapabilities.supportsExternalTextures` é falso em todos os
+  backends;
+- o laço de tempo real (`lib/src/app/frame_loop.dart` — `FrameLoopController`,
+  `FrameLoopMode.continuous`, acumulador de passo fixo, telemetria de pacing)
+  existe inteiro e **não é referenciado em lugar nenhum** de `lib/`;
+- `RenderPolicyScope` diz de si mesmo que deveria ser parâmetro: **nenhum
+  backend chama `restrict(...)`** hoje, então a política de renderização é um
+  contrato completo sem consumidor;
+- `ADR 0007` — citado por `cpu_renderer.dart`, `gpu_raster_sink.dart` e
+  `text/glyph_raster.dart` — **passou a existir em 23/08/2026**
+  (`doc/adr/0007-contorno-transformado-para-texto-nao-alinhado.md`), e registra
+  a decisão de preencher o glifo pelo contorno sob a matriz completa quando a
+  máscara em cache não serve, em vez de reamostrar o bitmap.
 
 ## Por que um package só
 
@@ -540,26 +709,31 @@ do `_countClick` já trata.
 
 ## O que ainda não existe
 
-**Vulkan, Metal, Direct3D 11 e DirectComposition** existem apenas nos POCs.
-A ordem aqui é deliberada: OpenGL foi levado a ter janela, layers, atlas e
-paridade com a CPU **antes** de uma segunda API entrar, porque até então
-`MemorySurfaceDescriptor` era o único `NativeSurfaceDescriptor` que existia — uma
-abstração de superfície validada por zero backends com janela real não é uma
-abstração, é um palpite.
+> **Três parágrafos desta seção envelheceram e foram corrigidos em 23 de agosto
+> de 2026.** Ficam registrados com a correção ao lado, e não apagados, porque
+> saber *quando* uma lacuna fechou é parte do valor deste arquivo.
 
-**Recuperação de perda de device.** `GpuDeviceState.recover()` existe e nunca é
-chamado; não há orquestrador que descarte handles, recrie o contexto e repovoe
-recursos, nem `RendererEvent`/`DeviceLost` da seção 23.12. `_checkError` já
-distingue `GL_CONTEXT_LOST` de erro recuperável, então a metade difícil está
-feita.
+**~~Vulkan, Metal, Direct3D 11 e DirectComposition existem apenas nos POCs.~~**
+**Corrigido:** D3D11, D3D12, Direct2D, Vulkan e Metal existem em `lib/`, com
+testes. **DirectComposition continua não existindo.** A ordem original era
+deliberada — OpenGL ganhou janela, layers, atlas e paridade com a CPU **antes**
+de uma segunda API entrar, porque até então `MemorySurfaceDescriptor` era o
+único `NativeSurfaceDescriptor` que existia, e uma abstração de superfície
+validada por zero backends com janela real não é uma abstração, é um palpite.
+O que continua verdadeiro é a **distância entre existir e ser escolhível**:
+`default_platform_resolver.dart` oferece, no Windows, apenas D3D11, OpenGL,
+Direct2D e a DIB. **D3D12 e Vulkan não estão na lista**, e Metal não apresenta.
 
-**Texto na GPU está implementado e não está ligado.** `GpuRasterSink` desenha
-runs de glifos por atlas, e um run vira um batch — testado. Mas nenhum target
-GL constrói um `GpuGlyphAtlas` e o passa ao sink, então por um device GL real
-um run é recusado por nome. É uma ligação de construtor, não um algoritmo. O
-teste diferencial afirma as duas metades — os pixels exatos da CPU e a recusa
-da GPU — de propósito: no dia em que o atlas for ligado, aquela asserção falha
-e obriga a comparação a entrar junto, em vez de a lacuna sumir em silêncio.
+**~~Recuperação de perda de device: `GpuDeviceState.recover()` existe e nunca é
+chamado.~~** **Corrigido:** `lib/src/rendering/gpu/gpu_recovery.dart` é o
+orquestrador que faltava, e `recover()` é chamado pelos backends GL, D3D11,
+WebGL e WebGPU. `_checkError` já distinguia `GL_CONTEXT_LOST` de erro
+recuperável, que era a metade difícil.
+
+**~~Texto na GPU está implementado e não está ligado.~~** **Corrigido:** o
+atlas é construído e passado ao sink em GL (`gl_backend.dart`,
+`gl_window_target.dart`), D3D11, D3D12, WebGL2 e WebGPU. A recusa por nome que
+o teste diferencial afirmava não existe mais nesses caminhos.
 
 **Três divergências CPU↔GPU conhecidas, todas medidas.** Blend mode por
 primitiva foi corrigido e agora concorda com desvio 0 (retângulos `plus`
@@ -654,14 +828,22 @@ qualquer pré-edição, e a acentuação por tecla morta — esta última só at
 teclado XKB do backend chegar, quando é ligar o `ComposeEngine` no mesmo ponto
 em que o Wayland liga.
 
-**Do layout:** Grid, Wrap, medição intrínseca, baselines, `PaintContext`,
-repaint boundaries e damage tracking. O `flushPaint` ainda repercorre a árvore
-inteira.
+**~~Do layout: Grid, Wrap~~** — **corrigido em 23/08/2026:** `RenderGrid`,
+`RenderWrap`, `Grid` e `Wrap` existem. Continuam faltando **medição
+intrínseca, baselines e damage tracking**; `RenderRepaintBoundary` existe
+(`render_proxy_box.dart`), mas o `flushPaint` ainda repercorre a árvore
+inteira, então a fronteira ainda não economiza a caminhada.
 
-**Dos backends:** X11 e macOS têm código escrito que **não foi executado** —
-não há máquina Linux nem Mac aqui. O caminho EGL de janela, `x11_gl_surface.dart`
-e as galerias X11/macOS compilam e analisam limpo, e nada além disso foi
-provado. Trate a primeira execução como bring-up, não como regressão.
+**Dos backends** (revisto em 23/08/2026): X11 **foi** executado sob Xvfb no CI
+(apresentação `PutImage`, depth 24/BGRA8888) e macOS **foi** executado num
+runner `macos-14` arm64. O que continua sem nunca ter rodado é o **caminho EGL
+de janela no X11** — `x11_gl_surface.dart`, cujo teste diz por escrito "has
+never been executed" — e o **backend Wayland contra um compositor real**: toda
+a sua suíte roda contra um compositor falso em memória, e a camada FFI
+(`sendmsg`/`recvmsg`/`SCM_RIGHTS`/`memfd`) não tem cobertura automatizada
+nenhuma. Trate a primeira execução desses dois como bring-up, não como
+regressão.
 
-Pelo roteiro, a ordem imediata é fechar a recuperação de device e o
-`PaintContext` antes de abrir uma segunda API de GPU.
+Pelo roteiro, a ordem imediata deixou de ser "device loss e `PaintContext`":
+device loss fechou, e as frentes abertas hoje estão listadas em *Falhas
+abertas*, acima.

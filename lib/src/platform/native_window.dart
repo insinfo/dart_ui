@@ -258,6 +258,16 @@ abstract interface class EnableableWindow {
   void setEnabled(bool value);
 }
 
+/// A window whose operating-system handle can be passed to native UI.
+///
+/// This is deliberately a capability separate from [NativeWindow]: an HWND,
+/// XID or NSWindow pointer has platform-specific meaning. Callers use it only
+/// as an opaque owner for APIs such as a certificate provider's secure PIN
+/// dialog and must never assume a particular handle type.
+abstract interface class NativeHandleWindow {
+  int get nativeHandle;
+}
+
 /// A live window.
 ///
 /// The two scales are separate on purpose. [renderScale] is what a framebuffer

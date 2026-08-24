@@ -185,15 +185,7 @@ final class RenderButton extends RenderBox with ControlBehavior {
       paintRoundedBorder(
         list,
         rect,
-        enabled ? theme.border : theme.disabledForeground,
-        theme.cornerRadius,
-      );
-    }
-    if (isDefault && enabled) {
-      paintRoundedBorder(
-        list,
-        rect,
-        theme.focusRing,
+        enabled ? theme.borderStrong : theme.disabledForeground,
         theme.cornerRadius,
       );
     }
@@ -338,7 +330,15 @@ final class RenderToggle extends RenderBox with ControlBehavior {
   void Function(bool value)? onChanged;
 
   /// The size of the box or circle drawn beside the label.
-  static const double indicatorExtent = 14.0;
+  ///
+  /// Tied to the type size rather than fixed at 14: a check box beside 13 px
+  /// text and one beside 15 px text are different drawings, and a constant is
+  /// right for exactly one of them. Rounded to an even number so the tick
+  /// inside it lands on the pixel grid.
+  double get indicatorExtent {
+    final double raw = theme.fontSize + 3;
+    return (raw / 2).roundToDouble() * 2;
+  }
 
   String get label => _label;
 
@@ -397,10 +397,11 @@ final class RenderToggle extends RenderBox with ControlBehavior {
     );
     switch (style) {
       case ToggleStyle.button:
-        paintFill(
+        paintRoundedFill(
           list,
           rect,
           _value ? surfaceColor(normal: theme.accentPressed) : surfaceColor(),
+          theme.cornerRadius,
         );
         paintCenteredLabel(list, _label, rect, theme.colorScheme.onPrimary);
         paintFocusRing(list, rect);
@@ -414,94 +415,141 @@ final class RenderToggle extends RenderBox with ControlBehavior {
   }
 
   void _paintIndicator(DisplayList list, Rect rect, {required bool square}) {
-    final double top =
-        (rect.top + (rect.height - indicatorExtent) / 2).roundToDouble();
-    final Rect box =
-        Rect.fromLTWH(rect.left, top, indicatorExtent, indicatorExtent);
-    paintFill(
-        list, box, enabled ? theme.surfaceAlternate : theme.disabledSurface);
-    paintBorder(
+    final double extent = indicatorExtent;
+    final double top = (rect.top + (rect.height - extent) / 2).roundToDouble();
+    final Rect box = Rect.fromLTWH(rect.left, top, extent, extent);
+    // A radio is a circle and a check box is a small rounded square: the shape
+    // is what tells the two apart at a glance, so the radius is derived from
+    // which one this is rather than taken from the theme wholesale.
+    final double radius = square ? theme.cornerRadiusSmall : extent / 2;
+    final bool marked = _value || _indeterminate;
+    // Checked is a *filled* shape and unchecked is an outline. An accent tick
+    // inside a white box is the 1995 drawing of this state; a white tick on an
+    // accent fill is the one that reads from across the room.
+    paintRoundedFill(
       list,
       box,
-      isHovered && enabled ? theme.accentHovered : theme.border,
+      !enabled
+          ? theme.disabledSurface
+          : marked && square
+              ? (isPressed
+                  ? theme.accentPressed
+                  : isHovered
+                      ? theme.accentHovered
+                      : theme.accent)
+              : isHovered
+                  ? theme.hoverSurface
+                  : theme.surfaceAlternate,
+      radius,
     );
+    if (!marked || !square) {
+      paintRoundedBorder(
+        list,
+        box,
+        !enabled
+            ? theme.disabledForeground
+            : marked
+                ? theme.accent
+                : theme.borderStrong,
+        radius,
+        width: marked && !square ? 1.5 : 1,
+      );
+    }
     if (_indeterminate) {
       // A mixed check box is a bar, not a tick: a partially checked group is
       // not the same claim as a checked one and must not look like it.
-      paintFill(
+      paintRoundedFill(
         list,
-        Rect.fromLTWH(box.left + 3, box.top + indicatorExtent / 2 - 1,
-            indicatorExtent - 6, 2),
-        enabled ? theme.accent : theme.disabledForeground,
+        Rect.fromLTWH(
+          (box.left + extent * 0.24).roundToDouble(),
+          (box.top + extent / 2 - 1).roundToDouble(),
+          (extent * 0.52).roundToDouble(),
+          2,
+        ),
+        enabled ? theme.colorScheme.onPrimary : theme.disabledForeground,
+        1,
       );
     } else if (_value) {
-      final Color mark = enabled ? theme.accent : theme.disabledForeground;
+      final Color mark = !enabled
+          ? theme.disabledForeground
+          : square
+              ? theme.colorScheme.onPrimary
+              : theme.accent;
       if (square) {
-        paintFill(
-          list,
-          Rect.fromLTWH(box.left + 3, box.top + 3, indicatorExtent - 6,
-              indicatorExtent - 6),
-          mark,
-        );
+        paintCheckMark(list, box, mark);
       } else {
-        // A circle is still a rect here: the rasterizer owns round shapes, and
-        // an inset square reads correctly at 14 px until it does.
-        paintFill(
+        final double dot = (extent * 0.42 / 2).roundToDouble() * 2;
+        paintRoundedFill(
           list,
-          Rect.fromLTWH(box.left + 4, box.top + 4, indicatorExtent - 8,
-              indicatorExtent - 8),
+          Rect.fromLTWH(
+            (box.left + (extent - dot) / 2).roundToDouble(),
+            (box.top + (extent - dot) / 2).roundToDouble(),
+            dot,
+            dot,
+          ),
           mark,
+          dot / 2,
         );
       }
     }
     paintLabel(
       list,
       _label,
-      Offset(
-        box.right + 6,
-        (rect.top + (rect.height - labelLineHeight) / 2).roundToDouble(),
-      ),
+      Offset(box.right + theme.effectiveGap, labelTopIn(rect)),
       foregroundColor(),
     );
-    paintFocusRing(list, rect);
+    paintFocusRing(list, box, radius: radius);
   }
 
   void _paintSwitch(DisplayList list, Rect rect) {
-    const double width = indicatorExtent * 1.8;
-    final double top =
-        (rect.top + (rect.height - indicatorExtent) / 2).roundToDouble();
-    final Rect track = Rect.fromLTWH(rect.left, top, width, indicatorExtent);
-    paintFill(
+    final double extent = indicatorExtent;
+    final double width = (extent * 1.8 / 2).roundToDouble() * 2;
+    final double top = (rect.top + (rect.height - extent) / 2).roundToDouble();
+    final Rect track = Rect.fromLTWH(rect.left, top, width, extent);
+    // A pill, not a rounded rectangle. The switch is the one control whose
+    // whole meaning is that something slides from one end to the other, and a
+    // square track reads as a progress bar with a block in it.
+    paintRoundedFill(
       list,
       track,
       !enabled
           ? theme.disabledSurface
           : _value
-              ? theme.accent
-              : theme.surface,
+              ? (isHovered ? theme.accentHovered : theme.accent)
+              : (isHovered ? theme.hoverSurface : theme.surfaceAlternate),
+      extent / 2,
     );
-    paintBorder(list, track, theme.border);
-    const double thumb = indicatorExtent - 4;
-    paintFill(
+    if (!_value || !enabled) {
+      paintRoundedBorder(
+        list,
+        track,
+        enabled ? theme.borderStrong : theme.disabledForeground,
+        extent / 2,
+      );
+    }
+    final double thumb = extent - 6;
+    paintRoundedFill(
       list,
       Rect.fromLTWH(
-        _value ? track.right - thumb - 2 : track.left + 2,
-        top + 2,
+        (_value ? track.right - thumb - 3 : track.left + 3).roundToDouble(),
+        (top + 3).roundToDouble(),
         thumb,
         thumb,
       ),
-      enabled ? theme.surfaceAlternate : theme.disabledForeground,
+      !enabled
+          ? theme.disabledForeground
+          : _value
+              ? theme.colorScheme.onPrimary
+              : theme.foregroundSecondary,
+      thumb / 2,
     );
     paintLabel(
       list,
       _label,
-      Offset(
-        track.right + 6,
-        (rect.top + (rect.height - labelLineHeight) / 2).roundToDouble(),
-      ),
+      Offset(track.right + theme.effectiveGap, labelTopIn(rect)),
       foregroundColor(),
     );
-    paintFocusRing(list, rect);
+    paintFocusRing(list, track, radius: extent / 2);
   }
 
   @override
@@ -782,7 +830,7 @@ final class RenderSlider extends RenderBox with ControlBehavior {
         _max = max;
 
   static const double trackThickness = 4.0;
-  static const double thumbExtent = 12.0;
+  static const double thumbExtent = 16.0;
 
   double _value;
   double _min;
@@ -915,23 +963,36 @@ final class RenderSlider extends RenderBox with ControlBehavior {
       size.width,
       trackThickness,
     );
-    paintFill(list, track, enabled ? theme.surface : theme.disabledSurface);
-    paintBorder(list, track, theme.border);
+    // Track, filled portion and thumb are all pills. A slider is the one
+    // control a user drags along a line, and a square end on that line is the
+    // detail that dates the whole screen.
+    const double trackRadius = trackThickness / 2;
+    paintRoundedFill(list, track, theme.disabledSurface, trackRadius);
     final double usable =
         (size.width - thumbExtent).clamp(0.0, double.infinity);
     final double thumbLeft = (offset.dx + usable * normalized).roundToDouble();
-    paintFill(
-      list,
-      Rect.fromLTWH(offset.dx, centerY, thumbLeft - offset.dx, trackThickness),
-      enabled ? theme.accent : theme.disabledForeground,
-    );
+    final double filled = thumbLeft - offset.dx + thumbExtent / 2;
+    if (filled > 0) {
+      paintRoundedFill(
+        list,
+        Rect.fromLTWH(offset.dx, centerY, filled, trackThickness),
+        enabled ? theme.accent : theme.disabledForeground,
+        trackRadius,
+      );
+    }
     final Rect thumb = Rect.fromLTWH(
       thumbLeft,
       (offset.dy + size.height / 2 - thumbExtent / 2).roundToDouble(),
       thumbExtent,
       thumbExtent,
     );
-    paintFill(
+    paintRoundedFill(
+      list,
+      thumb,
+      !enabled ? theme.disabledSurface : theme.surfaceAlternate,
+      thumbExtent / 2,
+    );
+    paintRoundedBorder(
       list,
       thumb,
       !enabled
@@ -941,12 +1002,10 @@ final class RenderSlider extends RenderBox with ControlBehavior {
               : isHovered
                   ? theme.accentHovered
                   : theme.accent,
+      thumbExtent / 2,
+      width: 2,
     );
-    paintBorder(list, thumb, theme.border);
-    paintFocusRing(
-      list,
-      Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height),
-    );
+    paintFocusRing(list, thumb, radius: thumbExtent / 2);
   }
 
   @override
@@ -1023,7 +1082,7 @@ final class RenderProgressBar extends RenderBox with ControlBehavior {
   bool get focusOnPointerDown => false;
 
   @override
-  void performLayout() => size = constraints.constrain(const Size(140, 6));
+  void performLayout() => size = constraints.constrain(const Size(160, 4));
 
   @override
   void paint(DisplayList list, Offset offset) {
@@ -1033,18 +1092,18 @@ final class RenderProgressBar extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surface);
-    paintBorder(list, rect, theme.border);
-    paintFill(
-      list,
-      Rect.fromLTWH(
-        rect.left,
-        rect.top,
-        (rect.width * _value.clamp(0.0, 1.0)).roundToDouble(),
-        rect.height,
-      ),
-      theme.accent,
-    );
+    final double radius = rect.height / 2;
+    paintRoundedFill(list, rect, theme.disabledSurface, radius);
+    final double filled =
+        (rect.width * _value.clamp(0.0, 1.0)).roundToDouble();
+    if (filled > 0) {
+      paintRoundedFill(
+        list,
+        Rect.fromLTWH(rect.left, rect.top, filled, rect.height),
+        theme.accent,
+        radius,
+      );
+    }
   }
 
   @override
@@ -1225,7 +1284,12 @@ final class _DialogRenderWidget extends SingleChildRenderObjectWidget {
 final class RenderDialog extends RenderSingleChildBox with ControlBehavior {
   RenderDialog({required String title, this.onDismiss}) : _title = title;
 
-  static const double titleBarHeight = 22.0;
+  /// The height of the dialog's title band.
+  ///
+  /// Derived, because a title bar shorter than a control is a title bar the
+  /// close button does not fit in - which is how the 22 px this replaced came
+  /// to need a smaller type size than the rest of the dialog.
+  double get titleBarHeight => theme.effectiveControlHeight + 8;
 
   String _title;
   void Function()? onDismiss;
@@ -1285,20 +1349,28 @@ final class RenderDialog extends RenderSingleChildBox with ControlBehavior {
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surfaceAlternate);
-    paintBorder(list, rect, theme.border);
-    final Rect titleBar =
-        Rect.fromLTWH(rect.left, rect.top, rect.width, titleBarHeight);
-    paintFill(list, titleBar, theme.accent);
+    // A dialog floats, so it gets the raised surface and the large radius -
+    // and a title band that is part of the dialog rather than a coloured strip
+    // stapled to the top of it. The accent-filled caption bar is the single
+    // most 1995 thing a dialog can do.
+    paintRoundedFill(list, rect, theme.surfaceRaised, theme.cornerRadiusLarge);
+    paintRoundedBorder(list, rect, theme.border, theme.cornerRadiusLarge);
+    final double bar = titleBarHeight;
+    final Rect titleBar = Rect.fromLTWH(rect.left, rect.top, rect.width, bar);
+    paintFill(
+      list,
+      Rect.fromLTWH(rect.left + 1, titleBar.bottom - 1, rect.width - 2, 1),
+      theme.borderSubtle,
+    );
     paintLabel(
       list,
       _title,
       Offset(
-        rect.left + 4,
-        (titleBar.top + (titleBarHeight - labelLineHeight) / 2).roundToDouble(),
+        rect.left + theme.effectiveControlPadding,
+        labelTopIn(titleBar),
       ),
-      theme.colorScheme.onPrimary,
-      maxWidth: rect.width - 8,
+      theme.foreground,
+      maxWidth: rect.width - theme.effectiveControlPadding * 2,
     );
     super.paint(list, offset);
   }
@@ -1381,7 +1453,9 @@ final class RenderTooltip extends RenderBox with ControlBehavior {
   @override
   void performLayout() {
     final Size text = measureLabel(_message);
-    size = constraints.constrain(Size(text.width + 8, text.height + 6));
+    size = constraints.constrain(
+      Size(text.width + theme.effectiveControlPadding * 2, text.height + 8),
+    );
   }
 
   @override
@@ -1392,8 +1466,8 @@ final class RenderTooltip extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    paintFill(list, rect, theme.surface);
-    paintBorder(list, rect, theme.border);
+    paintRoundedFill(list, rect, theme.surfaceRaised, theme.cornerRadiusSmall);
+    paintRoundedBorder(list, rect, theme.border, theme.cornerRadiusSmall);
     paintCenteredLabel(list, _message, rect, theme.foreground);
   }
 

@@ -312,9 +312,18 @@ void main() {
       expect(harness.highlightedIndex, 19);
       expect(harness.scroll.pixels, greaterThan(0),
           reason: 'a highlight the user cannot see is not a highlight');
-      expect(harness.scroll.pixels, 20 * 22 - (4 * 22 + 2),
-          reason: 'exactly enough to bring the last of twenty rows into view, '
-              'and no further: the list clamps at its own end');
+      // Stated as "the whole content minus one window" rather than as a
+      // literal: the window is the pop-up's height, and that is now the rows
+      // plus the pop-up's own vertical padding rather than the rows plus a
+      // two-pixel border. A literal here would be a copy of that padding.
+      expect(
+        harness.scroll.pixels,
+        harness.scroll.contentExtent - harness.scroll.viewportExtent,
+        reason: 'exactly enough to bring the last of twenty rows into view, '
+            'and no further: the list clamps at its own end',
+      );
+      expect(harness.scroll.contentExtent, 20 * 22,
+          reason: 'twenty rows of the extent this harness asked for');
       harness.dispose();
     });
   });

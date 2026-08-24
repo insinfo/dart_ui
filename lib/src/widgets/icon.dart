@@ -87,6 +87,7 @@ import '../rendering/text/font_registry.dart';
 import '../text/cmap.dart';
 import '../text/shaper.dart';
 import '../text/typeface.dart';
+import 'control.dart';
 import 'directionality.dart';
 import 'element.dart';
 import 'theme.dart';
@@ -439,20 +440,30 @@ final class RenderIcon extends RenderBox {
         family != TablerIcons.fontFamily &&
         family != 'Phosphor') {
       return (
-        penX: offset.dx + (_iconSize - face.advanceOf(glyph)) / 2,
-        baselineY: offset.dy + _baselineOffset,
+        penX:
+            (offset.dx + (_iconSize - face.advanceOf(glyph)) / 2).roundToDouble(),
+        baselineY: (offset.dy + _baselineOffset).roundToDouble(),
       );
     }
     final Rect bounds = face.typeface.outlineOf(glyph).bounds;
     if (bounds.isEmpty) {
       return (
-        penX: offset.dx + (_iconSize - face.advanceOf(glyph)) / 2,
-        baselineY: offset.dy + _baselineOffset,
+        penX:
+            (offset.dx + (_iconSize - face.advanceOf(glyph)) / 2).roundToDouble(),
+        baselineY: (offset.dy + _baselineOffset).roundToDouble(),
       );
     }
+    // Snapped to whole pixels. An icon outline is drawn on a 16- or 24-unit
+    // grid with 1-unit stems, and half a pixel of offset turns a crisp 1 px
+    // stem into two 50 % grey ones - which is what "the icons look blurry"
+    // always turns out to be. Snapping also collapses the glyph cache's
+    // subpixel buckets to one, so every 16 px chevron in a toolbar shares a
+    // single rasterised mask.
     return (
-      penX: offset.dx + _iconSize / 2 - bounds.center.dx * face.scale,
-      baselineY: offset.dy + _iconSize / 2 + bounds.center.dy * face.scale,
+      penX: (offset.dx + _iconSize / 2 - bounds.center.dx * face.scale)
+          .roundToDouble(),
+      baselineY: (offset.dy + _iconSize / 2 + bounds.center.dy * face.scale)
+          .roundToDouble(),
     );
   }
 
@@ -530,6 +541,174 @@ final class RenderIcon extends RenderBox {
   static Int32List _oneGlyph(int glyph) => _glyphScratch..[0] = glyph;
 }
 
+/// Which way a [Chevron] points.
+///
+/// [back] and [forward] follow the reading order and therefore mirror in a
+/// right-to-left interface; [up] and [down] do not, because up is up.
+enum ChevronDirection { up, down, back, forward }
+
+/// A chevron drawn from two strokes, with no font involved.
+///
+/// The framework's controls draw this mark from their own render objects - a
+/// combo box's drop-down marker, a tree's disclosure, a spin box's arrows - and
+/// this is the same mark for chrome that is composed from widgets instead, such
+/// as a calendar's month strip. It exists because the alternative was a
+/// Unicode triangle from [Icons], and `U+25B8` is missing from most interface
+/// faces: the button came out empty on Windows and looked like a bug, which is
+/// how the framework learned that a control's *own* marks cannot depend on
+/// what the system font happens to carry.
+final class Chevron extends RenderObjectWidget {
+  const Chevron({
+    super.key,
+    this.direction = ChevronDirection.down,
+    this.size,
+    this.color,
+    this.thickness = 1.5,
+  });
+
+  final ChevronDirection direction;
+
+  /// The side of the square the mark is centred in; null takes the icon size.
+  final double? size;
+
+  /// Null takes the ambient icon colour, then the theme's secondary text.
+  final Color? color;
+
+  final double thickness;
+
+  @override
+  RenderObjectElement createElement() => RenderObjectElement(this);
+
+  @override
+  RenderChevron createRenderObject(BuildContext context) => RenderChevron()
+    ..direction = _resolved(context)
+    ..extent = _extent(context)
+    ..color = _color(context)
+    ..thickness = thickness;
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant RenderChevron renderObject,
+  ) {
+    renderObject
+      ..direction = _resolved(context)
+      ..extent = _extent(context)
+      ..color = _color(context)
+      ..thickness = thickness;
+  }
+
+  double _extent(BuildContext context) =>
+      size ?? IconTheme.maybeOf(context)?.size ?? Theme.of(context).iconSize;
+
+  Color _color(BuildContext context) =>
+      color ??
+      IconTheme.maybeOf(context)?.color ??
+      Theme.of(context).foregroundSecondary;
+
+  /// The direction after mirroring, which only [back] and [forward] do.
+  ChevronDirection _resolved(BuildContext context) {
+    if (direction == ChevronDirection.up || direction == ChevronDirection.down) {
+      return direction;
+    }
+    final bool rtl = Directionality.maybeOf(context)?.isRightToLeft ?? false;
+    if (!rtl) return direction;
+    return direction == ChevronDirection.back
+        ? ChevronDirection.forward
+        : ChevronDirection.back;
+  }
+}
+
+/// The render object behind [Chevron].
+final class RenderChevron extends RenderBox {
+  ChevronDirection _direction = ChevronDirection.down;
+  double _extent = 16;
+  Color _color = const Color(0xFF5A6472);
+  double _thickness = 1.5;
+
+  ChevronDirection get direction => _direction;
+
+  set direction(ChevronDirection value) {
+    if (value == _direction) return;
+    _direction = value;
+    markNeedsPaint();
+  }
+
+  double get extent => _extent;
+
+  set extent(double value) {
+    if (value == _extent) return;
+    _extent = value;
+    markNeedsLayout();
+  }
+
+  Color get color => _color;
+
+  set color(Color value) {
+    if (value == _color) return;
+    _color = value;
+    markNeedsPaint();
+  }
+
+  double get thickness => _thickness;
+
+  set thickness(double value) {
+    if (value == _thickness) return;
+    _thickness = value;
+    markNeedsPaint();
+  }
+
+  @override
+  void performLayout() => size = constraints.constrain(Size(_extent, _extent));
+
+  @override
+  double computeMinIntrinsicWidth(double height) => _extent;
+
+  @override
+  double computeMaxIntrinsicWidth(double height) => _extent;
+
+  @override
+  double computeMinIntrinsicHeight(double width) => _extent;
+
+  @override
+  double computeMaxIntrinsicHeight(double width) => _extent;
+
+  @override
+  bool hitTestSelf(Offset position) => false;
+
+  @override
+  void paint(DisplayList list, Offset offset) {
+    // Snapped to whole pixels for the same reason [RenderIcon] snaps its pen:
+    // a 1.5 px stroke on a half-pixel centre rasterises as two grey ones.
+    final double cx = (offset.dx + size.width / 2).roundToDouble();
+    final double cy = (offset.dy + size.height / 2).roundToDouble();
+    final double span = (_extent * 0.22).clamp(3.0, 6.0).roundToDouble();
+    final List<Offset> points = switch (_direction) {
+      ChevronDirection.down => <Offset>[
+          Offset(cx - span, cy - span / 2),
+          Offset(cx, cy + span / 2),
+          Offset(cx + span, cy - span / 2),
+        ],
+      ChevronDirection.up => <Offset>[
+          Offset(cx - span, cy + span / 2),
+          Offset(cx, cy - span / 2),
+          Offset(cx + span, cy + span / 2),
+        ],
+      ChevronDirection.forward => <Offset>[
+          Offset(cx - span / 2, cy - span),
+          Offset(cx + span / 2, cy),
+          Offset(cx - span / 2, cy + span),
+        ],
+      ChevronDirection.back => <Offset>[
+          Offset(cx + span / 2, cy - span),
+          Offset(cx - span / 2, cy),
+          Offset(cx + span / 2, cy + span),
+        ],
+    };
+    paintPolyline(list, points, _thickness, _color);
+  }
+}
+
 /// The code points the framework's own controls draw.
 ///
 /// Deliberately small. A framework that ships an icon *set* has to ship the
@@ -599,6 +778,13 @@ abstract final class Icons {
   /// the other way in a right-to-left interface.
   static const IconData chevronForward =
       IconData(0x25B8, matchTextDirection: true);
+
+  /// `U+25C2` BLACK LEFT-POINTING SMALL TRIANGLE - "previous".
+  ///
+  /// Mirrors, for the same reason [chevronForward] does: previous is the way
+  /// the reader came from, which is the right in a right-to-left interface.
+  static const IconData chevronBack =
+      IconData(0x25C2, matchTextDirection: true);
 
   /// `U+25BE` BLACK DOWN-POINTING SMALL TRIANGLE - an expanded disclosure, and
   /// a combo box's drop-down marker. Does not mirror: down is down.

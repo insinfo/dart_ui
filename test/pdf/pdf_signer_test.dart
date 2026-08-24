@@ -1,67 +1,135 @@
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/pdf.dart';
 import 'package:test/test.dart';
 
+import 'signing_fixture.dart';
+
 void main() {
-  group('Assinador Digital PDF e Criptografia SHA-256 em Puro Dart', () {
-    test('PdfSha256 calcula hash criptográfico conhecido', () {
-      // Test vector padrão NIST: "abc" -> ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-      final data = Uint8List.fromList(ascii.encode('abc'));
-      final digest = PdfSha256.digest(data);
-      final hex = digest.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+  group('assinatura PDF incremental', () {
+    test('prepara campo AcroForm conectado à página e ByteRange exato', () {
+      final original = _document();
+      final document = PdfDocument.fromBytes(original);
+      final signer = _signer(document);
+      final prepared = signer.prepare(reservedSignatureBytes: 4096);
 
-      expect(hex,
-          'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad');
-    });
-
-    test('PdfSigner assina documento PDF com ByteRange e carimbo visual', () {
-      // Cria um documento original
-      final builder =
-          PdfDocumentBuilder(title: 'Contrato de Prestacao de Servicos');
-      final page = builder.addPage();
-      page.drawText(
-          'Contrato Particular de Servicos Graficos', const Offset(50, 80),
-          fontSize: 16.0);
-      page.drawRect(const Rect.fromLTWH(50, 100, 512, 2),
-          fillColor: 0xFF000000);
-      final originalPdfBytes = builder.build();
-
-      final doc = PdfDocument.fromBytes(originalPdfBytes);
-
-      // Prepara o assinador
-      final signer = PdfSigner(
-        document: doc,
-        signerName: 'Dr. Roberto Magalhaes',
-        reason: 'Aprovacao Formal do Contrato',
-        location: 'Sao Paulo, Brasil',
-        standard: PdfSignatureStandard.padesBB,
+      final text = latin1.decode(prepared.bytes, allowInvalid: true);
+      expect(text, contains('/SubFilter /ETSI.CAdES.detached'));
+      expect(text, contains('/FT /Sig'));
+      expect(text, contains('/AcroForm'));
+      expect(text, contains('/AP'));
+      expect(prepared.documentDigest.length, 32);
+      expect(prepared.byteRange[1], prepared.contentsHexOffset - 1);
+      expect(
+        prepared.byteRange[2],
+        prepared.contentsHexOffset + prepared.reservedSignatureBytes * 2 + 1,
       );
 
-      signer.setVisualAppearance(PdfSignatureAppearance(
-        pageNumber: 1,
-        rect: const Rect.fromLTWH(350, 650, 200, 80),
-        signerName: 'Dr. Roberto Magalhaes',
-        reason: 'Aprovacao Formal do Contrato',
-      ));
+      final reopened = PdfDocument.fromBytes(prepared.bytes);
+      expect(reopened.pageCount, 1);
+      final form = reopened.catalog?.getDict('AcroForm', reopened.xref);
+      expect(form?.getArray('Fields', reopened.xref)?.length, 1);
+      expect(reopened.getPage(1).dict.getArray('Annots', reopened.xref)?.length,
+          1);
+    });
 
-      // Executa a assinatura digital
-      final signedBytes = signer.sign(reservedSignatureBytes: 1024);
+    test('assina por callback externo e incorpora CMS sem mudar offsets',
+        () async {
+      Uint8List? signedInput;
+      final certificate = signingTestCertificate();
+      final signer = _signer(PdfDocument.fromBytes(_document()));
+      final result = await signer.sign(
+        reservedSignatureBytes: 4096,
+        externalSigner: PdfCallbackSigner(
+          certificateChain: <Uint8List>[certificate],
+          signCallback: (data) async {
+            signedInput = Uint8List.fromList(data);
+            return Uint8List.fromList(List<int>.filled(256, 0x5a));
+          },
+        ),
+      );
 
-      expect(signedBytes.length, greaterThan(originalPdfBytes.length));
+      expect(signedInput, isNotNull);
+      expect(signedInput!.first, 0x31);
+      final text = latin1.decode(result, allowInvalid: true);
+      expect(text, contains('/ByteRange [0 '));
+      expect(text, isNot(contains('/Contents <${'0' * 128}')));
+      expect(PdfDocument.fromBytes(result).pageCount, 1);
+    });
 
-      // Valida que o PDF assinado contém a estrutura de assinatura
-      final signedString = utf8.decode(signedBytes, allowMalformed: true);
-      expect(signedString, contains('/Type /Sig'));
-      expect(signedString, contains('/SubFilter /adbe.pkcs7.detached'));
-      expect(signedString, contains('Dr. Roberto Magalhaes'));
-      expect(signedString, contains('/ByteRange [0 '));
+    test('não fabrica assinatura para perfil de timestamp/LTV', () {
+      final signer = PdfSigner(
+        document: PdfDocument.fromBytes(_document()),
+        signerName: 'Teste',
+        standard: PdfSignatureStandard.padesBT,
+        signingTime: DateTime.utc(2005),
+      );
+      expect(signer.prepare, throwsA(isA<PdfSignatureException>()));
+    });
 
-      // Valida que o PDF assinado ainda abre perfeitamente
-      final verifiedDoc = PdfDocument.fromBytes(signedBytes);
-      expect(verifiedDoc.pageCount, 1);
-      expect(verifiedDoc.title, 'Contrato de Prestacao de Servicos');
+    test('coassinatura incremental preserva o primeiro campo', () async {
+      final certificate = signingTestCertificate();
+      PdfCallbackSigner externalSigner() => PdfCallbackSigner(
+            certificateChain: <Uint8List>[certificate],
+            signCallback: (data) async =>
+                Uint8List.fromList(List<int>.filled(256, data.last)),
+          );
+
+      final first = await _signer(PdfDocument.fromBytes(_document())).sign(
+        externalSigner: externalSigner(),
+        reservedSignatureBytes: 4096,
+      );
+      final second = await _signer(PdfDocument.fromBytes(first)).sign(
+        externalSigner: externalSigner(),
+        reservedSignatureBytes: 4096,
+      );
+      final reopened = PdfDocument.fromBytes(second);
+      final fields = reopened.catalog
+          ?.getDict('AcroForm', reopened.xref)
+          ?.getArray('Fields', reopened.xref);
+      expect(fields?.length, 2);
+      expect(
+        reopened.getPage(1).dict.getArray('Annots', reopened.xref)?.length,
+        2,
+      );
+      expect(
+        RegExp(r'/SubFilter /ETSI.CAdES.detached')
+            .allMatches(latin1.decode(second, allowInvalid: true))
+            .length,
+        2,
+      );
     });
   });
+}
+
+Uint8List _document() {
+  final builder = PdfDocumentBuilder(title: 'Contrato');
+  builder.addPage().drawText(
+        'Contrato para assinatura',
+        const Offset(50, 80),
+        fontSize: 16,
+      );
+  return builder.build();
+}
+
+PdfSigner _signer(PdfDocument document) {
+  final signer = PdfSigner(
+    document: document,
+    signerName: 'Autoridade Certificadora Raiz Brasileira',
+    reason: 'Aprovação',
+    location: 'Brasília, Brasil',
+    signingTime: DateTime.utc(2005, 1, 2, 3, 4, 5),
+  );
+  signer.setVisualAppearance(
+    PdfSignatureAppearance(
+      pageNumber: 1,
+      rect: const Rect.fromLTWH(300, 650, 240, 72),
+      signerName: 'Autoridade Certificadora Raiz Brasileira',
+      reason: 'Aprovação',
+      signingTime: DateTime.utc(2005, 1, 2, 3, 4, 5),
+    ),
+  );
+  return signer;
 }

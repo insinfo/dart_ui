@@ -48,8 +48,13 @@ void main() {
     expect(result.isSuccess, isTrue, reason: result.diagnostic?.toString());
     // The numbers `example/gallery_win32.dart` prints, asserted here so a
     // regression shows up in the suite rather than in a smoke run's stdout.
-    expect(application.controlCount, 20);
-    expect(application.semanticNodeCount, 21);
+    // Nineteen, not twenty: the list's rows are the theme's height now (28 px
+    // at the standard density, and they were a private 20), so the same
+    // four-row window realizes one fewer of them. The count is asserted at all
+    // because it is the number `example/gallery_win32.dart` prints - a change
+    // in it should show up in the suite rather than in a smoke run's stdout.
+    expect(application.controlCount, 19);
+    expect(application.semanticNodeCount, 20);
     expect(application.errors, isEmpty);
 
     final framebuffer = _framebufferOf(application);

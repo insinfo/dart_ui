@@ -500,17 +500,76 @@ void main() {
       expect(quad[2] - quad[0], 32);
     });
 
-    test('a rotated transform is refused rather than drawn upright', () {
-      final sink = _sink(glyphAtlas: GpuGlyphAtlas(), fonts: _FixedFont(font));
-      expect(
-        () => _drawRun(
-          sink,
-          ids: <int>[letterX],
-          offsets: <double>[0, 0],
-          transform: const Transform2D(0, 1, -1, 0, 0, 0),
-        ),
-        throwsA(isA<UnsupportedCapabilityError>()),
+    test('a rotated transform leaves the glyph atlas for the mask route', () {
+      // This used to be a refusal, and that refusal is what forced every
+      // caller with a vertical label to stack characters instead. A slot in
+      // the glyph atlas is keyed by size and sampled one texel per pixel,
+      // which a rotation destroys - so the run goes to the *mask* atlas
+      // instead, as a filled outline, exactly as a rotated path would.
+      final glyphs = GpuGlyphAtlas();
+      final masks = GpuMaskAtlas(width: 256, height: 256)..beginFrame();
+      final sink = _sink(
+        glyphAtlas: glyphs,
+        maskAtlas: masks,
+        maskTextureId: 17,
+        fonts: _FixedFont(font),
       );
+
+      _drawRun(
+        sink,
+        ids: <int>[letterX],
+        offsets: <double>[0, 0],
+        clip: const Rect.fromLTRB(-256, -256, 256, 256),
+        transform: const Transform2D(0, 1, -1, 0, 0, 0),
+      );
+
+      expect(glyphs.missCount, 0,
+          reason: 'a slot keyed by size cannot carry an angle, so admitting '
+              'this glyph would draw one frame at the previous frame angle');
+      expect(glyphs.hitCount, 0);
+      expect(sink.batcher.quadCount, 1,
+          reason: 'the glyph still has to reach the surface');
+      expect(sink.batcher.batchAt(0).textureId, 17,
+          reason: 'out of the mask atlas, which is where rotated coverage '
+              'lives');
+    });
+
+    test('the rotated quad is placed by the outline, not by a mask offset', () {
+      // Ahem's letter is a solid em box rising 0.8 em above the baseline and
+      // spanning one em. At 16 px the box sits at x in [0, 16), y in [-13, 4)
+      // *relative to the pen* - which the upright test above sees as
+      // (10, 17, 26, 34) for a pen at (10, 30).
+      //
+      // The matrix here is (x, y) -> (-y, x) and the pen is already in device
+      // space, so only the box turns about it: x in (-4, 13], y in [0, 16),
+      // which lands at (6, 30, 23, 46). A sink that silently dropped the
+      // rotation would report the upright rect and look like it had worked.
+      final masks = GpuMaskAtlas(width: 256, height: 256)..beginFrame();
+      final sink = _sink(
+        glyphAtlas: GpuGlyphAtlas(),
+        maskAtlas: masks,
+        maskTextureId: 17,
+        fonts: _FixedFont(font),
+      );
+
+      _drawRun(
+        sink,
+        ids: <int>[letterX],
+        offsets: <double>[0, 0],
+        clip: const Rect.fromLTRB(-256, -256, 256, 256),
+        transform: const Transform2D(0, 1, -1, 0, 0, 0),
+      );
+
+      final List<double> quad = _quad(sink);
+      expect(quad[0], closeTo(6, 0.5), reason: 'left');
+      expect(quad[1], closeTo(30, 0.5), reason: 'top');
+      expect(quad[2], closeTo(23, 0.5), reason: 'right');
+      expect(quad[3], closeTo(46, 0.5), reason: 'bottom');
+      // 17 wide by 16 tall, where the upright quad is 16 by 17: the em box's
+      // two dimensions have swapped, which is the whole visible consequence of
+      // the quarter turn on a shape this symmetric.
+      expect(quad[2] - quad[0], 17);
+      expect(quad[3] - quad[1], 16);
     });
 
     test('stroked text is refused, and says why the coverage cannot serve', () {
@@ -658,6 +717,8 @@ const int _glyphTextureId = 11;
 GpuRasterSink _sink({
   GpuImageResolver? resolver,
   GpuGlyphAtlas? glyphAtlas,
+  GpuMaskAtlas? maskAtlas,
+  int maskTextureId = kNoTexture,
   GpuFontResolver? fonts,
   void Function()? onAtlasFlush,
 }) =>
@@ -667,6 +728,8 @@ GpuRasterSink _sink({
       imageResolver: resolver,
       glyphAtlas: glyphAtlas,
       glyphTextureId: glyphAtlas == null ? kNoTexture : _glyphTextureId,
+      maskAtlas: maskAtlas,
+      maskTextureId: maskTextureId,
       fontResolver: fonts,
       onAtlasFlush: onAtlasFlush,
     );

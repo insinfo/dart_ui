@@ -162,7 +162,13 @@ void main() {
       final harness = _ListHarness(itemCount: 1000);
       harness.frame();
 
-      expect(harness.scroll.contentExtent, 1000 * 20.0);
+      // The row height is the theme's now rather than a private 20: naming it
+      // here keeps the assertion exact without freezing a copy of the density
+      // scale into the test.
+      expect(
+        harness.scroll.contentExtent,
+        1000 * ThemeData.neutralLight.effectiveRowHeight,
+      );
       expect(harness.scroll.canScroll, isTrue);
       harness.dispose();
     });

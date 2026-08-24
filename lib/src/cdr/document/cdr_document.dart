@@ -1,8 +1,10 @@
 import 'dart:typed_data';
 import '../../geometry/rect.dart';
+import '../../graphics/vector/document.dart';
 import '../container/riff_reader.dart';
 import '../container/zip_cdr_archive.dart';
 import '../geometry/cdr_path.dart';
+import 'cdr_translator.dart';
 
 /// Versão identificada do arquivo CorelDRAW.
 enum CdrVersion {
@@ -146,6 +148,15 @@ class CdrDocument {
 
   /// Nome legível da versão do CorelDRAW.
   String get versionName => version.displayName;
+
+  /// Converte este documento CorelDRAW para o modelo de documento unificado [VectorDocument].
+  VectorDocument toVectorDocument() => CdrTranslator.toVectorDocument(this);
+
+  /// Cria um [CdrDocument] a partir de um [VectorDocument] e codifica em bytes nativos CDR.
+  static CdrDocument fromVectorDocument(VectorDocument doc, {CdrVersion version = CdrVersion.v6}) {
+    final bytes = CdrTranslator.toCdrBytes(doc, version: version);
+    return CdrDocument.fromBytes(bytes);
+  }
 
   @override
   String toString() =>

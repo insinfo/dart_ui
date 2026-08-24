@@ -9,6 +9,7 @@ library;
 
 import 'package:meta/meta.dart';
 
+import '../foundation/frame_time.dart';
 import '../geometry/offset.dart';
 import '../graphics/display_list.dart';
 import 'box_constraints.dart';
@@ -33,6 +34,39 @@ final class PipelineOwner {
   RenderBox? _root;
   BoxConstraints _rootConstraints;
   bool _rootConstraintsDirty = true;
+  FrameTime _frameTime = FrameTime.zero;
+  bool _anotherFrameRequested = false;
+
+  /// When the frame currently being painted is, and how long since the
+  /// previous one.
+  ///
+  /// Written once per frame by whoever drives the pipeline - `FrameScheduler`
+  /// in production - and read by render objects whose content is a function of
+  /// time rather than of the widget tree. It lives here rather than being
+  /// passed down through [RenderBox.paint] for two reasons: the paint
+  /// signature is walked by every node in the tree and almost none of them
+  /// care, and a node that needs the time needs it at *paint* depth, where
+  /// threading a parameter through means changing every intermediate override
+  /// in the framework and in every application that has written one.
+  ///
+  /// [FrameTime.zero] before the first driven frame, which is what a node
+  /// painting outside a loop - a golden test, a one-shot screenshot - sees.
+  /// Its zero delta means a time-driven painter draws its initial state rather
+  /// than jumping, which is the honest answer for a frame that has no
+  /// predecessor.
+  FrameTime get frameTime => _frameTime;
+
+  set frameTime(FrameTime value) {
+    if (value.timestamp < _frameTime.timestamp) {
+      throw ArgumentError.value(
+        value,
+        'frameTime',
+        'the frame clock is monotonic and the previous frame was at '
+            '${_frameTime.timestamp}',
+      );
+    }
+    _frameTime = value;
+  }
 
   final List<RenderBox> _nodesNeedingLayout = <RenderBox>[];
   final List<RenderBox> _nodesNeedingPaint = <RenderBox>[];
@@ -131,6 +165,37 @@ final class PipelineOwner {
   }
 
   void requestVisualUpdate() => onNeedsVisualUpdate?.call();
+
+  /// Asks for one more frame *after* the one being produced right now.
+  ///
+  /// Deliberately not [requestVisualUpdate]. That one runs its callback
+  /// synchronously, which is exactly right for a mutation and exactly wrong
+  /// from inside [flushPaint]: the scheduler would post another frame into the
+  /// drain it is already inside, that frame would paint, that paint would post
+  /// again, and the pump would spin until the dispatcher's runaway limit fired
+  /// - a hang with a confusing error rather than an animation.
+  ///
+  /// So this only raises a flag. Whoever drives the frame reads it with
+  /// [takeAnotherFrameRequest] once the frame is finished and turns it into a
+  /// *next* frame through whatever mechanism it uses for animation, which for
+  /// the application shell is a timer armed for one frame interval. That is
+  /// what makes a self-animating painter possible in an on-demand application
+  /// without the painter having to know that a scheduler exists.
+  void requestAnotherFrame() => _anotherFrameRequested = true;
+
+  /// Reads and clears the flag [requestAnotherFrame] raised.
+  ///
+  /// Consuming rather than peeking: a request that survived into the next
+  /// frame would keep requesting forever, and a painter that stopped animating
+  /// would never let the loop go idle again.
+  bool takeAnotherFrameRequest() {
+    final bool requested = _anotherFrameRequested;
+    _anotherFrameRequested = false;
+    return requested;
+  }
+
+  /// Whether a frame has asked for a successor and nobody has consumed it yet.
+  bool get hasAnotherFrameRequest => _anotherFrameRequested;
 
   /// Brings every dirty node's geometry up to date.
   ///

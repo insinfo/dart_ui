@@ -20,7 +20,11 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dart_ui/src/geometry/offset.dart';
+import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
+import 'package:dart_ui/src/rendering/cpu_renderer.dart';
+import 'package:dart_ui/src/rendering/framebuffer.dart';
+import 'package:dart_ui/src/rendering/text/glyph_cache.dart';
 import 'package:dart_ui/src/rendering/text/glyph_raster.dart';
 import 'package:dart_ui/src/rendering/text/text_painter.dart';
 import 'package:dart_ui/src/text/shaper.dart';
@@ -53,6 +57,8 @@ void main(List<String> arguments) {
     _measureShaping(fontBytes),
     _measureAccentedShaping(fontBytes),
     _measureGlyphRaster(fontBytes),
+    _measureAlignedRun(fontBytes),
+    _measureRotatedRun(fontBytes),
     _measureParagraphEncode(fontBytes),
   ];
 
@@ -177,6 +183,97 @@ _Result _measureGlyphRaster(List<int> bytes) {
   rasterizer.render(font, glyph);
   return _measure(
       'rasterize one glyph', budget: 300, () => rasterizer.render(font, glyph));
+}
+
+/// Drawing a warm line of text upright: the hot path of every interface.
+///
+/// This is the number that must not move. Every label, every menu item and
+/// every list row in every frame takes this route: a cached coverage mask per
+/// glyph, blitted at a whole pixel. It is measured with the cache already warm
+/// because that is the steady state - a cold first frame is
+/// `rasterize one glyph` multiplied by the distinct glyphs on screen, and it
+/// is measured separately for that reason.
+///
+/// It is here as the control for the case below it. When rotated text stopped
+/// being refused and started filling outlines, the risk was not that rotation
+/// would be slow - it is, and that is priced in - but that the *upright* path
+/// would pick up the cost of deciding it was upright. The two cases printed
+/// next to each other is what makes that visible.
+_Result _measureAlignedRun(List<int> bytes) {
+  final _RunScene scene = _RunScene.of(bytes);
+  // Budget: generous by policy, like every other one in this file. A warm
+  // upright line measures in the high hundreds of microseconds on a quiet
+  // machine and several times that on a busy one; what this number is here to
+  // catch is the upright route silently acquiring the rotated route's cost,
+  // which would be an order of magnitude, not a few percent.
+  return _measure('draw a line, upright', budget: 3000, scene.drawUpright);
+}
+
+/// The same line under a rotation, which no cached mask can serve.
+///
+/// The outline route: one path fill per glyph, through the same
+/// `ScanlineFiller` a `drawPath` goes through, with nothing cached between
+/// frames but the glyph's design outline. Several times the upright cost per
+/// glyph, and that ratio is the whole reason the upright case keeps its own
+/// route rather than everything going through this one.
+///
+/// The budget is loose on purpose: what this case is here to catch is the
+/// rotated path becoming *pathological* - a per-frame re-decode, a cache that
+/// thrashes - not a few percent either way.
+_Result _measureRotatedRun(List<int> bytes) {
+  final _RunScene scene = _RunScene.of(bytes);
+  return _measure('draw a line, rotated', budget: 8000, scene.drawRotated);
+}
+
+/// One shaped line, encoded once, rasterized many times.
+///
+/// Shaping and encoding are measured by their own cases above; holding the
+/// display list still here keeps this number about the rasterizer.
+final class _RunScene {
+  _RunScene(this.list, this.surface, this.cache);
+
+  static _RunScene of(List<int> bytes) {
+    final ScaledTypeface font = Typeface.parse(_asBytes(bytes)).atSize(16);
+    final DisplayList list = DisplayList();
+    TextPainter().paint(
+      list,
+      sample,
+      font,
+      const Offset(8, 60),
+      list.addPaint(colorArgb: 0xFF101010),
+    );
+    final scene = _RunScene(
+      list,
+      Framebuffer.allocate(width: 480, height: 120),
+      GlyphCache(),
+    );
+    // Warm both routes' caches - the mask cache and the face's outline cache -
+    // so neither case is measuring a first decode.
+    scene
+      ..drawUpright()
+      ..drawRotated();
+    return scene;
+  }
+
+  final DisplayList list;
+  final Framebuffer surface;
+  final GlyphCache cache;
+
+  void drawUpright() => rasterizeDisplayList(
+        list,
+        surface,
+        clearColor: 0xFFFFFFFF,
+        glyphCache: cache,
+      );
+
+  void drawRotated() => rasterizeDisplayList(
+        list,
+        surface,
+        clearColor: 0xFFFFFFFF,
+        // 0.4 rad: off the grid in both axes, so no accidental fast case.
+        deviceTransform: Transform2D.rotation(0.4),
+        glyphCache: cache,
+      );
 }
 
 /// Shaping and encoding a paragraph into a display list.

@@ -115,7 +115,7 @@ final class PresentModeOutcome {
   });
 
   /// The request was honoured exactly.
-  const PresentModeOutcome.honoured(PresentMode mode, {String? detail})
+  PresentModeOutcome.honoured(PresentMode mode, {String? detail})
       : this(
           requested: mode,
           applied: mode,
@@ -124,7 +124,7 @@ final class PresentModeOutcome {
               ? null
               : BackendDiagnostic(
                   kind: DiagnosticKind.note,
-                  message: 'present mode ${mode.name} applied',
+                  message: 'present mode applied',
                   detail: detail,
                 ),
         );
@@ -244,7 +244,7 @@ final class UnpacedPresentation implements PresentPacer {
   @override
   PresentModeOutcome requestPresentMode(PresentMode mode) {
     if (mode == PresentMode.immediate) {
-      return const PresentModeOutcome.honoured(PresentMode.immediate);
+      return PresentModeOutcome.honoured(PresentMode.immediate);
     }
     return PresentModeOutcome.refused(
       mode,

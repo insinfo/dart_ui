@@ -22,6 +22,9 @@ void main() {
 
       // Largura da tabela _standardWidths para a 'Helvetica'
       expect(font.getCharWidth(65), equals(667.0));
+      expect(font.getCharWidth(73), equals(278.0));
+      expect(font.getCharWidth(87), equals(944.0));
+      expect(font.getCharWidth(0xE3), equals(556.0));
     });
 
     test('PdfCMap maps cid to unicode via bfchar and bfrange', () {

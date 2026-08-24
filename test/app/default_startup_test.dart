@@ -100,6 +100,25 @@ void main() {
       );
       expect(paths.first.kind, PresentationKind.gpu);
     });
+
+    test('the Windows OpenGL path probes through WGL rather than EGL', () {
+      if (!Platform.isWindows) return;
+      final List<PresentationPathEntry> paths =
+          PlatformBackendResolver.defaultPresentations(
+        operatingSystem: 'windows',
+      );
+      final PresentationPathEntry openGl = paths
+          .singleWhere((PresentationPathEntry path) => path.name == 'opengl');
+
+      final BackendProbeResult result = openGl.probe();
+
+      expect(result.supported, isTrue, reason: result.describe());
+      expect(result.capabilities, contains(Capability.gpuPresentation));
+      expect(
+        result.diagnostics.map((BackendDiagnostic item) => item.message),
+        isNot(contains(contains('Windows has no EGL'))),
+      );
+    });
   });
 
   test('public runApp needs no backend lists and installs root ambients',

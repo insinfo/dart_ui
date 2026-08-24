@@ -303,6 +303,7 @@ final class PresentationPathEntry {
     required RendererBackend backend,
     required RendererWindowAttachmentFactory createAttachment,
     String? name,
+    BackendProbeResult Function()? probe,
     Set<String>? compatibleWindowingBackends,
     bool experimental = false,
   }) =>
@@ -312,7 +313,7 @@ final class PresentationPathEntry {
         rasterizationApproach: backend.info.rasterizationApproach,
         compatibleWindowingBackends: compatibleWindowingBackends,
         experimental: experimental,
-        probe: backend.probe,
+        probe: probe ?? backend.probe,
         attach: (NativeWindow window) => RenderTargetPresenter.attachToWindow(
           backend: backend,
           window: window,

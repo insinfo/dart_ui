@@ -47,11 +47,15 @@ abstract class PdfOutputDevice {
   /// font metrics, character spacing and horizontal scaling. Output devices
   /// that only paint may ignore it; text-aware devices use it to preserve the
   /// selectable/searchable geometry without measuring a substitute UI font.
+  /// [characterAdvances] contains cumulative positions, begins at zero and has
+  /// `text.length + 1` entries. It lets selection use real per-glyph geometry
+  /// instead of dividing a proportional-font run into equal-width characters.
   void drawText(
     String text,
     PdfGfxState state,
     PdfMatrix textMatrix, {
     double? advance,
+    List<double>? characterAdvances,
   });
 }
 
@@ -107,6 +111,7 @@ class PdfMemoryOutputDevice extends PdfOutputDevice {
     PdfGfxState state,
     PdfMatrix textMatrix, {
     double? advance,
+    List<double>? characterAdvances,
   }) {
     commands.add(
         'drawText("$text", font: ${state.fontName}, size: ${state.fontSize})');

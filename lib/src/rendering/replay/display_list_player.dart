@@ -414,10 +414,13 @@ final class UnsupportedCommandException implements Exception {
 final class DisplayListPlayer {
   DisplayListPlayer(this.sink) : _hintSink = _hintSinkOf(sink);
 
-  static ContentHintAwareSink? _hintSinkOf(RasterSink sink) {
-    if (sink is ContentHintAwareSink) return sink;
-    return null;
-  }
+  /// [sink] as a hint consumer, or null.
+  ///
+  /// The cast is explicit because [RasterSink] and [ContentHintAwareSink] are
+  /// unrelated interfaces - which is the whole design - so the `is` test does
+  /// not promote to a type that is both.
+  static ContentHintAwareSink? _hintSinkOf(RasterSink sink) =>
+      sink is ContentHintAwareSink ? sink as ContentHintAwareSink : null;
 
   final RasterSink sink;
 

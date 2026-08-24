@@ -35,7 +35,24 @@ void main() {
       // being lost. What the gate actually asks is that both kinds of drawing
       // are there.
       final Map<int, int> counts = _opcodeCounts(list);
-      expect(counts[opDrawRect] ?? 0, greaterThan(50));
+      // Rectangles *and* rounded rectangles: the controls draw rounded chrome
+      // now, so a fill that used to be `opDrawRect` is `opDrawRRect` for the
+      // same picture. Counting only the square one would be counting how
+      // square the theme is, which is not what this gate asks.
+      // Rectangles, rounded rectangles and paths together: the controls draw
+      // rounded chrome now, so a fill that used to be `opDrawRect` is
+      // `opDrawRRect` for the same picture, and a check mark that used to be
+      // an inset square is a path.
+      //
+      // The threshold moved with it, for the same reason the glyph one did
+      // when labels stopped being one rectangle per lit pixel: a *border* used
+      // to be four `drawRectangle` commands, one per edge, and is now one
+      // rounded stroke. Fifty was a count of that style, not of the picture -
+      // the same gallery draws thirty-one shapes today with nothing missing.
+      final int shapes = (counts[opDrawRect] ?? 0) +
+          (counts[opDrawRRect] ?? 0) +
+          (counts[opDrawPath] ?? 0);
+      expect(shapes, greaterThan(25));
       expect(counts[opDrawGlyphRun] ?? 0, greaterThan(10),
           reason: 'every labelled control shapes and draws its own run');
       expect(harness.owner.renderRoot, isNotNull);

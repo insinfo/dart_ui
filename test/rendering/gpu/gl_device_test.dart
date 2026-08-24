@@ -79,8 +79,19 @@ void main() {
       expect(device.info.deviceDescription, isNotEmpty);
       expect(device.info.driverVersion, isNotEmpty);
       expect(device.capabilities.maxTextureSize, greaterThanOrEqualTo(2048));
-      expect(device.experimentalSparseStripsEnabled, isFalse,
-          reason: 'the dense renderer must remain the default');
+      // Sparse strips are the default, and this expectation used to say the
+      // opposite: `adoptContext` takes `GlSparseStripsPolicy.auto` when the
+      // caller asks for nothing, so the route is built wherever the driver
+      // exports the symbols for it and is quietly absent where it does not.
+      // Dense is the *fallback* now, not the default - which is why the
+      // answer is the driver's and not a constant. `disabled` is what a test
+      // that really wants dense passes, and two tests below do.
+      expect(
+        device.experimentalSparseStripsEnabled,
+        missingSparseGlSymbols(session.context!.procAddress).isEmpty,
+        reason: 'the default policy is GlSparseStripsPolicy.auto: sparse '
+            'strips on every driver that has them, dense on the rest',
+      );
       expect(device.experimentalStencilCoverEnabled, isFalse,
           reason: 'experimental stencil must remain opt-in');
       expect(device.experimentalCpuTessellationEnabled, isFalse,

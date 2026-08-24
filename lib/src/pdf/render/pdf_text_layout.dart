@@ -21,11 +21,18 @@ final class PdfTextFragment {
     required this.text,
     required this.textStart,
     required this.bounds,
+    this.characterOffsets,
   });
 
   final String text;
   final int textStart;
   final Rect bounds;
+
+  /// Cumulative horizontal positions as fractions of [bounds.width].
+  ///
+  /// There is one entry per UTF-16 boundary, including zero and the end.
+  /// Null retains the uniform fallback for layouts created by older callers.
+  final List<double>? characterOffsets;
 
   int get textEnd => textStart + text.length;
 }
@@ -83,9 +90,14 @@ final class PdfPageTextLayout {
       // blue bars seen in office-generated PDFs. Spaces between visible
       // fragments are still covered when the neighbouring boxes are merged.
       if (localStart >= localEnd || fragment.text.trim().isEmpty) continue;
-      final double from =
-          (localStart - fragment.textStart) / fragment.text.length;
-      final double to = (localEnd - fragment.textStart) / fragment.text.length;
+      final double from = _fractionAt(
+        fragment,
+        localStart - fragment.textStart,
+      );
+      final double to = _fractionAt(
+        fragment,
+        localEnd - fragment.textStart,
+      );
       result.add(Rect.fromLTRB(
         fragment.bounds.left + fragment.bounds.width * from,
         fragment.bounds.top,
@@ -133,7 +145,28 @@ final class PdfPageTextLayout {
     final double fraction =
         ((position.dx - fragment.bounds.left) / fragment.bounds.width)
             .clamp(0.0, 1.0);
-    return fragment.textStart + (fragment.text.length * fraction).round();
+    final List<double>? offsets = fragment.characterOffsets;
+    if (offsets == null || offsets.length != fragment.text.length + 1) {
+      return fragment.textStart + (fragment.text.length * fraction).round();
+    }
+    var nearest = 0;
+    var distance = double.infinity;
+    for (var index = 0; index < offsets.length; index++) {
+      final double candidate = (offsets[index] - fraction).abs();
+      if (candidate < distance) {
+        distance = candidate;
+        nearest = index;
+      }
+    }
+    return fragment.textStart + nearest;
+  }
+
+  double _fractionAt(PdfTextFragment fragment, int offset) {
+    final List<double>? positions = fragment.characterOffsets;
+    if (positions != null && positions.length == fragment.text.length + 1) {
+      return positions[offset.clamp(0, positions.length - 1)];
+    }
+    return offset / fragment.text.length;
   }
 }
 
@@ -182,6 +215,7 @@ final class _PdfTextOutputDevice extends PdfOutputDevice {
     PdfGfxState state,
     PdfMatrix textMatrix, {
     double? advance,
+    List<double>? characterAdvances,
   }) {
     if (text.isEmpty) return;
     final double width = (advance ?? state.fontSize * text.length * 0.5).abs();
@@ -202,7 +236,21 @@ final class _PdfTextOutputDevice extends PdfOutputDevice {
       // after every fragment has been grouped into visual lines.
       textStart: 0,
       bounds: bounds,
+      characterOffsets: _normalizedOffsets(text, characterAdvances, width),
     ));
+  }
+
+  List<double>? _normalizedOffsets(
+    String text,
+    List<double>? advances,
+    double width,
+  ) {
+    if (advances == null || advances.length != text.length + 1 || width <= 0) {
+      return null;
+    }
+    return List<double>.unmodifiable(
+      advances.map((double value) => (value.abs() / width).clamp(0.0, 1.0)),
+    );
   }
 
   PdfPageTextLayout _layoutInVisualReadingOrder() {
@@ -282,6 +330,7 @@ final class _PdfTextOutputDevice extends PdfOutputDevice {
           text: fragment.text,
           textStart: start,
           bounds: fragment.bounds,
+          characterOffsets: fragment.characterOffsets,
         ));
         previous = fragment;
       }

@@ -7,7 +7,6 @@ import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_backend.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_instance.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_library.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_surface_descriptor.dart';
-import 'package:dart_ui/src/rendering/renderer.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -29,7 +28,7 @@ void main() {
     final window = await backend.createWindow(
       const WindowOptions(title: 'vk', size: Size(160, 120), visible: false),
     ) as Win32Window;
-    print('HWND=${window.handle} ${window.physicalSize}');
+    print('HWND=${window.handle} ${window.pixelSize}');
 
     final device = VulkanRenderDevice.adoptInstance(instance,
         enablePresentation: true, enableExperimentalSparseStrips: true);

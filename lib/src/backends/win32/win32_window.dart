@@ -77,6 +77,7 @@ final class Win32Window
     with DisposableMixin
     implements
         NativeWindow,
+        NativeHandleWindow,
         ActivatableWindow,
         EnableableWindow,
         LiveResizeWindow {
@@ -337,7 +338,11 @@ final class Win32Window
 
   /// The native handle. Public because a renderer backend needs it to build a
   /// swapchain; treat it as read-only.
-  int get handle => _hwnd;
+  @override
+  int get nativeHandle => _hwnd;
+
+  /// Backwards-compatible Win32 spelling used by renderer internals.
+  int get handle => nativeHandle;
 
   /// The window class this window belongs to, for diagnostics.
   String get className => _class.name;

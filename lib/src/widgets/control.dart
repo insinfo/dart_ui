@@ -13,7 +13,10 @@
 /// of those to inherit machinery it cannot use.
 library;
 
+import 'dart:math' as math;
+
 import '../geometry/offset.dart';
+import '../geometry/path.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/color.dart';
@@ -254,12 +257,41 @@ mixin ControlBehavior on RenderBox
   // ---------------------------------------------------------------------
 
   /// The control's background for its current state.
+  ///
+  /// The accent ramp, for a *filled* control - a primary button, a checked
+  /// box, a slider's track. The neutral ramp is [neutralSurfaceColor].
   Color surfaceColor({Color? normal, Color? hovered, Color? pressed}) {
     if (!_enabled) return _theme.disabledSurface;
     if (_pressed) return pressed ?? _theme.accentPressed;
     if (_hovered) return hovered ?? _theme.accentHovered;
     return normal ?? _theme.accent;
   }
+
+  /// The background of a control that is *not* filled with the accent: a
+  /// toolbar button, a list row, a menu item, a tab.
+  ///
+  /// Returns null when the control is at rest and no [normal] was given, which
+  /// means "paint nothing at all". That is the whole point of the neutral
+  /// ramp: a toolbar of twenty buttons must be twenty pieces of unbroken
+  /// surface until the pointer arrives, not twenty grey rectangles.
+  Color? neutralSurfaceColor({
+    Color? normal,
+    Color? hovered,
+    Color? pressed,
+    bool selected = false,
+  }) {
+    if (!_enabled) return normal;
+    if (_pressed) return pressed ?? _theme.pressedSurface;
+    if (_hovered) return hovered ?? _theme.hoverSurface;
+    if (selected) return _theme.accentSubtle;
+    return normal;
+  }
+
+  /// The radius an ordinary control of this theme is drawn with.
+  double get controlRadius => _theme.cornerRadius;
+
+  /// The height of one row of a collection in this theme.
+  double get rowHeight => _theme.effectiveRowHeight;
 
   /// The control's text colour for its current state.
   Color foregroundColor({Color? normal}) =>
@@ -346,18 +378,69 @@ mixin ControlBehavior on RenderBox
   ///
   /// This is the `:focus-visible` rule from section 28.3: a ring after every
   /// mouse click is noise, and no ring after Tab makes the keyboard unusable.
-  void paintFocusRing(DisplayList list, Rect rect) {
+  ///
+  /// Two rings, not one. The outer ring is the theme's [ThemeData.focusRing];
+  /// the inner hairline is the control's own surface, so the ring never
+  /// touches the control's edge and stays visible against a background that
+  /// happens to be the same colour as the ring. It is the shape every desktop
+  /// platform converged on for exactly that reason, and it is what makes a
+  /// focused control read as focused on a dark blue toolbar as well as on
+  /// white.
+  ///
+  /// The ring is drawn *outside* the control's box, so it never eats a pixel
+  /// of the control it marks, and it follows [radius] - defaulting to the
+  /// theme's - so a rounded button does not get a square halo.
+  void paintFocusRing(DisplayList list, Rect rect, {double? radius}) {
     if (!isFocusVisible) return;
-    paintBorder(
+    final double width = _theme.focusRingWidth;
+    final double r = radius ?? _theme.cornerRadius;
+    // The separator first: one pixel of the control's own ground, so the ring
+    // reads as a ring rather than as a thicker border.
+    paintRoundedBorder(
       list,
-      Rect.fromLTWH(
-        rect.left - 1,
-        rect.top - 1,
-        rect.width + 2,
-        rect.height + 2,
-      ),
+      rect.inflate(0.5),
+      _theme.brightness == ThemeBrightness.dark
+          ? _theme.surfaceBase
+          : _theme.surfaceAlternate,
+      r <= 0 ? 0 : r + 0.5,
+      width: 1,
+    );
+    paintRoundedBorder(
+      list,
+      rect.inflate(1 + width / 2),
       _theme.focusRing,
-      width: _theme.focusRingWidth,
+      r <= 0 ? 0 : r + 1 + width / 2,
+      width: width,
+    );
+  }
+
+  /// Strokes the polyline through [points] as filled quads.
+  ///
+  /// Filled and not stroked because a stroked *path* still goes through the
+  /// rasterizer's path pipeline, while a quad is four points and a fill - and
+  /// the marks this draws (a check mark, a chevron) are two segments each. One
+  /// square is dropped at every interior joint so the corner is mitred rather
+  /// than notched.
+  void paintPolylineMark(
+    DisplayList list,
+    List<Offset> points,
+    double thickness,
+    Color color,
+  ) =>
+      paintPolyline(list, points, thickness, color);
+
+  /// The tick inside a checked check box, sized to [box].
+  void paintCheckMark(DisplayList list, Rect box, Color color) {
+    final double e = box.width;
+    paintPolylineMark(
+      list,
+      <Offset>[
+        Offset(box.left + e * 0.22, box.top + e * 0.52),
+        Offset(box.left + e * 0.42, box.top + e * 0.72),
+        Offset(box.left + e * 0.78, box.top + e * 0.30),
+      ],
+      math.max(1.5, e * 0.13),
+      color,
     );
   }
 
@@ -456,9 +539,27 @@ mixin ControlBehavior on RenderBox
     if (text.isEmpty) return;
     final Size box = measureLabel(text);
     final double x = (rect.left + (rect.width - box.width) / 2).roundToDouble();
-    final double y =
-        (rect.top + (rect.height - box.height) / 2).roundToDouble();
-    paintLabel(list, text, Offset(x, y), color, maxWidth: rect.width);
+    paintLabel(list, text, Offset(x, labelTopIn(rect)), color,
+        maxWidth: rect.width);
+  }
+
+  /// The y a label's [paintLabel] origin takes to sit optically centred in
+  /// [rect].
+  ///
+  /// Centred on the *typographic* box - ascent plus descent - and not on the
+  /// line box. The difference is the face's line gap, which sits entirely
+  /// above the ascent in most families: centring the line box therefore pushes
+  /// every label one or two pixels low, and one or two pixels is precisely the
+  /// error that makes an interface look amateur. Rounded, because a glyph mask
+  /// is cached per subpixel bucket and a label at y = 7.5 rasterises its own
+  /// copy of every glyph.
+  double labelTopIn(Rect rect) {
+    final ScaledTypeface? font = labelFont;
+    if (font == null) {
+      return (rect.top + (rect.height - labelLineHeight) / 2).roundToDouble();
+    }
+    final double typographic = font.ascent + font.descent;
+    return (rect.top + (rect.height - typographic) / 2).roundToDouble();
   }
 
   /// The natural size of a control that shows [label] with theme padding.
@@ -521,6 +622,52 @@ mixin ControlBehavior on RenderBox
       if (identical(node.target, this)) node.target = null;
     }
     super.detach();
+  }
+}
+
+/// Strokes the polyline through [points] as filled quads.
+///
+/// Free rather than a method so the widget layer can draw the same mark: the
+/// chevron in a combo box is painted by a render object and the one in a
+/// calendar's month strip is a widget, and two implementations of one mark is
+/// how two chevrons in one window end up different shapes.
+///
+/// Filled and not stroked because a stroked *path* still goes through the
+/// rasterizer's path pipeline, while a quad is four points and a fill - and
+/// the marks this draws are two segments each. One square is dropped at every
+/// interior joint so the corner is mitred rather than notched.
+void paintPolyline(
+  DisplayList list,
+  List<Offset> points,
+  double thickness,
+  Color color,
+) {
+  if (points.length < 2) return;
+  final double half = thickness / 2;
+  final int paint = list.addPaint(colorArgb: color.value, antiAlias: true);
+  for (int i = 0; i < points.length - 1; i++) {
+    final Offset a = points[i];
+    final Offset b = points[i + 1];
+    final double dx = b.dx - a.dx;
+    final double dy = b.dy - a.dy;
+    final double length = math.sqrt(dx * dx + dy * dy);
+    if (length == 0) continue;
+    final double nx = -dy / length * half;
+    final double ny = dx / length * half;
+    final PathBuilder quad = PathBuilder()
+      ..moveTo(a.dx + nx, a.dy + ny)
+      ..lineTo(b.dx + nx, b.dy + ny)
+      ..lineTo(b.dx - nx, b.dy - ny)
+      ..lineTo(a.dx - nx, a.dy - ny)
+      ..close();
+    list.drawPath(list.addPath(quad.build()), paint);
+  }
+  for (int i = 1; i < points.length - 1; i++) {
+    final Offset joint = points[i];
+    list.drawRectangle(
+      Rect.fromLTWH(joint.dx - half, joint.dy - half, thickness, thickness),
+      paint,
+    );
   }
 }
 

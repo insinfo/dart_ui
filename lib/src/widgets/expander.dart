@@ -29,7 +29,6 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/display_list.dart';
-import '../graphics/display_list_geometry.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
@@ -290,7 +289,12 @@ final class RenderExpanderHeader extends RenderBox with ControlBehavior {
     markNeedsPaint();
   }
 
-  double get chevronExtent => theme.effectiveControlHeight * 0.6;
+  /// The width of the disclosure chevron's column.
+  ///
+  /// The same fraction the combo box uses, so the two chevrons in one window
+  /// are the same drawing at the same size.
+  double get chevronExtent =>
+      (theme.effectiveControlHeight * 0.66).roundToDouble();
 
   @override
   Set<PseudoClass> get controlStates => <PseudoClass>{
@@ -330,7 +334,12 @@ final class RenderExpanderHeader extends RenderBox with ControlBehavior {
       size.height,
     );
     if (isPressed || isHovered) {
-      paintFill(list, rect, isPressed ? theme.surfaceAlternate : theme.surface);
+      paintRoundedFill(
+        list,
+        rect,
+        isPressed ? theme.pressedSurface : theme.hoverSurface,
+        theme.cornerRadius,
+      );
     }
     final double padding = theme.effectiveControlPadding;
     final bool rtl = _textDirection.isRightToLeft;
@@ -352,51 +361,46 @@ final class RenderExpanderHeader extends RenderBox with ControlBehavior {
         rtl
             ? (rect.right - textStart - box.width).roundToDouble()
             : (rect.left + textStart).roundToDouble(),
-        (rect.top + (rect.height - box.height) / 2).roundToDouble(),
+        labelTopIn(rect),
       ),
       foregroundColor(),
       maxWidth: (rect.width - textStart - padding).clamp(0.0, double.infinity),
     );
-    paintFocusRing(list, rect);
+    paintFocusRing(list, rect, radius: theme.cornerRadius);
   }
 
-  /// A triangle built from rectangles: pointing along the reading direction
-  /// when shut, and downward when open.
+  /// A disclosure chevron: pointing along the reading direction when shut, and
+  /// downward when open.
+  ///
+  /// Two mitred strokes rather than the solid triangle this drew before. The
+  /// triangle is the mark a 1995 tree control used, and at 8 px it is a blob.
   void _paintChevron(DisplayList list, Rect box) {
-    const int steps = 4;
-    const double unit = 2;
-    final int paint = list.addPaint(
-      colorArgb: foregroundColor().value,
-      antiAlias: false,
-    );
     final double centreX = (box.left + box.width / 2).roundToDouble();
     final double centreY = (box.top + box.height / 2).roundToDouble();
-    for (int i = 0; i < steps; i++) {
-      if (_expanded) {
-        // Open: a downward triangle, widest at the top.
-        final double half = (steps - i) * unit;
-        list.drawRectangle(
-          Rect.fromLTWH(
-            centreX - half,
-            centreY - steps * unit / 2 + i * unit,
-            half * 2,
-            unit,
-          ),
-          paint,
-        );
-        continue;
-      }
-      // Shut: a triangle pointing the way the text runs, so it points at the
-      // content it would reveal.
-      final double half = (steps - i) * unit;
-      final double x = _textDirection.isRightToLeft
-          ? centreX - steps * unit / 2 + i * unit
-          : centreX + steps * unit / 2 - (i + 1) * unit;
-      list.drawRectangle(
-        Rect.fromLTWH(x, centreY - half, unit, half * 2),
-        paint,
-      );
-    }
+    const double span = 3.5;
+    final bool rtl = _textDirection.isRightToLeft;
+    paintPolylineMark(
+      list,
+      _expanded
+          ? <Offset>[
+              Offset(centreX - span, centreY - span / 2),
+              Offset(centreX, centreY + span / 2),
+              Offset(centreX + span, centreY - span / 2),
+            ]
+          : rtl
+              ? <Offset>[
+                  Offset(centreX + span / 2, centreY - span),
+                  Offset(centreX - span / 2, centreY),
+                  Offset(centreX + span / 2, centreY + span),
+                ]
+              : <Offset>[
+                  Offset(centreX - span / 2, centreY - span),
+                  Offset(centreX + span / 2, centreY),
+                  Offset(centreX - span / 2, centreY + span),
+                ],
+      1.5,
+      enabled ? theme.foregroundSecondary : theme.disabledForeground,
+    );
   }
 
   @override

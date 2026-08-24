@@ -33,7 +33,10 @@ void main() {
       );
       harness.frame();
 
-      harness.find<RenderButton>()!.activate();
+      // The dismiss affordance is an icon button now, not an accent-filled
+      // `Button` labelled "X": a banner whose loudest control is the way to
+      // get rid of it is a banner nobody reads.
+      harness.find<RenderIconButton>()!.activate();
       expect(closed, 1);
       harness.dispose();
     });
@@ -83,7 +86,7 @@ void main() {
       harness.frame();
       expect(harness.find<RenderInfoBarChrome>(), isNotNull);
 
-      harness.find<RenderButton>()!.activate();
+      harness.find<RenderIconButton>()!.activate();
       harness.frame();
       expect(controller.entries, isEmpty);
       expect(harness.find<RenderInfoBarChrome>(), isNull);

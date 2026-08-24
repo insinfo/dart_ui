@@ -53,12 +53,38 @@ final class KeyboardRouter {
 
   void clearFocusFromTree() => _focusedTarget = null;
 
+  Set<KeyModifier> _heldModifiers = const <KeyModifier>{};
+
+  /// Which modifiers the last key transition reported as held.
+  ///
+  /// This exists because **[PointerEvent] carries no modifier set**, and a
+  /// desktop application needs one on nearly every press: Shift+click extends
+  /// a selection, Ctrl+click toggles a row, Ctrl+wheel zooms. `text_field.dart`
+  /// and `data_grid.dart` each grew a private copy of this field and each
+  /// documented the same limitation - "the real fix is a modifier set on
+  /// PointerEvent" - and each copy is only correct while *that control* has
+  /// focus, so Shift+clicking a canvas the user had not typed into yet read as
+  /// no Shift at all.
+  ///
+  /// Keeping it on the router fixes that half: every key transition in the
+  /// window passes through [route], focused or not, so the answer is the
+  /// window's and not one control's. The remaining gap is honest and small: a
+  /// modifier already held when the window gained focus has produced no
+  /// transition here, so it reads as released until the user lets go of it or
+  /// presses it again. Closing *that* needs the platform's modifier state on
+  /// the pointer event itself, which is a backend change.
+  Set<KeyModifier> get heldModifiers => _heldModifiers;
+
   /// Sends [event] to the current focus target.
   ///
   /// Returns whether the target consumed it - false both when nothing is
   /// focused and when the focused target declined. Callers use that to keep
   /// looking: traversal, then application shortcuts, then the platform.
   bool route(KeyEvent event) {
+    // Before the target is consulted, and whether or not there is one: the
+    // modifier state belongs to the window, and a press with nothing focused
+    // still tells us Shift went down.
+    _heldModifiers = event.modifiers;
     final target = _focusedTarget;
     if (target == null) return false;
     return target.handleKeyEvent(event);
