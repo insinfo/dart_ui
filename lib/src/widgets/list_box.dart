@@ -133,8 +133,7 @@ final class _ListBoxState extends State<ListBox> {
     // Before the first layout the viewport extent is unknown; realizing one
     // screenful of items on the estimate is better than realizing none, which
     // would paint an empty list for one frame.
-    final double viewport =
-        _viewportExtent > 0 ? _viewportExtent : _extent * 8;
+    final double viewport = _viewportExtent > 0 ? _viewportExtent : _extent * 8;
     final RealizedRange range = virtualization.rangeFor(
       scrollOffset: _position.pixels,
       viewportExtent: viewport,
@@ -270,17 +269,24 @@ final class RenderListItem extends RenderSingleChildBox with ControlBehavior {
     final double width = constraints.hasBoundedWidth
         ? constraints.maxWidth
         : constraints.minWidth;
+    final double horizontalPadding = theme.effectiveControlPadding;
     if (child != null) {
+      // The child is inset on the left when it is painted, so its constraints
+      // must reserve the same inset on the right. Giving it the full row width
+      // and then translating it made trailing content (durations, badges and
+      // buttons) extend past the ListBox clip by exactly one control padding.
+      final double contentWidth =
+          (width - horizontalPadding * 2).clamp(0.0, width);
       child.layout(
         BoxConstraints(
-          minWidth: width,
-          maxWidth: width,
+          minWidth: contentWidth,
+          maxWidth: contentWidth,
           maxHeight: _extent,
         ),
         parentUsesSize: true,
       );
       child.parentData!.offset = Offset(
-        theme.effectiveControlPadding,
+        horizontalPadding,
         ((_extent - child.size.height) / 2).roundToDouble().clamp(0.0, _extent),
       );
     }

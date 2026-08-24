@@ -1,4 +1,5 @@
 /// Serializer for binary RIFF containers (CorelDRAW CDR format).
+library;
 
 import 'dart:typed_data';
 

@@ -96,7 +96,12 @@ abstract final class MediaFoundationAudioDecoder {
         throw StateError('Media Foundation returned an invalid PCM format');
       }
 
-      final BytesBuilder pcm = BytesBuilder(copy: false);
+      // IMFMediaBuffer owns the bytes only while it is locked. BytesBuilder
+      // with copy:false may retain the Uint8List view past Unlock/Release,
+      // which turns longer MP3 files into reused native memory and audible
+      // noise. Copy every chunk while the buffer is still locked so the final
+      // PCM is genuinely owned by the decoder.
+      final BytesBuilder pcm = BytesBuilder(copy: true);
       final Pointer<Uint32> actualStream = arena<Uint32>();
       final Pointer<Uint32> flags = arena<Uint32>();
       final Pointer<Int64> timestamp = arena<Int64>();

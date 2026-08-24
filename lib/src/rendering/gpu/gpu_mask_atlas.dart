@@ -389,6 +389,19 @@ final class GpuMaskAtlas {
   int _evictions = 0;
   int _compactions = 0;
 
+  /// Masks dropped - evicted, repacked away or recycled - having served no
+  /// cache hit at all. See [unreusedDropCount].
+  int _unreusedDrops = 0;
+
+  /// Masks rasterised for one frame because the caller refused admission.
+  int _refusedAdmissions = 0;
+
+  /// The frame-scoped entries, released at the next [beginFrame].
+  ///
+  /// A list rather than a flag on the LRU, because releasing them is a walk
+  /// that happens once per frame and never on the draw path.
+  final List<_MaskEntry> _transient = <_MaskEntry>[];
+
   /// Fragmentation the last repack left behind, or -1 when none has run.
   ///
   /// The anti-thrash term of the compaction policy. Shelf waste is not always
@@ -438,6 +451,33 @@ final class GpuMaskAtlas {
 
   int get compactionCount => _compactions;
 
+  /// Masks that were rasterised, cached, and dropped without ever being hit.
+  ///
+  /// The cost of a cache admitting what it cannot reuse, made countable. A
+  /// continuous pinch-zoom produces a new device-space key every frame, so
+  /// **every** entry it writes is one of these: the raster, the slot and the
+  /// alpha8 upload are all spent on coverage that is evicted before it is
+  /// read, and the entries it evicts to make room are the static chrome's,
+  /// which then has to be rasterised again.
+  ///
+  /// Skia guards this with "does the matrix preserve axis alignment", as a
+  /// proxy for "is this animating"
+  /// (`SoftwarePathRenderer.cpp:284`). This class takes the declaration
+  /// instead - see `admitToCache` on [rasterizeMask] - because the
+  /// application knows, and knows a frame earlier than any proxy.
+  int get unreusedDropCount => _unreusedDrops;
+
+  /// Masks rasterised without being admitted to the cache.
+  ///
+  /// The guard's own counter: how many times a caller said "this will not be
+  /// reused" and the atlas therefore drew it without spending a cache entry
+  /// on it. These never appear in [unreusedDropCount], which is the whole
+  /// point - the trade is one number falling as the other rises.
+  int get refusedAdmissionCount => _refusedAdmissions;
+
+  /// Frame-scoped masks currently resident. Zero between frames.
+  int get transientMaskCount => _transient.length;
+
   /// Frames begun since construction. The clock the LRU order runs on.
   int get frameIndex => _frame;
 
@@ -464,6 +504,7 @@ final class GpuMaskAtlas {
   void beginFrame() {
     _frame++;
     markUploaded();
+    _releaseTransient();
     if (_packer.fragmentation > compactionThreshold &&
         _packer.reservedRows * 2 >= height &&
         _packer.fragmentation > _lastCompactionFragmentation) {
@@ -538,6 +579,10 @@ final class GpuMaskAtlas {
   /// it has been uploaded is the caller's fact to state, not this class's to
   /// guess.
   void recycle() {
+    for (var entry = _lruHead; entry != null; entry = entry.lruNext) {
+      if (entry.reuseCount == 0 && !entry.transient) _unreusedDrops++;
+    }
+    _transient.clear();
     _buckets.clear();
     _lruHead = null;
     _lruTail = null;
@@ -617,12 +662,42 @@ final class GpuMaskAtlas {
   /// path antialiased and ignores the flag; when it stops ignoring it, this
   /// rule is the one to match, and the two are named together here so they
   /// cannot drift apart silently.
+  /// [admitToCache] false draws the mask **without spending a cache entry on
+  /// it**: it is rasterised into a slot, uploaded and sampled exactly as
+  /// always, and then released whole at the next [beginFrame].
+  ///
+  /// The guard Skia has and this class did not. Skia turns its software path
+  /// cache off when the matrix stops preserving axis alignment, *"to prevent
+  /// overloading the cache with entries during animations"*
+  /// (`SoftwarePathRenderer.cpp:284`). That test is a **proxy** for "this is
+  /// animating", which the repetition model in `gpu_path_repetition.dart`
+  /// answers better *for the selector* - it has history and Skia does not.
+  /// Inside the atlas the situation is reversed: this class sees one draw and
+  /// no history at all, so during a pinch-zoom it admits a new entry every
+  /// frame, evicts the static chrome to make room, and never serves one of
+  /// them a single hit. [unreusedDropCount] is that cost, counted.
+  ///
+  /// So the answer comes from the only party that knows in advance - the
+  /// application, through `ContentHintScope` and the sink boundary - and it
+  /// stays advice:
+  ///
+  ///   * a mask that is **already resident** is still a hit, whatever the
+  ///     caller declared. A resident mask costs one quad and nothing else,
+  ///     and throwing one away because a subtree started moving would be the
+  ///     single case where a hint made a frame slower than no hint at all;
+  ///   * a refused mask is still **drawn**, from the same analytic coverage,
+  ///     into the same alpha8 texels. The picture is identical either way -
+  ///     the only difference is whether the entry survives the frame.
+  ///
+  /// A wrong declaration therefore costs a re-rasterisation per frame and
+  /// cannot change a pixel.
   MaskRasterResult rasterizeMask(
     Path path, {
     required Transform2D transform,
     required Rect clip,
     FillRule rule = FillRule.nonZero,
     bool antiAlias = true,
+    bool admitToCache = true,
   }) {
     final visible = transform.transformRect(path.bounds).intersect(clip);
     if (visible.isEmpty) return MaskRasterResult.empty;
@@ -667,7 +742,11 @@ final class GpuMaskAtlas {
       antiAlias,
     );
     if (cached != null) {
+      // Before the admission test on purpose: see the doc above. A resident
+      // mask is a measured fact and the cheapest answer there is, so no
+      // declaration about motion is allowed to discard it.
       _hits++;
+      cached.reuseCount++;
       _touch(cached);
       return _resultFor(cached, left, top);
     }
@@ -690,8 +769,14 @@ final class GpuMaskAtlas {
       slot,
     );
     _setUv(entry, slot);
-    entry.nextInChain = _buckets[hash];
-    _buckets[hash] = entry;
+    if (admitToCache) {
+      entry.nextInChain = _buckets[hash];
+      _buckets[hash] = entry;
+    } else {
+      entry.transient = true;
+      _transient.add(entry);
+      _refusedAdmissions++;
+    }
     _entryCount++;
     _touch(entry);
     return _resultFor(entry, left, top);
@@ -710,6 +795,7 @@ final class GpuMaskAtlas {
     required Rect clip,
     FillRule rule = FillRule.nonZero,
     bool antiAlias = true,
+    bool admitToCache = true,
   }) {
     final result = rasterizeMask(
       path,
@@ -717,6 +803,7 @@ final class GpuMaskAtlas {
       clip: clip,
       rule: rule,
       antiAlias: antiAlias,
+      admitToCache: admitToCache,
     );
     return result.isOk ? result.toQuad() : null;
   }
@@ -763,9 +850,33 @@ final class GpuMaskAtlas {
     return slot;
   }
 
+  /// Frees every frame-scoped mask, returning its slot to the packer.
+  ///
+  /// Called from [beginFrame] and nowhere else, for the same reason the
+  /// repack is: between frames every quad that referenced these texels has
+  /// been drawn, and mid-frame it has not. Within its own frame a transient
+  /// mask is protected exactly like any other current-frame entry - it sits
+  /// at the head of the LRU with this frame's stamp, and [_allocate] refuses
+  /// to evict those - so refusing admission can cost a rasterisation and can
+  /// never change a texel a draw call is about to sample.
+  void _releaseTransient() {
+    if (_transient.isEmpty) return;
+    for (final _MaskEntry entry in _transient) {
+      _unlink(entry);
+    }
+    _transient.clear();
+  }
+
   /// Removes [entry] from the chain, the LRU list and the packer.
   void _unlink(_MaskEntry entry) {
-    final head = _buckets[entry.keyHash];
+    // A transient entry is *known* not to be reused - it was never chained
+    // into a bucket - so counting it here would fold the guard's own cost
+    // into the number the guard exists to reduce. It has its own counter.
+    if (entry.reuseCount == 0 && !entry.transient) _unreusedDrops++;
+    // A transient entry was never chained into a bucket, so walking the chain
+    // for it would be a search that cannot succeed - and, worse, would run
+    // over a chain of live entries that share its hash.
+    final head = entry.transient ? null : _buckets[entry.keyHash];
     if (identical(head, entry)) {
       final next = entry.nextInChain;
       if (next == null) {
@@ -992,6 +1103,19 @@ final class _MaskEntry {
   double v1 = 0;
 
   int lastUsedFrame = -1;
+
+  /// Cache hits this mask has served since it was rasterised.
+  ///
+  /// Zero at the moment it is dropped means the atlas paid a rasterisation,
+  /// a slot and an upload for coverage nobody ever asked for twice - the
+  /// number `GpuMaskAtlas.unreusedDropCount` reports and the number the
+  /// admission guard exists to drive to zero.
+  int reuseCount = 0;
+
+  /// True for a mask admitted for this frame only: never chained into a
+  /// bucket, never findable, released whole at the next [GpuMaskAtlas
+  /// .beginFrame]. See [GpuMaskAtlas.rasterizeMask]'s `admitToCache`.
+  bool transient = false;
 
   _MaskEntry? nextInChain;
   _MaskEntry? lruPrev;

@@ -412,91 +412,18 @@ final class RenderPolicy {
 
   /// [workload] adjusted by what the application said about the subtree.
   ///
-  /// **The whole contract of hints lives in this method, so it is short on
-  /// purpose.** Exactly two fields can move, and both are cost estimates:
-  ///
-  ///   * `geometryStable` - will this shape be the same next frame;
-  ///   * `denseMaskLikelyCacheable` - would the atlas be caching it by now.
-  ///
-  /// Nothing else is touched. A hint cannot set `tessellationEligible` (the
-  /// tessellator decides that by inspecting the path, and a wrong answer draws
-  /// a wrong shape), cannot clear `hasSelfIntersections`, cannot change the
-  /// measured sparse costs, and - because this takes capabilities nowhere near
-  /// it - cannot enable a route the device did not report. A wrong hint
-  /// therefore selects a route that is legal, correct and slower, which is the
-  /// promise `content_hint.dart` makes.
-  ///
-  /// `denseMaskCacheHit` is deliberately left alone even though it looks like
-  /// a cost fact: it is a *measurement* of the atlas, and overriding it would
-  /// make the selector believe in a resident mask that does not exist.
-  ///
-  /// Returns [workload] itself when the hint says nothing, so the seam costs
-  /// one comparison and no allocation on the overwhelmingly common path.
+  /// A forwarder, kept because it is the name the seam was documented under.
+  /// The rule itself is [GpuPathWorkload.withContentHint], which lives on the
+  /// workload for a mechanical reason: applying a hint means copying every
+  /// field of that class, and a copy written out here would silently drop any
+  /// cost fact added there later. It is also where the selector reads it -
+  /// see [GpuPathStrategySelector.select], which takes the hint directly and
+  /// owns the precedence rule.
   static GpuPathWorkload applyContentHint(
     GpuPathWorkload workload,
     ContentHint hint,
-  ) {
-    switch (hint.motion) {
-      case ContentMotionHint.unspecified:
-        return workload;
-      case ContentMotionHint.staticContent:
-        if (workload.geometryStable) return workload;
-        return _copyWithCostFacts(
-          workload,
-          geometryStable: true,
-          denseMaskLikelyCacheable: workload.denseMaskLikelyCacheable,
-        );
-      case ContentMotionHint.animating:
-        // The coverage itself is new every frame, so no cache can hit and
-        // nothing about this shape repeats.
-        if (!workload.geometryStable && !workload.denseMaskLikelyCacheable) {
-          return workload;
-        }
-        return _copyWithCostFacts(
-          workload,
-          geometryStable: false,
-          denseMaskLikelyCacheable: false,
-        );
-      case ContentMotionHint.transforming:
-        // The interesting one, and the reason it is not a synonym for
-        // `animating`. Local geometry repeats and only the matrix moves, so a
-        // retained mesh - keyed on local coordinates - survives every frame,
-        // while a dense mask - keyed on device coordinates - misses every
-        // frame. Stable **and** uncacheable is exactly that pair of facts, and
-        // no single boolean could have said it.
-        if (workload.geometryStable && !workload.denseMaskLikelyCacheable) {
-          return workload;
-        }
-        return _copyWithCostFacts(
-          workload,
-          geometryStable: true,
-          denseMaskLikelyCacheable: false,
-        );
-    }
-  }
-
-  static GpuPathWorkload _copyWithCostFacts(
-    GpuPathWorkload workload, {
-    required bool geometryStable,
-    required bool denseMaskLikelyCacheable,
-  }) =>
-      GpuPathWorkload(
-        pixelWidth: workload.pixelWidth,
-        pixelHeight: workload.pixelHeight,
-        segmentCount: workload.segmentCount,
-        isAnalyticPrimitive: workload.isAnalyticPrimitive,
-        denseMaskCacheHit: workload.denseMaskCacheHit,
-        denseMaskLikelyCacheable: denseMaskLikelyCacheable,
-        geometryStable: geometryStable,
-        hasSelfIntersections: workload.hasSelfIntersections,
-        tessellationEligible: workload.tessellationEligible,
-        sparseEncodedBytes: workload.sparseEncodedBytes,
-        sparseUploadBytes: workload.sparseUploadBytes,
-        sparseInstanceBytes: workload.sparseInstanceBytes,
-        sparseEstimatedDrawCalls: workload.sparseEstimatedDrawCalls,
-        sparseAtlasPageCount: workload.sparseAtlasPageCount,
-        tileCrossings: workload.tileCrossings,
-      );
+  ) =>
+      workload.withContentHint(hint);
 
   /// The quality actually in force for a subtree: the hint if it declared one,
   /// this policy otherwise.

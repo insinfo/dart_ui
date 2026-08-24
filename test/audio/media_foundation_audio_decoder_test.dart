@@ -28,6 +28,18 @@ void main() {
             ),
         isTrue,
       );
+      final List<double> samples = decoded.samples.asTypedList(
+        decoded.sampleCount,
+      );
+      expect(samples.every((double sample) => sample.isFinite), isTrue);
+      expect(
+        samples.fold<double>(
+          0,
+          (double peak, double sample) =>
+              sample.abs() > peak ? sample.abs() : peak,
+        ),
+        lessThanOrEqualTo(1.1),
+      );
     },
     skip: !Platform.isWindows,
   );

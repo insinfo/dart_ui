@@ -497,6 +497,16 @@ final class DisplayListPlayer {
     );
     _hints = contentHints;
     _hintCursor = 0;
+    // The sink is told, not just the field reset. Two frames make this
+    // necessary and neither is exotic: a list whose last command sat inside a
+    // declaration leaves no trailing span to close it, and a list that
+    // declares nothing at all never enters the cursor loop below - so without
+    // this a sink would carry one frame's advice into the next one and go on
+    // carrying it for ever. Free when nothing was declared, which is the
+    // common frame.
+    if (_contentHint != ContentHint.none) {
+      _hintSink?.onContentHintChanged(ContentHint.none);
+    }
     _contentHint = ContentHint.none;
     // Resource ids are frame-local: a cached paint from the previous list
     // would answer with the wrong colour under the same id.

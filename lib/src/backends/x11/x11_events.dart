@@ -22,9 +22,8 @@
 ///     server - the only way this code gets covered at all, since the CI
 ///     runner has Xvfb and no window manager.
 ///
-/// The core mouse bootstrap is normalised here. Keyboard input remains
-/// deferred to the module that owns XKB keymaps; XInput2 device state and
-/// high-resolution scroll axes are also intentionally deferred.
+/// The core mouse *and* keyboard bootstrap is normalised here. XInput2 device
+/// state and high-resolution scroll axes remain intentionally deferred.
 ///
 /// XDND and the selection transfer it rides on are *decoded* here and handled
 /// in `x11_drag_drop.dart`: [X11RawEvent] carries all five ClientMessage words
@@ -32,28 +31,33 @@
 /// to the drag-and-drop manager before routing anything by window. The
 /// clipboard - the other user of selections - is still deferred.
 ///
-/// ## Text input: the contract exists, this backend's source of it does not
+/// ## Text input: the contract, and where this backend's source of it is
 ///
 /// [TextInputEvent] is the platform-neutral contract for typed text, and it is
 /// deliberately *not* derivable from a key code - see its documentation for
-/// why. This backend emits neither [KeyEvent] nor [TextInputEvent] yet, and
-/// the missing piece has a name rather than a shrug:
+/// why. The source of truth for this backend is the **core protocol keyboard
+/// map** in `x11_keyboard.dart`: `GetKeyboardMapping` and `GetModifierMapping`
+/// give the keysym a keycode names at each level, [X11KeyboardState] applies
+/// the protocol's own selection rules to the event's `state` word, and
+/// [X11EventTranslator.translateKey] turns the resulting keysym into a
+/// character. `x11_keyboard.dart` records why that route was taken over XKB and
+/// libxkbcommon, and exactly what it does not cover.
 ///
-///   * **`xkb_state_key_get_utf8` from libxkbcommon**, driven by an
-///     `xkb_state` kept current from `xcb_xkb_*` events, is what turns the
-///     `detail` field of an [xcbKeyPress] into characters. It is the XCB-era
-///     equivalent of Xlib's `Xutf8LookupString`/`XmbLookupString`; those two
-///     need an `XIC` on an Xlib `Display`, and this backend speaks raw XCB, so
-///     they are not reachable from here without also opening libX11.
-///   * The result is UTF-8, so it is decoded to a Dart [String] directly and
-///     fed to a [TextInputEvent] whole. [TextInputAssembler] is for the
-///     UTF-16-per-message platforms (Win32); X11 does not need it.
-///   * Composition (`ibus`/`fcitx` over XIM or the text-input-v3 protocol)
-///     stays deferred with the rest of IME.
+///   * The keysym is Unicode-valued, so a Dart [String] comes straight out of
+///     it. [TextInputAssembler] is for the UTF-16-per-message platforms
+///     (Win32); X11 does not need it.
+///   * **Dead keys and Compose are not the keymap's job** and are not faked
+///     here: a [ComposeEngine] built from the machine's own `~/.XCompose` or
+///     locale table sits in front of the keysym-to-text step, exactly as it
+///     does on Wayland. `dead_acute` then `a` is two keysyms and one character,
+///     and no keymap of any kind will join them.
+///   * Full composition (`ibus`/`fcitx` over XIM) stays deferred with the rest
+///     of IME, so CJK remains unavailable on this backend. Latin accents do not
+///     need it.
 ///
-/// Until libxkbcommon is bound, [xcbKeyPress] is consumed and dropped below,
-/// which is why typing into an X11 window does nothing at all rather than
-/// doing something wrong.
+/// A key whose keysym cannot be resolved still produces its [KeyEvent], with
+/// the physical keycode, and produces no text. That is the contract: a backend
+/// that cannot translate must stay silent rather than guess.
 library;
 
 import 'dart:ffi';
@@ -61,8 +65,10 @@ import 'dart:ffi';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/compose_sequences.dart';
 import '../../platform/input_events.dart';
 import '../../platform/window_events.dart';
+import 'x11_keyboard.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
 
@@ -100,8 +106,26 @@ final class X11RawEvent {
   /// contiguous region. Zero means this is the last one.
   int count = 0;
 
-  /// FocusIn/FocusOut `mode`, PropertyNotify `state`.
+  /// FocusIn/FocusOut `mode`, PropertyNotify `state`, MappingNotify `request`.
   int mode = 0;
+
+  /// The modifier mask of a key, button or crossing event - byte 28 of those
+  /// events, the `state` field.
+  ///
+  /// Not the same thing as [mode], and separate from it on purpose: `state` is
+  /// the eight-bit set of modifiers that were *already* held when the key went
+  /// down, and it is what decides which of a keycode's keysyms the user meant.
+  /// A single field reused for both would make Shift and a focus mode
+  /// indistinguishable, which is a bug that types the wrong character.
+  int state = 0;
+
+  /// True when this [xcbKeyPress] is the server repeating a held key rather
+  /// than a fresh press.
+  ///
+  /// Set by [X11KeyRepeatFilter], never by [decodeFrom]: the wire carries no
+  /// repeat flag at all without XKB's `DetectableAutoRepeat`, so it is deduced
+  /// from the release/press pair the server sends instead.
+  bool repeat = false;
 
   /// ClientMessage `type`, PropertyNotify `atom`.
   int atom = 0;
@@ -166,6 +190,8 @@ final class X11RawEvent {
     height = 0;
     count = 0;
     mode = 0;
+    state = 0;
+    repeat = false;
     atom = 0;
     data0 = 0;
     data1 = 0;
@@ -264,9 +290,58 @@ final class X11RawEvent {
         window = readU32(event, 12);
         x = readI16(event, 24);
         y = readI16(event, 26);
+        // Byte 28 is `state`: the modifiers held *before* this transition, so
+        // the Shift of a Shift+A arrives set on the `A` and clear on the Shift
+        // itself. That is the field the keysym is chosen with.
+        state = readU16(event, 28);
+      case xcbMappingNotify:
+        // MappingNotify names no window at all - byte 4 is `request`, not a
+        // resource - so it must not fall through to the default branch, which
+        // would report a request code as the window the event was for and
+        // route the notice to whichever window happened to have that id.
+        mode = event[4];
+        // `first-keycode` and `count` describe the range that changed. They are
+        // recorded but not acted on: re-reading the whole map costs one round
+        // trip on an event that arrives when a user changes their layout, and a
+        // partial update would have to merge two maps with different widths.
+        x = event[5];
+        count = event[6];
       default:
         window = readU32(event, 4);
     }
+  }
+
+  /// Copies every field from [other]. Used by [X11KeyRepeatFilter], which has
+  /// to hold one event back while the next one decides what it was.
+  void copyFrom(X11RawEvent other) {
+    type = other.type;
+    synthetic = other.synthetic;
+    detail = other.detail;
+    sequence = other.sequence;
+    timestamp = other.timestamp;
+    window = other.window;
+    x = other.x;
+    y = other.y;
+    width = other.width;
+    height = other.height;
+    count = other.count;
+    mode = other.mode;
+    state = other.state;
+    repeat = other.repeat;
+    atom = other.atom;
+    data0 = other.data0;
+    data1 = other.data1;
+    data2 = other.data2;
+    data3 = other.data3;
+    data4 = other.data4;
+    selection = other.selection;
+    target = other.target;
+    property = other.property;
+    requestor = other.requestor;
+    errorCode = other.errorCode;
+    majorOpcode = other.majorOpcode;
+    minorOpcode = other.minorOpcode;
+    resourceId = other.resourceId;
   }
 
   /// A human-readable line for an error event. Used by the diagnostics ring so

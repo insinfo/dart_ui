@@ -7,6 +7,7 @@
 /// file makes that per-draw policy explicit and testable without a GPU.
 library;
 
+import '../../graphics/content_hint.dart';
 import '../renderer.dart';
 
 /// The concrete strategy selected for one path draw.
@@ -152,6 +153,104 @@ final class GpuPathWorkload {
   /// Null when the backend has not measured it. Those callers keep the older
   /// transfer-bytes rule, which is documented on the selector as superseded.
   final int? tileCrossings;
+
+  /// This workload as the application's advice about the subtree describes
+  /// it.
+  ///
+  /// **The whole contract of a hint lives in this method, so it is short on
+  /// purpose.** Exactly two fields can move, and both are *cost estimates*:
+  ///
+  ///   * [geometryStable] - will this shape be the same next frame;
+  ///   * [denseMaskLikelyCacheable] - would the atlas be caching it by now.
+  ///
+  /// Nothing else is touched. A hint cannot set [tessellationEligible] (the
+  /// tessellator decides that by inspecting the path, and a wrong answer draws
+  /// a wrong shape), cannot clear [hasSelfIntersections], cannot change the
+  /// measured sparse costs or [tileCrossings], and - because this takes no
+  /// capabilities anywhere near it - cannot enable a route the device did not
+  /// report. A wrong hint therefore selects a route that is legal, correct and
+  /// slower, which is the promise `content_hint.dart` makes.
+  ///
+  /// [denseMaskCacheHit] is deliberately left alone even though it looks like
+  /// a cost fact: it is a *measurement* of the atlas, and overriding it would
+  /// make the selector believe in a resident mask that does not exist - or
+  /// throw away one that does.
+  ///
+  /// It lives on the workload rather than beside the policy that used to own
+  /// it because the copy has to enumerate every field of this class: a new
+  /// cost fact added here and forgotten there would be silently dropped by
+  /// every hinted draw, and only a method inside the class fails to compile
+  /// when that happens.
+  ///
+  /// Returns `this` when the hint says nothing or says nothing new, so the
+  /// seam costs one comparison and no allocation on the overwhelmingly common
+  /// path.
+  GpuPathWorkload withContentHint(ContentHint hint) {
+    switch (hint.motion) {
+      case ContentMotionHint.unspecified:
+        return this;
+      case ContentMotionHint.staticContent:
+        // Both facts, because `staticContent` declares that geometry **and
+        // transform** repeat - see `ContentMotionHint.staticContent`. The
+        // atlas keys on device space, so it is the transform half that makes
+        // the mask cacheable, and a declaration that moved only
+        // `geometryStable` would leave the first frame of a static subtree
+        // exactly where it was: judged fresh, promoted to a route that never
+        // populates the atlas, and therefore still not cached on the second
+        // frame either.
+        //
+        // The cost of being wrong here is the shape of every cost in this
+        // file: a moving subtree declared static goes to the atlas, misses,
+        // and re-rasterises - one frame's work, never a different picture.
+        if (geometryStable && denseMaskLikelyCacheable) return this;
+        return _withCostFacts(
+          geometryStable: true,
+          denseMaskLikelyCacheable: true,
+        );
+      case ContentMotionHint.animating:
+        // The coverage itself is new every frame, so no cache can hit and
+        // nothing about this shape repeats.
+        if (!geometryStable && !denseMaskLikelyCacheable) return this;
+        return _withCostFacts(
+          geometryStable: false,
+          denseMaskLikelyCacheable: false,
+        );
+      case ContentMotionHint.transforming:
+        // The interesting one, and the reason it is not a synonym for
+        // `animating`. Local geometry repeats and only the matrix moves, so a
+        // retained mesh - keyed on local coordinates - survives every frame,
+        // while a dense mask - keyed on device coordinates - misses every
+        // frame. Stable **and** uncacheable is exactly that pair of facts, and
+        // no single boolean could have said it.
+        if (geometryStable && !denseMaskLikelyCacheable) return this;
+        return _withCostFacts(
+          geometryStable: true,
+          denseMaskLikelyCacheable: false,
+        );
+    }
+  }
+
+  GpuPathWorkload _withCostFacts({
+    required bool geometryStable,
+    required bool denseMaskLikelyCacheable,
+  }) =>
+      GpuPathWorkload(
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+        segmentCount: segmentCount,
+        isAnalyticPrimitive: isAnalyticPrimitive,
+        denseMaskCacheHit: denseMaskCacheHit,
+        denseMaskLikelyCacheable: denseMaskLikelyCacheable,
+        geometryStable: geometryStable,
+        hasSelfIntersections: hasSelfIntersections,
+        tessellationEligible: tessellationEligible,
+        sparseEncodedBytes: sparseEncodedBytes,
+        sparseUploadBytes: sparseUploadBytes,
+        sparseInstanceBytes: sparseInstanceBytes,
+        sparseEstimatedDrawCalls: sparseEstimatedDrawCalls,
+        sparseAtlasPageCount: sparseAtlasPageCount,
+        tileCrossings: tileCrossings,
+      );
 
   int get denseMaskBytes => pixelWidth * pixelHeight;
 
@@ -312,10 +411,46 @@ final class GpuPathStrategySelector {
   /// still wins outright: that branch runs first and costs nothing at all.
   final int stencilMinimumDenseMaskBytes;
 
+  /// The strategy for one draw.
+  ///
+  /// ## Where [hint] enters, and the precedence it does not get
+  ///
+  /// [hint] is what the application declared about the subtree this draw is
+  /// in - `ContentHintScope` in the widget tree, carried beside the op stream
+  /// and delivered at the sink boundary. It exists because the one thing the
+  /// facts below cannot contain is what happens *next*: a card that has been
+  /// still for twenty-six frames and a card one frame into a pinch-zoom
+  /// present identical evidence and want opposite answers. The repetition
+  /// model in `gpu_path_repetition.dart` infers that from history, which
+  /// answers a frame late and cannot tell "stopped" from "about to move
+  /// again".
+  ///
+  /// **It is advice, and the ordering here is what makes that true.** The
+  /// hint is applied to the *cost* facts only, by
+  /// [GpuPathWorkload.withContentHint], and the two branches it could
+  /// plausibly have wanted to override run against facts it cannot move:
+  ///
+  ///   1. an analytic primitive stays analytic. Closed-form shader coverage
+  ///      is exact and cheaper than everything below it, and no declaration
+  ///      about motion changes either half of that;
+  ///   2. a **resident** mask still wins. `denseMaskCacheHit` is a
+  ///      measurement of the atlas, not a prediction, and a mask that is
+  ///      already there costs one quad and no transfer however the subtree is
+  ///      moving. An `animating` hint that threw it away would be the one
+  ///      case where a wrong hint cost more than the frame it was meant to
+  ///      save.
+  ///
+  /// Everything after that - the repetition gate, the
+  /// `crossings < k * area` rule, the tessellation and stencil gates - reads
+  /// the adjusted workload, and the measured terms of the cost rule are
+  /// untouched: a hinted draw still has to *win* on crossings against area to
+  /// be promoted to sparse. So a wrong hint moves a draw between routes that
+  /// were already legal for it and can only cost frame time.
   GpuPathStrategyDecision select(
     GpuPathWorkload workload,
-    GpuPathStrategyCapabilities capabilities,
-  ) {
+    GpuPathStrategyCapabilities capabilities, {
+    ContentHint hint = ContentHint.none,
+  }) {
     workload.validate();
 
     if (workload.isAnalyticPrimitive && capabilities.analyticPrimitives) {
@@ -331,6 +466,11 @@ final class GpuPathStrategySelector {
         'the exact dense mask is already resident in the atlas',
       );
     }
+
+    // Only here, and only onto the two cost estimates. Above this line are
+    // the two facts a hint is not allowed to overrule; below it, everything
+    // reads `workload`, which is now what the application said it is.
+    workload = workload.withContentHint(hint);
 
     // A draw that has repeated belongs to the atlas, and this has to come
     // before *every* experimental route rather than being priced against each.

@@ -264,6 +264,7 @@ final class GlRenderDevice
   final NativeHeap _heap;
   final RendererInfo _info;
   final int _maxTextureSize;
+
   /// Whether the sparse executor should exist. Cleared when an *automatic*
   /// attempt fails, which is what keeps a missing optimisation from becoming a
   /// missing renderer.
@@ -2540,6 +2541,11 @@ final class GlOffscreenTarget
         _readback.height.toDouble(),
       ),
       deviceTransform: deviceTransform,
+      // The application's per-subtree advice, carried beside the op stream so
+      // that a list encoded with it is byte for byte the list encoded without
+      // it. `GpuRasterSink` is the only sink here that reads it; every other
+      // consumer is unable to tell the difference. See `content_hint.dart`.
+      contentHints: list.contentHints,
     );
     return present(frame);
   }

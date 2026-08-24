@@ -37,8 +37,6 @@
 /// 6.2 exists to prevent.
 library;
 
-export 'src/audio/audio.dart';
-
 import 'src/app/application.dart' as app;
 import 'src/backends/default_platform_resolver_stub.dart'
     if (dart.library.io) 'src/backends/default_platform_resolver.dart';
@@ -50,10 +48,13 @@ export 'src/animation/curves.dart';
 export 'src/animation/keyframes.dart';
 export 'src/animation/simulation.dart';
 export 'src/app/app.dart' hide runApp;
+export 'src/audio/audio.dart';
 export 'src/backends/default_platform_resolver_stub.dart'
     if (dart.library.io) 'src/backends/default_platform_resolver.dart';
 export 'src/backends/headless/headless_backend.dart';
 export 'src/backends/headless/headless_test_support.dart';
+export 'src/cdr/document/cdr_document.dart';
+export 'src/cdr/document/cdr_translator.dart';
 export 'src/crypto/asn1/der.dart';
 export 'src/crypto/certificate_provider.dart';
 export 'src/crypto/crypto.dart';
@@ -95,6 +96,19 @@ export 'src/graphics/image/raster_codec.dart';
 export 'src/graphics/image/raster_formats.dart';
 export 'src/graphics/svg/svg_path.dart';
 export 'src/graphics/svg/svg_picture.dart';
+export 'src/graphics/vector/bezier.dart';
+export 'src/graphics/vector/constants.dart' hide FillRule, TextAlign;
+export 'src/graphics/vector/contour.dart';
+export 'src/graphics/vector/doc_methods.dart';
+export 'src/graphics/vector/document.dart';
+export 'src/graphics/vector/document_object.dart';
+export 'src/graphics/vector/pixmap.dart';
+export 'src/graphics/vector/primitives.dart';
+export 'src/graphics/vector/selectable_objects.dart';
+export 'src/graphics/vector/serialization/vector_svg_codec.dart';
+export 'src/graphics/vector/shaping.dart';
+export 'src/graphics/vector/structural_objects.dart';
+export 'src/graphics/vector/style.dart';
 export 'src/layout/alignment.dart';
 export 'src/layout/box_constraints.dart';
 export 'src/layout/edge_insets.dart';
@@ -113,6 +127,7 @@ export 'src/layout/render_proxy_box.dart';
 export 'src/layout/render_stack.dart';
 export 'src/layout/render_viewport.dart';
 export 'src/layout/render_wrap.dart';
+export 'src/pdf/export/vector_pdf_exporter.dart';
 export 'src/platform/backend_selection.dart';
 export 'src/platform/drag_drop.dart';
 export 'src/platform/file_picker.dart';
@@ -209,6 +224,7 @@ export 'src/widgets/safe_area.dart';
 export 'src/widgets/scroll_view.dart';
 export 'src/widgets/scrollbar.dart';
 export 'src/widgets/semantics.dart';
+export 'src/widgets/signal_visualization.dart';
 export 'src/widgets/split_view.dart';
 export 'src/widgets/style.dart';
 export 'src/widgets/svg.dart';
@@ -216,35 +232,18 @@ export 'src/widgets/tabs.dart';
 export 'src/widgets/theme.dart';
 export 'src/widgets/toolbar.dart';
 export 'src/widgets/tree_view.dart';
-export 'src/widgets/widget.dart';
-
-export 'src/graphics/vector/constants.dart' hide FillRule, TextAlign;
-export 'src/graphics/vector/document_object.dart';
-export 'src/graphics/vector/document.dart';
-export 'src/graphics/vector/structural_objects.dart';
-export 'src/graphics/vector/selectable_objects.dart';
-export 'src/graphics/vector/primitives.dart';
-export 'src/graphics/vector/pixmap.dart';
-export 'src/graphics/vector/style.dart';
-export 'src/graphics/vector/doc_methods.dart';
-export 'src/pdf/export/vector_pdf_exporter.dart';
-export 'src/graphics/vector/serialization/vector_svg_codec.dart';
-export 'src/graphics/vector/bezier.dart';
-export 'src/graphics/vector/contour.dart';
-export 'src/graphics/vector/shaping.dart';
-export 'src/cdr/document/cdr_document.dart';
-export 'src/cdr/document/cdr_translator.dart';
-export 'src/widgets/vector_editor/vector_canvas.dart';
-export 'src/widgets/vector_editor/vector_renderer.dart';
-export 'src/widgets/vector_editor/selection.dart';
-export 'src/widgets/vector_editor/snap_manager.dart';
-export 'src/widgets/vector_editor/ruler.dart';
-export 'src/widgets/vector_editor/tool_controller.dart';
-export 'src/widgets/vector_editor/text_edit_controller.dart';
-export 'src/widgets/vector_editor/text_metrics.dart';
 export 'src/widgets/vector_editor/color_controls.dart';
 export 'src/widgets/vector_editor/fill_controls.dart';
+export 'src/widgets/vector_editor/ruler.dart';
+export 'src/widgets/vector_editor/selection.dart';
+export 'src/widgets/vector_editor/snap_manager.dart';
 export 'src/widgets/vector_editor/stroke_controls.dart';
+export 'src/widgets/vector_editor/text_edit_controller.dart';
+export 'src/widgets/vector_editor/text_metrics.dart';
+export 'src/widgets/vector_editor/tool_controller.dart';
+export 'src/widgets/vector_editor/vector_canvas.dart';
+export 'src/widgets/vector_editor/vector_renderer.dart';
+export 'src/widgets/widget.dart';
 
 /// Mounts [rootWidget] using production platform defaults.
 ///

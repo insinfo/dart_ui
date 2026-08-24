@@ -1,5 +1,5 @@
 /// Translator between CorelDRAW binary structures and the high-level [VectorDocument] model.
-
+library;
 
 import 'dart:convert';
 import 'dart:typed_data';
@@ -92,7 +92,8 @@ class CdrTranslator {
   }
 
   /// Encodes a [VectorDocument] into a native binary CorelDRAW (.cdr) file.
-  static Uint8List toCdrBytes(VectorDocument doc, {CdrVersion version = CdrVersion.v6}) {
+  static Uint8List toCdrBytes(VectorDocument doc,
+      {CdrVersion version = CdrVersion.v6}) {
     final subchunks = <Uint8List>[];
 
     // 1. 'vrsn' chunk (Version number: 600 for CDR6)
@@ -158,7 +159,8 @@ class CdrTranslator {
     return RiffWriter.writeRiff('CDR6', subchunks);
   }
 
-  static Uint8List _encodeCrveChunk(List<VectorPath> paths, List<double> trafo) {
+  static Uint8List _encodeCrveChunk(
+      List<VectorPath> paths, List<double> trafo) {
     final bb = BytesBuilder();
 
     // Total knot count
@@ -181,8 +183,8 @@ class CdrTranslator {
           final cp1 = applyTrafoToPoint(pt.control1, trafo);
           final cp2 = applyTrafoToPoint(pt.control2, trafo);
           final end = applyTrafoToPoint(pt.endpoint, trafo);
-          bb.add(_encodeNode(
-              2, end.dx, end.dy, cp1.dx, cp1.dy, cp2.dx, cp2.dy));
+          bb.add(
+              _encodeNode(2, end.dx, end.dy, cp1.dx, cp1.dy, cp2.dx, cp2.dy));
           prevPt = end;
         } else if (pt is Offset) {
           final end = applyTrafoToPoint(pt, trafo);

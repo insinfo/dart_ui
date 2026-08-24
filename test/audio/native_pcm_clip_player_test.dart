@@ -24,7 +24,10 @@ void main() {
     });
 
     player.process(output, 4);
-    expect(output.asTypedList(4), <double>[0.1, 0.2, 0.3, 0]);
+    expect(output[0], closeTo(0.1, 0.0001));
+    expect(output[1], closeTo(0.2, 0.0001));
+    expect(output[2], closeTo(0.3, 0.0001));
+    expect(output[3], 0);
     expect(player.playing, isFalse);
     expect(player.isAtEnd, isTrue);
 

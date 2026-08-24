@@ -30,9 +30,8 @@ final class NativePcmClipPlayer
   int _positionFrames = 0;
 
   int get positionFrames => _positionFrames;
-  double get positionFraction => clip.frameCount == 0
-      ? 0
-      : _positionFrames / clip.frameCount;
+  double get positionFraction =>
+      clip.frameCount == 0 ? 0 : _positionFrames / clip.frameCount;
   bool get isAtEnd => clip.frameCount > 0 && _positionFrames >= clip.frameCount;
 
   void seekToFrame(int frame) {
@@ -65,9 +64,8 @@ final class NativePcmClipPlayer
       }
       final int remainingOutput = frames - outputFrame;
       final int remainingClip = clip.frameCount - _positionFrames;
-      final int copied = remainingOutput < remainingClip
-          ? remainingOutput
-          : remainingClip;
+      final int copied =
+          remainingOutput < remainingClip ? remainingOutput : remainingClip;
       for (int frame = 0; frame < copied; frame++) {
         final int sourceBase = (_positionFrames + frame) * channels;
         final int outputBase = (outputFrame + frame) * channels;

@@ -4,6 +4,7 @@ library;
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/transform2d.dart';
+import '../../graphics/content_hint.dart';
 import '../path/fill_rule.dart';
 import 'gpu_path_strategy.dart';
 import 'gpu_path_workload_builder.dart';
@@ -101,11 +102,29 @@ final class GpuPathPlanningProposal {
     required this.label,
     required this.workload,
     required this.candidate,
+    this.hint = ContentHint.none,
   });
 
   final String label;
+
+  /// The measured facts, **before** [hint] was applied.
+  ///
+  /// Raw on purpose: a telemetry event has to be able to say what was
+  /// measured and what was declared separately, or a support log cannot tell a
+  /// route chosen from evidence apart from one chosen from advice.
+  /// [effectiveWorkload] is the pair combined, which is what the selector
+  /// actually read.
   final GpuPathWorkload workload;
   final GpuPathStrategyDecision candidate;
+
+  /// What the application declared about the subtree this draw is in.
+  final ContentHint hint;
+
+  /// [workload] as the selector saw it.
+  GpuPathWorkload get effectiveWorkload => workload.withContentHint(hint);
+
+  /// True when the hint actually moved a cost fact for this draw.
+  bool get hintChangedWorkload => !identical(effectiveWorkload, workload);
 }
 
 /// One advisory decision and the strategy that actually produced its pixels.
@@ -114,12 +133,18 @@ final class GpuPathPlanningEvent {
     required this.label,
     required this.workload,
     required this.candidate,
+    this.hint = ContentHint.none,
     this.executedStrategy = GpuPathStrategy.coverageAtlas,
   });
 
   final String label;
   final GpuPathWorkload workload;
   final GpuPathStrategyDecision candidate;
+
+  /// The application's advice that was in force for this draw. Reported
+  /// beside the measured [workload] rather than folded into it, so a log can
+  /// separate what was measured from what was declared.
+  final ContentHint hint;
 
   /// The strategy that was actually recorded for ordered submission.
   ///
@@ -192,6 +217,7 @@ final class GpuPathPlanningTelemetry {
     required FillRule fillRule,
     required bool denseMaskCacheHit,
     GpuPathDrawTraits traits = const GpuPathDrawTraits(),
+    ContentHint hint = ContentHint.none,
     GpuPathStrategy executedStrategy = GpuPathStrategy.coverageAtlas,
   }) {
     final GpuPathPlanningProposal? proposal = plan(
@@ -202,6 +228,7 @@ final class GpuPathPlanningTelemetry {
       fillRule: fillRule,
       denseMaskCacheHit: denseMaskCacheHit,
       traits: traits,
+      hint: hint,
     );
     if (proposal == null) return null;
     return complete(proposal, executedStrategy: executedStrategy);
@@ -216,6 +243,11 @@ final class GpuPathPlanningTelemetry {
     required FillRule fillRule,
     required bool denseMaskCacheHit,
     GpuPathDrawTraits traits = const GpuPathDrawTraits(),
+    // What the application declared about the subtree, delivered at the sink
+    // boundary by `ContentHintAwareSink`. `ContentHint.none` - the default -
+    // is a backend that has not wired the seam, and reproduces exactly the
+    // behaviour this class had before the hint existed.
+    ContentHint hint = ContentHint.none,
   }) {
     observationCount++;
     try {
@@ -245,7 +277,12 @@ final class GpuPathPlanningTelemetry {
       final proposal = GpuPathPlanningProposal(
         label: label,
         workload: workload,
-        candidate: selector.select(workload, capabilities),
+        hint: hint,
+        // The hint goes to the selector rather than being applied here: the
+        // precedence rule - what a hint may and may not overrule - belongs
+        // beside the branches it is ordered against. See
+        // [GpuPathStrategySelector.select].
+        candidate: selector.select(workload, capabilities, hint: hint),
       );
       lastError = null;
       lastStackTrace = null;
@@ -268,6 +305,7 @@ final class GpuPathPlanningTelemetry {
       label: proposal.label,
       workload: proposal.workload,
       candidate: proposal.candidate,
+      hint: proposal.hint,
       executedStrategy: executedStrategy,
     );
     lastEvent = event;

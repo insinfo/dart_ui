@@ -726,6 +726,15 @@ final class _SwitchState extends State<Switch> {
 // Slider and progress
 // ---------------------------------------------------------------------------
 
+/// Direction in which a [Slider] increases.
+enum SliderOrientation {
+  /// Minimum at the left, maximum at the right.
+  horizontal,
+
+  /// Minimum at the bottom, maximum at the top, as on mixer faders.
+  vertical,
+}
+
 final class Slider extends StatefulWidget {
   const Slider({
     super.key,
@@ -733,6 +742,7 @@ final class Slider extends StatefulWidget {
     this.min = 0,
     this.max = 1,
     this.step = 0.1,
+    this.orientation = SliderOrientation.horizontal,
     this.onChanged,
   });
 
@@ -740,6 +750,7 @@ final class Slider extends StatefulWidget {
   final double min;
   final double max;
   final double step;
+  final SliderOrientation orientation;
   final void Function(double value)? onChanged;
 
   @override
@@ -763,6 +774,7 @@ final class _SliderState extends State<Slider> {
           min: widget.min,
           max: widget.max,
           step: widget.step,
+          orientation: widget.orientation,
           onChanged: widget.onChanged,
           theme: Theme.of(context),
           focusNode: _focusNode,
@@ -776,6 +788,7 @@ final class _SliderRenderWidget extends RenderObjectWidget {
     required this.min,
     required this.max,
     required this.step,
+    required this.orientation,
     required this.onChanged,
     required this.theme,
     required this.focusNode,
@@ -785,6 +798,7 @@ final class _SliderRenderWidget extends RenderObjectWidget {
   final double min;
   final double max;
   final double step;
+  final SliderOrientation orientation;
   final void Function(double value)? onChanged;
   final ThemeData theme;
   final FocusNode focusNode;
@@ -798,6 +812,7 @@ final class _SliderRenderWidget extends RenderObjectWidget {
         min: min,
         max: max,
         step: step,
+        orientation: orientation,
         onChanged: onChanged,
       )
         ..theme = theme
@@ -811,6 +826,7 @@ final class _SliderRenderWidget extends RenderObjectWidget {
       ..min = min
       ..max = max
       ..step = step
+      ..orientation = orientation
       ..onChanged = onChanged
       ..theme = theme
       ..focusNode = focusNode
@@ -824,10 +840,12 @@ final class RenderSlider extends RenderBox with ControlBehavior {
     required double min,
     required double max,
     required this.step,
+    required SliderOrientation orientation,
     this.onChanged,
   })  : _value = value,
         _min = min,
-        _max = max;
+        _max = max,
+        _orientation = orientation;
 
   static const double trackThickness = 4.0;
   static const double thumbExtent = 16.0;
@@ -837,6 +855,7 @@ final class RenderSlider extends RenderBox with ControlBehavior {
   double _max;
   double step;
   void Function(double value)? onChanged;
+  SliderOrientation _orientation;
 
   double get value => _value;
 
@@ -862,6 +881,14 @@ final class RenderSlider extends RenderBox with ControlBehavior {
     markNeedsPaint();
   }
 
+  SliderOrientation get orientation => _orientation;
+
+  set orientation(SliderOrientation value) {
+    if (value == _orientation) return;
+    _orientation = value;
+    markNeedsLayout();
+  }
+
   /// Where the value sits in its range, 0 to 1. Guards a zero-width range,
   /// which would otherwise divide by zero on a slider with min == max.
   double get normalized {
@@ -881,7 +908,9 @@ final class RenderSlider extends RenderBox with ControlBehavior {
 
   @override
   void performLayout() => size = constraints.constrain(
-        Size(140, theme.effectiveControlHeight),
+        _orientation == SliderOrientation.horizontal
+            ? Size(140, theme.effectiveControlHeight)
+            : Size(theme.effectiveControlHeight, 140),
       );
 
   @override
@@ -919,10 +948,13 @@ final class RenderSlider extends RenderBox with ControlBehavior {
     // slider's own space and then clamping onto the track is what lets the
     // drag continue when the mouse is above, below, or past the end of it.
     final Offset local = globalToLocal(event.logicalPosition);
-    final double usable =
-        (size.width - thumbExtent).clamp(1.0, double.infinity);
-    final double fraction =
-        ((local.dx - thumbExtent / 2) / usable).clamp(0.0, 1.0);
+    final double usable = (_orientation == SliderOrientation.horizontal
+            ? size.width - thumbExtent
+            : size.height - thumbExtent)
+        .clamp(1.0, double.infinity);
+    final double fraction = _orientation == SliderOrientation.horizontal
+        ? ((local.dx - thumbExtent / 2) / usable).clamp(0.0, 1.0)
+        : (1 - (local.dy - thumbExtent / 2) / usable).clamp(0.0, 1.0);
     _emit(_min + fraction * (_max - _min));
   }
 
@@ -955,6 +987,10 @@ final class RenderSlider extends RenderBox with ControlBehavior {
 
   @override
   void paint(DisplayList list, Offset offset) {
+    if (_orientation == SliderOrientation.vertical) {
+      _paintVertical(list, offset);
+      return;
+    }
     final double centerY =
         (offset.dy + size.height / 2 - trackThickness / 2).roundToDouble();
     final Rect track = Rect.fromLTWH(
@@ -983,6 +1019,63 @@ final class RenderSlider extends RenderBox with ControlBehavior {
     final Rect thumb = Rect.fromLTWH(
       thumbLeft,
       (offset.dy + size.height / 2 - thumbExtent / 2).roundToDouble(),
+      thumbExtent,
+      thumbExtent,
+    );
+    paintRoundedFill(
+      list,
+      thumb,
+      !enabled ? theme.disabledSurface : theme.surfaceAlternate,
+      thumbExtent / 2,
+    );
+    paintRoundedBorder(
+      list,
+      thumb,
+      !enabled
+          ? theme.disabledForeground
+          : isPressed
+              ? theme.accentPressed
+              : isHovered
+                  ? theme.accentHovered
+                  : theme.accent,
+      thumbExtent / 2,
+      width: 2,
+    );
+    paintFocusRing(list, thumb, radius: thumbExtent / 2);
+  }
+
+  void _paintVertical(DisplayList list, Offset offset) {
+    final double centerX =
+        (offset.dx + size.width / 2 - trackThickness / 2).roundToDouble();
+    final Rect track = Rect.fromLTWH(
+      centerX,
+      offset.dy,
+      trackThickness,
+      size.height,
+    );
+    const double trackRadius = trackThickness / 2;
+    paintRoundedFill(list, track, theme.disabledSurface, trackRadius);
+    final double usable =
+        (size.height - thumbExtent).clamp(0.0, double.infinity);
+    final double thumbTop =
+        (offset.dy + usable * (1 - normalized)).roundToDouble();
+    final double filledTop = thumbTop + thumbExtent / 2;
+    if (filledTop < offset.dy + size.height) {
+      paintRoundedFill(
+        list,
+        Rect.fromLTRB(
+          centerX,
+          filledTop,
+          centerX + trackThickness,
+          offset.dy + size.height,
+        ),
+        enabled ? theme.accent : theme.disabledForeground,
+        trackRadius,
+      );
+    }
+    final Rect thumb = Rect.fromLTWH(
+      (offset.dx + size.width / 2 - thumbExtent / 2).roundToDouble(),
+      thumbTop,
       thumbExtent,
       thumbExtent,
     );
@@ -1094,8 +1187,7 @@ final class RenderProgressBar extends RenderBox with ControlBehavior {
     );
     final double radius = rect.height / 2;
     paintRoundedFill(list, rect, theme.disabledSurface, radius);
-    final double filled =
-        (rect.width * _value.clamp(0.0, 1.0)).roundToDouble();
+    final double filled = (rect.width * _value.clamp(0.0, 1.0)).roundToDouble();
     if (filled > 0) {
       paintRoundedFill(
         list,

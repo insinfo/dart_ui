@@ -1,4 +1,3 @@
-
 import '../../geometry/offset.dart';
 import 'bezier.dart';
 import 'constants.dart';
@@ -7,7 +6,8 @@ import 'style.dart';
 
 /// Generates a filled outline path corresponding to stroking [sourcePath]
 /// with the given [stroke] descriptor.
-List<VectorPath> strokeToOutline(VectorPath sourcePath, StrokeDescriptor stroke) {
+List<VectorPath> strokeToOutline(
+    VectorPath sourcePath, StrokeDescriptor stroke) {
   if (stroke.isNone || sourcePath.points.isEmpty) return [];
 
   final halfWidth = stroke.width / 2.0;
@@ -37,7 +37,7 @@ List<VectorPath> strokeToOutline(VectorPath sourcePath, StrokeDescriptor stroke)
 
   for (var i = 0; i < n; i++) {
     Offset prevPt;
-    Offset currPt = polyline[i];
+    final Offset currPt = polyline[i];
     Offset nextPt;
 
     if (i == 0) {
@@ -69,9 +69,8 @@ List<VectorPath> strokeToOutline(VectorPath sourcePath, StrokeDescriptor stroke)
     // Normal to incoming segment
     final dIn = currPt - prevPt;
     final lenIn = dIn.distance;
-    final nIn = lenIn > 1e-6
-        ? Offset(-dIn.dy / lenIn, dIn.dx / lenIn)
-        : Offset.zero;
+    final nIn =
+        lenIn > 1e-6 ? Offset(-dIn.dy / lenIn, dIn.dx / lenIn) : Offset.zero;
 
     Offset avgNormal;
     if (i == 0 && !isClosed) {
@@ -102,7 +101,8 @@ List<VectorPath> strokeToOutline(VectorPath sourcePath, StrokeDescriptor stroke)
 
   // End cap (if open)
   if (!isClosed) {
-    _addCap(polyline.last, leftSide.last, rightSide.last, stroke.cap, resultPoints);
+    _addCap(
+        polyline.last, leftSide.last, rightSide.last, stroke.cap, resultPoints);
   }
 
   // Backward along the right side
@@ -112,7 +112,8 @@ List<VectorPath> strokeToOutline(VectorPath sourcePath, StrokeDescriptor stroke)
 
   // Start cap (if open)
   if (!isClosed) {
-    _addCap(polyline.first, rightSide.first, leftSide.first, stroke.cap, resultPoints);
+    _addCap(polyline.first, rightSide.first, leftSide.first, stroke.cap,
+        resultPoints);
   }
 
   return [
@@ -124,14 +125,16 @@ List<VectorPath> strokeToOutline(VectorPath sourcePath, StrokeDescriptor stroke)
   ];
 }
 
-void _addCap(Offset center, Offset from, Offset to, LineCap cap, List<Object> out) {
+void _addCap(
+    Offset center, Offset from, Offset to, LineCap cap, List<Object> out) {
   switch (cap) {
     case LineCap.butt:
       out.add(to);
     case LineCap.square:
       final d = from - to;
       final halfW = d.distance / 2.0;
-      final tangent = Offset(-d.dy / (2.0 * halfW), d.dx / (2.0 * halfW)) * halfW;
+      final tangent =
+          Offset(-d.dy / (2.0 * halfW), d.dx / (2.0 * halfW)) * halfW;
       out.add(from + tangent);
       out.add(to + tangent);
       out.add(to);

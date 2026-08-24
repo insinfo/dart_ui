@@ -79,10 +79,10 @@ void main() {
       final harness = _Harness();
       harness.frame();
 
-      expect(harness.sizeOf(EditorMenuBar)!.height,
-          ChromeMetrics.menuBarHeight);
-      expect(harness.sizeOf(StandardToolbar)!.height,
-          ChromeMetrics.toolbarHeight);
+      expect(
+          harness.sizeOf(EditorMenuBar)!.height, ChromeMetrics.menuBarHeight);
+      expect(
+          harness.sizeOf(StandardToolbar)!.height, ChromeMetrics.toolbarHeight);
       expect(harness.sizeOf(ContextPanel)!.height,
           ChromeMetrics.contextPanelHeight);
       expect(harness.sizeOf(DocumentTabs)!.height,
@@ -204,6 +204,30 @@ void main() {
     });
   });
 
+  group('large zoom text', () {
+    test('canvas text remains in the display list above 400 device pixels', () {
+      final harness = _Harness();
+      harness.frame();
+      // The sample title uses an 18 px face. At 3000% it becomes 540 px,
+      // beyond the former cutoff and beyond one 256 px GPU glyph plot.
+      harness.model.setZoom(30);
+      final DisplayList list = harness.frame();
+      final DisplayListReader reader = DisplayListReader(list);
+      final List<double> largeFontSizes = <double>[];
+      while (reader.moveNext()) {
+        if (reader.opcode != opDrawGlyphRun) continue;
+        final Object font = list.fontAt(reader.fontId);
+        if (font is ScaledTypeface && font.pixelSize > 400) {
+          largeFontSizes.add(font.pixelSize);
+        }
+      }
+
+      expect(largeFontSizes, contains(closeTo(540, 0.01)),
+          reason: 'zoom must change the raster route, not remove the text');
+      harness.dispose();
+    });
+  });
+
   group('the window is an editor, not a mock-up', () {
     test('every menu carries its rows, with shortcuts and reasons', () {
       final harness = _Harness();
@@ -226,7 +250,8 @@ void main() {
       );
 
       final file = catalog.menus.first.toMenuItems();
-      expect(file.any((item) => item.label == 'New' && item.shortcut == 'Ctrl+N'),
+      expect(
+          file.any((item) => item.label == 'New' && item.shortcut == 'Ctrl+N'),
           isTrue);
 
       // Nothing is selected, so Group must be disabled *and* say why - a
@@ -243,8 +268,10 @@ void main() {
       harness.frame();
       final model = harness.model;
 
-      expect(contextPluginsFor(model),
-          containsAll(<ContextPlugin>[ContextPlugin.page, ContextPlugin.units]));
+      expect(
+          contextPluginsFor(model),
+          containsAll(
+              <ContextPlugin>[ContextPlugin.page, ContextPlugin.units]));
 
       model.selectAll();
       harness.frame();
@@ -259,7 +286,8 @@ void main() {
       final harness = _Harness();
       harness.frame();
       final model = harness.model;
-      final rectangle = model.active.layer.children.whereType<VectorRectangle>().first;
+      final rectangle =
+          model.active.layer.children.whereType<VectorRectangle>().first;
       model.selection.select(rectangle);
       harness.frame();
 

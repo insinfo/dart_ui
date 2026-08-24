@@ -646,6 +646,10 @@ final class GlWindowTarget
       resources,
       deviceBounds: _surfaceRect,
       deviceTransform: deviceTransform,
+      // Same seam as `GlOffscreenTarget.renderDisplayList`: the window and a
+      // golden test have to make the same decisions, so both hand the player
+      // the list's hint table.
+      contentHints: list.contentHints,
     );
     return present(frame);
   }

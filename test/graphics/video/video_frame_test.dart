@@ -92,14 +92,14 @@ void main() {
         VideoPixelFormat.i420,
       ]) {
         expect(
-          () => VideoFrameFormat(
-              pixelFormat: pixelFormat, width: 31, height: 16),
+          () =>
+              VideoFrameFormat(pixelFormat: pixelFormat, width: 31, height: 16),
           throwsA(isA<ArgumentError>()),
           reason: '${pixelFormat.name} at an odd width',
         );
         expect(
-          () => VideoFrameFormat(
-              pixelFormat: pixelFormat, width: 32, height: 15),
+          () =>
+              VideoFrameFormat(pixelFormat: pixelFormat, width: 32, height: 15),
           throwsA(isA<ArgumentError>()),
           reason: '${pixelFormat.name} at an odd height',
         );
@@ -194,7 +194,7 @@ void main() {
       // picture rather than at the end of the last stride. Refusing that would
       // refuse most real frames.
       const int stride = 128;
-      final int shortBy = stride - 64;
+      const int shortBy = stride - 64;
       final frame = VideoFrame(
         format: nv12(64, 32),
         planes: <VideoPlane>[

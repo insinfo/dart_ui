@@ -81,6 +81,28 @@ void main() {
       expect(harness.value, 0.0);
       harness.dispose();
     });
+
+    test('a vertical slider increases from bottom to top', () {
+      final _SliderHarness harness = _SliderHarness(
+        orientation: SliderOrientation.vertical,
+      );
+      final RenderSlider slider = harness.slider;
+      final Offset origin = slider.globalOffset;
+
+      harness.pointerDown(Offset(
+        origin.dx + slider.size.width / 2,
+        origin.dy + slider.size.height - 2,
+      ));
+      final double nearBottom = harness.value;
+      harness.pointerMove(Offset(
+        origin.dx + slider.size.width / 2,
+        origin.dy + 2,
+      ));
+
+      expect(nearBottom, lessThan(0.1));
+      expect(harness.value, greaterThan(0.9));
+      harness.dispose();
+    });
   });
 
   group('a press that wanders off does not activate', () {
@@ -224,10 +246,16 @@ void main() {
 
 /// A slider inset by padding, so window space and slider space differ.
 final class _SliderHarness {
-  _SliderHarness() {
+  _SliderHarness({
+    this.orientation = SliderOrientation.horizontal,
+  }) {
     owner = BuildOwner(
       pipelineOwner: PipelineOwner(
-        rootConstraints: BoxConstraints.tight(const Size(300, 200)),
+        rootConstraints: BoxConstraints.tight(
+          orientation == SliderOrientation.vertical
+              ? const Size(300, 260)
+              : const Size(300, 200),
+        ),
       ),
     );
     _mount();
@@ -235,6 +263,7 @@ final class _SliderHarness {
   }
 
   late final BuildOwner owner;
+  final SliderOrientation orientation;
   double value = 0.5;
 
   void _mount() => owner.updateRoot(Padding(
@@ -243,6 +272,7 @@ final class _SliderHarness {
           const SizedBox(height: 40, child: Text('HEADER')),
           Slider(
             value: value,
+            orientation: orientation,
             onChanged: (double next) {
               value = next;
               _mount();

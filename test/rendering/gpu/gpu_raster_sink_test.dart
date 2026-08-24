@@ -678,20 +678,37 @@ void main() {
       expect(total, 12);
     });
 
-    test('a glyph too large for a plot names tiling, not flushing', () {
-      final atlas = GpuGlyphAtlas(width: 64, height: 64, plotSize: 32);
+    test('a glyph enlarged past 256 px falls back to a tiled outline', () {
+      // This reproduces the vector editor crash: a 16 px face enlarged to
+      // 352 px no longer fits a production-sized 256 px glyph plot. The mask
+      // atlas is also only 256 px, deliberately forcing the outline route to
+      // tile the visible shape instead of merely moving the same limit.
+      final atlas = GpuGlyphAtlas(width: 512, height: 512, plotSize: 256);
+      final masks = GpuMaskAtlas(width: 256, height: 256)..beginFrame();
       var flushes = 0;
       final sink = _sink(
         glyphAtlas: atlas,
-        fonts: _FixedFont(ahem.atSize(64)),
+        maskAtlas: masks,
+        maskTextureId: 17,
+        fonts: _FixedFont(font),
         onAtlasFlush: () => flushes++,
       );
-      expect(
-        () => _drawRun(sink, ids: <int>[letterX], offsets: <double>[0, 0]),
-        throwsA(isA<UnsupportedCapabilityError>()
-            .having((e) => e.detail, 'detail', contains('tiling'))),
+      _drawRun(
+        sink,
+        ids: <int>[letterX],
+        offsets: <double>[0, 0],
+        origin: const Offset(100, 400),
+        transform: const Transform2D.scaling(22, 22),
       );
-      expect(flushes, 0, reason: 'flushing cannot fix a glyph that never fits');
+
+      expect(atlas.lastFailure, GlyphAtlasFailure.glyphTooLarge);
+      expect(sink.batcher.quadCount, greaterThan(1),
+          reason: 'the glyph was tiled rather than dropped');
+      expect(sink.batcher.batchAt(0).textureId, 17,
+          reason: 'large coverage belongs to the mask/path atlas');
+      expect(flushes, greaterThan(0),
+          reason: 'tiles reuse the mask atlas only after submitting the '
+              'previous tile');
     });
 
     test('text and paths do not batch together', () {

@@ -1564,6 +1564,12 @@ void rasterizeDisplayList(
         framebuffer.height.toDouble(),
       )),
       deviceTransform: deviceTransform,
+      // Handed over even though nothing here reads it: `_RasterizerSink` does
+      // not implement `ContentHintAwareSink`, so the CPU renderer is the
+      // standing proof that a hint changes no pixel. Passing it means that
+      // proof is taken on the real path rather than on one where the table
+      // was quietly dropped before it could have had an effect.
+      contentHints: list.contentHints,
     );
   } finally {
     // Nothing is caught - a frame that cannot be interpreted must not be

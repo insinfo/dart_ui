@@ -294,7 +294,11 @@ class VectorRenderer {
     if (content.isEmpty) return;
     final descriptor = pending.object.style.textStyle;
     final pixelSize = descriptor.fontSize * zoom;
-    if (pixelSize < 3 || pixelSize > 400) return;
+    // Tiny text has no useful device coverage. Large text, however, must not
+    // be omitted: the GPU sink routes glyphs that outgrow its persistent
+    // atlas through scalable outlines and tiles the resulting mask. The old
+    // 400 px ceiling made text disappear at roughly 2200% zoom.
+    if (!pixelSize.isFinite || pixelSize < 3) return;
     final face = FontRegistry.instance
         .uiFont(pixelSize, weight: descriptor.bold ? 700 : 400);
     if (face == null) return;
@@ -350,8 +354,7 @@ class VectorRenderer {
             final cp1 = applyTrafoToPoint(pt.control1, obj.trafo);
             final cp2 = applyTrafoToPoint(pt.control2, obj.trafo);
             final end = applyTrafoToPoint(pt.endpoint, obj.trafo);
-            pathBuilder.cubicTo(
-                cp1.dx, cp1.dy, cp2.dx, cp2.dy, end.dx, end.dy);
+            pathBuilder.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, end.dx, end.dy);
           } else if (pt is Offset) {
             final end = applyTrafoToPoint(pt, obj.trafo);
             pathBuilder.lineTo(end.dx, end.dy);
@@ -468,8 +471,7 @@ class VectorRenderer {
       strokeWidth: 1.0 / scale,
     );
 
-    final bool rotating =
-        selection.handleMode == SelectionHandleMode.rotate;
+    final bool rotating = selection.handleMode == SelectionHandleMode.rotate;
     final List<Offset> centres = handlePositions(bounds);
 
     for (var i = 0; i < centres.length; i++) {
@@ -597,7 +599,8 @@ class VectorRenderer {
       list.drawPath(list.addPath(builder.build()), washPaint);
     }
 
-    final top = applyTrafoToPoint(Offset(caret.caretX, -caret.ascent), caret.trafo);
+    final top =
+        applyTrafoToPoint(Offset(caret.caretX, -caret.ascent), caret.trafo);
     final bottom =
         applyTrafoToPoint(Offset(caret.caretX, caret.descent), caret.trafo);
     final caretPaint = list.addPaint(

@@ -54,6 +54,7 @@ import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/transform2d.dart';
+import '../../graphics/content_hint.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../text/typeface.dart';
 import '../path/fill_rule.dart';
@@ -61,8 +62,7 @@ import '../path/stroker.dart';
 import '../raster/clip_stack.dart' show pixelEdge;
 import '../replay/display_list_player.dart';
 import '../text/glyph_cache.dart' show glyphPixelOrigin, glyphSubpixelBucket;
-import '../text/glyph_raster.dart'
-    show glyphMasksFit, glyphOutlineTransform;
+import '../text/glyph_raster.dart' show glyphMasksFit, glyphOutlineTransform;
 import 'gpu_batcher.dart';
 import 'gpu_glyph_atlas.dart';
 import 'gpu_layer_stack.dart';
@@ -115,7 +115,22 @@ abstract interface class GpuFontResolver {
 /// the player's message and keeps the invariant it existed to protect - a
 /// gradient is drawn as a gradient or refused out loud, and is never quietly
 /// flattened to the paint's fallback colour.
-final class GpuRasterSink implements RasterSink, GradientRasterSink {
+/// ## Content hints, and the two places they are read
+///
+/// This sink implements [ContentHintAwareSink], so the player tells it what
+/// the application declared about the subtree each command belongs to. Two
+/// consumers, both of them cost-only:
+///
+///   1. the strategy selector, through [GpuPathPlanningTelemetry.plan] - see
+///      `GpuPathStrategySelector.select` for the precedence rule;
+///   2. the dense atlas's **admission** guard - see
+///      `GpuMaskAtlas.rasterizeMask`'s `admitToCache`, which is the one thing
+///      the atlas cannot decide for itself because it has no history.
+///
+/// Neither can change a texel. A hint reaches no capability, no correctness
+/// fact and no coverage byte; a wrong one costs frame time.
+final class GpuRasterSink
+    implements RasterSink, GradientRasterSink, ContentHintAwareSink {
   GpuRasterSink({
     required this.batcher,
     required this.backendName,
@@ -214,6 +229,42 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
   /// a candidate after retaining a complete command; refusal or failure keeps
   /// the established coverage-atlas path below as the pixel-producing route.
   final GpuPathCommandRecorder? pathCommandRecorder;
+
+  /// What the application declared about the subtree being drawn.
+  ///
+  /// The player calls [onContentHintChanged] before the first command a
+  /// declaration covers and again at every change, including back to
+  /// [ContentHint.none] when the subtree closes, so this is always the value
+  /// in force for the command being executed. A frame from a list that
+  /// declared nothing never leaves [ContentHint.none], which is exactly the
+  /// behaviour this sink had before hints existed.
+  ContentHint _contentHint = ContentHint.none;
+
+  /// The advice covering the command being drawn. Readable so a test can
+  /// assert the player and this sink agree.
+  ContentHint get contentHint => _contentHint;
+
+  @override
+  void onContentHintChanged(ContentHint hint) => _contentHint = hint;
+
+  /// Whether the dense atlas should keep a mask drawn under [_contentHint].
+  ///
+  /// False for the two declarations that mean "the device-space coverage is
+  /// different next frame": [ContentMotionHint.animating], where the geometry
+  /// itself changes, and [ContentMotionHint.transforming], where it does not
+  /// but the matrix does - and the atlas keys on device space, so a moving
+  /// matrix misses every frame just as surely. Every entry either of them
+  /// writes is evicted before it is read, and the entries it evicts to make
+  /// room are the static chrome's.
+  ///
+  /// A resident mask is still a hit: the refusal only decides whether a
+  /// **new** entry survives the frame. See `GpuMaskAtlas.rasterizeMask`.
+  bool get _admitToAtlas => switch (_contentHint.motion) {
+        ContentMotionHint.animating || ContentMotionHint.transforming => false,
+        ContentMotionHint.unspecified ||
+        ContentMotionHint.staticContent =>
+          true,
+      };
 
   int _layerDepth = 0;
 
@@ -492,6 +543,9 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
                   antiAlias: paint.antiAlias,
                   hasGradient: hasGradient,
                 ),
+                // What the application declared about this subtree. Advice,
+                // and the selector decides what it may overrule.
+                hint: _contentHint,
               );
 
     if (proposal != null) {
@@ -551,6 +605,7 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
       transform: transform,
       clip: clip,
       rule: rule,
+      admitToCache: _admitToAtlas,
     );
     if (result.status == MaskRasterStatus.needsFlush) {
       _flushAtlases(atlas, null, 'a $what');
@@ -558,6 +613,7 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
         path,
         transform: transform,
         clip: clip,
+        admitToCache: _admitToAtlas,
         rule: rule,
       );
       if (result.status == MaskRasterStatus.needsFlush) {
@@ -659,7 +715,10 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
         // the same pixel twice and blend its coverage twice.
         final Rect tile = Rect.fromLTRB(x, y, tileRight, tileBottom);
         var result = atlas.rasterizeMask(path,
-            transform: transform, clip: tile, rule: rule);
+            transform: transform,
+            clip: tile,
+            rule: rule,
+            admitToCache: _admitToAtlas);
         if (result.status == MaskRasterStatus.needsFlush) {
           _flushAtlases(atlas, null, 'a tile of a $what');
           result = atlas.rasterizeMask(
@@ -667,6 +726,7 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
             transform: transform,
             clip: tile,
             rule: rule,
+            admitToCache: _admitToAtlas,
           );
         }
         if (result.status == MaskRasterStatus.empty) continue;
@@ -1164,6 +1224,27 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
 
       GlyphAtlasEntry? entry =
           atlas.acquire(font, glyphId, subpixelBucket: bucket);
+      if (entry == null &&
+          atlas.lastFailure == GlyphAtlasFailure.glyphTooLarge) {
+        // A uniform zoom can turn an otherwise ordinary text run into glyphs
+        // larger than one persistent-atlas plot. That is a routing decision,
+        // not an unsupported capability: draw the rest of the run from its
+        // scalable outlines through the mask/path pipeline. Glyphs already
+        // appended above remain valid in their atlas batch; starting at [i]
+        // avoids drawing them twice when the pipeline state changes.
+        _drawGlyphRunAsOutlines(
+          interned,
+          deviceOrigin,
+          transform,
+          glyphIds,
+          deviceOffsets,
+          glyphCount,
+          clip,
+          paint,
+          startGlyph: i,
+        );
+        return;
+      }
       entry ??= _refillGlyphAtlas(atlas, font, glyphId, bucket);
       if (entry.isBlank) continue;
 
@@ -1332,13 +1413,14 @@ final class GpuRasterSink implements RasterSink, GradientRasterSink {
     Float32List deviceOffsets,
     int glyphCount,
     Rect clip,
-    ReplayPaint paint,
-  ) {
+    ReplayPaint paint, {
+    int startGlyph = 0,
+  }) {
     // The interned face's scale: the device scale rides in the matrix's linear
     // part, and folding it into the font too would apply it twice.
     final double fontScale = font.scale;
     final Typeface face = font.typeface;
-    for (var i = 0; i < glyphCount; i++) {
+    for (var i = startGlyph; i < glyphCount; i++) {
       final Path outline = face.outlineOf(glyphIds[i]);
       if (outline.isEmpty) continue;
       // Device space, not layer space: [_drawMask] does the layer shift

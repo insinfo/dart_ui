@@ -173,6 +173,23 @@ void main() {
       harness.dispose();
     });
 
+    test('row content reserves equal padding on both horizontal edges', () {
+      final harness = _ListHarness(itemCount: 4);
+      harness.frame();
+
+      final RenderListItem row = harness.itemWithIndex(0);
+      final RenderBox content = row.child!;
+      final double padding = ThemeData.neutralLight.effectiveControlPadding;
+
+      expect(content.parentData!.offset.dx, padding);
+      expect(content.size.width, row.size.width - padding * 2);
+      expect(
+        content.parentData!.offset.dx + content.size.width,
+        lessThanOrEqualTo(row.size.width - padding),
+      );
+      harness.dispose();
+    });
+
     test('a wheel event scrolls the list', () {
       final harness = _ListHarness(itemCount: 1000);
       harness.frame();
