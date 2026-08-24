@@ -137,6 +137,38 @@ void main() {
     });
   });
 
+  group('the surface ladder only ever goes one way', () {
+    themes.forEach((String name, ThemeData theme) {
+      test(name, () {
+        // `surfaceSunken` is the only step that goes *down* from the window's
+        // own ground, and the whole reason it exists is that a document has to
+        // read as paper lying on something. A theme that filled it in lighter
+        // than `surfaceBase` would have inverted the one relationship the
+        // token is named for - and nothing in a rendered canvas would say so
+        // except a page that stopped looking like a page.
+        expect(
+          _relativeLuminance(theme.surfaceSunken),
+          lessThanOrEqualTo(_relativeLuminance(theme.surfaceBase) + 1e-9),
+          reason: '$name: the canvas well must not be lighter than the window',
+        );
+        // And it has to be distinguishable from the page laid on it, or the
+        // hierarchy is a hierarchy on paper only. High contrast is exempt:
+        // every one of its surfaces is pure black by design, and there the
+        // page is told apart by its border alone.
+        if (!theme.highContrast) {
+          expect(
+            _contrast(theme.surfaceAlternate, theme.surfaceSunken),
+            greaterThanOrEqualTo(1.15),
+            reason: '$name: the page has to be a real step above the desk - '
+                'this step is what separates them, because the 3:1 outline '
+                'that would do it instead is unreachable against any desk '
+                'light enough to be a surface',
+          );
+        }
+      });
+    });
+  });
+
   group('disabled reads as disabled without becoming invisible', () {
     themes.forEach((String name, ThemeData theme) {
       test(name, () {

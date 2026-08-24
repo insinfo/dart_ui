@@ -62,11 +62,17 @@ final class NativeSchroederReverb
   double _damping;
 
   double get wet => _wet;
-  set wet(double value) => _wet = _unit(value);
+  set wet(double value) {
+    final double next = _unit(value);
+    if (next == _wet) return;
+    _wet = next;
+  }
 
   double get roomSize => (_roomSize - 0.55) / 0.4;
   set roomSize(double value) {
-    _roomSize = _feedback(value);
+    final double next = _feedback(value);
+    if (next == _roomSize) return;
+    _roomSize = next;
     for (final _NativeCombFilter comb in _combs) {
       comb.feedback = _roomSize;
     }
@@ -74,7 +80,9 @@ final class NativeSchroederReverb
 
   double get damping => _damping;
   set damping(double value) {
-    _damping = _unit(value);
+    final double next = _unit(value);
+    if (next == _damping) return;
+    _damping = next;
     for (final _NativeCombFilter comb in _combs) {
       comb.damping = _damping;
     }
@@ -103,8 +111,7 @@ final class NativeSchroederReverb
         reverberated *= 1 / _combsPerChannel;
         final int allPassBase = channel * _allPassesPerChannel;
         for (int filter = 0; filter < _allPassesPerChannel; filter++) {
-          reverberated =
-              _allPasses[allPassBase + filter].process(reverberated);
+          reverberated = _allPasses[allPassBase + filter].process(reverberated);
         }
         double output = input * dryMix + reverberated * wetMix;
         if (output > 1) {

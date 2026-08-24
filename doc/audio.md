@@ -48,6 +48,32 @@ dart run examples/wasapi_audio_demo/main.dart 3
 O exemplo negocia o formato real, cria o stream no isolate de áudio, compartilha
 o ring buffer por endereço e produz um tom de 440 Hz no isolate principal.
 
+## DSP direto no buffer WASAPI
+
+`WasapiRenderStream.runWithProcessor` entrega o ponteiro float32 do próprio
+`IAudioRenderClient` a um `NativeFloat32AudioProcessor`. Esse caminho serve a
+sintetizadores, mixers e efeitos que não precisam de um produtor separado e
+remove a cópia intermediária pelo ring buffer.
+
+`NativeSchroederReverb` implementa um reverb simples inteiramente em Dart: cada
+canal usa quatro comb filters amortecidos em paralelo e dois filtros all-pass
+em série. As linhas de atraso são `Pointer<Float>` alocados uma vez fora do
+loop realtime.
+
+`WasapiSharedParameterBlock` permite que a UI controle gates, volumes e efeitos
+por memória nativa. A UI toma o SRW lock para escrever; o áudio apenas tenta
+obter o lock e conserva o snapshot anterior em caso de contenção.
+
+O teclado musical demonstra esse caminho:
+
+```powershell
+dart run examples/wasapi_audio_demo/main.dart
+```
+
+Mouse e teclado físico controlam duas oitavas polifônicas; reverb, sala,
+amortecimento e volume são atualizados em tempo real sem mensagens dentro do
+pump de áudio.
+
 ## Próximos backends
 
 A API já separa os contratos necessários para adicionar captura WASAPI,

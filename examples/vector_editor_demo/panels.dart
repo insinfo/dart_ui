@@ -21,25 +21,28 @@ class PanelSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.all(Spacing.sm),
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: theme.surface,
           border: BoxBorder(color: theme.border, width: 1),
-          radius: 4,
+          // A card, and the design system gives a card the large radius.
+          radius: theme.cornerRadiusLarge,
         ),
         child: Padding(
-          padding: const EdgeInsets.all(8),
+          padding: const EdgeInsets.all(Spacing.sm),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               Text(
                 caption,
+                // `titleSmall` is the panel/group heading role, weight and
+                // size together. It was 12 px with a hand-written w600, which
+                // is one pixel *under* body text pretending to be a heading.
+                style: theme.textTheme.titleSmall,
                 color: theme.foreground,
-                style: const TextStyle(fontWeight: FontWeight.w600),
-                fontSize: 12,
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: Spacing.sm),
               ...children,
             ],
           ),
@@ -59,23 +62,48 @@ class PanelRow extends StatelessWidget {
   static const double labelWidth = 76;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          children: <Widget>[
-            SizedBox(
-              width: labelWidth,
-              child: Text(
-                label,
-                color: Theme.of(context).foregroundSecondary,
-                fontSize: 11,
-              ),
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: Spacing.hair),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: <Widget>[
+          SizedBox(
+            width: labelWidth,
+            child: Text(
+              label,
+              style: theme.textTheme.labelSmall,
+              color: theme.foregroundSecondary,
             ),
-            Expanded(child: child),
-          ],
-        ),
-      );
+          ),
+          Expanded(child: child),
+        ],
+      ),
+    );
+  }
+}
+
+/// A line of explanatory text under a panel's controls.
+///
+/// `labelSmall` in the secondary foreground - the design system's own
+/// "legendas, metadados" role. Three copies of this sentence used to declare
+/// `fontSize: 11` each, and one of them forgot the colour.
+class _PanelNote extends StatelessWidget {
+  const _PanelNote(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Text(
+      text,
+      style: theme.textTheme.labelSmall,
+      color: theme.foregroundSecondary,
+      softWrap: true,
+    );
+  }
 }
 
 /// A number field sized for a panel column.
@@ -99,7 +127,9 @@ class PanelNumber extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        height: 24,
+        // One control tall, which at the editor's compact density is 28 - the
+        // same height as the combo boxes on the property bar above.
+        height: Theme.of(context).effectiveControlHeight,
         child: NumberBox(
           value: value,
           decimals: decimals,
@@ -138,11 +168,13 @@ class TransformPanel extends StatelessWidget {
                     padding: const EdgeInsets.only(right: 2),
                     child: IconButton(
                       icon: Icon(_iconFor(mode)),
-                      iconSize: 15,
+                      iconSize: theme.iconSize,
                       isSelected: model.transformMode == mode,
-                      padding: const EdgeInsets.all(5),
-                      constraints:
-                          BoxConstraints(minWidth: 26, minHeight: 26),
+                      padding: const EdgeInsets.all(Spacing.xs),
+                      constraints: BoxConstraints(
+                        minWidth: theme.effectiveControlHeight,
+                        minHeight: theme.effectiveControlHeight,
+                      ),
                       tooltip: mode.label,
                       onPressed: () {
                         model.transformMode = mode;
@@ -157,12 +189,12 @@ class TransformPanel extends StatelessWidget {
             caption: model.transformMode.label,
             children: <Widget>[
               ..._controlsFor(model.transformMode, enabled),
-              const SizedBox(height: 6),
+              const SizedBox(height: Spacing.sm),
               if (!enabled)
                 Text(
                   'Select something to transform.',
+                  style: theme.textTheme.labelSmall,
                   color: theme.foregroundSecondary,
-                  fontSize: 11,
                   softWrap: true,
                 ),
             ],
@@ -302,12 +334,8 @@ class TransformPanel extends StatelessWidget {
               onChanged: (_) {},
             ),
           ),
-          const SizedBox(height: 4),
-          const Text(
-            'Shearing is not implemented in the Dart demo yet.',
-            fontSize: 11,
-            softWrap: true,
-          ),
+          const SizedBox(height: Spacing.xs),
+          const _PanelNote('Shearing is not implemented in the Dart demo yet.'),
         ];
     }
   }
@@ -325,7 +353,6 @@ class AlignPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     final selected = model.hasSelection;
     final canDistribute = model.hasDocument && model.selection.count >= 3;
     return ScrollViewer(
@@ -421,7 +448,7 @@ class AlignPanel extends StatelessWidget {
                       }
                     : null,
               ),
-              const SizedBox(height: 6),
+              const SizedBox(height: Spacing.sm),
               Button(
                 label: 'Apply',
                 onPressed: selected &&
@@ -430,12 +457,7 @@ class AlignPanel extends StatelessWidget {
                     ? model.applyAlign
                     : null,
               ),
-              if (!selected)
-                Text(
-                  'Nothing is selected.',
-                  color: theme.foregroundSecondary,
-                  fontSize: 11,
-                ),
+              if (!selected) const _PanelNote('Nothing is selected.'),
             ],
           ),
           PanelSection(
@@ -460,12 +482,8 @@ class AlignPanel extends StatelessWidget {
                 ],
               ),
               if (!canDistribute)
-                Text(
-                  'Distributing needs at least three selected objects.',
-                  color: theme.foregroundSecondary,
-                  fontSize: 11,
-                  softWrap: true,
-                ),
+                const _PanelNote(
+                    'Distributing needs at least three selected objects.'),
             ],
           ),
         ],

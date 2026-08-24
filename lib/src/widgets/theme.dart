@@ -547,6 +547,7 @@ final class ThemeData {
     this.focusRing = const Color(0xFF2563EB),
     this.selection = const Color(0xFFD8E5FE),
     Color? onSelection,
+    Color? surfaceSunken,
     this.colorScheme = const ColorScheme.light(),
     this.textTheme = const TextTheme(),
     this.iconTheme = const IconThemeData(size: 20),
@@ -560,7 +561,8 @@ final class ThemeData {
     this.controlHeight = 32.0,
     this.controlPadding = 12.0,
     this.focusRingWidth = 2.0,
-  }) : _onSelection = onSelection;
+  })  : _onSelection = onSelection,
+        _surfaceSunken = surfaceSunken;
 
   final String name;
   final ThemeBrightness brightness;
@@ -583,6 +585,22 @@ final class ThemeData {
 
   /// The colour behind everything: the window, and the gap between panels.
   final Color surfaceBase;
+
+  final Color? _surfaceSunken;
+
+  /// A well *below* the window: the ground a document is set into.
+  ///
+  /// The one surface that is darker than [surfaceBase] rather than lighter,
+  /// and the only step in the ladder that does not exist in a form. It is
+  /// there for the same reason a light table is not the colour of the desk it
+  /// stands on: a page of white paper on a near-white ground is not a page, it
+  /// is a rectangle with a hairline, and an editor whose document does not
+  /// read as a document has lost the thing it is for. Every drawing program
+  /// sinks its canvas this way.
+  ///
+  /// Defaults to [surfaceBase], so a theme that has no document view in it
+  /// never has to answer the question.
+  Color get surfaceSunken => _surfaceSunken ?? surfaceBase;
 
   /// A panel's own background.
   final Color surface;
@@ -797,6 +815,7 @@ final class ThemeData {
         focusRing: focusRing,
         selection: selection,
         onSelection: _onSelection,
+        surfaceSunken: _surfaceSunken,
         density: density ?? this.density,
         highContrast: highContrast ?? this.highContrast,
         reducedMotion: reducedMotion ?? this.reducedMotion,
@@ -816,6 +835,7 @@ final class ThemeData {
       other.accentHovered == accentHovered &&
       other.accentSubtle == accentSubtle &&
       other.surfaceBase == surfaceBase &&
+      other.surfaceSunken == surfaceSunken &&
       other.surface == surface &&
       other.surfaceAlternate == surfaceAlternate &&
       other.surfaceRaised == surfaceRaised &&
@@ -846,7 +866,8 @@ final class ThemeData {
         name,
         brightness,
         Object.hash(accent, accentPressed, accentHovered, accentSubtle),
-        Object.hash(surfaceBase, surface, surfaceAlternate, surfaceRaised),
+        Object.hash(
+            surfaceBase, surfaceSunken, surface, surfaceAlternate, surfaceRaised),
         Object.hash(borderSubtle, border, borderStrong),
         Object.hash(foreground, foregroundSecondary, disabledForeground),
         Object.hash(disabledSurface, hoverSurface, pressedSurface),
@@ -871,6 +892,7 @@ final class ThemeData {
     accentPressed: Color(0xFF1E40AF),
     accentSubtle: Color(0xFFE3ECFD),
     surfaceBase: Color(0xFFEEF0F4),
+    surfaceSunken: Color(0xFFDDE1E8),
     surface: Color(0xFFF6F7F9),
     surfaceAlternate: Color(0xFFFFFFFF),
     surfaceRaised: Color(0xFFFFFFFF),
@@ -902,6 +924,7 @@ final class ThemeData {
     accentPressed: Color(0xFF9CC0FF),
     accentSubtle: Color(0xFF1F3559),
     surfaceBase: Color(0xFF15181C),
+    surfaceSunken: Color(0xFF0D1013),
     surface: Color(0xFF1D2126),
     surfaceAlternate: Color(0xFF24282F),
     surfaceRaised: Color(0xFF2A2F37),
@@ -942,6 +965,7 @@ final class ThemeData {
   /// Modern defaults for new applications: rounder, roomier, 14 px text.
   static const ThemeData materialLight = ThemeData(
     name: 'dart-ui-light',
+    surfaceSunken: Color(0xFFDDE1E8),
     cornerRadius: 8,
     controlHeight: 36,
     controlPadding: 16,
@@ -956,6 +980,7 @@ final class ThemeData {
     accentPressed: Color(0xFFC2D8FF),
     accentSubtle: Color(0xFF1E3A6B),
     surfaceBase: Color(0xFF0B1120),
+    surfaceSunken: Color(0xFF060A14),
     surface: Color(0xFF111827),
     surfaceAlternate: Color(0xFF1B2436),
     surfaceRaised: Color(0xFF222D42),
@@ -1005,6 +1030,7 @@ final class ThemeData {
     accentPressed: Color(0xFF0C4C86),
     accentSubtle: Color(0xFFDCEAF9),
     surfaceBase: Color(0xFFEFF1F4),
+    surfaceSunken: Color(0xFFDFE3E9),
     surface: Color(0xFFF7F8FA),
     surfaceAlternate: Color(0xFFFFFFFF),
     surfaceRaised: Color(0xFFFFFFFF),
@@ -1042,6 +1068,7 @@ final class ThemeData {
     accentHovered: Color(0xFFFFFF66),
     accentSubtle: Color(0xFF3A3A00),
     surfaceBase: Color(0xFF000000),
+    surfaceSunken: Color(0xFF000000),
     surface: Color(0xFF000000),
     surfaceAlternate: Color(0xFF000000),
     surfaceRaised: Color(0xFF000000),

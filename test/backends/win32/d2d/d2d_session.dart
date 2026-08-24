@@ -41,8 +41,18 @@ final class D2dSession {
     }
   }
 
-  D2dOffscreenSurface surface(int width, int height) =>
-      device!.createOffscreenSurface(width: width, height: height);
+  /// An offscreen surface of [width] by [height].
+  ///
+  /// [spriteBatching] false makes the sink take the `FillOpacityMask` loop a
+  /// runtime without `ID2D1DeviceContext3` would take, so a test can compare
+  /// the two routes on one machine instead of hoping about another.
+  D2dOffscreenSurface surface(int width, int height,
+          {bool spriteBatching = true}) =>
+      device!.createOffscreenSurface(
+        width: width,
+        height: height,
+        spriteBatching: spriteBatching,
+      );
 
   void close() {
     device?.dispose();

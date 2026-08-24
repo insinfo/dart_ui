@@ -30,23 +30,73 @@ const Map<int, int> _logicalKeyToNote = <int, int>{
 };
 
 const List<String> _keyLabels = <String>[
-  'Z', 'S', 'X', 'D', 'C', 'V', 'G', 'B', 'H', 'N', 'J', 'M',
-  'Q', '2', 'W', '3', 'E', 'R', '5', 'T', '6', 'Y', '7', 'U',
+  'Z',
+  'S',
+  'X',
+  'D',
+  'C',
+  'V',
+  'G',
+  'B',
+  'H',
+  'N',
+  'J',
+  'M',
+  'Q',
+  '2',
+  'W',
+  '3',
+  'E',
+  'R',
+  '5',
+  'T',
+  '6',
+  'Y',
+  '7',
+  'U',
 ];
 
 const List<int> _whiteNotes = <int>[
-  0, 2, 4, 5, 7, 9, 11,
-  12, 14, 16, 17, 19, 21, 23,
+  0,
+  2,
+  4,
+  5,
+  7,
+  9,
+  11,
+  12,
+  14,
+  16,
+  17,
+  19,
+  21,
+  23,
 ];
 
 const List<int> _blackNotes = <int>[
-  1, 3, 6, 8, 10,
-  13, 15, 18, 20, 22,
+  1,
+  3,
+  6,
+  8,
+  10,
+  13,
+  15,
+  18,
+  20,
+  22,
 ];
 
 const List<int> _blackAfterWhite = <int>[
-  1, 2, 4, 5, 6,
-  8, 9, 11, 12, 13,
+  1,
+  2,
+  4,
+  5,
+  6,
+  8,
+  9,
+  11,
+  12,
+  13,
 ];
 
 final class PianoKeyboard extends StatefulWidget {

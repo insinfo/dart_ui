@@ -106,6 +106,12 @@ enum SelectDrag {
   /// Scaling the selection from a handle.
   resize,
 
+  /// Turning the selection about its pivot, or skewing it from an edge.
+  rotate,
+
+  /// Dragging the rotation pivot itself. Moves no artwork.
+  pivot,
+
   /// Drawing a rubber band over the page.
   marquee,
 }
@@ -145,6 +151,11 @@ class SelectToolController extends ToolController {
   SelectionTransaction? _transaction;
   SelectionEdit? _edit;
 
+  /// The pivot as it was when a pivot drag started, so the drag is applied to
+  /// the press state rather than accumulated - the same rule every other
+  /// gesture here follows.
+  Offset? _pivotAtPress;
+
   /// What the current drag is doing.
   SelectDrag get dragKind => _drag;
 
@@ -174,12 +185,39 @@ class SelectToolController extends ToolController {
   /// selected object takes it back out, so a mis-click can be corrected
   /// without starting the selection over.
   void click(Offset point, VectorPage page) {
+    // Alt reaches *under* what is already selected, and each further Alt+click
+    // takes the next object down the stack. Without it an object that is
+    // completely covered can only be selected by moving the thing on top of
+    // it - which means changing the drawing in order to select something in
+    // it.
+    if (isAltHeld) {
+      final SelectableObject? below = selection.hitTestBelowSelection(
+        point,
+        page,
+        tolerance: _objectTolerance,
+      );
+      if (below == null) {
+        if (!isShiftHeld) selection.deselectAll();
+        return;
+      }
+      selection.select(below, additive: isShiftHeld);
+      return;
+    }
+
     final SelectableObject? hit =
         selection.hitTest(point, page, tolerance: _objectTolerance);
     if (hit == null) {
       // Shift+clicking nothing keeps what is selected: the user is building a
       // selection and missed.
       if (!isShiftHeld) selection.deselectAll();
+      return;
+    }
+    // The second click on something already selected swaps the scale frame for
+    // the rotate one, and a third swaps it back. Not with Shift, which is
+    // building a selection rather than working on one - toggling the frame
+    // there would fight the toggle Shift already means.
+    if (!isShiftHeld && selection.contains(hit)) {
+      selection.toggleHandleMode();
       return;
     }
     selection.select(hit, additive: isShiftHeld);
@@ -200,9 +238,23 @@ class SelectToolController extends ToolController {
       point,
       tolerance: SelectionManager.handleGrabPixels * onePixel,
     );
-    if (handle != null && handle != TransformHandle.rotationCenter) {
+    if (handle == TransformHandle.rotationCenter) {
       _handle = handle;
-      _drag = SelectDrag.resize;
+      _drag = SelectDrag.pivot;
+      _pivotAtPress = selection.pivot;
+      return;
+    }
+    if (handle != null) {
+      _handle = handle;
+      _drag = selection.handleMode == SelectionHandleMode.rotate
+          ? SelectDrag.rotate
+          : SelectDrag.resize;
+      // The pivot is read once, here, and held for the whole gesture. Reading
+      // it per move would read `selectionBounds.center` of a box that the
+      // previous move already rotated, and the box of a rotating asymmetric
+      // shape has a centre that wanders - so the turn would depend on how many
+      // pointer events the platform happened to deliver.
+      _pivotAtPress = selection.pivot;
       _transaction = selection.beginTransform();
       return;
     }
@@ -240,11 +292,41 @@ class SelectToolController extends ToolController {
               ? Offset(delta.dx, 0)
               : Offset(0, delta.dy);
         }
-        _transaction?.apply(<double>[1, 0, 0, 1, delta.dx, delta.dy]);
+        final SelectionTransaction? moving = _transaction;
+        if (moving == null) return;
+        // The snap corrects the *box*, not the pointer: the box as this delta
+        // would leave it is offered to the snap, and whatever nudge comes back
+        // is folded into the delta before anything is applied. That is why the
+        // object lands on the grid line instead of jumping by however far
+        // inside it the user happened to grab it.
+        delta += _snapCorrection(moving.startBounds.shift(delta), page, null);
+        moving.apply(<double>[1, 0, 0, 1, delta.dx, delta.dy]);
       case SelectDrag.resize:
         final SelectionTransaction? transaction = _transaction;
         final TransformHandle? handle = _handle;
         if (transaction == null || handle == null) return;
+        // Snapped the same way, but only on the edges this handle drags: a
+        // resize that nudged its anchored edge would not be a resize. The
+        // probe is the transform this delta would give, so the snap is offered
+        // the box the user is about to see rather than the one they started
+        // from.
+        final List<double>? probe = selection.trafoForHandle(
+          handle,
+          transaction.startBounds,
+          delta,
+          proportional: isShiftHeld,
+          aboutCentre: isControlHeld,
+        );
+        if (probe != null) {
+          // Applied and *measured*, not predicted. Transforming the start box
+          // is a point off: an object's bounding box includes half its stroke
+          // width, and a stroke does not scale with the geometry, so the box a
+          // scale actually produces is not the scaled box. The transaction
+          // resets before every apply, so asking it and then asking again with
+          // the corrected delta costs one extra apply and is exact.
+          transaction.apply(probe);
+          delta += _snapCorrection(selection.selectionBounds, page, handle);
+        }
         final List<double>? trafo = selection.trafoForHandle(
           handle,
           transaction.startBounds,
@@ -253,11 +335,54 @@ class SelectToolController extends ToolController {
           aboutCentre: isControlHeld,
         );
         if (trafo != null) transaction.apply(trafo);
+      case SelectDrag.rotate:
+        final SelectionTransaction? transaction = _transaction;
+        final TransformHandle? handle = _handle;
+        if (transaction == null || handle == null) return;
+        final List<double>? trafo = selection.trafoForRotateHandle(
+          handle,
+          transaction.startBounds,
+          _pivotAtPress ?? selection.pivot,
+          press,
+          point,
+          constrain: isShiftHeld,
+        );
+        if (trafo != null) transaction.apply(trafo);
+      case SelectDrag.pivot:
+        final Offset? start = _pivotAtPress;
+        if (start == null) return;
+        final Offset moved = start + delta;
+        final Rect asPoint =
+            Rect.fromLTRB(moved.dx, moved.dy, moved.dx, moved.dy);
+        selection.rotationPivot =
+            moved + _snapCorrection(asPoint, page, null);
       case SelectDrag.marquee:
         _marquee = Rect.fromPoints(press, point);
       case SelectDrag.none:
         break;
     }
+  }
+
+  /// The snap nudge for [bounds], or zero when nothing is near enough.
+  ///
+  /// Whether it fires at all is the [SnapManager]'s own `snapToGrid` /
+  /// `snapToGuides`, which is what the editor's Snap switch already sets -
+  /// a second switch here would be a second thing to turn off.
+  ///
+  /// The tolerance is a *screen* distance divided by the zoom, for the reason
+  /// every tolerance in this file is: a magnet measured in document units is
+  /// too weak to fire when zoomed out and too strong to escape when zoomed in.
+  Offset _snapCorrection(
+    Rect bounds,
+    VectorPage page,
+    TransformHandle? handle,
+  ) {
+    return snap.correctionFor(
+      bounds,
+      page,
+      edges: SnapManager.edgesForHandle(handle),
+      tolerance: SnapManager.dragPixels * onePixel,
+    );
   }
 
   @override
@@ -281,7 +406,13 @@ class SelectToolController extends ToolController {
         }
       case SelectDrag.move:
       case SelectDrag.resize:
+      case SelectDrag.rotate:
         _edit = _transaction?.commit();
+      case SelectDrag.pivot:
+        // Moving the pivot changes no artwork, so there is nothing to undo -
+        // and pushing an entry for it would stop Ctrl+Z meaning "undo the last
+        // change to the drawing".
+        break;
       case SelectDrag.none:
         break;
     }
@@ -290,6 +421,7 @@ class SelectToolController extends ToolController {
     _marquee = null;
     _transaction = null;
     _pressPoint = null;
+    _pivotAtPress = null;
     doc.update();
   }
 
@@ -298,11 +430,13 @@ class SelectToolController extends ToolController {
     // A cancelled gesture puts the document back where the press found it,
     // which is free now that the press state is a snapshot.
     _transaction?.reset();
+    if (_drag == SelectDrag.pivot) selection.rotationPivot = _pivotAtPress;
     _drag = SelectDrag.none;
     _handle = null;
     _marquee = null;
     _transaction = null;
     _pressPoint = null;
+    _pivotAtPress = null;
     _edit = null;
   }
 }

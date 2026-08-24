@@ -251,6 +251,7 @@ final class D2dRenderDevice with DisposableMixin implements RenderDevice {
   D2dOffscreenSurface createOffscreenSurface({
     required int width,
     required int height,
+    bool spriteBatching = true,
   }) {
     throwIfDisposed();
     return D2dOffscreenSurface(
@@ -259,6 +260,7 @@ final class D2dRenderDevice with DisposableMixin implements RenderDevice {
       width: width,
       height: height,
       backendName: D2dRendererBackend.backendName,
+      spriteBatching: spriteBatching,
     );
   }
 

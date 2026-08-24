@@ -98,8 +98,13 @@ class _MenuHeader extends StatelessWidget {
           child: Center(
             child: Text(
               label,
-              color: open ? theme.surfaceAlternate : theme.foreground,
-              fontSize: 12,
+              // A menu header is a control label, so it is `labelLarge`: the
+              // theme's own base size at medium weight. It was 12 px, two
+              // under the 13 px base, which is why the menu bar read as a
+              // smaller-typed strip glued to the top of a differently typed
+              // window.
+              style: theme.textTheme.labelLarge,
+              color: open ? theme.colorScheme.onPrimary : theme.foreground,
             ),
           ),
         ),

@@ -25,32 +25,143 @@ import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
 import '../../rendering/text/font_registry.dart';
 import '../../rendering/text/text_painter.dart';
+import '../theme.dart';
 import 'selection.dart';
 
-/// Colours the canvas paints with, named so the editor can match them.
+/// Every colour the canvas paints with, resolved from the theme.
+///
+/// The canvas used to hold nine literals, and the loudest of them was a flat
+/// `#8C8C8C` desk: a mid grey that belonged to no palette, agreed with nothing
+/// in the window around it, and turned a themed application into a themed
+/// application with a grey hole in the middle. The desk is not a colour of its
+/// own - it is `surfaceSunken`, the one step of the surface ladder that goes
+/// *down*, and the page is content resting on it. Saying that in tokens is
+/// what makes the canvas follow a theme switch instead of ignoring it.
+///
+/// The mapping, and why each one:
+///
+/// | canvas part | token | because |
+/// |---|---|---|
+/// | desk | `surfaceSunken` | the well a document is set into |
+/// | page | `surfaceAlternate` | content resting on that ground |
+/// | page edge | `border` | the edge where two surfaces meet |
+/// | grid | `borderSubtle` | a divider *inside* one surface |
+/// | selection frame, band, handle edge | `accent` | live interaction feedback |
+/// | handle body | `surfaceAlternate` | a handle is a small control |
+/// | caret | `foreground` | a caret is text, at full contrast |
+/// | text run wash | `selection` | selected text, the token's own job |
+///
+/// The page edge is `border` and **not** `borderStrong`, which is where this
+/// started: `borderStrong` is the 3:1 class, and 3:1 against a desk light
+/// enough to be a surface is arithmetically out of reach - the contrast test
+/// says so, and it says so for every light theme. That is the token telling
+/// the truth rather than the token being wrong: a page is not a control
+/// outline, it is a surface resting on another surface, and what separates
+/// them is the step between the two plus the shadow the upper one casts.
+///
+/// Two colours are deliberately *not* tokens. A [guide] is a document
+/// annotation the user places, like the artwork's own colours, and sK1's cyan
+/// is what a user of that program looks for. A [sheetShadow] is an opacity
+/// over whatever lies under it rather than a hue, and the palette has no token
+/// for one; if a shadow token is ever added to `ThemeData` this is its first
+/// caller.
+final class VectorCanvasColors {
+  const VectorCanvasColors({
+    required this.desktop,
+    required this.sheet,
+    required this.sheetBorder,
+    required this.sheetShadow,
+    required this.grid,
+    required this.guide,
+    required this.selection,
+    required this.handleFill,
+    required this.rubberBand,
+    required this.caret,
+    required this.textSelection,
+  });
+
+  /// The canvas colours a [ThemeData] asks for.
+  factory VectorCanvasColors.fromTheme(ThemeData theme) => VectorCanvasColors(
+        desktop: theme.surfaceSunken,
+        sheet: theme.surfaceAlternate,
+        sheetBorder: theme.border,
+        sheetShadow: VectorCanvasPalette.sheetShadow,
+        grid: theme.borderSubtle,
+        guide: VectorCanvasPalette.guide,
+        selection: theme.accent,
+        handleFill: theme.surfaceAlternate,
+        rubberBand: theme.accent,
+        caret: theme.foreground,
+        textSelection: theme.selection,
+      );
+
+  /// The desk the page sits on.
+  final Color desktop;
+
+  /// The paper itself.
+  final Color sheet;
+
+  /// The hairline around the paper.
+  final Color sheetBorder;
+
+  final Color sheetShadow;
+  final Color grid;
+  final Color guide;
+  final Color selection;
+  final Color handleFill;
+  final Color rubberBand;
+
+  /// The in-canvas text caret.
+  final Color caret;
+
+  /// The wash behind selected characters while a text is being edited.
+  final Color textSelection;
+}
+
+/// The canvas colours of the framework's default light theme.
+///
+/// Kept as the fallback a renderer uses when it is handed no colours at all -
+/// a display-list test that renders a page with no widget tree around it - and
+/// as the home of the two values [VectorCanvasColors] does not take from a
+/// token.
 abstract final class VectorCanvasPalette {
   /// The desk the page sits on.
-  static const Color desktop = Color(0xFF8C8C8C);
+  static const Color desktop = Color(0xFFEEF0F4);
 
   /// The paper itself.
   static const Color sheet = Color(0xFFFFFFFF);
 
   /// The hairline around the paper.
-  static const Color sheetBorder = Color(0xFF5A5A5A);
+  static const Color sheetBorder = Color(0xFFD5D9E0);
 
-  static const Color sheetShadow = Color(0x40000000);
-  static const Color grid = Color(0x1A000000);
+  /// Not a token: a cast shadow is an opacity over whatever is under it, not a
+  /// hue in the palette.
+  static const Color sheetShadow = Color(0x33000000);
+  static const Color grid = Color(0xFFE7E9ED);
+
+  /// Not a token either: a guide is a document annotation the user places, and
+  /// sK1's cyan is the colour a user of that program looks for.
   static const Color guide = Color(0xFF00A0C0);
-  static const Color selection = Color(0xFF1E88E5);
+  static const Color selection = Color(0xFF2563EB);
   static const Color handleFill = Color(0xFFFFFFFF);
-  static const Color rubberBand = Color(0xFF1E88E5);
+  static const Color rubberBand = Color(0xFF2563EB);
+  static const Color caret = Color(0xFF14181F);
+  static const Color textSelection = Color(0xFFD8E5FE);
 
-  /// The in-canvas text caret. Solid black rather than the selection blue:
-  /// a caret is a text affordance and reads as one only at full contrast.
-  static const Color caret = Color(0xFF000000);
-
-  /// The wash behind selected characters while a text is being edited.
-  static const Color textSelection = Color(0x553F8FE0);
+  /// The whole set, as the default light theme resolves it.
+  static const VectorCanvasColors defaults = VectorCanvasColors(
+    desktop: desktop,
+    sheet: sheet,
+    sheetBorder: sheetBorder,
+    sheetShadow: sheetShadow,
+    grid: grid,
+    guide: guide,
+    selection: selection,
+    handleFill: handleFill,
+    rubberBand: rubberBand,
+    caret: caret,
+    textSelection: textSelection,
+  );
 }
 
 /// Renders a [VectorDocument] page to a [DisplayList].
@@ -74,13 +185,13 @@ class VectorRenderer {
     ToolMode? currentTool,
     Rect? rubberBand,
     TextEditCaret? caret,
+    VectorCanvasColors colors = VectorCanvasPalette.defaults,
   }) {
     list.save();
     list.clipRectangle(viewport);
 
     // 1. Desktop background - the viewport, never more.
-    final bgPaint =
-        list.addPaint(colorArgb: VectorCanvasPalette.desktop.value);
+    final bgPaint = list.addPaint(colorArgb: colors.desktop.value);
     list.drawRectangle(viewport, bgPaint);
 
     // Apply pan and zoom.
@@ -93,21 +204,20 @@ class VectorRenderer {
 
     // 2. Page shadow and white sheet.
     final pageRect = page.rect;
-    final shadowPaint =
-        list.addPaint(colorArgb: VectorCanvasPalette.sheetShadow.value);
+    final shadowPaint = list.addPaint(colorArgb: colors.sheetShadow.value);
     list.drawRectangle(
       Rect.fromLTWH(
           pageRect.left + 4, pageRect.top + 4, pageRect.width, pageRect.height),
       shadowPaint,
     );
 
-    final sheetPaint = list.addPaint(colorArgb: VectorCanvasPalette.sheet.value);
+    final sheetPaint = list.addPaint(colorArgb: colors.sheet.value);
     list.drawRectangle(pageRect, sheetPaint);
 
     // A *stroked* border. Filling it painted the sheet grey, which is what made
     // the sample document look like it had no paper under it.
     final borderPaint = list.addPaint(
-      colorArgb: VectorCanvasPalette.sheetBorder.value,
+      colorArgb: colors.sheetBorder.value,
       style: paintStyleStroke,
       strokeWidth: 1.0 / (zoom == 0 ? 1 : zoom),
     );
@@ -115,7 +225,7 @@ class VectorRenderer {
 
     // 3. Grid, under the artwork rather than over it.
     if (showGrid) {
-      _renderGrid(pageRect, list, zoom);
+      _renderGrid(pageRect, list, zoom, colors);
     }
 
     // 4. Document objects (bottom-to-top across visible layers).
@@ -131,12 +241,12 @@ class VectorRenderer {
 
     // 5. Guidelines.
     if (showGuides) {
-      _renderGuides(page, list, zoom);
+      _renderGuides(page, list, zoom, colors);
     }
 
     // 6. Selection highlights & transform handles.
     if (selection != null && selection.hasSelection) {
-      _renderSelection(selection, list, zoom);
+      _renderSelection(selection, list, zoom, colors);
     }
 
     // 7. The rubber band, and the text caret. Both are interaction feedback
@@ -144,14 +254,14 @@ class VectorRenderer {
     // by the zoom the same way the selection frame's is.
     if (rubberBand != null) {
       final bandPaint = list.addPaint(
-        colorArgb: VectorCanvasPalette.rubberBand.value,
+        colorArgb: colors.rubberBand.value,
         style: paintStyleStroke,
         strokeWidth: 1.0 / (zoom == 0 ? 1 : zoom),
       );
       list.drawRectangle(rubberBand, bandPaint);
     }
 
-    if (caret != null) _renderCaret(list, caret, zoom);
+    if (caret != null) _renderCaret(list, caret, zoom, colors);
 
     list.restore();
 
@@ -277,12 +387,17 @@ class VectorRenderer {
     }
   }
 
-  static void _renderGrid(Rect pageRect, DisplayList list, double zoom) {
+  static void _renderGrid(
+    Rect pageRect,
+    DisplayList list,
+    double zoom,
+    VectorCanvasColors colors,
+  ) {
     const spacing = 28.346; // ~10 mm in points
     // Below a certain scale the grid is solid noise; drop it rather than draw
     // a grey page.
     if (spacing * zoom < 4.0) return;
-    final gridPaint = list.addPaint(colorArgb: VectorCanvasPalette.grid.value);
+    final gridPaint = list.addPaint(colorArgb: colors.grid.value);
     final hairline = 1.0 / (zoom == 0 ? 1 : zoom);
 
     for (var x = pageRect.left; x <= pageRect.right; x += spacing) {
@@ -293,8 +408,13 @@ class VectorRenderer {
     }
   }
 
-  static void _renderGuides(VectorPage page, DisplayList list, double zoom) {
-    final guidePaint = list.addPaint(colorArgb: VectorCanvasPalette.guide.value);
+  static void _renderGuides(
+    VectorPage page,
+    DisplayList list,
+    double zoom,
+    VectorCanvasColors colors,
+  ) {
+    final guidePaint = list.addPaint(colorArgb: colors.guide.value);
     final hairline = 1.0 / (zoom == 0 ? 1 : zoom);
     final rect = page.rect;
     // Guides run the width of the page, not the width of the universe: the
@@ -323,6 +443,7 @@ class VectorRenderer {
     SelectionManager selection,
     DisplayList list,
     double zoom,
+    VectorCanvasColors colors,
   ) {
     final bounds = selection.selectionBounds;
     if (bounds == Rect.zero) return;
@@ -331,7 +452,7 @@ class VectorRenderer {
     // Selection bounding box outline - stroked, so the selected art stays
     // visible through it.
     final selPaint = list.addPaint(
-      colorArgb: VectorCanvasPalette.selection.value,
+      colorArgb: colors.selection.value,
       style: paintStyleStroke,
       strokeWidth: 1.0 / scale,
     );
@@ -340,23 +461,105 @@ class VectorRenderer {
     // 8 transform handles, sized in screen pixels so they stay grabbable at
     // any zoom.
     final handleSize = 7.0 / scale;
-    final handlePaint =
-        list.addPaint(colorArgb: VectorCanvasPalette.handleFill.value);
+    final handlePaint = list.addPaint(colorArgb: colors.handleFill.value);
     final handleBorderPaint = list.addPaint(
-      colorArgb: VectorCanvasPalette.selection.value,
+      colorArgb: colors.selection.value,
       style: paintStyleStroke,
       strokeWidth: 1.0 / scale,
     );
 
-    for (final pos in handlePositions(bounds)) {
-      final handleRect = Rect.fromCenter(
+    final bool rotating =
+        selection.handleMode == SelectionHandleMode.rotate;
+    final List<Offset> centres = handlePositions(bounds);
+
+    for (var i = 0; i < centres.length; i++) {
+      final Offset pos = centres[i];
+      if (!rotating) {
+        final handleRect = Rect.fromCenter(
+          center: pos,
+          width: handleSize,
+          height: handleSize,
+        );
+        list.drawRectangle(handleRect, handlePaint);
+        list.drawRectangle(handleRect, handleBorderPaint);
+        continue;
+      }
+
+      // The rotate frame has to *look* different or the mode is invisible, and
+      // an invisible mode is a bug report. Corners become diamonds - a square
+      // turned, which is what a corner now does - and the edges become bars
+      // lying along the edge they skew, which is the direction they slide in.
+      final TransformHandle handle = TransformHandle.values[i];
+      if (SelectionManager.isCorner(handle)) {
+        final int diamond = list.addPath(_diamondPath(pos, handleSize));
+        list.drawPath(diamond, handlePaint);
+        list.drawPath(diamond, handleBorderPaint);
+        continue;
+      }
+      final bool horizontal = handle == TransformHandle.topCenter ||
+          handle == TransformHandle.bottomCenter;
+      final Rect bar = Rect.fromCenter(
         center: pos,
-        width: handleSize,
-        height: handleSize,
+        width: horizontal ? handleSize * 2.2 : handleSize * 0.8,
+        height: horizontal ? handleSize * 0.8 : handleSize * 2.2,
       );
-      list.drawRectangle(handleRect, handlePaint);
-      list.drawRectangle(handleRect, handleBorderPaint);
+      list.drawRectangle(bar, handlePaint);
+      list.drawRectangle(bar, handleBorderPaint);
     }
+
+    if (rotating) _renderPivot(selection.pivot, list, scale, colors);
+  }
+
+  /// The rotation pivot: a ring with a dot in it, and a cross through it.
+  ///
+  /// Drawn as a ring rather than as a ninth square because it is not a corner
+  /// of anything - it is a *point*, it can be dragged off the box entirely,
+  /// and a square there would read as one more thing to pull the box by. The
+  /// cross is what makes it findable once it has been dragged over artwork.
+  static void _renderPivot(
+    Offset pivot,
+    DisplayList list,
+    double scale,
+    VectorCanvasColors colors,
+  ) {
+    final double radius = 5.0 / scale;
+    final Rect box = Rect.fromCenter(
+      center: pivot,
+      width: radius * 2,
+      height: radius * 2,
+    );
+    final fill = list.addPaint(colorArgb: colors.handleFill.value);
+    final edge = list.addPaint(
+      colorArgb: colors.selection.value,
+      style: paintStyleStroke,
+      strokeWidth: 1.0 / scale,
+    );
+    // A uniform round rect whose radius is half its side is a circle, which
+    // saves building a four-cubic path for a five-pixel mark.
+    list.drawRRectUniform(
+        box.left, box.top, box.right, box.bottom, radius, radius, fill);
+    list.drawRRectUniform(
+        box.left, box.top, box.right, box.bottom, radius, radius, edge);
+
+    final double arm = radius * 1.6;
+    final cross = PathBuilder()
+      ..moveTo(pivot.dx - arm, pivot.dy)
+      ..lineTo(pivot.dx + arm, pivot.dy)
+      ..moveTo(pivot.dx, pivot.dy - arm)
+      ..lineTo(pivot.dx, pivot.dy + arm);
+    list.drawPath(list.addPath(cross.build()), edge);
+  }
+
+  /// A square turned forty-five degrees, centred on [centre].
+  static Path _diamondPath(Offset centre, double size) {
+    final double half = size * 0.75;
+    return (PathBuilder()
+          ..moveTo(centre.dx, centre.dy - half)
+          ..lineTo(centre.dx + half, centre.dy)
+          ..lineTo(centre.dx, centre.dy + half)
+          ..lineTo(centre.dx - half, centre.dy)
+          ..close())
+        .build();
   }
 
   /// The caret, and the wash behind a selected run, for an open text edit.
@@ -364,13 +567,17 @@ class VectorRenderer {
   /// Drawn in document space and through the object's own transform, so a text
   /// that has been scaled or rotated gets a caret that is scaled and rotated
   /// with it rather than an upright bar in the wrong place.
-  static void _renderCaret(DisplayList list, TextEditCaret caret, double zoom) {
+  static void _renderCaret(
+    DisplayList list,
+    TextEditCaret caret,
+    double zoom,
+    VectorCanvasColors colors,
+  ) {
     final scale = zoom == 0 ? 1.0 : zoom;
 
     final TextSelectionRange? range = caret.selection;
     if (range != null && range.end > range.start) {
-      final washPaint =
-          list.addPaint(colorArgb: VectorCanvasPalette.textSelection.value);
+      final washPaint = list.addPaint(colorArgb: colors.textSelection.value);
       final builder = PathBuilder();
       final corners = <Offset>[
         Offset(range.start, -caret.ascent),
@@ -394,7 +601,7 @@ class VectorRenderer {
     final bottom =
         applyTrafoToPoint(Offset(caret.caretX, caret.descent), caret.trafo);
     final caretPaint = list.addPaint(
-      colorArgb: VectorCanvasPalette.caret.value,
+      colorArgb: colors.caret.value,
       style: paintStyleStroke,
       strokeWidth: 1.4 / scale,
     );

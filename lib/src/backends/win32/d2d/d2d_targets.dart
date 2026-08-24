@@ -420,6 +420,7 @@ final class D2dOffscreenSurface with DisposableMixin {
     required this.width,
     required this.height,
     String backendName = 'direct2d',
+    bool spriteBatching = true,
   })  : _library = library,
         _backendName = backendName,
         assert(width > 0 && height > 0) {
@@ -501,6 +502,7 @@ final class D2dOffscreenSurface with DisposableMixin {
       factory: factory,
       allocator: alloc,
       backendName: backendName,
+      spriteBatching: spriteBatching,
     );
     _player = DisplayListPlayer(_sink);
   }

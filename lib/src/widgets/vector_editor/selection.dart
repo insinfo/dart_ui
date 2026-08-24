@@ -22,8 +22,13 @@
 ///    the multi-object selection that Group needs.
 library;
 
+import 'dart:math' as math;
+
 import '../../geometry/offset.dart';
+import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
+import '../../graphics/vector/bezier.dart';
+import '../../graphics/vector/primitives.dart';
 import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
 
@@ -38,6 +43,31 @@ enum TransformHandle {
   bottomLeft,
   midLeft,
   rotationCenter,
+}
+
+/// What the eight handles around the selection currently do.
+///
+/// The two-state frame is CorelDRAW's, and sK1 copies it (`trafo_ctrl.py`
+/// keeps markers 1-8 for one mode and 9-17 for the other): the first click
+/// selects and gives you a *scale* frame, and clicking the same object again
+/// swaps that frame for a *rotate* one, where the corners turn the object and
+/// the edge handles skew it. It matters because it doubles the number of
+/// transforms a mouse can reach without going anywhere near a menu, and
+/// because the second frame is where the pivot lives - the thing rotation is
+/// actually about, which no scale frame has a use for.
+enum SelectionHandleMode {
+  /// Corners and edges scale, anchored opposite. The mode a fresh selection
+  /// is in.
+  scale,
+
+  /// Corners rotate about the pivot, edges skew, and the pivot itself is a
+  /// ninth handle that can be dragged anywhere.
+  rotate;
+
+  SelectionHandleMode get toggled =>
+      this == SelectionHandleMode.scale
+          ? SelectionHandleMode.rotate
+          : SelectionHandleMode.scale;
 }
 
 /// How a rubber band decides what it caught.
@@ -178,6 +208,24 @@ class SelectionManager {
   /// bbox by 4 window pixels for the same reason.
   static const double objectGrabPixels = 4.0;
 
+  /// Whether the frame currently scales or rotates. See
+  /// [SelectionHandleMode].
+  ///
+  /// Reset to [SelectionHandleMode.scale] whenever the selection is *replaced*,
+  /// because "click the thing again to rotate it" has to mean the thing you
+  /// clicked twice, not whatever happened to be selected when you clicked
+  /// something else.
+  SelectionHandleMode handleMode = SelectionHandleMode.scale;
+
+  /// Where rotation turns about, or null for the centre of the box.
+  ///
+  /// Null rather than an eagerly computed centre so the pivot follows the
+  /// selection until the user drags it somewhere, and only then stops.
+  Offset? rotationPivot;
+
+  /// The point rotation actually turns about.
+  Offset get pivot => rotationPivot ?? selectionBounds.center;
+
   /// The list of currently selected objects.
   List<SelectableObject> get selectedObjects =>
       List.unmodifiable(_selectedObjects);
@@ -217,12 +265,32 @@ class SelectionManager {
   /// replaces it.
   void select(SelectableObject obj, {bool additive = false}) {
     if (!additive) {
+      final bool same = _selectedObjects.length == 1 &&
+          identical(_selectedObjects.first, obj);
       _selectedObjects
         ..clear()
         ..add(obj);
+      if (!same) _resetFrame();
       return;
     }
     toggle(obj);
+    _resetFrame();
+  }
+
+  /// Puts the frame back into scale mode with the pivot at the box centre.
+  void _resetFrame() {
+    handleMode = SelectionHandleMode.scale;
+    rotationPivot = null;
+  }
+
+  /// Swaps the scale frame for the rotate frame, or back.
+  ///
+  /// The second click on an object that is already selected. Named rather than
+  /// assigned so the one place that decides "this click was the second one"
+  /// reads as the gesture it is.
+  void toggleHandleMode() {
+    handleMode = handleMode.toggled;
+    if (handleMode == SelectionHandleMode.scale) rotationPivot = null;
   }
 
   /// Adds [obj] when it is out, removes it when it is in.
@@ -246,6 +314,7 @@ class SelectionManager {
     _selectedObjects
       ..clear()
       ..addAll(objects);
+    _resetFrame();
   }
 
   /// Adds [objects], skipping ones already selected.
@@ -253,10 +322,12 @@ class SelectionManager {
     for (final SelectableObject object in objects) {
       if (!contains(object)) _selectedObjects.add(object);
     }
+    _resetFrame();
   }
 
   /// Selects all objects on the active [page].
   void selectAll(VectorPage page) {
+    _resetFrame();
     _selectedObjects.clear();
     for (final layer in page.children.whereType<VectorLayer>()) {
       if (layer.isEditable) {
@@ -270,6 +341,7 @@ class SelectionManager {
   /// Clears the selection.
   void deselectAll() {
     _selectedObjects.clear();
+    _resetFrame();
   }
 
   /// Hit-tests a point against objects on [page] (topmost object first).
@@ -277,34 +349,217 @@ class SelectionManager {
   /// [tolerance] is in document units and is what a caller converts a few
   /// screen pixels into: a hairline shape is otherwise unclickable at low zoom.
   ///
-  /// The test is against the object's bounding box, not its outline. sK1 walks
-  /// a real hit surface and can tell the hole in a doughnut from the doughnut;
-  /// this cannot, and a click inside the bounding box but outside the shape
-  /// selects it anyway. Named rather than hidden - it is the next thing to fix
-  /// here, and it needs the rasterizer.
+  /// The test is against the object's **outline**, not its bounding box. That
+  /// distinction is the whole difference between clicking a star and clicking
+  /// the square it happens to fit in: the gaps between a five-pointed star's
+  /// points are more than half of its bounding box, and every click in one of
+  /// them used to select the star. A filled object is hit anywhere its fill
+  /// would be painted (non-zero winding over the flattened contours); an
+  /// unfilled or open one is hit within [tolerance] of its outline, plus half
+  /// its own stroke width, so a hairline curve stays as grabbable as it was.
+  ///
+  /// Objects with no geometry - text, and anything the flattener returns
+  /// nothing for - fall back to the box, which for a text run *is* its shape.
   SelectableObject? hitTest(
     Offset point,
     VectorPage page, {
     double tolerance = 0,
   }) {
+    final List<SelectableObject> stack =
+        hitTestStack(point, page, tolerance: tolerance);
+    return stack.isEmpty ? null : stack.first;
+  }
+
+  /// Every object under [point], topmost first.
+  ///
+  /// The list Alt+click walks. One click takes the top of it, and each
+  /// subsequent Alt+click takes the next one down - which is the only way to
+  /// reach an object that is completely covered without hiding or moving the
+  /// thing on top of it. CorelDRAW and Inkscape both bind exactly this.
+  List<SelectableObject> hitTestStack(
+    Offset point,
+    VectorPage page, {
+    double tolerance = 0,
+  }) {
+    final List<SelectableObject> found = <SelectableObject>[];
     final layers = page.children.whereType<VectorLayer>().toList();
 
-    // Iterate layers in reverse (top-to-bottom)
+    // Layers top-to-bottom, and objects within a layer likewise, so the list
+    // is in exactly the order a click walks down through the drawing.
     for (var i = layers.length - 1; i >= 0; i--) {
       final layer = layers[i];
       if (!layer.isVisible || !layer.isEditable) continue;
 
       for (var j = layer.children.length - 1; j >= 0; j--) {
         final obj = layer.children[j];
-        if (obj is SelectableObject) {
-          if (obj.cacheBbox.inflate(tolerance).contains(point)) {
-            return obj;
-          }
+        if (obj is! SelectableObject) continue;
+        if (hits(obj, point, tolerance)) found.add(obj);
+      }
+    }
+    return found;
+  }
+
+  /// The object an Alt+click should reach next, given what is selected now.
+  ///
+  /// Walks *down* the stack from whatever is selected and wraps at the bottom,
+  /// so repeated Alt+clicks in one spot cycle through everything under the
+  /// pointer and come back round. Returns null when nothing is there at all.
+  SelectableObject? hitTestBelowSelection(
+    Offset point,
+    VectorPage page, {
+    double tolerance = 0,
+  }) {
+    final List<SelectableObject> stack =
+        hitTestStack(point, page, tolerance: tolerance);
+    if (stack.isEmpty) return null;
+    for (var i = 0; i < stack.length; i++) {
+      if (contains(stack[i])) return stack[(i + 1) % stack.length];
+    }
+    return stack.first;
+  }
+
+  /// Whether [object] is under [point], within [tolerance] document units.
+  static bool hits(SelectableObject object, Offset point, double tolerance) {
+    // The box is the cheap rejection, and it is exact for the objects that
+    // have no contours to test.
+    if (!object.cacheBbox.inflate(tolerance).contains(point)) return false;
+    return _outlineHits(object, point, tolerance) ?? true;
+  }
+
+  /// Whether [point] is inside or on [object]'s real outline.
+  ///
+  /// Null means "this object cannot answer" - no contours came back - and the
+  /// caller falls back to the box.
+  static bool? _outlineHits(
+    SelectableObject object,
+    Offset point,
+    double tolerance,
+  ) {
+    if (object is VectorGroup) {
+      // A group is hit where one of its members is hit, not across the
+      // rectangle that spans them: two shapes at opposite corners of a page
+      // make a group whose box is the page.
+      var answered = false;
+      for (final child in object.children) {
+        if (child is! SelectableObject) continue;
+        if (!child.cacheBbox.inflate(tolerance).contains(point)) {
+          answered = true;
+          continue;
+        }
+        final bool? hit = _outlineHits(child, point, tolerance);
+        if (hit == null) return null;
+        if (hit) return true;
+        answered = true;
+      }
+      return answered ? false : null;
+    }
+    if (object is! PrimitiveObject) return null;
+    final List<VectorPath>? paths = object.cachePaths;
+    if (paths == null || paths.isEmpty) return null;
+
+    final Path path = pathFromVectorPaths(paths, object.trafo);
+    if (path.isEmpty) return null;
+    final FlattenedPath flat = path.flatten(_flattenTolerance);
+    if (flat.contourCount == 0) return null;
+
+    final bool filled = !object.style.fill.isNone;
+    if (filled && _windingContains(flat, point)) return true;
+
+    // The outline itself, always: the edge of a filled shape is grabbable too,
+    // and it is the only thing an unfilled one offers.
+    final double stroke =
+        object.style.stroke.isNone ? 0.0 : object.style.stroke.width / 2;
+    return _nearOutline(flat, point, tolerance + stroke);
+  }
+
+  /// How finely a contour is flattened before a point is tested against it.
+  ///
+  /// A quarter of a document unit: below the tolerance a click already
+  /// carries, so the flattening error cannot be what decides a hit.
+  static const double _flattenTolerance = 0.25;
+
+  /// Non-zero winding, the same rule the filler uses.
+  ///
+  /// The same rule matters more than which rule: a hit test that used even-odd
+  /// against a filler that uses non-zero would disagree with the picture
+  /// exactly where the two rules differ, which is inside every
+  /// self-overlapping shape.
+  static bool _windingContains(FlattenedPath flat, Offset point) {
+    var winding = 0;
+    for (var c = 0; c < flat.contourCount; c++) {
+      final int start = flat.contourStarts[c];
+      final int end = flat.contourStarts[c + 1];
+      if (end - start < 2) continue;
+      for (var i = start; i < end; i++) {
+        final int next = i + 1 == end ? start : i + 1;
+        final double x0 = flat.pointX(i);
+        final double y0 = flat.pointY(i);
+        final double x1 = flat.pointX(next);
+        final double y1 = flat.pointY(next);
+        if (y0 <= point.dy) {
+          if (y1 > point.dy && _isLeft(x0, y0, x1, y1, point) > 0) winding++;
+        } else {
+          if (y1 <= point.dy && _isLeft(x0, y0, x1, y1, point) < 0) winding--;
         }
       }
     }
+    return winding != 0;
+  }
 
-    return null;
+  static double _isLeft(double x0, double y0, double x1, double y1, Offset p) =>
+      (x1 - x0) * (p.dy - y0) - (p.dx - x0) * (y1 - y0);
+
+  /// Whether [point] is within [tolerance] of any flattened segment.
+  static bool _nearOutline(
+    FlattenedPath flat,
+    Offset point,
+    double tolerance,
+  ) {
+    final double limit = tolerance <= 0 ? 0.5 : tolerance;
+    final double limitSquared = limit * limit;
+    for (var c = 0; c < flat.contourCount; c++) {
+      final int start = flat.contourStarts[c];
+      final int end = flat.contourStarts[c + 1];
+      if (end - start < 2) continue;
+      final bool closed = flat.contourClosed[c] != 0;
+      final int last = closed ? end : end - 1;
+      for (var i = start; i < last; i++) {
+        final int next = i + 1 == end ? start : i + 1;
+        if (_distanceSquaredToSegment(
+              point,
+              flat.pointX(i),
+              flat.pointY(i),
+              flat.pointX(next),
+              flat.pointY(next),
+            ) <=
+            limitSquared) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  static double _distanceSquaredToSegment(
+    Offset p,
+    double x0,
+    double y0,
+    double x1,
+    double y1,
+  ) {
+    final double dx = x1 - x0;
+    final double dy = y1 - y0;
+    final double lengthSquared = dx * dx + dy * dy;
+    double t = 0;
+    if (lengthSquared > 0) {
+      t = ((p.dx - x0) * dx + (p.dy - y0) * dy) / lengthSquared;
+      t = t < 0 ? 0 : (t > 1 ? 1 : t);
+    }
+    final double cx = x0 + t * dx;
+    final double cy = y0 + t * dy;
+    final double ex = p.dx - cx;
+    final double ey = p.dy - cy;
+    return ex * ex + ey * ey;
   }
 
   /// Every object of [page] that [band] catches under [rule].
@@ -379,10 +634,23 @@ class SelectionManager {
   /// A square target, not a round one: that is the shape the handle is drawn
   /// as, and a circular hot spot inside a square handle means the four corners
   /// of every handle do nothing.
+  ///
+  /// In [SelectionHandleMode.rotate] the pivot is a ninth handle and it is
+  /// tested **first**, because it sits at the centre of the box by default and
+  /// the centre is nowhere near the other eight - but a user who has dragged it
+  /// onto a corner still expects to be able to pick it up again, and losing the
+  /// pivot under a scale handle is a state with no way out.
   TransformHandle? hitTestHandle(Offset point, {double tolerance = 6.0}) {
     if (!hasSelection) return null;
     final Rect bounds = selectionBounds;
     if (bounds == Rect.zero) return null;
+    if (handleMode == SelectionHandleMode.rotate) {
+      final Offset centre = pivot;
+      if ((point.dx - centre.dx).abs() <= tolerance &&
+          (point.dy - centre.dy).abs() <= tolerance) {
+        return TransformHandle.rotationCenter;
+      }
+    }
     final centres = handleCentres;
     for (var i = 0; i < centres.length; i++) {
       final Offset centre = centres[i];
@@ -392,6 +660,121 @@ class SelectionManager {
       }
     }
     return null;
+  }
+
+  /// Whether [handle] is one of the four corners.
+  static bool isCorner(TransformHandle handle) =>
+      handle == TransformHandle.topLeft ||
+      handle == TransformHandle.topRight ||
+      handle == TransformHandle.bottomRight ||
+      handle == TransformHandle.bottomLeft;
+
+  /// The document-space transform a rotate-frame drag describes.
+  ///
+  /// The rotate frame gives the same eight handles two new jobs, which is the
+  /// CorelDRAW arrangement sK1 copies:
+  ///
+  ///  * **a corner turns the selection** about [pivot]. The angle is measured
+  ///    from the pivot to the press point and from the pivot to the pointer now
+  ///    - not accumulated between moves - so the transform always describes the
+  ///    whole gesture and dragging back to where you started restores the
+  ///    document exactly.
+  ///  * **an edge skews it**, along the edge, anchored on the opposite edge.
+  ///    That anchoring is what makes a skew feel like pushing the top of a
+  ///    stack of paper sideways rather than like a shear about nothing.
+  ///
+  /// [constrain] (Shift) snaps to [rotationStepDegrees], which is CorelDRAW's
+  /// own constrained-rotation step.
+  ///
+  /// Returns null when the gesture cannot describe a transform: a zero-sized
+  /// box, or a press exactly on the pivot, where there is no angle to measure.
+  List<double>? trafoForRotateHandle(
+    TransformHandle handle,
+    Rect bounds,
+    Offset pivotPoint,
+    Offset pressPoint,
+    Offset currentPoint, {
+    bool constrain = false,
+  }) {
+    if (bounds.width <= 0 || bounds.height <= 0) return null;
+
+    if (isCorner(handle)) {
+      final Offset from = pressPoint - pivotPoint;
+      final Offset to = currentPoint - pivotPoint;
+      // Under a pixel of lever arm there is no angle worth reading, and
+      // atan2 of a near-zero vector is noise.
+      if (from.distance < 1e-6 || to.distance < 1e-6) return null;
+      var angle = math.atan2(to.dy, to.dx) - math.atan2(from.dy, from.dx);
+      if (constrain) {
+        const double step = rotationStepDegrees * math.pi / 180.0;
+        angle = (angle / step).roundToDouble() * step;
+      }
+      return rotationTrafo(angle, pivotPoint);
+    }
+
+    // Edges skew. Each one moves along itself and is anchored on the far side,
+    // so the factor is "how far the dragged edge travelled" over "how far it is
+    // from the edge that is standing still".
+    final Offset delta = currentPoint - pressPoint;
+    switch (handle) {
+      case TransformHandle.topCenter:
+      case TransformHandle.bottomCenter:
+        final double span = handle == TransformHandle.topCenter
+            ? bounds.top - bounds.bottom
+            : bounds.bottom - bounds.top;
+        if (span == 0) return null;
+        final double anchor = handle == TransformHandle.topCenter
+            ? bounds.bottom
+            : bounds.top;
+        var factor = delta.dx / span;
+        if (constrain) factor = _snapSkew(factor);
+        return <double>[1, 0, factor, 1, -factor * anchor, 0];
+      case TransformHandle.midLeft:
+      case TransformHandle.midRight:
+        final double span = handle == TransformHandle.midLeft
+            ? bounds.left - bounds.right
+            : bounds.right - bounds.left;
+        if (span == 0) return null;
+        final double anchor =
+            handle == TransformHandle.midLeft ? bounds.right : bounds.left;
+        var factor = delta.dy / span;
+        if (constrain) factor = _snapSkew(factor);
+        return <double>[1, factor, 0, 1, 0, -factor * anchor];
+      case TransformHandle.topLeft:
+      case TransformHandle.topRight:
+      case TransformHandle.bottomRight:
+      case TransformHandle.bottomLeft:
+      case TransformHandle.rotationCenter:
+        return null;
+    }
+  }
+
+  /// The step constrained rotation snaps to, in degrees. CorelDRAW's 15.
+  static const double rotationStepDegrees = 15.0;
+
+  /// A rotation of [angle] radians about [about].
+  ///
+  /// Composed as `T(about) . R(angle) . T(-about)` and written out, because
+  /// the alternative - three matrix multiplies per pointer move - buys nothing
+  /// and hides which of the six numbers the pivot ends up in.
+  static List<double> rotationTrafo(double angle, Offset about) {
+    final double c = math.cos(angle);
+    final double s = math.sin(angle);
+    return <double>[
+      c,
+      s,
+      -s,
+      c,
+      about.dx - about.dx * c + about.dy * s,
+      about.dy - about.dx * s - about.dy * c,
+    ];
+  }
+
+  /// Snaps a skew factor to the same 15 degree ladder rotation uses.
+  static double _snapSkew(double factor) {
+    const double step = rotationStepDegrees * math.pi / 180.0;
+    final double angle = math.atan(factor);
+    return math.tan((angle / step).roundToDouble() * step);
   }
 
   /// Opens a transaction over the current selection.

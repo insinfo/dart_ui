@@ -143,14 +143,17 @@ class _Label extends StatelessWidget {
   final String text;
 
   @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 3),
-        child: Text(
-          text,
-          color: Theme.of(context).foregroundSecondary,
-          fontSize: 11,
-        ),
-      );
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: Spacing.xs),
+      child: Text(
+        text,
+        style: theme.textTheme.labelSmall,
+        color: theme.foregroundSecondary,
+      ),
+    );
+  }
 }
 
 /// A number field of a fixed width, so the bar does not resize as digits come

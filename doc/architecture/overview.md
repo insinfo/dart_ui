@@ -317,6 +317,11 @@ A próxima geração vetorial está especificada em
 híbridos como piso vertex/fragment, máscaras densas como fallback/cache e
 tesselação ou compute como modos escolhidos por custo e capacidade.
 
+O custo de texto no backend Direct2D — o que foi medido, por que o gargalo era
+o rebind de bitmap e não a contagem de chamadas, e a conclusão fechada sobre
+DirectWrite (opção explícita de aparência nativa, nunca o padrão) — está em
+[`TEXTO_DIRECT2D.md`](TEXTO_DIRECT2D.md).
+
 O arredondamento do blend (`mul255`) foi verificado exaustivamente nos 65536
 pares contra `(v * a + 127) ~/ 255`: idêntico bit a bit, sem divisão. A
 equivalência é teste, não afirmação.

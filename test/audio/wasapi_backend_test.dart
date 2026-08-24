@@ -1,3 +1,4 @@
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:dart_ui/audio.dart';
@@ -47,7 +48,40 @@ void main() {
           reason: 'an empty ring is rendered as silence');
       stream.stop();
       expect(stream.state, AudioStreamState.stopped);
+
+      final _SilentProcessor processor = _SilentProcessor(
+        sampleRate: stream.configuration.format.sampleRate,
+        channels: stream.configuration.format.channels,
+      );
+      addTearDown(processor.dispose);
+      stream.start();
+      expect(stream.waitForPeriod(timeoutMilliseconds: 1000), isTrue);
+      expect(stream.renderAvailableWith(processor), greaterThan(0));
+      expect(processor.processedFrames, greaterThan(0));
+      stream.stop();
     },
     skip: !Platform.isWindows,
   );
+}
+
+final class _SilentProcessor implements NativeFloat32AudioProcessor {
+  _SilentProcessor({required this.sampleRate, required this.channels});
+
+  @override
+  final int sampleRate;
+  @override
+  final int channels;
+  int processedFrames = 0;
+  bool _disposed = false;
+
+  @override
+  bool get isDisposed => _disposed;
+
+  @override
+  void process(Pointer<Float> interleavedSamples, int frames) {
+    processedFrames += frames;
+  }
+
+  @override
+  void dispose() => _disposed = true;
 }

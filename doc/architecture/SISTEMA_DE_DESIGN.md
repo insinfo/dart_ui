@@ -140,6 +140,7 @@ caixas em vez de um conjunto de superfícies.
 
 | token | papel |
 |---|---|
+| `surfaceSunken` | o poço em que um documento é encaixado: o canvas de um editor |
 | `surfaceBase` | a janela, e o vão entre painéis |
 | `surface` | o fundo de um painel |
 | `surfaceAlternate` | conteúdo sobre o painel: campo, lista, cartão, barra |
@@ -154,6 +155,25 @@ caixas em vez de um conjunto de superfícies.
 | `selection` / `onSelection` | linha selecionada, e o texto sobre ela |
 | `disabledSurface` / `disabledForeground` | o que não pode ser usado |
 | `focusRing` | o anel de foco |
+
+### `surfaceSunken`: o único degrau que desce
+
+A escada de superfícies sobe — `surfaceBase` → `surface` → `surfaceAlternate`
+→ `surfaceRaised` —, e `surfaceSunken` é o único passo que desce. Existe por um
+motivo concreto e um só: **uma página de papel branco sobre um fundo quase
+branco não é uma página**, é um retângulo com um fio em volta, e um editor cujo
+documento não lê como documento perdeu aquilo para que ele serve. Toda
+ferramenta de desenho afunda o seu canvas assim.
+
+Ele tem um padrão: `surfaceBase`. Um tema sem vista de documento nunca precisa
+responder à pergunta.
+
+A aresta da página é `border`, e **não** `borderStrong`. A tentativa foi
+`borderStrong`, e a aritmética recusou: 3:1 contra um poço claro o bastante para
+ser uma superfície exige um poço quase branco — o teste de contraste diz isso
+para todos os temas claros. É o token dizendo a verdade, não o token errado: uma
+página não é o contorno de um controle, é uma superfície pousada sobre outra, e o
+que as separa é o degrau entre as duas mais a sombra que a de cima projeta.
 
 Duas distinções que carregam quase toda a diferença de aparência:
 
@@ -177,6 +197,10 @@ Verificado aritmeticamente para **todos** os temas embutidos:
 * **3:1** para o contorno de um controle e para marcas gráficas com significado
   (SC 1.4.11) — `borderStrong`, `focusRing`, preenchimento de acento contra o
   painel, glifo de acento sobre `accentSubtle`;
+* **1,15:1** entre `surfaceAlternate` e `surfaceSunken` — não é uma norma, é o
+  degrau que precisa existir para a página ler como página, e o teste o mede
+  porque foi exatamente ele que se perdeu quando o canvas ganhou o seu cinza
+  próprio;
 * texto **desabilitado** é isento por norma, e é medido contra um piso próprio:
   legível, porém sempre mais fraco que o habilitado.
 
@@ -195,14 +219,16 @@ visível "no olho":
 
 ### Paletas
 
-**neutral-light** (base dos goldens) — `surfaceBase #EEF0F4`, `surface #F6F7F9`,
+**neutral-light** (base dos goldens) — `surfaceSunken #DDE1E8`,
+`surfaceBase #EEF0F4`, `surface #F6F7F9`,
 `surfaceAlternate/Raised #FFFFFF`, `borderSubtle #E7E9ED`, `border #D5D9E0`,
 `borderStrong #888E98`, `foreground #14181F`, `foregroundSecondary #5A6472`,
 `hoverSurface #EBEDF1`, `pressedSurface #DFE3E9`, `accent #2563EB` →
 `#1D4ED8` → `#1E40AF`, `accentSubtle #E3ECFD`, `selection #D8E5FE`,
 `focusRing #2563EB`, raio 6, controle 32, padding 12, base tipográfica 13.
 
-**neutral-dark** — `surfaceBase #15181C`, `surface #1D2126`,
+**neutral-dark** — `surfaceSunken #0D1013`, `surfaceBase #15181C`,
+`surface #1D2126`,
 `surfaceAlternate #24282F`, `surfaceRaised #2A2F37`, `borderSubtle #2B3037`,
 `border #383E47`, `borderStrong #6B7280`, `foreground #EDEFF2`,
 `foregroundSecondary #A7AFBB`, `hoverSurface #2C313A`,
@@ -213,7 +239,8 @@ preenchimento mais escuro levaria o rótulo junto), `accentSubtle #1F3559`,
 
 **fluent-light** — o tema que uma ferramenta desktop escolhe: densidade
 compacta, raio 4, base 13. `accent #0F6CBD` → `#115EA3` → `#0C4C86`,
-`surface #F7F8FA`, `border #DCE0E6`, `borderStrong #888E98`,
+`surfaceSunken #DFE3E9`, `surface #F7F8FA`, `border #DCE0E6`,
+`borderStrong #888E98`,
 `selection #CFE4FA`, `accentSubtle #DCEAF9`.
 
 **material-light / material-dark** — padrões modernos: raio 8, controle 36,
@@ -314,6 +341,30 @@ controle 28, linha 24, padding 8, gap 4. Daí as bandas:
 | tira de abas recolhida | 24 | 28 | grade |
 | painel de plugin | 250 | 260 | grade |
 | padding de barra | 6 | 8 | escala de espaçamento |
+
+E o que o próprio canvas usa, que antes não usava nada:
+
+| peça | antes | agora |
+|---|---|---|
+| mesa | `#8C8C8C` chapado | `surfaceSunken` |
+| papel | `#FFFFFF` | `surfaceAlternate` |
+| aresta do papel | `#5A5A5A` | `border` + a sombra |
+| grade | `0x1A000000` | `borderSubtle` |
+| moldura de seleção, elástico, alça | `#1E88E5` | `accent` |
+| corpo da alça | `#FFFFFF` | `surfaceAlternate` |
+| caret no canvas | `#000000` | `foreground` |
+| trecho de texto selecionado | `0x553F8FE0` | `selection` |
+
+Duas cores continuam literais de propósito e estão marcadas como tais no código:
+a **guia** é uma anotação que o usuário posiciona, como as cores do próprio
+desenho, e o ciano do sK1 é o que um usuário daquele programa procura; a
+**sombra** da página é uma opacidade sobre o que estiver embaixo, não um matiz, e
+a paleta não tem token para uma. Se um token de sombra entrar no `ThemeData`,
+esse é o seu primeiro chamador.
+
+Texto do cromo: barra de menus e abas de documento em `labelLarge`, barra de
+status, réguas, rótulos de painel e legendas em `labelSmall`, cabeçalho de painel
+em `titleSmall`. Nenhum `fontSize:` literal sobrou nos dois diretórios.
 
 ---
 

@@ -178,8 +178,7 @@ final class _KeyboardSynthProcessor
       _snapshot[note] = 0;
       _phases[note] = 0;
       _envelopes[note] = 0;
-      _frequencies[note] =
-          130.81278265 * math.pow(2, note / 12).toDouble();
+      _frequencies[note] = 130.81278265 * math.pow(2, note / 12).toDouble();
     }
     _snapshot[_wetIndex] = 0.32;
     _snapshot[_roomIndex] = 0.72;

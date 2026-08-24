@@ -70,6 +70,11 @@ Future<void> main(List<String> args) async {
       ..selectAll()
       ..activePanel = PanelIds.align
       ..refresh();
+  } else if (scenario == 'fill') {
+    state.model
+      ..selectAll()
+      ..activePanel = PanelIds.fillStroke
+      ..refresh();
   } else if (scenario == 'collapsed') {
     state.model
       ..activePanel = null
@@ -88,6 +93,27 @@ Future<void> main(List<String> args) async {
     driver
       ..press(canvas.toGlobal(Offset(box.right, box.bottom)))
       ..moveTo(canvas.toGlobal(Offset(box.right + 120, box.bottom + 70)));
+  } else if (scenario == 'rotate') {
+    // The rotate frame: a second click on an already-selected object swaps the
+    // eight scale squares for four corner diamonds, four edge bars and the
+    // pivot ring.
+    final rect = objectOfType((o) => o is VectorRectangle);
+    final at = canvas.toGlobal(rect.cacheBbox.center);
+    driver
+      ..click(at)
+      ..click(at, clickCount: 2);
+  } else if (scenario == 'rotating') {
+    // The same frame with a corner held mid-turn.
+    final rect = objectOfType((o) => o is VectorRectangle);
+    final at = canvas.toGlobal(rect.cacheBbox.center);
+    driver
+      ..click(at)
+      ..click(at, clickCount: 2);
+    settle();
+    final box = rect.cacheBbox;
+    driver
+      ..press(canvas.toGlobal(Offset(box.right, box.top)))
+      ..moveTo(canvas.toGlobal(Offset(box.right + 40, box.top + 70)));
   } else if (scenario == 'marquee') {
     // Bug 4: the rubber band, in progress.
     driver

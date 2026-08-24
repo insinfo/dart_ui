@@ -1773,10 +1773,11 @@ Validar toda a pilha sem depender de GPU.
 
 ### Estado auditado em 2026-08-23 — implementado
 
-Direct2D existe em `lib/src/backends/win32/d2d/` (seis arquivos:
+Direct2D existe em `lib/src/backends/win32/d2d/` (nove arquivos:
 `d2d1_library.dart`, `d2d1_interfaces.dart`, `d2d1_structs.dart`,
-`d2d_backend.dart`, `d2d_targets.dart`, `d2d_raster_sink.dart`) e **está ligado
-ao seletor**: `_win32Direct2d()` entra em `defaultPresentations()` depois de
+`d2d_backend.dart`, `d2d_targets.dart`, `d2d_raster_sink.dart`,
+`d2d_glyph_atlas.dart`, `dwrite_interfaces.dart`, `dwrite_font_faces.dart`) e
+**está ligado ao seletor**: `_win32Direct2d()` entra em `defaultPresentations()` depois de
 D3D11 e OpenGL — para não mudar a imagem padrão de uma máquina comum enquanto é
 novo — e **antes** da DIB, para que uma máquina cujos probes de D3D11/GL
 falhem ainda receba um caminho acelerado. `--presentation=direct2d` ou
@@ -1792,16 +1793,72 @@ falhem ainda receba um caminho acelerado. `--presentation=direct2d` ou
   profundidade, `ID2D1HwndRenderTarget` para janela e um DC render target sobre
   DIB top-down para leitura de volta;
 - caches: geometria por identidade de path (`kD2dGeometryCacheLimit = 512`) e
-  glifo por (face, tamanho quantizado, glifo, bucket subpixel)
-  (`kD2dGlyphCacheLimit = 4096`).
+  **um atlas de glifos de 1024×1024** (`d2d_glyph_atlas.dart`) chaveado por
+  (face, tamanho quantizado, glifo, bucket subpixel), com bitmap próprio só
+  para tipo grande demais para o atlas (`kD2dGlyphCacheLimit = 64`).
+
+### Custo de texto — medido em 2026-08-24, e o que mudou por causa disso
+
+O caminho de texto fazia **uma `FillOpacityMask` por glifo, cada uma de um
+bitmap diferente**. A medição
+(`test/backends/win32/d2d/d2d_text_cost_test.dart`, atrás de
+`DART_UI_GPU_BENCHMARK=1`) mostrou que **o gargalo não era a contagem de
+chamadas e sim o rebind de bitmap**: 3400 quads do tamanho de um glifo custam
+12,1–16,6 ms com um bitmap cada, 5,4–8,0 ms com um atlas só e as mesmas
+chamadas, e 4,5–5,6 ms como um único `DrawSpriteBatch`.
+
+O sink passou a usar **atlas único + `ID2D1SpriteBatch`**. Os alvos deste
+backend, embora criados por construtores Direct2D 1.0, respondem
+`QueryInterface` até `ID2D1DeviceContext4` (verificado em
+`d2d_device_context_probe_test.dart`), então **nada mudou em `d2d_targets.dart`**;
+onde o runtime não oferecer o sprite batch, o sink emite um laço de
+`FillOpacityMask` sobre o mesmo atlas, que ainda é 2,2× melhor que o estado
+anterior.
+
+Numa tela cheia de texto (6800 glifos, 13 px, 1280×720), a parcela de texto do
+quadro:
+
+| caminho | texto |
+| --- | --- |
+| **D2D antes** | **7,58 – 9,64 ms** |
+| D2D, atlas + laço | 2,57 – 3,15 ms |
+| **D2D, atlas + `DrawSpriteBatch`** | **1,31 – 2,16 ms** |
+| renderizador de CPU | 4,92 – 6,26 ms |
+| OpenGL | 1,29 – 3,91 ms |
+
+**Paridade preservada, e endurecida:** o caso alinhado continua em **desvio 0**
+contra a CPU e o teste passou a asserir `0` em vez de aceitar a tolerância do
+caminho de contorno; as duas rotas de emissão concordam entre si em desvio 0; o
+escape de tipo grande também. Detalhes, tabelas completas e a justificativa da
+rota em **`doc/architecture/TEXTO_DIRECT2D.md`**.
 
 **Correção ao *Mapeamento* abaixo:** a linha `glyph run → DrawGlyphRun` **não é
-o que foi feito**. Os glifos vêm do `GlyphCache` compartilhado — o mesmo
-rasterizador da CPU — e são enviados como bitmaps pré-multiplicados pequenos,
-compostos com `FillOpacityMask`. **DirectWrite não é usada em lugar nenhum**, e
-a razão está escrita no arquivo: usá-la seria uma segunda opinião sobre cada
-glifo, e o roteiro (§13.12, *Regra de texto* da Fase 10) exige que o
-layout/shaping canônico permaneça em Dart.
+o caminho padrão**. Por padrão os glifos vêm do `GlyphCache` compartilhado — o
+mesmo rasterizador da CPU — e são desenhados a partir do atlas de glifos do
+backend, com uma `DrawSpriteBatch` por run.
+
+**DirectWrite: conclusão registrada em 2026-08-24.** O lote **fecha a diferença
+de desempenho sem DWrite** — o texto do Direct2D ficou ~4–5× mais rápido, ~3×
+mais rápido que o renderizador de CPU e no mesmo patamar do caminho OpenGL —
+então **não sobra argumento de desempenho para ela**. Somado ao que já se sabia
+(o framework é dono de shaping, OpenType, hinting e contornos, e rasterizar com
+DWrite faria o mesmo documento render diferente por plataforma; e sob rotação a
+DWrite também preenche contornos, sem ganho nenhum), **DirectWrite não é o
+caminho padrão e não deve virar**.
+
+O único cenário que ainda a justifica é **aparência nativa do Windows como
+opção explícita do usuário da biblioteca**, e é assim que ela existe:
+`RenderPolicy.glyphRasterization = GlyphRasterization.platformNative`,
+**desligada por padrão**, em **nível 1** — só a rasterização é nativa
+(`ID2D1RenderTarget::DrawGlyphRun` com os glifos, o tamanho e os deslocamentos
+que *nós* calculamos, `glyphAdvances` todos 0), então **o layout continua
+idêntico em todas as plataformas** e só os pixels dentro do glifo mudam. A face
+é resolvida pelo nome de família na coleção do sistema e **só é aceita se os
+índices de glifo coincidirem com os nossos**; caso contrário é **recusada por
+nome** e o run cai na rota portátil. **Nível 2** (`IDWriteTextLayout` fazendo
+shaping e quebra de linha) está **deliberadamente não implementado**, porque
+mudaria as métricas e com elas o layout — divergência de geometria, não de
+pixel. Tudo em **`doc/architecture/TEXTO_DIRECT2D.md`**.
 
 **Recusado por nome neste sink:** modos de blend além de source-over (exigem o
 blend primitivo de `ID2D1DeviceContext`, não vinculado) e texto com traço.
@@ -6607,8 +6664,16 @@ Se subclasses ObjC por callback FFI forem instáveis, registrar limitação obje
 
 - **D3D11 com COM em Dart puro, swapchain DXGI e paridade com a CPU** está
   entregue e é o **primeiro caminho tentado no Windows** pelo seletor;
-- **Direct2D** está entregue e é escolhível (§13.12), com uma correção
-  importante ao plano: **DirectWrite não é usada**. Os glifos vêm do
+- **Direct2D** está entregue e é escolhível (§13.12). O caminho de texto foi
+  medido e reescrito em 2026-08-24 — atlas de glifos único mais
+  `ID2D1SpriteBatch`, 4–5× mais rápido, paridade alinhada ainda em desvio 0 —
+  e a conclusão sobre DirectWrite está fechada:
+  **o lote fecha a diferença de desempenho sem ela**, então ela existe apenas
+  como **opção explícita de aparência nativa**
+  (`GlyphRasterization.platformNative`), desligada por padrão e em nível 1 (só
+  rasterização; métricas e layout continuam em Dart). Ver
+  `doc/architecture/TEXTO_DIRECT2D.md`. Correção ao plano original:
+  **DirectWrite não é o caminho padrão**. Os glifos vêm do
   `GlyphCache` compartilhado e são compostos com `FillOpacityMask`, o que
   atende à *Regra de texto* desta fase de forma mais forte do que consumir
   glyph runs pela DirectWrite;
@@ -6633,7 +6698,9 @@ Primeiro renderer GPU de produção.
 - DXGI;
 - swapchain;
 - D2D device/context;
-- DirectWrite opcional apenas como renderer de comparação/fallback;
+- DirectWrite opcional, e **entregue** exatamente assim: opção pública
+  `GlyphRasterization.platformNative`, nível 1, desligada por padrão
+  (`doc/architecture/TEXTO_DIRECT2D.md`);
 - mappings de DisplayList;
 - caches;
 - clips;

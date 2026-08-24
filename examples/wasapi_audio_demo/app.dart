@@ -107,7 +107,7 @@ final class _SynthesizerAppState extends State<SynthesizerApp> {
                       ),
                       const SizedBox(width: 18),
                       Text(
-                        '${widget.engine.sampleRate} Hz  ·  ${widget.engine.periodFrames} frames  ·  ${widget.engine.latency.inMilliseconds} ms',
+                        '${widget.engine.sampleRate} Hz  ·  ${widget.engine.periodFrames} frames  ·  ${_periodMilliseconds()} ms por período',
                         color: bright,
                         fontSize: 12,
                       ),
@@ -179,6 +179,12 @@ final class _SynthesizerAppState extends State<SynthesizerApp> {
         ),
       ),
     );
+  }
+
+  String _periodMilliseconds() {
+    final double milliseconds =
+        widget.engine.periodFrames * 1000 / widget.engine.sampleRate;
+    return milliseconds.toStringAsFixed(milliseconds < 10 ? 2 : 1);
   }
 }
 

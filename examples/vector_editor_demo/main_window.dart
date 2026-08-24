@@ -325,6 +325,15 @@ class MainWindowState extends State<MainWindow> {
                             model.tool = tool;
                             model.refresh('Tool: ${tool.name}');
                           },
+                          // Double-clicking the pick tool selects everything,
+                          // which is what CorelDRAW and sK1 both do. Only the
+                          // pick tool: a second click on "create rectangle"
+                          // means nothing, and making it mean Select All would
+                          // be a surprise rather than a shortcut.
+                          onToolDoubleTapped: (ToolMode tool) {
+                            if (tool != ToolMode.select) return;
+                            model.selectAll();
+                          },
                         ),
                         Expanded(
                           child: CanvasArea(
@@ -339,6 +348,16 @@ class MainWindowState extends State<MainWindow> {
                   ColorPaletteBar(
                     swatchSize: ChromeMetrics.paletteSwatchSize,
                     height: ChromeMetrics.paletteHeight,
+                    // Which cell the selection is already wearing, so the
+                    // palette answers "what colour is this?" as well as
+                    // "make it that colour".
+                    selectedFill: model.currentFill.isNone
+                        ? null
+                        : model.currentFill.color,
+                    selectedStroke: model.currentStroke.isNone ||
+                            model.currentStroke.width <= 0
+                        ? null
+                        : model.currentStroke.color,
                     onColorSelected: model.setFill,
                     onStrokeColorSelected: model.setStroke,
                   ),

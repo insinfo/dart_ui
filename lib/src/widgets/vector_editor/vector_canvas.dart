@@ -57,6 +57,7 @@ import '../focus.dart';
 import '../focus_scope.dart';
 import '../keyboard_router.dart';
 import '../pointer_router.dart';
+import '../theme.dart';
 import '../widget.dart';
 import 'selection.dart';
 import 'snap_manager.dart';
@@ -573,12 +574,19 @@ class VectorCanvasState extends State<VectorCanvas>
   void _reportSelectHint() {
     final void Function(String)? onHint = widget.onHint;
     if (onHint == null) return;
+    if (!widget.selection.hasSelection) {
+      onHint('Click to select, drag to band-select, Shift+click adds to the '
+          'selection, Alt+click reaches what is underneath');
+      return;
+    }
+    final int count = widget.selection.count;
     onHint(
-      widget.selection.hasSelection
-          ? '${widget.selection.count} selected - drag to move, drag a handle '
-              'to resize (Shift keeps the ratio), Shift+click adds or removes'
-          : 'Click to select, drag to band-select, Shift+click adds to the '
-              'selection',
+      widget.selection.handleMode == SelectionHandleMode.rotate
+          ? '$count selected - drag a corner to rotate (Shift snaps to 15 '
+              'degrees), an edge to skew, the pivot to move what it turns '
+              'about; click again for the resize handles'
+          : '$count selected - drag to move, drag a handle to resize (Shift '
+              'keeps the ratio), click again for the rotate handles',
     );
   }
 
@@ -751,6 +759,7 @@ class VectorCanvasState extends State<VectorCanvas>
           viewport: _viewport,
           marquee: marqueeRect,
           textEditor: _textEditor,
+          colors: VectorCanvasColors.fromTheme(Theme.of(context)),
           onPointer: _handlePointerEvent,
         ),
       );
@@ -769,6 +778,7 @@ final class _CanvasLeaf extends RenderObjectWidget {
     required this.viewport,
     required this.marquee,
     required this.textEditor,
+    required this.colors,
     required this.onPointer,
   });
 
@@ -783,6 +793,7 @@ final class _CanvasLeaf extends RenderObjectWidget {
   final CanvasViewport viewport;
   final Rect? marquee;
   final CanvasTextEditor? textEditor;
+  final VectorCanvasColors colors;
   final void Function(PointerEvent event) onPointer;
 
   @override
@@ -802,6 +813,7 @@ final class _CanvasLeaf extends RenderObjectWidget {
         viewport: viewport,
         marquee: marquee,
         textEditor: textEditor,
+        colors: colors,
         onPointer: onPointer,
       );
 
@@ -820,6 +832,7 @@ final class _CanvasLeaf extends RenderObjectWidget {
       ..viewport = viewport
       ..marquee = marquee
       ..textEditor = textEditor
+      ..colors = colors
       ..onPointer = onPointer;
   }
 }
@@ -838,6 +851,7 @@ final class RenderVectorCanvas extends RenderBox implements PointerEventTarget {
     required CanvasViewport viewport,
     Rect? marquee,
     CanvasTextEditor? textEditor,
+    VectorCanvasColors colors = VectorCanvasPalette.defaults,
     this.onPointer,
   })  : _doc = doc,
         _page = page,
@@ -849,7 +863,8 @@ final class RenderVectorCanvas extends RenderBox implements PointerEventTarget {
         _showGuides = showGuides,
         _viewport = viewport,
         _marquee = marquee,
-        _textEditor = textEditor;
+        _textEditor = textEditor,
+        _colors = colors;
 
   /// Where every pointer event on this canvas goes.
   ///
@@ -930,6 +945,13 @@ final class RenderVectorCanvas extends RenderBox implements PointerEventTarget {
     markNeedsPaint();
   }
 
+  VectorCanvasColors _colors;
+  set colors(VectorCanvasColors value) {
+    if (identical(_colors, value)) return;
+    _colors = value;
+    markNeedsPaint();
+  }
+
   @override
   bool hitTestSelf(Offset position) => true;
 
@@ -967,6 +989,7 @@ final class RenderVectorCanvas extends RenderBox implements PointerEventTarget {
       currentTool: _tool,
       rubberBand: _marquee,
       caret: _caret(),
+      colors: _colors,
     );
   }
 

@@ -137,7 +137,7 @@ void main() {
       // Sample a row inside each bar and assert it is not the canvas desktop
       // grey. Colour rather than "something was drawn": the broken build did
       // draw something there - the canvas' desktop.
-      final desktop = VectorCanvasPalette.desktop.value & 0x00FFFFFF;
+      final desktop = _deskColour;
       for (final band in <({String name, double y})>[
         (name: 'menu bar', y: ChromeMetrics.menuBarHeight / 2),
         (
@@ -166,7 +166,7 @@ void main() {
     test('the tool box column is not painted over either', () async {
       final harness = _Harness();
       final pixels = await harness.rasterize();
-      final desktop = VectorCanvasPalette.desktop.value & 0x00FFFFFF;
+      final desktop = _deskColour;
 
       // Halfway down the tool box, well inside its 30 px.
       final sample = pixels.at(
@@ -195,7 +195,7 @@ void main() {
           colours.add(pixels.at(x, y) & 0x00FFFFFF);
         }
       }
-      expect(colours, contains(VectorCanvasPalette.desktop.value & 0x00FFFFFF),
+      expect(colours, contains(_deskColour),
           reason: 'the desk should be visible around the page');
       expect(colours, contains(0x00FFFFFF), reason: 'the page should be white');
       expect(colours.length, greaterThan(4),
@@ -399,6 +399,17 @@ void main() {
 }
 
 /// Mounts the real editor window headless and drives it like a display would.
+/// The desk colour the editor actually paints, as RGB.
+///
+/// Resolved from the theme the window picks rather than from
+/// `VectorCanvasPalette`, which is only the fallback a canvas with no theme
+/// above it would use: taking the constant made these assertions compare the
+/// rendered window against a colour it never paints, and "the bar is not this
+/// colour it was never going to be" is a test that cannot fail.
+final int _deskColour =
+    VectorCanvasColors.fromTheme(ThemeData.fluentLight).desktop.value &
+        0x00FFFFFF;
+
 final class _Harness {
   _Harness() {
     owner = BuildOwner(

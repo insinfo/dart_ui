@@ -38,11 +38,18 @@
 ///
 /// ## What the fast path must keep doing
 ///
-/// The upright control at the end goes through `FillOpacityMask` and the
-/// shared glyph cache, and the last test asserts that a rotated run admits
-/// nothing to that cache - a slot there is keyed by (face, size, glyph,
-/// subpixel bucket) with nowhere to record an angle, so an entry made under a
-/// rotation would be blitted upright by the next frame.
+/// The upright control at the end goes through the [D2dGlyphAtlas], and the
+/// last test asserts that a rotated run admits nothing to it - a slot there is
+/// keyed by (face, size, glyph, subpixel bucket) with nowhere to record an
+/// angle, so an entry made under a rotation would be blitted upright by the
+/// next frame.
+///
+/// The upright control is drawn **twice**, once as a sprite batch and once as
+/// the loop of `FillOpacityMask` calls a runtime without
+/// `ID2D1DeviceContext3` would take, and both are held to deviation 0 against
+/// the CPU. That pair is what keeps the batching work honest: the two routes
+/// are compared on this machine rather than on the assumption that a driver
+/// somewhere rounds them the same.
 ///
 /// Skips rather than fails where Direct2D does not open, on the contract
 /// `d2d_session.dart` states.
@@ -218,17 +225,64 @@ void main() {
 
       final D2dOffscreenSurface surface = _surface(session, 128, 48);
       surface.renderDisplayList(list, clearColor: _clear);
-      expect(surface.sink.glyphBitmapCount, greaterThan(0),
-          reason: 'an upright run must still be served by the glyph bitmap '
-              'cache; if it is not, the fast path has been lost');
+      expect(surface.sink.glyphAtlasEntryCount, greaterThan(0),
+          reason: 'an upright run must still be served by the glyph atlas; if '
+              'it is not, the fast path has been lost');
+      expect(surface.sink.glyphBitmapCount, 0,
+          reason: 'a 20 px glyph fits the atlas many times over, so a '
+              'standalone bitmap here means the oversize fallback fired when '
+              'it should not have');
 
-      await _expectParity(session, list, 128, 48);
+      await _expectParity(session, list, 128, 48, exact: true);
     }, skip: skip);
 
-    test('a rotated run leaves the glyph bitmap cache untouched', () {
+    test('the same run without the sprite batch, pixel for pixel', () async {
+      // The other half of the fast path, and the reason the batching change
+      // could be made without loosening anything: a runtime that has no
+      // `ID2D1DeviceContext3` draws the run as a loop of `FillOpacityMask`
+      // calls over the same atlas, and that must be the same picture rather
+      // than a nearby one.
+      //
+      // Measured: max deviation 0 over 0 pixels, on both routes.
+      final ScaledTypeface font = dejaVu.atSize(20);
+      final DisplayList list = _run(
+        font,
+        _glyphsFor(dejaVu, 'Vertical'),
+        originX: 6,
+        originY: 20,
+        advance: 12,
+      );
+
+      final D2dOffscreenSurface batched = _surface(session, 128, 48);
+      batched.renderDisplayList(list, clearColor: _clear);
+      final D2dOffscreenSurface looped =
+          _surfaceWithoutSpriteBatch(session, 128, 48);
+      looped.renderDisplayList(list, clearColor: _clear);
+
+      expect(looped.sink.usesSpriteBatch, isFalse,
+          reason: 'the point of this test is the other route; if the flag did '
+              'not take, it is comparing the batch against itself');
+      expect(batched.sink.glyphAtlasEntryCount,
+          looped.sink.glyphAtlasEntryCount,
+          reason: 'both routes admit the same glyphs to the same atlas');
+
+      final _Diff diff = _diff(batched.readback(), looped.readback());
+      printOnFailure('batched against looped: max deviation '
+          '${diff.maxDeviation} over ${diff.differingPixels} pixels');
+      expect(diff.maxDeviation, 0,
+          reason: 'DrawSpriteBatch and FillOpacityMask place the same texels '
+              'under the same quads; a difference here is a placement bug, '
+              'not a rounding one.\n${diff.report}');
+
+      // And against the CPU, which is the bound that actually matters.
+      await _expectParity(session, list, 128, 48,
+          rendered: looped.readback(), exact: true);
+    }, skip: skip);
+
+    test('a rotated run leaves the glyph atlas untouched', () {
       // The cost model, asserted rather than assumed - the same assertion
       // `gl_glyph_device_test.dart` makes about the glyph atlas. A slot in
-      // this cache is keyed by (face, quantised size, glyph, subpixel bucket)
+      // that atlas is keyed by (face, quantised size, glyph, subpixel bucket)
       // and has nowhere to record an angle, so an entry made under a rotation
       // would be blitted upright by whatever drew next.
       final ScaledTypeface font = dejaVu.atSize(20);
@@ -245,6 +299,7 @@ void main() {
         clearColor: _clear,
       );
 
+      expect(surface.sink.glyphAtlasEntryCount, 0);
       expect(surface.sink.glyphBitmapCount, 0);
       expect(_isUniform(surface.readback()), isFalse,
           reason: 'the scene drew nothing, so the count above proves nothing');
@@ -370,6 +425,19 @@ D2dOffscreenSurface _surface(D2dSession session, int width, int height) {
   return surface;
 }
 
+/// A surface whose sink refuses the sprite batch, so a run takes the
+/// `FillOpacityMask` loop instead. See `d2d_session.dart`.
+D2dOffscreenSurface _surfaceWithoutSpriteBatch(
+  D2dSession session,
+  int width,
+  int height,
+) {
+  final D2dOffscreenSurface surface =
+      session.surface(width, height, spriteBatching: false);
+  addTearDown(surface.dispose);
+  return surface;
+}
+
 /// Replays [list] through Direct2D and returns the read-back pixels.
 Framebuffer _renderD2d(
   D2dSession session,
@@ -394,6 +462,7 @@ Future<void> _expectParity(
   int width,
   int height, {
   Framebuffer? rendered,
+  bool exact = false,
 }) async {
   final Framebuffer d2d = rendered ?? _renderD2d(session, list, width, height);
 
@@ -418,6 +487,18 @@ Future<void> _expectParity(
   printOnFailure('max deviation ${diff.maxDeviation} over '
       '${diff.differingPixels} pixels '
       '(${(fraction * 100).toStringAsFixed(1)}% of the surface)');
+  if (exact) {
+    // The mask route, where a tolerance would be a bug rather than a bound:
+    // Direct2D is blitting the very coverage `ScanlineFiller` produced, so
+    // the two backends are not two rasterisers here - they are one rasteriser
+    // and two ways of copying its output. Anything above 0 means the copy
+    // stopped being a copy.
+    expect(diff.maxDeviation, 0,
+        reason: 'the upright route must agree with the CPU renderer exactly; '
+            'it disagrees by up to ${diff.maxDeviation} levels on '
+            '${diff.differingPixels} pixels.\n${diff.report}');
+    return;
+  }
   expect(
     diff.maxDeviation,
     lessThanOrEqualTo(_tolerance),

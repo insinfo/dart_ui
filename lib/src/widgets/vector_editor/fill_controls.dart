@@ -7,10 +7,19 @@ import '../../graphics/color.dart';
 import '../../graphics/vector/constants.dart';
 import '../../graphics/vector/style.dart';
 import '../../layout/edge_insets.dart';
+import '../../layout/render_wrap.dart';
 import '../basic.dart';
 import '../gesture_detector.dart';
+import '../proxy.dart';
+import '../theme.dart';
 import '../widget.dart';
 
+/// The chips lay out in a [Wrap], not a [Row].
+///
+/// Seven preset widths and a label do not fit across a 260 px panel, and a
+/// [Row] answers that by drawing them off the edge: three of the presets were
+/// simply not reachable in the docked panel, and nothing said so. Wrapping is
+/// what a bar of chips is for.
 /// Interactive fill property editor widget.
 class FillControls extends StatelessWidget {
   const FillControls({
@@ -24,26 +33,30 @@ class FillControls extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
+    final theme = Theme.of(context);
+    return Wrap(
+      spacing: Spacing.xs,
+      runSpacing: Spacing.xs,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        const Text('Fill: ', color: Color(0xFF616161), fontSize: 11),
-        const SizedBox(width: 4),
-        // Type buttons: None, Solid, Linear, Radial
-        _TypeButton(
+        Text(
+          'Fill:',
+          style: theme.textTheme.labelSmall,
+          color: theme.foregroundSecondary,
+        ),
+        _StyleChip(
           label: 'None',
           selected: fill.fillType == FillType.none,
           onTap: () => onChanged?.call(FillDescriptor.none),
         ),
-        const SizedBox(width: 2),
-        _TypeButton(
+        _StyleChip(
           label: 'Solid',
           selected: fill.fillType == FillType.solid,
           onTap: () => onChanged?.call(
             fill.copyWith(fillType: FillType.solid),
           ),
         ),
-        const SizedBox(width: 2),
-        _TypeButton(
+        _StyleChip(
           label: 'Linear',
           selected: fill.fillType == FillType.linearGradient,
           onTap: () => onChanged?.call(
@@ -56,8 +69,7 @@ class FillControls extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(width: 2),
-        _TypeButton(
+        _StyleChip(
           label: 'Radial',
           selected: fill.fillType == FillType.radialGradient,
           onTap: () => onChanged?.call(
@@ -75,8 +87,17 @@ class FillControls extends StatelessWidget {
   }
 }
 
-class _TypeButton extends StatelessWidget {
-  const _TypeButton({
+/// A small labelled toggle: the shape a row of mutually exclusive style
+/// choices takes on a property bar.
+///
+/// It used to be a flat `#E0E0E0` rectangle that turned `#2196F3` when
+/// selected, with 10 px white text on it - a control that agreed with nothing
+/// else in the window and shouted louder than any of it. Now it is the
+/// framework's neutral ramp with the accent *wash* for "selected", which is the
+/// design system's own rule for a marked-but-not-primary control, and the small
+/// radius it gives a chip.
+class _StyleChip extends StatelessWidget {
+  const _StyleChip({
     required this.label,
     required this.selected,
     required this.onTap,
@@ -88,18 +109,29 @@ class _TypeButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return GestureDetector(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2.0),
-        child: ColoredBox(
-          color: selected ? const Color(0xFF2196F3) : const Color(0xFFE0E0E0),
+        padding: const EdgeInsets.symmetric(horizontal: Spacing.hair),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: selected ? theme.accentSubtle : null,
+            border: BoxBorder(
+              color: selected ? theme.accent : theme.border,
+              width: 1,
+            ),
+            radius: theme.cornerRadiusSmall,
+          ),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 2.0),
+            padding: const EdgeInsets.symmetric(
+              horizontal: Spacing.sm,
+              vertical: Spacing.xs,
+            ),
             child: Text(
               label,
-              color: selected ? const Color(0xFFFFFFFF) : const Color(0xFF424242),
-              fontSize: 10,
+              style: theme.textTheme.labelSmall,
+              color: selected ? theme.accent : theme.foregroundSecondary,
             ),
           ),
         ),

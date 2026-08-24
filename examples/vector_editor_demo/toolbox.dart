@@ -84,10 +84,18 @@ class Toolbox extends StatelessWidget {
     required this.onToolSelected,
     required this.fill,
     required this.stroke,
+    this.onToolDoubleTapped,
   });
 
   final ToolMode activeTool;
   final void Function(ToolMode tool) onToolSelected;
+
+  /// A second click on a tool's own icon.
+  ///
+  /// CorelDRAW and sK1 both bind double-clicking the pick tool to Select All,
+  /// and it is the fastest route to it there is: the pointer is already in the
+  /// tool box, and the alternative is Ctrl+A or two levels of menu.
+  final void Function(ToolMode tool)? onToolDoubleTapped;
 
   /// The fill and outline indicator sK1 puts at the foot of the tool box.
   final FillDescriptor fill;
@@ -106,7 +114,7 @@ class Toolbox extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: <Widget>[
-            const SizedBox(height: 4),
+            const SizedBox(height: Spacing.xs),
             for (final entry in kToolEntries)
               if (entry == null)
                 _ToolDivider(color: theme.border)
@@ -115,10 +123,13 @@ class Toolbox extends StatelessWidget {
                   entry: entry,
                   selected: entry.mode == activeTool,
                   onTap: () => onToolSelected(entry.mode),
+                  onDoubleTap: onToolDoubleTapped == null
+                      ? null
+                      : () => onToolDoubleTapped!(entry.mode),
                 ),
             const Spacer(),
             _ColorIndicator(fill: fill, stroke: stroke),
-            const SizedBox(height: 6),
+            const SizedBox(height: Spacing.sm),
           ],
         ),
       ),
@@ -131,11 +142,13 @@ class _ToolButton extends StatelessWidget {
     required this.entry,
     required this.selected,
     required this.onTap,
+    this.onDoubleTap,
   });
 
   final ToolEntry entry;
   final bool selected;
   final void Function() onTap;
+  final void Function()? onDoubleTap;
 
   @override
   Widget build(BuildContext context) {
@@ -145,6 +158,8 @@ class _ToolButton extends StatelessWidget {
       child: GestureDetector(
         behavior: GestureHitTestBehavior.opaque,
         onTap: onTap,
+        onDoubleTap:
+            onDoubleTap == null ? null : (TapDetails _) => onDoubleTap!(),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: 1),
           child: SizedBox(
@@ -154,14 +169,19 @@ class _ToolButton extends StatelessWidget {
             height: ChromeMetrics.toolboxButtonSize,
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: selected ? theme.accent : theme.surfaceAlternate,
-                radius: 3,
+                // A *wash* of the accent behind a glyph in the accent, not a
+                // filled accent button. The design system is explicit about
+                // this one: filling a selected toolbar button with `accent`
+                // turns a tool palette into a column of primary buttons, and
+                // "this tool is active" is a mark, not a call to action.
+                color: selected ? theme.accentSubtle : null,
+                radius: theme.cornerRadiusSmall,
               ),
               child: Center(
                 child: Icon(
                   entry.icon,
                   size: ChromeMetrics.toolboxIconSize,
-                  color: selected ? theme.surfaceAlternate : theme.foreground,
+                  color: selected ? theme.accent : theme.foreground,
                 ),
               ),
             ),
@@ -179,10 +199,11 @@ class _ToolDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 4),
+        padding: const EdgeInsets.symmetric(
+            horizontal: Spacing.sm, vertical: Spacing.xs),
         child: SizedBox(
           height: 1,
-          width: ChromeMetrics.toolboxWidth - 10,
+          width: ChromeMetrics.toolboxWidth - Spacing.sm * 2,
           child: ColoredBox(color: color),
         ),
       );
@@ -201,33 +222,35 @@ class _ColorIndicator extends StatelessWidget {
     return Tooltip(
       message: 'Current fill and outline',
       child: SizedBox(
-        width: 22,
-        height: 22,
+        width: ChromeMetrics.toolboxIconSize + Spacing.sm,
+        height: ChromeMetrics.toolboxIconSize + Spacing.sm,
         child: Stack(
           children: <Widget>[
             Positioned(
               left: 0,
               top: 0,
-              width: 14,
-              height: 14,
+              width: ChromeMetrics.toolboxIconSize,
+              height: ChromeMetrics.toolboxIconSize,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: fill.isNone ? const Color(0xFFFFFFFF) : fill.color,
-                  border: BoxBorder(color: theme.border, width: 1),
+                  color: fill.isNone ? theme.surfaceAlternate : fill.color,
+                  border: BoxBorder(color: theme.borderStrong, width: 1),
+                  radius: theme.cornerRadiusSmall,
                 ),
               ),
             ),
             Positioned(
-              left: 8,
-              top: 8,
-              width: 14,
-              height: 14,
+              left: Spacing.sm,
+              top: Spacing.sm,
+              width: ChromeMetrics.toolboxIconSize,
+              height: ChromeMetrics.toolboxIconSize,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: stroke.isNone || stroke.width <= 0
-                      ? const Color(0xFFFFFFFF)
+                      ? theme.surfaceAlternate
                       : stroke.color,
-                  border: BoxBorder(color: theme.border, width: 1),
+                  border: BoxBorder(color: theme.borderStrong, width: 1),
+                  radius: theme.cornerRadiusSmall,
                 ),
               ),
             ),

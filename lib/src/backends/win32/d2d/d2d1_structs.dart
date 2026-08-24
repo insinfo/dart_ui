@@ -106,6 +106,33 @@ const int d2d1OpacityMaskContentGraphics = 0;
 /// `D2D1_LAYER_OPTIONS_NONE`.
 const int d2d1LayerOptionsNone = 0;
 
+/// `D2D1_SPRITE_OPTIONS_NONE`: sample the sprite the way any bitmap draw
+/// would.
+const int d2d1SpriteOptionsNone = 0;
+
+/// `D2D1_SPRITE_OPTIONS_CLAMP_TO_SOURCE_RECTANGLE`: never sample outside the
+/// sprite's own source rectangle.
+///
+/// The option that makes an atlas safe. Without it a sprite whose destination
+/// is not a whole number of texels wide can reach past its slot and pick up
+/// the neighbouring glyph; with it the fetch is clamped to the slot. The glyph
+/// route places sprites on integer boundaries at 1:1 scale, so nothing should
+/// reach out in the first place - this is the belt to that pair of braces.
+const int d2d1SpriteOptionsClampToSourceRectangle = 1;
+
+/// `D2D1_TEXT_ANTIALIAS_MODE_DEFAULT`: let Direct2D pick per target.
+const int d2d1TextAntialiasModeDefault = 0;
+
+/// `D2D1_TEXT_ANTIALIAS_MODE_CLEARTYPE`: subpixel coverage, where the target
+/// allows it. See [D2dRenderTarget.setTextAntialiasMode] for when it does not.
+const int d2d1TextAntialiasModeCleartype = 1;
+
+/// `D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE`.
+const int d2d1TextAntialiasModeGrayscale = 2;
+
+/// `D2D1_TEXT_ANTIALIAS_MODE_ALIASED`.
+const int d2d1TextAntialiasModeAliased = 3;
+
 /// `D2D1_WINDOW_STATE_OCCLUDED` bit of `CheckWindowState`.
 const int d2d1WindowStateOccluded = 1;
 
@@ -208,6 +235,23 @@ final class D2dRectF extends Struct {
   external double right;
   @Float()
   external double bottom;
+}
+
+/// `D2D1_RECT_U`: the integer rectangle `ID2D1SpriteBatch::AddSprites` takes
+/// for a sprite's source, in texels of the atlas bitmap.
+///
+/// Integer and not float, and that is the point: a sprite's source rectangle
+/// addresses whole texels, so a glyph slot in an atlas cannot land half a
+/// texel off the way a `D2D1_RECT_F` source could.
+final class D2dRectU extends Struct {
+  @Uint32()
+  external int left;
+  @Uint32()
+  external int top;
+  @Uint32()
+  external int right;
+  @Uint32()
+  external int bottom;
 }
 
 /// `D2D1_POINT_2F`. Crossed by value in `BeginFigure` and `AddLine`.

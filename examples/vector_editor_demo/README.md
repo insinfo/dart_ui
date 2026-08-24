@@ -146,6 +146,8 @@ dart run .../headless_shot.dart saida.png 1400 880 marquee     # retângulo elá
 dart run .../headless_shot.dart saida.png 1400 880 text-edit   # texto em edição, com caret
 dart run .../headless_shot.dart saida.png 1400 880 multi       # três objetos com Shift
 dart run .../headless_shot.dart saida.png 1400 880 zoomed      # três passos de roda no cursor
+dart run .../headless_shot.dart saida.png 1400 880 rotate     # a moldura de rotação, em repouso
+dart run .../headless_shot.dart saida.png 1400 880 rotating   # um canto agarrado, girando
 ```
 
 Os testes de regressão correspondentes:
@@ -174,12 +176,20 @@ por sua vez imita o CorelDRAW. Onde a divergência foi deliberada, está dita aq
 | Gesto | Comportamento | Origem |
 | --- | --- | --- |
 | Clique num objeto | Seleciona (substitui a seleção) | sK1 `select_at_point` |
+| **Segundo clique** no que já está selecionado | Troca a moldura de escala pela de **rotação**: cantos giram, arestas inclinam | CorelDRAW / sK1 `trafo_ctrl.py` |
+| Arrastar um canto na moldura de rotação | Gira em torno do pivô | idem |
+| **Shift** ao girar | Trava em passos de 15° | CorelDRAW |
+| Arrastar uma aresta na moldura de rotação | Inclina, ancorado na aresta oposta | idem |
+| Arrastar o **pivô** | Move o ponto em torno do qual se gira; não é passo de undo | idem |
+| **Alt** + clique | Alcança o objeto de baixo, ciclando pela pilha a cada clique | CorelDRAW / Inkscape |
 | **Shift** + clique | Alterna: fora entra, dentro sai | sK1 `add(objs, xor=True)` |
 | Arrastar sobre a seleção | Move em espaço de documento, a partir do estado do *press* | sK1 `MoveController` |
 | **Ctrl** ao mover | Trava num eixo | sK1 `MoveController.mouse_move` |
 | Arrastar uma alça | Escala ancorada no canto oposto | sK1 `TransformController` |
 | **Shift** ao redimensionar | Mantém a proporção | **CorelDRAW / Inkscape** — o sK1 usa Ctrl |
 | **Ctrl** ao redimensionar | Escala a partir do centro | **trocado** — é o Shift do sK1 |
+| Mover ou redimensionar com Snap ligado | Encaixa as **arestas da bbox**, não o ponteiro | sK1 `MoveController._snap` |
+| Duplo clique no ícone da ferramenta de seleção | Seleciona tudo | CorelDRAW / sK1 |
 | Arrastar no vazio | Retângulo elástico | sK1 `SELECT_MODE` |
 | Elástico solto | Seleciona o que estiver **inteiramente dentro** | sK1 `is_bbox_in_rect` |
 | **Ctrl/Alt** + elástico | Seleciona o que ele **tocar** | sK1 `overlap_flag` |
@@ -209,16 +219,55 @@ de ser a mesma distância física em qualquer zoom. Pela mesma razão, a tolerâ
 `7 px / zoom` em unidades de documento — o sK1 dimensiona os seus marcadores assim
 (`config.sel_marker_size / (2.0 * canvas.zoom)`).
 
+### As duas molduras
+
+A primeira seleção dá uma moldura de **escala**: oito quadradinhos brancos,
+ancorados no canto oposto. Clicar de novo no mesmo objeto troca-a pela moldura de
+**rotação** — cantos viram losangos, arestas viram barras deitadas na direção em
+que deslizam, e no meio aparece o **pivô**, um anel com uma cruz. Um terceiro
+clique volta para a de escala; selecionar outra coisa também.
+
+A moldura tem de *parecer* diferente ou o modo é invisível, e um modo invisível é
+um relatório de bug. O pivô é lido uma vez, no `press`, e mantido pelo gesto
+inteiro: lê-lo a cada evento leria o centro de uma caixa que o evento anterior já
+girou, e o centro da caixa de uma forma assimétrica em rotação passeia — a volta
+passaria a depender de quantos eventos de ponteiro a plataforma resolveu
+entregar.
+
+### Snapping: a caixa, não o ponteiro
+
+`SnapManager` tem dois encaixes, e a distinção é a correção que faltava:
+
+- `snapPoint` encaixa o **ponteiro**. É o certo para uma ferramenta que desenha
+  uma forma a partir do nada — o canto de um retângulo novo *é* onde o ponteiro
+  está. Os criadores de forma continuam usando este;
+- `correctionFor` encaixa as **arestas da caixa transformada** e devolve o
+  empurrãozinho a somar ao delta. Num arrasto o ponteiro não é canto de nada: é
+  onde por acaso se pegou na forma, e encaixá-lo desloca o objeto pelo tamanho
+  dessa pegada sem alinhar aresta nenhuma. É o `MoveController._snap` do sK1.
+
+Um mover oferece as três linhas de cada eixo (as duas arestas e o centro); um
+redimensionar oferece só as arestas que a alça arrasta, porque encaixar a aresta
+ancorada seria mover a âncora — a única coisa que um redimensionamento promete
+não fazer. A tolerância é `6 px / zoom`, pela mesma razão que a das alças.
+
+### Hit test por contorno
+
+Um clique acerta o objeto onde o preenchimento seria pintado (winding não-zero
+sobre os contornos achatados), e uma forma sem preenchimento — ou aberta — dentro
+da tolerância do seu traço. O vão entre as pontas da estrela deixou de selecionar
+a estrela. Objetos sem geometria (texto) caem de volta na caixa, que para um
+texto *é* a forma.
+
 **Pendências nomeadas** (decididas, não implementadas):
 
-- **segundo clique alterna para rotação/inclinação** com marcador de pivô arrastável (CorelDRAW,
-  e os marcadores 9–17 do `trafo_ctrl.py` do sK1). A enumeração `TransformHandle` já reserva
-  `rotationCenter`;
-- **Alt+clique alcança o objeto de baixo**, ciclando pela pilha;
-- **duplo clique no ícone da ferramenta de seleção seleciona tudo**;
-- **snapping durante mover/redimensionar**: o sK1 encaixa as *arestas da bbox* transformada
-  (`MoveController._snap`), não o ponteiro. O `SnapManager` daqui encaixa o ponteiro, o que é a
-  coisa errada para um arrasto, então o mover/redimensionar não encaixa por enquanto — os
-  criadores de forma continuam encaixando;
-- **hit test é por bounding box**, não pelo contorno: um clique dentro da caixa mas fora da forma
-  seleciona. O sK1 usa uma superfície de acerto rasterizada.
+- a moldura desenhada em volta de um objeto girado continua sendo a **caixa
+  alinhada aos eixos**, não o retângulo girado que o sK1 desenha. O modelo de
+  documento guarda a matriz certa e o objeto gira certo; é o desenho da moldura
+  que ainda não gira;
+- **inclinar continua sem entrada numérica** — o painel Transformations diz isso
+  na cara (`Shearing is not implemented in the Dart demo yet`); o gesto existe,
+  o campo não;
+- redimensionar um objeto **com traço** move a aresta ancorada da sua *caixa* por
+  uma fração de ponto, porque a caixa inclui metade da espessura do traço e o
+  traço não escala com a geometria. É pequeno, é real, e é anterior a tudo isto.

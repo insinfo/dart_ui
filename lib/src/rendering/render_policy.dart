@@ -187,6 +187,57 @@ const String kStencilRefusedForQuality =
     'RenderQualityPreference.exact excludes MSAA cover: 18 levels of deviation '
     'at 16 samples, 42 at 4';
 
+/// Who rasterises the inside of a glyph.
+///
+/// The framework owns its whole text stack - shaping, OpenType, hinting
+/// policy, the rasteriser - so that one document lays out and draws the same
+/// on every platform. That is a promise, and this enum is the one place an
+/// application is allowed to break it, deliberately and for one reason.
+///
+/// **What this never moves.** Shaping, metrics, line breaking and glyph
+/// placement stay in Dart under every value below. A widget is the same size,
+/// a hit test lands on the same character and a line breaks in the same place
+/// on Windows, Linux, macOS and the web. Only the pixels *inside* a glyph can
+/// change.
+enum GlyphRasterization {
+  /// This framework's rasteriser, everywhere. The default.
+  ///
+  /// One document, one set of pixels, on every platform and in every backend.
+  /// The CPU renderer, OpenGL, Direct3D and Direct2D all draw the coverage
+  /// `GlyphCache` produced, and their parity against each other is measured at
+  /// deviation 0 wherever they share it.
+  portable,
+
+  /// Let the platform rasterise glyph bodies where it can.
+  ///
+  /// Today exactly one backend reads this: **Direct2D on Windows**, which
+  /// draws a run this framework already shaped through
+  /// `ID2D1RenderTarget::DrawGlyphRun` so Windows applies its own hinting and
+  /// ClearType. Every other backend and every other platform ignores it and
+  /// draws the portable way; the field is declared here rather than in a
+  /// Windows-only corner because an application declares it once, and a policy
+  /// that moved depending on where the program ran would be worse than one
+  /// that is inert.
+  ///
+  /// **Turning this on has consequences, and they are the point of the
+  /// option, not a defect:**
+  ///
+  ///   * text on Windows stops matching text on other platforms pixel for
+  ///     pixel, and golden images that contain text become Windows-specific;
+  ///   * a run whose font is not installed on the machine, or whose installed
+  ///     copy numbers its glyphs differently from the bytes the application
+  ///     loaded, is drawn the portable way instead - the backend refuses by
+  ///     name rather than drawing correctly spaced nonsense;
+  ///   * ClearType is not guaranteed. Direct2D falls back to greyscale of its
+  ///     own accord under a rotation, into a layer and wherever the target is
+  ///     transparent, so the same option produces subpixel text in some places
+  ///     on the same screen and greyscale in others.
+  ///
+  /// `doc/architecture/TEXTO_DIRECT2D.md` states what was measured and why the
+  /// default is [portable].
+  platformNative,
+}
+
 /// Budgets and policy the application declares once, for the whole process.
 ///
 /// Immutable and comparable, so it can be a `const` in an
@@ -198,6 +249,7 @@ final class RenderPolicy {
     this.quality = RenderQualityPreference.balanced,
     this.strategies = GpuStrategySwitches.all,
     this.diagnostics = RenderDiagnosticsMode.off,
+    this.glyphRasterization = GlyphRasterization.portable,
   }) : assert(maskAtlasByteBudget > 0);
 
   /// Everything at its measured default: today's behaviour exactly.
@@ -233,6 +285,15 @@ final class RenderPolicy {
   /// See [RenderDiagnosticsMode]. Default [RenderDiagnosticsMode.off], because
   /// it is the only value that can be proved to cost nothing.
   final RenderDiagnosticsMode diagnostics;
+
+  /// See [GlyphRasterization]. Default [GlyphRasterization.portable] - one
+  /// document, one set of pixels, on every platform.
+  ///
+  /// Read by `d2d_raster_sink.dart` and by nothing else today. It is not a
+  /// performance knob: the portable route on Direct2D was measured *faster*
+  /// than the native one is expected to be, and the reason to turn this on is
+  /// that the application wants Windows' own look.
+  final GlyphRasterization glyphRasterization;
 
   /// 1 MiB: one 1024 x 1024 alpha8 page, which is `GpuMaskAtlas`'s own
   /// default.
@@ -512,15 +573,17 @@ final class RenderPolicy {
       other.maskAtlasByteBudget == maskAtlasByteBudget &&
       other.quality == quality &&
       other.strategies == strategies &&
-      other.diagnostics == diagnostics;
+      other.diagnostics == diagnostics &&
+      other.glyphRasterization == glyphRasterization;
 
   @override
-  int get hashCode =>
-      Object.hash(maskAtlasByteBudget, quality, strategies, diagnostics);
+  int get hashCode => Object.hash(maskAtlasByteBudget, quality, strategies,
+      diagnostics, glyphRasterization);
 
   @override
   String toString() => 'RenderPolicy(${maskAtlasByteBudget}B atlas, '
-      '${quality.name}, $strategies, diagnostics: ${diagnostics.name})';
+      '${quality.name}, $strategies, diagnostics: ${diagnostics.name}, '
+      'glyphs: ${glyphRasterization.name})';
 }
 
 /// Where a GPU backend finds the policy the application declared.

@@ -20,12 +20,20 @@ import '../element.dart';
 import '../theme.dart';
 import '../widget.dart';
 
-/// How a ruler is painted.
+/// How a ruler is painted, in tokens.
+///
+/// Two tick colours rather than one, because a ruler with a single tick colour
+/// is a picket fence: the minor ticks are five times as numerous as the major
+/// ones, and drawing them all at full strength buries the numbers they are
+/// there to subdivide. Major ticks are [ThemeData.borderStrong] - a graphic
+/// mark with meaning, which is the 3:1 contrast class - and the minors drop to
+/// [ThemeData.border].
 final class RulerColors {
   const RulerColors({
     required this.background,
     required this.border,
     required this.tick,
+    required this.minorTick,
     required this.label,
     required this.cursor,
   });
@@ -33,14 +41,21 @@ final class RulerColors {
   factory RulerColors.fromTheme(ThemeData theme) => RulerColors(
         background: theme.surfaceAlternate,
         border: theme.border,
-        tick: theme.foregroundSecondary,
+        tick: theme.borderStrong,
+        minorTick: theme.border,
         label: theme.foregroundSecondary,
         cursor: theme.accent,
       );
 
   final Color background;
   final Color border;
+
+  /// A labelled tick.
   final Color tick;
+
+  /// The four unlabelled ticks between two labelled ones.
+  final Color minorTick;
+
   final Color label;
   final Color cursor;
 }
@@ -56,6 +71,7 @@ final class RulerWidget extends RenderObjectWidget {
     this.cursorPosition,
     this.rulerThickness = 18.0,
     this.colors,
+    this.labelSize,
   });
 
   final bool isVertical;
@@ -76,6 +92,11 @@ final class RulerWidget extends RenderObjectWidget {
 
   final RulerColors? colors;
 
+  /// The pixel size the numbers are drawn at, or null for the theme's
+  /// [TextTheme.labelSmall] - the role the design system gives to captions and
+  /// metadata, which is what a ruler number is.
+  final double? labelSize;
+
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
 
@@ -88,6 +109,7 @@ final class RulerWidget extends RenderObjectWidget {
         cursorPosition: cursorPosition,
         rulerThickness: rulerThickness,
         colors: colors ?? RulerColors.fromTheme(Theme.of(context)),
+        labelSize: labelSize ?? _labelSizeOf(context),
       );
 
   @override
@@ -100,8 +122,13 @@ final class RulerWidget extends RenderObjectWidget {
       ..unit = unit
       ..cursorPosition = cursorPosition
       ..rulerThickness = rulerThickness
-      ..colors = colors ?? RulerColors.fromTheme(Theme.of(context));
+      ..colors = colors ?? RulerColors.fromTheme(Theme.of(context))
+      ..labelSize = labelSize ?? _labelSizeOf(context);
   }
+
+  static double _labelSizeOf(BuildContext context) =>
+      Theme.of(context).textTheme.labelSmall.fontSize ??
+      Theme.of(context).fontSize;
 }
 
 /// Render object that paints ticks, numbers, and tracking marker on a ruler.
@@ -114,13 +141,15 @@ final class RenderRuler extends RenderBox {
     required double? cursorPosition,
     required double rulerThickness,
     required RulerColors colors,
+    required double labelSize,
   })  : _isVertical = isVertical,
         _zoom = zoom,
         _pan = pan,
         _unit = unit,
         _cursorPosition = cursorPosition,
         _rulerThickness = rulerThickness,
-        _colors = colors;
+        _colors = colors,
+        _labelSize = labelSize;
 
   /// The tick spacings a ruler is willing to use, in whole units.
   ///
@@ -157,8 +186,15 @@ final class RenderRuler extends RenderBox {
   static const double _minimumLabelGap = 56.0;
   static const double _minimumVerticalLabelGap = 78.0;
 
-  /// How far a stacked character advances down a vertical ruler.
-  static const double _stackedCharacterAdvance = 9.0;
+  /// How much of the ruler's thickness a tick takes.
+  ///
+  /// A major tick that ran the whole thickness - which is what this drew - is
+  /// a picket fence with the numbers written over the pickets. Both grow from
+  /// the *inner* edge, the one the canvas is on, so the run of tick ends is a
+  /// straight line against the document and the numbers have the outer half of
+  /// the band to themselves.
+  static const double _majorTickFraction = 0.45;
+  static const double _minorTickFraction = 0.22;
 
   static final TextPainter _painter = TextPainter();
 
@@ -208,6 +244,13 @@ final class RenderRuler extends RenderBox {
   set colors(RulerColors value) {
     if (identical(_colors, value)) return;
     _colors = value;
+    markNeedsPaint();
+  }
+
+  double _labelSize;
+  set labelSize(double value) {
+    if (_labelSize == value) return;
+    _labelSize = value;
     markNeedsPaint();
   }
 
@@ -266,11 +309,18 @@ final class RenderRuler extends RenderBox {
     final minor = major / 5;
     final extent = _isVertical ? size.height : size.width;
     final tickPaint = list.addPaint(colorArgb: _colors.tick.value);
+    final minorTickPaint = list.addPaint(colorArgb: _colors.minorTick.value);
     final labelPaint = list.addPaint(
       colorArgb: _colors.label.value,
       antiAlias: true,
     );
-    final ScaledTypeface? face = FontRegistry.instance.uiFont(10);
+    final ScaledTypeface? face = FontRegistry.instance.uiFont(_labelSize);
+
+    // Ticks grow from the inner edge - the one against the canvas - so their
+    // ends line up with the document and the numbers keep the outer half.
+    final double thickness = _isVertical ? size.width : size.height;
+    final double majorLength = thickness * _majorTickFraction;
+    final double minorLength = thickness * _minorTickFraction;
 
     // Walk in units, not pixels: the first labelled tick is the first multiple
     // of `major` at or before the left edge of the viewport.
@@ -290,7 +340,8 @@ final class RenderRuler extends RenderBox {
       final isMajor = (unitValue / major - (unitValue / major).roundToDouble())
               .abs() <
           1e-6;
-      final length = isMajor ? size.width : size.width * 0.4;
+      final length = isMajor ? majorLength : minorLength;
+      final paint = isMajor ? tickPaint : minorTickPaint;
 
       if (_isVertical) {
         list.drawRect(
@@ -298,42 +349,48 @@ final class RenderRuler extends RenderBox {
           offset.dy + pixel,
           offset.dx + size.width,
           offset.dy + pixel + 1,
-          tickPaint,
+          paint,
         );
       } else {
         list.drawRect(
           offset.dx + pixel,
-          offset.dy + size.height - (isMajor ? size.height : size.height * 0.4),
+          offset.dy + size.height - length,
           offset.dx + pixel + 1,
           offset.dy + size.height,
-          tickPaint,
+          paint,
         );
       }
 
       if (!isMajor || face == null) continue;
       final label = _formatLabel(unitValue, major);
+      // The baseline that puts the number's cap height against the outer edge
+      // of the band, computed from the face rather than guessed: a hard-coded
+      // baseline is only right for one font size, and the size now comes from
+      // the theme.
+      final double baseline = face.ascent + 1;
       if (_isVertical) {
         // A vertical ruler cannot rotate its text - the CPU rasterizer refuses
         // rotated glyph runs - so the number is stacked digit under digit,
         // which is also what several CAD rulers do.
+        final double advance = (face.ascent + face.descent).roundToDouble();
         var y = offset.dy + pixel + 1;
         for (final char in label.split('')) {
-          if (y > offset.dy + size.height - _stackedCharacterAdvance) break;
+          if (y > offset.dy + size.height - advance) break;
           _painter.paint(
             list,
             char,
             face,
-            Offset(offset.dx + 3, y + 8),
+            Offset(offset.dx + 2, y + baseline),
             labelPaint,
           );
-          y += _stackedCharacterAdvance;
+          y += advance;
         }
       } else {
         _painter.paint(
           list,
           label,
           face,
-          Offset(offset.dx + pixel + 2, offset.dy + 9),
+          Offset(offset.dx + pixel + 3, offset.dy + baseline),
           labelPaint,
         );
       }

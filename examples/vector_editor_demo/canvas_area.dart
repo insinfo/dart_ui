@@ -117,8 +117,11 @@ class _UnitCorner extends StatelessWidget {
             child: Center(
               child: Text(
                 model.units.label,
+                // `labelSmall` - the caption/metadata role. It was 8 px, which
+                // is below the size at which the hinting grid can keep a stem
+                // straight, and five under the framework's base.
+                style: theme.textTheme.labelSmall,
                 color: theme.foregroundSecondary,
-                fontSize: 8,
               ),
             ),
           ),

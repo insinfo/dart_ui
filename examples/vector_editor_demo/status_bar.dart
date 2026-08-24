@@ -26,20 +26,20 @@ class EditorStatusBar extends StatelessWidget {
           border: BoxBorder(color: theme.border, width: 1),
         ),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6),
+          padding: const EdgeInsets.symmetric(horizontal: Spacing.sm),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: <Widget>[
               _Section(
                 icon: PhosphorIcons.cursor,
                 text: _coordinates,
-                width: 150,
+                width: 152,
                 tooltip: 'Pointer position',
               ),
               _Section(
                 icon: PhosphorIcons.magnifyingGlass,
                 text: _zoom,
-                width: 74,
+                width: 76,
                 tooltip: 'Zoom level',
               ),
               _Section(
@@ -63,8 +63,12 @@ class EditorStatusBar extends StatelessWidget {
               Expanded(
                 child: Text(
                   model.status,
+                  // The status bar is the design system's own example of
+                  // `labelSmall`: "legendas, barra de status, metadados". It
+                  // was a bare 11, which happens to be the same number at a
+                  // 13 px base and stops being so the moment the base moves.
+                  style: theme.textTheme.labelSmall,
                   color: theme.foregroundSecondary,
-                  fontSize: 11,
                 ),
               ),
               _ColorMonitor(model: model),
@@ -130,17 +134,22 @@ class _Section extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: <Widget>[
-            Icon(icon, size: 12, color: theme.foregroundSecondary),
-            const SizedBox(width: 4),
+            Icon(icon,
+                size: theme.iconSize, color: theme.foregroundSecondary),
+            const SizedBox(width: Spacing.xs),
             Expanded(
-              child: Text(text, color: theme.foreground, fontSize: 11),
+              child: Text(
+                text,
+                style: theme.textTheme.labelSmall,
+                color: theme.foreground,
+              ),
             ),
             SizedBox(
               width: 1,
-              height: 12,
-              child: ColoredBox(color: theme.border),
+              height: theme.iconSize,
+              child: ColoredBox(color: theme.borderSubtle),
             ),
-            const SizedBox(width: 6),
+            const SizedBox(width: Spacing.sm),
           ],
         ),
       ),
@@ -162,44 +171,61 @@ class _ColorMonitor extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[
-        Text('Fill:', color: theme.foregroundSecondary, fontSize: 11),
-        const SizedBox(width: 4),
-        _Swatch(
-          color: fill.isNone ? null : fill.color,
-          border: theme.border,
+        Text(
+          'Fill:',
+          style: theme.textTheme.labelSmall,
+          color: theme.foregroundSecondary,
         ),
-        const SizedBox(width: 10),
-        Text('Outline:', color: theme.foregroundSecondary, fontSize: 11),
-        const SizedBox(width: 4),
+        const SizedBox(width: Spacing.xs),
+        _Swatch(color: fill.isNone ? null : fill.color),
+        const SizedBox(width: Spacing.md),
+        Text(
+          'Outline:',
+          style: theme.textTheme.labelSmall,
+          color: theme.foregroundSecondary,
+        ),
+        const SizedBox(width: Spacing.xs),
         _Swatch(
           color: stroke.isNone || stroke.width <= 0 ? null : stroke.color,
-          border: theme.border,
         ),
       ],
     );
   }
 }
 
+/// The fill or outline monitor's own chip.
+///
+/// One icon size square with the small radius, which is what the design system
+/// gives a swatch: "check box, chip, swatch, botão de ícone". It was a 14 px
+/// hard-cornered box with a 9 px red `x` in it - three numbers and a colour
+/// that came from nowhere.
 class _Swatch extends StatelessWidget {
-  const _Swatch({required this.color, required this.border});
+  const _Swatch({required this.color});
 
   final Color? color;
-  final Color border;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-        width: 14,
-        height: 14,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: color ?? const Color(0xFFFFFFFF),
-            border: BoxBorder(color: border, width: 1),
-          ),
-          child: color == null
-              ? const Center(
-                  child: Text('x', color: Color(0xFFD32F2F), fontSize: 9),
-                )
-              : null,
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SizedBox(
+      width: theme.iconSize,
+      height: theme.iconSize,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: color ?? theme.surfaceAlternate,
+          border: BoxBorder(color: theme.borderStrong, width: 1),
+          radius: theme.cornerRadiusSmall,
         ),
-      );
+        child: color == null
+            ? Center(
+                child: Text(
+                  'x',
+                  style: theme.textTheme.labelSmall,
+                  color: theme.colorScheme.error,
+                ),
+              )
+            : null,
+      ),
+    );
+  }
 }
