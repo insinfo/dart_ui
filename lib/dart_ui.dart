@@ -85,6 +85,7 @@ export 'src/graphics/display_list.dart';
 export 'src/graphics/display_list_debug.dart';
 export 'src/graphics/display_list_geometry.dart';
 export 'src/graphics/display_list_opcodes.dart';
+export 'src/graphics/display_list_pool.dart';
 export 'src/graphics/display_list_reader.dart';
 export 'src/graphics/gradient.dart';
 export 'src/graphics/gradient_lut.dart';

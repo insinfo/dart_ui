@@ -33,9 +33,12 @@
 /// The rectangle path allocates nothing. Clipping is done on bare doubles
 /// rather than through [Rect.intersect], because that would put one small
 /// object per primitive on the hottest path in the renderer, and the batcher
-/// below it was built specifically to avoid that. The mask path does allocate
-/// - a result object and a [Path] for a rounded rectangle - and is allowed to:
-/// it has already paid for a CPU rasterisation, so one object is noise.
+/// below it was built specifically to avoid that. The mask path allocates a
+/// result object and is allowed to: it has already paid for a CPU
+/// rasterisation, so one object is noise. It no longer allocates a [Path] per
+/// rounded rectangle - those are interned by geometry in
+/// [DeviceRRectPathCache], because static chrome asks for the same ones every
+/// frame and the mask atlas compares paths by value anyway.
 ///
 /// The glyph path allocates nothing per glyph once the atlas is warm: a hit
 /// returns a [GlyphAtlasEntry] the atlas already owns, and the quad is written
@@ -289,6 +292,17 @@ final class GpuRasterSink
   /// no backend-specific stroke shader or tessellator is required.
   final PathStroker _stroker = PathStroker();
 
+  /// Rounded-rectangle outlines, interned by their device geometry.
+  ///
+  /// Lives on the sink rather than on the atlas because it caches the *key*
+  /// the atlas is looked up with, not the coverage: a sink outlives a frame,
+  /// and the chrome that draws rounded rectangles draws the same ones.
+  final DeviceRRectPathCache _rrectPaths = DeviceRRectPathCache();
+
+  /// The rounded-rectangle path cache, for a test or a diagnostic that wants
+  /// to prove reuse actually happens.
+  DeviceRRectPathCache get rrectPathCache => _rrectPaths;
+
   /// Whether a *flattened* layer stands between the primitives being drawn now
   /// and the nearest real offscreen target.
   ///
@@ -412,9 +426,14 @@ final class GpuRasterSink
     // two that can disagree about a corner. The radii already arrive in
     // device space and in the encoder's order, so the borrowed buffer is
     // consumed directly.
-    final builder = PathBuilder()..addRoundedRectRadii(deviceRect, deviceRadii);
+    //
+    // Interned by geometry rather than rebuilt: static chrome hands the same
+    // twelve numbers in every frame, and the mask atlas keys on path *value*
+    // (`identical(path, other) || path == other`), so a reused instance is
+    // both a hit there and one fewer builder, two fewer arrays and one fewer
+    // Path here. See [DeviceRRectPathCache].
     _drawMask(
-      builder.build(),
+      _rrectPaths.pathFor(deviceRect, deviceRadii),
       Transform2D.identity,
       clip,
       paint,
@@ -1578,4 +1597,134 @@ final class GpuRasterSink
   /// and turns the pathological configuration (a wall-sized clip and a 64 px
   /// atlas) into a named refusal instead of thousands of rasterisations.
   static const int _maxMaskTiles = 64;
+}
+
+/// Interns the [Path] of a device-space rounded rectangle by its geometry.
+///
+/// ## What this actually saves
+///
+/// `GpuRasterSink.fillDeviceRRect` used to build a fresh `PathBuilder` and a
+/// fresh [Path] for every rounded rectangle of every frame. A rounded
+/// rectangle is not one object: it is a builder, the builder's two growing
+/// buffers, and then the two arrays [PathBuilder.build] copies them into, plus
+/// the [Path]. A window whose chrome is a dozen rounded panels paid all of
+/// that on every frame, forever, for geometry that had not moved.
+///
+/// The mask atlas below already caches the *coverage* - but it looks the entry
+/// up with `identical(path, other) || path == other`, and `Path.operator ==`
+/// compares hash, verbs and points by value. So the atlas was always able to
+/// serve a reused path; nothing about reusing one weakens the cache, and a hit
+/// here additionally lets the atlas's comparison short-circuit on identity
+/// instead of walking two float arrays.
+///
+/// ## Why the key is doubles and not the float32 the path stores
+///
+/// [PathBuilder] narrows its points to float32, so keying on the narrowed
+/// inputs would collapse two rectangles whose coordinates differ below float32
+/// precision. That is *nearly* always the same picture - but the corner
+/// control points are computed in `double` (the CSS overlap factor, then the
+/// ellipse constant) before they are narrowed, so a sub-ulp difference in the
+/// input can in principle survive into a different float32 control point. The
+/// key is therefore the exact doubles that were passed in, which makes a hit
+/// provably byte-identical to a rebuild rather than merely indistinguishable.
+///
+/// ## Direct mapped on purpose
+///
+/// One slot per hash, no chaining and no LRU list: a hit is a hash, twelve
+/// compares and a return, and a collision costs exactly what this class
+/// replaced - one rebuild. There is nothing to evict and no bookkeeping to
+/// allocate, which is the point on a per-primitive path.
+final class DeviceRRectPathCache {
+  DeviceRRectPathCache({this.capacity = 64})
+      : assert(capacity > 0),
+        _keys = Float64List(capacity * _slotFloats),
+        _paths = List<Path?>.filled(capacity, null, growable: false);
+
+  /// Four rect edges plus eight radii.
+  static const int _slotFloats = 12;
+
+  final int capacity;
+  final Float64List _keys;
+  final List<Path?> _paths;
+
+  /// One builder for every miss in the process. Safe to reuse because
+  /// [PathBuilder.build] copies into arrays of its own; the builder keeps only
+  /// capacity.
+  final PathBuilder _builder = PathBuilder();
+
+  int _hits = 0;
+  int _misses = 0;
+
+  /// Rounded rectangles served from the cache.
+  int get hitCount => _hits;
+
+  /// Rounded rectangles that had to be built - a cold slot or a collision.
+  int get missCount => _misses;
+
+  /// The [Path] of [rect] rounded by the eight [radii], built at most once per
+  /// distinct geometry.
+  ///
+  /// [radii] is borrowed, exactly as it is by `PathBuilder.addRoundedRectRadii`:
+  /// its values are copied into the key store, so the caller may keep reusing
+  /// one scratch buffer.
+  Path pathFor(Rect rect, Float32List radii) {
+    final int slot = _slotOf(rect, radii);
+    final int base = slot * _slotFloats;
+    final Path? cached = _paths[slot];
+    if (cached != null && _matches(base, rect, radii)) {
+      _hits++;
+      return cached;
+    }
+    _misses++;
+    _builder
+      ..reset()
+      ..addRoundedRectRadii(rect, radii);
+    final Path path = _builder.build();
+    _keys[base] = rect.left;
+    _keys[base + 1] = rect.top;
+    _keys[base + 2] = rect.right;
+    _keys[base + 3] = rect.bottom;
+    for (var i = 0; i < 8; i++) {
+      _keys[base + 4 + i] = radii[i];
+    }
+    _paths[slot] = path;
+    return path;
+  }
+
+  /// Drops every entry. For a device loss, or a test that wants a cold cache.
+  void clear() {
+    for (var i = 0; i < _paths.length; i++) {
+      _paths[i] = null;
+    }
+    _hits = 0;
+    _misses = 0;
+  }
+
+  bool _matches(int base, Rect rect, Float32List radii) {
+    if (_keys[base] != rect.left ||
+        _keys[base + 1] != rect.top ||
+        _keys[base + 2] != rect.right ||
+        _keys[base + 3] != rect.bottom) {
+      return false;
+    }
+    for (var i = 0; i < 8; i++) {
+      if (_keys[base + 4 + i] != radii[i]) return false;
+    }
+    return true;
+  }
+
+  int _slotOf(Rect rect, Float32List radii) {
+    // A NaN coordinate hashes like any other double here and then fails
+    // [_matches] - NaN is not equal to itself - so it misses every time and
+    // rebuilds, which is the same thing the uncached code did.
+    var hash = 0x1a2b3c;
+    hash = 0x3fffffff & (hash * 31 + rect.left.hashCode);
+    hash = 0x3fffffff & (hash * 31 + rect.top.hashCode);
+    hash = 0x3fffffff & (hash * 31 + rect.right.hashCode);
+    hash = 0x3fffffff & (hash * 31 + rect.bottom.hashCode);
+    for (var i = 0; i < 8; i++) {
+      hash = 0x3fffffff & (hash * 31 + radii[i].hashCode);
+    }
+    return hash % capacity;
+  }
 }

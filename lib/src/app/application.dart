@@ -1260,6 +1260,22 @@ final class ApplicationWindow with DisposableMixin {
         clearColor: (clearColor ?? application.options.clearColor)?.value,
       );
       stopwatch.stop();
+      // The list has left the building. Turning the ring here - once per
+      // presented frame, never once per settle pass - is what lets the
+      // scheduler rewind an arena instead of allocating one: the next frame
+      // records into the *other* list, so a retained CPU presenter can still
+      // replay this one into a replacement surface after a resize. See
+      // `DisplayListPool`.
+      //
+      // Unconditional, including on a stale result that [WindowHost.present]
+      // rejected before the presenter ever saw the list. That leaves the ring
+      // one turn "ahead" of what a presenter is holding, and it is safe rather
+      // than merely tolerable: recording a frame is entirely synchronous - the
+      // only suspension point in this method is the `await` above - so a
+      // retained replay can never observe a half-written arena. The worst it
+      // can observe is a newer complete frame, and a rejected present has
+      // already asked for one.
+      scheduler.advanceDisplayList();
 
       if (result.status == PresentStatus.deviceLost) {
         // Not a retry of this frame: the device it was built against is gone.
@@ -1385,6 +1401,10 @@ final class ApplicationWindow with DisposableMixin {
         clearColor: (clearColor ?? application.options.clearColor)?.value,
       );
       stopwatch.stop();
+      // Same rule as `drawFrame`, and it matters more here: this is the live
+      // resize path, which is precisely when a retained presenter replays the
+      // list it is holding.
+      scheduler.advanceDisplayList();
       if (result.isSuccess) {
         _framesPresented++;
         application._recordFrame(FrameTiming(

@@ -2,6 +2,7 @@
 library;
 
 import '../graphics/display_list.dart';
+import '../graphics/display_list_pool.dart';
 import '../layout/pipeline.dart';
 import 'dispatcher_priority.dart';
 import 'manual_dispatcher.dart';
@@ -54,12 +55,14 @@ final class FrameScheduler {
   FrameScheduler({
     ManualDispatcher? dispatcher,
     PipelineOwner? pipelineOwner,
+    DisplayListPool? displayLists,
     this.frameInterval = const Duration(microseconds: 16667),
     required this.onFrame,
     this.onNextFrameScheduled,
     this.onError,
   })  : dispatcher = dispatcher ?? ManualDispatcher(),
-        pipelineOwner = pipelineOwner ?? PipelineOwner() {
+        pipelineOwner = pipelineOwner ?? PipelineOwner(),
+        displayLists = displayLists ?? DisplayListPool() {
     if (frameInterval <= Duration.zero) {
       throw ArgumentError.value(
         frameInterval,
@@ -76,6 +79,22 @@ final class FrameScheduler {
 
   final ManualDispatcher dispatcher;
   final PipelineOwner pipelineOwner;
+
+  /// The arenas frames are recorded into.
+  ///
+  /// A frame does **not** allocate a [DisplayList]: it rewinds the pool's
+  /// current one, which keeps the two typed buffers that already grew to the
+  /// size this window's content needs. That is what `DisplayList.reset` was
+  /// written for, and constructing a list per frame - the way this scheduler
+  /// used to - defeated it twice over, because the settle loop in
+  /// `ApplicationWindow.drawFrame` produces up to eight of them per frame and
+  /// keeps only the last.
+  ///
+  /// The pool is a *ring*, not a single list, and it turns on
+  /// [advanceDisplayList] rather than per frame. See `display_list_pool.dart`
+  /// for the retained-presenter contract that forces both.
+  final DisplayListPool displayLists;
+
   final void Function(DisplayList displayList) onFrame;
   final FrameErrorCallback? onError;
 
@@ -177,6 +196,28 @@ final class FrameScheduler {
     dispatcher.drain();
   }
 
+  /// The arena the next frame will record into.
+  ///
+  /// Exposed so an owner can prove the reuse - `bufferGrowths` stops rising -
+  /// and so a test can check which slot of the ring is live. Not a handle to
+  /// keep: the list it names is rewound at the top of every frame.
+  DisplayList get displayList => displayLists.current;
+
+  /// Hands the last painted list over: the ring turns, so the next frame
+  /// records into a different arena than the one just presented.
+  ///
+  /// Call this **once per presented frame**, immediately after the present
+  /// call returns - never once per settle pass. A retained CPU presenter keeps
+  /// the list it was given and replays it into the replacement surface on the
+  /// next resize or DPI change, so the list it holds must not be rewound until
+  /// something else has been presented in its place. Rotating per settle pass
+  /// would break exactly that, silently, and only on a resize.
+  ///
+  /// An owner that never presents (an offscreen or test producer) simply never
+  /// calls this, and then every frame reuses one arena - which is safe for it,
+  /// because nothing outlives the frame.
+  void advanceDisplayList() => displayLists.advance();
+
   void advance(Duration duration) {
     _throwIfDisposed();
     dispatcher.advance(duration);
@@ -210,7 +251,10 @@ final class FrameScheduler {
     _lastErrorPhase = null;
     _frameTimestamp = dispatcher.elapsed;
     _frameNumber++;
-    final list = DisplayList();
+    // Rewound, not allocated. The ring turns on `advanceDisplayList`, so this
+    // is the arena of the frame being *recorded* and never the one a presenter
+    // is still holding.
+    final DisplayList list = displayLists.current..reset();
     try {
       _runFrameCallbacks(_frameTimestamp);
     } catch (error, stackTrace) {
