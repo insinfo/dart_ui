@@ -54,7 +54,12 @@ final class DisplayList {
         _ops = Uint32List(initialOpCapacity),
         _floats = Float32List(initialFloatCapacity),
         _paintInts = Uint32List(initialPaintCapacity * 2),
-        _paintFloats = Float32List(initialPaintCapacity + 1);
+        _paintFloats = Float32List(initialPaintCapacity + 1),
+        _paintWidthBits = _noBits,
+        _paintSlots = Uint32List(_slotCountFor(initialPaintCapacity)) {
+    _paintWidthBits = Uint32List.view(_paintFloats.buffer);
+    _paintSlotMask = _paintSlots.length - 1;
+  }
 
   Uint32List _ops;
   int _opLength = 0;
@@ -74,10 +79,37 @@ final class DisplayList {
   Float32List _paintFloats;
   int _paintCount = 0;
 
-  /// Candidate paint ids grouped by hash. A bucket list is allocated only the
-  /// first time a hash is seen, so a frame that reuses last frame's palette
-  /// pays nothing after the first few commands.
-  final Map<int, List<int>> _paintBuckets = <int, List<int>>{};
+  /// The bit patterns of [_paintFloats], aliasing the same storage.
+  ///
+  /// A stroke width is already narrowed to float32 the moment it is stored,
+  /// so its 32 bits *are* the value the renderer will see. Reading them as an
+  /// integer gives the dedup key without boxing and without a second
+  /// conversion, and keeps hash and comparison working on exactly the stored
+  /// value - quantisation included - which is the property [addPaint]
+  /// depends on. Rebuilt whenever [_paintFloats] is reallocated.
+  Uint32List _paintWidthBits;
+
+  /// Paint id + 1 per slot, 0 meaning empty: an open-addressed index from a
+  /// paint key to its id, probed linearly.
+  ///
+  /// A `Map<int, List<int>>` of hash buckets is the obvious spelling and the
+  /// wrong one here: it allocates a bucket list per distinct hash and a map
+  /// node per entry, and [reset] drops all of them, so a frame with a
+  /// hundred-odd distinct paints turned over tens of kilobytes per frame for
+  /// a table that is rebuilt identically every time. A flat typed table
+  /// allocates nothing in steady state and [reset] becomes a fill.
+  ///
+  /// Sized by [_slotCountFor] to twice the paint capacity, so the load factor
+  /// never passes 1/2. That bound is what lets the probe loop in [addPaint]
+  /// run without an emptiness guard: the table can never be full.
+  Uint32List _paintSlots;
+  int _paintSlotMask = 0;
+
+  /// Placeholder for [_paintWidthBits] in the initialiser list, which cannot
+  /// see the `_paintFloats` it must alias. The constructor body replaces it
+  /// before anything can read it, and it is shared, so it costs one empty
+  /// list for the whole program rather than one per display list.
+  static final Uint32List _noBits = Uint32List(0);
 
   // Content hints. See [pushContentHint] for why they are a side table and
   // not an opcode.
@@ -149,8 +181,10 @@ final class DisplayList {
     _opLength = 0;
     _floatLength = 0;
     _commandCount = 0;
-    _paintCount = 0;
-    _paintBuckets.clear();
+    if (_paintCount != 0) {
+      _paintCount = 0;
+      _paintSlots.fillRange(0, _paintSlots.length, 0);
+    }
     _paths.clear();
     _pathIds.clear();
     _images.clear();
@@ -220,25 +254,90 @@ final class DisplayList {
     _paintFloats[_paintCount] = strokeWidth;
 
     final int storedColor = _paintInts[base];
-    final double storedWidth = _paintFloats[_paintCount];
-    final int hash = Object.hash(storedColor, flags, storedWidth);
-
-    final List<int>? bucket = _paintBuckets[hash];
-    if (bucket != null) {
-      for (var i = 0; i < bucket.length; i++) {
-        final int candidate = bucket[i];
-        final int candidateBase = candidate * 2;
-        if (_paintInts[candidateBase] == storedColor &&
-            _paintInts[candidateBase + 1] == flags &&
-            _paintFloats[candidate] == storedWidth) {
-          return candidate;
-        }
-      }
-      bucket.add(_paintCount);
-    } else {
-      _paintBuckets[hash] = <int>[_paintCount];
+    final int storedFlags = _paintInts[base + 1];
+    var storedWidth = _paintWidthBits[_paintCount];
+    if (storedWidth == 0x80000000) {
+      // -0.0. It is `==` to 0.0 and strokes identically, and the old
+      // `==`-based comparison already collapsed the two, so the bit-pattern
+      // key has to as well. Normalising the *stored* slot rather than only
+      // the key keeps one representation in the buffer.
+      storedWidth = 0;
+      _paintWidthBits[_paintCount] = 0;
+    } else if ((storedWidth & 0x7FFFFFFF) > 0x7F800000) {
+      // NaN. `==` is false for it, so the old comparison never matched and
+      // every NaN-width paint interned a fresh id - a leak in a table that is
+      // supposed to be bounded by the palette. Collapsing every NaN onto one
+      // canonical quiet NaN makes the dedup total: two paints intern to one
+      // id iff their colour and flag words are equal and their widths are
+      // either `==` or both NaN.
+      storedWidth = 0x7FC00000;
+      _paintWidthBits[_paintCount] = 0x7FC00000;
     }
-    return _paintCount++;
+
+    final int mask = _paintSlotMask;
+    var slot = _hashPaint(storedColor, storedFlags, storedWidth) & mask;
+    while (true) {
+      final int entry = _paintSlots[slot];
+      if (entry == 0) {
+        _paintSlots[slot] = _paintCount + 1;
+        return _paintCount++;
+      }
+      // The full key is compared, never the hash, so a probe collision can
+      // only cost one more step - it can never merge two different paints.
+      final int candidate = entry - 1;
+      final int candidateBase = candidate * 2;
+      if (_paintInts[candidateBase] == storedColor &&
+          _paintInts[candidateBase + 1] == storedFlags &&
+          _paintWidthBits[candidate] == storedWidth) {
+        return candidate;
+      }
+      slot = (slot + 1) & mask;
+    }
+  }
+
+  /// Hash of a stored paint key, over the three 32-bit words themselves.
+  ///
+  /// Deliberately not `Object.hash`: its parameters are `Object?`, so the
+  /// float32 stroke width was boxed on every call - one allocation per
+  /// encoded paint, dedup hit or not.
+  ///
+  /// The words are folded one at a time rather than xored together first,
+  /// because a colour's low byte and a flag word live in the same numeric
+  /// range: `colour ^ flags` would make (colour, flags) and
+  /// (colour ^ d, flags ^ d) collide for small `d`, which is exactly the
+  /// pattern a palette produces. The trailing rounds are a finaliser: the
+  /// table indexes on the low bits, and a stroke width differs from its
+  /// neighbours mostly in the float32 exponent, up at bits 23..30.
+  ///
+  /// Arithmetic is kept inside 32 bits, and the multiplies are split into
+  /// 16-bit halves by [_mul32], because this library is compiled for the web
+  /// too, where an `int` is a double and a 64-bit product would silently lose
+  /// its low bits.
+  static int _hashPaint(int color, int flags, int widthBits) {
+    var h = _mul32(color, 0xCC9E2D51);
+    h = _mul32(h ^ flags, 0x1B873593);
+    h = _mul32(h ^ widthBits, 0x85EBCA6B);
+    h ^= h >>> 15;
+    h = _mul32(h, 0xC2B2AE35);
+    return h ^ (h >>> 16);
+  }
+
+  /// The low 32 bits of `a * b`, exact on a 53-bit double as well as on a
+  /// 64-bit integer: each partial product stays under 2^48.
+  static int _mul32(int a, int b) {
+    final int low = (a & 0xFFFF) * b;
+    final int high = ((a >>> 16) * b) & 0xFFFF;
+    return (low + high * 0x10000) & 0xFFFFFFFF;
+  }
+
+  /// Slot count for a paint capacity: a power of two at least twice the
+  /// capacity, never below 16.
+  static int _slotCountFor(int capacity) {
+    var slots = 16;
+    while (slots < capacity * 2) {
+      slots *= 2;
+    }
+    return slots;
   }
 
   int paintColor(int id) => _paintInts[_checkPaint(id) * 2];
@@ -750,7 +849,29 @@ final class DisplayList {
     final Float32List grownFloats = Float32List(capacity + 1);
     grownFloats.setRange(0, _paintCount, _paintFloats);
     _paintFloats = grownFloats;
+    _paintWidthBits = Uint32List.view(grownFloats.buffer);
     _bufferGrowths++;
+
+    // The index is keyed by hash modulo its size, so growing it is a rehash,
+    // not a copy. It is O(paints) and happens only on a doubling, so it is
+    // amortised away exactly like the buffer copies above.
+    final int slots = _slotCountFor(capacity);
+    if (slots == _paintSlots.length) return;
+    _paintSlots = Uint32List(slots);
+    _paintSlotMask = slots - 1;
+    for (var id = 0; id < _paintCount; id++) {
+      final int idBase = id * 2;
+      var slot = _hashPaint(
+            _paintInts[idBase],
+            _paintInts[idBase + 1],
+            _paintWidthBits[id],
+          ) &
+          _paintSlotMask;
+      while (_paintSlots[slot] != 0) {
+        slot = (slot + 1) & _paintSlotMask;
+      }
+      _paintSlots[slot] = id + 1;
+    }
   }
 
   /// Doubling, so that appending n items costs O(n) copies in total and the

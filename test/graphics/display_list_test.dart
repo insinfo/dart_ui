@@ -487,6 +487,210 @@ void main() {
       expect(list.paintColor(499), 0xFF0001F3);
     });
 
+    // The paint index is an open-addressed table keyed by a hash of the
+    // stored words. A bug there does not crash: it hands back the id of a
+    // *different* paint, and something on screen is quietly the wrong colour.
+    // The group below is the proof that it cannot.
+    group('paint interning stays exact', () {
+      test('growth rehashes without losing or merging a paint', () {
+        // Capacity 1 forces a rehash on essentially every insert, so this
+        // walks the table through every size it can take.
+        final list = DisplayList(initialPaintCapacity: 1);
+        const int count = 1000;
+        for (var i = 0; i < count; i++) {
+          expect(
+            list.addPaint(colorArgb: 0xFF000000 + i, strokeWidth: i / 8),
+            i,
+            reason: 'insert $i',
+          );
+        }
+        expect(list.paintCount, count);
+        // Every key still resolves to its own id after all those rehashes,
+        // and every field survived the buffer reallocations.
+        for (var i = 0; i < count; i++) {
+          expect(
+            list.addPaint(colorArgb: 0xFF000000 + i, strokeWidth: i / 8),
+            i,
+            reason: 'lookup $i',
+          );
+          expect(list.paintColor(i), 0xFF000000 + i);
+          expect(list.paintStrokeWidth(i), i / 8);
+        }
+        expect(list.paintCount, count);
+      });
+
+      test('paints that share every word but one never merge', () {
+        // One field varies at a time against a fixed rest, which is the shape
+        // a hash collision would break: same bucket, different paint.
+        final list = DisplayList();
+        final ids = <int>{};
+        for (var i = 0; i < 64; i++) {
+          ids.add(list.addPaint(colorArgb: 0xFF000000 | i));
+        }
+        for (var i = 0; i < 64; i++) {
+          ids.add(list.addPaint(colorArgb: 0xFF000000, strokeWidth: i + 1.0));
+        }
+        for (final int blend in <int>[
+          blendModeSrcOver,
+          blendModeSrc,
+          blendModePlus,
+        ]) {
+          for (final int style in <int>[
+            paintStyleFill,
+            paintStyleStroke,
+            paintStyleFillAndStroke,
+          ]) {
+            for (final bool aa in <bool>[true, false]) {
+              for (final int rule in <int>[
+                pathFillRuleNonZero,
+                pathFillRuleEvenOdd,
+              ]) {
+                ids.add(list.addPaint(
+                  colorArgb: 0xFF123456,
+                  blendMode: blend,
+                  style: style,
+                  antiAlias: aa,
+                  fillRule: rule,
+                ));
+              }
+            }
+          }
+        }
+        expect(ids.length, list.paintCount);
+        expect(ids.length, 64 + 64 + 3 * 3 * 2 * 2);
+      });
+
+      test('two different gradients never share a paint id', () {
+        Gradient ramp(int colorArgb) => LinearGradient(
+              startX: 0,
+              startY: 0,
+              endX: 8,
+              endY: 0,
+              stops: <GradientStop>[
+                GradientStop(0, colorArgb),
+                const GradientStop(1, 0xFF000000),
+              ],
+            );
+        final list = DisplayList();
+        final ids = <int>{};
+        for (var i = 0; i < 40; i++) {
+          ids.add(list.addPaint(colorArgb: 0, gradient: ramp(0xFF000000 | i)));
+        }
+        expect(ids.length, 40);
+        // And the same gradient value still collapses.
+        expect(
+          list.addPaint(colorArgb: 0, gradient: ramp(0xFF000000)),
+          list.addPaint(colorArgb: 0, gradient: ramp(0xFF000000)),
+        );
+        expect(list.paintCount, 40);
+      });
+
+      test('reset empties the index instead of leaking last frame ids', () {
+        final list = DisplayList(initialPaintCapacity: 2);
+        for (var i = 0; i < 300; i++) {
+          list.addPaint(colorArgb: 0xFF000000 + i, strokeWidth: i / 3);
+        }
+        list.reset();
+        expect(list.paintCount, 0);
+        // Ids restart, and nothing from before the reset can be found.
+        expect(list.addPaint(colorArgb: 0xFF000007, strokeWidth: 7 / 3), 0);
+        expect(list.addPaint(colorArgb: 0xFF000009, strokeWidth: 3.0), 1);
+        expect(list.addPaint(colorArgb: 0xFF000007, strokeWidth: 7 / 3), 0);
+        expect(list.paintCount, 2);
+        // A second reset on an already empty table is a no-op.
+        list
+          ..reset()
+          ..reset();
+        expect(list.addPaint(colorArgb: 0xFF000007, strokeWidth: 7 / 3), 0);
+      });
+
+      test('negative zero stroke width is the same paint as zero', () {
+        // -0.0 == 0.0 and strokes identically, so keying on the raw bit
+        // pattern would have split one paint in two. The stored slot is
+        // normalised, not just the key, so the buffer holds one spelling.
+        final list = DisplayList();
+        final int minusZero =
+            list.addPaint(colorArgb: 0xFF102030, strokeWidth: -0.0);
+        final int plusZero =
+            list.addPaint(colorArgb: 0xFF102030, strokeWidth: 0.0);
+        expect(plusZero, minusZero);
+        expect(list.paintCount, 1);
+        expect(list.paintStrokeWidth(minusZero), 0.0);
+        expect(list.paintStrokeWidth(minusZero).isNegative, isFalse);
+        // Order does not matter.
+        final other = DisplayList();
+        expect(
+          other.addPaint(colorArgb: 0xFF102030, strokeWidth: 0.0),
+          other.addPaint(colorArgb: 0xFF102030, strokeWidth: -0.0),
+        );
+        expect(other.paintCount, 1);
+      });
+
+      test('NaN stroke widths intern to one paint', () {
+        // `==` is false for NaN, so a comparison-based table interned a fresh
+        // id for every NaN paint and the table grew without bound. Every NaN
+        // is folded onto one canonical NaN instead: two paints intern to one
+        // id iff their words are equal and their widths are `==` or both NaN.
+        final list = DisplayList();
+        final int first =
+            list.addPaint(colorArgb: 0xFF445566, strokeWidth: double.nan);
+        for (var i = 0; i < 50; i++) {
+          expect(
+            list.addPaint(colorArgb: 0xFF445566, strokeWidth: double.nan),
+            first,
+          );
+          expect(
+            list.addPaint(colorArgb: 0xFF445566, strokeWidth: -double.nan),
+            first,
+          );
+        }
+        expect(list.paintCount, 1);
+        expect(list.paintStrokeWidth(first).isNaN, isTrue);
+        // NaN is still its own paint, distinct from any number and from the
+        // infinities.
+        expect(
+          list.addPaint(colorArgb: 0xFF445566),
+          isNot(first),
+        );
+        expect(
+          list.addPaint(
+            colorArgb: 0xFF445566,
+            strokeWidth: double.infinity,
+          ),
+          isNot(first),
+        );
+        expect(
+          list.addPaint(
+            colorArgb: 0xFF445566,
+            strokeWidth: double.negativeInfinity,
+          ),
+          isNot(first),
+        );
+        expect(list.paintCount, 4);
+      });
+
+      test('the index allocates nothing once the palette repeats', () {
+        // The whole point of the flat table: a frame that redraws last
+        // frame's palette must not grow a buffer, this one included.
+        final list = DisplayList(initialPaintCapacity: 64);
+        for (var frame = 0; frame < 3; frame++) {
+          list.reset();
+          for (var i = 0; i < 600; i++) {
+            list.addPaint(colorArgb: 0xFF000000 | (i % 60), strokeWidth: 1.0);
+          }
+        }
+        final int settled = list.bufferGrowths;
+        for (var frame = 0; frame < 20; frame++) {
+          list.reset();
+          for (var i = 0; i < 600; i++) {
+            list.addPaint(colorArgb: 0xFF000000 | (i % 60), strokeWidth: 1.0);
+          }
+        }
+        expect(list.paintCount, 60);
+        expect(list.bufferGrowths, settled);
+      });
+    });
+
     test('paths intern by their own equality', () {
       final list = DisplayList();
       final identityA = Object();
