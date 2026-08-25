@@ -121,6 +121,16 @@ const int glRgba8 = 0x8058;
 const int glRed = 0x1903;
 const int glR8 = 0x8229;
 
+/// `GL_BGRA`, an *upload* format only: the internal format stays `GL_RGBA8`
+/// and the driver reorders the channels as it copies, which is what makes
+/// `GpuTextureFormat.bgra8888Premultiplied` free of a Dart-side swizzle.
+///
+/// Desktop GL 1.2 and later have it in core. GLES does not - the nearest
+/// thing is `EXT_texture_format_BGRA8888`, where the *internal* format must
+/// also be BGRA - so `GlRenderDevice.createTexture` refuses the format on a
+/// GLES context rather than uploading channels in the wrong order.
+const int glBgra = 0x80E1;
+
 const int glFramebuffer = 0x8D40;
 const int glReadFramebuffer = 0x8CA8;
 const int glDrawFramebuffer = 0x8CA9;

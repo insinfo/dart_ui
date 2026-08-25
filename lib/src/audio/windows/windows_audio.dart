@@ -2,6 +2,7 @@
 library;
 
 export 'media_foundation_audio_decoder.dart';
+export 'media_foundation_audio_reader.dart';
 export 'wasapi_backend.dart';
 export 'wasapi_bindings.dart'
     show

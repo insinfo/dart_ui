@@ -66,6 +66,7 @@ import 'package:web/web.dart' as web;
 
 import '../../../foundation/diagnostics.dart';
 import '../../../foundation/lifecycle.dart';
+import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
 import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../renderer.dart';
@@ -78,6 +79,7 @@ import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import '../gpu_vertex_buffer.dart';
+import '../gpu_video_image.dart';
 import '../vector/sparse_strip_draw_plan.dart';
 import '../webgl/webgl_framebuffer_pool.dart' show WebGlObjectTable;
 import 'webgpu_interop.dart';
@@ -239,8 +241,7 @@ final class WebGpuRenderDevice
       surfaceFormat: surfaceFormat,
       info: RendererInfo(
         name: WebGpuRendererBackend.backendName,
-        deviceDescription:
-            deviceDescription ?? 'WebGPU, adapter not described',
+        deviceDescription: deviceDescription ?? 'WebGPU, adapter not described',
         rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       ),
       maxTextureSize: maxTextureSize,
@@ -580,9 +581,20 @@ final class WebGpuRenderDevice
     // for WebGL's `createTexture() == null`.
     final GPUTexture texture = _gpuDevice.createTexture(GPUTextureDescriptor(
       size: GPUExtent3DDict(width: width, height: height),
-      format: format == GpuTextureFormat.alpha8 ? 'r8unorm' : 'rgba8unorm',
-      usage: web.$GPUTextureUsage.TEXTURE_BINDING |
-          web.$GPUTextureUsage.COPY_DST,
+      // A switch and not a ternary, so a format added later is a compile error
+      // here rather than a texture quietly created in the wrong layout.
+      // `bgra8unorm` is core WebGPU and is sampled as RGBA like any other
+      // colour format, so it needs no second bind group layout and no second
+      // shader - see [GpuTextureFormat.bgra8888Premultiplied].
+      format: switch (format) {
+        GpuTextureFormat.alpha8 => 'r8unorm',
+        GpuTextureFormat.bgra8888Premultiplied => 'bgra8unorm',
+        GpuTextureFormat.rgba8888Straight ||
+        GpuTextureFormat.rgba8888Premultiplied =>
+          'rgba8unorm',
+      },
+      usage:
+          web.$GPUTextureUsage.TEXTURE_BINDING | web.$GPUTextureUsage.COPY_DST,
     ));
     final GPUTextureView view = texture.createView();
     return WebGpuTexture._(
@@ -665,7 +677,8 @@ final class WebGpuRenderDevice
   /// under this device's numbering, so a composite quad can name it the way
   /// it names every other texture.
   int registerSampledView(GPUTextureView view, GpuTextureFilter filter) =>
-      sampledTextures.register(WebGpuSampledTexture(view: view, filter: filter));
+      sampledTextures
+          .register(WebGpuSampledTexture(view: view, filter: filter));
 
   /// Forgets a registered view and the bind group cached for it.
   void releaseSampledView(int id) {
@@ -1099,7 +1112,8 @@ final class WebGpuRenderDevice
       // that kills the whole pass.
       return _dummyBindGroup!;
     }
-    final GPUBindGroup group = _gpuDevice.createBindGroup(GPUBindGroupDescriptor(
+    final GPUBindGroup group =
+        _gpuDevice.createBindGroup(GPUBindGroupDescriptor(
       layout: _textureLayout!,
       entries: <GPUBindGroupEntry>[
         GPUBindGroupEntry(
@@ -1696,7 +1710,27 @@ final class WebGpuImageCache implements GpuImageResolver {
   final Expando<_WebGpuImageEntry> _byImage = Expando<_WebGpuImageEntry>();
   final List<_WebGpuImageEntry> _entries = <_WebGpuImageEntry>[];
 
+  /// Where a decoded video frame becomes a texture.
+  ///
+  /// A separate cache and not another kind of entry above, because the entries
+  /// above are keyed by image identity and never evict - which is right for a
+  /// still and ruinous for a stream that produces a new object twenty-five
+  /// times a second. See `gpu_video_image.dart` for the whole argument and for
+  /// how one texture per stream is reused instead.
+  ///
+  /// [ImageChannelOrder.rgba] because [_upload] creates every image texture as
+  /// `rgba8888Premultiplied` and [_asRgba] swizzles a BGRA source into it; the
+  /// video conversion writes that order directly instead.
+  late final GpuVideoImageCache _video = GpuVideoImageCache(
+    _device,
+    channelOrder: ImageChannelOrder.rgba,
+  );
+
   int get length => _entries.length;
+
+  /// The video streams this cache holds a texture for. One per stream, never
+  /// one per frame.
+  int get videoStreamCount => _video.streamCount;
 
   /// How many bytes of image source this cache is keeping alive. Zero under
   /// [GpuImageSourceRetention.uploadOnly].
@@ -1714,7 +1748,11 @@ final class WebGpuImageCache implements GpuImageResolver {
 
   @override
   GpuTextureHandle? resolve(Object image) {
-    if (image is! Framebuffer) return null;
+    // A VideoFrame is not a Framebuffer, and returning null for it is what
+    // made every accelerated backend refuse to draw video by name. The video
+    // cache answers null for anything that is not a frame either, so this
+    // stays the single "this device cannot draw it" exit.
+    if (image is! Framebuffer) return _video.resolve(image);
     final _WebGpuImageEntry? cached = _byImage[image];
     if (cached != null) {
       final WebGpuTexture? texture = cached.texture;
@@ -1786,7 +1824,8 @@ final class WebGpuImageCache implements GpuImageResolver {
   /// This cache's contribution to step 5's inventory: one resource per image,
   /// because the answer differs per image.
   Iterable<GpuRecoverableResource> recoverableResources() sync* {
-    for (final _WebGpuImageEntry entry in List<_WebGpuImageEntry>.of(_entries)) {
+    for (final _WebGpuImageEntry entry
+        in List<_WebGpuImageEntry>.of(_entries)) {
       yield CallbackGpuResource(
         resourceName: entry.name,
         recoveryOf: () => entry.isRecoverable
@@ -1829,6 +1868,7 @@ final class WebGpuImageCache implements GpuImageResolver {
       if (image != null) _byImage[image] = null;
     }
     _entries.clear();
+    _video.clear();
   }
 
   /// The image's bytes in RGBA order, rows repacked - the same conversion,

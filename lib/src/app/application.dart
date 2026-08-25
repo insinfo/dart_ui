@@ -167,8 +167,7 @@ import '../widgets/context_menu.dart' show ContextMenuScope;
 import '../widgets/control.dart';
 import '../widgets/controls.dart' show ClipboardScope, TextInputScope;
 import '../widgets/dart_ui_app.dart';
-import '../widgets/drag_drop.dart'
-    show DragDropScope, WidgetTreeDropTarget;
+import '../widgets/drag_drop.dart' show DragDropScope, WidgetTreeDropTarget;
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
 import '../widgets/media_query.dart';
@@ -819,8 +818,23 @@ Future<Application> runApp(
     presentations: presentations,
     options: options,
   );
+  final completion = Completer<void>();
   try {
-    await application.run();
+    runZonedGuarded<void>(
+      () {
+        application.run().then<void>(
+          (_) {
+            if (!completion.isCompleted) completion.complete();
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            application._reportUnhandledAsync(error, stackTrace);
+            if (!completion.isCompleted) completion.complete();
+          },
+        );
+      },
+      application._reportUnhandledAsync,
+    );
+    await completion.future;
   } finally {
     application.dispose();
     await application.closed;
@@ -886,6 +900,7 @@ final class ApplicationWindow with DisposableMixin {
 
   Widget _rootWidget;
   DisplayList? _painted;
+  FrameworkError? _pendingFrameworkError;
   bool _rootMounted = false;
   MediaQueryData? _mountedMediaQueryData;
   bool _needsFrame = true;
@@ -1225,6 +1240,7 @@ final class ApplicationWindow with DisposableMixin {
         buildOwner.buildScope();
         scheduler.scheduleFrame();
         scheduler.pump();
+        if (scheduler.lastErrorPhase != null) break;
         if (!buildOwner.hasScheduledBuilds && !pipelineOwner.needsLayout) break;
       }
 
@@ -1352,6 +1368,7 @@ final class ApplicationWindow with DisposableMixin {
         buildOwner.buildScope();
         scheduler.scheduleFrame();
         scheduler.pump();
+        if (scheduler.lastErrorPhase != null) break;
         if (!buildOwner.hasScheduledBuilds && !pipelineOwner.needsLayout) break;
       }
       final list = _painted;
@@ -1385,6 +1402,16 @@ final class ApplicationWindow with DisposableMixin {
 
   /// Receives the finished display list from [FrameScheduler].
   void _onPainted(DisplayList list) {
+    final FrameworkError? error = _pendingFrameworkError;
+    _pendingFrameworkError = null;
+    if (error != null) {
+      const FrameworkErrorBanner().paint(
+        list,
+        Rect.fromLTWH(0, 0, host.logicalSize.width, host.logicalSize.height),
+        title: 'Erro de interface contido — o aplicativo continua aberto',
+        detail: '${error.phase.name}: ${error.cause}',
+      );
+    }
     if (application.options.showDevOverlay) {
       DevOverlay(statistics: application.statistics).paint(
         list,
@@ -1394,13 +1421,49 @@ final class ApplicationWindow with DisposableMixin {
     _painted = list;
   }
 
+  void _captureFrameworkError(FrameworkError error) {
+    _pendingFrameworkError = error;
+    final handler = application.options.onError;
+    if (handler == null) return;
+    try {
+      handler(error);
+    } catch (handlerError, stackTrace) {
+      _pendingFrameworkError = FrameworkError(
+        phase: FrameworkPhase.async,
+        cause: handlerError,
+        stackTrace: stackTrace,
+        context: 'the ApplicationOptions.onError callback threw while '
+            'reporting ${error.phase.name}',
+      );
+    }
+  }
+
+  void _onFrameError(
+    FramePipelinePhase phase,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    buildOwner.errorReporter.report(FrameworkError(
+      phase: switch (phase) {
+        FramePipelinePhase.callbacks => FrameworkPhase.async,
+        FramePipelinePhase.layout => FrameworkPhase.layout,
+        FramePipelinePhase.paint => FrameworkPhase.paint,
+      },
+      cause: error,
+      stackTrace: stackTrace,
+      context: 'producing frame ${scheduler.frameNumber}',
+    ));
+  }
+
   void _onStreamError(Object error, StackTrace stackTrace) {
     buildOwner.errorReporter.report(FrameworkError(
-      phase: FrameworkPhase.build,
+      phase: FrameworkPhase.async,
       cause: error,
       stackTrace: stackTrace,
       context: 'the window event stream failed',
     ));
+    requestFrame();
+    application.backend.wake();
   }
 
   /// Releases everything this window acquired, last first, exactly once.
@@ -1486,7 +1549,8 @@ final class Application with DisposableMixin {
     // first frame a backend draws - and because reporting it beside the probes
     // is what makes a support log self-contained.
     RenderPolicyScope.install(options.renderPolicy);
-    for (final BackendDiagnostic diagnostic in options.renderPolicy.describe()) {
+    for (final BackendDiagnostic diagnostic
+        in options.renderPolicy.describe()) {
       options.onDiagnostic?.call(diagnostic);
     }
 
@@ -1616,6 +1680,21 @@ final class Application with DisposableMixin {
   ApplicationLifecycleState _state = ApplicationLifecycleState.starting;
   bool _runCalled = false;
   bool _tearingDown = false;
+
+  /// The ceiling [run] currently gives the platform's event wait when nothing
+  /// is drawing. Moved by [_noteLoopProgress], which is where the policy is.
+  Duration _idlePumpWait = Duration.zero;
+
+  /// Time spent outside the platform wait since it last returned: the yield,
+  /// the frame, and whatever else one turn of [run]'s loop did.
+  ///
+  /// Subtracted from the next wait so that a slice is a *period* rather than a
+  /// delay added on top of the work - a loop that waits a whole frame interval
+  /// and then draws for nine milliseconds runs at 40 Hz, not at 60. It is a
+  /// [Stopwatch] and not a clock: nothing about frame content, ordering or
+  /// virtual time reads it, it only shortens a platform wait, and the headless
+  /// backend ignores that wait entirely - so no test observes it.
+  final Stopwatch _sincePumpReturned = Stopwatch();
   int _retiredFramesPresented = 0;
   int _retiredFramesRejected = 0;
   int _controlCount = 0;
@@ -2042,6 +2121,8 @@ final class Application with DisposableMixin {
         onFrame: (DisplayList list) => appWindow._onPainted(list),
         onNextFrameScheduled: (Duration delay) =>
             appWindow._scheduleAnimationWake(delay),
+        onError: (phase, error, stackTrace) =>
+            appWindow._onFrameError(phase, error, stackTrace),
       );
       bag.add(scheduler, () {
         _teardownOrder.add('scheduler');
@@ -2076,7 +2157,9 @@ final class Application with DisposableMixin {
         rootWidget: rootWidget,
       );
       appWindow._active = wantsFocus && visible;
-      buildOwner.errorReporter = ErrorReporter(onError: options.onError);
+      buildOwner.errorReporter = ErrorReporter(
+        onError: appWindow._captureFrameworkError,
+      );
 
       // --- d. events ----------------------------------------------------
       // Subscribed last and cancelled first: an event delivered into a
@@ -2086,7 +2169,19 @@ final class Application with DisposableMixin {
       // event is the authority on where it belongs - a backend that mislabels
       // one must not be able to smuggle it into the wrong tree.
       final subscription = native.events.listen(
-        handleEvent,
+        (event) {
+          try {
+            handleEvent(event);
+          } catch (error, stackTrace) {
+            appWindow.buildOwner.errorReporter.report(FrameworkError(
+              phase: FrameworkPhase.input,
+              cause: error,
+              stackTrace: stackTrace,
+              context: 'handling ${event.runtimeType}',
+            ));
+            appWindow.requestFrame();
+          }
+        },
         onError: appWindow._onStreamError,
       );
       bag.add(subscription, () {
@@ -2441,6 +2536,28 @@ final class Application with DisposableMixin {
     if (options.showDevOverlay) _sinceOverlayRefresh.reset();
   }
 
+  void _reportUnhandledAsync(Object error, StackTrace stackTrace) {
+    final frameworkError = FrameworkError(
+      phase: FrameworkPhase.async,
+      cause: error,
+      stackTrace: stackTrace,
+      context: 'an uncaught asynchronous callback escaped its owner',
+    );
+    final liveWindows = <ApplicationWindow>[
+      for (final window in _windows)
+        if (!window.isDisposed) window,
+    ];
+    if (liveWindows.isEmpty) {
+      options.onError?.call(frameworkError);
+      return;
+    }
+    for (final window in liveWindows) {
+      window.buildOwner.errorReporter.report(frameworkError);
+      window.requestFrame();
+    }
+    backend.wake();
+  }
+
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
@@ -2720,30 +2837,55 @@ final class Application with DisposableMixin {
       window.nativeWindow.show();
     }
 
+    // A run that has just started counts as active: the first wait is one
+    // frame long, and the back-off takes it up to the idle timeout within a
+    // handful of iterations if nothing turns out to be happening.
+    _noteLoopProgress(progressed: true);
+
     while (_state == ApplicationLifecycleState.running ||
         _state == ApplicationLifecycleState.suspended) {
       final wantsFrame = _state == ApplicationLifecycleState.running &&
           (needsFrame || _overlayIsStale);
       // Dart timers run on this isolate and cannot interrupt the synchronous
-      // native message wait. While an animation is armed, cap that wait to one
-      // frame interval so the timer gets a turn at roughly 60 Hz instead of
-      // only after the normal 250 ms idle timeout.
-      Duration pumpTimeout = wantsFrame ? Duration.zero : options.idleTimeout;
+      // native message wait, so the length of that wait *is* the latency of
+      // every piece of pending Dart work. [_idlePumpWait] is the adaptive
+      // answer to that - see [_noteLoopProgress]. An armed animation lowers it
+      // further, to exactly one frame interval; that is the case this loop has
+      // always handled, and it still wins over the adaptive value.
+      Duration pumpTimeout = wantsFrame ? Duration.zero : _idlePumpWait;
+      bool animating = false;
       if (!wantsFrame && _state == ApplicationLifecycleState.running) {
         for (final ApplicationWindow window in _windows) {
-          if (!window.isSuspended &&
-              window.hasPendingAnimationFrame &&
-              window.scheduler.frameInterval < pumpTimeout) {
+          if (window.isSuspended || !window.hasPendingAnimationFrame) continue;
+          animating = true;
+          if (window.scheduler.frameInterval < pumpTimeout) {
             pumpTimeout = window.scheduler.frameInterval;
           }
         }
       }
+      // Pacing is for the adaptive path only. An armed animation already has
+      // a deadline - its wake timer was armed *during* the frame, so it is
+      // due one interval from then, not one interval from now - and taking
+      // the work off this wait as well would wake the loop before the timer
+      // was due, find nothing, and then sleep a second full interval straight
+      // past it. Leaving the animation path exactly as it was is also what
+      // makes "the existing animation case does not regress" checkable.
+      if (!animating) pumpTimeout = _pacedPumpTimeout(pumpTimeout);
       if (!backend.pumpEvents(
         timeout: pumpTimeout,
       )) {
         break;
       }
+      _sincePumpReturned
+        ..reset()
+        ..start();
       await Future<void>.delayed(Duration.zero);
+      // Read after the yield: that is the single turn this iteration gives the
+      // Dart event loop, so it is the only point at which the loop can observe
+      // whether the turn produced anything.
+      final bool progressed = _state == ApplicationLifecycleState.running &&
+          (wantsFrame || needsFrame || _overlayIsStale || _isAnimating);
+      _noteLoopProgress(progressed: progressed);
       if (_state != ApplicationLifecycleState.running) continue;
       if (needsFrame || _overlayIsStale) await drawPendingFrames();
       if (budget > 0) {
@@ -2756,6 +2898,105 @@ final class Application with DisposableMixin {
     if (_state != ApplicationLifecycleState.closed) {
       _state = ApplicationLifecycleState.closing;
     }
+  }
+
+  /// Whether any live window is waiting on a timer-driven animation frame.
+  bool get _isAnimating {
+    for (final ApplicationWindow window in _windows) {
+      if (!window.isSuspended && window.hasPendingAnimationFrame) return true;
+    }
+    return false;
+  }
+
+  /// The shortest wait that still lets every live window run at its own frame
+  /// rate: one frame interval, never longer than
+  /// [ApplicationOptions.idleTimeout] - which stays the ceiling on every path.
+  Duration get _activePumpSlice {
+    Duration slice = options.idleTimeout;
+    for (final ApplicationWindow window in _windows) {
+      if (window.isDisposed || window.isSuspended) continue;
+      final Duration interval = window.scheduler.frameInterval;
+      if (interval < slice) slice = interval;
+    }
+    return slice;
+  }
+
+  /// [wait], less the time this iteration has already spent working.
+  ///
+  /// A slice names how often the loop wants a turn, not how long it wants to
+  /// sleep on top of everything else it did. Without this, a loop that waits
+  /// one frame interval and then spends nine milliseconds building, laying out
+  /// and presenting runs at 1/(16.7+9) ms - 39 Hz - and no amount of shortening
+  /// the wait fixes the arithmetic, because the work is on the other side of
+  /// the addition.
+  ///
+  /// Clamped at zero, which is a non-blocking pump: an iteration that already
+  /// overran its slice is saturated, and the honest thing is to go straight
+  /// back to the queue rather than to sleep on top of being late.
+  ///
+  /// Not applied while an animation frame is armed; see the call site.
+  Duration _pacedPumpTimeout(Duration wait) {
+    if (wait <= Duration.zero || !_sincePumpReturned.isRunning) return wait;
+    final Duration remaining = wait - _sincePumpReturned.elapsed;
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  /// Moves the adaptive idle wait after one turn of [run]'s loop.
+  ///
+  /// ## Why the wait has to adapt at all
+  ///
+  /// [WindowingBackend.pumpEvents] is a *synchronous* wait on the platform's
+  /// queue. While the isolate sits inside it no Dart timer fires, no `Future`
+  /// continuation resumes and no I/O callback is delivered; the loop hands the
+  /// Dart event loop exactly one turn per iteration, immediately after the
+  /// wait returns. The length of that wait is therefore the latency of every
+  /// piece of pending Dart work, and a flat 250 ms idle timeout turns an
+  /// ordinary `Timer.periodic` of 16 ms into a 4 Hz stutter with nothing wrong
+  /// with the timer.
+  ///
+  /// Exactly one class of pending work used to shorten the wait: an armed
+  /// animation frame, which the loop can see through
+  /// [ApplicationWindow.hasPendingAnimationFrame]. Everything else - an
+  /// application timer, a decoded frame arriving over a port, an `await` that
+  /// is merely ready to resume - is invisible from here, because Dart exposes
+  /// no way to ask "is anything queued, and when is it due". The loop cannot
+  /// know in advance; what it can do is remember what the last few turns
+  /// looked like.
+  ///
+  /// ## The policy
+  ///
+  /// Exponential back-off, reset by progress:
+  ///
+  ///   * a turn that produced something - a frame was drawn, a window came out
+  ///     of the yield dirty, an animation is armed - resets the wait to
+  ///     [_activePumpSlice], one frame interval. An application that is doing
+  ///     something therefore gets its Dart turns at display rate.
+  ///   * a turn that produced nothing doubles the wait, up to
+  ///     [ApplicationOptions.idleTimeout].
+  ///
+  /// Counted in loop iterations rather than in wall time on purpose: it needs
+  /// no clock, which this file deliberately never reads, and it costs a
+  /// genuinely idle window five extra wake-ups *once* - 16, 33, 66, 133, 250
+  /// ms - after which it is back to the four wake-ups a second the flat
+  /// timeout gave it. What it buys is that the wake-up which does find work is
+  /// followed by short waits, so a burst of asynchronous work runs at frame
+  /// rate instead of advancing one step per idle timeout.
+  ///
+  /// A suspended or closing application never counts as progressing, so it
+  /// returns to the ceiling within a few iterations rather than spinning while
+  /// minimised.
+  void _noteLoopProgress({required bool progressed}) {
+    final Duration ceiling = options.idleTimeout;
+    if (progressed) {
+      _idlePumpWait = _activePumpSlice;
+      return;
+    }
+    if (_idlePumpWait <= Duration.zero || _idlePumpWait >= ceiling) {
+      _idlePumpWait = ceiling;
+      return;
+    }
+    final Duration doubled = _idlePumpWait * 2;
+    _idlePumpWait = doubled < ceiling ? doubled : ceiling;
   }
 
   /// Whether the overlay's numbers are old enough to be worth a repaint.

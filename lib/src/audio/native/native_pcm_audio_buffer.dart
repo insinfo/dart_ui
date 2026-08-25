@@ -17,14 +17,38 @@ final class NativePcmAudioBuffer with DisposableMixin {
     required this.sampleRate,
     required this.channels,
     required this.frameCount,
-  }) : samples = NativeAllocator.instance.allocate<Float>(
+  })  : samples = NativeAllocator.instance.allocate<Float>(
           _checkedSampleCount(channels, frameCount) * sizeOf<Float>(),
-        );
+        ),
+        _ownsSamples = true;
+
+  /// Views samples that belong to somebody else.
+  ///
+  /// An address is the only part of a decoded clip that can cross an isolate
+  /// boundary, so the realtime playback isolate rebuilds its view of a buffer
+  /// decoded on another isolate through this constructor. Disposing the view
+  /// releases nothing: the allocation stays with whoever made it, and it must
+  /// outlive every view of it.
+  NativePcmAudioBuffer.borrow({
+    required this.samples,
+    required this.sampleRate,
+    required this.channels,
+    required this.frameCount,
+  }) : _ownsSamples = false {
+    if (samples == nullptr) {
+      throw ArgumentError.value(samples, 'samples', 'must not be null');
+    }
+    if (sampleRate <= 0) {
+      throw RangeError.value(sampleRate, 'sampleRate', 'must be positive');
+    }
+    _checkedSampleCount(channels, frameCount);
+  }
 
   final int sampleRate;
   final int channels;
   final int frameCount;
   final Pointer<Float> samples;
+  final bool _ownsSamples;
 
   int get sampleCount => frameCount * channels;
   Duration get duration => Duration(
@@ -98,7 +122,9 @@ final class NativePcmAudioBuffer with DisposableMixin {
   }
 
   @override
-  void onDispose() => NativeAllocator.instance.free(samples);
+  void onDispose() {
+    if (_ownsSamples) NativeAllocator.instance.free(samples);
+  }
 
   static int _checkedSampleCount(int channels, int frames) {
     if (channels <= 0) {

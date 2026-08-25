@@ -502,7 +502,7 @@ mixin ControlBehavior on RenderBox
     // Shaped once and then both measured and drawn from that one run: shaping
     // to decide whether to clip and shaping again to draw would double the
     // cost of every label on screen.
-    final GlyphRun run = uiTextPainter.shaper.shape(text, font);
+    final GlyphRun run = uiTextPainter.shapeRun(text, font);
     // Overlong text is clipped rather than truncated glyph by glyph. Dropping
     // glyphs silently changes the string - 'CANCEL' becomes 'CANC' with no sign
     // that anything is missing - while a clip leaves a cut letter, which reads
@@ -586,7 +586,7 @@ mixin ControlBehavior on RenderBox
       return FontRegistry.estimatedSize(text.substring(0, end), _theme.fontSize)
           .width;
     }
-    final GlyphRun run = uiTextPainter.shaper.shape(text, font);
+    final GlyphRun run = uiTextPainter.shapeRun(text, font);
     for (int i = 0; i < run.length; i++) {
       if (run.clusters[i] >= index) return run.xOf(i);
     }
@@ -601,7 +601,7 @@ mixin ControlBehavior on RenderBox
   int labelIndexAtOffset(String text, double dx) {
     final ScaledTypeface? font = labelFont;
     if (font == null || text.isEmpty) return 0;
-    final GlyphRun run = uiTextPainter.shaper.shape(text, font);
+    final GlyphRun run = uiTextPainter.shapeRun(text, font);
     int best = text.length;
     double bestDistance = (run.width - dx).abs();
     for (int i = 0; i < run.length; i++) {

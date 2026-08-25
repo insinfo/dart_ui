@@ -106,7 +106,10 @@ class PdfDocumentBuilder {
     final infoObjNum = currentObjNum++;
     offsets.add(body.length);
     writeString('$infoObjNum 0 obj\n'
-        '<< /Title ($title) /Author ($author) /Creator ($creator) /Producer (dart_ui PDF Engine) >>\n'
+        '<< /Title ${_pdfUnicodeText(title)} '
+        '/Author ${_pdfUnicodeText(author)} '
+        '/Creator ${_pdfUnicodeText(creator)} '
+        '/Producer ${_pdfUnicodeText('dart_ui PDF Engine')} >>\n'
         'endobj\n');
 
     // Tabela XRef
@@ -130,4 +133,14 @@ class PdfDocumentBuilder {
 
     return body.takeBytes();
   }
+}
+
+String _pdfUnicodeText(String value) {
+  final bytes = <int>[0xfe, 0xff];
+  for (final unit in value.codeUnits) {
+    bytes
+      ..add(unit >> 8)
+      ..add(unit & 0xff);
+  }
+  return '<${bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join()}>';
 }

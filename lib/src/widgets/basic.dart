@@ -886,7 +886,7 @@ final class RenderText extends RenderBox {
       if (clip) list.restore();
       return;
     }
-    final GlyphRun run = uiTextPainter.shaper.shape(_text, face);
+    final GlyphRun run = uiTextPainter.shapeRun(_text, face);
     // Clipped to the box layout gave it, which may be narrower than the text
     // asked for: a constrained parent must not have text spill out of it.
     final bool clip = run.width > size.width;

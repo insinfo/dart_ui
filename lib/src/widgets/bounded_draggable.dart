@@ -45,12 +45,25 @@ final class BoundedDraggable extends StatefulWidget {
     );
   }
 
+  /// Calcula a posição pela origem absoluta do gesto.
+  ///
+  /// Isso preserva exatamente o ponto em que o usuário segurou o objeto mesmo
+  /// quando eventos de movimento são agrupados ou um frame demora a pintar.
+  static Offset positionFromDrag({
+    required Offset startPosition,
+    required Offset pointerDown,
+    required Offset currentPointer,
+  }) =>
+      startPosition + (currentPointer - pointerDown);
+
   @override
   State<BoundedDraggable> createState() => _BoundedDraggableState();
 }
 
 final class _BoundedDraggableState extends State<BoundedDraggable> {
   late Offset _visualPosition;
+  Offset? _pointerDown;
+  Offset _dragStartPosition = Offset.zero;
   bool _dragging = false;
 
   @override
@@ -77,19 +90,30 @@ final class _BoundedDraggableState extends State<BoundedDraggable> {
     }
   }
 
-  void _start() {
+  void _rememberPointerDown(Offset globalPosition) {
+    _pointerDown = globalPosition;
+  }
+
+  void _start(Offset globalPosition) {
     _dragging = true;
     _visualPosition = BoundedDraggable.clampPosition(
       position: widget.position,
       size: widget.size,
       bounds: widget.bounds,
     );
+    _dragStartPosition = _visualPosition;
+    _pointerDown ??= globalPosition;
     widget.onDragStateChanged?.call(true);
   }
 
-  void _update(Offset delta) {
+  void _update(Offset globalPosition) {
+    final pointerDown = _pointerDown ?? globalPosition;
     final next = BoundedDraggable.clampPosition(
-      position: _visualPosition + delta,
+      position: BoundedDraggable.positionFromDrag(
+        startPosition: _dragStartPosition,
+        pointerDown: pointerDown,
+        currentPointer: globalPosition,
+      ),
       size: widget.size,
       bounds: widget.bounds,
     );
@@ -100,6 +124,7 @@ final class _BoundedDraggableState extends State<BoundedDraggable> {
 
   void _end() {
     _dragging = false;
+    _pointerDown = null;
     widget.onDragStateChanged?.call(false);
   }
 
@@ -117,9 +142,15 @@ final class _BoundedDraggableState extends State<BoundedDraggable> {
       height: widget.size.height,
       child: GestureDetector(
         behavior: GestureHitTestBehavior.opaque,
-        onPanStart: widget.enabled ? (_) => _start() : null,
-        onPanUpdate:
-            widget.enabled ? (details) => _update(details.delta) : null,
+        panSlop: 0,
+        onTapDown: widget.enabled
+            ? (details) => _rememberPointerDown(details.globalPosition)
+            : null,
+        onPanStart:
+            widget.enabled ? (details) => _start(details.globalPosition) : null,
+        onPanUpdate: widget.enabled
+            ? (details) => _update(details.globalPosition)
+            : null,
         onPanEnd: widget.enabled ? (_) => _end() : null,
         onPanCancel: widget.enabled ? _end : null,
         child: widget.child,

@@ -109,6 +109,10 @@ export 'src/graphics/vector/serialization/vector_svg_codec.dart';
 export 'src/graphics/vector/shaping.dart';
 export 'src/graphics/vector/structural_objects.dart';
 export 'src/graphics/vector/style.dart';
+export 'src/graphics/video/av_sync.dart';
+export 'src/graphics/video/video_color_conversion.dart';
+export 'src/graphics/video/video_decoder.dart';
+export 'src/graphics/video/video_frame.dart';
 export 'src/layout/alignment.dart';
 export 'src/layout/box_constraints.dart';
 export 'src/layout/edge_insets.dart';
@@ -243,6 +247,7 @@ export 'src/widgets/vector_editor/text_metrics.dart';
 export 'src/widgets/vector_editor/tool_controller.dart';
 export 'src/widgets/vector_editor/vector_canvas.dart';
 export 'src/widgets/vector_editor/vector_renderer.dart';
+export 'src/widgets/video.dart';
 export 'src/widgets/widget.dart';
 
 /// Mounts [rootWidget] using production platform defaults.

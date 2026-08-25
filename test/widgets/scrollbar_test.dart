@@ -74,6 +74,20 @@ void main() {
       expect(harness.pointer(_down(const Offset(196, 50))), isFalse);
       harness.dispose();
     });
+
+    test('fits its minimum thumb into a compact track', () {
+      final ScrollPosition position =
+          ScrollPosition(viewportExtent: 48, contentExtent: 480);
+      final harness = _Harness(position, height: 48);
+
+      expect(harness.bar.usableTrackExtent, greaterThan(0));
+      expect(
+        harness.bar.thumbMetrics!.extent,
+        lessThanOrEqualTo(harness.bar.usableTrackExtent),
+      );
+      expect(() => harness.frame(), returnsNormally);
+      harness.dispose();
+    });
   });
 
   group('dragging the thumb', () {
@@ -400,10 +414,11 @@ final class _Harness {
     ScrollbarVisibility visibility = ScrollbarVisibility.always,
     bool interactive = true,
     UiDispatcher? dispatcher,
+    double height = 100,
   }) {
     owner = BuildOwner(
       pipelineOwner: PipelineOwner(
-        rootConstraints: BoxConstraints.tight(const Size(200, 100)),
+        rootConstraints: BoxConstraints.tight(Size(200, height)),
       ),
     );
     // Stepper arrows and a resting track are off by default now - no current
@@ -423,7 +438,7 @@ final class _Harness {
           visibility: visibility,
           interactive: interactive,
           dispatcher: dispatcher,
-          child: const SizedBox(width: 200, height: 100),
+          child: SizedBox(width: 200, height: height),
         ),
       ),
     );

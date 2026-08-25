@@ -35,6 +35,11 @@ class Crypto {
   /// Calcula o hash MD5 (16 bytes / 128 bits).
   static Uint8List md5(Uint8List data) => _instance.md5(data);
 
+  /// Abre um hash MD5 incremental, para quem processa os dados em partes e nao
+  /// quer materializar tudo so para hashear. Usa o contexto nativo do SO quando
+  /// ha um disponivel, e Dart puro caso contrario.
+  static HashSink md5Sink() => _instance.md5Sink();
+
   /// Cifra [plaintext] usando AES no modo CBC com chave de 128, 192 ou 256 bits e IV de 16 bytes.
   static Uint8List aesEncryptCbc(
       Uint8List key, Uint8List iv, Uint8List plaintext,

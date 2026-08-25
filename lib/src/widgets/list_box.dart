@@ -40,6 +40,8 @@ import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'scroll_view.dart';
+import 'scrollbar.dart';
 import 'semantics.dart';
 import 'style.dart';
 import 'theme.dart';
@@ -63,6 +65,7 @@ final class ListBox extends StatefulWidget {
     this.selectedIndex,
     this.onSelected,
     this.controller,
+    this.scrollbar = ScrollbarVisibility.always,
   });
 
   final int itemCount;
@@ -82,6 +85,7 @@ final class ListBox extends StatefulWidget {
   final int? selectedIndex;
   final void Function(int index)? onSelected;
   final ScrollPosition? controller;
+  final ScrollbarVisibility scrollbar;
 
   @override
   State<ListBox> createState() => _ListBoxState();
@@ -138,7 +142,7 @@ final class _ListBoxState extends State<ListBox> {
       scrollOffset: _position.pixels,
       viewportExtent: viewport,
     );
-    return FocusAttachment(
+    final list = FocusAttachment(
       node: _focusNode,
       child: _ListBoxRenderWidget(
         position: _position,
@@ -179,6 +183,15 @@ final class _ListBoxState extends State<ListBox> {
                   : widget.itemBuilder(context, index),
             ),
         ],
+      ),
+    );
+    return Scrollbar(
+      position: _position,
+      visibility: widget.scrollbar,
+      child: Scrollable(
+        position: _position,
+        mouseDragEnabled: false,
+        child: list,
       ),
     );
   }
@@ -500,19 +513,18 @@ final class RenderListBox extends RenderBoxContainer<BoxParentData>
   @override
   void handlePointerEvent(PointerEvent event) {
     super.handlePointerEvent(event);
-    if (event is PointerScrollEvent) {
-      _position.applyScrollDelta(
-        event.scrollDelta.dy,
-        inLines: event.scrollDeltaUnit == ScrollDeltaUnit.lines,
-      );
-      return;
-    }
     if (event is PointerDownEvent) {
       final double contentY =
           globalToLocal(event.logicalPosition).dy + _position.pixels;
       final int index = _virtualization.indexAt(contentY);
       if (index >= 0 && index < _virtualization.itemCount) {
         onSelected?.call(index);
+        final double? reveal = _virtualization.scrollToReveal(
+          index,
+          scrollOffset: _position.pixels,
+          viewportExtent: hasSize ? size.height : _position.viewportExtent,
+        );
+        if (reveal != null) _position.jumpTo(reveal);
       }
     }
   }

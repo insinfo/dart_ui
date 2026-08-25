@@ -2,10 +2,10 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:dart_ui/src/graphics/image/codecs/image_lib.dart' as image_lib;
 import 'package:dart_ui/src/graphics/image/decoded_image.dart';
 import 'package:dart_ui/src/graphics/image/image_errors.dart';
 import 'package:dart_ui/src/graphics/image/raster_formats.dart';
-import 'package:image/image.dart' as image_lib;
 import 'package:test/test.dart';
 
 Uint8List _jpeg({int? orientation}) {
@@ -16,10 +16,59 @@ Uint8List _jpeg({int? orientation}) {
   return image_lib.encodeJpg(source, quality: 100);
 }
 
-Uint8List _png() => image_lib.encodePng(
-      image_lib.Image(width: 1, height: 1, numChannels: 4)
-        ..setPixelRgba(0, 0, 10, 20, 30, 128),
-    );
+int _crc32(List<int> bytes) {
+  var crc = 0xFFFFFFFF;
+  for (final int byte in bytes) {
+    crc ^= byte;
+    for (var i = 0; i < 8; i++) {
+      crc = (crc >> 1) ^ (0xEDB88320 & -(crc & 1));
+    }
+  }
+  return ~crc & 0xFFFFFFFF;
+}
+
+Uint8List _pngChunk(String type, List<int> data) {
+  final BytesBuilder builder = BytesBuilder();
+  final Uint8List length = Uint8List(4);
+  ByteData.view(length.buffer).setUint32(0, data.length);
+  builder.add(length);
+  final List<int> body = <int>[...type.codeUnits, ...data];
+  builder.add(body);
+  final Uint8List crc = Uint8List(4);
+  ByteData.view(crc.buffer).setUint32(0, _crc32(body));
+  builder.add(crc);
+  return builder.toBytes();
+}
+
+/// Minimal RGBA PNG writer so the fixture needs no external encoder.
+Uint8List _png() {
+  const int width = 1;
+  const int height = 1;
+  final BytesBuilder builder = BytesBuilder()
+    ..add(<int>[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+  final Uint8List ihdr = Uint8List(13);
+  // A cascata escreve direto no buffer de `ihdr`; nao ha uso para a view.
+  ByteData.view(ihdr.buffer)
+    ..setUint32(0, width)
+    ..setUint32(4, height)
+    ..setUint8(8, 8)
+    ..setUint8(9, 6);
+  builder.add(_pngChunk('IHDR', ihdr));
+  builder.add(
+    _pngChunk(
+      'IDAT',
+      ZLibEncoder().convert(<int>[
+        0,
+        10,
+        20,
+        30,
+        128,
+      ]),
+    ),
+  );
+  builder.add(_pngChunk('IEND', const <int>[]));
+  return builder.toBytes();
+}
 
 // One opaque 1x1 WebP. Kept inline so the test is independent from files and
 // exercises the RIFF size/chunk walk as well as the VP8 decoder.

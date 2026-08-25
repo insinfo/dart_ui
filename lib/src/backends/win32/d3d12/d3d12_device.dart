@@ -54,6 +54,7 @@ import 'dart:typed_data';
 import '../../../foundation/diagnostics.dart';
 import '../../../foundation/lifecycle.dart';
 import '../../../graphics/display_list_opcodes.dart';
+import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
 import '../../../rendering/framebuffer.dart';
 import '../../../rendering/gpu/d3d12/d3d12_compute_tile_executor.dart';
 import '../../../rendering/gpu/d3d12/d3d12_shaders.dart';
@@ -65,6 +66,7 @@ import '../../../rendering/gpu/gpu_path_strategy.dart';
 import '../../../rendering/gpu/gpu_pipeline.dart';
 import '../../../rendering/gpu/gpu_raster_sink.dart';
 import '../../../rendering/gpu/gpu_texture.dart';
+import '../../../rendering/gpu/gpu_video_image.dart';
 import '../../../rendering/gpu/vector/compute_tile_scene.dart';
 import '../../../rendering/gpu/vector/sparse_strip_draw_plan.dart';
 import '../../../rendering/renderer.dart';
@@ -91,6 +93,26 @@ import 'd3d12_window_target.dart';
 /// target: the render-target format is part of a PSO, so a second surface
 /// format would mean a second set of them.
 const int kD3d12SurfaceFormat = dxgiFormatR8G8B8A8Unorm;
+
+/// The `DXGI_FORMAT` a texture in [format] is created and copied into.
+///
+/// One function and not a ternary at each of the two sites that need it - the
+/// resource description and the copy footprint - because those two must agree
+/// or the upload writes correct bytes at an incorrect pitch. It is a `switch`
+/// so that a format added to [GpuTextureFormat] later fails to compile here
+/// instead of silently landing in the wrong layout.
+///
+/// [GpuTextureFormat.bgra8888Premultiplied] is a *sampled* format only. It
+/// never reaches a render target, so it needs no second set of pipeline state
+/// objects: the format baked into a PSO is the render-target's, and a
+/// shader-resource view's format lives in the descriptor.
+int _dxgiFormatFor(GpuTextureFormat format) => switch (format) {
+      GpuTextureFormat.alpha8 => dxgiFormatR8Unorm,
+      GpuTextureFormat.bgra8888Premultiplied => dxgiFormatB8G8R8A8Unorm,
+      GpuTextureFormat.rgba8888Straight ||
+      GpuTextureFormat.rgba8888Premultiplied =>
+        kD3d12SurfaceFormat,
+    };
 
 /// A texture owned by a [D3d12RenderDevice].
 ///
@@ -1358,10 +1380,13 @@ final class D3d12RenderDevice
       return null;
     }
 
-    final int dxgiFormat = dxgiFormatOverride ??
-        (format == GpuTextureFormat.alpha8
-            ? dxgiFormatR8Unorm
-            : kD3d12SurfaceFormat);
+    // A switch and not a ternary, so a format added later is a compile error
+    // here rather than a resource quietly created in the wrong layout. The
+    // SRV format is per-descriptor and is not baked into a pipeline state
+    // object, so BGRA needs no second PSO and no second shader - the texture
+    // unit returns RGBA either way. See
+    // [GpuTextureFormat.bgra8888Premultiplied].
+    final int dxgiFormat = dxgiFormatOverride ?? _dxgiFormatFor(format);
 
     return D3d12Arena.using(_library.allocator, (D3d12Arena arena) {
       final Pointer<D3d12HeapProperties> heap =
@@ -1608,9 +1633,9 @@ final class D3d12RenderDevice
       ..type = d3d12TextureCopyTypePlacedFootprint;
     _copySource.ref.placedFootprint.offset = range.offset;
     _copySource.ref.placedFootprint.footprint
-      ..format = texture.format == GpuTextureFormat.alpha8
-          ? dxgiFormatR8Unorm
-          : kD3d12SurfaceFormat
+      // The footprint's format has to be the resource's, or the copy writes
+      // the right bytes with the wrong pitch arithmetic.
+      ..format = _dxgiFormatFor(texture.format)
       ..width = width
       ..height = height
       ..depth = 1
@@ -2162,12 +2187,10 @@ final class D3d12RenderDevice
         existing.height >= height) {
       return existing;
     }
-    final int newWidth = existing == null || width > existing.width
-        ? width
-        : existing.width;
-    final int newHeight = existing == null || height > existing.height
-        ? height
-        : existing.height;
+    final int newWidth =
+        existing == null || width > existing.width ? width : existing.width;
+    final int newHeight =
+        existing == null || height > existing.height ? height : existing.height;
     if (existing != null) {
       // The GPU may still be reading it. Nothing else here is in flight during
       // a resize - a target resize already waited - but the ring's idle wait is
@@ -2399,11 +2422,35 @@ final class D3d12ImageCache implements GpuImageResolver {
   final Map<Object, D3d12Texture> _textures =
       Map<Object, D3d12Texture>.identity();
 
+  /// Where a decoded video frame becomes a texture.
+  ///
+  /// A separate cache and not another entry in the map above, because that map
+  /// is keyed by image identity and never evicts - which is right for a still
+  /// and ruinous for a stream that produces a new object twenty-five times a
+  /// second. See `gpu_video_image.dart` for the whole argument and for how one
+  /// texture per stream is reused instead.
+  ///
+  /// [ImageChannelOrder.rgba] because every image texture here is created as
+  /// `rgba8888Premultiplied` and [_asRgba] swizzles a BGRA source into it; the
+  /// video conversion writes that order directly instead.
+  late final GpuVideoImageCache _video = GpuVideoImageCache(
+    _device,
+    channelOrder: ImageChannelOrder.rgba,
+  );
+
   int get length => _textures.length;
+
+  /// The video streams this cache holds a texture for. One per stream, never
+  /// one per frame.
+  int get videoStreamCount => _video.streamCount;
 
   @override
   GpuTextureHandle? resolve(Object image) {
-    if (image is! Framebuffer) return null;
+    // A VideoFrame is not a Framebuffer, and returning null for it is what
+    // made every accelerated backend refuse to draw video by name. The video
+    // cache answers null for anything that is not a frame either, so this
+    // stays the single "this device cannot draw it" exit.
+    if (image is! Framebuffer) return _video.resolve(image);
     final D3d12Texture? cached = _textures[image];
     if (cached != null && cached.isValid) return cached;
 
@@ -2440,6 +2487,7 @@ final class D3d12ImageCache implements GpuImageResolver {
       _device.releaseTexture(texture);
     }
     _textures.clear();
+    _video.clear();
   }
 
   /// The image's bytes in the order `DXGI_FORMAT_R8G8B8A8_UNORM` expects.

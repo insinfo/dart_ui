@@ -6,6 +6,11 @@ assinatura incremental PAdES B-B com uma chave RSA ou EC mantida em token,
 smart card ou HSM. A interface mostra a página real e permite arrastar o bloco
 de assinatura; essa posição é gravada no campo visual do PDF.
 
+O selo visual usa o logo ICP-Brasil incorporado no pacote (sem acesso à rede
+durante a assinatura), nome extraído do certificado, CPF obtido do
+`SubjectAlternativeName` ICP-Brasil e mascarado como `***.456.789-**`, data
+com fuso horário e um link clicável para `https://validar.iti.gov.br/`.
+
 ```powershell
 dart run examples/pdf_signer_demo/main.dart --presentation direct3d11
 ```
@@ -52,6 +57,10 @@ Quando o token estiver conectado:
    por um campo do aplicativo;
 5. abra o `*_assinado.pdf` em um validador PAdES e confira signatário,
    integridade e cadeia ICP-Brasil.
+
+O PDF também exibe o endereço do VALIDAR no selo. O endereço apenas facilita o
+acesso ao serviço: a validação continua exigindo o envio do documento ao site
+oficial e não é substituída pela aparência visual.
 
 Não execute esse roteiro em teste automatizado: tentativas repetidas com PIN
 incorreto podem bloquear o token.

@@ -430,7 +430,11 @@ final class RenderScrollbar extends RenderBox
     final ({double start, double extent})? thumb = _position.thumb;
     final double track = usableTrackExtent;
     if (thumb == null || track <= 0) return null;
-    final double extent = (thumb.extent * track).clamp(_minThumbExtent, track);
+    // A compact control can legitimately leave less track than the themed
+    // minimum thumb length. Keep the clamp bounds ordered in that case; the
+    // whole available track is still a valid, reachable thumb.
+    final double minimumExtent = math.min(_minThumbExtent, track);
+    final double extent = (thumb.extent * track).clamp(minimumExtent, track);
     final double free = track - extent;
     final double fraction = thumb.extent >= 1
         ? 0.0

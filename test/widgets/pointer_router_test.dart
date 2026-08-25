@@ -98,6 +98,29 @@ void main() {
       expect(calls, <String>['inner']);
     });
 
+    test('zero-slop inner pan wins before an enclosing scroll drag', () {
+      final BuildOwner owner = _owner();
+      final List<String> calls = <String>[];
+      owner.updateRoot(
+        GestureDetector(
+          onVerticalDragStart: (_) => calls.add('scroll'),
+          child: GestureDetector(
+            panSlop: 0,
+            onPanStart: (_) => calls.add('seal'),
+            onPanUpdate: (_) {},
+            child: const ColoredBox(color: Color(1)),
+          ),
+        ),
+      );
+      owner.pipelineOwner.flushLayout();
+
+      owner.dispatchPointerEvent(_down(const Offset(5, 5)));
+      owner.dispatchPointerEvent(_move(const Offset(5, 6)));
+      owner.dispatchPointerEvent(_up(const Offset(5, 6)));
+
+      expect(calls, <String>['seal']);
+    });
+
     test('an in-place widget update changes the callback', () {
       final BuildOwner owner = _owner();
       final List<String> calls = <String>[];

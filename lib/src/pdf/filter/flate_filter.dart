@@ -27,7 +27,7 @@ class FlateFilter implements PdfFilter {
           budget: 'pdf_flate_stream',
         );
       }
-    } catch (_) {
+    } catch (zlibError) {
       // Fallback para raw inflate se o zlib falhar
       try {
         decompressed = inflate(
@@ -35,9 +35,11 @@ class FlateFilter implements PdfFilter {
           maxOutputBytes: 128 * 1024 * 1024,
           budget: 'pdf_flate_stream',
         );
-      } catch (e) {
-        // Se ainda falhar, retorna os dados originais para não abortar todo o parsing
-        return data;
+      } catch (rawError) {
+        throw PdfFilterException(
+          'invalid or over-budget Flate stream',
+          '$zlibError; raw fallback: $rawError',
+        );
       }
     }
 

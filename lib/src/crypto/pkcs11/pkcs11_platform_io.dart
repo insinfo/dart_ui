@@ -20,6 +20,7 @@ const int _ckaLabel = 3;
 const int _ckaValue = 0x11;
 const int _ckaId = 0x102;
 
+@Packed(1)
 final class _CkAttribute extends Struct {
   @UnsignedLong()
   external int type;
@@ -28,6 +29,7 @@ final class _CkAttribute extends Struct {
   external int valueLength;
 }
 
+@Packed(1)
 final class _CkTokenInfo extends Struct {
   @Array(32)
   external Array<Uint8> label;
@@ -67,6 +69,7 @@ final class _CkTokenInfo extends Struct {
   external Array<Uint8> utcTime;
 }
 
+@Packed(1)
 final class _CkMechanism extends Struct {
   @UnsignedLong()
   external int mechanism;
@@ -277,6 +280,19 @@ final class Pkcs11Module implements Pkcs11ModuleApi {
     };
     return candidates.where((path) => File(path).existsSync()).toList();
   }
+
+  /// Tamanhos efetivos das estruturas sensíveis ao ABI Cryptoki.
+  ///
+  /// O header PKCS#11 usa `pack(1)`. No Windows x64, onde `CK_ULONG` continua
+  /// com 32 bits, `CK_ATTRIBUTE` e `CK_MECHANISM` devem medir 16 bytes — não
+  /// 24. Um tamanho incorreto desloca os ponteiros entregues ao middleware e
+  /// pode causar uma access violation dentro da DLL.
+  static ({int attribute, int mechanism, int tokenInfo}) get nativeAbiLayout =>
+      (
+        attribute: sizeOf<_CkAttribute>(),
+        mechanism: sizeOf<_CkMechanism>(),
+        tokenInfo: sizeOf<_CkTokenInfo>(),
+      );
 
   @override
   List<Pkcs11Token> listTokens() => using((arena) {

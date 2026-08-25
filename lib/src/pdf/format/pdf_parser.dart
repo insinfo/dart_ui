@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'pdf_lexer.dart';
+import 'pdf_limits.dart';
 import 'pdf_object.dart';
 
 /// Analisador sintático de objetos PDF diretos e indiretos em Puro Dart.
@@ -7,7 +8,10 @@ class PdfParser {
   final PdfLexer lexer;
   final List<PdfToken> _tokenBuffer = [];
 
-  PdfParser(this.lexer);
+  PdfParser(this.lexer, {this.limits = const PdfLimits()});
+
+  final PdfLimits limits;
+  int _nesting = 0;
 
   PdfToken peekToken() {
     if (_tokenBuffer.isEmpty) {
@@ -30,7 +34,7 @@ class PdfParser {
 
     // 1. Dicionário `<< ... >>`
     if (token.isDelimiter('<<')) {
-      final dict = parseDictionary();
+      final dict = _nested(parseDictionary);
 
       // Verifica se é seguido imediatamente por um `stream`
       final peek = peekToken();
@@ -42,7 +46,7 @@ class PdfParser {
 
     // 2. Array `[ ... ]`
     if (token.isDelimiter('[')) {
-      return parseArray();
+      return _nested(parseArray);
     }
 
     // 3. String literal
@@ -103,6 +107,7 @@ class PdfParser {
   /// Analisa um dicionário `<< /Key Val ... >>`.
   PdfDict parseDictionary() {
     final dict = PdfDict();
+    var items = 0;
 
     while (true) {
       final token = nextToken();
@@ -111,6 +116,12 @@ class PdfParser {
       }
 
       if (token.type == PdfTokenType.name) {
+        if (++items > limits.maxCollectionItems) {
+          throw PdfFormatException(
+            'dictionary exceeds ${limits.maxCollectionItems} entries',
+            offset: lexer.reader.offset,
+          );
+        }
         final key = token.text;
         final value = parseObject();
         if (value != null) {
@@ -135,11 +146,32 @@ class PdfParser {
 
       final obj = parseObject();
       if (obj != null) {
+        if (elements.length >= limits.maxCollectionItems) {
+          throw PdfFormatException(
+            'array exceeds ${limits.maxCollectionItems} elements',
+            offset: lexer.reader.offset,
+          );
+        }
         elements.add(obj);
       }
     }
 
     return PdfArray(elements);
+  }
+
+  T _nested<T>(T Function() action) {
+    if (_nesting >= limits.maxObjectNesting) {
+      throw PdfFormatException(
+        'object nesting exceeds ${limits.maxObjectNesting}',
+        offset: lexer.reader.offset,
+      );
+    }
+    _nesting++;
+    try {
+      return action();
+    } finally {
+      _nesting--;
+    }
   }
 
   /// Analisa um objeto de fluxo binário `stream ... endstream`.

@@ -9,6 +9,9 @@ final class Pkcs11Module implements Pkcs11ModuleApi {
 
   static List<String> discoverCommonModules() => const <String>[];
 
+  static ({int attribute, int mechanism, int tokenInfo}) get nativeAbiLayout =>
+      (attribute: 0, mechanism: 0, tokenInfo: 0);
+
   @override
   final String modulePath;
 

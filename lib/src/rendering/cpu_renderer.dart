@@ -988,13 +988,9 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   /// [convertVideoFrameToRgba], which is also what the GL shader is a
   /// translation of - see the parity note in `video_color_conversion.dart`.
   ///
-  /// Two limits are inherited from the existing image path rather than
-  /// invented here, and both are worth naming. The blit does not **scale**, so
-  /// a frame drawn into a rectangle of a different size lands at its own size
-  /// from the destination's top-left corner - exactly what `drawDeviceImage`
-  /// already does with a `Framebuffer`. And the source rectangle is honoured
-  /// as a **crop**, in whole pixels, which is more than the `Framebuffer` path
-  /// does and is the part a video editor actually needs.
+  /// The source rectangle is honoured as a crop, in whole pixels. When the
+  /// destination has a different size the CPU fallback uses the image
+  /// resampler; native GPU paths keep scaling in their texture sampler.
   ///
   /// The paint's alpha is folded into the conversion instead of being applied
   /// afterwards. It costs three multiplies on a path that is already reading
@@ -1018,12 +1014,23 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     ).intersect(VideoRegion.wholeFrame(frame.width, frame.height));
     if (region.isEmpty) return;
 
+    // `drawFramebuffer` snaps each edge independently. Deriving the buffer
+    // extent from the same snapped edges prevents a fractional destination
+    // from selecting the wrong source texel after the blit crops it.
+    final int destinationWidth =
+        pixelEdge(deviceRect.right) - pixelEdge(deviceRect.left);
+    final int destinationHeight =
+        pixelEdge(deviceRect.bottom) - pixelEdge(deviceRect.top);
+    if (destinationWidth <= 0 || destinationHeight <= 0) return;
+
     final Framebuffer surface = _rasterizer.target;
     final Framebuffer converted = _convertedVideoFrame(
       frame,
       region,
       alpha,
       surface.format,
+      destinationWidth,
+      destinationHeight,
     );
 
     final CpuBlendMode blend = _blendFor(paint);
@@ -1046,6 +1053,8 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   VideoRegion? _videoCacheRegion;
   int _videoCacheAlpha = -1;
   PixelFormat? _videoCacheFormat;
+  int _videoCacheWidth = -1;
+  int _videoCacheHeight = -1;
   Framebuffer? _videoCacheResult;
 
   Framebuffer _convertedVideoFrame(
@@ -1053,16 +1062,20 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     VideoRegion region,
     int alpha,
     PixelFormat format,
+    int destinationWidth,
+    int destinationHeight,
   ) {
     final Framebuffer? cached = _videoCacheResult;
     if (cached != null &&
         _videoCacheFrame == frame &&
         _videoCacheRegion == region &&
         _videoCacheAlpha == alpha &&
-        _videoCacheFormat == format) {
+        _videoCacheFormat == format &&
+        _videoCacheWidth == destinationWidth &&
+        _videoCacheHeight == destinationHeight) {
       return cached;
     }
-    final Framebuffer result = Framebuffer(
+    final Framebuffer converted = Framebuffer(
       width: region.width,
       height: region.height,
       bytesPerRow: region.width * 4,
@@ -1076,10 +1089,39 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
         opacity: alpha,
       ),
     );
+    final Framebuffer result;
+    if (destinationWidth == converted.width &&
+        destinationHeight == converted.height) {
+      result = converted;
+    } else {
+      final ImageChannelOrder order =
+          format == PixelFormat.bgra8888Premultiplied
+              ? ImageChannelOrder.bgra
+              : ImageChannelOrder.rgba;
+      final DecodedImage scaled = DecodedImage(
+        width: converted.width,
+        height: converted.height,
+        order: order,
+        pixels: converted.pixels,
+        // RGB video formats may carry alpha even when the paint is opaque.
+        // This flag is metadata only for resampling, so conservatively retain
+        // the alpha channel rather than claiming the pixels are opaque.
+        hasAlpha: true,
+      ).resample(width: destinationWidth, height: destinationHeight);
+      result = Framebuffer(
+        width: scaled.width,
+        height: scaled.height,
+        bytesPerRow: scaled.bytesPerRow,
+        format: format,
+        pixels: scaled.pixels,
+      );
+    }
     _videoCacheFrame = frame;
     _videoCacheRegion = region;
     _videoCacheAlpha = alpha;
     _videoCacheFormat = format;
+    _videoCacheWidth = destinationWidth;
+    _videoCacheHeight = destinationHeight;
     _videoCacheResult = result;
     return result;
   }

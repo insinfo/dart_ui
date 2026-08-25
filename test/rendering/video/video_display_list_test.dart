@@ -25,6 +25,29 @@ import 'package:test/test.dart';
 
 import '../../graphics/video/synthetic_frames.dart';
 
+VideoFrame _redBlueFrame() {
+  final VideoFrame frame = VideoFrame.allocate(
+    VideoFrameFormat(
+      pixelFormat: VideoPixelFormat.rgba8888,
+      width: 2,
+      height: 1,
+      range: VideoColorRange.full,
+    ),
+    streamId: 91,
+  );
+  frame.plane(0).bytes.setAll(0, <int>[
+    255,
+    0,
+    0,
+    255,
+    0,
+    0,
+    255,
+    255,
+  ]);
+  return frame;
+}
+
 void main() {
   Future<MemoryRenderTarget> targetOf(int width, int height) async {
     final device = await const CpuRendererBackend().createDevice();
@@ -89,6 +112,48 @@ void main() {
   });
 
   group('the CPU fallback', () {
+    test('scales the converted frame to the destination rectangle', () async {
+      final VideoFrame frame = _redBlueFrame();
+      final MemoryRenderTarget target = await targetOf(4, 2);
+      final DisplayList list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+      list.drawImage(list.addImage(frame), 0, 0, 2, 1, 0, 0, 4, 2, paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      for (var y = 0; y < 2; y++) {
+        expect(pixelAt(target.framebuffer, 0, y), <int>[255, 0, 0, 255]);
+        expect(pixelAt(target.framebuffer, 1, y), <int>[255, 0, 0, 255]);
+        expect(pixelAt(target.framebuffer, 2, y), <int>[0, 0, 255, 255]);
+        expect(pixelAt(target.framebuffer, 3, y), <int>[0, 0, 255, 255]);
+      }
+    });
+
+    test('fractional destination uses its snapped pixel extent', () async {
+      final VideoFrame frame = _redBlueFrame();
+      final MemoryRenderTarget target = await targetOf(3, 1);
+      final DisplayList list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+      list.drawImage(
+        list.addImage(frame),
+        0,
+        0,
+        2,
+        1,
+        0.6,
+        0,
+        2.4,
+        1,
+        paint,
+      );
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      expect(pixelAt(target.framebuffer, 0, 0), <int>[0, 0, 0, 0]);
+      expect(pixelAt(target.framebuffer, 1, 0), <int>[0, 0, 255, 255]);
+      expect(pixelAt(target.framebuffer, 2, 0), <int>[0, 0, 0, 0]);
+    });
+
     test('draws the frame the reference converter produces', () async {
       final VideoFrame frame = picture.encode(VideoPixelFormat.nv12);
       final MemoryRenderTarget target = await targetOf(16, 16);
@@ -200,8 +265,7 @@ void main() {
       await target.renderDisplayList(list, clearColor: 0);
 
       final expected = convertVideoFrameToRgba(frame);
-      expect(pixelAt(target.framebuffer, 5, 3).take(3),
-          expected.sublist(0, 3));
+      expect(pixelAt(target.framebuffer, 5, 3).take(3), expected.sublist(0, 3));
       expect(pixelAt(target.framebuffer, 4, 3), <int>[0, 0, 0, 0]);
     });
 
@@ -251,8 +315,8 @@ void main() {
       final MemoryRenderTarget target = await targetOf(8, 8);
       final list = DisplayList();
       final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
-      list.drawImage(list.addImage('not an image'), 0, 0, 8, 8, 0, 0, 8, 8,
-          paint);
+      list.drawImage(
+          list.addImage('not an image'), 0, 0, 8, 8, 0, 0, 8, 8, paint);
       await expectLater(
         target.renderDisplayList(list, clearColor: 0),
         throwsA(isA<ArgumentError>()),

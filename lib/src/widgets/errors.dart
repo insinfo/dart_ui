@@ -14,7 +14,7 @@
 library;
 
 /// Which pipeline phase an error escaped from.
-enum FrameworkPhase { build, layout, paint, hitTest, input, semantics }
+enum FrameworkPhase { build, layout, paint, hitTest, input, semantics, async }
 
 /// One error, with the context needed to find it again.
 final class FrameworkError implements Exception {

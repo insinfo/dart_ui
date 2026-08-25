@@ -194,7 +194,7 @@ void main() {
       final harness = _ListHarness(itemCount: 1000);
       harness.frame();
 
-      harness.list.handlePointerEvent(const PointerScrollEvent(
+      harness.owner.dispatchPointerEvent(const PointerScrollEvent(
         windowId: NativeWindowId(1),
         generation: 1,
         timestamp: Duration.zero,
@@ -206,6 +206,32 @@ void main() {
       ));
 
       expect(harness.scroll.pixels, 3 * defaultLineExtent);
+      harness.dispose();
+    });
+
+    test('clicking a partially visible row reveals the whole selection', () {
+      final harness = _ListHarness(itemCount: 1000);
+      harness.frame();
+      final double extent = ThemeData.neutralLight.effectiveRowHeight;
+      final int partialIndex = (100 / extent).floor();
+
+      harness.list.handlePointerEvent(PointerDownEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 1,
+        kind: PointerKind.mouse,
+        logicalPosition: Offset(10, partialIndex * extent + 1),
+        button: PointerButton.primary,
+      ));
+      harness.frame();
+
+      expect(harness.selected, partialIndex);
+      expect(harness.scroll.pixels, greaterThan(0));
+      expect(
+        (partialIndex + 1) * extent,
+        lessThanOrEqualTo(harness.scroll.pixels + 100),
+      );
       harness.dispose();
     });
 

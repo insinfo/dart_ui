@@ -30,6 +30,7 @@ final class X509Certificate {
     required this.notBefore,
     required this.notAfter,
     required this.publicKeyAlgorithmOid,
+    required this.subjectAlternativeNames,
   });
 
   factory X509Certificate.parse(Uint8List bytes) {
@@ -74,6 +75,7 @@ final class X509Certificate {
     if (algorithmOid.tag != 0x06) {
       throw const FormatException('X.509 public key algorithm has no OID');
     }
+    final subjectAlternativeNames = _readSubjectAlternativeNames(reader);
     return X509Certificate._(
       derBytes: der,
       serialNumber: serial,
@@ -84,6 +86,7 @@ final class X509Certificate {
       notBefore: notBefore,
       notAfter: notAfter,
       publicKeyAlgorithmOid: decodeOid(algorithmOid.value),
+      subjectAlternativeNames: subjectAlternativeNames,
     );
   }
 
@@ -97,6 +100,10 @@ final class X509Certificate {
   final DateTime notAfter;
   final String publicKeyAlgorithmOid;
 
+  /// Valores `otherName` presentes em SubjectAlternativeName, indexados por
+  /// OID. Certificados ICP-Brasil guardam CPF/CNPJ e outros dados nesse local.
+  final Map<String, String> subjectAlternativeNames;
+
   X509PublicKeyAlgorithm get publicKeyAlgorithm =>
       X509PublicKeyAlgorithm.fromOid(publicKeyAlgorithmOid);
 
@@ -104,6 +111,49 @@ final class X509Certificate {
     final match = RegExp(r'(?:^|, )CN=([^,]+)').firstMatch(subjectName);
     return match?.group(1) ?? subjectName;
   }
+
+  /// Nome adequado para exibição em um selo ICP-Brasil.
+  ///
+  /// Certificados de pessoa física frequentemente acrescentam `:CPF` ao CN;
+  /// o sufixo é removido para que o documento não exponha o número completo.
+  /// Para certificados de pessoa jurídica, o OID 2.16.76.1.3.2 identifica o
+  /// responsável pelo certificado.
+  String get icpBrasilDisplayName {
+    final responsible = subjectAlternativeNames['2.16.76.1.3.2']?.trim();
+    if (responsible != null && responsible.isNotEmpty) return responsible;
+    return commonName.replaceFirst(RegExp(r':\s*\d{11}\s*$'), '').trim();
+  }
+
+  /// CPF conforme as formas usadas por certificados ICP-Brasil atuais e
+  /// legados: `serialNumber` do DN, outros nomes do SAN ou sufixo do CN.
+  String? get icpBrasilCpf {
+    final serialNumber = RegExp(
+      r'(?:^|, )SERIALNUMBER=([^,]+)',
+    ).firstMatch(subjectName)?.group(1);
+    final serialCpf = _cpfFromUnstructuredValue(serialNumber);
+    if (serialCpf != null) return serialCpf;
+
+    for (final oid in const <String>['2.16.76.1.3.1', '2.16.76.1.3.4']) {
+      final raw = subjectAlternativeNames[oid];
+      if (raw == null) continue;
+      final digits = raw.replaceAll(RegExp(r'\D'), '');
+      final cpf = digits.length == 11
+          ? digits
+          : (digits.length >= 19 ? digits.substring(8, 19) : null);
+      if (cpf != null && RegExp(r'^\d{11}$').hasMatch(cpf)) return cpf;
+    }
+    return RegExp(r':\s*(\d{11})\s*$').firstMatch(commonName)?.group(1);
+  }
+
+  static String? _cpfFromUnstructuredValue(String? value) {
+    if (value == null) return null;
+    final digits = value.replaceAll(RegExp(r'\D'), '');
+    return digits.length == 11 ? digits : null;
+  }
+
+  /// CPF no padrão de privacidade usado pelo Assinador SERPRO:
+  /// `***.456.789-**`.
+  String? get maskedIcpBrasilCpf => maskBrazilianCpf(icpBrasilCpf);
 
   bool isValidAt(DateTime instant) {
     final utc = instant.toUtc();
@@ -138,6 +188,62 @@ final class X509Certificate {
       }
     }
     return components.join(', ');
+  }
+
+  static Map<String, String> _readSubjectAlternativeNames(DerReader reader) {
+    final values = <String, String>{};
+    while (!reader.isAtEnd) {
+      final optional = reader.read();
+      if (optional.tag != 0xa3) continue;
+      try {
+        final extensionsValue = DerReader(optional.value).read();
+        if (extensionsValue.tag != 0x30) continue;
+        final extensions = DerReader(extensionsValue.value);
+        while (!extensions.isAtEnd) {
+          final extension = extensions.read();
+          if (extension.tag != 0x30) continue;
+          final fields = DerReader(extension.value);
+          final oid = fields.read();
+          if (oid.tag != 0x06) continue;
+          var value = fields.read();
+          if (value.tag == 0x01 && !fields.isAtEnd) value = fields.read();
+          if (decodeOid(oid.value) != '2.5.29.17' || value.tag != 0x04) {
+            continue;
+          }
+          final generalNames = DerReader(value.value).read();
+          if (generalNames.tag != 0x30) continue;
+          final names = DerReader(generalNames.value);
+          while (!names.isAtEnd) {
+            final name = names.read();
+            if (name.tag != 0xa0) continue;
+            final parsed = _readOtherName(name.value);
+            if (parsed != null) values[parsed.$1] = parsed.$2;
+          }
+        }
+      } on FormatException {
+        // Uma extensão SAN malformada não invalida os demais metadados X.509.
+      }
+    }
+    return Map<String, String>.unmodifiable(values);
+  }
+
+  static (String, String)? _readOtherName(Uint8List bytes) {
+    try {
+      var payload = DerReader(bytes);
+      final first = payload.read();
+      if (first.tag == 0x30) payload = DerReader(first.value);
+      final oidValue = first.tag == 0x30 ? payload.read() : first;
+      if (oidValue.tag != 0x06) return null;
+      final oid = decodeOid(oidValue.value);
+      var encoded = payload.read();
+      while (encoded.tag >= 0xa0 && encoded.tag <= 0xbf) {
+        encoded = DerReader(encoded.value).read();
+      }
+      final text = _decodeString(encoded).trim();
+      return text.isEmpty ? null : (oid, text);
+    } on FormatException {
+      return null;
+    }
   }
 
   static String _decodeString(DerValue value) {
@@ -205,4 +311,15 @@ final class X509Certificate {
     }
     throw const FormatException('X.509 invalid validity time');
   }
+}
+
+/// Mascara um CPF sem nunca devolver os cinco dígitos das extremidades.
+String? maskBrazilianCpf(String? value) {
+  if (value == null) return null;
+  if (RegExp(r'^\*{3}\.\d{3}\.\d{3}-\*{2}$').hasMatch(value)) {
+    return value;
+  }
+  final digits = value.replaceAll(RegExp(r'\D'), '');
+  if (digits.length != 11) return null;
+  return '***.${digits.substring(3, 6)}.${digits.substring(6, 9)}-**';
 }

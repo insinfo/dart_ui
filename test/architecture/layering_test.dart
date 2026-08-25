@@ -34,8 +34,11 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   'ffi': <String>['foundation'],
   // Portable audio contracts depend only on lifecycle ownership. Native
   // adapters use the OS-neutral ABI helpers; they never reach into a window or
-  // renderer backend.
-  'audio': <String>['ffi', 'foundation'],
+  // renderer backend. It knows `crypto` for the same reason `pdf` does: the MD5
+  // of the decoded PCM is part of the FLAC STREAMINFO, so the codec delegates
+  // the hash instead of carrying a second implementation of it - and `crypto`
+  // reaches only `ffi`, so this closes no cycle.
+  'audio': <String>['crypto', 'ffi', 'foundation'],
   'scheduler': <String>['foundation'],
   // Native image codecs live behind conditional imports in graphics. They
   // may use the OS-neutral ABI helpers, while platform/window types remain

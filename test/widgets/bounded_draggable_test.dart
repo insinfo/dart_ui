@@ -20,4 +20,15 @@ void main() {
       Offset.zero,
     );
   });
+
+  test('posição absoluta preserva o ponto de captura sem acumular deltas', () {
+    expect(
+      BoundedDraggable.positionFromDrag(
+        startPosition: const Offset(100, 80),
+        pointerDown: const Offset(125, 95),
+        currentPointer: const Offset(190, 170),
+      ),
+      const Offset(165, 155),
+    );
+  });
 }

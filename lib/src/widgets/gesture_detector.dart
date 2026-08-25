@@ -95,6 +95,7 @@ final class GestureDetector extends SingleChildRenderObjectWidget {
     this.onPanUpdate,
     this.onPanEnd,
     this.onPanCancel,
+    this.panSlop,
     this.onScaleStart,
     this.onScaleUpdate,
     this.onScaleEnd,
@@ -132,6 +133,10 @@ final class GestureDetector extends SingleChildRenderObjectWidget {
   final void Function(DragEndDetails details)? onPanEnd;
   final void Function()? onPanCancel;
 
+  /// Distância percorrida antes de um pan vencer a arena de gestos.
+  /// Controles diretamente arrastáveis dentro de uma rolagem podem usar zero.
+  final double? panSlop;
+
   final void Function(ScaleStartDetails details)? onScaleStart;
   final void Function(ScaleUpdateDetails details)? onScaleUpdate;
   final void Function(ScaleEndDetails details)? onScaleEnd;
@@ -150,6 +155,7 @@ final class GestureDetector extends SingleChildRenderObjectWidget {
       behavior: behavior,
       dispatcher: dispatcher ?? GestureScope.of(context),
       longPressDuration: longPressDuration,
+      panSlop: panSlop,
     );
     _apply(renderObject);
     return renderObject;
@@ -163,7 +169,8 @@ final class GestureDetector extends SingleChildRenderObjectWidget {
     renderObject
       ..behavior = behavior
       ..dispatcher = dispatcher ?? GestureScope.of(context)
-      ..longPressDuration = longPressDuration;
+      ..longPressDuration = longPressDuration
+      ..panSlop = panSlop;
     _apply(renderObject);
   }
 
@@ -208,10 +215,12 @@ final class RenderGestureDetector extends RenderSingleChildBox
     this.behavior = GestureHitTestBehavior.deferToChild,
     UiDispatcher? dispatcher,
     Duration? longPressDuration,
+    double? panSlop,
     GestureArenaManager? arena,
     super.child,
   })  : _dispatcher = dispatcher,
         _longPressDuration = longPressDuration,
+        _panSlop = panSlop,
         _arena = arena;
 
   /// How this detector takes part in hit testing.
@@ -219,6 +228,7 @@ final class RenderGestureDetector extends RenderSingleChildBox
 
   UiDispatcher? _dispatcher;
   Duration? _longPressDuration;
+  double? _panSlop;
   final GestureArenaManager? _arena;
 
   TapGestureRecognizer? _tap;
@@ -258,6 +268,15 @@ final class RenderGestureDetector extends RenderSingleChildBox
     _longPressDuration = value;
     _longPress?.dispose();
     _longPress = null;
+  }
+
+  double? get panSlop => _panSlop;
+
+  set panSlop(double? value) {
+    if (value == _panSlop) return;
+    _panSlop = value;
+    _pan?.dispose();
+    _pan = null;
   }
 
   /// The recognizers currently installed, for tests and diagnostics.
@@ -374,6 +393,7 @@ final class RenderGestureDetector extends RenderSingleChildBox
       onPanUpdate,
       onPanEnd,
       onPanCancel,
+      slop: _panSlop,
     );
 
     final bool wantsScale =
@@ -399,8 +419,9 @@ final class RenderGestureDetector extends RenderSingleChildBox
     void Function(DragStartDetails details)? onStart,
     void Function(DragUpdateDetails details)? onUpdate,
     void Function(DragEndDetails details)? onEnd,
-    void Function()? onCancel,
-  ) {
+    void Function()? onCancel, {
+    double? slop,
+  }) {
     final bool wanted = onStart != null ||
         onUpdate != null ||
         onEnd != null ||
@@ -410,7 +431,12 @@ final class RenderGestureDetector extends RenderSingleChildBox
       return null;
     }
     final DragGestureRecognizer recognizer = existing ??
-        DragGestureRecognizer(axis: axis, arena: _arena, debugOwner: this);
+        DragGestureRecognizer(
+          axis: axis,
+          arena: _arena,
+          debugOwner: this,
+          slop: slop,
+        );
     return recognizer
       ..onStart = onStart
       ..onUpdate = onUpdate

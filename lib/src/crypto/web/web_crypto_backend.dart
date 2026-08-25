@@ -44,6 +44,10 @@ class WebCryptoBackend implements CryptoBackend {
   @override
   Uint8List md5(Uint8List data) => _fallback.md5(data);
 
+  // A Web Crypto API nao expoe MD5 nem hashing incremental sincrono.
+  @override
+  HashSink md5Sink() => _fallback.md5Sink();
+
   @override
   Uint8List aesEncryptCbc(Uint8List key, Uint8List iv, Uint8List plaintext,
       {bool padding = true}) {

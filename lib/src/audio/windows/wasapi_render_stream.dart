@@ -93,6 +93,17 @@ final class WasapiRenderStream with DisposableMixin implements AudioStream {
       throw const AudioBackendException('ResetEvent', 'native call failed');
     }
 
+    // The engine signals the period event once more on its way down, and that
+    // signal survives Stop/Reset because the event is process state, not client
+    // state. Left standing, it makes the first [waitForPeriod] of the next run
+    // return before the engine has consumed anything - the buffer is still full
+    // of the priming silence below, so the caller sees zero writable frames and
+    // reads it as an underrun. Clearing it here makes a wakeup mean 'a period
+    // elapsed since this start', which is what the pump assumes.
+    if (_api.resetEvent(_audioEvent) == 0) {
+      throw const AudioBackendException('ResetEvent', 'native call failed');
+    }
+
     // Prime the endpoint with silence so the first engine wakeup cannot
     // underrun while the producer is still being scheduled.
     _sampleBuffer.value = nullptr;

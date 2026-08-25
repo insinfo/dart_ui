@@ -20,7 +20,7 @@ void main() {
         strokeWidth: 2.0,
       );
       p1.drawText(
-        'Relatorio de Desempenho 2026',
+        'Relatório de Desempenho - ação 2026',
         const Offset(70, 90),
         fontSize: 18.0,
         color: 0xFF1E293B,
@@ -67,6 +67,10 @@ void main() {
       final page1 = doc.getPage(1);
       expect(page1.width, 612.0);
       expect(page1.height, 792.0);
+      expect(
+        String.fromCharCodes(page1.getContentsBytes()),
+        contains('Relatório de Desempenho - ação 2026'),
+      );
 
       // Renderiza página 1 para memória para garantir que o interpretador consome o PDF gerado
       final memoryDev = page1.renderToMemory();

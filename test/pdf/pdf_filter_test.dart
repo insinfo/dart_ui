@@ -53,5 +53,25 @@ void main() {
       final result = DecodeParms.applyPredictor(raw, parms);
       expect(result, Uint8List.fromList([10, 20, 30, 15, 25, 35]));
     });
+
+    test('Flate inválido falha explicitamente em vez de devolver bytes crus',
+        () {
+      final invalid = Uint8List.fromList(<int>[0x78, 0x9C, 0x00]);
+
+      expect(
+        () => const FlateFilter().decode(invalid),
+        throwsA(isA<PdfFilterException>()),
+      );
+    });
+
+    test('Predictor rejeita dimensões inválidas antes da aritmética', () {
+      expect(
+        () => DecodeParms.applyPredictor(
+          Uint8List.fromList(<int>[0]),
+          const DecodeParms(predictor: 12, columns: 0),
+        ),
+        throwsA(isA<PdfFilterException>()),
+      );
+    });
   });
 }

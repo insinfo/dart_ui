@@ -70,6 +70,7 @@ import '../../../geometry/rect.dart';
 import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
+import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
 import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../renderer.dart';
@@ -88,6 +89,7 @@ import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import '../gpu_vector_command_stream.dart';
 import '../gpu_vector_submission_cursor.dart';
+import '../gpu_video_image.dart';
 import '../vector/cpu_tessellation.dart';
 import '../vector/sparse_strip_draw_plan.dart';
 import '../vector/stencil_cover_draw_plan.dart';
@@ -674,6 +676,20 @@ final class GlRenderDevice
             'the image or scale it down',
       );
     }
+    if (format == GpuTextureFormat.bgra8888Premultiplied &&
+        !_context.isDesktopGl) {
+      // GLES has no core `GL_BGRA` upload format. Refusing is the contract on
+      // [GpuTextureFormat.bgra8888Premultiplied]: the caller converts instead,
+      // which costs time. Creating an RGBA texture and uploading BGRA bytes
+      // into it would cost nothing and swap red with blue.
+      throw UnsupportedCapabilityError(
+        backendName: GlRendererBackend.backendName,
+        capability: Capability.gpuPresentation,
+        detail: 'this is a GLES context (${_context.description}) and GL_BGRA '
+            'is not a core GLES upload format, so a BGRA texture cannot be '
+            'sampled with the right channel order here',
+      );
+    }
     makeCurrentOrLose();
     _gl.genTextures(1, scratchNames);
     final name = scratchNames[0];
@@ -688,7 +704,7 @@ final class GlRenderDevice
       // 4-aligned; the default unpack alignment of 4 would shear them.
       ..pixelStorei(glUnpackAlignment, 1);
     final internal = format == GpuTextureFormat.alpha8 ? glR8 : glRgba8;
-    final external = format == GpuTextureFormat.alpha8 ? glRed : glRgba;
+    final external = _uploadFormat(format);
     _gl.texImage2D(glTexture2D, 0, internal, width, height, 0, external,
         glUnsignedByte, nullptr);
     checkError('glTexImage2D(${width}x$height, ${format.name})');
@@ -724,7 +740,7 @@ final class GlRenderDevice
         row * bytesPerRow,
       );
     }
-    final external = texture.format == GpuTextureFormat.alpha8 ? glRed : glRgba;
+    final external = _uploadFormat(texture.format);
     _gl
       ..bindTexture(glTexture2D, texture.id)
       ..pixelStorei(glUnpackAlignment, 1)
@@ -732,6 +748,23 @@ final class GlRenderDevice
           glUnsignedByte, staging.cast<Void>());
     checkError('glTexSubImage2D');
   }
+
+  /// The `format` argument `glTexImage2D` and `glTexSubImage2D` are given for
+  /// a texture in [format].
+  ///
+  /// One function, because the two calls have to agree: the internal format is
+  /// `GL_RGBA8` for both image formats, and only this argument says which
+  /// order the *source* bytes arrive in. The driver reorders as it copies,
+  /// which is the entire saving - see
+  /// [GpuTextureFormat.bgra8888Premultiplied]. A `switch`, so a format added
+  /// later fails to compile here rather than uploading in the wrong order.
+  static int _uploadFormat(GpuTextureFormat format) => switch (format) {
+        GpuTextureFormat.alpha8 => glRed,
+        GpuTextureFormat.bgra8888Premultiplied => glBgra,
+        GpuTextureFormat.rgba8888Straight ||
+        GpuTextureFormat.rgba8888Premultiplied =>
+          glRgba,
+      };
 
   /// Deletes [texture]'s name, or forgets it when the driver already has.
   ///
@@ -2980,8 +3013,28 @@ final class GlImageCache implements GpuImageResolver {
 
   final List<_GlImageEntry> _entries = <_GlImageEntry>[];
 
+  /// Where a decoded video frame becomes a texture.
+  ///
+  /// A separate cache and not another kind of entry above, because the entries
+  /// above are keyed by image identity and never evict - which is right for a
+  /// still and ruinous for a stream that produces a new object twenty-five
+  /// times a second. See `gpu_video_image.dart` for the whole argument and for
+  /// how one texture per stream is reused instead.
+  ///
+  /// [ImageChannelOrder.rgba] because [_upload] creates every image texture as
+  /// `rgba8888Premultiplied` and [_asRgba] swizzles a BGRA source into it; the
+  /// video conversion writes that order directly instead.
+  late final GpuVideoImageCache _video = GpuVideoImageCache(
+    _device,
+    channelOrder: ImageChannelOrder.rgba,
+  );
+
   /// How many entries are held. For tests and for a memory report.
   int get length => _entries.length;
+
+  /// The video streams this cache holds a texture for. One per stream, never
+  /// one per frame.
+  int get videoStreamCount => _video.streamCount;
 
   /// How many bytes of image source this cache is keeping alive.
   ///
@@ -3001,7 +3054,11 @@ final class GlImageCache implements GpuImageResolver {
 
   @override
   GpuTextureHandle? resolve(Object image) {
-    if (image is! Framebuffer) return null;
+    // A VideoFrame is not a Framebuffer, and returning null for it is what
+    // made every accelerated backend refuse to draw video by name. The video
+    // cache answers null for anything that is not a frame either, so this
+    // stays the single "this device cannot draw it" exit.
+    if (image is! Framebuffer) return _video.resolve(image);
     final _GlImageEntry? cached = _byImage[image];
     if (cached != null) {
       final GlTexture? texture = cached.texture;
@@ -3132,6 +3189,7 @@ final class GlImageCache implements GpuImageResolver {
       if (image != null) _byImage[image] = null;
     }
     _entries.clear();
+    _video.clear();
   }
 
   /// The image's bytes in the RGBA order `glTexImage2D` was told to expect.

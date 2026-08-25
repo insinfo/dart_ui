@@ -26,10 +26,11 @@ Copyright (c) 2013-2022 Brendan Duncan
 Licensed under the MIT License
 ================================================================================
 
-`package:image` is a runtime dependency used as the portable JPEG/WebP decode
-fallback when a native platform codec is unavailable. Its types do not cross
-dart_ui's public image API. The license is included at
-`licenses/image-LICENSE.txt`.
+The JPEG/WebP decode fallback under `lib/src/graphics/image/codecs/` is adapted
+from `package:image` (source files copied from version 4.8.0 and trimmed to the
+decode paths dart_ui uses). Only the subset needed for JPEG and WebP decoding
+was kept, and its types do not cross dart_ui's public image API. The license is
+included at `licenses/image-LICENSE.txt`.
 
 ================================================================================
 xml  (https://github.com/renggli/dart-xml)

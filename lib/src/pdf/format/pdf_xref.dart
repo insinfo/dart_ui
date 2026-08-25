@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import '../io/byte_reader.dart';
 import 'pdf_lexer.dart';
+import 'pdf_limits.dart';
 import 'pdf_object.dart';
 import 'pdf_parser.dart';
 
@@ -39,9 +40,11 @@ class PdfXRefTable implements PdfResolver {
   final ByteReader reader;
   final Map<int, PdfXRefEntry> _entries = {};
   final Map<int, PdfObject> _objectCache = {};
+  final Set<int> _resolvingObjects = <int>{};
   PdfDict? trailer;
+  final PdfLimits limits;
 
-  PdfXRefTable(this.reader);
+  PdfXRefTable(this.reader, {this.limits = const PdfLimits()});
 
   Map<int, PdfXRefEntry> get entries => _entries;
 
@@ -58,10 +61,33 @@ class PdfXRefTable implements PdfResolver {
     final startXRefOffset = _findStartXRef();
     if (startXRefOffset == -1) {
       _reconstructCorruptXRef();
+      _recoverTrailerFromCatalog();
       return;
     }
+    try {
+      _readXRefChain(startXRefOffset);
+      if (trailer == null) {
+        throw PdfFormatException(
+          'xref chain has no usable trailer',
+          offset: startXRefOffset,
+        );
+      }
+    } on PdfFormatException {
+      _repair();
+    } on RangeError {
+      _repair();
+    } on StateError {
+      _repair();
+    }
+  }
 
-    _readXRefChain(startXRefOffset);
+  void _repair() {
+    _entries.clear();
+    _objectCache.clear();
+    _resolvingObjects.clear();
+    trailer = null;
+    _reconstructCorruptXRef();
+    _recoverTrailerFromCatalog();
   }
 
   int _findStartXRef() {
@@ -93,8 +119,21 @@ class PdfXRefTable implements PdfResolver {
 
   void _readXRefChain(int initialOffset) {
     var currentOffset = initialOffset;
+    final visitedOffsets = <int>{};
 
     while (currentOffset > 0 && currentOffset < reader.length) {
+      if (!visitedOffsets.add(currentOffset)) {
+        throw PdfFormatException(
+          'cyclic /Prev chain at xref offset $currentOffset',
+          offset: currentOffset,
+        );
+      }
+      if (visitedOffsets.length > limits.maxXRefSections) {
+        throw PdfFormatException(
+          'xref chain exceeds ${limits.maxXRefSections} sections',
+          offset: currentOffset,
+        );
+      }
       reader.offset = currentOffset;
       final lexer = PdfLexer(reader);
       final token = lexer.nextToken();
@@ -137,7 +176,10 @@ class PdfXRefTable implements PdfResolver {
         }
         break;
       } else {
-        break;
+        throw PdfFormatException(
+          'startxref does not point to an xref table or stream',
+          offset: currentOffset,
+        );
       }
     }
   }
@@ -159,6 +201,18 @@ class PdfXRefTable implements PdfResolver {
 
       final startObjNum = t1.numberValue!.toInt();
       final count = t2.numberValue!.toInt();
+      if (startObjNum < 0 || count < 0 || count > limits.maxXRefEntries) {
+        throw PdfFormatException(
+          'invalid xref subsection $startObjNum $count',
+          offset: lexer.reader.offset,
+        );
+      }
+      if (_entries.length + count > limits.maxXRefEntries) {
+        throw PdfFormatException(
+          'xref exceeds ${limits.maxXRefEntries} entries',
+          offset: lexer.reader.offset,
+        );
+      }
 
       for (var i = 0; i < count; i++) {
         final offsetToken = lexer.nextToken();
@@ -198,6 +252,9 @@ class PdfXRefTable implements PdfResolver {
     final int w2 = wArray.getNumber(1)?.toInt() ?? 2;
     final int w3 = wArray.getNumber(2)?.toInt() ?? 1;
     final int entrySize = w1 + w2 + w3;
+    if (w1 < 0 || w2 < 0 || w3 < 0 || entrySize <= 0 || entrySize > 24) {
+      throw const PdfFormatException('invalid xref stream /W widths');
+    }
 
     final indexArray = dict.getArray('Index');
     final subsections = <(int, int)>[];
@@ -218,6 +275,11 @@ class PdfXRefTable implements PdfResolver {
     for (final sub in subsections) {
       final startObjNum = sub.$1;
       final count = sub.$2;
+      if (startObjNum < 0 || count < 0 || count > limits.maxXRefEntries) {
+        throw const PdfFormatException(
+          'invalid xref stream /Index subsection',
+        );
+      }
 
       for (var i = 0; i < count; i++) {
         if (byteOffset + entrySize > bytes.length) break;
@@ -298,6 +360,12 @@ class PdfXRefTable implements PdfResolver {
         final genNum = int.tryParse(genStr);
 
         if (objNum != null && genNum != null && !_entries.containsKey(objNum)) {
+          if (_entries.length >= limits.maxXRefEntries) {
+            throw PdfFormatException(
+              'repaired xref exceeds ${limits.maxXRefEntries} entries',
+              offset: i,
+            );
+          }
           addEntry(PdfXRefEntry(
             objNum: objNum,
             genNum: genNum,
@@ -305,6 +373,25 @@ class PdfXRefTable implements PdfResolver {
             type: PdfXRefEntryType.uncompressed,
           ));
         }
+      }
+    }
+  }
+
+  void _recoverTrailerFromCatalog() {
+    if (trailer?['Root'] != null) return;
+    for (final entry in _entries.values) {
+      if (entry.type != PdfXRefEntryType.uncompressed) continue;
+      try {
+        final object = resolveRef(PdfRef(entry.objNum, entry.genNum));
+        if (object is PdfDict &&
+            object.getName('Type', this)?.name == 'Catalog') {
+          trailer = PdfDict(<String, PdfObject>{
+            'Root': PdfRef(entry.objNum, entry.genNum),
+          });
+          return;
+        }
+      } on Object {
+        // Repair is best effort; keep scanning later object candidates.
       }
     }
   }
@@ -317,50 +404,67 @@ class PdfXRefTable implements PdfResolver {
 
     final entry = _entries[ref.objNum];
     if (entry == null) return null;
+    if (!_resolvingObjects.add(ref.objNum)) {
+      throw PdfFormatException('cyclic object reference ${ref.objNum}');
+    }
 
-    if (entry.type == PdfXRefEntryType.uncompressed) {
-      reader.offset = entry.offset;
-      final lexer = PdfLexer(reader);
-      final parser = PdfParser(lexer);
-      final obj = parser.parseObject();
-      if (obj != null) {
-        _objectCache[ref.objNum] = obj;
-      }
-      return obj;
-    } else if (entry.type == PdfXRefEntryType.compressed) {
-      final streamObj = resolveRef(PdfRef(entry.streamObjNum, 0));
-      if (streamObj is PdfStream) {
-        final decoded = streamObj.getDecodedBytes(this);
-        final streamReader = ByteReader(decoded);
-        final lexer = PdfLexer(streamReader);
-        final parser = PdfParser(lexer);
+    try {
+      if (entry.type == PdfXRefEntryType.uncompressed) {
+        reader.offset = entry.offset;
+        final lexer = PdfLexer(reader);
+        final parser = PdfParser(lexer, limits: limits);
+        final obj = parser.parseObject();
+        if (obj != null) {
+          _objectCache[ref.objNum] = obj;
+        }
+        return obj;
+      } else if (entry.type == PdfXRefEntryType.compressed) {
+        final streamObj = resolveRef(PdfRef(entry.streamObjNum, 0));
+        if (streamObj is PdfStream) {
+          final decoded = streamObj.getDecodedBytes(this);
+          final streamReader = ByteReader(decoded);
+          final lexer = PdfLexer(streamReader);
+          final parser = PdfParser(lexer, limits: limits);
 
-        final firstOffset = streamObj.dict.getNumber('First')?.toInt() ?? 0;
-        final n = streamObj.dict.getNumber('N')?.toInt() ?? 0;
+          final firstOffset = streamObj.dict.getNumber('First')?.toInt() ?? 0;
+          final n = streamObj.dict.getNumber('N')?.toInt() ?? 0;
+          if (firstOffset < 0 || firstOffset > decoded.length) {
+            throw const PdfFormatException('invalid object stream /First');
+          }
+          if (n < 0 || n > limits.maxObjectStreamEntries) {
+            throw PdfFormatException(
+              'object stream /N exceeds ${limits.maxObjectStreamEntries}',
+            );
+          }
 
-        final objMap = <int, int>{};
-        for (var i = 0; i < n; i++) {
-          final tNum = lexer.nextToken();
-          final tOff = lexer.nextToken();
-          if (tNum.type == PdfTokenType.number &&
-              tOff.type == PdfTokenType.number) {
+          final objMap = <int, int>{};
+          for (var i = 0; i < n; i++) {
+            final tNum = lexer.nextToken();
+            final tOff = lexer.nextToken();
+            if (tNum.type != PdfTokenType.number ||
+                tOff.type != PdfTokenType.number) {
+              break;
+            }
             objMap[tNum.numberValue!.toInt()] =
                 firstOffset + tOff.numberValue!.toInt();
           }
-        }
 
-        final targetOffset = objMap[ref.objNum];
-        if (targetOffset != null) {
-          streamReader.offset = targetOffset;
-          final obj = parser.parseObject();
-          if (obj != null) {
-            _objectCache[ref.objNum] = obj;
+          final targetOffset = objMap[ref.objNum];
+          if (targetOffset != null &&
+              targetOffset >= firstOffset &&
+              targetOffset <= decoded.length) {
+            streamReader.offset = targetOffset;
+            final obj = parser.parseObject();
+            if (obj != null) {
+              _objectCache[ref.objNum] = obj;
+            }
+            return obj;
           }
-          return obj;
         }
       }
+      return null;
+    } finally {
+      _resolvingObjects.remove(ref.objNum);
     }
-
-    return null;
   }
 }

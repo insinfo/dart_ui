@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import '../format/pdf_limits.dart';
 import '../format/pdf_object.dart';
 import '../format/pdf_xref.dart';
 import '../io/byte_reader.dart';
@@ -9,20 +10,24 @@ class PdfDocument {
   final Uint8List rawBytes;
   final ByteReader reader;
   final PdfXRefTable _xref;
+  final PdfLimits limits;
 
   PdfDict? _catalog;
   PdfDict? _info;
   final List<PdfPage> _pages = [];
 
-  PdfDocument._(this.rawBytes, this.reader, this._xref);
+  PdfDocument._(this.rawBytes, this.reader, this._xref, this.limits);
 
   /// Carrega um documento PDF a partir de um buffer de bytes na memória.
-  factory PdfDocument.fromBytes(Uint8List bytes) {
+  factory PdfDocument.fromBytes(
+    Uint8List bytes, {
+    PdfLimits limits = const PdfLimits(),
+  }) {
     final reader = ByteReader(bytes);
-    final xref = PdfXRefTable(reader);
+    final xref = PdfXRefTable(reader, limits: limits);
     xref.load();
 
-    final doc = PdfDocument._(bytes, reader, xref);
+    final doc = PdfDocument._(bytes, reader, xref, limits);
     doc._initialize();
     return doc;
   }
@@ -53,6 +58,8 @@ class PdfDocument {
         pagesRoot,
         <String, PdfObject>{},
         pagesReference is PdfRef ? pagesReference : null,
+        <int>{},
+        0,
       );
     }
   }
@@ -61,7 +68,17 @@ class PdfDocument {
     PdfDict node,
     Map<String, PdfObject> inheritedAttributes,
     PdfRef? nodeReference,
+    Set<int> visitedReferences,
+    int depth,
   ) {
+    if (depth > limits.maxPageTreeDepth) {
+      throw PdfFormatException(
+        'page tree exceeds depth ${limits.maxPageTreeDepth}',
+      );
+    }
+    if (nodeReference != null && !visitedReferences.add(nodeReference.objNum)) {
+      return;
+    }
     final currentInherited = Map<String, PdfObject>.from(inheritedAttributes);
 
     // Herança de atributos de nós pais (/MediaBox, /CropBox, /Rotate, /Resources)
@@ -84,6 +101,8 @@ class PdfDocument {
               kidObj,
               currentInherited,
               kidReference is PdfRef ? kidReference : null,
+              visitedReferences,
+              depth + 1,
             );
           }
         }
@@ -102,6 +121,9 @@ class PdfDocument {
       }
 
       final pageNumber = _pages.length + 1;
+      if (pageNumber > limits.maxPages) {
+        throw PdfFormatException('document exceeds ${limits.maxPages} pages');
+      }
       _pages.add(PdfPage(
         pageNumber: pageNumber,
         dict: pageDict,

@@ -44,8 +44,12 @@ final class TextPainter {
   /// [shaper] replaces the default for **both** levels of the API: the
   /// single-run calls use it directly, and the paragraph calls use it for every
   /// script instead of picking one per run.
-  TextPainter({Shaper? shaper, ParagraphCache? paragraphCache})
-      : _shaper = shaper ?? sharedShaper,
+  TextPainter({
+    Shaper? shaper,
+    ParagraphCache? paragraphCache,
+    GlyphRunCache? runCache,
+  })  : _shaper = shaper ?? sharedShaper,
+        runs = runCache ?? GlyphRunCache(shaper ?? sharedShaper),
         paragraphs = paragraphCache ?? ParagraphCache(shaper: shaper);
 
   /// The shaper the single-run API uses.
@@ -71,6 +75,35 @@ final class TextPainter {
   /// disagree about which shaper they use.
   final ParagraphCache paragraphs;
 
+  /// Shaped runs, keyed as [GlyphRunCache] documents.
+  ///
+  /// Wraps [shaper] rather than replacing it: [shaper] stays the raw pipeline a
+  /// caller handed in or the default [OpenTypeShaper], so code that wants a
+  /// guaranteed-fresh shaping - a benchmark, a test of the pipeline itself -
+  /// still has it. Everything on the drawing path goes through here, because
+  /// the drawing path shapes the same label on every frame.
+  final GlyphRunCache runs;
+
+  /// Shapes [text] with [font] through [runs].
+  ///
+  /// The single-run entry point every widget should use. The result is shared
+  /// and immutable: unlike [Shaper.shape], it stays valid past the next call,
+  /// and it must not be written to.
+  GlyphRun shapeRun(
+    String text,
+    ScaledTypeface font, {
+    Script? script,
+    String? language,
+    TextDirection direction = TextDirection.leftToRight,
+  }) =>
+      runs.shape(
+        text,
+        font,
+        script: script,
+        language: language,
+        direction: direction,
+      );
+
   /// Appends [text] to [list], with the **left end of its baseline** at
   /// [origin].
   ///
@@ -80,8 +113,8 @@ final class TextPainter {
   /// this guess. Callers that think in boxes use [paintInBox].
   ///
   /// Returns the shaped run so a caller can measure what it drew without
-  /// shaping twice. The run borrows the shaper's buffers and is only valid
-  /// until the next call.
+  /// shaping twice. It comes from [runs], so it is shared, immutable, and
+  /// valid past the next call.
   GlyphRun paint(
     DisplayList list,
     String text,
@@ -89,7 +122,7 @@ final class TextPainter {
     Offset baselineOrigin,
     int paintId,
   ) {
-    final GlyphRun run = _shaper.shape(text, font);
+    final GlyphRun run = shapeRun(text, font);
     emitRun(list, run, baselineOrigin, paintId);
     return run;
   }
@@ -122,8 +155,8 @@ final class TextPainter {
       // Offsets are relative to the run origin, and the origin of a
       // continuation run is the first glyph in it - so that glyph's offset is
       // zero and the rest are measured from it.
-      final Int32List ids = Int32List(count);
-      final Float32List offsets = Float32List(count * 2);
+      final Int32List ids = _emitIds;
+      final Float32List offsets = _emitOffsets;
       for (int i = 0; i < count; i++) {
         ids[i] = run.glyphIds[emitted + i];
         offsets[i * 2] = run.xOf(emitted + i) - run.xOf(emitted);
@@ -170,7 +203,7 @@ final class TextPainter {
   /// it.
   Size measure(String text, ScaledTypeface font) {
     if (text.isEmpty) return Size(0, font.lineHeight);
-    final GlyphRun run = _shaper.shape(text, font);
+    final GlyphRun run = shapeRun(text, font);
     return Size(run.width, font.lineHeight);
   }
 
@@ -234,6 +267,16 @@ final class TextPainter {
       }
     }
   }
+
+  /// Scratch for [emitRun], sized once to the largest run an opcode can carry.
+  ///
+  /// [DisplayList.drawGlyphRun] copies both arrays into its arena before it
+  /// returns and keeps no reference, so one buffer can serve every run in
+  /// every frame. Allocating a pair per emitted run instead was, measurably,
+  /// the largest single source of per-frame typed-list garbage in the text
+  /// path - second only to the re-shaping that [runs] now prevents.
+  final Int32List _emitIds = Int32List(kMaxGlyphsPerRun);
+  final Float32List _emitOffsets = Float32List(kMaxGlyphsPerRun * 2);
 
   /// The box [text] occupies once wrapped to [maxWidth].
   ///

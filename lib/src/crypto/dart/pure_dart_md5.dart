@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import '../crypto_backend.dart';
+
 /// Implementação do algoritmo MD5 (RFC 1321) em 100% Puro Dart para compatibilidade legada e PDF security handlers.
 class PureDartMd5 {
   static const List<int> _s = [
@@ -138,73 +140,147 @@ class PureDartMd5 {
 
   /// Calcula o hash MD5 (16 bytes / 128 bits) de [data].
   static Uint8List digest(Uint8List data) {
-    var a0 = 0x67452301;
-    var b0 = 0xefcdab89;
-    var c0 = 0x98badcfe;
-    var d0 = 0x10325476;
-
-    final lengthInBits = data.length * 8;
-    final paddingLength = (data.length % 64 < 56)
-        ? (56 - (data.length % 64))
-        : (120 - (data.length % 64));
-
-    final padded = Uint8List(data.length + paddingLength + 8);
-    padded.setAll(0, data);
-    padded[data.length] = 0x80;
-
-    final bd = ByteData.sublistView(padded);
-    bd.setUint64(padded.length - 8, lengthInBits, Endian.little);
-
-    for (var chunk = 0; chunk < padded.length; chunk += 64) {
-      final m = Uint32List(16);
-      for (var i = 0; i < 16; i++) {
-        m[i] = bd.getUint32(chunk + i * 4, Endian.little);
-      }
-
-      var a = a0;
-      var b = b0;
-      var c = c0;
-      var d = d0;
-
-      for (var i = 0; i < 64; i++) {
-        int f, g;
-        if (i < 16) {
-          f = (b & c) | ((~b) & d);
-          g = i;
-        } else if (i < 32) {
-          f = (d & b) | ((~d) & c);
-          g = (5 * i + 1) % 16;
-        } else if (i < 48) {
-          f = b ^ c ^ d;
-          g = (3 * i + 5) % 16;
-        } else {
-          f = c ^ (b | (~d));
-          g = (7 * i) % 16;
-        }
-
-        final temp = d;
-        d = c;
-        c = b;
-        final sum = (a + f + _k[i] + m[g]) & 0xFFFFFFFF;
-        b = (b + _rotl32(sum, _s[i])) & 0xFFFFFFFF;
-        a = temp;
-      }
-
-      a0 = (a0 + a) & 0xFFFFFFFF;
-      b0 = (b0 + b) & 0xFFFFFFFF;
-      c0 = (c0 + c) & 0xFFFFFFFF;
-      d0 = (d0 + d) & 0xFFFFFFFF;
-    }
-
-    final result = Uint8List(16);
-    final rbd = ByteData.sublistView(result);
-    rbd.setUint32(0, a0, Endian.little);
-    rbd.setUint32(4, b0, Endian.little);
-    rbd.setUint32(8, c0, Endian.little);
-    rbd.setUint32(12, d0, Endian.little);
-
-    return result;
+    return (PureDartMd5Sink()..add(data)).close();
   }
 
   static int _rotl32(int x, int n) => ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF;
+}
+
+/// Estado MD5 incremental.
+///
+/// Consome os dados em blocos de 64 bytes e guarda apenas o resto parcial, para
+/// quem precisa do hash de um stream sem materializar o stream inteiro - o
+/// verificador de assinatura do FLAC alimenta um frame decodificado por vez.
+///
+/// Use [PureDartMd5.digest] quando os bytes ja estiverem todos em memoria.
+class PureDartMd5Sink implements HashSink {
+  int _a0 = 0x67452301;
+  int _b0 = 0xefcdab89;
+  int _c0 = 0x98badcfe;
+  int _d0 = 0x10325476;
+
+  final Uint8List _block = Uint8List(64);
+  late final ByteData _blockView = ByteData.sublistView(_block);
+  final Uint32List _m = Uint32List(16);
+
+  /// Quantos bytes de [_block] ja estao preenchidos (sempre < 64 entre chamadas).
+  int _blockLength = 0;
+
+  /// Total de bytes consumidos, para o campo de comprimento do padding.
+  int _totalLength = 0;
+
+  bool _closed = false;
+
+  /// Acrescenta [data] ao hash. Pode ser chamado quantas vezes for preciso ate
+  /// [close].
+  @override
+  void add(List<int> data) {
+    if (_closed) {
+      throw StateError('PureDartMd5Sink.add() apos close()');
+    }
+
+    _totalLength += data.length;
+    var offset = 0;
+
+    // Completa o bloco parcial que sobrou da chamada anterior.
+    if (_blockLength > 0) {
+      final take = data.length < 64 - _blockLength ? data.length : 64 - _blockLength;
+      _block.setRange(_blockLength, _blockLength + take, data);
+      _blockLength += take;
+      offset = take;
+      if (_blockLength == 64) _processBlock();
+    }
+
+    while (data.length - offset >= 64) {
+      _block.setRange(0, 64, data, offset);
+      _processBlock();
+      offset += 64;
+    }
+
+    final rest = data.length - offset;
+    if (rest > 0) {
+      _block.setRange(0, rest, data, offset);
+      _blockLength = rest;
+    }
+  }
+
+  /// Aplica o padding e devolve o hash de 16 bytes. Chamadas seguintes devolvem
+  /// o mesmo resultado; [add] passa a ser um erro.
+  @override
+  Uint8List close() {
+    if (_closed) return _result();
+    _closed = true;
+
+    final lengthInBits = _totalLength * 8;
+
+    _block[_blockLength++] = 0x80;
+
+    // Sem espaco para o comprimento de 8 bytes: fecha este bloco e usa o proximo.
+    if (_blockLength > 56) {
+      while (_blockLength < 64) {
+        _block[_blockLength++] = 0;
+      }
+      _processBlock();
+    }
+
+    while (_blockLength < 56) {
+      _block[_blockLength++] = 0;
+    }
+    _blockView.setUint64(56, lengthInBits, Endian.little);
+    _processBlock();
+
+    return _result();
+  }
+
+  void _processBlock() {
+    for (var i = 0; i < 16; i++) {
+      _m[i] = _blockView.getUint32(i * 4, Endian.little);
+    }
+
+    var a = _a0;
+    var b = _b0;
+    var c = _c0;
+    var d = _d0;
+
+    for (var i = 0; i < 64; i++) {
+      int f, g;
+      if (i < 16) {
+        f = (b & c) | ((~b) & d);
+        g = i;
+      } else if (i < 32) {
+        f = (d & b) | ((~d) & c);
+        g = (5 * i + 1) % 16;
+      } else if (i < 48) {
+        f = b ^ c ^ d;
+        g = (3 * i + 5) % 16;
+      } else {
+        f = c ^ (b | (~d));
+        g = (7 * i) % 16;
+      }
+
+      final temp = d;
+      d = c;
+      c = b;
+      final sum = (a + f + PureDartMd5._k[i] + _m[g]) & 0xFFFFFFFF;
+      b = (b + PureDartMd5._rotl32(sum, PureDartMd5._s[i])) & 0xFFFFFFFF;
+      a = temp;
+    }
+
+    _a0 = (_a0 + a) & 0xFFFFFFFF;
+    _b0 = (_b0 + b) & 0xFFFFFFFF;
+    _c0 = (_c0 + c) & 0xFFFFFFFF;
+    _d0 = (_d0 + d) & 0xFFFFFFFF;
+
+    _blockLength = 0;
+  }
+
+  Uint8List _result() {
+    final result = Uint8List(16);
+    final view = ByteData.sublistView(result);
+    view.setUint32(0, _a0, Endian.little);
+    view.setUint32(4, _b0, Endian.little);
+    view.setUint32(8, _c0, Endian.little);
+    view.setUint32(12, _d0, Endian.little);
+    return result;
+  }
 }

@@ -244,3 +244,57 @@ final class DevOverlay {
   static String _ms(int microseconds) =>
       (microseconds / 1000).toStringAsFixed(1);
 }
+
+/// A deliberately simple last-resort surface for a contained framework error.
+///
+/// It bypasses build, layout and widgets so it remains drawable when one of
+/// those layers is precisely what failed.
+final class FrameworkErrorBanner {
+  const FrameworkErrorBanner();
+
+  void paint(
+    DisplayList list,
+    Rect bounds, {
+    required String title,
+    required String detail,
+  }) {
+    if (bounds.isEmpty) return;
+    final double height = bounds.height.clamp(0.0, 72.0);
+    final int background =
+        list.addPaint(colorArgb: 0xFFE11D48, antiAlias: false);
+    list.drawRectangle(
+      Rect.fromLTWH(bounds.left, bounds.top, bounds.width, height),
+      background,
+    );
+
+    final ScaledTypeface? titleFace = FontRegistry.instance.uiFont(13);
+    final ScaledTypeface? detailFace = FontRegistry.instance.uiFont(10);
+    if (titleFace == null || detailFace == null) return;
+    final int titlePaint =
+        list.addPaint(colorArgb: 0xFFFFFFFF, antiAlias: true);
+    final int detailPaint =
+        list.addPaint(colorArgb: 0xFFFFE4E6, antiAlias: true);
+    list.save();
+    list.clipRectangle(Rect.fromLTWH(
+      bounds.left + 10,
+      bounds.top,
+      (bounds.width - 20).clamp(0.0, double.infinity),
+      height,
+    ));
+    uiTextPainter.paintInBox(
+      list,
+      title,
+      titleFace,
+      Offset(bounds.left + 10, bounds.top + 10),
+      titlePaint,
+    );
+    uiTextPainter.paintInBox(
+      list,
+      detail.replaceAll('\n', ' '),
+      detailFace,
+      Offset(bounds.left + 10, bounds.top + 36),
+      detailPaint,
+    );
+    list.restore();
+  }
+}

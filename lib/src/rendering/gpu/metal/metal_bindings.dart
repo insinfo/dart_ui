@@ -1178,6 +1178,12 @@ int metalPixelFormat(GpuTextureFormat format) => switch (format) {
       GpuTextureFormat.alpha8 => MtlPixelFormat.r8Unorm,
       GpuTextureFormat.rgba8888Straight => MtlPixelFormat.rgba8Unorm,
       GpuTextureFormat.rgba8888Premultiplied => MtlPixelFormat.rgba8Unorm,
+      // Sampled as RGBA like any other colour format - the channel order is a
+      // property of the memory layout, not of what the shader reads - so this
+      // needs no second pipeline and no second shader. See
+      // [GpuTextureFormat.bgra8888Premultiplied]. `bgra8Unorm` is in every
+      // Metal feature set; it is the format `CAMetalLayer` itself defaults to.
+      GpuTextureFormat.bgra8888Premultiplied => MtlPixelFormat.bgra8Unorm,
     };
 
 /// The `useLinear` uniform value for a [GpuTextureFilter].

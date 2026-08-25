@@ -1,11 +1,10 @@
 /// SVG encoder and decoder for [VectorDocument].
 library;
 
-import 'package:xml/xml.dart';
-
 import '../../../geometry/offset.dart';
 import '../../color.dart';
 import '../../svg/svg_path.dart';
+import '../../xml/xml.dart';
 import '../bezier.dart';
 import '../constants.dart';
 import '../document.dart';
@@ -124,7 +123,8 @@ class VectorSvgCodec {
     final layer = page.children.whereType<VectorLayer>().first;
 
     final document = XmlDocument.parse(svgXml);
-    final svgElem = document.findElements('svg').firstOrNull;
+    final svgRoots = document.findElements('svg');
+    final svgElem = svgRoots.isEmpty ? null : svgRoots.first;
 
     if (svgElem != null) {
       final widthAttr = svgElem.getAttribute('width');

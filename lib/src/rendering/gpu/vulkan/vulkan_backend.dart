@@ -47,6 +47,7 @@ import '../../../geometry/rect.dart';
 import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
+import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
 import '../../framebuffer.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
@@ -56,6 +57,7 @@ import '../gpu_path_planning.dart';
 import '../gpu_path_strategy.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_texture.dart';
+import '../gpu_video_image.dart';
 import '../vector/sparse_strip_draw_plan.dart';
 import 'vulkan_constants.dart';
 import 'vulkan_device.dart';
@@ -204,11 +206,34 @@ final class VulkanImageCache implements GpuImageResolver {
   final Expando<VulkanTexture> _byImage = Expando<VulkanTexture>();
   final List<VulkanTexture> _textures = <VulkanTexture>[];
 
+  /// Where a decoded video frame becomes a texture.
+  ///
+  /// A separate cache and not another entry in the list above, because that
+  /// list is keyed by image identity and never evicts - which is right for a
+  /// still and ruinous for a stream that produces a new object twenty-five
+  /// times a second. See `gpu_video_image.dart` for the whole argument and for
+  /// how one texture per stream is reused instead.
+  ///
+  /// [ImageChannelOrder.rgba] because every image texture here is created as
+  /// `rgba8888Premultiplied`.
+  late final GpuVideoImageCache _video = GpuVideoImageCache(
+    _device,
+    channelOrder: ImageChannelOrder.rgba,
+  );
+
   int get length => _textures.length;
+
+  /// The video streams this cache holds a texture for. One per stream, never
+  /// one per frame.
+  int get videoStreamCount => _video.streamCount;
 
   @override
   GpuTextureHandle? resolve(Object image) {
-    if (image is! Framebuffer) return null;
+    // A VideoFrame is not a Framebuffer, and returning null for it is what
+    // made every accelerated backend refuse to draw video by name. The video
+    // cache answers null for anything that is not a frame either, so this
+    // stays the single "this device cannot draw it" exit.
+    if (image is! Framebuffer) return _video.resolve(image);
     final VulkanTexture? cached = _byImage[image];
     if (cached != null && cached.isValid) return cached;
 
@@ -237,6 +262,7 @@ final class VulkanImageCache implements GpuImageResolver {
       _device.releaseTexture(texture);
     }
     _textures.clear();
+    _video.clear();
   }
 }
 
@@ -584,7 +610,8 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
         throw UnsupportedCapabilityError(
           backendName: backendName,
           capability: Capability.gpuPresentation,
-          detail: 'this Vulkan device was opened without $vkKhrSwapchainExtension; '
+          detail:
+              'this Vulkan device was opened without $vkKhrSwapchainExtension; '
               'open it with enablePresentation: true to present to a window',
         );
       }
@@ -617,9 +644,30 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
             '${gpu.physicalDevice.name}',
       );
     }
-    final int vkFormat = format == GpuTextureFormat.alpha8
-        ? VkFormat.VK_FORMAT_R8_UNORM
-        : VkFormat.VK_FORMAT_R8G8B8A8_UNORM;
+    // A switch and not a ternary, so a format added later is a compile error
+    // here rather than an image quietly created in the wrong layout.
+    final int vkFormat = switch (format) {
+      GpuTextureFormat.alpha8 => VkFormat.VK_FORMAT_R8_UNORM,
+      GpuTextureFormat.bgra8888Premultiplied =>
+        VkFormat.VK_FORMAT_B8G8R8A8_UNORM,
+      GpuTextureFormat.rgba8888Straight ||
+      GpuTextureFormat.rgba8888Premultiplied =>
+        VkFormat.VK_FORMAT_R8G8B8A8_UNORM,
+    };
+    // `VK_FORMAT_R8G8B8A8_UNORM` is guaranteed sampleable by the spec;
+    // `VK_FORMAT_B8G8R8A8_UNORM` is not, so it is asked rather than assumed.
+    // Refusing is the contract on [GpuTextureFormat.bgra8888Premultiplied] -
+    // the caller converts instead. Creating the image anyway would be
+    // undefined behaviour on a driver that does not support it.
+    if (format == GpuTextureFormat.bgra8888Premultiplied &&
+        !gpu.physicalDevice.supportsSampling(vkFormat)) {
+      throw UnsupportedCapabilityError(
+        backendName: backendName,
+        capability: Capability.gpuPresentation,
+        detail: '${gpu.physicalDevice.name} cannot sample '
+            '${vkFormatName(vkFormat)} with optimal tiling',
+      );
+    }
     return _createImageTexture(
       width: width,
       height: height,

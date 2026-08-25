@@ -328,11 +328,18 @@ final class VideoFrameFormat {
 /// almost never to `width * bytesPerSample`. Recomputing the stride at the
 /// call site is how a frame comes out sheared, one row shifting a little
 /// further left than the last.
+/// Lifetime guard for storage that can be recycled independently of Dart GC.
+abstract interface class VideoFrameStorageLifetime {
+  bool get isValid;
+  void validate();
+}
+
 final class VideoPlane {
   VideoPlane({
     required this.bytes,
     required this.bytesPerRow,
     this.offset = 0,
+    this.lifetime,
   }) {
     if (bytesPerRow <= 0) {
       throw ArgumentError.value(bytesPerRow, 'bytesPerRow', 'must be positive');
@@ -340,6 +347,7 @@ final class VideoPlane {
     if (offset < 0 || offset > bytes.length) {
       throw ArgumentError.value(offset, 'offset', 'outside the buffer');
     }
+    lifetime?.validate();
   }
 
   final Uint8List bytes;
@@ -356,8 +364,15 @@ final class VideoPlane {
   /// free, and this path runs once per plane per frame forever.
   final int offset;
 
+  /// Keeps external/native storage ownership with the plane and detects a
+  /// ring slot that has wrapped before the renderer reads it.
+  final VideoFrameStorageLifetime? lifetime;
+
   /// First byte of row [row].
-  int rowOffset(int row) => offset + row * bytesPerRow;
+  int rowOffset(int row) {
+    lifetime?.validate();
+    return offset + row * bytesPerRow;
+  }
 
   @override
   String toString() =>
@@ -455,7 +470,11 @@ final class VideoFrame {
   int get width => format.width;
   int get height => format.height;
 
-  VideoPlane plane(int index) => planes[index];
+  VideoPlane plane(int index) {
+    final VideoPlane result = planes[index];
+    result.lifetime?.validate();
+    return result;
+  }
 
   /// A frame with the same bytes at a new position in the stream.
   ///

@@ -59,14 +59,17 @@
 library;
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/video/video_frame.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/d3d11/d3d11_backend.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_texture.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
 import 'package:test/test.dart';
 
@@ -93,6 +96,22 @@ void main() {
       // the rectangles are deliberately not vertically symmetric.
       // Observed deviation: 0. Anything above 0 here is a real difference.
       await _expectParity(session, _solidRects(), tolerance: 0);
+    });
+
+    test('a BGRA video frame, on the direct-upload path: 0', () async {
+      // The scene that guards the optimisation. A `bgra8888` frame now reaches
+      // this device as a BGRA texture and is never reordered in Dart - which
+      // saves 12.7 ms per 1080p frame and would, if the format mapping were
+      // wrong anywhere between here and `DXGI_FORMAT_B8G8R8A8_UNORM`, swap red
+      // with blue on every video in the framework.
+      //
+      // A unit test can prove the *bytes* handed to the driver are right; only
+      // this can prove the sampler reads them the way the backend claims. The
+      // CPU renderer converts the identical frame through the reference
+      // converter, so the comparison is between two independent routes to the
+      // same picture, which is the rule this file is built on.
+      // Observed deviation: 0.
+      await _expectParity(session, _bgraVideoFrame(), tolerance: 0);
     });
 
     test('rectangles with alpha, overlapping: 0', () async {
@@ -462,6 +481,67 @@ DisplayList _clippedLayer() {
     ..restore()
     ..restore()
     ..restore();
+  return list;
+}
+
+/// A `bgra8888` video frame drawn over the whole surface.
+///
+/// The colours are chosen so that a red/blue exchange is the loudest possible
+/// failure: pure red, pure blue, and a mid grey that is *not* symmetric in its
+/// channels. A swap turns the red block blue, which on a synthetic ramp - or on
+/// a dark film - is exactly the difference nobody notices.
+///
+/// `bgra8888` specifically, because that is what Media Foundation decodes h264
+/// into and it is the layout that now reaches the GPU without being converted:
+/// [GpuTextureFormat.bgra8888Premultiplied] is uploaded as the decoder's own
+/// bytes and reordered by the texture unit. The CPU renderer converts the same
+/// frame through `convertVideoFrameToRgba` instead, so the two agree only if
+/// the sampler really does return what this backend claims it returns.
+DisplayList _bgraVideoFrame() {
+  final frame = VideoFrame.allocate(
+    VideoFrameFormat(
+      pixelFormat: VideoPixelFormat.bgra8888,
+      width: _size,
+      height: _size,
+      range: VideoColorRange.full,
+    ),
+    streamId: 77,
+  );
+  final Uint8List bytes = frame.plane(0).bytes;
+  // Source order is B, G, R, A.
+  const List<List<int>> colors = <List<int>>[
+    <int>[0, 0, 255, 255], // red
+    <int>[255, 0, 0, 255], // blue
+    <int>[0, 255, 0, 255], // green
+    <int>[32, 96, 200, 255], // asymmetric in every channel
+  ];
+  for (var y = 0; y < _size; y++) {
+    for (var x = 0; x < _size; x++) {
+      // Blocks of 6, so a neighbourhood is uniform and the picture stays
+      // readable in the failure report, without any scaling being involved.
+      final List<int> color = colors[(x ~/ 6 + y ~/ 6) % colors.length];
+      bytes.setAll((y * _size + x) * 4, color);
+    }
+  }
+
+  final list = DisplayList();
+  final paint = list.addPaint(colorArgb: 0xFFFFFFFF, antiAlias: false);
+  // One texel per pixel, deliberately. Drawing the frame scaled would compare
+  // the CPU's image resampler against a GPU linear sampler, and those differ
+  // by design on a high-contrast source - a difference far larger than the
+  // channel swap this scene exists to catch, and one that would drown it.
+  list.drawImage(
+    list.addImage(frame),
+    0,
+    0,
+    _size.toDouble(),
+    _size.toDouble(),
+    0,
+    0,
+    _size.toDouble(),
+    _size.toDouble(),
+    paint,
+  );
   return list;
 }
 

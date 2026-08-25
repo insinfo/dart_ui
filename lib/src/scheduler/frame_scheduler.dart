@@ -14,6 +14,15 @@ import 'manual_dispatcher.dart';
 /// above this layer is allowed to read one.
 typedef FrameCallback = void Function(Duration timestamp);
 
+/// The part of a frame that failed before a display list was completed.
+enum FramePipelinePhase { callbacks, layout, paint }
+
+typedef FrameErrorCallback = void Function(
+  FramePipelinePhase phase,
+  Object error,
+  StackTrace stackTrace,
+);
+
 /// Coordinates build, layout and paint without owning a wall clock.
 ///
 /// A mutation requests one frame; multiple mutations before the dispatcher is
@@ -48,6 +57,7 @@ final class FrameScheduler {
     this.frameInterval = const Duration(microseconds: 16667),
     required this.onFrame,
     this.onNextFrameScheduled,
+    this.onError,
   })  : dispatcher = dispatcher ?? ManualDispatcher(),
         pipelineOwner = pipelineOwner ?? PipelineOwner() {
     if (frameInterval <= Duration.zero) {
@@ -67,6 +77,7 @@ final class FrameScheduler {
   final ManualDispatcher dispatcher;
   final PipelineOwner pipelineOwner;
   final void Function(DisplayList displayList) onFrame;
+  final FrameErrorCallback? onError;
 
   /// Wakes an owning platform loop when a timer-driven animation frame is
   /// armed. Tests normally leave this null and advance virtual time directly.
@@ -87,6 +98,7 @@ final class FrameScheduler {
   bool _disposed = false;
   Duration _frameTimestamp = Duration.zero;
   int _frameNumber = 0;
+  FramePipelinePhase? _lastErrorPhase;
 
   bool get hasScheduledFrame => _frameScheduled;
 
@@ -100,6 +112,11 @@ final class FrameScheduler {
   /// How many frames have been produced. The counter a test uses to assert
   /// that an animation advanced once per frame - not zero, not twice.
   int get frameNumber => _frameNumber;
+
+  /// The failed phase of the most recently produced frame, if it was
+  /// recovered through [onError]. Owners use this to stop a settle loop from
+  /// retrying the same broken layout indefinitely.
+  FramePipelinePhase? get lastErrorPhase => _lastErrorPhase;
 
   /// Registers [callback] to run at the top of every frame.
   ///
@@ -190,12 +207,43 @@ final class FrameScheduler {
   void _handleFrame() {
     if (_disposed) return;
     _frameScheduled = false;
+    _lastErrorPhase = null;
     _frameTimestamp = dispatcher.elapsed;
     _frameNumber++;
-    _runFrameCallbacks(_frameTimestamp);
     final list = DisplayList();
-    pipelineOwner.drawFrame(list);
+    try {
+      _runFrameCallbacks(_frameTimestamp);
+    } catch (error, stackTrace) {
+      _handleError(FramePipelinePhase.callbacks, error, stackTrace);
+      onFrame(list);
+      return;
+    }
+    try {
+      pipelineOwner.flushLayout();
+    } catch (error, stackTrace) {
+      _handleError(FramePipelinePhase.layout, error, stackTrace);
+      onFrame(list);
+      return;
+    }
+    try {
+      pipelineOwner.flushPaint(list);
+    } catch (error, stackTrace) {
+      _handleError(FramePipelinePhase.paint, error, stackTrace);
+      onFrame(list);
+      return;
+    }
     onFrame(list);
+  }
+
+  void _handleError(
+    FramePipelinePhase phase,
+    Object error,
+    StackTrace stackTrace,
+  ) {
+    _lastErrorPhase = phase;
+    final callback = onError;
+    if (callback == null) Error.throwWithStackTrace(error, stackTrace);
+    callback(phase, error, stackTrace);
   }
 
   void _runFrameCallbacks(Duration timestamp) {
@@ -203,7 +251,15 @@ final class FrameScheduler {
     _inFrameCallbacks = true;
     try {
       for (int i = 0; i < _frameCallbacks.length; i++) {
-        _frameCallbacks[i](timestamp);
+        try {
+          _frameCallbacks[i](timestamp);
+        } catch (error, stackTrace) {
+          _handleError(
+            FramePipelinePhase.callbacks,
+            error,
+            stackTrace,
+          );
+        }
       }
     } finally {
       _inFrameCallbacks = false;

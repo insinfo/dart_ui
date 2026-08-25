@@ -20,6 +20,13 @@ void main() {
       expect(text, contains('/FT /Sig'));
       expect(text, contains('/AcroForm'));
       expect(text, contains('/AP'));
+      expect(text, contains('/Subtype /Link'));
+      expect(text, contains('/XObject << /Logo'));
+      expect(text, contains('/SMask'));
+      expect(text, contains('CPF: ***.456.789-**'));
+      expect(text, contains('https://validar.iti.gov.br/'));
+      expect(text, isNot(contains('12345678909')));
+      expect(text, contains('/Rect [250 88 450 142]'));
       expect(prepared.documentDigest.length, 32);
       expect(prepared.byteRange[1], prepared.contentsHexOffset - 1);
       expect(
@@ -31,8 +38,10 @@ void main() {
       expect(reopened.pageCount, 1);
       final form = reopened.catalog?.getDict('AcroForm', reopened.xref);
       expect(form?.getArray('Fields', reopened.xref)?.length, 1);
-      expect(reopened.getPage(1).dict.getArray('Annots', reopened.xref)?.length,
-          1);
+      expect(
+        reopened.getPage(1).dict.getArray('Annots', reopened.xref)?.length,
+        2,
+      );
     });
 
     test('assina por callback externo e incorpora CMS sem mudar offsets',
@@ -92,7 +101,7 @@ void main() {
       expect(fields?.length, 2);
       expect(
         reopened.getPage(1).dict.getArray('Annots', reopened.xref)?.length,
-        2,
+        4,
       );
       expect(
         RegExp(r'/SubFilter /ETSI.CAdES.detached')
@@ -123,10 +132,11 @@ PdfSigner _signer(PdfDocument document) {
     signingTime: DateTime.utc(2005, 1, 2, 3, 4, 5),
   );
   signer.setVisualAppearance(
-    PdfSignatureAppearance(
+    PdfSignatureAppearance.icpBrasil(
       pageNumber: 1,
-      rect: const Rect.fromLTWH(300, 650, 240, 72),
+      rect: const Rect.fromLTWH(250, 650, 200, 54),
       signerName: 'Autoridade Certificadora Raiz Brasileira',
+      cpf: '123.456.789-09',
       reason: 'Aprovação',
       signingTime: DateTime.utc(2005, 1, 2, 3, 4, 5),
     ),

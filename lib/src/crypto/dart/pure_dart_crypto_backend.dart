@@ -31,6 +31,9 @@ class PureDartCryptoBackend implements CryptoBackend {
   Uint8List md5(Uint8List data) => PureDartMd5.digest(data);
 
   @override
+  HashSink md5Sink() => PureDartMd5Sink();
+
+  @override
   Uint8List aesEncryptCbc(Uint8List key, Uint8List iv, Uint8List plaintext,
       {bool padding = true}) {
     return PureDartAes.encryptCbc(key, iv, plaintext, padding: padding);

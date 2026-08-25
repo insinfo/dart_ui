@@ -73,6 +73,7 @@ import '../../../geometry/rect.dart';
 import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
+import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
 import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../renderer.dart';
@@ -89,6 +90,7 @@ import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
 import '../gpu_vertex_buffer.dart';
+import '../gpu_video_image.dart';
 import '../vector/sparse_strip_draw_plan.dart';
 import 'webgl_framebuffer_pool.dart';
 import 'webgl_sparse_driver.dart';
@@ -542,6 +544,20 @@ final class WebGlRenderDevice
         detail: 'a ${width}x$height texture exceeds this context\'s '
             'MAX_TEXTURE_SIZE of $_maxTextureSize; the caller must tile the '
             'image or scale it down',
+      );
+    }
+    if (format == GpuTextureFormat.bgra8888Premultiplied) {
+      // WebGL 2 is ES 3.0, which has no `GL_BGRA` upload format at all - not
+      // even the desktop GL path this backend's sibling can take. Refusing is
+      // the contract on [GpuTextureFormat.bgra8888Premultiplied]: the caller
+      // converts instead, which costs time. Creating an RGBA texture and
+      // uploading BGRA bytes into it would cost nothing and swap red with
+      // blue.
+      throw UnsupportedCapabilityError(
+        backendName: WebGlRendererBackend.backendName,
+        capability: Capability.gpuPresentation,
+        detail: 'WebGL2 is ES 3.0 and has no BGRA upload format, so a BGRA '
+            'texture cannot be sampled with the right channel order here',
       );
     }
     final web.WebGLTexture? object = _gl.createTexture();
@@ -2046,7 +2062,27 @@ final class WebGlImageCache implements GpuImageResolver {
   final Expando<_WebGlImageEntry> _byImage = Expando<_WebGlImageEntry>();
   final List<_WebGlImageEntry> _entries = <_WebGlImageEntry>[];
 
+  /// Where a decoded video frame becomes a texture.
+  ///
+  /// A separate cache and not another kind of entry above, because the entries
+  /// above are keyed by image identity and never evict - which is right for a
+  /// still and ruinous for a stream that produces a new object twenty-five
+  /// times a second. See `gpu_video_image.dart` for the whole argument and for
+  /// how one texture per stream is reused instead.
+  ///
+  /// [ImageChannelOrder.rgba] because [_upload] creates every image texture as
+  /// `rgba8888Premultiplied` and [_asRgba] swizzles a BGRA source into it; the
+  /// video conversion writes that order directly instead.
+  late final GpuVideoImageCache _video = GpuVideoImageCache(
+    _device,
+    channelOrder: ImageChannelOrder.rgba,
+  );
+
   int get length => _entries.length;
+
+  /// The video streams this cache holds a texture for. One per stream, never
+  /// one per frame.
+  int get videoStreamCount => _video.streamCount;
 
   /// How many bytes of image source this cache is keeping alive. Zero under
   /// [GpuImageSourceRetention.uploadOnly].
@@ -2064,7 +2100,11 @@ final class WebGlImageCache implements GpuImageResolver {
 
   @override
   GpuTextureHandle? resolve(Object image) {
-    if (image is! Framebuffer) return null;
+    // A VideoFrame is not a Framebuffer, and returning null for it is what
+    // made every accelerated backend refuse to draw video by name. The video
+    // cache answers null for anything that is not a frame either, so this
+    // stays the single "this device cannot draw it" exit.
+    if (image is! Framebuffer) return _video.resolve(image);
     final _WebGlImageEntry? cached = _byImage[image];
     if (cached != null) {
       final WebGlTexture? texture = cached.texture;
@@ -2185,6 +2225,7 @@ final class WebGlImageCache implements GpuImageResolver {
       if (image != null) _byImage[image] = null;
     }
     _entries.clear();
+    _video.clear();
   }
 
   /// The image's bytes in the RGBA order `texImage2D` was told to expect.

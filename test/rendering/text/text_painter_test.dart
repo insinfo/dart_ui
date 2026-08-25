@@ -357,11 +357,217 @@ void main() {
       expect(positioned.xOf(1), greaterThan(0.0));
     });
 
-    test('an explicit shaper is still honoured, for both APIs', () {
+    test('an explicit shaper is still honoured, for all three APIs', () {
       final Shaper latin = LatinShaper();
       final TextPainter painter = TextPainter(shaper: latin);
       expect(identical(painter.shaper, latin), isTrue);
       expect(identical(painter.paragraphs.shaper, latin), isTrue);
+      expect(identical(painter.runs.shaper, latin), isTrue);
+    });
+  });
+
+  group('the single-run cache', () {
+    // A label that does not soft-wrap has no paragraph to hang a layout on, so
+    // every paint used to re-run GSUB and GPOS on it - on every frame. These
+    // tests are about the one way a shaping cache can be worse than no cache:
+    // handing back a run that is not what the shaper would have produced.
+
+    /// Every field of a [GlyphRun], compared exactly rather than approximately.
+    void expectSameRun(GlyphRun actual, GlyphRun expected, String because) {
+      expect(actual.length, expected.length, reason: 'glyph count: $because');
+      expect(actual.width, expected.width, reason: 'width: $because');
+      expect(actual.direction, expected.direction, reason: because);
+      expect(actual.font, expected.font, reason: because);
+      for (int i = 0; i < expected.length; i++) {
+        expect(actual.glyphIds[i], expected.glyphIds[i],
+            reason: 'glyph $i: $because');
+        expect(actual.positions[i * 2], expected.positions[i * 2],
+            reason: 'x of glyph $i: $because');
+        expect(actual.positions[i * 2 + 1], expected.positions[i * 2 + 1],
+            reason: 'y of glyph $i: $because');
+        expect(actual.clusters[i], expected.clusters[i],
+            reason: 'cluster of glyph $i: $because');
+      }
+    }
+
+    test('the fixtures really do exercise GSUB and GPOS', () {
+      // Without this the identity tests below could pass on text that shapes
+      // one glyph per character at its nominal advance, which is exactly the
+      // text a broken cache would also get right.
+      final ScaledTypeface font = roboto.atSize(16);
+      final GlyphRun ligated = OpenTypeShaper().shape('office', font);
+      expect(ligated.length, lessThan('office'.length),
+          reason: 'the "ffi" in "office" must have become one glyph');
+
+      final GlyphRun kerned = OpenTypeShaper().shape('AV', font);
+      final GlyphRun unkerned =
+          OpenTypeShaper(applyKerning: false).shape('AV', font);
+      expect(kerned.width, isNot(unkerned.width),
+          reason: '"AV" must be kerned in Roboto');
+    });
+
+    test('a cached run is glyph for glyph what the shaper produced', () {
+      final TextPainter painter = TextPainter();
+      const List<String> texts = <String>[
+        'office fluffy affiliate difficult',
+        'AVATAR Yo To Wa LT AWAY V.A.T.',
+        'café naïve Ångström',
+        '',
+        'x',
+      ];
+      for (final double size in <double>[11, 16, 24.5]) {
+        for (final String text in texts) {
+          final ScaledTypeface font = roboto.atSize(size);
+          // A pristine shaper, so nothing about the comparison shares state
+          // with the one the cache wraps.
+          final GlyphRun fresh = OpenTypeShaper().shape(text, font);
+          expectSameRun(
+              painter.shapeRun(text, font), fresh, '"$text" at $size');
+          expectSameRun(
+            painter.shapeRun(text, font),
+            fresh,
+            '"$text" at $size, on the hit',
+          );
+        }
+      }
+    });
+
+    test('a hit returns the same object rather than reshaping', () {
+      final TextPainter painter = TextPainter();
+      final ScaledTypeface font = roboto.atSize(16);
+      final GlyphRun first = painter.shapeRun('Properties', font);
+      final int misses = painter.runs.missCount;
+      final GlyphRun second = painter.shapeRun('Properties', font);
+      expect(identical(first, second), isTrue);
+      expect(painter.runs.missCount, misses);
+      expect(painter.runs.hitCount, greaterThan(0));
+    });
+
+    test('an entry survives later shaping of other text', () {
+      // The trap a naive cache falls into: a Shaper hands back a run that
+      // borrows its scratch buffers, so storing that run stores a view of
+      // whatever gets shaped next.
+      final TextPainter painter = TextPainter();
+      final ScaledTypeface font = roboto.atSize(16);
+      final GlyphRun kept = painter.shapeRun('office', font);
+      final Int32List glyphsBefore = Int32List.fromList(kept.glyphIds);
+      final Float32List positionsBefore = Float32List.fromList(kept.positions);
+      final double widthBefore = kept.width;
+
+      painter.shapeRun(
+        'a considerably longer and entirely different string, waffles included',
+        font,
+      );
+      painter.shapeRun('AVATAR', roboto.atSize(32));
+
+      expect(kept.glyphIds, glyphsBefore);
+      expect(kept.positions, positionsBefore);
+      expect(kept.width, widthBefore);
+      expect(identical(painter.shapeRun('office', font), kept), isTrue);
+    });
+
+    test('an entry owns arrays sized to it', () {
+      final GlyphRun run = TextPainter().shapeRun('office', roboto.atSize(16));
+      expect(run.glyphIds.length, run.length);
+      expect(run.positions.length, run.length * 2);
+      expect(run.clusters.length, run.length);
+    });
+
+    test('the face and its size are part of the key', () {
+      final TextPainter painter = TextPainter();
+      final GlyphRun small =
+          painter.shapeRun('Hamburgefons', roboto.atSize(12));
+      final GlyphRun large =
+          painter.shapeRun('Hamburgefons', roboto.atSize(24));
+      expect(small.width, lessThan(large.width));
+
+      final GlyphRun other =
+          painter.shapeRun('Hamburgefons', dejaVu.atSize(12));
+      expect(identical(other, small), isFalse);
+      expectSameRun(
+        other,
+        OpenTypeShaper().shape('Hamburgefons', dejaVu.atSize(12)),
+        'a second face is a second entry',
+      );
+    });
+
+    test('evicts the least recently used entry, not the oldest', () {
+      final GlyphRunCache cache =
+          GlyphRunCache(OpenTypeShaper(), maximumEntries: 3);
+      final ScaledTypeface font = roboto.atSize(16);
+      cache.shape('one', font);
+      cache.shape('two', font);
+      cache.shape('three', font);
+      expect(cache.entryCount, 3);
+
+      // Touch the oldest so it is now the most recent.
+      cache.shape('one', font);
+      cache.shape('four', font);
+      expect(cache.entryCount, 3);
+
+      final int hits = cache.hitCount;
+      cache.shape('one', font);
+      expect(cache.hitCount, hits + 1,
+          reason: '"one" was touched, so it stays');
+      cache.shape('two', font);
+      expect(cache.hitCount, hits + 1,
+          reason: '"two" was the oldest untouched');
+    });
+
+    test('repainting a label emits byte-identical opcodes', () {
+      final TextPainter painter = TextPainter();
+      final ScaledTypeface font = roboto.atSize(17.5);
+      const String text = 'office fluffy AVATAR Yo';
+
+      DisplayList draw() {
+        final DisplayList list = DisplayList();
+        final int paint = list.addPaint(colorArgb: 0xFF101010, antiAlias: true);
+        painter.paint(list, text, font, const Offset(3.25, 21.75), paint);
+        return list;
+      }
+
+      final DisplayList cold = draw();
+      final DisplayList warm = draw();
+      expect(warm.opLength, cold.opLength);
+      expect(warm.floatLength, cold.floatLength);
+      for (int i = 0; i < cold.opLength; i++) {
+        expect(warm.opBuffer[i], cold.opBuffer[i], reason: 'opcode slot $i');
+      }
+      for (int i = 0; i < cold.floatLength; i++) {
+        expect(warm.floatBuffer[i], cold.floatBuffer[i],
+            reason: 'float slot $i');
+      }
+    });
+
+    test('emitRun reuses its scratch across a split run', () {
+      // Longer than kMaxGlyphsPerRun, so emitRun writes its scratch buffers
+      // more than once for a single run. Every chunk must carry its own
+      // glyphs, not the previous chunk's.
+      final TextPainter painter = TextPainter();
+      final ScaledTypeface font = ahem.atSize(8);
+      final String text = 'ab' * (kMaxGlyphsPerRun ~/ 2 + 40);
+      final GlyphRun run = painter.shapeRun(text, font);
+      expect(run.length, greaterThan(kMaxGlyphsPerRun));
+
+      final DisplayList list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF000000, antiAlias: false);
+      painter.emitRun(list, run, Offset.zero, paint);
+
+      final DisplayListReader reader = DisplayListReader(list);
+      int seen = 0;
+      int emitted = 0;
+      while (reader.moveNext()) {
+        if (reader.opcode != opDrawGlyphRun) continue;
+        final int count = reader.glyphCount;
+        for (int i = 0; i < count; i++) {
+          expect(reader.glyphIdAt(i), run.glyphIds[emitted + i],
+              reason: 'glyph ${emitted + i} of a split run');
+        }
+        emitted += count;
+        seen++;
+      }
+      expect(seen, greaterThan(1), reason: 'the run must have been split');
+      expect(emitted, run.length);
     });
   });
 

@@ -7,6 +7,7 @@ import 'dart:io';
 import '../../ffi/com.dart';
 import '../../ffi/native_memory.dart';
 import '../audio_device.dart';
+import '../audio_format.dart';
 import 'wasapi_bindings.dart';
 import 'wasapi_render_stream.dart';
 
@@ -124,6 +125,81 @@ final class WasapiAudioBackend implements AudioBackend {
       for (int index = objects.length - 1; index >= 0; index--) {
         objects[index].dispose();
       }
+      arena.dispose();
+      if (uninitialize) api.coUninitialize();
+    }
+  }
+
+  /// The format the shared engine mixes at, without opening a stream.
+  ///
+  /// ## Why this exists next to [openStream]
+  ///
+  /// A caller that only needs to *know* the format - to size a buffer, to
+  /// report a duration in output frames, to decide whether resampling is
+  /// needed - can get it from `IAudioClient::GetMixFormat`, which is a
+  /// property read. [openStream] answers the same question as a side effect of
+  /// `InitializeSharedAudioStream`, and that call spins the Windows audio
+  /// engine up for the process: measured at around half a second the first
+  /// time it happens and a few tens of milliseconds afterwards.
+  ///
+  /// Paying that in the isolate that is *about* to render is unavoidable.
+  /// Paying it twice - once to probe and once to render - is not, and the
+  /// difference is the half second between asking for a file and hearing it.
+  ///
+  /// Returns null when there is no endpoint to ask, which is the same "no
+  /// audio output is a state, not an error" rule the rest of this path
+  /// follows.
+  AudioFormat? defaultRenderMixFormat({
+    AudioDeviceRole role = AudioDeviceRole.multimedia,
+  }) {
+    final WasapiNativeApi? api = _tryApi;
+    if (api == null) return null;
+    final NativeArena arena = NativeArena();
+    final bool uninitialize = api.initializeApartment();
+    MmDeviceEnumerator? enumerator;
+    MmDevice? device;
+    AudioClient3? audioClient;
+    Pointer<Uint8> allocatedFormat = nullptr;
+    try {
+      enumerator = MmDeviceEnumerator(api.createDeviceEnumerator(arena));
+      final Pointer<Pointer<Void>> out = arena.allocateOutPointer();
+      out.value = nullptr;
+      if (failed(enumerator.getDefaultEndpoint(
+        wasapiDataFlowRender,
+        _role(role),
+        out,
+      ))) {
+        return null;
+      }
+      device = MmDevice(out.value);
+
+      out.value = nullptr;
+      if (failed(device.activateAudioClient3(
+        iidAudioClient3.allocateIn(arena),
+        out,
+      ))) {
+        return null;
+      }
+      audioClient = AudioClient3(out.value);
+
+      final Pointer<Pointer<Uint8>> formatOut =
+          arena.allocate<Pointer<Uint8>>(sizeOf<Pointer<Uint8>>());
+      formatOut.value = nullptr;
+      if (failed(audioClient.getMixFormat(formatOut)) ||
+          formatOut.value == nullptr) {
+        return null;
+      }
+      allocatedFormat = formatOut.value;
+      return WasapiWaveFormat.read(allocatedFormat).format;
+    } on Object {
+      return null;
+    } finally {
+      if (allocatedFormat != nullptr) {
+        api.coTaskMemFree(allocatedFormat.cast<Void>());
+      }
+      audioClient?.dispose();
+      device?.dispose();
+      enumerator?.dispose();
       arena.dispose();
       if (uninitialize) api.coUninitialize();
     }

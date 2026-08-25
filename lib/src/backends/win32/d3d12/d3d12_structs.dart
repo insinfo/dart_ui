@@ -271,6 +271,11 @@ const int dxgiFormatR32G32B32A32Float = 2;
 const int dxgiFormatR32G32Float = 16;
 const int dxgiFormatR8G8B8A8Unorm = 28;
 const int dxgiFormatR8Unorm = 61;
+
+/// `DXGI_FORMAT_B8G8R8A8_UNORM`, the layout Media Foundation already decodes
+/// h264 into. Sampling it returns RGBA like every other image texture - see
+/// `GpuTextureFormat.bgra8888Premultiplied` - so it costs no second shader.
+const int dxgiFormatB8G8R8A8Unorm = 87;
 const int dxgiFormatR32Uint = 42;
 
 /// `DXGI_FORMAT_R32_FLOAT`, the format the compute coverage texture uses.

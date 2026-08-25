@@ -16,6 +16,7 @@
 ///     widget an event reached, and on the words in a failure message.
 library;
 
+import 'dart:async' show Timer;
 import 'dart:io' show sleep;
 
 import 'package:dart_ui/dart_ui.dart';
@@ -51,6 +52,48 @@ void main() {
 
       application.dispose();
       await application.closed;
+    });
+
+    test('a paint failure is reported and becomes a red recovery surface',
+        () async {
+      final errors = <FrameworkError>[];
+      final application = await _start(
+        size: const Size(120, 80),
+        root: const _ThrowingPaintWidget(),
+        onError: errors.add,
+      );
+      try {
+        final result = await application.drawFrame();
+
+        expect(result.isSuccess, isTrue);
+        expect(errors, hasLength(1));
+        expect(errors.single.phase, FrameworkPhase.paint);
+        expect(errors.single.cause, isA<StateError>());
+        expect(_pixelAt(_framebufferOf(application), 0, 0), 0xFFE11D48);
+      } finally {
+        application.dispose();
+        await application.closed;
+      }
+    });
+
+    test('a layout failure aborts settling and presents recovery UI', () async {
+      final errors = <FrameworkError>[];
+      final application = await _start(
+        size: const Size(120, 80),
+        root: const _ThrowingLayoutWidget(),
+        onError: errors.add,
+      );
+      try {
+        final result = await application.drawFrame();
+
+        expect(result.isSuccess, isTrue);
+        expect(errors, hasLength(1));
+        expect(errors.single.phase, FrameworkPhase.layout);
+        expect(_pixelAt(_framebufferOf(application), 0, 0), 0xFFE11D48);
+      } finally {
+        application.dispose();
+        await application.closed;
+      }
     });
 
     test('the same tree presents byte-identical frames twice', () async {
@@ -146,6 +189,104 @@ void main() {
         backend.positiveTimeouts,
         everyElement(lessThanOrEqualTo(const Duration(microseconds: 16667))),
       );
+      application.dispose();
+      await application.closed;
+    });
+  });
+
+  /// The platform wait is synchronous: while `Application.run` sits inside
+  /// `pumpEvents`, no Dart timer fires and no `Future` resumes. Its length is
+  /// therefore the latency of *all* pending Dart work, not only of the frame
+  /// loop, and these three tests pin the three shapes that has to take.
+  ///
+  /// `_WaitingHeadlessBackend` is what makes them meaningful: it actually
+  /// sleeps for the timeout it is handed, the way a real backend blocks, so a
+  /// loop that hands it 250 ms really does starve the widget's timer for
+  /// 250 ms - which is the bug in one sentence.
+  group('the adaptive idle wait', () {
+    test('an ordinary application Timer is not starved by the idle timeout',
+        () async {
+      final _WaitingHeadlessBackend backend = _WaitingHeadlessBackend();
+      final Application application = await Application.start(
+        rootWidget: const _TickingBox(period: Duration(milliseconds: 8)),
+        backends: <WindowingBackendEntry>[
+          WindowingBackendEntry(name: 'headless', create: () => backend),
+        ],
+        options: const ApplicationOptions(
+          size: Size(16, 16),
+          idleTimeout: Duration(milliseconds: 250),
+        ),
+      );
+      Future<void>.delayed(
+        const Duration(milliseconds: 250),
+        application.requestClose,
+      );
+
+      await application.run();
+
+      // Nothing here arms an animation frame: `_TickingBox` is a plain
+      // `Timer.periodic` calling `setState`, exactly what an application
+      // writes. Against the flat 250 ms wait it advanced once per run; six is
+      // far below the ~30 the 8 ms period allows and far above that one.
+      expect(application.framesPresented, greaterThanOrEqualTo(6));
+      expect(
+        backend.positiveTimeouts,
+        everyElement(lessThanOrEqualTo(const Duration(microseconds: 16667))),
+      );
+      application.dispose();
+      await application.closed;
+    });
+
+    test('a genuinely idle application backs off to the idle timeout',
+        () async {
+      final _WaitingHeadlessBackend backend = _WaitingHeadlessBackend();
+      final Application application = await Application.start(
+        rootWidget: const ColoredBox(color: _background),
+        backends: <WindowingBackendEntry>[
+          WindowingBackendEntry(name: 'headless', create: () => backend),
+        ],
+        options: const ApplicationOptions(
+          size: Size(16, 16),
+          // Short enough to keep the test quick; the ramp is a ratio, not a
+          // constant, so 40 ms exercises exactly what 250 ms does.
+          idleTimeout: Duration(milliseconds: 40),
+        ),
+      );
+      Future<void>.delayed(
+        const Duration(milliseconds: 400),
+        application.requestClose,
+      );
+
+      await application.run();
+
+      final List<Duration> waits = backend.positiveTimeouts;
+      expect(waits, isNotEmpty);
+      // The ramp: one frame interval, then doubling, then the ceiling - which
+      // is what keeps an idle window at four wake-ups a second rather than 60.
+      expect(
+          waits.first, lessThanOrEqualTo(const Duration(microseconds: 16667)));
+      expect(waits.last, greaterThan(const Duration(milliseconds: 30)));
+      // A loop that had simply been made faster would have spent the 400 ms
+      // taking ~24 waits of one frame each.
+      expect(waits.length, lessThan(20));
+      application.dispose();
+      await application.closed;
+    });
+
+    test('a budgeted run never blocks in the platform wait at all', () async {
+      final _WaitingHeadlessBackend backend = _WaitingHeadlessBackend();
+      final Application application = await Application.start(
+        rootWidget: const ColoredBox(color: _background),
+        backends: <WindowingBackendEntry>[
+          WindowingBackendEntry(name: 'headless', create: () => backend),
+        ],
+        options: const ApplicationOptions(size: Size(16, 16)),
+      );
+
+      await application.run(frameBudget: 5);
+
+      expect(application.framesPresented, 5);
+      expect(backend.positiveTimeouts, isEmpty);
       application.dispose();
       await application.closed;
     });
@@ -643,6 +784,7 @@ Future<Application> _start({
   required Size size,
   Widget root = _twoColourTree,
   double renderScale = 1,
+  void Function(FrameworkError error)? onError,
 }) =>
     Application.start(
       rootWidget: root,
@@ -656,8 +798,79 @@ Future<Application> _start({
         title: 'test',
         size: size,
         clearColor: _background,
+        onError: onError,
       ),
     );
+
+/// A tree whose only source of change is an ordinary `Timer.periodic`.
+///
+/// Deliberately not an animation: nothing here arms
+/// `FrameScheduler.scheduleNextFrame`, so the loop cannot see the pending work
+/// through `hasPendingAnimationFrame`. It is the case the shortened wait used
+/// to miss entirely.
+final class _TickingBox extends StatefulWidget {
+  const _TickingBox({required this.period});
+
+  final Duration period;
+
+  @override
+  State<_TickingBox> createState() => _TickingBoxState();
+}
+
+final class _TickingBoxState extends State<_TickingBox> {
+  Timer? _timer;
+  int _ticks = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(widget.period, (_) => setState(() => _ticks++));
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+        color: Color(_ticks.isEven ? 0xFF102030 : 0xFF302010),
+      );
+}
+
+final class _ThrowingPaintWidget extends SingleChildRenderObjectWidget {
+  const _ThrowingPaintWidget() : super(child: null);
+
+  @override
+  RenderBox createRenderObject(BuildContext context) => _ThrowingPaintBox();
+}
+
+final class _ThrowingPaintBox extends RenderBox {
+  @override
+  void performLayout() {
+    size = constraints.constrain(const Size(40, 30));
+  }
+
+  @override
+  void paint(DisplayList list, Offset offset) {
+    throw StateError('paint failed intentionally');
+  }
+}
+
+final class _ThrowingLayoutWidget extends SingleChildRenderObjectWidget {
+  const _ThrowingLayoutWidget() : super(child: null);
+
+  @override
+  RenderBox createRenderObject(BuildContext context) => _ThrowingLayoutBox();
+}
+
+final class _ThrowingLayoutBox extends RenderBox {
+  @override
+  void performLayout() {
+    throw StateError('layout failed intentionally');
+  }
+}
 
 HeadlessWindow _window(Application application) =>
     application.window as HeadlessWindow;

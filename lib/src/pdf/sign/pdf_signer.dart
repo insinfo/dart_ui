@@ -3,9 +3,12 @@ import 'dart:typed_data';
 
 import '../../crypto/x509/x509_certificate.dart';
 import '../../geometry/rect.dart';
+import '../../graphics/image/decoded_image.dart';
+import '../../graphics/image/png.dart';
 import '../document/pdf_document.dart';
 import '../document/pdf_page.dart';
 import '../format/pdf_object.dart';
+import 'icp_brasil_logo.dart';
 import 'pdf_byte_range_signer.dart';
 import 'pdf_cms.dart';
 import 'pdf_external_signer.dart';
@@ -32,19 +35,72 @@ final class PdfSignatureAppearance {
     required this.signerName,
     this.reason = 'Concordo com os termos deste documento',
     this.location,
+    String? cpf,
+    this.validatorUrl = 'https://validar.iti.gov.br/',
+    this.headline = 'DOCUMENTO ASSINADO DIGITALMENTE',
+    this.logoPngBytes,
     DateTime? signingTime,
     this.borderColor = 0xFF2563EB,
     this.backgroundColor = 0xFFF8FAFC,
-  }) : signingTime = signingTime ?? DateTime.now();
+  })  : maskedCpf = maskBrazilianCpf(cpf),
+        signingTime = signingTime ?? DateTime.now();
+
+  /// Aparência oficial brasileira, com logo ICP-Brasil congelado localmente.
+  factory PdfSignatureAppearance.icpBrasil({
+    required int pageNumber,
+    required Rect rect,
+    required String signerName,
+    String? cpf,
+    String? reason = 'Assinatura Digital de Documento',
+    String? location,
+    DateTime? signingTime,
+    String validatorUrl = 'https://validar.iti.gov.br/',
+  }) =>
+      PdfSignatureAppearance(
+        pageNumber: pageNumber,
+        rect: rect,
+        signerName: signerName,
+        cpf: cpf,
+        reason: reason,
+        location: location,
+        signingTime: signingTime,
+        validatorUrl: validatorUrl,
+        logoPngBytes: icpBrasilLogoPngBytes(),
+        borderColor: 0xFF079447,
+        backgroundColor: 0xFFFFFFFF,
+      );
 
   final int pageNumber;
   final Rect rect;
   final String signerName;
   final String? reason;
   final String? location;
+  final String? maskedCpf;
+  final String validatorUrl;
+  final String headline;
+  final Uint8List? logoPngBytes;
   final DateTime signingTime;
   final int borderColor;
   final int backgroundColor;
+
+  PdfSignatureAppearance copyWith({
+    String? signerName,
+    DateTime? signingTime,
+  }) =>
+      PdfSignatureAppearance(
+        pageNumber: pageNumber,
+        rect: rect,
+        signerName: signerName ?? this.signerName,
+        cpf: maskedCpf,
+        reason: reason,
+        location: location,
+        signingTime: signingTime ?? this.signingTime,
+        validatorUrl: validatorUrl,
+        headline: headline,
+        logoPngBytes: logoPngBytes,
+        borderColor: borderColor,
+        backgroundColor: backgroundColor,
+      );
 }
 
 final class PdfSignatureException implements Exception {
@@ -76,7 +132,10 @@ final class PdfSigner {
   PdfSignatureAppearance? appearance;
 
   void setVisualAppearance(PdfSignatureAppearance value) {
-    appearance = value;
+    appearance = value.copyWith(
+      signerName: signerName,
+      signingTime: signingTime,
+    );
   }
 
   /// Prepara AcroForm, widget, dicionário `/Sig`, aparência e `/ByteRange`.
@@ -220,11 +279,23 @@ final class _PdfIncrementalSignatureWriter {
     final acroFormReference = PdfRef(nextObject++, 0);
     final appearanceReference =
         appearance == null ? null : PdfRef(nextObject++, 0);
+    final linkReference = appearance == null || appearance!.validatorUrl.isEmpty
+        ? null
+        : PdfRef(nextObject++, 0);
+    final logo = appearance?.logoPngBytes == null
+        ? null
+        : _decodeAppearanceLogo(appearance!.logoPngBytes!);
+    final logoReference = logo == null ? null : PdfRef(nextObject++, 0);
+    final logoMaskReference =
+        logo?.hasAlpha == true ? PdfRef(nextObject++, 0) : null;
 
     final acroForm = _updatedAcroForm(catalog, widgetReference);
     final updatedCatalog = PdfDict(Map<String, PdfObject>.from(catalog.entries))
       ..['AcroForm'] = acroFormReference;
-    final updatedPage = _updatedPage(originalPage, widgetReference);
+    final updatedPage = _updatedPage(originalPage, <PdfRef>[
+      widgetReference,
+      if (linkReference != null) linkReference,
+    ]);
     final widget = _signatureWidget(
       page,
       pageReference,
@@ -267,9 +338,31 @@ final class _PdfIncrementalSignatureWriter {
 
     addObject(signatureReference, ascii.encode(signatureDictionary.toString()));
     addObject(widgetReference, ascii.encode(_serialize(widget)));
+    if (linkReference != null) {
+      addObject(
+        linkReference,
+        ascii.encode(_serialize(_validatorLink(
+          page,
+          pageReference,
+          appearance!,
+        ))),
+      );
+    }
     addObject(acroFormReference, ascii.encode(_serialize(acroForm)));
+    if (logoReference != null) {
+      addObject(
+        logoReference,
+        _logoImageStream(logo!, logoMaskReference),
+      );
+    }
+    if (logoMaskReference != null) {
+      addObject(logoMaskReference, _logoMaskStream(logo!));
+    }
     if (appearanceReference != null) {
-      addObject(appearanceReference, _appearanceStream(appearance!));
+      addObject(
+        appearanceReference,
+        _appearanceStream(appearance!, logoReference),
+      );
     }
     addObject(rootReference, ascii.encode(_serialize(updatedCatalog)));
     if (pageReference != rootReference) {
@@ -361,7 +454,7 @@ final class _PdfIncrementalSignatureWriter {
     return result;
   }
 
-  PdfDict _updatedPage(PdfDict page, PdfRef widgetReference) {
+  PdfDict _updatedPage(PdfDict page, List<PdfRef> newAnnotations) {
     final result = PdfDict(Map<String, PdfObject>.from(page.entries));
     final rawAnnots = result['Annots'];
     final resolvedAnnots =
@@ -369,7 +462,7 @@ final class _PdfIncrementalSignatureWriter {
     final annotations = resolvedAnnots is PdfArray
         ? List<PdfObject>.from(resolvedAnnots.elements)
         : <PdfObject>[];
-    annotations.add(widgetReference);
+    annotations.addAll(newAnnotations);
     result['Annots'] = PdfArray(annotations);
     return result;
   }
@@ -406,42 +499,133 @@ final class _PdfIncrementalSignatureWriter {
 
   Rect _toPdfRect(PdfPage page, Rect displayed) {
     final box = page.cropBox;
-    if (page.rotation != 0) {
-      throw const PdfSignatureException(
-        'visual signatures on rotated pages are not implemented; '
-        'use an invisible signature or a non-rotated page',
+    if (displayed.isEmpty ||
+        displayed.left < 0 ||
+        displayed.top < 0 ||
+        displayed.right > page.width ||
+        displayed.bottom > page.height) {
+      throw PdfSignatureException(
+        'visual signature rectangle $displayed is outside page '
+        '${page.pageNumber} (${page.width} x ${page.height})',
       );
     }
-    final left = box.left + displayed.left;
-    final right = box.left + displayed.right;
-    final bottom = box.bottom - displayed.bottom;
-    final top = box.bottom - displayed.top;
-    return Rect.fromLTRB(left, bottom, right, top);
+    return switch ((page.rotation % 360 + 360) % 360) {
+      0 => Rect.fromLTRB(
+          box.left + displayed.left,
+          box.bottom - displayed.bottom,
+          box.left + displayed.right,
+          box.bottom - displayed.top,
+        ),
+      90 => Rect.fromLTRB(
+          box.left + displayed.top,
+          box.top + displayed.left,
+          box.left + displayed.bottom,
+          box.top + displayed.right,
+        ),
+      180 => Rect.fromLTRB(
+          box.right - displayed.right,
+          box.top + displayed.top,
+          box.right - displayed.left,
+          box.top + displayed.bottom,
+        ),
+      270 => Rect.fromLTRB(
+          box.right - displayed.bottom,
+          box.bottom - displayed.right,
+          box.right - displayed.top,
+          box.bottom - displayed.left,
+        ),
+      _ => throw PdfSignatureException(
+          'unsupported PDF page rotation ${page.rotation}',
+        ),
+    };
   }
 
-  Uint8List _appearanceStream(PdfSignatureAppearance appearance) {
+  PdfDict _validatorLink(
+    PdfPage page,
+    PdfRef pageReference,
+    PdfSignatureAppearance appearance,
+  ) {
+    final local = Rect.fromLTWH(
+      appearance.logoPngBytes == null ? 8 : appearance.rect.height * 0.82,
+      appearance.rect.height - 17,
+      appearance.rect.width -
+          (appearance.logoPngBytes == null ? 16 : appearance.rect.height * 0.9),
+      13,
+    );
+    final displayed = Rect.fromLTWH(
+      appearance.rect.left + local.left,
+      appearance.rect.top + local.top,
+      local.width,
+      local.height,
+    );
+    final rect = _toPdfRect(page, displayed);
+    return PdfDict(<String, PdfObject>{
+      'Type': const PdfName('Annot'),
+      'Subtype': const PdfName('Link'),
+      'P': pageReference,
+      'Rect': PdfArray(<PdfObject>[
+        PdfNumber(rect.left),
+        PdfNumber(rect.top),
+        PdfNumber(rect.right),
+        PdfNumber(rect.bottom),
+      ]),
+      'Border': const PdfArray(<PdfObject>[
+        PdfNumber(0),
+        PdfNumber(0),
+        PdfNumber(0),
+      ]),
+      'A': PdfDict(<String, PdfObject>{
+        'S': const PdfName('URI'),
+        'URI': PdfString.fromString(appearance.validatorUrl),
+      }),
+    });
+  }
+
+  Uint8List _appearanceStream(
+    PdfSignatureAppearance appearance,
+    PdfRef? logoReference,
+  ) {
     final width = appearance.rect.width;
     final height = appearance.rect.height;
     final background = _rgb(appearance.backgroundColor);
     final border = _rgb(appearance.borderColor);
+    final textX = logoReference == null ? 10.0 : height * 0.82;
+    final availableTextWidth = width - textX - 8;
+    final compact = height < 70;
+    final headlineSize = compact ? 6.2 : 7.5;
+    final nameSize = compact ? 8.0 : 10.0;
+    final detailSize = compact ? 5.9 : 7.2;
     final lines = <String>[
       'q',
       '${background.$1} ${background.$2} ${background.$3} rg',
       '0 0 ${_number(width)} ${_number(height)} re f',
-      '${border.$1} ${border.$2} ${border.$3} RG',
-      '1 w 0.5 0.5 ${_number(width - 1)} ${_number(height - 1)} re S',
-      'BT /Helv 8 Tf 8 ${_number(height - 15)} Td (${_literal('ASSINADO DIGITALMENTE')}) Tj ET',
-      'BT /Helv 10 Tf 8 ${_number(height - 31)} Td (${_literal(appearance.signerName)}) Tj ET',
-      'BT /Helv 7 Tf 8 ${_number(height - 46)} Td (${_literal(_pdfDate(appearance.signingTime))}) Tj ET',
-      if (appearance.reason != null)
-        'BT /Helv 7 Tf 8 ${_number(height - 59)} Td (${_literal(appearance.reason!)}) Tj ET',
+      if (logoReference != null)
+        'q ${_number(height * 0.54)} 0 0 ${_number(height * 0.62)} '
+            '${_number(height * 0.13)} ${_number(height * 0.18)} cm /Logo Do Q',
+      '${border.$1} ${border.$2} ${border.$3} rg',
+      'BT /HelvBold ${_number(headlineSize)} Tf ${_number(textX)} ${_number(height - (compact ? 9 : 13))} Td '
+          '(${_literal(_fitText(appearance.headline, availableTextWidth, headlineSize))}) Tj ET',
+      '0.08 0.12 0.18 rg',
+      'BT /HelvBold ${_number(nameSize)} Tf ${_number(textX)} ${_number(height - (compact ? 20 : 28))} Td '
+          '(${_literal(_fitText(appearance.signerName, availableTextWidth, nameSize))}) Tj ET',
+      if (appearance.maskedCpf != null)
+        'BT /Helv ${_number(detailSize)} Tf ${_number(textX)} ${_number(height - (compact ? 30 : 41))} Td '
+            '(${_literal('CPF: ${appearance.maskedCpf}')}) Tj ET',
+      'BT /Helv ${_number(detailSize)} Tf ${_number(textX)} ${_number(height - (appearance.maskedCpf == null ? (compact ? 30 : 41) : (compact ? 39 : 53)))} Td '
+          '(${_literal('Data: ${_humanDate(appearance.signingTime)}')}) Tj ET',
+      '0.02 0.35 0.72 rg',
+      'BT /Helv ${_number(compact ? 5.8 : 7)} Tf ${_number(textX)} 7 Td '
+          '(${_literal(_fitText('Valide em ${appearance.validatorUrl}', availableTextWidth, compact ? 5.8 : 7))}) Tj ET',
       'Q',
     ];
     final stream = latin1.encode(lines.join('\n'));
     final dictionary = '<< /Type /XObject /Subtype /Form /FormType 1 '
         '/BBox [0 0 ${_number(width)} ${_number(height)}] '
         '/Resources << /Font << /Helv << /Type /Font /Subtype /Type1 '
-        '/BaseFont /Helvetica /Encoding /WinAnsiEncoding >> >> >> '
+        '/BaseFont /Helvetica /Encoding /WinAnsiEncoding >> '
+        '/HelvBold << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold '
+        '/Encoding /WinAnsiEncoding >> >> '
+        '${logoReference == null ? '' : '/XObject << /Logo $logoReference >> '}>> '
         '/Length ${stream.length} >>\nstream\n';
     return Uint8List.fromList(<int>[
       ...ascii.encode(dictionary),
@@ -449,6 +633,80 @@ final class _PdfIncrementalSignatureWriter {
       ...ascii.encode('\nendstream'),
     ]);
   }
+
+  Uint8List _logoImageStream(_PdfAppearanceLogo logo, PdfRef? maskReference) {
+    final dictionary = '<< /Type /XObject /Subtype /Image '
+        '/Width ${logo.width} /Height ${logo.height} '
+        '/ColorSpace /DeviceRGB /BitsPerComponent 8 '
+        '${maskReference == null ? '' : '/SMask $maskReference '}'
+        '/Length ${logo.rgb.length} >>\nstream\n';
+    return Uint8List.fromList(<int>[
+      ...ascii.encode(dictionary),
+      ...logo.rgb,
+      ...ascii.encode('\nendstream'),
+    ]);
+  }
+
+  Uint8List _logoMaskStream(_PdfAppearanceLogo logo) {
+    final dictionary = '<< /Type /XObject /Subtype /Image '
+        '/Width ${logo.width} /Height ${logo.height} '
+        '/ColorSpace /DeviceGray /BitsPerComponent 8 '
+        '/Length ${logo.alpha.length} >>\nstream\n';
+    return Uint8List.fromList(<int>[
+      ...ascii.encode(dictionary),
+      ...logo.alpha,
+      ...ascii.encode('\nendstream'),
+    ]);
+  }
+}
+
+final class _PdfAppearanceLogo {
+  const _PdfAppearanceLogo({
+    required this.width,
+    required this.height,
+    required this.rgb,
+    required this.alpha,
+    required this.hasAlpha,
+  });
+
+  final int width;
+  final int height;
+  final Uint8List rgb;
+  final Uint8List alpha;
+  final bool hasAlpha;
+}
+
+_PdfAppearanceLogo _decodeAppearanceLogo(Uint8List bytes) {
+  final decoded = decodePng(bytes, order: ImageChannelOrder.rgba);
+  // A aparência exibe o logo com poucas dezenas de pontos. Limitar o XObject
+  // evita acrescentar centenas de KiB a cada coassinatura sem ganho visual.
+  final image = decoded.height > 96
+      ? decoded.resample(
+          width: (decoded.width * 96 / decoded.height).round(),
+          height: 96,
+        )
+      : decoded;
+  final rgb = Uint8List(image.width * image.height * 3);
+  final alpha = Uint8List(image.width * image.height);
+  for (var source = 0, color = 0, mask = 0;
+      source < image.pixels.length;
+      source += 4, color += 3, mask++) {
+    final a = image.pixels[source + 3];
+    alpha[mask] = a;
+    int straight(int channel) => a == 0
+        ? 0
+        : ((image.pixels[source + channel] * 255 + a ~/ 2) ~/ a).clamp(0, 255);
+    rgb[color] = straight(0);
+    rgb[color + 1] = straight(1);
+    rgb[color + 2] = straight(2);
+  }
+  return _PdfAppearanceLogo(
+    width: image.width,
+    height: image.height,
+    rgb: rgb,
+    alpha: alpha,
+    hasAlpha: image.hasAlpha,
+  );
 }
 
 String _serialize(PdfObject object) {
@@ -542,6 +800,24 @@ String _pdfDate(DateTime value) {
   String two(int number) => number.toString().padLeft(2, '0');
   return 'D:${utc.year.toString().padLeft(4, '0')}${two(utc.month)}'
       '${two(utc.day)}${two(utc.hour)}${two(utc.minute)}${two(utc.second)}Z';
+}
+
+String _humanDate(DateTime value) {
+  final local = value.toLocal();
+  String two(int number) => number.toString().padLeft(2, '0');
+  final offset = local.timeZoneOffset;
+  final sign = offset.isNegative ? '-' : '+';
+  final totalMinutes = offset.inMinutes.abs();
+  return '${two(local.day)}/${two(local.month)}/${local.year} '
+      '${two(local.hour)}:${two(local.minute)}:${two(local.second)} '
+      '$sign${two(totalMinutes ~/ 60)}:${two(totalMinutes % 60)}';
+}
+
+String _fitText(String value, double width, double fontSize) {
+  final maximum =
+      (width / (fontSize * 0.54)).floor().clamp(4, value.length).toInt();
+  if (value.length <= maximum) return value;
+  return '${value.substring(0, maximum - 3).trimRight()}...';
 }
 
 (String, String, String) _rgb(int argb) {

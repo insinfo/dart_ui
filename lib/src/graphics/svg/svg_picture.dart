@@ -3,14 +3,13 @@ library;
 
 import 'dart:math' as math;
 
-import 'package:xml/xml.dart';
-
 import '../../foundation/lru_cache.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
 import '../../geometry/transform2d.dart';
 import '../display_list_opcodes.dart';
+import '../xml/xml.dart';
 import 'svg_path.dart';
 
 final class SvgLimits {

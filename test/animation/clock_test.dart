@@ -153,6 +153,29 @@ void main() {
       expect(scheduler.hasScheduledFrame, isFalse);
     });
 
+    test('a failing callback is reported and later callbacks still run', () {
+      final List<String> order = <String>[];
+      final List<(FramePipelinePhase, Object)> errors =
+          <(FramePipelinePhase, Object)>[];
+      final FrameScheduler scheduler = FrameScheduler(
+        onFrame: (_) => order.add('painted'),
+        onError: (phase, error, _) => errors.add((phase, error)),
+      );
+      scheduler
+        ..addFrameCallback((_) {
+          order.add('first');
+          throw StateError('broken animation');
+        })
+        ..addFrameCallback((_) => order.add('second'))
+        ..scheduleFrame()
+        ..pump();
+
+      expect(order, <String>['first', 'second', 'painted']);
+      expect(errors, hasLength(1));
+      expect(errors.single.$1, FramePipelinePhase.callbacks);
+      expect(errors.single.$2, isA<StateError>());
+    });
+
     test('registering the same callback twice is rejected', () {
       final FrameScheduler scheduler = _scheduler();
       void callback(Duration _) {}

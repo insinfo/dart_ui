@@ -2,16 +2,15 @@
 ///
 /// PNG remains implemented inside this package because its exact filtering,
 /// premultiplication and hostile-input checks form the reference decoder for
-/// the renderer. JPEG and WebP are deliberately delegated to `package:image`,
-/// a pure-Dart MIT implementation, then converted immediately into the one
-/// pixel contract used by dart_ui: tightly packed, premultiplied RGBA/BGRA.
-/// No `package:image` type crosses this library's public API.
+/// the renderer. JPEG and WebP are delegated to the pure-Dart codecs adapted
+/// from `package:image` (MIT) under `codecs/`, then converted immediately into
+/// the one pixel contract used by dart_ui: tightly packed, premultiplied
+/// RGBA/BGRA. No codec-internal type crosses this library's public API.
 library;
 
 import 'dart:typed_data';
 
-import 'package:image/image.dart' as image_lib;
-
+import 'codecs/image_lib.dart' as image_lib;
 import 'decoded_image.dart';
 import 'image_errors.dart';
 import 'native_raster_codec_async_stub.dart'
@@ -106,7 +105,7 @@ RasterDecodeResult decodeImageWithCodec(
     image: decoded,
     codecName: format == RasterImageFormat.png
         ? 'dart_ui PNG'
-        : 'package:image (Dart)',
+        : 'dart_ui codecs (Dart)',
     isNative: false,
   );
 }
@@ -200,15 +199,19 @@ DecodedImage _decodeJpegDart(
       throw const JpegDecodeException('JPEG header could not be decoded');
     }
     limits.checkDimensions(info.width, info.height, RasterImageFormat.jpeg);
-    image_lib.Image? decoded = decoder.decodeFrame(0);
+    final image_lib.Image? decoded = decoder.decodeFrame(0);
     if (decoded == null) {
       throw const JpegDecodeException('JPEG contains no decodable frame');
     }
-    if (decoded.exif.imageIfd.hasOrientation &&
-        decoded.exif.imageIfd.orientation != 1) {
-      decoded = image_lib.bakeOrientation(decoded);
-    }
-    return _fromPackageImage(decoded, order);
+    final int? rawOrientation = decoded.exif.imageIfd.hasOrientation
+        ? decoded.exif.imageIfd.orientation
+        : null;
+    final int orientation =
+        rawOrientation != null && rawOrientation >= 2 && rawOrientation <= 8
+            ? rawOrientation
+            : 1;
+    final DecodedImage image = _fromPackageImage(decoded, order);
+    return _applyExifOrientation(image, orientation);
   } on ImageDecodeException {
     rethrow;
   } catch (error) {
@@ -218,7 +221,7 @@ DecodedImage _decodeJpegDart(
 
 int _jpegOrientation(Uint8List bytes) {
   try {
-    final image_lib.ExifData? exif = image_lib.decodeJpgExif(bytes);
+    final image_lib.ExifData? exif = image_lib.JpegUtil().decodeExif(bytes);
     final int? orientation = exif?.imageIfd.orientation;
     return orientation != null && orientation >= 2 && orientation <= 8
         ? orientation

@@ -1,5 +1,17 @@
 import 'dart:typed_data';
 
+final class PdfFilterException implements Exception {
+  const PdfFilterException(this.message, [this.cause]);
+
+  final String message;
+  final Object? cause;
+
+  @override
+  String toString() => cause == null
+      ? 'PdfFilterException: $message'
+      : 'PdfFilterException: $message ($cause)';
+}
+
 /// Parâmetros de decodificação passados pelo dicionário `/DecodeParms` no PDF.
 class DecodeParms {
   /// Algoritmo preditor (1 = Nenhum, 2 = TIFF Predictor 2, 10..15 = PNG Predictor).
@@ -49,6 +61,20 @@ class DecodeParms {
     final colors = parms.colors;
     final bitsPerComponent = parms.bitsPerComponent;
     final columns = parms.columns;
+    if (colors <= 0 || columns <= 0 || bitsPerComponent <= 0) {
+      throw const PdfFilterException(
+        'predictor colors, columns and bits-per-component must be positive',
+      );
+    }
+    if (bitsPerComponent != 1 &&
+        bitsPerComponent != 2 &&
+        bitsPerComponent != 4 &&
+        bitsPerComponent != 8 &&
+        bitsPerComponent != 16) {
+      throw PdfFilterException(
+        'unsupported predictor bits-per-component $bitsPerComponent',
+      );
+    }
     final bytesPerPixel = ((colors * bitsPerComponent + 7) ~/ 8);
     final rowBytes = ((columns * colors * bitsPerComponent + 7) ~/ 8);
 
@@ -108,7 +134,9 @@ class DecodeParms {
               val = (x + _paethPredictor(a, b, c)) & 0xFF;
               break;
             default:
-              val = x;
+              throw PdfFilterException(
+                'invalid PNG predictor filter type $filterType',
+              );
           }
           currentRow[i] = val;
           output[dstOffset++] = val;

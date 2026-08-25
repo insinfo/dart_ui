@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dart_ui/crypto.dart';
@@ -19,5 +20,19 @@ void main() {
     expect(certificate.derBytes, <int>[0x30, 0]);
     expect(certificate.idHex, '0102');
     expect(Pkcs11Mechanism.sha256RsaPkcs.value, 0x40);
+  });
+
+  test('ABI Cryptoki usa pack(1), inclusive no Windows x64', () {
+    final layout = Pkcs11Module.nativeAbiLayout;
+
+    if (Platform.isWindows) {
+      expect(layout.attribute, 16);
+      expect(layout.mechanism, 16);
+      expect(layout.tokenInfo, 160);
+    } else {
+      expect(layout.attribute, 24);
+      expect(layout.mechanism, 24);
+      expect(layout.tokenInfo, 204);
+    }
   });
 }

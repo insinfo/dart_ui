@@ -283,6 +283,11 @@ Uint8List convertVideoFrameToRgba(
   return out;
 }
 
+// `convertVideoFrameToNativeRgba` used to sit here. It moved to
+// `video_color_conversion_native.dart` because it needs the FFI ring buffer,
+// and this file is reachable from `lib/dart_ui.dart`, which the web backend
+// compiles.
+
 /// 16.16 coefficients of [matrix], scaled so the inputs may stay 8-bit codes.
 ///
 /// `out255 = c0*Y + c1*U + c2*V + c3` with the row's constant term already

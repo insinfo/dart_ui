@@ -46,6 +46,7 @@ import '../../../geometry/rect.dart';
 import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
+import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
 import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../renderer.dart';
@@ -59,6 +60,7 @@ import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
+import '../gpu_video_image.dart';
 import 'd3d11_bindings.dart';
 import 'd3d11_shaders.dart';
 import 'd3d11_surface_descriptor.dart';
@@ -519,9 +521,18 @@ final class D3d11RenderDevice
       _scratchDesc,
       width: width,
       height: height,
-      format: format == GpuTextureFormat.alpha8
-          ? dxgiFormatR8Unorm
-          : dxgiFormatR8G8B8A8Unorm,
+      // A switch and not a ternary, so a format added later is a compile
+      // error here rather than a texture quietly created in the wrong layout.
+      // BGRA is sampled by the same shader and the same `mode == 2` branch:
+      // the texture unit returns RGBA either way, so the channel order never
+      // reaches the fragment stage. See [GpuTextureFormat.bgra8888Premultiplied].
+      format: switch (format) {
+        GpuTextureFormat.alpha8 => dxgiFormatR8Unorm,
+        GpuTextureFormat.bgra8888Premultiplied => dxgiFormatB8G8R8A8Unorm,
+        GpuTextureFormat.rgba8888Straight ||
+        GpuTextureFormat.rgba8888Premultiplied =>
+          dxgiFormatR8G8B8A8Unorm,
+      },
       usage: d3d11UsageDefault,
       bindFlags: bindFlags,
       cpuAccess: 0,
@@ -2140,7 +2151,27 @@ final class D3d11ImageCache implements GpuImageResolver {
   final Expando<_D3d11ImageEntry> _byImage = Expando<_D3d11ImageEntry>();
   final List<_D3d11ImageEntry> _entries = <_D3d11ImageEntry>[];
 
+  /// Where a decoded video frame becomes a texture.
+  ///
+  /// A separate cache and not another kind of entry above, because the entries
+  /// above are keyed by image identity and never evict - which is right for a
+  /// still and ruinous for a stream that produces a new object twenty-five
+  /// times a second. See `gpu_video_image.dart` for the whole argument and for
+  /// how one texture per stream is reused instead.
+  ///
+  /// [ImageChannelOrder.rgba] because [_upload] creates every image texture as
+  /// `rgba8888Premultiplied` and [_asRgba] swizzles a BGRA source into it; the
+  /// video conversion writes that order directly instead.
+  late final GpuVideoImageCache _video = GpuVideoImageCache(
+    _device,
+    channelOrder: ImageChannelOrder.rgba,
+  );
+
   int get length => _entries.length;
+
+  /// The video streams this cache holds a texture for. One per stream, never
+  /// one per frame.
+  int get videoStreamCount => _video.streamCount;
 
   /// How many bytes of image source this cache is keeping alive. Zero under
   /// [GpuImageSourceRetention.uploadOnly].
@@ -2158,7 +2189,11 @@ final class D3d11ImageCache implements GpuImageResolver {
 
   @override
   GpuTextureHandle? resolve(Object image) {
-    if (image is! Framebuffer) return null;
+    // A VideoFrame is not a Framebuffer, and returning null for it is what
+    // made every accelerated backend refuse to draw video by name. The video
+    // cache answers null for anything that is not a frame either, so this
+    // stays the single "this device cannot draw it" exit.
+    if (image is! Framebuffer) return _video.resolve(image);
     final _D3d11ImageEntry? cached = _byImage[image];
     if (cached != null) {
       final D3d11Texture? texture = cached.texture;
@@ -2270,6 +2305,7 @@ final class D3d11ImageCache implements GpuImageResolver {
       if (image != null) _byImage[image] = null;
     }
     _entries.clear();
+    _video.clear();
   }
 
   /// The image's bytes in the R8G8B8A8 order the texture was created with.

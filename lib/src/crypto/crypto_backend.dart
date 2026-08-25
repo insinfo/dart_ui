@@ -1,5 +1,23 @@
 import 'dart:typed_data';
 
+/// Hash calculado em partes.
+///
+/// Existe para quem processa um stream e nao quer materializa-lo so para
+/// hashea-lo - o verificador de assinatura MD5 do FLAC alimenta um frame
+/// decodificado por vez e descarta o buffer em seguida.
+///
+/// O backend decide a implementacao: contexto nativo do SO quando disponivel
+/// (`BCryptHashData`, `EVP_DigestUpdate`, `CC_MD5_Update`), Dart puro caso
+/// contrario. Instancias sao de uso unico - depois de [close] o objeto so
+/// devolve o mesmo digest.
+abstract class HashSink {
+  /// Acrescenta [data] ao hash.
+  void add(List<int> data);
+
+  /// Finaliza e devolve o digest. Chamadas seguintes devolvem o mesmo valor.
+  Uint8List close();
+}
+
 /// Interface unificada para serviços de criptografia e hashing no `dart_ui`.
 abstract class CryptoBackend {
   /// Nome descritivo da implementação (ex: "Pure Dart", "Windows CNG (bcrypt.dll)", "macOS CommonCrypto", "Linux libcrypto").
@@ -22,6 +40,9 @@ abstract class CryptoBackend {
 
   /// Calcula o hash MD5 (128 bits / 16 bytes).
   Uint8List md5(Uint8List data);
+
+  /// Abre um hash MD5 incremental, para dados que chegam em partes.
+  HashSink md5Sink();
 
   /// Cifra dados usando AES em modo CBC com chave de 128, 192 ou 256 bits e IV de 16 bytes.
   Uint8List aesEncryptCbc(Uint8List key, Uint8List iv, Uint8List plaintext,
