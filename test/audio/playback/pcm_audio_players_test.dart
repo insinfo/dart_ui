@@ -41,9 +41,13 @@ NativePcmAudioBuffer _tone({
     channels: channels,
     frameCount: frames,
   );
+  // Amplitude de 1e-6, cerca de -120 dBFS: fica abaixo do piso de ruido de
+  // qualquer conversor e e inaudivel, mas continua diferente de zero — que e
+  // a unica coisa que alguma assercao daqui exige do sinal. Um tom audivel
+  // repetido a cada execucao da suite e como se para de rodar a suite.
   for (int frame = 0; frame < frames; frame++) {
     final double value =
-        0.02 * math.sin(2 * math.pi * 200 * frame / sampleRate);
+        1e-6 * math.sin(2 * math.pi * 200 * frame / sampleRate);
     for (int channel = 0; channel < channels; channel++) {
       buffer.setSample(frame, channel, value);
     }
