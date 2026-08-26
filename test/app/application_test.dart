@@ -166,14 +166,18 @@ void main() {
         ],
         options: const ApplicationOptions(
           size: Size(64, 64),
-          idleTimeout: Duration(milliseconds: 250),
+          idleTimeout: Duration(milliseconds: 400),
         ),
       );
-      // Closing after a few real frame intervals distinguishes the fixed loop
-      // from the old one: previously it blocked for the whole 250 ms idle
-      // timeout, so the close timer won and only the initial frame existed.
+      // Closing *before* the idle timeout is what distinguishes the fixed loop
+      // from the old one: the old one blocked for the whole timeout in one go,
+      // so the close request could not be seen until it was over and only the
+      // initial frame ever existed. Any delay shorter than the timeout proves
+      // that; this one is long enough that a loaded shared runner, which
+      // spends far longer than the 16.7 ms cap between iterations, still gets
+      // several frames into the window.
       Future<void>.delayed(
-        const Duration(milliseconds: 90),
+        const Duration(milliseconds: 300),
         application.requestClose,
       );
 
