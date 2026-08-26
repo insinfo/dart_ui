@@ -138,8 +138,7 @@ abstract final class D3d12SegmentPass {
           groupsY: dispatch.drawCount,
         ),
         if (dispatch.sortPerThread)
-          D3d12ComputeStage(
-              ComputeSegmentKernel.sort, dispatch.referenceGroups)
+          D3d12ComputeStage(ComputeSegmentKernel.sort, dispatch.referenceGroups)
         else
           D3d12ComputeStage(
               ComputeSegmentKernel.sortWide, dispatch.referenceSlots),

@@ -96,6 +96,8 @@ void main() {
   ComputeBinningExecutor? binning;
   D3d12ComputeSegmentDriver? segmentDriver;
   ComputeSegmentBinningExecutor? segmentBinning;
+  D3d12ComputeRasterDriver? wideSortDriver;
+  ComputeRasterPipeline? wideSortPipeline;
 
   tearDownAll(() {
     pipeline?.dispose();
@@ -108,6 +110,8 @@ void main() {
     binningDriver?.dispose();
     segmentBinning?.dispose();
     segmentDriver?.dispose();
+    wideSortPipeline?.dispose();
+    wideSortDriver?.dispose();
     session.close();
   });
 
@@ -151,6 +155,16 @@ void main() {
         D3d12ComputeSegmentDriver(session.device!);
     segmentDriver = made;
     return segmentBinning = ComputeSegmentBinningExecutor(made)..initialize();
+  }
+
+  /// The same pipeline with the group-per-reference rank sort.
+  ComputeRasterPipeline openWideSortPipeline() {
+    if (wideSortPipeline != null) return wideSortPipeline!;
+    final D3d12ComputeRasterDriver made =
+        D3d12ComputeRasterDriver(session.device!);
+    wideSortDriver = made;
+    return wideSortPipeline = ComputeRasterPipeline(made, sortPerThread: false)
+      ..initialize();
   }
 
   group('the chained pipeline builds on this device', () {
@@ -633,6 +647,74 @@ void main() {
             '${plan.tileCount} | ${plan.references.length} | '
             '${plan.tileSegments.length} | ${_us(cpu)} | '
             '${_us(unchained)} | ${_us(chained)} | ${_us(streamed)} |');
+      }
+
+      // ignore: avoid_print
+      print(table.toString());
+    });
+
+    test('a group per reference against a thread per reference', () {
+      if (_skipped(session)) return;
+      // The rank sort is the one place the segment stage could have copied the
+      // coarse stage's dispatch shape and been wrong to. A tile's *draw* run is
+      // long enough to want a group; a reference's *segment* run averages two
+      // or three, and a group of 256 threads dispatched to order two elements
+      // is 254 threads that read the guard and retire. Both shapes are
+      // compiled, so the difference is measured here rather than argued in a
+      // comment - and both are checked against the oracle first, because a
+      // faster wrong answer is not a result.
+      final ComputeRasterPipeline fast = openPipeline()!;
+      final ComputeRasterPipeline wide = openWideSortPipeline();
+
+      final StringBuffer table = StringBuffer()
+        ..writeln()
+        ..writeln('| scene | refs | tile segs | segs/ref | thread per ref | '
+            'group per ref |')
+        ..writeln('|---|---:|---:|---:|---:|---:|');
+
+      for (final _Scene scene in _scenes()) {
+        final ComputeTilePlan plan = scene.plan();
+        final ComputeCurveUpload curves = scene.curves();
+        final ComputeSegmentScene segmentScene = _segmentScene(plan);
+        final ComputeBinningGrid grid = ComputeBinningGrid(
+          width: plan.width,
+          height: plan.height,
+          tileSize: plan.tileSize,
+        );
+
+        final List<double> timings = <double>[];
+        for (final ComputeRasterPipeline built in <ComputeRasterPipeline>[
+          fast,
+          wide,
+        ]) {
+          final ComputeRasterResult warm = built.run(
+            scene: curves,
+            bounds: plan.bounds,
+            drawCount: plan.drawCount,
+            grid: grid,
+            segmentScene: segmentScene,
+          );
+          expect(warm.segments!.tileSegments, plan.tileSegments,
+              reason: 'both sort shapes have to produce the CPU planner\'s '
+                  'order; the faster one is only interesting if it is right');
+          timings.add(_time(_kIterations, () {
+            built.submit(
+              scene: curves,
+              bounds: plan.bounds,
+              drawCount: plan.drawCount,
+              grid: grid,
+              segmentScene: segmentScene,
+              budget: warm.budget,
+            );
+          }, finish: built.finish));
+        }
+
+        final double perReference =
+            plan.tileSegments.length / plan.references.length;
+        table.writeln('| ${scene.name} | ${plan.references.length} | '
+            '${plan.tileSegments.length} | '
+            '${perReference.toStringAsFixed(2)} | '
+            '${_us(timings[0])} | ${_us(timings[1])} |');
       }
 
       // ignore: avoid_print
