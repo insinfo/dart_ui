@@ -293,10 +293,7 @@ final class VulkanInstance {
 
       if (wantMessenger && api.hasDebugUtils) {
         callback = NativeCallable<_DebugCallbackNative>.isolateLocal(
-          (int severity,
-                  int types,
-                  Pointer<VkDebugUtilsMessengerCallbackDataEXT> data,
-                  Pointer<Void> user) =>
+          (int severity, int types, Pointer<Void> data, Pointer<Void> user) =>
               _record(messages, severity, data),
           exceptionalReturn: vkFalse,
         );
@@ -428,8 +425,10 @@ final class VulkanInstance {
   static int _record(
     List<String> messages,
     int severity,
-    Pointer<VkDebugUtilsMessengerCallbackDataEXT> data,
+    Pointer<Void> data,
   ) {
+    final Pointer<VkDebugUtilsMessengerCallbackDataEXT> typed =
+        data.cast<VkDebugUtilsMessengerCallbackDataEXT>();
     final String level = (severity &
                 VkDebugUtilsMessageSeverityFlagBitsEXT
                     .VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) !=
@@ -438,7 +437,7 @@ final class VulkanInstance {
         : 'WARNING';
     final String text = data == nullptr
         ? '(no message)'
-        : readNativeUtf8(data.ref.pMessage.cast<Uint8>(), limit: 4096);
+        : readNativeUtf8(typed.ref.pMessage.cast<Uint8>(), limit: 4096);
     if (messages.length >= _maxMessages) messages.removeAt(0);
     messages.add('$level: $text');
     // VK_FALSE: "do not abort the call that produced this message". Returning
@@ -458,8 +457,21 @@ final class VulkanInstance {
   }
 }
 
-typedef _DebugCallbackNative = Uint32 Function(Uint32, Uint32,
-    Pointer<VkDebugUtilsMessengerCallbackDataEXT>, Pointer<Void>);
+/// O terceiro parametro e `Pointer<Void>` e nao
+/// `Pointer<VkDebugUtilsMessengerCallbackDataEXT>` de proposito.
+///
+/// Na ABI os dois sao a mesma coisa - um ponteiro -, mas nomear o
+/// `Struct` aqui faz o compilador AOT tentar reter a *classe* dele no
+/// snapshot, e ele recusa: `Unexpected object (Class with illegal cid,
+/// full-aot)`. O sintoma nao aparece em JIT nem num programa que so
+/// importa a biblioteca; aparece em `dart compile exe` de qualquer
+/// aplicacao que alcance o seletor de apresentacao, porque e ele que
+/// torna este arquivo alcancavel.
+///
+/// O cast para o tipo real acontece em [_VulkanInstanceBuilder._record],
+/// do lado Dart, onde nao ha snapshot a gerar.
+typedef _DebugCallbackNative = Uint32 Function(
+    Uint32, Uint32, Pointer<Void>, Pointer<Void>);
 
 /// One `VkPhysicalDevice`, with the properties read once.
 ///

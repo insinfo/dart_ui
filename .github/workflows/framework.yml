@@ -104,16 +104,23 @@ jobs:
           mkdir -p build
           cat > build/aot_smoke.dart <<'DART'
           import 'package:dart_ui/dart_ui.dart';
+          import 'package:dart_ui/src/backends/default_platform_resolver.dart';
 
+          // Alcancar o seletor e o ponto deste programa, nao um detalhe.
+          //
+          // A versao anterior instanciava um DisposableBag e um
+          // BackendProbeResult, o que nao alcanca backend de GPU nenhum -
+          // entao ela passava verde em 26/08/2026 enquanto
+          // `dart compile exe` de qualquer aplicacao real falhava com
+          // `Unexpected object (Class with illegal cid, full-aot)` num Struct
+          // do Vulkan. O compilador AOT so ve o problema quando o codigo que
+          // o contem entra no grafo, e e o seletor que o coloca la.
           void main() {
+            final paths = PlatformBackendResolver.defaultPresentations();
             final bag = DisposableBag()..add('x', () {});
             bag.dispose();
-            final probe = BackendProbeResult(
-              backendName: 'aot-smoke',
-              supported: true,
-              capabilities: {Capability.window},
-            );
-            print('AOT_SMOKE=${bag.isDisposed && probe.supported}');
+            print('AOT_SMOKE=${bag.isDisposed && paths.isNotEmpty}');
+            print('AOT_PRESENTATIONS=${paths.map((p) => p.name).join(',')}');
           }
           DART
           dart compile exe build/aot_smoke.dart -o build/aot_smoke
