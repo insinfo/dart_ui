@@ -120,7 +120,8 @@ void main() {
     expect(typed(), <String>['á']);
   });
 
-  test('a dead key followed by something it does not combine with types '
+  test(
+      'a dead key followed by something it does not combine with types '
       'nothing at all', () {
     key(48, compose: engine);
     key(24, compose: engine);

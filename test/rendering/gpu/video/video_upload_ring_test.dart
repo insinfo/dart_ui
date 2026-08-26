@@ -173,6 +173,7 @@ void main() {
   });
 
   test('a ring needs at least one buffer', () {
-    expect(() => VideoUploadRing(bufferCount: 0), throwsA(isA<ArgumentError>()));
+    expect(
+        () => VideoUploadRing(bufferCount: 0), throwsA(isA<ArgumentError>()));
   });
 }

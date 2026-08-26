@@ -891,7 +891,8 @@ final class TrueTypeInterpreter {
         final Zone z1 = _gs.zp1 == 0 ? _twilightZone : _glyphZone!;
         final Zone z2 = _gs.zp2 == 0 ? _twilightZone : _glyphZone!;
 
-        final double oldRange = _dualProject(z1.orgX[_gs.rp2] - z0.orgX[_gs.rp1],
+        final double oldRange = _dualProject(
+            z1.orgX[_gs.rp2] - z0.orgX[_gs.rp1],
             z1.orgY[_gs.rp2] - z0.orgY[_gs.rp1]);
         final double curRange = _project(z1.curX[_gs.rp2] - z0.curX[_gs.rp1],
             z1.curY[_gs.rp2] - z0.curY[_gs.rp1]);

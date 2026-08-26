@@ -1,4 +1,3 @@
-
 import '../../geometry/offset.dart';
 import 'bezier.dart';
 import 'constants.dart';
@@ -23,7 +22,9 @@ List<VectorPath> applyBooleanOp(
   final polyB = _flattenShape(shapeB);
 
   if (polyA.isEmpty) return op == BooleanOp.union ? shapeB : [];
-  if (polyB.isEmpty) return op == BooleanOp.difference || op == BooleanOp.union ? shapeA : [];
+  if (polyB.isEmpty) {
+    return op == BooleanOp.difference || op == BooleanOp.union ? shapeA : [];
+  }
 
   List<List<Offset>> resultPolys;
   switch (op) {
@@ -95,7 +96,8 @@ List<List<Offset>> _clipPolygon(
         final edgeStart = clipPoly[i];
         final edgeEnd = clipPoly[(i + 1) % clipPoly.length];
 
-        currentPolygon = _clipAgainstEdge(currentPolygon, edgeStart, edgeEnd, mode);
+        currentPolygon =
+            _clipAgainstEdge(currentPolygon, edgeStart, edgeEnd, mode);
         if (currentPolygon.isEmpty) break;
       }
       if (currentPolygon.length >= 3) {
@@ -125,11 +127,13 @@ List<Offset> _clipAgainstEdge(
 
     if (currInside) {
       if (!prevInside) {
-        outputList.add(_computeIntersection(prevPoint, currPoint, edgeStart, edgeEnd));
+        outputList.add(
+            _computeIntersection(prevPoint, currPoint, edgeStart, edgeEnd));
       }
       outputList.add(currPoint);
     } else if (prevInside) {
-      outputList.add(_computeIntersection(prevPoint, currPoint, edgeStart, edgeEnd));
+      outputList
+          .add(_computeIntersection(prevPoint, currPoint, edgeStart, edgeEnd));
     }
 
     prevPoint = currPoint;

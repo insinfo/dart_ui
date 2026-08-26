@@ -98,8 +98,7 @@ void main() {
     test('a uniform rounded rectangle rounds its corners', () {
       final surface = newSurface();
       final list = DisplayList();
-      list.drawRRectUniform(
-          4, 4, 36, 36, 8, 8, list.addPaint(colorArgb: _red));
+      list.drawRRectUniform(4, 4, 36, 36, 8, 8, list.addPaint(colorArgb: _red));
 
       surface.renderDisplayList(list, clearColor: _black);
       final pixels = surface.readback();
@@ -329,8 +328,7 @@ void main() {
         end: const Offset(40, 20),
         stops: const <(double, int)>[(0.0, _black), (1.0, _red)],
       );
-      surface.sink
-          .fillRectWithBrush(const Rect.fromLTRB(0, 0, 40, 40), brush);
+      surface.sink.fillRectWithBrush(const Rect.fromLTRB(0, 0, 40, 40), brush);
       final int hr = surface.endDirectDraw();
       ComObject(brush).release();
       expect(comFailed(hr), isFalse, reason: d2dHresultTextForTest(hr));
@@ -347,7 +345,8 @@ void main() {
           reason: 'the midpoint of a black-to-red ramp, got $midR');
     });
 
-    test('a radial gradient is its start colour at the centre and its end '
+    test(
+        'a radial gradient is its start colour at the centre and its end '
         'colour past the radius', () {
       final surface = newSurface();
       surface.beginDirectDraw();
@@ -357,8 +356,7 @@ void main() {
         radiusY: 16,
         stops: const <(double, int)>[(0.0, _red), (1.0, 0xFF0000FF)],
       );
-      surface.sink
-          .fillRectWithBrush(const Rect.fromLTRB(0, 0, 40, 40), brush);
+      surface.sink.fillRectWithBrush(const Rect.fromLTRB(0, 0, 40, 40), brush);
       final int hr = surface.endDirectDraw();
       ComObject(brush).release();
       expect(comFailed(hr), isFalse);
@@ -387,20 +385,21 @@ void main() {
       );
     });
 
-    test('a frame after a refused frame still renders - the begin/end state '
+    test(
+        'a frame after a refused frame still renders - the begin/end state '
         'was settled', () {
       final surface = newSurface();
       final bad = DisplayList();
-      bad.drawRect(0, 0, 40, 40,
-          bad.addPaint(colorArgb: _red, blendMode: blendModeSrc));
+      bad.drawRect(
+          0, 0, 40, 40, bad.addPaint(colorArgb: _red, blendMode: blendModeSrc));
       expect(
         () => surface.renderDisplayList(bad, clearColor: _black),
         throwsA(isA<UnsupportedCapabilityError>()),
       );
 
       final good = DisplayList();
-      good.drawRect(10, 10, 30, 30,
-          good.addPaint(colorArgb: _red, antiAlias: false));
+      good.drawRect(
+          10, 10, 30, 30, good.addPaint(colorArgb: _red, antiAlias: false));
       final PresentResult result =
           surface.renderDisplayList(good, clearColor: _black);
       expect(result.status, PresentStatus.presented);

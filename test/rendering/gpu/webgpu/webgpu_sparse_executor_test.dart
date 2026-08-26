@@ -180,9 +180,8 @@ void main() {
 
   test('an unused material costs no uniform slice', () {
     final _FakeSparseWebGpuDriver driver = _FakeSparseWebGpuDriver();
-    final WebGpuSparseExecutionStats stats = (WebGpuSparseExecutor(driver)
-          ..initialize())
-        .submit(
+    final WebGpuSparseExecutionStats stats =
+        (WebGpuSparseExecutor(driver)..initialize()).submit(
       SparseStripDrawPlan()
         ..append(StripBuffer()..addFill(0, 0, 1), materialIndex: 2),
       materials: <SparseWebGpuMaterial>[
@@ -204,9 +203,8 @@ void main() {
 
   test('an empty plan draws nothing and opens no pass', () {
     final _FakeSparseWebGpuDriver driver = _FakeSparseWebGpuDriver();
-    final WebGpuSparseExecutionStats stats = (WebGpuSparseExecutor(driver)
-          ..initialize())
-        .submit(
+    final WebGpuSparseExecutionStats stats =
+        (WebGpuSparseExecutor(driver)..initialize()).submit(
       SparseStripDrawPlan(),
       materials: const <SparseWebGpuMaterial>[],
       viewportWidth: 4,
@@ -346,8 +344,9 @@ void main() {
         viewportHeight: 4,
       );
     expect(driver.moduleCreates, 2);
-    expect(driver.bufferCreates, 4, reason: 'one instance and one uniform '
-        'buffer per initialisation');
+    expect(driver.bufferCreates, 4,
+        reason: 'one instance and one uniform '
+            'buffer per initialisation');
 
     executor.dispose();
     expect(driver.deletedBuffers.length, 2);
@@ -397,8 +396,7 @@ void main() {
     expect(driver.createdTextureSizes, <String>['8x4', '16x4']);
   });
 
-  test('a gradient material becomes a gradient pipeline and its LUT group',
-      () {
+  test('a gradient material becomes a gradient pipeline and its LUT group', () {
     final LinearGradient gradient = LinearGradient(
       startX: 0,
       startY: 0,

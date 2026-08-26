@@ -64,10 +64,9 @@ enum SelectionHandleMode {
   /// ninth handle that can be dragged anywhere.
   rotate;
 
-  SelectionHandleMode get toggled =>
-      this == SelectionHandleMode.scale
-          ? SelectionHandleMode.rotate
-          : SelectionHandleMode.scale;
+  SelectionHandleMode get toggled => this == SelectionHandleMode.scale
+      ? SelectionHandleMode.rotate
+      : SelectionHandleMode.scale;
 }
 
 /// How a rubber band decides what it caught.
@@ -723,9 +722,8 @@ class SelectionManager {
             ? bounds.top - bounds.bottom
             : bounds.bottom - bounds.top;
         if (span == 0) return null;
-        final double anchor = handle == TransformHandle.topCenter
-            ? bounds.bottom
-            : bounds.top;
+        final double anchor =
+            handle == TransformHandle.topCenter ? bounds.bottom : bounds.top;
         var factor = delta.dx / span;
         if (constrain) factor = _snapSkew(factor);
         return <double>[1, 0, factor, 1, -factor * anchor, 0];

@@ -99,9 +99,8 @@ class VectorSvgCodec {
         }
       }
 
-      final fillStr = obj.style.fill.isNone
-          ? 'none'
-          : _colorToHex(obj.style.fill.color);
+      final fillStr =
+          obj.style.fill.isNone ? 'none' : _colorToHex(obj.style.fill.color);
       final strokeStr = obj.style.stroke.isNone
           ? 'none'
           : _colorToHex(obj.style.stroke.color);

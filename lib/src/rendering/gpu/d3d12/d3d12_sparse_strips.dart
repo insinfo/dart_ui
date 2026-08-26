@@ -315,7 +315,8 @@ const String kD3d12SparsePixelTarget = 'ps_5_0';
 /// root constant writing into a register nobody reads.
 void validateD3d12SparseShaderContract() {
   for (final D3d12SparseInputElement element in kD3d12SparseInputElements) {
-    final String declaration = '${element.components == 4 ? 'float4' : 'float2'}'
+    final String declaration =
+        '${element.components == 4 ? 'float4' : 'float2'}'
         ' ${element.name}';
     if (!kD3d12SparseVertexShader.contains(declaration)) {
       throw StateError('missing sparse HLSL input element: $declaration');
@@ -488,7 +489,8 @@ final class SparseD3d12Submission {
     while (length < required) {
       length *= 2;
     }
-    _instances = Float32List(length)..setRange(0, _instances.length, _instances);
+    _instances = Float32List(length)
+      ..setRange(0, _instances.length, _instances);
     _growths++;
   }
 

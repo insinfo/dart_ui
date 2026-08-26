@@ -21,8 +21,7 @@ void main() {
   });
 
   group('linux command planning (pure)', () {
-    test('zenity is first, kdialog second, with per-tool argument grammar',
-        () {
+    test('zenity is first, kdialog second, with per-tool argument grammar', () {
       final List<ShellCommand> commands = linuxMessageBoxCommands(
         MessageBoxKind.confirm,
         title: 'Sair',
@@ -64,8 +63,8 @@ void main() {
 
   group('macOS script planning (pure)', () {
     test('strings are escaped before interpolation', () {
-      expect(escapeAppleScriptString(r'a "quoted" \path'),
-          r'a \"quoted\" \\path');
+      expect(
+          escapeAppleScriptString(r'a "quoted" \path'), r'a \"quoted\" \\path');
     });
 
     test('confirm gets Cancel/OK, error gets the stop icon', () {

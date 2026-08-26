@@ -40,13 +40,13 @@ import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart' show Axis;
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import '../text/shaper.dart' show TextDirection;
 import 'control.dart';
 import 'directionality.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 

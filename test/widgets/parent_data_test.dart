@@ -594,7 +594,7 @@ void main() {
               flex: 3,
               child: _Host(
                 () => swapped
-              ? const ColoredBox(color: Color(0xFF000000))
+                    ? const ColoredBox(color: Color(0xFF000000))
                     : const SizedBox(height: 10),
               ),
             ),

@@ -225,8 +225,7 @@ class TPGroup extends VectorGroup {
   void copyFields(DocumentObject target) {
     super.copyFields(target);
     if (target is TPGroup) {
-      target.childrenData =
-          childrenData.map((d) => d?.copyWith()).toList();
+      target.childrenData = childrenData.map((d) => d?.copyWith()).toList();
     }
   }
 
@@ -282,8 +281,7 @@ class VectorContainer extends VectorGroup {
   bool get isGroup => true;
 
   /// The first child is the clipping shape.
-  DocumentObject? get clipShape =>
-      children.isNotEmpty ? children.first : null;
+  DocumentObject? get clipShape => children.isNotEmpty ? children.first : null;
 
   @override
   void updateBbox() {

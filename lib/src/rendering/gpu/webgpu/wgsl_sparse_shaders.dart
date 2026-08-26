@@ -202,8 +202,7 @@ void writeWebGpuSparseUniformSlice(
         '${viewportWidth}x$viewportHeight');
   }
   if (byteOffset < 0 ||
-      byteOffset + kWebGpuSparseUniformSliceSize >
-          destination.lengthInBytes) {
+      byteOffset + kWebGpuSparseUniformSliceSize > destination.lengthInBytes) {
     throw RangeError.range(
       byteOffset,
       0,

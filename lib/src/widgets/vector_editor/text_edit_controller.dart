@@ -74,7 +74,8 @@ final class CanvasTextEditor {
   bool get isDirty => object.textContent != originalText;
 
   /// The caret's distance along the baseline, in the object's own units.
-  double get caretX => VectorTextMetrics.caretX(object, _value.selection.extentOffset);
+  double get caretX =>
+      VectorTextMetrics.caretX(object, _value.selection.extentOffset);
 
   /// The baseline distance of one end of the selection.
   double selectionX(int offset) => VectorTextMetrics.caretX(object, offset);

@@ -109,9 +109,8 @@ String macMessageBoxScript(
     MessageBoxKind.error => 'stop',
     MessageBoxKind.confirm => 'note',
   };
-  final String buttons = kind == MessageBoxKind.confirm
-      ? '{"Cancel", "OK"}'
-      : '{"OK"}';
+  final String buttons =
+      kind == MessageBoxKind.confirm ? '{"Cancel", "OK"}' : '{"OK"}';
   return 'display dialog "$safeMessage" with title "$safeTitle" '
       'buttons $buttons default button "OK" with icon $icon';
 }

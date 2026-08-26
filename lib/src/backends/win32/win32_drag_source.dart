@@ -383,10 +383,9 @@ ComInterfaceSpec<Win32DragDataObject> win32DataObjectSpec() =>
         ),
         ComPointerPointerFlagMethod<Win32DragDataObject>(
           'SetData',
-          (Win32DragDataObject self, Pointer<Void> format,
-                  Pointer<Void> medium, int release) =>
-              self.setData(
-                  format.cast<Uint8>(), medium.cast<Uint8>(), release),
+          (Win32DragDataObject self, Pointer<Void> format, Pointer<Void> medium,
+                  int release) =>
+              self.setData(format.cast<Uint8>(), medium.cast<Uint8>(), release),
         ),
         // `dwDirection` is a `DWORD`; `ComIntPointerMethod` declares the slot
         // as `Int32`, which is the same 32-bit argument register on both
@@ -409,7 +408,8 @@ ComInterfaceSpec<Win32DragDataObject> win32DataObjectSpec() =>
         ),
         ComPointerMethod<Win32DragDataObject>(
           'EnumDAdvise',
-          (Win32DragDataObject self, Pointer<Void> out) => self.enumDAdvise(out),
+          (Win32DragDataObject self, Pointer<Void> out) =>
+              self.enumDAdvise(out),
         ),
       ],
     );
@@ -525,7 +525,8 @@ ComInterfaceSpec<Win32FormatEnumerator> win32FormatEnumeratorSpec() =>
         ),
         ComPointerMethod<Win32FormatEnumerator>(
           'Clone',
-          (Win32FormatEnumerator self, Pointer<Void> out) => self.cloneInto(out),
+          (Win32FormatEnumerator self, Pointer<Void> out) =>
+              self.cloneInto(out),
         ),
       ],
     );

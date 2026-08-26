@@ -30,7 +30,7 @@ import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/layout/box_constraints.dart';
 import 'package:dart_ui/src/layout/pipeline.dart';
 import 'package:dart_ui/src/layout/render_box.dart';
-import 'package:dart_ui/src/widgets/semantics.dart';
+import 'package:dart_ui/src/semantics/semantics.dart';
 import 'package:test/test.dart';
 
 const String _needsWindows =

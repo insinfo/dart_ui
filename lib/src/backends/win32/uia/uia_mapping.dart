@@ -22,7 +22,7 @@
 /// not a silent `generic`.
 library;
 
-import '../../../widgets/semantics.dart';
+import '../../../semantics/semantics.dart';
 import 'uia_constants.dart';
 
 /// What one [SemanticsRole] becomes on the UI Automation side.

@@ -253,7 +253,8 @@ void main() {
       expect(_maxDeviation(run.cpu, run.gpu), 0);
     });
 
-    test('a repeated frame reuses the retained plan and draws the same', () async {
+    test('a repeated frame reuses the retained plan and draws the same',
+        () async {
       if (_skipped(session)) return;
       // The gap the cost measurement exposed: the dense atlas keeps its mask,
       // so a static path costs a quad after its first frame, while approach D
@@ -430,7 +431,8 @@ Future<_Run> _render(D3d12Session session, DisplayList list) async {
   final int before = gpu.composedComputeDraws;
   final PresentResult result =
       await gpu.renderDisplayList(list, clearColor: _clear);
-  expect(result.status, PresentStatus.presented, reason: '${result.diagnostic}');
+  expect(result.status, PresentStatus.presented,
+      reason: '${result.diagnostic}');
 
   final GpuPathPlanningTelemetry planning = gpu.pathPlanning!;
   expect(planning.lastEvent, isNotNull,

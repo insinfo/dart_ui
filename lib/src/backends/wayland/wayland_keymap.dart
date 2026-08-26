@@ -246,8 +246,7 @@ final class WaylandXkbKeymap {
   factory WaylandXkbKeymap.usFallback() {
     final levels = <int, XkbKeyLevels>{};
     void put(int evdevCode, int base, [int shifted = xkbNoSymbol]) {
-      levels[evdevCode + evdevToXkbKeycodeOffset] =
-          XkbKeyLevels(base, shifted);
+      levels[evdevCode + evdevToXkbKeycodeOffset] = XkbKeyLevels(base, shifted);
     }
 
     void putChars(int evdevCode, String base, String shifted) {
@@ -345,9 +344,10 @@ final class WaylandXkbKeymap {
     return xkbKeysymToText(keysym);
   }
 
-  static final RegExp _keycodeEntry = RegExp(r'<([A-Za-z0-9_+\-]+)>\s*=\s*(\d+)\s*;');
-  static final RegExp _keycodeAlias = RegExp(
-      r'alias\s*<([A-Za-z0-9_+\-]+)>\s*=\s*<([A-Za-z0-9_+\-]+)>\s*;');
+  static final RegExp _keycodeEntry =
+      RegExp(r'<([A-Za-z0-9_+\-]+)>\s*=\s*(\d+)\s*;');
+  static final RegExp _keycodeAlias =
+      RegExp(r'alias\s*<([A-Za-z0-9_+\-]+)>\s*=\s*<([A-Za-z0-9_+\-]+)>\s*;');
   static final RegExp _symbolsEntry = RegExp(
     r'key\s*<([A-Za-z0-9_+\-]+)>\s*\{([^}]*)\}',
     dotAll: true,

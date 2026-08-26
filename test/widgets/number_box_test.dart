@@ -49,8 +49,8 @@ void main() {
       harness.frame();
       expect(harness.value, 6);
 
-      harness.box.handlePointerEvent(
-          _press(Offset(x, harness.box.size.height - 5)));
+      harness.box
+          .handlePointerEvent(_press(Offset(x, harness.box.size.height - 5)));
       harness.frame();
       expect(harness.value, 5);
       harness.dispose();
@@ -74,8 +74,7 @@ void main() {
     });
 
     test('a comma parses as the decimal separator', () {
-      final harness =
-          _NumberHarness(value: 1, min: 0, max: 100, decimals: 1);
+      final harness = _NumberHarness(value: 1, min: 0, max: 100, decimals: 1);
       harness.frame();
 
       harness.box.handleTextInput(_text('2,5'));

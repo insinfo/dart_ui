@@ -264,7 +264,9 @@ class VectorCanvasState extends State<VectorCanvas>
   /// freshly opened window is the first thing anybody tries.
   Set<KeyModifier> get _modifiers {
     final BuildContext ctx = context;
-    if (ctx is Element) return ctx.owner?.heldModifiers ?? const <KeyModifier>{};
+    if (ctx is Element) {
+      return ctx.owner?.heldModifiers ?? const <KeyModifier>{};
+    }
     return const <KeyModifier>{};
   }
 
@@ -517,7 +519,8 @@ class VectorCanvasState extends State<VectorCanvas>
     final Offset point = toDocument(global);
 
     if (widget.tool == ToolMode.zoom) {
-      _zoomAround(global, _modifiers.contains(KeyModifier.shift) ? 1 / 1.4 : 1.4);
+      _zoomAround(
+          global, _modifiers.contains(KeyModifier.shift) ? 1 / 1.4 : 1.4);
       return;
     }
     if (widget.tool == ToolMode.fleur) return;
@@ -731,7 +734,8 @@ class VectorCanvasState extends State<VectorCanvas>
       widget.onPanChanged?.call(widget.pan - Offset(dx * kWheelPanPixels, 0));
     }
     if (dy != 0) {
-      _zoomAround(event.logicalPosition, math.pow(kWheelZoomBase, -dy).toDouble());
+      _zoomAround(
+          event.logicalPosition, math.pow(kWheelZoomBase, -dy).toDouble());
     }
   }
 

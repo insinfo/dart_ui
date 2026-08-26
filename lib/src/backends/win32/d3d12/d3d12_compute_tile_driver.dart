@@ -120,8 +120,7 @@ final class D3d12ComputeTileDriver implements ComputeTileD3d12Driver {
   late final Pointer<Pointer<Void>> _mapped = _device.library.allocator
       .allocate<Pointer<Void>>(sizeOf<Pointer<Void>>());
 
-  bool get isBuilt =>
-      _bufferPipeline != nullptr && _texturePipeline != nullptr;
+  bool get isBuilt => _bufferPipeline != nullptr && _texturePipeline != nullptr;
 
   @override
   int createComputePipeline() {
@@ -129,7 +128,8 @@ final class D3d12ComputeTileDriver implements ComputeTileD3d12Driver {
     if (isBuilt) return _kComputePipelineToken;
     return D3d12Arena.using(_device.library.allocator, (D3d12Arena arena) {
       try {
-        _bufferRootSignature = _createRootSignature(arena, textureOutput: false);
+        _bufferRootSignature =
+            _createRootSignature(arena, textureOutput: false);
         _bufferBlob = _compile(
           arena,
           kD3d12ComputeTileBufferShader,
@@ -475,7 +475,8 @@ final class D3d12ComputeTileDriver implements ComputeTileD3d12Driver {
   }
 
   D3d12UploadRange _reserve(int bytes) {
-    final int size = bytes < _kMinimumUploadBytes ? _kMinimumUploadBytes : bytes;
+    final int size =
+        bytes < _kMinimumUploadBytes ? _kMinimumUploadBytes : bytes;
     final D3d12UploadRange? range =
         _device.frames.reserveUpload(size, alignment: 256);
     if (range == null) {
@@ -718,7 +719,9 @@ final class D3d12ComputeTileDriver implements ComputeTileD3d12Driver {
   }
 
   void _releaseNativeObjects() {
-    if (_bufferPipeline != nullptr) _bufferPipeline = releaseCom(_bufferPipeline);
+    if (_bufferPipeline != nullptr) {
+      _bufferPipeline = releaseCom(_bufferPipeline);
+    }
     if (_texturePipeline != nullptr) {
       _texturePipeline = releaseCom(_texturePipeline);
     }

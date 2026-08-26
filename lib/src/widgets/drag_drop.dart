@@ -48,9 +48,9 @@ import '../layout/render_box.dart';
 import '../platform/drag_drop.dart';
 import '../platform/input_events.dart';
 import '../platform/native_window.dart';
+import '../semantics/semantics.dart';
 import 'element.dart';
 import 'pointer_router.dart';
-import 'semantics.dart';
 import 'widget.dart';
 
 export '../platform/drag_drop.dart';
@@ -233,9 +233,8 @@ final class DragDropScope extends InheritedWidget {
 
   /// The nearest backend, or null - for a caller that would rather hide a
   /// "drag me" affordance than offer one that will fail.
-  static DragDropBackend? maybeOf(BuildContext context) => context
-      .dependOnInheritedWidgetOfExactType<DragDropScope>()
-      ?.dragAndDrop;
+  static DragDropBackend? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<DragDropScope>()?.dragAndDrop;
 
   /// The window this subtree is mounted in, or null outside an application.
   static NativeWindow? windowOf(BuildContext context) =>

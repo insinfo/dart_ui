@@ -84,7 +84,8 @@ abstract interface class WaylandTextInputClient {
 
   /// `set_surrounding_text`. [cursorBytes] and [anchorBytes] are **UTF-8 byte**
   /// offsets into [text], which is the protocol's unit and not the framework's.
-  void textInputSetSurroundingText(String text, int cursorBytes, int anchorBytes);
+  void textInputSetSurroundingText(
+      String text, int cursorBytes, int anchorBytes);
 
   void textInputSetTextChangeCause(int cause);
 
@@ -534,8 +535,7 @@ final class WaylandTextInputManager {
   void _pushState(TextInputClient client, {required int cause}) {
     bool dirty = false;
 
-    final TextInputConfiguration configuration =
-        client.textInputConfiguration;
+    final TextInputConfiguration configuration = client.textInputConfiguration;
     if (configuration != _sentConfiguration) {
       _sentConfiguration = configuration;
       _client.textInputSetContentType(

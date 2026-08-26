@@ -16,6 +16,21 @@
 ///   * **updates are incremental** (section 31.4). A rebuild reports which
 ///     nodes changed, so a platform bridge sends one property update instead of
 ///     a whole tree.
+///
+/// ## Why this is its own layer and not part of `widgets/`
+///
+/// Because nothing here is a widget. This file names [RenderBox] and two
+/// geometry types and stops; the tree it builds is consumed by accessibility
+/// backends - UI Automation, AT-SPI - that have never heard of a widget and
+/// should not have to import one to be handed a tree they can publish.
+///
+/// It lived in `widgets/` anyway, and the bill arrived at
+/// `semantics/accessibility.dart`: the contract a backend implements had to
+/// import the widget layer to name [SemanticsOwner], which made the lowest
+/// layer that knows about operating systems depend on the highest one that
+/// draws. Sitting above `layout` and below `widgets` costs nothing - every
+/// widget that describes itself still imports this file - and it lets the
+/// platform-facing contract sit beside the tree it carries.
 library;
 
 import '../geometry/offset.dart';

@@ -12,9 +12,9 @@ import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_opcodes.dart' show paintStyleStroke;
 import '../layout/render_box.dart';
+import '../semantics/semantics.dart';
 import 'animation_scope.dart';
 import 'element.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 

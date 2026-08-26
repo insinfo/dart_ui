@@ -26,12 +26,12 @@ import '../graphics/display_list_opcodes.dart' show paintStyleStroke;
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
 import '../rendering/text/font_registry.dart';
+import '../semantics/semantics.dart';
 import '../text/shaper.dart';
 import '../text/typeface.dart';
 import 'focus.dart';
 import 'keyboard_router.dart';
 import 'pointer_router.dart';
-import 'semantics.dart';
 import 'style.dart';
 import 'theme.dart';
 

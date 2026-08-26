@@ -255,10 +255,13 @@ void main() {
           offset += 4) {
         expect(_float(slice, offset), 0);
       }
-      expect(slice.getInt32(WebGpuSparseUniformOffset.gradientKind,
-          Endian.little), 0);
-      expect(slice.getInt32(WebGpuSparseUniformOffset.gradientSpread,
-          Endian.little), 0);
+      expect(
+          slice.getInt32(WebGpuSparseUniformOffset.gradientKind, Endian.little),
+          0);
+      expect(
+          slice.getInt32(
+              WebGpuSparseUniformOffset.gradientSpread, Endian.little),
+          0);
     });
 
     test('refuses a viewport that cannot project anything', () {

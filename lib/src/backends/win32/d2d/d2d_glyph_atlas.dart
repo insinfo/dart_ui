@@ -292,8 +292,7 @@ final class D2dGlyphAtlas {
       ..top = _dirtyTop
       ..right = _dirtyRight
       ..bottom = _dirtyBottom;
-    final Pointer<Uint8> source =
-        _texels + _dirtyTop * _pitch + _dirtyLeft * 4;
+    final Pointer<Uint8> source = _texels + _dirtyTop * _pitch + _dirtyLeft * 4;
     final int hr =
         _bitmap.copyFromMemory(_slotRect, source.cast<Void>(), _pitch);
     _dirtyLeft = 0;
@@ -357,10 +356,9 @@ final class D2dGlyphAtlas {
       final bool inside = row >= y && row < y + mask.height;
       for (var column = left; column < right; column++) {
         final int t = base + column * 4;
-        final int coverage =
-            inside && column >= x && column < x + mask.width
-                ? mask.coverage[(row - y) * mask.width + (column - x)]
-                : 0;
+        final int coverage = inside && column >= x && column < x + mask.width
+            ? mask.coverage[(row - y) * mask.width + (column - x)]
+            : 0;
         _bytes[t] = coverage;
         _bytes[t + 1] = coverage;
         _bytes[t + 2] = coverage;

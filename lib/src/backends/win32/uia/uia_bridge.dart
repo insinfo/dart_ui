@@ -54,7 +54,7 @@ import 'dart:io';
 
 import '../../../foundation/diagnostics.dart';
 import '../../../foundation/lifecycle.dart';
-import '../../../widgets/semantics.dart';
+import '../../../semantics/semantics.dart';
 import '../win32_api.dart';
 import '../win32_constants.dart';
 import '../win32_structs.dart';

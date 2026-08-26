@@ -790,7 +790,8 @@ final class X11DragDropManager {
     // `ConvertSelection` must use it rather than CurrentTime: the server
     // resolves the selection owner as of that moment, which is what stops a
     // late conversion from reading whatever owns the selection now.
-    _dropTimestamp = timestamp == xcbCurrentTime ? _positionTimestamp : timestamp;
+    _dropTimestamp =
+        timestamp == xcbCurrentTime ? _positionTimestamp : timestamp;
     _dropInFlight = true;
     _finishedSent = false;
     // The drop answers the enter; no `onDragLeave` is owed for a session that
@@ -1605,7 +1606,8 @@ final class X11XdndSource {
       for (int i = 0; i < xdndEnterInlineTypeCount; i++)
         i < _typeAtoms.length ? _typeAtoms[i] : xcbNone,
     ];
-    final int version = _targetVersion < xdndVersion ? _targetVersion : xdndVersion;
+    final int version =
+        _targetVersion < xdndVersion ? _targetVersion : xdndVersion;
     _client.sendClientMessage(
       destination: _target,
       window: _target,
@@ -1624,7 +1626,8 @@ final class X11XdndSource {
     _entered = true;
   }
 
-  void _sendPosition(int rootX, int rootY, int time) => _client.sendClientMessage(
+  void _sendPosition(int rootX, int rootY, int time) =>
+      _client.sendClientMessage(
         destination: _target,
         window: _target,
         type: _client.atom('XdndPosition'),

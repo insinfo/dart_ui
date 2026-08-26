@@ -37,7 +37,7 @@ import 'dart:ffi';
 import '../../../ffi/com.dart';
 import '../../../foundation/lifecycle.dart';
 import '../../../geometry/rect.dart';
-import '../../../widgets/semantics.dart';
+import '../../../semantics/semantics.dart';
 import 'com_server.dart';
 import 'uia_constants.dart';
 import 'uia_core.dart';

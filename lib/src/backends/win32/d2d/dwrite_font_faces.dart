@@ -239,8 +239,7 @@ final class DWriteFontFaces {
     }
 
     final Pointer<Uint16> name = _utf16(family);
-    final Pointer<Uint32> index =
-        _allocator.allocate<Uint32>(sizeOf<Uint32>());
+    final Pointer<Uint32> index = _allocator.allocate<Uint32>(sizeOf<Uint32>());
     final Pointer<Int32> exists = _allocator.allocate<Int32>(sizeOf<Int32>());
     exists.value = 0;
     final int hr = _collection.findFamilyName(name, index, exists);

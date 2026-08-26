@@ -209,7 +209,8 @@ void main() {
           <_Image>[const _Image(nominalSize: 24, width: 2, height: 2)],
         );
         // Rewrite the chunk's width to something no cursor could be.
-        ByteData.sublistView(bytes).setUint32(28 + 16, 0x40000000, Endian.little);
+        ByteData.sublistView(bytes)
+            .setUint32(28 + 16, 0x40000000, Endian.little);
         expect(parseXcursorFile(bytes), isNull);
       });
 

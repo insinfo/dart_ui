@@ -61,8 +61,9 @@ void main() {
       expect(state.height, 600);
       expect(state.configured, isTrue);
       expect(pending.resized, isTrue);
-      expect(pending.exposed, isTrue, reason: 'the first configure is the '
-          'only paint trigger Wayland has');
+      expect(pending.exposed, isTrue,
+          reason: 'the first configure is the '
+              'only paint trigger Wayland has');
       expect(pending.ackSerial, 41);
     });
 
@@ -86,8 +87,9 @@ void main() {
       surfaceConfigure(2);
 
       expect(pending.resized, isFalse);
-      expect(pending.exposed, isFalse, reason: 'only the first configure '
-          'exposes');
+      expect(pending.exposed, isFalse,
+          reason: 'only the first configure '
+              'exposes');
       expect(pending.ackSerial, 2);
     });
 
@@ -111,8 +113,7 @@ void main() {
     });
 
     test('activation arrives through the states array', () {
-      toplevelConfigure(0, 0,
-          stateFlags: 1 << xdgToplevelStateActivated);
+      toplevelConfigure(0, 0, stateFlags: 1 << xdgToplevelStateActivated);
       surfaceConfigure(5);
 
       expect(state.activated, isTrue);
@@ -129,8 +130,7 @@ void main() {
     });
 
     test('maximized and fullscreen bits update the window state', () {
-      toplevelConfigure(1920, 1080,
-          stateFlags: 1 << xdgToplevelStateMaximized);
+      toplevelConfigure(1920, 1080, stateFlags: 1 << xdgToplevelStateMaximized);
       surfaceConfigure(8);
       expect(state.maximized, isTrue);
       expect(state.fullscreen, isFalse);

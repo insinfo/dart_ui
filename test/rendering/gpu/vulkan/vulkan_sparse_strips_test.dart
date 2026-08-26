@@ -374,8 +374,8 @@ void main() {
         viewportWidth: 32,
         viewportHeight: 32,
       );
-      expect(driver.log.where((String e) => e == 'createPipeline'),
-          hasLength(2));
+      expect(
+          driver.log.where((String e) => e == 'createPipeline'), hasLength(2));
     });
 
     test('a disposed executor refuses everything by name', () {

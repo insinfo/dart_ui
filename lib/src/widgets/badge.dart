@@ -16,11 +16,11 @@ import '../graphics/display_list_geometry.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
-import 'semantics.dart';
 import 'style.dart';
 import 'theme.dart';
 import 'widget.dart';
@@ -334,8 +334,8 @@ final class RenderChip extends RenderBox with ControlBehavior {
     paintCenteredLabel(
       list,
       _label,
-      Rect.fromLTWH(rect.left, rect.top, rect.width - _deleteWidth,
-          rect.height),
+      Rect.fromLTWH(
+          rect.left, rect.top, rect.width - _deleteWidth, rect.height),
       enabled ? theme.foreground : theme.disabledForeground,
     );
     if (_onDeleted != null) {

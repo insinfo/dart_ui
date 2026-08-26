@@ -89,7 +89,9 @@ final class D2dFactory {
                     Pointer<D2dHwndRenderTargetProperties>,
                     Pointer<Pointer<Void>>)>(),
         _createDcRenderTarget = comMethod<
-                Int32 Function(Pointer<Void>, Pointer<D2dRenderTargetProperties>,
+                Int32 Function(
+                    Pointer<Void>,
+                    Pointer<D2dRenderTargetProperties>,
                     Pointer<Pointer<Void>>)>(pointer, 16)
             .asFunction<
                 int Function(Pointer<Void>, Pointer<D2dRenderTargetProperties>,
@@ -144,16 +146,22 @@ final class D2dFactory {
 final class D2dRenderTarget {
   D2dRenderTarget(this.pointer)
       : _createBitmap = comMethod<
-                Int32 Function(Pointer<Void>, D2dSizeU, Pointer<Void>, Uint32,
-                    Pointer<D2dBitmapProperties>, Pointer<Pointer<Void>>)>(
-                pointer, 4)
+                Int32 Function(
+                    Pointer<Void>,
+                    D2dSizeU,
+                    Pointer<Void>,
+                    Uint32,
+                    Pointer<D2dBitmapProperties>,
+                    Pointer<Pointer<Void>>)>(pointer, 4)
             .asFunction<
                 int Function(Pointer<Void>, D2dSizeU, Pointer<Void>, int,
                     Pointer<D2dBitmapProperties>, Pointer<Pointer<Void>>)>(),
         _createSolidColorBrush = comMethod<
-                Int32 Function(Pointer<Void>, Pointer<D2dColorF>,
-                    Pointer<D2dBrushProperties>, Pointer<Pointer<Void>>)>(
-                pointer, 8)
+                Int32 Function(
+                    Pointer<Void>,
+                    Pointer<D2dColorF>,
+                    Pointer<D2dBrushProperties>,
+                    Pointer<Pointer<Void>>)>(pointer, 8)
             .asFunction<
                 int Function(Pointer<Void>, Pointer<D2dColorF>,
                     Pointer<D2dBrushProperties>, Pointer<Pointer<Void>>)>(),
@@ -234,9 +242,8 @@ final class D2dRenderTarget {
                 void Function(Pointer<Void>, Pointer<Void>, Pointer<D2dRectF>,
                     double, int, Pointer<D2dRectF>)>(),
         _drawGlyphRun = comMethod<
-                    Void Function(Pointer<Void>, D2dPoint2F,
-                        Pointer<DWriteGlyphRun>, Pointer<Void>, Int32)>(
-                pointer, 29)
+                Void Function(Pointer<Void>, D2dPoint2F,
+                    Pointer<DWriteGlyphRun>, Pointer<Void>, Int32)>(pointer, 29)
             .asFunction<
                 void Function(Pointer<Void>, D2dPoint2F,
                     Pointer<DWriteGlyphRun>, Pointer<Void>, int)>(),
@@ -246,8 +253,7 @@ final class D2dRenderTarget {
         _setTransform = comMethod<
                 Void Function(
                     Pointer<Void>, Pointer<D2dMatrix3x2F>)>(pointer, 30)
-            .asFunction<
-                void Function(Pointer<Void>, Pointer<D2dMatrix3x2F>)>(),
+            .asFunction<void Function(Pointer<Void>, Pointer<D2dMatrix3x2F>)>(),
         _setAntialiasMode =
             comMethod<Void Function(Pointer<Void>, Uint32)>(pointer, 32)
                 .asFunction<void Function(Pointer<Void>, int)>(),
@@ -268,8 +274,7 @@ final class D2dRenderTarget {
         _pushAxisAlignedClip = comMethod<
                 Void Function(
                     Pointer<Void>, Pointer<D2dRectF>, Uint32)>(pointer, 45)
-            .asFunction<
-                void Function(Pointer<Void>, Pointer<D2dRectF>, int)>(),
+            .asFunction<void Function(Pointer<Void>, Pointer<D2dRectF>, int)>(),
         _popAxisAlignedClip =
             comMethod<Void Function(Pointer<Void>)>(pointer, 46)
                 .asFunction<void Function(Pointer<Void>)>(),
@@ -289,9 +294,11 @@ final class D2dRenderTarget {
 
   final int Function(Pointer<Void>, D2dSizeU, Pointer<Void>, int,
       Pointer<D2dBitmapProperties>, Pointer<Pointer<Void>>) _createBitmap;
-  final int Function(Pointer<Void>, Pointer<D2dColorF>,
-      Pointer<D2dBrushProperties>, Pointer<Pointer<Void>>)
-      _createSolidColorBrush;
+  final int Function(
+      Pointer<Void>,
+      Pointer<D2dColorF>,
+      Pointer<D2dBrushProperties>,
+      Pointer<Pointer<Void>>) _createSolidColorBrush;
   final int Function(Pointer<Void>, Pointer<D2dGradientStop>, int, int, int,
       Pointer<Pointer<Void>>) _createGradientStopCollection;
   final int Function(
@@ -316,8 +323,7 @@ final class D2dRenderTarget {
           Pointer<Void>, Pointer<Void>, Pointer<Void>, double, Pointer<Void>)
       _drawGeometry;
   final void Function(
-          Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Void>)
-      _fillGeometry;
+      Pointer<Void>, Pointer<Void>, Pointer<Void>, Pointer<Void>) _fillGeometry;
   final void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>, int,
       Pointer<D2dRectF>, Pointer<D2dRectF>) _fillOpacityMask;
   final void Function(Pointer<Void>, Pointer<Void>, Pointer<D2dRectF>, double,
@@ -327,8 +333,8 @@ final class D2dRenderTarget {
   final void Function(Pointer<Void>, int) _setTextAntialiasMode;
   final void Function(Pointer<Void>, Pointer<D2dMatrix3x2F>) _setTransform;
   final void Function(Pointer<Void>, int) _setAntialiasMode;
-  final void Function(Pointer<Void>, Pointer<D2dLayerParameters>,
-      Pointer<Void>) _pushLayer;
+  final void Function(Pointer<Void>, Pointer<D2dLayerParameters>, Pointer<Void>)
+      _pushLayer;
   final void Function(Pointer<Void>) _popLayer;
   final int Function(Pointer<Void>, Pointer<Uint64>, Pointer<Uint64>) _flush;
   final void Function(Pointer<Void>, Pointer<D2dRectF>, int)
@@ -447,8 +453,7 @@ final class D2dRenderTarget {
   /// transform, a target whose alpha mode is not ignore, anything inside a
   /// layer. Asking for ClearType where those hold produces greyscale, silently
   /// and correctly.
-  void setTextAntialiasMode(int mode) =>
-      _setTextAntialiasMode(pointer, mode);
+  void setTextAntialiasMode(int mode) => _setTextAntialiasMode(pointer, mode);
 
   void setTransform(Pointer<D2dMatrix3x2F> matrix) =>
       _setTransform(pointer, matrix);
@@ -521,12 +526,11 @@ const String iidD2d1DeviceContext3 = '235A7496-8351-414C-BCD4-6672AB2D8E00';
 final class D2dBitmap {
   D2dBitmap(this.pointer)
       : _copyFromMemory = comMethod<
-                    Int32 Function(
-                        Pointer<Void>, Pointer<D2dRectU>, Pointer<Void>,
-                        Uint32)>(pointer, 10)
+                Int32 Function(Pointer<Void>, Pointer<D2dRectU>, Pointer<Void>,
+                    Uint32)>(pointer, 10)
             .asFunction<
-                int Function(Pointer<Void>, Pointer<D2dRectU>, Pointer<Void>,
-                    int)>();
+                int Function(
+                    Pointer<Void>, Pointer<D2dRectU>, Pointer<Void>, int)>();
 
   final Pointer<Void> pointer;
 
@@ -600,12 +604,12 @@ final class D2dBitmap {
 final class D2dDeviceContext3 {
   D2dDeviceContext3(this.pointer)
       : _createSpriteBatch = comMethod<
-                    Int32 Function(Pointer<Void>, Pointer<Pointer<Void>>)>(
-                pointer, 106)
+                Int32 Function(
+                    Pointer<Void>, Pointer<Pointer<Void>>)>(pointer, 106)
             .asFunction<int Function(Pointer<Void>, Pointer<Pointer<Void>>)>(),
         _drawSpriteBatch = comMethod<
-                    Void Function(Pointer<Void>, Pointer<Void>, Uint32, Uint32,
-                        Pointer<Void>, Int32, Int32)>(pointer, 107)
+                Void Function(Pointer<Void>, Pointer<Void>, Uint32, Uint32,
+                    Pointer<Void>, Int32, Int32)>(pointer, 107)
             .asFunction<
                 void Function(Pointer<Void>, Pointer<Void>, int, int,
                     Pointer<Void>, int, int)>();
@@ -652,17 +656,17 @@ final class D2dDeviceContext3 {
 final class D2dSpriteBatch {
   D2dSpriteBatch(this.pointer)
       : _addSprites = comMethod<
-                    Int32 Function(
-                        Pointer<Void>,
-                        Uint32,
-                        Pointer<D2dRectF>,
-                        Pointer<D2dRectU>,
-                        Pointer<D2dColorF>,
-                        Pointer<D2dMatrix3x2F>,
-                        Uint32,
-                        Uint32,
-                        Uint32,
-                        Uint32)>(pointer, 4)
+                Int32 Function(
+                    Pointer<Void>,
+                    Uint32,
+                    Pointer<D2dRectF>,
+                    Pointer<D2dRectU>,
+                    Pointer<D2dColorF>,
+                    Pointer<D2dMatrix3x2F>,
+                    Uint32,
+                    Uint32,
+                    Uint32,
+                    Uint32)>(pointer, 4)
             .asFunction<
                 int Function(
                     Pointer<Void>,
@@ -731,10 +735,9 @@ final class D2dHwndRenderTarget {
         _checkWindowState =
             comMethod<Uint32 Function(Pointer<Void>)>(pointer, 57)
                 .asFunction<int Function(Pointer<Void>)>(),
-        _resize =
-            comMethod<Int32 Function(Pointer<Void>, Pointer<D2dSizeU>)>(
-                    pointer, 58)
-                .asFunction<int Function(Pointer<Void>, Pointer<D2dSizeU>)>();
+        _resize = comMethod<Int32 Function(Pointer<Void>, Pointer<D2dSizeU>)>(
+                pointer, 58)
+            .asFunction<int Function(Pointer<Void>, Pointer<D2dSizeU>)>();
 
   final Pointer<Void> pointer;
 
@@ -763,8 +766,8 @@ final class D2dDcRenderTarget {
                 Int32 Function(Pointer<Void>, Pointer<Void>,
                     Pointer<Win32NativeRect>)>(pointer, 57)
             .asFunction<
-                int Function(Pointer<Void>, Pointer<Void>,
-                    Pointer<Win32NativeRect>)>();
+                int Function(
+                    Pointer<Void>, Pointer<Void>, Pointer<Win32NativeRect>)>();
 
   final Pointer<Void> pointer;
   final D2dRenderTarget target;
@@ -785,10 +788,9 @@ final class D2dSolidColorBrush {
   D2dSolidColorBrush(this.pointer)
       : _setOpacity = comMethod<Void Function(Pointer<Void>, Float)>(pointer, 4)
             .asFunction<void Function(Pointer<Void>, double)>(),
-        _setColor =
-            comMethod<Void Function(Pointer<Void>, Pointer<D2dColorF>)>(
-                    pointer, 8)
-                .asFunction<void Function(Pointer<Void>, Pointer<D2dColorF>)>();
+        _setColor = comMethod<Void Function(Pointer<Void>, Pointer<D2dColorF>)>(
+                pointer, 8)
+            .asFunction<void Function(Pointer<Void>, Pointer<D2dColorF>)>();
 
   final Pointer<Void> pointer;
   final void Function(Pointer<Void>, double) _setOpacity;
@@ -836,14 +838,14 @@ final class D2dGeometrySink {
             .asFunction<void Function(Pointer<Void>, int)>(),
         _close = comMethod<Int32 Function(Pointer<Void>)>(pointer, 9)
             .asFunction<int Function(Pointer<Void>)>(),
-        _addLine = comMethod<Void Function(Pointer<Void>, D2dPoint2F)>(
-                pointer, 10)
-            .asFunction<void Function(Pointer<Void>, D2dPoint2F)>(),
-        _addBezier = comMethod<
-                Void Function(
-                    Pointer<Void>, Pointer<D2dBezierSegment>)>(pointer, 11)
-            .asFunction<
-                void Function(Pointer<Void>, Pointer<D2dBezierSegment>)>(),
+        _addLine =
+            comMethod<Void Function(Pointer<Void>, D2dPoint2F)>(pointer, 10)
+                .asFunction<void Function(Pointer<Void>, D2dPoint2F)>(),
+        _addBezier =
+            comMethod<Void Function(Pointer<Void>, Pointer<D2dBezierSegment>)>(
+                    pointer, 11)
+                .asFunction<
+                    void Function(Pointer<Void>, Pointer<D2dBezierSegment>)>(),
         _addQuadraticBezier = comMethod<
                 Void Function(Pointer<Void>,
                     Pointer<D2dQuadraticBezierSegment>)>(pointer, 12)

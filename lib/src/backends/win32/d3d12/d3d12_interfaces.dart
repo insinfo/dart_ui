@@ -147,19 +147,11 @@ final class D3d12Device {
                 void Function(Pointer<Void>, Pointer<Void>,
                     Pointer<D3d12ShaderResourceViewDesc>, int)>(),
         createUnorderedAccessView = comMethod<
-                Void Function(
-                    Pointer<Void>,
-                    Pointer<Void>,
-                    Pointer<Void>,
-                    Pointer<D3d12UnorderedAccessViewDesc>,
-                    IntPtr)>(pointer, 19)
+                Void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>,
+                    Pointer<D3d12UnorderedAccessViewDesc>, IntPtr)>(pointer, 19)
             .asFunction<
-                void Function(
-                    Pointer<Void>,
-                    Pointer<Void>,
-                    Pointer<Void>,
-                    Pointer<D3d12UnorderedAccessViewDesc>,
-                    int)>(),
+                void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>,
+                    Pointer<D3d12UnorderedAccessViewDesc>, int)>(),
         createRenderTargetView = comMethod<
                 Void Function(Pointer<Void>, Pointer<Void>, Pointer<Void>,
                     IntPtr)>(pointer, 20)
@@ -318,8 +310,8 @@ final class D3d12GraphicsCommandList {
             .asFunction<
                 int Function(Pointer<Void>, Pointer<Void>, Pointer<Void>)>(),
         drawInstanced = comMethod<
-                Void Function(Pointer<Void>, Uint32, Uint32, Uint32,
-                    Uint32)>(pointer, 12)
+                Void Function(
+                    Pointer<Void>, Uint32, Uint32, Uint32, Uint32)>(pointer, 12)
             .asFunction<void Function(Pointer<Void>, int, int, int, int)>(),
         drawIndexedInstanced = comMethod<
                 Void Function(Pointer<Void>, Uint32, Uint32, Uint32, Int32,
@@ -487,8 +479,7 @@ final class D3d12GraphicsCommandList {
 
   /// Root descriptors: a GPU virtual address in the root signature rather than
   /// an index into a descriptor heap. Raw and structured buffers only.
-  final void Function(Pointer<Void>, int, int)
-      setComputeRootShaderResourceView;
+  final void Function(Pointer<Void>, int, int) setComputeRootShaderResourceView;
   final void Function(Pointer<Void>, int, int)
       setComputeRootUnorderedAccessView;
   final void Function(Pointer<Void>, Pointer<D3d12IndexBufferView>)

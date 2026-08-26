@@ -89,7 +89,8 @@ class VectorPixmap extends SelectableObject {
     if (target is VectorPixmap) {
       target.pixelWidth = pixelWidth;
       target.pixelHeight = pixelHeight;
-      target.pixelData = pixelData != null ? Uint8List.fromList(pixelData!) : null;
+      target.pixelData =
+          pixelData != null ? Uint8List.fromList(pixelData!) : null;
       target.imageFormat = imageFormat;
       target.dpi = dpi;
     }

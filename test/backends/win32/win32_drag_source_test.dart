@@ -415,8 +415,7 @@ void main() {
         },
         api: api,
       );
-      buffer =
-          allocator.allocate<Uint8>(OleStructLayout.formatEtcSize * slots);
+      buffer = allocator.allocate<Uint8>(OleStructLayout.formatEtcSize * slots);
       fetched = allocator.allocate<Uint32>(4);
 
       final Pointer<Pointer<Void>> out =
@@ -752,8 +751,9 @@ int _getData(Pointer<Void> self, Pointer<Uint8> etc, Pointer<Uint8> medium) =>
         self, etc.cast(), medium.cast());
 
 int _queryGetData(Pointer<Void> self, Pointer<Uint8> etc) =>
-    comMethod<ComServerPointerNative>(self, 5).asFunction<
-        int Function(Pointer<Void>, Pointer<Void>)>()(self, etc.cast());
+    comMethod<ComServerPointerNative>(self, 5)
+            .asFunction<int Function(Pointer<Void>, Pointer<Void>)>()(
+        self, etc.cast());
 
 int _getCanonicalFormatEtc(
   Pointer<Void> self,
@@ -775,8 +775,8 @@ int _setData(
         self, etc.cast(), medium.cast(), release);
 
 int _enumFormatEtc(Pointer<Void> self, int direction, Pointer<Void> out) =>
-    comMethod<ComServerIntPointerNative>(self, 8).asFunction<
-        int Function(Pointer<Void>, int, Pointer<Void>)>()(
+    comMethod<ComServerIntPointerNative>(self, 8)
+        .asFunction<int Function(Pointer<Void>, int, Pointer<Void>)>()(
       self,
       direction,
       out,
@@ -806,8 +806,8 @@ int _next(
   Pointer<Uint32> fetched,
 ) =>
     comMethod<ComServerCountPointerOutNative>(self, 3).asFunction<
-        int Function(Pointer<Void>, int, Pointer<Void>,
-            Pointer<Uint32>)>()(self, count, buffer, fetched);
+            int Function(Pointer<Void>, int, Pointer<Void>, Pointer<Uint32>)>()(
+        self, count, buffer, fetched);
 
 int _skip(Pointer<Void> self, int count) =>
     comMethod<ComServerIntNative>(self, 4)
@@ -823,8 +823,9 @@ int _clone(Pointer<Void> self, Pointer<Void> out) =>
 // IDropSource: QueryContinueDrag 3, GiveFeedback 4.
 
 int _queryContinueDrag(Pointer<Void> self, int escapePressed, int keyState) =>
-    comMethod<ComServerIntIntNative>(self, 3).asFunction<
-        int Function(Pointer<Void>, int, int)>()(self, escapePressed, keyState);
+    comMethod<ComServerIntIntNative>(self, 3)
+            .asFunction<int Function(Pointer<Void>, int, int)>()(
+        self, escapePressed, keyState);
 
 int _giveFeedback(Pointer<Void> self, int effect) =>
     comMethod<ComServerIntNative>(self, 4)

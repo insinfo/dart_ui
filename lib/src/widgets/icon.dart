@@ -440,16 +440,16 @@ final class RenderIcon extends RenderBox {
         family != TablerIcons.fontFamily &&
         family != 'Phosphor') {
       return (
-        penX:
-            (offset.dx + (_iconSize - face.advanceOf(glyph)) / 2).roundToDouble(),
+        penX: (offset.dx + (_iconSize - face.advanceOf(glyph)) / 2)
+            .roundToDouble(),
         baselineY: (offset.dy + _baselineOffset).roundToDouble(),
       );
     }
     final Rect bounds = face.typeface.outlineOf(glyph).bounds;
     if (bounds.isEmpty) {
       return (
-        penX:
-            (offset.dx + (_iconSize - face.advanceOf(glyph)) / 2).roundToDouble(),
+        penX: (offset.dx + (_iconSize - face.advanceOf(glyph)) / 2)
+            .roundToDouble(),
         baselineY: (offset.dy + _baselineOffset).roundToDouble(),
       );
     }
@@ -608,7 +608,8 @@ final class Chevron extends RenderObjectWidget {
 
   /// The direction after mirroring, which only [back] and [forward] do.
   ChevronDirection _resolved(BuildContext context) {
-    if (direction == ChevronDirection.up || direction == ChevronDirection.down) {
+    if (direction == ChevronDirection.up ||
+        direction == ChevronDirection.down) {
       return direction;
     }
     final bool rtl = Directionality.maybeOf(context)?.isRightToLeft ?? false;

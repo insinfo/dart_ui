@@ -162,14 +162,15 @@ final class D2dRasterSink implements RasterSink {
     _sourceRect = _allocator.allocate<D2dRectF>(sizeOf<D2dRectF>());
     _clipRect = _allocator.allocate<D2dRectF>(sizeOf<D2dRectF>());
     _matrix = _allocator.allocate<D2dMatrix3x2F>(sizeOf<D2dMatrix3x2F>());
-    _roundedRect = _allocator.allocate<D2dRoundedRect>(sizeOf<D2dRoundedRect>());
+    _roundedRect =
+        _allocator.allocate<D2dRoundedRect>(sizeOf<D2dRoundedRect>());
     _layerParameters =
         _allocator.allocate<D2dLayerParameters>(sizeOf<D2dLayerParameters>());
     _size = _allocator.allocate<D2dSizeU>(sizeOf<D2dSizeU>());
     _point = _allocator.allocate<D2dPoint2F>(sizeOf<D2dPoint2F>());
     _bezier = _allocator.allocate<D2dBezierSegment>(sizeOf<D2dBezierSegment>());
-    _quadratic = _allocator
-        .allocate<D2dQuadraticBezierSegment>(sizeOf<D2dQuadraticBezierSegment>());
+    _quadratic = _allocator.allocate<D2dQuadraticBezierSegment>(
+        sizeOf<D2dQuadraticBezierSegment>());
     _bitmapProperties =
         _allocator.allocate<D2dBitmapProperties>(sizeOf<D2dBitmapProperties>());
     _spriteColor = _allocator.allocate<D2dColorF>(sizeOf<D2dColorF>());
@@ -803,8 +804,8 @@ final class D2dRasterSink implements RasterSink {
         _target.flush();
         _atlasSampled = false;
         atlas.reset();
-        (outcome, slot) = atlas.acquire(
-            _glyphCache, font, sizeKey, glyphIds[i], bucket);
+        (outcome, slot) =
+            atlas.acquire(_glyphCache, font, sizeKey, glyphIds[i], bucket);
       }
 
       switch (outcome) {
@@ -815,8 +816,8 @@ final class D2dRasterSink implements RasterSink {
           // glyph on top of letters that come after it in the run. Overlap is
           // rare and a reordering is not a rounding error.
           pending = _drawSprites(pending, argb);
-          _drawGlyphFromOwnBitmap(font, sizeKey, glyphIds[i], bucket, penX,
-              penY, argb);
+          _drawGlyphFromOwnBitmap(
+              font, sizeKey, glyphIds[i], bucket, penX, penY, argb);
           continue;
         case D2dGlyphAtlasResult.full:
           // The retry above ran against an empty atlas, and a glyph that does
@@ -943,8 +944,8 @@ final class D2dRasterSink implements RasterSink {
     _point.ref
       ..x = deviceOrigin.dx
       ..y = deviceOrigin.dy;
-    _target.drawGlyphRun(_point.ref, _dwriteRun, _solidBrush(argb),
-        dwriteMeasuringModeNatural);
+    _target.drawGlyphRun(
+        _point.ref, _dwriteRun, _solidBrush(argb), dwriteMeasuringModeNatural);
     _nativeTextRunCount++;
     return true;
   }
@@ -1009,8 +1010,7 @@ final class D2dRasterSink implements RasterSink {
     if (_spriteRouteResolved) return;
     _spriteRouteResolved = true;
     if (!spriteBatching) return;
-    final D2dDeviceContext3? context =
-        _target.queryDeviceContext3(_allocator);
+    final D2dDeviceContext3? context = _target.queryDeviceContext3(_allocator);
     if (context == null) return;
     final int hr = context.createSpriteBatch(_out);
     if (comFailed(hr) || _out.value == nullptr) {
@@ -1140,8 +1140,7 @@ final class D2dRasterSink implements RasterSink {
     double penY,
     int argb,
   ) {
-    final _D2dGlyphBitmap? glyph =
-        _glyphBitmap(font, sizeKey, glyphId, bucket);
+    final _D2dGlyphBitmap? glyph = _glyphBitmap(font, sizeKey, glyphId, bucket);
     if (glyph == null) return;
     final double left = (glyphPixelOrigin(penX) + glyph.left).toDouble();
     final double top = (pixelEdge(penY) + glyph.top).toDouble();
@@ -1155,8 +1154,8 @@ final class D2dRasterSink implements RasterSink {
       ..top = 0
       ..right = glyph.width.toDouble()
       ..bottom = glyph.height.toDouble();
-    _target.fillOpacityMask(glyph.bitmap, _solidBrush(argb), _rect,
-        _sourceRect);
+    _target.fillOpacityMask(
+        glyph.bitmap, _solidBrush(argb), _rect, _sourceRect);
   }
 
   /// Draws a run by filling each glyph's outline under the full matrix.
@@ -1231,8 +1230,7 @@ final class D2dRasterSink implements RasterSink {
       // contours - it is how the counter of an `o` comes out empty - and
       // even-odd would fill the overlap wherever two contours of a composite
       // glyph cross.
-      final Pointer<Void> geometry =
-          _geometryFor(outline, d2d1FillModeWinding);
+      final Pointer<Void> geometry = _geometryFor(outline, d2d1FillModeWinding);
       _setTransform(
         glyphOutlineTransform(
           transform,
@@ -1273,8 +1271,8 @@ final class D2dRasterSink implements RasterSink {
     properties.ref.endPoint
       ..x = end.dx
       ..y = end.dy;
-    final int hr = _target.createLinearGradientBrush(
-        properties, collection, _out);
+    final int hr =
+        _target.createLinearGradientBrush(properties, collection, _out);
     _allocator.free(properties);
     ComObject(collection).release();
     if (comFailed(hr)) {
@@ -1305,8 +1303,8 @@ final class D2dRasterSink implements RasterSink {
     properties.ref
       ..radiusX = radiusX
       ..radiusY = radiusY;
-    final int hr = _target.createRadialGradientBrush(
-        properties, collection, _out);
+    final int hr =
+        _target.createRadialGradientBrush(properties, collection, _out);
     _allocator.free(properties);
     ComObject(collection).release();
     if (comFailed(hr)) {
@@ -1548,8 +1546,7 @@ final class D2dRasterSink implements RasterSink {
     final int width = image.width;
     final int height = image.height;
     final int pitch = width * 4;
-    final Pointer<Uint8> staging =
-        _allocator.allocate<Uint8>(pitch * height);
+    final Pointer<Uint8> staging = _allocator.allocate<Uint8>(pitch * height);
     final Uint8List stagingBytes = staging.asTypedList(pitch * height);
     final bool bgra = image.format == PixelFormat.bgra8888Premultiplied;
     for (var y = 0; y < height; y++) {

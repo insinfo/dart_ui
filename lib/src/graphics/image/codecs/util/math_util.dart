@@ -1,4 +1,3 @@
-
 num fract(num x) => x - x.floorToDouble();
 
 num mix(num x, num y, num a) => x * (1 - a) + y * a;

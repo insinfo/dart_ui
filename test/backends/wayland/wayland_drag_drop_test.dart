@@ -187,8 +187,8 @@ void main() {
       announceOffer(30, sourceActions: wlDndActionMove);
       enter(30);
 
-      expect(handler.enters.single.allowedActions,
-          <DragAction>{DragAction.move});
+      expect(
+          handler.enters.single.allowedActions, <DragAction>{DragAction.move});
       expect(handler.enters.single.suggestedAction, DragAction.move);
     });
 
@@ -420,10 +420,10 @@ void main() {
       enter(30);
       final DragData data = handler.enters.single.data;
 
-      expect(data.preferredFormat(<String>[_uriFormat, _textFormat]),
-          _uriFormat);
-      expect(data.preferredFormat(<String>[_textFormat, _uriFormat]),
-          _textFormat);
+      expect(
+          data.preferredFormat(<String>[_uriFormat, _textFormat]), _uriFormat);
+      expect(
+          data.preferredFormat(<String>[_textFormat, _uriFormat]), _textFormat);
     });
 
     test('a format nobody offers is null', () {
@@ -439,8 +439,8 @@ void main() {
       announceOffer(30, mimes: <String>[_textFormat]);
       enter(30);
 
-      expect(await handler.enters.single.data.readBytes(DragFormats.png),
-          isNull);
+      expect(
+          await handler.enters.single.data.readBytes(DragFormats.png), isNull);
       expect(client.receives, isEmpty,
           reason: 'receiving a type the source cannot produce hangs forever');
     });
@@ -754,8 +754,7 @@ void main() {
               'substitutes destroy something the user meant to keep');
     });
 
-    test('copy wins when several bits are set, as an unmodified drag does',
-        () {
+    test('copy wins when several bits are set, as an unmodified drag does', () {
       expect(
         waylandDndActionFromBits(wlDndActionCopy | wlDndActionMove),
         DragAction.copy,
@@ -773,8 +772,8 @@ void main() {
     });
 
     test('an empty mask means unknown, and answers copy', () {
-      expect(waylandDndActionSet(wlDndActionNone),
-          <DragAction>{DragAction.copy},
+      expect(
+          waylandDndActionSet(wlDndActionNone), <DragAction>{DragAction.copy},
           reason: 'source_actions arrived in version 3 and a version 2 source '
               'never sends it; an empty set would refuse every such drag');
     });

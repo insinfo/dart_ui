@@ -1918,8 +1918,7 @@ final class WaylandConnection
     flush();
   }
 
-  bool get _canSendTextInput =>
-      !isDisposed && isValid && _textInputId != 0;
+  bool get _canSendTextInput => !isDisposed && isValid && _textInputId != 0;
 
   // -------------------------------------------------------------------------
   // WaylandDragDropClient

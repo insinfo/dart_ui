@@ -44,7 +44,7 @@ import 'package:dart_ui/src/backends/win32/win32_structs.dart';
 import 'package:dart_ui/src/ffi/com.dart';
 import 'package:dart_ui/src/ffi/native_memory.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
-import 'package:dart_ui/src/widgets/semantics.dart';
+import 'package:dart_ui/src/semantics/semantics.dart';
 
 typedef _WndProcNative = IntPtr Function(IntPtr, Uint32, IntPtr, IntPtr);
 

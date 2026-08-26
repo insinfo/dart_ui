@@ -159,7 +159,8 @@ abstract interface class ComputeTileD3d12Driver {
 /// surface. See [ComputeTileD3d12Executor.dispatchDrawCoverage] for why the
 /// upper bound is as load bearing as the lower one.
 final class ComputeTileCompositeRect {
-  const ComputeTileCompositeRect._(this.left, this.top, this.right, this.bottom);
+  const ComputeTileCompositeRect._(
+      this.left, this.top, this.right, this.bottom);
 
   final int left;
   final int top;
@@ -410,8 +411,7 @@ final class ComputeTileD3d12Executor {
     int sampleGrid,
     int selectedDraw,
   ) {
-    final Uint32List constants =
-        Uint32List(kD3d12ComputeTileRootConstantCount);
+    final Uint32List constants = Uint32List(kD3d12ComputeTileRootConstantCount);
     constants[D3d12ComputeTileRootConstant.width] = plan.width;
     constants[D3d12ComputeTileRootConstant.height] = plan.height;
     constants[D3d12ComputeTileRootConstant.tileSize] = plan.tileSize;

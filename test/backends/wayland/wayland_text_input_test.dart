@@ -58,7 +58,8 @@ void main() {
       expect(waylandUtf16OffsetOf('\u{1F600}', 2), 0);
     });
 
-    test('surrounding text is clipped around the caret, never split mid-'
+    test(
+        'surrounding text is clipped around the caret, never split mid-'
         'character', () {
       final String long = 'a' * 5000;
       final ({String text, int cursor, int anchor}) clipped =
@@ -121,8 +122,8 @@ void main() {
       wire = _FakeWire();
       manager = WaylandTextInputManager(wire);
       client = _RecordingClient();
-      manager.clientForSurface = (int surfaceId) =>
-          surfaceId == _surfaceId ? client : null;
+      manager.clientForSurface =
+          (int surfaceId) => surfaceId == _surfaceId ? client : null;
     });
 
     /// Focus the surface and enable, which is what a field taking focus does.
@@ -216,7 +217,8 @@ void main() {
       expect(manager.isComposing, isTrue);
     });
 
-    test('cursor_begin == -1 is a request to hide the caret, not a missing '
+    test(
+        'cursor_begin == -1 is a request to hide the caret, not a missing '
         'value', () {
       focusAndEnable();
 
@@ -430,7 +432,8 @@ void main() {
       );
       expect(
         wire.calls,
-        contains('contentType(${zwpTextInputV3ContentHintHiddenText | zwpTextInputV3ContentHintSensitiveData},'
+        contains(
+            'contentType(${zwpTextInputV3ContentHintHiddenText | zwpTextInputV3ContentHintSensitiveData},'
             '$zwpTextInputV3ContentPurposePassword)'),
       );
     });

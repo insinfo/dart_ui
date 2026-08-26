@@ -5,28 +5,35 @@
 /// platform's accessibility API, so registration hands the backend a tree it
 /// can read and the window keeps the job of saying when.
 ///
-/// ## Why this file reaches up into `widgets/`
+/// ## Why this file is not in `platform/`
 ///
-/// Nothing else in `lib/src/platform/` imports the widget layer, and the rule
-/// is a good one: this directory describes what an operating system can do,
-/// and a description that needs a widget to state itself has stopped being a
-/// description. This file breaks it once, for [SemanticsOwner], and the
-/// alternative is worse in a way worth writing down rather than discovering:
+/// It used to be, and it was the one file under `lib/src/platform/` that
+/// imported the widget layer - because the tree it hands a backend is a
+/// [SemanticsOwner], and that type lived in `widgets/`. The edge was recorded
+/// and regretted in this header for as long as it existed: `platform`
+/// describes what an operating system can do, and a description that needs a
+/// widget to state itself has stopped being a description.
 ///
-///   * the publisher has to know **both** the semantic tree and the platform
-///     provider. There is no arrangement in which it knows one;
-///   * passing the tree as `Object` and casting inside the backend keeps the
-///     import graph tidy by making the contract untypeable, which trades a
-///     layering diagram for a class of runtime failure;
-///   * moving [SemanticsOwner] out of `widgets/` is the honest fix. It is a
-///     larger change than the wiring it would unblock, and it belongs to
-///     whoever owns the widget layer.
+/// Two shortcuts were rejected on the way here, because both look cheaper
+/// than they are:
 ///
-/// So: one edge, named here, rather than an untyped hole.
+///   * **declaring the edge**. `platform -> widgets` is dependency inversion,
+///     not an exception worth documenting: it makes the lowest layer that
+///     names an operating system depend on the highest one that draws;
+///   * **passing the tree as `Object`** and casting inside the backend. That
+///     keeps the import graph tidy by making the contract untypeable, trading
+///     a layering diagram for a class of runtime failure.
+///
+/// So the tree moved instead. [SemanticsOwner] and everything it builds now
+/// live in `semantics/`, a layer above `layout` and below `widgets`, and this
+/// contract lives with them: what `register` carries is a semantic tree, so
+/// the interface carrying it belongs at the layer that defines one. Nothing
+/// left here names a platform type - a window is an `int` handle - and
+/// `platform` is back to importing nothing above `scheduler`.
 library;
 
 import '../layout/render_box.dart';
-import '../widgets/semantics.dart';
+import 'semantics.dart';
 
 /// Where a backend reads the tree it publishes.
 ///

@@ -246,15 +246,15 @@ Uint32List buildVulkanSparseVertexShader() {
   final int push = module.variable(pushPointer, kSpirvStorageClassPushConstant);
 
   module
-    ..entryPoint(kSpirvExecutionModelVertex, mainId, kVulkanSparseEntryPoint,
-        <int>[
-          aQuadRect,
-          aAtlasOrigin,
-          vertexIndex,
-          vAtlasTexel,
-          vTargetPosition,
-          position,
-        ])
+    ..entryPoint(
+        kSpirvExecutionModelVertex, mainId, kVulkanSparseEntryPoint, <int>[
+      aQuadRect,
+      aAtlasOrigin,
+      vertexIndex,
+      vAtlasTexel,
+      vTargetPosition,
+      position,
+    ])
     ..decorate(aQuadRect, kSpirvDecorationLocation,
         const <int>[kVulkanSparseAttributeQuadRect])
     ..decorate(aAtlasOrigin, kSpirvDecorationLocation,
@@ -275,7 +275,8 @@ Uint32List buildVulkanSparseVertexShader() {
   // Four vertices form a triangle strip: TL, TR, BL, BR. gl_VertexIndex makes
   // the immutable unit quad free - the only uploaded data is per-instance.
   final int index = body.load(i32, vertexIndex);
-  final int cornerX = body.convertToFloat(f32, body.bitwiseAnd(i32, index, intOne));
+  final int cornerX =
+      body.convertToFloat(f32, body.bitwiseAnd(i32, index, intOne));
   final int cornerY = body.convertToFloat(
       f32, body.bitwiseAnd(i32, body.shiftRight(i32, index, intOne), intOne));
   final int corner = body.construct(v2, <int>[cornerX, cornerY]);
@@ -291,8 +292,8 @@ Uint32List buildVulkanSparseVertexShader() {
     ..store(vTargetPosition, devicePosition);
 
   // clip = position / viewport * 2 - 1, in both axes and with no flip.
-  final int viewport = body.load(v2,
-      body.accessChain(pushMemberPointer, push, <int>[firstMember]));
+  final int viewport = body.load(
+      v2, body.accessChain(pushMemberPointer, push, <int>[firstMember]));
   final int ratio = body.divide(v2, devicePosition, viewport);
   final int ndc = body.subtract(v2, body.scale(v2, ratio, two), oneOne);
   body
@@ -336,7 +337,8 @@ Uint32List buildVulkanSparseFragmentShader({
   final bool samplesAtlas = coverage == kVulkanSparseModeAlpha;
   final bool samplesRamp = paint == kVulkanSparsePaintGradient;
 
-  final SpirvBuilder module = SpirvBuilder()..capability(kSpirvCapabilityShader);
+  final SpirvBuilder module = SpirvBuilder()
+    ..capability(kSpirvCapabilityShader);
   final int glsl = module.extInstImport(kGlslStd450);
   module.memoryModel(kSpirvAddressingModelLogical, kSpirvMemoryModelGlsl450);
 
@@ -457,8 +459,7 @@ Uint32List buildVulkanSparseFragmentShader({
     // entirely, which is what texelFetch does in the GL shader and what Load
     // does in the HLSL.
     final int texel = body.load(v2, vAtlasTexel);
-    final int floored =
-        body.extInst(v2, glsl, kGlslStd450Floor, <int>[texel]);
+    final int floored = body.extInst(v2, glsl, kGlslStd450Floor, <int>[texel]);
     final int coordinate = body.convertToSigned(iv2, floored);
     final int pageImage =
         body.image(imageType, body.load(sampledImage, alphaAtlas));
@@ -483,10 +484,10 @@ Uint32List buildVulkanSparseFragmentShader({
     final int row0 = loadV4(4);
     final int row1 = loadV4(5);
     final int local = body.construct(v2, <int>[
-      body.dot(f32, body.shuffle(v3, row0, row0, const <int>[0, 1, 2]),
-          targetXY1),
-      body.dot(f32, body.shuffle(v3, row1, row1, const <int>[0, 1, 2]),
-          targetXY1),
+      body.dot(
+          f32, body.shuffle(v3, row0, row0, const <int>[0, 1, 2]), targetXY1),
+      body.dot(
+          f32, body.shuffle(v3, row1, row1, const <int>[0, 1, 2]), targetXY1),
     ]);
 
     final int geometry0 = loadV4(6);
@@ -509,7 +510,8 @@ Uint32List buildVulkanSparseFragmentShader({
         body.divide(f32, projection, lengthSquared));
 
     // Radial and focal, the same four cases the CPU reference distinguishes.
-    final int center = body.shuffle(v2, geometry0, geometry0, const <int>[0, 1]);
+    final int center =
+        body.shuffle(v2, geometry0, geometry0, const <int>[0, 1]);
     final int radius = body.extract(f32, geometry0, 2);
     final int focus = body.construct(v2, <int>[
       body.extract(f32, geometry0, 3),
@@ -524,24 +526,22 @@ Uint32List buildVulkanSparseFragmentShader({
         body.equalFloat(boolType, rayY, zero));
     final int focusAtCenter = body.logicalAnd(
         boolType,
-        body.equalFloat(
-            boolType, body.extract(f32, focus, 0), body.extract(f32, center, 0)),
+        body.equalFloat(boolType, body.extract(f32, focus, 0),
+            body.extract(f32, center, 0)),
         body.equalFloat(boolType, body.extract(f32, focus, 1),
             body.extract(f32, center, 1)));
 
     final int a = body.dot(f32, ray, ray);
-    final int concentric =
-        body.divide(f32, body.extInst(f32, glsl, kGlslStd450Sqrt, <int>[a]),
-            radius);
+    final int concentric = body.divide(
+        f32, body.extInst(f32, glsl, kGlslStd450Sqrt, <int>[a]), radius);
 
     final int focusFromCenter = body.subtract(v2, focus, center);
-    final int b = body.multiply(
-        f32, two, body.dot(f32, focusFromCenter, ray));
-    final int c = body.subtract(f32, body.dot(f32, focusFromCenter,
-        focusFromCenter), body.multiply(f32, radius, radius));
-    final int discriminant = body.subtract(
+    final int b = body.multiply(f32, two, body.dot(f32, focusFromCenter, ray));
+    final int c = body.subtract(
         f32,
-        body.multiply(f32, b, b),
+        body.dot(f32, focusFromCenter, focusFromCenter),
+        body.multiply(f32, radius, radius));
+    final int discriminant = body.subtract(f32, body.multiply(f32, b, b),
         body.multiply(f32, four, body.multiply(f32, a, c)));
     // sqrt of a clamped discriminant, not of the discriminant: a negative one
     // is refused by the guard below anyway, and feeding sqrt a negative number
@@ -562,16 +562,11 @@ Uint32List buildVulkanSparseFragmentShader({
     ]);
     final int focal = body.select(
         f32,
-        body.logicalOr(
-            boolType,
-            body.equalFloat(boolType, a, zero),
+        body.logicalOr(boolType, body.equalFloat(boolType, a, zero),
             body.lessThanFloat(boolType, discriminant, zero)),
         zero,
-        body.select(
-            f32,
-            body.greaterThanFloat(boolType, scale, zero),
-            body.divide(f32, one, scale),
-            zero));
+        body.select(f32, body.greaterThanFloat(boolType, scale, zero),
+            body.divide(f32, one, scale), zero));
 
     final int radial = body.select(f32, rayIsZero, zero,
         body.select(f32, focusAtCenter, concentric, focal));
@@ -585,8 +580,8 @@ Uint32List buildVulkanSparseFragmentShader({
     // GLSL's mod and not from a truncating remainder - `x - 2 * floor(x / 2)`
     // keeps a negative parameter on the same half of the ramp the CPU puts it
     // on, which a remainder that truncates towards zero would mirror.
-    final int pad = body.extInst(
-        f32, glsl, kGlslStd450FClamp, <int>[parameter, zero, one]);
+    final int pad =
+        body.extInst(f32, glsl, kGlslStd450FClamp, <int>[parameter, zero, one]);
     final int repeat =
         body.extInst(f32, glsl, kGlslStd450Fract, <int>[parameter]);
     final int wrapped = body.subtract(
@@ -603,16 +598,17 @@ Uint32List buildVulkanSparseFragmentShader({
         wrapped,
         body.subtract(f32, two, wrapped));
 
-    final int spread = body.load(
-        u32, body.accessChain(pushU32, push, <int>[memberInt(2)]));
+    final int spread =
+        body.load(u32, body.accessChain(pushU32, push, <int>[memberInt(2)]));
     final int spreadParameter = body.select(
         f32,
         body.equalInt(boolType, spread, uOne),
         repeat,
-        body.select(f32, body.equalInt(boolType, spread, uTwo), reflected, pad));
+        body.select(
+            f32, body.equalInt(boolType, spread, uTwo), reflected, pad));
 
-    final int lookup = body.load(
-        v2, body.accessChain(pushV2, push, <int>[memberInt(3)]));
+    final int lookup =
+        body.load(v2, body.accessChain(pushV2, push, <int>[memberInt(3)]));
     final int rampCoordinate = body.add(
         f32,
         body.multiply(f32, spreadParameter, body.extract(f32, lookup, 0)),
@@ -703,8 +699,7 @@ const int kVulkanSparseFragmentModuleCount = 4;
 /// matches the pipeline count a driver will build. A driver may run this
 /// before creating anything; the tests run it unconditionally.
 void validateVulkanSparseShaderContract() {
-  if (kVulkanSparsePushConstantBytes >
-      kVulkanMinPushConstantBytes) {
+  if (kVulkanSparsePushConstantBytes > kVulkanMinPushConstantBytes) {
     throw StateError(
       'the sparse push-constant block is $kVulkanSparsePushConstantBytes '
       'bytes, past the $kVulkanMinPushConstantBytes Vulkan guarantees; it '

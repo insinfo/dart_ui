@@ -57,7 +57,8 @@ void main() {
   // -------------------------------------------------------------------------
 
   group('bug 1: dragging an object applies a document-space delta', () {
-    test('a scaled polygon moves by the pointer distance, not by scale times it',
+    test(
+        'a scaled polygon moves by the pointer distance, not by scale times it',
         () {
       // The bug in isolation, at the model layer, so the failure names the
       // cause rather than the symptom. A star built exactly as the sample
@@ -129,9 +130,9 @@ void main() {
       final bounds = harness.model.selection.selectionBounds;
       // Four screen pixels away from the bottom-right handle: a miss under the
       // old six-document-unit rule at this zoom, a hit under a screen rule.
-      final near = harness.canvasState
-              .toGlobal(Offset(bounds.right, bounds.bottom)) +
-          const Offset(3, 3);
+      final near =
+          harness.canvasState.toGlobal(Offset(bounds.right, bounds.bottom)) +
+              const Offset(3, 3);
       expect(
         harness.model.selection.hitTestHandle(
           harness.canvasState.toDocument(near),
@@ -315,8 +316,8 @@ void main() {
         Offset(rect.center.dx, rect.bottom + 10),
         modifiers: const <KeyModifier>{KeyModifier.control},
       );
-      expect(harness.model.selection.selectedObjects,
-          contains(harness.rectangle));
+      expect(
+          harness.model.selection.selectedObjects, contains(harness.rectangle));
       harness.dispose();
     });
 
@@ -1129,8 +1130,7 @@ final class _Harness {
 
   Offset _toGlobal(Offset document) => canvasState.toGlobal(document);
 
-  void tapDocument(Offset document,
-          {Set<KeyModifier> modifiers = const {}}) =>
+  void tapDocument(Offset document, {Set<KeyModifier> modifiers = const {}}) =>
       tapGlobal(_toGlobal(document), modifiers: modifiers);
 
   void doubleTapDocument(Offset document) {

@@ -47,7 +47,8 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
     required void Function(WaylandWindow window) onClosed,
     this.isPopup = false,
   })  : _client = client,
-        _cpuClient = client is WaylandCpuClient ? client as WaylandCpuClient : null,
+        _cpuClient =
+            client is WaylandCpuClient ? client as WaylandCpuClient : null,
         _id = id,
         _visible = visible,
         _onClosed = onClosed,
@@ -121,10 +122,12 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
       title: options.title,
       appId: 'dart_ui',
       resizable: options.resizable,
-      minimumWidth: minimum == null ? null : _clampExtent(minimum.width.round()),
+      minimumWidth:
+          minimum == null ? null : _clampExtent(minimum.width.round()),
       minimumHeight:
           minimum == null ? null : _clampExtent(minimum.height.round()),
-      maximumWidth: maximum == null ? null : _clampExtent(maximum.width.round()),
+      maximumWidth:
+          maximum == null ? null : _clampExtent(maximum.width.round()),
       maximumHeight:
           maximum == null ? null : _clampExtent(maximum.height.round()),
     ));

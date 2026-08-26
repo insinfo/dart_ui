@@ -94,7 +94,8 @@ void main() {
       // wrong stride, a wrong column count or an unzeroed buffer all show up
       // here as a shape in the wrong place or as noise outside it.
       // Observed deviation: 0.
-      _expectComputeParity(session, _planFor(_rect(8, 8, 40, 40)), tolerance: 0);
+      _expectComputeParity(session, _planFor(_rect(8, 8, 40, 40)),
+          tolerance: 0);
     });
 
     test('a rectangle with fractional edges: 0', () {

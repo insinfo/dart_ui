@@ -146,8 +146,7 @@ abstract final class OleStructLayout {
 
   /// `FORMATETC { CLIPFORMAT cfFormat; DVTARGETDEVICE* ptd; DWORD dwAspect;
   /// LONG lindex; DWORD tymed; }`
-  static int get formatEtcSize =>
-      _align(_pointerSize * 2 + 12, _pointerSize);
+  static int get formatEtcSize => _align(_pointerSize * 2 + 12, _pointerSize);
   static int get formatEtcFormat => 0;
   static int get formatEtcTargetDevice => _pointerSize;
   static int get formatEtcAspect => _pointerSize * 2;
@@ -180,8 +179,8 @@ void writeFormatEtc(Pointer<Uint8> target, int format) {
     target[i] = 0;
   }
   view.setUint16(OleStructLayout.formatEtcFormat, format, Endian.little);
-  view.setUint32(OleStructLayout.formatEtcAspect, dvAspectContent,
-      Endian.little);
+  view.setUint32(
+      OleStructLayout.formatEtcAspect, dvAspectContent, Endian.little);
   // -1 means "the whole thing"; 0 would ask for page zero of a paginated
   // object, which text is not and a file list certainly is not.
   view.setInt32(OleStructLayout.formatEtcIndex, -1, Endian.little);
@@ -227,10 +226,9 @@ void writeStgMediumGlobal(Pointer<Uint8> medium, int handle) {
   _writePointerField(view, OleStructLayout.stgMediumRelease, 0);
 }
 
-int _readPointerField(ByteData view, int offset) =>
-    sizeOf<IntPtr>() == 8
-        ? view.getUint64(offset, Endian.little)
-        : view.getUint32(offset, Endian.little);
+int _readPointerField(ByteData view, int offset) => sizeOf<IntPtr>() == 8
+    ? view.getUint64(offset, Endian.little)
+    : view.getUint32(offset, Endian.little);
 
 void _writePointerField(ByteData view, int offset, int value) {
   if (sizeOf<IntPtr>() == 8) {
@@ -264,8 +262,8 @@ final class Win32OleApi {
     registerDragDrop = _ole32.lookupFunction<
         Int32 Function(IntPtr, Pointer<Void>),
         int Function(int, Pointer<Void>)>('RegisterDragDrop');
-    revokeDragDrop = _ole32
-        .lookupFunction<Int32 Function(IntPtr), int Function(int)>(
+    revokeDragDrop =
+        _ole32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
             'RevokeDragDrop');
     releaseStgMedium = _ole32.lookupFunction<Void Function(Pointer<Uint8>),
         void Function(Pointer<Uint8>)>('ReleaseStgMedium');

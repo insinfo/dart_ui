@@ -25,12 +25,12 @@ import '../geometry/size.dart';
 import '../graphics/display_list.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
 import 'keyboard_router.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 

@@ -11,12 +11,12 @@ import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
+import '../semantics/semantics.dart';
 import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
 import 'icon.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 
@@ -42,6 +42,7 @@ final class IconButton extends StatefulWidget {
   final Widget icon;
   final void Function()? onPressed;
   final String? tooltip;
+
   /// Null takes the theme's icon size: 16 in a dense desktop theme, 20 in a
   /// roomy one. A hard 20 made every toolbar in a compact theme too tall for
   /// its own bar.
@@ -54,6 +55,7 @@ final class IconButton extends StatefulWidget {
   final Color? backgroundColor;
   final Color? hoverColor;
   final Color? selectedBackgroundColor;
+
   /// Null centres the icon in a square the size of one control, which is what
   /// puts a row of icon buttons on the same rhythm as the text fields beside
   /// them.
@@ -94,8 +96,8 @@ final class _IconButtonState extends State<IconButton> {
         tooltip: widget.tooltip,
         padding: widget.padding ??
             EdgeInsets.all(((box - glyph) / 2).roundToDouble()),
-        additionalConstraints: widget.constraints ??
-            BoxConstraints(minWidth: box, minHeight: box),
+        additionalConstraints:
+            widget.constraints ?? BoxConstraints(minWidth: box, minHeight: box),
         isSelected: widget.isSelected,
         backgroundColor: widget.backgroundColor,
         hoverColor: widget.hoverColor,
@@ -275,8 +277,10 @@ final class RenderIconButton extends RenderSingleChildBox with ControlBehavior {
     // used to correct for that now shows up as a row of icons sitting one
     // pixel low.
     child.parentData!.offset = Offset(
-      math.max(_padding.left, ((size.width - child.size.width) / 2).round().toDouble()),
-      math.max(_padding.top, ((size.height - child.size.height) / 2).round().toDouble()),
+      math.max(_padding.left,
+          ((size.width - child.size.width) / 2).round().toDouble()),
+      math.max(_padding.top,
+          ((size.height - child.size.height) / 2).round().toDouble()),
     );
   }
 

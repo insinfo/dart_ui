@@ -212,8 +212,7 @@ final class _Fixture {
     GpuPassAttachments layerAttachments = GpuPassAttachments.colorOnly,
   }) : layers = GpuLayerStack(
           allocator: _Allocator(attachments: layerAttachments),
-        )
-          ..beginFrame(
+        )..beginFrame(
             surfaceWidth: 100,
             surfaceHeight: 100,
             surfaceAttachments: surfaceAttachments,

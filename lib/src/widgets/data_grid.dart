@@ -38,6 +38,7 @@ import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
 import '../layout/render_viewport.dart';
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import '../text/shaper.dart' show TextDirection;
 import 'basic.dart';
 import 'control.dart';
@@ -45,7 +46,6 @@ import 'directionality.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
-import 'semantics.dart';
 import 'style.dart';
 import 'theme.dart';
 import 'virtualization.dart';
@@ -249,8 +249,7 @@ final class _DataGridState extends State<DataGrid> {
     final double? target = _virtualization.scrollToReveal(
       index,
       scrollOffset: _position.pixels,
-      viewportExtent:
-          _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8,
+      viewportExtent: _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8,
     );
     if (target != null) _position.jumpTo(target);
   }
@@ -323,8 +322,7 @@ final class _DataGridState extends State<DataGrid> {
         _moveCursor(_cursor);
         return true;
       case 0x41: // A
-        if (control &&
-            widget.selectionMode == DataGridSelectionMode.multiple) {
+        if (control && widget.selectionMode == DataGridSelectionMode.multiple) {
           _emitSelection(_range(0, widget.rowCount - 1));
           return true;
         }
@@ -535,8 +533,7 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
       cumulative += _widths[i];
     }
     if (!_textDirection.isRightToLeft) return cumulative;
-    final double width =
-        index < _widths.length ? _widths[index] : 0;
+    final double width = index < _widths.length ? _widths[index] : 0;
     return size.width - cumulative - width;
   }
 
@@ -548,9 +545,8 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
     double cumulative = 0;
     for (int i = 0; i < _widths.length; i++) {
       cumulative += _widths[i];
-      final double edge = _textDirection.isRightToLeft
-          ? size.width - cumulative
-          : cumulative;
+      final double edge =
+          _textDirection.isRightToLeft ? size.width - cumulative : cumulative;
       if ((dx - edge).abs() <= gripExtent) {
         return _columns[i].resizable ? i : -1;
       }
@@ -617,8 +613,7 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
   void activate() {
     final int column = _pressedColumn;
     _pressedColumn = -1;
-    if (column >= 0 && column < _columns.length &&
-        _columns[column].sortable) {
+    if (column >= 0 && column < _columns.length && _columns[column].sortable) {
       onSortRequest?.call(column);
     }
   }
@@ -680,8 +675,8 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
       // The boundary line doubles as the visual for the resize grip. Drawn in
       // the subtle colour: a column rule is a division *inside* one surface,
       // and at the border colour it competes with the grid's own frame.
-      final double edge = _textDirection.isRightToLeft ? start : start +
-          columnWidth;
+      final double edge =
+          _textDirection.isRightToLeft ? start : start + columnWidth;
       if (i < _columns.length - 1) {
         paintFill(
           list,

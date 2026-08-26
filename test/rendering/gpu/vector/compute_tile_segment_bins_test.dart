@@ -179,7 +179,8 @@ void main() {
         }
       }
       expect(expectedFirst, plan.tileSegmentReferenceCount);
-      expect(plan.metrics.uploadBytes,
+      expect(
+          plan.metrics.uploadBytes,
           plan.segments.lengthInBytes +
               plan.draws.lengthInBytes +
               plan.bounds.lengthInBytes +
@@ -236,8 +237,8 @@ void main() {
         clip: const Rect.fromLTRB(10.5, 12.25, 49.5, 47.75),
         clipRounding: ComputeTileClipRounding.exact,
       );
-      expect(exact.drawBounds(0),
-          const Rect.fromLTRB(10.5, 12.25, 49.5, 47.75));
+      expect(
+          exact.drawBounds(0), const Rect.fromLTRB(10.5, 12.25, 49.5, 47.75));
     });
 
     test('a whole-pixel clip is unchanged by the rounding', () {
@@ -259,7 +260,8 @@ void _expectBinnedParity(ComputeTilePlan plan, {int sampleGrid = 4}) {
   expect(reference.validateBins(sampleGrid: sampleGrid), isEmpty);
   var inked = 0;
   for (var draw = 0; draw < plan.drawCount; draw++) {
-    final Uint8List brute = reference.rasterizeDraw(draw, sampleGrid: sampleGrid);
+    final Uint8List brute =
+        reference.rasterizeDraw(draw, sampleGrid: sampleGrid);
     final Uint8List? binned =
         reference.rasterizeDrawUsingSegmentBins(draw, sampleGrid: sampleGrid);
     expect(binned, isNotNull,
@@ -351,8 +353,7 @@ ComputeTilePlan _planOf(
   final ComputeTileScene scene = ComputeTileScene();
   scene.appendPath(
     path,
-    clip: clip ??
-        Rect.fromLTRB(0, 0, width.toDouble(), height.toDouble()),
+    clip: clip ?? Rect.fromLTRB(0, 0, width.toDouble(), height.toDouble()),
     materialIndex: 0,
     fillRule: rule,
     transform: transform,

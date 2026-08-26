@@ -232,7 +232,8 @@ void main() {
           reason: 'a collapsed matrix has no mask either');
     });
 
-    test('a scale uniform only to within a rounding error still takes the '
+    test(
+        'a scale uniform only to within a rounding error still takes the '
         'outline', () {
       // The comparison is exact on purpose. There is no epsilon that is right
       // at 8 px and at 200 px, and the outline route draws the near-uniform
@@ -260,8 +261,8 @@ void main() {
       expect(m.transformOffset(Offset.zero), const Offset(100, 50));
       // A point one em to the right and one em up, in a 1000-upem face at
       // scale 0.25: 250 px right, and 250 px *up*, which is -y on screen.
-      expect(m.transformOffset(const Offset(1000, 1000)),
-          const Offset(350, -200));
+      expect(
+          m.transformOffset(const Offset(1000, 1000)), const Offset(350, -200));
     });
 
     test('it agrees with the mask route wherever both are defined', () {
@@ -327,10 +328,10 @@ void main() {
       // The layer shift in `cpu_renderer.dart` subtracts a whole-pixel origin
       // from the pen alone, on the strength of exactly this: a translation
       // cannot touch the linear part.
-      final Transform2D at0 = glyphOutlineTransform(
-          Transform2D.rotation(0.3), 0.04, 0, 0);
-      final Transform2D at100 = glyphOutlineTransform(
-          Transform2D.rotation(0.3), 0.04, 100, -60);
+      final Transform2D at0 =
+          glyphOutlineTransform(Transform2D.rotation(0.3), 0.04, 0, 0);
+      final Transform2D at100 =
+          glyphOutlineTransform(Transform2D.rotation(0.3), 0.04, 100, -60);
 
       expect(at100.a, at0.a);
       expect(at100.b, at0.b);

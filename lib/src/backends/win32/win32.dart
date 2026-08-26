@@ -17,7 +17,6 @@ export 'win32_dib_surface.dart' show Win32CpuSurface, Win32DibSurface;
 // as much an implementation detail as `WndClassExW`, and a caller that reached
 // for `ImmGetContext` would be holding an `HIMC` this file's lock discipline
 // no longer covers.
-export 'win32_ime.dart'
-    show Win32TextInputBackend, Win32TextInputConnection;
+export 'win32_ime.dart' show Win32TextInputBackend, Win32TextInputConnection;
 export 'win32_window.dart' show Win32ImeMessageHandler, Win32Window;
 export 'win32_window_class.dart' show Win32WindowRegistry;

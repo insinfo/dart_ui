@@ -111,7 +111,8 @@ void main() {
     expect(surface.presentedDamage, <Rect?>[null]);
   });
 
-  test('the first expose after a configure replays instead of committing '
+  test(
+      'the first expose after a configure replays instead of committing '
       'stale pixels', () async {
     await presenter.renderDisplayList(redRectangle(), clearColor: 0);
     // A new generation arrives with no frame presented into it yet.

@@ -56,7 +56,8 @@ const double _chromaNeutral = 128.0 / 255.0;
 /// in, which is what makes it composite correctly against the rest of a
 /// renderer that is itself working in sRGB codes.
 final class YuvToRgbMatrix {
-  const YuvToRgbMatrix._(this.rows, {required this.colorSpace, required this.range});
+  const YuvToRgbMatrix._(this.rows,
+      {required this.colorSpace, required this.range});
 
   /// Twelve floats: `r` row, then `g`, then `b`, each `(cy, cu, cv, offset)`.
   ///
@@ -90,9 +91,7 @@ final class YuvToRgbMatrix {
   /// change, and building one allocates a `Float32List` that would otherwise
   /// be allocated once per frame per draw.
   static YuvToRgbMatrix forFormat(VideoFrameFormat format) =>
-      format.pixelFormat.isYuv
-          ? of(format.colorSpace, format.range)
-          : identity;
+      format.pixelFormat.isYuv ? of(format.colorSpace, format.range) : identity;
 
   static YuvToRgbMatrix of(VideoColorSpace colorSpace, VideoColorRange range) =>
       _cache.putIfAbsent(
@@ -183,8 +182,7 @@ final class YuvToRgbMatrix {
   }
 
   @override
-  String toString() =>
-      'YuvToRgbMatrix(${colorSpace.name}, ${range.name})';
+  String toString() => 'YuvToRgbMatrix(${colorSpace.name}, ${range.name})';
 }
 
 /// The reference converter: a whole frame, or a region of one, to RGBA.
@@ -231,9 +229,9 @@ Uint8List convertVideoFrameToRgba(
     throw ArgumentError.value(opacity, 'opacity', 'must be 0..255');
   }
   final VideoFrameFormat format = frame.format;
-  final VideoRegion source = (region ??
-          VideoRegion.wholeFrame(format.width, format.height))
-      .intersect(VideoRegion.wholeFrame(format.width, format.height));
+  final VideoRegion source =
+      (region ?? VideoRegion.wholeFrame(format.width, format.height))
+          .intersect(VideoRegion.wholeFrame(format.width, format.height));
   if (source.isEmpty) {
     throw ArgumentError.value(
       region,

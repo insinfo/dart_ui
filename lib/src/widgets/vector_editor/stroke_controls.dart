@@ -2,7 +2,6 @@
 ///
 library;
 
-
 import '../../graphics/vector/constants.dart';
 import '../../graphics/vector/style.dart';
 import '../../layout/edge_insets.dart';

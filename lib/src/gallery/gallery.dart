@@ -429,147 +429,147 @@ final class DataGalleryState extends State<DataGallery> {
         child: FocusScope(
           node: _scope,
           child: ToastHost(
-          controller: model.toasts,
-          child: ColoredBox(
-            color: widget.theme.surface,
-            child: Padding(
-              padding: const EdgeInsets.all(Spacing.md),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(
-                    'Data controls',
-                    style: widget.theme.textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: Spacing.md),
-                  SizedBox(
-                    height: widget.theme.effectiveRowHeight * 4 + 2,
-                    child: TreeView(
-                      nodes: DataGalleryModel.treeNodes,
-                      controller: model.treeScroll,
-                      expandedIds: model.expandedNodes,
-                      selectedId: model.selectedNode,
-                      onToggle: (TreeNode node, bool expanded) {
-                        if (expanded) {
-                          model.expandedNodes.add(node.identity);
-                        } else {
-                          model.expandedNodes.remove(node.identity);
-                        }
-                        _refresh();
-                      },
-                      onSelected: (TreeNode node) {
-                        model.selectedNode = node.identity;
-                        _refresh();
-                      },
+            controller: model.toasts,
+            child: ColoredBox(
+              color: widget.theme.surface,
+              child: Padding(
+                padding: const EdgeInsets.all(Spacing.md),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      'Data controls',
+                      style: widget.theme.textTheme.titleMedium,
                     ),
-                  ),
-                  const SizedBox(height: Spacing.sm),
-                  SizedBox(
-                    height: widget.theme.effectiveControlHeight +
-                        widget.theme.effectiveRowHeight * 3 +
-                        2,
-                    child: DataGrid(
-                      columns: const <DataGridColumn>[
-                        DataGridColumn(title: 'Name', width: 140),
-                        DataGridColumn(title: 'Size', width: 90),
-                        DataGridColumn(
-                          title: 'Kind',
-                          width: 100,
-                          sortable: false,
+                    const SizedBox(height: Spacing.md),
+                    SizedBox(
+                      height: widget.theme.effectiveRowHeight * 4 + 2,
+                      child: TreeView(
+                        nodes: DataGalleryModel.treeNodes,
+                        controller: model.treeScroll,
+                        expandedIds: model.expandedNodes,
+                        selectedId: model.selectedNode,
+                        onToggle: (TreeNode node, bool expanded) {
+                          if (expanded) {
+                            model.expandedNodes.add(node.identity);
+                          } else {
+                            model.expandedNodes.remove(node.identity);
+                          }
+                          _refresh();
+                        },
+                        onSelected: (TreeNode node) {
+                          model.selectedNode = node.identity;
+                          _refresh();
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: Spacing.sm),
+                    SizedBox(
+                      height: widget.theme.effectiveControlHeight +
+                          widget.theme.effectiveRowHeight * 3 +
+                          2,
+                      child: DataGrid(
+                        columns: const <DataGridColumn>[
+                          DataGridColumn(title: 'Name', width: 140),
+                          DataGridColumn(title: 'Size', width: 90),
+                          DataGridColumn(
+                            title: 'Kind',
+                            width: 100,
+                            sortable: false,
+                          ),
+                        ],
+                        rowCount: DataGalleryModel.gridRowCount,
+                        controller: model.gridScroll,
+                        sort: model.sort,
+                        onSortChanged: (DataGridSort sort) {
+                          model.sort = sort;
+                          _refresh();
+                        },
+                        selectionMode: DataGridSelectionMode.multiple,
+                        selectedRows: model.selectedRows,
+                        onSelectionChanged: (Set<int> rows) {
+                          model.selectedRows = rows;
+                          _refresh();
+                        },
+                        cellBuilder:
+                            (BuildContext context, int row, int column) =>
+                                Text(switch (column) {
+                          0 => 'file_$row.dart',
+                          1 => '${(row + 1) * 3} KB',
+                          _ => 'Dart source',
+                        }),
+                      ),
+                    ),
+                    const SizedBox(height: Spacing.sm),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: <Widget>[
+                        NumberBox(
+                          value: model.amount,
+                          min: 0,
+                          max: 100,
+                          onChanged: (double value) {
+                            model.amount = value;
+                            _refresh();
+                          },
+                        ),
+                        const SizedBox(width: Spacing.sm),
+                        DatePicker(
+                          selectedDate: model.date,
+                          onDateSelected: (DateTime date) {
+                            model.date = date;
+                            model.toasts.show(
+                              'Date selected',
+                              severity: InfoBarSeverity.success,
+                              duration: null,
+                            );
+                            _refresh();
+                          },
                         ),
                       ],
-                      rowCount: DataGalleryModel.gridRowCount,
-                      controller: model.gridScroll,
-                      sort: model.sort,
-                      onSortChanged: (DataGridSort sort) {
-                        model.sort = sort;
-                        _refresh();
-                      },
-                      selectionMode: DataGridSelectionMode.multiple,
-                      selectedRows: model.selectedRows,
-                      onSelectionChanged: (Set<int> rows) {
-                        model.selectedRows = rows;
-                        _refresh();
-                      },
-                      cellBuilder:
-                          (BuildContext context, int row, int column) =>
-                              Text(switch (column) {
-                        0 => 'file_$row.dart',
-                        1 => '${(row + 1) * 3} KB',
-                        _ => 'Dart source',
-                      }),
                     ),
-                  ),
-                  const SizedBox(height: Spacing.sm),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: <Widget>[
-                      NumberBox(
-                        value: model.amount,
-                        min: 0,
-                        max: 100,
-                        onChanged: (double value) {
-                          model.amount = value;
+                    const SizedBox(height: Spacing.sm),
+                    if (model.infoBarVisible)
+                      InfoBar(
+                        title: 'Heads up',
+                        message: 'The grid holds ten thousand rows.',
+                        severity: InfoBarSeverity.warning,
+                        onClose: () {
+                          model.infoBarVisible = false;
                           _refresh();
                         },
                       ),
-                      const SizedBox(width: Spacing.sm),
-                      DatePicker(
-                        selectedDate: model.date,
-                        onDateSelected: (DateTime date) {
-                          model.date = date;
-                          model.toasts.show(
-                            'Date selected',
-                            severity: InfoBarSeverity.success,
-                            duration: null,
-                          );
-                          _refresh();
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: Spacing.sm),
-                  if (model.infoBarVisible)
-                    InfoBar(
-                      title: 'Heads up',
-                      message: 'The grid holds ten thousand rows.',
-                      severity: InfoBarSeverity.warning,
-                      onClose: () {
-                        model.infoBarVisible = false;
-                        _refresh();
-                      },
-                    ),
-                  const SizedBox(height: Spacing.sm),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: <Widget>[
-                      const Badge(label: '3'),
-                      const SizedBox(width: Spacing.sm),
-                      for (final String tag in model.tags.split(', '))
-                        Padding(
-                          padding: const EdgeInsets.only(right: Spacing.sm),
-                          child: Chip(
-                            label: tag,
-                            onDeleted: () {
-                              model.tags = model.tags
-                                  .split(', ')
-                                  .where((String t) => t != tag)
-                                  .join(', ');
-                              _refresh();
-                            },
+                    const SizedBox(height: Spacing.sm),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: <Widget>[
+                        const Badge(label: '3'),
+                        const SizedBox(width: Spacing.sm),
+                        for (final String tag in model.tags.split(', '))
+                          Padding(
+                            padding: const EdgeInsets.only(right: Spacing.sm),
+                            child: Chip(
+                              label: tag,
+                              onDeleted: () {
+                                model.tags = model.tags
+                                    .split(', ')
+                                    .where((String t) => t != tag)
+                                    .join(', ');
+                                _refresh();
+                              },
+                            ),
                           ),
-                        ),
-                      const Avatar(initials: 'DU'),
-                    ],
-                  ),
-                  const SizedBox(height: Spacing.sm),
-                  const Card(child: Text('Card content')),
-                ],
+                        const Avatar(initials: 'DU'),
+                      ],
+                    ),
+                    const SizedBox(height: Spacing.sm),
+                    const Card(child: Text('Card content')),
+                  ],
+                ),
               ),
             ),
           ),
         ),
-      ),
       ),
     );
   }
@@ -724,7 +724,8 @@ final class ChromeGalleryState extends State<ChromeGallery> {
                         _refresh();
                       },
                       tabs: const <TabItem>[
-                        TabItem(label: 'Document', content: _TabBody('Document')),
+                        TabItem(
+                            label: 'Document', content: _TabBody('Document')),
                         TabItem(label: 'Page', content: _TabBody('Page')),
                         TabItem(label: 'Export', content: _TabBody('Export')),
                       ],

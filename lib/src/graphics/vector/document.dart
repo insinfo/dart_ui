@@ -1,15 +1,12 @@
-
-
 import '../../graphics/color.dart';
 import 'constants.dart';
 import 'document_object.dart';
 import 'structural_objects.dart';
 import 'style.dart';
 
-
 /// The root node of a vector document.
 ///
-/// Structure 
+/// Structure
 /// ```
 /// VectorDocument
 ///   ├── DesktopLayers
@@ -158,9 +155,7 @@ class VectorDocument extends DocumentObject {
 
   /// Returns all editable layers for a page.
   List<VectorLayer> getEditableLayers(VectorPage page) {
-    return getVisibleLayers(page)
-        .where((l) => l.isEditable)
-        .toList();
+    return getVisibleLayers(page).where((l) => l.isEditable).toList();
   }
 
   /// Adds a new layer to [page].
@@ -169,8 +164,7 @@ class VectorDocument extends DocumentObject {
     final layerName = name ?? 'Layer ${page.layerCounter}';
     final layer = VectorLayer(parent: page, name: layerName);
     // Insert before the guide layer (last child).
-    final insertIndex =
-        page.children.isNotEmpty ? page.children.length - 1 : 0;
+    final insertIndex = page.children.isNotEmpty ? page.children.length - 1 : 0;
     page.children.insert(insertIndex, layer);
     return layer;
   }

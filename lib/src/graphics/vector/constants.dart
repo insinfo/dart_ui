@@ -1,8 +1,6 @@
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 
-
-
 /// Measurement units supported by vector documents.
 enum DocUnit {
   /// Millimetres.
@@ -41,10 +39,7 @@ double mmToPt(double mm) => mm * DocUnit.mm.toPoints;
 /// Convenience for points → millimetres.
 double ptToMm(double pt) => pt / DocUnit.mm.toPoints;
 
-
-
 enum PageOrientation { portrait, landscape }
-
 
 /// A named, standard page size.
 class PageSize {
@@ -80,8 +75,19 @@ abstract final class PageFormats {
   static const executive = PageSize('Executive', 521.86, 756.0);
 
   static const List<PageSize> all = [
-    a0, a1, a2, a3, a4, a5, a6, b4, b5,
-    letter, legal, tabloid, executive,
+    a0,
+    a1,
+    a2,
+    a3,
+    a4,
+    a5,
+    a6,
+    b4,
+    b5,
+    letter,
+    legal,
+    tabloid,
+    executive,
   ];
 
   /// Look up by name (case-insensitive).

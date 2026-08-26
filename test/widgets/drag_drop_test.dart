@@ -45,7 +45,8 @@ void main() {
       addTearDown(harness.dispose);
 
       expect(
-        harness.owner.dispatchDragUpdate(_event(const Offset(200, 200)))
+        harness.owner
+            .dispatchDragUpdate(_event(const Offset(200, 200)))
             .isAccepted,
         isFalse,
       );
@@ -115,11 +116,14 @@ void main() {
       harness.owner.dispatchDragUpdate(_event(const Offset(20, 10)));
       harness.owner.dispatchDragUpdate(_event(const Offset(70, 10)));
 
-      expect(log, <String>[
-        'enter left',
-        'leave left',
-        'enter right',
-      ], reason: 'a move inside one zone must not re-enter it');
+      expect(
+          log,
+          <String>[
+            'enter left',
+            'leave left',
+            'enter right',
+          ],
+          reason: 'a move inside one zone must not re-enter it');
     });
 
     test('a leave from the platform clears the active target', () {
@@ -243,19 +247,20 @@ void main() {
       addTearDown(harness.dispose);
 
       expect(
-        harness.owner.dispatchDragUpdate(_event(const Offset(10, 10)))
+        harness.owner
+            .dispatchDragUpdate(_event(const Offset(10, 10)))
             .isAccepted,
         isTrue,
       );
       expect(
-        harness.owner.dispatchDragUpdate(_event(const Offset(100, 10)))
+        harness.owner
+            .dispatchDragUpdate(_event(const Offset(100, 10)))
             .isAccepted,
         isFalse,
       );
     });
 
-    test('formats are consulted in the target order, not the source order',
-        () {
+    test('formats are consulted in the target order, not the source order', () {
       final _Harness harness = _Harness(
         child: DropTarget(
           formats: const <String>[DragFormats.text, DragFormats.uriList],
@@ -296,12 +301,12 @@ void main() {
       addTearDown(harness.dispose);
 
       expect(
-        harness.owner.dispatchDragUpdate(_event(const Offset(5, 5)))
-            .isAccepted,
+        harness.owner.dispatchDragUpdate(_event(const Offset(5, 5))).isAccepted,
         isTrue,
       );
       expect(
-        harness.owner.dispatchDragUpdate(_event(const Offset(200, 200)))
+        harness.owner
+            .dispatchDragUpdate(_event(const Offset(200, 200)))
             .isAccepted,
         isFalse,
       );
@@ -330,8 +335,7 @@ void main() {
 
   group('DragDropScope', () {
     test('a subtree with no scope gets a named failure, not a null', () {
-      final DragDropBackend backend =
-          DragDropScope.of(_NoContext());
+      final DragDropBackend backend = DragDropScope.of(_NoContext());
       expect(backend, isA<UnavailableDragDrop>());
       expect(
         backend.registerDropTarget(
@@ -375,8 +379,7 @@ void main() {
       await Future<void>.delayed(Duration.zero);
 
       expect(log, <String>['started', 'end copy']);
-      expect(backend.requests.single.data.formats,
-          contains(DragFormats.text));
+      expect(backend.requests.single.data.formats, contains(DragFormats.text));
       expect(source.isTracking, isFalse);
     });
 
@@ -492,8 +495,7 @@ void main() {
     });
 
     test('the allowed actions and the feedback reach the request', () async {
-      final FakeDragDrop backend = FakeDragDrop()
-        ..dragResult = DragAction.move;
+      final FakeDragDrop backend = FakeDragDrop()..dragResult = DragAction.move;
       final List<DragAction> ended = <DragAction>[];
       final _Harness harness = _Harness(
         backend: backend,
@@ -646,7 +648,8 @@ void main() {
       addTearDown(harness.dispose);
 
       expect(
-        harness.owner.dispatchDragUpdate(_event(const Offset(10, 10)))
+        harness.owner
+            .dispatchDragUpdate(_event(const Offset(10, 10)))
             .isAccepted,
         isTrue,
         reason: 'a draggable row inside a drop zone is the ordinary case',
@@ -660,12 +663,12 @@ void main() {
       addTearDown(harness.dispose);
       final DropTargetHandler handler = WidgetTreeDropTarget(harness.owner);
 
-      expect(handler.onDragEnter(_event(const Offset(10, 10))).isAccepted,
-          isTrue);
+      expect(
+          handler.onDragEnter(_event(const Offset(10, 10))).isAccepted, isTrue);
       expect(
           handler.onDragOver(_event(const Offset(11, 11))).isAccepted, isTrue);
-      expect(await handler.onDrop(_event(const Offset(11, 11))),
-          DragAction.copy);
+      expect(
+          await handler.onDrop(_event(const Offset(11, 11))), DragAction.copy);
       handler.onDragLeave();
       expect(harness.owner.activeDropTarget, isNull);
     });
@@ -680,10 +683,9 @@ void main() {
       );
 
       final DropTargetHandler handler = backend.handler!;
-      expect(handler.onDragEnter(_event(const Offset(5, 5))).isAccepted,
-          isTrue);
-      expect(await handler.onDrop(_event(const Offset(5, 5))),
-          DragAction.copy);
+      expect(
+          handler.onDragEnter(_event(const Offset(5, 5))).isAccepted, isTrue);
+      expect(await handler.onDrop(_event(const Offset(5, 5))), DragAction.copy);
     });
   });
 }
@@ -863,7 +865,6 @@ final class _FakeWindow implements NativeWindow {
   dynamic noSuchMethod(Invocation invocation) =>
       throw UnimplementedError('${invocation.memberName}');
 }
-
 
 /// A backend whose drag never ends until the test says so, which is how the
 /// "no nested drag" rule is provable without a modal loop.

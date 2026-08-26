@@ -652,9 +652,9 @@ void main() {
         grab: false,
       ));
 
-      final getPopup = compositor.requests.firstWhere(
-          (r) => r.objectId == popup.xdgSurfaceId &&
-              r.opcode == xdgSurfaceRequestGetPopup);
+      final getPopup = compositor.requests.firstWhere((r) =>
+          r.objectId == popup.xdgSurfaceId &&
+          r.opcode == xdgSurfaceRequestGetPopup);
       final reader = WaylandMessageReader(getPopup.payload);
       expect(reader.readNewId(), popup.toplevelId);
       expect(reader.readObject(), parent.xdgSurfaceId,
@@ -673,8 +673,7 @@ void main() {
 
       expect(
         compositor.requests.where((r) =>
-            r.objectId == popup.toplevelId &&
-            r.opcode == xdgPopupRequestGrab),
+            r.objectId == popup.toplevelId && r.opcode == xdgPopupRequestGrab),
         isEmpty,
         reason: 'grabbing without an input serial kills the connection',
       );
@@ -760,8 +759,7 @@ void main() {
       ]);
     });
 
-    test('destroying a popup uses xdg_popup.destroy, not toplevel.destroy',
-        () {
+    test('destroying a popup uses xdg_popup.destroy, not toplevel.destroy', () {
       final connection = openOk();
       final parent = connection.createToplevel(_request());
       final popup = connection.createPopup(WaylandPopupRequest(
@@ -803,8 +801,8 @@ void main() {
       compositor.requests.clear();
       connection.requestServerSideDecoration(ids);
 
-      final get = compositor.requests.firstWhere((r) =>
-          r.opcode == xdgDecorationManagerRequestGetToplevelDecoration);
+      final get = compositor.requests.firstWhere(
+          (r) => r.opcode == xdgDecorationManagerRequestGetToplevelDecoration);
       final reader = WaylandMessageReader(get.payload);
       reader.readNewId();
       expect(reader.readObject(), ids.toplevelId);
@@ -874,8 +872,8 @@ void main() {
         compositor.requests.first,
         isA<_Request>()
             .having((r) => r.objectId, 'objectId', decorationId)
-            .having((r) => r.opcode, 'opcode',
-                xdgToplevelDecorationRequestDestroy),
+            .having(
+                (r) => r.opcode, 'opcode', xdgToplevelDecorationRequestDestroy),
       );
     });
   });

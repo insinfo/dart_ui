@@ -86,8 +86,7 @@ class VectorPdfExporter {
             final cp1 = applyTrafoToPoint(pt.control1, obj.trafo);
             final cp2 = applyTrafoToPoint(pt.control2, obj.trafo);
             final end = applyTrafoToPoint(pt.endpoint, obj.trafo);
-            pathBuilder.cubicTo(
-                cp1.dx, cp1.dy, cp2.dx, cp2.dy, end.dx, end.dy);
+            pathBuilder.cubicTo(cp1.dx, cp1.dy, cp2.dx, cp2.dy, end.dx, end.dy);
           } else if (pt is Offset) {
             final end = applyTrafoToPoint(pt, obj.trafo);
             pathBuilder.lineTo(end.dx, end.dy);

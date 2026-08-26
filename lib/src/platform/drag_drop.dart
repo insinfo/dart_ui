@@ -313,7 +313,8 @@ final class FakeDragDrop implements DragDropBackend {
   DragAction dragResult = DragAction.copy;
 
   final List<DragRequest> requests = <DragRequest>[];
-  final List<FakeDropTargetRegistration> registrations = <FakeDropTargetRegistration>[];
+  final List<FakeDropTargetRegistration> registrations =
+      <FakeDropTargetRegistration>[];
 
   /// The handler of the newest live registration, which is what a test drives.
   DropTargetHandler? get handler => registrations

@@ -57,8 +57,8 @@ import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/layout/box_constraints.dart';
 import 'package:dart_ui/src/layout/pipeline.dart';
 import 'package:dart_ui/src/layout/render_flex.dart';
+import 'package:dart_ui/src/semantics/semantics.dart';
 import 'package:dart_ui/src/widgets/controls.dart';
-import 'package:dart_ui/src/widgets/semantics.dart';
 
 typedef _WndProcNative = IntPtr Function(IntPtr, Uint32, IntPtr, IntPtr);
 

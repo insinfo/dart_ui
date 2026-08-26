@@ -64,17 +64,15 @@ typedef VkDestroySurfaceDart = void Function(
 
 typedef VkGetSurfaceSupportNative = Int32 Function(Pointer<VkPhysicalDevice_T>,
     Uint32, Pointer<VkSurfaceKHR_T>, Pointer<Uint32>);
-typedef VkGetSurfaceSupportDart = int Function(Pointer<VkPhysicalDevice_T>, int,
-    Pointer<VkSurfaceKHR_T>, Pointer<Uint32>);
+typedef VkGetSurfaceSupportDart = int Function(
+    Pointer<VkPhysicalDevice_T>, int, Pointer<VkSurfaceKHR_T>, Pointer<Uint32>);
 
 typedef VkGetSurfaceCapabilitiesNative = Int32 Function(
     Pointer<VkPhysicalDevice_T>,
     Pointer<VkSurfaceKHR_T>,
     Pointer<VkSurfaceCapabilitiesKHR>);
-typedef VkGetSurfaceCapabilitiesDart = int Function(
-    Pointer<VkPhysicalDevice_T>,
-    Pointer<VkSurfaceKHR_T>,
-    Pointer<VkSurfaceCapabilitiesKHR>);
+typedef VkGetSurfaceCapabilitiesDart = int Function(Pointer<VkPhysicalDevice_T>,
+    Pointer<VkSurfaceKHR_T>, Pointer<VkSurfaceCapabilitiesKHR>);
 
 /// The two-call enumeration shape: null output means "tell me the count".
 typedef VkEnumerateSurfaceNative<T extends NativeType> = Int32 Function(
@@ -93,16 +91,10 @@ typedef VkGetWin32PresentationSupportNative = Uint32 Function(
 typedef VkGetWin32PresentationSupportDart = int Function(
     Pointer<VkPhysicalDevice_T>, int);
 
-typedef VkGetSwapchainImagesNative = Int32 Function(
-    Pointer<VkDevice_T>,
-    Pointer<VkSwapchainKHR_T>,
-    Pointer<Uint32>,
-    Pointer<Pointer<VkImage_T>>);
-typedef VkGetSwapchainImagesDart = int Function(
-    Pointer<VkDevice_T>,
-    Pointer<VkSwapchainKHR_T>,
-    Pointer<Uint32>,
-    Pointer<Pointer<VkImage_T>>);
+typedef VkGetSwapchainImagesNative = Int32 Function(Pointer<VkDevice_T>,
+    Pointer<VkSwapchainKHR_T>, Pointer<Uint32>, Pointer<Pointer<VkImage_T>>);
+typedef VkGetSwapchainImagesDart = int Function(Pointer<VkDevice_T>,
+    Pointer<VkSwapchainKHR_T>, Pointer<Uint32>, Pointer<Pointer<VkImage_T>>);
 
 typedef VkAcquireNextImageNative = Int32 Function(
     Pointer<VkDevice_T>,
@@ -209,9 +201,10 @@ final class VulkanSurfaceApi {
     final Pointer<NativeFunction<VkDestroySurfaceNative>> destroy =
         maybe<VkDestroySurfaceNative>('vkDestroySurfaceKHR');
     final Pointer<NativeFunction<VkGetSurfaceSupportNative>> support =
-        maybe<VkGetSurfaceSupportNative>('vkGetPhysicalDeviceSurfaceSupportKHR');
-    final Pointer<NativeFunction<VkGetSurfaceCapabilitiesNative>>
-        capabilities = maybe<VkGetSurfaceCapabilitiesNative>(
+        maybe<VkGetSurfaceSupportNative>(
+            'vkGetPhysicalDeviceSurfaceSupportKHR');
+    final Pointer<NativeFunction<VkGetSurfaceCapabilitiesNative>> capabilities =
+        maybe<VkGetSurfaceCapabilitiesNative>(
             'vkGetPhysicalDeviceSurfaceCapabilitiesKHR');
     final Pointer<NativeFunction<VkEnumerateSurfaceNative<VkSurfaceFormatKHR>>>
         formats = maybe<VkEnumerateSurfaceNative<VkSurfaceFormatKHR>>(
@@ -227,17 +220,22 @@ final class VulkanSurfaceApi {
       return null;
     }
 
-    final Pointer<NativeFunction<VkCreateSurfaceNative<VkWin32SurfaceCreateInfoKHR>>>
+    final Pointer<
+            NativeFunction<VkCreateSurfaceNative<VkWin32SurfaceCreateInfoKHR>>>
         win32 = maybe<VkCreateSurfaceNative<VkWin32SurfaceCreateInfoKHR>>(
             'vkCreateWin32SurfaceKHR');
-    final Pointer<NativeFunction<VkCreateSurfaceNative<VkXlibSurfaceCreateInfoKHR>>>
+    final Pointer<
+            NativeFunction<VkCreateSurfaceNative<VkXlibSurfaceCreateInfoKHR>>>
         xlib = maybe<VkCreateSurfaceNative<VkXlibSurfaceCreateInfoKHR>>(
             'vkCreateXlibSurfaceKHR');
-    final Pointer<NativeFunction<VkCreateSurfaceNative<VkXcbSurfaceCreateInfoKHR>>>
+    final Pointer<
+            NativeFunction<VkCreateSurfaceNative<VkXcbSurfaceCreateInfoKHR>>>
         xcb = maybe<VkCreateSurfaceNative<VkXcbSurfaceCreateInfoKHR>>(
             'vkCreateXcbSurfaceKHR');
-    final Pointer<NativeFunction<VkCreateSurfaceNative<VkWaylandSurfaceCreateInfoKHR>>>
-        wayland = maybe<VkCreateSurfaceNative<VkWaylandSurfaceCreateInfoKHR>>(
+    final Pointer<
+            NativeFunction<
+                VkCreateSurfaceNative<VkWaylandSurfaceCreateInfoKHR>>> wayland =
+        maybe<VkCreateSurfaceNative<VkWaylandSurfaceCreateInfoKHR>>(
             'vkCreateWaylandSurfaceKHR');
     final Pointer<NativeFunction<VkGetWin32PresentationSupportNative>>
         win32Support = maybe<VkGetWin32PresentationSupportNative>(
@@ -255,8 +253,8 @@ final class VulkanSurfaceApi {
           modes.asFunction<VkEnumerateSurfaceDart<UnsignedInt>>(),
       createWin32Surface: win32 == nullptr
           ? null
-          : win32.asFunction<
-              VkCreateSurfaceDart<VkWin32SurfaceCreateInfoKHR>>(),
+          : win32
+              .asFunction<VkCreateSurfaceDart<VkWin32SurfaceCreateInfoKHR>>(),
       createXlibSurface: xlib == nullptr
           ? null
           : xlib.asFunction<VkCreateSurfaceDart<VkXlibSurfaceCreateInfoKHR>>(),
@@ -265,8 +263,8 @@ final class VulkanSurfaceApi {
           : xcb.asFunction<VkCreateSurfaceDart<VkXcbSurfaceCreateInfoKHR>>(),
       createWaylandSurface: wayland == nullptr
           ? null
-          : wayland.asFunction<
-              VkCreateSurfaceDart<VkWaylandSurfaceCreateInfoKHR>>(),
+          : wayland
+              .asFunction<VkCreateSurfaceDart<VkWaylandSurfaceCreateInfoKHR>>(),
       getPhysicalDeviceWin32PresentationSupport: win32Support == nullptr
           ? null
           : win32Support.asFunction<VkGetWin32PresentationSupportDart>(),
@@ -317,8 +315,9 @@ final class VulkanSwapchainApi {
     final Pointer<
             NativeFunction<
                 VkCreateNative<VkSwapchainCreateInfoKHR, VkSwapchainKHR_T>>>
-        create = maybe<VkCreateNative<VkSwapchainCreateInfoKHR,
-            VkSwapchainKHR_T>>('vkCreateSwapchainKHR');
+        create =
+        maybe<VkCreateNative<VkSwapchainCreateInfoKHR, VkSwapchainKHR_T>>(
+            'vkCreateSwapchainKHR');
     final Pointer<NativeFunction<VkDestroyNative<VkSwapchainKHR_T>>> destroy =
         maybe<VkDestroyNative<VkSwapchainKHR_T>>('vkDestroySwapchainKHR');
     final Pointer<NativeFunction<VkGetSwapchainImagesNative>> images =
@@ -338,8 +337,7 @@ final class VulkanSwapchainApi {
     return VulkanSwapchainApi._(
       createSwapchain: create.asFunction<
           VkCreateDart<VkSwapchainCreateInfoKHR, VkSwapchainKHR_T>>(),
-      destroySwapchain:
-          destroy.asFunction<VkDestroyDart<VkSwapchainKHR_T>>(),
+      destroySwapchain: destroy.asFunction<VkDestroyDart<VkSwapchainKHR_T>>(),
       getSwapchainImages: images.asFunction<VkGetSwapchainImagesDart>(),
       acquireNextImage: acquire.asFunction<VkAcquireNextImageDart>(),
       queuePresent: present.asFunction<VkQueuePresentDart>(),

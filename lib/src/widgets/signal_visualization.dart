@@ -8,8 +8,8 @@ import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_opcodes.dart' show paintStyleStroke;
 import '../layout/render_box.dart';
+import '../semantics/semantics.dart';
 import 'element.dart';
-import 'semantics.dart';
 import 'widget.dart';
 
 /// Draws normalized time-domain samples as one continuous oscilloscope line.

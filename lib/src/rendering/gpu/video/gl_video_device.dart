@@ -197,7 +197,8 @@ final class GlVideoDevice implements GpuVideoTextureAllocator {
   /// context has. Partial upload is honoured because `glTexSubImage2D` is
   /// exactly that call.
   @override
-  VideoTextureCapabilities get videoCapabilities => const VideoTextureCapabilities(
+  VideoTextureCapabilities get videoCapabilities =>
+      const VideoTextureCapabilities(
         streamingFormats: <VideoPixelFormat>{
           VideoPixelFormat.nv12,
           VideoPixelFormat.i420,
@@ -446,8 +447,7 @@ final class GlVideoDevice implements GpuVideoTextureAllocator {
       );
     }
 
-    final VideoRegion whole =
-        VideoRegion.wholeFrame(frame.width, frame.height);
+    final VideoRegion whole = VideoRegion.wholeFrame(frame.width, frame.height);
     final VideoRegion asked = region == null
         ? whole
         : region.alignedTo(frame.format.pixelFormat).intersect(whole);
@@ -638,7 +638,8 @@ final class GlVideoDevice implements GpuVideoTextureAllocator {
       ..bindBuffer(glArrayBuffer, _vbo)
       ..bufferData(
           glArrayBuffer, vertexBytes, _vertices.cast<Void>(), glDynamicDraw)
-      ..uniform2f(_uViewport, viewportWidth.toDouble(), viewportHeight.toDouble())
+      ..uniform2f(
+          _uViewport, viewportWidth.toDouble(), viewportHeight.toDouble())
       ..uniform1i(_uYFlip, yFlip)
       ..uniform1i(_uFormat, videoGlModeFor(texture.format.pixelFormat))
       ..uniform2f(_uFrameSize, texture.format.width.toDouble(),
@@ -661,9 +662,8 @@ final class GlVideoDevice implements GpuVideoTextureAllocator {
         ..bindTexture(glTexture2D, texture.plane(index).id);
     }
 
-    final int scissorY = yFlip == 0
-        ? viewportHeight - clip.bottom.round()
-        : clip.top.round();
+    final int scissorY =
+        yFlip == 0 ? viewportHeight - clip.bottom.round() : clip.top.round();
     _gl
       ..viewport(0, 0, viewportWidth, viewportHeight)
       ..enable(glScissorTest)

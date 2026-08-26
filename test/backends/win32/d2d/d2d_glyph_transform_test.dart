@@ -262,8 +262,8 @@ void main() {
       expect(looped.sink.usesSpriteBatch, isFalse,
           reason: 'the point of this test is the other route; if the flag did '
               'not take, it is comparing the batch against itself');
-      expect(batched.sink.glyphAtlasEntryCount,
-          looped.sink.glyphAtlasEntryCount,
+      expect(
+          batched.sink.glyphAtlasEntryCount, looped.sink.glyphAtlasEntryCount,
           reason: 'both routes admit the same glyphs to the same atlas');
 
       final _Diff diff = _diff(batched.readback(), looped.readback());

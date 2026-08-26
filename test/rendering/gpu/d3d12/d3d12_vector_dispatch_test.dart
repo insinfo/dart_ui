@@ -200,7 +200,8 @@ void main() {
   });
 
   group('a retained encoding survives the frame', () {
-    test('a repeated frame reuses the sparse plan and draws the same', () async {
+    test('a repeated frame reuses the sparse plan and draws the same',
+        () async {
       if (_skipped(session)) return;
       // Sparse coverage is an analytic rasterisation on the CPU, and it was
       // being paid on every frame for a shape that had not moved - the dense
@@ -430,7 +431,8 @@ Future<_Run> _render(D3d12Session session, DisplayList list) async {
   addTearDown(gpu.dispose);
   final PresentResult result =
       await gpu.renderDisplayList(list, clearColor: _clear);
-  expect(result.status, PresentStatus.presented, reason: '${result.diagnostic}');
+  expect(result.status, PresentStatus.presented,
+      reason: '${result.diagnostic}');
 
   final GpuPathPlanningTelemetry planning = gpu.pathPlanning!;
   expect(planning.lastEvent, isNotNull,

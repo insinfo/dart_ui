@@ -820,8 +820,7 @@ final class ComputeTilePlan {
   double get meanSegmentsPerReference =>
       referenceCount == 0 ? 0 : _tileSegments.length / referenceCount;
 
-  int referenceFirstSegment(int reference) =>
-      _referenceSegment(reference, 0);
+  int referenceFirstSegment(int reference) => _referenceSegment(reference, 0);
   int referenceSegmentCount(int reference) => _referenceSegment(reference, 1);
 
   /// The [index]th segment binned into [reference], as an index into
@@ -845,8 +844,7 @@ final class ComputeTilePlan {
 
   int _backdrop(int reference, int field) {
     _checkReference(reference);
-    return _referenceBackdrops[
-        reference * kComputeTileBackdropStride + field];
+    return _referenceBackdrops[reference * kComputeTileBackdropStride + field];
   }
 
   void _checkReference(int reference) {

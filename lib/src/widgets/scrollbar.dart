@@ -55,13 +55,13 @@ import '../layout/render_viewport.dart';
 import '../platform/input_events.dart';
 import '../scheduler/timer_handle.dart';
 import '../scheduler/ui_dispatcher.dart';
+import '../semantics/semantics.dart';
 import 'basic.dart';
 import 'control.dart';
 import 'element.dart';
 import 'gesture_detector.dart';
 import 'pointer_router.dart';
 import 'proxy.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 

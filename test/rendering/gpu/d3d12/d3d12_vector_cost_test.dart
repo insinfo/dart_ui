@@ -80,12 +80,11 @@ const int _warmupFrames = 5;
 const String _benchmarkVariable = 'DART_UI_GPU_BENCHMARK';
 
 /// Null when the timing tests should run; otherwise the reason they did not.
-final String? _benchmarkSkip =
-    Platform.environment[_benchmarkVariable] == '1'
-        ? null
-        : 'a measurement rather than a correctness test, and one heavy enough '
-            'to reset the adapter out from under the suites running beside it; '
-            'set $_benchmarkVariable=1 to take the numbers';
+final String? _benchmarkSkip = Platform.environment[_benchmarkVariable] == '1'
+    ? null
+    : 'a measurement rather than a correctness test, and one heavy enough '
+        'to reset the adapter out from under the suites running beside it; '
+        'set $_benchmarkVariable=1 to take the numbers';
 
 void main() {
   final D3d12Session session =
@@ -143,8 +142,7 @@ void main() {
       'compute mean segs/tile':
           computePlan.meanSegmentsPerReference.toStringAsFixed(2),
       'compute segs/tile without binning': compute.segmentCount,
-      'sparse encode us/frame':
-          sparseClock.elapsedMicroseconds ~/ _iterations,
+      'sparse encode us/frame': sparseClock.elapsedMicroseconds ~/ _iterations,
       'compute encode us/frame':
           computeClock.elapsedMicroseconds ~/ _iterations,
     });
@@ -175,15 +173,12 @@ void main() {
           .samples,
     );
 
-    final _RouteCost dense = await _route(
-      session, (_) => scene, _denseSelector, GpuPathStrategy.coverageAtlas,
-      baseline);
-    final _RouteCost sparse = await _route(
-      session, (_) => scene, _sparseSelector, GpuPathStrategy.sparseStrips,
-      baseline);
-    final _RouteCost compute = await _route(
-      session, (_) => scene, _computeSelector, GpuPathStrategy.computeTiles,
-      baseline);
+    final _RouteCost dense = await _route(session, (_) => scene, _denseSelector,
+        GpuPathStrategy.coverageAtlas, baseline);
+    final _RouteCost sparse = await _route(session, (_) => scene,
+        _sparseSelector, GpuPathStrategy.sparseStrips, baseline);
+    final _RouteCost compute = await _route(session, (_) => scene,
+        _computeSelector, GpuPathStrategy.computeTiles, baseline);
 
     _report(<String, Object>{
       'scene': 'one *static* antialiased panel path, ${_size}x$_size, '
@@ -214,13 +209,12 @@ void main() {
           .samples,
     );
 
-    final _RouteCost dense = await _route(
-      session, _scene, _denseSelector, GpuPathStrategy.coverageAtlas, baseline);
-    final _RouteCost sparse = await _route(
-      session, _scene, _sparseSelector, GpuPathStrategy.sparseStrips, baseline);
-    final _RouteCost compute = await _route(
-      session, _scene, _computeSelector, GpuPathStrategy.computeTiles,
-      baseline);
+    final _RouteCost dense = await _route(session, _scene, _denseSelector,
+        GpuPathStrategy.coverageAtlas, baseline);
+    final _RouteCost sparse = await _route(session, _scene, _sparseSelector,
+        GpuPathStrategy.sparseStrips, baseline);
+    final _RouteCost compute = await _route(session, _scene, _computeSelector,
+        GpuPathStrategy.computeTiles, baseline);
 
     _report(<String, Object>{
       'scene': 'a *deforming* antialiased panel path, ${_size}x$_size, '

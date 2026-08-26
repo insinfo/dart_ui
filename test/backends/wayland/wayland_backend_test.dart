@@ -812,7 +812,9 @@ final class _FakeWaylandClient
   @override
   int requestFrameCallback(int surfaceId) {
     frameCallbackSurfaces.add(surfaceId);
-    return frameCallbackResult < 0 ? nextFrameCallbackId++ : frameCallbackResult;
+    return frameCallbackResult < 0
+        ? nextFrameCallbackId++
+        : frameCallbackResult;
   }
 
   @override

@@ -153,8 +153,8 @@ final class VulkanVectorPathRecorder implements GpuPathCommandRecorder {
     try {
       final SparseStripDrawPlan? cached = sparsePlanCache
           .lookup(_sparseKey(path, localToTarget, clip, fillRule));
-      final SparseStripDrawPlan? plan = cached ??
-          _encodeSparse(path, localToTarget, clip, fillRule);
+      final SparseStripDrawPlan? plan =
+          cached ?? _encodeSparse(path, localToTarget, clip, fillRule);
       if (plan == null) return null;
       _measuredPlan = plan;
       _measuredPath = path;

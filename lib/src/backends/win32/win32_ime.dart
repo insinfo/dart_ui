@@ -177,19 +177,17 @@ final class Imm32Api {
   late final int Function(int hwnd, int himc, int flags) immAssociateContextEx;
 
   void _bind() {
-    immGetContext = _imm32.lookupFunction<IntPtr Function(IntPtr),
-        int Function(int)>('ImmGetContext');
-    immReleaseContext = _imm32.lookupFunction<
-        Int32 Function(IntPtr, IntPtr),
+    immGetContext =
+        _imm32.lookupFunction<IntPtr Function(IntPtr), int Function(int)>(
+            'ImmGetContext');
+    immReleaseContext = _imm32.lookupFunction<Int32 Function(IntPtr, IntPtr),
         int Function(int, int)>('ImmReleaseContext');
     immGetCompositionStringW = _imm32.lookupFunction<
         Int32 Function(IntPtr, Uint32, Pointer<Void>, Uint32),
-        int Function(
-            int, int, Pointer<Void>, int)>('ImmGetCompositionStringW');
+        int Function(int, int, Pointer<Void>, int)>('ImmGetCompositionStringW');
     immSetCompositionWindow = _imm32.lookupFunction<
         Int32 Function(IntPtr, Pointer<CompositionForm>),
-        int Function(
-            int, Pointer<CompositionForm>)>('ImmSetCompositionWindow');
+        int Function(int, Pointer<CompositionForm>)>('ImmSetCompositionWindow');
     immSetCandidateWindow = _imm32.lookupFunction<
         Int32 Function(IntPtr, Pointer<CandidateForm>),
         int Function(int, Pointer<CandidateForm>)>('ImmSetCandidateWindow');
@@ -300,9 +298,8 @@ ImeComposition buildComposition({
   // an edit that raced the message leaves the context describing the previous,
   // longer string, and a clause that ran past the end would ask the paragraph
   // for boxes it has no glyphs for.
-  final int caret = cursorPosition < 0
-      ? text.length
-      : cursorPosition.clamp(0, text.length);
+  final int caret =
+      cursorPosition < 0 ? text.length : cursorPosition.clamp(0, text.length);
   return ImeComposition(
     text: text,
     clauses: decodeCompositionAttributes(

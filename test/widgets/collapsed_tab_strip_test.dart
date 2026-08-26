@@ -95,8 +95,7 @@ void main() {
     ])
       ..frame();
 
-    final double grew =
-        long.labelSize()!.height - short.labelSize()!.height;
+    final double grew = long.labelSize()!.height - short.labelSize()!.height;
     expect(grew,
         closeTo(lineWidth('Align and Distribute') - lineWidth('Fill'), 0.5));
     short.dispose();

@@ -45,13 +45,13 @@ import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_viewport.dart';
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import '../text/shaper.dart' show TextDirection;
 import 'control.dart';
 import 'directionality.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
-import 'semantics.dart';
 import 'style.dart';
 import 'theme.dart';
 import 'virtualization.dart';
@@ -214,8 +214,7 @@ final class _TreeViewState extends State<TreeView> {
     final double? target = _virtualization.scrollToReveal(
       index,
       scrollOffset: _position.pixels,
-      viewportExtent:
-          _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8,
+      viewportExtent: _viewportExtent > 0 ? _viewportExtent : _rowExtent * 8,
     );
     if (target != null) _position.jumpTo(target);
   }
@@ -383,8 +382,7 @@ final class _TreeViewState extends State<TreeView> {
               index: index,
               extent: _rowExtent,
               expandable: _rows[index].node.isExpandable,
-              expanded:
-                  widget.expandedIds.contains(_rows[index].node.identity),
+              expanded: widget.expandedIds.contains(_rows[index].node.identity),
               selected: index == _selectedIndex,
               enabled: _rows[index].node.enabled,
               textDirection: direction,
@@ -589,8 +587,8 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
     if (_expandable) {
       _paintToggle(
         list,
-        Rect.fromLTWH(offset.dx + toggleStart, offset.dy, toggleExtent,
-            size.height),
+        Rect.fromLTWH(
+            offset.dx + toggleStart, offset.dy, toggleExtent, size.height),
       );
     }
     final double labelStart = indent + toggleExtent + 2;

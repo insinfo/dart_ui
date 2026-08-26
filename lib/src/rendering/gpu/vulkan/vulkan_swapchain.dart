@@ -136,16 +136,15 @@ final class VulkanSurface {
           final Pointer<VkWin32SurfaceCreateInfoKHR> info =
               arena<VkWin32SurfaceCreateInfoKHR>();
           info.ref
-            ..sType = VkStructureType
-                .VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR
+            ..sType =
+                VkStructureType.VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR
             // Zero is legal and means "the module this process was loaded
             // from", which is what every driver does with it. Resolving it here
             // would mean calling `GetModuleHandle`, which is a Win32 name this
             // file may not use - see `vulkan_wsi_platform.dart`.
             ..hinstance = descriptor.displayHandle
             ..hwnd = descriptor.windowHandle;
-          result = api.createWin32Surface!(
-              instance.handle, info, nullptr, out);
+          result = api.createWin32Surface!(instance.handle, info, nullptr, out);
         case VulkanSurfacePlatform.xlib:
           final Pointer<VkXlibSurfaceCreateInfoKHR> info =
               arena<VkXlibSurfaceCreateInfoKHR>();
@@ -384,8 +383,7 @@ final class VulkanSurfaceFormat {
   int get hashCode => Object.hash(format, colorSpace);
 
   @override
-  String toString() =>
-      '${vkFormatName(format)}/${_colorSpaceName(colorSpace)}';
+  String toString() => '${vkFormatName(format)}/${_colorSpaceName(colorSpace)}';
 
   static String _colorSpaceName(int space) =>
       space == VkColorSpaceKHR.VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
@@ -544,13 +542,12 @@ abstract final class VulkanSurfaceConfiguration {
     // Mailbox with two images degenerates into FIFO with extra steps: the
     // producer still blocks, because there is no spare image to replace. Three
     // is the smallest count at which the mode does what it is chosen for.
-    final int wanted =
-        mode == VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR &&
-                descriptor.minImageCount < 3
-            ? 3
-            : descriptor.minImageCount;
-    final (int width, int height) =
-        capabilities.resolveExtent(descriptor.pixelWidth, descriptor.pixelHeight);
+    final int wanted = mode == VkPresentModeKHR.VK_PRESENT_MODE_MAILBOX_KHR &&
+            descriptor.minImageCount < 3
+        ? 3
+        : descriptor.minImageCount;
+    final (int width, int height) = capabilities.resolveExtent(
+        descriptor.pixelWidth, descriptor.pixelHeight);
     return VulkanSwapchainConfiguration(
       format: format.format,
       colorSpace: format.colorSpace,
@@ -694,8 +691,7 @@ final class VulkanSwapchain {
       families[0] = device.queueFamily;
       families[1] = device.presentQueueFamily;
       if (device.hasUnifiedQueues) {
-        info.ref.imageSharingMode =
-            VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
+        info.ref.imageSharingMode = VkSharingMode.VK_SHARING_MODE_EXCLUSIVE;
       } else {
         // Two families touch the image, so it is shared. The alternative -
         // EXCLUSIVE with an explicit ownership transfer on every frame - is
@@ -709,8 +705,7 @@ final class VulkanSwapchain {
 
       final Pointer<Pointer<VkSwapchainKHR_T>> out =
           arena<Pointer<VkSwapchainKHR_T>>();
-      if (vkFailed(
-          api.createSwapchain(device.handle, info, nullptr, out))) {
+      if (vkFailed(api.createSwapchain(device.handle, info, nullptr, out))) {
         return null;
       }
       final Pointer<VkSwapchainKHR_T> chain = out.value;

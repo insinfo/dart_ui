@@ -15,11 +15,11 @@ import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 
@@ -349,9 +349,7 @@ final class RenderMenu extends RenderBox with ControlBehavior {
                 shortcutWidth,
             baseline,
           ),
-          !item.enabled
-              ? theme.disabledForeground
-              : theme.foregroundSecondary,
+          !item.enabled ? theme.disabledForeground : theme.foregroundSecondary,
         );
       }
       y += itemHeight;

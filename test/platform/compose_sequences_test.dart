@@ -174,7 +174,8 @@ void main() {
       );
     });
 
-    test('a dead key followed by nothing it combines with is invalid, not '
+    test(
+        'a dead key followed by nothing it combines with is invalid, not '
         'text', () {
       final engine = ComposeEngine(table)..accept(_deadAcute);
       final ComposeResult result = engine.accept(_keyQ);
@@ -242,7 +243,8 @@ void main() {
   });
 
   group('finding the machine\'s table', () {
-    test('the candidate order is XCOMPOSEFILE, then ~/.XCompose, then the '
+    test(
+        'the candidate order is XCOMPOSEFILE, then ~/.XCompose, then the '
         'locale table', () {
       final List<String> candidates = systemComposeFileCandidates(
         environment: <String, String>{

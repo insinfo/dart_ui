@@ -44,8 +44,7 @@ final class WaylandMemfdAllocator implements WaylandShmAllocator {
     if (_libc.ftruncate(fd, byteLength) != 0) {
       final error = _libc.errno;
       _libc.closeFd(fd);
-      throw StateError(
-          'ftruncate($byteLength) failed for a Wayland shm pool '
+      throw StateError('ftruncate($byteLength) failed for a Wayland shm pool '
           '(errno=$error)');
     }
     final mapping = _libc.mmap(

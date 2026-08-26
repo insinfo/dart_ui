@@ -488,7 +488,9 @@ final class SpirvFunction {
   /// point over [sample] is that no filtering, no normalisation and no
   /// addressing mode stands between the coordinate and the texel.
   int fetch(int type, int image, int coordinate, int lod) => _value(
-      _opImageFetch, type, <int>[image, coordinate, kSpirvImageOperandsLod, lod]);
+      _opImageFetch,
+      type,
+      <int>[image, coordinate, kSpirvImageOperandsLod, lod]);
 
   int negate(int type, int value) => _value(_opFNegate, type, <int>[value]);
 

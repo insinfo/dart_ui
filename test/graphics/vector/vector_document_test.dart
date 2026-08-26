@@ -23,7 +23,8 @@ void main() {
       final doc = VectorDocument();
       expect(doc.pageCount, equals(1));
 
-      final page2 = doc.addPage(name: 'Page 2', format: const PageFormat.letterPortrait());
+      final page2 = doc.addPage(
+          name: 'Page 2', format: const PageFormat.letterPortrait());
       expect(doc.pageCount, equals(2));
       expect(doc.getPage(1).name, equals('Page 2'));
 
@@ -47,7 +48,8 @@ void main() {
       );
       methods.addObject(layer, rect);
       // With 1.0pt stroke width, bounds expand by 0.5 on each side
-      expect(rect.cacheBbox, equals(const Rect.fromLTRB(9.5, 19.5, 110.5, 70.5)));
+      expect(
+          rect.cacheBbox, equals(const Rect.fromLTRB(9.5, 19.5, 110.5, 70.5)));
 
       // 2. Circle
       final circle = methods.createCircle(
@@ -74,7 +76,8 @@ void main() {
       expect(layer.children.length, equals(3));
     });
 
-    test('grouping and ungrouping objects preserves coordinates and transforms', () {
+    test('grouping and ungrouping objects preserves coordinates and transforms',
+        () {
       final doc = VectorDocument();
       final methods = DocumentMethods(doc);
       final page = doc.getPage(0);
@@ -100,7 +103,8 @@ void main() {
       expect(layer.children.length, equals(2));
     });
 
-    test('deep copy clones document tree without sharing mutable instances', () {
+    test('deep copy clones document tree without sharing mutable instances',
+        () {
       final doc = VectorDocument();
       final methods = DocumentMethods(doc);
       final page = doc.getPage(0);

@@ -8791,10 +8791,14 @@ chamadas que nunca aconteciam:
 
 O que existe agora:
 
-- **`lib/src/platform/accessibility.dart`** — `AccessibilityHost`,
-  `WindowAccessibility` e `AccessibilityTreeSource`. A camada neutra; é o único
-  arquivo de `platform/` que importa `widgets/`, e o cabeçalho diz por quê e
-  qual seria a correção honesta (tirar `SemanticsOwner` de `widgets/`);
+- **`lib/src/semantics/accessibility.dart`** — `AccessibilityHost`,
+  `WindowAccessibility` e `AccessibilityTreeSource`. A camada neutra. Morava em
+  `platform/` e era o único arquivo de lá que importava `widgets/`, para poder
+  nomear `SemanticsOwner`; a correção honesta que o cabeçalho antigo apontava
+  foi feita — a árvore semântica saiu de `widgets/` para a camada `semantics/`
+  (acima de `layout`, abaixo de `widgets`) e este contrato foi junto, porque o
+  que `register` carrega é uma árvore semântica. `platform` voltou a não
+  importar nada acima de `scheduler`;
 - **`backends/win32/uia/uia_session.dart`** — `WindowsAccessibility` liga a
   árvore viva à ponte, e `WindowsUiaAccessibilityHost` é a implementação da
   interface neutra. **Ativação preguiçosa**: registrar custa uma entrada de
@@ -8807,7 +8811,7 @@ O que existe agora:
 - **`application.dart`** registra a janela na criação, bombeia a árvore depois
   de cada frame (`_pumpAccessibility`, uma busca em mapa quando ninguém está
   lendo) e desregistra no teardown;
-- **`widgets/semantics.dart`** ganhou `SemanticsActionTarget` e
+- **`semantics/semantics.dart`** ganhou `SemanticsActionTarget` e
   `SemanticsOwner.performAction`, que é o caminho de volta: um id que veio do
   leitor de tela vira o render object que o publicou. `ControlBehavior` implementa
   `activate` e `focus` para **todo** controle; `RenderSlider` implementa

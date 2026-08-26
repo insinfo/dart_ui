@@ -403,8 +403,8 @@ void main() {
 
       // The plan is in swapchain pixels, so it is built after the chain exists.
       final VulkanSwapchainConfiguration config = target.configuration!;
-      final Path path = _rectPath(10.5, 12.25, config.width - 14.5,
-          config.height - 18.75);
+      final Path path =
+          _rectPath(10.5, 12.25, config.width - 14.5, config.height - 18.75);
       final Rect clip = Rect.fromLTWH(
           0, 0, config.width.toDouble(), config.height.toDouble());
       final SparseStripDrawPlan plan = SparseStripDrawPlan()
@@ -467,8 +467,7 @@ void main() {
       for (var i = 0; i < target.imageCount; i++) {
         await target.renderDisplayList(_denseScene(), clearColor: _clear);
       }
-      final Framebuffer painted =
-          _copyOf(target.framebuffer!);
+      final Framebuffer painted = _copyOf(target.framebuffer!);
 
       final PresentResult result =
           await target.renderDisplayList(DisplayList());

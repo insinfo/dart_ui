@@ -17,8 +17,8 @@ Uint8List _ascii(String value) => Uint8List.fromList(ascii.encode(value));
 void main() {
   group('MD5 incremental (Crypto.md5Sink)', () {
     test('sem dados devolve o digest da entrada vazia', () {
-      expect(_hex(Crypto.md5Sink().close()),
-          'd41d8cd98f00b204e9800998ecf8427e');
+      expect(
+          _hex(Crypto.md5Sink().close()), 'd41d8cd98f00b204e9800998ecf8427e');
     });
 
     test('bate com o vetor RFC 1321 quando alimentado byte a byte', () {
@@ -89,20 +89,21 @@ void main() {
           offset = end;
         }
 
-        expect(_hex(sink.close()), expected, reason: 'incremental, $size bytes');
+        expect(_hex(sink.close()), expected,
+            reason: 'incremental, $size bytes');
       }
     });
   });
 
   group('Digests one-shot no backend ativo', () {
     test('MD5 atende aos vetores RFC 1321', () {
-      expect(_hex(Crypto.md5(Uint8List(0))),
-          'd41d8cd98f00b204e9800998ecf8427e');
-      expect(_hex(Crypto.md5(_ascii('abc'))),
-          '900150983cd24fb0d6963f7d28e17f72');
       expect(
-          _hex(Crypto
-              .md5(_ascii('The quick brown fox jumps over the lazy dog'))),
+          _hex(Crypto.md5(Uint8List(0))), 'd41d8cd98f00b204e9800998ecf8427e');
+      expect(
+          _hex(Crypto.md5(_ascii('abc'))), '900150983cd24fb0d6963f7d28e17f72');
+      expect(
+          _hex(Crypto.md5(
+              _ascii('The quick brown fox jumps over the lazy dog'))),
           '9e107d9d372bb6826bd81d3542a419d6');
     });
 

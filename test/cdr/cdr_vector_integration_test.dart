@@ -34,7 +34,9 @@ void main() {
       expect(format, equals('CDR6'));
     });
 
-    test('CdrDocument parses generated CDR bytes and converts back to VectorDocument', () {
+    test(
+        'CdrDocument parses generated CDR bytes and converts back to VectorDocument',
+        () {
       final doc = VectorDocument(docUnits: DocUnit.mm);
       final methods = DocumentMethods(doc);
       final page = doc.getPage(0);

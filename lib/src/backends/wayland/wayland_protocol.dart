@@ -389,8 +389,7 @@ const int xdgPopupEventRepositioned = 2;
 // zxdg_decoration_manager_v1 (xdg-decoration, unstable v1).
 // ---------------------------------------------------------------------------
 
-const String xdgDecorationManagerInterfaceName =
-    'zxdg_decoration_manager_v1';
+const String xdgDecorationManagerInterfaceName = 'zxdg_decoration_manager_v1';
 const int xdgDecorationManagerBindVersion = 1;
 
 const int xdgDecorationManagerRequestDestroy = 0;

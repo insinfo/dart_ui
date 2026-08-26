@@ -322,8 +322,7 @@ void main() {
           UnavailableDragDrop(name: 'web', reason: 'not implemented yet');
       // No await, no throw: the future is created without raising, which is
       // what lets a caller store it and await it later.
-      final Future<DragAction> pending =
-          backend.startDrag(DragRequest(
+      final Future<DragAction> pending = backend.startDrag(DragRequest(
         window: _FakeWindow(),
         data: MemoryDragData.text('x'),
       ));
@@ -353,8 +352,7 @@ void main() {
       final _RecordingHandler first = _RecordingHandler();
       final _RecordingHandler second = _RecordingHandler();
 
-      await backend.registerDropTarget(
-          window: _FakeWindow(), handler: first);
+      await backend.registerDropTarget(window: _FakeWindow(), handler: first);
       final DropTargetRegistration registration = await backend
           .registerDropTarget(window: _FakeWindow(), handler: second);
 
@@ -365,8 +363,7 @@ void main() {
     });
 
     test('records drag requests and plays back a result', () async {
-      final FakeDragDrop backend = FakeDragDrop()
-        ..dragResult = DragAction.move;
+      final FakeDragDrop backend = FakeDragDrop()..dragResult = DragAction.move;
       final DragRequest request = DragRequest(
         window: _FakeWindow(),
         data: MemoryDragData.text('x'),

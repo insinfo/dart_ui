@@ -76,7 +76,9 @@ void main() {
     }
     final List<int> inline = <int>[
       for (var index = 0; index < 3; index++)
-        index < types.length && !moreTypes ? client.atom(types[index]) : xcbNone,
+        index < types.length && !moreTypes
+            ? client.atom(types[index])
+            : xcbNone,
     ];
     return manager.handleClientMessage(
       window: window,
@@ -188,7 +190,8 @@ void main() {
     test('unregistering deletes the property and stops consuming events', () {
       manager.unregisterWindow(_ourWindow);
 
-      expect(client.deletedProperties.single.property, client.atom('XdndAware'));
+      expect(
+          client.deletedProperties.single.property, client.atom('XdndAware'));
       expect(manager.isRegistered(_ourWindow), isFalse);
       expect(enter(), isFalse);
       expect(handler.enters, isEmpty);
@@ -335,7 +338,8 @@ void main() {
       expect(status.data[1] & xdndStatusWantPositionBit, 0);
       expect(status.data[2], (140 << 16) | 90);
       expect(status.data[3], (1 << 16) | 1,
-          reason: 'an answer that can change per pixel must be asked per pixel');
+          reason:
+              'an answer that can change per pixel must be asked per pixel');
       expect(status.data[4], client.atom('XdndActionMove'));
       expect(manager.acceptedFormat, _textMime);
       expect(manager.acceptedAction, DragAction.move);
@@ -487,8 +491,8 @@ void main() {
       final _ClientMessage finished = client.messages.single;
       expect(finished.type, client.atom('XdndFinished'));
       expect(finished.data[0], _ourWindow);
-      expect(finished.data[1] & xdndFinishedAcceptedBit,
-          xdndFinishedAcceptedBit);
+      expect(
+          finished.data[1] & xdndFinishedAcceptedBit, xdndFinishedAcceptedBit);
       expect(finished.data[2], client.atom('XdndActionCopy'));
       expect(manager.hasActiveSession, isFalse);
       expect(manager.isTransferPending, isFalse);
@@ -853,8 +857,8 @@ void main() {
       await expectLater(
         backend.registerDropTarget(window: window, handler: handler),
         throwsA(isA<DragDropException>()
-            .having((DragDropException error) => error.backend, 'backend',
-                'xdnd')
+            .having(
+                (DragDropException error) => error.backend, 'backend', 'xdnd')
             .having((DragDropException error) => error.reason, 'reason',
                 contains('already has an XdndAware drop target'))),
       );
@@ -1163,8 +1167,8 @@ void main() {
           'text/plain': Uint8List(1),
         });
         expect(
-          client.propertyWrites
-              .where((_PropertyWrite w) => w.property == client.atom('XdndTypeList')),
+          client.propertyWrites.where(
+              (_PropertyWrite w) => w.property == client.atom('XdndTypeList')),
           isEmpty,
         );
         source.cancel();
@@ -1260,8 +1264,8 @@ void main() {
         placeTarget();
         // No back-reference on the proxy: the specification's own test for a
         // proxy nobody is servicing any more.
-        client.putCardinals(
-            targetWindow, client.atom('XdndProxy'), <int>[proxy]);
+        client
+            .putCardinals(targetWindow, client.atom('XdndProxy'), <int>[proxy]);
         start();
 
         source.moveTo(10, 10, 1000);
@@ -1523,7 +1527,13 @@ void main() {
         source.handleClientMessage(
           type: client.atom('XdndFinished'),
           window: originWindow,
-          data: <int>[targetWindow, 0, client.actionAtom(DragAction.move), 0, 0],
+          data: <int>[
+            targetWindow,
+            0,
+            client.actionAtom(DragAction.move),
+            0,
+            0
+          ],
         );
 
         expect(await drag, DragAction.none,
@@ -1806,7 +1816,6 @@ void _withNativeEvent(void Function(Pointer<Uint8> event) body) {
   // ---------------------------------------------------------------------------
   // The source half
   // ---------------------------------------------------------------------------
-
 }
 
 // ---------------------------------------------------------------------------
@@ -2166,8 +2175,8 @@ final class _FakeNativeWindow implements NativeWindow {
       const <NativeSurfaceDescriptor>[];
 
   @override
-  Stream<PlatformWindowEvent> get events => const Stream<
-      PlatformWindowEvent>.empty();
+  Stream<PlatformWindowEvent> get events =>
+      const Stream<PlatformWindowEvent>.empty();
 
   @override
   bool isDisposed = false;
@@ -2202,7 +2211,6 @@ final class _FakeNativeWindow implements NativeWindow {
   @override
   Offset clientToScreen(Offset clientPosition) => clientPosition;
 }
-
 
 final class _ByteWrite {
   _ByteWrite(this.window, this.property, this.type, this.bytes);

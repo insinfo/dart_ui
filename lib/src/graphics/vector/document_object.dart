@@ -1,6 +1,5 @@
 import '../../geometry/rect.dart';
 
-
 /// Base class for all nodes in the vector document tree.
 ///
 /// The tree is doubly-linked: each node has a [parent] pointer and a [children]

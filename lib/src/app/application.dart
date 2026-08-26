@@ -149,7 +149,6 @@ import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
-import '../platform/accessibility.dart';
 import '../platform/backend_selection.dart';
 import '../platform/clipboard.dart';
 import '../platform/drag_drop.dart';
@@ -163,6 +162,7 @@ import '../rendering/render_policy.dart';
 import '../rendering/renderer.dart';
 import '../scheduler/frame_scheduler.dart';
 import '../scheduler/manual_dispatcher.dart';
+import '../semantics/accessibility.dart';
 import '../text/shaper.dart' show TextDirection;
 import '../widgets/context_menu.dart' show ContextMenuScope;
 import '../widgets/control.dart';
@@ -2226,7 +2226,7 @@ final class Application with DisposableMixin {
       // until assistive technology actually asks for this window. On a machine
       // with no screen reader running - which is most machines, most of the
       // time - this line and the null check in [drawFrame] are the entire cost
-      // of the feature. See `platform/accessibility.dart`.
+      // of the feature. See `semantics/accessibility.dart`.
       final AccessibilityHost? accessibility =
           native is NativeHandleWindow ? platformAccessibility : null;
       if (accessibility != null) {

@@ -23,7 +23,7 @@ import 'package:dart_ui/src/backends/win32/uia/uia_provider.dart';
 import 'package:dart_ui/src/ffi/com.dart';
 import 'package:dart_ui/src/ffi/native_memory.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
-import 'package:dart_ui/src/widgets/semantics.dart';
+import 'package:dart_ui/src/semantics/semantics.dart';
 import 'package:test/test.dart';
 
 const String _needsWindows =

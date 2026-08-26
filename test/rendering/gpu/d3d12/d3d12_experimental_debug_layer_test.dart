@@ -208,8 +208,7 @@ void main() {
       // dense path except `D3d12RenderDevice.submit` itself, so a second frame
       // that draws densely after a sparse frame is the check that it does.
       final D3d12RenderDevice device = session.device!;
-      device.experimentalPathStrategySelector =
-          const GpuPathStrategySelector();
+      device.experimentalPathStrategySelector = const GpuPathStrategySelector();
       final D3d12OffscreenTarget target = session.target(24, 24);
       target.enqueueSparseStrips(
         _sparsePlan(),

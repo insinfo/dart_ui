@@ -1,5 +1,3 @@
-
-
 import 'dart:math' as math;
 
 import '../../geometry/offset.dart';
@@ -92,8 +90,7 @@ Offset evaluateQuadratic(Offset p0, Offset p1, Offset p2, double t) {
 // ---------------------------------------------------------------------------
 
 /// Finds the parameter values t ∈ (0, 1) where the 1D cubic polynomial derivative is 0.
-List<double> cubicExtremaRoots(
-    double v0, double v1, double v2, double v3) {
+List<double> cubicExtremaRoots(double v0, double v1, double v2, double v3) {
   final a = 3.0 * (-v0 + 3.0 * v1 - 3.0 * v2 + v3);
   final b = 6.0 * (v0 - 2.0 * v1 + v2);
   final c = 3.0 * (v1 - v0);

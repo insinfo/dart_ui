@@ -32,8 +32,7 @@ void main() {
       final Completer<FileChange> firstCreate = Completer<FileChange>();
       final StreamSubscription<FileChange> subscription =
           FileWatcher.watch(sandbox.path).listen((FileChange change) {
-        if (change.kind == FileChangeKind.create &&
-            !firstCreate.isCompleted) {
+        if (change.kind == FileChangeKind.create && !firstCreate.isCompleted) {
           firstCreate.complete(change);
         }
       });
@@ -45,8 +44,8 @@ void main() {
       File('${sandbox.path}${Platform.pathSeparator}born.txt')
           .writeAsStringSync('x');
 
-      final FileChange change = await firstCreate.future
-          .timeout(const Duration(seconds: 10));
+      final FileChange change =
+          await firstCreate.future.timeout(const Duration(seconds: 10));
       expect(change.path, endsWith('born.txt'));
     });
 
@@ -62,8 +61,7 @@ void main() {
       final Completer<FileChange> firstDelete = Completer<FileChange>();
       final StreamSubscription<FileChange> subscription =
           FileWatcher.watch(sandbox.path).listen((FileChange change) {
-        if (change.kind == FileChangeKind.delete &&
-            !firstDelete.isCompleted) {
+        if (change.kind == FileChangeKind.delete && !firstDelete.isCompleted) {
           firstDelete.complete(change);
         }
       });
@@ -72,8 +70,8 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       victim.deleteSync();
 
-      final FileChange change = await firstDelete.future
-          .timeout(const Duration(seconds: 10));
+      final FileChange change =
+          await firstDelete.future.timeout(const Duration(seconds: 10));
       expect(change.path, endsWith('doomed.txt'));
     });
   });

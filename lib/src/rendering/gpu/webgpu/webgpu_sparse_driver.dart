@@ -136,8 +136,7 @@ final class WebGpuSparseDriver implements SparseWebGpuDriver {
           // The vertex stage reads the viewport out of the same slice the
           // fragment stage reads the paint out of, which is why one struct and
           // both stages rather than two buffers.
-          visibility:
-              web.$GPUShaderStage.VERTEX | web.$GPUShaderStage.FRAGMENT,
+          visibility: web.$GPUShaderStage.VERTEX | web.$GPUShaderStage.FRAGMENT,
           buffer: GPUBufferBindingLayout(
             type: 'uniform',
             hasDynamicOffset: true,
@@ -374,8 +373,7 @@ final class WebGpuSparseDriver implements SparseWebGpuDriver {
       dstFactor: webGpuBlendFactorName(blend.destination),
       operation: 'add',
     );
-    _pipelines[key] =
-        _device.createRenderPipeline(GPURenderPipelineDescriptor(
+    _pipelines[key] = _device.createRenderPipeline(GPURenderPipelineDescriptor(
       layout: _pipelineLayout!,
       vertex: GPUVertexState(
         module: module,
@@ -592,8 +590,7 @@ final class WebGpuSparseDriver implements SparseWebGpuDriver {
   GPUBindGroup _frameBindGroup(int buffer) {
     final GPUBindGroup? cached = _frameBindGroups[buffer];
     if (cached != null) return cached;
-    final GPUBindGroup group =
-        _device.createBindGroup(GPUBindGroupDescriptor(
+    final GPUBindGroup group = _device.createBindGroup(GPUBindGroupDescriptor(
       layout: _uniformLayout!,
       entries: <GPUBindGroupEntry>[
         GPUBindGroupEntry(

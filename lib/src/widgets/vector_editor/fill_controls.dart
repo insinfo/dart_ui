@@ -2,7 +2,6 @@
 ///
 library;
 
-
 import '../../graphics/color.dart';
 import '../../graphics/vector/constants.dart';
 import '../../graphics/vector/style.dart';

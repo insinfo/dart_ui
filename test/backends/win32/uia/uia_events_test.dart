@@ -12,7 +12,7 @@ library;
 import 'package:dart_ui/src/backends/win32/uia/uia_constants.dart';
 import 'package:dart_ui/src/backends/win32/uia/uia_events.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
-import 'package:dart_ui/src/widgets/semantics.dart';
+import 'package:dart_ui/src/semantics/semantics.dart';
 import 'package:test/test.dart';
 
 SemanticsNode _node(

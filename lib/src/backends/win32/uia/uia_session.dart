@@ -40,12 +40,12 @@ library;
 
 import '../../../foundation/diagnostics.dart';
 import '../../../foundation/lifecycle.dart';
-import '../../../platform/accessibility.dart';
-import '../../../widgets/semantics.dart';
+import '../../../semantics/accessibility.dart';
+import '../../../semantics/semantics.dart';
 import 'uia_bridge.dart';
 import 'uia_events.dart';
 
-export '../../../platform/accessibility.dart' show AccessibilityTreeSource;
+export '../../../semantics/accessibility.dart' show AccessibilityTreeSource;
 
 /// Publishes one window's live semantic tree to UI Automation.
 ///

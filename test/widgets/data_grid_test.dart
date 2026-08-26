@@ -36,7 +36,8 @@ void main() {
       final harness = _GridHarness(rowCount: 10);
       harness.frame();
 
-      final RenderDataGridRow row = harness.body.childAt(0) as RenderDataGridRow;
+      final RenderDataGridRow row =
+          harness.body.childAt(0) as RenderDataGridRow;
       expect(row.childCount, 2);
       // Column 0 starts at 0 and column 1 at 100; cells sit inside their
       // column by the theme's full control padding (12 px on the neutral
@@ -66,8 +67,7 @@ void main() {
       harness.dispose();
     });
 
-    test('selection scrolls to stay visible, and End reaches the last row',
-        () {
+    test('selection scrolls to stay visible, and End reaches the last row', () {
       final harness = _GridHarness(rowCount: 100);
       harness.frame();
 
@@ -94,11 +94,9 @@ void main() {
       harness.frame();
       expect(harness.selection, <int>{1});
 
-      harness.body
-          .handleKeyEvent(_key(logicalKeyArrowDown, shift: true));
+      harness.body.handleKeyEvent(_key(logicalKeyArrowDown, shift: true));
       harness.frame();
-      harness.body
-          .handleKeyEvent(_key(logicalKeyArrowDown, shift: true));
+      harness.body.handleKeyEvent(_key(logicalKeyArrowDown, shift: true));
       harness.frame();
 
       expect(harness.selection, <int>{1, 2, 3});
@@ -152,7 +150,8 @@ void main() {
 
       harness.body.handlePointerEvent(_press(harness.bodyPoint(50, 45)));
       harness.frame();
-      expect(harness.selection, <int>{0}, reason: 'a second Ctrl+click removes');
+      expect(harness.selection, <int>{0},
+          reason: 'a second Ctrl+click removes');
       harness.dispose();
     });
   });
@@ -164,16 +163,18 @@ void main() {
 
       harness.clickHeader(const Offset(50, 10));
       harness.frame();
-      expect(harness.sort, const DataGridSort(0, DataGridSortDirection.ascending));
+      expect(
+          harness.sort, const DataGridSort(0, DataGridSortDirection.ascending));
 
       harness.clickHeader(const Offset(50, 10));
       harness.frame();
-      expect(
-          harness.sort, const DataGridSort(0, DataGridSortDirection.descending));
+      expect(harness.sort,
+          const DataGridSort(0, DataGridSortDirection.descending));
 
       harness.clickHeader(const Offset(150, 10));
       harness.frame();
-      expect(harness.sort, const DataGridSort(1, DataGridSortDirection.ascending));
+      expect(
+          harness.sort, const DataGridSort(1, DataGridSortDirection.ascending));
       harness.dispose();
     });
 

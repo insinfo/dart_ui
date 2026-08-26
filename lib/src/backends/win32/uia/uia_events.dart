@@ -23,7 +23,7 @@
 /// client may be watching for and there are never many in one frame.
 library;
 
-import '../../../widgets/semantics.dart';
+import '../../../semantics/semantics.dart';
 import 'uia_constants.dart';
 import 'uia_mapping.dart';
 

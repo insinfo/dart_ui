@@ -105,6 +105,7 @@ import '../graphics/display_list_geometry.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import 'control.dart';
 import 'controls.dart' show MenuItem;
 import 'element.dart';
@@ -113,7 +114,6 @@ import 'focus_scope.dart';
 import 'keyboard_router.dart';
 import 'pointer_router.dart';
 import 'popup.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 

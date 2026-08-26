@@ -253,7 +253,8 @@ final class TextStyle {
       other.height == height;
 
   @override
-  int get hashCode => Object.hash(color, fontSize, fontFamily, fontWeight, height);
+  int get hashCode =>
+      Object.hash(color, fontSize, fontFamily, fontWeight, height);
 }
 
 /// The type scale, derived from one number.
@@ -339,7 +340,8 @@ final class TextTheme {
   TextStyle get titleMedium =>
       _role(base + 2, FontWeight.w600, 1.30, _titleMedium);
 
-  TextStyle get titleLarge => _role(base + 8, FontWeight.w600, 1.20, _titleLarge);
+  TextStyle get titleLarge =>
+      _role(base + 8, FontWeight.w600, 1.20, _titleLarge);
 
   /// The same scale rebuilt around a different [base], overrides kept.
   TextTheme rebase(double base) => TextTheme(
@@ -439,6 +441,7 @@ final class ScrollbarThemeData {
   final double minThumbLength;
   final double mainAxisMargin;
   final double crossAxisMargin;
+
   /// Whether the track behind the thumb is painted while the bar is at rest.
   ///
   /// Off by default. A permanently visible groove down the side of every
@@ -866,8 +869,8 @@ final class ThemeData {
         name,
         brightness,
         Object.hash(accent, accentPressed, accentHovered, accentSubtle),
-        Object.hash(
-            surfaceBase, surfaceSunken, surface, surfaceAlternate, surfaceRaised),
+        Object.hash(surfaceBase, surfaceSunken, surface, surfaceAlternate,
+            surfaceRaised),
         Object.hash(borderSubtle, border, borderStrong),
         Object.hash(foreground, foregroundSecondary, disabledForeground),
         Object.hash(disabledSurface, hoverSurface, pressedSurface),

@@ -238,8 +238,7 @@ void _copyDirectory(Directory from, Directory to) {
   to.createSync(recursive: true);
   for (final FileSystemEntity entry
       in from.listSync(recursive: false, followLinks: false)) {
-    final String name =
-        entry.path.split(Platform.pathSeparator).last;
+    final String name = entry.path.split(Platform.pathSeparator).last;
     final String target = '${to.path}/$name';
     if (entry is Directory) {
       _copyDirectory(entry, Directory(target));
@@ -319,10 +318,7 @@ void _windowsRecycle(String absolutePath) {
     descriptor.ref
       ..operation = _foDelete
       ..from = from
-      ..flags = _fofAllowUndo |
-          _fofNoConfirmation |
-          _fofSilent |
-          _fofNoErrorUi;
+      ..flags = _fofAllowUndo | _fofNoConfirmation | _fofSilent | _fofNoErrorUi;
     final int code = operate(descriptor);
     return (code: code, aborted: descriptor.ref.anyOperationsAborted != 0);
   });

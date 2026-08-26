@@ -36,6 +36,7 @@ import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import '../text/shaper.dart' show TextDirection;
 import 'basic.dart';
 import 'control.dart';
@@ -47,7 +48,6 @@ import 'focus_scope.dart';
 import 'icon.dart';
 import 'icon_button.dart';
 import 'localizations.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 
@@ -210,8 +210,7 @@ final class _CalendarState extends State<Calendar> {
   }
 
   void _movePage(int months) {
-    final DateTime month =
-        DateTime(_month.year, _month.month + months);
+    final DateTime month = DateTime(_month.year, _month.month + months);
     final int day = _focusedDay.day.clamp(1, _daysInMonth(month));
     setState(() {
       _month = month;
@@ -279,8 +278,7 @@ final class _CalendarState extends State<Calendar> {
   /// The 42 days the grid shows: the month plus what pads it to whole weeks.
   List<DateTime> _gridDays(CalendarLocalizations strings) {
     final DateTime firstOfMonth = DateTime(_month.year, _month.month);
-    final int leading =
-        (firstOfMonth.weekday - strings.firstDayOfWeek) % 7;
+    final int leading = (firstOfMonth.weekday - strings.firstDayOfWeek) % 7;
     return List<DateTime>.generate(
       42,
       (int i) => DateTime(_month.year, _month.month, 1 - leading + i),
@@ -289,7 +287,8 @@ final class _CalendarState extends State<Calendar> {
 
   @override
   Widget build(BuildContext context) {
-    final CalendarLocalizations strings = CalendarLocalizations.resolve(context);
+    final CalendarLocalizations strings =
+        CalendarLocalizations.resolve(context);
     final TextDirection direction = Directionality.of(context);
     final ThemeData theme = Theme.of(context);
     final List<DateTime> days = _gridDays(strings);
@@ -335,8 +334,8 @@ final class _CalendarState extends State<Calendar> {
             focusNode: _focusNode,
             weekdayAbbreviations: <String>[
               for (int i = 0; i < 7; i++)
-                strings.weekdayAbbreviations[
-                    (strings.firstDayOfWeek - 1 + i) % 7],
+                strings
+                    .weekdayAbbreviations[(strings.firstDayOfWeek - 1 + i) % 7],
             ],
             textDirection: direction,
             monthTitle: strings.monthTitle(_month),
@@ -345,8 +344,7 @@ final class _CalendarState extends State<Calendar> {
             children: <Widget>[
               for (final DateTime day in days)
                 _CalendarDayWidget(
-                  key: ValueKey<String>(
-                      '${day.year}-${day.month}-${day.day}'),
+                  key: ValueKey<String>('${day.year}-${day.month}-${day.day}'),
                   day: day,
                   outsideMonth: day.month != _month.month,
                   selected: _sameDay(day, widget.selectedDate),
@@ -483,9 +481,8 @@ final class RenderCalendarGrid extends RenderBoxContainer<BoxParentData>
     paintRoundedFill(list, rect, theme.surfaceRaised, theme.cornerRadius);
     final double cell = _cellExtent;
     for (int i = 0; i < _weekdayAbbreviations.length && i < 7; i++) {
-      final double x = _textDirection.isRightToLeft
-          ? size.width - (i + 1) * cell
-          : i * cell;
+      final double x =
+          _textDirection.isRightToLeft ? size.width - (i + 1) * cell : i * cell;
       paintCenteredLabel(
         list,
         _weekdayAbbreviations[i],
@@ -643,8 +640,8 @@ final class RenderCalendarDay extends RenderBox with ControlBehavior {
     // A day is a circle, the way every calendar draws one: a square selection
     // in a 7-column grid tiles into a solid block the moment two days in a row
     // are selected, and a filled square with a number in it is the 1995 look.
-    final double disc = (rect.width < rect.height ? rect.width : rect.height) -
-        Spacing.xs;
+    final double disc =
+        (rect.width < rect.height ? rect.width : rect.height) - Spacing.xs;
     final Rect cell = Rect.fromLTWH(
       (rect.left + (rect.width - disc) / 2).roundToDouble(),
       (rect.top + (rect.height - disc) / 2).roundToDouble(),
@@ -740,17 +737,18 @@ final class _DatePickerState extends State<DatePicker> {
 
   @override
   Widget build(BuildContext context) {
-    final CalendarLocalizations strings = CalendarLocalizations.resolve(context);
+    final CalendarLocalizations strings =
+        CalendarLocalizations.resolve(context);
     final DateTime? selected = widget.selectedDate;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Button(
-          label:
-              selected == null ? widget.placeholder : strings.formatDate(selected),
-          onPressed: widget.enabled
-              ? () => setState(() => _open = !_open)
-              : null,
+          label: selected == null
+              ? widget.placeholder
+              : strings.formatDate(selected),
+          onPressed:
+              widget.enabled ? () => setState(() => _open = !_open) : null,
         ),
         if (_open)
           Calendar(

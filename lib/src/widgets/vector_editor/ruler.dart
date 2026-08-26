@@ -257,8 +257,7 @@ final class RenderRuler extends RenderBox {
   /// The unit step this ruler labels at the current zoom.
   double get labelStep {
     final pixelsPerUnit = _unit.toPoints * (_zoom == 0 ? 1 : _zoom);
-    final gap =
-        _isVertical ? _minimumVerticalLabelGap : _minimumLabelGap;
+    final gap = _isVertical ? _minimumVerticalLabelGap : _minimumLabelGap;
     for (final step in _steps) {
       if (step * pixelsPerUnit >= gap) return step;
     }
@@ -294,8 +293,8 @@ final class RenderRuler extends RenderBox {
 
     final borderPaint = list.addPaint(colorArgb: _colors.border.value);
     if (_isVertical) {
-      list.drawRect(offset.dx + size.width - 1, offset.dy, offset.dx + size.width,
-          offset.dy + size.height, borderPaint);
+      list.drawRect(offset.dx + size.width - 1, offset.dy,
+          offset.dx + size.width, offset.dy + size.height, borderPaint);
     } else {
       list.drawRect(offset.dx, offset.dy + size.height - 1,
           offset.dx + size.width, offset.dy + size.height, borderPaint);
@@ -337,9 +336,9 @@ final class RenderRuler extends RenderBox {
       if (pixel < -1 || pixel > extent + 1) continue;
 
       // Floating point makes "is this a multiple of major" a tolerance test.
-      final isMajor = (unitValue / major - (unitValue / major).roundToDouble())
-              .abs() <
-          1e-6;
+      final isMajor =
+          (unitValue / major - (unitValue / major).roundToDouble()).abs() <
+              1e-6;
       final length = isMajor ? majorLength : minorLength;
       final paint = isMajor ? tickPaint : minorTickPaint;
 

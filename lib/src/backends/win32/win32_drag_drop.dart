@@ -102,7 +102,9 @@ String? win32MimeForClipboardFormat(int format) => switch (format) {
 
 /// The clipboard format a MIME name asks for, or 0.
 int win32ClipboardFormatForMime(String mime) => switch (mime) {
-      DragFormats.text || DragFormats.plainText || DragFormats.utf8String =>
+      DragFormats.text ||
+      DragFormats.plainText ||
+      DragFormats.utf8String =>
         cfUnicodeText,
       DragFormats.uriList => cfHDrop,
       _ => 0,
@@ -154,8 +156,7 @@ List<String> win32ReadDropFilesAt(int address) {
 
   final List<String> paths = <String>[];
   if (wide) {
-    final Pointer<Uint16> names =
-        Pointer<Uint16>.fromAddress(address + offset);
+    final Pointer<Uint16> names = Pointer<Uint16>.fromAddress(address + offset);
     final List<int> units = <int>[];
     for (int index = 0;; index++) {
       final int unit = (names + index).value;
@@ -263,8 +264,8 @@ int _signed32(int value) => value >= 0x80000000 ? value - 0x100000000 : value;
 final class Win32DataObject {
   Win32DataObject(this.pointer, this._api, this._ole)
       : _getData = comMethod<
-                Int32 Function(Pointer<Void>, Pointer<Uint8>, Pointer<Uint8>)>(
-            pointer, _slotGetData)
+                Int32 Function(Pointer<Void>, Pointer<Uint8>,
+                    Pointer<Uint8>)>(pointer, _slotGetData)
             .asFunction(),
         _queryGetData =
             comMethod<Int32 Function(Pointer<Void>, Pointer<Uint8>)>(
@@ -503,7 +504,8 @@ final class Win32DropTarget {
       effect.value = dropEffectNone;
       return sOk;
     }
-    _response = handler.onDragOver(_event(live, keyState, packedPoint, allowed));
+    _response =
+        handler.onDragOver(_event(live, keyState, packedPoint, allowed));
     effect.value = _effectFor(_response, allowed);
     return sOk;
   }
@@ -759,8 +761,8 @@ final class Win32DragDropBackend implements DragDropBackend {
       );
     }
 
-    final ComServerClass<Win32DropTarget> serverClass = _class ??=
-        ComServerClass<Win32DropTarget>(
+    final ComServerClass<Win32DropTarget> serverClass =
+        _class ??= ComServerClass<Win32DropTarget>(
       'Win32DropTarget',
       <ComInterfaceSpec<Win32DropTarget>>[win32DropTargetSpec()],
     );

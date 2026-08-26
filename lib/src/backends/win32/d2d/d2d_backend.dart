@@ -44,8 +44,8 @@ import 'd2d_targets.dart';
   writeGuid(iid, D2d1Iids.factory);
   final Pointer<Pointer<Void>> out =
       alloc.allocate<Pointer<Void>>(sizeOf<Pointer<Void>>());
-  final int hr = library.createFactory(
-      d2d1FactoryTypeSingleThreaded, iid, nullptr, out);
+  final int hr =
+      library.createFactory(d2d1FactoryTypeSingleThreaded, iid, nullptr, out);
   final Pointer<Void> raw = out.value;
   alloc
     ..free(iid)

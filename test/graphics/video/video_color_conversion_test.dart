@@ -329,8 +329,8 @@ void main() {
     });
 
     test('refuses a region outside the frame and a short output buffer', () {
-      final VideoFrame frame = SyntheticPicture.ramp(8, 8)
-          .encode(VideoPixelFormat.nv12);
+      final VideoFrame frame =
+          SyntheticPicture.ramp(8, 8).encode(VideoPixelFormat.nv12);
       expect(
         () => convertVideoFrameToRgba(
           frame,
@@ -345,8 +345,8 @@ void main() {
     });
 
     test('sampling a packed frame for YUV codes is refused', () {
-      final VideoFrame frame = SyntheticPicture.ramp(4, 4)
-          .encode(VideoPixelFormat.rgba8888);
+      final VideoFrame frame =
+          SyntheticPicture.ramp(4, 4).encode(VideoPixelFormat.rgba8888);
       expect(
         () => sampleYuvCodes(frame, 0, 0),
         throwsA(isA<ArgumentError>()),

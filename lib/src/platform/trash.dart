@@ -13,8 +13,8 @@
 /// the platforms' own UIs do it better than a framework could.
 library;
 
-import 'trash_platform_stub.dart'
-    if (dart.library.io) 'trash_platform_io.dart' as platform;
+import 'trash_platform_stub.dart' if (dart.library.io) 'trash_platform_io.dart'
+    as platform;
 import 'trash_types.dart';
 
 export 'trash_types.dart';

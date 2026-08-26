@@ -99,7 +99,8 @@ void main() {
       final Framebuffer portable = _render(session, list);
 
       RenderPolicyScope.install(
-        const RenderPolicy(glyphRasterization: GlyphRasterization.platformNative),
+        const RenderPolicy(
+            glyphRasterization: GlyphRasterization.platformNative),
       );
       final D2dOffscreenSurface surface = _surface(session, 320, 64);
       final PresentResult result =
@@ -148,7 +149,8 @@ void main() {
 
     test('a font Windows does not have falls back, and says why', () {
       RenderPolicyScope.install(
-        const RenderPolicy(glyphRasterization: GlyphRasterization.platformNative),
+        const RenderPolicy(
+            glyphRasterization: GlyphRasterization.platformNative),
       );
       final DisplayList list = _scene(dejaVu);
       final D2dOffscreenSurface surface = _surface(session, 320, 64);
@@ -177,7 +179,8 @@ void main() {
       // the native route sits inside the branch [glyphMasksFit] already took.
       final Typeface face = systemFace ?? dejaVu;
       RenderPolicyScope.install(
-        const RenderPolicy(glyphRasterization: GlyphRasterization.platformNative),
+        const RenderPolicy(
+            glyphRasterization: GlyphRasterization.platformNative),
       );
       final D2dOffscreenSurface surface = _surface(session, 200, 200);
       surface.renderDisplayList(

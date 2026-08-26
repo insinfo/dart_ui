@@ -35,7 +35,8 @@ final class Color {
 
   Color withAlpha(int alpha) => Color.fromARGB(alpha, red, green, blue);
 
-  Color withOpacity(double opacity) => Color.fromRGBO(red, green, blue, opacity);
+  Color withOpacity(double opacity) =>
+      Color.fromRGBO(red, green, blue, opacity);
 
   Color withValues({double? alpha, double? red, double? green, double? blue}) =>
       Color.fromARGB(

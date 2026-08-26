@@ -468,7 +468,8 @@ Future<_Run> _render(VulkanRenderDevice device, DisplayList list) async {
   addTearDown(gpu.dispose);
   final PresentResult result =
       await gpu.renderDisplayList(list, clearColor: _clear);
-  expect(result.status, PresentStatus.presented, reason: '${result.diagnostic}');
+  expect(result.status, PresentStatus.presented,
+      reason: '${result.diagnostic}');
 
   final GpuPathPlanningEvent? event = gpu.pathPlanning!.lastEvent;
   return _Run(

@@ -173,9 +173,10 @@ XcursorImage? _parseImageChunk(Uint8List bytes, ByteData data, int position) {
   }
   if (hotspotX > width || hotspotY > height) return null;
 
-  final pixelStart = position + (chunkHeaderSize < chunkHeaderWords * 4
-      ? chunkHeaderWords * 4
-      : chunkHeaderSize);
+  final pixelStart = position +
+      (chunkHeaderSize < chunkHeaderWords * 4
+          ? chunkHeaderWords * 4
+          : chunkHeaderSize);
   final pixelBytes = width * height * 4;
   if (pixelStart + pixelBytes > bytes.length) return null;
 

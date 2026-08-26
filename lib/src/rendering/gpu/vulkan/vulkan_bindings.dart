@@ -774,6 +774,7 @@ final class VulkanDeviceApi {
   late final VkCmdBindDescriptorSetsDart cmdBindDescriptorSets;
   late final VkCmdSetViewportDart cmdSetViewport;
   late final VkCmdSetScissorDart cmdSetScissor;
+
   /// `vkCmdDraw`. Non-indexed, and the only draw the sparse-strip pipeline
   /// uses: its quad is four vertices built from `gl_VertexIndex`, so there is
   /// no index buffer to bind and `firstInstance` is what selects the command's

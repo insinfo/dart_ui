@@ -96,7 +96,8 @@ void main() {
   group('Avatar', () {
     test('is square at its requested size and reads as an image', () {
       final harness = _Harness(
-        child: const Avatar(initials: 'DU', size: 40, semanticsLabel: 'Dart UI'),
+        child:
+            const Avatar(initials: 'DU', size: 40, semanticsLabel: 'Dart UI'),
       );
       harness.frame();
 

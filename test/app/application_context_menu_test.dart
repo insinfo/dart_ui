@@ -40,7 +40,7 @@ void main() {
       final application = await _start(TextEditingController('a'));
       final second = await application.openWindow(
         rootWidget: ColoredBox(
-            color: const Color(0xFF202020),
+          color: const Color(0xFF202020),
           child: TextField(controller: TextEditingController('b')),
         ),
         title: 'second',
@@ -88,7 +88,7 @@ BuildContext _fieldContextOf(ApplicationWindow window) {
 Future<Application> _start(TextEditingController controller) async {
   final application = await Application.start(
     rootWidget: ColoredBox(
-        color: const Color(0xFF101010),
+      color: const Color(0xFF101010),
       child: TextField(controller: controller),
     ),
     backends: <WindowingBackendEntry>[

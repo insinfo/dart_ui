@@ -259,7 +259,8 @@ void main() {
       );
     });
 
-    test('disable really takes the input context away, and enable gives it '
+    test(
+        'disable really takes the input context away, and enable gives it '
         'back', () {
       final api = Imm32Api.load().api!;
       final int hwnd = window.handle;
@@ -304,7 +305,8 @@ void main() {
       expect(connection.isEnabled, isFalse);
     });
 
-    test('the caret rectangle reaches ImmSetCompositionWindow and '
+    test(
+        'the caret rectangle reaches ImmSetCompositionWindow and '
         'ImmSetCandidateWindow', () {
       final api = Imm32Api.load().api!;
       if (api.immGetContext(window.handle) == 0) return;
@@ -325,7 +327,8 @@ void main() {
       );
     });
 
-    test('reading a composition string from a context that is not composing '
+    test(
+        'reading a composition string from a context that is not composing '
         'is empty, not a crash', () {
       final api = Imm32Api.load().api!;
       final int himc = api.immGetContext(window.handle);

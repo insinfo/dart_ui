@@ -50,7 +50,6 @@ void main() {
       expect(tracker.observe(keyFor(square())), isTrue);
     });
 
-
     test('a whole-pixel translation still hits, as the atlas would', () {
       // Guard 4 from the reference survey: the dense atlas keys on the mask's
       // *sub-pixel* offset and size, not on the absolute translation, so a

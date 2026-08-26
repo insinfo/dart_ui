@@ -138,8 +138,8 @@ void main() {
 
     test('a wide CF_HDROP yields every path', () {
       final List<String> paths = <String>[r'C:\a.txt', r'C:\b\c.txt'];
-      final Pointer<Uint8> block = _allocateDropFiles(allocator, paths,
-          wide: true);
+      final Pointer<Uint8> block =
+          _allocateDropFiles(allocator, paths, wide: true);
       try {
         expect(win32ReadDropFilesAt(block.address), paths);
       } finally {
@@ -149,8 +149,8 @@ void main() {
 
     test('an ANSI CF_HDROP is not misread as UTF-16', () {
       final List<String> paths = <String>[r'C:\a.txt'];
-      final Pointer<Uint8> block = _allocateDropFiles(allocator, paths,
-          wide: false);
+      final Pointer<Uint8> block =
+          _allocateDropFiles(allocator, paths, wide: false);
       try {
         expect(win32ReadDropFilesAt(block.address), paths);
       } finally {
@@ -201,8 +201,7 @@ void main() {
         // A window whose client area starts at (100, 50) on a 2x display:
         // this is exactly the conversion a real window performs, and getting
         // it wrong is the bug the position assertions below exist for.
-        screenToClient: (int x, int y) =>
-            Offset((x - 100) / 2, (y - 50) / 2),
+        screenToClient: (int x, int y) => Offset((x - 100) / 2, (y - 50) / 2),
         api: api,
         ole: ole,
       );
@@ -301,8 +300,8 @@ void main() {
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
         effect.value = dropEffectCopy;
-        _dragEnter(object.pointer, data.pointer, 0, _packPoint(100, 50),
-            effect);
+        _dragEnter(
+            object.pointer, data.pointer, 0, _packPoint(100, 50), effect);
 
         final DragData live = handler.enters.single.data;
         expect(await live.readText(), 'caf\u00e9 drop');
@@ -327,8 +326,8 @@ void main() {
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
         effect.value = dropEffectCopy;
-        _dragEnter(object.pointer, data.pointer, 0, _packPoint(100, 50),
-            effect);
+        _dragEnter(
+            object.pointer, data.pointer, 0, _packPoint(100, 50), effect);
         final DragData live = handler.enters.single.data;
         expect(live.formats, contains(DragFormats.uriList));
         expect(
@@ -343,15 +342,13 @@ void main() {
     }, skip: _skipReason);
 
     test('a refusal writes DROPEFFECT_NONE and takes no data', () {
-      final _FakeDataObject data = _FakeDataObject(api, allocator)
-        ..text = 'x';
+      final _FakeDataObject data = _FakeDataObject(api, allocator)..text = 'x';
       handler.response = const DropResponse.reject();
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
         effect.value = dropEffectCopy;
         expect(
-          _dragEnter(object.pointer, data.pointer, 0, _packPoint(0, 0),
-              effect),
+          _dragEnter(object.pointer, data.pointer, 0, _packPoint(0, 0), effect),
           sOk,
         );
         expect(effect.value, dropEffectNone);
@@ -364,8 +361,7 @@ void main() {
     }, skip: _skipReason);
 
     test('an action the source does not allow is masked to none', () {
-      final _FakeDataObject data = _FakeDataObject(api, allocator)
-        ..text = 'x';
+      final _FakeDataObject data = _FakeDataObject(api, allocator)..text = 'x';
       handler.response = const DropResponse(
         acceptedFormat: DragFormats.text,
         action: DragAction.move,
@@ -388,14 +384,13 @@ void main() {
     }, skip: _skipReason);
 
     test('DragOver re-asks and can change the answer', () {
-      final _FakeDataObject data = _FakeDataObject(api, allocator)
-        ..text = 'x';
+      final _FakeDataObject data = _FakeDataObject(api, allocator)..text = 'x';
       handler.response = const DropResponse.reject();
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
         effect.value = dropEffectCopy | dropEffectMove;
-        _dragEnter(object.pointer, data.pointer, 0, _packPoint(100, 50),
-            effect);
+        _dragEnter(
+            object.pointer, data.pointer, 0, _packPoint(100, 50), effect);
         expect(effect.value, dropEffectNone);
 
         handler.response = const DropResponse(
@@ -418,7 +413,8 @@ void main() {
       }
     }, skip: _skipReason);
 
-    test('DragOver with no DragEnter answers nothing rather than inventing '
+    test(
+        'DragOver with no DragEnter answers nothing rather than inventing '
         'a session', () {
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
@@ -435,8 +431,7 @@ void main() {
     }, skip: _skipReason);
 
     test('DragLeave releases the borrowed data object exactly once', () {
-      final _FakeDataObject data = _FakeDataObject(api, allocator)
-        ..text = 'x';
+      final _FakeDataObject data = _FakeDataObject(api, allocator)..text = 'x';
       handler.response = const DropResponse(acceptedFormat: DragFormats.text);
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
@@ -472,8 +467,8 @@ void main() {
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
         effect.value = dropEffectCopy | dropEffectMove;
-        _dragEnter(object.pointer, data.pointer, 0, _packPoint(100, 50),
-            effect);
+        _dragEnter(
+            object.pointer, data.pointer, 0, _packPoint(100, 50), effect);
 
         effect.value = dropEffectCopy | dropEffectMove;
         expect(
@@ -501,8 +496,7 @@ void main() {
     }, skip: _skipReason);
 
     test('a Drop after a refusal performs nothing', () {
-      final _FakeDataObject data = _FakeDataObject(api, allocator)
-        ..text = 'x';
+      final _FakeDataObject data = _FakeDataObject(api, allocator)..text = 'x';
       handler.response = const DropResponse.reject();
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
@@ -533,16 +527,14 @@ void main() {
     }, skip: _skipReason);
 
     test('a handler that throws becomes E_FAIL and a recorded fault', () {
-      final _FakeDataObject data = _FakeDataObject(api, allocator)
-        ..text = 'x';
+      final _FakeDataObject data = _FakeDataObject(api, allocator)..text = 'x';
       handler.throwOnEnter = true;
       ComServerRegistry.clearFaults();
       final Pointer<Uint32> effect = allocator.allocate<Uint32>(4);
       try {
         effect.value = dropEffectCopy;
         expect(
-          _dragEnter(object.pointer, data.pointer, 0, _packPoint(0, 0),
-              effect),
+          _dragEnter(object.pointer, data.pointer, 0, _packPoint(0, 0), effect),
           eFail,
           reason: 'a Dart exception must never unwind into the OLE drag loop',
         );
@@ -568,14 +560,12 @@ void main() {
           reason: 'ole32 is expected to load on a real Windows host');
       try {
         final DropTargetRegistration registration = await dnd
-            .registerDropTarget(
-                window: window, handler: _RecordingHandler());
+            .registerDropTarget(window: window, handler: _RecordingHandler());
         expect(registration.isActive, isTrue);
         expect(registration.windowId, window.id);
 
         await expectLater(
-          dnd.registerDropTarget(
-              window: window, handler: _RecordingHandler()),
+          dnd.registerDropTarget(window: window, handler: _RecordingHandler()),
           throwsA(
             isA<DragDropException>()
                 .having((DragDropException e) => e.operation, 'operation',
@@ -650,8 +640,7 @@ void main() {
 String? get _skipReason =>
     Platform.isWindows ? null : 'the Win32 drop target needs Windows';
 
-int _packPoint(int x, int y) =>
-    ((y & 0xFFFFFFFF) << 32) | (x & 0xFFFFFFFF);
+int _packPoint(int x, int y) => ((y & 0xFFFFFFFF) << 32) | (x & 0xFFFFFFFF);
 
 // ---------------------------------------------------------------------------
 // Calling the vtable the way OLE would
@@ -693,12 +682,11 @@ int _dragOver(
   Pointer<Uint32> effect,
 ) =>
     comMethod<ComServerStatePointOutNative>(self, 4).asFunction<
-        int Function(Pointer<Void>, int, int,
-            Pointer<Uint32>)>()(self, keyState, point, effect);
+            int Function(Pointer<Void>, int, int, Pointer<Uint32>)>()(
+        self, keyState, point, effect);
 
-int _dragLeave(Pointer<Void> self) =>
-    comMethod<ComServerSelfNative>(self, 5)
-        .asFunction<int Function(Pointer<Void>)>()(self);
+int _dragLeave(Pointer<Void> self) => comMethod<ComServerSelfNative>(self, 5)
+    .asFunction<int Function(Pointer<Void>)>()(self);
 
 int _drop(
   Pointer<Void> self,
@@ -736,8 +724,7 @@ Pointer<Uint8> _allocateDropFiles(
       ByteData.sublistView(block.asTypedList(OleStructLayout.dropFilesSize));
   header.setUint32(OleStructLayout.dropFilesOffset,
       OleStructLayout.dropFilesSize, Endian.little);
-  header.setUint32(
-      OleStructLayout.dropFilesWide, wide ? 1 : 0, Endian.little);
+  header.setUint32(OleStructLayout.dropFilesWide, wide ? 1 : 0, Endian.little);
   if (wide) {
     final Pointer<Uint16> tail = Pointer<Uint16>.fromAddress(
         block.address + OleStructLayout.dropFilesSize);
@@ -774,8 +761,7 @@ final class _FakeDataObject {
           methods: <ComMethod<_FakeDataObject>>[
             ComPointerPointerMethod<_FakeDataObject>(
               'GetData',
-              (_FakeDataObject self, Pointer<Void> etc,
-                      Pointer<Void> medium) =>
+              (_FakeDataObject self, Pointer<Void> etc, Pointer<Void> medium) =>
                   self._getData(etc.cast(), medium.cast()),
             ),
             ComPointerPointerMethod<_FakeDataObject>(
@@ -932,7 +918,6 @@ final class _RecordingHandler implements DropTargetHandler {
     return lastDropCompleted = Future<DragAction>.value(dropResult);
   }
 }
-
 
 /// A window the port never touches, for the paths that fail before it would.
 final class _NullWindow implements NativeWindow {

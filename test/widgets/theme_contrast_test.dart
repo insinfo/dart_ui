@@ -234,9 +234,7 @@ double _contrast(Color a, Color b) {
 double _relativeLuminance(Color color) {
   double channel(int shift) {
     final double srgb = ((color.value >> shift) & 0xFF) / 255.0;
-    return srgb <= 0.03928
-        ? srgb / 12.92
-        : _pow((srgb + 0.055) / 1.055, 2.4);
+    return srgb <= 0.03928 ? srgb / 12.92 : _pow((srgb + 0.055) / 1.055, 2.4);
   }
 
   return 0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0);

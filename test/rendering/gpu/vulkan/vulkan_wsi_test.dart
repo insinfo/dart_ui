@@ -83,16 +83,16 @@ void main() {
       final Pointer<Uint8> raw = arena.allocate<Uint8>(size);
       final Pointer<VkWin32SurfaceCreateInfoKHR> info =
           raw.cast<VkWin32SurfaceCreateInfoKHR>();
-      _expectField('sType', raw, size, 0, _u32Bytes,
-          () => info.ref.sType = _u32);
+      _expectField(
+          'sType', raw, size, 0, _u32Bytes, () => info.ref.sType = _u32);
       _expectField('pNext', raw, size, 8, _ptrBytes,
           () => info.ref.pNext = Pointer<Void>.fromAddress(_ptr));
-      _expectField('flags', raw, size, 16, _u32Bytes,
-          () => info.ref.flags = _u32);
+      _expectField(
+          'flags', raw, size, 16, _u32Bytes, () => info.ref.flags = _u32);
       _expectField('hinstance', raw, size, 24, _ptrBytes,
           () => info.ref.hinstance = _ptr);
-      _expectField('hwnd', raw, size, 32, _ptrBytes,
-          () => info.ref.hwnd = _ptr);
+      _expectField(
+          'hwnd', raw, size, 32, _ptrBytes, () => info.ref.hwnd = _ptr);
     });
 
     test('VkXlibSurfaceCreateInfoKHR carries a pointer-width Window', () {
@@ -102,8 +102,8 @@ void main() {
       final Pointer<VkXlibSurfaceCreateInfoKHR> info =
           raw.cast<VkXlibSurfaceCreateInfoKHR>();
       _expectField('dpy', raw, size, 24, _ptrBytes, () => info.ref.dpy = _ptr);
-      _expectField('window', raw, size, 32, _ptrBytes,
-          () => info.ref.window = _ptr);
+      _expectField(
+          'window', raw, size, 32, _ptrBytes, () => info.ref.window = _ptr);
     });
 
     test('VkXcbSurfaceCreateInfoKHR carries a 32-bit xcb_window_t', () {
@@ -121,8 +121,8 @@ void main() {
           raw.cast<VkXcbSurfaceCreateInfoKHR>();
       _expectField('connection', raw, size, 24, _ptrBytes,
           () => info.ref.connection = _ptr);
-      _expectField('window', raw, size, 32, _u32Bytes,
-          () => info.ref.window = _u32);
+      _expectField(
+          'window', raw, size, 32, _u32Bytes, () => info.ref.window = _u32);
       // The four bytes past it stay zero: an `IntPtr` field would write eight.
       final Uint8List bytes = raw.asTypedList(size);
       bytes.fillRange(0, size, 0);
@@ -139,10 +139,10 @@ void main() {
       final Pointer<Uint8> raw = arena.allocate<Uint8>(size);
       final Pointer<VkWaylandSurfaceCreateInfoKHR> info =
           raw.cast<VkWaylandSurfaceCreateInfoKHR>();
-      _expectField('display', raw, size, 24, _ptrBytes,
-          () => info.ref.display = _ptr);
-      _expectField('surface', raw, size, 32, _ptrBytes,
-          () => info.ref.surface = _ptr);
+      _expectField(
+          'display', raw, size, 24, _ptrBytes, () => info.ref.display = _ptr);
+      _expectField(
+          'surface', raw, size, 32, _ptrBytes, () => info.ref.surface = _ptr);
     });
 
     test('the generated swapchain structures came through too', () {
@@ -256,7 +256,8 @@ void main() {
           PixelFormat.rgba8888Premultiplied);
       // Null is not a failure: the window still draws. It means a readback
       // cannot be compared byte for byte, and the target says so.
-      expect(_configWith(VkFormat.VK_FORMAT_A2B10G10R10_UNORM_PACK32).pixelFormat,
+      expect(
+          _configWith(VkFormat.VK_FORMAT_A2B10G10R10_UNORM_PACK32).pixelFormat,
           isNull);
     });
   });
@@ -513,7 +514,8 @@ void main() {
 
   group('the descriptor', () {
     test('resizing keeps every other decision', () {
-      final VulkanWindowSurfaceDescriptor original = VulkanWindowSurfaceDescriptor(
+      final VulkanWindowSurfaceDescriptor original =
+          VulkanWindowSurfaceDescriptor(
         platform: VulkanSurfacePlatform.win32,
         windowHandle: 0x1234,
         displayHandle: 0x5678,

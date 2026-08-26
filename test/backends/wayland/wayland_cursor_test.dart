@@ -545,8 +545,7 @@ final class _ManualClock {
 
   int get pending => _scheduled.length;
 
-  Duration? get nextDelay =>
-      _scheduled.isEmpty ? null : _scheduled.first.delay;
+  Duration? get nextDelay => _scheduled.isEmpty ? null : _scheduled.first.delay;
 
   void Function() schedule(Duration delay, void Function() callback) {
     final entry = (delay: delay, callback: callback);

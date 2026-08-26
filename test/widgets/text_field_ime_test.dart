@@ -70,7 +70,8 @@ void main() {
   }
 
   group('attaching', () {
-    test('a field takes the input method when it takes focus, and gives it '
+    test(
+        'a field takes the input method when it takes focus, and gives it '
         'back when it loses it', () {
       final input = _ScriptedTextInput();
       final bound = mount(input);

@@ -218,14 +218,14 @@ void main() {
       harness.frame();
 
       expect(harness.expanded, contains('remote'));
-      expect(harness.realizedLabels, <String>['remote', 'loaded 1', 'loaded 2']);
+      expect(
+          harness.realizedLabels, <String>['remote', 'loaded 1', 'loaded 2']);
       harness.dispose();
     });
   });
 
   group('TreeView semantics', () {
-    test('the tree reports the full row count and rows report their level',
-        () {
+    test('the tree reports the full row count and rows report their level', () {
       final harness = _TreeHarness(nodes: _fileTree());
       harness.expanded.add('src');
       harness.selected = 'widgets';

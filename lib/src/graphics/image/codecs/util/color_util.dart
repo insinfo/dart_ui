@@ -1,4 +1,3 @@
-
 import '../color/color.dart';
 import '../color/color_float16.dart';
 import '../color/color_float32.dart';

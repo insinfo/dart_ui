@@ -7,8 +7,7 @@ import 'package:test/test.dart';
 void main() {
   group('trashinfo bookkeeping (pure)', () {
     test('paths are percent-encoded per octet with / kept literal', () {
-      expect(encodeTrashPath('/home/isaque/a b.txt'),
-          '/home/isaque/a%20b.txt');
+      expect(encodeTrashPath('/home/isaque/a b.txt'), '/home/isaque/a%20b.txt');
       expect(encodeTrashPath('/home/isaque/relatório.pdf'),
           '/home/isaque/relat%C3%B3rio.pdf');
       expect(encodeTrashPath('/plain/path-with_safe.chars~'),
@@ -67,8 +66,7 @@ void main() {
     test('moves the file into files/ and writes the matching info file',
         () async {
       final String root = forwardSlashes(sandbox.path);
-      final File victim = File('$root/victim.txt')
-        ..writeAsStringSync('bytes');
+      final File victim = File('$root/victim.txt')..writeAsStringSync('bytes');
       await trash_io.moveToFreedesktopTrash(
         forwardSlashes(victim.path),
         trashRoot: '$root/Trash',
@@ -76,8 +74,7 @@ void main() {
       );
 
       expect(victim.existsSync(), isFalse);
-      expect(File('$root/Trash/files/victim.txt').readAsStringSync(),
-          'bytes');
+      expect(File('$root/Trash/files/victim.txt').readAsStringSync(), 'bytes');
       final String info =
           File('$root/Trash/info/victim.txt.trashinfo').readAsStringSync();
       expect(info, startsWith('[Trash Info]\n'));
@@ -96,12 +93,12 @@ void main() {
           trashRoot: '$root/Trash',
         );
       }
-      expect(File('$root/Trash/files/victim.txt').readAsStringSync(),
-          'round 0');
-      expect(File('$root/Trash/files/victim.2.txt').readAsStringSync(),
-          'round 1');
-      expect(File('$root/Trash/info/victim.2.txt.trashinfo').existsSync(),
-          isTrue);
+      expect(
+          File('$root/Trash/files/victim.txt').readAsStringSync(), 'round 0');
+      expect(
+          File('$root/Trash/files/victim.2.txt').readAsStringSync(), 'round 1');
+      expect(
+          File('$root/Trash/info/victim.2.txt.trashinfo').existsSync(), isTrue);
     });
 
     test('a directory is trashed whole', () async {

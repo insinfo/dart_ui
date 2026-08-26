@@ -31,12 +31,12 @@ import '../graphics/display_list.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
+import '../semantics/semantics.dart';
 import 'basic.dart';
 import 'control.dart';
 import 'element.dart';
 import 'icon.dart';
 import 'icon_button.dart';
-import 'semantics.dart';
 import 'theme.dart';
 import 'widget.dart';
 

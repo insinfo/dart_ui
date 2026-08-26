@@ -83,7 +83,8 @@ String macStandardPath(StandardFolder folder, {required String home}) =>
       StandardFolder.cache => '$home/Library/Caches',
       // temp and executable are answered before dispatch; reaching here is a
       // caller using this helper directly, and the honest answer is a throw.
-      StandardFolder.temp || StandardFolder.executable =>
+      StandardFolder.temp ||
+      StandardFolder.executable =>
         throw StandardPathsException(
           folder: folder,
           platform: 'macos',
@@ -147,8 +148,7 @@ String linuxStandardPath(
   final String configHome = xdgBase('XDG_CONFIG_HOME', '.config');
   final String? content = readUserDirs(configHome);
   if (content != null) {
-    final String? configured =
-        parseXdgUserDirs(content, home: homePath)[key];
+    final String? configured = parseXdgUserDirs(content, home: homePath)[key];
     if (configured != null) return configured;
   }
   final String defaultName = switch (folder) {
@@ -213,8 +213,7 @@ typedef _CoTaskMemFreeDart = void Function(Pointer<Void> block);
 ///
 /// These are ABI constants fixed by the Windows SDK (KnownFolders.h); they
 /// are the same on every Windows since Vista.
-const Map<StandardFolder, String> _windowsFolderIds =
-    <StandardFolder, String>{
+const Map<StandardFolder, String> _windowsFolderIds = <StandardFolder, String>{
   StandardFolder.home: '5E6C858F-0E22-4760-9AFE-EA3317B67173', // Profile
   StandardFolder.documents: 'FDD39AD0-238F-46AF-ADB4-6C85480369C7',
   StandardFolder.downloads: '374DE290-123F-4565-9164-39C4925E467B',
@@ -239,11 +238,11 @@ void _bindWindows() {
   try {
     final DynamicLibrary shell32 = DynamicLibrary.open('shell32.dll');
     final DynamicLibrary ole32 = DynamicLibrary.open('ole32.dll');
-    _shGetKnownFolderPath = shell32.lookupFunction<
-        _SHGetKnownFolderPathNative,
+    _shGetKnownFolderPath = shell32.lookupFunction<_SHGetKnownFolderPathNative,
         _SHGetKnownFolderPathDart>('SHGetKnownFolderPath');
-    _coTaskMemFree = ole32.lookupFunction<_CoTaskMemFreeNative,
-        _CoTaskMemFreeDart>('CoTaskMemFree');
+    _coTaskMemFree =
+        ole32.lookupFunction<_CoTaskMemFreeNative, _CoTaskMemFreeDart>(
+            'CoTaskMemFree');
   } on Object {
     _shGetKnownFolderPath = null;
     _coTaskMemFree = null;

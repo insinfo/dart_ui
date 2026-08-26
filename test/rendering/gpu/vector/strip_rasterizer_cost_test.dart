@@ -84,7 +84,6 @@ void main() {
     }
   }, skip: _benchmarkSkip);
 
-
   test('the selector picks the route the measurement says is cheaper', () {
     // The rule, checked against the same four scenes it was derived from.
     // This is what authorises the promotion: sparse chosen where it wins,

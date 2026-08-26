@@ -87,9 +87,13 @@ final class D2d1Library {
     createDibSection = gdi32.lookupFunction<
         Pointer<Void> Function(Pointer<Void>, Pointer<Win32BitmapInfoHeader>,
             Uint32, Pointer<Pointer<Void>>, Pointer<Void>, Uint32),
-        Pointer<Void> Function(Pointer<Void>, Pointer<Win32BitmapInfoHeader>,
-            int, Pointer<Pointer<Void>>, Pointer<Void>, int)>(
-        'CreateDIBSection');
+        Pointer<Void> Function(
+            Pointer<Void>,
+            Pointer<Win32BitmapInfoHeader>,
+            int,
+            Pointer<Pointer<Void>>,
+            Pointer<Void>,
+            int)>('CreateDIBSection');
     selectObject = gdi32.lookupFunction<
         Pointer<Void> Function(Pointer<Void>, Pointer<Void>),
         Pointer<Void> Function(Pointer<Void>, Pointer<Void>)>('SelectObject');
@@ -186,9 +190,13 @@ final class D2d1Library {
 
   // GDI, for the offscreen readback surface only.
   late final Pointer<Void> Function(Pointer<Void>) createCompatibleDc;
-  late final Pointer<Void> Function(Pointer<Void>,
-      Pointer<Win32BitmapInfoHeader>, int, Pointer<Pointer<Void>>,
-      Pointer<Void>, int) createDibSection;
+  late final Pointer<Void> Function(
+      Pointer<Void>,
+      Pointer<Win32BitmapInfoHeader>,
+      int,
+      Pointer<Pointer<Void>>,
+      Pointer<Void>,
+      int) createDibSection;
   late final Pointer<Void> Function(Pointer<Void>, Pointer<Void>) selectObject;
   late final int Function(Pointer<Void>) deleteObject;
   late final int Function(Pointer<Void>) deleteDc;

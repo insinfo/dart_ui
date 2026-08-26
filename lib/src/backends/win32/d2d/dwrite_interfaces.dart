@@ -141,9 +141,8 @@ final class DWriteGlyphRun extends Struct {
 final class DWriteFactory {
   DWriteFactory(this.pointer)
       : _getSystemFontCollection = comMethod<
-                    Int32 Function(
-                        Pointer<Void>, Pointer<Pointer<Void>>, Int32)>(
-                pointer, 3)
+                Int32 Function(
+                    Pointer<Void>, Pointer<Pointer<Void>>, Int32)>(pointer, 3)
             .asFunction<
                 int Function(Pointer<Void>, Pointer<Pointer<Void>>, int)>();
 
@@ -170,14 +169,13 @@ final class DWriteFactory {
 final class DWriteFontCollection {
   DWriteFontCollection(this.pointer)
       : _getFontFamily = comMethod<
-                    Int32 Function(
-                        Pointer<Void>, Uint32, Pointer<Pointer<Void>>)>(
-                pointer, 4)
+                Int32 Function(
+                    Pointer<Void>, Uint32, Pointer<Pointer<Void>>)>(pointer, 4)
             .asFunction<
                 int Function(Pointer<Void>, int, Pointer<Pointer<Void>>)>(),
         _findFamilyName = comMethod<
-                    Int32 Function(Pointer<Void>, Pointer<Uint16>,
-                        Pointer<Uint32>, Pointer<Int32>)>(pointer, 5)
+                Int32 Function(Pointer<Void>, Pointer<Uint16>, Pointer<Uint32>,
+                    Pointer<Int32>)>(pointer, 5)
             .asFunction<
                 int Function(Pointer<Void>, Pointer<Uint16>, Pointer<Uint32>,
                     Pointer<Int32>)>();
@@ -185,8 +183,9 @@ final class DWriteFontCollection {
   final Pointer<Void> pointer;
 
   final int Function(Pointer<Void>, int, Pointer<Pointer<Void>>) _getFontFamily;
-  final int Function(Pointer<Void>, Pointer<Uint16>, Pointer<Uint32>,
-      Pointer<Int32>) _findFamilyName;
+  final int Function(
+          Pointer<Void>, Pointer<Uint16>, Pointer<Uint32>, Pointer<Int32>)
+      _findFamilyName;
 
   int getFontFamily(int index, Pointer<Pointer<Void>> out) =>
       _getFontFamily(pointer, index, out);
@@ -211,11 +210,11 @@ final class DWriteFontCollection {
 final class DWriteFontFamily {
   DWriteFontFamily(this.pointer)
       : _getFirstMatchingFont = comMethod<
-                    Int32 Function(Pointer<Void>, Int32, Int32, Int32,
-                        Pointer<Pointer<Void>>)>(pointer, 7)
+                Int32 Function(Pointer<Void>, Int32, Int32, Int32,
+                    Pointer<Pointer<Void>>)>(pointer, 7)
             .asFunction<
-                int Function(Pointer<Void>, int, int, int,
-                    Pointer<Pointer<Void>>)>();
+                int Function(
+                    Pointer<Void>, int, int, int, Pointer<Pointer<Void>>)>();
 
   final Pointer<Void> pointer;
 
@@ -237,8 +236,8 @@ final class DWriteFontFamily {
 final class DWriteFont {
   DWriteFont(this.pointer)
       : _createFontFace = comMethod<
-                    Int32 Function(Pointer<Void>, Pointer<Pointer<Void>>)>(
-                pointer, 13)
+                Int32 Function(
+                    Pointer<Void>, Pointer<Pointer<Void>>)>(pointer, 13)
             .asFunction<int Function(Pointer<Void>, Pointer<Pointer<Void>>)>();
 
   final Pointer<Void> pointer;
@@ -257,11 +256,11 @@ final class DWriteFontFace {
       : _getGlyphCount = comMethod<Uint16 Function(Pointer<Void>)>(pointer, 9)
             .asFunction<int Function(Pointer<Void>)>(),
         _getGlyphIndices = comMethod<
-                    Int32 Function(Pointer<Void>, Pointer<Uint32>, Uint32,
-                        Pointer<Uint16>)>(pointer, 11)
+                Int32 Function(Pointer<Void>, Pointer<Uint32>, Uint32,
+                    Pointer<Uint16>)>(pointer, 11)
             .asFunction<
-                int Function(Pointer<Void>, Pointer<Uint32>, int,
-                    Pointer<Uint16>)>();
+                int Function(
+                    Pointer<Void>, Pointer<Uint32>, int, Pointer<Uint16>)>();
 
   final Pointer<Void> pointer;
 

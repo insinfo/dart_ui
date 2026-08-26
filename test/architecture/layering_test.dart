@@ -99,6 +99,25 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'rendering',
     'text',
   ],
+  // The semantic tree and the contract a platform accessibility bridge
+  // implements to publish it. It is a layer of its own, between `layout` and
+  // `widgets`, because a semantic node is a description of a tree and not a
+  // widget: `semantics/semantics.dart` names [RenderBox] and two geometry
+  // types and nothing else, and its consumers are UI Automation and AT-SPI,
+  // which have never heard of a widget.
+  //
+  // `layout` is the whole dependency: ids are keyed by render-object identity
+  // so they survive a frame, and a node's bounds come from `RenderBox.size`.
+  // It sits here and not lower for that reason - and `widgets` above it is
+  // where controls describe themselves, which is a use of this layer and not
+  // a part of it.
+  //
+  // This row exists because the alternative was `platform -> widgets`: while
+  // [SemanticsOwner] lived in `widgets/`, `platform/accessibility.dart` had
+  // to import the widget layer to name it. That is dependency inversion, not
+  // an exception worth recording, so the tree moved instead and the contract
+  // moved with it. `platform` is unchanged below.
+  'semantics': <String>['geometry', 'layout'],
   'widgets': <String>[
     'animation',
     'cdr',
@@ -111,6 +130,7 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'pdf',
     'rendering',
     'scheduler',
+    'semantics',
     'text',
   ],
   // The overlay draws its own numbers, and the join between a face and a
@@ -148,6 +168,7 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'platform',
     'rendering',
     'scheduler',
+    'semantics',
     'text',
     'widgets',
   ],

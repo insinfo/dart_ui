@@ -153,7 +153,8 @@ class CdrDocument {
   VectorDocument toVectorDocument() => CdrTranslator.toVectorDocument(this);
 
   /// Cria um [CdrDocument] a partir de um [VectorDocument] e codifica em bytes nativos CDR.
-  static CdrDocument fromVectorDocument(VectorDocument doc, {CdrVersion version = CdrVersion.v6}) {
+  static CdrDocument fromVectorDocument(VectorDocument doc,
+      {CdrVersion version = CdrVersion.v6}) {
     final bytes = CdrTranslator.toCdrBytes(doc, version: version);
     return CdrDocument.fromBytes(bytes);
   }

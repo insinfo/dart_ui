@@ -283,8 +283,8 @@ final class _Harness {
             resizes.add(value);
             extent = value;
           },
-        first: const ColoredBox(color: Color(0xFF102030)),
-        second: const ColoredBox(color: Color(0xFF203040)),
+          first: const ColoredBox(color: Color(0xFF102030)),
+          second: const ColoredBox(color: Color(0xFF203040)),
         ),
       );
 

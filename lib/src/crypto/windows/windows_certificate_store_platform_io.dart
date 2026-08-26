@@ -279,6 +279,7 @@ final class WindowsCertificateStore implements WindowsCertificateStoreApi {
   final DynamicLibrary _crypt32;
   final DynamicLibrary _ncrypt;
   final DynamicLibrary _advapi32;
+
   /// A biblioteca de onde sai `GetLastError`, e so isso.
   ///
   /// Nomeada pela funcao e nao pela DLL de proposito: `test/architecture/

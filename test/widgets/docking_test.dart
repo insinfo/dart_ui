@@ -20,7 +20,8 @@ void main() {
     );
 
     expect(layout.hierarchy(nameInfo: true), 'R(T(IA,IB),IC)');
-    expect(layout.layoutAreas().map((area) => area.index), <int>[1, 2, 3, 4, 5]);
+    expect(
+        layout.layoutAreas().map((area) => area.index), <int>[1, 2, 3, 4, 5]);
     expect(b.parent, isA<DockingTabs>());
     expect(b.level, 2);
     expect(b.path, 'RTI');

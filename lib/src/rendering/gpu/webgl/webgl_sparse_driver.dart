@@ -552,9 +552,7 @@ final class WebGlSparseDriver implements SparseGlDriver {
     final String log = _gl.getShaderInfoLog(shader) ?? '';
     _gl.deleteShader(shader);
     throw StateError(
-      'the sparse WebGL2 ${type == web.WebGL2RenderingContext.VERTEX_SHADER
-          ? 'vertex'
-          : 'fragment'} shader failed to compile: $log',
+      'the sparse WebGL2 ${type == web.WebGL2RenderingContext.VERTEX_SHADER ? 'vertex' : 'fragment'} shader failed to compile: $log',
     );
   }
 

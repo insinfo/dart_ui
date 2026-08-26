@@ -1,4 +1,3 @@
-
 import 'dart:typed_data';
 
 import '../../graphics/color.dart';
@@ -51,7 +50,8 @@ class CdrColorParser {
           final grayVal = (255 * (1.0 - tint)).round().clamp(0, 255);
           return CdrColor(
             model: CdrColorModel.pantone,
-            colorArgb: (0xFF << 24) | (grayVal << 16) | (grayVal << 8) | grayVal,
+            colorArgb:
+                (0xFF << 24) | (grayVal << 16) | (grayVal << 8) | grayVal,
             pantoneName: 'Pantone $spotId',
           );
         }

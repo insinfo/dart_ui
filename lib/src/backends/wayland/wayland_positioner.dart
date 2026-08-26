@@ -93,8 +93,7 @@ final class WaylandPositionerSpec {
       anchorHeight: anchorHeight,
       anchor: waylandAnchorFor(request.anchorPoint),
       gravity: waylandGravityFor(request.popupPoint),
-      constraintAdjustment:
-          waylandConstraintAdjustmentFor(request.adjustments),
+      constraintAdjustment: waylandConstraintAdjustmentFor(request.adjustments),
       offsetX: request.offset.dx.round(),
       offsetY: request.offset.dy.round(),
     );
@@ -102,8 +101,7 @@ final class WaylandPositionerSpec {
 
   /// The size a compositor-independent caller would expect before any
   /// constraint adjustment, useful for the first frame's allocation.
-  Size get unconstrainedSize =>
-      Size(width.toDouble(), height.toDouble());
+  Size get unconstrainedSize => Size(width.toDouble(), height.toDouble());
 
   @override
   bool operator ==(Object other) =>

@@ -180,7 +180,7 @@ Future<Application> _start(
 }) async {
   final application = await Application.start(
     rootWidget: ColoredBox(
-        color: const Color(0xFF101010),
+      color: const Color(0xFF101010),
       child: TextField(controller: controller),
     ),
     backends: <WindowingBackendEntry>[

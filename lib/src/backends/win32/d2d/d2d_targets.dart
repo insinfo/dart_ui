@@ -198,15 +198,15 @@ final class D2dHwndWindowTarget
     _color = alloc.allocate<D2dColorF>(sizeOf<D2dColorF>());
     _sizeScratch = alloc.allocate<D2dSizeU>(sizeOf<D2dSizeU>());
 
-    final Pointer<D2dRenderTargetProperties> targetProperties = alloc
-        .allocate<D2dRenderTargetProperties>(
+    final Pointer<D2dRenderTargetProperties> targetProperties =
+        alloc.allocate<D2dRenderTargetProperties>(
             sizeOf<D2dRenderTargetProperties>());
     // The window is opaque; premultiplied alpha would buy nothing and some
     // drivers refuse it on an HWND target.
     _describeTarget(targetProperties, alphaMode: d2d1AlphaModeIgnore);
 
-    final Pointer<D2dHwndRenderTargetProperties> hwndProperties = alloc
-        .allocate<D2dHwndRenderTargetProperties>(
+    final Pointer<D2dHwndRenderTargetProperties> hwndProperties =
+        alloc.allocate<D2dHwndRenderTargetProperties>(
             sizeOf<D2dHwndRenderTargetProperties>());
     hwndProperties.ref
       ..hwnd = Pointer<Void>.fromAddress(surface.windowHandle)
@@ -428,8 +428,8 @@ final class D2dOffscreenSurface with DisposableMixin {
     _color = alloc.allocate<D2dColorF>(sizeOf<D2dColorF>());
 
     // The DIB: 32-bit, top-down (negative height), BI_RGB.
-    final Pointer<Win32BitmapInfoHeader> info = alloc
-        .allocate<Win32BitmapInfoHeader>(sizeOf<Win32BitmapInfoHeader>());
+    final Pointer<Win32BitmapInfoHeader> info =
+        alloc.allocate<Win32BitmapInfoHeader>(sizeOf<Win32BitmapInfoHeader>());
     info.ref
       ..biSize = sizeOf<Win32BitmapInfoHeader>()
       ..biWidth = width
@@ -447,8 +447,8 @@ final class D2dOffscreenSurface with DisposableMixin {
         ..free(_color);
       throw StateError('$backendName: CreateCompatibleDC failed');
     }
-    _dibSection =
-        library.createDibSection(_memoryDc, info, dibRgbColors, bits, nullptr, 0);
+    _dibSection = library.createDibSection(
+        _memoryDc, info, dibRgbColors, bits, nullptr, 0);
     _dibBits = bits.value;
     alloc
       ..free(info)
@@ -461,8 +461,8 @@ final class D2dOffscreenSurface with DisposableMixin {
     }
     _previousBitmap = library.selectObject(_memoryDc, _dibSection);
 
-    final Pointer<D2dRenderTargetProperties> targetProperties = alloc
-        .allocate<D2dRenderTargetProperties>(
+    final Pointer<D2dRenderTargetProperties> targetProperties =
+        alloc.allocate<D2dRenderTargetProperties>(
             sizeOf<D2dRenderTargetProperties>());
     _describeTarget(targetProperties, alphaMode: d2d1AlphaModePremultiplied);
     final Pointer<Pointer<Void>> out =
@@ -493,8 +493,7 @@ final class D2dOffscreenSurface with DisposableMixin {
       _dcTarget.release();
       _releaseGdi();
       alloc.free(_color);
-      throw StateError(
-          '$backendName: BindDC failed: ${d2dHresultText(hr)}');
+      throw StateError('$backendName: BindDC failed: ${d2dHresultText(hr)}');
     }
 
     _sink = D2dRasterSink(
@@ -543,8 +542,7 @@ final class D2dOffscreenSurface with DisposableMixin {
       sink: _sink,
       player: _player,
       list: list,
-      deviceBounds:
-          Rect.fromLTRB(0, 0, width.toDouble(), height.toDouble()),
+      deviceBounds: Rect.fromLTRB(0, 0, width.toDouble(), height.toDouble()),
       deviceTransform: deviceTransform,
       clearColor: clearColor,
       colorScratch: _color,

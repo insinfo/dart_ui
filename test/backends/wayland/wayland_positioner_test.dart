@@ -11,14 +11,14 @@ void main() {
     test('every corner and edge maps to its xdg_positioner value', () {
       expect(waylandAnchorFor(PopupAnchorPoint.topLeft),
           xdgPositionerAnchorTopLeft);
-      expect(waylandAnchorFor(PopupAnchorPoint.topCenter),
-          xdgPositionerAnchorTop);
+      expect(
+          waylandAnchorFor(PopupAnchorPoint.topCenter), xdgPositionerAnchorTop);
       expect(waylandAnchorFor(PopupAnchorPoint.topRight),
           xdgPositionerAnchorTopRight);
       expect(waylandAnchorFor(PopupAnchorPoint.centerLeft),
           xdgPositionerAnchorLeft);
-      expect(waylandAnchorFor(PopupAnchorPoint.center),
-          xdgPositionerAnchorNone);
+      expect(
+          waylandAnchorFor(PopupAnchorPoint.center), xdgPositionerAnchorNone);
       expect(waylandAnchorFor(PopupAnchorPoint.centerRight),
           xdgPositionerAnchorRight);
       expect(waylandAnchorFor(PopupAnchorPoint.bottomLeft),
@@ -54,8 +54,8 @@ void main() {
     });
 
     test('centre has no direction, so it has no gravity', () {
-      expect(waylandGravityFor(PopupAnchorPoint.center),
-          xdgPositionerAnchorNone);
+      expect(
+          waylandGravityFor(PopupAnchorPoint.center), xdgPositionerAnchorNone);
     });
 
     test('flipping an attachment point flips its gravity too', () {
@@ -75,11 +75,13 @@ void main() {
   group('constraint adjustment translation', () {
     test('each adjustment sets exactly its own bit', () {
       expect(
-        waylandConstraintAdjustmentFor(<PopupAdjustment>{PopupAdjustment.flipX}),
+        waylandConstraintAdjustmentFor(
+            <PopupAdjustment>{PopupAdjustment.flipX}),
         xdgPositionerConstraintAdjustmentFlipX,
       );
       expect(
-        waylandConstraintAdjustmentFor(<PopupAdjustment>{PopupAdjustment.flipY}),
+        waylandConstraintAdjustmentFor(
+            <PopupAdjustment>{PopupAdjustment.flipY}),
         xdgPositionerConstraintAdjustmentFlipY,
       );
       expect(

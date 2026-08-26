@@ -160,8 +160,8 @@ final class VulkanSparsePipelines {
 
       for (final int coverage in kVulkanSparseCoverageModes) {
         for (final int paint in kVulkanSparsePaintModes) {
-          final Pointer<VkShaderModule_T> fragment = _createShaderModule(
-              device, arena, code.fragmentFor(coverage: coverage, paint: paint));
+          final Pointer<VkShaderModule_T> fragment = _createShaderModule(device,
+              arena, code.fragmentFor(coverage: coverage, paint: paint));
           if (fragment == nullptr) {
             releaseAll();
             return null;
@@ -697,8 +697,7 @@ final class VulkanApiSparseDriver implements SparseVulkanDriver {
       final int from = sourceOffset + row * sourceBytesPerRow;
       packed.setRange(row * width, row * width + width, pixels, from);
     }
-    _staged.add(
-        _StagedPage(page, x, y, width, height, _stagingBytes.length));
+    _staged.add(_StagedPage(page, x, y, width, height, _stagingBytes.length));
     _stagingBytes.add(packed);
   }
 
@@ -783,8 +782,7 @@ final class VulkanApiSparseDriver implements SparseVulkanDriver {
         // This pass's slice of the frame's instance arena, so `firstInstance`
         // stays a per-pass index rather than becoming a running total.
         offsets.value = _instanceBase;
-        _device.gpu.api
-            .cmdBindVertexBuffers(_commands, 0, 1, buffers, offsets);
+        _device.gpu.api.cmdBindVertexBuffers(_commands, 0, 1, buffers, offsets);
       }
     });
   }

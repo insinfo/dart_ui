@@ -2,7 +2,6 @@
 ///
 library;
 
-
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../graphics/vector/constants.dart';
@@ -354,8 +353,7 @@ class SelectToolController extends ToolController {
         final Offset moved = start + delta;
         final Rect asPoint =
             Rect.fromLTRB(moved.dx, moved.dy, moved.dx, moved.dy);
-        selection.rotationPivot =
-            moved + _snapCorrection(asPoint, page, null);
+        selection.rotationPivot = moved + _snapCorrection(asPoint, page, null);
       case SelectDrag.marquee:
         _marquee = Rect.fromPoints(press, point);
       case SelectDrag.none:
@@ -480,8 +478,10 @@ class RectangleToolController extends ToolController {
 
     final left = _startPoint!.dx < snapped.dx ? _startPoint!.dx : snapped.dx;
     final top = _startPoint!.dy < snapped.dy ? _startPoint!.dy : snapped.dy;
-    final width = (_startPoint!.dx - snapped.dx).abs().clamp(1.0, double.infinity);
-    final height = (_startPoint!.dy - snapped.dy).abs().clamp(1.0, double.infinity);
+    final width =
+        (_startPoint!.dx - snapped.dx).abs().clamp(1.0, double.infinity);
+    final height =
+        (_startPoint!.dy - snapped.dy).abs().clamp(1.0, double.infinity);
 
     _currentRect!.startX = left;
     _currentRect!.startY = top;

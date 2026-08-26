@@ -309,8 +309,7 @@ final class D3d12SparseDriver implements SparseD3d12Driver {
       );
     }
     _boundBlendKey = key;
-    _device.frames.list
-        .setPipelineState(_device.frames.list.pointer, pso);
+    _device.frames.list.setPipelineState(_device.frames.list.pointer, pso);
   }
 
   @override
@@ -331,8 +330,7 @@ final class D3d12SparseDriver implements SparseD3d12Driver {
   @override
   void useSolidPaint() {
     _requirePass();
-    _rootConstants[D3d12SparseRootConstant.paintMode] =
-        kD3d12SparsePaintSolid;
+    _rootConstants[D3d12SparseRootConstant.paintMode] = kD3d12SparsePaintSolid;
   }
 
   @override
@@ -483,9 +481,8 @@ final class D3d12SparseDriver implements SparseD3d12Driver {
         ..offsetInDescriptorsFromTableStart = 0;
     }
 
-    final Pointer<D3d12RootParameter> parameters =
-        arena<D3d12RootParameter>(
-            sizeOf<D3d12RootParameter>() * kD3d12SparseRootParameterCount);
+    final Pointer<D3d12RootParameter> parameters = arena<D3d12RootParameter>(
+        sizeOf<D3d12RootParameter>() * kD3d12SparseRootParameterCount);
     parameters[kD3d12SparseRootConstantsSlot]
       ..parameterType = d3d12RootParameterTypeConstants
       ..field8 = 0 // ShaderRegister: b0
@@ -725,6 +722,8 @@ final class D3d12SparseDriver implements SparseD3d12Driver {
   }
 
   void _throwIfDisposed() {
-    if (_disposed) throw StateError('the sparse Direct3D 12 driver is disposed');
+    if (_disposed) {
+      throw StateError('the sparse Direct3D 12 driver is disposed');
+    }
   }
 }

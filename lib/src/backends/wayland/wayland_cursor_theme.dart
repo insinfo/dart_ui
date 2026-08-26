@@ -27,7 +27,12 @@ import '../../platform/native_window.dart';
 /// silently drawing an arrow.
 const Map<SystemCursor, List<String>> waylandCursorNames =
     <SystemCursor, List<String>>{
-  SystemCursor.arrow: <String>['default', 'left_ptr', 'arrow', 'top_left_arrow'],
+  SystemCursor.arrow: <String>[
+    'default',
+    'left_ptr',
+    'arrow',
+    'top_left_arrow'
+  ],
   SystemCursor.text: <String>['text', 'xterm', 'ibeam'],
   SystemCursor.hand: <String>['pointer', 'hand2', 'hand1', 'pointing_hand'],
   SystemCursor.resizeHorizontal: <String>[

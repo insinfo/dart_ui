@@ -92,8 +92,7 @@ final class StandardPathsException implements Exception {
 /// (that is the convention xdg-user-dirs documents), and is omitted.
 Map<String, String> parseXdgUserDirs(String content, {required String home}) {
   final Map<String, String> result = <String, String>{};
-  final RegExp assignment =
-      RegExp(r'^\s*(XDG_[A-Z]+_DIR)\s*=\s*"([^"]*)"\s*$');
+  final RegExp assignment = RegExp(r'^\s*(XDG_[A-Z]+_DIR)\s*=\s*"([^"]*)"\s*$');
   for (final String line in content.split('\n')) {
     final RegExpMatch? match = assignment.firstMatch(line);
     if (match == null) continue;

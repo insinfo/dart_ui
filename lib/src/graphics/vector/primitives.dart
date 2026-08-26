@@ -352,7 +352,8 @@ class VectorCircle extends PrimitiveObject {
   bool get isClosed => arcType != ArcType.arc;
 
   /// Creates from a bounding rect `[cx, cy, w, h]`.
-  factory VectorCircle.fromRect(List<double> rect, {
+  factory VectorCircle.fromRect(
+    List<double> rect, {
     double angle1 = 0.0,
     double angle2 = 0.0,
     ArcType arcType = ArcType.chord,
@@ -443,12 +444,10 @@ class VectorPolygon extends PrimitiveObject {
 
   double get cornerRadius => 0.5;
 
-  double get midpointRadius =>
-      cornerRadius * math.cos(math.pi / cornersNum);
+  double get midpointRadius => cornerRadius * math.cos(math.pi / cornersNum);
 
   double getCornerAngle(int index) {
-    var val =
-        2.0 * math.pi / cornersNum * index + math.pi / 2.0;
+    var val = 2.0 * math.pi / cornersNum * index + math.pi / 2.0;
     if (val > 2.0 * math.pi) val -= 2.0 * math.pi;
     return val;
   }
@@ -543,8 +542,7 @@ class VectorCurve extends PrimitiveObject {
   }
 
   @override
-  String toString() =>
-      'VectorCurve(${paths.length} paths, closed=$isClosed)';
+  String toString() => 'VectorCurve(${paths.length} paths, closed=$isClosed)';
 }
 
 // ---------------------------------------------------------------------------

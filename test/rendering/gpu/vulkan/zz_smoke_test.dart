@@ -13,15 +13,22 @@ void main() {
   test('window smoke', () async {
     final load = VulkanLibrary.open();
     final lib = load.library;
-    if (lib == null) { markTestSkipped('no loader'); return; }
+    if (lib == null) {
+      markTestSkipped('no loader');
+      return;
+    }
     final attempt = VulkanInstance.create(lib,
         options: const VulkanInstanceOptions(
             validation: true,
             surfaces: <VulkanSurfacePlatform>{VulkanSurfacePlatform.win32}));
     final instance = attempt.instance;
-    if (instance == null) { markTestSkipped('no instance: ${attempt.failureText}'); return; }
+    if (instance == null) {
+      markTestSkipped('no instance: ${attempt.failureText}');
+      return;
+    }
     print('EXT=${instance.enabledExtensions}');
-    print('SUPPORTS_WIN32=${instance.supportsSurface(VulkanSurfacePlatform.win32)}');
+    print(
+        'SUPPORTS_WIN32=${instance.supportsSurface(VulkanSurfacePlatform.win32)}');
 
     final backend = Win32WindowingBackend();
     await backend.initialize();
@@ -32,7 +39,8 @@ void main() {
 
     final device = VulkanRenderDevice.adoptInstance(instance,
         enablePresentation: true, enableExperimentalSparseStrips: true);
-    print('canPresent=${device.gpu.canPresent} family=${device.gpu.queueFamily}/${device.gpu.presentQueueFamily}');
+    print(
+        'canPresent=${device.gpu.canPresent} family=${device.gpu.queueFamily}/${device.gpu.presentQueueFamily}');
 
     final target = device.createTarget(VulkanWindowSurfaceDescriptor(
       platform: VulkanSurfacePlatform.win32,
@@ -49,7 +57,8 @@ void main() {
       final list = DisplayList();
       final paint = list.addPaint(colorArgb: 0xFF3366CC);
       list.drawRect(10, 10, 100, 80, paint);
-      final result = await target.renderDisplayList(list, clearColor: 0xFF000000);
+      final result =
+          await target.renderDisplayList(list, clearColor: 0xFF000000);
       print('frame $i -> ${result.status} ${result.diagnostic ?? ''}');
     }
     final fb = target.framebuffer;
@@ -59,11 +68,14 @@ void main() {
       print('pixel(50,50)=${fb.pixels.sublist(o, o + 4)}');
     }
     target.resize(200, 150, 1.0);
-    print('after resize config=${target.configuration} failure=${target.creationFailure}');
-    final r2 = await target.renderDisplayList(DisplayList(), clearColor: 0xFF102030);
+    print(
+        'after resize config=${target.configuration} failure=${target.creationFailure}');
+    final r2 =
+        await target.renderDisplayList(DisplayList(), clearColor: 0xFF102030);
     print('post-resize frame -> ${r2.status}');
 
-    print('VALIDATION=${instance.validationEnabled} problems=${instance.problems}');
+    print(
+        'VALIDATION=${instance.validationEnabled} problems=${instance.problems}');
     target.dispose();
     device.dispose();
     window.close();

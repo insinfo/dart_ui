@@ -3,13 +3,13 @@ library;
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
+import '../semantics/semantics.dart';
 import 'actions.dart';
 import 'drag_drop.dart';
 import 'errors.dart';
 import 'focus.dart';
 import 'keyboard_router.dart';
 import 'pointer_router.dart';
-import 'semantics.dart';
 import 'widget.dart';
 
 /// Where an element is in its life.

@@ -120,8 +120,7 @@ void main() {
       final SparseStripDrawPlan plan = SparseStripDrawPlan()
         ..append(StripBuffer()..addFill(2, 0, 3), materialIndex: 0);
 
-      final SparseGlExecutionStats stats =
-          session.device!.submitSparseStrips(
+      final SparseGlExecutionStats stats = session.device!.submitSparseStrips(
         plan,
         materials: <SparseGlMaterial>[_white()],
         viewportWidth: 8,
@@ -169,8 +168,7 @@ void main() {
       final SparseStripDrawPlan plan = SparseStripDrawPlan()
         ..append(source, materialIndex: 0);
 
-      final SparseGlExecutionStats stats =
-          session.device!.submitSparseStrips(
+      final SparseGlExecutionStats stats = session.device!.submitSparseStrips(
         plan,
         materials: <SparseGlMaterial>[_white()],
         viewportWidth: 8,
@@ -348,7 +346,6 @@ void main() {
       surface.target.dispose();
     });
   });
-
 }
 
 /// Opaque white, premultiplied, source-over: the paint that makes coverage

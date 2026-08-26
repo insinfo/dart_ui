@@ -104,9 +104,8 @@ void main() {
         // `DrawSpriteBatch` per run: what a runtime without
         // `ID2D1DeviceContext3` would pay, measured here rather than guessed
         // at from the synthetic quad test below.
-        final D2dOffscreenSurface looped = session.surface(
-            scene.width, scene.height,
-            spriteBatching: false);
+        final D2dOffscreenSurface looped =
+            session.surface(scene.width, scene.height, spriteBatching: false);
         addTearDown(looped.dispose);
         final double loopBlank = _medianSync(
             () => looped.renderDisplayList(blank, clearColor: _clear));
@@ -361,8 +360,7 @@ void main() {
             ..top = y(i)
             ..right = x(i) + cellWidth
             ..bottom = y(i) + cellHeight;
-          target.fillOpacityMask(
-              singles[i % distinctGlyphs], brush, dest, src);
+          target.fillOpacityMask(singles[i % distinctGlyphs], brush, dest, src);
         }
         target.setAntialiasMode(d2d1AntialiasModePerPrimitive);
         surface.endDirectDraw();
@@ -465,7 +463,6 @@ void main() {
       );
     }, skip: skip);
   });
-
 }
 
 // ---------------------------------------------------------------------

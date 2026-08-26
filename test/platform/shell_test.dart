@@ -8,14 +8,13 @@ void main() {
   group('url validation', () {
     test('absolute URLs of any scheme pass', () {
       expect(parseLaunchableUrl('https://dart.dev').scheme, 'https');
-      expect(parseLaunchableUrl('mailto:someone@example.com').scheme,
-          'mailto');
+      expect(parseLaunchableUrl('mailto:someone@example.com').scheme, 'mailto');
       expect(parseLaunchableUrl('vscode://file/x').scheme, 'vscode');
     });
 
     test('a bare program name or relative path is refused', () {
-      expect(() => parseLaunchableUrl('cmd.exe'),
-          throwsA(isA<ShellException>()));
+      expect(
+          () => parseLaunchableUrl('cmd.exe'), throwsA(isA<ShellException>()));
       expect(() => parseLaunchableUrl('../secrets.txt'),
           throwsA(isA<ShellException>()));
       expect(() => parseLaunchableUrl(''), throwsA(isA<ShellException>()));
@@ -24,16 +23,14 @@ void main() {
 
   group('command planning (pure)', () {
     test('linux open prefers xdg-open and passes the target verbatim', () {
-      final List<ShellCommand> commands =
-          linuxOpenCommands('https://dart.dev');
+      final List<ShellCommand> commands = linuxOpenCommands('https://dart.dev');
       expect(commands.first.executable, 'xdg-open');
       expect(commands.first.arguments, <String>['https://dart.dev']);
       expect(commands.map((ShellCommand c) => c.executable),
           containsAll(<String>['gio', 'kde-open5']));
     });
 
-    test('linux reveal asks FileManager1 first and degrades to the parent',
-        () {
+    test('linux reveal asks FileManager1 first and degrades to the parent', () {
       final List<ShellCommand> commands =
           linuxRevealCommands('/home/isaque/docs/relatório.pdf');
       expect(commands.first.executable, 'dbus-send');
@@ -60,8 +57,7 @@ void main() {
   });
 
   group('fallback execution (injected runner)', () {
-    ProcessResult result(int exitCode) =>
-        ProcessResult(1, exitCode, '', '');
+    ProcessResult result(int exitCode) => ProcessResult(1, exitCode, '', '');
 
     test('stops at the first launcher that exits 0', () async {
       final List<String> ran = <String>[];
@@ -105,15 +101,13 @@ void main() {
           isA<ShellException>().having(
             (ShellException e) => e.reason,
             'reason',
-            allOf(contains('xdg-open'), contains('gio'),
-                contains('kde-open5')),
+            allOf(contains('xdg-open'), contains('gio'), contains('kde-open5')),
           ),
         ),
       );
     });
 
-    test('a nonzero exit is recorded and the next launcher is tried',
-        () async {
+    test('a nonzero exit is recorded and the next launcher is tried', () async {
       final List<String> ran = <String>[];
       await shell_io.runFirstAvailable(
         'openUrl',
@@ -139,8 +133,8 @@ void main() {
     });
 
     test('openUrl refuses a non-URL before touching the platform', () {
-      expect(() => Shell.openUrl('notepad.exe'),
-          throwsA(isA<ShellException>()));
+      expect(
+          () => Shell.openUrl('notepad.exe'), throwsA(isA<ShellException>()));
     });
   });
 }

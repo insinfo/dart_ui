@@ -560,7 +560,7 @@ void main() {
         options: ApplicationOptions(
           title: 'drag',
           size: const Size(240, 160),
-      clearColor: const Color(0xFF101010),
+          clearColor: const Color(0xFF101010),
           liveResize: liveResize,
         ),
       );
