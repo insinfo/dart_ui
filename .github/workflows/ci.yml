@@ -167,8 +167,119 @@ jobs:
           mvp/mvp_01_win32_counter/build/mvp_01.exe --smoke-test
 
   # ==============================================================
-  # Build AOT multiplataforma
+  # Wayland contra um compositor de verdade (Weston headless)
   # ==============================================================
+  #
+  # Ate 26/08/2026 nenhuma linha do backend Wayland tinha falado com um
+  # compositor. As 14 suites de `test/backends/wayland/` rodam contra um
+  # compositor FALSO em memoria: isso e teste unitario, nao integracao, e
+  # deixa tres camadas sem cobertura alguma - a FFI de libc
+  # (sendmsg/recvmsg/SCM_RIGHTS), o memfd/mmap do `wl_shm`, e a conformidade
+  # do protocolo, porque um falso aceita exatamente o que foi escrito para
+  # aceitar e um compositor mata a conexao num pedido malformado.
+  #
+  # Este job e a integracao: sobe Weston no backend headless e roda o smoke
+  # compilado contra ele, do mesmo jeito que o passo de X11 sobe Xvfb.
+  #
+  # Deliberadamente sem `needs:`. A evidencia que ele produz nao deve depender
+  # do estado de outra frente: se o `analyze` quebrar por um arquivo que nao e
+  # deste backend, ainda queremos saber se o Wayland conversou com o
+  # compositor.
+  wayland:
+    name: Wayland smoke (Weston headless)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Install Weston
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y weston libwayland-client0 xkb-data
+          weston --version || true
+
+      - name: Run the Wayland backend smoke under Weston headless
+        run: |
+          set -uo pipefail
+          mkdir -p build
+          export XDG_RUNTIME_DIR="${RUNNER_TEMP}/wayland-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export WAYLAND_DISPLAY=wayland-ci
+          export XDG_SESSION_TYPE=wayland
+          socket="$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+          common="--socket=$WAYLAND_DISPLAY --width=1024 --height=768"
+          common="$common --idle-time=0 --no-config"
+
+          # Weston renomeou os backends e o seletor de renderer entre as
+          # versoes que as distribuicoes carregam. Em vez de fixar uma forma
+          # e descobrir na proxima atualizacao do runner que ela sumiu, tenta
+          # as conhecidas em ordem e imprime qual pegou.
+          weston_pid=''
+          start_weston() {
+            rm -f "$socket" "$socket.lock"
+            weston "$@" >>build/weston.log 2>&1 &
+            weston_pid=$!
+            for _ in $(seq 1 40); do
+              if [ -S "$socket" ]; then
+                echo "WESTON_ARGS=$*"
+                return 0
+              fi
+              if ! kill -0 "$weston_pid" 2>/dev/null; then
+                return 1
+              fi
+              sleep 0.5
+            done
+            kill "$weston_pid" 2>/dev/null || true
+            return 1
+          }
+
+          started=0
+          for backend in "--backend=headless --renderer=pixman" "--backend=headless --use-pixman" "--backend=headless-backend.so --use-pixman" "--backend=headless"; do
+            echo "--- trying: weston $backend $common"
+            # shellcheck disable=SC2086
+            if start_weston $backend $common; then
+              started=1
+              break
+            fi
+            echo "--- that form failed; weston said:"
+            tail -n 40 build/weston.log || true
+          done
+          if [ "$started" -ne 1 ]; then
+            echo "Weston headless never opened $socket on this runner."
+            cat build/weston.log || true
+            exit 1
+          fi
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+
+          dart compile exe tool/wayland_backend_smoke.dart -o build/wayland_smoke
+          # `|| status=...` e obrigatorio: o shell padrao do runner e
+          # `bash -e`, e sem isso um smoke que falha aborta o passo antes de
+          # imprimir o log do Weston - que e justamente o que explicaria a
+          # falha.
+          status=0
+          timeout --kill-after=5 90 build/wayland_smoke || status=$?
+          echo "--- weston log:"
+          cat build/weston.log || true
+          exit "$status"
+
+      - name: Upload Weston log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: weston-log
+          path: build/weston.log
+          retention-days: 7
+          if-no-files-found: warn
+
+
   build-aot:
     name: AOT (${{ matrix.platform }})
     needs: test

@@ -261,6 +261,24 @@ final class WaylandWindowingBackend
   List<BackendDiagnostic> get diagnostics =>
       List<BackendDiagnostic>.unmodifiable(_diagnostics);
 
+  /// The interface names the compositor's registry advertised on the live
+  /// connection, empty before [initialize] and after [shutdown].
+  ///
+  /// Exists for the same reason the X11 backend exposes its keyboard state:
+  /// a smoke test running against a real compositor has to be able to say
+  /// *which* compositor answered and with what, and the probe diagnostics
+  /// summarise only three of the globals.
+  Set<String> get globalInterfaces =>
+      _connection?.globalInterfaces ?? const <String>{};
+
+  /// Whether `wl_keyboard.keymap` arrived and parsed into a usable map.
+  ///
+  /// False means the compositor sent no keymap, or the fd it passed through
+  /// `SCM_RIGHTS` could not be mapped or decoded; key events then carry their
+  /// evdev code and no text. Named after the X11 backend's getter because it
+  /// answers the same question.
+  bool get hasKeyboardMap => _connection?.keymap != null;
+
   // ---------------------------------------------------------------------------
   // Probe
   // ---------------------------------------------------------------------------
