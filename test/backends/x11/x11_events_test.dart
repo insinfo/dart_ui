@@ -2,12 +2,15 @@ import 'dart:ffi';
 import 'dart:io';
 
 import 'package:dart_ui/src/backends/x11/x11_events.dart';
+import 'package:dart_ui/src/backends/x11/x11_keyboard.dart';
 import 'package:dart_ui/src/backends/x11/x11_libc.dart';
 import 'package:dart_ui/src/backends/x11/x11_protocol.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/platform/compose_sequences.dart';
 import 'package:dart_ui/src/platform/input_events.dart';
+import 'package:dart_ui/src/platform/keysyms.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:test/test.dart';
 
@@ -758,6 +761,354 @@ void main() {
       );
 
       expect(events, isEmpty);
+    });
+  });
+
+  group('X11EventTranslator.translateKey', () {
+    // A small map: 38 is `a` listed as a single alphabetic keysym, 46 is
+    // `c-cedilla` with a dead acute on the AltGr layer, 50 is Shift_L, 54 is
+    // Return, 55 is Alt_L, 56 is Control_L and 57 is ISO_Level3_Shift.
+    X11KeyboardState keyboardState() => X11KeyboardState(
+          keyboard: X11KeyboardMapping.fromLists(
+            <List<int>>[
+              <int>[0x61], // 38
+              <int>[keysymNoSymbol], // 39
+              <int>[keysymNoSymbol], // 40
+              <int>[keysymNoSymbol], // 41
+              <int>[keysymNoSymbol], // 42
+              <int>[keysymNoSymbol], // 43
+              <int>[keysymNoSymbol], // 44
+              <int>[keysymNoSymbol], // 45
+              <int>[0xe7, 0xc7, 0xfe51], // 46
+              <int>[keysymNoSymbol], // 47
+              <int>[keysymNoSymbol], // 48
+              <int>[keysymNoSymbol], // 49
+              <int>[keysymShiftL], // 50
+              <int>[keysymNoSymbol], // 51
+              <int>[keysymNoSymbol], // 52
+              <int>[keysymNoSymbol], // 53
+              <int>[keysymReturn], // 54
+              <int>[keysymAltL], // 55
+              <int>[keysymControlL], // 56
+              <int>[keysymIsoLevel3Shift], // 57
+            ],
+            firstKeycode: 38,
+          ),
+          modifiers: X11ModifierMapping.fromRows(<List<int>>[
+            <int>[50], // Shift
+            <int>[], // Lock
+            <int>[56], // Control
+            <int>[55], // Mod1 - Alt
+            <int>[], // Mod2
+            <int>[], // Mod3
+            <int>[], // Mod4
+            <int>[57], // Mod5 - AltGr
+          ]),
+          source: 'core-keyboard-mapping',
+        );
+
+    List<PlatformWindowEvent> translate(
+      X11RawEvent raw, {
+      X11KeyboardState? keyboard,
+      ComposeEngine? compose,
+    }) {
+      final events = <PlatformWindowEvent>[];
+      X11EventTranslator.translateKey(
+        raw,
+        windowId: const NativeWindowId(7),
+        generation: 3,
+        keyboard: keyboard ?? keyboardState(),
+        compose: compose,
+        emit: events.add,
+      );
+      return events;
+    }
+
+    /// Builds the 32 bytes of a real `xcb_key_press_event_t`, decodes them the
+    /// way the pump does, and translates the result. Bytes in, events out -
+    /// the only end-to-end this file can prove with no X server in the room.
+    List<PlatformWindowEvent> fromWire({
+      required int type,
+      required int keycode,
+      required int state,
+      int time = 4321,
+      X11KeyboardState? keyboard,
+      ComposeEngine? compose,
+    }) {
+      late List<PlatformWindowEvent> events;
+      _withNativeEvent((event) {
+        event[0] = type;
+        event[1] = keycode; // detail
+        writeU16(event, 2, 0x0042); // sequence
+        writeU32(event, 4, time); // time
+        writeU32(event, 8, 0x01020304); // root
+        writeU32(event, 12, 0x11223344); // event window
+        writeU32(event, 16, 0); // child
+        writeU16(event, 20, 500); // root_x
+        writeU16(event, 22, 400); // root_y
+        writeU16(event, 24, 120); // event_x
+        writeU16(event, 26, 80); // event_y
+        writeU16(event, 28, state); // state
+        event[30] = 1; // same_screen
+        final raw = X11RawEvent()..decodeFrom(event);
+        expect(raw.type, type);
+        expect(raw.detail, keycode);
+        expect(raw.window, 0x11223344);
+        expect(raw.state, state);
+        events = translate(raw, keyboard: keyboard, compose: compose);
+      });
+      return events;
+    }
+
+    test('a KeyPress off the wire becomes a KeyDownEvent and its text', () {
+      final events = fromWire(type: xcbKeyPress, keycode: 38, state: 0);
+
+      expect(events.length, 2);
+      final down = events[0] as KeyDownEvent;
+      expect(down.windowId, const NativeWindowId(7));
+      expect(down.generation, 3);
+      expect(down.physicalKey, 38);
+      expect(down.logicalKey, 0x61);
+      expect(down.timestamp, const Duration(milliseconds: 4321));
+      expect(down.modifiers, isEmpty);
+      expect(down.isRepeat, isFalse);
+      expect((events[1] as TextInputEvent).text, 'a');
+    });
+
+    test('the hardware event always precedes the text event', () {
+      // A consumer that saw the text first could not implement a shortcut
+      // that suppresses typing.
+      final events = fromWire(type: xcbKeyPress, keycode: 38, state: 0);
+
+      expect(events[0], isA<KeyEvent>());
+      expect(events[1], isA<TextInputEvent>());
+    });
+
+    test('Shift in the state word selects level two and reports the modifier',
+        () {
+      final events =
+          fromWire(type: xcbKeyPress, keycode: 38, state: x11ModShift);
+
+      final down = events[0] as KeyDownEvent;
+      expect(down.logicalKey, 0x41);
+      expect(down.modifiers, <KeyModifier>{KeyModifier.shift});
+      expect((events[1] as TextInputEvent).text, 'A');
+    });
+
+    test('a KeyRelease never produces text', () {
+      // X carries `state` on both edges; a translator that ignored the edge
+      // types every character twice.
+      final events =
+          fromWire(type: xcbKeyRelease, keycode: 38, state: x11ModShift);
+
+      expect(events.single, isA<KeyUpEvent>());
+      expect((events.single as KeyUpEvent).logicalKey, 0x41);
+      expect(
+        (events.single as KeyUpEvent).modifiers,
+        <KeyModifier>{KeyModifier.shift},
+      );
+    });
+
+    test('Control suppresses the text but not the key event', () {
+      // Ctrl+A is a command and the keysym under it is still `a`; emitting
+      // text would type an `a` into the document the shortcut acts on.
+      final events =
+          fromWire(type: xcbKeyPress, keycode: 38, state: x11ModControl);
+
+      expect(events.single, isA<KeyDownEvent>());
+      expect((events.single as KeyDownEvent).logicalKey, 0x61);
+      expect(
+        (events.single as KeyDownEvent).modifiers,
+        <KeyModifier>{KeyModifier.control},
+      );
+    });
+
+    test('Alt suppresses the text', () {
+      final events =
+          fromWire(type: xcbKeyPress, keycode: 38, state: x11ModMod1);
+
+      expect(events.single, isA<KeyDownEvent>());
+    });
+
+    test('AltGr does not suppress the text it exists to reach', () {
+      // Mod5 is ISO_Level3_Shift on this map. Suppressing it as if it were
+      // Alt would make the whole AltGr layer untypable.
+      final events =
+          fromWire(type: xcbKeyPress, keycode: 46, state: x11ModMod5);
+
+      expect(events.length, 1); // dead_acute has no text of its own
+      expect((events.single as KeyDownEvent).logicalKey, 0xfe51);
+    });
+
+    test('AltGr reaches the second group text where the layer has some', () {
+      final keyboard = X11KeyboardState(
+        keyboard: X11KeyboardMapping.fromLists(
+          <List<int>>[
+            <int>[0x71, 0x51, 0x2f, keysymNoSymbol], // q Q, AltGr slash
+            <int>[keysymIsoLevel3Shift],
+          ],
+          firstKeycode: 24,
+        ),
+        modifiers: X11ModifierMapping.fromRows(<List<int>>[
+          <int>[], <int>[], <int>[], <int>[], //
+          <int>[], <int>[], <int>[], <int>[25],
+        ]),
+      );
+
+      final events = fromWire(
+        type: xcbKeyPress,
+        keycode: 24,
+        state: x11ModMod5,
+        keyboard: keyboard,
+      );
+
+      expect((events[1] as TextInputEvent).text, '/');
+    });
+
+    test('a keysym that resolves to nothing still emits its KeyEvent', () {
+      // The contract: a backend that cannot translate stays silent about text
+      // rather than guessing a character from a keycode.
+      final events = fromWire(
+        type: xcbKeyPress,
+        keycode: 200,
+        state: 0,
+        keyboard: X11KeyboardState(),
+      );
+
+      expect(events.single, isA<KeyDownEvent>());
+      expect((events.single as KeyDownEvent).physicalKey, 200);
+      expect((events.single as KeyDownEvent).logicalKey, keysymNoSymbol);
+    });
+
+    test('a control character keysym produces no TextInputEvent', () {
+      // Return has a Latin-1 value of 0x0d, and a TextInputEvent must never
+      // carry a control character.
+      final events = fromWire(type: xcbKeyPress, keycode: 54, state: 0);
+
+      expect(events.single, isA<KeyDownEvent>());
+      expect((events.single as KeyDownEvent).logicalKey, keysymReturn);
+    });
+
+    test('a modifier key press produces no text', () {
+      final events = fromWire(type: xcbKeyPress, keycode: 50, state: 0);
+
+      expect(events.single, isA<KeyDownEvent>());
+      expect((events.single as KeyDownEvent).logicalKey, keysymShiftL);
+    });
+
+    test('the repeat flag the filter set is carried onto the KeyDownEvent', () {
+      final raw = X11RawEvent()
+        ..type = xcbKeyPress
+        ..detail = 38
+        ..timestamp = 900
+        ..repeat = true;
+
+      final events = translate(raw);
+
+      expect((events[0] as KeyDownEvent).isRepeat, isTrue);
+      // A repeat still types: holding `a` is how `aaaa` gets into a field.
+      expect((events[1] as TextInputEvent).text, 'a');
+    });
+
+    test('an event that is neither a press nor a release is ignored', () {
+      expect(translate(_raw(type: xcbMotionNotify)), isEmpty);
+    });
+
+    group('with a Compose engine in front', () {
+      ComposeEngine acuteEngine() => ComposeEngine(
+            ComposeTable.parse(
+              '<dead_acute> <a> : "\u00e1" aacute\n',
+            ),
+          );
+
+      test('a dead key alone produces a KeyEvent and no text', () {
+        final events = fromWire(
+          type: xcbKeyPress,
+          keycode: 46,
+          state: x11ModMod5, // the AltGr layer, which is dead_acute here
+          compose: acuteEngine(),
+        );
+
+        expect(events.single, isA<KeyDownEvent>());
+        expect((events.single as KeyDownEvent).logicalKey, 0xfe51);
+      });
+
+      test('dead_acute then a is two keysyms and one character', () {
+        final compose = acuteEngine();
+
+        fromWire(
+          type: xcbKeyPress,
+          keycode: 46,
+          state: x11ModMod5,
+          compose: compose,
+        );
+        final events = fromWire(
+          type: xcbKeyPress,
+          keycode: 38,
+          state: 0,
+          compose: compose,
+        );
+
+        expect(events.length, 2);
+        expect(events[0], isA<KeyDownEvent>());
+        expect((events[1] as TextInputEvent).text, '\u00e1');
+      });
+
+      test('Shift held during a sequence does not break it', () {
+        // Shift is held *during* half the sequences in a real table, so the
+        // modifier keysym must never reach the engine.
+        final compose = ComposeEngine(
+          ComposeTable.parse('<dead_acute> <A> : "\u00c1" Aacute\n'),
+        );
+
+        fromWire(
+          type: xcbKeyPress,
+          keycode: 46,
+          state: x11ModMod5,
+          compose: compose,
+        );
+        // The Shift_L press itself, with Shift not yet in `state`.
+        fromWire(type: xcbKeyPress, keycode: 50, state: 0, compose: compose);
+        final events = fromWire(
+          type: xcbKeyPress,
+          keycode: 38,
+          state: x11ModShift,
+          compose: compose,
+        );
+
+        expect((events[1] as TextInputEvent).text, '\u00c1');
+      });
+
+      test('an ordinary key passes straight through the engine', () {
+        final events = fromWire(
+          type: xcbKeyPress,
+          keycode: 38,
+          state: 0,
+          compose: acuteEngine(),
+        );
+
+        expect((events[1] as TextInputEvent).text, 'a');
+      });
+
+      test('a sequence that cannot match emits no bare accent', () {
+        final compose = acuteEngine();
+
+        fromWire(
+          type: xcbKeyPress,
+          keycode: 46,
+          state: x11ModMod5,
+          compose: compose,
+        );
+        // c-cedilla does not follow dead_acute in the table above.
+        final events = fromWire(
+          type: xcbKeyPress,
+          keycode: 46,
+          state: 0,
+          compose: compose,
+        );
+
+        expect(events.single, isA<KeyDownEvent>());
+      });
     });
   });
 }

@@ -70,6 +70,8 @@ void main() {
           'direct3d11',
           'opengl',
           'direct2d',
+          'direct3d12',
+          'vulkan',
           'win32-dib',
           'headless-cpu',
         ],
@@ -77,7 +79,9 @@ void main() {
       expect(paths[0].kind, PresentationKind.gpu);
       expect(paths[1].kind, PresentationKind.gpu);
       expect(paths[2].kind, PresentationKind.gpu);
-      expect(paths[3].kind, PresentationKind.cpu);
+      expect(paths[3].kind, PresentationKind.gpu);
+      expect(paths[4].kind, PresentationKind.gpu);
+      expect(paths[5].kind, PresentationKind.cpu);
       expect(
         paths[0].rasterizationApproach,
         RasterizationApproach.analyticCoverageAtlas,
@@ -85,6 +89,76 @@ void main() {
       expect(
         paths[0].compatibleWindowingBackends,
         const <String>{'win32'},
+      );
+      for (final PresentationPathEntry path in paths.take(6)) {
+        expect(
+          path.compatibleWindowingBackends,
+          const <String>{'win32'},
+          reason: '${path.name} attaches to a Win32 window and to nothing '
+              'else; declaring that is what keeps it out of a headless '
+              'fallback',
+        );
+      }
+    });
+
+    test('Vulkan is registered but never reached by fallback', () {
+      final List<PresentationPathEntry> paths =
+          PlatformBackendResolver.defaultPresentations(
+        operatingSystem: 'windows',
+      );
+
+      // The flag is the whole point of the entry: `VulkanWindowTarget` has no
+      // glyph atlas, so a UI that lands on it by fallback loses text. It is
+      // registered so that it can be asked for by name, and marked so that it
+      // is never chosen for anybody who did not.
+      expect(
+        paths
+            .singleWhere((PresentationPathEntry p) => p.name == 'vulkan')
+            .experimental,
+        isTrue,
+      );
+      expect(
+        paths
+            .singleWhere((PresentationPathEntry p) => p.name == 'direct3d12')
+            .experimental,
+        isFalse,
+      );
+    });
+
+    test('the Windows Direct3D 12 path probes a real device', () {
+      if (!Platform.isWindows) return;
+      final PresentationPathEntry d3d12 =
+          PlatformBackendResolver.defaultPresentations(
+        operatingSystem: 'windows',
+      ).singleWhere((PresentationPathEntry path) => path.name == 'direct3d12');
+
+      final BackendProbeResult result = d3d12.probe();
+
+      expect(result.supported, isTrue, reason: result.describe());
+      expect(result.capabilities, contains(Capability.gpuPresentation));
+    });
+
+    test('the Windows Vulkan path probes through VK_KHR_win32_surface', () {
+      if (!Platform.isWindows) return;
+      final PresentationPathEntry vulkan =
+          PlatformBackendResolver.defaultPresentations(
+        operatingSystem: 'windows',
+      ).singleWhere((PresentationPathEntry path) => path.name == 'vulkan');
+
+      final BackendProbeResult result = vulkan.probe();
+
+      // A machine with no Vulkan loader is a legitimate answer and not a
+      // failure; what this asserts is that the answer names the reason either
+      // way, and that a yes really was checked against the WSI extension
+      // rather than against an offscreen instance.
+      if (!result.supported) {
+        expect(result.diagnostics, isNotEmpty, reason: result.describe());
+        return;
+      }
+      expect(result.capabilities, contains(Capability.gpuPresentation));
+      expect(
+        result.diagnostics.map((BackendDiagnostic item) => item.message),
+        contains(contains('VK_KHR_win32_surface')),
       );
     });
 

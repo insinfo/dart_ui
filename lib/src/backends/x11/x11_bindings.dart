@@ -224,6 +224,14 @@ typedef XcbVisualNextN = Void Function(Pointer<XcbVisualTypeIterator>);
 typedef XcbVisualNextD = void Function(Pointer<XcbVisualTypeIterator>);
 typedef XcbWinN = XcbCookie Function(Pointer<Void>, Uint32);
 typedef XcbWinD = XcbCookie Function(Pointer<Void>, int);
+
+/// A request whose only argument is the connection - `GetModifierMapping`.
+typedef XcbConnReqN = XcbCookie Function(Pointer<Void>);
+typedef XcbConnReqD = XcbCookie Function(Pointer<Void>);
+
+/// `xcb_get_keyboard_mapping(connection, first_keycode, count)`.
+typedef XcbGetKbMapN = XcbCookie Function(Pointer<Void>, Uint8, Uint8);
+typedef XcbGetKbMapD = XcbCookie Function(Pointer<Void>, int, int);
 typedef XcbReplyN = Pointer<Uint8> Function(
     Pointer<Void>, XcbCookie, Pointer<Pointer<Uint8>>);
 typedef XcbReplyD = Pointer<Uint8> Function(
@@ -309,8 +317,7 @@ typedef XcbSetOwnerN = XcbCookie Function(
 typedef XcbSetOwnerD = XcbCookie Function(Pointer<Void>, int, int, int);
 typedef XcbCnvSelN = XcbCookie Function(
     Pointer<Void>, Uint32, Uint32, Uint32, Uint32, Uint32);
-typedef XcbCnvSelD = XcbCookie Function(
-    Pointer<Void>, int, int, int, int, int);
+typedef XcbCnvSelD = XcbCookie Function(Pointer<Void>, int, int, int, int, int);
 
 /// Bound libxcb. Constructed only after every symbol has been verified.
 final class XcbBindings {
@@ -413,6 +420,10 @@ final class XcbBindings {
     'xcb_create_glyph_cursor',
     'xcb_free_cursor',
     'xcb_set_input_focus',
+    'xcb_get_keyboard_mapping',
+    'xcb_get_keyboard_mapping_reply',
+    'xcb_get_modifier_mapping',
+    'xcb_get_modifier_mapping_reply',
   ];
 
   final DynamicLibrary library;
@@ -474,9 +485,8 @@ final class XcbBindings {
       library.lookupFunction<XcbChgPropN, XcbChgPropD>('xcb_change_property');
   late final XcbDelPropD deleteProperty =
       library.lookupFunction<XcbDelPropN, XcbDelPropD>('xcb_delete_property');
-  late final XcbSetOwnerD setSelectionOwner =
-      library.lookupFunction<XcbSetOwnerN, XcbSetOwnerD>(
-          'xcb_set_selection_owner');
+  late final XcbSetOwnerD setSelectionOwner = library
+      .lookupFunction<XcbSetOwnerN, XcbSetOwnerD>('xcb_set_selection_owner');
   late final XcbCnvSelD convertSelection =
       library.lookupFunction<XcbCnvSelN, XcbCnvSelD>('xcb_convert_selection');
   late final XcbGetPropD getProperty =
@@ -511,6 +521,13 @@ final class XcbBindings {
       library.lookupFunction<XcbGlyphN, XcbGlyphD>('xcb_create_glyph_cursor');
   late final XcbFocusD setInputFocus =
       library.lookupFunction<XcbFocusN, XcbFocusD>('xcb_set_input_focus');
+  // The keyboard map. Two requests, both core protocol, both answering with a
+  // reply whose bytes *are* the wire reply - which is what lets the decoders in
+  // `x11_keyboard.dart` take a `Uint8List` and stay testable off an X server.
+  late final XcbGetKbMapD getKeyboardMapping = library
+      .lookupFunction<XcbGetKbMapN, XcbGetKbMapD>('xcb_get_keyboard_mapping');
+  late final XcbConnReqD getModifierMapping = library
+      .lookupFunction<XcbConnReqN, XcbConnReqD>('xcb_get_modifier_mapping');
 
   late final XcbIntCD connectionHasError = _int('xcb_connection_has_error');
   late final XcbIntCD getFileDescriptor = _int('xcb_get_file_descriptor');
@@ -545,6 +562,10 @@ final class XcbBindings {
   late final XcbReplyD translateCoordinatesReply =
       _reply('xcb_translate_coordinates_reply');
   late final XcbReplyD getGeometryReply = _reply('xcb_get_geometry_reply');
+  late final XcbReplyD getKeyboardMappingReply =
+      _reply('xcb_get_keyboard_mapping_reply');
+  late final XcbReplyD getModifierMappingReply =
+      _reply('xcb_get_modifier_mapping_reply');
 }
 
 typedef XcbShmAtN = XcbCookie Function(Pointer<Void>, Uint32, Uint32, Uint8);

@@ -11,12 +11,15 @@ import '../../foundation/lifecycle.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/compose_sequences.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
 import 'x11_connection.dart';
 import 'x11_coordinates.dart';
 import 'x11_events.dart';
+import 'x11_keyboard.dart';
+import 'x11_protocol.dart';
 import 'x11_surface.dart';
 
 final class X11Window with DisposableMixin implements NativeWindow {
@@ -114,6 +117,26 @@ final class X11Window with DisposableMixin implements NativeWindow {
   bool _visible;
   bool _closedEventEmitted = false;
   SystemCursor _cursor = SystemCursor.arrow;
+
+  /// The keyboard map this window translates key events with.
+  ///
+  /// Set by the backend, which owns the one map the whole connection shares -
+  /// a keymap is a property of the X server, not of a window, and two windows
+  /// holding two copies would disagree the moment the user switches layout.
+  /// Starts out empty rather than null, and is replaced by the backend's
+  /// shared instance at creation: a window whose map could not be read still
+  /// emits every [KeyEvent] with its physical keycode, and simply never emits
+  /// text. That is the contract - a backend that cannot translate stays silent
+  /// rather than guessing - and a nullable field here would have turned it
+  /// into "no keyboard at all".
+  X11KeyboardState keyboardState = X11KeyboardState();
+
+  /// Dead keys, from the machine's own Compose table. Null when there is none.
+  ///
+  /// One engine **per window**, not per connection: the engine holds the
+  /// half-finished sequence the user is in the middle of, and sharing it would
+  /// let an accent typed in one window finish in another.
+  ComposeEngine? composeEngine;
 
   @override
   NativeWindowId get id => _id;
@@ -284,6 +307,16 @@ final class X11Window with DisposableMixin implements NativeWindow {
       scale: _scale,
     );
     if (pointerEvent != null) _emit(pointerEvent);
+    if (raw.type == xcbKeyPress || raw.type == xcbKeyRelease) {
+      X11EventTranslator.translateKey(
+        raw,
+        windowId: id,
+        generation: generation,
+        keyboard: keyboardState,
+        compose: composeEngine,
+        emit: _emit,
+      );
+    }
     return true;
   }
 

@@ -67,6 +67,70 @@ void main() {
         ]));
   });
 
+  test('the GPU inventory is bounded and evicts least-recently-drawn', () {
+    // A retained mesh is a GPU allocation nothing else frees, and the cache
+    // key is path content, so geometry that changes every frame  uploads a new pair
+    // every frame. Without a budget that is an unbounded leak.
+    const CpuPathTessellator tessellator = CpuPathTessellator();
+    final List<TessellatedPathMesh> meshes = <TessellatedPathMesh>[
+      for (var i = 1; i <= 4; i++)
+        tessellator.tessellate(Path.rect(Rect.fromLTRB(0, 0, i * 4.0, 4))),
+    ];
+    final int meshBytes = meshes.first.metrics.retainedBytes;
+    final _FakeTessellatedDriver driver = _FakeTessellatedDriver();
+    final TessellatedGlExecutor executor = TessellatedGlExecutor(
+      driver,
+      maxRetainedBytes: meshBytes * 2,
+    )..initialize(desktop: true);
+    final material = TessellatedGlMaterial(red: 0, green: 0, blue: 0, alpha: 1);
+    TessellatedGlExecutionStats draw(TessellatedPathMesh mesh) =>
+        executor.submit(
+          mesh,
+          material: material,
+          viewportWidth: 64,
+          viewportHeight: 64,
+        );
+
+    draw(meshes[0]);
+    draw(meshes[1]);
+    // Renews mesh 0, so mesh 1 is now the coldest.
+    expect(draw(meshes[0]).uploadedMeshes, 0);
+    final TessellatedGlExecutionStats third = draw(meshes[2]);
+
+    expect(third.evictedMeshes, 1);
+    expect(executor.retainedMeshCount, 2);
+    expect(executor.evictionCount, 1);
+    expect(executor.retainedBytes, lessThanOrEqualTo(meshBytes * 2));
+    expect(driver.deletedMeshes.length, 1);
+    // The renewed mesh survived; the un-renewed one was uploaded again.
+    expect(draw(meshes[0]).uploadedMeshes, 0);
+    expect(draw(meshes[1]).uploadedMeshes, 1);
+  });
+
+  test('the mesh being drawn is never the one evicted', () {
+    // Releasing the buffers a `drawMesh` is one line from binding would be a
+    // use-after-free; one frame over budget is not.
+    final TessellatedPathMesh big = const CpuPathTessellator()
+        .tessellate(Path.rect(const Rect.fromLTRB(0, 0, 40, 40)));
+    final _FakeTessellatedDriver driver = _FakeTessellatedDriver();
+    final TessellatedGlExecutor executor =
+        TessellatedGlExecutor(driver, maxRetainedBytes: 8)
+          ..initialize(desktop: true);
+
+    final TessellatedGlExecutionStats stats = executor.submit(
+      big,
+      material: TessellatedGlMaterial(red: 0, green: 0, blue: 0, alpha: 1),
+      viewportWidth: 64,
+      viewportHeight: 64,
+    );
+
+    expect(stats.drawCalls, 1);
+    expect(stats.evictedMeshes, 0);
+    expect(executor.retainedMeshCount, 1);
+    expect(driver.deletedMeshes, isEmpty);
+    expect(executor.retainedBytes, greaterThan(8));
+  });
+
   test('release and normal disposal delete retained buffers exactly once', () {
     final TessellatedPathMesh first = const CpuPathTessellator()
         .tessellate(Path.rect(const Rect.fromLTRB(0, 0, 4, 4)));

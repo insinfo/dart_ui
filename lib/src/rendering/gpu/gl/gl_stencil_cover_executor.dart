@@ -53,8 +53,15 @@ abstract interface class StencilCoverGlDriver {
 
   void deleteResources();
 
-  /// Uploads [vertexCount] tightly packed `x,y` vertices.
+  /// Uploads [vertexCount] tightly packed `x,y` accumulation vertices.
   void uploadVertices(Float32List vertices, int vertexCount);
+
+  /// Uploads every cover quad of the submission in one transfer.
+  ///
+  /// Six `x,y` vertices per draw, so [drawCover] only has to name the first.
+  /// This replaces a `bufferData` per cover - a buffer orphan each - with one
+  /// per submission, and moves no other state.
+  void uploadCoverVertices(Float32List vertices, int vertexCount);
 
   void beginStencilCoverPass({
     required int viewportWidth,
@@ -62,14 +69,20 @@ abstract interface class StencilCoverGlDriver {
     required int yFlip,
   });
 
-  void clearStencil({
+  /// Restricts every following command to this rectangle.
+  ///
+  /// Called by the executor before each command, including the accumulation.
+  /// A driver that scissors only where it obviously matters - the clear and
+  /// the cover - leaves the accumulation inheriting whatever came last, which
+  /// is a wrong shape the moment two draws share a clear.
+  void setScissor({
     required double left,
     required double top,
     required double right,
     required double bottom,
-    required int value,
-    required int writeMask,
   });
+
+  void clearStencil({required int value, required int writeMask});
 
   void setPassState(StencilCoverPassState state);
 
@@ -84,12 +97,8 @@ abstract interface class StencilCoverGlDriver {
 
   void drawTriangles({required int firstVertex, required int vertexCount});
 
-  void drawCover({
-    required double left,
-    required double top,
-    required double right,
-    required double bottom,
-  });
+  /// Draws the pre-uploaded quad at [firstVertex].
+  void drawCover({required int firstVertex});
 
   void endStencilCoverPass();
 
@@ -163,6 +172,10 @@ final class StencilCoverGlExecutor {
     _validatePlan(plan, materials);
 
     _driver.uploadVertices(plan.vertexStorage, plan.vertexCount);
+    _driver.uploadCoverVertices(
+      plan.coverVertexStorage,
+      plan.coverVertexCount,
+    );
     _driver.beginStencilCoverPass(
       viewportWidth: viewportWidth,
       viewportHeight: viewportHeight,
@@ -174,15 +187,23 @@ final class StencilCoverGlExecutor {
     try {
       for (var command = 0; command < plan.commandCount; command++) {
         final int draw = plan.commandDraw(command);
-        final bounds = plan.drawCoverBounds(draw);
+        // The command's rectangle, not the draw's, and set for *every* command
+        // rather than only the ones that obviously need it. A coalesced clear
+        // scissors to the union of its group; an accumulation scissors to its
+        // own cover, which is the only region its cover will read. Letting the
+        // accumulation inherit the previous rectangle is what broke when the
+        // clears were first grouped. See `stencil_cover_draw_plan.dart`.
+        final bounds = plan.commandBounds(command);
         final StencilCoverPassState state = plan.commandState(command);
+        _driver.setScissor(
+          left: bounds.left,
+          top: bounds.top,
+          right: bounds.right,
+          bottom: bounds.bottom,
+        );
         switch (plan.commandKind(command)) {
           case StencilCoverCommandKind.clear:
             _driver.clearStencil(
-              left: bounds.left,
-              top: bounds.top,
-              right: bounds.right,
-              bottom: bounds.bottom,
               value: state.clearValue!,
               writeMask: state.writeMask,
             );
@@ -206,12 +227,7 @@ final class StencilCoverGlExecutor {
                 material.blue,
                 material.alpha,
               )
-              ..drawCover(
-                left: bounds.left,
-                top: bounds.top,
-                right: bounds.right,
-                bottom: bounds.bottom,
-              );
+              ..drawCover(firstVertex: plan.drawCoverFirstVertex(draw));
             coverDraws++;
         }
       }

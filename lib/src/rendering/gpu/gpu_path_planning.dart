@@ -6,6 +6,8 @@ import '../../geometry/rect.dart';
 import '../../geometry/transform2d.dart';
 import '../../graphics/content_hint.dart';
 import '../path/fill_rule.dart';
+import '../render_diagnostics.dart';
+import '../render_policy.dart';
 import 'gpu_path_strategy.dart';
 import 'gpu_path_workload_builder.dart';
 import 'vector/sparse_strip_draw_plan.dart';
@@ -169,7 +171,9 @@ final class GpuPathPlanningEvent {
 final class GpuPathPlanningTelemetry {
   GpuPathPlanningTelemetry({
     this.builder = const GpuPathWorkloadBuilder(),
-    this.selector = const GpuPathStrategySelector(),
+    GpuPathStrategySelector? selector,
+    RenderPolicy? policy,
+    RenderDiagnosticsRecorder? diagnostics,
     this.candidateCapabilities = const GpuPathStrategyCapabilities(),
     this.capabilitiesProbe,
     this.stabilityProbe,
@@ -177,9 +181,33 @@ final class GpuPathPlanningTelemetry {
     this.sparseMetricsProbe,
     this.crossingsProbe,
     this.onEvent,
-  });
+  })  : policy = policy ?? RenderPolicyScope.policy,
+        diagnostics = diagnostics ?? RenderPolicyScope.diagnostics,
+        selector =
+            selector ?? (policy ?? RenderPolicyScope.policy).buildSelector();
 
   final GpuPathWorkloadBuilder builder;
+
+  /// The application's declared policy, read once when this object is built.
+  ///
+  /// Once and not per draw, because `Application.start` installs the policy
+  /// before any backend opens a device and a policy that could change under a
+  /// running frame would make two draws of the same shape in one frame answer
+  /// differently. A caller that passes one explicitly - a test - is not
+  /// reading the scope at all.
+  final RenderPolicy policy;
+
+  /// Where [RenderPolicy.restrict] records what it took away.
+  ///
+  /// [RenderDiagnosticsRecorder.disabled] unless the policy asked for
+  /// diagnostics, so an unconfigured process pays nothing per draw.
+  final RenderDiagnosticsRecorder diagnostics;
+
+  /// The selector [policy] asks for, unless the caller named one.
+  ///
+  /// This is how [RenderQualityPreference] reaches the branch it changes:
+  /// `speed` and `exact` move [RenderPolicy.stencilThresholdFor], and the
+  /// threshold is a field of the selector rather than an argument to it.
   final GpuPathStrategySelector selector;
 
   /// The device-wide answer, used when [capabilitiesProbe] is null.
@@ -251,8 +279,17 @@ final class GpuPathPlanningTelemetry {
   }) {
     observationCount++;
     try {
-      final GpuPathStrategyCapabilities capabilities =
-          capabilitiesProbe?.call(traits) ?? candidateCapabilities;
+      // The backend reports what its device and this pass can execute; the
+      // policy takes routes away from that and can never add one. This is the
+      // single place the two meet, which is why it is here rather than
+      // repeated in each backend's capability probe: a backend added later
+      // gets the kill switches and the quality trade without knowing they
+      // exist, and there is one place to read to find out whether a route was
+      // removed by the device or by the application.
+      final GpuPathStrategyCapabilities capabilities = policy.restrict(
+        capabilitiesProbe?.call(traits) ?? candidateCapabilities,
+        diagnostics: diagnostics,
+      );
       final workload = builder.build(
         path,
         bounds: localToTarget.transformRect(path.bounds),

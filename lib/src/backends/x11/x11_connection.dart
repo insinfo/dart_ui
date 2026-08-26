@@ -20,8 +20,10 @@ import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
 import '../../rendering/framebuffer.dart';
 import 'x11_bindings.dart';
+import 'x11_clipboard.dart';
 import 'x11_drag_drop.dart';
 import 'x11_events.dart';
+import 'x11_keyboard.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
 import 'x11_put_image_plan.dart';
@@ -55,6 +57,9 @@ const List<String> x11WellKnownAtoms = <String>[
   // XDND atom that is in one list and not the other is a drag that silently
   // never starts.
   ...x11XdndAtoms,
+  // The clipboard, spread for the same reason: a CLIPBOARD atom that is in one
+  // list and not the other is a copy that silently never happens.
+  ...x11ClipboardAtoms,
 ];
 
 /// Extensions the probe asks about by name.
@@ -107,6 +112,35 @@ abstract interface class X11WindowClient implements X11BackendConnection {
   ({int x, int y})? translateToRoot(int window);
   int flush();
   void recordError(String message);
+}
+
+/// The two core-protocol requests that describe the keyboard.
+///
+/// A separate seam, like [X11CpuClient] and [X11DragDropClient], for the same
+/// reason: it lets the backend ask "can this connection tell me what the keys
+/// mean?" and answer honestly when it cannot, instead of a `null` map that
+/// looks like a keyboard with no keys. A test double implements this without
+/// implementing presentation or XDND.
+///
+/// Both methods perform a **round trip**. They are called at startup and again
+/// on `MappingNotify` - never per key event.
+abstract interface class X11KeyboardClient {
+  /// The lowest and highest keycode the server will ever report, from the
+  /// connection setup. `GetKeyboardMapping` is asked for exactly this range,
+  /// because the request takes a first keycode and a count and the reply does
+  /// not say which range it describes.
+  int get minKeycode;
+  int get maxKeycode;
+
+  /// `GetKeyboardMapping(minKeycode, maxKeycode - minKeycode + 1)`, decoded.
+  ///
+  /// Null when the server refused or the reply did not parse - the state in
+  /// which [X11KeyboardState.hasKeymap] is false, [KeyEvent]s still carry their
+  /// keycode, and no text is ever produced.
+  X11KeyboardMapping? readKeyboardMapping();
+
+  /// `GetModifierMapping`, decoded. Null on the same terms.
+  X11ModifierMapping? readModifierMapping();
 }
 
 /// Device-pixel creation parameters for one top-level X11 window.
@@ -177,7 +211,12 @@ final class X11ConnectionAttempt {
 /// A live X display connection.
 final class X11Connection
     with DisposableMixin
-    implements X11WindowClient, X11CpuClient, X11DragDropClient {
+    implements
+        X11WindowClient,
+        X11CpuClient,
+        X11DragDropClient,
+        X11KeyboardClient,
+        X11ClipboardClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
   /// Opens `$DISPLAY`, or reports exactly what stopped it.
@@ -308,6 +347,17 @@ final class X11Connection
   int rootVisual = 0;
   int rootDepth = 0;
   int imageByteOrder = -1;
+
+  /// The keycode range the server reports, from the connection setup.
+  ///
+  /// Defaults are the values every X server has used since the protocol was
+  /// written; they are overwritten from the setup reply in [_readScreen] and
+  /// exist only so that a connection that failed before the setup was read
+  /// asks for a sane range instead of `0..0`.
+  @override
+  int minKeycode = 8;
+  @override
+  int maxKeycode = 255;
   int rootBitsPerPixel = 0;
   int rootScanlinePad = 0;
   int rootVisualClass = -1;
@@ -488,7 +538,16 @@ final class X11Connection
     root = screen.root;
     rootVisual = screen.rootVisual;
     rootDepth = screen.rootDepth;
-    imageByteOrder = setup.cast<XcbSetup>().ref.imageByteOrder;
+    final XcbSetup setupFields = setup.cast<XcbSetup>().ref;
+    imageByteOrder = setupFields.imageByteOrder;
+    // A server that reports a reversed or empty range would make
+    // `GetKeyboardMapping` fail with a Value error, so the protocol's own
+    // defaults stand in rather than the nonsense being forwarded.
+    if (setupFields.maxKeycode >= setupFields.minKeycode &&
+        setupFields.minKeycode > 0) {
+      minKeycode = setupFields.minKeycode;
+      maxKeycode = setupFields.maxKeycode;
+    }
     blackPixel = screen.blackPixel;
     whitePixel = screen.whitePixel;
     screenWidthPixels = screen.widthInPixels;
@@ -879,6 +938,60 @@ final class X11Connection
     required int type,
   }) =>
       getCardinalProperty(window, property, type, <int>[]);
+
+  @override
+  X11KeyboardMapping? readKeyboardMapping() {
+    throwIfDisposed();
+    final int first = minKeycode;
+    final int count = maxKeycode - first + 1;
+    if (count <= 0 || count > 255) return null;
+    final cookie = xcb.getKeyboardMapping(_handle, first, count);
+    final reply = xcb.getKeyboardMappingReply(_handle, cookie, errorScratch);
+    if (reply == nullptr) {
+      _drainReplyError('GetKeyboardMapping($first, $count)');
+      return null;
+    }
+    try {
+      return X11KeyboardMapping.decodeReply(
+        _copyReply(reply),
+        firstKeycode: first,
+      );
+    } finally {
+      libc.free(reply);
+    }
+  }
+
+  @override
+  X11ModifierMapping? readModifierMapping() {
+    throwIfDisposed();
+    final cookie = xcb.getModifierMapping(_handle);
+    final reply = xcb.getModifierMappingReply(_handle, cookie, errorScratch);
+    if (reply == nullptr) {
+      _drainReplyError('GetModifierMapping');
+      return null;
+    }
+    try {
+      return X11ModifierMapping.decodeReply(_copyReply(reply));
+    } finally {
+      libc.free(reply);
+    }
+  }
+
+  /// Copies a reply out of XCB's buffer into Dart memory.
+  ///
+  /// The whole reply, header included, because the decoders in
+  /// `x11_keyboard.dart` read the header fields - `keysyms-per-keycode` lives
+  /// in byte 1 and the length in bytes 4-7 - and take a [Uint8List] precisely
+  /// so that a test can build one by hand with no X server in the room. The
+  /// length field counts 32-bit words *after* the 32-byte header, which is
+  /// what makes the total size computable without a second XCB accessor.
+  Uint8List _copyReply(Pointer<Uint8> reply) {
+    final int words = readU32(reply, 4);
+    final int total = x11ReplyHeaderBytes + (words < 0 ? 0 : words * 4);
+    final out = Uint8List(total);
+    out.setAll(0, reply.asTypedList(total));
+    return out;
+  }
 
   @override
   int getSelectionOwner(int selection) {

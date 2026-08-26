@@ -184,6 +184,7 @@ final class GlApiTessellatedDriver implements TessellatedGlDriver {
       vertexBuffer: vertexBuffer,
       indexBuffer: indexBuffer,
       indexCount: mesh.indices.length,
+      retainedBytes: vertexBytes + indexBytes,
     );
   }
 

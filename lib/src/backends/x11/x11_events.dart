@@ -29,7 +29,10 @@
 /// in `x11_drag_drop.dart`: [X11RawEvent] carries all five ClientMessage words
 /// and the SelectionNotify fields, and the backend offers those two event types
 /// to the drag-and-drop manager before routing anything by window. The
-/// clipboard - the other user of selections - is still deferred.
+/// clipboard - the other user of selections - is decoded here too and handled
+/// in `x11_clipboard.dart`, and it is offered the same events *after* XDND:
+/// the arbitration between the two is by selection atom, and each answers
+/// false for a selection that is not its own.
 ///
 /// ## Text input: the contract, and where this backend's source of it is
 ///
@@ -67,6 +70,7 @@ import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
 import '../../platform/compose_sequences.dart';
 import '../../platform/input_events.dart';
+import '../../platform/keysyms.dart';
 import '../../platform/window_events.dart';
 import 'x11_keyboard.dart';
 import 'x11_libc.dart';
@@ -551,6 +555,112 @@ abstract final class X11EventTranslator {
     }
   }
 
+  /// Translates one `KeyPress`/`KeyRelease` into a [KeyEvent], and the
+  /// [TextInputEvent] its keysym produces when it produces one.
+  ///
+  /// Events reach [emit] in order: hardware first, text second - the same order
+  /// Win32 delivers `WM_KEYDOWN` then `WM_CHAR`, and the same order
+  /// `wayland_events.dart` uses. A consumer that sees the text before the key
+  /// cannot implement a shortcut that suppresses typing.
+  ///
+  /// Rules, each of which is a rule the platform imposes rather than a
+  /// preference:
+  ///
+  ///   * **A release never produces text.** X sends `state` on both edges and a
+  ///     naive translator types every character twice.
+  ///   * **Control, Meta and Super suppress text.** `Ctrl+A` is a command, and
+  ///     the keysym under it is still `a`; emitting text for it types an `a`
+  ///     into the document the shortcut was meant to act on. Alt suppresses too
+  ///     *unless* it is also the AltGr modifier of this layout - on a keyboard
+  ///     whose `Mode_switch` and `Alt` landed on the same `Mod`, suppressing
+  ///     would make the entire AltGr layer untypable, which is `ç`, `€` and
+  ///     half the dead keys on a Brazilian, German or French layout.
+  ///   * **Compose runs before the keymap.** `dead_acute` then `a` is two
+  ///     keysyms and one character; see the library comment.
+  ///   * **A keysym that resolves to nothing still emits its [KeyEvent]**, with
+  ///     the physical keycode in [KeyEvent.physicalKey], and emits no text.
+  ///
+  /// [KeyEvent.location] is left [KeyLocation.standard] deliberately: the
+  /// keysym in [KeyEvent.logicalKey] already distinguishes `Shift_L` from
+  /// `Shift_R` and `KP_1` from `1`, and inventing a second encoding of the same
+  /// fact here - which `wayland_events.dart` does not - would be the first
+  /// place the two backends disagree about the same keyboard.
+  static void translateKey(
+    X11RawEvent raw, {
+    required NativeWindowId windowId,
+    required int generation,
+    required X11KeyboardState keyboard,
+    required void Function(PlatformWindowEvent event) emit,
+    ComposeEngine? compose,
+  }) {
+    final bool pressed = raw.type == xcbKeyPress;
+    if (!pressed && raw.type != xcbKeyRelease) return;
+    final int keycode = raw.detail;
+    final int state = raw.state;
+    final int keysym = keyboard.keysymFor(keycode, state);
+    final Duration timestamp = Duration(milliseconds: raw.timestamp);
+    final Set<KeyModifier> modifiers = keyboard.modifierSetOf(state);
+    emit(pressed
+        ? KeyDownEvent(
+            windowId: windowId,
+            generation: generation,
+            timestamp: timestamp,
+            physicalKey: keycode,
+            logicalKey: keysym,
+            modifiers: modifiers,
+            isRepeat: raw.repeat,
+          )
+        : KeyUpEvent(
+            windowId: windowId,
+            generation: generation,
+            timestamp: timestamp,
+            physicalKey: keycode,
+            logicalKey: keysym,
+            modifiers: modifiers,
+          ));
+    if (!pressed) return;
+    // AltGr is not Alt even when the layout put them on the same modifier bit:
+    // `group2Of` is true exactly when this `state` selects the second group,
+    // which is the layer AltGr exists to reach.
+    final bool altGr = keyboard.group2Of(state);
+    if (keyboard.controlOf(state) ||
+        keyboard.metaOf(state) ||
+        keyboard.superOf(state) ||
+        (keyboard.altOf(state) && !altGr)) {
+      return;
+    }
+    if (compose != null && !isModifierKeysym(keysym)) {
+      final ComposeResult result = compose.accept(keysym);
+      switch (result.status) {
+        case ComposeStatus.composed:
+          emit(TextInputEvent(
+            windowId: windowId,
+            generation: generation,
+            timestamp: timestamp,
+            text: result.text!,
+          ));
+          return;
+        case ComposeStatus.pending:
+        case ComposeStatus.invalid:
+          // Swallowed on purpose: the sequence is mid-flight, or it failed and
+          // the accent must not appear on its own. The `KeyEvent` above still
+          // went out, so a shortcut bound to the physical key keeps working.
+          return;
+        case ComposeStatus.pass:
+          break;
+      }
+    }
+    final String? text = keyboard.textFor(keycode, state);
+    if (text == null || text.isEmpty) return;
+    if (text.length == 1 && isTextInputControlUnit(text.codeUnitAt(0))) return;
+    emit(TextInputEvent(
+      windowId: windowId,
+      generation: generation,
+      timestamp: timestamp,
+      text: text,
+    ));
+  }
+
   static PointerButton? _corePointerButton(int detail) => switch (detail) {
         1 => PointerButton.primary,
         2 => PointerButton.middle,
@@ -662,13 +772,13 @@ abstract final class X11EventTranslator {
       case xcbButtonRelease:
       case xcbEnterNotify:
       case xcbLeaveNotify:
-        // Consumed, nothing allocated. This is the flood path.
+        // Consumed, nothing allocated. This is the flood path: ten thousand
+        // MotionNotify set no bits on [pending] at all.
         //
-        // KeyPress is where `xkb_state_key_get_utf8(state, raw.detail)` will
-        // hang, producing the UTF-8 for one `TextInputEvent`; see the library
-        // comment. Dropping the event is the honest interim behaviour - the
-        // alternative, deriving a character from `raw.detail`, is the exact
-        // bug the Win32 backend was just cured of.
+        // Key events are consumed here for the same reason - they set no
+        // coalesced window state - and are turned into [KeyEvent]s and
+        // [TextInputEvent]s by [translateKey], which the caller runs on the
+        // same event. Nothing is dropped.
         return true;
 
       default:

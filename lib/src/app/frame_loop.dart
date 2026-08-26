@@ -64,6 +64,35 @@
 /// cheap enough that there is no configuration to turn it off, which is
 /// deliberate: a diagnostic with an off switch is a diagnostic that is off in
 /// the build where the problem happened.
+///
+/// ## What this file is not, today
+///
+/// **Nothing in `lib/` builds a [FrameLoopController].** `Application.run`
+/// owns the only loop this framework has and drives it from invalidation
+/// alone, so [FrameLoopMode.continuous] is a design that has been written and
+/// tested and not yet turned on. That is said here rather than left to be
+/// discovered, because a reader who finds a complete real-time loop in the
+/// tree is entitled to assume it is the one running.
+///
+/// Wiring it is one seam and it is worth naming, so that whoever takes it does
+/// not have to rediscover the shape: `Application.run` would ask
+/// [isFrameDue] beside its own `needsFrame`, clamp its wait to
+/// [timeUntilNextFrame] while [isContinuous], and bracket the frame it draws
+/// with [FrameLoopController.beginFrame] and [FrameLoopController.endFrame].
+///
+/// **The waiting policy is deliberately not here.** An earlier version of this
+/// file carried a `pumpTimeout` that answered "how long may the loop block" -
+/// zero when a frame is wanted, the next deadline while continuous, and a flat
+/// idle timeout otherwise. It was removed rather than kept, because
+/// `Application.run` decides the same thing and decides it differently: its
+/// wait is an exponential back-off reset by progress, since the length of the
+/// platform wait is the latency of *every* pending piece of Dart work and a
+/// flat idle timeout turns an ordinary 16 ms `Timer.periodic` into a 4 Hz
+/// stutter. Two answers to one question, in two files, where only one of them
+/// runs, is worse than no answer at all: the dead one reads like the policy
+/// and is not. What this file keeps is the *deadline* - [timeUntilNextFrame],
+/// a fact about the schedule - and the loop keeps the policy about how long to
+/// wait for it.
 library;
 
 import 'dart:typed_data';
@@ -330,16 +359,14 @@ final class FrameLoopStatistics {
   Duration get inputToFrameLatency => _inputToFrameLatency;
 
   /// The most recent sample, or null before the first frame completed.
-  FramePacingSample? get last =>
-      _count == 0 ? null : sampleAt(_count - 1);
+  FramePacingSample? get last => _count == 0 ? null : sampleAt(_count - 1);
 
   /// Reads sample [index] back out of the ring, oldest first.
   FramePacingSample sampleAt(int index) {
     if (index < 0 || index >= _count) {
       throw RangeError.index(index, this, 'index', null, _count);
     }
-    final int slot =
-        _count < capacity ? index : (_next + index) % capacity;
+    final int slot = _count < capacity ? index : (_next + index) % capacity;
     return FramePacingSample(
       frameNumber: _numbers[slot],
       cpu: Duration(microseconds: _cpu[slot]),
@@ -538,8 +565,8 @@ final class FixedStepAccumulator {
     if (_accumulated >= step) {
       // Clamped rather than looped: see the class documentation for the
       // spiral this prevents, and note that the abandoned time is *reported*.
-      final int abandonedSteps = _accumulated.inMicroseconds ~/
-          step.inMicroseconds;
+      final int abandonedSteps =
+          _accumulated.inMicroseconds ~/ step.inMicroseconds;
       final Duration abandoned = step * abandonedSteps;
       _accumulated -= abandoned;
       _dropped += abandoned;
@@ -737,26 +764,6 @@ final class FrameLoopController {
     if (!isContinuous) return Duration.zero;
     final Duration remaining = _nextDue - clock.now;
     return remaining.isNegative ? Duration.zero : remaining;
-  }
-
-  /// How long the loop may block in the platform's event wait.
-  ///
-  /// The single place the two modes' waiting policies meet, which is why it is
-  /// here rather than inlined in the loop:
-  ///
-  ///   * a frame is wanted now - do not block at all;
-  ///   * continuous - block at most until the next frame is due, so a frame
-  ///     that nothing invalidated still happens on time;
-  ///   * on-demand - block for [idleTimeout], which is what makes an idle
-  ///     window free.
-  Duration pumpTimeout({
-    required bool wantsFrame,
-    required Duration idleTimeout,
-  }) {
-    if (wantsFrame) return Duration.zero;
-    if (!isContinuous) return idleTimeout;
-    final Duration until = timeUntilNextFrame;
-    return until < idleTimeout ? until : idleTimeout;
   }
 
   /// Opens a frame and returns its time.

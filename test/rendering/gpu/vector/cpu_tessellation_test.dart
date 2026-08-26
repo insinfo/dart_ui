@@ -337,6 +337,103 @@ void main() {
       );
     });
   });
+
+  group('the retained cache is bounded', () {
+    Path square(double size) => Path.rect(Rect.fromLTRB(0, 0, size, size));
+
+    test('a hit is a hit, and it renews the entry rather than ageing it', () {
+      final CpuTessellatedPathCache cache = CpuTessellatedPathCache();
+      final TessellatedPathMesh first = cache.resolve(square(4));
+      final TessellatedPathMesh again = cache.resolve(square(4));
+
+      expect(identical(first, again), isTrue);
+      expect(cache.hitCount, 1);
+      expect(cache.missCount, 1);
+      expect(cache.length, 1);
+      expect(cache.retainedBytes, first.metrics.retainedBytes);
+      expect(cache.evictionCount, 0);
+    });
+
+    test('the fill rule and the tolerance are part of the identity', () {
+      final CpuTessellatedPathCache cache = CpuTessellatedPathCache();
+      cache.resolve(square(4));
+      cache.resolve(square(4), fillRule: FillRule.evenOdd);
+      cache.resolve(square(4), flattenTolerance: 0.05);
+
+      expect(cache.missCount, 3);
+      expect(cache.hitCount, 0);
+      expect(cache.length, 3);
+    });
+
+    test('coldest entries leave first, and the budget is really enforced', () {
+      // One mesh at a time: every new path evicts the oldest surviving one.
+      final int meshBytes = const CpuPathTessellator()
+          .tessellate(square(4))
+          .metrics
+          .retainedBytes;
+      final CpuTessellatedPathCache cache =
+          CpuTessellatedPathCache(maxRetainedBytes: meshBytes * 2);
+      for (var i = 1; i <= 4; i++) {
+        cache.resolve(square(i * 4.0));
+      }
+
+      expect(cache.length, 2);
+      expect(cache.retainedBytes, lessThanOrEqualTo(meshBytes * 2));
+      expect(cache.evictionCount, 2);
+      // The two most recent survive; the first two are gone.
+      cache.resolve(square(16));
+      cache.resolve(square(12));
+      expect(cache.hitCount, 2);
+      cache.resolve(square(4));
+      expect(cache.missCount, 5);
+    });
+
+    test('touching an entry saves it from the next eviction', () {
+      final int meshBytes = const CpuPathTessellator()
+          .tessellate(square(4))
+          .metrics
+          .retainedBytes;
+      final CpuTessellatedPathCache cache =
+          CpuTessellatedPathCache(maxRetainedBytes: meshBytes * 2);
+      cache
+        ..resolve(square(4))
+        ..resolve(square(8))
+        // Renews the oldest, so the *second* one becomes the coldest.
+        ..resolve(square(4))
+        ..resolve(square(12));
+
+      expect(cache.length, 2);
+      cache.resolve(square(4));
+      expect(cache.hitCount, 2, reason: 'the renewed entry should have stayed');
+      cache.resolve(square(8));
+      expect(cache.missCount, 4, reason: 'the un-renewed one should have gone');
+    });
+
+    test('a mesh larger than the whole budget is still returned', () {
+      // The alternative is refusing to draw, and the caller has already
+      // decided this route is the right one for the path.
+      final CpuTessellatedPathCache cache =
+          CpuTessellatedPathCache(maxRetainedBytes: 8);
+      final TessellatedPathMesh mesh = cache.resolve(square(40));
+
+      expect(mesh.indices, isNotEmpty);
+      expect(cache.length, 1);
+      expect(cache.retainedBytes, greaterThan(8));
+    });
+
+    test('clear drops the bytes and the counters together', () {
+      final CpuTessellatedPathCache cache = CpuTessellatedPathCache()
+        ..resolve(square(4))
+        ..resolve(square(8))
+        ..clear();
+
+      expect(cache.length, 0);
+      expect(cache.retainedBytes, 0);
+      expect(cache.hitCount, 0);
+      expect(cache.missCount, 0);
+      expect(cache.evictionCount, 0);
+    });
+  });
 }
 
 Path _polygon(List<(double, double)> points) {

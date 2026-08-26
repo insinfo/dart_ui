@@ -153,8 +153,10 @@ O que mudou desde a última auditoria, em uma tela:
 6. **Drag-and-drop cross-backend** existe nos três backends nativos de desktop,
    nos dois sentidos, com widgets `DropTarget`/`DragSource`. Ver §56 e §55;
 7. **IME**: Win32 (IMM32) e Wayland (`text-input-v3`) ligados ao mesmo
-   contrato; **X11 continua sem teclado e sem IME**, que é o maior buraco
-   funcional aberto. Ver §15.2.1, que já registrava a decisão, e §68;
+   contrato; o X11 **ganhou teclado em 26/08/2026** pelo core protocol
+   (`GetKeyboardMapping`), com teclas mortas e clipboard, e **continua sem
+   IME** — XIM precisa de Xlib e de um input context, e CJK segue fora dele.
+   Ver §15.2.1 e §68.1;
 8. **APIs de sistema operacional**: `StandardPaths`, `Shell`, `Trash`,
    `SystemInfo`, `NativeMessageBox`, `FileWatcher` e `FilePicker` existem, com
    cobertura muito desigual por plataforma. Ver §56.1;
@@ -489,21 +491,23 @@ importam `graphics`, e o exportador PDF vetorial importa `pdf`. Ou a regra da
 | Linux Wayland x64/arm64 | Wayland + xdg-shell | GTK shell opcional | `wl_shm` | Vulkan ou EGL/OpenGL | upload de CPU |
 | macOS x64/arm64 | AppKit por Objective-C Runtime | — | Core Graphics | Metal + `CAMetalLayer` | upload CPU para Metal |
 
-**Estado medido em 2026-08-23** — o que o `default_platform_resolver.dart`
+**Estado medido em 2026-08-26** — o que o `default_platform_resolver.dart`
 realmente oferece, em ordem de tentativa:
 
 | Plataforma | Backend de janela | Caminhos de apresentação, na ordem |
 |---|---|---|
-| Windows | `win32` | D3D11 → OpenGL/WGL → **Direct2D** → DIB de GDI |
+| Windows | `win32` | D3D11 → OpenGL/WGL → **Direct2D** → **D3D12** → **Vulkan** (experimental) → DIB de GDI |
 | Linux | `wayland`, depois `x11` | OpenGL/EGL no X11 → `wl_shm` → `PutImage` no X11 |
 | macOS | `macos` | IOSurface/CoreGraphics |
 | qualquer | `headless` | renderer de CPU em memória |
 
-Três divergências entre a tabela normativa acima e o que existe, e o código
-vence as três:
+Duas divergências entre a tabela normativa acima e o que existe, e o código
+vence as duas:
 
-1. **D3D12 e Vulkan não estão no seletor.** Os dois têm backend, alvo de janela
-   e testes, e nenhuma aplicação normal consegue escolhê-los;
+1. **Vulkan no Linux ainda não está no seletor**, e no Windows entra marcado
+   `experimental` — nunca por *fallback*, só pelo nome — porque
+   `VulkanWindowTarget` não tem atlas de glifos e recusa qualquer texto. Ver
+   §68.2;
 2. **Wayland não tem GPU alguma** — nem EGL, nem `linux-dmabuf`, nem Vulkan. A
    linha "Vulkan ou EGL/OpenGL" é intenção, não estado;
 3. **Metal não apresenta.** Não há `CAMetalLayer`, e `supportsSurface` só
@@ -2163,13 +2167,19 @@ dart_ui_backend_x11/
 
 ### 15.2.1 IME no X11: decisão registrada
 
-`x11_ime.dart` **não foi escrito**, e a razão não é XIM ser caro — é que o
-backend X11 não tem teclado. `x11_events.dart` consome `xcbKeyPress` /
-`xcbKeyRelease` e os descarta; nenhum `KeyEvent` nem `TextInputEvent` sai daqui,
-e `x11_backend.dart` sequer reivindica `Capability.keyboardInput`. Compor teclas
-que nunca chegam seria o telhado antes das paredes. A dependência que falta é
-`libxkbcommon` para `xkb_state_key_get_utf8` (§15.7), não um servidor de método
-de entrada.
+**Revisada em 26/08/2026.** A razão original desta decisão caiu: o backend
+X11 **tem teclado** desde essa data. `x11_keyboard.dart` decodifica
+`GetKeyboardMapping` e `GetModifierMapping` do core protocol,
+`X11EventTranslator.translateKey` emite `KeyDownEvent`/`KeyUpEvent` e o
+`TextInputEvent` correspondente, e `x11_backend.dart` reivindica
+`Capability.keyboardInput` quando o servidor respondeu. Ver §68.1 para o que a
+rota do core protocol não cobre.
+
+`x11_ime.dart` **continua não escrito**, e agora pela razão que sempre foi a
+verdadeira para o IME em si: XIM precisa de Xlib (não tem equivalente em XCB) e
+de um input context com um servidor de método de entrada separado. O que isso
+custa está nomeado: **CJK indisponível neste backend**. Não custa acentuação —
+ver o parágrafo seguinte.
 
 Foi implementada a metade que serve às duas plataformas Linux:
 `lib/src/platform/compose_sequences.dart` lê as tabelas Compose do próprio X11
@@ -2178,13 +2188,14 @@ Foi implementada a metade que serve às duas plataformas Linux:
 Compose. Está **ligada no Wayland** — onde o teclado existe e o `wl_keyboard`
 entrega keysyms sem compor — e apenas quando o compositor não oferece
 `zwp_text_input_v3`, porque um método de entrada já compõe teclas mortas e rodar
-os dois aplicaria o acento duas vezes. No X11 a tabela existe e fica desligada
-até o teclado chegar; ligá-la depois é uma linha no mesmo ponto em que o Wayland
-a liga.
+os dois aplicaria o acento duas vezes. **No X11 ela foi ligada em 26/08/2026**,
+sem a condicional do Wayland: não há método de entrada neste backend que já
+pudesse compor, então não há como aplicar o acento duas vezes.
 
-**Fica de fora no X11, explicitamente:** CJK (chinês, japonês, coreano),
-qualquer pré-edição, e — até o teclado XKB existir — também a acentuação por
-tecla morta.
+**Fica de fora no X11, explicitamente:** CJK (chinês, japonês, coreano) e
+qualquer pré-edição. A acentuação por tecla morta **saiu desta lista**: `´`
+seguido de `a` produz um `TextInputEvent` com `á`, e o teste que prova isso
+monta os bytes de dois `xcb_key_press_event_t` de verdade.
 
 ## 15.3 Conexão e setup
 
@@ -2273,7 +2284,14 @@ Obrigatório para qualidade profissional:
 
 ### XKB
 
-Usar `xkbcommon`:
+**Estado em 26/08/2026:** o teclado foi implementado pelo **core protocol**
+(`GetKeyboardMapping` + `GetModifierMapping`), não por `xkbcommon` — a
+justificativa da escolha, e o que ela não cobre, estão no topo de
+`lib/src/backends/x11/x11_keyboard.dart` e resumidos na §68.1. Não há tabela de
+teclado manual: as regras aplicadas são as do próprio protocolo sobre a resposta
+do servidor. O que segue continua valendo como plano para a rota XKB, que é a
+resposta para três ou mais grupos, para grupo por evento e para
+`DetectableAutoRepeat`:
 
 - keymap;
 - state;
@@ -2290,6 +2308,15 @@ Não implementar tabela de teclado manual completa.
 ## 15.7 Clipboard X11
 
 Clipboard em X11 é protocolo de selections, não memória global.
+
+**Estado em 26/08/2026:** `x11_clipboard.dart` existe e cobre `CLIPBOARD`,
+ownership, `TARGETS`, `TIMESTAMP`, `UTF8_STRING`, `STRING`, `TEXT`,
+`SelectionRequest`, `SelectionNotify`, timeout, perda de ownership e **INCR na
+leitura**. Fora, e nomeado: `PRIMARY`, `text/html`, `image/png`, URI list,
+formatos customizados, **INCR como dono** (payload acima de 200 KiB é recusado
+em vez de truncado) e clipboard manager (`CLIPBOARD_MANAGER`/`SAVE_TARGETS`).
+A máquina de estados é testável sem servidor real, como esta seção pedia:
+`test/backends/x11/x11_clipboard_test.dart`.
 
 Implementar:
 
@@ -3056,12 +3083,17 @@ Revisto em 2026-08-23 contra `lib/src/rendering/gpu/vulkan/`.
   `vkAcquireNextImageKHR`, `vkQueuePresentKHR`, e create-infos escritas à mão
   para Win32, Xlib, XCB e Wayland. `VulkanWindowTarget` está completo, e
   `VulkanOffscreenTarget` é o gêmeo — **não é offscreen-only**;
-- **o que trava**: dois arquivos de teste **não compilam** hoje
-  (`vulkan_window_test.dart`, `zz_smoke_test.dart`) porque pedem
-  `Win32Window.setClientSize`, `Win32Window.physicalSize` e `blendModeSrcOver`,
-  que não existem;
-- **não está no seletor**: `VulkanRendererBackend` não aparece em
-  `default_platform_resolver.dart`, então nenhuma aplicação normal o escolhe;
+- **~~o que trava: dois arquivos de teste não compilam~~** — corrigido:
+  `vulkan_window_test.dart` e `zz_smoke_test.dart` compilam e passam
+  (19 casos em 26/08/2026), incluindo apresentação numa janela Win32 real,
+  `resize` e comparação de pixels contra a CPU;
+- **no seletor desde 26/08/2026, como experimental**: o Windows registra
+  `vulkan` depois de D3D11/GL/D2D/D3D12, com probe próprio que exige
+  `VK_KHR_win32_surface` (o probe do backend cria uma instância *sem* WSI e
+  responderia "sim" numa máquina onde `vkCreateWin32SurfaceKHR` não existe).
+  `experimental: true` porque este alvo **não desenha texto** — sem atlas de
+  glifos, o primeiro `drawGlyphRun` é recusado pelo nome —, então ele só é
+  alcançado por quem o pede com `allowExperimentalBackends`;
 - `vulkan_wsi_platform.dart` passa o handle nativo como `IntPtr` porque
   `test/architecture/layering_test.dart` proíbe `HWND`/`Display*` fora de
   `lib/src/backends` — e diz, por escrito, que o preço disso é **não conseguir
@@ -5808,7 +5840,8 @@ que seguiu tornaria as fases inúteis como gate. Três desvios, registrados:
 1. **Fases foram abertas antes de a anterior fechar.** F10 (D2D/D3D11), F11
    (OpenGL), F12 (Metal), F13 (Wayland) e F14 (Vulkan) estão todas em
    andamento simultâneo, com F13 quase completa em código e **zero execução
-   real**, enquanto F8 (X11) segue com o gate travado no teclado. O custo
+   real**, enquanto F8 (X11) seguia com o gate travado no teclado — que foi
+   destravado em 26/08/2026 (§68.1), restando IME e acessibilidade. O custo
    apareceu: várias frentes com código escrito e nenhum consumidor — ver a §68,
    item *escrito e não ligado*;
 2. **Trabalho fora de qualquer fase entrou no repositório**: PDF, assinatura
@@ -7080,7 +7113,9 @@ Estado em 2026-08-23, medido contra os critérios de promoção da §50.
   nem de *experimental* por este critério;
 - [ ] **Linux GPU estável por OpenGL ou Vulkan** — o caminho EGL no X11 nunca
   rodou e o Wayland não tem GPU;
-- [ ] **X11 estável** — sem teclado e sem clipboard, não passa de *alpha*;
+- [~] **X11 estável** — teclado e clipboard entraram em 26/08/2026, mas
+  **nenhum dos dois rodou contra um X server real** e o backend segue sem IME e
+  sem acessibilidade; não passa de *beta* pela evidência (§68.1);
 - [~] **Wayland ao menos beta com CPU** — o código está em nível de beta e a
   evidência não: a §50 exige *gallery, clipboard, IME, resize/DPI, packaging,
   leak suite* e nada disso foi exercido contra um compositor;
@@ -7150,7 +7185,7 @@ F0..F7 na ordem prevista, com F7 fechando o IME do Windows
   ├─ APIs de SO + DnD ────── fora de qualquer fase (§56.1)
   └─ PDF/CDR/vetorial ────── fora de qualquer fase (§4.4)
   │
-  F8 X11 ─── parada no teclado, e é o bloqueio mais caro em aberto
+  F8 X11 ─── teclado e clipboard entraram em 26/08/2026; restam IME e a11y
 ```
 
 Duas conclusões que o desvio sustenta, e uma que ele não sustenta:
@@ -7876,9 +7911,9 @@ aplica, **?** não verificado.
 | `vsync` | **não reivindicada** — o `BitBlt` não é paced, ainda que o DWM componha no vblank | ? | ? | ? | ? | — |
 | `pointerInput` | sim | sim | sim | sim | ? | sim |
 | `scrollInput` | ? (roda normalizada) | sim | sim | sim | ? | sim |
-| **`keyboardInput`** | sim | **não** | sim (subconjunto xkb) | sim | ? | sim |
-| **`textComposition`** | sim, se `imm32` carrega | **nunca** | sim, se o compositor anuncia v3 | não | não | não |
-| `clipboardText` | sim | **não** | sim | não | não | sim (falso) |
+| **`keyboardInput`** | sim | sim desde 26/08/2026 (core protocol: dois grupos, sem `DetectableAutoRepeat`) | sim (subconjunto xkb) | sim | ? | sim |
+| **`textComposition`** | sim, se `imm32` carrega | **não** (XIM não implementado; teclas mortas funcionam e não são IME) | sim, se o compositor anuncia v3 | não | não | não |
+| `clipboardText` | sim | sim desde 26/08/2026 (selections; **sem dono INCR**, sem `PRIMARY`) | sim | não | não | sim (falso) |
 | `clipboardImage` | **não em plataforma nenhuma** — o contrato `Clipboard` é só texto | não | não | não | não | não |
 | `dragAndDrop` | sim (OLE, dois sentidos; **imagem de arraste ignorada**) | sim (XDND, dois sentidos; **imagem ignorada**) | sim (dois sentidos; **imagem ignorada**, **sem `link`**) | não | não | não |
 | `perMonitorDpi` | sim | parcial (escala do probe) | parcial (inteira, a maior dos outputs) | ? | sim | sim |
@@ -7898,8 +7933,9 @@ kinds trazem `hasAccessibility: false` com o comentário "not wired yet".
 
 Cinco leituras que essa tabela deixa claras, e que a normativa esconde:
 
-1. **X11 é o único backend de desktop sem teclado**, e sem clipboard. Tudo o
-   que depende dos dois cai junto;
+1. ~~**X11 é o único backend de desktop sem teclado**, e sem clipboard.~~
+   Deixou de ser em 26/08/2026: os dois entraram pelo core protocol (§68.1). O
+   que resta faltando só no X11 entre os backends de desktop é o **IME**;
 2. **drag-and-drop chegou nos três backends de desktop antes de clipboard e IME
    chegarem em dois deles** — foi a única capacidade portada em bloco;
 3. **`clipboardImage` não existe em lugar nenhum**: o contrato é texto, por
@@ -8306,8 +8342,8 @@ Cada spike produz documento, código mínimo e decisão. Código descartável n�
 | docs | sim | sim | sim | sim | parcial |
 
 Duas colunas dizem a mesma coisa por caminhos diferentes: **X11 e AppKit são os
-dois backends que faltam serviços inteiros** — X11 sem teclado, IME e
-clipboard; AppKit sem drag, IME e clipboard.
+dois backends que faltam serviços inteiros** — o X11 fechou teclado e clipboard
+em 26/08/2026 e segue **sem IME**; o AppKit segue sem drag, IME e clipboard.
 
 ---
 
@@ -8603,11 +8639,17 @@ de bindings.
 3. **atualizar os dois testes que ficaram velhos** (`gl_device_test`,
    `text_rendering_test`) para afirmarem o comportamento novo, junto com a
    paridade que ele passou a permitir;
-4. **ligar XKB no X11.** É o maior buraco funcional aberto, e destranca
-   teclado, atalhos, teclas mortas e IME de uma vez;
-5. **ligar o que está escrito e solto** (§68.2): `FrameLoopController`,
-   `RenderPolicyScope` nos backends, `GlVideoDevice`, `FilePicker` no editor
-   vetorial, e Vulkan/D3D12 no seletor;
+4. ~~**ligar XKB no X11.**~~ Feito em 26/08/2026 **pelo core protocol**, não
+   pelo XKB: `GetKeyboardMapping` + `GetModifierMapping` destravaram teclado,
+   atalhos, teclas mortas e clipboard. `libxcb-xkb` continua sendo a resposta
+   para três ou mais grupos e para `DetectableAutoRepeat`; IME (XIM) segue
+   fora. Ver §68.1;
+5. **ligar o que está escrito e solto** (§68.2). Fechados em 26/08/2026:
+   Vulkan e D3D12 no seletor (Vulkan como experimental, porque não desenha
+   texto), `RenderPolicy.restrict` no planejador e `ContentHintAwareSink` no
+   `GpuRasterSink`. Abertos: `GlVideoDevice`, `FilePicker` no editor vetorial e
+   `FrameLoopController` — este último com a política duplicada já removida e a
+   decisão registrada em §68.2;
 6. **rodar o Wayland contra um compositor de verdade** — é a única coisa que
    valida a camada FFI e o único item que separa a Fase 13 do gate.
 
@@ -8625,27 +8667,72 @@ também é informação.
 
 ## 68.1 Buracos funcionais
 
-### X11 não tem teclado, e por isso não tem IME nem clipboard útil
+### ~~X11 não tem teclado~~ — **fechado em 26/08/2026**, pelo core protocol
 
-`x11_events.dart` consome `xcbKeyPress` e `xcbKeyRelease` no mesmo `case` de
-motion/button/crossing, lê só `timestamp`/`window`/`x`/`y` e **descarta**.
-Nenhum `KeyEvent` e nenhum `TextInputEvent` é construído em
-`lib/src/backends/x11/`, e `x11_backend.dart` **não reivindica**
-`Capability.keyboardInput`. Não há keysym, `GetKeyboardMapping`, `xcb_xkb_*`,
-`libxkbcommon`, XIM, `XLookupString` nem `Xutf8LookupString`.
+Esta era a linha mais cara da seção e ela mudou de lado. O que existe agora:
 
-Decorrem daí, e não são decisões independentes: **sem IME**, **sem teclas
-mortas**, **sem atalho de teclado**. Compor teclas que nunca chegam seria o
-telhado antes das paredes (§15.2.1).
+- `x11_keyboard.dart` decodifica `GetKeyboardMapping` e `GetModifierMapping`
+  **do core protocol**, aplica as regras de seleção de keysym do próprio
+  protocolo (Shift, CapsLock que *maiúsculiza o símbolo*, ShiftLock que
+  seleciona o nível 2, NumLock testado **antes** de CapsLock, grupo 2 por
+  `Mode_switch`/`ISO_Level3_Shift`) e resolve **por keysym** em que `Mod1`-`Mod5`
+  o teclado do usuário pôs Alt, Meta, Super, NumLock e AltGr — em vez de assumir
+  `Mod1 == Alt`, que é o motivo de Alt+Tab quebrar em setups incomuns;
+- `X11EventTranslator.translateKey` constrói `KeyDownEvent`/`KeyUpEvent` e o
+  `TextInputEvent` que o keysym produz, nessa ordem (hardware antes de texto,
+  como Win32 entrega `WM_KEYDOWN` antes de `WM_CHAR`);
+- `x11_backend.dart` lê o mapa no `initialize`, **relê em `MappingNotify`** (que
+  é o que troca de layout), e **reivindica `Capability.keyboardInput`** quando o
+  servidor respondeu — e não reivindica quando ele recusou, caso em que
+  `KeyEvent` continua saindo com o keycode físico e texto nenhum é inventado;
+- `X11KeyRepeatFilter` reconhece o auto-repeat pela assinatura de fio
+  (`KeyRelease` + `KeyPress` no **mesmo timestamp do servidor**), porque
+  `DetectableAutoRepeat` é um flag por cliente do XKB;
+- **teclas mortas funcionam**: `ComposeEngine` é instalado por janela a partir
+  do `~/.XCompose` ou da tabela de locale da própria máquina, exatamente como no
+  Wayland.
 
-**Separadamente**, X11 também não tem clipboard: não existe
-`x11_clipboard.dart` e o backend não implementa `ClipboardProvider`. Seleções
-estão registradas como adiadas em `x11_events.dart`.
+**Por que o core protocol e não XKB nem libxkbcommon** está escrito no topo de
+`x11_keyboard.dart`, com o que a rota **não** cobre: só **dois grupos** (três ou
+quatro layouts configurados alcançam os dois primeiros), **sem grupo por
+evento**, e **sem `DetectableAutoRepeat`**. `libxcb-xkb` continua sendo a
+resposta para isso.
 
-**A dependência que falta é uma só**: XKB até `xkb_state_key_get_utf8` produzir
-o primeiro caractere. O motor de teclas mortas já está escrito e testado
-(`platform/compose_sequences.dart`), e ligá-lo é uma chamada no mesmo ponto em
-que o Wayland o liga.
+**Continua sem IME**: XIM precisa de Xlib e de um input context, e CJK segue
+indisponível neste backend. Teclas mortas e AltGr **não são IME** e funcionam.
+
+### O clipboard do X11 existe — com um limite nomeado
+
+`x11_clipboard.dart` implementa `Clipboard` sobre seleções e `x11_backend.dart`
+implementa `ClipboardProvider`. Ler pede `UTF8_STRING`, cai para
+`text/plain;charset=utf-8` e depois para `STRING` (que é Latin-1 **por
+definição**, e é decodificado como tal), e **monta transferências `INCR`** —
+que o destino XDND, ao lado, recusa. Escrever toma `CLIPBOARD`, verifica a posse
+com um round trip (`SetSelectionOwner` não dá erro quando é ignorado) e serve
+`TARGETS`, `TIMESTAMP`, `UTF8_STRING`, `STRING` e `TEXT`.
+
+**O que não tem**: servir como **dono INCR**. Um payload maior que 200 KiB é
+recusado **em voz alta** em vez de truncado. E `PRIMARY` — a seleção do botão do
+meio — está deliberadamente fora: é outra funcionalidade, com outra semântica.
+
+### O que disso está provado por teste executável, e o que não está
+
+A distinção importa e esta máquina é Windows, então nada de X11 rodou aqui:
+
+- **provado por teste**: `test/backends/x11/x11_keyboard_test.dart` (38 testes)
+  constrói respostas de `GetKeyboardMapping`/`GetModifierMapping` **byte a
+  byte** e afirma o keysym que sai; `x11_events_test.dart` monta os 32 bytes de
+  um `xcb_key_press_event_t` de verdade, passa por `decodeFrom` e afirma o
+  `KeyEvent`/`TextInputEvent`; `x11_clipboard_test.dart` (41 testes) roda a
+  máquina de estados contra um cliente de seleção falso; `x11_backend_test.dart`
+  prova o roteamento pelo pump, a releitura em `MappingNotify` e o colapso do
+  par de auto-repeat;
+- **não provado**: que o libxcb entrega esses bytes intactos, que um servidor
+  real responde assim, e que um GTK/Qt do outro lado negocia a seleção como o
+  falso negocia. **Nada disto foi executado contra um X server real.**
+  `tool/x11_backend_smoke.dart` ganhou as linhas `X11_KEYBOARD=` e
+  `X11_CLIPBOARD=` para que seja executável numa sessão Linux — mas **ainda não
+  foi executado**.
 
 ### O backend Wayland nunca falou com um compositor
 
@@ -8666,27 +8753,88 @@ começado. É requisito de *Gate 1.0* (§45, Fase 17).
 
 ## 68.2 Escrito e não ligado
 
-Quatro subsistemas estão completos, testados e **sem nenhum consumidor**. Vale
-listá-los juntos porque é o mesmo padrão, e o padrão é o custo de abrir frentes
-em paralelo (§46.0):
+Esta seção listava quatro subsistemas completos e sem consumidor. **Três foram
+ligados em 26/08/2026**; o que sobra está abaixo com o motivo, porque um item
+fechado sem dizer como foi fechado é a mesma opacidade que a lista existe para
+evitar.
+
+### Fechado
+
+- **D3D12 e Vulkan no seletor** (`default_platform_resolver.dart`). Os dois
+  entram depois de `direct3d11`, `opengl` e `direct2d` e antes do `win32-dib`,
+  pela mesma razão que o Direct2D entrou depois dos dois primeiros: a figura
+  padrão de uma máquina comum não muda, e uma máquina cujos probes de D3D11,
+  GL e D2D falham passa a alcançar um caminho acelerado em vez de cair na CPU.
+  `--presentation=direct3d12` e `--presentation=vulkan` os fixam pelo nome.
+
+  **Vulkan é `experimental: true`, e a bandeira não é cautela:**
+  `VulkanWindowTarget` monta seu `GpuRasterSink` sem atlas de glifos e sem
+  `GpuFontResolver`, então o primeiro `drawGlyphRun` levanta
+  `UnsupportedCapabilityError` pelo nome — verificado em janela real. Um
+  caminho que não desenha texto não pode ser alcançado por *fallback* num
+  framework de UI; ele está registrado para poder ser pedido, não para ser
+  escolhido. O D3D12 tem atlas de glifos e resolver, e por isso entra sem a
+  bandeira.
+
+  Também corrigido no caminho: `D3d12WindowTarget` declarava só `RenderTarget`
+  e não `DisplayListRenderTarget`, embora já tivesse `renderDisplayList`. O
+  `RenderTargetPresenter` que não enxerga a interface mais estreita desvia para
+  `beginFrame`/`rasterizeDisplayList`, que ali rasteriza no `Framebuffer` de
+  1x1 que o alvo usa como espaço reservado — janela em branco, sem erro.
+
+  **Prova em janela real**, Intel UHD, `RenderingPolicy.gpuOnly` e `onError`
+  instalado: `direct3d12` desenhou 105 frames em 16 s com texto, preenchimentos
+  e um retângulo arredondado antialiasado, `errors=0`, *feature level* 12_1;
+  `vulkan` (sem texto) apresentou pelo swapchain `VK_KHR_win32_surface` com
+  `errors=0`.
+
+- **Política de renderização.** `RenderPolicy.restrict(...)` é chamado — uma
+  vez, em `GpuPathPlanningTelemetry.plan`, que é o único ponto onde o que o
+  *dispositivo* sabe executar encontra o que o *seletor* pode escolher. Os três
+  backends de GPU deste repositório (`gl_vector_replay.dart`,
+  `d3d12_offscreen_target.dart`, `vulkan_backend.dart`) constroem essa
+  telemetria, então os *kill switches* e a troca de qualidade valem para todos
+  de uma vez, e um backend novo os herda sem saber que existem. O seletor
+  também passa a vir de `RenderPolicy.buildSelector()`, que é como
+  `RenderQualityPreference.speed`/`exact` chega ao limiar do *cover pass* —
+  metade que não estaria ligada se só as capacidades fossem restritas.
+  `test/rendering/gpu/gpu_path_policy_test.dart`.
+
+- **Hints de conteúdo.** `GpuRasterSink` implementa `ContentHintAwareSink`
+  (`gpu_raster_sink.dart:136`); o hint chega tanto à admissão no atlas denso
+  (`_admitToAtlas`) quanto ao planejador (`hint: _contentHint`). Coberto por
+  `test/rendering/gpu/gpu_path_hint_test.dart` e
+  `test/widgets/content_hint_test.dart`.
+
+### Aberto
 
 1. **Laço de tempo real.** `lib/src/app/frame_loop.dart` — `FrameLoopMode`,
    `FrameLoopOptions.continuous`, `FrameLoopController`, `FixedStepAccumulator`
-   e telemetria de pacing. Não é referenciado em `lib/`, `test/` nem nos
-   exemplos;
-2. **Política de renderização.** `RenderPolicy` e `GpuStrategySwitches` estão
-   inteiros, e **nenhum backend chama `restrict(...)`** — todos montam
-   `GpuPathStrategyCapabilities` direto. `RenderPolicyScope` diz de si mesmo que
-   deveria ser parâmetro;
-3. **Hints de conteúdo.** `ContentMotionHint`/`RenderQualityHint` viajam ao
-   lado da display list sem alterá-la, e **nenhuma classe implementa
-   `ContentHintAwareSink`**, então o hint nunca é lido em produção;
-4. **Vídeo.** `GlVideoDevice` é o único allocator e não é referenciado por
+   e telemetria de pacing. Continua **sem consumidor em `lib/`**, e a decisão
+   de 26/08/2026 foi *manter o desenho e remover a política duplicada*:
+   - o que fazia dele pior que ausência era `FrameLoopController.pumpTimeout`,
+     que respondia "quanto o laço pode bloquear" com um `idleTimeout` **plano**
+     no modo `onDemand` — exatamente a política que a espera ociosa adaptativa
+     de `Application.run` substituiu, e por um motivo medido (a espera síncrona
+     no pump é a latência de *todo* trabalho Dart pendente, e um teto plano de
+     250 ms transforma um `Timer.periodic` de 16 ms em 4 Hz). Duas respostas
+     para uma pergunta, em dois arquivos, com só uma rodando: a morta se lê
+     como a política e não é. **Removida.** O arquivo fica com o *prazo*
+     (`timeUntilNextFrame`) e o laço fica com a política de espera;
+   - o resto — modo contínuo, passo fixo, pacing — é a resposta a um requisito
+     nomeado do §1 (editores de animação e vídeo, jogos 2D/2.5D), não depende
+     de nada e não custa nada carregado. Apagá-lo enquanto quatro frentes rodam
+     em paralelo seria uma frente decidindo por outra;
+   - o arquivo agora **diz de si mesmo** que não está ligado e nomeia a costura
+     de uma linha que o ligaria, e `test/app/frame_loop_test.dart` (21 casos)
+     fixa a política — inclusive a garantia de coexistência: em `onDemand`
+     nenhum frame vence nunca, então ligá-lo não move nada numa aplicação
+     dirigida por invalidação.
+2. **Vídeo.** `GlVideoDevice` é o único allocator e não é referenciado por
    ninguém; o próprio arquivo diz que ligá-lo ao sink de batching "é uma decisão
    separada e posterior".
 
-Some-se a isso **Vulkan e D3D12 fora do seletor** (`default_platform_resolver.dart`)
-e o **`FilePicker` que existe e que o editor vetorial não usa**.
+Some-se a isso o **`FilePicker` que existe e que o editor vetorial não usa**.
 
 ## 68.3 Contratos sem implementação
 
@@ -8787,8 +8935,11 @@ fora da tela, e curvas achatadas por `Path.flattenTo`.
 - **Windows**: sem DirectComposition; sem TSF (só IMM32); IME não lê texto ao
   redor; `FilePicker` usa o `GetOpenFileNameW` legado, não `IFileDialog`;
   `vsync` não é reivindicada porque o `BitBlt` não é paced;
-- **X11**: §68.1; mais sem XInput2, sem RandR, sem `MIT-SHM` (a apresentação é
-  `PutImage` do core), e o caminho EGL **nunca executado**;
+- **X11**: teclado e clipboard existem desde 26/08/2026 (§68.1), mas **sem
+  IME** (XIM não implementado), **sem XKB** — logo só dois grupos de layout e
+  sem `DetectableAutoRepeat` —, sem dono `INCR` no clipboard, sem `PRIMARY`, sem
+  XInput2, sem RandR, sem `MIT-SHM` (a apresentação é `PutImage` do core), e o
+  caminho EGL **nunca executado**;
 - **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
   primária, sem CSD quando o compositor recusa SSD, sem movimento/resize
@@ -8812,7 +8963,10 @@ Isto é tão importante quanto a lista anterior, e é mais fácil de esquecer:
   provaram **aqui** foi pixel correto, **não** validação — e a distinção é
   impressa, não escondida;
 - **Metal só roda em CI Apple Silicon**, e nunca em Intel;
-- **X11 só rodou sob Xvfb**, nunca num Xorg ou XWayland de verdade;
+- **X11 só rodou sob Xvfb**, nunca num Xorg ou XWayland de verdade — e o
+  teclado e o clipboard que entraram em 26/08/2026 **não rodaram nem sob Xvfb**:
+  são provados por testes sobre bytes numa máquina Windows, e a metade FFI
+  (`xcb_get_keyboard_mapping`, `SetSelectionOwner`) **nunca foi executada**;
 - **Wayland nunca rodou** (§68.1);
 - **a camada FFI do Wayland não tem teste algum**;
 - **os dois arquivos de janela do Vulkan voltaram a compilar** em 24/08/2026:
@@ -8846,7 +9000,7 @@ Registradas para quem mexer no código a seguir; **em todas, o código venceu**:
 | `wayland_backend.dart` (probe) | teclado "no dead keys/compose" | `ComposeEngine` é instalado por janela quando não há `text-input-v3` |
 | `wayland_xcursor.dart` | "only the first frame is used today" | `wayland_cursor.dart` anima todos os quadros |
 | `platform/drag_drop.dart` | cita `DragDropController` em `widgets/drag_drop.dart` | a classe não existe; são `WidgetTreeDropTarget` + `DragRouter` |
-| `platform/text_input.dart` | cita `x11_compose.dart` | o arquivo não existe |
+| `platform/text_input.dart` | citava `x11_compose.dart` | **resolvido em 26/08/2026**: o arquivo nunca existiu; a referência passou a ser `backends/x11/x11_keyboard.dart`, e a frase "o teclado da plataforma ainda produz `TextInputEvent`" deixou de ser aspiracional no X11 |
 | `vector/compute_tile_scene.dart` | "nenhum binding de API consome estes buffers ainda" | o executor de compute do D3D12 consome |
 | `doc/vector_editor.md` | o exemplo está em `examples/sk1_editor_demo/` | está em `examples/vector_editor_demo/` |
 | `doc/vector_editor.md` | booleanas 2D em polígonos **e caminhos** | `shaping.dart` achata para polilinhas e usa Sutherland-Hodgman (convexo, perde curvas) |
@@ -8939,32 +9093,135 @@ medir, não presumir.
 A regra prática: se o ganho não aparecer numa medição reprodutível de quadro
 inteiro, não vale duas implementações.
 
-## 69.4 O trabalho em aberto
+## 69.4 A varredura, medida — 2026-08-26
 
-Nada disso foi aplicado ainda — esta seção registra o mecanismo e o critério,
-não uma migração feita. O que falta:
+O trabalho que 69.1–69.3 deixaram em aberto foi feito. O resultado é o que a
+própria seção previa como plausível: **nenhum candidato passa do limiar, e nada
+foi dividido.** O que segue é a tabela do que foi medido, para que a varredura
+não precise ser refeita.
 
-1. **Varrer `lib/` procurando o imposto.** Todo lugar que evita 64 bits, parte
-   palavras em metades, ou tem comentário citando dart2js/JavaScript como razão
-   de uma escolha numérica. Candidatos conhecidos: `_hashPaint` e `_mul32` em
-   `graphics/display_list.dart` (documentados como tal), e os caminhos de
-   hash/checksum em `crypto/` e nos codecs de áudio.
-2. **Medir cada candidato na VM**, com o método que esta sessão validou:
-   contagem de scavenges em isolate separado, em AOT, com semi space fixado
-   (`--new_gen_semi_initial_size=2 --new_gen_semi_max_size=2 --verbose_gc`),
-   medindo N e 2N quadros para o startup cancelar. Deu 0% de variação entre
-   repetições, ao contrário da taxa global de lixo do app, que variou de 71 a
-   704 KiB/s no mesmo código.
-3. **Dividir só os que passarem de um limiar** definido em fração de quadro,
-   não em nanossegundos por chamada.
-4. **Garantir que o portão de compilação continue cobrindo os dois backends
-   web.** `test/backends/web/web_compilation_test.dart` já roda `dart compile
-   js` *e* `dart compile wasm` justamente porque um não substitui o outro; uma
-   divisão por `dart.library.js` cria um quarto caminho de código que só o
-   dart2js exercita, e ele precisa continuar sendo compilado.
+### O método
 
-É plausível que a varredura conclua que nenhum caminho passa do limiar. Isso
-também é resultado, e é barato de obter.
+Duas etapas, nesta ordem, porque a primeira é de graça e elimina a maioria.
+
+1. **Alcance.** Um candidato que a web nunca compila não paga imposto nenhum.
+   O que a web compila é `test/backends/web/web_compilation_fixture.dart`, e o
+   fecho transitivo dos seus `import`/`export` — resolvendo cada
+   `if (dart.library.…)` pelo ramo do dart2js — dá **448 arquivos de `lib/`**.
+   A conferência não ficou na leitura: injetar um literal de 64 bits num
+   arquivo e rodar `dart compile js` sobre o fixture faz o próprio compilador
+   responder. Feito em `crypto/dart/pure_dart_sha.dart`, que respondeu
+   `The integer literal 0x428a2f98d728ae22 can't be represented exactly in
+   JavaScript` — logo aquele arquivo está, de fato, dentro do conjunto.
+
+2. **Medição.** Só para os que sobraram: AOT (`dartaotruntime`), semi space
+   fixado (`--new_gen_semi_initial_size=2 --new_gen_semi_max_size=2
+   --verbose_gc`), N e 2N iterações por processo tomando `t(2N) − t(N)` para o
+   startup cancelar, N = 5×10⁷, e o **mínimo** de 7 a 9 repetições — o ruído
+   desta máquina é sempre aditivo, então o mínimo é o estimador certo, e as
+   repetições isoladas variaram até 2× entre si. Nenhum candidato aloca: a
+   contagem de scavenges deu zero dos dois lados em todos eles, e o custo que
+   resta é de tempo, não de lixo.
+
+As chamadas por quadro **não** foram estimadas: `_hashPaint`, `encodeHeader` e
+`_packKey` foram instrumentados com um contador e a galeria rodou 120 quadros
+no backend headless. O quadro de 60 Hz vale **16,667 ms**.
+
+### O que a web sequer alcança
+
+| Subsistema | Alcançável de `dart_ui.dart`? | Por quê |
+|---|---|---|
+| `src/audio/codecs/**` — FLAC, MP3, OGG, WAV, PCM, demuxer, CRC-8/16/32 | **não** | `src/audio/audio.dart` exporta só `audio_codec`, `audio_device` e `audio_format`. Os codecs saem apenas por `lib/audio.dart`, e nove deles importam `dart:io` ou `dart:ffi` direto — não é questão de alcance, é de viabilidade. |
+| `src/backends/{win32,x11,wayland}/**` | **não** | `dart:ffi`. |
+| `src/audio/{native,windows,playback,dsp}/**` | **não** | `dart:ffi`, `dart:io`. |
+| `src/crypto/dart/**` — MD5, SHA-1/256/384/512, AES, RC4 | **sim** | `dart_ui.dart` exporta `src/crypto/crypto.dart`. |
+| `src/graphics/image/**` — 117 arquivos: PNG, JPEG, WebP, EXIF, inflate | **sim** | |
+| `src/pdf/**` (5 arquivos), `src/cdr/**` (8) | **sim, parcial** | só o recorte que `dart_ui.dart` exporta. |
+| `src/graphics/display_list*`, `src/rendering/**`, `src/text/**` | **sim** | o núcleo. |
+
+O candidato mais citado de antemão — os codecs de áudio, com suas tabelas de
+CRC e seus escritores de bits — sai da lista inteiro, e nem foi preciso medir:
+`dart:io` já o tinha excluído.
+
+### O que sobrou, e quanto custa
+
+Ganho por chamada é `atual − 64 bits`; positivo significa que a forma de 64
+bits é mais rápida. Chamadas por quadro são medidas, na galeria headless.
+
+| Candidato | O que a forma atual faz | ns/chamada, atual → 64 bits | Chamadas/quadro | Fração do quadro | Veredito |
+|---|---|---|---|---|---|
+| `_hashPaint`/`_mul32` (`graphics/display_list.dart`) | multiplica em metades de 16 bits | 2,20→1,55 e 3,59→1,51 nas duas séries; ganho 0,65 a 2,08 ns | **55,8** | 0,12 µs = **0,0007 %** | **não divide** |
+| `encodeHeader` (`graphics/display_list_opcodes.dart`) | `.toUnsigned(32)` no cabeçalho | 0,49→0,82 e 1,02→1,10; a forma atual **nunca** foi a mais lenta | **121,4** | **0 %** | **não divide** — o imposto não existe |
+| `_packKey` (`rendering/text/glyph_cache.dart` e `rendering/gpu/gpu_glyph_atlas.dart`) | multiplica em vez de deslocar, para caber em 53 bits | 0,42→1,55 e 0,65→1,20: a forma de 64 bits é **2× mais lenta** na VM | **171,4** | −0,0012 % | **não divide** — o imposto é negativo |
+| SHA-512 em pares `(hi, lo)` (`crypto/dart/pure_dart_sha.dart`) | 80 rodadas sobre `Uint32List` | 31 MiB/s → 247 MiB/s, **7,9×** | **0** | **0 %** | **não divide** — ver abaixo |
+| `shiftR`/`shiftL` no IDCT do JPEG (`image/codecs/formats/jpeg/`) | já dividido, em `dart.library.io` | a VM já pega o ramo rápido | 0 | 0 % na VM | não se aplica — ver abaixo |
+
+Dispensados por inspeção, sem medir, e a razão de cada um:
+
+- **MD5, SHA-1, SHA-256, AES, RC4, CRC-32 do PNG, Adler-32 do zlib.** São
+  algoritmos de 32 bits *por definição*. Um `int` de 64 bits não compra nada:
+  não há palavra partida, só aritmética modular de 32 bits que é o que a
+  especificação manda.
+- **`text/normalize.dart`.** A chave de composição empacota dois code points de
+  21 bits em 42. Já está acima de 32 e dentro de 53 — a web não custou nada
+  aqui, e 64 bits não acrescentariam nada.
+- **`gradient.dart`, `text/cff.dart`, `crypto/windows/…_types.dart`,
+  `audio/audio_device.dart`.** `toUnsigned(32)`/`toSigned(32)` em construção ou
+  em formatação de mensagem, uma vez, fora de laço.
+- **`webp/vp8l_transform.colorTransformDelta`.** Contorna o bug 16497 do
+  dart2js passando por vistas de `TypedData`. É por decodificação de WebP, não
+  por quadro.
+
+### As duas coisas que a varredura achou e vale registrar
+
+**SHA-512 é o único imposto grande — e não é de quadro.** Sobre 8 MiB, mínimo
+de cinco execuções: 257 ms na forma atual contra 32,4 ms numa implementação de
+64 bits nativos, conferida contra os vetores do FIPS 180-4 e contra a própria
+forma atual em 600 comprimentos diferentes de entrada. São 7,9×, e é
+exatamente a categoria que 69.3 chama de viabilidade — bitwise acima de 32
+bits. Mesmo assim não divide, por duas razões que se somam: SHA-512 não roda
+dentro de um quadro (ele roda quando um documento é assinado), então a
+conversão para fração de quadro dá zero por não haver denominador; e duas
+implementações de um primitivo criptográfico são o caso mais caro possível do
+risco de divergência silenciosa que 69.3 levanta. Se um dia a assinatura de
+documentos grandes virar reclamação medida, o número está aqui e a
+implementação de 64 bits já foi escrita e conferida uma vez.
+
+De passagem, no mesmo arquivo: `sha512` escreve o comprimento da mensagem com
+`setUint32(padded.length - 4, lengthInBits & 0xFFFFFFFF)`. Os 64 bits que a
+FIPS 180-4 reserva para o comprimento existem no buffer, mas só os 32 baixos
+são escritos, então uma entrada acima de 512 MiB produz digest errado. É a
+mesma mentalidade de 32 bits, mas é um defeito de correção, não de desempenho,
+e não foi tocado nesta varredura.
+
+**O seletor do JPEG está condicionado no eixo errado.** `jpeg_data.dart` faz
+
+```dart
+import '_jpeg_quantize_html.dart' if (dart.library.io) '_jpeg_quantize_io.dart';
+```
+
+O eixo é `dart.library.io`, que responde "este alvo tem sistema de arquivos",
+não "este alvo é JavaScript". A VM tem `dart:io` e pega a versão rápida; o
+**dart2wasm não tem**, e fica com a versão que passa cada deslocamento por
+`shiftR`/`shiftL` (`(v >> n).toSigned(32)`) para contornar um bug que é só do
+dart2js. É o caso que dá título a esta seção — uma plataforma penalizada por
+causa de outra — só que a penalizada é o Wasm, e por isso o método de medição
+desta seção, que roda na VM, não o enxerga.
+
+Trocar a condição por `if (dart.library.js)` é uma linha, mas não é seguro
+hoje: os dois arquivos **não** são equivalentes. O `_io` tem um
+`if (index < 0) break` no clamp final que o `_html` não tem, e os dois copiam o
+perfil ICC em pontos diferentes. Trocar mudaria o resultado do Wasm, e a
+exigência de 69.3 — teste provando resultados idênticos onde ambos são
+válidos — teria de ser cumprida antes.
+
+### O que continua valendo do item 4
+
+Nada foi dividido, então o quarto caminho de código não foi criado e
+`test/backends/web/web_compilation_test.dart` segue como está, rodando
+`dart compile js` *e* `dart compile wasm`. A exigência continua de pé para a
+primeira divisão que houver: o ramo do dart2js precisa continuar sendo
+compilado pelo portão, e precisa de um teste que o execute.
 
 ---
 

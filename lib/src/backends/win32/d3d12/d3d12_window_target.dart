@@ -65,7 +65,19 @@ import 'd3d12_structs.dart';
 const int _dxgiNoAltEnter = 2;
 
 /// A render target backed by a DXGI swap chain over a window.
-final class D3d12WindowTarget with DisposableMixin implements RenderTarget {
+///
+/// [DisplayListRenderTarget] and not merely [RenderTarget], and the difference
+/// is the whole point of this class rather than a spelling: a
+/// [RenderTargetPresenter] that does not see the narrower interface takes the
+/// `beginFrame` / `rasterizeDisplayList` / `present` route instead, and that
+/// route rasterises into the [Frame]'s [Framebuffer] - which here is
+/// [_placeholder], one shared 1x1 surface. The picture would be dropped into a
+/// single pixel nobody reads and the window would present whatever the swap
+/// chain last held. Declaring the interface is what routes a frame through
+/// [renderDisplayList] and therefore through the GPU.
+final class D3d12WindowTarget
+    with DisposableMixin
+    implements DisplayListRenderTarget {
   D3d12WindowTarget(this._device, D3d12WindowSurfaceDescriptor surface)
       : _surface = surface {
     _maskAtlas = GpuMaskAtlas();
@@ -274,6 +286,7 @@ final class D3d12WindowTarget with DisposableMixin implements RenderTarget {
   }
 
   /// Rasterises [list] into the back buffer and presents it.
+  @override
   Future<PresentResult> renderDisplayList(
     DisplayList list, {
     int? clearColor,

@@ -133,33 +133,73 @@ final class TessellatedPathMesh {
   int get triangleCount => indices.length ~/ 3;
 }
 
+/// Default budget for retained local meshes: 4 MiB.
+///
+/// Approach B is a *fast path*, not a store: it exists to keep the SVGs, icons
+/// and simple convex paths of an interface resident. 4 MiB is roughly sixty
+/// thousand triangles - far more than any one screen holds - while being small
+/// enough that a pathological producer cannot turn the renderer into a leak.
+const int kDefaultTessellationCacheBytes = 4 * 1024 * 1024;
+
 /// Retains local meshes by path content, fill rule, and flattening tolerance.
 ///
 /// There is intentionally no transform argument: translation, scale, and
 /// rotation belong in a per-draw GPU uniform and reuse the same VBO. A caller
 /// that needs a different local approximation asks with a different
 /// [flattenTolerance], which necessarily produces a different key.
+///
+/// ## The cache is bounded, and it has to be
+///
+/// The key is path *content*, so anything that changes its own geometry - a
+/// chart redrawn from new samples, a spline the user is dragging, a path built
+/// per frame from a layout - produces a new key every frame and never reuses
+/// one. An unbounded map of those grows for as long as the process runs, and
+/// nothing about a retained-mesh route stops it: the very draws that make the
+/// cache useless are the ones that fill it fastest.
+///
+/// So entries are evicted least-recently-used against [maxRetainedBytes].
+/// Recency is the insertion order of a `Map`, which Dart specifies: a hit
+/// re-inserts, so the first key the iterator yields is always the coldest.
+///
+/// ## Why this budget is not shared with the GPU inventory
+///
+/// `TessellatedGlExecutor` keeps its own, on the same keys, and the two are
+/// deliberately independent rather than coupled through an eviction callback.
+/// Coupling would be strictly worse: a mesh evicted here and drawn again is
+/// re-tessellated into an *equal* key, so the GPU buffer that survived the
+/// eviction is still a hit and the upload is saved. Each budget bounds the
+/// memory it actually owns, and neither can force the other to throw away
+/// something the next frame needs.
 final class CpuTessellatedPathCache {
   CpuTessellatedPathCache({
     CpuPathTessellator tessellator = const CpuPathTessellator(),
-  }) : _tessellator = tessellator;
+    this.maxRetainedBytes = kDefaultTessellationCacheBytes,
+  })  : _tessellator = tessellator,
+        assert(maxRetainedBytes > 0);
 
   final CpuPathTessellator _tessellator;
+
+  /// Retained vertex and index bytes this cache will hold before evicting.
+  final int maxRetainedBytes;
+
   final Map<TessellatedPathCacheKey, TessellatedPathMesh> _meshes =
       <TessellatedPathCacheKey, TessellatedPathMesh>{};
 
   int hitCount = 0;
   int missCount = 0;
 
+  /// Meshes dropped to stay inside [maxRetainedBytes].
+  ///
+  /// A rising count on a static screen is the diagnostic that matters: it
+  /// means the route is re-tessellating what it just built, and the draw
+  /// belongs on the dense atlas instead.
+  int evictionCount = 0;
+
   int get length => _meshes.length;
 
-  int get retainedBytes {
-    var total = 0;
-    for (final mesh in _meshes.values) {
-      total += mesh.metrics.retainedBytes;
-    }
-    return total;
-  }
+  /// Retained bytes, maintained incrementally rather than summed on demand.
+  int get retainedBytes => _retainedBytes;
+  int _retainedBytes = 0;
 
   TessellatedPathMesh resolve(
     Path path, {
@@ -171,9 +211,12 @@ final class CpuTessellatedPathCache {
       fillRule: fillRule,
       flattenTolerance: flattenTolerance,
     );
-    final cached = _meshes[key];
+    final cached = _meshes.remove(key);
     if (cached != null) {
       hitCount++;
+      // Re-inserted rather than left in place: insertion order is the recency
+      // order eviction reads, so a hit has to move to the back.
+      _meshes[key] = cached;
       return cached;
     }
     final mesh = _tessellator.tessellate(
@@ -181,15 +224,34 @@ final class CpuTessellatedPathCache {
       fillRule: fillRule,
       flattenTolerance: flattenTolerance,
     );
-    _meshes[mesh.cacheKey] = mesh;
     missCount++;
+    _meshes[mesh.cacheKey] = mesh;
+    _retainedBytes += mesh.metrics.retainedBytes;
+    _evictToBudget(keep: mesh.cacheKey);
     return mesh;
+  }
+
+  /// Evicts coldest-first until the budget holds.
+  ///
+  /// [keep] is never evicted even when it alone exceeds the budget: the caller
+  /// is about to draw it, and returning a mesh whose GPU buffers were released
+  /// in the same call would be worse than one frame over budget.
+  void _evictToBudget({required TessellatedPathCacheKey keep}) {
+    while (_retainedBytes > maxRetainedBytes && _meshes.length > 1) {
+      final TessellatedPathCacheKey coldest = _meshes.keys.first;
+      if (coldest == keep) break;
+      final TessellatedPathMesh mesh = _meshes.remove(coldest)!;
+      _retainedBytes -= mesh.metrics.retainedBytes;
+      evictionCount++;
+    }
   }
 
   void clear() {
     _meshes.clear();
+    _retainedBytes = 0;
     hitCount = 0;
     missCount = 0;
+    evictionCount = 0;
   }
 }
 

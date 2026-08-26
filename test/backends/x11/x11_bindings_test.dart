@@ -36,5 +36,20 @@ void main() {
         ]),
       );
     });
+
+    test('the keyboard map requests are preflighted with everything else', () {
+      // Preflight or nothing: a partially bound libxcb works until the first
+      // call into the missing half, by which time a window is on screen and
+      // the failure looks like a rendering bug rather than a packaging one.
+      expect(
+        XcbBindings.requiredSymbols,
+        containsAll(<String>[
+          'xcb_get_keyboard_mapping',
+          'xcb_get_keyboard_mapping_reply',
+          'xcb_get_modifier_mapping',
+          'xcb_get_modifier_mapping_reply',
+        ]),
+      );
+    });
   });
 }

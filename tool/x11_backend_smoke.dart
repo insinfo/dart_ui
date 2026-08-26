@@ -112,6 +112,17 @@ Future<void> main() async {
       await subscription.cancel();
       presenter.dispose();
     }
+    // The keyboard and the clipboard, which only a real server can answer.
+    //
+    // Everything about the keymap decoder and the selection state machine is
+    // covered by unit tests over bytes; what those cannot reach is libxcb -
+    // whether `xcb_get_keyboard_mapping` is bound correctly, whether the reply
+    // buffer really is the wire reply, whether the server accepts this client
+    // as a selection owner. That is what these two lines exist for, and it is
+    // the only place in this repository where any of it is executed.
+    await _reportKeyboard(backend);
+    await _reportClipboard(backend);
+
     stdout.writeln('X11_BACKEND_WINDOW=PASS id=${window.id.value}');
     window.close();
     if (backend.windows.isNotEmpty || backend.pumpEvents()) {
@@ -141,6 +152,47 @@ Future<void> main() async {
     );
   }
   stdout.writeln('X11_BACKEND_SMOKE=PASS');
+}
+
+/// Reports whether the core keyboard map came back from the server.
+///
+/// A `FAIL` here means `GetKeyboardMapping` was refused or did not decode; the
+/// backend then emits `KeyEvent`s with their keycode and no text, which is the
+/// honest degraded state rather than a crash.
+Future<void> _reportKeyboard(X11WindowingBackend backend) async {
+  // The live backend's own answer, not a second `probe()`: probing opens
+  // another connection and replaces the diagnostics this run collected.
+  final Iterable<String> lines = backend.diagnostics
+      .map((item) => item.message)
+      .where((message) => message.startsWith('keyboard'));
+  stdout.writeln(
+    'X11_KEYBOARD=${backend.hasKeyboardMap ? 'PASS' : 'FAIL'} '
+    '${lines.isEmpty ? 'no map diagnostic' : lines.first}',
+  );
+}
+
+/// Reports whether this client can take `CLIPBOARD` and read it back.
+///
+/// Reading back our own copy does not go through the server's selection
+/// transfer - the manager answers from the payload it holds - so this proves
+/// `SetSelectionOwner` was accepted and nothing more. A real cross-application
+/// paste needs another application and is not something a smoke test can
+/// arrange.
+Future<void> _reportClipboard(X11WindowingBackend backend) async {
+  const String sample = 'dart_ui clipboard smoke';
+  try {
+    await backend.clipboard
+        .writeText(sample)
+        .timeout(const Duration(seconds: 5));
+    final String? read =
+        await backend.clipboard.readText().timeout(const Duration(seconds: 5));
+    stdout.writeln(
+      'X11_CLIPBOARD=${read == sample ? 'PASS' : 'FAIL'} '
+      'owner=self roundtrip=${read == sample}',
+    );
+  } on Object catch (error) {
+    stdout.writeln('X11_CLIPBOARD=FAIL $error');
+  }
 }
 
 Future<void> _pumpUntil(

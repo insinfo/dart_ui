@@ -98,7 +98,7 @@ final class GlVectorPathRecorder implements GpuPathCommandRecorder {
     this.stencilMaxTrianglesPerDraw = 65536,
     this.allowStencilInLayers = false,
   })  : _sparseGenerator = sparseGenerator ?? NativeStripRasterizer(),
-        _tessellationCache = tessellationCache ?? CpuTessellatedPathCache(),
+        tessellationCache = tessellationCache ?? CpuTessellatedPathCache(),
         sparsePlanCache =
             sparsePlanCache ?? VectorPlanCache<SparseStripDrawPlan>() {
     if (!flattenTolerance.isFinite || flattenTolerance <= 0) {
@@ -131,7 +131,14 @@ final class GlVectorPathRecorder implements GpuPathCommandRecorder {
   /// directly. The two are drop-in equivalents - same call, same
   /// [StripBuffer] - and a parity suite pins them together.
   final NativeStripRasterizer _sparseGenerator;
-  final CpuTessellatedPathCache _tessellationCache;
+
+  /// Retained local meshes for approach B, keyed by content, fill rule and
+  /// flattening tolerance - the cache POC-23 asks this route to keep.
+  ///
+  /// Public because its budget and eviction counters are the diagnostic that
+  /// says whether the route is a fast path or a treadmill, and because the
+  /// wiring that owns this recorder has to drop it when the device is lost.
+  final CpuTessellatedPathCache tessellationCache;
 
   /// Where a gradient paint's ramp becomes a resident texture.
   ///
@@ -430,10 +437,19 @@ final class GlVectorPathRecorder implements GpuPathCommandRecorder {
     required Transform2D localToTarget,
     required Rect targetClip,
   }) {
-    // The current B shader has no analytic fringe. MSAA-aware promotion can
-    // relax this once sample count becomes part of the pass descriptor.
-    if (request.paint.antiAlias) return null;
-    final mesh = _tessellationCache.resolve(
+    // The B shader has no analytic fringe, so an antialiased fill is only
+    // correct where the pass supplies coverage of its own. Sample count is now
+    // part of the pass descriptor, and this is deliberately the same predicate
+    // `GlVectorReplay.capabilities` reports. The two disagreeing was not a
+    // wrong picture but something harder to find: a route the selector kept
+    // choosing and this method silently refused, so every antialiased draw on
+    // a multisampled target paid for a promotion it never received and landed
+    // back on the dense atlas one refusal later.
+    if (request.paint.antiAlias &&
+        !stream.layers.currentPass.attachments.isMultisampled) {
+      return null;
+    }
+    final mesh = tessellationCache.resolve(
       request.path,
       fillRule: request.fillRule,
       flattenTolerance: flattenTolerance,

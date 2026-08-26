@@ -64,6 +64,19 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
 
   Pointer<Uint8> _staging = nullptr;
   int _stagingBytes = 0;
+  Pointer<Uint8> _coverStaging = nullptr;
+  int _coverStagingBytes = 0;
+
+  /// Cover vertices resident in [_coverBuffer] for the current submission.
+  /// Reset by every upload, so a stale `firstVertex` cannot address geometry
+  /// that belonged to a previous plan.
+  int _coverVertexCount = 0;
+
+  /// The scissor GL currently holds, or -1 when this pass has not set one.
+  int _scissorX = -1;
+  int _scissorY = -1;
+  int _scissorWidth = -1;
+  int _scissorHeight = -1;
   int _program = 0;
   int _vao = 0;
   int _geometryBuffer = 0;
@@ -210,6 +223,9 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
     _viewportWidth = viewportWidth;
     _viewportHeight = viewportHeight;
     _yFlip = yFlip;
+    // Nothing outside this pass is this driver's to remember: the dense
+    // renderer, the sparse executor and the layer pool all set their own.
+    _forgetScissor();
     _gl
       ..viewport(0, 0, viewportWidth, viewportHeight)
       ..useProgram(_program)
@@ -230,16 +246,44 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
       ..frontFace(yFlip == 0 ? glCw : glCcw);
   }
 
+  /// Sets the scissor, skipping the call when the rectangle already holds.
+  ///
+  /// The executor now asks before every command, which is what makes the
+  /// accumulation's rectangle explicit - but a draw's accumulation and its
+  /// cover share one rectangle, and so do a lone draw's three commands. Left
+  /// undeduplicated that was 384 `glScissor` calls per frame on the 128-path
+  /// POC-23 scene and 0.6 ms of the frame; the comparison is four integers.
   @override
-  void clearStencil({
+  void setScissor({
     required double left,
     required double top,
     required double right,
     required double bottom,
-    required int value,
-    required int writeMask,
   }) {
-    _setScissor(left, top, right, bottom);
+    final StencilCoverGlScissor scissor = StencilCoverGlScissor.fromBounds(
+      left: left,
+      top: top,
+      right: right,
+      bottom: bottom,
+      viewportWidth: _viewportWidth,
+      viewportHeight: _viewportHeight,
+      yFlip: _yFlip,
+    );
+    if (scissor.x == _scissorX &&
+        scissor.y == _scissorY &&
+        scissor.width == _scissorWidth &&
+        scissor.height == _scissorHeight) {
+      return;
+    }
+    _scissorX = scissor.x;
+    _scissorY = scissor.y;
+    _scissorWidth = scissor.width;
+    _scissorHeight = scissor.height;
+    _gl.scissor(scissor.x, scissor.y, scissor.width, scissor.height);
+  }
+
+  @override
+  void clearStencil({required int value, required int writeMask}) {
     _gl
       ..colorMask(0, 0, 0, 0)
       ..stencilMask(writeMask)
@@ -295,44 +339,45 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
   }
 
   @override
-  void drawCover({
-    required double left,
-    required double top,
-    required double right,
-    required double bottom,
-  }) {
-    _setScissor(left, top, right, bottom);
-    const int vertices = 6;
-    final Pointer<Uint8> native =
-        _ensureStaging(vertices * 2 * sizeOf<Float>());
-    native.cast<Float>().asTypedList(vertices * 2).setAll(0, <double>[
-      left,
-      top,
-      right,
-      top,
-      left,
-      bottom,
-      left,
-      bottom,
-      right,
-      top,
-      right,
-      bottom,
-    ]);
+  void uploadCoverVertices(Float32List vertices, int vertexCount) {
+    _requireResources();
+    final int floatCount = vertexCount * kStencilCoverVertexStride;
+    if (vertexCount < 0 || floatCount > vertices.length) {
+      throw RangeError('stencil cover upload exceeds source arena');
+    }
+    _coverVertexCount = vertexCount;
+    if (vertexCount == 0) return;
+    final int bytes = floatCount * sizeOf<Float>();
+    final Pointer<Uint8> native = _ensureCoverStaging(bytes);
+    native.asTypedList(bytes).setAll(
+          0,
+          vertices.buffer.asUint8List(vertices.offsetInBytes, bytes),
+        );
     _gl
+      ..bindVertexArray(_vao)
       ..bindBuffer(glArrayBuffer, _coverBuffer)
-      ..bufferData(
-        glArrayBuffer,
-        vertices * 2 * sizeOf<Float>(),
-        native.cast<Void>(),
-        glDynamicDraw,
+      ..bufferData(glArrayBuffer, bytes, native.cast<Void>(), glDynamicDraw);
+  }
+
+  @override
+  void drawCover({required int firstVertex}) {
+    if (firstVertex < 0 ||
+        firstVertex + kStencilCoverQuadVertexCount > _coverVertexCount) {
+      throw RangeError.range(
+        firstVertex,
+        0,
+        _coverVertexCount - kStencilCoverQuadVertexCount,
+        'firstVertex',
+        'the cover quad was not uploaded for this submission',
       );
+    }
     _bindPositionBuffer(_coverBuffer);
-    _gl.drawArrays(glTriangles, 0, vertices);
+    _gl.drawArrays(glTriangles, firstVertex, kStencilCoverQuadVertexCount);
   }
 
   @override
   void endStencilCoverPass() {
+    _forgetScissor();
     _gl
       ..colorMask(1, 1, 1, 1)
       ..stencilMask(0xFFFFFFFF)
@@ -356,8 +401,10 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
       ..release(_status)
       ..release(_sourceSlot)
       ..release(_log)
-      ..release(_staging);
+      ..release(_staging)
+      ..release(_coverStaging);
     _staging = nullptr;
+    _coverStaging = nullptr;
   }
 
   StencilCoverCapabilities _queryCapabilities() {
@@ -466,6 +513,13 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
     return _staging = _heap.allocate<Uint8>(_stagingBytes);
   }
 
+  Pointer<Uint8> _ensureCoverStaging(int bytes) {
+    if (bytes <= _coverStagingBytes) return _coverStaging;
+    _heap.release(_coverStaging);
+    _coverStagingBytes = math.max(64, bytes * 2);
+    return _coverStaging = _heap.allocate<Uint8>(_coverStagingBytes);
+  }
+
   void _bindPositionBuffer(int buffer) {
     _gl
       ..bindVertexArray(_vao)
@@ -479,19 +533,6 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
         2 * sizeOf<Float>(),
         nullptr,
       );
-  }
-
-  void _setScissor(double left, double top, double right, double bottom) {
-    final StencilCoverGlScissor scissor = StencilCoverGlScissor.fromBounds(
-      left: left,
-      top: top,
-      right: right,
-      bottom: bottom,
-      viewportWidth: _viewportWidth,
-      viewportHeight: _viewportHeight,
-      yFlip: _yFlip,
-    );
-    _gl.scissor(scissor.x, scissor.y, scissor.width, scissor.height);
   }
 
   void _deleteObjects() {
@@ -511,11 +552,19 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
     _forgetNames();
   }
 
+  void _forgetScissor() {
+    _scissorX = -1;
+    _scissorY = -1;
+    _scissorWidth = -1;
+    _scissorHeight = -1;
+  }
+
   void _forgetNames() {
     _program = 0;
     _vao = 0;
     _geometryBuffer = 0;
     _coverBuffer = 0;
+    _coverVertexCount = 0;
     _viewportUniform = -1;
     _yFlipUniform = -1;
     _colorUniform = -1;

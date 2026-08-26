@@ -515,30 +515,44 @@ final class RenderPolicy {
 
 /// Where a GPU backend finds the policy the application declared.
 ///
-/// ## Why this is a scope and not a parameter
+/// ## Where it is read, and why that is one place
 ///
-/// It should be a parameter, and one day it will be. The reason it is not
-/// today is honest and worth writing down: the policy has to be readable at
-/// the point a path strategy is chosen, which is inside `GpuRasterSink` and
-/// the per-backend vector replays. Those are five backends deep and are being
-/// worked on concurrently; threading a parameter through them from here would
-/// be a change to files this change has no business touching.
-///
-/// So this holds the value, and the seam each backend eventually adds is one
-/// line at the point it builds its capabilities:
+/// `GpuPathPlanningTelemetry` reads it - once, in its constructor - and every
+/// GPU backend in this repository builds one: the OpenGL vector replay, the
+/// Direct3D 12 targets and the Vulkan ordered recorder all hand their
+/// per-draw capabilities to it and take its decision. So [restrict] is
+/// applied at the single point where what the *device* can execute meets what
+/// the *selector* is allowed to choose, and [buildSelector] supplies the
+/// selector that meets it there:
 ///
 /// ```dart
-/// final GpuPathStrategyCapabilities caps = RenderPolicyScope.policy.restrict(
-///   deviceCapabilities,
-///   diagnostics: RenderPolicyScope.diagnostics,
+/// final GpuPathStrategyCapabilities capabilities = policy.restrict(
+///   capabilitiesProbe?.call(traits) ?? candidateCapabilities,
+///   diagnostics: diagnostics,
 /// );
 /// ```
 ///
-/// and one more where it builds a workload:
+/// That is deliberately not repeated per backend. Three copies of one line is
+/// three chances for a backend to forget it, and a kill switch that works on
+/// two backends out of three is worse than none - it makes a bisection lie.
+/// A backend added later gets the switches and the quality trade without
+/// knowing they exist.
 ///
-/// ```dart
-/// workload = RenderPolicy.applyContentHint(workload, currentContentHint);
-/// ```
+/// The workload half is wired at the same point and reads the same way:
+/// `GpuPathStrategySelector.select` takes the [ContentHint] directly, because
+/// the precedence rule - what a hint may and may not overrule - belongs beside
+/// the branches it is ordered against.
+///
+/// ## Why this is a scope and not a parameter
+///
+/// It should be a parameter, and one day it will be. What stops it is the
+/// distance: nothing between `Application.start` and a planner constructed
+/// deep inside a backend's target has any other reason to carry a policy, so
+/// the parameter would be threaded through five backends' constructors to be
+/// read in one place. `GpuPathPlanningTelemetry` does take one - it is the
+/// `policy:` argument, and a test passes it - so the scope is the default and
+/// not the only way in, which is the shape that makes the eventual parameter
+/// a change of default rather than a change of design.
 ///
 /// Process-wide rather than per-window because a policy is a property of the
 /// program - a memory budget and a bisection are not per-window decisions -

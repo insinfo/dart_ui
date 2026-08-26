@@ -145,11 +145,16 @@ estado, conferido no código, para quem precisa decidir sem abrir aquele:
 
 ### Limitações que valem repetir
 
-- **X11 não tem teclado.** `x11_events.dart` consome `xcbKeyPress`/`xcbKeyRelease`
-  e os descarta; nenhum `KeyEvent` nem `TextInputEvent` sai dali, e o probe não
-  reivindica `Capability.keyboardInput`. Daí decorrem, e não são decisões
-  independentes: sem IME, sem teclas mortas, sem atalho. X11 também **não tem
-  clipboard** — não existe `x11_clipboard.dart`;
+- **X11 tem teclado e clipboard desde 26/08/2026**, e não tem IME.
+  `x11_keyboard.dart` decodifica `GetKeyboardMapping`/`GetModifierMapping` do
+  core protocol, `X11EventTranslator.translateKey` emite `KeyEvent` e
+  `TextInputEvent`, teclas mortas compõem pela tabela Compose da máquina, e
+  `x11_clipboard.dart` fala selections nos dois sentidos. O probe reivindica
+  `Capability.keyboardInput` e `Capability.clipboardText` quando o servidor
+  responde. **Nada disso rodou contra um X server real**: a prova é por testes
+  sobre bytes numa máquina Windows, e a metade FFI nunca foi executada. Fora,
+  nomeado: XIM (logo, CJK), três ou mais grupos de layout,
+  `DetectableAutoRepeat`, dono `INCR` no clipboard e `PRIMARY`;
 - **texto rotacionado**: os **três** rasterizadores aceitam. Quando a matriz não
   cabe em máscara, a CPU e o `GpuRasterSink` caem na rota de contorno
   (`_drawGlyphRunAsOutlines`) e o **Direct2D** preenche o contorno com
@@ -164,9 +169,16 @@ estado, conferido no código, para quem precisa decidir sem abrir aquele:
   de glifos e sem pilha de layers, então path, rrect, texto e layer são
   recusados por nome. `supportsSurface` só aceita `MemorySurfaceDescriptor`;
 - Vulkan tem `VulkanWindowTarget` completo — semáforos por imagem, recriação
-  por `VK_ERROR_OUT_OF_DATE_KHR` — mas **não está no
-  `default_platform_resolver`**: uma aplicação normal não tem como escolhê-lo.
-  As **validation layers não estão instaladas nesta máquina**, então os testes
+  por `VK_ERROR_OUT_OF_DATE_KHR` — e **desde 26/08/2026 está no
+  `default_platform_resolver`**, atrás de D3D11/GL/D2D/D3D12 e marcado
+  `experimental: true`. A bandeira é o fato, não cautela: aquele alvo monta o
+  `GpuRasterSink` sem atlas de glifos e sem `GpuFontResolver`, então o primeiro
+  `drawGlyphRun` é recusado pelo nome — verificado em janela real. Ele é
+  alcançável por `--presentation=vulkan` com
+  `ApplicationOptions.allowExperimentalBackends`, e nunca por *fallback*.
+  **D3D12 entrou sem a bandeira**, porque tem atlas de glifos e resolver:
+  105 frames com texto numa janela real em Intel UHD, `errors=0`. As
+  **validation layers não estão instaladas nesta máquina**, então os testes
   que as pedem provaram pixels, não validação;
 - vídeo é **contrato de plumbing**: `lib/src/graphics/video/` não decodifica
   nada, e o único allocator (`GlVideoDevice`) não é referenciado por ninguém em
@@ -174,10 +186,17 @@ estado, conferido no código, para quem precisa decidir sem abrir aquele:
   backends;
 - o laço de tempo real (`lib/src/app/frame_loop.dart` — `FrameLoopController`,
   `FrameLoopMode.continuous`, acumulador de passo fixo, telemetria de pacing)
-  existe inteiro e **não é referenciado em lugar nenhum** de `lib/`;
-- `RenderPolicyScope` diz de si mesmo que deveria ser parâmetro: **nenhum
-  backend chama `restrict(...)`** hoje, então a política de renderização é um
-  contrato completo sem consumidor;
+  existe inteiro e **continua não referenciado em `lib/`**. O arquivo passou a
+  dizer isso de si mesmo e a nomear a costura que o ligaria; a política de
+  espera duplicada (`pumpTimeout`, que respondia com um `idleTimeout` plano
+  onde `Application.run` usa espera adaptativa com back-off) foi **removida**,
+  e `test/app/frame_loop_test.dart` fixa o resto. Ver §68.2 do roteiro;
+- a política de renderização **está ligada**: `RenderPolicy.restrict(...)` é
+  aplicado em `GpuPathPlanningTelemetry.plan`, o único ponto onde as
+  capacidades do dispositivo encontram o seletor, e por onde passam os três
+  backends de GPU deste repositório. `RenderPolicyScope` continua sendo um
+  escopo e não um parâmetro, mas agora o parâmetro existe (`policy:`) e o
+  escopo é apenas o padrão;
 - `ADR 0007` — citado por `cpu_renderer.dart`, `gpu_raster_sink.dart` e
   `text/glyph_raster.dart` — **passou a existir em 23/08/2026**
   (`doc/adr/0007-contorno-transformado-para-texto-nao-alinhado.md`), e registra
@@ -725,9 +744,10 @@ deliberada — OpenGL ganhou janela, layers, atlas e paridade com a CPU **antes*
 de uma segunda API entrar, porque até então `MemorySurfaceDescriptor` era o
 único `NativeSurfaceDescriptor` que existia, e uma abstração de superfície
 validada por zero backends com janela real não é uma abstração, é um palpite.
-O que continua verdadeiro é a **distância entre existir e ser escolhível**:
-`default_platform_resolver.dart` oferece, no Windows, apenas D3D11, OpenGL,
-Direct2D e a DIB. **D3D12 e Vulkan não estão na lista**, e Metal não apresenta.
+A **distância entre existir e ser escolhível** encolheu em 26/08/2026:
+`default_platform_resolver.dart` oferece, no Windows, D3D11 → OpenGL →
+Direct2D → **D3D12** → **Vulkan** (experimental) → DIB. O que resta da
+distância é o Metal, que não apresenta.
 
 **~~Recuperação de perda de device: `GpuDeviceState.recover()` existe e nunca é
 chamado.~~** **Corrigido:** `lib/src/rendering/gpu/gpu_recovery.dart` é o
@@ -785,8 +805,8 @@ modeladas, não suavizadas.
 | texto ao redor | **não** (`WM_IME_REQUEST` não respondida) | sim | — | — |
 | `delete_surrounding_text` | não existe no protocolo | sim | — | — |
 | retângulo do cursor | `ImmSetCandidateWindow` | `set_cursor_rectangle` | — | — |
-| teclas mortas | o SO compõe (`WM_DEADCHAR` → `WM_CHAR`) | tabela Compose do X11, quando não há IME | — | o navegador compõe |
-| `Capability.textComposition` | quando `imm32` carrega | quando o compositor anuncia o protocolo | nunca | nunca |
+| teclas mortas | o SO compõe (`WM_DEADCHAR` → `WM_CHAR`) | tabela Compose do X11, quando não há IME | **sim**, tabela Compose do X11, sempre (não há IME aqui) | o navegador compõe |
+| `Capability.textComposition` | quando `imm32` carrega | quando o compositor anuncia o protocolo | **não** (XIM não implementado) | nunca |
 
 Três consequências que valem repetir porque cada uma já foi bug em algum
 toolkit:
@@ -807,26 +827,32 @@ toolkit:
 
 ### X11: a decisão, com a evidência
 
-**O backend X11 não ganha IME, e a razão não é XIM ser caro — é que não há
-teclado.** `x11_events.dart` consome `xcbKeyPress`/`xcbKeyRelease` e os
-descarta; o backend não emite `KeyEvent` nem `TextInputEvent`, e
-`x11_backend.dart` nem reivindica `Capability.keyboardInput`. Compor teclas que
-nunca chegam seria construir o telhado antes das paredes.
+**Revisado em 26/08/2026.** A razão registrada aqui era que não havia
+teclado. Isso caiu: `x11_keyboard.dart` lê o mapa do core protocol e
+`X11EventTranslator.translateKey` emite `KeyEvent` e `TextInputEvent`. O
+backend reivindica `Capability.keyboardInput` quando o servidor respondeu — e
+não reivindica quando ele recusou, caso em que os `KeyEvent` continuam saindo
+com o keycode físico e texto nenhum é inventado.
 
-XIM sobre o protocolo cru continua caro e frágil pelos motivos de sempre — é um
-protocolo próprio sobre `ClientMessage` e propriedades, com negociação de
-ordem de bytes e um servidor externo que pode morrer no meio —, mas isso é
-secundário: a dependência que falta é `libxkbcommon` (ou equivalente) para
-`xkb_state_key_get_utf8`, que é o que produz o primeiro caractere.
+**O backend X11 continua sem IME**, e agora pela razão que sempre foi a
+verdadeira para o IME em si: XIM é um protocolo próprio sobre `ClientMessage` e
+propriedades, com negociação de ordem de bytes e um servidor externo que pode
+morrer no meio, e **não tem equivalente em XCB** — precisaria de Xlib e de um
+input context. O que isso custa está nomeado: **CJK indisponível neste
+backend**.
 
-O que **foi** feito, porque é a metade útil e serve às duas plataformas:
-`lib/src/platform/compose_sequences.dart` lê as tabelas Compose do próprio X11
-(`$XCOMPOSEFILE`, `~/.XCompose`, `/usr/share/X11/locale/<locale>/Compose`,
-com `include` e `%L`/`%H`/`%S`) e resolve teclas mortas. **Está ligado no
-Wayland**, onde o teclado existe e o `wl_keyboard` entrega keysyms sem compor,
-e só quando o compositor **não** oferece `zwp_text_input_v3` — rodar os dois
-aplicaria o acento duas vezes. No X11 a tabela fica disponível e desligada até
-o teclado existir.
+O que **não** custa é acentuação. `lib/src/platform/compose_sequences.dart` lê
+as tabelas Compose do próprio X11 (`$XCOMPOSEFILE`, `~/.XCompose`,
+`/usr/share/X11/locale/<locale>/Compose`, com `include` e `%L`/`%H`/`%S`) e
+resolve teclas mortas. Está ligado no **Wayland** — só quando o compositor não
+oferece `zwp_text_input_v3`, porque rodar os dois aplicaria o acento duas vezes
+— e está ligado no **X11 sem condicional**, porque aqui não há método de
+entrada que já pudesse compor.
+
+**A rota escolhida foi o core protocol, não XKB nem `libxkbcommon`**, e o topo
+de `x11_keyboard.dart` registra por quê e o que ela não cobre: só dois grupos
+de layout, sem grupo por evento e sem `DetectableAutoRepeat`. `libxcb-xkb`
+continua sendo a resposta para esses três.
 
 **Fica de fora no X11, explicitamente:** CJK (chinês, japonês, coreano),
 qualquer pré-edição, e a acentuação por tecla morta — esta última só até o

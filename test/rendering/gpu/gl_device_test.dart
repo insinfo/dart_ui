@@ -18,6 +18,7 @@ library;
 
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/win32/win32_gl_surface.dart';
@@ -401,6 +402,130 @@ void main() {
         expect(device.checkError('msaa resolve'), isFalse,
             reason: '${device.lastError}');
         expect(device.isLost, isFalse);
+      } finally {
+        pool
+          ..releaseLayerTarget(target)
+          ..dispose();
+      }
+    }, skip: sparseSession.skipReason);
+
+    test('grouped stencil clears draw the same pixels as one clear per path',
+        () {
+      // The identity proof for POC-23's "agrupar clears". A grouped plan
+      // issues one scissored `glClear` for a run of paths instead of one per
+      // path; that is only an optimisation if the driver writes the same
+      // bytes, so both plans are submitted to the same stencil target and the
+      // readback is compared exactly - no tolerance, because a different
+      // arrangement of the *same* commands has no licence to differ.
+      final GlRenderDevice device = sparseSession.device!;
+      if (missingAttachmentFramebufferGlSymbols(
+              sparseSession.context!.procAddress)
+          .isNotEmpty) {
+        markTestSkipped('the live driver lacks attachment framebuffer calls');
+        return;
+      }
+      const int size = 64;
+      final GlFramebufferPool pool = GlFramebufferPool(
+        factory: GlDeviceFramebufferFactory(
+          gl: device.api,
+          scratchNames: device.scratchNames,
+          makeCurrent: device.makeCurrentOrLose,
+        ),
+      );
+      final GlFramebuffer target = pool.acquireFramebuffer(
+        size,
+        size,
+        attachments: GlFramebufferAttachments.stencil8,
+      );
+      try {
+        final StencilCoverCapabilities capabilities =
+            device.queryStencilCoverCapabilities(surfaceFramebuffer: target.id);
+        if (capabilities.stencilBits < 8) {
+          markTestSkipped('the stencil target reports too few bits');
+          return;
+        }
+        // Overlapping fills, both rules, and a clipped path whose fan the
+        // cover cannot zero - the case that has to close a clear group.
+        StencilCoverDrawPlan build({required bool coalesce}) {
+          final StencilCoverDrawPlan plan =
+              StencilCoverDrawPlan(coalesceClears: coalesce);
+          for (var i = 0; i < 6; i++) {
+            final double x = (i % 3) * 20.0;
+            final double y = (i ~/ 3) * 20.0;
+            plan.append(
+              (PathBuilder()
+                    ..addOval(Rect.fromLTRB(x + 1, y + 1, x + 18, y + 18))
+                    ..addRect(Rect.fromLTRB(x + 6, y + 6, x + 13, y + 13)))
+                  .build(),
+              clip: i == 1
+                  ? Rect.fromLTRB(x + 5, y, x + 14, y + 40)
+                  : const Rect.fromLTRB(0, 0, size * 1.0, size * 1.0),
+              materialIndex: i % 2,
+              fillRule: i.isEven ? FillRule.nonZero : FillRule.evenOdd,
+              capabilities: capabilities,
+              antiAlias: false,
+            );
+          }
+          return plan;
+        }
+
+        final List<StencilGlMaterial> materials = <StencilGlMaterial>[
+          StencilGlMaterial(red: 0.75, green: 0.25, blue: 0, alpha: 1),
+          StencilGlMaterial(red: 0, green: 0.5, blue: 0.5, alpha: 1),
+        ];
+        final NativeHeap? heap = NativeHeap.tryBind(null);
+        if (heap == null) {
+          markTestSkipped('no native heap for the stencil readback');
+          return;
+        }
+        Uint8List render(StencilCoverDrawPlan plan) {
+          expect(device.makeCurrentOrLose(), isTrue);
+          device.api
+            ..bindFramebuffer(glFramebuffer, target.id)
+            ..disable(glScissorTest)
+            ..clearColor(0, 0, 0, 0)
+            ..clear(glColorBufferBit);
+          device.submitStencilCover(
+            plan,
+            materials: materials,
+            viewportWidth: size,
+            viewportHeight: size,
+            surfaceFramebuffer: target.id,
+          );
+          final Pointer<Uint8> native = heap.allocate<Uint8>(size * size * 4);
+          try {
+            device.api
+              ..bindFramebuffer(glFramebuffer, target.id)
+              ..pixelStorei(glPackAlignment, 1)
+              ..finish()
+              ..readPixels(0, 0, size, size, glRgba, glUnsignedByte,
+                  native.cast<Void>());
+            return Uint8List.fromList(native.asTypedList(size * size * 4));
+          } finally {
+            heap.release(native);
+          }
+        }
+
+        final StencilCoverDrawPlan grouped = build(coalesce: true);
+        final StencilCoverDrawPlan perDraw = build(coalesce: false);
+        expect(grouped.clearGroupCount, lessThan(perDraw.clearGroupCount));
+        expect(perDraw.clearGroupCount, perDraw.drawCount);
+
+        final Uint8List perDrawPixels = render(perDraw);
+        final Uint8List groupedPixels = render(grouped);
+        expect(device.isLost, isFalse);
+        expect(
+          perDrawPixels.any((int value) => value != 0),
+          isTrue,
+          reason: 'two blank targets would compare equal and prove nothing',
+        );
+        var differing = 0;
+        for (var i = 0; i < groupedPixels.length; i++) {
+          if (groupedPixels[i] != perDrawPixels[i]) differing++;
+        }
+        expect(differing, 0,
+            reason: 'grouping clears changed $differing of '
+                '${groupedPixels.length} bytes');
       } finally {
         pool
           ..releaseLayerTarget(target)
@@ -1087,6 +1212,76 @@ void main() {
         // and the off-grid test above is what measures the general answer.
         expect(parity.maxDeviation, lessThanOrEqualTo(0),
             reason: parity.report);
+      }, skip: sparseSession.skipReason);
+
+      test('an antialiased convex path takes B inside a multisampled layer',
+          () async {
+        // The gap this closes. `GlVectorReplay.capabilities` has reported
+        // approach B as available for an antialiased draw on a multisampled
+        // pass since the sample count reached the pass descriptor, and the
+        // recorder refused every one of them anyway - so the selector kept
+        // choosing a route that answered with a refusal, and the draw landed
+        // back on the dense atlas one wasted promotion later. Nothing was ever
+        // drawn wrong, which is exactly why it survived: the only symptom was
+        // a route that never fired.
+        //
+        // Reaching it takes a specific shape, and the shape is the finding.
+        // Sparse strips are checked first and are *analytically* exact, so
+        // they win every antialiased path whose tile crossings cost less than
+        // its area - which is nearly all of them. B is reached here because
+        // six hundred short edges push the crossing count past that rule, and
+        // on the single-sample surface it is reached only by aliased fills.
+        //
+        // The deviation is against the CPU's analytic coverage. Four samples
+        // resolve to five levels, so a boundary pixel is quantised to the
+        // nearest quarter - one step is 255/4, and the layer's 0x80 alpha
+        // halves it, which is where the bound below comes from. It is derived
+        // rather than fitted: a route that stopped antialiasing would show
+        // about 128 and fail, and one that drew the wrong shape would fail the
+        // pixel-count bound instead. Observed on Intel UHD Graphics: 27 levels
+        // over 497 of 25 600 pixels.
+        final DisplayList list = DisplayList();
+        final int paint = list.addPaint(
+          colorArgb: 0xFF3080C0,
+          antiAlias: true,
+        );
+        final PathBuilder builder = PathBuilder();
+        const int sides = 600;
+        for (var i = 0; i < sides; i++) {
+          final double angle = i * 2 * math.pi / sides;
+          final double x = 80.37 + 68.5 * math.cos(angle);
+          final double y = 80.11 + 68.5 * math.sin(angle);
+          if (i == 0) {
+            builder.moveTo(x, y);
+          } else {
+            builder.lineTo(x, y);
+          }
+        }
+        builder.close();
+        final int path = list.addPath(builder.build());
+        final int layerPaint = list.addPaint(
+          colorArgb: 0x80FFFFFF,
+          antiAlias: false,
+        );
+        list
+          ..saveLayer(0, 0, 160, 160, layerPaint)
+          ..drawPath(path, paint)
+          ..restore();
+
+        final _Parity parity = await _parity(sparseSession, list, 160);
+        expect(parity.executed, GpuPathStrategy.tessellatedMesh,
+            reason: 'a static convex path on a multisampled layer is what the '
+                'retained-mesh route is for; ${parity.report}');
+        expect(parity.drewSomething, isTrue);
+        expect(parity.layerResolves, greaterThan(0),
+            reason: 'a multisampled layer nobody resolves leaves the composite '
+                'sampling an unwritten texture');
+        expect(parity.maxDeviation, lessThanOrEqualTo(32),
+            reason: parity.report);
+        expect(parity.differingPixels, lessThan(160 * 4),
+            reason: 'the difference has to stay on the boundary; a filled or '
+                'missing interior is not a sampling difference\n'
+                '${parity.report}');
       }, skip: sparseSession.skipReason);
 
       test('a small saveLayer stays colour-only, and its contents fall back',

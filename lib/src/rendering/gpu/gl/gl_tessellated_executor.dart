@@ -49,11 +49,19 @@ final class TessellatedGlMeshHandle {
     required this.vertexBuffer,
     required this.indexBuffer,
     required this.indexCount,
+    this.retainedBytes = 0,
   });
 
   final int vertexBuffer;
   final int indexBuffer;
   final int indexCount;
+
+  /// Vertex plus index bytes resident on the GPU for this mesh.
+  ///
+  /// Carried on the handle rather than recomputed from the source mesh so the
+  /// inventory can price what it is holding without keeping the CPU mesh
+  /// alive to ask.
+  final int retainedBytes;
 }
 
 /// Fakeable GL operations required by approach B.
@@ -103,27 +111,72 @@ final class TessellatedGlExecutionStats {
     required this.triangles,
     required this.uploadedMeshes,
     required this.uploadedBytes,
+    this.evictedMeshes = 0,
   });
 
   final int drawCalls;
   final int triangles;
   final int uploadedMeshes;
   final int uploadedBytes;
+
+  /// Retained meshes released to stay inside the executor's budget.
+  final int evictedMeshes;
 }
 
+/// Default GPU budget for retained meshes: 8 MiB.
+///
+/// Twice the CPU cache's, because a mesh only reaches the GPU once it has been
+/// drawn at least once, and because a buffer that is evicted here has to be
+/// re-uploaded rather than re-tessellated - the cheaper of the two costs.
+const int kDefaultRetainedMeshBytes = 8 * 1024 * 1024;
+
 /// Owns the optional program and retained VBO/IBO inventory.
+///
+/// ## The inventory is bounded, least-recently-used first
+///
+/// A retained mesh is a GPU allocation that nothing else will ever free: the
+/// executor is the only object that holds the buffer names, and the cache key
+/// is path content, so a subtree whose geometry changes every frame uploads a
+/// new pair every frame and abandons the last. That is the failure this bound
+/// exists for, and it is not hypothetical - it is the ordinary behaviour of
+/// any path built from live data.
+///
+/// The budget is in bytes rather than entries because the entries differ by
+/// three orders of magnitude: an icon is a few hundred bytes and a map outline
+/// is megabytes, and a count that is generous for one is a leak for the other.
+/// Eviction happens at [submit], which is the only moment a new mesh arrives
+/// and the only moment the GL context is known to be current.
 final class TessellatedGlExecutor {
-  TessellatedGlExecutor(this._driver);
+  TessellatedGlExecutor(
+    this._driver, {
+    this.maxRetainedBytes = kDefaultRetainedMeshBytes,
+  }) : assert(maxRetainedBytes > 0);
 
   final TessellatedGlDriver _driver;
+
+  /// Vertex and index bytes this executor holds on the GPU before evicting.
+  final int maxRetainedBytes;
+
+  /// Key to buffers, in least-recently-used order.
+  ///
+  /// A `Map`'s insertion order is its iteration order in Dart, so a hit
+  /// removes and re-inserts and the first key is always the coldest.
   final Map<TessellatedPathCacheKey, TessellatedGlMeshHandle> _meshes =
       <TessellatedPathCacheKey, TessellatedGlMeshHandle>{};
+  int _retainedBytes = 0;
+  int _evictionCount = 0;
   bool _initialized = false;
   bool _disposed = false;
 
   bool get isInitialized => _initialized;
   bool get isDisposed => _disposed;
   int get retainedMeshCount => _meshes.length;
+
+  /// Vertex and index bytes currently resident on the GPU.
+  int get retainedBytes => _retainedBytes;
+
+  /// Meshes released to stay inside [maxRetainedBytes] since construction.
+  int get evictionCount => _evictionCount;
 
   void initialize({required bool desktop}) {
     _throwIfDisposed();
@@ -168,9 +221,10 @@ final class TessellatedGlExecutor {
       );
     }
 
-    TessellatedGlMeshHandle? handle = _meshes[mesh.cacheKey];
+    TessellatedGlMeshHandle? handle = _meshes.remove(mesh.cacheKey);
     var uploadedMeshes = 0;
     var uploadedBytes = 0;
+    var evictedMeshes = 0;
     if (handle == null) {
       final int vertexCount = mesh.vertices.length ~/ 2;
       if (vertexCount == 0 ||
@@ -178,6 +232,7 @@ final class TessellatedGlExecutor {
           mesh.indices.any((int index) => index >= vertexCount)) {
         throw ArgumentError('tessellated mesh contains invalid vertices');
       }
+      uploadedBytes = mesh.vertices.lengthInBytes + mesh.indices.lengthInBytes;
       handle = _driver.uploadMesh(mesh);
       if (handle.vertexBuffer == 0 ||
           handle.indexBuffer == 0 ||
@@ -185,10 +240,23 @@ final class TessellatedGlExecutor {
         _driver.deleteMesh(handle);
         throw StateError('the tessellated GL driver returned an invalid mesh');
       }
-      _meshes[mesh.cacheKey] = handle;
+      // The driver may or may not have priced the upload; the bytes the mesh
+      // actually carries are authoritative either way, and a handle reporting
+      // zero would make the budget unenforceable.
+      if (handle.retainedBytes != uploadedBytes) {
+        handle = TessellatedGlMeshHandle(
+          vertexBuffer: handle.vertexBuffer,
+          indexBuffer: handle.indexBuffer,
+          indexCount: handle.indexCount,
+          retainedBytes: uploadedBytes,
+        );
+      }
       uploadedMeshes = 1;
-      uploadedBytes = mesh.vertices.lengthInBytes + mesh.indices.lengthInBytes;
+      _retainedBytes += uploadedBytes;
     }
+    // Re-inserted after the lookup so a hit counts as the most recent use.
+    _meshes[mesh.cacheKey] = handle;
+    evictedMeshes = _evictToBudget(keep: mesh.cacheKey);
 
     _driver.beginTessellatedPass(
       viewportWidth: viewportWidth,
@@ -215,7 +283,27 @@ final class TessellatedGlExecutor {
       triangles: handle.indexCount ~/ 3,
       uploadedMeshes: uploadedMeshes,
       uploadedBytes: uploadedBytes,
+      evictedMeshes: evictedMeshes,
     );
+  }
+
+  /// Deletes coldest-first until the budget holds, and returns how many went.
+  ///
+  /// [keep] is the mesh this submission is about to draw, and is never
+  /// evicted: releasing the buffers a `drawMesh` is one line away from binding
+  /// would be a use-after-free, and one frame over budget is not.
+  int _evictToBudget({required TessellatedPathCacheKey keep}) {
+    var evicted = 0;
+    while (_retainedBytes > maxRetainedBytes && _meshes.length > 1) {
+      final TessellatedPathCacheKey coldest = _meshes.keys.first;
+      if (coldest == keep) break;
+      final TessellatedGlMeshHandle stale = _meshes.remove(coldest)!;
+      _retainedBytes -= stale.retainedBytes;
+      _driver.deleteMesh(stale);
+      _evictionCount++;
+      evicted++;
+    }
+    return evicted;
   }
 
   /// Releases one retained GPU mesh while leaving the CPU cache untouched.
@@ -223,6 +311,7 @@ final class TessellatedGlExecutor {
     _throwIfDisposed();
     final TessellatedGlMeshHandle? mesh = _meshes.remove(key);
     if (mesh == null) return false;
+    _retainedBytes -= mesh.retainedBytes;
     _driver.deleteMesh(mesh);
     return true;
   }
@@ -233,12 +322,14 @@ final class TessellatedGlExecutor {
       _driver.deleteMesh(mesh);
     }
     _meshes.clear();
+    _retainedBytes = 0;
   }
 
   void discardNativeResources() {
     _throwIfDisposed();
     if (_initialized) _driver.discardNativeResources();
     _meshes.clear();
+    _retainedBytes = 0;
     _initialized = false;
   }
 
@@ -256,6 +347,7 @@ final class TessellatedGlExecutor {
     if (_disposed) return;
     if (_initialized) _driver.discardNativeResources();
     _meshes.clear();
+    _retainedBytes = 0;
     _initialized = false;
     _disposed = true;
   }

@@ -60,11 +60,17 @@
 /// ## What a backend that cannot do this returns
 ///
 /// [UnavailableTextInput], carrying the reason - never null and never a silent
-/// no-op. A headless run, the web backend and (see `x11_compose.dart` for the
-/// evidence) the X11 backend all take that path, so a field mounted on them
-/// keeps working exactly as it does today: the platform's own keyboard
-/// translation still produces [TextInputEvent]s, and only *composition* is
-/// absent.
+/// no-op. A headless run, the web backend and the X11 backend all take that
+/// path, so a field mounted on them keeps working exactly as it does today:
+/// the platform's own keyboard translation still produces [TextInputEvent]s,
+/// and only *composition* is absent.
+///
+/// On X11 that sentence is now literal rather than aspirational. The core
+/// protocol keyboard map produces the text (`backends/x11/x11_keyboard.dart`
+/// records why that route was taken and what it does not cover), and dead keys
+/// compose through `compose_sequences.dart` - so accented Latin input works
+/// with no input method at all. What is absent is XIM, and therefore CJK; the
+/// same file says so.
 ///
 /// ## What is deliberately not in this contract
 ///

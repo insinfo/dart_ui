@@ -294,6 +294,11 @@ final class GlVectorReplay {
   void dispose() {
     gradientCache?.clear();
     recorder.sparsePlanCache.clear();
+    // Like the sparse plans: CPU-only, so a device loss does not require
+    // dropping it, but this wiring is rebuilt whole on recovery and a cache
+    // left behind would be meshes nothing can reach. Its GPU counterpart -
+    // `TessellatedGlExecutor`'s buffer inventory - is dropped by the device.
+    recorder.tessellationCache.clear();
     repetition.clear();
   }
 

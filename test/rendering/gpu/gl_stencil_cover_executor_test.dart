@@ -105,14 +105,18 @@ void main() {
     expect(driver.events, <String>[
       'create:desktop',
       'upload:6',
+      'coverUpload:6',
       'begin:100x80:0',
-      'clear:0,0,10,10:0/255',
+      'scissor:0,0,10,10',
+      'clear:0/255',
+      'scissor:0,0,10,10',
       'state:false:always:incrementWrap/decrementWrap',
       'triangles:0+6',
+      'scissor:0,0,10,10',
       'state:true:notEqualZero:zero/zero',
       'blend:one/oneMinusSrcAlpha',
       'color:0.25,0.125,0.0,0.5',
-      'cover:0,0,10,10',
+      'cover:0',
       'end',
     ]);
   });
@@ -259,6 +263,7 @@ final class _FakeDriver implements StencilCoverGlDriver {
   final List<String> events = <String>[];
   String vertexSource = '';
   int uploadedVertices = 0;
+  int uploadedCoverVertices = 0;
   int creates = 0;
   int deletes = 0;
   int discards = 0;
@@ -286,6 +291,12 @@ final class _FakeDriver implements StencilCoverGlDriver {
   }
 
   @override
+  void uploadCoverVertices(Float32List vertices, int vertexCount) {
+    uploadedCoverVertices = vertexCount;
+    events.add('coverUpload:$vertexCount');
+  }
+
+  @override
   void beginStencilCoverPass({
     required int viewportWidth,
     required int viewportHeight,
@@ -294,18 +305,19 @@ final class _FakeDriver implements StencilCoverGlDriver {
       events.add('begin:${viewportWidth}x$viewportHeight:$yFlip');
 
   @override
-  void clearStencil({
+  void setScissor({
     required double left,
     required double top,
     required double right,
     required double bottom,
-    required int value,
-    required int writeMask,
   }) =>
       events.add(
-        'clear:${_n(left)},${_n(top)},${_n(right)},${_n(bottom)}:'
-        '$value/$writeMask',
+        'scissor:${_n(left)},${_n(top)},${_n(right)},${_n(bottom)}',
       );
+
+  @override
+  void clearStencil({required int value, required int writeMask}) =>
+      events.add('clear:$value/$writeMask');
 
   @override
   void setPassState(StencilCoverPassState state) => events.add(
@@ -333,15 +345,8 @@ final class _FakeDriver implements StencilCoverGlDriver {
   }
 
   @override
-  void drawCover({
-    required double left,
-    required double top,
-    required double right,
-    required double bottom,
-  }) =>
-      events.add(
-        'cover:${_n(left)},${_n(top)},${_n(right)},${_n(bottom)}',
-      );
+  void drawCover({required int firstVertex}) =>
+      events.add('cover:$firstVertex');
 
   @override
   void endStencilCoverPass() => events.add('end');
