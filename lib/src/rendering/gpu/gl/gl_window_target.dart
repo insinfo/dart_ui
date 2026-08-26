@@ -62,6 +62,7 @@ import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
 import '../../framebuffer.dart';
+import '../../present_mode.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
@@ -81,6 +82,7 @@ import '../vector/vector_plan_cache.dart';
 import 'gl_backend.dart';
 import 'gl_bindings.dart';
 import 'gl_framebuffer_pool.dart';
+import 'gl_present_pacer.dart';
 import 'gl_surface_descriptor.dart';
 import 'gl_vector_path_recorder.dart';
 import 'gl_vector_replay.dart';
@@ -88,7 +90,7 @@ import 'gl_vector_replay.dart';
 /// A render target backed by a window's back buffer.
 final class GlWindowTarget
     with DisposableMixin
-    implements DisplayListRenderTarget, GlRecoverableTarget {
+    implements DisplayListRenderTarget, GlRecoverableTarget, PresentPacer {
   /// Wraps [surface] for [device].
   ///
   /// The constructor is public - unlike [GlOffscreenTarget]'s - because this
@@ -369,6 +371,50 @@ final class GlWindowTarget
   /// How the back buffer reaches the screen. Exposed so an owner can set the
   /// swap interval without holding the platform object separately.
   GlSwapChain get swapChain => _surface.swapChain;
+
+  /// This window's presentation pacing, as a [PresentPacer].
+  ///
+  /// The typed answer to "how should frames reach the display", where
+  /// [swapChain] is the untyped one. `PresentMode` existed as a contract with
+  /// no implementation at all until this getter: nothing outside
+  /// `present_mode.dart` implemented [PresentPacer], so an application asking
+  /// for a mode had nowhere to ask. `GlSwapChainPresentPacer` turns
+  /// [GlSwapChain.setSwapInterval] into that answer for every GL window -
+  /// WGL, GLX and EGL alike - and refuses [PresentMode.mailbox] by name
+  /// because no swap-interval API can express it.
+  ///
+  /// Built once and kept, because the pacer remembers what is in force: a
+  /// fresh instance per call would report [PresentMode.fifo] as the applied
+  /// mode in a refusal even after the owner had moved the window to
+  /// [PresentMode.immediate].
+  ///
+  /// Type-tested for exactly as `present_mode.dart` documents:
+  ///
+  /// ```dart
+  /// if (target case final PresentPacer pacer) { ... }
+  /// ```
+  ///
+  /// so this class *implements* [PresentPacer] as well as exposing it, and an
+  /// owner holding a bare `RenderTarget` needs no cast to a GL type.
+  late final GlSwapChainPresentPacer presentPacer = GlSwapChainPresentPacer(
+    _surface.swapChain,
+    surfaceDescription: 'the OpenGL window back buffer '
+        '(${_surface.pixelWidth}x${_surface.pixelHeight})',
+  );
+
+  @override
+  Set<PresentMode> get supportedPresentModes =>
+      presentPacer.supportedPresentModes;
+
+  @override
+  PresentMode get presentMode => presentPacer.presentMode;
+
+  @override
+  PresentModeOutcome requestPresentMode(PresentMode mode) =>
+      presentPacer.requestPresentMode(mode);
+
+  @override
+  bool awaitVerticalBlank() => presentPacer.awaitVerticalBlank();
 
   @override
   GlWindowSurfaceDescriptor get surface => _surface;

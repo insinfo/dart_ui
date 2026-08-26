@@ -1,4 +1,5 @@
-/// Production Direct3D 12 adapter for the chained flatten + binning pipeline.
+/// Production Direct3D 12 adapter for the chained flatten, coarse-binning and
+/// segment-binning pipeline.
 ///
 /// The two single-stage drivers next to this one each own a [D3d12ComputePass]
 /// and call [D3d12ComputePass.run], which closes a command list and waits on a
@@ -18,6 +19,17 @@
 /// asked, and a `readBack: false` submission copies nothing and waits for
 /// nothing - which is the shape a frame path would use, and the shape that
 /// separates the cost of submitting from the cost of waiting.
+///
+/// ## The one place a stage reads another stage's buffer
+///
+/// The segment stage is the pipeline's first real consumer: it needs the tile
+/// index and the tile references the coarse stage wrote, and in a single
+/// submission those never leave the device. So its first two read-write slots
+/// are [D3d12ComputeAlias]es naming the coarse pass's own buffers, and nothing
+/// is copied, transitioned or waited on between the two. `D3d12SegmentPass`
+/// spells that binding, and the unchained driver next door spells the seeded
+/// alternative, so both shapes dispatch the same kernels over the same
+/// registers.
 library;
 
 import 'dart:typed_data';
@@ -26,9 +38,11 @@ import '../../../rendering/gpu/compute/compute_curve_scene.dart';
 import '../../../rendering/gpu/compute/compute_raster_pipeline.dart';
 import '../../../rendering/gpu/compute/d3d12_compute_binning_executor.dart';
 import '../../../rendering/gpu/compute/d3d12_compute_flatten_executor.dart';
+import '../../../rendering/gpu/compute/d3d12_compute_segment_executor.dart';
 import 'd3d12_compute_binning_driver.dart';
 import 'd3d12_compute_flatten_driver.dart';
 import 'd3d12_compute_pass.dart';
+import 'd3d12_compute_segment_driver.dart';
 import 'd3d12_device.dart';
 
 /// The token [D3d12ComputeRasterDriver.createRasterPipeline] returns.
@@ -46,13 +60,16 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
             D3d12FlattenPass.create(device, deviceZeroFill: deviceZeroFill),
         _binning =
             D3d12BinningPass.create(device, deviceZeroFill: deviceZeroFill),
+        _segments =
+            D3d12SegmentPass.create(device, deviceZeroFill: deviceZeroFill),
         _chain = D3d12ComputeChain(device, label: 'raster');
 
   final D3d12ComputePass _flatten;
   final D3d12ComputePass _binning;
+  final D3d12ComputePass _segments;
   final D3d12ComputeChain _chain;
 
-  bool get isBuilt => _flatten.isBuilt && _binning.isBuilt;
+  bool get isBuilt => _flatten.isBuilt && _binning.isBuilt && _segments.isBuilt;
 
   @override
   int get submissions => _chain.submissions;
@@ -67,8 +84,10 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
   int createRasterPipeline() {
     D3d12FlattenPass.assertSlotContract();
     D3d12BinningPass.assertSlotContract();
+    D3d12SegmentPass.assertSlotContract();
     _flatten.build();
     _binning.build();
+    _segments.build();
     return _kRasterPipelineToken;
   }
 
@@ -77,6 +96,7 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
     if (pipeline != _kRasterPipelineToken) return;
     _flatten.release();
     _binning.release();
+    _segments.release();
     _chain.release();
   }
 
@@ -84,6 +104,7 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
   void discardNativeResources() {
     _flatten.discard();
     _binning.discard();
+    _segments.discard();
     _chain.discard();
   }
 
@@ -97,6 +118,9 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
     required Uint32List binningConstants,
     required ComputeBinningDispatch binningDispatch,
     required bool readBack,
+    ComputeSegmentScene? segmentScene,
+    Uint32List? segmentConstants,
+    ComputeSegmentBinningDispatch? segmentDispatch,
   }) {
     if (pipeline != _kRasterPipelineToken || !isBuilt) {
       throw StateError('the raster pipeline does not belong to this driver');
@@ -145,6 +169,32 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
       ),
     ];
 
+    if (segmentScene != null) {
+      if (segmentConstants == null || segmentDispatch == null) {
+        throw ArgumentError(
+          'a chained segment stage needs its own constants and dispatch',
+        );
+      }
+      work.add(
+        D3d12ComputeWork(
+          _segments,
+          rootConstants: segmentConstants,
+          uploads: D3d12SegmentPass.uploads(segmentScene),
+          uavBytes: D3d12SegmentPass.uavBytes(segmentDispatch),
+          stages: D3d12SegmentPass.stages(segmentDispatch),
+          // Not a copy of the coarse stage's output: its buffers, by address.
+          // A copy would need the coarse stage to have finished, and a fence
+          // is what this pipeline exists to remove.
+          uavSources: D3d12SegmentPass.sources(
+            aliasBins: D3d12ComputeAlias(_binning, kD3d12BinningBinsSlot),
+            aliasReferences:
+                D3d12ComputeAlias(_binning, kD3d12BinningReferencesSlot),
+          ),
+          reads: readBack ? D3d12SegmentPass.reads : const <int>[],
+        ),
+      );
+    }
+
     if (!readBack) {
       // One list, no copies, no fence: nothing is read, so nothing has to have
       // finished. `ComputeRasterPipeline.finish` is where the wait went.
@@ -171,12 +221,16 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
         commands: Uint32List.view(bin[2].buffer, 0, tileCount * 3),
         offsets: Uint32List.view(bin[3].buffer, 0, tileCount + 1),
       ),
+      segments: segmentDispatch == null
+          ? null
+          : D3d12SegmentPass.readbackOf(back[2], segmentDispatch),
     );
   }
 
   void dispose() {
     _flatten.dispose();
     _binning.dispose();
+    _segments.dispose();
     _chain.dispose();
   }
 
@@ -184,6 +238,7 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
   void disposeAfterDeviceLoss() {
     _flatten.disposeAfterDeviceLoss();
     _binning.disposeAfterDeviceLoss();
+    _segments.disposeAfterDeviceLoss();
     _chain.disposeAfterDeviceLoss();
   }
 }

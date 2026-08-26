@@ -85,13 +85,54 @@ const int kD3d12CompileIeeeStrictness = 1 << 13;
 
 /// One dispatch in a chain: which compiled entry point, and how many groups.
 final class D3d12ComputeStage {
-  const D3d12ComputeStage(this.entryPoint, this.groups);
+  const D3d12ComputeStage(this.entryPoint, this.groups, {this.groupsY = 1});
 
   /// Index into the pass's entry-point list.
   final int entryPoint;
 
   /// Thread groups on x. A stage of zero groups is skipped.
   final int groups;
+
+  /// Thread groups on y, one by default.
+  ///
+  /// The segment-binning stage is the reason this is not always one. Its work
+  /// is a *ragged* rectangle - one thread per (draw, segment of that draw) -
+  /// and the two ways to cover a ragged space are a prefix sum over the draws
+  /// plus a search per thread, or a rectangle as wide as the widest draw with
+  /// the short rows retiring at the guard. The second costs threads that exit
+  /// on their first instruction; the first costs a scan and a binary search on
+  /// every thread that does work. This picks the second, and `groupsY` is what
+  /// makes the draw index a dispatch dimension rather than a division.
+  final int groupsY;
+}
+
+/// A read-write slot bound to *another* pass's buffer instead of this pass's.
+///
+/// The chained pipeline is why this exists. The segment-binning stage reads the
+/// tile index and the tile references that the coarse-binning stage wrote, and
+/// in a single submission those are still on the device: there is no readback
+/// between the two, which is the entire point. So the consumer binds the
+/// producer's buffer by address.
+///
+/// **They are read-write slots on both sides, and that is deliberate.** A root
+/// SRV requires `NON_PIXEL_SHADER_RESOURCE`, and these buffers live in
+/// `UNORDERED_ACCESS` from creation to release; binding one as an SRV would
+/// mean a transition pair per submission around a resource the producer may
+/// still be writing. Declaring the consumer's slot `RWStructuredBuffer` and
+/// never writing it needs no transition at all, and the UAV barrier the chain
+/// already records between every dispatch is exactly the ordering guarantee an
+/// aliased read needs.
+///
+/// An aliased slot is not sized, not zero-filled and not read back by the
+/// consumer: it is not the consumer's buffer.
+final class D3d12ComputeAlias {
+  const D3d12ComputeAlias(this.pass, this.slot);
+
+  /// The pass that owns the buffer.
+  final D3d12ComputePass pass;
+
+  /// Its read-write slot index.
+  final int slot;
 }
 
 /// A compute pass over `srvCount` read-only and `uavCount` read-write buffers.
@@ -206,9 +247,10 @@ final class D3d12ComputePass {
     required List<int> uavBytes,
     required List<D3d12ComputeStage> stages,
     required List<int> reads,
+    List<Object?>? uavSources,
   }) {
     _throwIfDisposed();
-    _validate(rootConstants, uploads, uavBytes);
+    _validate(rootConstants, uploads, uavBytes, uavSources);
     if (_device.frames.isRecording) {
       throw StateError(
         'a Direct3D 12 command list is already recording; the $label pass owns '
@@ -220,7 +262,7 @@ final class D3d12ComputePass {
     // Before the list is opened, not after: growing a buffer waits for the GPU
     // to be idle, and a wait issued while a list is recording reads as if the
     // open list were part of what is being waited for.
-    _ensureBuffers(uavBytes);
+    _ensureBuffers(uavBytes, uavSources);
     final List<int> sections = <int>[];
     final List<int> sizes = <int>[];
     var cursor = 0;
@@ -245,6 +287,7 @@ final class D3d12ComputePass {
         uploads: uploads,
         uavBytes: uavBytes,
         stages: stages,
+        uavSources: uavSources,
       );
       for (var i = 0; i < reads.length; i++) {
         copyOutSlot(
@@ -280,12 +323,18 @@ final class D3d12ComputePass {
     required List<TypedData> uploads,
     required List<int> uavBytes,
     required List<D3d12ComputeStage> stages,
+    List<Object?>? uavSources,
   }) {
     final List<int> addresses = <int>[
       for (final TypedData data in uploads) _stage(data),
     ];
     for (var slot = 0; slot < uavCount; slot++) {
+      final Object? source = uavSources?[slot];
+      // An aliased slot is another pass's buffer. Zeroing it would erase what
+      // this pass was chained here to read.
+      if (source is D3d12ComputeAlias) continue;
       _zero(list, _buffers[slot], uavBytes[slot]);
+      if (source is TypedData) _seed(list, _buffers[slot], source);
     }
 
     for (var i = 0; i < rootConstants.length; i++) {
@@ -304,15 +353,19 @@ final class D3d12ComputePass {
           list.pointer, 1 + slot, addresses[slot]);
     }
     for (var slot = 0; slot < uavCount; slot++) {
+      final Object? source = uavSources?[slot];
+      final int address = source is D3d12ComputeAlias
+          ? source.pass._buffers[source.slot].address
+          : _buffers[slot].address;
       list.setComputeRootUnorderedAccessView(
-          list.pointer, 1 + srvCount + slot, _buffers[slot].address);
+          list.pointer, 1 + srvCount + slot, address);
     }
 
     for (final D3d12ComputeStage stage in stages) {
-      if (stage.groups <= 0) continue;
+      if (stage.groups <= 0 || stage.groupsY <= 0) continue;
       list
         ..setPipelineState(list.pointer, _pipelines[stage.entryPoint])
-        ..dispatch(list.pointer, stage.groups, 1, 1);
+        ..dispatch(list.pointer, stage.groups, stage.groupsY, 1);
       _uavBarrier(list);
     }
   }
@@ -324,17 +377,31 @@ final class D3d12ComputePass {
   /// part of what is being waited for. A chained caller reserves for *every*
   /// pass before it opens its list.
   void reserve(
-      Uint32List rootConstants, List<TypedData> uploads, List<int> uavBytes) {
+    Uint32List rootConstants,
+    List<TypedData> uploads,
+    List<int> uavBytes, [
+    List<Object?>? uavSources,
+  ]) {
     _throwIfDisposed();
-    _validate(rootConstants, uploads, uavBytes);
-    _ensureBuffers(uavBytes);
+    _validate(rootConstants, uploads, uavBytes, uavSources);
+    _ensureBuffers(uavBytes, uavSources);
   }
 
   /// The byte size of read-write slot [slot], as the last [reserve] set it.
   int slotBytes(int slot) => _buffers[slot].bytes;
 
   void _validate(
-      Uint32List rootConstants, List<TypedData> uploads, List<int> uavBytes) {
+    Uint32List rootConstants,
+    List<TypedData> uploads,
+    List<int> uavBytes, [
+    List<Object?>? uavSources,
+  ]) {
+    if (uavSources != null && uavSources.length != uavCount) {
+      throw ArgumentError(
+        'the $label pass declares $uavCount read-write buffers, got '
+        '${uavSources.length} sources',
+      );
+    }
     if (!isBuilt) {
       throw StateError('the $label compute pass is not built');
     }
@@ -506,6 +573,44 @@ final class D3d12ComputePass {
     _transition(buffer, d3d12ResourceStateUnorderedAccess);
   }
 
+  /// Copies [data] over the front of a stage buffer, from upload memory.
+  ///
+  /// The other half of [D3d12ComputeAlias]. A slot the chained pipeline binds
+  /// to the producing pass's buffer is, in the unchained oracle shape, this
+  /// pass's own buffer holding the same numbers uploaded from the CPU - so one
+  /// shader reads the same register whether its input came from the device or
+  /// from a `ComputeTilePlan`, and the parity test and the chain exercise the
+  /// same kernels rather than two spellings of them.
+  ///
+  /// The slot is zeroed first and seeded second: a seed shorter than the slot
+  /// leaves zeros behind it rather than the previous run's values.
+  void _seed(D3d12GraphicsCommandList list, _StageBuffer buffer, TypedData d) {
+    final int bytes = d.lengthInBytes;
+    if (bytes <= 0) return;
+    if (bytes > buffer.bytes) {
+      throw StateError(
+        'a $bytes byte seed does not fit a ${buffer.bytes} byte $label buffer',
+      );
+    }
+    final D3d12UploadRange? source =
+        _device.frames.reserveUpload(bytes, alignment: 256);
+    if (source == null) {
+      throw StateError(
+        'a $bytes byte seed for a $label buffer did not fit in an upload '
+        'buffer',
+      );
+    }
+    source.cpu.asTypedList(bytes).setRange(
+          0,
+          bytes,
+          Uint8List.view(d.buffer, d.offsetInBytes, bytes),
+        );
+    _transition(buffer, d3d12ResourceStateCopyDest);
+    list.copyBufferRegion(
+        list.pointer, buffer.pointer, 0, source.resource, source.offset, bytes);
+    _transition(buffer, d3d12ResourceStateUnorderedAccess);
+  }
+
   /// Writes the zeros into [_zeros], once per growth, from upload memory.
   ///
   /// Recorded into the same list rather than in a submission of its own: a
@@ -556,16 +661,30 @@ final class D3d12ComputePass {
   // Resources
   // -------------------------------------------------------------------
 
-  void _ensureBuffers(List<int> uavBytes) {
+  void _ensureBuffers(List<int> uavBytes, [List<Object?>? uavSources]) {
     while (_buffers.length < uavCount) {
       _buffers.add(_StageBuffer(_buffers.length));
     }
     var widest = 0;
-    for (final int bytes in uavBytes) {
-      if (bytes > widest) widest = bytes;
+    for (var slot = 0; slot < uavBytes.length; slot++) {
+      if (uavSources?[slot] is D3d12ComputeAlias) continue;
+      if (uavBytes[slot] > widest) widest = uavBytes[slot];
     }
     _ensureZeros(widest);
     for (var slot = 0; slot < uavCount; slot++) {
+      // An aliased slot is sized, allocated and zeroed by the pass that owns
+      // it; this one keeps the minimum allocation so its own address stays
+      // valid if the alias is dropped on a later run.
+      if (uavSources?[slot] is D3d12ComputeAlias) {
+        final _StageBuffer borrowed = _buffers[slot];
+        if (borrowed.pointer == nullptr) {
+          borrowed.pointer = _createUavBuffer(_kMinimumUploadBytes);
+          borrowed
+            ..bytes = _kMinimumUploadBytes
+            ..state = d3d12ResourceStateUnorderedAccess;
+        }
+        continue;
+      }
       final _StageBuffer buffer = _buffers[slot];
       // A root UAV still needs a real address even for a chain that never
       // indexes it, so an empty slot gets the minimum allocation rather than
@@ -931,6 +1050,7 @@ final class D3d12ComputeWork {
     required this.uavBytes,
     required this.stages,
     this.reads = const <int>[],
+    this.uavSources,
   });
 
   final D3d12ComputePass pass;
@@ -938,6 +1058,12 @@ final class D3d12ComputeWork {
   final List<TypedData> uploads;
   final List<int> uavBytes;
   final List<D3d12ComputeStage> stages;
+
+  /// Per read-write slot: null for this pass's own zero-filled buffer, a
+  /// [TypedData] to seed it from the CPU, or a [D3d12ComputeAlias] naming an
+  /// earlier pass's buffer in this same list. Null for the whole list means
+  /// every slot is this pass's own.
+  final List<Object?>? uavSources;
 
   /// Read-write slots of [pass] to copy back. Empty is legal and is the point:
   /// a stage whose output only the next stage reads never leaves the device.
@@ -1025,7 +1151,12 @@ final class D3d12ComputeChain {
 
     // Every pass, before the list opens: see the class comment.
     for (final D3d12ComputeWork item in work) {
-      item.pass.reserve(item.rootConstants, item.uploads, item.uavBytes);
+      item.pass.reserve(
+        item.rootConstants,
+        item.uploads,
+        item.uavBytes,
+        item.uavSources,
+      );
     }
 
     final List<int> sections = <int>[];
@@ -1057,6 +1188,7 @@ final class D3d12ComputeChain {
           uploads: item.uploads,
           uavBytes: item.uavBytes,
           stages: item.stages,
+          uavSources: item.uavSources,
         );
       }
       if (readBack) {

@@ -8678,10 +8678,14 @@ de bindings.
    fora. Ver §68.1;
 5. **ligar o que está escrito e solto** (§68.2). Fechados em 26/08/2026:
    Vulkan e D3D12 no seletor (Vulkan como experimental, porque não desenha
-   texto), `RenderPolicy.restrict` no planejador e `ContentHintAwareSink` no
-   `GpuRasterSink`. Abertos: `GlVideoDevice`, `FilePicker` no editor vetorial e
-   `FrameLoopController` — este último com a política duplicada já removida e a
-   decisão registrada em §68.2;
+   texto), `RenderPolicy.restrict` no planejador, `ContentHintAwareSink` no
+   `GpuRasterSink`, o `FilePicker` no editor vetorial, e o `PresentMode`, que
+   **não tinha implementação alguma** apesar de a §68.3 nomear um arquivo que
+   não existia. `GlVideoDevice` foi **medido e deliberadamente não ligado** —
+   a tabela e o número que inverteriam a decisão estão na §68.2, junto com o
+   `GL_INVALID_OPERATION` que a medição encontrou nele. Aberto:
+   `FrameLoopController` — com a política duplicada já removida e a decisão
+   registrada em §68.2;
 6. ~~**rodar o Wayland contra um compositor de verdade**~~ — feito em
    26/08/2026 (§68.1). `tool/wayland_backend_smoke.dart` roda sob Weston no
    runner Linux a cada push, validou a camada FFI nos dois sentidos do
@@ -9046,24 +9050,123 @@ evitar.
      fixa a política — inclusive a garantia de coexistência: em `onDemand`
      nenhum frame vence nunca, então ligá-lo não move nada numa aplicação
      dirigida por invalidação.
-2. **Vídeo.** `GlVideoDevice` é o único allocator e não é referenciado por
-   ninguém; o próprio arquivo diz que ligá-lo ao sink de batching "é uma decisão
-   separada e posterior".
+2. ~~**Vídeo.** `GlVideoDevice` é o único allocator e não é referenciado por
+   ninguém.~~ **Medido e decidido em 26/08/2026: não ligar, e o número está
+   abaixo.** `tool/gl_video_path_bench.dart` compara os dois caminhos no mesmo
+   contexto GL real (Intel UHD Graphics, 1920x1080, 120 quadros distintos,
+   `glFinish` nos dois lados), em ms por quadro:
 
-Some-se a isso o **`FilePicker` que existe e que o editor vetorial não usa**.
+   | formato    | `GpuVideoImageCache` (hoje) | `GlVideoDevice` |
+   |------------|-----------------------------|-----------------|
+   | `bgra8888` | **3,44**                    | 7,63            |
+   | `nv12`     | 67,32                       | **2,45**        |
+
+   O que decide não é a razão de 27x a favor do `GlVideoDevice` em NV12; é
+   **quem produz NV12 neste repositório: ninguém**. Os três decodificadores —
+   `video_decoder_windows_mf.dart`, `video_decoder_linux_gstreamer.dart` e
+   `macos_native_video_decoder.dart` — emitem `VideoPixelFormat.bgra8888`, os
+   três, conferido no código. A rota de conversão de 67 ms nunca é tomada, e o
+   formato que *é* tomado é aquele em que ligar o `GlVideoDevice` custa o dobro:
+   não há conversão para mover para a GPU, e o que se acrescenta é um programa
+   próprio, um VAO próprio e um `glDrawArrays` fora do lote do
+   `GpuRasterSink`. Ligá-lo hoje seria pagar por uma otimização cuja entrada
+   não existe.
+
+   **O número que inverte a decisão está nomeado:** no dia em que um
+   decodificador emitir planos YUV — saída acelerada por hardware de MF, do
+   VideoToolbox ou de VAAPI, que é o passo natural do §16 — a linha `nv12` da
+   tabela passa a valer e o `GlVideoDevice` é a resposta certa. Ele fica
+   escrito por isso.
+
+   **E medir custou mais do que a medição.** Ao ser executado contra um driver
+   pela primeira vez na vida, `GlVideoDevice.drawFrame` levantou
+   `GL_INVALID_OPERATION` (0x502) em **toda** chamada: `_setOpacity` escrevia um
+   uniform `float` com `glUniform4f`, sobre a leitura — registrada em comentário
+   no arquivo — de que os componentes extras seriam ignorados. Não são: o
+   `glUniform` exige que a contagem de componentes case com o tamanho
+   declarado, e a divergência é `GL_INVALID_OPERATION` com o uniform intacto. O
+   próprio `_checkError` da classe transformava isso num `StateError` no
+   primeiro quadro. **Corrigido** (`glUniform1f`, acrescentado a
+   `gl_bindings.dart`), e coberto por
+   `test/rendering/gpu/video/gl_video_device_test.dart` — três casos contra
+   driver real, incluindo paridade NV12 contra `convertVideoFrameToRgba`.
+   Verificado que os três falham ao reintroduzir o bug e passam com a correção.
+   A lição é a da §68.6 e não é sobre vídeo: **código completo, revisado e
+   nunca executado não é código que funciona**, e a única prova era rodá-lo.
+
+3. ~~**`FilePicker` que o editor vetorial não usa.**~~ **Fechado**, por outra
+   frente, antes desta auditoria: `examples/vector_editor_demo/main_window.dart`
+   chama `FilePicker.openFile` em `_open` e `FilePicker.saveFile` em
+   `_saveAsAsync`, com filtros por formato, `defaultExtension`, e um recuo
+   nomeado para gravar ao lado do processo quando a plataforma não tem diálogo.
+   O comentário que dizia "não há seletor de arquivo neste framework" foi
+   substituído pelo que diz o contrário. Conferido no código em 26/08/2026.
 
 ## 68.3 Contratos sem implementação
 
 - **Textura externa.** `GpuForeignTextureImporter` e `ForeignTextureDescriptor`
   descrevem handle DXGI, `EGLImage` e `IOSurface`, e
   `RendererCapabilities.supportsExternalTextures` é **falso em todos os
-  backends** deste repositório;
+  backends** deste repositório. **Continua aberto em 26/08/2026, e o tamanho
+  foi avaliado antes de não entrar:** são três importadores independentes, um
+  por plataforma, cada um com o seu par de extensões
+  (`WGL_NV_DX_interop2` / `EXT_external_objects` no Win32+GL,
+  `EGL_KHR_image_base` + `EGL_EXT_image_dma_buf_import` no Linux,
+  `CVOpenGLTextureCache` / `IOSurface` no macOS), e nenhum deles tem produtor
+  neste repositório — o mesmo diagnóstico que decidiu o `GlVideoDevice` na
+  §68.2, e pela mesma razão: os três decodificadores entregam bytes
+  `bgra8888`, não handles. É o maior dos itens da §68.3 e o de entrada menos
+  provável; a ordem certa é um decodificador que produza um handle antes de um
+  importador que o consuma;
 - **Decodificação de vídeo.** `lib/src/graphics/video/` diz na primeira linha
   que **nada ali decodifica nada**: um frame chega como planos de bytes
   (NV12, I420, YUY2) que outra pessoa produziu;
-- **`PresentMode`.** `fifo` e `immediate` são reais no WGL (`wglSwapIntervalEXT`)
-  e no GDI (`DwmFlush`); `mailbox` é **recusado por nome** nos dois; o D3D12
-  tem só o contrato;
+- ~~**`PresentMode`.**~~ **Era pior do que esta linha dizia, e foi fechado em
+  26/08/2026.** A auditoria de 23/08 registrou `fifo` e `immediate` como "reais
+  no WGL e no GDI", nomeando `win32_present_mode.dart`. **Esse arquivo não
+  existia.** `PresentPacer` não tinha *nenhuma* implementação fora de
+  `UnpacedPresentation` — que é a classe para superfícies que não podem
+  sincronizar com nada — e `present_mode.dart` sequer estava exportado de
+  `lib/dart_ui.dart`, então o vocabulário era inalcançável de fora do pacote.
+  Toda aplicação que pedisse um modo estava pedindo a ninguém. O que existe
+  agora:
+
+  - **`GlSwapChainPresentPacer`** (`rendering/gpu/gl/gl_present_pacer.dart`),
+    escrito contra `GlSwapChain.setSwapInterval` e **não** contra o Win32. Essa
+    costura já é `wglSwapIntervalEXT` no Win32, `glXSwapIntervalEXT` no X11 e
+    `eglSwapInterval` no EGL, então uma implementação pauta as três janelas GL
+    que este framework abre — o arquivo que a §68.3 pedia teria sido copiado
+    duas vezes e teria divergido. `GlWindowTarget` **implementa** `PresentPacer`
+    delegando a ele, então o dono que segura um `RenderTarget` puro faz o
+    type-test documentado e recebe.
+  - **`GdiPresentPacer`** (`backends/win32/win32_present_mode.dart`, o arquivo
+    que a seção nomeava), ligado ao `Win32CpuPresenter`: `fifo` é `DwmFlush`,
+    `immediate` é não bloquear. Começa em `immediate` de propósito — é o que o
+    caminho *fazia* antes de ter pauta, e ligar um contrato não pode mudar
+    comportamento que ninguém pediu para mudar.
+
+  **`mailbox` continua recusado por nome nos dois, e a recusa agora é código.**
+  A razão é estrutural e está escrita nas duas recusas: um *intervalo* de swap
+  é uma contagem de blanks verticais e nenhum valor dele significa "substitua o
+  quadro enfileirado"; e um DIB sobrescrito no lugar não é fila em que se possa
+  substituir nada. Recusar é a resposta certa nesses dois, e a §68.3 estava
+  certa quanto a isso.
+
+  **Onde `mailbox` é implementável de verdade, e onde já é real:** o D3D12
+  (`FLIP_DISCARD` + `BufferCount >= 3` + objeto aguardável), que exige mudar a
+  *criação* da swap chain e não a chamada de present — continua como contrato.
+  E o **Vulkan já escolhe `VK_PRESENT_MODE_MAILBOX_KHR`** em
+  `vulkan_swapchain.dart` quando `VulkanPresentPolicy.lowLatency` pede e a
+  superfície reporta: mailbox é real ali, apenas ainda não alcançável por este
+  vocabulário.
+
+  **Prova em janela real** (`tool/present_mode_smoke.dart`, Intel UHD Graphics,
+  painel de 60 Hz): `fifo` 60,0 fps, `immediate` 1564,3 fps — 26x de separação,
+  que é a única evidência possível de que o `wglSwapIntervalEXT` chegou ao
+  driver — e `DwmFlush` bloqueando 14,8 ms, um intervalo de refresh. Nenhum
+  desses três números é produzível por um teste headless, que é exatamente por
+  que a ferramenta existe *ao lado* de `test/rendering/present_mode_test.dart`
+  (10 casos, os dois pacers, com dublês injetados) e não no lugar dela;
 - **Portais XDG.** A §16.13 os pede para diálogos e integração em ambientes
   sandboxed, e o que existe é subprocesso de helper (`zenity`, `kdialog`,
   `yad`) — que falha exatamente no caso que o portal resolve.

@@ -20,12 +20,21 @@ import '../../geometry/transform2d.dart';
 import '../../graphics/display_list.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/cpu_renderer.dart';
+import '../../rendering/present_mode.dart';
 import '../../rendering/renderer.dart';
 import 'win32_dib_surface.dart';
+import 'win32_present_mode.dart';
 import 'win32_window.dart';
 
 /// Retains and presents the most recent CPU display list for one window.
-final class Win32CpuPresenter with DisposableMixin {
+///
+/// Also the GDI path's [PresentPacer]. `PresentMode` was a contract with no
+/// implementation anywhere in this repository - see `win32_present_mode.dart`
+/// for what that meant - and this is where the GDI half of it is answered:
+/// [PresentMode.fifo] by `DwmFlush`, [PresentMode.immediate] by not blocking,
+/// and [PresentMode.mailbox] refused by name because one DIB blitted over in
+/// place is not a queue anything can replace a frame in.
+final class Win32CpuPresenter with DisposableMixin implements PresentPacer {
   Win32CpuPresenter(Win32Window window)
       : this.withSurfaceProvider(
           surfaceProvider: () => window.dibSurface,
@@ -61,6 +70,32 @@ final class Win32CpuPresenter with DisposableMixin {
   /// Completes after resize/DPI-triggered replay already queued by this
   /// presenter. Primarily useful to make lifecycle tests deterministic.
   Future<void> get idle => _automaticWork;
+
+  /// The GDI pacing this presenter delegates [PresentPacer] to.
+  ///
+  /// Injectable so a test can drive the refusals without a desktop compositor
+  /// - which is also what a CI container is.
+  late final GdiPresentPacer pacer = _pacer ??
+      GdiPresentPacer(
+        surfaceDescription: 'the Win32 DIB window surface',
+      );
+  GdiPresentPacer? _pacer;
+
+  /// Replaces the pacer. For tests; a running application has exactly one.
+  set debugPacer(GdiPresentPacer value) => _pacer = value;
+
+  @override
+  Set<PresentMode> get supportedPresentModes => pacer.supportedPresentModes;
+
+  @override
+  PresentMode get presentMode => pacer.presentMode;
+
+  @override
+  PresentModeOutcome requestPresentMode(PresentMode mode) =>
+      pacer.requestPresentMode(mode);
+
+  @override
+  bool awaitVerticalBlank() => pacer.awaitVerticalBlank();
 
   /// Rasterises [list], copies it into the current DIB, and presents it.
   ///
@@ -149,6 +184,12 @@ final class Win32CpuPresenter with DisposableMixin {
     if (failure != null) {
       return PresentResult(status: PresentStatus.failed, diagnostic: failure);
     }
+    // The pacing, and the only place in this class that knows there is any.
+    // Under `PresentMode.fifo` this blocks until the desktop compositor's next
+    // present; under `immediate` it returns false without waiting, which is
+    // the mode's whole meaning. The wait is *after* the blit, not before it,
+    // so the frame just produced is the one the compositor picks up.
+    pacer.awaitVerticalBlank();
     return const PresentResult(status: PresentStatus.presented);
   }
 

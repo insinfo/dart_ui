@@ -155,6 +155,11 @@ export 'src/rendering/path/coverage_span_sink.dart';
 export 'src/rendering/path/fill_rule.dart';
 export 'src/rendering/path/scanline_filler.dart';
 export 'src/rendering/path/stroker.dart';
+// `PresentMode` and `PresentPacer`. An application that wants to say how its
+// frames should reach the display has to be able to name the modes and to
+// type-test a target for the seam; both were unreachable from outside the
+// package until this line, which is half of why the contract had no callers.
+export 'src/rendering/present_mode.dart';
 export 'src/rendering/raster/blend.dart';
 export 'src/rendering/raster/clip_stack.dart';
 export 'src/rendering/raster/rasterizer.dart';

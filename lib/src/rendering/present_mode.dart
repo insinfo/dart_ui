@@ -41,15 +41,40 @@
 ///
 /// ## What is implemented and what is a seam
 ///
+/// This section used to describe two implementations in
+/// `win32_present_mode.dart`. **That file did not exist**, and neither did any
+/// other implementation of [PresentPacer]: the only class in this repository
+/// that implemented it was [UnpacedPresentation], below, which exists for
+/// surfaces that cannot pace at all. Every application asking for a mode was
+/// therefore asking nobody. The two below are the real ones.
+///
 /// Implemented in this repository today:
 ///
-///   * WGL on Win32 - `wglSwapIntervalEXT`, in `win32_present_mode.dart`.
-///     [PresentMode.fifo] and [PresentMode.immediate] are real; mailbox is
-///     refused by name, because WGL has no way to express it.
-///   * The Win32 CPU (GDI) path - `DwmFlush`, in the same file. Under the
-///     desktop compositor a `BitBlt` is already tear-free but unthrottled, so
-///     fifo is implemented as "block until the compositor's next present"
-///     and immediate as "do not block". Mailbox is refused by name.
+///   * **Every GL window** - `GlSwapChainPresentPacer`, in
+///     `rendering/gpu/gl/gl_present_pacer.dart`, written against
+///     `GlSwapChain.setSwapInterval` rather than against Win32. That seam is
+///     already `wglSwapIntervalEXT` on Win32, `glXSwapIntervalEXT` on X11 and
+///     `eglSwapInterval` on EGL, so one implementation paces all three.
+///     [PresentMode.fifo] and [PresentMode.immediate] are real;
+///     [PresentMode.mailbox] is refused by name, because a swap *interval* is
+///     a count of vertical blanks and no value of it means "replace the queued
+///     frame". `GlWindowTarget` implements [PresentPacer] by delegating to it,
+///     so an owner holding a bare `RenderTarget` type-tests and gets it.
+///   * **The Win32 CPU (GDI) path** - `GdiPresentPacer`, in
+///     `backends/win32/win32_present_mode.dart`, wired into
+///     `Win32CpuPresenter`. Under the desktop compositor a `BitBlt` is already
+///     tear-free but unthrottled, so fifo is "block until the compositor's
+///     next present" (`DwmFlush`) and immediate is "do not block". Mailbox is
+///     refused by name: one DIB blitted over in place is not a queue anything
+///     can replace a frame in. It starts in [PresentMode.immediate] because
+///     that is what the path *did* before it had a pacer, and wiring a
+///     contract in must not change behaviour nobody asked to change.
+///
+/// Measured in a real window on Intel UHD Graphics, 60 Hz panel, by
+/// `tool/present_mode_smoke.dart`: fifo 60.0 fps, immediate 1564.3 fps, and
+/// `DwmFlush` blocking 14.8 ms - one refresh interval. A headless run cannot
+/// produce any of those three numbers, which is why the tool exists next to
+/// `test/rendering/present_mode_test.dart` rather than instead of it.
 ///
 /// Contract only, seam left open deliberately because other work is live in
 /// those directories:
@@ -62,12 +87,18 @@
 ///     that cannot set the flag must refuse immediate rather than fall back
 ///     to 0 without it, which silently becomes fifo. mailbox is
 ///     `DXGI_SWAP_EFFECT_FLIP_DISCARD` with `BufferCount >= 3` and the
-///     frame-latency waitable object.
+///     frame-latency waitable object. **This is the one backend here where
+///     mailbox is implementable**, and implementing it means changing swap
+///     chain *creation*, not the present call.
 ///   * **Vulkan** - `vkGetPhysicalDeviceSurfacePresentModesKHR` enumerates
 ///     what the surface really supports, and only `VK_PRESENT_MODE_FIFO_KHR`
-///     is guaranteed. [supportedModes] is meant to be filled from that
-///     enumeration rather than from a static table, which is the entire
-///     reason it is a `Set` on the instance and not a constant on the class.
+///     is guaranteed. [PresentPacer.supportedPresentModes] is meant to be
+///     filled from that enumeration rather than from a static table, which is
+///     the entire reason it is a `Set` on the instance and not a constant on
+///     the class. Note that `vulkan_swapchain.dart` *already* selects
+///     `VK_PRESENT_MODE_MAILBOX_KHR` when `VulkanPresentPolicy.lowLatency`
+///     asks and the surface reports it - so mailbox is real on that backend
+///     and simply not yet reachable through this vocabulary.
 ///
 /// Both seams are a [PresentPacer] implementation next to the backend and
 /// nothing else: no core file needs to change to add them.

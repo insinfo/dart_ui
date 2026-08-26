@@ -687,15 +687,16 @@ final class GlVideoDevice implements GpuVideoTextureAllocator {
 
   /// Sets the scalar opacity uniform.
   ///
-  /// `glUniform1f` is not in `gl_bindings.dart`'s table, and three other
-  /// backends are editing that file. Rather than widen it, the uniform is set
-  /// through `glUniform4f`, which is legal for a `float` uniform in GL: the
-  /// extra components are ignored. That is a documented property of the API
-  /// and not a trick - `glUniform4f` on a `float` sets the first component -
-  /// but it is the kind of thing that looks like a bug to the next reader, so
-  /// it says so here.
+  /// This used to go through `glUniform4f` on the reading that a `float`
+  /// uniform simply ignores the extra components. It does not: `glUniform`
+  /// requires the command's component count to match the declared size, and a
+  /// mismatch is `GL_INVALID_OPERATION` with the uniform left at its previous
+  /// value. Every `drawFrame` on this device therefore raised, and
+  /// `_checkError('video drawArrays')` turned that into a `StateError` on the
+  /// first call - which is what `tool/gl_video_path_bench.dart` found the
+  /// first time this file was executed against a driver at all.
   void _setOpacity(double opacity) {
-    _gl.uniform4f(_uOpacity, opacity, 0, 0, 0);
+    _gl.uniform1f(_uOpacity, opacity);
   }
 
   void _writeVertex(int index, Offset position, double sx, double sy) {

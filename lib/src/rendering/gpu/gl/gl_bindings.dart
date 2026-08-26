@@ -757,6 +757,17 @@ final class GlApi {
       .cast<NativeFunction<Void Function(Int32, Int32)>>()
       .asFunction<void Function(int, int)>();
 
+  /// `glUniform1f`, for a `float` uniform.
+  ///
+  /// Added because setting a `float` uniform through [uniform4f] is not a
+  /// harmless overshoot: `glUniform{1|2|3|4}` is required to match the
+  /// declared size, and a mismatch is `GL_INVALID_OPERATION` with the uniform
+  /// left unchanged. Measured on Intel UHD Graphics through
+  /// `tool/gl_video_path_bench.dart`, which is where the error surfaced.
+  late final void Function(int, double) uniform1f = _proc('glUniform1f')
+      .cast<NativeFunction<Void Function(Int32, Float)>>()
+      .asFunction<void Function(int, double)>();
+
   late final void Function(int, Pointer<Uint32>) genTextures =
       _proc('glGenTextures')
           .cast<NativeFunction<Void Function(Int32, Pointer<Uint32>)>>()

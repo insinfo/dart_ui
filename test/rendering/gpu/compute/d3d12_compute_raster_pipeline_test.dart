@@ -1,4 +1,4 @@
-/// The chained pipeline: same two stages, one submission, and what that costs.
+/// The chained pipeline: the same stages, one submission, and what that costs.
 ///
 /// `d3d12_compute_flatten_parity_test.dart` and
 /// `d3d12_compute_binning_parity_test.dart` proved the two stages correct in
@@ -54,18 +54,30 @@
 /// test suite is a threshold that fails on somebody else's laptop, and the
 /// claim being made is a comparison between shapes measured together, not an
 /// absolute. What *is* asserted is the structural fact the timing is supposed
-/// to explain: two stages cost one submission, not two.
+/// to explain: three stages cost one submission, not three.
+///
+/// ## Four: the comparison stops being a handicap
+///
+/// Every table above was measured with a CPU column doing **strictly more**
+/// work than the GPU column: `ComputeTileScene.build` produces the per-tile
+/// segment lists and the backdrops, and nothing on the device did. The segment
+/// stage does now, so the last group here runs the same three shapes with it
+/// chained in, and the two tables are printed in the same run on the same
+/// machine. The difference between them is the price of the work the earlier
+/// tables were not charging the GPU for.
 library;
 
 import 'package:dart_ui/src/backends/win32/d3d12/d3d12_compute_binning_driver.dart';
 import 'package:dart_ui/src/backends/win32/d3d12/d3d12_compute_flatten_driver.dart';
 import 'package:dart_ui/src/backends/win32/d3d12/d3d12_compute_raster_driver.dart';
+import 'package:dart_ui/src/backends/win32/d3d12/d3d12_compute_segment_driver.dart';
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/rendering/gpu/compute/compute_curve_scene.dart';
 import 'package:dart_ui/src/rendering/gpu/compute/compute_raster_pipeline.dart';
 import 'package:dart_ui/src/rendering/gpu/compute/d3d12_compute_binning_executor.dart';
 import 'package:dart_ui/src/rendering/gpu/compute/d3d12_compute_flatten_executor.dart';
+import 'package:dart_ui/src/rendering/gpu/compute/d3d12_compute_segment_executor.dart';
 import 'package:dart_ui/src/rendering/gpu/vector/compute_tile_scene.dart';
 import 'package:dart_ui/src/rendering/path/fill_rule.dart';
 import 'package:test/test.dart';
@@ -82,6 +94,8 @@ void main() {
   ComputeFlattenExecutor? flatten;
   D3d12ComputeBinningDriver? binningDriver;
   ComputeBinningExecutor? binning;
+  D3d12ComputeSegmentDriver? segmentDriver;
+  ComputeSegmentBinningExecutor? segmentBinning;
 
   tearDownAll(() {
     pipeline?.dispose();
@@ -92,6 +106,8 @@ void main() {
     flattenDriver?.dispose();
     binning?.dispose();
     binningDriver?.dispose();
+    segmentBinning?.dispose();
+    segmentDriver?.dispose();
     session.close();
   });
 
@@ -129,12 +145,114 @@ void main() {
     return binning = ComputeBinningExecutor(made)..initialize();
   }
 
+  ComputeSegmentBinningExecutor openSegments() {
+    if (segmentBinning != null) return segmentBinning!;
+    final D3d12ComputeSegmentDriver made =
+        D3d12ComputeSegmentDriver(session.device!);
+    segmentDriver = made;
+    return segmentBinning = ComputeSegmentBinningExecutor(made)..initialize();
+  }
+
   group('the chained pipeline builds on this device', () {
-    test('both stages compile into one driver', () {
+    test('all three stages compile into one driver', () {
       if (_skipped(session)) return;
       final ComputeRasterPipeline built = openPipeline()!;
       expect(built.isInitialized, isTrue);
       expect(rasterDriver!.isBuilt, isTrue);
+    });
+  });
+
+  group('the segment stage chains onto the coarse stage it consumes', () {
+    for (final _Scene scene in _scenes()) {
+      test('${scene.name}: byte for byte against the CPU planner', () {
+        if (_skipped(session)) return;
+        // This is the one link in the pipeline that is a real
+        // producer/consumer: the segment stage reads the tile index and the
+        // references the coarse stage wrote, in the same command list, bound
+        // by address. If a barrier were missing, or if the alias pointed at
+        // the wrong buffer, the arrays below would be wrong - and they are the
+        // arrays the coverage shader reads, so wrong here means a wrong
+        // picture rather than a slow one.
+        final ComputeRasterPipeline built = openPipeline()!;
+        final ComputeTilePlan plan = scene.plan();
+        final ComputeCurveUpload curves = scene.curves();
+        final ComputeSegmentScene segmentScene = _segmentScene(plan);
+        final ComputeBinningGrid grid = ComputeBinningGrid(
+          width: plan.width,
+          height: plan.height,
+          tileSize: plan.tileSize,
+        );
+
+        final ComputeRasterResult learned = built.run(
+          scene: curves,
+          bounds: plan.bounds,
+          drawCount: plan.drawCount,
+          grid: grid,
+          segmentScene: segmentScene,
+        );
+        final int before = built.submissions;
+        final ComputeRasterResult chained = built.run(
+          scene: curves,
+          bounds: plan.bounds,
+          drawCount: plan.drawCount,
+          grid: grid,
+          segmentScene: segmentScene,
+          budget: learned.budget,
+        );
+        expect(built.submissions - before, 1,
+            reason: 'three stages, one command list');
+        expect(chained.submissions, 1);
+
+        expect(chained.segments, isNotNull);
+        expect(chained.segments!.referenceSegments, plan.referenceSegments,
+            reason: 'the CSR segment index must match the CPU planner exactly');
+        expect(chained.segments!.tileSegmentCount, plan.tileSegments.length);
+        expect(chained.segments!.tileSegments, plan.tileSegments);
+        expect(chained.segments!.backdrops, plan.referenceBackdrops);
+
+        // And against the unchained stage, which the parity file proved
+        // against the same oracle: chaining must not change a byte.
+        final ComputeSegmentBinningResult unchained =
+            openSegments().binSegments(
+          scene: segmentScene,
+          bins: plan.bins,
+          references: plan.references,
+          grid: ComputeSegmentBinningGrid(
+            width: plan.width,
+            height: plan.height,
+            tileSize: plan.tileSize,
+          ),
+        );
+        expect(chained.segments!.referenceSegments, unchained.referenceSegments,
+            reason: 'the same kernels over the same buffers, one list or two');
+        expect(chained.segments!.tileSegments, unchained.tileSegments);
+        expect(chained.segments!.backdrops, unchained.backdrops);
+      });
+    }
+
+    test('a fire-and-forget three-stage submission refuses an unknown budget',
+        () {
+      if (_skipped(session)) return;
+      final ComputeRasterPipeline built = openPipeline()!;
+      final ComputeTilePlan plan = _scenes().first.plan();
+      // The two-stage shape needs two totals; the three-stage shape needs
+      // three, and a budget that names only two is refused rather than
+      // guessed at.
+      expect(
+        () => built.submit(
+          scene: _scenes().first.curves(),
+          bounds: plan.bounds,
+          drawCount: plan.drawCount,
+          grid: ComputeBinningGrid(
+            width: plan.width,
+            height: plan.height,
+            tileSize: plan.tileSize,
+          ),
+          segmentScene: _segmentScene(plan),
+          budget: const ComputeRasterBudget(segments: 64, references: 64),
+        ),
+        throwsArgumentError,
+      );
     });
   });
 
@@ -405,6 +523,122 @@ void main() {
       print(table.toString());
     });
 
+    test('the same scenes with the segment stage chained in', () {
+      if (_skipped(session)) return;
+      // The honest table. Every column here computes the same function:
+      // `ComputeTileScene.build` produces bins, references, commands, the
+      // per-reference segment lists and the backdrops, and so does the GPU
+      // chain. The previous table's GPU columns did not produce the last two,
+      // which is why that comparison was a handicap and this one is not.
+      //
+      // The GPU columns still do *more* than the CPU column, not less: they
+      // also flatten the curves, which `build()` does not - `appendPath` did
+      // that before the clock started. That direction is the safe one to be
+      // wrong in.
+      final ComputeRasterPipeline built = openPipeline()!;
+      final ComputeFlattenExecutor flat = openFlatten();
+      final ComputeBinningExecutor bin = openBinning();
+      final ComputeSegmentBinningExecutor seg = openSegments();
+
+      final StringBuffer table = StringBuffer()
+        ..writeln()
+        ..writeln('| scene | draws | tiles | refs | tile segs | CPU build | '
+            'unchained 3 passes | chained + read | chained, no read |')
+        ..writeln('|---|---:|---:|---:|---:|---:|---:|---:|---:|');
+
+      for (final _Scene scene in _scenes()) {
+        final ComputeTilePlan plan = scene.plan();
+        final ComputeCurveUpload curves = scene.curves();
+        final ComputeSegmentScene segmentScene = _segmentScene(plan);
+        final ComputeBinningGrid grid = ComputeBinningGrid(
+          width: plan.width,
+          height: plan.height,
+          tileSize: plan.tileSize,
+        );
+        final ComputeSegmentBinningGrid segmentGrid = ComputeSegmentBinningGrid(
+          width: plan.width,
+          height: plan.height,
+          tileSize: plan.tileSize,
+        );
+
+        // Warm every shape once: the first run of each grows its buffers, and
+        // growing waits for idle.
+        final ComputeRasterResult warm = built.run(
+          scene: curves,
+          bounds: plan.bounds,
+          drawCount: plan.drawCount,
+          grid: grid,
+          segmentScene: segmentScene,
+        );
+        final ComputeRasterBudget budget = warm.budget;
+        flat.flatten(curves, segmentBudget: budget.segments);
+        bin.bin(
+          bounds: plan.bounds,
+          drawCount: plan.drawCount,
+          grid: grid,
+          referenceBudget: budget.references,
+        );
+        seg.binSegments(
+          scene: segmentScene,
+          bins: plan.bins,
+          references: plan.references,
+          grid: segmentGrid,
+          tileSegmentBudget: budget.tileSegments,
+        );
+        scene.build();
+
+        final double cpu = _time(_kIterations, () => scene.build());
+        final double unchained = _time(_kIterations, () {
+          flat.flatten(curves, segmentBudget: budget.segments);
+          bin.bin(
+            bounds: plan.bounds,
+            drawCount: plan.drawCount,
+            grid: grid,
+            referenceBudget: budget.references,
+          );
+          seg.binSegments(
+            scene: segmentScene,
+            bins: plan.bins,
+            references: plan.references,
+            grid: segmentGrid,
+            tileSegmentBudget: budget.tileSegments,
+          );
+        });
+        final double chained = _time(_kIterations, () {
+          built.run(
+            scene: curves,
+            bounds: plan.bounds,
+            drawCount: plan.drawCount,
+            grid: grid,
+            segmentScene: segmentScene,
+            budget: budget,
+          );
+        });
+        final int submissionsBefore = built.submissions;
+        const int expectedSubmissions = _kIterations * _kBatches;
+        final double streamed = _time(_kIterations, () {
+          built.submit(
+            scene: curves,
+            bounds: plan.bounds,
+            drawCount: plan.drawCount,
+            grid: grid,
+            segmentScene: segmentScene,
+            budget: budget,
+          );
+        }, finish: built.finish);
+        expect(built.submissions - submissionsBefore, expectedSubmissions,
+            reason: 'one command list per iteration, not three');
+
+        table.writeln('| ${scene.name} | ${plan.drawCount} | '
+            '${plan.tileCount} | ${plan.references.length} | '
+            '${plan.tileSegments.length} | ${_us(cpu)} | '
+            '${_us(unchained)} | ${_us(chained)} | ${_us(streamed)} |');
+      }
+
+      // ignore: avoid_print
+      print(table.toString());
+    });
+
     test('what is left of a submission is the zero-fill', () {
       if (_skipped(session)) return;
       // The residual cost of a submission that waits for nothing is not the
@@ -546,6 +780,16 @@ String _us(double microseconds) => '${microseconds.toStringAsFixed(0)} us';
 /// references and the scatter scratch beside them.
 int _budgetBytes(ComputeRasterBudget budget) =>
     budget.segments * 16 + budget.references * 8;
+
+/// A plan's own three scene arrays, in the shape the segment stage takes them.
+///
+/// Unmodified on purpose: the stage is fed exactly what the CPU planner binned,
+/// so a difference in the output cannot be a difference in the input.
+ComputeSegmentScene _segmentScene(ComputeTilePlan plan) => ComputeSegmentScene(
+      segments: plan.segments,
+      draws: plan.draws,
+      bounds: plan.bounds,
+    );
 
 bool _skipped(D3d12Session session) {
   if (session.device != null) return false;
