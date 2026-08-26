@@ -21,33 +21,92 @@ import 'd3d12_device.dart';
 const int _kBinningPipelineToken = 1;
 
 /// Read-write slots, in the order the root signature declares them.
-const int _kCountsSlot = 0;
-const int _kOffsetsSlot = 1;
-const int _kBlockSumsSlot = 2;
-const int _kScratchSlot = 3;
-const int _kReferencesSlot = 4;
-const int _kBinsSlot = 5;
-const int _kCommandsSlot = 6;
+const int kD3d12BinningCountsSlot = 0;
+const int kD3d12BinningOffsetsSlot = 1;
+const int kD3d12BinningBlockSumsSlot = 2;
+const int kD3d12BinningScratchSlot = 3;
+const int kD3d12BinningReferencesSlot = 4;
+const int kD3d12BinningBinsSlot = 5;
+const int kD3d12BinningCommandsSlot = 6;
+
+const int _kCountsSlot = kD3d12BinningCountsSlot;
+const int _kOffsetsSlot = kD3d12BinningOffsetsSlot;
+const int _kBlockSumsSlot = kD3d12BinningBlockSumsSlot;
+const int _kScratchSlot = kD3d12BinningScratchSlot;
+const int _kReferencesSlot = kD3d12BinningReferencesSlot;
+const int _kBinsSlot = kD3d12BinningBinsSlot;
+const int _kCommandsSlot = kD3d12BinningCommandsSlot;
+
+/// The binning stage's pass, its buffer sizes and its kernel chain, once.
+///
+/// See `D3d12FlattenPass`: the chained pipeline records the same stage into a
+/// shared command list, and a second copy of a twelve-link chain is a second
+/// place for a dispatch size to be wrong.
+abstract final class D3d12BinningPass {
+  static D3d12ComputePass create(D3d12RenderDevice device,
+          {bool deviceZeroFill = true}) =>
+      D3d12ComputePass(
+        device,
+        label: 'binning',
+        source: kComputeBinningShader,
+        entryPoints: kComputeBinningEntryPoints,
+        rootConstantCount: kComputeBinningRootConstantCount,
+        srvCount: kComputeBinningLastSrvSlot - kComputeBinningFirstSrvSlot + 1,
+        uavCount: kComputeBinningLastUavSlot - kComputeBinningFirstUavSlot + 1,
+        target: kComputeBinningTarget,
+        // The tile range is `floor(bounds.left / tileSize)`, and a division an
+        // optimiser is free to reassociate can land on the other side of an
+        // integer - which changes the length of every later tile's run.
+        compileFlags: kD3d12CompileIeeeStrictness,
+        deviceZeroFill: deviceZeroFill,
+      );
+
+  /// The read-write buffer sizes, in slot order.
+  static List<int> uavBytes(ComputeBinningDispatch dispatch) {
+    final int tileCount = dispatch.tileCount;
+    final int referenceBytes = dispatch.referenceBudget * 4;
+    return <int>[
+      tileCount * 4,
+      (tileCount + 1) * 4,
+      (dispatch.blockCount + 1) * 4,
+      referenceBytes,
+      referenceBytes,
+      tileCount * 8,
+      tileCount * 12,
+    ];
+  }
+
+  /// The twelve-link chain, including the three scan kernels dispatched twice.
+  static List<D3d12ComputeStage> stages(ComputeBinningDispatch dispatch) =>
+      <D3d12ComputeStage>[
+        // Count the draws each tile touches, then turn the counts into a CSR
+        // index with the first scan.
+        D3d12ComputeStage(ComputeBinningKernel.tileCounts, dispatch.drawGroups),
+        D3d12ComputeStage(ComputeBinningKernel.scanBlocks, dispatch.blockCount),
+        const D3d12ComputeStage(ComputeBinningKernel.scanBlockSums, 1),
+        D3d12ComputeStage(ComputeBinningKernel.scanApply, dispatch.applyGroups),
+        D3d12ComputeStage(ComputeBinningKernel.buildBins, dispatch.tileGroups),
+        // Place the references in whatever order the atomics hand out, then
+        // sort each tile's run so the result does not depend on that order.
+        D3d12ComputeStage(ComputeBinningKernel.scatter, dispatch.drawGroups),
+        D3d12ComputeStage(ComputeBinningKernel.sort, dispatch.tileCount),
+        // The second scan: over occupancy, to compact the command list.
+        D3d12ComputeStage(ComputeBinningKernel.flags, dispatch.tileGroups),
+        D3d12ComputeStage(ComputeBinningKernel.scanBlocks, dispatch.blockCount),
+        const D3d12ComputeStage(ComputeBinningKernel.scanBlockSums, 1),
+        D3d12ComputeStage(ComputeBinningKernel.scanApply, dispatch.applyGroups),
+        D3d12ComputeStage(ComputeBinningKernel.commands, dispatch.tileGroups),
+      ];
+
+  /// Asserts the shader's slot constants against the pass's slot numbering.
+  static void assertSlotContract() =>
+      D3d12ComputeBinningDriver._assertSlotContract();
+}
 
 /// Maps [ComputeBinningDriver] onto a [D3d12RenderDevice].
 final class D3d12ComputeBinningDriver implements ComputeBinningDriver {
   D3d12ComputeBinningDriver(D3d12RenderDevice device)
-      : _pass = D3d12ComputePass(
-          device,
-          label: 'binning',
-          source: kComputeBinningShader,
-          entryPoints: kComputeBinningEntryPoints,
-          rootConstantCount: kComputeBinningRootConstantCount,
-          srvCount:
-              kComputeBinningLastSrvSlot - kComputeBinningFirstSrvSlot + 1,
-          uavCount:
-              kComputeBinningLastUavSlot - kComputeBinningFirstUavSlot + 1,
-          target: kComputeBinningTarget,
-          // The tile range is `floor(bounds.left / tileSize)`, and a division
-          // an optimiser is free to reassociate can land on the other side of
-          // an integer - which changes the length of every later tile's run.
-          compileFlags: kD3d12CompileIeeeStrictness,
-        );
+      : _pass = D3d12BinningPass.create(device);
 
   final D3d12ComputePass _pass;
 
@@ -84,44 +143,12 @@ final class D3d12ComputeBinningDriver implements ComputeBinningDriver {
     }
 
     final int tileCount = dispatch.tileCount;
-    final int countBytes = tileCount * 4;
-    final int offsetBytes = (tileCount + 1) * 4;
-    final int blockSumBytes = (dispatch.blockCount + 1) * 4;
-    final int referenceBytes = dispatch.referenceBudget * 4;
-    final int binBytes = tileCount * 8;
-    final int commandBytes = tileCount * 12;
 
     final List<Uint8List> back = _pass.run(
       rootConstants: rootConstants,
       uploads: <TypedData>[bounds],
-      uavBytes: <int>[
-        countBytes,
-        offsetBytes,
-        blockSumBytes,
-        referenceBytes,
-        referenceBytes,
-        binBytes,
-        commandBytes,
-      ],
-      stages: <D3d12ComputeStage>[
-        // Count the draws each tile touches, then turn the counts into a CSR
-        // index with the first scan.
-        D3d12ComputeStage(ComputeBinningKernel.tileCounts, dispatch.drawGroups),
-        D3d12ComputeStage(ComputeBinningKernel.scanBlocks, dispatch.blockCount),
-        const D3d12ComputeStage(ComputeBinningKernel.scanBlockSums, 1),
-        D3d12ComputeStage(ComputeBinningKernel.scanApply, dispatch.applyGroups),
-        D3d12ComputeStage(ComputeBinningKernel.buildBins, dispatch.tileGroups),
-        // Place the references in whatever order the atomics hand out, then
-        // sort each tile's run so the result does not depend on that order.
-        D3d12ComputeStage(ComputeBinningKernel.scatter, dispatch.drawGroups),
-        D3d12ComputeStage(ComputeBinningKernel.sort, tileCount),
-        // The second scan: over occupancy, to compact the command list.
-        D3d12ComputeStage(ComputeBinningKernel.flags, dispatch.tileGroups),
-        D3d12ComputeStage(ComputeBinningKernel.scanBlocks, dispatch.blockCount),
-        const D3d12ComputeStage(ComputeBinningKernel.scanBlockSums, 1),
-        D3d12ComputeStage(ComputeBinningKernel.scanApply, dispatch.applyGroups),
-        D3d12ComputeStage(ComputeBinningKernel.commands, dispatch.tileGroups),
-      ],
+      uavBytes: D3d12BinningPass.uavBytes(dispatch),
+      stages: D3d12BinningPass.stages(dispatch),
       reads: <int>[
         _kBinsSlot,
         _kReferencesSlot,

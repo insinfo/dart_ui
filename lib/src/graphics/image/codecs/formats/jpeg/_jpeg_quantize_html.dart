@@ -1,3 +1,20 @@
+// GERADO A PARTIR DE `_jpeg_quantize_io.dart`.
+//
+// O ramo do dart2js do seletor de `jpeg_data.dart`. E uma copia palavra por
+// palavra de `_jpeg_quantize_io.dart` na qual todo `(expr) >> n` e
+// `p[k] << 4` do IDCT e da conversao de cor virou `shiftR`/`shiftL` --
+// `(v >> n).toSigned(32)`, de `bit_utils.dart`. O motivo e exclusivo do
+// dart2js, onde `int` e um double de 53 bits e o bitwise e de 32: sem a
+// normalizacao os deslocamentos do IDCT dao a imagem errada, e
+// `test/graphics/image/jpeg_quantize_dart2js_test.dart` mostra isso rodando no
+// Node.
+//
+// A VM e o dart2wasm nao precisam do contorno, e por isso o seletor corta em
+// `dart.library.js` e nao em `dart.library.io` (secao 69 do roteiro). Toda
+// mudanca tem de ser feita nos dois arquivos:
+// `test/graphics/image/jpeg_quantize_equivalence_test.dart` importa os dois com
+// prefixo e exige bytes identicos.
+
 import 'dart:typed_data';
 
 import '../../exif/exif_data.dart';
@@ -7,11 +24,21 @@ import '../../util/image_exception.dart';
 import '_component_data.dart';
 import 'jpeg_data.dart';
 
-Uint8List? _dctClip;
+final _dctClip = _createDctClip();
 
-// These functions contain bit-shift operations that fail with HTML builds.
-// A conditional import is used to use a modified version for HTML builds
-// to work around this javascript bug, while keeping the native version fast.
+const _dctClipOffset = 256;
+const _dctClipLength = 768;
+
+Uint8List _createDctClip() {
+  final result = Uint8List(_dctClipLength);
+  for (var i = 0; i < 256; ++i) {
+    result[_dctClipOffset + i] = i;
+  }
+  for (var i = 256; i < 512; ++i) {
+    result[_dctClipOffset + i] = 255;
+  }
+  return result;
+}
 
 // Quantize the coefficients and apply IDCT.
 //
@@ -22,19 +49,6 @@ Uint8List? _dctClip;
 void quantizeAndInverse(Int16List quantizationTable, Int32List coefBlock,
     Uint8List dataOut, Int32List dataIn) {
   final p = dataIn;
-
-  const dctClipOffset = 256;
-  const dctClipLength = 768;
-  if (_dctClip == null) {
-    final clip = Uint8List(dctClipLength);
-    for (var i = 0; i < 256; ++i) {
-      clip[dctClipOffset + i] = i;
-    }
-    for (var i = 256; i < 512; ++i) {
-      clip[dctClipOffset + i] = 255;
-    }
-    _dctClip = clip;
-  }
 
   // IDCT constants (20.12 fixed point format)
   const cos1 = 4017; // cos(pi/16)*4096
@@ -206,13 +220,28 @@ void quantizeAndInverse(Int16List quantizationTable, Int32List coefBlock,
 
   // convert to 8-bit integers
   for (var i = 0; i < 64; ++i) {
-    dataOut[i] = _dctClip![(dctClipOffset + 128 + shiftR(p[i] + 8, 4))];
+    var index = _dctClipOffset + 128 + shiftR(p[i] + 8, 4);
+    // A tabela de clip satura por construcao: as 256 primeiras entradas valem
+    // 0 e as 256 ultimas valem 255. Um indice fora dela so pode vir de um
+    // coeficiente fora de faixa -- de um fluxo corrompido ou hostil -- e a
+    // resposta saturada e a da extremidade mais proxima. Prender o indice
+    // aqui e o que mantem os dois ramos do seletor byte a byte identicos:
+    // antes, o ramo nativo abortava o bloco com um `break` no lado negativo
+    // (deixando o resto de `dataOut` com lixo do bloco anterior) e os dois
+    // lancavam `RangeError` no lado positivo.
+    if (index < 0) {
+      index = 0;
+    } else if (index >= _dctClipLength) {
+      index = _dctClipLength - 1;
+    }
+    dataOut[i] = _dctClip[index];
   }
 }
 
 Image getImageFromJpeg(JpegData jpeg) {
   final orientation =
       jpeg.exif.imageIfd.hasOrientation ? jpeg.exif.imageIfd.orientation! : 0;
+
   final w = jpeg.width!;
   final h = jpeg.height!;
   final flipWidthHeight = orientation >= 5 && orientation <= 8;
@@ -220,10 +249,8 @@ Image getImageFromJpeg(JpegData jpeg) {
   final height = flipWidthHeight ? w : h;
 
   final image = Image(width: width, height: height)
-    // Copy exif data, except for Orientation which we're baking.
     ..exif = ExifData.from(jpeg.exif)
-    ..exif.imageIfd.orientation = null
-    ..iccProfile = jpeg.iccProfile;
+    ..exif.imageIfd.orientation = null;
 
   ComponentData component1;
   ComponentData component2;
@@ -291,17 +318,17 @@ Image getImageFromJpeg(JpegData jpeg) {
         int hShift2 = component2.hScaleShift;
         int vShift2 = component2.vScaleShift;
 
-        for (int y = 0; y < height; y++) {
+        for (int y = 0; y < h; y++) {
           int y1 = y >> vShift1;
           int y2 = y >> vShift2;
           component1Line = component1.lines[y1];
           component2Line = component2.lines[y2];
 
-          for (int x = 0; x < width; x++) {
+          for (int x = 0; x < w; x++) {
             int x1 = x >> hShift1;
             int x2 = x >> hShift2;
 
-            var cy = component1Line[x1];
+            final cy = component1Line[x1];
             //data[offset++] = cy;
 
             cy = component2Line[x2];
@@ -340,18 +367,18 @@ Image getImageFromJpeg(JpegData jpeg) {
         final y2 = y >> vShift2;
         final y3 = y >> vShift3;
 
-        component1Line = lines1[y1];
-        component2Line = lines2[y2];
-        component3Line = lines3[y3];
+        component1Line = lines1[y1]!;
+        component2Line = lines2[y2]!;
+        component3Line = lines3[y3]!;
 
         for (var x = 0; x < w; x++) {
           final x1 = x >> hShift1;
           final x2 = x >> hShift2;
           final x3 = x >> hShift3;
 
-          var r = component1Line![x1];
-          var g = component2Line![x2];
-          var b = component3Line![x3];
+          var r = component1Line[x1];
+          var g = component2Line[x2];
+          var b = component3Line[x3];
 
           if (colorTransform) {
             final cy = r << 8;
@@ -359,7 +386,7 @@ Image getImageFromJpeg(JpegData jpeg) {
             final cr = b - 128;
             r = shiftR(cy + (359 * cr), 8).clamp(0, 255);
             g = shiftR(cy - (88 * cb) - (183 * cr), 8).clamp(0, 255);
-            b = shiftR(cy + (454 * cb), 8).clamp(0, 255);
+            b = shiftR(cy + 454 * cb, 8).clamp(0, 255);
           }
 
           setPixel(x, y, r, g, b);
@@ -431,7 +458,6 @@ Image getImageFromJpeg(JpegData jpeg) {
                     .clamp(0, 255);
             cy = 255 - shiftR(cyScaled + 454 * cbShifted, 8).clamp(0, 255);
           }
-
           final r = shiftR(cc * ck, 8);
           final g = shiftR(cm * ck, 8);
           final b = shiftR(cy * ck, 8);
@@ -442,6 +468,10 @@ Image getImageFromJpeg(JpegData jpeg) {
       break;
     default:
       throw ImageException('Unsupported color mode');
+  }
+
+  if (jpeg.iccProfile != null) {
+    image.iccProfile = jpeg.iccProfile;
   }
 
   return image;

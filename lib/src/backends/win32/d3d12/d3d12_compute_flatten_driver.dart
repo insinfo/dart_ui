@@ -25,29 +25,76 @@ import 'd3d12_device.dart';
 const int _kFlattenPipelineToken = 1;
 
 /// Read-write slots, in the order the root signature declares them.
-const int _kCountsSlot = 0;
-const int _kOffsetsSlot = 1;
-const int _kBlockSumsSlot = 2;
-const int _kSegmentsSlot = 3;
+const int kD3d12FlattenCountsSlot = 0;
+const int kD3d12FlattenOffsetsSlot = 1;
+const int kD3d12FlattenBlockSumsSlot = 2;
+const int kD3d12FlattenSegmentsSlot = 3;
+
+const int _kCountsSlot = kD3d12FlattenCountsSlot;
+const int _kOffsetsSlot = kD3d12FlattenOffsetsSlot;
+const int _kBlockSumsSlot = kD3d12FlattenBlockSumsSlot;
+const int _kSegmentsSlot = kD3d12FlattenSegmentsSlot;
+
+/// The flatten stage's pass, its buffer sizes and its kernel chain, stated once.
+///
+/// Three functions rather than three literals inside [runFlattenPass], because
+/// the chained pipeline records the *same* stage into a shared command list. A
+/// second copy of the chain there would be a second place for a dispatch size
+/// to be wrong, and the two would disagree only under load.
+abstract final class D3d12FlattenPass {
+  static D3d12ComputePass create(D3d12RenderDevice device,
+          {bool deviceZeroFill = true}) =>
+      D3d12ComputePass(
+        device,
+        label: 'flatten',
+        source: kComputeFlattenShader,
+        entryPoints: kComputeFlattenEntryPoints,
+        rootConstantCount: kComputeFlattenRootConstantCount,
+        srvCount: kComputeFlattenLastSrvSlot - kComputeFlattenFirstSrvSlot + 1,
+        uavCount: kComputeFlattenLastUavSlot - kComputeFlattenFirstUavSlot + 1,
+        target: kComputeFlattenTarget,
+        // The flatten stage's first output is an integer segment count derived
+        // from `ceil(sqrt(...))`; see the constant.
+        compileFlags: kD3d12CompileIeeeStrictness,
+        deviceZeroFill: deviceZeroFill,
+      );
+
+  /// The read-write buffer sizes, in slot order.
+  static List<int> uavBytes(ComputeFlattenDispatch dispatch) => <int>[
+        dispatch.curveCount * 4,
+        (dispatch.curveCount + 1) * 4,
+        (dispatch.blockCount + 1) * 4,
+        dispatch.segmentBudget * 16,
+      ];
+
+  /// The three read-only buffers, in slot order.
+  static List<TypedData> uploads(ComputeCurveUpload scene) => <TypedData>[
+        scene.curves,
+        scene.curvePoints,
+        scene.transforms,
+      ];
+
+  /// The chain. Every arrow between two of these is a write one kernel makes
+  /// and the next reads, so every arrow is a barrier - which the pass records
+  /// after each stage.
+  static List<D3d12ComputeStage> stages(ComputeFlattenDispatch dispatch) =>
+      <D3d12ComputeStage>[
+        D3d12ComputeStage(0, dispatch.blockCount), // csCurveCounts
+        D3d12ComputeStage(1, dispatch.blockCount), // csScanBlocks
+        const D3d12ComputeStage(2, 1), // csScanBlockSums
+        D3d12ComputeStage(3, dispatch.applyGroups), // csScanApply
+        D3d12ComputeStage(4, dispatch.curveCount), // csEmitSegments
+      ];
+
+  /// Asserts the shader's slot constants against the pass's slot numbering.
+  static void assertSlotContract() =>
+      D3d12ComputeFlattenDriver._assertSlotContract();
+}
 
 /// Maps [ComputeFlattenDriver] onto a [D3d12RenderDevice].
 final class D3d12ComputeFlattenDriver implements ComputeFlattenDriver {
   D3d12ComputeFlattenDriver(D3d12RenderDevice device)
-      : _pass = D3d12ComputePass(
-          device,
-          label: 'flatten',
-          source: kComputeFlattenShader,
-          entryPoints: kComputeFlattenEntryPoints,
-          rootConstantCount: kComputeFlattenRootConstantCount,
-          srvCount:
-              kComputeFlattenLastSrvSlot - kComputeFlattenFirstSrvSlot + 1,
-          uavCount:
-              kComputeFlattenLastUavSlot - kComputeFlattenFirstUavSlot + 1,
-          target: kComputeFlattenTarget,
-          // The flatten stage's first output is an integer segment count
-          // derived from `ceil(sqrt(...))`; see the constant.
-          compileFlags: kD3d12CompileIeeeStrictness,
-        );
+      : _pass = D3d12FlattenPass.create(device);
 
   final D3d12ComputePass _pass;
 
@@ -83,29 +130,11 @@ final class D3d12ComputeFlattenDriver implements ComputeFlattenDriver {
       throw ArgumentError('a flatten pass needs curves and a segment budget');
     }
 
-    final int countBytes = dispatch.curveCount * 4;
-    final int offsetBytes = (dispatch.curveCount + 1) * 4;
-    final int blockSumBytes = (dispatch.blockCount + 1) * 4;
-    final int segmentBytes = dispatch.segmentBudget * 16;
-
     final List<Uint8List> back = _pass.run(
       rootConstants: rootConstants,
-      uploads: <TypedData>[
-        scene.curves,
-        scene.curvePoints,
-        scene.transforms,
-      ],
-      uavBytes: <int>[countBytes, offsetBytes, blockSumBytes, segmentBytes],
-      // The chain. Every arrow between two of these is a write one kernel
-      // makes and the next reads, so every arrow is a barrier - which the pass
-      // records after each stage.
-      stages: <D3d12ComputeStage>[
-        D3d12ComputeStage(0, dispatch.blockCount), // csCurveCounts
-        D3d12ComputeStage(1, dispatch.blockCount), // csScanBlocks
-        const D3d12ComputeStage(2, 1), // csScanBlockSums
-        D3d12ComputeStage(3, dispatch.applyGroups), // csScanApply
-        D3d12ComputeStage(4, dispatch.curveCount), // csEmitSegments
-      ],
+      uploads: D3d12FlattenPass.uploads(scene),
+      uavBytes: D3d12FlattenPass.uavBytes(dispatch),
+      stages: D3d12FlattenPass.stages(dispatch),
       reads: <int>[_kCountsSlot, _kOffsetsSlot, _kSegmentsSlot],
     );
 

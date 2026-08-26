@@ -9154,7 +9154,7 @@ bits é mais rápida. Chamadas por quadro são medidas, na galeria headless.
 | `encodeHeader` (`graphics/display_list_opcodes.dart`) | `.toUnsigned(32)` no cabeçalho | 0,49→0,82 e 1,02→1,10; a forma atual **nunca** foi a mais lenta | **121,4** | **0 %** | **não divide** — o imposto não existe |
 | `_packKey` (`rendering/text/glyph_cache.dart` e `rendering/gpu/gpu_glyph_atlas.dart`) | multiplica em vez de deslocar, para caber em 53 bits | 0,42→1,55 e 0,65→1,20: a forma de 64 bits é **2× mais lenta** na VM | **171,4** | −0,0012 % | **não divide** — o imposto é negativo |
 | SHA-512 em pares `(hi, lo)` (`crypto/dart/pure_dart_sha.dart`) | 80 rodadas sobre `Uint32List` | 31 MiB/s → 247 MiB/s, **7,9×** | **0** | **0 %** | **não divide** — ver abaixo |
-| `shiftR`/`shiftL` no IDCT do JPEG (`image/codecs/formats/jpeg/`) | já dividido, em `dart.library.io` | a VM já pega o ramo rápido | 0 | 0 % na VM | não se aplica — ver abaixo |
+| `shiftR`/`shiftL` no IDCT do JPEG (`image/codecs/formats/jpeg/`) | já dividido, mas em `dart.library.io` | a VM já pegava o ramo rápido; o **dart2wasm não** | 0 | 0 % na VM | eixo trocado — ver 69.5 |
 
 Dispensados por inspeção, sem medir, e a razão de cada um:
 
@@ -9208,20 +9208,153 @@ dart2js. É o caso que dá título a esta seção — uma plataforma penalizada 
 causa de outra — só que a penalizada é o Wasm, e por isso o método de medição
 desta seção, que roda na VM, não o enxerga.
 
-Trocar a condição por `if (dart.library.js)` é uma linha, mas não é seguro
-hoje: os dois arquivos **não** são equivalentes. O `_io` tem um
-`if (index < 0) break` no clamp final que o `_html` não tem, e os dois copiam o
-perfil ICC em pontos diferentes. Trocar mudaria o resultado do Wasm, e a
-exigência de 69.3 — teste provando resultados idênticos onde ambos são
-válidos — teria de ser cumprida antes.
+Trocar a condição por `if (dart.library.js)` é uma linha, mas não era seguro
+naquele dia: os dois arquivos **não** eram equivalentes. O `_io` tinha um
+`if (index < 0) break` no clamp final que o `_html` não tinha, e os dois
+copiavam o perfil ICC em pontos diferentes. Trocar mudaria o resultado do Wasm,
+e a exigência de 69.3 — teste provando resultados idênticos onde ambos são
+válidos — teria de ser cumprida antes. **Foi cumprida; ver 69.5.**
 
 ### O que continua valendo do item 4
 
-Nada foi dividido, então o quarto caminho de código não foi criado e
-`test/backends/web/web_compilation_test.dart` segue como está, rodando
-`dart compile js` *e* `dart compile wasm`. A exigência continua de pé para a
-primeira divisão que houver: o ramo do dart2js precisa continuar sendo
-compilado pelo portão, e precisa de um teste que o execute.
+Nada foi dividido nesta varredura, então o quarto caminho de código não foi
+criado por ela e `test/backends/web/web_compilation_test.dart` segue rodando
+`dart compile js` *e* `dart compile wasm`. A exigência continua de pé para toda
+divisão: o ramo do dart2js precisa continuar sendo compilado pelo portão, e
+precisa de um teste que o execute. **A primeira divisão a cumprir as duas é a
+do JPEG, em 69.5.**
+
+## 69.5 O eixo do JPEG, corrigido — 2026-08-26
+
+A pendência que 69.4 deixou registrada foi fechada. O seletor de
+`jpeg_data.dart` passou de
+
+```dart
+import '_jpeg_quantize_html.dart' if (dart.library.io) '_jpeg_quantize_io.dart';
+```
+
+para
+
+```dart
+import '_jpeg_quantize_io.dart' if (dart.library.js) '_jpeg_quantize_html.dart';
+```
+
+O que muda: o dart2wasm, que não tem `dart:io` e por isso caía no ramo do
+contorno, passou a compartilhar com a VM o ramo sem contorno. O dart2js
+continua com o `_html`, e nada mais mudou de alvo.
+
+### As diferenças reais entre os dois arquivos
+
+A leitura linha a linha achou **uma** divergência de comportamento, e não as
+duas que 69.4 supunha:
+
+| Diferença | Veredito |
+|---|---|
+| `shiftR`/`shiftL` em 45 deslocamentos do IDCT e da conversão de cor, e em 2 `<<` | o contorno; é a razão de existir da divisão |
+| clamp final: `if (index < 0) break` no `_io`, indexação sem guarda no `_html` | **divergência real**, e um defeito nos dois — ver abaixo |
+| perfil ICC copiado na construção (`_html`) ou no fim (`_io`) | **nenhuma**: `Image.iccProfile` nasce nulo, e a atribuição incondicional de `null` é a mesma coisa que não atribuir. Provado por teste, não por leitura |
+| `_dctClip` como `final` de topo (`_io`) ou `Uint8List?` com verificação por chamada (`_html`) | nenhuma; um `final` de topo já é preguiçoso em todos os alvos |
+| `lines[y]!` no `_io` contra `line![x]` no `_html` | nenhuma; o mesmo erro no mesmo lugar |
+| `h`/`w` contra `height`/`width`, e `final cy` reatribuído | **dentro de um bloco `/* */`**: o `case 2` do PDF está comentado nos dois. Código morto, não divergência |
+
+O clamp final era o único ponto de verdade, e o problema é maior do que "os
+dois discordam". O índice vale `384 + ((p[i] + 8) >> 4)` numa tabela de 768
+entradas que satura por construção. O `_io` guardava **só** o lado negativo, e
+guardava com `break`, o que abandonava o resto do bloco de 64 amostras com o
+lixo do bloco anterior; o lado positivo não era guardado em **nenhum** dos
+dois, e estourava `RangeError`. Os dois lados são alcançáveis a partir de um
+fluxo corrompido ou hostil: `p[i]` é o produto de um coeficiente da entropia
+pela tabela de quantização, e as duas coisas vêm do arquivo.
+
+O comportamento escolhido é **saturar**, que é o que a tabela de clip já faz no
+miolo: um índice abaixo dela vira 0, um acima vira 255. Para todo índice dentro
+da tabela — isto é, para todo JPEG válido — é bit a bit o que os dois já
+faziam. Fora dela, troca um `break` que corrompia o bloco e um `RangeError` que
+derrubava a decodificação por uma amostra saturada.
+
+### A prova de equivalência
+
+`test/graphics/image/jpeg_quantize_equivalence_test.dart` importa **os dois
+arquivos com prefixo** — o que nenhum teste normal consegue, já que a
+importação condicional só deixa um deles compilado — e exige bytes idênticos:
+
+- `quantizeAndInverse` sobre 2.000 blocos aleatórios na faixa de um JPEG
+  válido, 500 blocos com coeficientes extremos e 7 valores de DC escolhidos nas
+  bordas exatas da tabela de clip, com `dataOut` pré-preenchido com um
+  sentinela para que o `break` apareça se voltar;
+- `getImageFromJpeg` sobre o mesmo JPEG nos dois ramos, comparando
+  `toUint8List()`, o perfil ICC e a orientação, em 4:4:4, em 4:2:0 (inclusive
+  1×1 e dimensões ímpares, que exercitam os deslocamentos de subamostragem),
+  com e sem perfil ICC, e nas oito orientações EXIF.
+
+Rodado **antes** da correção, ele falhava nos três testes de
+`quantizeAndInverse` — `RangeError` em −10393 no `_html` e em 389785 no `_io` —
+e passava nos cinco de imagem, que é o que estabeleceu que a diferença do ICC
+não existia. Depois, passa nos oito.
+
+O caminho CMYK de 4 componentes não tem fixture: o codificador deste pacote não
+escreve 4 componentes. Ele é coberto pela geração mecânica descrita abaixo e
+por inspeção — todos os valores ali são amostras de 0..255, muito longe de 32
+bits.
+
+Para que a equivalência não volte a se perder, `_jpeg_quantize_html.dart` foi
+**gerado** a partir de `_jpeg_quantize_io.dart` por substituição mecânica dos
+deslocamentos, e o cabeçalho dele diz isso. Fora do contorno, os dois arquivos
+são a mesma sequência de caracteres.
+
+### O ramo do dart2js, executado
+
+A exigência do item 4 é cumprida por
+`test/graphics/image/jpeg_quantize_dart2js_test.dart`, que compila uma sonda
+com `dart compile js`, roda no Node e compara com a resposta da VM. Ele leva
+2 s. São dois testes:
+
+1. o ramo que o dart2js escolhe decodifica no dart2js os mesmos bytes que na
+   VM;
+2. o ramo **sem** contorno decodifica *diferente* no dart2js — uma armadilha
+   deliberada: se um dia ela falhar, o dart2js parou de precisar do contorno e
+   a divisão inteira pode ser apagada.
+
+O segundo é o que justifica a divisão, e não é sutil. Num bloco perfeitamente
+comum — quantização até 96, coeficientes até ±256 — o ramo sem contorno
+devolve, no dart2js, `[255, 255, 255, …]` onde a VM e o ramo com contorno
+devolvem `[0, 0, 255, 255, 255, 255, 0, 255, …]`. Não é imprecisão de último
+bit: é a imagem errada. Isto é viabilidade, o critério que 69.3 chama de
+"divida", e não otimização.
+
+### O ganho, medido
+
+`quantizeAndInverse` sobre 4.096 blocos com forma de bloco real, os dois ramos
+no mesmo processo, mínimo de 9 séries alternadas após aquecimento longo:
+
+| Alvo | sem contorno | com contorno | razão |
+|---|---|---|---|
+| dart2wasm (Node v24) | **757,5 ns/bloco** | 835,3 ns/bloco | **1,10×** |
+| VM (AOT) | 757,3 ns/bloco | 948,9 ns/bloco | 1,25× |
+
+O dart2wasm ganhou os ~78 ns por bloco de 8×8 que vinha pagando. Num JPEG
+4:2:0 são 1,5 blocos por 64 pixels, ou ~23.400 blocos por megapixel: **~1,8 ms
+por megapixel**, ~22 ms numa foto de 12 MP. Decodificação de JPEG não é
+trabalho de quadro, então a regra de fração de quadro de 69.3 não se aplica —
+mas aqui não é o ganho que decide a divisão, e sim o `[255, 255, 255, …]` da
+seção anterior.
+
+Duas observações sobre o método, porque custaram tempo: sob o V8 a diferença
+`t(2N) − t(N)` que 69.4 usa **não** serve, porque o tiering faz a série longa
+sair mais rápida por iteração que a curta e a diferença chega a dar negativa;
+o que serve é aquecer bastante e tomar o mínimo de séries diretas alternadas.
+E o número absoluto do Wasm oscila (757 a 1.215 ns entre execuções desta
+máquina) enquanto a razão fica presa entre 1,08× e 1,18× — a razão é o que
+vale, e o mínimo é o estimador certo, pelo mesmo motivo que 69.4 dá.
+
+### Onde o portão continua
+
+`test/backends/web/web_compilation_test.dart` passa nos três casos depois da
+troca: `dart compile js`, `dart compile wasm` e `dart compile exe`. O
+`_jpeg_quantize_io.dart` não importa `dart:io` — nunca importou; o nome é
+herança do pacote de origem — e por isso o dart2wasm o aceita. Os nomes dos
+dois arquivos foram mantidos de propósito, para não gerar ruído de diff em
+cima de outras frentes; o cabeçalho de cada um diz qual alvo o recebe.
 
 ---
 

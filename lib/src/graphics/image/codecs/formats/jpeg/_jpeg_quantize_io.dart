@@ -1,3 +1,15 @@
+// O ramo *sem* contorno do seletor de `jpeg_data.dart`: a VM e o dart2wasm, que
+// tem `int` de 64 bits de verdade. O nome `_io` e heranca do pacote de origem e
+// nao quer dizer nada: este arquivo nao importa `dart:io`, e por isso o
+// dart2wasm o aceita.
+//
+// O par dele e `_jpeg_quantize_html.dart`, que e o mesmo codigo com todo
+// deslocamento normalizado por `toSigned(32)` para contornar o `int` de 53 bits
+// do dart2js. Aquele arquivo e GERADO deste por substituicao mecanica: toda
+// mudanca feita aqui tem de ser refletida la, e
+// `test/graphics/image/jpeg_quantize_equivalence_test.dart` importa os dois com
+// prefixo e exige bytes identicos. Ver a secao 69 do roteiro.
+
 import 'dart:typed_data';
 
 import '../../exif/exif_data.dart';
@@ -202,9 +214,19 @@ void quantizeAndInverse(Int16List quantizationTable, Int32List coefBlock,
 
   // convert to 8-bit integers
   for (var i = 0; i < 64; ++i) {
-    final index = _dctClipOffset + 128 + ((p[i] + 8) >> 4);
+    var index = _dctClipOffset + 128 + ((p[i] + 8) >> 4);
+    // A tabela de clip satura por construcao: as 256 primeiras entradas valem
+    // 0 e as 256 ultimas valem 255. Um indice fora dela so pode vir de um
+    // coeficiente fora de faixa -- de um fluxo corrompido ou hostil -- e a
+    // resposta saturada e a da extremidade mais proxima. Prender o indice
+    // aqui e o que mantem os dois ramos do seletor byte a byte identicos:
+    // antes, o ramo nativo abortava o bloco com um `break` no lado negativo
+    // (deixando o resto de `dataOut` com lixo do bloco anterior) e os dois
+    // lancavam `RangeError` no lado positivo.
     if (index < 0) {
-      break;
+      index = 0;
+    } else if (index >= _dctClipLength) {
+      index = _dctClipLength - 1;
     }
     dataOut[i] = _dctClip[index];
   }

@@ -113,6 +113,7 @@ final class D3d12ComputePass {
     required this.uavCount,
     required this.target,
     this.compileFlags = 0,
+    this.deviceZeroFill = true,
   });
 
   /// Names the pass in every diagnostic it can raise.
@@ -129,6 +130,17 @@ final class D3d12ComputePass {
 
   final int compileFlags;
 
+  /// Whether the per-run zero-fill copies from a device-local buffer of zeros
+  /// rather than from a fresh upload allocation the CPU memsets.
+  ///
+  /// True is the production answer and the only one a caller should pick; see
+  /// [_zero] for what the other one costs. It stays selectable because that
+  /// cost is a *claim*, and
+  /// `test/rendering/gpu/compute/d3d12_compute_raster_pipeline_test.dart`
+  /// measures both shapes in the same run on the same machine rather than
+  /// asking anyone to believe a comment.
+  final bool deviceZeroFill;
+
   final D3d12RenderDevice _device;
 
   Pointer<Void> _rootSignature = nullptr;
@@ -136,8 +148,14 @@ final class D3d12ComputePass {
   final List<D3dBlob> _blobs = <D3dBlob>[];
   final List<_StageBuffer> _buffers = <_StageBuffer>[];
 
-  Pointer<Void> _readback = nullptr;
-  int _readbackBytes = 0;
+  late final _Readback _readback = _Readback(_device, label);
+
+  /// A default-heap buffer of zeros, as wide as the widest stage buffer.
+  ///
+  /// See [_zero]: this is what the per-run memset became.
+  Pointer<Void> _zeros = nullptr;
+  int _zerosBytes = 0;
+  bool _zerosNeedFilling = false;
 
   bool _disposed = false;
 
@@ -145,10 +163,6 @@ final class D3d12ComputePass {
       _device.library.allocator.allocate<Uint32>(4 * rootConstantCount);
   late final Pointer<D3d12ResourceBarrier> _barrier = _device.library.allocator
       .allocate<D3d12ResourceBarrier>(sizeOf<D3d12ResourceBarrier>());
-  late final Pointer<D3d12Range> _range =
-      _device.library.allocator.allocate<D3d12Range>(sizeOf<D3d12Range>());
-  late final Pointer<Pointer<Void>> _mapped = _device.library.allocator
-      .allocate<Pointer<Void>>(sizeOf<Pointer<Void>>());
 
   bool get isBuilt =>
       _rootSignature != nullptr && _pipelines.length == entryPoints.length;
@@ -181,6 +195,11 @@ final class D3d12ComputePass {
   ///
   /// [uavBytes] sizes every read-write buffer, in slot order; each is grown if
   /// needed and zeroed. [reads] names the slots to copy back.
+  ///
+  /// One list, one fence, one map: this is the oracle shape. A caller that
+  /// wants several passes to share a submission uses [D3d12ComputeChain]
+  /// instead, which reuses the same recording code without the fence between
+  /// the passes.
   List<Uint8List> run({
     required Uint32List rootConstants,
     required List<TypedData> uploads,
@@ -189,6 +208,133 @@ final class D3d12ComputePass {
     required List<int> reads,
   }) {
     _throwIfDisposed();
+    _validate(rootConstants, uploads, uavBytes);
+    if (_device.frames.isRecording) {
+      throw StateError(
+        'a Direct3D 12 command list is already recording; the $label pass owns '
+        'its own list because it waits for the GPU',
+      );
+    }
+    if (_device.isLost) throw StateError('the Direct3D 12 device is lost');
+
+    // Before the list is opened, not after: growing a buffer waits for the GPU
+    // to be idle, and a wait issued while a list is recording reads as if the
+    // open list were part of what is being waited for.
+    _ensureBuffers(uavBytes);
+    final List<int> sections = <int>[];
+    final List<int> sizes = <int>[];
+    var cursor = 0;
+    for (final int slot in reads) {
+      sections.add(cursor);
+      sizes.add(uavBytes[slot]);
+      cursor = alignUp(cursor + uavBytes[slot], _kReadbackAlignment);
+    }
+    if (cursor > 0) _readback.ensure(cursor);
+
+    if (_device.frames.begin() == null) {
+      _device.markLost('a command list could not be opened for $label');
+      throw StateError('a command list could not be opened for $label');
+    }
+
+    var completed = false;
+    try {
+      final D3d12GraphicsCommandList list = _device.frames.list;
+      record(
+        list,
+        rootConstants: rootConstants,
+        uploads: uploads,
+        uavBytes: uavBytes,
+        stages: stages,
+      );
+      for (var i = 0; i < reads.length; i++) {
+        copyOutSlot(
+            list, _readback.pointer, reads[i], sections[i], uavBytes[reads[i]]);
+      }
+
+      completed = true;
+      if (!_device.frames.end(waitForCompletion: true)) {
+        _device.markLost('the $label command list did not complete');
+        throw StateError('the $label command list did not complete');
+      }
+      return _readback.read(sections, sizes, cursor);
+    } finally {
+      // A throw before `end` would otherwise leave the list recording, and the
+      // next `begin` would reset an allocator whose list is still open.
+      if (!completed && _device.frames.isRecording) _device.frames.abandon();
+    }
+  }
+
+  /// Records the uploads, the zero-fill, the root bindings and the whole
+  /// dispatch chain into [list], which the caller has already opened.
+  ///
+  /// Everything [run] does except opening the list, sizing the buffers, copying
+  /// out and waiting. Split out for [D3d12ComputeChain]: the point of the
+  /// chained entry point is that it records *this* into a list it shares with
+  /// other passes, so the two shapes cannot drift into recording different
+  /// things.
+  ///
+  /// [reserve] must have been called first, outside the open list.
+  void record(
+    D3d12GraphicsCommandList list, {
+    required Uint32List rootConstants,
+    required List<TypedData> uploads,
+    required List<int> uavBytes,
+    required List<D3d12ComputeStage> stages,
+  }) {
+    final List<int> addresses = <int>[
+      for (final TypedData data in uploads) _stage(data),
+    ];
+    for (var slot = 0; slot < uavCount; slot++) {
+      _zero(list, _buffers[slot], uavBytes[slot]);
+    }
+
+    for (var i = 0; i < rootConstants.length; i++) {
+      _rootConstantScratch[i] = rootConstants[i];
+    }
+    list.setComputeRootSignature(list.pointer, _rootSignature);
+    list.setComputeRoot32BitConstants(
+      list.pointer,
+      0,
+      rootConstantCount,
+      _rootConstantScratch.cast<Void>(),
+      0,
+    );
+    for (var slot = 0; slot < srvCount; slot++) {
+      list.setComputeRootShaderResourceView(
+          list.pointer, 1 + slot, addresses[slot]);
+    }
+    for (var slot = 0; slot < uavCount; slot++) {
+      list.setComputeRootUnorderedAccessView(
+          list.pointer, 1 + srvCount + slot, _buffers[slot].address);
+    }
+
+    for (final D3d12ComputeStage stage in stages) {
+      if (stage.groups <= 0) continue;
+      list
+        ..setPipelineState(list.pointer, _pipelines[stage.entryPoint])
+        ..dispatch(list.pointer, stage.groups, 1, 1);
+      _uavBarrier(list);
+    }
+  }
+
+  /// Sizes and, if needed, reallocates the read-write buffers.
+  ///
+  /// Separate from [record] because growing one waits for the GPU to be idle,
+  /// and a wait issued while a list is recording reads as if the open list were
+  /// part of what is being waited for. A chained caller reserves for *every*
+  /// pass before it opens its list.
+  void reserve(
+      Uint32List rootConstants, List<TypedData> uploads, List<int> uavBytes) {
+    _throwIfDisposed();
+    _validate(rootConstants, uploads, uavBytes);
+    _ensureBuffers(uavBytes);
+  }
+
+  /// The byte size of read-write slot [slot], as the last [reserve] set it.
+  int slotBytes(int slot) => _buffers[slot].bytes;
+
+  void _validate(
+      Uint32List rootConstants, List<TypedData> uploads, List<int> uavBytes) {
     if (!isBuilt) {
       throw StateError('the $label compute pass is not built');
     }
@@ -209,84 +355,6 @@ final class D3d12ComputePass {
         'the $label pass declares $uavCount read-write buffers, got '
         '${uavBytes.length}',
       );
-    }
-    if (_device.frames.isRecording) {
-      throw StateError(
-        'a Direct3D 12 command list is already recording; the $label pass owns '
-        'its own list because it waits for the GPU',
-      );
-    }
-    if (_device.isLost) throw StateError('the Direct3D 12 device is lost');
-
-    // Before the list is opened, not after: growing a buffer waits for the GPU
-    // to be idle, and a wait issued while a list is recording reads as if the
-    // open list were part of what is being waited for.
-    _ensureBuffers(uavBytes);
-    final List<int> sections = <int>[];
-    var cursor = 0;
-    for (final int slot in reads) {
-      sections.add(cursor);
-      cursor = alignUp(cursor + uavBytes[slot], _kReadbackAlignment);
-    }
-    if (cursor > 0) _ensureReadback(cursor);
-
-    if (_device.frames.begin() == null) {
-      _device.markLost('a command list could not be opened for $label');
-      throw StateError('a command list could not be opened for $label');
-    }
-
-    var completed = false;
-    try {
-      final List<int> addresses = <int>[
-        for (final TypedData data in uploads) _stage(data),
-      ];
-      for (var slot = 0; slot < uavCount; slot++) {
-        _zero(_buffers[slot], uavBytes[slot]);
-      }
-
-      final D3d12GraphicsCommandList list = _device.frames.list;
-      for (var i = 0; i < rootConstants.length; i++) {
-        _rootConstantScratch[i] = rootConstants[i];
-      }
-      list.setComputeRootSignature(list.pointer, _rootSignature);
-      list.setComputeRoot32BitConstants(
-        list.pointer,
-        0,
-        rootConstantCount,
-        _rootConstantScratch.cast<Void>(),
-        0,
-      );
-      for (var slot = 0; slot < srvCount; slot++) {
-        list.setComputeRootShaderResourceView(
-            list.pointer, 1 + slot, addresses[slot]);
-      }
-      for (var slot = 0; slot < uavCount; slot++) {
-        list.setComputeRootUnorderedAccessView(
-            list.pointer, 1 + srvCount + slot, _buffers[slot].address);
-      }
-
-      for (final D3d12ComputeStage stage in stages) {
-        if (stage.groups <= 0) continue;
-        list
-          ..setPipelineState(list.pointer, _pipelines[stage.entryPoint])
-          ..dispatch(list.pointer, stage.groups, 1, 1);
-        _uavBarrier(list);
-      }
-
-      for (var i = 0; i < reads.length; i++) {
-        _copyOut(list, _buffers[reads[i]], sections[i], uavBytes[reads[i]]);
-      }
-
-      completed = true;
-      if (!_device.frames.end(waitForCompletion: true)) {
-        _device.markLost('the $label command list did not complete');
-        throw StateError('the $label command list did not complete');
-      }
-      return _read(reads, sections, uavBytes, cursor);
-    } finally {
-      // A throw before `end` would otherwise leave the list recording, and the
-      // next `begin` would reset an allocator whose list is still open.
-      if (!completed && _device.frames.isRecording) _device.frames.abandon();
     }
   }
 
@@ -310,8 +378,10 @@ final class D3d12ComputePass {
         ..state = d3d12ResourceStateUnorderedAccess;
     }
     _buffers.clear();
-    if (_readback != nullptr) _readback = releaseCom(_readback);
-    _readbackBytes = 0;
+    if (_zeros != nullptr) _zeros = releaseCom(_zeros);
+    _zerosBytes = 0;
+    _zerosNeedFilling = false;
+    _readback.release();
   }
 
   /// Forgets objects invalidated by device removal without releasing them.
@@ -320,19 +390,20 @@ final class D3d12ComputePass {
     _pipelines.clear();
     _blobs.clear();
     _buffers.clear();
-    _readback = nullptr;
-    _readbackBytes = 0;
+    _zeros = nullptr;
+    _zerosBytes = 0;
+    _zerosNeedFilling = false;
+    _readback.discard();
   }
 
   void dispose() {
     if (_disposed) return;
     _disposed = true;
     release();
+    _readback.dispose();
     _device.library.allocator
       ..free(_rootConstantScratch)
-      ..free(_barrier)
-      ..free(_range)
-      ..free(_mapped);
+      ..free(_barrier);
   }
 
   /// Disposes after device removal, where releasing an object is undefined.
@@ -360,16 +431,23 @@ final class D3d12ComputePass {
     list.resourceBarrier(list.pointer, 1, _barrier);
   }
 
-  void _copyOut(
+  /// Copies read-write slot [slot] into [readback] at byte [destination].
+  ///
+  /// The readback resource is a parameter rather than this pass's own, so that
+  /// a [D3d12ComputeChain] can gather several passes' sections into one buffer
+  /// and map it once.
+  void copyOutSlot(
     D3d12GraphicsCommandList list,
-    _StageBuffer buffer,
+    Pointer<Void> readback,
+    int slot,
     int destination,
     int bytes,
   ) {
     if (bytes <= 0) return;
+    final _StageBuffer buffer = _buffers[slot];
     _transition(buffer, d3d12ResourceStateCopySource);
     list.copyBufferRegion(
-        list.pointer, _readback, destination, buffer.pointer, 0, bytes);
+        list.pointer, readback, destination, buffer.pointer, 0, bytes);
     _transition(buffer, d3d12ResourceStateUnorderedAccess);
   }
 
@@ -379,13 +457,40 @@ final class D3d12ComputePass {
     buffer.state = state;
   }
 
-  /// Fills a stage buffer with zeros through a copy from upload memory.
+  /// Fills a stage buffer with zeros, copying from the device-local source.
   ///
   /// `ClearUnorderedAccessViewUint` would need both a shader-visible and a
   /// non-shader-visible descriptor for the same UAV, which is two descriptor
   /// heaps to own for one memset - the trade `D3d12ComputeTileDriver` states.
-  void _zero(_StageBuffer buffer, int bytes) {
+  /// So it is a copy. What changed is *where it copies from*.
+  ///
+  /// It used to copy from a fresh upload allocation the CPU zeroed every run.
+  /// Upload memory is write-combined, and this file's own benchmark measured
+  /// what that costs: quadrupling the stage buffers, with every dispatch size
+  /// unchanged, roughly doubled the cost of a submission - about 1 GB/s, which
+  /// is a write-combined memset and nothing else. On the largest scene that was
+  /// two thirds of everything a submission cost.
+  ///
+  /// Now [_ensureZeros] keeps one default-heap buffer of zeros, filled once
+  /// when it grows, and every run copies from *it*. The CPU touches nothing per
+  /// run, and the copy is device-local to device-local.
+  void _zero(D3d12GraphicsCommandList list, _StageBuffer buffer, int bytes) {
     if (bytes <= 0) return;
+    if (!deviceZeroFill) {
+      _zeroFromUpload(list, buffer, bytes);
+      return;
+    }
+    _fillZerosIfNeeded(list);
+    _transition(buffer, d3d12ResourceStateCopyDest);
+    list.copyBufferRegion(list.pointer, buffer.pointer, 0, _zeros, 0, bytes);
+    _transition(buffer, d3d12ResourceStateUnorderedAccess);
+  }
+
+  /// The shape [deviceZeroFill] replaced: a fresh upload allocation, memset by
+  /// the CPU, every run. Kept so the difference can be measured rather than
+  /// asserted.
+  void _zeroFromUpload(
+      D3d12GraphicsCommandList list, _StageBuffer buffer, int bytes) {
     final D3d12UploadRange? zeros =
         _device.frames.reserveUpload(bytes, alignment: 256);
     if (zeros == null) {
@@ -396,10 +501,34 @@ final class D3d12ComputePass {
     }
     zeros.cpu.asTypedList(bytes).fillRange(0, bytes, 0);
     _transition(buffer, d3d12ResourceStateCopyDest);
-    final D3d12GraphicsCommandList list = _device.frames.list;
     list.copyBufferRegion(
         list.pointer, buffer.pointer, 0, zeros.resource, zeros.offset, bytes);
     _transition(buffer, d3d12ResourceStateUnorderedAccess);
+  }
+
+  /// Writes the zeros into [_zeros], once per growth, from upload memory.
+  ///
+  /// Recorded into the same list rather than in a submission of its own: a
+  /// separate one would need a fence before the copies that read it, and a
+  /// fence is the thing this whole file is trying to stop paying.
+  void _fillZerosIfNeeded(D3d12GraphicsCommandList list) {
+    if (!_zerosNeedFilling) return;
+    final D3d12UploadRange? source =
+        _device.frames.reserveUpload(_zerosBytes, alignment: 256);
+    if (source == null) {
+      throw StateError(
+        'a $_zerosBytes byte zero-fill source for $label did not fit in an '
+        'upload buffer',
+      );
+    }
+    source.cpu.asTypedList(_zerosBytes).fillRange(0, _zerosBytes, 0);
+    _device.transitionResource(
+        _zeros, d3d12ResourceStateUnorderedAccess, d3d12ResourceStateCopyDest);
+    list.copyBufferRegion(
+        list.pointer, _zeros, 0, source.resource, source.offset, _zerosBytes);
+    _device.transitionResource(
+        _zeros, d3d12ResourceStateCopyDest, d3d12ResourceStateCopySource);
+    _zerosNeedFilling = false;
   }
 
   int _stage(TypedData data) {
@@ -423,43 +552,6 @@ final class D3d12ComputePass {
     return range.gpuAddress;
   }
 
-  List<Uint8List> _read(
-    List<int> reads,
-    List<int> sections,
-    List<int> uavBytes,
-    int total,
-  ) {
-    if (reads.isEmpty) return const <Uint8List>[];
-    final D3d12Resource resource = D3d12Resource(_readback);
-    _range.ref
-      ..begin = 0
-      ..end = total;
-    if (comFailed(resource.map(_range, _mapped))) {
-      _device.markLost('the $label readback buffer could not be mapped');
-      throw StateError('the $label readback buffer could not be mapped');
-    }
-    final int base = _mapped.value.address;
-    final List<Uint8List> result = <Uint8List>[];
-    for (var i = 0; i < reads.length; i++) {
-      final int bytes = uavBytes[reads[i]];
-      final Uint8List copy = Uint8List(bytes);
-      if (bytes > 0) {
-        copy.setRange(
-          0,
-          bytes,
-          Pointer<Uint8>.fromAddress(base + sections[i]).asTypedList(bytes),
-        );
-      }
-      result.add(copy);
-    }
-    // A zero-length written range: the CPU only read.
-    _range.ref
-      ..begin = 0
-      ..end = 0;
-    resource.unmap(_range);
-    return result;
-  }
-
   // -------------------------------------------------------------------
   // Resources
   // -------------------------------------------------------------------
@@ -468,6 +560,11 @@ final class D3d12ComputePass {
     while (_buffers.length < uavCount) {
       _buffers.add(_StageBuffer(_buffers.length));
     }
+    var widest = 0;
+    for (final int bytes in uavBytes) {
+      if (bytes > widest) widest = bytes;
+    }
+    _ensureZeros(widest);
     for (var slot = 0; slot < uavCount; slot++) {
       final _StageBuffer buffer = _buffers[slot];
       // A root UAV still needs a real address even for a chain that never
@@ -493,17 +590,26 @@ final class D3d12ComputePass {
     }
   }
 
-  void _ensureReadback(int bytes) {
-    if (_readback != nullptr && _readbackBytes >= bytes) return;
-    if (_readback != nullptr) {
+  /// Grows the zero source to [bytes] and marks it as needing a fill.
+  ///
+  /// Never shrinks, for the reason the stage buffers never shrink: a scene that
+  /// was large once is usually large again, and a shrink is a free allocation
+  /// plus a wait for idle in exchange for memory nobody asked back.
+  void _ensureZeros(int bytes) {
+    if (!deviceZeroFill) return;
+    final int size =
+        bytes < _kMinimumUploadBytes ? _kMinimumUploadBytes : bytes;
+    if (_zeros != nullptr && _zerosBytes >= size) return;
+    if (_zeros != nullptr) {
       _device.frames.waitIdle();
-      _readback = releaseCom(_readback);
+      _zeros = releaseCom(_zeros);
     }
-    _readback = _device.createReadbackBuffer(bytes);
-    if (_readback == nullptr) {
-      throw StateError('a $bytes byte $label readback buffer was refused');
+    _zeros = _createUavBuffer(size);
+    if (_zeros == nullptr) {
+      throw StateError('a $size byte $label zero source was refused');
     }
-    _readbackBytes = bytes;
+    _zerosBytes = size;
+    _zerosNeedFilling = true;
   }
 
   Pointer<Void> _createUavBuffer(int bytes) =>
@@ -724,4 +830,306 @@ final class _StageBuffer {
   int state = d3d12ResourceStateUnorderedAccess;
 
   int get address => D3d12Resource(pointer).gpuVirtualAddress;
+}
+
+/// A readback buffer, its map scratch, and the sectioned copy out of it.
+///
+/// Owned by a [D3d12ComputePass] for its own single-pass shape, and by a
+/// [D3d12ComputeChain] for the shared one - the sections of a chained
+/// submission come from several passes, so the buffer they land in cannot
+/// belong to any one of them.
+final class _Readback {
+  _Readback(this._device, this._label);
+
+  final D3d12RenderDevice _device;
+  final String _label;
+
+  Pointer<Void> pointer = nullptr;
+  int _bytes = 0;
+
+  late final Pointer<D3d12Range> _range =
+      _device.library.allocator.allocate<D3d12Range>(sizeOf<D3d12Range>());
+  late final Pointer<Pointer<Void>> _mapped = _device.library.allocator
+      .allocate<Pointer<Void>>(sizeOf<Pointer<Void>>());
+
+  /// Grows the buffer to at least [bytes]. Waits for idle before releasing the
+  /// old one, which the GPU may still be copying into.
+  void ensure(int bytes) {
+    if (pointer != nullptr && _bytes >= bytes) return;
+    if (pointer != nullptr) {
+      _device.frames.waitIdle();
+      pointer = releaseCom(pointer);
+    }
+    pointer = _device.createReadbackBuffer(bytes);
+    if (pointer == nullptr) {
+      throw StateError('a $bytes byte $_label readback buffer was refused');
+    }
+    _bytes = bytes;
+  }
+
+  /// Copies [sections] of [sizes] bytes each out of the mapped buffer.
+  List<Uint8List> read(List<int> sections, List<int> sizes, int total) {
+    if (sections.isEmpty) return const <Uint8List>[];
+    final D3d12Resource resource = D3d12Resource(pointer);
+    _range.ref
+      ..begin = 0
+      ..end = total;
+    if (comFailed(resource.map(_range, _mapped))) {
+      _device.markLost('the $_label readback buffer could not be mapped');
+      throw StateError('the $_label readback buffer could not be mapped');
+    }
+    final int base = _mapped.value.address;
+    final List<Uint8List> result = <Uint8List>[];
+    for (var i = 0; i < sections.length; i++) {
+      final int bytes = sizes[i];
+      final Uint8List copy = Uint8List(bytes);
+      if (bytes > 0) {
+        copy.setRange(
+          0,
+          bytes,
+          Pointer<Uint8>.fromAddress(base + sections[i]).asTypedList(bytes),
+        );
+      }
+      result.add(copy);
+    }
+    // A zero-length written range: the CPU only read.
+    _range.ref
+      ..begin = 0
+      ..end = 0;
+    resource.unmap(_range);
+    return result;
+  }
+
+  void release() {
+    if (pointer != nullptr) pointer = releaseCom(pointer);
+    _bytes = 0;
+  }
+
+  /// Forgets the resource without releasing it, after device removal.
+  void discard() {
+    pointer = nullptr;
+    _bytes = 0;
+  }
+
+  void dispose() {
+    release();
+    _device.library.allocator
+      ..free(_range)
+      ..free(_mapped);
+  }
+}
+
+/// One pass's share of a chained submission.
+///
+/// The same five arguments [D3d12ComputePass.run] takes, named so that a list
+/// of them reads as the pipeline it is.
+final class D3d12ComputeWork {
+  const D3d12ComputeWork(
+    this.pass, {
+    required this.rootConstants,
+    required this.uploads,
+    required this.uavBytes,
+    required this.stages,
+    this.reads = const <int>[],
+  });
+
+  final D3d12ComputePass pass;
+  final Uint32List rootConstants;
+  final List<TypedData> uploads;
+  final List<int> uavBytes;
+  final List<D3d12ComputeStage> stages;
+
+  /// Read-write slots of [pass] to copy back. Empty is legal and is the point:
+  /// a stage whose output only the next stage reads never leaves the device.
+  final List<int> reads;
+}
+
+/// Several passes, one command list, one fence.
+///
+/// [D3d12ComputePass.run] is the oracle shape: it ends in a readback the CPU
+/// maps, so it closes its list and waits. Measured on an Intel UHD at feature
+/// level 12_1 that costs about 0.8 ms per pass almost regardless of the scene,
+/// which is more than the CPU planner it was meant to replace takes to do
+/// strictly more work. A pipeline of stages paying that per stage is a pipeline
+/// that cannot win.
+///
+/// This is the other shape. It records every pass into one list, in order, with
+/// a UAV barrier between the passes as well as inside them, and submits once.
+/// [run] still ends in a fence because a caller that asked to read something
+/// has to wait for it; [submit] does not wait at all, and the difference
+/// between the two is how the fence wait gets separated from the submission
+/// cost rather than guessed at.
+///
+/// ## What a chained pass may not do
+///
+/// Grow a buffer. [D3d12ComputePass.reserve] runs for every pass before the
+/// list opens, because growing waits for idle and a wait inside an open list
+/// reads as if the list itself were being waited for. That is also why a
+/// chained caller cannot use the overflow retry the single-pass executors have:
+/// the retry needs the total the pass computed, and the total is on the device
+/// until somebody waits. A chained caller carries the previous frame's budget
+/// forward instead.
+final class D3d12ComputeChain {
+  D3d12ComputeChain(this._device, {required this.label});
+
+  /// Names the chain in every diagnostic it can raise.
+  final String label;
+
+  final D3d12RenderDevice _device;
+
+  late final _Readback _readback = _Readback(_device, label);
+
+  /// How many command lists this chain has submitted.
+  ///
+  /// A counter rather than a log: the thing worth asserting about a chained
+  /// pipeline is that N stages cost *one* submission, and a test that reads
+  /// this proves it without a profiler.
+  int get submissions => _submissions;
+  int _submissions = 0;
+
+  /// How many of those submissions ended in a fence wait.
+  int get waits => _waits;
+  int _waits = 0;
+
+  bool _disposed = false;
+
+  bool get isDisposed => _disposed;
+
+  /// Records [work] into one list, submits it, waits, and returns each pass's
+  /// requested buffers - outer list per work item, inner in `reads` order.
+  List<List<Uint8List>> run(List<D3d12ComputeWork> work) =>
+      _record(work, readBack: true);
+
+  /// Records [work] into one list and submits it without waiting.
+  ///
+  /// Nothing is read, so nothing has to have finished. The frame ring lets the
+  /// CPU run two submissions ahead of the GPU, and the third `begin` waits on
+  /// the first one's fence - so a caller that submits in a loop measures the
+  /// GPU's throughput rather than its latency, which is the number a frame path
+  /// actually pays.
+  void submit(List<D3d12ComputeWork> work) => _record(work, readBack: false);
+
+  List<List<Uint8List>> _record(
+    List<D3d12ComputeWork> work, {
+    required bool readBack,
+  }) {
+    _throwIfDisposed();
+    if (work.isEmpty) return const <List<Uint8List>>[];
+    if (_device.frames.isRecording) {
+      throw StateError(
+        'a Direct3D 12 command list is already recording; the $label chain '
+        'owns its own list',
+      );
+    }
+    if (_device.isLost) throw StateError('the Direct3D 12 device is lost');
+
+    // Every pass, before the list opens: see the class comment.
+    for (final D3d12ComputeWork item in work) {
+      item.pass.reserve(item.rootConstants, item.uploads, item.uavBytes);
+    }
+
+    final List<int> sections = <int>[];
+    final List<int> sizes = <int>[];
+    var cursor = 0;
+    if (readBack) {
+      for (final D3d12ComputeWork item in work) {
+        for (final int slot in item.reads) {
+          sections.add(cursor);
+          sizes.add(item.uavBytes[slot]);
+          cursor = alignUp(cursor + item.uavBytes[slot], _kReadbackAlignment);
+        }
+      }
+      if (cursor > 0) _readback.ensure(cursor);
+    }
+
+    if (_device.frames.begin() == null) {
+      _device.markLost('a command list could not be opened for $label');
+      throw StateError('a command list could not be opened for $label');
+    }
+
+    var completed = false;
+    try {
+      final D3d12GraphicsCommandList list = _device.frames.list;
+      for (final D3d12ComputeWork item in work) {
+        item.pass.record(
+          list,
+          rootConstants: item.rootConstants,
+          uploads: item.uploads,
+          uavBytes: item.uavBytes,
+          stages: item.stages,
+        );
+      }
+      if (readBack) {
+        var section = 0;
+        for (final D3d12ComputeWork item in work) {
+          for (final int slot in item.reads) {
+            item.pass.copyOutSlot(
+              list,
+              _readback.pointer,
+              slot,
+              sections[section],
+              item.uavBytes[slot],
+            );
+            section++;
+          }
+        }
+      }
+
+      completed = true;
+      _submissions++;
+      if (readBack) _waits++;
+      if (!_device.frames.end(waitForCompletion: readBack)) {
+        _device.markLost('the $label command list did not complete');
+        throw StateError('the $label command list did not complete');
+      }
+      if (!readBack) return const <List<Uint8List>>[];
+
+      final List<Uint8List> flat = _readback.read(sections, sizes, cursor);
+      final List<List<Uint8List>> result = <List<Uint8List>>[];
+      var section = 0;
+      for (final D3d12ComputeWork item in work) {
+        result.add(flat.sublist(section, section + item.reads.length));
+        section += item.reads.length;
+      }
+      return result;
+    } finally {
+      // A throw before `end` would otherwise leave the list recording, and the
+      // next `begin` would reset an allocator whose list is still open.
+      if (!completed && _device.frames.isRecording) _device.frames.abandon();
+    }
+  }
+
+  /// Waits for every submission this chain has made.
+  ///
+  /// A caller that used [submit] and now wants to touch a buffer, or to stop a
+  /// clock, calls this. It is the fence the chained shape does not pay per
+  /// stage, paid once at the end instead.
+  bool finish() {
+    _throwIfDisposed();
+    return _device.frames.waitIdle();
+  }
+
+  void release() => _readback.release();
+
+  /// Forgets objects invalidated by device removal without releasing them.
+  void discard() => _readback.discard();
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _readback.dispose();
+  }
+
+  /// Disposes after device removal, where releasing an object is undefined.
+  void disposeAfterDeviceLoss() {
+    if (_disposed) return;
+    discard();
+    dispose();
+  }
+
+  void _throwIfDisposed() {
+    if (_disposed) {
+      throw StateError('the $label compute chain is disposed');
+    }
+  }
 }

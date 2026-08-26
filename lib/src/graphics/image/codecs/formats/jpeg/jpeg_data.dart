@@ -8,7 +8,16 @@ import '../../util/image_exception.dart';
 import '../../util/input_buffer.dart';
 import '_component_data.dart';
 import '_jpeg_huffman.dart';
-import '_jpeg_quantize_html.dart' if (dart.library.io) '_jpeg_quantize_io.dart';
+// O corte e `dart.library.js`, e nao `dart.library.io`: o que decide qual
+// implementacao do IDCT serve nao e "este alvo tem sistema de arquivos" e sim
+// "este alvo e JavaScript". `_jpeg_quantize_html.dart` normaliza cada
+// deslocamento com `toSigned(32)` para contornar o `int` de 53 bits do dart2js;
+// a VM e o dart2wasm tem `int` de 64 bits de verdade e ficam com a versao sem
+// contorno. Com `dart.library.io` o dart2wasm -- que nao tem `dart:io` -- pagava
+// o imposto do dart2js sem ter o problema dele. Ver a secao 69 do roteiro; os
+// dois arquivos sao mantidos identicos a menos do contorno, e
+// `test/graphics/image/jpeg_quantize_equivalence_test.dart` prova isso.
+import '_jpeg_quantize_io.dart' if (dart.library.js) '_jpeg_quantize_html.dart';
 import 'jpeg_adobe.dart';
 import 'jpeg_component.dart';
 import 'jpeg_frame.dart';
@@ -330,8 +339,7 @@ class JpegData {
     }
 
     final data = block.toUint8List();
-    iccProfile =
-        IccProfile('ICC_PROFILE', IccProfileCompression.none, data);
+    iccProfile = IccProfile('ICC_PROFILE', IccProfileCompression.none, data);
   }
 
   void _readExifData(InputBuffer block) {
