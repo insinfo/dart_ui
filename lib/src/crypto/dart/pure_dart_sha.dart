@@ -90,7 +90,7 @@ class PureDartSha {
     padded[data.length] = 0x80;
 
     final bd = ByteData.sublistView(padded);
-    bd.setUint64(padded.length - 8, lengthInBits, Endian.big);
+    _writeLengthBigEndian(bd, padded.length - 8, lengthInBits);
 
     final w = Uint32List(64);
 
@@ -175,7 +175,7 @@ class PureDartSha {
     padded[data.length] = 0x80;
 
     final bd = ByteData.sublistView(padded);
-    bd.setUint64(padded.length - 8, lengthInBits, Endian.big);
+    _writeLengthBigEndian(bd, padded.length - 8, lengthInBits);
 
     final w = Uint32List(80);
 
@@ -452,9 +452,12 @@ class PureDartSha {
     padded.setAll(0, data);
     padded[data.length] = 0x80;
 
-    // Comprimento em bits como big-endian 128-bit (apenas os últimos 64 bits são usados)
+    // Comprimento em bits como big-endian de 128 bits, dos quais a FIPS 180-4
+    // deixa os 64 altos em zero para qualquer entrada real. Escrevia-se aqui
+    // apenas os 32 bits baixos, e o `& 0xFFFFFFFF` descartava o resto em
+    // silencio: a partir de 2^32 bits (512 MiB) o digest saia errado.
     final bdPad = ByteData.sublistView(padded);
-    bdPad.setUint32(padded.length - 4, lengthInBits & 0xFFFFFFFF, Endian.big);
+    _writeLengthBigEndian(bdPad, padded.length - 8, lengthInBits);
 
     // Message schedule W (80 palavras de 64 bits = 160 Uint32)
     final w = Uint32List(160);
@@ -642,4 +645,18 @@ class PureDartSha {
       ((x >>> n) | (x << (32 - n))) & 0xFFFFFFFF;
   static int _rotl32(int x, int n) =>
       ((x << n) | (x >>> (32 - n))) & 0xFFFFFFFF;
+}
+
+/// Escreve [lengthInBits] como 64 bits big-endian em [offset].
+///
+/// Duas escritas de 32 bits e nao um `setUint64`: este arquivo e alcancavel
+/// pelo backend web, e `ByteData.setUint64` lanca `UnsupportedError` sob o
+/// dart2js ("Uint64 accessor not supported by dart2js"). Com o `setUint64` o
+/// SHA-1 e o SHA-256 nao falhavam na compilacao — falhavam ao rodar.
+///
+/// A separacao usa `~/` e `%`, e nao deslocamentos: no dart2js as operacoes
+/// bitwise sao de 32 bits, entao `>> 32` daria zero.
+void _writeLengthBigEndian(ByteData target, int offset, int lengthInBits) {
+  target.setUint32(offset, lengthInBits ~/ 0x100000000, Endian.big);
+  target.setUint32(offset + 4, lengthInBits % 0x100000000, Endian.big);
 }

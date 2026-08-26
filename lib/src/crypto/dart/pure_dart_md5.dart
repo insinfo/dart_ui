@@ -184,7 +184,8 @@ class PureDartMd5Sink implements HashSink {
 
     // Completa o bloco parcial que sobrou da chamada anterior.
     if (_blockLength > 0) {
-      final take = data.length < 64 - _blockLength ? data.length : 64 - _blockLength;
+      final take =
+          data.length < 64 - _blockLength ? data.length : 64 - _blockLength;
       _block.setRange(_blockLength, _blockLength + take, data);
       _blockLength += take;
       offset = take;
@@ -226,7 +227,12 @@ class PureDartMd5Sink implements HashSink {
     while (_blockLength < 56) {
       _block[_blockLength++] = 0;
     }
-    _blockView.setUint64(56, lengthInBits, Endian.little);
+    // Duas escritas de 32 bits e nao um `setUint64`: este arquivo e alcancavel
+    // pelo backend web, e `ByteData.setUint64` lanca `UnsupportedError` sob o
+    // dart2js. `~/` e `%` em vez de deslocamentos porque as operacoes bitwise
+    // do dart2js sao de 32 bits.
+    _blockView.setUint32(56, lengthInBits % 0x100000000, Endian.little);
+    _blockView.setUint32(60, lengthInBits ~/ 0x100000000, Endian.little);
     _processBlock();
 
     return _result();
