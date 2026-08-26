@@ -191,12 +191,21 @@ void main() {
     expect(_inkPixels(d2d), greaterThan(1000),
         reason: 'a 1500 px H covers most of the surface; if it drew nothing '
             'the comparison below proves nothing');
-    // 0, and not a tolerance: the fallback blits the very coverage
-    // `ScanlineFiller` produced, exactly as the atlas route does. Direct2D's
-    // own rasteriser is not involved in either.
-    expect(maxDeviation, 0,
+    // One level, and not zero: the mask is the very coverage `ScanlineFiller`
+    // produced - Direct2D's rasteriser is not involved on either side - but
+    // the *blit* is `FillOpacityMask`, and its rounding is not a documented
+    // bit-exact copy. It is exact on a developer machine and off by one on the
+    // AA fringe on the CI runner, whose d2d1.dll and CPU differ; nothing in
+    // this repository is between the two. So the tolerance is one level, and
+    // the count of bytes that may reach it is bounded as well - a fallback
+    // that placed the glyph wrong, or rasterised it a second time, moves
+    // whole percentages of the surface and not a hairline.
+    expect(maxDeviation, lessThanOrEqualTo(1),
         reason: 'the oversize fallback disagrees with the CPU renderer by up '
             'to $maxDeviation levels over $differing bytes');
+    expect(differing, lessThan(d2d.pixels.length ~/ 1000),
+        reason: 'a one-level fringe is rounding; $differing bytes of '
+            '${d2d.pixels.length} is a different picture');
   }, skip: skip);
 }
 

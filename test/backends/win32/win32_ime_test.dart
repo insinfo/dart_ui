@@ -33,6 +33,7 @@ library;
 
 import 'dart:async';
 import 'dart:ffi' show nullptr;
+import 'dart:io' show Platform;
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/win32/win32_backend.dart';
@@ -351,7 +352,7 @@ void main() {
         api.immReleaseContext(window.handle, himc);
       }
     });
-  });
+  }, skip: Platform.isWindows ? false : 'needs a real Win32 window');
 
   group('the WndProc arms', () {
     late Win32WindowingBackend backend;
@@ -483,7 +484,7 @@ void main() {
         returnsNormally,
       );
     });
-  });
+  }, skip: Platform.isWindows ? false : 'needs a real Win32 window');
 }
 
 /// A [TextInputClient] that records what it was told.

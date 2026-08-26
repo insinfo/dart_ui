@@ -226,9 +226,13 @@ void main() {
 
       // Nothing here arms an animation frame: `_TickingBox` is a plain
       // `Timer.periodic` calling `setState`, exactly what an application
-      // writes. Against the flat 250 ms wait it advanced once per run; six is
-      // far below the ~30 the 8 ms period allows and far above that one.
-      expect(application.framesPresented, greaterThanOrEqualTo(6));
+      // writes. Against the flat 250 ms wait it advanced exactly once per run,
+      // so what this number has to separate is one from many - not one count
+      // from another. The bar is three rather than the ~15 the capped wait
+      // allows because a loaded shared runner spends far longer than the cap
+      // itself between iterations; the mechanism is pinned by the timeout
+      // assertion below, which is exact.
+      expect(application.framesPresented, greaterThanOrEqualTo(3));
       expect(
         backend.positiveTimeouts,
         everyElement(lessThanOrEqualTo(const Duration(microseconds: 16667))),

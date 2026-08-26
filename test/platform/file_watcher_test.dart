@@ -29,10 +29,15 @@ void main() {
           Directory.systemTemp.createTempSync('dart_ui_watch_test');
       addTearDown(() => sandbox.deleteSync(recursive: true));
 
+      // Wait for the create that names born.txt rather than for the first
+      // create of any kind: macOS FSEvents also delivers a create for the
+      // watched directory itself, which says nothing about the file.
       final Completer<FileChange> firstCreate = Completer<FileChange>();
       final StreamSubscription<FileChange> subscription =
           FileWatcher.watch(sandbox.path).listen((FileChange change) {
-        if (change.kind == FileChangeKind.create && !firstCreate.isCompleted) {
+        if (change.kind == FileChangeKind.create &&
+            change.path.endsWith('born.txt') &&
+            !firstCreate.isCompleted) {
           firstCreate.complete(change);
         }
       });
@@ -61,7 +66,9 @@ void main() {
       final Completer<FileChange> firstDelete = Completer<FileChange>();
       final StreamSubscription<FileChange> subscription =
           FileWatcher.watch(sandbox.path).listen((FileChange change) {
-        if (change.kind == FileChangeKind.delete && !firstDelete.isCompleted) {
+        if (change.kind == FileChangeKind.delete &&
+            change.path.endsWith('doomed.txt') &&
+            !firstDelete.isCompleted) {
           firstDelete.complete(change);
         }
       });

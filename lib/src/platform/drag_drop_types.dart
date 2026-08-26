@@ -365,9 +365,22 @@ final class MemoryDragData implements DragData {
   }
 
   /// A drag carrying local files. Paths become `file://` URIs.
+  ///
+  /// Which kind of path it is is read off the path rather than off the host,
+  /// for the reason [DragData.readFilePaths] reads it off the URI: `C:\x`
+  /// is a Windows path wherever it is encoded. The host default of `Uri.file`
+  /// would otherwise make a relative URI with escaped backslashes out of one
+  /// on a machine that is not Windows, and a relative URI carries no `file`
+  /// scheme, so the round trip drops the file entirely.
   factory MemoryDragData.filePaths(List<String> paths) => MemoryDragData.uris(
-        <Uri>[for (final String path in paths) Uri.file(path)],
+        <Uri>[
+          for (final String path in paths)
+            Uri.file(path, windows: _isWindowsPath(path)),
+        ],
       );
+
+  static bool _isWindowsPath(String path) =>
+      path.contains('\\') || (path.length >= 2 && path[1] == ':');
 
   final Map<String, Uint8List> _data;
 

@@ -186,12 +186,23 @@ void main() {
 
       final BackendProbeResult result = openGl.probe();
 
-      expect(result.supported, isTrue, reason: result.describe());
-      expect(result.capabilities, contains(Capability.gpuPresentation));
+      // The claim in the name holds either way, so it is asserted first: the
+      // Windows entry must never answer through EGL.
       expect(
         result.diagnostics.map((BackendDiagnostic item) => item.message),
         isNot(contains(contains('Windows has no EGL'))),
       );
+      // And, as with Vulkan above, a no is a legitimate answer rather than a
+      // failure: a machine with no display driver - a CI runner on the
+      // Microsoft Basic Render Driver - has only the OpenGL 1.1 software
+      // implementation inside opengl32.dll, which resolves a fraction of the
+      // entry points this backend needs. What is asserted there is that the
+      // probe says why.
+      if (!result.supported) {
+        expect(result.diagnostics, isNotEmpty, reason: result.describe());
+        return;
+      }
+      expect(result.capabilities, contains(Capability.gpuPresentation));
     });
   });
 

@@ -11,6 +11,8 @@
 /// exercised only for its precedence order.
 library;
 
+import 'dart:io' show Platform;
+
 import 'package:dart_ui/src/platform/compose_sequences.dart';
 import 'package:dart_ui/src/platform/compose_sequences_platform_io.dart';
 import 'package:test/test.dart';
@@ -301,12 +303,16 @@ void main() {
     test('a machine that is not Linux has no table at all', () {
       // Windows composes dead keys inside the OS - WM_DEADCHAR then a composed
       // WM_CHAR - so composing them again here would double every accent.
-      // This assertion is only meaningful on the platform running it, which is
-      // the point: it pins the behaviour wherever CI happens to be.
+      // Only meaningful off Linux: a Linux machine really does ship
+      // /usr/share/X11/locale/*/Compose, so there the table is rightly not
+      // empty and the assertion would be testing the runner, not the code.
       final ComposeTable table = loadSystemComposeTable(
         environment: <String, String>{'HOME': '/nonexistent'},
       );
       expect(table.isEmpty, isTrue);
-    });
+    },
+        skip: Platform.isLinux
+            ? 'runs only off Linux: a Linux machine has an X11 compose table'
+            : false);
   });
 }
