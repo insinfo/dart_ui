@@ -187,6 +187,75 @@ const String kStencilRefusedForQuality =
     'RenderQualityPreference.exact excludes MSAA cover: 18 levels of deviation '
     'at 16 samples, 42 at 4';
 
+/// Which optional general-path executors a GPU backend is asked to **build**.
+///
+/// ## Why this is not a fourth kill switch
+///
+/// [GpuStrategySwitches] takes a route *away* from the selector, and that is
+/// the whole of what a kill switch may do. It cannot make a route exist:
+/// approaches B (retained CPU tessellation) and C (stencil-then-cover) are
+/// executors an OpenGL device only compiles when it is asked to, and until
+/// something asks, `GpuStrategySwitches.tessellation` and
+/// `.stencilThenCover` - both `true` by default - switch off routes that were
+/// never there. That is the "knob that does nothing" this library's own
+/// preamble forbids, and it is what this enum closes.
+///
+/// The two gates stay separate and stay honest: this one decides what is
+/// *built*, [RenderPolicy.restrict] decides what may be *chosen*, and
+/// `restrict` remains subtractive. Turning a route on here still cannot force
+/// it: the per-draw selector decides, and the dense analytic atlas is
+/// underneath every refusal.
+///
+/// ## Why the default is not "everything"
+///
+/// Measured on the Intel UHD Graphics of `doc/RELATORIO_POC_23_*`, OpenGL 4.6,
+/// driver 32.0.101.7088, offscreen 512x512, medians of 41 interleaved frames
+/// on the same device in the same run:
+///
+/// | scene | routes built | frame time |
+/// |---|---|---|
+/// | static panel with a 260x250 `saveLayer` | none | **3.82 ms** |
+/// | the same | C | 4.21 ms (**0.91x**) |
+/// | large uncached path animating inside a layer | none | **4.72 ms** |
+/// | the same | C | 3.89 ms (**1.21x**) |
+/// | the same | B and C | 3.75 ms (**1.33x**) |
+///
+/// The static row is the cost of C existing at all: nothing in that frame was
+/// promoted to the cover pass - the diagnostics count zero
+/// `stencilThenCover` draws - and it still lost 9%, because
+/// `glLayerAttachmentsFor` gives every layer at or above 128 px the stencil
+/// and the four samples C would need, and the frame pays their allocation and
+/// their resolve whether or not C uses them.
+///
+/// So the ordinary interface pays and gets nothing, and the workload these
+/// routes were measured for gains a fifth to a third. That is a property of
+/// the *content*, which the application knows and the machine does not, which
+/// is why this is a declaration and not a probe.
+enum GpuRouteAvailability {
+  /// Only the routes every frame already pays for: analytic primitives, the
+  /// dense coverage atlas, and - where the driver has the symbols - sparse
+  /// strips. The default, and the behaviour of every release so far.
+  measuredDefaults,
+
+  /// Also build approach B and approach C, and allocate layers large enough to
+  /// hold a promoted path with the stencil and samples C needs.
+  ///
+  /// Declare this when the program draws **large paths that change every
+  /// frame** - a chart being dragged, a map, a vector canvas under a live
+  /// transform. Both routes reach the rasteriser through geometry instead of
+  /// an area-proportional CPU mask upload, which is where the numbers in the
+  /// table above come from.
+  ///
+  /// **What it costs, stated rather than implied.** Both are masked by
+  /// coverage the hardware quantises rather than by the analytic coverage
+  /// every other route in this renderer shares, so a promoted path's fringe
+  /// moves. Measured against the same frame drawn without them, on the same
+  /// GPU: **55 levels over 24 757 edge pixels** for the cover pass at four
+  /// samples, interiors exact. [RenderQualityPreference.exact] and the
+  /// [GpuStrategySwitches] still take either route back out.
+  largeAnimatedPaths,
+}
+
 /// Who rasterises the inside of a glyph.
 ///
 /// The framework owns its whole text stack - shaping, OpenType, hinting
@@ -248,6 +317,7 @@ final class RenderPolicy {
     this.maskAtlasByteBudget = kDefaultMaskAtlasByteBudget,
     this.quality = RenderQualityPreference.balanced,
     this.strategies = GpuStrategySwitches.all,
+    this.routes = GpuRouteAvailability.measuredDefaults,
     this.diagnostics = RenderDiagnosticsMode.off,
     this.glyphRasterization = GlyphRasterization.portable,
   }) : assert(maskAtlasByteBudget > 0);
@@ -281,6 +351,39 @@ final class RenderPolicy {
 
   /// See [GpuStrategySwitches]. Default: nothing disabled.
   final GpuStrategySwitches strategies;
+
+  /// See [GpuRouteAvailability]. Default
+  /// [GpuRouteAvailability.measuredDefaults] - the frame time and the picture
+  /// of every release so far.
+  ///
+  /// Read by `lib/src/backends/default_platform_resolver.dart`, which is the
+  /// composition root that opens the device, and by nothing else. It is the
+  /// *only* additive field on this class: everything below [restrict] can
+  /// still only subtract, so declaring a route here cannot make a backend
+  /// execute something it did not report.
+  final GpuRouteAvailability routes;
+
+  /// Whether approach B's executor should be built for a device opened under
+  /// this policy.
+  ///
+  /// False either because the application never asked for the routes or
+  /// because it asked and then switched this one back off - building an
+  /// executor `restrict` would immediately take away is native memory and
+  /// shader compilation spent on a route no draw can reach.
+  bool get buildsTessellationExecutor =>
+      routes == GpuRouteAvailability.largeAnimatedPaths &&
+      strategies.tessellation;
+
+  /// Whether approach C's executor should be built, and with it the stencil
+  /// and samples large layers are then allocated with.
+  ///
+  /// [RenderQualityPreference.exact] answers false for the same reason
+  /// [restrict] removes the route: its edge is quantised, and a policy that
+  /// refuses that trade should not pay for the attachments either.
+  bool get buildsStencilCoverExecutor =>
+      routes == GpuRouteAvailability.largeAnimatedPaths &&
+      strategies.stencilThenCover &&
+      quality != RenderQualityPreference.exact;
 
   /// See [RenderDiagnosticsMode]. Default [RenderDiagnosticsMode.off], because
   /// it is the only value that can be proved to cost nothing.
@@ -467,6 +570,24 @@ final class RenderPolicy {
             'they would otherwise cost every frame',
       ));
     }
+    final List<String> built = <String>[
+      if (buildsTessellationExecutor) 'tessellatedMesh',
+      if (buildsStencilCoverExecutor) 'stencilThenCover',
+    ];
+    // Nothing when every requested route was switched off again: the switches
+    // report themselves above, and a second line naming an empty set would be
+    // the log noise this method exists to avoid.
+    if (built.isNotEmpty) {
+      out.add(BackendDiagnostic.note(
+        'optional GPU path routes requested: ${built.join(', ')}',
+        detail: 'GpuRouteAvailability.largeAnimatedPaths. Layers at or above '
+            '128 px are allocated with stencil and four samples, which a '
+            'frame pays for whether or not a draw is promoted; the routes '
+            'themselves were measured at 1.21x-1.33x on large uncached paths '
+            'and 0.91x on a static panel. Only the backends that build these '
+            'executors are affected - OpenGL today.',
+      ));
+    }
     if (maskAtlasByteBudget != kDefaultMaskAtlasByteBudget) {
       out.add(BackendDiagnostic.note(
         'mask atlas budget $maskAtlasByteBudget bytes '
@@ -485,13 +606,17 @@ final class RenderPolicy {
     int? maskAtlasByteBudget,
     RenderQualityPreference? quality,
     GpuStrategySwitches? strategies,
+    GpuRouteAvailability? routes,
     RenderDiagnosticsMode? diagnostics,
+    GlyphRasterization? glyphRasterization,
   }) =>
       RenderPolicy(
         maskAtlasByteBudget: maskAtlasByteBudget ?? this.maskAtlasByteBudget,
         quality: quality ?? this.quality,
         strategies: strategies ?? this.strategies,
+        routes: routes ?? this.routes,
         diagnostics: diagnostics ?? this.diagnostics,
+        glyphRasterization: glyphRasterization ?? this.glyphRasterization,
       );
 
   @override
@@ -500,16 +625,18 @@ final class RenderPolicy {
       other.maskAtlasByteBudget == maskAtlasByteBudget &&
       other.quality == quality &&
       other.strategies == strategies &&
+      other.routes == routes &&
       other.diagnostics == diagnostics &&
       other.glyphRasterization == glyphRasterization;
 
   @override
   int get hashCode => Object.hash(maskAtlasByteBudget, quality, strategies,
-      diagnostics, glyphRasterization);
+      routes, diagnostics, glyphRasterization);
 
   @override
   String toString() => 'RenderPolicy(${maskAtlasByteBudget}B atlas, '
-      '${quality.name}, $strategies, diagnostics: ${diagnostics.name}, '
+      '${quality.name}, $strategies, routes: ${routes.name}, '
+      'diagnostics: ${diagnostics.name}, '
       'glyphs: ${glyphRasterization.name})';
 }
 

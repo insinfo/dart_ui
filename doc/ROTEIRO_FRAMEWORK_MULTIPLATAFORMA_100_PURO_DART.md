@@ -4060,6 +4060,25 @@ ou de escala não uniforme era recusado por nome nos dois renderizadores e hoje
 em `test/rendering/gpu/gl_glyph_device_test.dart`. Ver ADR 0007 e a seção 30
 acima.
 
+Outro que **fechou, em 26 de agosto de 2026**: B e C não eram alcançáveis de
+aplicação nenhuma. `GlRenderDevice.adoptContext` só constrói os dois executores
+quando é pedido, e `default_platform_resolver.dart` nunca pedia — rodavam de
+teste, da POC e de uso direto do device. Agora o resolver pede, e quem decide é
+`RenderPolicy.routes`. O padrão continua sendo **não construir**, e a razão é
+medida: numa UI comum, ligar C custa 9% e desenha **zero** draws pelo cover
+pass, porque toda camada a partir de 128 px passa a carregar stencil e quatro
+amostras; na carga para a qual as rotas existem — path grande, não cacheado,
+animando dentro de camada — o mesmo par entrega 1,21× (C) e 1,33× (B e C). As
+tabelas estão em `RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD.md`, seção
+“Correção de 26 de agosto de 2026”, que também corrige o nicho que o relatório
+atribuía a B e que na prática é tomado pelas strips e pela trava de repetição.
+
+No mesmo movimento, `RenderDiagnosticsMode.counters` deixou de reportar sempre
+“0 draws”: `recordDecision` e os contadores de cache do atlas não tinham
+chamador nenhum em produção, então `Application.renderDiagnostics` não sabia
+dizer qual rota um quadro real havia tomado. Passam a ser alimentados em
+`GpuPathPlanningTelemetry.complete` — no executado, não no proposto.
+
 O seam que tinha **aberto por consequência** também fechou: o sink **Direct2D**
 tomou a mesma rota, com `FillGeometry` sobre um `ID2D1PathGeometry` por glifo
 em vez do `ScanlineFiller`. Como a cobertura embaixo é o rasterizador do
@@ -8744,12 +8763,92 @@ compositor. A camada FFI — `sendmsg`, `recvmsg`, `SCM_RIGHTS`, `memfd_create`,
 Wayland real. Não existe `tool/wayland_backend_smoke.dart`, que X11 e macOS
 têm.
 
-### Acessibilidade quase não existe
+### ~~Acessibilidade quase não existe~~ — **fechada no Windows em 26/08/2026**
 
-Só há a ponte UIA no Windows (`backends/win32/uia/`), e o próprio probe diz
-"accessibility is partial" — `Capability.accessibility` **não é reivindicada**
-por backend nativo nenhum. X11, Wayland e web não têm nada; AT-SPI não foi
-começado. É requisito de *Gate 1.0* (§45, Fase 17).
+Esta linha dizia que só havia a ponte UIA e que `Capability.accessibility`
+não era reivindicada por backend nenhum. A ponte estava certa; o diagnóstico
+estava incompleto, e a parte incompleta era a que importava. Os 4.009 linhas de
+`backends/win32/uia/` **funcionavam** e eram **inalcançáveis**, por três
+chamadas que nunca aconteciam:
+
+- ninguém em `lib/` chamava `Win32UiaBridge.attach`;
+- ninguém bombeava um `SemanticsUpdate` para a ponte — `BuildOwner.updateSemantics`
+  só era chamado por teste, e `application.dart` construía a árvore semântica
+  apenas para **contar nós** num diagnóstico;
+- `UiaProviderTree.actionDispatcher` nunca era atribuído, então **todo** padrão
+  de controle respondia `UIA_E_NOTSUPPORTED`. O botão se anunciava
+  corretamente e não podia ser pressionado.
+
+O que existe agora:
+
+- **`lib/src/platform/accessibility.dart`** — `AccessibilityHost`,
+  `WindowAccessibility` e `AccessibilityTreeSource`. A camada neutra; é o único
+  arquivo de `platform/` que importa `widgets/`, e o cabeçalho diz por quê e
+  qual seria a correção honesta (tirar `SemanticsOwner` de `widgets/`);
+- **`backends/win32/uia/uia_session.dart`** — `WindowsAccessibility` liga a
+  árvore viva à ponte, e `WindowsUiaAccessibilityHost` é a implementação da
+  interface neutra. **Ativação preguiçosa**: registrar custa uma entrada de
+  mapa, e o provider só é construído quando um cliente manda o primeiro
+  `WM_GETOBJECT` — que é o sinal honesto de que alguém quer a árvore. Uma
+  máquina sem leitor de tela roda o código que rodava antes;
+- **`win32_backend.dart`** instala o host no `initialize` e **reivindica
+  `Capability.accessibility`**, condicionada a `uiautomationcore.dll` ter
+  carregado — a mesma regra de ole32 e imm32;
+- **`application.dart`** registra a janela na criação, bombeia a árvore depois
+  de cada frame (`_pumpAccessibility`, uma busca em mapa quando ninguém está
+  lendo) e desregistra no teardown;
+- **`widgets/semantics.dart`** ganhou `SemanticsActionTarget` e
+  `SemanticsOwner.performAction`, que é o caminho de volta: um id que veio do
+  leitor de tela vira o render object que o publicou. `ControlBehavior` implementa
+  `activate` e `focus` para **todo** controle; `RenderSlider` implementa
+  increment/decrement/setValue e `RenderTextField` implementa setValue pelo
+  caminho do *paste* (uma entrada de undo).
+
+**O que está provado por teste executável, e o que não está.** A distinção é a
+mesma que a seção faz para X11, e aqui ela cai do lado bom:
+
+- **provado, e por um cliente em outro processo**:
+  `test/backends/win32/uia/uia_app_test.dart` sobe uma aplicação `dart_ui` de
+  verdade (`uia_app_host.dart`, que não faz nada específico de acessibilidade —
+  quem faz é `lib/`), e aponta `uia_app_client.dart` para o HWND dela **de um
+  processo separado**. Esse cliente é `CLSID_CUIAutomation`, o mesmo objeto que
+  a biblioteca do Narrator cria. Ele encontra os quatro controles na **control
+  view** — Button (50000) "Save", CheckBox (50002) "Remember me", Slider (50015)
+  sem rótulo, Edit (50004) "Name" — chama `IUIAutomationInvokePattern::Invoke`,
+  `ITogglePattern::Toggle` e `IValuePattern::SetValue`, e os *callbacks da
+  aplicação hospedeira rodam*: `presses=1`, `checked=true`, `slider=0.75`,
+  `text=after`. Os valores novos voltam pela árvore num frame posterior, o que
+  é a metade que prova que `application.dart` bombeia. **Fora de processo é a
+  medição que importa**: um cliente in-process compartilha o apartamento com o
+  provider e nunca exercita o marshalling que `uia_bridge.dart` depende;
+- **também provado, in-process**: `uia_session_test.dart` (11 casos) e o
+  `uia_widget_probe.dart` que ele roda — render objects reais, ativação
+  preguiçosa medida (`liveBeforeClient=0`, `liveAfterClient=1`), e as mesmas
+  três operações; `test/widgets/semantics_actions_test.dart` (12 casos) cobre
+  as recusas — controle desabilitado, ação não declarada, campo read-only,
+  `setValue` com texto que não é número, incremento no fim da faixa;
+- **não provado**: que o **Narrator** anuncia o que o cliente lê. Ninguém rodou
+  o Narrator nesta máquina — ele fala em voz alta e toma a máquina, e esta é a
+  máquina do usuário. O que foi provado é a API que o Narrator usa, do jeito que
+  ele a usa, de fora do processo. **Também não provado**: NVDA, JAWS, e o
+  comportamento sob *high contrast* ou *text scaling* do sistema.
+
+**O que continua ausente no Windows**, por nome e com motivo, em
+`Win32UiaBridge.absentFeatures`: `IAccessible` (MSAA), `ITextProvider`,
+`IScrollProvider`, `IRangeValueProvider`, `IRawElementProviderAdviseEvents`. E
+uma consequência do desenho a mais: um render object que **declara** uma ação
+em `SemanticsConfiguration` mas não implementa `SemanticsActionTarget` continua
+respondendo `UIA_E_NOTSUPPORTED`. Os controles ligados hoje são os que passam
+por `ControlBehavior` (botão, toggle/checkbox, radio, switch), o slider e o
+campo de texto; `list_box`, `tree_view`, `data_grid`, `combo_box`, `menu`,
+`tabs` e `expander` **descrevem-se e não se operam**.
+
+**Fora do Windows continua não existindo nada.** X11, Wayland, macOS e web não
+têm host de acessibilidade; AT-SPI e NSAccessibility não foram começados, e
+nenhum deles pode ser verificado nesta máquina — escrever um às cegas produziria
+confiança falsa, que é exatamente o que esta seção existe para evitar. É
+requisito de *Gate 1.0* (§45, Fase 17), e o Gate continua aberto pelos outros
+três.
 
 ## 68.2 Escrito e não ligado
 

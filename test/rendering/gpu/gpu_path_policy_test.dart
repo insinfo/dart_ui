@@ -18,6 +18,7 @@
 ///     with the reason, so a support log says which routes were off.
 library;
 
+import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/transform2d.dart';
@@ -235,6 +236,143 @@ void main() {
             .strategy,
         GpuPathStrategy.tessellatedMesh,
       );
+    });
+  });
+
+  group('which executors a backend is asked to build', () {
+    // The gap this closed: `GpuStrategySwitches.tessellation` and
+    // `.stencilThenCover` are both true by default and were switching off
+    // routes no window had ever built, because
+    // `GlRenderDevice.adoptContext` only compiles approaches B and C when it
+    // is asked and `default_platform_resolver.dart` never asked. These two
+    // getters are what it asks with.
+    test('the default builds neither, which is every release so far', () {
+      const RenderPolicy policy = RenderPolicy.defaults;
+      expect(policy.routes, GpuRouteAvailability.measuredDefaults);
+      expect(policy.buildsTessellationExecutor, isFalse);
+      expect(policy.buildsStencilCoverExecutor, isFalse);
+      expect(policy.describe(), isEmpty);
+    });
+
+    test('largeAnimatedPaths builds both, and says so', () {
+      const RenderPolicy policy =
+          RenderPolicy(routes: GpuRouteAvailability.largeAnimatedPaths);
+      expect(policy.buildsTessellationExecutor, isTrue);
+      expect(policy.buildsStencilCoverExecutor, isTrue);
+      expect(
+        policy.describe().map((BackendDiagnostic d) => d.message),
+        contains(contains('tessellatedMesh, stencilThenCover')),
+      );
+    });
+
+    test('a kill switch is still subtractive over the request', () {
+      const RenderPolicy policy = RenderPolicy(
+        routes: GpuRouteAvailability.largeAnimatedPaths,
+        strategies: GpuStrategySwitches(tessellation: false),
+      );
+      expect(policy.buildsTessellationExecutor, isFalse);
+      expect(policy.buildsStencilCoverExecutor, isTrue);
+    });
+
+    test('exact refuses to pay for the cover pass it would remove anyway', () {
+      // Not a second opinion about quality: `restrict` already takes the route
+      // away, and building the executor would also have allocated stencil and
+      // four samples for every layer at or above 128 px - a cost with no route
+      // left to use it.
+      const RenderPolicy policy = RenderPolicy(
+        routes: GpuRouteAvailability.largeAnimatedPaths,
+        quality: RenderQualityPreference.exact,
+      );
+      expect(policy.buildsStencilCoverExecutor, isFalse);
+      expect(policy.buildsTessellationExecutor, isTrue);
+      expect(
+        decide(policy: policy).strategy,
+        isNot(GpuPathStrategy.stencilThenCover),
+      );
+    });
+
+    test('everything switched off again reports no route line', () {
+      const RenderPolicy policy = RenderPolicy(
+        routes: GpuRouteAvailability.largeAnimatedPaths,
+        strategies: GpuStrategySwitches(
+          tessellation: false,
+          stencilThenCover: false,
+        ),
+      );
+      expect(
+        policy.describe().where(
+            (BackendDiagnostic d) => d.message.contains('routes requested')),
+        isEmpty,
+      );
+    });
+
+    test('routes takes part in equality and copyWith', () {
+      const RenderPolicy defaults = RenderPolicy.defaults;
+      final RenderPolicy asked =
+          defaults.copyWith(routes: GpuRouteAvailability.largeAnimatedPaths);
+      expect(asked, isNot(defaults));
+      expect(asked.copyWith(routes: GpuRouteAvailability.measuredDefaults),
+          defaults);
+      expect(asked.toString(), contains('largeAnimatedPaths'));
+    });
+  });
+
+  group('the counters count what was executed, not what was proposed', () {
+    // `recordDecision` had no caller at all, so `RenderDiagnosticsMode
+    // .counters` reported "0 draws" for ever and `Application
+    // .renderDiagnostics` could not answer which route a real window took.
+    test('an executed candidate is counted under its own reason', () {
+      final RenderDiagnosticsRecorder recorder =
+          RenderDiagnosticsRecorder.forMode(RenderDiagnosticsMode.counters);
+      final GpuPathPlanningTelemetry telemetry = GpuPathPlanningTelemetry(
+        policy: RenderPolicy.defaults,
+        diagnostics: recorder,
+        candidateCapabilities: everything,
+        stabilityProbe: (_) => true,
+      );
+      final GpuPathPlanningProposal proposal = telemetry.plan(
+        label: 'counted',
+        path: _triangle(),
+        localToTarget: Transform2D.identity,
+        clip: const Rect.fromLTRB(0, 0, 512, 512),
+        fillRule: FillRule.nonZero,
+        denseMaskCacheHit: false,
+      )!;
+      telemetry.complete(proposal,
+          executedStrategy: proposal.candidate.strategy);
+
+      final FrameRenderDiagnostics frame = recorder.snapshot();
+      expect(frame.drawsOf(GpuPathStrategy.tessellatedMesh), 1);
+      expect(frame.reasonFor(GpuPathStrategy.tessellatedMesh),
+          proposal.candidate.reason);
+      expect(frame.maskCacheMisses, 1);
+      expect(frame.maskCacheHits, 0);
+    });
+
+    test('a refused candidate counts against the atlas that drew it', () {
+      final RenderDiagnosticsRecorder recorder =
+          RenderDiagnosticsRecorder.forMode(RenderDiagnosticsMode.counters);
+      final GpuPathPlanningTelemetry telemetry = GpuPathPlanningTelemetry(
+        policy: RenderPolicy.defaults,
+        diagnostics: recorder,
+        candidateCapabilities: everything,
+        stabilityProbe: (_) => true,
+      );
+      final GpuPathPlanningProposal proposal = telemetry.plan(
+        label: 'refused',
+        path: _triangle(),
+        localToTarget: Transform2D.identity,
+        clip: const Rect.fromLTRB(0, 0, 512, 512),
+        fillRule: FillRule.nonZero,
+        denseMaskCacheHit: true,
+      )!;
+      telemetry.complete(proposal,
+          executedStrategy: GpuPathStrategy.coverageAtlas);
+
+      final FrameRenderDiagnostics frame = recorder.snapshot();
+      expect(frame.drawsOf(GpuPathStrategy.tessellatedMesh), 0);
+      expect(frame.drawsOf(GpuPathStrategy.coverageAtlas), 1);
+      expect(frame.maskCacheHits, 1);
     });
   });
 }

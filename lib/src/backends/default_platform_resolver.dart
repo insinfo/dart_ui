@@ -5,6 +5,7 @@
 /// and receives only factories and common contracts.
 library;
 
+import 'dart:ffi';
 import 'dart:io';
 
 import '../app/application.dart';
@@ -19,10 +20,12 @@ import '../rendering/framebuffer.dart';
 import '../rendering/gpu/d3d11/d3d11_backend.dart';
 import '../rendering/gpu/d3d12/d3d12_surface_descriptor.dart';
 import '../rendering/gpu/gl/gl_backend.dart';
+import '../rendering/gpu/gl/gl_context.dart';
 import '../rendering/gpu/vulkan/vulkan_backend.dart';
 import '../rendering/gpu/vulkan/vulkan_instance.dart';
 import '../rendering/gpu/vulkan/vulkan_library.dart';
 import '../rendering/gpu/vulkan/vulkan_surface_descriptor.dart';
+import '../rendering/render_policy.dart';
 import '../rendering/renderer.dart';
 import 'headless/headless_backend.dart';
 import 'macos/macos.dart';
@@ -529,7 +532,7 @@ final class PlatformBackendResolver {
         }
         final GlRenderDevice device;
         try {
-          device = GlRendererBackend.adoptContext(context, surface.glLibrary);
+          device = _adoptGlContext(context, surface.glLibrary);
         } on Object {
           surface.dispose();
           rethrow;
@@ -569,10 +572,7 @@ final class PlatformBackendResolver {
         }
         final GlRenderDevice device;
         try {
-          device = GlRendererBackend.adoptContext(
-            surface.context,
-            surface.glLibrary,
-          );
+          device = _adoptGlContext(surface.context, surface.glLibrary);
         } on Object {
           surface.dispose();
           rethrow;
@@ -623,6 +623,34 @@ final class PlatformBackendResolver {
           );
         },
       );
+}
+
+/// Opens the GL device for a window, asking for exactly the optional
+/// executors the application's [RenderPolicy] declared.
+///
+/// This is the seam that made approaches B and C reachable at all. Both are
+/// built only when [GlRendererBackend.adoptContext] is asked to build them,
+/// and until this function existed nothing in the framework ever asked: they
+/// ran from tests, from the POC and from direct device use, and no window on
+/// any platform could reach them. Sparse strips are not named here on
+/// purpose - `GlSparseStripsPolicy.auto` is already `adoptContext`'s default
+/// and the driver's symbol table, not a policy, decides them.
+///
+/// The policy is read from [RenderPolicyScope] rather than threaded through
+/// `PresentationPathEntry`, and that is safe by construction rather than by
+/// luck: `Application.start` installs it before the first probe runs, and an
+/// attachment happens after a window exists, which is later still. A process
+/// that never started an [Application] - a test opening a device by hand -
+/// reads [RenderPolicy.defaults] and therefore gets exactly the device this
+/// resolver built before this function existed.
+GlRenderDevice _adoptGlContext(GlContext context, DynamicLibrary glLibrary) {
+  final RenderPolicy policy = RenderPolicyScope.policy;
+  return GlRendererBackend.adoptContext(
+    context,
+    glLibrary,
+    enableExperimentalCpuTessellation: policy.buildsTessellationExecutor,
+    enableExperimentalStencilCover: policy.buildsStencilCoverExecutor,
+  );
 }
 
 int _pixelWidth(NativeWindow window) =>

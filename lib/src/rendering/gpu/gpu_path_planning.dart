@@ -278,6 +278,14 @@ final class GpuPathPlanningTelemetry {
     ContentHint hint = ContentHint.none,
   }) {
     observationCount++;
+    // The atlas's own answer, recorded before anything can refuse it: this is
+    // a measurement of residency and not a decision, so it counts even for a
+    // draw whose planning then throws.
+    if (denseMaskCacheHit) {
+      diagnostics.recordMaskCacheHit();
+    } else {
+      diagnostics.recordMaskCacheMiss();
+    }
     try {
       // The backend reports what its device and this pass can execute; the
       // policy takes routes away from that and can never add one. This is the
@@ -334,10 +342,26 @@ final class GpuPathPlanningTelemetry {
   }
 
   /// Publishes [proposal] after ordered recording chose its real executor.
+  ///
+  /// This is also where the per-strategy draw counters are fed, and it has to
+  /// be *here* rather than at [plan]: what [plan] produces is a candidate, and
+  /// a candidate the ordered recorder then refuses falls back to the dense
+  /// atlas. A counter incremented at selection time would report routes that
+  /// never drew a pixel, which is worse than no counter - it is the exact
+  /// question `RenderDiagnosticsMode.counters` exists to answer. The reason
+  /// string is the candidate's own, so a strategy that was selected *and*
+  /// executed carries the sentence that chose it.
   GpuPathPlanningEvent complete(
     GpuPathPlanningProposal proposal, {
     required GpuPathStrategy executedStrategy,
   }) {
+    diagnostics.recordDecision(
+      executedStrategy,
+      executedStrategy == proposal.candidate.strategy
+          ? proposal.candidate.reason
+          : 'the ordered recorder refused '
+              '${proposal.candidate.strategy.name}, so the dense atlas drew it',
+    );
     final event = GpuPathPlanningEvent(
       label: proposal.label,
       workload: proposal.workload,
