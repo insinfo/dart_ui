@@ -365,17 +365,20 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
       throttledFrameCount++;
       return null;
     }
+    // `wl_surface.frame` is double-buffered surface state: it applies to the
+    // *next* commit, so it must be queued **before** the commit and not
+    // after. Asking afterwards attaches the callback to a commit that never
+    // arrives and the compositor stays silent forever - which is exactly what
+    // Weston did the first time this ran, while the in-memory fake answered
+    // anyway because it answers the request rather than the commit.
+    final callbackId = _client.requestFrameCallback(surfaceId);
     final failure = surface.present(damage: damage);
     if (failure != null) {
       _record(failure);
       return failure;
     }
-    // The request only takes effect on a commit, and `present` just made one;
-    // asking now attaches the callback to the frame that was committed.
-    if (_client.requestFrameCallback(surfaceId) != 0) {
-      _frameCallbackPending = true;
-      _client.flush();
-    }
+    // The commit inside `present` flushed the frame request with it.
+    if (callbackId != 0) _frameCallbackPending = true;
     return null;
   }
 

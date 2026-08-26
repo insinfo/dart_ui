@@ -556,6 +556,21 @@ void main() {
         expect(window.isFrameThrottled, isTrue);
       });
 
+      test('the frame request is queued before the commit it belongs to',
+          () async {
+        // A regression guard for a bug no fake could have caught on its own:
+        // the request was queued after the commit, which is legal protocol
+        // and means the callback belongs to the *next* commit. Weston
+        // therefore never answered, and every frame after the first was
+        // coalesced against a callback that could not arrive.
+        final window = await configuredWindow();
+        client.surfaceCallOrder.clear();
+
+        window.present();
+
+        expect(client.surfaceCallOrder, <String>['frame', 'commit']);
+      });
+
       test('presents while a callback is in flight are coalesced, not sent',
           () async {
         final window = await configuredWindow();
@@ -809,8 +824,16 @@ final class _FakeWaylandClient
   /// Set to 0 to model a compositor/connection that cannot arm a callback.
   int frameCallbackResult = -1;
 
+  /// Every `wl_surface.frame` and every commit, in the order they were made.
+  ///
+  /// The order is the point: `wl_surface.frame` is double-buffered surface
+  /// state and applies to the next commit, so a request made after the commit
+  /// waits for a commit that may never come.
+  final List<String> surfaceCallOrder = <String>[];
+
   @override
   int requestFrameCallback(int surfaceId) {
+    surfaceCallOrder.add('frame');
     frameCallbackSurfaces.add(surfaceId);
     return frameCallbackResult < 0
         ? nextFrameCallbackId++
@@ -898,6 +921,7 @@ final class _FakeWaylandClient
     required WaylandCpuDamage damage,
     required int bufferScale,
   }) {
+    surfaceCallOrder.add('commit');
     presentedDamage.add(damage);
     return null;
   }

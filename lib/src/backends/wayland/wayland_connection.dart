@@ -113,9 +113,15 @@ abstract interface class WaylandWindowClient
   ///
   /// The compositor answers when it is ready for the *next* frame, which is
   /// the only throttling signal Wayland gives a client: there is no vblank to
-  /// query and no swap that blocks. The request must be followed by a commit
-  /// to take effect, so [presentShmBuffer] emits it as part of the same
-  /// transaction. Returns the callback object id, or 0 when unavailable.
+  /// query and no swap that blocks.
+  ///
+  /// The request is double-buffered surface state, so it takes effect on the
+  /// next `wl_surface.commit` and **must be queued before** the commit it
+  /// belongs to - [presentShmBuffer] ends in a commit, so call this first and
+  /// let that commit carry it. Queued afterwards it waits for a commit that
+  /// may never come, and the compositor is silent rather than wrong.
+  ///
+  /// Returns the callback object id, or 0 when unavailable.
   int requestFrameCallback(int surfaceId);
 
   bool pollEventInto(WaylandRawEvent target);
