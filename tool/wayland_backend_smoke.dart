@@ -242,6 +242,13 @@ Future<void> main() async {
 /// `MAP_PRIVATE`, and parse the text. A fake compositor cannot pass a real
 /// descriptor, so nothing but a live session reaches this path.
 void _reportKeyboard(WaylandWindowingBackend backend) {
+  if (!backend.globalInterfaces.contains('wl_seat')) {
+    // A compositor with no input devices advertises no seat, and without a
+    // seat there is no `wl_keyboard` to send a keymap. Reported as SKIP
+    // because nothing in this backend was exercised, let alone found wanting.
+    stdout.writeln('WAYLAND_KEYBOARD=SKIP compositor advertises no wl_seat');
+    return;
+  }
   stdout.writeln(
     'WAYLAND_KEYBOARD=${backend.hasKeyboardMap ? 'PASS' : 'FAIL'} '
     'scm_rights_keymap=${backend.hasKeyboardMap}',

@@ -23,30 +23,50 @@ import 'wayland_window.dart';
 
 /// Retains and presents the most recent CPU display list for one window.
 final class WaylandCpuPresenter with DisposableMixin {
+  /// Presents into [window], committing through the window so that frame
+  /// pacing applies.
+  ///
+  /// The commit deliberately goes through [WaylandWindow.present] rather than
+  /// straight to the surface. Wayland's only pacing signal is the
+  /// `wl_surface.frame` callback, and it is the window that owns it: it arms
+  /// the callback after a commit and coalesces the presents that arrive while
+  /// one is in flight. Committing directly to the surface - which is what this
+  /// class did until the first run against a real compositor showed no frame
+  /// callback was ever armed - skips that entirely: every rasterised frame is
+  /// sent, and a compositor that wanted one frame per tick simply discards the
+  /// extras after the client paid for them.
   WaylandCpuPresenter(
     WaylandWindow window, {
     void Function(BackendDiagnostic diagnostic)? onDiagnostic,
     void Function(Object error, StackTrace stackTrace)? onError,
   }) : this.withSurfaceProvider(
           surfaceProvider: () => window.cpuSurface,
+          commit: ({Rect? damage}) => window.present(damage: damage),
           events: window.events,
           onDiagnostic: onDiagnostic ?? window.recordRenderDiagnostic,
           onError: onError ?? window.reportError,
         );
 
   /// Dependency-injected constructor for tests that have no compositor.
+  ///
+  /// [commit] defaults to committing the surface directly, which is what a
+  /// test holding a fake surface and no window wants; the window constructor
+  /// above passes the paced one.
   WaylandCpuPresenter.withSurfaceProvider({
     required WaylandCpuSurface? Function() surfaceProvider,
     required Stream<PlatformWindowEvent> events,
+    BackendDiagnostic? Function({Rect? damage})? commit,
     void Function(BackendDiagnostic diagnostic)? onDiagnostic,
     void Function(Object error, StackTrace stackTrace)? onError,
   })  : _surfaceProvider = surfaceProvider,
+        _commit = commit,
         _onDiagnostic = onDiagnostic,
         _onError = onError {
     _events = events.listen(_onWindowEvent, onError: _reportError);
   }
 
   final WaylandCpuSurface? Function() _surfaceProvider;
+  final BackendDiagnostic? Function({Rect? damage})? _commit;
   final void Function(BackendDiagnostic diagnostic)? _onDiagnostic;
   final void Function(Object error, StackTrace stackTrace)? _onError;
 
@@ -121,11 +141,23 @@ final class WaylandCpuPresenter with DisposableMixin {
     }
 
     _presentedGeneration = surface.generation;
-    final failure = surface.present(damage: damage);
+    final failure = _present(surface, damage: damage);
     if (failure != null) {
       return PresentResult(status: PresentStatus.failed, diagnostic: failure);
     }
     return const PresentResult(status: PresentStatus.presented);
+  }
+
+  /// Commits [surface], through the window's frame pacing when there is one.
+  ///
+  /// A paced commit that is coalesced returns null exactly like one that was
+  /// sent: nothing is lost, the damage is unioned and replayed as an expose
+  /// when the compositor asks for the next frame, so the caller has no
+  /// decision to make between the two.
+  BackendDiagnostic? _present(WaylandCpuSurface surface, {Rect? damage}) {
+    final commit = _commit;
+    if (commit != null) return commit(damage: damage);
+    return surface.present(damage: damage);
   }
 
   void _onWindowEvent(PlatformWindowEvent event) {
@@ -143,7 +175,7 @@ final class WaylandCpuPresenter with DisposableMixin {
         return;
       }
       try {
-        final failure = surface.present(damage: event.dirtyRect);
+        final failure = _present(surface, damage: event.dirtyRect);
         if (failure != null) _onDiagnostic?.call(failure);
       } catch (error, stackTrace) {
         _reportError(error, stackTrace);

@@ -55,6 +55,63 @@ void main() {
     expect(_rgbaAt(surface.framebuffer, 0, 0), (0, 0, 0, 0));
   });
 
+  // Unit tests for the pacing seam. They prove the presenter *uses* the
+  // commit hook; that the hook the production constructor installs is the
+  // window's paced `present` - and that a real compositor then answers with a
+  // frame callback - is what `tool/wayland_backend_smoke.dart` proves under
+  // Weston, because no fake can send a frame callback it was not written to
+  // send.
+  test('commits through the pacing hook rather than the surface', () async {
+    final damages = <Rect?>[];
+    final paced = WaylandCpuPresenter.withSurfaceProvider(
+      surfaceProvider: () => surface,
+      commit: ({Rect? damage}) {
+        damages.add(damage);
+        return null;
+      },
+      events: events.stream,
+      onDiagnostic: diagnostics.add,
+      onError: (error, _) => errors.add(error),
+    );
+    addTearDown(paced.dispose);
+
+    final result = await paced.renderDisplayList(
+      redRectangle(),
+      clearColor: 0,
+      damage: const Rect.fromLTWH(1, 1, 4, 4),
+    );
+
+    expect(result.status, PresentStatus.presented);
+    expect(damages, <Rect?>[const Rect.fromLTWH(1, 1, 4, 4)]);
+    // The pixels were still rasterised; only the commit changed hands.
+    expect(_rgbaAt(surface.framebuffer, 2, 2), (255, 0, 0, 255));
+    expect(surface.presentedDamage, isEmpty);
+  });
+
+  test('a coalesced commit is presented, not a failure', () async {
+    // The window returns null both when it committed and when it coalesced
+    // the frame behind an in-flight callback. Nothing is lost in the second
+    // case - the damage is replayed as an expose - so the presenter must not
+    // report it as a failed frame.
+    var calls = 0;
+    final paced = WaylandCpuPresenter.withSurfaceProvider(
+      surfaceProvider: () => surface,
+      commit: ({Rect? damage}) {
+        calls++;
+        return null;
+      },
+      events: events.stream,
+    );
+    addTearDown(paced.dispose);
+
+    final first = await paced.renderDisplayList(redRectangle(), clearColor: 0);
+    final second = await paced.renderDisplayList(redRectangle(), clearColor: 0);
+
+    expect(first.status, PresentStatus.presented);
+    expect(second.status, PresentStatus.presented);
+    expect(calls, 2);
+  });
+
   test('an expose re-commits retained pixels and forwards its damage',
       () async {
     await presenter.renderDisplayList(redRectangle(), clearColor: 0);
