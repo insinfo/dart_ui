@@ -117,7 +117,10 @@ void main() {
     test('is named, with a reason somebody could act on', () {
       expect(
         Win32UiaBridge.absentFeatures.keys,
-        containsAll(<String>['IAccessible (MSAA)', 'Performing actions']),
+        containsAll(<String>[
+          'IAccessible (MSAA)',
+          'Actions on a node whose widget cannot perform one',
+        ]),
       );
       for (final MapEntry<String, String> entry
           in Win32UiaBridge.absentFeatures.entries) {

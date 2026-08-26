@@ -9,6 +9,7 @@ library;
 
 import 'dart:io' show Platform;
 
+import 'package:dart_ui/src/backends/win32/uia/uia_core.dart' as probe;
 import 'package:dart_ui/src/backends/win32/win32_backend.dart';
 import 'package:dart_ui/src/backends/win32/win32_ime.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
@@ -121,7 +122,6 @@ void main() {
       // and IMM32 composition are both part of the Win32 vertical slice now.
       expect(result.supports(Capability.clipboardText), isTrue);
       expect(result.supports(Capability.clipboardImage), isFalse);
-      expect(result.supports(Capability.accessibility), isFalse);
       expect(result.supports(Capability.vsync), isFalse);
       // The remaining deferral is written down, not just absent.
       expect(
@@ -130,7 +130,27 @@ void main() {
       );
     });
 
-    test('text composition is claimed on imm32 having bound, and on nothing '
+    test('accessibility is claimed on uiautomationcore.dll having loaded', () {
+      final result = probe.UiaCore.load();
+      final expected = result.core != null;
+      expect(
+        backend.probe().supports(Capability.accessibility),
+        expected,
+        reason: 'the capability has to follow the library, or a stripped '
+            'Windows image reports a window a screen reader cannot read',
+      );
+      // And the claim is explained rather than only made: what UI Automation
+      // covers here and what it does not are both in the diagnostics.
+      expect(
+        backend.probe().diagnostics.map((d) => d.message).join(' | '),
+        expected
+            ? contains('accessibility is UI Automation')
+            : contains('uiautomationcore.dll did not load'),
+      );
+    });
+
+    test(
+        'text composition is claimed on imm32 having bound, and on nothing '
         'else', () {
       final result = backend.probe();
       expect(

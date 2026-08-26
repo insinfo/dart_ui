@@ -516,7 +516,8 @@ final class TextEditingController extends ValueNotifier<String> {
   ///  * **Any composing region goes.** The characters around the caret are
   ///    changing, so the input method's idea of which span it owns is now
   ///    wrong; keeping the range would underline text that nothing will clear.
-  void deleteSurrounding({required int beforeLength, required int afterLength}) {
+  void deleteSurrounding(
+      {required int beforeLength, required int afterLength}) {
     if (beforeLength <= 0 && afterLength <= 0) return;
     final ({int start, int end}) range = orderedSelection;
     final int from = TextMotion.snapDown(
@@ -2460,14 +2461,14 @@ final class RenderTextField extends RenderBox
   List<_CompositionRun> _compositionRuns(TextRange composing) {
     if (_compositionClauses.isEmpty) {
       return <_CompositionRun>[
-        _CompositionRun(composing.start, composing.end,
-            ImeCompositionStyle.input),
+        _CompositionRun(
+            composing.start, composing.end, ImeCompositionStyle.input),
       ];
     }
     final runs = <_CompositionRun>[];
     for (final ImeCompositionClause clause in _compositionClauses) {
-      final int start =
-          (composing.start + clause.start).clamp(composing.start, composing.end);
+      final int start = (composing.start + clause.start)
+          .clamp(composing.start, composing.end);
       final int end =
           (composing.start + clause.end).clamp(composing.start, composing.end);
       if (end > start) runs.add(_CompositionRun(start, end, clause.style));
@@ -2526,4 +2527,29 @@ final class RenderTextField extends RenderBox
               }
             : const <SemanticsAction>{},
       );
+
+  /// Replaces the whole text, the way a client's `IValueProvider::SetValue`
+  /// means it.
+  ///
+  /// Routed through [TextEditingController.selectAll] and
+  /// [TextEditingController.replaceSelection] rather than through the plain
+  /// `value` setter, because that is the path a paste takes: it records one
+  /// undo entry, so a user who let a screen reader fill a field can take it
+  /// back with Ctrl+Z like any other edit.
+  ///
+  /// Refused on a read-only field even though the field still *declares*
+  /// `setValue` - the declaration is about the control accepting a value at
+  /// all, and `readOnly` is published as a state a client is expected to
+  /// read. Answering false is what turns that state into a consequence.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (action != SemanticsAction.setValue) {
+      return super.performSemanticsAction(action, value: value);
+    }
+    if (!enabled || _readOnly || value == null) return false;
+    _controller
+      ..selectAll()
+      ..replaceSelection(value);
+    return true;
+  }
 }

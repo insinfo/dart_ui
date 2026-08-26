@@ -119,6 +119,26 @@ abstract interface class SemanticsProvider {
   SemanticsConfiguration describeSemantics();
 }
 
+/// A render object that can *carry out* one of the actions it declared.
+///
+/// [SemanticsConfiguration.actions] is a promise; this is the keeping of it.
+/// The two were split for a while and the gap was the single largest hole in
+/// this framework's accessibility: a screen reader could read "button, Save"
+/// and had no way to press it, because every platform pattern answered
+/// `UIA_E_NOTSUPPORTED` for want of anywhere to dispatch to.
+///
+/// Implementations should return false rather than throw for an action they do
+/// not handle: a platform bridge turns false into the "not supported" answer
+/// its own API expects, and an exception crossing an FFI trampoline does not
+/// survive the trip.
+abstract interface class SemanticsActionTarget {
+  /// Performs [action], returning whether it was carried out.
+  ///
+  /// [value] carries the text for [SemanticsAction.setValue] and is null for
+  /// every other action.
+  bool performSemanticsAction(SemanticsAction action, {String? value});
+}
+
 /// One node in the semantic tree.
 final class SemanticsNode {
   const SemanticsNode({
@@ -236,6 +256,12 @@ final class SemanticsUpdate {
 /// after the object it belonged to is gone.
 final class SemanticsOwner {
   final Map<RenderBox, int> _ids = Map<RenderBox, int>.identity();
+
+  /// The inverse of [_ids], so an id arriving from the platform can be turned
+  /// back into the render object that owns it. A platform bridge is handed an
+  /// integer by a screen reader and has nothing else to go on.
+  final Map<int, RenderBox> _byId = <int, RenderBox>{};
+
   int _nextId = 1;
 
   SemanticsSnapshot _last = const SemanticsSnapshot(null);
@@ -244,7 +270,48 @@ final class SemanticsOwner {
   SemanticsSnapshot get snapshot => _last;
 
   /// The id assigned to [node], allocating one on first sight.
-  int idFor(RenderBox node) => _ids[node] ??= _nextId++;
+  int idFor(RenderBox node) {
+    final int? existing = _ids[node];
+    if (existing != null) return existing;
+    final int id = _nextId++;
+    _ids[node] = id;
+    _byId[id] = node;
+    return id;
+  }
+
+  /// The render object behind [id], or null once it has been pruned.
+  ///
+  /// Null is the ordinary answer for a stale id, not an error: an assistive
+  /// client holds ids across frames and is entitled to ask about one whose
+  /// control has since been removed.
+  RenderBox? renderObjectFor(int id) => _byId[id];
+
+  /// Performs [action] on the node [id] names, returning whether it happened.
+  ///
+  /// Refuses, in this order and for these reasons:
+  ///
+  ///   * **no such node** - the id is stale, the control is gone;
+  ///   * **the node did not declare the action** in the last published
+  ///     snapshot. Declaring is what a client reads to decide the call is
+  ///     legal, so honouring an undeclared action would make the declaration
+  ///     a lie in the other direction;
+  ///   * **the render object cannot perform actions** - it implements
+  ///     [SemanticsProvider] but not [SemanticsActionTarget], which is the
+  ///     honest state for a control that describes itself and does nothing.
+  ///
+  /// The snapshot is consulted rather than the render object because the
+  /// snapshot is what the client was told, and a frame may have changed the
+  /// control's mind since. Acting on the description the client actually read
+  /// is the behaviour that cannot surprise it.
+  bool performAction(int id, SemanticsAction action, {String? value}) {
+    final SemanticsNode? node = _last.nodeById(id);
+    if (node == null) return false;
+    if (!node.actions.contains(action)) return false;
+    final RenderBox? object = _byId[id];
+    if (object is! SemanticsActionTarget) return false;
+    return (object as SemanticsActionTarget)
+        .performSemanticsAction(action, value: value);
+  }
 
   /// Walks [root] and produces the current tree.
   ///
@@ -394,12 +461,14 @@ final class SemanticsOwner {
     _ids.removeWhere((RenderBox node, int id) {
       if (live.contains(node)) return false;
       _sortKeys.remove(id);
+      _byId.remove(id);
       return true;
     });
   }
 
   void reset() {
     _ids.clear();
+    _byId.clear();
     _sortKeys.clear();
     _last = const SemanticsSnapshot(null);
     _nextId = 1;

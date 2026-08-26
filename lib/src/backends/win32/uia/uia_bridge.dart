@@ -11,10 +11,14 @@
 ///      - the value is a cookie, not a pointer, and interpreting it is a bug;
 ///   4. UI Automation then calls the provider's methods to walk the tree.
 ///
-/// Step 3 is the one line this directory cannot write, because
-/// `win32_window.dart` belongs to somebody else. [Win32UiaBridge] implements
-/// everything around it and [getObjectPatch] spells out the change, so the
-/// owner of that file can apply four lines rather than reconstruct a design.
+/// Step 3 lives in `win32_window.dart`, which carries the arm
+/// [getObjectPatch] describes; the constant is kept because it is also what
+/// `uia_client_probe.dart` reproduces, and a patch next to the code it patches
+/// cannot go stale on its own.
+///
+/// **Who calls [attach]**: `uia_session.dart`, and only when a client asks.
+/// See [onDemandAttach]. Attaching eagerly is still supported and is what the
+/// probe does.
 ///
 /// ## The threading problem, stated plainly
 ///
@@ -213,10 +217,31 @@ final class Win32UiaBridge with DisposableMixin {
   static int? handleGetObject(int hwnd, int wParam, int lParam) {
     // lParam arrives as an unsigned machine word; UiaRootObjectId is -25.
     if (lParam.toSigned(32) != uiaRootObjectId) return null;
-    final Win32UiaBridge? bridge = _bridges[hwnd];
+    Win32UiaBridge? bridge = _bridges[hwnd];
+    if (bridge != null && bridge.isDisposed) return null;
+    // Nobody had built a provider for this window yet. This message is the
+    // only honest signal that one is now wanted - it arrives when Narrator
+    // starts, when Inspect points here, when any IUIAutomation client calls
+    // ElementFromHandle, and never otherwise. See [onDemandAttach].
+    bridge ??= onDemandAttach?.call(hwnd);
     if (bridge == null || bridge.isDisposed) return null;
     return bridge.respondToGetObject(wParam, lParam);
   }
+
+  /// Builds a bridge for a window that has none, on the first client request.
+  ///
+  /// Null - the default - means a window publishes only if somebody attached
+  /// to it explicitly, which is the behaviour this class had before the hook
+  /// existed. `uia_session.dart` installs the callback that makes activation
+  /// lazy, and returning null from it is a supported answer: the
+  /// `WM_GETOBJECT` then falls through to `DefWindowProcW` exactly as it does
+  /// for an unregistered window.
+  ///
+  /// Deliberately a hook rather than a direct call into the session: this file
+  /// is the layer that knows about COM and `WM_GETOBJECT`, and the layer that
+  /// knows about semantic trees sits above it. Inverting that would put a
+  /// widget-layer import in the innermost provider file.
+  static Win32UiaBridge? Function(int hwnd)? onDemandAttach;
 
   /// The instance half of [handleGetObject].
   int? respondToGetObject(int wParam, int lParam) {
@@ -455,12 +480,15 @@ final class Win32UiaBridge with DisposableMixin {
     'IRawElementProviderHwndOverride':
         'Nothing in this framework hosts a child HWND, so there is no window '
             'whose provider would need overriding.',
-    'Performing actions': 'Every control pattern announces itself and answers '
-        'UIA_E_NOTSUPPORTED when invoked, because nothing in '
-        'lib/src/widgets/ can perform a SemanticsAction: the actions are '
-        'declared by SemanticsConfiguration and there is no dispatch path '
-        'for them. UiaProviderTree.actionDispatcher is the one assignment '
-        'that would finish it.',
+    'Actions on a node whose widget cannot perform one':
+        'Invoke, Toggle and SetValue reach the widget through '
+            'UiaProviderTree.actionDispatcher, which uia_session.dart assigns '
+            'to SemanticsOwner.performAction. A render object that declares an '
+            'action in SemanticsConfiguration but does not implement '
+            'SemanticsActionTarget still answers UIA_E_NOTSUPPORTED - the '
+            'declaration and the doing are separate, and only the controls '
+            'that implement the interface can be operated. See the table in '
+            'uia_session.dart for which ones do.',
     'Text ranges, scrolling and numeric ranges':
         'ITextProvider, IScrollProvider and IRangeValueProvider - see '
             'uiaAbsentPatterns in uia_mapping.dart, which names what each '

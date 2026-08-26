@@ -1120,6 +1120,40 @@ final class RenderSlider extends RenderBox with ControlBehavior {
               }
             : const <SemanticsAction>{},
       );
+
+  /// The three value actions this control declares, actually performed.
+  ///
+  /// [SemanticsAction.setValue] parses the string because that is the shape
+  /// the semantic tree carries a value in - see the `IRangeValueProvider`
+  /// entry in `uia_mapping.dart`, which explains why the Windows bridge hands
+  /// a slider to a client as `IValueProvider` with the widget's own string
+  /// rather than as a numeric range.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    switch (action) {
+      case SemanticsAction.increment:
+        return _emitFromSemantics(_value + step);
+      case SemanticsAction.decrement:
+        return _emitFromSemantics(_value - step);
+      case SemanticsAction.setValue:
+        final double? parsed = value == null ? null : double.tryParse(value);
+        if (parsed == null) return false;
+        return _emitFromSemantics(parsed);
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
+  }
+
+  /// [_emit] with an answer. False means the value did not move - the slider
+  /// was already at the end of its range, or nobody is listening - which is
+  /// what a client should be told rather than a success it can't observe.
+  bool _emitFromSemantics(double next) {
+    if (!enabled || onChanged == null) return false;
+    final double clamped = next.clamp(_min, _max);
+    if (clamped == _value) return false;
+    onChanged!.call(clamped);
+    return true;
+  }
 }
 
 /// A determinate progress bar.

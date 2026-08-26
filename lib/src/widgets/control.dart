@@ -41,7 +41,8 @@ mixin ControlBehavior on RenderBox
         PointerEventTarget,
         HoverEventTarget,
         KeyboardEventTarget,
-        SemanticsProvider {
+        SemanticsProvider,
+        SemanticsActionTarget {
   ThemeData _theme = ThemeData.neutralLight;
   FocusNode? _focusNode;
   bool _enabled = true;
@@ -149,6 +150,42 @@ mixin ControlBehavior on RenderBox
   /// control, by Space/Enter, and by an accessibility invoke - one path, so
   /// the three cannot diverge.
   void activate() {}
+
+  /// Carries out an action assistive technology asked for.
+  ///
+  /// The two every control shares are here; a control with a value overrides
+  /// this and calls `super` for the rest. Deliberately routed through
+  /// [activate] rather than through the pointer path: a screen reader's
+  /// "invoke" is not a synthetic click, and pretending it were would mean
+  /// inventing a pointer id, a position and a capture for a gesture nobody
+  /// made.
+  ///
+  /// [FocusChangeReason.programmatic] rather than `pointer` because that is
+  /// what this is: no pointer was involved, and the reason is what decides
+  /// whether the focus ring is drawn.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!_enabled) return false;
+    switch (action) {
+      case SemanticsAction.activate:
+        activate();
+        return true;
+      case SemanticsAction.focus:
+        final FocusNode? node = _focusNode;
+        if (node == null || !node.canRequestFocus) return false;
+        return node.requestFocus();
+      case SemanticsAction.setValue:
+      case SemanticsAction.increment:
+      case SemanticsAction.decrement:
+      case SemanticsAction.scrollUp:
+      case SemanticsAction.scrollDown:
+      case SemanticsAction.scrollLeft:
+      case SemanticsAction.scrollRight:
+      case SemanticsAction.dismiss:
+      case SemanticsAction.showMenu:
+        return false;
+    }
+  }
 
   /// Whether this control takes focus when clicked. True for anything
   /// interactive; a label or a progress bar says false.

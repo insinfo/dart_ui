@@ -149,6 +149,7 @@ import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
+import '../platform/accessibility.dart';
 import '../platform/backend_selection.dart';
 import '../platform/clipboard.dart';
 import '../platform/drag_drop.dart';
@@ -1304,9 +1305,46 @@ final class ApplicationWindow with DisposableMixin {
         // requested a new frame against the new geometry.
         requestFrame();
       }
+      _pumpAccessibility();
       return result;
     } finally {
       _inFrame = false;
+    }
+  }
+
+  /// Publishes this frame's semantic tree, if anybody is reading it.
+  ///
+  /// After present rather than before, for the reason a screen reader would
+  /// care about: the tree carries bounds, and announcing a control at
+  /// coordinates that are not on screen yet is worse than announcing it one
+  /// frame later. Layout has already run either way.
+  ///
+  /// Costs one map lookup on a machine with no assistive technology running -
+  /// [AccessibilityHost.forWindow] answers null until a client has asked for
+  /// this window - and a tree walk plus a diff when there is. Never throws
+  /// into the frame: an accessibility failure is not a reason to lose the
+  /// pixels, so it is reported like any other framework error and the frame
+  /// stands.
+  void _pumpAccessibility() {
+    final NativeWindow window = nativeWindow;
+    // Not every window has an operating-system handle to key on - see
+    // [NativeHandleWindow], which is a separate capability on purpose - and a
+    // window without one cannot be pointed at by an accessibility client
+    // either, so there is nothing to publish.
+    if (window is! NativeHandleWindow) return;
+    final WindowAccessibility? published = platformAccessibility
+        ?.forWindow((window as NativeHandleWindow).nativeHandle);
+    if (published == null) return;
+    try {
+      published.pump();
+    } catch (error, stackTrace) {
+      buildOwner.errorReporter.report(FrameworkError(
+        phase: FrameworkPhase.paint,
+        cause: error,
+        stackTrace: stackTrace,
+        context: 'publishing the semantic tree to '
+            '${platformAccessibility?.apiName ?? 'the platform'}',
+      ));
     }
   }
 
@@ -1415,6 +1453,7 @@ final class ApplicationWindow with DisposableMixin {
       } else {
         _needsFrame = true;
       }
+      _pumpAccessibility();
     } finally {
       _inFrame = false;
     }
@@ -2180,6 +2219,30 @@ final class Application with DisposableMixin {
       buildOwner.errorReporter = ErrorReporter(
         onError: appWindow._captureFrameworkError,
       );
+
+      // --- c2. accessibility --------------------------------------------
+      // Registering is all that happens here, and it is deliberately cheap:
+      // no provider is built, no COM is initialised and no tree is walked
+      // until assistive technology actually asks for this window. On a machine
+      // with no screen reader running - which is most machines, most of the
+      // time - this line and the null check in [drawFrame] are the entire cost
+      // of the feature. See `platform/accessibility.dart`.
+      final AccessibilityHost? accessibility =
+          native is NativeHandleWindow ? platformAccessibility : null;
+      if (accessibility != null) {
+        final int handle = (native as NativeHandleWindow).nativeHandle;
+        accessibility.register(handle, (
+          owner: buildOwner.semanticsOwner,
+          // A callback and not the root itself: the render root is replaced
+          // when the tree is remounted, and a captured one would publish a
+          // detached tree for the rest of the process.
+          root: () => buildOwner.renderRoot,
+        ));
+        bag.add(accessibility, () {
+          _teardownOrder.add('accessibility');
+          accessibility.unregister(handle);
+        });
+      }
 
       // --- d. events ----------------------------------------------------
       // Subscribed last and cancelled first: an event delivered into a

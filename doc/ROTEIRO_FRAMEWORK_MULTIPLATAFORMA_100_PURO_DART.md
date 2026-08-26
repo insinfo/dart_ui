@@ -2048,7 +2048,7 @@ Revisto em 2026-08-23 contra `lib/src/backends/win32/`.
 - [x] Direct2D (§13.12);
 - [x] D3D11/DXGI;
 - [ ] DirectComposition opcional — **não existe**;
-- [~] acessibilidade básica — ponte UIA escrita (`backends/win32/uia/`), e o próprio probe diz "accessibility is partial"; `Capability.accessibility` **não é reivindicada**;
+- [x] acessibilidade básica — UI Automation ligada de ponta a ponta em 26/08/2026: host instalado por `win32_backend.dart`, janela registrada e árvore bombeada por `application.dart`, provider construído **preguiçosamente** no primeiro `WM_GETOBJECT`, e `Capability.accessibility` reivindicada. Provada por um cliente `IUIAutomation` **em outro processo** (`test/backends/win32/uia/uia_app_test.dart`), que opera botão, check box, slider e campo de texto. **Não** cobre MSAA, `ITextProvider`, `IScrollProvider` nem `IRangeValueProvider`, e os controles compostos (lista, árvore, grade, combo, menu, abas) descrevem-se sem se operar — ver §68.1;
 - [x] device-loss (`gpu_recovery.dart` é o orquestrador, chamado por GL e D3D11);
 - [ ] leak-check;
 - [x] AOT x64 (gate de CI);
@@ -5867,9 +5867,12 @@ que seguiu tornaria as fases inúteis como gate. Três desvios, registrados:
    PAdES, CorelDRAW e o motor vetorial (§4.4), mais o porte de APIs de SO
    (§56.1) e o de drag-and-drop, que atravessa três backends. Nenhum deles tem
    fase, e dois deles já custaram arestas de camada;
-3. **F16 (acessibilidade) e F15 (GTK/desktop) não começaram**, e a
-   acessibilidade é o item que o *Gate 1.0* exige e que menos avançou fora do
-   Windows.
+3. **F15 (GTK/desktop) não começou.** F16 (acessibilidade) começou e fechou o
+   Windows em 26/08/2026: a ponte UIA existia havia semanas e era inalcançável
+   por três chamadas que ninguém fazia — o caso mais caro de *escrito e não
+   ligado* que a §68.2 descreve, e agora ligado e provado fora do processo
+   (§68.1). Fora do Windows a acessibilidade segue sendo o item que o *Gate
+   1.0* exige e que menos avançou.
 
 Isso não pede reordenar as fases. Pede que os gates voltem a ser respeitados
 como condição de saída — em particular o de F13, que hoje depende de uma coisa
@@ -7140,8 +7143,11 @@ Estado em 2026-08-23, medido contra os critérios de promoção da §50.
   leak suite* e nada disso foi exercido contra um compositor;
 - [~] **widgets e texto estáveis** — os controles estão amplos (§29.2); o texto
   tem lacunas nomeadas (bidi no caret, fallback, CFF hinting, multilinha);
-- [ ] **acessibilidade básica funcional** — só a ponte UIA no Windows, e
-  parcial; nada em X11, Wayland ou web;
+- [~] **acessibilidade básica funcional** — **no Windows, sim**, e provada por
+  um cliente `IUIAutomation` em outro processo que lê papel, nome, valor e
+  estado e opera botão, check box, slider e campo de texto (§68.1). Nada em
+  X11, Wayland, macOS ou web, e o Narrator em si nunca foi executado — o que
+  foi provado é a API que ele usa, do jeito que ele a usa;
 - [ ] sem leaks conhecidos críticos — não medido;
 - [x] CI multi-plataforma;
 - [x] **documentação de limitações** — §68 e
@@ -7937,7 +7943,7 @@ aplica, **?** não verificado.
 | `dragAndDrop` | sim (OLE, dois sentidos; **imagem de arraste ignorada**) | sim (XDND, dois sentidos; **imagem ignorada**) | sim (dois sentidos; **imagem ignorada**, **sem `link`**) | não | não | não |
 | `perMonitorDpi` | sim | parcial (escala do probe) | parcial (inteira, a maior dos outputs) | ? | sim | sim |
 | `orderlyShutdown` | sim | sim | sim | sim (provado no spike) | ? | sim |
-| `accessibility` | **não reivindicada** — ponte UIA parcial | não | não | **não** — `hasAccessibility: false` nos três kinds, "not wired yet" | não | não |
+| `accessibility` | **sim** (UI Automation, condicionada a `uiautomationcore.dll`) — papel/nome/valor/estado, e Invoke/Toggle/SetValue chegam ao widget; sem MSAA, `ITextProvider`, `IScrollProvider` e `IRangeValueProvider` | não | não | **não** — `hasAccessibility: false` nos três kinds, "not wired yet" | não | não |
 | touch | não | não | **não** (`wl_touch` nunca vinculado) | não | ? | — |
 | pen / tablet | não | não | não | não | não | — |
 | popups | sim | sim | sim (`xdg_positioner`) | ? | — | sim |
@@ -7963,7 +7969,11 @@ Cinco leituras que essa tabela deixa claras, e que a normativa esconde:
 4. **`vsync` não é reivindicada por ninguém**, o que é honesto e vale manter:
    o `BitBlt` não é paced, e o `PresentMode` só tem `fifo`/`immediate` reais no
    WGL e no GDI;
-5. **acessibilidade é a linha mais vazia da tabela**, e é requisito de Gate 1.0.
+5. **acessibilidade deixou de ser a linha mais vazia da tabela — no Windows.**
+   `Capability.accessibility` é reivindicada desde 26/08/2026, condicionada a
+   `uiautomationcore.dll`, e o que ela cobre está provado por um cliente
+   `IUIAutomation` fora do processo (§68.1). Nos outros quatro backends
+   continua vazia, e o Gate 1.0 continua aberto por eles.
 
 ---
 
@@ -8354,7 +8364,7 @@ Cada spike produz documento, código mínimo e decisão. Código descartável n�
 | **dialogs** | sim (`MessageBoxW`, `GetOpenFileNameW`) | parcial (helpers externos) | parcial (helpers externos) | parcial (`osascript`) | parcial |
 | theme | sim | ? | ? | ? | sim |
 | monitor | parcial | parcial | parcial | ? | sim |
-| **accessibility** | parcial (UIA) | **não** | **não** | **não** | **não** |
+| **accessibility** | sim (UIA, §68.1) | **não** | **não** | **não** | **não** |
 | AOT | sim | sim | ? | sim | — |
 | architecture test | sim (com as exceções nomeadas da Fase 6 + 4 arestas novas em vermelho) | idem | idem | idem | sim (proíbe `dart:ffi`) |
 | stress / idle / benchmark | parcial | ? | ? | ? | ? |
@@ -9068,6 +9078,13 @@ Isto é tão importante quanto a lista anterior, e é mais fácil de esquecer:
   (`xcb_get_keyboard_mapping`, `SetSelectionOwner`) **nunca foi executada**;
 - **Wayland nunca rodou** (§68.1);
 - **a camada FFI do Wayland não tem teste algum**;
+- **nenhum leitor de tela foi executado**. A acessibilidade do Windows é provada
+  por um cliente `IUIAutomation` fora do processo — `CLSID_CUIAutomation`, o
+  mesmo objeto que a biblioteca do Narrator cria, chamado do jeito que ele o
+  chama —, e isso **não é** o Narrator falando. Ninguém verificou o que ele
+  anuncia, em que ordem, nem como NVDA e JAWS se comportam; nem o *high
+  contrast* e o *text scaling* do sistema. Rodar o Narrator toma a máquina do
+  usuário e não foi feito (§68.1);
 - **os dois arquivos de janela do Vulkan voltaram a compilar** em 24/08/2026:
   pediam `Win32Window.setClientSize` e `Win32Window.physicalSize`, que nunca
   existiram em backend nenhum — a API é `setBounds` (lógica) e `pixelSize`

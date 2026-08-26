@@ -26,6 +26,8 @@ import '../../platform/clipboard.dart';
 import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart';
 import '../../platform/text_input.dart';
+import 'uia/uia_core.dart';
+import 'uia/uia_session.dart';
 import 'win32_abi.dart';
 import 'win32_api.dart';
 import 'win32_clipboard.dart';
@@ -294,14 +296,39 @@ final class Win32WindowingBackend
       );
     }
 
+    // Probed for the same reason as ole32 and imm32: uiautomationcore.dll is
+    // present on every real Windows install and absent exactly where
+    // `Capability.accessibility` claimed on faith turns into a window no
+    // screen reader can read. Cached inside `UiaCore`, so asking here costs
+    // nothing the first attach would not have paid anyway.
+    final uiaResult = UiaCore.load();
+    final uiaLoaded = uiaResult.core != null;
+    diagnostics.addAll(uiaResult.diagnostics);
+
     diagnostics.add(
       BackendDiagnostic.note(
         'core mouse, wheel and keyboard input, the Unicode clipboard, OLE '
         'drag and drop in both directions and IMM32 composition are '
         'normalized; the IME cannot read surrounding text '
-        '(WM_IME_REQUEST/IMR_DOCUMENTFEED is unanswered) and accessibility is '
-        'partial${immLoaded ? '' : '; imm32 did not load, so there is no '
+        '(WM_IME_REQUEST/IMR_DOCUMENTFEED is unanswered)'
+        '${immLoaded ? '' : '; imm32 did not load, so there is no '
             'composition at all'}',
+      ),
+    );
+    diagnostics.add(
+      BackendDiagnostic.note(
+        uiaLoaded
+            ? 'accessibility is UI Automation, published lazily: a window is '
+                'registered when it is created and a provider is built only '
+                'when a client sends WM_GETOBJECT, so a machine with no '
+                'screen reader running pays a map entry per window. Role, '
+                'name, value and state come from the semantic tree; Invoke, '
+                'Toggle and SetValue reach the widget. Absent: IAccessible '
+                '(MSAA), ITextProvider, IScrollProvider and '
+                'IRangeValueProvider - see Win32UiaBridge.absentFeatures'
+            : 'uiautomationcore.dll did not load, so this process publishes no '
+                'accessibility tree at all and Capability.accessibility is '
+                'not claimed',
       ),
     );
     diagnostics.add(
@@ -332,6 +359,11 @@ final class Win32WindowingBackend
         if (immLoaded) Capability.textComposition,
         Capability.orderlyShutdown,
         if (perMonitor && api.getDpiForWindow != null) Capability.perMonitorDpi,
+        // Claimed on uiautomationcore.dll having loaded, which is the single
+        // thing the provider needs and the only thing that can be missing.
+        // What the claim covers is in the note above; what it does not is in
+        // `Win32UiaBridge.absentFeatures`, by name and with a reason.
+        if (uiaLoaded) Capability.accessibility,
       },
       diagnostics: diagnostics,
     );
@@ -384,6 +416,14 @@ final class Win32WindowingBackend
     // put it.
     Win32WindowRegistry.onFault = _onHandlerFault;
     _resources.add(this, () => Win32WindowRegistry.onFault = null);
+
+    // Makes this process's windows readable by a screen reader. Installing one
+    // object is the whole cost: no COM, no provider and no per-frame tree walk
+    // happens until an assistive client sends the first `WM_GETOBJECT`, which
+    // is the only honest signal that anybody wants the tree. See
+    // `uia/uia_session.dart`.
+    installWindowsUiaAccessibility();
+    _resources.add(this, removeWindowsUiaAccessibility);
 
     _initialized = true;
   }
