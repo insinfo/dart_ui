@@ -8853,6 +8853,119 @@ Registradas para quem mexer no código a seguir; **em todas, o código venceu**:
 | `examples/vector_editor_demo/main_window.dart` | "não há seletor de arquivo neste framework" | `platform/file_picker.dart` existe e está exportado |
 | três arquivos de renderização | citavam `ADR 0007` sem ele existir | **resolvido em 23/08/2026**, durante esta auditoria: o ADR foi escrito |
 
+# 69. Não penalizar uma plataforma por causa de outra — PoC de 2026-08-25
+
+O framework compila para cinco alvos com capacidades numéricas diferentes, e
+até esta data o código escrito para ser alcançável pela web era escrito no
+menor denominador comum: 32 bits. Isso cobra um preço da VM e do WebAssembly
+por um limite que é só do dart2js.
+
+O caso que expôs isso foi `DisplayList.addPaint`. A função de hash foi
+escrita em 64 bits, o `dart compile js` **recusou os literais**, e ela foi
+refeita em 32 bits com multiplicações partidas em metades de 16 bits — ~3,5 ns
+por chamada mais lenta, em todos os alvos, inclusive nos dois que não têm o
+problema.
+
+## 69.1 O que a PoC mediu
+
+Uma PoC executou o mesmo programa nos três alvos (Dart 3.6.2, Node v24) e
+verificou tanto o mecanismo de seleção quanto a capacidade real do `int`:
+
+| | Dart VM | dart2js | dart2wasm |
+|---|---|---|---|
+| `export … if (dart.library.js) …` seleciona | int64 | **int32** | **int64** |
+| `export … if (dart.library.html) …` seleciona | int64 | int32 | int64 |
+| `bool.fromEnvironment('dart.tool.dart2wasm')` | false | false | **true** |
+| `bool.fromEnvironment('dart.tool.dart2js')` | false | **true** | false |
+| `bool.fromEnvironment('dart.library.js')` | false | true | **false** |
+| `bool.fromEnvironment('dart.library.js_interop')` | false | true | **true** |
+| `identical(0, 0.0)` (constante) | false | **true** | false |
+| `2^53+1` sobrevive | sim | **não** | sim |
+| `(1<<60) >> 60 == 1` | sim | **não** | sim |
+| `3037000499²` exato | sim | **não** | sim |
+
+Três conclusões:
+
+1. **`dart.library.js_interop` não serve** para este corte: é `true` no dart2js
+   *e* no dart2wasm. Ele significa "este alvo tem interop com JavaScript", não
+   "este alvo é JavaScript".
+2. **`dart.library.js` serve**, e é o corte exato: `true` só nos backends
+   JavaScript, `false` na VM e no Wasm.
+3. **O Wasm tem `int` de 64 bits de verdade** — não é "mais preciso que o JS",
+   é outra categoria. Escrever 32 bits para ele desperdiça a vantagem de
+   compilar para WebAssembly.
+
+O dart2js recusa literais de 64 bits **em tempo de compilação**
+(`The integer literal 9007199254740993 can't be represented exactly in
+JavaScript`), então o imposto não é sutil: ele aparece como erro de build e
+força a reescrita.
+
+## 69.2 O padrão a adotar
+
+Um arquivo seletor, e duas implementações com a mesma API:
+
+```dart
+// int_ops.dart — a única linha que conhece a diferença
+export 'int_ops_int64.dart' if (dart.library.js) 'int_ops_js32.dart';
+```
+
+Isolar o teste **num arquivo só** é deliberado: `dart.library.js` está atado à
+biblioteca legada `dart:js`, que está em depreciação. Quando o SDK oferecer um
+discriminador melhor — há discussão sobre algo como `dart.mode.jsNumbers` — a
+migração é uma linha, não uma varredura.
+
+Para diferenças pequenas demais para justificar dois arquivos, a constante
+resolve, e o compilador elimina o ramo morto:
+
+```dart
+const bool kIsJavaScript = identical(0, 0.0);
+```
+
+## 69.3 Quando dividir, e quando não
+
+A divisão **não** é gratuita: são duas implementações que precisam concordar,
+duas superfícies de teste, e risco de divergência silenciosa. O critério é
+medir, não presumir.
+
+- **Divida** quando o alvo web muda o que o código *pode fazer*: aritmética
+  acima de 53 bits, bitwise acima de 32 bits, checksums, hashes, codecs. Aqui
+  não é otimização, é viabilidade — e é a mesma razão pela qual `crypto`,
+  `inflate.dart` e os pares `_io`/`_stub` já existem.
+- **Não divida** quando o custo é de nanossegundos num caminho que não é
+  quente. O próprio `addPaint`, que motivou esta seção, é o exemplo: 3,5 ns por
+  chamada, ~600 chamadas por quadro, dá **2,1 µs** — 0,013% de um quadro de
+  60 Hz. Medir primeiro teria evitado a discussão.
+
+A regra prática: se o ganho não aparecer numa medição reprodutível de quadro
+inteiro, não vale duas implementações.
+
+## 69.4 O trabalho em aberto
+
+Nada disso foi aplicado ainda — esta seção registra o mecanismo e o critério,
+não uma migração feita. O que falta:
+
+1. **Varrer `lib/` procurando o imposto.** Todo lugar que evita 64 bits, parte
+   palavras em metades, ou tem comentário citando dart2js/JavaScript como razão
+   de uma escolha numérica. Candidatos conhecidos: `_hashPaint` e `_mul32` em
+   `graphics/display_list.dart` (documentados como tal), e os caminhos de
+   hash/checksum em `crypto/` e nos codecs de áudio.
+2. **Medir cada candidato na VM**, com o método que esta sessão validou:
+   contagem de scavenges em isolate separado, em AOT, com semi space fixado
+   (`--new_gen_semi_initial_size=2 --new_gen_semi_max_size=2 --verbose_gc`),
+   medindo N e 2N quadros para o startup cancelar. Deu 0% de variação entre
+   repetições, ao contrário da taxa global de lixo do app, que variou de 71 a
+   704 KiB/s no mesmo código.
+3. **Dividir só os que passarem de um limiar** definido em fração de quadro,
+   não em nanossegundos por chamada.
+4. **Garantir que o portão de compilação continue cobrindo os dois backends
+   web.** `test/backends/web/web_compilation_test.dart` já roda `dart compile
+   js` *e* `dart compile wasm` justamente porque um não substitui o outro; uma
+   divisão por `dart.library.js` cria um quarto caminho de código que só o
+   dart2js exercita, e ele precisa continuar sendo compilado.
+
+É plausível que a varredura conclua que nenhum caminho passa do limiar. Isso
+também é resultado, e é barato de obter.
+
 ---
 
 **Fim do roteiro.**
