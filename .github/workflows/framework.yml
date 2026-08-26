@@ -34,7 +34,18 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  DART_SDK_VERSION: '3.6.0'
+  # Tem de acompanhar o SDK de desenvolvimento, e nao apenas satisfazer o
+  # `^3.6.0` do pubspec. As duas versoes sao legitimas para o pacote, mas a
+  # divergencia e silenciosa ate quebrar - e quando quebra, quebra no gate
+  # de formatacao abaixo, antes de qualquer teste, com um sintoma que nao
+  # se parece com a causa e que o desenvolvedor nao consegue ver
+  # localmente. Aconteceu em 26/08/2026: um literal com separadores de
+  # digito e parseado pelo `dart format` do 3.6.2 e recusado pelo do
+  # 3.6.0, e as tres pernas caiam com erro de parse.
+  #
+  # Alinhar fecha a classe ate a proxima atualizacao local. A garantia de
+  # verdade seria CI e ambiente lerem a versao de um lugar so.
+  DART_SDK_VERSION: '3.6.2'
 
 jobs:
   framework:
