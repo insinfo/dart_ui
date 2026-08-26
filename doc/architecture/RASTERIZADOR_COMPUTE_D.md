@@ -1,13 +1,15 @@
 # Estratégia D — rasterizador vetorial em compute
 
-Estado em 26 de agosto de 2026. Complementa
-`doc/architecture/ACELERACAO_GPU_VETORIAL.md`, que descreve as quatro
-estratégias, e `doc/RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD.md`, que mediu
-o hardware.
+Estado em 26 de agosto de 2026, revisto com o estágio de binning de segmentos.
+Complementa `doc/architecture/ACELERACAO_GPU_VETORIAL.md`, que descreve as
+quatro estratégias, e `doc/RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD.md`, que
+mediu o hardware.
 
 O POC-23 nomeia o que faltava para D: *"flatten, binning, cobertura, ordenação e
 composição na GPU"*. Cobertura e composição já rodavam no device desde
-`d3d12_compute_tile_shader.dart`. Este documento cobre as duas primeiras.
+`d3d12_compute_tile_shader.dart`. Este documento cobre o flatten, o binning
+grosso com a sua ordenação, e o binning de segmentos com os backdrops — que é o
+estágio que faltava para que a comparação com a CPU seja como-por-como.
 
 ## Onde cada estágio roda hoje
 
@@ -16,10 +18,10 @@ composição na GPU"*. Cobertura e composição já rodavam no device desde
 | **Flatten** (curvas → segmentos) | **GPU** | `ComputeFlattenReference` — contagens e offsets exatos, coordenadas a 7,6e-6 px, cobertura idêntica à do `Path.flatten` |
 | **Binning grosso** (draws → tiles) | **GPU** | `ComputeTileScene.build` — `bins`, `references` e `commands` byte a byte |
 | **Ordenação** (draws dentro do tile) | **GPU** | idem — a ordem crescente por draw é parte da comparação acima |
-| **Binning de segmentos + backdrops** | CPU | — (não portado; é o item 2 abaixo, e é o que falta para a comparação com a CPU ser como-por-como) |
+| **Binning de segmentos + backdrops** | **GPU** | `ComputeTileScene.build` — `referenceSegments`, `tileSegments` e `referenceBackdrops` byte a byte |
 | **Cobertura** | GPU | `ComputeTileCpuReference` (trabalho anterior) |
 | **Composição** | GPU | `d3d12_compute_composite_parity_test.dart` (trabalho anterior) |
-| **Flatten + binning numa submissão só** | **GPU** | `d3d12_compute_raster_pipeline_test.dart` — byte a byte contra os executores não encadeados e contra `ComputeTileScene.build` |
+| **Flatten + binning grosso + binning de segmentos numa submissão só** | **GPU** | `d3d12_compute_raster_pipeline_test.dart` — byte a byte contra os executores não encadeados e contra `ComputeTileScene.build` |
 
 ## Por que Direct3D 12 e não Vulkan
 
@@ -120,6 +122,128 @@ Não há tolerância porque não há arredondamento: `floorTile`/`ceilTile` corr
 a divisão em float32 com duas comparações exatas, de modo que os dois lados
 calculam o piso matemático verdadeiro em vez de concordarem por sorte.
 
+## Binning de segmentos e backdrops
+
+`d3d12_compute_segment_shader.dart` produz as três matrizes por referência que
+faltavam: `referenceSegments` (o índice CSR), `tileSegments` (os índices de
+segmento, em ordem crescente dentro de uma referência) e `referenceBackdrops`
+(`winding, parity`). A especificação é `ComputeTileScene._binSegments`, e o
+shader a transcreve em vez de reargumentá-la — a partição em três casos
+(segmento à esquerda do tile, à direita e cobrindo a altura inteira, e o resto)
+já está provada exaustiva e exata lá.
+
+Quatro decisões são deste estágio e não vieram de lá:
+
+**A ordem dos laços é a da CPU, transposta.** A CPU percorre draw, linha de
+tiles, segmento. Aqui a *thread* é um par (draw, segmento) e o laço de linhas
+fica dentro, porque os segmentos de um draw são o único eixo com paralelismo
+suficiente numa cena de algumas centenas de draws. Os mesmos trios
+(draw, segmento, linha) são visitados; só a ordem muda, e nada aqui depende de
+ordem.
+
+**Achar o índice de referência sem construir um segundo índice.** A CPU sabe o
+índice da referência (tile, draw) porque anda em ordem de draw com um cursor por
+tile. Uma thread não tem cursor. O que ela tem é a saída do estágio grosso:
+`uReferences` guarda a corrida de cada tile **ordenada por draw**, que é
+exatamente a propriedade que `csSortReferences` existe para garantir. Então o
+índice é `bins[tile].x` mais a posição de `draw` na corrida, achada por busca
+binária em `log2` do comprimento da corrida. A alternativa — um mapa
+(tile, draw) → referência — custa `tiles * draws` entradas.
+
+**O backdrop é um array de diferenças, e as referências são as suas células.**
+A CPU acumula, por linha de tiles, um array de diferenças de `columns + 1` e o
+soma por prefixo uma vez. Uma thread não pode guardar esse array, mas não
+precisa: **cada referência pertence a exatamente um par (draw, linha)**, então o
+array de diferenças *é* o buffer de backdrops, indexado por referência.
+`csSegmentCounts` soma `+delta` na referência da primeira coluna e `-delta` na
+coluna onde a corrida para, com `InterlockedAdd`; `csBackdropScan` roda uma
+thread por (draw, linha) que soma por prefixo, **no lugar**, as referências
+daquela linha. Um buffer, sem reset, e a mesma aritmética.
+
+**O rank sort é uma thread por referência, não um grupo.** O estágio grosso
+ordena a corrida de *draws* de um tile com um grupo, e há alguns milhares de
+tiles. Aqui a unidade é uma referência (tile, draw), e há muito mais delas:
+26 561 na cena de 256 draws, com 63 003 segmentos entre elas — **2,37 segmentos
+por referência**. Um grupo de 256 threads despachado para ordenar dois elementos
+é 254 threads que leem a guarda e saem. As duas formas estão compiladas e o
+teste mede as duas na mesma execução:
+
+| cena | refs | segs de tile | segs/ref | thread por ref | grupo por ref |
+|---|---:|---:|---:|---:|---:|
+| 8 draws, 256×256 | 81 | 388 | 4,79 | **336 µs** | 354 µs |
+| 64 draws, 512×512 | 1 967 | 6 430 | 3,27 | **466 µs** | 490 µs |
+| 256 draws, 1024×1024 | 26 561 | 63 003 | 2,37 | **1 774 µs** | 2 069 µs |
+
+O trabalho total é o mesmo — continua sendo a soma de `n²` sobre as corridas —
+só está distribuído de outro jeito, e as duas formas produzem a ordem da CPU
+byte a byte (o teste verifica antes de cronometrar; uma resposta errada mais
+rápida não é resultado).
+
+### O primeiro estágio que consome outro, e o que isso custou descobrir
+
+Este é o primeiro par produtor/consumidor real do pipeline: o estágio de
+segmentos lê `uBins` e `uReferences`, que o estágio grosso escreveu, na mesma
+lista de comandos e sem readback no meio. `D3d12ComputeAlias` é como — o
+consumidor liga o buffer do produtor **por endereço**, e os dois slots são
+`RWStructuredBuffer` dos dois lados de propósito: um root SRV exige
+`NON_PIXEL_SHADER_RESOURCE`, e esses buffers vivem em `UNORDERED_ACCESS` da
+criação até a liberação. Ler como UAV não precisa de transição nenhuma, e a
+barreira UAV que a cadeia já grava entre cada despacho é exatamente a ordenação
+de que uma leitura aliasada precisa.
+
+O que isso trouxe junto foi um modo de falha novo, e ele **removeu o device**
+antes de ser entendido. Quando o estágio grosso estoura o seu orçamento de
+referências, os seus `uBins` continuam carregando as contagens exatas — é isso
+que faz o *seu* retry funcionar — então `bins[tile].x + bins[tile].y` pode
+apontar para além do fim de um buffer de referências que só tinha o orçamento. E
+**todo buffer aqui é um root descriptor, e um root descriptor não carrega
+tamanho**: não existe a checagem de limites que descartaria a escrita numa
+descriptor table, e um índice fora de faixa é um acesso de memória de verdade.
+Por isso `referenceOf` limita a busca a `uReferenceSlots` e devolve
+`uReferenceSlots` quando a corrida do tile começa depois do fim, e todo chamador
+descarta uma referência que não seja estritamente menor. A saída dessa submissão
+é lixo, o que está certo: o pipeline está prestes a notar o estouro do estágio
+grosso, crescer os dois orçamentos e ressubmeter. O que a guarda compra é que ele
+sobreviva para fazer isso.
+
+### `uReferenceSlots` é um orçamento, não uma contagem
+
+Todo kernel aqui é indexado por referência, e o número de referências é
+resultado do estágio *anterior*. Uma submissão encadeada não pode lê-lo — é
+justamente a cerca que se está removendo. Então o despacho cobre um número de
+**slots** que o chamador escolheu, que é o mesmo orçamento de bump allocator com
+que o estágio grosso rodou. Slots além da contagem real foram zerados,
+contribuem zero para o scan, ordenam uma corrida vazia e não são nomeados por
+nenhuma entrada de `uBins` — as saídas são idênticas às de um despacho
+dimensionado exatamente, e a forma não encadeada simplesmente passa a contagem
+exata como orçamento.
+
+### Paridade medida
+
+Sete cenas, comparação **exata, sem tolerância**, nas três matrizes ao mesmo
+tempo: retângulo em grade par; uma forma larga em que colunas inteiras de tiles
+são só backdrop; uma elipse, cujos segmentos cobrem linhas de tiles pela metade;
+dois draws sobrepostos que compartilham referências, um deles even-odd;
+geometria recortada de modo que os segmentos correm para fora da superfície (que
+é onde `low` fica negativo e `high` passa da grade); um tile size que não é
+potência de dois; e vinte draws pequenos. Todas passaram.
+
+Não há tolerância porque não há arredondamento. Tudo o que o estágio produz é
+inteiro: uma contagem é uma soma de uns, um offset é uma soma de prefixo, uma
+referência de segmento é um índice, e um backdrop é uma soma de `+1` e `-1`. O
+único passo em ponto flutuante é decidir *quais* tiles um segmento toca, e essa
+decisão é o mesmo par `floorTile`/`ceilTile` corrigido que o estágio grosso usa —
+com a diferença de que aqui o valor pode ser negativo, porque um path recortado
+guarda a geometria que caiu fora da superfície.
+
+O teste também verifica as *cenas*, sem GPU: se nenhuma tivesse backdrop
+diferente de zero, ou nenhuma referência tivesse mais de um segmento, a
+comparação exata estaria comparando zeros.
+
+Uma cena a mais é verificada encadeada, contra o planejador da CPU **e** contra
+o executor não encadeado: as três cenas do benchmark, incluindo a de 256 draws
+em 1024×1024, com 26 561 referências e 63 003 segmentos de tile.
+
 ## O custo honesto, como estava medido antes deste trabalho
 
 **O diagnóstico da frente anterior era que o gargalo não é a GPU: é a leitura de
@@ -207,17 +331,57 @@ A forma antiga continua selecionável por `D3d12ComputePass.deviceZeroFill`, e
 existe exatamente para que essa tabela possa ser produzida numa execução só, em
 vez de exigir que se acredite num comentário.
 
-## Onde a estratégia D está agora
+## Onde a estratégia D está agora, com a CPU fazendo o mesmo trabalho
 
-Na cena de 256 draws em 1024×1024, uma submissão encadeada sem readback custa
-**546 µs contra 3 640 µs** do planejador de CPU. É a primeira configuração em
-que D fica à frente, por cerca de 6,7×.
+Esta é a razão de o item 2 ter vindo antes do 3. Todas as tabelas acima foram
+medidas com uma coluna de CPU fazendo **estritamente mais** trabalho do que a de
+GPU: `ComputeTileScene.build` produz as listas de segmentos por tile e os
+backdrops, e nada no device os produzia. Agora produz, então o mesmo benchmark
+roda duas vezes na mesma execução — sem o estágio de segmentos e com ele — e a
+diferença entre as duas tabelas é o preço do trabalho que a GPU não estava sendo
+cobrada.
 
-**E ainda não é um ganho como-por-como**, pela mesma razão que a versão anterior
-deste documento dava: a coluna da CPU faz **estritamente mais** trabalho. Ela
-inclui o binning de segmentos por tile e os backdrops, que a GPU continua não
-fazendo. O que a tabela prova é que a *forma* deixou de ser o gargalo; o que
-falta para a comparação ser justa é o item 2 abaixo.
+**Antes** — dois estágios na GPU (flatten + binning grosso), a coluna de CPU
+fazendo mais:
+
+| cena | draws | tiles | refs | segs | `build()` na CPU | 2 passes sem encadear | encadeado + readback | encadeado, sem readback |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 draws, 256×256 | 8 | 256 | 81 | 160 | **55 µs** | 492 µs | 396 µs | 161 µs |
+| 64 draws, 512×512 | 64 | 1 024 | 1 967 | 1 536 | 551 µs | 544 µs | 436 µs | **203 µs** |
+| 256 draws, 1024×1024 | 256 | 4 096 | 26 561 | 8 192 | 2 854 µs | 998 µs | 902 µs | **518 µs** |
+
+**Depois** — três estágios na GPU, as duas colunas computando a mesma função:
+
+| cena | draws | tiles | refs | segs de tile | `build()` na CPU | 3 passes sem encadear | encadeado + readback | encadeado, sem readback |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 8 draws, 256×256 | 8 | 256 | 81 | 388 | **38 µs** | 798 µs | 654 µs | 312 µs |
+| 64 draws, 512×512 | 64 | 1 024 | 1 967 | 6 430 | **390 µs** | 1 070 µs | 802 µs | 480 µs |
+| 256 draws, 1024×1024 | 256 | 4 096 | 26 561 | 63 003 | 3 290 µs | 3 996 µs | 3 121 µs | **1 764 µs** |
+
+**O número, dito como ele é.** O ganho de 6,7× que a versão anterior deste
+documento registrou era, em boa parte, o handicap. Com as duas colunas fazendo o
+mesmo trabalho, a cena de 256 draws em 1024×1024 fica em **1 764 µs contra
+3 290 µs** — a GPU ainda ganha, por **cerca de 1,9×** em vez de 6,7×. E nas duas
+cenas menores a CPU **ganha**: 38 µs contra 312 µs, e 390 µs contra 480 µs.
+
+Três ressalvas, todas na direção conservadora contra a GPU:
+
+1. **A coluna da GPU continua fazendo mais, não menos.** Ela também acha as
+   curvas, e `build()` não — `appendPath` já tinha feito isso antes do relógio
+   começar. Na cena grande o flatten + binning grosso sozinhos custam 518 µs, de
+   modo que binning grosso + segmentos na GPU custa **no máximo** 1 764 µs
+   contra os 3 290 µs que a CPU leva para o mesmo par.
+2. **A coluna da CPU é a ruidosa.** `build()` aloca nove arrays tipados por
+   chamada e o GC cai onde cai: a mesma linha variou entre 2 734 µs e 5 412 µs
+   entre execuções, enquanto as colunas de GPU ficaram dentro de ~10 %. As
+   razões acima são de *uma* execução, como todas as outras deste documento.
+3. **O estágio de segmentos é o mais caro dos três, e por larga margem.** Ele
+   sozinho responde por cerca de 1,25 ms dos 1,76 ms da cena grande.
+
+O que a tabela de antes provava era que a *forma* tinha deixado de ser o
+gargalo. O que a tabela de depois prova é que, feita a comparação como-por-como,
+D fica à frente apenas na cena grande e apenas por um fator pequeno. Isso é o
+resultado, e é ele que diz onde vale otimizar em seguida.
 
 ## O que ainda falta
 
@@ -245,23 +409,54 @@ falta para a comparação ser justa é o item 2 abaixo.
    lista abrir, porque crescer um buffer espera idle e uma espera dentro de uma
    lista aberta se lê como se a própria lista estivesse sendo esperada.
 
-2. **Binning de segmentos por tile e backdrops na GPU.** Inalterado, e agora é o
-   item que decide tudo: é o estágio sobre segmentos que corresponde a
-   `ComputeTileScene._binSegments`, é o que o shader de cobertura realmente lê, e
-   é o que falta para que a coluna da CPU e a da GPU façam o mesmo trabalho.
-   Enquanto ele estiver na CPU, o flatten da GPU tem de voltar para ser binado.
+2. ~~**Binning de segmentos por tile e backdrops na GPU.**~~ **Feito.**
+   `d3d12_compute_segment_shader.dart`, `d3d12_compute_segment_executor.dart` e
+   `d3d12_compute_segment_driver.dart`, encadeados como terceiro passe de
+   `ComputeRasterPipeline`. Paridade exata contra `ComputeTileScene.build` nas
+   três matrizes, encadeado e não encadeado, e a tabela de antes/depois acima.
 
-3. **`ExecuteIndirect`.** Inalterado. O emit do flatten despacha um grupo por
-   curva porque a contagem de segmentos é um resultado da GPU e a CPU não pode
-   dimensionar o despacho sem lê-lo. Este backend ainda não liga dispatch
-   indireto.
+   **A cobertura agora pode ser encadeada, e o motivo que a barrava caiu.**
+   `D3d12ComputeTileDriver` lê `scene.segments` e `scene.referenceBackdrops`;
+   os dois estão no device ao fim desta cadeia, e `D3d12ComputeAlias` é o
+   mecanismo pelo qual o consumidor os lê sem cópia. O que sobra é o segundo
+   motivo que a frente anterior declarou e que continua verdadeiro: aquele
+   driver usa descriptor heaps para a textura de saída, e `D3d12ComputePass` só
+   declara root descriptors. Portá-lo continua sendo trabalho real.
+
+3. **`ExecuteIndirect`.** Inalterado, e agora com um segundo cliente. O emit do
+   flatten despacha um grupo por curva porque a contagem de segmentos é um
+   resultado da GPU; o estágio de segmentos despacha sobre `referenceSlots` em
+   vez de sobre a contagem real de referências pela mesma razão, e paga o scan e
+   o sort sobre os slots vazios. Um despacho indireto tornaria os dois exatos.
+
+4. **O despacho esparso dos dois kernels mais caros.** `csSegmentCounts` e
+   `csScatterSegments` cobrem um retângulo (draw, segmento) tão largo quanto o
+   draw mais largo, com `numthreads(256)`. Na cena de 256 draws cada draw tem 32
+   segmentos, ou seja **224 das 256 threads de cada grupo saem na primeira
+   guarda**. É a maior ineficiência conhecida do estágio, é medida e não
+   suposta, e as duas saídas — um grupo menor, ou uma soma de prefixo sobre as
+   contagens de segmento por draw e uma busca por thread — são exatamente o
+   trade que `D3d12ComputeStage.groupsY` documenta.
+
+5. **O teto de 65 535 referências.** Todo kernel do estágio de segmentos é
+   indexado por referência, e tanto o scan de dois níveis quanto o despacho de
+   uma dimensão param aí. A cena de 256 draws em 1024×1024 usa 26 561; uma cena
+   quatro vezes maior é recusada por nome
+   (`referenceCountExceedsScan`), não truncada. Um terceiro nível de scan é a
+   extensão.
 
 Limites declarados e recusados por nome, não descobertos em runtime:
 
-- 65 536 elementos por scan (dois níveis), 65 535 grupos por despacho;
-- orçamento de segmentos e de referências no estilo *bump allocator*: quem
-  estoura é recontado e reexecutado uma vez, com o total exato — nunca truncado
-  em silêncio.
+- 65 536 elementos por scan (dois níveis), 65 535 grupos por despacho — e o
+  estágio de segmentos herda os dois sobre a contagem de *referências*, não de
+  tiles;
+- orçamento de segmentos, de referências e de segmentos por tile no estilo *bump
+  allocator*: quem estoura é recontado e reexecutado, com o total exato — nunca
+  truncado em silêncio. O terceiro pode custar uma **terceira** submissão, e
+  isso é uma dependência e não uma dúvida: o estágio de segmentos lê as
+  referências do estágio grosso, então um orçamento de referências estourado
+  torna o total dele sem sentido, e só depois de crescer aquele é que este pode
+  faltar por si.
 
 ## Arquivos
 
@@ -272,19 +467,23 @@ Lado neutro, em `lib/src/rendering/gpu/compute/`:
 - `compute_scan.dart` — a soma de prefixo, em Dart e como gerador de HLSL;
 - `d3d12_compute_flatten_shader.dart`, `d3d12_compute_flatten_executor.dart`;
 - `d3d12_compute_binning_shader.dart`, `d3d12_compute_binning_executor.dart`;
+- `d3d12_compute_segment_shader.dart`, `d3d12_compute_segment_executor.dart`;
 - `compute_raster_pipeline.dart` — a entrada encadeada, o orçamento carregado
   entre frames e a política de retry que uma submissão sem leitura não pode ter.
 
 Lado Direct3D 12, em `lib/src/backends/win32/d3d12/`:
 
 - `d3d12_compute_pass.dart` — root signature, cadeia de kernels, barreira UAV,
-  zero-fill device-local, readback seccionado e a espera de cerca; e
-  `D3d12ComputeChain`, que grava vários passes numa lista com uma cerca só;
-- `d3d12_compute_flatten_driver.dart`, `d3d12_compute_binning_driver.dart` — cada
-  um expõe seu passe, seus tamanhos de buffer e sua cadeia de kernels como
-  funções (`D3d12FlattenPass`, `D3d12BinningPass`), de modo que a forma
-  encadeada e a não encadeada despacham literalmente a mesma coisa;
-- `d3d12_compute_raster_driver.dart` — os dois passes e a cadeia, juntos.
+  zero-fill device-local, readback seccionado e a espera de cerca;
+  `D3d12ComputeChain`, que grava vários passes numa lista com uma cerca só; e
+  `D3d12ComputeAlias`, que liga um slot read-write ao buffer de *outro* passe,
+  que é como um consumidor lê um produtor sem cópia e sem cerca;
+- `d3d12_compute_flatten_driver.dart`, `d3d12_compute_binning_driver.dart`,
+  `d3d12_compute_segment_driver.dart` — cada um expõe seu passe, seus tamanhos
+  de buffer e sua cadeia de kernels como funções (`D3d12FlattenPass`,
+  `D3d12BinningPass`, `D3d12SegmentPass`), de modo que a forma encadeada e a não
+  encadeada despacham literalmente a mesma coisa;
+- `d3d12_compute_raster_driver.dart` — os três passes e a cadeia, juntos.
 
 Testes, em `test/rendering/gpu/compute/` (89 no total; os quatro arquivos sem
 GPU rodam em qualquer runner):
@@ -292,6 +491,8 @@ GPU rodam em qualquer runner):
 - `compute_scan_test.dart`, `compute_flatten_reference_test.dart`,
   `compute_flatten_executor_test.dart`, `compute_binning_executor_test.dart`;
 - `d3d12_compute_flatten_parity_test.dart`,
-  `d3d12_compute_binning_parity_test.dart`;
-- `d3d12_compute_raster_pipeline_test.dart` — paridade do encadeamento e as duas
-  tabelas acima.
+  `d3d12_compute_binning_parity_test.dart`,
+  `d3d12_compute_segment_parity_test.dart`;
+- `d3d12_compute_raster_pipeline_test.dart` — paridade do encadeamento, incluindo
+  a do estágio de segmentos contra o passe não encadeado e contra o planejador
+  de CPU, e as quatro tabelas acima.
