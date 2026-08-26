@@ -86,7 +86,9 @@ void main() {
       expect(composeKeysymFromName('a'), 0x61);
       expect(
         composeKeysymFromName('U1F600'),
-        0x0100_0000 + 0x1F600,
+        // Sem separador de digito: o CI fixa o SDK 3.6.0, que ainda nao
+        // habilita `digit-separators`, e o gate de formatacao nem parseia.
+        0x01000000 + 0x1F600,
         reason: 'a code point above Latin-1 carries the 0x01000000 prefix, '
             'which is how xkb spells every non-legacy keysym',
       );
