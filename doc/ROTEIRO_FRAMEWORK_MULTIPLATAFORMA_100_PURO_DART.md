@@ -2540,13 +2540,16 @@ primária, ícone de arraste, ação `link`, movimento/redimensionamento
 interativo, `set_maximized`/`set_fullscreen`/`set_minimized`, posição de
 janela, e CSD. Ver §16.14 e §68.
 
-**Nenhuma linha deste backend jamais falou com um compositor real.** As 14
-suítes (6.709 linhas) rodam contra um compositor **falso em memória** que
-decodifica as mensagens do cliente com o wire de verdade e sintetiza eventos de
-volta — o que é um bom teste, e não é a mesma coisa. A camada FFI
-(`sendmsg`/`recvmsg`/`SCM_RIGHTS`/`memfd`) **não tem cobertura automatizada
-nenhuma**. Também não existe `tool/wayland_backend_smoke.dart`, que X11 e macOS
-têm.
+**Falou com um compositor de verdade em 26/08/2026**, e a evidência está na
+§68.1. Até essa data nenhuma linha tinha falado. As 14 suítes (6.709 linhas)
+continuam rodando contra um compositor **falso em memória** que decodifica as
+mensagens do cliente com o wire de verdade e sintetiza eventos de volta — o
+que é um bom teste unitário, e não é a mesma coisa: o falso responde ao
+*pedido* de `wl_surface.frame` e um compositor responde ao *commit*, e essa
+diferença escondia um deadlock de frame pacing que só o Weston mostrou. A
+camada FFI (`sendmsg`/`recvmsg`/`SCM_RIGHTS`/`memfd`/`mmap`) deixou de não ter
+cobertura nenhuma: `tool/wayland_backend_smoke.dart` existe, e o job `wayland`
+do `ci.yml` o roda sob Weston a cada push.
 
 ## 16.1 Protocolo em Dart — gerador previsto, transcrição feita
 
@@ -8679,8 +8682,13 @@ de bindings.
    `GpuRasterSink`. Abertos: `GlVideoDevice`, `FilePicker` no editor vetorial e
    `FrameLoopController` — este último com a política duplicada já removida e a
    decisão registrada em §68.2;
-6. **rodar o Wayland contra um compositor de verdade** — é a única coisa que
-   valida a camada FFI e o único item que separa a Fase 13 do gate.
+6. ~~**rodar o Wayland contra um compositor de verdade**~~ — feito em
+   26/08/2026 (§68.1). `tool/wayland_backend_smoke.dart` roda sob Weston no
+   runner Linux a cada push, validou a camada FFI nos dois sentidos do
+   `SCM_RIGHTS`, e encontrou dois defeitos que o compositor falso não podia
+   encontrar. O que separa a Fase 13 do gate deixou de ser "nunca executou" e
+   passou a ser o que a §68.1 lista como não verificado — input de verdade,
+   DnD, IME, e um compositor que não seja o Weston.
 
 O detalhamento por frente está em §68.
 
@@ -8763,15 +8771,110 @@ A distinção importa e esta máquina é Windows, então nada de X11 rodou aqui:
   `X11_CLIPBOARD=` para que seja executável numa sessão Linux — mas **ainda não
   foi executado**.
 
-### O backend Wayland nunca falou com um compositor
+### ~~O backend Wayland nunca falou com um compositor~~ — **fechado em 26/08/2026**
 
-As 14 suítes (6.709 linhas) rodam contra um compositor **falso em memória** —
-que é um bom teste, porque decodifica o que o cliente envia com o wire de
-verdade e sintetiza eventos de volta, e **não é a mesma coisa** que um
-compositor. A camada FFI — `sendmsg`, `recvmsg`, `SCM_RIGHTS`, `memfd_create`,
-`mmap` — **não tem cobertura automatizada nenhuma** e só roda numa sessão
-Wayland real. Não existe `tool/wayland_backend_smoke.dart`, que X11 e macOS
-têm.
+Esta linha estava certa até esta data, e o que faltava nunca foi código: era
+uma máquina com um compositor. Uma frente anterior chegou aqui e recuou com a
+razão certa — escrever `tool/wayland_backend_smoke.dart` às cegas produziria
+uma ferramenta nunca executada, e não evidência. O que mudou foi o CI: o job
+`wayland` do `ci.yml` sobe Weston 13 no runner Linux e roda o smoke
+**compilado** contra ele.
+
+**O que rodou** (run
+`https://github.com/insinfo/dart_ui/actions/runs/32937198172`):
+
+```text
+WESTON_ARGS=--backend=x11 --socket=wayland-ci --width=1024 --height=768 \
+            --idle-time=0 --no-config
+WAYLAND_BACKEND_PROBE=PASS supported=true window=true cpu=true
+WAYLAND_GLOBALS=weston_capture_v1,weston_desktop_shell,wl_compositor,
+  wl_data_device_manager,wl_output,wl_seat,wl_shm,wl_subcompositor,
+  wp_presentation,wp_single_pixel_buffer_manager_v1,
+  wp_tearing_control_manager_v1,wp_viewporter,xdg_wm_base,
+  zwp_input_method_v1,zwp_input_panel_v1,zwp_input_timestamps_manager_v1,
+  zwp_linux_dmabuf_v1,zwp_pointer_constraints_v1,
+  zwp_relative_pointer_manager_v1,zwp_text_input_manager_v1,
+  zxdg_output_manager_v1
+WAYLAND_CONFIGURE=PASS size=320x200 bufferScale=1 generation=1 \
+                       decorations=false
+WAYLAND_SHM_PRESENT=PASS format=ARGB8888 slots=1 busyReuse=0
+WAYLAND_FRAME_CALLBACK=PASS throttled=0
+WAYLAND_RESIZE=PASS size=360x240 generation=2
+WAYLAND_KEYBOARD=PASS scm_rights_keymap=true
+WAYLAND_CLIPBOARD=PASS owner=self roundtrip=true
+WAYLAND_BACKEND_WINDOW=PASS id=1
+WAYLAND_BACKEND_SMOKE=PASS
+```
+
+O que cada linha prova, porque um `PASS` sem isso é só uma palavra:
+
+- **`PROBE`/`GLOBALS`** — o socket de `$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`
+  abriu por `socket`/`connect` de libc, e os dois roundtrips do handshake de
+  registry voltaram. Os 21 globais são os que o Weston anuncia, não os que o
+  falso foi escrito para anunciar;
+- **`CONFIGURE`** — `xdg_wm_base` → `xdg_surface` → `xdg_toplevel`, commit
+  vazio, e o primeiro `xdg_surface.configure` de volta, com o `ack` aceito.
+  Nada local produz esse evento;
+- **`SHM_PRESENT`** — `memfd_create` + `ftruncate` + `mmap`, o fd atravessando
+  `sendmsg` no `cmsghdr` montado à mão, e o compositor aceitando o pool, o
+  stride e o formato. **A metade emissora do `SCM_RIGHTS`;**
+- **`FRAME_CALLBACK`** — o `wl_surface.frame` voltou. É a afirmação mais forte
+  da ferramenta: o compositor só responde depois de ter pego o buffer
+  commitado e estar pronto para a próxima frame;
+- **`RESIZE`** — a surface foi substituída na geração 2 e o pool de 360x240
+  foi aceito. Um stride errado seria erro de protocolo, e erro de protocolo
+  mata a conexão;
+- **`KEYBOARD`** — o compositor mandou o keymap xkb como **descritor**, e ele
+  foi retirado do `cmsghdr`, mapeado `MAP_PRIVATE` e parseado. **A metade
+  receptora do `SCM_RIGHTS`** — o único exercício dela no repositório;
+- **`CLIPBOARD`** — `wl_data_device` aceitou este cliente como dono da seleção
+  e devolveu o texto. Ida e volta com a *nossa* seleção, então prova que o
+  `set_selection` foi aceito com um serial de input válido, e **não** prova
+  uma colagem entre aplicações.
+
+**Weston sobe pelo backend `x11` dentro do Xvfb, e não pelo headless.** O
+headless subiu de primeira (`weston 13.0.0`, renderer Pixman) e chegou até o
+`SHM_PRESENT` — mas ele não tem dispositivo de entrada nenhum e por isso
+**não anuncia `wl_seat`**: sem seat não há `wl_keyboard`, e a metade
+receptora do `SCM_RIGHTS` ficava sem ser exercitada. O `ci.yml` tenta `x11`
+primeiro e cai para o headless, porque provar menos é melhor que não provar
+nada.
+
+**Dois defeitos que só o compositor revelou**, e é por isso que esta linha
+precisava fechar:
+
+1. **O frame pacing não estava ligado.** `WaylandCpuPresenter` commitava
+   direto na surface, e o pacing por `wl_surface.frame` mora em
+   `WaylandWindow.present` — que **não tinha chamador nenhum em `lib/`**. O
+   throttle descrito na §16.0 era código morto no caminho de produção: toda
+   frame rasterizada era enviada, e um compositor que queria uma por tick
+   descartava as extras depois de o cliente as ter pago. O presenter passou a
+   commitar por um gancho que o construtor de produção liga em
+   `WaylandWindow.present`;
+2. **`wl_surface.frame` era pedido depois do commit.** Ele é estado
+   duplo-bufferizado da surface e aplica-se ao *próximo* commit, então o
+   callback ficava pendurado num commit que só viria na frame seguinte — que
+   por sua vez era engolida pelo throttle esperando o callback. Um deadlock
+   silencioso: o protocolo aceita o pedido e o compositor apenas nunca
+   responde. O falso respondia porque responde ao *pedido*, não ao commit, e
+   é exatamente por isso que nenhuma das 14 suítes pegou. Há teste de
+   regressão de ordem (`'frame'` antes de `'commit'`).
+
+**O que continua não verificado contra um compositor**, e não deve ser
+apresentado como se estivesse:
+
+- **ponteiro, foco e teclas de verdade** — o Weston do CI não tem quem digite
+  nem quem mova o mouse. O keymap chegou; nenhum `wl_keyboard.key` chegou;
+- **colagem entre aplicações** — só a ida e volta com a própria seleção;
+- **drag-and-drop**, **`text-input-v3`** (o Weston anuncia
+  `zwp_text_input_manager_v1`, que este backend não fala), **popups**,
+  **cursores**, **xdg-decoration** (o Weston não anuncia
+  `zxdg_decoration_manager_v1`) e **escala de buffer > 1**;
+- **GNOME/Mutter e KDE/KWin** — a prova é contra Weston, e um compositor não
+  é todos;
+- **`busyReuseCount`, rotação de slots e o swapchain sob pressão** — a corrida
+  registrou `slots=1`, o que quer dizer que a rotação nunca precisou acontecer.
+
 
 ### ~~Acessibilidade quase não existe~~ — **fechada no Windows em 26/08/2026**
 
@@ -9080,8 +9183,14 @@ Isto é tão importante quanto a lista anterior, e é mais fácil de esquecer:
   teclado e o clipboard que entraram em 26/08/2026 **não rodaram nem sob Xvfb**:
   são provados por testes sobre bytes numa máquina Windows, e a metade FFI
   (`xcb_get_keyboard_mapping`, `SetSelectionOwner`) **nunca foi executada**;
-- **Wayland nunca rodou** (§68.1);
-- **a camada FFI do Wayland não tem teste algum**;
+- ~~**Wayland nunca rodou**~~ — roda desde 26/08/2026 sob Weston no CI
+  (§68.1). O que **não** rodou contra um compositor está listado lá: input de
+  verdade, DnD, IME, popups, cursores, decoração, e qualquer compositor que
+  não seja o Weston;
+- ~~**a camada FFI do Wayland não tem teste algum**~~ — `sendmsg`, `recvmsg`,
+  `SCM_RIGHTS` nos dois sentidos, `memfd_create` e `mmap` são exercitados pelo
+  smoke a cada push (§68.1); o que não é exercitado é o resto de
+  `wayland_libc.dart` fora desse caminho;
 - **nenhum leitor de tela foi executado**. A acessibilidade do Windows é provada
   por um cliente `IUIAutomation` fora do processo — `CLSID_CUIAutomation`, o
   mesmo objeto que a biblioteca do Narrator cria, chamado do jeito que ele o
