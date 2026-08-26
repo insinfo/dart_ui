@@ -1,9 +1,9 @@
 /// A frame of video, described without naming a decoder or a graphics API.
 ///
-/// Nothing in this library decodes anything. A frame arrives here as planes of
-/// bytes that somebody else produced - a hardware decoder's mapped surface, a
-/// software codec's output, a test that filled three `Uint8List`s - and the
-/// only thing this file decides is what those bytes *mean*: which plane holds
+/// This file decodes nothing. A frame arrives here as planes of bytes that
+/// somebody else produced - a hardware decoder's mapped surface, a software
+/// codec's output, a test that filled three `Uint8List`s - and the only thing
+/// this file decides is what those bytes *mean*: which plane holds
 /// which samples, how far apart the rows are, which primaries the chroma was
 /// encoded against and whether the levels are studio or full range.
 ///
@@ -11,6 +11,11 @@
 /// the container, the codec and the operating system; the renderer's contract
 /// must not. So the renderer never sees a codec, and the decoder never sees a
 /// texture.
+///
+/// The decoders that feed it live beside this file - `video_decoder.dart` and
+/// its Media Foundation, GStreamer and AVFoundation backends - and they reach
+/// this contract only as planes of bytes, which is the separation working as
+/// intended rather than an exception to it.
 ///
 /// ## Why not `DecodedImage`
 ///
@@ -86,8 +91,7 @@ enum VideoPixelFormat {
   rgba8888;
 
   /// Whether decoding needs a [YuvToRgbMatrix]; false for the two RGB members.
-  bool get isYuv =>
-      this == nv12 || this == i420 || this == yuy2;
+  bool get isYuv => this == nv12 || this == i420 || this == yuy2;
 
   /// How many separately addressable planes a frame of this format carries.
   int get planeCount => switch (this) {
@@ -313,7 +317,8 @@ final class VideoFrameFormat {
       other.range == range;
 
   @override
-  int get hashCode => Object.hash(pixelFormat, width, height, colorSpace, range);
+  int get hashCode =>
+      Object.hash(pixelFormat, width, height, colorSpace, range);
 
   @override
   String toString() => 'VideoFrameFormat(${pixelFormat.name}, ${width}x$height,'
@@ -503,8 +508,7 @@ final class VideoFrame {
   int get hashCode => Object.hash(streamId, sequence);
 
   @override
-  String toString() =>
-      'VideoFrame(stream $streamId, #$sequence, $format)';
+  String toString() => 'VideoFrame(stream $streamId, #$sequence, $format)';
 }
 
 /// An integer rectangle of a frame, in frame pixels.
