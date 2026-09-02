@@ -71,12 +71,20 @@ completo. Até lá a dependência vem do Git (`pubspec.yaml` do `dart_ui`).
 | 6.4 isolate e orçamento | **feito** | `decodeImageAsync` manda JPEG 2000 para `compute` na VM; `probeJpeg2000` aplica `RasterImageLimits` antes de alocar e o codec recebe o mesmo orçamento; `Image.jp2` e doc do `Image.memory` avisam do custo |
 | 6.5 `/JPXDecode` | **feito** | `decodePdfImage` reconhece JP2/J2K, ignora o alfa sem `/SMaskInData`, usa com 1 ou 2; `/Decode` ignorado como manda a norma. Fora: `/ColorSpace` que contradiz o JP2 e `/Indexed` sobre JPX |
 | 6.6 testes | **feito** | `test/graphics/image/jp2_test.dart` e `test/pdf/pdf_jpx_image_test.dart` geram os JP2 com o próprio encoder, sem fixture binária; 49 testes em série com `test/architecture` |
-| Caminho ImageIO no macOS | **não provado** | ImageIO decodifica JP2 e o código deixa tentar; sem máquina macOS aqui, fica com a regra de teste real |
+| Caminho ImageIO no macOS | **coberto pelo CI** | `test/graphics/image/jp2_native_test.dart` compara o decodificador nativo com o Dart quando há um (tolerância de 1 na cor, 0 no alfa); o workflow `framework.yml` roda `dart test test` em `macos-14`, que é onde a comparação vale. No Windows e no Linux o teste prova só o fallback |
 
-Ainda em aberto no `jpeg2000`: o decodificador MQ (próximo alvo de
-desempenho), assinaturas 4.7 (`Object source`, `extraParameters`), componentes
-assinadas no encoder. Publicar no pub.dev é `dart pub publish` a partir da
-`main`, quando você decidir que está completo.
+Terceira rodada de desempenho, AOT, melhor de 20 execuções quentes:
+`file1.jp2` 863 → 219 → **202 ms**; `relax.jp2` 47 → 24 → **17 ms**. O
+caminho rápido do decodificador MQ (símbolo mais provável sem
+renormalização) ficou pequeno o bastante para o VM inlinar nas passadas;
+helpers de sinal e refinamento sem `toSigned` redundante; closures de trace
+que capturavam variáveis do laço removidas; wavelet 5x3 em `Int32List`. O
+que sobra (MQ e as três passadas, ~75%) já está na estrutura da referência
+Java; ganhos além disso pedem mudança de algoritmo, não de tipagem.
+
+Ainda em aberto no `jpeg2000`: assinaturas 4.7 (`Object source`,
+`extraParameters`) e componentes assinadas no encoder. Publicar no pub.dev é
+`dart pub publish` a partir da `main`, quando você decidir que está completo.
 
 Duas mudanças de API que o consumidor precisa saber: `Jpeg2000Image.components`
 agora inclui o alfa (um JP2 RGBA devolve 4, não 3), e todo erro de entrada
