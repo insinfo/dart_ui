@@ -207,8 +207,11 @@ RasterDecodeResult? tryDecodeImageIo(
     if (context == nullptr) return null;
     objects.add(context);
 
-    api.translate(context, 0, height.toDouble());
-    api.scale(context, 1, -1);
+    // No flip: a CGBitmapContext stores its first scanline at the top, and
+    // CGContextDrawImage puts the image's top row there. Flipping the CTM
+    // (the UIKit habit) turned every native decode upside down, which the
+    // one-row test images of the time could not reveal; the two-row native
+    // orientation test now does.
     final Pointer<_CgRect> rect = arena.allocate<_CgRect>(sizeOf<_CgRect>());
     rect.ref
       ..origin.x = 0
