@@ -4,14 +4,14 @@
 /// premultiplication and hostile-input checks form the reference decoder for
 /// the renderer. JPEG and WebP are delegated to the pure-Dart codecs adapted
 /// from `package:image` (MIT) under `codecs/`, and JPEG 2000 to our own
-/// `package:jpeg2000`; every one of them is converted immediately into the one
+/// `package:j2k`; every one of them is converted immediately into the one
 /// pixel contract used by dart_ui: tightly packed, premultiplied RGBA/BGRA. No
 /// codec-internal type crosses this library's public API.
 library;
 
 import 'dart:typed_data';
 
-import 'package:jpeg2000/jpeg2000.dart' as jp2;
+import 'package:j2k/j2k.dart' as jp2;
 
 import '../../foundation/compute.dart';
 import 'codecs/image_lib.dart' as image_lib;
@@ -237,7 +237,7 @@ DecodedImage decodeJp2(
   ).image;
 }
 
-const String _jp2CodecName = 'package:jpeg2000 (Dart)';
+const String _jp2CodecName = 'package:j2k (Dart)';
 
 final class _Jp2Request {
   const _Jp2Request(this.bytes, this.order, this.limits);
@@ -315,7 +315,7 @@ DecodedImage _decodeJp2Dart(
 /// image (CMYK, multispectral) has no colour meaning the codec could give it,
 /// so its first three channels are shown as RGB, or its first channel as gray
 /// when there are fewer than three; that keeps such files visible instead of
-/// refused, and the caller can go to `package:jpeg2000` for the raw channels.
+/// refused, and the caller can go to `package:j2k` for the raw channels.
 DecodedImage _fromJp2Image(
   jp2.Jpeg2000Image source,
   ImageChannelOrder order, {

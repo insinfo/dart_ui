@@ -31,16 +31,12 @@ dependencies:
   # arquivos.
   web: ^1.1.0
 
-  # JPEG 2000 (JP2/J2K) decoder. Este e o unico codec que nao vive em
-  # `lib/src/graphics/image/codecs/`: e um package proprio, 100% Dart, sem
+  # JPEG 2000 (JP2/J2K) codec. Este e o unico codec que nao vive em
+  # `lib/src/graphics/image/codecs/`: e um package proprio (repo
+  # github.com/insinfo/jpeg2000, publicado como j2k), 100% Dart, sem
   # dependencia alem de `meta` e `web` (as mesmas duas daqui), com CI em VM,
-  # dart2js e dart2wasm. Vendorizar 50 mil linhas duplicaria a manutencao, e a
-  # regra "sem dependencias" existe para nao trazer codigo de terceiros, nao
-  # para impedir que um package nosso seja consumido como package. Vem do Git
-  # ate a publicacao no pub.dev; depois troque por uma versao.
-  jpeg2000:
-    git:
-      url: https://github.com/insinfo/jpeg2000.git
+  # dart2js e dart2wasm.
+  j2k: ^0.9.0
 
 dev_dependencies:
   lints: ^5.1.0

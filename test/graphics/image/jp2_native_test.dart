@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 import 'package:dart_ui/src/graphics/image/decoded_image.dart';
 import 'package:dart_ui/src/graphics/image/raster_formats.dart';
-import 'package:jpeg2000/jpeg2000.dart' as jp2;
+import 'package:j2k/j2k.dart' as jp2;
 import 'package:test/test.dart';
 
 /// The platform JPEG 2000 decoder against the Dart one.

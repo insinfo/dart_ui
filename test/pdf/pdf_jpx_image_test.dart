@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:dart_ui/src/graphics/image/decoded_image.dart';
 import 'package:dart_ui/src/pdf/format/pdf_object.dart';
 import 'package:dart_ui/src/pdf/render/pdf_image_decoder.dart';
-import 'package:jpeg2000/jpeg2000.dart' as jp2;
+import 'package:j2k/j2k.dart' as jp2;
 import 'package:test/test.dart';
 
 /// `/JPXDecode` image XObjects: the filter chain passes the JP2 bytes through

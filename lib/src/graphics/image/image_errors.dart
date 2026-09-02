@@ -56,7 +56,7 @@ final class WebPDecodeException extends ImageDecodeException {
 /// The JP2 container or J2K codestream is malformed, truncated, or uses a
 /// feature the codec does not implement.
 ///
-/// The codec distinguishes those cases itself (`package:jpeg2000` throws a
+/// The codec distinguishes those cases itself (`package:j2k` throws a
 /// sealed hierarchy); [kind] keeps that distinction so a caller can retry a
 /// truncated download without retrying a corrupted file.
 final class Jpeg2000DecodeException extends ImageDecodeException {
@@ -69,7 +69,7 @@ final class Jpeg2000DecodeException extends ImageDecodeException {
   final Jpeg2000FailureKind kind;
 }
 
-/// The reasons `package:jpeg2000` can refuse an input, one per exception
+/// The reasons `package:j2k` can refuse an input, one per exception
 /// class it throws.
 enum Jpeg2000FailureKind {
   /// Neither a JP2 signature nor a J2K start-of-codestream marker.

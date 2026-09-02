@@ -6,7 +6,7 @@ import 'dart:typed_data';
 import 'package:dart_ui/src/graphics/image/decoded_image.dart';
 import 'package:dart_ui/src/graphics/image/image_errors.dart';
 import 'package:dart_ui/src/graphics/image/raster_formats.dart';
-import 'package:jpeg2000/jpeg2000.dart' as jp2;
+import 'package:j2k/j2k.dart' as jp2;
 import 'package:test/test.dart';
 
 /// JPEG 2000 through the format dispatcher.
@@ -139,7 +139,7 @@ void main() {
       final RasterDecodeResult result =
           decodeImageWithCodec(bytes, preferNative: false);
       expect(result.isNative, isFalse);
-      expect(result.codecName, contains('jpeg2000'));
+      expect(result.codecName, contains('j2k'));
     });
 
     test('the asynchronous path decodes in a background isolate', () async {
@@ -149,7 +149,7 @@ void main() {
           await decodeImageAsyncWithCodec(bytes, preferNative: false);
       expect(result.image.pixels.length, 16);
       expect(result.image.pixels[0], 9);
-      expect(result.codecName, contains('jpeg2000'));
+      expect(result.codecName, contains('j2k'));
     });
   });
 

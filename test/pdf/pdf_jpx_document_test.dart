@@ -6,7 +6,7 @@ import 'dart:typed_data';
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/pdf.dart';
-import 'package:jpeg2000/jpeg2000.dart' as jp2;
+import 'package:j2k/j2k.dart' as jp2;
 import 'package:test/test.dart';
 
 import '../../tool/make_jpx_pdf.dart';

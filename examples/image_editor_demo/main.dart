@@ -3,7 +3,7 @@
 ///
 /// Existe para provar o caminho completo do JPEG 2000 no `dart_ui`: o
 /// `decodeImage` reconhece o formato pela assinatura, o adaptador entrega
-/// BGRA premultiplicado, e o `package:jpeg2000` codifica de volta o que foi
+/// BGRA premultiplicado, e o `package:j2k` codifica de volta o que foi
 /// pintado. A barra de estado mostra qual decodificador rodou (o Dart ou o
 /// nativo da plataforma), o tempo, e o tamanho do arquivo salvo.
 ///
@@ -19,7 +19,7 @@ import 'dart:typed_data';
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/graphics/image/codecs/image_lib.dart' as image_lib;
-import 'package:jpeg2000/jpeg2000.dart' as jp2;
+import 'package:j2k/j2k.dart' as jp2;
 
 void main(List<String> arguments) {
   FrameworkFonts.install();
