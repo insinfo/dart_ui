@@ -148,6 +148,11 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
   bool _tapMoved = false;
   int _selectionAnchor = 0;
   final Map<Object, DecodedImage> _decodedImages = <Object, DecodedImage>{};
+
+  /// The last resample of each image at the pixel size the current zoom
+  /// asks for. Paint runs on every scroll step, and resampling a page-sized
+  /// image each time is what made scrolling a zoomed-in scan stutter.
+  final Map<Object, DecodedImage> _scaledImages = <Object, DecodedImage>{};
   final Map<String, Typeface?> _embeddedFonts = <String, Typeface?>{};
 
   PdfPage get page => _page;
@@ -156,6 +161,7 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     if (identical(value, _page)) return;
     _page = value;
     _decodedImages.clear();
+    _scaledImages.clear();
     _embeddedFonts.clear();
     // A lazily resolved layout belongs to the page it was extracted from; the
     // new page's layout is re-resolved on demand. An explicit layout is the
@@ -172,7 +178,12 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
       throw ArgumentError.value(value, 'scale', 'must be finite and positive');
     }
     _scale = value;
-    _decodedImages.clear();
+    // The decoded images are the XObjects at their own size and do not
+    // depend on the scale; only the resampled copies do, and those are keyed
+    // by their pixel size. Clearing the decodes here made every zoom step
+    // re-run the image codecs: 2.6 s for a 10-megapixel JPEG 2000 page,
+    // against 20-200 ms for the resample that actually changes.
+    _scaledImages.clear();
     markNeedsLayout();
   }
 
@@ -381,6 +392,7 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
       renderScale: scale,
       devicePixelRatio: devicePixelRatio,
       decodedImages: _decodedImages,
+      scaledImages: _scaledImages,
       embeddedFonts: _embeddedFonts,
     );
     PdfPageRenderer(page).render(device, applyPageRotation: false);
@@ -424,6 +436,7 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
     required this.renderScale,
     required this.devicePixelRatio,
     required this.decodedImages,
+    required this.scaledImages,
     required this.embeddedFonts,
   });
 
@@ -433,6 +446,7 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
   final double renderScale;
   final double devicePixelRatio;
   final Map<Object, DecodedImage> decodedImages;
+  final Map<Object, DecodedImage> scaledImages;
   final Map<String, Typeface?> embeddedFonts;
   final List<Transform2D> _stack = <Transform2D>[];
   Transform2D _ctm = Transform2D.identity;
@@ -618,10 +632,20 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
         (device.width * devicePixelRatio).round().clamp(1, 8192);
     final int pixelHeight =
         (device.height * devicePixelRatio).round().clamp(1, 8192);
-    final DecodedImage pixels =
-        decoded.width == pixelWidth && decoded.height == pixelHeight
-            ? decoded
-            : decoded.resample(width: pixelWidth, height: pixelHeight);
+    final DecodedImage pixels;
+    if (decoded.width == pixelWidth && decoded.height == pixelHeight) {
+      pixels = decoded;
+    } else {
+      final DecodedImage? scaled = scaledImages[key];
+      if (scaled != null &&
+          scaled.width == pixelWidth &&
+          scaled.height == pixelHeight) {
+        pixels = scaled;
+      } else {
+        pixels = decoded.resample(width: pixelWidth, height: pixelHeight);
+        scaledImages[key] = pixels;
+      }
+    }
     list.drawImage(
       list.addImage(framebufferFromImage(pixels)),
       0,
