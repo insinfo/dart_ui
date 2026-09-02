@@ -129,6 +129,70 @@ Duas mudanças de API que o consumidor precisa saber: `Jpeg2000Image.components`
 agora inclui o alfa (um JP2 RGBA devolve 4, não 3), e todo erro de entrada
 sai como `Jpeg2000Exception`, nunca mais como `StateError`.
 
+### Quarta rodada de desempenho: o caminho 9/7 em SIMD
+
+O caminho reversível (5/3) já era dominado pelo decodificador MQ; o
+irreversível (9/7 com ICT), que é o das fotos, não. Com `balloon.jp2`
+(2717×3701 RGB, três tiles, 9/7) como cobaia, quente, melhor de seis:
+
+| Build | `file1.jp2` | `relax.jp2` | `balloon.jp2` |
+|---|---:|---:|---:|
+| VM JIT, antes | 182 ms | 11 ms | 1236 ms |
+| VM JIT, depois | 165 ms | 10 ms | **417 ms** |
+| AOT, antes | 202 ms | 17 ms | 1436 ms |
+| AOT, depois | 176 ms | 13 ms | **493 ms** |
+
+Tudo bit-exato contra as fixtures do JJ2000 (52 testes de referência e
+conformidade continuam passando com erro máximo zero).
+
+- A síntese 9/7 inversa roda em `Float32x4`: na horizontal, a linha inteira
+  em passadas vetoriais sobre as amostras pares e ímpares, com os vizinhos
+  `x[j-1]`/`x[j+1]` montados por shuffles de lanes entre vetores adjacentes;
+  na vertical, dezesseis colunas por passada (uma linha de cache por linha da
+  imagem) em buffers contíguos. `Float32x4` calcula em precisão simples em
+  cada operação, que é exatamente o que o `float` do Java faz.
+- O ICT lê Y, Cb e Cr por views `Float32x4List` alinhadas; os planos
+  reconstruídos têm o stride arredondado para múltiplo de quatro para que
+  toda linha comece alinhada a 16 bytes.
+- A coleta final escreve RGB pixel a pixel a partir dos três planos, em vez
+  de três passadas com stride 3 sobre a saída.
+
+Três achados sobre os compiladores do Dart (3.6.2, JIT e AOT) que moldaram o
+código, e que valem para o `dart_ui` também:
+
+- Montar um `Float32x4` a partir de quatro loads escalares é **mais lento**
+  que o loop escalar; ler vetores inteiros por uma view `Float32x4List`
+  alinhada é 2,5× mais rápido. Alinhamento se garante, não se torce.
+- Um shift por quantidade variável (`x >> fixedPoint`) num loop quente em
+  AOT custou três vezes o resto do loop; o caso comum (zero) ganhou loop
+  próprio.
+- Tirar uma lista tipada de um `List<Int32List?>` com `!` dentro da função
+  do loop faz cada leitura virar chamada polimórfica em AOT (2,5× mais
+  lento); os planos passam como parâmetros tipados.
+
+Sobre as issues do SDK que você mandou (dart-lang/sdk#53662, #61087, #63217
+e o CL 497000): o que era lento em AOT eram os operadores de `Int32x4`,
+corrigidos em abril de 2026 e fora da SDK 3.6.2. `Float32x4` já era
+especializado em AOT desde a 3.5, e é só isso que o codec usa. Os
+microbenchmarks em AOT confirmaram: view `Float32x4List` 2,5× mais rápida
+que o escalar também no executável.
+
+Comparação com o `jpeg2000` do pub.dev (p3pp8), AOT, melhor de quatro:
+
+| Arquivo | `j2k` | `jpeg2000` 0.1.4 |
+|---|---:|---:|
+| cameraman 256×256 | 2 ms | 4 ms |
+| relax.jp2 400×300 | 14 ms | 13 ms |
+| sample_jpxdecode 816×1056 | 24 ms | 38 ms |
+| file1.jp2 768×512 | 184 ms | 263 ms |
+| balloon.jp2 2717×3701 | 492 ms | falha (precincts) |
+
+(`relax.jp2` é pequeno e quase só entropia, onde esta rodada não mexeu.)
+
+O que sobra no perfil do 9/7 (AOT, balloon): entropia 45%, coleta final
+12%, síntese vertical 12%, horizontal 11%, ICT 8%. O próximo alvo, para os
+dois caminhos, é o decodificador de entropia.
+
 ## 1. Estado medido
 
 | Verificação | Resultado | Comando |
