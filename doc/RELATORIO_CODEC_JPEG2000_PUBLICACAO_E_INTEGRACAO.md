@@ -54,10 +54,29 @@ mudou de fato:
 | `pana` | **160 / 160** (era 125) | medido depois do push; antes dele dava 150 porque o pana lê o `pubspec.yaml` no GitHub para verificar `repository` |
 | Suíte do codec | 303 testes, 0 falhas, 13 s em série | `dart test -j 1` |
 
-Ainda em aberto no `jpeg2000`, na ordem da seção 8: saída de 16 bits (4.2),
-encoder por pixels (4.5 e seção 7), desempenho (seção 5). No `dart_ui`, tudo
-da seção 6 continua por fazer; a decisão da seção 6.1 é sua. Publicar no
-pub.dev é `dart pub publish` a partir da `main` depois do push.
+### Segunda rodada, mais tarde no mesmo dia
+
+Decisões suas: o `dart_ui` consome o `jpeg2000` como **dependência** (não
+vendoriza), e a publicação no pub.dev só acontece quando o codec estiver
+completo. Até lá a dependência vem do Git (`pubspec.yaml` do `dart_ui`).
+
+| Item | Estado | Prova |
+|---|---|---|
+| 4.2 saída de 16 bits | **feito** | `outputBitDepth: 16`, `bitsPerSample`, `pixels16`; fontes rasas são reescaladas (255 → 65535); enum de formato sem sufixo (`gray`, `rgba`...) |
+| 4.5 e seção 7, encoder por pixels | **feito** | `encodeJpeg2000Pixels` com 1 a 16 bits, alfa gravado na caixa `cdef`; PNM de 16 bits; RGBA, gray+alfa, 16 bits e 12 bits fecham sem perdas |
+| Bug achado no caminho | **corrigido** | acima de 12 bits o alocador descartava o último ponto de truncamento (inclinação estimada negativa) e perdia os bit-planes baixos; a MCT inversa indexava lista de 3 com 4 componentes |
+| Seção 5, desempenho | **3,5×** | `file1.jp2` 768×512: 672 → 182 ms (JIT), 863 → 219 ms (AOT). 70% do tempo era interpolação de strings de trace dentro das passadas de entropia; o resto veio de listas tipadas. Perfil por `build/profile.dart` (VM service); o que sobra é o decodificador MQ (47%) |
+| 6.2 sniff, enum, exceção, `switch`es | **feito** | `RasterImageFormat.jpeg2000`, `isJpeg2000`, `Jpeg2000DecodeException` com `kind` (format, truncated, corrupted, unsupported); WIC devolve `null` sem tentar; Web pede `image/jp2` e cai para o Dart |
+| 6.3 adaptador | **feito** | `_fromJp2Image` em `raster_formats.dart`: gray replicado, alfa premultiplicado com o `premultiplyChannel` compartilhado, `cdef` premultiplicado respeitado, `multiComponent` mostra os três primeiros canais |
+| 6.4 isolate e orçamento | **feito** | `decodeImageAsync` manda JPEG 2000 para `compute` na VM; `probeJpeg2000` aplica `RasterImageLimits` antes de alocar e o codec recebe o mesmo orçamento; `Image.jp2` e doc do `Image.memory` avisam do custo |
+| 6.5 `/JPXDecode` | **feito** | `decodePdfImage` reconhece JP2/J2K, ignora o alfa sem `/SMaskInData`, usa com 1 ou 2; `/Decode` ignorado como manda a norma. Fora: `/ColorSpace` que contradiz o JP2 e `/Indexed` sobre JPX |
+| 6.6 testes | **feito** | `test/graphics/image/jp2_test.dart` e `test/pdf/pdf_jpx_image_test.dart` geram os JP2 com o próprio encoder, sem fixture binária; 49 testes em série com `test/architecture` |
+| Caminho ImageIO no macOS | **não provado** | ImageIO decodifica JP2 e o código deixa tentar; sem máquina macOS aqui, fica com a regra de teste real |
+
+Ainda em aberto no `jpeg2000`: o decodificador MQ (próximo alvo de
+desempenho), assinaturas 4.7 (`Object source`, `extraParameters`), componentes
+assinadas no encoder. Publicar no pub.dev é `dart pub publish` a partir da
+`main`, quando você decidir que está completo.
 
 Duas mudanças de API que o consumidor precisa saber: `Jpeg2000Image.components`
 agora inclui o alfa (um JP2 RGBA devolve 4, não 3), e todo erro de entrada

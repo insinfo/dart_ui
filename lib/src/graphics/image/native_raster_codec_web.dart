@@ -72,4 +72,7 @@ String _mimeType(RasterImageFormat format) => switch (format) {
       RasterImageFormat.png => 'image/png',
       RasterImageFormat.jpeg => 'image/jpeg',
       RasterImageFormat.webp => 'image/webp',
+      // Only Safari decodes JPEG 2000 natively; elsewhere createImageBitmap
+      // rejects the blob and the caller falls back to the Dart codec.
+      RasterImageFormat.jpeg2000 => 'image/jp2',
     };

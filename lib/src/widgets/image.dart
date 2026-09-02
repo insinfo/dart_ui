@@ -253,7 +253,13 @@ final class Image extends RenderObjectWidget {
         alignment: alignment,
       );
 
-  /// Detects PNG, JPEG, or WebP from [bytes], decodes it, and draws it.
+  /// Detects PNG, JPEG, WebP, or JPEG 2000 from [bytes], decodes it, and
+  /// draws it.
+  ///
+  /// JPEG 2000 decodes in pure Dart at roughly a quarter of a microsecond per
+  /// pixel, on the calling thread: for anything larger than an icon, decode
+  /// once with `decodeImageAsync`, which moves it to a background isolate,
+  /// and pass the [DecodedImage] to the ordinary constructor.
   ///
   /// Prefer decoding once with [decodeImage] and using the ordinary
   /// constructor for large assets or widgets rebuilt frequently.
@@ -275,6 +281,29 @@ final class Image extends RenderObjectWidget {
           pngLimits: pngLimits,
           limits: limits,
         ),
+        key: key,
+        width: width,
+        height: height,
+        fit: fit,
+        alignment: alignment,
+      );
+
+  /// Decodes JP2 or raw J2K bytes and draws the image.
+  ///
+  /// Synchronous and pure Dart; see [Image.memory] for when to decode off the
+  /// UI thread instead.
+  factory Image.jp2(
+    Uint8List bytes, {
+    Key? key,
+    double? width,
+    double? height,
+    BoxFit fit = BoxFit.contain,
+    Alignment alignment = Alignment.center,
+    ImageChannelOrder order = ImageChannelOrder.bgra,
+    RasterImageLimits limits = const RasterImageLimits(),
+  }) =>
+      Image(
+        decodeJp2(bytes, order: order, limits: limits),
         key: key,
         width: width,
         height: height,

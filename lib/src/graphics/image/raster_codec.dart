@@ -3,7 +3,7 @@ library;
 import 'decoded_image.dart';
 import 'image_errors.dart';
 
-enum RasterImageFormat { png, jpeg, webp }
+enum RasterImageFormat { png, jpeg, webp, jpeg2000 }
 
 final class RasterImageLimits {
   const RasterImageLimits({
@@ -38,6 +38,9 @@ final class RasterImageLimits {
           ),
         RasterImageFormat.png => const PngHeaderException(
             'PNG declares a zero or negative dimension',
+          ),
+        RasterImageFormat.jpeg2000 => const Jpeg2000DecodeException(
+            'JPEG 2000 declares a zero or negative dimension',
           ),
       };
     }

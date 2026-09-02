@@ -53,6 +53,38 @@ final class WebPDecodeException extends ImageDecodeException {
   const WebPDecodeException(super.message);
 }
 
+/// The JP2 container or J2K codestream is malformed, truncated, or uses a
+/// feature the codec does not implement.
+///
+/// The codec distinguishes those cases itself (`package:jpeg2000` throws a
+/// sealed hierarchy); [kind] keeps that distinction so a caller can retry a
+/// truncated download without retrying a corrupted file.
+final class Jpeg2000DecodeException extends ImageDecodeException {
+  const Jpeg2000DecodeException(
+    super.message, {
+    this.kind = Jpeg2000FailureKind.corrupted,
+  });
+
+  /// Which check in the codec refused the bytes.
+  final Jpeg2000FailureKind kind;
+}
+
+/// The reasons `package:jpeg2000` can refuse an input, one per exception
+/// class it throws.
+enum Jpeg2000FailureKind {
+  /// Neither a JP2 signature nor a J2K start-of-codestream marker.
+  format,
+
+  /// The data ends before the codestream is complete.
+  truncated,
+
+  /// A value in the container or codestream violates the standard.
+  corrupted,
+
+  /// A valid file that uses a feature the codec does not implement.
+  unsupported,
+}
+
 /// The first eight bytes are not the PNG signature.
 ///
 /// The cheapest check there is, done before anything is allocated, and the one

@@ -234,6 +234,9 @@ RasterDecodeResult? tryDecodeWic(
 }) {
   final _WicApi? api = _wicApi;
   if (api == null) return null;
+  // Windows ships no JPEG 2000 codec for WIC; asking would only cost a COM
+  // round trip before the Dart codec runs anyway.
+  if (format == RasterImageFormat.jpeg2000) return null;
   final NativeArena arena = NativeArena();
   final List<ComObject> objects = <ComObject>[];
   var uninitialize = false;

@@ -22,9 +22,23 @@ DecodedImage? decodePdfImage({
 }) {
   if (width <= 0 || height <= 0 || bytes.isEmpty) return null;
 
-  // DCTDecode and similar pass-through filters leave a complete encoded
-  // image here. Keep that path ahead of raw PDF sample decoding.
-  if (sniffImageFormat(bytes) != null) {
+  // DCTDecode, JPXDecode and similar pass-through filters leave a complete
+  // encoded image here. Keep that path ahead of raw PDF sample decoding.
+  final RasterImageFormat? encoded = sniffImageFormat(bytes);
+  if (encoded == RasterImageFormat.jpeg2000) {
+    // ISO 32000-1 section 7.4.9: the JPX colour space is used as-is unless
+    // the dictionary overrides it, `/Decode` is ignored, and any opacity
+    // channel in the file counts only when `/SMaskInData` is 1 or 2. The
+    // codec reports whether that channel is premultiplied (2) or not (1).
+    final int smaskInData =
+        dictionary?.getNumber('SMaskInData', resolver)?.toInt() ?? 0;
+    try {
+      return decodeJp2(bytes, keepAlpha: smaskInData != 0);
+    } on Object {
+      return null;
+    }
+  }
+  if (encoded != null) {
     try {
       return decodeImage(bytes, preferNative: false);
     } on Object {
