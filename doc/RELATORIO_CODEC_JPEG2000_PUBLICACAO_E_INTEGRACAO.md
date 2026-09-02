@@ -190,8 +190,17 @@ Comparação com o `jpeg2000` do pub.dev (p3pp8), AOT, melhor de quatro:
 (`relax.jp2` é pequeno e quase só entropia, onde esta rodada não mexeu.)
 
 O que sobra no perfil do 9/7 (AOT, balloon): entropia 45%, coleta final
-12%, síntese vertical 12%, horizontal 11%, ICT 8%. O próximo alvo, para os
-dois caminhos, é o decodificador de entropia.
+12%, síntese vertical 12%, horizontal 11%, ICT 8%.
+
+**Melhoria futura anotada (pendente):** o decodificador de entropia
+(MQ + as três passadas de codificação) é o próximo alvo, para os dois
+caminhos (5/3 e 9/7). Ele já é o custo dominante do `file1.jp2` (cerca de
+85%) e passa a ser quase metade do `balloon.jp2`. As ideias registradas em
+`doc/BENCHMARKS.md` do codec: decodificar vários símbolos por chamada na
+passada de limpeza, atualização de contexto por tabela, e manter o
+registro de código do MQ em local durante a passada inteira. Nenhuma versão
+nova do `j2k` foi publicada com esta rodada; a 0.9.0 no pub.dev ainda é a
+anterior ao SIMD, e publicar a 0.9.1 fica a critério do autor.
 
 ## 1. Estado medido
 
