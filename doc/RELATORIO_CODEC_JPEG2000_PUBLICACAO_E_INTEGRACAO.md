@@ -82,6 +82,29 @@ que capturavam variáveis do laço removidas; wavelet 5x3 em `Int32List`. O
 que sobra (MQ e as três passadas, ~75%) já está na estrutura da referência
 Java; ganhos além disso pedem mudança de algoritmo, não de tipagem.
 
+### Terceira rodada: o editor de imagem achou dois bugs de precincts
+
+O exemplo `examples/image_editor_demo` (pincel, importar e salvar em PNG,
+JPEG e JPEG 2000) abriu e salvou `cameraman.10.jp2`, mas recusou
+`balloon.jp2` (Kakadu, 2717×3701, 12 tiles, RPCL, SOP, EPH, precincts
+128/256, 6 camadas) com "expected EPH marker". Nenhuma fixture do codec tinha
+precincts. Bissecção com o próprio encoder (que o ImageMagick decodifica
+certo) isolou dois bugs no leitor de pacotes, ambos invisíveis sem precincts:
+
+| Bug | Efeito | Correção |
+|---|---|---|
+| `Lblock` indexado pela linha do code-block *dentro do precinct* (`m`) em vez da linha no subband (`cbc.y`, como no Java) | precincts empilhados na mesma coluna compartilhavam o estado; o primeiro pacote de um precinct inferior que o alterava dessincronizava os comprimentos seguintes | `pkt_decoder.dart`, `readPktHead` |
+| Tamanhos de precinct lidos do COD na ordem do codestream (r0 primeiro) enquanto `getPPX` indexa com `mrl - rl` (mais alta primeiro) | com tamanhos diferentes por nível, cada resolução recebia o tamanho da sua imagem espelhada | `header_decoder.dart`, `_buildPrecinctValue` inverte a lista |
+
+Prova: `balloon.jp2` decodifica a 55 dB PSNR contra o ImageMagick/OpenJPEG
+(9/7 irreversível, diferença de arredondamento em ponto flutuante); arquivos
+RPCL, com tiles e com três camadas gerados pelo ImageMagick decodificam
+idênticos (PSNR infinito). `test/precinct_test.dart` cobre precincts por
+subband, tamanhos por resolução, tiles+SOP+EPH+segmentação+camadas, tudo sem
+perdas. Também nesta rodada: o CI de macOS pegou o `ImageIO` devolvendo
+imagens de cabeça para baixo (inversão de CTM indevida no `CGBitmapContext`),
+corrigido com teste de orientação de duas linhas.
+
 Ainda em aberto no `jpeg2000`: assinaturas 4.7 (`Object source`,
 `extraParameters`) e componentes assinadas no encoder. Publicar no pub.dev é
 `dart pub publish` a partir da `main`, quando você decidir que está completo.
