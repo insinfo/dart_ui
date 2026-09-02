@@ -105,9 +105,25 @@ perdas. Também nesta rodada: o CI de macOS pegou o `ImageIO` devolvendo
 imagens de cabeça para baixo (inversão de CTM indevida no `CGBitmapContext`),
 corrigido com teste de orientação de duas linhas.
 
-Ainda em aberto no `jpeg2000`: assinaturas 4.7 (`Object source`,
-`extraParameters`) e componentes assinadas no encoder. Publicar no pub.dev é
-`dart pub publish` a partir da `main`, quando você decidir que está completo.
+### Publicado: `j2k` 0.9.0
+
+`dart pub publish` recusou o nome `jpeg2000`: já existe no pub.dev desde
+2026-08-31 (0.1.4, de outro autor, port do `jpx.js` do pdf.js, só decoder).
+Por decisão sua o package passou a se chamar **`j2k`** (o repositório continua
+`github.com/insinfo/jpeg2000`), e foi publicado como 0.9.0 em
+https://pub.dev/packages/j2k. A API não mudou: `import 'package:j2k/j2k.dart'`
+e as mesmas funções `decodeJpeg2000`, `probeJpeg2000`, `encodeJpeg2000Pixels`.
+O `dart_ui` consome `j2k: ^0.9.0` do pub.dev; a dependência Git acabou.
+
+Também nesta rodada: `test/data/balloon.pdf` (Flate, 17 MB, sem JPEG 2000)
+deu lugar a `test/data/balloon_jpx.pdf`, gerado por `tool/make_jpx_pdf.dart`
+com `/JPXDecode` e sem `/ColorSpace`, e o leitor de PDF parou de redecodificar
+as imagens da página a cada zoom (2,6 s → o resample de 20 a 200 ms).
+
+Ainda em aberto no `j2k`: assinaturas 4.7 (`Object source`,
+`extraParameters`) e componentes assinadas no encoder; decodificação do JPX
+do PDF fora da thread da janela, que ainda trava a abertura de páginas
+grandes.
 
 Duas mudanças de API que o consumidor precisa saber: `Jpeg2000Image.components`
 agora inclui o alfa (um JP2 RGBA devolve 4, não 3), e todo erro de entrada
