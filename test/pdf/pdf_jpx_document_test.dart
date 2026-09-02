@@ -61,6 +61,45 @@ void main() {
     expect(decoded.pixels.sublist(24, 28), <int>[50, 100, 200, 255]);
   });
 
+  test('test/data/sample_jpxdecode_minimal.pdf: OpenJPEG jpx brand, gray', () {
+    // `/Filter [/JPXDecode]` with `/ColorSpace /DeviceGray` on a JP2 whose
+    // file type box says `jpx` (compatible with `jp2`), as OpenJPEG writes.
+    final File file = File('test/data/sample_jpxdecode_minimal.pdf');
+    expect(file.existsSync(), isTrue);
+    final PdfDocument document = PdfDocument.fromBytes(file.readAsBytesSync());
+    final PdfPage page = document.getPage(1);
+    final _CapturingDevice device = _CapturingDevice();
+    page.renderTo(device);
+
+    expect(device.images, hasLength(1));
+    final _CapturedImage captured = device.images.single;
+    expect(captured.width, 816);
+    expect(captured.height, 1056);
+    expect(sniffImageFormat(captured.bytes), RasterImageFormat.jpeg2000);
+
+    final DecodedImage? decoded = decodePdfImage(
+      bytes: captured.bytes,
+      width: captured.width,
+      height: captured.height,
+      dictionary: captured.dictionary,
+      resolver: page.resolver,
+    );
+    expect(decoded, isNotNull);
+    expect(decoded!.width, 816);
+    expect(decoded.height, 1056);
+    var minLuma = 255;
+    var maxLuma = 0;
+    for (var y = 20; y < 1056; y += 60) {
+      for (var x = 20; x < 816; x += 40) {
+        final int luma = decoded.pixels[(y * 816 + x) * 4];
+        if (luma < minLuma) minLuma = luma;
+        if (luma > maxLuma) maxLuma = luma;
+      }
+    }
+    expect(maxLuma - minLuma, greaterThan(60),
+        reason: 'luma range $minLuma..$maxLuma');
+  });
+
   test('test/data/balloon_jpx.pdf renders through the JPEG 2000 decoder', () {
     final File file = File('test/data/balloon_jpx.pdf');
     expect(file.existsSync(), isTrue);

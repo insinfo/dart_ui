@@ -3,6 +3,7 @@ library;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import '../../foundation/compute.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
@@ -12,6 +13,7 @@ import '../../graphics/color.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/image/decoded_image.dart';
+import '../../graphics/image/raster_formats.dart';
 import '../../layout/render_box.dart';
 import '../../pdf/document/pdf_page.dart';
 import '../../pdf/format/pdf_object.dart';
@@ -153,6 +155,11 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
   /// asks for. Paint runs on every scroll step, and resampling a page-sized
   /// image each time is what made scrolling a zoomed-in scan stutter.
   final Map<Object, DecodedImage> _scaledImages = <Object, DecodedImage>{};
+
+  /// Images whose codec is running in a background isolate right now, and
+  /// those the codec refused; both keep paint from asking twice.
+  final Set<Object> _pendingImages = <Object>{};
+  final Set<Object> _failedImages = <Object>{};
   final Map<String, Typeface?> _embeddedFonts = <String, Typeface?>{};
 
   PdfPage get page => _page;
@@ -162,6 +169,8 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     _page = value;
     _decodedImages.clear();
     _scaledImages.clear();
+    _pendingImages.clear();
+    _failedImages.clear();
     _embeddedFonts.clear();
     // A lazily resolved layout belongs to the page it was extracted from; the
     // new page's layout is re-resolved on demand. An explicit layout is the
@@ -370,6 +379,34 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
     return (start: start, end: end);
   }
 
+  /// Runs an encoded image's codec off the UI thread and repaints when it is
+  /// done.
+  ///
+  /// A 10-megapixel JPEG 2000 page takes seconds to decode in pure Dart; on
+  /// the painting thread that is seconds of a frozen window every time such
+  /// a page is first shown. The page paints a placeholder meanwhile, and the
+  /// decoded image is cached across zoom levels like every other image.
+  void _scheduleImageDecode(Object key, _PdfImageDecodeRequest request) {
+    _pendingImages.add(key);
+    compute<_PdfImageDecodeRequest, DecodedImage?>(
+      _decodeEncodedPdfImage,
+      request,
+      debugLabel: 'dart_ui.pdf.image',
+    ).then((DecodedImage? image) {
+      if (!_pendingImages.remove(key)) return; // The page changed meanwhile.
+      if (image == null) {
+        _failedImages.add(key);
+      } else {
+        _decodedImages[key] = image;
+      }
+      if (owner != null) markNeedsPaint();
+    }, onError: (Object error, StackTrace stackTrace) {
+      if (!_pendingImages.remove(key)) return;
+      _failedImages.add(key);
+      if (owner != null) markNeedsPaint();
+    });
+  }
+
   @override
   void paint(DisplayList list, Offset offset) {
     if (size.isEmpty) return;
@@ -393,6 +430,9 @@ final class RenderPdfPage extends RenderBox implements PointerEventTarget {
       devicePixelRatio: devicePixelRatio,
       decodedImages: _decodedImages,
       scaledImages: _scaledImages,
+      pendingImages: _pendingImages,
+      failedImages: _failedImages,
+      scheduleDecode: _scheduleImageDecode,
       embeddedFonts: _embeddedFonts,
     );
     PdfPageRenderer(page).render(device, applyPageRotation: false);
@@ -437,6 +477,9 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
     required this.devicePixelRatio,
     required this.decodedImages,
     required this.scaledImages,
+    required this.pendingImages,
+    required this.failedImages,
+    required this.scheduleDecode,
     required this.embeddedFonts,
   });
 
@@ -447,6 +490,10 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
   final double devicePixelRatio;
   final Map<Object, DecodedImage> decodedImages;
   final Map<Object, DecodedImage> scaledImages;
+  final Set<Object> pendingImages;
+  final Set<Object> failedImages;
+  final void Function(Object key, _PdfImageDecodeRequest request)
+      scheduleDecode;
   final Map<String, Typeface?> embeddedFonts;
   final List<Transform2D> _stack = <Transform2D>[];
   Transform2D _ctm = Transform2D.identity;
@@ -616,18 +663,50 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
   }) {
     if (width <= 0 || height <= 0 || imageBytes.isEmpty) return;
     final Object key = imageDictionary ?? imageBytes;
-    final DecodedImage? decoded = decodedImages[key] ??
-        decodePdfImage(
-          bytes: imageBytes,
-          width: width,
-          height: height,
-          dictionary: imageDictionary,
-          resolver: page.resolver,
-        );
-    if (decoded == null) return;
-    decodedImages[key] = decoded;
-
     final Rect device = _deviceTransform.transformRect(dstRect);
+    DecodedImage? decoded = decodedImages[key];
+    if (decoded == null) {
+      if (failedImages.contains(key)) return;
+      final RasterImageFormat? encoded = sniffImageFormat(imageBytes);
+      if (encoded == RasterImageFormat.jpeg2000 ||
+          encoded == RasterImageFormat.jpeg) {
+        // Codec work goes to an isolate; packed samples (Flate, LZW, CCITT)
+        // are unpacked here because that is cheap and needs the resolver.
+        if (!pendingImages.contains(key)) {
+          final int smaskInData = imageDictionary
+                  ?.getNumber('SMaskInData', page.resolver)
+                  ?.toInt() ??
+              0;
+          scheduleDecode(
+            key,
+            _PdfImageDecodeRequest(imageBytes, encoded!, smaskInData),
+          );
+        }
+        list.drawRect(
+          device.left,
+          device.top,
+          device.right,
+          device.bottom,
+          list.addPaint(
+            colorArgb: _withOpacity(_pendingImageColor, state.fillAlpha),
+          ),
+        );
+        return;
+      }
+      decoded = decodePdfImage(
+        bytes: imageBytes,
+        width: width,
+        height: height,
+        dictionary: imageDictionary,
+        resolver: page.resolver,
+      );
+      if (decoded == null) {
+        failedImages.add(key);
+        return;
+      }
+      decodedImages[key] = decoded;
+    }
+
     final int pixelWidth =
         (device.width * devicePixelRatio).round().clamp(1, 8192);
     final int pixelHeight =
@@ -660,6 +739,36 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
         colorArgb: _withOpacity(0xFFFFFFFF, state.fillAlpha),
       ),
     );
+  }
+}
+
+/// What the page shows where an image is still being decoded: a light grey
+/// block, visibly "loading" rather than a blank hole.
+const int _pendingImageColor = 0xFFE6E6E6;
+
+/// What the isolate needs, and nothing that drags the document along: the
+/// encoded bytes, the format the dispatcher sniffed, and the one dictionary
+/// entry the JPX rules depend on.
+final class _PdfImageDecodeRequest {
+  const _PdfImageDecodeRequest(this.bytes, this.format, this.smaskInData);
+
+  final Uint8List bytes;
+  final RasterImageFormat format;
+  final int smaskInData;
+}
+
+/// Runs in the background isolate. Mirrors the encoded-image branches of
+/// `decodePdfImage`: JPX keeps its opacity channel only with `/SMaskInData`,
+/// and every codec runs in Dart because the platform decoders are bound to
+/// the isolate that initialised them.
+DecodedImage? _decodeEncodedPdfImage(_PdfImageDecodeRequest request) {
+  try {
+    if (request.format == RasterImageFormat.jpeg2000) {
+      return decodeJp2(request.bytes, keepAlpha: request.smaskInData != 0);
+    }
+    return decodeImage(request.bytes, preferNative: false);
+  } on Object {
+    return null;
   }
 }
 
