@@ -39,7 +39,12 @@ void main() {
       final RasterDecodeResult native = decodeImageWithCodec(bytes);
       final DecodedImage dart = decodeImage(bytes, preferNative: false);
       if (!native.isNative) {
-        expect(native.codecName, contains('jpeg2000'));
+        // The Dart fallback, and the assertion is on the *package* rather than
+        // on a spelling of the format: the decoder was the vendored `jpeg2000`
+        // and became the published `j2k`, and an assertion phrased as the
+        // format name went stale at that rename without anyone noticing until
+        // it was read months later.
+        expect(native.codecName, contains('j2k'));
         continue;
       }
       expect(native.image.width, dart.width);
