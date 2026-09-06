@@ -29,10 +29,15 @@ Implementação completa e de nível de produção da arquitetura do editor veto
 - [style.dart](file:///C:/MyDartProjects/dart_ui/lib/src/graphics/vector/style.dart): `FillDescriptor`, `StrokeDescriptor`, `TextStyleDescriptor`, `VectorStyle` e `GradientColorStop`.
 - [doc_methods.dart](file:///C:/MyDartProjects/dart_ui/lib/src/graphics/vector/doc_methods.dart): `DocumentMethods` fornecendo operações CRUD de alto nível, z-ordering (`raiseObject`, `lowerObject`, `toFront`, `toBottom`), agrupamento/desagrupamento e criação de primitivas.
 
-### 2. Motor de Geometria Vetorial (`lib/src/geometry/`)
-- [bezier.dart](file:///C:/MyDartProjects/dart_ui/lib/src/geometry/bezier.dart): Avaliação analítica de curvas de Bézier cúbicas e quadráticas, derivadas, subdivisão de De Casteljau (`splitCubic`, `splitQuadratic`), localização exata de extremos por raízes da derivada (`cubicExtremaRoots`), *bounding box* estrita analítica (`cubicTightBounds`), achatamento recursivo (`flattenCubic`) e conversão bidirecional entre `VectorPath` e `Path`.
-- [contour.dart](file:///C:/MyDartProjects/dart_ui/lib/src/geometry/contour.dart): Gerador de contorno de traço (`strokeToOutline`) com suporte a pontas de linha (`butt`, `round`, `square`) e extrusão de normais.
-- [shaping.dart](file:///C:/MyDartProjects/dart_ui/lib/src/geometry/shaping.dart): Operações booleanas 2D em polígonos e caminhos (`union`, `intersection`, `difference`, `exclusion`).
+### 2. Motor de Geometria Vetorial (`lib/src/graphics/vector/`)
+
+Os três arquivos moravam em `lib/src/geometry/` e desceram para
+`lib/src/graphics/vector/` em 23/08/2026, quando o teste de camadas acusou a
+inversão `geometry → graphics` (roteiro, §68.6).
+
+- [bezier.dart](file:///C:/MyDartProjects/dart_ui/lib/src/graphics/vector/bezier.dart): Avaliação analítica de curvas de Bézier cúbicas e quadráticas, derivadas, subdivisão de De Casteljau (`splitCubic`, `splitQuadratic`), localização exata de extremos por raízes da derivada (`cubicExtremaRoots`), *bounding box* estrita analítica (`cubicTightBounds`), achatamento recursivo (`flattenCubic`) e conversão bidirecional entre `VectorPath` e `Path`.
+- [contour.dart](file:///C:/MyDartProjects/dart_ui/lib/src/graphics/vector/contour.dart): Gerador de contorno de traço (`strokeToOutline`) com suporte a pontas de linha (`butt`, `round`, `square`) e extrusão de normais.
+- [shaping.dart](file:///C:/MyDartProjects/dart_ui/lib/src/graphics/vector/shaping.dart): Operações booleanas 2D (`union`, `intersection`, `difference`, `exclusion`) **sobre polígonos**: um caminho é achatado para polilinha antes da operação e o recorte é Sutherland-Hodgman, que exige um dos operandos convexo. Curvas não sobrevivem à operação, e um operando côncavo dos dois lados dá resultado errado sem aviso — é a limitação registrada na §68.7 do roteiro.
 
 ### 3. Engine CorelDRAW Nativo (`lib/src/cdr/`)
 - [cdr_color_parser.dart](file:///C:/MyDartProjects/dart_ui/lib/src/cdr/styles/cdr_color_parser.dart): Parser e conversor de modelos de cor binários do CorelDRAW (CMYK, RGB, Grayscale, Pantone/Spot).
@@ -41,7 +46,7 @@ Implementação completa e de nível de produção da arquitetura do editor veto
 - [cdr_document.dart](file:///C:/MyDartProjects/dart_ui/lib/src/cdr/document/cdr_document.dart): Adicionados métodos `toVectorDocument()` e construtor de fábrica `CdrDocument.fromVectorDocument()`.
 
 ### 4. Serialização e Interoperabilidade (`lib/src/graphics/vector/serialization/`)
-- [vector_pdf_exporter.dart](file:///C:/MyDartProjects/dart_ui/lib/src/graphics/vector/serialization/vector_pdf_exporter.dart): Exportador vetorial de alta definição para PDF padrão (ISO 32000).
+- [vector_pdf_exporter.dart](file:///C:/MyDartProjects/dart_ui/lib/src/pdf/export/vector_pdf_exporter.dart): Exportador vetorial de alta definição para PDF padrão (ISO 32000). Mora em `pdf/export/` e não em `graphics/vector/serialization/`, porque `graphics` não pode importar `pdf` (roteiro, §8.2).
 - [vector_svg_codec.dart](file:///C:/MyDartProjects/dart_ui/lib/src/graphics/vector/serialization/vector_svg_codec.dart): Codec SVG bidirecional para importação e exportação de documentos vetoriais SVG 1.1 / SVG Tiny.
 
 ### 5. Widgets Especializados do Editor Vetorial (`lib/src/widgets/vector_editor/`)
@@ -55,16 +60,16 @@ Implementação completa e de nível de produção da arquitetura do editor veto
 - [fill_controls.dart](file:///C:/MyDartProjects/dart_ui/lib/src/widgets/vector_editor/fill_controls.dart): Controles de tipo de preenchimento (nenhum, sólido, gradiente linear/radial).
 - [stroke_controls.dart](file:///C:/MyDartProjects/dart_ui/lib/src/widgets/vector_editor/stroke_controls.dart): Controles de espessura de linha, terminais de linha (*caps*) e junções (*joins*).
 
-### 6. Aplicação Desktop Demo (`examples/sk1_editor_demo/`)
-- [main.dart](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/main.dart): Ponto de entrada CLI/GUI suportando abertura de arquivos `.cdr` e `.svg`.
-- [app.dart](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/app.dart): Wrapper do aplicativo `SK1EditorApp`.
-- [main_window.dart](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/main_window.dart): Layout de janela profissional integrando todos os painéis, menus e ferramentas.
-- [menu_bar.dart](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/menu_bar.dart): Menus suspensos com atalhos de arquivo, edição, seleção e agrupamento.
-- [toolbar.dart](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/toolbar.dart): Barra de ferramentas vertical com ferramentas de criação e manipulação.
-- [context_panel.dart](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/context_panel.dart): Faixa de propriedades contextuais dinâmicas.
-- [status_bar.dart](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/status_bar.dart): Barra de status com coordenadas, contagem de seleção e metadados.
-- [document_api.dart](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/document_api.dart): Gerenciador transacional de comandos com pilha de Undo / Redo.
-- [README.md](file:///C:/MyDartProjects/dart_ui/examples/sk1_editor_demo/README.md): Guia de arquitetura e instruções de execução.
+### 6. Aplicação Desktop Demo (`examples/vector_editor_demo/`)
+- [main.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/main.dart): Ponto de entrada CLI/GUI suportando abertura de arquivos `.cdr` e `.svg`.
+- [app.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/app.dart): Wrapper do aplicativo.
+- [main_window.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/main_window.dart): Layout de janela integrando todos os painéis, menus e ferramentas; abre e salva pelo `FilePicker` da plataforma, com recuo nomeado para gravar ao lado do processo onde não há diálogo.
+- [menu_bar.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/menu_bar.dart): Menus suspensos com atalhos de arquivo, edição, seleção e agrupamento.
+- [toolbox.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/toolbox.dart) e [standard_toolbar.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/standard_toolbar.dart): Caixa de ferramentas vertical (criação e manipulação) e barra de ferramentas padrão horizontal.
+- [context_panel.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/context_panel.dart): Faixa de propriedades contextuais dinâmicas.
+- [status_bar.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/status_bar.dart): Barra de status com coordenadas, contagem de seleção e metadados.
+- [document_api.dart](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/document_api.dart): Gerenciador transacional de comandos com pilha de Undo / Redo.
+- [README.md](file:///C:/MyDartProjects/dart_ui/examples/vector_editor_demo/README.md): Guia de arquitetura e instruções de execução.
 
 ---
 

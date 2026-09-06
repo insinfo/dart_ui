@@ -24,10 +24,13 @@
 /// ## What this cannot do yet, said plainly
 ///
 ///   * **Keyboard input is the minimal xkb subset.** First group, two shift
-///     levels, no dead keys, no compose and no IME. Client-side key repeat is
-///     driven by `wl_keyboard.repeat_info`; unresolvable keys deliver
-///     [KeyEvent]s but never guessed text. `wayland_keymap.dart` carries the
-///     details.
+///     levels, and no IME unless the compositor offers `zwp_text_input_v3`.
+///     Dead keys *do* compose: when there is no text-input protocol, a
+///     `ComposeEngine` fed from the user's X11 Compose table is installed per
+///     window, which is the same table X11 clients read. Client-side key
+///     repeat is driven by `wl_keyboard.repeat_info`; unresolvable keys
+///     deliver [KeyEvent]s but never guessed text. `wayland_keymap.dart`
+///     carries the details.
 ///   * **Client-side decorations are negotiated but not drawn here.**
 ///     `zxdg_decoration_manager_v1` is used to ask for a server-side frame;
 ///     when the compositor has no such protocol (GNOME) the window reports
@@ -801,10 +804,10 @@ final class WaylandWindowingBackend
     ));
     diagnostics.add(BackendDiagnostic.note(
       'pointer motion, buttons, crossings and axis scroll are normalized; '
-      'keyboard uses the minimal xkb text subset with client-side repeat '
-      '(no dead keys/compose)'
+      'keyboard uses the minimal xkb text subset with client-side repeat'
       '${_supportsTextInput ? '; composition is handled by the input method '
-          'through zwp_text_input_v3' : '; and no input method'}',
+          'through zwp_text_input_v3' : '; dead keys compose from the X11 '
+          'Compose table when one is found, and there is no input method'}',
     ));
   }
 

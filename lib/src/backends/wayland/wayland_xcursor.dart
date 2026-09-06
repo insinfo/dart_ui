@@ -24,8 +24,10 @@
 /// needed, only the premultiply that `wl_shm` requires.
 ///
 /// Animated cursors are several images sharing one nominal size, each with a
-/// `delay`. Only the first frame is used today; the rest are parsed and kept
-/// so that an animation timer can be added without touching the parser.
+/// `delay`. This parser keeps every frame; `wayland_cursor.dart` plays them
+/// through [XcursorFile.framesForSize], on a timer the owner supplies.
+/// [XcursorFile.bestForSize] answers the *first* frame of a size, for a caller
+/// that wants a still.
 library;
 
 import 'dart:typed_data';

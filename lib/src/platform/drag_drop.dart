@@ -60,10 +60,10 @@ export 'drag_drop_types.dart';
 /// The callbacks a window layer implements to receive drops.
 ///
 /// One handler per registered window. The framework's own implementation is
-/// `DragDropController` in `lib/src/widgets/drag_drop.dart`, which fans the
-/// session out to whichever [DropTarget] widget is under the pointer; an
-/// application that wants the window-level events raw may implement this
-/// directly and register it against the backend.
+/// `WidgetTreeDropTarget` in `lib/src/widgets/drag_drop.dart`, which hands the
+/// session to a `DragRouter` that fans it out to whichever [DropTarget] widget
+/// is under the pointer; an application that wants the window-level events
+/// raw may implement this directly and register it against the backend.
 ///
 /// **Enter, over and leave must not await and must not be expensive.** They
 /// run inside the platform's own drag loop - literally so on Win32 - and

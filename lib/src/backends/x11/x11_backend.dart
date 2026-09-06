@@ -890,7 +890,7 @@ final class X11WindowingBackend
     ));
     diagnostics.add(BackendDiagnostic.note(
       _supportsDragAndDrop
-          ? 'XDND drop targets are available; dragging out is not implemented'
+          ? 'XDND is available in both directions'
           : 'XDND is unavailable on this connection',
     ));
     diagnostics.add(BackendDiagnostic.note(

@@ -3,8 +3,10 @@
 ///
 /// This is deliberately a preparation contract, not a GPU capability. It
 /// flattens paths into reusable line-segment buffers, records ordered draws,
-/// and builds a CSR-style tile index. No backend advertises compute support and
-/// no API binding consumes these buffers yet.
+/// and builds a CSR-style tile index. The D3D12 compute executors
+/// (`d3d12_compute_tile_executor.dart`, `d3d12_compute_segment_executor.dart`)
+/// consume these buffers; no other backend does, and none advertises compute
+/// as a capability.
 ///
 /// A real Vello-like implementation still needs parallel curve flattening,
 /// per-tile winding/area accumulation, prefix scans, fine rasterization,

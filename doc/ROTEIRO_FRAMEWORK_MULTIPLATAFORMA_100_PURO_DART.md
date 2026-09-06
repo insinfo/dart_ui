@@ -471,8 +471,9 @@ descrever o projeto.
   de traço, codec SVG, exportador PDF e os widgets de editor
   (`lib/src/graphics/vector/`, `lib/src/widgets/vector_editor/`), com o exemplo
   `examples/vector_editor_demo/` no layout do sK1. Documento:
-  `doc/vector_editor.md` — que **precisa de correção**: ele descreve o exemplo
-  como `examples/sk1_editor_demo/`, diretório que não existe.
+  `doc/vector_editor.md` — corrigido em 06/09/2026: descrevia o exemplo como
+  `examples/sk1_editor_demo/`, diretório que não existe, e os arquivos de
+  geometria como `lib/src/geometry/`, de onde já tinham descido.
 
 Custo já cobrado por elas: quatro das arestas de camada que
 `test/architecture/layering_test.dart` acusa hoje vêm daqui —
@@ -8692,7 +8693,29 @@ de bindings.
    `SCM_RIGHTS`, e encontrou dois defeitos que o compositor falso não podia
    encontrar. O que separa a Fase 13 do gate deixou de ser "nunca executou" e
    passou a ser o que a §68.1 lista como não verificado — input de verdade,
-   DnD, IME, e um compositor que não seja o Weston.
+   DnD, IME, e um compositor que não seja o Weston;
+7. ~~**fazer os controles de coleção operarem o que declaram**~~ — feito em
+   06/09/2026 (§68.1): lista, árvore, grade, menu, menu de contexto, combo
+   box, expander e scrollbar passaram a implementar `performSemanticsAction`
+   para as ações que já publicavam, e a publicar só as que executam. Junto,
+   as sete divergências documentação ↔ código que a §68.7 ainda listava como
+   abertas foram corrigidas no lado que estava errado.
+
+**A próxima ação concreta em 06/09/2026**, na ordem em que uma destrava a
+seguinte:
+
+1. **`IFileDialog` no Windows** (§68.5): o `FilePicker` usa o
+   `GetOpenFileNameW` legado, que não abre o diálogo moderno nem lê os locais
+   fixados do usuário. É COM já disponível pela infraestrutura do UIA;
+2. **`mailbox` no D3D12** (§68.3): exige mudar a criação da swap chain
+   (`FLIP_DISCARD`, três buffers, objeto aguardável), e é o único lugar em
+   que o modo é implementável de verdade sem ser o Vulkan;
+3. **damage tracking** (§68.4): `isRepaintBoundary` continua consultado por
+   nada e `flushPaint` repercorre a árvore inteira. É a maior lacuna de
+   desempenho do framework e a que mais cresce com o tamanho da aplicação;
+4. **rodar `tool/x11_backend_smoke.dart` numa sessão Linux** (§68.1): o
+   teclado e o clipboard do X11 continuam provados só por bytes numa máquina
+   Windows.
 
 O detalhamento por frente está em §68.
 
@@ -8959,10 +8982,60 @@ mesma que a seção faz para X11, e aqui ela cai do lado bom:
 `IScrollProvider`, `IRangeValueProvider`, `IRawElementProviderAdviseEvents`. E
 uma consequência do desenho a mais: um render object que **declara** uma ação
 em `SemanticsConfiguration` mas não implementa `SemanticsActionTarget` continua
-respondendo `UIA_E_NOTSUPPORTED`. Os controles ligados hoje são os que passam
+respondendo `UIA_E_NOTSUPPORTED`. ~~Os controles ligados hoje são os que passam
 por `ControlBehavior` (botão, toggle/checkbox, radio, switch), o slider e o
 campo de texto; `list_box`, `tree_view`, `data_grid`, `combo_box`, `menu`,
-`tabs` e `expander` **descrevem-se e não se operam**.
+`tabs` e `expander` **descrevem-se e não se operam**.~~ **Fechado em
+06/09/2026**, e o diagnóstico de 26/08 era impreciso em dois sentidos que vale
+registrar. Primeiro, `tabs` e `expander` já se operavam por `activate`, porque
+os dois passam por `ControlBehavior` e o `activate()` deles chama o dono.
+Segundo, o problema dos outros era **pior** do que "não se operam": o
+`activate()` vazio de `ControlBehavior` respondia **sucesso** — um leitor de
+tela que pedisse `Invoke` numa linha de lista ouvia "feito" e nada era
+selecionado. E `RenderMenu` declarava `dismiss` sem ter a quem entregar. O que
+existe agora, controle a controle:
+
+- **`RenderListItem`, `RenderTreeItem`, `RenderDataGridRow`**: `activate` é
+  o clique na linha — seleciona e revela — respondido pelo contêiner, que é
+  quem tem a seleção e a posição de rolagem. A linha sobe pelo `parent` até
+  achá-lo; sem contêiner, responde `false`. Na lista, o clique, as setas e a
+  ação passaram a usar um único `RenderListBox.select`;
+- **`RenderListBox`, `RenderTreeView`, `RenderDataGridBody`, `RenderScrollbar`**:
+  `scrollUp`/`scrollDown` paginam por `ScrollPosition.pageBy` e respondem
+  **se a posição moveu** — no fim da lista, `false`, porque um cliente que ouve
+  "rolou" sem nada ter mudado lê as mesmas linhas e as chama de próxima página.
+  A scrollbar horizontal passou a declarar `scrollLeft`/`scrollRight` em vez
+  do par vertical;
+- **`RenderTreeItem`, `RenderExpanderHeader`, `RenderComboBoxField`**:
+  `showMenu`/`dismiss` são o par expandir/recolher — é neles que a ponte
+  mapeia `IExpandCollapseProvider::Expand`/`Collapse` — e **só a direção que
+  mudaria algo é declarada**: uma linha recolhida publica `showMenu`, uma
+  expandida publica `dismiss`, e a outra direção responde `false`. A árvore
+  ganhou `onRowActivated`/`onRowToggled` para que a ação chegue ao dono pelo
+  mesmo `onToggle` do teclado; o combo box ganhou `onShowMenu` (abre sem
+  alternar) e `onDismiss` (fecha sem commit, como Escape);
+- **`Menu`** ganhou `onDismiss`, e `RenderMenu` só declara `dismiss` quando ele
+  existe; Escape e a ação chegam ao mesmo callback. `activate` sem item
+  realçado, ou com item desabilitado, responde `false`;
+- **`RenderContextMenuSurface`**: `dismiss` chama o `onDismiss` que já tinha, e
+  `activate` sem realce responde `false`. **`RenderContextMenuItem`**: `focus`
+  move o cursor do teclado para o item (`highlightItem`), que é o que o item
+  publica como `focused`, já que o nó de foco é da superfície.
+
+**Provado por teste**: `test/widgets/semantics_collection_actions_test.dart`
+(26 casos, in-process): cada ação faz o que o clique ou a tecla equivalente
+faz, e cada recusa — item desabilitado, direção que não mudaria nada, fim da
+rolagem, menu sem `onDismiss`, nada realçado — responde `false`. Dois casos
+passam pelo `SemanticsOwner.performAction` com o id publicado, e provam que a
+direção **não declarada** é recusada pelo dono antes de chegar ao controle.
+`uia_app_test.dart` (fora de processo) continua passando. **Não provado**: o
+que um leitor de tela anuncia — a mesma ressalva de 26/08.
+
+O que **continua** ausente nesse eixo: `RenderTabStrip` declara só `focus`
+(as abas se operam por `activate` no cabeçalho, o que está certo); as
+seleções múltiplas com Shift/Ctrl não têm ação semântica (o `activate` da grade
+é o clique sem modificador, o que é honesto e é pouco); e `ITextProvider`,
+`IScrollProvider` e `IRangeValueProvider` seguem na lista de ausentes da ponte.
 
 **Fora do Windows continua não existindo nada.** X11, Wayland, macOS e web não
 têm host de acessibilidade; AT-SPI e NSAccessibility não foram começados, e
@@ -9328,14 +9401,14 @@ Registradas para quem mexer no código a seguir; **em todas, o código venceu**:
 |---|---|---|
 | `d2d_raster_sink.dart` | a recusa de texto rotacionado é "a mesma da CPU" | **resolvido em 24/08/2026**: o D2D passou a preencher o contorno e o comentário foi corrigido |
 | `widgets/docking/collapsed_tab_strip.dart` | o rasterizador de CPU recusa glifo sob rotação | **resolvido**: gira o rótulo de verdade |
-| `x11_backend.dart` (probe) | "XDND drop targets are available; dragging out is not implemented" | o caminho de `initialize` liga `X11XdndSource` e diz "in both directions" |
-| `wayland_backend.dart` (probe) | teclado "no dead keys/compose" | `ComposeEngine` é instalado por janela quando não há `text-input-v3` |
-| `wayland_xcursor.dart` | "only the first frame is used today" | `wayland_cursor.dart` anima todos os quadros |
-| `platform/drag_drop.dart` | cita `DragDropController` em `widgets/drag_drop.dart` | a classe não existe; são `WidgetTreeDropTarget` + `DragRouter` |
+| `x11_backend.dart` (probe) | "XDND drop targets are available; dragging out is not implemented" | o caminho de `initialize` liga `X11XdndSource` e diz "in both directions". **Resolvido em 06/09/2026**: o probe diz o mesmo |
+| `wayland_backend.dart` (probe e cabeçalho) | teclado "no dead keys/compose" | `ComposeEngine` é instalado por janela quando não há `text-input-v3`. **Resolvido em 06/09/2026**: os dois textos nomeiam a tabela Compose do X11 |
+| `wayland_xcursor.dart` | "only the first frame is used today" | `wayland_cursor.dart` anima todos os quadros. **Resolvido em 06/09/2026**: o cabeçalho aponta `framesForSize` e quem o consome |
+| `platform/drag_drop.dart` | cita `DragDropController` em `widgets/drag_drop.dart` | a classe não existe; são `WidgetTreeDropTarget` + `DragRouter`. **Resolvido em 06/09/2026** |
 | `platform/text_input.dart` | citava `x11_compose.dart` | **resolvido em 26/08/2026**: o arquivo nunca existiu; a referência passou a ser `backends/x11/x11_keyboard.dart`, e a frase "o teclado da plataforma ainda produz `TextInputEvent`" deixou de ser aspiracional no X11 |
-| `vector/compute_tile_scene.dart` | "nenhum binding de API consome estes buffers ainda" | o executor de compute do D3D12 consome |
-| `doc/vector_editor.md` | o exemplo está em `examples/sk1_editor_demo/` | está em `examples/vector_editor_demo/` |
-| `doc/vector_editor.md` | booleanas 2D em polígonos **e caminhos** | `shaping.dart` achata para polilinhas e usa Sutherland-Hodgman (convexo, perde curvas) |
+| `vector/compute_tile_scene.dart` | "nenhum binding de API consome estes buffers ainda" | o executor de compute do D3D12 consome. **Resolvido em 06/09/2026**: o cabeçalho nomeia os dois executores |
+| `doc/vector_editor.md` | o exemplo está em `examples/sk1_editor_demo/` | está em `examples/vector_editor_demo/`. **Resolvido em 06/09/2026**, junto com os caminhos de `geometry/` (hoje `graphics/vector/`), do exportador PDF (hoje `pdf/export/`) e da barra de ferramentas (`toolbox.dart` + `standard_toolbar.dart`) |
+| `doc/vector_editor.md` | booleanas 2D em polígonos **e caminhos** | `shaping.dart` achata para polilinhas e usa Sutherland-Hodgman (convexo, perde curvas). **Resolvido em 06/09/2026**: o documento diz isso, com a limitação de convexidade |
 | `examples/vector_editor_demo/main_window.dart` | "não há seletor de arquivo neste framework" | `platform/file_picker.dart` existe e está exportado |
 | três arquivos de renderização | citavam `ADR 0007` sem ele existir | **resolvido em 23/08/2026**, durante esta auditoria: o ADR foi escrito |
 
