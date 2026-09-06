@@ -364,6 +364,8 @@ final class _TreeViewState extends State<TreeView> {
         onKeyEvent: (KeyEvent event) => _handleKey(event, direction),
         onRowPressed: (int index, double dx, double width) =>
             _handleRowPress(index, dx, width, direction),
+        onRowActivated: _select,
+        onRowToggled: _toggle,
         onViewportExtent: (double extent) {
           if (extent == _viewportExtent) return;
           _viewportExtent = extent;
@@ -654,11 +656,55 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
           if (_expandable && _expanded) SemanticsState.expanded,
           if (!enabled) SemanticsState.disabled,
         },
-        actions: enabled
-            ? const <SemanticsAction>{SemanticsAction.activate}
-            : const <SemanticsAction>{},
+        // `showMenu`/`dismiss` are the framework's expand/collapse pair: the
+        // Windows bridge maps IExpandCollapseProvider::Expand onto the first
+        // and Collapse onto the second, and a row that published `expanded`
+        // without either was a tree a screen reader could describe and not
+        // open. Only the direction that would change something is declared,
+        // so the declaration and the answer agree.
+        actions: <SemanticsAction>{
+          if (enabled) SemanticsAction.activate,
+          if (enabled && _expandable && !_expanded) SemanticsAction.showMenu,
+          if (enabled && _expandable && _expanded) SemanticsAction.dismiss,
+        },
         mergesDescendants: true,
       );
+
+  /// The tree this row belongs to, found by walking up.
+  RenderTreeView? get _treeView {
+    RenderBox? node = parent;
+    while (node != null) {
+      if (node is RenderTreeView) return node;
+      node = node.parent;
+    }
+    return null;
+  }
+
+  /// The row owns neither the selection nor the expansion set - the owner
+  /// does, through [TreeView.onSelected] and [TreeView.onToggle] - so every
+  /// action is forwarded to the tree, which forwards it to the owner. Same
+  /// route a click on the label or on the toggle gutter takes.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!enabled) return false;
+    switch (action) {
+      case SemanticsAction.activate:
+        final RenderTreeView? tree = _treeView;
+        if (tree == null || !tree.enabled) return false;
+        tree.onRowActivated(_index);
+        return true;
+      case SemanticsAction.showMenu:
+      case SemanticsAction.dismiss:
+        final bool expand = action == SemanticsAction.showMenu;
+        if (!_expandable || _expanded == expand) return false;
+        final RenderTreeView? tree = _treeView;
+        if (tree == null || !tree.enabled) return false;
+        tree.onRowToggled(_index, expand);
+        return true;
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +721,8 @@ final class _TreeViewRenderWidget extends MultiChildRenderObjectWidget {
     required this.selectedIndex,
     required this.onKeyEvent,
     required this.onRowPressed,
+    required this.onRowActivated,
+    required this.onRowToggled,
     required this.onViewportExtent,
     required super.children,
   });
@@ -687,6 +735,8 @@ final class _TreeViewRenderWidget extends MultiChildRenderObjectWidget {
   final int selectedIndex;
   final bool Function(KeyEvent event) onKeyEvent;
   final void Function(int index, double dx, double width) onRowPressed;
+  final void Function(int index) onRowActivated;
+  final void Function(int index, bool expanded) onRowToggled;
   final void Function(double extent) onViewportExtent;
 
   @override
@@ -697,6 +747,8 @@ final class _TreeViewRenderWidget extends MultiChildRenderObjectWidget {
         selectedIndex: selectedIndex,
         onKeyEvent: onKeyEvent,
         onRowPressed: onRowPressed,
+        onRowActivated: onRowActivated,
+        onRowToggled: onRowToggled,
         onViewportExtent: onViewportExtent,
       )
         ..theme = theme
@@ -714,6 +766,8 @@ final class _TreeViewRenderWidget extends MultiChildRenderObjectWidget {
       ..selectedIndex = selectedIndex
       ..onKeyEvent = onKeyEvent
       ..onRowPressed = onRowPressed
+      ..onRowActivated = onRowActivated
+      ..onRowToggled = onRowToggled
       ..onViewportExtent = onViewportExtent
       ..theme = theme
       ..focusNode = focusNode;
@@ -730,6 +784,8 @@ final class RenderTreeView extends RenderBoxContainer<BoxParentData>
     required this.selectedIndex,
     required this.onKeyEvent,
     required this.onRowPressed,
+    required this.onRowActivated,
+    required this.onRowToggled,
     required this.onViewportExtent,
   })  : _position = position,
         _virtualization = virtualization,
@@ -743,6 +799,14 @@ final class RenderTreeView extends RenderBoxContainer<BoxParentData>
   int selectedIndex;
   bool Function(KeyEvent event) onKeyEvent;
   void Function(int index, double dx, double width) onRowPressed;
+
+  /// A row asked to become the selection, by an assistive client's `activate`
+  /// on it. What a press outside the toggle gutter does.
+  void Function(int index) onRowActivated;
+
+  /// A row asked to expand or collapse, by an assistive client. What a press
+  /// on the toggle gutter does.
+  void Function(int index, bool expanded) onRowToggled;
   void Function(double extent) onViewportExtent;
 
   ScrollPosition get position => _position;
@@ -846,6 +910,22 @@ final class RenderTreeView extends RenderBoxContainer<BoxParentData>
 
   @override
   bool handleKeyEvent(KeyEvent event) => onKeyEvent(event);
+
+  /// `scrollUp`/`scrollDown` page the tree; the answer is whether the
+  /// position moved, which at either end it does not.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!enabled) return false;
+    switch (action) {
+      case SemanticsAction.scrollDown:
+      case SemanticsAction.scrollUp:
+        final double before = _position.pixels;
+        _position.pageBy(action == SemanticsAction.scrollDown ? 1 : -1);
+        return _position.pixels != before;
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
+  }
 
   void _onScrolled(ScrollPosition position) => markNeedsLayout();
 

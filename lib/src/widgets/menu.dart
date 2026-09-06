@@ -79,9 +79,15 @@ final class MenuItem {
 
 /// A vertical list of commands, keyboard-navigable.
 final class Menu extends StatefulWidget {
-  const Menu({super.key, required this.items});
+  const Menu({super.key, required this.items, this.onDismiss});
 
   final List<MenuItem> items;
+
+  /// Called when the user asks the menu to go away - Escape, or an assistive
+  /// client's `dismiss`. Null for a menu that is a fixed part of its window
+  /// and has nothing to dismiss; such a menu declares no `dismiss` action
+  /// either, so what a screen reader reads and what it gets agree.
+  final void Function()? onDismiss;
 
   @override
   State<Menu> createState() => _MenuState();
@@ -103,6 +109,7 @@ final class _MenuState extends State<Menu> {
           items: widget.items,
           theme: Theme.of(context),
           focusNode: _focusNode,
+          onDismiss: widget.onDismiss,
         ),
       );
 }
@@ -112,11 +119,13 @@ final class _MenuRenderWidget extends RenderObjectWidget {
     required this.items,
     required this.theme,
     required this.focusNode,
+    required this.onDismiss,
   });
 
   final List<MenuItem> items;
   final ThemeData theme;
   final FocusNode focusNode;
+  final void Function()? onDismiss;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
@@ -124,6 +133,7 @@ final class _MenuRenderWidget extends RenderObjectWidget {
   @override
   RenderMenu createRenderObject(BuildContext context) =>
       RenderMenu(items: items)
+        ..onDismiss = onDismiss
         ..theme = theme
         ..focusNode = focusNode;
 
@@ -131,6 +141,7 @@ final class _MenuRenderWidget extends RenderObjectWidget {
   void updateRenderObject(BuildContext context, covariant RenderMenu object) {
     object
       ..items = items
+      ..onDismiss = onDismiss
       ..theme = theme
       ..focusNode = focusNode;
   }
@@ -158,6 +169,10 @@ final class RenderMenu extends RenderBox with ControlBehavior {
 
   List<MenuItem> _items;
   int _highlighted = -1;
+
+  /// See [Menu.onDismiss]. Read by [describeSemantics] as well as by Escape,
+  /// so a menu without one declares nothing it cannot do.
+  void Function()? onDismiss;
 
   List<MenuItem> get items => _items;
 
@@ -257,8 +272,34 @@ final class RenderMenu extends RenderBox with ControlBehavior {
         _highlighted = _items.length;
         _moveHighlight(-1);
         return true;
+      case logicalKeyEscape:
+        final void Function()? dismiss = onDismiss;
+        if (dismiss == null) return false;
+        dismiss();
+        return true;
       default:
         return super.handleKeyEvent(event);
+    }
+  }
+
+  /// `dismiss` is Escape; `activate` is the highlighted item, through
+  /// [ControlBehavior], and is refused when nothing is highlighted rather
+  /// than reported as done.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!enabled) return false;
+    switch (action) {
+      case SemanticsAction.dismiss:
+        final void Function()? dismiss = onDismiss;
+        if (dismiss == null) return false;
+        dismiss();
+        return true;
+      case SemanticsAction.activate:
+        if (_highlighted < 0 || _highlighted >= _items.length) return false;
+        if (!_items[_highlighted].enabled) return false;
+        return super.performSemanticsAction(action, value: value);
+      default:
+        return super.performSemanticsAction(action, value: value);
     }
   }
 
@@ -361,9 +402,9 @@ final class RenderMenu extends RenderBox with ControlBehavior {
   SemanticsConfiguration describeSemantics() => SemanticsConfiguration(
         role: SemanticsRole.menu,
         value: '${_items.where((MenuItem i) => !i.isSeparator).length} items',
-        actions: const <SemanticsAction>{
+        actions: <SemanticsAction>{
           SemanticsAction.focus,
-          SemanticsAction.dismiss,
+          if (onDismiss != null) SemanticsAction.dismiss,
         },
       );
 }

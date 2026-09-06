@@ -346,6 +346,33 @@ final class RenderListItem extends RenderSingleChildBox with ControlBehavior {
         },
         actions: const <SemanticsAction>{SemanticsAction.activate},
       );
+
+  /// The list this row belongs to, found by walking up: the row is laid out
+  /// by [RenderListBox] directly, but a wrapper between the two is not
+  /// something this row should have to know about.
+  RenderListBox? get _listBox {
+    RenderBox? node = parent;
+    while (node != null) {
+      if (node is RenderListBox) return node;
+      node = node.parent;
+    }
+    return null;
+  }
+
+  /// `activate` on a row is what a click on it is: the row becomes the
+  /// selection and is scrolled into view. It is answered by the *list*,
+  /// because the row owns neither the selection nor the scroll position -
+  /// which is why the empty `activate()` that [ControlBehavior] provides was
+  /// a lie here: it reported success and selected nothing.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (action == SemanticsAction.activate) {
+      final RenderListBox? list = _listBox;
+      if (list == null || !list.enabled) return false;
+      return list.select(_index);
+    }
+    return super.performSemanticsAction(action, value: value);
+  }
 }
 
 final class _ListBoxRenderWidget extends MultiChildRenderObjectWidget {
@@ -516,16 +543,48 @@ final class RenderListBox extends RenderBoxContainer<BoxParentData>
     if (event is PointerDownEvent) {
       final double contentY =
           globalToLocal(event.logicalPosition).dy + _position.pixels;
-      final int index = _virtualization.indexAt(contentY);
-      if (index >= 0 && index < _virtualization.itemCount) {
-        onSelected?.call(index);
-        final double? reveal = _virtualization.scrollToReveal(
-          index,
-          scrollOffset: _position.pixels,
-          viewportExtent: hasSize ? size.height : _position.viewportExtent,
-        );
-        if (reveal != null) _position.jumpTo(reveal);
-      }
+      select(_virtualization.indexAt(contentY));
+    }
+  }
+
+  /// Selects row [index] and scrolls it into view, answering whether the
+  /// index named a row.
+  ///
+  /// The one route every selection takes - a click, the arrow keys, and an
+  /// assistive client's `activate` on the row - so that the three cannot
+  /// disagree about what selecting means. Selection is reported through
+  /// [onSelected] and *not* stored here: the owner decides, and the next
+  /// build says what it decided.
+  bool select(int index) {
+    if (index < 0 || index >= _virtualization.itemCount) return false;
+    onSelected?.call(index);
+    // Selection must bring the item into view, or a screen reader announces
+    // a selection that remains invisible on screen.
+    final double? reveal = _virtualization.scrollToReveal(
+      index,
+      scrollOffset: _position.pixels,
+      viewportExtent: hasSize ? size.height : _position.viewportExtent,
+    );
+    if (reveal != null) _position.jumpTo(reveal);
+    return true;
+  }
+
+  /// `scrollUp`/`scrollDown` page the list, which is what the actions mean
+  /// for a container (the row-by-row step belongs to the keyboard). The
+  /// answer is whether the position moved: at either end it does not, and
+  /// a client told "scrolled" while nothing changed would read the same rows
+  /// again and call that the next page.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!enabled) return false;
+    switch (action) {
+      case SemanticsAction.scrollDown:
+      case SemanticsAction.scrollUp:
+        final double before = _position.pixels;
+        _position.pageBy(action == SemanticsAction.scrollDown ? 1 : -1);
+        return _position.pixels != before;
+      default:
+        return super.performSemanticsAction(action, value: value);
     }
   }
 
@@ -552,15 +611,7 @@ final class RenderListBox extends RenderBoxContainer<BoxParentData>
       default:
         return false;
     }
-    onSelected?.call(target);
-    // Keyboard selection must bring the item into view, or the selection is
-    // announced by a screen reader while remaining invisible on screen.
-    final double? reveal = _virtualization.scrollToReveal(
-      target,
-      scrollOffset: _position.pixels,
-      viewportExtent: hasSize ? size.height : _position.viewportExtent,
-    );
-    if (reveal != null) _position.jumpTo(reveal);
+    select(target);
     return true;
   }
 

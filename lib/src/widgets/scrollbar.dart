@@ -691,9 +691,37 @@ final class RenderScrollbar extends RenderBox
         role: SemanticsRole.slider,
         value: _position.pixels.toStringAsFixed(0),
         hint: 'of ${_position.maxScrollExtent.toStringAsFixed(0)}',
-        actions: const <SemanticsAction>{
-          SemanticsAction.scrollUp,
-          SemanticsAction.scrollDown,
-        },
+        // The pair that matches the axis: a horizontal bar that declared
+        // scrollUp would have a client asking for a direction it cannot move.
+        actions: _position.axis == ScrollAxis.vertical
+            ? const <SemanticsAction>{
+                SemanticsAction.scrollUp,
+                SemanticsAction.scrollDown,
+              }
+            : const <SemanticsAction>{
+                SemanticsAction.scrollLeft,
+                SemanticsAction.scrollRight,
+              },
       );
+
+  /// A scroll action pages, which is what a click on the track does; the
+  /// answer is whether the position moved, which at either end it does not.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    final bool vertical = _position.axis == ScrollAxis.vertical;
+    final int pages;
+    switch (action) {
+      case SemanticsAction.scrollDown when vertical:
+      case SemanticsAction.scrollRight when !vertical:
+        pages = 1;
+      case SemanticsAction.scrollUp when vertical:
+      case SemanticsAction.scrollLeft when !vertical:
+        pages = -1;
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
+    final double before = _position.pixels;
+    _position.pageBy(pages);
+    return _position.pixels != before;
+  }
 }

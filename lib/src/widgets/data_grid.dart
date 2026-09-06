@@ -902,6 +902,33 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
         },
         actions: const <SemanticsAction>{SemanticsAction.activate},
       );
+
+  /// The body this row belongs to, found by walking up.
+  RenderDataGridBody? get _body {
+    RenderBox? node = parent;
+    while (node != null) {
+      if (node is RenderDataGridBody) return node;
+      node = node.parent;
+    }
+    return null;
+  }
+
+  /// `activate` on a row is a plain click on it - no Shift, no Ctrl - so in
+  /// `single` and `multiple` modes it becomes the selection, and in `none`
+  /// it moves the cursor and selects nothing, exactly as the click would.
+  /// Answered by the body because the row owns neither the selection nor
+  /// the cursor; [ControlBehavior]'s empty `activate()` reported success
+  /// here and selected nothing.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (action == SemanticsAction.activate) {
+      final RenderDataGridBody? body = _body;
+      if (body == null || !body.enabled) return false;
+      body.onRowPressed(_index, const <KeyModifier>{});
+      return true;
+    }
+    return super.performSemanticsAction(action, value: value);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1109,6 +1136,22 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
     // state rather than the state at the last KeyDown.
     _modifiers = event.modifiers;
     return onKeyEvent(event);
+  }
+
+  /// `scrollUp`/`scrollDown` page the body; the answer is whether the
+  /// position moved, which at either end it does not.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!enabled) return false;
+    switch (action) {
+      case SemanticsAction.scrollDown:
+      case SemanticsAction.scrollUp:
+        final double before = _position.pixels;
+        _position.pageBy(action == SemanticsAction.scrollDown ? 1 : -1);
+        return _position.pixels != before;
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
   }
 
   void _onScrolled(ScrollPosition position) => markNeedsLayout();

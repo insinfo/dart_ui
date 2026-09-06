@@ -912,6 +912,8 @@ final class _ComboBoxState<T> extends State<ComboBox<T>> {
             _openPopup();
           }
         },
+        onShowMenu: _openPopup,
+        onDismiss: _cancel,
         onKeyEvent: _handleKey,
         onTextInput: _handleTextInput,
       ),
@@ -956,6 +958,8 @@ final class _ComboBoxFieldWidget extends RenderObjectWidget {
     required this.selectedIndex,
     required this.styleClasses,
     required this.onActivate,
+    required this.onShowMenu,
+    required this.onDismiss,
     required this.onKeyEvent,
     required this.onTextInput,
   });
@@ -972,6 +976,8 @@ final class _ComboBoxFieldWidget extends RenderObjectWidget {
   final int selectedIndex;
   final Set<String> styleClasses;
   final void Function() onActivate;
+  final void Function() onShowMenu;
+  final void Function() onDismiss;
   final bool Function(KeyEvent event) onKeyEvent;
   final bool Function(String text) onTextInput;
 
@@ -988,6 +994,8 @@ final class _ComboBoxFieldWidget extends RenderObjectWidget {
         ..itemCount = itemCount
         ..selectedIndex = selectedIndex
         ..onActivate = onActivate
+        ..onShowMenu = onShowMenu
+        ..onDismiss = onDismiss
         ..onKeyEvent = onKeyEvent
         ..onTextInput = onTextInput
         ..theme = theme
@@ -1009,6 +1017,8 @@ final class _ComboBoxFieldWidget extends RenderObjectWidget {
       ..itemCount = itemCount
       ..selectedIndex = selectedIndex
       ..onActivate = onActivate
+      ..onShowMenu = onShowMenu
+      ..onDismiss = onDismiss
       ..onKeyEvent = onKeyEvent
       ..onTextInput = onTextInput
       ..theme = theme
@@ -1034,6 +1044,14 @@ final class RenderComboBoxField extends RenderBox
   int itemCount = 0;
   int selectedIndex = -1;
   void Function()? onActivate;
+
+  /// Opens the popup without toggling it: `showMenu` from an assistive client
+  /// means "expand", and Expand on an open combo box must stay open.
+  void Function()? onShowMenu;
+
+  /// Closes the popup without committing, as Escape does. `dismiss` is the
+  /// Collapse half of the same pattern.
+  void Function()? onDismiss;
   bool Function(KeyEvent event)? onKeyEvent;
   bool Function(String text)? onTextInput;
 
@@ -1083,6 +1101,29 @@ final class RenderComboBoxField extends RenderBox
 
   @override
   void activate() => onActivate?.call();
+
+  /// Expand and Collapse are the two directions of one pattern, and each is
+  /// refused when it would change nothing - a client that asked an open
+  /// popup to expand and heard "done" would then read a state that did not
+  /// change and conclude the control is broken.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!enabled) return false;
+    switch (action) {
+      case SemanticsAction.showMenu:
+        final void Function()? show = onShowMenu;
+        if (_isOpen || show == null) return false;
+        show();
+        return true;
+      case SemanticsAction.dismiss:
+        final void Function()? dismiss = onDismiss;
+        if (!_isOpen || dismiss == null) return false;
+        dismiss();
+        return true;
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
+  }
 
   @override
   bool handleKeyEvent(KeyEvent event) {
@@ -1215,13 +1256,12 @@ final class RenderComboBoxField extends RenderBox
           if (hasFocus) SemanticsState.focused,
           if (_isOpen) SemanticsState.expanded,
         },
-        actions: enabled
-            ? const <SemanticsAction>{
-                SemanticsAction.activate,
-                SemanticsAction.focus,
-                SemanticsAction.showMenu,
-              }
-            : const <SemanticsAction>{},
+        actions: <SemanticsAction>{
+          if (enabled) SemanticsAction.activate,
+          if (enabled) SemanticsAction.focus,
+          if (enabled && !_isOpen) SemanticsAction.showMenu,
+          if (enabled && _isOpen) SemanticsAction.dismiss,
+        },
         mergesDescendants: true,
       );
 

@@ -900,6 +900,27 @@ final class RenderContextMenuSurface extends RenderBoxContainer<BoxParentData>
   @override
   void activate() => highlightedItem?.activate();
 
+  /// `dismiss` is Escape; `activate` is the highlighted item and is refused
+  /// when there is none, or when it is disabled, instead of being reported
+  /// as done.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!enabled) return false;
+    switch (action) {
+      case SemanticsAction.dismiss:
+        final void Function()? dismiss = onDismiss;
+        if (dismiss == null) return false;
+        dismiss();
+        return true;
+      case SemanticsAction.activate:
+        final RenderContextMenuItem? item = highlightedItem;
+        if (item == null || !item.item.enabled) return false;
+        return super.performSemanticsAction(action, value: value);
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
+  }
+
   /// Moves the highlight by [delta], wrapping, starting from [from].
   ///
   /// Separators are always skipped - there is nothing there to choose - and
@@ -1147,6 +1168,27 @@ final class RenderContextMenuItem extends RenderBox with ControlBehavior {
     // click, Enter, an accessibility invoke - is refused by the same line.
     if (!_item.enabled || _item.isSeparator) return;
     onActivate?.call();
+  }
+
+  /// An item owns no focus node - the surface holds the keyboard for the
+  /// whole menu - so `focus` on an item is the keyboard cursor moving onto
+  /// it, which is what the item *publishes* as its focused state. `activate`
+  /// goes through [activate], whose refusal of a disabled item is honoured
+  /// here by answering false rather than a success that did nothing.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    switch (action) {
+      case SemanticsAction.focus:
+        final RenderContextMenuSurface? owner = surface;
+        if (owner == null || _item.isSeparator) return false;
+        owner.highlightItem(this);
+        return true;
+      case SemanticsAction.activate:
+        if (!_item.enabled || _item.isSeparator) return false;
+        return super.performSemanticsAction(action, value: value);
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
   }
 
   @override

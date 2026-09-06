@@ -412,14 +412,38 @@ final class RenderExpanderHeader extends RenderBox with ControlBehavior {
           if (hasFocus) SemanticsState.focused,
           if (!enabled) SemanticsState.disabled,
         },
-        actions: enabled
-            ? const <SemanticsAction>{
-                SemanticsAction.activate,
-                SemanticsAction.focus,
-              }
-            : const <SemanticsAction>{},
+        // `showMenu`/`dismiss` are the expand/collapse pair the Windows
+        // bridge maps IExpandCollapseProvider onto; `expanded` alone gave a
+        // client the pattern with nothing behind it. Only the direction that
+        // would change something is declared.
+        actions: <SemanticsAction>{
+          if (enabled) SemanticsAction.activate,
+          if (enabled) SemanticsAction.focus,
+          if (enabled && !_expanded) SemanticsAction.showMenu,
+          if (enabled && _expanded) SemanticsAction.dismiss,
+        },
         mergesDescendants: true,
       );
+
+  /// Expand and Collapse both go through [onActivate], which toggles - the
+  /// same single implementation Space, Enter and a click use - and each is
+  /// refused when the header is already in the state asked for.
+  @override
+  bool performSemanticsAction(SemanticsAction action, {String? value}) {
+    if (!enabled) return false;
+    switch (action) {
+      case SemanticsAction.showMenu:
+      case SemanticsAction.dismiss:
+        final bool expand = action == SemanticsAction.showMenu;
+        if (_expanded == expand) return false;
+        final void Function()? toggle = onActivate;
+        if (toggle == null) return false;
+        toggle();
+        return true;
+      default:
+        return super.performSemanticsAction(action, value: value);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
