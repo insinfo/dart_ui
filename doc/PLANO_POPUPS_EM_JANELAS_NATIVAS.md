@@ -422,27 +422,50 @@ primeiro.
 O achado acima virou trabalho, e o resultado está medido no mesmo smoke, na
 mesma máquina, AOT:
 
+**Um par medido na mesma sessão, com a mesma versão da ferramenta**, contra
+uma cópia limpa do índice:
+
 | | antes | depois |
 |---|---|---|
-| abertura do popup, mediana | 41,34 ms | **7,54 ms** |
-| abertura, melhor de 20 | 35,37 ms | 5,03 ms |
-| abertura fria | 63,16 ms | 7,82 ms |
-| dispositivo | dois `D3d11RenderDevice` distintos | **o mesmo objeto** (`sharedDevice=true`) |
-| frames do popup | 121 a 60,0 fps, `errors=0` | 120 a 60,0 fps, `errors=0` |
+| abertura do popup, mediana | 30,26 ms | **7,29 ms** |
+| abertura, melhor de 20 | 22,33 ms | 5,43 ms |
+| abertura fria | 45,67 ms | 10,93 ms |
+| **anexar a superfície** | **22,62 ms** | **1,38 ms** |
+| dispositivo | dois `D3d11RenderDevice` distintos | **o mesmo objeto** |
+| frames do popup | 60,0 fps, `errors=0` | 60,0 fps, `errors=0` |
 
-**5,5 vezes**, e a separação que faltava explica exatamente por quê. O smoke
-passou a cronometrar as três partes em separado, em vez de as somar:
+**Correção de um número que publiquei antes.** Eu escrevi "41,34 ms → 7,54 ms,
+5,5 vezes" comparando o "antes" da primeira sessão de smoke com o "depois"
+desta. Os dois são medições legítimas, e comparar entre sessões **exagera**: a
+máquina varia e a ferramenta mudou entre elas. O par honesto é o da tabela
+acima, **4,1 vezes**, e o número mais limpo de todos é a linha do attach, que
+isola a mudança: 22,62 ms para 1,38 ms.
+
+A separação, que era o dado que faltava:
 
 | parte | mediana |
 |---|---|
-| criar a janela nativa | 2,54 ms |
-| **criar o dispositivo** | **19,66 ms** |
-| anexar a superfície | 9,32 ms |
+| criar a janela nativa | 1,38 ms |
+| **criar o dispositivo** | **20,71 ms** |
+| anexar o swapchain | 1,91 ms |
 
-O dispositivo era a maior fatia isolada. Compartilhá-lo era a correção certa, e
-agora isso é um dado e não uma inferência minha — na versão anterior desta
-seção eu dizia "por experiência, a criação do device é a parte cara", que era
-um palpite bem informado e continuava sendo um palpite.
+O dispositivo era **~70%** de uma abertura de 30 ms — não os "cerca de 90%" que
+eu tinha inferido do controle de janela nua, porque aquele controle somava as
+três partes. Compartilhá-lo era a correção certa, e agora isso é dado e não
+inferência: na versão anterior desta seção eu dizia "por experiência, a criação
+do device é a parte cara", e sinalizei que era palpite. Era, e estava certo
+pelo motivo certo, com a magnitude errada.
+
+**Verificado em janela real nos outros caminhos**, não só no Direct3D 11:
+
+| caminho | reabertura | compartilha |
+|---|---|---|
+| `direct2d` | 6,46 ms | sim |
+| `direct3d12` | 14,28 ms | sim |
+| `opengl` | 38,56 ms | **não, como declarado** |
+
+O OpenGL manter o número antigo é o resultado esperado e é a prova de que a
+declaração `sharesDevice: false` está sendo respeitada em vez de ignorada.
 
 **A questão do pool ficou pequena.** Com o dispositivo compartilhado, criar a
 janela é 2,5 ms de 7,5 ms. Um popup oculto reaproveitado economizaria um terço

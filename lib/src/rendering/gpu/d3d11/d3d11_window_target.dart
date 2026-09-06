@@ -70,9 +70,12 @@
 /// None of them are bound. The consequence, stated rather than discovered: no
 /// per-visual transform, and no transparent or non-rectangular window.
 ///
-/// **Device loss is recovered from, except for the swap chain.** The device
-/// and every atlas this target owns come back - see `gpu_recovery.dart` for the
-/// eight steps and [recoverableResources] for this target's inventory. The swap
+/// **Device loss is recovered from, except for the swap chain.** The device,
+/// the mask atlas this target still owns and the glyph atlas the device shares
+/// between its targets all come back - see `gpu_recovery.dart` for the eight
+/// steps, [recoverableResources] for what is left in this target's own
+/// inventory, and [D3d11RenderDevice.recoverableResources] for why the shared
+/// half has to be rebuilt before any target's sink reads a texture id. The swap
 /// chain does not, and that is a boundary rather than an omission: a chain
 /// belongs to the device that created it, and the chain here was created by the
 /// platform code that owns the window
@@ -121,26 +124,28 @@ final class D3d11WindowTarget
   /// [D3d11WindowSurfaceDescriptor.swapChain] is a caller error this class
   /// cannot detect, because a swap chain is an interface here on purpose.
   ///
-  /// Takes no ownership of the window or of the [D3d11SwapChain]. Disposing this
-  /// target releases the textures it uploaded and nothing else: the window
-  /// outlives its targets, which is the split `renderer.dart` describes between
-  /// a target and the surface it draws into.
+  /// Takes no ownership of the window, of the [D3d11SwapChain], or of the
+  /// caches the device shares between its targets. Disposing this target
+  /// releases its own mask texture and its layer pool and nothing else: the
+  /// window outlives its targets, which is the split `renderer.dart` describes
+  /// between a target and the surface it draws into, and the glyph atlas
+  /// outlives them too, which is what makes a popup cheap.
   D3d11WindowTarget(this._device, D3d11WindowSurfaceDescriptor surface)
       : _surface = surface,
         _observedWindowGeneration = surface.generation.current {
-    _maskAtlas = GpuMaskAtlas();
-    _glyphAtlas = GpuGlyphAtlas();
-    _fonts = D3d11FontResolver();
-    _images = D3d11ImageCache(_device);
     _buildAtlasObjects();
     _device.registerTarget(this);
   }
 
-  /// Creates the atlas textures and everything downstream of their ids.
+  /// Creates the mask texture and everything downstream of its id.
   ///
   /// Shared by the constructor and by [_repopulateAtlasObjects]: the sink holds
   /// the two texture ids as final fields, so a recovery has to rebuild the sink
-  /// rather than the textures alone.
+  /// rather than the textures alone. That is still true now that the glyph
+  /// texture belongs to the device - the id reaches the sink the same way, so a
+  /// device that rebuilt the shared texture must reach every target's
+  /// repopulate, and [D3d11RenderDevice.recoverableResources] orders itself so
+  /// that the id read here is the new one.
   void _buildAtlasObjects() {
     _maskTexture = _device.createTexture(
       width: _maskAtlas.width,
@@ -153,13 +158,10 @@ final class D3d11WindowTarget
     // Text is wired here exactly as it is on the offscreen target, and that
     // symmetry is the point: a window is where text is actually read, so a
     // backend whose *test* target drew glyphs and whose *window* target refused
-    // them would pass every golden test and show a blank panel on screen.
-    _glyphTexture = _device.createTexture(
-      width: _glyphAtlas.width,
-      height: _glyphAtlas.height,
-      format: GpuTextureFormat.alpha8,
-      filter: GpuTextureFilter.nearest,
-    );
+    // them would pass every golden test and show a blank panel on screen. The
+    // atlas, its texture and the resolvers now come from the device, so the two
+    // targets are not merely wired alike - they are wired to the same objects,
+    // and a menu drawn over a window finds its glyphs already rasterised.
     _layerPool = D3d11LayerPool(_device);
     _layers = GpuLayerStack(
       allocator: _layerPool,
@@ -170,10 +172,10 @@ final class D3d11WindowTarget
       backendName: D3d11RendererBackend.backendName,
       maskAtlas: _maskAtlas,
       maskTextureId: _maskTexture.id,
-      imageResolver: _images,
-      glyphAtlas: _glyphAtlas,
-      glyphTextureId: _glyphTexture.id,
-      fontResolver: _fonts,
+      imageResolver: _device.imageCache,
+      glyphAtlas: _device.glyphAtlas,
+      glyphTextureId: _device.glyphTextureId,
+      fontResolver: _device.fontResolver,
       layerStack: _layers,
       onAtlasFlush: _flushAtlases,
     );
@@ -183,24 +185,44 @@ final class D3d11WindowTarget
   final D3d11RenderDevice _device;
   final GpuBatcher _batcher = GpuBatcher();
 
-  late final GpuMaskAtlas _maskAtlas;
-  late final GpuGlyphAtlas _glyphAtlas;
-  late final D3d11FontResolver _fonts;
-  late final D3d11ImageCache _images;
+  /// The one cache that stayed per target, and deliberately.
+  ///
+  /// The glyph atlas, the font resolver and the image cache went up to the
+  /// device because they are caches of stable things: a rasterised glyph, a
+  /// face for an id, an uploaded image. The mask atlas is not. Its `beginFrame`
+  /// repacks whenever the waste crosses a threshold and it evicts, so two
+  /// windows sharing one would move each other's live slots at whatever
+  /// interleaving their frame loops produced. The failure - a shape drawn from
+  /// a slot its neighbour has since taken - is intermittent, invisible to a
+  /// headless test, and gets blamed on the geometry. Sharing it needs its own
+  /// evidence, which this change did not set out to gather.
+  final GpuMaskAtlas _maskAtlas = GpuMaskAtlas();
 
-  // Not final: a device loss destroys all six and a recovery rebuilds them.
+  // Not final: a device loss destroys all five and a recovery rebuilds them.
   late D3d11Texture _maskTexture;
-  late D3d11Texture _glyphTexture;
   late D3d11LayerPool _layerPool;
   late GpuLayerStack _layers;
   late GpuRasterSink _sink;
   late DisplayListPlayer _player;
 
+  /// Whether this target has opened a frame against the device's shared glyph
+  /// atlas and not yet closed it. See [D3d11RenderDevice.beginSharedFrame] for
+  /// what the device does with the count and why an unclosed frame is not just
+  /// untidy.
+  bool _sharedFrameOpen = false;
+
   // -------------------------------------------------------------------
   // Device-loss recovery
   // -------------------------------------------------------------------
 
-  /// Step 5's inventory for this target.
+  /// Step 5's inventory for what this target still owns alone.
+  ///
+  /// The glyph atlas and the uploaded images used to be here and are not any
+  /// more: they belong to the device, which yields them once for itself before
+  /// it reaches any target, so a two-window application rebuilds them once
+  /// rather than twice and the recovery report stops double-counting them. See
+  /// [D3d11RenderDevice.recoverableResources] for why that order is not merely
+  /// tidy.
   ///
   /// The last entry is the interesting one and it always answers
   /// [GpuResourceRecovery.orphaned]: an `IDXGISwapChain1` belongs to the device
@@ -213,14 +235,12 @@ final class D3d11WindowTarget
   @override
   Iterable<GpuRecoverableResource> recoverableResources() sync* {
     yield CallbackGpuResource.fixed(
-      resourceName: 'direct3d11 window atlases '
-          '(mask ${_maskAtlas.width}x${_maskAtlas.height}, glyph '
-          '${_glyphAtlas.width}x${_glyphAtlas.height})',
+      resourceName: 'direct3d11 window mask atlas '
+          '(${_maskAtlas.width}x${_maskAtlas.height})',
       recovery: GpuResourceRecovery.rebuilt,
       onDiscard: _discardAtlasObjects,
       onRepopulate: _repopulateAtlasObjects,
     );
-    yield* _images.recoverableResources();
     yield CallbackGpuResource.fixed(
       resourceName: 'direct3d11 window swap chain '
           '(${_surface.pixelWidth}x${_surface.pixelHeight}, '
@@ -243,20 +263,19 @@ final class D3d11WindowTarget
     _batcher.beginFrame();
     _submittedBatches = 0;
     _pendingClear = null;
+    _closeSharedFrame();
     _layers.endFrame();
     _layerPool.dispose();
-    _device
-      ..releaseTexture(_maskTexture)
-      ..releaseTexture(_glyphTexture);
-    // Both atlases are caches that outlive a frame, so both have to be told
-    // their texels are gone. The mask atlas is the one that is easy to miss:
-    // its `beginFrame` deliberately *keeps* every cached mask, so a static
-    // rounded rectangle drawn before the loss would be found resident,
-    // re-batched against a texture that was never re-uploaded, and drawn as
-    // nothing at all - a frame that differs from the pre-loss one by exactly
-    // the shapes the cache was working for.
+    _device.releaseTexture(_maskTexture);
+    // The mask atlas is a cache that outlives a frame, so it has to be told
+    // its texels are gone, and it is the one that is easy to miss: its
+    // `beginFrame` deliberately *keeps* every cached mask, so a static rounded
+    // rectangle drawn before the loss would be found resident, re-batched
+    // against a texture that was never re-uploaded, and drawn as nothing at
+    // all - a frame that differs from the pre-loss one by exactly the shapes
+    // the cache was working for. The glyph atlas needs the identical treatment
+    // and now gets it once, on the device, instead of once per target.
     _maskAtlas.recycle();
-    _glyphAtlas.clear();
   }
 
   BackendDiagnostic? _repopulateAtlasObjects() {
@@ -305,21 +324,37 @@ final class D3d11WindowTarget
   int get lastPresentHresult => _lastPresentHresult;
   int _lastPresentHresult = sOk;
 
-  /// The textures this target uploaded for drawn images.
-  D3d11ImageCache get images => _images;
+  /// The textures uploaded for drawn images. The device's, shared with every
+  /// other target on it; kept here as a getter because a caller asking a target
+  /// what it drew with should not have to know where the cache lives.
+  D3d11ImageCache get images => _device.imageCache;
 
   /// Where layers get their offscreen targets. Exposed for a memory report and
   /// for a test that asserts the same layer drawn on ten frames created one
   /// target; reuse is invisible from the pixels and very visible in frame time.
   D3d11LayerPool get layerPool => _layerPool;
 
-  /// The glyph coverage this target keeps between frames.
-  GpuGlyphAtlas get glyphAtlas => _glyphAtlas;
+  /// The coverage this target packs its own path masks into.
+  ///
+  /// Exposed so a test can assert that two targets on one device do *not* share
+  /// it. That is not a detail: the mask atlas repacks and evicts, and the whole
+  /// argument for leaving it here rather than on the device is in the field's
+  /// own comment.
+  GpuMaskAtlas get maskAtlas => _maskAtlas;
 
-  /// `UpdateSubresource` calls this target has made for glyph coverage. A frame
-  /// that redraws the same text must not increase it.
-  int get glyphUploadCount => _glyphUploadCount;
-  int _glyphUploadCount = 0;
+  /// The device's font resolver, which every target on it binds in turn.
+  D3d11FontResolver get fontResolver => _device.fontResolver;
+
+  /// The glyph coverage the device keeps between frames, for every target on
+  /// it. A menu's label is already in here when the window behind it drew the
+  /// same face at the same size, which is the claim section 3.7 of
+  /// `doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md` makes.
+  GpuGlyphAtlas get glyphAtlas => _device.glyphAtlas;
+
+  /// `UpdateSubresource` calls made for glyph coverage, across every target on
+  /// the device. A frame that redraws the same text must not increase it, and
+  /// neither must a second window drawing text the first one already drew.
+  int get glyphUploadCount => _device.glyphUploadCount;
 
   GpuBatcher get batcher => _batcher;
 
@@ -358,8 +393,10 @@ final class D3d11WindowTarget
     _maskAtlas.beginFrame();
     // Keeps every glyph and advances the counter its LRU compares against; a
     // target that forgot it would leave every plot pinned to the frame in
-    // progress and report the atlas permanently full.
-    _glyphAtlas.beginFrame();
+    // progress and report the atlas permanently full. It goes through the
+    // device now because the atlas is shared, and the device is the only place
+    // that can tell whether another target still has a frame open against it.
+    _openSharedFrame();
     _layers.beginFrame(
       surfaceWidth: _surface.pixelWidth,
       surfaceHeight: _surface.pixelHeight,
@@ -388,8 +425,23 @@ final class D3d11WindowTarget
   ///      `ResizeBuffers` leaves behind;
   ///   5. the device was lost while the frame was being drawn;
   ///   6. `Present` itself refused.
+  ///
+  /// All six exit through [_present] so that the one thing that must happen on
+  /// every path - closing this target's frame against the device's shared glyph
+  /// atlas - happens in a `finally` rather than six times. A target that took
+  /// an early return and left its frame open would hold the atlas at one frame
+  /// index for the life of the device, which pins every plot and makes a
+  /// long-running window report the atlas permanently full.
   @override
   Future<PresentResult> present(Frame frame) async {
+    try {
+      return await _present(frame);
+    } finally {
+      _closeSharedFrame();
+    }
+  }
+
+  Future<PresentResult> _present(Frame frame) async {
     throwIfDisposed();
     final PresentResult? blocked = _device.state.blockedPresent();
     if (blocked != null) return blocked;
@@ -424,7 +476,7 @@ final class D3d11WindowTarget
     }
 
     _uploadMaskAtlas();
-    _uploadGlyphAtlas();
+    _device.uploadGlyphAtlas();
 
     final int? clear = _pendingClear;
     _pendingClear = null;
@@ -586,7 +638,7 @@ final class D3d11WindowTarget
     // One resource table, walked by the player and read by the sink's font
     // resolver, so the two cannot disagree about which face an id names.
     final resources = DisplayListResources(list);
-    _fonts.bind(resources);
+    _device.fontResolver.bind(resources);
     _player.play(
       DisplayListReader(list),
       resources,
@@ -620,37 +672,36 @@ final class D3d11WindowTarget
     _maskAtlas.markUploaded();
   }
 
-  /// Sends the plots this frame wrote glyphs into, and nothing else.
-  ///
-  /// One `UpdateSubresource` per dirty plot, so a window redrawing the same
-  /// label sixty times a second uploads nothing at all after the first frame -
-  /// which is the entire reason the glyph atlas survives [beginFrame] while the
-  /// mask atlas does not.
-  void _uploadGlyphAtlas() {
-    if (!_glyphAtlas.isDirty) return;
-    final int width = _glyphAtlas.width;
-    _glyphAtlas.forEachDirtyRegion((int x, int y, int regionWidth, int height) {
-      _glyphUploadCount++;
-      _device.uploadRegion(
-        _glyphTexture,
-        x: x,
-        y: y,
-        width: regionWidth,
-        height: height,
-        pixels: Uint8List.sublistView(_glyphAtlas.pixels, y * width + x),
-        bytesPerRow: width,
-      );
-    });
-    _glyphAtlas.markUploaded();
+  /// Opens a frame against the device's shared glyph atlas, once per frame even
+  /// if [beginFrame] is called twice without an intervening present.
+  void _openSharedFrame() {
+    if (_sharedFrameOpen) return;
+    _sharedFrameOpen = true;
+    _device.beginSharedFrame();
+  }
+
+  void _closeSharedFrame() {
+    if (!_sharedFrameOpen) return;
+    _sharedFrameOpen = false;
+    _device.endSharedFrame();
   }
 
   /// The backend's half of the atlas flush protocol - see
   /// [GpuRasterSink.onAtlasFlush]. Upload first, because the batches about to be
   /// drawn sample texels that so far exist only in the staging image; submit
   /// second, and remember how far it got.
+  ///
+  /// The glyph half of the flush is the device's, and one caveat comes with
+  /// that. When this path runs because the atlas was *full*, the sink calls
+  /// `recycleAll` on it once this returns, which now frees plots another
+  /// target's unsubmitted frame may be about to sample. A device that runs two
+  /// windows into a full 1024x1024 atlas within one round of frames can
+  /// therefore repaint the other window's already-recorded glyphs with the next
+  /// tenant. Stated rather than hidden: the fix belongs in the sink's flush
+  /// protocol, which is not this backend's file to change.
   void _flushAtlases() {
     _uploadMaskAtlas();
-    _uploadGlyphAtlas();
+    _device.uploadGlyphAtlas();
     final Pointer<Void> view = _surface.swapChain.backBufferView;
     if (view == nullptr) return;
     final int? clear = _pendingClear;
@@ -681,20 +732,23 @@ final class D3d11WindowTarget
         ),
       );
 
+  /// Releases what this target owns, and nothing the device owns.
+  ///
+  /// The glyph atlas, its texture, the font resolver and the image cache are
+  /// deliberately left alone. Clearing them here is what closing a popup would
+  /// do to the window underneath it: the atlas's entries would go, the texture
+  /// they name would be released, and the next frame of a window that never
+  /// asked for any of this would re-rasterise every glyph on screen - or, if
+  /// the texture went and the entries stayed, draw them as nothing. The device
+  /// releases all four in its own dispose, when it is the last one out.
   @override
   void onDispose() {
     _device.unregisterTarget(this);
-    _images.clear();
+    _closeSharedFrame();
     // After endFrame has returned every target: the pool only destroys what is
     // idle, so disposing mid-frame would leak the ones still in flight.
     _layers.endFrame();
     _layerPool.dispose();
-    _device
-      ..releaseTexture(_maskTexture)
-      ..releaseTexture(_glyphTexture);
-    // The staging bytes go with the texture: an entry that outlived it would
-    // say a glyph is resident in a texture the driver has freed.
-    _glyphAtlas.clear();
-    _fonts.bind(null);
+    _device.releaseTexture(_maskTexture);
   }
 }

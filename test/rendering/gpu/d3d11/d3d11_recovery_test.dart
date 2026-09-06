@@ -114,10 +114,22 @@ void main() {
       target.dispose();
     }, skip: session.skipReason);
 
+    // On a device of its own, and that is a consequence of the image cache
+    // moving up to the device rather than an accident of style. An image whose
+    // source was dropped and whose texture died is unrecoverable for as long as
+    // the cache holds it, and the cache now lives as long as the *device*. Left
+    // on the shared session device, this case would make every later recovery
+    // in this file report `recoveredWithLosses` about an image no later case
+    // ever drew.
     test('an image whose source was dropped fails by name, not by drawing',
         () async {
-      final D3d11RenderDevice device = session.device!;
-      final D3d11OffscreenTarget target = session.target(16, 16);
+      final D3d11RenderDevice device = D3d11RendererBackend.openDevice();
+      addTearDown(device.dispose);
+      final target = device.createTarget(const MemorySurfaceDescriptor(
+        pixelWidth: 16,
+        pixelHeight: 16,
+        format: PixelFormat.rgba8888Premultiplied,
+      )) as D3d11OffscreenTarget;
       final coordinator = GpuRecoveryCoordinator(host: device);
 
       final Framebuffer image = _checkerboard();
