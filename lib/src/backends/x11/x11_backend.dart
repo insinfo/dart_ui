@@ -986,6 +986,11 @@ final class X11WindowingBackend
           ? <Capability>{
               Capability.window,
               Capability.multipleWindows,
+              // An override-redirect window with _NET_WM_WINDOW_TYPE_POPUP_MENU
+              // and WM_TRANSIENT_FOR: undecorated, never focused by the window
+              // manager, and positioned by this client. Unconditional, because
+              // override-redirect is core protocol and needs no extension.
+              Capability.nativePopups,
               Capability.pointerInput,
               Capability.scrollInput,
               Capability.orderlyShutdown,

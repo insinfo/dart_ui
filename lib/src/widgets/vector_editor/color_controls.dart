@@ -29,13 +29,13 @@ import '../../platform/input_events.dart';
 import '../../semantics/semantics.dart';
 import '../basic.dart';
 import '../control.dart';
-import '../controls.dart' show Tooltip;
 import '../element.dart';
 import '../focus.dart';
 import '../focus_scope.dart';
 import '../proxy.dart';
 import '../style.dart';
 import '../theme.dart';
+import '../tooltip.dart' show Tooltip;
 import '../widget.dart';
 
 /// Predefined standard palette colours (classic CorelDRAW default palette).

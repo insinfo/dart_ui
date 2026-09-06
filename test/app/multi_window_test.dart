@@ -615,6 +615,121 @@ void main() {
     });
   });
 
+  group('popups in windows of their own', () {
+    test('a popup opened by openPopup is owned, kinded, and never activates',
+        () async {
+      final app = await _start(size: const Size(60, 40), colour: _colourA);
+      final owner = app.primaryWindow;
+      await owner.drawFrame();
+
+      final menu = await app.openPopup(
+        owner: owner,
+        anchorRect: const Rect.fromLTWH(4, 4, 10, 6),
+        content: const _CountingBox(colour: _colourC),
+        kind: PopupKind.menu,
+        constraints: BoxConstraints.tight(const Size(20, 12)),
+      );
+
+      expect(menu.kind, WindowKind.popup);
+      expect(menu.popupKind, PopupKind.menu);
+      expect(menu.ownerId, owner.id);
+      expect(menu.nativeWindow.clientSize, const Size(20, 12));
+      // The rule `WindowKind` was written for: the keyboard stays where the
+      // user left it, so every caret in the window behind the menu goes on
+      // blinking while it is read.
+      expect(app.keyboardFocusWindow, owner.id);
+      expect(_activeWindows(app), <NativeWindowId>[owner.id]);
+      expect(app.topLevelWindows, <ApplicationWindow>[owner]);
+
+      await _stop(app);
+    });
+
+    test('closing the owner takes its whole popup chain with it', () async {
+      final app = await _start(size: const Size(60, 40), colour: _colourA);
+      final owner = app.primaryWindow;
+      // A second top-level window, so that closing the owner is an ordinary
+      // close rather than the last-window policy.
+      final other = await app.openWindow(
+        rootWidget: const _CountingBox(colour: _colourB),
+        size: const Size(60, 40),
+      );
+      await owner.drawFrame();
+
+      final menu = await app.openPopup(
+        owner: owner,
+        anchorRect: const Rect.fromLTWH(4, 4, 10, 6),
+        content: const _CountingBox(colour: _colourC),
+        kind: PopupKind.menu,
+        constraints: BoxConstraints.tight(const Size(20, 12)),
+      );
+      final submenu = await app.openPopup(
+        owner: owner,
+        parentPopup: menu,
+        anchorRect: const Rect.fromLTWH(6, 6, 10, 6),
+        content: const _CountingBox(colour: _colourC),
+        kind: PopupKind.submenu,
+        constraints: BoxConstraints.tight(const Size(16, 10)),
+      );
+      // One owner link per level: this is the chain the platform is handed,
+      // and on Wayland a submenu whose parent is not the preceding popup is a
+      // protocol error rather than a misplacement.
+      expect(submenu.ownerId, menu.id);
+      expect(app.windows, hasLength(4));
+
+      app.closeWindow(owner.id);
+
+      expect(menu.isDisposed, isTrue);
+      expect(submenu.isDisposed, isTrue);
+      expect(app.windows, <ApplicationWindow>[other]);
+      expect(app.state, ApplicationLifecycleState.running);
+
+      await _stop(app);
+    });
+
+    test('typing with a menu open reaches the menu, not the owner', () async {
+      final controllerOwner = TextEditingController('owner');
+      final controllerMenu = TextEditingController('menu');
+      final app = await _start(
+        size: const Size(140, 40),
+        root: _FieldTree(controller: controllerOwner),
+      );
+      final owner = app.primaryWindow;
+      await owner.drawFrame();
+
+      // The owner's field takes focus first, while there is no popup for the
+      // press to dismiss - which is itself the behaviour tested elsewhere.
+      _click(owner, const Offset(40, 12));
+      app.backend.pumpEvents();
+      await owner.drawFrame();
+
+      final menu = await app.openPopup(
+        owner: owner,
+        anchorRect: const Rect.fromLTWH(10, 20, 20, 10),
+        content: _FieldTree(controller: controllerMenu),
+        kind: PopupKind.menu,
+        constraints: BoxConstraints.tight(const Size(140, 40)),
+      );
+      await menu.drawFrame();
+      _click(menu, const Offset(40, 12));
+      app.backend.pumpEvents();
+      await menu.drawFrame();
+
+      // Addressed to the owner, because the popup never activated and the
+      // platform has no idea it exists. The framework redirects.
+      expect(app.handleEvent(_text(owner, 'X')), isTrue);
+      expect(controllerMenu.value, contains('X'));
+      expect(controllerOwner.value, isNot(contains('X')));
+
+      // And it is a redirection, not a move: dismissing the menu puts the
+      // keystrokes back in the window that never lost the keyboard.
+      app.closeWindow(menu.id);
+      expect(app.handleEvent(_text(owner, 'Y')), isTrue);
+      expect(controllerOwner.value, contains('Y'));
+
+      await _stop(app);
+    });
+  });
+
   group('modal windows', () {
     test('a modal blocks its owner and hands focus back when it closes',
         () async {

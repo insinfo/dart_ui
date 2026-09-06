@@ -4805,6 +4805,39 @@ Contrato precisa considerar:
 - input grab;
 - serial Wayland.
 
+## 29.6.1 Como isso ficou — 06/09/2026
+
+A decisão está no **ADR 0008** e o desenho completo em
+`doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md`. O resumo, porque a lista acima
+pergunta e não responde:
+
+- **a escolha "mesma surface ou janela nativa" é uma costura, não um `if`.**
+  `PopupHost` (`widgets/popup_host.dart`) tem duas implementações —
+  `InTreePopupHost`, que compõe na superfície da dona, e `WindowPopupHost`
+  (`app/`), que abre uma `WindowKind.popup`. `PopupPolicy.auto | inTree |
+  window` escolhe, e `window` num backend sem janelas **falha por nome** em vez
+  de cair em silêncio;
+- **placement, flip/slide** já eram `PopupPositioner`, e continuam sendo os
+  mesmos para os dois hosts. A diferença é só a *área útil*: a janela, para o
+  host in-tree; o monitor (`ScreenInfo.workArea`), para o de janela;
+- **screen bounds e DPI** entraram como `ScreenProvider`, interface **opcional**
+  no padrão do `ClipboardProvider` — pôr membros novos em `WindowingBackend`
+  quebraria os seis backends e todo dublê de teste;
+- **focus:** o popup **nunca** ativa, e o teclado é redirecionado pela
+  `Application` para o popup vivo mais interno. Ativar o popup apaga o caret da
+  janela de trás, que é a razão escrita no próprio `WindowKind`;
+- **dismissal:** cinco entradas, todas no framework — clique na dona fora do
+  popup, clique na área não-cliente, dona movida/redimensionada, `popup_done`
+  do compositor, e Escape. O clique que fecha um **menu** é engolido; o que
+  fecha um **dropdown** passa adiante, e essa diferença é decidida no *hit
+  test*, não depois da entrega (ADR 0008, item 4);
+- **input grab e serial Wayland:** **sem grab**, nos dois. No Wayland o serial
+  virou parte do tipo (`WaylandPopupGrab`), então um grab sem serial é
+  irrepresentável em vez de ser o erro de protocolo que mata a conexão inteira;
+  no X11 um grab que vaza congela o desktop. O Avalonia decidiu igual;
+- **renderização:** o popup vai pelo caminho da janela dona, GPU inclusive
+  (§8.1.1 e §3.7 do plano). Sem exceção de CPU para popups.
+
 ---
 
 # 30. Texto, fontes e edição
@@ -9139,6 +9172,23 @@ evitar.
   (`_admitToAtlas`) quanto ao planejador (`hint: _contentHint`). Coberto por
   `test/rendering/gpu/gpu_path_hint_test.dart` e
   `test/widgets/content_hint_test.dart`.
+
+### Fechado em 06/09/2026
+
+- **`PopupStack` e `PopupEntry`** (`widgets/popup.dart`). Modelavam a cadeia de
+  popups, o descarte ordenado e a regra "um clique dentro do menu pai fecha só
+  os filhos" — e **não tinham consumidor nenhum**, nem em `lib/` nem em
+  `test/` fora do próprio teste da classe. A auditoria de 23/08 não os listou
+  aqui porque a §68.3 os citava como *contrato*; eram os dois. Passaram a ser o
+  que ordena a cadeia do `InTreePopupHost` e o que decide o descarte, e
+  ganharam o `reposition` que faltava: um popup é aberto antes de o conteúdo
+  ser medido, então o placement inicial é um marcador de posição, e sem
+  atualizá-lo `handleOutsideClick` compara todo clique contra um retângulo de
+  tamanho zero — o primeiro clique num item fecharia o menu em vez de escolher.
+  Ver ADR 0008.
+- **`PopupSurfaceKind` e `PopupPositioner.surfaceFor`**, pela mesma razão: a
+  pergunta "cabe na janela dona?" passou a ser respondida por quem escolhe
+  entre os dois hosts.
 
 ### Aberto
 

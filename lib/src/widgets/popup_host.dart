@@ -200,6 +200,7 @@ final class PopupSpec {
     this.constraints,
     this.parent,
     this.onDismiss,
+    this.passThrough,
   });
 
   /// What the popup attaches to, **in the owner window's logical coordinate
@@ -236,6 +237,31 @@ final class PopupSpec {
   /// [PopupHandle.close]. Fires exactly once.
   final void Function()? onDismiss;
 
+  /// A region of the owner's content that keeps receiving the pointer even
+  /// while this popup is modal — "modal, except here".
+  ///
+  /// **A menu bar is the reason this exists.** A menu's layer takes the
+  /// content out of the hit path entirely, so that the click which closes the
+  /// menu cannot also press the button behind it. A menu *bar* breaks that
+  /// rule for exactly one rectangle: the bar itself has to keep receiving the
+  /// pointer while its dropdown is up, or hovering a sibling cannot switch
+  /// menus and clicking the open one cannot close it — the two behaviours a
+  /// user notices immediately when they are missing.
+  ///
+  /// Without this the only way to build a bar is to make its whole chain
+  /// non-modal, which trades one visible wrong behaviour for another: a click
+  /// anywhere else in the window would then press what it landed on *as well
+  /// as* closing the menu.
+  ///
+  /// A callback rather than a [Rect] because the bar moves: the window is
+  /// resized, the bar reflows, and a rect captured at open time would leave a
+  /// hole in the wrong place. It is read during hit testing, so it must be
+  /// cheap and must not allocate.
+  ///
+  /// In the same space as [anchorRect]. Null — the usual case — means the
+  /// popup is modal everywhere or modal nowhere, as its [kind] decides.
+  final Rect? Function()? passThrough;
+
   PopupSpec copyWith({Rect? anchorRect, BoxConstraints? constraints}) =>
       PopupSpec(
         anchorRect: anchorRect ?? this.anchorRect,
@@ -249,6 +275,7 @@ final class PopupSpec {
         constraints: constraints ?? this.constraints,
         parent: parent,
         onDismiss: onDismiss,
+        passThrough: passThrough,
       );
 }
 
@@ -826,10 +853,21 @@ final class RenderPopupLayer extends RenderBoxContainer<BoxParentData>
     }
     // Missed every popup. A modal layer stops here and lets [hitTestSelf]
     // claim the press; anything else offers it to the content underneath.
-    if (_isModal) return null;
+    if (_isModal && !_passesThrough(position)) return null;
     if (childCount == 0) return null;
     final RenderBox content = childAt(0);
     return content.hitTest(position, path: path);
+  }
+
+  /// Whether [position] falls in a region an open popup declared as still
+  /// belonging to the content. See [PopupSpec.passThrough]; a menu bar is the
+  /// reason it exists.
+  bool _passesThrough(Offset position) {
+    for (final PopupSpec spec in _specs) {
+      final Rect? region = spec.passThrough?.call();
+      if (region != null && region.contains(position)) return true;
+    }
+    return false;
   }
 
   /// Whether an open popup makes this layer modal to the pointer.
@@ -863,13 +901,27 @@ final class RenderPopupLayer extends RenderBoxContainer<BoxParentData>
   /// adds a parent whose children hit — so both routes reach
   /// [handlePointerEvent].
   @override
-  bool hitTestSelf(Offset position) => _specs.isNotEmpty;
+  bool hitTestSelf(Offset position) {
+    if (_specs.isEmpty) return false;
+    // A press inside a declared pass-through region is the content's, not
+    // this layer's: claiming it here would put the layer ahead of the menu bar
+    // in the hit path and dismiss the very menu the press is trying to switch.
+    return !_passesThrough(position);
+  }
 
   @override
   void handlePointerEvent(PointerEvent event) {
     if (event is! PointerDownEvent) return;
     if (_specs.isEmpty) return;
-    _host.handlePressOutside(globalToLocal(event.logicalPosition));
+    final Offset local = globalToLocal(event.logicalPosition);
+    // A press inside a pass-through region belongs to the content and must not
+    // dismiss anything here. `RenderBox.hitTest` puts this layer in the path
+    // whenever a child was hit, so without this guard a click on a menu bar
+    // would close the menu on the way past and the bar's own handler would
+    // then reopen it: switching menus would flicker, and clicking the open one
+    // would close and immediately reopen instead of toggling shut.
+    if (_passesThrough(local)) return;
+    _host.handlePressOutside(local);
   }
 
   @override

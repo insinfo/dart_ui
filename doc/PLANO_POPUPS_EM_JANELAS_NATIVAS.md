@@ -326,9 +326,23 @@ na frente, que é a metade que o olho encontra primeiro.
 
 O que isso exige, e o que custa:
 
-- **Um dispositivo, N swapchains.** O popup **não** cria um `GlRenderDevice`,
-  um `D3d12Device` ou um `VkDevice` próprio: adota o da janela dona e cria
-  apenas a sua superfície de apresentação. É o que todo toolkit acelerado
+- **Um dispositivo, N swapchains.** O popup **não deve** criar um
+  `GlRenderDevice`, um `D3d12Device` ou um `VkDevice` próprio: deve adotar o da
+  janela dona e criar apenas a sua superfície de apresentação.
+
+  > **Estado em 06/09/2026: metade feito, e a metade que falta está medida.**
+  > O popup herda o **caminho** já escolhido pela aplicação — nenhuma exceção
+  > de CPU foi criada, e um menu nunca diverge do rasterizador da dona, que é
+  > a parte que importa para a correção visual. Mas ele **não** herda o
+  > *dispositivo*: `Application.openWindow` chama `_presentationPath.attach`
+  > por janela, e o `attach` abre um dispositivo para aquela janela. Então o
+  > atlas de glifos e o cache de cobertura **não** são compartilhados hoje, e
+  > o texto de um menu é rasterizado de novo em vez de ser reaproveitado.
+  > Consertar isso é mover a costura para um dispositivo por *aplicação* com
+  > swapchains por janela, em `window_host.dart` e
+  > `default_platform_resolver.dart` — trabalho real, fora do escopo desta
+  > entrega, e é ele que o número de reabertura da fase 2 vai justificar ou
+  > não. É o que todo toolkit acelerado
   faz, e é o que faz o **atlas de glifos e o cache de cobertura serem
   compartilhados** — o texto de um menu já está rasterizado, porque a mesma
   fonte no mesmo tamanho já foi desenhada na janela de trás. Um dispositivo
@@ -362,13 +376,55 @@ O que isso exige, e o que custa:
   popup vai junto. O que não pode existir é a combinação cruzada — dona na
   GPU, menu na CPU — que é o que a versão anterior desta seção prescrevia.
 
-**O que medir na fase 2** (`tool/popup_window_smoke.dart`, janela real, Intel
-UHD, `onError` instalado): tempo de primeira abertura, tempo de reabertura com
-o popup reaproveitado, e **paridade de pixel entre o menu e o mesmo menu
-desenhado dentro da janela** — essa terceira é a que prova que a divergência
-foi evitada em vez de assumida. O teste "opening and closing a child in a
-burst while the owner presents" já existe e prova que a rajada é correta; o
-smoke mede se é barata.
+### O que a fase 2 mediu — 06/09/2026, janela real
+
+`tool/popup_window_smoke.dart`, Windows 11, Intel UHD Graphics, Direct3D 11,
+`onError` e `onDiagnostic` instalados, JIT e AOT concordando:
+
+| Medida | Resultado |
+|---|---|
+| o popup **sai** da janela dona | popup `676,494 220x190`; dona `140,120 560x380`. Passa **196 px** da borda direita e **184 px** da inferior |
+| o mesmo posicionador contra a janela | `474,286 220x190`, virado para cima e **contido** — é o que o host in-tree produziria |
+| tela real por trás da colocação | `DISPLAY1`, bounds 1920x1080, área útil 1920x1032, os 48 px são a taskbar; `synthetic=0` |
+| a dona continua ativa | `ownerActive=true popupActive=false keyboardFocus=1`, lido da aplicação e não do que foi pedido |
+| frames do popup | 121 em 2016 ms = **60,0 fps**, `errors=0`, `rejected=0` |
+| cadeia | profundidade 2; a janela do submenu tem como dona a **janela do menu**, não a de topo |
+| descarte | 3 janelas → 1, `popupsLeft=0`, nenhuma janela vazada |
+| caminho de renderização | dona e popup em `direct3d11/gpu`, mesmo adaptador, mesma abordagem (`analyticCoverageAtlas`) |
+| custo de abertura | fria 63 ms; reabertura melhor 35,4 ms, mediana **41,3 ms** |
+
+**As duas primeiras linhas são a prova da funcionalidade inteira**, e valem
+mais que qualquer teste headless: o mesmo `PopupPositioner`, o mesmo
+`PopupRequest`, trocando só a área útil — e um retângulo sai da janela
+enquanto o outro é virado para dentro dela. Um overlay não pode produzir o
+primeiro.
+
+**O que o smoke encontrou e não foi consertado**, com arquivo e linha:
+
+- **o popup cria o seu próprio dispositivo** (`sharedDevice=false`). A criação
+  é por *janela*, por *presenter*:
+  `default_platform_resolver.dart:191` faz `backend.createDevice()` em todo
+  attach. `application.dart:348` já enuncia a regra que o código segue — "um
+  presenter por janela, porque um presenter é ligado a uma superfície" — e o
+  presenter por superfície está certo; é o **dispositivo pegar carona** que a
+  §3.7 proíbe;
+- **pior que isso: o atlas é por *alvo*.**
+  `d3d11_window_target.dart:131-134` constrói `GpuMaskAtlas`, `GpuGlyphAtlas`,
+  `D3d11FontResolver` e `D3d11ImageCache` no construtor do alvo. Então o ganho
+  que esta seção promete — "o texto de um menu já está rasterizado" — **não
+  acontece**: todo menu rasteriza os glifos de novo, a partir do contorno;
+- nada disso é visível hoje, porque os dois lados são o mesmo rasterizador no
+  mesmo adaptador. A divergência que a §3.7 teme está ausente; o mecanismo que
+  ela nomeia como a razão, também.
+
+**E o número decide a questão do pool.** O smoke mediu um controle: uma janela
+`WindowKind.popup` nua, sem medir, colocar nem mostrar — exatamente a metade
+que um popup oculto reaproveitado já possui. Melhor 32,9 ms, mediana 37,1 ms,
+contra 35,4 / 41,3 do `openPopup` completo. Ou seja, **cerca de 90% do custo de
+abrir um menu é criar a janela, o dispositivo e o swapchain**; medir, colocar e
+mostrar somam 3 a 4 ms. A 41 ms um menu perde duas ou três frames antes de
+aparecer, e isso se vê. O pool resolve — e **adotar o dispositivo da dona
+ataca o mesmo custo dominante**, então as duas são alternativas e não somas.
 
 ### 3.8 Acessibilidade
 
@@ -395,6 +451,61 @@ o `uia_app_test.dart` fora de processo é o lugar da prova.
 Todos continuam funcionando sem janela nativa. O teste de cada um roda **nos
 dois hosts** com o mesmo caso, que é a única prova de que a lógica do widget
 não depende de onde os pixels vão.
+
+## 4.1 Estado da execução — 06/09/2026
+
+Este plano foi escrito e executado no mesmo dia. O que está feito, e como isso
+foi provado, está aqui; o que sobrou está nomeado no fim da seção. A decisão
+de desenho está no **ADR 0008**.
+
+| Fase | Estado | Prova |
+|---|---|---|
+| 0 — geometria e Win32 | **feita** | `ScreenInfo`/`ScreenProvider` como interface opcional; Win32 por `EnumDisplayMonitors`/`GetMonitorInfoW`/`GetDpiForMonitor`. Medido nesta máquina: 1920x1080, área útil 1032, os 48 px de taskbar são reais. Classe de popup própria com `CS_DROPSHADOW` (`0x2000b`), `MA_NOACTIVATE`, `HTTRANSPARENT` para tooltip, `WindowNonClientPressEvent` |
+| 1 — `Application` | **feita** | `openPopup` com auto-dimensionamento por medição em janela oculta, teclado redirecionado ao popup vivo mais interno, e as cinco rotas de descarte |
+| 2 — `PopupHost` | **feita e provada em janela real** | `PopupHost`/`PopupHandle`/`PopupSpec`/`PopupKind`/`PopupPolicy`, `InTreePopupHost` e `WindowPopupHost`. `test/widgets/popup_host_test.dart` é o **contrato compartilhado**: as duas implementações têm de satisfazer os mesmos casos. `tool/popup_window_smoke.dart` mediu num HWND de verdade que o popup sai 196 px da janela dona (§3.7) |
+| 3 — widgets | **feita** | `Tooltip` real, `MenuAnchor`, `MenuController`, `MenuItemButton`, `SubmenuButton`, `MenuBar`, `showMenu`, `PopupMenuButton`, `PopupMenuItem`, `PopupMenuDivider`, `RelativeRect` — nos nomes e assinaturas do Flutter (`doc/MIGRACAO_DO_FLUTTER.md`) |
+| 4 — X11 e Wayland | **feita no código, não executada** | X11 honra `WindowKind` (override-redirect, `_NET_WM_WINDOW_TYPE`, `WM_TRANSIENT_FOR`); Wayland com grab desligado e o serial dentro do tipo. Provados por testes de bytes numa máquina Windows; os dois smokes **nunca rodaram** |
+| 4 — macOS | **não feita** | sem host de popup nativo; cai no overlay. Escrever às cegas produz confiança falsa (§68.1) |
+| 5 — acessibilidade | **não feita** | o popup ainda não é fragmento UIA filho da dona, nem emite `MenuOpened`/`MenuClosed` |
+
+**A correção mais importante do plano original**, registrada porque errar em
+público é o que torna o resto confiável: a §3.7 dizia "popups usam sempre o
+apresentador de CPU". Estava errada, e não por desempenho — um menu na CPU
+sobre uma janela na GPU exibe lado a lado as divergências que a §68.4 lista.
+A §3.7 foi reescrita e a regra virou a §8.1.1 do roteiro.
+
+**O que a auditoria de execução encontrou e vale registrar:**
+
+- **o descarte não podia ser decidido depois da entrega.** O roteador entrega o
+  caminho de hit do mais profundo para a raiz, então um botão deixado no
+  caminho já foi pressionado quando o evento sobe até a camada de popup. A
+  decisão foi para o *hit test* (ADR 0008, item 4);
+- **`canOpenPopupWindows` não pode ser inferido de um handle nativo.** O
+  Wayland cria um `xdg_popup` real e não tem handle a exibir, então o proxy
+  responde "não" para ele. Virou `Capability.nativePopups`, declarada por cada
+  backend;
+- **uma barra de menus precisa de "modal, exceto aqui".** Um menu tira o
+  conteúdo do caminho de hit para que o clique que o fecha não pressione o que
+  está atrás — mas a barra **é** conteúdo, e precisa continuar recebendo o
+  ponteiro para trocar de menu no hover e fechar no segundo clique. A primeira
+  tentativa foi tornar a cadeia da barra inteira não-modal, o que devolve o
+  clique que fecha *e* pressiona. `PopupSpec.passThrough` nomeia a região que
+  continua sendo do conteúdo, e é um *callback* e não um `Rect` porque a barra
+  se move: um retângulo capturado na abertura deixa o buraco no lugar errado
+  depois de um redimensionamento;
+- **um dispositivo por janela** (acima): o achado que a auditoria de execução
+  não conseguiu fechar;
+- **a colocação inicial de um popup é um move e um resize.** Sem excluir isso
+  das rotas de descarte, todo submenu fecharia no instante em que abrisse;
+- **o host tem de ser compartilhado por cadeia, a partir da janela de topo.**
+  Um host por `ApplicationWindow` faria um submenu aberto de dentro de um popup
+  não achar o pai — e no Wayland um `xdg_popup` com o pai errado é erro de
+  protocolo, que mata a conexão e leva junto todas as janelas do processo;
+- **"o tooltip já está quente"** precisou de uma variável própria com carência:
+  o roteador reporta a *saída* do ponteiro antes da *entrada*, então limpar o
+  calor ao esconder faria todo tooltip depois do primeiro pagar a espera cheia.
+
+---
 
 ## 5. Fases, com o que prova cada uma
 

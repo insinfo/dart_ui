@@ -566,6 +566,10 @@ final class Win32WindowingBackend
       capabilities: <Capability>{
         Capability.window,
         Capability.multipleWindows,
+        // WS_POPUP | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, shown with
+        // SW_SHOWNOACTIVATE, on a window class of its own carrying
+        // CS_DROPSHADOW. Everything a menu needs, and none of it conditional.
+        Capability.nativePopups,
         Capability.cpuPresentation,
         Capability.partialPresent,
         Capability.keyboardInput,

@@ -367,6 +367,69 @@ void main() {
     });
   });
 
+  group('a modal popup with a pass-through region', () {
+    test('a press inside the region reaches the content and dismisses nothing',
+        () {
+      // What a menu bar needs: the strip keeps the pointer while its own
+      // dropdown is up, so hovering a sibling can switch menus and clicking
+      // the open one can close it. Without this the bar is unreachable, and
+      // the only other way to reach it is to make the whole chain non-modal -
+      // which gives back the press that presses the button underneath.
+      final _Harness harness = _Harness()..frame();
+      final PopupHandle menu = harness.open(
+        anchorRect: const Rect.fromLTWH(200, 200, 10, 10),
+        passThrough: () => harness.buttonRect,
+      );
+      harness.frame();
+
+      harness.pressButton();
+      harness.frame();
+
+      expect(harness.presses, 1, reason: 'the region is still the content');
+      expect(menu.isOpen, isTrue, reason: 'and pressing it dismisses nothing');
+      harness.dispose();
+    });
+
+    test('a press outside the region is swallowed, as any menu press is', () {
+      final _Harness harness = _Harness()..frame();
+      final PopupHandle menu = harness.open(
+        anchorRect: const Rect.fromLTWH(200, 200, 10, 10),
+        // A region nowhere near the button or the popup.
+        passThrough: () => const Rect.fromLTRB(0, 280, 400, 300),
+      );
+      harness.frame();
+
+      harness.pressButton();
+      harness.frame();
+
+      expect(menu.isOpen, isFalse);
+      expect(harness.presses, 0);
+      harness.dispose();
+    });
+
+    test('the region is read live, so a bar that moved is still reachable', () {
+      // A rect captured when the menu opened would leave the hole in the old
+      // place after a resize reflowed the bar. The callback is what makes that
+      // impossible, and this is the case that would catch a regression to a
+      // stored Rect.
+      Rect region = const Rect.fromLTRB(0, 280, 400, 300);
+      final _Harness harness = _Harness()..frame();
+      final PopupHandle menu = harness.open(
+        anchorRect: const Rect.fromLTWH(200, 200, 10, 10),
+        passThrough: () => region,
+      );
+      harness.frame();
+      region = harness.buttonRect;
+
+      harness.pressButton();
+      harness.frame();
+
+      expect(harness.presses, 1);
+      expect(menu.isOpen, isTrue);
+      harness.dispose();
+    });
+  });
+
   group('with no popup open', () {
     test('the layer is invisible to the pointer', () {
       // A host installed in every window must cost nothing in the common case,
@@ -447,15 +510,31 @@ final class _Harness {
     PopupKind kind = PopupKind.menu,
     PopupHandle? parent,
     void Function()? onDismiss,
+    Rect? Function()? passThrough,
   }) =>
       host.open(PopupSpec(
         anchorRect: anchorRect ?? const Rect.fromLTWH(10, 10, 50, 20),
         kind: kind,
         parent: parent,
         onDismiss: onDismiss,
+        passThrough: passThrough,
         builder: (BuildContext context) =>
             SizedBox(width: size.width, height: size.height),
       ));
+
+  RenderButton get button => _find<RenderButton>();
+
+  /// The button's rect in the same space the popup specs use.
+  Rect get buttonRect {
+    final RenderButton box = button;
+    final Offset origin = box.globalOffset;
+    return Rect.fromLTWH(
+      origin.dx,
+      origin.dy,
+      box.size.width,
+      box.size.height,
+    );
+  }
 
   /// A press at the centre of the button behind everything.
   void pressButton() {

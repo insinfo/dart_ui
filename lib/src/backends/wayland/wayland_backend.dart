@@ -835,6 +835,11 @@ final class WaylandWindowingBackend
           ? <Capability>{
               Capability.window,
               Capability.multipleWindows,
+              // A real xdg_popup with an xdg_positioner - and the reason this
+              // capability is declared rather than inferred: this backend has
+              // no OS window handle to show for it, so every proxy for "can
+              // you make a popup" answers no here and is wrong.
+              Capability.nativePopups,
               Capability.pointerInput,
               Capability.scrollInput,
               Capability.keyboardInput,

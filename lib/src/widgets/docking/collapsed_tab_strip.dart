@@ -43,13 +43,13 @@ import '../../layout/render_flex.dart';
 import '../../rendering/text/font_registry.dart';
 import '../../text/typeface.dart';
 import '../basic.dart';
-import '../controls.dart' show Tooltip;
 import '../element.dart';
 import '../gesture_detector.dart';
 import '../icon.dart';
 import '../icon_button.dart';
 import '../proxy.dart';
 import '../theme.dart';
+import '../tooltip.dart' show Tooltip;
 import '../widget.dart';
 import 'docking_theme.dart';
 

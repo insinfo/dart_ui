@@ -172,10 +172,13 @@ import '../widgets/drag_drop.dart' show DragDropScope, WidgetTreeDropTarget;
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
 import '../widgets/media_query.dart';
+import '../widgets/popup.dart';
+import '../widgets/popup_host.dart';
 import '../widgets/theme.dart';
 import '../widgets/widget.dart';
 import 'application_info.dart';
 import 'window_host.dart';
+import 'window_popup_host.dart';
 
 /// Where an application is in its life.
 enum ApplicationLifecycleState {
@@ -391,6 +394,7 @@ final class ApplicationOptions {
     this.renderPolicy = RenderPolicy.defaults,
     this.theme = ThemeData.neutralLight,
     this.textDirection = TextDirection.leftToRight,
+    this.popupPolicy = PopupPolicy.auto,
     this.headlessRenderScale = 1.0,
     this.arguments = const <String>[],
     this.environment = const <String, String>{},
@@ -436,6 +440,7 @@ final class ApplicationOptions {
     RenderPolicy renderPolicy = RenderPolicy.defaults,
     ThemeData theme = ThemeData.neutralLight,
     TextDirection textDirection = TextDirection.leftToRight,
+    PopupPolicy popupPolicy = PopupPolicy.auto,
     double headlessRenderScale = 1.0,
     Map<String, String> environment = const <String, String>{},
     Clipboard? clipboard,
@@ -510,6 +515,7 @@ final class ApplicationOptions {
               ? ThemeData.neutralLight
               : theme,
       textDirection: textDirection,
+      popupPolicy: popupPolicy,
       headlessRenderScale: parsedScale,
       arguments: List<String>.unmodifiable(arguments),
       environment: environment,
@@ -697,6 +703,25 @@ final class ApplicationOptions {
   /// Defaults installed by the framework-owned [DartUiApp] wrapper.
   final ThemeData theme;
   final TextDirection textDirection;
+
+  /// Whether menus, dropdowns and tooltips get windows of their own.
+  ///
+  /// [PopupPolicy.auto] is the default and the value almost every application
+  /// should keep: a window when [Application.canOpenPopupWindows] says the
+  /// backend has one to give, the owner's own surface otherwise. The other two
+  /// exist because the trade is real in both directions and neither answer is
+  /// safe to guess for somebody else - an application recording its window to
+  /// a video wants [PopupPolicy.inTree] so the menu is *in* the recording, and
+  /// one whose menus must never be cropped wants [PopupPolicy.window] and
+  /// wants to be told, not silently accommodated, when it cannot have them.
+  ///
+  /// [PopupPolicy.window] on a backend that has no popup windows therefore
+  /// throws [PopupWindowUnavailableError] out of [Application.openWindow] -
+  /// and so out of [Application.start], since that is where the first window
+  /// is opened. Failing at startup is the whole point: an application that
+  /// asked for windows because being cropped is unacceptable to it must not
+  /// discover at the first menu that it quietly got overlays.
+  final PopupPolicy popupPolicy;
 
   /// Pixel scale used when the automatically selected backend is headless.
   /// Native windows obtain their scale from the operating system.
@@ -897,6 +922,44 @@ final class ApplicationWindow with DisposableMixin {
   /// This window's clear colour, defaulting to the application's.
   final Color? clearColor;
 
+  /// What kind of popup this window *is*, or null when it is not one.
+  ///
+  /// [kind] already says the window is a [WindowKind.popup] or a
+  /// [WindowKind.tooltip]; this says which of the four popups the framework
+  /// distinguishes it is, and the difference decides routing rather than
+  /// decoration. A [PopupKind.menu] swallows the press that dismisses it and a
+  /// [PopupKind.dropdown] lets it through; a [PopupKind.tooltip] never takes
+  /// the keyboard while the other three do. None of that is derivable from
+  /// [WindowKind], which is why the value is recorded here at
+  /// [Application.openPopup] time instead of being re-guessed by every rule
+  /// that needs it - and a rule that guessed would be a menu that pressed the
+  /// button behind it.
+  PopupKind? popupKind;
+
+  /// Where this window's popups go, resolved once and then reused.
+  ///
+  /// Null means "no host of the application's own": [DartUiApp] then lets
+  /// [PopupScope] own an [InTreePopupHost], which is the portable answer and
+  /// the only possible one on a backend with no popup windows.
+  ///
+  /// Assigned directly by [Application.openPopup] for a popup *window*, before
+  /// its tree has mounted, so that a submenu opened from inside it chains onto
+  /// the popup it was opened from rather than starting a second, unrelated
+  /// chain anchored to the top-level window. Getting that wrong is not
+  /// cosmetic: xdg-shell requires the parent of an `xdg_popup` to be the
+  /// immediately preceding popup, and a wrong parent is a protocol error that
+  /// takes the whole connection - every window of the process - down with it.
+  PopupHost? _popupHost;
+  bool _popupHostResolved = false;
+
+  /// Called from [Application._retire] when this popup window goes away by any
+  /// route at all - closed explicitly, dismissed with its owner, taken by a
+  /// `popup_done` from the compositor. It is what makes
+  /// `PopupSpec.onDismiss` fire exactly once however the popup died, and it
+  /// lives on the window rather than in a list on the application because the
+  /// window is the thing whose lifetime it describes.
+  void Function()? _onPopupWindowRetired;
+
   final DisposableBag _resources;
 
   Widget _rootWidget;
@@ -1057,6 +1120,53 @@ final class ApplicationWindow with DisposableMixin {
         devicePixelRatio: host.renderScale,
       );
 
+  /// The host this window's menus, dropdowns and tooltips open into.
+  ///
+  /// Resolved lazily and exactly once, on the first mount, rather than in
+  /// [Application.openWindow]: a popup window's host is handed to it by
+  /// [Application.openPopup] *after* the window exists, and resolving eagerly
+  /// would have already given it a root host of its own - a second chain, with
+  /// the broken platform parentage [_popupHost] describes.
+  PopupHost? get popupHost {
+    if (_popupHostResolved) return _popupHost;
+    _popupHostResolved = true;
+    _popupHost ??= application._popupHostFor(this);
+    return _popupHost;
+  }
+
+  /// Builds and lays this window's tree out against [constraints] without
+  /// presenting anything, and answers the size its root chose.
+  ///
+  /// The whole of popup auto-sizing. A window's root constraints are normally
+  /// `BoxConstraints.tight(clientSize)`, so a popup window created at a
+  /// guessed size would be laid out *against the guess* and would report the
+  /// guess back - measuring nothing. Handing the root a loose constraint
+  /// instead is the only way to ask a menu how tall it wants to be.
+  ///
+  /// It is the build-and-lay-out half of a frame and nothing else: the same
+  /// `buildScope` + `flushLayout` pair [_settleForInput] runs before a hit
+  /// test, reached through the same [BuildOwner], so a popup is measured by
+  /// the code path that will later draw it rather than by a second one that
+  /// could disagree with it. Nothing is painted and nothing is presented,
+  /// which is what lets the window still be hidden while this runs.
+  ///
+  /// Returns [Size.zero] when the tree has no root render object, which is a
+  /// tree that renders nothing; the caller then keeps whatever size it asked
+  /// for rather than creating a zero-sized window the platform would refuse.
+  Size measureRoot(BoxConstraints constraints) {
+    throwIfDisposed();
+    pipelineOwner.rootConstraints = constraints;
+    if (!_rootMounted) {
+      buildOwner.updateRoot(_mountableRoot);
+      _rootMounted = true;
+    }
+    buildOwner.buildScope();
+    pipelineOwner.flushLayout();
+    final RenderBox? root = buildOwner.renderRoot;
+    if (root == null || !root.hasSize) return Size.zero;
+    return root.size;
+  }
+
   Widget get _mountableRoot {
     final MediaQueryData media = _mediaQueryData;
     _mountedMediaQueryData = media;
@@ -1084,6 +1194,11 @@ final class ApplicationWindow with DisposableMixin {
                   theme: application.options.theme,
                   textDirection: application.options.textDirection,
                   frameScheduler: scheduler,
+                  // Null on a backend with no popup windows, and null is not a
+                  // degraded answer: `PopupScope` then owns an
+                  // `InTreePopupHost` and every menu still opens, composited
+                  // into this window's own surface. See [popupHost].
+                  popupHost: popupHost,
                   home: _rootWidget,
                 ),
               ),
@@ -2004,6 +2119,88 @@ final class Application with DisposableMixin {
   }
 
   // ---------------------------------------------------------------------------
+  // Screens
+  // ---------------------------------------------------------------------------
+
+  /// The monitors this application's windows are placed on.
+  ///
+  /// The backend's own answer when it is a [ScreenProvider] - a pattern rather
+  /// than `is`, for [ClipboardProvider]'s reason: the interface is deliberately
+  /// not a subtype of [WindowingBackend], so `is` would not promote.
+  ///
+  /// ## The synthetic fallback, and why it is not an empty list
+  ///
+  /// A backend that is not a [ScreenProvider] gets **one screen synthesised
+  /// from the primary window's own client area and scale**, positioned at the
+  /// desktop origin. That is a fabrication and it is documented as one: the
+  /// window is not the screen, its origin is not the desktop's, and nothing
+  /// here knows where a taskbar is - so [ScreenInfo.workArea] equals
+  /// [ScreenInfo.bounds], which is the truthful shape for "nothing was
+  /// reserved that I could find out about".
+  ///
+  /// The alternative - answering with an empty list - reads as the honest one
+  /// and is the worse bug. Every popup would then fall back to the owner
+  /// window as its work area, which is exactly the in-tree behaviour this
+  /// whole feature exists to stop: a menu near the right edge cropped instead
+  /// of flipped. A backend that merely has not implemented [ScreenProvider]
+  /// yet would silently undo the feature for every application on it, and the
+  /// symptom - a cropped menu - names neither the missing interface nor this
+  /// method. So the fallback places popups *somewhere plausible* and stays
+  /// wrong only about the desktop, while an empty list would be wrong about
+  /// the popup.
+  ///
+  /// Empty only when there is no window to synthesise from either, which is a
+  /// windowless application - and one of those has no popup to place.
+  List<ScreenInfo> get screens {
+    if (backend case final ScreenProvider provider) {
+      final List<ScreenInfo> reported = provider.screens;
+      if (reported.isNotEmpty) return reported;
+    }
+    return _syntheticScreens();
+  }
+
+  /// The screen [window] is on, or null when nothing can say.
+  ///
+  /// The window's own centre decides, converted to screen coordinates by the
+  /// window itself - a window straddling two monitors belongs to the one that
+  /// holds most of it, which is what the centre expresses and what the
+  /// platform's own `MonitorFromWindow` means by "nearest".
+  ScreenInfo? screenFor(ApplicationWindow window) {
+    if (window.isDisposed) return null;
+    final Size size = window.host.logicalSize;
+    final Offset centre = window.nativeWindow.clientToScreen(
+      Offset(size.width / 2, size.height / 2),
+    );
+    return screenAt(centre);
+  }
+
+  /// The screen containing [screenPoint], or the nearest one; null only when
+  /// [screens] is empty. See [ScreenInfo.nearest] for why an outside point
+  /// resolves to a screen rather than to null.
+  ScreenInfo? screenAt(Offset screenPoint) =>
+      ScreenInfo.nearest(screens, screenPoint);
+
+  List<ScreenInfo> _syntheticScreens() {
+    final ApplicationWindow? window = _windows.isEmpty ? null : _windows.first;
+    if (window == null || window.isDisposed) return const <ScreenInfo>[];
+    final Size size = window.host.logicalSize;
+    if (size.isEmpty) return const <ScreenInfo>[];
+    final Rect bounds = Rect.fromLTWH(0, 0, size.width, size.height);
+    return <ScreenInfo>[
+      ScreenInfo(
+        bounds: bounds,
+        // Equal to the bounds on purpose: nothing here can find out what a
+        // shell reserved, and a guessed inset would be a menu floating above
+        // a taskbar that is not there.
+        workArea: bounds,
+        scale: window.host.renderScale,
+        isPrimary: true,
+        name: 'synthetic-${backend.name}',
+      ),
+    ];
+  }
+
+  // ---------------------------------------------------------------------------
   // Opening and closing
   // ---------------------------------------------------------------------------
 
@@ -2116,6 +2313,13 @@ final class Application with DisposableMixin {
         _teardownOrder.add('window');
         native.close();
       });
+
+      // The first moment the question can be answered - the backend has a
+      // window now, so [canOpenPopupWindows] has something to look at - and
+      // the last moment before anything expensive is built. A throw here
+      // unwinds through the bag below, so the window that was just created is
+      // closed rather than leaked.
+      _assertPopupPolicySatisfiable();
 
       // --- b. presenter and host ---------------------------------------
       late SurfacePresenter presenter;
@@ -2385,6 +2589,380 @@ final class Application with DisposableMixin {
         renderingPolicy: options.renderingPolicy,
       );
 
+  // ---------------------------------------------------------------------------
+  // Popups
+  // ---------------------------------------------------------------------------
+
+  /// Whether a menu opened here can be a window of its own.
+  ///
+  /// One question, asked of the backend rather than inferred: does its probe
+  /// report [Capability.nativePopups]? A popup needs a surface that is
+  /// undecorated, refuses activation, is positioned by the client and does not
+  /// count as a window of the application - `WS_POPUP | WS_EX_NOACTIVATE`, an
+  /// override-redirect window, an `xdg_popup` - and none of that is implied by
+  /// being able to open two ordinary windows.
+  ///
+  /// Asked of the backend and not derived from anything visible here, because
+  /// every proxy available at this layer is wrong for some backend. "Does the
+  /// window have an operating-system handle" is the tempting one and it
+  /// answers no for Wayland, which has no handle to expose and the most real
+  /// popups of all; it would have silently dropped every Wayland menu back
+  /// into an overlay, with nothing in the symptom naming the cause. So the
+  /// backends declare it.
+  ///
+  /// The headless backend deliberately does not, and that is a decision rather
+  /// than a gap: it *can* create a [WindowKind.popup] window - [openPopup]
+  /// works there and its tests drive it - but it has no screen to put one on,
+  /// and a headless run wants its menus composited into the single surface it
+  /// captures.
+  bool get canOpenPopupWindows =>
+      windowingSelection.chosen?.probe.capabilities
+          .contains(Capability.nativePopups) ??
+      false;
+
+  /// One [WindowPopupHost] per top-level owner window, shared by its whole
+  /// chain.
+  ///
+  /// Keyed by the *owner*, never by the popup: a submenu's host must be the
+  /// same object its parent menu used, or the two chains would not know about
+  /// each other and [PopupHost.closeAll] would close half of one.
+  final Map<NativeWindowId, WindowPopupHost> _popupHosts =
+      <NativeWindowId, WindowPopupHost>{};
+
+  /// The host [window]'s tree publishes, or null for the in-tree one.
+  ///
+  /// Called once per window, on its first mount, from
+  /// [ApplicationWindow.popupHost].
+  PopupHost? _popupHostFor(ApplicationWindow window) {
+    if (options.popupPolicy == PopupPolicy.inTree) return null;
+    if (!canOpenPopupWindows) return null;
+    // A popup window's host was handed to it by [openPopup] before it mounted,
+    // so reaching here for one means it was opened as a bare window rather
+    // than as a popup; a root host is the honest answer for that.
+    final ApplicationWindow root = _topLevelOwnerOf(window);
+    return _popupHosts.putIfAbsent(
+      root.id,
+      () => WindowPopupHost(application: this, owner: root),
+    );
+  }
+
+  /// The window at the top of [window]'s owner chain - itself, when it has no
+  /// owner.
+  ApplicationWindow _topLevelOwnerOf(ApplicationWindow window) {
+    ApplicationWindow node = window;
+    while (true) {
+      final NativeWindowId? ownerId = node.ownerId;
+      final ApplicationWindow? owner = ownerId == null ? null : _byId[ownerId];
+      if (owner == null) return node;
+      node = owner;
+    }
+  }
+
+  /// Refuses [PopupPolicy.window] loudly on a backend that has no windows to
+  /// give it, rather than quietly handing back the overlays it rejected.
+  void _assertPopupPolicySatisfiable() {
+    if (options.popupPolicy != PopupPolicy.window) return;
+    if (canOpenPopupWindows) return;
+    throw PopupWindowUnavailableError(
+      'the ${backend.name} backend does not open popup windows '
+      '(ApplicationOptions.popupPolicy is PopupPolicy.window)',
+    );
+  }
+
+  /// Opens a popup as a window of its own, sized to its content and placed
+  /// against the monitor's work area.
+  ///
+  /// [anchorRect] is in **[owner]'s logical coordinate space** - the space
+  /// `RenderBox.localToGlobal` produces - because that is the only space that
+  /// exists on every backend. See [PopupSpec.anchorRect].
+  ///
+  /// ## The order of the four steps, and what each one prevents
+  ///
+  ///   1. **the window is created hidden.** A popup that appeared at a
+  ///      provisional size and then resized to its measured one is a visible
+  ///      jump, and there is no size to create it at that is not provisional -
+  ///      the content has not been laid out yet. Avalonia's `PopupImpl` avoids
+  ///      the same jump the same way, `MoveResize` before `Show`;
+  ///   2. **it is measured** through [ApplicationWindow.measureRoot] against a
+  ///      loose constraint. Skipping this and trusting the created size would
+  ///      lay the menu out against the guess and then believe the guess;
+  ///   3. **it is placed** by [PopupPositioner] against the work area of the
+  ///      screen the anchor is on - flip, then slide - with the anchor
+  ///      converted to screen coordinates by the owner itself;
+  ///   4. **it is shown**, and its root constraints go back to tight, because
+  ///      from here on it is an ordinary window whose layout is its client
+  ///      area.
+  ///
+  /// ## The one divergence, and it is the surprising thing in this method
+  ///
+  /// **On a backend that reports no screens, step 3 does not run at all.** The
+  /// case is Wayland, and it is not a gap to be filled in later: a Wayland
+  /// client cannot express a screen coordinate, is never told where its own
+  /// window is, and has no business computing a flip. The compositor does it,
+  /// from the `xdg_positioner` the backend builds out of exactly the anchor
+  /// rectangle and adjustment set handed in here. So the anchor is passed
+  /// through untouched and the placement that comes back is the compositor's.
+  /// A caller must therefore not assume [ApplicationWindow] bounds mean
+  /// anything before the first frame - which is the same rule
+  /// [PopupHandle.placedRect] states by being nullable.
+  ///
+  /// ## Rendering
+  ///
+  /// None. A popup goes through the application's already-chosen presentation
+  /// path, exactly like every other window, because [openWindow] does and this
+  /// method does not add an exception. Section 3.7 of the popup plan is
+  /// explicit about why: a menu rasterised on the CPU over a window rasterised
+  /// on the GPU shows the two rasterisers' divergences side by side on one
+  /// screen, and no number of milliseconds buys that back.
+  Future<ApplicationWindow> openPopup({
+    required ApplicationWindow owner,
+    required Rect anchorRect,
+    required Widget content,
+    required PopupKind kind,
+    PopupAnchorPoint anchorPoint = PopupAnchorPoint.bottomLeft,
+    PopupAnchorPoint popupPoint = PopupAnchorPoint.topLeft,
+    Offset offset = Offset.zero,
+    Set<PopupAdjustment> adjustments = const <PopupAdjustment>{
+      PopupAdjustment.flipY,
+      PopupAdjustment.flipX,
+      PopupAdjustment.slideX,
+      PopupAdjustment.slideY,
+    },
+    BoxConstraints? constraints,
+    ApplicationWindow? parentPopup,
+    PopupHost? host,
+    void Function()? onDismissed,
+  }) async {
+    throwIfDisposed();
+    if (owner.isDisposed) {
+      throw ArgumentError.value(
+        owner,
+        'owner',
+        'a popup cannot be opened from a window that has closed',
+      );
+    }
+    final ApplicationWindow parent = parentPopup ?? owner;
+    if (parent.isDisposed) {
+      throw ArgumentError.value(
+        parentPopup,
+        'parentPopup',
+        'the popup this one opens from has already closed',
+      );
+    }
+
+    final Rect workArea = workAreaFor(owner, anchorRect);
+
+    // --- 1. hidden, at a provisional size ------------------------------
+    final Size provisional = _boundedSize(workArea.size, constraints);
+    final ApplicationWindow popup = await openWindow(
+      rootWidget: content,
+      size: provisional,
+      visible: false,
+      resizable: false,
+      decorated: false,
+      owner: parent.id,
+      kind: kind.windowKind,
+      focus: false,
+    );
+    popup.popupKind = kind;
+    // Both before the tree mounts, which [measureRoot] below is about to do.
+    // The host in particular: it is what a submenu opened from inside this
+    // popup finds, and a popup that mounted without it would resolve a root
+    // host of its own and break the platform's parent chain.
+    popup._popupHost = host;
+    popup._popupHostResolved = true;
+    popup._onPopupWindowRetired = onDismissed;
+
+    // --- 2. measure ----------------------------------------------------
+    final BoxConstraints measuring = constraints == null
+        ? BoxConstraints.loose(provisional)
+        : constraints.enforce(BoxConstraints.loose(provisional));
+    Size measured = popup.measureRoot(measuring);
+    if (measured.isEmpty) measured = provisional;
+
+    // --- 3. place ------------------------------------------------------
+    final Rect placed = placePopup(
+      owner: owner,
+      anchorRect: anchorRect,
+      size: measured,
+      anchorPoint: anchorPoint,
+      popupPoint: popupPoint,
+      offset: offset,
+      adjustments: adjustments,
+    );
+
+    // --- 4. show -------------------------------------------------------
+    if (!popup.isDisposed) {
+      popup.nativeWindow.setBounds(placed);
+      // Back to the ordinary contract: a window's tree is laid out against its
+      // client area. Leaving the loose constraint in place would let the next
+      // frame lay the menu out at a size the window is not.
+      popup.pipelineOwner.rootConstraints =
+          BoxConstraints.tight(Size(placed.width, placed.height));
+      popup.nativeWindow.show();
+      popup.requestFrame();
+    }
+    return popup;
+  }
+
+  /// Whether this platform lets a client name a point on the desktop.
+  ///
+  /// True when the backend is a [ScreenProvider] that reports at least one
+  /// monitor. False is not a defect: a Wayland client is never told where its
+  /// own window is and cannot express a screen coordinate at all, and this is
+  /// the flag that keeps the framework from pretending otherwise.
+  ///
+  /// Distinct from `screens.isNotEmpty`, which is never false while a window
+  /// is open because [screens] synthesises one. The synthetic screen is a
+  /// usable *work area* - it is what bounds a menu's height - and it is not a
+  /// coordinate system; conflating the two is how a popup gets placed at a
+  /// desktop position the compositor never agreed to.
+  bool get hasScreenCoordinates {
+    if (backend case final ScreenProvider provider) {
+      return provider.screens.isNotEmpty;
+    }
+    return false;
+  }
+
+  /// The rectangle a popup anchored at [anchorRect] in [owner] must fit into.
+  ///
+  /// The work area of the screen the anchor is on - which on a backend with no
+  /// screens is the synthetic one [screens] describes, and that is the
+  /// difference between this and [placePopup]: a size may be estimated from a
+  /// fabricated screen, a *position* may not.
+  Rect workAreaFor(ApplicationWindow owner, Rect anchorRect) {
+    final Offset centre = owner.nativeWindow.clientToScreen(anchorRect.center);
+    final ScreenInfo? screen = screenAt(centre);
+    if (screen != null) return screen.workArea;
+    return Rect.fromLTWH(
+      0,
+      0,
+      owner.host.logicalSize.width,
+      owner.host.logicalSize.height,
+    );
+  }
+
+  /// Where a popup of [size] anchored at [anchorRect] should be put.
+  ///
+  /// The returned rectangle is in **screen** coordinates where there are any,
+  /// and in [owner]'s logical space where there are not - see
+  /// [hasScreenCoordinates]. Both are what [NativeWindow.setBounds] wants on
+  /// the backend in question, which is why one method answers both: a Wayland
+  /// window's bounds *are* an anchor offset, because that is all a Wayland
+  /// window is allowed to know.
+  ///
+  /// Shared by [openPopup] and by `PopupHandle.updateAnchor`, so a popup that
+  /// follows something - a dropdown whose window moved, a tooltip following
+  /// the pointer - is repositioned by the same arithmetic that placed it.
+  Rect placePopup({
+    required ApplicationWindow owner,
+    required Rect anchorRect,
+    required Size size,
+    PopupAnchorPoint anchorPoint = PopupAnchorPoint.bottomLeft,
+    PopupAnchorPoint popupPoint = PopupAnchorPoint.topLeft,
+    Offset offset = Offset.zero,
+    Set<PopupAdjustment> adjustments = const <PopupAdjustment>{
+      PopupAdjustment.flipY,
+      PopupAdjustment.flipX,
+      PopupAdjustment.slideX,
+      PopupAdjustment.slideY,
+    },
+  }) {
+    final Offset anchorCentre =
+        owner.nativeWindow.clientToScreen(anchorRect.center);
+    final ScreenInfo? screen =
+        hasScreenCoordinates ? screenAt(anchorCentre) : null;
+    if (screen == null) {
+      // The divergence [openPopup] warns about, in the one place it lives.
+      // The compositor flips and slides from the `xdg_positioner` the backend
+      // builds out of this anchor; computing a flip here would be inventing a
+      // desktop this client is not entitled to see.
+      return Rect.fromLTWH(
+        anchorRect.left + offset.dx,
+        anchorRect.bottom + offset.dy,
+        size.width,
+        size.height,
+      );
+    }
+    final Offset anchorOrigin =
+        owner.nativeWindow.clientToScreen(anchorRect.topLeft);
+    return const PopupPositioner()
+        .place(
+          PopupRequest(
+            anchorRect: Rect.fromLTWH(
+              anchorOrigin.dx,
+              anchorOrigin.dy,
+              anchorRect.width,
+              anchorRect.height,
+            ),
+            size: size,
+            anchorPoint: anchorPoint,
+            popupPoint: popupPoint,
+            offset: offset,
+            adjustments: adjustments,
+          ),
+          screen.workArea,
+        )
+        .rect;
+  }
+
+  /// [size] clamped by [constraints], or unchanged when there are none.
+  static Size _boundedSize(Size size, BoxConstraints? constraints) {
+    if (constraints == null) return size;
+    final Size bounded = constraints.constrain(size);
+    // A constraint with an unbounded maximum constrains to the incoming value,
+    // so this only ever shrinks - which is what "bounded by constraints" has
+    // to mean for a provisional size that is already the whole work area.
+    return Size(
+      bounded.width.isFinite ? bounded.width : size.width,
+      bounded.height.isFinite ? bounded.height : size.height,
+    );
+  }
+
+  /// Every live popup window below [window], innermost last.
+  ///
+  /// Ordered by depth in the owner chain so that the last entry is the
+  /// topmost popup - the one Escape closes, the one whose [PopupKind] decides
+  /// whether a dismissing press is swallowed - and so that closing the list
+  /// backwards closes deepest first.
+  List<ApplicationWindow> popupsOf(ApplicationWindow window) {
+    final entries = <(int, ApplicationWindow)>[];
+    for (final ApplicationWindow candidate in _windows) {
+      if (candidate.isDisposed || candidate.popupKind == null) continue;
+      final int depth = _popupDepthUnder(candidate, window);
+      if (depth > 0) entries.add((depth, candidate));
+    }
+    entries.sort((a, b) => a.$1.compareTo(b.$1));
+    return <ApplicationWindow>[for (final entry in entries) entry.$2];
+  }
+
+  /// How many owner links separate [candidate] from [ancestor], or 0 when
+  /// [candidate] is not below it.
+  int _popupDepthUnder(
+      ApplicationWindow candidate, ApplicationWindow ancestor) {
+    var depth = 0;
+    ApplicationWindow? node = candidate;
+    while (node != null) {
+      final NativeWindowId? ownerId = node.ownerId;
+      if (ownerId == null) return 0;
+      depth++;
+      if (ownerId == ancestor.id) return depth;
+      node = _byId[ownerId];
+    }
+    return 0;
+  }
+
+  /// Closes every popup window below [window], deepest first. Returns how many
+  /// closed.
+  int _dismissPopupsOf(ApplicationWindow window) {
+    final List<ApplicationWindow> popups = popupsOf(window);
+    var dismissed = 0;
+    for (var i = popups.length - 1; i >= 0; i--) {
+      if (closeWindow(popups[i].id)) dismissed++;
+    }
+    return dismissed;
+  }
+
   /// Closes every live popup and tooltip, optionally sparing one subtree.
   ///
   /// This is what a click outside a menu does, and what moving the keyboard to
@@ -2449,6 +3027,17 @@ final class Application with DisposableMixin {
     _retiredFramesPresented += window.framesPresented;
     _retiredFramesRejected += window.host.framesRejected;
     _retiredErrors.addAll(window.errors);
+
+    // Before the early return below, and deliberately: a popup dismissed
+    // during teardown still owes its opener the callback it promised exactly
+    // once, and a `PopupHandle` left believing it is open would answer
+    // `isOpen` true for a window that no longer exists.
+    final void Function()? popupRetired = window._onPopupWindowRetired;
+    if (popupRetired != null) {
+      window._onPopupWindowRetired = null;
+      popupRetired();
+    }
+    _popupHosts.remove(window.id);
 
     if (_tearingDown) return;
 
@@ -2544,6 +3133,19 @@ final class Application with DisposableMixin {
     if (active) {
       focusWindow(window.id, notifyPlatform: false);
     } else {
+      // The fourth dismissal route: the owner lost activation.
+      //
+      // [focusWindow] already dismisses when the keyboard moves between *our*
+      // windows, and that covers nothing at all when the user clicks another
+      // application - the platform deactivates this window and never tells us
+      // who took it. So the deactivation itself is the signal. Doing it here
+      // rather than in `focusWindow` is what makes "click on another app with
+      // a menu open" close the menu, which is the case a framework that only
+      // watched its own windows silently misses.
+      //
+      // Harmless in the between-our-windows case: the popups were already
+      // dismissed by `focusWindow`, and this finds none.
+      _dismissPopupsOf(window);
       window.buildOwner.focusManager.isWindowActive = false;
       // Focus is surrendered rather than handed on. The window that gains it
       // will say so with its own activation event, and inventing a successor
@@ -2753,6 +3355,39 @@ final class Application with DisposableMixin {
 
     switch (event) {
       case PointerEvent():
+        // A press aimed at a window that owns live popups dismisses them
+        // *before* anything is hit-tested, and then either stops or goes on.
+        //
+        // It has to happen here and not in the tree, for the reason the whole
+        // window host exists: the popup is another window, so nothing in this
+        // window's render tree can see the press that is meant to close it.
+        // The rule it implements is `RenderPopupLayer._isModal`'s, and the two
+        // must agree - a user pressing the same pixel must not get different
+        // behaviour depending on which host the application happened to pick.
+        if (event is PointerDownEvent) {
+          final List<ApplicationWindow> popups = popupsOf(window);
+          if (popups.isNotEmpty) {
+            // The innermost popup decides, because it is the one on top: a
+            // menu swallows the press that closes it, since the user was
+            // aiming at "not the menu" and must not also press the button
+            // behind it; a dropdown lets it through, because closing a combo
+            // list by clicking a button should press that button.
+            final PopupKind topmost = popups.last.popupKind!;
+            _dismissPopupsOf(window);
+            if (window.isDisposed) {
+              _eventsDropped++;
+              return false;
+            }
+            // Only the *owner's* content is shielded, never a popup's own.
+            // `_isModal` shields child 0 and leaves the popups in the hit
+            // path, so a press on a parent menu item still activates it while
+            // closing the submenu; keying on popupKind is that same rule.
+            if (window.popupKind == null && !topmost.dismissalPassesThrough) {
+              window.requestFrame();
+              return true;
+            }
+          }
+        }
         // Layout must be current before hit testing, or the pointer is tested
         // against the previous frame's geometry - which is exactly wrong
         // during a resize, when the previous frame's geometry is the reason
@@ -2775,10 +3410,11 @@ final class Application with DisposableMixin {
           _eventsDropped++;
           return false;
         }
-        window._settleForInput();
-        final handled = window.buildOwner.dispatchKeyEvent(event);
-        window.requestFrame();
-        return handled;
+        return _dispatchKeyboard(
+          window,
+          (ApplicationWindow target) =>
+              target.buildOwner.dispatchKeyEvent(event),
+        );
 
       case TextInputEvent():
         // Text follows the key that produced it, on the same focus route and
@@ -2791,10 +3427,11 @@ final class Application with DisposableMixin {
           _eventsDropped++;
           return false;
         }
-        window._settleForInput();
-        final handled = window.buildOwner.dispatchTextInputEvent(event);
-        window.requestFrame();
-        return handled;
+        return _dispatchKeyboard(
+          window,
+          (ApplicationWindow target) =>
+              target.buildOwner.dispatchTextInputEvent(event),
+        );
 
       default:
         return _handleWindowEvent(window, event);
@@ -2804,7 +3441,75 @@ final class Application with DisposableMixin {
   bool _holdsKeyboard(ApplicationWindow window) =>
       _keyboardFocus == null || _keyboardFocus == window.id;
 
+  /// Offers a keyboard event to [window]'s innermost live popup first, then to
+  /// [window] itself.
+  ///
+  /// **A popup window never activates**, so the platform goes on delivering
+  /// keys to the owner: the OS focus is the owner's and the framework focus
+  /// may be inside the menu. That split is the whole design (see `WindowKind`
+  /// for why activating a popup is refused - every caret in the window behind
+  /// it would stop blinking while the user merely read a menu), and this is
+  /// the redirection that pays for it.
+  ///
+  /// **If the popup does not consume the event, the owner still gets it.**
+  /// That second half is not a nicety: it is what keeps Alt+F4 closing the
+  /// application, and the window's own shortcut map working, while a menu is
+  /// open. A tooltip is never a target - [PopupKind.takesKeyboard] is false
+  /// for it - because a hover label that ate the user's typing would be an
+  /// unexplainable dead keyboard.
+  bool _dispatchKeyboard(
+    ApplicationWindow window,
+    bool Function(ApplicationWindow target) dispatch,
+  ) {
+    final ApplicationWindow target = _keyboardTargetOf(window);
+    var handled = false;
+    if (!identical(target, window)) {
+      target._settleForInput();
+      handled = dispatch(target);
+      if (!target.isDisposed) target.requestFrame();
+    }
+    // The owner sees it whenever the popup did not, and always when there is
+    // no popup - which is the unchanged path every existing test takes.
+    if (!handled && !window.isDisposed) {
+      window._settleForInput();
+      handled = dispatch(window);
+    }
+    if (!window.isDisposed) window.requestFrame();
+    return handled;
+  }
+
+  /// [window]'s innermost live popup that takes the keyboard, or [window].
+  ApplicationWindow _keyboardTargetOf(ApplicationWindow window) {
+    final List<ApplicationWindow> popups = popupsOf(window);
+    for (var i = popups.length - 1; i >= 0; i--) {
+      if (popups[i].popupKind!.takesKeyboard) return popups[i];
+    }
+    return window;
+  }
+
   bool _handleWindowEvent(ApplicationWindow window, PlatformWindowEvent event) {
+    // Two of the five dismissal routes, and both are things the popup itself
+    // can never see because it is a different window.
+    //
+    //   * the frame of the owner was pressed - the user grabbed the title bar
+    //     or a caption button. Avalonia subscribes to the same signal
+    //     (`NonClientLeftButtonDown`) for the same reason; without it a menu
+    //     floats over the desktop while the window it is anchored to is
+    //     dragged out from under it;
+    //   * the owner moved or was resized. A menu anchored to a window that
+    //     has moved is pointing at nothing.
+    //
+    // The move and resize routes are restricted to windows that are not
+    // themselves popups, because a popup's *own* placement is a move and a
+    // resize: [openPopup] sets its bounds once, and a popup that dismissed its
+    // children when it was first positioned would close every submenu the
+    // instant it opened.
+    if (event is WindowNonClientPressEvent) {
+      _dismissPopupsOf(window);
+    } else if (window.popupKind == null &&
+        (event is WindowMovedEvent || event is WindowResizedEvent)) {
+      _dismissPopupsOf(window);
+    }
     if (event is WindowPointerLeaveEvent) {
       window.buildOwner.clearPointerHover();
       window.requestFrame();

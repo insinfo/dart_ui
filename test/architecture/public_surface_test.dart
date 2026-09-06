@@ -217,5 +217,50 @@ void main() {
       expect(CertificateProviderKind.values,
           contains(CertificateProviderKind.pkcs11));
     });
+
+    test('the popup contracts are nameable without naming a backend', () {
+      // An application declares where its menus go, and a widget package
+      // declares that it opens one. Both have to be able to write the types
+      // down from the public import alone - a PopupHost that could be
+      // returned but not named is a seam nobody outside this package can
+      // implement.
+      final InTreePopupHost host = InTreePopupHost();
+      final PopupSpec spec = PopupSpec(
+        anchorRect: const Rect.fromLTWH(0, 0, 10, 10),
+        kind: PopupKind.menu,
+        builder: (BuildContext context) =>
+            const SizedBox(width: 10, height: 10),
+      );
+      final PopupHandle handle = host.open(spec);
+      final PopupHost declared = host;
+
+      expect(declared.escapesOwnerWindow, isFalse);
+      expect(handle.kind, PopupKind.menu);
+      expect(handle.placedRect, isNull, reason: 'never laid out');
+      expect(PopupPolicy.values, contains(PopupPolicy.auto));
+      expect(PopupKind.tooltip.windowKind, WindowKind.tooltip);
+      expect(
+        const PopupWindowUnavailableError('headless').toString(),
+        contains('headless'),
+      );
+      handle.close();
+      expect(host.openCount, 0);
+    });
+
+    test('screen geometry is nameable, and is an optional backend seam', () {
+      // ScreenProvider is deliberately not a member of WindowingBackend - see
+      // screen_info.dart - so an application that wants monitors has to be
+      // able to name the interface it type-tests for.
+      const ScreenInfo screen = ScreenInfo(
+        bounds: Rect.fromLTRB(0, 0, 1920, 1080),
+        workArea: Rect.fromLTRB(0, 0, 1920, 1040),
+        scale: 1,
+        isPrimary: true,
+      );
+      ScreenProvider? provider;
+
+      expect(screen.workArea.height, lessThan(screen.bounds.height));
+      expect(provider, isNull);
+    });
   });
 }

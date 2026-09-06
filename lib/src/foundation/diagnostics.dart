@@ -66,6 +66,28 @@ enum Capability {
   orderlyShutdown,
 
   accessibility,
+
+  /// A menu, a tooltip or a combo list can be presented in a surface of its
+  /// own that may extend past the owner window.
+  ///
+  /// Distinct from [multipleWindows] and **not** implied by it, which is the
+  /// whole reason it exists. A backend can open several ordinary windows and
+  /// still have nothing to offer a menu: what a popup needs is a surface that
+  /// is undecorated, refuses activation, is positioned by the client and is
+  /// not counted as a window of the application. On Win32 that is
+  /// `WS_POPUP | WS_EX_NOACTIVATE`, on X11 an override-redirect window, on
+  /// Wayland an `xdg_popup`.
+  ///
+  /// The distinction is not academic. The Wayland backend creates a perfectly
+  /// real `xdg_popup` and has **no OS handle to expose**, so any predicate
+  /// phrased as "does this window have a native handle" answers no for it and
+  /// silently drops its menus back into an overlay. Backends declare this for
+  /// themselves precisely so that no consumer has to guess from a proxy.
+  ///
+  /// Absent means the framework composites popups into the owner's surface —
+  /// correct, cheaper, and cropped at the window's edge. See
+  /// `doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md`.
+  nativePopups,
 }
 
 /// Why a probe reached the conclusion it did.
