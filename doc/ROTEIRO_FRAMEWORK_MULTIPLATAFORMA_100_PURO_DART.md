@@ -8715,7 +8715,13 @@ seguinte:
    desempenho do framework e a que mais cresce com o tamanho da aplicação;
 4. **rodar `tool/x11_backend_smoke.dart` numa sessão Linux** (§68.1): o
    teclado e o clipboard do X11 continuam provados só por bytes numa máquina
-   Windows.
+   Windows;
+5. **popups em janelas nativas** — menu de contexto, combo box, tooltip e
+   barra de menus abrindo `WindowKind.popup` em vez de um overlay cortado
+   pela janela. A multijanela já existe; o que falta é o widget que a usa, o
+   redirecionamento de teclado, o descarte por clique na dona, a geometria de
+   monitor, e dois backends que não honram o kind. Plano por fases, com o
+   que cada uma prova, em `doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md`.
 
 O detalhamento por frente está em §68.
 
