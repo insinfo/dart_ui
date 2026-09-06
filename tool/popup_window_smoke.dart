@@ -159,6 +159,7 @@ Future<void> main(List<String> arguments) async {
         await _checkEscapesDeviceFramesActivation(app, owner, errors, record);
 
     await _checkOpenCost(app, owner, coldOpenMs, record);
+    await _checkOpenBreakdown(app, owner, record);
     await _checkChainAndDismiss(app, owner, record);
   } on Object catch (error, stackTrace) {
     stderr
@@ -316,9 +317,28 @@ Future<double> _checkEscapesDeviceFramesActivation(
   // compared too: `runtimeInfo.renderer` is the attached device's own
   // `RendererInfo`, so a popup that had fallen back to another path would
   // differ here even though the selection did not.
+  //
+  // `sharedDevice` is now part of the verdict rather than a number printed
+  // beside it. It used to be false, and false is what section 3.7 of the popup
+  // plan forbids by name: a popup that opens its own `ID3D11Device` pays for a
+  // driver connection the window behind it already has, and throws away the
+  // glyph atlas and the coverage cache that hang off it, so a menu rasterises
+  // from the outline every font the owner had already drawn.
+  //
+  // Asserted against what the path *declares* rather than unconditionally, so
+  // that a path which says it cannot share is held to its own answer instead
+  // of to one it never gave. Exactly one family says no and says it on
+  // purpose: the OpenGL paths, whose context is made from the window's own HDC
+  // with no share group. Making this an unconditional demand would turn
+  // `--presentation=opengl` into a failing smoke run over a structural
+  // property of WGL, and hide the case it is meant to catch - direct3d11
+  // quietly reverting to a device per window.
+  final bool sharesAsDeclared =
+      app.presentationPath.sharesDevice == sharedDevice;
   record(
     'POPUP_DEVICE',
-    ownerInfo.presentationBackend == popupInfo.presentationBackend &&
+    sharesAsDeclared &&
+        ownerInfo.presentationBackend == popupInfo.presentationBackend &&
         ownerInfo.presentationKind == popupInfo.presentationKind &&
         ownerInfo.renderer.name == popupInfo.renderer.name &&
         ownerInfo.renderer.rasterizationApproach ==
@@ -329,6 +349,10 @@ Future<double> _checkEscapesDeviceFramesActivation(
         '${popupInfo.presentationKind.name} '
         'ownerDevice=${_device(ownerDevice)} popupDevice=${_device(popupDevice)} '
         'sharedDevice=$sharedDevice '
+        'ownerLeased=${ownerPresenter is RenderTargetPresenter && ownerPresenter.sharesDevice} '
+        'popupLeased=${popupPresenter is RenderTargetPresenter && popupPresenter.sharesDevice} '
+        'pathSharesDevice=${app.presentationPath.sharesDevice} '
+        'sharesAsDeclared=$sharesAsDeclared '
         'ownerRenderer=${ownerInfo.renderer.deviceDescription} '
         'popupRenderer=${popupInfo.renderer.deviceDescription} '
         'approach=${ownerInfo.renderer.rasterizationApproach.name}/'
@@ -463,6 +487,170 @@ Future<void> _checkOpenCost(
         'bareWindowMedian=${bare[bare.length ~/ 2].toStringAsFixed(2)}',
   );
 }
+
+// ---------------------------------------------------------------------------
+// 3b. Where those milliseconds actually go
+// ---------------------------------------------------------------------------
+
+/// Splits an open into the three things it pays for, each timed on its own.
+///
+/// [_checkOpenCost] answers "what does a menu cost" and stops there, which was
+/// enough to decide that a pool would help and not enough to decide *what* to
+/// pool. The three parts are separable and only one of them is shared between
+/// windows by nature:
+///
+///   * `window` - `WindowingBackend.createWindow`, the HWND and its class,
+///     which is per window by definition and cannot be shared, only pooled;
+///   * `device` - `RendererBackend.createDevice`, the `ID3D11Device` and its
+///     pipeline, which is per *adapter* by nature and is only per window
+///     because this framework asks for one per window;
+///   * `attach` - the full `PresentationPathEntry.attach`, which is the device
+///     plus the swap chain plus the target. So `attach - device` is what a
+///     window costs once the device is already open, and that difference is
+///     the number that says whether sharing the device is worth doing.
+///
+/// Everything is measured on a popup-kind window owned by [owner], so the
+/// window creation path is the same one `openPopup` takes rather than a
+/// cheaper top-level one, and the numbers are best-of-[_timedCycles] warm: the
+/// first of each kind is discarded because it pays for the driver's own lazy
+/// initialisation, which a menu opened by a user never pays again.
+Future<void> _checkOpenBreakdown(
+  Application app,
+  ApplicationWindow owner,
+  void Function(String, bool, String) record,
+) async {
+  final PresentationPathEntry path = app.presentationPath;
+  final RendererBackend? renderer = path.backend;
+
+  WindowOptions popupOptions() => WindowOptions(
+        title: 'breakdown',
+        size: _menuSize,
+        visible: false,
+        resizable: false,
+        decorated: false,
+        owner: owner.nativeWindow,
+        kind: WindowKind.popup,
+      );
+
+  // --- the native window, alone ----------------------------------------
+  final windowMs = <double>[];
+  for (var i = 0; i <= _timedCycles; i++) {
+    final Stopwatch watch = Stopwatch()..start();
+    final NativeWindow native = await app.backend.createWindow(popupOptions());
+    watch.stop();
+    native.close();
+    if (i > 0) windowMs.add(watch.elapsedMicroseconds / 1000);
+    await _pump(app, const Duration(milliseconds: 16));
+  }
+
+  // --- the device, alone -------------------------------------------------
+  //
+  // Opened and thrown away, which is exactly what the framework does today
+  // once per window; the dispose is deliberately outside the stopwatch so the
+  // number is the cost of *having* a device, not of churning one.
+  //
+  // A refusal is a legitimate answer and is recorded rather than thrown: on
+  // Windows `GlRendererBackend.createDevice` refuses by name, because a WGL
+  // context can only be made from a device context a window already carries -
+  // which is the same property that makes the OpenGL paths declare
+  // `sharesDevice: false`, seen from the other side.
+  final deviceMs = <double>[];
+  String deviceRefusal = '';
+  if (renderer != null) {
+    for (var i = 0; i <= _timedCycles; i++) {
+      final Stopwatch watch = Stopwatch()..start();
+      final RenderDevice device;
+      try {
+        device = await renderer.createDevice();
+      } on Object catch (error) {
+        deviceRefusal = error.runtimeType.toString();
+        break;
+      }
+      watch.stop();
+      device.dispose();
+      if (i > 0) deviceMs.add(watch.elapsedMicroseconds / 1000);
+      await _pump(app, const Duration(milliseconds: 16));
+    }
+  }
+
+  // --- device plus swap chain plus target --------------------------------
+  //
+  // No provider, so this attach opens a device of its own: it is what every
+  // window of this framework cost before the registry existed, measured the
+  // same way before and after so the two runs are comparable.
+  final attachMs = <double>[];
+  for (var i = 0; i <= _timedCycles; i++) {
+    final NativeWindow native = await app.backend.createWindow(popupOptions());
+    try {
+      final Stopwatch watch = Stopwatch()..start();
+      final SurfacePresenter presenter = await path.attach(native);
+      watch.stop();
+      presenter.dispose();
+      if (i > 0) attachMs.add(watch.elapsedMicroseconds / 1000);
+    } finally {
+      native.close();
+    }
+    await _pump(app, const Duration(milliseconds: 16));
+  }
+
+  // --- the same attach against the application's own registry ------------
+  //
+  // The owner window is open, so the registry already holds the device and
+  // this is a swap chain and a target and nothing else - which is what a menu
+  // now pays. Measured rather than derived: `attach - device` is arithmetic on
+  // two medians and this is the number itself.
+  final sharedAttachMs = <double>[];
+  for (var i = 0; i <= _timedCycles; i++) {
+    final NativeWindow native = await app.backend.createWindow(popupOptions());
+    try {
+      final Stopwatch watch = Stopwatch()..start();
+      final SurfacePresenter presenter = await path.attach(
+        native,
+        devices: app.devices,
+      );
+      watch.stop();
+      presenter.dispose();
+      if (i > 0) sharedAttachMs.add(watch.elapsedMicroseconds / 1000);
+    } finally {
+      native.close();
+    }
+    await _pump(app, const Duration(milliseconds: 16));
+  }
+
+  windowMs.sort();
+  deviceMs.sort();
+  attachMs.sort();
+  sharedAttachMs.sort();
+
+  final double deviceBest = deviceMs.isEmpty ? 0 : deviceMs.first;
+  final double deviceMedian =
+      deviceMs.isEmpty ? 0 : deviceMs[deviceMs.length ~/ 2];
+  // What is left of an attach once the device is free. Reported as a plain
+  // subtraction of two medians rather than as a fourth measurement, because
+  // the swap chain cannot be created without a device to create it from.
+  final double surfaceMedian =
+      attachMs.isEmpty ? 0 : attachMs[attachMs.length ~/ 2] - deviceMedian;
+
+  record(
+    'POPUP_OPEN_BREAKDOWN',
+    windowMs.isNotEmpty && attachMs.isNotEmpty,
+    'path=${path.name} renderer=${renderer?.info.name ?? 'none'} '
+        '${deviceRefusal.isEmpty ? '' : 'deviceRefused=$deviceRefusal '}'
+        'windowBest=${_ms(windowMs.isEmpty ? 0 : windowMs.first)} '
+        'windowMedian=${_ms(windowMs.isEmpty ? 0 : windowMs[windowMs.length ~/ 2])} '
+        'deviceBest=${_ms(deviceBest)} deviceMedian=${_ms(deviceMedian)} '
+        'attachBest=${_ms(attachMs.isEmpty ? 0 : attachMs.first)} '
+        'attachMedian=${_ms(attachMs.isEmpty ? 0 : attachMs[attachMs.length ~/ 2])} '
+        'surfaceOnlyMedian=${_ms(surfaceMedian)} '
+        'sharedAttachBest=${_ms(sharedAttachMs.isEmpty ? 0 : sharedAttachMs.first)} '
+        'sharedAttachMedian=${_ms(sharedAttachMs.isEmpty ? 0 : sharedAttachMs[sharedAttachMs.length ~/ 2])} '
+        'sharesDevice=${app.presentationPath.sharesDevice} '
+        'samples=${windowMs.length}/${deviceMs.length}/${attachMs.length}/'
+        '${sharedAttachMs.length}',
+  );
+}
+
+String _ms(double value) => value.toStringAsFixed(2);
 
 // ---------------------------------------------------------------------------
 // 6 and 7. A popup owned by a popup, and the whole chain going at once

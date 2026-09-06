@@ -417,6 +417,52 @@ primeiro.
   mesmo adaptador. A divergência que a §3.7 teme está ausente; o mecanismo que
   ela nomeia como a razão, também.
 
+### Fechado em 06/09/2026: um dispositivo por adaptador
+
+O achado acima virou trabalho, e o resultado está medido no mesmo smoke, na
+mesma máquina, AOT:
+
+| | antes | depois |
+|---|---|---|
+| abertura do popup, mediana | 41,34 ms | **7,54 ms** |
+| abertura, melhor de 20 | 35,37 ms | 5,03 ms |
+| abertura fria | 63,16 ms | 7,82 ms |
+| dispositivo | dois `D3d11RenderDevice` distintos | **o mesmo objeto** (`sharedDevice=true`) |
+| frames do popup | 121 a 60,0 fps, `errors=0` | 120 a 60,0 fps, `errors=0` |
+
+**5,5 vezes**, e a separação que faltava explica exatamente por quê. O smoke
+passou a cronometrar as três partes em separado, em vez de as somar:
+
+| parte | mediana |
+|---|---|
+| criar a janela nativa | 2,54 ms |
+| **criar o dispositivo** | **19,66 ms** |
+| anexar a superfície | 9,32 ms |
+
+O dispositivo era a maior fatia isolada. Compartilhá-lo era a correção certa, e
+agora isso é um dado e não uma inferência minha — na versão anterior desta
+seção eu dizia "por experiência, a criação do device é a parte cara", que era
+um palpite bem informado e continuava sendo um palpite.
+
+**A questão do pool ficou pequena.** Com o dispositivo compartilhado, criar a
+janela é 2,5 ms de 7,5 ms. Um popup oculto reaproveitado economizaria um terço
+do que sobrou, contra os 90% que economizaria antes. Deixa de ser a próxima
+coisa a fazer e passa a ser uma otimização comum.
+
+**E o desenho ficou flexível de propósito.** `RenderDeviceRequest` carrega
+`adapter` e `exclusive`: o adaptador está na chave desde o primeiro dia, então
+uma janela na GPU discreta e outra na integrada é uma chamada e não uma
+refatoração, e quem precisar de um dispositivo sem histórico — uma captura,
+uma corrida de conformidade — pede `exclusive` e o recebe.
+
+**O OpenGL é a exceção, e é a mesma do Avalonia.** Um `GlRenderDevice` equivale
+a um `GlContext` e a uma janela, e **não há `wglShareLists` neste
+repositório**, então nomes de textura não atravessam. A metade OpenGL da
+camada 2 é mudança estrutural: põe os caches onde eles pertencem e deixa o dia
+em que os contextos compartilharem a uma linha de distância. Ela não rende
+desempenho hoje e não foi relatada como se rendesse. O Avalonia responde
+`UsesSharedContext => false` nos backends GL dele, o GLX inclusive.
+
 **E o número decide a questão do pool.** O smoke mediu um controle: uma janela
 `WindowKind.popup` nua, sem medir, colocar nem mostrar — exatamente a metade
 que um popup oculto reaproveitado já possui. Melhor 32,9 ms, mediana 37,1 ms,

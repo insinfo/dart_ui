@@ -859,6 +859,43 @@ Duas consequências que valem por si:
   janela dona em vez de criar o seu (`doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md`,
   §3.7).
 
+### 8.1.2 Um dispositivo por adaptador, N swapchains
+
+Corolário do anterior, e a forma que as duas referências deste repositório
+usam. Não é otimização prematura: é a diferença entre um menu abrir em 41 ms e
+abrir de graça, medida.
+
+- **Avalonia**: um `PlatformRenderInterfaceContextManager` guarda **um**
+  contexto GPU e **um** backend Skia para a aplicação inteira; o
+  `ServerCompositor` desenha todas as janelas (`_activeTargets`) num tique do
+  mesmo laço. Ver `referencias/Avalonia/src/Avalonia.Base/Rendering/`;
+- **Flutter**: o `egl::Manager` pertence ao `FlutterWindowsEngine`, um por
+  engine, com um `render_context_`; por janela chama só
+  `CreateWindowSurface(HWND, w, h)`. Ver
+  `referencias/engine-main/shell/platform/windows/egl/manager.h`.
+
+**Compartilhar não serializa nada que já não estivesse serializado.** A GPU é
+uma peça de hardware com um escalonador só, e tanto o Avalonia quanto o
+`dart_ui` (`Application.drawPendingFrames`, um `for` com `await`) desenham as
+janelas em sequência numa thread. O que se ganha é o cache: atlas de glifos,
+resolver de fontes, cache de imagens, cache de pipelines. O texto que a janela
+A desenhou já está rasterizado quando a B pede a mesma fonte no mesmo tamanho.
+
+**A chave é o adaptador, não a aplicação.** Uma janela na GPU discreta e outra
+na integrada é real em laptop híbrido, e é o único caso em que dispositivos
+separados ganham alguma coisa. Chavear por adaptador desde o início é o que
+evita refazer a camada inteira nesse dia; `RenderDeviceRequest.exclusive` é a
+saída explícita para quem quer o seu.
+
+**O OpenGL é a exceção, e é a mesma exceção que o Avalonia tem.** O Avalonia
+separa `CanShareContexts` (objetos compartilhados entre contextos) de
+`UsesSharedContext` (um contexto reusado), e os seus backends GL respondem
+`false` ao segundo — o GLX inclusive, que *pode* compartilhar objetos. Neste
+repositório é um passo abaixo: **não há `wglShareLists` em lugar nenhum**, e
+`win32_gl_surface.dart:525` cria o contexto do HDC da própria janela sem grupo
+de compartilhamento. Então nomes de textura não atravessam janelas no caminho
+GL, e dizer o contrário seria promessa falsa.
+
 ---
 
 ## 8.2 Regra de dependências
@@ -9426,17 +9463,14 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
 
 **Aberto, por nome:**
 
-- **o popup cria o próprio dispositivo de renderização.** A criação é por
-  janela, por presenter (`default_platform_resolver.dart:191`), e pior: o
-  atlas de glifos é por *alvo* (`d3d11_window_target.dart:131-134`). Então o
-  texto de um menu é rasterizado de novo a partir do contorno, mesmo com a
-  mesma fonte no mesmo tamanho já desenhada na janela de trás. Nada disso é
-  visível hoje — os dois lados são o mesmo rasterizador no mesmo adaptador —
-  mas o mecanismo que a §8.1.1 nomeia como a razão da regra não está lá;
-- **abrir um menu custa ~41 ms**, dos quais cerca de 90% são criar a janela, o
-  dispositivo e o swapchain (medido contra um controle de janela nua). A 41 ms
-  o menu perde duas ou três frames antes de aparecer. Adotar o dispositivo da
-  dona e um pool de popup oculto atacam o mesmo custo dominante;
+- ~~**o popup cria o próprio dispositivo de renderização**~~ e ~~**o atlas de
+  glifos é por alvo**~~ — **fechados em 06/09/2026**, e a medição está na
+  §8.1.2 e no plano. Abrir um menu caiu de **41,34 ms para 7,54 ms** de
+  mediana, com dona e popup reportando o **mesmo** `D3d11RenderDevice`. A
+  separação que faltava, agora medida em vez de inferida: janela 2,54 ms,
+  **dispositivo 19,66 ms**, superfície 9,32 ms — o dispositivo era mesmo a
+  maior fatia. O pool de popup oculto, que antes economizaria 90%, agora
+  economizaria um terço de 7,5 ms e deixou de ser a próxima coisa a fazer;
 - **macOS não tem popup nativo** e cai no overlay: sem `NSPanel` sem ativação.
   Não pode ser verificado nesta máquina;
 - **X11 e Wayland têm o código e nunca o executaram.** Os dois smokes

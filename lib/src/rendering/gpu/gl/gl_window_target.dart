@@ -109,9 +109,6 @@ final class GlWindowTarget
       : _surface = surface,
         _observedWindowGeneration = surface.generation.current {
     _maskAtlas = GpuMaskAtlas();
-    _glyphAtlas = GpuGlyphAtlas();
-    _fonts = GlFontResolver();
-    _images = GlImageCache(_device);
     _buildAtlasObjects();
     _device.registerTarget(this);
   }
@@ -136,18 +133,18 @@ final class GlWindowTarget
     // symmetry is the point: a window is where text is actually read, so a
     // backend whose *test* target drew glyphs and whose *window* target
     // refused them would pass every golden test and show a blank panel on
-    // screen. One atlas per target rather than one per device, matching the
-    // mask atlas: an atlas is written during a frame and recycled mid-frame
-    // when it fills, and two targets sharing one would recycle each other's
-    // texels out from under quads already in a vertex buffer.
-    _glyphTexture = _device.createTexture(
-      width: _glyphAtlas.width,
-      height: _glyphAtlas.height,
-      format: GpuTextureFormat.alpha8,
-      // Nearest: a glyph quad is placed on whole pixels so that one texel is
-      // one pixel, and a linear tap would resample coverage already on grid.
-      filter: GpuTextureFilter.nearest,
-    );
+    // screen.
+    //
+    // The glyph atlas and its texture are no longer built here. They belong to
+    // the device, one pair per GL context, so that a popup opening over a
+    // window that already drew this font finds its glyphs rasterised - see
+    // [GlRenderDevice.glyphAtlas], which also says why the mask atlas above
+    // stayed and why this buys nothing until two windows share a context. The
+    // per-target hazard that used to justify a per-target glyph atlas - one
+    // target recycling texels out from under quads already in another's vertex
+    // buffer - is handled by [GlRenderDevice.beginGlyphFrame], which advances
+    // the atlas's frame counter once for however many targets have a frame
+    // open rather than once per target.
     // Layers cost the same here as on the offscreen target and are wired the
     // same way: a pool of framebuffer objects, a device-independent stack, and
     // one flush hook shared by both atlases. Without them a `saveLayer` with
@@ -208,7 +205,10 @@ final class GlWindowTarget
       maskTextureId: _maskTexture.id,
       imageResolver: _images,
       glyphAtlas: _glyphAtlas,
-      glyphTextureId: _glyphTexture.id,
+      // The device's texture, read at build time rather than kept in a field:
+      // this is the id that has to be fresh after a recovery, and the device's
+      // own entry is sequenced before this target's precisely so that it is.
+      glyphTextureId: _device.glyphTexture.id,
       fontResolver: _fonts,
       layerStack: _layers,
       onAtlasFlush: _flushAtlases,
@@ -221,14 +221,26 @@ final class GlWindowTarget
   final GlRenderDevice _device;
   final GpuBatcher _batcher = GpuBatcher();
 
+  /// The one atlas that is still this target's own. See
+  /// [GlRenderDevice.glyphAtlas] for why the glyph atlas, the font resolver and
+  /// the image cache moved to the device and this one deliberately did not: its
+  /// beginFrame repacks and evicts, so two windows sharing one would throw away
+  /// coverage the other had already emitted quads for, and the frame that lost
+  /// it would render almost correctly.
   late final GpuMaskAtlas _maskAtlas;
-  late final GpuGlyphAtlas _glyphAtlas;
-  late final GlFontResolver _fonts;
-  late final GlImageCache _images;
 
-  // Not final: a device loss destroys all six and a recovery rebuilds them.
+  /// The caches the device owns and every target on this context shares. Read
+  /// through the device rather than copied into fields, so a recovery that
+  /// replaced one cannot leave this target holding the old object, and disposed
+  /// from nowhere here - see [onDispose].
+  GpuGlyphAtlas get _glyphAtlas => _device.glyphAtlas;
+  GlFontResolver get _fonts => _device.fontResolver;
+  GlImageCache get _images => _device.images;
+
+  // Not final: a device loss destroys all five and a recovery rebuilds them.
+  // The glyph texture is not among them any more - the device rebuilds it,
+  // before this target's entry runs, so the sink finds a live name.
   late GlTexture _maskTexture;
-  late GlTexture _glyphTexture;
   late GlFramebufferPool _layerPool;
   late GpuLayerStack _layers;
   late GpuRasterSink _sink;
@@ -253,14 +265,12 @@ final class GlWindowTarget
   @override
   Iterable<GpuRecoverableResource> recoverableResources() sync* {
     yield CallbackGpuResource.fixed(
-      resourceName: 'opengl window atlases '
-          '(mask ${_maskAtlas.width}x${_maskAtlas.height}, glyph '
-          '${_glyphAtlas.width}x${_glyphAtlas.height})',
+      resourceName: 'opengl window coverage atlas '
+          '${_maskAtlas.width}x${_maskAtlas.height}',
       recovery: GpuResourceRecovery.rebuilt,
       onDiscard: _discardAtlasObjects,
       onRepopulate: _repopulateAtlasObjects,
     );
-    yield* _images.recoverableResources();
   }
 
   void _discardAtlasObjects() {
@@ -277,16 +287,19 @@ final class GlWindowTarget
     _vector?.dispose();
     _device
       ..releaseTexture(_maskTexture)
-      ..releaseTexture(_glyphTexture);
-    // Both atlases are caches that outlive a frame, so both have to be told
-    // their texels are gone. The mask atlas is the one that is easy to miss:
-    // its `beginFrame` deliberately *keeps* every cached mask, so a static
-    // rounded rectangle drawn before the loss would be found resident,
-    // re-batched against a texture that was never re-uploaded, and drawn as
-    // nothing at all - a frame that differs from the pre-loss one by exactly
-    // the shapes the cache was working for.
+      // This target's frame died with the device, so the ticket it holds
+      // against the shared atlas has to die with it: a ticket left open pins
+      // the atlas's frame counter, and an atlas whose every plot looks used by
+      // the frame in progress can never evict and reports itself full.
+      ..endGlyphFrame(this);
+    // The mask atlas is the one that is easy to miss: its beginFrame
+    // deliberately *keeps* every cached mask, so a static rounded rectangle
+    // drawn before the loss would be found resident, re-batched against a
+    // texture that was never re-uploaded, and drawn as nothing at all - a frame
+    // that differs from the pre-loss one by exactly the shapes the cache was
+    // working for. The glyph atlas is told its texels are gone by the device's
+    // own entry, once for the context rather than once per target.
     _maskAtlas.recycle();
-    _glyphAtlas.clear();
   }
 
   BackendDiagnostic? _repopulateAtlasObjects() {
@@ -311,15 +324,32 @@ final class GlWindowTarget
   /// framebuffer; reuse is invisible from the pixels.
   GlFramebufferPool get layerPool => _layerPool;
 
-  /// The glyph coverage this target keeps between frames, for the same kind of
+  /// The glyph coverage this target draws out of, for the same kind of
   /// question [layerPool] answers: whether a static screen stopped rasterising
   /// after its first frame, and whether a full atlas was recycled mid-frame.
+  ///
+  /// The device's, and identical to every other target's on this context - so
+  /// a test asking whether a popup found a window's glyphs already rasterised
+  /// asks it here, and one asking about a single target's own history has to
+  /// take deltas.
   GpuGlyphAtlas get glyphAtlas => _glyphAtlas;
 
-  /// `glTexSubImage2D` calls this target has made for glyph coverage. A frame
-  /// that redraws the same text must not increase it.
-  int get glyphUploadCount => _glyphUploadCount;
-  int _glyphUploadCount = 0;
+  /// The dense coverage this target rasterises paths into.
+  ///
+  /// Exposed for the question the glyph atlas's counterpart cannot answer any
+  /// more: whether this target has one of its own. It does, and
+  /// [GlRenderDevice.glyphAtlas] says why - a mask atlas is repacked and
+  /// evicted per frame rather than kept, so two targets sharing one would
+  /// discard coverage the other had already emitted quads for.
+  GpuMaskAtlas get maskAtlas => _maskAtlas;
+
+  /// `glTexSubImage2D` calls made for glyph coverage on this target's device.
+  ///
+  /// A frame that redraws the same text must not increase it, and neither must
+  /// a second target drawing that text: since the atlas moved to the device
+  /// there is one glyph texture per context and one upload path into it, so a
+  /// per-target count would be a share of a cost nobody paid twice.
+  int get glyphUploadCount => _device.glyphUploadCount;
 
   int get experimentalVectorCommandCount =>
       _vectorStream?.vectorCommandCount ?? 0;
@@ -480,8 +510,11 @@ final class GlWindowTarget
     _maskAtlas.beginFrame();
     // Keeps every glyph and advances the counter its LRU compares against; a
     // target that forgot it would leave every plot pinned to the frame in
-    // progress and report the atlas permanently full.
-    _glyphAtlas.beginFrame();
+    // progress and report the atlas permanently full. Through the device
+    // because the atlas is shared: the counter advances once for however many
+    // targets have a frame open, which is what stops this window evicting a
+    // plot a popup's unsubmitted quads already point at.
+    _device.beginGlyphFrame(this);
     _layers.beginFrame(
       surfaceWidth: _surface.pixelWidth,
       surfaceHeight: _surface.pixelHeight,
@@ -515,6 +548,19 @@ final class GlWindowTarget
   @override
   Future<PresentResult> present(Frame frame) async {
     throwIfDisposed();
+    // Every exit below closes this target's ticket on the shared glyph atlas,
+    // and there are five of them plus the swap - including the refusals that
+    // never reach a draw call. A ticket left open pins the atlas's frame
+    // counter, which makes every plot look used by the frame in progress: an
+    // atlas that can never evict and reports itself full.
+    try {
+      return await _present(frame);
+    } finally {
+      _device.endGlyphFrame(this);
+    }
+  }
+
+  Future<PresentResult> _present(Frame frame) async {
     final blocked = _device.state.blockedPresent();
     if (blocked != null) return blocked;
     if (frame.generation != generation) return _stale('before it was drawn');
@@ -729,35 +775,14 @@ final class GlWindowTarget
 
   /// Sends the plots this frame wrote glyphs into, and nothing else.
   ///
-  /// One `glTexSubImage2D` per dirty plot, so a window redrawing the same
-  /// label sixty times a second uploads nothing at all after the first frame -
-  /// which is the entire reason the glyph atlas survives [beginFrame] while
-  /// the mask atlas does not.
-  ///
-  /// Orientation: an atlas is *uploaded*, not rendered into, so `uYFlip` and
-  /// its two constants do not apply - they invert the projection of a pass
-  /// whose output is sampled later. `glTexSubImage2D` puts the first row it is
-  /// given at texture row `y`, and the staging image is top-down, so atlas row
-  /// `y` is texture coordinate `y / height`, which is what the sink computes
-  /// for the *top* edge of a glyph quad. See `gl_backend.dart`'s copy of this
-  /// method for the long form of the argument.
-  void _uploadGlyphAtlas() {
-    if (!_glyphAtlas.isDirty) return;
-    final int width = _glyphAtlas.width;
-    _glyphAtlas.forEachDirtyRegion((int x, int y, int regionWidth, int height) {
-      _glyphUploadCount++;
-      _device.uploadRegion(
-        _glyphTexture,
-        x: x,
-        y: y,
-        width: regionWidth,
-        height: height,
-        pixels: Uint8List.sublistView(_glyphAtlas.pixels, y * width + x),
-        bytesPerRow: width,
-      );
-    });
-    _glyphAtlas.markUploaded();
-  }
+  /// The device's call, because the atlas and the texture it stages into are
+  /// one unit: [GpuGlyphAtlas.markUploaded] clears every plot's dirty flag at
+  /// once, so an atlas shared between targets that each staged into a texture
+  /// of their own would have the first target to present consume the dirty
+  /// regions and the second sample texels its texture never received. See
+  /// [GlRenderDevice.uploadGlyphAtlas] for the orientation argument and for why
+  /// the upload is per region.
+  void _uploadGlyphAtlas() => _device.uploadGlyphAtlas();
 
   /// The backend's half of the atlas flush protocol - see
   /// [GpuRasterSink.onAtlasFlush]. Upload first, because the batches about to
@@ -807,21 +832,28 @@ final class GlWindowTarget
         ),
       );
 
+  /// Releases what this target owns, and deliberately nothing else.
+  ///
+  /// The list of what is *not* here is the whole point of the ownership split.
+  /// No `_images.clear()`, no glyph texture, no `_glyphAtlas.clear()` and no
+  /// `_fonts.bind(null)`: those belong to the device and outlive this target,
+  /// so freeing them here would blank the text and drop the uploaded images of
+  /// every other target on the same context. That is exactly the failure this
+  /// change invites and must not have - closing a popup must not blank the
+  /// window behind it. The device frees them in its own `onDispose`, once.
   @override
   void onDispose() {
-    _device.unregisterTarget(this);
-    _images.clear();
+    _device
+      ..unregisterTarget(this)
+      // Balances a beginFrame that never reached present, so an abandoned frame
+      // cannot pin the shared atlas's frame counter after the target that
+      // opened it is gone.
+      ..endGlyphFrame(this);
     // After endFrame has returned every target: the pool only deletes what is
     // idle, so disposing mid-frame would leak the ones still in flight.
     _layers.endFrame();
     _layerPool.dispose();
     _vector?.dispose();
-    _device
-      ..releaseTexture(_maskTexture)
-      ..releaseTexture(_glyphTexture);
-    // The staging bytes go with the texture: an entry that outlived it would
-    // say a glyph is resident in a texture the driver has freed.
-    _glyphAtlas.clear();
-    _fonts.bind(null);
+    _device.releaseTexture(_maskTexture);
   }
 }

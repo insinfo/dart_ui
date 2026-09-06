@@ -232,8 +232,10 @@ final class PresentationPathEntry {
     required this.probe,
     required this.attach,
     required this.rasterizationApproach,
+    this.backend,
     this.compatibleWindowingBackends,
     this.experimental = false,
+    this.sharesDevice = false,
   });
 
   /// A retained CPU presenter owned by a backend, adapted in one line.
@@ -268,7 +270,11 @@ final class PresentationPathEntry {
                     ),
                   ],
                 ),
-        attach: (NativeWindow window) async =>
+        // `devices` is ignored, and that is the honest answer rather than an
+        // omission: these pixels go through a presenter the windowing backend
+        // owns - a DIB section, a `wl_shm` pool, an `IOSurface` - and there is
+        // no `RenderDevice` anywhere on this path to share.
+        attach: (NativeWindow window, {RenderDeviceProvider? devices}) async =>
             CallbackSurfacePresenter.retained(
           info: RendererInfo(
             name: name,
@@ -291,9 +297,20 @@ final class PresentationPathEntry {
         name: name ?? backend.info.name,
         kind: PresentationKind.cpu,
         rasterizationApproach: backend.info.rasterizationApproach,
+        backend: backend,
+        // A `CpuRenderDevice` has no driver behind it, so sharing one buys
+        // nothing dramatic - but the glyph and coverage caches hang off the
+        // device here exactly as they do on a GPU one, and a second window
+        // rasterising the same font at the same size from scratch is the same
+        // waste on either path.
+        sharesDevice: true,
         probe: backend.probe,
-        attach: (NativeWindow window) =>
-            RenderTargetPresenter.attach(backend: backend, window: window),
+        attach: (NativeWindow window, {RenderDeviceProvider? devices}) =>
+            RenderTargetPresenter.attach(
+          backend: backend,
+          window: window,
+          devices: devices,
+        ),
       );
 
   /// A renderer that replays display lists directly into a native window.
@@ -302,6 +319,27 @@ final class PresentationPathEntry {
   /// use analytic coverage, tessellation, stencil-and-cover, compute tiles, or
   /// a custom strategy; application and compositor code only see the common
   /// [RendererBackend] and [DisplayListRenderTarget] contracts.
+  /// [sharesDevice] is Avalonia's `IPlatformGraphics.UsesSharedContext`, moved
+  /// onto the path because that is where this framework knows the answer:
+  /// [RendererBackend] deliberately does not grow a capability for it, and the
+  /// same `GlRendererBackend` is shareable or not depending on how the
+  /// attachment obtains its context.
+  ///
+  /// True is the framework's rule - "um dispositivo, N swapchains" - and every
+  /// Direct3D-family path answers true, because one `ID3D11Device` with N swap
+  /// chains is what the API is shaped like. The OpenGL paths answer false and
+  /// the reason is structural rather than unfinished work: their context is
+  /// created from the window's own HDC or drawable with its own pixel format
+  /// and no share group, and there is no `wglShareLists` call anywhere in this
+  /// repository. Making them share is a design change to the GL backend - a
+  /// share group at context creation, or one context made current on several
+  /// HDCs, which the spec permits only for matching pixel formats and which
+  /// then serialises every window on `MakeCurrent` - not a call-site change,
+  /// so it is declared false here rather than silently half-done.
+  ///
+  /// [openDevice] replaces `RendererBackend.createDevice` as the way a shared
+  /// device is opened, for the one path whose presentation device the backend
+  /// cannot produce. See [RenderDeviceProvider.acquire].
   factory PresentationPathEntry.directRenderer({
     required RendererBackend backend,
     required RendererWindowAttachmentFactory createAttachment,
@@ -309,18 +347,25 @@ final class PresentationPathEntry {
     BackendProbeResult Function()? probe,
     Set<String>? compatibleWindowingBackends,
     bool experimental = false,
+    bool sharesDevice = true,
+    Future<RenderDevice> Function()? openDevice,
   }) =>
       PresentationPathEntry(
         name: name ?? backend.info.name,
         kind: PresentationKind.gpu,
         rasterizationApproach: backend.info.rasterizationApproach,
+        backend: backend,
         compatibleWindowingBackends: compatibleWindowingBackends,
         experimental: experimental,
+        sharesDevice: sharesDevice,
         probe: probe ?? backend.probe,
-        attach: (NativeWindow window) => RenderTargetPresenter.attachToWindow(
+        attach: (NativeWindow window, {RenderDeviceProvider? devices}) =>
+            RenderTargetPresenter.attachToWindow(
           backend: backend,
           window: window,
           createAttachment: createAttachment,
+          devices: sharesDevice ? devices : null,
+          openDevice: openDevice,
         ),
       );
 
@@ -344,12 +389,42 @@ final class PresentationPathEntry {
   /// the whole selection down instead of losing one candidate.
   final BackendProbeResult Function() probe;
 
+  /// The renderer this path draws with, when there is one to name.
+  ///
+  /// Null for [PresentationPathEntry.retainedCpu], where the pixels go through
+  /// a presenter the windowing backend owns and no [RendererBackend] is
+  /// involved at all. Exposed rather than captured privately in [attach]
+  /// because a caller that wants to know what a *device* costs - the popup
+  /// smoke does, and the answer is the whole justification for sharing one -
+  /// otherwise has no way to ask for one without going through a window.
+  final RendererBackend? backend;
+
   /// Binds this path to a live window. Called once per window, for the winner
   /// only - every window of one application gets its own presenter, because a
   /// presenter is bound to one surface.
-  final Future<SurfacePresenter> Function(NativeWindow window) attach;
+  ///
+  /// A presenter per window is right and a *device* per window was not, and
+  /// [devices] is the difference. The application passes its registry here and
+  /// the second window of an application is handed the first window's device,
+  /// so what a new window costs is a swap chain rather than a driver
+  /// connection. Null means "nobody is sharing" and restores the per-window
+  /// device this framework opened before the registry existed, which is what
+  /// a caller building a presenter by hand outside an [Application] gets.
+  final Future<SurfacePresenter> Function(
+    NativeWindow window, {
+    RenderDeviceProvider? devices,
+  }) attach;
 
   final bool experimental;
+
+  /// Whether every window of one application draws through one device.
+  ///
+  /// Reported rather than merely acted on, because "the popup got its own
+  /// `ID3D11Device`" was true for a year and invisible from everywhere: the
+  /// two devices had the same [RendererInfo], drew the same pixels and
+  /// differed only in cost. A path that answers false here is saying so on
+  /// purpose - see [PresentationPathEntry.directRenderer].
+  final bool sharesDevice;
 
   BackendProbeResult probeForWindowingBackend(String backendName) {
     final Set<String>? compatible = compatibleWindowingBackends;
@@ -1687,11 +1762,13 @@ final class Application with DisposableMixin {
     required Map<String, BackendProbeResult> presentationProbes,
     required DisposableBag resources,
     required List<String> teardownOrder,
+    required SharedRenderDeviceRegistry devices,
   })  : _presentationPath = presentationPath,
         _presentationPaths = presentationPaths,
         _presentationProbes = presentationProbes,
         _resources = resources,
-        _teardownOrder = teardownOrder;
+        _teardownOrder = teardownOrder,
+        _devices = devices;
 
   /// Assembles everything, opens the first window, and stops short of the
   /// first frame.
@@ -1787,6 +1864,7 @@ final class Application with DisposableMixin {
     // succeeds so a failure half-way releases exactly what was built.
     final resources = DisposableBag();
     final teardown = <String>[];
+    final devices = SharedRenderDeviceRegistry();
     late final Application application;
 
     try {
@@ -1795,6 +1873,13 @@ final class Application with DisposableMixin {
         teardown.add('backend');
         application._pendingShutdown = backend.shutdown();
       });
+      // After the backend and therefore released before it, which is the only
+      // order that works: a device is a driver object owned by this process
+      // and disposing one after the windowing backend has shut down would be
+      // a release against a connection that is already gone. It is a safety
+      // net regardless - by the time this runs every window has released its
+      // lease and the registry holds nothing.
+      resources.add(devices, devices.dispose);
 
       application = Application._(
         options: options,
@@ -1806,6 +1891,7 @@ final class Application with DisposableMixin {
         presentationProbes: presentationProbes,
         resources: resources,
         teardownOrder: teardown,
+        devices: devices,
       );
 
       // --- 3. the first window -----------------------------------------
@@ -1831,7 +1917,34 @@ final class Application with DisposableMixin {
   PresentationSelection presentationSelection;
 
   PresentationPathEntry _presentationPath;
+
+  /// The path every window of this application attaches through.
+  ///
+  /// Not necessarily the one [presentationSelection] chose at startup: a first
+  /// window whose attach fails demotes its path and picks the next, and this
+  /// getter reports the one in force now.
+  PresentationPathEntry get presentationPath => _presentationPath;
+
   final List<PresentationPathEntry> _presentationPaths;
+
+  /// One GPU device per adapter, for every window of this application.
+  ///
+  /// The rule from section 3.7 of the popup plan and 8.1.1 of the roadmap -
+  /// *um dispositivo, N swapchains* - lives here rather than in any backend.
+  /// It was measured before it was written: on an Intel UHD at Direct3D 11,
+  /// opening a menu cost 20.7 ms of `ID3D11Device` against 1.4 ms of HWND and
+  /// 1.9 ms of swap chain, so a menu was paying seven eighths of its latency
+  /// for a driver connection the window behind it already had open. The glyph
+  /// atlas and the coverage cache hang off the device, so the second window
+  /// also re-rasterised every glyph the first had already drawn.
+  ///
+  /// Reference counted, not application-lifetime: the device dies with the
+  /// last window that was using it and is opened again if another opens later.
+  final SharedRenderDeviceRegistry _devices;
+
+  /// Where every window of this application gets its render device.
+  RenderDeviceProvider get devices => _devices;
+
   final Map<String, BackendProbeResult> _presentationProbes;
   final DisposableBag _resources;
   final List<String> _teardownOrder;
@@ -2325,7 +2438,7 @@ final class Application with DisposableMixin {
       late SurfacePresenter presenter;
       while (true) {
         try {
-          presenter = await _presentationPath.attach(native);
+          presenter = await _presentationPath.attach(native, devices: _devices);
           break;
         } on Object catch (error) {
           // A pinned path is a demand, not a preference. Falling back would
@@ -2357,6 +2470,15 @@ final class Application with DisposableMixin {
                 entry.name == presentationSelection.chosen!.name,
           );
         }
+      }
+      // Below the host in the bag and therefore released *after* it, and no
+      // entry is added to [teardownOrder]: the device is not a new step of a
+      // window's life, it is a borrow the presenter already gives back inside
+      // `host.dispose()`. Announcing it as a step would change the observed
+      // teardown order of every window in the framework to record something
+      // that has already happened. See `releaseDeviceLease`.
+      if (presenter case final RenderTargetPresenter target) {
+        bag.add(target, target.releaseDeviceLease);
       }
       final host = WindowHost(
         window: native,

@@ -649,3 +649,406 @@ abstract interface class RendererBackend {
 
   Future<RenderDevice> createDevice();
 }
+
+// ---------------------------------------------------------------------------
+// One device, N swapchains - the sharing seam
+// ---------------------------------------------------------------------------
+
+/// What a caller wants from a device.
+///
+/// A request object rather than a bare bool because the two questions - *which
+/// GPU* and *may I share it* - are independent and both have to be answerable
+/// at the same call site. Both defaults are the framework's rule: the system
+/// adapter, shared.
+final class RenderDeviceRequest {
+  const RenderDeviceRequest({this.adapter, this.exclusive = false});
+
+  /// Which adapter, or null for the system default.
+  ///
+  /// **Part of the sharing key from day one**, before anything reads it. A
+  /// window dragged onto a discrete GPU while another stays on the integrated
+  /// one needs a device per adapter, and a key that had to grow that field
+  /// later would mean revisiting every acquisition a second time - which is
+  /// exactly the cost this whole change exists to stop paying per window.
+  final String? adapter;
+
+  /// Force a device of this window's own.
+  ///
+  /// The escape hatch, and the reason this is a request rather than a
+  /// parameter: a caller doing something genuinely per-window - a capture that
+  /// must not contend with the UI, a conformance run that wants a device with
+  /// no history - says so here and gets a device nobody else can reach, while
+  /// every ordinary window keeps sharing.
+  final bool exclusive;
+
+  @override
+  bool operator ==(Object other) =>
+      other is RenderDeviceRequest &&
+      other.adapter == adapter &&
+      other.exclusive == exclusive;
+
+  @override
+  int get hashCode => Object.hash(adapter, exclusive);
+
+  @override
+  String toString() => 'RenderDeviceRequest(adapter: ${adapter ?? 'default'}'
+      '${exclusive ? ', exclusive' : ''})';
+}
+
+/// A borrowed device, and the right to stop borrowing it.
+///
+/// [release] rather than `dispose` is the whole point: the holder of a lease
+/// does not know whether it is the only one, so it must never dispose. Calling
+/// [release] is what *allows* the last holder to dispose, and calling it twice
+/// is a no-op rather than an error - a presenter that failed half-way through
+/// an attach and a bag that releases the same resource on teardown are both
+/// correct, and only one of them can be first.
+abstract interface class RenderDeviceLease {
+  /// The device. Valid until [release]; reading it afterwards is a bug the
+  /// implementation is free to refuse.
+  RenderDevice get device;
+
+  bool get isReleased;
+
+  void release();
+}
+
+/// Hands out GPU devices, sharing one per adapter where that is possible.
+///
+/// This exists because the framework was creating an `ID3D11Device` per
+/// *window*, and on the machine this was measured on that is 20.7 ms of a
+/// 30 ms menu open - against 1.4 ms for the HWND and 1.9 ms for the swap
+/// chain. A device is per adapter by nature; it was per window only because
+/// nothing ever asked for it any other way.
+///
+/// [sharesDevices] is Avalonia's `IPlatformGraphics.UsesSharedContext`, and
+/// both answers are real rather than one being a gap. `AvaloniaNativeGl`
+/// reports true; `EglPlatformGraphics` reports false and its
+/// `GetSharedContext()` throws; `GlxPlatformFeature` reports
+/// `CanShareContexts => true` with `UsesSharedContext => false`, which is a
+/// third state - contexts that can share *objects* without being the same
+/// object. This framework's OpenGL paths sit below even that:
+/// `win32_gl_surface.dart` creates a context from the window's own HDC with no
+/// share group, and there is no `wglShareLists` call anywhere in this
+/// repository, so a GL device is bound to one window's pixel format and cannot
+/// be handed to a second window at all. That is why a non-sharing provider is
+/// a first-class implementation here ([PerWindowRenderDeviceProvider]) rather
+/// than an error case.
+abstract interface class RenderDeviceProvider {
+  /// Whether one device object is reused by every target.
+  ///
+  /// False is a legitimate answer, not a failure: the caller may still
+  /// [acquire], it simply gets a device of its own every time. What false
+  /// means is that no amount of asking will make two windows share a glyph
+  /// atlas.
+  bool get sharesDevices;
+
+  /// The device for [request], created on first use and reused after.
+  ///
+  /// [openDevice] overrides *how* the device is opened without changing what
+  /// it is keyed by. Exactly one path needs that and needs it badly: the
+  /// Vulkan presentation path must open a device with `VK_KHR_swapchain`
+  /// enabled, which `VulkanRendererBackend.createDevice` deliberately does not
+  /// - it opens an offscreen device so a headless runner with no WSI loader
+  /// keeps Vulkan at all. Without this parameter that path would go on opening
+  /// a `VkDevice` per window while the registry sat beside it doing nothing,
+  /// and nobody would notice, because Vulkan is experimental and draws no
+  /// text. The key is still the backend, so every Vulkan window of one
+  /// application shares the one presentation-enabled device.
+  Future<RenderDeviceLease> acquire(
+    RendererBackend backend,
+    RenderDeviceRequest request, {
+    Future<RenderDevice> Function()? openDevice,
+  });
+}
+
+/// The provider for backends whose devices cannot be shared.
+///
+/// Every acquisition opens a device and every release disposes it, which is
+/// precisely what this framework did on every path before the registry
+/// existed. Keeping it as a provider rather than as a null provider and a
+/// branch is what gives the presenter one code path: it always holds a lease,
+/// and "this device is mine alone" is a property of the provider rather than a
+/// shape every caller has to test for.
+final class PerWindowRenderDeviceProvider implements RenderDeviceProvider {
+  const PerWindowRenderDeviceProvider();
+
+  @override
+  bool get sharesDevices => false;
+
+  @override
+  Future<RenderDeviceLease> acquire(
+    RendererBackend backend,
+    RenderDeviceRequest request, {
+    Future<RenderDevice> Function()? openDevice,
+  }) async =>
+      _OwnedDeviceLease(await (openDevice ?? backend.createDevice)());
+}
+
+/// A lease over a device nobody else can reach: releasing disposes it.
+final class _OwnedDeviceLease implements RenderDeviceLease {
+  _OwnedDeviceLease(this._device);
+
+  final RenderDevice _device;
+  bool _released = false;
+
+  @override
+  RenderDevice get device => _device;
+
+  @override
+  bool get isReleased => _released;
+
+  @override
+  void release() {
+    if (_released) return;
+    _released = true;
+    _device.dispose();
+  }
+}
+
+/// One device per adapter, reference counted, for a whole application.
+///
+/// Reference counted rather than application-lifetime, and the difference is
+/// two faults neither of which the existing teardown tests can see. An
+/// application-lifetime device would hold a driver allocation across an
+/// interval in which every window is closed - a tray application spends most
+/// of its life there - and a device that merely outlived its last window would
+/// be a leak `test/app/multi_window_test.dart` counts nothing about, because
+/// that suite counts *releases* and a device nobody releases produces no entry
+/// to count.
+///
+/// The lost-device rule is Avalonia's, from
+/// `PlatformRenderInterfaceContextManager.EnsureValidBackendContext`: an entry
+/// whose device reports [RenderDevice.isLost] is evicted on the next
+/// acquisition and a fresh one takes its place in the map. The evicted entry
+/// keeps its own holders and disposes itself when the last of them releases,
+/// so a window that has not yet noticed the loss is never left holding a
+/// device somebody else disposed.
+final class SharedRenderDeviceRegistry
+    with DisposableMixin
+    implements RenderDeviceProvider {
+  SharedRenderDeviceRegistry();
+
+  final Map<_RenderDeviceKey, _SharedDeviceEntry> _entries =
+      <_RenderDeviceKey, _SharedDeviceEntry>{};
+  final Set<_SharedDeviceEntry> _live = <_SharedDeviceEntry>{};
+
+  @override
+  bool get sharesDevices => true;
+
+  /// How many devices this registry currently keeps open, counting entries
+  /// evicted for device loss that some window still holds.
+  ///
+  /// The number a test can assert on. "The popup did not create a device" is
+  /// not observable from a window, and counting `createDevice` calls on a fake
+  /// backend proves only that the registry did not ask twice - not that it is
+  /// not holding two.
+  int get liveDeviceCount => _live.length;
+
+  /// How many leases are outstanding across every device.
+  int get leaseCount =>
+      _live.fold<int>(0, (int sum, _SharedDeviceEntry e) => sum + e.holders);
+
+  @override
+  Future<RenderDeviceLease> acquire(
+    RendererBackend backend,
+    RenderDeviceRequest request, {
+    Future<RenderDevice> Function()? openDevice,
+  }) async {
+    // `async` so that every failure of an acquisition reaches the caller the
+    // same way - on the future - rather than a disposed registry throwing on
+    // the stack while a refusing driver throws on the future. It costs the
+    // reentrancy guard nothing: an async body runs synchronously up to its
+    // first `await`, and there is none before the entry goes into the map.
+    throwIfDisposed();
+    // An exclusive request is not a cache miss, it is a refusal to use the
+    // cache: it must not populate the map, or the next ordinary window would
+    // silently adopt the device somebody asked to keep to themselves.
+    if (request.exclusive) {
+      final entry = _SharedDeviceEntry(
+        this,
+        null,
+        (openDevice ?? backend.createDevice)(),
+      );
+      _live.add(entry);
+      return entry.lease();
+    }
+    final key = _RenderDeviceKey(backend, request.adapter);
+    _SharedDeviceEntry? entry = _entries[key];
+    if (entry != null && entry.isLost) {
+      // Evicted, not disposed: holders that have not noticed the loss keep the
+      // old device until they release it themselves.
+      _entries.remove(key);
+      entry = null;
+    }
+    if (entry == null) {
+      // The *future* goes into the map, before the first await. This is the
+      // reentrancy guard the whole design turns on: `acquire` is asynchronous,
+      // and two windows opening in the same turn would otherwise both find an
+      // empty map and both call `createDevice` - which is the bug this class
+      // exists to remove, reintroduced by the fix for it.
+      entry = _SharedDeviceEntry(
+        this,
+        key,
+        (openDevice ?? backend.createDevice)(),
+      );
+      _entries[key] = entry;
+      _live.add(entry);
+    }
+    return entry.lease();
+  }
+
+  void _forget(_SharedDeviceEntry entry) {
+    _live.remove(entry);
+    final _RenderDeviceKey? key = entry.key;
+    // Only when it is still the *current* entry for that key: an entry evicted
+    // for device loss must not take its replacement out of the map with it
+    // when its last stale holder finally releases.
+    if (key != null && identical(_entries[key], entry)) _entries.remove(key);
+  }
+
+  /// A safety net, not the normal path.
+  ///
+  /// Every device here should already be gone: a lease is released when its
+  /// window's presenter is disposed, and the last release disposes the device.
+  /// Anything left at application teardown is a lease somebody did not
+  /// release, and dropping it would turn that into a driver allocation
+  /// outliving the process's own shutdown sequence.
+  @override
+  void onDispose() {
+    for (final _SharedDeviceEntry entry in List<_SharedDeviceEntry>.of(_live)) {
+      entry.forceDispose();
+    }
+    _live.clear();
+    _entries.clear();
+  }
+}
+
+/// The sharing key. [adapter] is null for the system default.
+///
+/// The backend is compared with `==`, which for the in-tree backends is
+/// identity on a canonicalised const instance - every window of one
+/// application constructs `const D3d11RendererBackend()` and lands on the same
+/// key, without anything having to hold a reference for that purpose alone.
+final class _RenderDeviceKey {
+  const _RenderDeviceKey(this.backend, this.adapter);
+
+  final RendererBackend backend;
+  final String? adapter;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _RenderDeviceKey &&
+      other.backend == backend &&
+      other.adapter == adapter;
+
+  @override
+  int get hashCode => Object.hash(backend, adapter);
+}
+
+/// One device and the count of who is still using it.
+final class _SharedDeviceEntry {
+  _SharedDeviceEntry(this.registry, this.key, this._pending);
+
+  final SharedRenderDeviceRegistry registry;
+  final _RenderDeviceKey? key;
+  final Future<RenderDevice> _pending;
+
+  RenderDevice? _device;
+  int holders = 0;
+  bool _disposed = false;
+
+  bool get isLost => _device?.isLost ?? false;
+
+  Future<RenderDeviceLease> lease() async {
+    // Incremented *before* the await, so a release landing while the device is
+    // still opening cannot take the count to zero and dispose underneath a
+    // caller who is about to be handed that device.
+    holders++;
+    final lease = _SharedDeviceLease(this);
+    final RenderDevice device;
+    try {
+      device = _device ??= await _pending;
+    } on Object {
+      // A device that never opened must not stay in the map: the next window
+      // would inherit a permanently failing future instead of getting a fresh
+      // attempt, which is how one transient driver error becomes a
+      // permanently broken application.
+      lease.releaseWithoutDisposing();
+      rethrow;
+    }
+    if (_disposed) {
+      // Only reachable through `SharedRenderDeviceRegistry.dispose` while an
+      // acquisition was in flight: the application tore down mid-attach.
+      holders = holders > 0 ? holders - 1 : 0;
+      throw StateError('the render device was disposed while it was being '
+          'acquired; the application shut down during a window attach');
+    }
+    lease.bind(device);
+    return lease;
+  }
+
+  void release() {
+    if (holders == 0) return;
+    holders--;
+    if (holders > 0) return;
+    registry._forget(this);
+    _dispose();
+  }
+
+  void forceDispose() {
+    holders = 0;
+    _dispose();
+  }
+
+  void _dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    // Null when the open failed or is still in flight; there is nothing to
+    // dispose in either case, and a `_pending` that completes afterwards
+    // resolves to a device nobody can reach.
+    _device?.dispose();
+    _device = null;
+  }
+}
+
+final class _SharedDeviceLease implements RenderDeviceLease {
+  _SharedDeviceLease(this._entry);
+
+  final _SharedDeviceEntry _entry;
+  RenderDevice? _device;
+  bool _released = false;
+
+  void bind(RenderDevice device) => _device = device;
+
+  @override
+  RenderDevice get device {
+    final RenderDevice? device = _device;
+    if (device == null) {
+      throw StateError('this lease has been released; the device it named may '
+          'belong to nobody, or to somebody else');
+    }
+    return device;
+  }
+
+  @override
+  bool get isReleased => _released;
+
+  @override
+  void release() {
+    if (_released) return;
+    _released = true;
+    _device = null;
+    _entry.release();
+  }
+
+  /// Gives the count back without letting the entry dispose a device it never
+  /// opened. Used only when the open itself threw.
+  void releaseWithoutDisposing() {
+    if (_released) return;
+    _released = true;
+    _device = null;
+    if (_entry.holders > 0) _entry.holders--;
+    if (_entry.holders == 0) _entry.registry._forget(_entry);
+  }
+}

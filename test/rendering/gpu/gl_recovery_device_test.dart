@@ -113,13 +113,25 @@ void main() {
       final int id = list.addImage(image);
       list.drawImage(id, 0, 0, 4, 4, 0, 0, 16, 16, paint);
 
+      // Deltas, not absolutes: the image cache belongs to the device and is
+      // shared by every target on it, so what an earlier test in this file
+      // uploaded is still resident. Asserting `length == 1` here would be
+      // asserting that the cache is per target, which is the thing that
+      // changed - see GlRenderDevice.images.
+      final int imagesBefore = device.images.length;
+      final int retainedBefore = device.images.retainedSourceBytes;
+      final int unrecoverableBefore = device.images.unrecoverableCount;
+
       await target.renderDisplayList(list, clearColor: 0xFF000000);
       final Uint8List before = Uint8List.fromList(target.framebuffer.pixels);
-      expect(target.images.length, 1);
+      expect(target.images.length, imagesBefore + 1);
       // The retention policy, measured rather than asserted in prose: the cache
-      // is holding exactly the image's bytes.
-      expect(target.images.retainedSourceBytes, 4 * 4 * 4);
-      expect(target.images.unrecoverableCount, 0);
+      // took on exactly this image's bytes.
+      expect(
+        target.images.retainedSourceBytes,
+        retainedBefore + 4 * 4 * 4,
+      );
+      expect(target.images.unrecoverableCount, unrecoverableBefore);
 
       device.state.markLost(const BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
@@ -148,10 +160,14 @@ void main() {
       list.drawImage(id, 0, 0, 4, 4, 0, 0, 16, 16, paint);
 
       await target.renderDisplayList(list, clearColor: 0xFF000000);
+      final int retainedWithIt = device.images.retainedSourceBytes;
+      final int unrecoverableBefore = device.images.unrecoverableCount;
       // The application decided it would never need to re-upload this one.
       expect(target.images.dropSource(image), isTrue);
-      expect(target.images.retainedSourceBytes, 0);
-      expect(target.images.unrecoverableCount, 1);
+      // Deltas again, and for the device-wide cache's reason: dropping this
+      // image's source frees this image's bytes, not the whole cache's.
+      expect(target.images.retainedSourceBytes, retainedWithIt - 4 * 4 * 4);
+      expect(target.images.unrecoverableCount, unrecoverableBefore + 1);
 
       device.state.markLost(const BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
@@ -162,7 +178,9 @@ void main() {
       // Recovered, and honest about what did not come back.
       expect(report.status, GpuRecoveryStatus.recoveredWithLosses);
       expect(report.unrecoverableResources, hasLength(1));
-      expect(report.unrecoverableResources.single, contains('opengl image #0'));
+      // Named by index within the device's cache, so the number is whatever
+      // this file has uploaded so far rather than a fixed 0.
+      expect(report.unrecoverableResources.single, contains('opengl image #'));
       expect(report.unrecoverableResources.single, contains('4x4'));
 
       // And the frame that asks for it is refused *by name*. Not a blank

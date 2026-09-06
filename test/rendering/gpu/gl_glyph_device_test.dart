@@ -188,8 +188,15 @@ void main() {
       // nothing is dirty, so no region is sent - and the count is per
       // `glTexSubImage2D` call rather than per frame, so a backend that
       // uploaded the whole atlas "just in case" would fail this by 1.
+      //
+      // Every number here is a delta against a baseline taken before the first
+      // frame, because the atlas and its upload counter belong to the *device*
+      // and are shared with every target on it - see GlRenderDevice.glyphAtlas.
+      // A size nothing else in this file has drawn keeps the first frame a
+      // genuine miss rather than a hit on an earlier test's leftovers, which
+      // would make this test pass while measuring nothing.
       final GlOffscreenTarget target = session.target(96, 32);
-      final ScaledTypeface font = dejaVu.atSize(16);
+      final ScaledTypeface font = dejaVu.atSize(17);
       final DisplayList list = _run(
         font,
         _glyphsFor(dejaVu, 'repeat'),
@@ -198,30 +205,45 @@ void main() {
         advance: 10,
       );
 
+      final int uploadsBefore = target.glyphUploadCount;
+      final int missesBefore = target.glyphAtlas.missCount;
+      final int hitsBefore = target.glyphAtlas.hitCount;
+
       await target.renderDisplayList(list, clearColor: _clear);
-      final int firstUploads = target.glyphUploadCount;
-      final int firstMisses = target.glyphAtlas.missCount;
+      final int firstUploads = target.glyphUploadCount - uploadsBefore;
+      final int firstMisses = target.glyphAtlas.missCount - missesBefore;
+      final int uploadsAfterFirst = target.glyphUploadCount;
+      final int missesAfterFirst = target.glyphAtlas.missCount;
+      final int hitsAfterFirst = target.glyphAtlas.hitCount;
       expect(firstUploads, greaterThan(0),
           reason: 'the first frame has to send the coverage it rasterised');
       expect(firstMisses, greaterThan(0));
 
       await target.renderDisplayList(list, clearColor: _clear);
-      expect(target.glyphUploadCount, firstUploads,
+      expect(target.glyphUploadCount, uploadsAfterFirst,
           reason: 'a cache hit dirties nothing, so there is nothing to send');
-      expect(target.glyphAtlas.missCount, firstMisses,
+      expect(target.glyphAtlas.missCount, missesAfterFirst,
           reason: 'the second frame must not rasterise a glyph again');
-      expect(target.glyphAtlas.hitCount, greaterThanOrEqualTo(firstMisses));
+      expect(target.glyphAtlas.hitCount - hitsAfterFirst,
+          greaterThanOrEqualTo(firstMisses),
+          reason: 'every glyph the first frame rasterised has to be a hit on '
+              'the second');
       expect(target.glyphAtlas.isDirty, isFalse);
       printOnFailure('uploads $firstUploads, misses $firstMisses, '
-          'hits ${target.glyphAtlas.hitCount}');
+          'hits ${target.glyphAtlas.hitCount - hitsBefore}');
       target.dispose();
     }, skip: session.skipReason);
 
     test('uploads one region per plot, not the whole texture', () async {
       // Six small glyphs land in one plot, so the frame costs exactly one
       // driver call. A full-atlas upload would move a megabyte to do it.
+      // A size no other test in this file uses, so the six glyphs are genuine
+      // misses on a device-wide atlas that other tests have already written
+      // into, and both numbers below are deltas for the same reason.
       final GlOffscreenTarget target = session.target(96, 32);
-      final ScaledTypeface font = dejaVu.atSize(16);
+      final ScaledTypeface font = dejaVu.atSize(18);
+      final int uploadsBefore = target.glyphUploadCount;
+      final int plotsBefore = target.glyphAtlas.usedPlotCount;
       await target.renderDisplayList(
         _run(
           font,
@@ -232,8 +254,12 @@ void main() {
         ),
         clearColor: _clear,
       );
-      expect(target.glyphUploadCount, 1);
-      expect(target.glyphAtlas.usedPlotCount, 1);
+      expect(target.glyphUploadCount - uploadsBefore, 1,
+          reason: 'six small glyphs land in one plot, so the frame costs one '
+              'driver call; a full-atlas upload would move a megabyte');
+      expect(
+          target.glyphAtlas.usedPlotCount - plotsBefore, lessThanOrEqualTo(1),
+          reason: 'and they occupy no plot that was not already in use');
       target.dispose();
     }, skip: session.skipReason);
 
@@ -425,6 +451,8 @@ void main() {
       // next one and draw the previous frame's angle.
       final ScaledTypeface font = dejaVu.atSize(20);
       final GlOffscreenTarget target = session.target(96, 96);
+      final int missesBefore = target.glyphAtlas.missCount;
+      final int hitsBefore = target.glyphAtlas.hitCount;
       await target.renderDisplayList(
         _run(
           font,
@@ -437,8 +465,11 @@ void main() {
         clearColor: _clear,
       );
 
-      expect(target.glyphAtlas.missCount, 0);
-      expect(target.glyphAtlas.hitCount, 0);
+      // Untouched *by this frame*: the atlas is the device's and holds what
+      // every earlier test in this file put in it, so the assertion is that
+      // neither counter moved rather than that both are zero.
+      expect(target.glyphAtlas.missCount, missesBefore);
+      expect(target.glyphAtlas.hitCount, hitsBefore);
       expect(_isUniform(target.framebuffer), isFalse,
           reason: 'the run still has to have drawn something');
       target.dispose();

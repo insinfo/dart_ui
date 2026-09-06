@@ -247,7 +247,7 @@ void main() {
             supported: true,
             capabilities: <Capability>{Capability.gpuPresentation},
           ),
-          attach: (NativeWindow _) async =>
+          attach: (NativeWindow _, {RenderDeviceProvider? devices}) async =>
               throw StateError('swapchain creation failed'),
         ),
         PresentationPathEntry.cpuRenderer(name: 'cpu-fallback'),

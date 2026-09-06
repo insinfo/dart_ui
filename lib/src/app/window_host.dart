@@ -122,11 +122,28 @@ typedef RendererWindowAttachment = ({
   bool releaseSurfaceBeforeDevice,
 });
 
+/// Builds an attachment, on a device it is given or on one it opens itself.
+///
+/// [device] is the load-bearing parameter and the whole of the "one device, N
+/// swapchains" rule at the only place it can be enforced:
+///
+///   * **non-null** - a device leased from a [RenderDeviceProvider] that some
+///     other window may already be drawing through. Use it; do not dispose it.
+///     The lease decides when it dies, and disposing it here would take the
+///     owner window's swap chain down with the menu that closed.
+///   * **null** - nobody is sharing, so open a device, return it in
+///     [RendererWindowAttachment.device], and the presenter disposes it with
+///     the window exactly as it did before any of this existed. This is not a
+///     legacy branch: the OpenGL paths build their device *from the window* -
+///     `wglCreateContext` on the window's own HDC, with its own pixel format
+///     and no share group - so there is no device to hand them before their
+///     window exists, and no way to hand the same one to a second window.
 typedef RendererWindowAttachmentFactory = Future<RendererWindowAttachment>
     Function(
   RendererBackend backend,
-  NativeWindow window,
-);
+  NativeWindow window, {
+  RenderDevice? device,
+});
 
 /// Anything that can turn a display list into presented pixels for one window.
 ///
@@ -675,12 +692,20 @@ final class RenderTargetPresenter
     required RenderDevice device,
     required RenderTarget target,
     required NativeSurfaceDescriptor surface,
+    RenderDeviceLease? lease,
+    RenderDeviceProvider? devices,
+    RenderDeviceRequest request = const RenderDeviceRequest(),
+    Future<RenderDevice> Function()? openDevice,
     NativeWindow? window,
     RendererWindowAttachmentFactory? attachmentFactory,
     void Function()? releaseSurface,
     bool releaseSurfaceBeforeDevice = true,
   })  : _backend = backend,
         _device = device,
+        _lease = lease,
+        _devices = devices,
+        _request = request,
+        _openDevice = openDevice,
         _target = target,
         _surface = surface,
         _window = window,
@@ -698,6 +723,8 @@ final class RenderTargetPresenter
   static Future<RenderTargetPresenter> attach({
     required RendererBackend backend,
     required NativeWindow window,
+    RenderDeviceProvider? devices,
+    RenderDeviceRequest request = const RenderDeviceRequest(),
   }) async {
     final surfaces = window.surfaces;
     NativeSurfaceDescriptor? chosen;
@@ -728,11 +755,32 @@ final class RenderTargetPresenter
         ],
       );
     }
-    final device = await backend.createDevice();
+    // A device is only asked for once a surface has been found, which is why
+    // this line is below the throw above rather than at the top: a window that
+    // offers nothing this backend can draw into must not cost a device on its
+    // way to failing.
+    final RenderDeviceProvider provider =
+        devices ?? const PerWindowRenderDeviceProvider();
+    final RenderDeviceLease lease = await provider.acquire(backend, request);
+    final RenderDevice device = lease.device;
+    late final RenderTarget target;
+    try {
+      target = device.createTarget(chosen);
+    } on Object {
+      // Release, never dispose. On a shared provider this device may already
+      // be presenting another window; on a per-window one the release *is* the
+      // dispose. Getting this wrong the other way - disposing - is the failure
+      // mode this whole seam exists to make impossible.
+      lease.release();
+      rethrow;
+    }
     return RenderTargetPresenter._(
       backend: backend,
       device: device,
-      target: device.createTarget(chosen),
+      lease: lease,
+      devices: provider,
+      request: request,
+      target: target,
       surface: chosen,
     );
   }
@@ -742,19 +790,51 @@ final class RenderTargetPresenter
   /// This is the production GPU seam. The common presenter still owns replay,
   /// resize, device-loss recovery and teardown; the platform callback only
   /// turns an opaque native window into the renderer's surface descriptor.
+  /// [devices] is where the device comes from when this path can share one.
+  ///
+  /// Null - or a provider that answers [RenderDeviceProvider.sharesDevices]
+  /// false - restores exactly the pre-registry behaviour: the factory opens a
+  /// device, this presenter owns it, and closing the window disposes it. That
+  /// is the correct answer for the OpenGL paths and the wrong one for
+  /// Direct3D, which is why it is a parameter rather than a policy.
+  ///
+  /// [openDevice] is handed on to the provider unchanged, for the one path -
+  /// Vulkan - whose presentation device cannot come from
+  /// `RendererBackend.createDevice`.
   static Future<RenderTargetPresenter> attachToWindow({
     required RendererBackend backend,
     required NativeWindow window,
     required RendererWindowAttachmentFactory createAttachment,
+    RenderDeviceProvider? devices,
+    RenderDeviceRequest request = const RenderDeviceRequest(),
+    Future<RenderDevice> Function()? openDevice,
   }) async {
+    final RenderDeviceProvider? provider =
+        (devices != null && devices.sharesDevices) ? devices : null;
+    RenderDeviceLease? lease;
     RendererWindowAttachment? attachment;
     try {
-      attachment = await createAttachment(backend, window);
+      if (provider != null) {
+        lease = await provider.acquire(
+          backend,
+          request,
+          openDevice: openDevice,
+        );
+      }
+      attachment = await createAttachment(
+        backend,
+        window,
+        device: lease?.device,
+      );
       final RenderTarget target =
           attachment.device.createTarget(attachment.surface);
       return RenderTargetPresenter._(
         backend: backend,
         device: attachment.device,
+        lease: lease,
+        devices: provider,
+        request: request,
+        openDevice: openDevice,
         target: target,
         surface: attachment.surface,
         window: window,
@@ -763,12 +843,20 @@ final class RenderTargetPresenter
         releaseSurfaceBeforeDevice: attachment.releaseSurfaceBeforeDevice,
       );
     } on Object {
+      // Two failures reach here and they need opposite treatment of the
+      // device, which is exactly why [lease] is consulted rather than the
+      // attachment: a leased device is released - some other window may be
+      // mid-frame on it - while a device the factory opened for this window
+      // alone is disposed, as it always was.
       if (attachment case final RendererWindowAttachment value) {
-        _disposeAttachedDevice(
+        _releaseAttachedDevice(
           device: value.device,
+          lease: lease,
           releaseSurface: value.releaseSurface,
           releaseSurfaceBeforeDevice: value.releaseSurfaceBeforeDevice,
         );
+      } else {
+        lease?.release();
       }
       rethrow;
     }
@@ -776,6 +864,21 @@ final class RenderTargetPresenter
 
   final RendererBackend _backend;
   RenderDevice _device;
+
+  /// The borrow on [_device], or null when this presenter owns it outright.
+  ///
+  /// Null is the non-sharing case and it is not a degraded one: an OpenGL
+  /// context made from this window's HDC belongs to this window and dies with
+  /// it. Non-null means somebody else may be drawing through the same device
+  /// right now, and the only correct teardown is a release.
+  RenderDeviceLease? _lease;
+
+  /// Where a *replacement* device comes from after a loss. Null whenever
+  /// [_lease] is null - the two are set together and mean the same thing.
+  final RenderDeviceProvider? _devices;
+  final RenderDeviceRequest _request;
+  final Future<RenderDevice> Function()? _openDevice;
+
   RenderTarget _target;
   NativeSurfaceDescriptor _surface;
   final NativeWindow? _window;
@@ -785,6 +888,30 @@ final class RenderTargetPresenter
 
   RenderDevice get device => _device;
   RenderTarget get target => _target;
+
+  /// Whether this window is drawing through a device it shares with others.
+  ///
+  /// Observable so a smoke test can assert the framework's own rule rather
+  /// than infer it from two identity hashes that happen to match.
+  bool get sharesDevice => _lease != null && (_devices?.sharesDevices ?? false);
+
+  /// Hands the device back without tearing the presenter down.
+  ///
+  /// Registered in the window's own `DisposableBag` next to the host, so the
+  /// lease is accounted for by the same mechanism that accounts for the window
+  /// and the scheduler rather than by one object's `dispose` alone. In the
+  /// ordinary teardown it runs second and does nothing: the bag releases last
+  /// acquired first, [onDispose] has already released, and a released lease
+  /// releases again as a no-op. It earns its place in the case that is not
+  /// ordinary - a presenter that never reached the host because a later step
+  /// of `openWindow` threw - where it is the only thing that gives a shared
+  /// device its reference count back, and where leaving it out would pin an
+  /// `ID3D11Device` for the life of the process.
+  void releaseDeviceLease() {
+    final RenderDeviceLease? lease = _lease;
+    _lease = null;
+    lease?.release();
+  }
 
   @override
   RendererInfo get info => _device.info;
@@ -846,27 +973,54 @@ final class RenderTargetPresenter
     _surface = _target.surface;
   }
 
+  /// Rebuilds device, surface and target after the device underneath was lost.
+  ///
+  /// With a shared device this is also how the *other* windows recover, and it
+  /// works without any coordination between them because of the eviction rule
+  /// in [SharedRenderDeviceRegistry]: the first window to notice releases its
+  /// lease and acquires again, the registry sees a lost device, evicts it and
+  /// opens one; the second window to notice then acquires and is handed that
+  /// same replacement rather than a third device. The evicted device dies when
+  /// the last window that had not yet noticed releases it, which is why the
+  /// release below happens before the acquisition and not after.
   @override
   Future<bool> recoverFromDeviceLoss() async {
     throwIfDisposed();
     _target.dispose();
     final void Function() oldRelease = _releaseSurface;
     _releaseSurface = _doNothing;
-    _disposeAttachedDevice(
+    final RenderDeviceLease? oldLease = _lease;
+    _lease = null;
+    _releaseAttachedDevice(
       device: _device,
+      lease: oldLease,
       releaseSurface: oldRelease,
       releaseSurfaceBeforeDevice: _releaseSurfaceBeforeDevice,
     );
+
+    final RenderDeviceProvider? devices = _devices;
     final RendererWindowAttachmentFactory? factory = _attachmentFactory;
     final NativeWindow? window = _window;
     if (factory != null && window != null) {
-      final RendererWindowAttachment attachment = await factory(
-        _backend,
-        window,
-      );
+      RenderDeviceLease? lease;
+      if (devices != null && devices.sharesDevices) {
+        lease = await devices.acquire(
+          _backend,
+          _request,
+          openDevice: _openDevice,
+        );
+      }
+      final RendererWindowAttachment attachment;
+      try {
+        attachment = await factory(_backend, window, device: lease?.device);
+      } on Object {
+        lease?.release();
+        rethrow;
+      }
       if (attachment.device.isLost) {
-        _disposeAttachedDevice(
+        _releaseAttachedDevice(
           device: attachment.device,
+          lease: lease,
           releaseSurface: attachment.releaseSurface,
           releaseSurfaceBeforeDevice: attachment.releaseSurfaceBeforeDevice,
         );
@@ -876,48 +1030,62 @@ final class RenderTargetPresenter
       try {
         target = attachment.device.createTarget(attachment.surface);
       } on Object {
-        _disposeAttachedDevice(
+        _releaseAttachedDevice(
           device: attachment.device,
+          lease: lease,
           releaseSurface: attachment.releaseSurface,
           releaseSurfaceBeforeDevice: attachment.releaseSurfaceBeforeDevice,
         );
         rethrow;
       }
       _device = attachment.device;
+      _lease = lease;
       _surface = attachment.surface;
       _releaseSurface = attachment.releaseSurface;
       _releaseSurfaceBeforeDevice = attachment.releaseSurfaceBeforeDevice;
       _target = target;
     } else {
-      final RenderDevice device = await _backend.createDevice();
+      final RenderDeviceProvider provider =
+          devices ?? const PerWindowRenderDeviceProvider();
+      final RenderDeviceLease lease = await provider.acquire(
+        _backend,
+        _request,
+        openDevice: _openDevice,
+      );
+      final RenderDevice device = lease.device;
       if (device.isLost) {
-        device.dispose();
+        lease.release();
         return false;
       }
       late final RenderTarget target;
       try {
         target = device.createTarget(_surface);
       } on Object {
-        device.dispose();
+        lease.release();
         rethrow;
       }
       _device = device;
+      _lease = lease;
       _target = target;
     }
     return true;
   }
 
   /// Reverse of acquisition: the target draws into memory the device owns, so
-  /// the device must outlive it.
+  /// the device must outlive it - and with a shared device it outlives this
+  /// window too, which is why nothing here disposes it.
   @override
   void onDispose() {
     final void Function() release = _releaseSurface;
     _releaseSurface = _doNothing;
+    final RenderDeviceLease? lease = _lease;
+    _lease = null;
     try {
       _target.dispose();
     } finally {
-      _disposeAttachedDevice(
+      _releaseAttachedDevice(
         device: _device,
+        lease: lease,
         releaseSurface: release,
         releaseSurfaceBeforeDevice: _releaseSurfaceBeforeDevice,
       );
@@ -927,21 +1095,48 @@ final class RenderTargetPresenter
 
 void _doNothing() {}
 
-void _disposeAttachedDevice({
+/// Gives back one window's half of an attachment.
+///
+/// [lease] decides what happens to the device, and the two cases are not
+/// interchangeable:
+///
+///   * a **lease** is released. Whether that disposes anything is the
+///     provider's business - it does for [PerWindowRenderDeviceProvider] and
+///     it does not for [SharedRenderDeviceRegistry] until the last window
+///     lets go. A presenter that disposed here instead would kill the owner
+///     window's swap chain when a menu closed, which is the one failure this
+///     entire change has to not introduce;
+///   * a **null lease** means the factory opened the device for this window
+///     alone, and it is disposed exactly as it was before providers existed.
+///
+/// [releaseSurfaceBeforeDevice] is honoured in both cases and it is not
+/// decoration: an OpenGL context must be destroyed before the HDC it was made
+/// from, so `wglDeleteContext` runs before `ReleaseDC`, while a DXGI swap
+/// chain must go before the device that made it.
+void _releaseAttachedDevice({
   required RenderDevice device,
+  required RenderDeviceLease? lease,
   required void Function() releaseSurface,
   required bool releaseSurfaceBeforeDevice,
 }) {
+  void releaseDevice() {
+    if (lease != null) {
+      lease.release();
+      return;
+    }
+    device.dispose();
+  }
+
   if (releaseSurfaceBeforeDevice) {
     try {
       releaseSurface();
     } finally {
-      device.dispose();
+      releaseDevice();
     }
     return;
   }
   try {
-    device.dispose();
+    releaseDevice();
   } finally {
     releaseSurface();
   }

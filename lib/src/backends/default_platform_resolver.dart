@@ -187,10 +187,26 @@ final class PlatformBackendResolver {
     return PresentationPathEntry.directRenderer(
       backend: renderer,
       compatibleWindowingBackends: const <String>{'win32'},
-      createAttachment: (RendererBackend backend, NativeWindow native) async {
-        final RenderDevice rawDevice = await backend.createDevice();
+      createAttachment: (
+        RendererBackend backend,
+        NativeWindow native, {
+        RenderDevice? device,
+      }) async {
+        // The whole of the change, at the site that used to pay for it: a
+        // device arrives when the application has one to lend, and only a
+        // caller with nobody to borrow from opens its own. An `ID3D11Device`
+        // is per adapter by nature - N swap chains hang off one of them - so
+        // the second window of an application now costs a swap chain.
+        final RenderDevice rawDevice = device ?? await backend.createDevice();
+        // Disposed only when this attachment opened it. A leased device may be
+        // presenting the window behind this one right now, and the release is
+        // the presenter's to make.
+        void discardOwnDevice() {
+          if (device == null) rawDevice.dispose();
+        }
+
         if (rawDevice is! D3d11RenderDevice || native is! Win32Window) {
-          rawDevice.dispose();
+          discardOwnDevice();
           throw StateError('direct3d11 requires D3d11RenderDevice and '
               'Win32Window; got ${rawDevice.runtimeType} and '
               '${native.runtimeType}');
@@ -203,7 +219,7 @@ final class PlatformBackendResolver {
         );
         final Win32D3d11Surface? surface = attempt.surface;
         if (surface == null) {
-          rawDevice.dispose();
+          discardOwnDevice();
           _throwAttachmentFailure(
             D3d11RendererBackend.backendName,
             attempt.diagnostics,
@@ -268,10 +284,14 @@ final class PlatformBackendResolver {
     return PresentationPathEntry.directRenderer(
       backend: renderer,
       compatibleWindowingBackends: const <String>{'win32'},
-      createAttachment: (RendererBackend backend, NativeWindow native) async {
-        final RenderDevice rawDevice = await backend.createDevice();
+      createAttachment: (
+        RendererBackend backend,
+        NativeWindow native, {
+        RenderDevice? device,
+      }) async {
+        final RenderDevice rawDevice = device ?? await backend.createDevice();
         if (rawDevice is! D2dRenderDevice || native is! Win32Window) {
-          rawDevice.dispose();
+          if (device == null) rawDevice.dispose();
           throw StateError('direct2d requires D2dRenderDevice and '
               'Win32Window; got ${rawDevice.runtimeType} and '
               '${native.runtimeType}');
@@ -307,10 +327,14 @@ final class PlatformBackendResolver {
     return PresentationPathEntry.directRenderer(
       backend: renderer,
       compatibleWindowingBackends: const <String>{'win32'},
-      createAttachment: (RendererBackend backend, NativeWindow native) async {
-        final RenderDevice rawDevice = await backend.createDevice();
+      createAttachment: (
+        RendererBackend backend,
+        NativeWindow native, {
+        RenderDevice? device,
+      }) async {
+        final RenderDevice rawDevice = device ?? await backend.createDevice();
         if (rawDevice is! D3d12RenderDevice || native is! Win32Window) {
-          rawDevice.dispose();
+          if (device == null) rawDevice.dispose();
           throw StateError('direct3d12 requires D3d12RenderDevice and '
               'Win32Window; got ${rawDevice.runtimeType} and '
               '${native.runtimeType}');
@@ -351,17 +375,30 @@ final class PlatformBackendResolver {
       probe: _probeWin32Vulkan,
       experimental: true,
       compatibleWindowingBackends: const <String>{'win32'},
-      createAttachment: (RendererBackend _, NativeWindow native) async {
+      // The registry keys on the backend and opens the device with this,
+      // never with `VulkanRendererBackend.createDevice`. Without it the
+      // registry would sit beside this path doing nothing while it went on
+      // opening a `VkDevice` per window, and nobody would notice: Vulkan is
+      // experimental, is never reached by fallback, and raises on the first
+      // glyph, so almost nothing exercises it.
+      openDevice: _openWin32VulkanDevice,
+      createAttachment: (
+        RendererBackend _,
+        NativeWindow native, {
+        RenderDevice? device,
+      }) async {
         if (native is! Win32Window) {
           throw StateError('vulkan on Windows requires Win32Window; got '
               '${native.runtimeType}');
         }
-        final VulkanRenderDevice device = VulkanRenderDevice.open(
-          options: _win32VulkanInstanceOptions,
-          enablePresentation: true,
-        );
+        final RenderDevice raw = device ?? await _openWin32VulkanDevice();
+        if (raw is! VulkanRenderDevice) {
+          if (device == null) raw.dispose();
+          throw StateError('vulkan requires VulkanRenderDevice; got '
+              '${raw.runtimeType}');
+        }
         return (
-          device: device,
+          device: raw,
           surface: VulkanWindowSurfaceDescriptor(
             platform: VulkanSurfacePlatform.win32,
             // Zero is legal here and means "the module this process was loaded
@@ -382,6 +419,19 @@ final class PlatformBackendResolver {
       },
     );
   }
+
+  /// Opens the presentation-capable Vulkan device, once per application.
+  ///
+  /// Separate from the attachment so the registry can call it: what is shared
+  /// has to be openable before any window exists, and the surface half below
+  /// still needs a window. `VulkanRendererBackend.createDevice` cannot stand
+  /// in - it opens an offscreen device with no `VK_KHR_swapchain`, on purpose,
+  /// so a headless runner with no WSI loader keeps Vulkan at all.
+  static Future<RenderDevice> _openWin32VulkanDevice() async =>
+      VulkanRenderDevice.open(
+        options: _win32VulkanInstanceOptions,
+        enablePresentation: true,
+      );
 
   static const VulkanInstanceOptions _win32VulkanInstanceOptions =
       VulkanInstanceOptions(
@@ -504,7 +554,24 @@ final class PlatformBackendResolver {
       backend: renderer,
       probe: _probeWin32OpenGl,
       compatibleWindowingBackends: const <String>{'win32'},
-      createAttachment: (RendererBackend _, NativeWindow native) async {
+      // Declared, not overlooked. `wglCreateContext` below is called on this
+      // window's own HDC with this window's chosen pixel format and no share
+      // group - there is no `wglShareLists` call anywhere in this repository -
+      // so the device this factory builds cannot be handed to a second window
+      // even in principle. Making it shareable is a change inside
+      // `rendering/gpu/gl`: a share group at creation, or one context made
+      // current on several HDCs, which WGL permits only for matching pixel
+      // formats and which then serialises every window on `MakeCurrent`. This
+      // is the state Avalonia's own GL backends report too - `EglPlatformGra`
+      // `phics` answers `UsesSharedContext => false` and `GlxPlatformFeature`
+      // answers `CanShareContexts => true, UsesSharedContext => false`, and
+      // this path is below even the second of those.
+      sharesDevice: false,
+      createAttachment: (
+        RendererBackend _,
+        NativeWindow native, {
+        RenderDevice? device,
+      }) async {
         if (native is! Win32Window) {
           throw StateError('opengl on Windows requires Win32Window; got '
               '${native.runtimeType}');
@@ -530,15 +597,20 @@ final class PlatformBackendResolver {
             ],
           );
         }
-        final GlRenderDevice device;
+        // Asserted rather than assumed: this path declares `sharesDevice:
+        // false`, so a device arriving here would mean the declaration and the
+        // wiring had drifted apart, and the symptom would be a silently
+        // ignored shared device plus a second context nobody asked for.
+        assert(device == null, 'the OpenGL path cannot adopt a shared device');
+        final GlRenderDevice adopted;
         try {
-          device = _adoptGlContext(context, surface.glLibrary);
+          adopted = _adoptGlContext(context, surface.glLibrary);
         } on Object {
           surface.dispose();
           rethrow;
         }
         return (
-          device: device,
+          device: adopted,
           surface: surface.describeSurface(
             pixelWidth: _pixelWidth(native),
             pixelHeight: _pixelHeight(native),
@@ -556,7 +628,15 @@ final class PlatformBackendResolver {
     return PresentationPathEntry.directRenderer(
       backend: renderer,
       compatibleWindowingBackends: const <String>{'x11'},
-      createAttachment: (RendererBackend _, NativeWindow native) async {
+      // As on Win32, and for the GLX equivalent of the same reason: the
+      // context comes from the window's own drawable and visual, built with no
+      // share list. See `_win32OpenGl`.
+      sharesDevice: false,
+      createAttachment: (
+        RendererBackend _,
+        NativeWindow native, {
+        RenderDevice? device,
+      }) async {
         if (native is! X11Window) {
           throw StateError('opengl on Linux requires X11Window; got '
               '${native.runtimeType}');
@@ -570,15 +650,16 @@ final class PlatformBackendResolver {
             attempt.diagnostics,
           );
         }
-        final GlRenderDevice device;
+        assert(device == null, 'the OpenGL path cannot adopt a shared device');
+        final GlRenderDevice adopted;
         try {
-          device = _adoptGlContext(surface.context, surface.glLibrary);
+          adopted = _adoptGlContext(surface.context, surface.glLibrary);
         } on Object {
           surface.dispose();
           rethrow;
         }
         return (
-          device: device,
+          device: adopted,
           surface: surface.describeSurface(
             pixelWidth: _pixelWidth(native),
             pixelHeight: _pixelHeight(native),
