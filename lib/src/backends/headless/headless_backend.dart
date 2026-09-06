@@ -25,14 +25,56 @@ import 'headless_test_support.dart' show FakeClipboard;
 
 /// An always-available in-memory windowing backend.
 final class HeadlessWindowingBackend
-    implements WindowingBackend, ClipboardProvider, DragDropProvider {
+    implements
+        WindowingBackend,
+        ClipboardProvider,
+        DragDropProvider,
+        ScreenProvider {
   HeadlessWindowingBackend({
     this.renderScale = 1,
     this.desktopScale = 1,
-  }) {
+    List<ScreenInfo>? screens,
+  }) : _screens = List<ScreenInfo>.unmodifiable(
+          screens ?? const <ScreenInfo>[defaultHeadlessScreen],
+        ) {
     _validateScale(renderScale, 'renderScale');
     _validateScale(desktopScale, 'desktopScale');
   }
+
+  /// The one synthetic monitor a headless run has unless a test says
+  /// otherwise: 1920x1080 at scale 1, with **40 logical pixels reserved along
+  /// the bottom**.
+  ///
+  /// The inset is the point of the default, not decoration. A synthetic screen
+  /// whose work area equalled its bounds would let a test of popup placement
+  /// pass while the code under test ignored the work area entirely - and the
+  /// bug that ships is precisely a menu drawn underneath the Windows taskbar,
+  /// which is what a work area smaller than the bounds is *for*. So the
+  /// default screen can tell the two apart, and a test that confuses them
+  /// fails here rather than on a user's desktop.
+  static const ScreenInfo defaultHeadlessScreen = ScreenInfo(
+    bounds: Rect.fromLTRB(0, 0, 1920, 1080),
+    workArea: Rect.fromLTRB(0, 0, 1920, 1040),
+    scale: 1,
+    isPrimary: true,
+    name: 'headless-1',
+  );
+
+  /// The monitors this backend reports.
+  ///
+  /// Injected through the constructor so a test can describe a desktop this
+  /// machine does not have - two monitors side by side at different scales is
+  /// the arrangement the popup work has to survive, and it is not reproducible
+  /// on CI any other way. Unmodifiable: a backend whose screen list could be
+  /// mutated between two reads would make a placement bug look like a race.
+  @override
+  List<ScreenInfo> get screens => _screens;
+
+  final List<ScreenInfo> _screens;
+
+  @override
+  ScreenInfo? screenAt(Offset screenPoint) =>
+      ScreenInfo.nearest(_screens, screenPoint);
 
   @override
   String get name => 'headless';
@@ -99,6 +141,11 @@ final class HeadlessWindowingBackend
         diagnostics: const <BackendDiagnostic>[
           BackendDiagnostic.note(
             'pure Dart in-memory windowing; no display server required',
+          ),
+          BackendDiagnostic.note(
+            'screens are synthetic: one 1920x1080 monitor at scale 1 whose '
+            'work area is inset 40 logical pixels at the bottom, or whatever '
+            'the constructor was given',
           ),
         ],
       );

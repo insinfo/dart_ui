@@ -50,6 +50,14 @@ const List<String> x11WellKnownAtoms = <String>[
   '_NET_WM_STATE_HIDDEN',
   '_NET_WM_WINDOW_TYPE',
   '_NET_WM_WINDOW_TYPE_NORMAL',
+  // One atom per WindowKind (see `x11_window.dart`). They are interned with
+  // the rest rather than on demand because the type has to be on the window
+  // before it is mapped - a menu that interned its atom lazily would round
+  // trip inside the click that opened it, and a window mapped without a type
+  // is a window the compositor has already decided how to animate.
+  '_NET_WM_WINDOW_TYPE_DIALOG',
+  '_NET_WM_WINDOW_TYPE_POPUP_MENU',
+  '_NET_WM_WINDOW_TYPE_TOOLTIP',
   '_NET_ACTIVE_WINDOW',
   '_MOTIF_WM_HINTS',
   // Drag and drop. Spread rather than spelled out again so that the state
@@ -107,6 +115,16 @@ abstract interface class X11WindowClient implements X11BackendConnection {
   void configureTopLevelWindow(int window, X11TopLevelBounds bounds);
   void requestTopLevelRedraw(int window, X11RedrawRegion? region);
 
+  /// What the server says about a window's kind, or null when it cannot say.
+  ///
+  /// Read-back, not book-keeping: `override_redirect` goes out inside
+  /// `CreateWindow` and comes back in no event, so the only honest way to know
+  /// a popup really is invisible to the window manager is to ask
+  /// `GetWindowAttributes` afterwards. `tool/x11_backend_smoke.dart` is the one
+  /// caller, and it exists because asserting the arguments we passed proves
+  /// nothing about what the server did with them.
+  X11ServerWindowKind? readWindowKind(int window);
+
   bool pollEventInto(X11RawEvent target);
   bool waitForActivity(int timeoutMilliseconds);
   ({int x, int y})? translateToRoot(int window);
@@ -144,6 +162,13 @@ abstract interface class X11KeyboardClient {
 }
 
 /// Device-pixel creation parameters for one top-level X11 window.
+///
+/// The three kind-bearing fields ([overrideRedirect], [windowTypeAtom],
+/// [transientFor]) arrive already resolved, because the framework's
+/// `WindowKind` must not cross this seam: everything below here speaks X11 and
+/// nothing else, which is what keeps the connection testable without the
+/// windowing layer and the windowing layer testable without libxcb. The
+/// translation lives in `X11WindowKindPlan` in `x11_window.dart`.
 final class X11TopLevelWindowRequest {
   const X11TopLevelWindowRequest({
     required this.width,
@@ -154,6 +179,9 @@ final class X11TopLevelWindowRequest {
     required this.visible,
     this.x,
     this.y,
+    this.overrideRedirect = false,
+    this.windowTypeAtom = '_NET_WM_WINDOW_TYPE_NORMAL',
+    this.transientFor = 0,
   });
 
   final int width;
@@ -164,6 +192,50 @@ final class X11TopLevelWindowRequest {
   final bool resizable;
   final bool decorated;
   final bool visible;
+
+  /// Whether the window manager should be told to keep its hands off entirely.
+  ///
+  /// It can only be asked for at creation - see [X11Connection.createTopLevelWindow]
+  /// for why changing it afterwards does not work.
+  final bool overrideRedirect;
+
+  /// The `_NET_WM_WINDOW_TYPE` atom *name* to publish, interned by the
+  /// connection. A name rather than an atom because the caller has no
+  /// connection to intern with, and this list is interned up front anyway.
+  final String windowTypeAtom;
+
+  /// The owner's window id for `WM_TRANSIENT_FOR`, or zero for none.
+  final int transientFor;
+}
+
+/// What the server answers about a live window's kind.
+///
+/// Every field is read back rather than remembered: [overrideRedirect] from
+/// `GetWindowAttributes`, the other two from `GetProperty`. Zero and null mean
+/// "the server has no such value", which is a real state - a window created
+/// without an owner has no `WM_TRANSIENT_FOR` at all.
+final class X11ServerWindowKind {
+  const X11ServerWindowKind({
+    required this.overrideRedirect,
+    required this.windowTypeAtom,
+    required this.windowTypeName,
+    required this.transientFor,
+  });
+
+  final bool overrideRedirect;
+
+  /// The first atom in `_NET_WM_WINDOW_TYPE`, or zero when the property is
+  /// absent. First rather than only: EWMH types the property as a list in
+  /// preference order, and the first entry is the one a compliant window
+  /// manager acts on.
+  final int windowTypeAtom;
+
+  /// [windowTypeAtom] spelled back by the server, or null when absent. The
+  /// name is what makes a smoke line readable by a human reading CI output.
+  final String? windowTypeName;
+
+  /// The `WM_TRANSIENT_FOR` window id, or zero when the property is absent.
+  final int transientFor;
 }
 
 final class X11TopLevelBounds {
@@ -1244,16 +1316,25 @@ final class X11Connection
         xcbEventMaskEnterWindow |
         xcbEventMaskLeaveWindow |
         xcbEventMaskPointerMotion;
-    const valueMask = xcbCwBackPixmap |
-        xcbCwBorderPixel |
-        xcbCwBitGravity |
-        xcbCwWinGravity |
-        xcbCwEventMask;
-    valueScratch[0] = xcbBackPixmapNone;
-    valueScratch[1] = blackPixel;
-    valueScratch[2] = xcbGravityNorthWest;
-    valueScratch[3] = xcbGravityNorthWest;
-    valueScratch[4] = eventMask;
+    // `override_redirect` has to travel *inside* CreateWindow. It is legal to
+    // change afterwards, and useless: the window manager decides whether it
+    // manages a window when it sees the MapRequest, so a popup that flipped
+    // the bit after mapping has already been reparented into a frame, given a
+    // taskbar entry and handed the focus it was created never to take. The bit
+    // means "no window manager will ever touch this window": no decorations,
+    // no taskbar entry, no focus stealing, no placement policy - and therefore
+    // **the client owns the position**. Nothing will move an override-redirect
+    // window onto the screen, off a monitor edge, or out from under a panel;
+    // whatever x/y we ask for is exactly where it stays.
+    final attributes = X11CreateWindowAttributes(
+      borderPixel: blackPixel,
+      eventMask: eventMask,
+      overrideRedirect: request.overrideRedirect,
+    );
+    final valueMask = attributes.valueMask;
+    for (var i = 0; i < attributes.values.length; i++) {
+      valueScratch[i] = attributes.values[i];
+    }
 
     final x = _clampI16(request.x ?? 0);
     final y = _clampI16(request.y ?? 0);
@@ -1283,7 +1364,7 @@ final class X11Connection
     try {
       _configureTopLevelProtocols(window);
       setTopLevelTitle(window, request.title);
-      _configureTopLevelIdentity(window);
+      _configureTopLevelIdentity(window, request);
       _configureTopLevelHints(window, request, width, height, x, y);
       if (request.visible) xcb.mapWindow(_handle, window);
       if (xcb.flush(_handle) <= 0 || !isValid) {
@@ -1317,7 +1398,10 @@ final class X11Connection
     );
   }
 
-  void _configureTopLevelIdentity(int window) {
+  void _configureTopLevelIdentity(
+    int window,
+    X11TopLevelWindowRequest request,
+  ) {
     final pidAtom = atom('_NET_WM_PID');
     if (pidAtom != 0) {
       valueScratch[0] = pid;
@@ -1333,10 +1417,17 @@ final class X11Connection
       );
     }
 
+    // `_NET_WM_WINDOW_TYPE`, even on an override-redirect window that no
+    // window manager will read. A *compositor* reads it, and it is what
+    // decides the drop shadow and the open/close animation a menu gets - a
+    // popup with no type is composited like a plain rectangle, which is how a
+    // menu ends up looking pasted onto the screen next to every other
+    // application's. It costs one property on a window that is being created
+    // anyway.
     final typeAtom = atom('_NET_WM_WINDOW_TYPE');
-    final normalAtom = atom('_NET_WM_WINDOW_TYPE_NORMAL');
-    if (typeAtom != 0 && normalAtom != 0) {
-      valueScratch[0] = normalAtom;
+    final kindAtom = atom(request.windowTypeAtom);
+    if (typeAtom != 0 && kindAtom != 0) {
+      valueScratch[0] = kindAtom;
       xcb.changeProperty(
         _handle,
         xcbPropModeReplace,
@@ -1349,6 +1440,44 @@ final class X11Connection
       );
     }
 
+    // `WM_TRANSIENT_FOR`, when this window belongs to another one. ICCCM
+    // 4.1.2.6: it is what makes a window manager keep the child above its
+    // parent, iconify the two together and place the child over the parent.
+    // Without it a dialog can end up behind the window that opened it - the
+    // failure users report as "the application froze", because the modal they
+    // cannot see is the one holding the input.
+    if (request.transientFor != 0) {
+      valueScratch[0] = request.transientFor;
+      xcb.changeProperty(
+        _handle,
+        xcbPropModeReplace,
+        window,
+        xcbAtomWmTransientFor,
+        xcbAtomWindow,
+        32,
+        1,
+        valueScratch.cast<Uint8>(),
+      );
+    }
+
+    // No `GrabPointer` anywhere in this file, and that is deliberate rather
+    // than unfinished. A pointer grab is what GTK uses to make a click outside
+    // a menu close it, and it is global state on the X server: if this process
+    // wedges - a stuck frame, a breakpoint in a debugger, an isolate deadlock
+    // - while holding it, every click and every keystroke on the entire
+    // desktop goes to a client that is not answering, and the user's only exit
+    // is a VT switch or the power button. Avalonia does not grab either
+    // (`X11Window.cs`), and section 6.1 of doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md
+    // records the decision: dismissal is the framework's job - focus leaving
+    // the owner, a press in the owner outside the popup, the owner moving -
+    // all of which `Application` already sees without taking the desktop
+    // hostage. A grab is the second step, if a real window manager turns out
+    // to leak clicks that the framework cannot see.
+
+    // `WM_CLASS`, on every kind. An override-redirect window is one no window
+    // manager reads it from, and it is set anyway: it costs one property, and
+    // it is what makes the window identifiable in `xprop` and `xwininfo` when
+    // someone is debugging a menu that appeared in the wrong place.
     _changePropertyBytes(
       window,
       xcbAtomWmClass,
@@ -1415,6 +1544,47 @@ final class X11Connection
         );
       }
     }
+  }
+
+  @override
+  X11ServerWindowKind? readWindowKind(int window) {
+    throwIfDisposed();
+    final cookie = xcb.getWindowAttributes(_handle, window);
+    final reply = xcb.getWindowAttributesReply(_handle, cookie, errorScratch);
+    if (reply == nullptr) {
+      _drainReplyError('GetWindowAttributes(0x${window.toRadixString(16)})');
+      return null;
+    }
+    final bool overrideRedirect;
+    try {
+      overrideRedirect =
+          reply[xcbGetWindowAttributesOverrideRedirectOffset] != 0;
+    } finally {
+      libc.free(reply);
+    }
+    // Both properties are read with their declared type rather than
+    // `AnyPropertyType`: a window whose `_NET_WM_WINDOW_TYPE` came back as
+    // anything but ATOM was written by something that is not us, and reporting
+    // its bytes as a type atom would be worse than reporting nothing.
+    final types = getCardinalProperty(
+      window,
+      atom('_NET_WM_WINDOW_TYPE'),
+      xcbAtomAtom,
+      <int>[],
+    );
+    final transients = getCardinalProperty(
+      window,
+      xcbAtomWmTransientFor,
+      xcbAtomWindow,
+      <int>[],
+    );
+    final typeAtom = types.isEmpty ? 0 : types.first;
+    return X11ServerWindowKind(
+      overrideRedirect: overrideRedirect,
+      windowTypeAtom: typeAtom,
+      windowTypeName: typeAtom == 0 ? null : atomName(typeAtom),
+      transientFor: transients.isEmpty ? 0 : transients.first,
+    );
   }
 
   @override

@@ -372,10 +372,64 @@ void main() {
         expect(request.positioner.anchorY, 40);
         expect(request.positioner.width, 180);
         expect(request.positioner.height, 240);
-        expect(request.grab, isTrue);
+        expect(request.grab, WaylandPopupGrab.none,
+            reason: 'the framework dismisses popups; a grab is opt-in');
+        expect(client.grabbedPopups, isEmpty);
+        expect(menu.popupDepth, 1);
+      });
+
+      test('a menu never grabs by default, whatever the serial', () async {
+        // The hazard the default exists for: a grab is legal only while
+        // quoting a recent serial, and an illegal one is a protocol error
+        // that closes the connection - every window with it.
+        client.lastInputSerial = 4242;
+        final owner = await createWindow();
+        await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          kind: WindowKind.popup,
+          owner: owner,
+        ));
+
+        expect(client.popupRequests.single.grab, WaylandPopupGrab.none);
+      });
+
+      test('an application that opts in grabs with the serial it holds',
+          () async {
+        backend.grabPopups = true;
+        client.lastInputSerial = 4242;
+        final owner = await createWindow();
+        final menu = await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          kind: WindowKind.popup,
+          owner: owner,
+        )) as WaylandWindow;
+
+        final grab = client.popupRequests.single.grab;
+        expect(grab.isRequested, isTrue);
+        expect(grab.serial, 4242,
+            reason: 'the grab must quote a serial the compositor issued');
+        expect(menu.diagnostics, isEmpty);
+      });
+
+      test('an opted-in grab without a serial is refused, and named', () async {
+        backend.grabPopups = true;
+        final owner = await createWindow();
+        final menu = await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          kind: WindowKind.popup,
+          owner: owner,
+        )) as WaylandWindow;
+
+        expect(client.popupRequests.single.grab, WaylandPopupGrab.none,
+            reason: 'nothing may go on the wire without a serial');
+        final refusal = menu.diagnostics.single;
+        expect(refusal.kind, DiagnosticKind.rejectedByPolicy);
+        expect(refusal.message, contains('no recent input serial'));
       });
 
       test('a tooltip is a popup that never grabs', () async {
+        backend.grabPopups = true;
+        client.lastInputSerial = 4242;
         final owner = await createWindow();
         final tooltip = await backend.createWindow(WindowOptions(
           size: const Size(120, 32),
@@ -384,8 +438,10 @@ void main() {
         )) as WaylandWindow;
 
         expect(tooltip.isPopup, isTrue);
-        expect(client.popupRequests.single.grab, isFalse,
+        expect(client.popupRequests.single.grab, WaylandPopupGrab.none,
             reason: 'a grab would steal input from the window beneath');
+        expect(tooltip.diagnostics, isEmpty,
+            reason: 'the tooltip veto is the rule, not a thwarted request');
       });
 
       test('a submenu parents to the popup above it, not to the toplevel',
@@ -396,14 +452,49 @@ void main() {
           kind: WindowKind.popup,
           owner: owner,
         )) as WaylandWindow;
-        await backend.createWindow(WindowOptions(
+        final submenu = await backend.createWindow(WindowOptions(
           size: const Size(180, 200),
           kind: WindowKind.popup,
           owner: menu,
-        ));
+        )) as WaylandWindow;
 
         expect(client.popupRequests.last.parent, menu.toplevelIds,
             reason: 'xdg-shell requires a popup chain, not siblings');
+        // Named explicitly because the alternative is not a misplaced window:
+        // a popup that skipped a level - anchoring to the toplevel while the
+        // menu is still mapped - is a protocol error and ends the connection.
+        expect(client.popupRequests.last.parent, isNot(owner.toplevelIds));
+        expect(menu.popupDepth, 1);
+        expect(submenu.popupDepth, 2);
+      });
+
+      test('a third level keeps naming the popup immediately before it',
+          () async {
+        final owner = await createWindow();
+        var parent = await backend.createWindow(WindowOptions(
+          size: const Size(180, 240),
+          kind: WindowKind.popup,
+          owner: owner,
+        )) as WaylandWindow;
+        final chain = <WaylandWindow>[parent];
+        for (var level = 0; level < 2; level++) {
+          parent = await backend.createWindow(WindowOptions(
+            size: const Size(160, 120),
+            kind: WindowKind.popup,
+            owner: parent,
+          )) as WaylandWindow;
+          chain.add(parent);
+        }
+
+        expect(chain.map((w) => w.popupDepth), <int>[1, 2, 3]);
+        expect(
+          client.popupRequests.map((r) => r.parent),
+          <WaylandToplevelIds>[
+            owner.toplevelIds,
+            chain[0].toplevelIds,
+            chain[1].toplevelIds,
+          ],
+        );
       });
 
       test('a dismissable window without an owner stays a toplevel', () async {
@@ -466,6 +557,23 @@ void main() {
         expect(events.whereType<WindowCloseRequestedEvent>(), isEmpty,
             reason: 'the surface is already gone; this is not a request');
         expect(backend.windows, isNot(contains(menu)));
+        expect(menu.isDisposed, isTrue,
+            reason: 'popup_done takes the same teardown a close does, so the '
+                'application layer sees one closed popup and not a live '
+                'window it can no longer present to');
+        // Idempotent: the compositor may name a popup this client is already
+        // tearing down, and the second pass must not emit a second close.
+        client.script(WaylandRawEvent()
+          ..type = WaylandRawEventType.popupDone
+          ..surfaceId = menu.surfaceId);
+        backend.pumpEvents();
+        menu.close();
+        await Future<void>.delayed(Duration.zero);
+        expect(events.whereType<WindowClosedEvent>(), hasLength(1));
+        expect(
+            client.destroyedToplevels.where((ids) => ids == menu.toplevelIds),
+            hasLength(1),
+            reason: 'the xdg_popup is destroyed once, by the dismissal');
       });
 
       test('a popup ignores setTitle rather than erroring on the role',
@@ -789,6 +897,12 @@ final class _FakeWaylandClient
     grabbedPopups.add(ids);
     return true;
   }
+
+  /// What the compositor last vouched for. 0 is the honest starting state -
+  /// no click, no keystroke - and it is what makes an opted-in grab collapse
+  /// to none instead of reaching the wire.
+  @override
+  int lastInputSerial = 0;
 
   @override
   bool get supportsServerSideDecorations => decorationsSupported;

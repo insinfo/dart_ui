@@ -196,6 +196,18 @@ final class WaylandWindowingBackend
   bool _supportsDragAndDrop = false;
   bool _supportsTextInput = false;
 
+  /// Whether the popups this backend opens ask the compositor for an explicit
+  /// `xdg_popup.grab`.
+  ///
+  /// Off, and deliberately so: the reasoning is written out at the grab in
+  /// [WaylandWindow.create], and the short version is that a grab without a
+  /// recent input serial is a protocol error, a protocol error kills the
+  /// connection, and dismissal is already the framework's job. It is a
+  /// property rather than a constant so an application that really wants a
+  /// modal menu can opt in - and even then the serial has to exist, or the
+  /// window records the refusal instead of writing the request.
+  bool grabPopups = false;
+
   /// The machine's Compose table, read once at [initialize].
   ///
   /// Read once rather than per window because it is a file on disk that does
@@ -509,6 +521,7 @@ final class WaylandWindowingBackend
       id: NativeWindowId(_nextWindowId++),
       options: options,
       onClosed: _onWindowClosed,
+      grabPopup: grabPopups,
     );
     // Dead keys, from the machine's own Compose table.
     //

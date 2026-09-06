@@ -53,6 +53,70 @@ final class Win32LoadResult {
   final List<BackendDiagnostic> diagnostics;
 }
 
+/// `MONITOR_DEFAULTTONEAREST`.
+///
+/// Always this one, never `MONITOR_DEFAULTTONULL`: every caller here is about
+/// to place a popup, and a point that is outside every monitor - a window
+/// dragged half off the desktop, a pointer on the seam between two screens -
+/// still has to be placed on some monitor. It is the same rule, one layer
+/// down, that `ScreenInfo.nearest` states for the logical space.
+const int monitorDefaultToNearest = 0x00000002;
+
+/// `MONITORINFOF_PRIMARY`, the only flag `MONITORINFO.dwFlags` ever carries.
+const int monitorInfoPrimaryFlag = 0x00000001;
+
+/// `MDT_EFFECTIVE_DPI` - the DPI the user's scaling setting asks for, which is
+/// the number the framework's scale means. The other two (`MDT_ANGULAR_DPI`,
+/// `MDT_RAW_DPI`) describe the panel's physics and would make a 150% desktop
+/// render at 100%.
+const int monitorDpiTypeEffective = 0;
+
+/// `CS_DROPSHADOW` - the system's own drop shadow behind a window of this
+/// class.
+///
+/// A **class** style, not a window style, and that single fact is what makes
+/// popups need a second registered class: see `Win32PopupWindowClass`.
+const int csDropshadow = 0x00020000;
+
+/// `GCL_STYLE` / `GCLP_STYLE`, the index of the class style word for
+/// `GetClassLongPtrW`.
+const int gclStyle = -26;
+
+/// The `MONITORENUMPROC` Windows calls once per monitor from inside
+/// `EnumDisplayMonitors`.
+typedef MonitorEnumProcNative = Int32 Function(
+  IntPtr hMonitor,
+  IntPtr hdc,
+  Pointer<Win32Rect> clip,
+  IntPtr lParam,
+);
+
+/// `MONITORINFOEXW`.
+///
+/// Declared here rather than in `win32_structs.dart` for the reason
+/// `_swpShowwindow` is declared in `win32_window.dart`: exactly one call fills
+/// it in, that call is [Win32Api.readMonitorInfo] a few lines below, and
+/// `cbSize` is what tells Windows whether the trailing [szDevice] is there at
+/// all. A declaration that drifts away from the call that sets `cbSize` is a
+/// buffer overrun, not a compile error.
+final class MonitorInfoExW extends Struct {
+  @Uint32()
+  external int cbSize;
+
+  /// The whole monitor, in physical desktop pixels.
+  external Win32Rect rcMonitor;
+
+  /// [rcMonitor] minus the taskbar and any registered appbar.
+  external Win32Rect rcWork;
+
+  @Uint32()
+  external int dwFlags;
+
+  /// `\\.\DISPLAY1` and friends: 32 UTF-16 units, null-terminated.
+  @Array(32)
+  external Array<Uint16> szDevice;
+}
+
 /// The bound Win32 entry points, loaded once per process.
 ///
 /// Fields are lowerCamelCase versions of the native names, which keeps the
@@ -262,6 +326,55 @@ final class Win32Api {
   /// Paints [rect] of a DC with a brush - the one call `WM_ERASEBKGND` needs.
   late final int Function(int, Pointer<Win32Rect>, int) fillRect;
 
+  // ---------------------------------------------------------------------------
+  // Monitors
+  // ---------------------------------------------------------------------------
+
+  /// `MonitorFromPoint`. The point is passed **by value**, which is what the
+  /// SDK does: `POINT` is two 32-bit fields and travels in a single register
+  /// on x64 and as two stack words on x86, and `dart:ffi` reproduces both from
+  /// the struct declaration - so this must not be "helpfully" flattened into
+  /// two ints, which would put the flags argument in the wrong slot.
+  late final int Function(Win32Point, int) monitorFromPoint;
+
+  /// `MonitorFromWindow`. With [monitorDefaultToNearest] this is the call
+  /// Avalonia's `ScreenFromHwnd` makes to decide how large a popup opened from
+  /// a given window may grow.
+  late final int Function(int, int) monitorFromWindow;
+
+  /// `GetMonitorInfoW`, always with the [MonitorInfoExW] form - the device
+  /// name costs 64 bytes of an already-allocated scratch struct and is the
+  /// only thing that makes a diagnostic about two identical 1920x1080
+  /// monitors readable.
+  late final int Function(int, Pointer<MonitorInfoExW>) getMonitorInfoW;
+
+  /// `EnumDisplayMonitors`. The callback is invoked synchronously, once per
+  /// monitor, before the call returns - which is why the enumerating code can
+  /// safely accumulate into a list it owns.
+  late final int Function(
+    int hdc,
+    Pointer<Win32Rect> clip,
+    Pointer<NativeFunction<MonitorEnumProcNative>> callback,
+    int lParam,
+  ) enumDisplayMonitors;
+
+  /// `GetClassLongPtrW` / `SetClassLongPtrW`, or their 32-bit spellings.
+  ///
+  /// Read is what a test uses to ask Windows whether the popup class really
+  /// carries `CS_DROPSHADOW`, which is a stronger statement than "we passed
+  /// the flag to RegisterClassExW".
+  ///
+  /// Write is bound as its pair and **is not called by this backend**, on
+  /// purpose. It is the route Avalonia takes (`PopupImpl.EnableBoxShadow`
+  /// flips `GCL_STYLE` on the live HWND), and it works there because Avalonia
+  /// registers a class per window; here one class is shared by every window of
+  /// the process, so setting the bit through a popup's HWND would give the
+  /// application's main window a drop shadow too. The second registered class
+  /// is the fix - see `Win32PopupWindowClass` - and this binding exists so
+  /// that the claim can be *checked* rather than believed.
+  late final int Function(int, int) getClassLongPtrW;
+  late final int Function(int, int, int) setClassLongPtrW;
+
   void _bindUser32() {
     registerClassExW = _user32.lookupFunction<
         Uint16 Function(Pointer<WndClassExW>),
@@ -407,6 +520,44 @@ final class Win32Api {
     fillRect = _user32.lookupFunction<
         Int32 Function(IntPtr, Pointer<Win32Rect>, IntPtr),
         int Function(int, Pointer<Win32Rect>, int)>('FillRect');
+    monitorFromPoint = _user32.lookupFunction<
+        IntPtr Function(Win32Point, Uint32),
+        int Function(Win32Point, int)>('MonitorFromPoint');
+    monitorFromWindow = _user32.lookupFunction<IntPtr Function(IntPtr, Uint32),
+        int Function(int, int)>('MonitorFromWindow');
+    getMonitorInfoW = _user32.lookupFunction<
+        Int32 Function(IntPtr, Pointer<MonitorInfoExW>),
+        int Function(int, Pointer<MonitorInfoExW>)>('GetMonitorInfoW');
+    enumDisplayMonitors = _user32.lookupFunction<
+        Int32 Function(IntPtr, Pointer<Win32Rect>,
+            Pointer<NativeFunction<MonitorEnumProcNative>>, IntPtr),
+        int Function(
+            int,
+            Pointer<Win32Rect>,
+            Pointer<NativeFunction<MonitorEnumProcNative>>,
+            int)>('EnumDisplayMonitors');
+
+    // GetClassLongPtrW is 64-bit only; the 32-bit SDK maps the name onto
+    // GetClassLongW with a macro, exactly as it does for the window longs
+    // above, and FFI cannot see a macro.
+    try {
+      getClassLongPtrW = _user32.lookupFunction<IntPtr Function(IntPtr, Int32),
+          int Function(int, int)>('GetClassLongPtrW');
+      setClassLongPtrW = _user32.lookupFunction<
+          IntPtr Function(IntPtr, Int32, IntPtr),
+          int Function(int, int, int)>('SetClassLongPtrW');
+    } on ArgumentError {
+      getClassLongPtrW = _user32.lookupFunction<Uint32 Function(IntPtr, Int32),
+          int Function(int, int)>('GetClassLongW');
+      setClassLongPtrW = _user32.lookupFunction<
+          Uint32 Function(IntPtr, Int32, Int32),
+          int Function(int, int, int)>('SetClassLongW');
+      _optionalDiagnostics.add(
+        const BackendDiagnostic.note(
+          'GetClassLongPtrW missing; using GetClassLongW (32-bit Windows)',
+        ),
+      );
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -468,6 +619,16 @@ final class Win32Api {
   int Function(int)? setProcessDpiAwareness;
   int Function(int)? getDpiForWindow;
   int Function()? getDpiForSystem;
+
+  /// `GetDpiForMonitor` from shcore (Windows 8.1+), the only call that gives a
+  /// *monitor's* DPI without a window on it.
+  ///
+  /// Null on Windows 8 and earlier, and on any image without shcore.dll - the
+  /// same DLL whose absence already narrows the DPI-awareness story above. The
+  /// fallback is [systemDpi], which is right on a single-scale desktop and
+  /// wrong only in the case that machine cannot have anyway: per-monitor DPI
+  /// needs an OS that has this symbol.
+  int Function(int, int, Pointer<Uint32>, Pointer<Uint32>)? getDpiForMonitor;
   int Function(Pointer<Win32Rect>, int, int, int, int)?
       adjustWindowRectExForDpi;
   int Function(int)? openClipboard;
@@ -530,6 +691,14 @@ final class Win32Api {
       'GetDpiForSystem',
       (library) => library
           .lookupFunction<Uint32 Function(), int Function()>('GetDpiForSystem'),
+    );
+    getDpiForMonitor = tryLookup(
+      _shcore,
+      'GetDpiForMonitor',
+      (library) => library.lookupFunction<
+          Int32 Function(IntPtr, Int32, Pointer<Uint32>, Pointer<Uint32>),
+          int Function(
+              int, int, Pointer<Uint32>, Pointer<Uint32>)>('GetDpiForMonitor'),
     );
     adjustWindowRectExForDpi = tryLookup(
       _user32,
@@ -640,6 +809,42 @@ final class Win32Api {
     final dpi = getDeviceCaps(screenDc, logPixelsX);
     releaseDC(0, screenDc);
     return dpi <= 0 ? defaultScreenDpi : dpi;
+  }
+
+  /// Fills [info] with one monitor's rectangles, flags and device name.
+  ///
+  /// Sets `cbSize` itself, because that field is not information the caller
+  /// has: it is how Windows decides whether it may write the 64-byte device
+  /// name past the end of a `MONITORINFO`, and a caller that set it from a
+  /// stale constant would be handing out a buffer overrun.
+  bool readMonitorInfo(int monitor, Pointer<MonitorInfoExW> info) {
+    if (monitor == 0) return false;
+    info.ref.cbSize = sizeOf<MonitorInfoExW>();
+    return getMonitorInfoW(monitor, info) != 0;
+  }
+
+  /// The DPI one monitor is configured at.
+  ///
+  /// Falls back to [systemDpi] when shcore has no `GetDpiForMonitor`, which is
+  /// exact on every desktop such a Windows can have: per-monitor DPI arrived
+  /// in the same release as this symbol, so a machine without it has one scale
+  /// for the whole desktop by construction. Returning 96 instead would make
+  /// every window on a 150% single-monitor Windows 8 render at two thirds of
+  /// its size.
+  int monitorDpi(int monitor) {
+    final direct = getDpiForMonitor;
+    if (direct == null || monitor == 0) return systemDpi();
+    // Two UINTs in one block: GetDpiForMonitor writes x and y separately even
+    // though Windows has never reported a monitor whose two axes differ.
+    final buffer = allocator<Uint32>(2);
+    try {
+      final hr = direct(monitor, monitorDpiTypeEffective, buffer, buffer + 1);
+      if (hr != 0) return systemDpi();
+      final dpi = buffer[0];
+      return dpi <= 0 ? systemDpi() : dpi;
+    } finally {
+      allocator.free(buffer);
+    }
   }
 
   /// Grows [rect] from a client rectangle to the window rectangle that

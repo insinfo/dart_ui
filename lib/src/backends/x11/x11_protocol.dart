@@ -102,6 +102,61 @@ const int xcbBackPixmapNone = 0;
 /// server does not shuffle our pixels around behind the renderer's back.
 const int xcbGravityNorthWest = 1;
 
+/// The `CreateWindow` value mask and value list of one top-level window.
+///
+/// Computed rather than hand-packed because the protocol makes the *order* of
+/// the value list part of the request: the server reads one word per set bit,
+/// from the lowest bit upwards, and never says which attribute it read wrong.
+/// Inserting `override_redirect` (bit 9) into a hand-written list that already
+/// ends in `event_mask` (bit 11) is precisely the edit that silently turns the
+/// event mask into a boolean and the boolean into an event mask - the window
+/// then receives nothing, or the server answers `BadValue`, and nothing in
+/// either failure names the list.
+///
+/// It is a pure value so the mapping from "what kind of window is this" to
+/// "what goes on the wire" can be asserted without an X server; see
+/// `test/backends/x11/x11_window_kind_test.dart`.
+final class X11CreateWindowAttributes {
+  /// [borderPixel] is the screen's black pixel, [eventMask] the events this
+  /// window selects, and [overrideRedirect] true only for the window kinds the
+  /// window manager must not see at all.
+  factory X11CreateWindowAttributes({
+    required int borderPixel,
+    required int eventMask,
+    required bool overrideRedirect,
+  }) {
+    var mask = xcbCwBackPixmap |
+        xcbCwBorderPixel |
+        xcbCwBitGravity |
+        xcbCwWinGravity |
+        xcbCwEventMask;
+    final values = <int>[
+      xcbBackPixmapNone,
+      borderPixel,
+      xcbGravityNorthWest,
+      xcbGravityNorthWest,
+    ];
+    if (overrideRedirect) {
+      mask |= xcbCwOverrideRedirect;
+      values.add(1);
+    }
+    // Last, because `event_mask` is bit 11 and `override_redirect` is bit 9.
+    values.add(eventMask);
+    return X11CreateWindowAttributes._(mask, values);
+  }
+
+  const X11CreateWindowAttributes._(this.valueMask, this.values);
+
+  final int valueMask;
+
+  /// One word per set bit of [valueMask], in increasing bit order.
+  final List<int> values;
+
+  /// Whether bit 9 is set, which is the only thing that makes a window
+  /// invisible to the window manager.
+  bool get overrideRedirect => valueMask & xcbCwOverrideRedirect != 0;
+}
+
 // ---------------------------------------------------------------------------
 // ConfigureWindow value mask bits.
 // ---------------------------------------------------------------------------
@@ -133,6 +188,12 @@ const int xcbGetPropertyTypeAny = 0;
 /// `XCB_INPUT_FOCUS_POINTER_ROOT`, used when revoking focus.
 const int xcbInputFocusPointerRoot = 1;
 
+/// Byte offset of `override_redirect` in an `xcb_get_window_attributes_reply_t`
+/// (response_type, backing_store, sequence, length, visual, class, bit_gravity,
+/// win_gravity, backing_planes, backing_pixel, save_under, map_is_installed,
+/// map_state, then this one). It is a `uint8`, not a word.
+const int xcbGetWindowAttributesOverrideRedirectOffset = 27;
+
 // ---------------------------------------------------------------------------
 // Predefined atoms (X11 protocol appendix B). Interning these would be a
 // round trip for a value the protocol already fixed.
@@ -151,6 +212,12 @@ const int xcbAtomWmName = 39;
 const int xcbAtomWmNormalHints = 40;
 const int xcbAtomWmSizeHints = 41;
 const int xcbAtomWmClass = 67;
+
+/// `XA_WM_TRANSIENT_FOR` (ICCCM 4.1.2.6): "this window is a transient of that
+/// one". A window manager reads it to keep a dialog above the window it
+/// belongs to, to iconify the two together, and to place the child over the
+/// parent instead of wherever its placement policy would have put it.
+const int xcbAtomWmTransientFor = 68;
 
 // ---------------------------------------------------------------------------
 // ICCCM WM_SIZE_HINTS flags.

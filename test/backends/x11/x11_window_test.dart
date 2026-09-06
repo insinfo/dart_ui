@@ -121,6 +121,11 @@ final class _FakeX11WindowClient implements X11WindowClient, X11CpuClient {
     return nextWindow;
   }
 
+  // Read-back needs a live server: the fake reports "cannot say", which is the
+  // same answer a connection that lost its socket gives.
+  @override
+  X11ServerWindowKind? readWindowKind(int window) => null;
+
   @override
   void destroyTopLevelWindow(int window) {
     destroyedWindows.add(window);

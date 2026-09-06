@@ -577,14 +577,12 @@ void main() {
     test('creation configures a positioner and consumes it at once', () {
       final connection = openOk();
       final parent = connection.createToplevel(_request());
-      // A grab needs an input serial; give the connection one.
       connection.flush();
       compositor.requests.clear();
 
       final popup = connection.createPopup(WaylandPopupRequest(
         parent: parent,
         positioner: spec(),
-        grab: false,
       ));
 
       final opcodes =
@@ -615,7 +613,6 @@ void main() {
       connection.createPopup(WaylandPopupRequest(
         parent: parent,
         positioner: spec(width: 200, height: 300),
-        grab: false,
       ));
 
       final positionerId =
@@ -649,7 +646,6 @@ void main() {
       final popup = connection.createPopup(WaylandPopupRequest(
         parent: parent,
         positioner: spec(),
-        grab: false,
       ));
 
       final getPopup = compositor.requests.firstWhere((r) =>
@@ -661,9 +657,40 @@ void main() {
           reason: 'a popup is parented to the xdg_surface, not the toplevel');
     });
 
-    test('a grab is skipped, with a reason, until the user has acted', () {
+    test('a nested popup names the popup above it, not the toplevel', () {
+      final connection = openOk();
+      final toplevel = connection.createToplevel(_request());
+      final menu = connection.createPopup(WaylandPopupRequest(
+        parent: toplevel,
+        positioner: spec(),
+      ));
+      compositor.requests.clear();
+
+      final submenu = connection.createPopup(WaylandPopupRequest(
+        parent: menu,
+        positioner: spec(width: 160, height: 120),
+      ));
+
+      final getPopup = compositor.requests.firstWhere((r) =>
+          r.objectId == submenu.xdgSurfaceId &&
+          r.opcode == xdgSurfaceRequestGetPopup);
+      final reader = WaylandMessageReader(getPopup.payload);
+      expect(reader.readNewId(), submenu.toplevelId);
+      final parentArgument = reader.readObject();
+      expect(parentArgument, menu.xdgSurfaceId,
+          reason: 'xdg-shell requires the immediately preceding popup; naming '
+              'the toplevel while the menu is mapped is a protocol error');
+      expect(parentArgument, isNot(toplevel.xdgSurfaceId));
+    });
+
+    test('a popup does not grab unless it was asked to', () {
       final connection = openOk();
       final parent = connection.createToplevel(_request());
+      // Even with a serial in hand: the grab is opted into, never inferred.
+      compositor.sendPointerEnter(parent.surfaceId, 10, x: 1, y: 1);
+      compositor.sendPointerButton(77, 100, btnLeft, pressed: true);
+      final drain = WaylandRawEvent();
+      while (connection.pollEventInto(drain)) {}
       compositor.requests.clear();
 
       final popup = connection.createPopup(WaylandPopupRequest(
@@ -675,12 +702,44 @@ void main() {
         compositor.requests.where((r) =>
             r.objectId == popup.toplevelId && r.opcode == xdgPopupRequestGrab),
         isEmpty,
-        reason: 'grabbing without an input serial kills the connection',
+        reason: 'dismissal is the framework\'s job; see WaylandWindow.create',
       );
-      expect(connection.recentErrors.last, contains('no input serial'));
     });
 
-    test('a grab is taken with the latest input serial once one exists', () {
+    test('a grab with no serial is refused before any byte is written', () {
+      final connection = openOk();
+      final parent = connection.createToplevel(_request());
+      expect(connection.lastInputSerial, 0,
+          reason: 'nothing has been clicked or typed in this connection');
+      compositor.requests.clear();
+
+      // The value type is the refusal: withSerial(0) collapses to none, so the
+      // popup is created ungrabbed rather than with a request the compositor
+      // would answer by closing the socket.
+      final popup = connection.createPopup(WaylandPopupRequest(
+        parent: parent,
+        positioner: spec(),
+        grab: WaylandPopupGrab.withSerial(connection.lastInputSerial),
+      ));
+
+      expect(WaylandPopupGrab.withSerial(0), WaylandPopupGrab.none);
+      expect(
+        compositor.requests.where((r) =>
+            r.objectId == popup.toplevelId && r.opcode == xdgPopupRequestGrab),
+        isEmpty,
+      );
+      // And the imperative door is shut the same way, with a reason.
+      expect(connection.grabPopup(popup), isFalse);
+      expect(connection.recentErrors.last, contains('no input serial'));
+      expect(
+        compositor.requests.where((r) =>
+            r.objectId == popup.toplevelId && r.opcode == xdgPopupRequestGrab),
+        isEmpty,
+        reason: 'grabbing without an input serial kills the connection',
+      );
+    });
+
+    test('a requested grab quotes the serial it was built from', () {
       final connection = openOk();
       final parent = connection.createToplevel(_request());
       connection.flush();
@@ -688,11 +747,13 @@ void main() {
       compositor.sendPointerButton(77, 100, btnLeft, pressed: true);
       final raw = WaylandRawEvent();
       while (connection.pollEventInto(raw)) {}
+      expect(connection.lastInputSerial, 77);
       compositor.requests.clear();
 
       final popup = connection.createPopup(WaylandPopupRequest(
         parent: parent,
         positioner: spec(),
+        grab: WaylandPopupGrab.withSerial(connection.lastInputSerial),
       ));
 
       final grab = compositor.requests.firstWhere((r) =>
@@ -701,6 +762,14 @@ void main() {
       expect(reader.readObject(), compositor.seatId);
       expect(reader.readUint(), 77,
           reason: 'the grab must quote the serial of the click that opened it');
+      // Ordering matters as much as the bytes: the grab applies to the popup
+      // being mapped, so it has to precede the commit that maps it.
+      final opcodes =
+          compositor.requests.map((r) => (r.objectId, r.opcode)).toList();
+      expect(
+        opcodes.indexOf((popup.toplevelId, xdgPopupRequestGrab)),
+        lessThan(opcodes.indexOf((popup.surfaceId, wlSurfaceRequestCommit))),
+      );
     });
 
     test('configure surfaces the compositor placement, not the request', () {
@@ -709,7 +778,6 @@ void main() {
       final popup = connection.createPopup(WaylandPopupRequest(
         parent: parent,
         positioner: spec(),
-        grab: false,
       ));
       // The compositor flipped the popup upwards and narrowed it.
       compositor.sendPopupConfigure(popup.toplevelId, 10, -240, 180, 200);
@@ -730,17 +798,14 @@ void main() {
       final menu = connection.createPopup(WaylandPopupRequest(
         parent: parent,
         positioner: spec(),
-        grab: false,
       ));
       final submenu = connection.createPopup(WaylandPopupRequest(
         parent: menu,
         positioner: spec(),
-        grab: false,
       ));
       final subsubmenu = connection.createPopup(WaylandPopupRequest(
         parent: submenu,
         positioner: spec(),
-        grab: false,
       ));
 
       compositor.sendPopupDone(menu.toplevelId);
@@ -765,7 +830,6 @@ void main() {
       final popup = connection.createPopup(WaylandPopupRequest(
         parent: parent,
         positioner: spec(),
-        grab: false,
       ));
       compositor.requests.clear();
 

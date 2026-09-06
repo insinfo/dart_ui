@@ -52,6 +52,14 @@ const int _hwndTop = 0;
 const int _wsExNoactivate = 0x08000000;
 const int _wsExTopmost = 0x00000008;
 
+/// `WM_MOUSEACTIVATE`, `MA_NOACTIVATE`, `WM_NCLBUTTONDOWN` and
+/// `HTTRANSPARENT`, declared here for the same reason as the five above: one
+/// file uses them, and it is this one.
+const int _wmMouseactivate = 0x0021;
+const int _maNoactivate = 3;
+const int _wmNclbuttondown = 0x00A1;
+const int _htTransparent = -1;
+
 /// Whoever currently owns this window's input context.
 ///
 /// Declared here rather than in `win32_ime.dart` so that the window does not
@@ -66,6 +74,166 @@ const int _wsExTopmost = 0x00000008;
 /// position.
 abstract interface class Win32ImeMessageHandler {
   int? handleImeMessage(int hwnd, int msg, int wParam, int lParam);
+}
+
+/// A second window class, identical to the shared one except that it carries
+/// `CS_DROPSHADOW`, used by [WindowKind.popup] and [WindowKind.tooltip].
+///
+/// ## Why a second class and not a flag on the first
+///
+/// The system drop shadow behind a menu is a **class** style. There is no
+/// per-window bit for it, and the only way to turn it on for a live HWND is
+/// `SetClassLongPtrW(GCL_STYLE)` - which does not set it for that window, it
+/// sets it for *the class*, and therefore for every window sharing the class.
+/// This backend deliberately registers one class for the whole process
+/// (`Win32WindowClass` explains why: a class per window leaks a window-station
+/// registration per window), so flipping the bit through a popup's handle
+/// would put a drop shadow behind the application's main window and behind
+/// every dialog. Avalonia does exactly that flip in `PopupImpl.EnableBoxShadow`
+/// and is right to, because it registers a class per window impl; here the
+/// same call would be a visual bug in windows nobody was looking at.
+///
+/// So: one extra registration for the whole process, cloned from the base
+/// class rather than declared again.
+///
+/// ## Why cloned rather than declared
+///
+/// `GetClassInfoExW` hands back the class Windows actually registered -
+/// including `lpfnWndProc`, which is the `NativeCallable` trampoline
+/// `Win32WindowClass` owns. Re-declaring the fields here would mean a second
+/// place that has to be kept in step with the first (the null cursor, the null
+/// background brush, `CS_DBLCLKS`), and the day the two drift is the day
+/// popups stop reporting double clicks for no visible reason. Cloning cannot
+/// drift.
+///
+/// Because the trampoline is borrowed, **this class must be unregistered
+/// before the base class is**: `Win32WindowClass.unregister` closes the
+/// callable, and a registered class pointing at a closed trampoline is a
+/// dangling function pointer the OS will happily call. The backend registers
+/// this one last, and the disposable bag releases last-acquired first.
+final class Win32PopupWindowClass {
+  Win32PopupWindowClass._({
+    required Win32Api api,
+    required this.name,
+    required this.atom,
+    required this.instanceHandle,
+    required Pointer<Uint16> namePointer,
+  })  : _api = api,
+        _namePointer = namePointer;
+
+  /// Registers the popup class, or returns null after saying why in
+  /// [diagnostics].
+  ///
+  /// Null is a degradation, not a failure: the caller then creates popups on
+  /// the shared class, and what is lost is the shadow behind a menu. Refusing
+  /// to open the window instead would turn a cosmetic absence into an
+  /// application that cannot show a menu at all.
+  static Win32PopupWindowClass? register(
+    Win32Api api,
+    Win32WindowClass base,
+    List<BackendDiagnostic> diagnostics,
+  ) {
+    var name = '${base.name}.popup';
+    var namePointer = api.toUtf16(name);
+    var atom = 0;
+    var lastError = 0;
+    for (var attempt = 0; attempt < 8; attempt++) {
+      final descriptor = api.allocator<WndClassExW>();
+      try {
+        descriptor.ref.cbSize = sizeOf<WndClassExW>();
+        if (api.getClassInfoExW(
+              base.instanceHandle,
+              base.namePointer,
+              descriptor,
+            ) ==
+            0) {
+          diagnostics.add(
+            win32CallFailed(
+              'GetClassInfoExW',
+              api.getLastError(),
+              kind: DiagnosticKind.note,
+              context: 'class "${base.name}"; popups get no drop shadow',
+            ),
+          );
+          api.heapRelease(namePointer);
+          return null;
+        }
+        descriptor.ref
+          ..style = descriptor.ref.style | csDropshadow
+          ..lpszClassName = namePointer
+          ..lpszMenuName = nullptr
+          // GetClassInfoExW does not fill hInstance in - it is an input, and
+          // the value left in the struct is whatever the allocator zeroed.
+          // Registering with 0 would put the class in the window station's
+          // global list instead of this module's.
+          ..hInstance = base.instanceHandle;
+        atom = api.registerClassExW(descriptor);
+        lastError = atom == 0 ? api.getLastError() : 0;
+      } finally {
+        api.allocator.free(descriptor);
+      }
+      if (atom != 0) break;
+      // The same two cases `Win32WindowClass.register` handles, for the same
+      // reason: the name is shared by every thread of the process, so another
+      // isolate of the same `dart test` run can be holding it, and Windows
+      // sometimes reports that with no error at all.
+      if (lastError != 1410 && lastError != 0) break;
+      api.heapRelease(namePointer);
+      name = '${base.name}.popup.${api.getCurrentThreadId()}.${++_suffix}';
+      namePointer = api.toUtf16(name);
+    }
+
+    if (atom == 0) {
+      api.heapRelease(namePointer);
+      diagnostics.add(
+        win32CallFailed(
+          'RegisterClassExW',
+          lastError,
+          kind: DiagnosticKind.note,
+          context: 'popup class "$name"; popups get no drop shadow',
+        ),
+      );
+      return null;
+    }
+
+    return Win32PopupWindowClass._(
+      api: api,
+      name: name,
+      atom: atom,
+      instanceHandle: base.instanceHandle,
+      namePointer: namePointer,
+    );
+  }
+
+  static int _suffix = 0;
+
+  final Win32Api _api;
+  final Pointer<Uint16> _namePointer;
+
+  final String name;
+  final int atom;
+  final int instanceHandle;
+
+  Pointer<Uint16> get namePointer => _namePointer;
+
+  bool _unregistered = false;
+
+  /// Unregisters the class. Idempotent; returns a diagnostic when Windows
+  /// refused, which it does while a popup of this class is still alive.
+  BackendDiagnostic? unregister() {
+    if (_unregistered) return null;
+    _unregistered = true;
+    BackendDiagnostic? failure;
+    if (_api.unregisterClassW(_namePointer, instanceHandle) == 0) {
+      failure = win32CallFailed(
+        'UnregisterClassW',
+        _api.getLastError(),
+        context: 'popup class "$name"; a popup is probably still open',
+      );
+    }
+    _api.heapRelease(_namePointer);
+    return failure;
+  }
 }
 
 /// A Win32 window.
@@ -162,6 +330,7 @@ final class Win32Window
     required WindowOptions options,
     required void Function(Win32Window window) onClosed,
     required void Function() onSessionEnding,
+    Win32PopupWindowClass? popupClass,
   }) {
     final kind = options.kind;
     final decorated = options.decorated && kind.isDecoratedByDefault;
@@ -203,13 +372,25 @@ final class Win32Window
       backgroundColor: options.backgroundColor,
     );
 
+    // A menu and a tooltip go on the shadowed class when there is one; every
+    // other window goes on the shared class, because a drop shadow behind an
+    // ordinary window is the platform's decision and not this framework's.
+    // Both classes name the same module and the same WndProc, so nothing else
+    // about the window changes with the choice.
+    final classNamePointer = !kind.takesActivation && popupClass != null
+        ? popupClass.namePointer
+        : windowClass.namePointer;
+    if (!kind.takesActivation && popupClass != null) {
+      window._popupClassName = popupClass.name;
+    }
+
     final title = api.toUtf16(options.title);
     int handle;
     int lastError;
     try {
       handle = api.createWindowExW(
         exStyle,
-        windowClass.namePointer,
+        classNamePointer,
         title,
         style,
         cwUseDefault,
@@ -344,8 +525,15 @@ final class Win32Window
   /// Backwards-compatible Win32 spelling used by renderer internals.
   int get handle => nativeHandle;
 
-  /// The window class this window belongs to, for diagnostics.
-  String get className => _class.name;
+  /// The window class this window was actually created on, for diagnostics.
+  ///
+  /// Not always the shared class: a popup or a tooltip is created on
+  /// [Win32PopupWindowClass] when one was registered, and a diagnostic that
+  /// named the shared class for it would send the reader looking for a drop
+  /// shadow on the wrong registration.
+  String get className => _popupClassName ?? _class.name;
+
+  String? _popupClassName;
 
   /// Who sees this window's `WM_IME_*` messages, or null.
   ///
@@ -791,6 +979,51 @@ final class Win32Window
       case wmKillfocus:
         _textAssembler.reset();
         _reportActivation(active: false);
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
+      case _wmMouseactivate:
+        // The second half of "a popup never activates", and it is not
+        // redundant with WS_EX_NOACTIVATE. That style stops `ShowWindow` from
+        // activating the window; this message is what Windows sends when the
+        // *user clicks in it*, and DefWindowProcW answers MA_ACTIVATE, which
+        // activates the popup after all. The visible cost is exactly the one
+        // WindowKind was written to prevent: clicking a menu item takes the
+        // keyboard from the window behind, its caret stops blinking and its
+        // selection dims, for the half second before the menu closes again.
+        // Avalonia answers this message the same way, unconditionally, in
+        // `PopupImpl.WndProc`.
+        if (!kind.takesActivation) return _maNoactivate;
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
+      case wmNchittest:
+        // A tooltip must never swallow a click. HTTRANSPARENT tells Windows to
+        // pass the hit test on to whatever is underneath, so the button the
+        // tooltip is describing still receives the press that dismisses it -
+        // without this, a tooltip that has drifted under the pointer eats the
+        // user's click and nothing at all happens.
+        //
+        // Only for a tooltip: a menu is *made* of things to click, and a
+        // transparent menu would be an ornament. For every other kind this
+        // stays DefWindowProcW's answer, which is what keeps the caption
+        // draggable and the border resizable (see the audit in
+        // `win32_constants.dart`).
+        if (kind == WindowKind.tooltip) return _htTransparent;
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
+      case _wmNclbuttondown:
+        // Reported *and* handed on. The event is how an open menu learns that
+        // its owner's title bar was grabbed - the menu is a different window
+        // and never sees that click - and DefWindowProcW is what actually
+        // starts the drag or presses the caption button. Swallowing it to
+        // "consume the dismissal" would make the title bar dead while a menu
+        // was open, which is a far more visible bug than the one being fixed.
+        _emit(
+          WindowNonClientPressEvent(
+            windowId: id,
+            generation: _generation.current,
+            timestamp: _eventTimestamp(),
+          ),
+        );
         return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
       case wmSetcursor:

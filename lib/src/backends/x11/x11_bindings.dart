@@ -384,6 +384,8 @@ final class XcbBindings {
     'xcb_map_window',
     'xcb_unmap_window',
     'xcb_change_window_attributes',
+    'xcb_get_window_attributes',
+    'xcb_get_window_attributes_reply',
     'xcb_configure_window',
     'xcb_intern_atom',
     'xcb_intern_atom_reply',
@@ -551,6 +553,12 @@ final class XcbBindings {
   // window cookie shape too. It is the request an XDND *source* walks the
   // window tree with, once per pointer motion of a drag it started.
   late final XcbWinD queryPointer = _win('xcb_query_pointer');
+  // `xcb_get_window_attributes` is one window after the connection too. It is
+  // the only way to ask the server what a window's `override_redirect` really
+  // is: the bit travels in `CreateWindow` and is never echoed back in any
+  // event, so a smoke test that did not read it would be asserting its own
+  // argument rather than the server's answer.
+  late final XcbWinD getWindowAttributes = _win('xcb_get_window_attributes');
   late final XcbReplyD internAtomReply = _reply('xcb_intern_atom_reply');
   late final XcbReplyD getAtomNameReply = _reply('xcb_get_atom_name_reply');
   late final XcbReplyD getSelectionOwnerReply =
@@ -562,6 +570,8 @@ final class XcbBindings {
   late final XcbReplyD translateCoordinatesReply =
       _reply('xcb_translate_coordinates_reply');
   late final XcbReplyD getGeometryReply = _reply('xcb_get_geometry_reply');
+  late final XcbReplyD getWindowAttributesReply =
+      _reply('xcb_get_window_attributes_reply');
   late final XcbReplyD getKeyboardMappingReply =
       _reply('xcb_get_keyboard_mapping_reply');
   late final XcbReplyD getModifierMappingReply =

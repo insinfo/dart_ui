@@ -15,6 +15,14 @@ import '../geometry/size.dart';
 import '../rendering/renderer.dart';
 import 'window_events.dart';
 
+// Re-exported rather than merely imported so that `ScreenInfo` and
+// `ScreenProvider` are nameable from the same import that names
+// `WindowingBackend`. A caller that has a backend and wants to know where the
+// monitors are must be able to write down the type it pattern-matches on, and
+// the umbrella library exports this file; a seam that cannot be spelled is a
+// seam nobody uses.
+export 'screen_info.dart';
+
 enum WindowState { normal, minimised, maximised, fullscreen }
 
 /// What a window *is*, which decides far more than how it is decorated.
@@ -310,6 +318,17 @@ abstract interface class NativeWindow implements Disposable {
 }
 
 /// Creating and owning windows on one platform.
+///
+/// Capabilities a backend may or may not have are **not** members here, and
+/// that is a rule rather than an accident: this contract is implemented by
+/// every backend and by every test double in the suite, so a member added for
+/// something only two of them can do breaks all of them at once. They are
+/// separate interfaces a backend also implements, and a caller asks with a
+/// pattern - `ClipboardProvider` for the clipboard, `ScreenProvider` for the
+/// monitors and their work areas (`screen_info.dart`, re-exported above),
+/// `DragDropProvider`, `TextInputProvider`. Wayland has no screen coordinates
+/// at all, and a fake backend in a widget test has no monitor to describe;
+/// both stay whole by simply not declaring the interface.
 abstract interface class WindowingBackend {
   String get name;
 

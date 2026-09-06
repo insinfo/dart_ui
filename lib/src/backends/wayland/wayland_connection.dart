@@ -67,13 +67,28 @@ abstract interface class WaylandWindowClient
   /// like a toplevel.
   WaylandToplevelIds createPopup(WaylandPopupRequest request);
 
-  /// Takes an explicit grab for [ids], so that a click anywhere outside the
-  /// popup chain dismisses it with `popup_done`.
+  /// The serial of the newest input event the compositor has sent, or 0 when
+  /// the user has not acted at all yet.
   ///
-  /// Wayland only grants this to a popup created in response to recent user
-  /// input, and only for the serial of that input; a grab requested without
-  /// one is a protocol error, so a missing serial means no grab rather than a
-  /// killed connection. Returns whether the grab was requested.
+  /// Exposed because every request Wayland guards behind "the user did
+  /// something recently" - `xdg_popup.grab`, `wl_data_device.start_drag`,
+  /// `wl_data_device.set_selection` - is only legal while quoting such a
+  /// serial, and quoting none is a *protocol error*, not a refusal. Reading it
+  /// lets a caller decide before a single byte is written; see
+  /// [WaylandPopupGrab], which turns that decision into a value.
+  int get lastInputSerial;
+
+  /// Takes an explicit grab for [ids] with the connection's newest input
+  /// serial, so that a click anywhere outside the popup chain dismisses the
+  /// whole chain with `popup_done`.
+  ///
+  /// Returns whether the grab was actually requested. False means no serial
+  /// (or no seat) existed and **nothing was written**: a grab that quotes a
+  /// serial the compositor does not recognise is a protocol error, and a
+  /// protocol error tears the connection down - the entire application dies
+  /// because a menu opened. Prefer declaring the grab up front through
+  /// [WaylandPopupRequest.grab], which carries the serial in the value and so
+  /// cannot express the illegal request at all.
   bool grabPopup(WaylandToplevelIds ids);
 
   /// Whether the compositor offers `zxdg_decoration_manager_v1`, which is
@@ -197,12 +212,55 @@ final class WaylandToplevelRequest {
   final int? maximumHeight;
 }
 
+/// Whether one popup takes an `xdg_popup.grab`, and the input serial that
+/// makes the request legal.
+///
+/// A bool would be the wrong type here, and expensively so. `xdg_popup.grab`
+/// is accepted only while quoting the serial of a *recent* input event; a grab
+/// sent without one is a protocol error, and a Wayland protocol error is fatal
+/// to the connection - every window of the process dies because a menu opened.
+/// Carrying the serial inside the value makes "grab, but with no serial"
+/// unrepresentable rather than merely discouraged: [WaylandPopupGrab.withSerial]
+/// collapses to [none] when handed 0, so the only way to reach the wire is with
+/// a serial the compositor actually issued.
+final class WaylandPopupGrab {
+  const WaylandPopupGrab._(this.serial);
+
+  /// No grab. The default, and what this backend uses unless the application
+  /// opts in - see the grab note in `WaylandWindow.create`.
+  static const WaylandPopupGrab none = WaylandPopupGrab._(0);
+
+  /// A grab quoting [serial], or [none] when [serial] is 0 - which is what
+  /// [WaylandWindowClient.lastInputSerial] reports until the user has clicked
+  /// or typed at least once.
+  factory WaylandPopupGrab.withSerial(int serial) =>
+      serial <= 0 ? none : WaylandPopupGrab._(serial);
+
+  /// The input serial the grab quotes; 0 when there is no grab.
+  final int serial;
+
+  /// Whether anything at all should be written for this grab.
+  bool get isRequested => serial != 0;
+
+  @override
+  bool operator ==(Object other) =>
+      other is WaylandPopupGrab && other.serial == serial;
+
+  @override
+  int get hashCode => serial.hashCode;
+
+  @override
+  String toString() => isRequested
+      ? 'WaylandPopupGrab(serial: $serial)'
+      : 'WaylandPopupGrab.none';
+}
+
 /// Everything needed to create one `xdg_popup`.
 final class WaylandPopupRequest {
   const WaylandPopupRequest({
     required this.parent,
     required this.positioner,
-    this.grab = true,
+    this.grab = WaylandPopupGrab.none,
   });
 
   /// The parent surface's ids. A submenu passes the *parent popup's* ids,
@@ -213,10 +271,16 @@ final class WaylandPopupRequest {
 
   final WaylandPositionerSpec positioner;
 
-  /// Whether to take an explicit grab, which is what makes a click outside
-  /// dismiss the popup. Menus want it; a tooltip must not have it, because a
-  /// grab steals input from the window under the pointer.
-  final bool grab;
+  /// The grab this popup asks for, [WaylandPopupGrab.none] by default.
+  ///
+  /// A grab is what makes a click *outside* the popup chain - including one in
+  /// another application - come back as `popup_done` instead of reaching
+  /// whatever is under the pointer. It is off by default because dismissal is
+  /// the framework's job in this design, and because the serial requirement
+  /// above turns a mistimed grab into a dead connection; a tooltip must never
+  /// have one at all, since a grab takes input away from the window the user
+  /// is actually pointing at.
+  final WaylandPopupGrab grab;
 }
 
 /// The three protocol objects one toplevel window is made of.
@@ -1704,7 +1768,10 @@ final class WaylandConnection
     _surfaceByPopup[popupId] = surfaceId;
     _popupParents[popupId] = request.parent.toplevelId;
 
-    if (request.grab) grabPopup(ids);
+    // The grab, when there is one, goes out before the first commit: it
+    // applies to the popup being mapped, and the serial it quotes is the one
+    // the caller captured rather than whatever has arrived since.
+    if (request.grab.isRequested) _grabPopupWith(ids, request.grab);
 
     // The empty commit that asks for the first configure, same as a toplevel.
     _writer.begin(surfaceId, wlSurfaceRequestCommit);
@@ -1753,18 +1820,29 @@ final class WaylandConnection
   }
 
   @override
-  bool grabPopup(WaylandToplevelIds ids) {
+  int get lastInputSerial => _lastInputSerial;
+
+  @override
+  bool grabPopup(WaylandToplevelIds ids) =>
+      _grabPopupWith(ids, WaylandPopupGrab.withSerial(_lastInputSerial));
+
+  /// The one place `xdg_popup.grab` can reach the wire from.
+  ///
+  /// Serial and seat are both checked here, and a failure writes nothing: the
+  /// request the compositor would answer with a protocol error - which closes
+  /// the socket and takes every window of this process down with it - is
+  /// refused locally and recorded as a reason instead.
+  bool _grabPopupWith(WaylandToplevelIds ids, WaylandPopupGrab grab) {
     if (isDisposed || !isValid) return false;
-    // A grab without an input serial is a protocol error that kills the
-    // connection, so a popup opened programmatically simply goes ungrabbed.
-    if (_lastInputSerial == 0 || _seatId == 0) {
-      recordError('xdg_popup.grab skipped: no input serial yet, so the '
+    if (!grab.isRequested || _seatId == 0) {
+      recordError('xdg_popup.grab skipped: '
+          '${grab.isRequested ? 'no wl_seat' : 'no input serial yet'}, so the '
           'compositor would reject the grab and close the connection');
       return false;
     }
     _writer.begin(ids.toplevelId, xdgPopupRequestGrab);
     _writer.putObject(_seatId);
-    _writer.putUint(_lastInputSerial);
+    _writer.putUint(grab.serial);
     _queueMessage();
     return true;
   }

@@ -893,6 +893,7 @@ final class X11WindowingBackend
           ? 'XDND is available in both directions'
           : 'XDND is unavailable on this connection',
     ));
+    _reportWindowKinds(connection, diagnostics);
     diagnostics.add(BackendDiagnostic.note(
       'core mouse motion, buttons, crossings and wheel are normalized; '
       'keyboard is ${_supportsKeyboard ? 'the core protocol map '
@@ -917,6 +918,46 @@ final class X11WindowingBackend
           'keymap plus platform/compose_sequences.dart. Full composition needs '
           'XIM (which needs Xlib and an input context) or ibus over its own '
           'protocol; see doc/architecture/overview.md.',
+    ));
+  }
+
+  /// What this connection can do with [WindowKind], and what it cannot.
+  ///
+  /// `override_redirect` needs nothing from the server - it is a bit in
+  /// `CreateWindow` and every X server since X11R1 has honoured it - so the
+  /// only thing worth reporting is whether the EWMH type atoms interned. A
+  /// server that refused them (or a bare server that has no window manager to
+  /// read them) still gets popups without frames and without focus theft; what
+  /// it loses is the compositor's shadow and animation, which is a cosmetic
+  /// degradation and is named as one rather than reported as a failure.
+  void _reportWindowKinds(
+    X11BackendConnection connection,
+    List<BackendDiagnostic> diagnostics,
+  ) {
+    if (connection is! X11WindowClient) return;
+    final missing = <String>[
+      for (final name in const <String>[
+        '_NET_WM_WINDOW_TYPE',
+        '_NET_WM_WINDOW_TYPE_NORMAL',
+        '_NET_WM_WINDOW_TYPE_DIALOG',
+        '_NET_WM_WINDOW_TYPE_POPUP_MENU',
+        '_NET_WM_WINDOW_TYPE_TOOLTIP',
+      ])
+        if (connection.atom(name) == 0) name,
+    ];
+    diagnostics.add(BackendDiagnostic.note(
+      'window kinds are honoured: popup and tooltip are created '
+      'override-redirect (no frame, no taskbar entry, no focus stolen from '
+      'the owner, and this client owns their position); dialog, popup and '
+      'tooltip carry WM_TRANSIENT_FOR when they were given an owner; every '
+      'kind publishes its _NET_WM_WINDOW_TYPE'
+      '${missing.isEmpty ? '' : ' - except ${missing.join(', ')}, '
+          'which this server did not intern'}',
+      detail: 'No pointer grab is taken for popups. Dismissal is the '
+          'framework\'s job (Application watches focus, presses in the owner '
+          'and owner moves); a grab leaked by a wedged process freezes every '
+          'click on the desktop, which is why Avalonia does not take one '
+          'either. See doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md section 6.1.',
     ));
   }
 

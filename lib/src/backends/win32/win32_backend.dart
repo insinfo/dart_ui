@@ -22,9 +22,11 @@ import 'dart:io' show Platform;
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../geometry/offset.dart';
+import '../../geometry/rect.dart';
 import '../../platform/clipboard.dart';
 import '../../platform/drag_drop.dart';
-import '../../platform/native_window.dart';
+import '../../platform/native_window.dart'; // also exports screen_info.dart
 import '../../platform/text_input.dart';
 import 'uia/uia_core.dart';
 import 'uia/uia_session.dart';
@@ -32,6 +34,7 @@ import 'win32_abi.dart';
 import 'win32_api.dart';
 import 'win32_clipboard.dart';
 import 'win32_constants.dart';
+import 'win32_coordinates.dart';
 import 'win32_diagnostics.dart';
 import 'win32_drag_drop.dart';
 import 'win32_ime.dart';
@@ -46,6 +49,7 @@ final class Win32WindowingBackend
         WindowingBackend,
         ClipboardProvider,
         DragDropProvider,
+        ScreenProvider,
         TextInputProvider {
   Win32WindowingBackend();
 
@@ -152,6 +156,7 @@ final class Win32WindowingBackend
 
   Win32Api? _api;
   Win32WindowClass? _windowClass;
+  Win32PopupWindowClass? _popupClass;
   Pointer<Msg>? _message;
   int _wakeHandle = 0;
   bool _initialized = false;
@@ -168,6 +173,204 @@ final class Win32WindowingBackend
 
   /// The class name Windows knows these windows by, once registered.
   String? get windowClassName => _windowClass?.name;
+
+  /// The class name popups and tooltips are created on, or null when the
+  /// second registration did not happen - in which case they share
+  /// [windowClassName] and have no drop shadow. See [Win32PopupWindowClass].
+  String? get popupWindowClassName => _popupClass?.name;
+
+  // ---------------------------------------------------------------------------
+  // Screens
+  // ---------------------------------------------------------------------------
+
+  /// Every monitor, read from Windows on **every call**.
+  ///
+  /// The alternative - a cached list invalidated by `WM_DISPLAYCHANGE` - was
+  /// rejected, and the reason is that the invalidation cannot be guaranteed to
+  /// arrive. That message is delivered to *windows*, and this list is legally
+  /// read when there is no window: before the first one is created, which is
+  /// exactly when an application decides where to place it, and after the last
+  /// one closes. A cache with a hole like that hands out a stale monitor
+  /// rectangle after the user unplugs a display, and the popup that reads it
+  /// lands on a screen that is no longer there - a bug that reproduces once a
+  /// week on somebody's docking station and never in a test.
+  ///
+  /// The cost of being right is one `EnumDisplayMonitors` plus two calls per
+  /// monitor, all of them cheap user32/shcore reads with no allocation beyond
+  /// one scratch struct, on a path that runs when a menu opens rather than per
+  /// frame. Correctness over caching, deliberately; if a profile ever shows
+  /// this, the fix is for the caller to hold the list for the life of the
+  /// popup, not for this getter to lie.
+  @override
+  List<ScreenInfo> get screens {
+    final api = _api;
+    if (api == null) return const <ScreenInfo>[];
+
+    // The callback runs synchronously, once per monitor, before
+    // EnumDisplayMonitors returns - so a single static accumulator is safe
+    // here in a way it would not be for an asynchronous callback: nothing else
+    // in this isolate can run between the clear and the copy, and the WndProc
+    // that could re-enter this backend is not being pumped from inside a
+    // monitor enumeration.
+    _enumeratedMonitors.clear();
+    if (api.enumDisplayMonitors(0, nullptr, _monitorEnumProc, 0) == 0) {
+      _diagnostics.add(
+        win32CallFailed(
+          'EnumDisplayMonitors',
+          api.getLastError(),
+          kind: DiagnosticKind.note,
+        ),
+      );
+    }
+    final handles = List<int>.of(_enumeratedMonitors);
+    _enumeratedMonitors.clear();
+
+    final screens = <ScreenInfo>[];
+    final info = api.allocator<MonitorInfoExW>();
+    try {
+      for (final monitor in handles) {
+        final screen = _describeMonitor(api, monitor, info);
+        if (screen != null) screens.add(screen);
+      }
+    } finally {
+      api.allocator.free(info);
+    }
+    return List<ScreenInfo>.unmodifiable(screens);
+  }
+
+  @override
+  ScreenInfo? screenAt(Offset screenPoint) =>
+      ScreenInfo.nearest(screens, screenPoint);
+
+  /// The screen a window is on, asked of Windows rather than computed.
+  ///
+  /// This is Avalonia's `ScreenFromHwnd`, and it is the call a popup host
+  /// wants when it has an owner window in hand: `MonitorFromWindow` answers
+  /// with the monitor holding the largest part of the window, which is the
+  /// right answer for a window straddling two screens and is not something the
+  /// logical rectangles in [screens] can be made to say.
+  ScreenInfo? screenForWindowHandle(int hwnd) {
+    final api = _api;
+    if (api == null || hwnd == 0) return null;
+    return _screenForMonitor(
+      api,
+      api.monitorFromWindow(hwnd, monitorDefaultToNearest),
+    );
+  }
+
+  /// The screen a **physical** desktop point is on.
+  ///
+  /// Physical, not logical, and that is the whole reason this exists next to
+  /// [screenAt]: a point that came from `ClientToScreen`, from a `WM_*`
+  /// message or from the cursor position is in desktop pixels, and converting
+  /// it to logical units would need the scale of the very monitor this call is
+  /// asked to find. Windows can answer without that circularity;
+  /// [ScreenInfo.nearest] cannot.
+  ScreenInfo? screenAtPhysical(int x, int y) {
+    final api = _api;
+    if (api == null) return null;
+    final point = api.allocator<Win32Point>();
+    try {
+      point.ref
+        ..x = x
+        ..y = y;
+      return _screenForMonitor(
+        api,
+        api.monitorFromPoint(point.ref, monitorDefaultToNearest),
+      );
+    } finally {
+      api.allocator.free(point);
+    }
+  }
+
+  ScreenInfo? _screenForMonitor(Win32Api api, int monitor) {
+    if (monitor == 0) return null;
+    final info = api.allocator<MonitorInfoExW>();
+    try {
+      return _describeMonitor(api, monitor, info);
+    } finally {
+      api.allocator.free(info);
+    }
+  }
+
+  /// One monitor, in logical units at *its own* scale.
+  ///
+  /// Dividing each monitor's physical rectangle by its own scale is what
+  /// `ScreenInfo` documents and what a popup needs, and it is also why the
+  /// rectangles of two monitors with different scales do not tile the desktop.
+  /// The alternative - one global logical space at the primary monitor's
+  /// scale - would report the secondary screen's work area in units nothing
+  /// laid out on that screen uses, so a menu clamped to it would be the wrong
+  /// size by the ratio of the two scales.
+  ScreenInfo? _describeMonitor(
+    Win32Api api,
+    int monitor,
+    Pointer<MonitorInfoExW> info,
+  ) {
+    if (!api.readMonitorInfo(monitor, info)) {
+      _diagnostics.add(
+        win32CallFailed(
+          'GetMonitorInfoW',
+          api.getLastError(),
+          kind: DiagnosticKind.note,
+          context: 'monitor 0x${monitor.toRadixString(16)}',
+        ),
+      );
+      return null;
+    }
+    final scale = win32ScaleForDpi(api.monitorDpi(monitor));
+    return ScreenInfo(
+      bounds: _logicalRect(info.ref.rcMonitor, scale),
+      workArea: _logicalRect(info.ref.rcWork, scale),
+      scale: scale,
+      isPrimary: info.ref.dwFlags & monitorInfoPrimaryFlag != 0,
+      name: _deviceName(info.ref.szDevice),
+    );
+  }
+
+  static Rect _logicalRect(Win32Rect rect, double scale) => Rect.fromLTRB(
+        rect.left / scale,
+        rect.top / scale,
+        rect.right / scale,
+        rect.bottom / scale,
+      );
+
+  /// `szDevice` up to its null terminator.
+  ///
+  /// Read by hand rather than through a marshaller because the field is an
+  /// inline `WCHAR[32]` and not a pointer: there is no allocation to hand to a
+  /// UTF-16 helper, and a name that filled all 32 units would not be
+  /// terminated at all - hence the bound as well as the terminator test.
+  static String? _deviceName(Array<Uint16> szDevice) {
+    final units = <int>[];
+    for (var i = 0; i < 32; i++) {
+      final unit = szDevice[i];
+      if (unit == 0) break;
+      units.add(unit);
+    }
+    return units.isEmpty ? null : String.fromCharCodes(units);
+  }
+
+  /// Filled by [_collectMonitor] for the duration of one enumeration. See
+  /// [screens] for why a static is safe here.
+  static final List<int> _enumeratedMonitors = <int>[];
+
+  static final Pointer<NativeFunction<MonitorEnumProcNative>> _monitorEnumProc =
+      Pointer.fromFunction<MonitorEnumProcNative>(_collectMonitor, 0);
+
+  /// Windows' `MONITORENUMPROC`. Returning non-zero means "keep going"; the
+  /// body is one list append precisely because a Dart exception must never
+  /// unwind through the native frame (the policy in `win32_window_class.dart`,
+  /// applied by construction rather than by a try block).
+  static int _collectMonitor(
+    int monitor,
+    int hdc,
+    Pointer<Win32Rect> clip,
+    int lParam,
+  ) {
+    _enumeratedMonitors.add(monitor);
+    return 1;
+  }
 
   // ---------------------------------------------------------------------------
   // Probe
@@ -248,6 +451,15 @@ final class Win32WindowingBackend
         const BackendDiagnostic.missingSymbol(
           'GetDpiForWindow',
           detail: 'per-monitor DPI cannot be reported per window',
+        ),
+      );
+    }
+    if (api.getDpiForMonitor == null) {
+      diagnostics.add(
+        const BackendDiagnostic.missingSymbol(
+          'GetDpiForMonitor',
+          detail: 'every ScreenInfo.scale falls back to the system DPI, which '
+              'is exact on the single-scale desktop such a Windows can have',
         ),
       );
     }
@@ -337,6 +549,16 @@ final class Win32WindowingBackend
         'itself is not paced, so vsync is not claimed',
       ),
     );
+    diagnostics.add(
+      const BackendDiagnostic.note(
+        'monitor geometry is published through ScreenProvider - bounds, work '
+        'area and scale per monitor, logical at that monitor\'s own scale and '
+        'read fresh on every query; popups and tooltips are created on a '
+        'second window class carrying CS_DROPSHADOW, answer WM_MOUSEACTIVATE '
+        'with MA_NOACTIVATE, and a tooltip is HTTRANSPARENT so it can never '
+        'swallow a click',
+      ),
+    );
 
     return BackendProbeResult(
       backendName: name,
@@ -404,6 +626,21 @@ final class Win32WindowingBackend
       if (failure != null) _diagnostics.add(failure);
     });
     _windowClass = windowClass;
+
+    // Second, and after the first: it is cloned from that registration and
+    // borrows its WndProc trampoline, so it must be unregistered *before* the
+    // base class closes that trampoline. The bag releases last-acquired
+    // first, which is exactly that order. Null when Windows refused - popups
+    // then lose their drop shadow and nothing else.
+    final popupClass =
+        Win32PopupWindowClass.register(api, windowClass, _diagnostics);
+    if (popupClass != null) {
+      _resources.add(popupClass, () {
+        final failure = popupClass.unregister();
+        if (failure != null) _diagnostics.add(failure);
+      });
+    }
+    _popupClass = popupClass;
 
     _wakeHandle = _createWakeWindow(api, windowClass);
     _resources.add(_wakeHandle, () {
@@ -541,6 +778,7 @@ final class Win32WindowingBackend
 
     _resources.dispose();
     _windowClass = null;
+    _popupClass = null;
     _message = null;
     _api = null;
   }
@@ -558,6 +796,7 @@ final class Win32WindowingBackend
     final window = Win32Window.create(
       api: _api!,
       windowClass: _windowClass!,
+      popupClass: _popupClass,
       options: options,
       onClosed: _windows.remove,
       onSessionEnding: () => _quitRequested = true,

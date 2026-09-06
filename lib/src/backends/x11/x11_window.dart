@@ -22,6 +22,86 @@ import 'x11_keyboard.dart';
 import 'x11_protocol.dart';
 import 'x11_surface.dart';
 
+/// How one [WindowKind] is spelled in X11: three decisions, no side effects.
+///
+/// It is a value rather than a branch inside [X11Window.create] because these
+/// three answers are the whole of "X11 honours the kind", and a branch would
+/// only be checkable against a live X server with a real window manager - which
+/// is exactly the thing this repository cannot run in CI on every platform.
+/// As a value it is asserted directly (`x11_window_kind_test.dart`), and the
+/// smoke tool reads the same three facts back off the server to prove the
+/// wiring between this and `CreateWindow` (`X11_POPUP=` in
+/// `tool/x11_backend_smoke.dart`).
+///
+/// Follows Avalonia's `X11Window` (`referencias/Avalonia/src/Avalonia.X11`),
+/// which sets `_overrideRedirect` for every popup and leaves positioning to
+/// its own `ManagedPopupPositioner`.
+final class X11WindowKindPlan {
+  const X11WindowKindPlan._({
+    required this.overrideRedirect,
+    required this.windowTypeAtom,
+    required this.wantsTransientForOwner,
+  });
+
+  /// The plan for [kind].
+  factory X11WindowKindPlan.of(WindowKind kind) => switch (kind) {
+        // An ordinary window: managed, decorated, in the taskbar, and placed
+        // by whatever policy the user's window manager has.
+        WindowKind.normal => const X11WindowKindPlan._(
+            overrideRedirect: false,
+            windowTypeAtom: '_NET_WM_WINDOW_TYPE_NORMAL',
+            wantsTransientForOwner: false,
+          ),
+        // A dialog stays managed - it is decorated and it does take activation
+        // - and gains only its type and its transient-for. Making a dialog
+        // override-redirect would take away the frame the user closes it with.
+        WindowKind.dialog => const X11WindowKindPlan._(
+            overrideRedirect: false,
+            windowTypeAtom: '_NET_WM_WINDOW_TYPE_DIALOG',
+            wantsTransientForOwner: true,
+          ),
+        // A menu. Override-redirect is the only thing on X11 that gives all
+        // four of "no frame", "no taskbar entry", "no focus stolen from the
+        // owner" and "appears exactly where the framework put it" at once;
+        // `_MOTIF_WM_HINTS` alone gives the first and none of the rest.
+        WindowKind.popup => const X11WindowKindPlan._(
+            overrideRedirect: true,
+            windowTypeAtom: '_NET_WM_WINDOW_TYPE_POPUP_MENU',
+            wantsTransientForOwner: true,
+          ),
+        // A tooltip is a popup that additionally must never be focusable, and
+        // override-redirect already guarantees that: a window the window
+        // manager does not manage is a window it never focuses.
+        WindowKind.tooltip => const X11WindowKindPlan._(
+            overrideRedirect: true,
+            windowTypeAtom: '_NET_WM_WINDOW_TYPE_TOOLTIP',
+            wantsTransientForOwner: true,
+          ),
+      };
+
+  /// Whether `CreateWindow` must carry `override_redirect = 1`.
+  ///
+  /// True makes the window invisible to the window manager: no decorations,
+  /// no taskbar entry, no focus stealing, no placement policy - and therefore
+  /// **the client is fully responsible for the position**, since nothing will
+  /// nudge the window back onto a monitor or out from under a panel.
+  final bool overrideRedirect;
+
+  /// The `_NET_WM_WINDOW_TYPE` atom name, which is set for every kind
+  /// including the override-redirect ones: a compositor reads it to choose the
+  /// shadow and the animation even for a window no window manager manages.
+  final String windowTypeAtom;
+
+  /// Whether `WM_TRANSIENT_FOR` should name the owner, when there is one.
+  final bool wantsTransientForOwner;
+
+  /// Whether the window manager should be asked to draw a frame.
+  ///
+  /// Always false where [overrideRedirect] is true - not as a policy but as a
+  /// statement of fact, since an unmanaged window has nobody to decorate it.
+  bool get decorated => !overrideRedirect;
+}
+
 final class X11Window with DisposableMixin implements NativeWindow {
   X11Window._({
     required X11WindowClient client,
@@ -73,6 +153,14 @@ final class X11Window with DisposableMixin implements NativeWindow {
     final position = options.position;
     final x = position == null ? null : (position.dx * scale).round();
     final y = position == null ? null : (position.dy * scale).round();
+    final plan = X11WindowKindPlan.of(options.kind);
+    // The owner's X id, and only when the owner is one of *our* windows on
+    // *this* connection: `WM_TRANSIENT_FOR` naming a window the server does
+    // not have is a property a window manager will act on, and it acts by
+    // losing the child behind everything.
+    final owner = options.owner;
+    final transientFor =
+        plan.wantsTransientForOwner && owner is X11Window ? owner.xcbWindow : 0;
     final xcbWindow = client.createTopLevelWindow(
       X11TopLevelWindowRequest(
         width: width,
@@ -81,8 +169,11 @@ final class X11Window with DisposableMixin implements NativeWindow {
         y: y,
         title: options.title,
         resizable: options.resizable,
-        decorated: options.decorated,
+        decorated: options.decorated && plan.decorated,
         visible: options.visible,
+        overrideRedirect: plan.overrideRedirect,
+        windowTypeAtom: plan.windowTypeAtom,
+        transientFor: transientFor,
       ),
     );
     return X11Window._(
@@ -176,6 +267,15 @@ final class X11Window with DisposableMixin implements NativeWindow {
 
   List<BackendDiagnostic> get diagnostics =>
       List<BackendDiagnostic>.unmodifiable(_diagnostics);
+
+  /// What the *server* says this window's kind is, or null when it cannot say.
+  ///
+  /// Three round trips, so it is not for the frame loop; it exists so a smoke
+  /// run against a real X server can print what actually landed on the window
+  /// rather than the arguments it passed in. See `X11_POPUP=` in
+  /// `tool/x11_backend_smoke.dart`.
+  X11ServerWindowKind? readServerWindowKind() =>
+      _client.readWindowKind(xcbWindow);
 
   @override
   Stream<PlatformWindowEvent> get events => _events.stream;

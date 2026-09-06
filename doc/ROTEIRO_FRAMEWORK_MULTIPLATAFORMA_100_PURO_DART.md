@@ -826,6 +826,41 @@ O framework deverá documentar e testar quatro árvores:
 
 Opcionalmente, controles templated podem manter uma árvore lógica separada da visual.
 
+## 8.1.1 Regra de renderização: GPU primeiro, CPU nos três casos nomeados
+
+Escrita aqui porque estava implementada e não declarada, e uma regra não
+declarada é obedecida por acidente. `RenderingPolicy`
+(`platform/backend_selection.dart`) já a codifica; esta seção é o que ela
+significa.
+
+**Este framework é acelerado por GPU e tem foco em GPU.** O rasterizador de
+CPU existe, tem paridade medida contra a GPU e é excelente — e nada disso o
+torna um caminho co-igual. Ele é a resposta em **três** casos, e em nenhum
+outro:
+
+1. **o hardware ou o sistema operacional não suportam** — nenhum candidato
+   acelerado passou na sondagem. `RenderingPolicy.auto` cai para o último da
+   lista de candidatos, com o relatório dizendo quem falhou e por quê;
+2. **renderização off-screen** — headless, captura de imagem, teste de
+   conformidade, exportação. Não há swapchain e não deveria haver;
+3. **o usuário da biblioteca forçou** — `RenderingPolicy.cpuOnly`. Uma escolha
+   declarada, por diagnóstico determinístico, sessão remota ou consumo de
+   energia.
+
+Duas consequências que valem por si:
+
+- **`RenderingPolicy.gpuOnly` falha em vez de cair para a CPU.** Quem pediu
+  GPU pediu porque cair silenciosamente é o que não pode acontecer;
+- **nenhuma superfície nova escolhe sozinha.** Uma janela, um popup, uma
+  camada — tudo herda o caminho já escolhido pela aplicação. Uma superfície
+  que decide por conta própria produz a combinação cruzada, e a combinação
+  cruzada é visível: os desvios CPU↔GPU da §68.4 aparecem lado a lado na
+  mesma tela. É por isso que um menu em janela nativa adota o dispositivo da
+  janela dona em vez de criar o seu (`doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md`,
+  §3.7).
+
+---
+
 ## 8.2 Regra de dependências
 
 - plataforma depende de foundation, nunca de widgets;

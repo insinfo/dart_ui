@@ -309,20 +309,66 @@ dona e tela → lógico pelo popup. É o que `_window_win32.dart` faz com
   mover junto. Só verificável no CI Apple Silicon.
 - **Headless/web:** devolvem `nativePopups = false`; nada muda.
 
-### 3.7 Custo por popup, e como não pagar duas vezes
+### 3.7 O popup é GPU, pela mesma razão que a janela é
 
-Cada `ApplicationWindow` cria um `SurfacePresenter`. Um menu que abre e
-fecha a 60 Hz de cliques não pode pagar um swapchain de GPU por abertura:
+**Um popup renderiza pelo mesmo caminho que a janela que o abriu.** Se a dona
+está no Direct3D 11, o menu está no Direct3D 11; a CPU é o recuo de último
+caso, o mesmo que o resto do framework já tem, e não uma escolha de desenho.
 
-- popups usam **sempre o apresentador de CPU** (DIB no Win32, `PutImage` no
-  X11, `wl_shm` no Wayland) — um menu tem poucos milhares de pixels, e o
-  rasterizador de CPU já é o caminho de paridade;
-- medir a criação de janela no Win32 e no X11 (`tool/popup_window_smoke.dart`,
-  fase 2). Se ficar acima de ~2 ms, **um popup oculto por janela dona,
-  reutilizado** (`SW_HIDE`/`SW_SHOWNOACTIVATE` em vez de criar/destruir),
-  que é o que o Win32 faz para menus do sistema. O teste "opening and
-  closing a child in a burst while the owner presents" já existe para
-  provar que a criação em rajada é correta; a fase 2 mede se é barata.
+A razão de peso **não é** desempenho, é correção. Um menu rasterizado na CPU
+sobre uma janela rasterizada na GPU exibe as divergências que a §68.4 lista
+por nome — retângulo antialiasado divergindo um nível, `src` sobre máscara
+divergindo até 255, e o texto vindo de outro rasterizador. O usuário vê um
+menu cujo texto e cujas bordas não casam com o resto da aplicação, e essa é
+uma diferença que nenhum número de milissegundos compra. Um framework
+GPU-first que abre o menu na CPU não é GPU-first; é GPU-first no fundo e CPU
+na frente, que é a metade que o olho encontra primeiro.
+
+O que isso exige, e o que custa:
+
+- **Um dispositivo, N swapchains.** O popup **não** cria um `GlRenderDevice`,
+  um `D3d12Device` ou um `VkDevice` próprio: adota o da janela dona e cria
+  apenas a sua superfície de apresentação. É o que todo toolkit acelerado
+  faz, e é o que faz o **atlas de glifos e o cache de cobertura serem
+  compartilhados** — o texto de um menu já está rasterizado, porque a mesma
+  fonte no mesmo tamanho já foi desenhada na janela de trás. Um dispositivo
+  por popup jogaria esse cache fora a cada abertura, que é o custo real que
+  se estava tentando evitar;
+- a costura para isso já existe: `GlRenderDevice.adoptContext` adota um
+  contexto em vez de criá-lo, e o seletor de apresentação
+  (`default_platform_resolver.dart`) escolhe o caminho uma vez por
+  aplicação. O popup pede o caminho **já escolhido**, não repete a escolha —
+  repetir a sondagem por popup é como se paga o preço duas vezes;
+- **o swapchain é o objeto caro, então é ele que se reaproveita.** Um popup
+  oculto por janela dona, mantido vivo e apenas mostrado/escondido
+  (`SW_SHOWNOACTIVATE`/`SW_HIDE`), preserva a superfície entre aberturas —
+  que é o que o próprio Win32 faz com os menus do sistema. Isso deixa de ser
+  o plano B da versão anterior desta seção e passa a ser o desenho: com GPU,
+  criar e destruir por abertura é que seria caro;
+- **a CPU entra nos três casos em que ela é a resposta certa, e em nenhum
+  outro.** Este framework é acelerado por GPU com foco em GPU; o rasterizador
+  de CPU existe com paridade medida, e ter paridade não o torna um caminho
+  co-igual. Os três casos já são exatamente o que `RenderingPolicy`
+  (`platform/backend_selection.dart`) enumera, e o popup herda a política da
+  janela dona em vez de decidir de novo:
+  1. **o hardware ou o sistema não suportam** — nenhum candidato de GPU
+     passou na sondagem, e `RenderingPolicy.auto` cai para o último da lista;
+  2. **renderização off-screen** — headless, captura, teste de conformidade,
+     onde não há swapchain e não deveria haver;
+  3. **o usuário da biblioteca forçou** — `RenderingPolicy.cpuOnly`, que é uma
+     escolha declarada e não um acidente.
+
+  Numa janela cuja dona está no `win32-dib` por um desses três motivos, o
+  popup vai junto. O que não pode existir é a combinação cruzada — dona na
+  GPU, menu na CPU — que é o que a versão anterior desta seção prescrevia.
+
+**O que medir na fase 2** (`tool/popup_window_smoke.dart`, janela real, Intel
+UHD, `onError` instalado): tempo de primeira abertura, tempo de reabertura com
+o popup reaproveitado, e **paridade de pixel entre o menu e o mesmo menu
+desenhado dentro da janela** — essa terceira é a que prova que a divergência
+foi evitada em vez de assumida. O teste "opening and closing a child in a
+burst while the owner presents" já existe e prova que a rajada é correta; o
+smoke mede se é barata.
 
 ### 3.8 Acessibilidade
 
@@ -387,8 +433,9 @@ não depende de onde os pixels vão.
 - `tool/popup_window_smoke.dart`: janela real no Win32, `onError` instalado
   (a regra de `headless-tests-miss-backend-bugs`), abre o menu perto da
   borda direita e afirma que o retângulo do popup **sai** da janela dona
-  (`escapesOwnerWindow` medido, não declarado), mede tempo de abertura,
-  conta frames apresentados pelo popup.
+  (`escapesOwnerWindow` medido, não declarado), confirma que o popup adotou
+  **o dispositivo da dona** e não criou o seu, mede primeira abertura e
+  reabertura, e compara o menu em janela com o mesmo menu em overlay (§3.7).
 - **Prova:** os 32 casos de `context_menu_test.dart` rodam duas vezes, uma
   por host, sem mudar um `expect`; o smoke em janela real dá o
   número de 3.7.
@@ -497,5 +544,8 @@ final handle = PopupHost.of(context).open(
   por janela para impedir.
 - Não escreve o backend macOS às cegas: a regra da §68.1 (escrever sem poder
   rodar produz confiança falsa) vale aqui.
-- Não promete GPU para popups: CPU por desenho, e o número da fase 2 decide
-  se vale mais que isso.
+- Não abre exceção de renderização para popups: o popup vai pelo caminho da
+  janela dona, GPU inclusive, e a CPU é o mesmo recuo de sempre (§3.7). A
+  versão anterior desta seção dizia o contrário — "CPU por desenho" — e
+  estava errada no ponto que decide: o custo de um menu na CPU sobre uma
+  janela na GPU não é tempo, é a divergência visível que a §68.4 lista.

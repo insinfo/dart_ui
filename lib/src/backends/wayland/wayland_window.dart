@@ -46,6 +46,7 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
     required bool visible,
     required void Function(WaylandWindow window) onClosed,
     this.isPopup = false,
+    this.popupDepth = 0,
   })  : _client = client,
         _cpuClient =
             client is WaylandCpuClient ? client as WaylandCpuClient : null,
@@ -63,11 +64,20 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
       ..bufferScale = client.bufferScaleHint;
   }
 
+  /// Creates the window, taking the `xdg_popup` role when [options] describe a
+  /// dismissable window with an owner.
+  ///
+  /// [grabPopup] is the deliberate opt-in for `xdg_popup.grab`, described at
+  /// the grab below. It is a parameter rather than something read off
+  /// [WindowOptions.kind] because "this is a menu" and "this menu was opened
+  /// by a click the compositor will still vouch for" are different facts, and
+  /// only the second one makes a grab legal.
   static WaylandWindow create({
     required WaylandWindowClient client,
     required NativeWindowId id,
     required WindowOptions options,
     required void Function(WaylandWindow window) onClosed,
+    bool grabPopup = false,
   }) {
     final width = _clampExtent(options.size.width.round());
     final height = _clampExtent(options.size.height.round());
@@ -96,15 +106,56 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
         ),
         size: Size(width.toDouble(), height.toDouble()),
       );
+      // ## Why there is no grab here by default
+      //
+      // `xdg_popup.grab` is the compositor-side dismissal: it takes the input
+      // devices for the popup chain, so the next click anywhere outside it -
+      // including inside another application - comes back as `popup_done`
+      // rather than reaching whatever is under the pointer. Three reasons this
+      // backend does not ask for it unless told to:
+      //
+      //  1. **It can kill the process.** A grab is legal only while quoting the
+      //     serial of a *recent* input event. Quote none, or a stale one, and
+      //     the compositor answers with a protocol error - which is fatal to
+      //     the whole connection, so every window of the application would
+      //     disappear because a menu opened. `WaylandConnection._grabPopupWith`
+      //     already refuses that request rather than sending it; the value type
+      //     below moves the same refusal one step earlier, to the caller.
+      //  2. **Dismissal belongs to the framework here** (plan section 3.4).
+      //     Every source a grab would provide already reaches the application:
+      //     `popup_done` from the compositor, focus leaving the owning
+      //     toplevel, and a pointer press in the owner outside the popup. A
+      //     grab would add nothing except the clicks landing in *other*
+      //     applications, and it would swallow those.
+      //  3. **Avalonia decided the same, for the same reason.** Its
+      //     `Avalonia.Wayland/PopupImpl` says in so many words that it
+      //     deliberately does not call `xdg_popup.grab()`, and names the same
+      //     three dismissal sources.
+      //
+      // A grab stays reachable for the application that genuinely wants a modal
+      // menu and holds a valid serial - hence [grabPopup] - but a tooltip vetoes
+      // it whatever was asked, because a grab takes input away from the window
+      // under the pointer and a tooltip is precisely the popup the user is not
+      // interacting with.
+      final wantsGrab = grabPopup && options.kind != WindowKind.tooltip;
+      final grab = wantsGrab
+          ? WaylandPopupGrab.withSerial(client.lastInputSerial)
+          : WaylandPopupGrab.none;
       final popupIds = client.createPopup(WaylandPopupRequest(
+        // The owner's role object, whichever it is: a menu anchored to the
+        // toplevel names the toplevel's xdg_surface, and a submenu anchored to
+        // that menu names the *menu's*. That is not a choice - xdg-shell
+        // requires every popup in a chain to name the one immediately before
+        // it, so a submenu that reached two levels up (naming the toplevel
+        // while a menu is still mapped, or naming a grandparent popup) is a
+        // protocol error and takes the connection with it. The framework's
+        // owner chain is already that chain, so passing the owner through
+        // unchanged is what keeps the two in step.
         parent: owner.toplevelIds,
         positioner: WaylandPositionerSpec.fromRequest(request),
-        // A tooltip must never grab: a grab takes input away from the window
-        // under the pointer, and a tooltip is precisely the popup the user is
-        // not interacting with.
-        grab: options.kind == WindowKind.popup,
+        grab: grab,
       ));
-      return WaylandWindow._(
+      final popup = WaylandWindow._(
         client: client,
         toplevelIds: popupIds,
         id: id,
@@ -113,7 +164,21 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
         visible: options.visible,
         onClosed: onClosed,
         isPopup: true,
+        popupDepth: owner.popupDepth + 1,
       );
+      if (wantsGrab && !grab.isRequested) {
+        // Named, not silent: an application that asked for a modal menu and
+        // got a light-dismiss one must be able to find out why, and the answer
+        // - "the user had not acted yet, so no serial existed" - is a policy
+        // refusal rather than a failure of the compositor or the socket.
+        popup._record(const BackendDiagnostic(
+          kind: DiagnosticKind.rejectedByPolicy,
+          message: 'xdg_popup.grab refused: no recent input serial',
+          detail: 'a grab quoting no serial is a protocol error, which would '
+              'close the connection and every window on it',
+        ));
+      }
+      return popup;
     }
 
     final ids = client.createToplevel(WaylandToplevelRequest(
@@ -170,6 +235,19 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
   /// `xdg_toplevel`. A popup has a position, no title and no decorations,
   /// and is dismissed by the compositor rather than closed by the user.
   final bool isPopup;
+
+  /// How deep in the `xdg_popup` chain this window sits: 0 for a toplevel, 1
+  /// for a menu anchored to it, 2 for that menu's submenu, and so on.
+  ///
+  /// Recorded because the chain is a protocol rule and not bookkeeping.
+  /// xdg-shell requires each popup to be the child of the popup *immediately*
+  /// before it; a menu that already has a submenu open and then opens a second
+  /// popup from itself, or a submenu that anchors two levels up to the
+  /// toplevel, is a protocol error rather than a mispositioned window - and a
+  /// protocol error ends the connection. The depth is what lets a test, and
+  /// `tool/wayland_backend_smoke.dart`, state the shape of the chain that was
+  /// actually built.
+  final int popupDepth;
 
   bool _visible;
   bool _closedEventEmitted = false;

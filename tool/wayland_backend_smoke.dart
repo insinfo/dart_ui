@@ -196,6 +196,7 @@ Future<void> main() async {
       presenter.dispose();
     }
 
+    await _reportPopup(backend, window);
     _reportKeyboard(backend);
     await _reportClipboard(backend);
 
@@ -231,6 +232,98 @@ Future<void> main() async {
     );
   }
   stdout.writeln('WAYLAND_BACKEND_SMOKE=PASS');
+}
+
+/// Opens a real `xdg_popup` on [owner], then a second one on that popup, and
+/// reports the round trip the compositor answered with.
+///
+/// The claim is narrow on purpose: PASS means the compositor sent back *this
+/// popup's own* `xdg_surface.configure` and the window built a surface with a
+/// real size out of it. Nothing weaker proves anything here, because an
+/// xdg_positioner the compositor dislikes is not a request that is quietly
+/// ignored - an incomplete or contradictory positioner is a protocol error,
+/// which closes the connection and every window on it. So "no error so far"
+/// is not evidence the positioner was accepted; the configure coming back is
+/// the only evidence there is.
+///
+/// The second popup is parented to the first, which is the submenu shape:
+/// xdg-shell requires each popup to name the one immediately before it, and a
+/// chain that named the toplevel a second time would be that same fatal
+/// protocol error rather than a badly placed menu. `chain=` is what the
+/// compositor accepted, not what this process intended.
+Future<void> _reportPopup(
+  WaylandWindowingBackend backend,
+  NativeWindow owner,
+) async {
+  final opened = <WaylandWindow>[];
+  try {
+    Future<({WaylandWindow window, Offset placement})> open(
+      NativeWindow parent,
+      Size size,
+      Offset anchor,
+    ) async {
+      final popup = await backend
+          .createWindow(WindowOptions(
+            size: size,
+            kind: WindowKind.popup,
+            owner: parent,
+            position: anchor,
+          ))
+          .timeout(const Duration(seconds: 10)) as WaylandWindow;
+      opened.add(popup);
+      if (!popup.isPopup) {
+        throw StateError('the request for a popup produced a toplevel');
+      }
+      // Two different answers, both required. `xdg_popup.configure` carries
+      // the placement the compositor chose after its own flip/slide/resize -
+      // which is the only way a Wayland client ever learns where a window
+      // went - and `xdg_surface.configure` is the one that makes drawing
+      // legal and builds the surface.
+      Offset? placement;
+      final subscription = popup.events.listen((event) {
+        if (event is WindowMovedEvent) placement = event.screenPosition;
+      });
+      try {
+        await _pumpUntil(
+          backend,
+          () => placement != null && popup.cpuSurface != null,
+          const Duration(seconds: 10),
+          'xdg_popup.configure + xdg_surface.configure for the popup',
+        );
+      } finally {
+        await subscription.cancel();
+      }
+      final surface = popup.cpuSurface!;
+      if (surface.pixelWidth <= 0 || surface.pixelHeight <= 0) {
+        throw StateError('the popup was configured with no size');
+      }
+      return (window: popup, placement: placement!);
+    }
+
+    final menu = await open(owner, const Size(140, 180), const Offset(24, 48));
+    final submenu =
+        await open(menu.window, const Size(120, 90), const Offset(132, 16));
+
+    stdout.writeln(
+      'WAYLAND_POPUP=PASS '
+      'size=${menu.window.cpuSurface!.pixelWidth}x'
+      '${menu.window.cpuSurface!.pixelHeight} '
+      'placement=${menu.placement.dx.round()},${menu.placement.dy.round()} '
+      'nested=${submenu.placement.dx.round()},'
+      '${submenu.placement.dy.round()} '
+      'chain=${submenu.window.popupDepth}',
+    );
+  } on Object catch (error) {
+    stdout.writeln('WAYLAND_POPUP=FAIL $error');
+    rethrow;
+  } finally {
+    // Deepest first: xdg-shell destroys a popup chain from the leaf up, and
+    // destroying a parent with a live child is a protocol error.
+    for (final popup in opened.reversed) {
+      popup.close();
+    }
+    backend.pumpEvents(timeout: const Duration(milliseconds: 25));
+  }
 }
 
 /// Reports whether `wl_keyboard.keymap` arrived, decoded and produced a map.

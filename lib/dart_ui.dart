@@ -227,6 +227,7 @@ export 'src/widgets/overlay.dart';
 export 'src/widgets/phosphor_icons.dart';
 export 'src/widgets/pointer_router.dart';
 export 'src/widgets/popup.dart';
+export 'src/widgets/popup_host.dart';
 export 'src/widgets/progress_indicator.dart';
 export 'src/widgets/properties.dart';
 export 'src/widgets/proxy.dart';

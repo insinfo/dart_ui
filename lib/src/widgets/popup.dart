@@ -176,6 +176,24 @@ final class PopupPlacement {
   bool get isUnadjusted =>
       !flippedX && !flippedY && !slidX && !slidY && !resized;
 
+  /// Value equality, because a placement *is* its six fields and callers
+  /// compare them: [PopupStack.reposition] skips the rebuild when layout
+  /// produced the same answer, and a test asserting a placement wants to name
+  /// the expected one rather than reach into it field by field.
+  @override
+  bool operator ==(Object other) =>
+      other is PopupPlacement &&
+      other.rect == rect &&
+      other.flippedX == flippedX &&
+      other.flippedY == flippedY &&
+      other.slidX == slidX &&
+      other.slidY == slidY &&
+      other.resized == resized;
+
+  @override
+  int get hashCode =>
+      Object.hash(rect, flippedX, flippedY, slidX, slidY, resized);
+
   @override
   String toString() => 'PopupPlacement($rect'
       '${flippedX ? ', flipX' : ''}${flippedY ? ', flipY' : ''}'
@@ -422,6 +440,34 @@ final class PopupStack {
       onDismiss: onDismiss,
     ));
     return id;
+  }
+
+  /// Replaces the placement recorded for [id].
+  ///
+  /// A popup is opened before its content has been measured, so the placement
+  /// it is opened with is a placeholder: nothing knows how big a menu is until
+  /// the menu has been laid out. The measured rect arrives here afterwards,
+  /// and it has to, because [handleOutsideClick] decides "inside or outside"
+  /// by comparing a press against these rects - against a zero-size
+  /// placeholder every press is outside every popup, and the first click on a
+  /// menu item would dismiss the menu instead of choosing anything.
+  ///
+  /// Silently ignores an id that is no longer open: a layout pass can complete
+  /// for a popup that was dismissed in the same frame.
+  void reposition(int id, PopupPlacement placement) {
+    final int index = _entries.indexWhere((PopupEntry entry) => entry.id == id);
+    if (index < 0) return;
+    final PopupEntry entry = _entries[index];
+    if (entry.placement == placement) return;
+    _entries[index] = PopupEntry(
+      id: entry.id,
+      placement: placement,
+      surfaceKind: entry.surfaceKind,
+      dismissPolicy: entry.dismissPolicy,
+      grabsInput: entry.grabsInput,
+      ownerId: entry.ownerId,
+      onDismiss: entry.onDismiss,
+    );
   }
 
   /// Closes [id] and every popup opened from it, deepest first.

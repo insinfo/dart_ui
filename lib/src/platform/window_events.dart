@@ -125,6 +125,40 @@ final class WindowClosedEvent extends PlatformWindowEvent {
   });
 }
 
+/// The user pressed a mouse button on the window's *frame* - its title bar,
+/// its border, one of the caption buttons - rather than in its client area.
+///
+/// This exists for one job: **dismissing a popup that belongs to this window**.
+/// A menu is a separate window, so it never sees the click that starts a drag
+/// of its owner's title bar; without this event the menu stays open, floating
+/// over the desktop, while the window it was anchored to walks away from
+/// underneath it. Avalonia subscribes to the same signal for the same reason
+/// (`NonClientLeftButtonDown`), and it is one of the five dismissal inputs the
+/// popup plan names.
+///
+/// It is deliberately **not** a `PlatformInputEvent`: there is no position on
+/// it and no hit test above this layer would be meaningful, because the pixels
+/// under the press belong to the window manager and not to any render object.
+/// What the framework needs to know is that the frame was pressed, and which
+/// window's frame it was.
+///
+/// Backends that cannot tell simply never emit it, and the other four
+/// dismissal inputs still fire; a missing frame press costs a menu that
+/// outlives a title-bar drag, not a stuck popup, because moving the window
+/// also produces a [WindowMovedEvent].
+final class WindowNonClientPressEvent extends PlatformWindowEvent {
+  const WindowNonClientPressEvent({
+    required super.windowId,
+    required super.generation,
+    required this.timestamp,
+  });
+
+  /// Monotonic timestamp of the press, as reported by the OS - the same clock
+  /// and the same meaning as `PlatformInputEvent.timestamp`, so that a
+  /// dismissal can be ordered against the pointer events around it.
+  final Duration timestamp;
+}
+
 /// The pointer entered the window's client area.
 final class WindowPointerEnterEvent extends PlatformWindowEvent {
   const WindowPointerEnterEvent({

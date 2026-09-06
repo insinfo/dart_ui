@@ -8,6 +8,7 @@ import 'animation_scope.dart';
 import 'directionality.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'popup_host.dart';
 import 'theme.dart';
 import 'widget.dart';
 
@@ -25,12 +26,22 @@ final class DartUiApp extends StatefulWidget {
     this.theme = ThemeData.neutralLight,
     this.textDirection = TextDirection.leftToRight,
     this.frameScheduler,
+    this.popupHost,
   });
 
   final Widget home;
   final ThemeData theme;
   final TextDirection textDirection;
   final FrameScheduler? frameScheduler;
+
+  /// Where menus, dropdowns and tooltips are presented, or null to composite
+  /// them into this window's own surface.
+  ///
+  /// Null is the portable answer and the only one available on a backend with
+  /// no windows. The application layer passes a host that opens real popup
+  /// windows when the backend has them, which is what lets a menu near the
+  /// window edge flip instead of being cropped.
+  final PopupHost? popupHost;
 
   @override
   State<DartUiApp> createState() => _DartUiAppState();
@@ -69,7 +80,21 @@ final class _DartUiAppState extends State<DartUiApp> {
         textDirection: widget.textDirection,
         child: FocusScope(
           node: _focusScope,
-          child: widget.home,
+          // The popup host goes here, inside the theme and the reading
+          // direction and inside the focus scope, because a menu is themed
+          // like the window that opened it and its items take focus in the
+          // same scope. Installed by the application widget rather than left
+          // to the caller for the reason the clipboard is: a Tooltip or a
+          // MenuAnchor in an application that forgot the wrapper would
+          // silently show nothing, which reads as a broken control rather
+          // than as a missing ancestor.
+          //
+          // A caller that wants popups in real windows passes its own host
+          // through [popupHost]; the application layer does exactly that.
+          child: PopupScope(
+            host: widget.popupHost,
+            child: widget.home,
+          ),
         ),
       ),
     );

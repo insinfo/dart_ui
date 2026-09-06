@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/x11/x11_backend.dart';
+import 'package:dart_ui/src/backends/x11/x11_connection.dart';
 import 'package:dart_ui/src/backends/x11/x11_cpu_presenter.dart';
 import 'package:dart_ui/src/backends/x11/x11_window.dart';
 
@@ -122,6 +123,7 @@ Future<void> main() async {
     // the only place in this repository where any of it is executed.
     await _reportKeyboard(backend);
     await _reportClipboard(backend);
+    await _reportPopup(backend, window);
 
     stdout.writeln('X11_BACKEND_WINDOW=PASS id=${window.id.value}');
     window.close();
@@ -192,6 +194,69 @@ Future<void> _reportClipboard(X11WindowingBackend backend) async {
     );
   } on Object catch (error) {
     stdout.writeln('X11_CLIPBOARD=FAIL $error');
+  }
+}
+
+/// Reports whether a [WindowKind.popup] window really reached the server as a
+/// popup.
+///
+/// Everything printed here is **read back off the server**, not remembered from
+/// the request: `GetWindowAttributes` for `override_redirect` and `GetProperty`
+/// for `_NET_WM_WINDOW_TYPE` and `WM_TRANSIENT_FOR`. That is the entire point
+/// of the line. `override_redirect` travels inside `CreateWindow` and is echoed
+/// back in no event, so a check that asserted the arguments this function
+/// passed would pass just as happily against a backend that dropped them on the
+/// floor - which is exactly the state this backend was in before Fase 4.
+///
+/// A `FAIL` here means a menu on this machine would get a title bar, a taskbar
+/// entry, or the keyboard focus of the window that opened it.
+Future<void> _reportPopup(
+    X11WindowingBackend backend, NativeWindow owner) async {
+  try {
+    final popup = await backend
+        .createWindow(
+          WindowOptions(
+            size: const Size(160, 96),
+            // An override-redirect window is placed by nobody but us: no window
+            // manager will nudge it onto a monitor or out from under a panel,
+            // so the position has to be one that is on screen already.
+            position: const Offset(48, 48),
+            title: 'dart_ui X11 popup smoke',
+            resizable: false,
+            owner: owner,
+            kind: WindowKind.popup,
+          ),
+        )
+        .timeout(const Duration(seconds: 10));
+    try {
+      // One pump so the create and its properties are on the wire before we
+      // ask for them back; the reads are round trips and would flush anyway.
+      backend.pumpEvents(timeout: const Duration(milliseconds: 25));
+      final X11ServerWindowKind? observed =
+          (popup as X11Window).readServerWindowKind();
+      if (observed == null) {
+        stdout.writeln('X11_POPUP=FAIL the server did not answer '
+            'GetWindowAttributes for the popup');
+        return;
+      }
+      final ownerXid = (owner as X11Window).xcbWindow;
+      final passed = observed.overrideRedirect &&
+          observed.windowTypeName == '_NET_WM_WINDOW_TYPE_POPUP_MENU' &&
+          observed.transientFor == ownerXid;
+      stdout.writeln(
+        'X11_POPUP=${passed ? 'PASS' : 'FAIL'} '
+        'override_redirect=${observed.overrideRedirect} '
+        'type=${observed.windowTypeName ?? 'none'} '
+        'transient_for=0x${observed.transientFor.toRadixString(16)} '
+        'owner=0x${ownerXid.toRadixString(16)} '
+        'grab=none',
+      );
+    } finally {
+      popup.close();
+      backend.pumpEvents(timeout: const Duration(milliseconds: 25));
+    }
+  } on Object catch (error) {
+    stdout.writeln('X11_POPUP=FAIL $error');
   }
 }
 
