@@ -9413,6 +9413,37 @@ fora da tela, e curvas achatadas por `Path.flattenTo`.
   é, nas palavras do próprio arquivo, "consultado por nada" — `flushPaint`
   repercorre a árvore inteira.
 
+## 68.4.1 Popups: o que passou a existir, e o que não — 06/09/2026
+
+Fechado: menus, dropdowns e tooltips podem ser apresentados numa janela
+própria que **sai** da janela dona. Medido num HWND de verdade
+(`tool/popup_window_smoke.dart`, agora no job Windows do `ci.yml`): o popup
+pousou 196 px além da borda direita da dona e 184 px além da inferior, e o
+mesmo posicionador contra a área da janela produziria um retângulo virado para
+cima e contido. Junto: a dona continua ativa, 121 frames a 60,0 fps com
+`errors=0`, cadeia de profundidade 2 com o submenu pertencendo à janela do
+menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
+
+**Aberto, por nome:**
+
+- **o popup cria o próprio dispositivo de renderização.** A criação é por
+  janela, por presenter (`default_platform_resolver.dart:191`), e pior: o
+  atlas de glifos é por *alvo* (`d3d11_window_target.dart:131-134`). Então o
+  texto de um menu é rasterizado de novo a partir do contorno, mesmo com a
+  mesma fonte no mesmo tamanho já desenhada na janela de trás. Nada disso é
+  visível hoje — os dois lados são o mesmo rasterizador no mesmo adaptador —
+  mas o mecanismo que a §8.1.1 nomeia como a razão da regra não está lá;
+- **abrir um menu custa ~41 ms**, dos quais cerca de 90% são criar a janela, o
+  dispositivo e o swapchain (medido contra um controle de janela nua). A 41 ms
+  o menu perde duas ou três frames antes de aparecer. Adotar o dispositivo da
+  dona e um pool de popup oculto atacam o mesmo custo dominante;
+- **macOS não tem popup nativo** e cai no overlay: sem `NSPanel` sem ativação.
+  Não pode ser verificado nesta máquina;
+- **X11 e Wayland têm o código e nunca o executaram.** Os dois smokes
+  compilam; só o CI pode prová-los;
+- **acessibilidade do popup**: o popup ainda não é fragmento UIA filho da dona
+  e não emite `MenuOpened`/`MenuClosed`.
+
 ## 68.5 Limitações por plataforma, em uma linha cada
 
 - **Windows**: sem DirectComposition; sem TSF (só IMM32); IME não lê texto ao
