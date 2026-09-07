@@ -16,7 +16,8 @@
 /// of a stalled renderer: it was `await decoder.readFrame()` that never
 /// completed, so no frame was even decoded, let alone presented.
 ///
-/// Measured with `Sleep` from kernel32 standing in for `Show`, because `Show`
+/// Measured with `Sleep` from the system library standing in for `Show`,
+/// because `Show`
 /// cannot be run unattended: a 1500 ms blocking FFI call made from the main
 /// isolate let **1** tick of a 50 ms periodic timer through, and the same call
 /// made through [Isolate.run] let **30** through.
@@ -186,21 +187,22 @@ typedef _NativeGetCurrentProcessId = Uint32 Function();
 /// this layer follows: the answer is null and the dialog simply opens without a
 /// gate, which is the behaviour that shipped before this file existed.
 final class _ModalWindowApi {
-  _ModalWindowApi._(DynamicLibrary user32, DynamicLibrary kernel32)
-      : enableWindow = user32.lookupFunction<_NativeEnableWindow,
+  _ModalWindowApi._(DynamicLibrary windowing, DynamicLibrary system)
+      : enableWindow = windowing.lookupFunction<_NativeEnableWindow,
             int Function(int, int)>('EnableWindow'),
-        isWindow = user32
+        isWindow = windowing
             .lookupFunction<_NativeBoolOfHandle, int Function(int)>('IsWindow'),
         setForegroundWindow =
-            user32.lookupFunction<_NativeBoolOfHandle, int Function(int)>(
+            windowing.lookupFunction<_NativeBoolOfHandle, int Function(int)>(
                 'SetForegroundWindow'),
-        getForegroundWindow = user32.lookupFunction<_NativeGetForegroundWindow,
-            int Function()>('GetForegroundWindow'),
-        getWindowThreadProcessId = user32.lookupFunction<
+        getForegroundWindow = windowing.lookupFunction<
+            _NativeGetForegroundWindow, int Function()>('GetForegroundWindow'),
+        getWindowThreadProcessId = windowing.lookupFunction<
             _NativeGetWindowThreadProcessId,
             int Function(int, Pointer<Uint32>)>('GetWindowThreadProcessId'),
-        currentProcessId = kernel32.lookupFunction<_NativeGetCurrentProcessId,
-            int Function()>('GetCurrentProcessId');
+        currentProcessId =
+            system.lookupFunction<_NativeGetCurrentProcessId, int Function()>(
+                'GetCurrentProcessId');
 
   final int Function(int, int) enableWindow;
   final int Function(int) isWindow;
