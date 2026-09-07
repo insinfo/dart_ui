@@ -352,10 +352,16 @@ void main() {
   group('AvSynchronizer drop-spiral guards', () {
     test('drops in a row are capped even while dropping keeps helping', () {
       final sync = AvSynchronizer();
-      const Duration clock = Duration(seconds: 10);
+      // Half a second behind. This used to read ten seconds, which is a gap
+      // dropping cannot close and which the policy now answers with
+      // `AvSyncAction.resync` - see the resync group below, where that
+      // scenario is kept under its new answer. The clock moved so this case
+      // still tests what its name says: the hard cap on a drop run that is
+      // working.
+      const Duration clock = Duration(milliseconds: 1500);
       final actions = <AvSyncAction>[];
 
-      // Video is nine seconds behind and catching up frame by frame: every
+      // Video is half a second behind and catching up frame by frame: every
       // drop strictly improves drift, so only the hard cap can stop the run.
       for (var i = 0; i < 9; i++) {
         actions.add(
@@ -387,7 +393,9 @@ void main() {
     test('a lower cap shortens the run and zero disables dropping', () {
       final single = AvSynchronizer(maxConsecutiveDrops: 1);
       final never = AvSynchronizer(maxConsecutiveDrops: 0);
-      const Duration clock = Duration(seconds: 10);
+      // Inside the drop zone rather than past the resync threshold; see the
+      // note on the previous case.
+      const Duration clock = Duration(milliseconds: 1500);
       final singleActions = <AvSyncAction>[];
       final neverActions = <AvSyncAction>[];
 
@@ -448,7 +456,9 @@ void main() {
       final sync = AvSynchronizer(
         minDropImprovement: const Duration(milliseconds: 20),
       );
-      const Duration clock = Duration(seconds: 10);
+      // 600 ms behind: deep in the drop zone, nowhere near the resync
+      // threshold, which is what this case is about.
+      const Duration clock = Duration(milliseconds: 1600);
 
       // Each frame recovers only 10 ms, below the 20 ms the policy demands.
       final AvSyncDecision first = sync.evaluate(
@@ -530,7 +540,8 @@ void main() {
 
     test('reset makes the next late frame eligible to drop again', () {
       final sync = AvSynchronizer();
-      const Duration clock = Duration(seconds: 10);
+      // Drop zone, not resync zone; see the drop-spiral group.
+      const Duration clock = Duration(milliseconds: 1500);
 
       sync.evaluate(
         framePts: const Duration(seconds: 1),
@@ -553,6 +564,236 @@ void main() {
       );
       expect(afterReset.action, AvSyncAction.drop);
       expect(sync.consecutiveDrops, 1);
+    });
+  });
+
+  group('AvSynchronizer recovering from a stall', () {
+    // The defect these exist for, in the words of the report: a modal file
+    // dialog froze the UI thread for several seconds while audio kept
+    // playing, and afterwards the player discarded frames "practically all
+    // the time" - `waited` frozen because nothing was ever early again, and
+    // average drift parked at -775 ms for the rest of the file.
+
+    test('a nine-second gap is seeked, not dropped', () {
+      // The exact scenario the drop-spiral cases used to assert `drop` on.
+      // Dropping there was never wrong so much as futile: at 30 fps a drop
+      // buys 33 ms, so nine seconds is 270 decoded-then-discarded frames,
+      // and the cap lets only two in three of them be skipped.
+      final sync = AvSynchronizer();
+      final AvSyncDecision decision = sync.evaluate(
+        framePts: const Duration(seconds: 1),
+        clock: const Duration(seconds: 10),
+        frameDuration: _frame30,
+      );
+
+      expect(decision.action, AvSyncAction.resync);
+      expect(decision.drift, const Duration(seconds: -9));
+      expect(sync.stats.resynced, 1);
+    });
+
+    test('and being half a second behind is not', () {
+      // The boundary that matters most. A machine that cannot quite decode in
+      // real time sits here for hours; jumping the picture at this would
+      // trade a fault nobody can see for one everybody can.
+      final sync = AvSynchronizer();
+      final AvSyncDecision decision = sync.evaluate(
+        framePts: const Duration(milliseconds: 1000),
+        clock: const Duration(milliseconds: 1500),
+        frameDuration: _frame30,
+      );
+
+      expect(decision.action, AvSyncAction.drop);
+      expect(sync.stats.resynced, 0);
+    });
+
+    test('the threshold is where it says it is', () {
+      // Exactly at the threshold presents the ordinary answer, one microsecond
+      // past it resyncs. Asserted because "roughly two seconds" is not a
+      // policy anybody can reason about.
+      AvSyncDecision at(Duration late) => AvSynchronizer().evaluate(
+            framePts: Duration.zero,
+            clock: late,
+            frameDuration: _frame30,
+          );
+
+      expect(at(const Duration(seconds: 2)).action, isNot(AvSyncAction.resync));
+      expect(
+        at(const Duration(seconds: 2, microseconds: 1)).action,
+        AvSyncAction.resync,
+      );
+    });
+
+    test('a slow frame rate raises the threshold with it', () {
+      // Four frames of a two-per-second capture is two seconds exactly, so
+      // the constant no longer decides; five frames' worth does resync.
+      const Duration slow = Duration(milliseconds: 500);
+      final sync = AvSynchronizer();
+
+      expect(sync.resyncThresholdFor(slow), const Duration(seconds: 2));
+      expect(
+        sync.resyncThresholdFor(const Duration(seconds: 1)),
+        const Duration(seconds: 4),
+        reason: 'a stream whose frames last a second must be four frames '
+            'behind before a jump is the cheaper remedy',
+      );
+    });
+
+    test('the cooldown stops a hopeless machine jumping every frame', () {
+      // Without this, a player that simply cannot decode the stream would sit
+      // permanently past the threshold and resync on every single frame,
+      // turning the picture into a slide show of unrelated moments - which is
+      // worse than being late.
+      final sync = AvSynchronizer();
+      final actions = <AvSyncAction>[];
+
+      // Ten frames, each one ten seconds behind, with the clock advancing one
+      // frame at a time: far less than the five-second cooldown.
+      for (var i = 0; i < 10; i++) {
+        actions.add(
+          sync
+              .evaluate(
+                framePts: _frame30 * i,
+                clock: const Duration(seconds: 10) + _frame30 * i,
+                frameDuration: _frame30,
+              )
+              .action,
+        );
+      }
+
+      expect(
+        actions.where((AvSyncAction a) => a == AvSyncAction.resync).length,
+        1,
+        reason: 'the first frame resyncs and the cooldown holds the rest',
+      );
+      expect(sync.stats.resynced, 1);
+    });
+
+    test('and lets go once the clock has moved on', () {
+      final sync = AvSynchronizer();
+      AvSyncAction at(Duration clock) => sync
+          .evaluate(
+            framePts: Duration.zero,
+            clock: clock,
+            frameDuration: _frame30,
+          )
+          .action;
+
+      expect(at(const Duration(seconds: 10)), AvSyncAction.resync);
+      expect(at(const Duration(seconds: 14)), isNot(AvSyncAction.resync));
+      expect(at(const Duration(seconds: 15)), AvSyncAction.resync);
+      expect(sync.stats.resynced, 2);
+    });
+
+    test('the caller only seeks: the bookkeeping is already clear', () {
+      // The reason the caller is not asked to call `reset`. A forgotten reset
+      // would re-read the gap that justified the seek as fresh drift on the
+      // very next frame, and the drop guards would still be carrying the
+      // decisions from before the jump.
+      final sync = AvSynchronizer();
+      sync.evaluate(
+        framePts: const Duration(milliseconds: 1000),
+        clock: const Duration(milliseconds: 1500),
+        frameDuration: _frame30,
+      );
+      expect(sync.consecutiveDrops, 1);
+
+      sync.evaluate(
+        framePts: Duration.zero,
+        clock: const Duration(seconds: 10),
+        frameDuration: _frame30,
+      );
+
+      expect(sync.consecutiveDrops, 0);
+      expect(
+        sync.stats.recentSamples,
+        0,
+        reason: 'the recent window describes the present, and the present is '
+            'about to be a different position in the file',
+      );
+      expect(
+        sync.stats.resynced,
+        1,
+        reason: 'what a reset would have erased, and what a bug report needs',
+      );
+      expect(
+        sync.stats.minDrift,
+        const Duration(seconds: -10),
+        reason: 'the lifetime extreme survives on purpose: it is the '
+            'measurement that justified the jump',
+      );
+    });
+  });
+
+  group('AvSyncStats recent window', () {
+    test(
+        'describes the present while the lifetime figures describe the '
+        'session', () {
+      // The other half of the reported defect. A twelve-second stall was
+      // recorded as the worst drift and then reported for the rest of the
+      // session, long after the player had recovered - a number that says
+      // "broken right now" about something that is not.
+      final sync = AvSynchronizer(recentDriftWindow: 4);
+
+      // One bad frame, inside the drop zone so it does not trigger a seek.
+      sync.evaluate(
+        framePts: Duration.zero,
+        clock: const Duration(milliseconds: 900),
+        frameDuration: _frame30,
+      );
+      // Then four in a row that are dead on.
+      for (var i = 0; i < 4; i++) {
+        sync.evaluate(
+          framePts: _frame30 * i,
+          clock: _frame30 * i,
+          frameDuration: _frame30,
+        );
+      }
+
+      final AvSyncStats stats = sync.stats;
+      expect(
+        stats.minDrift,
+        const Duration(milliseconds: -900),
+        reason: 'the session did contain a 900 ms miss and deleting that '
+            'would delete the evidence',
+      );
+      expect(
+        stats.recentMinDrift,
+        Duration.zero,
+        reason: 'but the last four frames were perfect, and that is what a '
+            'status bar is asking about',
+      );
+      expect(stats.recentSamples, 4);
+      expect(stats.recentAverageDrift, Duration.zero);
+    });
+
+    test('the window never grows past its size', () {
+      final sync = AvSynchronizer(recentDriftWindow: 3);
+      for (var i = 0; i < 50; i++) {
+        sync.evaluate(
+          framePts: _frame30 * i,
+          clock: _frame30 * i,
+          frameDuration: _frame30,
+        );
+      }
+      expect(sync.stats.recentSamples, 3);
+      expect(sync.stats.presented, 50);
+    });
+
+    test('a window of zero is refused rather than reporting perfection', () {
+      expect(
+        () => AvSynchronizer(recentDriftWindow: 0),
+        throwsArgumentError,
+      );
+    });
+
+    test('a resync threshold inside the drop zone is refused', () {
+      expect(
+        () => AvSynchronizer(
+          dropThreshold: const Duration(seconds: 1),
+          resyncThreshold: const Duration(milliseconds: 500),
+        ),
+        throwsArgumentError,
+      );
     });
   });
 

@@ -275,6 +275,17 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
   bool _playing = false;
   bool _seeking = false;
   bool _decoding = false;
+
+  /// Guards [_resyncToClock] against being started again while its own seek is
+  /// still in flight. Without it a stall long enough to span several ticks
+  /// would queue one seek per tick, and each would land on a clock position
+  /// the next one immediately invalidates.
+  bool _resyncing = false;
+
+  /// Why the last resync failed, if one did. Shown rather than swallowed: a
+  /// decoder that cannot seek leaves the picture permanently late, and that is
+  /// worth saying out loud instead of looking like ordinary lateness.
+  String? _resyncError;
   bool _endOfStream = false;
   bool _tickerAttached = false;
   double? _pendingSeek;
@@ -566,9 +577,54 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
         // Early. Nothing to do until the clock catches up with it; the
         // decision's delay is not a timer here, it is simply "not this tick".
         break;
+      case AvSyncAction.resync:
+        // The picture is seconds behind, which dropping cannot close: at 25
+        // fps a drop buys 40 ms, so a ten-second gap is 250 frames decoded
+        // and thrown away, and the drop cap lets only two in three of them go.
+        // One seek and the picture is back on the sound.
+        _pending = null;
+        unawaited(_resyncToClock(clock.position));
     }
     _sampleFrameRate();
     _pumpDecode();
+  }
+
+  /// Puts the decoder back where the master clock already is.
+  ///
+  /// Deliberately **not** [_seekTo]: that one is the scrub bar, and it pauses
+  /// playback, moves the clock, clears the picture and resumes - all correct
+  /// for a user dragging a slider and all wrong here, where the clock is the
+  /// authority and is not to be moved. Here the sound is right and the picture
+  /// is late; only the decoder moves.
+  ///
+  /// The synchronizer has already cleared its own drift history and drop
+  /// guards by the time it answers `resync`, so there is no `reset` to call and
+  /// no way to forget one.
+  Future<void> _resyncToClock(Duration position) async {
+    final VideoDecoder? decoder = _decoder;
+    if (decoder == null || _seeking || _loading || _resyncing) return;
+    _resyncing = true;
+    final int generation = _generation;
+    try {
+      await decoder.seek(position);
+      final VideoSample? sample = await decoder.readFrame();
+      if (!mounted || generation != _generation) return;
+      // Straight to the screen rather than into `_pending`: this frame is by
+      // construction the one the clock is asking for, and routing it back
+      // through `evaluate` would only measure the decode that just happened.
+      if (sample != null) {
+        _framesThisWindow++;
+        setState(() => _sample = sample);
+      } else {
+        _endOfStream = true;
+      }
+    } on Object catch (error) {
+      // A decoder that cannot seek is not a reason to stop playing; the
+      // picture simply stays late, which is where it already was.
+      if (mounted) setState(() => _resyncError = '$error');
+    } finally {
+      _resyncing = false;
+    }
   }
 
   /// Keeps [_lookahead] frames decoded ahead of the screen.
@@ -622,8 +678,10 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
       'playback ${_presentedPerSecond.toStringAsFixed(1)} fps · '
       'clock ${_clock?.label} at ${_format(_clock?.position ?? Duration.zero)} '
       '· presented ${stats.presented} · dropped ${stats.dropped} · '
-      'waited ${stats.waited} · drift ${stats.averageDrift.inMilliseconds}ms '
-      'avg / ${stats.maxAbsoluteDrift.inMilliseconds}ms max · '
+      'waited ${stats.waited} · resynced ${stats.resynced} · '
+      'drift ${stats.recentAverageDrift.inMilliseconds}ms recent avg / '
+      '${stats.recentMaxAbsoluteDrift.inMilliseconds}ms recent max / '
+      '${stats.maxAbsoluteDrift.inMilliseconds}ms session max · '
       'framework errors ${_frameworkErrors.count}',
     );
   }
@@ -859,15 +917,31 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
   }
 
   /// The discreet line: which clock is master, and what sync is doing.
+  ///
+  /// The drift shown is the **recent** one, over the synchronizer's last
+  /// window of consumed frames, and that is a deliberate change from the
+  /// lifetime figure this line used to print. A player that froze for twelve
+  /// seconds - a modal dialog on the UI thread will do it - recorded twelve
+  /// seconds as its worst drift and then reported it for the rest of the
+  /// session, describing as "now" something that was over. The lifetime
+  /// extreme is still kept and is still what a bug report wants; it simply is
+  /// not what a status bar is asking.
   String _statusLine() {
     final _MasterClock? clock = _clock;
     if (clock == null) return 'nenhum arquivo aberto';
     final AvSyncStats stats = _sync.stats;
+    final String resyncs =
+        stats.resynced == 0 ? '' : ' · ressincronias ${stats.resynced}';
+    final String failure =
+        _resyncError == null ? '' : ' · ressincronia falhou: $_resyncError';
     return 'relógio: ${clock.label} · '
         '${_presentedPerSecond.toStringAsFixed(1)} fps · '
         'apresentados ${stats.presented} · descartados ${stats.dropped} · '
-        'esperas ${stats.waited} · drift ${stats.averageDrift.inMilliseconds} '
-        'ms (máx ${stats.maxAbsoluteDrift.inMilliseconds} ms)';
+        'esperas ${stats.waited}$resyncs · '
+        'drift ${stats.recentAverageDrift.inMilliseconds} ms '
+        '(máx recente ${stats.recentMaxAbsoluteDrift.inMilliseconds} ms, '
+        'pior da sessão ${stats.maxAbsoluteDrift.inMilliseconds} ms)'
+        '$failure';
   }
 }
 
