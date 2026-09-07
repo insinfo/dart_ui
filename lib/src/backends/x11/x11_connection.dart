@@ -59,6 +59,8 @@ const List<String> x11WellKnownAtoms = <String>[
   '_NET_WM_WINDOW_TYPE_POPUP_MENU',
   '_NET_WM_WINDOW_TYPE_TOOLTIP',
   '_NET_ACTIVE_WINDOW',
+  '_NET_WORKAREA',
+  '_NET_CURRENT_DESKTOP',
   '_MOTIF_WM_HINTS',
   // Drag and drop. Spread rather than spelled out again so that the state
   // machine in `x11_drag_drop.dart` and this batch cannot drift apart - an
@@ -96,6 +98,30 @@ abstract interface class X11BackendConnection implements Disposable {
   X11PhysicalScreen get physicalScreen;
   String? readResourceManager();
   bool signalWake();
+}
+
+/// Root-screen geometry and the EWMH work area reserved by the desktop.
+final class X11DesktopGeometry {
+  const X11DesktopGeometry({
+    required this.widthPixels,
+    required this.heightPixels,
+    required this.workX,
+    required this.workY,
+    required this.workWidth,
+    required this.workHeight,
+  });
+
+  final int widthPixels;
+  final int heightPixels;
+  final int workX;
+  final int workY;
+  final int workWidth;
+  final int workHeight;
+}
+
+/// Optional live desktop query, separate so protocol fakes need not invent it.
+abstract interface class X11ScreenClient {
+  X11DesktopGeometry readDesktopGeometry();
 }
 
 /// Window and event operations exposed by a production X11 connection.
@@ -288,7 +314,8 @@ final class X11Connection
         X11CpuClient,
         X11DragDropClient,
         X11KeyboardClient,
-        X11ClipboardClient {
+        X11ClipboardClient,
+        X11ScreenClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
   /// Opens `$DISPLAY`, or reports exactly what stopped it.
@@ -1292,6 +1319,46 @@ final class X11Connection
         widthInMillimetres: screenWidthMillimetres,
         heightInMillimetres: screenHeightMillimetres,
       );
+
+  @override
+  X11DesktopGeometry readDesktopGeometry() {
+    final List<int> desktop = getCardinalProperty(
+      root,
+      atom('_NET_CURRENT_DESKTOP'),
+      xcbAtomCardinal,
+      <int>[],
+    );
+    final List<int> areas = getCardinalProperty(
+      root,
+      atom('_NET_WORKAREA'),
+      xcbAtomCardinal,
+      <int>[],
+    );
+    final int offset = (desktop.isEmpty ? 0 : desktop.first) * 4;
+    if (offset + 3 < areas.length &&
+        areas[offset + 2] > 0 &&
+        areas[offset + 3] > 0) {
+      return X11DesktopGeometry(
+        widthPixels: screenWidthPixels,
+        heightPixels: screenHeightPixels,
+        // EWMH types the tuple as CARDINAL even though desktops extending
+        // left or above the origin need signed coordinates. Preserve the wire
+        // bits and interpret only the two positions as two's-complement.
+        workX: areas[offset].toSigned(32),
+        workY: areas[offset + 1].toSigned(32),
+        workWidth: areas[offset + 2],
+        workHeight: areas[offset + 3],
+      );
+    }
+    return X11DesktopGeometry(
+      widthPixels: screenWidthPixels,
+      heightPixels: screenHeightPixels,
+      workX: 0,
+      workY: 0,
+      workWidth: screenWidthPixels,
+      workHeight: screenHeightPixels,
+    );
+  }
 
   // -------------------------------------------------------------------------
   // Top-level windows

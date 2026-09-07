@@ -122,6 +122,7 @@ Future<void> main() async {
     // as a selection owner. That is what these two lines exist for, and it is
     // the only place in this repository where any of it is executed.
     await _reportKeyboard(backend);
+    _reportScreens(backend);
     await _reportClipboard(backend);
     await _reportPopup(backend, window);
 
@@ -154,6 +155,20 @@ Future<void> main() async {
     );
   }
   stdout.writeln('X11_BACKEND_SMOKE=PASS');
+}
+
+void _reportScreens(X11WindowingBackend backend) {
+  final List<ScreenInfo> screens = backend.screens;
+  final bool passed = screens.length == 1 &&
+      screens.single.bounds.width > 0 &&
+      screens.single.bounds.height > 0 &&
+      screens.single.scale > 0 &&
+      screens.single.isPrimary;
+  stdout.writeln(
+    'X11_SCREENS=${passed ? 'PASS' : 'FAIL'} '
+    '${screens.isEmpty ? 'empty' : screens.single}',
+  );
+  if (!passed) throw StateError('invalid X11 root screen geometry');
 }
 
 /// Reports whether the core keyboard map came back from the server.

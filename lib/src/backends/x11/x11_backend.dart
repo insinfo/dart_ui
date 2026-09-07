@@ -44,6 +44,7 @@ import 'dart:io' show Platform;
 
 import '../../foundation/diagnostics.dart';
 import '../../geometry/offset.dart';
+import '../../geometry/rect.dart';
 import '../../platform/clipboard.dart';
 import '../../platform/compose_sequences.dart';
 import '../../platform/compose_sequences_platform_stub.dart'
@@ -72,7 +73,11 @@ typedef X11ConnectionOpener = X11ConnectionAttempt Function(String display);
 
 /// Creates and owns X11 windows.
 final class X11WindowingBackend
-    implements WindowingBackend, DragDropProvider, ClipboardProvider {
+    implements
+        WindowingBackend,
+        DragDropProvider,
+        ClipboardProvider,
+        ScreenProvider {
   X11WindowingBackend({
     bool? isLinux,
     String? operatingSystem,
@@ -377,6 +382,51 @@ final class X11WindowingBackend
 
   @override
   List<NativeWindow> get windows => List<NativeWindow>.unmodifiable(_windows);
+
+  @override
+  List<ScreenInfo> get screens {
+    final X11BackendConnection? connection = _connection;
+    if (connection == null) return const <ScreenInfo>[];
+    final double scale = _scale?.scale ?? 1;
+    final X11PhysicalScreen physical = connection.physicalScreen;
+    final X11DesktopGeometry geometry = switch (connection) {
+      final X11ScreenClient screenClient => screenClient.readDesktopGeometry(),
+      _ => X11DesktopGeometry(
+          widthPixels: physical.widthInPixels,
+          heightPixels: physical.heightInPixels,
+          workX: 0,
+          workY: 0,
+          workWidth: physical.widthInPixels,
+          workHeight: physical.heightInPixels,
+        ),
+    };
+    if (geometry.widthPixels <= 0 || geometry.heightPixels <= 0) {
+      return const <ScreenInfo>[];
+    }
+    return <ScreenInfo>[
+      ScreenInfo(
+        bounds: Rect.fromLTWH(
+          0,
+          0,
+          geometry.widthPixels / scale,
+          geometry.heightPixels / scale,
+        ),
+        workArea: Rect.fromLTWH(
+          geometry.workX / scale,
+          geometry.workY / scale,
+          geometry.workWidth / scale,
+          geometry.workHeight / scale,
+        ),
+        scale: scale,
+        isPrimary: true,
+        name: 'X11 root screen',
+      ),
+    ];
+  }
+
+  @override
+  ScreenInfo? screenAt(Offset screenPoint) =>
+      ScreenInfo.nearest(screens, screenPoint);
 
   @override
   Future<NativeWindow> createWindow(WindowOptions options) async {

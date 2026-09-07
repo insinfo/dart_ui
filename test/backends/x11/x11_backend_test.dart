@@ -13,6 +13,7 @@ import 'package:dart_ui/src/backends/x11/x11_scale.dart';
 import 'package:dart_ui/src/backends/x11/x11_surface.dart';
 import 'package:dart_ui/src/backends/x11/x11_window.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
+import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/platform/clipboard.dart';
 import 'package:dart_ui/src/platform/input_events.dart';
@@ -327,6 +328,35 @@ X11ConnectionAttempt _success(_FakeConnection connection) {
 }
 
 void main() {
+  test('screen provider exposes the core root at the resolved logical scale',
+      () async {
+    final connection = _FakeConnection(
+      resourceManager: 'Xft.dpi: 192',
+      screen: const X11PhysicalScreen(
+        widthInPixels: 3840,
+        heightInPixels: 2160,
+        widthInMillimetres: 600,
+        heightInMillimetres: 340,
+      ),
+    );
+    final backend = X11WindowingBackend(
+      isLinux: true,
+      operatingSystem: 'linux',
+      environment: const <String, String>{'DISPLAY': ':77'},
+      connectionOpener: (_) => _success(connection),
+    );
+
+    await backend.initialize();
+    final screen = backend.screens.single;
+    expect(screen.bounds.width, 1920);
+    expect(screen.bounds.height, 1080);
+    expect(screen.workArea, screen.bounds);
+    expect(screen.scale, 2);
+    expect(screen.isPrimary, isTrue);
+    expect(backend.screenAt(const Offset(4000, 4000)), screen);
+    await backend.shutdown();
+  });
+
   group('probe', () {
     test('rejects another OS before trying to load or connect', () {
       var openCalls = 0;
