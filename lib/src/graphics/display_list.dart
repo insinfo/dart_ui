@@ -800,6 +800,215 @@ final class DisplayList {
     _commandCount++;
   }
 
+
+  // ---------------------------------------------------------------------
+  // Splicing
+  // ---------------------------------------------------------------------
+
+  /// Scratch id maps used by [appendFrom], one per resource table.
+  ///
+  /// Kept across calls and across [reset] for the same reason the command
+  /// buffers are: a boundary that splices a cached sub-list does it every
+  /// frame, and allocating four typed lists per splice would put an allocation
+  /// per repaint boundary per frame back on the exact path section 6.5 says
+  /// must not have one. They grow to the widest sub-list ever spliced and stay
+  /// there. Lazily created, so a program that never splices pays four null
+  /// fields.
+  Uint32List? _splicePaintMap;
+  Uint32List? _splicePathMap;
+  Uint32List? _spliceImageMap;
+  Uint32List? _spliceFontMap;
+
+  /// Appends every command of [other] to this list, rewriting its resource ids
+  /// into this list's tables.
+  ///
+  /// This is the primitive a retained sub-list is replayed through: a repaint
+  /// boundary records its subtree once into a private [DisplayList] and, on a
+  /// frame where nothing under it changed, splices those words here instead of
+  /// walking the subtree again. See `RenderBox.paintFromParent`.
+  ///
+  /// ## Why the ids have to be rewritten and the floats do not
+  ///
+  /// An id in the operand stream indexes the resource tables of *the list that
+  /// produced it* - the format says so, and that is the whole reason an
+  /// encoded list is self-contained. Paint, path, image and font ids are dense
+  /// per-list indices, so a raw copy of [other]'s words into this list would
+  /// point every draw at whatever resource happens to sit at that index here:
+  /// the wrong colour, the wrong glyph face, or a [RangeError] when the index
+  /// is past the end.
+  ///
+  /// The maps below are built by re-adding [other]'s tables in id order, which
+  /// is exactly what a direct walk would have done. Interning dedups, and
+  /// dedup is order-preserving and idempotent, so an id that already exists
+  /// here collapses onto it and a new one lands at the same index a direct
+  /// walk would have given it. Re-adding the *whole* table rather than only
+  /// the ids the commands mention is deliberate: a resource that was interned
+  /// and then not drawn still consumed an id in [other], and skipping it would
+  /// shift every later id by one against the direct walk. That property - that
+  /// a spliced frame is word-for-word the frame a walk produces - is the only
+  /// evidence that a repaint boundary is an optimisation and not a rendering
+  /// change, and `test/layout/repaint_boundary_cache_test.dart` asserts it.
+  ///
+  /// The floats need none of that. Every float slot in the format is a
+  /// coordinate, a radius or a glyph offset, and none of them is an index into
+  /// anything, so they are copied with one bulk [setRange]. Nothing here
+  /// translates them either: shifting a sub-list to a new position would mean
+  /// knowing, per opcode, which floats are positions and which are extents,
+  /// and a mistake in that table is a silent geometry bug rather than a loud
+  /// one. A caller that needs the sub-list somewhere else wraps the splice in
+  /// [save]/[transform]/[restore] and records the sub-list in its own local
+  /// space, which is what [RenderBox] does.
+  ///
+  /// Throws when [other] carries content hints. A hint span is an op-stream
+  /// offset plus a packed value that *already has its enclosing hints merged
+  /// into it* - see [pushContentHint] - so replaying spans recorded with no
+  /// enclosing hint into a stream where one is in force would silently drop
+  /// the outer declaration, and the sub-list would be advised differently from
+  /// the way the same subtree is advised when it is walked. Rather than merge
+  /// the two stacks and hope, this refuses; the caller declines to cache that
+  /// subtree at all.
+  void appendFrom(DisplayList other) {
+    if (identical(other, this)) {
+      throw ArgumentError.value(
+        other,
+        'other',
+        'a display list cannot be spliced into itself; the read cursor would '
+            'chase the write cursor forever',
+      );
+    }
+    if (other._hintSpanCount != 0) {
+      throw StateError(
+        'cannot splice a display list that carries content hints: a hint span '
+        'records the value already merged with its enclosing hints, so '
+        'replaying it here would drop whatever hint is in force at the splice '
+        'point',
+      );
+    }
+    if (other._hintDepth != 0) {
+      throw StateError(
+        'cannot splice a display list with ${other._hintDepth} unbalanced '
+        'pushContentHint; finish the recording first',
+      );
+    }
+    if (other._opLength == 0) return;
+
+    final Uint32List paintMap = _spliceMap(_splicePaintTable, other._paintCount);
+    for (var id = 0; id < other._paintCount; id++) {
+      paintMap[id] = addPaint(
+        colorArgb: other.paintColor(id),
+        style: other.paintStyle(id),
+        strokeWidth: other.paintStrokeWidth(id),
+        blendMode: other.paintBlendMode(id),
+        antiAlias: other.paintAntiAlias(id),
+        fillRule: other.paintFillRule(id),
+        gradient: other.paintGradient(id),
+      );
+    }
+    final Uint32List pathMap = _spliceMap(_splicePathTable, other._paths.length);
+    for (var id = 0; id < other._paths.length; id++) {
+      pathMap[id] = addPath(other._paths[id]);
+    }
+    final Uint32List imageMap =
+        _spliceMap(_spliceImageTable, other._images.length);
+    for (var id = 0; id < other._images.length; id++) {
+      imageMap[id] = addImage(other._images[id]);
+    }
+    final Uint32List fontMap = _spliceMap(_spliceFontTable, other._fonts.length);
+    for (var id = 0; id < other._fonts.length; id++) {
+      fontMap[id] = addFont(other._fonts[id]);
+    }
+
+    // One bulk copy rather than a slot at a time: the float stream carries no
+    // framing of its own, so a command's floats are simply wherever the
+    // running cursor left off, and appending the whole run keeps the relative
+    // order every header already describes.
+    _ensureFloats(other._floatLength);
+    _floats.setRange(
+      _floatLength,
+      _floatLength + other._floatLength,
+      other._floats,
+    );
+    _floatLength += other._floatLength;
+
+    _ensureOps(other._opLength);
+    final Uint32List source = other._ops;
+    var read = 0;
+    while (read < other._opLength) {
+      final int header = source[read];
+      final int opcode = headerOpcode(header);
+      final int intSlots = headerIntSlots(header);
+      final int operands = read + 1;
+      _ops[_opLength++] = header;
+      switch (opcode) {
+        case opSave:
+        case opRestore:
+        case opTransform:
+          break;
+        case opSaveLayer:
+        case opDrawRect:
+        case opDrawRRect:
+          _ops[_opLength++] = paintMap[source[operands]];
+        case opClipRect:
+          // The lone operand is a clip op, not an id.
+          _ops[_opLength++] = source[operands];
+        case opClipPath:
+          _ops[_opLength++] = pathMap[source[operands]];
+          _ops[_opLength++] = source[operands + 1];
+        case opDrawPath:
+          _ops[_opLength++] = pathMap[source[operands]];
+          _ops[_opLength++] = paintMap[source[operands + 1]];
+        case opDrawImage:
+          _ops[_opLength++] = imageMap[source[operands]];
+          _ops[_opLength++] = paintMap[source[operands + 1]];
+        case opDrawGlyphRun:
+          _ops[_opLength++] = fontMap[source[operands]];
+          _ops[_opLength++] = paintMap[source[operands + 1]];
+          // The glyph count and the ids behind it are values, not resource
+          // ids: a glyph id names a glyph inside the face the fontId already
+          // resolved, so remapping one would draw a different letter.
+          for (var i = 2; i < intSlots; i++) {
+            _ops[_opLength++] = source[operands + i];
+          }
+        default:
+          throw DisplayListFormatException(
+            'unknown opcode ${opcodeName(opcode)} while splicing',
+            wordOffset: read,
+          );
+      }
+      read = operands + intSlots;
+    }
+    _commandCount += other._commandCount;
+  }
+
+  static const int _splicePaintTable = 0;
+  static const int _splicePathTable = 1;
+  static const int _spliceImageTable = 2;
+  static const int _spliceFontTable = 3;
+
+  /// The scratch id map for resource table [which], at least [length] long.
+  Uint32List _spliceMap(int which, int length) {
+    final Uint32List? existing = switch (which) {
+      _splicePaintTable => _splicePaintMap,
+      _splicePathTable => _splicePathMap,
+      _spliceImageTable => _spliceImageMap,
+      _ => _spliceFontMap,
+    };
+    if (existing != null && existing.length >= length) return existing;
+    final Uint32List grown =
+        Uint32List(_grownCapacity(existing?.length ?? 0, length));
+    switch (which) {
+      case _splicePaintTable:
+        _splicePaintMap = grown;
+      case _splicePathTable:
+        _splicePathMap = grown;
+      case _spliceImageTable:
+        _spliceImageMap = grown;
+      default:
+        _spliceFontMap = grown;
+    }
+    return grown;
+  }
+
   // ---------------------------------------------------------------------
   // Arena
   // ---------------------------------------------------------------------
