@@ -6,6 +6,7 @@ import 'dart:io';
 import '../ffi/native_memory.dart';
 import 'file_picker_types.dart';
 import 'file_picker_windows_com.dart';
+import 'file_picker_windows_modal.dart';
 
 const int _ofnNoChangeDir = 0x00000008;
 const int _ofnPathMustExist = 0x00000800;
@@ -93,7 +94,7 @@ Future<PickedFile?> openFile({
 }) async {
   final String? path;
   if (Platform.isWindows) {
-    path = _openWindows(
+    path = await _openWindows(
       title: title,
       filters: filters,
       ownerWindowHandle: ownerWindowHandle,
@@ -138,12 +139,12 @@ Future<PickedFile?> openFile({
 /// `CoCreateInstance` refuses - a locked-down desktop, a Windows older than
 /// Vista, a broken shell registration - still gets a working open dialog
 /// rather than an exception about a COM class it never asked for.
-String? _openWindows({
+Future<String?> _openWindows({
   required String title,
   required List<FilePickerFilter> filters,
   required int ownerWindowHandle,
-}) {
-  final WindowsFileDialogResult result = showWindowsFileDialog(
+}) async {
+  final WindowsFileDialogResult result = await showWindowsFileDialogAsync(
     save: false,
     title: title,
     filters: filters,
@@ -162,15 +163,28 @@ String? _openWindows({
         reason: result.detail ?? 'the Common Item Dialog failed',
       );
     case WindowsFileDialogStatus.unavailable:
-      return _openWindowsLegacy(
-        title: title,
-        filters: filters,
+      // No dialog was shown, so nothing is in flight and the gate below opens
+      // its own. The double disable/enable of the owner window is two style-bit
+      // writes on a path that only a machine without the Common Item Dialog
+      // ever takes.
+      return runWindowsModalOffThread<String?>(
         ownerWindowHandle: ownerWindowHandle,
+        debugName: 'windows-legacy-open-dialog',
+        body: () => _openWindowsLegacy(
+          title: title,
+          filters: filters,
+          ownerWindowHandle: ownerWindowHandle,
+        ),
       );
   }
 }
 
 /// `GetOpenFileNameW`, the fallback for a machine with no Common Item Dialog.
+///
+/// It blocks its caller in a nested modal loop exactly as `IFileDialog::Show`
+/// does, so it gets exactly the same treatment: the only caller runs it through
+/// [runWindowsModalOffThread]. Leaving this one on the main isolate would have
+/// meant the freeze came back on every machine that falls back.
 String? _openWindowsLegacy({
   required String title,
   required List<FilePickerFilter> filters,
@@ -269,16 +283,16 @@ Future<String?> saveFile({
 /// name, so a caller that passed `C:\docs\drawing.svg` got both effects at
 /// once; `IFileSaveDialog` has `SetFolder` and `SetFileName`, and the split is
 /// done here so the shipped behaviour of `saveFile` does not change.
-String? _saveWindows({
+Future<String?> _saveWindows({
   required String title,
   required String suggestedName,
   required List<FilePickerFilter> filters,
   required String? defaultExtension,
   required int ownerWindowHandle,
-}) {
+}) async {
   final ({String? directory, String name}) seed =
       splitSuggestedPath(suggestedName);
-  final WindowsFileDialogResult result = showWindowsFileDialog(
+  final WindowsFileDialogResult result = await showWindowsFileDialogAsync(
     save: true,
     title: title,
     filters: filters,
@@ -300,12 +314,16 @@ String? _saveWindows({
         reason: result.detail ?? 'the Common Item Dialog failed',
       );
     case WindowsFileDialogStatus.unavailable:
-      return _saveWindowsLegacy(
-        title: title,
-        suggestedName: suggestedName,
-        filters: filters,
-        defaultExtension: defaultExtension,
+      return runWindowsModalOffThread<String?>(
         ownerWindowHandle: ownerWindowHandle,
+        debugName: 'windows-legacy-save-dialog',
+        body: () => _saveWindowsLegacy(
+          title: title,
+          suggestedName: suggestedName,
+          filters: filters,
+          defaultExtension: defaultExtension,
+          ownerWindowHandle: ownerWindowHandle,
+        ),
       );
   }
 }
@@ -328,6 +346,9 @@ String? _saveWindows({
 }
 
 /// `GetSaveFileNameW`, the fallback for a machine with no Common Item Dialog.
+///
+/// Modal and blocking like its open counterpart, and run off the main isolate
+/// for the same reason - see [_openWindowsLegacy].
 String? _saveWindowsLegacy({
   required String title,
   required String suggestedName,

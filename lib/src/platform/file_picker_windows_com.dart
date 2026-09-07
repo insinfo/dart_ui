@@ -35,6 +35,7 @@ import 'dart:io';
 import '../ffi/com.dart';
 import '../ffi/native_memory.dart';
 import 'file_picker_types.dart';
+import 'file_picker_windows_modal.dart';
 
 // ---------------------------------------------------------------------------
 // Class and interface identifiers
@@ -284,6 +285,62 @@ WindowsFileDialogResult showWindowsFileDialog({
   } finally {
     apartment.leave();
   }
+}
+
+/// The same dialog as [showWindowsFileDialog], opened on a thread that is not
+/// the one running the Dart event loop.
+///
+/// **This is what an application calls.** [showWindowsFileDialog] blocks its
+/// caller inside a nested modal message loop until the user dismisses the
+/// dialog; on the main isolate that stops every timer, microtask and pending
+/// `await` in the process, which is what froze the video player's picture while
+/// its sound - rendered on a WASAPI thread nothing here blocks - kept playing.
+/// `file_picker_windows_modal.dart` carries the measurements and the modality
+/// this hands over to it.
+///
+/// The synchronous form stays public for the two callers that want it:
+/// `tool/file_dialog_smoke.dart`, which has no event loop to protect, and any
+/// caller already running on an isolate of its own.
+///
+/// Everything crossing the isolate boundary here is plain data - two `bool`s,
+/// four `String`s, the owner `HWND` as an `int`, and [filters], whose
+/// [FilePickerFilter] is a label and a list of extensions and nothing else.
+/// Nothing native, nothing with a `ReceivePort` in it.
+Future<WindowsFileDialogResult> showWindowsFileDialogAsync({
+  required bool save,
+  required String title,
+  List<FilePickerFilter> filters = const <FilePickerFilter>[],
+  String suggestedName = '',
+  String? defaultExtension,
+  String? initialDirectory,
+  bool allowMultiple = false,
+  int ownerWindowHandle = 0,
+}) async {
+  final WindowsFileDialogResult? result =
+      await runWindowsModalOffThread<WindowsFileDialogResult>(
+    ownerWindowHandle: ownerWindowHandle,
+    debugName: 'windows-file-dialog',
+    body: () => showWindowsFileDialog(
+      save: save,
+      title: title,
+      filters: filters,
+      suggestedName: suggestedName,
+      defaultExtension: defaultExtension,
+      initialDirectory: initialDirectory,
+      allowMultiple: allowMultiple,
+      ownerWindowHandle: ownerWindowHandle,
+    ),
+  );
+  // A second open while the first dialog is still up is reported as a cancel
+  // and not as a failure: the user got no second dialog and chose no file, and
+  // that is exactly what a cancel means to every caller. Raising here would put
+  // an exception in the face of somebody who pressed a button twice.
+  return result ??
+      const WindowsFileDialogResult(
+        status: WindowsFileDialogStatus.cancelled,
+        hresult: hresultCancelled,
+        detail: 'a file dialog is already open',
+      );
 }
 
 /// Creates a dialog, configures it exactly as [showWindowsFileDialog] would,
