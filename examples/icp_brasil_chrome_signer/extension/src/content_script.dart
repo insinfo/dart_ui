@@ -6,11 +6,14 @@ import 'package:web/web.dart' as web;
 external JSObject get chrome;
 
 void main() {
-  web.window.addEventListener('message', _onWindowMessage.toJS);
   final marker = web.document.createElement('meta') as web.HTMLMetaElement;
   marker.name = 'dart-ui-icp-brasil';
-  marker.content = '1';
-  web.document.head?.append(marker);
+  final runtimeId = chrome
+      .getProperty<JSObject>('runtime'.toJS)
+      .getProperty<JSString?>('id'.toJS);
+  marker.content = runtimeId?.toDart ?? 'unknown';
+  (web.document.head ?? web.document.documentElement)?.append(marker);
+  web.window.addEventListener('message', _onWindowMessage.toJS);
 }
 
 void _onWindowMessage(web.Event rawEvent) {
