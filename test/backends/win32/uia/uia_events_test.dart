@@ -392,5 +392,118 @@ void main() {
         ]),
       );
     });
+
+    test('and closing raises the other half of the pair', () {
+      // The half that did not exist. `uiaMenuClosedEventId` and
+      // `uiaToolTipClosedEventId` were declared and had no writer, so Narrator
+      // was told to enter menu-reading mode and never told to leave it.
+      final SemanticsNode tooltip =
+          _node(20, SemanticsRole.tooltip, label: 'Copy');
+      final SemanticsNode menu = _node(21, SemanticsRole.menu);
+      final SemanticsSnapshot before = _tree(<SemanticsNode>[tooltip, menu]);
+
+      final List<UiaEventRecord> events = translator.translate(
+        const SemanticsUpdate(
+          added: <SemanticsNode>[],
+          updated: <SemanticsNode>[],
+          removed: <int>[20, 21],
+        ),
+        before: before,
+        after: _tree(const <SemanticsNode>[]),
+      );
+
+      // On the root, because the parent of both is the root and because an
+      // event raised on an element that has just left resolves to no provider
+      // and is dropped by the runtime in silence.
+      expect(
+        events,
+        containsAll(<UiaEventRecord>[
+          const UiaAutomationEventRecord(0, uiaToolTipClosedEventId),
+          const UiaAutomationEventRecord(0, uiaMenuClosedEventId),
+        ]),
+      );
+    });
+
+    test('a menu leaving with its parent still addresses a live node', () {
+      // A submenu inside a menu, the whole chain dismissed at once. Addressing
+      // the closing event at the departed parent would put it on a node with
+      // no provider, which is the same trap `ChildRemoved` documents.
+      final SemanticsNode submenu = _node(31, SemanticsRole.menu);
+      final SemanticsNode menu = _node(
+        30,
+        SemanticsRole.menu,
+        children: <SemanticsNode>[submenu],
+      );
+
+      final List<UiaEventRecord> events = translator.translate(
+        const SemanticsUpdate(
+          added: <SemanticsNode>[],
+          updated: <SemanticsNode>[],
+          removed: <int>[30, 31],
+        ),
+        before: _tree(<SemanticsNode>[menu]),
+        after: _tree(const <SemanticsNode>[]),
+      );
+
+      final List<UiaAutomationEventRecord> closed =
+          _of<UiaAutomationEventRecord>(events)
+              .where((UiaAutomationEventRecord e) =>
+                  e.eventId == uiaMenuClosedEventId)
+              .toList();
+      expect(closed, hasLength(2));
+      expect(
+        closed.every((UiaAutomationEventRecord e) => e.nodeId == 0),
+        isTrue,
+        reason: 'the submenu names the root and not its departed parent',
+      );
+    });
+
+    test('an ordinary node leaving says nothing about menus', () {
+      final List<UiaEventRecord> events = translator.translate(
+        const SemanticsUpdate(
+          added: <SemanticsNode>[],
+          updated: <SemanticsNode>[],
+          removed: <int>[40],
+        ),
+        before: _tree(<SemanticsNode>[_node(40, SemanticsRole.button)]),
+        after: _tree(const <SemanticsNode>[]),
+      );
+      expect(
+        _of<UiaAutomationEventRecord>(events),
+        isEmpty,
+        reason: 'only the two roles that have an open/close pair get one',
+      );
+    });
+
+    test('the close survives the bulk collapse', () {
+      // A menu dismissed in the same frame a list refills would otherwise be
+      // swallowed: past `bulkThreshold` the structural events become one
+      // `ChildrenInvalidated`, and "re-read the subtree" is not the message
+      // that takes a screen reader out of menu mode.
+      final SemanticsNode menu = _node(50, SemanticsRole.menu);
+      final List<SemanticsNode> rows = <SemanticsNode>[
+        for (int i = 60; i < 80; i++) _node(i, SemanticsRole.listItem),
+      ];
+
+      final List<UiaEventRecord> events = translator.translate(
+        SemanticsUpdate(
+          added: const <SemanticsNode>[],
+          updated: const <SemanticsNode>[],
+          removed: <int>[50, for (final SemanticsNode row in rows) row.id],
+        ),
+        before: _tree(<SemanticsNode>[menu, ...rows]),
+        after: _tree(const <SemanticsNode>[]),
+      );
+
+      expect(
+        _of<UiaStructureChangedRecord>(events),
+        hasLength(1),
+        reason: 'the structural half did collapse, so the guard is real',
+      );
+      expect(
+        events,
+        contains(const UiaAutomationEventRecord(0, uiaMenuClosedEventId)),
+      );
+    });
   });
 }

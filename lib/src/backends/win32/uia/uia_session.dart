@@ -43,6 +43,7 @@ import '../../../foundation/lifecycle.dart';
 import '../../../semantics/accessibility.dart';
 import '../../../semantics/semantics.dart';
 import 'uia_bridge.dart';
+import 'uia_constants.dart';
 import 'uia_events.dart';
 
 export '../../../semantics/accessibility.dart' show AccessibilityTreeSource;
@@ -120,7 +121,11 @@ final class WindowsAccessibility
   static void unregister(int hwnd) {
     _registered.remove(hwnd);
     _failures.remove(hwnd);
-    _live.remove(hwnd)?.dispose();
+    final WindowsAccessibility? session = _live.remove(hwnd);
+    if (session == null) return;
+    // Before the dispose, not after: see [raiseClosingEvents].
+    session.raiseClosingEvents();
+    session.dispose();
   }
 
   /// The live session for [hwnd], or null while nobody has asked.
@@ -232,6 +237,44 @@ final class WindowsAccessibility
     owner.build(_source.root());
     bridge.publish(owner.snapshot);
     _publishes++;
+  }
+
+  /// Raises the closing events that destroying this window would swallow.
+  ///
+  /// A popup presented in a **native window** - a menu, a submenu, a dropdown,
+  /// a tooltip; see ADR 0008 - is its own window with its own semantic tree, so
+  /// it closes by the window being destroyed and not by a node leaving a diff.
+  /// The owner's tree does not change at all and [UiaEventTranslator] has
+  /// nothing to translate, so without this the pair is broken in the worst
+  /// direction: `MenuOpened` is raised when the menu appears and `MenuClosed`
+  /// never is, and Narrator stays in menu-reading mode over a subtree that no
+  /// longer exists.
+  ///
+  /// The in-tree popup host has no such gap, because there the menu genuinely
+  /// leaves the owner's tree and the translator sees it go. This method is the
+  /// price of the two hosts being interchangeable: a user must not get
+  /// different announcements from the same click depending on which one the
+  /// framework picked.
+  ///
+  /// Called *before* [dispose] because the nodes must still resolve to
+  /// providers - the runtime drops an event raised on one it cannot find, and
+  /// drops it without an error. Raised on the menu itself for the same reason,
+  /// which is the opposite of what the translator can do for a removal.
+  List<UiaEventRecord> raiseClosingEvents() {
+    if (isDisposed) return const <UiaEventRecord>[];
+    final List<UiaEventRecord> raised = <UiaEventRecord>[];
+    for (final SemanticsNode node in _source.owner.snapshot.nodes) {
+      final int? eventId = switch (node.role) {
+        SemanticsRole.menu => uiaMenuClosedEventId,
+        SemanticsRole.tooltip => uiaToolTipClosedEventId,
+        _ => null,
+      };
+      if (eventId == null) continue;
+      final record = UiaAutomationEventRecord(node.id, eventId);
+      if (bridge.raise(record)) raised.add(record);
+    }
+    _eventsRaised += raised.length;
+    return raised;
   }
 
   /// The dispatcher handed to [UiaProviderTree.actionDispatcher].

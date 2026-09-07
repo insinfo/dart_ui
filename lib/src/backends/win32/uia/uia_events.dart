@@ -183,6 +183,7 @@ final class UiaEventTranslator {
     // ---- structure -------------------------------------------------------
     final int structuralCount = update.added.length + update.removed.length;
     final int rootId = after?.root?.id ?? before?.root?.id ?? 0;
+    final Set<int> removedIds = update.removed.toSet();
     if (structuralCount > bulkThreshold) {
       events.add(
         UiaStructureChangedRecord(
@@ -202,7 +203,6 @@ final class UiaEventTranslator {
           ),
         );
       }
-      final Set<int> removedIds = update.removed.toSet();
       for (final int removed in update.removed) {
         // ChildRemoved has to be raised on something that still exists, so it
         // goes to the parent the node had - or to the root when the parent
@@ -282,6 +282,36 @@ final class UiaEventTranslator {
       if (node.role == SemanticsRole.menu) {
         events.add(UiaAutomationEventRecord(node.id, uiaMenuOpenedEventId));
       }
+    }
+
+    // ---- and the closing half --------------------------------------------
+    // `MenuOpened` without `MenuClosed` is worse than raising neither.
+    // Narrator enters menu-reading mode on the first and leaves it only on the
+    // second, so a menu announced open and never announced closed strands the
+    // reading cursor in a subtree that is no longer on screen; the user's next
+    // arrow key reads an item that cannot be invoked. Both constants had sat
+    // in `uia_constants.dart` with no writer, which is how the asymmetry
+    // survived being reviewed: the opening half is here and looks complete.
+    //
+    // Addressed to the surviving parent - or to the root when the parent left
+    // in the same frame - for exactly the reason `ChildRemoved` above is: the
+    // runtime drops an event raised on a node that no longer resolves to a
+    // provider, and drops it silently. That is a real asymmetry with the
+    // opening half, which names the menu itself because the menu is there.
+    for (final int removed in update.removed) {
+      final int? closed = switch (previous[removed]?.role) {
+        SemanticsRole.menu => uiaMenuClosedEventId,
+        SemanticsRole.tooltip => uiaToolTipClosedEventId,
+        _ => null,
+      };
+      if (closed == null) continue;
+      final int? parent = _parentOf(removed, before);
+      events.add(
+        UiaAutomationEventRecord(
+          parent == null || removedIds.contains(parent) ? rootId : parent,
+          closed,
+        ),
+      );
     }
 
     return events;

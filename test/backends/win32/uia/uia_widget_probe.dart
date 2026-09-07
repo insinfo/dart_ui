@@ -46,6 +46,7 @@ import 'dart:io';
 import 'package:dart_ui/src/backends/win32/uia/uia_bridge.dart';
 import 'package:dart_ui/src/backends/win32/uia/uia_constants.dart';
 import 'package:dart_ui/src/backends/win32/uia/uia_core.dart';
+import 'package:dart_ui/src/backends/win32/uia/uia_events.dart';
 import 'package:dart_ui/src/backends/win32/uia/uia_session.dart';
 import 'package:dart_ui/src/backends/win32/win32_api.dart';
 import 'package:dart_ui/src/backends/win32/win32_constants.dart';
@@ -176,11 +177,24 @@ void main() {
     readOnly: false,
   );
 
+  // A menu, because `MenuOpened` had no matching `MenuClosed` and the gap was
+  // invisible from a unit test: a popup in a native window closes by the
+  // window being destroyed, so no diff ever carries the removal and the
+  // translator is never asked. What proves the fix is the teardown at the
+  // bottom of this file, against the live runtime.
+  final RenderMenu menu = RenderMenu(
+    items: const <MenuItem>[
+      MenuItem(label: 'Cut'),
+      MenuItem(label: 'Copy'),
+    ],
+  );
+
   final RenderFlex column = RenderFlex(direction: Axis.vertical)
     ..add(button)
     ..add(checkBox)
     ..add(slider)
-    ..add(field);
+    ..add(field)
+    ..add(menu);
 
   final PipelineOwner pipeline = PipelineOwner(
     rootConstraints: BoxConstraints.loose(const Size(380, 300)),
@@ -441,6 +455,18 @@ void main() {
   _releaseCom(walker);
   _releaseCom(element);
   client.dispose();
+
+  // The half of the menu pair that a native-window popup can only get here.
+  // Raised *before* the dispose, so the nodes still resolve to providers; a
+  // count of zero would mean the runtime rejected them, which is a different
+  // failure from never having tried and is worth being able to tell apart.
+  final List<UiaEventRecord> closing = session.raiseClosingEvents();
+  _say('closingRaised=${closing.length}');
+  _say('closingKinds=${closing.map((UiaEventRecord e) => switch (e) {
+        UiaAutomationEventRecord(:final int eventId) =>
+          uiaEventNames[eventId] ?? '$eventId',
+        _ => e.runtimeType.toString(),
+      }).join(',')}');
 
   WindowsAccessibility.unregister(hwnd);
   _say('liveAfterUnregister=${WindowsAccessibility.liveCount}');

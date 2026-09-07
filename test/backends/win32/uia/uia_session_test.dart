@@ -315,6 +315,18 @@ void main() {
             'change event, or a screen reader announces nothing',
       );
 
+      // The closing half of the menu pair, accepted by the live runtime.
+      // A popup in a native window closes by the window being destroyed, so
+      // no diff ever carries the removal and the translator is never asked -
+      // `MenuOpened` was raised and `MenuClosed` never was, which leaves
+      // Narrator reading a menu that is off the screen. A count here is a
+      // stronger claim than a translator unit test: it says
+      // `UiaRaiseAutomationEvent` returned S_OK for a provider that still
+      // resolves, which is the thing that would break if the raise moved
+      // after the dispose.
+      expect(probe['closingRaised'], '1');
+      expect(probe['closingKinds'], 'UIA_MenuClosedEventId');
+
       // SetValue on a slider, which the bridge exposes as IValueProvider with
       // the widget's own string rather than as IRangeValueProvider - see the
       // uiaAbsentPatterns entry that explains why.

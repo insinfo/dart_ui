@@ -8851,12 +8851,20 @@ seguinte:
 4. **rodar `tool/x11_backend_smoke.dart` numa sessão Linux** (§68.1): o
    teclado e o clipboard do X11 continuam provados só por bytes numa máquina
    Windows;
-5. **popups em janelas nativas** — menu de contexto, combo box, tooltip e
-   barra de menus abrindo `WindowKind.popup` em vez de um overlay cortado
-   pela janela. A multijanela já existe; o que falta é o widget que a usa, o
-   redirecionamento de teclado, o descarte por clique na dona, a geometria de
-   monitor, e dois backends que não honram o kind. Plano por fases, com o
-   que cada uma prova, em `doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md`.
+5. ~~**popups em janelas nativas**~~ — **feito em 06/09/2026.** Menu de
+   contexto, combo box, tooltip e barra de menus abrem `WindowKind.popup` em
+   vez de um overlay cortado pela janela. Provado num HWND de verdade: o popup
+   pousou **196 px além da borda direita** da dona e 184 px além da inferior,
+   que é o retângulo que um overlay não pode produzir. A costura é `PopupHost`
+   com duas implementações, e headless e web continuam funcionando pela
+   in-tree sem saber que janelas existem. Ver ADR 0008, §68.4.1 e
+   `doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md`; o que ficou aberto está nomeado
+   na §68.4.1 e é macOS, os dois smokes de Linux, e acessibilidade UIA.
+
+**A próxima, hoje**, é a §68.4.1 e a §68.4.3: o macOS e o Linux não podem ser
+provados nesta máquina, então o que sobra aqui é a acessibilidade do popup
+como fragmento UIA da dona, e a submissão intermediária de lote no Vulkan, que
+é a causa-raiz comum da recusa de `mixed-ui` e da §68.4.2.
 
 O detalhamento por frente está em §68.
 
@@ -9529,8 +9537,20 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   Não pode ser verificado nesta máquina;
 - **X11 e Wayland têm o código e nunca o executaram.** Os dois smokes
   compilam; só o CI pode prová-los;
-- **acessibilidade do popup**: o popup ainda não é fragmento UIA filho da dona
-  e não emite `MenuOpened`/`MenuClosed`.
+- **acessibilidade do popup**: metade fechada em 06/09/2026. `MenuOpened` era
+  levantado e `MenuClosed` **nunca** — as duas constantes estavam em
+  `uia_constants.dart` sem escritor —, e o leitor de tela entrava no modo de
+  leitura de menu sem nunca ser mandado sair. Faltava por dois caminhos
+  diferentes: um popup **na árvore** sai por diff, e o tradutor agora emite o
+  fechamento endereçado ao pai sobrevivente (ou à raiz), pela mesma razão que
+  o `ChildRemoved` já tinha; um popup **em janela nativa** não sai por diff
+  nenhum, porque a árvore da dona não muda — quem fecha é a janela sendo
+  destruída —, então `WindowsAccessibility.unregister` levanta o par antes do
+  dispose, enquanto os nós ainda resolvem para providers. Provado no probe de
+  janela real com cliente `IUIAutomation`: `closingRaised=1`,
+  `closingKinds=UIA_MenuClosedEventId`, e o tradutor foi sabotado para
+  confirmar que os testes ficam vermelhos. **Aberto:** o popup ainda não é
+  fragmento UIA filho da dona.
 
 ## 68.4.3 O Vulkan desenha texto — 06/09/2026
 
