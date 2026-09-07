@@ -15,7 +15,7 @@ void main() {
     'signPdfHash',
   ]) {
     api.setProperty(
-        operation.toJS, ((JSAny? args) => _request(operation, args)).toJS);
+        operation.toJS, (([JSAny? args]) => _request(operation, args)).toJS);
   }
   globalThis.setProperty('dartUiIcpBrasil'.toJS, api);
 }
