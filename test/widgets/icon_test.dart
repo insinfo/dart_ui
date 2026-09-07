@@ -420,7 +420,7 @@ void main() {
       // for a font that *is* installed would be worse than no report, because
       // the next real one would be ignored.
       RenderIcon.clearMissingIconFamilies();
-      _render(Icon(block, size: 20), const Size(20, 20));
+      _render(const Icon(block, size: 20), const Size(20, 20));
       expect(RenderIcon.missingIconFamilies, isEmpty);
     });
 
