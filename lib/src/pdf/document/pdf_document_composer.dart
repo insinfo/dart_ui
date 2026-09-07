@@ -1,8 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
-import 'package:archive/archive.dart';
-
+import '../../graphics/image/deflate.dart';
 import '../format/pdf_object.dart';
 import '../sign/pdf_signature_inspector.dart';
 import 'pdf_document.dart';
@@ -251,7 +250,7 @@ final class _PdfGraphWriter {
       final dictionary = Map<String, PdfObject>.from(object.dict.entries)
         ..remove('Length');
       if (compressStreams && dictionary['Filter'] == null) {
-        final compressed = const ZLibEncoder().encodeBytes(streamBytes);
+        final compressed = deflateZlib(streamBytes);
         if (compressed.length < streamBytes.length) {
           streamBytes = compressed;
           dictionary['Filter'] = const PdfName('FlateDecode');
