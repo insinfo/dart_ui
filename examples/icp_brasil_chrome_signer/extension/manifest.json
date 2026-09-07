@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Dart UI ICP-Brasil",
   "description": "Autenticação e assinatura PAdES com certificados ICP-Brasil.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "permissions": ["nativeMessaging"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {"service_worker": "dist/service_worker.js"},

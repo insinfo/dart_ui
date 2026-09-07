@@ -6,8 +6,9 @@ external JSObject get chrome;
 
 void main() {
   final runtime = chrome.getProperty<JSObject>('runtime'.toJS);
-  final onMessage = runtime.getProperty<JSObject>('onMessage'.toJS);
-  onMessage.callMethod<JSAny?>('addListener'.toJS, _onMessage.toJS);
+  runtime
+      .getProperty<JSObject>('onMessage'.toJS)
+      .callMethod<JSAny?>('addListener'.toJS, _onMessage.toJS);
 }
 
 JSAny? _onMessage(JSAny? raw, JSAny? senderRaw, JSFunction sendResponse) {
@@ -30,18 +31,21 @@ JSAny? _onMessage(JSAny? raw, JSAny? senderRaw, JSFunction sendResponse) {
   final request = Map<String, Object?>.from(message.cast<String, Object?>());
   request['origin'] = origin;
   final runtime = chrome.getProperty<JSObject>('runtime'.toJS);
-  runtime
-      .callMethod<JSPromise<JSAny?>>(
-        'sendNativeMessage'.toJS,
-        'br.com.dartui.icp_signer'.toJS,
-        request.jsify(),
-      )
-      .toDart
-      .then(
-        (reply) => sendResponse.callAsFunction(null, reply),
-        onError: (Object error) =>
-            sendResponse.callAsFunction(null, _error(error.toString()).jsify()),
-      );
+  runtime.callMethod<JSAny?>(
+    'sendNativeMessage'.toJS,
+    'br.com.dartui.icp_signer'.toJS,
+    request.jsify(),
+    ((JSAny? reply) {
+      if (reply != null) {
+        sendResponse.callAsFunction(null, reply);
+        return;
+      }
+      final lastError = runtime.getProperty<JSObject?>('lastError'.toJS);
+      final error = lastError?.getProperty<JSString?>('message'.toJS)?.toDart ??
+          'native host returned no response';
+      sendResponse.callAsFunction(null, _error(error).jsify());
+    }).toJS,
+  );
   return true.toJS;
 }
 
@@ -49,6 +53,6 @@ Map<String, Object?> _error(String message) => <String, Object?>{
       'ok': false,
       'error': <String, Object?>{
         'code': 'NATIVE_HOST_ERROR',
-        'message': message
+        'message': message,
       },
     };

@@ -55,7 +55,9 @@ final class SignerService {
     )) {
       throw const _Denied();
     }
-    _identities = await _provider.listIdentities();
+    _identities = (await _provider.listIdentities())
+        .where(_isIcpBrasilIdentity)
+        .toList(growable: false);
     final now = DateTime.now();
     return <String, Object?>{
       'certificates': <Object?>[
@@ -186,7 +188,9 @@ final class SignerService {
 
   Future<CryptoIdentity> _identity(Object? id) async {
     if (_identities.isEmpty) {
-      _identities = await _provider.listIdentities();
+      _identities = (await _provider.listIdentities())
+          .where(_isIcpBrasilIdentity)
+          .toList(growable: false);
     }
     return _identities.firstWhere(
       (value) => value.id == id,
@@ -228,6 +232,12 @@ final class SignerService {
 
   static String _hex(Uint8List bytes) =>
       bytes.map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+
+  static bool _isIcpBrasilIdentity(CryptoIdentity identity) {
+    final certificate = identity.certificate;
+    return certificate.subjectName.toUpperCase().contains('ICP-BRASIL') ||
+        certificate.issuerName.toUpperCase().contains('ICP-BRASIL');
+  }
 
   static Future<bool> _nativeConsent({
     required String origin,

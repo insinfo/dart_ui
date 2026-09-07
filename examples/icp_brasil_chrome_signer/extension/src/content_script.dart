@@ -8,10 +8,9 @@ external JSObject get chrome;
 void main() {
   final marker = web.document.createElement('meta') as web.HTMLMetaElement;
   marker.name = 'dart-ui-icp-brasil';
-  final runtimeId = chrome
-      .getProperty<JSObject>('runtime'.toJS)
-      .getProperty<JSString?>('id'.toJS);
-  marker.content = runtimeId?.toDart ?? 'unknown';
+  final runtime = chrome.getProperty<JSObject>('runtime'.toJS);
+  marker.content =
+      runtime.getProperty<JSString?>('id'.toJS)?.toDart ?? 'unknown';
   (web.document.head ?? web.document.documentElement)?.append(marker);
   web.window.addEventListener('message', _onWindowMessage.toJS);
 }
@@ -27,18 +26,18 @@ void _onWindowMessage(web.Event rawEvent) {
       data['direction'] != 'request') {
     return;
   }
-  final request = Map<String, Object?>.from(data.cast<String, Object?>());
-  request.remove('origin');
-  final runtime = chrome.getProperty<JSObject>('runtime'.toJS);
-  runtime
-      .callMethod<JSPromise<JSAny?>>('sendMessage'.toJS, request.jsify())
-      .toDart
-      .then(
-        (reply) => web.window.postMessage(<String, Object?>{
-          'channel': 'dart-ui-icp-brasil',
-          'direction': 'response',
-          'id': request['id'],
-          'payload': reply?.dartify(),
-        }.jsify()),
+  final request = Map<String, Object?>.from(data.cast<String, Object?>())
+    ..remove('origin');
+  chrome.getProperty<JSObject>('runtime'.toJS).callMethod<JSAny?>(
+        'sendMessage'.toJS,
+        request.jsify(),
+        ((JSAny? reply) {
+          web.window.postMessage(<String, Object?>{
+            'channel': 'dart-ui-icp-brasil',
+            'direction': 'response',
+            'id': request['id'],
+            'payload': reply?.dartify(),
+          }.jsify());
+        }).toJS,
       );
 }

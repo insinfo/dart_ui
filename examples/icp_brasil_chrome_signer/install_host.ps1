@@ -20,7 +20,19 @@ $manifest = [ordered]@{
   type = 'stdio'
   allowed_origins = @("chrome-extension://$ExtensionId/")
 }
-$manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
+$manifestJson = $manifest | ConvertTo-Json -Depth 4
+[IO.File]::WriteAllText($manifestPath, $manifestJson, [Text.UTF8Encoding]::new($false))
+
+$firefoxManifestPath = Join-Path $installDir 'br.com.dartui.icp_signer.firefox.json'
+$firefoxManifest = [ordered]@{
+  name = 'br.com.dartui.icp_signer'
+  description = 'Host Dart UI para certificados ICP-Brasil'
+  path = $installedExe
+  type = 'stdio'
+  allowed_extensions = @('dart-ui-icp-brasil@insinfo.dev')
+}
+$firefoxManifestJson = $firefoxManifest | ConvertTo-Json -Depth 4
+[IO.File]::WriteAllText($firefoxManifestPath, $firefoxManifestJson, [Text.UTF8Encoding]::new($false))
 
 $registryKeys = @(
   'HKCU:\Software\Google\Chrome\NativeMessagingHosts\br.com.dartui.icp_signer',
@@ -31,4 +43,7 @@ foreach ($key in $registryKeys) {
   New-Item -Path $key -Force | Out-Null
   Set-ItemProperty -Path $key -Name '(default)' -Value $manifestPath
 }
-Write-Host "Host instalado para Chrome, Brave e Edge; extensão $ExtensionId"
+$firefoxKey = 'HKCU:\Software\Mozilla\NativeMessagingHosts\br.com.dartui.icp_signer'
+New-Item -Path $firefoxKey -Force | Out-Null
+Set-ItemProperty -Path $firefoxKey -Name '(default)' -Value $firefoxManifestPath
+Write-Host "Host instalado para Chrome, Brave, Edge e Firefox; extensao $ExtensionId"

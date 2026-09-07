@@ -3,9 +3,33 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dart_ui/dart_ui.dart';
+
 import 'native_host/lib/native_messaging.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> arguments) async {
+  if (arguments.contains('--list')) {
+    final provider = WindowsCertificateProvider();
+    try {
+      final identities = await provider.listIdentities();
+      final icpBrasil = identities.where(
+        (identity) => identity.certificate.subjectName
+            .toUpperCase()
+            .contains('ICP-BRASIL'),
+      );
+      for (final identity in icpBrasil) {
+        stdout.writeln('${identity.certificate.icpBrasilDisplayName} | '
+            '${identity.certificate.maskedIcpBrasilCpf} | '
+            '${identity.metadata['provider']}');
+      }
+      if (icpBrasil.isEmpty) {
+        throw StateError('nenhum certificado ICP-Brasil encontrado');
+      }
+    } finally {
+      provider.close();
+    }
+    return;
+  }
   final directory = File(Platform.script.toFilePath()).parent;
   final executable = File(
     '${directory.path}${Platform.pathSeparator}native_host'
