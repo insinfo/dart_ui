@@ -515,8 +515,9 @@ vence as duas:
    linha "Vulkan ou EGL/OpenGL" é intenção, não estado;
 3. **Metal não apresenta.** Não há `CAMetalLayer`, e `supportsSurface` só
    aceita `MemorySurfaceDescriptor`. A linha "Metal + `CAMetalLayer`" é
-   intenção. Além disso, o caminho GL de janela no X11 está registrado no
-   seletor e **nunca foi executado**.
+   intenção. O caminho GL de janela no X11 está registrado no seletor e, desde
+   07/09/2026, é executado no CI por `tool/x11_gl_smoke.dart` sob Xvfb e Mesa
+   llvmpipe — sob **nenhuma GPU de verdade** ainda.
 
 ## 5.1 Política de seleção em runtime
 
@@ -2536,19 +2537,30 @@ Não acoplar AT-SPI a X11: o mesmo adaptador deverá servir Wayland.
 
 ## 15.14 Critérios de conclusão X11
 
-Revisto em 2026-08-23 contra `lib/src/backends/x11/`.
+Revisto em 2026-09-07 **contra o código e contra o log do CI**, nunca contra a
+revisão anterior. A revisão de 2026-08-23 que estava aqui errava em três itens
+ao mesmo tempo, e nos dois sentidos: declarava ausente o que já existia
+(teclado, clipboard) e não executado o que já rodava. Uma lista que mente para
+menos manda o próximo leitor construir o que já está pronto — é tão cara
+quanto uma que mente para mais.
+
+As provas citadas por linha são saídas de `tool/x11_backend_smoke.dart`
+compilado AOT sob Xvfb, no job `Test (linux)` da execução
+[#34155890811](https://github.com/insinfo/dart_ui/actions/runs/34155890811).
 
 - [x] XCB sem Xlib obrigatória;
 - [x] janela (criação checked, `WM_PROTOCOLS`/`WM_DELETE_WINDOW`, ICCCM/EWMH);
 - [x] resize/move/focus (coalescidos no pump, com generation de surface);
-- [~] CPU SHM — a apresentação é **`PutImage` do core**, dividida em bandas ou tiles por um planner puro, **não `MIT-SHM`**. Validada sob Xvfb no CI;
-- [ ] **XKB — não existe, e é o bloqueio central**: `xcbKeyPress`/`xcbKeyRelease` são consumidos e descartados, o backend não emite `KeyEvent` nem `TextInputEvent` e não reivindica `Capability.keyboardInput`. Sem isso não há teclado, atalho, tecla morta nem IME (§15.2.1, §68);
+- [~] CPU SHM — a apresentação é **`PutImage` do core**, dividida em bandas ou tiles por um planner puro, **não `MIT-SHM`**. `X11_PUT_IMAGE=PASS depth=24 format=BGRA8888 size=360x240 generation=1`;
+- [x] **teclado — existe, e falou com um X server**: `x11_keyboard.dart` decodifica o mapa do **core protocol** (`GetKeyboardMapping` + `GetModifierMapping`), o backend emite `KeyEvent` e `TextInputEvent` e reivindica `Capability.keyboardInput` quando o mapa veio. Teclas mortas pela tabela Compose do sistema, uma `ComposeEngine` **por janela**. `X11_KEYBOARD=PASS keyboard: 248 keycodes from 8, 7 keysyms each`;
+- [ ] **XKB — detectado e não usado**, e o que isso custa é menor do que a lista anterior dizia. `_inspectConnection` lê `XKEYBOARD` da lista de extensões e nada mais. Sem XKB: **dois grupos de layout** em vez de quatro, **sem `DetectableAutoRepeat`** (o repeat é deduzido do par release/press), e sem grupo por evento. Não bloqueia teclado nem tecla morta; bloqueia layout. O IME (XIM) é item separado e também não existe (§15.2.1, §68);
 - [x] mouse/wheel (botões 1/2/3/8/9, roda 4/5/6/7 em linhas);
-- [ ] XInput2;
-- [ ] **clipboard INCR — não existe**: não há `x11_clipboard.dart` e o backend não implementa `ClipboardProvider`;
-- [x] XDND — **nos dois sentidos**: `X11DragDropManager` recebe e `X11XdndSource` inicia. A imagem de arraste é **ignorada**. *(Cuidado: a string de diagnóstico do probe ainda diz "dragging out is not implemented"; ela é que está velha — o caminho de `initialize` diz "XDND is available in both directions" e liga a fonte.)*;
-- [ ] RandR;
-- [~] OpenGL/EGL — `x11_gl_surface.dart` e a entrada `_x11OpenGl()` existem no seletor, e o teste correspondente diz por escrito que este caminho **nunca foi executado**;
+- [ ] **XInput2 — não existe**: `XInputExtension` aparece só na lista de extensões que a conexão detecta, e nenhuma linha usa a extensão. Sem eventos brutos, sem roda de alta resolução, sem pressão/tilt, sem distinguir dispositivos;
+- [x] **clipboard — existe, e falou com um X server**: `x11_clipboard.dart` implementa `ClipboardProvider`, toma `CLIPBOARD` com o timestamp mais novo do servidor e **lê transferências `INCR`** com timeout por pedaço. `X11_CLIPBOARD=PASS owner=self roundtrip=true`;
+- [ ] **dono `INCR` — não existe, e só essa metade falta**: servir uma seleção maior que o pedaço máximo do servidor exige o lado do dono do protocolo `INCR`, e o código diz isso por escrito (`'does not implement an INCR selection owner'`). Um `paste` de payload grande **de outra aplicação** funciona; um `copy` grande **para** outra aplicação, não. `PRIMARY` também não existe;
+- [x] XDND — **nos dois sentidos**: `X11DragDropManager` recebe e `X11XdndSource` inicia. A imagem de arraste é **ignorada**. *(A string velha do probe — "dragging out is not implemented" — foi corrigida em 06/09/2026; os dois caminhos hoje dizem "XDND is available in both directions".)*;
+- [ ] **RandR — detectado e não usado**: `_hasRandr` sai da lista de extensões e a única consumidora seria a geometria por monitor. A geometria da tela **raiz** existe e roda (`X11_SCREENS=PASS`, `1920x1080`, `scale 1.0`), mas ela é a caixa envolvente de todos os monitores: num multi-head o framework vê **uma** tela do tamanho de todas, e `x11_scale.dart` diz por que isso foi adiado (três round trips encadeados por `RRGetScreenResources`);
+- [~] **OpenGL/EGL — deixou de ser só código em 07/09/2026**: `tool/x11_gl_smoke.dart` leva o caminho de ponta a ponta (janela mapeada → `eglCreateWindowSurface` → `glReadPixels` do framebuffer 0 → três frames por `GlWindowTarget` → resize → `GlMeshRenderer.create`) e o workflow `X11 OpenGL probe` o roda sob **Xvfb com Mesa llvmpipe**. O veredito de cada execução vale mais que esta linha: leia o log. O que nem esse job cobre é **GPU real** — llvmpipe aceita config, visual e GLSL que um driver de hardware pode recusar;
 - [ ] Vulkan opcional — há `VK_KHR_xcb_surface`/`VK_KHR_xlib_surface` no lado do Vulkan, sem nada que produza o descriptor a partir deste backend;
 - [ ] AT-SPI básico;
 - [ ] GNOME/KDE/Xfce;
@@ -2936,7 +2948,7 @@ Revisto em 2026-08-23 contra `lib/src/backends/wayland/`.
 - [~] scaling **inteiro** sim, **fracionário não** (§16.10.1);
 - [ ] **EGL ou Vulkan — nenhum dos dois** (§16.12);
 - [ ] portais;
-- [ ] **GNOME/KDE/wlroots — nunca executado contra compositor real algum**;
+- [ ] **GNOME/KDE/wlroots — nenhum deles**; o único compositor de verdade que já rodou este backend é o **Weston** do job `wayland` do `ci.yml`, desde 26/08/2026;
 - [~] protocolo sem deadlock — provado contra o compositor falso, incluindo o curto-circuito de clipboard que evitaria travar o isolate;
 - [x] buffers sem use-after-release — o release limpa `busy`, a destruição é adiada, e a exaustão do swapchain reusa um buffer ocupado **contando** em `busyReuseCount` em vez de em silêncio;
 - [ ] **CSD** (novo item): quando o compositor recusa decoração de servidor — o caso do GNOME — **ninguém desenha uma barra de título**. `hasServerSideDecorations` não tem um único consumidor em `lib/`.
@@ -3653,13 +3665,29 @@ Usar:
 
 ## 21.6 Critérios Metal
 
-Revisto em 2026-08-23 contra `lib/src/rendering/gpu/metal/` (cinco arquivos).
+Revisto em 2026-08-23 contra `lib/src/rendering/gpu/metal/` (cinco arquivos) e
+reconferido em 2026-09-07 contra os mesmos sete arquivos de hoje. As correções
+da segunda passagem estão em
+[`logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md`](logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md),
+com número de run em cada uma.
 
 - [ ] **clear/present — não há apresentação nenhuma**: sem `CAMetalLayer`, sem
   drawable, sem IOSurface no caminho do renderer, sem janela.
   `supportsSurface` só aceita `MemorySurfaceDescriptor`, e a capacidade
-  anunciada é `cpuPresentation`, não `gpuPresentation`;
-- [ ] resize Retina;
+  anunciada é `cpuPresentation`, não `gpuPresentation`. Reconferido em
+  07/09/2026: continua exato, e o que falta tem nome — não existe
+  `metal_window_target.dart`, enquanto `d3d11/` tem o seu. Os três envios que
+  fecham essa lacuna
+  (`newTextureWithDescriptor:iosurface:plane:`, `addCompletedHandler:` e a
+  leitura por `IOSurfaceLock`) estão declarados em `kMetalSelectors` com
+  encoding verificado a cada push e **nunca foram enviados**;
+  `tool/metal_present_probe.dart` existe para medir os três;
+- [ ] **resize Retina — não é provável neste CI, e por isso fica desmarcado.**
+  O `macos-14` enumera um display `Apple Virtual` a `scale 1.0`
+  (run [`34153314897`](https://github.com/insinfo/dart_ui/actions/runs/34153314897)),
+  e a conversão de pontos para pixels só erra quando os dois números diferem —
+  um teste a 1× passaria sem tocar no código que importa. Marcar este item
+  exige hardware Retina, não mais código;
 - [~] display list básica — **retângulos sólidos e com alpha**, offscreen, com
   paridade medida contra a CPU em CI Apple Silicon: desvio 0 onde nada mistura,
   1 nível onde mistura;
@@ -6688,7 +6716,13 @@ Tornar edição de texto uma capacidade central, não um adendo.
   comprovou conexão, registry, `wl_compositor`, `wl_shm`, surface, commit e
   teardown, mas ainda não `xdg-shell` nem o lifecycle de `wl_buffer.release`.
 
-### Estado auditado em 2026-08-23
+### Estado auditado em 2026-08-23 — **superado; leia §15.14**
+
+> Registro histórico, mantido porque a data importa e apagá-lo esconderia o
+> ritmo real do backend. **Os três primeiros itens desta lista deixaram de
+> valer três dias depois**: teclado e clipboard entraram em 26/08/2026 e rodam
+> sob Xvfb no CI, e o caminho GL passou a ser executado em 07/09/2026. O
+> estado corrente está na §15.14.
 
 Desde 09/08 este backend ganhou **XDND nos dois sentidos** — `X11DragDropManager`
 recebe e `X11XdndSource` inicia — e nada mais que mude o quadro. O que **não**
@@ -6914,9 +6948,12 @@ Mesmo que DirectWrite desenhe glyphs, o layout/shaping canônico permanece em Da
   causa disso a escolha entre A, sparse, B e C passou a ser **automática no
   replay**: o seletor lê o que o framebuffer daquele pass realmente carrega, em
   vez de uma hipótese global;
-- **EGL no X11 nunca foi executado.** A entrada existe no seletor e o teste
-  correspondente diz por escrito "has never been executed - this suite runs on
-  Windows". No Wayland não há EGL nenhum (§16.12);
+- **EGL no X11 passou a ser executado em 07/09/2026.** A entrada sempre esteve
+  no seletor; o que faltava era alguém rodá-la. `tool/x11_gl_smoke.dart` e o
+  workflow `X11 OpenGL probe` fazem isso sob Xvfb com Mesa llvmpipe — X server
+  de verdade, driver de verdade, **GPU nenhuma**. O teste unitário continua
+  pulando com motivo, e agora o motivo aponta o smoke em vez de dizer que o
+  caminho nunca rodou. No Wayland não há EGL nenhum (§16.12);
 - o gate desta fase perguntava se a abstração exigiria hacks por comando em
   todos os backends antes de Metal/Vulkan. A resposta medida foi **não** — GL,
   D3D11, D3D12, WebGL2 e WebGPU compartilham `GpuRasterSink`, batches, atlas e
@@ -6965,6 +7002,10 @@ atlas de máscara, sem atlas de glifos e sem pilha de layers, então path, rrect
 texto e layer são **recusados por nome**. O probe diz a verdade sobre isso — ele
 anuncia `cpuPresentation`, não `gpuPresentation`. Ver §21.6, inclusive para a
 ausência de MSL no porte sparse.
+
+Reconferido em 07/09/2026 e confirmado item a item; o que mudou desde a
+auditoria está em
+[`logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md`](logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md).
 ### Objetivo
 
 Renderer nativo macOS de produção.
@@ -7237,18 +7278,34 @@ Transformar protótipos em framework consumível.
 
 ### Gate 1.0
 
-Estado em 2026-08-23, medido contra os critérios de promoção da §50.
+Estado em 2026-09-07, medido contra os critérios de promoção da §50 **e contra
+o log do CI**, não contra a redação anterior desta lista. A revisão de
+2026-08-23 dizia três coisas que os logs desmentem, e todas as três estão
+corrigidas abaixo com a execução que as desmente.
 
 - [~] **backend CPU estável nas três plataformas** — Windows sim; X11 validado
-  sob Xvfb; macOS validado em CI; Wayland **nunca executado de verdade**;
+  sob Xvfb; macOS validado em CI; **Wayland roda contra o Weston desde
+  26/08/2026** e o job `Wayland smoke (Weston)` do `ci.yml` está verde a cada
+  push (`WAYLAND_BACKEND_SMOKE=PASS` na
+  [#34155890811](https://github.com/insinfo/dart_ui/actions/runs/34155890811)).
+  Continua `[~]` por um motivo diferente do que estava escrito: um compositor
+  só, e nenhum GNOME, KDE ou wlroots;
 - [~] **ao menos D2D e Metal estáveis** — D2D está em *alpha/beta* (existe,
   escolhível, com recusas nomeadas); **Metal não apresenta**, então não passa
   nem de *experimental* por este critério;
-- [ ] **Linux GPU estável por OpenGL ou Vulkan** — o caminho EGL no X11 nunca
-  rodou e o Wayland não tem GPU;
-- [~] **X11 estável** — teclado e clipboard entraram em 26/08/2026, mas
-  **nenhum dos dois rodou contra um X server real** e o backend segue sem IME e
-  sem acessibilidade; não passa de *beta* pela evidência (§68.1);
+- [ ] **Linux GPU estável por OpenGL ou Vulkan** — o caminho EGL no X11 passou
+  a ser executado em 07/09/2026 (`tool/x11_gl_smoke.dart`, workflow
+  `X11 OpenGL probe`), sob **Xvfb com llvmpipe e nenhuma GPU**; "estável" pede
+  hardware de verdade e continua sem prova. O Wayland não tem GPU alguma —
+  ainda que o Weston do CI anuncie `zwp_linux_dmabuf_v1`, que é por onde ela
+  entraria;
+- [~] **X11 estável** — teclado e clipboard entraram em 26/08/2026 e
+  **rodaram contra um X server**: `X11_KEYBOARD=PASS` (248 keycodes a partir do
+  8, 7 keysyms cada) e `X11_CLIPBOARD=PASS owner=self roundtrip=true` saem do
+  smoke AOT sob Xvfb a cada push, junto de `X11_SCREENS=PASS` e
+  `X11_POPUP=PASS`. Continua *beta* — mas pelo que falta de verdade: sem IME,
+  sem acessibilidade, sem XInput2, sem RandR por monitor, sem dono `INCR`, e
+  só Xvfb (nunca um Xorg ou XWayland);
 - [~] **Wayland ao menos beta com CPU** — o código está em nível de beta e a
   evidência não: a §50 exige *gallery, clipboard, IME, resize/DPI, packaging,
   leak suite* e nada disso foi exercido contra um compositor;
@@ -7313,9 +7370,11 @@ que permite avaliar se o desvio valeu a pena:
 F0..F7 na ordem prevista, com F7 fechando o IME do Windows
   │
   ├─ F10 D2D/D3D11/D3D12 ─── entregues; D3D12 fora do seletor
-  ├─ F11 OpenGL ──────────── o backend mais completo; EGL no X11 nunca rodou
+  ├─ F11 OpenGL ──────────── o backend mais completo; EGL no X11 roda em CI
+  │                          desde 07/09/2026, sob llvmpipe e nenhuma GPU
   ├─ F12 Metal ───────────── offscreen apenas, sem apresentação
-  ├─ F13 Wayland ─────────── quase completo em código, zero execução real
+  ├─ F13 Wayland ─────────── quase completo em código; roda sob Weston no CI
+  │                          desde 26/08/2026, e sob nenhum outro compositor
   ├─ F14 Vulkan ──────────── SPIR-V em Dart; WSI em voo, testes não compilam
   ├─ web ─────────────────── WebGL2 + WebGPU, fora de qualquer fase
   ├─ APIs de SO + DnD ────── fora de qualquer fase (§56.1)
@@ -8030,7 +8089,7 @@ Legenda: **M** obrigatório, **P** posterior, **N/A** não aplicável.
 | Direct2D | M | N/A | N/A | N/A | N/A |
 | Metal | N/A | N/A | N/A | N/A | M |
 
-## 55.1 Matriz de capacidades **medida** em 2026-08-23
+## 55.1 Matriz de capacidades **medida** em 2026-08-23, linhas Linux revistas em 2026-09-07
 
 A tabela acima diz o que é obrigatório. Esta diz o que existe, lida direto dos
 conjuntos `Capability` que cada probe devolve e do código por trás deles.
@@ -8042,7 +8101,7 @@ aplica, **?** não verificado.
 | `window` | sim | sim | sim | sim | sim | sim |
 | `multipleWindows` | sim | sim | sim | ? | sim (várias canvas) | sim |
 | `cpuPresentation` | sim (DIB) | sim (`PutImage`, se o formato do servidor bate) | sim (`wl_shm`) | sim | — | sim |
-| `gpuPresentation` | sim (D3D11, GL, D2D) | não (entrada EGL nunca executada) | **não** | não (Metal só offscreen) | sim (WebGL2/WebGPU) | — |
+| `gpuPresentation` | sim (D3D11, GL, D2D) | entrada EGL executada em CI desde 07/09/2026, sob llvmpipe; nunca sobre GPU | **não** | não (Metal só offscreen) | sim (WebGL2/WebGPU) | — |
 | `partialPresent` | sim | ? | sim | ? | ? | ? |
 | `vsync` | **não reivindicada** — o `BitBlt` não é paced, ainda que o DWM componha no vblank | ? | ? | ? | ? | — |
 | `pointerInput` | sim | sim | sim | sim | ? | sim |
@@ -9918,11 +9977,12 @@ proporção ele aparece nos outros caminhos, não.
   sem prova é o que só um olho vê: locais fixados, chrome, e a seleção
   múltipla;
   `vsync` não é reivindicada porque o `BitBlt` não é paced;
-- **X11**: teclado e clipboard existem desde 26/08/2026 (§68.1), mas **sem
-  IME** (XIM não implementado), **sem XKB** — logo só dois grupos de layout e
-  sem `DetectableAutoRepeat` —, sem dono `INCR` no clipboard, sem `PRIMARY`, sem
-  XInput2, sem RandR, sem `MIT-SHM` (a apresentação é `PutImage` do core), e o
-  caminho EGL **nunca executado**;
+- **X11**: teclado e clipboard existem desde 26/08/2026 e rodam sob Xvfb a cada
+  push (§68.1), mas **sem IME** (XIM não implementado), **sem XKB** — logo só
+  dois grupos de layout e sem `DetectableAutoRepeat` —, sem **dono** `INCR` no
+  clipboard (o leitor existe), sem `PRIMARY`, sem XInput2, sem RandR por
+  monitor, sem `MIT-SHM` (a apresentação é `PutImage` do core); o caminho EGL
+  roda desde 07/09/2026 sob **llvmpipe**, nunca sobre GPU;
 - **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
   primária, sem CSD quando o compositor recusa SSD, sem movimento/resize
@@ -9946,10 +10006,18 @@ Isto é tão importante quanto a lista anterior, e é mais fácil de esquecer:
   provaram **aqui** foi pixel correto, **não** validação — e a distinção é
   impressa, não escondida;
 - **Metal só roda em CI Apple Silicon**, e nunca em Intel;
-- **X11 só rodou sob Xvfb**, nunca num Xorg ou XWayland de verdade — e o
-  teclado e o clipboard que entraram em 26/08/2026 **não rodaram nem sob Xvfb**:
-  são provados por testes sobre bytes numa máquina Windows, e a metade FFI
-  (`xcb_get_keyboard_mapping`, `SetSelectionOwner`) **nunca foi executada**;
+- **X11 só rodou sob Xvfb**, nunca num Xorg ou XWayland de verdade. O que
+  estava escrito aqui sobre teclado e clipboard estava errado e foi corrigido em
+  07/09/2026: a metade FFI **é** executada — `X11_KEYBOARD=PASS` e
+  `X11_CLIPBOARD=PASS` saem do smoke AOT sob Xvfb desde 26/08/2026, e a
+  [#34155890811](https://github.com/insinfo/dart_ui/actions/runs/34155890811) é
+  uma das execuções. O que continua sem prova é o **atravessar processos**: o
+  roundtrip de clipboard lê de volta a própria seleção (o gerente responde do
+  payload que guarda, sem transferência pelo servidor), e nenhuma tecla foi
+  digitada por um humano;
+- **o caminho EGL do X11 só rodou sob llvmpipe.** Xvfb é um X server de verdade
+  e Mesa é um driver de verdade, mas nenhuma GPU aceitou uma config, um visual
+  ou um shader deste projeto no Linux;
 - ~~**Wayland nunca rodou**~~ — roda desde 26/08/2026 sob Weston no CI
   (§68.1). O que **não** rodou contra um compositor está listado lá: input de
   verdade, DnD, IME, popups, cursores, decoração, e qualquer compositor que
@@ -9996,6 +10064,9 @@ Registradas para quem mexer no código a seguir; **em todas, o código venceu**:
 | `wayland_backend.dart` (probe e cabeçalho) | teclado "no dead keys/compose" | `ComposeEngine` é instalado por janela quando não há `text-input-v3`. **Resolvido em 06/09/2026**: os dois textos nomeiam a tabela Compose do X11 |
 | `wayland_xcursor.dart` | "only the first frame is used today" | `wayland_cursor.dart` anima todos os quadros. **Resolvido em 06/09/2026**: o cabeçalho aponta `framesForSize` e quem o consome |
 | `platform/drag_drop.dart` | cita `DragDropController` em `widgets/drag_drop.dart` | a classe não existe; são `WidgetTreeDropTarget` + `DragRouter`. **Resolvido em 06/09/2026** |
+| §15.14 (roteiro) | "XKB — não existe, e é o bloqueio central"; "clipboard INCR — não existe" | `x11_keyboard.dart` (mapa do core protocol) e `x11_clipboard.dart` (`ClipboardProvider` + leitor `INCR`) existem desde 26/08/2026 e **passam sob Xvfb no CI**. **Resolvido em 07/09/2026**: a §15.14 foi reescrita contra o código e contra o log |
+| §45 Gate 1.0 (roteiro) | teclado e clipboard do X11 "não rodaram contra um X server real"; Wayland "nunca executado de verdade" | `X11_KEYBOARD=PASS`, `X11_CLIPBOARD=PASS` e `WAYLAND_BACKEND_SMOKE=PASS` na mesma execução de CI. **Resolvido em 07/09/2026** |
+| `x11_gl_surface.dart` + §5/§45/§55.1/§68 | o caminho EGL do X11 "nunca foi executado" | era verdade, e deixou de ser: `tool/x11_gl_smoke.dart` e o workflow `X11 OpenGL probe` o rodam sob Xvfb com Mesa llvmpipe. **Resolvido em 07/09/2026** — o que continua sem prova é GPU de verdade |
 | `platform/text_input.dart` | citava `x11_compose.dart` | **resolvido em 26/08/2026**: o arquivo nunca existiu; a referência passou a ser `backends/x11/x11_keyboard.dart`, e a frase "o teclado da plataforma ainda produz `TextInputEvent`" deixou de ser aspiracional no X11 |
 | `vector/compute_tile_scene.dart` | "nenhum binding de API consome estes buffers ainda" | o executor de compute do D3D12 consome. **Resolvido em 06/09/2026**: o cabeçalho nomeia os dois executores |
 | `doc/vector_editor.md` | o exemplo está em `examples/sk1_editor_demo/` | está em `examples/vector_editor_demo/`. **Resolvido em 06/09/2026**, junto com os caminhos de `geometry/` (hoje `graphics/vector/`), do exportador PDF (hoje `pdf/export/`) e da barra de ferramentas (`toolbox.dart` + `standard_toolbar.dart`) |
