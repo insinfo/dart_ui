@@ -1131,6 +1131,24 @@ final class ApplicationWindow with DisposableMixin {
   bool _active = false;
   Timer? _animationWakeTimer;
   bool _animationFrameDue = false;
+
+  /// Real time, for the frames the Dart event loop is not producing.
+  ///
+  /// The scheduler's own clock is *virtual*: it moves only when
+  /// [_consumeAnimationFrame] advances it, and that runs off a real `Timer`.
+  /// Inside a platform modal loop no `Timer` fires, so without a second,
+  /// genuinely monotonic reading there is nothing to advance virtual time
+  /// *by*, and every frame the modal loop asks for would redraw the same
+  /// instant. Started lazily because a window that is never dragged never
+  /// needs it.
+  Stopwatch? _modalClock;
+
+  /// When the previous modal-loop frame was drawn, on [_modalClock].
+  ///
+  /// Null between drags. Cleared by the asynchronous path, which is how a new
+  /// drag starts measuring from its own first frame instead of inheriting a
+  /// gap from the last one.
+  Duration? _lastModalFrameAt;
   int _framesPresented = 0;
   int _controlCount = 0;
   int _semanticNodeCount = 0;
@@ -1487,6 +1505,47 @@ final class ApplicationWindow with DisposableMixin {
     });
   }
 
+  /// Moves virtual time forward by the real time since the last modal frame.
+  ///
+  /// This is what makes an animation keep running while the user drags the
+  /// window, and it is a *different* mechanism from [_consumeAnimationFrame]
+  /// rather than a variation on it. The ordinary one is driven by a real
+  /// `Timer` and jumps virtual time to that timer's due instant, which is exact
+  /// because the wake and the due time were arranged together. Inside a
+  /// platform modal loop the wake never happens - `Timer` needs the Dart event
+  /// loop, which is parked inside `DispatchMessageW` - so the only honest
+  /// source of a delta is a stopwatch.
+  ///
+  /// Two bounds, both of which have a concrete failure behind them:
+  ///
+  ///   * **nothing happens when no frame is armed.** Advancing virtual time in
+  ///     a window with no animation would fire whatever unrelated timers the
+  ///     tree has pending, out of order with the event loop that owns them.
+  ///   * **the delta is capped.** `WM_TIMER` is the lowest-priority message
+  ///     Windows has and a drag that hits a slow paint can leave a long gap;
+  ///     advancing an animation by a quarter of a second in one step makes it
+  ///     jump, and jumping is worse than the slight slow-motion of clamping.
+  void _advanceModalAnimation() {
+    if (!scheduler.hasArmedNextFrame) return;
+    final Stopwatch clock = _modalClock ??= Stopwatch()..start();
+    final Duration now = clock.elapsed;
+    final Duration? last = _lastModalFrameAt;
+    _lastModalFrameAt = now;
+    if (last == null) return;
+    Duration delta = now - last;
+    if (delta.isNegative) return;
+    if (delta > _maxModalAnimationStep) delta = _maxModalAnimationStep;
+    // Consumed here as well: a real `Timer` that fired just before the modal
+    // loop started leaves this set, and letting `_consumeAnimationFrame` also
+    // run would advance the same frame twice.
+    _animationFrameDue = false;
+    scheduler.advance(delta);
+  }
+
+  /// The most virtual time one modal-loop frame may advance. See
+  /// [_advanceModalAnimation].
+  static const Duration _maxModalAnimationStep = Duration(milliseconds: 100);
+
   void _consumeAnimationFrame() {
     if (!_animationFrameDue || !scheduler.hasArmedNextFrame) return;
     _animationFrameDue = false;
@@ -1581,6 +1640,10 @@ final class ApplicationWindow with DisposableMixin {
       final build = stopwatch.elapsedMicroseconds;
 
       _painted = null;
+      // The event loop is running again, so the real `Timer` is back in charge
+      // of virtual time. Dropping the mark makes the next drag measure from
+      // its own first frame rather than from whenever the last one ended.
+      _lastModalFrameAt = null;
       _consumeAnimationFrame();
       var pass = 0;
       while (true) {
@@ -1783,7 +1846,9 @@ final class ApplicationWindow with DisposableMixin {
       final build = stopwatch.elapsedMicroseconds;
 
       _painted = null;
-      _consumeAnimationFrame();
+      // Instead of [_consumeAnimationFrame], not as well as it: see
+      // [_advanceModalAnimation] for why the two cannot both run on one frame.
+      _advanceModalAnimation();
       var pass = 0;
       while (pass++ < _maxSettlePasses) {
         buildOwner.buildScope();

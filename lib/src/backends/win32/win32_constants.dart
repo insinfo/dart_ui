@@ -391,6 +391,17 @@ const int wmMousehwheel = 0x020E;
 /// something else took it. Section 27.4 calls this capture-lost.
 const int wmCapturechanged = 0x0215;
 
+/// `WM_TIMER` - the only message this framework can make the OS deliver to
+/// itself from inside a modal loop it did not start.
+///
+/// That is the whole reason it is here. A timer armed with `SetTimer` is
+/// dispatched by *any* message loop pumping the window, including the one
+/// Windows runs for itself between [wmEntersizemove] and [wmExitsizemove] and
+/// the one `IFileDialog::Show` runs. Every other way this framework has of
+/// asking for a frame - a Dart timer, a microtask, a stream - needs the Dart
+/// event loop, which is precisely what is unreachable at that moment.
+const int wmTimer = 0x0113;
+
 /// `WM_ENTERSIZEMOVE` - the user grabbed the border or the caption and Windows
 /// is about to run its **own** modal message loop until they let go.
 ///
@@ -400,8 +411,15 @@ const int wmCapturechanged = 0x0215;
 /// where layout, paint and present live - is frozen. WM_PAINT still arrives,
 /// but all it does here is put a `WindowExposedEvent` on a stream nobody is
 /// draining. The window therefore shows stale pixels for the length of the
-/// drag. The standard cure is a `SetTimer` armed here and killed in
-/// [wmExitsizemove], with WM_TIMER pumping one frame.
+/// drag.
+///
+/// `Win32Window` arms a [wmTimer] here and kills it in [wmExitsizemove], and
+/// that timer is what pumps a frame through the drag. Two things it does not
+/// fix, both worth knowing before reading a bug report: it gives back
+/// *drawing*, not the event loop, so an animation whose clock is read at paint
+/// time keeps running while anything waiting on an `await` - a video decode,
+/// say - stays parked; and moving a window never sends `WM_SIZE`, which is why
+/// the synchronous frame out of the resize handler was not enough on its own.
 const int wmEntersizemove = 0x0231;
 
 /// `WM_EXITSIZEMOVE` - the modal loop of [wmEntersizemove] is over.

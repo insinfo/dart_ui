@@ -510,7 +510,35 @@ final class Win32Window
   bool _inLiveFrame = false;
   int _liveResizeFrames = 0;
   int _liveResizeFramesSuppressed = 0;
+  int _sizeMoveTicks = 0;
   int _backgroundFills = 0;
+
+  /// Whether the `WM_TIMER` that pumps frames through the modal loop is armed.
+  ///
+  /// A bool and not the id `SetTimer` returned: with an explicit id the return
+  /// value *is* the id, so the only thing worth remembering is whether a
+  /// `KillTimer` is owed. Storing the returned handle instead would say the
+  /// timer exists when what happened is that `SetTimer` failed and answered 0,
+  /// and the window would then skip the kill on a timer that is running.
+  bool _sizeMoveTimerArmed = false;
+
+  /// The timer id, per-window and ours alone.
+  ///
+  /// Timer ids are scoped to an `HWND`, so this cannot collide with the id 1
+  /// that `Win32Dispatcher` arms on its message-only wake window - but a
+  /// distinctive value is still cheaper than proving that again every time
+  /// somebody adds a timer here.
+  static const int _sizeMoveTimerId = 0x5A4D;
+
+  /// How often the modal loop is asked for a frame, in milliseconds.
+  ///
+  /// Not a frame budget: `WM_TIMER` is a *synthesised* message, generated only
+  /// when the queue is otherwise empty and delivered at the lowest priority
+  /// there is, so this is a floor on the interval and never a promise. 15 ms is
+  /// one 60 Hz frame rounded to the timer resolution Windows actually has;
+  /// asking for less would not produce more frames, it would only make the loop
+  /// discard more of them.
+  static const int _sizeMoveTimerIntervalMs = 15;
 
   /// System cursors are shared objects owned by the OS: loading the same one
   /// twice returns the same handle and destroying one is forbidden. Caching
@@ -583,6 +611,19 @@ final class Win32Window
   /// a frame that was never asked for look identical from outside, and only one
   /// of the two is the reentrancy guard doing its job.
   int get liveResizeFramesSuppressed => _liveResizeFramesSuppressed;
+
+  /// Frames driven by the modal-loop timer since this window opened.
+  ///
+  /// Separate from [liveResizeFrames] because the two answer different
+  /// questions and only one of them was ever in doubt: a resize that is
+  /// actively moving the mouse produces `WM_SIZE` and would paint without the
+  /// timer, whereas a *stationary* drag and a window move produce no `WM_SIZE`
+  /// at all. A non-zero count here is the evidence that the second case draws.
+  int get sizeMoveTicks => _sizeMoveTicks;
+
+  /// Whether the modal-loop timer is currently armed. For tests: the arming is
+  /// otherwise only observable by dragging the window by hand.
+  bool get sizeMoveTimerArmed => _sizeMoveTimerArmed;
 
   /// The client area, in physical pixels, that has actually been presented
   /// into. See [_paintedWidth].
@@ -930,9 +971,17 @@ final class Win32Window
       // here rather than inferred from WM_SIZE.
       case wmEntersizemove:
         _inSizeMove = true;
+        _armSizeMoveTimer();
         return 0;
 
+      case wmTimer:
+        return _onTimer(hwnd, msg, wParam, lParam);
+
       case wmExitsizemove:
+        // Killed before the flag drops, because `_drawLiveResizeFrame` refuses
+        // to draw once `_inSizeMove` is false: the other order would leave a
+        // tick that arrived in between doing nothing but costing a message.
+        _killSizeMoveTimer();
         _inSizeMove = false;
         // The queued events - one WindowResizedEvent per mouse movement, plus
         // the exposures - are about to be drained all at once by a message loop
@@ -1056,6 +1105,10 @@ final class Win32Window
         return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
       case wmDestroy:
+        // Windows kills a window's timers with the window, so this is not
+        // strictly owed - but a destroy during a drag is exactly the path where
+        // "not strictly owed" has been wrong before, and the call is free.
+        _killSizeMoveTimer();
         _onDestroy();
         return 0;
 
@@ -1652,6 +1705,75 @@ final class Win32Window
     // put pixels there before the user sees it, and this handler is the last
     // code that runs before they do.
     if (!_drawLiveResizeFrame()) _paintExposedRegion();
+    return 0;
+  }
+
+  /// Arms the timer that keeps this window drawing inside the OS's modal loop.
+  ///
+  /// The synchronous frame out of `WM_SIZE` covers only one of the three ways a
+  /// drag can look, and it is the one nobody complains about. Windows sends
+  /// `WM_SIZE` when the client rectangle *changes*, so:
+  ///
+  ///   * dragging a border with the mouse moving repaints, because every mouse
+  ///     movement is a new size;
+  ///   * holding a border still repaints once and then stops, because there is
+  ///     no new size to report;
+  ///   * dragging the **caption** never repaints at all, because moving a
+  ///     window does not resize it - `WM_MOVE` arrives instead, and this
+  ///     framework has no synchronous path out of it.
+  ///
+  /// A timer covers all three, being the one thing the OS's own loop dispatches
+  /// on its own initiative. It is armed on entry rather than kept running,
+  /// because outside the modal loop the ordinary asynchronous frame loop is
+  /// both correct and cheaper, and a permanently armed `WM_TIMER` would drag
+  /// every idle window off `onDemand` scheduling.
+  ///
+  /// Silent when `SetTimer` fails. There is nothing useful to do about it and
+  /// nowhere to report it from - this runs on the OS's stack - and the failure
+  /// mode is the behaviour that existed before this method, which is a stale
+  /// window during a drag rather than a broken one.
+  void _armSizeMoveTimer() {
+    if (_sizeMoveTimerArmed || _destroyed || isDisposed || _hwnd == 0) return;
+    if (_liveResizeCallback == null) {
+      // Nothing to pump. An application that did not opt into live resize gets
+      // the behaviour it asked for, and arming a timer that would find no
+      // callback on every tick is a message per 15 ms for nothing.
+      return;
+    }
+    final int armed = _api.setTimer(
+      _hwnd,
+      _sizeMoveTimerId,
+      _sizeMoveTimerIntervalMs,
+      nullptr,
+    );
+    _sizeMoveTimerArmed = armed != 0;
+  }
+
+  void _killSizeMoveTimer() {
+    if (!_sizeMoveTimerArmed) return;
+    _sizeMoveTimerArmed = false;
+    if (_hwnd == 0) return;
+    _api.killTimer(_hwnd, _sizeMoveTimerId);
+  }
+
+  /// `WM_TIMER`: a frame, but only for the timer this window armed.
+  ///
+  /// The id is checked rather than assumed. `WM_TIMER` is not private to this
+  /// code - a common control, a COM object hosted in this window, or a future
+  /// timer of our own can each arm one on the same `HWND` - and answering 0 to
+  /// all of them would swallow theirs. Anything else goes to `DefWindowProcW`,
+  /// which is what invokes a timer's own callback when it was given one.
+  int _onTimer(int hwnd, int msg, int wParam, int lParam) {
+    if (wParam != _sizeMoveTimerId) {
+      return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+    }
+    _sizeMoveTicks++;
+    // Deliberately not falling back to `_paintExposedRegion` the way `_onSize`
+    // does. That fallback exists for the strip a *growing* window has just
+    // uncovered, and there is no such strip here: a tick that draws nothing is
+    // a window whose pixels are already correct, and painting the background
+    // over them would be a flash of flat colour on every tick of a plain move.
+    _drawLiveResizeFrame();
     return 0;
   }
 

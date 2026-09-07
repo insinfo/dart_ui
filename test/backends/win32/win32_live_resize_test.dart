@@ -238,6 +238,132 @@ void main() {
       expect(window.isCurrent(generations.last), isTrue);
     });
 
+    test('a stationary drag still draws, because a timer keeps ticking', () {
+      // The half `_onSize` cannot reach. WM_SIZE is sent when the client
+      // rectangle *changes*, so holding a border still - the user's mouse
+      // stops for a second in the middle of a resize - produces no message at
+      // all, and before the timer that second was a frozen window.
+      var called = 0;
+      window.setLiveResizeCallback(({
+        required Size logicalSize,
+        required double renderScale,
+      }) {
+        called++;
+      });
+
+      window.handleMessage(window.handle, wmEntersizemove, 0, 0);
+      expect(
+        window.sizeMoveTimerArmed,
+        isTrue,
+        reason: 'nothing else in this framework can ask the OS for a frame '
+            'from inside a loop the OS is running for itself',
+      );
+
+      for (var i = 0; i < 4; i++) {
+        window.handleMessage(window.handle, wmTimer, 0x5A4D, 0);
+      }
+      window.handleMessage(window.handle, wmExitsizemove, 0, 0);
+
+      expect(
+        called,
+        4,
+        reason: 'remove the SetTimer from wmEntersizemove and this is 0: a '
+            'drag with the mouse held still, showing one stale frame for as '
+            'long as the user holds it',
+      );
+      expect(window.sizeMoveTicks, 4);
+      expect(
+        window.sizeMoveTimerArmed,
+        isFalse,
+        reason: 'a timer that outlived the drag would drag every idle window '
+            'off on-demand scheduling, at 66 messages a second, forever',
+      );
+    });
+
+    test('a move draws too, and a move never sends WM_SIZE', () {
+      // The case the user actually reported: dragging the *caption*. Moving a
+      // window does not resize it, so `_onSize` never runs and the whole drag
+      // - seconds of it - had not one frame in it.
+      final sizes = <Size>[];
+      window.setLiveResizeCallback(({
+        required Size logicalSize,
+        required double renderScale,
+      }) {
+        sizes.add(logicalSize);
+      });
+
+      window.handleMessage(window.handle, wmEntersizemove, 0, 0);
+      // WM_MOVE, as many times as the mouse moved. Not one of them is a resize.
+      for (var i = 0; i < 3; i++) {
+        window.handleMessage(window.handle, wmMove, 0, ((100 + i) << 16) | 50);
+      }
+      expect(
+        window.liveResizeFrames,
+        0,
+        reason: 'the WM_SIZE path is genuinely unreachable here, which is why '
+            'the synchronous frame out of the resize handler was not enough',
+      );
+
+      window.handleMessage(window.handle, wmTimer, 0x5A4D, 0);
+      window.handleMessage(window.handle, wmExitsizemove, 0, 0);
+
+      expect(sizes, hasLength(1));
+      expect(
+        sizes.single.width * window.renderScale,
+        closeTo(200, 1),
+        reason: 'a move keeps the size it had; the frame is for the clock, '
+            'not for the geometry',
+      );
+    });
+
+    test('a timer that is not ours is not swallowed', () {
+      // WM_TIMER is not private to this code: a common control or a hosted COM
+      // object can arm one on the same HWND, and answering 0 to all of them
+      // would silently break whatever armed it.
+      var called = 0;
+      window.setLiveResizeCallback(({
+        required Size logicalSize,
+        required double renderScale,
+      }) {
+        called++;
+      });
+
+      window.handleMessage(window.handle, wmEntersizemove, 0, 0);
+      window.handleMessage(window.handle, wmTimer, 0x5A4D + 1, 0);
+      window.handleMessage(window.handle, wmExitsizemove, 0, 0);
+
+      expect(called, 0);
+      expect(window.sizeMoveTicks, 0);
+    });
+
+    test('no callback, no timer', () {
+      // An application that did not opt into live resize gets what it asked
+      // for. Arming anyway would be a message every 15 ms that finds nothing
+      // to do on arrival.
+      window.handleMessage(window.handle, wmEntersizemove, 0, 0);
+      expect(window.sizeMoveTimerArmed, isFalse);
+      window.handleMessage(window.handle, wmExitsizemove, 0, 0);
+    });
+
+    test('a tick outside the modal loop draws nothing', () {
+      // Belt and braces on the kill: a WM_TIMER already in the queue when
+      // WM_EXITSIZEMOVE was handled still gets delivered, and the ordinary
+      // asynchronous frame loop owns the window again by then.
+      var called = 0;
+      window.setLiveResizeCallback(({
+        required Size logicalSize,
+        required double renderScale,
+      }) {
+        called++;
+      });
+
+      window.handleMessage(window.handle, wmEntersizemove, 0, 0);
+      window.handleMessage(window.handle, wmExitsizemove, 0, 0);
+      window.handleMessage(window.handle, wmTimer, 0x5A4D, 0);
+
+      expect(called, 0);
+    });
+
     test('the callback can be removed again', () {
       var called = 0;
       window.setLiveResizeCallback(({
@@ -611,6 +737,66 @@ void main() {
       // blitted at it.
       expect(application.host.logicalSize.width * window.renderScale,
           closeTo(260, 1));
+    });
+
+    test('an animation keeps running through the drag', () async {
+      // The half a timer alone does not buy. Pumping frames from the modal
+      // loop gives back *drawing*; it does not give back the Dart event loop,
+      // and this framework's virtual clock is moved by a real `Timer` that
+      // cannot fire while the loop is parked. Without `_advanceModalAnimation`
+      // every frame of the drag renders the same instant: the window repaints
+      // busily and the animation stands still, which reads as a freeze and is
+      // exactly what the user reported.
+      await start(liveResize: true);
+      final window = application.window as Win32Window;
+      final FrameScheduler scheduler = application.scheduler;
+
+      // A self-sustaining continuous animation, which is the shape every
+      // ticker in this framework has: each frame asks for the next one.
+      final List<Duration> ticks = <Duration>[];
+      void tick(Duration timestamp) {
+        ticks.add(timestamp);
+        scheduler.scheduleNextFrame();
+      }
+
+      scheduler.addFrameCallback(tick);
+      addTearDown(() => scheduler.removeFrameCallback(tick));
+      scheduler.scheduleNextFrame();
+      await application.drawFrame();
+      final Duration armedAt = ticks.last;
+
+      // Real time has to pass, and it has to pass without yielding: an `await`
+      // here would be the very turn of the event loop a drag does not get.
+      void spin(Duration wait) {
+        final Stopwatch spinning = Stopwatch()..start();
+        while (spinning.elapsed < wait) {
+          // Busy on purpose. This is what the user's CPU is doing during a
+          // drag anyway - the isolate is inside DispatchMessageW.
+        }
+      }
+
+      window.handleMessage(window.handle, wmEntersizemove, 0, 0);
+      for (var i = 0; i < 4; i++) {
+        spin(const Duration(milliseconds: 25));
+        window.handleMessage(window.handle, wmTimer, 0x5A4D, 0);
+      }
+      window.handleMessage(window.handle, wmExitsizemove, 0, 0);
+
+      expect(
+        ticks.last,
+        greaterThan(armedAt),
+        reason: 'remove _advanceModalAnimation and this is equal: four frames '
+            'drawn, all of them at the instant the drag started',
+      );
+      // Four ticks of 25 ms of real time, and the scheduler's interval is
+      // 16.67 ms, so at least one whole frame of virtual time per tick.
+      expect(
+        ticks.last - armedAt,
+        greaterThanOrEqualTo(const Duration(milliseconds: 50)),
+        reason: 'virtual time has to track real time, not merely move: an '
+            'animation that advances one frame per drag is still frozen',
+      );
+      expect(application.errors, isEmpty);
     });
 
     test('presents nothing during the drag with live resize off', () async {

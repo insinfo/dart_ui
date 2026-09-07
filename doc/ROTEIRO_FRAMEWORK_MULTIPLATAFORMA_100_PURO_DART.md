@@ -9627,22 +9627,68 @@ nem timer, nem microtask, nem `await`. É a mesma forma do defeito do
 `IFileDialog::Show`, corrigido em 06/09/2026, só que aqui o laço modal é da
 nossa própria janela e a isolate não pode fugir dele.
 
-**Metade já está tratada e a outra não.** O manipulador de `WM_SIZE` chama
+**Metade estava tratada e a outra não.** O manipulador de `WM_SIZE` chama
 `_drawLiveResizeFrame`, que produz um quadro síncrono ali dentro, fora da fila
-— por isso redimensionar *ativamente* ainda desenha. Parar o mouse no meio do
-redimensionamento congela, porque sem mensagem nova não há gatilho; e **mover
-não muda o tamanho**, então `WM_SIZE` nunca chega e o arrasto inteiro fica sem
-um único quadro. O remédio padrão já está escrito no comentário de
-`wmEntersizemove` em `win32_constants.dart`: um `SetTimer` armado ao entrar no
-laço e morto ao sair, com `WM_TIMER` — que **é** despachado dentro do laço
-modal — bombeando um quadro. As ligações de `SetTimer` e `KillTimer` já
-existem em `win32_api.dart`.
+— por isso redimensionar *ativamente* já desenhava. Parar o mouse no meio do
+redimensionamento congelava, porque sem mensagem nova não há gatilho; e **mover
+não muda o tamanho**, então `WM_SIZE` nunca chegava e o arrasto inteiro ficava
+sem um único quadro.
 
-**Só que o temporizador devolve o desenho, não o laço de eventos.** Ele faria o
-Lottie animar durante o arrasto, porque o quadro da animação vem de um
-`Stopwatch` lido na hora de pintar. Não faria o vídeo tocar: a decodificação é
-`await` e continuaria parada, redesenhando o mesmo quadro. É exatamente o que o
-VLC resolve tendo decodificação e saída de vídeo em threads próprias.
+### O temporizador, 07/09/2026
+
+O remédio padrão está aplicado. `Win32Window` arma um `SetTimer` de 15 ms em
+`WM_ENTERSIZEMOVE` e o mata em `WM_EXITSIZEMOVE`, e `WM_TIMER` — a única
+mensagem que este framework consegue fazer o sistema entregar a si mesmo de
+dentro de um laço modal que não foi ele quem começou — bombeia um quadro por
+tique. Três detalhes que não são decoração:
+
+- **o id é conferido.** `WM_TIMER` não é privado deste código; um controle
+  comum ou um objeto COM hospedado nesta janela pode armar o seu na mesma
+  `HWND`, e responder 0 a todos engoliria o dele. O que não é nosso vai para
+  `DefWindowProcW`;
+- **sem callback de live resize, sem temporizador.** Quem não pediu
+  `ApplicationOptions.liveResize` recebe o que pediu, e não uma mensagem a cada
+  15 ms que chega e não acha o que fazer;
+- **15 ms é um piso e nunca uma promessa.** `WM_TIMER` é sintetizado só quando
+  a fila está vazia e é a prioridade mais baixa que existe.
+
+Provado em `test/backends/win32/win32_live_resize_test.dart`, pela `WndProc`
+real de uma `HWND` real e **sem uma volta do laço de eventos do Dart** em lugar
+nenhum da sequência — que é a forma obrigatória aqui, porque num arrasto de
+verdade não existe essa volta. Com o `SetTimer` removido, o arrasto parado cai
+de 4 quadros para 0 e o arrasto pela barra de título de 1 para 0.
+
+### Só que o temporizador devolve o desenho, não o relógio
+
+Este relatório dizia que o temporizador faria o Lottie animar “porque o quadro
+da animação vem de um `Stopwatch` lido na hora de pintar”. **Está errado para
+qualquer animação deste framework**, e o erro é da mesma natureza do defeito
+original. O relógio do `FrameScheduler` é **virtual**: só anda quando
+`_consumeAnimationFrame` o adianta, e isso roda a partir de um `Timer` real.
+Dentro do laço modal nenhum `Timer` real dispara, então não há por quanto
+adiantar, e cada quadro que o temporizador pede redesenha **o mesmo instante**.
+A janela repinta ocupadíssima e a animação fica parada — que é exatamente o que
+o usuário chama de congelar.
+
+Por isso entrou `ApplicationWindow._advanceModalAnimation`, um mecanismo
+*diferente* de `_consumeAnimationFrame` e não uma variação dele: um `Stopwatch`
+real mede quanto tempo passou desde o quadro modal anterior e adianta o tempo
+virtual por esse delta. Dois limites, cada um com uma falha concreta atrás:
+não faz nada quando não há próximo quadro armado — adiantar o tempo virtual
+numa janela sem animação dispararia timers alheios fora de ordem com o laço que
+é dono deles —, e o delta é limitado a 100 ms, porque avançar uma animação um
+décimo de segundo de uma vez é um salto, e saltar é pior que a leve câmera lenta
+de limitar.
+
+O teste `an animation keeps running through the drag` roda quatro tiques com
+25 ms de espera **ocupada** entre eles (um `await` ali seria justamente a volta
+do laço de eventos que um arrasto não tem). Sem `_advanceModalAnimation`, o
+tempo virtual avança `0:00:00.000000` no arrasto inteiro.
+
+**O que continua não resolvido: o vídeo.** A decodificação é `await` e continua
+parada durante o arrasto, redesenhando o mesmo quadro. É exatamente o que o VLC
+resolve tendo decodificação e saída de vídeo em threads próprias, e é a
+motivação da isolate medida logo abaixo.
 
 ### A decodificação numa isolate própria: medida, não suposta
 
