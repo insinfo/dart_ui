@@ -288,14 +288,33 @@ final class AbsorbPointer extends SingleChildRenderObjectWidget {
   }
 }
 
-/// Marks where repainting could stop one day.
+/// Marks where repainting stops.
 ///
-/// It buys nothing today - there is no layer cache anywhere in this repository
-/// and `PipelineOwner.flushPaint` re-walks the whole tree every frame. The
-/// class comment on [layout.RenderRepaintBoundary] says so at length rather
-/// than implying a saving that does not exist. Placing them correctly now is
-/// still worth doing, because the placement is the part that is hard to add
-/// afterwards.
+/// A boundary whose subtree did not change records that subtree once and
+/// **splices the recording** on later frames instead of walking it again, so a
+/// `setState` deep inside one costs the boundary and nothing above it. See
+/// [layout.RenderRepaintBoundary] for the mechanism and
+/// `benchmark/repaint_boundary_benchmark.dart` for what it is worth.
+///
+/// **It is not free in every frame shape**, and the number is measured rather
+/// than implied: a frame in which *every* boundary is dirty - a theme change,
+/// a colour animation across the whole window - is about **2x slower**,
+/// because recording into a sub-list and copying it back costs more than
+/// drawing straight into the frame when there is nothing to reuse. The saving
+/// comes from the frames where most of the tree held still, which is most of
+/// them in an application and none of them in a benchmark that repaints
+/// everything.
+///
+/// Two subtrees it declines to cache, and says so rather than caching them
+/// wrongly: one containing a content hint, because a hint span records a value
+/// already merged with its enclosing hints and cannot be replayed under a
+/// different enclosure; and an outer boundary whose inner boundary changed,
+/// because the splice copies words rather than referencing a layer, so nesting
+/// helps siblings and not ancestors.
+///
+/// This comment used to read "it buys nothing today - there is no layer cache
+/// anywhere in this repository". That was true until 06/09/2026 and is now
+/// false in both clauses.
 final class RepaintBoundary extends SingleChildRenderObjectWidget {
   const RepaintBoundary({super.key, super.child});
 

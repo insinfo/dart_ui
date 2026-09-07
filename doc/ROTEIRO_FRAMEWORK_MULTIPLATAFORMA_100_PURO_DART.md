@@ -8823,16 +8823,31 @@ seguinte:
    emendado é idêntico ao desenhado direto, comando a comando.
    `benchmark/repaint_boundary_benchmark.dart`, mediana:
 
+   200 painéis por 50 folhas, um boundary por painel, **só pintura**, AOT:
+
    | caso | sem cache | com cache | |
    |---|---|---|---|
-   | uma folha muda | 840 µs | 212 µs | 3,96x |
-   | nada muda | 763 µs | 100 µs | 7,63x |
-   | painéis se movem | 815 µs | 125 µs | 6,52x |
-   | **todo painel sujo** | **787 µs** | **1,07 ms** | **1,36x mais lento** |
+   | uma folha muda por frame | 385 µs | 61 µs | 6,31x |
+   | nada muda | 283 µs | 47 µs | 6,02x |
+   | todo painel move 1 px | 257 µs | 50 µs | 5,14x |
+   | **todo painel sujo** | **276 µs** | **597 µs** | **2,16x mais lento** |
 
    A última linha é o custo honesto e está no benchmark em vez de escondida:
-   quando tudo muda, gravar numa sub-lista e emendá-la custa mais que desenhar
-   direto, porque não há nada a reaproveitar;
+   quando tudo muda, gravar numa sub-lista e copiá-la de volta custa mais que
+   desenhar direto, porque não há nada a reaproveitar. Um tema trocando ou uma
+   animação de cor na janela inteira paga isso.
+
+   E o teto de 6x diz onde o tempo de pintura estava: `appendFrom` é
+   `O(comandos)` com um switch por comando, não um memcpy, então os ~5/6 que o
+   cache remove são a **caminhada da árvore e o despacho virtual**, não a
+   codificação.
+
+   Três coisas que ele recusa a cachear em vez de cachear errado: uma subárvore
+   com content hint, porque um span de hint guarda o valor já combinado com os
+   hints que o cercavam; um boundary externo cujo interno mudou, porque a
+   emenda copia palavras em vez de referenciar uma camada, então o aninhamento
+   ajuda irmãos e não ancestrais; e a recusa do hint é **permanente** por
+   boundary, porque retestá-la custaria uma gravação inteira por frame;
 4. **rodar `tool/x11_backend_smoke.dart` numa sessão Linux** (§68.1): o
    teclado e o clipboard do X11 continuam provados só por bytes numa máquina
    Windows;
