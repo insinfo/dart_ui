@@ -49,6 +49,7 @@ import '../../../graphics/display_list_reader.dart';
 import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
 import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
+import '../../render_policy.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
@@ -56,14 +57,19 @@ import '../gpu_device_state.dart';
 import '../gpu_glyph_atlas.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
+import '../gpu_path_planning.dart';
 import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
+import '../gpu_vector_command_stream.dart';
+import '../gpu_vector_submission_cursor.dart';
 import '../gpu_video_image.dart';
 import 'd3d11_bindings.dart';
 import 'd3d11_shaders.dart';
 import 'd3d11_surface_descriptor.dart';
+import 'd3d11_vector_executors.dart';
+import 'd3d11_vector_replay.dart';
 import 'd3d11_window_target.dart';
 
 /// A texture owned by a [D3d11RenderDevice].
@@ -131,9 +137,37 @@ final class D3d11Texture implements GpuTextureHandle {
 }
 
 /// One offscreen target a layer renders into.
-final class D3d11LayerTarget implements GpuLayerTarget {
+///
+/// ## Three resources, not one, once a layer is multisampled
+///
+/// A colour-only layer is what it always was: one texture, one render-target
+/// view over it, and the composite quad samples the same texture the pass drew
+/// into. A layer allocated for approach C cannot be that, because Direct3D 11
+/// will not let a shader sample a multisampled texture through the `Texture2D`
+/// the dense pixel shader declares - that would need `Texture2DMS` and a
+/// resolve written by hand in the pixel stage.
+///
+/// So such a layer holds three things: [multisampleTexture] that the pass
+/// renders into, [depthStencilView] that its winding accumulates into, and
+/// [texture] - single-sample, shader-readable - that
+/// `D3d11RenderDevice._resolveLayerTarget` copies into with
+/// `ResolveSubresource` when the pass ends. [textureId] is always the
+/// single-sample one, so the composite quad batches against a texture it can
+/// actually read, and a missing resolve shows up as a layer that composites the
+/// previous frame rather than as a device error.
+final class D3d11LayerTarget
+    implements GpuLayerTarget, GpuAttachmentAwareTarget {
   D3d11LayerTarget._(
-      this.id, this.width, this.height, this.texture, this.renderTarget);
+    this.id,
+    this.width,
+    this.height,
+    this.texture,
+    this.renderTarget,
+    this.passAttachments, {
+    this.multisampleTexture,
+    this.depthStencil,
+    this.depthStencilView,
+  });
 
   @override
   final int id;
@@ -144,18 +178,37 @@ final class D3d11LayerTarget implements GpuLayerTarget {
   @override
   final int height;
 
-  /// The colour texture, in the device's texture-id space, so a composite quad
-  /// batches against it like any other texture.
+  /// The single-sample colour texture, in the device's texture-id space, so a
+  /// composite quad batches against it like any other texture.
   final D3d11Texture texture;
 
   @override
   int get textureId => texture.id;
 
-  /// `ID3D11RenderTargetView` over [texture].
+  /// `ID3D11RenderTargetView` over [multisampleTexture] when there is one, and
+  /// over [texture] otherwise.
   final ComObject renderTarget;
 
   @override
-  String toString() => 'D3d11LayerTarget($id, ${width}x$height)';
+  final GpuPassAttachments passAttachments;
+
+  /// The multisampled colour `ID3D11Texture2D`, or null for a colour-only
+  /// layer. Never bound as a shader resource - it has no view for one.
+  final ComObject? multisampleTexture;
+
+  /// The `D24_UNORM_S8_UINT` `ID3D11Texture2D`, or null.
+  final ComObject? depthStencil;
+
+  /// `ID3D11DepthStencilView` over [depthStencil], or null.
+  final ComObject? depthStencilView;
+
+  /// Whether a pass that drew into this target has to resolve before anything
+  /// samples [texture].
+  bool get needsResolve => multisampleTexture != null;
+
+  @override
+  String toString() =>
+      'D3d11LayerTarget($id, ${width}x$height, $passAttachments)';
 }
 
 /// Where layers get their targets, and where they go back to.
@@ -165,7 +218,8 @@ final class D3d11LayerTarget implements GpuLayerTarget {
 /// one per frame. That is the same trade `gl_framebuffer_pool.dart` makes and
 /// for the same reason: an allocator that hands out exactly the requested
 /// pixels never reuses anything.
-final class D3d11LayerPool implements GpuLayerTargetAllocator {
+final class D3d11LayerPool
+    implements GpuLayerTargetAllocator, GpuAttachmentAwareAllocator {
   D3d11LayerPool(this._device);
 
   final D3d11RenderDevice _device;
@@ -191,10 +245,31 @@ final class D3d11LayerPool implements GpuLayerTargetAllocator {
   }
 
   @override
-  GpuLayerTarget acquireLayerTarget(int width, int height) {
+  GpuLayerTarget acquireLayerTarget(int width, int height) =>
+      acquireLayerTargetWith(width, height, GpuPassAttachments.colorOnly);
+
+  /// A target of at least [width] by [height] carrying [attachments].
+  ///
+  /// The pool keys on the attachments as well as the size, and it must: a
+  /// colour-only target handed back for a request that asked for stencil would
+  /// make the layer pass report - through [D3d11LayerTarget.passAttachments] -
+  /// exactly what it got, so approach C would be refused for the whole layer
+  /// and nothing would be wrong except a promotion that silently never happens.
+  /// Keying them apart is cheaper than diagnosing that.
+  ///
+  /// May hand back *more* than was asked for only in the sense the contract
+  /// allows: a request the driver cannot honour is downgraded by
+  /// [D3d11RenderDevice._createLayerTarget], which reports what it really
+  /// allocated, and the stack believes the target rather than the request.
+  @override
+  GpuLayerTarget acquireLayerTargetWith(
+    int width,
+    int height,
+    GpuPassAttachments attachments,
+  ) {
     final int w = _round(width);
     final int h = _round(height);
-    final int key = w * 65536 + h;
+    final int key = _key(w, h, attachments);
     final List<D3d11LayerTarget>? free = _idle[key];
     if (free != null && free.isNotEmpty) {
       final target = free.removeLast();
@@ -202,7 +277,7 @@ final class D3d11LayerPool implements GpuLayerTargetAllocator {
       return target;
     }
     _created++;
-    final target = _device._createLayerTarget(w, h);
+    final target = _device._createLayerTarget(w, h, attachments);
     _live.add(target);
     return target;
   }
@@ -212,10 +287,23 @@ final class D3d11LayerPool implements GpuLayerTargetAllocator {
     final resolved = target as D3d11LayerTarget;
     _live.remove(resolved);
     _idle
-        .putIfAbsent(resolved.width * 65536 + resolved.height,
+        .putIfAbsent(
+            _key(resolved.width, resolved.height, resolved.passAttachments),
             () => <D3d11LayerTarget>[])
         .add(resolved);
   }
+
+  /// Size and attachments in one integer.
+  ///
+  /// Sample count and stencil bits are folded in above the two 16-bit sizes
+  /// rather than beside them, so the colour-only key of a given size keeps the
+  /// value it had before attachments existed and a default build reuses exactly
+  /// the targets it always did.
+  static int _key(int width, int height, GpuPassAttachments attachments) =>
+      width * 65536 +
+      height +
+      (attachments.sampleCount << 32) +
+      (attachments.stencilBits << 40);
 
   /// Destroys every target. Called when the owning target is disposed, after
   /// the layer stack has handed everything back.
@@ -268,9 +356,13 @@ final class D3d11RenderDevice
     required this.context,
     required RendererInfo info,
     required int featureLevel,
+    required bool tessellationRequested,
+    required bool stencilCoverRequested,
   })  : _api = api,
         _info = info,
-        _featureLevel = featureLevel;
+        _featureLevel = featureLevel,
+        _tessellationRequested = tessellationRequested,
+        _stencilCoverRequested = stencilCoverRequested;
 
   final D3d11Api _api;
 
@@ -325,6 +417,55 @@ final class D3d11RenderDevice
   final Map<int, D3d11Texture> _texturesById = <int, D3d11Texture>{};
   int _nextTextureId = 1;
   int _nextLayerId = 1;
+
+  // -------------------------------------------------------------------
+  // Approaches B and C - built only when the application declared them
+  // -------------------------------------------------------------------
+
+  /// What `RenderPolicy.routes` asked for, before the driver had a say.
+  ///
+  /// Kept as fields rather than consulted from the scope per frame because
+  /// `RenderPolicyScope` can be reinstalled - by a test, or by an application
+  /// that starts a second `Application` - and a device whose executors appeared
+  /// mid-frame would promote draws the recorder had no payload for. The ask is
+  /// read once, at device creation, exactly as it is on OpenGL.
+  final bool _tessellationRequested;
+  final bool _stencilCoverRequested;
+
+  D3d11VectorPipeline? _vectorPipeline;
+  D3d11TessellatedExecutor? _tessellatedExecutor;
+  D3d11StencilCoverExecutor? _stencilCoverExecutor;
+
+  /// `DepthEnable = FALSE, StencilEnable = FALSE`, bound by [_bindPipeline].
+  ///
+  /// Built only alongside the vector pipeline, because only a device with
+  /// approach C ever attaches a depth-stencil view to a pass; on every other
+  /// device this stays null and the dense pipeline sets no depth-stencil state
+  /// at all, exactly as it always did.
+  ComObject? _depthStencilOff;
+
+  /// Whether approach B's executor exists on this device.
+  ///
+  /// False on a default build, and false when the application asked but the
+  /// driver refused the shared vector program - in which case the refusal is
+  /// already a diagnostic on the failed device creation, and this simply
+  /// reports that no draw can be promoted.
+  bool get experimentalCpuTessellationEnabled => _tessellatedExecutor != null;
+
+  /// Whether approach C's executor exists, and with it the stencil and samples
+  /// that large layers are then allocated with.
+  bool get experimentalStencilCoverEnabled => _stencilCoverExecutor != null;
+
+  /// Whether either promoted route is built, which is what makes a target wire
+  /// the ordered submitter instead of the dense batch loop.
+  bool get hasExperimentalVectorRoutes =>
+      experimentalCpuTessellationEnabled || experimentalStencilCoverEnabled;
+
+  /// The shared program both routes draw through, or null on a default build.
+  D3d11VectorPipeline? get vectorPipeline => _vectorPipeline;
+
+  /// The retained-mesh inventory, so a test can assert reuse and eviction.
+  D3d11TessellatedExecutor? get tessellatedExecutor => _tessellatedExecutor;
 
   /// The DXGI factory that makes swap chains, fetched on first use.
   ///
@@ -575,6 +716,7 @@ final class D3d11RenderDevice
     required int usage,
     required int bindFlags,
     required int cpuAccess,
+    int sampleCount = 1,
   }) {
     final view = target.cast<Uint32>();
     view[0] = width;
@@ -582,7 +724,7 @@ final class D3d11RenderDevice
     view[2] = 1; // MipLevels
     view[3] = 1; // ArraySize
     view[4] = format;
-    view[5] = 1; // SampleDesc.Count
+    view[5] = sampleCount; // SampleDesc.Count
     view[6] = 0; // SampleDesc.Quality
     view[7] = usage;
     view[8] = bindFlags;
@@ -719,9 +861,16 @@ final class D3d11RenderDevice
         if (end <= start && !clears) continue;
 
         final GpuLayerTarget? target = pass.target;
-        final Pointer<Void> rtv = target == null
-            ? surfaceRenderTarget
-            : (target as D3d11LayerTarget).renderTarget.pointer;
+        final D3d11LayerTarget? layer =
+            target is D3d11LayerTarget ? target : null;
+        final Pointer<Void> rtv =
+            layer == null ? surfaceRenderTarget : layer.renderTarget.pointer;
+        // Colour only. This is the dense-only submitter: no command it issues
+        // reads or writes stencil, so there is nothing to attach - and
+        // attaching a view would depth-test every batch against Direct3D's
+        // default `DepthEnable = TRUE` / `DepthFunc = LESS` on a plane nothing
+        // wrote. [submitOrderedPaths] does attach one, and pairs it with the
+        // explicit depth-off state [_bindPipeline] binds.
         _bindRenderTarget(rtv);
         _setViewport(pass.viewportWidth, pass.viewportHeight);
 
@@ -735,11 +884,13 @@ final class D3d11RenderDevice
             _float4[i] = 0;
           }
           context.clearRenderTargetView(context.pointer, rtv, _float4);
+          _clearPassStencil(layer);
         }
-        if (end <= start) continue;
-
-        _drawBatches(batcher, start, end, pass.viewportWidth,
-            pass.viewportHeight, state);
+        if (end > start) {
+          _drawBatches(batcher, start, end, pass.viewportWidth,
+              pass.viewportHeight, state);
+        }
+        _resolveLayerTarget(layer);
       }
       // The caller bound its own target before calling and is entitled to find
       // it bound afterwards - it reads pixels back or presents it next.
@@ -747,6 +898,210 @@ final class D3d11RenderDevice
     }
 
     return !_state.isLost;
+  }
+
+  /// Issues an incrementally snapshot mixed dense/vector command stream.
+  ///
+  /// The opt-in replay counterpart of [submit], and the Direct3D 11 twin of
+  /// `GlRenderDevice.submitOrderedPaths`. The stream has already retained every
+  /// promoted payload without touching the device, and [cursor] makes
+  /// atlas-pressure submissions resumable: dense batches, vector ordinals and
+  /// offscreen clears are each issued exactly once across snapshots.
+  ///
+  /// Reached only when the device was opened with at least one of the two
+  /// promoted routes; a default build never calls this and walks [submit]
+  /// exactly as it always did.
+  bool submitOrderedPaths(
+    GpuBatcher batcher,
+    GpuVectorCommandStream<ReplayPaint, D3d11VectorPathPayload> stream,
+    GpuVectorSubmissionCursor cursor,
+    int surfaceWidth,
+    int surfaceHeight,
+    int? clearColor,
+    Pointer<Void> surfaceRenderTarget,
+  ) {
+    if (_submissionsStopped) {
+      _blockedSubmissionCount++;
+      return false;
+    }
+    if (_state.isLost) return false;
+
+    _bindRenderTarget(surfaceRenderTarget);
+    _setViewport(surfaceWidth, surfaceHeight);
+    if (clearColor != null) {
+      _float4[0] = ((clearColor >> 16) & 0xFF) / 255.0;
+      _float4[1] = ((clearColor >> 8) & 0xFF) / 255.0;
+      _float4[2] = (clearColor & 0xFF) / 255.0;
+      _float4[3] = ((clearColor >> 24) & 0xFF) / 255.0;
+      context.clearRenderTargetView(
+          context.pointer, surfaceRenderTarget, _float4);
+    }
+
+    if (batcher.batchCount > cursor.nextDenseBatch &&
+        !_uploadGeometry(batcher)) {
+      return false;
+    }
+    final _DrawState denseState = _drawState..reset();
+    const GpuOrderedSubmissionWalker().submit(
+      stream: stream,
+      cursor: cursor,
+      beginPass: (pass, clearTarget) {
+        final GpuLayerTarget? target = pass.target;
+        final D3d11LayerTarget? layer =
+            target is D3d11LayerTarget ? target : null;
+        final Pointer<Void> rtv =
+            layer == null ? surfaceRenderTarget : layer.renderTarget.pointer;
+        // The depth-stencil view is bound for the whole pass, not just for the
+        // command that accumulates into it. Rebinding render targets in the
+        // middle of a pass was measured losing the *first* stencil submission
+        // on a device outright - 74 508 pixels of a 512x512 frame drew nothing
+        // and every later frame was exact - which is the behaviour a driver
+        // that resolves render-target contents lazily is entitled to. Binding
+        // once is also fewer calls. What it costs is that every dense batch in
+        // this pass now has a depth-stencil view attached, which is why
+        // [_bindPipeline] binds an explicit depth-off state: Direct3D's default
+        // is `DepthEnable = TRUE` with `DepthFunc = LESS`, and against a plane
+        // nothing wrote that rejects almost everything.
+        _bindRenderTarget(
+          rtv,
+          depthStencil: layer?.depthStencilView?.pointer ?? nullptr,
+        );
+        _setViewport(pass.viewportWidth, pass.viewportHeight);
+        if (clearTarget) {
+          for (var i = 0; i < 4; i++) {
+            _float4[i] = 0;
+          }
+          context.clearRenderTargetView(context.pointer, rtv, _float4);
+          _clearPassStencil(layer);
+        }
+      },
+      submitDense: (pass, range) {
+        // Every promoted executor rebinds the input layout, both shaders, the
+        // rasteriser, the blend state and the constant buffer, so the dense
+        // pipeline has to be restored for each resumed range rather than once
+        // per frame. `_DrawState` still avoids redundant texture and blend
+        // changes *within* the range, and `_constantsMode` is invalidated
+        // because the vector program's constant buffer displaced the dense
+        // one at register b0 - a stale mode would draw a coverage mask as a
+        // solid quad.
+        _bindPipeline();
+        _constantsMode = -1;
+        _writeConstants(pass.viewportWidth, pass.viewportHeight, 0);
+        denseState.reset();
+        _drawBatches(batcher, range.firstBatch, range.endBatch,
+            pass.viewportWidth, pass.viewportHeight, denseState);
+      },
+      submitVector: (pass, command) {
+        _executeVectorCommand(pass, command);
+        denseState.reset();
+      },
+      endPass: (pass) => _resolveLayerTarget(pass.target),
+    );
+
+    _bindRenderTarget(surfaceRenderTarget);
+    return !_state.isLost;
+  }
+
+  /// Runs one promoted command through the executor that owns its payload.
+  void _executeVectorCommand(
+    GpuVectorPassRecord<ReplayPaint, D3d11VectorPathPayload> pass,
+    GpuExperimentalVectorCommand<ReplayPaint, D3d11VectorPathPayload> command,
+  ) {
+    final D3d11VectorPipeline? pipeline = _vectorPipeline;
+    if (pipeline == null) return;
+    final ReplayPaint paint = command.material;
+    final GpuLayerTarget? target = pass.target;
+    final D3d11LayerTarget? layer = target is D3d11LayerTarget ? target : null;
+    // Refused rather than drawn without one. An accumulation into no
+    // depth-stencil view updates nothing and the cover quad that follows passes
+    // everywhere, which is a filled bounding box - the one failure mode of this
+    // route that looks like geometry rather than like an error. The recorder
+    // already checked the pass attachments, so reaching here without a view
+    // would mean the pool and the pass had disagreed.
+    if (command.payload is D3d11StencilPathPayload &&
+        layer?.depthStencilView == null) {
+      return;
+    }
+    pipeline.beginPass(
+      viewportWidth: pass.viewportWidth,
+      viewportHeight: pass.viewportHeight,
+    );
+    try {
+      switch (command.payload) {
+        case D3d11TessellatedPathPayload(
+            :final mesh,
+            :final localToTarget,
+            :final clip,
+          ):
+          _tessellatedExecutor?.submit(
+            mesh,
+            material: _vectorMaterial(paint),
+            localToTarget: localToTarget,
+            // The recorder's target-space clip intersected with the clip the
+            // stream recomputed against the pass viewport, so a layer that was
+            // clamped after recording cannot be drawn outside.
+            clip: clip.intersect(command.effectiveTargetClip),
+          );
+        case D3d11StencilPathPayload(:final plan, :final capabilities):
+          _stencilCoverExecutor?.submit(
+            plan,
+            materials: <D3d11VectorMaterial>[_vectorMaterial(paint)],
+            capabilities: capabilities,
+          );
+      }
+    } finally {
+      pipeline.endPass();
+      // The dense pipeline's own constants were displaced at register b0.
+      _constantsMode = -1;
+      _constantsWidth = -1;
+      _constantsHeight = -1;
+    }
+  }
+
+  /// The paint's premultiplied colour, for a route with no gradient material.
+  ///
+  /// Approaches B and C hand the rasteriser geometry and one solid colour, so
+  /// a gradient reaching either of them would be drawn as its otherwise-unused
+  /// fallback colour. `D3d11VectorPathRecorder.tryRecord` refuses that
+  /// combination before a command is recorded and
+  /// `D3d11VectorReplay.capabilities` never reports either route as capable for
+  /// a gradient draw; this is the assertion that both held.
+  static D3d11VectorMaterial _vectorMaterial(ReplayPaint paint) {
+    if (paint.gradient != null) {
+      throw UnsupportedError(
+        'ordered Direct3D 11 path replay has no gradient material; the '
+        'recorder must not accept a gradient paint for these routes',
+      );
+    }
+    final double alpha = ((paint.argbColor >> 24) & 0xFF) / 255.0;
+    return D3d11VectorMaterial(
+      red: ((paint.argbColor >> 16) & 0xFF) / 255.0 * alpha,
+      green: ((paint.argbColor >> 8) & 0xFF) / 255.0 * alpha,
+      blue: (paint.argbColor & 0xFF) / 255.0 * alpha,
+      alpha: alpha,
+      blendMode: paint.blendMode,
+    );
+  }
+
+  /// Defines the stencil plane of a layer target the first time a frame binds
+  /// it.
+  ///
+  /// A freshly created `D24S8` holds whatever the driver's allocator left, and
+  /// a pooled one holds the previous tenant's winding. Approach C's own
+  /// per-command clear is a scissored `REPLACE` quad covering only the bounds
+  /// it is about to accumulate into, which is correct but says nothing about
+  /// the rest of the plane; this is the one call that makes the whole view a
+  /// known value, and it rides on the colour clear that already happens once
+  /// per layer target per frame.
+  void _clearPassStencil(D3d11LayerTarget? layer) {
+    final ComObject? view = layer?.depthStencilView;
+    if (view == null) return;
+    // Depth as well as stencil, and depth is not superfluous: nothing in this
+    // backend depth-tests, but a `D24S8` whose depth plane is never written is
+    // the kind of resource a driver's own validation can complain about, and
+    // the clear is one call on a plane the frame is already touching.
+    context.clearDepthStencilView(context.pointer, view.pointer,
+        d3d11ClearDepth | d3d11ClearStencil, 1, 0);
   }
 
   final _DrawState _drawState = _DrawState();
@@ -855,10 +1210,59 @@ final class D3d11RenderDevice
     }
   }
 
-  void _bindRenderTarget(Pointer<Void> rtv) {
+  /// Binds [rtv], and [depthStencil] with it when the pass has one.
+  ///
+  /// The depth-stencil argument is not optional in the sense of "nice to
+  /// have": approach C's accumulation writes through the output merger, and a
+  /// pass bound with a null view rasterises the winding triangles, updates
+  /// nothing, and then draws the cover quad against a stencil test that always
+  /// passes - a filled bounding box where a shape was asked for. Passing
+  /// `nullptr` for a colour-only pass is equally load-bearing in the other
+  /// direction: a view left bound from a previous layer would be written by
+  /// dense batches that have no business touching it.
+  void _bindRenderTarget(Pointer<Void> rtv, {Pointer<Void>? depthStencil}) {
     _slotA.value = rtv;
-    context.omSetRenderTargets(context.pointer, 1, _slotA, nullptr);
+    context.omSetRenderTargets(
+        context.pointer, 1, _slotA, depthStencil ?? nullptr);
   }
+
+  /// Resolves a multisampled layer target so the composite quad can sample it.
+  ///
+  /// Called at the end of every pass that drew into a layer, and a no-op for
+  /// the surface and for single-sample targets - which is every layer target
+  /// unless the stack's attachment policy asked for more.
+  ///
+  /// **The end of every pass and not the end of the layer**, for the reason
+  /// `GlRenderDevice._resolveLayerTarget` gives: a layer's batches are not one
+  /// contiguous run - a nested layer splits them and a mid-frame atlas flush
+  /// splits them again - so resolving whenever a pass that wrote into the
+  /// target finishes is the only placement that is correct without tracking
+  /// which pass was the last. Resolving twice is harmless; the second copy
+  /// moves the same finished pixels. What matters is the ordering it
+  /// guarantees: the composite quad that samples this target belongs to the
+  /// *parent's* pass, appended after this one, so it can never be drawn before
+  /// the resolve that feeds it.
+  void _resolveLayerTarget(GpuLayerTarget? target) {
+    if (target is! D3d11LayerTarget) return;
+    final ComObject? multisample = target.multisampleTexture;
+    if (multisample == null) return;
+    _layerResolveCount++;
+    context.resolveSubresource(
+      context.pointer,
+      target.texture.texture.pointer,
+      0,
+      multisample.pointer,
+      0,
+      dxgiFormatR8G8B8A8Unorm,
+    );
+  }
+
+  /// Multisample resolves this device has issued for layer targets.
+  ///
+  /// Invisible from the pixels - a *missing* one is - so a test asserts the
+  /// count rather than the image.
+  int get layerResolveCount => _layerResolveCount;
+  int _layerResolveCount = 0;
 
   /// Unbinds every render target and shader resource.
   ///
@@ -875,6 +1279,17 @@ final class D3d11RenderDevice
   }
 
   void _bindPipeline() {
+    // Depth and stencil explicitly off. The dense renderer never used to set
+    // this because it never had a depth-stencil view attached; now that
+    // [submitOrderedPaths] attaches one for a layer that carries stencil, the
+    // *default* state - `DepthEnable = TRUE`, `DepthFunc = LESS` - would
+    // depth-test every dense batch of that pass against a plane nothing wrote.
+    // The state is null on a device that never built the vector pipeline, and
+    // that device never attaches a view either.
+    final ComObject? depthOff = _depthStencilOff;
+    if (depthOff != null) {
+      context.omSetDepthStencilState(context.pointer, depthOff.pointer, 0);
+    }
     _slotA.value = _vertexBuffer!.pointer;
     _uint4[0] = kGpuFloatsPerVertex * 4;
     _uint4b[0] = 0;
@@ -1322,6 +1737,11 @@ final class D3d11RenderDevice
   /// process.
   @override
   void discardNativeResources() {
+    // Before the textures, because the retained meshes and the vector program
+    // are the only objects here whose owner is not this device's `ComBag` - the
+    // executors hold `ID3D11Buffer`s directly - and a removal must not leave
+    // one behind for the rebuilt pipeline to bind.
+    _disposeVectorRoutes();
     for (final D3d11Texture texture in _texturesById.values.toList()) {
       releaseTexture(texture);
     }
@@ -1339,6 +1759,7 @@ final class D3d11RenderDevice
     _pixelShader = null;
     _inputLayout = null;
     _rasterizerState = null;
+    _depthStencilOff = null;
     _samplerPoint = null;
     _samplerLinear = null;
     _constantBuffer = null;
@@ -1614,7 +2035,85 @@ final class D3d11RenderDevice
     }
     _samplerPoint = point;
     _samplerLinear = linear;
+    return _initialiseVectorRoutes(compile);
+  }
+
+  /// Builds the shared vector program and the executors the policy asked for.
+  ///
+  /// Nothing at all when neither route was declared, which is the default: the
+  /// second HLSL compile, the second input layout and every state cache below
+  /// it are skipped, and this device is byte-for-byte the one that shipped.
+  ///
+  /// A driver that refuses the program returns a diagnostic and the device is
+  /// not opened, rather than opening one that reports the routes and cannot
+  /// execute them. That is the harsher of the two options and it is the right
+  /// one here: the application asked for these routes by name in its
+  /// `RenderPolicy`, so silently giving it a device without them would make a
+  /// declared trade disappear with no way to notice.
+  BackendDiagnostic? _initialiseVectorRoutes(D3dCompileFn compile) {
+    if (!_tessellationRequested && !_stencilCoverRequested) return null;
+    final Object built = D3d11VectorPipeline.create(
+      device: device,
+      context: context,
+      compile: compile,
+    );
+    if (built is BackendDiagnostic) return built;
+    final pipeline = built as D3d11VectorPipeline;
+    _vectorPipeline = pipeline;
+    final desc = _scratchDesc.cast<Uint32>();
+    for (var i = 0; i < sizeOfDepthStencilDesc ~/ 4; i++) {
+      desc[i] = 0;
+    }
+    // DepthEnable and StencilEnable stay zero; the comparison functions still
+    // have to name legal enum values or the descriptor is rejected.
+    desc[2] = d3d11ComparisonAlways;
+    desc[8] = d3d11ComparisonAlways;
+    desc[12] = d3d11ComparisonAlways;
+    desc[5] = d3d11StencilOpKeep;
+    desc[6] = d3d11StencilOpKeep;
+    desc[7] = d3d11StencilOpKeep;
+    desc[9] = d3d11StencilOpKeep;
+    desc[10] = d3d11StencilOpKeep;
+    desc[11] = d3d11StencilOpKeep;
+    final int hr = hresult(device.createDepthStencilState(
+        device.pointer, _scratchDesc.cast(), _out));
+    if (failed(hr)) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the depth-off state for layered dense batches was refused',
+        detail: hresultName(hr),
+      );
+    }
+    _depthStencilOff = _objects
+        .keep(ComObject(_out.value, interfaceName: 'ID3D11DepthStencilState'));
+    if (_tessellationRequested) {
+      _tessellatedExecutor = D3d11TessellatedExecutor(pipeline);
+    }
+    if (_stencilCoverRequested) {
+      _stencilCoverExecutor = D3d11StencilCoverExecutor(pipeline);
+    }
     return null;
+  }
+
+  /// Releases the vector program, both executors and the retained meshes.
+  ///
+  /// One path for a dispose and for a device loss, because on this API they
+  /// need the same thing done: `Release` still works on an object whose device
+  /// was removed, and it is the only way the refcount reaches zero. This is the
+  /// argument [discardNativeResources] makes about the rest of the pipeline,
+  /// and the retained meshes need it more than anything else here - they are
+  /// the one set of GPU allocations no `ComBag` owns.
+  ///
+  /// [_depthStencilOff] is *not* released here: it lives in the device's own
+  /// bag, which the caller disposes.
+  void _disposeVectorRoutes() {
+    _tessellatedExecutor?.dispose();
+    _stencilCoverExecutor?.dispose();
+    _vectorPipeline?.dispose();
+    _tessellatedExecutor = null;
+    _stencilCoverExecutor = null;
+    _vectorPipeline = null;
+    _depthStencilOff = null;
   }
 
   ComObject? _createSampler(int filter) {
@@ -1737,7 +2236,16 @@ final class D3d11RenderDevice
     }
   }
 
-  D3d11LayerTarget _createLayerTarget(int width, int height) {
+  D3d11LayerTarget _createLayerTarget(
+    int width,
+    int height,
+    GpuPassAttachments attachments,
+  ) {
+    // The single-sample colour texture exists whatever the attachments say: it
+    // is the one the composite quad samples, and for a multisampled layer it is
+    // also the resolve destination. Its bind flags therefore include
+    // RENDER_TARGET even when nothing renders into it directly, because
+    // `ResolveSubresource` requires the destination to be one.
     final D3d11Texture texture = _createTexture(
       width: width,
       height: height,
@@ -1748,22 +2256,125 @@ final class D3d11RenderDevice
       filter: GpuTextureFilter.nearest,
       bindFlags: d3d11BindShaderResource | d3d11BindRenderTarget,
     );
+    // Asked before anything is created rather than discovered from a failed
+    // `CreateTexture2D`: a driver that will not give four samples on this
+    // format answers zero here, and the layer is then allocated colour-only and
+    // reports that, so approach C is refused for it by the ordinary capability
+    // rule instead of by a layer with no target at all.
+    final int samples = attachments.sampleCount > 1 &&
+            _supportsSampleCount(
+                dxgiFormatR8G8B8A8Unorm, attachments.sampleCount) &&
+            _supportsSampleCount(
+                dxgiFormatD24UnormS8Uint, attachments.sampleCount)
+        ? attachments.sampleCount
+        : 1;
+    final bool multisampled = samples > 1;
+    final bool wantsStencil = attachments.hasStencil && multisampled;
+
+    ComObject? multisampleTexture;
+    ComObject? depthStencil;
+    ComObject? depthStencilView;
+    Pointer<Void> colorResource = texture.texture.pointer;
+    if (multisampled) {
+      _writeTexture2DDesc(
+        _scratchDesc,
+        width: width,
+        height: height,
+        format: dxgiFormatR8G8B8A8Unorm,
+        usage: d3d11UsageDefault,
+        bindFlags: d3d11BindRenderTarget,
+        cpuAccess: 0,
+        sampleCount: samples,
+      );
+      checkHresult(
+        device.createTexture2D(
+            device.pointer, _scratchDesc.cast(), nullptr, _out),
+        'ID3D11Device::CreateTexture2D(multisampled layer)',
+      );
+      multisampleTexture =
+          ComObject(_out.value, interfaceName: 'ID3D11Texture2D');
+      colorResource = multisampleTexture.pointer;
+    }
     checkHresult(
       device.createRenderTargetView(
-          device.pointer, texture.texture.pointer, nullptr, _out),
+          device.pointer, colorResource, nullptr, _out),
       'ID3D11Device::CreateRenderTargetView(layer)',
     );
+    final renderTarget =
+        ComObject(_out.value, interfaceName: 'ID3D11RenderTargetView');
+
+    if (wantsStencil) {
+      _writeTexture2DDesc(
+        _scratchDesc,
+        width: width,
+        height: height,
+        format: dxgiFormatD24UnormS8Uint,
+        usage: d3d11UsageDefault,
+        bindFlags: d3d11BindDepthStencil,
+        cpuAccess: 0,
+        sampleCount: samples,
+      );
+      checkHresult(
+        device.createTexture2D(
+            device.pointer, _scratchDesc.cast(), nullptr, _out),
+        'ID3D11Device::CreateTexture2D(layer depth-stencil)',
+      );
+      depthStencil = ComObject(_out.value, interfaceName: 'ID3D11Texture2D');
+      // The descriptor is written out rather than left null. A null descriptor
+      // infers the format and dimension from the resource and would be correct
+      // here, but the *flags* field is the one that matters and is easy to
+      // forget: it must be zero, because a read-only depth-stencil view cannot
+      // be written by a stencil operation, and that failure is a cover quad
+      // masked by a stencil buffer nothing ever wrote.
+      final dsv = _scratchDesc.cast<Uint32>();
+      for (var i = 0; i < sizeOfDepthStencilViewDesc ~/ 4; i++) {
+        dsv[i] = 0;
+      }
+      dsv[0] = dxgiFormatD24UnormS8Uint;
+      dsv[1] = d3d11DsvDimensionTexture2dMs;
+      dsv[2] = 0; // Flags: read/write.
+      checkHresult(
+        device.createDepthStencilView(
+            device.pointer, depthStencil.pointer, _scratchDesc.cast(), _out),
+        'ID3D11Device::CreateDepthStencilView(layer)',
+      );
+      depthStencilView =
+          ComObject(_out.value, interfaceName: 'ID3D11DepthStencilView');
+    }
+
     return D3d11LayerTarget._(
       _nextLayerId++,
       width,
       height,
       texture,
-      ComObject(_out.value, interfaceName: 'ID3D11RenderTargetView'),
+      renderTarget,
+      // What was really allocated, not what was asked for. The layer stack
+      // reads this back onto the pass, so a downgrade becomes a refusal to
+      // promote rather than a promise the target cannot keep.
+      GpuPassAttachments(
+        stencilBits: depthStencilView == null ? 0 : 8,
+        sampleCount: samples,
+      ),
+      multisampleTexture: multisampleTexture,
+      depthStencil: depthStencil,
+      depthStencilView: depthStencilView,
     );
   }
 
+  /// Whether [format] supports [sampleCount] on this adapter.
+  bool _supportsSampleCount(int format, int sampleCount) {
+    final Pointer<Uint32> levels = _uint4;
+    levels[0] = 0;
+    final int hr = hresult(device.checkMultisampleQualityLevels(
+        device.pointer, format, sampleCount, levels));
+    return !failed(hr) && levels[0] > 0;
+  }
+
   void _destroyLayerTarget(D3d11LayerTarget target) {
+    target.depthStencilView?.dispose();
+    target.depthStencil?.dispose();
     target.renderTarget.dispose();
+    target.multisampleTexture?.dispose();
     releaseTexture(target.texture);
   }
 
@@ -1789,6 +2400,7 @@ final class D3d11RenderDevice
     _glyphAtlas = null;
     _glyphTexture = null;
     _fonts.bind(null);
+    _disposeVectorRoutes();
     for (final texture in _texturesById.values.toList()) {
       releaseTexture(texture);
     }
@@ -1833,7 +2445,24 @@ final class D3d11OffscreenTarget
     _layers = GpuLayerStack(
       allocator: _layerPool,
       backendName: D3d11RendererBackend.backendName,
+      // Stencil and samples for a layer big enough that a promoted draw inside
+      // it could pay for them. See `GpuLayerStack.layerAttachmentPolicy` for
+      // why the answer cannot be derived from the layer's contents, and
+      // `d3d11LayerAttachmentsFor` for the size threshold.
+      layerAttachmentPolicy: (int width, int height) =>
+          d3d11LayerAttachmentsFor(
+        width: width,
+        height: height,
+        stencilCoverEnabled: _device.experimentalStencilCoverEnabled,
+      ),
     );
+    final D3d11VectorReplay? vector = D3d11VectorReplay.create(
+      layers: _layers,
+      stencilEnabled: _device.experimentalStencilCoverEnabled,
+      tessellationEnabled: _device.experimentalCpuTessellationEnabled,
+    );
+    _vector = vector;
+    _vectorStream = vector?.stream;
     _sink = GpuRasterSink(
       batcher: _batcher,
       backendName: D3d11RendererBackend.backendName,
@@ -1845,9 +2474,20 @@ final class D3d11OffscreenTarget
       fontResolver: _device.fontResolver,
       layerStack: _layers,
       onAtlasFlush: _flushAtlases,
+      pathPlanningTelemetry: vector?.telemetry,
+      pathCommandRecorder: vector?.recorder,
     );
     _player = DisplayListPlayer(_sink);
   }
+
+  /// The ordered vector wiring, or null on a device with neither route.
+  D3d11VectorReplay? _vector;
+  GpuVectorCommandStream<ReplayPaint, D3d11VectorPathPayload>? _vectorStream;
+  final GpuVectorSubmissionCursor _vectorCursor = GpuVectorSubmissionCursor();
+
+  /// The strategy decisions this target's sink observed, or null. Advisory: the
+  /// recorder decides what really drew, and `complete` records that separately.
+  GpuPathPlanningTelemetry? get pathPlanning => _vector?.telemetry;
 
   // -------------------------------------------------------------------
   // Device-loss recovery
@@ -1888,6 +2528,14 @@ final class D3d11OffscreenTarget
     _closeSharedFrame();
     _layers.endFrame();
     _layerPool.dispose();
+    // The retained tessellations and the repetition history are CPU-only, so a
+    // loss does not require dropping them - but this wiring is rebuilt whole by
+    // `_buildAtlasObjects` below, and a cache left behind would be meshes
+    // nothing can reach.
+    _vector?.dispose();
+    _vector = null;
+    _vectorStream = null;
+    _vectorCursor.reset();
     _device.releaseTexture(_maskTexture);
     // The mask atlas is a cache that outlives a frame, so it has to be told
     // its texels are gone. It is the one that is easy to miss: its
@@ -2009,6 +2657,8 @@ final class D3d11OffscreenTarget
       surfaceWidth: _readback.width,
       surfaceHeight: _readback.height,
     );
+    _vector?.beginFrame();
+    _vectorCursor.reset();
     _submittedBatches = 0;
     _pendingClear = request.clearColor;
     return Frame(
@@ -2057,15 +2707,30 @@ final class D3d11OffscreenTarget
     _device.uploadGlyphAtlas();
     final int? clear = _pendingClear;
     _pendingClear = null;
-    final bool drawn = _device.submit(
-      _batcher,
-      _readback.width,
-      _readback.height,
-      clear,
-      _renderTargetView.pointer,
-      layers: _layers,
-      firstBatch: _submittedBatches,
-    );
+    final vectorStream = _vectorStream;
+    final bool drawn;
+    if (vectorStream == null) {
+      drawn = _device.submit(
+        _batcher,
+        _readback.width,
+        _readback.height,
+        clear,
+        _renderTargetView.pointer,
+        layers: _layers,
+        firstBatch: _submittedBatches,
+      );
+    } else {
+      vectorStream.finish(totalBatchCount: _batcher.batchCount);
+      drawn = _device.submitOrderedPaths(
+        _batcher,
+        vectorStream,
+        _vectorCursor,
+        _readback.width,
+        _readback.height,
+        clear,
+        _renderTargetView.pointer,
+      );
+    }
     _submittedBatches = _batcher.batchCount;
     // After the draws and never before: until they are issued, the composite
     // quads are still going to sample those layer textures.
@@ -2179,15 +2844,32 @@ final class D3d11OffscreenTarget
     _device.uploadGlyphAtlas();
     final int? clear = _pendingClear;
     _pendingClear = null;
-    _device.submit(
-      _batcher,
-      _readback.width,
-      _readback.height,
-      clear,
-      _renderTargetView.pointer,
-      layers: _layers,
-      firstBatch: _submittedBatches,
-    );
+    final vectorStream = _vectorStream;
+    if (vectorStream == null) {
+      _device.submit(
+        _batcher,
+        _readback.width,
+        _readback.height,
+        clear,
+        _renderTargetView.pointer,
+        layers: _layers,
+        firstBatch: _submittedBatches,
+      );
+    } else {
+      // A snapshot rather than `finish`: replay has not ended, and the cursor
+      // is what stops a command this prefix issued from being issued again by
+      // the present that follows.
+      vectorStream.snapshot(totalBatchCount: _batcher.batchCount);
+      _device.submitOrderedPaths(
+        _batcher,
+        vectorStream,
+        _vectorCursor,
+        _readback.width,
+        _readback.height,
+        clear,
+        _renderTargetView.pointer,
+      );
+    }
     _submittedBatches = _batcher.batchCount;
   }
 
@@ -2750,12 +3432,41 @@ final class D3d11RendererBackend implements RendererBackend {
   }
 
   /// Opens a device, or throws [BackendSelectionError] carrying the probe.
+  ///
+  /// ## Where `RenderPolicy.routes` reaches this backend
+  ///
+  /// On OpenGL the composition root asks:
+  /// `default_platform_resolver.dart` reads [RenderPolicyScope.policy] and
+  /// hands `GlRendererBackend.adoptContext` the two booleans. It cannot do the
+  /// same here, because this backend is reached through
+  /// [RendererBackend.createDevice], which takes no arguments and is called
+  /// from a path shared with every other backend.
+  ///
+  /// So the ask is read here instead, from the same scope and with the same
+  /// guarantee: `Application.start` installs the policy before the first probe
+  /// runs, and a device is opened after a window exists, which is later still.
+  /// A process that never started an `Application` - a test opening a device by
+  /// hand - reads [RenderPolicy.defaults] and therefore gets exactly the device
+  /// this backend built before these routes existed. [openDevice] takes the
+  /// booleans explicitly so a test can name them without installing a scope.
   @override
-  Future<RenderDevice> createDevice() async => openDevice();
+  Future<RenderDevice> createDevice() async {
+    final RenderPolicy policy = RenderPolicyScope.policy;
+    return openDevice(
+      enableExperimentalCpuTessellation: policy.buildsTessellationExecutor,
+      enableExperimentalStencilCover: policy.buildsStencilCoverExecutor,
+    );
+  }
 
   /// The synchronous form. Device creation is synchronous on this API and the
   /// tests want it without an await.
-  static D3d11RenderDevice openDevice() {
+  ///
+  /// Both routes default to false, so every existing caller - and there are
+  /// several, in tests and in `Win32D3d11Surface` - keeps the device it had.
+  static D3d11RenderDevice openDevice({
+    bool enableExperimentalCpuTessellation = false,
+    bool enableExperimentalStencilCover = false,
+  }) {
     final D3d11LibraryLoad load = D3d11Libraries.open();
     if (!load.isLoaded) {
       throw BackendSelectionError(
@@ -2792,6 +3503,8 @@ final class D3d11RendererBackend implements RendererBackend {
       device: attempt.device!,
       context: attempt.context!,
       featureLevel: attempt.featureLevel,
+      tessellationRequested: enableExperimentalCpuTessellation,
+      stencilCoverRequested: enableExperimentalStencilCover,
       info: RendererInfo(
         name: backendName,
         deviceDescription: _adapterDescription(attempt.device!) ??

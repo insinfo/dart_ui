@@ -105,11 +105,15 @@ import '../gpu_batcher.dart';
 import '../gpu_glyph_atlas.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
+import '../gpu_path_planning.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_recovery.dart';
 import '../gpu_texture.dart';
+import '../gpu_vector_command_stream.dart';
+import '../gpu_vector_submission_cursor.dart';
 import 'd3d11_backend.dart';
 import 'd3d11_surface_descriptor.dart';
+import 'd3d11_vector_replay.dart';
 
 /// A render target backed by a swap chain's back buffer.
 final class D3d11WindowTarget
@@ -166,7 +170,24 @@ final class D3d11WindowTarget
     _layers = GpuLayerStack(
       allocator: _layerPool,
       backendName: D3d11RendererBackend.backendName,
+      // Built identically to the offscreen target's, which is the whole point
+      // of `d3d11LayerAttachmentsFor` being a function rather than a literal in
+      // two files: a window that allocated its layers differently from the test
+      // target would promote draws no golden test had ever exercised.
+      layerAttachmentPolicy: (int width, int height) =>
+          d3d11LayerAttachmentsFor(
+        width: width,
+        height: height,
+        stencilCoverEnabled: _device.experimentalStencilCoverEnabled,
+      ),
     );
+    final D3d11VectorReplay? vector = D3d11VectorReplay.create(
+      layers: _layers,
+      stencilEnabled: _device.experimentalStencilCoverEnabled,
+      tessellationEnabled: _device.experimentalCpuTessellationEnabled,
+    );
+    _vector = vector;
+    _vectorStream = vector?.stream;
     _sink = GpuRasterSink(
       batcher: _batcher,
       backendName: D3d11RendererBackend.backendName,
@@ -178,9 +199,20 @@ final class D3d11WindowTarget
       fontResolver: _device.fontResolver,
       layerStack: _layers,
       onAtlasFlush: _flushAtlases,
+      pathPlanningTelemetry: vector?.telemetry,
+      pathCommandRecorder: vector?.recorder,
     );
     _player = DisplayListPlayer(_sink);
   }
+
+  /// The ordered vector wiring, or null on a device with neither promoted
+  /// route - which is every device a default `RenderPolicy` opens.
+  D3d11VectorReplay? _vector;
+  GpuVectorCommandStream<ReplayPaint, D3d11VectorPathPayload>? _vectorStream;
+  final GpuVectorSubmissionCursor _vectorCursor = GpuVectorSubmissionCursor();
+
+  /// The strategy decisions this target's sink observed, or null.
+  GpuPathPlanningTelemetry? get pathPlanning => _vector?.telemetry;
 
   final D3d11RenderDevice _device;
   final GpuBatcher _batcher = GpuBatcher();
@@ -266,6 +298,12 @@ final class D3d11WindowTarget
     _closeSharedFrame();
     _layers.endFrame();
     _layerPool.dispose();
+    // Rebuilt whole by `_buildAtlasObjects`, so its CPU caches go with it: a
+    // retained tessellation left behind would be a mesh nothing can reach.
+    _vector?.dispose();
+    _vector = null;
+    _vectorStream = null;
+    _vectorCursor.reset();
     _device.releaseTexture(_maskTexture);
     // The mask atlas is a cache that outlives a frame, so it has to be told
     // its texels are gone, and it is the one that is easy to miss: its
@@ -401,6 +439,8 @@ final class D3d11WindowTarget
       surfaceWidth: _surface.pixelWidth,
       surfaceHeight: _surface.pixelHeight,
     );
+    _vector?.beginFrame();
+    _vectorCursor.reset();
     _submittedBatches = 0;
     _pendingClear = request.clearColor;
     return Frame(
@@ -480,15 +520,30 @@ final class D3d11WindowTarget
 
     final int? clear = _pendingClear;
     _pendingClear = null;
-    final bool drawn = _device.submit(
-      _batcher,
-      _surface.pixelWidth,
-      _surface.pixelHeight,
-      clear,
-      view,
-      layers: _layers,
-      firstBatch: _submittedBatches,
-    );
+    final vectorStream = _vectorStream;
+    final bool drawn;
+    if (vectorStream == null) {
+      drawn = _device.submit(
+        _batcher,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+        clear,
+        view,
+        layers: _layers,
+        firstBatch: _submittedBatches,
+      );
+    } else {
+      vectorStream.finish(totalBatchCount: _batcher.batchCount);
+      drawn = _device.submitOrderedPaths(
+        _batcher,
+        vectorStream,
+        _vectorCursor,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+        clear,
+        view,
+      );
+    }
     _submittedBatches = _batcher.batchCount;
     // After the draws and never before: until they are issued, the composite
     // quads are still going to sample those layer textures.
@@ -706,15 +761,32 @@ final class D3d11WindowTarget
     if (view == nullptr) return;
     final int? clear = _pendingClear;
     _pendingClear = null;
-    _device.submit(
-      _batcher,
-      _surface.pixelWidth,
-      _surface.pixelHeight,
-      clear,
-      view,
-      layers: _layers,
-      firstBatch: _submittedBatches,
-    );
+    final vectorStream = _vectorStream;
+    if (vectorStream == null) {
+      _device.submit(
+        _batcher,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+        clear,
+        view,
+        layers: _layers,
+        firstBatch: _submittedBatches,
+      );
+    } else {
+      // A snapshot rather than `finish`: replay has not ended, and the cursor
+      // is what stops a command this prefix issued from being issued again by
+      // the present that follows.
+      vectorStream.snapshot(totalBatchCount: _batcher.batchCount);
+      _device.submitOrderedPaths(
+        _batcher,
+        vectorStream,
+        _vectorCursor,
+        _surface.pixelWidth,
+        _surface.pixelHeight,
+        clear,
+        view,
+      );
+    }
     _submittedBatches = _batcher.batchCount;
   }
 

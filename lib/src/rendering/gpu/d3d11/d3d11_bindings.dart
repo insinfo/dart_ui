@@ -102,6 +102,15 @@ const int dxgiFormatR32Uint = 42;
 const int dxgiFormatR8Unorm = 61;
 const int dxgiFormatB8G8R8A8Unorm = 87;
 
+/// `DXGI_FORMAT_D24_UNORM_S8_UINT`, the depth-stencil format approach C needs.
+///
+/// Eight stencil bits is what `StencilCoverRequirements.forDraw` asks for on a
+/// non-zero fill, and D3D11 has no stencil-only format: every hardware format
+/// with a stencil plane carries depth as well, so the 24 depth bits are paid
+/// for whether or not anything reads them. `D32_FLOAT_S8X24_UINT` is the other
+/// option and costs twice the bandwidth for the same eight bits.
+const int dxgiFormatD24UnormS8Uint = 45;
+
 const int d3d11UsageDefault = 0;
 const int d3d11UsageImmutable = 1;
 const int d3d11UsageDynamic = 2;
@@ -112,6 +121,7 @@ const int d3d11BindIndexBuffer = 0x2;
 const int d3d11BindConstantBuffer = 0x4;
 const int d3d11BindShaderResource = 0x8;
 const int d3d11BindRenderTarget = 0x20;
+const int d3d11BindDepthStencil = 0x40;
 
 const int d3d11CpuAccessWrite = 0x10000;
 const int d3d11CpuAccessRead = 0x20000;
@@ -139,6 +149,35 @@ const int d3d11TextureAddressClamp = 3;
 const int d3d11ComparisonNever = 1;
 
 const int d3d11InputPerVertexData = 0;
+
+// Depth-stencil state, for approach C. The comparison functions are the full
+// `D3D11_COMPARISON_FUNC` enum because the stencil test uses three of them and
+// naming only those three would leave the next reader guessing at the numbers.
+const int d3d11ComparisonLess = 2;
+const int d3d11ComparisonEqual = 3;
+const int d3d11ComparisonNotEqual = 6;
+const int d3d11ComparisonAlways = 8;
+
+const int d3d11DepthWriteMaskZero = 0;
+
+/// `D3D11_STENCIL_OP`. `INCR`/`DECR` are the **wrapping** pair - the saturating
+/// ones are `INCR_SAT`/`DECR_SAT` at 4 and 5 - and the wrap is what a non-zero
+/// fill's winding accumulation requires: a contour crossed 256 times must come
+/// back to zero rather than stick at 255, which is the same guarantee GL's
+/// `GL_INCR_WRAP` gives. Naming these two `Wrap` keeps the call site honest
+/// about which pair it asked for.
+const int d3d11StencilOpKeep = 1;
+const int d3d11StencilOpZero = 2;
+const int d3d11StencilOpReplace = 3;
+const int d3d11StencilOpInvert = 6;
+const int d3d11StencilOpIncrementWrap = 7;
+const int d3d11StencilOpDecrementWrap = 8;
+
+/// `D3D11_CLEAR_FLAG`. Stencil only: the depth plane of the layer target's
+/// `D24S8` is allocated because the format carries it and is never tested, so
+/// clearing it would move bandwidth for a value nothing reads.
+const int d3d11ClearDepth = 0x1;
+const int d3d11ClearStencil = 0x2;
 
 const int dxgiUsageRenderTargetOutput = 0x20;
 const int dxgiScalingStretch = 0;
@@ -213,6 +252,35 @@ const int sizeOfBlendDesc = 8 + 8 * sizeOfRenderTargetBlendDesc;
 /// `D3D11_SAMPLER_DESC`: 5 enums, 2 floats-and-ints, a 4-float border, 2
 /// floats.
 const int sizeOfSamplerDesc = 52;
+
+/// `D3D11_DEPTH_STENCILOP_DESC`: four 4-byte enums.
+const int sizeOfDepthStencilOpDesc = 16;
+
+/// `D3D11_DEPTH_STENCIL_DESC`.
+///
+/// `BOOL DepthEnable`, `D3D11_DEPTH_WRITE_MASK`, `D3D11_COMPARISON_FUNC`,
+/// `BOOL StencilEnable` - four 4-byte fields - then `UINT8 StencilReadMask`
+/// and `UINT8 StencilWriteMask`, which the compiler pads to four bytes before
+/// the two `D3D11_DEPTH_STENCILOP_DESC`s. The two masks sharing one 4-byte
+/// word is the part that is easy to get wrong: writing the write mask at its
+/// own `UINT` offset would leave the read mask at whatever the scratch buffer
+/// last held and silently mask the stencil test.
+const int sizeOfDepthStencilDesc = 20 + 2 * sizeOfDepthStencilOpDesc;
+
+/// `D3D11_DEPTH_STENCIL_VIEW_DESC`: format, view dimension, flags, then the
+/// largest union member (`Texture2DArray`: three `UINT`s).
+const int sizeOfDepthStencilViewDesc = 24;
+
+/// `D3D11_DSV_DIMENSION_TEXTURE2DMS`.
+///
+/// Five, and the number is worth stating rather than counting: the enum runs
+/// UNKNOWN, TEXTURE1D, TEXTURE1DARRAY, TEXTURE2D, TEXTURE2D**ARRAY**,
+/// TEXTURE2DMS - so the value one below this is the *array* dimension, and a
+/// descriptor that names it is rejected with `E_INVALIDARG` rather than
+/// misbehaving, which is the good outcome. Only the multisampled dimension is
+/// named because a layer target that carries stencil at all is one this backend
+/// allocated with four samples; see `d3d11LayerAttachmentsFor`.
+const int d3d11DsvDimensionTexture2dMs = 5;
 
 /// `D3D11_INPUT_ELEMENT_DESC`: an `LPCSTR` then six 4-byte fields, aligned to
 /// the pointer.
@@ -422,6 +490,11 @@ typedef Int32GetterFn = int Function(Pointer<Void>);
 typedef _NativeVoidOut = Void Function(Pointer<Void>, Pointer<Pointer<Void>>);
 typedef VoidOutFn = void Function(Pointer<Void>, Pointer<Pointer<Void>>);
 
+typedef _NativeCheckMultisampleQualityLevels = Int32 Function(
+    Pointer<Void>, Uint32, Uint32, Pointer<Uint32>);
+typedef CheckMultisampleQualityLevelsFn = int Function(
+    Pointer<Void>, int, int, Pointer<Uint32>);
+
 /// `ID3D11Device`, deriving from `IUnknown` (slots 0-2).
 final class D3d11Device extends ComObject {
   D3d11Device(super.pointer) : super(interfaceName: 'ID3D11Device');
@@ -430,11 +503,14 @@ final class D3d11Device extends ComObject {
   static const int _slotCreateTexture2D = 5;
   static const int _slotCreateShaderResourceView = 7;
   static const int _slotCreateRenderTargetView = 9;
+  static const int _slotCreateDepthStencilView = 10;
   static const int _slotCreateInputLayout = 11;
   static const int _slotCreateVertexShader = 12;
   static const int _slotCreatePixelShader = 15;
   static const int _slotCreateBlendState = 20;
+  static const int _slotCreateDepthStencilState = 21;
   static const int _slotCreateRasterizerState = 22;
+  static const int _slotCheckMultisampleQualityLevels = 30;
   static const int _slotCreateSamplerState = 23;
   static const int _slotGetFeatureLevel = 37;
   static const int _slotGetDeviceRemovedReason = 39;
@@ -450,6 +526,9 @@ final class D3d11Device extends ComObject {
   late final Create3Fn createRenderTargetView =
       comMethod<_NativeCreate3>(pointer, _slotCreateRenderTargetView)
           .asFunction();
+  late final Create3Fn createDepthStencilView =
+      comMethod<_NativeCreate3>(pointer, _slotCreateDepthStencilView)
+          .asFunction();
   late final CreateInputLayoutFn createInputLayout =
       comMethod<_NativeCreateInputLayout>(pointer, _slotCreateInputLayout)
           .asFunction();
@@ -461,8 +540,24 @@ final class D3d11Device extends ComObject {
           .asFunction();
   late final Create2Fn createBlendState =
       comMethod<_NativeCreate2>(pointer, _slotCreateBlendState).asFunction();
+  late final Create2Fn createDepthStencilState =
+      comMethod<_NativeCreate2>(pointer, _slotCreateDepthStencilState)
+          .asFunction();
   late final Create2Fn createRasterizerState =
       comMethod<_NativeCreate2>(pointer, _slotCreateRasterizerState)
+          .asFunction();
+
+  /// `CheckMultisampleQualityLevels(format, sampleCount, out levels)`.
+  ///
+  /// Asked before a multisampled layer target is created rather than after
+  /// `CreateTexture2D` has refused one: a driver that does not support four
+  /// samples on `R8G8B8A8_UNORM` answers zero here, and this backend then
+  /// allocates the layer colour-only and refuses both promoted routes for it.
+  /// Discovering the same fact from a failed texture creation would mean a
+  /// layer with no target at all, which is a frame that does not draw.
+  late final CheckMultisampleQualityLevelsFn checkMultisampleQualityLevels =
+      comMethod<_NativeCheckMultisampleQualityLevels>(
+              pointer, _slotCheckMultisampleQualityLevels)
           .asFunction();
   late final Create2Fn createSamplerState =
       comMethod<_NativeCreate2>(pointer, _slotCreateSamplerState).asFunction();
@@ -529,6 +624,24 @@ typedef _NativeDrawIndexed = Void Function(
     Pointer<Void>, Uint32, Uint32, Int32);
 typedef DrawIndexedFn = void Function(Pointer<Void>, int, int, int);
 
+typedef _NativeDraw = Void Function(Pointer<Void>, Uint32, Uint32);
+typedef DrawFn = void Function(Pointer<Void>, int, int);
+
+typedef _NativeSetDepthStencilState = Void Function(
+    Pointer<Void>, Pointer<Void>, Uint32);
+typedef SetDepthStencilStateFn = void Function(
+    Pointer<Void>, Pointer<Void>, int);
+
+typedef _NativeClearDsv = Void Function(
+    Pointer<Void>, Pointer<Void>, Uint32, Float, Uint8);
+typedef ClearDsvFn = void Function(
+    Pointer<Void>, Pointer<Void>, int, double, int);
+
+typedef _NativeResolveSubresource = Void Function(
+    Pointer<Void>, Pointer<Void>, Uint32, Pointer<Void>, Uint32, Uint32);
+typedef ResolveSubresourceFn = void Function(
+    Pointer<Void>, Pointer<Void>, int, Pointer<Void>, int, int);
+
 typedef _NativeSetVertexBuffers = Void Function(Pointer<Void>, Uint32, Uint32,
     Pointer<Pointer<Void>>, Pointer<Uint32>, Pointer<Uint32>);
 typedef SetVertexBuffersFn = void Function(Pointer<Void>, int, int,
@@ -569,6 +682,7 @@ final class D3d11DeviceContext extends ComObject {
   static const int _slotPsSetSamplers = 10;
   static const int _slotVsSetShader = 11;
   static const int _slotDrawIndexed = 12;
+  static const int _slotDraw = 13;
   static const int _slotMap = 14;
   static const int _slotUnmap = 15;
   static const int _slotPsSetConstantBuffers = 16;
@@ -578,12 +692,15 @@ final class D3d11DeviceContext extends ComObject {
   static const int _slotIaSetPrimitiveTopology = 24;
   static const int _slotOmSetRenderTargets = 33;
   static const int _slotOmSetBlendState = 35;
+  static const int _slotOmSetDepthStencilState = 36;
   static const int _slotRsSetState = 43;
   static const int _slotRsSetViewports = 44;
   static const int _slotRsSetScissorRects = 45;
   static const int _slotCopyResource = 47;
   static const int _slotUpdateSubresource = 48;
   static const int _slotClearRenderTargetView = 50;
+  static const int _slotClearDepthStencilView = 53;
+  static const int _slotResolveSubresource = 57;
   static const int _slotFlush = 111;
 
   late final SetSlotsFn vsSetConstantBuffers =
@@ -603,6 +720,16 @@ final class D3d11DeviceContext extends ComObject {
       comMethod<_NativeSetShader>(pointer, _slotVsSetShader).asFunction();
   late final DrawIndexedFn drawIndexed =
       comMethod<_NativeDrawIndexed>(pointer, _slotDrawIndexed).asFunction();
+
+  /// `Draw(vertexCount, startVertexLocation)`, the non-indexed form.
+  ///
+  /// Approaches B and C need it for different reasons and neither can use
+  /// `DrawIndexed`: the stencil accumulation is a triangle fan expanded into
+  /// an unindexed list by `StencilCoverDrawPlan`, and the cover and clear
+  /// quads live at named vertex offsets inside one buffer so a plan's three
+  /// geometries can be uploaded in a single `Map`.
+  late final DrawFn draw =
+      comMethod<_NativeDraw>(pointer, _slotDraw).asFunction();
   late final MapFn map = comMethod<_NativeMap>(pointer, _slotMap).asFunction();
   late final UnmapFn unmap =
       comMethod<_NativeUnmap>(pointer, _slotUnmap).asFunction();
@@ -623,6 +750,10 @@ final class D3d11DeviceContext extends ComObject {
   late final SetBlendStateFn omSetBlendState =
       comMethod<_NativeSetBlendState>(pointer, _slotOmSetBlendState)
           .asFunction();
+  late final SetDepthStencilStateFn omSetDepthStencilState =
+      comMethod<_NativeSetDepthStencilState>(
+              pointer, _slotOmSetDepthStencilState)
+          .asFunction();
   late final SetOneFn rsSetState =
       comMethod<_NativeSetOne>(pointer, _slotRsSetState).asFunction();
   late final SetArrayFn rsSetViewports =
@@ -636,6 +767,22 @@ final class D3d11DeviceContext extends ComObject {
           .asFunction();
   late final ClearRtvFn clearRenderTargetView =
       comMethod<_NativeClearRtv>(pointer, _slotClearRenderTargetView)
+          .asFunction();
+  late final ClearDsvFn clearDepthStencilView =
+      comMethod<_NativeClearDsv>(pointer, _slotClearDepthStencilView)
+          .asFunction();
+
+  /// `ResolveSubresource(dst, dstSub, src, srcSub, format)`.
+  ///
+  /// The multisampled half of a layer target is never sampled: a shader that
+  /// read it would need `Texture2DMS` and its own resolve in the pixel stage.
+  /// So a pass that drew into one ends by resolving it into the single-sample
+  /// colour texture whose id the composite quad batches against, exactly where
+  /// `GlRenderDevice._resolveLayerTarget` blits. Skipping it does not fail -
+  /// it composites the previous frame's resolved pixels, which reads as a
+  /// layer that stopped updating.
+  late final ResolveSubresourceFn resolveSubresource =
+      comMethod<_NativeResolveSubresource>(pointer, _slotResolveSubresource)
           .asFunction();
   late final VoidNullaryFn flush =
       comMethod<_NativeVoidNullary>(pointer, _slotFlush).asFunction();

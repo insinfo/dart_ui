@@ -183,3 +183,88 @@ float4 pixelMain(VertexOutput input) : SV_Target {
   return color * boxCoverage(input.shapeRect, input.devicePos);
 }
 ''';
+
+// ---------------------------------------------------------------------------
+// The opt-in vector program: approaches B and C
+// ---------------------------------------------------------------------------
+
+/// One HLSL program for the tessellated mesh (B) and the stencil cover (C).
+///
+/// The two routes are usually written as two programs because OpenGL's are -
+/// `gl_tessellated_executor.dart` carries a transform in its vertex shader and
+/// `gl_stencil_cover_executor.dart` does not. That difference is not real: both
+/// consume a position-only vertex and both write one premultiplied constant
+/// colour, and the only thing C would leave unused is a matrix it can set to
+/// the identity. So this is one program, one input layout and one constant
+/// buffer, and the cost of the merge is two dot products per stencil vertex.
+///
+/// Merging them is worth more here than it would be on GL. Every D3D11
+/// pipeline object is a COM object created from a descriptor at device
+/// creation and released with the device, and a second program would mean a
+/// second compile, a second `CreateInputLayout` against a second bytecode blob,
+/// and a second object to rebuild after a device loss - all for a vertex shader
+/// that differs by a multiply the identity makes free.
+///
+/// **No `boxCoverage`, and that is the whole trade these routes make.** The
+/// dense program in [kD3d11ShaderSource] multiplies every fragment by the exact
+/// area of the pixel square inside the shape rectangle, which is where this
+/// renderer's antialiasing comes from on every other path. A mesh and a cover
+/// quad have no such closed form, so their coverage is whatever the hardware's
+/// sample mask gives: exact in the interior, quantised at the edge. See
+/// `doc/RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD.md`.
+const String kD3d11VectorShaderSource = '''
+cbuffer VectorConstants : register(b0) {
+  float2 viewport;
+  float2 vectorPadding;
+  // Rows of the 2x3 local-to-target affine, in the order Transform2D stores
+  // them: (a, c, tx) and (b, d, ty). Approach C leaves these the identity
+  // because `StencilCoverDrawPlan` has already flattened its geometry into
+  // target space; approach B keeps the mesh in local coordinates so one
+  // retained vertex buffer survives a subtree that only moves.
+  float4 localToTarget0;
+  float4 localToTarget1;
+  float4 vectorColor;
+};
+
+struct VectorVertexInput {
+  float2 position : POSITION0;
+};
+
+struct VectorVertexOutput {
+  float4 clipPosition : SV_Position;
+};
+
+VectorVertexOutput vectorVertexMain(VectorVertexInput input) {
+  VectorVertexOutput output;
+  float3 local = float3(input.position, 1.0);
+  float2 target = float2(
+      dot(localToTarget0.xyz, local),
+      dot(localToTarget1.xyz, local));
+  // The same unconditional flip the dense program uses, and for the same
+  // reason: device space is y-down from the top-left, clip space is y-up from
+  // the middle, and D3D11 needs no second conditional flip because a rendered
+  // target is already stored top-down. See "Disagreement 1" above.
+  output.clipPosition = float4(
+      target.x / viewport.x * 2.0 - 1.0,
+      1.0 - target.y / viewport.y * 2.0,
+      0.0,
+      1.0);
+  return output;
+}
+
+float4 vectorPixelMain(VectorVertexOutput input) : SV_Target {
+  return vectorColor;
+}
+''';
+
+const String kD3d11VectorVertexEntryPoint = 'vectorVertexMain';
+const String kD3d11VectorPixelEntryPoint = 'vectorPixelMain';
+
+/// Bytes of [kD3d11VectorShaderSource]'s constant buffer.
+///
+/// Four `float4` registers. A constant buffer's `ByteWidth` must be a multiple
+/// of 16 and HLSL will not straddle a register boundary with a `float4`, so
+/// this is exactly what the declaration above occupies - the padding after
+/// `viewport` is named in the source rather than left implicit so that the Dart
+/// side can write the four registers as sixteen consecutive floats.
+const int kD3d11VectorConstantBytes = 64;

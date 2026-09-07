@@ -9,7 +9,10 @@ A GPU desta máquina suporta as quatro abordagens propostas.
 - **A — atlas analítico:** é a melhor base para UI comum e já é o caminho de
   produção mais completo do `dart_ui`.
 - **B — tesselação na CPU:** o executor está integrado ao replay de produção e é
-  alcançável de uma aplicação real por `RenderPolicy.routes`. O nicho que este
+  alcançável de uma aplicação real por `RenderPolicy.routes`. **Só no OpenGL
+  até 06/09/2026**, quando o Direct3D 11 — o caminho padrão do Windows —
+  finalmente ganhou o replay vetorial ordenado e os dois executores; ver a
+  seção do fim. O nicho que este
   relatório lhe atribuía — “SVG/ícone estático” — **não é dele**; ver a seção
   “Correção de 26 de agosto de 2026”.
 - **C — stencil-then-cover:** funciona no hardware, está integrado e é
@@ -262,6 +265,73 @@ ela: **24 757 pixels de borda e até 55 níveis** com quatro amostras, interior
 exato. `RenderQualityPreference.exact` e os kill switches de
 `GpuStrategySwitches` continuam removendo qualquer uma das duas — e agora
 removem alguma coisa, o que antes desta frente não era verdade.
+
+## Estratégias B e C no Direct3D 11 — 06/09/2026
+
+Até esta data B e C existiam **só no OpenGL**, e o OpenGL não é o caminho
+padrão: o seletor escolhe `direct3d11` primeiro em toda máquina Windows comum.
+Então as duas rotas que este relatório integrou eram inalcançáveis para
+praticamente todo usuário real do framework.
+
+**E o trabalho era maior do que "somar dois executores".** O Direct3D 11 não
+tinha replay vetorial ordenado nenhum: sem fluxo de comandos, sem recorder, sem
+telemetria de planejamento, sem `submitOrderedPaths`, sem alvos de camada com
+MSAA e stencil, e o sink construído sem recorder. Foi o caminho de promoção
+inteiro mais os dois executores.
+
+**As diferenças com o OpenGL que uma transliteração literal erraria**, cada uma
+um lugar onde o desenho sai errado e não falha:
+
+- **não existe `glColorMask`.** A máscara de escrita de cor é campo do *blend
+  state*, então limpar e acumular stencil exigem um segundo objeto de estado;
+- **`ClearDepthStencilView` não aceita retângulo nem máscara de escrita**, e a
+  capacidade `scissoredClear` não pode ser honrada pela chamada. A limpeza
+  virou um **desenho**: um quad sobre os limites do grupo com `REPLACE` e o
+  valor de limpeza como referência — um terceiro bloco de geometria que o
+  executor do GL não tem;
+- **o sentido de rotação inverte.** O GL usa `glFrontFace(GL_CW)` porque o
+  espaço de janela dele é y-para-cima; no D3D11 a projeção inverte e o viewport
+  inverte de volta, então área positiva é horária no alvo, que já é a face
+  frontal padrão. Copiar o ajuste do GL inverteria todo preenchimento non-zero;
+- **uma camada multiamostrada custa três recursos, não um**, porque um shader
+  `Texture2D` não amostra textura MSAA: alvo de cor MSAA, `D24_UNORM_S8_UINT`
+  com DSV, e uma textura de resolve de amostra única;
+- **profundidade precisou ser desligada explicitamente.** Com um DSV ligado, o
+  padrão do D3D11 é `DepthEnable = TRUE` contra um plano em que ninguém
+  escreveu, o que rejeita tudo.
+
+**Três bugs reais achados no caminho**, e os três são do tipo que não falha
+onde nasce:
+
+1. **estouro de buffer nativo.** O scratch de descritor tinha 256 bytes e
+   `D3D11_BLEND_DESC` tem 264. Corrompia o heap do Dart e derrubava a VM
+   minutos depois, dentro de iteração sem relação;
+2. **`allocate<Float>(4)` são quatro *bytes*, não quatro floats.** Os fatores
+   de blend escreviam 12 bytes além do fim;
+3. **a rota C não desenhava nada no primeiro frame de cada dispositivo.** Ela
+   escreve o constant buffer só no comando de cover, então no primeiro passe do
+   processo o registrador de viewport tinha o que `CreateBuffer` tivesse
+   deixado: a acumulação projetava fora da tela, o stencil ficava zero e o cover
+   era mascarado. 74 508 pixels de um frame 512x512 não desenhavam, **uma vez**,
+   e todo frame seguinte era exato.
+
+**Paridade medida** contra a rota do atlas, 512x512, na Intel UHD: interiores
+**exatos**, bit a bit, em todos os casos; todo desvio na franja, no máximo 55
+níveis na estrela de 90 pontas. O OpenGL mediu 24 757 pixels e 55 níveis na
+mesma cena — os dois portes independentes caem a **dois pixels** um do outro,
+o que mostra que a franja é a cobertura de quatro amostras do hardware e não de
+nenhum dos dois backends.
+
+**E nenhum desenho de UI comum trocou de estratégia**, afirmado duas vezes: com
+os dois executores construídos, zero desenhos escolhem B ou C numa cena de
+painéis, chips e ícones, e o framebuffer contra o dispositivo de política
+padrão difere em **0 pixels**. Com a política padrão o dispositivo não constrói
+executor nenhum e não paga o plano MSAA, o `D24S8` nem o resolve.
+
+**Não verificado:** não há `HWND` de verdade — `tool/gl_vector_routes_smoke.dart`
+não tem equivalente Direct3D 11 —, os números de custo do POC-23 não foram
+remedidos aqui, e o caminho de rebaixamento de contagem de amostras nunca rodou
+porque este adaptador suporta quatro.
 
 ## Estratégia D em 06/09/2026 — mais pronta e mais inalcançável do que este relatório dizia
 
