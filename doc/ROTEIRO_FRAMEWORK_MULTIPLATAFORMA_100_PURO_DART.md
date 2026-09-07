@@ -9610,6 +9610,104 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   confirmar que os testes ficam vermelhos. **Aberto:** o popup ainda não é
   fragmento UIA filho da dona.
 
+## 68.4.4 O laço modal do Windows congela o Dart inteiro — 07/09/2026
+
+Relatado por um usuário, com a comparação que fecha o diagnóstico: **no VLC
+dá para mover a janela, redimensionar e abrir o diálogo de arquivo sem o vídeo
+parar.** No reprodutor daqui, os três param a imagem.
+
+Não é limitação do Windows nem do Dart; é a interação dos dois com a
+arquitetura desta aplicação. Segurando a barra de título ou uma borda, o
+Windows entra num **laço de mensagens modal próprio** entre `WM_ENTERSIZEMOVE`
+e `WM_EXITSIZEMOVE`, e `DispatchMessageW` não retorna até soltar o mouse. A
+isolate do Dart está dentro dessa chamada, então **nada** do lado Dart roda:
+nem timer, nem microtask, nem `await`. É a mesma forma do defeito do
+`IFileDialog::Show`, corrigido em 06/09/2026, só que aqui o laço modal é da
+nossa própria janela e a isolate não pode fugir dele.
+
+**Metade já está tratada e a outra não.** O manipulador de `WM_SIZE` chama
+`_drawLiveResizeFrame`, que produz um quadro síncrono ali dentro, fora da fila
+— por isso redimensionar *ativamente* ainda desenha. Parar o mouse no meio do
+redimensionamento congela, porque sem mensagem nova não há gatilho; e **mover
+não muda o tamanho**, então `WM_SIZE` nunca chega e o arrasto inteiro fica sem
+um único quadro. O remédio padrão já está escrito no comentário de
+`wmEntersizemove` em `win32_constants.dart`: um `SetTimer` armado ao entrar no
+laço e morto ao sair, com `WM_TIMER` — que **é** despachado dentro do laço
+modal — bombeando um quadro. As ligações de `SetTimer` e `KillTimer` já
+existem em `win32_api.dart`.
+
+**Só que o temporizador devolve o desenho, não o laço de eventos.** Ele faria o
+Lottie animar durante o arrasto, porque o quadro da animação vem de um
+`Stopwatch` lido na hora de pintar. Não faria o vídeo tocar: a decodificação é
+`await` e continuaria parada, redesenhando o mesmo quadro. É exatamente o que o
+VLC resolve tendo decodificação e saída de vídeo em threads próprias.
+
+### A decodificação numa isolate própria: medida, não suposta
+
+Duas perguntas, e as duas têm resposta medida.
+
+**1. O Media Foundation roda numa isolate?** A razão de duvidar é específica:
+uma isolate do Dart **não é presa a uma thread do sistema** — roda numa thread
+do pool da VM e pode ser retomada em outra depois de qualquer ponto de
+suspensão — e apartamento COM é estado de thread. O que salva é que este
+decodificador pede `COINIT_MULTITHREADED`: um objeto de MTA não tem afinidade
+de apartamento e pode ser chamado de qualquer thread do processo.
+
+Provado em vez de deduzido, com `tool/isolate_decode_probe.dart` sobre um H.264
+1080p real, 400 quadros e outros tantos `await`:
+
+```
+aberto na isolate: 1920x1080 · h264 · 0:20:18.909000
+400 quadros decodificados numa isolate própria em 2697 ms
+(6,74 ms/quadro, 148,3 fps) · timestamps fora de ordem: 0
+```
+
+**2. Entregar os quadros de volta custa quanto?** Um quadro 1080p BGRA é 7,91
+MiB, e a 25 fps são 198 MiB/s atravessando a fronteira. `NativeVideoFrameRing`
+**já aloca memória nativa** — um `Pointer<Uint8>` fatiado em slots — e isolates
+dividem um espaço de endereçamento, então o consumidor reconstrói a view com
+`Pointer.fromAddress(...).asTypedList(...)` e só o índice do slot cruza a
+porta. `tool/isolate_frame_handoff_probe.dart`, AOT, 120 quadros por caminho:
+
+| caminho | mediana | média | p95 | sobre a mesma isolate |
+|---|---|---|---|---|
+| mesma isolate (hoje) | 0,934 ms | 0,960 ms | 1,143 ms | — |
+| **anel nativo compartilhado** | **1,029 ms** | 1,143 ms | 1,816 ms | **+0,095 ms, 1,10x** |
+| cópia pela porta | 3,243 ms | 3,401 ms | 4,578 ms | +2,309 ms, 3,47x |
+| `TransferableTypedData` | 4,506 ms | 4,520 ms | 5,461 ms | +3,572 ms, 4,82x |
+
+O `TransferableTypedData` sair **pior que a cópia** é o resultado que
+surpreende, e a explicação está no próprio nome: a transferência *tira* o
+buffer de quem enviou, então não dá para reaproveitar um anel e cada quadro
+paga uma alocação de 7,91 MiB zerada. Alocação custa mais que memcpy nesse
+tamanho.
+
+Então a resposta é: **não degrada.** 0,095 ms por quadro são 2,4 ms por segundo
+a 25 fps, um quarto de por cento. O custo é a ida e volta pela porta e nada
+mais, porque os 7,91 MiB não se movem.
+
+**O que se paga em vez de desempenho** é segurança de memória, e o próprio
+probe demonstrou: uma versão inicial dele passou um buffer de um slot e deixou
+o produtor construir quatro views sobre ele. `asTypedList` **não confere** o
+comprimento contra a alocação — não tem como, a alocação não é algo que ele
+conheça — e o **processo morreu com violação de acesso e nenhuma exceção
+Dart**. Compartilhar memória bruta entre isolates troca um erro de índice por
+um crash sem diagnóstico, e o dono do anel passa a ser responsável por uma
+disciplina que o tipo não impõe.
+
+E a visibilidade das escritas entre isolates foi checada em vez de assumida: o
+Dart não publica modelo de memória para memória de `dart:ffi` compartilhada, e
+o que torna isso seguro na prática é o envio e o recebimento pela porta serem
+um ponto de sincronização dentro da VM. 200 rodadas conferindo primeira,
+última e palavra do meio de um quadro inteiro: sempre coerente.
+
+### Um número que sobra explicado pela metade
+
+O decodificador sozinho sustenta **148 fps** num H.264 1080p, e o reprodutor
+mostrava 12,7 fps num arquivo de 25 fps **antes de qualquer diálogo**. A
+decodificação não é o gargalo; o que consome os outros ~79 ms por quadro não
+foi isolado, e está aqui como pergunta aberta em vez de suposição.
+
 ## 68.4.3 O Vulkan desenha texto — 06/09/2026
 
 A §68.2 registrava que `VulkanWindowTarget` montava seu `GpuRasterSink` **sem
