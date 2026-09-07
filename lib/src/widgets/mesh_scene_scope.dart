@@ -39,9 +39,8 @@ final class MeshSceneScope extends InheritedWidget {
   final BackendDiagnostic? unavailable;
 
   /// The window's 3D surface, or null. The call a render object makes.
-  static MeshSceneSurface? maybeOf(BuildContext context) => context
-      .dependOnInheritedWidgetOfExactType<MeshSceneScope>()
-      ?.surface;
+  static MeshSceneSurface? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<MeshSceneScope>()?.surface;
 
   /// The whole answer, including the reason there is no surface.
   static MeshSceneScope? of(BuildContext context) =>

@@ -354,8 +354,10 @@ final class GlMeshPipeline {
     // viewport partly outside the target is `GL_INVALID_VALUE` only for a
     // negative width, so the half that is silent - a box hanging off the right
     // edge - would simply scissor away pixels the other backend drew.
-    final int boxLeft = viewport == null ? 0 : viewport.left.floor().clamp(0, width);
-    final int boxTop = viewport == null ? 0 : viewport.top.floor().clamp(0, height);
+    final int boxLeft =
+        viewport == null ? 0 : viewport.left.floor().clamp(0, width);
+    final int boxTop =
+        viewport == null ? 0 : viewport.top.floor().clamp(0, height);
     final int boxRight =
         viewport == null ? width : viewport.right.ceil().clamp(boxLeft, width);
     final int boxBottom = viewport == null
@@ -437,10 +439,8 @@ final class GlMeshPipeline {
     // reach the whole attachment: a scissored depth clear leaves the previous
     // frame's depth outside the box, and the frame after a viewport moves
     // would test against it and drop triangles with no error anywhere.
-    final bool confined = boxLeft != 0 ||
-        boxTop != 0 ||
-        boxWidth != width ||
-        boxHeight != height;
+    final bool confined =
+        boxLeft != 0 || boxTop != 0 || boxWidth != width || boxHeight != height;
     if (confined) {
       _gl
         ..scissor(boxLeft, height - boxBottom, boxWidth, boxHeight)

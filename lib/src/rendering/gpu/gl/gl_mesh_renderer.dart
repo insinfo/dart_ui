@@ -134,7 +134,8 @@ final class GlMeshRenderer implements MeshSceneRenderer, GlRecoverableTarget {
     final GlMeshPipelineAttempt attempt =
         GlMeshPipeline.create(gl: device.api, heap: device.heap);
     final GlMeshPipeline? pipeline = attempt.pipeline;
-    if (pipeline == null) return GlMeshRendererAttempt(null, attempt.diagnostics);
+    if (pipeline == null)
+      return GlMeshRendererAttempt(null, attempt.diagnostics);
     final renderer = GlMeshRenderer._(device, pipeline);
     // Registered only once the program linked, so a device never holds a
     // renderer whose repopulate is certain to fail - that would turn every
