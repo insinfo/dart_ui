@@ -340,7 +340,11 @@ endsolid test
   });
 
   group('format sniffing', () {
-    test('FBX is refused by name, with what to do instead', () {
+    test('an FBX with nothing after its header is refused by version', () {
+      // FBX is read now, in `fbx_loader.dart`, and the cases that exercise it
+      // live beside it. What is pinned here is only the routing: bytes that
+      // begin with the FBX magic reach that reader, and it complains about
+      // the file rather than the format.
       final Uint8List fbx = Uint8List(64);
       const String magic = 'Kaydara FBX Binary';
       for (var i = 0; i < magic.length; i++) {
@@ -352,7 +356,7 @@ endsolid test
           isA<MeshParseException>().having(
             (MeshParseException e) => e.detail,
             'detail',
-            contains('glTF'),
+            contains('6400'),
           ),
         ),
       );

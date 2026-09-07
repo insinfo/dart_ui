@@ -1,12 +1,11 @@
-/// Reading OBJ, STL, glTF 2.0 and GLB into [Mesh3D].
+/// Reading OBJ, STL, glTF 2.0, GLB and FBX into [Mesh3D].
 ///
-/// Four formats, chosen because between them they cover what a person actually
-/// has on disk: OBJ from anything old, STL from anything printed, and glTF/GLB
-/// from anything current. **FBX is refused by name.** It is Autodesk's binary
-/// format with a compressed node tree, a property system and a version history
-/// that changed the layout more than once; supporting it is a project rather
-/// than a loader, and half-supporting it would mean models that open and are
-/// silently wrong.
+/// Five formats, chosen because between them they cover what a person actually
+/// has on disk: OBJ from anything old, STL from anything printed, glTF/GLB
+/// from anything current, and FBX from every animation pipeline there is.
+/// FBX's node tree, property system and skinning live in `fbx_loader.dart`
+/// because they are a reader in their own right; what remains here is the
+/// sniff that routes to it.
 ///
 /// ## The convention that trips every one of these
 ///
@@ -27,6 +26,7 @@ import '../container/zip_archive.dart' show ZipArchive;
 import '../image/decoded_image.dart';
 import '../image/image_errors.dart';
 import '../image/raster_formats.dart';
+import 'fbx_loader.dart' show loadFbx, looksLikeAsciiFbx, looksLikeBinaryFbx;
 import 'mesh3d.dart';
 
 /// Reads a model, choosing the format from the bytes rather than the name.
@@ -54,13 +54,8 @@ Mesh3D loadMesh(
       detail: 'entries: ${archive.names.take(8).join(', ')}',
     );
   }
-  if (_looksLikeFbx(bytes)) {
-    throw const MeshParseException(
-      'FBX is not supported',
-      detail: 'Autodesk FBX is a binary format with its own node tree and '
-          'property system; this viewer reads OBJ, STL, glTF and GLB. Export '
-          'the model as glTF or OBJ.',
-    );
+  if (looksLikeBinaryFbx(bytes)) {
+    return loadFbx(bytes, name: name, resolveBuffer: resolveBuffer);
   }
   if (_looksBinary(bytes)) return loadStl(bytes, name: name);
 
@@ -72,16 +67,17 @@ Mesh3D loadMesh(
   if (head.trimLeft().startsWith('{')) {
     return loadGltf(text, name: name, resolveBuffer: resolveBuffer);
   }
-  return loadObj(text, name: name, resolveBuffer: resolveBuffer);
-}
-
-bool _looksLikeFbx(Uint8List bytes) {
-  const String magic = 'Kaydara FBX Binary';
-  if (bytes.length < magic.length) return false;
-  for (var i = 0; i < magic.length; i++) {
-    if (bytes[i] != magic.codeUnitAt(i)) return false;
+  // ASCII FBX is refused by name rather than left to the OBJ reader, which
+  // finds no `v` lines in it and returns an empty model instead of an error.
+  if (looksLikeAsciiFbx(text)) {
+    throw const MeshParseException(
+      'this is an ASCII FBX, and only binary FBX is read',
+      detail: 'the two formats share a name and nothing else: the text one is '
+          'a different grammar with the same node names. Re-export it as '
+          'binary FBX, or as glTF.',
+    );
   }
-  return true;
+  return loadObj(text, name: name, resolveBuffer: resolveBuffer);
 }
 
 /// Whether the first kilobyte holds bytes no text model would.
