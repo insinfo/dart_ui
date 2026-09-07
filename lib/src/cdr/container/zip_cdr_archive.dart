@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
-import '../../graphics/image/inflate.dart';
-import '../../pdf/io/byte_reader.dart';
+
+import '../../graphics/container/zip_archive.dart';
 
 /// Arquivo individual contido em um pacote CorelDRAW moderno baseado em ZIP (CDR X4 a 2024).
 class ZipCdrEntry {
@@ -26,81 +26,44 @@ class ZipCdrEntry {
 }
 
 /// Leitor e extrator de contêineres ZIP em Puro Dart para arquivos CorelDRAW (.cdr).
+///
+/// Casca fina sobre [ZipArchive], que mora em `graphics` porque três formatos
+/// daqui são ZIP por baixo — `.cdr`, dotLottie e o que vier — e porque
+/// `graphics` é a camada mais baixa que pode segurar um: o `inflate` já está
+/// lá. Este tipo fica pelo nome, que é o que `cdr_document.dart` usa.
+///
+/// A troca corrigiu um defeito de verdade junto: o leitor antigo caminhava os
+/// *local headers* da frente para trás e parava seco na primeira entrada com o
+/// bit 3 das flags ligado, em que o tamanho comprimido no cabeçalho é zero e o
+/// verdadeiro vem depois dos dados. Sem erro, devolvendo o que tinha alcançado.
+/// O leitor novo lê o diretório central primeiro, que sempre traz os tamanhos.
 class ZipCdrArchive {
-  final Map<String, ZipCdrEntry> _entries = {};
+  ZipCdrArchive._(this._archive);
 
-  Map<String, ZipCdrEntry> get entries => _entries;
+  final ZipArchive _archive;
 
-  /// Retorna a entrada pelo nome do caminho (ex: `content/root.dat`, `content/riffData.dat`).
-  ZipCdrEntry? operator [](String name) => _entries[name];
+  Map<String, ZipCdrEntry> get entries => <String, ZipCdrEntry>{
+        for (final ZipEntry entry in _archive.entries.values)
+          entry.name: _wrap(entry),
+      };
 
-  bool contains(String name) => _entries.containsKey(name);
+  /// Retorna a entrada pelo nome do caminho (ex: `content/root.dat`).
+  ZipCdrEntry? operator [](String name) {
+    final ZipEntry? entry = _archive[name];
+    return entry == null ? null : _wrap(entry);
+  }
+
+  bool contains(String name) => _archive.contains(name);
 
   /// Abre e analisa o contêiner ZIP a partir dos bytes brutos.
-  static ZipCdrArchive parse(Uint8List bytes) {
-    final archive = ZipCdrArchive();
-    final reader = ByteReader(bytes);
+  static ZipCdrArchive parse(Uint8List bytes) =>
+      ZipCdrArchive._(ZipArchive.parse(bytes));
 
-    while (reader.remaining >= 30) {
-      final sig = reader.readUint32LE();
-      if (sig != 0x04034B50) {
-        // Não é mais uma assinatura de Local File Header (PK\x03\x04)
-        break;
-      }
-
-      reader.skip(2); // Version needed
-      final flags = reader.readUint16LE();
-      final method = reader.readUint16LE();
-      reader.skip(4); // Mod time & date
-      reader.skip(4); // CRC32
-      final compSize = reader.readUint32LE();
-      final uncompSize = reader.readUint32LE();
-      final fileNameLen = reader.readUint16LE();
-      final extraFieldLen = reader.readUint16LE();
-
-      final fileNameBytes = reader.readBytes(fileNameLen);
-      final fileName = String.fromCharCodes(fileNameBytes);
-
-      reader.skip(extraFieldLen);
-
-      if (compSize > 0 && reader.remaining >= compSize) {
-        final compData = reader.readBytes(compSize);
-        Uint8List decompressed;
-
-        if (method == 0) {
-          // Stored (sem compressão)
-          decompressed = compData;
-        } else if (method == 8) {
-          // DEFLATE
-          try {
-            decompressed = inflate(
-              compData,
-              maxOutputBytes: 128 * 1024 * 1024,
-              budget: 'zip_cdr_entry',
-            );
-          } catch (_) {
-            decompressed = compData;
-          }
-        } else {
-          decompressed = compData;
-        }
-
-        archive._entries[fileName] = ZipCdrEntry(
-          name: fileName,
-          compressionMethod: method,
-          compressedSize: compSize,
-          uncompressedSize: uncompSize,
-          data: decompressed,
-        );
-      } else {
-        // Entrada de diretório ou tamanho desconhecido no local header
-        if ((flags & 0x08) != 0) {
-          // Data descriptor segue os dados
-          break;
-        }
-      }
-    }
-
-    return archive;
-  }
+  static ZipCdrEntry _wrap(ZipEntry entry) => ZipCdrEntry(
+        name: entry.name,
+        compressionMethod: entry.compressionMethod,
+        compressedSize: entry.compressedSize,
+        uncompressedSize: entry.uncompressedSize,
+        data: entry.data,
+      );
 }
