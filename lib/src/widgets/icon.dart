@@ -472,7 +472,29 @@ final class RenderIcon extends RenderBox {
 
   @override
   void paint(DisplayList list, Offset offset) {
-    final ScaledTypeface face = font ?? (throw _missingFont());
+    final ScaledTypeface? resolved = font;
+    if (resolved == null) {
+      // Nothing is drawn, and the family is recorded once. This used to throw,
+      // and throwing was the wrong size of failure: an application whose icon
+      // font is missing - most often because it was not copied next to the
+      // executable by the installer, which is how this was found - lost its
+      // *entire* window rather than its icons. The frame's error boundary
+      // contains the throw, but containing it at frame level means every pixel
+      // of that frame is gone, so a cosmetic defect reads as a dead program.
+      //
+      // It is also what the two lines below already do for the narrower case.
+      // A code point the family does not carry draws nothing and says nothing;
+      // a family that is not registered at all was fatal. That is backwards:
+      // the broader failure had the harsher consequence.
+      //
+      // Silence is still not the answer - it is what the throw was defending
+      // against - so the family goes into [missingIconFamilies], deduplicated,
+      // and [hasGlyph] remains the question to ask before painting when a
+      // missing icon font is a state the application expects.
+      _noteMissingFamily();
+      return;
+    }
+    final ScaledTypeface face = resolved;
     final int glyph = face.typeface.glyphForCodePoint(_icon.codePoint);
     if (glyph == notdefGlyph) return;
     if (_color.alpha == 0) return;
@@ -524,11 +546,40 @@ final class RenderIcon extends RenderBox {
     list.drawPath(list.addPath(outline), paintId);
   }
 
-  StateError _missingFont() => StateError(
-        'RenderIcon has no face for $_icon. The family is not registered with '
-        'FontRegistry, so there is nothing to draw; ask hasGlyph before '
-        'painting if a missing icon font is a state this application expects.',
-      );
+  /// Records that this icon's family was asked for and is not registered.
+  ///
+  /// Deduplicated by family name rather than by icon: a toolbar of thirty
+  /// icons from one unregistered font is one fact, and a set that grew per
+  /// icon per frame would be a leak on a path that only exists to report a
+  /// mistake.
+  void _noteMissingFamily() {
+    final String family = _icon.fontFamily ?? _uiFontFamilyPlaceholder;
+    _missingFamilies.add(family);
+  }
+
+  /// Stands in for a null [IconData.fontFamily], which asks for the UI font.
+  ///
+  /// Reaching here with a null family means `FontRegistry.uiFont` answered
+  /// null, so the application has no UI font at all - a different and much
+  /// louder problem than a missing icon font, and one worth being able to tell
+  /// apart in the report.
+  static const String _uiFontFamilyPlaceholder = '(the UI font)';
+
+  static final Set<String> _missingFamilies = <String>{};
+
+  /// Icon font families that were painted and are not registered.
+  ///
+  /// The loud half of the decision in [paint]: an application that draws
+  /// nothing where an icon should be can ask this and get the family name,
+  /// rather than discovering the omission from a screenshot. Empty is the
+  /// healthy state, and a test that asserts it stays empty is worth more than
+  /// one that asserts an icon drew.
+  static Set<String> get missingIconFamilies =>
+      Set<String>.unmodifiable(_missingFamilies);
+
+  /// Forgets every recorded miss. For tests, and for an application that has
+  /// just registered the fonts it was missing.
+  static void clearMissingIconFamilies() => _missingFamilies.clear();
 
   /// One-element scratch buffers, reused across paints.
   ///

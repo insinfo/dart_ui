@@ -368,6 +368,62 @@ void main() {
       expect(render.glyphId, 0);
     });
 
+    test('painting an unregistered family draws nothing and does not throw',
+        () {
+      // The regression, reported from a packaged application: the installer
+      // shipped the executable without the icon font beside it, `paint` threw,
+      // and the frame's error boundary caught it - which meant the whole
+      // window came up blank with one red banner. A missing icon font must
+      // cost the icons, not the program.
+      RenderIcon.clearMissingIconFamilies();
+
+      final Framebuffer surface = _render(
+        const Icon(IconData(0xEBAC, fontFamily: 'NoSuchFamily'), size: 20),
+        const Size(20, 20),
+      );
+
+      expect(
+        _inkBounds(surface),
+        isNull,
+        reason: 'nothing is drawn, which is what the narrower case - a code '
+            'point the family does not carry - has always done',
+      );
+      expect(
+        RenderIcon.missingIconFamilies,
+        contains('NoSuchFamily'),
+        reason: 'silence was what the old throw was defending against, so the '
+            'family has to be recoverable by name rather than only visible in '
+            'a screenshot',
+      );
+    });
+
+    test('the same missing family is recorded once, not once per paint', () {
+      // A toolbar of thirty icons from one unregistered font is one fact. A
+      // set that grew per icon per frame would turn a reporting path into a
+      // leak.
+      RenderIcon.clearMissingIconFamilies();
+      for (var frame = 0; frame < 5; frame++) {
+        _render(
+          const Icon(IconData(0xEBAC, fontFamily: 'NoSuchFamily'), size: 20),
+          const Size(20, 20),
+        );
+        _render(
+          const Icon(IconData(0xEBAD, fontFamily: 'NoSuchFamily'), size: 20),
+          const Size(20, 20),
+        );
+      }
+      expect(RenderIcon.missingIconFamilies, <String>{'NoSuchFamily'});
+    });
+
+    test('a registered family records nothing', () {
+      // The healthy state, asserted rather than assumed: a report that fired
+      // for a font that *is* installed would be worse than no report, because
+      // the next real one would be ignored.
+      RenderIcon.clearMissingIconFamilies();
+      _render(Icon(block, size: 20), const Size(20, 20));
+      expect(RenderIcon.missingIconFamilies, isEmpty);
+    });
+
     test('a code point the face does not carry draws nothing', () {
       // U+E800 is in the Private Use Area and Ahem has nothing there.
       final RenderIcon render =
