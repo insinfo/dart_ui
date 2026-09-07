@@ -306,6 +306,21 @@ final class GlRenderDevice
   /// without the opt-in the display-list route remains byte-for-byte dense.
   bool get experimentalCpuTessellationEnabled => _tessellatedExecutor != null;
 
+  /// Whether the fragment stage evaluates rounded rectangles in closed form.
+  ///
+  /// On by default, and not called experimental, because unlike the three
+  /// above it needs nothing optional from the driver: the coverage is computed
+  /// by the one shader program this backend has always compiled, from two
+  /// vertex floats the solid pipeline has always written as zero. Any context
+  /// that can run this renderer at all can run it.
+  ///
+  /// It is settable because a closed form and a scanline filler are two
+  /// different rasterisers and the only honest way to say how far apart they
+  /// land is to draw the same scene both ways through one device and subtract.
+  /// `test/rendering/gpu/gl/gl_analytic_primitive_test.dart` does exactly
+  /// that; nothing in a frame touches it.
+  bool analyticPrimitivesEnabled = true;
+
   /// Queries the attachments of one currently selectable framebuffer.
   ///
   /// Unlike context features, stencil bits and sample count belong to the
@@ -2296,6 +2311,10 @@ final class GlOffscreenTarget
       onAtlasFlush: _flushAtlases,
       pathPlanningTelemetry: vector?.telemetry,
       pathCommandRecorder: vector?.recorder,
+      // Refreshed per frame below as well, so a caller that flips the device's
+      // switch between two frames gets the second one drawn the other way
+      // without rebuilding a target.
+      analyticPrimitives: _device.analyticPrimitivesEnabled,
     );
     _player = DisplayListPlayer(_sink);
   }
@@ -2825,6 +2844,7 @@ final class GlOffscreenTarget
     Transform2D deviceTransform = Transform2D.identity,
   }) async {
     final frame = beginFrame(FrameRequest(clearColor: clearColor));
+    _sink.analyticPrimitives = _device.analyticPrimitivesEnabled;
     // The sink is handed a font *id* and resolves it through the same resource
     // table the player walks, so the two cannot disagree about which face an
     // id names. Bound per list rather than per target because a target draws

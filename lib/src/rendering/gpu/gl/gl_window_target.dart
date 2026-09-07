@@ -214,6 +214,10 @@ final class GlWindowTarget
       onAtlasFlush: _flushAtlases,
       pathPlanningTelemetry: vector?.telemetry,
       pathCommandRecorder: vector?.recorder,
+      // The window and the offscreen target must promote the same draws or a
+      // golden test proves nothing about what the screen shows, which is the
+      // reason `GlVectorReplay` exists. Same flag, read from the same device.
+      analyticPrimitives: _device.analyticPrimitivesEnabled,
     );
     _player = DisplayListPlayer(_sink);
   }
@@ -729,6 +733,7 @@ final class GlWindowTarget
     Transform2D deviceTransform = Transform2D.identity,
   }) async {
     final frame = beginFrame(FrameRequest(clearColor: clearColor));
+    _sink.analyticPrimitives = _device.analyticPrimitivesEnabled;
     // One resource table, walked by the player and read by the sink's font
     // resolver, so the two cannot disagree about which face an id names.
     final resources = DisplayListResources(list);

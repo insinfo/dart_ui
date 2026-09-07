@@ -220,6 +220,14 @@ final class GlVectorReplay {
   /// than a preference. The dense atlas is always available, which is why
   /// every refusal here is a decision about cost and never about correctness.
   ///
+  ///   * **Analytic primitives** are unconditional. The closed form is
+  ///     evaluated by the one shader program this backend compiles for every
+  ///     context it opens, so there is no driver fact to consult - and the
+  ///     selector's own rule is that an analytic primitive stays analytic
+  ///     whatever else is available, because no encoding beats six floats on a
+  ///     vertex. Which *shapes* qualify is decided in `gpu_raster_sink.dart`,
+  ///     not here: the vertex has room for one radius, so a uniform rounded
+  ///     rectangle takes this route and a per-corner one keeps the atlas.
   ///   * **Sparse strips** carry analytic coverage in an alpha8 atlas, so they
   ///     are the antialiased route and only that. Encoding an aliased fill
   ///     through them would add a fringe the display list did not ask for.
@@ -243,6 +251,13 @@ final class GlVectorReplay {
     final GpuPassAttachments attachments = layers.currentPass.attachments;
     if (traits.hasGradient) return _gradientCapabilities();
     return GpuPathStrategyCapabilities(
+      // Stated rather than left to the default, because it is now a claim
+      // about a shader that exists: `gl_shaders.dart` decodes a corner radius
+      // out of the solid pipeline's unused texture coordinate and computes the
+      // coverage from the field. It needs no extension, no attachment and no
+      // sample count - which is why it is the one capability here with no
+      // condition attached, and why the three below all have one.
+      analyticPrimitives: true,
       sparseStrips: sparseEnabled && traits.antiAlias,
       tessellation: tessellationEnabled &&
           (!traits.antiAlias || attachments.isMultisampled),
@@ -274,6 +289,11 @@ final class GlVectorReplay {
   GpuPathStrategyCapabilities _gradientCapabilities() {
     final bool sparse = sparseEnabled && gradientCache != null;
     return GpuPathStrategyCapabilities(
+      // False even now that the backend has the shader, and for the same
+      // reason the coverage atlas is false below: the analytic route modulates
+      // one vertex colour by a coverage it computed, and a ramp is not a
+      // colour. Promoting a gradient into it would paint a flat fill, which is
+      // the wrong picture this whole method exists to refuse.
       analyticPrimitives: false,
       coverageAtlas: false,
       sparseStrips: sparse,

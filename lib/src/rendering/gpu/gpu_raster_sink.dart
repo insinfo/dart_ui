@@ -75,6 +75,7 @@ import 'gpu_path_planning.dart';
 import 'gpu_path_strategy.dart';
 import 'gpu_pipeline.dart';
 import 'gpu_texture.dart';
+import 'vector/analytic_primitive.dart';
 
 /// Turns whatever the display list interned as an image into a texture.
 ///
@@ -178,6 +179,7 @@ final class GpuRasterSink
     this.layerStack,
     this.pathPlanningTelemetry,
     this.pathCommandRecorder,
+    this.analyticPrimitives = false,
   })  : assert(
           maskAtlas == null || maskTextureId != kNoTexture,
           'a mask atlas needs a texture id, or every mask would batch as if '
@@ -263,6 +265,52 @@ final class GpuRasterSink
   /// a candidate after retaining a complete command; refusal or failure keeps
   /// the established coverage-atlas path below as the pixel-producing route.
   final GpuPathCommandRecorder? pathCommandRecorder;
+
+  /// Whether this backend's fragment stage can evaluate a closed-form shape.
+  ///
+  /// Strategy 6 of `doc/architecture/ACELERACAO_GPU_VETORIAL.md`, and the one
+  /// capability in this class that is a statement about a *shader* rather than
+  /// about a resource. False - the default - is the renderer as it was: every
+  /// rounded rectangle is turned into a [Path], rasterised on the CPU by
+  /// `ScanlineFiller`, uploaded to the coverage atlas and sampled back. True
+  /// says the backend's solid pipeline reads a corner radius off the vertex
+  /// and computes the coverage itself, so the shape costs one quad and touches
+  /// no atlas, no upload and no cache.
+  ///
+  /// Mutable rather than final so a differential test can draw the same scene
+  /// both ways through one device and compare the pixels, which is the only
+  /// comparison that can say what the closed form costs in accuracy. Nothing
+  /// in a frame changes it; a backend sets it once and a test sets it between
+  /// frames.
+  ///
+  /// The flag alone is not enough to make a picture wrong on a backend that
+  /// leaves it false, because the parameters ride in vertex floats that every
+  /// other route already writes as zero - see `gl_shaders.dart`. What it
+  /// guards is the reverse: a backend whose shader does *not* read them would
+  /// draw a square-cornered rectangle where a rounded one was asked for.
+  bool analyticPrimitives;
+
+  /// The recognised shape, refilled per draw and never retained.
+  ///
+  /// One instance for the life of the sink, for the reason
+  /// `analytic_primitive.dart` gives: the whole claim of this route is that a
+  /// rounded rectangle costs nothing but a quad, and an object allocated per
+  /// rounded rectangle per frame would be the garbage `gpu_vertex_buffer.dart`
+  /// exists to avoid, reintroduced one layer up.
+  final AnalyticPrimitive _analytic = AnalyticPrimitive();
+
+  static const AnalyticPrimitiveRecognizer _recognizer =
+      AnalyticPrimitiveRecognizer();
+
+  /// [AnalyticPrimitiveKind.rounded]'s shader code, as the float a vertex
+  /// carries it in.
+  ///
+  /// Read off the enum rather than written as a literal because that integer
+  /// *is* the contract with every shader that decodes it - the enum's own
+  /// comment says it may be added to but not renumbered - and a literal here
+  /// would be a second copy of it that nothing forces to agree.
+  static final double _roundedShaderCode =
+      AnalyticPrimitiveKind.rounded.shaderCode.toDouble();
 
   /// What the application declared about the subtree being drawn.
   ///
@@ -452,6 +500,28 @@ final class GpuRasterSink
     ReplayPaint paint,
   ) {
     _requireFill(paint, 'rounded rectangles');
+    // The closed-form route first, when this backend has a shader for it.
+    //
+    // This is the draw the whole analytic-primitive strategy was written for.
+    // Everything below it - the interned path, the mask atlas, the scanline
+    // filler, the alpha8 upload - answers "how much of this pixel does the
+    // shape cover?" by rasterising the shape's entire bounding box on the CPU
+    // and reading the answer back through a texture. A 220x44 button is 9 680
+    // bytes of that per distinct size and per sub-pixel offset, and a list or
+    // a table has more distinct rounded rectangles than the atlas has room to
+    // keep, so the cost is paid again every frame. Measured on this machine,
+    // 600 antialiased rounded rectangles cost 56 ms a frame against 0.8 ms for
+    // 600 plain ones - 65x per primitive, for a shape whose coverage has an
+    // exact closed form.
+    //
+    // A refusal below is never a wrong picture, only a slower one: control
+    // falls through to the interned path and the atlas, which is the parity
+    // route this renderer measures everything else against.
+    if (analyticPrimitives &&
+        paint.gradient == null &&
+        _fillAnalyticRRect(deviceRect, clip, deviceRadii, paint)) {
+      return;
+    }
     // Built as a path rather than given its own primitive, for the reason the
     // CPU sink gives: one implementation of a rounded rectangle instead of
     // two that can disagree about a corner. The radii already arrive in
@@ -470,6 +540,136 @@ final class GpuRasterSink
       paint,
       'rounded rectangle',
     );
+  }
+
+  /// Draws a rounded rectangle as one quad the fragment shader shapes, or
+  /// returns false and leaves nothing behind.
+  ///
+  /// ## Every refusal here, and why it is a refusal rather than a compromise
+  ///
+  ///   * **a corner whose two radii differ**, or **four corners that do not
+  ///     share one radius**. The shared vertex layout in `gpu_pipeline.dart`
+  ///     has exactly two floats a solid fill does not already use, and they
+  ///     hold one radius and one shape code - see `gl_shaders.dart` for why
+  ///     that is the whole budget. Collapsing an elliptical corner with
+  ///     `min()`, the way Impeller's rrect fast path does, would draw a rounder
+  ///     corner than the display list asked for, which is a wrong picture
+  ///     chosen for speed.
+  ///   * **radius zero.** Not a refusal so much as a redirect: it is a
+  ///     rectangle, and [fillDeviceRect] draws one with `boxCoverage`, whose
+  ///     separable area is *exact* at a corner where the distance field is
+  ///     not. A pixel centred on a square corner is a quarter covered; the
+  ///     field says a half. Sending it there keeps a zero-radius rounded
+  ///     rectangle and a plain rectangle byte-identical.
+  ///   * **a fractional clip that actually cuts the shape.** The quad is
+  ///     snapped out to whole pixels and the clip is then enforced by the
+  ///     scissor, which has no fraction to give; the atlas route runs the
+  ///     filler against the exact clip and antialiases that edge. Where the
+  ///     clip does not reach the shape the two agree trivially, and where it
+  ///     lands on whole pixels the scissor is exact - so only the fractional
+  ///     cut is refused, and it goes to the route that can express it.
+  ///
+  /// The shape rectangle written on the vertex is the **unclipped** box. That
+  /// is the one difference from [fillDeviceRect], which clips its shape rect
+  /// and lets the shader antialias the clip edge as well: moving an edge of a
+  /// rounded rectangle moves its corners with it, so a clipped box would round
+  /// the wrong four points.
+  bool _fillAnalyticRRect(
+    Rect deviceRect,
+    Rect clip,
+    Float32List deviceRadii,
+    ReplayPaint paint,
+  ) {
+    // The same clamping rule `PathBuilder.addRoundedRectPerCorner` applies -
+    // one global factor over all eight radii - because the recogniser was
+    // written against that builder. The two routes must not be able to
+    // disagree about what a 40px radius on a 50px edge means, or the shape
+    // would change when the selector changed its mind.
+    if (!_recognizer.recogniseRoundedRect(_analytic, deviceRect, deviceRadii)) {
+      return false;
+    }
+    final AnalyticPrimitive shape = _analytic;
+    final double radius = shape.p0;
+    if (shape.p1 != radius || shape.p2 != radius || shape.p3 != radius) {
+      return false;
+    }
+    if (radius <= 0) {
+      fillDeviceRect(deviceRect, clip, paint);
+      return true;
+    }
+
+    // Half a pixel is as far outside the box as any coverage can reach, so a
+    // clip further out than that never touches the shape and the scissor it
+    // sets is a formality.
+    const double reach = 0.5;
+    final bool cutsLeft = clip.left > shape.left - reach;
+    final bool cutsTop = clip.top > shape.top - reach;
+    final bool cutsRight = clip.right < shape.right + reach;
+    final bool cutsBottom = clip.bottom < shape.bottom + reach;
+    if ((cutsLeft && clip.left != clip.left.roundToDouble()) ||
+        (cutsTop && clip.top != clip.top.roundToDouble()) ||
+        (cutsRight && clip.right != clip.right.roundToDouble()) ||
+        (cutsBottom && clip.bottom != clip.bottom.roundToDouble())) {
+      return false;
+    }
+
+    final int alpha = (paint.argbColor >> 24) & 0xFF;
+    // Recognised and then found invisible: still a success. The atlas route
+    // would have drawn nothing either, and falling through to it would only
+    // rasterise a mask nobody samples.
+    if (alpha == 0) return true;
+
+    // Into layer space, on bare doubles. Zero outside a layer.
+    final double left = shape.left - _originX;
+    final double top = shape.top - _originY;
+    final double right = shape.right - _originX;
+    final double bottom = shape.bottom - _originY;
+
+    // The quad: the visible part of the box, snapped outward so the rasteriser
+    // visits every pixel the shape touches even partially. The fragment stage
+    // decides how much of each it actually covers, from the unsnapped box and
+    // the radius written below.
+    var quadLeft = left;
+    var quadTop = top;
+    var quadRight = right;
+    var quadBottom = bottom;
+    final double clipLeft = clip.left - _originX;
+    final double clipTop = clip.top - _originY;
+    final double clipRight = clip.right - _originX;
+    final double clipBottom = clip.bottom - _originY;
+    if (clipLeft > quadLeft) quadLeft = clipLeft;
+    if (clipTop > quadTop) quadTop = clipTop;
+    if (clipRight < quadRight) quadRight = clipRight;
+    if (clipBottom < quadBottom) quadBottom = clipBottom;
+    if (quadRight <= quadLeft || quadBottom <= quadTop) return true;
+
+    _setState(GpuPipelineKind.solid, kNoTexture, paint.blendMode, clip);
+    batcher.addQuad(
+      left: quadLeft.floorToDouble(),
+      top: quadTop.floorToDouble(),
+      right: quadRight.ceilToDouble(),
+      bottom: quadBottom.ceilToDouble(),
+      // Not a texture coordinate. The solid pipeline has never sampled
+      // anything, so these two floats carry the shape instead: the radius, and
+      // the code that says there is a radius at all. Written identically on
+      // all four corners, so interpolation hands the fragment stage a
+      // constant. `gl_shaders.dart` owns the encoding and states its budget.
+      u0: radius,
+      v0: _roundedShaderCode,
+      u1: radius,
+      v1: _roundedShaderCode,
+      red: _channel(paint.argbColor, 16, alpha),
+      green: _channel(paint.argbColor, 8, alpha),
+      blue: _channel(paint.argbColor, 0, alpha),
+      alpha: alpha / 255.0,
+      // The box, not the quad: this is what the field is evaluated against,
+      // and it is why the quad may be snapped and clipped freely.
+      shapeLeft: left,
+      shapeTop: top,
+      shapeRight: right,
+      shapeBottom: bottom,
+    );
+    return true;
   }
 
   @override
@@ -602,9 +802,28 @@ final class GpuRasterSink
       var executed = GpuPathStrategy.coverageAtlas;
       final GpuPathCommandRecorder? recorder = pathCommandRecorder;
       final GpuPathStrategy candidate = proposal.candidate.strategy;
-      if (recorder != null &&
-          candidate != GpuPathStrategy.coverageAtlas &&
-          candidate != GpuPathStrategy.analyticPrimitive) {
+      if (candidate == GpuPathStrategy.analyticPrimitive) {
+        // Executed here rather than recorded, and that is what keeps the
+        // batching invariant below true without paying for it.
+        //
+        // Every other promoted strategy owns a payload and a native executor,
+        // so it becomes a command in an ordered stream drawn *between* two
+        // dense batches - which is why the recorder branch has to close the
+        // open batch first: a later dense quad merging into the batch that
+        // precedes the command would be drawn before it, and the picture would
+        // be in the wrong order. An analytic primitive has no payload and no
+        // executor. It is one quad in the same solid pipeline the rectangles
+        // are already in, appended through the same batcher in the same place
+        // in the same order, so there is nothing to sequence around and
+        // nothing to flush. It merges into the batch a plain rectangle would
+        // have merged into, which is the whole point of the route.
+        if (analyticPrimitives &&
+            !hasGradient &&
+            _drawAnalyticPath(path, transform, clip, paint)) {
+          executed = candidate;
+        }
+      } else if (recorder != null &&
+          candidate != GpuPathStrategy.coverageAtlas) {
         // A command at this batch index must not merge a later dense quad into
         // the batch that precedes it. Closing is harmless on refusal: it can
         // cost one draw call, but it can never change pixels.
@@ -687,6 +906,58 @@ final class GpuRasterSink
       return;
     }
     _batchMask(result, clip, paint, alpha);
+  }
+
+  /// Draws [path] as a closed-form shape when it is one this renderer's
+  /// fragment stage can evaluate, or returns false having drawn nothing.
+  ///
+  /// Reached only from the strategy the selector chose, so the recognition
+  /// here is a confirmation rather than a search: `GpuPathWorkloadBuilder`
+  /// already decided the path was an axis-aligned rectangle under an
+  /// axis-preserving transform, and this re-derives the device rectangle it
+  /// implies. The two agreeing is the point - a mismatch means the workload
+  /// builder and the recogniser have drifted, and the honest answer to that is
+  /// the dense atlas, not a guess.
+  ///
+  /// Only [AnalyticPrimitiveKind.rounded] is accepted, and from
+  /// [AnalyticPrimitiveRecognizer.recognisePath] that means a rectangle with
+  /// no radii. An ellipse would need its centre and two radii, and an oriented
+  /// box its axis; neither fits the two vertex floats this renderer had spare,
+  /// so both keep the atlas. See `gl_shaders.dart`.
+  ///
+  /// An aliased paint is refused as well. The dense route takes a path's
+  /// coverage from `ScanlineFiller` and never consults `antiAlias`, while
+  /// [fillDeviceRect] honours it by snapping to `pixelEdge` - so promoting an
+  /// aliased rectangle path here would change its edges from antialiased to
+  /// hard. That may well be the more faithful reading of the display list, but
+  /// it is a decision about pixels and it does not belong in a change about
+  /// where they are computed.
+  bool _drawAnalyticPath(
+    Path path,
+    Transform2D transform,
+    Rect clip,
+    ReplayPaint paint,
+  ) {
+    if (!paint.antiAlias) return false;
+    if (!_recognizer.recognisePath(_analytic, path, transform)) return false;
+    if (_analytic.kind != AnalyticPrimitiveKind.rounded) return false;
+    if (_analytic.p0 != 0 ||
+        _analytic.p1 != 0 ||
+        _analytic.p2 != 0 ||
+        _analytic.p3 != 0) {
+      return false;
+    }
+    fillDeviceRect(
+      Rect.fromLTRB(
+        _analytic.left,
+        _analytic.top,
+        _analytic.right,
+        _analytic.bottom,
+      ),
+      clip,
+      paint,
+    );
+    return true;
   }
 
   /// Draws a shape larger than the whole atlas as several masks, one per tile.

@@ -33,6 +33,32 @@
 /// expected. So every test declares `tolerance: 0`, and the measurement is
 /// recorded next to each one.
 ///
+/// ## The one scene that is not zero, and why it is not a tolerance
+///
+/// Since 06/09/2026 OpenGL draws a uniform-radius rounded rectangle from a
+/// **closed form** in the fragment shader, while the CPU still flattens the
+/// corner arc into a polyline and fills the polygon. The two disagree by up to
+/// **tens of levels on corner pixels** — and this file's rule is that when two
+/// backends disagree, one of them is wrong and the tolerance is not where that
+/// gets recorded. So it is not recorded there. On the scene below - a 24x24
+/// surface, radius 6 - the disagreement measures **52 levels over 44 pixels**.
+///
+/// **The CPU is the wrong one, and it was measured rather than argued.**
+/// Against a 400x400 point sample of the exact circle, on the corner of a
+/// radius-12 rounded rectangle, the closed form is out by at most 0.035 of a
+/// pixel's area and the flattened polygon by 0.164 — **4.7x further, always in
+/// the same direction**, because a chord cuts inside the arc it replaces. The
+/// atlas has therefore always drawn rounded corners very slightly too sharp.
+/// The proof lives in `test/rendering/gpu/gl/gl_analytic_primitive_test.dart`
+/// (`_theClosedFormIsTheAccurateOne`).
+///
+/// So the rounded-rect scene below does **not** call `_expectParity` with a
+/// wide margin. It asserts the disagreement's *shape*: that it exists, that it
+/// is bounded, and that it is confined to corner pixels. When the CPU gains
+/// the same closed form — the real fix, and `AnalyticPrimitive.fieldAt` is
+/// portable Dart that it could call directly — this test becomes a
+/// `tolerance: 0` line like every other and the paragraph above is deleted.
+///
 /// The `tolerance` parameter stays even though nothing uses it, because it is
 /// the honest place to record a driver that genuinely rounds differently. What
 /// it must never become is the place a failure is made to go away: a scene
@@ -162,6 +188,68 @@ void main() {
       await _expectParity(session, _srcLayer(), tolerance: 0);
     });
 
+    test('a rounded rectangle: the CPU is the inaccurate side', () async {
+      // Deliberately not `_expectParity`. Since OpenGL gained the closed form
+      // the two draw different corner pixels, and this file's rule is that a
+      // disagreement means one side is wrong rather than that the margin was
+      // too tight. See the library comment: the CPU's flattened polygon is
+      // 4.7x further from the exact circle than the shader's field, always in
+      // the same direction, so what is asserted here is the *shape* of the
+      // disagreement and not a licence for it.
+      final String? reason = session.skipReason;
+      if (reason != null) {
+        markTestSkipped('no GL device: $reason');
+        return;
+      }
+      final DisplayList list = _roundedRect();
+
+      final cpu = _cpuTarget(_size, _size);
+      await cpu.renderDisplayList(list, clearColor: _clear);
+      final gpu = session.target(_size, _size);
+      expect(
+        (await gpu.renderDisplayList(list, clearColor: _clear)).status,
+        PresentStatus.presented,
+      );
+      expect(_isUniform(cpu.framebuffer), isFalse,
+          reason: 'the scene drew nothing, so comparing it proves nothing');
+
+      final _Diff diff = _diff(cpu.framebuffer, gpu.framebuffer);
+      printOnFailure('max deviation ${diff.maxDeviation} over '
+          '${diff.differingPixels} pixels');
+
+      // It exists. If this ever reads 0 the CPU has gained the closed form -
+      // delete this test, restore `tolerance: 0`, and delete the paragraph in
+      // the library comment.
+      expect(
+        diff.maxDeviation,
+        greaterThan(0),
+        reason: 'the two agree again; the CPU presumably gained the closed '
+            'form, so this test has outlived its subject',
+      );
+
+      // It is bounded. Observed here: **52 levels over 44 pixels**, on a 24x24
+      // surface with radius 6. The GL test's own scenes peak at 41 on a 64x64
+      // surface with larger radii - a smaller corner over a smaller surface
+      // puts proportionally more of the shape in the arc, so the number is a
+      // property of the scene and each file states the one it measured rather
+      // than borrowing the other's. The bound has headroom for driver
+      // rounding and none for drift: far above this would mean the shader
+      // moved, which is a different bug wearing the same clothes.
+      expect(diff.maxDeviation, lessThanOrEqualTo(64));
+
+      // And it is confined to the corners. The four straight edges are exact
+      // in both, so a disagreement along an edge would not be the flattening
+      // at all.
+      expect(
+        diff.differingPixels,
+        lessThan(_size * _size ~/ 4),
+        reason: 'the disagreement escaped the corner arcs, so it is not the '
+            'flattening this test was written about',
+      );
+
+      cpu.dispose();
+    });
+
     test('rectangles composited with plus, overlapping: 0', () async {
       // Until primitives honoured `paint.blendMode` on the CPU, this scene
       // could not be written: the GPU added and the CPU drew source-over, so
@@ -266,6 +354,14 @@ void main() {
 // The scenes. Each one is a display list and nothing else: no reference, no
 // expected buffer, no per-backend variation.
 // ---------------------------------------------------------------------
+
+/// A rounded rectangle with room for a real corner arc on a 24x24 surface.
+DisplayList _roundedRect() {
+  final list = DisplayList();
+  final ink = list.addPaint(colorArgb: 0xFFFFFFFF);
+  list.drawRRect(3, 3, 21, 21, 6, 6, 6, 6, 6, 6, 6, 6, ink);
+  return list;
+}
 
 DisplayList _solidRects() {
   final list = DisplayList();

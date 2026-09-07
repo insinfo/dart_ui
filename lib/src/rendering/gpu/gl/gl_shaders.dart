@@ -23,6 +23,13 @@
 /// geometry, so the term evaluates to exactly 1 and the mask alone decides
 /// coverage. That is why there is no separate "no coverage" mode.
 ///
+/// A solid quad may additionally carry a corner radius, in which case the
+/// coverage comes from `roundedCoverage` and the shape is a rounded rectangle
+/// evaluated in closed form rather than sampled out of the dense atlas. See
+/// [kAnalyticRoundedRect] for how six parameters were fitted into the two
+/// floats the shared vertex layout had left over, and which shapes therefore
+/// still go to the atlas.
+///
 /// ## Two dialects
 ///
 /// GLSL 330 core for a desktop context, GLSL ES 300 for an ES one. They
@@ -49,6 +56,43 @@ const List<String> kAttributeNames = <String>[
 const int kModeSolid = 0;
 const int kModeCoverageMask = 1;
 const int kModeTexturedImage = 2;
+
+/// What the second texture-coordinate float means in [kModeSolid].
+///
+/// ## Why the analytic primitive rides in `aTexCoord`
+///
+/// `AnalyticPrimitiveKind` wants six floats on a vertex and the shared layout
+/// in `gpu_pipeline.dart` has none spare: twelve floats, all of them read by
+/// one of the three modes. Widening it would change the stride, the batcher
+/// and every other backend's vertex writer for a shape only this one can
+/// draw, so the parameters go where a solid fill already writes zeroes -
+/// `aTexCoord`, which [kModeSolid] has never sampled anything with.
+///
+/// That buys two floats, not six, and the two are spent as
+/// `(radius, kind)`. It is enough for the shape a user interface actually
+/// draws - the uniform-radius rounded rectangle, whose box is already on the
+/// vertex as `aShapeRect` - and it is *not* enough for per-corner radii, for
+/// an ellipse's independent centre, or for the oriented kinds' axis. Those
+/// keep going through the dense coverage atlas, which is the parity route;
+/// see `gpu_raster_sink.dart`, which refuses them by name before it gets here.
+///
+/// [kAnalyticNone] is zero on purpose: every quad every other path in this
+/// renderer writes leaves `aTexCoord` at the origin, so an older vertex and a
+/// vertex from another backend both decode as "no analytic primitive" and get
+/// the [boxCoverage] term they always got. Nothing had to be changed to keep
+/// working.
+const int kAnalyticNone = 0;
+
+/// A rounded rectangle: `aShapeRect` is its box and `aTexCoord.x` its radius.
+///
+/// Radius zero is deliberately *not* encoded this way. The signed-distance
+/// field of a zero-radius box and the separable area of [boxCoverage] agree
+/// exactly along a straight edge and disagree at the four corner pixels - the
+/// field answers `0.5 - length(q)` where the true covered area is the product
+/// of the two axis overlaps, which at a pixel centred on the corner is 0.5
+/// against 0.25. So a rectangle stays a rectangle here and only a genuinely
+/// rounded corner takes the field.
+const int kAnalyticRoundedRect = 1;
 
 /// Values of the `uYFlip` uniform: the orientation convention, declared.
 ///
@@ -126,18 +170,59 @@ float boxCoverage(vec4 r, vec2 p) {
   return overlap.x * overlap.y;
 }
 
+// Coverage of the pixel at [p] by the rectangle [r] with corner radius [rad].
+//
+// The body is AnalyticPrimitive.fieldAt for AnalyticPrimitiveKind.rounded with
+// all four radii equal, transcribed: fold the pixel into the first quadrant,
+// pull the box in by the radius, and read the distance to that inset box's
+// boundary. It is signed, in device pixels, and exact.
+//
+// The coverage is then 0.5 - d, which is exact wherever the boundary crossing
+// the pixel is straight - the four edges, which is most of the outline - and
+// an approximation on the corner arcs, where the true covered area of a
+// circular segment differs from the half-plane one by O(1/rad). At the radii
+// an interface uses that is under a coverage level; at a radius of one pixel
+// it is the widest this route ever deviates from the scanline filler, which is
+// where the parity suite measures it.
+//
+// No dFdx: everything on this path is already in device pixels, because
+// GpuRasterSink recognises the rounded rectangle after the player has applied
+// the transform. A shape that arrived in some other space would need the
+// gradient of the field to normalise the distance, and is refused instead.
+float roundedCoverage(vec4 r, float rad, vec2 p) {
+  vec2 centre = (r.xy + r.zw) * 0.5;
+  // Not named `half`: GLSL reserves that word in both dialects, and a shader
+  // that fails to compile here takes the whole renderer down with it.
+  vec2 extent = (r.zw - r.xy) * 0.5;
+  vec2 q = abs(p - centre) - extent + rad;
+  float d = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - rad;
+  return clamp(0.5 - d, 0.0, 1.0);
+}
+
 void main() {
   vec4 color = vColor;
+  float coverage;
   if (uMode == 1) {
     // A coverage mask scales the already-premultiplied colour, which is the
     // premultiplied equivalent of mul255(alpha, coverage) on the CPU.
     color *= texture(uTexture, vTexCoord).r;
+    coverage = boxCoverage(vShapeRect, vDevicePos);
   } else if (uMode == 2) {
     // Premultiplied texel modulated by the paint's alpha; the colour
     // channels carry that alpha too, so this is a plain scale.
     color = texture(uTexture, vTexCoord) * vColor.a;
+    coverage = boxCoverage(vShapeRect, vDevicePos);
+  } else if (vTexCoord.y >= 0.5) {
+    // kAnalyticRoundedRect. The comparison is a threshold rather than an
+    // equality because the value is interpolated: it is written identically on
+    // all four vertices, so it arrives constant, but a driver is entitled to
+    // reconstruct 1.0 as 0.99999994 and an == test would then draw a plain
+    // rectangle where a rounded one was asked for, on some hardware only.
+    coverage = roundedCoverage(vShapeRect, vTexCoord.x, vDevicePos);
+  } else {
+    coverage = boxCoverage(vShapeRect, vDevicePos);
   }
-  fragColor = color * boxCoverage(vShapeRect, vDevicePos);
+  fragColor = color * coverage;
 }
 ''';
 

@@ -9434,6 +9434,22 @@ fora da tela, e curvas achatadas por `Path.flattenTo`.
 
 ### Divergências CPU↔GPU e outras lacunas de renderização
 
+- **retângulo arredondado: a CPU é o lado impreciso, e isso é novo.** Desde
+  06/09/2026 o OpenGL desenha um arredondado de raio uniforme por **forma
+  fechada** no fragment shader, enquanto a CPU continua achatando o arco do
+  canto em polilinha e preenchendo o polígono. Os dois divergem em **52 níveis
+  sobre 44 pixels** numa superfície 24x24 de raio 6, e em até 41 nas cenas
+  maiores do teste do GL. **A CPU é quem erra**, medido e não argumentado:
+  contra uma amostragem 400x400 do círculo exato, a forma fechada erra no
+  máximo 0,035 da área de um pixel e o polígono achatado 0,164 — **4,7 vezes
+  mais longe, sempre na mesma direção**, porque a corda corta por dentro do
+  arco que substitui. O atlas sempre desenhou cantos arredondados
+  ligeiramente pontudos demais. A correção certa é a CPU ganhar a mesma forma
+  fechada; `AnalyticPrimitive.fieldAt` é Dart portátil que ela pode chamar. Até
+  lá, `test/differential/cpu_gpu_parity_test.dart` afirma o **formato** da
+  divergência — que existe, que é limitada e que fica nos cantos — em vez de
+  alargar a tolerância, e a prova de quem erra está em
+  `gl_analytic_primitive_test.dart`;
 - gradiente **em glifos e em imagens** é recusado por nome nos dois renderers,
   CPU inclusive;
 - retângulos antialiasados divergem em 1 nível: `raster/coverage.dart` quantiza
