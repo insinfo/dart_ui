@@ -1,6 +1,47 @@
 # Extensão Dart UI ICP-Brasil para Chrome, Brave, Edge e Firefox
 
-Projeto de referência completo para um site solicitar certificados, autenticar um desafio e assinar um PDF com um token ICP-Brasil. A extensão Chrome MV3 e o host são escritos em Dart. O host usa `WindowsCertificateProvider` (repositório `CurrentUser\\MY`, CNG/KSP e CryptoAPI/CSP) e o assinador PDF do `dart_ui` para produzir PAdES B-B.
+Suíte completa para assinar PDFs com certificado ICP-Brasil. O aplicativo
+Windows funciona sozinho; a extensão Chrome/Brave/Edge/Firefox acrescenta a
+mesma capacidade a sites autorizados. Aplicativo, popup e página web são
+árvores de widgets `dart_ui`: no Windows o framework usa sua janela e seu
+renderer nativos; no navegador, `WebWindowingBackend` monta um `<canvas>` HTML
+e apresenta a mesma pipeline por WebGPU ou WebGL2.
+
+O host usa `WindowsCertificateProvider` (repositório `CurrentUser\\MY`,
+CNG/KSP e CryptoAPI/CSP) e o assinador PDF do `dart_ui` para produzir PAdES
+B-B. Nenhuma interface do produto é implementada com botões ou formulários
+HTML.
+
+## Aplicativo Windows independente
+
+O build produz
+`application/dist/dart_ui_pdf_signer.exe`. Ele oferece:
+
+- abertura e visualização real de PDFs com `PdfView`;
+- seleção automática de certificados ICP-Brasil do Windows;
+- alternativa PKCS#11 para token, smart card ou HSM;
+- posicionamento arrastável da aparência visual na página;
+- assinatura PAdES B-B e gravação do PDF assinado;
+- PIN solicitado pela UI segura do Windows/minidriver, sem passar pelo app.
+
+Em Windows, macOS ou Linux, compile o executável nativo na própria plataforma
+sem depender do PowerShell:
+
+```console
+dart run examples/icp_brasil_chrome_signer/application/build.dart
+```
+
+Para instalar no perfil atual e criar o atalho no Menu Iniciar:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File examples/icp_brasil_chrome_signer/install_app.ps1 -DesktopShortcut
+```
+
+Para também registrar a integração do navegador:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File examples/icp_brasil_chrome_signer/install_app.ps1 -ExtensionId ID_DA_EXTENSAO
+```
 
 ## Segurança e limites
 
@@ -18,7 +59,7 @@ Projeto de referência completo para um site solicitar certificados, autenticar 
 2. No Chrome, Brave ou Edge, abra a página de extensões, habilite o modo do desenvolvedor e escolha **Carregar sem compactação** em `examples/icp_brasil_chrome_signer/extension/dist`. Essa pasta contém o `manifest.json`; não selecione `dist` dentro dela novamente.
 3. Copie o ID exibido pelo Chrome.
 4. Execute `powershell -ExecutionPolicy Bypass -File examples/icp_brasil_chrome_signer/install_host.ps1 -ExtensionId ID_COPIADO`. O instalador registra o host para Chrome, Brave, Edge e Firefox no perfil atual.
-5. Reinicie o Chrome. Rode `dart run examples/icp_brasil_chrome_signer/demo_server.dart` e abra `http://localhost:8787`.
+5. Reinicie o Chrome. Rode `dart run examples/icp_brasil_chrome_signer/demo_server.dart` e abra `http://localhost:8787`. Essa página também é desenhada integralmente pelo `dart_ui`; o HTML contém apenas o ponto de montagem do backend.
 
 O host pode ser verificado sem abrir o token ou pedir PIN com
 `dart run examples/icp_brasil_chrome_signer/native_host_smoke.dart`.
@@ -35,6 +76,18 @@ assinadas instaladas dessa forma são removidas quando o Firefox fecha. Para
 distribuição permanente, assine o XPI no AMO.
 
 Para remover o registro, execute `uninstall_host.ps1`. O script preserva os binários em `%LOCALAPPDATA%\\DartUiIcpBrasil` para evitar exclusão destrutiva implícita.
+Para remover o aplicativo e seus atalhos, execute `uninstall_app.ps1`.
+
+## Interface no navegador
+
+Aplicações web importam `package:dart_ui/dart_ui.dart` normalmente. Este exemplo
+usa o backend canvas/WebGPU/WebGL2 já existente. Um eventual backend DOM/HTML é
+uma frente separada e não faz parte desta suíte.
+
+O exemplo web está em `web/main.dart`; `build.ps1` o compila para
+`demo/main.dart.js`. O documento HTML não duplica o layout: tamanhos, textos,
+cards, botões, seletor, visualizador PDF, foco, hit testing e pintura pertencem
+ao `dart_ui`.
 
 ## API para qualquer site
 

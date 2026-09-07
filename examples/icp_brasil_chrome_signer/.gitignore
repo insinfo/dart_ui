@@ -2,3 +2,9 @@ extension/dist/
 extension/dist_firefox/
 extension/*.xpi
 native_host/dist/
+application/dist/
+demo/main.dart.js
+demo/main.dart.js.deps
+demo/main.dart.js.map
+demo/assets/
+*-smoke.png

@@ -3,26 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Dart UI — ICP-Brasil</title>
+  <title>Dart UI Assinador ICP-Brasil</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main>
-    <p class="eyebrow">DART UI · ICP-BRASIL</p>
-    <h1>Autentique e assine sem retirar a chave do token.</h1>
-    <p class="lead">Demonstração local da API universal exposta pela extensão.</p>
-    <section>
-      <div class="actions">
-        <button id="connect">Conectar e listar certificados</button>
-        <label class="file">Selecionar PDF<input id="pdf" type="file" accept="application/pdf"></label>
-        <button id="sign" disabled>Assinar PDF</button>
-        <button id="signHash" disabled>Assinar hash</button>
-        <button id="auth" disabled>Autenticar desafio</button>
-      </div>
-      <select id="certificates" aria-label="Certificado" disabled></select>
-      <pre id="log">Aguardando extensão…</pre>
-    </section>
-  </main>
-  <script src="app.js"></script>
+  <noscript>Este aplicativo requer JavaScript.</noscript>
+  <script>
+    globalThis.__dartUiErrors = [];
+    for (const level of ['error', 'warn', 'log']) {
+      const original = console[level].bind(console);
+      console[level] = (...values) => {
+        __dartUiErrors.push(values.map(String).join(' '));
+        original(...values);
+      };
+    }
+    addEventListener('error', event => __dartUiErrors.push(String(event.error || event.message)));
+    addEventListener('unhandledrejection', event => __dartUiErrors.push(String(event.reason)));
+  </script>
+  <script defer src="main.dart.js"></script>
 </body>
 </html>

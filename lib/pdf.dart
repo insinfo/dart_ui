@@ -34,6 +34,7 @@ export 'src/pdf/sign/pdf_certificate_provider_signer.dart';
 export 'src/pdf/sign/pdf_cms.dart';
 export 'src/pdf/sign/pdf_external_signer.dart';
 export 'src/pdf/sign/pdf_pades_engine.dart';
+export 'src/pdf/sign/pdf_signature_inspector.dart';
 export 'src/pdf/sign/pdf_signer.dart';
 export 'src/widgets/pdf/pdf_page_view.dart';
 export 'src/widgets/pdf/pdf_view.dart';

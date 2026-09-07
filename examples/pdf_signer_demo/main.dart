@@ -36,6 +36,8 @@ final class _PdfSignerDemoAppState extends State<PdfSignerDemoApp> {
 
   PickedFile? _input;
   PdfDocument? _document;
+  List<PdfEmbeddedSignature> _embeddedSignatures =
+      const <PdfEmbeddedSignature>[];
   Pkcs11Module? _module;
   List<Pkcs11Token> _tokens = const <Pkcs11Token>[];
   Pkcs11CertificateProvider? _pkcs11Provider;
@@ -268,12 +270,20 @@ final class _PdfSignerDemoAppState extends State<PdfSignerDemoApp> {
 
   void _openDocument(PickedFile selected) {
     final document = PdfDocument.fromBytes(selected.bytes);
+    List<PdfEmbeddedSignature> embeddedSignatures;
+    try {
+      embeddedSignatures =
+          const PdfSignatureInspector().inspect(selected.bytes);
+    } on FormatException {
+      embeddedSignatures = const <PdfEmbeddedSignature>[];
+    }
     final page = document.getPage(1);
     final width = math.min(200.0, math.max(140.0, page.width - 48));
     const height = 54.0;
     setState(() {
       _input = selected;
       _document = document;
+      _embeddedSignatures = embeddedSignatures;
       _previewPage = 1;
       _signaturePage = 1;
       _previewZoom = 1;
@@ -283,7 +293,11 @@ final class _PdfSignerDemoAppState extends State<PdfSignerDemoApp> {
         width,
         height,
       );
-      _status = 'Documento aberto: ${document.pageCount} página(s).';
+      final signatureStatus = embeddedSignatures.isEmpty
+          ? ''
+          : ' • ${embeddedSignatures.length} assinatura(s) incorporada(s)';
+      _status = 'Documento aberto: ${document.pageCount} página(s)'
+          '$signatureStatus.';
       _severity = InfoBarSeverity.success;
       if (_wizardStep == 0) _wizardStep = 1;
     });
@@ -1313,6 +1327,22 @@ final class _PdfSignerDemoAppState extends State<PdfSignerDemoApp> {
                 'Documento',
                 _input?.name ?? 'Não selecionado',
               ),
+              if (_embeddedSignatures.isNotEmpty) ...<Widget>[
+                const SizedBox(height: 4),
+                Padding(
+                  padding: const EdgeInsets.only(left: 29),
+                  child: Text(
+                    '${_embeddedSignatures.length} assinatura(s) já '
+                    'incorporada(s); será criada uma nova revisão.',
+                    softWrap: true,
+                    maxLines: 2,
+                    style: const TextStyle(
+                      fontSize: 11,
+                      color: Color(0xFF15803D),
+                    ),
+                  ),
+                ),
+              ],
               const SizedBox(height: 10),
               _reviewLine(
                 PhosphorIcons.certificate,

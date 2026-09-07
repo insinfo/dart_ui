@@ -138,6 +138,7 @@ export 'src/pdf/export/vector_pdf_exporter.dart';
 export 'src/pdf/sign/pdf_certificate_provider_signer.dart';
 export 'src/pdf/sign/pdf_cms.dart';
 export 'src/pdf/sign/pdf_external_signer.dart';
+export 'src/pdf/sign/pdf_signature_inspector.dart';
 export 'src/pdf/sign/pdf_signer.dart';
 export 'src/platform/backend_selection.dart';
 export 'src/platform/drag_drop.dart';
