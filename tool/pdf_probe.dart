@@ -47,6 +47,19 @@ void main(List<String> arguments) {
     );
     stdout.writeln('optimized bytes: ${optimized.length}');
   }
+  if (arguments.contains('--images')) {
+    final images = _measure(
+      'inventory images without decoding',
+      () => const PdfImageInventory().inspect(document),
+    );
+    stdout.writeln('images: ${images.length}');
+    for (final image in images) {
+      stdout.writeln(
+        '  ${image.objectNumber ?? '-'}: ${image.width}x${image.height}, '
+        '${image.encodedBytes} encoded bytes, ${image.filters.join('+')}',
+      );
+    }
+  }
   stdout.writeln('total: ${total.elapsedMilliseconds} ms');
 }
 

@@ -5,6 +5,7 @@ export 'src/pdf/annot/pdf_annotation.dart';
 export 'src/pdf/crypto/pdf_sha.dart';
 export 'src/pdf/document/pdf_document.dart';
 export 'src/pdf/document/pdf_document_composer.dart';
+export 'src/pdf/document/pdf_image_inventory.dart';
 export 'src/pdf/document/pdf_page.dart';
 export 'src/pdf/document/pdf_validator.dart';
 export 'src/pdf/export/pdf_canvas_recorder.dart';

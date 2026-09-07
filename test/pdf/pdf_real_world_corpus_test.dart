@@ -82,4 +82,17 @@ void main() {
       isTrue,
     );
   });
+
+  test('lists real image XObjects without decoding damaged page streams', () {
+    final bytes =
+        File('test/pdf/data/corpus/c008_2021_4hd.pdf').readAsBytesSync();
+    final document = PdfDocument.fromBytes(bytes);
+
+    final images = const PdfImageInventory().inspect(document);
+
+    expect(images, isNotEmpty);
+    expect(images.every((image) => image.encodedBytes > 0), isTrue);
+    expect(
+        images.every((image) => image.width > 0 && image.height > 0), isTrue);
+  });
 }
