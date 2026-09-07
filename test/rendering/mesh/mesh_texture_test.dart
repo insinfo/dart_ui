@@ -122,7 +122,7 @@ void main() {
 
     /// The screen x where the red ramp crosses [target], on the centre row.
     double? crossingOf(Framebuffer frame, int target) {
-      final int y = size ~/ 2;
+      const int y = size ~/ 2;
       for (var x = 1; x < size; x++) {
         final int left = _pixelAt(frame, x - 1, y);
         final int right = _pixelAt(frame, x, y);
