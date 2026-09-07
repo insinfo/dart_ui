@@ -304,6 +304,8 @@ final class _FakeWindowClient implements X11WindowClient {
 
   @override
   int root = 1;
+  @override
+  int rootVisual = 0x21;
 
   @override
   bool isDisposed = false;

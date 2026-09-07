@@ -16,10 +16,13 @@
 /// would do on a visible one except reach a monitor. That is exactly the part
 /// under test.
 ///
-/// The X11 path is **not covered by anything that runs**. It is written, it
-/// compiles, and the tests that would exercise it skip with that reason
-/// stated - this suite is developed on Windows. See
-/// `lib/src/backends/x11/x11_gl_surface.dart`.
+/// The X11 path is not covered *here*, and cannot be: a mapped window and a
+/// running display server are what it needs, and this suite is developed on
+/// Windows. It is covered by `tool/x11_gl_smoke.dart`, which the
+/// `X11 OpenGL probe` workflow runs under Xvfb with Mesa llvmpipe - a real
+/// server and a real driver. What is left below is the off-Linux refusal,
+/// which is the only part of the X11 path a Windows run can honestly assert.
+/// See `lib/src/backends/x11/x11_gl_surface.dart`.
 library;
 
 import 'dart:io';
@@ -436,9 +439,10 @@ void main() {
     test('refuses to run off Linux instead of failing obscurely', () {
       final attempt = X11GlSurface.forWindow(1);
       if (Platform.isLinux) {
-        // Nothing is asserted about the outcome here: this suite has never
-        // been run on Linux and guessing what a display server would answer
-        // is how a test becomes a lie. What matters is that it returned.
+        // Nothing is asserted about the outcome here: window 1 is not a window
+        // this process made, and what a server answers about somebody else's
+        // XID is not a contract. The Linux behaviour that *is* a contract is
+        // measured by `tool/x11_gl_smoke.dart` against a mapped window.
         printOnFailure('X11 attempt: ${attempt.diagnostics.join('; ')}');
         return;
       }
@@ -448,15 +452,14 @@ void main() {
     });
 
     test('creates an EGL window surface over an xcb window', () {
-      // Deliberately left as a skip rather than deleted. The X11 path is
-      // written and unexecuted, and a suite that simply omits it reads as if
-      // it were covered.
+      // Deliberately left as a skip rather than deleted. A suite that simply
+      // omits the case reads as if it were covered; this one names where the
+      // coverage actually lives.
     },
-        skip: Platform.isLinux
-            ? 'needs a mapped X11 window and a running display server; the '
-                'X11 GL path has never been executed'
-            : 'the X11 GL path needs a Linux display server and has never '
-                'been executed - this suite runs on Windows');
+        skip: 'covered by tool/x11_gl_smoke.dart under Xvfb and Mesa llvmpipe '
+            '(.github/workflows/x11_gl_probe.yml), because it needs a mapped '
+            'X11 window and a running display server that this suite has '
+            'neither of');
   });
 }
 

@@ -28,14 +28,24 @@
 /// recovering means recreating the window with the config's visual, and the
 /// window belongs to whoever made it.
 ///
-/// ## Not executed
+/// ## Where this is executed
 ///
-/// This file was written on Windows and has never been run. Every X11 test in
-/// `test/rendering/gpu/gl_window_target_test.dart` that would exercise it is
-/// skipped off Linux with that reason stated, and the compile-time contract -
-/// that it implements `GlSwapChain` and hands the renderer nothing but
-/// integers - is all that has actually been verified. Treat the first Linux
-/// run as the real test.
+/// It was written on Windows, and for a long time nothing ran it: the unit
+/// suite in `test/rendering/gpu/gl_window_target_test.dart` cannot, because
+/// what this needs is a mapped window on a live display server.
+///
+/// `tool/x11_gl_smoke.dart` is that run, and the `X11 OpenGL probe` workflow
+/// drives it under **Xvfb with Mesa llvmpipe** - a real X server and a real
+/// GL driver, which is the standing rule here for anything that presents. It
+/// takes the path end to end: mapped window, `eglCreateWindowSurface`, a
+/// `glReadPixels` off framebuffer 0, three frames through `GlWindowTarget`, a
+/// resize, and `GlMeshRenderer.create`.
+///
+/// What that still does not cover, and what a bug report should not assume
+/// from a green run: **any real GPU**. llvmpipe accepts configs, visuals and
+/// GLSL that a Mali, an Adreno or an NVIDIA driver may not, and it never
+/// exercises `EGL_NATIVE_VISUAL_ID` against a compositing X server with
+/// 32-bit ARGB visuals. Those remain unexecuted.
 library;
 
 import 'dart:ffi';
@@ -107,8 +117,10 @@ final class X11GlSurface implements GlSwapChain {
   /// [windowVisualId], when given, is compared against the config's and a
   /// mismatch is reported as a note *before* the surface is attempted, so a
   /// later `EGL_BAD_MATCH` arrives with its cause already in the diagnostics
-  /// rather than needing to be inferred from it. It is optional because
-  /// `X11Window` does not expose the visual it used; the connection does.
+  /// rather than needing to be inferred from it. `X11Window.visualId` is the
+  /// number to pass, and `default_platform_resolver.dart` passes it; it stays
+  /// optional because a caller holding only an XID - a probe, a foreign
+  /// window - has no way to know it, and half a diagnostic beats none.
   ///
   /// Never throws. Every failure is a diagnostic.
   static X11GlSurfaceAttempt forWindow(

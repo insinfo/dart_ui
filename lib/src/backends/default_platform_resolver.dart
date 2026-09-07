@@ -715,8 +715,13 @@ final class PlatformBackendResolver {
           throw StateError('opengl on Linux requires X11Window; got '
               '${native.runtimeType}');
         }
-        final X11GlSurfaceAttempt attempt =
-            X11GlSurface.forWindow(native.xcbWindow);
+        // The visual is passed, not left null: an EGL config whose
+        // EGL_NATIVE_VISUAL_ID differs from the window's is refused by the X
+        // server as EGL_BAD_MATCH, and that error names neither number.
+        final X11GlSurfaceAttempt attempt = X11GlSurface.forWindow(
+          native.xcbWindow,
+          windowVisualId: native.visualId,
+        );
         final X11GlSurface? surface = attempt.surface;
         if (surface == null) {
           _throwAttachmentFailure(

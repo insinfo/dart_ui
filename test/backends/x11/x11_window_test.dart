@@ -36,6 +36,8 @@ final class _FakeX11WindowClient implements X11WindowClient, X11CpuClient {
 
   @override
   int root = 0x100;
+  @override
+  int rootVisual = 0x21;
 
   @override
   bool isDisposed = false;
@@ -266,6 +268,24 @@ void main() {
     // A window created visible is already mapped; show must not map twice.
     window.show();
     expect(client.mappedWindows, isEmpty);
+  });
+
+  test('the window reports the visual it was created with, for EGL', () {
+    // Not book-keeping: `createTopLevelWindow` passes the connection's root
+    // visual and never echoes it back in the request, so the only honest
+    // source is the connection itself. Without this getter the visual mismatch
+    // that makes `eglCreateWindowSurface` answer EGL_BAD_MATCH could only be
+    // reported as the config's number with nothing to compare it against.
+    final client = _FakeX11WindowClient();
+    final window = _createWindow(client);
+    addTearDown(window.dispose);
+
+    expect(window.visualId, client.rootVisual);
+
+    client.rootVisual = 0x22;
+    expect(window.visualId, 0x22,
+        reason: 'the connection owns the visual, so the window must ask it '
+            'rather than keep a copy that can go stale');
   });
 
   test('show and hide are idempotent for an initially hidden window', () {

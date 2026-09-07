@@ -131,6 +131,17 @@ abstract interface class X11ScreenClient {
 /// that knows about XCB allocation and request encoding.
 abstract interface class X11WindowClient implements X11BackendConnection {
   int get root;
+
+  /// The visual every top-level window here is created with.
+  ///
+  /// Exposed for EGL, and for nothing else. `eglCreateWindowSurface` fails
+  /// with `EGL_BAD_MATCH` when the window's visual is not the config's
+  /// `EGL_NATIVE_VISUAL_ID`, and that refusal carries no visual ids of its
+  /// own - so without this the failure that `x11_gl_surface.dart` predicts
+  /// arrives as a bare error code and the two numbers that explain it are
+  /// unreachable from `X11Window`.
+  int get rootVisual;
+
   int atom(String name);
 
   int createTopLevelWindow(X11TopLevelWindowRequest request);
@@ -443,6 +454,7 @@ final class X11Connection
 
   @override
   int root = 0;
+  @override
   int rootVisual = 0;
   int rootDepth = 0;
   int imageByteOrder = -1;

@@ -246,6 +246,18 @@ final class X11Window with DisposableMixin implements NativeWindow {
         height: _protocol.height,
       );
 
+  /// The X visual this window was created with.
+  ///
+  /// Read from the connection rather than remembered from the request because
+  /// the request never names one: `createTopLevelWindow` passes the screen's
+  /// root visual, and this is the same number, asked of the same object.
+  ///
+  /// It exists so `X11GlSurface.forWindow` can be told which visual to compare
+  /// against the EGL config's. Until it did, the mismatch that makes
+  /// `eglCreateWindowSurface` return `EGL_BAD_MATCH` could only be reported as
+  /// half a fact - the config's visual, with nothing to compare it to.
+  int get visualId => _client.rootVisual;
+
   @override
   double get renderScale => _scale;
 

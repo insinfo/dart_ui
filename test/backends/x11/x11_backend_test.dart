@@ -157,6 +157,8 @@ final class _FakeConnection
 
   @override
   int root = 1;
+  @override
+  int rootVisual = 0x21;
 
   @override
   int atom(String name) =>

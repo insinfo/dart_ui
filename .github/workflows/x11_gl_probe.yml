@@ -1,0 +1,117 @@
+# Primeira execução do caminho OpenGL/EGL do backend X11.
+#
+# `lib/src/backends/x11/x11_gl_surface.dart` diz de si mesmo que nunca rodou, e
+# `test/rendering/gpu/gl_window_target_test.dart` pula o grupo X11 com essa
+# mesma frase escrita no `skip:`. Enquanto isso `default_platform_resolver.dart`
+# já oferece `_x11OpenGl()` como caminho de apresentação. Este job existe para
+# que a primeira execução seja aqui e não na máquina de um usuário.
+#
+# Segue o formato de `macos_popup_probe.yml`: um workflow por pergunta, com
+# `workflow_dispatch` para reexecutar sem commit.
+#
+# Xvfb é um X server de verdade e Mesa llvmpipe é um driver GL de verdade, então
+# isto não é um teste headless — é a mesma disciplina do job `wayland` do
+# `ci.yml`, que sobe Weston. O que Xvfb **não** dá é uma GPU: o veredito aqui é
+# sobre protocolo, negociação de visual, `eglSwapBuffers` e compilação de GLSL,
+# não sobre desempenho.
+name: X11 OpenGL probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'lib/src/backends/x11/**'
+      - 'lib/src/backends/default_platform_resolver.dart'
+      - 'lib/src/rendering/gpu/gl/**'
+      - 'tool/x11_gl_smoke.dart'
+      - '.github/workflows/x11_gl_probe.yml'
+
+concurrency:
+  group: x11-gl-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  egl:
+    name: EGL over X11 (Xvfb + llvmpipe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.6.2'
+
+      - run: dart pub get
+
+      - name: Install Xvfb, xcb and a software GL stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb x11-utils \
+            libxcb1-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev \
+            libgl1-mesa-dri mesa-utils
+
+      # Tudo o que decide o próximo passo é impresso NESTE job, antes e depois
+      # do smoke: um round trip por push é caro demais para descobrir um fato
+      # por vez. Se `eglCreateWindowSurface` falhar com EGL_BAD_MATCH, a lista
+      # de visuais do servidor e a lista de configs do EGL já estarão no log ao
+      # lado do erro, e a correção é decidível sem outro push.
+      - name: Probe EGL over X11 through the production backend
+        env:
+          DISPLAY: ':99'
+          EGL_PLATFORM: 'x11'
+          LIBGL_ALWAYS_SOFTWARE: '1'
+          GALLIUM_DRIVER: 'llvmpipe'
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          Xvfb :99 -screen 0 1920x1080x24 -ac >build/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 15); do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
+            if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+              cat build/xvfb.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          echo "=== X server: screen and visuals ==="
+          xdpyinfo | sed -n '1,12p'
+          # O visual raiz e a lista completa: uma janela deste backend nasce
+          # com o visual raiz, e um EGL_BAD_MATCH significa que a config quer
+          # outro. Estes dois blocos dizem qual outro estava disponivel.
+          xdpyinfo | grep -E 'default visual id|depth of root window' || true
+          xdpyinfo | grep -E '^  visual id|^  class|^  depth|red, green, blue masks' \
+            | head -80 || true
+
+          echo "=== Mesa: what this runner can do ==="
+          eglinfo -B 2>/dev/null || eglinfo 2>/dev/null | head -60 || \
+            echo "(eglinfo not available on this image)"
+          glxinfo -B 2>/dev/null || echo "(glxinfo not available)"
+
+          echo "=== the smoke, compiled AOT (a dart run costs ~6 s of VM startup) ==="
+          dart compile exe tool/x11_gl_smoke.dart -o build/x11_gl_smoke
+          set +e
+          timeout --kill-after=5 90 build/x11_gl_smoke
+          status=$?
+          set -e
+          echo "x11_gl_smoke exit=$status  (0 ran, 1 EGL present and refused, 2 no EGL here)"
+          # 2 é um skip com motivo impresso, não um verde silencioso: o log diz
+          # o que faltou. Só o 1 reprova o job.
+          if [ "$status" = "2" ]; then
+            echo "::warning::the X11 GL path was skipped; see the X11_GL_SMOKE=SKIP line"
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Upload the Xvfb log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x11-gl-xvfb-log
+          path: build/xvfb.log
+          if-no-files-found: ignore
