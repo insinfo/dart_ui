@@ -34,18 +34,23 @@
 /// kernel's output with the tile shader's, pixel for pixel, instead of
 /// asserting the transcription is faithful.
 ///
-/// ## The three arrays that stay uploads, and why saying so matters
+/// ## Where `segments` and `draws` come from, and why it is a choice
 ///
-/// `segments`, `draws` and `bounds` are still CPU uploads at `t0..t2`. The
-/// flatten stage does produce segments on the device, but it produces *its own*
-/// segments: `ComputeCurveScene.appendPath` and `ComputeTileScene`'s sink
-/// disagree by construction about the closing edge of a degenerate contour -
-/// `compute_curve_scene.dart` states that divergence in its own comment - and
-/// neither produces the `firstSegment`/`segmentCount` table the draws array
-/// carries. Aliasing the flatten output here would bind a buffer with one
-/// segment numbering to an index built for another, which reads the wrong edges
-/// rather than failing. That join is real work, it is not done, and this file
-/// does not pretend otherwise.
+/// One of two places, and never one of each. In a joined submission they are
+/// the flatten stage's own segment buffer and the table `csDrawTable` builds
+/// out of its scan; otherwise they are a `ComputeTilePlan`'s two arrays,
+/// uploaded. `bounds` is always uploaded, because it is the control polygon's
+/// box and the CPU has it without flattening anything.
+///
+/// This used to be an upload and only an upload, and the reason it was is worth
+/// keeping: the two flatteners **number their segments differently**.
+/// `ComputeCurveScene.appendPath` decides the closing edge of a contour before
+/// anything is flattened and keeps the degenerate records, `ComputeTileScene`'s
+/// sink decides it after and drops them, so the same path gets a different
+/// segment count from each - the same picture, a different index. Binding one
+/// half's buffer to the other half's table reads edges that exist and belong to
+/// another draw, which is a wrong picture and not a failure, so the driver
+/// refuses the mixture by argument.
 ///
 /// What is removed is the expensive half. `ComputeTileScene.build` spends most
 /// of its time in `_binSegments` - the benchmark in
@@ -136,17 +141,23 @@ abstract final class ComputeCoverageRootConstant {
 const int kComputeCoverageRootConstantCount = 11;
 
 /// Read-only slots, as root-signature parameter indices.
-const int kComputeCoverageSegmentsSlot = 1;
-const int kComputeCoverageDrawsSlot = 2;
-const int kComputeCoverageBoundsSlot = 3;
+const int kComputeCoverageBoundsSlot = 1;
 
-/// Read-write slots, as root-signature parameter indices. The first five are
-/// the chained producers' buffers; the last is this stage's own output.
+/// Read-write slots, as root-signature parameter indices. The first seven are
+/// other passes' buffers; the last is this stage's own output.
+///
+/// `segments` and `draws` moved here from the read-only side when the flatten
+/// join was made: they are the flatten stage's output in a chained submission
+/// and a `ComputeTilePlan`'s two arrays otherwise, and a root SRV cannot name
+/// a buffer that lives in `UNORDERED_ACCESS`. `D3d12ComputeAlias` states the
+/// argument once for every slot of this shape.
 ///
 /// The coarse stage's `bins` is deliberately absent. The tile shader binds it
 /// and never indexes it either - the run of references a tile owns is already
 /// in that tile's command - and carrying a binding no kernel reads would claim
 /// a dependency this stage does not have.
+const int kComputeCoverageSegmentsSlot = 2;
+const int kComputeCoverageDrawsSlot = 3;
 const int kComputeCoverageReferencesSlot = 4;
 const int kComputeCoverageCommandsSlot = 5;
 const int kComputeCoverageReferenceSegmentsSlot = 6;
@@ -154,9 +165,9 @@ const int kComputeCoverageTileSegmentsSlot = 7;
 const int kComputeCoverageBackdropsSlot = 8;
 const int kComputeCoverageOutputSlot = 9;
 
-const int kComputeCoverageFirstSrvSlot = kComputeCoverageSegmentsSlot;
+const int kComputeCoverageFirstSrvSlot = kComputeCoverageBoundsSlot;
 const int kComputeCoverageLastSrvSlot = kComputeCoverageBoundsSlot;
-const int kComputeCoverageFirstUavSlot = kComputeCoverageReferencesSlot;
+const int kComputeCoverageFirstUavSlot = kComputeCoverageSegmentsSlot;
 const int kComputeCoverageLastUavSlot = kComputeCoverageOutputSlot;
 
 /// The value `FillRule.evenOdd.index` has on the wire, as the kernel tests it.
@@ -194,22 +205,27 @@ cbuffer CoverageConstants : register(b0) {
   uint uTileSegmentSlots;
 };
 
-// Uploaded: the segment table and the per-draw index into it. See the library
-// comment on why these three are not the flatten stage's output.
-StructuredBuffer<float4> uSegments : register(t0);
-StructuredBuffer<uint4>  uDraws    : register(t1);
-StructuredBuffer<float4> uBounds   : register(t2);
+// Uploaded: the per-draw box, which the CPU has without flattening anything.
+StructuredBuffer<float4> uBounds   : register(t0);
 
 // The producers' buffers, bound by address. Declared read-write because that is
 // what a root UAV descriptor is, and never written: a store into one would
 // corrupt the stage that is still the source of truth for it.
-RWStructuredBuffer<uint>  uReferences        : register(u0);
-RWStructuredBuffer<uint3> uCommands          : register(u1);
-RWStructuredBuffer<uint2> uReferenceSegments : register(u2);
-RWStructuredBuffer<uint>  uTileSegments      : register(u3);
-RWStructuredBuffer<int2>  uBackdrops         : register(u4);
+//
+// The first two are the flatten stage's when the chain joins it and a
+// ComputeTilePlan's when it does not. They must come from the *same* half:
+// uTileSegments indexes uSegments through the ranges in uDraws, and the two
+// flatteners number their segments differently.
+RWStructuredBuffer<float4> uSegments : register(u0);
+RWStructuredBuffer<uint4>  uDraws    : register(u1);
 
-RWStructuredBuffer<uint> uCoverage : register(u5);
+RWStructuredBuffer<uint>  uReferences        : register(u2);
+RWStructuredBuffer<uint3> uCommands          : register(u3);
+RWStructuredBuffer<uint2> uReferenceSegments : register(u4);
+RWStructuredBuffer<uint>  uTileSegments      : register(u5);
+RWStructuredBuffer<int2>  uBackdrops         : register(u6);
+
+RWStructuredBuffer<uint> uCoverage : register(u7);
 
 // ComputeTileCpuReference.containsUsingSegmentBins, transcribed - the same
 // transcription d3d12_compute_tile_shader.dart carries, whose library comment
@@ -356,6 +372,8 @@ void validateComputeCoverageShaderContract() {
   // same submission. The assertion is over the text because the compiler will
   // not make it: a `RWStructuredBuffer` is writable whether or not it should be.
   for (final String borrowed in <String>[
+    'uSegments',
+    'uDraws',
     'uReferences',
     'uCommands',
     'uReferenceSegments',

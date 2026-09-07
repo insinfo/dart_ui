@@ -55,6 +55,38 @@
 /// `RASTERIZADOR_COMPUTE_D.md` published, and a benchmark that can no longer
 /// produce the old row cannot show what the new one changed.
 ///
+/// ## The flatten join, and why it is a mode rather than the only shape
+///
+/// Until it existed the flatten stage was a dead end *inside this chain*: it
+/// wrote segments nobody read, while the segment stage was handed a
+/// `ComputeTilePlan`'s segments and its `firstSegment`/`segmentCount` table
+/// from the CPU. [ComputeFlattenJunction] is the other wiring - the segment and
+/// coverage stages bind the flatten pass's segment buffer and the draw table
+/// `csDrawTable` builds from its scan, and the CPU uploads no segment at all.
+///
+/// Both shapes stay reachable because they are the two sides of the parity
+/// argument. The seeded shape is what four stages of oracles already prove; the
+/// joined shape is what a frame would run, and the only way to say it is right
+/// is to rasterise the same scene both ways and compare pixels. They cannot be
+/// mixed: the two flatteners number their segments differently - see
+/// `compute_curve_scene.dart` on the closing edge of a degenerate contour - so
+/// a segment index resolved through the other half's table names an edge that
+/// exists and belongs to another draw.
+///
+/// ## What the joined shape cannot know, and how it bounds it instead
+///
+/// The segment stage's ragged dispatch is as wide as the widest draw, in
+/// segments. In the seeded shape that is a property of an array the CPU holds.
+/// In the joined shape it is a *result of the scan*, and reading it is the
+/// fence this pipeline exists to remove - so the dispatch runs over a bound and
+/// [ComputeRasterBudget.drawSegments] is that bound, carried frame to frame
+/// like every other budget here. A bound that is too small is not an error the
+/// kernel can raise: its guard is `local >= segmentCount`, so the segments past
+/// it are silently not binned. [ComputeRasterPipeline.run] therefore checks the
+/// widest draw against the bound it dispatched with, out of the scan it read
+/// back, and resubmits; [ComputeRasterPipeline.submit] demands the number
+/// up front for the same reason it demands the other three.
+///
 /// ## The retry cannot be chained, and that is a real constraint
 ///
 /// Both single-stage executors grow their bump-allocated buffer once when the
@@ -114,12 +146,14 @@ final class ComputeRasterBudget {
     required this.segments,
     required this.references,
     this.tileSegments = 0,
+    this.drawSegments = 0,
   });
 
   const ComputeRasterBudget.unknown()
       : segments = 0,
         references = 0,
-        tileSegments = 0;
+        tileSegments = 0,
+        drawSegments = 0;
 
   /// Segments the flatten stage may write. Non-positive means "no idea".
   final int segments;
@@ -131,11 +165,36 @@ final class ComputeRasterBudget {
   /// means the same, and is what a two-stage submission always carries.
   final int tileSegments;
 
+  /// Segments in the widest draw, which is how wide the segment stage's ragged
+  /// dispatch has to be.
+  ///
+  /// Only the joined shape needs it; the seeded one reads the number off the
+  /// array it was handed. Non-positive means "no idea", and the joined shape
+  /// then falls back to the segment budget - a bound that always holds, because
+  /// one draw cannot flatten to more segments than the whole scene, at the cost
+  /// of dispatching groups whose threads all retire at the guard.
+  final int drawSegments;
+
   bool get isKnown => segments > 0 && references > 0;
 
   /// Whether the third budget is known too, which a submission that reads
   /// nothing back and includes the segment stage requires.
   bool get isKnownWithSegments => isKnown && tileSegments > 0;
+}
+
+/// Ask the segment and coverage stages to read the flatten stage's output.
+///
+/// A value rather than a bare `bool` because it carries the one number that
+/// wiring needs and a boolean could not: how many draws the scene has, which is
+/// what `csDrawTable` writes an entry each for and what the two consumers index
+/// by. It has to be the curve scene's own path count and not a
+/// `ComputeTilePlan`'s draw count - those differ whenever the planner drops a
+/// draw whose flattened box came out empty, and a draw index off by one reads
+/// another draw's segment range.
+final class ComputeFlattenJunction {
+  const ComputeFlattenJunction({required this.drawCount});
+
+  final int drawCount;
 }
 
 /// Narrow, fakeable surface over one chained submission.
@@ -170,6 +229,7 @@ abstract interface class ComputeRasterDriver {
     required ComputeBinningDispatch binningDispatch,
     required bool readBack,
     ComputeSegmentScene? segmentScene,
+    bool joinFlatten = false,
     Uint32List? segmentConstants,
     ComputeSegmentBinningDispatch? segmentDispatch,
     ComputeCoverageDispatch? coverageDispatch,
@@ -307,6 +367,7 @@ final class ComputeRasterPipeline {
     required int drawCount,
     required ComputeBinningGrid grid,
     ComputeSegmentScene? segmentScene,
+    ComputeFlattenJunction? junction,
     ComputeCoverageRequest? coverage,
     ComputeRasterBudget budget = const ComputeRasterBudget.unknown(),
   }) =>
@@ -316,6 +377,7 @@ final class ComputeRasterPipeline {
         drawCount: drawCount,
         grid: grid,
         segmentScene: segmentScene,
+        junction: junction,
         coverage: coverage,
         budget: budget,
         readBack: true,
@@ -332,15 +394,27 @@ final class ComputeRasterPipeline {
     required int drawCount,
     required ComputeBinningGrid grid,
     ComputeSegmentScene? segmentScene,
+    ComputeFlattenJunction? junction,
     ComputeCoverageRequest? coverage,
     required ComputeRasterBudget budget,
   }) {
+    final bool runsSegments = segmentScene != null || junction != null;
     final bool known =
-        segmentScene == null ? budget.isKnown : budget.isKnownWithSegments;
+        runsSegments ? budget.isKnownWithSegments : budget.isKnown;
     if (!known) {
       throw ArgumentError(
         'a submission that reads nothing back cannot grow a budget; name every '
         'total, or use run() once to learn them',
+      );
+    }
+    if (junction != null && budget.drawSegments <= 0) {
+      // The fallback the joined shape uses when this is absent is the segment
+      // budget, which is safe but dispatches groups per draw that all retire at
+      // the guard. A submission that reads nothing back cannot discover that it
+      // over-dispatched either, so the number is required rather than guessed.
+      throw ArgumentError(
+        'a joined submission that reads nothing back has to name the widest '
+        'draw in segments; run() once to learn it',
       );
     }
     return _run(
@@ -349,6 +423,7 @@ final class ComputeRasterPipeline {
       drawCount: drawCount,
       grid: grid,
       segmentScene: segmentScene,
+      junction: junction,
       coverage: coverage,
       budget: budget,
       readBack: false,
@@ -367,6 +442,7 @@ final class ComputeRasterPipeline {
     required int drawCount,
     required ComputeBinningGrid grid,
     required ComputeSegmentScene? segmentScene,
+    required ComputeFlattenJunction? junction,
     required ComputeCoverageRequest? coverage,
     required ComputeRasterBudget budget,
     required bool readBack,
@@ -381,7 +457,26 @@ final class ComputeRasterPipeline {
     if (drawCount <= 0) {
       throw ArgumentError('a chained pass needs at least one draw');
     }
-    if (coverage != null && segmentScene == null) {
+    if (segmentScene != null && junction != null) {
+      throw ArgumentError(
+        'the segment table comes from the flatten stage or from a plan, never '
+        'from both',
+      );
+    }
+    if (junction != null && junction.drawCount != scene.pathCount) {
+      throw ArgumentError(
+        'the joined shape indexes the draw table csDrawTable writes, which has '
+        '${scene.pathCount} entries, not ${junction.drawCount}',
+      );
+    }
+    if (junction != null && junction.drawCount != drawCount) {
+      throw ArgumentError(
+        'the coarse stage bins $drawCount draws and the joined segment stage '
+        'reads ${junction.drawCount}; the two index the same references',
+      );
+    }
+    final bool runSegments = segmentScene != null || junction != null;
+    if (coverage != null && !runSegments) {
       throw ArgumentError(
         'the coverage stage reads the three per-reference arrays the segment '
         'stage produces; ask for both or neither',
@@ -426,6 +521,13 @@ final class ComputeRasterPipeline {
             ? maxTileSegments
             : budget.tileSegments)
         : minimumTileSegmentBudget;
+    // The scene's own segment budget is the bound that always holds: one draw
+    // cannot flatten to more segments than every draw together.
+    var drawSegmentBudget = budget.drawSegments > 0
+        ? (budget.drawSegments > segmentBudget
+            ? segmentBudget
+            : budget.drawSegments)
+        : segmentBudget;
 
     if (!readBack) {
       _submit(
@@ -434,10 +536,12 @@ final class ComputeRasterPipeline {
         drawCount: drawCount,
         grid: grid,
         segmentScene: segmentScene,
+        junction: junction,
         coverage: coverage,
         segmentBudget: segmentBudget,
         referenceBudget: referenceBudget,
         tileSegmentBudget: tileSegmentBudget,
+        drawSegmentBudget: drawSegmentBudget,
         readBack: false,
       );
       return ComputeRasterResult(
@@ -447,7 +551,8 @@ final class ComputeRasterPipeline {
         budget: ComputeRasterBudget(
           segments: segmentBudget,
           references: referenceBudget,
-          tileSegments: segmentScene == null ? 0 : tileSegmentBudget,
+          tileSegments: runSegments ? tileSegmentBudget : 0,
+          drawSegments: junction == null ? 0 : drawSegmentBudget,
         ),
         submissions: 1,
       );
@@ -465,6 +570,7 @@ final class ComputeRasterPipeline {
     var segments = 0;
     var references = 0;
     var tileSegments = 0;
+    var widestDraw = 0;
     var previousValid = false;
     for (;;) {
       final ComputeRasterReadback current = _submit(
@@ -473,10 +579,12 @@ final class ComputeRasterPipeline {
         drawCount: drawCount,
         grid: grid,
         segmentScene: segmentScene,
+        junction: junction,
         coverage: coverage,
         segmentBudget: segmentBudget,
         referenceBudget: referenceBudget,
         tileSegmentBudget: tileSegmentBudget,
+        drawSegmentBudget: drawSegmentBudget,
         readBack: true,
       )!;
       submissions++;
@@ -485,6 +593,11 @@ final class ComputeRasterPipeline {
           _totalReferences(current.binning.bins, tileCount);
       final int nextTileSegments =
           current.segments?.offsets[referenceBudget] ?? 0;
+      // Out of the scan, not out of the stage that consumed it: the scan is
+      // exact whether or not the emit or the segment dispatch had room, which
+      // is what makes one readback enough to size the next submission.
+      final int nextWidestDraw =
+          junction == null ? 0 : widestDrawOf(scene, current.flatten.offsets);
 
       if (submissions > 1) {
         // Every one of these is a pure function of the scene, so the same
@@ -499,6 +612,13 @@ final class ComputeRasterPipeline {
             'buffers are not being reset between submissions',
           );
         }
+        if (nextWidestDraw != widestDraw && submissions > 1 && widestDraw > 0) {
+          throw StateError(
+            'the chained pass reported a widest draw of $widestDraw segments '
+            'and then $nextWidestDraw for the same scene; the stage buffers '
+            'are not being reset between submissions',
+          );
+        }
         if (previousValid && nextTileSegments != tileSegments) {
           throw StateError(
             'the chained pass reported $tileSegments segment references and '
@@ -507,18 +627,29 @@ final class ComputeRasterPipeline {
           );
         }
       }
-      previousValid = nextReferences <= referenceBudget;
+      // A dispatch too narrow for the widest draw drops that draw's tail
+      // segments at the kernel's own guard, so the segment stage's total is
+      // meaningless for the same reason an overflowed reference budget makes
+      // it meaningless.
+      previousValid = nextReferences <= referenceBudget &&
+          nextWidestDraw <= drawSegmentBudget;
       segments = nextSegments;
       references = nextReferences;
       tileSegments = nextTileSegments;
+      widestDraw = nextWidestDraw;
       read = current;
 
       final bool grewSegments = segments > segmentBudget;
       final bool grewReferences = references > referenceBudget;
-      final bool grewTileSegments = segmentScene != null &&
-          previousValid &&
-          tileSegments > tileSegmentBudget;
-      if (!grewSegments && !grewReferences && !grewTileSegments) break;
+      final bool grewDrawSegments = widestDraw > drawSegmentBudget;
+      final bool grewTileSegments =
+          runSegments && previousValid && tileSegments > tileSegmentBudget;
+      if (!grewSegments &&
+          !grewReferences &&
+          !grewDrawSegments &&
+          !grewTileSegments) {
+        break;
+      }
 
       if (segments > maxSegments) {
         throw ComputeFlattenError(
@@ -550,6 +681,7 @@ final class ComputeRasterPipeline {
       }
       if (grewSegments) segmentBudget = segments;
       if (grewReferences) referenceBudget = references;
+      if (grewDrawSegments) drawSegmentBudget = widestDraw;
       if (grewTileSegments) tileSegmentBudget = tileSegments;
     }
 
@@ -571,6 +703,7 @@ final class ComputeRasterPipeline {
         totalSegments: segments,
         passes: submissions,
         segmentBudget: segmentBudget,
+        drawTable: read.flatten.draws,
       ),
       binning: ComputeBinningResult(
         bins: read.binning.bins,
@@ -614,10 +747,32 @@ final class ComputeRasterPipeline {
       budget: ComputeRasterBudget(
         segments: segmentBudget,
         references: referenceBudget,
-        tileSegments: segmentScene == null ? 0 : tileSegmentBudget,
+        tileSegments: runSegments ? 0 + tileSegmentBudget : 0,
+        drawSegments: junction == null ? 0 : drawSegmentBudget,
       ),
       submissions: submissions,
     );
+  }
+
+  /// Segments in the widest draw, from the curve scene's path table and the
+  /// flatten stage's own scan.
+  ///
+  /// The number the joined shape's ragged dispatch has to cover. Public because
+  /// it is also what a test asserts the dispatch against: the kernel's guard
+  /// makes a too-narrow dispatch silent, so the only way to know it was wide
+  /// enough is to compute the answer separately and compare.
+  static int widestDrawOf(ComputeCurveUpload scene, Uint32List offsets) {
+    var widest = 0;
+    for (var draw = 0; draw < scene.pathCount; draw++) {
+      final int base = draw * kComputeCurvePathStride;
+      var first = scene.paths[base];
+      var last = first + scene.paths[base + 1];
+      if (first > scene.curveCount) first = scene.curveCount;
+      if (last > scene.curveCount) last = scene.curveCount;
+      final int span = offsets[last] - offsets[first];
+      if (span > widest) widest = span;
+    }
+    return widest;
   }
 
   ComputeRasterReadback? _submit({
@@ -626,16 +781,22 @@ final class ComputeRasterPipeline {
     required int drawCount,
     required ComputeBinningGrid grid,
     required ComputeSegmentScene? segmentScene,
+    required ComputeFlattenJunction? junction,
     required ComputeCoverageRequest? coverage,
     required int segmentBudget,
     required int referenceBudget,
     required int tileSegmentBudget,
+    required int drawSegmentBudget,
     required bool readBack,
   }) {
     final ComputeFlattenDispatch flattenDispatch =
         ComputeFlattenExecutor.dispatchFor(
       curveCount: scene.curveCount,
       segmentBudget: segmentBudget,
+      // Zero outside the joined shape, which is a stage the pass skips: a
+      // submission nobody joins has no consumer for the table and paying for
+      // it would change the benchmark rows this file exists to compare.
+      pathCount: junction == null ? 0 : scene.pathCount,
     );
     final ComputeBinningDispatch binningDispatch =
         ComputeBinningExecutor.dispatchFor(
@@ -650,7 +811,8 @@ final class ComputeRasterPipeline {
     flattenConstants[ComputeFlattenRootConstant.blockCount] =
         flattenDispatch.blockCount;
     flattenConstants[ComputeFlattenRootConstant.maxSegments] = segmentBudget;
-    flattenConstants[ComputeFlattenRootConstant.reserved] = 0;
+    flattenConstants[ComputeFlattenRootConstant.pathCount] =
+        flattenDispatch.pathCount;
 
     final Uint32List binningConstants =
         Uint32List(kComputeBinningRootConstantCount);
@@ -669,7 +831,7 @@ final class ComputeRasterPipeline {
 
     ComputeSegmentBinningDispatch? segmentDispatch;
     Uint32List? segmentConstants;
-    if (segmentScene != null) {
+    if (segmentScene != null || junction != null) {
       final ComputeSegmentBinningGrid segmentGrid = ComputeSegmentBinningGrid(
         width: grid.width,
         height: grid.height,
@@ -680,8 +842,10 @@ final class ComputeRasterPipeline {
       // `d3d12_compute_segment_shader.dart` argues why the extra slots change
       // no output.
       segmentDispatch = ComputeSegmentBinningExecutor.dispatchFor(
-        drawCount: segmentScene.drawCount,
-        maxDrawSegments: segmentScene.maxDrawSegments,
+        drawCount: segmentScene?.drawCount ?? junction!.drawCount,
+        // A bound in the joined shape and a count in the seeded one; see the
+        // library comment on why the widest draw is not knowable here.
+        maxDrawSegments: segmentScene?.maxDrawSegments ?? drawSegmentBudget,
         rows: grid.rows,
         tileCount: grid.tileCount,
         referenceSlots: referenceBudget,
@@ -695,7 +859,7 @@ final class ComputeRasterPipeline {
     }
 
     ComputeCoverageDispatch? coverageDispatch;
-    if (coverage != null && segmentScene != null) {
+    if (coverage != null && segmentDispatch != null) {
       // Every argument is CPU-known, which is what makes the stage chainable.
       // Two of them are *budgets* and not counts, for the reason the segment
       // stage states: the reference and tile-segment totals are on the device
@@ -707,7 +871,7 @@ final class ComputeRasterPipeline {
         height: grid.height,
         tileSize: grid.tileSize,
         columns: grid.columns,
-        drawCount: segmentScene.drawCount,
+        drawCount: segmentDispatch.drawCount,
         // One group per tile rather than per occupied tile: the occupancy total
         // is the coarse stage's output, and reading it is the fence the chain
         // removes. A command slot past the real count is zero and writes
@@ -729,6 +893,7 @@ final class ComputeRasterPipeline {
       binningConstants: binningConstants,
       binningDispatch: binningDispatch,
       segmentScene: segmentScene,
+      joinFlatten: junction != null,
       segmentConstants: segmentConstants,
       segmentDispatch: segmentDispatch,
       coverageDispatch: coverageDispatch,

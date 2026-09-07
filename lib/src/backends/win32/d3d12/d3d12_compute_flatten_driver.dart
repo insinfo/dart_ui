@@ -29,11 +29,13 @@ const int kD3d12FlattenCountsSlot = 0;
 const int kD3d12FlattenOffsetsSlot = 1;
 const int kD3d12FlattenBlockSumsSlot = 2;
 const int kD3d12FlattenSegmentsSlot = 3;
+const int kD3d12FlattenDrawsSlot = 4;
 
 const int _kCountsSlot = kD3d12FlattenCountsSlot;
 const int _kOffsetsSlot = kD3d12FlattenOffsetsSlot;
 const int _kBlockSumsSlot = kD3d12FlattenBlockSumsSlot;
 const int _kSegmentsSlot = kD3d12FlattenSegmentsSlot;
+const int _kDrawsSlot = kD3d12FlattenDrawsSlot;
 
 /// The flatten stage's pass, its buffer sizes and its kernel chain, stated once.
 ///
@@ -65,13 +67,18 @@ abstract final class D3d12FlattenPass {
         (dispatch.curveCount + 1) * 4,
         (dispatch.blockCount + 1) * 4,
         dispatch.segmentBudget * 16,
+        // A root UAV needs a real address even when the draw table is not
+        // dispatched, and `D3d12ComputePass` gives a zero-byte slot the
+        // minimum allocation rather than a null pointer the runtime rejects.
+        dispatch.pathCount * 16,
       ];
 
-  /// The three read-only buffers, in slot order.
+  /// The four read-only buffers, in slot order.
   static List<TypedData> uploads(ComputeCurveUpload scene) => <TypedData>[
         scene.curves,
         scene.curvePoints,
         scene.transforms,
+        scene.paths,
       ];
 
   /// The chain. Every arrow between two of these is a write one kernel makes
@@ -79,12 +86,29 @@ abstract final class D3d12FlattenPass {
   /// after each stage.
   static List<D3d12ComputeStage> stages(ComputeFlattenDispatch dispatch) =>
       <D3d12ComputeStage>[
-        D3d12ComputeStage(0, dispatch.blockCount), // csCurveCounts
-        D3d12ComputeStage(1, dispatch.blockCount), // csScanBlocks
-        const D3d12ComputeStage(2, 1), // csScanBlockSums
-        D3d12ComputeStage(3, dispatch.applyGroups), // csScanApply
-        D3d12ComputeStage(4, dispatch.curveCount), // csEmitSegments
+        D3d12ComputeStage(ComputeFlattenKernel.counts, dispatch.blockCount),
+        D3d12ComputeStage(ComputeFlattenKernel.scanBlocks, dispatch.blockCount),
+        const D3d12ComputeStage(ComputeFlattenKernel.scanBlockSums, 1),
+        D3d12ComputeStage(ComputeFlattenKernel.scanApply, dispatch.applyGroups),
+        // The draw table before the segments, because it is the cheaper of the
+        // two consumers of the scan and the one a later stage aliases: putting
+        // it last would leave the table unwritten for exactly as long as the
+        // emit takes, and the barrier after each stage makes the order free.
+        D3d12ComputeStage(ComputeFlattenKernel.drawTable, dispatch.drawGroups),
+        D3d12ComputeStage(ComputeFlattenKernel.emit, dispatch.curveCount),
       ];
+
+  /// The slots the chained pipeline aliases into the two stages downstream.
+  ///
+  /// Named here rather than spelled at each call site because they are the
+  /// whole of the flatten-to-segments join: `tileSegments` indexes
+  /// [kD3d12FlattenSegmentsSlot] through the table in [kD3d12FlattenDrawsSlot],
+  /// and a consumer given one of the two and an uploaded copy of the other
+  /// would read the wrong edges rather than fail.
+  static const List<int> junctionSlots = <int>[
+    kD3d12FlattenSegmentsSlot,
+    kD3d12FlattenDrawsSlot,
+  ];
 
   /// Asserts the shader's slot constants against the pass's slot numbering.
   static void assertSlotContract() =>
@@ -172,7 +196,8 @@ final class D3d12ComputeFlattenDriver implements ComputeFlattenDriver {
         kComputeFlattenBlockSumsSlot - kComputeFlattenFirstUavSlot !=
             _kBlockSumsSlot ||
         kComputeFlattenSegmentsSlot - kComputeFlattenFirstUavSlot !=
-            _kSegmentsSlot) {
+            _kSegmentsSlot ||
+        kComputeFlattenDrawsSlot - kComputeFlattenFirstUavSlot != _kDrawsSlot) {
       throw StateError('the flatten read-write slots are out of order');
     }
   }

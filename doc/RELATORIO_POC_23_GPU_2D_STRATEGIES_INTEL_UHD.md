@@ -22,7 +22,9 @@ A GPU desta máquina suporta as quatro abordagens propostas.
 - **D — compute:** ~~a POC executa um microkernel em tiles 16×16, mas o
   rasterizador vetorial completo ainda precisa de flatten, binning, cobertura,
   ordenação e composição na GPU.~~ **Desatualizado nas duas direções, corrigido
-  em 06/09/2026 — ver §"Estratégia D em 06/09/2026" no fim deste relatório.**
+  em 06/09/2026 — ver §"Estratégia D em 06/09/2026" no fim deste relatório. A
+  junção flatten→segmentos, que aquela seção listava como lacuna, fechou em
+  07/09/2026; só a composição encadeada continua de fora.**
 
 ## Hardware e APIs confirmados nesta máquina
 
@@ -347,10 +349,15 @@ desenhos sobrepostos, triângulo, elipse, gravata-borboleta even-odd). Mais
 determinismo: a mesma cena duas vezes dá o mesmo buffer, e uma cena pequena
 depois de uma grande não deixa tinta para trás.
 
+Os quatro estágios continuavam, porém, **desligados entre o primeiro e o
+terceiro**: o flatten escrevia segmentos que ninguém lia. Desde 07/09/2026 não —
+ver §"A junção flatten→segmentos" abaixo, que é onde a paridade da rota
+realmente encadeada está medida.
+
 **Estava inalcançável, e passou a ser alcançável por opt-in em 06/09/2026.**
 `GpuPathStrategy.computeTiles` depende de `experimentalComputeTilesEnabled`,
 que depende de um executor, que depende de uma bandeira de construtor. Os
-**dois** pontos de produção — `d3d12_backend.dart:80` e `:119` — chamavam
+**dois** pontos de produção — `d3d12_backend.dart:81` e `:131` — chamavam
 `D3d12RenderDevice.open` sem passá-la, e o **único** ponto de construção no
 repositório inteiro era `D3d12Session.open(computeTiles: true)`, num arquivo de
 teste. Um pipeline com paridade byte a byte que nenhum programa podia executar.
@@ -377,16 +384,11 @@ CPU**. Então o que a bandeira liga é a metade CPU-planejada, e a metade
 GPU-encadeada — flatten, binning, segmentos, cobertura — não é tocada por
 desenho nenhum, com ou sem bandeira.
 
-**As duas lacunas que restam, nomeadas:**
+**A lacuna que resta, nomeada:** a **composição encadeada**, que precisa da
+porta para descriptor heaps.
 
-1. **A junção flatten→segmentos.** O flatten é hoje um beco sem saída *dentro
-   da própria cadeia*: o driver carrega os segmentos da CPU para o estágio de
-   segmentos e nunca usa a saída do flatten. As duas metades discordam por
-   construção sobre a aresta de fechamento de um contorno degenerado, e a saída
-   do flatten não produz a tabela `firstSegment`/`segmentCount`. Aliasar uma na
-   outra ligaria uma numeração de segmentos a um índice construído para outra:
-   arestas erradas, não uma falha.
-2. **A composição encadeada**, que precisa da porta para descriptor heaps.
+A outra — a junção flatten→segmentos — foi fechada em 07/09/2026 e tem seção
+própria abaixo.
 
 **E uma correção de fato ao design.** `doc/architecture/RASTERIZADOR_COMPUTE_D.md`
 dizia que encadear a cobertura estava bloqueado por descriptor heaps. Isso vale
@@ -401,6 +403,188 @@ MiB na maior linha — e zeram esse buffer por caminhos diferentes, um deles na
 CPU a ~700 µs/MB. O que a tabela mostra honestamente é **onde fica o
 cruzamento**, entre 4 e 16 desenhos, e não um ganho de 2,7×.
 
+## A junção flatten→segmentos, fechada em 07/09/2026
+
+Até aqui o flatten era um beco sem saída *dentro da própria cadeia*: escrevia
+segmentos que ninguém lia, enquanto o estágio de segmentos recebia os segmentos
+de um `ComputeTilePlan` e a tabela `firstSegment`/`segmentCount` construída na
+CPU. Este relatório dizia, com razão, que ligar um no outro ingenuamente
+amarraria uma numeração de segmentos a um índice construído para outra —
+**arestas erradas, e não uma falha**. Nada lança; sai um desenho.
+
+Eram dois problemas e não um, e foram resolvidos separadamente.
+
+### 1. A aresta de fechamento de um contorno degenerado
+
+Isto é uma questão de **especificação** antes de ser de código, e a resposta
+está escrita uma vez, em `compute_curve_scene.dart`:
+
+> um contorno emite uma linha de fechamento **se e somente se** emitiu ao menos
+> um registro de curva e seu ponto corrente, *em espaço de origem*, difere do
+> ponto inicial. Um contorno de um ponto só não emite nada; um contorno de dois
+> pontos coincidentes emite o registro degenerado que o verbo pediu e nenhuma
+> linha de fechamento, porque corrente já é igual a início.
+
+A regra alternativa é a do sink de `ComputeTileScene`: emitir a aresta de
+fechamento só quando o achatamento produziu uma aresta **não degenerada** em
+espaço de dispositivo. Ela não é implementável aqui, e o motivo é estrutural e
+não de gosto: é uma pergunta sobre o *resultado* do achatamento, e o resultado
+do achatamento é produzido por threads que nunca viram o contorno. Decidi-la na
+CPU significaria achatar na CPU primeiro, que é exatamente o trabalho que este
+estágio existe para tirar de lá.
+
+E as duas regras só divergem sobre arestas de **comprimento zero em espaço de
+dispositivo**. O teste de cruzamento que consome um segmento é `y0 <= y && y1 >
+y` (ou o espelho), falso para todo `y` quando `y0 == y1`: uma aresta degenerada
+não contribui para o winding de amostra nenhuma. Logo o *desenho* é o mesmo e a
+**numeração** não é — a regra escolhida pode dar a um desenho um segmento a mais
+que a do sink, que é precisamente por que a tabela tem de vir da varredura do
+próprio flatten e nunca de um `ComputeTilePlan`.
+
+Uma correção de fato entrou junto: `ComputeCurveScene.appendPath` tratava um
+verbo de curva sem contorno aberto mantendo o ponto inicial do contorno
+*anterior*, o que fecharia o contorno com uma aresta atravessando o caminho até
+um ponto que ele nunca tocou.
+
+### 2. A tabela `firstSegment`/`segmentCount`
+
+Um sexto kernel no estágio de flatten, `csDrawTable`, uma thread por desenho.
+Não é uma segunda varredura: as curvas de um caminho são contíguas por
+construção, então os segmentos do desenho são o intervalo
+`[offsets[firstCurve], offsets[firstCurve + curveCount])` e as duas leituras
+saem da mesma varredura que `compute_scan.dart` já produz. `uOffsets` tem
+`curveCount + 1` entradas com o total no fim, então o último desenho não é caso
+especial. O material e a regra de preenchimento viajam no registro de caminho —
+`kComputeCurvePathStride` passou de 2 para 4 — e são copiados sem serem lidos,
+de modo que a tabela sai já no layout `firstSegment, segmentCount, material,
+fillRule` que os dois consumidores indexam.
+
+### 3. A ligação em si
+
+`uSegments` e `uDraws` saíram do lado **somente-leitura** para o lado
+**leitura-escrita** nos estágios de segmentos e de cobertura. É o mesmo
+argumento que `D3d12ComputeAlias` já fazia para `bins` e `references`: um root
+SRV exige `NON_PIXEL_SHADER_RESOURCE` e os buffers do flatten vivem em
+`UNORDERED_ACCESS` do nascimento à liberação, então bindá-los como SRV custaria
+um par de transições por submissão em torno de um recurso que o produtor ainda
+pode estar escrevendo. Como slots de leitura-escrita nunca escritos, eles aceitam
+um alias, e a barreira UAV que a cadeia já grava entre despachos é toda a
+ordenação de que uma leitura aliasada precisa.
+
+As duas formas continuam alcançáveis — semeada da CPU e ligada ao flatten —
+porque são os dois lados do argumento de paridade, e **o driver recusa a
+mistura por argumento**: um índice de segmento resolvido pela tabela da outra
+metade acha uma aresta que existe e pertence a outro desenho.
+
+### O que continua na CPU, e por quê
+
+As caixas por desenho. `ComputeCurveScene.deviceBounds` devolve a caixa do
+**polígono de controle**, não a da polilinha achatada: não precisa de segmento
+nem de varredura, é `O(pontos de controle)` da mesma transformação que o
+codificador já percorre. Uma Bézier está dentro do fecho convexo do seu polígono
+de controle, então essa caixa é um **superconjunto** da que `ComputeTileScene`
+deriva de `Path.flattenTo`, e a área a mais não muda pixel: os tiles que ela
+acrescenta não carregam segmento, e o backdrop da primeira referência de uma
+linha é o winding líquido das arestas que atravessam a linha inteira à esquerda
+dela, que é zero para um contorno fechado quer a linha comece um tile mais fora
+ou não.
+
+### O que a submissão encadeada não sabe
+
+O desenho mais largo, em segmentos, que é a largura do despacho irregular do
+estágio de segmentos. Na forma semeada isso é uma propriedade de um array que a
+CPU tem; na forma ligada é **resultado da varredura**, e lê-lo é a cerca que
+esta cadeia existe para remover. Virou orçamento — `ComputeRasterBudget.
+drawSegments` — carregado de quadro a quadro como os outros três. Um orçamento
+curto demais **não é um erro que o kernel possa levantar**: a guarda dele é
+`local >= segmentCount`, então os segmentos além dela simplesmente não são
+binados. `run()` recalcula o desenho mais largo a partir da varredura que leu de
+volta e ressubmete; `submit()`, que não lê nada, exige o número.
+
+### Paridade, medida nesta máquina
+
+`test/rendering/gpu/compute/d3d12_compute_flatten_junction_test.dart` compara a
+rota ligada com `ComputeTileD3d12Executor.submit(plan)` — a rota de cobertura já
+provada contra `ComputeTileCpuReference` — **por pixel**. As duas não
+compartilham array nenhum: só a geometria.
+
+| cena | limite honesto | desvio observado |
+|---|---:|---:|
+| um retângulo | 0 | **0** |
+| um desenho num tile de dezesseis | 0 | **0** |
+| dois desenhos partilhando tiles | 0 | **0** |
+| um triângulo | 0 | **0** |
+| uma elipse | 16 | **0** |
+| um quadrado com contornos degenerados | 0 | **0** |
+| gravata-borboleta even-odd | 0 | **0** |
+
+O limite é 0 onde toda aresta é reta, porque aí não há ponto interior e as duas
+polilinhas são os mesmos pontos. Na elipse ele **não** é 0 por construção: os
+dois achatadores concordam sobre o *número* de segmentos e colocam os pontos
+interiores de propósito de formas diferentes — diferenças progressivas em
+float64 contra avaliação direta de `B(j/n)` em float32 —, então um cruzamento
+pode cair do outro lado de uma subamostra, que custa `255/16 = 16` níveis. O
+que se mediu foi 0; o limite fica onde está porque é uma propriedade da
+aritmética e não desta execução.
+
+**O contorno degenerado é uma cena aqui, e não uma nota de rodapé**: é onde as
+duas metades discordavam por construção. Para o mesmo caminho o sink dá 6
+segmentos ao desenho e o codificador de curvas dá 7, e o desvio é 0 — que é
+exatamente a afirmação do §1 verificada em pixels em vez de no papel.
+
+As seis cenas da forma **semeada** continuam byte a byte contra a rota provada:
+nada do que entrou mexeu nelas. Determinismo idem, nas duas formas: a mesma cena
+duas vezes dá o mesmo buffer, e uma cena pequena depois de uma grande não deixa
+tinta para trás.
+
+### A sabotagem, porque um teste que só roda não prova nada
+
+A falha que este relatório nomeou não lança. Então as duas foram encenadas de
+propósito, e o teste falha se elas *não* forem visíveis:
+
+| sabotagem | pixels movidos | pior desvio |
+|---|---:|---:|
+| numeração cruzada: segmentos do plano, tabela do flatten | 141 | **255** de 255 |
+| regra de fechamento removida: sem a aresta de fechamento | 329 | **255** de 255 |
+
+Duas armadilhas apareceram ao montá-las, e as duas dizem algo sobre a forma da
+falha. Com **um** desenho só, a numeração cruzada corre para fora do array de
+segmentos do plano, e um root descriptor além do seu buffer lê zeros —
+`float4(0,0,0,0)` é uma aresta horizontal, e aresta horizontal não cruza nada.
+E com um **retângulo** como segundo desenho, toda aresta emprestada é ou
+horizontal ou metade de um par que se cancela. Foi preciso um segundo desenho
+com arestas inclinadas para que a numeração cruzada pegasse geometria de
+verdade. Pela mesma razão a sabotagem da aresta de fechamento não usa o
+triângulo das cenas de paridade: a aresta que o fecha é horizontal, e apagá-la
+não muda nada.
+
+### Custo, com a ressalva de sempre
+
+A ressalva desta seção é a mesma que o §"tabela de custo" faz, e ela vale ainda
+mais aqui: **as duas colunas de GPU leem de volta um `uint` por pixel por
+desenho** — 64 MiB na maior linha — e isso domina tudo o mais em ambas. As duas
+são uma submissão de quatro estágios pelo mesmo driver, então **nada aqui é
+atribuível a encadeamento**. O que difere é o lado CPU: a coluna semeada precisa
+de um `ComputeTilePlan`, que é `ComputeTileScene.build` fazendo o achatamento, as
+caixas, a deduplicação e a codificação; a coluna ligada não precisa de nada
+disso e paga um kernel a mais.
+
+Mediana de cinco execuções, três execuções do arquivo, Intel UHD, feature level
+12_1:
+
+| cena | plano (CPU) | semeada | plano + semeada | ligada |
+|---|---:|---:|---:|---:|
+| 4 desenhos, 128x128 | 0,8 – 1,4 ms | 2,7 – 7,7 ms | 3,5 – 9,2 ms | 2,4 – 5,1 ms |
+| 16 desenhos, 256x256 | 2,2 – 2,4 ms | 7,6 – 8,9 ms | 9,9 – 11,4 ms | 7,0 – 9,3 ms |
+| 64 desenhos, 512x512 | 5,3 – 36,7 ms | 57 – 98 ms | 62 – 105 ms | 62 – 101 ms |
+
+**A faixa é o resultado**, e não um intervalo de confiança: a mesma medida
+variou por mais de dois para um entre execuções deste mesmo arquivo, com a
+leitura de volta dominando. O que se pode dizer honestamente é que a coluna
+ligada fica **no mesmo lugar ou um pouco abaixo** da semeada apesar de despachar
+um kernel a mais, e que ela não paga a coluna do plano. O que **não** se pode
+dizer é qualquer razão entre elas.
+
 ## Artefatos
 
 - `poc/poc_23_gpu_2d_strategies/bin/main.dart`: probe e benchmark executável.
@@ -411,6 +595,9 @@ cruzamento**, entre 4 e 16 desenhos, e não um ganho de 2,7×.
   as quatro combinações.
 - `test/rendering/gpu/gl_route_availability_test.dart`: os mesmos fatos em
   alvo offscreen, incluindo o limite de desvio da borda do cover pass.
+- `test/rendering/gpu/compute/d3d12_compute_flatten_junction_test.dart`: a
+  junção flatten→segmentos comparada por pixel contra a rota provada, com as
+  duas sabotagens e a tabela de custo desta seção.
 
 O código continua executável em Linux para conferir portabilidade, mas este
 relatório e seus números de decisão referem-se ao Windows nativo, conforme o

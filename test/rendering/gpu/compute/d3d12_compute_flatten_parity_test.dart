@@ -97,12 +97,12 @@ void main() {
       // Cheap, and it runs on every platform: a root constant renamed on one
       // side of the seam and not the other compiles and binds and draws wrong.
       expect(validateComputeFlattenShaderContract, returnsNormally);
-      expect(kComputeFlattenEntryPoints.length, 5);
+      expect(kComputeFlattenEntryPoints.length, 6);
       expect(kComputeFlattenMaxCurves,
           kComputeFlattenGroupSize * kComputeFlattenGroupSize);
     });
 
-    test('five compute pipelines are created', () {
+    test('six compute pipelines are created', () {
       if (_skipped(session)) return;
       final ComputeFlattenExecutor? built = open();
       expect(built, isNotNull);

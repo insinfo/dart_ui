@@ -7,12 +7,19 @@
 /// thing this stage has that the two before it do not: **two of its read-write
 /// slots are inputs**.
 ///
-/// `uBins` and `uReferences` are the coarse stage's output. In the chained
-/// pipeline they are that pass's buffers, bound by address with
-/// [D3d12ComputeAlias] and never copied; in the unchained oracle shape they are
-/// this pass's own buffers, seeded from a `ComputeTilePlan`. [sources] is the
-/// one function that spells the difference, so the two shapes dispatch
-/// literally the same kernels over the same registers.
+/// `uBins` and `uReferences` are the coarse stage's output, and `uSegments` and
+/// `uDraws` are the **flatten** stage's. In the chained pipeline all four are
+/// those passes' buffers, bound by address with [D3d12ComputeAlias] and never
+/// copied; in the unchained oracle shape they are this pass's own buffers,
+/// seeded from a `ComputeTilePlan`. [sources] is the one function that spells
+/// the difference, so the two shapes dispatch literally the same kernels over
+/// the same registers.
+///
+/// The last two are the junction `RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD`
+/// recorded as missing. Aliasing only one of them would be worse than aliasing
+/// neither: `tileSegments` indexes `uSegments` through the ranges in `uDraws`,
+/// so a GPU segment buffer read through a CPU-built table names edges that
+/// exist and belong to another draw - wrong geometry, not a failure.
 library;
 
 import 'dart:typed_data';
@@ -26,15 +33,17 @@ import 'd3d12_device.dart';
 const int _kSegmentPipelineToken = 1;
 
 /// Read-write slots, in the order the root signature declares them.
-const int kD3d12SegmentBinsSlot = 0;
-const int kD3d12SegmentReferencesSlot = 1;
-const int kD3d12SegmentCountsSlot = 2;
-const int kD3d12SegmentOffsetsSlot = 3;
-const int kD3d12SegmentBlockSumsSlot = 4;
-const int kD3d12SegmentScratchSlot = 5;
-const int kD3d12SegmentTileSegmentsSlot = 6;
-const int kD3d12SegmentRefSegmentsSlot = 7;
-const int kD3d12SegmentBackdropsSlot = 8;
+const int kD3d12SegmentSegmentsSlot = 0;
+const int kD3d12SegmentDrawsSlot = 1;
+const int kD3d12SegmentBinsSlot = 2;
+const int kD3d12SegmentReferencesSlot = 3;
+const int kD3d12SegmentCountsSlot = 4;
+const int kD3d12SegmentOffsetsSlot = 5;
+const int kD3d12SegmentBlockSumsSlot = 6;
+const int kD3d12SegmentScratchSlot = 7;
+const int kD3d12SegmentTileSegmentsSlot = 8;
+const int kD3d12SegmentRefSegmentsSlot = 9;
+const int kD3d12SegmentBackdropsSlot = 10;
 
 /// The segment stage's pass, its buffer sizes and its kernel chain, once.
 ///
@@ -61,23 +70,26 @@ abstract final class D3d12SegmentPass {
         deviceZeroFill: deviceZeroFill,
       );
 
-  /// The read-only uploads, in slot order.
-  static List<TypedData> uploads(ComputeSegmentScene scene) => <TypedData>[
-        scene.segments,
-        scene.draws,
-        scene.bounds,
-      ];
+  /// The read-only upload, in slot order.
+  static List<TypedData> uploads(Float32List bounds) => <TypedData>[bounds];
 
   /// The read-write buffer sizes, in slot order.
   ///
-  /// The two borrowed slots are sized for the unchained shape, where they are
+  /// The four borrowed slots are sized for the unchained shape, where they are
   /// this pass's own buffers holding a seeded copy. An aliased run ignores
   /// them: [D3d12ComputePass] neither allocates nor zeroes a slot whose source
-  /// is a [D3d12ComputeAlias].
-  static List<int> uavBytes(ComputeSegmentBinningDispatch dispatch) {
+  /// is a [D3d12ComputeAlias]. [scene] is null in the chained shape, where the
+  /// segment table and the draw table both come from the flatten pass and this
+  /// pass has no size to state for them.
+  static List<int> uavBytes(
+    ComputeSegmentBinningDispatch dispatch, {
+    ComputeSegmentScene? scene,
+  }) {
     final int slots = dispatch.referenceSlots;
     final int segmentBytes = dispatch.tileSegmentBudget * 4;
     return <int>[
+      scene == null ? 0 : scene.segments.lengthInBytes,
+      scene == null ? 0 : scene.draws.lengthInBytes,
       dispatch.tileCount * 8,
       slots * 4,
       slots * 4,
@@ -92,16 +104,21 @@ abstract final class D3d12SegmentPass {
 
   /// Where each read-write slot's contents come from.
   ///
-  /// [bins] and [references] seed the two borrowed slots from the CPU;
-  /// [aliasBins] and [aliasReferences] bind them to another pass's buffers
-  /// instead. Exactly one of each pair is given.
+  /// [scene], [bins] and [references] seed the four borrowed slots from the
+  /// CPU; the four aliases bind them to the producing passes' buffers instead.
+  /// Exactly one of each pair is given.
   static List<Object?> sources({
+    ComputeSegmentScene? scene,
     Uint32List? bins,
     Uint32List? references,
+    D3d12ComputeAlias? aliasSegments,
+    D3d12ComputeAlias? aliasDraws,
     D3d12ComputeAlias? aliasBins,
     D3d12ComputeAlias? aliasReferences,
   }) =>
       <Object?>[
+        aliasSegments ?? scene?.segments,
+        aliasDraws ?? scene?.draws,
         aliasBins ?? bins,
         aliasReferences ?? references,
         null,
@@ -227,11 +244,15 @@ final class D3d12ComputeSegmentDriver implements ComputeSegmentBinningDriver {
 
     final List<Uint8List> back = _pass.run(
       rootConstants: rootConstants,
-      uploads: D3d12SegmentPass.uploads(scene),
-      uavBytes: D3d12SegmentPass.uavBytes(dispatch),
+      uploads: D3d12SegmentPass.uploads(scene.bounds),
+      uavBytes: D3d12SegmentPass.uavBytes(dispatch, scene: scene),
       stages: D3d12SegmentPass.stages(dispatch),
       reads: D3d12SegmentPass.reads,
-      uavSources: D3d12SegmentPass.sources(bins: bins, references: references),
+      uavSources: D3d12SegmentPass.sources(
+        scene: scene,
+        bins: bins,
+        references: references,
+      ),
     );
     return D3d12SegmentPass.readbackOf(back, dispatch);
   }
@@ -245,6 +266,8 @@ final class D3d12ComputeSegmentDriver implements ComputeSegmentBinningDriver {
   static void _assertSlotContract() {
     validateComputeSegmentShaderContract();
     const List<(int, int)> slots = <(int, int)>[
+      (kComputeSegmentSegmentsSlot, kD3d12SegmentSegmentsSlot),
+      (kComputeSegmentDrawsSlot, kD3d12SegmentDrawsSlot),
       (kComputeSegmentBinsSlot, kD3d12SegmentBinsSlot),
       (kComputeSegmentReferencesSlot, kD3d12SegmentReferencesSlot),
       (kComputeSegmentCountsSlot, kD3d12SegmentCountsSlot),

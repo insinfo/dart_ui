@@ -62,6 +62,7 @@ final class ComputeFlattenReadback {
     required this.counts,
     required this.offsets,
     required this.segments,
+    this.draws,
   });
 
   /// `n` per curve, as `csCurveCounts` wrote it.
@@ -73,6 +74,14 @@ final class ComputeFlattenReadback {
   /// `x0, y0, x1, y1` per segment, `segmentBudget` entries long whether or not
   /// the scene filled it.
   final Float32List segments;
+
+  /// `firstSegment, segmentCount, material, fillRule` per draw, or null when
+  /// the caller did not ask for it.
+  ///
+  /// Nullable because the unchained oracle shape reads back three buffers and
+  /// the chained one reads four; a driver that always returned it would make
+  /// every parity test pay for a copy it does not compare.
+  final Uint32List? draws;
 }
 
 /// How many thread groups each of the five dispatches needs.
@@ -86,6 +95,8 @@ final class ComputeFlattenDispatch {
     required this.blockCount,
     required this.applyGroups,
     required this.segmentBudget,
+    required this.pathCount,
+    required this.drawGroups,
   });
 
   /// Curves in the scene. Also the emit dispatch's group count - one group per
@@ -101,6 +112,12 @@ final class ComputeFlattenDispatch {
 
   /// Elements in the segment buffer this pass may write.
   final int segmentBudget;
+
+  /// Draws in the scene, which is what `csDrawTable` writes one entry each for.
+  final int pathCount;
+
+  /// Groups for `csDrawTable`, which covers [pathCount] elements.
+  final int drawGroups;
 }
 
 /// Narrow, fakeable surface over one flatten pass.
@@ -133,6 +150,7 @@ final class ComputeFlattenResult {
     required this.totalSegments,
     required this.passes,
     required this.segmentBudget,
+    this.drawTable,
   });
 
   /// `n` per curve.
@@ -155,6 +173,16 @@ final class ComputeFlattenResult {
 
   /// The budget the successful pass ran with.
   final int segmentBudget;
+
+  /// `firstSegment, segmentCount, material, fillRule` per draw, or null when
+  /// the pass did not build it.
+  ///
+  /// The table `csDrawTable` writes, which is what the segment and coverage
+  /// stages index by draw in a joined submission. Returned so a test can check
+  /// it against `ComputeFlattenReference`: it is the only part of the join
+  /// whose failure is a *plausible* picture rather than a refusal, so the one
+  /// check that catches it has to be able to see the numbers.
+  final Uint32List? drawTable;
 
   bool get isEmpty => totalSegments == 0;
 }
@@ -292,12 +320,13 @@ final class ComputeFlattenExecutor {
     final ComputeFlattenDispatch dispatch = dispatchFor(
       curveCount: scene.curveCount,
       segmentBudget: segmentBudget,
+      pathCount: scene.pathCount,
     );
     final Uint32List constants = Uint32List(kComputeFlattenRootConstantCount);
     constants[ComputeFlattenRootConstant.curveCount] = scene.curveCount;
     constants[ComputeFlattenRootConstant.blockCount] = dispatch.blockCount;
     constants[ComputeFlattenRootConstant.maxSegments] = segmentBudget;
-    constants[ComputeFlattenRootConstant.reserved] = 0;
+    constants[ComputeFlattenRootConstant.pathCount] = scene.pathCount;
 
     final ComputeFlattenReadback readback = _driver.runFlattenPass(
       pipeline: _pipeline,
@@ -331,6 +360,7 @@ final class ComputeFlattenExecutor {
   static ComputeFlattenDispatch dispatchFor({
     required int curveCount,
     required int segmentBudget,
+    int pathCount = 0,
   }) {
     if (curveCount <= 0) {
       throw RangeError.value(curveCount, 'curveCount', 'must be positive');
@@ -348,6 +378,16 @@ final class ComputeFlattenExecutor {
         'a segment budget of $segmentBudget overflows 32-bit float4 indexing',
       );
     }
+    if (pathCount < 0) {
+      throw RangeError.value(pathCount, 'pathCount', 'must not be negative');
+    }
+    if (pathCount > kComputeMaxDispatchGroups * kComputeScanGroupSize) {
+      throw ComputeFlattenError(
+        ComputeFlattenRejection.integerOverflow,
+        'a scene of $pathCount draws needs more than '
+        '$kComputeMaxDispatchGroups groups for the draw table',
+      );
+    }
     final int blockCount = computeScanGroups(curveCount);
     final int applyGroups = computeScanGroups(curveCount + 1);
     return ComputeFlattenDispatch(
@@ -355,6 +395,11 @@ final class ComputeFlattenExecutor {
       blockCount: blockCount,
       applyGroups: applyGroups,
       segmentBudget: segmentBudget,
+      pathCount: pathCount,
+      // Zero groups is a stage the pass skips, which is what a caller that
+      // never asked for the table wants: the unchained oracle shape reads the
+      // segments and does its own grouping.
+      drawGroups: computeScanGroups(pathCount),
     );
   }
 

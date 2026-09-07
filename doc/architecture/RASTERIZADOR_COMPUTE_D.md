@@ -447,18 +447,24 @@ resultado, e é ele que diz onde vale otimizar em seguida.
    encadeada um por tile *ocupado* — a cena `18,18–28,28` ocupa 1 tile de 16, e
    as duas continuam byte a byte idênticas em tamanhos de despacho diferentes.
 
-4. **A junção flatten→segmentos, que é a lacuna nova.** O flatten é um beco sem
-   saída *dentro da própria cadeia*: `D3d12ComputeRasterDriver.runRasterPass`
-   carrega `segmentScene.segments` da CPU para o estágio de segmentos e **nunca
-   aliasa a saída do flatten**. Os dois rodam lado a lado sobre arrays de
-   segmentos diferentes. Não dá para simplesmente juntá-los:
-   `ComputeCurveScene.appendPath` e o sink de `ComputeTileScene` discordam por
-   construção sobre a aresta de fechamento de um contorno degenerado — cada um
-   diz isso no próprio comentário — e o flatten não produz a tabela
-   `firstSegment`/`segmentCount`. Aliasar um no outro ligaria uma numeração de
-   segmentos a um índice construído para outra: **arestas erradas, não uma
-   falha**. Precisa de uma tabela de desenhos do lado da GPU e de um novo
-   oráculo.
+4. ~~**A junção flatten→segmentos, que é a lacuna nova.**~~ **Feita em
+   07/09/2026.** A regra da aresta de fechamento passou a ser a do
+   `ComputeCurveScene` — decidida por contorno, em espaço de origem, antes de
+   qualquer achatamento — porque a alternativa pergunta pelo *resultado* do
+   achatamento, que na GPU é produzido por threads que nunca viram o contorno; e
+   as duas só divergem sobre arestas de comprimento zero em espaço de
+   dispositivo, que não cruzam linha de varredura nenhuma. A tabela
+   `firstSegment`/`segmentCount` virou `csDrawTable`, um sexto kernel do estágio
+   de flatten, uma thread por desenho sobre a varredura que já existia. E
+   `uSegments`/`uDraws` saíram do lado somente-leitura para o lado
+   leitura-escrita nos estágios de segmentos e de cobertura, para que possam ser
+   aliasados como `bins` e `references` já eram. O oráculo novo é
+   `d3d12_compute_flatten_junction_test.dart`, que compara por pixel contra a
+   rota provada — desvio 0 em sete cenas, a elipse e um contorno degenerado
+   incluídos — e encena as duas falhas de propósito para mostrar que elas seriam
+   visíveis. Detalhes e custo em
+   `RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD.md`, §"A junção
+   flatten→segmentos".
 
 5. **A composição encadeada**, que é o caso em que a porta para descriptor
    heaps é mesmo necessária.

@@ -7,7 +7,7 @@
 /// segment the coverage shader read had been produced by `Path.flattenTo` on
 /// the CPU.
 ///
-/// ## Five entry points, and why the middle three are a prefix sum
+/// ## Six entry points, and why the middle three are a prefix sum
 ///
 /// A curve does not know where its segments go. Curve `k` writes at
 /// `sum(counts[0..k))`, and that sum is not available to the thread that needs
@@ -24,6 +24,13 @@
 ///      into an exclusive prefix sum in `uOffsets` with the grand total at
 ///      `uOffsets[curveCount]`.
 ///   5. `csEmitSegments` - one group per curve, one thread per segment.
+///   6. `csDrawTable` - one thread per draw, turning the same scan into the
+///      `firstSegment, segmentCount, material, fillRule` table the segment and
+///      coverage stages index by draw. Without it this stage was a dead end
+///      inside its own chain: the segments were on the device and nothing could
+///      say which of them belonged to which draw, so the consumer read an
+///      uploaded table built by a *different* flattener with a different
+///      segment numbering.
 ///
 /// The scan is generated rather than written here because the binning stage
 /// needs the same three kernels over different data, and two copies of a
@@ -100,38 +107,61 @@ abstract final class ComputeFlattenRootConstant {
   static const int curveCount = 0;
   static const int blockCount = 1;
   static const int maxSegments = 2;
-  static const int reserved = 3;
+
+  /// Paths in the scene, which is the draw-table kernel's element count.
+  static const int pathCount = 3;
 }
 
 const int kComputeFlattenRootConstantCount = 4;
 
-/// Root-signature parameter indices: root constants, three read-only scene
-/// buffers, four read-write stage buffers.
+/// Root-signature parameter indices: root constants, four read-only scene
+/// buffers, five read-write stage buffers.
 const int kComputeFlattenRootConstantsSlot = 0;
 const int kComputeFlattenCurvesSlot = 1;
 const int kComputeFlattenCurvePointsSlot = 2;
 const int kComputeFlattenTransformsSlot = 3;
-const int kComputeFlattenCountsSlot = 4;
-const int kComputeFlattenOffsetsSlot = 5;
-const int kComputeFlattenBlockSumsSlot = 6;
-const int kComputeFlattenSegmentsSlot = 7;
-const int kComputeFlattenRootParameterCount = 8;
+const int kComputeFlattenPathsSlot = 4;
+const int kComputeFlattenCountsSlot = 5;
+const int kComputeFlattenOffsetsSlot = 6;
+const int kComputeFlattenBlockSumsSlot = 7;
+const int kComputeFlattenSegmentsSlot = 8;
+const int kComputeFlattenDrawsSlot = 9;
+const int kComputeFlattenRootParameterCount = 10;
 
 const int kComputeFlattenFirstSrvSlot = kComputeFlattenCurvesSlot;
-const int kComputeFlattenLastSrvSlot = kComputeFlattenTransformsSlot;
+const int kComputeFlattenLastSrvSlot = kComputeFlattenPathsSlot;
 const int kComputeFlattenFirstUavSlot = kComputeFlattenCountsSlot;
-const int kComputeFlattenLastUavSlot = kComputeFlattenSegmentsSlot;
+const int kComputeFlattenLastUavSlot = kComputeFlattenDrawsSlot;
 
 /// Entry point names, passed to `D3DCompile` as ASCII.
 const String kComputeFlattenCountsEntryPoint = 'csCurveCounts';
 const String kComputeFlattenEmitEntryPoint = 'csEmitSegments';
+const String kComputeFlattenDrawTableEntryPoint = 'csDrawTable';
 
 /// Every entry point, in dispatch order.
 final List<String> kComputeFlattenEntryPoints = <String>[
   kComputeFlattenCountsEntryPoint,
   ...kComputeFlattenScanEntryPoints.all,
   kComputeFlattenEmitEntryPoint,
+  kComputeFlattenDrawTableEntryPoint,
 ];
+
+/// Index of each entry point in [kComputeFlattenEntryPoints].
+///
+/// The draw table is appended rather than inserted after the scan it reads,
+/// because these indices are what `D3d12FlattenPass.stages` dispatches by
+/// number: inserting one would renumber `csEmitSegments` silently, and a stage
+/// list that dispatches the wrong compiled kernel produces a picture rather
+/// than a failure. Dispatch order is the *list* the pass builds, and there the
+/// table comes after the scan, which is the only ordering constraint.
+abstract final class ComputeFlattenKernel {
+  static const int counts = 0;
+  static const int scanBlocks = 1;
+  static const int scanBlockSums = 2;
+  static const int scanApply = 3;
+  static const int emit = 4;
+  static const int drawTable = 5;
+}
 
 /// Compilation target.
 ///
@@ -140,9 +170,9 @@ final List<String> kComputeFlattenEntryPoints = <String>[
 /// nothing here uses a 5.1 feature.
 const String kComputeFlattenTarget = 'cs_5_0';
 
-/// All five kernels, in one compilation unit.
+/// All six kernels, in one compilation unit.
 ///
-/// One source rather than five because every resource sits at a distinct
+/// One source rather than six because every resource sits at a distinct
 /// register, so there is no conflict to avoid - unlike the coverage shaders,
 /// which had to be split because both wanted `u0`. One source also means one
 /// copy of the arithmetic that has to agree with Dart expression by
@@ -152,7 +182,7 @@ cbuffer FlattenConstants : register(b0) {
   uint uCurveCount;
   uint uBlockCount;
   uint uMaxSegments;
-  uint uReserved;
+  uint uPathCount;
 };
 
 // kind, path, 0, 0 per curve.
@@ -161,11 +191,16 @@ StructuredBuffer<uint4>  uCurves       : register(t0);
 StructuredBuffer<float4> uCurvePoints  : register(t1);
 // a,b,c,d then tx,ty,tolerance,0 per path.
 StructuredBuffer<float4> uTransforms   : register(t2);
+// firstCurve, curveCount, material, fillRule per path.
+StructuredBuffer<uint4>  uPaths        : register(t3);
 
 RWStructuredBuffer<uint>   uCounts    : register(u0);
 RWStructuredBuffer<uint>   uOffsets   : register(u1);
 RWStructuredBuffer<uint>   uBlockSums : register(u2);
 RWStructuredBuffer<float4> uSegments  : register(u3);
+// firstSegment, segmentCount, material, fillRule per draw: the table the
+// segment and coverage stages index by draw, in this stage's own numbering.
+RWStructuredBuffer<uint4>  uDraws     : register(u4);
 
 static const uint kLine = 0;
 static const uint kQuadratic = 1;
@@ -301,6 +336,30 @@ void csEmitSegments(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     uSegments[slot] = float4(a.x, a.y, b.x, b.y);
   }
 }
+
+// The join this stage existed without: one thread per draw, turning the scan
+// into the per-draw segment range the next two stages read.
+//
+// A path's curves are contiguous by construction - ComputeCurveScene.appendPath
+// appends them as one run - so its segments are the contiguous range
+// [offsets[firstCurve], offsets[firstCurve + curveCount]) and no second scan is
+// needed. The two reads are of uOffsets, which has curveCount + 1 entries with
+// the grand total last, so a path ending at the final curve needs no special
+// case.
+//
+// It must run after csScanApply and it does not have to run after
+// csEmitSegments: it reads the offsets, not the segments.
+[numthreads($kComputeFlattenGroupSize, 1, 1)]
+void csDrawTable(uint3 id : SV_DispatchThreadID) {
+  uint draw = id.x;
+  if (draw >= uPathCount) return;
+  uint4 record = uPaths[draw];
+  uint firstCurve = min(record.x, uCurveCount);
+  uint lastCurve = min(record.x + record.y, uCurveCount);
+  uint first = uOffsets[firstCurve];
+  uint last = uOffsets[lastCurve];
+  uDraws[draw] = uint4(first, last - first, record.z, record.w);
+}
 ''';
 
 /// Checks the Dart-side constant contract against the source.
@@ -313,7 +372,7 @@ void validateComputeFlattenShaderContract() {
     'uCurveCount',
     'uBlockCount',
     'uMaxSegments',
-    'uReserved',
+    'uPathCount',
   ];
   if (names.length != kComputeFlattenRootConstantCount) {
     throw StateError(
@@ -325,15 +384,21 @@ void validateComputeFlattenShaderContract() {
       throw StateError('missing flatten root constant: $name');
     }
   }
-  for (final String register in <String>[
-    't0',
-    't1',
-    't2',
-    'u0',
-    'u1',
-    'u2',
-    'u3',
-  ]) {
+  // Derived from the slot constants rather than listed: these two have to
+  // agree, and a literal list is a second place to forget a resource that
+  // moved between the read-only and the read-write side.
+  for (var slot = kComputeFlattenFirstSrvSlot;
+      slot <= kComputeFlattenLastSrvSlot;
+      slot++) {
+    final String register = 't${slot - kComputeFlattenFirstSrvSlot}';
+    if (!kComputeFlattenShader.contains('register($register)')) {
+      throw StateError('missing flatten resource register: $register');
+    }
+  }
+  for (var slot = kComputeFlattenFirstUavSlot;
+      slot <= kComputeFlattenLastUavSlot;
+      slot++) {
+    final String register = 'u${slot - kComputeFlattenFirstUavSlot}';
     if (!kComputeFlattenShader.contains('register($register)')) {
       throw StateError('missing flatten resource register: $register');
     }

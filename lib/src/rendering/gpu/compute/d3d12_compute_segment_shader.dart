@@ -166,12 +166,22 @@ abstract final class ComputeSegmentRootConstant {
 
 const int kComputeSegmentRootConstantCount = 12;
 
-/// Root-signature parameter indices: constants, three read-only buffers, nine
+/// Root-signature parameter indices: constants, one read-only buffer, eleven
 /// read-write ones.
+///
+/// `segments` and `draws` are read-write slots this stage never writes, and
+/// that is the whole of the flatten-to-segments join. They used to be root
+/// SRVs, which meant they could only ever be *uploaded* - a root SRV wants
+/// `NON_PIXEL_SHADER_RESOURCE` and the flatten stage's buffers live in
+/// `UNORDERED_ACCESS` from creation to release, so binding one would need a
+/// transition pair per submission around a resource the producer may still be
+/// writing. As read-write slots they take a `D3d12ComputeAlias` instead, and
+/// the UAV barrier the chain already records between dispatches is exactly the
+/// ordering an aliased read needs. See [D3d12ComputeAlias].
 const int kComputeSegmentRootConstantsSlot = 0;
-const int kComputeSegmentSegmentsSlot = 1;
-const int kComputeSegmentDrawsSlot = 2;
-const int kComputeSegmentBoundsSlot = 3;
+const int kComputeSegmentBoundsSlot = 1;
+const int kComputeSegmentSegmentsSlot = 2;
+const int kComputeSegmentDrawsSlot = 3;
 const int kComputeSegmentBinsSlot = 4;
 const int kComputeSegmentReferencesSlot = 5;
 const int kComputeSegmentCountsSlot = 6;
@@ -183,9 +193,9 @@ const int kComputeSegmentRefSegmentsSlot = 11;
 const int kComputeSegmentBackdropsSlot = 12;
 const int kComputeSegmentRootParameterCount = 13;
 
-const int kComputeSegmentFirstSrvSlot = kComputeSegmentSegmentsSlot;
+const int kComputeSegmentFirstSrvSlot = kComputeSegmentBoundsSlot;
 const int kComputeSegmentLastSrvSlot = kComputeSegmentBoundsSlot;
-const int kComputeSegmentFirstUavSlot = kComputeSegmentBinsSlot;
+const int kComputeSegmentFirstUavSlot = kComputeSegmentSegmentsSlot;
 const int kComputeSegmentLastUavSlot = kComputeSegmentBackdropsSlot;
 
 /// Entry point names, passed to `D3DCompile` as ASCII.
@@ -270,33 +280,37 @@ cbuffer SegmentConstants : register(b0) {
   uint uReserved1;
 };
 
-// x0, y0, x1, y1 per segment - ComputeTilePlan.segments, verbatim.
-StructuredBuffer<float4> uSegments : register(t0);
-// firstSegment, segmentCount, material, fillRule per draw.
-StructuredBuffer<uint4>  uDraws    : register(t1);
-// left, top, right, bottom per draw.
-StructuredBuffer<float4> uBounds   : register(t2);
+// left, top, right, bottom per draw. The one input still uploaded: it is the
+// control polygon's box, which the CPU has without flattening anything.
+StructuredBuffer<float4> uBounds   : register(t0);
 
-// The coarse stage's two outputs. Read-write slots that this stage never
-// writes: see D3d12ComputeAlias on why a chained read is a UAV and not an SRV.
-RWStructuredBuffer<uint2> uBins       : register(u0);
-RWStructuredBuffer<uint>  uReferences : register(u1);
+// x0, y0, x1, y1 per segment, and firstSegment, segmentCount, material,
+// fillRule per draw. The flatten stage's two outputs when the chain joins them,
+// a ComputeTilePlan's two arrays when it does not. Read-write slots that this
+// stage never writes: see D3d12ComputeAlias on why a chained read is a UAV and
+// not an SRV.
+RWStructuredBuffer<float4> uSegments : register(u0);
+RWStructuredBuffer<uint4>  uDraws    : register(u1);
+
+// The coarse stage's two outputs, bound the same way.
+RWStructuredBuffer<uint2> uBins       : register(u2);
+RWStructuredBuffer<uint>  uReferences : register(u3);
 
 // Segments per reference, then the scatter cursor. Two lives for one buffer,
 // exactly as in the coarse stage.
-RWStructuredBuffer<uint>  uCounts     : register(u2);
-RWStructuredBuffer<uint>  uOffsets    : register(u3);
-RWStructuredBuffer<uint>  uBlockSums  : register(u4);
+RWStructuredBuffer<uint>  uCounts     : register(u4);
+RWStructuredBuffer<uint>  uOffsets    : register(u5);
+RWStructuredBuffer<uint>  uBlockSums  : register(u6);
 // Segment indices in whatever order the atomics handed out slots.
-RWStructuredBuffer<uint>  uScratch    : register(u5);
+RWStructuredBuffer<uint>  uScratch    : register(u7);
 // The same indices, each reference's run sorted.
-RWStructuredBuffer<uint>  uTileSegments : register(u6);
+RWStructuredBuffer<uint>  uTileSegments : register(u8);
 // firstSegment, segmentCount per reference.
-RWStructuredBuffer<uint2> uRefSegments  : register(u7);
+RWStructuredBuffer<uint2> uRefSegments  : register(u9);
 // winding, parity per reference - two uints, not an int2, because
 // InterlockedAdd on a structured-buffer member is not cs_5_0. The winding is
 // two's complement and asint recovers it.
-RWStructuredBuffer<uint>  uBackdrops    : register(u8);
+RWStructuredBuffer<uint>  uBackdrops    : register(u10);
 
 $_kTileRangeHelpers
 
@@ -552,20 +566,21 @@ void validateComputeSegmentShaderContract() {
       throw StateError('missing segment root constant: $name');
     }
   }
-  for (final String register in <String>[
-    't0',
-    't1',
-    't2',
-    'u0',
-    'u1',
-    'u2',
-    'u3',
-    'u4',
-    'u5',
-    'u6',
-    'u7',
-    'u8',
-  ]) {
+  // Derived from the slot constants rather than listed: these two have to
+  // agree, and a literal list is a second place to forget a resource that
+  // moved between the read-only and the read-write side.
+  for (var slot = kComputeSegmentFirstSrvSlot;
+      slot <= kComputeSegmentLastSrvSlot;
+      slot++) {
+    final String register = 't${slot - kComputeSegmentFirstSrvSlot}';
+    if (!kComputeSegmentShader.contains('register($register)')) {
+      throw StateError('missing segment resource register: $register');
+    }
+  }
+  for (var slot = kComputeSegmentFirstUavSlot;
+      slot <= kComputeSegmentLastUavSlot;
+      slot++) {
+    final String register = 'u${slot - kComputeSegmentFirstUavSlot}';
     if (!kComputeSegmentShader.contains('register($register)')) {
       throw StateError('missing segment resource register: $register');
     }

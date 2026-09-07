@@ -75,12 +75,42 @@
 /// costs a slot in a tile's segment list and nothing else.
 /// `compute_flatten_reference_test.dart` asserts the coverage equality rather
 /// than leaving the argument on paper.
+///
+/// **The closing edge of a degenerate contour, decided here for both halves.**
+/// This is the rule `RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD.md` recorded
+/// the two halves of the pipeline as disagreeing about, and it is a
+/// specification question before it is a code one, so it is answered here:
+///
+///   * a contour emits a closing line **iff** it emitted at least one curve
+///     record and its current *source* point differs from its start point;
+///   * a contour of one point - a `moveTo` with nothing after it - emits
+///     nothing at all;
+///   * a contour of two coincident points emits the degenerate record the verb
+///     asked for and no closing line, because current already equals start.
+///
+/// The alternative rule is `ComputeTileScene`'s sink: emit the closing edge
+/// only when flattening produced a *non-degenerate* device-space edge. That
+/// rule is not implementable here and the reason is structural rather than one
+/// of taste - it is a question about the flatten result, and the flatten result
+/// is produced by threads that have never seen the contour. Deciding it on the
+/// CPU would mean flattening on the CPU first, which is the work this whole
+/// stage exists to move.
+///
+/// The two rules differ only over edges that are **zero length in device
+/// space**, and by the paragraph above such an edge crosses no scan line and
+/// changes no sample's winding. So the picture is the same and the *numbering*
+/// is not: this rule can give a draw one more segment than the sink's, which is
+/// exactly why the `firstSegment`/`segmentCount` table the segment stage reads
+/// has to be built from the flatten stage's own offsets and never from a
+/// `ComputeTilePlan`. `d3d12_compute_flatten_junction_test.dart` runs a
+/// degenerate contour through both and compares pixels.
 library;
 
 import 'dart:typed_data';
 
 import '../../../geometry/path.dart';
 import '../../../geometry/transform2d.dart';
+import '../../path/fill_rule.dart';
 
 /// A straight line from `p0` to `p3`. `p1` and `p2` are unread.
 const int kComputeCurveKindLine = 0;
@@ -100,8 +130,14 @@ const int kComputeCurvePointStride = 8;
 /// `a, b, c, d, tx, ty, tolerance, reserved` per path, as two `float4`s.
 const int kComputeCurveTransformStride = 8;
 
-/// `firstCurve, curveCount` per path.
-const int kComputeCurvePathStride = 2;
+/// `firstCurve, curveCount, material, fillRule` per path, as one `uint4`.
+///
+/// The last two travel here rather than in a separate array because the flatten
+/// stage's draw-table kernel copies them through untouched: the table it writes
+/// is `firstSegment, segmentCount, material, fillRule`, which is the layout the
+/// segment and coverage stages already read, and a second upload would be a
+/// second place for a draw index to be off by one.
+const int kComputeCurvePathStride = 4;
 
 const int _maxUint32 = 0xFFFFFFFF;
 
@@ -192,11 +228,19 @@ final class ComputeCurveScene {
   /// yet, so a contour with at least one curve verb gets a closing line even if
   /// every one of its curves collapses to a point. The extra edge is
   /// zero-length in exactly that case, and a zero-length edge crosses no scan
-  /// line - see the library comment.
+  /// line - see the library comment, which states this as the specification
+  /// both halves obey and says why the other rule is not implementable.
+  ///
+  /// [materialIndex] and [fillRule] are carried, unread by this file, into the
+  /// path record the flatten stage's draw-table kernel copies through. They are
+  /// here rather than in a parallel array for the reason
+  /// [kComputeCurvePathStride] states.
   int appendPath(
     Path path, {
     Transform2D transform = Transform2D.identity,
     double flattenTolerance = kDefaultFlattenTolerance,
+    int materialIndex = 0,
+    FillRule fillRule = FillRule.nonZero,
   }) {
     if (!flattenTolerance.isFinite || flattenTolerance <= 0) {
       throw ArgumentError.value(
@@ -227,6 +271,9 @@ final class ComputeCurveScene {
           'the source path contains a non-finite float32 coordinate',
         );
       }
+    }
+    if (materialIndex < 0 || materialIndex > _maxUint32) {
+      throw RangeError.range(materialIndex, 0, _maxUint32, 'materialIndex');
     }
     if (pathCount >= maxPaths) {
       throw ComputeCurveError(
@@ -319,6 +366,15 @@ final class ComputeCurveScene {
           currentX = x;
           currentY = y;
         case verbQuadraticTo:
+          // A curve verb with no contour open would otherwise keep the
+          // *previous* contour's start point, and closeContour would then draw
+          // a closing line across the path to a point this contour never
+          // touched. Starting the contour here is what `moveTo` would have done.
+          if (!open) {
+            startX = currentX;
+            startY = currentY;
+            open = true;
+          }
           final double x1 = path.pointX(index);
           final double y1 = path.pointY(index);
           final double x2 = path.pointX(index + 1);
@@ -331,6 +387,12 @@ final class ComputeCurveScene {
           currentX = x2;
           currentY = y2;
         case verbCubicTo:
+          // See verbQuadraticTo: a stale start point is a stray closing edge.
+          if (!open) {
+            startX = currentX;
+            startY = currentY;
+            open = true;
+          }
           final double x1 = path.pointX(index);
           final double y1 = path.pointY(index);
           final double x2 = path.pointX(index + 1);
@@ -364,7 +426,9 @@ final class ComputeCurveScene {
     _points.addAll(points);
     _paths
       ..add(firstCurve)
-      ..add(added);
+      ..add(added)
+      ..add(materialIndex)
+      ..add(fillRule.index);
     _transforms
       ..add(transform.a)
       ..add(transform.b)
@@ -375,6 +439,76 @@ final class ComputeCurveScene {
       ..add(flattenTolerance)
       ..add(0);
     return path0;
+  }
+
+  /// `left, top, right, bottom` per path, in device space, clipped to a
+  /// `width` by `height` surface.
+  ///
+  /// The one number the flatten chain still needs from the CPU, and the reason
+  /// it is not a fifth kernel: it is the **control polygon's** box, not the
+  /// flattened polyline's, so it needs no segment and no scan - it is
+  /// `O(control points)` of the same transform the encoder already walks.
+  ///
+  /// A Bezier lies inside its control polygon's convex hull, so this box
+  /// contains every point of every polyline either half of the pipeline could
+  /// produce from these curves. It is therefore a **superset** of the box
+  /// `ComputeTileScene` derives from `Path.flattenTo`'s output, and the extra
+  /// area cannot change a pixel: the tiles it adds carry no segment, and the
+  /// backdrop of the first reference of a row is the net winding of the
+  /// row-spanning edges to its left, which is zero for a closed contour whether
+  /// the row starts one tile further out or not. The two stages that read this
+  /// - `tileRangeOf` and the coverage kernel's `containsPoint` - are both
+  /// rejections, and widening a rejection can only let through samples that the
+  /// crossing test then answers on its own.
+  ///
+  /// An empty box is written as four zeros, which is what `tileRangeOf` reads
+  /// as "this draw puts no ink anywhere".
+  Float32List deviceBounds({required int width, required int height}) {
+    if (width <= 0 || height <= 0) {
+      throw ArgumentError('a surface needs a positive size');
+    }
+    final Float32List result = Float32List(pathCount * 4);
+    final Float32List round = Float32List(2);
+    for (var path = 0; path < pathCount; path++) {
+      final int first = pathFirstCurve(path);
+      final int count = pathCurveCount(path);
+      final int base = path * kComputeCurveTransformStride;
+      var left = double.infinity;
+      var top = double.infinity;
+      var right = double.negativeInfinity;
+      var bottom = double.negativeInfinity;
+      for (var curve = first; curve < first + count; curve++) {
+        final int point = curve * kComputeCurvePointStride;
+        for (var corner = 0; corner < 4; corner++) {
+          final double x = _points[point + corner * 2];
+          final double y = _points[point + corner * 2 + 1];
+          // Rounded to float32 through a typed list for the reason
+          // `ComputeFlattenReference` states: the shader stores float32, and a
+          // bound computed in float64 could sit a bit inside a coordinate the
+          // shader actually produces.
+          round[0] = _transforms[base + 0] * x +
+              _transforms[base + 2] * y +
+              _transforms[base + 4];
+          round[1] = _transforms[base + 1] * x +
+              _transforms[base + 3] * y +
+              _transforms[base + 5];
+          if (round[0] < left) left = round[0];
+          if (round[0] > right) right = round[0];
+          if (round[1] < top) top = round[1];
+          if (round[1] > bottom) bottom = round[1];
+        }
+      }
+      if (left < 0) left = 0;
+      if (top < 0) top = 0;
+      if (right > width) right = width.toDouble();
+      if (bottom > height) bottom = height.toDouble();
+      if (!(right > left) || !(bottom > top)) continue;
+      result[path * 4 + 0] = left;
+      result[path * 4 + 1] = top;
+      result[path * 4 + 2] = right;
+      result[path * 4 + 3] = bottom;
+    }
+    return result;
   }
 
   /// The three read-only buffers a flatten kernel binds, exact-sized.
@@ -425,8 +559,11 @@ final class ComputeCurveUpload {
   /// `a, b, c, d` then `tx, ty, tolerance, 0` per path, as two `float4`s.
   final Float32List transforms;
 
-  /// `firstCurve, curveCount` per path. Unread by the flatten kernels; a
-  /// consumer that groups segments back into paths needs it.
+  /// `firstCurve, curveCount, material, fillRule` per path, as one `uint4`.
+  ///
+  /// Read by `csDrawTable`, which is the kernel that turns it and the flatten
+  /// scan into the `firstSegment, segmentCount, material, fillRule` table the
+  /// segment and coverage stages index by draw.
   final Uint32List paths;
 
   final int curveCount;

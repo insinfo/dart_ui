@@ -25,23 +25,39 @@
 ///
 /// The segment stage is the pipeline's first real consumer: it needs the tile
 /// index and the tile references the coarse stage wrote, and in a single
-/// submission those never leave the device. So its first two read-write slots
+/// submission those never leave the device. So two of its read-write slots
 /// are [D3d12ComputeAlias]es naming the coarse pass's own buffers, and nothing
 /// is copied, transitioned or waited on between the two. `D3d12SegmentPass`
 /// spells that binding, and the unchained driver next door spells the seeded
 /// alternative, so both shapes dispatch the same kernels over the same
 /// registers.
 ///
+/// ## And the join that closes the chain on itself
+///
+/// Two more of its slots are the **flatten** pass's: the segment buffer and the
+/// `firstSegment, segmentCount, material, fillRule` table `csDrawTable` builds
+/// out of the flatten scan. With `joinFlatten` those are aliases too and all
+/// the CPU uploads is one array of boxes; without it they are seeded from a
+/// `ComputeTilePlan`, which is the shape every parity oracle here compares
+/// against and the shape the benchmark's old rows were measured in.
+///
+/// The two spellings are the same pair of slots on purpose. Binding one of them
+/// from each half is the failure
+/// `RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD.md` names: a segment index
+/// resolved through a table built for a different numbering finds an edge that
+/// exists and belongs to another draw, so nothing throws and the picture is
+/// wrong. [D3d12ComputeRasterDriver.runRasterPass] refuses the mixture by
+/// argument rather than trusting two call sites to stay in step.
+///
 /// ## The coverage stage closes it, and consumes both producers
 ///
 /// The fourth pass is the first that reads *two* earlier stages: `references`
 /// and `commands` from the coarse pass, and `referenceSegments`,
-/// `tileSegments` and `backdrops` from the segment pass, all five by alias. With
+/// `tileSegments` and `backdrops` from the segment pass, all five by alias - and
+/// with `joinFlatten` a third, for the segment buffer and the draw table. With
 /// it recorded, the binned scene never returns to the CPU on its way to
-/// coverage - which is the whole of what `RASTERIZADOR_COMPUTE_D.md` listed as
-/// missing for the pipeline, minus the join between the flatten stage's
-/// segments and the segment table, which `d3d12_compute_coverage_shader.dart`
-/// states is not done.
+/// coverage, which is the whole of what `RASTERIZADOR_COMPUTE_D.md` listed as
+/// missing for the pipeline.
 ///
 /// It is optional for the same reason the segment stage is: the three-stage
 /// shape is the measurement that document published, and a benchmark that can
@@ -148,12 +164,20 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
     required ComputeBinningDispatch binningDispatch,
     required bool readBack,
     ComputeSegmentScene? segmentScene,
+    bool joinFlatten = false,
     Uint32List? segmentConstants,
     ComputeSegmentBinningDispatch? segmentDispatch,
     ComputeCoverageDispatch? coverageDispatch,
   }) {
     if (pipeline != _kRasterPipelineToken || !isBuilt) {
       throw StateError('the raster pipeline does not belong to this driver');
+    }
+    if (joinFlatten && segmentScene != null) {
+      throw ArgumentError(
+        'the segment table comes from the flatten stage or from a plan, never '
+        'from both: a segment index resolved through the other half of the '
+        'pipeline names an edge that exists and belongs to another draw',
+      );
     }
     if (flattenDispatch.curveCount <= 0 ||
         flattenDispatch.segmentBudget <= 0 ||
@@ -174,11 +198,17 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
         uploads: D3d12FlattenPass.uploads(scene),
         uavBytes: flattenBytes,
         stages: D3d12FlattenPass.stages(flattenDispatch),
+        // The draw table comes back only in the joined shape, and only because
+        // it is the one number a caller cannot otherwise check: the segment
+        // stage was dispatched over a *bound* on the widest draw, and a bound
+        // that turned out too small drops segments through the kernel's own
+        // guard without saying so.
         reads: readBack
-            ? const <int>[
+            ? <int>[
                 kD3d12FlattenCountsSlot,
                 kD3d12FlattenOffsetsSlot,
                 kD3d12FlattenSegmentsSlot,
+                if (joinFlatten) kD3d12FlattenDrawsSlot,
               ]
             : const <int>[],
       ),
@@ -199,7 +229,17 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
       ),
     ];
 
-    if (segmentScene != null) {
+    final bool runSegments = segmentScene != null || joinFlatten;
+    // Null in the seeded shape, where this pass owns both buffers and the
+    // sources list carries the plan's arrays instead.
+    final D3d12ComputeAlias? aliasSegments = joinFlatten
+        ? D3d12ComputeAlias(_flatten, kD3d12FlattenSegmentsSlot)
+        : null;
+    final D3d12ComputeAlias? aliasDraws = joinFlatten
+        ? D3d12ComputeAlias(_flatten, kD3d12FlattenDrawsSlot)
+        : null;
+
+    if (runSegments) {
       if (segmentConstants == null || segmentDispatch == null) {
         throw ArgumentError(
           'a chained segment stage needs its own constants and dispatch',
@@ -209,13 +249,17 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
         D3d12ComputeWork(
           _segments,
           rootConstants: segmentConstants,
-          uploads: D3d12SegmentPass.uploads(segmentScene),
-          uavBytes: D3d12SegmentPass.uavBytes(segmentDispatch),
+          uploads: D3d12SegmentPass.uploads(bounds),
+          uavBytes:
+              D3d12SegmentPass.uavBytes(segmentDispatch, scene: segmentScene),
           stages: D3d12SegmentPass.stages(segmentDispatch),
-          // Not a copy of the coarse stage's output: its buffers, by address.
-          // A copy would need the coarse stage to have finished, and a fence
-          // is what this pipeline exists to remove.
+          // Not a copy of the producers' output: their buffers, by address. A
+          // copy would need them to have finished, and a fence is what this
+          // pipeline exists to remove.
           uavSources: D3d12SegmentPass.sources(
+            scene: segmentScene,
+            aliasSegments: aliasSegments,
+            aliasDraws: aliasDraws,
             aliasBins: D3d12ComputeAlias(_binning, kD3d12BinningBinsSlot),
             aliasReferences:
                 D3d12ComputeAlias(_binning, kD3d12BinningReferencesSlot),
@@ -231,7 +275,7 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
       // they are this pass's own zeroed buffers - every reference would read an
       // empty run and every pixel would come back zero, which is a plausible
       // answer and therefore the worst kind of wrong.
-      if (segmentScene == null) {
+      if (!runSegments) {
         throw ArgumentError(
           'a chained coverage stage reads what the segment stage produced; '
           'run it with a segment scene or not at all',
@@ -241,17 +285,21 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
         D3d12ComputeWork(
           _coverage,
           rootConstants: coverageDispatch.rootConstants(),
-          // The same three arrays the segment stage was handed, and the same
-          // objects: `tileSegments` indexes `segments`, so a re-encoding here
-          // would read the wrong edges rather than fail.
-          uploads: D3d12CoveragePass.uploads(segmentScene),
-          uavBytes: D3d12CoveragePass.uavBytes(coverageDispatch),
+          // The same box array the segment stage was handed, and the same
+          // object: the two stages have to agree about which draw covers
+          // where.
+          uploads: D3d12CoveragePass.uploads(bounds),
+          uavBytes:
+              D3d12CoveragePass.uavBytes(coverageDispatch, scene: segmentScene),
           stages: D3d12CoveragePass.stages(coverageDispatch),
-          // Five buffers from two earlier passes, by address. Nothing is
-          // copied and nothing is waited on: the UAV barrier the chain records
-          // between dispatches is the whole of the ordering an aliased read
-          // needs.
+          // Seven buffers from three earlier passes, by address, or five of
+          // them plus the plan's two seeded. Nothing is copied and nothing is
+          // waited on: the UAV barrier the chain records between dispatches is
+          // the whole of the ordering an aliased read needs.
           uavSources: D3d12CoveragePass.sources(
+            scene: segmentScene,
+            segments: aliasSegments,
+            draws: aliasDraws,
             references:
                 D3d12ComputeAlias(_binning, kD3d12BinningReferencesSlot),
             commands: D3d12ComputeAlias(_binning, kD3d12BinningCommandsSlot),
@@ -284,6 +332,9 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
             Uint32List.view(flat[1].buffer, 0, flattenDispatch.curveCount + 1),
         segments: Float32List.view(
             flat[2].buffer, 0, flattenDispatch.segmentBudget * 4),
+        draws: flat.length > 3
+            ? Uint32List.view(flat[3].buffer, 0, flattenDispatch.pathCount * 4)
+            : null,
       ),
       binning: ComputeBinningReadback(
         bins: Uint32List.view(bin[0].buffer, 0, tileCount * 2),

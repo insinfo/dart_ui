@@ -7,15 +7,24 @@
 /// different from the three before it: **five of its six read-write slots are
 /// inputs, and every one of them belongs to another pass.**
 ///
-/// The coarse stage owns `references` and `commands`; the segment stage owns
-/// `referenceSegments`, `tileSegments` and `backdrops`. In a chained submission
-/// all five are still on the device when this kernel runs, so [sources] binds
-/// them by address with [D3d12ComputeAlias] and copies nothing. There is no
-/// unchained alternative spelling here, unlike `D3d12SegmentPass.sources`: a
-/// coverage pass seeded with all five from the CPU is exactly
-/// `ComputeTileD3d12Executor`, which already exists, is already proved against
-/// `ComputeTileCpuReference`, and is what the parity test compares this
-/// against.
+/// The flatten stage owns `segments` and `draws`; the coarse stage owns
+/// `references` and `commands`; the segment stage owns `referenceSegments`,
+/// `tileSegments` and `backdrops`. In a chained submission all seven are still
+/// on the device when this kernel runs, so [sources] binds them by address with
+/// [D3d12ComputeAlias] and copies nothing.
+///
+/// The first two are the only ones with an unchained alternative, and it is the
+/// one `D3d12SegmentPass.sources` spells for the same pair: a submission that
+/// does not join the flatten stage seeds them from a `ComputeTilePlan`. The
+/// five after them have none - a coverage pass seeded with all of those from
+/// the CPU is exactly `ComputeTileD3d12Executor`, which already exists, is
+/// already proved against `ComputeTileCpuReference`, and is what the parity
+/// test compares this against.
+///
+/// **Whichever half `segments` comes from, `draws` must come from too.**
+/// `tileSegments` holds indices into `segments`, and the range a draw owns is
+/// in `draws`; the two flatteners number their segments differently, so mixing
+/// them reads edges that exist and belong elsewhere.
 ///
 /// ## The output slot is last, and that is load bearing
 ///
@@ -35,12 +44,14 @@ import 'd3d12_compute_pass.dart';
 import 'd3d12_device.dart';
 
 /// Read-write slots, in the order the root signature declares them.
-const int kD3d12CoverageReferencesSlot = 0;
-const int kD3d12CoverageCommandsSlot = 1;
-const int kD3d12CoverageRefSegmentsSlot = 2;
-const int kD3d12CoverageTileSegmentsSlot = 3;
-const int kD3d12CoverageBackdropsSlot = 4;
-const int kD3d12CoverageOutputSlot = 5;
+const int kD3d12CoverageSegmentsSlot = 0;
+const int kD3d12CoverageDrawsSlot = 1;
+const int kD3d12CoverageReferencesSlot = 2;
+const int kD3d12CoverageCommandsSlot = 3;
+const int kD3d12CoverageRefSegmentsSlot = 4;
+const int kD3d12CoverageTileSegmentsSlot = 5;
+const int kD3d12CoverageBackdropsSlot = 6;
+const int kD3d12CoverageOutputSlot = 7;
 
 /// The coverage stage's pass, its buffer sizes and its one-link chain.
 ///
@@ -71,23 +82,25 @@ abstract final class D3d12CoveragePass {
         deviceZeroFill: deviceZeroFill,
       );
 
-  /// The read-only uploads, in slot order.
+  /// The read-only upload, in slot order.
   ///
-  /// The same three arrays the segment stage uploads, and it must be the same
-  /// object: the kernel indexes [ComputeSegmentScene.segments] through the
-  /// `tileSegments` that stage built out of it.
-  static List<TypedData> uploads(ComputeSegmentScene scene) => <TypedData>[
-        scene.segments,
-        scene.draws,
-        scene.bounds,
-      ];
+  /// The same array the segment stage uploads, so the two stages agree about
+  /// which draw covers where.
+  static List<TypedData> uploads(Float32List bounds) => <TypedData>[bounds];
 
   /// The read-write buffer sizes, in slot order.
   ///
-  /// The five borrowed slots are zero: an aliased slot is neither allocated nor
+  /// The borrowed slots are zero: an aliased slot is neither allocated nor
   /// zeroed by this pass, so a size here would be a number with no consumer
-  /// pretending to be a contract. Only the output is sized.
-  static List<int> uavBytes(ComputeCoverageDispatch dispatch) => <int>[
+  /// pretending to be a contract. [scene] is non-null only for the seeded
+  /// spelling of the first two, where this pass does own them.
+  static List<int> uavBytes(
+    ComputeCoverageDispatch dispatch, {
+    ComputeSegmentScene? scene,
+  }) =>
+      <int>[
+        scene == null ? 0 : scene.segments.lengthInBytes,
+        scene == null ? 0 : scene.draws.lengthInBytes,
         0,
         0,
         0,
@@ -96,16 +109,26 @@ abstract final class D3d12CoveragePass {
         dispatch.coverageElements * 4,
       ];
 
-  /// Where each read-write slot's contents come from: five producers' buffers
+  /// Where each read-write slot's contents come from: the producers' buffers
   /// and this pass's own output.
+  ///
+  /// [scene] seeds the first two from a `ComputeTilePlan`; [segments] and
+  /// [draws] bind them to the flatten pass instead. Exactly one of the two
+  /// spellings is given, and it has to be the same one the segment stage ran
+  /// with.
   static List<Object?> sources({
     required D3d12ComputeAlias references,
     required D3d12ComputeAlias commands,
     required D3d12ComputeAlias referenceSegments,
     required D3d12ComputeAlias tileSegments,
     required D3d12ComputeAlias backdrops,
+    ComputeSegmentScene? scene,
+    D3d12ComputeAlias? segments,
+    D3d12ComputeAlias? draws,
   }) =>
       <Object?>[
+        segments ?? scene?.segments,
+        draws ?? scene?.draws,
         references,
         commands,
         referenceSegments,
@@ -150,6 +173,8 @@ abstract final class D3d12CoveragePass {
   static void assertSlotContract() {
     validateComputeCoverageShaderContract();
     const List<(int, int)> slots = <(int, int)>[
+      (kComputeCoverageSegmentsSlot, kD3d12CoverageSegmentsSlot),
+      (kComputeCoverageDrawsSlot, kD3d12CoverageDrawsSlot),
       (kComputeCoverageReferencesSlot, kD3d12CoverageReferencesSlot),
       (kComputeCoverageCommandsSlot, kD3d12CoverageCommandsSlot),
       (kComputeCoverageReferenceSegmentsSlot, kD3d12CoverageRefSegmentsSlot),
