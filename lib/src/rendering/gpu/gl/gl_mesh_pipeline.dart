@@ -83,6 +83,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../../../foundation/diagnostics.dart';
+import '../../../geometry/rect.dart';
 import '../../../graphics/mesh/mesh3d.dart';
 import '../../framebuffer.dart';
 import '../../mesh/mesh_rasterizer.dart';
@@ -301,11 +302,27 @@ final class GlMeshPipeline {
   /// Draws [mesh] seen from [camera] into the framebuffer bound for drawing.
   ///
   /// The arguments after [height] are the CPU rasteriser's, with the same
-  /// defaults, so the same call renders the same picture through either. The
-  /// viewport is set to the full [width] x [height]; nothing here reads the
-  /// caller's scissor, and the scissor test is switched off because
-  /// `glClear` obeys it and a stale rectangle from the 2D renderer would clear
-  /// a corner of the frame.
+  /// defaults, so the same call renders the same picture through either.
+  ///
+  /// [width] and [height] are the **surface**, and [viewport] narrows the draw
+  /// to a rectangle inside it - in surface pixels with the origin at the top
+  /// left, which is the framework's convention and not GL's; the flip to GL's
+  /// bottom-left origin happens here, once. Null means the whole surface, and
+  /// then the projection's aspect ratio is `width / height` exactly as before.
+  ///
+  /// **The clear is not clipped to [viewport]**, and that is a contract rather
+  /// than an oversight: `MeshSceneRenderer` has a Direct3D 11 implementation
+  /// whose `ClearRenderTargetView` takes no rectangle and ignores the scissor,
+  /// so a GL path that cleared only the box would draw a *different picture*
+  /// from the other backend for the same [MeshScene]. See
+  /// [MeshScene.backgroundArgb], which records the same rule and points a
+  /// caller drawing a 3D view inside an interface at `null` - the case where
+  /// clearing anything at all is wrong.
+  ///
+  /// The scissor test is switched off across the clear for the reason it was
+  /// always switched off here - `glClear` obeys it, and a stale rectangle left
+  /// by the 2D renderer would clear a corner of the frame - and switched back
+  /// on around the draws only when there is a [viewport] to confine them to.
   ///
   /// [modelMatrix] defaults to the identity, which is the only case the CPU
   /// rasteriser can be compared against: it has no model matrix and shades in
@@ -321,6 +338,7 @@ final class GlMeshPipeline {
     required MeshCamera camera,
     required int width,
     required int height,
+    Rect? viewport,
     MeshShading shading = MeshShading.smooth,
     int backgroundArgb = 0xFF10151F,
     Vector3 lightDirection = const Vector3(-0.4, -0.8, -0.45),
@@ -331,11 +349,29 @@ final class GlMeshPipeline {
   }) {
     _throwIfDisposed();
     if (width <= 0 || height <= 0) return MeshRenderStats.zero;
+
+    // Rounded outward and clamped to the surface before anything reads it. A
+    // viewport partly outside the target is `GL_INVALID_VALUE` only for a
+    // negative width, so the half that is silent - a box hanging off the right
+    // edge - would simply scissor away pixels the other backend drew.
+    final int boxLeft = viewport == null ? 0 : viewport.left.floor().clamp(0, width);
+    final int boxTop = viewport == null ? 0 : viewport.top.floor().clamp(0, height);
+    final int boxRight =
+        viewport == null ? width : viewport.right.ceil().clamp(boxLeft, width);
+    final int boxBottom = viewport == null
+        ? height
+        : viewport.bottom.ceil().clamp(boxTop, height);
+    final int boxWidth = boxRight - boxLeft;
+    final int boxHeight = boxBottom - boxTop;
+    if (boxWidth <= 0 || boxHeight <= 0) return MeshRenderStats.zero;
+
     final Stopwatch watch = Stopwatch()..start();
 
     final Matrix4 model = modelMatrix ?? Matrix4.identity();
     final Matrix4 view = camera.viewMatrix();
-    final Matrix4 projection = camera.projectionMatrix(width / height);
+    // The *box*, not the surface: a scene drawn into a narrow strip must not
+    // be stretched, which is what `MeshSceneRenderer.drawScene` promises.
+    final Matrix4 projection = camera.projectionMatrix(boxWidth / boxHeight);
     final Matrix4 mvp = projection.multiply(view).multiply(model);
     final Matrix4 normals = normalMatrixOf(model);
     final Vector3 light = lightDirection.normalized;
@@ -364,7 +400,12 @@ final class GlMeshPipeline {
 
     _gl
       ..useProgram(_program)
-      ..viewport(0, 0, width, height)
+      // GL's window origin is the bottom-left corner and the box arrived
+      // top-left, so the y of the box's *bottom* edge measured from the top is
+      // what becomes its bottom in GL. Subtracting `boxTop` instead puts a
+      // viewport pinned to the top of the surface at the bottom of it, which
+      // looks like the camera pitched rather than like a viewport bug.
+      ..viewport(boxLeft, height - boxBottom, boxWidth, boxHeight)
       ..disable(glScissorTest)
       ..disable(glStencilTest)
       // Opaque, like the CPU rasteriser, which writes `argb | 0xFF000000`
@@ -390,6 +431,20 @@ final class GlMeshPipeline {
           1,
         )
         ..clear(glColorBufferBit | glDepthBufferBit);
+    }
+
+    // After the clear and never before. The depth clear in particular has to
+    // reach the whole attachment: a scissored depth clear leaves the previous
+    // frame's depth outside the box, and the frame after a viewport moves
+    // would test against it and drop triangles with no error anywhere.
+    final bool confined = boxLeft != 0 ||
+        boxTop != 0 ||
+        boxWidth != width ||
+        boxHeight != height;
+    if (confined) {
+      _gl
+        ..scissor(boxLeft, height - boxBottom, boxWidth, boxHeight)
+        ..enable(glScissorTest);
     }
 
     _setMatrix(_uModelViewProjection, mvp);
@@ -456,7 +511,8 @@ final class GlMeshPipeline {
     // and reports no error.
     _gl
       ..disable(glDepthTest)
-      ..disable(glCullFace);
+      ..disable(glCullFace)
+      ..disable(glScissorTest);
 
     if (measure) _gl.finish();
     watch.stop();
@@ -495,18 +551,49 @@ final class GlMeshPipeline {
 
   void dispose() {
     if (_disposed) return;
-    _disposed = true;
     for (final _CachedPrimitive cached in _primitives.values) {
       _deleteCached(cached);
     }
-    _primitives.clear();
     for (final int name in _textures.values) {
       if (name == 0) continue;
       _names[0] = name;
       _gl.deleteTextures(1, _names);
     }
-    _textures.clear();
     _gl.deleteProgram(_program);
+    _releaseWithoutDriver();
+  }
+
+  /// Step 3 of a device-loss recovery: forget every GL name, call no GL.
+  ///
+  /// The name and the shape are `GlFramebufferPool.discardAfterDeviceLoss`'s,
+  /// and so is the argument. A GL name is an integer indexing memory the lost
+  /// context already freed; `glDeleteBuffers` on one is undefined and on some
+  /// drivers is a second crash on top of the first. So nothing here reaches
+  /// the driver - not even `glDeleteProgram`, which is the one that looks
+  /// harmless.
+  ///
+  /// The native heap allocations *are* released, and that is not an
+  /// inconsistency: they are process memory this pipeline malloc'd, no context
+  /// owns them, and a recovery that skipped them would leak the staging buffer
+  /// - up to a whole model's vertices - on every GPU reset.
+  ///
+  /// The pipeline is unusable afterwards, exactly as if [dispose] had been
+  /// called. `GlMeshRenderer` builds a fresh one rather than reviving this,
+  /// because a program name is a `final` field and a half-revived object is
+  /// how a renderer ends up drawing with a shader from a dead context.
+  void discardAfterDeviceLoss() {
+    if (_disposed) return;
+    _releaseWithoutDriver();
+  }
+
+  void _releaseWithoutDriver() {
+    _disposed = true;
+    for (final _CachedPrimitive cached in _primitives.values) {
+      cached.geometries.clear();
+      cached.sharedVbo = 0;
+    }
+    _primitives.clear();
+    _textures.clear();
     _heap
       ..release(_names)
       ..release(_status)

@@ -18,13 +18,16 @@ import '../platform/native_window.dart';
 import '../rendering/cpu_renderer.dart';
 import '../rendering/framebuffer.dart';
 import '../rendering/gpu/d3d11/d3d11_backend.dart';
+import '../rendering/gpu/d3d11/d3d11_mesh_pipeline.dart';
 import '../rendering/gpu/d3d12/d3d12_surface_descriptor.dart';
 import '../rendering/gpu/gl/gl_backend.dart';
 import '../rendering/gpu/gl/gl_context.dart';
+import '../rendering/gpu/gl/gl_mesh_renderer.dart';
 import '../rendering/gpu/vulkan/vulkan_backend.dart';
 import '../rendering/gpu/vulkan/vulkan_instance.dart';
 import '../rendering/gpu/vulkan/vulkan_library.dart';
 import '../rendering/gpu/vulkan/vulkan_surface_descriptor.dart';
+import '../rendering/mesh/mesh_scene.dart';
 import '../rendering/render_policy.dart';
 import '../rendering/renderer.dart';
 import 'headless/headless_backend.dart';
@@ -187,6 +190,23 @@ final class PlatformBackendResolver {
     return PresentationPathEntry.directRenderer(
       backend: renderer,
       compatibleWindowingBackends: const <String>{'win32'},
+      // This file is the one place in the tree allowed to name a concrete
+      // backend, which is why the mesh factory is declared here and not in
+      // `application.dart`: the window that calls it never learns what it got.
+      //
+      // It throws rather than returning null, and the window turns the throw
+      // into a null surface with the reason attached. That is the shape a
+      // factory can have when the caller has a working fallback: the CPU
+      // rasteriser draws the frame and the viewer says which path it used.
+      createMeshRenderer: (RenderDevice device) {
+        if (device is! D3d11RenderDevice) {
+          throw StateError('direct3d11 mesh rendering needs a '
+              'D3d11RenderDevice; got ${device.runtimeType}');
+        }
+        final Object built = D3d11MeshRenderer.create(device);
+        if (built is MeshSceneRenderer) return built;
+        throw StateError('$built');
+      },
       createAttachment: (
         RendererBackend backend,
         NativeWindow native, {
@@ -554,6 +574,22 @@ final class PlatformBackendResolver {
       backend: renderer,
       probe: _probeWin32OpenGl,
       compatibleWindowingBackends: const <String>{'win32'},
+      // See `_win32D3d11` for why the factory lives here and why it throws.
+      createMeshRenderer: (RenderDevice device) {
+        if (device is! GlRenderDevice) {
+          throw StateError('opengl mesh rendering needs a GlRenderDevice; '
+              'got ${device.runtimeType}');
+        }
+        final GlMeshRendererAttempt attempt = GlMeshRenderer.create(device);
+        final GlMeshRenderer? built = attempt.renderer;
+        if (built != null) return built;
+        throw StateError(attempt.diagnostics.isEmpty
+            ? 'the OpenGL mesh program could not be built'
+            : attempt.diagnostics
+                .map((BackendDiagnostic d) => d.message)
+                .join('; '));
+      },
+
       // Declared, not overlooked. `wglCreateContext` below is called on this
       // window's own HDC with this window's chosen pixel format and no share
       // group - there is no `wglShareLists` call anywhere in this repository -
@@ -628,6 +664,22 @@ final class PlatformBackendResolver {
     return PresentationPathEntry.directRenderer(
       backend: renderer,
       compatibleWindowingBackends: const <String>{'x11'},
+      // See `_win32D3d11` for why the factory lives here and why it throws.
+      createMeshRenderer: (RenderDevice device) {
+        if (device is! GlRenderDevice) {
+          throw StateError('opengl mesh rendering needs a GlRenderDevice; '
+              'got ${device.runtimeType}');
+        }
+        final GlMeshRendererAttempt attempt = GlMeshRenderer.create(device);
+        final GlMeshRenderer? built = attempt.renderer;
+        if (built != null) return built;
+        throw StateError(attempt.diagnostics.isEmpty
+            ? 'the OpenGL mesh program could not be built'
+            : attempt.diagnostics
+                .map((BackendDiagnostic d) => d.message)
+                .join('; '));
+      },
+
       // As on Win32, and for the GLX equivalent of the same reason: the
       // context comes from the window's own drawable and visual, built with no
       // share list. See `_win32OpenGl`.

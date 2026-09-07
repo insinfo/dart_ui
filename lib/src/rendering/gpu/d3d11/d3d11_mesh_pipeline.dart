@@ -82,6 +82,7 @@ import '../../../graphics/mesh/mesh3d.dart';
 import '../../mesh/mesh_rasterizer.dart';
 import '../../mesh/mesh_scene.dart';
 import '../../renderer.dart';
+import '../gpu_recovery.dart';
 import 'd3d11_backend.dart';
 import 'd3d11_bindings.dart';
 import 'd3d11_mesh_shaders.dart';
@@ -107,14 +108,40 @@ enum D3d11MeshDepthTest {
 /// Draws a [MeshScene] with Direct3D 11.
 ///
 /// One per device. It owns GPU objects, so it must be disposed before the
-/// device it was built from - and it does *not* register itself for device-loss
-/// recovery, which is a limitation stated rather than hidden: after a
-/// `DXGI_ERROR_DEVICE_REMOVED` every buffer, texture and state object here
-/// belongs to a device that no longer exists, and the honest recovery is for
-/// the application to dispose this renderer and build another. Wiring it into
-/// [D3d11RenderDevice.recoverableResources] needs the device to know a mesh
-/// renderer exists, which is precisely the coupling this file avoids.
-final class D3d11MeshRenderer implements MeshSceneRenderer {
+/// device it was built from.
+///
+/// ## What happens after `DXGI_ERROR_DEVICE_REMOVED`, stated
+///
+/// This renderer registers itself through [D3d11RenderDevice.registerTarget],
+/// so the eight-step recovery of `gpu_recovery.dart` releases and rebuilds it
+/// with everything else the device owns. An earlier revision refused to, on
+/// the grounds that registering would couple the device to the mesh path, and
+/// that was a misreading of the seam: [D3d11RecoverableTarget] is an interface
+/// with one method returning [GpuRecoverableResource]s, and the device holds
+/// its registrants through it precisely so that it never learns what they are.
+/// `D3d11WindowTarget` comes through the same door from another library. So
+/// the device gains no mesh knowledge here, and what refusing bought was this:
+/// after a reset every buffer, state object and shader in this file belonged
+/// to a destroyed device while `_device.state.isLost` had already gone back to
+/// false, so the next [drawScene] submitted **dangling COM pointers** to a
+/// live context. No caller could work around that, because nothing told the
+/// caller a recovery had happened.
+///
+/// Concretely, after a loss and a successful recovery:
+///
+///   * every shader, input layout, state object, sampler, constant buffer and
+///     depth buffer is **recreated**. The HLSL is compiled at run time, so
+///     there is nothing to preserve across the loss;
+///   * the vertex, index and texture caches are **dropped, not re-uploaded**.
+///     Their source is the [Mesh3D] the caller still holds, so the first frame
+///     after a recovery pays the upload again - 43 MB for a 451,838-triangle
+///     model - and every frame after it is cached as before. Re-uploading
+///     inside the recovery would move those megabytes whether or not the
+///     caller ever draws that model again;
+///   * a recovery that *fails* leaves the device lost, and [drawScene] returns
+///     [MeshRenderStats.zero] without submitting anything.
+final class D3d11MeshRenderer
+    implements MeshSceneRenderer, D3d11RecoverableTarget {
   D3d11MeshRenderer._(this._device, this._objects);
 
   /// Builds the pipeline for [device], or returns the [BackendDiagnostic] that
@@ -134,8 +161,39 @@ final class D3d11MeshRenderer implements MeshSceneRenderer {
             'D3d11RendererBackend.shaderCompilationPolicy for why',
       );
     }
-    final arena = NativeArena();
     final renderer = D3d11MeshRenderer._(device, ComBag());
+    final BackendDiagnostic? failure = renderer._compileAndBuild();
+    if (failure != null) {
+      renderer.dispose();
+      return failure;
+    }
+    // Registered only once everything above succeeded, so a device never holds
+    // a renderer whose shaders it refused: `recoverableResources` would then
+    // yield an entry whose repopulate is guaranteed to fail, and every later
+    // recovery on this device would report `recoveredWithLosses` about a
+    // renderer nothing ever used.
+    device.registerTarget(renderer);
+    return renderer;
+  }
+
+  /// Compiles the HLSL and creates every device object, or says what refused.
+  ///
+  /// Shared by [create] and by the device-loss recovery below, and the sharing
+  /// is the point: a rebuild that drifted from the original would produce a
+  /// renderer that is subtly different after a GPU reset rather than one that
+  /// fails, which is the hardest kind of bug to attribute.
+  BackendDiagnostic? _compileAndBuild() {
+    final D3dCompileFn? compile = _device.api.compile;
+    if (compile == null) {
+      return const BackendDiagnostic(
+        kind: DiagnosticKind.missingLibrary,
+        message: 'd3dcompiler_47.dll is not loadable, so there is no mesh '
+            'program',
+        detail: 'this backend compiles its HLSL at run time; see '
+            'D3d11RendererBackend.shaderCompilationPolicy for why',
+      );
+    }
+    final arena = NativeArena();
     try {
       final Object vertex = _compile(
           compile, arena, kD3d11MeshVertexProfile, kD3d11MeshVertexEntryPoint);
@@ -149,19 +207,12 @@ final class D3d11MeshRenderer implements MeshSceneRenderer {
       final vertexBlob = vertex as D3dBlob;
       final pixelBlob = pixel as D3dBlob;
       try {
-        final BackendDiagnostic? failure =
-            renderer._build(arena, vertexBlob, pixelBlob);
-        if (failure != null) {
-          renderer.dispose();
-          return failure;
-        }
+        return _build(arena, vertexBlob, pixelBlob);
       } finally {
         vertexBlob.dispose();
         pixelBlob.dispose();
       }
-      return renderer;
     } on Object catch (error) {
-      renderer.dispose();
       return BackendDiagnostic(
         kind: DiagnosticKind.incompatibleDevice,
         message: 'the Direct3D 11 mesh pipeline could not be built',
@@ -172,8 +223,47 @@ final class D3d11MeshRenderer implements MeshSceneRenderer {
     }
   }
 
+  // -------------------------------------------------------------------
+  // Device-loss recovery - see the library comment for what survives
+  // -------------------------------------------------------------------
+
+  /// Step 5's inventory for this renderer: one entry, because everything here
+  /// comes back from bytes that never left Dart.
+  ///
+  /// [GpuResourceRecovery.rebuilt] and not [GpuResourceRecovery.reuploaded],
+  /// and the difference is the geometry caches: `reuploaded` promises the
+  /// megabytes are back when the recovery returns, and this deliberately does
+  /// not move them until something asks for a frame.
+  @override
+  Iterable<GpuRecoverableResource> recoverableResources() sync* {
+    yield CallbackGpuResource.fixed(
+      resourceName: 'direct3d11 mesh pipeline '
+          '($cachedPrimitiveCount primitives, $cachedBufferBytes bytes)',
+      recovery: GpuResourceRecovery.rebuilt,
+      onDiscard: _forgetDeviceObjects,
+      onRepopulate: _compileAndBuild,
+    );
+  }
+
+  /// Step 3: release every COM reference and forget every cache.
+  ///
+  /// `Release` on an object whose device was removed is legal and is what the
+  /// rest of this backend does - see
+  /// [D3d11RenderDevice.discardNativeResources] for why that is the opposite
+  /// of what GL wants - so this is the same code the healthy path runs, minus
+  /// the arena, which is Dart-side memory the rebuild reuses.
+  void _forgetDeviceObjects() {
+    _releaseDeviceObjects();
+    // A fresh bag, because a disposed one throws from `keep` and the rebuild
+    // is about to fill it again.
+    _objects = ComBag();
+  }
+
   final D3d11RenderDevice _device;
-  final ComBag _objects;
+
+  /// Not final: [_forgetDeviceObjects] disposes it and the recovery needs a
+  /// fresh one, because `ComBag.keep` throws once the bag has been disposed.
+  ComBag _objects;
 
   /// Long-lived native scratch, so a frame performs no native allocation. The
   /// rule the rest of this backend already keeps.
@@ -525,7 +615,12 @@ final class D3d11MeshRenderer implements MeshSceneRenderer {
     if (renderTargetView == nullptr ||
         targetWidth <= 0 ||
         targetHeight <= 0 ||
-        _device.state.isLost) {
+        _device.state.isLost ||
+        // Null only between a device loss and a recovery that could not put
+        // the shaders back. Every line below dereferences these with `!`, and
+        // the alternative to refusing here is a null-check throw out of a
+        // frame loop that had already been told the device was healthy again.
+        _vertexShader == null) {
       return MeshRenderStats.zero;
     }
     final Stopwatch watch = Stopwatch()..start();
@@ -1229,6 +1324,22 @@ final class D3d11MeshRenderer implements MeshSceneRenderer {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    // Before the objects go, so a recovery running afterwards cannot walk a
+    // disposed renderer. Unregistering an object that was never registered is
+    // a no-op, which is what a `create` that failed half way needs.
+    _device.unregisterTarget(this);
+    _releaseDeviceObjects();
+    _objects.dispose();
+    _arena.dispose();
+  }
+
+  /// Releases every device object and empties every cache, leaving the arena
+  /// and the [ComBag] itself alone.
+  ///
+  /// The shared half of [dispose] and of [_forgetDeviceObjects]: the two want
+  /// the same COM releases and differ only in whether anything will be built
+  /// on top afterwards.
+  void _releaseDeviceObjects() {
     for (final _MeshBuffers entry in _buffers.values) {
       entry.dispose();
     }
@@ -1242,10 +1353,22 @@ final class D3d11MeshRenderer implements MeshSceneRenderer {
     _depthTexture?.dispose();
     _depthView = null;
     _depthTexture = null;
+    // Zeroed, and not tidiness: `_ensureDepth` returns early when the cached
+    // size matches, so a rebuild that left 256x192 here would go on using a
+    // depth view belonging to the destroyed device.
+    _depthWidth = 0;
+    _depthHeight = 0;
     _rasterizerStates.clear();
     _depthStates.clear();
-    _objects.dispose();
-    _arena.dispose();
+    // Nulled for the same reason: `_build` assigns them and every draw
+    // dereferences them with `!`, so a half-rebuilt renderer must fail on a
+    // null check rather than submit a pointer the driver has freed.
+    _vertexShader = null;
+    _pixelShader = null;
+    _inputLayout = null;
+    _constantBuffer = null;
+    _sampler = null;
+    _blendOpaque = null;
   }
 }
 

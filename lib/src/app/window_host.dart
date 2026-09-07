@@ -886,6 +886,14 @@ final class RenderTargetPresenter
   void Function() _releaseSurface;
   bool _releaseSurfaceBeforeDevice;
 
+  /// The device [target] was created on.
+  ///
+  /// The one caller that needs a device and a target together is the mesh
+  /// path: a renderer is built per device and draws into a target, and the
+  /// window is the only object holding both. Kept off [SurfacePresenter] on
+  /// purpose - a presenter that rasterises on the CPU has no device to give,
+  /// and widening the interface would make every one of them answer a question
+  /// only two can.
   RenderDevice get device => _device;
   RenderTarget get target => _target;
 

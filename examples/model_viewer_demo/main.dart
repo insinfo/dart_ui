@@ -60,6 +60,9 @@ import 'package:dart_ui/src/graphics/mesh/mesh3d.dart';
 import 'package:dart_ui/src/graphics/mesh/mesh_loaders.dart';
 import 'package:dart_ui/src/platform/model_asset_resolver.dart';
 import 'package:dart_ui/src/rendering/mesh/mesh_rasterizer.dart';
+import 'package:dart_ui/src/rendering/mesh/mesh_scene.dart';
+import 'package:dart_ui/src/rendering/mesh/mesh_scene_host.dart';
+import 'package:dart_ui/src/widgets/mesh_scene_scope.dart';
 
 /// The value of `--name=value`, or of `--name value`.
 ///
@@ -144,6 +147,15 @@ Future<void> main(List<String> arguments) async {
   }
 
   FrameworkFonts.install();
+  // `--cpu-mesh` and not `--cpu`: the latter is already
+  // `ApplicationOptions.fromArguments`'s switch for `RenderingPolicy.cpuOnly`,
+  // which changes the whole presentation path. Sharing the name would make one
+  // flag mean two things and make a comparison between the mesh paths
+  // accidentally compare the presenters as well.
+  //
+  // Read before the tree is built, because the state reads it in `initState`.
+  _ModelViewerDemoState.forceCpuFromArguments =
+      arguments.contains('--cpu-mesh');
   final ViewerSession session = ViewerSession();
   final ApplicationOptions options = ApplicationOptions.fromArguments(
     arguments,
@@ -236,12 +248,11 @@ enum MeshDrawPath {
         'apresenta o resultado como uma imagem; ele não desenha a malha.',
   ),
 
-  /// A GPU mesh pipeline. No such pipeline exists yet; this member is here so
-  /// that the day one lands, the status bar reports it instead of being
-  /// rewritten.
+  /// A GPU mesh pipeline, through `MeshSceneScope`.
   gpu(
     'GPU desenha',
-    'Os triângulos são desenhados pelo pipeline 3D do backend.',
+    'Os triângulos são desenhados pelo pipeline 3D do backend, direto no '
+        'back buffer, e esta interface é composta por cima.',
   );
 
   const MeshDrawPath(this.label, this.explanation);
@@ -322,6 +333,16 @@ final class _ModelViewerDemoState extends State<ModelViewerDemo>
 
   late OrbitCameraController _controls;
   MeshShading _shading = MeshShading.smooth;
+
+  /// Whether to rasterise on the CPU even where the GPU can draw.
+  ///
+  /// The third case §8.1.1 allows - "the library user asked for it" - and the
+  /// reason a comparison between the two paths does not need a code edit.
+  bool _forceCpu = false;
+
+  /// Set once from the command line, so the two paths can be compared in a
+  /// bounded run without a human pressing a button.
+  static bool forceCpuFromArguments = false;
   bool _spinning = true;
 
   late final FocusNode _focusNode =
@@ -354,6 +375,7 @@ final class _ModelViewerDemoState extends State<ModelViewerDemo>
   @override
   void initState() {
     super.initState();
+    _forceCpu = _ModelViewerDemoState.forceCpuFromArguments;
     _mesh = widget.mesh;
     _error = widget.error;
     _source = widget.sourcePath;
@@ -572,156 +594,176 @@ final class _ModelViewerDemoState extends State<ModelViewerDemo>
       _attached = true;
     }
 
-    const Color page = Color(0xFF070A11);
     const Color panel = Color(0xFF111927);
     const Color text = Color(0xFFE7EEF9);
     const Color muted = Color(0xFF8EA0B8);
 
-    return ColoredBox(
-      color: page,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          ColoredBox(
-            color: panel,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-              child: Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: <Widget>[
-                        Text(
-                          _mesh?.name ?? 'Nenhum modelo aberto',
-                          color: text,
-                          fontSize: 15,
-                        ),
-                        Text(
-                          _mesh == null
-                              ? 'OBJ, STL, glTF ou GLB'
-                              : '${_mesh!.format} · '
-                                  '${_mesh!.triangleCount} triângulos · '
-                                  '${_mesh!.primitives.length} primitivas · '
-                                  'lido em ${_loadTime.inMilliseconds} ms',
-                          color: muted,
-                          fontSize: 11,
-                        ),
-                      ],
-                    ),
-                  ),
-                  Button(label: 'ABRIR MODELO', onPressed: _open),
-                ],
-              ),
-            ),
-          ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: _error != null
-                  ? Center(
-                      child: Padding(
-                        padding: const EdgeInsets.all(24),
-                        child: Text(
-                          _error!,
-                          color: const Color(0xFFE0754A),
-                          fontSize: 13,
-                        ),
-                      ),
-                    )
-                  : _mesh == null
-                      ? const Center(
-                          child: Text(
-                            'Abra um arquivo OBJ, STL, glTF ou GLB.\n'
-                            'FBX é recusado pelo nome: exporte como glTF.',
-                            color: muted,
-                            fontSize: 13,
-                          ),
-                        )
-                      : FocusAttachment(
-                          node: _focusNode,
-                          autofocus: true,
-                          child: PointerListener(
-                            onPointerDown: _onPointerDown,
-                            onPointerMove: _onPointerMove,
-                            onPointerUp: _endPointer,
-                            onPointerCancel: _endPointer,
-                            onPointerScroll: _onPointerScroll,
-                            child: _ModelView(
-                              mesh: _mesh!,
-                              camera: _controls.camera,
-                              shading: _shading,
-                              onCreated: (_RenderModel render) =>
-                                  _render = render,
-                            ),
-                          ),
-                        ),
-            ),
-          ),
-          ColoredBox(
-            color: panel,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  Text(_statusLine(), color: text, fontSize: 12),
-                  const SizedBox(height: 4),
-                  Text(
-                    (_render?.lastDrawPath ?? MeshDrawPath.none).explanation,
-                    color: muted,
-                    fontSize: 11,
-                  ),
-                  const SizedBox(height: 4),
-                  const Text(
-                    'Botão esquerdo orbita · botão direito ou do meio desloca · '
-                    'roda aproxima no ponteiro · F enquadra · G gira · '
-                    'setas e +/- também.',
-                    color: muted,
-                    fontSize: 11,
-                  ),
-                  if (_mesh != null && _mesh!.unsupported.isNotEmpty) ...[
-                    const SizedBox(height: 4),
-                    Text(
-                      'Não lido neste arquivo: '
-                      '${_mesh!.unsupported.join(', ')}',
-                      color: const Color(0xFFE0B341),
-                      fontSize: 11,
-                    ),
-                  ],
-                  const SizedBox(height: 10),
-                  Row(
+    // No background over the whole window, and that is the rule rather than a
+    // detail of this demo: on the GPU path the model is drawn into the back
+    // buffer *before* the display list, so anything opaque painted over the
+    // viewport erases it. The symptom is a black window with a working
+    // interface, which reads as "the model failed to load" and is not.
+    //
+    // The header and the status bar paint their own panels, and the area
+    // between them keeps whatever the 3D pass cleared it to - which is the
+    // scene's own background, so the window is never showing undefined
+    // memory. On the CPU path the rasteriser fills that area with an image,
+    // and the result is the same picture either way.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        ColoredBox(
+          color: panel,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            child: Row(
+              children: <Widget>[
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
-                      for (final MeshShading shading in MeshShading.values) ...[
-                        Button(
-                          label: _shadingLabel(shading),
-                          onPressed: shading == _shading
-                              ? null
-                              : () {
-                                  setState(() => _shading = shading);
-                                  _render?.markNeedsPaint();
-                                },
-                        ),
-                        const SizedBox(width: 8),
-                      ],
-                      Button(
-                        label: _spinning ? 'PARAR' : 'GIRAR',
-                        onPressed: () => setState(() => _spinning = !_spinning),
+                      Text(
+                        _mesh?.name ?? 'Nenhum modelo aberto',
+                        color: text,
+                        fontSize: 15,
                       ),
-                      const SizedBox(width: 8),
-                      Button(label: 'ENQUADRAR', onPressed: _frame),
-                      const SizedBox(width: 8),
-                      Button(label: '+', onPressed: () => _zoom(0.8)),
-                      const SizedBox(width: 8),
-                      Button(label: '-', onPressed: () => _zoom(1.25)),
+                      Text(
+                        _mesh == null
+                            ? 'OBJ, STL, glTF ou GLB'
+                            : '${_mesh!.format} · '
+                                '${_mesh!.triangleCount} triângulos · '
+                                '${_mesh!.primitives.length} primitivas · '
+                                'lido em ${_loadTime.inMilliseconds} ms',
+                        color: muted,
+                        fontSize: 11,
+                      ),
                     ],
                   ),
-                ],
-              ),
+                ),
+                Button(label: 'ABRIR MODELO', onPressed: _open),
+              ],
             ),
           ),
-        ],
-      ),
+        ),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: _error != null
+                ? Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Text(
+                        _error!,
+                        color: const Color(0xFFE0754A),
+                        fontSize: 13,
+                      ),
+                    ),
+                  )
+                : _mesh == null
+                    ? const Center(
+                        child: Text(
+                          'Abra um arquivo OBJ, STL, glTF ou GLB.\n'
+                          'FBX é recusado pelo nome: exporte como glTF.',
+                          color: muted,
+                          fontSize: 13,
+                        ),
+                      )
+                    : FocusAttachment(
+                        node: _focusNode,
+                        autofocus: true,
+                        child: PointerListener(
+                          onPointerDown: _onPointerDown,
+                          onPointerMove: _onPointerMove,
+                          onPointerUp: _endPointer,
+                          onPointerCancel: _endPointer,
+                          onPointerScroll: _onPointerScroll,
+                          child: _ModelView(
+                            mesh: _mesh!,
+                            camera: _controls.camera,
+                            shading: _shading,
+                            // Read here and not in the render object: an
+                            // inherited widget is looked up from a
+                            // `BuildContext`, and a render object has none.
+                            surface: MeshSceneScope.maybeOf(context),
+                            forceCpu: _forceCpu,
+                            onCreated: (_RenderModel render) =>
+                                _render = render,
+                          ),
+                        ),
+                      ),
+          ),
+        ),
+        ColoredBox(
+          color: panel,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                Text(_statusLine(), color: text, fontSize: 12),
+                const SizedBox(height: 4),
+                Text(
+                  (_render?.lastDrawPath ?? MeshDrawPath.none).explanation,
+                  color: muted,
+                  fontSize: 11,
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Botão esquerdo orbita · botão direito ou do meio desloca · '
+                  'roda aproxima no ponteiro · F enquadra · G gira · '
+                  'setas e +/- também.',
+                  color: muted,
+                  fontSize: 11,
+                ),
+                if (_mesh != null && _mesh!.unsupported.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'Não lido neste arquivo: '
+                    '${_mesh!.unsupported.join(', ')}',
+                    color: const Color(0xFFE0B341),
+                    fontSize: 11,
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Row(
+                  children: <Widget>[
+                    for (final MeshShading shading in MeshShading.values) ...[
+                      Button(
+                        label: _shadingLabel(shading),
+                        onPressed: shading == _shading
+                            ? null
+                            : () {
+                                setState(() => _shading = shading);
+                                _render?.markNeedsPaint();
+                              },
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    Button(
+                      label: _forceCpu ? 'USAR GPU' : 'FORÇAR CPU',
+                      onPressed: () {
+                        setState(() => _forceCpu = !_forceCpu);
+                        _render?.markNeedsPaint();
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    Button(
+                      label: _spinning ? 'PARAR' : 'GIRAR',
+                      onPressed: () => setState(() => _spinning = !_spinning),
+                    ),
+                    const SizedBox(width: 8),
+                    Button(label: 'ENQUADRAR', onPressed: _frame),
+                    const SizedBox(width: 8),
+                    Button(label: '+', onPressed: () => _zoom(0.8)),
+                    const SizedBox(width: 8),
+                    Button(label: '-', onPressed: () => _zoom(1.25)),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -749,12 +791,16 @@ final class _ModelViewerDemoState extends State<ModelViewerDemo>
 /// Draws the model.
 final class _ModelView extends RenderObjectWidget {
   const _ModelView({
+    required this.surface,
+    required this.forceCpu,
     required this.mesh,
     required this.camera,
     required this.shading,
     required this.onCreated,
   });
 
+  final MeshSceneSurface? surface;
+  final bool forceCpu;
   final Mesh3D mesh;
   final MeshCamera camera;
   final MeshShading shading;
@@ -769,7 +815,9 @@ final class _ModelView extends RenderObjectWidget {
       mesh: mesh,
       camera: camera,
       shading: shading,
-    );
+    )
+      ..surface = surface
+      ..forceCpu = forceCpu;
     onCreated(render);
     return render;
   }
@@ -779,7 +827,9 @@ final class _ModelView extends RenderObjectWidget {
     renderObject
       ..mesh = mesh
       ..camera = camera
-      ..shading = shading;
+      ..shading = shading
+      ..surface = surface
+      ..forceCpu = forceCpu;
     onCreated(renderObject);
   }
 }
@@ -801,6 +851,18 @@ final class _RenderModel extends RenderBox {
   Framebuffer? _target;
   MeshRenderStats lastStats = MeshRenderStats.zero;
 
+  /// The window's 3D surface, or null when nothing here draws 3D.
+  ///
+  /// Resolved per paint through the inherited scope rather than captured:
+  /// `MeshSceneSurface`'s own comment says why a widget must not hold one, and
+  /// the reason is that a resize and a device-loss recovery both replace the
+  /// render target under it.
+  MeshSceneSurface? surface;
+
+  /// Whether the caller has asked for the CPU rasteriser whatever is
+  /// available. The third case §8.1.1 allows.
+  bool forceCpu = false;
+
   /// What drew the last frame. Set by [paint], never asserted from outside.
   MeshDrawPath lastDrawPath = MeshDrawPath.none;
 
@@ -821,6 +883,16 @@ final class _RenderModel extends RenderBox {
     markNeedsPaint();
   }
 
+  /// The scene this frame draws, shared by both paths so that switching
+  /// between them cannot change anything but where the triangles are
+  /// rasterised.
+  MeshScene get _scene => MeshScene(
+        mesh: _mesh,
+        camera: _camera,
+        shading: _shading,
+        backgroundArgb: 0xFF0C111B,
+      );
+
   @override
   void performLayout() => size = constraints.biggest;
 
@@ -833,6 +905,31 @@ final class _RenderModel extends RenderBox {
     final int width = size.width.round();
     final int height = size.height.round();
     if (width <= 0 || height <= 0) return;
+
+    // The GPU first, which is what §8.1.1 asks for. Nothing is drawn into the
+    // display list on this path: the scene is recorded and the window draws it
+    // into the back buffer after `beginFrame`, and this interface is composed
+    // over it. That is why the viewport is passed in *logical* units - the
+    // window scales it, because the render scale is the one number a widget
+    // cannot be right about.
+    final MeshSceneSurface? gpu = forceCpu ? null : surface;
+    if (gpu != null) {
+      final MeshRenderStats? stats = gpu.draw(
+        _scene,
+        viewport: Rect.fromLTWH(
+          offset.dx,
+          offset.dy,
+          size.width,
+          size.height,
+        ),
+      );
+      // Null before the first flush completes, which is one frame. Keeping the
+      // previous statistics rather than zeroing them stops the status bar
+      // flickering to zero on the frame a model is opened.
+      if (stats != null) lastStats = stats;
+      lastDrawPath = MeshDrawPath.gpu;
+      return;
+    }
 
     // Reallocated only when the window changes size. A framebuffer per frame
     // for a 1000x700 view is 2.8 MB of garbage sixty times a second, which the

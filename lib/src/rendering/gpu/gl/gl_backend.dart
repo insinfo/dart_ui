@@ -403,6 +403,15 @@ final class GlRenderDevice
 
   GlApi get api => _gl;
 
+  /// The allocator every native scratch buffer on this context comes from.
+  ///
+  /// Public for the reason [api] and [scratchNames] are: a collaborator in
+  /// another library - `gl_window_target.dart`, `gl_mesh_renderer.dart` - has
+  /// to allocate from the *device's* heap rather than binding one of its own.
+  /// Two `malloc`s from two loaded libraries both work and only one of them
+  /// shows this device's allocations next to each other in a leak report.
+  NativeHeap get heap => _heap;
+
   @override
   RendererInfo get info => _info;
 
@@ -2545,8 +2554,24 @@ final class GlOffscreenTarget
   /// the single-sample texture the pixels are resolved into, carries no
   /// stencil and would answer the question about the wrong object.
   ///
-  /// Not for drawing: nothing outside this file binds it.
+  /// Not for drawing; [drawFramebuffer] is the same number for a caller that
+  /// intends to bind it.
   int get debugFramebuffer => _drawFramebuffer;
+
+  /// The framebuffer a pass on this target must bind, for a collaborator in
+  /// another library that draws into it directly.
+  ///
+  /// [GlMeshRenderer] is the one such collaborator: `MeshSceneRenderer`
+  /// promises to take a [RenderTarget], so the mesh path has to be able to
+  /// find the framebuffer behind one. It is the multisampled draw buffer when
+  /// there is one, which is the number that matters - binding [_fbo] instead
+  /// would draw the model into the resolve target and then have
+  /// [_resolveMultisample] blit the 2D frame over it.
+  ///
+  /// It changes on a [resize] and on a device loss, both of which bump
+  /// [generation]; a caller that caches anything derived from it must key that
+  /// cache on the generation too.
+  int get drawFramebuffer => _drawFramebuffer;
 
   late Framebuffer _readback;
   int _generation = 0;

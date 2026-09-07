@@ -9,9 +9,10 @@
 ///
 /// ## Why the contract is here and not in a backend
 ///
-/// Two backends are filling it - `gpu/d3d11/d3d11_mesh_pipeline.dart` and the
-/// OpenGL twin beside it - and a contract that lived in one of them would be
-/// the other's dependency. Worse, it would be shaped by whichever API was
+/// Two backends fill it - `D3d11MeshRenderer` in
+/// `gpu/d3d11/d3d11_mesh_pipeline.dart` and `GlMeshRenderer` in
+/// `gpu/gl/gl_mesh_renderer.dart` - and a contract that lived in one of them
+/// would be the other's dependency. Worse, it would be shaped by whichever API was
 /// written first: a `drawScene` taking a `Pointer<Void>` render-target view is
 /// a perfectly good Direct3D 11 method and is not a contract, because nothing
 /// else can implement it. So [MeshSceneRenderer] names only types this layer
@@ -62,6 +63,19 @@ final class MeshScene {
   /// A GPU path draws into a surface that a 2D pass may already have painted,
   /// so "do not clear" is a real request there and is the only field of this
   /// class the CPU path cannot honour.
+  ///
+  /// **The clear covers the whole target, not
+  /// [MeshSceneRenderer.drawScene]'s `viewport`.** That is a contract and not
+  /// an accident of one backend: Direct3D 11's `ClearRenderTargetView` takes
+  /// no rectangle and ignores the scissor, so a renderer that clipped the
+  /// clear could not be the same renderer on both APIs, and two backends that
+  /// draw a *different picture* from the same [MeshScene] is the one outcome
+  /// this whole file exists to prevent. The GL path therefore clears with the
+  /// scissor test switched off to match.
+  ///
+  /// So a caller drawing a 3D view inside an interface passes null here and
+  /// clears the surface itself. That is what null is for; it is not a
+  /// micro-optimisation.
   final int? backgroundArgb;
 
   /// The direction light travels in, normalised by the renderer.
@@ -88,7 +102,15 @@ abstract interface class MeshSceneRenderer {
   ///
   /// [viewport] is in target pixels with the origin at the top-left corner.
   /// The projection's aspect ratio comes from it, so a scene drawn into a
-  /// narrow strip is not stretched.
+  /// narrow strip is not stretched. It bounds the *draws*; it does not bound
+  /// the clear - see [MeshScene.backgroundArgb].
+  ///
+  /// Returns [MeshRenderStats.zero] without submitting anything when the
+  /// implementation was handed a [RenderTarget] belonging to another backend,
+  /// when the device is lost, or when the target could not be given a depth
+  /// buffer. A renderer that drew anyway would produce a model with its far
+  /// side over its near side and no error anywhere, which is the failure mode
+  /// both implementations are built to make loud.
   MeshRenderStats drawScene(
     RenderTarget target,
     MeshScene scene, {

@@ -146,6 +146,7 @@ import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/color.dart';
 import '../graphics/display_list.dart';
+import '../graphics/mesh/mesh3d.dart';
 import '../layout/box_constraints.dart';
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
@@ -157,6 +158,9 @@ import '../platform/native_window.dart';
 import '../platform/text_input.dart';
 import '../platform/window_events.dart';
 import '../rendering/cpu_renderer.dart';
+import '../rendering/mesh/mesh_rasterizer.dart';
+import '../rendering/mesh/mesh_scene.dart';
+import '../rendering/mesh/mesh_scene_host.dart';
 import '../rendering/render_diagnostics.dart';
 import '../rendering/render_policy.dart';
 import '../rendering/renderer.dart';
@@ -172,6 +176,7 @@ import '../widgets/drag_drop.dart' show DragDropScope, WidgetTreeDropTarget;
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
 import '../widgets/media_query.dart';
+import '../widgets/mesh_scene_scope.dart';
 import '../widgets/popup.dart';
 import '../widgets/popup_host.dart';
 import '../widgets/theme.dart';
@@ -237,6 +242,7 @@ final class PresentationPathEntry {
     this.compatibleWindowingBackends,
     this.experimental = false,
     this.sharesDevice = false,
+    this.createMeshRenderer,
   });
 
   /// A retained CPU presenter owned by a backend, adapted in one line.
@@ -350,6 +356,7 @@ final class PresentationPathEntry {
     bool experimental = false,
     bool sharesDevice = true,
     Future<RenderDevice> Function()? openDevice,
+    MeshSceneRendererFactory? createMeshRenderer,
   }) =>
       PresentationPathEntry(
         name: name ?? backend.info.name,
@@ -359,6 +366,7 @@ final class PresentationPathEntry {
         compatibleWindowingBackends: compatibleWindowingBackends,
         experimental: experimental,
         sharesDevice: sharesDevice,
+        createMeshRenderer: createMeshRenderer,
         probe: probe ?? backend.probe,
         attach: (NativeWindow window, {RenderDeviceProvider? devices}) =>
             RenderTargetPresenter.attachToWindow(
@@ -426,6 +434,24 @@ final class PresentationPathEntry {
   /// differed only in cost. A path that answers false here is saying so on
   /// purpose - see [PresentationPathEntry.directRenderer].
   final bool sharesDevice;
+
+  /// Builds this path's 3D renderer for a device it opened, or null when this
+  /// path has no 3D pipeline at all.
+  ///
+  /// Null is the ordinary answer and it is what a headless run, a CPU
+  /// presenter and a web target all give - see `mesh_scene_host.dart` for why
+  /// the seam is a factory on a *path* rather than a member of
+  /// [RendererBackend] or of [RenderDevice]. Filled in by
+  /// `backends/default_platform_resolver.dart`, which is the one file in the
+  /// tree allowed to name a concrete backend; the application layer only ever
+  /// calls it.
+  ///
+  /// Called at most once per window, lazily, the first time something in that
+  /// window's tree asks to draw a mesh. A window that never shows a 3D view
+  /// never compiles a mesh shader, which is the same rule
+  /// [AccessibilityHost.register] follows for the same reason: most windows
+  /// never need the feature and none of them should pay for it.
+  final MeshSceneRendererFactory? createMeshRenderer;
 
   BackendProbeResult probeForWindowingBackend(String backendName) {
     final Set<String>? compatible = compatibleWindowingBackends;
@@ -993,8 +1019,39 @@ final class ApplicationWindow with DisposableMixin {
     required this.clearColor,
     required DisposableBag resources,
     required Widget rootWidget,
+    required PresentationPathEntry presentationPath,
   })  : _resources = resources,
-        _rootWidget = rootWidget;
+        _rootWidget = rootWidget,
+        _presentationPath = presentationPath;
+
+  /// The presentation path this window is drawing through.
+  ///
+  /// Held for one reason: it is where [PresentationPathEntry.createMeshRenderer]
+  /// lives, and a window that could not name its own path could not tell
+  /// whether the backend under it draws meshes. It is the window's copy and not
+  /// the application's, because a fallback after an attachment failure moves
+  /// the *application* to another path while windows already open keep drawing
+  /// through the one they attached to.
+  final PresentationPathEntry _presentationPath;
+
+  /// This window's 3D surface, built the first time a widget asks for one.
+  ///
+  /// Lazy, and that is the whole cost model: building it compiles a mesh shader
+  /// and allocates a depth buffer the size of the window, so a window that
+  /// never shows a 3D view pays a null check. It is the same rule the
+  /// accessibility bridge follows - see `uia_session.dart` on why activation is
+  /// lazy - and for the same reason: almost every window never needs it.
+  _WindowMeshSurface? _meshSurface;
+
+  /// Why [_meshSurface] is null, when there is a reason worth showing.
+  BackendDiagnostic? _meshUnavailable;
+
+  /// Whether the mesh surface has been asked for at all.
+  ///
+  /// Separate from `_meshSurface != null`: a path that declares no mesh
+  /// renderer answers null forever, and without this the window would retry the
+  /// lookup on every rebuild.
+  bool _meshAsked = false;
 
   /// The application this window belongs to. Windows are never freestanding:
   /// the backend, the clipboard and the focus arbitration all live up there.
@@ -1268,6 +1325,82 @@ final class ApplicationWindow with DisposableMixin {
     return root.size;
   }
 
+  /// This window's 3D surface, or null when nothing here draws 3D.
+  ///
+  /// Null on headless, on web, on every CPU presenter, and on a GPU backend
+  /// whose presentation path declares no mesh renderer. None of those is an
+  /// error and none of them throws: a viewer that gets null draws with the CPU
+  /// rasteriser and keeps its window, which is the entire reason this answers
+  /// rather than raising.
+  _WindowMeshSurface? get _meshSceneSurface {
+    if (_meshAsked) return _meshSurface;
+    _meshAsked = true;
+    final MeshSceneRendererFactory? factory =
+        _presentationPath.createMeshRenderer;
+    if (factory == null) {
+      // No diagnostic. Nothing was asked for, because this path never claimed
+      // to draw meshes - which is a different thing from asking and being
+      // refused, and only the second is worth showing a user.
+      return null;
+    }
+    final SurfacePresenter presenter = host.presenter;
+    if (presenter is! RenderTargetPresenter) {
+      _meshUnavailable = BackendDiagnostic(
+        kind: DiagnosticKind.note,
+        message: '${_presentationPath.name} declares a mesh renderer but its '
+            'presenter does not expose a render target',
+        detail: 'presenter: ${presenter.runtimeType}',
+      );
+      return null;
+    }
+    try {
+      _meshSurface = _WindowMeshSurface(
+        window: this,
+        renderer: factory(presenter.device),
+        rendererName: _presentationPath.name,
+      );
+    } on Object catch (error) {
+      // A driver that refused the shader, a device that went away between the
+      // probe and here. Recorded and answered as null, because losing the
+      // window over a 3D pipeline the caller can do without is the one outcome
+      // that is never right.
+      _meshUnavailable = BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: '${_presentationPath.name} could not build a mesh renderer',
+        detail: '$error',
+      );
+    }
+    return _meshSurface;
+  }
+
+  /// Draws the scenes this frame's paint queued, into the back buffer.
+  ///
+  /// Called between [WindowHost.beginFrame] and the display list's present,
+  /// and that ordering is the rule rather than an accident:
+  ///
+  ///   * **after `beginFrame`**, because before it there is no back buffer to
+  ///     draw into - on a flip-model swap chain the view is refetched every
+  ///     present;
+  ///   * **before the display list**, because the interface is drawn *over* the
+  ///     model. A 3D view with a header and a status bar around it is the
+  ///     ordinary case, and the opposite order would bury them.
+  ///
+  /// The consequence a caller has to know: the 2D pass must not clear, or it
+  /// erases the model. `ApplicationWindow` passes the clear colour to the mesh
+  /// pass instead, and the display list present is told not to clear on any
+  /// frame a scene was drawn.
+  bool _flushMeshScenes() {
+    final _WindowMeshSurface? surface = _meshSurface;
+    if (surface == null) return false;
+    return surface.flush();
+  }
+
+  void _disposeMeshSurface() {
+    _meshSurface?.dispose();
+    _meshSurface = null;
+    _meshAsked = false;
+  }
+
   Widget get _mountableRoot {
     final MediaQueryData media = _mediaQueryData;
     _mountedMediaQueryData = media;
@@ -1290,17 +1423,21 @@ final class ApplicationWindow with DisposableMixin {
               // field that could not name its window would have nothing to
               // attach an input method to.
               window: nativeWindow,
-              child: ContextMenuScope(
-                child: DartUiApp(
-                  theme: application.options.theme,
-                  textDirection: application.options.textDirection,
-                  frameScheduler: scheduler,
-                  // Null on a backend with no popup windows, and null is not a
-                  // degraded answer: `PopupScope` then owns an
-                  // `InTreePopupHost` and every menu still opens, composited
-                  // into this window's own surface. See [popupHost].
-                  popupHost: popupHost,
-                  home: _rootWidget,
+              child: MeshSceneScope(
+                surface: _meshSceneSurface,
+                unavailable: _meshUnavailable,
+                child: ContextMenuScope(
+                  child: DartUiApp(
+                    theme: application.options.theme,
+                    textDirection: application.options.textDirection,
+                    frameScheduler: scheduler,
+                    // Null on a backend with no popup windows, and null is not a
+                    // degraded answer: `PopupScope` then owns an
+                    // `InTreePopupHost` and every menu still opens, composited
+                    // into this window's own surface. See [popupHost].
+                    popupHost: popupHost,
+                    home: _rootWidget,
+                  ),
                 ),
               ),
             ),
@@ -1476,10 +1613,19 @@ final class ApplicationWindow with DisposableMixin {
       // is a widget-tree problem and a 12 ms present is not.
       application._noteCpuFrameComplete();
       final frame = host.beginFrame();
+      // Between the back buffer existing and the interface being drawn over
+      // it. See [_flushMeshScenes] for why that is the only order that works.
+      final bool drewMesh = _flushMeshScenes();
       final result = await host.present(
         frame,
         list,
-        clearColor: (clearColor ?? application.options.clearColor)?.value,
+        // Null when a mesh was drawn: the 3D pass has already cleared and
+        // filled this buffer, and clearing again would erase it. The scene
+        // carries the colour in that case, which is why `MeshScene` has a
+        // background at all.
+        clearColor: drewMesh
+            ? null
+            : (clearColor ?? application.options.clearColor)?.value,
       );
       stopwatch.stop();
       // The list has left the building. Turning the ring here - once per
@@ -1779,6 +1925,109 @@ final class ApplicationWindow with DisposableMixin {
 
     if (root != null) walk(root);
     return count;
+  }
+}
+
+/// One window's 3D surface: the object a render object draws a scene through.
+///
+/// It exists because the two halves of a mesh draw are owned by different
+/// things at different times. A render object knows the scene and the viewport
+/// during `paint`; the back buffer to draw into does not exist until
+/// `beginFrame`, which happens after every `paint` in the frame. So `draw`
+/// **records** and [flush] draws, and the window calls [flush] at the one
+/// moment both halves are available.
+///
+/// The consequence, and it is worth stating because it surprises: the
+/// statistics [draw] returns are the **previous** frame's. A status line
+/// showing last frame's triangle count is normal and is what every profiler
+/// overlay does; a `draw` that blocked until the numbers were real would have
+/// to stall the paint on a GPU fence.
+final class _WindowMeshSurface implements MeshSceneSurface {
+  _WindowMeshSurface({
+    required this.window,
+    required this.renderer,
+    required this.rendererName,
+  });
+
+  final ApplicationWindow window;
+  final MeshSceneRenderer renderer;
+
+  @override
+  final String rendererName;
+
+  /// Scenes recorded by this frame's paint, in the order they were painted.
+  final List<(MeshScene, Rect?)> _queued = <(MeshScene, Rect?)>[];
+
+  MeshRenderStats? _lastStats;
+  bool _disposed = false;
+
+  @override
+  MeshRenderStats? draw(MeshScene scene, {Rect? viewport}) {
+    if (_disposed) return null;
+    _queued.add((scene, viewport));
+    // Whatever the last completed frame measured. Null before the first one,
+    // which a caller reads as "not yet" rather than as a refusal - the refusal
+    // is a null *surface*, which it already got past to be here.
+    return _lastStats;
+  }
+
+  @override
+  void discardMesh(Mesh3D mesh) {
+    if (_disposed) return;
+    renderer.discardMesh(mesh);
+  }
+
+  /// Draws everything [draw] recorded. Returns whether anything was drawn.
+  bool flush() {
+    if (_disposed || _queued.isEmpty) return false;
+    final SurfacePresenter presenter = window.host.presenter;
+    if (presenter is! RenderTargetPresenter) {
+      _queued.clear();
+      return false;
+    }
+    final RenderTarget target = presenter.target;
+    final double scale = window.host.renderScale;
+
+    var drew = false;
+    MeshRenderStats? last;
+    for (final (MeshScene scene, Rect? viewport) in _queued) {
+      // Logical to device pixels, here and not in the render object: the
+      // render scale is the one number a widget cannot be right about on a
+      // mixed-DPI desktop, and the window is the authority on it.
+      final Rect? devicePixels = viewport == null
+          ? null
+          : Rect.fromLTRB(
+              viewport.left * scale,
+              viewport.top * scale,
+              viewport.right * scale,
+              viewport.bottom * scale,
+            );
+      try {
+        last = renderer.drawScene(target, scene, viewport: devicePixels);
+        drew = true;
+      } on Object catch (error, stackTrace) {
+        // A device lost between paint and present, a target that moved. The
+        // frame keeps whatever the 2D pass draws, which is the whole point of
+        // not throwing out of a paint.
+        window.buildOwner.errorReporter.report(FrameworkError(
+          phase: FrameworkPhase.paint,
+          cause: error,
+          stackTrace: stackTrace,
+          context: 'drawing a 3D scene through $rendererName',
+        ));
+        break;
+      }
+    }
+    _queued.clear();
+    if (last != null) _lastStats = last;
+    return drew;
+  }
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _queued.clear();
+    renderer.dispose();
   }
 }
 
@@ -2590,7 +2839,25 @@ final class Application with DisposableMixin {
         clearColor: clearColor,
         resources: bag,
         rootWidget: rootWidget,
+        // The path this window actually attached to, not the application's
+        // current one: a failed attach above may have moved the application on
+        // to the next candidate, and a window that asked the application later
+        // would be handed the mesh factory of a backend it is not drawing
+        // with.
+        presentationPath: _presentationPath,
       );
+      // Released *before* the host, and therefore before the device: every GPU
+      // object a mesh renderer holds belongs to a device the presenter is
+      // about to give back. Registered here rather than where the renderer is
+      // built because the bag is what accounts for a window's resources, and
+      // one that was built during a frame would otherwise have nothing but
+      // `ApplicationWindow.dispose` to release it - which is not run when
+      // `openWindow` fails half-way.
+      // No entry in [_teardownOrder], for the reason the device lease adds
+      // none: announcing this as a step would change the observed teardown
+      // order of every window in the framework to record something most
+      // windows never acquired.
+      bag.add(appWindow, appWindow._disposeMeshSurface);
       appWindow._active = wantsFocus && visible;
       buildOwner.errorReporter = ErrorReporter(
         onError: appWindow._captureFrameworkError,
