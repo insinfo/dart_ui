@@ -190,6 +190,7 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
         visible: false,
         decorated: spawnOptions.decorated,
         resizable: spawnOptions.resizable,
+        kind: spawnOptions.kind,
         handshakeTimeout: spawnOptions.handshakeTimeout,
       ),
       sink: _HostSink(this),

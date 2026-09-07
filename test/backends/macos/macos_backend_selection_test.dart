@@ -24,6 +24,30 @@ BackendCandidate _candidate(
 }
 
 void main() {
+  test('only the implemented native host advertises native popups', () {
+    MacosBackendCapabilities capabilities(MacosBackendKind kind) =>
+        MacosBackendCapabilities(
+          kind: kind,
+          canCreateWindow: true,
+          hasInput: true,
+          hasIme: false,
+          hasAccessibility: false,
+          hasOrderlyShutdown: true,
+          needsHostBinary: kind == MacosBackendKind.appkitNativeHost,
+        );
+
+    expect(
+      capabilities(MacosBackendKind.appkitNativeHost)
+          .toProbeResult()
+          .capabilities,
+      contains(Capability.nativePopups),
+    );
+    expect(
+      capabilities(MacosBackendKind.skylight).toProbeResult().capabilities,
+      isNot(contains(Capability.nativePopups)),
+    );
+  });
+
   final candidates = <BackendCandidate>[
     _candidate(MacosBackendKind.appkitNativeHost),
     _candidate(MacosBackendKind.skylight),

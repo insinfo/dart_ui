@@ -104,6 +104,12 @@ final class MacosBackendCapabilities {
       // CPU presentation is always available when a window exists: the
       // IOSurface path or the CoreGraphics fallback provides it.
       if (canCreateWindow) Capability.cpuPresentation,
+      // The native-host path maps popup and tooltip to a nonactivating
+      // NSPanel. The other strategies cannot create windows yet, so tying the
+      // claim to [canCreateWindow] cannot advertise a path that falls through
+      // to an ordinary activating NSWindow.
+      if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
+        Capability.nativePopups,
     };
 
     return BackendProbeResult(

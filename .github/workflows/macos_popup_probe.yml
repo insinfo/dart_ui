@@ -1,0 +1,30 @@
+name: macOS native popup probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'lib/src/backends/macos/**'
+      - 'tool/macos_popup_probe.dart'
+      - '.github/workflows/macos_popup_probe.yml'
+
+concurrency:
+  group: macos-popup-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  popup:
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.6.2'
+      - run: dart pub get
+      - name: Build the production AppKit host
+        run: lib/src/backends/macos/native/build_host.sh
+      - name: Inspect real NSPanel popup and tooltip windows
+        env:
+          DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+        run: dart run tool/macos_popup_probe.dart

@@ -139,6 +139,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 @property(nonatomic, assign) BOOL decorated;
 @property(nonatomic, assign) BOOL resizable;
 @property(nonatomic, assign) BOOL commandStdin;
+@property(nonatomic, copy) NSString *windowKind;
 
 @property(nonatomic, assign) IOSurfaceRef *surfacePool;
 @property(nonatomic, assign) NSUInteger surfacePoolCount;
@@ -203,19 +204,36 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
   (void)notification;
 
+  BOOL isPopup = [self.windowKind isEqualToString:@"popup"];
+  BOOL isTooltip = [self.windowKind isEqualToString:@"tooltip"];
+  BOOL isTransient = isPopup || isTooltip;
   NSWindowStyleMask style = NSWindowStyleMaskBorderless;
-  if (self.decorated) {
+  if (isTransient) {
+    // NonactivatingPanel is a style-mask promise, not merely a choice of show
+    // method. Keeping it on a separate NSPanel prevents a mouse press in a
+    // menu from making the host process key and dimming the owner's caret.
+    style |= NSWindowStyleMaskNonactivatingPanel;
+  } else if (self.decorated) {
     style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
             NSWindowStyleMaskMiniaturizable;
   }
-  if (self.resizable) style |= NSWindowStyleMaskResizable;
+  if (self.resizable && !isTransient) style |= NSWindowStyleMaskResizable;
 
   NSRect contentRect = NSMakeRect(0.0, 0.0, self.initialWidth,
                                   self.initialHeight);
-  self.window = [[NSWindow alloc] initWithContentRect:contentRect
-                                            styleMask:style
-                                              backing:NSBackingStoreBuffered
-                                                defer:NO];
+  Class windowClass = isTransient ? NSPanel.class : NSWindow.class;
+  self.window = [[windowClass alloc] initWithContentRect:contentRect
+                                              styleMask:style
+                                                backing:NSBackingStoreBuffered
+                                                  defer:NO];
+  if (isTransient) {
+    self.window.level = NSPopUpMenuWindowLevel;
+    self.window.collectionBehavior =
+        NSWindowCollectionBehaviorTransient |
+        NSWindowCollectionBehaviorIgnoresCycle;
+    ((NSPanel *)self.window).becomesKeyOnlyIfNeeded = YES;
+    self.window.ignoresMouseEvents = isTooltip;
+  }
   self.window.delegate = self;
   self.window.title = self.initialTitle ?: @"dart_ui";
   self.window.releasedWhenClosed = NO;
@@ -241,7 +259,9 @@ static const size_t kDartUiMaximumLineBytes = 8192;
     [self.window center];
   }
 
-  if (self.initiallyVisible) {
+  if (self.initiallyVisible && isTransient) {
+    [self.window orderFront:nil];
+  } else if (self.initiallyVisible) {
     [self.window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
   }
@@ -709,7 +729,19 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   } else if ([command hasPrefix:@"SET_BOUNDS "]) {
     [self setBoundsFromCommand:command];
   } else if ([command isEqualToString:@"SHOW"]) {
-    [self.window makeKeyAndOrderFront:nil];
+    BOOL isTransient = [self.windowKind isEqualToString:@"popup"] ||
+                       [self.windowKind isEqualToString:@"tooltip"];
+    if (isTransient) [self.window orderFront:nil];
+    else [self.window makeKeyAndOrderFront:nil];
+  } else if ([command isEqualToString:@"INSPECT_WINDOW"]) {
+    printf("WINDOW_INSPECT=%s:%s:%llu:%ld:%d:%d\n",
+           self.windowKind.UTF8String,
+           NSStringFromClass(self.window.class).UTF8String,
+           (unsigned long long)self.window.styleMask,
+           (long)self.window.level,
+           self.window.isKeyWindow ? 1 : 0,
+           self.window.ignoresMouseEvents ? 1 : 0);
+    fflush(stdout);
   } else if ([command isEqualToString:@"HIDE"]) {
     [self.window orderOut:nil];
   } else if ([command hasPrefix:@"CURSOR "]) {
@@ -865,6 +897,7 @@ int main(int argc, const char *argv[]) {
     delegate.initiallyVisible = YES;
     delegate.decorated = YES;
     delegate.resizable = YES;
+    delegate.windowKind = @"normal";
     delegate.machServicePort = MACH_PORT_NULL;
     delegate.presentedSlot = -1;
     delegate.reportedState = -1;
@@ -900,6 +933,13 @@ int main(int argc, const char *argv[]) {
         delegate.decorated = NO;
       } else if (strcmp(argument, "--not-resizable") == 0) {
         delegate.resizable = NO;
+      } else if (strcmp(argument, "--window-kind") == 0 && index + 1 < argc) {
+        NSString *kind = [NSString stringWithUTF8String:argv[++index]];
+        if (![kind isEqualToString:@"normal"] &&
+            ![kind isEqualToString:@"dialog"] &&
+            ![kind isEqualToString:@"popup"] &&
+            ![kind isEqualToString:@"tooltip"]) return 64;
+        delegate.windowKind = kind;
       } else {
         fprintf(stderr, "unknown or incomplete argument: %s\n", argument);
         return 64;

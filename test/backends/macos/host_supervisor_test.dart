@@ -9,6 +9,17 @@ import 'package:dart_ui/src/backends/macos/surface_pool.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('spawn arguments carry the AppKit window archetype', () {
+    final List<String> arguments = const MacosHostSpawnOptions(
+      binaryPath: 'host',
+      logicalWidth: 320,
+      logicalHeight: 200,
+      kind: MacosHostWindowKind.tooltip,
+    ).toArguments();
+
+    expect(arguments, containsAllInOrder(<String>['--window-kind', 'tooltip']));
+  });
+
   group('MacosHostSupervisor recovery', () {
     test('unexpected exit restarts with injected clock and backoff', () async {
       final first = _FakeHost(pid: 101, windowNumber: 1);

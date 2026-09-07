@@ -72,6 +72,14 @@ final class MacosHostHandshake {
       protocolVersion >= kMacosHostProtocolVersion;
 }
 
+/// The AppKit archetype the host must create.
+///
+/// This deliberately belongs to the host protocol rather than importing
+/// [WindowKind] here. The native process is a versioned boundary: spelling the
+/// four wire values in one place prevents a framework enum reorder from
+/// silently turning a tooltip into an activating window.
+enum MacosHostWindowKind { normal, dialog, popup, tooltip }
+
 /// Spawn parameters for one host process.
 final class MacosHostSpawnOptions {
   const MacosHostSpawnOptions({
@@ -84,6 +92,7 @@ final class MacosHostSpawnOptions {
     this.visible = true,
     this.decorated = true,
     this.resizable = true,
+    this.kind = MacosHostWindowKind.normal,
     this.handshakeTimeout = const Duration(seconds: 10),
   });
 
@@ -99,6 +108,7 @@ final class MacosHostSpawnOptions {
   final bool visible;
   final bool decorated;
   final bool resizable;
+  final MacosHostWindowKind kind;
 
   /// Ten seconds because a cold `NSApplication` on a loaded CI runner has been
   /// seen to take seconds, and because the alternative to waiting is a false
@@ -122,6 +132,8 @@ final class MacosHostSpawnOptions {
         if (!visible) '--hidden',
         if (!decorated) '--no-decorations',
         if (!resizable) '--not-resizable',
+        '--window-kind',
+        kind.name,
       ];
 }
 

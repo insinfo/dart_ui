@@ -202,6 +202,7 @@ final class MacosWindowingBackend implements WindowingBackend {
         visible: options.visible,
         decorated: options.decorated,
         resizable: options.resizable,
+        kind: MacosHostWindowKind.values.byName(options.kind.name),
       ),
     );
     if (!opened) {
