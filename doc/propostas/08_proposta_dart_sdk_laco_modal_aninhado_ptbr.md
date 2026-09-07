@@ -49,8 +49,8 @@ documento foi escrito, que muda o pedido.** As três APIs que a proposta 04 pedi
 — `Isolate.create`, `Isolate.onEvent`, `Isolate.handleEvent` — **existem,
 compilam e estão documentadas no 3.13.3**, e continuam **inalcançáveis a partir
 de Dart**: as duas últimas lançam `UnsupportedError`, e a primeira lança
-`StateError: Should be invoked outside of an isolate`, ou seja, só um *embedder*
-em C pode chamá-la. §5.2 traz a tabela completa, com o comando que a reproduz.
+`StateError: Should be invoked outside of an isolate`. §5.2 traz a tabela
+medida e a leitura do fonte da VM que explica cada recusa.
 
 Isso reposiciona este documento. Ele deixa de ser só "acrescentem uma
 primitiva" e passa a ser, na ordem: **(a)** tornar alcançável de Dart o que já
@@ -292,20 +292,72 @@ Lido com cuidado, isso diz três coisas:
    thread* estão vivas — o que é a proposta 01, não esta.
 2. **`onEvent` e `handleEvent` são declaradas e não implementadas** para o
    isolate corrente. Exatamente o que a proposta 04 pede, ainda pendente.
-3. **`Isolate.create` recusa por ser chamada de dentro de um isolate.** Esta é
-   a descoberta que reposiciona a proposta 04: a arquitetura que a própria
-   documentação da API descreve — "crie um isolate no grupo atual, cujo laço de
-   eventos não está rodando, e o drene com `handleEvent`" — **não é acessível a
-   um programa Dart**, porque um `main` sempre roda dentro de um isolate. Ela é
-   para um *embedder* em C, que é quem tem uma thread sem isolate corrente.
+3. **`Isolate.create` recusa por ser chamada de dentro de um isolate.**
 
-Em outras palavras: a API foi enviada com a forma de uma solução para
-`Dart_CreateIsolateInGroup`, e não para `dart run`. A proposta 04 pedia que
-`onEvent`/`handleEvent` fossem implementadas; este documento acrescenta que
-**implementá-las sem tornar `Isolate.create` (ou um equivalente) chamável de
-Dart não entrega nada a um pacote 100% Dart.**
+### 5.3 O que o fonte da VM diz, e o que ele não diz
 
-### 5.3 Um defeito encontrado de passagem: `pinToCurrentThread` derruba a VM na saída
+Com o fonte de `dart-sdk` main em mãos, as duas recusas têm causas de naturezas
+bem diferentes, e a distinção muda o pedido.
+
+**`onEvent` e `handleEvent` não estão implementadas.** Não é uma recusa
+condicional, não é "não suportado nesta configuração": em
+`sdk/lib/_internal/vm/lib/isolate_patch.dart` as duas são literalmente
+
+```dart
+void set onEvent(void Function(Isolate) callback) {
+  throw UnsupportedError("Isolate.onEvent");
+}
+
+void handleEvent() {
+  throw UnsupportedError("Isolate.handleEvent");
+}
+```
+
+Ou seja, o que a proposta 04 pediu em agosto de 2026 continua **inteiramente em
+aberto**, e a medição em 3.13.3 stable bate com o `main`. Isto é o bloqueio
+decisivo, e nenhum arranjo de threads o contorna.
+
+**`Isolate.create` é implementada, e a guarda é sobre o estado da thread.** Em
+`runtime/lib/isolate.cc`, `Isolate_create_` — e também `shutdownSync_` e
+`runEventLoopSync_` — começam com
+
+```cpp
+if (thread->isolate() != nullptr) {
+  ... "Should be invoked outside of an isolate" ...
+}
+```
+
+e depois trabalham sobre `thread->isolate_group()`. Ou seja, o que se exige é
+uma thread **dentro do grupo e fora de qualquer isolate**. Num `main` isso nunca
+vale, e por isso a chamada sempre recusa lá.
+
+**E existe um estado alcançável de Dart que satisfaz essa guarda**, o que
+enfraquece a leitura fácil de "é só para embedder em C": um callback
+[`NativeCallable.isolateGroupBound`](../../tool/sdk313/group_bound_create_probe.dart)
+roda, por definição, dentro do grupo e fora de um isolate — é a própria
+documentação de `onEvent` que aponta para ele. `tool/sdk313/group_bound_create_probe.dart`
+tenta exatamente isso, criando uma thread do sistema com `CreateThread` e
+chamando `Isolate.create` de dentro dela.
+
+**Esse teste travou** — nenhuma saída, processo vivo depois de dois minutos,
+teve de ser morto — e por isso **não é evidência em nenhuma direção**. A
+hipótese, que é hipótese e não medida, é que o callback ligado ao grupo precise
+entrar no grupo como mutator enquanto a thread principal o segura bloqueada num
+`WaitForSingleObject`, e cada uma espere a outra. Se for isso, é um defeito
+próprio e vale relato separado.
+
+O que fica dito com segurança, então, é mais estreito e mais útil do que
+"embedder-only": **`Isolate.create` recusa em toda chamada que um programa Dart
+comum consegue fazer**, e a única brecha teórica é uma que não foi possível
+demonstrar funcionando. E, sobretudo, **ela não importa enquanto `handleEvent`
+for um stub**, porque criar um isolate que não se pode drenar não resolve nada.
+
+A proposta 04 pedia que `onEvent`/`handleEvent` fossem implementadas; este
+documento acrescenta que, se `Isolate.create` continuar exigindo uma thread
+sem isolate corrente, é preciso dizer **explicitamente** por qual caminho um
+pacote 100% Dart chega a essa thread — e que esse caminho seja testado.
+
+### 5.4 Um defeito encontrado de passagem: `pinToCurrentThread` derruba a VM na saída
 
 Reproduzível, e atribuído com a variável isolada — `--no-pin` no mesmo probe não
 derruba nada:
@@ -320,7 +372,7 @@ mínimo, uma lacuna de documentação: se há uma pré-condição — desafixar 
 sair, ou não usar em `main` — ela não está escrita. Merece issue própria,
 separada desta proposta, e interessa diretamente à proposta 01.
 
-### 5.4 A conclusão de §5
+### 5.5 A conclusão de §5
 
 Mesmo com a proposta 04 **inteiramente implementada**, o caso 2 continua
 quebrado, a menos que `handleEvent` seja explicitamente reentrante. É esse "a
@@ -329,13 +381,14 @@ há um segundo bloqueio antes dele.
 
 ---
 
-### 5.5 Dá para usar a API nova mantendo `sdk: ^3.6.0`?
+### 5.6 Dá para usar a API nova mantendo `sdk: ^3.6.0`?
 
 Pergunta prática, porque um pacote de UI não quer excluir todo mundo que ainda
 está em 3.6 só para experimentar. A resposta, medida:
 
 **Hoje, não — e a razão é anterior à compatibilidade.** Não há o que usar:
-§5.2 mostra que os membros necessários lançam também no 3.13.3.
+§5.2 e §5.3 mostram que os membros necessários lançam também no 3.13.3, e que
+`handleEvent` sequer tem implementação no `main` do SDK.
 
 **No dia em que houver, parcialmente.** Vale registrar o mecanismo, porque ele
 foi verificado e delimita o que será possível:
@@ -704,16 +757,27 @@ implementável sem a outra.
 
 Mais duas, menores e independentes, que saíram da medição de §5:
 
-- **`Isolate.create` recusa ser chamada de Dart** (`StateError: Should be
-  invoked outside of an isolate`), o que torna inacessível a um pacote 100%
-  Dart a própria arquitetura que a documentação da API descreve. Vale como
-  comentário na issue da proposta 04, por ser o mesmo assunto;
+- **`Isolate.create` recusa toda chamada que um programa Dart comum consegue
+  fazer**, e o único estado que satisfaz a guarda da VM — um callback
+  `NativeCallable.isolateGroupBound` — não foi possível demonstrar funcionando
+  (§5.3). Vale como comentário na issue da proposta 04, por ser o mesmo assunto,
+  pedindo que o caminho suportado seja nomeado e testado;
 - **`Isolate.pinToCurrentThread` derruba a VM na saída** de um programa comum
-  (§5.3). Issue própria, e relevante à proposta 01.
+  (§5.4). Issue própria, e relevante à proposta 01.
 
 ---
 
 ## 16. Referências
+
+**Do fonte do SDK**
+
+- `sdk/lib/_internal/vm/lib/isolate_patch.dart` — `onEvent` e `handleEvent` como
+  `throw UnsupportedError` incondicionais;
+- `runtime/lib/isolate.cc` — a guarda `thread->isolate() != nullptr` em
+  `Isolate_create_`, `Isolate_shutdownSync_` e `Isolate_runEventLoopSync_`;
+- `sdk/lib/ffi/ffi.dart` — `NativeCallable.isolateGroupBound`, marcada como
+  experimental, e a regra de que o callback não pode tocar estático não
+  compartilhado pelo grupo.
 
 **Deste repositório**
 
@@ -723,10 +787,12 @@ Mais duas, menores e independentes, que saíram da medição de §5:
   contorno do caso 1, 0 contra 30;
 - [`tool/dart313_nested_drain_probe.dart`](../../tool/dart313_nested_drain_probe.dart)
   — `handleEvent` por `dynamic`, compilando sob `^3.6.0` e rodando nos dois SDKs;
-- [`tool/sdk313/api_surface_probe.dart`](../../tool/sdk313/api_surface_probe.dart)
-  e [`tool/sdk313/created_isolate_drain_probe.dart`](../../tool/sdk313/created_isolate_drain_probe.dart)
+- [`tool/sdk313/api_surface_probe.dart`](../../tool/sdk313/api_surface_probe.dart),
+  [`tool/sdk313/created_isolate_drain_probe.dart`](../../tool/sdk313/created_isolate_drain_probe.dart)
+  e [`tool/sdk313/group_bound_create_probe.dart`](../../tool/sdk313/group_bound_create_probe.dart)
   — a superfície de 3.13 medida membro a membro; excluídos do analisador porque
-  nomeiam o que não existe em 3.6;
+  nomeiam o que não existe em 3.6. O terceiro trava e está documentado como
+  inconclusivo;
 - [`test/backends/win32/win32_live_resize_test.dart`](../../test/backends/win32/win32_live_resize_test.dart)
   — a `WndProc` real sem uma volta do laço de eventos;
 - [`doc/ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md`](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md)
