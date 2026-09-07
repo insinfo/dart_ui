@@ -9508,6 +9508,21 @@ Fechado, e o que faltava era menos do que parecia:
 **Medido**: `tool/render_throughput_bench.dart`, Vulkan 1.4.323 sobre Intel
 UHD, a cena de texto com 1896 glifos passou de `REFUSED` para **60,0 fps**.
 
+**E isso não bastava, o que é a lição desta entrada.** Com o atlas ligado, o
+benchmark parou de recusar e o texto continuava **errado na tela**. A causa:
+`VulkanWindowTarget._textureFor` conhecia a textura de máscara e as de imagem e
+**não a de glifos**, então todo quad de texto caía na textura padrão. É um bug
+que **não lança nada**, porque um id não reconhecido tem uma resposta
+plausível — e "parou de lançar exceção" foi tomado por "desenha certo", que é
+precisamente o erro que a §68.6 existe para impedir.
+
+O que passou a provar: `vulkan_cpu_parity_test.dart` ganhou uma cena de texto
+comparada **pixel a pixel contra o rasterizador de CPU**, com Ahem, cujas
+letras são caixas sólidas de métrica exata — a face em que uma textura errada
+aparece como um bloco no lugar errado em vez de uma franja. Tolerância **0**. E
+foi verificado que ela falha ao reintroduzir a omissão: **desvio 153 em 48
+pixels**.
+
 **O que continua faltando no Vulkan**, e agora aparece porque o resto passou:
 a cena `mixed-ui` recusa com *"the coverage atlas is full of masks this frame
 has already drawn, and this backend passed no onAtlasFlush handler"*. O D3D11 e

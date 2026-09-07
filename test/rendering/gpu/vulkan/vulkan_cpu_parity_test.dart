@@ -51,14 +51,25 @@
 ///
 /// ## What is not compared here, and why
 ///
-/// **Text.** This backend passes no `GpuGlyphAtlas` to its sink and refuses a
-/// glyph run by name. The refusal is asserted below so the gap cannot quietly
-/// become a wrong picture.
+/// **Text.** Compared here since 06/09/2026. Until then this backend passed no
+/// `GpuGlyphAtlas` to its sink and refused a glyph run by name — the header
+/// claimed the refusal was asserted below and it never was, which is how the
+/// gap outlived its own note.
+///
+/// It is compared with **Ahem**, whose letters are solid boxes with exact
+/// metrics, because that is the face where a wrong *texture* is unmistakable:
+/// a box either lands where the CPU put it or the frame shows whatever the
+/// sampler read instead. That is not hypothetical. Wiring the atlas made the
+/// benchmark stop refusing text while the glyphs still came out wrong, because
+/// the target's `_textureFor` did not know the glyph page and every text quad
+/// fell through to the default texture — a bug that throws nothing, because
+/// an unrecognised id has a plausible-looking answer.
 ///
 /// **Layers.** Same: no `GpuLayerStack`, so a `saveLayer` needing a real
 /// offscreen pass is refused rather than flattened.
 library;
 
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dart_ui/src/foundation/diagnostics.dart';
@@ -71,6 +82,7 @@ import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_texture.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_backend.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
+import 'package:dart_ui/src/text/typeface.dart';
 import 'package:test/test.dart';
 
 import 'vulkan_session.dart';
@@ -150,6 +162,12 @@ void main() {
 
     test('a rectangular clip: 0', () async {
       await _expectParity(() => device, skip, _clipped(), tolerance: 0);
+    });
+  });
+
+  group('text', () {
+    test('a glyph run, box for box: 0', () async {
+      await _expectParity(() => device, skip, _glyphRun(), tolerance: 0);
     });
   });
 
@@ -410,6 +428,35 @@ DisplayList _roundedRect() {
   final DisplayList list = DisplayList();
   final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
   list.drawRRect(3, 3, 21, 21, 6, 6, 6, 6, 6, 6, 6, 6, paint);
+  return list;
+}
+
+/// Three Ahem boxes on the baseline, at a size that fits the 24x24 surface.
+///
+/// Ahem's `X` is a solid em box from 0.8 em above the baseline to 0.2 em
+/// below, spanning exactly one em. At 8 px that is an 8x8 block per glyph, so
+/// the comparison is about *placement and sampling* rather than about the
+/// shape of a curve - which is what makes a wrong glyph texture, a wrong
+/// atlas offset or a half-texel sampling error visible as a whole block in the
+/// wrong place instead of a fringe nobody notices.
+DisplayList _glyphRun() {
+  final Typeface ahem = Typeface.parse(
+    File('test/fonts/ahem.ttf').readAsBytesSync(),
+  );
+  final ScaledTypeface font = ahem.atSize(8);
+  final DisplayList list = DisplayList();
+  final int ink = list.addPaint(colorArgb: 0xFFFFFFFF);
+  final int glyph = font.typeface.glyphForCodePoint(0x58);
+  final offsets = Float32List.fromList(<double>[0, 0, 8, 0, 16, 0]);
+  list.drawGlyphRun(
+    list.addFont(font),
+    ink,
+    0,
+    16,
+    Int32List.fromList(<int>[glyph, glyph, glyph]),
+    offsets,
+    3,
+  );
   return list;
 }
 

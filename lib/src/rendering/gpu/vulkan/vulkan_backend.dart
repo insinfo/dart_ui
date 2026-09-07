@@ -1781,6 +1781,15 @@ final class VulkanOffscreenTarget implements RenderTarget {
 
   VulkanTexture _textureFor(int id) {
     if (id == _maskTexture.id) return _maskTexture;
+    // The glyph page, and leaving it out is a bug that throws nothing: a text
+    // quad whose id matches no branch falls through to the default texture and
+    // the frame presents with the glyphs replaced by whatever that holds. It
+    // is the failure mode this whole lookup invites, because every id that is
+    // not recognised has a plausible-looking answer.
+    //
+    // `vulkan_cpu_parity_test.dart`'s glyph scene is what catches it:
+    // reintroducing this omission makes it fail by 153 levels over 48 pixels.
+    if (id == _glyphTexture.id) return _glyphTexture;
     for (final VulkanTexture texture in _images._textures) {
       if (texture.id == id) return texture;
     }
@@ -2450,6 +2459,15 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
 
   VulkanTexture _textureFor(int id) {
     if (id == _maskTexture.id) return _maskTexture;
+    // The glyph page, and leaving it out is a bug that throws nothing: a text
+    // quad whose id matches no branch falls through to the default texture and
+    // the frame presents with the glyphs replaced by whatever that holds. It
+    // is the failure mode this whole lookup invites, because every id that is
+    // not recognised has a plausible-looking answer.
+    //
+    // `vulkan_cpu_parity_test.dart`'s glyph scene is what catches it:
+    // reintroducing this omission makes it fail by 153 levels over 48 pixels.
+    if (id == _glyphTexture.id) return _glyphTexture;
     for (final VulkanTexture texture in _images._textures) {
       if (texture.id == id) return texture;
     }
