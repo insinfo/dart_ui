@@ -20,6 +20,31 @@ dart run .\examples\video_player_demo\main.dart "C:\Videos\exemplo.mp4"
 Também é possível abrir o programa sem argumentos e selecionar o vídeo pela
 interface.
 
+### Se a janela demora segundos para aparecer, não é o vídeo
+
+`dart run` sobre um arquivo `.dart` **compila o grafo de imports inteiro** a
+cada execução, e para este pacote isso é o framework todo. Medido nesta
+máquina com `tool/startup_cost.dart`, que imprime o tempo decorrido até a
+primeira instrução de `main`:
+
+| como é executado | antes de `main()` |
+|---|---|
+| `dart run` a partir do fonte | **6007–6750 ms** |
+| `dart compile exe` e rodar o binário | **51–101 ms** |
+
+Cento e vinte vezes. Nada disso aparece na instrumentação do reprodutor, que
+mede a partir do `main` e reporta o próprio custo — tipicamente
+`decode ate 1o quadro ~500 ms · ate pintar ~560 ms`. As duas medições estão
+certas e são de coisas diferentes: os segundos que se sentem são do
+*front-end* do Dart, e não do pipeline de vídeo.
+
+Para medir o reprodutor como ele seria entregue, compile antes:
+
+```powershell
+dart compile exe -o build\video_player.exe .\examples\video_player_demo\main.dart
+.\build\video_player.exe "C:\Videos\exemplo.mp4"
+```
+
 Para validar decoder e dependências sem abrir uma janela:
 
 ```powershell
