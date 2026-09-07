@@ -10,6 +10,7 @@ final class _Inspection {
     required this.level,
     required this.isKey,
     required this.ignoresMouse,
+    required this.activationPolicy,
   });
 
   final String kind;
@@ -18,6 +19,7 @@ final class _Inspection {
   final int level;
   final bool isKey;
   final bool ignoresMouse;
+  final int activationPolicy;
 }
 
 Future<_Inspection> _inspect(String host, String kind) async {
@@ -44,7 +46,7 @@ Future<_Inspection> _inspect(String host, String kind) async {
       process.stdin.writeln('INSPECT_WINDOW');
     } else if (line.startsWith('WINDOW_INSPECT=')) {
       final List<String> fields = line.substring(15).split(':');
-      if (fields.length != 6) {
+      if (fields.length != 7) {
         inspected.completeError(StateError('malformed inspection: $line'));
         return;
       }
@@ -55,6 +57,7 @@ Future<_Inspection> _inspect(String host, String kind) async {
         level: int.parse(fields[3]),
         isKey: fields[4] == '1',
         ignoresMouse: fields[5] == '1',
+        activationPolicy: int.parse(fields[6]),
       ));
       process.stdin.writeln('CLOSE');
     }
@@ -100,14 +103,16 @@ Future<void> main() async {
       tooltip.styleMask & nonactivatingPanel != 0 &&
       popup.level > 0 &&
       tooltip.level == popup.level &&
+      popup.activationPolicy == 1 &&
+      tooltip.activationPolicy == 1 &&
       !popup.isKey &&
       !tooltip.isKey &&
       !popup.ignoresMouse &&
       tooltip.ignoresMouse;
   stdout.writeln(
     'MACOS_POPUP=${passed ? 'PASS' : 'FAIL'} '
-    'popup=${popup.windowClass}/${popup.styleMask}/${popup.level}/key=${popup.isKey} '
-    'tooltip=${tooltip.windowClass}/${tooltip.styleMask}/${tooltip.level}/key=${tooltip.isKey}/ignoresMouse=${tooltip.ignoresMouse}',
+    'popup=${popup.windowClass}/${popup.styleMask}/${popup.level}/key=${popup.isKey}/policy=${popup.activationPolicy} '
+    'tooltip=${tooltip.windowClass}/${tooltip.styleMask}/${tooltip.level}/key=${tooltip.isKey}/ignoresMouse=${tooltip.ignoresMouse}/policy=${tooltip.activationPolicy}',
   );
   if (!passed) exitCode = 1;
 }

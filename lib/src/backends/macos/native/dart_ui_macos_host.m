@@ -734,13 +734,14 @@ static const size_t kDartUiMaximumLineBytes = 8192;
     if (isTransient) [self.window orderFront:nil];
     else [self.window makeKeyAndOrderFront:nil];
   } else if ([command isEqualToString:@"INSPECT_WINDOW"]) {
-    printf("WINDOW_INSPECT=%s:%s:%llu:%ld:%d:%d\n",
+    printf("WINDOW_INSPECT=%s:%s:%llu:%ld:%d:%d:%ld\n",
            self.windowKind.UTF8String,
            NSStringFromClass(self.window.class).UTF8String,
            (unsigned long long)self.window.styleMask,
            (long)self.window.level,
            self.window.isKeyWindow ? 1 : 0,
-           self.window.ignoresMouseEvents ? 1 : 0);
+           self.window.ignoresMouseEvents ? 1 : 0,
+           (long)NSApp.activationPolicy);
     fflush(stdout);
   } else if ([command isEqualToString:@"HIDE"]) {
     [self.window orderOut:nil];
@@ -952,7 +953,15 @@ int main(int argc, const char *argv[]) {
 
     NSApplication *application = [NSApplication sharedApplication];
     application.delegate = delegate;
-    [application setActivationPolicy:NSApplicationActivationPolicyRegular];
+    BOOL isTransient = [delegate.windowKind isEqualToString:@"popup"] ||
+                       [delegate.windowKind isEqualToString:@"tooltip"];
+    // Each window has its own host process. A Regular activation policy would
+    // consequently put every open submenu in the Dock and application
+    // switcher; Accessory keeps the process alive and interactive without
+    // pretending that the popup is an application of its own.
+    [application setActivationPolicy:isTransient
+        ? NSApplicationActivationPolicyAccessory
+        : NSApplicationActivationPolicyRegular];
     [application run];
   }
   return 0;
