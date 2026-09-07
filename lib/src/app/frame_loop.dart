@@ -65,20 +65,27 @@
 /// deliberate: a diagnostic with an off switch is a diagnostic that is off in
 /// the build where the problem happened.
 ///
-/// ## What this file is not, today
+/// ## Where this runs
 ///
-/// **Nothing in `lib/` builds a [FrameLoopController].** `Application.run`
-/// owns the only loop this framework has and drives it from invalidation
-/// alone, so [FrameLoopMode.continuous] is a design that has been written and
-/// tested and not yet turned on. That is said here rather than left to be
-/// discovered, because a reader who finds a complete real-time loop in the
-/// tree is entitled to assume it is the one running.
+/// `Application` builds one of these unconditionally and `Application.run`
+/// drives it, so this is the loop that is running rather than a design beside
+/// it. The seam is four lines and they are worth knowing where to look for:
+/// `run` asks [isFrameDue] beside its own `needsFrame`, clamps its platform
+/// wait to [timeUntilNextFrame] while [isContinuous], calls
+/// [notePumpComplete] the instant the pump returns, and brackets the frame it
+/// draws with [beginFrame] and [endFrame]. The split between the two halves
+/// of a frame comes from the window, which calls [markCpuComplete] just
+/// before it hands the display list to the platform.
 ///
-/// Wiring it is one seam and it is worth naming, so that whoever takes it does
-/// not have to rediscover the shape: `Application.run` would ask
-/// [isFrameDue] beside its own `needsFrame`, clamp its wait to
-/// [timeUntilNextFrame] while [isContinuous], and bracket the frame it draws
-/// with [FrameLoopController.beginFrame] and [FrameLoopController.endFrame].
+/// The bracketing happens **only while continuous**, deliberately. In
+/// on-demand mode the pacing record would be a list of intervals between
+/// unrelated user actions - "37 seconds since the last frame" is true and
+/// says nothing - and [FrameLoopStatistics.framesDropped] would count the
+/// times the user went to lunch.
+///
+/// This paragraph used to say that nothing in `lib/` built a controller and
+/// that continuous mode was written, tested and not turned on. That was true
+/// until 06/09/2026.
 ///
 /// **The waiting policy is deliberately not here.** An earlier version of this
 /// file carried a `pumpTimeout` that answered "how long may the loop block" -

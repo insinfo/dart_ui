@@ -177,6 +177,7 @@ import '../widgets/popup_host.dart';
 import '../widgets/theme.dart';
 import '../widgets/widget.dart';
 import 'application_info.dart';
+import 'frame_loop.dart';
 import 'window_host.dart';
 import 'window_popup_host.dart';
 
@@ -470,6 +471,7 @@ final class ApplicationOptions {
     this.theme = ThemeData.neutralLight,
     this.textDirection = TextDirection.leftToRight,
     this.popupPolicy = PopupPolicy.auto,
+    this.frameLoop = const FrameLoopOptions(),
     this.headlessRenderScale = 1.0,
     this.arguments = const <String>[],
     this.environment = const <String, String>{},
@@ -516,6 +518,7 @@ final class ApplicationOptions {
     ThemeData theme = ThemeData.neutralLight,
     TextDirection textDirection = TextDirection.leftToRight,
     PopupPolicy popupPolicy = PopupPolicy.auto,
+    FrameLoopOptions frameLoop = const FrameLoopOptions(),
     double headlessRenderScale = 1.0,
     Map<String, String> environment = const <String, String>{},
     Clipboard? clipboard,
@@ -591,6 +594,7 @@ final class ApplicationOptions {
               : theme,
       textDirection: textDirection,
       popupPolicy: popupPolicy,
+      frameLoop: frameLoop,
       headlessRenderScale: parsedScale,
       arguments: List<String>.unmodifiable(arguments),
       environment: environment,
@@ -797,6 +801,28 @@ final class ApplicationOptions {
   /// asked for windows because being cropped is unacceptable to it must not
   /// discover at the first menu that it quietly got overlays.
   final PopupPolicy popupPolicy;
+
+  /// When a frame happens: because something changed, or because time passed.
+  ///
+  /// The default is [FrameLoopMode.onDemand] and it is the shape this
+  /// framework was built around - an idle window produces no frames at all and
+  /// the loop sleeps inside the platform's event wait. Section 1 of the
+  /// roadmap also names animation editors, video editors and 2D/2.5D games,
+  /// which are the other shape: the world moved, nothing invalidated, and a
+  /// frame is due anyway.
+  ///
+  /// [FrameLoopMode.continuous] **adds** that second reason and removes none,
+  /// so an invalidation still draws immediately. Switch at runtime through
+  /// [Application.frameLoop]: an editor's canvas is continuous while a clip
+  /// plays and on-demand while the user types in a property field, and paying
+  /// a frame every 16 ms for the second case is a battery bug.
+  ///
+  /// ```dart
+  /// options: const ApplicationOptions(
+  ///   frameLoop: FrameLoopOptions.continuous(),
+  /// ),
+  /// ```
+  final FrameLoopOptions frameLoop;
 
   /// Pixel scale used when the automatically selected backend is headless.
   /// Native windows obtain their scale from the operating system.
@@ -1444,6 +1470,11 @@ final class ApplicationWindow with DisposableMixin {
       }
       final paint = stopwatch.elapsedMicroseconds - build;
 
+      // The CPU half is over: the display list is finished and everything
+      // after this is the driver, the compositor and the vsync wait. Split
+      // because the two halves are fixed by different people - a 12 ms build
+      // is a widget-tree problem and a 12 ms present is not.
+      application._noteCpuFrameComplete();
       final frame = host.beginFrame();
       final result = await host.present(
         frame,
@@ -1623,6 +1654,7 @@ final class ApplicationWindow with DisposableMixin {
       }
       final paint = stopwatch.elapsedMicroseconds - build;
 
+      application._noteCpuFrameComplete();
       final result = host.presentNow(
         host.beginFrame(),
         list,
@@ -1967,6 +1999,24 @@ final class Application with DisposableMixin {
   ApplicationLifecycleState _state = ApplicationLifecycleState.starting;
   bool _runCalled = false;
   bool _tearingDown = false;
+
+  /// When a frame is due for a reason other than something having changed.
+  ///
+  /// Always built, because building it is a handful of fields and because
+  /// [FrameLoopMode.onDemand] is a controller that answers "no frame is due"
+  /// forever - so the default application asks one extra boolean per loop
+  /// iteration and follows exactly the invalidation-driven path it followed
+  /// before this was wired. That coexistence is the property
+  /// `frame_loop.dart` was designed around and
+  /// `test/app/frame_loop_test.dart` pins.
+  ///
+  /// Public so an application can switch at runtime:
+  /// `app.frameLoop.setMode(FrameLoopMode.continuous)` while a timeline plays
+  /// and back when it stops. [FrameLoopController.statistics] is recorded
+  /// unconditionally and is how a real-time claim is checked rather than
+  /// asserted.
+  late final FrameLoopController frameLoop =
+      FrameLoopController(options: options.frameLoop);
 
   /// The ceiling [run] currently gives the platform's event wait when nothing
   /// is drawing. Moved by [_noteLoopProgress], which is where the policy is.
@@ -3338,6 +3388,17 @@ final class Application with DisposableMixin {
     }
   }
 
+  /// Splits the frame the pacing record is holding into its two halves.
+  ///
+  /// Called by a window from inside its own frame, just before the display
+  /// list is handed to the platform. Silent when no frame is open, which is
+  /// every frame in on-demand mode and every frame a test draws by calling
+  /// [drawFrame] directly: those are real frames and they are simply not
+  /// paced by this controller, so there is nothing to split.
+  void _noteCpuFrameComplete() {
+    if (frameLoop.isFrameInFlight) frameLoop.markCpuComplete();
+  }
+
   void _recordFrame(FrameTiming timing) {
     statistics.record(timing);
     if (options.showDevOverlay) _sinceOverlayRefresh.reset();
@@ -3754,6 +3815,11 @@ final class Application with DisposableMixin {
 
     while (_state == ApplicationLifecycleState.running ||
         _state == ApplicationLifecycleState.suspended) {
+      // The second reason to draw, asked before `wantsFrame` is computed so
+      // that a due frame takes the zero-length wait below like any other. In
+      // on-demand mode this is `false` forever and the two lines cost one
+      // comparison; see [frameLoop].
+      if (frameLoop.isFrameDue) requestFrame();
       final wantsFrame = _state == ApplicationLifecycleState.running &&
           (needsFrame || _overlayIsStale);
       // Dart timers run on this isolate and cannot interrupt the synchronous
@@ -3781,11 +3847,25 @@ final class Application with DisposableMixin {
       // past it. Leaving the animation path exactly as it was is also what
       // makes "the existing animation case does not regress" checkable.
       if (!animating) pumpTimeout = _pacedPumpTimeout(pumpTimeout);
+      // A continuous loop owns its own schedule and must not sleep past its
+      // next deadline. Clamped *after* the pacing subtraction rather than
+      // before it: `timeUntilNextFrame` is already a remainder measured from
+      // now, so subtracting this iteration's work from it a second time would
+      // wake the loop early, find nothing due, and spin.
+      if (frameLoop.isContinuous) {
+        final Duration untilNext = frameLoop.timeUntilNextFrame;
+        if (untilNext < pumpTimeout) pumpTimeout = untilNext;
+      }
       if (!backend.pumpEvents(
         timeout: pumpTimeout,
       )) {
         break;
       }
+      // Input before render, and now measurable: this marks the instant the
+      // platform's messages were delivered, and `beginFrame` below subtracts
+      // it to produce [FrameLoopStatistics.inputToFrameLatency]. A loop that
+      // drew first and pumped afterwards would show a whole frame of it.
+      frameLoop.notePumpComplete();
       _sincePumpReturned
         ..reset()
         ..start();
@@ -3797,7 +3877,32 @@ final class Application with DisposableMixin {
           (wantsFrame || needsFrame || _overlayIsStale || _isAnimating);
       _noteLoopProgress(progressed: progressed);
       if (_state != ApplicationLifecycleState.running) continue;
-      if (needsFrame || _overlayIsStale) await drawPendingFrames();
+      if (needsFrame || _overlayIsStale) {
+        // Bracketed only while continuous. In on-demand mode the pacing
+        // record would be a list of intervals between unrelated user actions
+        // - "37 seconds since the last frame" is true and means nothing - and
+        // the dropped-frame count would be the number of times the user went
+        // to lunch.
+        final bool paced = frameLoop.isContinuous;
+        if (paced) frameLoop.beginFrame();
+        List<PresentResult> results = const <PresentResult>[];
+        try {
+          results = await drawPendingFrames();
+        } finally {
+          if (paced) {
+            if (results.isEmpty) {
+              // Nothing was drawn - every window suspended, disposed or
+              // already clean. Recording a zero-cost frame here would pull
+              // every average in the flattering direction.
+              frameLoop.abandonFrame();
+            } else {
+              frameLoop.endFrame(
+                presented: results.any((PresentResult r) => r.isSuccess),
+              );
+            }
+          }
+        }
+      }
       if (budget > 0) {
         if (framesPresented >= budget) break;
         // A budgeted run wants frames as fast as it can get them; an

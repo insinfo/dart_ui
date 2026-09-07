@@ -15,5 +15,6 @@ library;
 
 export 'application.dart';
 export 'application_info.dart';
+export 'frame_loop.dart';
 export 'window_host.dart';
 export 'window_popup_host.dart';
