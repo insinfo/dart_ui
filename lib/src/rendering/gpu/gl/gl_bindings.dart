@@ -55,6 +55,11 @@ import 'dart:io';
 const int glNoError = 0;
 const int glFalseValue = 0;
 
+/// `GL_TRUE`. Only the mesh pipeline needs it - `glDepthMask` is the one
+/// `GLboolean` argument in this table that is ever anything but false, and
+/// passing [glFalseValue] there disables depth writes silently.
+const int glTrueValue = 1;
+
 /// The two errors that leave GL in an undefined state.
 ///
 /// Every other error in the registry is defined to have "no other side effect
@@ -65,6 +70,7 @@ const int glFalseValue = 0;
 const int glOutOfMemory = 0x0505;
 const int glContextLost = 0x0507;
 
+const int glLines = 0x0001;
 const int glTriangles = 0x0004;
 const int glTriangleStrip = 0x0005;
 const int glUnsignedByte = 0x1401;
@@ -73,6 +79,13 @@ const int glFloat = 0x1406;
 
 const int glColorBufferBit = 0x00004000;
 const int glStencilBufferBit = 0x00000400;
+const int glDepthBufferBit = 0x00000100;
+
+/// `GL_LESS`, the depth comparison `mesh_rasterizer.dart` performs on the CPU
+/// (`if (depth >= _depth[index]) continue;`). Anything else here and a model's
+/// far side draws over its near side.
+const int glLess = 0x0201;
+const int glLessOrEqual = 0x0203;
 
 const int glBlend = 0x0BE2;
 const int glScissorTest = 0x0C11;
@@ -100,6 +113,14 @@ const int glArrayBuffer = 0x8892;
 const int glElementArrayBuffer = 0x8893;
 const int glDynamicDraw = 0x88E8;
 
+/// `GL_STATIC_DRAW`, for buffers uploaded once and drawn many times.
+///
+/// The mesh pipeline's whole reason for existing as a cache: a 451,838
+/// triangle model is 43 MB of vertices, and re-uploading it at 60 Hz as
+/// [glDynamicDraw] would be 2.6 GB/s of traffic for geometry that never
+/// changes. The hint is what tells the driver it may put it in device memory.
+const int glStaticDraw = 0x88E4;
+
 const int glVertexShader = 0x8B31;
 const int glFragmentShader = 0x8B30;
 const int glCompileStatus = 0x8B81;
@@ -115,6 +136,12 @@ const int glTextureWrapT = 0x2803;
 const int glNearest = 0x2600;
 const int glLinear = 0x2601;
 const int glClampToEdge = 0x812F;
+
+/// `GL_REPEAT`. What glTF and OBJ both mean by a texture's default wrap, and
+/// what `MeshTexture.sample` does with its `% width`: a model that tiles a
+/// floor carries `u` well outside the unit square, and [glClampToEdge] would
+/// smear the edge texel across all of it.
+const int glRepeat = 0x2901;
 
 const int glRgba = 0x1908;
 const int glRgba8 = 0x8058;
@@ -138,7 +165,35 @@ const int glReadFramebufferBinding = 0x8CAA;
 const int glDrawFramebufferBinding = 0x8CA6;
 const int glColorAttachment0 = 0x8CE0;
 const int glStencilAttachment = 0x8D20;
+const int glDepthAttachment = 0x8D00;
 const int glFramebufferAttachmentStencilSize = 0x8217;
+
+/// `GL_FRAMEBUFFER_ATTACHMENT_DEPTH_SIZE`.
+///
+/// **0x8216, not 0x8214.** The size queries run RED, GREEN, BLUE, ALPHA,
+/// DEPTH, STENCIL from 0x8212, so 0x8214 is BLUE_SIZE - which a depth
+/// attachment answers with a perfectly valid zero and no GL error at all. The
+/// first version of this file had that constant wrong and the symptom was a
+/// window with 24 depth bits reporting none of them.
+const int glFramebufferAttachmentDepthSize = 0x8216;
+
+/// `GL_DEPTH`, the *default* framebuffer's depth attachment.
+///
+/// Not [glDepthAttachment], and the difference is the whole point: framebuffer
+/// zero has no attachment points, so its depth buffer is queried by this name
+/// and an FBO's by the other. Asking for the wrong one is `GL_INVALID_ENUM`,
+/// and a sticky GL error gets blamed on the next unrelated call.
+const int glDepth = 0x1801;
+
+/// `GL_DEPTH_COMPONENT24`, the renderbuffer format an offscreen mesh target
+/// attaches. 24 bits because that is what the window's pixel format asks for
+/// in `win32_gl_surface.dart`, and a comparison between the two is only
+/// meaningful if they resolve depth at the same precision.
+const int glDepthComponent24 = 0x81A6;
+
+/// `GL_DEPTH_BITS`. Removed from the core profile in GL 3.1, so it is the
+/// *fallback* half of the depth query and never the first thing tried.
+const int glDepthBits = 0x0D56;
 
 /// `GL_FRAMEBUFFER_ATTACHMENT_OBJECT_TYPE`, and the only attachment query that
 /// is legal before you know whether the attachment exists. See
@@ -437,6 +492,36 @@ const List<String> kStencilCoverGlRequiredSymbols = <String>[
   'glDrawArrays',
   'glGetFramebufferAttachmentParameteriv',
 ];
+
+/// Additional symbols used only by the GPU mesh pipeline.
+///
+/// Kept out of [kRequiredGlSymbols] for the reason the sparse list gives: a
+/// driver that cannot draw a 3D model must still be allowed to draw the user
+/// interface. All five are core GL 2.0 or older, so in practice the list is
+/// empty on anything that runs this renderer at all - which is what makes an
+/// empty result meaningful rather than assumed.
+const List<String> kMeshGlRequiredSymbols = <String>[
+  'glUniform3f',
+  'glUniformMatrix4fv',
+  'glDepthFunc',
+  'glDepthMask',
+  'glCullFace',
+];
+
+/// Names in [kMeshGlRequiredSymbols] that [resolve] cannot find.
+List<String> missingMeshGlSymbols(GlProcResolver resolve) {
+  final missing = <String>[];
+  for (final symbol in kMeshGlRequiredSymbols) {
+    Pointer<Void> address;
+    try {
+      address = resolve(symbol);
+    } on Object {
+      address = nullptr;
+    }
+    if (address == nullptr) missing.add(symbol);
+  }
+  return missing;
+}
 
 /// Additional symbols used only by attachment-aware/MSAA framebuffer pools.
 const List<String> kAttachmentFramebufferGlRequiredSymbols = <String>[
@@ -767,6 +852,50 @@ final class GlApi {
   late final void Function(int, double) uniform1f = _proc('glUniform1f')
       .cast<NativeFunction<Void Function(Int32, Float)>>()
       .asFunction<void Function(int, double)>();
+
+  /// `glUniform3f`, for a `vec3` uniform - a light direction, a base colour.
+  ///
+  /// Three and not four, for the reason [uniform1f] was added: the component
+  /// count has to match what the shader declared, and setting a `vec3` through
+  /// [uniform4f] is `GL_INVALID_OPERATION` with the uniform left at whatever
+  /// it held before. A light direction left at the zero vector shades every
+  /// model with flat ambient, which reads as a normals bug.
+  late final void Function(int, double, double, double) uniform3f =
+      _proc('glUniform3f')
+          .cast<NativeFunction<Void Function(Int32, Float, Float, Float)>>()
+          .asFunction<void Function(int, double, double, double)>();
+
+  /// `glUniformMatrix4fv`.
+  ///
+  /// The `transpose` argument must be false and the sixteen floats must be
+  /// **column-major**, which is the layout `Matrix4` in
+  /// `graphics/mesh/mesh3d.dart` documents and stores. Passing true instead
+  /// would transpose every model exactly once, which looks like a broken
+  /// camera rather than a broken upload.
+  late final void Function(int, int, int, Pointer<Float>) uniformMatrix4fv =
+      _proc('glUniformMatrix4fv')
+          .cast<
+              NativeFunction<
+                  Void Function(Int32, Int32, Uint8, Pointer<Float>)>>()
+          .asFunction<void Function(int, int, int, Pointer<Float>)>();
+
+  late final void Function(int) depthFunc = _proc('glDepthFunc')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
+
+  /// `glDepthMask`. Takes a `GLboolean`: [glTrueValue] or [glFalseValue].
+  late final void Function(int) depthMask = _proc('glDepthMask')
+      .cast<NativeFunction<Void Function(Uint8)>>()
+      .asFunction<void Function(int)>();
+
+  /// `glCullFace`, which selects *which* face is discarded.
+  ///
+  /// Not to be confused with the top-level `glCullFace` constant in this
+  /// library, which is `GL_CULL_FACE`, the capability [enable] switches on.
+  /// They are two different things that the GL registry gave one name.
+  late final void Function(int) cullFace = _proc('glCullFace')
+      .cast<NativeFunction<Void Function(Uint32)>>()
+      .asFunction<void Function(int)>();
 
   late final void Function(int, Pointer<Uint32>) genTextures =
       _proc('glGenTextures')
