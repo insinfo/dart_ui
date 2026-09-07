@@ -3,6 +3,20 @@
 Corra, pule, role, esmague os inimigos, pegue os anéis e chegue à bandeira. Um
 nível, do começo ao fim, em Dart puro, com os triângulos desenhados pela GPU.
 
+## Navegador
+
+Compile o launcher portátil, sirva a raiz do repositório e abra
+`examples/side_scroller_game/web/`:
+
+```powershell
+dart compile js examples/side_scroller_game/web/main.dart -o examples/side_scroller_game/web/main.dart.js
+python -m http.server 8080
+```
+
+`dart compile wasm examples/side_scroller_game/web/main.dart -o build/side_scroller_game/main.wasm`
+confere o segundo compilador. O launcher tenta WebGPU primeiro e cai para
+WebGL2 quando não recebe um adaptador.
+
 ```powershell
 dart run .\examples\side_scroller_game\main.dart
 dart run .\examples\side_scroller_game\main.dart --frames=1800 --demo --report

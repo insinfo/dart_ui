@@ -1,0 +1,21 @@
+# Custom browser platforms for the GPU backends.
+#
+# `package:test` launches Chrome for `-p chrome` with `--headless` *and*
+# `--disable-gpu` together (see `chromium.dart` in the runner): old headless
+# mode plus an explicit GPU kill switch. On this machine that is exactly why
+# `navigator.gpu.requestAdapter()` resolved null and eight of the twelve tests
+# in `webgpu_device_test.dart` skipped with "no adapter answered" even though
+# the machine has a working Intel gen-12lp adapter that headless Chrome finds
+# on its own.
+#
+# `headless: false` stops the runner adding either flag; the `--headless=new`
+# we pass instead is Chrome's modern headless, which keeps the real GPU stack
+# and so keeps WebGPU. No window appears, and the adapter is the same one a
+# headed browser gets.
+define_platforms:
+  chrome_gpu:
+    name: Chrome (GPU)
+    extends: chrome
+    settings:
+      headless: false
+      arguments: --headless=new

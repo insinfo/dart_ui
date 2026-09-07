@@ -451,6 +451,12 @@ final class WebGpuCanvasTarget
     }
   }
 
+  /// Current canvas attachment for collaborators sharing this device.
+  GPUTextureView? acquireAttachmentView() => _currentView();
+
+  int get pixelWidth => _surface.pixelWidth;
+  int get pixelHeight => _surface.pixelHeight;
+
   /// Reconciles this target with a canvas that is now [pixelWidth] x
   /// [pixelHeight] physical pixels at [scale].
   ///

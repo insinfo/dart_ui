@@ -315,6 +315,14 @@ extension type GPUTextureDescriptor._(JSObject _) implements JSObject {
   });
 }
 
+extension type GPUDepthStencilState._(JSObject _) implements JSObject {
+  external factory GPUDepthStencilState({
+    String format,
+    bool depthWriteEnabled,
+    String depthCompare,
+  });
+}
+
 extension type GPUSamplerDescriptor._(JSObject _) implements JSObject {
   external factory GPUSamplerDescriptor({
     String magFilter,
@@ -458,7 +466,11 @@ extension type GPUFragmentState._(JSObject _) implements JSObject {
 }
 
 extension type GPUPrimitiveState._(JSObject _) implements JSObject {
-  external factory GPUPrimitiveState({String topology});
+  external factory GPUPrimitiveState({
+    String topology,
+    String frontFace,
+    String cullMode,
+  });
 }
 
 extension type GPURenderPipelineDescriptor._(JSObject _) implements JSObject {
@@ -467,6 +479,7 @@ extension type GPURenderPipelineDescriptor._(JSObject _) implements JSObject {
     GPUVertexState vertex,
     GPUFragmentState fragment,
     GPUPrimitiveState primitive,
+    GPUDepthStencilState depthStencil,
   });
 }
 
@@ -483,8 +496,19 @@ extension type GPURenderPassColorAttachment._(JSObject _) implements JSObject {
   });
 }
 
+extension type GPURenderPassDepthStencilAttachment._(JSObject _)
+    implements JSObject {
+  external factory GPURenderPassDepthStencilAttachment({
+    GPUTextureView view,
+    num depthClearValue,
+    String depthLoadOp,
+    String depthStoreOp,
+  });
+}
+
 extension type GPURenderPassDescriptor._(JSObject _) implements JSObject {
   external factory GPURenderPassDescriptor({
     JSArray<GPURenderPassColorAttachment> colorAttachments,
+    GPURenderPassDepthStencilAttachment depthStencilAttachment,
   });
 }

@@ -1,0 +1,57 @@
+name: Metal mesh ABI probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: metal-mesh-abi-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DART_SDK_VERSION: '3.6.2'
+
+jobs:
+  probe:
+    name: Metal selectors and pipeline (macOS ARM64)
+    runs-on: macos-14
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Report runner architecture
+        run: |
+          uname -a
+          uname -m | grep -q '^arm64$'
+
+      - name: Exercise Metal mesh Objective-C ABI
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p build
+          dart run tool/metal_mesh_abi_probe.dart 2>&1 \
+            | tee build/metal-mesh-abi-probe.log
+          grep -q '^MTLCreateSystemDefaultDevice=NON_NIL$' \
+            build/metal-mesh-abi-probe.log
+          grep -q '^METAL_MESH_PIPELINE_STATE=PASS$' \
+            build/metal-mesh-abi-probe.log
+          grep -q '^METAL_MESH_ABI_PROBE=PASS selectors=20$' \
+            build/metal-mesh-abi-probe.log
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-mesh-abi-probe
+          path: build/metal-mesh-abi-probe.log
+          retention-days: 14
+          if-no-files-found: warn
