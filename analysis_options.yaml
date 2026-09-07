@@ -8,6 +8,11 @@ analyzer:
     - poc/**
     - referencias/**
     - build/**
+    # Probes that name `dart:isolate` members added in 3.13. The package
+    # declares `^3.6.0` on purpose, so these do not compile here and are run
+    # only against an SDK that has the API. See the library comment in
+    # `tool/sdk313/created_isolate_drain_probe.dart`.
+    - tool/sdk313/**
   language:
     strict-casts: true
     strict-raw-types: true
