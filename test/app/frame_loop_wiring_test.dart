@@ -101,12 +101,20 @@ Future<Application> _runFor(
     ),
   );
   if (midway != null) {
+    final Duration half = Duration(microseconds: duration.inMicroseconds ~/ 2);
     Timer(
-      Duration(microseconds: duration.inMicroseconds ~/ 2),
-      () => midway(application),
+      half,
+      () {
+        midway(application);
+        // A busy shared runner may deliver this timer later than requested.
+        // Start the observation half when the switch is actually delivered,
+        // instead of letting an already-due close timer run in the same turn.
+        Timer(half, application.requestClose);
+      },
     );
+  } else {
+    Timer(duration, application.requestClose);
   }
-  Timer(duration, application.requestClose);
   await application.run();
   return application;
 }
