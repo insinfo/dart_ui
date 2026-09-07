@@ -15,10 +15,13 @@ Projeto de referência completo para um site solicitar certificados, autenticar 
 ## Construção e instalação no Windows
 
 1. Na raiz do projeto, execute `powershell -ExecutionPolicy Bypass -File examples/icp_brasil_chrome_signer/build.ps1`.
-2. Abra `chrome://extensions`, habilite o modo do desenvolvedor e escolha **Carregar sem compactação** em `examples/icp_brasil_chrome_signer/extension`.
+2. Abra `chrome://extensions` (ou `brave://extensions`), habilite o modo do desenvolvedor e escolha **Carregar sem compactação** em `examples/icp_brasil_chrome_signer/extension/dist`. Essa pasta contém o `manifest.json` empacotado; não selecione um subdiretório dela.
 3. Copie o ID exibido pelo Chrome.
-4. Execute `powershell -ExecutionPolicy Bypass -File examples/icp_brasil_chrome_signer/install_host.ps1 -ExtensionId ID_COPIADO`.
+4. Execute `powershell -ExecutionPolicy Bypass -File examples/icp_brasil_chrome_signer/install_host.ps1 -ExtensionId ID_COPIADO`. O instalador registra o host para Chrome, Brave e Edge no perfil atual.
 5. Reinicie o Chrome. Rode `dart run examples/icp_brasil_chrome_signer/demo_server.dart` e abra `http://localhost:8787`.
+
+O host pode ser verificado sem abrir o token ou pedir PIN com
+`dart run examples/icp_brasil_chrome_signer/native_host_smoke.dart`.
 
 Para remover o registro, execute `uninstall_host.ps1`. O script preserva os binários em `%LOCALAPPDATA%\\DartUiIcpBrasil` para evitar exclusão destrutiva implícita.
 

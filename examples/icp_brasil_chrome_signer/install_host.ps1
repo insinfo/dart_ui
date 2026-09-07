@@ -22,7 +22,13 @@ $manifest = [ordered]@{
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $manifestPath -Encoding utf8
 
-$key = 'HKCU:\Software\Google\Chrome\NativeMessagingHosts\br.com.dartui.icp_signer'
-New-Item -Path $key -Force | Out-Null
-Set-ItemProperty -Path $key -Name '(default)' -Value $manifestPath
-Write-Host "Host instalado para a extensão $ExtensionId"
+$registryKeys = @(
+  'HKCU:\Software\Google\Chrome\NativeMessagingHosts\br.com.dartui.icp_signer',
+  'HKCU:\Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\br.com.dartui.icp_signer',
+  'HKCU:\Software\Microsoft\Edge\NativeMessagingHosts\br.com.dartui.icp_signer'
+)
+foreach ($key in $registryKeys) {
+  New-Item -Path $key -Force | Out-Null
+  Set-ItemProperty -Path $key -Name '(default)' -Value $manifestPath
+}
+Write-Host "Host instalado para Chrome, Brave e Edge; extensão $ExtensionId"
