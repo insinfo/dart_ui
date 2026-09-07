@@ -108,20 +108,30 @@ Future<void> main() async {
     // canvas, so a browser that says no leaves the element virgin for the
     // WebGL2 entry - and the startup report logged below names which one won
     // and why the other did not.
+    // The `devices` argument is accepted and dropped, in both entries and on
+    // purpose. It carries the shared render device a second window would
+    // adopt instead of opening its own - the whole point of the desktop work
+    // that made a menu open in 7 ms instead of 30 - and on the web there is no
+    // second window to share with: a page has one canvas, and a browser hands
+    // out a context per canvas whatever the caller would prefer. Taking the
+    // parameter and ignoring it is the honest shape; a named refusal here
+    // would fire on every startup for a request nobody made.
     presentations: <PresentationPathEntry>[
-      const PresentationPathEntry(
+      PresentationPathEntry(
         name: WebGpuRendererBackend.backendName,
         kind: PresentationKind.gpu,
         rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
         probe: _probeWebGpu,
-        attach: WebGpuCanvasPresenter.attach,
+        attach: (NativeWindow window, {RenderDeviceProvider? devices}) =>
+            WebGpuCanvasPresenter.attach(window),
       ),
-      const PresentationPathEntry(
+      PresentationPathEntry(
         name: WebGlRendererBackend.backendName,
         kind: PresentationKind.gpu,
         rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
         probe: _probeWebGl2,
-        attach: WebGlCanvasPresenter.attach,
+        attach: (NativeWindow window, {RenderDeviceProvider? devices}) =>
+            WebGlCanvasPresenter.attach(window),
       ),
     ],
     options: ApplicationOptions(
