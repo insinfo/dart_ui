@@ -24,6 +24,7 @@ import 'dart:ffi';
 
 import '../../../foundation/diagnostics.dart';
 import '../../../rendering/gpu/d3d12/d3d12_surface_descriptor.dart';
+import '../../../rendering/render_policy.dart';
 import '../../../rendering/renderer.dart';
 import '../win32_api.dart';
 import '../win32_constants.dart';
@@ -115,8 +116,23 @@ final class D3d12RendererBackend implements RendererBackend {
 
   @override
   Future<RenderDevice> createDevice() async {
-    final D3d12DeviceAttempt attempt =
-        D3d12RenderDevice.open(debugLayer: debugLayer);
+    // The ask is read here rather than passed in, for the reason
+    // `D3d11RendererBackend.createDevice` states at length: this backend is
+    // reached through `RendererBackend.createDevice`, which takes no
+    // arguments. `Application.start` installs the policy before the first
+    // probe, and a device is opened after a window exists, so the scope is
+    // always in place by now. A process that never started an `Application` -
+    // a test opening a device by hand - reads `RenderPolicy.defaults` and gets
+    // exactly the device this backend built before.
+    //
+    // Until this line existed the compute executor could be constructed from
+    // **nowhere in the repository except a test session**, so an application
+    // could not reach the path at all.
+    final D3d12DeviceAttempt attempt = D3d12RenderDevice.open(
+      debugLayer: debugLayer,
+      enableExperimentalComputeTiles:
+          RenderPolicyScope.policy.buildsComputeTilesExecutor,
+    );
     final D3d12RenderDevice? device = attempt.device;
     if (device == null) {
       throw BackendSelectionError(

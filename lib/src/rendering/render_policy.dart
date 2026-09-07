@@ -254,6 +254,32 @@ enum GpuRouteAvailability {
   /// samples, interiors exact. [RenderQualityPreference.exact] and the
   /// [GpuStrategySwitches] still take either route back out.
   largeAnimatedPaths,
+
+  /// Also build the **experimental compute-tile rasteriser**, on the one
+  /// backend that has it.
+  ///
+  /// Its own value rather than a flag on [largeAnimatedPaths], because the two
+  /// are not the same kind of thing. Approach B and approach C are finished
+  /// routes with a measured cost; this is research. Folding it into
+  /// [largeAnimatedPaths] would silently enable an incomplete pipeline for
+  /// every application that asked only for large animated paths.
+  ///
+  /// **What it reaches, exactly.** The CPU-planned tile route: the scene is
+  /// binned by `ComputeTileScene` on the CPU and the coverage and composition
+  /// run in compute shaders on Direct3D 12. That half is finished and its
+  /// parity against the coverage atlas is byte for byte.
+  ///
+  /// **What it does not reach.** The fully GPU-side pipeline — flatten,
+  /// coarse binning, segment binning, chained coverage — which exists, is
+  /// parity-tested, and is **not on any draw path**, because
+  /// `d3d12_vector_path_recorder.dart` builds its plan with `ComputeTileScene`
+  /// on the CPU. Declaring this value does not change that; see the compute
+  /// section of `doc/RELATORIO_POC_23_GPU_2D_STRATEGIES_INTEL_UHD.md`.
+  ///
+  /// Before this value existed the executor could be built from **nowhere in
+  /// the repository except a test session**, so an application could not try
+  /// the path at all. That is the gap this closes — not the pipeline's.
+  experimentalComputeTiles,
 }
 
 /// Who rasterises the inside of a glyph.
@@ -384,6 +410,16 @@ final class RenderPolicy {
       routes == GpuRouteAvailability.largeAnimatedPaths &&
       strategies.stencilThenCover &&
       quality != RenderQualityPreference.exact;
+
+  /// Whether the experimental compute-tile executor should be built.
+  ///
+  /// Gated on the route being asked for **by name**, so no application reaches
+  /// a research path by asking for something else. See
+  /// [GpuRouteAvailability.experimentalComputeTiles] for what it does and does
+  /// not cover.
+  bool get buildsComputeTilesExecutor =>
+      routes == GpuRouteAvailability.experimentalComputeTiles &&
+      strategies.computeTiles;
 
   /// See [RenderDiagnosticsMode]. Default [RenderDiagnosticsMode.off], because
   /// it is the only value that can be proved to cost nothing.
@@ -573,6 +609,7 @@ final class RenderPolicy {
     final List<String> built = <String>[
       if (buildsTessellationExecutor) 'tessellatedMesh',
       if (buildsStencilCoverExecutor) 'stencilThenCover',
+      if (buildsComputeTilesExecutor) 'computeTiles',
     ];
     // Nothing when every requested route was switched off again: the switches
     // report themselves above, and a second line naming an empty set would be

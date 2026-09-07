@@ -347,14 +347,31 @@ desenhos sobrepostos, triângulo, elipse, gravata-borboleta even-odd). Mais
 determinismo: a mesma cena duas vezes dá o mesmo buffer, e uma cena pequena
 depois de uma grande não deixa tinta para trás.
 
-**E está inalcançável.** `GpuPathStrategy.computeTiles` depende de
-`experimentalComputeTilesEnabled`, que depende de um executor, que depende da
-bandeira `enableExperimentalComputeTiles` do construtor. Os **dois** pontos de
-produção — `d3d12_backend.dart:80` e `:119` — chamam `D3d12RenderDevice.open`
-sem passá-la. O **único** ponto de construção no repositório inteiro é
-`D3d12Session.open(computeTiles: true)`, num arquivo de teste.
+**Estava inalcançável, e passou a ser alcançável por opt-in em 06/09/2026.**
+`GpuPathStrategy.computeTiles` depende de `experimentalComputeTilesEnabled`,
+que depende de um executor, que depende de uma bandeira de construtor. Os
+**dois** pontos de produção — `d3d12_backend.dart:80` e `:119` — chamavam
+`D3d12RenderDevice.open` sem passá-la, e o **único** ponto de construção no
+repositório inteiro era `D3d12Session.open(computeTiles: true)`, num arquivo de
+teste. Um pipeline com paridade byte a byte que nenhum programa podia executar.
 
-Pior: mesmo ligando a bandeira, nada do pipeline seria alcançado.
+Entrou `GpuRouteAvailability.experimentalComputeTiles`, e
+`D3d12RendererBackend.createDevice` lê a política pelo mesmo mecanismo que o
+Direct3D 11 usa para B e C. **Valor próprio e não uma bandeira em
+`largeAnimatedPaths`**, porque as duas coisas são de naturezas diferentes: B e
+C são rotas terminadas com custo medido, esta é pesquisa, e dobrá-la na outra
+habilitaria um pipeline incompleto para quem pediu só caminhos grandes
+animados.
+
+`test/rendering/gpu/compute/compute_route_reachability_test.dart` abre o
+dispositivo pelo **caminho de produção** e pergunta se o executor voltou, que é
+a única pergunta que uma aplicação consegue fazer — e é o teste que teria pego
+a lacuna. O padrão continua não construindo nada, e o interruptor
+`GpuStrategySwitches.computeTiles`, que existia e nunca podia agir sobre nada,
+volta a tirá-lo.
+
+Uma ressalva que continua valendo: mesmo com a rota pedida, o que se alcança é
+a **metade planejada na CPU**.
 `d3d12_vector_path_recorder.dart:386` monta o plano com `ComputeTileScene` **na
 CPU**. Então o que a bandeira liga é a metade CPU-planejada, e a metade
 GPU-encadeada — flatten, binning, segmentos, cobertura — não é tocada por
