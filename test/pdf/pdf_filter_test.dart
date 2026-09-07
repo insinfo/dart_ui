@@ -64,6 +64,49 @@ void main() {
       );
     });
 
+    test('Flate aceita qualquer cabeçalho zlib RFC 1950 válido', () {
+      // CINFO=6 (janela de 16 KiB), encontrado em PDFs reais. Um zlib stream
+      // não é obrigado a começar pelo cabeçalho mais comum 0x78.
+      final encoded = Uint8List.fromList(<int>[
+        0x68,
+        0xde,
+        0xcb,
+        0xcb,
+        0xcf,
+        0xd3,
+        0x4d,
+        0x49,
+        0x4d,
+        0x4b,
+        0x2c,
+        0xcd,
+        0x29,
+        0x51,
+        0xa8,
+        0xca,
+        0xc9,
+        0x4c,
+        0x52,
+        0xc8,
+        0x48,
+        0x4d,
+        0x4c,
+        0x49,
+        0x2d,
+        0x02,
+        0x00,
+        0x68,
+        0xfc,
+        0x08,
+        0xb8,
+      ]);
+
+      expect(
+        utf8.decode(const FlateFilter().decode(encoded)),
+        'non-default zlib header',
+      );
+    });
+
     test('Predictor rejeita dimensões inválidas antes da aritmética', () {
       expect(
         () => DecodeParms.applyPredictor(

@@ -12,7 +12,7 @@ class FlateFilter implements PdfFilter {
 
     Uint8List decompressed;
     try {
-      if (data.length >= 2 && data[0] == 0x78) {
+      if (_hasZlibHeader(data)) {
         // Zlib stream com cabeçalho (RFC 1950)
         decompressed = inflateZlib(
           data,
@@ -44,5 +44,13 @@ class FlateFilter implements PdfFilter {
     }
 
     return DecodeParms.applyPredictor(decompressed, parms);
+  }
+
+  static bool _hasZlibHeader(Uint8List data) {
+    if (data.length < 2) return false;
+    final cmf = data[0];
+    final flg = data[1];
+    // RFC 1950: CM=8 (DEFLATE), CINFO<=7 and CMF*256+FLG divisible by 31.
+    return (cmf & 0x0f) == 8 && (cmf >> 4) <= 7 && ((cmf << 8) | flg) % 31 == 0;
   }
 }

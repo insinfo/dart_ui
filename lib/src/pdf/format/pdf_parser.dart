@@ -213,42 +213,28 @@ class PdfParser {
         }
       }
     } else {
-      // Varredura linear segura até encontrar os bytes 'endstream'
-      final raw = <int>[];
-      while (!reader.isEOF) {
-        if (reader.remaining >= 9) {
-          final p0 = reader.buffer[reader.offset];
-          final p1 = reader.buffer[reader.offset + 1];
-          final p2 = reader.buffer[reader.offset + 2];
-          final p3 = reader.buffer[reader.offset + 3];
-          final p4 = reader.buffer[reader.offset + 4];
-          final p5 = reader.buffer[reader.offset + 5];
-          final p6 = reader.buffer[reader.offset + 6];
-          final p7 = reader.buffer[reader.offset + 7];
-          final p8 = reader.buffer[reader.offset + 8];
-
-          if (p0 == 0x65 &&
-              p1 == 0x6E &&
-              p2 == 0x64 &&
-              p3 == 0x73 &&
-              p4 == 0x74 &&
-              p5 == 0x72 &&
-              p6 == 0x65 &&
-              p7 == 0x61 &&
-              p8 == 0x6D) {
-            // 'endstream' encontrado
-            reader.skip(9);
-            break;
-          }
-        }
-        raw.add(reader.readUint8());
+      // PDFs damaged or using an indirect /Length need a bounded linear
+      // search. Keep a view into the source rather than growing a List<int>
+      // byte by byte (which is prohibitively expensive for large images).
+      final raw = reader.readUntilKeyword(const <int>[
+        0x65,
+        0x6e,
+        0x64,
+        0x73,
+        0x74,
+        0x72,
+        0x65,
+        0x61,
+        0x6d,
+      ]);
+      var end = raw.length;
+      while (end > 0 &&
+          (raw[end - 1] == 0x0A ||
+              raw[end - 1] == 0x0D ||
+              raw[end - 1] == 0x20)) {
+        end--;
       }
-      // Remove quebras de linha residuais no final do stream
-      while (raw.isNotEmpty &&
-          (raw.last == 0x0A || raw.last == 0x0D || raw.last == 0x20)) {
-        raw.removeLast();
-      }
-      streamBytes = Uint8List.fromList(raw);
+      streamBytes = Uint8List.view(raw.buffer, raw.offsetInBytes, end);
     }
 
     return PdfStream(dict, streamBytes);

@@ -42,20 +42,12 @@ final class PdfEmbeddedSignature {
 final class PdfSignatureInspector {
   const PdfSignatureInspector();
 
-  static final RegExp _byteRangePattern = RegExp(
-    r'/ByteRange\s*\[\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*\]',
-  );
+  static final Uint8List _byteRangeMarker =
+      Uint8List.fromList(ascii.encode('/ByteRange'));
 
   List<PdfEmbeddedSignature> inspect(Uint8List bytes) {
-    final source = latin1.decode(bytes, allowInvalid: true);
     final signatures = <PdfEmbeddedSignature>[];
-    for (final match in _byteRangePattern.allMatches(source)) {
-      final range = <int>[
-        int.parse(match.group(1)!),
-        int.parse(match.group(2)!),
-        int.parse(match.group(3)!),
-        int.parse(match.group(4)!),
-      ];
+    for (final range in _findByteRanges(bytes)) {
       _validateRange(bytes, range);
       final contentsStart = range[1];
       final contentsEnd = range[2];
@@ -87,6 +79,75 @@ final class PdfSignatureInspector {
       ));
     }
     return List<PdfEmbeddedSignature>.unmodifiable(signatures);
+  }
+
+  /// Finds `/ByteRange [a b c d]` directly in the byte buffer.
+  ///
+  /// Avoiding `latin1.decode(bytes)` is significant for multi-gigabyte PDFs:
+  /// the old implementation temporarily allocated a second object roughly as
+  /// large as the whole document merely to run a regular expression.
+  static Iterable<List<int>> _findByteRanges(Uint8List bytes) sync* {
+    final marker = _byteRangeMarker;
+    var cursor = 0;
+    while (cursor <= bytes.length - marker.length) {
+      if (bytes[cursor] != marker[0]) {
+        cursor++;
+        continue;
+      }
+      var matches = true;
+      for (var index = 1; index < marker.length; index++) {
+        if (bytes[cursor + index] != marker[index]) {
+          matches = false;
+          break;
+        }
+      }
+      if (!matches) {
+        cursor++;
+        continue;
+      }
+
+      var offset = cursor + marker.length;
+      offset = _skipWhitespace(bytes, offset);
+      if (offset >= bytes.length || bytes[offset] != 0x5b) {
+        cursor += marker.length;
+        continue;
+      }
+      offset++;
+      final values = <int>[];
+      for (var index = 0; index < 4; index++) {
+        offset = _skipWhitespace(bytes, offset);
+        final parsed = _readUnsignedInteger(bytes, offset);
+        if (parsed == null) break;
+        values.add(parsed.$1);
+        offset = parsed.$2;
+      }
+      offset = _skipWhitespace(bytes, offset);
+      if (values.length == 4 &&
+          offset < bytes.length &&
+          bytes[offset] == 0x5d) {
+        yield values;
+      }
+      cursor += marker.length;
+    }
+  }
+
+  static int _skipWhitespace(Uint8List bytes, int offset) {
+    while (offset < bytes.length && _isWhitespace(bytes[offset])) {
+      offset++;
+    }
+    return offset;
+  }
+
+  static (int, int)? _readUnsignedInteger(Uint8List bytes, int offset) {
+    final start = offset;
+    var value = 0;
+    while (offset < bytes.length) {
+      final byte = bytes[offset];
+      if (byte < 0x30 || byte > 0x39) break;
+      value = value * 10 + byte - 0x30;
+      offset++;
+    }
+    return offset == start ? null : (value, offset);
   }
 
   static void _validateRange(Uint8List bytes, List<int> range) {

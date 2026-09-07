@@ -94,10 +94,102 @@ class ByteReader {
       throw StateError(
           'Tentativa de ler $count bytes, mas restam apenas $remaining.');
     }
-    final slice = _buffer.sublist(_offset, _offset + count);
+    final slice = Uint8List.view(
+      _buffer.buffer,
+      _buffer.offsetInBytes + _offset,
+      count,
+    );
     _offset += count;
     return slice;
   }
+
+  /// Returns a zero-copy view up to [pattern], advancing past the pattern.
+  /// Returns all remaining bytes when the pattern is absent.
+  Uint8List readUntil(List<int> pattern) {
+    if (pattern.isEmpty) return Uint8List(0);
+    final start = _offset;
+    final lastStart = _buffer.length - pattern.length;
+    for (var candidate = _offset; candidate <= lastStart; candidate++) {
+      if (_buffer[candidate] != pattern[0]) continue;
+      var matches = true;
+      for (var index = 1; index < pattern.length; index++) {
+        if (_buffer[candidate + index] != pattern[index]) {
+          matches = false;
+          break;
+        }
+      }
+      if (!matches) continue;
+      _offset = candidate + pattern.length;
+      return Uint8List.view(
+        _buffer.buffer,
+        _buffer.offsetInBytes + start,
+        candidate - start,
+      );
+    }
+    _offset = _buffer.length;
+    return Uint8List.view(
+      _buffer.buffer,
+      _buffer.offsetInBytes + start,
+      _buffer.length - start,
+    );
+  }
+
+  /// Like [readUntil], but only accepts a PDF keyword delimited by whitespace
+  /// or delimiter characters. This prevents binary stream data containing the
+  /// same byte sequence from terminating a damaged/indirect-length stream.
+  Uint8List readUntilKeyword(List<int> keyword) {
+    if (keyword.isEmpty) return Uint8List(0);
+    final start = _offset;
+    final lastStart = _buffer.length - keyword.length;
+    for (var candidate = _offset; candidate <= lastStart; candidate++) {
+      if (_buffer[candidate] != keyword[0]) continue;
+      final before = candidate == start ? -1 : _buffer[candidate - 1];
+      if (before >= 0 && !_isPdfBoundary(before)) continue;
+      var matches = true;
+      for (var index = 1; index < keyword.length; index++) {
+        if (_buffer[candidate + index] != keyword[index]) {
+          matches = false;
+          break;
+        }
+      }
+      if (!matches) continue;
+      final afterOffset = candidate + keyword.length;
+      final after = afterOffset >= _buffer.length ? -1 : _buffer[afterOffset];
+      if (after >= 0 && !_isPdfBoundary(after)) continue;
+      _offset = afterOffset;
+      return Uint8List.view(
+        _buffer.buffer,
+        _buffer.offsetInBytes + start,
+        candidate - start,
+      );
+    }
+    _offset = _buffer.length;
+    return Uint8List.view(
+      _buffer.buffer,
+      _buffer.offsetInBytes + start,
+      _buffer.length - start,
+    );
+  }
+
+  static bool _isPdfBoundary(int byte) =>
+      byte == 0 ||
+      byte == 9 ||
+      byte == 10 ||
+      byte == 12 ||
+      byte == 13 ||
+      byte == 32 ||
+      const <int>[
+        0x28,
+        0x29,
+        0x3c,
+        0x3e,
+        0x5b,
+        0x5d,
+        0x7b,
+        0x7d,
+        0x2f,
+        0x25,
+      ].contains(byte);
 
   /// Avança o cursor em [count] posições.
   void skip(int count) {
