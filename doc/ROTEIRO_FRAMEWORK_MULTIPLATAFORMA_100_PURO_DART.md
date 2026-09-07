@@ -8140,7 +8140,7 @@ motivo.
 | `SystemInfo` + tema escuro | `RegGetValueW` em `AppsUseLightTheme` | `gsettings … color-scheme` | `defaults read -g AppleInterfaceStyle` | `matchMedia` |
 | `NativeMessageBox` | `MessageBoxW` (**nativa**) | **subprocesso** `zenity`/`kdialog` | `osascript display dialog` | lança — um `alert()` seria mentira |
 | `FileWatcher` | `dart:io` → `ReadDirectoryChangesW` | `dart:io` → inotify | `dart:io` → FSEvents | `isSupported == false` |
-| `FilePicker` (**só abrir**) | `GetOpenFileNameW` (**não** `IFileDialog`) | **`zenity`/`kdialog`/`yad`** — **sem portal XDG** | `osascript choose file` | `<input type=file>` |
+| `FilePicker` (**só abrir**) | `IFileOpenDialog`/`IFileSaveDialog`, com recuo para `GetOpenFileNameW` | **`zenity`/`kdialog`/`yad`** — **sem portal XDG** | `osascript choose file` | `<input type=file>` |
 
 Três avisos que valem mais do que a tabela:
 
@@ -8470,7 +8470,7 @@ Cada spike produz documento, código mínimo e decisão. Código descartável n�
 | surface / resize / present / damage | sim | sim | sim | sim | sim |
 | device lost / fallback de render | sim | ? | — (sem GPU) | ? | sim |
 | **clipboard** | sim | **não** | sim | **não** | não |
-| **dialogs** | sim (`MessageBoxW`, `GetOpenFileNameW`) | parcial (helpers externos) | parcial (helpers externos) | parcial (`osascript`) | parcial |
+| **dialogs** | sim (`MessageBoxW`, `IFileDialog`) | parcial (helpers externos) | parcial (helpers externos) | parcial (`osascript`) | parcial |
 | theme | sim | ? | ? | ? | sim |
 | monitor | parcial | parcial | parcial | ? | sim |
 | **accessibility** | sim (UIA, §68.1) | **não** | **não** | **não** | **não** |
@@ -8809,9 +8809,25 @@ de bindings.
 **A próxima ação concreta em 06/09/2026**, na ordem em que uma destrava a
 seguinte:
 
-1. **`IFileDialog` no Windows** (§68.5): o `FilePicker` usa o
-   `GetOpenFileNameW` legado, que não abre o diálogo moderno nem lê os locais
-   fixados do usuário. É COM já disponível pela infraestrutura do UIA;
+1. ~~**`IFileDialog` no Windows**~~ — **feito em 06/09/2026.**
+   `IFileOpenDialog`/`IFileSaveDialog` sobre a camada COM que já existia
+   (`lib/src/ffi/com.dart`), em `platform/` e não em `backends/win32/`, porque
+   a regra de camadas proíbe um arquivo do núcleo de importar um backend — e o
+   `FilePicker` é do núcleo. A API pública não mudou uma letra, e o
+   `GetOpenFileNameW` **fica** como recuo nomeado para a máquina em que o
+   `CoCreateInstance` falha.
+
+   Uma descoberta que teria custado caro: o objeto de diálogo do shell devolve
+   **`E_NOINTERFACE` para `IID_IFileDialog`** no Windows 11 26200, embora a
+   herança de vtable seja real e todo slot abaixo de 27 dependa dela. Uma
+   verificação "isto é mesmo um diálogo de arquivo?" nesse IID mandaria toda
+   abertura para o caminho legado numa máquina saudável.
+
+   **O que não está provado**, e está aqui em vez de subentendido: os locais
+   fixados, o chrome moderno, a seleção múltipla devolvendo dois caminhos, e o
+   round-trip de salvar com prompt de sobrescrita. Nada disso dá para ver sem
+   olhar a tela; `dart run tool/file_dialog_smoke.dart --interactive` roda a
+   lista, e sem a flag o smoke exercita só o que não abre janela;
 2. **`mailbox` no D3D12** (§68.3): exige mudar a criação da swap chain
    (`FLIP_DISCARD`, três buffers, objeto aguardável), e é o único lugar em
    que o modo é implementável de verdade sem ser o Vulkan;
@@ -9682,7 +9698,9 @@ proporção ele aparece nos outros caminhos, não.
 ## 68.5 Limitações por plataforma, em uma linha cada
 
 - **Windows**: sem DirectComposition; sem TSF (só IMM32); IME não lê texto ao
-  redor; `FilePicker` usa o `GetOpenFileNameW` legado, não `IFileDialog`;
+  redor; o `FilePicker` passou ao `IFileDialog` em 06/09/2026, e o que fica
+  sem prova é o que só um olho vê: locais fixados, chrome, e a seleção
+  múltipla;
   `vsync` não é reivindicada porque o `BitBlt` não é paced;
 - **X11**: teclado e clipboard existem desde 26/08/2026 (§68.1), mas **sem
   IME** (XIM não implementado), **sem XKB** — logo só dois grupos de layout e

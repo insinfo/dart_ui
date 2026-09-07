@@ -5,6 +5,7 @@ import 'dart:io';
 
 import '../ffi/native_memory.dart';
 import 'file_picker_types.dart';
+import 'file_picker_windows_com.dart';
 
 const int _ofnNoChangeDir = 0x00000008;
 const int _ofnPathMustExist = 0x00000800;
@@ -125,7 +126,52 @@ Future<PickedFile?> openFile({
   }
 }
 
+/// The Common Item Dialog first, the 2000-era one only if it is not there.
+///
+/// `IFileOpenDialog` is what every shipping application opens: it has the
+/// navigation pane, the places the user pinned in Explorer, the search box and
+/// per-type filters that are a real list instead of a NUL-separated string.
+/// `GetOpenFileNameW` has none of that, and the difference is visible to the
+/// user the moment they look for a pinned folder that simply is not there.
+///
+/// The legacy path below is **kept, not replaced**: a session where
+/// `CoCreateInstance` refuses - a locked-down desktop, a Windows older than
+/// Vista, a broken shell registration - still gets a working open dialog
+/// rather than an exception about a COM class it never asked for.
 String? _openWindows({
+  required String title,
+  required List<FilePickerFilter> filters,
+  required int ownerWindowHandle,
+}) {
+  final WindowsFileDialogResult result = showWindowsFileDialog(
+    save: false,
+    title: title,
+    filters: filters,
+    ownerWindowHandle: ownerWindowHandle,
+  );
+  switch (result.status) {
+    case WindowsFileDialogStatus.selected:
+      return result.path;
+    case WindowsFileDialogStatus.cancelled:
+      return null;
+    case WindowsFileDialogStatus.failed:
+      throw FilePickerException(
+        operation: 'IFileOpenDialog',
+        platform: 'windows',
+        errorCode: result.hresult,
+        reason: result.detail ?? 'the Common Item Dialog failed',
+      );
+    case WindowsFileDialogStatus.unavailable:
+      return _openWindowsLegacy(
+        title: title,
+        filters: filters,
+        ownerWindowHandle: ownerWindowHandle,
+      );
+  }
+}
+
+/// `GetOpenFileNameW`, the fallback for a machine with no Common Item Dialog.
+String? _openWindowsLegacy({
   required String title,
   required List<FilePickerFilter> filters,
   required int ownerWindowHandle,
@@ -216,7 +262,73 @@ Future<String?> saveFile({
   );
 }
 
+/// `IFileSaveDialog` first, `GetSaveFileNameW` only if COM refused.
+///
+/// The modern dialog splits what the legacy one conflated. `GetSaveFileNameW`
+/// took one buffer that was both the starting directory and the suggested
+/// name, so a caller that passed `C:\docs\drawing.svg` got both effects at
+/// once; `IFileSaveDialog` has `SetFolder` and `SetFileName`, and the split is
+/// done here so the shipped behaviour of `saveFile` does not change.
 String? _saveWindows({
+  required String title,
+  required String suggestedName,
+  required List<FilePickerFilter> filters,
+  required String? defaultExtension,
+  required int ownerWindowHandle,
+}) {
+  final ({String? directory, String name}) seed =
+      splitSuggestedPath(suggestedName);
+  final WindowsFileDialogResult result = showWindowsFileDialog(
+    save: true,
+    title: title,
+    filters: filters,
+    suggestedName: seed.name,
+    defaultExtension: defaultExtension,
+    initialDirectory: seed.directory,
+    ownerWindowHandle: ownerWindowHandle,
+  );
+  switch (result.status) {
+    case WindowsFileDialogStatus.selected:
+      return result.path;
+    case WindowsFileDialogStatus.cancelled:
+      return null;
+    case WindowsFileDialogStatus.failed:
+      throw FilePickerException(
+        operation: 'IFileSaveDialog',
+        platform: 'windows',
+        errorCode: result.hresult,
+        reason: result.detail ?? 'the Common Item Dialog failed',
+      );
+    case WindowsFileDialogStatus.unavailable:
+      return _saveWindowsLegacy(
+        title: title,
+        suggestedName: suggestedName,
+        filters: filters,
+        defaultExtension: defaultExtension,
+        ownerWindowHandle: ownerWindowHandle,
+      );
+  }
+}
+
+/// A suggested name split into the folder to start in and the name to type in.
+///
+/// Public for the test that asserts it: the split is the one place where a
+/// caller passing an absolute path can lose its directory, and the failure -
+/// a save dialog that opens in Documents instead of next to the file the user
+/// opened - is invisible in a headless run.
+({String? directory, String name}) splitSuggestedPath(String suggestedName) {
+  final int separator = suggestedName.lastIndexOf(RegExp(r'[\\/]'));
+  if (separator < 0) {
+    return (directory: null, name: suggestedName);
+  }
+  return (
+    directory: suggestedName.substring(0, separator + 1),
+    name: suggestedName.substring(separator + 1),
+  );
+}
+
+/// `GetSaveFileNameW`, the fallback for a machine with no Common Item Dialog.
+String? _saveWindowsLegacy({
   required String title,
   required String suggestedName,
   required List<FilePickerFilter> filters,
