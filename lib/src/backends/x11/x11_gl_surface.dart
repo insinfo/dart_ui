@@ -28,6 +28,17 @@
 /// recovering means recreating the window with the config's visual, and the
 /// window belongs to whoever made it.
 ///
+/// **This has not yet fired, and that is not evidence the concern is wrong.**
+/// The first CI run printed `window_visual=0x21 config_visual=0x21` - under
+/// Xvfb's depth-24 root there is no 32-bit ARGB visual for `eglChooseConfig`
+/// to prefer, so `EGL_ALPHA_SIZE 8` was satisfied by the same visual the
+/// window already had and the two could not diverge. A compositing Xorg does
+/// offer a depth-32 visual, and there the config and the root visual can
+/// disagree for exactly the reason above. Do not delete the comparison
+/// because it has always agreed: the run where it disagrees is the run that
+/// needs it, and by then the two numbers are unreachable from the EGL error
+/// code alone.
+///
 /// ## Where this is executed
 ///
 /// It was written on Windows, and for a long time nothing ran it: the unit
@@ -40,6 +51,12 @@
 /// takes the path end to end: mapped window, `eglCreateWindowSurface`, a
 /// `glReadPixels` off framebuffer 0, three frames through `GlWindowTarget`, a
 /// resize, and `GlMeshRenderer.create`.
+///
+/// It first ran on 2026-09-07 and passed every stage: EGL 1.5 from
+/// `libEGL.so.1`, a **desktop** GL context (`eglBindAPI(EGL_OPENGL_API)` was
+/// accepted, so the renderer takes the `#version 330 core` branch, not GLSL
+/// ES), Mesa 25.2.8 llvmpipe reporting GL 4.5 core, the cleared framebuffer
+/// reading back exactly, three swaps, a resize, and a linked mesh program.
 ///
 /// What that still does not cover, and what a bug report should not assume
 /// from a green run: **any real GPU**. llvmpipe accepts configs, visuals and

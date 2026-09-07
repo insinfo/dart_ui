@@ -318,11 +318,25 @@ Future<void> _reportResize(
   var resized = false;
   final subscription =
       window.events.listen((event) => resized |= event is WindowResizedEvent);
+  // Sampled before the resize rather than compared against a literal: the
+  // window's generation starts at 0 and one coalesced resize advances it by
+  // exactly one, so the number that means "the surface was invalidated once"
+  // depends on how many resizes came before. Asserting the delta says what is
+  // actually meant; asserting `== 1` would have been a coincidence of this
+  // smoke only ever resizing once.
+  final int generationBefore = window.generation;
   try {
     window
         .setBounds(const Rect.fromLTWH(12, 14, _resizedWidth, _resizedHeight));
     await _pumpUntil(backend, () => resized, const Duration(seconds: 5));
     final ({int width, int height}) size = window.pixelSize;
+    final int advanced = window.generation - generationBefore;
+    if (advanced != 1) {
+      stdout.writeln('X11_GL_RESIZE=FAIL generation moved by $advanced, not 1 '
+          '(before=$generationBefore after=${window.generation}); a frame in '
+          'flight across the resize would no longer be refused');
+      throw StateError('the resize did not invalidate the window exactly once');
+    }
     final BackendDiagnostic? refused = surface.reconfigure(
       pixelWidth: size.width,
       pixelHeight: size.height,
@@ -355,7 +369,7 @@ Future<void> _reportResize(
       }
       stdout.writeln(
         'X11_GL_RESIZE=PASS size=${size.width}x${size.height} '
-        'generation=${window.generation}',
+        'generation=$generationBefore->${window.generation}',
       );
     } finally {
       target.dispose();
@@ -365,7 +379,17 @@ Future<void> _reportResize(
   }
 }
 
-/// Builds the mesh program, which is the whole point of reaching GL on Linux.
+/// Compiles and links the mesh program. **Linking is all this proves.**
+///
+/// The distance between "the program linked" and "the model draws correctly"
+/// is where the Direct3D 11 port found its bugs, so the verdict is worded to
+/// stop short of the claim it cannot support. What runs here: the vertex and
+/// fragment sources go to the driver's GLSL compiler, every uniform and
+/// attribute location resolves, and the pipeline object builds. What does
+/// **not** run: a single triangle. No `MeshScene` is submitted, no depth
+/// buffer is exercised, nothing is compared against the CPU mesh rasteriser,
+/// and no frame contains a model. A `PASS` here means the shaders are valid
+/// GLSL for this driver and nothing more.
 ///
 /// Reported and not thrown on: the 2D path above is what decides whether this
 /// backend can present at all, and a driver whose GLSL compiler rejects the
@@ -380,7 +404,8 @@ void _reportMesh(GlRenderDevice device) {
       return;
     }
     renderer.dispose();
-    stdout.writeln('X11_GL_MESH=PASS the mesh program linked'
+    stdout.writeln('X11_GL_MESH=PASS the mesh program linked; nothing was '
+        'drawn with it'
         '${attempt.diagnostics.isEmpty ? '' : ' '
             '(${_summarise(attempt.diagnostics)})'}');
   } on Object catch (error) {

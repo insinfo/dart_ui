@@ -2560,7 +2560,20 @@ compilado AOT sob Xvfb, no job `Test (linux)` da execução
 - [ ] **dono `INCR` — não existe, e só essa metade falta**: servir uma seleção maior que o pedaço máximo do servidor exige o lado do dono do protocolo `INCR`, e o código diz isso por escrito (`'does not implement an INCR selection owner'`). Um `paste` de payload grande **de outra aplicação** funciona; um `copy` grande **para** outra aplicação, não. `PRIMARY` também não existe;
 - [x] XDND — **nos dois sentidos**: `X11DragDropManager` recebe e `X11XdndSource` inicia. A imagem de arraste é **ignorada**. *(A string velha do probe — "dragging out is not implemented" — foi corrigida em 06/09/2026; os dois caminhos hoje dizem "XDND is available in both directions".)*;
 - [ ] **RandR — detectado e não usado**: `_hasRandr` sai da lista de extensões e a única consumidora seria a geometria por monitor. A geometria da tela **raiz** existe e roda (`X11_SCREENS=PASS`, `1920x1080`, `scale 1.0`), mas ela é a caixa envolvente de todos os monitores: num multi-head o framework vê **uma** tela do tamanho de todas, e `x11_scale.dart` diz por que isso foi adiado (três round trips encadeados por `RRGetScreenResources`);
-- [~] **OpenGL/EGL — deixou de ser só código em 07/09/2026**: `tool/x11_gl_smoke.dart` leva o caminho de ponta a ponta (janela mapeada → `eglCreateWindowSurface` → `glReadPixels` do framebuffer 0 → três frames por `GlWindowTarget` → resize → `GlMeshRenderer.create`) e o workflow `X11 OpenGL probe` o roda sob **Xvfb com Mesa llvmpipe**. O veredito de cada execução vale mais que esta linha: leia o log. O que nem esse job cobre é **GPU real** — llvmpipe aceita config, visual e GLSL que um driver de hardware pode recusar;
+- [x] **OpenGL/EGL — executado pela primeira vez em 07/09/2026, e passou**. `tool/x11_gl_smoke.dart` leva o caminho de ponta a ponta e o workflow `X11 OpenGL probe` o roda sob **Xvfb com Mesa llvmpipe**. A execução
+  [#34165428718](https://github.com/insinfo/dart_ui/actions/runs/34165428718)
+  imprimiu, em 46 s:
+  - `X11_GL_EGL=PASS window_visual=0x21 config_visual=0x21 desktop_gl=true presents_to_window=true` — EGL 1.5 de `libEGL.so.1`, contexto de **desktop GL** (o `eglBindAPI(EGL_OPENGL_API)` foi aceito, então o renderer usa o ramo `#version 330 core` e não GLSL ES);
+  - `X11_GL_DEVICE=PASS` — Mesa 25.2.8, llvmpipe, **GL 4.5 Core Profile**;
+  - `X11_GL_CLEAR=PASS rgba=64,128,191,255` — `glReadPixels` do **framebuffer 0**: o back buffer da janela é memória de verdade e o rasterizador escreveu nela;
+  - `X11_GL_PRESENT=PASS frames=3 swap_interval_0=accepted` — três frames pelo `GlWindowTarget` de produção, cada um chegando ao `eglSwapBuffers`;
+  - `X11_GL_RESIZE=PASS size=480x320 generation=0->1` — o resize invalidou a janela **exatamente uma vez**, que é o que faz um frame em voo ser recusado em vez de desenhado no tamanho errado;
+  - `X11_GL_MESH=PASS` — ver o item seguinte, que é onde essa linha para.
+
+  **O que a agulha do visual não provou.** `window_visual == config_visual` porque o root do Xvfb é depth 24 e não existe visual ARGB de 32 bits para o `eglChooseConfig` preferir; o `EGL_ALPHA_SIZE 8` foi satisfeito pelo mesmo visual que a janela já tinha. Num Xorg com composição há visual depth 32, e lá os dois **podem** divergir e produzir `EGL_BAD_MATCH`. A comparação em `x11_gl_surface.dart` não deve ser removida por nunca ter disparado: a execução em que ela dispara é justamente a que precisa dela, e o código de erro do EGL não carrega nenhum dos dois números;
+
+  **O que o job não cobre**: **GPU alguma**. llvmpipe aceita config, visual e GLSL que um driver de hardware pode recusar, e nada aqui mediu desempenho;
+- [~] **malha 3D no Linux — o programa linka; nada foi desenhado com ele**. `X11_GL_MESH=PASS` diz que o compilador GLSL do driver aceitou os shaders de malha, que todos os uniforms e atributos resolveram e que o pipeline montou. Não diz que um triângulo saiu: nenhuma `MeshScene` é submetida, nenhum depth buffer é exercitado, nada é comparado com o rasterizador de malha da CPU, e nenhum frame contém um modelo. A distância entre "linkou" e "desenha certo" é exatamente onde a porta do Direct3D 11 encontrou os bugs dela; fechar essa distância no Linux é o próximo passo deste item;
 - [ ] Vulkan opcional — há `VK_KHR_xcb_surface`/`VK_KHR_xlib_surface` no lado do Vulkan, sem nada que produza o descriptor a partir deste backend;
 - [ ] AT-SPI básico;
 - [ ] GNOME/KDE/Xfce;
@@ -7293,10 +7306,13 @@ corrigidas abaixo com a execução que as desmente.
 - [~] **ao menos D2D e Metal estáveis** — D2D está em *alpha/beta* (existe,
   escolhível, com recusas nomeadas); **Metal não apresenta**, então não passa
   nem de *experimental* por este critério;
-- [ ] **Linux GPU estável por OpenGL ou Vulkan** — o caminho EGL no X11 passou
-  a ser executado em 07/09/2026 (`tool/x11_gl_smoke.dart`, workflow
-  `X11 OpenGL probe`), sob **Xvfb com llvmpipe e nenhuma GPU**; "estável" pede
-  hardware de verdade e continua sem prova. O Wayland não tem GPU alguma —
+- [ ] **Linux GPU estável por OpenGL ou Vulkan** — o caminho EGL no X11 rodou
+  pela primeira vez em 07/09/2026 e **passou em todos os estágios**
+  ([#34165428718](https://github.com/insinfo/dart_ui/actions/runs/34165428718)):
+  contexto desktop GL 4.5, clear lido de volta do framebuffer 0, três swaps,
+  resize. Mas sob **Xvfb com llvmpipe e nenhuma GPU**, e com a malha apenas
+  *linkando* — "estável" pede hardware de verdade e um modelo desenhado, e
+  continua sem prova. O Wayland não tem GPU alguma —
   ainda que o Weston do CI anuncie `zwp_linux_dmabuf_v1`, que é por onde ela
   entraria;
 - [~] **X11 estável** — teclado e clipboard entraram em 26/08/2026 e
@@ -8101,7 +8117,7 @@ aplica, **?** não verificado.
 | `window` | sim | sim | sim | sim | sim | sim |
 | `multipleWindows` | sim | sim | sim | ? | sim (várias canvas) | sim |
 | `cpuPresentation` | sim (DIB) | sim (`PutImage`, se o formato do servidor bate) | sim (`wl_shm`) | sim | — | sim |
-| `gpuPresentation` | sim (D3D11, GL, D2D) | entrada EGL executada em CI desde 07/09/2026, sob llvmpipe; nunca sobre GPU | **não** | não (Metal só offscreen) | sim (WebGL2/WebGPU) | — |
+| `gpuPresentation` | sim (D3D11, GL, D2D) | sim, medido em 07/09/2026 — o `GlWindowTarget` fez três swaps numa janela xcb de verdade, sob Xvfb/llvmpipe; **nunca sobre GPU**, e o `X11WindowingBackend` em si não reivindica a capacidade (quem a reivindica é o probe do renderer GL) | **não** | não (Metal só offscreen) | sim (WebGL2/WebGPU) | — |
 | `partialPresent` | sim | ? | sim | ? | ? | ? |
 | `vsync` | **não reivindicada** — o `BitBlt` não é paced, ainda que o DWM componha no vblank | ? | ? | ? | ? | — |
 | `pointerInput` | sim | sim | sim | sim | ? | sim |
@@ -9982,7 +9998,8 @@ proporção ele aparece nos outros caminhos, não.
   dois grupos de layout e sem `DetectableAutoRepeat` —, sem **dono** `INCR` no
   clipboard (o leitor existe), sem `PRIMARY`, sem XInput2, sem RandR por
   monitor, sem `MIT-SHM` (a apresentação é `PutImage` do core); o caminho EGL
-  roda desde 07/09/2026 sob **llvmpipe**, nunca sobre GPU;
+  roda desde 07/09/2026 sob **llvmpipe**, nunca sobre GPU, e a malha 3D só
+  **linka** por lá — nenhum triângulo foi desenhado no Linux;
 - **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
   primária, sem CSD quando o compositor recusa SSD, sem movimento/resize
@@ -10017,7 +10034,14 @@ Isto é tão importante quanto a lista anterior, e é mais fácil de esquecer:
   digitada por um humano;
 - **o caminho EGL do X11 só rodou sob llvmpipe.** Xvfb é um X server de verdade
   e Mesa é um driver de verdade, mas nenhuma GPU aceitou uma config, um visual
-  ou um shader deste projeto no Linux;
+  ou um shader deste projeto no Linux. E a comparação de visual que existe para
+  pegar `EGL_BAD_MATCH` **nunca disparou** — sob Xvfb não há visual ARGB de 32
+  bits para o `eglChooseConfig` preferir, então ela não podia disparar. Não
+  confunda "nunca falhou" com "não é necessária";
+- **o pipeline de malha 3D no Linux só foi linkado, nunca desenhado.**
+  `X11_GL_MESH=PASS` é o compilador GLSL do driver dizendo que os shaders são
+  válidos. Nenhuma `MeshScene` foi submetida, nenhum frame com modelo saiu, e
+  nada foi comparado com o rasterizador de malha da CPU;
 - ~~**Wayland nunca rodou**~~ — roda desde 26/08/2026 sob Weston no CI
   (§68.1). O que **não** rodou contra um compositor está listado lá: input de
   verdade, DnD, IME, popups, cursores, decoração, e qualquer compositor que
