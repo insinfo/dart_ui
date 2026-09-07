@@ -51,7 +51,7 @@ import '../../rendering/renderer.dart';
 /// Presents display lists to a canvas through a [WebGlCanvasTarget].
 final class WebGlCanvasPresenter
     with DisposableMixin
-    implements SurfacePresenter {
+    implements DeviceTargetPresenter {
   WebGlCanvasPresenter._(this._target, this._device);
 
   /// Opens a WebGL2 context on the canvas [window] offers and binds a presenter
@@ -121,7 +121,14 @@ final class WebGlCanvasPresenter
   final WebGlCanvasTarget _target;
   final WebGlRenderDevice _device;
 
+  /// See [DeviceTargetPresenter]. Both were already here; what was missing was
+  /// the *promise* that they can be read, and without it a page could not draw
+  /// 3D at all - `ApplicationWindow` asked for a `RenderTargetPresenter` by
+  /// name, which is a `final class` this can never be.
+  @override
   WebGlCanvasTarget get target => _target;
+
+  @override
   WebGlRenderDevice get device => _device;
 
   @override

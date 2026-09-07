@@ -1362,11 +1362,15 @@ final class ApplicationWindow with DisposableMixin {
       return null;
     }
     final SurfacePresenter presenter = host.presenter;
-    if (presenter is! RenderTargetPresenter) {
+    // The capability, not the class. `RenderTargetPresenter` is `final`, so
+    // asking for it by name refused every browser presenter - which reaches a
+    // device by another route - before anyone had decided that 3D in a page
+    // was unsupported.
+    if (presenter is! DeviceTargetPresenter) {
       _meshUnavailable = BackendDiagnostic(
         kind: DiagnosticKind.note,
         message: '${_presentationPath.name} declares a mesh renderer but its '
-            'presenter does not expose a render target',
+            'presenter does not expose a device and a render target',
         detail: 'presenter: ${presenter.runtimeType}',
       );
       return null;

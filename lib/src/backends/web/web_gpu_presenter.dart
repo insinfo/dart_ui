@@ -53,7 +53,7 @@ import '../../rendering/renderer.dart';
 /// Presents display lists to a canvas through a [WebGpuCanvasTarget].
 final class WebGpuCanvasPresenter
     with DisposableMixin
-    implements SurfacePresenter {
+    implements DeviceTargetPresenter {
   WebGpuCanvasPresenter._(this._target, this._device)
       : _recovery = GpuRecoveryCoordinator(host: _device);
 
@@ -125,7 +125,12 @@ final class WebGpuCanvasPresenter
   final WebGpuRenderDevice _device;
   final GpuRecoveryCoordinator _recovery;
 
+  /// See [DeviceTargetPresenter], and `web_gl_presenter.dart` for why the
+  /// promise had to be made explicit.
+  @override
   WebGpuCanvasTarget get target => _target;
+
+  @override
   WebGpuRenderDevice get device => _device;
 
   @override

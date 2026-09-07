@@ -147,6 +147,27 @@ typedef RendererWindowAttachmentFactory = Future<RendererWindowAttachment>
 
 /// Anything that can turn a display list into presented pixels for one window.
 ///
+/// A presenter that can hand over the device and the target together.
+///
+/// Split out of [SurfacePresenter] rather than added to it, and the reason is
+/// the one [RenderTargetPresenter.device] already states: a presenter that
+/// rasterises on the CPU has no device to give, and widening the base
+/// interface would make every one of them answer a question only some can.
+///
+/// The one caller is the 3D path. `ApplicationWindow` builds a mesh renderer
+/// per device and draws it into a target, and the presenter is the only object
+/// that holds both. Before this existed the check was `is RenderTargetPresenter`,
+/// which is a `final class` - so the browser presenters, which reach a WebGL2
+/// or WebGPU device by a different route entirely, could never answer yes and
+/// 3D in a page was refused by construction rather than by decision.
+abstract interface class DeviceTargetPresenter implements SurfacePresenter {
+  /// The device [target] was created on.
+  RenderDevice get device;
+
+  /// The surface being drawn into.
+  RenderTarget get target;
+}
+
 /// The interface is narrow on purpose. A host needs to draw, to be told the
 /// surface changed size, and to be told whether the device underneath is gone.
 /// Everything else - swapchains, DIB sections, `IOSurface` handoffs - is the
@@ -686,7 +707,7 @@ final class WindowHost with DisposableMixin {
 /// says CPU except the default [RendererBackend] the caller passes.
 final class RenderTargetPresenter
     with DisposableMixin
-    implements SurfacePresenter {
+    implements DeviceTargetPresenter {
   RenderTargetPresenter._({
     required RendererBackend backend,
     required RenderDevice device,
@@ -886,15 +907,11 @@ final class RenderTargetPresenter
   void Function() _releaseSurface;
   bool _releaseSurfaceBeforeDevice;
 
-  /// The device [target] was created on.
-  ///
-  /// The one caller that needs a device and a target together is the mesh
-  /// path: a renderer is built per device and draws into a target, and the
-  /// window is the only object holding both. Kept off [SurfacePresenter] on
-  /// purpose - a presenter that rasterises on the CPU has no device to give,
-  /// and widening the interface would make every one of them answer a question
-  /// only two can.
+  /// The device [target] was created on. See [DeviceTargetPresenter].
+  @override
   RenderDevice get device => _device;
+
+  @override
   RenderTarget get target => _target;
 
   /// Whether this window is drawing through a device it shares with others.
