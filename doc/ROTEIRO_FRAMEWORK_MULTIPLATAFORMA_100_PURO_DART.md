@@ -102,6 +102,8 @@
 - [66. Resultado esperado da arquitetura](#66-resultado-esperado-da-arquitetura)
 - [67. Próxima ação concreta](#67-proxima-acao-concreta)
 - [68. Limitações conhecidas — auditoria de 2026-08-23](#68-limitacoes-conhecidas-auditoria-de-2026-08-23)
+- [69. Não penalizar uma plataforma por causa de outra](#69-nao-penalizar-uma-plataforma-por-causa-de-outra-poc-de-2026-08-25)
+- [70. Malha 3D: leitores, pipeline de GPU e o que a CPU ainda faz](#70-malha-3d-leitores-pipeline-de-gpu-e-o-que-a-cpu-ainda-faz-07092026)
 
 ---
 
@@ -10307,3 +10309,144 @@ cima de outras frentes; o cabeçalho de cada um diz qual alvo o recebe.
 ---
 
 **Fim do roteiro.**
+
+# 70. Malha 3D: leitores, pipeline de GPU e o que a CPU ainda faz — 07/09/2026
+
+Esta seção existe porque o framework ganhou uma capacidade que a §1 nomeava
+("jogos 2D/2.5D") e que nada implementava, e porque o caminho até ela passou por
+um erro de escopo que vale mais registrado do que apagado.
+
+## 70.1 O erro de escopo, primeiro
+
+A primeira entrega desenhava a malha **na CPU** e apresentava o resultado como
+uma imagem. Isso contradiz a §8.1.1 do próprio roteiro — GPU primeiro, CPU só
+quando o hardware ou o SO não suportam, fora da tela, ou a pedido do usuário da
+biblioteca — e nenhum desses três casos se aplicava.
+
+A justificativa na hora foi que a display list não tem primitiva de triângulo
+nem profundidade, o que é verdade e não bastava: a resposta certa era abrir a
+pipeline de GPU, não documentar a lacuna e seguir. O dono do repositório
+apontou isso e estava certo.
+
+O rasterizador de CPU **fica**, e agora pelos motivos legítimos: renderização
+fora da tela, máquina sem GPU utilizável, e a referência contra a qual as duas
+pipelines de GPU são medidas. É essa terceira função que o torna caro de jogar
+fora.
+
+## 70.2 Os leitores
+
+`lib/src/graphics/mesh/`. Cinco formatos, e o que **não** é lido é nomeado em
+`Mesh3D.unsupported` em vez de descartado em silêncio — a mesma regra do
+decodificador de Lottie, pela mesma razão: um modelo que chega sem textura
+porque texturas não estão implementadas não pode ser indistinguível de um
+modelo que não tem textura.
+
+| formato | estado |
+|---|---|
+| OBJ | posições, normais, `vt`, faces de qualquer aridade, `.mtl` com `map_Kd`, agrupamento por `usemtl` |
+| STL | binário e ASCII |
+| glTF 2.0 / GLB | nós, hierarquia, acessores com stride, cor base, imagens do chunk binário, de `data:` e de arquivo |
+| FBX binário | árvore de nós, geometria, materiais, texturas embutidas, transformações completas, **skinning e animação** |
+| FBX ASCII | recusado por nome; é outra gramática |
+
+**Validação cruzada, que é a única disponível sem renderizador de referência:**
+o `sonic` dá **1086 triângulos** em FBX, OBJ e GLB — três leitores
+independentes. `SciFi_Island` dá 115.752 em FBX e GLB com 53 primitivas cada.
+O `Exteriors` **não fecha** (58.643 contra 58.667) e a conclusão registrada é
+que são exportações diferentes da cena, não divergência de leitor; ficou aberto
+em vez de arredondado.
+
+**As armadilhas do FBX**, cada uma com teste que falha ao reintroduzi-la:
+posições de vértice são `d` (Float64) e não Float32; `PolygonVertexIndex` marca
+o **último** índice de cada polígono por negação bit a bit; e `Lcl Rotation`
+com `PreRotation` e `RotationPivot` é o que faz um membro girar em torno do
+ponto certo em vez da origem.
+
+E a decisão que muda a pose, escrita para quem for depurar: as matrizes de bind
+inversas vêm da **hierarquia de nós**, não do `TransformLink` do cluster, o que
+faz a pose de repouso ser a identidade por construção. Onde os dois concordam
+não muda nada; onde discordam o leitor **nomeia a maior discordância** — quatro
+das oito skins do `Unarmed Walk Forward` discordam, a pior por 3,06 — em vez de
+escolher calado.
+
+## 70.3 A pipeline de GPU
+
+`MeshScene` e `MeshSceneRenderer` em `lib/src/rendering/mesh/mesh_scene.dart`
+são a costura: recebem um `RenderTarget`, uma cena e um viewport, e não nomeiam
+nada que um backend possua.
+
+Medido em AOT, Intel UHD, `Mario+Kart+3D+Statue.stl` com 451.838 triângulos a
+1080x780:
+
+| caminho | ms/quadro | contra a CPU |
+|---|---|---|
+| Direct3D 11 | **2,63** | 42x |
+| OpenGL | **3,98** | 48x |
+| rasterizador de CPU | 108 a 191 | — |
+
+A submissão do lado da CPU custa **0,004 ms** no D3D11: os 108 ms saem inteiros
+do quadro da aplicação. A geometria sobe **duas vezes** — um buffer de vértices
+e um de índices, 46,5 MiB — e não sobe de novo em 200 quadros.
+
+**A tolerância de paridade contra a CPU são duas frações e não um desvio
+máximo**, e o motivo é estrutural: a GPU fixa a cobertura de triângulo por
+especificação com regra de preenchimento e grade de sub-pixel, enquanto o
+rasterizador avalia funções de aresta em ponto flutuante no centro do pixel com
+teste inclusive dos dois lados. Um pixel de silhueta pode legitimamente ser
+fundo numa imagem e superfície na outra, e isso é a distância inteira entre as
+duas cores. Então mede-se separadamente **aritmética** (pixels que diferem por
+mais de 1 nível) e **cobertura** (mais de 16). Zero onde toda aresta da cena é
+reta; 0,02% do quadro onde há silhueta curva.
+
+**Três coisas que a porta para D3D liga e que não são opcionais**: o remap de
+profundidade `z' = (z + w) * 0,5`, porque `Matrix4.perspective` é o `[-1,1]` do
+OpenGL e o D3D corta em `0 ≤ z ≤ w`; `noperspective` na normal, porque o
+rasterizador a interpola de forma afim de propósito e o padrão do HLSL não é; e
+o shader inteiro em espaço 0..255, para `floor` cair nos mesmos inteiros que o
+Dart.
+
+## 70.4 Defeitos que só apareceram por rodar contra driver
+
+Vale mais que os números, e é a mesma lição da §68.6:
+
+- criar um buffer de índices com o VAO de outra primitiva ligado **reescreve em
+  silêncio a ligação de elementos daquele VAO** — o binding é estado do VAO.
+  Primeiro quadro certo, todos os seguintes desenhando um modelo pelos índices
+  do outro, sem erro de GL;
+- a consulta de bits de profundidade usava `0x8214`, que é `BLUE_SIZE`, e um
+  anexo de profundidade responde a ela **0 sem erro nenhum**. É `0x8216`. E
+  `glGetIntegerv(GL_DEPTH_BITS)` levanta `GL_INVALID_ENUM` num contexto 4.6, so
+  a consulta do anexo é a única rota;
+- `normalMatrixOf` escrevia os cofatores na ordem de leitura numa matriz
+  coluna-maior, o que é a inversa simples: idêntica em qualquer matriz diagonal
+  e errada assim que o modelo gira;
+- e um quadro de malha que deixasse a view de profundidade ligada faria **todo
+  lote 2D seguinte** falhar o teste contra um plano que o modelo escreveu. O
+  probe de janela desenha malha, redimensiona a swap chain e depois desenha uma
+  display list 2D pelo mesmo dispositivo, que é a checagem que nenhuma execução
+  fora da tela faz.
+
+## 70.5 A roda do mouse não chegava a widget nenhum
+
+Descoberto ao dar controles de câmera ao visualizador. `PointerScrollEvent` não
+é oferecido a reconhecedores de gesto: tem de ser reivindicado do
+`PointerSignalResolver` durante o despacho, o que só um render object faz. Por
+isso os quatro widgets que a leem — scroll view, data grid, tree view, tela
+vetorial — cada um escreveu o próprio. `PointerListener` fecha isso e recupera
+também os botões do meio e da direita.
+
+## 70.6 Aberto
+
+- `MeshRenderStats.culled`, `clipped` e `pixels` são **0 no caminho de GPU** —
+  não medidos, não inexistentes. Uma consulta de estatísticas de pipeline
+  poderia preenchê-los e custaria uma sincronização por quadro;
+- `MeshShading.wireframe` roda nos dois backends e **não tem paridade
+  afirmada**: comparar Bresenham com a regra de saída em diamante da GPU seria
+  testar dois rasterizadores de linha;
+- recuperação de perda de dispositivo para o renderizador de malha;
+- e o número de partida que ninguém explicou: o decodificador de vídeo sustenta
+  148 fps e o reprodutor mostrava 12,7 num arquivo de 25 fps **antes** de
+  qualquer diálogo. Continua aberto desde a §68.4.4.
+
+---
+
