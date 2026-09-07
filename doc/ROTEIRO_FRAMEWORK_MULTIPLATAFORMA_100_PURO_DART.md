@@ -2556,8 +2556,13 @@ compilado AOT sob Xvfb, no job `Test (linux)` da execução
 - [ ] **XKB — detectado e não usado**, e o que isso custa é menor do que a lista anterior dizia. `_inspectConnection` lê `XKEYBOARD` da lista de extensões e nada mais. Sem XKB: **dois grupos de layout** em vez de quatro, **sem `DetectableAutoRepeat`** (o repeat é deduzido do par release/press), e sem grupo por evento. Não bloqueia teclado nem tecla morta; bloqueia layout. O IME (XIM) é item separado e também não existe (§15.2.1, §68);
 - [x] mouse/wheel (botões 1/2/3/8/9, roda 4/5/6/7 em linhas);
 - [ ] **XInput2 — não existe**: `XInputExtension` aparece só na lista de extensões que a conexão detecta, e nenhuma linha usa a extensão. Sem eventos brutos, sem roda de alta resolução, sem pressão/tilt, sem distinguir dispositivos;
-- [x] **clipboard — existe, e falou com um X server**: `x11_clipboard.dart` implementa `ClipboardProvider`, toma `CLIPBOARD` com o timestamp mais novo do servidor e **lê transferências `INCR`** com timeout por pedaço. `X11_CLIPBOARD=PASS owner=self roundtrip=true`;
-- [ ] **dono `INCR` — não existe, e só essa metade falta**: servir uma seleção maior que o pedaço máximo do servidor exige o lado do dono do protocolo `INCR`, e o código diz isso por escrito (`'does not implement an INCR selection owner'`). Um `paste` de payload grande **de outra aplicação** funciona; um `copy` grande **para** outra aplicação, não. `PRIMARY` também não existe;
+- [x] **clipboard — existe, e falou com um X server**: `x11_clipboard.dart` implementa `ClipboardProvider`, toma `CLIPBOARD` com o timestamp mais novo do servidor e trata `INCR` **nos dois papéis**. `X11_CLIPBOARD=PASS owner=self roundtrip=true` no smoke sob Xvfb — e esse roundtrip lê de volta a *própria* seleção, sem transferência pelo servidor, o que é pouco. A prova de interoperabilidade é outra: `tool/x11_clipboard_interop_smoke.dart` faz o **`xclip`** — um cliente que este projeto não escreveu — colar 900 KiB nossos e compara byte a byte, no workflow `X11 clipboard INCR interop`;
+- [x] **dono `INCR` — existe desde 07/09/2026**, e era o buraco mais visível para o usuário deste backend: copiar um documento longo *para fora* de uma aplicação dart_ui lançava exceção, e nenhuma camada acima conseguia fazer dar certo. Agora uma conversão acima de `defaultSingleShotBytes` sai como transferência incremental. As três decisões que a máquina de estados registra por escrito:
+  - **de quem é o `PropertyChange`, e quando ele sai.** É selecionado na janela **do requestor**, *antes* de a propriedade `INCR` ser escrita (o requestor pode apagá-la no instante em que a vê, e uma seleção feita depois perde esse delete e trava a transferência no chunk zero), e a máscara anterior é **lida e restaurada** no fim — não zerada. Zerar está certo por acidente numa janela alheia, cuja máscara nossa é 0, e errado de propósito numa janela **nossa**: um paste vindo de outro toolkit no mesmo processo cai exatamente aí e perderia os eventos com que a janela foi criada;
+  - **o que limita uma transferência.** O mesmo timeout por pedaço que o leitor já usava, espelhado em vez de reinventado. Quando dispara, o que é abandonado é a **transferência**, nunca a seleção: o clipboard continua sendo nosso e a próxima aplicação a pedir ainda recebe o texto. Descartar o payload transformaria o crash de uma aplicação no clipboard vazio de todas as outras;
+  - **mais de uma ao mesmo tempo.** Paralelas, com chave `(janela, propriedade)`, até `maximumConcurrentTransfers`. Serializar faria a segunda aplicação esperar a primeira, e uma primeira que parou de ler a penduraria pelo timeout inteiro. Um segundo pedido **na mesma propriedade da mesma janela** é recusado em voz alta (`SelectionNotify` com `None`), porque duas transferências escrevendo a mesma propriedade intercalariam os chunks num paste corrompido.
+
+  O teto que sobra é de memória e não de protocolo (`maximumOwnedBytes`, 32 MiB), porque cada transferência em voo guarda a própria cópia dos bytes — e é justamente por guardar que perder a seleção no meio **não trunca** o paste de quem já estava recebendo, como a ICCCM manda. `PRIMARY` continua deliberadamente ausente;
 - [x] XDND — **nos dois sentidos**: `X11DragDropManager` recebe e `X11XdndSource` inicia. A imagem de arraste é **ignorada**. *(A string velha do probe — "dragging out is not implemented" — foi corrigida em 06/09/2026; os dois caminhos hoje dizem "XDND is available in both directions".)*;
 - [ ] **RandR — detectado e não usado**: `_hasRandr` sai da lista de extensões e a única consumidora seria a geometria por monitor. A geometria da tela **raiz** existe e roda (`X11_SCREENS=PASS`, `1920x1080`, `scale 1.0`), mas ela é a caixa envolvente de todos os monitores: num multi-head o framework vê **uma** tela do tamanho de todas, e `x11_scale.dart` diz por que isso foi adiado (três round trips encadeados por `RRGetScreenResources`);
 - [x] **OpenGL/EGL — executado pela primeira vez em 07/09/2026, e passou**. `tool/x11_gl_smoke.dart` leva o caminho de ponta a ponta e o workflow `X11 OpenGL probe` o roda sob **Xvfb com Mesa llvmpipe**. A execução
@@ -3684,30 +3689,44 @@ da segunda passagem estão em
 [`logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md`](logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md),
 com número de run em cada uma.
 
-- [ ] **clear/present — não há apresentação nenhuma**: sem `CAMetalLayer`, sem
-  drawable, sem IOSurface no caminho do renderer, sem janela.
-  `supportsSurface` só aceita `MemorySurfaceDescriptor`, e a capacidade
-  anunciada é `cpuPresentation`, não `gpuPresentation`. Reconferido em
-  07/09/2026: continua exato, e o que falta tem nome — não existe
-  `metal_window_target.dart`, enquanto `d3d11/` tem o seu. Os três envios que
-  fecham essa lacuna
-  (`newTextureWithDescriptor:iosurface:plane:`, `addCompletedHandler:` e a
-  leitura por `IOSurfaceLock`) estão declarados em `kMetalSelectors` com
-  encoding verificado a cada push e **nunca foram enviados**;
-  `tool/metal_present_probe.dart` existe para medir os três;
+- [x] **clear/present — existe apresentação, e por `IOSurface`.** Este item
+  ficou aberto até 07/09/2026 e a linha que o fechou é uma medição:
+  `IOSURFACE_CENTRE_BGRA=128,64,32,255` para uma limpeza `0xFF204080` na run
+  [`34165428755`](https://github.com/insinfo/dart_ui/actions/runs/34165428755)
+  — a GPU escreveu, a CPU leu as mesmas páginas pelo `IOSurfaceLock`, e os
+  canais estavam na ordem certa. `MetalWindowTarget` embrulha a `IOSurface` do
+  `surface_pool.dart` com `newTextureWithDescriptor:iosurface:plane:`, desenha,
+  espera o `addCompletedHandler:` (6,7 ms medidos) e só então manda
+  `PRESENT_SLOT`. `supportsSurface` aceita `MetalPresentSurface` e a capacidade
+  anunciada passou a incluir `gpuPresentation`;
+- [ ] **`CAMetalLayer` — recusado por arquitetura, não por falta de tempo.**
+  O probe mostra que o runner entregaria um drawable
+  (`CAMETALLAYER_PRESENTER=VIABLE`), e isso não compra apresentador: no único
+  backend macOS que cria janela em `lib/` a layer está em **outro processo**
+  (ADR 0001), e `skylight` e `appkitSignal` têm `canCreateWindow: false` fixo.
+  Um segundo caminho de apresentação sem janela para exercê-lo é o apresentador
+  inverificável que este projeto já recusou uma vez;
 - [ ] **resize Retina — não é provável neste CI, e por isso fica desmarcado.**
   O `macos-14` enumera um display `Apple Virtual` a `scale 1.0`
   (run [`34153314897`](https://github.com/insinfo/dart_ui/actions/runs/34153314897)),
   e a conversão de pontos para pixels só erra quando os dois números diferem —
-  um teste a 1× passaria sem tocar no código que importa. Marcar este item
-  exige hardware Retina, não mais código;
+  um teste a 1× passaria sem tocar no código que importa. `MetalWindowTarget`
+  *tem* o caminho: `resize` invalida a geração antes de soltar as texturas, e o
+  `deviceTransform` atravessa até o `DisplayListPlayer`. Nada disso é evidência.
+  Marcar este item exige hardware Retina, não mais código;
 - [~] display list básica — **retângulos sólidos e com alpha**, offscreen, com
   paridade medida contra a CPU em CI Apple Silicon: desvio 0 onde nada mistura,
   1 nível onde mistura;
-- [ ] **texto — recusado por nome**: não há atlas de glifos neste caminho;
+- [ ] **texto — recusado por nome**: não há atlas de glifos neste caminho.
+  É por isso que a entrada `metal` em `default_platform_resolver.dart` está
+  marcada `experimental: true` — um caminho que não desenha texto não pode ser
+  alcançado por fallback num framework de UI, a mesma regra que o `_win32Vulkan`
+  já aplicava;
 - [ ] **clips e layers — recusados por nome**: não há atlas de máscara nem
   pilha de layers;
-- [ ] múltiplas janelas;
+- [ ] múltiplas janelas — o `MTLDevice` e o cache de pipelines são por
+  dispositivo e compartilhados (`sharesDevice`), então o custo já está pago;
+  o que falta é exercer duas janelas ao mesmo tempo e medir;
 - [ ] perda/indisponibilidade tratada;
 - [ ] fallback CPU;
 - [~] Intel e Apple Silicon — só arm64 no CI;
@@ -7009,12 +7028,28 @@ Objective-C próprio, `MTLCreateSystemDefaultDevice`, MSL compilada de verdade
 por `newLibraryWithSource:options:error:`, um `MTLRenderPipelineState` por modo
 de blend, passe offscreen, leitura de volta e paridade medida contra a CPU.
 
-E, apesar disso, **o gate está aberto por um item só, que vale por todos**:
-**não há apresentação**. Sem `CAMetalLayer`, sem drawable, sem janela; e sem
+E, apesar disso, **o gate estava aberto por um item só, que valia por todos**:
+**não havia apresentação**. Sem `CAMetalLayer`, sem drawable, sem janela; e sem
 atlas de máscara, sem atlas de glifos e sem pilha de layers, então path, rrect,
-texto e layer são **recusados por nome**. O probe diz a verdade sobre isso — ele
-anuncia `cpuPresentation`, não `gpuPresentation`. Ver §21.6, inclusive para a
+texto e layer eram **recusados por nome**. O probe dizia a verdade sobre isso —
+anunciava `cpuPresentation`, não `gpuPresentation`. Ver §21.6, inclusive para a
 ausência de MSL no porte sparse.
+
+### Atualização de 07/09/2026 — a apresentação existe
+
+O item que valia por todos foi fechado, e não por `CAMetalLayer`: pela
+`IOSurface` compartilhada que o ADR 0005 tinha escolhido sem poder executar.
+`MetalWindowTarget` desenha nas páginas que o host varre e apresenta com
+`PRESENT_SLOT` depois que o `addCompletedHandler:` volta. A capacidade
+anunciada passou a incluir `gpuPresentation` — e passou porque a condição que a
+própria `Capability.gpuPresentation` documenta foi medida, não porque o backend
+amadureceu de forma difusa.
+
+**O gate continua aberto**, agora por três itens que são de fato três: atlas de
+máscara, atlas de glifos e pilha de layers. Enquanto eles faltarem, a entrada
+`metal` do resolvedor fica `experimental: true` e nunca é alcançada por
+fallback — um caminho que levanta `UnsupportedCapabilityError` no primeiro
+glifo não pode ser o caminho em que um aplicativo cai sozinho.
 
 Reconferido em 07/09/2026 e confirmado item a item; o que mudou desde a
 auditoria está em
@@ -7320,8 +7355,9 @@ corrigidas abaixo com a execução que as desmente.
   8, 7 keysyms cada) e `X11_CLIPBOARD=PASS owner=self roundtrip=true` saem do
   smoke AOT sob Xvfb a cada push, junto de `X11_SCREENS=PASS` e
   `X11_POPUP=PASS`. Continua *beta* — mas pelo que falta de verdade: sem IME,
-  sem acessibilidade, sem XInput2, sem RandR por monitor, sem dono `INCR`, e
-  só Xvfb (nunca um Xorg ou XWayland);
+  sem acessibilidade, sem XInput2, sem RandR por monitor, e só Xvfb (nunca um
+  Xorg ou XWayland). O dono `INCR`, que era o item mais visível desta lista,
+  entrou em 07/09/2026 e é provado contra o `xclip`;
 - [~] **Wayland ao menos beta com CPU** — o código está em nível de beta e a
   evidência não: a §50 exige *gallery, clipboard, IME, resize/DPI, packaging,
   leak suite* e nada disso foi exercido contra um compositor;
@@ -8124,7 +8160,7 @@ aplica, **?** não verificado.
 | `scrollInput` | ? (roda normalizada) | sim | sim | sim | ? | sim |
 | **`keyboardInput`** | sim | sim desde 26/08/2026 (core protocol: dois grupos, sem `DetectableAutoRepeat`) | sim (subconjunto xkb) | sim | ? | sim |
 | **`textComposition`** | sim, se `imm32` carrega | **não** (XIM não implementado; teclas mortas funcionam e não são IME) | sim, se o compositor anuncia v3 | não | não | não |
-| `clipboardText` | sim | sim desde 26/08/2026 (selections; **sem dono INCR**, sem `PRIMARY`) | sim | não | não | sim (falso) |
+| `clipboardText` | sim | sim desde 26/08/2026 (selections; **INCR nos dois papéis** desde 07/09/2026, provado contra `xclip`; sem `PRIMARY`) | sim | não | não | sim (falso) |
 | `clipboardImage` | **não em plataforma nenhuma** — o contrato `Clipboard` é só texto | não | não | não | não | não |
 | `dragAndDrop` | sim (OLE, dois sentidos; **imagem de arraste ignorada**) | sim (XDND, dois sentidos; **imagem ignorada**) | sim (dois sentidos; **imagem ignorada**, **sem `link`**) | não | não | não |
 | `perMonitorDpi` | sim | parcial (escala do probe) | parcial (inteira, a maior dos outputs) | ? | sim | sim |
@@ -9018,9 +9054,16 @@ que o destino XDND, ao lado, recusa. Escrever toma `CLIPBOARD`, verifica a posse
 com um round trip (`SetSelectionOwner` não dá erro quando é ignorado) e serve
 `TARGETS`, `TIMESTAMP`, `UTF8_STRING`, `STRING` e `TEXT`.
 
-**O que não tem**: servir como **dono INCR**. Um payload maior que 200 KiB é
-recusado **em voz alta** em vez de truncado. E `PRIMARY` — a seleção do botão do
-meio — está deliberadamente fora: é outra funcionalidade, com outra semântica.
+**O que não tinha**: servir como **dono INCR** — um payload acima de 200 KiB era
+recusado em voz alta em vez de truncado, o que é a recusa certa e ainda assim
+uma perda de dados do ponto de vista de quem copiou. **Entrou em 07/09/2026**:
+acima do limite de um `ChangeProperty` a conversão sai incremental, com
+`PropertyChange` selecionado na janela do requestor antes da propriedade `INCR`
+e a máscara anterior restaurada no fim, timeout por pedaço que abandona a
+transferência sem largar a seleção, e transferências paralelas com chave
+`(janela, propriedade)`. O teto que resta é de memória (32 MiB), não de
+protocolo. `PRIMARY` — a seleção do botão do meio — segue deliberadamente fora:
+é outra funcionalidade, com outra semântica.
 
 ### O que disso está provado por teste executável, e o que não está
 
@@ -9999,7 +10042,9 @@ proporção ele aparece nos outros caminhos, não.
   clipboard (o leitor existe), sem `PRIMARY`, sem XInput2, sem RandR por
   monitor, sem `MIT-SHM` (a apresentação é `PutImage` do core); o caminho EGL
   roda desde 07/09/2026 sob **llvmpipe**, nunca sobre GPU, e a malha 3D só
-  **linka** por lá — nenhum triângulo foi desenhado no Linux;
+  **linka** por lá — nenhum triângulo foi desenhado no Linux. O dono `INCR`
+  deixou esta lista em 07/09/2026: um documento longo agora sai da
+  aplicação em vez de ser recusado;
 - **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
   primária, sem CSD quando o compositor recusa SSD, sem movimento/resize
@@ -10038,6 +10083,14 @@ Isto é tão importante quanto a lista anterior, e é mais fácil de esquecer:
   pegar `EGL_BAD_MATCH` **nunca disparou** — sob Xvfb não há visual ARGB de 32
   bits para o `eglChooseConfig` preferir, então ela não podia disparar. Não
   confunda "nunca falhou" com "não é necessária";
+- **nenhuma aplicação de desktop de verdade colou daqui.** O dono `INCR` é
+  provado contra o `xclip`, que é um cliente estranho e não um fake — essa
+  é a parte que importa —, mas GTK e Qt implementam a mesma ICCCM com outro
+  código e nenhum dos dois foi executado contra este backend. E o `xclip` não
+  produz sob encomenda os casos que quebram uma máquina de estados INCR:
+  requestor que para de ler, payload múltiplo exato do chunk, duas
+  conversões simultâneas. Esses estão no teste unitário, contra um fake, com
+  o viés que um fake tem;
 - **o pipeline de malha 3D no Linux só foi linkado, nunca desenhado.**
   `X11_GL_MESH=PASS` é o compilador GLSL do driver dizendo que os shaders são
   válidos. Nenhuma `MeshScene` foi submetida, nenhum frame com modelo saiu, e
@@ -10091,6 +10144,7 @@ Registradas para quem mexer no código a seguir; **em todas, o código venceu**:
 | §15.14 (roteiro) | "XKB — não existe, e é o bloqueio central"; "clipboard INCR — não existe" | `x11_keyboard.dart` (mapa do core protocol) e `x11_clipboard.dart` (`ClipboardProvider` + leitor `INCR`) existem desde 26/08/2026 e **passam sob Xvfb no CI**. **Resolvido em 07/09/2026**: a §15.14 foi reescrita contra o código e contra o log |
 | §45 Gate 1.0 (roteiro) | teclado e clipboard do X11 "não rodaram contra um X server real"; Wayland "nunca executado de verdade" | `X11_KEYBOARD=PASS`, `X11_CLIPBOARD=PASS` e `WAYLAND_BACKEND_SMOKE=PASS` na mesma execução de CI. **Resolvido em 07/09/2026** |
 | `x11_gl_surface.dart` + §5/§45/§55.1/§68 | o caminho EGL do X11 "nunca foi executado" | era verdade, e deixou de ser: `tool/x11_gl_smoke.dart` e o workflow `X11 OpenGL probe` o rodam sob Xvfb com Mesa llvmpipe. **Resolvido em 07/09/2026** — o que continua sem prova é GPU de verdade |
+| `x11_clipboard.dart` | "serving as an INCR owner is not implemented" | era verdade, e era a perda de dados mais visível do backend: um `copy` grande **para fora** falhava. **Implementado em 07/09/2026**, com prova de interoperabilidade contra o `xclip` |
 | `platform/text_input.dart` | citava `x11_compose.dart` | **resolvido em 26/08/2026**: o arquivo nunca existiu; a referência passou a ser `backends/x11/x11_keyboard.dart`, e a frase "o teclado da plataforma ainda produz `TextInputEvent`" deixou de ser aspiracional no X11 |
 | `vector/compute_tile_scene.dart` | "nenhum binding de API consome estes buffers ainda" | o executor de compute do D3D12 consome. **Resolvido em 06/09/2026**: o cabeçalho nomeia os dois executores |
 | `doc/vector_editor.md` | o exemplo está em `examples/sk1_editor_demo/` | está em `examples/vector_editor_demo/`. **Resolvido em 06/09/2026**, junto com os caminhos de `geometry/` (hoje `graphics/vector/`), do exportador PDF (hoje `pdf/export/`) e da barra de ferramentas (`toolbox.dart` + `standard_toolbar.dart`) |

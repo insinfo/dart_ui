@@ -1,6 +1,9 @@
 # ADR 0005 — Metal no macOS: IOSurface compartilhada, não comandos no protocolo
 
-**Status:** proposto — **nada foi executado num Mac**
+**Status:** aceito e **executado num Mac** desde 07/09/2026 — ver a seção
+*Medição* no fim deste documento. O texto abaixo é preservado como foi escrito,
+porque um ADR que se reescreve depois do resultado deixa de registrar a decisão
+e passa a registrar o desfecho.
 **Data:** 16 de agosto de 2026
 **Depende de:** [`0001-worker-process-com-iosurface-no-macos.md`](0001-worker-process-com-iosurface-no-macos.md)
 **Pendência que fecha:** "Metal além do framebuffer de CPU", listada em
@@ -231,6 +234,8 @@ A última linha é o ponto. A seção 6.6 do roteiro diz que capacidade fingida 
 pior que capacidade ausente, e este ADR é aceito sabendo que a última linha
 está vazia.
 
+> **07/09/2026 — a última linha foi preenchida.** Ver *Medição*, abaixo.
+
 ## Plano de reversão
 
 A decisão foi construída para ser barata de desfazer, e o teste disso é
@@ -268,3 +273,39 @@ concreto: **o caminho de CPU não é tocado**. Reverter é, em ordem:
   significativa: `MTLSharedEvent` sobre XPC passa a valer o transporte novo.
 - Se o custo de compilar MSL no arranque aparecer num perfil: o `.metallib`
   volta à mesa, junto com a decisão de toolchain que ele arrasta.
+
+---
+
+## Medição — 07 de setembro de 2026
+
+Run [`34165428755`](https://github.com/insinfo/dart_ui/actions/runs/34165428755),
+`macos-14` arm64, `Apple Paravirtual device`, 16 verificações, 0 falhas.
+Probe: [`metal_present_probe.dart`](../../tool/metal_present_probe.dart).
+
+As três afirmações que este ADR fez sem poder executar:
+
+| Afirmação de 16/08 | Medição de 07/09 | Veredito |
+|---|---|---|
+| a `IOSurface` pode ser embrulhada como `MTLTexture` | `ADR0005_IOSURFACE_BRIDGE=OK storageMode=0` | **confirmada**, sob `MTLStorageModeShared`; `managed` foi tentado e não foi necessário |
+| `addCompletedHandler:` pode substituir `waitUntilCompleted` | `ADR0005_COMPLETION_HANDLER=OK latency_us=6672` | **confirmada** — e a latência da volta pelo isolate, que a seção *Consequências* listava como "não medido", são 6,7 ms |
+| Metal desenha | `IOSURFACE_CENTRE_BGRA=128,64,32,255` para `0xFF204080` | **confirmada**, com a ordem dos canais verificada e não suposta |
+
+O `ObjCBlock` dessa run é o primeiro que este repositório construiu. Até então
+os testes conferiam o `sizeOf` da estrutura e paravam aí — layout correto não é
+ABI exercida, e a diferença só aparece quando um framework chama o ponteiro.
+
+### O que a medição *não* resolveu
+
+**A dúvida do `registryID` continua aberta**, e agora é mensurável em vez de
+apenas verdadeira: `DEVICE_REGISTRY_ID=4294967700` é impresso pelo probe, mas o
+host não imprime o dele, então os dois seguem sem ser comparados. Em Apple
+silicon com uma GPU só isso não muda nada. Num Mac Intel com GPU discreta
+continua sendo a falha silenciosa que a seção *Consequências* descreve.
+
+**`MTLStorageModeShared` é uma suposição de uma máquina.** Ela está escrita em
+`metal_window_target.dart` no ponto exato em que vive, porque um Mac com
+memória discreta pode exigir `managed` e essa é a linha que teria de mudar.
+
+**O agendamento continua sendo do `surface_pool.dart`.** A consequência
+negativa nº 3 — sem `presentDrawable:`, sem o pacing que a `CAMetalLayer` faz
+sozinha — segue valendo e não foi medida.
