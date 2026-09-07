@@ -95,4 +95,19 @@ void main() {
     expect(
         images.every((image) => image.width > 0 && image.height > 0), isTrue);
   });
+
+  test('lenient page rendering isolates a corrupt content stream', () {
+    final bytes =
+        File('test/pdf/data/corpus/c008_2021_4hd.pdf').readAsBytesSync();
+    final page = PdfDocument.fromBytes(bytes).getPage(1);
+
+    expect(page.getContentsBytes, throwsA(isA<PdfFilterException>()));
+    final content = page.readContents(ignoreStreamErrors: true);
+    expect(content.isComplete, isFalse);
+    expect(content.issues, isNotEmpty);
+    expect(
+      () => page.renderToMemory(ignoreContentStreamErrors: true),
+      returnsNormally,
+    );
+  });
 }

@@ -129,6 +129,7 @@ class PdfDocument {
         dict: pageDict,
         resolver: _xref,
         reference: nodeReference,
+        limits: limits,
       ));
     }
   }

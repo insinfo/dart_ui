@@ -8,6 +8,7 @@ final class PdfLimits {
     this.maxObjectStreamEntries = 1000000,
     this.maxPageTreeDepth = 256,
     this.maxPages = 1000000,
+    this.maxPageContentBytes = 256 * 1024 * 1024,
   });
 
   final int maxObjectNesting;
@@ -17,6 +18,7 @@ final class PdfLimits {
   final int maxObjectStreamEntries;
   final int maxPageTreeDepth;
   final int maxPages;
+  final int maxPageContentBytes;
 }
 
 /// A malformed or resource-hostile PDF rejected at a controlled boundary.
