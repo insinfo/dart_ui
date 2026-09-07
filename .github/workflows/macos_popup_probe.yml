@@ -23,7 +23,7 @@ jobs:
           sdk: '3.6.2'
       - run: dart pub get
       - name: Build the production AppKit host
-        run: lib/src/backends/macos/native/build_host.sh
+        run: bash lib/src/backends/macos/native/build_host.sh
       - name: Inspect real NSPanel popup and tooltip windows
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
