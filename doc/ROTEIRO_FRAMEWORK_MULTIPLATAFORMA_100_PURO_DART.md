@@ -9479,6 +9479,118 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
 - **acessibilidade do popup**: o popup ainda não é fragmento UIA filho da dona
   e não emite `MenuOpened`/`MenuClosed`.
 
+## 68.4.3 O Vulkan desenha texto — 06/09/2026
+
+A §68.2 registrava que `VulkanWindowTarget` montava seu `GpuRasterSink` **sem
+atlas de glifos e sem `GpuFontResolver`**, então o primeiro `drawGlyphRun`
+levantava exceção pelo nome, e era isso que mantinha o caminho atrás de
+`experimental: true`: um backend que apresenta um swapchain e não desenha um
+caractere.
+
+Fechado, e o que faltava era menos do que parecia:
+
+- **o resolver de fonte não precisava existir.** Cinco backends tinham uma
+  cópia privada — `D3d11FontResolver`, `D3d12FontResolver`, `GlFontResolver`,
+  `WebGlFontResolver`, `WebGpuFontResolver` — **byte a byte idênticas, exceto
+  por um comentário**, e nenhuma delas toca em API gráfica nenhuma: resolvem um
+  id por `ReplayResources`. O Vulkan não tinha cópia e por isso não desenhava
+  texto. Entrou `ReplayFontResolver`, portátil, em `gpu_raster_sink.dart`. As
+  cinco cópias continuam lá e devem ser substituídas por ela;
+- **o atlas de glifos é o mesmo mecanismo do atlas de máscara** que o Vulkan já
+  tinha: uma página alpha8 que a CPU rasteriza e o shader amostra. O upload,
+  porém, **não** é o mesmo: a máscara é uma faixa única e o glifo é empacotado
+  em plots, então copiar a forma da máscara enviaria a página inteira sempre
+  que um glifo caísse no último plot. Usa `forEachDirtyRegion`;
+- **e ligar o atlas não bastava.** A recusa apenas mudou de "sem atlas de
+  glifos" para "font id 0 não resolveu para nada": faltava vincular o resolver
+  aos recursos do replay, como o D3D11 e o GL fazem em `renderDisplayList`.
+
+**Medido**: `tool/render_throughput_bench.dart`, Vulkan 1.4.323 sobre Intel
+UHD, a cena de texto com 1896 glifos passou de `REFUSED` para **60,0 fps**.
+
+**O que continua faltando no Vulkan**, e agora aparece porque o resto passou:
+a cena `mixed-ui` recusa com *"the coverage atlas is full of masks this frame
+has already drawn, and this backend passed no onAtlasFlush handler"*. O D3D11 e
+o GL passam um manipulador que faz upload dos atlas e **submete o lote no meio
+do frame** para reciclar o atlas. O Vulkan grava o display list inteiro no
+batcher e só submete em `present`, então não existe ponto de submissão
+intermediário: dá-lo é reestruturar o frame, e é decisão própria. É também a
+mesma causa-raiz da §68.4.2.
+
+**E uma mensagem de erro que era falsa.** `UnsupportedCapabilityError` imprimia
+"vulkan does not support gpuPresentation" para uma recusa de texto — dita por
+um backend que apresenta por swapchain a 60 fps. `Capability` é vocabulário de
+**backend** (janela, apresentação, entrada, clipboard) e não tem valor para
+"este renderizador não desenha isso", então as 51 recusas de `rendering/`
+usavam `gpuPresentation` como coringa. O erro ganhou um campo `feature` que
+substitui o nome da capacidade na mensagem; as três recusas do caminho de texto
+o usam. **As outras continuam imprecisas** e devem ser corrigidas do mesmo
+jeito.
+
+## 68.4.2 O primitivo mais comum da biblioteca é o mais caro — medido em 06/09/2026
+
+`tool/render_throughput_bench.dart` foi escrito para responder outra pergunta
+(qual caminho desenha mais rápido) e encontrou isto, que importa mais.
+
+**A medição**, OpenGL sem vsync, Intel UHD, 960x540, mediana por frame:
+
+| cena | primitivos | ms/frame | por primitivo |
+|---|---|---|---|
+| retângulos simples | 600 | 0,83 | 0,0014 ms |
+| **retângulos arredondados AA** | **600** | **54,51** | **0,091 ms** |
+| texto | 1896 glifos | 0,71 | — |
+| imagens | 144 | 0,86 | — |
+
+**65 vezes mais caro por primitivo que um retângulo simples** — e retângulo
+arredondado antialiasado é o que este framework mais desenha. Todo botão, todo
+card, todo painel, todo campo passa por `paintRoundedFill` e
+`paintRoundedBorder`.
+
+**O diagnóstico, em três linhas de código:**
+
+1. `GpuRasterSink.fillDeviceRRect` constrói um `Path` e chama `_drawMask`, ou
+   seja, **todo arredondado antialiasado vai para o atlas de máscara** — que,
+   como a §68.4 já diz, roda o `ScanlineFiller` **na CPU**;
+2. `DeviceRRectPathCache` tem **capacidade 64**. O comentário dele enuncia a
+   premissa em voz alta: "static chrome hands the same twelve numbers in every
+   frame". Uma tela com mais de 64 arredondados distintos — qualquer lista,
+   grade ou tabela — invalida essa premissa e o cache passa a errar sempre;
+3. com 600 máscaras distintas, o atlas de 1024x1024 enche e recicla, então não
+   há reuso entre frames: **600 rasterizações de CPU por frame**.
+
+**E a correção já está escrita, desligada em uma linha.**
+`lib/src/rendering/gpu/vector/analytic_primitive.dart` é a estratégia 6 do
+`doc/architecture/ACELERACAO_GPU_VETORIAL.md`, e o cabeçalho dele descreve
+exatamente o custo medido acima antes de qualquer um o ter medido: "para um
+botão de 220x44 são 9 680 bytes de rasterização de CPU, 9 680 bytes de upload e
+uma entrada de atlas, repetidos para cada tamanho e deslocamento subpixel
+distinto na tela". Pela rota analítica a mesma forma vira **seis floats num
+vértice**, sem rasterização, sem upload e sem entrada de atlas.
+
+A cadeia existe inteira e para num ponto:
+
+- `AnalyticPrimitiveRecognizer` reconhece a forma;
+- `GpuPathStrategy` a escolheria — `gpu_path_strategy.dart:456`, "closed-form
+  shader coverage is cheaper than path rasterization";
+- `GpuPathStrategyCapabilities.analyticPrimitives` **é `true` por padrão**;
+- **`gpu_raster_sink.dart:576` a exclui por nome** da gravação e cai para o
+  `coverageAtlas`;
+- e nenhum backend tem o shader que a executaria: a única declaração concreta
+  no repositório é `gl_vector_replay.dart:277`, `analyticPrimitives: false`.
+
+Então isto é §68.2 — escrito e não ligado — e é o item de maior impacto dessa
+lista, porque o custo dele não é uma funcionalidade ausente: é o caminho quente
+de toda tela. O que falta é o executor no backend, ou seja, formato de vértice,
+shader de SDF e integração com o lote existente.
+
+**Uma ressalva sobre a medição**, porque ela vale menos do que parece em um
+aspecto: só o OpenGL pôde ser destravado do vsync nesta máquina. Direct3D 11 e
+12 aceitaram intervalo 0 e continuaram a 60 fps, e Direct2D e Vulkan não
+expõem como destravar. Então **não se sabe se os outros caminhos sofrem o
+mesmo**, e provavelmente sofrem, porque o atlas de máscara é compartilhado por
+todos eles. O que está medido é que o custo existe e é grande; em que
+proporção ele aparece nos outros caminhos, não.
+
 ## 68.5 Limitações por plataforma, em uma linha cada
 
 - **Windows**: sem DirectComposition; sem TSF (só IMM32); IME não lê texto ao

@@ -100,6 +100,37 @@ abstract interface class GpuFontResolver {
   ScaledTypeface? resolveFont(int fontId);
 }
 
+/// Resolves a font id through the display list's own resource table.
+///
+/// Portable on purpose, and it should have been from the start: every GPU
+/// backend in this repository grew a private copy of this class -
+/// `D3d11FontResolver`, `D3d12FontResolver`, `GlFontResolver`,
+/// `WebGlFontResolver`, `WebGpuFontResolver` - and the five were **byte for
+/// byte identical apart from a comment**. Nothing in resolving an id to a face
+/// touches a graphics API; the duplication was momentum, not necessity, and
+/// the visible cost of it was the Vulkan backend, which had no copy and
+/// therefore could not draw text at all.
+///
+/// The type test is deliberately not a cast. A display list stores a font as
+/// an opaque `Object`, so a list built by something that interned a different
+/// kind of face has to be refused by name rather than crash with a type error
+/// in the middle of a frame.
+final class ReplayFontResolver implements GpuFontResolver {
+  ReplayResources? _resources;
+
+  /// Points this resolver at the resources of the list being replayed, or at
+  /// nothing between frames.
+  void bind(ReplayResources? resources) => _resources = resources;
+
+  @override
+  ScaledTypeface? resolveFont(int fontId) {
+    final ReplayResources? resources = _resources;
+    if (resources == null) return null;
+    final Object font = resources.fontAt(fontId);
+    return font is ScaledTypeface ? font : null;
+  }
+}
+
 /// Batches the player's device-space primitives for a GPU backend.
 ///
 /// ## Gradients, and why the marker moved here from the player
@@ -1168,6 +1199,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'text rendering',
         detail: atlas == null
             ? 'this device has no glyph atlas, so text cannot be drawn; pass a '
                 'GpuGlyphAtlas and the id of the alpha8 texture it stages into'
@@ -1179,6 +1211,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'stroked text',
         detail: 'stroked text is not implemented; the glyph atlas stores '
             'coverage, and the stroker needs the outline that coverage was '
             'rasterised from',
@@ -1194,6 +1227,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'text rendering',
         detail: 'font id $fontId resolved to nothing; the display list '
             'interned a face this device cannot rasterise',
       );

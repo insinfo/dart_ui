@@ -240,13 +240,33 @@ final class UnsupportedCapabilityError extends Error {
     required this.backendName,
     required this.capability,
     this.detail,
+    this.feature,
   });
 
   final String backendName;
   final Capability capability;
   final String? detail;
 
+  /// What the caller actually asked for, when that is narrower than
+  /// [capability] names.
+  ///
+  /// [Capability] is a **backend** vocabulary: windows, presentation, input,
+  /// clipboard. A *renderer* refusing to draw something is a different axis
+  /// entirely, and it has no value in that enum — so every such refusal in
+  /// `rendering/` reached for `gpuPresentation` as the nearest thing, and
+  /// produced sentences that were simply false. "vulkan does not support
+  /// gpuPresentation" was printed by a backend that presents through a
+  /// `VK_KHR_win32_surface` swapchain at 60 fps; the real answer was that it
+  /// had no glyph atlas. Someone reading that message would go and debug the
+  /// swapchain.
+  ///
+  /// When this is set it replaces the capability name in [toString], so the
+  /// sentence says the thing that is true. The capability stays on the object
+  /// because callers that switch on it still can.
+  final String? feature;
+
   @override
   String toString() => 'UnsupportedCapabilityError: $backendName does not '
-      'support ${capability.name}${detail == null ? '' : ' ($detail)'}';
+      'support ${feature ?? capability.name}'
+      '${detail == null ? '' : ' ($detail)'}';
 }

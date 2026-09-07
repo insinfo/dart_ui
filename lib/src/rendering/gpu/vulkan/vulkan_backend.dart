@@ -52,6 +52,7 @@ import '../../framebuffer.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
+import '../gpu_glyph_atlas.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_path_planning.dart';
 import '../gpu_path_strategy.dart';
@@ -1452,6 +1453,18 @@ final class VulkanOffscreenTarget implements RenderTarget {
       height: _maskAtlas.height,
       format: GpuTextureFormat.alpha8,
     );
+    // The glyph atlas is the same mechanism as the mask atlas one line up: an
+    // alpha8 page the CPU rasterises into and the shader samples. Vulkan went
+    // without one for no reason anyone wrote down, and the consequence was
+    // that the first `drawGlyphRun` threw - so this backend could present a
+    // swapchain and not draw a single character, which is what kept it behind
+    // `experimental: true`.
+    _glyphAtlas = GpuGlyphAtlas();
+    _glyphTexture = _device.createTexture(
+      width: _glyphAtlas.width,
+      height: _glyphAtlas.height,
+      format: GpuTextureFormat.alpha8,
+    );
     _images = VulkanImageCache(_device);
     _recorder = _VulkanOrderedRecorder(
       device: _device,
@@ -1463,6 +1476,9 @@ final class VulkanOffscreenTarget implements RenderTarget {
       backendName: VulkanRenderDevice.backendName,
       maskAtlas: _maskAtlas,
       maskTextureId: _maskTexture.id,
+      glyphAtlas: _glyphAtlas,
+      glyphTextureId: _glyphTexture.id,
+      fontResolver: _fonts,
       imageResolver: _images,
       pathPlanningTelemetry: _recorder.planning,
       pathCommandRecorder: _recorder.vectorRecorder,
@@ -1476,6 +1492,12 @@ final class VulkanOffscreenTarget implements RenderTarget {
   final GpuBatcher _batcher = GpuBatcher();
   late final GpuMaskAtlas _maskAtlas;
   late final VulkanTexture _maskTexture;
+  late final GpuGlyphAtlas _glyphAtlas;
+  late final VulkanTexture _glyphTexture;
+
+  /// Portable, and shared with every other backend - see [ReplayFontResolver]
+  /// for why five identical private copies existed before this one.
+  final ReplayFontResolver _fonts = ReplayFontResolver();
   late final VulkanImageCache _images;
   late final GpuRasterSink _sink;
   late final DisplayListPlayer _player;
@@ -1575,9 +1597,16 @@ final class VulkanOffscreenTarget implements RenderTarget {
     Transform2D deviceTransform = Transform2D.identity,
   }) async {
     final Frame frame = beginFrame(FrameRequest(clearColor: clearColor));
+    // One resource table, walked by the player and read by the sink's font
+    // resolver, so the two cannot disagree about which face an id names. The
+    // resolver being unbound is why wiring the atlas alone was not enough: the
+    // refusal simply moved from "no glyph atlas" to "font id 0 resolved to
+    // nothing".
+    final resources = DisplayListResources(list);
+    _fonts.bind(resources);
     _player.play(
       DisplayListReader(list),
-      DisplayListResources(list),
+      resources,
       deviceBounds: Rect.fromLTWH(
         0,
         0,
@@ -1614,6 +1643,7 @@ final class VulkanOffscreenTarget implements RenderTarget {
     }
 
     _uploadMaskAtlas();
+    _uploadGlyphAtlas();
 
     final Pointer<VkCommandBuffer_T>? commands = _device.gpu.beginFrame();
     if (commands == null) return _lost('beginFrame could not open a frame');
@@ -1774,6 +1804,34 @@ final class VulkanOffscreenTarget implements RenderTarget {
     _maskAtlas.markUploaded();
   }
 
+  /// The same upload as [_uploadMaskAtlas], for the glyph page.
+  ///
+  /// `markUploaded` clears the dirty span for the **atlas**, not for a
+  /// texture, so this has to run before the frame is submitted and exactly
+  /// once: a second caller would find nothing dirty and the first would have
+  /// already consumed the span.
+  void _uploadGlyphAtlas() {
+    if (!_glyphAtlas.isDirty) return;
+    final int width = _glyphAtlas.width;
+    // Region by region rather than one span, because a glyph atlas is packed
+    // in plots and the dirty texels of a frame are scattered across them - the
+    // mask atlas one method up is a single growing band and can be uploaded in
+    // one call, and copying its shape here would upload the whole page every
+    // time one glyph landed in the last plot.
+    _glyphAtlas.forEachDirtyRegion((int x, int y, int regionWidth, int height) {
+      _device.uploadRegion(
+        _glyphTexture,
+        x: x,
+        y: y,
+        width: regionWidth,
+        height: height,
+        pixels: Uint8List.sublistView(_glyphAtlas.pixels, y * width + x),
+        bytesPerRow: width,
+      );
+    });
+    _glyphAtlas.markUploaded();
+  }
+
   void _readPixels() {
     _device.gpu.allocator.invalidate(_readbackBuffer!.memory);
     final int bytes = _readback.pixels.length;
@@ -1920,6 +1978,18 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
       height: _maskAtlas.height,
       format: GpuTextureFormat.alpha8,
     );
+    // The glyph atlas is the same mechanism as the mask atlas one line up: an
+    // alpha8 page the CPU rasterises into and the shader samples. Vulkan went
+    // without one for no reason anyone wrote down, and the consequence was
+    // that the first `drawGlyphRun` threw - so this backend could present a
+    // swapchain and not draw a single character, which is what kept it behind
+    // `experimental: true`.
+    _glyphAtlas = GpuGlyphAtlas();
+    _glyphTexture = _device.createTexture(
+      width: _glyphAtlas.width,
+      height: _glyphAtlas.height,
+      format: GpuTextureFormat.alpha8,
+    );
     _images = VulkanImageCache(_device);
     _recorder = _VulkanOrderedRecorder(
       device: _device,
@@ -1931,6 +2001,9 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
       backendName: VulkanRenderDevice.backendName,
       maskAtlas: _maskAtlas,
       maskTextureId: _maskTexture.id,
+      glyphAtlas: _glyphAtlas,
+      glyphTextureId: _glyphTexture.id,
+      fontResolver: _fonts,
       imageResolver: _images,
       pathPlanningTelemetry: _recorder.planning,
       pathCommandRecorder: _recorder.vectorRecorder,
@@ -1948,6 +2021,12 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
   final GpuBatcher _batcher = GpuBatcher();
   late final GpuMaskAtlas _maskAtlas;
   late final VulkanTexture _maskTexture;
+  late final GpuGlyphAtlas _glyphAtlas;
+  late final VulkanTexture _glyphTexture;
+
+  /// Portable, and shared with every other backend - see [ReplayFontResolver]
+  /// for why five identical private copies existed before this one.
+  final ReplayFontResolver _fonts = ReplayFontResolver();
   late final VulkanImageCache _images;
   late final GpuRasterSink _sink;
   late final DisplayListPlayer _player;
@@ -2054,9 +2133,16 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
     final Frame frame = beginFrame(FrameRequest(clearColor: clearColor));
     final int width = _swapchain?.configuration.width ?? _surface.pixelWidth;
     final int height = _swapchain?.configuration.height ?? _surface.pixelHeight;
+    // One resource table, walked by the player and read by the sink's font
+    // resolver, so the two cannot disagree about which face an id names. The
+    // resolver being unbound is why wiring the atlas alone was not enough: the
+    // refusal simply moved from "no glyph atlas" to "font id 0 resolved to
+    // nothing".
+    final resources = DisplayListResources(list);
+    _fonts.bind(resources);
     _player.play(
       DisplayListReader(list),
-      DisplayListResources(list),
+      resources,
       deviceBounds: Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
       deviceTransform: deviceTransform,
     );
@@ -2100,6 +2186,7 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
     }
 
     _uploadMaskAtlas();
+    _uploadGlyphAtlas();
 
     final Pointer<VkCommandBuffer_T>? commands = _device.gpu.beginFrame();
     if (commands == null) return _lost('beginFrame could not open a frame');
@@ -2331,6 +2418,34 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
       bytesPerRow: _maskAtlas.width,
     );
     _maskAtlas.markUploaded();
+  }
+
+  /// The same upload as [_uploadMaskAtlas], for the glyph page.
+  ///
+  /// `markUploaded` clears the dirty span for the **atlas**, not for a
+  /// texture, so this has to run before the frame is submitted and exactly
+  /// once: a second caller would find nothing dirty and the first would have
+  /// already consumed the span.
+  void _uploadGlyphAtlas() {
+    if (!_glyphAtlas.isDirty) return;
+    final int width = _glyphAtlas.width;
+    // Region by region rather than one span, because a glyph atlas is packed
+    // in plots and the dirty texels of a frame are scattered across them - the
+    // mask atlas one method up is a single growing band and can be uploaded in
+    // one call, and copying its shape here would upload the whole page every
+    // time one glyph landed in the last plot.
+    _glyphAtlas.forEachDirtyRegion((int x, int y, int regionWidth, int height) {
+      _device.uploadRegion(
+        _glyphTexture,
+        x: x,
+        y: y,
+        width: regionWidth,
+        height: height,
+        pixels: Uint8List.sublistView(_glyphAtlas.pixels, y * width + x),
+        bytesPerRow: width,
+      );
+    });
+    _glyphAtlas.markUploaded();
   }
 
   VulkanTexture _textureFor(int id) {
