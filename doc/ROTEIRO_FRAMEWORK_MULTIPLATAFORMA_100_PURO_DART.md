@@ -8828,9 +8828,10 @@ seguinte:
    round-trip de salvar com prompt de sobrescrita. Nada disso dá para ver sem
    olhar a tela; `dart run tool/file_dialog_smoke.dart --interactive` roda a
    lista, e sem a flag o smoke exercita só o que não abre janela;
-2. **`mailbox` no D3D12** (§68.3): exige mudar a criação da swap chain
-   (`FLIP_DISCARD`, três buffers, objeto aguardável), e é o único lugar em
-   que o modo é implementável de verdade sem ser o Vulkan;
+2. ~~**`mailbox` no D3D12**~~ — **feito em 06/09/2026.** `D3d12WindowTarget`
+   implementa `PresentPacer` e é o primeiro pacer daqui que não recusa
+   mailbox. A medição em janela real corrigiu a explicação corrente do que o
+   objeto aguardável faz; a tabela e o porquê estão na §68.3;
 3. ~~**damage tracking**~~ — **feito em 06/09/2026.** `isRepaintBoundary`
    deixou de ser consultado por nada: um boundary limpo emenda a sub-lista que
    gravou em vez de repercorrer a subárvore, `markNeedsPaint` para nele, e
@@ -9407,13 +9408,54 @@ evitar.
   substituir nada. Recusar é a resposta certa nesses dois, e a §68.3 estava
   certa quanto a isso.
 
-  **Onde `mailbox` é implementável de verdade, e onde já é real:** o D3D12
-  (`FLIP_DISCARD` + `BufferCount >= 3` + objeto aguardável), que exige mudar a
-  *criação* da swap chain e não a chamada de present — continua como contrato.
+  **`mailbox` no D3D12 deixou de ser contrato em 06/09/2026.**
+  `D3d12WindowTarget` implementa `PresentPacer` e honra os três modos — é o
+  primeiro pacer deste repositório que não recusa mailbox. `FLIP_DISCARD` com
+  `max(3, bufferCount)` buffers,
+  `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`,
+  `SetMaximumFrameLatency(1)`, a espera tomada em `beginFrame` **antes de
+  gravar**, e `Present(1, 0)`. Nada disso pode ser acrescentado a uma cadeia
+  viva, então trocar de modo **reconstrói** a swap chain, e a geração sobe para
+  que um quadro em voo seja recusado como velho. O `presentMode` é **derivado**
+  do handle aguardável e do `syncInterval`, nunca lembrado, para que a válvula
+  de escape pública `syncInterval` não consiga fazer o modo mentir.
+
   E o **Vulkan já escolhe `VK_PRESENT_MODE_MAILBOX_KHR`** em
   `vulkan_swapchain.dart` quando `VulkanPresentPolicy.lowLatency` pede e a
   superfície reporta: mailbox é real ali, apenas ainda não alcançável por este
   vocabulário.
+
+  **E a explicação corrente de para que serve o objeto aguardável está errada,
+  medida.** "Mailbox não bloqueia o produtor" é falso no D3D12: `Present`
+  devolve em 0,2–0,4 ms em **todos** os modos, `fifo` inclusive. O gargalo de
+  uma cadeia sem o objeto aparece mais tarde, dentro da cerca do anel de
+  quadros, onde o produtor não consegue nomear a espera nem gastar o tempo
+  dela. O que o objeto compra é que **o mesmo tempo ocioso vira uma chamada
+  nomeada no topo do quadro** e que a fila fica limitada a um quadro em vez dos
+  três que o DXGI usa por padrão. Painel de 60 Hz, 180 quadros por modo,
+  reproduzido pelo coordenador em janela visível:
+
+  | modo | fps | quadro | espera de latência | resto do quadro | Present |
+  |---|---|---|---|---|---|
+  | fifo | 60,1 | 16,65 ms | 0,00 ms | 16,65 ms | 0,20 ms |
+  | **mailbox** | 59,9 | 16,70 ms | **14,89 ms** | **1,82 ms** | 0,43 ms |
+  | immediate | 60,0 | 16,67 ms | 0,00 ms | 16,67 ms | 0,34 ms |
+  | mailbox após resize | 60,0 | 16,66 ms | 15,52 ms | 1,14 ms | 0,31 ms |
+
+  A última linha é o bug que esta funcionalidade sempre tem e que **não foi
+  enviado**: `ResizeBuffers` recebe os valores de criação gravados e nunca zero,
+  senão o objeto aguardável morre no primeiro redimensionamento. Verificado
+  reintroduzindo o defeito duas vezes — com as flags perdidas o
+  `ResizeBuffers` chega a destruir a cadeia (`notPresented=40`).
+
+  **Duas coisas que ficam medidas como não medíveis**, em vez de afirmadas:
+  `SetMaximumFrameLatency(1)` vale pelo contrato da API e não por medição — a
+  conta `GetLastPresentCount` menos `DXGI_FRAME_STATISTICS.PresentCount` foi
+  implementada, medida e **removida**, porque numa janela composta pelo DWM ela
+  deriva monotonicamente (4 após três quadros, 56 após 180) e deriva e
+  profundidade de fila ficam inseparáveis. E `immediate` só se separa de `fifo`
+  quando o DWM põe a janela em DirectFlip; quando não põe, os dois dão 60 fps e
+  o smoke imprime `WARN` em vez de fingir que a cadeia foi provada.
 
   **Prova em janela real** (`tool/present_mode_smoke.dart`, Intel UHD Graphics,
   painel de 60 Hz): `fifo` 60,0 fps, `immediate` 1564,3 fps — 26x de separação,

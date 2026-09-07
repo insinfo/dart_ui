@@ -70,8 +70,6 @@ import '../../../rendering/gpu/gpu_video_image.dart';
 import '../../../rendering/gpu/vector/compute_tile_scene.dart';
 import '../../../rendering/gpu/vector/sparse_strip_draw_plan.dart';
 import '../../../rendering/renderer.dart';
-import '../../../rendering/replay/display_list_player.dart';
-import '../../../text/typeface.dart';
 import 'd3d12_arena.dart';
 import 'd3d12_com.dart';
 import 'd3d12_compute_tile_driver.dart';
@@ -1270,6 +1268,7 @@ final class D3d12RenderDevice
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'another render target view',
         detail: 'this device holds at most $kRenderTargetCapacity render '
             'target views and they are all in use; a target that was not '
             'disposed is the usual cause',
@@ -1329,6 +1328,7 @@ final class D3d12RenderDevice
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a ${width}x$height texture',
         detail: 'a ${width}x$height texture exceeds the $kMaxTextureSize '
             'limit every Direct3D 12 feature level guarantees; the caller '
             'must tile the image or scale it down',
@@ -1344,6 +1344,7 @@ final class D3d12RenderDevice
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a ${width}x$height texture',
         detail: _lastTextureHresult == 0
             ? 'the ${width}x$height texture could not be created; all '
                 '$kTextureCapacity shader-resource descriptors are in use'
@@ -1983,6 +1984,7 @@ final class D3d12RenderDevice
           throw UnsupportedCapabilityError(
             backendName: backendName,
             capability: Capability.gpuPresentation,
+            feature: 'blend mode ${batch.blendMode}',
             detail: 'no pipeline state for blend mode ${batch.blendMode}; a '
                 'mode added to gpu_pipeline.dart needs one built in '
                 'D3d12RenderDevice._initialise',
@@ -2205,6 +2207,7 @@ final class D3d12RenderDevice
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a ${newWidth}x$newHeight compute coverage texture',
         detail: 'a ${newWidth}x$newHeight R32_FLOAT compute coverage texture '
             'could not be created; approach D has nowhere to write',
       );
@@ -2388,25 +2391,6 @@ String _readUtf16(Array<Uint16> array, int capacity) {
     buffer.writeCharCode(unit);
   }
   return buffer.toString();
-}
-
-/// Turns the display list's interned font ids into faces for the sink.
-///
-/// The same shape as `GlFontResolver`, and for the same reason: the sink is
-/// handed a raw `fontId` because the player never asks what a glyph looks
-/// like, so whoever has to rasterise needs the table the player is walking.
-final class D3d12FontResolver implements GpuFontResolver {
-  ReplayResources? _resources;
-
-  void bind(ReplayResources? resources) => _resources = resources;
-
-  @override
-  ScaledTypeface? resolveFont(int fontId) {
-    final ReplayResources? resources = _resources;
-    if (resources == null) return null;
-    final Object font = resources.fontAt(fontId);
-    return font is ScaledTypeface ? font : null;
-  }
 }
 
 /// Uploads drawn images into textures, once each.

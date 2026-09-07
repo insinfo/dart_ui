@@ -6,6 +6,15 @@
 /// That is what makes presenting testable on a build machine without putting
 /// anything on an operator's screen.
 ///
+/// What this file can and cannot prove about `PresentMode.mailbox`: it can
+/// prove the **shape** of the swap chain - that the waitable flag was
+/// accepted, that three buffers were created, that a handle came back, and
+/// above all that `ResizeBuffers` was given the flag again - because those are
+/// answers from DXGI rather than facts about a picture. It cannot prove
+/// anything about pacing: a hidden window is not scanned out, so the frame
+/// cadence here means nothing. `tool/d3d12_mailbox_smoke.dart` is the other
+/// half and it needs a window on screen.
+///
 /// The observable that matters is the **back buffer index**. Under
 /// `DXGI_SWAP_EFFECT_FLIP_DISCARD` it advances on every present and wraps at
 /// the buffer count, and `GetCurrentBackBufferIndex` is the only correct
@@ -17,6 +26,7 @@ import 'package:dart_ui/src/backends/win32/d3d12/d3d12_backend.dart';
 import 'package:dart_ui/src/backends/win32/d3d12/d3d12_window_target.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/rendering/gpu/d3d12/d3d12_surface_descriptor.dart';
+import 'package:dart_ui/src/rendering/present_mode.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
 import 'package:test/test.dart';
 
@@ -90,6 +100,67 @@ void main() {
           await target.renderDisplayList(_scene(), clearColor: 0xFF102030);
       expect(result.status, PresentStatus.presented,
           reason: '${result.diagnostic}');
+      target.dispose();
+    }, skip: session.skipReason);
+
+    test(
+        'mailbox rebuilds the chain waitable, and the resize keeps it that way',
+        () async {
+      final D3d12WindowTarget target = _target(session, 64, 48);
+      expect(target.presentMode, PresentMode.fifo);
+      expect(target.hasFrameLatencyWaitableObject, isFalse);
+
+      final PresentModeOutcome outcome =
+          target.requestPresentMode(PresentMode.mailbox);
+      if (!outcome.accepted) {
+        // A refusal is a legitimate answer and must name what refused - so it
+        // is checked rather than skipped over, and the test then stops
+        // because there is no mailbox chain to say anything else about.
+        expect(outcome.applied, PresentMode.fifo);
+        expect(outcome.diagnostic, isNotNull);
+        printOnFailure('$outcome');
+        target.dispose();
+        return;
+      }
+      expect(target.presentMode, PresentMode.mailbox);
+      expect(target.hasFrameLatencyWaitableObject, isTrue);
+      // Three, not the descriptor's two: with two buffers the producer has
+      // nothing to draw into while one is on screen and one is queued.
+      expect(target.bufferCount, 3);
+      expect(target.swapChainFlags & 0x40, 0x40);
+
+      final PresentResult presented =
+          await target.renderDisplayList(_scene(), clearColor: 0xFF102030);
+      expect(presented.status, PresentStatus.presented,
+          reason: '${presented.diagnostic}');
+
+      target.resize(96, 72, 1.0);
+
+      // The whole point of this test. `ResizeBuffers` given 0 instead of the
+      // flag returns S_OK and quietly un-waitables the chain, and the handle
+      // the frame loop is waiting on then never signals again - so every
+      // frame after the first window resize stalls for the wait's full
+      // timeout, with nothing anywhere reporting it.
+      expect(target.creationFailure, isNull);
+      expect(target.swapChainFlags & 0x40, 0x40,
+          reason: 'ResizeBuffers dropped the frame-latency waitable flag');
+      expect(target.hasFrameLatencyWaitableObject, isTrue);
+      expect(target.bufferCount, 3);
+      expect(target.presentMode, PresentMode.mailbox);
+
+      final PresentResult afterResize =
+          await target.renderDisplayList(_scene(), clearColor: 0xFF102030);
+      expect(afterResize.status, PresentStatus.presented,
+          reason: '${afterResize.diagnostic}');
+
+      // And back. Leaving mailbox has to release the handle and put the plain
+      // chain back, or the next fifo window in the process inherits a waitable
+      // object nobody waits on.
+      expect(target.requestPresentMode(PresentMode.fifo).accepted, isTrue);
+      expect(target.hasFrameLatencyWaitableObject, isFalse);
+      expect(target.swapChainFlags, 0);
+      expect(
+          target.bufferCount, D3d12WindowSurfaceDescriptor.kDefaultBufferCount);
       target.dispose();
     }, skip: session.skipReason);
 

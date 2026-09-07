@@ -299,6 +299,21 @@ const int dxgiUsageRenderTargetOutput = 0x20;
 /// - a swap chain created with one fails outright rather than falling back.
 const int dxgiSwapEffectFlipDiscard = 4;
 
+/// `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`.
+///
+/// Asked for at swap chain *creation* and nowhere else: it is what makes
+/// `IDXGISwapChain2::GetFrameLatencyWaitableObject` return a handle instead of
+/// null, and it is the only way DXGI lets an application decide *where* in its
+/// frame it blocks. Without it the block is inside `Present`, at the end of the
+/// frame, after every millisecond of CPU work has already been spent.
+///
+/// It must be passed to `ResizeBuffers` again on every resize. Dropping it
+/// there does not fail: `ResizeBuffers` returns `S_OK`, the swap chain quietly
+/// stops being waitable, and the handle the application is still waiting on
+/// never signals again - so the first window resize hangs the frame loop for
+/// the wait's whole timeout, every frame. See `D3d12WindowTarget.resize`.
+const int dxgiSwapChainFlagFrameLatencyWaitableObject = 0x40;
+
 /// `DXGI_SCALING_STRETCH`, `DXGI_ALPHA_MODE_UNSPECIFIED`.
 const int dxgiScalingStretch = 0;
 const int dxgiAlphaModeUnspecified = 0;

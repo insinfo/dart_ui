@@ -729,6 +729,13 @@ final class DxgiAdapter1 {
 /// `IDXGISwapChain3`. Slots: 7 inherited + GetDevice = 8, IDXGISwapChain adds
 /// 10 (to 18), IDXGISwapChain1 adds 11 (to 29), IDXGISwapChain2 adds 7 (to
 /// 36), then IDXGISwapChain3's own.
+///
+/// The two `IDXGISwapChain2` slots this file names - 31 and 33 - are counted
+/// out of that run: SetSourceSize 29, GetSourceSize 30,
+/// **SetMaximumFrameLatency 31**, GetMaximumFrameLatency 32,
+/// **GetFrameLatencyWaitableObject 33**, SetMatrixTransform 34,
+/// GetMatrixTransform 35. A wrong index here is a call into the wrong function
+/// rather than an error, so the count is written down.
 final class DxgiSwapChain3 {
   DxgiSwapChain3(this.pointer)
       : _present =
@@ -744,6 +751,12 @@ final class DxgiSwapChain3 {
                 Int32 Function(Pointer<Void>, Uint32, Uint32, Uint32, Uint32,
                     Uint32)>(pointer, 13)
             .asFunction<int Function(Pointer<Void>, int, int, int, int, int)>(),
+        _setMaximumFrameLatency =
+            comMethod<Int32 Function(Pointer<Void>, Uint32)>(pointer, 31)
+                .asFunction<int Function(Pointer<Void>, int)>(),
+        _getFrameLatencyWaitableObject =
+            comMethod<IntPtr Function(Pointer<Void>)>(pointer, 33)
+                .asFunction<int Function(Pointer<Void>)>(),
         _currentBackBufferIndex =
             comMethod<Uint32 Function(Pointer<Void>)>(pointer, 36)
                 .asFunction<int Function(Pointer<Void>)>();
@@ -753,6 +766,8 @@ final class DxgiSwapChain3 {
   final int Function(Pointer<Void>, int, Pointer<Guid>, Pointer<Pointer<Void>>)
       _getBuffer;
   final int Function(Pointer<Void>, int, int, int, int, int) _resizeBuffers;
+  final int Function(Pointer<Void>, int) _setMaximumFrameLatency;
+  final int Function(Pointer<Void>) _getFrameLatencyWaitableObject;
   final int Function(Pointer<Void>) _currentBackBufferIndex;
 
   int present(int syncInterval, int flags) =>
@@ -772,6 +787,32 @@ final class DxgiSwapChain3 {
     int flags,
   ) =>
       _resizeBuffers(pointer, bufferCount, width, height, format, flags);
+
+  /// How many frames the swap chain will let the producer queue ahead.
+  ///
+  /// `IDXGISwapChain2::SetMaximumFrameLatency`, slot 31. Only legal on a swap
+  /// chain created with
+  /// `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` - it returns
+  /// `DXGI_ERROR_INVALID_CALL` on any other, which is why
+  /// `D3d12WindowTarget` calls it only on the chain it created waitable.
+  ///
+  /// One is the value `PresentMode.mailbox` means: the producer is allowed
+  /// exactly one frame in flight, so what reaches the display is the newest
+  /// finished frame rather than the third one back. DXGI's default without
+  /// this call is three, which is where "the picture lags the mouse by 50 ms
+  /// at 60 Hz" comes from.
+  int setMaximumFrameLatency(int maxLatency) =>
+      _setMaximumFrameLatency(pointer, maxLatency);
+
+  /// The event the producer waits on before recording a frame.
+  ///
+  /// `IDXGISwapChain2::GetFrameLatencyWaitableObject`, slot 33. Returns a
+  /// `HANDLE`, **not** an `HRESULT`: zero is the failure, and the failure is
+  /// what a swap chain created without the waitable flag returns. The handle
+  /// is owned by the caller and must be passed to `CloseHandle`; it survives
+  /// `ResizeBuffers` only while that call is given the waitable flag again.
+  int getFrameLatencyWaitableObject() =>
+      _getFrameLatencyWaitableObject(pointer);
 
   /// Which buffer the next frame must be drawn into.
   ///

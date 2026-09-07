@@ -73,7 +73,7 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
       format: GpuTextureFormat.alpha8,
       filter: GpuTextureFilter.nearest,
     );
-    _fonts = D3d12FontResolver();
+    _fonts = ReplayFontResolver();
     _images = D3d12ImageCache(_device);
     // The experimental vector route is wired only when the device was opened
     // with it. A production device leaves both fields null, the sink consults
@@ -136,7 +136,7 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
   late final D3d12Texture _maskTexture;
   late final GpuGlyphAtlas _glyphAtlas;
   late final D3d12Texture _glyphTexture;
-  late final D3d12FontResolver _fonts;
+  late final ReplayFontResolver _fonts;
   late final D3d12ImageCache _images;
   late final GpuRasterSink _sink;
   late final DisplayListPlayer _player;

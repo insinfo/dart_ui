@@ -21,7 +21,11 @@
 ///     tearing, latency bounded by one refresh instead of by one frame time.
 ///     This is `VK_PRESENT_MODE_MAILBOX_KHR` and `DXGI_SWAP_EFFECT_FLIP_DISCARD`
 ///     with a waitable object; it is the mode a game wants and the mode WGL
-///     and GDI cannot express at all.
+///     and GDI cannot express at all. Note what it does *not* promise: the
+///     display still paces the frame rate, because the mode is tear-free. What
+///     is unblocked is the producer's *position* in the frame - it waits where
+///     it chooses rather than where the driver chooses - and the depth of the
+///     queue in front of the display.
 ///   * [PresentMode.immediate] - the frame is scanned out the moment it is
 ///     ready, tearing included. `wglSwapIntervalEXT(0)`, `SyncInterval: 0`,
 ///     `VK_PRESENT_MODE_IMMEDIATE_KHR`. The right answer for a benchmark and
@@ -46,7 +50,7 @@
 /// other implementation of [PresentPacer]: the only class in this repository
 /// that implemented it was [UnpacedPresentation], below, which exists for
 /// surfaces that cannot pace at all. Every application asking for a mode was
-/// therefore asking nobody. The two below are the real ones.
+/// therefore asking nobody. The three below are the real ones.
 ///
 /// Implemented in this repository today:
 ///
@@ -69,27 +73,30 @@
 ///     can replace a frame in. It starts in [PresentMode.immediate] because
 ///     that is what the path *did* before it had a pacer, and wiring a
 ///     contract in must not change behaviour nobody asked to change.
+///   * **Direct3D 12** - `D3d12WindowTarget`, in
+///     `backends/win32/d3d12/d3d12_window_target.dart`. All three modes are
+///     honoured and none is refused, which no other pacer here can say; see
+///     the section below for what mailbox actually costs and buys, and for the
+///     measurement that corrected the standard explanation of it. One
+///     deliberate gap: [PresentMode.immediate] is `Present(0, 0)` without
+///     `DXGI_PRESENT_ALLOW_TEARING`. The flag needs
+///     `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING` at creation and an
+///     `IDXGIFactory5::CheckFeatureSupport` query that backend does not make -
+///     and under the desktop compositor a windowed flip-model present does not
+///     tear with or without it, so the mode is accepted with that stated in
+///     its diagnostic rather than refused. A full-screen exclusive path would
+///     have to revisit this.
 ///
-/// Measured in a real window on Intel UHD Graphics, 60 Hz panel, by
-/// `tool/present_mode_smoke.dart`: fifo 60.0 fps, immediate 1564.3 fps, and
-/// `DwmFlush` blocking 14.8 ms - one refresh interval. A headless run cannot
-/// produce any of those three numbers, which is why the tool exists next to
-/// `test/rendering/present_mode_test.dart` rather than instead of it.
+/// The GL and GDI pacers were measured in a real window on Intel UHD Graphics,
+/// 60 Hz panel, by `tool/present_mode_smoke.dart`: fifo 60.0 fps, immediate
+/// 1564.3 fps, and `DwmFlush` blocking 14.8 ms - one refresh interval. A
+/// headless run cannot produce any of those three numbers, which is why the
+/// tool exists next to `test/rendering/present_mode_test.dart` rather than
+/// instead of it.
 ///
 /// Contract only, seam left open deliberately because other work is live in
-/// those directories:
+/// that directory:
 ///
-///   * **D3D12** - `IDXGISwapChain3::Present1(syncInterval, flags)`. fifo is
-///     `syncInterval: 1`; immediate is `syncInterval: 0` plus
-///     `DXGI_PRESENT_ALLOW_TEARING`, which additionally requires the swap
-///     chain to have been created with `DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING`
-///     and the factory to have reported `AllowTearing` support - a backend
-///     that cannot set the flag must refuse immediate rather than fall back
-///     to 0 without it, which silently becomes fifo. mailbox is
-///     `DXGI_SWAP_EFFECT_FLIP_DISCARD` with `BufferCount >= 3` and the
-///     frame-latency waitable object. **This is the one backend here where
-///     mailbox is implementable**, and implementing it means changing swap
-///     chain *creation*, not the present call.
 ///   * **Vulkan** - `vkGetPhysicalDeviceSurfacePresentModesKHR` enumerates
 ///     what the surface really supports, and only `VK_PRESENT_MODE_FIFO_KHR`
 ///     is guaranteed. [PresentPacer.supportedPresentModes] is meant to be
@@ -100,8 +107,43 @@
 ///     asks and the surface reports it - so mailbox is real on that backend
 ///     and simply not yet reachable through this vocabulary.
 ///
-/// Both seams are a [PresentPacer] implementation next to the backend and
-/// nothing else: no core file needs to change to add them.
+/// The seam is a [PresentPacer] implementation next to the backend and nothing
+/// else: no core file needs to change to add one.
+///
+/// ## Direct3D 12, and the first honoured `mailbox` in this vocabulary
+///
+/// This section described a contract until `D3d12WindowTarget` implemented
+/// [PresentPacer]. It **honours all three modes**, which makes it the first
+/// pacer here that does not refuse [PresentMode.mailbox]. Vulkan picks
+/// `VK_PRESENT_MODE_MAILBOX_KHR` for its own reasons and still does not
+/// implement this interface, so through *this*
+/// vocabulary D3D12 is the only backend where a caller can ask for mailbox and
+/// be told yes.
+///
+/// Mailbox there is `DXGI_SWAP_EFFECT_FLIP_DISCARD` over three buffers with
+/// `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT`,
+/// `SetMaximumFrameLatency(1)`, a wait on `GetFrameLatencyWaitableObject`
+/// taken **before the frame is recorded**, and `Present(1, 0)`. Sync interval
+/// one, because mailbox does not tear; `DXGI_PRESENT_ALLOW_TEARING` belongs to
+/// [PresentMode.immediate] and confusing the two is how this feature is
+/// usually mis-implemented. None of the flag, the third buffer or the waitable
+/// object can be added to a live swap chain, so the target *rebuilds* the
+/// chain on a mode change - which is why this mode is creation-time work and
+/// not a present-time argument.
+///
+/// **The obvious justification for it is wrong, and was measured wrong.** The
+/// usual telling is that a swap chain without a waitable object blocks inside
+/// `Present`. On Direct3D 12 it does not: `Present` returns in a few hundred
+/// microseconds in every mode, and the throttle surfaces later, inside the
+/// frame ring's fence, where the producer can neither name the stall nor spend
+/// it. What the waitable object buys is that the same idle time becomes one
+/// named call at the top of the frame, and that it is bounded to one frame
+/// instead of DXGI's default three. Measured by
+/// `tool/d3d12_mailbox_smoke.dart` in a real window at 60 Hz, 240 frames per
+/// mode: fifo 60.0 fps with 16.68 ms of the 16.68 ms frame inside the frame's
+/// own machinery; mailbox 60.0 fps with 15.44 ms in the frame-latency wait and
+/// 1.20 ms of frame around it; immediate 1176.5 fps. Same cadence for the two
+/// tear-free modes, because the panel decides that, and the stall moved.
 library;
 
 import '../foundation/diagnostics.dart';
