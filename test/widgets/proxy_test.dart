@@ -518,7 +518,17 @@ void main() {
       );
     });
 
-    test('NO CACHE: a second frame re-walks the subtree all the same', () {
+    test('a clean boundary is painted once, however many frames run', () {
+      // This test used to be called `NO CACHE` and assert the opposite: three
+      // frames, three walks, with the reason "flushPaint walks the whole tree
+      // every frame; this widget buys nothing until a layer cache exists". The
+      // cache exists as of 06/09/2026, so the assertion is inverted rather
+      // than relaxed - the old number recorded an absence, and the absence is
+      // what was fixed.
+      //
+      // The widget was a marker for as long as that was true: §68.4 of the
+      // roadmap quoted `render_box.dart` calling `isRepaintBoundary`
+      // "consultado por nada".
       final PipelineOwner pipeline = PipelineOwner(
         rootConstraints: BoxConstraints.tight(const Size(16, 16)),
       );
@@ -533,9 +543,36 @@ void main() {
 
       final layout.RenderRepaintBoundary node =
           owner.renderRoot! as layout.RenderRepaintBoundary;
-      expect(node.paintCount, 3,
-          reason: 'flushPaint walks the whole tree every frame; this widget '
-              'buys nothing until a layer cache exists');
+      expect(node.paintCount, 1,
+          reason: 'nothing inside the boundary changed after the first frame, '
+              'so frames two and three splice the recorded sub-list instead '
+              'of walking the subtree again');
+    });
+
+    test('and the frames it did not paint drew the same pixels', () {
+      // The half that matters more than the count. A boundary that stopped
+      // repainting and also stopped drawing would satisfy the test above and
+      // be a blank hole on screen, which is the failure this optimisation
+      // invites.
+      final PipelineOwner pipeline = PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(16, 16)),
+      );
+      BuildOwner(pipelineOwner: pipeline).updateRoot(
+        const RepaintBoundary(child: ColoredBox(color: _content)),
+      );
+
+      final DisplayList first = DisplayList();
+      pipeline.drawFrame(first);
+      final DisplayList second = DisplayList();
+      pipeline.drawFrame(second);
+
+      expect(second.commandCount, first.commandCount);
+      expect(second.opLength, first.opLength);
+      expect(
+        second.commandCount,
+        greaterThan(0),
+        reason: 'two empty frames would agree perfectly and prove nothing',
+      );
     });
   });
 

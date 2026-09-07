@@ -3,10 +3,13 @@
 /// The GLSL counterpart is `gl_shaders.dart` and the two are deliberately the
 /// same shader written twice, not two shaders that happen to look alike: one
 /// program, three modes selected by a constant, the same interleaved vertex
-/// layout from `gpu_pipeline.dart`, and the same analytic `boxCoverage` term.
-/// Every argument in that file for why it is shaped this way applies here and
-/// is not repeated. What *is* written down here is everything the two APIs
-/// disagree about, because those are the places a port goes silently wrong.
+/// layout from `gpu_pipeline.dart`, and the same two analytic coverage terms -
+/// `boxCoverage` for a rectangle and `roundedCoverage` for the closed-form
+/// rounded rectangle, which a solid quad selects from a shape code it carries
+/// in the texture coordinate the solid pipeline never samples. Every argument
+/// in that file for why it is shaped this way applies here and is not
+/// repeated. What *is* written down here is everything the two APIs disagree
+/// about, because those are the places a port goes silently wrong.
 ///
 /// ## Disagreement 1: where a rendered image's row 0 is
 ///
@@ -78,6 +81,36 @@ library;
 const int kD3dModeSolid = 0;
 const int kD3dModeCoverageMask = 1;
 const int kD3dModeTexturedImage = 2;
+
+/// What the second texture-coordinate float means in [kD3dModeSolid].
+///
+/// The whole argument for the encoding lives in `gl_shaders.dart` under
+/// `kAnalyticNone` and is not repeated: the shared vertex of
+/// `gpu_pipeline.dart` has exactly two floats a solid fill does not already
+/// use, they are `TEXCOORD0`, and they hold `(radius, kind)` - enough for the
+/// uniform-radius rounded rectangle a user interface actually draws, and not
+/// enough for per-corner radii or an oriented kind, which `GpuRasterSink`
+/// refuses by name before the vertex is written.
+///
+/// What matters *here* is that these are the same integers as the GLSL twin's
+/// and are checked against `AnalyticPrimitiveKind.shaderCode` in the test
+/// suite. The three of them cross an API boundary a compiler cannot see
+/// across: `gpu_raster_sink.dart` writes the code as a float on a vertex and
+/// this pixel shader compares it against a literal, so a renumbering that
+/// touched only one side would not fail to build - it would draw a plain
+/// rectangle where a rounded one was asked for, on this backend only.
+const int kD3dAnalyticNone = 0;
+
+/// A rounded rectangle: `shapeRect` is its box and `texCoord.x` its radius.
+///
+/// Zero is [kD3dAnalyticNone] on purpose, twice over. It is what every other
+/// path in this renderer already leaves in `TEXCOORD0` for a solid quad, so
+/// nothing that existed before this constant had to change to keep drawing
+/// exactly as it did; and radius zero is genuinely not this shape - the
+/// distance field says a pixel centred on a square corner is half covered
+/// where the true area is a quarter, so the sink redirects a zero radius to
+/// the plain rectangle path rather than encoding it here.
+const int kD3dAnalyticRoundedRect = 1;
 
 /// The vertex shader entry point, in the profile the device is created for.
 const String kD3d11VertexEntryPoint = 'vertexMain';
@@ -167,20 +200,70 @@ float boxCoverage(float4 r, float2 p) {
   return overlap.x * overlap.y;
 }
 
+// Coverage of the pixel at [p] by the rectangle [r] with corner radius [rad].
+//
+// The body is AnalyticPrimitive.fieldAt for AnalyticPrimitiveKind.rounded with
+// all four radii equal, transcribed: fold the pixel into the first quadrant,
+// pull the box in by the radius, and read the distance to that inset box's
+// boundary. It is signed, in device pixels, and exact. The coverage is then
+// 0.5 - d, exact wherever the boundary crossing the pixel is straight - the
+// four edges, which is most of the outline - and an approximation on the
+// corner arcs, where the true area of a circular segment differs from the
+// half-plane one by O(1/rad).
+//
+// Line for line the same function as `roundedCoverage` in `gl_shaders.dart`,
+// and it has to be: the two backends draw the same display list and a golden
+// held against both would hide a divergence here. HLSL and GLSL agree on every
+// operation it uses - `abs`, `min`, `max`, `length`, `clamp`, componentwise
+// arithmetic on a float2 - so the transcription is mechanical, with one real
+// difference: GLSL's `vec2`/`vec4` are `float2`/`float4`. The local is still
+// not named `half`, because HLSL has a `half` *type* where GLSL merely
+// reserves the word, and shadowing it is a compile error that would take the
+// whole renderer down at device creation rather than at the draw.
+//
+// No ddx: everything on this path is already in device pixels, because
+// GpuRasterSink recognises the rounded rectangle after the player has applied
+// the transform. A shape that arrived in some other space would need the
+// gradient of the field to normalise the distance, and is refused instead.
+float roundedCoverage(float4 r, float rad, float2 p) {
+  float2 centre = (r.xy + r.zw) * 0.5;
+  float2 extent = (r.zw - r.xy) * 0.5;
+  float2 q = abs(p - centre) - extent + rad;
+  float d = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - rad;
+  return clamp(0.5 - d, 0.0, 1.0);
+}
+
 float4 pixelMain(VertexOutput input) : SV_Target {
   float4 color = input.color;
+  float coverage;
   if (mode == 1) {
     // A coverage mask scales the already-premultiplied colour, which is the
     // premultiplied equivalent of mul255(alpha, coverage) on the CPU. The
     // mask is an R8_UNORM texture, so the coverage is in .r exactly as the
     // GLSL twin reads it out of a GL_R8.
     color *= sourceTexture.Sample(sourceSampler, input.texCoord).r;
+    coverage = boxCoverage(input.shapeRect, input.devicePos);
   } else if (mode == 2) {
     // Premultiplied texel modulated by the paint's alpha; the colour channels
     // carry that alpha too, so this is a plain scale.
     color = sourceTexture.Sample(sourceSampler, input.texCoord) * input.color.a;
+    coverage = boxCoverage(input.shapeRect, input.devicePos);
+  } else if (input.texCoord.y >= 0.5) {
+    // kD3dAnalyticRoundedRect. A threshold rather than an equality, and that
+    // is not defensiveness: the value is a vertex attribute, so it is
+    // *interpolated*, and although the sink writes the identical float on all
+    // four corners a driver is entitled to reconstruct 1.0 as 0.99999994 at
+    // the pixel centre. An `== 1.0` test would then fall through to
+    // boxCoverage and draw a hard-cornered rectangle where a rounded one was
+    // asked for - on some hardware only, which is the worst way to be wrong.
+    // The threshold also keeps kD3dAnalyticNone decoding as "no primitive" for
+    // every quad this renderer has ever written, since those carry exact zero.
+    coverage =
+        roundedCoverage(input.shapeRect, input.texCoord.x, input.devicePos);
+  } else {
+    coverage = boxCoverage(input.shapeRect, input.devicePos);
   }
-  return color * boxCoverage(input.shapeRect, input.devicePos);
+  return color * coverage;
 }
 ''';
 

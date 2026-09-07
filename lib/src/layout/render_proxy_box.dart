@@ -26,9 +26,12 @@
 ///
 /// ## What is deliberately not here
 ///
-/// * **A layer tree.** [RenderRepaintBoundary] is a marker with no cache behind
-///   it; see its own comment, which says so at length rather than implying a
-///   saving that does not exist.
+/// * **A layer tree.** [RenderRepaintBoundary] retains a *display list*, not a
+///   rasterised layer: a clean boundary skips the walk of its subtree and
+///   still hands the rasteriser every command that subtree emitted. A layer
+///   would skip the rasterising too, and would let an outer boundary reference
+///   an inner one instead of copying it - see that class for what the copy
+///   costs.
 /// * **Rounded *clipping*.** [RenderClipRRect] cannot round the corners it
 ///   paints, because no rasterizer in this repository implements `opClipPath`
 ///   and the three available blend modes cannot express a mask. Its comment
@@ -813,40 +816,60 @@ final class RenderAbsorbPointer extends RenderProxyBox {
 // Boundaries and visibility
 // ---------------------------------------------------------------------------
 
-/// Marks a subtree as a place where repainting *could* stop.
+/// Marks a subtree as a place where repainting stops.
 ///
-/// ## There is no cache behind this, and this comment exists to say so
+/// ## What it does, now that there is something behind it
 ///
-/// A repaint boundary in a finished toolkit owns a retained layer: its subtree
-/// is rasterised once into a texture, and a later frame that dirtied nothing
-/// inside it re-composites that texture instead of re-walking the subtree. None
-/// of that machinery exists here. [PipelineOwner.flushPaint] calls `paint` on
-/// the root and walks the entire tree into a fresh display list, every frame,
-/// and this node does not interrupt it - [paint] below forwards to the child
-/// unconditionally.
+/// A repaint boundary in a finished toolkit owns a retained *layer*: its
+/// subtree is rasterised once into a texture, and a later frame that dirtied
+/// nothing inside it re-composites that texture. There is still no texture and
+/// no layer tree here. What there is instead is one step earlier in the
+/// pipeline and buys most of the same thing: the subtree is walked once into a
+/// private [DisplayList], and a later frame that dirtied nothing inside it
+/// splices those words into the frame - `DisplayList.appendFrom` - instead of
+/// asking every node under here to write them again.
 ///
-/// So wrapping something in a `RepaintBoundary` today buys **nothing**. It is
-/// not a smaller win than the real thing, it is zero, and claiming otherwise
-/// would be worse than not having the class: a boundary that is believed to
-/// work is a boundary nobody profiles.
+/// The saving is the walk, not the raster. A spliced boundary still hands the
+/// rasteriser every command its subtree emitted; what it skips is the virtual
+/// call, the offset arithmetic and the encoder work per node. That is the
+/// larger half of paint for the trees this framework is meant to run, and it
+/// is the half that grows with the size of the application rather than with
+/// the size of the window.
 ///
-/// What it is good for is being placed correctly *now*, so that the day a layer
-/// tree lands the tree already says where the seams are, and [paintCount] is
-/// the number that makes the arrival observable - it counts paints of this
-/// subtree and today grows once per frame forever. A caching implementation is
-/// exactly the change that makes it stop growing, which is a test that can be
-/// written before the feature and will fail until it works.
+/// ## Where to put one, and where not
+///
+/// On a subtree that is expensive to walk and changes rarely *relative to its
+/// siblings*: a list row, a chart, a panel of static chrome. Not on something
+/// that changes every frame - it re-records *and* the parent copies, so it is
+/// strictly slower than not being a boundary at all. Not on something tiny,
+/// where the splice costs about what the walk did.
+///
+/// And note the one that surprises people: nesting these buys nothing along
+/// the ancestor chain of whatever changed. The recording here holds a *copy*
+/// of an inner boundary's words rather than a pointer to them, so a change
+/// deep inside invalidates every boundary above it. See
+/// [RenderBox.paintFromParent], which says why and what a layer tree would
+/// change about it.
+///
+/// [paintCount] is what makes all of this observable: it counts actual walks
+/// of this subtree, so a boundary that is doing its job stops incrementing it
+/// while its contents hold still.
 final class RenderRepaintBoundary extends RenderProxyBox {
   RenderRepaintBoundary({super.child});
 
   int _paintCount = 0;
 
-  /// How many times this subtree has been walked into a display list.
+  /// How many times this subtree has actually been walked into a display list.
   ///
-  /// Today: once per frame, unconditionally. See the class comment.
+  /// A frame that replays the recording does not increment it, which is the
+  /// whole claim of the class stated as a number. It counts walks rather than
+  /// frames, so the one frame on which a subtree containing a
+  /// [RenderContentHint] is discovered to be uncacheable counts twice - the
+  /// recording that is then thrown away, and the direct paint that replaces
+  /// it.
   int get paintCount => _paintCount;
 
-  /// True, and consulted by nothing. The marker half of the class.
+  @override
   bool get isRepaintBoundary => true;
 
   @override

@@ -270,6 +270,29 @@ void main() {
       // Observed deviation: 0.
       await _expectParity(session, _clippedLayer(), tolerance: 0);
     });
+
+    test('a rounded rectangle, two evaluators of one formula: 0', () async {
+      // The scene this file could not have had until 06/09/2026, and the
+      // reason it can now is the point of it.
+      //
+      // Both sides used to reach a rounded rectangle the same way - build a
+      // `Path`, flatten the corner arc into a polyline, fill the polygon - and
+      // a scene here would have proved only that one implementation agrees
+      // with itself. Then the GPU gained a closed form in the pixel shader and
+      // the CPU gained the *same* closed form in `rounded_rect_coverage.dart`,
+      // both transcribing `AnalyticPrimitive.fieldAt`.
+      //
+      // So this is now the strongest kind of scene in the file: **two
+      // independent evaluators of one formula**, one in HLSL on the GPU and
+      // one in Dart on the CPU, over float32 and float64 respectively. Zero
+      // says the transcription is faithful in both directions. It is also the
+      // check that catches a drift nobody would otherwise notice - a shader
+      // edited for one backend, or a CPU fast path that stopped clamping the
+      // radius the same way.
+      //
+      // Observed deviation: 0.
+      await _expectParity(session, _roundedRect(), tolerance: 0);
+    });
   });
 }
 
@@ -277,6 +300,18 @@ void main() {
 // The scenes. Each is a display list and nothing else: no reference, no
 // expected buffer, no per-backend variation.
 // ---------------------------------------------------------------------
+
+/// A rounded rectangle with room for a real corner arc on a 24x24 surface.
+///
+/// Radius 6 on an 18x18 box: large enough that the arc spans several pixels in
+/// each corner, which is where the two evaluators could disagree, and small
+/// enough to leave straight edges that must stay exact.
+DisplayList _roundedRect() {
+  final list = DisplayList();
+  final ink = list.addPaint(colorArgb: 0xFFFFFFFF);
+  list.drawRRect(3, 3, 21, 21, 6, 6, 6, 6, 6, 6, 6, 6, ink);
+  return list;
+}
 
 DisplayList _solidRects() {
   final list = DisplayList();

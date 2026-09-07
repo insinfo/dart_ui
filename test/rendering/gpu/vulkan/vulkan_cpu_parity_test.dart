@@ -15,8 +15,8 @@
 ///
 /// ## The tolerance, declared and measured
 ///
-/// **Zero on nine of the ten scenes. One level on the tenth, and the tenth is
-/// the reason the number is worth stating.**
+/// **Zero on eight of the ten scenes. One level on the ninth, and tens of
+/// levels on the tenth - where the number is not a tolerance at all.**
 ///
 /// A tolerance is justifiable in principle. The CPU folds 8-bit channels
 /// through `mul255`, which is exact round-to-nearest of `v * a / 255`. The GPU
@@ -28,11 +28,19 @@
 ///
 /// It was measured rather than assumed. On the adapter this was written
 /// against - Intel UHD Graphics, Vulkan 1.3.212, driver 0x19481f - the solid
-/// fills, both blend modes, both coverage-mask path fills, the rounded
-/// rectangle, the image and the clip all match in **all four channels on all
-/// 576 pixels**, deviation 0.
+/// fills, both blend modes, both coverage-mask path fills, the image and the
+/// clip all match in **all four channels on all 576 pixels**, deviation 0.
 ///
-/// The exception is [_fractionalRect], whose left edge sits at exactly x.5 so
+/// The rounded rectangle no longer does, and it is the one scene here whose
+/// number is **not** written as a tolerance. Since 06/09/2026 the CPU draws a
+/// uniform-radius rounded rectangle from a closed form and this backend still
+/// flattens the corner arc into a polyline, so the two differ by 52 levels on
+/// 44 corner pixels - and the closed form is the accurate one, measured
+/// against a supersampled circle rather than argued. A margin would record
+/// that as "the two nearly agree"; the scene instead asserts the shape of the
+/// disagreement and names which side has to move. See the test itself.
+///
+/// The other exception is [_fractionalRect], whose left edge sits at exactly x.5 so
 /// that `boxCoverage` evaluates to exactly 0.5 down a whole column. That is a
 /// **rounding tie**, and the two sides break it in opposite directions: the
 /// CPU's coverage arrives as a quantised 8-bit value (`gpu_pipeline.dart`
@@ -150,8 +158,87 @@ void main() {
       await _expectParity(() => device, skip, _holePath(), tolerance: 0);
     });
 
-    test('a rounded rectangle: 0', () async {
-      await _expectParity(() => device, skip, _roundedRect(), tolerance: 0);
+    test('a rounded rectangle: Vulkan is now the inaccurate side', () async {
+      // Deliberately not `_expectParity`, and deliberately not a widened
+      // tolerance. This scene was exact until 06/09/2026, when the *CPU* moved
+      // - and it moved towards the shape the display list asked for, which is
+      // why the answer here is a named disagreement rather than a margin.
+      //
+      // `CpuRenderer.fillDeviceRRect` now evaluates the closed form for a
+      // uniform-radius rounded rectangle: `AnalyticPrimitive.fieldAt`, the same
+      // arithmetic OpenGL's and Direct3D 11's fragment shaders run. It used to
+      // flatten the corner arc into a polyline at a quarter of a pixel and fill
+      // the polygon, and every chord of that polyline lies *inside* the arc it
+      // replaces, so the corners came out slightly too sharp. Measured against
+      // a 400x400 point sample of the exact circle on a radius-12 corner, the
+      // closed form is out by at most 0.035 of a pixel's area and the flattened
+      // polygon by 0.164 - 4.7x further, always in the same direction. The
+      // measurements live in `gl_analytic_primitive_test.dart`
+      // (`_theClosedFormIsTheAccurateOne`) and, against this exact span
+      // generator, in `test/rendering/raster/rounded_rect_coverage_test.dart`.
+      //
+      // This backend has no closed form: `vulkan_backend.dart` never sets
+      // `GpuRasterSink.analyticPrimitives`, so a rounded rectangle here is
+      // still a `ScanlineFiller` coverage mask staged into an atlas - the route
+      // the CPU just left. So the 52 levels below are the flattening's error,
+      // measured from the accurate side, and the fix is to give the Vulkan
+      // fragment shader the `roundedCoverage` function `gl_shaders.dart`
+      // already carries. When it has one this becomes a `tolerance: 0` line
+      // like its neighbours and this comment goes with it.
+      if (skip != null) {
+        markTestSkipped('no Vulkan device: $skip');
+        return;
+      }
+      final DisplayList list = _roundedRect();
+
+      final MemoryRenderTarget cpu = _cpuTarget(_size, _size);
+      await cpu.renderDisplayList(list, clearColor: _clear);
+      final VulkanOffscreenTarget gpu = device!.createTarget(
+        const MemorySurfaceDescriptor(
+          pixelWidth: _size,
+          pixelHeight: _size,
+          format: PixelFormat.rgba8888Premultiplied,
+        ),
+      ) as VulkanOffscreenTarget;
+      final PresentResult result =
+          await gpu.renderDisplayList(list, clearColor: _clear);
+      expect(result.status, PresentStatus.presented,
+          reason: '${result.diagnostic}');
+      expect(_isUniform(cpu.framebuffer), isFalse,
+          reason: 'the scene drew nothing, so comparing it proves nothing');
+
+      final _Diff diff = _diff(cpu.framebuffer, gpu.framebuffer);
+      printOnFailure('max deviation ${diff.maxDeviation} over '
+          '${diff.differingPixels} pixels');
+
+      // It exists. Reading 0 here means this backend gained the closed form -
+      // delete this test, restore `tolerance: 0`, and delete the comment.
+      expect(
+        diff.maxDeviation,
+        greaterThan(0),
+        reason: 'the two agree again; Vulkan presumably gained the closed '
+            'form, so this test has outlived its subject',
+      );
+
+      // It is bounded. Observed on the adapter this was written against:
+      // **52 levels over 44 pixels**, on a 24x24 surface with radius 6 - the
+      // same pair of numbers `cpu_gpu_parity_test.dart` recorded for OpenGL
+      // before OpenGL gained the closed form, on the same scene, which is what
+      // says this is the flattening and not something new. The bound has
+      // headroom for driver rounding and none for drift.
+      expect(diff.maxDeviation, lessThanOrEqualTo(64));
+
+      // And it is confined to the corners: the four straight edges are exact
+      // in both, so a disagreement along an edge would not be the flattening.
+      expect(
+        diff.differingPixels,
+        lessThan(_size * _size ~/ 4),
+        reason: 'the disagreement escaped the corner arcs, so it is not the '
+            'flattening this test was written about',
+      );
+
+      cpu.dispose();
+      gpu.dispose();
     });
   });
 

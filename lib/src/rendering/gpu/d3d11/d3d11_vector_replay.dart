@@ -492,6 +492,13 @@ final class D3d11VectorReplay {
     final GpuPassAttachments attachments = layers.currentPass.attachments;
     if (traits.hasGradient) return _gradientCapabilities();
     return GpuPathStrategyCapabilities(
+      // Stated rather than left to the default, because it is now a claim
+      // about a shader that exists: `d3d11_shaders.dart` decodes a corner
+      // radius out of the solid pipeline's unused texture coordinate and
+      // computes the coverage from the field. It needs no second program, no
+      // attachment and no sample count - which is why it is the one capability
+      // here with no condition attached, and why the two below both have one.
+      analyticPrimitives: true,
       tessellation: tessellationEnabled &&
           (!traits.antiAlias || attachments.isMultisampled),
       stencil: stencilEnabled &&
@@ -518,6 +525,14 @@ final class D3d11VectorReplay {
   /// these routes existed, reached by a shorter path.
   GpuPathStrategyCapabilities _gradientCapabilities() =>
       const GpuPathStrategyCapabilities(
+        // False even now that the backend has the shader, and for exactly the
+        // reason the coverage atlas is false beside it: the analytic quad
+        // modulates one vertex colour by a coverage it computed, and a ramp is
+        // not a colour. Promoting a gradient into it would paint a flat fill -
+        // the wrong picture this whole method exists to refuse. `GpuRasterSink`
+        // refuses a gradient rounded rectangle a second time on its own, in
+        // `fillDeviceRRect`, so the two agree even on a device with no vector
+        // wiring at all and therefore no call to this method.
         analyticPrimitives: false,
         coverageAtlas: false,
       );

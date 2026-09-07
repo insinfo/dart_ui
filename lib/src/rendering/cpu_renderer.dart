@@ -31,6 +31,7 @@ import '../graphics/video/video_color_conversion.dart';
 import '../graphics/video/video_frame.dart';
 import '../text/typeface.dart';
 import 'framebuffer.dart';
+import 'gpu/vector/analytic_primitive.dart';
 import 'path/coverage_span_sink.dart';
 import 'path/fill_rule.dart';
 import 'path/scanline_filler.dart';
@@ -38,6 +39,7 @@ import 'path/stroker.dart';
 import 'raster/blend.dart';
 import 'raster/clip_stack.dart' show pixelEdge;
 import 'raster/rasterizer.dart';
+import 'raster/rounded_rect_coverage.dart';
 import 'renderer.dart';
 import 'replay/display_list_player.dart';
 import 'text/glyph_cache.dart';
@@ -344,6 +346,17 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
 
   final _CoverageToRasterizer _spanSink;
 
+  /// The shape slot [_fillAnalyticRRect] recognises into, and the recogniser
+  /// that fills it.
+  ///
+  /// One per sink and reused, exactly as `GpuRasterSink` holds its own: the
+  /// whole point of the closed form is that a rounded rectangle costs no
+  /// allocation, and a shape object per rounded rectangle per frame would be
+  /// the garbage this route exists to remove, reintroduced one layer up.
+  final AnalyticPrimitive _analytic = AnalyticPrimitive();
+  static const AnalyticPrimitiveRecognizer _recognizer =
+      AnalyticPrimitiveRecognizer();
+
   /// One immutable LUT per value-interned gradient, retained across draws in
   /// the frame. The display list already deduplicates gradients by value, so
   /// this map normally contains only the handful of ramps in the scene.
@@ -517,10 +530,35 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     ReplayPaint paint,
   ) {
     _requireFillStyle(paint, 'rounded rectangle');
-    // Through the path filler rather than a special-case span loop in the
-    // rasteriser. The filler already antialiases by exact area, so the corners
-    // come out at the same quality as every other curve, and there is one
-    // implementation of a rounded rectangle rather than two that can disagree.
+    // The closed form first, when the shape is one it describes.
+    //
+    // This comment used to say the opposite: that the shape went through the
+    // path filler so that there would be "one implementation of a rounded
+    // rectangle rather than two that can disagree". That reasoning is out of
+    // date, and the way it went out of date inverted the conclusion. OpenGL
+    // gained a closed form for the uniform-radius case, the two backends began
+    // differing by up to 52 levels on corner pixels, and the difference was
+    // chased instead of tolerated: against a 400x400 point sample of the exact
+    // circle, on the corner of a radius-12 rounded rectangle, the closed form
+    // is out by at most 0.035 of a pixel's area and this file's flattened
+    // polygon by 0.164 - 4.7x further, and always in the same direction,
+    // because a chord cuts inside the arc it replaces. So the second
+    // implementation was not a divergence to be avoided; it was the accurate
+    // one, and the filler had been drawing every rounded corner very slightly
+    // too sharp since the day it was written.
+    //
+    // Two implementations therefore stay, and what keeps them from disagreeing
+    // is not that one of them goes unused but that both ask the *same*
+    // recogniser which shapes qualify and both refuse the same ones - see
+    // [_fillAnalyticRRect] against `GpuRasterSink._fillAnalyticRRect`.
+    if (paint.gradient == null &&
+        _fillAnalyticRRect(deviceRect, clip, deviceRadii, paint)) {
+      return;
+    }
+    // Everything the closed form refuses - per-corner radii, elliptical
+    // corners, gradients, a fractional clip that cuts the shape - lands here,
+    // which is the route the GPU's own refusals land on too, so a refused
+    // shape is still one picture on both backends rather than two.
     //
     // The radii arrive already in device space and in the encoder's order, so
     // addRoundedRectRadii consumes the borrowed scratch buffer directly and
@@ -533,6 +571,93 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     _drew = true;
     _spanSink.begin(paint, blend, shader: shader);
     _filler.fill(builder.build(), _toLayer(clip), _spanSink);
+  }
+
+  /// Fills a rounded rectangle from its signed distance field, or returns
+  /// false and leaves nothing behind.
+  ///
+  /// ## The refusals are copied from the GPU deliberately
+  ///
+  /// Every test below is `GpuRasterSink._fillAnalyticRRect`'s, in the same
+  /// order, and two of them are not tests this backend would have written for
+  /// itself. That is the point: what the closed form buys here is that the two
+  /// renderers compute the *same* corner pixels, and they only do that while
+  /// they agree about which shapes go down which route. A rule that is
+  /// necessary on one side and merely harmless on the other still has to be on
+  /// both, or the agreement lasts exactly until a shape lands between them.
+  ///
+  ///   * **per-corner or elliptical radii.** The GPU has one radius slot on a
+  ///     vertex; this file has no such constraint and could evaluate four
+  ///     radii as easily as one. It does not, because then a per-corner shape
+  ///     would be the closed form here and the flattened polygon there.
+  ///   * **radius zero** is a redirect rather than a refusal, and a
+  ///     correctness one on both sides: the field says a pixel centred on a
+  ///     square corner is half covered where the truth is a quarter, and
+  ///     [fillDeviceRect] already computes the exact separable area. Sending it
+  ///     there keeps a zero-radius rounded rectangle byte-identical to the
+  ///     plain rectangle it is.
+  ///   * **a fractional clip that actually cuts the shape.** The GPU refuses it
+  ///     because its quad is snapped out to whole pixels and the clip is then a
+  ///     scissor with no fraction to give. This file's clip stack *can* cut a
+  ///     pixel, so the refusal buys nothing locally - it buys that a half-pixel
+  ///     clip does not put one backend on the field and the other on the atlas.
+  ///   * **a gradient** never reaches here; the caller checks for it, as the
+  ///     GPU's caller does, because a gradient is resolved per pixel through a
+  ///     shader that the span sink owns and the field knows nothing about.
+  ///
+  /// A refusal is never a wrong picture, only the older and very slightly
+  /// sharper one.
+  bool _fillAnalyticRRect(
+    Rect deviceRect,
+    Rect clip,
+    Float32List deviceRadii,
+    ReplayPaint paint,
+  ) {
+    // The same recogniser the GPU sink uses, applying the same overrun rule
+    // `PathBuilder.addRoundedRectPerCorner` applies - one global factor over
+    // all eight radii. If the two routes could disagree about what a 40px
+    // radius on a 50px edge means, the shape would change when the selector
+    // changed its mind.
+    if (!_recognizer.recogniseRoundedRect(_analytic, deviceRect, deviceRadii)) {
+      return false;
+    }
+    final AnalyticPrimitive shape = _analytic;
+    final double radius = shape.p0;
+    if (shape.p1 != radius || shape.p2 != radius || shape.p3 != radius) {
+      return false;
+    }
+    if (radius <= 0) {
+      fillDeviceRect(deviceRect, clip, paint);
+      return true;
+    }
+
+    // Half a pixel is as far outside the box as any coverage can reach, so a
+    // clip further out than that never touches the shape and its fraction is a
+    // formality.
+    const double reach = 0.5;
+    final bool cutsLeft = clip.left > deviceRect.left - reach;
+    final bool cutsTop = clip.top > deviceRect.top - reach;
+    final bool cutsRight = clip.right < deviceRect.right + reach;
+    final bool cutsBottom = clip.bottom < deviceRect.bottom + reach;
+    if ((cutsLeft && clip.left != clip.left.roundToDouble()) ||
+        (cutsTop && clip.top != clip.top.roundToDouble()) ||
+        (cutsRight && clip.right != clip.right.roundToDouble()) ||
+        (cutsBottom && clip.bottom != clip.bottom.roundToDouble())) {
+      return false;
+    }
+
+    final CpuBlendMode blend = _blendFor(paint);
+    _drew = true;
+    _spanSink.begin(paint, blend);
+    fillRoundedRectSpans(
+      _spanSink,
+      // The recogniser passes the rectangle through untouched and clamps only
+      // the radii, so the box is the caller's own and needs no rebuilding.
+      box: _toLayer(deviceRect),
+      radius: radius,
+      clip: _toLayer(clip),
+    );
+    return true;
   }
 
   /// Refuses a stroke on the primitives that cannot carry one.

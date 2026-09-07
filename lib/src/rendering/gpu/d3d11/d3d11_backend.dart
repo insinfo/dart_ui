@@ -461,6 +461,26 @@ final class D3d11RenderDevice
   bool get hasExperimentalVectorRoutes =>
       experimentalCpuTessellationEnabled || experimentalStencilCoverEnabled;
 
+  /// Whether the pixel stage evaluates rounded rectangles in closed form.
+  ///
+  /// On by default, and deliberately not called experimental like the three
+  /// above it. They each need something optional - a second program, a stencil
+  /// attachment, a sample count - and can therefore be absent on a device that
+  /// otherwise works. This needs nothing: the coverage is computed by the one
+  /// HLSL program every Direct3D 11 device here already compiles, from two
+  /// vertex floats the solid pipeline has always written as zero and never
+  /// read. Any device that can run this backend at all can run it, so there is
+  /// no capability to query and no way for it to fail at draw time.
+  ///
+  /// It is settable because a distance field and a scanline filler are two
+  /// different rasterisers, and the only honest way to say how far apart they
+  /// land is to draw the same scene both ways through one device and subtract.
+  /// `test/rendering/gpu/d3d11/d3d11_analytic_primitive_test.dart` does exactly
+  /// that. Nothing in a frame writes it; a target reads it in `beginFrame`, so
+  /// flipping it between two frames takes effect on the second without
+  /// rebuilding a target or touching a pipeline object.
+  bool analyticPrimitivesEnabled = true;
+
   /// The shared program both routes draw through, or null on a default build.
   D3d11VectorPipeline? get vectorPipeline => _vectorPipeline;
 
@@ -2476,6 +2496,11 @@ final class D3d11OffscreenTarget
       onAtlasFlush: _flushAtlases,
       pathPlanningTelemetry: vector?.telemetry,
       pathCommandRecorder: vector?.recorder,
+      // Refreshed in `beginFrame` as well, so a caller that flips the device's
+      // switch between two frames gets the second one drawn the other way
+      // without rebuilding a target. Set here too because a target built after
+      // the switch was flipped must not draw its first frame the old way.
+      analyticPrimitives: _device.analyticPrimitivesEnabled,
     );
     _player = DisplayListPlayer(_sink);
   }
@@ -2652,6 +2677,12 @@ final class D3d11OffscreenTarget
     throwIfDisposed();
     _batcher.beginFrame();
     _maskAtlas.beginFrame();
+    // Per frame rather than per target, because the flag is a property of the
+    // device and a parity test flips it between two renders of one list
+    // through one target. Read here instead of in `renderDisplayList` so that
+    // a caller driving the player itself - which is what the throughput
+    // benchmarks do - observes the same switch as one that does not.
+    _sink.analyticPrimitives = _device.analyticPrimitivesEnabled;
     _openSharedFrame();
     _layers.beginFrame(
       surfaceWidth: _readback.width,

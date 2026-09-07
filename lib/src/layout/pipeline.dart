@@ -74,6 +74,43 @@ final class PipelineOwner {
   /// Reused across passes so that draining the dirty list allocates nothing
   /// per frame, per section 6.5.
   final List<RenderBox> _layoutScratch = <RenderBox>[];
+  final List<RenderBox> _paintScratch = <RenderBox>[];
+
+  /// Identifies one run of the invalidation walk in [flushPaint].
+  ///
+  /// Static, and therefore shared by every owner in the process, because a
+  /// render object can be moved between owners and a per-owner counter would
+  /// let a stale stamp from its previous pipeline look like a node this pass
+  /// had already visited - which would leave a boundary holding bytes it
+  /// should have dropped. Monotonic and never reset; at one frame per
+  /// millisecond it takes nearly three hundred million years to wrap a 64-bit
+  /// int, and on the web the double it becomes still outlasts any session.
+  static int _paintPassCounter = 0;
+
+  /// Whether a clean repaint boundary may replay its retained recording
+  /// instead of walking its subtree.
+  ///
+  /// The reason this exists is a test rather than a policy. A repaint boundary
+  /// is only correct if the frame it splices is the frame the walk would have
+  /// produced, and the only way to assert that is to produce both from the
+  /// same tree and compare them - which needs the walk to be reachable while
+  /// the feature is on. `test/layout/repaint_boundary_cache_test.dart` is
+  /// entirely built on this switch.
+  ///
+  /// Turning it off drops every recording in the tree rather than merely
+  /// ignoring them, and so does turning it back on. Keeping stale bytes around
+  /// against the day the flag flips would be relying on the invalidation walk
+  /// having run over a period when nothing was reading its result, and a
+  /// boundary that replays a recording older than the last time anything
+  /// looked at it is exactly the failure this whole mechanism has to not have.
+  bool get repaintBoundaryCaching => _repaintBoundaryCaching;
+  bool _repaintBoundaryCaching = true;
+
+  set repaintBoundaryCaching(bool value) {
+    if (value == _repaintBoundaryCaching) return;
+    _repaintBoundaryCaching = value;
+    _root?.dropPaintCacheSubtree();
+  }
 
   /// How many times the dirty list may refill during one [flushLayout] before
   /// layout is declared not to converge.
@@ -307,10 +344,35 @@ final class PipelineOwner {
   /// to prepend a clear or a device transform, and who knows whether this tree
   /// is the only thing in the frame.
   ///
-  /// The entire tree is re-emitted, not just the dirty nodes. With no layer
-  /// tree there is nothing retained to reuse, so a partial walk would produce
-  /// an incomplete list rather than a cheaper one. See
-  /// [RenderBox.markNeedsPaint].
+  /// ## Why the whole frame is still emitted, and where the saving is
+  ///
+  /// [list] is an arena the caller resets every frame, so the output has to
+  /// describe the entire picture: a partial list is not a cheaper frame, it is
+  /// a frame with holes in it. What the dirty set buys is not a smaller list
+  /// but a shorter walk - a clean [RenderBox.isRepaintBoundary] splices the
+  /// words it recorded last time instead of asking its subtree to write them
+  /// again, and the splice is a bulk copy where the walk is a virtual call and
+  /// a bounds computation per node.
+  ///
+  /// So the dirty set is read twice here, and painting sits between the two
+  /// reads:
+  ///
+  ///   1. **before**, to drop the recording of every boundary that has a dirty
+  ///      node underneath it. Doing it here rather than inside
+  ///      [RenderBox.markNeedsPaint] means the ancestors of a node that was
+  ///      marked forty times between two frames are walked once, and it means
+  ///      the walk is stamped so that *n* dirty nodes cost `O(n)` rather than
+  ///      `O(n * depth)`;
+  ///   2. **after**, to clear [RenderBox.needsPaint] on exactly the nodes that
+  ///      carried it. That set is exactly the dirty list - see
+  ///      [RenderBox.clearNeedsPaint] - so this replaces a walk of the whole
+  ///      tree per frame with a walk of what changed, which for the frame this
+  ///      whole mechanism is about is one node.
+  ///
+  /// The list is drained into a scratch buffer first. A node marked *during*
+  /// paint - which nothing in this repository does, and which a custom painter
+  /// could - then lands in a set this frame will not clear, and is repainted
+  /// on the next frame instead of being silently forgotten.
   void flushPaint(DisplayList list) {
     final RenderBox? root = _root;
     if (root == null) return;
@@ -321,9 +383,27 @@ final class PipelineOwner {
         'sizes; call flushLayout first.',
       );
     }
-    root.paint(list, Offset.zero);
-    root.clearNeedsPaintSubtree();
+
+    _paintScratch
+      ..clear()
+      ..addAll(_nodesNeedingPaint);
     _nodesNeedingPaint.clear();
+
+    final int stamp = ++_paintPassCounter;
+    for (int i = 0; i < _paintScratch.length; i++) {
+      _paintScratch[i].invalidatePaintCacheToRoot(stamp);
+    }
+
+    root.paintFromParent(list, Offset.zero);
+
+    for (int i = 0; i < _paintScratch.length; i++) {
+      final RenderBox node = _paintScratch[i];
+      // A node detached since it was marked was never painted, so its mark
+      // still stands; leaving it set is what makes attach() re-announce it to
+      // whichever pipeline adopts it next.
+      if (identical(node.owner, this)) node.clearNeedsPaint();
+    }
+    _paintScratch.clear();
   }
 
   /// The whole frame: geometry, then commands.

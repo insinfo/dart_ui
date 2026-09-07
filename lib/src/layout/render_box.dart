@@ -131,6 +131,65 @@ abstract class RenderBox {
   bool _needsLayout = true;
   bool _needsPaint = true;
 
+  // --- the repaint boundary cache ----------------------------------------
+  //
+  // Five fields, all null or false on every node that is not a repaint
+  // boundary, which is almost all of them. They are here rather than on
+  // `RenderRepaintBoundary` because [isRepaintBoundary] is a property any node
+  // may claim - a scroll viewport or a video surface is entitled to become one
+  // without changing its class - and the cache has to live wherever the claim
+  // can be made.
+
+  /// The commands this node emitted the last time its subtree was walked, in
+  /// the coordinate space of the frame it was walked into.
+  ///
+  /// Allocated on a boundary's first recording and then kept for the life of
+  /// the node, valid or not. A [DisplayList] is an arena, and handing it back
+  /// on invalidation would mean allocating one per dirty boundary per frame -
+  /// which is exactly the per-frame allocation section 6.5 forbids, and which
+  /// measured as a *three-fold* regression on the frame where every boundary
+  /// is dirty, before these two concepts were separated. Whether the bytes are
+  /// still true is [_paintCacheValid]'s business, not this field's.
+  DisplayList? _paintRecording;
+
+  /// Whether [_paintRecording] still describes this subtree.
+  ///
+  /// [PipelineOwner.flushPaint] clears it on every node between a dirty node
+  /// and the root before it paints anything, which is the entire invalidation
+  /// story: this flag being true *is* the proof that nothing under this node
+  /// has been marked since the recording was made.
+  bool _paintCacheValid = false;
+
+  /// The offset [_paintRecording] was recorded at.
+  ///
+  /// Kept because the bytes are frame-space, not local: a boundary that has
+  /// moved since it was recorded still owns a valid picture, just one drawn
+  /// somewhere else, and the difference is what [paintFromParent] turns into a
+  /// translation around the splice.
+  Offset _paintCacheOffset = Offset.zero;
+
+  /// The size this node had when [_paintRecording] was made.
+  Size? _paintCacheSize;
+
+  /// Set once, for ever, when a recording of this subtree came back carrying
+  /// content hints, which `DisplayList.appendFrom` refuses to splice.
+  ///
+  /// Sticky rather than re-tested per frame because the test costs a full
+  /// recording: a boundary that re-recorded, discovered the hints and painted
+  /// directly would walk its subtree twice on every frame it stayed clean,
+  /// which is slower than the uncached path it is trying to beat. One wasted
+  /// walk, once, and then this node behaves exactly as it did before the cache
+  /// existed. The cost of the stickiness is that removing the `RenderContentHint`
+  /// underneath does not bring the cache back until the tree is rebuilt.
+  bool _paintCacheRefused = false;
+
+  /// Which invalidation pass last visited this node, so that the walk from a
+  /// second dirty node stops the moment it joins a path already cleared.
+  ///
+  /// Without it a frame that dirtied every node - a window resize - would walk
+  /// depth ancestors per node instead of visiting each node once.
+  int _paintInvalidationStamp = 0;
+
   /// Answers to intrinsic queries, keyed by which question and its argument.
   ///
   /// Lazily created: a tree in which nobody asks an intrinsic question pays one
@@ -161,6 +220,21 @@ abstract class RenderBox {
   bool get needsLayout => _needsLayout;
 
   bool get needsPaint => _needsPaint;
+
+  /// Whether this node's subtree may be recorded once and replayed.
+  ///
+  /// False here, and the answer for every node that has no reason to say
+  /// otherwise: a boundary is not free. It costs a [DisplayList] that lives as
+  /// long as the node, a splice that copies its words into the frame instead
+  /// of the walk writing them there directly, and - the part that actually
+  /// bites - it stops being a saving the moment anything inside it changes
+  /// every frame, because then it re-records *and* the parent still copies.
+  ///
+  /// Say true where the subtree is expensive to walk and changes rarely
+  /// relative to its siblings, which is the shape of a list item, a chart or a
+  /// panel of static chrome. See [RenderRepaintBoundary], and
+  /// [paintFromParent] for what the claim buys and what invalidates it.
+  bool get isRepaintBoundary => false;
 
   bool get hasSize => _size != null;
 
@@ -384,6 +458,13 @@ abstract class RenderBox {
 
   void detach() {
     _owner = null;
+    // The recording describes a position in a frame this node is no longer
+    // part of, and nothing will invalidate it while it is off the tree: the
+    // invalidation walk starts from the owner's dirty list, and a detached
+    // node is not on it. Dropping it here is what keeps a node that is removed
+    // and re-inserted somewhere else from replaying its old address. The
+    // buffer stays; only the claim that it is true goes.
+    _paintCacheValid = false;
     visitChildren((RenderBox child) => child.detach());
   }
 
@@ -782,25 +863,182 @@ abstract class RenderBox {
   @protected
   void paintChild(DisplayList list, RenderBox child, Offset offset) {
     final Offset childOffset = child.offsetFromParent;
-    child.paint(
+    child.paintFromParent(
       list,
       Offset(offset.dx + childOffset.dx, offset.dy + childOffset.dy),
     );
   }
 
+  /// Emits this node's subtree into [list] at [offset], replaying a retained
+  /// recording when this node is a clean repaint boundary.
+  ///
+  /// The single funnel: [paintChild] calls it for every child and
+  /// [PipelineOwner.flushPaint] calls it on the root, so the boundary test is
+  /// one branch in one place rather than a rule every container has to
+  /// remember. [paint] keeps meaning what it always meant - *walk this subtree
+  /// and record it now* - which is why a subclass still overrides that one and
+  /// why calling it directly is still the way to force a real walk.
+  ///
+  /// ## Why the recording is in frame space and not local space
+  ///
+  /// `DisplayList.appendFrom` copies floats verbatim and translates nothing,
+  /// by a deliberate design decision documented there: knowing which float
+  /// slots of which opcode are positions is a table, and a wrong entry in it is
+  /// a silent geometry bug. So a sub-list is drawn wherever its floats say.
+  ///
+  /// Recording at the offset the boundary was painted at makes the common case
+  /// - a boundary that has not moved - a raw splice whose output is
+  /// word-for-word what the walk would have written, which is the property
+  /// `test/layout/repaint_boundary_cache_test.dart` asserts and the only
+  /// evidence that this is an optimisation rather than a rendering change.
+  /// Recording in local space would have made *every* replay carry a
+  /// `save`/`transform`/`restore` triple, paid by every boundary on every
+  /// frame, to save the rarer case a translation already covers.
+  ///
+  /// A boundary that *has* moved replays under exactly that triple, translated
+  /// by the difference between where it is now and where it was recorded. That
+  /// is the one case whose output is not word-identical to the walk's - it is
+  /// the same picture expressed as a translation of the same commands - so it
+  /// is proven by rasterising both and comparing pixels rather than by
+  /// comparing streams.
+  ///
+  /// ## What invalidates the recording
+  ///
+  /// One thing, and everything else reduces to it: [PipelineOwner.flushPaint]
+  /// drops the cache of every node between a node that called [markNeedsPaint]
+  /// and the root, before it paints anything. A live [_paintCacheValid] is
+  /// therefore a proof that nothing under this boundary has been marked since
+  /// it was recorded. That covers a changed colour, a changed size (layout
+  /// marks paint at the end of every [performLayout]), an adopted or dropped
+  /// child (adoption marks layout on the parent, whose relayout marks paint)
+  /// and a child that merely moved (whoever moved it re-ran its own
+  /// performLayout). [detach] drops it separately, because a detached node is
+  /// not on any dirty list to be reached from.
+  ///
+  /// The walk goes all the way to the root rather than stopping at the nearest
+  /// boundary, and that is not the same rule [markNeedsPaint] follows. It
+  /// cannot be: an enclosing boundary did not *reference* this one's recording,
+  /// it copied the words into its own, so a change here really does make the
+  /// ancestor's bytes wrong. A layer tree - where the outer layer holds a
+  /// pointer to the inner one - is the structure that would let the dirt stop,
+  /// and there is none here. The consequence is worth naming: nesting
+  /// boundaries buys nothing along the ancestor chain of whatever changed. It
+  /// buys everything for the *siblings*, which is where a real application's
+  /// nodes are.
+  @internal
+  void paintFromParent(DisplayList list, Offset offset) {
+    if (!isRepaintBoundary) {
+      paint(list, offset);
+      return;
+    }
+    final PipelineOwner? owner = _owner;
+    if (owner == null || !owner.repaintBoundaryCaching || _paintCacheRefused) {
+      paint(list, offset);
+      return;
+    }
+
+    final DisplayList? recording = _paintRecording;
+    // The size test is belt and braces: a node's size is assigned only by its
+    // own performLayout, which ends in markNeedsPaint, so a boundary whose size
+    // changed cannot still be valid. It costs one comparison and it is the
+    // check that would catch a future node that learns to resize itself
+    // outside layout.
+    if (recording != null && _paintCacheValid && _paintCacheSize == _size) {
+      final double dx = offset.dx - _paintCacheOffset.dx;
+      final double dy = offset.dy - _paintCacheOffset.dy;
+      if (dx == 0.0 && dy == 0.0) {
+        list.appendFrom(recording);
+        return;
+      }
+      list
+        ..save()
+        ..transform(1, 0, 0, 1, dx, dy)
+        ..appendFrom(recording)
+        ..restore();
+      return;
+    }
+
+    final DisplayList sub = recording ?? (_paintRecording = DisplayList());
+    sub.reset();
+    paint(sub, offset);
+    if (sub.hasContentHints) {
+      // A hint span records the value already merged with its enclosing hints,
+      // so appendFrom refuses the list rather than replay it under a different
+      // enclosure - see its comment. Refusing to cache is the only honest
+      // answer available here, and it is permanent for this node; see
+      // [_paintCacheRefused].
+      _paintRecording = null;
+      _paintCacheValid = false;
+      _paintCacheSize = null;
+      _paintCacheRefused = true;
+      paint(list, offset);
+      return;
+    }
+    _paintCacheValid = true;
+    _paintCacheOffset = offset;
+    _paintCacheSize = _size;
+    list.appendFrom(sub);
+  }
+
   /// Flags this node's drawing as out of date.
   ///
-  /// Today this is coarse on purpose: there is no layer tree, so there is no
-  /// repaint boundary to stop at and the pipeline re-walks the whole render
-  /// tree into a fresh display list. That is honest for a tree that emits into
-  /// an arena which is reset per frame anyway - the saving a repaint boundary
-  /// buys only exists once retained layers exist to reuse. The dirty set is
-  /// still recorded, because it is what a compositor will need and because it
-  /// is how a caller can see that a mutation was noticed at all.
+  /// The mark stops here. It does not walk to a parent, an ancestor boundary
+  /// or the root, and that is the property [PipelineOwner.nodesNeedingPaint]
+  /// makes observable: a `setState` deep inside a subtree leaves exactly one
+  /// entry there, whatever the depth. What has to happen further up - dropping
+  /// the recordings of the boundaries that copied this subtree's words into
+  /// themselves - is done once per frame in [PipelineOwner.flushPaint] over
+  /// the whole dirty set, rather than once per mutation over one node's
+  /// ancestors. Same result, and it does not make a widget that calls this
+  /// twenty times between two frames walk to the root twenty times.
   void markNeedsPaint() {
     if (_needsPaint) return;
     _needsPaint = true;
     _owner?.addNodeNeedingPaint(this);
+  }
+
+  /// Drops the retained recording of every node from here to the root.
+  ///
+  /// [stamp] identifies one invalidation pass. A node already stamped has had
+  /// its whole ancestor chain cleared by an earlier walk in the same pass, so
+  /// the walk stops there; that turns a frame that dirtied *n* nodes from
+  /// `O(n * depth)` into `O(n)`.
+  @internal
+  void invalidatePaintCacheToRoot(int stamp) {
+    for (RenderBox? node = this; node != null; node = node._parent) {
+      if (node._paintInvalidationStamp == stamp) return;
+      node._paintInvalidationStamp = stamp;
+      // Unconditional rather than guarded by isRepaintBoundary: the flag is
+      // already false on everything else, and a branch per ancestor per frame
+      // costs more than the write it would avoid. The buffer itself survives -
+      // see [_paintRecording] for why handing it back would be the expensive
+      // mistake.
+      node._paintCacheValid = false;
+    }
+  }
+
+  /// Marks this node as painted, without touching its subtree.
+  ///
+  /// Only [PipelineOwner.flushPaint] calls it, once per node it took off the
+  /// dirty list. That list holds exactly the attached nodes whose
+  /// [needsPaint] is true - [markNeedsPaint] registers on the false-to-true
+  /// edge and [attach] re-announces whatever was marked while detached - so
+  /// clearing it entry by entry clears the same set the subtree walk used to,
+  /// at the cost of the dirt rather than the cost of the tree.
+  @internal
+  void clearNeedsPaint() {
+    _needsPaint = false;
+  }
+
+  /// Gives up the retained recording of this node and everything under it.
+  ///
+  /// The blunt instrument, for the two moments that cannot name which
+  /// boundaries went stale: [PipelineOwner.repaintBoundaryCaching] being
+  /// toggled, and a test that wants a known-cold tree.
+  @internal
+  void dropPaintCacheSubtree() {
+    _paintCacheValid = false;
+    visitChildren((RenderBox child) => child.dropPaintCacheSubtree());
   }
 
   @internal

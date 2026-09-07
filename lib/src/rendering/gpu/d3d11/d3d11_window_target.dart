@@ -201,6 +201,13 @@ final class D3d11WindowTarget
       onAtlasFlush: _flushAtlases,
       pathPlanningTelemetry: vector?.telemetry,
       pathCommandRecorder: vector?.recorder,
+      // Refreshed in `beginFrame` as well; set here so a window created after
+      // the device's switch was flipped does not draw its first frame the old
+      // way. The offscreen target does the same, and it has to be the same in
+      // both files: a window that drew rounded rectangles through a different
+      // rasteriser than the target the golden tests use would be a difference
+      // no test in this repository could see.
+      analyticPrimitives: _device.analyticPrimitivesEnabled,
     );
     _player = DisplayListPlayer(_sink);
   }
@@ -429,6 +436,10 @@ final class D3d11WindowTarget
     throwIfDisposed();
     _batcher.beginFrame();
     _maskAtlas.beginFrame();
+    // Per frame, from the device, for the reason `D3d11OffscreenTarget`'s
+    // `beginFrame` gives: the flag belongs to the device and a caller may flip
+    // it between two frames of one target.
+    _sink.analyticPrimitives = _device.analyticPrimitivesEnabled;
     // Keeps every glyph and advances the counter its LRU compares against; a
     // target that forgot it would leave every plot pinned to the frame in
     // progress and report the atlas permanently full. It goes through the

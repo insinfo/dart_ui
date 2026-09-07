@@ -8815,9 +8815,24 @@ seguinte:
 2. **`mailbox` no D3D12** (§68.3): exige mudar a criação da swap chain
    (`FLIP_DISCARD`, três buffers, objeto aguardável), e é o único lugar em
    que o modo é implementável de verdade sem ser o Vulkan;
-3. **damage tracking** (§68.4): `isRepaintBoundary` continua consultado por
-   nada e `flushPaint` repercorre a árvore inteira. É a maior lacuna de
-   desempenho do framework e a que mais cresce com o tamanho da aplicação;
+3. ~~**damage tracking**~~ — **feito em 06/09/2026.** `isRepaintBoundary`
+   deixou de ser consultado por nada: um boundary limpo emenda a sub-lista que
+   gravou em vez de repercorrer a subárvore, `markNeedsPaint` para nele, e
+   `flushPaint` lê o `_nodesNeedingPaint` que antes só era limpo. A primitiva
+   que faltava era `DisplayList.appendFrom`, cuja garantia é que o fluxo
+   emendado é idêntico ao desenhado direto, comando a comando.
+   `benchmark/repaint_boundary_benchmark.dart`, mediana:
+
+   | caso | sem cache | com cache | |
+   |---|---|---|---|
+   | uma folha muda | 840 µs | 212 µs | 3,96x |
+   | nada muda | 763 µs | 100 µs | 7,63x |
+   | painéis se movem | 815 µs | 125 µs | 6,52x |
+   | **todo painel sujo** | **787 µs** | **1,07 ms** | **1,36x mais lento** |
+
+   A última linha é o custo honesto e está no benchmark em vez de escondida:
+   quando tudo muda, gravar numa sub-lista e emendá-la custa mais que desenhar
+   direto, porque não há nada a reaproveitar;
 4. **rodar `tool/x11_backend_smoke.dart` numa sessão Linux** (§68.1): o
    teclado e o clipboard do X11 continuam provados só por bytes numa máquina
    Windows;
@@ -9434,22 +9449,29 @@ fora da tela, e curvas achatadas por `Path.flattenTo`.
 
 ### Divergências CPU↔GPU e outras lacunas de renderização
 
-- **retângulo arredondado: a CPU é o lado impreciso, e isso é novo.** Desde
-  06/09/2026 o OpenGL desenha um arredondado de raio uniforme por **forma
-  fechada** no fragment shader, enquanto a CPU continua achatando o arco do
-  canto em polilinha e preenchendo o polígono. Os dois divergem em **52 níveis
-  sobre 44 pixels** numa superfície 24x24 de raio 6, e em até 41 nas cenas
-  maiores do teste do GL. **A CPU é quem erra**, medido e não argumentado:
-  contra uma amostragem 400x400 do círculo exato, a forma fechada erra no
-  máximo 0,035 da área de um pixel e o polígono achatado 0,164 — **4,7 vezes
-  mais longe, sempre na mesma direção**, porque a corda corta por dentro do
-  arco que substitui. O atlas sempre desenhou cantos arredondados
-  ligeiramente pontudos demais. A correção certa é a CPU ganhar a mesma forma
-  fechada; `AnalyticPrimitive.fieldAt` é Dart portátil que ela pode chamar. Até
-  lá, `test/differential/cpu_gpu_parity_test.dart` afirma o **formato** da
-  divergência — que existe, que é limitada e que fica nos cantos — em vez de
-  alargar a tolerância, e a prova de quem erra está em
-  `gl_analytic_primitive_test.dart`;
+- ~~**retângulo arredondado: a CPU é o lado impreciso**~~ — **resolvido no
+  mesmo dia, e a resolução foi mover a CPU e não alargar a tolerância.** O
+  OpenGL, o Direct3D 11 e a CPU desenham um arredondado de raio uniforme pela
+  **mesma forma fechada**, e a paridade CPU↔GPU voltou a **zero**. Quem errava
+  era a CPU, medido contra uma amostragem 400x400 da forma exata: o polígono
+  achatado erra de 2,5 a 11,8 vezes mais que a forma fechada, conforme o raio,
+  e **sempre subcobrindo** — a corda corta por dentro do arco, então o
+  framework sempre desenhou cantos ligeiramente pontudos demais. Nenhum golden
+  se moveu, porque nenhum afirmava bytes de canto arredondado.
+
+  Ficou um invariante novo e forte:
+  `test/rendering/gpu/d3d11/d3d11_cpu_parity_test.dart` compara **dois
+  avaliadores independentes de uma fórmula só** — HLSL em float32 na GPU,
+  Dart em float64 na CPU — e dá zero. Antes essa cena não teria valor, porque
+  os dois lados achatavam pelo mesmo código.
+
+  **O Vulkan é o único que ficou para trás**, porque o sink dele nunca liga
+  `analyticPrimitives`. `vulkan_cpu_parity_test.dart` afirma o *formato* da
+  divergência — que existe, que é limitada, que fica nos cantos — e nomeia o
+  Vulkan como o lado que tem de se mover. A correção é dar ao fragment shader
+  dele o `roundedCoverage` que o GL e o D3D11 já têm, e ali é mais caro: o
+  Vulkan monta SPIR-V à mão em Dart, então precisa de controle de fluxo
+  escrito na marra em vez de uma edição de texto;
 - gradiente **em glifos e em imagens** é recusado por nome nos dois renderers,
   CPU inclusive;
 - retângulos antialiasados divergem em 1 nível: `raster/coverage.dart` quantiza

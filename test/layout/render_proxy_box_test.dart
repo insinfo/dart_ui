@@ -867,7 +867,11 @@ void main() {
       );
     });
 
-    test('NO CACHE BEHIND IT: it repaints on every frame, dirty or not', () {
+    test('paint() is still the walk, whatever the cache is holding', () {
+      // Called directly rather than through a pipeline, which is what a
+      // subclass and a golden test do. `paint` means *record this subtree now*
+      // and always has; the cache lives one level up in `paintFromParent`, so
+      // this number is three and would be three with the feature switched off.
       final RenderRepaintBoundary node = RenderRepaintBoundary(
         child: _Probe(preferred: const Size(16, 16), color: _content),
       );
@@ -879,14 +883,28 @@ void main() {
         node.clearNeedsPaintSubtree();
       }
 
-      // Three, not one. `PipelineOwner.flushPaint` walks the whole tree into a
-      // fresh display list every frame and this node does not interrupt it, so
-      // wrapping a subtree in a repaint boundary today buys exactly nothing.
-      // A retained-layer implementation is precisely the change that makes
-      // this number stop at 1, which is why it is asserted before the feature
-      // exists.
       expect(node.paintCount, 3);
       expect(node.isRepaintBoundary, isTrue);
+    });
+
+    test('under a pipeline, a clean second frame walks nothing', () {
+      // The other half, and the one the class exists for. Three frames through
+      // a real `PipelineOwner` with nothing dirtied between them walk the
+      // subtree once; the other two splice the recording. The whole of
+      // `repaint_boundary_cache_test.dart` is about why that is allowed to be
+      // the same picture.
+      final RenderRepaintBoundary node = RenderRepaintBoundary(
+        child: _Probe(preferred: const Size(16, 16), color: _content),
+      );
+      final PipelineOwner owner = PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(16, 16)),
+      )..root = node;
+
+      for (int frame = 0; frame < 3; frame++) {
+        owner.drawFrame(DisplayList());
+      }
+
+      expect(node.paintCount, 1);
     });
   });
 
