@@ -132,6 +132,7 @@ const int _opFOrdEqual = 180;
 const int _opFOrdLessThan = 184;
 const int _opFOrdGreaterThan = 186;
 const int _opFOrdLessThanEqual = 188;
+const int _opFOrdGreaterThanEqual = 190;
 const int _opShiftRightLogical = 194;
 const int _opBitwiseAnd = 199;
 const int _opLabel = 248;
@@ -185,17 +186,28 @@ const int kSpirvFunctionControlNone = 0;
 /// and `FClamp` from.
 const String kGlslStd450 = 'GLSL.std.450';
 
-/// `GLSLstd450FMin`, `FMax` and `FClamp`, which are the only three needed.
+/// The extended instructions the shaders here actually call.
 ///
 /// Written out rather than transcribing the whole set for the same reason
 /// `vulkan_constants.dart` gives: a number nobody uses is a number nobody
 /// checks.
+///
+/// `FAbs` and `Length` arrived with the closed-form rounded rectangle, which
+/// is `abs(p - centre)` folded into the first quadrant and then the length of
+/// the clamped corner vector. `Length` rather than `Sqrt` of a `Dot`: the GLSL
+/// original in `gl_shaders.dart` writes `length(max(q, 0.0))` and a driver is
+/// free to fuse `Length` into whatever its hardware has, where the hand-rolled
+/// pair fixes an evaluation order the GL side never asked for. Both spell the
+/// same real number; only one of them is the same *instruction* the twin
+/// shader emits, and that is what a zero-tolerance parity test rests on.
+const int kGlslStd450FAbs = 4;
 const int kGlslStd450Floor = 8;
 const int kGlslStd450Fract = 10;
 const int kGlslStd450Sqrt = 31;
 const int kGlslStd450FMin = 37;
 const int kGlslStd450FMax = 40;
 const int kGlslStd450FClamp = 43;
+const int kGlslStd450Length = 66;
 
 // ---------------------------------------------------------------------------
 // The builder
@@ -524,6 +536,17 @@ final class SpirvFunction {
   int lessThanOrEqualFloat(int boolType, int a, int b) =>
       _value(_opFOrdLessThanEqual, boolType, <int>[a, b]);
 
+  /// `OpFOrdGreaterThanEqual`.
+  ///
+  /// Spelled out rather than reached through [lessThanOrEqualFloat] with the
+  /// operands swapped, because the shape code the analytic rounded rectangle
+  /// tests is written in the GLSL and the HLSL as `texCoord.y >= 0.5` and a
+  /// reader comparing the three files should find the same comparison in all
+  /// three. The two are identical for ordered comparisons; the readability is
+  /// the whole of the difference.
+  int greaterThanOrEqualFloat(int boolType, int a, int b) =>
+      _value(_opFOrdGreaterThanEqual, boolType, <int>[a, b]);
+
   int equalInt(int boolType, int a, int b) =>
       _value(_opIEqual, boolType, <int>[a, b]);
 
@@ -702,6 +725,7 @@ const Map<int, int> _resultIdPosition = <int, int>{
   _opFOrdLessThan: 1,
   _opFOrdGreaterThan: 1,
   _opFOrdLessThanEqual: 1,
+  _opFOrdGreaterThanEqual: 1,
   _opShiftRightLogical: 1,
   _opBitwiseAnd: 1,
 };

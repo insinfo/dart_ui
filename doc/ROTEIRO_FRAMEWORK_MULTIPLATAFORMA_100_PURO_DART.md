@@ -9612,6 +9612,34 @@ aparece como um bloco no lugar errado em vez de uma franja. Tolerância **0**. E
 foi verificado que ela falha ao reintroduzir a omissão: **desvio 153 em 48
 pixels**.
 
+**E o Vulkan entrou no caminho analítico — 06/09/2026.** Era o único backend
+de fora, e o motivo era real: este repositório escreve SPIR-V **à mão**, sem
+glslang e sem shaderc. A formulação sem ramificação bastou — a fórmula é a
+mesma `roundedCoverage` do GLSL, instrução por instrução, com `OpExtInst
+Length` e não `Sqrt` de um `Dot`, porque "algebricamente equivalente" é outro
+float32 —, o braço de modo é um `OpSelect`, e o `OpLabel == 1` do
+`vulkan_spirv_test.dart` continua lendo 1: nenhum bloco de merge, a promessa
+de SSA em linha reta do `SpirvBuilder` intacta.
+
+**O layout de vértice não precisou mudar.** Os 12 floats já carregavam
+`(raio, código de forma)` em `u0/v0` e o módulo de vértice já os repassava.
+Raios por canto, elipses e cápsulas continuam bloqueados pelo mesmo orçamento
+de dois floats, e o teste afirma que nos dois caminhos eles são idênticos byte
+a byte.
+
+**Medido:** a cena de retângulos arredondados do `vulkan_cpu_parity_test.dart`
+saiu de uma discordância *afirmada* (52 níveis em 44 pixels) para **tolerância
+0**, e as 600 rasterizações de CPU foram para **0**, ainda em 1 lote. Contra
+janela real, com a camada de validação ligada: **1 nível em 16 de 19200
+pixels**, que é a quantização de 8 bits de um canal fracionário e está
+declarado como tal, não como folga.
+
+E uma armadilha que a sabotagem encontrou: a guarda óbvia — "o atlas de
+máscara não rasterizou nada" — é **insuficiente** neste dispositivo e lê 0 dos
+dois jeitos, porque a janela abre o device com as rotas experimentais de faixa
+esparsa e um arredondado recusado vai para o gravador vetorial em vez do
+`GpuMaskAtlas`. O que pega é a contagem de quads: 2 com a forma fechada, 1 sem.
+
 **O que continua faltando no Vulkan**, e agora aparece porque o resto passou:
 a cena `mixed-ui` recusa com *"the coverage atlas is full of masks this frame
 has already drawn, and this backend passed no onAtlasFlush handler"*. O D3D11 e

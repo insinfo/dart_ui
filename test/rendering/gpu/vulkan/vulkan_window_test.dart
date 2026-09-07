@@ -391,6 +391,96 @@ void main() {
               'a rounding tie');
     });
 
+    test('the closed-form rounded rectangle, in the window: 1 on 16 pixels',
+        () async {
+      // The offscreen parity file asserts this shape at tolerance 0 already,
+      // so why again here: **a headless test does not prove a Vulkan backend
+      // works.** This repository learned that with the glyph atlas, where
+      // every offscreen test passed while the window drew letters out of an
+      // unbound texture, and it is a live risk for this route specifically
+      // because `VulkanWindowTarget` and `VulkanOffscreenTarget` are two
+      // classes with two `beginFrame` methods and two copies of the line that
+      // reads `analyticPrimitivesEnabled` off the device. One of them could
+      // easily have been missed, and no exception would be thrown: the sink
+      // would simply keep rasterising rounded rectangles on the CPU and the
+      // window would look right.
+      //
+      // So the assertion is in two parts and the second is the point. The
+      // pixels agree with the CPU rasteriser - which now evaluates the same
+      // closed form - to **1 level on 16 pixels of 19200**, and the window
+      // target's mask atlas rasterised **nothing**, which is what says the
+      // picture came out of the fragment stage rather than out of
+      // `ScanlineFiller`.
+      //
+      // The one level is the 8-bit quantisation tie this file already declares
+      // for the dense path, not the field. Confirmed by construction rather
+      // than argued: the *same* geometry in white deviates by **0**, offscreen
+      // and in the window, and so does this colour at radius 6 on a 24x24
+      // surface - which is the scene `vulkan_cpu_parity_test.dart` holds at
+      // tolerance 0. What moves is a fractional coverage multiplied into a
+      // channel that is not 255: the CPU folds it through `mul255` on integers
+      // having already quantised the coverage to 1/255ths, the shader
+      // multiplies floats and quantises once at the end, and a product landing
+      // on a midpoint goes opposite ways. It is the same one level the amber
+      // rectangle above measures, arrived at by the same route.
+      //
+      // It is a ceiling and not a cushion. A field evaluated against the wrong
+      // box, a radius read from the wrong vertex float or a route that fell
+      // back to the CPU would move hundreds of pixels by tens of levels, and
+      // the count below is what refuses to let that hide behind the tie.
+      if (skipped()) return;
+      final (_, VulkanWindowTarget target) = await open();
+      if (!target.canCaptureFrames) {
+        markTestSkipped('this surface does not allow TRANSFER_SRC usage on its '
+            'swapchain images, so a presented frame cannot be read back');
+        return;
+      }
+      target.captureFrames = true;
+
+      final DisplayList list = _roundedScene();
+      final PresentResult result =
+          await target.renderDisplayList(list, clearColor: _clear);
+      expect(result.status, PresentStatus.presented,
+          reason: '${result.diagnostic}');
+
+      final Framebuffer window = target.framebuffer!;
+      final Framebuffer cpu = await _cpuFrame(list, window);
+      final int deviation = _maxDeviation(cpu, window);
+      final int differing = _differingPixels(cpu, window);
+      printOnFailure('max deviation $deviation over $differing pixels of '
+          '${window.width}x${window.height}, '
+          '${target.maskAtlas.rasterizationCount} CPU rasterisations, '
+          '${target.quadCount} quads in ${target.batchCount} batches');
+      expect(deviation, lessThanOrEqualTo(1),
+          reason: 'the window and the CPU rasteriser evaluate the same closed '
+              'form and disagree by up to $deviation levels on $differing '
+              'pixels; more than one level is not the quantisation tie');
+      expect(differing, lessThanOrEqualTo(16),
+          reason: 'the declared tie is 16 pixels on the corner arcs; '
+              '$differing differ, which is a different picture');
+      // The structural half, and it took a sabotage run to get right. The
+      // obvious assertion - "the mask atlas rasterised nothing" - is *not*
+      // sufficient here and reads 0 either way: the device this file opens has
+      // the experimental sparse-strip routes enabled, so a rounded rectangle
+      // the sink refuses does not reach `GpuMaskAtlas` at all, it goes to the
+      // vector recorder. The count that actually separates the two routes is
+      // the quad count. The analytic rounded rectangle is a *solid* quad that
+      // joins the background rectangle's batch, so the batcher sees two quads
+      // in one batch; every other route takes the shape out of the batch
+      // entirely and leaves one. With `beginFrame`'s assignment removed this
+      // read 1, which is the bug named above caught without looking at a
+      // pixel.
+      expect(target.quadCount, 2,
+          reason: 'the rounded rectangle did not reach the batcher as a solid '
+              'quad, so the window is not drawing it in closed form however '
+              'right the picture looks');
+      expect(target.batchCount, 1,
+          reason: 'the analytic quad opened a draw call of its own');
+      expect(target.maskAtlas.rasterizationCount, 0,
+          reason: 'a coverage mask was rasterised on the CPU for a shape the '
+              'fragment stage can draw');
+    });
+
     test('the experimental sparse path, in the window: 0', () async {
       if (skipped()) return;
       final (_, VulkanWindowTarget target) = await open();
@@ -580,6 +670,23 @@ DisplayList _scene(int seed) {
   final int paint = list.addPaint(colorArgb: 0xFF3366CC);
   final double offset = (seed % 8).toDouble();
   list.drawRect(10 + offset, 10, 90 + offset, 70, paint);
+  return list;
+}
+
+/// A rounded rectangle with room for a real corner arc, plus a plain rectangle
+/// behind it so a frame that drew nothing cannot pass by being uniformly
+/// blank.
+///
+/// Radius 10 on a 96x56 box: large enough that the arc spans several pixels in
+/// each corner, which is where the field and the filler could disagree, and
+/// small enough to leave straight edges that must stay exact.
+DisplayList _roundedScene() {
+  final DisplayList list = DisplayList();
+  final int slate = list.addPaint(colorArgb: 0xFF203040, antiAlias: false);
+  final int blue = list.addPaint(colorArgb: 0xFF3366CC);
+  list
+    ..drawRect(4, 4, 124, 84, slate)
+    ..drawRRectUniform(12, 16, 108, 72, 10, 10, blue);
   return list;
 }
 

@@ -300,6 +300,26 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
   /// refuses [VulkanOffscreenTarget.enqueueSparseStrips] by name.
   final bool experimentalSparseStripsEnabled;
 
+  /// Whether the fragment stage evaluates rounded rectangles in closed form.
+  ///
+  /// On by default, and deliberately not called experimental like the sparse
+  /// strips above it. That opt-in needs pipelines this backend may not be able
+  /// to build; this needs nothing. The coverage comes out of the one solid
+  /// fragment module every Vulkan device here already compiles, from two
+  /// vertex floats the solid pipeline has always written as zero and never
+  /// read - no descriptor, no push constant, no second pipeline and no format
+  /// or feature to query. Any device that can run this backend at all can run
+  /// it, so there is nothing for it to fail on at draw time.
+  ///
+  /// It is settable because a distance field and a scanline filler are two
+  /// different rasterisers, and the only honest way to say how far apart they
+  /// land is to draw the same scene both ways through one device and subtract.
+  /// `test/rendering/gpu/vulkan/vulkan_analytic_primitive_test.dart` does
+  /// exactly that. Nothing in a frame writes it; a target reads it in
+  /// `beginFrame`, so flipping it between two frames takes effect on the
+  /// second without rebuilding a target or touching a pipeline object.
+  bool analyticPrimitivesEnabled = true;
+
   final Map<int, VulkanPipelines> _pipelines = <int, VulkanPipelines>{};
 
   Pointer<VkDescriptorPool_T> _descriptorPool = nullptr;
@@ -597,6 +617,7 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
           (throw UnsupportedCapabilityError(
             backendName: backendName,
             capability: Capability.gpuPresentation,
+            feature: 'a graphics pipeline for ${vkFormatName(colorFormat)}',
             detail: 'no graphics pipeline could be built for '
                 '${vkFormatName(colorFormat)} on ${gpu.physicalDevice.name}',
           ));
@@ -641,6 +662,7 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a ${width}x$height texture',
         detail: '${width}x$height exceeds maxImageDimension2D ($limit) on '
             '${gpu.physicalDevice.name}',
       );
@@ -665,6 +687,7 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'BGRA textures',
         detail: '${gpu.physicalDevice.name} cannot sample '
             '${vkFormatName(vkFormat)} with optimal tiling',
       );
@@ -715,6 +738,7 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
           throw UnsupportedCapabilityError(
             backendName: backendName,
             capability: Capability.gpuPresentation,
+            feature: 'a ${width}x$height ${vkFormatName(vkFormat)} image',
             detail: 'vkCreateImage refused ${width}x$height '
                 '${vkFormatName(vkFormat)}',
           );
@@ -756,6 +780,7 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
           throw UnsupportedCapabilityError(
             backendName: backendName,
             capability: Capability.gpuPresentation,
+            feature: 'an image view for ${vkFormatName(vkFormat)}',
             detail: 'vkCreateImageView refused ${vkFormatName(vkFormat)}',
           );
         }
@@ -803,6 +828,7 @@ final class VulkanRenderDevice implements RenderDevice, GpuTextureAllocator {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'another texture descriptor set',
         detail: 'vkAllocateDescriptorSets answered ${vkResultName(result)}; '
             'this device pool holds $kMaxDescriptorSets sets',
       );
@@ -1482,6 +1508,10 @@ final class VulkanOffscreenTarget implements RenderTarget {
       imageResolver: _images,
       pathPlanningTelemetry: _recorder.planning,
       pathCommandRecorder: _recorder.vectorRecorder,
+      // Also read per frame in `beginFrame`; set here so a caller that skips
+      // the player and drives the sink directly still gets the device's answer
+      // rather than the constructor's default.
+      analyticPrimitives: _device.analyticPrimitivesEnabled,
     );
     _player = DisplayListPlayer(_sink);
   }
@@ -1539,6 +1569,11 @@ final class VulkanOffscreenTarget implements RenderTarget {
 
   int get batchCount => _batcher.batchCount;
 
+  /// Quads submitted this frame, so a test can say the analytic rounded
+  /// rectangle joined the batch the plain rectangles are in rather than
+  /// opening one of its own.
+  int get quadCount => _batcher.quadCount;
+
   /// What the last sparse-strip submission actually sent, or null.
   SparseVulkanExecutionStats? get lastSparseStats => _recorder.lastStats;
 
@@ -1577,6 +1612,11 @@ final class VulkanOffscreenTarget implements RenderTarget {
   Frame beginFrame(FrameRequest request) {
     _batcher.beginFrame();
     _maskAtlas.beginFrame();
+    // Per frame rather than per target, because the flag belongs to the device
+    // and the parity test flips it between two renders of one list through one
+    // target. Read here instead of in `renderDisplayList` so that a caller
+    // driving the player itself observes the same switch as one that does not.
+    _sink.analyticPrimitives = _device.analyticPrimitivesEnabled;
     _recorder.beginFrame();
     _pendingClear = request.clearColor;
     return Frame(
@@ -1892,6 +1932,7 @@ final class VulkanOffscreenTarget implements RenderTarget {
         throw UnsupportedCapabilityError(
           backendName: VulkanRenderDevice.backendName,
           capability: Capability.gpuPresentation,
+          feature: 'a framebuffer for this surface size',
           detail: 'vkCreateFramebuffer refused '
               '${_surface.pixelWidth}x${_surface.pixelHeight}',
         );
@@ -2016,6 +2057,10 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
       imageResolver: _images,
       pathPlanningTelemetry: _recorder.planning,
       pathCommandRecorder: _recorder.vectorRecorder,
+      // Also read per frame in `beginFrame`; set here so a caller that skips
+      // the player and drives the sink directly still gets the device's answer
+      // rather than the constructor's default.
+      analyticPrimitives: _device.analyticPrimitivesEnabled,
     );
     _player = DisplayListPlayer(_sink);
     for (var i = 0; i < _device.gpu.framesInFlight; i++) {
@@ -2099,6 +2144,11 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
 
   int get batchCount => _batcher.batchCount;
 
+  /// Quads submitted this frame, so a test can say the analytic rounded
+  /// rectangle joined the batch the plain rectangles are in rather than
+  /// opening one of its own.
+  int get quadCount => _batcher.quadCount;
+
   SparseVulkanExecutionStats? get lastSparseStats => _recorder.lastStats;
 
   GpuPathPlanningTelemetry? get pathPlanning => _recorder.planning;
@@ -2120,6 +2170,8 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
   Frame beginFrame(FrameRequest request) {
     _batcher.beginFrame();
     _maskAtlas.beginFrame();
+    // Per frame, from the device: same argument as `VulkanOffscreenTarget`.
+    _sink.analyticPrimitives = _device.analyticPrimitivesEnabled;
     _recorder.beginFrame();
     _pendingClear = request.clearColor;
     final int width = _swapchain?.configuration.width ?? _surface.pixelWidth;

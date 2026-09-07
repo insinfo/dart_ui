@@ -250,18 +250,24 @@ void main() {
       }
     });
 
-    test('the solid module is the smallest and the two samplers are equal', () {
+    test('the three modules are three modules, and the two samplers agree', () {
       // A shape check rather than a value check: the three differ by exactly
       // the sampling instructions, so a builder that silently emitted the same
       // module three times - the failure a `switch` with a wrong default
       // produces - would make these equal.
-      final int solid = code.fragmentFor(GpuPipelineKind.solid).length;
-      final int mask = code.fragmentFor(GpuPipelineKind.coverageMask).length;
-      final int image = code.fragmentFor(GpuPipelineKind.texturedImage).length;
-      expect(solid, lessThan(mask));
-      expect(mask, image);
-      expect(code.fragmentFor(GpuPipelineKind.coverageMask),
-          isNot(code.fragmentFor(GpuPipelineKind.texturedImage)));
+      //
+      // The solid module used to be asserted the *smallest*, and it is not any
+      // more: since 06/09/2026 it carries the closed-form rounded rectangle,
+      // which is some thirty instructions of signed distance field that the
+      // two sampling modules have no use for. So the claim it stands for -
+      // "solid is a different module from the samplers" - is now made by
+      // inequality, which is what it always meant.
+      final Uint32List solid = code.fragmentFor(GpuPipelineKind.solid);
+      final Uint32List mask = code.fragmentFor(GpuPipelineKind.coverageMask);
+      final Uint32List image = code.fragmentFor(GpuPipelineKind.texturedImage);
+      expect(solid, isNot(mask));
+      expect(mask.length, image.length);
+      expect(mask, isNot(image));
     });
   });
 
