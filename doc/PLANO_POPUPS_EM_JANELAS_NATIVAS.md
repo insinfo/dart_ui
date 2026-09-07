@@ -534,8 +534,8 @@ de desenho está no **ADR 0008**.
 | 2 — `PopupHost` | **feita e provada em janela real** | `PopupHost`/`PopupHandle`/`PopupSpec`/`PopupKind`/`PopupPolicy`, `InTreePopupHost` e `WindowPopupHost`. `test/widgets/popup_host_test.dart` é o **contrato compartilhado**: as duas implementações têm de satisfazer os mesmos casos. `tool/popup_window_smoke.dart` mediu num HWND de verdade que o popup sai 196 px da janela dona (§3.7) |
 | 3 — widgets | **feita** | `Tooltip` real, `MenuAnchor`, `MenuController`, `MenuItemButton`, `SubmenuButton`, `MenuBar`, `showMenu`, `PopupMenuButton`, `PopupMenuItem`, `PopupMenuDivider`, `RelativeRect` — nos nomes e assinaturas do Flutter (`doc/MIGRACAO_DO_FLUTTER.md`) |
 | 4 — X11 e Wayland | **feita no código, não executada** | X11 honra `WindowKind` (override-redirect, `_NET_WM_WINDOW_TYPE`, `WM_TRANSIENT_FOR`); Wayland com grab desligado e o serial dentro do tipo. Provados por testes de bytes numa máquina Windows; os dois smokes **nunca rodaram** |
-| 4 — macOS | **não feita** | sem host de popup nativo; cai no overlay. Escrever às cegas produz confiança falsa (§68.1) |
-| 5 — acessibilidade | **não feita** | o popup ainda não é fragmento UIA filho da dona, nem emite `MenuOpened`/`MenuClosed` |
+| 4 — macOS | **feita e provada no runner Apple Silicon** | o host cria `NSPanel` com `NSWindowStyleMaskNonactivatingPanel`, nível 101, política `Accessory` e `orderFront:`. O probe real confirmou popup e tooltip sem `isKeyWindow`; tooltip confirmou `ignoresMouseEvents`. O mesmo handshake transporta `NSScreen.frame`, `visibleFrame` e `backingScaleFactor`, e o backend implementa `ScreenProvider` |
+| 5 — acessibilidade | **parcialmente feita** | `ControlType.Menu`/`MenuItem` e os pares `MenuOpened`/`MenuClosed` já estão implementados e exercitados por cliente UIA fora do processo; falta ligar o fragment root da janela popup como filho UIA da janela dona |
 
 **A correção mais importante do plano original**, registrada porque errar em
 público é o que torna o resto confiável: a §3.7 dizia "popups usam sempre o
@@ -573,6 +573,16 @@ A §3.7 foi reescrita e a regra virou a §8.1.1 do roteiro.
 - **"o tooltip já está quente"** precisou de uma variável própria com carência:
   o roteador reporta a *saída* do ponteiro antes da *entrada*, então limpar o
   calor ao esconder faria todo tooltip depois do primeiro pagar a espera cheia.
+- **um host por janela no macOS também é um processo por janela.** O popup não
+  pode usar `addChildWindow:` sobre o `NSWindow` da dona, que vive em outro
+  processo. A ownership lógica continua em `Application`; no AppKit o host
+  transitório usa `NSPanel` não ativável, nível de popup e política de ativação
+  `Accessory`. Sem esta última, cada submenu seria anunciado ao Dock como um
+  aplicativo independente.
+- **X11 agora expõe a geometria que realmente conhece.** `_NET_WORKAREA` e
+  `_NET_CURRENT_DESKTOP` dão a área reservada pelo window manager; sem WM (o
+  Xvfb do CI), a área útil é honestamente igual ao root screen. Isso ainda não
+  é RandR por monitor e não é descrito como se fosse.
 
 ---
 
