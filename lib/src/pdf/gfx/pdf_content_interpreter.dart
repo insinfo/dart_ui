@@ -11,6 +11,7 @@ import '../io/byte_reader.dart';
 import 'pdf_gfx_state.dart';
 import 'pdf_matrix.dart';
 import 'pdf_output_device.dart';
+import 'pdf_shading.dart';
 
 /// Interpretador de fluxos de comandos gráficos de conteúdo PDF (`/Contents`).
 class PdfContentInterpreter {
@@ -491,6 +492,19 @@ class PdfContentInterpreter {
             } else if (subtype == 'Form') {
               _executeForm(xobj);
             }
+          }
+        }
+        break;
+
+      case 'sh':
+        if (args.isNotEmpty && resources != null) {
+          final object = resources!.getDict('Shading', resolver)?.getResolved(
+                args.last.text,
+                resolver,
+              );
+          if (object != null) {
+            final shading = PdfShading.parse(object, resolver);
+            if (shading != null) device.drawShading(shading, _state);
           }
         }
         break;

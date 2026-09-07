@@ -4,9 +4,13 @@ import '../../geometry/rect.dart';
 import '../format/pdf_object.dart';
 import 'pdf_gfx_state.dart';
 import 'pdf_matrix.dart';
+import 'pdf_shading.dart';
 
 /// Interface abstrata de saída gráfica para o interpretador PDF (equivalente ao OutputDev do Poppler).
 abstract class PdfOutputDevice {
+  /// Paints a shading resource through the active clipping region.
+  void drawShading(PdfShading shading, PdfGfxState state) {}
+
   /// Salva o estado gráfico no destino.
   void saveState();
 
@@ -63,6 +67,11 @@ abstract class PdfOutputDevice {
 class PdfMemoryOutputDevice extends PdfOutputDevice {
   final List<String> commands = [];
   final List<Path> paths = [];
+
+  @override
+  void drawShading(PdfShading shading, PdfGfxState state) {
+    commands.add('drawShading(type: ${shading.type})');
+  }
 
   @override
   void saveState() => commands.add('save');

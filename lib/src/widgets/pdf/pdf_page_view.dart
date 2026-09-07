@@ -12,6 +12,7 @@ import '../../geometry/transform2d.dart';
 import '../../graphics/color.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
+import '../../graphics/gradient.dart';
 import '../../graphics/image/decoded_image.dart';
 import '../../graphics/image/raster_formats.dart';
 import '../../layout/render_box.dart';
@@ -20,6 +21,7 @@ import '../../pdf/format/pdf_object.dart';
 import '../../pdf/gfx/pdf_gfx_state.dart';
 import '../../pdf/gfx/pdf_matrix.dart';
 import '../../pdf/gfx/pdf_output_device.dart';
+import '../../pdf/gfx/pdf_shading.dart';
 import '../../pdf/render/pdf_image_decoder.dart';
 import '../../pdf/render/pdf_page_renderer.dart';
 import '../../pdf/render/pdf_text_layout.dart';
@@ -501,6 +503,95 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
   Transform2D get _deviceTransform => pageToDevice.multiply(_ctm);
 
   @override
+  void drawShading(PdfShading shading, PdfGfxState state) {
+    final Gradient? source = shading.toGradient(page.resolver);
+    if (source == null) return;
+    final Transform2D transform = _deviceTransform;
+    final Gradient gradient;
+    if (source is LinearGradient) {
+      final start = transform.transformOffset(
+        Offset(source.startX, source.startY),
+      );
+      final end = transform.transformOffset(Offset(source.endX, source.endY));
+      gradient = LinearGradient(
+        startX: start.dx,
+        startY: start.dy,
+        endX: end.dx,
+        endY: end.dy,
+        stops: _gradientStops(source),
+        spread: source.spread,
+      );
+    } else if (source is RadialGradient) {
+      final center = transform.transformOffset(
+        Offset(source.centerX, source.centerY),
+      );
+      final focus = transform.transformOffset(
+        Offset(source.focusX, source.focusY),
+      );
+      final sx =
+          math.sqrt(transform.a * transform.a + transform.b * transform.b);
+      final sy =
+          math.sqrt(transform.c * transform.c + transform.d * transform.d);
+      gradient = RadialGradient(
+        centerX: center.dx,
+        centerY: center.dy,
+        focusX: focus.dx,
+        focusY: focus.dy,
+        radius: source.radius * (sx + sy) / 2,
+        stops: _gradientStops(source),
+        spread: source.spread,
+      );
+    } else {
+      return;
+    }
+    final bounds = transform.transformRect(page.cropBox);
+    final paint = list.addPaint(colorArgb: 0, gradient: gradient);
+    if (gradient is LinearGradient &&
+        (!shading.extension(page.resolver, 0) ||
+            !shading.extension(page.resolver, 1))) {
+      final start = Offset(gradient.startX, gradient.startY);
+      final end = Offset(gradient.endX, gradient.endY);
+      final dx = end.dx - start.dx;
+      final dy = end.dy - start.dy;
+      final length = math.sqrt(dx * dx + dy * dy);
+      if (length == 0) return;
+      final extent = (bounds.width + bounds.height + length) * 2;
+      final direction = Offset(dx / length, dy / length);
+      final normal = Offset(-direction.dy * extent, direction.dx * extent);
+      final a = shading.extension(page.resolver, 0)
+          ? start - direction * extent
+          : start;
+      final b =
+          shading.extension(page.resolver, 1) ? end + direction * extent : end;
+      final path = PathBuilder()
+        ..moveTo(a.dx + normal.dx, a.dy + normal.dy)
+        ..lineTo(b.dx + normal.dx, b.dy + normal.dy)
+        ..lineTo(b.dx - normal.dx, b.dy - normal.dy)
+        ..lineTo(a.dx - normal.dx, a.dy - normal.dy)
+        ..close();
+      list.drawPath(list.addPath(path.build()), paint);
+    } else if (gradient is RadialGradient &&
+        !shading.extension(page.resolver, 1)) {
+      final radius = gradient.radius;
+      final circle = Path.oval(Rect.fromLTWH(
+        gradient.centerX - radius,
+        gradient.centerY - radius,
+        radius * 2,
+        radius * 2,
+      ));
+      list.drawPath(list.addPath(circle), paint);
+    } else {
+      list.drawRect(
+        bounds.left,
+        bounds.top,
+        bounds.right,
+        bounds.bottom,
+        paint,
+      );
+    }
+  }
+
+  @override
   void saveState() {
     _stack.add(_ctm);
     list.save();
@@ -788,6 +879,14 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
 /// What the page shows where an image is still being decoded: a light grey
 /// block, visibly "loading" rather than a blank hole.
 const int _pendingImageColor = 0xFFE6E6E6;
+
+List<GradientStop> _gradientStops(Gradient gradient) => <GradientStop>[
+      for (var index = 0; index < gradient.stopCount; index++)
+        GradientStop(
+          gradient.stopOffsets[index],
+          gradient.stopColors[index],
+        ),
+    ];
 
 /// What the isolate needs, and nothing that drags the document along: the
 /// encoded bytes, the format the dispatcher sniffed, and the one dictionary

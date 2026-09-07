@@ -24,6 +24,7 @@ export 'src/pdf/gfx/pdf_content_interpreter.dart';
 export 'src/pdf/gfx/pdf_gfx_state.dart';
 export 'src/pdf/gfx/pdf_matrix.dart';
 export 'src/pdf/gfx/pdf_output_device.dart';
+export 'src/pdf/gfx/pdf_shading.dart';
 export 'src/pdf/io/byte_reader.dart';
 export 'src/pdf/render/pdf_image_decoder.dart';
 export 'src/pdf/render/pdf_page_renderer.dart';
