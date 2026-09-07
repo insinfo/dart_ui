@@ -16,10 +16,10 @@ A GPU desta máquina suporta as quatro abordagens propostas.
   alcançável pela mesma política. É uma rota estreita: só dentro de camadas com
   stencil e quatro amostras, e só para paths grandes e não cacheados. Ligá-la
   numa UI comum **custa 9% e não desenha nada** — ver a mesma seção.
-- **D — compute:** a GPU e os runtimes nativos têm compute suficiente para um
-  pipeline no estilo Vello. A POC executa um microkernel em tiles 16×16, mas o
+- **D — compute:** ~~a POC executa um microkernel em tiles 16×16, mas o
   rasterizador vetorial completo ainda precisa de flatten, binning, cobertura,
-  ordenação e composição na GPU.
+  ordenação e composição na GPU.~~ **Desatualizado nas duas direções, corrigido
+  em 06/09/2026 — ver §"Estratégia D em 06/09/2026" no fim deste relatório.**
 
 ## Hardware e APIs confirmados nesta máquina
 
@@ -262,6 +262,57 @@ ela: **24 757 pixels de borda e até 55 níveis** com quatro amostras, interior
 exato. `RenderQualityPreference.exact` e os kill switches de
 `GpuStrategySwitches` continuam removendo qualquer uma das duas — e agora
 removem alguma coisa, o que antes desta frente não era verdade.
+
+## Estratégia D em 06/09/2026 — mais pronta e mais inalcançável do que este relatório dizia
+
+A frase original errava nos dois sentidos, e os dois importam.
+
+**Está mais pronta.** Quatro dos cinco estágios rodam na GPU, e desde 06/09/2026
+numa **única submissão**: flatten, binning grosso com ordenação, binning de
+segmentos com backdrops, e agora **cobertura encadeada** — a cena binada não
+volta mais para a CPU entre o binning e a cobertura. A paridade foi medida
+nesta máquina, Intel UHD, feature level 12_1: **byte a byte, tolerância zero**,
+contra a rota já provada, em seis cenas (retângulo, um tile de dezesseis, dois
+desenhos sobrepostos, triângulo, elipse, gravata-borboleta even-odd). Mais
+determinismo: a mesma cena duas vezes dá o mesmo buffer, e uma cena pequena
+depois de uma grande não deixa tinta para trás.
+
+**E está inalcançável.** `GpuPathStrategy.computeTiles` depende de
+`experimentalComputeTilesEnabled`, que depende de um executor, que depende da
+bandeira `enableExperimentalComputeTiles` do construtor. Os **dois** pontos de
+produção — `d3d12_backend.dart:80` e `:119` — chamam `D3d12RenderDevice.open`
+sem passá-la. O **único** ponto de construção no repositório inteiro é
+`D3d12Session.open(computeTiles: true)`, num arquivo de teste.
+
+Pior: mesmo ligando a bandeira, nada do pipeline seria alcançado.
+`d3d12_vector_path_recorder.dart:386` monta o plano com `ComputeTileScene` **na
+CPU**. Então o que a bandeira liga é a metade CPU-planejada, e a metade
+GPU-encadeada — flatten, binning, segmentos, cobertura — não é tocada por
+desenho nenhum, com ou sem bandeira.
+
+**As duas lacunas que restam, nomeadas:**
+
+1. **A junção flatten→segmentos.** O flatten é hoje um beco sem saída *dentro
+   da própria cadeia*: o driver carrega os segmentos da CPU para o estágio de
+   segmentos e nunca usa a saída do flatten. As duas metades discordam por
+   construção sobre a aresta de fechamento de um contorno degenerado, e a saída
+   do flatten não produz a tabela `firstSegment`/`segmentCount`. Aliasar uma na
+   outra ligaria uma numeração de segmentos a um índice construído para outra:
+   arestas erradas, não uma falha.
+2. **A composição encadeada**, que precisa da porta para descriptor heaps.
+
+**E uma correção de fato ao design.** `doc/architecture/RASTERIZADOR_COMPUTE_D.md`
+dizia que encadear a cobertura estava bloqueado por descriptor heaps. Isso vale
+só para o ponto de entrada de **textura**; o de buffer usa root descriptors, e
+foi por ele que a cobertura encadeou.
+
+**Sobre a tabela de custo**, que é onde um relatório de desempenho mente com
+mais facilidade: o encadeamento fica à frente a partir de 16 desenhos e chega a
+110 ms contra 41 ms em 64 desenhos, **mas essa razão não é atribuível ao
+encadeamento**. Os dois lados leem de volta um `uint` por pixel por desenho — 64
+MiB na maior linha — e zeram esse buffer por caminhos diferentes, um deles na
+CPU a ~700 µs/MB. O que a tabela mostra honestamente é **onde fica o
+cruzamento**, entre 4 e 16 desenhos, e não um ganho de 2,7×.
 
 ## Artefatos
 

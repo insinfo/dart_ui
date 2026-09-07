@@ -418,12 +418,52 @@ resultado, e é ele que diz onde vale otimizar em seguida.
    **A cobertura agora pode ser encadeada, e o motivo que a barrava caiu.**
    `D3d12ComputeTileDriver` lê `scene.segments` e `scene.referenceBackdrops`;
    os dois estão no device ao fim desta cadeia, e `D3d12ComputeAlias` é o
-   mecanismo pelo qual o consumidor os lê sem cópia. O que sobra é o segundo
-   motivo que a frente anterior declarou e que continua verdadeiro: aquele
-   driver usa descriptor heaps para a textura de saída, e `D3d12ComputePass` só
-   declara root descriptors. Portá-lo continua sendo trabalho real.
+   mecanismo pelo qual o consumidor os lê sem cópia.
 
-3. **`ExecuteIndirect`.** Inalterado, e agora com um segundo cliente. O emit do
+3. ~~**Cobertura encadeada.**~~ **Feita em 06/09/2026**, e o segundo motivo que
+   a barrava era mais estreito do que estava escrito aqui. Dizia-se que o
+   driver usa descriptor heaps e que `D3d12ComputePass` só declara root
+   descriptors: **isso vale só para o ponto de entrada de textura.** O ponto de
+   entrada de buffer é todo root descriptors, então a barreira não se aplicava
+   a ele, e foi por ele que a cobertura encadeou.
+
+   Um quarto `D3d12ComputePass` lê cinco buffers dos dois passes anteriores por
+   `D3d12ComputeAlias` — `references` e `commands` do estágio grosso;
+   `referenceSegments`, `tileSegments` e `backdrops` do de segmentos — e grava
+   o seu próprio UAV de cobertura. `bins` **não** é ligado, de propósito:
+   nenhum dos dois kernels o indexa.
+
+   Duas constantes de raiz novas, `uReferenceSlots` e `uTileSegmentSlots`,
+   limitam os espaços de índice emprestados. Sem elas, estourar o orçamento do
+   alocador é acesso fora de faixa através de um root descriptor — sem tamanho,
+   sem verificação — que é o modo de remoção de dispositivo que este documento
+   registra. O kernel descarta a referência e o pipeline devolve só a submissão
+   em que todo orçamento coube.
+
+   Paridade: **byte a byte, tolerância zero**, contra a rota não encadeada em
+   seis cenas, e desvio 0 contra `ComputeTileCpuReference`. O sobre-despacho é
+   testado por construção e não por um botão: a rota encadeada despacha um
+   grupo por *tile* porque não consegue ler o total de ocupação, e a não
+   encadeada um por tile *ocupado* — a cena `18,18–28,28` ocupa 1 tile de 16, e
+   as duas continuam byte a byte idênticas em tamanhos de despacho diferentes.
+
+4. **A junção flatten→segmentos, que é a lacuna nova.** O flatten é um beco sem
+   saída *dentro da própria cadeia*: `D3d12ComputeRasterDriver.runRasterPass`
+   carrega `segmentScene.segments` da CPU para o estágio de segmentos e **nunca
+   aliasa a saída do flatten**. Os dois rodam lado a lado sobre arrays de
+   segmentos diferentes. Não dá para simplesmente juntá-los:
+   `ComputeCurveScene.appendPath` e o sink de `ComputeTileScene` discordam por
+   construção sobre a aresta de fechamento de um contorno degenerado — cada um
+   diz isso no próprio comentário — e o flatten não produz a tabela
+   `firstSegment`/`segmentCount`. Aliasar um no outro ligaria uma numeração de
+   segmentos a um índice construído para outra: **arestas erradas, não uma
+   falha**. Precisa de uma tabela de desenhos do lado da GPU e de um novo
+   oráculo.
+
+5. **A composição encadeada**, que é o caso em que a porta para descriptor
+   heaps é mesmo necessária.
+
+6. **`ExecuteIndirect`.** Inalterado, e agora com um segundo cliente. O emit do
    flatten despacha um grupo por curva porque a contagem de segmentos é um
    resultado da GPU; o estágio de segmentos despacha sobre `referenceSlots` em
    vez de sobre a contagem real de referências pela mesma razão, e paga o scan e

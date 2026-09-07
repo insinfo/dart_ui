@@ -72,6 +72,8 @@ import 'compute_curve_scene.dart';
 import 'compute_scan.dart';
 import 'd3d12_compute_binning_executor.dart';
 import 'd3d12_compute_binning_shader.dart';
+import 'd3d12_compute_coverage_executor.dart';
+import 'd3d12_compute_coverage_shader.dart';
 import 'd3d12_compute_flatten_executor.dart';
 import 'd3d12_compute_flatten_shader.dart';
 import 'd3d12_compute_segment_executor.dart';
@@ -83,6 +85,7 @@ final class ComputeRasterReadback {
     required this.flatten,
     required this.binning,
     this.segments,
+    this.coverage,
   });
 
   final ComputeFlattenReadback flatten;
@@ -90,6 +93,15 @@ final class ComputeRasterReadback {
 
   /// Null when the submission did not include the segment stage.
   final ComputeSegmentBinningReadback? segments;
+
+  /// Null when the submission did not include the coverage stage.
+  ///
+  /// Not trustworthy on its own: a submission whose reference or tile-segment
+  /// budget overflowed still rasterises, because the kernel bounds its borrowed
+  /// indices rather than refusing, and what it rasterises from a truncated tile
+  /// index is garbage. [ComputeRasterPipeline] is what knows whether the
+  /// budgets held, and it drops this when they did not.
+  final ComputeCoverageResult? coverage;
 }
 
 /// The bump-allocator budgets one chained submission runs with.
@@ -138,9 +150,12 @@ abstract interface class ComputeRasterDriver {
   /// [segmentScene] is given - the segment-binning chain into one command list,
   /// in that order, and submits it **once**.
   ///
-  /// The segment chain must come last and must read the coarse stage's tile
-  /// index and references from that stage's own buffers, without a copy: it is
-  /// the consumer, and a copy would need a fence.
+  /// The segment chain must read the coarse stage's tile index and references
+  /// from that stage's own buffers, without a copy: it is the consumer, and a
+  /// copy would need a fence. The coverage chain, when [coverageDispatch] is
+  /// given, comes after both and reads five buffers across the two of them the
+  /// same way; it requires [segmentScene], because three of the five are that
+  /// stage's output.
   ///
   /// Returns the stages' buffers when [readBack] is true, and null when it is
   /// false - in which case the submission does not wait on a fence either, and
@@ -157,6 +172,7 @@ abstract interface class ComputeRasterDriver {
     ComputeSegmentScene? segmentScene,
     Uint32List? segmentConstants,
     ComputeSegmentBinningDispatch? segmentDispatch,
+    ComputeCoverageDispatch? coverageDispatch,
   });
 
   /// Command lists this driver has submitted.
@@ -183,7 +199,16 @@ final class ComputeRasterResult {
     required this.budget,
     required this.submissions,
     this.segments,
+    this.coverage,
   });
+
+  /// Null when the pass did not read back, or did not run the coverage stage.
+  ///
+  /// Present only when every budget held for the submission that produced it:
+  /// a coverage buffer rasterised from a truncated tile index is garbage, and
+  /// returning it would let a caller compare garbage against an oracle and
+  /// report a parity failure for a budget problem.
+  final ComputeCoverageResult? coverage;
 
   /// Null when the pass did not read back, or did not run the segment stage.
   final ComputeSegmentBinningResult? segments;
@@ -211,6 +236,7 @@ final class ComputeRasterPipeline {
     this.minimumSegmentBudget = 4096,
     this.minimumReferenceBudget = 4096,
     this.minimumTileSegmentBudget = 4096,
+    this.maxCoverageElements = 1 << 26,
     this.sortPerThread = true,
   });
 
@@ -228,6 +254,13 @@ final class ComputeRasterPipeline {
   final int minimumSegmentBudget;
   final int minimumReferenceBudget;
   final int minimumTileSegmentBudget;
+
+  /// The ceiling on the coverage buffer, in `uint`s - the number
+  /// `ComputeTileD3d12Executor.maxCoverageElements` defaults to, for the same
+  /// reason: the layout is one word per pixel *per draw*, so a modest scene
+  /// asks for a diagnostic-sized buffer and a large one asks for an impossible
+  /// one. Refused by name rather than by the driver.
+  final int maxCoverageElements;
 
   /// Forwarded to [ComputeSegmentBinningDispatch.sortPerThread]. True is the
   /// production answer; false is the shape the benchmark compares it against.
@@ -253,6 +286,7 @@ final class ComputeRasterPipeline {
     validateComputeFlattenShaderContract();
     validateComputeBinningShaderContract();
     validateComputeSegmentShaderContract();
+    validateComputeCoverageShaderContract();
     _pipeline = _driver.createRasterPipeline();
     if (_pipeline == 0) {
       throw StateError('the GPU raster pipeline was refused');
@@ -273,6 +307,7 @@ final class ComputeRasterPipeline {
     required int drawCount,
     required ComputeBinningGrid grid,
     ComputeSegmentScene? segmentScene,
+    ComputeCoverageRequest? coverage,
     ComputeRasterBudget budget = const ComputeRasterBudget.unknown(),
   }) =>
       _run(
@@ -281,6 +316,7 @@ final class ComputeRasterPipeline {
         drawCount: drawCount,
         grid: grid,
         segmentScene: segmentScene,
+        coverage: coverage,
         budget: budget,
         readBack: true,
       );
@@ -296,6 +332,7 @@ final class ComputeRasterPipeline {
     required int drawCount,
     required ComputeBinningGrid grid,
     ComputeSegmentScene? segmentScene,
+    ComputeCoverageRequest? coverage,
     required ComputeRasterBudget budget,
   }) {
     final bool known =
@@ -312,6 +349,7 @@ final class ComputeRasterPipeline {
       drawCount: drawCount,
       grid: grid,
       segmentScene: segmentScene,
+      coverage: coverage,
       budget: budget,
       readBack: false,
     );
@@ -329,6 +367,7 @@ final class ComputeRasterPipeline {
     required int drawCount,
     required ComputeBinningGrid grid,
     required ComputeSegmentScene? segmentScene,
+    required ComputeCoverageRequest? coverage,
     required ComputeRasterBudget budget,
     required bool readBack,
   }) {
@@ -341,6 +380,12 @@ final class ComputeRasterPipeline {
     }
     if (drawCount <= 0) {
       throw ArgumentError('a chained pass needs at least one draw');
+    }
+    if (coverage != null && segmentScene == null) {
+      throw ArgumentError(
+        'the coverage stage reads the three per-reference arrays the segment '
+        'stage produces; ask for both or neither',
+      );
     }
     if (bounds.length < drawCount * 4) {
       throw ArgumentError(
@@ -389,6 +434,7 @@ final class ComputeRasterPipeline {
         drawCount: drawCount,
         grid: grid,
         segmentScene: segmentScene,
+        coverage: coverage,
         segmentBudget: segmentBudget,
         referenceBudget: referenceBudget,
         tileSegmentBudget: tileSegmentBudget,
@@ -427,6 +473,7 @@ final class ComputeRasterPipeline {
         drawCount: drawCount,
         grid: grid,
         segmentScene: segmentScene,
+        coverage: coverage,
         segmentBudget: segmentBudget,
         referenceBudget: referenceBudget,
         tileSegmentBudget: tileSegmentBudget,
@@ -559,6 +606,11 @@ final class ComputeRasterPipeline {
               passes: submissions,
               tileSegmentBudget: tileSegmentBudget,
             ),
+      // `read` is the submission the loop broke on, which is the one where
+      // every budget held. An earlier submission's coverage was rasterised from
+      // a tile index its own stage had truncated, and handing that to a caller
+      // would turn a budget miss into a parity failure.
+      coverage: read.coverage,
       budget: ComputeRasterBudget(
         segments: segmentBudget,
         references: referenceBudget,
@@ -574,6 +626,7 @@ final class ComputeRasterPipeline {
     required int drawCount,
     required ComputeBinningGrid grid,
     required ComputeSegmentScene? segmentScene,
+    required ComputeCoverageRequest? coverage,
     required int segmentBudget,
     required int referenceBudget,
     required int tileSegmentBudget,
@@ -641,6 +694,32 @@ final class ComputeRasterPipeline {
       );
     }
 
+    ComputeCoverageDispatch? coverageDispatch;
+    if (coverage != null && segmentScene != null) {
+      // Every argument is CPU-known, which is what makes the stage chainable.
+      // Two of them are *budgets* and not counts, for the reason the segment
+      // stage states: the reference and tile-segment totals are on the device
+      // until somebody waits, and the kernel bounds its borrowed indices by
+      // these so an overflowed submission produces garbage instead of touching
+      // memory that is not there.
+      coverageDispatch = ComputeCoverageDispatch.of(
+        width: grid.width,
+        height: grid.height,
+        tileSize: grid.tileSize,
+        columns: grid.columns,
+        drawCount: segmentScene.drawCount,
+        // One group per tile rather than per occupied tile: the occupancy total
+        // is the coarse stage's output, and reading it is the fence the chain
+        // removes. A command slot past the real count is zero and writes
+        // nothing - `d3d12_compute_coverage_shader.dart` argues why.
+        commandSlots: grid.tileCount,
+        referenceSlots: referenceBudget,
+        tileSegmentSlots: tileSegmentBudget,
+        sampleGrid: coverage.sampleGrid,
+        maxCoverageElements: maxCoverageElements,
+      );
+    }
+
     return _driver.runRasterPass(
       pipeline: _pipeline,
       scene: scene,
@@ -652,6 +731,7 @@ final class ComputeRasterPipeline {
       segmentScene: segmentScene,
       segmentConstants: segmentConstants,
       segmentDispatch: segmentDispatch,
+      coverageDispatch: coverageDispatch,
       readBack: readBack,
     );
   }

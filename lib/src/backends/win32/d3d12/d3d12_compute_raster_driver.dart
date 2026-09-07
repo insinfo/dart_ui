@@ -1,17 +1,18 @@
-/// Production Direct3D 12 adapter for the chained flatten, coarse-binning and
-/// segment-binning pipeline.
+/// Production Direct3D 12 adapter for the chained flatten, coarse-binning,
+/// segment-binning and coverage pipeline.
 ///
-/// The two single-stage drivers next to this one each own a [D3d12ComputePass]
-/// and call [D3d12ComputePass.run], which closes a command list and waits on a
-/// fence because it ends in a readback the CPU maps. This one owns *both*
-/// passes and a [D3d12ComputeChain], and records both kernel chains into one
+/// The single-stage drivers next to this one each own a [D3d12ComputePass] and
+/// call [D3d12ComputePass.run], which closes a command list and waits on a
+/// fence because it ends in a readback the CPU maps. This one owns *all four*
+/// passes and a [D3d12ComputeChain], and records every kernel chain into one
 /// list.
 ///
-/// Nothing about the two stages is restated here. The pass, the buffer sizes
-/// and the kernel chain of each come from `D3d12FlattenPass` and
-/// `D3d12BinningPass`, which are the same functions the single-stage drivers
-/// call - so a chained submission dispatches exactly what an unchained one
-/// dispatches, and the parity oracle that proved one proves the other.
+/// Nothing about the stages is restated here. The pass, the buffer sizes and
+/// the kernel chain of each come from `D3d12FlattenPass`, `D3d12BinningPass`,
+/// `D3d12SegmentPass` and `D3d12CoveragePass`, which are the same functions the
+/// single-stage drivers call - so a chained submission dispatches exactly what
+/// an unchained one dispatches, and the parity oracle that proved one proves
+/// the other.
 ///
 /// What is genuinely different is the readback list. In the unchained shape
 /// every stage reads back everything it produced, because that is what an
@@ -30,6 +31,21 @@
 /// spells that binding, and the unchained driver next door spells the seeded
 /// alternative, so both shapes dispatch the same kernels over the same
 /// registers.
+///
+/// ## The coverage stage closes it, and consumes both producers
+///
+/// The fourth pass is the first that reads *two* earlier stages: `references`
+/// and `commands` from the coarse pass, and `referenceSegments`,
+/// `tileSegments` and `backdrops` from the segment pass, all five by alias. With
+/// it recorded, the binned scene never returns to the CPU on its way to
+/// coverage - which is the whole of what `RASTERIZADOR_COMPUTE_D.md` listed as
+/// missing for the pipeline, minus the join between the flatten stage's
+/// segments and the segment table, which `d3d12_compute_coverage_shader.dart`
+/// states is not done.
+///
+/// It is optional for the same reason the segment stage is: the three-stage
+/// shape is the measurement that document published, and a benchmark that can
+/// no longer produce the old row cannot show what the new one changed.
 library;
 
 import 'dart:typed_data';
@@ -37,9 +53,11 @@ import 'dart:typed_data';
 import '../../../rendering/gpu/compute/compute_curve_scene.dart';
 import '../../../rendering/gpu/compute/compute_raster_pipeline.dart';
 import '../../../rendering/gpu/compute/d3d12_compute_binning_executor.dart';
+import '../../../rendering/gpu/compute/d3d12_compute_coverage_executor.dart';
 import '../../../rendering/gpu/compute/d3d12_compute_flatten_executor.dart';
 import '../../../rendering/gpu/compute/d3d12_compute_segment_executor.dart';
 import 'd3d12_compute_binning_driver.dart';
+import 'd3d12_compute_coverage_driver.dart';
 import 'd3d12_compute_flatten_driver.dart';
 import 'd3d12_compute_pass.dart';
 import 'd3d12_compute_segment_driver.dart';
@@ -62,14 +80,21 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
             D3d12BinningPass.create(device, deviceZeroFill: deviceZeroFill),
         _segments =
             D3d12SegmentPass.create(device, deviceZeroFill: deviceZeroFill),
+        _coverage =
+            D3d12CoveragePass.create(device, deviceZeroFill: deviceZeroFill),
         _chain = D3d12ComputeChain(device, label: 'raster');
 
   final D3d12ComputePass _flatten;
   final D3d12ComputePass _binning;
   final D3d12ComputePass _segments;
+  final D3d12ComputePass _coverage;
   final D3d12ComputeChain _chain;
 
-  bool get isBuilt => _flatten.isBuilt && _binning.isBuilt && _segments.isBuilt;
+  bool get isBuilt =>
+      _flatten.isBuilt &&
+      _binning.isBuilt &&
+      _segments.isBuilt &&
+      _coverage.isBuilt;
 
   @override
   int get submissions => _chain.submissions;
@@ -85,9 +110,11 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
     D3d12FlattenPass.assertSlotContract();
     D3d12BinningPass.assertSlotContract();
     D3d12SegmentPass.assertSlotContract();
+    D3d12CoveragePass.assertSlotContract();
     _flatten.build();
     _binning.build();
     _segments.build();
+    _coverage.build();
     return _kRasterPipelineToken;
   }
 
@@ -97,6 +124,7 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
     _flatten.release();
     _binning.release();
     _segments.release();
+    _coverage.release();
     _chain.release();
   }
 
@@ -105,6 +133,7 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
     _flatten.discard();
     _binning.discard();
     _segments.discard();
+    _coverage.discard();
     _chain.discard();
   }
 
@@ -121,6 +150,7 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
     ComputeSegmentScene? segmentScene,
     Uint32List? segmentConstants,
     ComputeSegmentBinningDispatch? segmentDispatch,
+    ComputeCoverageDispatch? coverageDispatch,
   }) {
     if (pipeline != _kRasterPipelineToken || !isBuilt) {
       throw StateError('the raster pipeline does not belong to this driver');
@@ -195,6 +225,47 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
       );
     }
 
+    if (coverageDispatch != null) {
+      // Guarded rather than assumed: the coverage kernel indexes the segment
+      // stage's three per-reference arrays, and without that stage in the list
+      // they are this pass's own zeroed buffers - every reference would read an
+      // empty run and every pixel would come back zero, which is a plausible
+      // answer and therefore the worst kind of wrong.
+      if (segmentScene == null) {
+        throw ArgumentError(
+          'a chained coverage stage reads what the segment stage produced; '
+          'run it with a segment scene or not at all',
+        );
+      }
+      work.add(
+        D3d12ComputeWork(
+          _coverage,
+          rootConstants: coverageDispatch.rootConstants(),
+          // The same three arrays the segment stage was handed, and the same
+          // objects: `tileSegments` indexes `segments`, so a re-encoding here
+          // would read the wrong edges rather than fail.
+          uploads: D3d12CoveragePass.uploads(segmentScene),
+          uavBytes: D3d12CoveragePass.uavBytes(coverageDispatch),
+          stages: D3d12CoveragePass.stages(coverageDispatch),
+          // Five buffers from two earlier passes, by address. Nothing is
+          // copied and nothing is waited on: the UAV barrier the chain records
+          // between dispatches is the whole of the ordering an aliased read
+          // needs.
+          uavSources: D3d12CoveragePass.sources(
+            references:
+                D3d12ComputeAlias(_binning, kD3d12BinningReferencesSlot),
+            commands: D3d12ComputeAlias(_binning, kD3d12BinningCommandsSlot),
+            referenceSegments:
+                D3d12ComputeAlias(_segments, kD3d12SegmentRefSegmentsSlot),
+            tileSegments:
+                D3d12ComputeAlias(_segments, kD3d12SegmentTileSegmentsSlot),
+            backdrops: D3d12ComputeAlias(_segments, kD3d12SegmentBackdropsSlot),
+          ),
+          reads: readBack ? D3d12CoveragePass.reads : const <int>[],
+        ),
+      );
+    }
+
     if (!readBack) {
       // One list, no copies, no fence: nothing is read, so nothing has to have
       // finished. `ComputeRasterPipeline.finish` is where the wait went.
@@ -224,6 +295,12 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
       segments: segmentDispatch == null
           ? null
           : D3d12SegmentPass.readbackOf(back[2], segmentDispatch),
+      // Positional, like every other index here: the coverage work item is
+      // appended last, so it is the last readback whether or not the segment
+      // stage was in front of it.
+      coverage: coverageDispatch == null
+          ? null
+          : D3d12CoveragePass.resultOf(back.last, coverageDispatch),
     );
   }
 
@@ -231,6 +308,7 @@ final class D3d12ComputeRasterDriver implements ComputeRasterDriver {
     _flatten.dispose();
     _binning.dispose();
     _segments.dispose();
+    _coverage.dispose();
     _chain.dispose();
   }
 
