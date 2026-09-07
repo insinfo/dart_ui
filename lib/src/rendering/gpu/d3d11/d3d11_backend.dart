@@ -47,7 +47,6 @@ import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
 import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
-import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../render_policy.dart';
 import '../../renderer.dart';
@@ -658,6 +657,7 @@ final class D3d11RenderDevice
       throw UnsupportedCapabilityError(
         backendName: D3d11RendererBackend.backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a ${width}x$height texture',
         detail: 'a ${width}x$height texture exceeds this feature level\'s '
             'limit of $limit; the caller must tile the image or scale it down',
       );
@@ -1589,8 +1589,8 @@ final class D3d11RenderDevice
   /// the player runs. Two targets cannot be mid-replay at once - a replay is
   /// synchronous from `bind` to the last op - so there is no window in which
   /// one target's binding could answer another's glyph.
-  D3d11FontResolver get fontResolver => _fonts;
-  final D3d11FontResolver _fonts = D3d11FontResolver();
+  ReplayFontResolver get fontResolver => _fonts;
+  final ReplayFontResolver _fonts = ReplayFontResolver();
 
   /// The textures uploaded for drawn images, shared by every target.
   ///
@@ -2642,7 +2642,7 @@ final class D3d11OffscreenTarget
   GpuMaskAtlas get maskAtlas => _maskAtlas;
 
   /// The device's font resolver, which every target on it binds in turn.
-  D3d11FontResolver get fontResolver => _device.fontResolver;
+  ReplayFontResolver get fontResolver => _device.fontResolver;
 
   /// The glyph coverage this target draws text from. The device's, so a second
   /// target finds this one's glyphs already rasterised.
@@ -3037,25 +3037,6 @@ final class D3d11OffscreenTarget
     _layers.endFrame();
     _layerPool.dispose();
     _device.releaseTexture(_maskTexture);
-  }
-}
-
-/// Turns the display list's interned font ids into faces for the sink.
-///
-/// The same class as `GlFontResolver` and for the same reason; see that file
-/// for why the resolver holds the player's own resource table rather than a
-/// map of its own.
-final class D3d11FontResolver implements GpuFontResolver {
-  ReplayResources? _resources;
-
-  void bind(ReplayResources? resources) => _resources = resources;
-
-  @override
-  ScaledTypeface? resolveFont(int fontId) {
-    final ReplayResources? resources = _resources;
-    if (resources == null) return null;
-    final Object font = resources.fontAt(fontId);
-    return font is ScaledTypeface ? font : null;
   }
 }
 

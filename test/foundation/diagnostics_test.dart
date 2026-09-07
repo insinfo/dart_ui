@@ -133,5 +133,23 @@ void main() {
       expect(error, contains('skylight'));
       expect(error, contains('accessibility'));
     });
+
+    test('a feature replaces the capability name in the sentence', () {
+      // The failure this guards: a renderer that had nothing to name in the
+      // backend-shaped Capability enum reached for gpuPresentation, so a
+      // backend presenting at 60 fps printed "does not support
+      // gpuPresentation" when what it actually lacked was a glyph atlas -
+      // and the reader went to debug the swapchain.
+      final error = UnsupportedCapabilityError(
+        backendName: 'vulkan',
+        capability: Capability.gpuPresentation,
+        feature: 'glyph atlas',
+        detail: 'this device has no glyph atlas',
+      ).toString();
+
+      expect(error, contains('vulkan does not support glyph atlas'));
+      expect(error, isNot(contains('gpuPresentation')));
+      expect(error, contains('this device has no glyph atlas'));
+    });
   });
 }

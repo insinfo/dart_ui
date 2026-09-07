@@ -800,7 +800,6 @@ final class DisplayList {
     _commandCount++;
   }
 
-
   // ---------------------------------------------------------------------
   // Splicing
   // ---------------------------------------------------------------------
@@ -892,7 +891,8 @@ final class DisplayList {
     }
     if (other._opLength == 0) return;
 
-    final Uint32List paintMap = _spliceMap(_splicePaintTable, other._paintCount);
+    final Uint32List paintMap =
+        _spliceMap(_splicePaintTable, other._paintCount);
     for (var id = 0; id < other._paintCount; id++) {
       paintMap[id] = addPaint(
         colorArgb: other.paintColor(id),
@@ -904,7 +904,8 @@ final class DisplayList {
         gradient: other.paintGradient(id),
       );
     }
-    final Uint32List pathMap = _spliceMap(_splicePathTable, other._paths.length);
+    final Uint32List pathMap =
+        _spliceMap(_splicePathTable, other._paths.length);
     for (var id = 0; id < other._paths.length; id++) {
       pathMap[id] = addPath(other._paths[id]);
     }
@@ -913,7 +914,8 @@ final class DisplayList {
     for (var id = 0; id < other._images.length; id++) {
       imageMap[id] = addImage(other._images[id]);
     }
-    final Uint32List fontMap = _spliceMap(_spliceFontTable, other._fonts.length);
+    final Uint32List fontMap =
+        _spliceMap(_spliceFontTable, other._fonts.length);
     for (var id = 0; id < other._fonts.length; id++) {
       fontMap[id] = addFont(other._fonts[id]);
     }

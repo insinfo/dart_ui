@@ -74,7 +74,6 @@ import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
 import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
-import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
@@ -470,8 +469,9 @@ final class WebGlRenderDevice
   /// cannot add a second, disagreeing one on top.
   ///
   /// **Text is drawn, and none of these booleans says so.** Every target
-  /// carries a [GpuGlyphAtlas], an alpha8 texture and a [WebGlFontResolver], so
-  /// a glyph run rasterises here rather than being refused.
+  /// carries a [GpuGlyphAtlas], an alpha8 texture and a
+  /// [ReplayFontResolver], so a glyph run rasterises here rather than being
+  /// refused.
   /// `supportsExternalTextures: false` is about *foreign* textures and has
   /// never had anything to do with glyphs; it is stated because a reader
   /// looking for "can this draw text" would otherwise find no field and assume
@@ -541,6 +541,7 @@ final class WebGlRenderDevice
       throw UnsupportedCapabilityError(
         backendName: WebGlRendererBackend.backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a ${width}x$height texture',
         detail: 'a ${width}x$height texture exceeds this context\'s '
             'MAX_TEXTURE_SIZE of $_maxTextureSize; the caller must tile the '
             'image or scale it down',
@@ -556,6 +557,7 @@ final class WebGlRenderDevice
       throw UnsupportedCapabilityError(
         backendName: WebGlRendererBackend.backendName,
         capability: Capability.gpuPresentation,
+        feature: 'BGRA texture uploads',
         detail: 'WebGL2 is ES 3.0 and has no BGRA upload format, so a BGRA '
             'texture cannot be sampled with the right channel order here',
       );
@@ -573,6 +575,7 @@ final class WebGlRenderDevice
       throw UnsupportedCapabilityError(
         backendName: WebGlRendererBackend.backendName,
         capability: Capability.gpuPresentation,
+        feature: 'texture creation',
         detail: 'the WebGL2 context is lost and cannot create textures',
       );
     }
@@ -1514,7 +1517,7 @@ final class WebGlOffscreenTarget
       : _surface = surface {
     _maskAtlas = GpuMaskAtlas();
     _glyphAtlas = GpuGlyphAtlas();
-    _fonts = WebGlFontResolver();
+    _fonts = ReplayFontResolver();
     _images = WebGlImageCache(_device);
     _buildAtlasObjects();
     final BackendDiagnostic? failure = _createSurfaceObjects();
@@ -1527,7 +1530,7 @@ final class WebGlOffscreenTarget
 
   late final GpuMaskAtlas _maskAtlas;
   late final GpuGlyphAtlas _glyphAtlas;
-  late final WebGlFontResolver _fonts;
+  late final ReplayFontResolver _fonts;
   late final WebGlImageCache _images;
 
   // Not final: a context loss destroys every one of these and a recovery
@@ -1995,31 +1998,6 @@ final class WebGlOffscreenTarget
   }
 }
 
-/// Turns the display list's interned font ids into faces for the sink.
-///
-/// Identical in shape to `GlFontResolver`, and for the reason that file gives:
-/// the sink is handed a raw `fontId` because the player never asks what a glyph
-/// looks like, so whoever has to rasterise must be able to look one up - in the
-/// *same* table the player is walking, or the two would disagree about which
-/// face an id names the first time a list was replayed with different
-/// resources.
-final class WebGlFontResolver implements GpuFontResolver {
-  ReplayResources? _resources;
-
-  void bind(ReplayResources? resources) => _resources = resources;
-
-  @override
-  ScaledTypeface? resolveFont(int fontId) {
-    final ReplayResources? resources = _resources;
-    if (resources == null) return null;
-    final Object font = resources.fontAt(fontId);
-    // Not a cast: the display list stores a font as an opaque `Object`, and a
-    // list built by something that interned another kind of face must be
-    // refused by name rather than crash with a type error mid-frame.
-    return font is ScaledTypeface ? font : null;
-  }
-}
-
 /// One image this cache uploaded, and whether it could do it again.
 final class _WebGlImageEntry {
   _WebGlImageEntry({
@@ -2410,6 +2388,7 @@ final class WebGlRendererBackend implements RendererBackend {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a WebGL2 context',
         detail: 'this browser did not give a canvas a WebGL2 context; call '
             'probe() before createDevice() to get the reason as a diagnostic '
             'instead of an exception',
@@ -2422,6 +2401,7 @@ final class WebGlRendererBackend implements RendererBackend {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a WebGL2 render device',
         detail: 'the WebGL2 context refused the renderer objects: '
             '${result.failure}',
       );

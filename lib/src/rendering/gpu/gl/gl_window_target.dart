@@ -238,7 +238,7 @@ final class GlWindowTarget
   /// replaced one cannot leave this target holding the old object, and disposed
   /// from nowhere here - see [onDispose].
   GpuGlyphAtlas get _glyphAtlas => _device.glyphAtlas;
-  GlFontResolver get _fonts => _device.fontResolver;
+  ReplayFontResolver get _fonts => _device.fontResolver;
   GlImageCache get _images => _device.images;
 
   // Not final: a device loss destroys all five and a recovery rebuilds them.

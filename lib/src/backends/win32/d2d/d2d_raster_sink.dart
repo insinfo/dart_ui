@@ -735,6 +735,7 @@ final class D2dRasterSink implements RasterSink {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'stroked text',
         detail: 'stroked text is not implemented; glyph coverage comes from '
             'the shared CPU glyph cache, and a coverage mask has no outline '
             'to stroke',
@@ -1365,6 +1366,7 @@ final class D2dRasterSink implements RasterSink {
     throw UnsupportedCapabilityError(
       backendName: backendName,
       capability: Capability.gpuPresentation,
+      feature: 'blend mode ${paint.blendMode} on $what',
       detail: 'blend mode ${paint.blendMode} on $what: ID2D1RenderTarget '
           'composites source-over only; src and plus need the '
           'ID2D1DeviceContext primitive blend, which this backend does not '

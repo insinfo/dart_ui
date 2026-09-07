@@ -33,6 +33,7 @@ import 'package:dart_ui/src/backends/web/dom_input_translation.dart';
 import 'package:dart_ui/src/backends/web/web_gl_presenter.dart';
 import 'package:dart_ui/src/backends/web/web_gpu_presenter.dart';
 import 'package:dart_ui/src/backends/web/web_window.dart';
+import 'package:dart_ui/src/rendering/gpu/gpu_raster_sink.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_backend.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_canvas_target.dart';
 import 'package:dart_ui/src/rendering/gpu/webgl/webgl_framebuffer_pool.dart';
@@ -77,7 +78,11 @@ String describeWebBackend() {
     // webgl_backend.dart.
     ..writeln(const WebGlRendererBackend().info)
     ..writeln(WebGlRendererBackend.backendName)
-    ..writeln(WebGlFontResolver().resolveFont(0))
+    // gpu_raster_sink.dart. The web backends used to hold a private font
+    // resolver each and this fixture named both; they share
+    // [ReplayFontResolver] now, so one reference is what keeps that shared
+    // library - which every backend reaches - on the web-compiled side.
+    ..writeln(ReplayFontResolver().resolveFont(0))
     // wgsl_shaders.dart and webgpu_interop.dart: the pure half and the
     // interop half of the WebGPU backend.
     ..writeln(kWgslShaderModuleSource.length)
@@ -93,7 +98,6 @@ String describeWebBackend() {
     // webgpu_backend.dart.
     ..writeln(const WebGpuRendererBackend().info)
     ..writeln(WebGpuRendererBackend.backendName)
-    ..writeln(WebGpuFontResolver().resolveFont(0))
     ..writeln(WebGpuLayerTargetPool.bucket(30))
     // web_window.dart.
     ..writeln(WebWindowingBackend.backendName)

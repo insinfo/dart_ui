@@ -101,7 +101,7 @@ final class WebGlCanvasTarget
         _observedCanvasGeneration = surface.generation.current {
     _maskAtlas = GpuMaskAtlas();
     _glyphAtlas = GpuGlyphAtlas();
-    _fonts = WebGlFontResolver();
+    _fonts = ReplayFontResolver();
     _images = WebGlImageCache(_device);
     _buildAtlasObjects();
     _device.registerTarget(this);
@@ -161,7 +161,7 @@ final class WebGlCanvasTarget
 
   late final GpuMaskAtlas _maskAtlas;
   late final GpuGlyphAtlas _glyphAtlas;
-  late final WebGlFontResolver _fonts;
+  late final ReplayFontResolver _fonts;
   late final WebGlImageCache _images;
 
   // Not final: a context loss destroys all six and a recovery rebuilds them.

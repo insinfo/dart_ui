@@ -104,13 +104,15 @@ abstract interface class GpuFontResolver {
 /// Resolves a font id through the display list's own resource table.
 ///
 /// Portable on purpose, and it should have been from the start: every GPU
-/// backend in this repository grew a private copy of this class -
+/// backend in this repository had grown a private copy of this class -
 /// `D3d11FontResolver`, `D3d12FontResolver`, `GlFontResolver`,
 /// `WebGlFontResolver`, `WebGpuFontResolver` - and the five were **byte for
 /// byte identical apart from a comment**. Nothing in resolving an id to a face
 /// touches a graphics API; the duplication was momentum, not necessity, and
 /// the visible cost of it was the Vulkan backend, which had no copy and
-/// therefore could not draw text at all.
+/// therefore could not draw text at all. All five are gone and every backend
+/// now constructs this one; the names above are kept only so a search for the
+/// old symbol lands here.
 ///
 /// The type test is deliberately not a cast. A display list stores a font as
 /// an opaque `Object`, so a list built by something that interned a different
@@ -728,6 +730,7 @@ final class GpuRasterSink
         throw UnsupportedCapabilityError(
           backendName: backendName,
           capability: Capability.gpuPresentation,
+          feature: 'paint style ${paint.style}',
           detail: 'paint style ${paint.style} is not fill, stroke or '
               'fillAndStroke',
         );
@@ -763,6 +766,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'antialiased $what',
         detail: 'this device has no coverage-mask atlas, so a $what cannot be '
             'antialiased; only axis-aligned rectangles and images are '
             'supported',
@@ -860,6 +864,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'gradient $what',
         detail: 'a gradient $what could not be routed to a shader that samples '
             'a ramp: ${paint.gradient}. The dense coverage atlas stores one '
             'alpha per texel and modulates it by a single colour, so drawing '
@@ -1003,6 +1008,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'tiled $what',
         detail: 'the ${atlas.width}x${atlas.height} coverage atlas cannot hold '
             'a mask of any size, so a $what cannot be tiled either',
       );
@@ -1018,6 +1024,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'tiled $what',
         detail: 'a $what covering ${right - left}x${bottom - top} device '
             'pixels needs ${columns * rows} tiles of ${tileWidth}x$tileHeight '
             'out of the ${atlas.width}x${atlas.height} coverage atlas, over '
@@ -1070,6 +1077,7 @@ final class GpuRasterSink
         _ => throw UnsupportedCapabilityError(
             backendName: backendName,
             capability: Capability.gpuPresentation,
+            feature: 'fill rule ${paint.fillRule}',
             detail: 'unknown path fill rule ${paint.fillRule}',
           ),
       };
@@ -1139,6 +1147,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'drawing a ${image.runtimeType}',
         detail: texture == null
             ? 'no texture for ${image.runtimeType}; this device needs a '
                 'GpuImageResolver that can upload it'
@@ -1277,6 +1286,7 @@ final class GpuRasterSink
         throw UnsupportedCapabilityError(
           backendName: backendName,
           capability: Capability.gpuPresentation,
+          feature: 'offscreen layers',
           detail: 'a layer with alpha $alpha and blend mode $blendMode needs '
               'an offscreen pass, and this device was built with no '
               'GpuLayerStack. Drawing its contents into the parent instead '
@@ -1633,6 +1643,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'glyph tiling',
         detail: 'glyph $glyphId of $font does not fit in a '
             '${atlas.plotSize}x${atlas.plotSize} atlas plot, and glyph tiling '
             'is not implemented; text this large should be drawn as a path',
@@ -1647,6 +1658,7 @@ final class GpuRasterSink
     throw UnsupportedCapabilityError(
       backendName: backendName,
       capability: Capability.gpuPresentation,
+      feature: 'this many glyphs in one run',
       detail: 'the ${atlas.width}x${atlas.height} glyph atlas had no room for '
           'glyph $glyphId even after a flush (${atlas.lastFailure.name}); one '
           'run needs more glyphs than the whole atlas holds',
@@ -1690,6 +1702,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a mid-frame atlas flush',
         detail: '$which is full of masks this frame has already drawn, and '
             'this backend passed no onAtlasFlush handler, so $what cannot be '
             'placed and the frame cannot be completed correctly. A handler '
@@ -1830,6 +1843,7 @@ final class GpuRasterSink
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'blend mode $blendMode inside a flattened layer',
         detail: 'blend mode $blendMode inside a flattened layer would blend '
             'against the parent\'s pixels, where an isolating renderer blends '
             'against transparency - the two are not the same picture, and '
@@ -1878,6 +1892,7 @@ final class GpuRasterSink
     throw UnsupportedCapabilityError(
       backendName: backendName,
       capability: Capability.gpuPresentation,
+      feature: 'a gradient paint on $what',
       detail: 'a gradient paint on $what is not defined: $because. The '
           'display-list resource was preserved as ${paint.gradient} instead '
           'of being rendered as an incorrect solid colour.',
@@ -1889,6 +1904,7 @@ final class GpuRasterSink
     throw UnsupportedCapabilityError(
       backendName: backendName,
       capability: Capability.gpuPresentation,
+      feature: 'stroked $what',
       detail: 'stroking is not implemented on the GPU path; the CPU sink '
           'strokes through PathStroker and nothing here calls it, so a '
           'stroke-styled $what would be filled as its enclosed region',

@@ -3,7 +3,7 @@
 /// `doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md` section 3.7 promises that a menu's
 /// text is already rasterised because the same font at the same size was
 /// already drawn in the window behind it. Before this file that was false on
-/// every backend: each target built a [GpuGlyphAtlas], a `GlFontResolver` and a
+/// every backend: each target built a [GpuGlyphAtlas], a font resolver and a
 /// `GlImageCache` in its constructor, so every window and every popup started
 /// from an empty atlas and re-rasterised its glyphs from outlines. The caches
 /// now belong to [GlRenderDevice], and these tests are what says so.

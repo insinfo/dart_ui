@@ -67,10 +67,8 @@ import 'package:web/web.dart' as web;
 import '../../../foundation/diagnostics.dart';
 import '../../../foundation/lifecycle.dart';
 import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
-import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../renderer.dart';
-import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
 import '../gpu_device_state.dart';
 import '../gpu_layer_stack.dart';
@@ -532,6 +530,7 @@ final class WebGpuRenderDevice
       throw UnsupportedCapabilityError(
         backendName: WebGpuRendererBackend.backendName,
         capability: Capability.gpuPresentation,
+        feature: 'offscreen readback',
         detail: 'the WebGPU backend has no offscreen readback target yet: a '
             'readback is copyTextureToBuffer plus an async mapAsync, which is '
             'a different present contract than the synchronous Framebuffer '
@@ -570,6 +569,7 @@ final class WebGpuRenderDevice
       throw UnsupportedCapabilityError(
         backendName: WebGpuRendererBackend.backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a ${width}x$height texture',
         detail: 'a ${width}x$height texture exceeds this device\'s '
             'maxTextureDimension2D of $_maxTextureSize; the caller must tile '
             'the image or scale it down',
@@ -1650,25 +1650,6 @@ final class WebGpuLayerTarget implements GpuLayerTarget {
       '${width}x$height${isBacked ? '' : ', unbacked'})';
 }
 
-/// Turns the display list's interned font ids into faces for the sink.
-///
-/// Identical to `WebGlFontResolver`, which is itself identical to
-/// `GlFontResolver`, and the identity is the point - see the latter for why
-/// the sink must resolve through the same table the player walks.
-final class WebGpuFontResolver implements GpuFontResolver {
-  ReplayResources? _resources;
-
-  void bind(ReplayResources? resources) => _resources = resources;
-
-  @override
-  ScaledTypeface? resolveFont(int fontId) {
-    final ReplayResources? resources = _resources;
-    if (resources == null) return null;
-    final Object font = resources.fontAt(fontId);
-    return font is ScaledTypeface ? font : null;
-  }
-}
-
 /// One image this cache uploaded, and whether it could do it again.
 final class _WebGpuImageEntry {
   _WebGpuImageEntry({
@@ -2093,6 +2074,7 @@ final class WebGpuRendererBackend implements RendererBackend {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a WebGPU device',
         detail: 'this browser did not answer a WebGPU device: '
             '${answer.failure}',
       );
@@ -2108,6 +2090,7 @@ final class WebGpuRendererBackend implements RendererBackend {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a WebGPU render device',
         detail: 'WebGPU refused the renderer objects: ${opened.failure}',
       );
     }

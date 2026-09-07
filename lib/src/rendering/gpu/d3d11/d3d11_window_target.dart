@@ -388,7 +388,7 @@ final class D3d11WindowTarget
   GpuMaskAtlas get maskAtlas => _maskAtlas;
 
   /// The device's font resolver, which every target on it binds in turn.
-  D3d11FontResolver get fontResolver => _device.fontResolver;
+  ReplayFontResolver get fontResolver => _device.fontResolver;
 
   /// The glyph coverage the device keeps between frames, for every target on
   /// it. A menu's label is already in here when the window behind it drew the

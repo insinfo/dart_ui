@@ -71,7 +71,6 @@ import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
 import '../../../graphics/image/decoded_image.dart' show ImageChannelOrder;
-import '../../../text/typeface.dart';
 import '../../framebuffer.dart';
 import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
@@ -462,8 +461,8 @@ final class GlRenderDevice
   /// every target re-rasterise from outlines the moment it was built, which is
   /// what `doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md` section 3.7 promises does
   /// not happen when a menu opens over a window already showing that font. So
-  /// the atlas, the [GlFontResolver] and the [GlImageCache] belong to whatever
-  /// owns the *textures* they name, and that is this class.
+  /// the atlas, the [ReplayFontResolver] and the [GlImageCache] belong to
+  /// whatever owns the *textures* they name, and that is this class.
   ///
   /// ## Why the atlas and its texture had to move together
   ///
@@ -543,8 +542,8 @@ final class GlRenderDevice
   /// walk, and Dart's single thread means no second target can get between that
   /// bind and its own play. A target must therefore never unbind it on dispose;
   /// see the targets' `onDispose`.
-  GlFontResolver get fontResolver => _fonts;
-  final GlFontResolver _fonts = GlFontResolver();
+  ReplayFontResolver get fontResolver => _fonts;
+  final ReplayFontResolver _fonts = ReplayFontResolver();
 
   /// The textures drawn images were uploaded into, for every target.
   ///
@@ -850,10 +849,10 @@ final class GlRenderDevice
   ///
   /// **Text.** Every target this device builds - [GlOffscreenTarget] and
   /// [GlWindowTarget] alike - carries a [GpuGlyphAtlas], the alpha8 texture it
-  /// stages into and a [GlFontResolver], so a glyph run is drawn here rather
-  /// than refused. None of the five booleans below is the field that says so,
-  /// which is stated because the previous shape of this class invited the
-  /// opposite reading: `supportsExternalTextures: false` is about *foreign*
+  /// stages into and a [ReplayFontResolver], so a glyph run is drawn here
+  /// rather than refused. None of the five booleans below is the field that
+  /// says so, which is stated because the previous shape of this class invited
+  /// the opposite reading: `supportsExternalTextures: false` is about *foreign*
   /// textures and has never had anything to do with glyphs, and a reader
   /// looking for "can this device draw text" would otherwise find no answer at
   /// all and assume the pessimistic one. The probe report says it in prose -
@@ -944,6 +943,7 @@ final class GlRenderDevice
       throw UnsupportedCapabilityError(
         backendName: GlRendererBackend.backendName,
         capability: Capability.gpuPresentation,
+        feature: 'a ${width}x$height texture',
         detail: 'a ${width}x$height texture exceeds this device\'s '
             'GL_MAX_TEXTURE_SIZE of $_maxTextureSize; the caller must tile '
             'the image or scale it down',
@@ -958,6 +958,7 @@ final class GlRenderDevice
       throw UnsupportedCapabilityError(
         backendName: GlRendererBackend.backendName,
         capability: Capability.gpuPresentation,
+        feature: 'BGRA texture uploads',
         detail: 'this is a GLES context (${_context.description}) and GL_BGRA '
             'is not a core GLES upload format, so a BGRA texture cannot be '
             'sampled with the right channel order here',
@@ -2216,7 +2217,7 @@ final class GlOffscreenTarget
   /// which replaced one cannot leave this target holding the old object, and
   /// disposed from nowhere here - see [onDispose].
   GpuGlyphAtlas get _glyphAtlas => _device.glyphAtlas;
-  GlFontResolver get _fonts => _device.fontResolver;
+  ReplayFontResolver get _fonts => _device.fontResolver;
   GlImageCache get _images => _device.images;
 
   // Not final: a device loss destroys every one of these, and a recovery
@@ -3193,40 +3194,6 @@ final class GlOffscreenTarget
     _layerPool.dispose();
     _vector?.dispose();
     _device.releaseTexture(_maskTexture);
-  }
-}
-
-/// Turns the display list's interned font ids into faces for the sink.
-///
-/// The sink is handed a raw `fontId` because the player never asks what a
-/// glyph looks like - see [ReplayResources.fontAt] - so somebody who *does*
-/// have to rasterise has to be able to look one up. That somebody is a target,
-/// and the table it looks it up in is the one the player is walking, which is
-/// why this holds a [ReplayResources] rather than a map of its own: a second
-/// table would be a second answer to "what is font 3", and the two would
-/// disagree the first time a list was replayed with different resources.
-///
-/// [bind] is called before each play and with null on dispose. An unbound
-/// resolver answers null, which the sink turns into a named refusal rather
-/// than a wrong face - and that is the honest answer, because a font id means
-/// nothing without the list that interned it.
-final class GlFontResolver implements GpuFontResolver {
-  ReplayResources? _resources;
-
-  /// Points this resolver at the table [resources] ids belong to, or at
-  /// nothing when it is null.
-  void bind(ReplayResources? resources) => _resources = resources;
-
-  @override
-  ScaledTypeface? resolveFont(int fontId) {
-    final ReplayResources? resources = _resources;
-    if (resources == null) return null;
-    final Object font = resources.fontAt(fontId);
-    // Not a cast: the display list stores a font as an opaque `Object`, and a
-    // list built by something that interned another kind of face must be
-    // refused by name rather than crash with a type error in the middle of a
-    // frame.
-    return font is ScaledTypeface ? font : null;
   }
 }
 
