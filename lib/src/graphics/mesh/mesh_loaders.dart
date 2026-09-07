@@ -24,6 +24,9 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../container/zip_archive.dart' show ZipArchive;
+import '../image/decoded_image.dart';
+import '../image/image_errors.dart';
+import '../image/raster_formats.dart';
 import 'mesh3d.dart';
 
 /// Reads a model, choosing the format from the bytes rather than the name.
@@ -69,7 +72,7 @@ Mesh3D loadMesh(
   if (head.trimLeft().startsWith('{')) {
     return loadGltf(text, name: name, resolveBuffer: resolveBuffer);
   }
-  return loadObj(text, name: name);
+  return loadObj(text, name: name, resolveBuffer: resolveBuffer);
 }
 
 bool _looksLikeFbx(Uint8List bytes) {
@@ -97,6 +100,49 @@ bool _looksBinary(Uint8List bytes) {
   return false;
 }
 
+/// Turns encoded image bytes into the word layout a rasteriser samples.
+///
+/// Returns null rather than throwing on anything it cannot read: a model whose
+/// normal map is a format this repository has no codec for should still show
+/// its base colour, and the caller records `textures` as unread. Throwing would
+/// turn one unreadable image into an unopenable model.
+MeshTexture? decodeMeshTexture(Uint8List bytes, {String name = ''}) {
+  if (bytes.isEmpty) return null;
+  final DecodedImage decoded;
+  try {
+    decoded = decodeImage(bytes);
+  } on UnsupportedImageFormatException {
+    return null;
+  } on Object {
+    // Any decoder failure at all. The alternative is a viewer that refuses a
+    // model because one of its forty textures is truncated.
+    return null;
+  }
+
+  final int width = decoded.width;
+  final int height = decoded.height;
+  final Uint32List pixels = Uint32List(width * height);
+  final Uint8List source = decoded.pixels;
+  final int red = decoded.order.redIndex;
+  final int blue = decoded.order.blueIndex;
+  for (var i = 0; i < pixels.length; i++) {
+    final int at = i * 4;
+    // Opaque by construction: the shading path has no blending, so an alpha
+    // that survived here would be read as a colour channel by nothing and
+    // would only make the word look transparent to a future reader.
+    pixels[i] = 0xFF000000 |
+        (source[at + red] << 16) |
+        (source[at + 1] << 8) |
+        source[at + blue];
+  }
+  return MeshTexture(
+    width: width,
+    height: height,
+    pixels: pixels,
+    name: name,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // OBJ
 // ---------------------------------------------------------------------------
@@ -111,38 +157,59 @@ bool _looksBinary(Uint8List bytes) {
 /// allocation is invisible at the call site.
 final RegExp _whitespace = RegExp(r'\s+');
 
-/// Reads Wavefront OBJ.
+/// Reads Wavefront OBJ, and the `.mtl` beside it when [resolveBuffer] can
+/// find one.
 ///
-/// Positions, normals, texture coordinates and faces, with faces of any arity
-/// fan-triangulated. Groups become separate primitives so a viewer can report
-/// them, and `usemtl` names are recorded even though the `.mtl` file beside the
-/// model is not read: the name is what lets a person tell that materials exist
-/// and were not applied.
-Mesh3D loadObj(String source, {String name = 'model'}) {
+/// Faces are grouped by `usemtl`, so a model with a body material and an eye
+/// material becomes two primitives with two textures rather than one primitive
+/// wearing whichever it met last.
+///
+/// **`v` is flipped.** OBJ puts the texture origin at the bottom left and glTF
+/// at the top left; everything downstream of these loaders uses glTF's, so the
+/// flip happens here. Doing it in the sampler instead would mean the rasteriser
+/// having to know where each mesh came from.
+Mesh3D loadObj(
+  String source, {
+  String name = 'model',
+  GltfBufferResolver? resolveBuffer,
+}) {
   final List<double> positions = <double>[];
   final List<double> normals = <double>[];
+  final List<double> texCoords = <double>[];
   final Set<String> unsupported = <String>{};
+  final Map<String, MeshMaterial> materials = <String, MeshMaterial>{};
 
-  // Faces reference vertices by index, and the same vertex can appear with
-  // different normals in different faces. A key of "position/normal" is what
-  // keeps those distinct without exploding every vertex - which is what
-  // emitting three fresh vertices per triangle would do, tripling the memory
-  // of a two-million-triangle model for nothing.
+  // Faces reference vertices by index, and the same position can appear with
+  // different normals or texture coordinates in different faces. A key of
+  // "position/uv/normal" keeps those distinct without exploding every vertex,
+  // which is what emitting three fresh vertices per triangle would do.
   final Map<String, int> vertexIds = <String, int>{};
   final List<double> outPositions = <double>[];
   final List<double> outNormals = <double>[];
-  final List<int> indices = <int>[];
+  final List<double> outUvs = <double>[];
   var sawNormals = false;
+  var sawUvs = false;
+
+  // One index list per material, in first-seen order so the model draws in the
+  // order the file wrote it.
+  final Map<String, List<int>> byMaterial = <String, List<int>>{};
+  var currentMaterial = '';
+  List<int> indicesFor(String material) =>
+      byMaterial.putIfAbsent(material, () => <int>[]);
 
   int vertexFor(String token) {
     final int? existing = vertexIds[token];
     if (existing != null) return existing;
     final List<String> parts = token.split('/');
     final int positionIndex = _objIndex(parts[0], positions.length ~/ 3);
+    final int uvIndex = parts.length > 1 && parts[1].isNotEmpty
+        ? _objIndex(parts[1], texCoords.length ~/ 2)
+        : -1;
     final int normalIndex = parts.length > 2 && parts[2].isNotEmpty
         ? _objIndex(parts[2], normals.length ~/ 3)
         : -1;
     final int id = outPositions.length ~/ 3;
+
     if (positionIndex >= 0 && positionIndex * 3 + 2 < positions.length) {
       outPositions
         ..add(positions[positionIndex * 3])
@@ -151,6 +218,17 @@ Mesh3D loadObj(String source, {String name = 'model'}) {
     } else {
       outPositions.addAll(<double>[0, 0, 0]);
     }
+
+    if (uvIndex >= 0 && uvIndex * 2 + 1 < texCoords.length) {
+      sawUvs = true;
+      outUvs
+        ..add(texCoords[uvIndex * 2])
+        // The flip. See the note on this function.
+        ..add(1 - texCoords[uvIndex * 2 + 1]);
+    } else {
+      outUvs.addAll(<double>[0, 0]);
+    }
+
     if (normalIndex >= 0 && normalIndex * 3 + 2 < normals.length) {
       sawNormals = true;
       outNormals
@@ -173,23 +251,21 @@ Mesh3D loadObj(String source, {String name = 'model'}) {
 
     switch (keyword) {
       case 'v':
-        final List<double> values = _numbers(rest, 3);
-        positions.addAll(values);
+        positions.addAll(_numbers(rest, 3));
       case 'vn':
         normals.addAll(_numbers(rest, 3));
       case 'vt':
-        // Read and dropped: this viewer has no texture sampling, so keeping
-        // the coordinates would only make the mesh bigger.
-        unsupported.add('texture coordinates');
+        texCoords.addAll(_numbers(rest, 2));
       case 'f':
         final List<String> tokens =
             rest.split(_whitespace).where((String t) => t.isNotEmpty).toList();
         if (tokens.length < 3) continue;
+        final List<int> indices = indicesFor(currentMaterial);
         final int first = vertexFor(tokens[0]);
-        // Fan triangulation. Correct for the convex faces an exporter emits and
-        // wrong for a concave one, which OBJ permits and no common tool writes;
-        // an ear-clipping triangulator would be right in general and is not
-        // worth the code until a model needs it.
+        // Fan triangulation. Correct for the convex faces an exporter emits
+        // and wrong for a concave one, which OBJ permits and no common tool
+        // writes; ear clipping would be right in general and is not worth the
+        // code until a model needs it.
         for (var i = 1; i + 1 < tokens.length; i++) {
           indices
             ..add(first)
@@ -197,8 +273,25 @@ Mesh3D loadObj(String source, {String name = 'model'}) {
             ..add(vertexFor(tokens[i + 1]));
         }
       case 'mtllib':
+        final Uint8List? mtl = resolveBuffer?.call(rest);
+        if (mtl == null) {
+          // Named precisely rather than as "materials from .mtl", because the
+          // two cases need different answers: a viewer that cannot resolve
+          // paths, and a `.mtl` that is simply not next to the model. The
+          // second is common in models downloaded loose and there is nothing
+          // to fix in the loader.
+          unsupported.add('the .mtl file "$rest" was not found');
+        } else {
+          materials.addAll(
+            parseMtl(
+              utf8.decode(mtl, allowMalformed: true),
+              resolveBuffer: resolveBuffer,
+              unsupported: unsupported,
+            ),
+          );
+        }
       case 'usemtl':
-        unsupported.add('materials from .mtl');
+        currentMaterial = rest;
       case 's':
       case 'g':
       case 'o':
@@ -208,25 +301,128 @@ Mesh3D loadObj(String source, {String name = 'model'}) {
     }
   }
 
-  if (indices.isEmpty) {
+  final int totalIndices =
+      byMaterial.values.fold(0, (int sum, List<int> list) => sum + list.length);
+  if (totalIndices == 0) {
     throw const MeshParseException(
       'the OBJ has no faces',
       detail: 'positions may have loaded, but nothing references them',
     );
   }
 
+  final Float32List sharedPositions = Float32List.fromList(outPositions);
+  final Float32List? sharedNormals =
+      sawNormals ? Float32List.fromList(outNormals) : null;
+  final Float32List? sharedUvs = sawUvs ? Float32List.fromList(outUvs) : null;
+
+  final List<MeshPrimitive> primitives = <MeshPrimitive>[];
+  for (final MapEntry<String, List<int>> entry in byMaterial.entries) {
+    if (entry.value.isEmpty) continue;
+    // The vertex arrays are shared across primitives rather than sliced per
+    // material. Slicing would mean renumbering every index and duplicating
+    // every vertex on a material boundary; sharing costs a primitive that
+    // indexes a superset, which nothing here minds.
+    primitives.add(
+      MeshPrimitive(
+        positions: sharedPositions,
+        indices: Uint32List.fromList(entry.value),
+        normals: sharedNormals,
+        uvs: sharedUvs,
+        material: materials[entry.key] ?? const MeshMaterial(),
+      ),
+    );
+  }
+
+  if (materials.isEmpty && byMaterial.keys.any((String k) => k.isNotEmpty)) {
+    unsupported.add('materials from .mtl');
+  }
+
   return Mesh3D(
     name: name,
     format: 'obj',
-    primitives: <MeshPrimitive>[
-      MeshPrimitive(
-        positions: Float32List.fromList(outPositions),
-        indices: Uint32List.fromList(indices),
-        normals: sawNormals ? Float32List.fromList(outNormals) : null,
-      ),
-    ],
+    primitives: primitives,
     unsupported: unsupported,
   );
+}
+
+/// Reads a `.mtl`, keeping the base colour and the diffuse map.
+///
+/// The rest of the format - specular exponent, ambient colour, illumination
+/// model, bump and displacement maps - describes shading this rasteriser does
+/// not do, so it is skipped rather than stored where nothing reads it.
+Map<String, MeshMaterial> parseMtl(
+  String source, {
+  GltfBufferResolver? resolveBuffer,
+  Set<String>? unsupported,
+}) {
+  final Map<String, MeshMaterial> materials = <String, MeshMaterial>{};
+  // Decoded once per file even when several materials name the same image,
+  // which an exported atlas routinely does.
+  final Map<String, MeshTexture?> textures = <String, MeshTexture?>{};
+
+  String current = '';
+  var colorArgb = 0xFFB4BCC8;
+  MeshTexture? map;
+
+  void flush() {
+    if (current.isEmpty) return;
+    materials[current] = MeshMaterial(
+      name: current,
+      colorArgb: colorArgb,
+      baseColorTexture: map,
+    );
+  }
+
+  for (final String rawLine in const LineSplitter().convert(source)) {
+    final String line = rawLine.trim();
+    if (line.isEmpty || line.startsWith('#')) continue;
+    final int space = line.indexOf(' ');
+    if (space < 0) continue;
+    final String keyword = line.substring(0, space);
+    final String rest = line.substring(space + 1).trim();
+
+    switch (keyword) {
+      case 'newmtl':
+        flush();
+        current = rest;
+        colorArgb = 0xFFB4BCC8;
+        map = null;
+      case 'Kd':
+        final List<double> rgb = _numbers(rest, 3);
+        int channel(double value) => (value.clamp(0.0, 1.0) * 255).round();
+        colorArgb = 0xFF000000 |
+            (channel(rgb[0]) << 16) |
+            (channel(rgb[1]) << 8) |
+            channel(rgb[2]);
+      case 'map_Kd':
+        // Options come before the filename: `map_Kd -s 1 1 1 wood.png`. Taking
+        // the last token rather than the whole rest is what survives them, and
+        // a filename with spaces is rare enough to lose to that trade.
+        final List<String> parts =
+            rest.split(_whitespace).where((String t) => t.isNotEmpty).toList();
+        if (parts.isEmpty) break;
+        final String file = parts.last;
+        map = textures.putIfAbsent(file, () {
+          final Uint8List? bytes = resolveBuffer?.call(file);
+          if (bytes == null) {
+            unsupported?.add('the texture "$file" was not found');
+            return null;
+          }
+          final MeshTexture? decoded = decodeMeshTexture(bytes, name: file);
+          if (decoded == null) unsupported?.add('textures');
+          return decoded;
+        });
+      case 'map_Bump':
+      case 'bump':
+        unsupported?.add('normal maps');
+      case 'map_Ks':
+        unsupported?.add('specular maps');
+      default:
+        break;
+    }
+  }
+  flush();
+  return materials;
 }
 
 /// OBJ indices are 1-based, and negative means "counted back from the end".
@@ -360,14 +556,15 @@ Mesh3D _loadAsciiStl(String source, String name) {
 // glTF 2.0 and GLB
 // ---------------------------------------------------------------------------
 
-/// Supplies the bytes of a glTF buffer that lives outside the document.
+/// Supplies the bytes of a file that sits beside the model rather than inside
+/// it: a glTF's `.bin`, a texture image, an OBJ's `.mtl`.
 ///
-/// A `.gltf` normally sits beside a `.bin`, and reading it means touching the
-/// filesystem — which this library does not do, and deliberately: a decoder
-/// that opens files is a decoder that cannot run in a browser, in a test, or
-/// over bytes that arrived from a network. So the path stays with the caller,
-/// and this is the seam. Returning null for a URI the caller will not or cannot
-/// resolve is normal, and the loader records `external buffers (.bin)`.
+/// Reading those means touching the filesystem, which this library does not do
+/// and deliberately: a decoder that opens files is a decoder that cannot run in
+/// a browser, in a test, or over bytes that arrived from a network. So the path
+/// stays with the caller and this is the seam. Returning null for a URI the
+/// caller will not or cannot resolve is normal, and the loader records what it
+/// therefore could not read.
 typedef GltfBufferResolver = Uint8List? Function(String uri);
 
 /// Reads a GLB: the binary wrapper around glTF JSON plus one buffer.
@@ -449,8 +646,44 @@ Mesh3D loadGltf(
 
   if (_list(gltf['animations']).isNotEmpty) unsupported.add('animations');
   if (_list(gltf['skins']).isNotEmpty) unsupported.add('skinning');
-  if (_list(gltf['textures']).isNotEmpty) unsupported.add('textures');
   if (_list(gltf['cameras']).isNotEmpty) unsupported.add('cameras');
+
+  // Decoded once per image and shared by every material that names it. A
+  // model with forty primitives over one atlas decodes the atlas once; doing
+  // it per material would decode a 4096x4096 PNG forty times.
+  final Map<int, MeshTexture?> textureCache = <int, MeshTexture?>{};
+  MeshTexture? textureAt(int index) => textureCache.putIfAbsent(index, () {
+        final List<Object?> textures = _list(gltf['textures']);
+        if (index < 0 || index >= textures.length) return null;
+        final Object? texture = textures[index];
+        if (texture is! Map<String, Object?>) return null;
+        final Object? sourceIndex = texture['source'];
+        if (sourceIndex is! num) {
+          // A texture with no source is an extension's - `EXT_texture_webp`
+          // and friends put theirs under `extensions`. Named rather than
+          // guessed at.
+          unsupported.add('texture extensions');
+          return null;
+        }
+        final List<Object?> images = _list(gltf['images']);
+        final int at = sourceIndex.toInt();
+        if (at < 0 || at >= images.length) return null;
+        final Object? image = images[at];
+        if (image is! Map<String, Object?>) return null;
+
+        final Uint8List? bytes = _gltfImageBytes(
+          image,
+          bufferViews: bufferViews,
+          buffers: buffers,
+          resolveBuffer: resolveBuffer,
+          unsupported: unsupported,
+        );
+        if (bytes == null) return null;
+        final MeshTexture? decoded =
+            decodeMeshTexture(bytes, name: image['name'] as String? ?? '');
+        if (decoded == null) unsupported.add('textures');
+        return decoded;
+      });
 
   final List<MeshPrimitive> primitives = <MeshPrimitive>[];
 
@@ -481,6 +714,7 @@ Mesh3D loadGltf(
             materials: materials,
             transform: world,
             unsupported: unsupported,
+            textureAt: textureAt,
           );
           if (primitive != null) primitives.add(primitive);
         }
@@ -614,6 +848,7 @@ MeshPrimitive? _gltfPrimitive(
   required List<Object?> materials,
   required Matrix4 transform,
   required Set<String> unsupported,
+  required MeshTexture? Function(int index) textureAt,
 }) {
   // Mode 4 is triangles. The others - strips, fans, lines, points - are legal
   // and rare, and drawing a line list as triangles would produce nonsense, so
@@ -676,6 +911,24 @@ MeshPrimitive? _gltfPrimitive(
     }
   }
 
+  // `TEXCOORD_0` only. A mesh with a second UV set uses it for a lightmap or
+  // an occlusion map, neither of which is shaded here, so reading it would
+  // cost memory for something nothing samples.
+  Float32List? uvs;
+  final Object? uvIndex = attributes['TEXCOORD_0'];
+  if (uvIndex is num) {
+    uvs = _gltfAccessorFloats(
+      uvIndex.toInt(),
+      accessors: accessors,
+      bufferViews: bufferViews,
+      buffers: buffers,
+      components: 2,
+    );
+  }
+  if (attributes.containsKey('TEXCOORD_1')) {
+    unsupported.add('a second UV set');
+  }
+
   Uint32List indices;
   final Object? indexAccessor = primitive['indices'];
   if (indexAccessor is num) {
@@ -700,14 +953,62 @@ MeshPrimitive? _gltfPrimitive(
     positions: positions,
     indices: indices,
     normals: normals,
-    material: _gltfMaterial(primitive['material'], materials, unsupported),
+    uvs: uvs,
+    material: _gltfMaterial(
+      primitive['material'],
+      materials,
+      unsupported,
+      textureAt,
+    ),
   );
+}
+
+/// The encoded bytes of one glTF image, from wherever it lives.
+///
+/// Three places, and a GLB uses the first: a `bufferView` into the binary
+/// chunk, a base64 `data:` URI, or a file beside the document.
+Uint8List? _gltfImageBytes(
+  Map<String, Object?> image, {
+  required List<Object?> bufferViews,
+  required List<Uint8List> buffers,
+  required GltfBufferResolver? resolveBuffer,
+  required Set<String> unsupported,
+}) {
+  final Object? viewIndex = image['bufferView'];
+  if (viewIndex is num) {
+    final int at = viewIndex.toInt();
+    if (at < 0 || at >= bufferViews.length) return null;
+    final Object? view = bufferViews[at];
+    if (view is! Map<String, Object?>) return null;
+    final int bufferIndex = (view['buffer'] as num?)?.toInt() ?? -1;
+    if (bufferIndex < 0 || bufferIndex >= buffers.length) return null;
+    final Uint8List buffer = buffers[bufferIndex];
+    final int offset = (view['byteOffset'] as num?)?.toInt() ?? 0;
+    final int length = (view['byteLength'] as num?)?.toInt() ?? 0;
+    if (offset + length > buffer.length) return null;
+    return Uint8List.sublistView(buffer, offset, offset + length);
+  }
+
+  final Object? uri = image['uri'];
+  if (uri is! String) return null;
+  if (uri.startsWith('data:')) {
+    final int comma = uri.indexOf(',');
+    if (comma < 0 || !uri.substring(0, comma).contains(';base64')) return null;
+    return base64Decode(uri.substring(comma + 1));
+  }
+  final Uint8List? resolved = resolveBuffer?.call(uri);
+  if (resolved == null || resolved.isEmpty) {
+    unsupported.add('external textures');
+    return null;
+  }
+  return resolved;
 }
 
 MeshMaterial _gltfMaterial(
   Object? index,
   List<Object?> materials,
   Set<String> unsupported,
+  MeshTexture? Function(int index) textureAt,
 ) {
   if (index is! num || index.toInt() >= materials.length) {
     return const MeshMaterial();
@@ -718,6 +1019,7 @@ MeshMaterial _gltfMaterial(
   var colorArgb = 0xFFB4BCC8;
   var metallic = 1.0;
   var roughness = 1.0;
+  MeshTexture? texture;
   if (pbr is Map<String, Object?>) {
     final Object? base = pbr['baseColorFactor'];
     if (base is List && base.length >= 3) {
@@ -731,7 +1033,15 @@ MeshMaterial _gltfMaterial(
     }
     metallic = (pbr['metallicFactor'] as num?)?.toDouble() ?? 1;
     roughness = (pbr['roughnessFactor'] as num?)?.toDouble() ?? 1;
-    if (pbr.containsKey('baseColorTexture')) unsupported.add('textures');
+    final Object? map = pbr['baseColorTexture'];
+    if (map is Map<String, Object?>) {
+      final Object? textureIndex = map['index'];
+      if (textureIndex is num) texture = textureAt(textureIndex.toInt());
+      final Object? uvSet = map['texCoord'];
+      if (uvSet is num && uvSet.toInt() != 0) {
+        unsupported.add('a second UV set');
+      }
+    }
   }
   if (raw.containsKey('normalTexture')) unsupported.add('normal maps');
   if (raw.containsKey('emissiveTexture')) unsupported.add('emissive maps');
@@ -741,6 +1051,7 @@ MeshMaterial _gltfMaterial(
     metallic: metallic,
     roughness: roughness,
     doubleSided: raw['doubleSided'] == true,
+    baseColorTexture: texture,
   );
 }
 

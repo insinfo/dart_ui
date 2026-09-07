@@ -37,6 +37,15 @@
 ///      says which way it faces. Getting the sign backwards leaves a model
 ///      looking hollow — you see its inside surfaces — which reads as a normals
 ///      problem and is not.
+///   5. **Perspective-correct interpolation.** Barycentric weights are linear
+///      in screen space; texture coordinates are not. Interpolating `u` and `v`
+///      directly gives a texture that swims and bends across a triangle seen at
+///      an angle — the affine-texturing wobble of a fifth-generation console.
+///      What is linear in screen space is `u/w` and `1/w`, so those are
+///      interpolated and divided at the end. Colours and normals are left
+///      affine on purpose: the error is the same, but a shading gradient a
+///      fraction of a percent off is invisible where a sliding checkerboard is
+///      not.
 library;
 
 import 'dart:math' as math;
@@ -293,6 +302,12 @@ final class MeshRasterizer {
       final Float32List? normals = shading == MeshShading.smooth
           ? (primitive.normals ?? primitive.computeSmoothNormals())
           : null;
+      // Only when the material can use them. A mesh with texture coordinates
+      // and no map pays nothing for carrying them.
+      final MeshTexture? texture = shading == MeshShading.wireframe
+          ? null
+          : primitive.material.baseColorTexture;
+      final Float32List? uvs = texture == null ? null : primitive.uvs;
       triangles += primitive.triangleCount;
 
       // Every vertex through the matrix once, rather than once per triangle it
@@ -316,9 +331,9 @@ final class MeshRasterizer {
           continue;
         }
 
-        final _Vertex a = _vertexAt(ia, positions, normals);
-        final _Vertex b = _vertexAt(ib, positions, normals);
-        final _Vertex c = _vertexAt(ic, positions, normals);
+        final _Vertex a = _vertexAt(ia, positions, normals, uvs);
+        final _Vertex b = _vertexAt(ib, positions, normals, uvs);
+        final _Vertex c = _vertexAt(ic, positions, normals, uvs);
 
         final double wa = _clipSpace[ia * 4 + 3];
         final double wb = _clipSpace[ib * 4 + 3];
@@ -338,6 +353,7 @@ final class MeshRasterizer {
             viewProjection,
             camera.near,
             baseColor,
+            texture,
             light,
             ambient,
             shading,
@@ -363,6 +379,7 @@ final class MeshRasterizer {
           _screen(ib, width, height),
           _screen(ic, width, height),
           baseColor,
+          texture,
           light,
           ambient,
           shading,
@@ -422,13 +439,21 @@ final class MeshRasterizer {
     );
   }
 
-  _Vertex _vertexAt(int index, Float32List positions, Float32List? normals) {
+  _Vertex _vertexAt(
+    int index,
+    Float32List positions,
+    Float32List? normals,
+    Float32List? uvs,
+  ) {
     final int p = index * 3;
+    final int t = index * 2;
     return _Vertex(
       Vector3(positions[p], positions[p + 1], positions[p + 2]),
       normals == null
           ? null
           : Vector3(normals[p], normals[p + 1], normals[p + 2]),
+      uvs == null || t + 1 >= uvs.length ? double.nan : uvs[t],
+      uvs == null || t + 1 >= uvs.length ? double.nan : uvs[t + 1],
     );
   }
 
@@ -447,6 +472,7 @@ final class MeshRasterizer {
     Matrix4 viewProjection,
     double near,
     int baseColor,
+    MeshTexture? texture,
     Vector3 light,
     double ambient,
     MeshShading shading,
@@ -485,6 +511,7 @@ final class MeshRasterizer {
         _projectOne(polygon[i].position, viewProjection, width, height),
         _projectOne(polygon[i + 1].position, viewProjection, width, height),
         baseColor,
+        texture,
         light,
         ambient,
         shading,
@@ -526,6 +553,7 @@ final class MeshRasterizer {
     _Screen sb,
     _Screen sc,
     int baseColor,
+    MeshTexture? texture,
     Vector3 light,
     double ambient,
     MeshShading shading,
@@ -641,9 +669,35 @@ final class MeshRasterizer {
         if (depth >= _depth[index]) continue;
         _depth[index] = depth;
 
+        // Perspective-correct only where it shows. `u/w` and `1/w` are
+        // linear in screen space and `u` is not; interpolating `u` directly is
+        // the affine wobble that makes a floor swim underfoot.
+        int surface = baseColor;
+        if (texture != null && !va.u.isNaN) {
+          final double invW = la * sa.invW + lb * sb.invW + lc * sc.invW;
+          if (invW != 0) {
+            final double u = (la * va.u * sa.invW +
+                    lb * vb.u * sb.invW +
+                    lc * vc.u * sc.invW) /
+                invW;
+            final double v = (la * va.v * sa.invW +
+                    lb * vb.v * sb.invW +
+                    lc * vc.v * sc.invW) /
+                invW;
+            final int texel = texture.sample(u, v);
+            // Multiplied by the factor rather than replacing it, which is what
+            // glTF specifies: a white factor samples the texture unchanged and
+            // a tinted one tints it.
+            surface = 0xFF000000 |
+                (_mul(texel >> 16, baseColor >> 16) << 16) |
+                (_mul(texel >> 8, baseColor >> 8) << 8) |
+                _mul(texel, baseColor);
+          }
+        }
+
         int argb;
         if (shading == MeshShading.unlit) {
-          argb = baseColor;
+          argb = surface;
         } else {
           Vector3 normal;
           if (shading == MeshShading.smooth &&
@@ -658,7 +712,7 @@ final class MeshRasterizer {
           } else {
             normal = faceNormalOf();
           }
-          argb = _shade(baseColor, normal, light, ambient, backFacing);
+          argb = _shade(surface, normal, light, ambient, backFacing);
         }
 
         // BGRA, premultiplied, and opaque - so premultiplying is the
@@ -787,17 +841,34 @@ final class MeshRasterizer {
     }
   }
 
+  /// One channel of a texel times one channel of a factor, both 0..255.
+  ///
+  /// `(a * b + 127) ~/ 255` and not `>> 8`: the shift is a divide by 256 and
+  /// leaves white multiplied by white at 254, so every fully lit textured
+  /// surface would come out one level dark. That is invisible on one surface
+  /// and a visible seam where a textured mesh meets an untextured one.
+  static int _mul(int a, int b) {
+    final int product = (a & 0xFF) * (b & 0xFF);
+    return (product + 127) ~/ 255;
+  }
+
   static int _floor(double value) => value.floor();
 
   static int _ceil(double value) => value.ceil();
 }
 
-/// A vertex in model space, with its normal when the mesh had one.
+/// A vertex in model space, with its normal and texture coordinate when the
+/// mesh had them.
 final class _Vertex {
-  const _Vertex(this.position, this.normal);
+  const _Vertex(this.position, this.normal, this.u, this.v);
 
   final Vector3 position;
   final Vector3? normal;
+
+  /// Texture coordinates. NaN when the mesh has none, which is a cheaper test
+  /// than a nullable pair and cannot be confused with a real coordinate.
+  final double u;
+  final double v;
 
   _Vertex lerp(_Vertex other, double t) => _Vertex(
         Vector3(
@@ -812,6 +883,8 @@ final class _Vertex {
                 normal!.y + (other.normal!.y - normal!.y) * t,
                 normal!.z + (other.normal!.z - normal!.z) * t,
               ),
+        u + (other.u - u) * t,
+        v + (other.v - v) * t,
       );
 }
 

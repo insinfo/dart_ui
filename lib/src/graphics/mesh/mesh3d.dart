@@ -267,13 +267,96 @@ final class Matrix4 {
   }
 }
 
+/// An image a material samples, in the one layout a rasteriser wants.
+///
+/// **32-bit words and not bytes**, because the inner loop reads one texel per
+/// pixel and four bounds-checked byte loads cost four times what one word load
+/// costs. The conversion happens once, when the model is loaded.
+///
+/// Dimensions are kept as they came. Nothing here requires a power of two: the
+/// sampler multiplies by `width - 1` rather than masking, which costs the same
+/// and works for the 4096x4096 and 1024x683 textures that real models carry.
+final class MeshTexture {
+  MeshTexture({
+    required this.width,
+    required this.height,
+    required this.pixels,
+    this.name = '',
+  }) : assert(pixels.length >= width * height);
+
+  final int width;
+  final int height;
+
+  /// `0xAARRGGBB` per texel, row-major.
+  final Uint32List pixels;
+
+  final String name;
+
+  /// The texel at ([u], [v]), wrapping.
+  ///
+  /// Nearest neighbour, and that is a choice rather than an omission: bilinear
+  /// costs four loads and six multiplies per pixel in a rasteriser that is
+  /// already the frame's whole budget, and on a model filling a window at
+  /// roughly one texel per pixel it changes almost nothing. Magnified far past
+  /// that it would, and [sampleBilinear] is there for a caller who wants to
+  /// pay for it.
+  ///
+  /// Wrapping rather than clamping because that is what `REPEAT` means in
+  /// glTF and OBJ alike, and it is the default in both. A model with UVs
+  /// outside the unit square is normal - tiling a floor is exactly that - and
+  /// clamping would smear the edge texel across it.
+  int sample(double u, double v) {
+    var x = (u * width).floor() % width;
+    var y = (v * height).floor() % height;
+    if (x < 0) x += width;
+    if (y < 0) y += height;
+    return pixels[y * width + x];
+  }
+
+  /// The texel at ([u], [v]), interpolated between its four neighbours.
+  int sampleBilinear(double u, double v) {
+    final double fx = u * width - 0.5;
+    final double fy = v * height - 0.5;
+    final int x0 = fx.floor();
+    final int y0 = fy.floor();
+    final double tx = fx - x0;
+    final double ty = fy - y0;
+
+    int at(int x, int y) {
+      var cx = x % width;
+      var cy = y % height;
+      if (cx < 0) cx += width;
+      if (cy < 0) cy += height;
+      return pixels[cy * width + cx];
+    }
+
+    final int p00 = at(x0, y0);
+    final int p10 = at(x0 + 1, y0);
+    final int p01 = at(x0, y0 + 1);
+    final int p11 = at(x0 + 1, y0 + 1);
+
+    int channel(int shift) {
+      final double top =
+          ((p00 >> shift) & 0xFF) * (1 - tx) + ((p10 >> shift) & 0xFF) * tx;
+      final double bottom =
+          ((p01 >> shift) & 0xFF) * (1 - tx) + ((p11 >> shift) & 0xFF) * tx;
+      return (top * (1 - ty) + bottom * ty).round().clamp(0, 255);
+    }
+
+    return 0xFF000000 | (channel(16) << 16) | (channel(8) << 8) | channel(0);
+  }
+
+  @override
+  String toString() => 'MeshTexture($name, ${width}x$height)';
+}
+
 /// A material, reduced to what a software rasteriser can honour.
 ///
 /// glTF describes physically based materials with metallic-roughness textures,
-/// occlusion maps and emissive maps. This viewer shades with a base colour and
-/// two lights, so it keeps the base colour factor and records that the rest
-/// exists — see [Mesh3D.unsupported]. Silently keeping only the colour would
-/// make a textured model look like a flat one with no explanation.
+/// occlusion maps and emissive maps. This shades with a base colour, an
+/// optional base-colour texture and two lights, and records the rest in
+/// [Mesh3D.unsupported]. Silently keeping only the colour would make a
+/// textured model look like a flat one with no explanation.
 final class MeshMaterial {
   const MeshMaterial({
     this.name = '',
@@ -281,9 +364,17 @@ final class MeshMaterial {
     this.metallic = 0,
     this.roughness = 0.8,
     this.doubleSided = false,
+    this.baseColorTexture,
   });
 
   final String name;
+
+  /// The base-colour map, or null for a flat material.
+  ///
+  /// Multiplied by [colorArgb] rather than replacing it, which is what glTF
+  /// specifies and what makes a white-factor material sample the texture
+  /// unchanged.
+  final MeshTexture? baseColorTexture;
 
   /// Base colour, opaque grey by default: a model with no material at all is
   /// still a model, and a default of black would look like a loader failure.
@@ -304,6 +395,7 @@ final class MeshPrimitive {
     required this.positions,
     required this.indices,
     this.normals,
+    this.uvs,
     this.material = const MeshMaterial(),
   });
 
@@ -319,6 +411,15 @@ final class MeshPrimitive {
   /// decision with a visible consequence - smooth versus flat shading - and it
   /// belongs to whoever is drawing, not to whoever is reading the file.
   final Float32List? normals;
+
+  /// `u, v` per vertex, or null when the file carried none.
+  ///
+  /// Stored with **v as the file wrote it**, and the two formats disagree:
+  /// glTF puts the origin at the top left, OBJ and FBX at the bottom left. The
+  /// loaders flip so that everything here is glTF's convention, because
+  /// flipping in the sampler instead would mean the rasteriser needing to know
+  /// where each mesh came from.
+  final Float32List? uvs;
 
   final MeshMaterial material;
 
