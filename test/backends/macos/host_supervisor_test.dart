@@ -20,6 +20,21 @@ void main() {
     expect(arguments, containsAllInOrder(<String>['--window-kind', 'tooltip']));
   });
 
+  test('screen banner preserves work area, scale, primary flag and name', () {
+    final MacosHostScreen? screen = parseMacosHostScreen(
+      'SCREEN_INFO=-1440:0:1440:900:-1440:23:1440:877:2:1:Studio: Left',
+    );
+
+    expect(screen, isNotNull);
+    expect(screen!.x, -1440);
+    expect(screen.workY, 23);
+    expect(screen.workHeight, 877);
+    expect(screen.scale, 2);
+    expect(screen.isPrimary, isTrue);
+    expect(screen.name, 'Studio: Left');
+    expect(parseMacosHostScreen('SCREEN_INFO=broken'), isNull);
+  });
+
   group('MacosHostSupervisor recovery', () {
     test('unexpected exit restarts with injected clock and backoff', () async {
       final first = _FakeHost(pid: 101, windowNumber: 1);

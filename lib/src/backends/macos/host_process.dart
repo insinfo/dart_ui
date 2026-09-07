@@ -46,6 +46,7 @@ final class MacosHostHandshake {
     required this.protocolVersion,
     required this.features,
     this.renderScale = 1,
+    this.screens = const <MacosHostScreen>[],
   });
 
   /// The `CGSWindowID`. Kept for `screencapture -l<id>` - the only witness
@@ -59,6 +60,9 @@ final class MacosHostHandshake {
   /// Backing scale reported before the first IOSurface allocation.
   final double renderScale;
 
+  /// AppKit screen frames captured on its main thread before the handshake.
+  final List<MacosHostScreen> screens;
+
   /// `PROTOCOL_FEATURES` verbatim. Compared with `contains`, never for
   /// equality: a host that gains a feature must not look like a stranger.
   final String features;
@@ -70,6 +74,60 @@ final class MacosHostHandshake {
   bool get supportsWindowEvents =>
       features.contains('window-events') ||
       protocolVersion >= kMacosHostProtocolVersion;
+}
+
+/// One `NSScreen`, already converted to top-left-origin logical points.
+final class MacosHostScreen {
+  const MacosHostScreen({
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    required this.workX,
+    required this.workY,
+    required this.workWidth,
+    required this.workHeight,
+    required this.scale,
+    required this.isPrimary,
+    required this.name,
+  });
+
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+  final double workX;
+  final double workY;
+  final double workWidth;
+  final double workHeight;
+  final double scale;
+  final bool isPrimary;
+  final String name;
+}
+
+MacosHostScreen? parseMacosHostScreen(String line) {
+  if (!line.startsWith('SCREEN_INFO=')) return null;
+  final List<String> fields = line.substring(12).split(':');
+  if (fields.length < 11) return null;
+  final List<double?> numbers = <double?>[
+    for (var index = 0; index < 9; index++) double.tryParse(fields[index]),
+  ];
+  if (numbers.any((double? value) => value == null)) return null;
+  final int? primary = int.tryParse(fields[9]);
+  if (primary == null) return null;
+  return MacosHostScreen(
+    x: numbers[0]!,
+    y: numbers[1]!,
+    width: numbers[2]!,
+    height: numbers[3]!,
+    workX: numbers[4]!,
+    workY: numbers[5]!,
+    workWidth: numbers[6]!,
+    workHeight: numbers[7]!,
+    scale: numbers[8]!,
+    isPrimary: primary == 1,
+    name: fields.sublist(10).join(':'),
+  );
 }
 
 /// The AppKit archetype the host must create.
@@ -207,6 +265,7 @@ final class MacosHostProcess
   int _protocolVersion = 0;
   int _renderScaleMilli = 1000;
   String _features = '';
+  final List<MacosHostScreen> _screens = <MacosHostScreen>[];
   bool _sawMainThread = false;
 
   MacosHostExitReason _exitReason = MacosHostExitReason.none;
@@ -517,6 +576,7 @@ final class MacosHostProcess
       protocolVersion: _protocolVersion,
       features: _features,
       renderScale: _renderScaleMilli / 1000,
+      screens: List<MacosHostScreen>.unmodifiable(_screens),
     );
     _completedHandshake = banner;
     _handshake.complete(banner);
@@ -597,6 +657,11 @@ final class MacosHostProcess
 
   @override
   void onUnrecognised(String line) {
+    final MacosHostScreen? screen = parseMacosHostScreen(line);
+    if (screen != null) {
+      _screens.add(screen);
+      return;
+    }
     _onDiagnostic(
       BackendDiagnostic.note('unrecognised macOS host output', detail: line),
     );

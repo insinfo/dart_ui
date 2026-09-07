@@ -155,6 +155,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 @property(nonatomic, assign) BOOL terminating;
 @property(nonatomic, assign) BOOL closedReported;
 @property(nonatomic, assign) NSInteger reportedState;
+- (void)reportScreens;
 @end
 
 @implementation DartUiHostDelegate
@@ -275,6 +276,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   printf("PROTOCOL=4\n");
   printf("WINDOW_SCALE=%ld\n", (long)scaleMilli);
   printf("PROTOCOL_FEATURES=surface-port,window-events\n");
+  [self reportScreens];
   // HOST_PID is deliberately last: it is the final required field and causes
   // the Dart side to publish the completed handshake immediately.
   printf("HOST_PID=%d\n", (int)getpid());
@@ -294,6 +296,22 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   printf("WINDOW=SCALE:%.4f:%.4f\n", scale, scale);
   printf("WINDOW=STATE:%ld\n", (long)self.reportedState);
   fflush(stdout);
+}
+
+- (void)reportScreens {
+  CGFloat desktopTop = [self desktopTop];
+  NSScreen *primary = NSScreen.screens.firstObject ?: NSScreen.mainScreen;
+  for (NSScreen *screen in NSScreen.screens) {
+    NSRect frame = screen.frame;
+    NSRect visible = screen.visibleFrame;
+    NSString *name = [screen.localizedName stringByReplacingOccurrencesOfString:@"\n"
+                                                                    withString:@" "];
+    printf("SCREEN_INFO=%.4f:%.4f:%.4f:%.4f:%.4f:%.4f:%.4f:%.4f:%.4f:%d:%s\n",
+           NSMinX(frame), desktopTop - NSMaxY(frame), NSWidth(frame), NSHeight(frame),
+           NSMinX(visible), desktopTop - NSMaxY(visible), NSWidth(visible),
+           NSHeight(visible), screen.backingScaleFactor,
+           screen == primary ? 1 : 0, name.UTF8String);
+  }
 }
 
 - (void)installEventMonitor {

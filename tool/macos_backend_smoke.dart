@@ -50,6 +50,21 @@ Future<void> main() async {
       );
     }
     stdout.writeln('MACOS_BACKEND_WINDOW=PASS id=${window.id.value}');
+    final List<ScreenInfo> screens = backend.screens;
+    final bool validScreens = screens.isNotEmpty &&
+        screens.where((ScreenInfo screen) => screen.isPrimary).length == 1 &&
+        screens.every((ScreenInfo screen) =>
+            screen.scale > 0 &&
+            screen.workArea.left >= screen.bounds.left &&
+            screen.workArea.top >= screen.bounds.top &&
+            screen.workArea.right <= screen.bounds.right &&
+            screen.workArea.bottom <= screen.bounds.bottom);
+    stdout.writeln(
+      'MACOS_SCREENS=${validScreens ? 'PASS' : 'FAIL'} '
+      'count=${screens.length} '
+      'values=${screens.map((ScreenInfo screen) => screen.toString()).join(';')}',
+    );
+    if (!validScreens) throw StateError('invalid NSScreen snapshot');
   } on Object catch (error, stack) {
     failure = error;
     failureStack = stack;

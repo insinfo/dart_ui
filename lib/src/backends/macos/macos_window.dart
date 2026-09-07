@@ -159,6 +159,28 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
 
   int get hostPid => _supervisor?.handshake?.hostPid ?? 0;
 
+  List<ScreenInfo> get hostScreens => <ScreenInfo>[
+        for (final MacosHostScreen screen
+            in _supervisor?.handshake?.screens ?? const <MacosHostScreen>[])
+          ScreenInfo(
+            bounds: Rect.fromLTWH(
+              screen.x,
+              screen.y,
+              screen.width,
+              screen.height,
+            ),
+            workArea: Rect.fromLTWH(
+              screen.workX,
+              screen.workY,
+              screen.workWidth,
+              screen.workHeight,
+            ),
+            scale: screen.scale,
+            isPrimary: screen.isPrimary,
+            name: screen.name,
+          ),
+      ];
+
   /// How many times the host has been replaced under this window.
   int get hostRestartCount => _supervisor?.restartCount ?? 0;
 

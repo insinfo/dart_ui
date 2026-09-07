@@ -43,13 +43,14 @@ final class _FakeSurface implements MacosPoolSurface {
 }
 
 final class _FakeHost implements MacosHostProcessHandle {
-  _FakeHost({double renderScale = 1})
+  _FakeHost({double renderScale = 1, List<MacosHostScreen>? screens})
       : handshake = MacosHostHandshake(
           windowNumber: 42,
           hostPid: 123,
           protocolVersion: 4,
           features: 'surface-port,window-events',
           renderScale: renderScale,
+          screens: screens ?? const <MacosHostScreen>[],
         );
 
   @override
@@ -175,6 +176,63 @@ void main() {
     await window.teardown;
     expect(
         surfaces, everyElement(predicate<_FakeSurface>((s) => s.isDisposed)));
+  });
+
+  test('host screen snapshot becomes logical ScreenInfo', () async {
+    final host = _FakeHost(
+      screens: const <MacosHostScreen>[
+        MacosHostScreen(
+          x: 0,
+          y: 0,
+          width: 1512,
+          height: 982,
+          workX: 0,
+          workY: 25,
+          workWidth: 1512,
+          workHeight: 932,
+          scale: 2,
+          isPrimary: true,
+          name: 'Built-in Display',
+        ),
+      ],
+    );
+    final window = MacosWindow(
+      id: const NativeWindowId(4),
+      surfaceFactory: ({
+        required pixelWidth,
+        required pixelHeight,
+        required global,
+      }) =>
+          MacosSurfacePool(<_FakeSurface>[
+        _FakeSurface(1, pixelWidth, pixelHeight),
+        _FakeSurface(2, pixelWidth, pixelHeight),
+      ]),
+      clientSize: const Size(8, 6),
+      renderScale: 1,
+      desktopScale: 1,
+      onDiagnostic: (_) {},
+      onClosed: (_) {},
+      hostStarter: (options, sink, onDiagnostic) async => host,
+      poolAttacher: (candidate, pool) async => true,
+    );
+
+    expect(
+      await window.open(
+        spawnOptions: const MacosHostSpawnOptions(
+          binaryPath: 'fake',
+          logicalWidth: 8,
+          logicalHeight: 6,
+        ),
+      ),
+      isTrue,
+    );
+    expect(window.hostScreens.single.name, 'Built-in Display');
+    expect(window.hostScreens.single.bounds.height, 982);
+    expect(window.hostScreens.single.workArea.top, 25);
+    expect(window.hostScreens.single.scale, 2);
+
+    window.dispose();
+    await window.teardown;
   });
 
   test('close emits once, unregisters once, and disposes without a live host',

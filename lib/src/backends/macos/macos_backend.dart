@@ -26,6 +26,7 @@ import 'dart:async';
 import 'dart:io' show Platform;
 
 import '../../foundation/diagnostics.dart';
+import '../../geometry/offset.dart';
 import '../../platform/backend_selection.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
@@ -36,7 +37,7 @@ import 'macos_backend_selection.dart';
 import 'macos_window.dart';
 
 /// Creates and owns macOS windows through the selected backend strategy.
-final class MacosWindowingBackend implements WindowingBackend {
+final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
   MacosWindowingBackend({
     MacosBackendOptions options = const MacosBackendOptions(),
   }) : _options = options;
@@ -217,6 +218,22 @@ final class MacosWindowingBackend implements WindowingBackend {
 
   @override
   List<NativeWindow> get windows => List<NativeWindow>.unmodifiable(_windows);
+
+  @override
+  List<ScreenInfo> get screens {
+    // NSScreen is queried in the AppKit host, where thread ownership is valid.
+    // Every host sees the same desktop, so the first completed handshake is a
+    // snapshot; concatenating them would report every monitor once per window.
+    for (final MacosWindow window in _windows.whereType<MacosWindow>()) {
+      final List<ScreenInfo> snapshot = window.hostScreens;
+      if (snapshot.isNotEmpty) return List<ScreenInfo>.unmodifiable(snapshot);
+    }
+    return const <ScreenInfo>[];
+  }
+
+  @override
+  ScreenInfo? screenAt(Offset screenPoint) =>
+      ScreenInfo.nearest(screens, screenPoint);
 
   @override
   bool pumpEvents({Duration timeout = Duration.zero}) {

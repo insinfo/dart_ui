@@ -6,6 +6,7 @@ on:
     paths:
       - 'lib/src/backends/macos/**'
       - 'tool/macos_popup_probe.dart'
+      - 'tool/macos_backend_smoke.dart'
       - '.github/workflows/macos_popup_probe.yml'
 
 concurrency:
@@ -28,3 +29,7 @@ jobs:
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/macos_popup_probe.dart
+      - name: Enumerate NSScreen through the production backend
+        env:
+          DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+        run: dart run tool/macos_backend_smoke.dart
