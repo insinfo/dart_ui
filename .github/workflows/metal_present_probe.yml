@@ -1,0 +1,120 @@
+# Ground truth for Metal *presentation* on a real Apple Silicon runner.
+#
+# Separate from `metal_mesh_abi_probe.yml` because it answers a different
+# question. That workflow proves Metal draws: a device, 27 verified selector
+# encodings, a compiled MSL pipeline, meshes rendered and read back offscreen.
+# This one asks whether a drawn frame can reach a surface a window could show,
+# which is the one gate §21.6 of the roadmap still has open.
+#
+# ## Why almost nothing here is asserted
+#
+# The three sends this exercises have never run anywhere, so a `grep` that
+# demanded them would be asserting the conclusion we are trying to measure -
+# and a red run teaches nothing the log would not have said better. So the
+# gates are only the two facts already established by run 34148425779, plus
+# the summary line, whose absence means the probe crashed part way and the
+# answers below it are missing rather than negative.
+#
+# When an answer comes back, it becomes a gate here. That is the point at
+# which red means regression instead of ignorance.
+name: Metal presentation probe
+
+on:
+  # Unfiltered, so the probe can always be re-run by hand against a commit
+  # that changed nothing - which is how a flaky or environment-dependent
+  # answer gets told apart from a real one.
+  workflow_dispatch:
+  push:
+    # Scoped so an unrelated commit does not spend a macOS runner. These are
+    # the paths that can change the answer: the Metal backend, the macOS
+    # window backend that owns the IOSurface pool, the Objective-C send and
+    # block layer the probe drives, and the probe itself.
+    paths:
+      - 'lib/src/rendering/gpu/metal/**'
+      - 'lib/src/backends/macos/**'
+      - 'lib/src/ffi/objc_runtime.dart'
+      - 'tool/metal_present_probe.dart'
+      - '.github/workflows/metal_present_probe.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: metal-present-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DART_SDK_VERSION: '3.6.2'
+
+jobs:
+  probe:
+    name: Metal presentation ABI (macOS ARM64)
+    runs-on: macos-14
+    # The layer group runs last precisely because `-[CAMetalLayer
+    # nextDrawable]` can block when no drawable can be vended; ten minutes is
+    # far more than the rest of the probe needs and bounds that case.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Report runner architecture
+        run: |
+          uname -a
+          uname -m | grep -q '^arm64$'
+
+      # OBJC_DEBUG_MISSING_POOLS makes the runtime print when an object is
+      # autoreleased with no enclosing pool. It matters here more than in most
+      # places: this probe is the first code in the repository to hand Metal a
+      # block, and the completion handler runs on a thread that has no pool of
+      # ours at all.
+      - name: Exercise the Metal presentation path
+        shell: bash
+        env:
+          OBJC_DEBUG_MISSING_POOLS: 'YES'
+        run: |
+          set -o pipefail
+          mkdir -p build
+          dart run tool/metal_present_probe.dart 2>&1 \
+            | tee build/metal-present-probe.log
+
+      # The two facts already established, so a regression in them is red, and
+      # the summary line, whose absence means the process died mid-probe.
+      - name: Assert what is already known
+        shell: bash
+        run: |
+          grep -q '^MTLCreateSystemDefaultDevice=NON_NIL$' \
+            build/metal-present-probe.log
+          grep -q '^CHECK=device RESULT=OK ' build/metal-present-probe.log
+          grep -q '^METAL_PRESENT_PROBE=DONE ' build/metal-present-probe.log
+
+      # Printed, never gated. These three lines are the whole reason the
+      # workflow exists, and reading them out of the step summary beats
+      # scrolling a log.
+      - name: Report the verdicts
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### Metal presentation verdicts'
+            echo ''
+            echo '```'
+            grep -E '^(ADR0005_|CAMETALLAYER_PRESENTER=|DEVICE_|IOSURFACE_|COMPLETION_HANDLER_|METAL_PRESENT_PROBE=)' \
+              build/metal-present-probe.log || echo 'no verdict lines found'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload probe log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-present-probe
+          path: build/metal-present-probe.log
+          retention-days: 14
+          if-no-files-found: warn

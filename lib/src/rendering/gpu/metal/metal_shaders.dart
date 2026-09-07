@@ -7,13 +7,24 @@
 /// the CPU rasteriser and this backend has to be a bug in one of them, not a
 /// difference of intent between two shader authors.
 ///
-/// **Nothing here has been compiled.** There is no Mac in this loop and
-/// `newLibraryWithSource:options:error:` has never been called on this string.
-/// What the tests assert is structure - that the mode constants match
-/// [GpuPipelineKind], that the attribute offsets match `gpu_pipeline.dart`,
-/// that the uniform block is the size Dart and MSL both think it is. A
-/// syntax error in the MSL below would survive all of that and be caught by
-/// the first compile on a Mac.
+/// **This compiles on a Mac, and the tests here still do not compile it.** The
+/// paragraph above this one used to read "nothing here has been compiled" and
+/// that stopped being true in run
+/// [`34148425779`](https://github.com/insinfo/dart_ui/actions/runs/34148425779):
+/// `MetalPipelineCache.build` calls `compileShaderLibrary()`, which with no
+/// argument compiles [kMetalShaderSource] - this string - and the run reports
+/// `METAL_MESH_PIPELINE_STATE=PASS`, which cannot happen unless
+/// `newLibraryWithSource:options:error:` returned a library and both entry
+/// points were found in it.
+///
+/// The claim is narrowed rather than deleted, because the half that mattered
+/// survives: **the tests in this file assert structure, not syntax** - that
+/// the mode constants match [GpuPipelineKind], that the attribute offsets
+/// match `gpu_pipeline.dart`, that the uniform block is the size Dart and MSL
+/// both think it is. A syntax error in the MSL below still survives every one
+/// of them, and is still caught by a compile on a Mac and nowhere else. What
+/// changed is that the compile now happens on every dispatch of
+/// `metal_mesh_abi_probe.yml` instead of never.
 ///
 /// ## The conventions, declared
 ///

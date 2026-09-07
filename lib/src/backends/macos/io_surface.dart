@@ -178,6 +178,23 @@ final class MacosIOSurface implements MacosPoolSurface {
   /// Production uses private surfaces and Mach-port handoff.
   final bool isGlobal;
 
+  /// The raw `IOSurfaceRef`, for a caller that must hand the surface to
+  /// another framework instead of writing pixels into it.
+  ///
+  /// One caller is intended: ADR 0005's Metal presenter, which wraps this
+  /// surface with `-[MTLDevice newTextureWithDescriptor:iosurface:plane:]` so
+  /// the GPU writes the same pages the host scans out. A raw pointer because
+  /// that is exactly what the selector takes.
+  ///
+  /// **It confers no ownership.** This object still owns the surface and
+  /// [dispose] is still what releases it. Metal retains what it wraps for as
+  /// long as the texture lives, which is why the texture must be released
+  /// before the pool is torn down and not after.
+  Pointer<Void> get surfaceRef {
+    _checkAlive();
+    return _surface;
+  }
+
   final int _allocSize;
 
   bool _disposed = false;
