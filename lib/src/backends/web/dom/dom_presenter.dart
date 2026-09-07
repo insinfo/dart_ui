@@ -343,6 +343,14 @@ final class DomCanvasPresenter
     if (clearColor != null) {
       _host.style.backgroundColor = _cssColor(clearColor);
     }
+    // Asked for on the way in, which means the frame in hand was already
+    // recorded without it: this presenter is handed a finished list, so the
+    // first frame after it is chosen falls back to inverting the `cmap` and
+    // every frame after that has the real characters. Idempotent, and set
+    // every frame rather than once because a frame producer may hand out a
+    // different list from a pool. Off is the default for everyone else, and
+    // costs nothing - see `glyph_text.dart`.
+    list.capturesGlyphText = true;
     try {
       _scene.update(list);
     } on Object catch (error, stack) {

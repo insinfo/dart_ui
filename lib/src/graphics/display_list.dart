@@ -37,6 +37,7 @@ import 'dart:typed_data';
 
 import 'content_hint.dart';
 import 'display_list_opcodes.dart';
+import 'glyph_text.dart';
 import 'gradient.dart';
 
 /// Builder and owner of an encoded display list.
@@ -120,6 +121,13 @@ final class DisplayList {
   int _hintDepth = 0;
   ContentHintSpans? _hintView;
 
+  /// Where [recordGlyphText] sends the text behind a glyph run.
+  ///
+  /// The `const` disabled capture, so a list that is never asked to capture
+  /// holds one shared object for the whole program and allocates nothing per
+  /// frame. See [capturesGlyphText] and `glyph_text.dart`.
+  GlyphTextCapture _glyphText = GlyphTextCapture.disabled;
+
   final List<Object> _paths = <Object>[];
   final Map<Object, int> _pathIds = <Object, int>{};
 
@@ -195,6 +203,7 @@ final class DisplayList {
     _gradientIds.clear();
     _hintSpanCount = 0;
     _hintDepth = 0;
+    _glyphText.reset();
   }
 
   // ---------------------------------------------------------------------
@@ -554,6 +563,48 @@ final class DisplayList {
     _hintValues[_hintSpanCount] = packed;
     _hintSpanCount++;
   }
+
+  // ---------------------------------------------------------------------
+  // Glyph text
+  // ---------------------------------------------------------------------
+
+  /// Whether [recordGlyphText] keeps anything.
+  ///
+  /// False by default and free when false: the capture is the `const`
+  /// singleton from `glyph_text.dart`, so an untouched list allocates nothing
+  /// for this and [recordGlyphText] is a call with an empty body rather than a
+  /// branch. Only a backend that turns characters back into characters - the
+  /// DOM presenter - sets it, and it sets it on the list it is handed, so the
+  /// first frame after it is chosen still falls back.
+  ///
+  /// Setting it back to false drops the table. Setting it to the value it
+  /// already has does nothing, so a presenter can assert it every frame.
+  bool get capturesGlyphText => _glyphText.isRecording;
+
+  set capturesGlyphText(bool value) {
+    if (value == _glyphText.isRecording) return;
+    _glyphText =
+        value ? GlyphTextCapture.recording() : GlyphTextCapture.disabled;
+  }
+
+  /// The text side table, for a replayer that wants to read it.
+  ///
+  /// [GlyphTextSpans.empty] while [capturesGlyphText] is false, which is the
+  /// same const instance every time.
+  GlyphTextSpans get glyphTexts => _glyphText.spans;
+
+  /// Records that the **next** command appended draws the glyphs of
+  /// `text.substring(start, end)`.
+  ///
+  /// Next, not last, so that the offset recorded is [opLength] exactly as
+  /// [_recordHint] uses it - a caller pairs this immediately before its
+  /// [drawGlyphRun] and the two cannot drift apart.
+  ///
+  /// [text] is retained by reference. The string is one the widget tree
+  /// already built and `GlyphRunCache` already keys on, so recording it costs
+  /// a pointer and no characters.
+  void recordGlyphText(String text, int start, int end) =>
+      _glyphText.record(_opLength, text, start, end);
 
   // ---------------------------------------------------------------------
   // Commands
@@ -933,6 +984,12 @@ final class DisplayList {
     _floatLength += other._floatLength;
 
     _ensureOps(other._opLength);
+    // Every op offset in `other` shifts by exactly this, because the words
+    // below are appended in order and none is added or dropped. That is what
+    // lets the glyph-text spans be replayed rather than refused the way
+    // content hints are: a text span carries no inherited state, so shifting
+    // its offset is the whole of the translation.
+    final int opBase = _opLength;
     final Uint32List source = other._ops;
     var read = 0;
     while (read < other._opLength) {
@@ -980,6 +1037,18 @@ final class DisplayList {
       read = operands + intSlots;
     }
     _commandCount += other._commandCount;
+
+    // Free when neither list captures: `spanCount` is zero on the const empty
+    // table, so the common splice does one integer comparison.
+    final GlyphTextSpans texts = other.glyphTexts;
+    for (var i = 0; i < texts.spanCount; i++) {
+      _glyphText.record(
+        opBase + texts.spanStart(i),
+        texts.spanText(i),
+        texts.spanTextStart(i),
+        texts.spanTextEnd(i),
+      );
+    }
   }
 
   static const int _splicePaintTable = 0;

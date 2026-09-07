@@ -95,6 +95,9 @@ final class GlyphRun {
     required this.length,
     required this.width,
     this.direction = TextDirection.leftToRight,
+    this.text = '',
+    this.textStart = 0,
+    this.textEnd = 0,
   });
 
   final ScaledTypeface font;
@@ -124,6 +127,47 @@ final class GlyphRun {
   final double width;
 
   final TextDirection direction;
+
+  /// The string [clusters] index into, held by reference.
+  ///
+  /// The class comment has always said a run is "glyphs, where they go, and
+  /// what text they came from", and until this field existed the third of
+  /// those was only half true: [clusters] names *offsets* into a string the
+  /// run did not carry, so every consumer above had to be handed the string
+  /// separately or do without. The DOM backend is the one that cannot do
+  /// without - a glyph id cannot go into a text node - and it was recovering
+  /// characters by inverting the font's `cmap`, which cannot name a ligature.
+  ///
+  /// Empty when the run was built without one, which is a legal input and
+  /// means "ask the font": see [hasText].
+  ///
+  /// Never a substring. A paragraph's spans all point at the paragraph's own
+  /// text with absolute [clusters], so a wrapped paragraph costs one pointer
+  /// per span rather than one copy of every line.
+  final String text;
+
+  /// First UTF-16 offset of [text] this run covers.
+  final int textStart;
+
+  /// One past the last UTF-16 offset of [text] this run covers.
+  ///
+  /// Carried rather than derived because it cannot be derived: [clusters]
+  /// gives the *start* of each cluster and nothing says how far the last one
+  /// extends - shape "fi" as one ligature glyph and the single cluster 0 is
+  /// equally consistent with a one- and a two-character run. That is the same
+  /// gap [glyphIndexOfCluster] documents from the other side, and it is why
+  /// splitting a run into commands needs this number.
+  final int textEnd;
+
+  /// Whether [text] can be trusted to name this run's characters.
+  ///
+  /// Also checks [clusters] against [length]: a run may legitimately carry
+  /// fewer clusters than glyphs - a paragraph's ellipsis run has none at all,
+  /// because its glyphs came from the style rather than from the string - and
+  /// reading past the end of that array would be an attribution bug wearing a
+  /// range error's clothes.
+  bool get hasText =>
+      text.isNotEmpty && textEnd > textStart && clusters.length >= length;
 
   bool get isEmpty => length == 0;
 
@@ -160,6 +204,78 @@ final class GlyphRun {
       }
     }
     return best;
+  }
+
+  /// First UTF-16 offset of [text] that the glyphs `[first, first + count)`
+  /// came from, or [textStart] when they came from nothing this command owns.
+  ///
+  /// Together with [textEndOfGlyphs] this is what lets a run too long for one
+  /// `drawGlyphRun` command name, per command, exactly the characters that
+  /// command's glyphs came from - exactly, meaning the commands partition the
+  /// run's text with nothing counted twice and nothing dropped. Getting that
+  /// wrong is invisible in a short label and silently misattributes a
+  /// paragraph, which is the worse kind of wrong, so both methods are written
+  /// to assume as little as possible:
+  ///
+  ///   * the **minimum** cluster in the range, never the first entry. Same
+  ///     answer in a left-to-right run, the correct one in a right-to-left run
+  ///     where clusters descend, and still correct under the reordering Indic
+  ///     and Arabic shaping do;
+  ///   * a cluster **straddling the split** - one cluster that produced more
+  ///     glyphs than fit in one command - belongs to the command that drew its
+  ///     *first* glyph and to no other. Claiming it in both would spell those
+  ///     characters twice into a copy or a find, which is precisely the bug a
+  ///     backend reads this table to avoid. [carriedCluster] is how the
+  ///     continuation command knows to leave it alone.
+  int textStartOfGlyphs(int first, int count) {
+    final int carried = carriedCluster(first);
+    var lowest = -1;
+    for (var i = first; i < first + count; i++) {
+      final int cluster = clusters[i];
+      if (cluster == carried) continue;
+      if (lowest < 0 || cluster < lowest) lowest = cluster;
+    }
+    return lowest < 0 ? textStart : lowest;
+  }
+
+  /// One past the last UTF-16 offset of [text] that the glyphs
+  /// `[first, first + count)` came from.
+  ///
+  /// The end of the highest cluster the command owns, and [clusters] does not
+  /// hold it - see [textEnd]. So it is the next cluster boundary *anywhere in
+  /// the run*, and [textEnd] when there is none. Scanning the whole run rather
+  /// than the neighbouring glyph is what makes this direction-agnostic: in a
+  /// right-to-left run the cluster that ends this command's text sits at a
+  /// *lower* glyph index, and a neighbour test would look the wrong way.
+  int textEndOfGlyphs(int first, int count) {
+    final int carried = carriedCluster(first);
+    var highest = -1;
+    for (var i = first; i < first + count; i++) {
+      final int cluster = clusters[i];
+      if (cluster == carried) continue;
+      if (cluster > highest) highest = cluster;
+    }
+    if (highest < 0) return textStart;
+    var next = textEnd;
+    for (var i = 0; i < length; i++) {
+      final int cluster = clusters[i];
+      if (cluster > highest && cluster < next) next = cluster;
+    }
+    return next;
+  }
+
+  /// The cluster the glyph before [first] belongs to, when the glyph *at*
+  /// [first] belongs to it too; -1 otherwise.
+  ///
+  /// Names the one thing a command starting at [first] must not claim. The
+  /// test is the immediate neighbour and not a search, because the glyphs of
+  /// one cluster are adjacent by construction - that is what makes a cluster a
+  /// cluster - so a value can only be carried across a boundary, never
+  /// reappear later.
+  int carriedCluster(int first) {
+    if (first <= 0 || first >= length) return -1;
+    final int previous = clusters[first - 1];
+    return previous == clusters[first] ? previous : -1;
   }
 
   @override
@@ -294,6 +410,9 @@ final class LatinShaper implements Shaper {
       length: count,
       width: pen,
       direction: direction,
+      text: text,
+      textStart: 0,
+      textEnd: text.length,
     );
   }
 
@@ -701,6 +820,9 @@ final class OpenTypeShaper implements Shaper {
       length: count,
       width: penX * scale,
       direction: direction,
+      text: text,
+      textStart: 0,
+      textEnd: text.length,
     );
   }
 
@@ -860,6 +982,13 @@ final class GlyphRunCache implements Shaper {
       length: count,
       width: run.width,
       direction: run.direction,
+      // Carried across, not rebuilt: the cache owns copies of the typed
+      // arrays because the shaper reuses its scratch, but the source string is
+      // immutable and is the very thing the cache key holds, so copying it
+      // would be a second reference to the same characters.
+      text: run.text,
+      textStart: run.textStart,
+      textEnd: run.textEnd,
     );
   }
 

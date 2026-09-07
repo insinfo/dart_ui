@@ -142,6 +142,12 @@ final class TextPainter {
     if (run.isEmpty) return;
     final int fontId = list.addFont(run.font);
 
+    // Scanning clusters is the only work this method does that a rasteriser
+    // has no use for, so it is asked for once, here, and not per command. The
+    // guard is the one `render_diagnostics.dart` sanctions: the recording call
+    // itself is free when capture is off, but the scan behind it would not be.
+    final bool captureText = list.capturesGlyphText && run.hasText;
+
     // The opcode caps a run at kMaxGlyphsPerRun because the header packs the
     // float-slot count into ten bits. Long text is therefore several runs, and
     // each one carries its own origin so the split is invisible: the second
@@ -161,6 +167,23 @@ final class TextPainter {
         ids[i] = run.glyphIds[emitted + i];
         offsets[i * 2] = run.xOf(emitted + i) - run.xOf(emitted);
         offsets[i * 2 + 1] = run.yOf(emitted + i) - run.yOf(emitted);
+      }
+
+      // Before the command, because the side table keys on the offset the
+      // *next* command will be written at. Per command rather than per run:
+      // one logical string becomes several commands here, and a table that
+      // named the whole string on each of them would spell a paragraph out
+      // once per split - which reads correctly in a short label and duplicates
+      // text in anything long enough to matter.
+      if (captureText) {
+        final int from = run.textStartOfGlyphs(emitted, count);
+        final int to = run.textEndOfGlyphs(emitted, count);
+        // Empty only when every glyph in this command continues a cluster the
+        // previous command already claimed, which needs a single cluster wider
+        // than kMaxGlyphsPerRun. Recording nothing then is what keeps the
+        // table's spans a partition: the characters are already named, once,
+        // on the command that drew the cluster's first glyph.
+        if (to > from) list.recordGlyphText(run.text, from, to);
       }
 
       list.drawGlyphRun(

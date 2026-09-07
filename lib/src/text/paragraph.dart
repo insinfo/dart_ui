@@ -1829,6 +1829,9 @@ final class _Draft {
           direction: level.isOdd
               ? TextDirection.rightToLeft
               : TextDirection.leftToRight,
+          text: text,
+          textStart: start,
+          textEnd: end,
         ),
         left: left,
         width: width,
@@ -1879,6 +1882,14 @@ final class _Draft {
         width: b - a,
         direction:
             level.isOdd ? TextDirection.rightToLeft : TextDirection.leftToRight,
+        // The paragraph's whole text, with the slice bounds beside it, because
+        // `clusters` above are absolute offsets into it. A substring here
+        // would be a copy of every line of every laid-out paragraph, for a
+        // side table that only ever wanted to point at characters that already
+        // exist.
+        text: text,
+        textStart: start,
+        textEnd: end,
       ),
       left: left,
       width: width,

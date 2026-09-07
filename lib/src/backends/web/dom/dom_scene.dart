@@ -65,6 +65,7 @@ import 'package:web/web.dart' as web;
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_opcodes.dart';
 import '../../../graphics/display_list_reader.dart';
+import '../../../graphics/glyph_text.dart';
 import '../../../rendering/framebuffer.dart';
 import '../../../text/typeface.dart';
 import 'dom_text.dart';
@@ -156,9 +157,34 @@ final class DomScene {
   /// it to the console; a test collects it.
   void Function(DomRefusal refusal)? onRefusal;
 
-  /// Glyphs that could not be turned back into characters. See `dom_text.dart`
-  /// - this is the count of the display list's single largest omission.
+  /// Glyphs that could not be turned back into characters.
+  ///
+  /// Zero for every run whose text the display list recorded - see
+  /// `glyph_text.dart` - and non-zero only where this backend had to fall back
+  /// to inverting the font's `cmap`, which `dom_text.dart` explains cannot
+  /// name a ligature or a positional form. A list built by something that does
+  /// not record text is still a legal input, so the fallback stays and so does
+  /// this count.
   int unresolvedGlyphs = 0;
+
+  /// How many runs were named from the display list's own text side table,
+  /// and how many fell back to the `cmap`.
+  ///
+  /// The pair, not just the total, because the interesting failure is a frame
+  /// where capture is on and the table is empty anyway: that is a display list
+  /// built before the presenter asked for capture, and it looks identical to a
+  /// working frame in every other measurement.
+  int lastRunsFromText = 0;
+  int lastRunsFromCmap = 0;
+
+  /// The text side table of the list being reconciled, and how far a linear
+  /// scan of it has got.
+  ///
+  /// A cursor rather than a search because both sequences are in op order:
+  /// commands are read forwards and spans are recorded forwards, so the whole
+  /// lookup is an advance and a comparison. Reset per frame in [update].
+  GlyphTextSpans _glyphTexts = GlyphTextSpans.empty;
+  int _glyphTextCursor = 0;
 
   /// How many elements were created, and how many were reused, on the last
   /// reconciliation.
@@ -189,6 +215,10 @@ final class DomScene {
     lastReused = 0;
     lastRemoved = 0;
     unresolvedGlyphs = 0;
+    lastRunsFromText = 0;
+    lastRunsFromCmap = 0;
+    _glyphTexts = list.glyphTexts;
+    _glyphTextCursor = 0;
 
     _frames
       ..clear()
@@ -586,24 +616,45 @@ final class DomScene {
 
     final int count = reader.glyphCount;
     if (count == 0) return;
-    final Int32List glyphs = Int32List(count);
-    for (int i = 0; i < count; i++) {
-      glyphs[i] = reader.glyphIdAt(i);
-    }
     final DomTypeface face =
         DomFontRegistry.instance.faceFor(resource.typeface);
-    final ResolvedGlyphText resolved = face.textOf(glyphs, count);
-    unresolvedGlyphs += resolved.unresolved;
-    if (resolved.unresolved > 0) {
-      _refuse(
-        'glyph without a code point',
-        'the display list carries glyph ids and no text, so a glyph that the '
-            'cmap does not map - a ligature, an Arabic positional form, any '
-            'contextual substitution - cannot be named. See dom_text.dart for '
-            'the side table that would fix this',
-      );
+
+    // The recorded text first, and the cmap only when there is none. The two
+    // are not equally good and the difference is not cosmetic: `TextPainter`
+    // knows the characters this command's glyphs were shaped from, while the
+    // cmap can only answer for glyphs a code point maps to - so a ligature
+    // comes back as U+FB01 at best and as nothing at worst. See
+    // `glyph_text.dart` for why the display list can carry it without moving
+    // a single word of the op stream.
+    final String? recorded = _recordedTextAt(reader.headerOffset);
+    final String text;
+    var unresolvedHere = 0;
+    if (recorded != null) {
+      text = recorded;
+      lastRunsFromText++;
+    } else {
+      lastRunsFromCmap++;
+      final Int32List glyphs = Int32List(count);
+      for (int i = 0; i < count; i++) {
+        glyphs[i] = reader.glyphIdAt(i);
+      }
+      final ResolvedGlyphText resolved = face.textOf(glyphs, count);
+      unresolvedHere = resolved.unresolved;
+      unresolvedGlyphs += resolved.unresolved;
+      if (resolved.unresolved > 0) {
+        _refuse(
+          'glyph without a code point',
+          'this display list recorded no text for the run, so the cmap is the '
+              'only source of characters - and a glyph it does not map, a '
+              'ligature or an Arabic positional form or any contextual '
+              'substitution, cannot be named. Set '
+              'DisplayList.capturesGlyphText on the list that records the '
+              'frame; see glyph_text.dart',
+        );
+      }
+      text = resolved.text;
     }
-    if (resolved.text.isEmpty) return;
+    if (text.isEmpty) return;
 
     final double pixelSize = resource.pixelSize;
     final String cssFont = '${_n(pixelSize)}px "${face.cssFamily}", sans-serif';
@@ -631,11 +682,39 @@ final class DomScene {
         'font:$cssFont;line-height:${_px(lineHeight)};'
         'color:${_cssColor(list.paintColor(paintId))}',
       )
-      ..setText(resolved.text)
+      ..setText(text)
       ..setAttribute(
         'data-dartui-unresolved',
-        resolved.unresolved == 0 ? null : '${resolved.unresolved}',
-      );
+        unresolvedHere == 0 ? null : '$unresolvedHere',
+      )
+      ..setAttribute(
+          'data-dartui-text-source', recorded != null ? null : 'cmap');
+  }
+
+  /// The recorded characters of the `drawGlyphRun` whose header is at
+  /// [wordOffset], or null when the list recorded none.
+  ///
+  /// A span in the text table names one command exactly, so this tests for
+  /// equality after advancing rather than taking the last span at or before
+  /// the offset the way the content-hint cursor does - a hint is in force
+  /// until the next one, and text is not.
+  String? _recordedTextAt(int wordOffset) {
+    final GlyphTextSpans spans = _glyphTexts;
+    final int count = spans.spanCount;
+    if (count == 0) return null;
+    while (_glyphTextCursor < count &&
+        spans.spanStart(_glyphTextCursor) < wordOffset) {
+      _glyphTextCursor++;
+    }
+    if (_glyphTextCursor >= count ||
+        spans.spanStart(_glyphTextCursor) != wordOffset) {
+      return null;
+    }
+    final int index = _glyphTextCursor++;
+    final int start = spans.spanTextStart(index);
+    final int end = spans.spanTextEnd(index);
+    if (end <= start) return null;
+    return spans.spanText(index).substring(start, end);
   }
 
   void _refuse(String what, String why) {

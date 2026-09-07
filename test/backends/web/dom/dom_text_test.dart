@@ -7,12 +7,13 @@
 /// browser's own selection API can anchor in it", "find-in-page has something
 /// to find", and "the string survives a redraw with the selection intact".
 ///
-/// The one that is not a claim but a confession is
-/// [_ligaturesCannotBeRecovered]: the display list carries glyph ids and no
-/// text, so a glyph produced by a substitution has no code point to come back
-/// as. It is asserted rather than hidden, because a backend that dropped those
-/// characters silently would produce text that reads correctly and copies
-/// wrong.
+/// Two paths are exercised and both have to keep working. A display list that
+/// recorded its text - see `graphics/glyph_text.dart` - hands over the exact
+/// characters, ligature or not. A list that did not is still a legal input, and
+/// this backend then inverts the font's `cmap`, which cannot name a glyph a
+/// substitution produced; the count of those is asserted rather than hidden,
+/// because a backend that dropped them silently would produce text that reads
+/// correctly and copies wrong.
 library;
 
 import 'dart:typed_data';
@@ -52,9 +53,13 @@ void main() {
   tearDown(() => host.close());
 
   /// One line of text, drawn through the same painter every widget uses.
+  ///
+  /// [recordText] off by default, so every test that does not name it is still
+  /// exercising the `cmap` fallback - which stays the behaviour for any list
+  /// built by something that never asked for capture.
   DisplayList listWith(String text,
-      {double size = 16, int color = 0xFF000000}) {
-    final DisplayList list = DisplayList();
+      {double size = 16, int color = 0xFF000000, bool recordText = false}) {
+    final DisplayList list = DisplayList()..capturesGlyphText = recordText;
     final int paint = list.addPaint(colorArgb: color);
     TextPainter().paint(
       list,
@@ -218,6 +223,61 @@ void main() {
       reason: 'and it must be in the refusal list, which is what a human reads '
           'to find out what this backend cannot do',
     );
+  });
+
+  test('recorded text is used, and the cmap is never consulted', () {
+    if (skipIfMissing(font.skipReason)) return;
+
+    scene.update(listWith('findable office', recordText: true));
+    final web.Element span = firstSpan(host.element)!;
+
+    expect(span.textContent, 'findable office');
+    expect(scene.unresolvedGlyphs, 0);
+    expect(scene.lastRunsFromText, 1);
+    expect(scene.lastRunsFromCmap, 0);
+    expect(span.getAttribute('data-dartui-text-source'), isNull,
+        reason: 'the attribute marks the fallback, so its absence is the '
+            'assertion that the fallback was not taken');
+  });
+
+  test('recorded text names glyphs the cmap cannot name at all', () {
+    if (skipIfMissing(font.skipReason)) return;
+
+    // The same unmappable glyph ids as the confession test below, with the
+    // text recorded beside them. This is the whole point of the side table:
+    // there is no glyph a substitution can produce that makes the characters
+    // unrecoverable, because the characters never had to be recovered.
+    final DisplayList list = DisplayList()..capturesGlyphText = true;
+    final int paint = list.addPaint(colorArgb: 0xFF000000);
+    final int fontId = list.addFont(ScaledTypeface(font.typeface!, 16));
+    list
+      ..recordGlyphText('في', 0, 2)
+      ..drawGlyphRun(
+        fontId,
+        paint,
+        0,
+        20,
+        Int32List.fromList(<int>[0xFFFF, 0xFFFE]),
+        Float32List.fromList(<double>[0, 0, 8, 0]),
+        2,
+      );
+
+    scene.update(list);
+
+    expect(firstSpan(host.element)!.textContent, 'في');
+    expect(scene.unresolvedGlyphs, 0);
+    expect(scene.refusals.keys, isNot(contains('glyph without a code point')));
+  });
+
+  test('a run with no recorded text still falls back, and says so', () {
+    if (skipIfMissing(font.skipReason)) return;
+
+    scene.update(listWith('plain'));
+    expect(firstSpan(host.element)!.textContent, 'plain');
+    expect(scene.lastRunsFromText, 0);
+    expect(scene.lastRunsFromCmap, 1);
+    expect(firstSpan(host.element)!.getAttribute('data-dartui-text-source'),
+        'cmap');
   });
 
   test('one face is registered with the browser once, however often it draws',

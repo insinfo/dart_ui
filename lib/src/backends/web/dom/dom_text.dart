@@ -1,26 +1,30 @@
 /// Turning a shaped glyph run back into characters, and getting the browser
 /// to draw them in the same face this framework shaped them with.
 ///
-/// ## The gap this file exists to paper over, stated first
+/// ## This is now the fallback, not the main road
 ///
 /// `DisplayList.drawGlyphRun` carries a font id, a paint id, an origin and a
 /// list of **glyph ids**. It does not carry the string. That is exactly right
-/// for a rasteriser - a glyph id is what indexes an outline - and it is the
+/// for a rasteriser - a glyph id is what indexes an outline - and it was the
 /// single biggest obstacle to a DOM backend, because the DOM's unit of text is
 /// a character and there is no way to put a glyph id into a text node.
 ///
-/// The shaper *had* the string: `GlyphRun` holds `clusters`, and
-/// `GlyphRunCache` holds the source text next to the run it shaped. Both are
-/// dropped at `TextPainter.emitRun`, which encodes ids and offsets and nothing
-/// else. See the report accompanying this backend for the proposed fix: a text
-/// side table on `DisplayList`, in the exact shape `ContentHintSpans` already
-/// establishes, so the op and float streams stay byte-for-byte identical and
-/// every existing consumer is unaffected.
+/// `graphics/glyph_text.dart` closes it: an opt-in side table on `DisplayList`
+/// in the shape `ContentHintSpans` established, filled by `TextPainter.emitRun`
+/// from the string the shaper already had, keyed by op offset so the op and
+/// float streams stay byte-for-byte identical. `DomCanvasPresenter` turns it on,
+/// and `DomScene` uses it whenever a run has it.
 ///
-/// Until that exists, this file inverts the `cmap`. That recovers the
-/// characters for every glyph the font maps from exactly one code point, which
-/// is the overwhelming majority of Latin, Greek and Cyrillic text. It cannot
-/// recover:
+/// Everything below stays because a display list built by something that never
+/// asked for capture is still a legal input - a test that encodes commands by
+/// hand, a list that crossed an isolate as two typed buffers, the first frame
+/// after this presenter is chosen - and a backend that answered such a list
+/// with no text at all would be a regression against the day this file was the
+/// only road.
+///
+/// So this file inverts the `cmap`. That recovers the characters for every
+/// glyph the font maps from exactly one code point, which is the overwhelming
+/// majority of Latin, Greek and Cyrillic text. It cannot recover:
 ///
 ///   * a **ligature** - `GSUB` replaced two glyphs with one that no code point
 ///     maps to, so `office` shaped with an `fi` ligature comes back `oce`;
@@ -52,10 +56,12 @@
 /// fixed. Restricting it to U+FB00..U+FDFF and U+FE70..U+FEFF hits every glyph
 /// a `GSUB` substitution can have produced and nothing else.
 ///
-/// This closes the ligature case. It does **not** close the general one: a font
-/// whose ligature glyph has no `cmap` entry at all, or whose substitution has
-/// no Unicode presentation form, is still unnameable, and that is what the
-/// count is for.
+/// This closes the ligature case *for a face that maps the presentation form*.
+/// It does not close the general one: a font whose ligature glyph has no `cmap`
+/// entry at all, or whose substitution has no Unicode presentation form, is
+/// still unnameable, and that is what the count is for. Neither limit applies
+/// to a run whose text the display list recorded, which is why that is the
+/// path taken first.
 ///
 /// ## Why the browser needs the font file a second time
 ///
