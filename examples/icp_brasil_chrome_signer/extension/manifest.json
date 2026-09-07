@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Dart UI ICP-Brasil",
+  "description": "Autenticação e assinatura PAdES com certificados ICP-Brasil.",
+  "version": "0.1.0",
+  "permissions": ["nativeMessaging"],
+  "host_permissions": ["http://*/*", "https://*/*"],
+  "background": {"service_worker": "dist/service_worker.js"},
+  "action": {
+    "default_title": "Dart UI ICP-Brasil",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["dist/content_script.js"],
+    "all_frames": false,
+    "run_at": "document_start"
+  }, {
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["dist/page_api.js"],
+    "world": "MAIN",
+    "all_frames": false,
+    "run_at": "document_start"
+  }]
+}

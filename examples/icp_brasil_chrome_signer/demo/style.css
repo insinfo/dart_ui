@@ -1,0 +1,14 @@
+:root { color-scheme: light; font-family: Inter, system-ui, sans-serif; background:#eef3f8; color:#142033 }
+body { margin:0; min-height:100vh; display:grid; place-items:center }
+main { width:min(880px, calc(100% - 40px)); }
+.eyebrow { color:#087f5b; font-weight:800; letter-spacing:.14em }
+h1 { max-width:720px; font-size:clamp(2.2rem,6vw,4.5rem); line-height:1; margin:.25em 0 }
+.lead { color:#526173; font-size:1.15rem }
+section { background:white; padding:28px; border-radius:18px; box-shadow:0 18px 60px #19324d1c }
+.actions { display:flex; flex-wrap:wrap; gap:10px }
+button,.file,select { border:1px solid #bcc8d6; border-radius:9px; padding:11px 14px; background:white; font:inherit }
+button:first-child { color:white; background:#087f5b; border-color:#087f5b }
+button:disabled { opacity:.45 }
+.file input { display:none }
+select { width:100%; margin-top:14px }
+pre { white-space:pre-wrap; background:#142033; color:#d6e4f0; padding:16px; border-radius:10px; min-height:80px }

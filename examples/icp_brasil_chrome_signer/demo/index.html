@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Dart UI — ICP-Brasil</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main>
+    <p class="eyebrow">DART UI · ICP-BRASIL</p>
+    <h1>Autentique e assine sem retirar a chave do token.</h1>
+    <p class="lead">Demonstração local da API universal exposta pela extensão.</p>
+    <section>
+      <div class="actions">
+        <button id="connect">Conectar e listar certificados</button>
+        <label class="file">Selecionar PDF<input id="pdf" type="file" accept="application/pdf"></label>
+        <button id="sign" disabled>Assinar PDF</button>
+        <button id="signHash" disabled>Assinar hash</button>
+        <button id="auth" disabled>Autenticar desafio</button>
+      </div>
+      <select id="certificates" aria-label="Certificado" disabled></select>
+      <pre id="log">Aguardando extensão…</pre>
+    </section>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
