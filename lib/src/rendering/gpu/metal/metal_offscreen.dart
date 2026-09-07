@@ -33,6 +33,7 @@ import 'dart:typed_data';
 import '../../../ffi/native_memory.dart';
 import '../../../ffi/objc_runtime.dart';
 import '../../../geometry/rect.dart';
+import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list.dart';
 import '../../../graphics/display_list_reader.dart';
 import '../../framebuffer.dart';
@@ -54,9 +55,10 @@ final class MetalOffscreenTarget {
     this._white,
     this.width,
     this.height,
-    this.framebuffer,
-    this._staging,
-  );
+    this._framebuffer,
+    this._staging, {
+    required bool ownsTexture,
+  }) : _ownsTexture = ownsTexture;
 
   /// Allocates the colour texture and the readback buffer.
   ///
@@ -122,7 +124,46 @@ final class MetalOffscreenTarget {
     final Pointer<Uint8> staging =
         NativeAllocator.instance.allocate<Uint8>(width * height * 4);
     return MetalOffscreenTarget._(gpu, pipelines, texture,
-        _createWhiteTexture(gpu), width, height, framebuffer, staging);
+        _createWhiteTexture(gpu), width, height, framebuffer, staging,
+        ownsTexture: true);
+  }
+
+  /// A target that draws into a texture **somebody else owns**.
+  ///
+  /// The window path of ADR 0005: the colour texture is an `IOSurface` from
+  /// `surface_pool.dart` wrapped with
+  /// `newTextureWithDescriptor:iosurface:plane:`, so the pages this draws into
+  /// are the pages the host scans out. Three things differ from [create] and
+  /// each is a decision:
+  ///
+  ///   * **the texture is not released here.** It belongs to the caller, whose
+  ///     pool outlives any one target; disposing it from a target would free a
+  ///     surface the compositor is still showing;
+  ///   * **there is no [Framebuffer] and no staging buffer.** A window target
+  ///     that allocated both would cost two full-resolution copies per window
+  ///     - 16 MB at 1080p - for a readback that never happens. [cpuPixels] is
+  ///     null and [readPixels] says so by name;
+  ///   * **the pixel format is the caller's**, not `rgba8Unorm`. An IOSurface
+  ///     from this repository's pool is `BGRA`, and a pipeline state's
+  ///     attachment format is part of its identity in Metal - so [pipelines]
+  ///     must have been built for the format the texture actually has or every
+  ///     draw is rejected at encode time.
+  static MetalOffscreenTarget overTexture(
+    MetalGpu gpu,
+    MetalPipelineCache pipelines, {
+    required Pointer<ObjCObject> texture,
+    required int width,
+    required int height,
+  }) {
+    if (width <= 0 || height <= 0) {
+      throw MetalError('a target needs a positive size, got ${width}x$height');
+    }
+    if (texture == nullptr) {
+      throw MetalError('overTexture was given a nil texture');
+    }
+    return MetalOffscreenTarget._(gpu, pipelines, texture,
+        _createWhiteTexture(gpu), width, height, null, null,
+        ownsTexture: false);
   }
 
   /// A 1x1 opaque white texture, bound whenever a batch names no texture.
@@ -180,10 +221,32 @@ final class MetalOffscreenTarget {
   final int width;
   final int height;
 
-  /// Where [readPixels] leaves the result.
-  final Framebuffer framebuffer;
+  /// Whether [dispose] releases [texture]. False for [overTexture].
+  final bool _ownsTexture;
 
-  final Pointer<Uint8> _staging;
+  /// Where [readPixels] leaves the result, or null on a target that draws
+  /// into somebody else's texture. See [overTexture].
+  final Framebuffer? _framebuffer;
+
+  /// The CPU-visible pixels, or null when this target has none.
+  ///
+  /// Mirrors `Frame.cpuPixels`: a window target genuinely has no readback
+  /// buffer, and a 1x1 placeholder would be a lie in the type.
+  Framebuffer? get cpuPixels => _framebuffer;
+
+  /// The readback buffer, or a named failure when there is none.
+  Framebuffer get framebuffer {
+    final Framebuffer? pixels = _framebuffer;
+    if (pixels != null) return pixels;
+    throw MetalError(
+      'this target draws into a texture it does not own and has no readback '
+      'buffer: it was built by MetalOffscreenTarget.overTexture, which is the '
+      'window path of ADR 0005. Read the pixels through the IOSurface the '
+      'caller owns instead',
+    );
+  }
+
+  final Pointer<Uint8>? _staging;
 
   bool _disposed = false;
 
@@ -212,14 +275,20 @@ final class MetalOffscreenTarget {
     int? clearColor,
     Pointer<ObjCObject>? depthTexture,
     void Function(Pointer<ObjCObject> encoder)? body,
+    Pointer<ObjCObject>? completedHandler,
   }) =>
       _encodePass(
-          clearColor: clearColor, depthTexture: depthTexture, body: body);
+        clearColor: clearColor,
+        depthTexture: depthTexture,
+        body: body,
+        completedHandler: completedHandler,
+      );
 
   void _encodePass({
     required int? clearColor,
     Pointer<ObjCObject>? depthTexture,
     required void Function(Pointer<ObjCObject> encoder)? body,
+    Pointer<ObjCObject>? completedHandler,
   }) {
     _checkAlive();
     ObjCAutoreleasePool.run(() {
@@ -274,6 +343,22 @@ final class MetalOffscreenTarget {
       }
       if (body != null) body(encoder);
       metalSendVoid(encoder, 'endEncoding');
+
+      if (completedHandler != null) {
+        // Installed before commit, never after: a handler added to a buffer
+        // that has already completed is not guaranteed to run, and this one
+        // is what tells the presenter the IOSurface is finished. Measured at
+        // 6.7 ms end to end in run 34165428755.
+        metalSendVoid1(
+            commandBuffer, 'addCompletedHandler:', completedHandler.address);
+        metalSendVoid(commandBuffer, 'commit');
+        // No waitUntilCompleted and no status read. `commit` only enqueues, so
+        // `status` here would be `committed` and asserting `completed` would
+        // fail every frame - the handler is what observes the outcome, which
+        // is the whole reason a caller asked for one.
+        return;
+      }
+
       metalSendVoid(commandBuffer, 'commit');
       metalSendVoid(commandBuffer, 'waitUntilCompleted');
 
@@ -296,18 +381,27 @@ final class MetalOffscreenTarget {
   /// reallocated.
   Framebuffer readPixels() {
     _checkAlive();
+    final Pointer<Uint8>? staging = _staging;
+    final Framebuffer? destination = _framebuffer;
+    if (staging == nullptr || staging == null || destination == null) {
+      throw MetalError(
+        'readPixels on a target built by MetalOffscreenTarget.overTexture: it '
+        'has no staging buffer because a window target never reads its own '
+        'back buffer back. The pixels are in the IOSurface the caller owns',
+      );
+    }
     final int bytesPerRow = width * 4;
     metalSendGetBytes(
       texture,
       'getBytes:bytesPerRow:fromRegion:mipmapLevel:',
-      _staging.cast<Void>(),
+      staging.cast<Void>(),
       bytesPerRow,
       mtlRegion2D(x: 0, y: 0, width: width, height: height),
       0,
     );
-    final Uint8List source = _staging.asTypedList(bytesPerRow * height);
-    framebuffer.pixels.setRange(0, source.length, source);
-    return framebuffer;
+    final Uint8List source = staging.asTypedList(bytesPerRow * height);
+    destination.pixels.setRange(0, source.length, source);
+    return destination;
   }
 
   // -------------------------------------------------------------------
@@ -345,19 +439,30 @@ final class MetalOffscreenTarget {
   }
 
   /// Walks [list] into the batcher. No GPU work happens here.
-  void playDisplayList(DisplayList list) {
+  void playDisplayList(
+    DisplayList list, {
+    Transform2D deviceTransform = Transform2D.identity,
+  }) {
     _checkAlive();
     _player.play(
       DisplayListReader(list),
       DisplayListResources(list),
       deviceBounds: Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble()),
+      // Passed through rather than dropped: a window target is handed one by
+      // the presenter when the surface and the layout disagree about scale,
+      // and silently ignoring it would draw every frame at 1x on a display
+      // that is not.
+      deviceTransform: deviceTransform,
     );
   }
 
   /// Encodes the recorded batches into one pass and waits for it.
-  void submit({int? clearColor}) {
+  void submit({int? clearColor, Pointer<ObjCObject>? completedHandler}) {
     _checkAlive();
-    encodePass(clearColor: clearColor, body: _drawBatches);
+    encodePass(
+        clearColor: clearColor,
+        body: _drawBatches,
+        completedHandler: completedHandler);
   }
 
   late final GpuBatcher _batcher = GpuBatcher();
@@ -528,9 +633,13 @@ final class MetalOffscreenTarget {
     if (_disposed) return;
     _disposed = true;
     NativeAllocator.instance.free(_uniforms);
-    NativeAllocator.instance.free(_staging);
+    final Pointer<Uint8>? staging = _staging;
+    if (staging != null) NativeAllocator.instance.free(staging);
     objcRelease(_white);
-    objcRelease(texture);
+    // Never for an overTexture target: the IOSurface-backed texture belongs to
+    // the pool, which outlives every target built over it, and releasing it
+    // here would free a surface the host may still be showing.
+    if (_ownsTexture) objcRelease(texture);
     // The pipeline cache is the caller's; a target that disposed it would
     // invalidate every other target built from the same device.
   }

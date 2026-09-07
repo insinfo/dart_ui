@@ -14,9 +14,12 @@
 /// putting it in code is that hoping does not scale past the first refactor.
 library;
 
+import 'dart:ffi';
 import 'dart:typed_data';
 
+import '../../foundation/diagnostics.dart';
 import '../../rendering/framebuffer.dart';
+import '../../rendering/gpu/metal/metal_surface_descriptor.dart';
 import '../../rendering/renderer.dart';
 import 'io_surface.dart';
 
@@ -32,19 +35,74 @@ final class MacosPresentInvariantError extends Error {
   String toString() => 'MacosPresentInvariantError: $message';
 }
 
+/// What the window behind a surface can do, for a renderer that presents to it.
+///
+/// Kept as an interface rather than a reference to `MacosWindow` so that
+/// `surface_pool.dart` does not depend on the window and a test can present
+/// against a double. `MacosWindow` implements it; nothing else needs to.
+abstract interface class MacosSurfaceHost {
+  /// Whether a present would reach a host at all.
+  bool get isPresentable;
+
+  /// The window's generation, as `lifecycle.dart` defines it.
+  int get presentGeneration;
+
+  /// Marks the back slot presented and sends `PRESENT_SLOT`.
+  ///
+  /// For a caller that filled the back buffer by means other than
+  /// [MacosWindow.present] or [MacosWindow.drawAndPresent] - which today means
+  /// the GPU writing straight into the `IOSurface`.
+  Future<PresentResult> presentBackBuffer({required int generation});
+}
+
 /// What a renderer is told about this window's presentable surface.
 ///
 /// One descriptor, not one per slot: which slot a frame lands in is this
 /// backend's bookkeeping, and a renderer that could see the slots would sooner
 /// or later pick one.
-final class MacosSurfaceDescriptor implements NativeSurfaceDescriptor {
-  const MacosSurfaceDescriptor({
+///
+/// ## Why it also implements [MetalPresentSurface]
+///
+/// ADR 0005: on macOS the GPU renders into the same `IOSurface` the CPU
+/// rasteriser writes, and presentation stays `PRESENT_SLOT`. So the *same*
+/// descriptor serves both renderers, and the GPU half is an interface declared
+/// in the Metal directory rather than a second descriptor type - a window that
+/// offered two surfaces would be claiming two buffers where there is one pool.
+///
+/// The Metal half is answered honestly when the parts are missing: a
+/// descriptor built without a [MacosSurfaceHost] - which is what
+/// `MacosSurfacePool.describe` produces for a caller that only wants geometry
+/// - reports `isPresentable` false and refuses a present by name rather than
+/// pretending.
+final class MacosSurfaceDescriptor implements MetalPresentSurface {
+  MacosSurfaceDescriptor({
     required this.pixelWidth,
     required this.pixelHeight,
     required this.scale,
     required this.bytesPerRow,
     required this.slotCount,
-  });
+    MacosSurfacePool? pool,
+    MacosSurfaceHost? host,
+  })  : _pool = pool,
+        _host = host;
+
+  /// The pool this describes, when the descriptor was built from a live one.
+  ///
+  /// Null for a geometry-only descriptor. The GPU path needs it because
+  /// wrapping a surface as an `MTLTexture` requires the `IOSurfaceRef` itself,
+  /// which no amount of width and height can substitute for.
+  final MacosSurfacePool? _pool;
+
+  final MacosSurfaceHost? _host;
+
+  /// The pool this describes, or null for a geometry-only descriptor.
+  ///
+  /// Exposed for the caller that already owns the window and needs to read the
+  /// pixels a present put on screen - the conformance probes, which are the
+  /// only honest way to tell "the present call returned success" from "the
+  /// right pixels are in the surface the host is showing". It confers no
+  /// ownership: the window created the pool and the window disposes it.
+  MacosSurfacePool? get pool => _pool;
 
   @override
   String get kind => 'iosurface';
@@ -59,14 +117,71 @@ final class MacosSurfaceDescriptor implements NativeSurfaceDescriptor {
   final double scale;
 
   /// The surface's own stride. Never `pixelWidth * 4`: IOSurface rounds up.
+  @override
   final int bytesPerRow;
 
-  /// How many buffers rotate behind this descriptor. Diagnostics only.
+  /// How many buffers rotate behind this descriptor.
+  @override
   final int slotCount;
 
   @override
+  int get backSlot => _pool?.backSlot ?? 0;
+
+  @override
+  bool get isPresentable {
+    final MacosSurfacePool? pool = _pool;
+    final MacosSurfaceHost? host = _host;
+    return pool != null &&
+        !pool.isDisposed &&
+        host != null &&
+        host.isPresentable;
+  }
+
+  @override
+  int get presentGeneration => _host?.presentGeneration ?? -1;
+
+  /// The `IOSurfaceRef` behind [slot], or `nullptr`.
+  ///
+  /// Null-safe by construction rather than by assertion: a descriptor built
+  /// without a pool, a slot out of range, and a pool surface that is a test
+  /// double instead of a real `MacosIOSurface` all answer `nullptr`, and
+  /// `MetalWindowTarget` turns that into a named refusal. Handing Metal a nil
+  /// surface instead would return a nil texture and surface as a render pass
+  /// that silently encodes nothing.
+  @override
+  Pointer<Void> surfaceRefForSlot(int slot) {
+    final MacosSurfacePool? pool = _pool;
+    if (pool == null || pool.isDisposed) return nullptr;
+    if (slot < 0 || slot >= pool.surfaces.length) return nullptr;
+    final MacosPoolSurface surface = pool.surfaces[slot];
+    if (surface is! MacosIOSurface || surface.isDisposed) return nullptr;
+    return surface.surfaceRef;
+  }
+
+  @override
+  Future<PresentResult> presentBackBuffer({required int generation}) {
+    final MacosSurfaceHost? host = _host;
+    if (host == null) {
+      return Future<PresentResult>.value(
+        const PresentResult(
+          status: PresentStatus.failed,
+          diagnostic: BackendDiagnostic(
+            kind: DiagnosticKind.surfaceCreationFailed,
+            message: 'this surface descriptor has no window behind it',
+            detail: 'it was built by MacosSurfacePool.describe for its '
+                'geometry alone. A descriptor that can present carries the '
+                'window as its MacosSurfaceHost.',
+          ),
+        ),
+      );
+    }
+    return host.presentBackBuffer(generation: generation);
+  }
+
+  @override
   String toString() => 'MacosSurfaceDescriptor(${pixelWidth}x$pixelHeight '
-      '@${scale}x, stride $bytesPerRow, $slotCount slots)';
+      '@${scale}x, stride $bytesPerRow, $slotCount slots'
+      '${_host == null ? ', geometry only' : ''})';
 }
 
 /// A rotating set of `IOSurface`s, one of which the host is showing.
@@ -143,12 +258,20 @@ final class MacosSurfacePool {
 
   int contentSequenceOf(int slot) => _contentSequence[slot];
 
-  MacosSurfaceDescriptor describe(double scale) => MacosSurfaceDescriptor(
+  /// A descriptor for this pool at [scale].
+  ///
+  /// [host] is what turns it from geometry into something a GPU renderer can
+  /// present through; a caller that only wants the numbers omits it and gets a
+  /// descriptor that refuses to present by name.
+  MacosSurfaceDescriptor describe(double scale, {MacosSurfaceHost? host}) =>
+      MacosSurfaceDescriptor(
         pixelWidth: _surfaces.first.width,
         pixelHeight: _surfaces.first.height,
         scale: scale,
         bytesPerRow: _surfaces.first.bytesPerRow,
         slotCount: _surfaces.length,
+        pool: this,
+        host: host,
       );
 
   /// Runs [write] against the back buffer's pixels, wrapped as a

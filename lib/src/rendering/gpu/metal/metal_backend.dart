@@ -75,6 +75,8 @@ import 'metal_bindings.dart';
 import 'metal_device.dart';
 import 'metal_mesh_renderer.dart';
 import 'metal_offscreen.dart';
+import 'metal_surface_descriptor.dart';
+import 'metal_window_target.dart';
 
 /// Metal, as a [RendererBackend].
 ///
@@ -100,19 +102,27 @@ final class MetalRendererBackend implements RendererBackend {
 
   /// Whether this backend can present to [surface].
   ///
-  /// **A memory surface, and nothing else.** That is not a placeholder either
-  /// way: a [MemorySurfaceDescriptor] is answered by rendering into an
-  /// `MTLTexture` and reading it back, which is implemented, measured against
-  /// the CPU rasteriser and running in CI. A window surface is answered no,
-  /// because no drawable is ever acquired and no `IOSurface` ever handed over -
-  /// ADR 0005's presenters do not exist yet.
+  /// Two kinds, and both are implemented rather than promised:
+  ///
+  ///   * a [MemorySurfaceDescriptor] is answered by rendering into an
+  ///     `MTLTexture` and reading it back - measured against the CPU
+  ///     rasteriser in CI at deviation 0 where nothing blends;
+  ///   * a [MetalPresentSurface] is answered by ADR 0005's shared-`IOSurface`
+  ///     path: the GPU writes the pages the macOS host scans out, and
+  ///     `PRESENT_SLOT` shows them. Run 34165428755 proved the three sends it
+  ///     rests on, and `metal_present_probe.yml` keeps proving them.
+  ///
+  /// Everything else is still no. A `CAMetalLayer` surface in particular is
+  /// **not** supported and is not an oversight: on the only macOS backend that
+  /// creates a window in `lib/`, the layer lives in another process (ADR
+  /// 0001), so there is nothing on this side to acquire a drawable from.
   ///
   /// The narrowing is the point. Selection policy asks this per surface, so a
-  /// backend that can do one of the two says so instead of claiming both or
+  /// backend that can do two of three says so instead of claiming all or
   /// refusing everything.
   @override
   bool supportsSurface(NativeSurfaceDescriptor surface) =>
-      surface is MemorySurfaceDescriptor;
+      surface is MemorySurfaceDescriptor || surface is MetalPresentSurface;
 
   /// What this machine has, and why the backend still refuses.
   ///
@@ -204,25 +214,36 @@ final class MetalRendererBackend implements RendererBackend {
     return BackendProbeResult(
       backendName: backendName,
       supported: true,
-      // cpuPresentation and deliberately NOT gpuPresentation: the pixels this
-      // backend produces reach the caller through
-      // getBytes:bytesPerRow:fromRegion:mipmapLevel:, which is a readback, not
-      // a surface swap. Capability.gpuPresentation's own documentation calls
-      // that "cpu presentation with a GPU rasteriser bolted on", and claiming
-      // it here is exactly the overclaim section 6.6 forbids.
-      capabilities: const <Capability>{Capability.cpuPresentation},
+      // Both, and each for its own surface kind. cpuPresentation is the
+      // memory target, whose pixels reach the caller through
+      // getBytes:bytesPerRow:fromRegion:mipmapLevel: - a readback.
+      // gpuPresentation is the window target, and it is claimed only because
+      // the condition in Capability.gpuPresentation's own documentation is now
+      // met: a window surface can be handed to createTarget and the pixels
+      // reach a screen without a readback. They reach it by being written
+      // straight into the IOSurface the host scans out.
+      //
+      // This line said cpuPresentation alone until 07/09/2026, and the reason
+      // it changed is a measurement and not a decision - see
+      // doc/logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md.
+      capabilities: const <Capability>{
+        Capability.cpuPresentation,
+        Capability.gpuPresentation,
+      },
       diagnostics: <BackendDiagnostic>[
         ...diagnostics,
         const BackendDiagnostic(
           kind: DiagnosticKind.rejectedByPolicy,
-          message: 'this backend renders offscreen only: a memory surface is '
-              'supported and a window surface is not',
+          message: 'this backend presents to a macOS window through a shared '
+              'IOSurface, and still refuses text, clips and layers by name',
           detail: 'MetalRenderDevice creates a target for a '
-              'MemorySurfaceDescriptor, renders a display list through the '
-              'shared GpuRasterSink and reads the texture back. What is '
-              'missing is presentation - the CAMetalLayer drawable and the '
-              'IOSurface hand-off of ADR 0005 - and the mask atlas, glyph '
-              'atlas and layer stack, so paths, rounded rectangles, text and '
+              'MemorySurfaceDescriptor - rendered through the shared '
+              'GpuRasterSink and read back - and for a MetalPresentSurface, '
+              'which is ADR 0005: the IOSurface of surface_pool.dart wrapped '
+              'as an MTLTexture, drawn into, and handed to the host with '
+              'PRESENT_SLOT once addCompletedHandler: says the GPU finished. '
+              'What is still missing is the mask atlas, the glyph atlas and '
+              'the layer stack, so paths, rounded rectangles, text and '
               'compositing saveLayers are refused by name rather than '
               'approximated. supportsSurface() is where that shows up in '
               'selection policy.',
@@ -390,14 +411,20 @@ final class MetalRenderDevice with DisposableMixin implements RenderDevice {
   ///
   /// Every `false` here is a decision with a reason, not a default:
   ///
-  ///   * no partial present, because there is no present at all - a memory
-  ///     target reads the whole texture back;
+  ///   * no partial present: a memory target reads the whole texture back, and
+  ///     the window target redraws the whole surface because the pool rotates
+  ///     slots - the back buffer is two frames old, so a damage-limited draw
+  ///     would composite onto the wrong frame;
   ///   * no MSAA: the renderer antialiases analytically in the fragment stage
   ///     and through the mask atlas, which is why `sampleCount` never leaves 1;
   ///   * no compute, matching every other backend in this repository;
-  ///   * no external textures: `newTextureWithDescriptor:iosurface:plane:` is
-  ///     bound but never called, and claiming the capability would promise the
-  ///     `IOSurface` path of ADR 0005;
+  ///   * **external textures yes**, and this is the one that changed on
+  ///     07/09/2026: `newTextureWithDescriptor:iosurface:plane:` is called by
+  ///     `MetalWindowTarget` for every slot of the window's pool, and run
+  ///     34165428755 measured it returning a real texture under
+  ///     `MTLStorageModeShared`. It used to be false with the note that
+  ///     claiming it "would promise the IOSurface path of ADR 0005"; the path
+  ///     now exists, so the promise is kept rather than withdrawn;
   ///   * no linear colour: the pipeline's attachment is `rgba8Unorm`, not
   ///     `rgba8Unorm_sRGB`, and the CPU rasteriser composites in the same
   ///     space.
@@ -412,7 +439,7 @@ final class MetalRenderDevice with DisposableMixin implements RenderDevice {
         supportsPartialPresent: false,
         supportsMsaa: false,
         supportsCompute: false,
-        supportsExternalTextures: false,
+        supportsExternalTextures: true,
         supportsLinearColor: false,
         maxTextureSize: 8192,
         formats: <PixelFormat>{PixelFormat.rgba8888Premultiplied},
@@ -426,17 +453,39 @@ final class MetalRenderDevice with DisposableMixin implements RenderDevice {
   @override
   bool get isLost => false;
 
+  /// The pipeline cache for the **window** path, built on first use.
+  ///
+  /// A second cache and not a second device: an `IOSurface` from
+  /// `surface_pool.dart` is `BGRA`, the offscreen path is `RGBA`, and in Metal
+  /// a pipeline state's attachment format is part of its identity - one cache
+  /// cannot serve both. Lazy because a process that never opens a window
+  /// should not pay the MSL compile, and shared across every window on this
+  /// device because the compile is the expensive part.
+  MetalPipelineCache? _bgraPipelines;
+
+  MetalPipelineCache get _windowPipelines => _bgraPipelines ??=
+      MetalPipelineCache.build(_gpu, pixelFormat: MtlPixelFormat.bgra8Unorm);
+
   @override
   RenderTarget createTarget(NativeSurfaceDescriptor surface) {
     throwIfDisposed();
+    if (surface is MetalPresentSurface) {
+      return MetalWindowTarget(
+        gpu: _gpu,
+        pipelines: _windowPipelines,
+        surface: surface,
+      );
+    }
     if (surface is! MemorySurfaceDescriptor) {
       throw UnsupportedCapabilityError(
         backendName: MetalRendererBackend.backendName,
         capability: Capability.gpuPresentation,
-        detail: 'a ${surface.runtimeType} was asked for. This backend renders '
-            'into an MTLTexture and reads it back; '
-            'no CAMetalLayer drawable is acquired and no IOSurface is shared, '
-            'so there is no window surface it can present to. '
+        detail: 'a ${surface.runtimeType} was asked for. This backend presents '
+            'to a MemorySurfaceDescriptor by rendering into an MTLTexture and '
+            'reading it back, and to a MetalPresentSurface through the shared '
+            'IOSurface of ADR 0005. It does not acquire a CAMetalLayer '
+            'drawable, because on the macOS backend that owns the window the '
+            'layer is in another process. '
             'MetalRendererBackend.supportsSurface answers the same question '
             'before a target is asked for.',
       );
@@ -458,6 +507,8 @@ final class MetalRenderDevice with DisposableMixin implements RenderDevice {
 
   @override
   void onDispose() {
+    _bgraPipelines?.dispose();
+    _bgraPipelines = null;
     _pipelines.dispose();
     _gpu.dispose();
   }

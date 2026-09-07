@@ -23,6 +23,7 @@ import '../rendering/gpu/d3d12/d3d12_surface_descriptor.dart';
 import '../rendering/gpu/gl/gl_backend.dart';
 import '../rendering/gpu/gl/gl_context.dart';
 import '../rendering/gpu/gl/gl_mesh_renderer.dart';
+import '../rendering/gpu/metal/metal_backend.dart';
 import '../rendering/gpu/vulkan/vulkan_backend.dart';
 import '../rendering/gpu/vulkan/vulkan_instance.dart';
 import '../rendering/gpu/vulkan/vulkan_library.dart';
@@ -33,6 +34,7 @@ import '../rendering/render_policy.dart';
 import '../rendering/renderer.dart';
 import 'headless/headless_backend.dart';
 import 'macos/macos.dart';
+import 'macos/surface_pool.dart';
 import 'wayland/wayland_backend.dart';
 import 'wayland/wayland_cpu_presenter.dart';
 import 'wayland/wayland_window.dart';
@@ -179,7 +181,25 @@ final class PlatformBackendResolver {
           },
         ),
       ],
-      if (platform == 'macos') _macosCpu(),
+      if (platform == 'macos') ...<PresentationPathEntry>[
+        // Experimental, and the flag is not caution - it is the same rule
+        // `_win32Vulkan` states. `MetalWindowTarget` builds its
+        // `GpuRasterSink` with no mask atlas, no glyph atlas and no layer
+        // stack, so the first path, rounded rectangle, glyph run or
+        // compositing saveLayer in any window raises
+        // `UnsupportedCapabilityError` by name. A path that cannot draw text
+        // must never be reached by fallback in a UI framework. It is here so
+        // that `--presentation=metal` with
+        // `ApplicationOptions.allowExperimentalBackends` can reach it, which
+        // is the difference between a backend under development and a backend
+        // nobody can run.
+        //
+        // What it *can* do is present, which is new as of 07/09/2026 and is
+        // measured rather than asserted - see
+        // `doc/logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md`.
+        _macosMetal(),
+        _macosCpu(),
+      ],
       PresentationPathEntry.cpuRenderer(
         backend: const CpuRendererBackend(),
         name: 'headless-cpu',
@@ -746,6 +766,60 @@ final class PlatformBackendResolver {
           ),
           releaseSurface: surface.dispose,
           releaseSurfaceBeforeDevice: false,
+        );
+      },
+    );
+  }
+
+  /// Metal presenting into the window's own `IOSurface`, per ADR 0005.
+  ///
+  /// `sharesDevice` is left at its default: one `MTLDevice` serves every
+  /// window on this path, which is what ADR 0005 means by cutting the backend
+  /// into a device and a presenter.
+  ///
+  /// There is no `openDevice` override and no separate probe, unlike Vulkan.
+  /// Both exist there because a Vulkan instance built without a WSI extension
+  /// reports success and then fails at surface creation. Metal has no such
+  /// split: `MetalRendererBackend.probe` opens a real `MTLDevice`, which is
+  /// the same object the presenter uses, and `supportsSurface` answers the
+  /// window question separately.
+  static PresentationPathEntry _macosMetal() {
+    const MetalRendererBackend renderer = MetalRendererBackend();
+    return PresentationPathEntry.directRenderer(
+      backend: renderer,
+      experimental: true,
+      compatibleWindowingBackends: const <String>{'macos'},
+      createAttachment: (
+        RendererBackend _,
+        NativeWindow native, {
+        RenderDevice? device,
+      }) async {
+        if (native is! MacosWindow) {
+          throw StateError('metal requires a MacosWindow; got '
+              '${native.runtimeType}');
+        }
+        // The window's own descriptor, not a new one: it carries the pool and
+        // the window, which is what lets the target reach an IOSurfaceRef and
+        // send PRESENT_SLOT. A descriptor built here would have neither.
+        MacosSurfaceDescriptor? surface;
+        for (final NativeSurfaceDescriptor offered in native.surfaces) {
+          if (offered is MacosSurfaceDescriptor) {
+            surface = offered;
+            break;
+          }
+        }
+        if (surface == null) {
+          throw StateError('this macOS window offers no IOSurface to present '
+              'into; it reports ${native.surfaces.length} surfaces');
+        }
+        final RenderDevice raw = device ?? await renderer.createDevice();
+        return (
+          device: raw,
+          surface: surface,
+          // The IOSurfaces belong to the window's pool, which outlives every
+          // target built over it and is torn down by the window itself.
+          releaseSurface: _doNothing,
+          releaseSurfaceBeforeDevice: true,
         );
       },
     );

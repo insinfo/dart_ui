@@ -311,6 +311,15 @@ final class MetalPipelineCache {
   final Pointer<ObjCObject> _library;
   final int _pixelFormat;
 
+  /// The [MtlPixelFormat] every state in this cache was built for.
+  ///
+  /// Public because it is a *precondition* of using the cache, not a detail:
+  /// a pipeline state built for one attachment format is rejected at encode
+  /// time by a pass using another, so a caller that owns two caches - the
+  /// window path needs bgra8Unorm while the offscreen path is rgba8Unorm -
+  /// has to be able to check it got the right one.
+  int get pixelFormat => _pixelFormat;
+
   /// Keyed by the display list's blend-mode constant, which is what a
   /// [GpuBatch] carries; the factors come from [gpuBlendForMode].
   final Map<int, Pointer<ObjCObject>> _states = <int, Pointer<ObjCObject>>{};

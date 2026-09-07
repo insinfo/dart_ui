@@ -16,11 +16,13 @@
 /// to keep refusing everything.
 library;
 
+import 'dart:ffi';
 import 'dart:io';
 
 import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/metal/metal_backend.dart';
+import 'package:dart_ui/src/rendering/gpu/metal/metal_surface_descriptor.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
 import 'package:test/test.dart';
 
@@ -64,15 +66,27 @@ void main() {
       expect(result.supported, isTrue);
     });
 
-    test('claims cpuPresentation and never gpuPresentation', () {
-      // The distinction Capability.gpuPresentation documents: these pixels
-      // reach the caller through getBytes:, which is a readback. Claiming the
-      // GPU one would promise a surface swap that does not exist.
+    test('claims both presentations, and still never a window', () {
+      // This test asserted `never gpuPresentation` until 07/09/2026, and the
+      // reason it changed is a measurement rather than a decision: run
+      // 34165428755 wrapped an IOSurface as an MTLTexture, drew into it and
+      // read the right bytes back out through IOSurfaceLock. The condition
+      // Capability.gpuPresentation documents - a window surface can be handed
+      // to createTarget and the pixels reach a screen without a readback - is
+      // now met by MetalWindowTarget.
+      //
+      // cpuPresentation stays, and is not redundant: the memory target still
+      // reaches the caller through getBytes:, which genuinely is a readback.
+      // The two capabilities describe two surface kinds, not two opinions
+      // about one.
       final BackendProbeResult result = backend.probe();
-      expect(result.capabilities, isNot(contains(Capability.gpuPresentation)));
+      // Capability.window is a *windowing* backend's claim - the thing that
+      // creates an NSWindow - and a renderer never creates one. That this
+      // stays absent while gpuPresentation appears is the distinction.
       expect(result.capabilities, isNot(contains(Capability.window)));
       if (Platform.isMacOS) {
         expect(result.capabilities, contains(Capability.cpuPresentation));
+        expect(result.capabilities, contains(Capability.gpuPresentation));
       } else {
         expect(result.capabilities, isEmpty);
       }
@@ -105,24 +119,40 @@ void main() {
           (BackendDiagnostic d) => d.kind == DiagnosticKind.rejectedByPolicy);
       expect(policy, hasLength(1));
       // A probe that says "supported" and stops is useless to whoever has to
-      // decide whether to select this backend for a window.
-      expect(policy.single.message, contains('offscreen only'));
-      expect(policy.single.detail, contains('CAMetalLayer'));
-      expect(policy.single.detail, contains('IOSurface'));
+      // decide whether to select this backend for a window. What is still
+      // missing changed on 07/09/2026 - presentation landed, text and clips
+      // did not - so this asserts the current refusals by name rather than
+      // the old ones.
+      expect(policy.single.message, contains('IOSurface'));
+      expect(policy.single.detail, contains('PRESENT_SLOT'));
+      expect(policy.single.detail, contains('glyph atlas'));
+      expect(policy.single.detail, contains('refused by name'));
     });
   });
 
   group('supportsSurface', () {
-    test('a memory surface yes, anything else no', () {
-      // The narrowing that lets `supported: true` be honest: selection policy
-      // asks this per surface, so a backend that renders offscreen and cannot
-      // present to a window says exactly that instead of claiming both or
-      // refusing everything.
+    test('a memory surface yes', () {
       expect(
         backend.supportsSurface(
             const MemorySurfaceDescriptor(pixelWidth: 4, pixelHeight: 4)),
         isTrue,
       );
+    });
+
+    test('a presentable IOSurface yes', () {
+      // ADR 0005's window path. Answered on any platform, because
+      // supportsSurface is a question about the *descriptor* and not about
+      // the machine - the machine question is probe(), and selection asks
+      // both.
+      expect(backend.supportsSurface(_FakePresentSurface()), isTrue);
+    });
+
+    test('anything else no', () {
+      // The narrowing that lets `supported: true` stay honest: selection
+      // policy asks this per surface, so a backend that presents to two kinds
+      // of surface says which two instead of claiming all of them. A
+      // CAMetalLayer surface would land here, and deliberately: on the macOS
+      // backend that owns the window the layer is in another process.
       expect(backend.supportsSurface(const _NotAMemorySurface()), isFalse);
     });
   });
@@ -254,4 +284,46 @@ final class _NotAMemorySurface implements NativeSurfaceDescriptor {
 
   @override
   double get scale => 1;
+}
+
+/// A window surface with no window behind it.
+///
+/// Enough to answer [MetalRendererBackend.supportsSurface], which asks only
+/// what kind of thing it is - and deliberately not enough to present, so a
+/// test that accidentally tried would get a named refusal rather than a
+/// crash.
+final class _FakePresentSurface implements MetalPresentSurface {
+  @override
+  String get kind => 'iosurface';
+
+  @override
+  int get pixelWidth => 8;
+
+  @override
+  int get pixelHeight => 8;
+
+  @override
+  double get scale => 1;
+
+  @override
+  int get slotCount => 2;
+
+  @override
+  int get backSlot => 0;
+
+  @override
+  int get bytesPerRow => 64;
+
+  @override
+  bool get isPresentable => false;
+
+  @override
+  int get presentGeneration => 0;
+
+  @override
+  Pointer<Void> surfaceRefForSlot(int slot) => nullptr;
+
+  @override
+  Future<PresentResult> presentBackBuffer({required int generation}) async =>
+      const PresentResult(status: PresentStatus.failed);
 }

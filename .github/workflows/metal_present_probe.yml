@@ -6,17 +6,21 @@
 # This one asks whether a drawn frame can reach a surface a window could show,
 # which is the one gate §21.6 of the roadmap still has open.
 #
-# ## Why almost nothing here is asserted
+# ## The gates, and when each one earned its place
 #
-# The three sends this exercises have never run anywhere, so a `grep` that
-# demanded them would be asserting the conclusion we are trying to measure -
-# and a red run teaches nothing the log would not have said better. So the
-# gates are only the two facts already established by run 34148425779, plus
-# the summary line, whose absence means the probe crashed part way and the
-# answers below it are missing rather than negative.
+# This file landed with almost nothing asserted, because the three sends it
+# exercises had never run anywhere and a `grep` demanding them would have been
+# asserting the conclusion under measurement. Run 34165428755 answered all
+# three - the IOSurface wraps under MTLStorageModeShared, the block fires at
+# 6.7 ms, and the bytes read back in the right order - so they are gates now.
+# That is the promise the first revision made: an answer becomes a gate, and
+# from then on red means regression instead of ignorance.
 #
-# When an answer comes back, it becomes a gate here. That is the point at
-# which red means regression instead of ignorance.
+# `CAMETALLAYER_PRESENTER` is the exception and stays ungated. It reports
+# whether a detached layer can vend a drawable, which is a fact about the
+# runner rather than about this repository: no macOS backend in `lib/` creates
+# a window in this process for a layer to live in, so green there buys no
+# presenter and red there breaks nothing.
 name: Metal presentation probe
 
 on:
@@ -84,15 +88,49 @@ jobs:
           dart run tool/metal_present_probe.dart 2>&1 \
             | tee build/metal-present-probe.log
 
-      # The two facts already established, so a regression in them is red, and
-      # the summary line, whose absence means the process died mid-probe.
-      - name: Assert what is already known
+      # Everything run 34165428755 established. `fail=0` rather than a count
+      # of successes, so adding a check to the probe does not make this red for
+      # the wrong reason - what must not regress is that nothing fails.
+      - name: Assert the presentation ABI
         shell: bash
         run: |
-          grep -q '^MTLCreateSystemDefaultDevice=NON_NIL$' \
-            build/metal-present-probe.log
+          grep -q '^MTLCreateSystemDefaultDevice=NON_NIL$'             build/metal-present-probe.log
           grep -q '^CHECK=device RESULT=OK ' build/metal-present-probe.log
+          grep -q '^ADR0005_IOSURFACE_BRIDGE=OK ' build/metal-present-probe.log
+          grep -q '^ADR0005_COMPLETION_HANDLER=OK '             build/metal-present-probe.log
+          grep -q ' fail=0 ' build/metal-present-probe.log
           grep -q '^METAL_PRESENT_PROBE=DONE ' build/metal-present-probe.log
+
+      # The AppKit host, without which there is no window to present into. The
+      # same build script macos_popup_probe.yml uses, so a break in it shows up
+      # in both rather than only here.
+      - name: Build the production AppKit host
+        run: bash lib/src/backends/macos/native/build_host.sh
+
+      # The end-to-end proof, and the one that cannot be faked. Everything
+      # above runs against surfaces this process made for itself; this runs
+      # against a real NSWindow on a real screen, with onError attached, and
+      # then reads the presented IOSurface back with the CPU to check *which*
+      # pixels are in it. A headless run that never presented would be a false
+      # green, which is a standing rule in this repository.
+      - name: Present into a real window and read the pixels back
+        shell: bash
+        env:
+          OBJC_DEBUG_MISSING_POOLS: 'YES'
+          DART_UI_MACOS_HOST: >-
+            ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+        run: |
+          set -o pipefail
+          dart run tool/metal_window_present_probe.dart 2>&1             | tee build/metal-window-present-probe.log
+          # SKIP is not success here. This runner has a WindowServer session -
+          # macos_popup_probe.yml proves it with real NSPanels - so anything
+          # short of PASS means the path broke, not that the machine cannot
+          # host the run.
+          grep -q '^METAL_WINDOW_PRESENT=PASS$'             build/metal-window-present-probe.log
+          grep -q '^APP presentation=metal$'             build/metal-window-present-probe.log
+          grep -q '^CHECK=non_blank RESULT=OK '             build/metal-window-present-probe.log
+          grep -q '^CHECK=pixel_inside_rect RESULT=OK'             build/metal-window-present-probe.log
+          grep -q '^CHECK=pixel_outside_rect RESULT=OK'             build/metal-window-present-probe.log
 
       # Printed, never gated. These three lines are the whole reason the
       # workflow exists, and reading them out of the step summary beats
@@ -115,6 +153,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: metal-present-probe
-          path: build/metal-present-probe.log
+          path: build/metal-*-probe.log
           retention-days: 14
           if-no-files-found: warn

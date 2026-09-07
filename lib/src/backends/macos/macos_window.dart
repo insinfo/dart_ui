@@ -64,7 +64,9 @@ typedef MacosSurfaceFactory = MacosSurfacePool Function({
 });
 
 /// A window owned by a host process.
-final class MacosWindow with DisposableMixin implements NativeWindow {
+final class MacosWindow
+    with DisposableMixin
+    implements NativeWindow, MacosSurfaceHost {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -239,7 +241,7 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
       return false;
     }
     _pool = pool;
-    _descriptor = pool.describe(_renderScale);
+    _descriptor = pool.describe(_renderScale, host: this);
     if (!await supervisor.attachPool(pool)) {
       pool.dispose();
       _pool = null;
@@ -444,6 +446,36 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
     return const PresentResult(status: PresentStatus.presented);
   }
 
+  /// Presents a back buffer the caller filled by other means.
+  ///
+  /// The GPU path of ADR 0005. [present] copies a [Framebuffer] in and
+  /// [drawAndPresent] runs a CPU closure over the surface's own memory; this
+  /// one assumes the pixels are **already there** because Metal wrote them
+  /// straight into the `IOSurface`, and only does the bookkeeping and the
+  /// `PRESENT_SLOT`.
+  ///
+  /// The caller is responsible for the ordering that makes this safe: `commit`
+  /// enqueues and does not complete, so a presenter that called this straight
+  /// after committing would hand the host a half-written surface.
+  /// `MetalWindowTarget` waits on `addCompletedHandler:` first.
+  @override
+  Future<PresentResult> presentBackBuffer({required int generation}) {
+    final PresentResult? stale = _rejectStale(generation);
+    if (stale != null) return Future<PresentResult>.value(stale);
+    return _presentBackBuffer(_pool!);
+  }
+
+  /// Whether a present would reach a host at all. See [MacosSurfaceHost].
+  @override
+  bool get isPresentable =>
+      !isDisposed &&
+      _pool != null &&
+      !_resizeInFlight &&
+      _supervisor?.host != null;
+
+  @override
+  int get presentGeneration => _generation.current;
+
   /// Presents and waits for the host to confirm.
   ///
   /// Only for conformance: it costs the measured 188 us round trip per frame
@@ -601,7 +633,7 @@ final class MacosWindow with DisposableMixin implements NativeWindow {
         return;
       }
       _pool = pool;
-      _descriptor = pool.describe(_renderScale);
+      _descriptor = pool.describe(_renderScale, host: this);
       previous?.dispose();
     } finally {
       _resizeInFlight = false;
