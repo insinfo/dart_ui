@@ -35,6 +35,10 @@ class PdfContentInterpreter {
   bool _hasPath = false;
   bool _clipEvenOdd = false;
   bool _pendingClip = false;
+  double? _currentX;
+  double? _currentY;
+  double? _subpathStartX;
+  double? _subpathStartY;
   final Map<String, PdfCMap?> _toUnicodeMaps = <String, PdfCMap?>{};
 
   PdfGfxState get currentState => _state;
@@ -140,12 +144,18 @@ class PdfContentInterpreter {
         }
         break;
 
+      case 'gs': // Parameters from an ExtGState resource dictionary.
+        if (args.isNotEmpty) _applyExtendedGraphicsState(args.last.text);
+        break;
+
       // --- Construção de Caminhos (Paths) ---
       case 'm': // MoveTo (x y m)
         if (args.length >= 2) {
           final x = _toDouble(args[0]);
           final y = _toDouble(args[1]);
           _pathBuilder.moveTo(x, y);
+          _currentX = _subpathStartX = x;
+          _currentY = _subpathStartY = y;
           _hasPath = true;
         }
         break;
@@ -155,6 +165,8 @@ class PdfContentInterpreter {
           final x = _toDouble(args[0]);
           final y = _toDouble(args[1]);
           _pathBuilder.lineTo(x, y);
+          _currentX = x;
+          _currentY = y;
           _hasPath = true;
         }
         break;
@@ -169,20 +181,24 @@ class PdfContentInterpreter {
             _toDouble(args[4]),
             _toDouble(args[5]),
           );
+          _currentX = _toDouble(args[4]);
+          _currentY = _toDouble(args[5]);
           _hasPath = true;
         }
         break;
 
       case 'v': // Curva com primeiro ponto de controle igual ao ponto inicial
-        if (args.length >= 4) {
+        if (args.length >= 4 && _currentX != null && _currentY != null) {
           _pathBuilder.cubicTo(
-            _toDouble(args[0]),
-            _toDouble(args[1]),
+            _currentX!,
+            _currentY!,
             _toDouble(args[0]),
             _toDouble(args[1]),
             _toDouble(args[2]),
             _toDouble(args[3]),
           );
+          _currentX = _toDouble(args[2]);
+          _currentY = _toDouble(args[3]);
           _hasPath = true;
         }
         break;
@@ -197,6 +213,8 @@ class PdfContentInterpreter {
             _toDouble(args[2]),
             _toDouble(args[3]),
           );
+          _currentX = _toDouble(args[2]);
+          _currentY = _toDouble(args[3]);
           _hasPath = true;
         }
         break;
@@ -208,12 +226,16 @@ class PdfContentInterpreter {
           final w = _toDouble(args[2]);
           final h = _toDouble(args[3]);
           _pathBuilder.addRect(Rect.fromLTWH(x, y, w, h));
+          _currentX = _subpathStartX = x;
+          _currentY = _subpathStartY = y;
           _hasPath = true;
         }
         break;
 
       case 'h': // Fechar subcaminho
         _pathBuilder.close();
+        _currentX = _subpathStartX;
+        _currentY = _subpathStartY;
         break;
 
       // --- Recorte (Clipping) ---
@@ -540,6 +562,43 @@ class PdfContentInterpreter {
 
     _pathBuilder = PathBuilder();
     _hasPath = false;
+    _currentX = null;
+    _currentY = null;
+    _subpathStartX = null;
+    _subpathStartY = null;
+  }
+
+  void _applyExtendedGraphicsState(String name) {
+    final PdfDict? parameters =
+        resources?.getDict('ExtGState', resolver)?.getDict(name, resolver);
+    if (parameters == null) return;
+    final double? strokeAlpha =
+        parameters.getNumber('CA', resolver)?.toDouble();
+    final double? fillAlpha = parameters.getNumber('ca', resolver)?.toDouble();
+    if (strokeAlpha != null) _state.strokeAlpha = strokeAlpha.clamp(0.0, 1.0);
+    if (fillAlpha != null) _state.fillAlpha = fillAlpha.clamp(0.0, 1.0);
+    final double? lineWidth = parameters.getNumber('LW', resolver)?.toDouble();
+    if (lineWidth != null && lineWidth >= 0) _state.lineWidth = lineWidth;
+    final int? lineCap = parameters.getNumber('LC', resolver)?.toInt();
+    if (lineCap != null && lineCap >= 0 && lineCap <= 2) {
+      _state.lineCap = PdfLineCap.values[lineCap];
+    }
+    final int? lineJoin = parameters.getNumber('LJ', resolver)?.toInt();
+    if (lineJoin != null && lineJoin >= 0 && lineJoin <= 2) {
+      _state.lineJoin = PdfLineJoin.values[lineJoin];
+    }
+    final double? miterLimit = parameters.getNumber('ML', resolver)?.toDouble();
+    if (miterLimit != null && miterLimit > 0) _state.miterLimit = miterLimit;
+    final PdfArray? dash = parameters.getArray('D', resolver);
+    final PdfArray? pattern = dash?.getArray(0, resolver);
+    if (dash != null && dash.length >= 2 && pattern != null) {
+      _state.dashPattern = <double>[
+        for (var index = 0; index < pattern.length; index++)
+          if (pattern.getNumber(index, resolver) case final num value)
+            value.toDouble(),
+      ];
+      _state.dashPhase = dash.getNumber(1, resolver)?.toDouble() ?? 0;
+    }
   }
 
   int _cmykToRgb(double c, double m, double y, double k) {

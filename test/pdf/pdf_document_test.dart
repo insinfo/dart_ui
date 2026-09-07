@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import 'package:dart_ui/dart_ui.dart' show Rect;
 import 'package:dart_ui/pdf.dart';
 import 'package:test/test.dart';
 
@@ -51,5 +52,37 @@ void main() {
       final contents = page.getContentsBytes();
       expect(utf8.decode(contents).trim(), 'BT /F1 12 Tf (Hi) Tj ET');
     });
+
+    test('normaliza Rotate e preserva a origem não-zero das caixas', () {
+      final page = PdfPage(
+        pageNumber: 1,
+        resolver: _NullResolver(),
+        dict: PdfDict(<String, PdfObject>{
+          'MediaBox': const PdfArray(<PdfObject>[
+            PdfNumber(10),
+            PdfNumber(20),
+            PdfNumber(210),
+            PdfNumber(320),
+          ]),
+          'CropBox': const PdfArray(<PdfObject>[
+            PdfNumber(30),
+            PdfNumber(40),
+            PdfNumber(190),
+            PdfNumber(280),
+          ]),
+          'Rotate': const PdfNumber(-90),
+        }),
+      );
+
+      expect(page.rotation, 270);
+      expect(page.cropBox, const Rect.fromLTRB(30, 40, 190, 280));
+      expect(page.width, 240);
+      expect(page.height, 160);
+    });
   });
+}
+
+final class _NullResolver implements PdfResolver {
+  @override
+  PdfObject? resolveRef(PdfRef ref) => null;
 }

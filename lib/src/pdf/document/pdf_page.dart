@@ -49,9 +49,9 @@ class PdfPage {
       final y1 =
           (array.getResolved(1, resolver) as PdfNumber?)?.asDouble ?? 0.0;
       final x2 = (array.getResolved(2, resolver) as PdfNumber?)?.asDouble ??
-          mediaBox.width;
+          mediaBox.right;
       final y2 = (array.getResolved(3, resolver) as PdfNumber?)?.asDouble ??
-          mediaBox.height;
+          mediaBox.bottom;
       return Rect.fromLTRB(x1, y1, x2, y2);
     }
     return mediaBox;
@@ -59,7 +59,8 @@ class PdfPage {
 
   /// Ângulo de rotação da página em graus (0, 90, 180, 270).
   int get rotation {
-    return dict.getNumber('Rotate', resolver)?.toInt() ?? 0;
+    final value = dict.getNumber('Rotate', resolver)?.toInt() ?? 0;
+    return ((value % 360) + 360) % 360;
   }
 
   /// Largura da página em pontos tipográficos (1/72 de polegada).

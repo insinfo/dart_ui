@@ -114,6 +114,8 @@ class PdfMemoryOutputDevice extends PdfOutputDevice {
     List<double>? characterAdvances,
   }) {
     commands.add(
-        'drawText("$text", font: ${state.fontName}, size: ${state.fontSize})');
+      'drawText("$text", font: ${state.fontName}, size: ${state.fontSize}, '
+      'mode: ${state.textRenderMode.name})',
+    );
   }
 }

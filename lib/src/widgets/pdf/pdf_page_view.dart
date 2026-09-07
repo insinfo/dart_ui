@@ -571,9 +571,27 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
     double? advance,
     List<double>? characterAdvances,
   }) {
-    if (text.isEmpty || state.textRenderMode == PdfTextRenderMode.invisible) {
-      return;
-    }
+    if (text.isEmpty) return;
+    final bool fill = switch (state.textRenderMode) {
+      PdfTextRenderMode.fill ||
+      PdfTextRenderMode.fillAndStroke ||
+      PdfTextRenderMode.fillAndClip ||
+      PdfTextRenderMode.fillStrokeAndClip =>
+        true,
+      _ => false,
+    };
+    final bool stroke = switch (state.textRenderMode) {
+      PdfTextRenderMode.stroke ||
+      PdfTextRenderMode.fillAndStroke ||
+      PdfTextRenderMode.strokeAndClip ||
+      PdfTextRenderMode.fillStrokeAndClip =>
+        true,
+      _ => false,
+    };
+    // Text clipping (modes 4-7) needs glyph outlines in the clip stack. Until
+    // the text shaper exposes those outlines, honor their painting component
+    // and keep clip-only mode 7 invisible instead of incorrectly filling it.
+    if (!fill && !stroke) return;
     final Transform2D textTransform = _deviceTransform.multiply(
       Transform2D(
         textMatrix.a,
@@ -594,10 +612,35 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
     final Offset baseline = textTransform.transformOffset(
       Offset(0, state.textRise),
     );
-    final int paint = list.addPaint(
-      colorArgb: _withOpacity(state.fillColor, state.fillAlpha),
-    );
-    uiTextPainter.paint(list, text, font, baseline, paint);
+    if (fill) {
+      uiTextPainter.paint(
+        list,
+        text,
+        font,
+        baseline,
+        list.addPaint(
+          colorArgb: _withOpacity(state.fillColor, state.fillAlpha),
+        ),
+      );
+    }
+    if (stroke) {
+      final Transform2D transform = _deviceTransform;
+      final double sx =
+          math.sqrt(transform.a * transform.a + transform.b * transform.b);
+      final double sy =
+          math.sqrt(transform.c * transform.c + transform.d * transform.d);
+      uiTextPainter.paint(
+        list,
+        text,
+        font,
+        baseline,
+        list.addPaint(
+          colorArgb: _withOpacity(state.strokeColor, state.strokeAlpha),
+          style: paintStyleStroke,
+          strokeWidth: state.lineWidth * (sx + sy) / 2,
+        ),
+      );
+    }
   }
 
   ScaledTypeface? _fontFor(String text, String? fontName, double size) {
