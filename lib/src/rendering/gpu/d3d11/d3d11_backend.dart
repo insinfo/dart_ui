@@ -2659,6 +2659,18 @@ final class D3d11OffscreenTarget
   /// The last pixels read back. Golden and parity tests read this.
   Framebuffer get framebuffer => _readback;
 
+  /// The `ID3D11RenderTargetView` this target's colour goes through.
+  ///
+  /// Exposed for `d3d11_mesh_pipeline.dart`, which is another library and draws
+  /// its own pass into the same colour buffer the 2D batches reach. The window
+  /// target needs no counterpart: its view comes off the swap chain, which
+  /// `D3d11SwapChain.backBufferView` already publishes.
+  ///
+  /// **Not cacheable.** [resize] and a device recovery both replace it, exactly
+  /// as [D3d11RenderDevice.device] warns about the device pointer; read it
+  /// fresh per frame.
+  Pointer<Void> get colorRenderTargetView => _renderTargetView.pointer;
+
   @override
   NativeSurfaceDescriptor get surface => _surface;
 

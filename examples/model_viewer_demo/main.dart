@@ -58,6 +58,7 @@ import 'dart:typed_data';
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/graphics/mesh/mesh3d.dart';
 import 'package:dart_ui/src/graphics/mesh/mesh_loaders.dart';
+import 'package:dart_ui/src/platform/model_asset_resolver.dart';
 import 'package:dart_ui/src/rendering/mesh/mesh_rasterizer.dart';
 
 /// The value of `--name=value`, or of `--name value`.
@@ -101,16 +102,7 @@ List<String> _positional(List<String> arguments) {
 Mesh3D readModel(File file) => loadMesh(
       Uint8List.fromList(file.readAsBytesSync()),
       name: file.uri.pathSegments.last,
-      resolveBuffer: (String uri) {
-        if (uri.startsWith('http:') || uri.startsWith('https:')) return null;
-        final File sibling = File(
-          '${file.parent.path}${Platform.pathSeparator}'
-          '${Uri.decodeComponent(uri)}',
-        );
-        return sibling.existsSync()
-            ? Uint8List.fromList(sibling.readAsBytesSync())
-            : null;
-      },
+      resolveBuffer: ModelAssetResolver(file).call,
     );
 
 Future<void> main(List<String> arguments) async {

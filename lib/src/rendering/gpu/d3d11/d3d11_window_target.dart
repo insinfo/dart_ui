@@ -222,6 +222,21 @@ final class D3d11WindowTarget
   GpuPathPlanningTelemetry? get pathPlanning => _vector?.telemetry;
 
   final D3d11RenderDevice _device;
+
+  /// The device this target draws through.
+  ///
+  /// Exposed for a caller that has to create GPU resources compatible with this
+  /// window's back buffer - `d3d11_mesh_pipeline.dart` is the one that does,
+  /// because a mesh pass needs a depth buffer, an input layout and shaders of
+  /// its own. Opening a second device instead would not work at all: its
+  /// resources cannot be bound alongside a render-target view that belongs to
+  /// this one, and the failure is a silent no-op rather than an error.
+  ///
+  /// Read fresh, never cached: [D3d11RenderDevice.recreateDevice] replaces the
+  /// underlying `ID3D11Device` after a loss, which is what that field's own
+  /// comment warns about.
+  D3d11RenderDevice get device => _device;
+
   final GpuBatcher _batcher = GpuBatcher();
 
   /// The one cache that stayed per target, and deliberately.

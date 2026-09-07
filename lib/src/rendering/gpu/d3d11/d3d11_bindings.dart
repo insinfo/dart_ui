@@ -96,6 +96,13 @@ const int d3d11CreateDeviceDebug = 0x2;
 
 const int dxgiFormatUnknown = 0;
 const int dxgiFormatR32G32B32A32Float = 2;
+
+/// `DXGI_FORMAT_R32G32B32_FLOAT`, the position and normal of a mesh vertex.
+///
+/// The one three-component float format the input assembler accepts. A vertex
+/// stream that declared `R32G32B32A32_FLOAT` for a `float3` would read four
+/// floats per attribute out of a buffer holding three and shear the model.
+const int dxgiFormatR32G32B32Float = 6;
 const int dxgiFormatR32G32Float = 16;
 const int dxgiFormatR8G8B8A8Unorm = 28;
 const int dxgiFormatR32Uint = 42;
@@ -134,8 +141,20 @@ const int d3d11MapWriteNoOverwrite = 5;
 
 const int d3d11PrimitiveTopologyTriangleList = 4;
 
+/// `D3D11_FILL_MODE`. Wireframe is here for `MeshShading.wireframe`, which the
+/// CPU rasteriser draws as three Bresenham lines per triangle; the hardware's
+/// line rasterisation is not that algorithm, so the mesh pipeline claims no
+/// pixel parity for it and says so.
+const int d3d11FillWireframe = 2;
 const int d3d11FillSolid = 3;
+
+/// `D3D11_CULL_MODE`. The 2D pipeline uses only [d3d11CullNone] - a user
+/// interface has no back faces - and the mesh pipeline needs the other two,
+/// because a closed model drawn without culling is twice the fragments and a
+/// model culled the wrong way round is hollow.
 const int d3d11CullNone = 1;
+const int d3d11CullFront = 2;
+const int d3d11CullBack = 3;
 
 const int d3d11BlendZero = 1;
 const int d3d11BlendOne = 2;
@@ -145,6 +164,12 @@ const int d3d11ColorWriteEnableAll = 15;
 
 const int d3d11FilterMinMagMipPoint = 0;
 const int d3d11FilterMinMagMipLinear = 0x15;
+
+/// `D3D11_TEXTURE_ADDRESS_WRAP`, which is what `REPEAT` means in glTF and OBJ
+/// and the default in both. `MeshTexture.sample` wraps with a modulo for the
+/// same reason: a model with UVs outside the unit square is normal - tiling a
+/// floor is exactly that - and clamping smears the edge texel across it.
+const int d3d11TextureAddressWrap = 1;
 const int d3d11TextureAddressClamp = 3;
 const int d3d11ComparisonNever = 1;
 
@@ -155,10 +180,16 @@ const int d3d11InputPerVertexData = 0;
 // naming only those three would leave the next reader guessing at the numbers.
 const int d3d11ComparisonLess = 2;
 const int d3d11ComparisonEqual = 3;
+const int d3d11ComparisonGreater = 5;
 const int d3d11ComparisonNotEqual = 6;
 const int d3d11ComparisonAlways = 8;
 
 const int d3d11DepthWriteMaskZero = 0;
+
+/// `D3D11_DEPTH_WRITE_MASK_ALL`. One in an enum whose only other member is
+/// zero, and the mesh pipeline is the first thing in this backend that needs
+/// it: a 2D renderer orders by submission and writes no depth at all.
+const int d3d11DepthWriteMaskAll = 1;
 
 /// `D3D11_STENCIL_OP`. `INCR`/`DECR` are the **wrapping** pair - the saturating
 /// ones are `INCR_SAT`/`DECR_SAT` at 4 and 5 - and the wrap is what a non-zero
@@ -281,6 +312,15 @@ const int sizeOfDepthStencilViewDesc = 24;
 /// named because a layer target that carries stencil at all is one this backend
 /// allocated with four samples; see `d3d11LayerAttachmentsFor`.
 const int d3d11DsvDimensionTexture2dMs = 5;
+
+/// `D3D11_DSV_DIMENSION_TEXTURE2D`.
+///
+/// Three, and the enum's ordering is the trap named above: the value *after*
+/// this one is TEXTURE2DARRAY, not the multisampled dimension. The mesh
+/// pipeline's depth buffer is single-sample - it draws into a swap chain's back
+/// buffer or into the offscreen readback texture, neither of which is
+/// multisampled - so this is the dimension it names.
+const int d3d11DsvDimensionTexture2d = 3;
 
 /// `D3D11_INPUT_ELEMENT_DESC`: an `LPCSTR` then six 4-byte fields, aligned to
 /// the pointer.

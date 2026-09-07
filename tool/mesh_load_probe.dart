@@ -17,6 +17,7 @@ import 'dart:typed_data';
 
 import 'package:dart_ui/src/graphics/mesh/mesh3d.dart';
 import 'package:dart_ui/src/graphics/mesh/mesh_loaders.dart';
+import 'package:dart_ui/src/platform/model_asset_resolver.dart';
 
 const Set<String> _extensions = <String>{
   '.obj',
@@ -58,7 +59,7 @@ Future<void> main(List<String> arguments) async {
         // The seam the library leaves open: a `.gltf` points at a `.bin`
         // beside it by relative URI, and only something that knows where the
         // document came from can turn that into a path.
-        resolveBuffer: (String uri) => _readSibling(entity, uri),
+        resolveBuffer: ModelAssetResolver(entity).call,
       );
       watch.stop();
       final Bounds3 bounds = mesh.computeBounds();
@@ -84,17 +85,4 @@ Future<void> main(List<String> arguments) async {
   // A refusal is a result, not a failure: FBX is meant to be refused. Only an
   // empty run is worth a non-zero exit.
   if (loaded == 0) exitCode = 1;
-}
-
-/// Reads [uri] relative to [document], or null.
-///
-/// Percent-decoded, because an exporter writes `my%20model.bin` for a file
-/// whose name has a space in it and the filesystem wants the space back.
-Uint8List? _readSibling(File document, String uri) {
-  if (uri.startsWith('http:') || uri.startsWith('https:')) return null;
-  final String decoded = Uri.decodeComponent(uri);
-  final String directory = document.parent.path;
-  final File file = File('$directory${Platform.pathSeparator}$decoded');
-  if (!file.existsSync()) return null;
-  return Uint8List.fromList(file.readAsBytesSync());
 }

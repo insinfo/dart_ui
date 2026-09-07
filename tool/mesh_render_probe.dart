@@ -22,6 +22,7 @@ import 'dart:typed_data';
 
 import 'package:dart_ui/src/graphics/mesh/mesh3d.dart';
 import 'package:dart_ui/src/graphics/mesh/mesh_loaders.dart';
+import 'package:dart_ui/src/platform/model_asset_resolver.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/mesh/mesh_rasterizer.dart';
 
@@ -70,15 +71,7 @@ Future<void> main(List<String> arguments) async {
       mesh = loadMesh(
         Uint8List.fromList(file.readAsBytesSync()),
         name: file.uri.pathSegments.last,
-        resolveBuffer: (String uri) {
-          final File sibling = File(
-            '${file.parent.path}${Platform.pathSeparator}'
-            '${Uri.decodeComponent(uri)}',
-          );
-          return sibling.existsSync()
-              ? Uint8List.fromList(sibling.readAsBytesSync())
-              : null;
-        },
+        resolveBuffer: ModelAssetResolver(file).call,
       );
     } on MeshParseException catch (error) {
       stdout.writeln('$path\n  RECUSADO: ${error.message}');
