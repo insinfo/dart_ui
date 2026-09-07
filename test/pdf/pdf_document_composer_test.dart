@@ -1,6 +1,10 @@
+import 'dart:typed_data';
+
 import 'package:dart_ui/pdf.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:test/test.dart';
+
+import 'signing_fixture.dart';
 
 void main() {
   PdfDocument document(String label, int pages) {
@@ -80,4 +84,42 @@ void main() {
       contains('linha repetida para compressão'),
     );
   });
+
+  test('refuses to silently invalidate an existing digital signature',
+      () async {
+    final signed = await _signedDocument(document('Assinado', 1));
+    final source = PdfDocument.fromBytes(signed);
+
+    expect(
+      () => PdfDocumentComposer.optimize(source),
+      throwsA(isA<PdfSignedDocumentModificationException>()),
+    );
+  });
+
+  test('explicit invalidation removes signature widgets and stale CMS',
+      () async {
+    final signed = await _signedDocument(document('Assinado', 1));
+    final rewritten = PdfDocumentComposer.optimize(
+      PdfDocument.fromBytes(signed),
+      allowSignatureInvalidation: true,
+    );
+
+    expect(const PdfSignatureInspector().inspect(rewritten), isEmpty);
+    expect(PdfDocument.fromBytes(rewritten).pageCount, 1);
+  });
+}
+
+Future<Uint8List> _signedDocument(PdfDocument document) {
+  final certificate = signingTestCertificate();
+  return PdfSigner(
+    document: document,
+    signerName: 'Teste',
+    signingTime: DateTime.utc(2005, 1, 2),
+  ).sign(
+    reservedSignatureBytes: 4096,
+    externalSigner: PdfCallbackSigner(
+      certificateChain: <Uint8List>[certificate],
+      signCallback: (_) async => Uint8List.fromList(List<int>.filled(256, 1)),
+    ),
+  );
 }

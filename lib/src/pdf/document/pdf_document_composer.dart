@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:archive/archive.dart';
 
 import '../format/pdf_object.dart';
+import '../sign/pdf_signature_inspector.dart';
 import 'pdf_document.dart';
 import 'pdf_page.dart';
 
@@ -18,17 +19,36 @@ final class PdfDocumentComposer {
     this.author,
     this.creator = 'dart_ui',
     this.compressStreams = false,
+    this.allowSignatureInvalidation = false,
   });
 
   final String? title;
   final String? author;
   final String creator;
   final bool compressStreams;
+  final bool allowSignatureInvalidation;
   final List<PdfPage> _pages = <PdfPage>[];
 
-  void addPage(PdfPage page) => _pages.add(page);
+  void addPage(PdfPage page) {
+    final annotations = page.dict.getArray('Annots', page.resolver);
+    if (!allowSignatureInvalidation && annotations != null) {
+      for (var index = 0; index < annotations.length; index++) {
+        if (_isSignatureAnnotation(
+          annotations.getResolved(index, page.resolver),
+          page.resolver,
+        )) {
+          throw const PdfSignedDocumentModificationException();
+        }
+      }
+    }
+    _pages.add(page);
+  }
 
   void addDocument(PdfDocument document, {Iterable<int>? pages}) {
+    final signatures = const PdfSignatureInspector().inspect(document.rawBytes);
+    if (signatures.isNotEmpty && !allowSignatureInvalidation) {
+      throw const PdfSignedDocumentModificationException();
+    }
     final selected = pages ??
         Iterable<int>.generate(document.pageCount, (index) => index + 1);
     for (final number in selected) {
@@ -42,30 +62,59 @@ final class PdfDocumentComposer {
         author: author,
         creator: creator,
         compressStreams: compressStreams,
+        stripSignatures: allowSignatureInvalidation,
       ).build();
 
   static Uint8List merge(
     Iterable<PdfDocument> documents, {
     String? title,
     String? author,
+    bool allowSignatureInvalidation = false,
   }) {
-    final composer = PdfDocumentComposer(title: title, author: author);
+    final composer = PdfDocumentComposer(
+      title: title,
+      author: author,
+      allowSignatureInvalidation: allowSignatureInvalidation,
+    );
     for (final document in documents) {
       composer.addDocument(document);
     }
     return composer.build();
   }
 
-  static List<Uint8List> split(PdfDocument document) => <Uint8List>[
-        for (final page in document.pages)
-          (PdfDocumentComposer()..addPage(page)).build(),
-      ];
+  static List<Uint8List> split(
+    PdfDocument document, {
+    bool allowSignatureInvalidation = false,
+  }) {
+    final result = <Uint8List>[];
+    for (var number = 1; number <= document.pageCount; number++) {
+      final composer = PdfDocumentComposer(
+        allowSignatureInvalidation: allowSignatureInvalidation,
+      )..addDocument(document, pages: <int>[number]);
+      result.add(composer.build());
+    }
+    return result;
+  }
 
   /// Rewrites one document and Flate-compresses unfiltered streams whenever
   /// doing so actually reduces their size.
-  static Uint8List optimize(PdfDocument document) =>
-      (PdfDocumentComposer(compressStreams: true)..addDocument(document))
+  static Uint8List optimize(
+    PdfDocument document, {
+    bool allowSignatureInvalidation = false,
+  }) =>
+      (PdfDocumentComposer(
+        compressStreams: true,
+        allowSignatureInvalidation: allowSignatureInvalidation,
+      )..addDocument(document))
           .build();
+}
+
+final class PdfSignedDocumentModificationException implements Exception {
+  const PdfSignedDocumentModificationException();
+
+  @override
+  String toString() => 'PDF contains digital signatures; rewriting it would '
+      'invalidate them. Pass allowSignatureInvalidation: true explicitly.';
 }
 
 final class _PendingObject {
@@ -81,6 +130,7 @@ final class _PdfGraphWriter {
     required this.author,
     required this.creator,
     required this.compressStreams,
+    required this.stripSignatures,
   });
 
   final List<PdfPage> pages;
@@ -88,6 +138,7 @@ final class _PdfGraphWriter {
   final String? author;
   final String creator;
   final bool compressStreams;
+  final bool stripSignatures;
   final List<_PendingObject?> _objects = <_PendingObject?>[null];
   final Map<(PdfResolver, int, int), int> _imported =
       <(PdfResolver, int, int), int>{};
@@ -112,6 +163,19 @@ final class _PdfGraphWriter {
         ..remove('Parent')
         ..['Type'] = const PdfName('Page')
         ..['Parent'] = PdfRef(pagesNumber, 0);
+      if (stripSignatures) {
+        final annotations = page.dict.getArray('Annots', page.resolver);
+        if (annotations != null) {
+          entries['Annots'] = PdfArray(<PdfObject>[
+            for (var index = 0; index < annotations.length; index++)
+              if (!_isSignatureAnnotation(
+                annotations.getResolved(index, page.resolver),
+                page.resolver,
+              ))
+                annotations[index],
+          ]);
+        }
+      }
       pageNumbers.add(_add(PdfDict(entries), page.resolver));
     }
     _objects[pagesNumber] = _PendingObject(
@@ -173,6 +237,15 @@ final class _PdfGraphWriter {
   }
 
   Uint8List _serializeObject(PdfObject object, PdfResolver? resolver) {
+    // A signature dictionary may still be reachable through an AcroForm or
+    // another annotation-related object in malformed or incremental files.
+    // Never copy stale CMS bytes after the caller explicitly chose to rewrite
+    // a signed document.
+    if (stripSignatures &&
+        object is PdfDict &&
+        _isSignatureDictionary(object, resolver)) {
+      return Uint8List.fromList(ascii.encode('null'));
+    }
     if (object is PdfStream) {
       var streamBytes = object.rawBytes;
       final dictionary = Map<String, PdfObject>.from(object.dict.entries)
@@ -248,4 +321,16 @@ final class _PdfGraphWriter {
             ? String.fromCharCode(unit)
             : '#${unit.toRadixString(16).padLeft(2, '0')}';
       }).join();
+}
+
+bool _isSignatureAnnotation(PdfObject? object, PdfResolver resolver) {
+  if (object is! PdfDict) return false;
+  if (object.getName('FT', resolver)?.name == 'Sig') return true;
+  final value = object.getResolved('V', resolver);
+  return value is PdfDict && value.getName('Type', resolver)?.name == 'Sig';
+}
+
+bool _isSignatureDictionary(PdfDict object, PdfResolver? resolver) {
+  if (object.getName('Type', resolver)?.name == 'Sig') return true;
+  return object.containsKey('ByteRange') && object.containsKey('Contents');
 }
