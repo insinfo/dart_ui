@@ -1,6 +1,8 @@
 # Migrando do Flutter para o `dart_ui`
 
-Data: 6 de setembro de 2026.
+Data: 6 de setembro de 2026. Revisto em 7 de setembro de 2026, quando o
+inventário foi conferido linha a linha contra o código e a animação
+implícita passou a existir.
 
 Este documento existe por uma razão prática: **quem vem do Flutter já sabe
 escrever esta interface.** O `dart_ui` não é um clone do Flutter e não tenta
@@ -21,18 +23,47 @@ Isto compila quase sem edição vindo do Flutter:
 
 | Área | Nomes |
 |---|---|
-| Widgets base | `StatelessWidget`, `StatefulWidget`, `State`, `InheritedWidget`, `Widget`, `BuildContext`, `Key`, `ValueKey`, `GlobalKey` |
-| Layout | `Row`, `Column`, `Stack`, `Positioned`, `Padding`, `Center`, `Align`, `SizedBox`, `Expanded`, `Flexible`, `Wrap`, `ClipRect`, `Opacity` |
-| Conteúdo | `Text`, `Icon`, `Image`, `ListView`, `Card` |
+| Widgets base | `StatelessWidget`, `StatefulWidget`, `State`, `InheritedWidget`, `Widget`, `BuildContext`, `Key`, `ValueKey`, `GlobalKey`, `Builder`, `StatefulBuilder` |
+| Layout | `Row`, `Column`, `Stack`, `Positioned`, `Padding`, `Center`, `Align`, `SizedBox`, `Expanded`, `Flexible`, `Spacer`, `Wrap`, `AspectRatio`, `ConstrainedBox`, `FractionallySizedBox`, `IntrinsicWidth`, `IntrinsicHeight`, `LimitedBox`, `OverflowBox`, `SizedOverflowBox`, `Baseline`, `LayoutBuilder`, `SafeArea` |
+| Pintura | `Opacity`, `ClipRect`, `ClipRRect`, `DecoratedBox`, `BoxDecoration`, `ColoredBox`, `RepaintBoundary`, `IgnorePointer`, `AbsorbPointer` |
+| Conteúdo | `Text`, `Icon`, `Image`, `ListView`, `GridView`, `SingleChildScrollView`, `Card`, `Divider`, `VerticalDivider` |
 | Controles | `TextField`, `Radio`, `Switch`, `Slider`, `IconButton`, `Tooltip` |
 | Ambiente | `Theme`, `ThemeData`, `MediaQuery`, `Directionality`, `Navigator`, `Overlay`, `OverlayEntry` |
 | Foco e gestos | `FocusNode`, `FocusScope`, `GestureDetector` |
-| Animação | `AnimationController`, `CurvedAnimation`, `ColorTween`, `RectTween`, `SizeTween`, `OffsetTween`, `Interval`, `Cubic` |
-| Geometria | `Offset`, `Size`, `Rect`, `EdgeInsets`, `BoxConstraints`, `RelativeRect`, `Alignment` |
+| Animação explícita | `AnimationController`, `CurvedAnimation`, `Tween`, `RectTween`, `SizeTween`, `OffsetTween`, `Curves`, `Interval`, `Cubic` |
+| Animação implícita | `ImplicitlyAnimatedWidget`, `AnimatedOpacity`, `AnimatedAlign`, `AnimatedPadding`, `AnimatedPositioned`, `AnimatedDefaultTextStyle` |
+| Geometria | `Offset`, `Size`, `Rect`, `EdgeInsets`, `EdgeInsetsDirectional`, `BoxConstraints`, `RelativeRect`, `Alignment`, `AlignmentDirectional` |
 | Estado | `ValueNotifier` |
 
 `Overlay` e `OverlayEntry` têm a assinatura do Flutter inclusive em
 `OverlayEntry(builder:, opaque:, maintainState:)` e `Overlay.of(context)`.
+
+Sobre a animação implícita, duas coisas que quem chega do Flutter precisa
+saber e que não aparecem na assinatura:
+
+- **não há relógio ambiente.** O tempo vem do `AnimationScope` mais próximo,
+  que o `DartUiApp` instala. Sem escopo acima, o widget continua funcionando e
+  simplesmente não anima — é o que permite montar um controle sozinho num
+  teste. `ThemeData.reducedMotion` tem o mesmo efeito, por desenho;
+- **`duration: Duration.zero` é legal** e significa "não anime". Nenhum
+  `AnimationController` é criado, porque o controlador recusa duração zero por
+  nome em vez de dividir por ela.
+
+### Quase idêntico: os parâmetros que mudam
+
+Estes têm o nome e o comportamento do Flutter, mas **um** argumento diferente,
+e cada um diz isso no comentário da própria classe:
+
+| Widget | Diferença |
+|---|---|
+| `Align`, `AnimatedAlign`, `FractionallySizedBox`, `OverflowBox`, `SizedOverflowBox` | recebem `Alignment` (físico), não `AlignmentGeometry`. `AlignmentDirectional` existe e é resolvido acima do widget |
+| `Padding`, `AnimatedPadding` | recebem `EdgeInsets`, não `EdgeInsetsGeometry`, pela mesma razão |
+| `AnimatedOpacity` | não tem `alwaysIncludeSemantics`: aqui `Opacity` nunca tira a subárvore da árvore semântica, então o parâmetro não teria efeito |
+| `AnimatedDefaultTextStyle` | só anima `style`; o `DefaultTextStyle` daqui publica um estilo e mais nada |
+| `LayoutBuilder` | sem filho, assume o **menor** tamanho permitido (o Flutter assume o maior, que é infinito num eixo sem limite — e um tamanho infinito aqui é erro com nome). Uma consulta de intrínseco é recusada por nome, e não apenas em modo debug |
+| `FractionallySizedBox` | um fator num eixo sem limite é erro com nome, em vez de infinito propagado para cima |
+| `OverflowBox` | num eixo sem limite colapsa para o mínimo (`BoxConstraints.largestFinite`) em vez de disparar uma asserção |
+| `Divider` | a cor padrão é `theme.borderSubtle`, o divisor *dentro* de uma superfície |
 
 ---
 
@@ -73,7 +104,7 @@ janela override-redirect. `PopupHost.maybeOf` responde null onde não há host, 
 
 ---
 
-## 3. Diferenças de nome
+## 3. Diferenças de nome e de tipo
 
 Poucas, e cada uma tem motivo:
 
@@ -84,26 +115,61 @@ Poucas, e cada uma tem motivo:
 | `MaterialApp` / `WidgetsApp` | `DartUiApp` | não é Material; instala tema, direção de leitura, escopo de foco, relógio de animação e o host de popups |
 | `Scaffold` / `AppBar` | — | não existem. Este framework é de aplicação desktop: a barra de menus é `MenuBar` e o chrome da janela é da janela |
 | `runApp(Widget)` | `runApp(...)` | existe, e abre uma janela real; ver §5 |
+| `GridView` com delegates | `Grid` | `Grid` é o layout de trilhas (`GridTrack.fixed/auto/fraction/minmax`), mais perto de CSS Grid que dos delegates. O `GridView` rolável também existe |
+| `Transform(transform: Matrix4)` | `Transform(transform: Transform2D)` | a interface é 2D; não há matriz 4x4 no núcleo, e uma transformação 3D aplicada ao plano seria uma promessa que o rasterizador não cumpre |
+| `Chip(label: Widget)` | `Chip(label: String)` | o rótulo é texto; o controle desenha o glifo de exclusão sozinho |
+| `ColorTween extends Tween<Color?>` | `ColorTween extends Tween<int>` | interpola ARGB empacotado, com pré-multiplicação. No nível de widget, `lerpColor(a, b, t)` devolve `Color` |
+| `TextStyle` | subconjunto | `color`, `fontSize`, `fontFamily`, `fontWeight`, `height` — e nada mais |
+
+E uma diferença de **padrão**, que é a mais fácil de não notar porque compila:
+`Visibility.maintainSize` aqui é `true` por omissão e no Flutter é `false`. Um
+`Visibility(visible: false)` copiado do Flutter mantém o espaço aqui em vez de
+devolvê-lo.
+
+Uma nota sobre `ImplicitlyAnimatedWidget`: a *classe* tem o nome e os três
+parâmetros do Flutter (`duration`, `curve`, `onEnd`), mas quem escreveu uma
+subclasse própria no Flutter reescreve um método. O `forEachTween` de lá existe
+para contornar campos `Tween` mutáveis e anuláveis; o `Tween` daqui é imutável
+e não anulável, então o lugar dele é ocupado por `AnimatedProperty<V>` e por
+`ImplicitlyAnimatedWidgetState.retarget`. Quem apenas *usa* os widgets não vê
+diferença.
 
 ---
 
 ## 4. O que **não** existe (e o que usar)
 
-Ser honesto aqui é o ponto do documento.
+Ser honesto aqui é o ponto do documento. A lista está separada entre o que é
+**recusa de projeto** — não vai existir, e por quê — e o que é **ainda não
+feito**, que é uma lista de trabalho e não uma posição.
+
+### Recusas de projeto
 
 - **`Container`** — não existe. Use a composição explícita: `Padding`,
   `Align`, `SizedBox`, `DecoratedBox`. `Container` no Flutter é um atalho para
   sete widgets, e o atalho é o que torna difícil ler o que uma tela faz.
-- **`Divider`** — use uma caixa de 1 px com a cor `theme.border`.
+- **`AnimatedContainer`** — consequência da anterior: não há `Container` para
+  animar. Componha `AnimatedPadding`, `AnimatedAlign` e `AnimatedOpacity`, que
+  é o que o `AnimatedContainer` faz por dentro de qualquer modo.
 - **Platform channels, plugins do pub.dev com código nativo** — não existem e
   não vão existir. O equivalente é FFI direto, em Dart, dentro do repositório.
-- **`Hero`, `AnimatedContainer`, `ImplicitlyAnimatedWidget`** — o framework tem
-  o motor de animação explícito (`AnimationController`, tweens, curvas), não os
-  wrappers implícitos.
-- **Widgets Material/Cupertino** (`ListTile`, `Chip`, `SnackBar`, `Drawer`…) —
-  o conjunto de controles é de desktop: `DataGrid`, `TreeView`, `ListBox`,
-  `ComboBox`, `Expander`, `SplitView`, `Tabs`, `Docking`, `ContextMenu`,
-  `NumberBox`, `Calendar`, `InfoBar`, `Badge`, `Scrollbar`.
+- **Widgets Material/Cupertino** (`ListTile`, `SnackBar`, `Drawer`,
+  `FloatingActionButton`, `BottomNavigationBar`…) — o conjunto de controles é
+  de desktop: `DataGrid`, `TreeView`, `ListBox`, `ComboBox`, `Expander`,
+  `SplitView`, `Tabs`, `Docking`, `ContextMenu`, `NumberBox`, `Calendar`,
+  `InfoBar`, `Badge`, `Chip`, `Card`, `Scrollbar`.
+
+### Ainda não feito
+
+Sem justificativa de projeto — simplesmente não escrito:
+
+- **Layout**: `Table`, `Flow`, `CustomMultiChildLayout`, `FittedBox`,
+  `UnconstrainedBox`, `Placeholder`.
+- **Texto rico**: `RichText`, `TextSpan` no nível de widget, `WidgetSpan`. O
+  motor de parágrafo já compõe estilos por trecho (`text/paragraph.dart`); o
+  que falta é a fachada de widget sobre ele.
+- **Animação**: `Hero`, `AnimatedSize`, `AnimatedSwitcher`, `AnimatedBuilder`,
+  `TweenAnimationBuilder`, `ValueListenableBuilder`, `AnimatedList`.
+- **Rolagem**: `CustomScrollView` e a família `Sliver*`, `NestedScrollView`.
 
 ### O que existe aqui e não existe no Flutter
 

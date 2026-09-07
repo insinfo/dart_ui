@@ -389,6 +389,46 @@ final class BuildOwner {
     }
   }
 
+  /// Runs [callback] from inside a layout pass and settles whatever it built.
+  ///
+  /// The escape hatch a [LayoutBuilder] needs, and the only legal one: its
+  /// child cannot be built during the build scope, because the constraints that
+  /// decide what the child *is* are not known until the parent lays this node
+  /// out. So the build has to happen from inside `performLayout`, which is
+  /// after [buildScope] has already settled and returned.
+  ///
+  /// [callback] only reconciles - `updateChild` mounts an element and
+  /// [Element.mount] schedules it rather than building it inline - so the
+  /// [buildScope] afterwards is what actually produces the subtree, and it is
+  /// also what drains the three lists that can only be flushed once a scope
+  /// settles: the detached elements, the pending parent data, and the render
+  /// order. Skipping it and calling `updateChild` alone was the first shape
+  /// tried, and it fails on `LayoutBuilder(builder: (_, __) => Column(children:
+  /// [Expanded(...)]))`: the flex factor is queued and never written, because
+  /// nothing else in the frame opens a scope to drain it.
+  ///
+  /// That scope drains the *whole* dirty list, not only the subtree below this
+  /// node. Building an unrelated element here is safe rather than merely
+  /// tolerated - it can dirty layout, and [PipelineOwner.flushLayout] refills
+  /// its dirty list and converges - and the alternative, a depth-scoped
+  /// sub-scope, buys nothing while adding a second definition of what a build
+  /// scope is.
+  ///
+  /// Calling this from inside a build is the cycle the settle-pass limit exists
+  /// to catch, so it is a named error here instead.
+  void buildDuringLayout(void Function() callback) {
+    _throwIfDisposed();
+    if (_building) {
+      throw StateError(
+        'BuildOwner.buildDuringLayout() ran inside a build scope. Layout runs '
+        'after the build settles; a build that lays out that lays out that '
+        'builds is the cycle the settle-pass limit reports.',
+      );
+    }
+    callback();
+    buildScope();
+  }
+
   /// Unmounts everything detached during this scope that was not reclaimed.
   void _flushInactive() {
     while (_inactiveElements.isNotEmpty) {
