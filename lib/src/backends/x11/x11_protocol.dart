@@ -194,6 +194,19 @@ const int xcbInputFocusPointerRoot = 1;
 /// map_state, then this one). It is a `uint8`, not a word.
 const int xcbGetWindowAttributesOverrideRedirectOffset = 27;
 
+/// Byte offset of `your_event_mask` in the same reply - the mask **this
+/// client** selected on that window, not the union every client selected.
+///
+/// The INCR selection owner needs it to add `PropertyChange` to a requestor's
+/// window and put the mask back exactly as it found it when the transfer ends.
+/// Overwriting with a bare `PropertyChange` and then clearing to zero would be
+/// correct for a foreign window, whose mask is normally 0, and would silently
+/// unsubscribe one of *our own* windows from the events it was created with -
+/// a self-paste from another toolkit in this process is enough to hit it.
+///
+/// Follows `colormap` (28) and `all_event_masks` (32); it is a `uint32`.
+const int xcbGetWindowAttributesYourEventMaskOffset = 36;
+
 // ---------------------------------------------------------------------------
 // Predefined atoms (X11 protocol appendix B). Interning these would be a
 // round trip for a value the protocol already fixed.

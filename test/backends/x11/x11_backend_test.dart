@@ -218,6 +218,18 @@ final class _FakeConnection
       null;
 
   @override
+  int? readOwnEventMask(int window) => selectedEventMasks[window] ?? 0;
+
+  @override
+  void selectWindowEvents(int window, int mask) =>
+      selectedEventMasks[window] = mask;
+
+  /// What the INCR selection owner selected on each requestor, so a test can
+  /// see that a transfer put the mask back instead of leaving a subscription
+  /// to another client's property traffic behind.
+  final Map<int, int> selectedEventMasks = <int, int>{};
+
+  @override
   void deleteWindowProperty(int window, int property) {}
 
   @override

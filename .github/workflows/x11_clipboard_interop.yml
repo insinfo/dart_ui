@@ -1,0 +1,101 @@
+# O dono INCR do clipboard X11, contra um cliente que este projeto não escreveu.
+#
+# Arquivo próprio e não um passo do `x11_gl_probe.yml`: aquele job responde uma
+# pergunta sobre EGL e o nome dele ficaria mentindo. É o mesmo formato do
+# `macos_popup_probe.yml` — um workflow por pergunta, com `workflow_dispatch`
+# para reexecutar sem commit.
+#
+# `xclip` é do mesmo tipo que o Weston e o Xvfb: um cliente de verdade instalado
+# no runner, não uma dependência do `pubspec.yaml`. A regra deste repositório é
+# sobre o `pubspec.yaml`.
+#
+# Por que um cliente estranho e não uma segunda conexão nossa: se lemos a ICCCM
+# errado sobre *quando* o requestor apaga a propriedade, um requestor escrito a
+# partir da mesma leitura errada apaga na mesma hora errada, as duas metades
+# concordam e toda aplicação de verdade trava. Os casos que o `xclip` não
+# produz sob encomenda — requestor que para de ler, payload múltiplo exato do
+# chunk, duas conversões ao mesmo tempo — ficam em
+# `test/backends/x11/x11_clipboard_test.dart`.
+name: X11 clipboard INCR interop
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'lib/src/backends/x11/x11_clipboard.dart'
+      - 'lib/src/backends/x11/x11_connection.dart'
+      - 'lib/src/backends/x11/x11_backend.dart'
+      - 'lib/src/backends/x11/x11_protocol.dart'
+      - 'tool/x11_clipboard_interop_smoke.dart'
+      - '.github/workflows/x11_clipboard_interop.yml'
+
+concurrency:
+  group: x11-clipboard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  interop:
+    name: INCR owner vs xclip (Xvfb)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.6.2'
+
+      - run: dart pub get
+
+      - name: Install Xvfb, xcb and a foreign clipboard client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb x11-utils \
+            libxcb1-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            xclip
+          xclip -version 2>&1 | head -n 2 || true
+
+      - name: Paste a large payload out through xclip
+        env:
+          DISPLAY: ':99'
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          Xvfb :99 -screen 0 1920x1080x24 -ac >build/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 15); do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
+            if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+              cat build/xvfb.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          # AOT: um `dart run` gasta ~6 s de partida da VM antes do main, e o
+          # que se mede aqui é uma conversa com round trip por chunk.
+          dart compile exe tool/x11_clipboard_interop_smoke.dart \
+            -o build/x11_clipboard_interop
+          # O `timeout` externo é a rede de segurança da rede de segurança: uma
+          # transferencia INCR que trava do lado errado é um deadlock entre dois
+          # processos, e o smoke tem timeout proprio para o caso normal.
+          set +e
+          timeout --kill-after=5 120 build/x11_clipboard_interop
+          status=$?
+          set -e
+          echo "x11_clipboard_interop exit=$status  (0 round trip igual, 1 divergiu, 2 sem xclip/display)"
+          if [ "$status" = "2" ]; then
+            echo "::warning::interop pulado; veja a linha X11_CLIP_INTEROP=SKIP"
+            exit 0
+          fi
+          exit "$status"
+
+      - name: Upload the Xvfb log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x11-clipboard-xvfb-log
+          path: build/xvfb.log
+          if-no-files-found: ignore

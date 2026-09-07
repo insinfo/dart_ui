@@ -1122,6 +1122,35 @@ final class X11Connection
   }
 
   @override
+  int? readOwnEventMask(int window) {
+    throwIfDisposed();
+    if (window == 0) return null;
+    final cookie = xcb.getWindowAttributes(_handle, window);
+    final reply = xcb.getWindowAttributesReply(_handle, cookie, errorScratch);
+    if (reply == nullptr) {
+      _drainReplyError('GetWindowAttributes(0x${window.toRadixString(16)})');
+      return null;
+    }
+    try {
+      // Byte-addressed like `readWindowKind` does, and for the same reason:
+      // the reply is a packed wire struct, not a Dart layout.
+      return (reply.cast<Uint8>() + xcbGetWindowAttributesYourEventMaskOffset)
+          .cast<Uint32>()
+          .value;
+    } finally {
+      libc.free(reply);
+    }
+  }
+
+  @override
+  void selectWindowEvents(int window, int mask) {
+    throwIfDisposed();
+    if (window == 0) return;
+    valueScratch[0] = mask;
+    xcb.changeWindowAttributes(_handle, window, xcbCwEventMask, valueScratch);
+  }
+
+  @override
   void setSelectionOwner(int owner, int selection, int time) {
     throwIfDisposed();
     if (selection == 0) return;

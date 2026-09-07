@@ -77,6 +77,17 @@ final class _FakeSelectionClient implements X11ClipboardClient {
   /// Queued `GetProperty` answers, consumed in order.
   final List<X11PropertyValue?> propertyReplies = <X11PropertyValue?>[];
 
+  /// The event mask each window reports, in the order the manager asks. A
+  /// window missing here answers null, which is how a destroyed requestor
+  /// looks to `GetWindowAttributes`.
+  final Map<int, int?> eventMasks = <int, int?>{_theirWindow: 0};
+
+  /// Every `ChangeWindowAttributes(CW_EVENT_MASK)`, in order. The INCR owner
+  /// must both add PropertyChange and put the old mask back, and a test that
+  /// only checked the first half would pass on code that leaks a
+  /// subscription to another client's property traffic.
+  final List<(int window, int mask)> maskChanges = <(int, int)>[];
+
   @override
   int atom(String name) => _names[name] ?? 0;
 
@@ -112,6 +123,15 @@ final class _FakeSelectionClient implements X11ClipboardClient {
   }) {
     if (propertyReplies.isEmpty) return null;
     return propertyReplies.removeAt(0);
+  }
+
+  @override
+  int? readOwnEventMask(int window) => eventMasks[window];
+
+  @override
+  void selectWindowEvents(int window, int mask) {
+    maskChanges.add((window, mask));
+    eventMasks[window] = mask;
   }
 
   @override
@@ -179,12 +199,19 @@ void main() {
   late _FakeSelectionClient client;
   late X11ClipboardManager manager;
 
-  X11ClipboardManager build({int window = _ourWindow, int time = 9000}) {
+  X11ClipboardManager build({
+    int window = _ourWindow,
+    int time = 9000,
+    int singleShotBytes = X11ClipboardManager.defaultSingleShotBytes,
+    int chunkBytes = X11ClipboardManager.defaultChunkBytes,
+  }) {
     return X11ClipboardManager(
       client,
       windowOf: () => window,
       timeOf: () => time,
       transferTimeout: const Duration(milliseconds: 50),
+      singleShotBytes: singleShotBytes,
+      chunkBytes: chunkBytes,
     );
   }
 
@@ -613,20 +640,32 @@ void main() {
       );
     });
 
-    test('a payload too large to serve is refused, never truncated', () async {
+    test('a payload past the memory cap is refused, never truncated', () async {
+      // The cap that remains after INCR is memory, not protocol: every
+      // in-flight transfer holds its own copy of the bytes.
       client.owner = _ourWindow;
-      final String huge = 'a' * (X11ClipboardManager.maximumServedBytes + 1);
+      final String huge = 'a' * (X11ClipboardManager.maximumOwnedBytes + 1);
 
       await expectLater(
         manager.writeText(huge),
         throwsA(isA<ClipboardException>().having(
           (e) => e.reason,
           'reason',
-          contains('INCR selection owner is not implemented'),
+          contains('INCR removes the protocol ceiling but not the memory one'),
         )),
       );
       expect(manager.ownsSelection, isFalse);
       expect(client.ownerships, isEmpty);
+    });
+
+    test('a payload that once needed INCR is now simply accepted', () async {
+      // The regression this whole feature exists to prevent: copying a long
+      // document out of the application used to throw, and nothing above this
+      // layer could make it succeed.
+      client.owner = _ourWindow;
+      await manager
+          .writeText('a' * (X11ClipboardManager.defaultSingleShotBytes + 1));
+      expect(manager.ownsSelection, isTrue);
     });
   });
 
@@ -887,6 +926,288 @@ void main() {
         manager.writeText('x'),
         throwsA(isA<ClipboardException>()),
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Serving an INCR transfer
+  // ---------------------------------------------------------------------
+  //
+  // These exist because a real client will not produce them on demand. The
+  // interop proof - `tool/x11_clipboard_interop_smoke.dart`, which has `xclip`
+  // paste from us - answers "does a stranger get our bytes". It cannot be made
+  // to stop reading halfway, or to ask for a payload that is an exact multiple
+  // of the chunk size. Those are the cases where a bug is a hang or a
+  // truncation rather than a diff, so they are here.
+  group('serving an INCR transfer', () {
+    const int destination = 300;
+
+    /// Copies [text] and asks for it as `UTF8_STRING`, with a small chunk so
+    /// the interesting sizes cost bytes instead of megabytes.
+    Future<void> offer(String text, {int chunkBytes = 8}) async {
+      manager = build(singleShotBytes: 0, chunkBytes: chunkBytes);
+      client.owner = _ourWindow;
+      await manager.writeText(text);
+      client.writes.clear();
+      client.notifies.clear();
+      client.maskChanges.clear();
+      manager.handleSelectionRequest(
+        requestor: _theirWindow,
+        selection: _atoms['CLIPBOARD']!,
+        target: _atoms['UTF8_STRING']!,
+        property: destination,
+        time: 9100,
+      );
+    }
+
+    /// One `PropertyNotify(Deleted)` from the requestor: "send the next".
+    bool deleted() => manager.handlePropertyNotify(
+          window: _theirWindow,
+          atom: destination,
+          state: x11PropertyDeleted,
+        );
+
+    /// The bytes of every chunk written so far, concatenated.
+    List<int> served() => <int>[
+          for (final _PropertyWrite write in client.writes)
+            if (write.value is Uint8List) ...write.value as Uint8List,
+        ];
+
+    test('announces INCR with the size, then answers the request', () async {
+      await offer('abcdefghijklmnop');
+
+      // The order is the contract. PropertyChange has to be selected before
+      // the INCR property is written: the requestor may delete it the instant
+      // it appears, and a selection made afterwards misses that delete and
+      // hangs the transfer at chunk zero.
+      expect(client.maskChanges.single.$1, _theirWindow);
+      expect(
+        client.maskChanges.single.$2 & xcbEventMaskPropertyChange,
+        xcbEventMaskPropertyChange,
+      );
+
+      final _PropertyWrite announcement = client.writes.single;
+      expect(announcement.window, _theirWindow);
+      expect(announcement.property, destination);
+      expect(announcement.type, _atoms['INCR']);
+      expect(announcement.value, <int>[16],
+          reason: 'the INCR property carries the total size, not the data');
+
+      // The requestor is blocked on its own queue until this arrives.
+      expect(client.notifies.single.property, destination);
+      expect(manager.pendingTransferCount, 1);
+    });
+
+    test('one chunk per delete, in order, ending with a zero-length one',
+        () async {
+      await offer('abcdefghijklmnop', chunkBytes: 8);
+      client.writes.clear();
+
+      expect(deleted(), isTrue);
+      expect(deleted(), isTrue);
+      expect(served(), utf8.encode('abcdefghijklmnop'));
+
+      // Exactly two full chunks fitted, so the payload is finished - and the
+      // transfer is not. This is the case that catches an implementation
+      // which folds the terminator into the last full chunk: the requestor
+      // waits for an end that never comes and the paste hangs instead of
+      // arriving truncated, which is why it is asserted on a size that is an
+      // exact multiple of the chunk.
+      expect(manager.pendingTransferCount, 1);
+      expect(deleted(), isTrue);
+      expect(client.writes.last.value as Uint8List, isEmpty);
+
+      // The last delete is the requestor acknowledging the terminator.
+      expect(deleted(), isTrue);
+      expect(manager.pendingTransferCount, 0);
+    });
+
+    test('every chunk carries the type the TARGETS answer promised', () async {
+      await offer('abcdefghij', chunkBytes: 4);
+      client.writes.clear();
+      while (manager.pendingTransferCount > 0) {
+        deleted();
+      }
+      expect(
+        client.writes.map((_PropertyWrite w) => w.type).toSet(),
+        <int>{_atoms['UTF8_STRING']!},
+        reason: 'a chunk typed differently from the rest tells the requestor '
+            'to decode the tail with another encoding',
+      );
+    });
+
+    test('the requestor event mask is restored, not cleared', () async {
+      // A window of ours, with a real mask on it - a self-paste from another
+      // toolkit in this process reaches exactly this path. Clearing to zero
+      // would unsubscribe the window from the events it was created with.
+      const int ownMask = xcbEventMaskPropertyChange | xcbEventMaskExposure;
+      client.eventMasks[_theirWindow] = ownMask;
+      await offer('abcdefghij', chunkBytes: 4);
+      while (manager.pendingTransferCount > 0) {
+        deleted();
+      }
+      expect(client.maskChanges.last, (_theirWindow, ownMask));
+      expect(client.eventMasks[_theirWindow], ownMask);
+    });
+
+    test(
+        'a requestor that stops reading is timed out, and the selection is '
+        'kept', () async {
+      await offer('abcdefghijklmnop', chunkBytes: 8);
+      expect(deleted(), isTrue);
+      expect(manager.pendingTransferCount, 1);
+
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+
+      expect(manager.pendingTransferCount, 0);
+      expect(
+        client.errors.any((String e) => e.contains('abandoned an INCR')),
+        isTrue,
+      );
+      // The transfer is abandoned; the clipboard is not. One application
+      // crashing mid-paste must not empty everybody else's clipboard.
+      expect(manager.ownsSelection, isTrue);
+      expect(client.maskChanges.last.$1, _theirWindow);
+    });
+
+    test('two requestors are served at once, not one behind the other',
+        () async {
+      // Serialising them would make the second application wait for the first,
+      // and a first one that never reads would hang it for the whole timeout.
+      const int otherWindow = 0x900;
+      client.eventMasks[otherWindow] = 0;
+      await offer('abcdefghijklmnop', chunkBytes: 8);
+      manager.handleSelectionRequest(
+        requestor: otherWindow,
+        selection: _atoms['CLIPBOARD']!,
+        target: _atoms['UTF8_STRING']!,
+        property: destination,
+        time: 9200,
+      );
+      expect(manager.pendingTransferCount, 2);
+
+      client.writes.clear();
+      expect(
+        manager.handlePropertyNotify(
+          window: otherWindow,
+          atom: destination,
+          state: x11PropertyDeleted,
+        ),
+        isTrue,
+      );
+      expect(client.writes.single.window, otherWindow,
+          reason: 'a delete from one requestor must not push a chunk at the '
+              'other');
+      expect(manager.pendingTransferCount, 2);
+    });
+
+    test('a second request on the same property is refused, not interleaved',
+        () async {
+      await offer('abcdefghijklmnop', chunkBytes: 8);
+      client.notifies.clear();
+
+      manager.handleSelectionRequest(
+        requestor: _theirWindow,
+        selection: _atoms['CLIPBOARD']!,
+        target: _atoms['UTF8_STRING']!,
+        property: destination,
+        time: 9300,
+      );
+
+      // Refused out loud: the requestor is blocked waiting for an answer, and
+      // the transfer already running is untouched.
+      expect(client.notifies.single.property, xcbNone);
+      expect(manager.pendingTransferCount, 1);
+      expect(
+        client.errors.any((String e) => e.contains('second INCR conversion')),
+        isTrue,
+      );
+    });
+
+    test('a requestor whose window is already gone is refused, not started',
+        () async {
+      manager = build(singleShotBytes: 0, chunkBytes: 8);
+      client.owner = _ourWindow;
+      await manager.writeText('abcdefghij');
+      client.eventMasks.remove(_theirWindow);
+      client.notifies.clear();
+
+      manager.handleSelectionRequest(
+        requestor: _theirWindow,
+        selection: _atoms['CLIPBOARD']!,
+        target: _atoms['UTF8_STRING']!,
+        property: destination,
+        time: 9100,
+      );
+
+      expect(client.notifies.single.property, xcbNone);
+      expect(manager.pendingTransferCount, 0);
+      expect(client.maskChanges, isEmpty,
+          reason: 'nothing should be selected on a window that is gone');
+    });
+
+    test('an empty payload stays a single ChangeProperty', () async {
+      // A zero-byte selection is a zero-length property, which is a legitimate
+      // answer - not an INCR transfer of nothing. It cannot reach the INCR
+      // path even with the threshold at zero, because the test is `>`.
+      manager = build(singleShotBytes: 0, chunkBytes: 8);
+      client.owner = _ourWindow;
+      await manager.writeText('');
+      client.writes.clear();
+      client.notifies.clear();
+
+      manager.handleSelectionRequest(
+        requestor: _theirWindow,
+        selection: _atoms['CLIPBOARD']!,
+        target: _atoms['UTF8_STRING']!,
+        property: destination,
+        time: 9100,
+      );
+
+      expect(client.writes.single.type, _atoms['UTF8_STRING']);
+      expect(client.writes.single.value, isEmpty);
+      expect(manager.pendingTransferCount, 0);
+    });
+
+    test('losing the selection mid-transfer does not truncate the paste',
+        () async {
+      // ICCCM: an owner keeps servicing a request it already accepted. Each
+      // transfer holds its own bytes, so the application halfway through gets
+      // the document it asked for rather than half of it.
+      await offer('abcdefghijklmnop', chunkBytes: 8);
+      client.writes.clear();
+      expect(deleted(), isTrue);
+
+      manager.handleSelectionClear(_atoms['CLIPBOARD']!);
+      expect(manager.ownsSelection, isFalse);
+
+      expect(deleted(), isTrue);
+      expect(served(), utf8.encode('abcdefghijklmnop'));
+
+      // But a *new* conversion gets nothing: the text is gone.
+      client.notifies.clear();
+      expect(
+        manager.handleSelectionRequest(
+          requestor: 0x900,
+          selection: _atoms['CLIPBOARD']!,
+          target: _atoms['UTF8_STRING']!,
+          property: destination,
+          time: 9400,
+        ),
+        isFalse,
+      );
+    });
+
+    test('dispose cancels the timers instead of leaving them armed', () async {
+      await offer('abcdefghijklmnop', chunkBytes: 8);
+      expect(manager.pendingTransferCount, 1);
+      manager.dispose();
+      expect(manager.pendingTransferCount, 0);
+      // No ChangeWindowAttributes after dispose: the connection is gone and
+      // the masks die with it.
+      final int changesAtDispose = client.maskChanges.length;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(client.maskChanges.length, changesAtDispose);
     });
   });
 }

@@ -32,9 +32,10 @@
 ///   * **No IME.** XIM has no XCB equivalent: it needs Xlib and an input
 ///     context, so CJK is unavailable on this backend. Dead keys and AltGr are
 ///     not IME and do work.
-///   * **No INCR selection owner.** The clipboard reads an INCR transfer but
-///     cannot serve one; a payload above 200 KiB is refused rather than
-///     truncated. `PRIMARY` is deliberately not modelled.
+///   * **No `PRIMARY`.** The middle-click selection is deliberately not
+///     modelled as a second clipboard. `CLIPBOARD` is served in both
+///     directions, including INCR in both roles, so a document of any size
+///     copies out as well as in.
 ///   * **PutImage copies.** The core CPU path works on compatible TrueColor
 ///     visuals, but `xcb-shm` would eliminate that copy; it is detected here
 ///     and is the first performance extension to wire.
@@ -710,7 +711,8 @@ final class X11WindowingBackend
     diagnostics.add(const BackendDiagnostic.note(
       'the clipboard reads and writes CLIPBOARD as UTF8_STRING',
       detail: 'STRING is accepted as a fallback on read and offered on write; '
-          'an INCR transfer is assembled on read but not served on write, and '
+          'an INCR transfer is assembled on read and served on write, so a '
+          'payload larger than one ChangeProperty crosses in both directions; '
           'PRIMARY is deliberately not modelled as a second clipboard',
     ));
   }
