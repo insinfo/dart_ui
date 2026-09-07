@@ -150,6 +150,401 @@ final class MeshCamera {
         near: near,
         far: far,
       );
+
+  // -------------------------------------------------------------------------
+  // The screen basis, and the moves an orbit control needs
+  //
+  // Everything above is unchanged. What was missing was a way to move [target]
+  // at all: it was fixed at construction, so a viewer could turn a model and
+  // zoom it but never look at anything except its exact centre. A model with a
+  // detail off to one side could not be examined, and no amount of orbiting
+  // helped, because orbiting is rotation *about* the point you cannot move.
+  // -------------------------------------------------------------------------
+
+  /// The camera's own +Z axis: from [target] back toward [eye].
+  ///
+  /// Named for the basis column it is rather than for the view direction. The
+  /// view looks down *negative* Z, and a pan written against the wrong sign
+  /// mirrors: the model runs away from the cursor instead of following it.
+  Vector3 get backAxis => (eye - target).normalized;
+
+  /// The camera's own +X axis, pointing to the right of the picture.
+  ///
+  /// Derived exactly the way `Matrix4.lookAt` derives it, degenerate case
+  /// included. Deriving it by a shorter route — `(cos yaw, 0, -sin yaw)`, which
+  /// is correct wherever `cos pitch > 0` — would be a second basis that agrees
+  /// with the drawn frame most of the time, and a pan is precisely the
+  /// operation that shows up the disagreement: it would slide diagonally near
+  /// the poles.
+  Vector3 get rightAxis {
+    final Vector3 back = backAxis;
+    Vector3 right = Vector3.up.cross(back).normalized;
+    if (right.length == 0) {
+      right = const Vector3(1, 0, 0).cross(back).normalized;
+      if (right.length == 0) right = const Vector3(0, 0, 1);
+    }
+    return right;
+  }
+
+  /// The camera's own +Y axis, pointing to the top of the picture.
+  Vector3 get upAxis => backAxis.cross(rightAxis);
+
+  /// How much world one pixel of the window covers, at the target's depth.
+  ///
+  /// The whole of pan and of zoom-about-the-cursor is this number. Half the
+  /// field of view spans from the centre of the picture to its top edge, so the
+  /// visible height at the target plane is `2 * distance * tan(fov/2)`, and
+  /// dividing by the height in pixels gives the world a single pixel covers
+  /// there. Only the height is used, deliberately: scaling x by the width would
+  /// make a drag across a wide window move the model further than the same drag
+  /// down a short one, and the model would appear to stretch as the window was
+  /// resized.
+  ///
+  /// This is what makes a pan track the cursor at any zoom: the same drag moves
+  /// twice as much world when the camera is twice as far away, which is exactly
+  /// what "the model stays under the pointer" means.
+  double worldUnitsPerPixel(double viewportHeight) => viewportHeight <= 0
+      ? 0
+      : 2 * distance * math.tan(fovYRadians / 2) / viewportHeight;
+
+  /// The same camera looking at [value].
+  MeshCamera withTarget(Vector3 value) => _derive(target: value);
+
+  /// Turned by [yawDelta] and [pitchDelta] radians, pitch clamped by
+  /// [withPitch].
+  MeshCamera orbitedBy({double yawDelta = 0, double pitchDelta = 0}) =>
+      _derive(yaw: yaw + yawDelta).withPitch(pitch + pitchDelta);
+
+  /// [target] slid in the camera's own screen plane by a drag of ([dx], [dy])
+  /// **pixels**, [dy] positive downward as every pointer in this framework
+  /// reports it.
+  ///
+  /// The signs are what makes the model follow the cursor rather than flee it:
+  /// dragging right moves the *target* left, and the picture moves right.
+  MeshCamera pannedByPixels(
+    double dx,
+    double dy, {
+    required double viewportHeight,
+  }) {
+    final double scale = worldUnitsPerPixel(viewportHeight);
+    if (scale == 0) return this;
+    return withTarget(
+      target + rightAxis * (-dx * scale) + upAxis * (dy * scale),
+    );
+  }
+
+  /// [distance] multiplied by [factor]: below one is closer, above one further.
+  ///
+  /// Multiplicative rather than additive because that is what a wheel notch
+  /// means to a user — one notch should cover the same *proportion* of the way
+  /// in whether the model is a figurine or a landscape — and because a
+  /// subtraction reaches zero, where the view basis collapses and the model
+  /// disappears for good. The floor here is [near] times two, so no sequence of
+  /// zooms can reach the target.
+  ///
+  /// The depth range only ever widens. Zooming out with a fixed far plane walks
+  /// the model straight through it and the model vanishes with nothing on
+  /// screen to say why; zooming a long way in with a fixed near plane clips the
+  /// front of it away. Widening rather than recomputing costs some depth
+  /// precision over a long session of zooming, which is visible only as
+  /// z-fighting on coplanar surfaces — a far better failure than a black
+  /// window.
+  MeshCamera zoomedBy(double factor) {
+    final double wanted =
+        distance * (factor.isFinite && factor > 0 ? factor : 1.0);
+    final double nextNear = math.min(near, math.max(wanted * 0.001, 1e-4));
+    final double nextDistance = math.max(wanted, nextNear * 2);
+    return _derive(
+      distance: nextDistance,
+      near: nextNear,
+      far: math.max(far, nextDistance * 10),
+    );
+  }
+
+  /// The general copy. [_copy] is left exactly as it was because other code
+  /// calls the three `with` methods built on it.
+  MeshCamera _derive({
+    Vector3? target,
+    double? distance,
+    double? yaw,
+    double? pitch,
+    double? near,
+    double? far,
+  }) =>
+      MeshCamera(
+        target: target ?? this.target,
+        distance: distance ?? this.distance,
+        yaw: yaw ?? this.yaw,
+        pitch: pitch ?? this.pitch,
+        fovYRadians: fovYRadians,
+        near: near ?? this.near,
+        far: far ?? this.far,
+      );
+}
+
+/// Drag to turn, drag to pan, wheel to zoom: the control scheme a 3D view is
+/// unusable without.
+///
+/// It lives beside [MeshCamera] rather than inside an example because every
+/// application this framework is meant to serve needs the same arithmetic — a
+/// scene viewer, a level editor, the inspector view of a 3D game — and they
+/// differ only in what draws the pixels. Nothing here touches a widget, a
+/// render object or an event type on purpose: the caller feeds it pixels and
+/// notches from whatever input system it has.
+///
+/// ## What it takes from three.js' OrbitControls, and why
+///
+/// The behaviour is matched deliberately, because these are the details that
+/// separate a viewer that feels like every other 3D tool from one that fights
+/// the user:
+///
+///   * **the pan is in the camera's screen plane, scaled by distance.** See
+///     [MeshCamera.worldUnitsPerPixel]. The first thing anybody writes instead
+///     is a pan along the world axes, which shears the model sideways as soon
+///     as the camera is not looking down an axis, and moves it by the wrong
+///     amount at every zoom but one.
+///   * **the pitch stops short of the poles.** [MeshCamera.withPitch] does the
+///     clamp; the reason is in its documentation.
+///   * **input accumulates and is applied as a fraction per frame.** A drag
+///     that stops does not stop dead: the remaining fraction plays out over the
+///     next few frames. This is not decoration — it is what hides the gap
+///     between the pointer's report rate and the frame rate, which otherwise
+///     reads as a stutter in the model rather than in the mouse.
+///   * **the wheel zooms about the cursor.** A zoom that walks away from what
+///     you are looking at is the oldest complaint about 3D viewers.
+///
+/// It does not copy three.js' auto-rotation, its touch gestures, its key pan or
+/// its orthographic path. Turntable spin is one line at the call site
+/// ([spin]); the rest needs input this controller is not given.
+///
+/// ## The frame loop it expects
+///
+/// Feed it input whenever input arrives, call [update] once per frame, and
+/// repaint when it returns true. When it returns false nothing moved and the
+/// frame can be skipped entirely, which is the difference between an idle
+/// viewer costing nothing and one rasterising the same picture sixty times a
+/// second.
+final class OrbitCameraController {
+  OrbitCameraController({
+    required this.camera,
+    this.bounds = Bounds3.empty,
+    this.rotateSpeed = 1.0,
+    this.panSpeed = 1.0,
+    this.zoomSpeed = 1.0,
+    this.dampingFactor = 0.2,
+    this.enableDamping = true,
+    this.zoomToCursor = true,
+  });
+
+  /// An orbit control framing [bounds], which is where a viewer starts.
+  factory OrbitCameraController.framing(Bounds3 bounds) =>
+      OrbitCameraController(camera: MeshCamera.frame(bounds), bounds: bounds);
+
+  /// The camera as it stands. Read it every frame; it is replaced, not
+  /// mutated, because [MeshCamera] is immutable and shared with whatever is
+  /// drawing.
+  MeshCamera camera;
+
+  /// What [frame] fits. Kept here so a viewer can reframe on a key press
+  /// without carrying the model's bounds around beside the controller.
+  Bounds3 bounds;
+
+  /// Radians of turn per fraction of the viewport dragged. One at the default:
+  /// dragging the full height of the window turns the camera a full circle,
+  /// which is three.js' rate.
+  double rotateSpeed;
+
+  double panSpeed;
+  double zoomSpeed;
+
+  /// How much of the outstanding input each [update] applies, in `(0, 1]`.
+  ///
+  /// Smaller is smoother and laggier. Applied per frame rather than per second:
+  /// a factor scaled by elapsed time would be more correct on a variable frame
+  /// rate, and is what a future revision should do, but it needs a clock this
+  /// controller is not given.
+  double dampingFactor;
+
+  bool enableDamping;
+
+  /// Whether the wheel zooms toward the pointer rather than the centre.
+  bool zoomToCursor;
+
+  double _yawDelta = 0;
+  double _pitchDelta = 0;
+  Vector3 _panOffset = Vector3.zero;
+
+  /// Set by the moves that are applied immediately, so [update] reports the
+  /// frame as changed exactly once.
+  bool _appliedDirectly = false;
+
+  /// Below this, an outstanding rotation is dropped instead of decayed.
+  ///
+  /// Damping is exponential and never actually reaches zero, so without a floor
+  /// [update] would report "something moved" on every frame for the rest of the
+  /// session and the viewer would never go idle. A hundredth of a milliradian
+  /// is far under a pixel of movement on any window.
+  static const double _rotationEpsilon = 1e-5;
+
+  /// The same floor for pan, as a fraction of the viewing distance: a pan is
+  /// only meaningful relative to how far away the camera is.
+  static const double _panEpsilonRatio = 1e-5;
+
+  /// Whether input is still playing out and [update] has work to do.
+  bool get isSettling =>
+      _appliedDirectly ||
+      _yawDelta != 0 ||
+      _pitchDelta != 0 ||
+      _panOffset.length != 0;
+
+  /// A drag of ([dx], [dy]) pixels with the orbit button held.
+  ///
+  /// The rate is per viewport *height* on both axes, three.js' choice: using
+  /// the width for x would make the same drag turn the model further in a wide
+  /// window than in a tall one.
+  void rotateByPixels(
+    double dx,
+    double dy, {
+    required double viewportHeight,
+  }) {
+    if (viewportHeight <= 0) return;
+    final double rate = 2 * math.pi * rotateSpeed / viewportHeight;
+    _yawDelta -= dx * rate;
+    _pitchDelta += dy * rate;
+  }
+
+  /// A drag of ([dx], [dy]) pixels with the pan button held.
+  ///
+  /// Converted to world units here, against the camera as it is now, rather
+  /// than kept as pixels and converted at [update] time: the conversion depends
+  /// on the distance, and a zoom arriving between the drag and the frame would
+  /// otherwise silently rescale a movement the user has already made.
+  void panByPixels(
+    double dx,
+    double dy, {
+    required double viewportHeight,
+  }) {
+    final double scale = camera.worldUnitsPerPixel(viewportHeight) * panSpeed;
+    if (scale == 0) return;
+    _panOffset = _panOffset +
+        camera.rightAxis * (-dx * scale) +
+        camera.upAxis * (dy * scale);
+  }
+
+  /// One wheel report, in detents. Positive is a scroll toward the user, which
+  /// pulls the camera back.
+  ///
+  /// ([focusX], [focusY]) is where the pointer was, in pixels from the centre
+  /// of the viewport, y downward. Leave them at zero to zoom about the centre.
+  void zoomByWheel(
+    double notches, {
+    double focusX = 0,
+    double focusY = 0,
+    double viewportHeight = 0,
+  }) =>
+      zoomBy(
+        math.pow(0.95, -notches * zoomSpeed).toDouble(),
+        focusX: focusX,
+        focusY: focusY,
+        viewportHeight: viewportHeight,
+      );
+
+  /// Multiplies the viewing distance by [factor], applied at once.
+  ///
+  /// Not damped, and three.js does not damp it either: a wheel notch is a
+  /// discrete decision rather than a movement being tracked, and easing it
+  /// makes a viewer feel unresponsive on the one input that has no other
+  /// feedback.
+  void zoomBy(
+    double factor, {
+    double focusX = 0,
+    double focusY = 0,
+    double viewportHeight = 0,
+  }) {
+    final MeshCamera before = camera;
+    final MeshCamera after = before.zoomedBy(factor);
+    final double applied = after.distance / before.distance;
+    if (applied == 1) return;
+    _appliedDirectly = true;
+    if (!zoomToCursor || viewportHeight <= 0 || (focusX == 0 && focusY == 0)) {
+      camera = after;
+      return;
+    }
+    // Keep the world point under the pointer under the pointer. That point is
+    // taken on the plane through the target, which is an approximation - the
+    // surface the user is looking at is usually nearer than the target - and it
+    // is the same approximation three.js makes when it has no ray to intersect.
+    // Pinning the actual surface would need a depth query the rasteriser does
+    // not expose.
+    final double scale = before.worldUnitsPerPixel(viewportHeight);
+    final double shift = scale * (1 - applied);
+    camera = after.withTarget(
+      after.target +
+          before.rightAxis * (focusX * shift) +
+          before.upAxis * (-focusY * shift),
+    );
+  }
+
+  /// Turns the camera immediately, for a turntable or a keyboard nudge.
+  void spin({double yawDelta = 0, double pitchDelta = 0}) {
+    if (yawDelta == 0 && pitchDelta == 0) return;
+    camera = camera.orbitedBy(yawDelta: yawDelta, pitchDelta: pitchDelta);
+    _appliedDirectly = true;
+  }
+
+  /// Frames [bounds] again — the escape hatch from a camera that has been
+  /// panned somewhere with nothing in shot, which is the state every 3D viewer
+  /// eventually gets into and the reason every one of them has this key.
+  void frame([Bounds3? newBounds]) {
+    if (newBounds != null) bounds = newBounds;
+    camera = MeshCamera.frame(bounds);
+    _yawDelta = 0;
+    _pitchDelta = 0;
+    _panOffset = Vector3.zero;
+    _appliedDirectly = true;
+  }
+
+  /// Drops whatever input has not played out yet, without moving the camera.
+  void settle() {
+    _yawDelta = 0;
+    _pitchDelta = 0;
+    _panOffset = Vector3.zero;
+  }
+
+  /// Applies one frame's worth of the outstanding input.
+  ///
+  /// Returns whether the camera moved, so the caller can repaint only then.
+  bool update() {
+    bool moved = _appliedDirectly;
+    _appliedDirectly = false;
+
+    final double fraction =
+        enableDamping ? dampingFactor.clamp(0.01, 1.0) : 1.0;
+
+    if (_yawDelta != 0 || _pitchDelta != 0) {
+      camera = camera.orbitedBy(
+        yawDelta: _yawDelta * fraction,
+        pitchDelta: _pitchDelta * fraction,
+      );
+      _yawDelta -= _yawDelta * fraction;
+      _pitchDelta -= _pitchDelta * fraction;
+      if (_yawDelta.abs() < _rotationEpsilon) _yawDelta = 0;
+      if (_pitchDelta.abs() < _rotationEpsilon) _pitchDelta = 0;
+      moved = true;
+    }
+
+    if (_panOffset.length != 0) {
+      final Vector3 step = _panOffset * fraction;
+      camera = camera.withTarget(camera.target + step);
+      _panOffset = _panOffset - step;
+      if (_panOffset.length < camera.distance * _panEpsilonRatio) {
+        _panOffset = Vector3.zero;
+      }
+      moved = true;
+    }
+
+    return moved;
+  }
 }
 
 /// How a mesh is shaded.

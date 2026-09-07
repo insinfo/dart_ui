@@ -227,6 +227,7 @@ export 'src/widgets/navigator.dart';
 export 'src/widgets/number_box.dart';
 export 'src/widgets/overlay.dart';
 export 'src/widgets/phosphor_icons.dart';
+export 'src/widgets/pointer_listener.dart';
 export 'src/widgets/pointer_router.dart';
 export 'src/widgets/popup.dart';
 export 'src/widgets/popup_host.dart';
