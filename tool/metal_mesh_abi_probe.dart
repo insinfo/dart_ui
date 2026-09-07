@@ -13,6 +13,7 @@ const List<String> _meshSelectors = <String>[
   'newCommandQueue',
   'newLibraryWithSource:options:error:',
   'newRenderPipelineStateWithDescriptor:error:',
+  'newDepthStencilStateWithDescriptor:',
   'newBufferWithBytes:length:options:',
   'newFunctionWithName:',
   'vertexDescriptor',
@@ -30,6 +31,12 @@ const List<String> _meshSelectors = <String>[
   'colorAttachments',
   'setPixelFormat:',
   'setBlendingEnabled:',
+  'setDepthAttachmentPixelFormat:',
+  'setDepthCompareFunction:',
+  'setDepthWriteEnabled:',
+  'depthAttachment',
+  'setDepthStencilState:',
+  'setTriangleFillMode:',
 ];
 
 Never _fail(String message) {

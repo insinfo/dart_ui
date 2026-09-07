@@ -44,14 +44,31 @@ jobs:
             build/metal-mesh-abi-probe.log
           grep -q '^METAL_MESH_PIPELINE_STATE=PASS$' \
             build/metal-mesh-abi-probe.log
-          grep -q '^METAL_MESH_ABI_PROBE=PASS selectors=20$' \
+          grep -q '^METAL_MESH_ABI_PROBE=PASS selectors=27$' \
             build/metal-mesh-abi-probe.log
+
+      - name: Draw and read back Metal meshes
+        shell: bash
+        run: |
+          set -o pipefail
+          dart run tool/metal_mesh_runtime_probe.dart 2>&1 \
+            | tee build/metal-mesh-runtime-probe.log
+          grep -q '^SHADING=PASS mode=smooth ' \
+            build/metal-mesh-runtime-probe.log
+          grep -q '^SHADING=PASS mode=flat ' \
+            build/metal-mesh-runtime-probe.log
+          grep -q '^SHADING=PASS mode=unlit ' \
+            build/metal-mesh-runtime-probe.log
+          grep -q '^SHADING=PASS mode=wireframe ' \
+            build/metal-mesh-runtime-probe.log
+          grep -q '^METAL_MESH_RUNTIME=PASS ' \
+            build/metal-mesh-runtime-probe.log
 
       - name: Upload probe log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: metal-mesh-abi-probe
-          path: build/metal-mesh-abi-probe.log
+          path: build/metal-mesh-*-probe.log
           retention-days: 14
           if-no-files-found: warn

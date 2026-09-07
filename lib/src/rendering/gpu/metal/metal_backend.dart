@@ -73,6 +73,7 @@ import '../../framebuffer.dart';
 import '../../renderer.dart';
 import 'metal_bindings.dart';
 import 'metal_device.dart';
+import 'metal_mesh_renderer.dart';
 import 'metal_offscreen.dart';
 
 /// Metal, as a [RendererBackend].
@@ -373,6 +374,8 @@ final class MetalRenderDevice with DisposableMixin implements RenderDevice {
   final MetalGpu _gpu;
   final MetalPipelineCache _pipelines;
 
+  MetalGpu get meshGpu => _gpu;
+
   /// What `-[MTLDevice name]` answered, read once at open time.
   late final String deviceName = _gpu.name;
 
@@ -458,6 +461,8 @@ final class MetalRenderDevice with DisposableMixin implements RenderDevice {
     _pipelines.dispose();
     _gpu.dispose();
   }
+
+  MetalMeshRenderer createMeshRenderer() => MetalMeshRenderer(this);
 }
 
 /// A [RenderTarget] that renders into an `MTLTexture` and reads it back.
@@ -497,6 +502,8 @@ final class MetalMemoryTarget with DisposableMixin implements RenderTarget {
   /// because the other reading - "this frame's pixels, before it was drawn" -
   /// is the kind of thing a golden test passes silently.
   Framebuffer get framebuffer => _offscreen.framebuffer;
+
+  MetalOffscreenTarget get meshTarget => _offscreen;
 
   @override
   Frame beginFrame(FrameRequest request) {

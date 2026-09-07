@@ -182,9 +182,6 @@ const Map<String, String> kMetalDeliberatelyUnbound = <String, String>{
   'MTLBlitCommandEncoder':
       'texture uploads go through replaceRegion:, which needs no encoder for '
           'a shared-storage texture',
-  'MTLDepthStencilState':
-      'the renderer is 2D and painter-ordered; there is no depth buffer, which '
-          'is also why the GL backend disables GL_DEPTH_TEST',
   'MTLSamplerState':
       'filtering is a property of the texture in this renderer and is carried '
           'by GpuTextureFilter; if a future change needs dynamic filtering it '
@@ -303,6 +300,16 @@ abstract final class MtlPixelFormat {
   static const int bgra8Unorm = 80;
 
   static const int bgra8UnormSrgb = 81;
+  static const int depth32Float = 252;
+}
+
+abstract final class MtlCompareFunction {
+  static const int less = 1;
+}
+
+abstract final class MtlTriangleFillMode {
+  static const int fill = 0;
+  static const int lines = 1;
 }
 
 /// `MTLLoadAction`. **See the library comment**: the POC had `clear` as 0.
@@ -714,6 +721,9 @@ const List<MetalSelector> kMetalSelectors = <MetalSelector>[
   MetalSelector('newRenderPipelineStateWithDescriptor:error:', '@@:@^@',
       ObjCSendShape.pointerReturn2,
       returnsOwned: true, receiver: 'MTLDevice'),
+  MetalSelector('newDepthStencilStateWithDescriptor:', '@@:@',
+      ObjCSendShape.pointerReturn1,
+      returnsOwned: true, receiver: 'MTLDevice'),
   MetalSelector(
       'newTextureWithDescriptor:', '@@:@', ObjCSendShape.pointerReturn1,
       returnsOwned: true, receiver: 'MTLDevice'),
@@ -778,6 +788,8 @@ const List<MetalSelector> kMetalSelectors = <MetalSelector>[
       returnsOwned: false, receiver: 'MTLRenderPassDescriptor'),
   MetalSelector('colorAttachments', '@@:', ObjCSendShape.pointerReturn0,
       returnsOwned: false, receiver: 'MTLRenderPassDescriptor'),
+  MetalSelector('depthAttachment', '@@:', ObjCSendShape.pointerReturn0,
+      returnsOwned: false, receiver: 'MTLRenderPassDescriptor'),
   MetalSelector('setTexture:', 'v@:@', ObjCSendShape.voidReturn1,
       returnsOwned: false, receiver: 'MTLRenderPassColorAttachmentDescriptor'),
   MetalSelector('setLoadAction:', 'v@:Q', ObjCSendShape.voidReturn1,
@@ -818,6 +830,15 @@ const List<MetalSelector> kMetalSelectors = <MetalSelector>[
   MetalSelector('setAlphaBlendOperation:', 'v@:Q', ObjCSendShape.voidReturn1,
       returnsOwned: false,
       receiver: 'MTLRenderPipelineColorAttachmentDescriptor'),
+  MetalSelector(
+      'setDepthAttachmentPixelFormat:', 'v@:Q', ObjCSendShape.voidReturn1,
+      returnsOwned: false, receiver: 'MTLRenderPipelineDescriptor'),
+
+  // --- MTLDepthStencilDescriptor ----------------------------------------
+  MetalSelector('setDepthCompareFunction:', 'v@:Q', ObjCSendShape.voidReturn1,
+      returnsOwned: false, receiver: 'MTLDepthStencilDescriptor'),
+  MetalSelector('setDepthWriteEnabled:', 'v@:B', ObjCSendShape.voidReturn1,
+      returnsOwned: false, receiver: 'MTLDepthStencilDescriptor'),
 
   // --- MTLVertexDescriptor -----------------------------------------------
   MetalSelector('vertexDescriptor', '@@:', ObjCSendShape.pointerReturn0,
@@ -878,6 +899,10 @@ const List<MetalSelector> kMetalSelectors = <MetalSelector>[
       'setFragmentTexture:atIndex:', 'v@:@Q', ObjCSendShape.voidReturn2,
       returnsOwned: false, receiver: 'MTLRenderCommandEncoder'),
   MetalSelector('setCullMode:', 'v@:Q', ObjCSendShape.voidReturn1,
+      returnsOwned: false, receiver: 'MTLRenderCommandEncoder'),
+  MetalSelector('setDepthStencilState:', 'v@:@', ObjCSendShape.voidReturn1,
+      returnsOwned: false, receiver: 'MTLRenderCommandEncoder'),
+  MetalSelector('setTriangleFillMode:', 'v@:Q', ObjCSendShape.voidReturn1,
       returnsOwned: false, receiver: 'MTLRenderCommandEncoder'),
   MetalSelector(
       'drawIndexedPrimitives:indexCount:indexType:indexBuffer:'

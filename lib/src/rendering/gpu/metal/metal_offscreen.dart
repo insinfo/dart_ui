@@ -210,12 +210,15 @@ final class MetalOffscreenTarget {
   /// discards.
   void encodePass({
     int? clearColor,
+    Pointer<ObjCObject>? depthTexture,
     void Function(Pointer<ObjCObject> encoder)? body,
   }) =>
-      _encodePass(clearColor: clearColor, body: body);
+      _encodePass(
+          clearColor: clearColor, depthTexture: depthTexture, body: body);
 
   void _encodePass({
     required int? clearColor,
+    Pointer<ObjCObject>? depthTexture,
     required void Function(Pointer<ObjCObject> encoder)? body,
   }) {
     _checkAlive();
@@ -245,6 +248,13 @@ final class MetalOffscreenTarget {
       if (clearColor != null) {
         metalSendDouble4(
             attachment, 'setClearColor:', metalClearColor(clearColor));
+      }
+      if (depthTexture != null) {
+        final Pointer<ObjCObject> depth =
+            metalSendPointer(pass, 'depthAttachment');
+        metalSendVoid1(depth, 'setTexture:', depthTexture.address);
+        metalSendVoid1(depth, 'setLoadAction:', MtlLoadAction.clear);
+        metalSendVoid1(depth, 'setStoreAction:', MtlStoreAction.dontCare);
       }
 
       final Pointer<ObjCObject> commandBuffer =

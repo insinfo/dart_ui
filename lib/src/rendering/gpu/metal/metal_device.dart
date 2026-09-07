@@ -247,6 +247,8 @@ final class MetalGpu {
 /// about the descriptor it accepted.
 Pointer<ObjCObject> metalBuildVertexDescriptor({
   List<MetalVertexAttribute> attributes = kMetalVertexAttributes,
+  int stride = kMetalVertexStride,
+  int bufferIndex = kMetalVertexBufferIndex,
 }) {
   final Pointer<ObjCObject> cls = objcClass('MTLVertexDescriptor');
   if (cls == nullptr) {
@@ -268,16 +270,16 @@ Pointer<ObjCObject> metalBuildVertexDescriptor({
     }
     metalSendVoid1(slot, 'setFormat:', attribute.format);
     metalSendVoid1(slot, 'setOffset:', attribute.byteOffset);
-    metalSendVoid1(slot, 'setBufferIndex:', kMetalVertexBufferIndex);
+    metalSendVoid1(slot, 'setBufferIndex:', bufferIndex);
   }
 
   final Pointer<ObjCObject> layouts = metalSendPointer(descriptor, 'layouts');
-  final Pointer<ObjCObject> layout = metalSendPointer1(
-      layouts, 'objectAtIndexedSubscript:', kMetalVertexBufferIndex);
+  final Pointer<ObjCObject> layout =
+      metalSendPointer1(layouts, 'objectAtIndexedSubscript:', bufferIndex);
   if (layout == nullptr) {
     throw MetalError('buffer layout $kMetalVertexBufferIndex has no slot');
   }
-  metalSendVoid1(layout, 'setStride:', kMetalVertexStride);
+  metalSendVoid1(layout, 'setStride:', stride);
   metalSendVoid1(layout, 'setStepFunction:', MtlVertexStepFunction.perVertex);
   return descriptor;
 }
@@ -485,7 +487,15 @@ Map<String, Pointer<ObjCObject>> metalDescriptorSpecimens() {
         metalSendPointer1(metalSendPointer(pass, 'colorAttachments'),
             'objectAtIndexedSubscript:', 0),
       );
+      put('MTLRenderPassDepthAttachmentDescriptor',
+          metalSendPointer(pass, 'depthAttachment'));
     }
+  }
+
+  final Pointer<ObjCObject> depthClass = objcClass('MTLDepthStencilDescriptor');
+  if (depthClass != nullptr) {
+    put('MTLDepthStencilDescriptor',
+        metalSendPointer(metalSendPointer(depthClass, 'alloc'), 'init'));
   }
 
   final Pointer<ObjCObject> pipelineClass =
@@ -536,6 +546,8 @@ void metalReleaseSpecimens(Map<String, Pointer<ObjCObject>> specimens) {
   final Pointer<ObjCObject>? pipeline =
       specimens['MTLRenderPipelineDescriptor'];
   if (pipeline != null) objcRelease(pipeline);
+  final Pointer<ObjCObject>? depth = specimens['MTLDepthStencilDescriptor'];
+  if (depth != null) objcRelease(depth);
 }
 
 // ---------------------------------------------------------------------------
