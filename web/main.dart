@@ -43,6 +43,8 @@ library;
 import 'dart:js_interop';
 
 import 'package:dart_ui/dart_ui.dart';
+import 'package:dart_ui/src/backends/web/dom/dom_presenter.dart';
+import 'package:dart_ui/src/backends/web/dom/dom_scene.dart';
 import 'package:dart_ui/src/backends/web/web_fonts.dart';
 import 'package:dart_ui/src/backends/web/web_gl_presenter.dart';
 import 'package:dart_ui/src/backends/web/web_gpu_presenter.dart';
@@ -69,6 +71,23 @@ BackendProbeResult _probeWebGl2() => const WebGlRendererBackend().probe();
 /// and a refusal there is what the fallback below exists for - see the
 /// presentations list in `main`.
 BackendProbeResult _probeWebGpu() => const WebGpuRendererBackend().probe();
+
+/// Whether the page asked for the DOM path by name.
+///
+/// `?renderer=dom` in the query string, and nothing else. The policy, stated
+/// once: **the DOM path is the last fallback and never the default.** It draws
+/// with HTML elements instead of pixels, which buys selectable text, find-in-
+/// page, a real accessibility tree and real keyboard focus, and pays for them
+/// by refusing arbitrary paths, gradients and blend modes - see
+/// `dom_presenter.dart` for the list. A gallery whose whole point is vector
+/// rendering should not silently land there because a driver was having a bad
+/// morning, so it sits below WebGPU and WebGL2 and is only promoted when
+/// somebody asks.
+///
+/// A query parameter rather than a build flag because the interesting
+/// comparison is the same page on both paths, side by side in two tabs, and
+/// because it is what a browser test can drive.
+bool get _domRequested => web.window.location.search.contains('renderer=dom');
 
 /// The face the gallery draws its labels in.
 ///
@@ -117,6 +136,9 @@ Future<void> main() async {
     // parameter and ignoring it is the honest shape; a named refusal here
     // would fire on every startup for a request nobody made.
     presentations: <PresentationPathEntry>[
+      // Promoted to the front only when the page asked; see [_domRequested] for
+      // the policy and the reason it is a query parameter.
+      if (_domRequested) _domPresentationPath(),
       PresentationPathEntry(
         name: WebGpuRendererBackend.backendName,
         kind: PresentationKind.gpu,
@@ -133,6 +155,13 @@ Future<void> main() async {
         attach: (NativeWindow window, {RenderDeviceProvider? devices}) =>
             WebGlCanvasPresenter.attach(window),
       ),
+      // Last, and reachable without asking: this is the path that works when
+      // WebGL2 is blocked by policy, disabled by a flag, or absent because the
+      // machine has no GPU at all. A page that fell all the way here is drawn
+      // as HTML, which is worse-looking and entirely usable - and the startup
+      // report below says so by name, which is the difference between "the DOM
+      // path is running" and "something went wrong".
+      if (!_domRequested) _domPresentationPath(),
     ],
     options: ApplicationOptions(
       // No API in the name: which of the two GPU paths won is the startup
@@ -163,7 +192,76 @@ Future<void> main() async {
   // something else", and those two look identical on screen.
   web.console.log(application.describeStartup().toJS);
 
+  _connectDomSemantics(application);
+
   _FrameLoop(application).start();
+}
+
+/// The DOM presentation path, in the one shape `Application.start` accepts.
+///
+/// A function rather than a `const` entry because the presenter it attaches
+/// needs two things wired to it afterwards - a semantic tree to publish and
+/// somewhere to report what it could not draw - and both are held on the object
+/// rather than passed to the constructor. See [_wireDomPresenter], which is
+/// where that happens.
+PresentationPathEntry _domPresentationPath() => PresentationPathEntry(
+      name: DomCanvasPresenter.backendName,
+      // `cpu` and not `gpu`, and neither word is really right: nothing here
+      // rasterises at all - the browser's own compositor does, on whatever
+      // hardware it chooses. `cpu` is the honest half of the answer, because
+      // this path makes no claim on a GPU device and shares none.
+      kind: PresentationKind.cpu,
+      rasterizationApproach: RasterizationApproach.custom,
+      probe: DomCanvasPresenter.probe,
+      attach: (NativeWindow window, {RenderDeviceProvider? devices}) async {
+        final DomCanvasPresenter presenter =
+            await DomCanvasPresenter.attach(window);
+        _wireDomPresenter(presenter);
+        return presenter;
+      },
+    );
+
+/// Where the presenter built above is remembered until an [Application] exists.
+///
+/// `attach` runs *inside* `Application.start`, before the object that owns the
+/// semantic tree has been returned, so the tree cannot be handed over there.
+/// This is the smallest thing that closes that gap: one field, set during
+/// attach and consumed immediately after start.
+DomCanvasPresenter? _domPresenter;
+
+void _wireDomPresenter(DomCanvasPresenter presenter) {
+  _domPresenter = presenter;
+  // Once per distinct reason, not once per command. A page whose interface uses
+  // one gradient should say so once and then be quiet.
+  presenter.onRefusal = (DomRefusal refusal) => web.console.warn(
+        'the DOM backend cannot draw ${refusal.what}: ${refusal.why}'.toJS,
+      );
+}
+
+/// Gives the DOM path the semantic tree and the action sink it could not be
+/// given at attach time.
+///
+/// Does nothing when another path won, which is the ordinary case.
+///
+/// The tree is built per frame rather than diffed through
+/// `BuildOwner.updateSemantics`, because the layer does its own diff by node id
+/// and a second diff above it would only be able to describe changes the layer
+/// then has to look up anyway. The cost is one render-tree walk per frame, paid
+/// only by a page that is actually on this path.
+void _connectDomSemantics(Application application) {
+  final DomCanvasPresenter? presenter = _domPresenter;
+  if (presenter == null) return;
+  presenter
+    ..semanticsSource = application.buildOwner.buildSemantics
+    ..onSemanticsAction = (int nodeId, SemanticsAction action) {
+      // Through the owner rather than straight at the render object, because
+      // `SemanticsOwner.performAction` refuses an action the last published
+      // snapshot did not declare - which is what stops the DOM being able to
+      // press a button the framework never offered.
+      final bool performed =
+          application.buildOwner.semanticsOwner.performAction(nodeId, action);
+      if (performed) application.requestFrame();
+    };
 }
 
 /// Drives [Application.drawPendingFrames] from `requestAnimationFrame`.
