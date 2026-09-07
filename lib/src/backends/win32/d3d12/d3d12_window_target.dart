@@ -279,6 +279,32 @@ final class D3d12WindowTarget
   @override
   NativeSurfaceDescriptor get surface => _surface;
 
+  /// The device this target presents through.
+  ///
+  /// Exposed for `d3d12_mesh_pipeline.dart`; see the same getter on
+  /// [D3d12OffscreenTarget] for why a mesh pipeline must be built on *this*
+  /// device and not a second one.
+  D3d12RenderDevice get device => _device;
+
+  /// The render-target-view handle of the buffer the frame in progress draws
+  /// into, or 0 when there is no swap chain.
+  ///
+  /// Refetched from [_backBufferViews] on every read rather than cached by the
+  /// caller, which is the trap `tool/mesh_gpu_window_probe.dart` documents:
+  /// the views are destroyed and recreated by every resize, and a renderer
+  /// holding an old one draws into a freed buffer.
+  int get currentRenderTargetView =>
+      _backBufferViews.isEmpty ? 0 : _backBufferViews[_backBufferIndex];
+
+  /// The swap chain buffer the frame in progress draws into, or `nullptr`.
+  ///
+  /// A caller that records draws into this buffer outside [present] has to
+  /// move it `PRESENT` -> `RENDER_TARGET` and back itself, because [present]
+  /// records exactly that pair and a barrier whose `before` state does not
+  /// match is undefined behaviour the debug layer reports as an error.
+  Pointer<Void> get currentBackBuffer =>
+      _backBuffers.isEmpty ? nullptr : _backBuffers[_backBufferIndex];
+
   /// Which swap chain buffer the frame in progress is drawn into.
   ///
   /// Exposed because it is the observable that says the flip model is working:

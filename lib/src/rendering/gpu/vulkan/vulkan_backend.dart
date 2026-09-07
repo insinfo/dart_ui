@@ -76,8 +76,88 @@ import 'vulkan_vector_path_recorder.dart';
 import 'vulkan_wsi_bindings.dart';
 
 /// A `VkBuffer` and the memory behind it.
+/// A pass that draws straight into a target's colour attachment, before the
+/// display list's own batches.
+///
+/// The generalisation of `enqueueSparseStrips`, and it exists for the reason
+/// that one does: a Vulkan target opens its command buffer and acquires its
+/// image inside `present`, so between `beginFrame` and `present` there is
+/// nothing for an outside caller to record onto. Anything that wants to draw
+/// into the attachment therefore has to hand the target a callback and be
+/// called back.
+///
+/// A function of a command buffer and a [VulkanAttachmentSurface], and
+/// deliberately nothing more specific: the 3D mesh pipeline is the first
+/// implementation and this file must not learn what a mesh is - see the
+/// library comment of `rendering/mesh/mesh_scene.dart` for why the contract
+/// between a renderer and a backend is written in the types the layer already
+/// has.
+typedef VulkanAttachmentPass = void Function(
+  Pointer<VkCommandBuffer_T> commands,
+  VulkanAttachmentSurface surface,
+);
+
+/// What a [VulkanAttachmentPass] is drawing into.
+///
+/// Everything a caller needs to build its own `VkFramebuffer` and its own
+/// render pass over this target's colour image, and nothing about how the
+/// target uses it.
+final class VulkanAttachmentSurface {
+  const VulkanAttachmentSurface({
+    required this.colorView,
+    required this.width,
+    required this.height,
+    required this.colorFormat,
+    required this.generation,
+    required this.hasContent,
+  });
+
+  /// The colour attachment's image view.
+  ///
+  /// **Not to be cached across generations.** A swapchain rebuild destroys
+  /// every view and a freed `VkImageView` can be re-allocated at the same
+  /// address, so a framebuffer keyed on the address alone would name a
+  /// destroyed view with no diagnostic anywhere. [generation] is what makes
+  /// such a cache safe.
+  final Pointer<VkImageView_T> colorView;
+
+  final int width;
+  final int height;
+
+  /// The `VkFormat` of [colorView], which a render pass has to declare.
+  final int colorFormat;
+
+  /// The target's [RenderTarget.generation]. It moves when the views behind
+  /// [colorView] are rebuilt.
+  final int generation;
+
+  /// Whether the attachment already holds a frame in
+  /// `COLOR_ATTACHMENT_OPTIMAL`.
+  ///
+  /// False on the first frame of a target and on a swapchain image that has
+  /// never been presented, where a pass with `loadOp = LOAD` and
+  /// `initialLayout = COLOR_ATTACHMENT_OPTIMAL` would be reading a layout the
+  /// image is not in. A pass that would rather load than clear has to consult
+  /// this rather than assume.
+  final bool hasContent;
+}
+
 final class VulkanBuffer {
   VulkanBuffer._(this.handle, this.memory, this.size);
+
+  /// Takes ownership of a buffer somebody else created and bound.
+  ///
+  /// For a caller that needs a memory *preference* - `HOST_VISIBLE` while
+  /// asking the allocator for `DEVICE_LOCAL` where the adapter has some the
+  /// CPU can write - which [create]'s `hostVisible` bool cannot express. The
+  /// alternative was a second bool with a name nobody could read; this way the
+  /// caller does the four calls it wants and still gets one [dispose].
+  factory VulkanBuffer.adopt(
+    Pointer<VkBuffer_T> handle,
+    VulkanAllocation memory,
+    int size,
+  ) =>
+      VulkanBuffer._(handle, memory, size);
 
   final Pointer<VkBuffer_T> handle;
   final VulkanAllocation memory;
@@ -1541,6 +1621,18 @@ final class VulkanOffscreenTarget implements RenderTarget {
   int? _pendingClear;
   bool _disposed = false;
 
+  /// The pass enqueued for the frame in progress, if any. See
+  /// [enqueueAttachmentPass].
+  VulkanAttachmentPass? _pendingAttachmentPass;
+
+  /// Whether the colour image holds a frame in `COLOR_ATTACHMENT_OPTIMAL`.
+  ///
+  /// Distinct from the recorder's own `hasContent`, which is per *render pass*
+  /// and is what decides between clearing and loading; this is per *image* and
+  /// is what an enqueued pass is told, because an image that has never been
+  /// written is in `UNDEFINED` and cannot be loaded from at all.
+  bool _colorHasContent = false;
+
   late final _VulkanOrderedRecorder _recorder;
 
   /// True once the colour image holds something worth loading. Until then a
@@ -1723,6 +1815,28 @@ final class VulkanOffscreenTarget implements RenderTarget {
         ),
       );
 
+  /// The device this target draws through.
+  ///
+  /// Exposed so a caller holding only a [RenderTarget] - which is all the
+  /// [MeshSceneRenderer] contract can name - can check that it is the device
+  /// its own pipelines were built on. Objects from a second `VkDevice` cannot
+  /// be used together and Vulkan answers that with undefined behaviour rather
+  /// than an error.
+  VulkanRenderDevice get device => _device;
+
+  /// Runs [pass] on the frame in progress, before the display list's batches.
+  ///
+  /// One per frame; a second call replaces the first, which is what a caller
+  /// that draws one 3D scene per frame wants and is the same shape
+  /// [enqueueSparseStrips] has.
+  ///
+  /// **A [FrameRequest] that also names a clear colour wipes the pass**, since
+  /// the display list clears after it. That is a contradiction in the request
+  /// rather than a bug: a caller drawing an interface over a model passes no
+  /// clear colour and lets the pass do the clearing.
+  void enqueueAttachmentPass(VulkanAttachmentPass pass) =>
+      _pendingAttachmentPass = pass;
+
   bool _record(Pointer<VkCommandBuffer_T> commands) {
     // The vertex data. Written straight into host-visible memory; see the
     // library comment for why there is no staging copy here.
@@ -1749,6 +1863,29 @@ final class VulkanOffscreenTarget implements RenderTarget {
 
     final int? clear = _pendingClear;
     _pendingClear = null;
+
+    // Before the display list, so the batches composite over whatever the pass
+    // drew. The pass owns its own render pass and framebuffer and leaves the
+    // colour image in `COLOR_ATTACHMENT_OPTIMAL`, which is exactly the layout
+    // the recorder's load pass expects to find it in.
+    final VulkanAttachmentPass? pass = _pendingAttachmentPass;
+    _pendingAttachmentPass = null;
+    if (pass != null) {
+      pass(
+        commands,
+        VulkanAttachmentSurface(
+          colorView: _color.view,
+          width: _readback.width,
+          height: _readback.height,
+          colorFormat: _vkFormat,
+          generation: _generation,
+          hasContent: _colorHasContent,
+        ),
+      );
+      _colorHasContent = true;
+      _hasContent = true;
+    }
+
     _hasContent = _recorder.record(
       commands,
       framebuffer: _framebuffer,
@@ -1758,6 +1895,7 @@ final class VulkanOffscreenTarget implements RenderTarget {
       clearColor: clear,
       hasContent: _hasContent,
     );
+    _colorHasContent = true;
 
     return using((NativeArena arena) {
       // COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL, copy, and back. The
@@ -2185,6 +2323,25 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
     );
   }
 
+  /// The pass enqueued for the frame in progress. See
+  /// [enqueueAttachmentPass].
+  VulkanAttachmentPass? _pendingAttachmentPass;
+
+  /// The device this target presents through. See the same getter on
+  /// [VulkanOffscreenTarget].
+  VulkanRenderDevice get device => _device;
+
+  /// Runs [pass] on the frame in progress, before the display list's batches.
+  ///
+  /// The same contract [VulkanOffscreenTarget.enqueueAttachmentPass] states,
+  /// including what a clear colour in the [FrameRequest] does to it. The pass
+  /// runs after the swapchain image has been acquired and moved out of
+  /// `PRESENT_SRC_KHR`, which is the whole reason it cannot simply be recorded
+  /// by the caller: neither the image nor the command buffer exists until
+  /// [present] is called.
+  void enqueueAttachmentPass(VulkanAttachmentPass pass) =>
+      _pendingAttachmentPass = pass;
+
   @override
   Future<PresentResult> renderDisplayList(
     DisplayList list, {
@@ -2369,7 +2526,14 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
     // while a presented image sits in `PRESENT_SRC_KHR`. The clearing pass
     // needs no such transition: its `initialLayout` is UNDEFINED, which is
     // legal from any layout and says the contents are about to be overwritten.
-    final bool loads = clear == null && chain.isPresentable(image);
+    final VulkanAttachmentPass? pass = _pendingAttachmentPass;
+    _pendingAttachmentPass = null;
+    // An enqueued pass writes the image before the display list does, so it
+    // needs the same transition out of `PRESENT_SRC_KHR` a loading frame does -
+    // even when it will clear, because its render pass may declare
+    // `initialLayout = COLOR_ATTACHMENT_OPTIMAL` and only the pass knows which.
+    final bool loads =
+        (clear == null || pass != null) && chain.isPresentable(image);
     if (loads) {
       _device.recordImageBarrier(
         commands,
@@ -2386,6 +2550,20 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
       );
     }
 
+    if (pass != null) {
+      pass(
+        commands,
+        VulkanAttachmentSurface(
+          colorView: chain.imageViewAt(image),
+          width: config.width,
+          height: config.height,
+          colorFormat: config.format,
+          generation: _generation,
+          hasContent: chain.isPresentable(image),
+        ),
+      );
+    }
+
     _recorder.record(
       commands,
       framebuffer: chain.framebufferAt(image),
@@ -2393,7 +2571,10 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
       height: config.height,
       colorFormat: config.format,
       clearColor: clear,
-      hasContent: loads,
+      // A pass has already written this image and left it in
+      // `COLOR_ATTACHMENT_OPTIMAL`, so the batches load over it rather than
+      // clearing it away.
+      hasContent: loads || pass != null,
     );
 
     final bool captures = captureFrames && canCaptureFrames;

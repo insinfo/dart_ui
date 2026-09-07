@@ -212,6 +212,24 @@ final class D3d12OffscreenTarget with DisposableMixin implements RenderTarget {
   @override
   NativeSurfaceDescriptor get surface => _surface;
 
+  /// The device this target draws through.
+  ///
+  /// Exposed for `d3d12_mesh_pipeline.dart`, which is handed a [RenderTarget]
+  /// by the [MeshSceneRenderer] contract and has to reach the device the
+  /// target's colour texture belongs to. A mesh pipeline built on a *second*
+  /// device would draw nothing and report no error, which is the failure this
+  /// getter exists to make impossible.
+  D3d12RenderDevice get device => _device;
+
+  /// The render-target-view handle of the colour texture, in the device's RTV
+  /// heap.
+  ///
+  /// The colour texture is created with `renderTarget: true` and therefore
+  /// never leaves `RENDER_TARGET` state, so a caller recording into the open
+  /// command list needs no barrier of its own - unlike the window target,
+  /// whose buffer DXGI hands over in `PRESENT`.
+  int get colorRenderTargetView => _renderTargetView;
+
   @override
   int get generation {
     final int losses = _device.state.lossCount;

@@ -160,12 +160,31 @@ const int kSpirvStorageClassPushConstant = 9;
 
 const int kSpirvDecorationBlock = 2;
 const int kSpirvDecorationBuiltIn = 11;
+
+/// `SpvDecorationNoPerspective`. Affine interpolation, where the default is
+/// perspective-correct.
+///
+/// It arrived with the mesh pipeline and it is not a preference:
+/// `MeshRasterizer` interpolates a vertex normal affinely while interpolating
+/// texture coordinates with `1/w` - its comment #5 argues for exactly that -
+/// so a normal without this decoration shades a curved surface from a normal a
+/// fraction of a degree off over its whole area. The HLSL twins spell it
+/// `noperspective`.
+const int kSpirvDecorationNoPerspective = 13;
 const int kSpirvDecorationLocation = 30;
 const int kSpirvDecorationBinding = 33;
 const int kSpirvDecorationDescriptorSet = 34;
 const int kSpirvDecorationOffset = 35;
 
 const int kSpirvBuiltInPosition = 0;
+
+/// `SpvBuiltInFrontFacing`. Vulkan's `gl_FrontFacing`, a **bool** input.
+///
+/// The counterpart of HLSL's `SV_IsFrontFace`, and it follows the pipeline's
+/// `frontFace` exactly as that one follows `FrontCounterClockwise`. The mesh
+/// fragment stage reads it to reverse the normal of a back face that survived
+/// culling, which is what stops the inside of an open shell reading as a hole.
+const int kSpirvBuiltInFrontFacing = 17;
 
 /// `SpvBuiltInVertexIndex`. Vulkan's `gl_VertexIndex`, which is a *signed*
 /// 32-bit integer; the unsigned `VertexId` of OpenGL is a different builtin
@@ -208,6 +227,15 @@ const int kGlslStd450FMin = 37;
 const int kGlslStd450FMax = 40;
 const int kGlslStd450FClamp = 43;
 const int kGlslStd450Length = 66;
+
+/// `Normalize`, which the mesh fragment stage calls on the interpolated
+/// normal.
+///
+/// The instruction and not `Sqrt` of a `Dot`, for the reason `Length` is used
+/// above: the HLSL twins call `normalize`, and a parity test held to a level
+/// or two rests on the two sides emitting the same instruction rather than the
+/// same real number.
+const int kGlslStd450Normalize = 69;
 
 // ---------------------------------------------------------------------------
 // The builder

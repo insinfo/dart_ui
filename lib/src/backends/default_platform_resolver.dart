@@ -26,6 +26,7 @@ import '../rendering/gpu/gl/gl_mesh_renderer.dart';
 import '../rendering/gpu/vulkan/vulkan_backend.dart';
 import '../rendering/gpu/vulkan/vulkan_instance.dart';
 import '../rendering/gpu/vulkan/vulkan_library.dart';
+import '../rendering/gpu/vulkan/vulkan_mesh_pipeline.dart';
 import '../rendering/gpu/vulkan/vulkan_surface_descriptor.dart';
 import '../rendering/mesh/mesh_scene.dart';
 import '../rendering/render_policy.dart';
@@ -40,6 +41,7 @@ import 'win32/d2d/d2d_targets.dart';
 import 'win32/d3d11/win32_d3d11_surface.dart';
 import 'win32/d3d12/d3d12_backend.dart';
 import 'win32/d3d12/d3d12_device.dart';
+import 'win32/d3d12/d3d12_mesh_pipeline.dart';
 import 'win32/win32.dart';
 import 'win32/win32_gl_surface.dart';
 import 'x11/x11_backend.dart';
@@ -347,6 +349,16 @@ final class PlatformBackendResolver {
     return PresentationPathEntry.directRenderer(
       backend: renderer,
       compatibleWindowingBackends: const <String>{'win32'},
+      // See `_win32D3d11` for why the factory lives here and why it throws.
+      createMeshRenderer: (RenderDevice device) {
+        if (device is! D3d12RenderDevice) {
+          throw StateError('direct3d12 mesh rendering needs a '
+              'D3d12RenderDevice; got ${device.runtimeType}');
+        }
+        final Object built = D3d12MeshRenderer.create(device);
+        if (built is MeshSceneRenderer) return built;
+        throw StateError('$built');
+      },
       createAttachment: (
         RendererBackend backend,
         NativeWindow native, {
@@ -402,6 +414,16 @@ final class PlatformBackendResolver {
       // experimental, is never reached by fallback, and raises on the first
       // glyph, so almost nothing exercises it.
       openDevice: _openWin32VulkanDevice,
+      // See `_win32D3d11` for why the factory lives here and why it throws.
+      createMeshRenderer: (RenderDevice device) {
+        if (device is! VulkanRenderDevice) {
+          throw StateError('vulkan mesh rendering needs a VulkanRenderDevice; '
+              'got ${device.runtimeType}');
+        }
+        final Object built = VulkanMeshRenderer.create(device);
+        if (built is MeshSceneRenderer) return built;
+        throw StateError('$built');
+      },
       createAttachment: (
         RendererBackend _,
         NativeWindow native, {

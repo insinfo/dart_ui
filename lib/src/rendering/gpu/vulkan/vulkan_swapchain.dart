@@ -620,6 +620,15 @@ final class VulkanSwapchain {
 
   Pointer<VkImage_T> imageAt(int index) => _images[index];
 
+  /// The image view of swapchain image [index].
+  ///
+  /// Exposed for a [VulkanAttachmentPass] that builds a framebuffer of its own
+  /// over this image - a depth-testing 3D pass cannot reuse [framebufferAt],
+  /// whose framebuffer has one attachment and belongs to a render pass with
+  /// one. The view is destroyed and rebuilt by every swapchain rebuild, so a
+  /// caller that caches it has to key the cache on the target's generation.
+  Pointer<VkImageView_T> imageViewAt(int index) => _views[index];
+
   Pointer<VkFramebuffer_T> framebufferAt(int index) => _framebuffers[index];
 
   /// Whether image [index] has been presented, and therefore holds the last
