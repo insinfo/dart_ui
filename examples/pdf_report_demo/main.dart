@@ -303,6 +303,16 @@ void _drawTypefaceText(
   double size,
   int color,
 ) {
+  // Preserve searchable/selectable Unicode text while painting the exact
+  // custom-font outlines. The invisible text layer is a PDF accessibility
+  // primitive (text rendering mode 3), not a raster image.
+  canvas.drawText(
+    text,
+    position,
+    fontSize: size,
+    color: color,
+    invisible: true,
+  );
   final scale = size / typeface.unitsPerEm;
   var penX = position.dx;
   for (final rune in text.runes) {

@@ -52,6 +52,20 @@ void main() {
       );
     });
 
+    test('emits an invisible selectable text layer', () {
+      final builder = PdfDocumentBuilder();
+      builder.addPage().drawText(
+            'Texto acessível',
+            const Offset(20, 30),
+            invisible: true,
+          );
+
+      final page = PdfDocument.fromBytes(builder.build()).getPage(1);
+      final content = String.fromCharCodes(page.getContentsBytes());
+      expect(content, contains('3 Tr'));
+      expect(content, contains('(Texto acessível) Tj'));
+    });
+
     test('cria documento PDF válido com múltiplas páginas e valida round-trip',
         () {
       final builder = PdfDocumentBuilder(

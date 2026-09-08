@@ -150,7 +150,8 @@ class PdfCanvasRecorder {
   void drawText(String text, Offset position,
       {String fontName = 'F1',
       double fontSize = 12.0,
-      int color = 0xFF000000}) {
+      int color = 0xFF000000,
+      bool invisible = false}) {
     setFillColor(color);
     final escapedText = text
         .replaceAll('\\', '\\\\')
@@ -161,6 +162,10 @@ class PdfCanvasRecorder {
 
     _buffer.writeln('BT');
     _buffer.writeln('/$fontName $fontSize Tf');
+    // Text rendering mode belongs to the text state and survives ET/BT in
+    // common readers. Set it on every run so an accessibility layer cannot
+    // accidentally hide later visible text.
+    _buffer.writeln(invisible ? '3 Tr' : '0 Tr');
     _buffer.writeln('$x $y Td');
     _buffer.writeln('($escapedText) Tj');
     _buffer.writeln('ET');
