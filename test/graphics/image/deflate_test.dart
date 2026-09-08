@@ -355,6 +355,127 @@ void main() {
     });
   });
 
+  group('the platform encoder, and what choosing it costs', () {
+    // The cross-check runs the other way round here. zlib reading zlib proves
+    // nothing, so what is asserted is that *this repository's* inflater reads
+    // what `DeflateEncoder.native` produced - the same discipline as
+    // `_roundTrip`, with the two implementations swapping ends.
+    Uint8List nativeRoundTrip(Uint8List raw) {
+      final Uint8List packed = deflateZlib(raw, encoder: DeflateEncoder.native);
+      expect(
+        inflateZlib(packed, maxOutputBytes: _plenty, budget: 'test'),
+        raw,
+        reason: 'the inflater in this repository could not read what zlib '
+            'wrote',
+      );
+      return packed;
+    }
+
+    test('empty, one byte, text and noise all read back', () {
+      nativeRoundTrip(Uint8List(0));
+      nativeRoundTrip(_bytes(<int>[0x42]));
+      nativeRoundTrip(Uint8List.fromList(utf8.encode('BT (x) Tj ET ' * 500)));
+      final Random random = Random(1951);
+      nativeRoundTrip(Uint8List.fromList(
+        List<int>.generate(70000, (_) => random.nextInt(256)),
+      ));
+    });
+
+    test('the raw stream, with no wrapper, reads back too', () {
+      final Uint8List raw =
+          Uint8List.fromList(utf8.encode('q 1 0 0 1 0 0 cm Q ' * 300));
+      final Uint8List packed = deflate(raw, encoder: DeflateEncoder.native);
+      expect(
+        inflate(packed, maxOutputBytes: _plenty, budget: 'test'),
+        raw,
+        reason: 'the inflater in this repository could not read what zlib '
+            'wrote',
+      );
+    });
+
+    test('its header is the header ours writes, so no reader can tell', () {
+      // Both encoders have to claim DEFLATE with a 32 KiB window and no preset
+      // dictionary; a `/FlateDecode` reader checks nothing else, and this is
+      // what makes the two interchangeable to everything but a byte compare.
+      final Uint8List packed =
+          deflateZlib(_bytes(<int>[1, 2, 3]), encoder: DeflateEncoder.native);
+      expect(packed[0] & 0x0F, 8);
+      expect((packed[0] << 8 | packed[1]) % 31, 0);
+      expect(packed[1] & 0x20, 0);
+    });
+
+    test('the two encoders do not agree on the bytes', () {
+      // The cost of `native`, asserted rather than described: a document
+      // composed on the VM with it and the same document composed in a browser
+      // are both valid and are not the same file. `portable` is the default
+      // precisely so that nothing loses byte-for-byte reproducibility by
+      // accident.
+      final Uint8List raw = Uint8List.fromList(
+        utf8.encode('pagina 1 linha 0 - texto repetido o bastante ' * 400),
+      );
+      expect(
+        deflateZlib(raw, encoder: DeflateEncoder.native),
+        isNot(deflateZlib(raw)),
+      );
+      expect(zlib.decode(deflateZlib(raw)), raw);
+      expect(
+        inflateZlib(
+          deflateZlib(raw, encoder: DeflateEncoder.native),
+          maxOutputBytes: _plenty,
+          budget: 'test',
+        ),
+        raw,
+      );
+    });
+
+    test('and ours is the smaller of the two on a document worth of data', () {
+      // The other half of the trade, asserted on the data the default was
+      // chosen for: the content streams of a document this framework composed.
+      //
+      // Not on the two PDF fixtures, and the failure that ruled them out is
+      // worth recording - their Flate streams add up to a few hundred bytes,
+      // and on one of those zlib wins by a single byte. The 1.43% in the file
+      // header is a figure over 101 MiB; per stream the two trade places, and
+      // a test built on a hundred bytes would be measuring rounding.
+      final PdfDocumentBuilder builder = PdfDocumentBuilder(title: 'Tamanho');
+      for (int page = 0; page < 10; page++) {
+        final canvas = builder.addPage(width: 595, height: 842);
+        for (int line = 0; line < 40; line++) {
+          canvas.drawText(
+            'pagina ${page + 1} linha $line - texto suficientemente repetido '
+            'para que a compressao valha a pena',
+            Offset(40, 40 + line * 20),
+          );
+        }
+      }
+      final PdfDocument document = PdfDocument.fromBytes(builder.build());
+      int ours = 0;
+      int theirs = 0;
+      for (int page = 1; page <= document.pageCount; page++) {
+        final Uint8List content = document.getPage(page).getContentsBytes();
+        ours += deflateZlib(content).length;
+        theirs += deflateZlib(content, encoder: DeflateEncoder.native).length;
+      }
+      expect(ours, greaterThan(0));
+      expect(ours, lessThan(theirs));
+    });
+
+    test('asking it for a block type it cannot emit is a programming error',
+        () {
+      // zlib prices its own blocks, so honouring `blocks` is impossible and
+      // ignoring it would make `DeflateBlocks.stored` mean whatever zlib felt
+      // like - the assumption every block-type test above is built on.
+      expect(
+        () => deflateZlib(
+          _bytes(<int>[1, 2, 3]),
+          blocks: DeflateBlocks.stored,
+          encoder: DeflateEncoder.native,
+        ),
+        throwsA(isA<AssertionError>()),
+      );
+    });
+  });
+
   group('the PDF writer that this replaced a dependency for', () {
     test('a composed document is Flate-compressed and reads back', () {
       final PdfDocumentBuilder builder =

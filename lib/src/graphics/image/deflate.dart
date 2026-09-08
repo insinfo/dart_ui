@@ -3,10 +3,13 @@
 /// ## Why this file exists at all
 ///
 /// The same reason `inflate.dart` does, read from the other side. `dart:io`
-/// ships a zlib codec and this framework may not use it: the web backend
-/// compiles under `dart2js` and `dart2wasm`, where `dart:io` does not exist,
-/// and the whole point of the project is that one implementation runs
-/// everywhere. There is exactly one caller that has to *produce* a zlib
+/// ships a zlib codec and this framework cannot be built on it: the web
+/// backend compiles under `dart2js` and `dart2wasm`, where `dart:io` does not
+/// exist, and the whole point of the project is that one implementation runs
+/// everywhere. That codec is reachable - see [DeflateEncoder] below, and the
+/// section that explains why it is not the default - but only as a faster
+/// second answer to a question this file already answers on every target.
+/// There is exactly one caller that has to *produce* a zlib
 /// stream - the PDF writer, which compresses a content stream so the object
 /// can carry `/Filter /FlateDecode` - and until this file it reached for
 /// `package:archive`: a whole third-party dependency, in a repository whose
@@ -39,10 +42,51 @@
 /// five bytes per 64 KiB instead of expanding, which is the one guarantee a
 /// Huffman-only encoder cannot make.
 ///
-/// The cost is time: 2.5x `archive` over that corpus, 14 MiB/s against its
-/// 35 MiB/s. A PDF is compressed once on the way out, so the streams of a
-/// hundred-page document cost single-digit milliseconds more; this would be
-/// the wrong trade in a decoder inside a frame loop and it is not one here.
+/// One correction to that paragraph, found later and worth stating because it
+/// changes what the numbers mean: `package:archive`'s `ZLibEncoder` is not
+/// Dart on the VM. Its `_zlib_encoder_io.dart` is `ZLibCodec(level: 6)`, so
+/// every ratio above is against C zlib itself, and "a little under `archive`"
+/// means a little under zlib.
+///
+/// ## Which encoder writes the bytes, and why the default is the slow one
+///
+/// Since zlib is what `dart:io` has been handing us all along, [DeflateEncoder]
+/// makes it reachable: [DeflateEncoder.native] is `ZLibCodec` on the VM and
+/// this encoder everywhere else, [DeflateEncoder.portable] is this encoder
+/// everywhere. The default is [DeflateEncoder.portable], and the measurements
+/// that chose it, taken from an AOT binary (`tool/deflate_bench.dart`; `dart
+/// run` spends about six seconds front-end compiling this package before
+/// `main` and would report that instead) over 2091 `/FlateDecode` streams,
+/// 101.3 MiB, from `test/data` and `referencias`:
+///
+///   * **size**: 24294662 bytes against zlib's 24641706. zlib is **1.43%
+///     larger**, for the reason the block section already gives - a table per
+///     16384 symbols tracks a stream that turns from text to font data better
+///     than one table for the whole of it;
+///   * **speed**: 17.9 MiB/s against 43.8, so zlib is **2.45x faster**;
+///   * **at the call site**, which is the number that decides it:
+///     `PdfDocumentComposer.optimize` on a 60-page document composed by this
+///     framework takes 23-28 ms with this encoder and 11-17 ms with zlib -
+///     about 11 ms, against a run-to-run spread of the *same* binary of 7 to
+///     27 ms. On a real 42-page 6.6 MiB PDF that arrived already
+///     `/FlateDecode`-filtered - which is what a document from Word or Acrobat
+///     is - the composer keeps those streams untouched and the two encoders
+///     are indistinguishable: the difference changed sign between measurement
+///     passes.
+///
+/// So the trade is 1.43% of every archived byte against about eleven
+/// milliseconds paid once, on the subset of documents this framework composed
+/// itself. The caller this exists for signs documents that are then emailed
+/// and archived, where the bytes outlive the eleven milliseconds by years, and
+/// the default follows that.
+///
+/// The second half of the trade has no size to it at all: zlib's bytes are not
+/// this encoder's bytes, so with [DeflateEncoder.native] the same document
+/// composed on the VM and in a browser stop being byte-identical. Anything
+/// that hashes, diffs or golden-tests the output becomes platform-dependent -
+/// which is why [DeflateEncoder.portable] exists as a name a caller can ask
+/// for rather than as an implementation detail of the web build, and why it is
+/// what a caller gets without asking.
 ///
 /// ## The deliberate trades
 ///
@@ -75,13 +119,43 @@
 /// with this one - before they decode it with this repository's own
 /// [inflate]. A round trip through our own inflater proves only that the two
 /// halves agree.
+///
+/// [DeflateEncoder.native] is checked the other way round, and has to be: zlib
+/// reading its own output proves nothing at all, so what the tests assert is
+/// that *this repository's* inflater reads what zlib wrote. Each encoder is
+/// read by the decoder written by the other side.
 library;
 
 import 'dart:typed_data';
 
 import 'package:meta/meta.dart';
 
+import 'deflate_platform_stub.dart'
+    if (dart.library.io) 'deflate_platform_io.dart' as platform;
 import 'inflate.dart' show adler32;
+
+/// Which of the two encoders writes the bytes.
+///
+/// The choice is a parameter and not a platform test, because it is a trade
+/// and the caller is the only one who knows which side of it they are on. See
+/// the "Which encoder" section of this file's header for the measurement.
+enum DeflateEncoder {
+  /// The encoder in this file, on every platform.
+  ///
+  /// The same input produces the same bytes on the VM, under dart2js and
+  /// under dart2wasm. That is what a caller needs when the output is hashed,
+  /// signed, diffed against a golden file, or compared between a desktop
+  /// build and a web build of the same application.
+  portable,
+
+  /// The platform's own zlib where there is one - `dart:io`'s `ZLibCodec` -
+  /// and [portable] where there is not, which is every web target.
+  ///
+  /// Faster and slightly larger, and its bytes are *not* the bytes [portable]
+  /// writes: a document composed on the VM with this and one composed in a
+  /// browser are both valid and differ byte for byte.
+  native,
+}
 
 /// Which block types [deflate] is allowed to emit.
 ///
@@ -108,10 +182,19 @@ enum DeflateBlocks {
 /// an Adler-32 of the *uncompressed* bytes.
 ///
 /// This is what `/FlateDecode` in a PDF and `IDAT` in a PNG both mean.
+///
+/// [encoder] chooses between reproducible bytes and speed and defaults to the
+/// first; [blocks] is only meaningful to [DeflateEncoder.portable], since the
+/// platform codec picks its own block types.
 Uint8List deflateZlib(
   Uint8List data, {
   DeflateBlocks blocks = DeflateBlocks.auto,
+  DeflateEncoder encoder = DeflateEncoder.portable,
 }) {
+  if (_wantsNative(encoder, blocks)) {
+    final Uint8List? native = platform.nativeDeflate(data, raw: false);
+    if (native != null) return native;
+  }
   final Uint8List body = deflate(data, blocks: blocks);
   final Uint8List out = Uint8List(body.length + 6);
   // 0x78: DEFLATE with the full 32 KiB window. 0x9C: no preset dictionary,
@@ -138,8 +221,27 @@ Uint8List deflateZlib(
 Uint8List deflate(
   Uint8List data, {
   DeflateBlocks blocks = DeflateBlocks.auto,
-}) =>
-    _Deflater(data, blocks).run();
+  DeflateEncoder encoder = DeflateEncoder.portable,
+}) {
+  if (_wantsNative(encoder, blocks)) {
+    final Uint8List? native = platform.nativeDeflate(data, raw: true);
+    if (native != null) return native;
+  }
+  return _Deflater(data, blocks).run();
+}
+
+/// Whether the platform codec may answer this request.
+///
+/// A codec that prices its own blocks cannot honour [blocks], and quietly
+/// ignoring it would make `DeflateBlocks.stored` mean whatever zlib felt like
+/// - which is exactly what the block-type tests assert it does not.
+bool _wantsNative(DeflateEncoder encoder, DeflateBlocks blocks) {
+  assert(
+    encoder == DeflateEncoder.portable || blocks == DeflateBlocks.auto,
+    'DeflateEncoder.native cannot emit $blocks; it picks its own block types.',
+  );
+  return encoder == DeflateEncoder.native && blocks == DeflateBlocks.auto;
+}
 
 /// The Huffman construction and its length limit, exposed for tests.
 ///
