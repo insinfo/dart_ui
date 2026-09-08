@@ -6,6 +6,23 @@ import '../../graphics/image/decoded_image.dart';
 import '../../graphics/image/raster_formats.dart';
 import '../format/pdf_object.dart';
 
+/// Pluggable decoder for the bi-level image payload used by `/JBIG2Decode`.
+///
+/// A JBIG2 image may depend on a shared segment stream referenced through
+/// `/DecodeParms /JBIG2Globals`. Keeping that stream explicit prevents a
+/// decoder from accidentally treating the page-local segments as a complete
+/// JBIG2 file. Implementations must return one premultiplied BGRA image whose
+/// dimensions match [width] and [height], or `null` when the bitstream cannot
+/// be decoded safely.
+abstract interface class PdfJbig2Decoder {
+  DecodedImage? decode({
+    required Uint8List bytes,
+    required Uint8List? globals,
+    required int width,
+    required int height,
+  });
+}
+
 /// Decodes the samples of a PDF image XObject into premultiplied BGRA pixels.
 ///
 /// PDF image streams are not necessarily ordinary PNG/JPEG files. Most are
@@ -19,8 +36,30 @@ DecodedImage? decodePdfImage({
   required int height,
   PdfDict? dictionary,
   PdfResolver? resolver,
+  PdfJbig2Decoder? jbig2Decoder,
 }) {
   if (width <= 0 || height <= 0 || bytes.isEmpty) return null;
+
+  if (_hasFilter(dictionary, resolver, 'JBIG2Decode')) {
+    if (jbig2Decoder == null) return null;
+    final Uint8List? globals = _jbig2Globals(dictionary, resolver);
+    try {
+      final DecodedImage? decoded = jbig2Decoder.decode(
+        bytes: bytes,
+        globals: globals,
+        width: width,
+        height: height,
+      );
+      if (decoded == null ||
+          decoded.width != width ||
+          decoded.height != height) {
+        return null;
+      }
+      return decoded;
+    } on Object {
+      return null;
+    }
+  }
 
   // DCTDecode, JPXDecode and similar pass-through filters leave a complete
   // encoded image here. Keep that path ahead of raw PDF sample decoding.
@@ -99,6 +138,46 @@ DecodedImage? decodePdfImage({
     pixels: pixels,
     hasAlpha: false,
   );
+}
+
+bool _hasFilter(
+  PdfDict? dictionary,
+  PdfResolver? resolver,
+  String expected,
+) {
+  final PdfObject? filter = dictionary?.getResolved('Filter', resolver);
+  if (filter is PdfName) return filter.name == expected;
+  if (filter is! PdfArray) return false;
+  for (var index = 0; index < filter.length; index++) {
+    final PdfObject? item = filter.getResolved(index, resolver);
+    if (item is PdfName && item.name == expected) return true;
+  }
+  return false;
+}
+
+Uint8List? _jbig2Globals(PdfDict? dictionary, PdfResolver? resolver) {
+  final PdfObject? parameters =
+      dictionary?.getResolved('DecodeParms', resolver);
+  PdfDict? jbig2Parameters;
+  if (parameters is PdfDict) {
+    jbig2Parameters = parameters;
+  } else if (parameters is PdfArray) {
+    final PdfObject? filters = dictionary?.getResolved('Filter', resolver);
+    if (filters is PdfArray) {
+      for (var index = 0; index < filters.length; index++) {
+        final PdfObject? filter = filters.getResolved(index, resolver);
+        if (filter is PdfName && filter.name == 'JBIG2Decode') {
+          final PdfObject? candidate = parameters.getResolved(index, resolver);
+          if (candidate is PdfDict) jbig2Parameters = candidate;
+          break;
+        }
+      }
+    }
+  }
+  final PdfObject? globals =
+      jbig2Parameters?.getResolved('JBIG2Globals', resolver);
+  if (globals is! PdfStream) return null;
+  return globals.getDecodedBytes(resolver);
 }
 
 List<double>? _decodeArray(

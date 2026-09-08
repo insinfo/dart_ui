@@ -1,5 +1,7 @@
 import '../../geometry/path.dart';
+import '../format/pdf_object.dart';
 import 'pdf_color_space.dart';
+import 'pdf_function.dart';
 import 'pdf_matrix.dart';
 
 /// Estilo de tampa de linha (Line Cap) do PDF.
@@ -26,6 +28,58 @@ enum PdfTextRenderMode {
   strokeAndClip, // 5
   fillStrokeAndClip, // 6
   clip, // 7
+}
+
+/// Standard PDF blend modes (ISO 32000-2, 11.3.5).
+enum PdfBlendMode {
+  normal,
+  multiply,
+  screen,
+  overlay,
+  darken,
+  lighten,
+  colorDodge,
+  colorBurn,
+  hardLight,
+  softLight,
+  difference,
+  exclusion,
+  hue,
+  saturation,
+  color,
+  luminosity,
+}
+
+enum PdfSoftMaskSubtype { alpha, luminosity }
+
+/// Parsed soft-mask definition from an ExtGState `/SMask` dictionary.
+final class PdfSoftMask {
+  const PdfSoftMask({
+    required this.subtype,
+    required this.group,
+    this.backgroundColor = const <double>[],
+    this.transferFunction,
+  });
+
+  final PdfSoftMaskSubtype subtype;
+  final PdfStream group;
+  final List<double> backgroundColor;
+  final PdfFunction? transferFunction;
+}
+
+/// Parameters of a Form XObject transparency group.
+final class PdfTransparencyGroup {
+  const PdfTransparencyGroup({
+    required this.form,
+    this.colorSpace,
+    this.isolated = false,
+    this.knockout = false,
+  });
+
+  final PdfStream form;
+  final PdfColorSpace? colorSpace;
+  final bool isolated;
+  final bool knockout;
 }
 
 /// Estado gráfico completo do PDF (`PdfGfxState`) mantido na pilha de estados (`q` / `Q`).
@@ -77,6 +131,18 @@ class PdfGfxState {
 
   /// Opacidade de preenchimento (0.0 a 1.0, chave `/ca`).
   double fillAlpha;
+
+  /// Current compositing blend mode.
+  PdfBlendMode blendMode;
+
+  /// Original unsupported `/BM` name, when no standard mode could be selected.
+  String? unsupportedBlendMode;
+
+  /// Current soft mask, or null for `/SMask /None`.
+  PdfSoftMask? softMask;
+
+  /// Diagnostic for a malformed or unsupported `/SMask` entry.
+  String? unsupportedSoftMaskReason;
 
   // --- Estado de Texto ---
   /// Matriz de texto corrente (`Tm`).
@@ -132,6 +198,10 @@ class PdfGfxState {
     this.dashPhase = 0.0,
     this.strokeAlpha = 1.0,
     this.fillAlpha = 1.0,
+    this.blendMode = PdfBlendMode.normal,
+    this.unsupportedBlendMode,
+    this.softMask,
+    this.unsupportedSoftMaskReason,
     this.textMatrix = PdfMatrix.identity,
     this.textLineMatrix = PdfMatrix.identity,
     this.fontName,
@@ -168,6 +238,10 @@ class PdfGfxState {
       dashPhase: dashPhase,
       strokeAlpha: strokeAlpha,
       fillAlpha: fillAlpha,
+      blendMode: blendMode,
+      unsupportedBlendMode: unsupportedBlendMode,
+      softMask: softMask,
+      unsupportedSoftMaskReason: unsupportedSoftMaskReason,
       textMatrix: textMatrix,
       textLineMatrix: textLineMatrix,
       fontName: fontName,

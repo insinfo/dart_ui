@@ -49,10 +49,13 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // accelerator reaches only the OS-neutral ABI helpers and falls back to
   // the pure-Dart implementation on unsupported targets.
   'crypto': <String>['ffi'],
-  // PDF is a document/graphics format layer: it consumes geometry and display
-  // lists and delegates hashes/ciphers to the crypto layer, while remaining
-  // independent from layout, widgets and platform backends.
-  'pdf': <String>['crypto', 'geometry', 'graphics'],
+  'text': <String>['foundation', 'geometry', 'graphics'],
+  // PDF is a document/graphics format layer: it consumes geometry, display
+  // lists and portable font/Unicode primitives, and delegates hashes/ciphers
+  // to the crypto layer. It remains independent from layout, widgets and
+  // platform backends. The text dependency is intentional: embedding a
+  // Typeface and SASLprep normalization must not be duplicated inside PDF.
+  'pdf': <String>['crypto', 'geometry', 'graphics', 'text'],
   // CorelDRAW parsing shares the PDF byte reader/exporter and the portable
   // vector/image primitives. It likewise stays below layout and widgets.
   'cdr': <String>['geometry', 'graphics', 'pdf'],
@@ -61,7 +64,6 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // `animation/clock.dart`. It knows geometry because a tween interpolates an
   // Offset, and nothing else.
   'animation': <String>['foundation', 'geometry', 'scheduler'],
-  'text': <String>['foundation', 'geometry', 'graphics'],
   'platform': <String>['ffi', 'foundation', 'geometry', 'scheduler'],
   // Gesture recognizers sit above raw pointer events and the injected
   // scheduler used by deadlines, but below render objects and widgets. The

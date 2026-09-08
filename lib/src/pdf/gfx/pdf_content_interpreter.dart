@@ -11,6 +11,7 @@ import '../format/pdf_lexer.dart';
 import '../format/pdf_object.dart';
 import '../io/byte_reader.dart';
 import 'pdf_color_space.dart';
+import 'pdf_function.dart';
 import 'pdf_gfx_state.dart';
 import 'pdf_matrix.dart';
 import 'pdf_output_device.dart';
@@ -26,15 +27,18 @@ class PdfContentInterpreter {
     PdfGfxState? initialState,
     int nestingDepth = 0,
     PdfPatternRenderBudget? patternBudget,
+    PdfType3RenderBudget? type3Budget,
   })  : _state = initialState ?? PdfGfxState(),
         _nestingDepth = nestingDepth,
-        _patternBudget = patternBudget ?? PdfPatternRenderBudget();
+        _patternBudget = patternBudget ?? PdfPatternRenderBudget(),
+        _type3Budget = type3Budget ?? PdfType3RenderBudget();
 
   final PdfOutputDevice device;
   final PdfDict? resources;
   final PdfResolver? resolver;
   final int _nestingDepth;
   final PdfPatternRenderBudget _patternBudget;
+  final PdfType3RenderBudget _type3Budget;
 
   final List<PdfGfxState> _stateStack = <PdfGfxState>[];
   PdfGfxState _state;
@@ -579,6 +583,11 @@ class PdfContentInterpreter {
         : PdfMatrix.identity;
     device.saveState();
     device.transform(formMatrix);
+    final PdfTransparencyGroup? transparencyGroup =
+        _parseTransparencyGroup(form);
+    if (transparencyGroup != null) {
+      device.beginTransparencyGroup(transparencyGroup, _state);
+    }
     final PdfArray? bounds = form.dict.getArray('BBox', resolver);
     if (bounds != null && bounds.length >= 4) {
       final PathBuilder clip = PathBuilder()
@@ -600,8 +609,12 @@ class PdfContentInterpreter {
         initialState: _state.clone()..ctm = _state.ctm.multiply(formMatrix),
         nestingDepth: _nestingDepth + 1,
         patternBudget: _patternBudget,
+        type3Budget: _type3Budget,
       ).execute(form.getDecodedBytes(resolver));
     } finally {
+      if (transparencyGroup != null) {
+        device.endTransparencyGroup(transparencyGroup, _state);
+      }
       device.restoreState();
     }
   }
@@ -658,6 +671,10 @@ class PdfContentInterpreter {
     final double? fillAlpha = parameters.getNumber('ca', resolver)?.toDouble();
     if (strokeAlpha != null) _state.strokeAlpha = strokeAlpha.clamp(0.0, 1.0);
     if (fillAlpha != null) _state.fillAlpha = fillAlpha.clamp(0.0, 1.0);
+    final PdfObject? blend = parameters.getResolved('BM', resolver);
+    if (blend != null) _applyBlendMode(blend);
+    final PdfObject? softMask = parameters.getResolved('SMask', resolver);
+    if (softMask != null) _applySoftMask(softMask);
     final double? lineWidth = parameters.getNumber('LW', resolver)?.toDouble();
     if (lineWidth != null && lineWidth >= 0) _state.lineWidth = lineWidth;
     final int? lineCap = parameters.getNumber('LC', resolver)?.toInt();
@@ -680,6 +697,130 @@ class PdfContentInterpreter {
       ];
       _state.dashPhase = dash.getNumber(1, resolver)?.toDouble() ?? 0;
     }
+  }
+
+  PdfTransparencyGroup? _parseTransparencyGroup(PdfStream form) {
+    final PdfDict? group = form.dict.getDict('Group', resolver);
+    if (group?.getName('S', resolver)?.name != 'Transparency') return null;
+    final PdfObject? colorSpaceObject = group!.getResolved('CS', resolver);
+    return PdfTransparencyGroup(
+      form: form,
+      colorSpace: colorSpaceObject == null
+          ? null
+          : PdfColorSpace.parse(colorSpaceObject, resolver),
+      isolated: group.getBool('I', resolver) ?? false,
+      knockout: group.getBool('K', resolver) ?? false,
+    );
+  }
+
+  void _applyBlendMode(PdfObject object) {
+    PdfName? name;
+    if (object is PdfName) {
+      name = object;
+    } else if (object is PdfArray) {
+      for (var i = 0; i < object.length; i++) {
+        final candidate = object.getResolved(i, resolver);
+        if (candidate is PdfName && _blendMode(candidate.name) != null) {
+          name = candidate;
+          break;
+        }
+      }
+      if (name == null && object.length > 0) {
+        final first = object.getResolved(0, resolver);
+        if (first is PdfName) name = first;
+      }
+    }
+    final PdfBlendMode? mode = name == null ? null : _blendMode(name.name);
+    if (mode == null) {
+      _state.blendMode = PdfBlendMode.normal;
+      _state.unsupportedBlendMode = name?.name ?? object.toString();
+    } else {
+      _state.blendMode = mode;
+      _state.unsupportedBlendMode = null;
+    }
+  }
+
+  PdfBlendMode? _blendMode(String name) => switch (name) {
+        'Normal' || 'Compatible' => PdfBlendMode.normal,
+        'Multiply' => PdfBlendMode.multiply,
+        'Screen' => PdfBlendMode.screen,
+        'Overlay' => PdfBlendMode.overlay,
+        'Darken' => PdfBlendMode.darken,
+        'Lighten' => PdfBlendMode.lighten,
+        'ColorDodge' => PdfBlendMode.colorDodge,
+        'ColorBurn' => PdfBlendMode.colorBurn,
+        'HardLight' => PdfBlendMode.hardLight,
+        'SoftLight' => PdfBlendMode.softLight,
+        'Difference' => PdfBlendMode.difference,
+        'Exclusion' => PdfBlendMode.exclusion,
+        'Hue' => PdfBlendMode.hue,
+        'Saturation' => PdfBlendMode.saturation,
+        'Color' => PdfBlendMode.color,
+        'Luminosity' => PdfBlendMode.luminosity,
+        _ => null,
+      };
+
+  void _applySoftMask(PdfObject object) {
+    if (object is PdfName && object.name == 'None') {
+      _state.softMask = null;
+      _state.unsupportedSoftMaskReason = null;
+      device.setSoftMask(null, _state);
+      return;
+    }
+    if (object is! PdfDict) {
+      _rejectSoftMask('SMask is neither /None nor a dictionary');
+      return;
+    }
+    final String? subtypeName = object.getName('S', resolver)?.name;
+    final PdfSoftMaskSubtype? subtype = switch (subtypeName) {
+      'Alpha' => PdfSoftMaskSubtype.alpha,
+      'Luminosity' => PdfSoftMaskSubtype.luminosity,
+      _ => null,
+    };
+    final PdfObject? groupObject = object.getResolved('G', resolver);
+    if (subtype == null ||
+        groupObject is! PdfStream ||
+        groupObject.dict.getName('Subtype', resolver)?.name != 'Form') {
+      _rejectSoftMask('invalid SMask subtype or group Form XObject');
+      return;
+    }
+    final PdfObject? transferObject = object.getResolved('TR', resolver);
+    PdfFunction? transfer;
+    if (transferObject != null &&
+        !(transferObject is PdfName && transferObject.name == 'Identity')) {
+      transfer = PdfFunction.parse(transferObject, resolver);
+      if (transfer == null || transfer.inputCount != 1) {
+        _rejectSoftMask('unsupported SMask transfer function');
+        return;
+      }
+    }
+    final PdfArray? background = object.getArray('BC', resolver);
+    final values = <double>[];
+    if (background != null) {
+      for (var i = 0; i < background.length; i++) {
+        final double? value = background.getNumber(i, resolver)?.toDouble();
+        if (value == null || !value.isFinite) {
+          _rejectSoftMask('invalid SMask backdrop color');
+          return;
+        }
+        values.add(value);
+      }
+    }
+    final mask = PdfSoftMask(
+      subtype: subtype,
+      group: groupObject,
+      backgroundColor: List<double>.unmodifiable(values),
+      transferFunction: transfer,
+    );
+    _state.softMask = mask;
+    _state.unsupportedSoftMaskReason = null;
+    device.setSoftMask(mask, _state);
+  }
+
+  void _rejectSoftMask(String reason) {
+    _state.softMask = null;
+    _state.unsupportedSoftMaskReason = reason;
+    device.setSoftMask(null, _state);
   }
 
   int _cmykToRgb(double c, double m, double y, double k) {
@@ -826,6 +967,7 @@ class PdfContentInterpreter {
               initialState: state,
               nestingDepth: _nestingDepth + 1,
               patternBudget: _patternBudget,
+              type3Budget: _type3Budget,
             ).execute(pattern.contents);
           } finally {
             device.restoreState();
@@ -852,13 +994,19 @@ class PdfContentInterpreter {
       codeAdvances.add(glyphAdvance);
       advance += glyphAdvance;
     }
-    device.drawText(
-      text,
-      _state,
-      _state.textMatrix,
-      advance: advance,
-      characterAdvances: _characterAdvances(text, codeAdvances, advance),
-    );
+    final characterAdvances = _characterAdvances(text, codeAdvances, advance);
+    if (_isType3Font) {
+      var position = 0.0;
+      for (var index = 0; index < codes.length; index++) {
+        _paintType3Glyph(codes[index], position);
+        position += codeAdvances[index];
+      }
+      device.recordText(text, _state, _state.textMatrix,
+          advance: advance, characterAdvances: characterAdvances);
+    } else {
+      device.drawText(text, _state, _state.textMatrix,
+          advance: advance, characterAdvances: characterAdvances);
+    }
     _moveText(advance);
   }
 
@@ -909,6 +1057,99 @@ class PdfContentInterpreter {
     return font?.getName('Subtype', resolver)?.name == 'Type0';
   }
 
+  bool get _isType3Font =>
+      _currentFont?.getName('Subtype', resolver)?.name == 'Type3';
+
+  void _paintType3Glyph(int code, double textOffset) {
+    if (_nestingDepth >= 32 || !_type3Budget.takeGlyph()) return;
+    final font = _currentFont;
+    if (font == null) return;
+    final name = _type3GlyphName(font, code);
+    if (name == null) return;
+    final charProc = font.getDict('CharProcs', resolver)?.getResolved(
+          name,
+          resolver,
+        );
+    if (charProc is! PdfStream) return;
+    final fontMatrix = _matrix(font.getArray('FontMatrix', resolver),
+        fallback: const PdfMatrix(0.001, 0, 0, 0.001, 0, 0));
+    final scale = PdfMatrix.scale(
+      _state.fontSize * _state.horizontalScaling / 100,
+      _state.fontSize,
+    );
+    final transform = fontMatrix
+        .multiply(scale)
+        .multiply(_state.textMatrix)
+        .multiply(PdfMatrix.translation(textOffset, _state.textRise));
+    device.saveState();
+    device.transform(transform);
+    final bbox = font.getArray('FontBBox', resolver);
+    if (bbox != null && bbox.length >= 4) {
+      final clip = PathBuilder()
+        ..addRect(Rect.fromLTRB(
+          bbox.getNumber(0, resolver)?.toDouble() ?? 0,
+          bbox.getNumber(1, resolver)?.toDouble() ?? 0,
+          bbox.getNumber(2, resolver)?.toDouble() ?? 0,
+          bbox.getNumber(3, resolver)?.toDouble() ?? 0,
+        ));
+      device.clip(clip.build());
+    }
+    try {
+      PdfContentInterpreter(
+        device: device,
+        resources: font.getDict('Resources', resolver) ?? resources,
+        resolver: resolver,
+        initialState: _state.clone()
+          ..ctm = _state.ctm.multiply(transform)
+          ..fontName = null,
+        nestingDepth: _nestingDepth + 1,
+        patternBudget: _patternBudget,
+        type3Budget: _type3Budget,
+      ).execute(charProc.getDecodedBytes(resolver));
+    } finally {
+      device.restoreState();
+    }
+  }
+
+  String? _type3GlyphName(PdfDict font, int code) {
+    final encoding = font.getResolved('Encoding', resolver);
+    if (encoding is PdfDict) {
+      final differences = encoding.getArray('Differences', resolver);
+      if (differences != null) {
+        var current = 0;
+        for (var index = 0; index < differences.length; index++) {
+          final value = differences.getResolved(index, resolver);
+          if (value is PdfNumber) {
+            current = value.asInt;
+          } else if (value is PdfName) {
+            if (current == code) return value.name;
+            current++;
+          }
+        }
+      }
+    }
+    if (code >= 33 && code <= 126) return String.fromCharCode(code);
+    return null;
+  }
+
+  PdfMatrix _matrix(PdfArray? array, {required PdfMatrix fallback}) {
+    if (array == null || array.length < 6) return fallback;
+    final values = <double>[
+      for (var i = 0; i < 6; i++)
+        array.getNumber(i, resolver)?.toDouble() ?? double.nan,
+    ];
+    return values.any((value) => !value.isFinite)
+        ? fallback
+        : PdfMatrix(
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[4],
+            values[5],
+          );
+  }
+
   PdfDict? get _currentFont {
     final String? fontName = _state.fontName;
     if (fontName == null || resources == null) return null;
@@ -925,7 +1166,30 @@ class PdfContentInterpreter {
       final PdfArray? widths = font.getArray('Widths', resolver);
       final int index = code - first;
       if (widths != null && index >= 0 && index < widths.length) {
-        return widths.getNumber(index, resolver)?.toDouble() ?? 500;
+        final width = widths.getNumber(index, resolver)?.toDouble() ?? 500;
+        if (font.getName('Subtype', resolver)?.name == 'Type3') {
+          final matrix = _matrix(font.getArray('FontMatrix', resolver),
+              fallback: const PdfMatrix(0.001, 0, 0, 0.001, 0, 0));
+          return width * matrix.a * 1000;
+        }
+        return width;
+      }
+      if (font.getName('Subtype', resolver)?.name == 'Type3') {
+        final glyphName = _type3GlyphName(font, code);
+        final charProc = glyphName == null
+            ? null
+            : font.getDict('CharProcs', resolver)?.getResolved(
+                  glyphName,
+                  resolver,
+                );
+        if (charProc is PdfStream) {
+          final width = _type3ProgramWidth(charProc.getDecodedBytes(resolver));
+          if (width != null) {
+            final matrix = _matrix(font.getArray('FontMatrix', resolver),
+                fallback: const PdfMatrix(0.001, 0, 0, 0.001, 0, 0));
+            return width * matrix.a * 1000;
+          }
+        }
       }
       final String? baseFont = font.getName('BaseFont', resolver)?.name;
       final double? standard =
@@ -963,6 +1227,24 @@ class PdfContentInterpreter {
     return descendant.getNumber('DW', resolver)?.toDouble() ?? 1000;
   }
 
+  double? _type3ProgramWidth(Uint8List contents) {
+    final lexer = PdfLexer(ByteReader(contents));
+    final operands = <PdfToken>[];
+    while (true) {
+      final token = lexer.nextToken();
+      if (token.type == PdfTokenType.eof) return null;
+      if (token.type == PdfTokenType.keyword) {
+        if ((token.text == 'd0' || token.text == 'd1') &&
+            operands.length >= 2) {
+          return _toDouble(operands[0]);
+        }
+        operands.clear();
+      } else {
+        operands.add(token);
+      }
+    }
+  }
+
   String _extractStringText(PdfToken token) {
     if (token.stringBytes != null) {
       try {
@@ -978,7 +1260,7 @@ class PdfContentInterpreter {
     final Uint8List? bytes = token.stringBytes;
     if (bytes == null) return _extractStringText(token);
     final String? fontName = _state.fontName;
-    if (fontName == null || resources == null || resolver == null) {
+    if (fontName == null || resources == null) {
       return _extractStringText(token);
     }
     final PdfDict? fontObject = _currentFont;
@@ -1007,7 +1289,31 @@ class PdfContentInterpreter {
       }
       return result.toString();
     }
+    if (fontObject.getName('Subtype', resolver)?.name == 'Type3') {
+      return String.fromCharCodes(bytes.map((code) {
+        final name = _type3GlyphName(fontObject, code);
+        return name == null ? code : _glyphNameCodePoint(name) ?? code;
+      }));
+    }
     return _decodeWinAnsi(bytes);
+  }
+
+  int? _glyphNameCodePoint(String name) {
+    if (name.length == 1) return name.codeUnitAt(0);
+    if (name == 'space') return 0x20;
+    if (name.startsWith('uni') && name.length == 7) {
+      return int.tryParse(name.substring(3), radix: 16);
+    }
+    if (name.startsWith('u') && name.length >= 5 && name.length <= 7) {
+      return int.tryParse(name.substring(1), radix: 16);
+    }
+    return const <String, int>{
+      'acute': 0x00B4,
+      'ccedilla': 0x00E7,
+      'eacute': 0x00E9,
+      'ntilde': 0x00F1,
+      'bullet': 0x2022,
+    }[name];
   }
 
   String _decodeWinAnsi(Uint8List bytes) => String.fromCharCodes(
@@ -1059,6 +1365,18 @@ final class PdfPatternRenderBudget {
   int _remaining;
   bool get hasTiles => _remaining > 0;
   bool takeTile() {
+    if (_remaining <= 0) return false;
+    _remaining--;
+    return true;
+  }
+}
+
+/// Shared defensive budget for nested Type 3 glyph programs.
+final class PdfType3RenderBudget {
+  PdfType3RenderBudget({int maximumGlyphs = 10000})
+      : _remaining = maximumGlyphs.clamp(0, 100000);
+  int _remaining;
+  bool takeGlyph() {
     if (_remaining <= 0) return false;
     _remaining--;
     return true;

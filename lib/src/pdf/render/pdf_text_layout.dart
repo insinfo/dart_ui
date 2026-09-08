@@ -240,6 +240,23 @@ final class _PdfTextOutputDevice extends PdfOutputDevice {
     ));
   }
 
+  @override
+  void recordText(
+    String text,
+    PdfGfxState state,
+    PdfMatrix textMatrix, {
+    double? advance,
+    List<double>? characterAdvances,
+  }) {
+    drawText(
+      text,
+      state,
+      textMatrix,
+      advance: advance,
+      characterAdvances: characterAdvances,
+    );
+  }
+
   List<double>? _normalizedOffsets(
     String text,
     List<double>? advances,

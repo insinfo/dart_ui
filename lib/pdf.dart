@@ -6,6 +6,7 @@ export 'src/pdf/crypto/pdf_encryption.dart';
 export 'src/pdf/crypto/pdf_sha.dart';
 export 'src/pdf/document/pdf_document.dart';
 export 'src/pdf/document/pdf_document_composer.dart';
+export 'src/pdf/document/pdf_feature_inventory.dart';
 export 'src/pdf/document/pdf_image_inventory.dart';
 export 'src/pdf/document/pdf_incremental_writer.dart';
 export 'src/pdf/document/pdf_page.dart';

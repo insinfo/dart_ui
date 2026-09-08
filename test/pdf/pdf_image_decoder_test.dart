@@ -2,12 +2,46 @@ library;
 
 import 'dart:typed_data';
 
+import 'package:dart_ui/src/graphics/image/decoded_image.dart';
 import 'package:dart_ui/src/pdf/format/pdf_object.dart';
 import 'package:dart_ui/src/pdf/render/pdf_image_decoder.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('PDF image sample decoder', () {
+    test('passes page segments and JBIG2Globals to a JBIG2 decoder', () {
+      final globals = PdfStream(PdfDict(), Uint8List.fromList(<int>[7, 8]));
+      final decoder = _RecordingJbig2Decoder();
+      final image = decodePdfImage(
+        bytes: Uint8List.fromList(<int>[1, 2, 3]),
+        width: 2,
+        height: 1,
+        dictionary: PdfDict(<String, PdfObject>{
+          'Filter': const PdfName('JBIG2Decode'),
+          'DecodeParms': PdfDict(<String, PdfObject>{
+            'JBIG2Globals': globals,
+          }),
+        }),
+        jbig2Decoder: decoder,
+      );
+
+      expect(image, isNotNull);
+      expect(decoder.bytes, <int>[1, 2, 3]);
+      expect(decoder.globals, <int>[7, 8]);
+    });
+
+    test('does not interpret undecoded JBIG2 segments as raw samples', () {
+      final image = decodePdfImage(
+        bytes: Uint8List.fromList(<int>[0]),
+        width: 1,
+        height: 1,
+        dictionary: PdfDict(<String, PdfObject>{
+          'Filter': const PdfName('JBIG2Decode'),
+        }),
+      );
+      expect(image, isNull);
+    });
+
     test('uses an 8-bit indexed palette instead of painting indices as gray',
         () {
       final image = decodePdfImage(
@@ -128,6 +162,29 @@ void main() {
       expect(image!.pixels, <int>[16, 128, 240, 255]);
     });
   });
+}
+
+final class _RecordingJbig2Decoder implements PdfJbig2Decoder {
+  Uint8List? bytes;
+  Uint8List? globals;
+
+  @override
+  DecodedImage? decode({
+    required Uint8List bytes,
+    required Uint8List? globals,
+    required int width,
+    required int height,
+  }) {
+    this.bytes = bytes;
+    this.globals = globals;
+    return DecodedImage(
+      width: width,
+      height: height,
+      order: ImageChannelOrder.bgra,
+      pixels: Uint8List.fromList(<int>[0, 0, 0, 255, 255, 255, 255, 255]),
+      hasAlpha: false,
+    );
+  }
 }
 
 PdfDict _indexedDictionary({

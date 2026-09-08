@@ -8,6 +8,28 @@ import 'pdf_shading.dart';
 
 /// Interface abstrata de saída gráfica para o interpretador PDF (equivalente ao OutputDev do Poppler).
 abstract class PdfOutputDevice {
+  /// Whether this device composites isolated Form XObject groups natively.
+  bool get supportsTransparencyGroups => false;
+
+  /// Notifies the device that subsequent operations belong to [group].
+  ///
+  /// The default is an explicit pass-through fallback: children are rendered
+  /// in normal order but isolation and knockout cannot be reproduced.
+  void beginTransparencyGroup(
+    PdfTransparencyGroup group,
+    PdfGfxState state,
+  ) {}
+
+  /// Ends the most recently opened transparency group.
+  void endTransparencyGroup(
+    PdfTransparencyGroup group,
+    PdfGfxState state,
+  ) {}
+
+  /// Notifies the device after `/SMask` changes in the graphics state.
+  /// The mask object remains available on every subsequent [PdfGfxState].
+  void setSoftMask(PdfSoftMask? mask, PdfGfxState state) {}
+
   /// Paints a shading resource through the active clipping region.
   void drawShading(PdfShading shading, PdfGfxState state) {
     final triangles = shading.tessellate(null);
@@ -99,12 +121,39 @@ abstract class PdfOutputDevice {
     double? advance,
     List<double>? characterAdvances,
   });
+
+  /// Records text whose visible glyphs were painted by a Type 3 CharProc.
+  void recordText(
+    String text,
+    PdfGfxState state,
+    PdfMatrix textMatrix, {
+    double? advance,
+    List<double>? characterAdvances,
+  }) {}
 }
 
 /// Implementação padrão em memória que grava chamadas em operações vetoriais.
 class PdfMemoryOutputDevice extends PdfOutputDevice {
   final List<String> commands = [];
   final List<Path> paths = [];
+
+  @override
+  void beginTransparencyGroup(PdfTransparencyGroup group, PdfGfxState state) {
+    commands.add(
+      'beginTransparencyGroup(isolated: ${group.isolated}, '
+      'knockout: ${group.knockout})',
+    );
+  }
+
+  @override
+  void endTransparencyGroup(PdfTransparencyGroup group, PdfGfxState state) {
+    commands.add('endTransparencyGroup');
+  }
+
+  @override
+  void setSoftMask(PdfSoftMask? mask, PdfGfxState state) {
+    commands.add('softMask(${mask?.subtype.name ?? 'none'})');
+  }
 
   @override
   void drawShading(PdfShading shading, PdfGfxState state) {
@@ -171,5 +220,16 @@ class PdfMemoryOutputDevice extends PdfOutputDevice {
       'drawText("$text", font: ${state.fontName}, size: ${state.fontSize}, '
       'mode: ${state.textRenderMode.name})',
     );
+  }
+
+  @override
+  void recordText(
+    String text,
+    PdfGfxState state,
+    PdfMatrix textMatrix, {
+    double? advance,
+    List<double>? characterAdvances,
+  }) {
+    commands.add('recordText("$text", advance: $advance)');
   }
 }

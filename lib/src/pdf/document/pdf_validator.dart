@@ -1,9 +1,11 @@
 import 'dart:typed_data';
 
+import '../crypto/pdf_encryption.dart';
 import '../format/pdf_object.dart';
 import '../format/pdf_xref.dart';
 import '../sign/pdf_signature_inspector.dart';
 import 'pdf_document.dart';
+import 'pdf_feature_inventory.dart';
 
 enum PdfValidationSeverity { warning, error }
 
@@ -16,16 +18,19 @@ final class PdfValidationOptions {
     this.validateContentStreams = true,
     this.resolveAllObjects = true,
     this.inspectSignatures = true,
+    this.inspectFeatures = false,
   });
 
   const PdfValidationOptions.metadataOnly()
       : validateContentStreams = false,
         resolveAllObjects = false,
-        inspectSignatures = false;
+        inspectSignatures = false,
+        inspectFeatures = false;
 
   final bool validateContentStreams;
   final bool resolveAllObjects;
   final bool inspectSignatures;
+  final bool inspectFeatures;
 }
 
 final class PdfValidationIssue {
@@ -36,10 +41,16 @@ final class PdfValidationIssue {
 }
 
 final class PdfValidationReport {
-  const PdfValidationReport(this.issues, this.pageCount, this.signatureCount);
+  const PdfValidationReport(
+    this.issues,
+    this.pageCount,
+    this.signatureCount, [
+    this.featureInventory,
+  ]);
   final List<PdfValidationIssue> issues;
   final int pageCount;
   final int signatureCount;
+  final PdfFeatureInventoryReport? featureInventory;
   bool get isValid =>
       !issues.any((issue) => issue.severity == PdfValidationSeverity.error);
 }
@@ -56,6 +67,8 @@ final class PdfValidator {
   PdfValidationReport validate(
     Uint8List bytes, {
     PdfValidationOptions options = const PdfValidationOptions(),
+    String? password,
+    PdfPasswordProvider? passwordProvider,
   }) {
     final issues = <PdfValidationIssue>[];
     if (!_startsWith(bytes, const <int>[0x25, 0x50, 0x44, 0x46, 0x2d])) {
@@ -77,7 +90,11 @@ final class PdfValidator {
     }
     PdfDocument document;
     try {
-      document = PdfDocument.fromBytes(bytes);
+      document = PdfDocument.fromBytes(
+        bytes,
+        password: password,
+        passwordProvider: passwordProvider,
+      );
     } on Object catch (error) {
       issues.add(PdfValidationIssue(
         'structure.invalid',
@@ -154,10 +171,29 @@ final class PdfValidator {
         ));
       }
     }
+    PdfFeatureInventoryReport? inventory;
+    if (options.inspectFeatures) {
+      inventory = const PdfFeatureInventory().inspect(document);
+      for (final feature in inventory.occurrences) {
+        if (feature.support == PdfFeatureSupport.supported) continue;
+        final location = feature.pageNumber == null
+            ? ''
+            : ' na página ${feature.pageNumber}';
+        issues.add(PdfValidationIssue(
+          'feature.${feature.support.name}.${feature.category.name}',
+          '${feature.feature}$location: '
+              '${feature.detail ?? 'não possui suporte completo.'}',
+          feature.support == PdfFeatureSupport.unsupported
+              ? PdfValidationSeverity.error
+              : PdfValidationSeverity.warning,
+        ));
+      }
+    }
     return PdfValidationReport(
       List<PdfValidationIssue>.unmodifiable(issues),
       document.pageCount,
       signatures,
+      inventory,
     );
   }
 }
