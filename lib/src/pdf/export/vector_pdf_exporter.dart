@@ -31,13 +31,24 @@ class VectorPdfExporter {
       final h = page.height;
       final recorder = builder.addPage(width: w, height: h);
 
-      // Render visible layers bottom-to-top
-      for (final layer in doc.getVisibleLayers(page)) {
-        _renderLayer(layer, recorder, h);
-      }
+      renderPage(doc, page, recorder);
     }
 
     return builder.build();
+  }
+
+  /// Renders one vector-document page into an existing PDF page.
+  ///
+  /// This allows inline SVG imported through `VectorSvgCodec` to be combined
+  /// with regular PDF content such as tables, text and JPEG XObjects.
+  static void renderPage(
+    VectorDocument document,
+    VectorPage page,
+    PdfCanvasRecorder recorder,
+  ) {
+    for (final layer in document.getVisibleLayers(page)) {
+      _renderLayer(layer, recorder, page.height);
+    }
   }
 
   static void _renderLayer(

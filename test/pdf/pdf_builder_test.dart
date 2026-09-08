@@ -1,9 +1,57 @@
+import 'dart:typed_data';
+
 import 'package:dart_ui/dart_ui.dart';
+import 'package:dart_ui/image_codecs.dart' as raster;
 import 'package:dart_ui/pdf.dart';
 import 'package:test/test.dart';
 
 void main() {
   group('PdfDocumentBuilder (Exportador Vetorial PDF em Puro Dart)', () {
+    test('embeds a JPEG XObject without transcoding it', () {
+      final image = raster.Image(width: 3, height: 2);
+      for (var y = 0; y < image.height; y++) {
+        for (var x = 0; x < image.width; x++) {
+          image.setPixelRgb(x, y, x * 90, y * 120, 180);
+        }
+      }
+      final jpeg = raster.encodeJpg(image, quality: 90);
+      final builder = PdfDocumentBuilder();
+      final resource = builder.addJpeg(jpeg, name: 'Cover');
+      builder
+          .addPage(width: 100, height: 100)
+          .drawImage(resource, const Rect.fromLTWH(10, 15, 70, 50));
+
+      final bytes = builder.build();
+      final document = PdfDocument.fromBytes(bytes);
+      final images = const PdfImageInventory().inspect(document);
+
+      expect(images, hasLength(1));
+      expect(images.single.width, 3);
+      expect(images.single.height, 2);
+      expect(images.single.filters, const <String>['DCTDecode']);
+      expect(images.single.encodedBytes, jpeg.length);
+      expect(
+        String.fromCharCodes(document.getPage(1).getContentsBytes()),
+        contains('/Cover Do'),
+      );
+    });
+
+    test('rejects invalid JPEG data and duplicate resource names', () {
+      final builder = PdfDocumentBuilder();
+      expect(
+        () => builder.addJpeg(Uint8List.fromList(const <int>[1, 2, 3])),
+        throwsFormatException,
+      );
+      final image = raster.Image(width: 1, height: 1)
+        ..setPixelRgb(0, 0, 20, 40, 60);
+      final jpeg = raster.encodeJpg(image);
+      builder.addJpeg(jpeg, name: 'Photo');
+      expect(
+        () => builder.addJpeg(jpeg, name: 'Photo'),
+        throwsArgumentError,
+      );
+    });
+
     test('cria documento PDF válido com múltiplas páginas e valida round-trip',
         () {
       final builder = PdfDocumentBuilder(

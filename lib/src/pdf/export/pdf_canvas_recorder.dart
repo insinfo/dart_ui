@@ -166,6 +166,18 @@ class PdfCanvasRecorder {
     _buffer.writeln('ET');
   }
 
+  /// Paints a named image XObject inside [rect].
+  void drawImage(String resourceName, Rect rect) {
+    final safeName = resourceName.replaceAll(RegExp(r'[^A-Za-z0-9_.-]'), '_');
+    _buffer
+      ..writeln('q')
+      ..writeln(
+        '${rect.width} 0 0 ${rect.height} ${rect.left} ${_pdfY(rect.bottom)} cm',
+      )
+      ..writeln('/$safeName Do')
+      ..writeln('Q');
+  }
+
   /// Retorna o Content Stream em WinAnsi, a codificação da fonte padrão.
   Uint8List toBytes() => _encodeWinAnsi(_buffer.toString());
 }

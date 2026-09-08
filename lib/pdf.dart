@@ -10,6 +10,7 @@ export 'src/pdf/document/pdf_page.dart';
 export 'src/pdf/document/pdf_validator.dart';
 export 'src/pdf/export/pdf_canvas_recorder.dart';
 export 'src/pdf/export/pdf_document_builder.dart';
+export 'src/pdf/export/vector_pdf_exporter.dart';
 export 'src/pdf/filter/ascii85_filter.dart';
 export 'src/pdf/filter/ascii_hex_filter.dart';
 export 'src/pdf/filter/ccitt_fax_filter.dart';
