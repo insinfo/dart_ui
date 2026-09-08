@@ -131,6 +131,63 @@ janela, apresentação CPU/GPU, renderer ativo e escalas lógica/física.
 registra página e deslocamento tanto da âncora quanto da extensão. A seleção é
 mantida quando cruza páginas e o texto copiado preserva as quebras entre elas.
 
+### Limitações conhecidas do módulo PDF
+
+O módulo já cobre leitura e escrita estrutural, renderização básica, texto
+selecionável, imagens JPEG/JPX, filtros comuns, fontes Type 1/TrueType/Type 3,
+patterns, shadings, criptografia por senha, operações de páginas e assinatura.
+Ele ainda não deve ser tratado como uma implementação integral da ISO 32000.
+As lacunas abaixo ficam registradas como trabalho para uma próxima interação:
+
+- `/JBIG2Decode` ainda não possui codec em Dart. A integração distingue os
+  segmentos locais, resolve `/JBIG2Globals` e aceita um `PdfJbig2Decoder`, mas
+  sem uma implementação fornecida pelo chamador a imagem não é renderizada.
+- Fontes Type 0/CID permanecem parciais. Ainda faltam variantes de CMap,
+  escrita vertical, métricas CID menos comuns e cobertura ampla de fontes
+  compostas encontradas em documentos asiáticos.
+- `ICCBased`, `Separation`, `DeviceN` e cores de pattern usam conversões
+  limitadas ou aproximações; não existe ainda um motor completo de perfis ICC
+  nem gerenciamento de cor equivalente ao de um visualizador profissional.
+- Shadings 1 e 4–7 são aproximados por tesselação e limites de segurança.
+  Malhas muito densas, funções incomuns e casos degenerados podem perder
+  fidelidade. Shadings 2 e 3 têm cobertura mais completa.
+- Blend modes, alpha, soft masks e grupos de transparência são interpretados,
+  mas a composição visual exata depende do `PdfOutputDevice`. Dispositivos sem
+  suporte nativo usam fallback pass-through e podem divergir da composição
+  definida pela especificação.
+- Anotações e AcroForms são reconhecidos, porém aparência, JavaScript,
+  ações, cálculo de campos e interação variam por subtipo e não estão completos.
+- O Standard Security Handler R2–R6 é suportado, mas senhas R6 cujo SASLprep
+  continue não ASCII falham de forma segura. Segurança por certificado público
+  e handlers proprietários também não são suportados.
+- Assinatura incremental e CMS funcionam, mas timestamp RFC 3161, LTV,
+  DSS/VRI, políticas ICP-Brasil completas e validação de revogação OCSP/CRL
+  ainda exigem serviços e implementação adicionais.
+- A validação atual verifica estrutura, referências, streams, assinaturas e um
+  inventário de capacidades. Ela não certifica conformidade PDF/A, PDF/X,
+  PDF/UA, acessibilidade ou equivalência visual com a ISO 32000.
+- A matriz do inventário precisa acompanhar a implementação automaticamente.
+  Nesta versão, Type 3 e partes de transparência já são interpretados, mas
+  ainda podem aparecer como não suportados no preflight conservador.
+- `DisplayListToPdfWriter` ainda não reproduz os opcodes de uma `DisplayList`;
+  exportações devem usar hoje `PdfDocumentBuilder`, `PdfCanvasRecorder` ou o
+  exportador vetorial diretamente.
+- A API principal recebe o arquivo inteiro como `Uint8List`. O inventário de
+  imagens evita descompactar pixels e objetos são resolvidos sob demanda, mas
+  ainda não há fonte de bytes paginada, `mmap` ou leitura por intervalos. Por
+  isso, abrir um PDF de aproximadamente 3 GB pode exigir memória proporcional
+  ao arquivo e não há garantia de alcançar o tempo do MuPDF.
+- A recuperação de corrupção cobre xref clássico/stream, busca de `startxref`
+  e tolerância opcional a erros em content streams. Reconstrução total de xref,
+  objetos truncados, streams com `/Length` irrecuperável e danos severos ainda
+  podem impedir a abertura. `ignoreContentStreamErrors` deve permanecer uma
+  escolha explícita, pois ignorar streams pode ocultar perda de conteúdo.
+
+Antes de prometer fidelidade para um documento, use
+`PdfFeatureInventory.inspect` ou `PdfValidator` com `inspectFeatures: true`.
+Recursos parciais geram avisos e recursos não suportados tornam o preflight
+inválido, evitando sucesso silencioso.
+
 ## Docking desktop
 
 `DockingLayout` organiza `DockingItem`, `DockingTabs`, `DockingRow` e
