@@ -188,6 +188,109 @@ Antes de prometer fidelidade para um documento, use
 Recursos parciais geram avisos e recursos não suportados tornam o preflight
 inválido, evitando sucesso silencioso.
 
+## Limitações conhecidas
+
+Esta seção vale para o framework inteiro; o módulo PDF tem a sua própria, mais
+acima. Três categorias, porque confundi-las é o que faz uma lacuna virar
+surpresa:
+
+- **não existe** — falta código, e está dito;
+- **existe e não foi verificado** — o código está lá, roda, e nada provou que
+  está certo. É a categoria perigosa, porque de fora é idêntica à que funciona;
+- **o ambiente impede de provar** — o código pode estar certo e a máquina
+  disponível não consegue dizer.
+
+### Backends e plataformas
+
+- **O Metal apresenta numa janela e o resto é por medir.** O caminho é o do
+  ADR 0005: renderiza dentro do `IOSurface` do pool e apresenta por
+  `PRESENT_SLOT`. O ritmo de apresentação não foi medido, e
+  `MTLStorageModeShared` é a resposta de **uma** máquina — um Mac com memória
+  discreta pode responder diferente. Retina não pode ser confirmado no runner
+  de CI, que reporta escala 1,0 num display virtual: marcar aquele item exige
+  hardware, não mais código.
+- **O Vulkan não passou pela camada de validação.**
+  `VK_LAYER_KHRONOS_validation` não está instalada nas máquinas usadas. Todo
+  layout de attachment, dependência de subpasse e regra de compatibilidade de
+  descriptor set foi *exercitado*, não *validado* — um quadro que bate com a
+  CPU ainda pode se apoiar em comportamento indefinido que outro driver
+  implementa diferente. E `MeshShading.wireframe` desenha sólido sem
+  iluminação, porque `VK_POLYGON_MODE_LINE` exige `fillModeNonSolid`, que este
+  dispositivo não habilita.
+- **O X11 só rodou sob Xvfb.** Nenhum gerenciador de janelas jamais administrou
+  uma janela deste backend, então `WM_TRANSIENT_FOR`, `_NET_WM_STATE` e
+  decorações seguem sem prova. Não há visual ARGB de 32 bits nem compositor
+  ali, então `EGL_NATIVE_VISUAL_ID` contra um Xorg com composição continua sem
+  teste. **XInput2 e RandR por monitor não existem** — a geometria de tela é a
+  caixa envolvente de todos os monitores.
+- **O Wayland só rodou sob Weston.** GNOME, KDE e wlroots, nenhum.
+- **O dono INCR do clipboard X11 foi provado contra o `xclip`**, que é um
+  estranho e é a parte que importa. GTK e Qt implementam o mesmo ICCCM com
+  código diferente e nenhum dos dois jamais colou deste backend.
+- **As primitivas de sincronização entre isolates só rodaram no Windows.** As
+  ligações pthread, os valores de errno (`ETIMEDOUT` é 110 no Linux e 60 no
+  macOS), o layout de `timespec` e a cadeia de bibliotecas vêm da
+  especificação.
+- **Acessibilidade só existe no Windows**, provada por um cliente
+  `IUIAutomation` em outro processo. Nada em X11, Wayland, macOS ou web.
+
+### Web
+
+- **O backend DOM cobre um subconjunto declarado.** Retângulos, cantos
+  arredondados, clips, transformadas afins, camadas, imagens e texto. Recusa
+  por nome, e cada recusa é contada em `presenter.refusals`: caminhos
+  arbitrários, `clipPath`, gradientes, modos de mistura que não `srcOver`, e
+  clips de diferença. O caso dos gradientes é o mais traiçoeiro — o CSS define
+  o gradiente ao longo de uma linha atravessando a caixa do elemento e a
+  display list por dois pontos com modo de espalhamento próprio, e os dois só
+  concordam no caso alinhado e sem clamp.
+- **Dois sistemas de foco convivem.** O Tab tira o foco do canvas, e a partir
+  daí atalhos de teclado do framework param até algo refocar. O conserto pede
+  uma ponte de `focusin` para o gerenciador de foco, que ainda não tem costura.
+- **Rótulos são anunciados duas vezes** por um leitor de tela — como nome
+  acessível do controle e como texto visível embaixo dele.
+- **Fidelidade visual contra os caminhos de GPU nunca foi conferida a olho.**
+  As afirmações são de estrutura e comportamento, de propósito: um backend DOM
+  que batesse pixel a pixel com o canvas teria falhado no que veio fazer.
+
+### Vídeo e áudio
+
+- **O anel de quadros tem uma corrida conhecida.** O anel do Media Foundation
+  pode reciclar um slot enquanto o renderizador ainda converte dele
+  (`native video frame slot N generation M is no longer valid`). A otimização
+  de cor deixou isso **mais raro, não consertado** — 70 ms por quadro tornavam
+  provável, 27 ms tornam raro.
+- **O vídeo congela ao arrastar a janela.** A animação voltou a andar e o
+  desenho volta a acontecer, mas a decodificação é `await` e nenhum `await`
+  roda dentro do laço modal do sistema. Ver a seção seguinte.
+- **Volume de sessão existe só no Windows.** ALSA e CoreAudio não têm volume
+  por aplicativo; PulseAudio e PipeWire têm por stream e não há backend aqui.
+  Quem pede numa plataforma sem ele recebe recusa nomeada, nunca ganho de
+  stream fingindo ser a mesma coisa. E ele não é exposto no `PcmAudioPlayer`,
+  cujo stream vive em outra isolate.
+
+### Um limite que não é nosso
+
+**O laço de eventos do Dart é inalcançável de dentro de uma moldura nativa.**
+Quando o sistema roda um laço modal próprio — arrastar a janela, um diálogo de
+arquivo — nenhum `Timer`, microtask, `Future` ou mensagem de porta roda, porque
+a isolate está parada dentro da chamada FFI. Medido em
+`tool/nested_callback_probe.dart`: zero tiques de trinta esperados.
+
+O desenho e a animação foram devolvidos por um `SetTimer` e por um caminho que
+adianta o tempo virtual à mão. Tudo que depende de `await` continua parado, e
+só o SDK pode mudar isso — as APIs que resolveriam
+(`Isolate.onEvent`/`handleEvent`) existem declaradas e lançam
+`UnsupportedError` até o `main` do `dart-sdk`. A proposta está em
+`doc/propostas/08_proposta_dart_sdk_laco_modal_aninhado_ptbr.md`.
+
+### Estratégia D do rasterizador por compute
+
+Quatro dos cinco estágios rodam na GPU numa única submissão e a junção
+flatten→segmentos foi fechada com paridade byte a byte. **A composição
+encadeada continua aberta**, e o plano de tiles ainda é montado na CPU
+(`d3d12_vector_path_recorder.dart`). A rota inteira é opt-in e experimental.
+
 ## Docking desktop
 
 `DockingLayout` organiza `DockingItem`, `DockingTabs`, `DockingRow` e
