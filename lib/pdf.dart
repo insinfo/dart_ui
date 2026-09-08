@@ -2,6 +2,7 @@
 library;
 
 export 'src/pdf/annot/pdf_annotation.dart';
+export 'src/pdf/crypto/pdf_encryption.dart';
 export 'src/pdf/crypto/pdf_sha.dart';
 export 'src/pdf/document/pdf_document.dart';
 export 'src/pdf/document/pdf_document_composer.dart';
@@ -28,9 +29,11 @@ export 'src/pdf/format/pdf_xref.dart';
 export 'src/pdf/forms/pdf_acro_form.dart';
 export 'src/pdf/gfx/pdf_color_space.dart';
 export 'src/pdf/gfx/pdf_content_interpreter.dart';
+export 'src/pdf/gfx/pdf_function.dart';
 export 'src/pdf/gfx/pdf_gfx_state.dart';
 export 'src/pdf/gfx/pdf_matrix.dart';
 export 'src/pdf/gfx/pdf_output_device.dart';
+export 'src/pdf/gfx/pdf_pattern.dart';
 export 'src/pdf/gfx/pdf_shading.dart';
 export 'src/pdf/io/byte_reader.dart';
 export 'src/pdf/render/pdf_image_decoder.dart';

@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
+import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../font/pdf_cmap.dart';
@@ -12,6 +14,7 @@ import 'pdf_color_space.dart';
 import 'pdf_gfx_state.dart';
 import 'pdf_matrix.dart';
 import 'pdf_output_device.dart';
+import 'pdf_pattern.dart';
 import 'pdf_shading.dart';
 
 /// Interpretador de fluxos de comandos gráficos de conteúdo PDF (`/Contents`).
@@ -22,13 +25,16 @@ class PdfContentInterpreter {
     this.resolver,
     PdfGfxState? initialState,
     int nestingDepth = 0,
+    PdfPatternRenderBudget? patternBudget,
   })  : _state = initialState ?? PdfGfxState(),
-        _nestingDepth = nestingDepth;
+        _nestingDepth = nestingDepth,
+        _patternBudget = patternBudget ?? PdfPatternRenderBudget();
 
   final PdfOutputDevice device;
   final PdfDict? resources;
   final PdfResolver? resolver;
   final int _nestingDepth;
+  final PdfPatternRenderBudget _patternBudget;
 
   final List<PdfGfxState> _stateStack = <PdfGfxState>[];
   PdfGfxState _state;
@@ -298,6 +304,7 @@ class PdfContentInterpreter {
           final PdfColorSpace? space = _resolveColorSpace(args.last.text);
           _state.fillColorSpaceSupported = space != null;
           if (space != null) _state.fillColorSpace = space;
+          _state.fillPatternName = null;
         }
         break;
 
@@ -306,6 +313,7 @@ class PdfContentInterpreter {
           final PdfColorSpace? space = _resolveColorSpace(args.last.text);
           _state.strokeColorSpaceSupported = space != null;
           if (space != null) _state.strokeColorSpace = space;
+          _state.strokePatternName = null;
         }
         break;
 
@@ -323,6 +331,7 @@ class PdfContentInterpreter {
         if (args.isNotEmpty) {
           _state.fillColorSpace = PdfDeviceGray();
           _state.fillColorSpaceSupported = true;
+          _state.fillPatternName = null;
           final gray = (_toDouble(args[0]) * 255).round().clamp(0, 255);
           _state.fillColor = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
         }
@@ -332,6 +341,7 @@ class PdfContentInterpreter {
         if (args.isNotEmpty) {
           _state.strokeColorSpace = PdfDeviceGray();
           _state.strokeColorSpaceSupported = true;
+          _state.strokePatternName = null;
           final gray = (_toDouble(args[0]) * 255).round().clamp(0, 255);
           _state.strokeColor = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
         }
@@ -341,6 +351,7 @@ class PdfContentInterpreter {
         if (args.length >= 3) {
           _state.fillColorSpace = PdfDeviceRgb();
           _state.fillColorSpaceSupported = true;
+          _state.fillPatternName = null;
           final r = (_toDouble(args[0]) * 255).round().clamp(0, 255);
           final g = (_toDouble(args[1]) * 255).round().clamp(0, 255);
           final b = (_toDouble(args[2]) * 255).round().clamp(0, 255);
@@ -352,6 +363,7 @@ class PdfContentInterpreter {
         if (args.length >= 3) {
           _state.strokeColorSpace = PdfDeviceRgb();
           _state.strokeColorSpaceSupported = true;
+          _state.strokePatternName = null;
           final r = (_toDouble(args[0]) * 255).round().clamp(0, 255);
           final g = (_toDouble(args[1]) * 255).round().clamp(0, 255);
           final b = (_toDouble(args[2]) * 255).round().clamp(0, 255);
@@ -363,6 +375,7 @@ class PdfContentInterpreter {
         if (args.length >= 4) {
           _state.fillColorSpace = PdfDeviceCmyk();
           _state.fillColorSpaceSupported = true;
+          _state.fillPatternName = null;
           _state.fillColor = _cmykToRgb(
             _toDouble(args[0]),
             _toDouble(args[1]),
@@ -376,6 +389,7 @@ class PdfContentInterpreter {
         if (args.length >= 4) {
           _state.strokeColorSpace = PdfDeviceCmyk();
           _state.strokeColorSpaceSupported = true;
+          _state.strokePatternName = null;
           _state.strokeColor = _cmykToRgb(
             _toDouble(args[0]),
             _toDouble(args[1]),
@@ -585,6 +599,7 @@ class PdfContentInterpreter {
         resolver: resolver,
         initialState: _state.clone()..ctm = _state.ctm.multiply(formMatrix),
         nestingDepth: _nestingDepth + 1,
+        patternBudget: _patternBudget,
       ).execute(form.getDecodedBytes(resolver));
     } finally {
       device.restoreState();
@@ -603,6 +618,19 @@ class PdfContentInterpreter {
     if (_pendingClip) {
       device.clip(path, evenOdd: _clipEvenOdd);
       _pendingClip = false;
+    }
+
+    final fillPattern = fill ? _state.fillPatternName : null;
+    final strokePattern = stroke ? _state.strokePatternName : null;
+    if (fillPattern != null) {
+      _paintTilingPattern(path, fillPattern,
+          components: _state.fillPatternComponents, evenOdd: evenOdd);
+      fill = false;
+    }
+    if (strokePattern != null) {
+      _paintTilingPattern(path, strokePattern,
+          components: _state.strokePatternComponents, stroking: true);
+      stroke = false;
     }
 
     if (fill && stroke) {
@@ -677,8 +705,22 @@ class PdfContentInterpreter {
     }
     final PdfColorSpace space =
         stroking ? _state.strokeColorSpace : _state.fillColorSpace;
-    // `scn`/`SCN` can end in a Pattern name. Pattern and special colour
-    // spaces are intentionally not approximated as RGB; keep the prior color.
+    if (space is PdfPatternColorSpace) {
+      if (args.isEmpty || args.last.type != PdfTokenType.name) return;
+      final components = <double>[
+        for (final token in args.take(args.length - 1))
+          if (token.type == PdfTokenType.number) _toDouble(token),
+      ];
+      if (components.length != space.numComponents) return;
+      if (stroking) {
+        _state.strokePatternName = args.last.text;
+        _state.strokePatternComponents = components;
+      } else {
+        _state.fillPatternName = args.last.text;
+        _state.fillPatternComponents = components;
+      }
+      return;
+    }
     if (args.any((PdfToken token) => token.type != PdfTokenType.number)) return;
     final List<double> components = <double>[
       for (final PdfToken token in args) _toDouble(token),
@@ -697,8 +739,101 @@ class PdfContentInterpreter {
         (rgb[2].clamp(0.0, 1.0) * 255).round();
     if (stroking) {
       _state.strokeColor = color;
+      _state.strokePatternName = null;
     } else {
       _state.fillColor = color;
+      _state.fillPatternName = null;
+    }
+  }
+
+  void _paintTilingPattern(
+    Path path,
+    String name, {
+    required List<double> components,
+    bool stroking = false,
+    bool evenOdd = false,
+  }) {
+    if (_nestingDepth >= 32 || resources == null) return;
+    final object = resources!.getDict('Pattern', resolver)?.getResolved(
+          name,
+          resolver,
+        );
+    final pattern = PdfTilingPattern.parse(object, resolver);
+    if (pattern == null) return;
+    final inverse = pattern.matrix.invert();
+    if (inverse == null) return;
+    final bounds = path.bounds;
+    final corners = <Offset>[
+      inverse.transformPoint(bounds.left, bounds.top),
+      inverse.transformPoint(bounds.right, bounds.top),
+      inverse.transformPoint(bounds.left, bounds.bottom),
+      inverse.transformPoint(bounds.right, bounds.bottom),
+    ];
+    final minX = corners.map((p) => p.dx).reduce(math.min);
+    final maxX = corners.map((p) => p.dx).reduce(math.max);
+    final minY = corners.map((p) => p.dy).reduce(math.min);
+    final maxY = corners.map((p) => p.dy).reduce(math.max);
+    final x0 = ((minX - pattern.bbox[2]) / pattern.xStep.abs()).floor();
+    final x1 = ((maxX - pattern.bbox[0]) / pattern.xStep.abs()).ceil();
+    final y0 = ((minY - pattern.bbox[3]) / pattern.yStep.abs()).floor();
+    final y1 = ((maxY - pattern.bbox[1]) / pattern.yStep.abs()).ceil();
+    device.saveState();
+    if (stroking) {
+      device.clipStrokePath(path, _state);
+    } else {
+      device.clip(path, evenOdd: evenOdd);
+    }
+    try {
+      for (var row = y0; row <= y1 && _patternBudget.hasTiles; row++) {
+        for (var column = x0;
+            column <= x1 && _patternBudget.takeTile();
+            column++) {
+          final tile = PdfMatrix.translation(
+            column * pattern.xStep.abs(),
+            row * pattern.yStep.abs(),
+          ).multiply(pattern.matrix);
+          device.saveState();
+          device.transform(tile);
+          final tileBounds = PathBuilder()
+            ..addRect(Rect.fromLTRB(
+              pattern.bbox[0],
+              pattern.bbox[1],
+              pattern.bbox[2],
+              pattern.bbox[3],
+            ));
+          device.clip(tileBounds.build());
+          try {
+            final state = _state.clone()
+              ..ctm = _state.ctm.multiply(tile)
+              ..fillPatternName = null
+              ..strokePatternName = null;
+            if (!pattern.isColored) {
+              final base =
+                  stroking ? _state.strokeColorSpace : _state.fillColorSpace;
+              if (base is PdfPatternColorSpace && base.baseSpace != null) {
+                final rgb = base.baseSpace!.toRgb(components);
+                final color = 0xFF000000 |
+                    ((rgb[0].clamp(0.0, 1.0) * 255).round() << 16) |
+                    ((rgb[1].clamp(0.0, 1.0) * 255).round() << 8) |
+                    (rgb[2].clamp(0.0, 1.0) * 255).round();
+                state.fillColor = state.strokeColor = color;
+              }
+            }
+            PdfContentInterpreter(
+              device: device,
+              resources: pattern.resources ?? resources,
+              resolver: resolver,
+              initialState: state,
+              nestingDepth: _nestingDepth + 1,
+              patternBudget: _patternBudget,
+            ).execute(pattern.contents);
+          } finally {
+            device.restoreState();
+          }
+        }
+      }
+    } finally {
+      device.restoreState();
     }
   }
 
@@ -915,4 +1050,17 @@ class PdfContentInterpreter {
 
   double _toDouble(PdfToken token) => token.numberValue?.toDouble() ?? 0.0;
   int _toInt(PdfToken token) => token.numberValue?.toInt() ?? 0;
+}
+
+/// Shared defensive budget for nested tiling-pattern interpretation.
+final class PdfPatternRenderBudget {
+  PdfPatternRenderBudget({int maximumTiles = 10000})
+      : _remaining = maximumTiles.clamp(0, 100000);
+  int _remaining;
+  bool get hasTiles => _remaining > 0;
+  bool takeTile() {
+    if (_remaining <= 0) return false;
+    _remaining--;
+    return true;
+  }
 }

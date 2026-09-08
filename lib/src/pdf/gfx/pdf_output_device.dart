@@ -57,6 +57,10 @@ abstract class PdfOutputDevice {
   /// Aplica região de recorte com base no [path] e modo [evenOdd].
   void clip(Path path, {bool evenOdd = false});
 
+  /// Clips to the area painted by stroking [path]. Minimal devices may use
+  /// the path itself; raster devices should expand it with the active pen.
+  void clipStrokePath(Path path, PdfGfxState state) => clip(path);
+
   /// Preenche o caminho vetorial [path] com o estilo e cor de preenchimento definidos em [state].
   void fillPath(Path path, PdfGfxState state, {bool evenOdd = false});
 
@@ -121,6 +125,12 @@ class PdfMemoryOutputDevice extends PdfOutputDevice {
   void clip(Path path, {bool evenOdd = false}) {
     paths.add(path);
     commands.add('clip(evenOdd: $evenOdd)');
+  }
+
+  @override
+  void clipStrokePath(Path path, PdfGfxState state) {
+    paths.add(path);
+    commands.add('clipStroke(width: ${state.lineWidth})');
   }
 
   @override

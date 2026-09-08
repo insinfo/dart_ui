@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import '../crypto/pdf_encryption.dart';
 import '../format/pdf_limits.dart';
 import '../format/pdf_object.dart';
 import '../format/pdf_xref.dart';
@@ -22,10 +23,43 @@ class PdfDocument {
   factory PdfDocument.fromBytes(
     Uint8List bytes, {
     PdfLimits limits = const PdfLimits(),
+    String? password,
+    PdfPasswordProvider? passwordProvider,
   }) {
+    if (password != null && passwordProvider != null) {
+      throw ArgumentError('Specify password or passwordProvider, not both');
+    }
     final reader = ByteReader(bytes);
     final xref = PdfXRefTable(reader, limits: limits);
     xref.load();
+
+    final encryptionReference = xref.trailer?['Encrypt'];
+    if (encryptionReference != null) {
+      final encryptionObject = encryptionReference.resolve(xref);
+      if (encryptionObject is! PdfDict) {
+        throw const FormatException('Invalid PDF /Encrypt dictionary');
+      }
+      final info = PdfEncryptionContext.inspect(encryptionObject, xref);
+      final suppliedPassword = password ?? passwordProvider?.call(info);
+      if (suppliedPassword == null) {
+        throw PdfPasswordRequiredException(info);
+      }
+      final idArray = xref.trailer?.getArray('ID', xref);
+      final firstId = idArray?.getResolved(0, xref);
+      if (firstId is! PdfString) {
+        throw const FormatException('Encrypted PDF has no trailer /ID');
+      }
+      if (encryptionReference is! PdfRef) {
+        throw const FormatException('/Encrypt must be an indirect reference');
+      }
+      final context = PdfEncryptionContext.fromDictionary(
+        encryptionObject,
+        firstId.bytes,
+        suppliedPassword,
+        xref,
+      );
+      xref.configureEncryption(context, encryptionReference);
+    }
 
     final doc = PdfDocument._(bytes, reader, xref, limits);
     doc._initialize();

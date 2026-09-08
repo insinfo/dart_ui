@@ -305,9 +305,15 @@ class PdfSecurityHandler {
   }
 
   /// Encrypts a string or stream belonging to the indirect object.
-  Uint8List encryptContent(int objNum, int objGen, Uint8List data) {
-    final objectKey = _computeObjectKey(objNum, objGen);
-    if (!isAes && revision < 5) return Crypto.rc4(objectKey, data);
+  Uint8List encryptContent(
+    int objNum,
+    int objGen,
+    Uint8List data, {
+    PdfSecurityCipher? cipher,
+  }) {
+    final selected = cipher ?? _defaultCipher;
+    final objectKey = _computeObjectKey(objNum, objGen, selected);
+    if (selected == PdfSecurityCipher.rc4) return Crypto.rc4(objectKey, data);
 
     final random = Random.secure();
     final iv = Uint8List.fromList(
@@ -323,9 +329,15 @@ class PdfSecurityHandler {
   }
 
   /// Decrypts a string or stream belonging to the indirect object.
-  Uint8List decryptContent(int objNum, int objGen, Uint8List data) {
-    final objectKey = _computeObjectKey(objNum, objGen);
-    if (!isAes && revision < 5) return Crypto.rc4(objectKey, data);
+  Uint8List decryptContent(
+    int objNum,
+    int objGen,
+    Uint8List data, {
+    PdfSecurityCipher? cipher,
+  }) {
+    final selected = cipher ?? _defaultCipher;
+    final objectKey = _computeObjectKey(objNum, objGen, selected);
+    if (selected == PdfSecurityCipher.rc4) return Crypto.rc4(objectKey, data);
     if (data.length < 32 || (data.length - 16) % 16 != 0) {
       throw const FormatException('Invalid AES-encrypted PDF object');
     }
@@ -337,13 +349,32 @@ class PdfSecurityHandler {
     );
   }
 
-  Uint8List _computeObjectKey(int objNum, int objGen) {
-    if (revision >= 5) return encryptionKey;
+  PdfSecurityCipher get _defaultCipher => revision >= 5
+      ? PdfSecurityCipher.aes256
+      : isAes
+          ? PdfSecurityCipher.aes128
+          : PdfSecurityCipher.rc4;
+
+  Uint8List _computeObjectKey(
+    int objNum,
+    int objGen,
+    PdfSecurityCipher cipher,
+  ) {
+    if (cipher == PdfSecurityCipher.aes256) {
+      if (revision < 5) {
+        throw const FormatException('AESV3 requires Standard Security R5/R6');
+      }
+      return encryptionKey;
+    }
     if (objNum < 0 || objNum > 0xffffff || objGen < 0 || objGen > 0xffff) {
       throw RangeError(
           'PDF object and generation numbers must fit 3 and 2 bytes');
     }
-    final input = Uint8List(encryptionKey.length + 5 + (isAes ? 4 : 0));
+    final aes128 = cipher == PdfSecurityCipher.aes128;
+    if (aes128 && revision != 4) {
+      throw const FormatException('AESV2 requires Standard Security R4');
+    }
+    final input = Uint8List(encryptionKey.length + 5 + (aes128 ? 4 : 0));
     input
       ..setAll(0, encryptionKey)
       ..[encryptionKey.length] = objNum & 0xff
@@ -351,7 +382,7 @@ class PdfSecurityHandler {
       ..[encryptionKey.length + 2] = (objNum >> 16) & 0xff
       ..[encryptionKey.length + 3] = objGen & 0xff
       ..[encryptionKey.length + 4] = (objGen >> 8) & 0xff;
-    if (isAes) {
+    if (aes128) {
       input.setAll(input.length - 4, const <int>[0x73, 0x41, 0x6c, 0x54]);
     }
     final digest = Crypto.md5(input);
@@ -495,6 +526,8 @@ class PdfSecurityHandler {
     return difference == 0;
   }
 }
+
+enum PdfSecurityCipher { rc4, aes128, aes256 }
 
 final class _AuthenticationResult {
   const _AuthenticationResult(this.key, this.owner);

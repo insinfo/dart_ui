@@ -92,7 +92,7 @@ void main() {
       expect(interpreter.currentState.fillColor, 0xff808080);
     });
 
-    test('unsupported and Pattern spaces leave known state unchanged', () {
+    test('unsupported spaces leave known color unchanged', () {
       final resources = PdfDict(<String, PdfObject>{
         'ColorSpace': PdfDict(<String, PdfObject>{
           'Spot': const PdfArray(<PdfObject>[
@@ -104,7 +104,7 @@ void main() {
         }),
       });
       final interpreter = run(
-        '0.4 g /Spot cs 1 scn /Pattern cs 0.2 /P1 scn',
+        '0.4 g /Spot cs 1 scn',
         resources: resources,
       );
 

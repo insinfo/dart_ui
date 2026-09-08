@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../format/pdf_object.dart';
+import 'pdf_function.dart';
 
 /// Representação abstrata de um espaço de cor no PDF (ISO 32000-1, Seção 8.6).
 abstract class PdfColorSpace {
@@ -17,7 +18,10 @@ abstract class PdfColorSpace {
   /// Unsupported spaces return null instead of being silently treated as RGB.
   static PdfColorSpace? parse(PdfObject? object, PdfResolver? resolver) {
     final resolved = object?.resolve(resolver);
-    if (resolved is PdfName) return _deviceSpace(resolved.name);
+    if (resolved is PdfName) {
+      if (resolved.name == 'Pattern') return PdfPatternColorSpace();
+      return _deviceSpace(resolved.name);
+    }
     if (resolved is! PdfArray || resolved.length == 0) return null;
     final family = resolved.getResolved(0, resolver);
     if (family is! PdfName) return null;
@@ -42,6 +46,76 @@ abstract class PdfColorSpace {
         lookupTable: Uint8List.sublistView(bytes, 0, required),
       );
     }
+    if (family.name == 'ICCBased') {
+      final profile = resolved.getResolved(1, resolver);
+      if (profile is! PdfStream) return null;
+      final components = profile.dict.getNumber('N', resolver)?.toInt();
+      if (components == null || !const <int>[1, 3, 4].contains(components)) {
+        return null;
+      }
+      final alternateObject = profile.dict.getResolved('Alternate', resolver);
+      final alternate = alternateObject == null
+          ? switch (components) {
+              1 => PdfDeviceGray(),
+              3 => PdfDeviceRgb(),
+              4 => PdfDeviceCmyk(),
+              _ => null,
+            }
+          : parse(alternateObject, resolver);
+      if (alternate == null || alternate.numComponents != components) {
+        return null;
+      }
+      return PdfIccBasedColorSpace(
+        componentCount: components,
+        alternateSpace: alternate,
+        profile: profile.rawBytes,
+      );
+    }
+    if (family.name == 'Separation') {
+      if (resolved.length < 4) return null;
+      final colorant = resolved.getResolved(1, resolver);
+      final alternate = parse(resolved.getResolved(2, resolver), resolver);
+      final transform =
+          PdfFunction.parse(resolved.getResolved(3, resolver), resolver);
+      if (colorant is! PdfName ||
+          alternate == null ||
+          transform == null ||
+          transform.inputCount != 1) {
+        return null;
+      }
+      return PdfSeparationColorSpace(
+        colorantName: colorant.name,
+        alternateSpace: alternate,
+        tintTransform: transform,
+      );
+    }
+    if (family.name == 'DeviceN') {
+      if (resolved.length < 4) return null;
+      final namesObject = resolved.getResolved(1, resolver);
+      final alternate = parse(resolved.getResolved(2, resolver), resolver);
+      final transform =
+          PdfFunction.parse(resolved.getResolved(3, resolver), resolver);
+      if (namesObject is! PdfArray || alternate == null || transform == null) {
+        return null;
+      }
+      final names = <String>[];
+      for (var i = 0; i < namesObject.length; i++) {
+        final name = namesObject.getResolved(i, resolver);
+        if (name is! PdfName) return null;
+        names.add(name.name);
+      }
+      if (names.isEmpty || transform.inputCount != names.length) return null;
+      return PdfDeviceNColorSpace(
+        colorantNames: List<String>.unmodifiable(names),
+        alternateSpace: alternate,
+        tintTransform: transform,
+      );
+    }
+    if (family.name == 'Pattern') {
+      if (resolved.length == 1) return PdfPatternColorSpace();
+      final base = parse(resolved.getResolved(1, resolver), resolver);
+      return base == null ? null : PdfPatternColorSpace(base);
+    }
     final parameters = resolved.getResolved(1, resolver);
     if (parameters is! PdfDict) return null;
     return switch (family.name) {
@@ -51,6 +125,94 @@ abstract class PdfColorSpace {
       _ => null,
     };
   }
+}
+
+/// ICCBased space. The profile bytes are preserved for colour-managed devices;
+/// the portable converter uses the profile's explicit Alternate space (or the
+/// ISO-defined device default when Alternate is absent).
+final class PdfIccBasedColorSpace extends PdfColorSpace {
+  PdfIccBasedColorSpace({
+    required this.componentCount,
+    required this.alternateSpace,
+    required this.profile,
+  });
+
+  final int componentCount;
+  final PdfColorSpace alternateSpace;
+  final Uint8List profile;
+
+  @override
+  int get numComponents => componentCount;
+
+  @override
+  List<double> toRgb(List<double> components) =>
+      alternateSpace.toRgb(components);
+}
+
+/// A single named colourant mapped through a PDF tint transform.
+final class PdfSeparationColorSpace extends PdfColorSpace {
+  PdfSeparationColorSpace({
+    required this.colorantName,
+    required this.alternateSpace,
+    required this.tintTransform,
+  });
+
+  final String colorantName;
+  final PdfColorSpace alternateSpace;
+  final PdfFunction tintTransform;
+
+  @override
+  int get numComponents => 1;
+
+  @override
+  List<double> toRgb(List<double> components) {
+    if (components.length != 1) return const <double>[0, 0, 0];
+    final alternate = tintTransform.evaluate(components);
+    if (alternate == null || alternate.length != alternateSpace.numComponents) {
+      throw const FormatException('Invalid Separation tint transform result');
+    }
+    return alternateSpace.toRgb(alternate);
+  }
+}
+
+/// Multiple named colourants mapped through a PDF tint transform.
+final class PdfDeviceNColorSpace extends PdfColorSpace {
+  PdfDeviceNColorSpace({
+    required this.colorantNames,
+    required this.alternateSpace,
+    required this.tintTransform,
+  });
+
+  final List<String> colorantNames;
+  final PdfColorSpace alternateSpace;
+  final PdfFunction tintTransform;
+
+  @override
+  int get numComponents => colorantNames.length;
+
+  @override
+  List<double> toRgb(List<double> components) {
+    if (components.length != numComponents) return const <double>[0, 0, 0];
+    final alternate = tintTransform.evaluate(components);
+    if (alternate == null || alternate.length != alternateSpace.numComponents) {
+      throw const FormatException('Invalid DeviceN tint transform result');
+    }
+    return alternateSpace.toRgb(alternate);
+  }
+}
+
+/// Pattern color space, optionally carrying the base space of an uncolored
+/// tiling pattern.
+final class PdfPatternColorSpace extends PdfColorSpace {
+  PdfPatternColorSpace([this.baseSpace]);
+  final PdfColorSpace? baseSpace;
+
+  @override
+  int get numComponents => baseSpace?.numComponents ?? 0;
+
+  @override
+  List<double> toRgb(List<double> components) =>
+      baseSpace?.toRgb(components) ?? const <double>[0, 0, 0];
 }
 
 PdfColorSpace? _deviceSpace(String name) => switch (name) {

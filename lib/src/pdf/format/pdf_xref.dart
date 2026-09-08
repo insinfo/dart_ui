@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import '../crypto/pdf_encryption.dart';
 import '../io/byte_reader.dart';
 import 'pdf_lexer.dart';
 import 'pdf_limits.dart';
@@ -43,8 +44,16 @@ class PdfXRefTable implements PdfResolver {
   final Set<int> _resolvingObjects = <int>{};
   PdfDict? trailer;
   final PdfLimits limits;
+  PdfEncryptionContext? _encryption;
+  int? _encryptionObjectNumber;
 
   PdfXRefTable(this.reader, {this.limits = const PdfLimits()});
+
+  void configureEncryption(PdfEncryptionContext context, PdfRef encryptionRef) {
+    _encryption = context;
+    _encryptionObjectNumber = encryptionRef.objNum;
+    _objectCache.removeWhere((number, _) => number != encryptionRef.objNum);
+  }
 
   Map<int, PdfXRefEntry> get entries => _entries;
 
@@ -413,8 +422,11 @@ class PdfXRefTable implements PdfResolver {
         reader.offset = entry.offset;
         final lexer = PdfLexer(reader);
         final parser = PdfParser(lexer, limits: limits);
-        final obj = parser.parseObject();
+        var obj = parser.parseObject();
         if (obj != null) {
+          if (_encryption != null && ref.objNum != _encryptionObjectNumber) {
+            obj = _encryption!.decryptObject(ref.objNum, ref.genNum, obj);
+          }
           _objectCache[ref.objNum] = obj;
         }
         return obj;

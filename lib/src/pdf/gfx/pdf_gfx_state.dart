@@ -51,6 +51,11 @@ class PdfGfxState {
   /// Whether the selected non-stroking color space can be converted by this engine.
   bool fillColorSpaceSupported;
 
+  String? strokePatternName;
+  String? fillPatternName;
+  List<double> strokePatternComponents;
+  List<double> fillPatternComponents;
+
   /// Espessura da linha (em unidades do espaço de usuário).
   double lineWidth;
 
@@ -115,6 +120,10 @@ class PdfGfxState {
     PdfColorSpace? fillColorSpace,
     this.strokeColorSpaceSupported = true,
     this.fillColorSpaceSupported = true,
+    this.strokePatternName,
+    this.fillPatternName,
+    this.strokePatternComponents = const <double>[],
+    this.fillPatternComponents = const <double>[],
     this.lineWidth = 1.0,
     this.lineCap = PdfLineCap.butt,
     this.lineJoin = PdfLineJoin.miter,
@@ -147,6 +156,10 @@ class PdfGfxState {
       fillColorSpace: fillColorSpace,
       strokeColorSpaceSupported: strokeColorSpaceSupported,
       fillColorSpaceSupported: fillColorSpaceSupported,
+      strokePatternName: strokePatternName,
+      fillPatternName: fillPatternName,
+      strokePatternComponents: List<double>.from(strokePatternComponents),
+      fillPatternComponents: List<double>.from(fillPatternComponents),
       lineWidth: lineWidth,
       lineCap: lineCap,
       lineJoin: lineJoin,
