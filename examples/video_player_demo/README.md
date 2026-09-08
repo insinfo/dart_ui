@@ -77,3 +77,21 @@ retidos.
 # toca sozinho e imprime uma linha de estatística por segundo
 dart run .\examples\video_player_demo\main.dart --autoplay --stats "C:\Videos\exemplo.mp4"
 ```
+
+### `--no-audio`, e por que ele existe
+
+`--autoplay` abre o dispositivo de saída e **toca o arquivo em voz alta**. Numa
+medição feita sem ninguém olhando isso vira um som sem origem visível para quem
+está no teclado, e foi exatamente o que aconteceu enquanto este reprodutor era
+perfilado. `--no-audio` deixa a saída fechada e põe o `_WallMasterClock` no
+lugar do relógio de áudio.
+
+Ele **muda o que está sendo medido** e por isso é um flag e não o padrão: o
+custo do quadro não depende de qual relógio está atrás dele — o caminho da
+imagem não sabe qual dos dois é — mas drift, descartes e esperas passam a ser
+números de relógio de parede e têm de ser rotulados assim.
+
+Com `--stats`, o fim da execução imprime também a divisão do quadro em
+build/layout/paint/present vinda de `Application.statistics`. É a metade
+`Stopwatch` da instrumentação, e é a que funciona em AOT, onde o `Timeline` de
+`tool/frame_timeline_trace.dart` não tem serviço de VM para conversar.

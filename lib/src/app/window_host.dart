@@ -45,6 +45,7 @@ library;
 import 'dart:async';
 
 import '../foundation/diagnostics.dart';
+import '../foundation/frame_timeline.dart';
 import '../foundation/lifecycle.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
@@ -963,24 +964,45 @@ final class RenderTargetPresenter
     }
     final RenderTarget target = _target;
     if (target is DisplayListRenderTarget) {
-      return target.renderDisplayList(
-        list,
-        clearColor: clearColor,
-        deviceTransform: deviceTransform ?? Transform2D.identity,
-      );
+      beginFramePhase(FramePhase.presentReplay);
+      try {
+        return await target.renderDisplayList(
+          list,
+          clearColor: clearColor,
+          deviceTransform: deviceTransform ?? Transform2D.identity,
+        );
+      } finally {
+        endFramePhase();
+      }
     }
-    final frame = target.beginFrame(FrameRequest(damage: damage));
+    beginFramePhase(FramePhase.presentAcquire);
+    final Frame frame;
+    try {
+      frame = target.beginFrame(FrameRequest(damage: damage));
+    } finally {
+      endFramePhase();
+    }
     // The clear goes to the rasteriser rather than to `FrameRequest`, so that
     // exactly one thing clears the buffer. Both would work and the second
     // would be pure waste - a full-surface memset on every frame.
-    rasterizeDisplayList(
-      list,
-      frame.framebuffer,
-      clearColor: clearColor,
-      damage: damage,
-      deviceTransform: deviceTransform ?? Transform2D.identity,
-    );
-    return target.present(frame);
+    beginFramePhase(FramePhase.presentRasterize);
+    try {
+      rasterizeDisplayList(
+        list,
+        frame.framebuffer,
+        clearColor: clearColor,
+        damage: damage,
+        deviceTransform: deviceTransform ?? Transform2D.identity,
+      );
+    } finally {
+      endFramePhase();
+    }
+    beginFramePhase(FramePhase.presentSwap);
+    try {
+      return await target.present(frame);
+    } finally {
+      endFramePhase();
+    }
   }
 
   @override

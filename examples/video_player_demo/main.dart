@@ -55,6 +55,21 @@ bool _logStatistics = false;
 /// a click.
 bool _autoPlay = false;
 
+/// Whether the output device is left closed and the wall clock drives instead.
+///
+/// Enabled with `--no-audio`, and it exists because of a concrete incident:
+/// profiling this player means running it unattended with `--autoplay`, and
+/// there was no way to do that without the machine playing the file's sound
+/// out loud. Somebody at the keyboard heard a test tone with no visible source.
+///
+/// **It changes what is being measured**, so it is a flag and not a default: the
+/// master clock stops being the sound card and becomes [_WallMasterClock], and
+/// the A/V synchroniser's present/drop/wait decisions are judged against a
+/// different reference. A frame-cost measurement is unaffected - the picture
+/// path does not know which clock it is - but a drift or drop count taken with
+/// this flag is a wall-clock number and has to be labelled as one.
+bool _noAudio = false;
+
 /// Where framework errors go, so that a broken frame is a line of text rather
 /// than a window that silently disappears.
 final _FrameworkErrorLog _frameworkErrors = _FrameworkErrorLog();
@@ -97,9 +112,10 @@ Future<void> main(List<String> arguments) async {
   }
   _logStatistics = arguments.contains('--stats');
   _autoPlay = arguments.contains('--autoplay');
+  _noAudio = arguments.contains('--no-audio');
   FrameworkFonts.install();
   FontRegistry.warmSystemFonts();
-  await runApp(
+  final Application application = await runApp(
     VideoPlayerDemo(initialPath: initialPath),
     options: ApplicationOptions.fromArguments(
       arguments,
@@ -114,6 +130,44 @@ Future<void> main(List<String> arguments) async {
       // the failure; the only thing missing was somebody listening.
       onError: _frameworkErrors.report,
     ),
+  );
+  if (_logStatistics) _printFrameBreakdown(application);
+}
+
+/// Where the frames went, from the `Stopwatch` half of the instrumentation.
+///
+/// Printed after the loop rather than during it, and read from
+/// [Application.statistics] rather than from a trace, because a trace cannot be
+/// taken from the build that matters: `Timeline` needs a VM Service and an AOT
+/// executable has none. This is the same four phases
+/// `tool/frame_timeline_trace.dart` shows, measured with a stopwatch, so a JIT
+/// conclusion has somewhere to be checked. The label says which runtime
+/// produced the numbers because the two are not comparable.
+void _printFrameBreakdown(Application application) {
+  final List<FrameTiming> frames = application.statistics.frames;
+  if (frames.isEmpty) {
+    stdout.writeln('no frames were presented; nothing to break down');
+    return;
+  }
+  var build = 0;
+  var layout = 0;
+  var paint = 0;
+  var raster = 0;
+  for (final FrameTiming frame in frames) {
+    build += frame.build;
+    layout += frame.layout;
+    paint += frame.paint;
+    raster += frame.raster;
+  }
+  final int n = frames.length;
+  String ms(int total) => (total / n / 1000).toStringAsFixed(2);
+  stdout.writeln(
+    'frame breakdown (${DartRuntimeMode.current.label}, last $n of '
+    '${application.framesPresented} presented, ms/frame) · '
+    'build ${ms(build)} · layout ${ms(layout)} · paint ${ms(paint)} · '
+    'present ${ms(raster)} · total ${ms(build + layout + paint + raster)} · '
+    'p99 ${(application.statistics.percentileTotal(99) / 1000).toStringAsFixed(2)} · worst '
+    '${(application.statistics.worstTotal / 1000).toStringAsFixed(2)}',
   );
 }
 
@@ -476,6 +530,7 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
   /// device, or not Windows"; none of those is an error the user can act on,
   /// so none of them throws here either.
   _MasterClock _openMasterClock(String path) {
+    if (_noAudio) return _WallMasterClock();
     try {
       final PcmAudioPlayer? player = PcmAudioPlayers.openFile(path);
       if (player != null) return _AudioMasterClock(player);

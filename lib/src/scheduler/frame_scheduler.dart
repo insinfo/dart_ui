@@ -1,6 +1,7 @@
 /// Deterministic pulse coordinator for a widget/render tree.
 library;
 
+import '../foundation/frame_timeline.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_pool.dart';
 import '../layout/pipeline.dart';
@@ -111,6 +112,18 @@ final class FrameScheduler {
   final List<FrameCallback> _frameCallbacks = <FrameCallback>[];
   final List<FrameCallback> _pendingCallbackRemovals = <FrameCallback>[];
 
+  /// The one stopwatch the phase split is read from.
+  ///
+  /// A field and not a local: `ApplicationWindow.drawFrame` runs this frame up
+  /// to eight times while a settle loop converges, and a stopwatch allocated
+  /// per pass would be eight allocations for a number that has to be summed
+  /// across all of them anyway.
+  final Stopwatch _phaseWatch = Stopwatch();
+
+  int _callbacksMicros = 0;
+  int _layoutMicros = 0;
+  int _paintMicros = 0;
+
   bool _frameScheduled = false;
   bool _nextFrameArmed = false;
   bool _inFrameCallbacks = false;
@@ -136,6 +149,33 @@ final class FrameScheduler {
   /// recovered through [onError]. Owners use this to stop a settle loop from
   /// retrying the same broken layout indefinitely.
   FramePipelinePhase? get lastErrorPhase => _lastErrorPhase;
+
+  /// Microseconds spent in frame callbacks since [resetPhaseTimings].
+  ///
+  /// These three exist because a `Timeline` trace cannot be taken from the
+  /// build this framework actually ships: `Timeline` needs a VM Service and an
+  /// AOT executable has none. A `Stopwatch` works in both, so the phases a
+  /// trace shows and the phases [FrameTiming] reports are the same phases,
+  /// measured two ways, and a JIT conclusion can be re-checked against AOT.
+  ///
+  /// Summed across settle passes rather than overwritten: a frame that takes
+  /// three passes to converge really did lay out three times, and reporting
+  /// only the last one would hide the pass that cost the most.
+  int get callbacksMicros => _callbacksMicros;
+
+  /// Microseconds spent in `PipelineOwner.flushLayout` since the last reset.
+  int get layoutMicros => _layoutMicros;
+
+  /// Microseconds spent in `PipelineOwner.flushPaint` since the last reset.
+  int get paintMicros => _paintMicros;
+
+  /// Zeroes the phase counters. Called once per drawn frame by the owner,
+  /// never per settle pass - see [callbacksMicros].
+  void resetPhaseTimings() {
+    _callbacksMicros = 0;
+    _layoutMicros = 0;
+    _paintMicros = 0;
+  }
 
   /// Registers [callback] to run at the top of every frame.
   ///
@@ -255,26 +295,47 @@ final class FrameScheduler {
     // is the arena of the frame being *recorded* and never the one a presenter
     // is still holding.
     final DisplayList list = displayLists.current..reset();
+    beginFramePhase(FramePhase.frameCallbacks);
+    _phaseWatch
+      ..reset()
+      ..start();
     try {
       _runFrameCallbacks(_frameTimestamp);
     } catch (error, stackTrace) {
       _handleError(FramePipelinePhase.callbacks, error, stackTrace);
       onFrame(list);
       return;
+    } finally {
+      _callbacksMicros += _phaseWatch.elapsedMicroseconds;
+      endFramePhase();
     }
+    beginFramePhase(FramePhase.layout);
+    _phaseWatch
+      ..reset()
+      ..start();
     try {
       pipelineOwner.flushLayout();
     } catch (error, stackTrace) {
       _handleError(FramePipelinePhase.layout, error, stackTrace);
       onFrame(list);
       return;
+    } finally {
+      _layoutMicros += _phaseWatch.elapsedMicroseconds;
+      endFramePhase();
     }
+    beginFramePhase(FramePhase.paint);
+    _phaseWatch
+      ..reset()
+      ..start();
     try {
       pipelineOwner.flushPaint(list);
     } catch (error, stackTrace) {
       _handleError(FramePipelinePhase.paint, error, stackTrace);
       onFrame(list);
       return;
+    } finally {
+      _paintMicros += _phaseWatch.elapsedMicroseconds;
+      endFramePhase();
     }
     onFrame(list);
   }

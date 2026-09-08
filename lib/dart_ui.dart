@@ -69,6 +69,7 @@ export 'src/crypto/x509/x509_certificate.dart';
 export 'src/diagnostics/dev_overlay.dart';
 export 'src/foundation/compute.dart';
 export 'src/foundation/diagnostics.dart';
+export 'src/foundation/frame_timeline.dart';
 export 'src/foundation/lifecycle.dart';
 export 'src/foundation/locale.dart';
 export 'src/foundation/lru_cache.dart';

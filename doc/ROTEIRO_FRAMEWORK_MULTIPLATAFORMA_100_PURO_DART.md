@@ -9867,12 +9867,196 @@ o que torna isso seguro na prática é o envio e o recebimento pela porta serem
 um ponto de sincronização dentro da VM. 200 rodadas conferindo primeira,
 última e palavra do meio de um quadro inteiro: sempre coerente.
 
-### Um número que sobra explicado pela metade
+### O número que sobrava: os ~79 ms são a conversão de cor na CPU — 07/09/2026
 
-O decodificador sozinho sustenta **148 fps** num H.264 1080p, e o reprodutor
-mostrava 12,7 fps num arquivo de 25 fps **antes de qualquer diálogo**. A
-decodificação não é o gargalo; o que consome os outros ~79 ms por quadro não
-foi isolado, e está aqui como pergunta aberta em vez de suposição.
+O decodificador sozinho sustenta **148 fps** num H.264 1080p e o reprodutor
+mostrava 12,7 fps num arquivo de 25 fps. A pergunta ficou aberta aqui porque
+não havia como olhar: `grep -rn "dart:developer" lib/` **não encontrava nada**,
+e o framework sabia dizer que um quadro custou 79 ms sem saber dizer onde.
+
+Agora encontra, e a resposta é curta: **os ~79 ms nunca foram do laço de
+quadros, nem do sincronizador, nem do contador. São a conversão YUV→RGB de um
+quadro 1920x1080 na CPU, feita uma vez por quadro exibido, mais o
+reescalamento que vem depois dela.** E o mais importante: **só existem no
+caminho de apresentação por CPU.** Na janela normal, com o D3D11, o mesmo
+arquivo toca a 25,0 fps com zero descartes.
+
+#### O que passou a existir
+
+`lib/src/foundation/frame_timeline.dart` marca as fases de um quadro com o
+`Timeline` do `dart:developer` — `ui.frame`, `ui.settle`, `ui.build`,
+`ui.layout`, `ui.paint`, `ui.beginFrame`, `ui.present` e, dentro do present,
+`ui.present.rasterize` e `ui.present.swap`. Os nomes são `const String` e não
+existe sobrecarga que aceite nome interpolado ou `Map` de argumentos, pela
+razão que a §37 já tinha escrito no `render_diagnostics.dart`: o
+`Timeline.startSync` confere internamente se o fluxo está ligado, **mas os
+argumentos são avaliados na chamada de qualquer jeito**.
+
+`tool/frame_timeline_trace.dart` roda um programa sob o serviço de VM, liga os
+fluxos, puxa os eventos e faz duas coisas com eles: escreve um arquivo que o
+`ui.perfetto.dev` abre, e **imprime o resumo no stdout** — as fases por tempo
+total e por tempo próprio —, para que uma regressão apareça numa saída de CI e
+não só num navegador.
+
+**O transporte foi verificado, não suposto.** No SDK 3.6.2:
+
+- o endpoint **HTTP** responde `GET /<método>?param=valor` e serve para todo
+  RPC sem parâmetro — `getVersion`, `getVM`, `getVMTimeline`, `clearVMTimeline`
+  voltam envelopes JSON-RPC corretos. `POST /` com o envelope no corpo é
+  **405 method not allowed**, então a receita usual não se aplica;
+- mas `setVMTimelineFlags` recebe `recordedStreams` como **array JSON**, e uma
+  query string não carrega um. `?recordedStreams=Dart&recordedStreams=GC`
+  chega como a string `GC` e é recusado; a string com o JSON dentro também.
+  **Não existe grafia HTTP dessa chamada**, então ligar a gravação só é
+  possível pelo **WebSocket** em `ws://host:porta/ws`, e é o que a ferramenta
+  usa para tudo. `dart:io` basta; nada disso precisou de `package:vm_service`;
+- e o nome do RPC é **`getVMTimeline`**. `getTimeline` não existe no protocolo:
+  pedir por ele responde `Unknown method "getTimeline"` nos dois transportes.
+
+#### A medição, com JIT e AOT separados
+
+Um traço é **sempre JIT**: `Timeline` é uma facilidade do serviço de VM e um
+executável AOT não tem serviço nenhum. Por isso a instrumentação tem duas
+metades que medem as mesmas fases — as marcas de `Timeline`, para o traço, e
+contadores de `Stopwatch` no `FrameScheduler`, que alimentam
+`FrameTiming.layout` (que até aqui era sempre zero) e **funcionam em AOT**. O
+reprodutor com `--stats` imprime essa divisão ao terminar.
+
+**AOT** (`dart compile exe`), clipe 1920x1080 H.264 25 fps, janela 1100x760,
+Intel UHD, ms por quadro do framework:
+
+| caminho de apresentação | vídeo | build | layout | paint | present | total |
+|---|---|---|---|---|---|---|
+| **GPU D3D11 (o padrão)** | **25,0 fps, 0 descartes** | 0,28 | 0,85 | 0,10 | **15,19** | **16,42** |
+| CPU numa janela (`--cpu`) | 10,7–12,6 fps | 0,18 | 0,71 | 0,09 | **41,11** | 42,09 |
+| CPU sem janela (`--headless`) | 8,4–12,0 fps | 0,20 | 0,73 | 0,07 | 38–47 | 39–48 |
+
+Os 15,19 ms do caminho GPU **não são trabalho**: são a espera do vsync de
+60 Hz. Os 41 ms do caminho CPU são.
+
+**JIT**, traço do caminho headless, 163 quadros em 10 s, tempo *próprio* por
+quadro — a coluna que encontra um custo, porque `ui.frame` contém tudo e nunca
+diz nada:
+
+| fase | próprio, ms/quadro |
+|---|---|
+| `ui.present.rasterize` | **47,3** |
+| `ConcurrentMark` (GC) | 12,8 |
+| `ui.present.swap` | 9,2 |
+| `Sweep` + `SweepLarge` (GC) | 4,4 |
+| `ui.layout` | 0,85 |
+| `ui.paint` | 0,46 |
+| `ui.build` | 0,43 |
+| `ui.frameCallbacks` | 0,18 |
+
+Build, layout e paint somados são **menos de 2 ms**. O sincronizador de A/V, um
+dos suspeitos, é `ui.frameCallbacks`: **0,18 ms**. E os 17 ms de GC não são
+ruído de fundo — são a consequência direta da linha de cima.
+
+#### Por que a rasterização custa isso, medido isoladamente
+
+`CpuDisplayListRenderer._drawVideoFrame` converte a região de origem inteira e
+só depois reduz para o destino. Medido em AOT com um quadro sintético
+1920x1080 NV12 → BGRA e destino 1084x610, mediana de 40 rodadas:
+
+| operação | ms |
+|---|---|
+| converter o quadro inteiro, buffer novo a cada vez (**o que é feito hoje**) | **86** |
+| converter o quadro inteiro, num buffer reaproveitado | 73–80 |
+| reamostrar 1080p → 1084x610 | 5 |
+| converter **já no tamanho do destino** | **22–24** |
+
+Os 86 ms fecham a conta que estava aberta: o conversor roda uma vez por quadro
+de vídeo *exibido*, e não por quadro do framework, então o teto de exibição é
+`1/86 ms` = **11,6 fps** — que é a faixa de 10,7 a 12,7 fps que se via. O
+`_convertedVideoFrame` tem um cache de um slot, e é por isso que a média por
+quadro do framework (41 ms) é menor que o custo de uma conversão: os quadros
+que reexibem a mesma imagem não pagam.
+
+**O contador de fps estava certo.** `_framesThisWindow` conta decisões
+`AvSyncAction.present` contra um `Stopwatch` reiniciado a cada segundo, e a
+contagem acumulada de `presented` na mesma linha confirma o número por outro
+caminho. Não havia erro de medição a encontrar; havia 86 ms de conversão.
+
+#### O conserto, dimensionado e não começado
+
+Duas mudanças em `_convertedVideoFrame`, ambas em `cpu_renderer.dart`:
+
+1. **converter direto no tamanho do destino**, avançando na origem com o passo
+   do destino em vez de converter tudo e reamostrar depois. Pelos números
+   acima, 91 ms viram ~23 ms — o caminho de CPU sairia de ~11 fps para ~35 fps
+   neste tamanho de janela. É a mudança maior: `convertVideoFrameToRgba` hoje
+   escreve 1:1 e precisaria de uma variante com passo, e a paridade com o
+   shader da GPU (o teste de tolerância 1 da §68) tem de ser reavaliada, porque
+   amostrar com passo não é o mesmo que amostrar tudo e reduzir depois;
+2. **reaproveitar o buffer de saída**. `convertVideoFrameToRgba` já aceita
+   `into:` e o renderizador não usa: são 8,29 MiB de lixo por quadro, e o traço
+   mostra os 12,8 ms/quadro de `ConcurrentMark` que isso paga. Essa metade é
+   pequena e independente da primeira.
+
+Nada disso é urgente para quem usa o reprodutor, e vale dizer por quê: o
+caminho que ele usa é o da GPU, e lá o arquivo toca a 25,0 fps com zero
+descartes e 8 ms de drift. O caminho de CPU é o de recurso — máquina sem
+driver, teste headless, golden — e é lá que os 86 ms moram.
+
+#### O que a instrumentação custa desligada, medido
+
+A pergunta "vale a pena remover depois de otimizar" foi respondida com número
+em vez de argumento. `kFrameTimelineEnabled` é
+`dart.library.io && !dart.vm.product`, e as duas exclusões foram verificadas:
+
+- **AOT release**, 20 milhões de iterações, um laço com o par
+  `beginFramePhase`/`endFramePhase` contra o mesmo laço sem ele: **0,03 ns por
+  par**, dentro de uma banda de ruído de ~0,4 ns. O compilador removeu o bloco.
+  Compilado *para dentro* com `-Ddart_ui.frame_timeline=true` e sem gravador
+  nenhum ligado, o mesmo par custa **31 ns** — ou seja, a constante está
+  fazendo trabalho real e não é decoração;
+- **web**: `Timeline` sob `dart2js` **não é o no-op que é fácil supor**.
+  Compilado e executado, `Timeline.startSync` chega a JavaScript de verdade
+  (sob `node` falha com `ReferenceError: self is not defined`, que é artefato
+  do node; num navegador funcionaria e escreveria na timeline de desempenho do
+  navegador a cada quadro, para sempre, para eventos que nada aqui consegue ler
+  de volta, porque `getVMTimeline` precisa de um serviço de VM e um navegador
+  não tem). Por isso o teste é `dart.library.io` e não apenas
+  `!dart.vm.product`. Verificado: o `dart compile js` do bracket imprime
+  `kFrameTimelineEnabled=false` e não toca em JS.
+
+A metade que **fica ligada em produção** são os contadores de `Stopwatch`, e
+eles têm preço: **497 ns por passe de settle**, ou ~1,25 µs por quadro com os
+2,5 passes que o traço mediu. Contra os 16,4 ms de um quadro na GPU são
+**0,008%**. Um A/B de ponta a ponta em AOT (7 execuções de 400 quadros de cada
+lado) não consegue distinguir os dois: mediana 5,64 ms desligado contra 5,46 ms
+ligado, com a banda de ruído da máquina indo de 4,4 a 11,0 ms. **Não há o que
+remover.**
+
+E a regra que fica escrita junto: **as fases grossas ficam para sempre** — são
+os olhos que faltavam —, enquanto **instrumentação fina** (por widget, por
+draw, dentro de laço) é temporária por natureza, porque a um microssegundo por
+evento dez mil eventos por quadro mudam o número que estão medindo. Nenhuma das
+medições acima usou instrumentação fina: a divisão dos 86 ms saiu de um
+micro-benchmark isolado, fora do pipeline, exatamente para não perturbá-lo.
+
+#### Duas notas sobre como as medições foram feitas
+
+**O áudio.** Perfilar o reprodutor com `--autoplay` abre o dispositivo de saída
+e toca o arquivo em voz alta, e não havia flag para evitar isso: o
+`PcmAudioPlayers.openFile` era incondicional e `AudioStream` não expõe ganho
+nenhum. As medições acima foram feitas com o **clipe de teste atenuado na
+origem**: um seno de 440 Hz real, codificado a −78 dBFS de pico (média −80,8,
+crista de 2,5 dB, ou seja uma onda de verdade e não zeros). Isso mantém
+**todos** os estágios rodando — decodificação AAC, reamostragem, fila, escrita
+no WASAPI, relógio mestre de áudio conduzindo o `AvSynchronizer` — e **não
+acrescenta nenhum trabalho** ao processo medido, porque a multiplicação
+aconteceu uma vez, fora dele, na produção do arquivo. O reprodutor ganhou
+também um `--no-audio`, que **é** um curto-circuito — troca o relógio de áudio
+pelo de parede — e está documentado como tal no README, para que ninguém o use
+achando que mede o mesmo caminho.
+
+**O relógio.** Trocar o relógio de áudio pelo de parede não moveu o custo do
+quadro (38,0 ms contra 39,5 ms de present no mesmo caminho headless), o que
+confirma que o caminho da imagem não sabe qual relógio está atrás dele. Drift,
+descartes e esperas, esses sim, mudam, e por isso são números de relógio de
+parede quando essa flag está ligada.
 
 ## 68.4.3 O Vulkan desenha texto — 06/09/2026
 

@@ -140,6 +140,7 @@ import 'dart:async';
 import '../diagnostics/dev_overlay.dart';
 import '../foundation/collections.dart';
 import '../foundation/diagnostics.dart';
+import '../foundation/frame_timeline.dart';
 import '../foundation/lifecycle.dart';
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
@@ -1636,12 +1637,22 @@ final class ApplicationWindow with DisposableMixin {
     _inFrame = true;
     _needsFrame = false;
     final stopwatch = Stopwatch()..start();
+    beginFramePhase(FramePhase.frame);
     try {
       if (!_rootMounted) {
-        buildOwner.updateRoot(_mountableRoot);
+        beginFramePhase(FramePhase.mountRoot);
+        try {
+          buildOwner.updateRoot(_mountableRoot);
+        } finally {
+          endFramePhase();
+        }
         _rootMounted = true;
       }
-      final build = stopwatch.elapsedMicroseconds;
+      final mount = stopwatch.elapsedMicroseconds;
+      // Zeroed here and not per settle pass: the counters sum layout and paint
+      // across every pass the loop below takes, which is the number that
+      // explains a frame - see `FrameScheduler.callbacksMicros`.
+      scheduler.resetPhaseTimings();
 
       _painted = null;
       // The event loop is running again, so the real `Timer` is back in charge
@@ -1650,19 +1661,31 @@ final class ApplicationWindow with DisposableMixin {
       _lastModalFrameAt = null;
       _consumeAnimationFrame();
       var pass = 0;
-      while (true) {
-        if (pass++ >= _maxSettlePasses) {
-          throw StateError(
-            'the frame did not settle in $_maxSettlePasses passes. A build is '
-            'dirtying layout, or a layout is dirtying a build, in a cycle '
-            'that cannot converge.',
-          );
+      beginFramePhase(FramePhase.settle);
+      try {
+        while (true) {
+          if (pass++ >= _maxSettlePasses) {
+            throw StateError(
+              'the frame did not settle in $_maxSettlePasses passes. A build '
+              'is dirtying layout, or a layout is dirtying a build, in a cycle '
+              'that cannot converge.',
+            );
+          }
+          beginFramePhase(FramePhase.build);
+          try {
+            buildOwner.buildScope();
+          } finally {
+            endFramePhase();
+          }
+          scheduler.scheduleFrame();
+          scheduler.pump();
+          if (scheduler.lastErrorPhase != null) break;
+          if (!buildOwner.hasScheduledBuilds && !pipelineOwner.needsLayout) {
+            break;
+          }
         }
-        buildOwner.buildScope();
-        scheduler.scheduleFrame();
-        scheduler.pump();
-        if (scheduler.lastErrorPhase != null) break;
-        if (!buildOwner.hasScheduledBuilds && !pipelineOwner.needsLayout) break;
+      } finally {
+        endFramePhase();
       }
 
       final list = _painted;
@@ -1672,28 +1695,52 @@ final class ApplicationWindow with DisposableMixin {
           'is the only path pixels take out of the pipeline.',
         );
       }
-      final paint = stopwatch.elapsedMicroseconds - build;
+      // The settle loop's cost, split into what the scheduler measured and
+      // what is left. "Left" is the build: `buildScope` plus the dispatcher
+      // drain, which is the only part of a settle pass nothing else times.
+      final int settle = stopwatch.elapsedMicroseconds - mount;
+      final int layout = scheduler.layoutMicros;
+      final int paint = scheduler.paintMicros;
+      final int build = settle - layout - paint;
 
       // The CPU half is over: the display list is finished and everything
       // after this is the driver, the compositor and the vsync wait. Split
       // because the two halves are fixed by different people - a 12 ms build
       // is a widget-tree problem and a 12 ms present is not.
       application._noteCpuFrameComplete();
-      final frame = host.beginFrame();
+      beginFramePhase(FramePhase.beginFrame);
+      final HostFrame frame;
+      try {
+        frame = host.beginFrame();
+      } finally {
+        endFramePhase();
+      }
       // Between the back buffer existing and the interface being drawn over
       // it. See [_flushMeshScenes] for why that is the only order that works.
-      final bool drewMesh = _flushMeshScenes();
-      final result = await host.present(
-        frame,
-        list,
-        // Null when a mesh was drawn: the 3D pass has already cleared and
-        // filled this buffer, and clearing again would erase it. The scene
-        // carries the colour in that case, which is why `MeshScene` has a
-        // background at all.
-        clearColor: drewMesh
-            ? null
-            : (clearColor ?? application.options.clearColor)?.value,
-      );
+      beginFramePhase(FramePhase.meshScenes);
+      final bool drewMesh;
+      try {
+        drewMesh = _flushMeshScenes();
+      } finally {
+        endFramePhase();
+      }
+      beginFramePhase(FramePhase.present);
+      final PresentResult result;
+      try {
+        result = await host.present(
+          frame,
+          list,
+          // Null when a mesh was drawn: the 3D pass has already cleared and
+          // filled this buffer, and clearing again would erase it. The scene
+          // carries the colour in that case, which is why `MeshScene` has a
+          // background at all.
+          clearColor: drewMesh
+              ? null
+              : (clearColor ?? application.options.clearColor)?.value,
+        );
+      } finally {
+        endFramePhase();
+      }
       stopwatch.stop();
       // The list has left the building. Turning the ring here - once per
       // presented frame, never once per settle pass - is what lets the
@@ -1730,8 +1777,9 @@ final class ApplicationWindow with DisposableMixin {
         _framesPresented++;
         application._recordFrame(FrameTiming(
           build: build,
+          layout: layout,
           paint: paint,
-          raster: stopwatch.elapsedMicroseconds - build - paint,
+          raster: stopwatch.elapsedMicroseconds - mount - settle,
         ));
       } else if (result.status == PresentStatus.stale) {
         // The surface moved under the frame. Not an error and not a retry of
@@ -1739,10 +1787,16 @@ final class ApplicationWindow with DisposableMixin {
         // requested a new frame against the new geometry.
         requestFrame();
       }
-      _pumpAccessibility();
+      beginFramePhase(FramePhase.accessibility);
+      try {
+        _pumpAccessibility();
+      } finally {
+        endFramePhase();
+      }
       return result;
     } finally {
       _inFrame = false;
+      endFramePhase();
     }
   }
 
@@ -1842,24 +1896,38 @@ final class ApplicationWindow with DisposableMixin {
     _inFrame = true;
     _needsFrame = false;
     final stopwatch = Stopwatch()..start();
+    beginFramePhase(FramePhase.frameSync);
     try {
       if (!_rootMounted) {
         buildOwner.updateRoot(_mountableRoot);
         _rootMounted = true;
       }
-      final build = stopwatch.elapsedMicroseconds;
+      final mount = stopwatch.elapsedMicroseconds;
+      scheduler.resetPhaseTimings();
 
       _painted = null;
       // Instead of [_consumeAnimationFrame], not as well as it: see
       // [_advanceModalAnimation] for why the two cannot both run on one frame.
       _advanceModalAnimation();
       var pass = 0;
-      while (pass++ < _maxSettlePasses) {
-        buildOwner.buildScope();
-        scheduler.scheduleFrame();
-        scheduler.pump();
-        if (scheduler.lastErrorPhase != null) break;
-        if (!buildOwner.hasScheduledBuilds && !pipelineOwner.needsLayout) break;
+      beginFramePhase(FramePhase.settle);
+      try {
+        while (pass++ < _maxSettlePasses) {
+          beginFramePhase(FramePhase.build);
+          try {
+            buildOwner.buildScope();
+          } finally {
+            endFramePhase();
+          }
+          scheduler.scheduleFrame();
+          scheduler.pump();
+          if (scheduler.lastErrorPhase != null) break;
+          if (!buildOwner.hasScheduledBuilds && !pipelineOwner.needsLayout) {
+            break;
+          }
+        }
+      } finally {
+        endFramePhase();
       }
       final list = _painted;
       if (list == null) {
@@ -1867,14 +1935,23 @@ final class ApplicationWindow with DisposableMixin {
         _needsFrame = true;
         return;
       }
-      final paint = stopwatch.elapsedMicroseconds - build;
+      final int settle = stopwatch.elapsedMicroseconds - mount;
+      final int layout = scheduler.layoutMicros;
+      final int paint = scheduler.paintMicros;
+      final int build = settle - layout - paint;
 
       application._noteCpuFrameComplete();
-      final result = host.presentNow(
-        host.beginFrame(),
-        list,
-        clearColor: (clearColor ?? application.options.clearColor)?.value,
-      );
+      beginFramePhase(FramePhase.present);
+      final PresentResult result;
+      try {
+        result = host.presentNow(
+          host.beginFrame(),
+          list,
+          clearColor: (clearColor ?? application.options.clearColor)?.value,
+        );
+      } finally {
+        endFramePhase();
+      }
       stopwatch.stop();
       // Same rule as `drawFrame`, and it matters more here: this is the live
       // resize path, which is precisely when a retained presenter replays the
@@ -1884,8 +1961,9 @@ final class ApplicationWindow with DisposableMixin {
         _framesPresented++;
         application._recordFrame(FrameTiming(
           build: build,
+          layout: layout,
           paint: paint,
-          raster: stopwatch.elapsedMicroseconds - build - paint,
+          raster: stopwatch.elapsedMicroseconds - mount - settle,
         ));
       } else {
         _needsFrame = true;
@@ -1893,6 +1971,7 @@ final class ApplicationWindow with DisposableMixin {
       _pumpAccessibility();
     } finally {
       _inFrame = false;
+      endFramePhase();
     }
   }
 
