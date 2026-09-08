@@ -10258,10 +10258,195 @@ Durante as medições do binário **antes**, uma execução morreu com
 de `_convertPackedRgb`. É o anel de quadros nativos do Media Foundation
 reciclando o slot enquanto o renderizador ainda estava convertendo dele — uma
 corrida que 70 ms de conversão por quadro tornam provável e 27 ms tornam rara.
-**Não foi consertada aqui** e não é vídeo mal decodificado: é
-`video_frame_ring_buffer.dart` fazendo exatamente o que promete (detectar em
-vez de corromper). Fica anotada porque ficou mais difícil de reproduzir, o que
-é a pior coisa que se pode fazer com uma corrida sem consertá-la.
+Não foi consertada naquele dia, e ficou anotada porque ficou mais difícil de
+reproduzir, o que é a pior coisa que se pode fazer com uma corrida sem
+consertá-la. **Consertada em 07/09/2026; a §68.4.5 é o conserto.**
+
+## 68.4.5 O anel de quadros empresta o slot — 07/09/2026
+
+A corrida da §68.4.4 estava escrita no comentário da própria classe: *"um
+empréstimo vale até o slot ser adquirido de novo […] sempre use `isValid` ou
+`validate` antes de acessar"*. Isso é um **verifica-depois-usa**, e o uso é
+longo: o renderizador validava em nanossegundos e depois passava dezenas de
+milissegundos convertendo de dentro do slot. Dois modos de falha, e o segundo
+é o perigoso:
+
+1. **detectado** — `validate()` levanta
+   `native video frame slot N generation M is no longer valid`. Alto, e é um
+   crash;
+2. **não detectado** — a validação passa, o decodificador recicla o slot
+   *durante* a conversão, e sai um quadro **rasgado**: metade da imagem velha,
+   metade da nova, sem erro nenhum.
+
+A otimização de cor da §68.4.4 (70 ms → 27 ms por quadro) tornou os dois
+**mais raros, não impossíveis** — e uma corrida rara é pior que uma frequente,
+porque sobrevive ao teste e aparece na frente do usuário.
+
+### É entre threads? Estabelecido, não suposto
+
+**Não é.** Os três decodificadores que possuem um anel foram lidos até o ponto
+onde os bytes entram no slot, e nos três a escrita é uma chamada FFI
+**síncrona feita pela mesma thread que chamou `acquire()`**:
+
+| decodificador | quem escreve no slot |
+|---|---|
+| `video_decoder_windows_mf.dart` | `IMF2DBuffer::ContiguousCopyTo` (ou `IMFMediaBuffer::Lock` + `setRange`) dentro de `readFrame` |
+| `video_decoder_linux_gstreamer.dart` | `gst_buffer_extract` dentro de `readFrame` |
+| `macos_native_video_decoder.dart` | `memcpy` linha a linha sobre um `CVPixelBuffer` travado |
+
+O Media Foundation decodifica nas threads dele, mas o que chega a este anel é
+a cópia que **nós** fazemos, na isolate do consumidor. Então a contabilidade do
+anel continua em campos Dart comuns: um mutex ali não guardaria nada, e
+acrescentar um seria um defeito próprio. O que muda essa conclusão está
+nomeado no arquivo: no dia em que a produção for para outra thread ou isolate
+— a forma que `lib/src/concurrency/BlockingSlotMailbox` já prevê, com o anel
+guardando os pixels e só um índice de slot viajando —, **a contabilidade**, e
+não apenas os pixels, tem de ir para memória nativa com ordenação.
+
+E é por isso que um teste de uma isolate só não prova nada sobre o caso
+cruzado: o que provaria é o teste que já existe em
+`test/concurrency/blocking_slot_mailbox_test.dart`, duas isolates sobre um
+anel, estendido para as contagens do anel depois que elas forem para memória
+nativa.
+
+### O empréstimo
+
+`acquire()` **não pode** devolver um slot que o consumidor ainda segura.
+Qualquer outra coisa é ajuste de probabilidade. Então:
+
+- `acquire()` procura um slot livre a partir do cursor e devolve `null` quando
+  todos estão emprestados, contando a recusa em
+  `NativeVideoFrameRing.droppedFrames`. **Nunca bloqueia**: um produtor preso a
+  um relógio de tempo real que esperasse por um consumidor lento trocaria um
+  problema de renderização por dessincronia de áudio e vídeo. Descartar é a
+  resposta certa — mas um descarte silencioso é indistinguível de um
+  decodificador lento, e por isso ele é contado e legível;
+- `NativeVideoFrameLease.release()` devolve o slot, é idempotente, e o
+  consumidor chega nele por `VideoSample.release()` / `VideoFrame.release()`,
+  sem precisar conhecer o anel;
+- um empréstimo que **nunca** volta não é um engasgo, é uma trava: o anel para
+  de produzir para sempre. Depois de `starvationLimit` recusas consecutivas
+  (60 por omissão, ~1 s de tela parada num pump de 60 Hz) `acquire()` deixa de
+  devolver `null` e **levanta com nome**:
+  `all 3 native video frame slots have been borrowed for 60 consecutive
+  acquisitions: a consumer is holding video frames without calling release()`.
+
+Como os três decodificadores são **pull** (o consumidor pede o quadro), a
+primeira recusa já significa que ele segura tudo e pede mais um; repetir
+dentro da mesma chamada síncrona não pode dar certo, então cada um converte a
+recusa num `VideoDecoderException` nomeado, que diz quantos quadros já se
+perderam. O `starvationLimit` é a rede para um produtor **push** futuro, que
+ignoraria os `null`.
+
+`invalidateAll()` (o seek) devolve todos os empréstimos e invalida todos os
+leases: quem guardou um quadro através do seek recebe erro nomeado no acesso
+seguinte, nunca imagem rasgada — é o contrato que o seek já tinha — e um
+consumidor esquecido não trava o anel para sempre.
+
+### Três alternativas, e por que nenhuma entrou
+
+- **copiar** — é exatamente o que o anel existe para não fazer: 1,10x
+  compartilhado contra 3,47x com cópia de porta, já medido na §68 e em
+  `blocking_byte_mailbox_test.dart`. E os ponteiros e as views são criados uma
+  vez na construção, de propósito;
+- **mais slots** — adia a corrida, não a fecha;
+- **devolver o slot pelo coletor de lixo** (`Finalizer` ou `WeakReference`) —
+  a única forma automática que existe em Dart, e foi **medida** no padrão de
+  retenção do reprodutor (segura o apresentado e o pré-decodificado, larga o
+  anterior): de 1000 quadros o anel conseguiu servir **15**, com 12
+  recuperações. A razão é conhecida: um quadro que sobrevive a um scavenge é
+  promovido, e daí em diante espera uma coleta maior, que num laço sem pressão
+  de heap velho leva segundos. Confiar nisso seria trocar o rasgo por um
+  reprodutor a 0,4 fps.
+
+### O que custa por quadro
+
+Nada mensurável. `acquire()` + `release()` em AOT, 20 milhões de iterações,
+anel de 3 slots de 1080p:
+
+| anel | ns por quadro |
+|---|---|
+| antes (cursor + geração) | 8,53 · 8,62 |
+| depois (empréstimo) | 8,57 · 8,70 |
+
+0,1 ns dentro do ruído, e a 25 quadros por segundo isso é 0,0002 ms por
+segundo de vídeo. Nenhuma alocação nova: o lease por quadro já existia, e as
+views e os ponteiros continuam sendo os mesmos objetos por toda a vida do
+anel — há teste para isso.
+
+### Como se prova, sem laço de estresse
+
+Uma corrida é fácil de "consertar" de um jeito que só a torne mais rara de
+novo, então nenhum dos testes depende de tempo
+(`test/graphics/video/video_frame_ring_buffer_test.dart`):
+
+- **a janela, fechada por construção** — um lease é tomado e o cursor dá duas
+  voltas completas, cada aquisição liberada na hora: o anel tem de continuar
+  respondendo e nunca com o slot segurado;
+- **os bytes, não a geração** — o consumidor lê o quadro linha a linha
+  enquanto o produtor decodifica entre as linhas, e a asserção é sobre os
+  **bytes** lidos pela view tomada uma vez, que é o que rasga; a geração já
+  falhava alto;
+- **o descarte é contado** e `droppedFrames` é público, para quem reporta
+  saúde de reprodução;
+- **o vazamento tem nome** — segurar tudo e insistir levanta a mensagem
+  citada acima, em vez de o anel emudecer;
+- **ponta a ponta contra o Media Foundation de verdade**
+  (`video_decoder_windows_mf_test.dart`): três quadros retidos, o quarto
+  recusado com nome, e devolver um volta a decodificar.
+
+**Os testes foram vistos falhar.** Repondo o `acquire()` antigo (cursor e
+geração, sem empréstimo), 7 dos 12 casos do anel ficam vermelhos, o de bytes
+com `Expected: <165> Actual: <90> the producer overwrote row 2 of a held
+frame` — o rasgo silencioso — e outro reproduzindo palavra por palavra a
+mensagem de produção,
+`native video frame slot 0 generation 1 is no longer valid`. O caso ponta a
+ponta contra o Media Foundation também fica vermelho: o decodificador entrega
+um `VideoSample` onde deveria recusar.
+
+### A regra antiga não era arriscada, era impossível de seguir
+
+O comentário dizia *"consumidores que guardam quadros por mais tempo têm de
+copiar os bytes"*. Quando o empréstimo passou a valer, **a suíte de testes do
+Media Foundation deste repositório ficou vermelha**: ela retinha *todos* os
+quadros que decodificava, sem copiar nada. O reprodutor de exemplo fazia o
+mesmo. Ou seja, a regra documentada era violada por todos os consumidores da
+própria árvore — e isso é um argumento mais forte a favor do empréstimo do que
+a corrida em si. Uma regra que ninguém cumpre não é um contrato; é uma nota de
+rodapé sobre um bug.
+
+### O que passou a ser dever de quem consome
+
+Um quadro é um **empréstimo**: `VideoSample.release()` assim que ele não for
+mais desenhado — substituído na tela, descartado como atrasado pelo
+`AvSynchronizer`, jogado fora por um seek ou por uma reabertura, ou no
+`dispose`.
+
+`examples/video_player_demo/main.dart` foi ajustado junto (07/09/2026). Toda
+saída de quadro passa por um único `_discard(VideoSample?)`, para que um
+esquecimento seja uma chamada ausente a um método com nome e não uma
+referência largada sem ninguém ver. São oito rotas: a troca em
+`AvSyncAction.present`, os descartes em `drop` e `resync`, o quadro esperado
+que volta depois de `!mounted || generation != _generation` em `_pumpDecode` e
+em `_resyncToClock`, os dois de `_seekTo`, a reabertura de arquivo e o
+`dispose` — mais o laço do `--smoke-test`, que antes só sobrevivia porque o
+seek seguinte devolvia os slots por acidente.
+
+**As rotas de descarte são onde isso se erra**, porque só rodam depois de um
+redimensionamento, uma reabertura ou um seek: passam em qualquer teste de
+fumaça e falham na frente de alguém. Por isso elas têm asserção própria, e não
+confiança: `frames abandoned on a discard path give their slots back` no anel
+e `the player retention shape decodes a whole stream without starving` contra
+o Media Foundation de verdade, os dois com a forma exata do reprodutor (um na
+tela, um adiantado, um em cada três abandonado). Removendo o `release()` do
+ramo abandonado, o primeiro fica vermelho com
+`starved at frame 4 after 2 presented and 2 abandoned`.
+
+Verificado em execução, sem janela e sem som:
+`--smoke-test` continua imprimindo `video smoke: 3 frame(s)`, e um
+`--headless --frames 400 --no-audio --autoplay --stats` sobre 250 quadros
+reproduziu 7 segundos a 25 fps com `presented 177 · dropped 0 · framework
+errors 0`.
 
 ## 68.4.3 O Vulkan desenha texto — 06/09/2026
 

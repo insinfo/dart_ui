@@ -285,45 +285,64 @@ final class _GStreamerVideoDecoder implements VideoDecoder {
                 '$_frameByteCount bytes',
           );
         }
-        final NativeVideoFrameLease lease = _frameRing.acquire();
-        final int copied = _api.bufferExtract(
-          buffer,
-          0,
-          lease.pointer.cast<Void>(),
-          _frameByteCount,
-        );
-        if (copied != _frameByteCount) {
+        // Null means every slot is still borrowed by the consumer. The ring
+        // refuses rather than recycling a slot under a renderer that is still
+        // reading it, which is the crash §68 recorded.
+        final NativeVideoFrameLease? lease = _frameRing.acquire();
+        if (lease == null) {
           throw VideoDecoderException(
             'decode',
-            'GStreamer copied $copied of $_frameByteCount frame bytes',
+            'all ${_frameRing.slotCount} native frame slots are still held by '
+                'the consumer; release a VideoSample before reading the next '
+                'frame (${_frameRing.droppedFrames} frames dropped so far)',
           );
         }
-        final Uint8List bytes = lease.bytes;
-        final Duration frameDuration = info.nominalFrameDuration;
-        final Duration timestamp = _origin + frameDuration * _sequence;
-        final frame = VideoFrame(
-          format: VideoFrameFormat(
-            pixelFormat: VideoPixelFormat.bgra8888,
-            width: info.width,
-            height: info.height,
-            colorSpace: VideoColorSpace.bt709,
-            range: VideoColorRange.full,
-          ),
-          planes: <VideoPlane>[
-            VideoPlane(
-              bytes: bytes,
-              bytesPerRow: info.width * 4,
-              lifetime: lease,
+        try {
+          final int copied = _api.bufferExtract(
+            buffer,
+            0,
+            lease.pointer.cast<Void>(),
+            _frameByteCount,
+          );
+          if (copied != _frameByteCount) {
+            throw VideoDecoderException(
+              'decode',
+              'GStreamer copied $copied of $_frameByteCount frame bytes',
+            );
+          }
+          final Uint8List bytes = lease.bytes;
+          final Duration frameDuration = info.nominalFrameDuration;
+          final Duration timestamp = _origin + frameDuration * _sequence;
+          final frame = VideoFrame(
+            format: VideoFrameFormat(
+              pixelFormat: VideoPixelFormat.bgra8888,
+              width: info.width,
+              height: info.height,
+              colorSpace: VideoColorSpace.bt709,
+              range: VideoColorRange.full,
             ),
-          ],
-          streamId: _streamId,
-          sequence: _sequence++,
-        );
-        return VideoSample(
-          frame: frame,
-          timestamp: timestamp,
-          duration: frameDuration,
-        );
+            planes: <VideoPlane>[
+              VideoPlane(
+                bytes: bytes,
+                bytesPerRow: info.width * 4,
+                lifetime: lease,
+              ),
+            ],
+            streamId: _streamId,
+            sequence: _sequence++,
+          );
+          return VideoSample(
+            frame: frame,
+            timestamp: timestamp,
+            duration: frameDuration,
+          );
+        } on Object {
+          // A slot borrowed for a frame that was never handed out would be
+          // lost for the rest of the stream, so a failed extract gives it back
+          // before the error leaves this method.
+          lease.release();
+          rethrow;
+        }
       } finally {
         _api.miniObjectUnref(sample.cast<_GstMiniObject>());
       }

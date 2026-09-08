@@ -244,7 +244,7 @@ void main() {
       // slot, which is what the consumer's reported addresses are checked
       // against.
       final List<NativeVideoFrameLease> leases = <NativeVideoFrameLease>[
-        for (var i = 0; i < slotCount; i++) ring.acquire(),
+        for (var i = 0; i < slotCount; i++) ring.acquire()!,
       ];
       final _RingGeometry geometry = _RingGeometry(
         leases.first.pointer.address,

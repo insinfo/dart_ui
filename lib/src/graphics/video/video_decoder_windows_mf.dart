@@ -561,39 +561,60 @@ final class _MediaFoundationVideoDecoder implements VideoDecoder {
                 continue;
               }
               _seekTarget = null;
-              final NativeVideoFrameLease lease = _frameRing.acquire();
-              final Uint8List bytes =
-                  path.copyContiguousBytes(sample, _frameByteCount, lease);
-              // MFVideoFormat_RGB32 is BGRX. dart_ui's BGRA contract requires
-              // a defined opaque alpha rather than propagating the spare byte.
-              //
-              // A byte at a time, and measured that way round: rewriting this
-              // as `words[i] |= 0xff000000` over a 32-bit view looks like four
-              // times less work but is 1.33x *slower* on a 1080p frame (1.161
-              // ms against 0.872 ms), because it turns a pure store into a
-              // read-modify-write over the same 8.3 MB.
-              for (var i = 3; i < bytes.length; i += 4) {
-                bytes[i] = 0xff;
+              // Null means every slot is still borrowed by the consumer. The
+              // ring refuses rather than recycling a slot under a renderer
+              // that is still reading it, which is the crash §68 recorded.
+              final NativeVideoFrameLease? lease = _frameRing.acquire();
+              if (lease == null) {
+                throw VideoDecoderException(
+                  'decode',
+                  'all ${_frameRing.slotCount} native frame slots are still '
+                      'held by the consumer; release a VideoSample before '
+                      'reading the next frame '
+                      '(${_frameRing.droppedFrames} frames dropped so far)',
+                );
               }
-              final int sampleDuration100ns = path.sampleDuration(sample);
-              return VideoSample(
-                frame: VideoFrame(
-                  format: _frameFormat,
-                  planes: <VideoPlane>[
-                    VideoPlane(
-                      bytes: lease.bytes,
-                      bytesPerRow: info.width * 4,
-                      lifetime: lease,
-                    ),
-                  ],
-                  streamId: _streamId,
-                  sequence: _sequence++,
-                ),
-                timestamp: Duration(microseconds: timestamp100ns ~/ 10),
-                duration: sampleDuration100ns > 0
-                    ? Duration(microseconds: sampleDuration100ns ~/ 10)
-                    : info.nominalFrameDuration,
-              );
+              try {
+                final Uint8List bytes =
+                    path.copyContiguousBytes(sample, _frameByteCount, lease);
+                // MFVideoFormat_RGB32 is BGRX. dart_ui's BGRA contract
+                // requires a defined opaque alpha rather than propagating the
+                // spare byte.
+                //
+                // A byte at a time, and measured that way round: rewriting
+                // this as `words[i] |= 0xff000000` over a 32-bit view looks
+                // like four times less work but is 1.33x *slower* on a 1080p
+                // frame (1.161 ms against 0.872 ms), because it turns a pure
+                // store into a read-modify-write over the same 8.3 MB.
+                for (var i = 3; i < bytes.length; i += 4) {
+                  bytes[i] = 0xff;
+                }
+                final int sampleDuration100ns = path.sampleDuration(sample);
+                return VideoSample(
+                  frame: VideoFrame(
+                    format: _frameFormat,
+                    planes: <VideoPlane>[
+                      VideoPlane(
+                        bytes: lease.bytes,
+                        bytesPerRow: info.width * 4,
+                        lifetime: lease,
+                      ),
+                    ],
+                    streamId: _streamId,
+                    sequence: _sequence++,
+                  ),
+                  timestamp: Duration(microseconds: timestamp100ns ~/ 10),
+                  duration: sampleDuration100ns > 0
+                      ? Duration(microseconds: sampleDuration100ns ~/ 10)
+                      : info.nominalFrameDuration,
+                );
+              } on Object {
+                // A slot borrowed for a frame that was never handed out would
+                // be lost for the rest of the stream, so a failed copy gives
+                // it back before the error leaves this method.
+                lease.release();
+                rethrow;
+              }
             } finally {
               path.releaseSample(sample);
             }

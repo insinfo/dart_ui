@@ -334,9 +334,20 @@ final class VideoFrameFormat {
 /// call site is how a frame comes out sheared, one row shifting a little
 /// further left than the last.
 /// Lifetime guard for storage that can be recycled independently of Dart GC.
+///
+/// The storage is *borrowed* for as long as the plane lives: its owner cannot
+/// reuse it until [release] is called. Dart offers no deterministic hook for
+/// that - a `Finalizer` was measured on the demo player's retention pattern
+/// and served 15 of 1000 frames, because a frame that survives one scavenge is
+/// promoted and then waits for a major collection - so the release is the
+/// consumer's, and [VideoFrame.release] is where consumers make it.
 abstract interface class VideoFrameStorageLifetime {
   bool get isValid;
   void validate();
+
+  /// Hands the storage back. Must be idempotent so a consumer can call it in
+  /// a `finally` without first asking whether it still owns anything.
+  void release();
 }
 
 final class VideoPlane {
@@ -378,6 +389,12 @@ final class VideoPlane {
     lifetime?.validate();
     return offset + row * bytesPerRow;
   }
+
+  /// Gives any borrowed storage back to its owner. Idempotent.
+  ///
+  /// Nothing after this may read [bytes]: the owner is free to overwrite the
+  /// memory the view still points at.
+  void release() => lifetime?.release();
 
   @override
   String toString() =>
@@ -479,6 +496,24 @@ final class VideoFrame {
     final VideoPlane result = planes[index];
     result.lifetime?.validate();
     return result;
+  }
+
+  /// Gives every plane's borrowed storage back to the decoder. Idempotent.
+  ///
+  /// This is how a consumer ends the borrow described on
+  /// [VideoFrameStorageLifetime]: call it as soon as the frame will not be
+  /// drawn again - when it is replaced on screen, when a synchroniser drops
+  /// it as late, when a seek discards it. A frame that is never released
+  /// holds a decoder slot for the rest of the stream, and a decoder that runs
+  /// out of slots stops producing rather than corrupting what it already
+  /// handed out.
+  ///
+  /// [atSequence] shares these planes, so releasing either frame ends the same
+  /// borrow: a held frame re-presented at a new sequence is one loan, not two.
+  void release() {
+    for (var i = 0; i < planes.length; i++) {
+      planes[i].release();
+    }
   }
 
   /// A frame with the same bytes at a new position in the stream.

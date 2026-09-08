@@ -48,8 +48,15 @@ void main() {
       expect(decoder.info.frameRate, closeTo(_frameRate.toDouble(), 0.001));
       expect(decoder.info.duration.inMilliseconds, greaterThan(0));
 
+      // Every sample is released as soon as it has been counted: the decoder
+      // lends out three native slots and refuses to recycle one a consumer
+      // still holds, so a drain loop that kept them would starve by name on
+      // the fourth frame.
       var decoded = 0;
-      while (await decoder.readFrame() != null) {
+      while (true) {
+        final VideoSample? sample = await decoder.readFrame();
+        if (sample == null) break;
+        sample.release();
         decoded++;
         if (decoded > _frameCount * 2) break;
       }
@@ -116,6 +123,97 @@ void main() {
     expect(decoded.hardwareAcceleration, isFalse);
   });
 
+  // The §68 race, at the decoder rather than at the ring: a consumer that
+  // holds every slot used to be handed one of them back, and found out only
+  // when `validate` threw from the middle of a colour conversion - or did not
+  // find out at all, and drew half of one frame and half of the next. Now the
+  // decoder refuses by name, and says how many frames that cost.
+  test('a consumer holding every slot is refused, not handed a live slot',
+      () async {
+    final VideoDecoder decoder = await openWindowsNativeVideoDecoder(
+      syntheticPath,
+      const VideoDecoderOptions(),
+    );
+    try {
+      final List<VideoSample> held = <VideoSample>[];
+      for (var i = 0; i < 3; i++) {
+        final VideoSample? sample = await decoder.readFrame();
+        expect(sample, isNotNull);
+        held.add(sample!);
+      }
+      // Every held frame still reads as its own picture, which is the whole
+      // point: three distinct slots, none of them recycled underneath.
+      for (final VideoSample sample in held) {
+        expect(sample.frame.planes.first.bytes.length, _width * _height * 4);
+        expect(sample.frame.plane(0), isNotNull);
+      }
+
+      await expectLater(
+        decoder.readFrame(),
+        throwsA(
+          isA<VideoDecoderException>().having(
+            (VideoDecoderException error) => error.message,
+            'message',
+            allOf(
+              contains('all 3 native frame slots are still held'),
+              contains('1 frames dropped so far'),
+            ),
+          ),
+        ),
+      );
+
+      // And giving one back is enough to keep decoding.
+      held.removeAt(0).release();
+      final VideoSample? resumed = await decoder.readFrame();
+      expect(resumed, isNotNull);
+      resumed!.release();
+      for (final VideoSample sample in held) {
+        sample.release();
+      }
+    } finally {
+      await decoder.close();
+    }
+  });
+
+  // The player's retention shape against the real decoder: one frame on
+  // screen, one decoded ahead, and the rest abandoned the way
+  // `!mounted || generation != _generation` abandons them. Three slots is
+  // exactly enough for it, so a route that forgets to release starves inside
+  // four frames - which is what `examples/video_player_demo` did before it
+  // learned to give frames back.
+  test('the player retention shape decodes a whole stream without starving',
+      () async {
+    final VideoDecoder decoder = await openWindowsNativeVideoDecoder(
+      syntheticPath,
+      const VideoDecoderOptions(),
+    );
+    try {
+      VideoSample? onScreen;
+      var presented = 0;
+      var abandoned = 0;
+      for (var pass = 0; pass < 4; pass++) {
+        await decoder.seek(Duration.zero);
+        for (var i = 0; i < _frameCount; i++) {
+          final VideoSample? decoded = await decoder.readFrame();
+          if (decoded == null) break;
+          if (i % 3 == 0) {
+            decoded.release();
+            abandoned++;
+            continue;
+          }
+          onScreen?.release();
+          onScreen = decoded;
+          presented++;
+        }
+      }
+      onScreen?.release();
+      expect(presented, greaterThan(_frameCount));
+      expect(abandoned, greaterThan(0));
+    } finally {
+      await decoder.close();
+    }
+  });
+
   test('a real compressed file falls back to the same picture', () async {
     final String? path = Platform.environment['DART_UI_TEST_VIDEO'];
     if (path == null || !File(path).existsSync()) {
@@ -173,25 +271,35 @@ Future<_Decoded> _decodeFirstFrame(
     expect(first, isNotNull, reason: '$path decoded no frames');
     final Uint8List firstFrame =
         Uint8List.fromList(first!.frame.planes.first.bytes);
+    final String pixelFormat = first.frame.format.pixelFormat.name;
+    final int bytesPerRow = first.frame.planes.first.bytesPerRow;
+    // The bytes are copied above, so the slot goes back now rather than being
+    // held for the metadata that was already read out of it.
+    first.release();
 
     var count = 1;
-    while (count < frames && await decoder.readFrame() != null) {
+    while (count < frames) {
+      final VideoSample? sample = await decoder.readFrame();
+      if (sample == null) break;
+      sample.release();
       count++;
     }
 
     await decoder.seek(Duration.zero);
     final VideoSample? replay = await decoder.readFrame();
+    final int? sequenceAfterSeek = replay?.frame.sequence;
+    replay?.release();
 
     return _Decoded(
       backend: decoder.info.backend,
       hardwareAcceleration: decoder.info.hardwareAcceleration,
       width: decoder.info.width,
       height: decoder.info.height,
-      pixelFormat: first.frame.format.pixelFormat.name,
-      bytesPerRow: first.frame.planes.first.bytesPerRow,
+      pixelFormat: pixelFormat,
+      bytesPerRow: bytesPerRow,
       firstFrame: firstFrame,
       frameCount: count,
-      sequenceAfterSeek: replay?.frame.sequence,
+      sequenceAfterSeek: sequenceAfterSeek,
     );
   } finally {
     await decoder.close();

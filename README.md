@@ -255,11 +255,17 @@ surpresa:
 
 ### Vídeo e áudio
 
-- **O anel de quadros tem uma corrida conhecida.** O anel do Media Foundation
-  pode reciclar um slot enquanto o renderizador ainda converte dele
-  (`native video frame slot N generation M is no longer valid`). A otimização
-  de cor deixou isso **mais raro, não consertado** — 70 ms por quadro tornavam
-  provável, 27 ms tornam raro.
+- **Quem recebe um quadro precisa devolvê-lo.** O anel de quadros nativos
+  empresta um slot, e desde 07/09/2026 ele **recusa** reciclar um slot que o
+  consumidor ainda segura — era daí que vinha
+  `native video frame slot N generation M is no longer valid` no meio de uma
+  conversão. O preço é um contrato: chame `VideoSample.release()` assim que o
+  quadro não for mais desenhado (substituído na tela, descartado como atrasado,
+  jogado fora por um seek). Um consumidor que segura os três slots e pede um
+  quarto recebe recusa nomeada e `NativeVideoFrameRing.droppedFrames` conta o
+  quadro perdido; nenhum quadro é entregue rasgado. Deixar o coletor de lixo
+  devolver por você não funciona, e o número está medido: 15 quadros servidos
+  em 1000. Ver §68.4.5 do roteiro.
 - **O vídeo congela ao arrastar a janela.** A animação voltou a andar e o
   desenho volta a acontecer, mas a decodificação é `await` e nenhum `await`
   roda dentro do laço modal do sistema. Ver a seção seguinte.

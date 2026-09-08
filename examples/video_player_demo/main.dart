@@ -90,8 +90,13 @@ Future<void> main(List<String> arguments) async {
       ),
     );
     try {
+      // Counted and given straight back: a decoder lends out a fixed ring
+      // of native slots, and a loop that kept every frame would starve it.
       var decoded = 0;
-      while (decoded < 3 && await decoder.readFrame() != null) {
+      while (decoded < 3) {
+        final VideoSample? sample = await decoder.readFrame();
+        if (sample == null) break;
+        sample.release();
         decoded++;
       }
       await decoder.seek(Duration.zero);
@@ -102,7 +107,9 @@ Future<void> main(List<String> arguments) async {
         '${decoder.info.backend}',
       );
       if (decoded == 0) throw StateError('the video has no decodable frames');
-      if (replay == null || replay.frame.sequence != 0) {
+      final int? replaySequence = replay?.frame.sequence;
+      replay?.release();
+      if (replaySequence != 0) {
         throw StateError('seek did not restart the native video stream');
       }
     } finally {
@@ -476,6 +483,7 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
     _stopTicking();
     _generation++;
     _playing = false;
+    _discard(_pending);
     _pending = null;
     _endOfStream = false;
     final _MasterClock? oldClock = _clock;
@@ -488,6 +496,7 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
       // Before the old decoder is closed, not after: closing frees the ring
       // its frames point into, and a frame painted from freed storage is a
       // crash rather than a stale picture.
+      _discard(_sample);
       _sample = null;
       _path = path;
       _error = null;
@@ -500,6 +509,7 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
       final VideoSample? first = await decoder.readFrame();
       _decodedElapsed = _openWatch?.elapsed;
       if (!mounted) {
+        _discard(first);
         await decoder.close();
         return;
       }
@@ -624,9 +634,14 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
       case AvSyncAction.present:
         _pending = null;
         _framesThisWindow++;
+        // The outgoing picture is released here and not in `build`: it leaves
+        // the screen in this same turn, and holding it would cost the decoder
+        // one of its three slots for the rest of the file.
+        _discard(_sample);
         setState(() => _sample = next);
       case AvSyncAction.drop:
         // Late enough that showing it would only make the next one later.
+        _discard(next);
         _pending = null;
       case AvSyncAction.wait:
         // Early. Nothing to do until the clock catches up with it; the
@@ -637,6 +652,7 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
         // fps a drop buys 40 ms, so a ten-second gap is 250 frames decoded
         // and thrown away, and the drop cap lets only two in three of them go.
         // One seek and the picture is back on the sound.
+        _discard(next);
         _pending = null;
         unawaited(_resyncToClock(clock.position));
     }
@@ -663,12 +679,19 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
     try {
       await decoder.seek(position);
       final VideoSample? sample = await decoder.readFrame();
-      if (!mounted || generation != _generation) return;
+      if (!mounted || generation != _generation) {
+        // The awaited frame outlived what asked for it. Nobody will ever draw
+        // it, so its slot goes back here - this is the branch a leak hides
+        // in, because it only runs after a resize or a reopen.
+        _discard(sample);
+        return;
+      }
       // Straight to the screen rather than into `_pending`: this frame is by
       // construction the one the clock is asking for, and routing it back
       // through `evaluate` would only measure the decode that just happened.
       if (sample != null) {
         _framesThisWindow++;
+        _discard(_sample);
         setState(() => _sample = sample);
       } else {
         _endOfStream = true;
@@ -681,6 +704,17 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
       _resyncing = false;
     }
   }
+
+  /// Ends a frame's borrow of a decoder slot.
+  ///
+  /// Every route a sample can take out of this widget goes through here:
+  /// replaced on screen, dropped as late, abandoned by a seek or a reopen,
+  /// thrown away because the widget is gone. A native decoder lends out three
+  /// slots and refuses to recycle one this player still holds, so a route
+  /// that forgets stops playback with a named error at the fourth frame
+  /// instead of tearing the picture. Idempotent, and null-safe, so it can be
+  /// called without first working out whether there is anything to give back.
+  void _discard(VideoSample? sample) => sample?.release();
 
   /// Keeps [_lookahead] frames decoded ahead of the screen.
   ///
@@ -695,7 +729,12 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
     _decoding = true;
     unawaited(decoder.readFrame().then((VideoSample? sample) {
       _decoding = false;
-      if (!mounted || generation != _generation) return;
+      if (!mounted || generation != _generation) {
+        // Same abandoned frame as in `_resyncToClock`, reached by a widget
+        // that went away or a file that was replaced mid-decode.
+        _discard(sample);
+        return;
+      }
       if (sample == null) {
         _endOfStream = true;
         return;
@@ -760,12 +799,17 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
         // Seeking invalidates every lease the decoder handed out, this frame
         // included, so the picture goes before the seek runs rather than
         // after it returns.
+        _discard(_pending);
         _pending = null;
+        _discard(_sample);
         setState(() => _sample = null);
         _clock?.seek(target);
         await decoder.seek(target);
         final VideoSample? sample = await decoder.readFrame();
-        if (!mounted || generation != _generation) return;
+        if (!mounted || generation != _generation) {
+          _discard(sample);
+          return;
+        }
         // Without this the jump in both the timestamps and the clock reads as
         // one enormous drift, and the first decisions after a seek are made
         // against it.
@@ -789,7 +833,9 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
   void dispose() {
     _generation++;
     _playing = false;
+    _discard(_pending);
     _pending = null;
+    _discard(_sample);
     _sample = null;
     _stopTicking();
     _frameworkErrors.onReport = null;

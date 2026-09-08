@@ -125,6 +125,14 @@ final class VideoSample {
   final VideoFrame frame;
   final Duration timestamp;
   final Duration duration;
+
+  /// Gives the decoder its frame storage back. Idempotent.
+  ///
+  /// A native decoder hands out a borrow of a fixed ring of slots, so every
+  /// sample a consumer stops using - presented and replaced, dropped as late,
+  /// thrown away by a seek - must be released or that slot is gone for the
+  /// rest of the stream. See [VideoFrame.release].
+  void release() => frame.release();
 }
 
 final class VideoDecoderException implements Exception {

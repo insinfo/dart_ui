@@ -468,28 +468,47 @@ final class _MacVideoBindings {
                 'still reference them',
           );
         }
-        final NativeVideoFrameLease lease = storage.acquire();
-        final Pointer<Uint8> destination = lease.pointer;
-        final int packedStride = width * 4;
-        for (var row = 0; row < height; row++) {
-          _memcpy(
-            Pointer<Void>.fromAddress(
-              destination.address + row * packedStride,
-            ),
-            Pointer<Void>.fromAddress(base.address + row * stride),
-            packedStride,
+        // Null means every slot is still borrowed by the consumer. The ring
+        // refuses rather than recycling a slot under a renderer that is still
+        // reading it, which is the crash §68 recorded.
+        final NativeVideoFrameLease? lease = storage.acquire();
+        if (lease == null) {
+          throw VideoDecoderException(
+            'decode',
+            'all ${storage.slotCount} native frame slots are still held by '
+                'the consumer; release a VideoSample before reading the next '
+                'frame (${storage.droppedFrames} frames dropped so far)',
           );
         }
-        final double seconds = _timeSeconds(_sampleTimestamp(sample));
-        final double durationSeconds = _timeSeconds(_sampleDuration(sample));
-        return _NativeDecodedFrame(
-          width,
-          height,
-          storage,
-          lease,
-          _duration(seconds),
-          _duration(durationSeconds),
-        );
+        try {
+          final Pointer<Uint8> destination = lease.pointer;
+          final int packedStride = width * 4;
+          for (var row = 0; row < height; row++) {
+            _memcpy(
+              Pointer<Void>.fromAddress(
+                destination.address + row * packedStride,
+              ),
+              Pointer<Void>.fromAddress(base.address + row * stride),
+              packedStride,
+            );
+          }
+          final double seconds = _timeSeconds(_sampleTimestamp(sample));
+          final double durationSeconds = _timeSeconds(_sampleDuration(sample));
+          return _NativeDecodedFrame(
+            width,
+            height,
+            storage,
+            lease,
+            _duration(seconds),
+            _duration(durationSeconds),
+          );
+        } on Object {
+          // A slot borrowed for a frame that was never handed out would be
+          // lost for the rest of the stream, so a failed copy gives it back
+          // before the error leaves this method.
+          lease.release();
+          rethrow;
+        }
       } finally {
         _unlock(pixelBuffer, 1);
       }
@@ -654,6 +673,10 @@ final class _MacNativeVideoDecoder implements VideoDecoder {
           _pending = _sample(decoded);
           break;
         }
+        // Everything before the target is thrown away here, so its slot goes
+        // back now: three slots and a seek that skips a hundred frames would
+        // otherwise starve the ring before reaching the target.
+        decoded.lease.release();
       }
     });
   }
