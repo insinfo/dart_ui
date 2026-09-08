@@ -136,6 +136,7 @@ export 'src/layout/render_stack.dart';
 export 'src/layout/render_viewport.dart';
 export 'src/layout/render_wrap.dart';
 export 'src/pdf/document/pdf_document.dart';
+export 'src/pdf/document/pdf_incremental_writer.dart';
 export 'src/pdf/export/vector_pdf_exporter.dart';
 export 'src/pdf/sign/pdf_certificate_provider_signer.dart';
 export 'src/pdf/sign/pdf_cms.dart';

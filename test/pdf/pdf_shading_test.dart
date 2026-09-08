@@ -167,4 +167,148 @@ void main() {
 
     expect(device.commands, contains('drawShading(type: 1)'));
   });
+
+  test('type 4 honors continuation flags and produces three triangles', () {
+    final records = <List<int>>[
+      [0, 0, 0, 255, 0, 0],
+      [0, 255, 0, 0, 255, 0],
+      [0, 0, 255, 0, 0, 255],
+      [1, 255, 255, 255, 255, 255],
+      [2, 128, 255, 128, 128, 128],
+    ];
+    final shading = _mesh(4, records.expand((e) => e).toList());
+    final triangles = shading.tessellate(null)!;
+
+    expect(triangles, hasLength(3));
+    expect(triangles[1].a, same(triangles[0].b));
+    expect(triangles[1].b, same(triangles[0].c));
+    expect(triangles[2].a, same(triangles[1].a));
+    expect(triangles[2].b, same(triangles[1].c));
+  });
+
+  test('type 5 tessellates a 2 by 2 lattice', () {
+    final shading = _mesh(5, <int>[
+      0,
+      0,
+      255,
+      0,
+      0,
+      255,
+      0,
+      0,
+      255,
+      0,
+      0,
+      255,
+      0,
+      0,
+      255,
+      255,
+      255,
+      255,
+      255,
+      255,
+    ]);
+    expect(shading.tessellate(null), hasLength(2));
+  });
+
+  for (final type in <int>[6, 7]) {
+    test('type $type decodes and tessellates one rectangular patch', () {
+      final boundary = <List<int>>[
+        [0, 0],
+        [85, 0],
+        [170, 0],
+        [255, 0],
+        [255, 85],
+        [255, 170],
+        [255, 255],
+        [170, 255],
+        [85, 255],
+        [0, 255],
+        [0, 170],
+        [0, 85],
+        if (type == 7) ...[
+          [85, 85],
+          [170, 85],
+          [170, 170],
+          [85, 170]
+        ],
+      ];
+      final bytes = <int>[
+        0,
+        for (final point in boundary) ...point,
+        255,
+        0,
+        0,
+        0,
+        255,
+        0,
+        0,
+        0,
+        255,
+        255,
+        255,
+        255
+      ];
+      final triangles = _mesh(type, bytes).tessellate(null, patchDivisions: 2)!;
+
+      expect(triangles, hasLength(8));
+      final xs = triangles.expand((t) => [t.a.x, t.b.x, t.c.x]);
+      final ys = triangles.expand((t) => [t.a.y, t.b.y, t.c.y]);
+      expect(xs.reduce((a, b) => a < b ? a : b), closeTo(0, 1e-9));
+      expect(xs.reduce((a, b) => a > b ? a : b), closeTo(1, 1e-9));
+      expect(ys.reduce((a, b) => a < b ? a : b), closeTo(0, 1e-9));
+      expect(ys.reduce((a, b) => a > b ? a : b), closeTo(1, 1e-9));
+    });
+  }
+
+  test('mesh output is bounded by caller triangle budget', () {
+    final boundary = <int>[
+      0,
+      for (var i = 0; i < 12; i++) ...[i * 20, i * 20],
+      255,
+      0,
+      0,
+      0,
+      255,
+      0,
+      0,
+      0,
+      255,
+      255,
+      255,
+      255,
+    ];
+    expect(
+        _mesh(6, boundary)
+            .tessellate(null, patchDivisions: 32, maxTriangles: 7),
+        hasLength(7));
+  });
 }
+
+PdfShading _mesh(int type, List<int> bytes) => PdfShading.parse(
+      PdfStream(
+        PdfDict(<String, PdfObject>{
+          'ShadingType': PdfNumber(type),
+          'ColorSpace': const PdfName('DeviceRGB'),
+          'BitsPerCoordinate': const PdfNumber(8),
+          'BitsPerComponent': const PdfNumber(8),
+          if (type != 5) 'BitsPerFlag': const PdfNumber(8),
+          if (type == 5) 'VerticesPerRow': const PdfNumber(2),
+          'Decode': const PdfArray(<PdfObject>[
+            PdfNumber(0),
+            PdfNumber(1),
+            PdfNumber(0),
+            PdfNumber(1),
+            PdfNumber(0),
+            PdfNumber(1),
+            PdfNumber(0),
+            PdfNumber(1),
+            PdfNumber(0),
+            PdfNumber(1),
+          ]),
+        }),
+        Uint8List.fromList(bytes),
+      ),
+      null,
+    )!;

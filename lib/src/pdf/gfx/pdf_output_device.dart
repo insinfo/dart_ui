@@ -9,7 +9,41 @@ import 'pdf_shading.dart';
 /// Interface abstrata de saída gráfica para o interpretador PDF (equivalente ao OutputDev do Poppler).
 abstract class PdfOutputDevice {
   /// Paints a shading resource through the active clipping region.
-  void drawShading(PdfShading shading, PdfGfxState state) {}
+  void drawShading(PdfShading shading, PdfGfxState state) {
+    final triangles = shading.tessellate(null);
+    if (triangles == null) return;
+    for (final triangle in triangles) {
+      drawShadingTriangle(shading, triangle, state);
+    }
+  }
+
+  /// Paints one mesh triangle whose three vertices carry independent colors.
+  ///
+  /// Raster/GPU devices should override this to interpolate the vertex colors.
+  /// The portable fallback uses their average, so even minimal vector devices
+  /// render the geometry instead of silently dropping mesh shadings.
+  void drawShadingTriangle(
+    PdfShading shading,
+    PdfShadingTriangle triangle,
+    PdfGfxState state,
+  ) {
+    final path = (PathBuilder()
+          ..moveTo(triangle.a.x, triangle.a.y)
+          ..lineTo(triangle.b.x, triangle.b.y)
+          ..lineTo(triangle.c.x, triangle.c.y)
+          ..close())
+        .build();
+    final components = <double>[
+      for (var i = 0; i < triangle.a.components.length; i++)
+        (triangle.a.components[i] +
+                triangle.b.components[i] +
+                triangle.c.components[i]) /
+            3,
+    ];
+    final triangleState = state.clone()
+      ..fillColor = shading.colorForComponents(components);
+    fillPath(path, triangleState);
+  }
 
   /// Salva o estado gráfico no destino.
   void saveState();
@@ -71,6 +105,7 @@ class PdfMemoryOutputDevice extends PdfOutputDevice {
   @override
   void drawShading(PdfShading shading, PdfGfxState state) {
     commands.add('drawShading(type: ${shading.type})');
+    super.drawShading(shading, state);
   }
 
   @override

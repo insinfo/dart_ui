@@ -6,8 +6,8 @@ Este exemplo gera um relatório A4 de duas páginas usando o módulo PDF do
 - SVG declarado inline e importado como `VectorDocument`;
 - JPEG incorporado sem decodificação ou recompressão (`DCTDecode`);
 - tabela com células, bordas, cores e tipografia;
-- Inter SemiBold, disponível no Google Fonts, parseada por `Typeface` e
-  desenhada como contornos vetoriais;
+- Inter SemiBold, disponível no Google Fonts, incorporada como fonte TrueType
+  Type0/CIDFontType2 com mapa `ToUnicode`, mantendo aparência e seleção;
 - reabertura, inventário de imagens e validação do PDF gerado.
 
 Execute a partir da raiz do repositório:

@@ -8,6 +8,7 @@ import '../font/pdf_type1_font.dart';
 import '../format/pdf_lexer.dart';
 import '../format/pdf_object.dart';
 import '../io/byte_reader.dart';
+import 'pdf_color_space.dart';
 import 'pdf_gfx_state.dart';
 import 'pdf_matrix.dart';
 import 'pdf_output_device.dart';
@@ -292,8 +293,36 @@ class PdfContentInterpreter {
         break;
 
       // --- Cores ---
+      case 'cs': // Non-stroking color space
+        if (args.isNotEmpty) {
+          final PdfColorSpace? space = _resolveColorSpace(args.last.text);
+          _state.fillColorSpaceSupported = space != null;
+          if (space != null) _state.fillColorSpace = space;
+        }
+        break;
+
+      case 'CS': // Stroking color space
+        if (args.isNotEmpty) {
+          final PdfColorSpace? space = _resolveColorSpace(args.last.text);
+          _state.strokeColorSpaceSupported = space != null;
+          if (space != null) _state.strokeColorSpace = space;
+        }
+        break;
+
+      case 'sc':
+      case 'scn':
+        _setColor(args, stroking: false);
+        break;
+
+      case 'SC':
+      case 'SCN':
+        _setColor(args, stroking: true);
+        break;
+
       case 'g': // Non-stroking Gray
         if (args.isNotEmpty) {
+          _state.fillColorSpace = PdfDeviceGray();
+          _state.fillColorSpaceSupported = true;
           final gray = (_toDouble(args[0]) * 255).round().clamp(0, 255);
           _state.fillColor = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
         }
@@ -301,6 +330,8 @@ class PdfContentInterpreter {
 
       case 'G': // Stroking Gray
         if (args.isNotEmpty) {
+          _state.strokeColorSpace = PdfDeviceGray();
+          _state.strokeColorSpaceSupported = true;
           final gray = (_toDouble(args[0]) * 255).round().clamp(0, 255);
           _state.strokeColor = 0xFF000000 | (gray << 16) | (gray << 8) | gray;
         }
@@ -308,6 +339,8 @@ class PdfContentInterpreter {
 
       case 'rg': // Non-stroking RGB
         if (args.length >= 3) {
+          _state.fillColorSpace = PdfDeviceRgb();
+          _state.fillColorSpaceSupported = true;
           final r = (_toDouble(args[0]) * 255).round().clamp(0, 255);
           final g = (_toDouble(args[1]) * 255).round().clamp(0, 255);
           final b = (_toDouble(args[2]) * 255).round().clamp(0, 255);
@@ -317,6 +350,8 @@ class PdfContentInterpreter {
 
       case 'RG': // Stroking RGB
         if (args.length >= 3) {
+          _state.strokeColorSpace = PdfDeviceRgb();
+          _state.strokeColorSpaceSupported = true;
           final r = (_toDouble(args[0]) * 255).round().clamp(0, 255);
           final g = (_toDouble(args[1]) * 255).round().clamp(0, 255);
           final b = (_toDouble(args[2]) * 255).round().clamp(0, 255);
@@ -326,6 +361,8 @@ class PdfContentInterpreter {
 
       case 'k': // Non-stroking CMYK
         if (args.length >= 4) {
+          _state.fillColorSpace = PdfDeviceCmyk();
+          _state.fillColorSpaceSupported = true;
           _state.fillColor = _cmykToRgb(
             _toDouble(args[0]),
             _toDouble(args[1]),
@@ -337,6 +374,8 @@ class PdfContentInterpreter {
 
       case 'K': // Stroking CMYK
         if (args.length >= 4) {
+          _state.strokeColorSpace = PdfDeviceCmyk();
+          _state.strokeColorSpaceSupported = true;
           _state.strokeColor = _cmykToRgb(
             _toDouble(args[0]),
             _toDouble(args[1]),
@@ -620,6 +659,47 @@ class PdfContentInterpreter {
     final g = (255 * (1 - m) * (1 - k)).round().clamp(0, 255);
     final b = (255 * (1 - y) * (1 - k)).round().clamp(0, 255);
     return 0xFF000000 | (r << 16) | (g << 8) | b;
+  }
+
+  PdfColorSpace? _resolveColorSpace(String name) {
+    final PdfColorSpace? device = PdfColorSpace.parse(PdfName(name), resolver);
+    if (device != null) return device;
+    final PdfObject? resource =
+        resources?.getDict('ColorSpace', resolver)?.getResolved(name, resolver);
+    return PdfColorSpace.parse(resource, resolver);
+  }
+
+  void _setColor(List<PdfToken> args, {required bool stroking}) {
+    if (stroking
+        ? !_state.strokeColorSpaceSupported
+        : !_state.fillColorSpaceSupported) {
+      return;
+    }
+    final PdfColorSpace space =
+        stroking ? _state.strokeColorSpace : _state.fillColorSpace;
+    // `scn`/`SCN` can end in a Pattern name. Pattern and special colour
+    // spaces are intentionally not approximated as RGB; keep the prior color.
+    if (args.any((PdfToken token) => token.type != PdfTokenType.number)) return;
+    final List<double> components = <double>[
+      for (final PdfToken token in args) _toDouble(token),
+    ];
+    if (components.length != space.numComponents) return;
+    final List<double> rgb;
+    try {
+      rgb = space.toRgb(components);
+    } on Object {
+      return;
+    }
+    if (rgb.length < 3 || rgb.any((double value) => !value.isFinite)) return;
+    final int color = 0xFF000000 |
+        ((rgb[0].clamp(0.0, 1.0) * 255).round() << 16) |
+        ((rgb[1].clamp(0.0, 1.0) * 255).round() << 8) |
+        (rgb[2].clamp(0.0, 1.0) * 255).round();
+    if (stroking) {
+      _state.strokeColor = color;
+    } else {
+      _state.fillColor = color;
+    }
   }
 
   void _showText(PdfToken token) {

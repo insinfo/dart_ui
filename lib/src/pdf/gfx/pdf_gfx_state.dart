@@ -1,4 +1,5 @@
 import '../../geometry/path.dart';
+import 'pdf_color_space.dart';
 import 'pdf_matrix.dart';
 
 /// Estilo de tampa de linha (Line Cap) do PDF.
@@ -37,6 +38,18 @@ class PdfGfxState {
 
   /// Cor de preenchimento (Non-stroking color em ARGB 32 bits).
   int fillColor;
+
+  /// Active stroking color space, changed by `CS`, `G`, `RG`, and `K`.
+  PdfColorSpace strokeColorSpace;
+
+  /// Active non-stroking color space, changed by `cs`, `g`, `rg`, and `k`.
+  PdfColorSpace fillColorSpace;
+
+  /// Whether the selected stroking color space can be converted by this engine.
+  bool strokeColorSpaceSupported;
+
+  /// Whether the selected non-stroking color space can be converted by this engine.
+  bool fillColorSpaceSupported;
 
   /// Espessura da linha (em unidades do espaço de usuário).
   double lineWidth;
@@ -98,6 +111,10 @@ class PdfGfxState {
     this.ctm = PdfMatrix.identity,
     this.strokeColor = 0xFF000000,
     this.fillColor = 0xFF000000,
+    PdfColorSpace? strokeColorSpace,
+    PdfColorSpace? fillColorSpace,
+    this.strokeColorSpaceSupported = true,
+    this.fillColorSpaceSupported = true,
     this.lineWidth = 1.0,
     this.lineCap = PdfLineCap.butt,
     this.lineJoin = PdfLineJoin.miter,
@@ -117,7 +134,8 @@ class PdfGfxState {
     this.textRenderMode = PdfTextRenderMode.fill,
     this.textRise = 0.0,
     this.clipPath,
-  });
+  })  : strokeColorSpace = strokeColorSpace ?? PdfDeviceGray(),
+        fillColorSpace = fillColorSpace ?? PdfDeviceGray();
 
   /// Clona o estado gráfico atual para empilhar em `q`.
   PdfGfxState clone() {
@@ -125,6 +143,10 @@ class PdfGfxState {
       ctm: ctm,
       strokeColor: strokeColor,
       fillColor: fillColor,
+      strokeColorSpace: strokeColorSpace,
+      fillColorSpace: fillColorSpace,
+      strokeColorSpaceSupported: strokeColorSpaceSupported,
+      fillColorSpaceSupported: fillColorSpaceSupported,
       lineWidth: lineWidth,
       lineCap: lineCap,
       lineJoin: lineJoin,

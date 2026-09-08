@@ -1,4 +1,7 @@
+import 'dart:math' as math;
 import 'dart:typed_data';
+
+import '../format/pdf_object.dart';
 
 /// Representação abstrata de um espaço de cor no PDF (ISO 32000-1, Seção 8.6).
 abstract class PdfColorSpace {
@@ -9,7 +12,53 @@ abstract class PdfColorSpace {
   ///
   /// O retorno sempre contém 3 elementos: [R, G, B].
   List<double> toRgb(List<double> components);
+
+  /// Resolves the device and calibrated color spaces defined by ISO 32000.
+  /// Unsupported spaces return null instead of being silently treated as RGB.
+  static PdfColorSpace? parse(PdfObject? object, PdfResolver? resolver) {
+    final resolved = object?.resolve(resolver);
+    if (resolved is PdfName) return _deviceSpace(resolved.name);
+    if (resolved is! PdfArray || resolved.length == 0) return null;
+    final family = resolved.getResolved(0, resolver);
+    if (family is! PdfName) return null;
+    if (family.name == 'Indexed' || family.name == 'I') {
+      if (resolved.length < 4) return null;
+      final base = parse(resolved.getResolved(1, resolver), resolver);
+      final hival = resolved.getNumber(2, resolver)?.toInt();
+      final lookup = resolved.getResolved(3, resolver);
+      final bytes = switch (lookup) {
+        PdfString(:final bytes) => bytes,
+        PdfStream() => lookup.getDecodedBytes(resolver),
+        _ => null,
+      };
+      if (base == null || hival == null || hival < 0 || bytes == null) {
+        return null;
+      }
+      final required = (hival + 1) * base.numComponents;
+      if (bytes.length < required) return null;
+      return PdfIndexedColorSpace(
+        baseSpace: base,
+        hival: hival,
+        lookupTable: Uint8List.sublistView(bytes, 0, required),
+      );
+    }
+    final parameters = resolved.getResolved(1, resolver);
+    if (parameters is! PdfDict) return null;
+    return switch (family.name) {
+      'CalGray' => PdfCalGray.fromDictionary(parameters, resolver),
+      'CalRGB' => PdfCalRgb.fromDictionary(parameters, resolver),
+      'Lab' => PdfLab.fromDictionary(parameters, resolver),
+      _ => null,
+    };
+  }
 }
+
+PdfColorSpace? _deviceSpace(String name) => switch (name) {
+      'DeviceGray' || 'G' => PdfDeviceGray(),
+      'DeviceRGB' || 'RGB' => PdfDeviceRgb(),
+      'DeviceCMYK' || 'CMYK' => PdfDeviceCmyk(),
+      _ => null,
+    };
 
 /// Espaço de cor /DeviceGray (1 componente).
 class PdfDeviceGray extends PdfColorSpace {
@@ -62,6 +111,117 @@ class PdfDeviceCmyk extends PdfColorSpace {
   }
 }
 
+/// CIE-based calibrated gray space.
+final class PdfCalGray extends PdfColorSpace {
+  PdfCalGray({required this.whitePoint, this.gamma = 1});
+
+  factory PdfCalGray.fromDictionary(PdfDict dict, PdfResolver? resolver) {
+    return PdfCalGray(
+      whitePoint: _triple(dict.getArray('WhitePoint', resolver), resolver,
+          fallback: const <double>[0.9505, 1, 1.089]),
+      gamma: dict.getNumber('Gamma', resolver)?.toDouble() ?? 1,
+    );
+  }
+
+  final List<double> whitePoint;
+  final double gamma;
+
+  @override
+  int get numComponents => 1;
+
+  @override
+  List<double> toRgb(List<double> components) {
+    final a = (components.isEmpty ? 0.0 : components[0]).clamp(0.0, 1.0);
+    final value = math.pow(a, gamma).toDouble();
+    return _xyzToSrgb(
+      value * whitePoint[0],
+      value * whitePoint[1],
+      value * whitePoint[2],
+    );
+  }
+}
+
+/// CIE-based calibrated RGB space.
+final class PdfCalRgb extends PdfColorSpace {
+  PdfCalRgb({
+    required this.whitePoint,
+    required this.gamma,
+    required this.matrix,
+  });
+
+  factory PdfCalRgb.fromDictionary(PdfDict dict, PdfResolver? resolver) {
+    return PdfCalRgb(
+      whitePoint: _triple(dict.getArray('WhitePoint', resolver), resolver,
+          fallback: const <double>[0.9505, 1, 1.089]),
+      gamma: _triple(dict.getArray('Gamma', resolver), resolver,
+          fallback: const <double>[1, 1, 1]),
+      matrix: _numbers(dict.getArray('Matrix', resolver), resolver, 9) ??
+          const <double>[1, 0, 0, 0, 1, 0, 0, 0, 1],
+    );
+  }
+
+  final List<double> whitePoint;
+  final List<double> gamma;
+  final List<double> matrix;
+
+  @override
+  int get numComponents => 3;
+
+  @override
+  List<double> toRgb(List<double> components) {
+    if (components.length < 3) return const <double>[0, 0, 0];
+    final a = math.pow(components[0].clamp(0, 1), gamma[0]).toDouble();
+    final b = math.pow(components[1].clamp(0, 1), gamma[1]).toDouble();
+    final c = math.pow(components[2].clamp(0, 1), gamma[2]).toDouble();
+    return _xyzToSrgb(
+      matrix[0] * a + matrix[3] * b + matrix[6] * c,
+      matrix[1] * a + matrix[4] * b + matrix[7] * c,
+      matrix[2] * a + matrix[5] * b + matrix[8] * c,
+    );
+  }
+}
+
+/// CIE L*a*b* color space with the PDF default range for a and b.
+final class PdfLab extends PdfColorSpace {
+  PdfLab({required this.whitePoint, required this.range});
+
+  factory PdfLab.fromDictionary(PdfDict dict, PdfResolver? resolver) {
+    return PdfLab(
+      whitePoint: _triple(dict.getArray('WhitePoint', resolver), resolver,
+          fallback: const <double>[0.9505, 1, 1.089]),
+      range: _numbers(dict.getArray('Range', resolver), resolver, 4) ??
+          const <double>[-100, 100, -100, 100],
+    );
+  }
+
+  final List<double> whitePoint;
+  final List<double> range;
+
+  @override
+  int get numComponents => 3;
+
+  @override
+  List<double> toRgb(List<double> components) {
+    if (components.length < 3) return const <double>[0, 0, 0];
+    final l = components[0].clamp(0.0, 100.0);
+    final a = components[1].clamp(range[0], range[1]);
+    final b = components[2].clamp(range[2], range[3]);
+    final fy = (l + 16) / 116;
+    final fx = fy + a / 500;
+    final fz = fy - b / 200;
+    double inverse(double value) {
+      final cube = value * value * value;
+      return cube >= 216 / 24389 ? cube : (116 * value - 16) / 903.3;
+    }
+
+    return _xyzToSrgb(
+      whitePoint[0] * inverse(fx),
+      whitePoint[1] * inverse(fy),
+      whitePoint[2] * inverse(fz),
+    );
+  }
+}
+
 /// Espaço de cor indexado (/Indexed), usando uma paleta base.
 class PdfIndexedColorSpace extends PdfColorSpace {
   final PdfColorSpace baseSpace;
@@ -98,4 +258,36 @@ class PdfIndexedColorSpace extends PdfColorSpace {
 
     return baseSpace.toRgb(baseComponents);
   }
+}
+
+List<double> _xyzToSrgb(double x, double y, double z) {
+  final linear = <double>[
+    3.2404542 * x - 1.5371385 * y - 0.4985314 * z,
+    -0.969266 * x + 1.8760108 * y + 0.041556 * z,
+    0.0556434 * x - 0.2040259 * y + 1.0572252 * z,
+  ];
+  double encode(double value) => (value <= 0.0031308
+          ? 12.92 * value
+          : 1.055 * math.pow(value, 1 / 2.4) - 0.055)
+      .clamp(0.0, 1.0)
+      .toDouble();
+  return <double>[for (final value in linear) encode(value)];
+}
+
+List<double> _triple(
+  PdfArray? array,
+  PdfResolver? resolver, {
+  required List<double> fallback,
+}) =>
+    _numbers(array, resolver, 3) ?? fallback;
+
+List<double>? _numbers(PdfArray? array, PdfResolver? resolver, int count) {
+  if (array == null || array.length < count) return null;
+  final result = <double>[];
+  for (var index = 0; index < count; index++) {
+    final value = array.getNumber(index, resolver);
+    if (value == null) return null;
+    result.add(value.toDouble());
+  }
+  return List<double>.unmodifiable(result);
 }

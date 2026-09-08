@@ -3,6 +3,7 @@ import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../gfx/pdf_matrix.dart';
+import 'pdf_embedded_font.dart';
 
 /// Gravador de comandos vetoriais que compila operações do `dart_ui.Canvas` diretamente para sintaxe PDF (ISO 32000).
 class PdfCanvasRecorder {
@@ -149,25 +150,24 @@ class PdfCanvasRecorder {
   /// Desenha um texto posicionado com fonte e tamanho especificados.
   void drawText(String text, Offset position,
       {String fontName = 'F1',
+      PdfEmbeddedFont? embeddedFont,
       double fontSize = 12.0,
       int color = 0xFF000000,
       bool invisible = false}) {
     setFillColor(color);
-    final escapedText = text
-        .replaceAll('\\', '\\\\')
-        .replaceAll('(', '\\(')
-        .replaceAll(')', '\\)');
+    final encodedText = embeddedFont?.encodeText(text) ??
+        '(${text.replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)')})';
     final x = position.dx;
     final y = _pdfY(position.dy);
 
     _buffer.writeln('BT');
-    _buffer.writeln('/$fontName $fontSize Tf');
+    _buffer.writeln('/${embeddedFont?.resourceName ?? fontName} $fontSize Tf');
     // Text rendering mode belongs to the text state and survives ET/BT in
     // common readers. Set it on every run so an accessibility layer cannot
     // accidentally hide later visible text.
     _buffer.writeln(invisible ? '3 Tr' : '0 Tr');
     _buffer.writeln('$x $y Td');
-    _buffer.writeln('($escapedText) Tj');
+    _buffer.writeln('$encodedText Tj');
     _buffer.writeln('ET');
   }
 

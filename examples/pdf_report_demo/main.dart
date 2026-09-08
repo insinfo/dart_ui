@@ -32,10 +32,11 @@ void main(List<String> arguments) {
     author: 'dart_ui',
     creator: 'Exemplo PDF avançado',
   );
+  final reportFont = builder.addTrueTypeFont(typeface, name: 'InterSemiBold');
   final photo = builder.addJpeg(jpeg, name: 'DashboardPhoto');
 
-  _buildOverviewPage(builder, typeface, photo);
-  _buildDetailsPage(builder, typeface);
+  _buildOverviewPage(builder, reportFont, photo);
+  _buildDetailsPage(builder, reportFont);
 
   final bytes = builder.build();
   final validation = const PdfValidator().validate(bytes);
@@ -56,7 +57,7 @@ void main(List<String> arguments) {
 
 void _buildOverviewPage(
   PdfDocumentBuilder builder,
-  Typeface typeface,
+  PdfEmbeddedFont reportFont,
   String photo,
 ) {
   final page = builder.addPage(width: _pageWidth, height: _pageHeight);
@@ -77,7 +78,7 @@ void _buildOverviewPage(
 
   _drawTypefaceText(
     page,
-    typeface,
+    reportFont,
     'RELATÓRIO DE IMPACTO',
     const Offset(42, 70),
     25,
@@ -96,7 +97,7 @@ void _buildOverviewPage(
     color: 0xFF8DE2C1,
   );
 
-  _sectionTitle(page, typeface, 'Visão geral', 42, 238);
+  _sectionTitle(page, reportFont, 'Visão geral', 42, 238);
   page.drawText(
     'Um exemplo completo criado apenas com APIs Dart. O cabeçalho decorativo',
     const Offset(42, 265),
@@ -117,11 +118,11 @@ void _buildOverviewPage(
     strokeWidth: 0.8,
   );
 
-  _metricCard(page, typeface, 378, 309, '98,7%', 'integridade');
-  _metricCard(page, typeface, 378, 371, '2,4×', 'mais rápido');
-  _metricCard(page, typeface, 378, 433, '100%', 'Dart puro');
+  _metricCard(page, reportFont, 378, 309, '98,7%', 'integridade');
+  _metricCard(page, reportFont, 378, 371, '2,4×', 'mais rápido');
+  _metricCard(page, reportFont, 378, 433, '100%', 'Dart puro');
 
-  _sectionTitle(page, typeface, 'Indicadores por trimestre', 42, 535);
+  _sectionTitle(page, reportFont, 'Indicadores por trimestre', 42, 535);
   _drawTable(page);
 
   page.drawLine(
@@ -138,7 +139,7 @@ void _buildOverviewPage(
   page.drawText('01', const Offset(536, 812), fontSize: 8.5);
 }
 
-void _buildDetailsPage(PdfDocumentBuilder builder, Typeface typeface) {
+void _buildDetailsPage(PdfDocumentBuilder builder, PdfEmbeddedFont reportFont) {
   final page = builder.addPage(width: _pageWidth, height: _pageHeight);
   page.drawRect(
     const Rect.fromLTWH(0, 0, _pageWidth, 92),
@@ -146,7 +147,7 @@ void _buildDetailsPage(PdfDocumentBuilder builder, Typeface typeface) {
   );
   _drawTypefaceText(
     page,
-    typeface,
+    reportFont,
     'COMO O DOCUMENTO FOI CONSTRUÍDO',
     const Offset(42, 54),
     19,
@@ -164,7 +165,7 @@ void _buildDetailsPage(PdfDocumentBuilder builder, Typeface typeface) {
     ),
     (
       '03  Google Fonts',
-      'Inter SemiBold é lida pelo Typeface e convertida em contornos.'
+      'Inter SemiBold é incorporada como Type0/CIDFontType2 com ToUnicode.'
     ),
     (
       '04  Tabela',
@@ -189,7 +190,7 @@ void _buildDetailsPage(PdfDocumentBuilder builder, Typeface typeface) {
       color: 0xFFFFFFFF,
     );
     _drawTypefaceText(
-        page, typeface, entry.$1.substring(4), Offset(84, y), 13, 0xFF172B45);
+        page, reportFont, entry.$1.substring(4), Offset(84, y), 13, 0xFF172B45);
     page.drawText(
       entry.$2,
       Offset(84, y + 24),
@@ -205,7 +206,7 @@ void _buildDetailsPage(PdfDocumentBuilder builder, Typeface typeface) {
   );
   _drawTypefaceText(
     page,
-    typeface,
+    reportFont,
     'UM PIPELINE, VÁRIOS FORMATOS',
     const Offset(65, 638),
     17,
@@ -228,18 +229,18 @@ void _buildDetailsPage(PdfDocumentBuilder builder, Typeface typeface) {
 
 void _sectionTitle(
   PdfCanvasRecorder page,
-  Typeface typeface,
+  PdfEmbeddedFont reportFont,
   String text,
   double x,
   double y,
 ) {
   page.drawRect(Rect.fromLTWH(x, y - 15, 4, 18), fillColor: 0xFF087F5B);
-  _drawTypefaceText(page, typeface, text, Offset(x + 13, y), 15, 0xFF10253F);
+  _drawTypefaceText(page, reportFont, text, Offset(x + 13, y), 15, 0xFF10253F);
 }
 
 void _metricCard(
   PdfCanvasRecorder page,
-  Typeface typeface,
+  PdfEmbeddedFont reportFont,
   double x,
   double y,
   String value,
@@ -252,7 +253,7 @@ void _metricCard(
     strokeWidth: 0.6,
   );
   _drawTypefaceText(
-      page, typeface, value, Offset(x + 14, y + 24), 17, 0xFF087F5B);
+      page, reportFont, value, Offset(x + 14, y + 24), 17, 0xFF087F5B);
   page.drawText(caption, Offset(x + 87, y + 24),
       fontSize: 9.5, color: 0xFF506176);
 }
@@ -297,40 +298,19 @@ void _drawTable(PdfCanvasRecorder page) {
 
 void _drawTypefaceText(
   PdfCanvasRecorder canvas,
-  Typeface typeface,
+  PdfEmbeddedFont font,
   String text,
   Offset position,
   double size,
   int color,
 ) {
-  // Preserve searchable/selectable Unicode text while painting the exact
-  // custom-font outlines. The invisible text layer is a PDF accessibility
-  // primitive (text rendering mode 3), not a raster image.
   canvas.drawText(
     text,
     position,
+    embeddedFont: font,
     fontSize: size,
     color: color,
-    invisible: true,
   );
-  final scale = size / typeface.unitsPerEm;
-  var penX = position.dx;
-  for (final rune in text.runes) {
-    final glyph = typeface.glyphForCodePoint(rune);
-    if (glyph != 0) {
-      final transform = Transform2D(
-        scale,
-        0,
-        0,
-        -scale,
-        penX,
-        position.dy,
-      );
-      canvas.drawPath(typeface.outlineOf(glyph).transform(transform),
-          fillColor: color);
-    }
-    penX += typeface.advanceOf(glyph) * scale;
-  }
 }
 
 Uint8List _createCoverJpeg() {

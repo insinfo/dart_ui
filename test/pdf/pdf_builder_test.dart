@@ -1,3 +1,5 @@
+import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dart_ui/dart_ui.dart';
@@ -7,6 +9,48 @@ import 'package:test/test.dart';
 
 void main() {
   group('PdfDocumentBuilder (Exportador Vetorial PDF em Puro Dart)', () {
+    test('embeds selectable Unicode text with a TrueType Type0 font', () {
+      final face = Typeface.parse(
+        File('test/fonts/Roboto-Regular.ttf').readAsBytesSync(),
+      );
+      final builder = PdfDocumentBuilder();
+      final font = builder.addTrueTypeFont(face, name: 'Roboto');
+      builder.addPage(width: 300, height: 120).drawText(
+            'Relatório: ação € 😀',
+            const Offset(20, 50),
+            embeddedFont: font,
+            fontSize: 18,
+          );
+
+      final bytes = builder.build();
+      final source = latin1.decode(bytes, allowInvalid: true);
+      expect(source, contains('/Subtype /Type0'));
+      expect(source, contains('/Subtype /CIDFontType2'));
+      expect(source, contains('/FontFile2'));
+      expect(source, contains('/ToUnicode'));
+      expect(source, isNot(contains('3 Tr')));
+
+      final page = PdfDocument.fromBytes(bytes).getPage(1);
+      final layout = PdfTextExtractor(page).extract();
+      expect(layout.text, 'Relatório: ação € 😀');
+      expect(page.renderToMemory().commands, isNotEmpty);
+    });
+
+    test('rejects duplicate and invalid embedded font resource names', () {
+      final face = Typeface.parse(
+        File('test/fonts/Roboto-Regular.ttf').readAsBytesSync(),
+      );
+      final builder = PdfDocumentBuilder()..addTrueTypeFont(face, name: 'UI');
+      expect(
+        () => builder.addTrueTypeFont(face, name: 'UI'),
+        throwsArgumentError,
+      );
+      expect(
+        () => builder.addTrueTypeFont(face, name: '1invalid'),
+        throwsArgumentError,
+      );
+    });
+
     test('embeds a JPEG XObject without transcoding it', () {
       final image = raster.Image(width: 3, height: 2);
       for (var y = 0; y < image.height; y++) {

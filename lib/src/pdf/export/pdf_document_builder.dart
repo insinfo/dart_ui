@@ -1,6 +1,10 @@
 import 'dart:convert';
 import 'dart:typed_data';
+import '../../text/typeface.dart';
 import 'pdf_canvas_recorder.dart';
+import 'pdf_embedded_font.dart';
+
+export 'pdf_embedded_font.dart';
 
 class _PdfPageEntry {
   final double width;
@@ -27,6 +31,7 @@ class PdfDocumentBuilder {
   final String creator;
   final List<_PdfPageEntry> _pages = [];
   final List<_PdfJpegEntry> _jpegImages = [];
+  final List<PdfEmbeddedFont> _fonts = [];
 
   PdfDocumentBuilder({
     this.title = 'Documento Dart UI',
@@ -62,6 +67,28 @@ class PdfDocumentBuilder {
     return resourceName;
   }
 
+  /// Registers a TrueType face for native, selectable PDF text.
+  ///
+  /// The complete sfnt program is embedded. Only widths and Unicode mappings
+  /// for glyphs actually painted are emitted into the PDF dictionaries.
+  PdfEmbeddedFont addTrueTypeFont(Typeface typeface, {String? name}) {
+    if (typeface.isCff) {
+      throw ArgumentError.value(typeface, 'typeface',
+          'FontFile2 only accepts TrueType glyf outlines');
+    }
+    final resourceName = name ?? 'F${_fonts.length + 2}';
+    if (!RegExp(r'^[A-Za-z][A-Za-z0-9_.-]*$').hasMatch(resourceName)) {
+      throw ArgumentError.value(name, 'name', 'invalid PDF resource name');
+    }
+    if (resourceName == 'F1' ||
+        _fonts.any((font) => font.resourceName == resourceName)) {
+      throw ArgumentError.value(name, 'name', 'duplicate font resource name');
+    }
+    final font = PdfEmbeddedFont.internal(resourceName, typeface);
+    _fonts.add(font);
+    return font;
+  }
+
   /// Compila e gera o arquivo PDF completo (ISO 32000) como um buffer de bytes [Uint8List].
   Uint8List build() {
     final body = BytesBuilder();
@@ -82,6 +109,17 @@ class PdfDocumentBuilder {
     final pagesObjNum = currentObjNum++;
     // Objeto de Fonte Padrão F1 (/Helvetica)
     final fontObjNum = currentObjNum++;
+
+    final embeddedFontObjects = <_PdfFontObjects>[
+      for (var i = 0; i < _fonts.length; i++)
+        _PdfFontObjects(
+          type0: currentObjNum++,
+          cidFont: currentObjNum++,
+          descriptor: currentObjNum++,
+          fontFile: currentObjNum++,
+          toUnicode: currentObjNum++,
+        ),
+    ];
 
     final imageObjectNumbers = <int>[
       for (var i = 0; i < _jpegImages.length; i++) currentObjNum++,
@@ -111,6 +149,57 @@ class PdfDocumentBuilder {
     writeString(
         '$fontObjNum 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n');
 
+    for (var i = 0; i < _fonts.length; i++) {
+      final font = _fonts[i];
+      final objects = embeddedFontObjects[i];
+      final face = font.typeface;
+      final baseName = _pdfName(face.name?.postScriptName ??
+          '${face.familyName ?? 'DartUIFont'}-${face.subfamilyName ?? 'Regular'}');
+      final scale = 1000 / face.unitsPerEm;
+      final glyphs = font.usedGlyphs.toList()..sort();
+      final widths = glyphs
+          .map((glyph) => '$glyph [${(face.advanceOf(glyph) * scale).round()}]')
+          .join(' ');
+      final flags = 32 | (face.isItalic ? 64 : 0);
+      final capHeight = face.os2?.capHeightOrNull ?? face.hhea.ascender;
+
+      offsets.add(body.length);
+      writeString('${objects.type0} 0 obj\n'
+          '<< /Type /Font /Subtype /Type0 /BaseFont /$baseName '
+          '/Encoding /Identity-H /DescendantFonts [${objects.cidFont} 0 R] '
+          '/ToUnicode ${objects.toUnicode} 0 R >>\nendobj\n');
+      offsets.add(body.length);
+      writeString('${objects.cidFont} 0 obj\n'
+          '<< /Type /Font /Subtype /CIDFontType2 /BaseFont /$baseName '
+          '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> '
+          '/FontDescriptor ${objects.descriptor} 0 R /CIDToGIDMap /Identity '
+          '/DW 1000${widths.isEmpty ? '' : ' /W [$widths]'} >>\nendobj\n');
+      offsets.add(body.length);
+      writeString('${objects.descriptor} 0 obj\n'
+          '<< /Type /FontDescriptor /FontName /$baseName /Flags $flags '
+          '/FontBBox [${(face.head.xMin * scale).round()} '
+          '${(face.head.yMin * scale).round()} '
+          '${(face.head.xMax * scale).round()} '
+          '${(face.head.yMax * scale).round()}] '
+          '/ItalicAngle ${face.post?.italicAngle ?? 0} '
+          '/Ascent ${(face.hhea.ascender * scale).round()} '
+          '/Descent ${(face.hhea.descender * scale).round()} '
+          '/CapHeight ${(capHeight * scale).round()} /StemV 80 '
+          '/FontFile2 ${objects.fontFile} 0 R >>\nendobj\n');
+      offsets.add(body.length);
+      writeString('${objects.fontFile} 0 obj\n'
+          '<< /Length ${font.bytes.length} /Length1 ${font.bytes.length} >>\nstream\n');
+      body.add(font.bytes);
+      writeString('\nendstream\nendobj\n');
+      final cmap = _toUnicodeCMap(font, baseName);
+      final cmapBytes = ascii.encode(cmap);
+      offsets.add(body.length);
+      writeString('${objects.toUnicode} 0 obj\n'
+          '<< /Length ${cmapBytes.length} >>\nstream\n');
+      body.add(cmapBytes);
+      writeString('\nendstream\nendobj\n');
+    }
+
     for (var i = 0; i < _jpegImages.length; i++) {
       final image = _jpegImages[i];
       final objectNumber = imageObjectNumbers[i];
@@ -139,7 +228,11 @@ class PdfDocumentBuilder {
           '   /Parent $pagesObjNum 0 R\n'
           '   /MediaBox [0 0 ${page.width} ${page.height}]\n'
           '   /Contents $contentObjNum 0 R\n'
-          '   /Resources << /Font << /F1 $fontObjNum 0 R >> '
+          '   /Resources << /Font << /F1 $fontObjNum 0 R '
+          '${[
+        for (var j = 0; j < _fonts.length; j++)
+          '/${_fonts[j].resourceName} ${embeddedFontObjects[j].type0} 0 R'
+      ].join(' ')} >> '
           '${_jpegImages.isEmpty ? '' : '/XObject << ${[
               for (var j = 0; j < _jpegImages.length; j++)
                 '/${_jpegImages[j].name} ${imageObjectNumbers[j]} 0 R'
@@ -187,6 +280,62 @@ class PdfDocumentBuilder {
 
     return body.takeBytes();
   }
+}
+
+final class _PdfFontObjects {
+  const _PdfFontObjects({
+    required this.type0,
+    required this.cidFont,
+    required this.descriptor,
+    required this.fontFile,
+    required this.toUnicode,
+  });
+
+  final int type0;
+  final int cidFont;
+  final int descriptor;
+  final int fontFile;
+  final int toUnicode;
+}
+
+String _pdfName(String value) => value
+    .replaceAll(RegExp(r'[^A-Za-z0-9_.+-]'), '-')
+    .replaceAll(RegExp('-+'), '-');
+
+String _toUnicodeCMap(PdfEmbeddedFont font, String name) {
+  final glyphs = font.usedGlyphs.toList()..sort();
+  final mappings = <String>[
+    for (final glyph in glyphs)
+      '<${glyph.toRadixString(16).padLeft(4, '0')}> '
+          '<${_utf16Hex(font.unicodeForGlyph(glyph))}>'
+  ];
+  final body = StringBuffer();
+  for (var offset = 0; offset < mappings.length; offset += 100) {
+    final end = (offset + 100).clamp(0, mappings.length);
+    body
+      ..writeln('${end - offset} beginbfchar')
+      ..writeln(mappings.sublist(offset, end).join('\n'))
+      ..writeln('endbfchar');
+  }
+  return '/CIDInit /ProcSet findresource begin\n'
+      '12 dict begin\n'
+      'begincmap\n'
+      '/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n'
+      '/CMapName /${name}ToUnicode def\n'
+      '/CMapType 2 def\n'
+      '1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n'
+      '$body'
+      'endcmap\nCMapName currentdict /CMap defineresource pop\n'
+      'end\nend';
+}
+
+String _utf16Hex(int codePoint) {
+  if (codePoint <= 0xffff) return codePoint.toRadixString(16).padLeft(4, '0');
+  final value = codePoint - 0x10000;
+  final high = 0xd800 + (value >> 10);
+  final low = 0xdc00 + (value & 0x3ff);
+  return '${high.toRadixString(16).padLeft(4, '0')}'
+      '${low.toRadixString(16).padLeft(4, '0')}';
 }
 
 (int, int, int) _readJpegInfo(Uint8List bytes) {
