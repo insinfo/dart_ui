@@ -7370,7 +7370,94 @@ corrigidas abaixo com a execução que as desmente.
   estado e opera botão, check box, slider e campo de texto (§68.1). Nada em
   X11, Wayland, macOS ou web, e o Narrator em si nunca foi executado — o que
   foi provado é a API que ele usa, do jeito que ele a usa;
-- [ ] sem leaks conhecidos críticos — não medido;
+- [~] **sem leaks conhecidos críticos** — deixou de ser "não medido" em
+  08/09/2026, e o que existe agora é um instrumento com números, não um
+  carimbo. A suíte é `tool/leak_suite/` (`dart run
+  tool/leak_suite/leak_suite.dart`, ou o `.exe` compilado) e mede **três coisas
+  diferentes que se chamam leak**, porque uma ferramenta só nunca vê as três:
+
+  - **A — heap Dart.** Objetos ainda alcançáveis depois do `dispose()`, lidos
+    pelo VM Service **do próprio processo** (`Service.controlWebServer`), com um
+    GC completo antes de cada leitura. **Só em JIT**: um binário AOT não tem VM
+    Service, e a suíte diz *NOT MEASURED* em vez de reportar um heap limpo que
+    nunca olhou;
+  - **B — memória nativa.** `NativeAllocator` passou a contar blocos vivos
+    sempre e bytes vivos sob demanda (`trackBlockSizes`), com
+    `NativeMemoryStats` comparável por subtração. Funciona em AOT;
+  - **C — handles do sistema operacional.** `GetGuiResources` (objetos GDI e
+    USER), `GetProcessHandleCount` e o `PrivateUsage` de
+    `GetProcessMemoryInfo`. É a classe mais específica de um framework de UI —
+    um `HWND`, uma DIB section, um pincel — e era a que ninguém lia. Funciona em
+    AOT.
+
+  A regra de medição é **N ciclos, não um**. Um único abrir/fechar cresce um
+  processo por motivos legítimos (fonte internada, classe de janela registrada,
+  pool aquecido, caminho compilado), e uma suíte que reprova nisso é desligada
+  na terceira falsa. O padrão é **24 ciclos com os 6 primeiros descartados** —
+  18 pontos deixam o erro padrão da inclinação em torno de um quarto do ruído
+  por ciclo; com menos de doze, um único ponto ruim decide o veredicto. O
+  veredicto sai da **inclinação** da reta ajustada à cauda, contra o próprio
+  erro padrão dela *e* contra um piso por métrica, e **todas as leituras são
+  impressas** para que um platô (cache) se distinga a olho de uma reta (leak).
+
+  **O que foi medido, em 08/09/2026, nesta máquina (Windows 11, x64):**
+
+  | ciclo | o que faz | resultado |
+  | --- | --- | --- |
+  | `window` | cria e destrói uma janela oculta | 60 ciclos AOT: GDI **3→3**, USER **3→3**, handles de kernel **172 constantes**, blocos nativos **0**. Inclinação 0,00 ± 0 em todos os contadores exatos |
+  | `resize` | redimensiona uma janela, reconstruindo a DIB a cada vez | 24 ciclos: GDI **5 constante**, `Win32DibSurface` vivo **1**, e em AOT os bytes privados alternam **13 996 k / 14 300 k** exatamente com os dois tamanhos, voltando ao mesmo valor a cada dois ciclos |
+  | `present` | rasteriza e faz blit de uma display list | tudo plano; `DisplayList` vivo **1**, que é o retido de propósito pelo presenter |
+  | `video-ring` | aloca um `NativeVideoFrameRing`, empresta e devolve os slots | blocos e bytes nativos **0** |
+  | `arena` | enche e libera um `NativeArena` | blocos e bytes nativos **0** |
+  | `idle` | nada | o piso da própria suíte: **1552 bytes de heap Dart por ciclo ± 64** |
+
+  **A suíte foi provada contra leaks plantados**, um para cada classe, no mesmo
+  ciclo `window` e contra o ruído da corrida limpa:
+
+  - `--plant heap` (um `Uint8List` de 4096 B retido por ciclo):
+    **5936 B/ciclo ± 234** contra **1806 B/ciclo** limpo — a diferença é 4130 B,
+    o objeto plantado;
+  - `--plant native` (um bloco de 4096 B não liberado): **1,00 bloco/ciclo ± 0**
+    e **4096 bytes/ciclo ± 0**, contra 0 ± 0 limpo;
+  - `--plant gdi` (um `CreateCompatibleDC` não deletado): **1,00 objeto GDI por
+    ciclo ± 0**, contra 0 ± 0 limpo.
+
+  Os contadores inteiros do sistema operacional dão erro padrão **zero** numa
+  corrida limpa, então a margem entre limpo e plantado ali não é estatística: é
+  0 contra 1.
+
+  **O achado honesto do processo**: a primeira corrida acusou *handles de
+  kernel crescendo 0,21 por ciclo* no `window`. Não era o framework — era o
+  instrumento. O VM Service tem isolate e socket próprios; `--no-heap` derruba
+  a inclinação para **exatamente 0,000 ao longo de 60 ciclos**. É por isso que
+  a flag existe, e é o motivo de a suíte imprimir *qual* das duas medições cada
+  número é.
+
+  **JIT contra AOT**, que aqui não são a mesma medida: 24 ciclos de `window`
+  custam **2,2 s** com `dart run` (com o kernel já em cache; a primeira
+  compilação do pacote é o custo de `tool/startup_cost.dart`) contra **0,085 s**
+  no `.exe` compilado. Os números do AOT também são muito mais limpos — sem o
+  GC forçado do VM Service, os contadores grossos do processo ficam presos em
+  valores exatos em vez de oscilarem alguns megabytes.
+
+  **O que a suíte ainda não vê**, e por isso este item continua `[~]` e não
+  `[x]`:
+
+  - **recuperação de perda de dispositivo** (`recoverFromDeviceLoss`) não é
+    exercitada: exige uma GPU e uma injeção de `markLost`, e os recursos que um
+    driver segura não aparecem em nenhum dos contadores acima a não ser como
+    bytes privados, que são a métrica mais ruidosa das cinco;
+  - **cenas de malha** (`discardMesh` e o cache de vertex buffers por
+    identidade de primitiva) e o **player de vídeo de ponta a ponta**;
+  - **X11, Wayland e macOS**: `GetGuiResources` não tem equivalente fora do
+    Windows. `/proc/self/fd` e a contagem de portas Mach são os análogos e não
+    estão escritos;
+  - o **alocador de heap de processo do próprio `win32_api.dart`**, que é
+    separado de `NativeAllocator` e não é contado — a `BitmapInfo` de cada DIB
+    sai dali;
+  - um **A que só cobre as classes nomeadas por ciclo**: o total do heap tem o
+    custo da própria suíte dentro dele (daí o ciclo `idle` e o piso de 4 KiB),
+    e uma closure retida numa classe fora da lista de observação não aparece.
 - [x] CI multi-plataforma;
 - [x] **documentação de limitações** — §68 e
   [`architecture/overview.md`](architecture/overview.md#estado-executivo--23-de-agosto-de-2026);

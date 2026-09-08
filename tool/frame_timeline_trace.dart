@@ -18,28 +18,13 @@
 ///     -- examples/video_player_demo/main.dart --autoplay --frames 400 video.mp4
 /// ```
 ///
-/// ## The transport, checked rather than assumed
+/// ## The transport
 ///
-/// The VM Service speaks JSON-RPC over two transports, and on Dart 3.6.2
-/// (`dart --version` on the machine this was written for) they are **not**
-/// equivalent:
-///
-///   * the **HTTP** endpoint answers `GET /<method>?param=value` and works for
-///     every parameterless RPC - `getVersion`, `getVM`, `getVMTimeline`,
-///     `clearVMTimeline` all return proper JSON-RPC envelopes. `POST /` with a
-///     JSON-RPC body is **405 method not allowed**, so the usual "post the
-///     envelope" recipe does not apply here;
-///   * but `setVMTimelineFlags` takes `recordedStreams` as a **JSON array**,
-///     and a query string cannot carry one. A repeated `?recordedStreams=Dart
-///     &recordedStreams=GC` arrives as the single string `GC` and is rejected
-///     as an invalid parameter; a JSON-encoded string is rejected too. There is
-///     no HTTP spelling of that call.
-///
-/// So the recording flags can only be set over the **WebSocket** at
-/// `ws://host:port/ws`, and since that transport can do everything the HTTP
-/// one can, this tool uses it for all of it. `dart:io`'s [WebSocket] is enough;
-/// nothing here needs `package:vm_service`, which this repository does not
-/// depend on.
+/// The recording flags can only be set over the VM Service's **WebSocket**
+/// transport, for the reason `tool/vm_service_client.dart` documents at
+/// length: `setVMTimelineFlags` takes a JSON array and the HTTP endpoint's
+/// query string cannot carry one. That client is shared with
+/// `tool/leak_suite/`.
 ///
 /// One more name to get right: the RPC is **`getVMTimeline`**. There is no
 /// `getTimeline` in the VM Service protocol - asking for it answers
@@ -59,6 +44,8 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
+import 'vm_service_client.dart';
 
 Future<void> main(List<String> arguments) async {
   final _Options options;
@@ -81,7 +68,8 @@ Future<void> main(List<String> arguments) async {
 
   int exitStatus = 0;
   try {
-    final _VmService service = await _VmService.connect(target.serviceUri);
+    final VmServiceClient service =
+        await VmServiceClient.connect(target.serviceUri);
     try {
       await service.call('setVMTimelineFlags', <String, Object?>{
         'recordedStreams': options.streams,
@@ -300,81 +288,6 @@ Future<void> _sleepOrExit(Duration duration, _Target target) async {
     Future<void>.delayed(duration),
     exited,
   ]);
-}
-
-/// A JSON-RPC client for the VM Service over `dart:io`'s WebSocket.
-///
-/// Pure `dart:io`; see the library comment for why the HTTP transport is not
-/// enough and why `package:vm_service` is not an option here.
-final class _VmService {
-  _VmService._(this._socket) {
-    _socket.listen(
-      (Object? message) {
-        final Map<String, Object?> reply =
-            jsonDecode(message! as String) as Map<String, Object?>;
-        final Completer<Map<String, Object?>?>? pending =
-            _pending.remove(reply['id']);
-        if (pending == null) return;
-        final Object? error = reply['error'];
-        if (error != null) {
-          pending.completeError(StateError('VM Service error: $error'));
-          return;
-        }
-        pending.complete(reply['result'] as Map<String, Object?>?);
-      },
-      onDone: _failPending,
-      onError: (Object _) => _failPending(),
-    );
-  }
-
-  static Future<_VmService> connect(Uri serviceUri) async {
-    // `http://127.0.0.1:1234/` and `http://127.0.0.1:1234/AbC=/` both become
-    // the same URI with `ws` and a `ws` segment appended - the auth-code form
-    // keeps its code, which is what makes --attach work against a VM the user
-    // started without `--disable-service-auth-codes`.
-    final List<String> segments = <String>[
-      ...serviceUri.pathSegments.where((String s) => s.isNotEmpty),
-      'ws',
-    ];
-    final Uri wsUri = serviceUri.replace(
-      scheme: serviceUri.scheme == 'https' ? 'wss' : 'ws',
-      pathSegments: segments,
-    );
-    return _VmService._(await WebSocket.connect(wsUri.toString()));
-  }
-
-  final WebSocket _socket;
-  final Map<int, Completer<Map<String, Object?>?>> _pending =
-      <int, Completer<Map<String, Object?>?>>{};
-  int _nextId = 0;
-
-  Future<Map<String, Object?>?> call(
-    String method, [
-    Map<String, Object?>? params,
-  ]) {
-    final int id = ++_nextId;
-    final Completer<Map<String, Object?>?> completer =
-        Completer<Map<String, Object?>?>();
-    _pending[id] = completer;
-    _socket.add(jsonEncode(<String, Object?>{
-      'jsonrpc': '2.0',
-      'id': id,
-      'method': method,
-      if (params != null) 'params': params,
-    }));
-    return completer.future;
-  }
-
-  void _failPending() {
-    for (final Completer<Map<String, Object?>?> pending in _pending.values) {
-      if (!pending.isCompleted) {
-        pending.completeError(StateError('the VM Service connection closed'));
-      }
-    }
-    _pending.clear();
-  }
-
-  Future<void> close() => _socket.close();
 }
 
 /// One phase's accumulated cost.

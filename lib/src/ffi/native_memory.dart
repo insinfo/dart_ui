@@ -97,6 +97,83 @@ final class NativeAllocator implements Allocator {
   /// another - is invisible except through knowing which one was used.
   final String provenance;
 
+  // ---------------------------------------------------------------------
+  // Accounting.
+  //
+  // Added because Gate 1.0's "no known critical leaks" line had no evidence
+  // behind it and native memory is the half of a leak the Dart garbage
+  // collector cannot see: a block this allocator hands out is invisible to
+  // `getAllocationProfile` and to `getMemoryUsage`, so a surface recreated on
+  // every resize could lose a descriptor per cycle while every Dart-side
+  // measurement stayed flat. Counting is the difference between "probably
+  // fine" and a number.
+  //
+  // Block counting is unconditional because it is two integer operations next
+  // to a native call that already zeroes the memory it returns. Byte counting
+  // is not, because knowing a block's size at [free] means remembering it, and
+  // a map insert per `arena<WndClassExW>()` is a cost every frame would pay for
+  // a diagnostic almost nobody reads. Call [trackBlockSizes] to turn it on.
+
+  int _liveBlocks = 0;
+  int _liveBytes = 0;
+  int _peakLiveBlocks = 0;
+  int _totalAllocations = 0;
+  int _totalReleases = 0;
+  int _totalBytesAllocated = 0;
+  int _releasesOfUntrackedBlocks = 0;
+
+  /// Address to byte count, only while size tracking is on.
+  ///
+  /// Null rather than empty when off, so [free] tests one field instead of
+  /// hashing a pointer on a path that did not ask for the number.
+  Map<int, int>? _blockSizes;
+
+  /// Whether [NativeMemoryStats.liveBytes] is being maintained.
+  bool get isTrackingBlockSizes => _blockSizes != null;
+
+  /// Turns exact byte accounting on or off.
+  ///
+  /// Only blocks allocated *while it is on* are sized, so a caller that enables
+  /// it after start-up gets bytes relative to that moment and
+  /// [NativeMemoryStats.releasesOfUntrackedBlocks] counting the older blocks as
+  /// they come back. That is the honest reading and it is the one a leak suite
+  /// wants anyway: it enables tracking once, then measures per-cycle deltas
+  /// against a baseline taken immediately afterwards.
+  void trackBlockSizes(bool enabled) {
+    if (enabled) {
+      _blockSizes ??= <int, int>{};
+    } else {
+      _blockSizes = null;
+      _liveBytes = 0;
+    }
+  }
+
+  /// Everything counted so far.
+  NativeMemoryStats get stats => NativeMemoryStats(
+        liveBlocks: _liveBlocks,
+        liveBytes: _liveBytes,
+        peakLiveBlocks: _peakLiveBlocks,
+        totalAllocations: _totalAllocations,
+        totalReleases: _totalReleases,
+        totalBytesAllocated: _totalBytesAllocated,
+        releasesOfUntrackedBlocks: _releasesOfUntrackedBlocks,
+        trackingBlockSizes: isTrackingBlockSizes,
+      );
+
+  /// Zeroes the cumulative counters and leaves the live ones alone.
+  ///
+  /// For a measurement that starts after warm-up. Live blocks are deliberately
+  /// not cleared: they are outstanding memory, not history, and zeroing them
+  /// would turn a block allocated before the reset into a negative count when
+  /// it is freed after it.
+  void resetCumulativeStatistics() {
+    _totalAllocations = 0;
+    _totalReleases = 0;
+    _totalBytesAllocated = 0;
+    _releasesOfUntrackedBlocks = 0;
+    _peakLiveBlocks = _liveBlocks;
+  }
+
   static NativeAllocator? _instance;
   static bool _attempted = false;
 
@@ -238,12 +315,36 @@ final class NativeAllocator implements Allocator {
     if (byteCount > 0) {
       pointer.cast<Uint8>().asTypedList(byteCount).fillRange(0, byteCount, 0);
     }
+    _liveBlocks++;
+    _totalAllocations++;
+    _totalBytesAllocated += byteCount;
+    if (_liveBlocks > _peakLiveBlocks) _peakLiveBlocks = _liveBlocks;
+    final Map<int, int>? sizes = _blockSizes;
+    if (sizes != null) {
+      sizes[pointer.address] = byteCount;
+      _liveBytes += byteCount;
+    }
     return pointer.cast<T>();
   }
 
   @override
   void free(Pointer<NativeType> pointer) {
     if (pointer == nullptr) return;
+    // Uncounted before the release rather than after it, because the address
+    // is the map key and a freed block's address is reused: `CoTaskMemFree`
+    // followed by another thread's `CoTaskMemAlloc` can hand the same number
+    // back, and removing the entry afterwards would remove the new block's.
+    _liveBlocks--;
+    _totalReleases++;
+    final Map<int, int>? sizes = _blockSizes;
+    if (sizes != null) {
+      final int? byteCount = sizes.remove(pointer.address);
+      if (byteCount == null) {
+        _releasesOfUntrackedBlocks++;
+      } else {
+        _liveBytes -= byteCount;
+      }
+    }
     _release(pointer.cast<Void>());
   }
 
@@ -253,6 +354,85 @@ final class NativeAllocator implements Allocator {
 
   @override
   String toString() => 'NativeAllocator($provenance)';
+}
+
+/// A snapshot of [NativeAllocator]'s counters.
+///
+/// Immutable and comparable by subtraction, because the question a leak suite
+/// asks is never "how many blocks are live" - a framework legitimately holds
+/// some - but "how many more are live than one cycle ago". [difference] is that
+/// subtraction, and the per-cycle series it produces is what separates a leak
+/// (linear growth that never stops) from a cache (growth that plateaus).
+final class NativeMemoryStats {
+  const NativeMemoryStats({
+    required this.liveBlocks,
+    required this.liveBytes,
+    required this.peakLiveBlocks,
+    required this.totalAllocations,
+    required this.totalReleases,
+    required this.totalBytesAllocated,
+    required this.releasesOfUntrackedBlocks,
+    required this.trackingBlockSizes,
+  });
+
+  /// Blocks allocated and not yet freed.
+  ///
+  /// Can go negative, and the negative is information rather than a bug in the
+  /// counter: it means [NativeAllocator.free] was handed a pointer this
+  /// allocator never returned - a double free, or a buffer that came from a COM
+  /// method and should have gone back through that library's own
+  /// `CoTaskMemFree`. Both are worth seeing.
+  final int liveBlocks;
+
+  /// Bytes in those blocks, counted only while
+  /// [NativeAllocator.trackBlockSizes] was on. Zero and meaningless when
+  /// [trackingBlockSizes] is false.
+  final int liveBytes;
+
+  final int peakLiveBlocks;
+  final int totalAllocations;
+  final int totalReleases;
+  final int totalBytesAllocated;
+
+  /// Frees of blocks the size map did not know, which for a run that turned
+  /// tracking on at start-up means blocks allocated before it. A non-zero value
+  /// is the reason [liveBytes] can drift below the truth, and is reported so
+  /// nobody has to guess whether it did.
+  final int releasesOfUntrackedBlocks;
+
+  final bool trackingBlockSizes;
+
+  static const NativeMemoryStats zero = NativeMemoryStats(
+    liveBlocks: 0,
+    liveBytes: 0,
+    peakLiveBlocks: 0,
+    totalAllocations: 0,
+    totalReleases: 0,
+    totalBytesAllocated: 0,
+    releasesOfUntrackedBlocks: 0,
+    trackingBlockSizes: false,
+  );
+
+  /// This snapshot minus [earlier], field by field.
+  NativeMemoryStats difference(NativeMemoryStats earlier) => NativeMemoryStats(
+        liveBlocks: liveBlocks - earlier.liveBlocks,
+        liveBytes: liveBytes - earlier.liveBytes,
+        peakLiveBlocks: peakLiveBlocks - earlier.peakLiveBlocks,
+        totalAllocations: totalAllocations - earlier.totalAllocations,
+        totalReleases: totalReleases - earlier.totalReleases,
+        totalBytesAllocated: totalBytesAllocated - earlier.totalBytesAllocated,
+        releasesOfUntrackedBlocks:
+            releasesOfUntrackedBlocks - earlier.releasesOfUntrackedBlocks,
+        trackingBlockSizes: trackingBlockSizes,
+      );
+
+  @override
+  String toString() => 'NativeMemoryStats(live: $liveBlocks blocks'
+      '${trackingBlockSizes ? ' / $liveBytes bytes' : ''}, '
+      'peak: $peakLiveBlocks, '
+      'allocations: $totalAllocations, releases: $totalReleases'
+      '${releasesOfUntrackedBlocks != 0 ? ', untracked releases: '
+          '$releasesOfUntrackedBlocks' : ''})';
 }
 
 /// A scope of native allocations released in reverse order.

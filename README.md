@@ -290,6 +290,50 @@ surpresa:
   stream fingindo ser a mesma coisa. E ele não é exposto no `PcmAudioPlayer`,
   cujo stream vive em outra isolate.
 
+### Vazamentos de recursos
+
+Este item era o único do Gate 1.0 com **nenhuma** evidência — "não medido".
+Desde 08/09/2026 existe uma suíte, `tool/leak_suite/`, e o que ela diz cabe
+aqui inteiro.
+
+- **Três coisas diferentes se chamam leak, e a suíte cobre as três — com
+  alcances diferentes.** *Heap Dart* (objetos vivos depois do `dispose()`,
+  pelo VM Service do próprio processo, **só em JIT** — um AOT não tem VM
+  Service e a suíte imprime *NOT MEASURED* em vez de fingir que olhou);
+  *memória nativa* (`NativeAllocator` agora conta blocos e bytes vivos);
+  *handles do sistema* (objetos GDI e USER por `GetGuiResources`, handles de
+  kernel por `GetProcessHandleCount`, bytes privados por
+  `GetProcessMemoryInfo`). As duas últimas funcionam em AOT.
+- **O veredicto é a inclinação ao longo de N ciclos, nunca um ciclo.** Padrão:
+  24 ciclos, 6 descartados como aquecimento. Abrir e fechar uma janela **uma
+  vez** cresce um processo por motivos legítimos; o que separa um cache de um
+  leak é o platô contra a reta, e todas as leituras são impressas para que a
+  diferença se veja em vez de se acreditar.
+- **O que foi medido não vaza.** Abrir e fechar uma janela oculta 60 vezes
+  devolve tudo: GDI 3→3, USER 3→3, handles de kernel constantes em 172, blocos
+  nativos em 0 — inclinação 0,00 com erro padrão 0 em todos os contadores
+  exatos. Redimensionar 24 vezes, que **reconstrói a DIB a cada vez**, mantém
+  os objetos GDI em 5 e um único `Win32DibSurface` vivo. Apresentar display
+  lists, alocar e liberar um `NativeVideoFrameRing` e encher um `NativeArena`
+  são igualmente planos.
+- **A suíte foi provada contra leaks plantados**, um por classe: um objeto
+  Dart retido aparece como 5936 B/ciclo contra 1806 B/ciclo limpo; um bloco
+  nativo não liberado, como 1,00 bloco/ciclo ± 0 contra 0; um `HDC` não
+  deletado, como 1,00 objeto GDI/ciclo ± 0 contra 0. Um detector que nunca
+  detectou nada não é evidência de nada.
+- **O que ela ainda não vê**, e por isso o item do roteiro é `[~]` e não `[x]`:
+  recuperação de perda de dispositivo, cenas de malha e `discardMesh`, o player
+  de vídeo de ponta a ponta, o alocador de heap de processo do `win32_api.dart`
+  (separado do `NativeAllocator`), a memória que um driver de GPU segura, e
+  **qualquer contador de handles fora do Windows** — `GetGuiResources` não tem
+  equivalente em X11, Wayland ou macOS, e os análogos (`/proc/self/fd`, portas
+  Mach) não estão escritos.
+- **Um aviso sobre o próprio instrumento.** A primeira corrida acusou handles
+  de kernel crescendo 0,21 por ciclo; não era o framework, era o VM Service,
+  que tem isolate e socket próprios. Com `--no-heap` a inclinação vai a
+  exatamente zero ao longo de 60 ciclos. Por isso a suíte separa, e imprime,
+  qual das duas medições cada número é.
+
 ### Um limite que não é nosso
 
 **O laço de eventos do Dart é inalcançável de dentro de uma moldura nativa.**

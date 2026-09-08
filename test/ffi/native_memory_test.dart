@@ -74,6 +74,99 @@ void main() {
     }, skip: skipReason);
   });
 
+  group('the accounting', () {
+    // Added with tool/leak_suite/, which needed a number where there had only
+    // been an argument: native memory is invisible to the Dart garbage
+    // collector, so nothing else in this repository could tell a framework
+    // that frees every block from one that loses one per window.
+
+    test('counts a block out and back', () {
+      final NativeAllocator allocator = NativeAllocator.instance;
+      final NativeMemoryStats before = allocator.stats;
+      final Pointer<Uint8> block = allocator.allocate<Uint8>(64);
+      final NativeMemoryStats held = allocator.stats.difference(before);
+      expect(held.liveBlocks, 1);
+      expect(held.totalAllocations, 1);
+      expect(held.totalBytesAllocated, 64);
+      allocator.free(block);
+      final NativeMemoryStats after = allocator.stats.difference(before);
+      expect(after.liveBlocks, 0);
+      expect(after.totalReleases, 1);
+    }, skip: skipReason);
+
+    test('counts bytes only while asked to, and says which', () {
+      final NativeAllocator allocator = NativeAllocator.instance;
+      final bool wasTracking = allocator.isTrackingBlockSizes;
+      allocator.trackBlockSizes(false);
+      expect(allocator.stats.trackingBlockSizes, isFalse);
+      final Pointer<Uint8> untracked = allocator.allocate<Uint8>(128);
+      expect(allocator.stats.liveBytes, 0);
+
+      allocator.trackBlockSizes(true);
+      final NativeMemoryStats before = allocator.stats;
+      final Pointer<Uint8> tracked = allocator.allocate<Uint8>(256);
+      expect(allocator.stats.difference(before).liveBytes, 256);
+      allocator.free(tracked);
+      expect(allocator.stats.difference(before).liveBytes, 0);
+
+      // The block allocated before tracking began is not in the size map, and
+      // that is reported rather than silently subtracted - a leak suite that
+      // turned tracking on after start-up has to know its byte baseline is
+      // relative, not absolute.
+      allocator.free(untracked);
+      expect(allocator.stats.difference(before).releasesOfUntrackedBlocks, 1);
+      expect(allocator.stats.difference(before).liveBytes, 0);
+      allocator.trackBlockSizes(wasTracking);
+    }, skip: skipReason);
+
+    test('an arena returns every block it took', () {
+      final NativeAllocator allocator = NativeAllocator.instance;
+      final NativeMemoryStats before = allocator.stats;
+      using((NativeArena arena) {
+        arena.allocateUtf16('window title');
+        arena.allocateUtf8('window title');
+        arena.allocate<Uint8>(1024);
+        expect(allocator.stats.difference(before).liveBlocks, 3);
+      });
+      expect(allocator.stats.difference(before).liveBlocks, 0);
+      expect(allocator.stats.difference(before).totalAllocations, 3);
+      expect(allocator.stats.difference(before).totalReleases, 3);
+    }, skip: skipReason);
+
+    test('a leaked block is a number, not a suspicion', () {
+      // The whole point of the accounting, asserted directly: this is what
+      // tool/leak_suite/leak_suite.dart --plant native does, and the counter
+      // has to see it.
+      final NativeAllocator allocator = NativeAllocator.instance;
+      final NativeMemoryStats before = allocator.stats;
+      final List<Pointer<Uint8>> leaked = <Pointer<Uint8>>[
+        for (var i = 0; i < 5; i++) allocator.allocate<Uint8>(4096),
+      ];
+      expect(allocator.stats.difference(before).liveBlocks, 5);
+      if (allocator.isTrackingBlockSizes) {
+        expect(allocator.stats.difference(before).liveBytes, 5 * 4096);
+      }
+      for (final Pointer<Uint8> block in leaked) {
+        allocator.free(block);
+      }
+      expect(allocator.stats.difference(before).liveBlocks, 0);
+    }, skip: skipReason);
+
+    test('resetting the cumulative counters leaves the live ones alone', () {
+      final NativeAllocator allocator = NativeAllocator.instance;
+      final Pointer<Uint8> held = allocator.allocate<Uint8>(32);
+      final int liveBefore = allocator.stats.liveBlocks;
+      allocator.resetCumulativeStatistics();
+      expect(allocator.stats.totalAllocations, 0);
+      expect(allocator.stats.totalReleases, 0);
+      // Outstanding memory is not history: zeroing it would turn this block
+      // into a negative count the moment it is freed.
+      expect(allocator.stats.liveBlocks, liveBefore);
+      allocator.free(held);
+      expect(allocator.stats.liveBlocks, liveBefore - 1);
+    }, skip: skipReason);
+  });
+
   group('the arena', () {
     test('releases everything in one call and stays usable', () {
       // The half of package:ffi's Arena.releaseAll that takes `reuse: true`. A
