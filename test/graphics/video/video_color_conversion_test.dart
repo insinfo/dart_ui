@@ -17,6 +17,8 @@
 ///      addressing error in exactly one of them.
 library;
 
+import 'dart:typed_data';
+
 import 'package:dart_ui/src/graphics/image/decoded_image.dart';
 import 'package:dart_ui/src/graphics/video/video_color_conversion.dart';
 import 'package:dart_ui/src/graphics/video/video_frame.dart';
@@ -353,4 +355,221 @@ void main() {
       );
     });
   });
+
+  group('the destination size', () {
+    // The claim the whole optimisation rests on: converting at the
+    // destination size is not a new picture, it is the same picture reached
+    // without building the intermediate one. It holds because
+    // `DecodedImage.resample` is nearest-neighbour - it says so, and says that
+    // shrinking "drops source pixels entirely and aliases" - so both paths
+    // point-sample and the only question is whether they point at the same
+    // sample.
+    //
+    // Byte-identical is the assertion and a distribution is the report,
+    // because "maximum deviation" is the summary that hides a picture which is
+    // fine everywhere and wrong along one edge. The vocabulary is
+    // `d3d12_mesh_cpu_parity_test.dart`'s: the fraction of pixels off by more
+    // than one level, and by more than sixteen.
+    test('is the same picture as converting whole and resampling', () {
+      final picture = SyntheticPicture.ramp(64, 48);
+      for (final VideoPixelFormat format in <VideoPixelFormat>[
+        VideoPixelFormat.nv12,
+        VideoPixelFormat.i420,
+        VideoPixelFormat.yuy2,
+        VideoPixelFormat.bgra8888,
+      ]) {
+        final VideoFrame frame = picture.encode(format);
+        for (final List<int> size in const <List<int>>[
+          <int>[64, 48], // 1:1
+          <int>[32, 24], // exactly half
+          <int>[37, 29], // a ratio with no whole number in it
+          <int>[7, 5], // far past the point where samples are dropped
+          <int>[128, 96], // enlarging, which replicates instead
+          <int>[100, 17], // and the two axes disagreeing
+        ]) {
+          final Uint8List direct = convertVideoFrameToRgba(
+            frame,
+            order: ImageChannelOrder.bgra,
+            destinationWidth: size[0],
+            destinationHeight: size[1],
+          );
+          final Uint8List twoStep = DecodedImage(
+            width: 64,
+            height: 48,
+            order: ImageChannelOrder.bgra,
+            pixels: convertVideoFrameToRgba(
+              frame,
+              order: ImageChannelOrder.bgra,
+            ),
+            hasAlpha: true,
+          ).resample(width: size[0], height: size[1]).pixels;
+          final _Deviation deviation = _Deviation.between(direct, twoStep);
+          expect(
+            deviation.overOne,
+            0,
+            reason: '${format.name} at ${size[0]}x${size[1]}: $deviation',
+          );
+          expect(deviation.max, 0, reason: format.name);
+        }
+      }
+    });
+
+    test('a crop and a destination size compose', () {
+      final picture = SyntheticPicture.ramp(32, 32);
+      final VideoFrame frame = picture.encode(VideoPixelFormat.nv12);
+      const region = VideoRegion(8, 4, 24, 28);
+      final Uint8List direct = convertVideoFrameToRgba(
+        frame,
+        region: region,
+        destinationWidth: 5,
+        destinationHeight: 9,
+      );
+      final Uint8List twoStep = DecodedImage(
+        width: region.width,
+        height: region.height,
+        order: ImageChannelOrder.rgba,
+        pixels: convertVideoFrameToRgba(frame, region: region),
+        hasAlpha: true,
+      ).resample(width: 5, height: 9).pixels;
+      expect(direct, orderedEquals(twoStep));
+    });
+
+    test('opacity and channel order survive the resize', () {
+      final picture = SyntheticPicture.ramp(16, 16);
+      final VideoFrame frame = picture.encode(VideoPixelFormat.i420);
+      final Uint8List rgba = convertVideoFrameToRgba(
+        frame,
+        opacity: 96,
+        destinationWidth: 6,
+        destinationHeight: 5,
+      );
+      final Uint8List bgra = convertVideoFrameToRgba(
+        frame,
+        order: ImageChannelOrder.bgra,
+        opacity: 96,
+        destinationWidth: 6,
+        destinationHeight: 5,
+      );
+      for (var i = 0; i < rgba.length; i += 4) {
+        expect(bgra[i], rgba[i + 2]);
+        expect(bgra[i + 2], rgba[i]);
+        expect(rgba[i + 3], 96);
+      }
+    });
+
+    // The test above asserts zero, and a test that can only assert zero is a
+    // test nobody has seen fail. This perturbs the sampling by exactly the
+    // mistake that is easiest to make - dropping the half-pixel that puts the
+    // sample at the destination pixel's *centre* - and measures what that
+    // costs, so the tolerance of zero above is known to be load-bearing rather
+    // than lucky. Observed: **every** pixel off by more than sixteen levels,
+    // worst 255. A ramp with a hard chroma edge is the harshest picture to
+    // shift by half a pixel, which is why it is the one used here.
+    test('a half-pixel shift in the sampling is a visible picture', () {
+      final picture = SyntheticPicture.ramp(64, 48);
+      final VideoFrame frame = picture.encode(VideoPixelFormat.nv12);
+      const int width = 29;
+      const int height = 21;
+      final Uint8List correct = convertVideoFrameToRgba(
+        frame,
+        destinationWidth: width,
+        destinationHeight: height,
+      );
+      final Uint8List whole = convertVideoFrameToRgba(frame);
+      final Uint8List shifted = Uint8List(width * height * 4);
+      for (var y = 0; y < height; y++) {
+        final int sourceY = (y * 48 / height).floor();
+        for (var x = 0; x < width; x++) {
+          final int sourceX = (x * 64 / width).floor();
+          final int from = (sourceY * 64 + sourceX) * 4;
+          shifted.setRange((y * width + x) * 4, (y * width + x) * 4 + 4,
+              whole.sublist(from, from + 4));
+        }
+      }
+      final _Deviation deviation = _Deviation.between(correct, shifted);
+      printOnFailure('half-pixel shift: $deviation');
+      expect(deviation.overOne, greaterThan(0.9),
+          reason: 'the perturbation must be visible: $deviation');
+      expect(deviation.overSixteen, greaterThan(0.9), reason: '$deviation');
+    });
+
+    test('refuses a destination with no pixels in it', () {
+      final VideoFrame frame =
+          SyntheticPicture.ramp(8, 8).encode(VideoPixelFormat.nv12);
+      expect(
+        () => convertVideoFrameToRgba(frame, destinationWidth: 0),
+        throwsA(isA<ArgumentError>()),
+      );
+      expect(
+        () => convertVideoFrameToRgba(frame, destinationHeight: -3),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+
+    test('sizes the output buffer and the stride from the destination', () {
+      final VideoFrame frame =
+          SyntheticPicture.ramp(16, 16).encode(VideoPixelFormat.nv12);
+      expect(
+        convertVideoFrameToRgba(
+          frame,
+          destinationWidth: 5,
+          destinationHeight: 3,
+        ).length,
+        5 * 3 * 4,
+      );
+      expect(
+        () => convertVideoFrameToRgba(
+          frame,
+          destinationWidth: 5,
+          destinationHeight: 3,
+          into: Uint8List(5 * 3 * 4 - 1),
+        ),
+        throwsA(isA<ArgumentError>()),
+      );
+    });
+  });
+}
+
+/// How two images differ, as the repository states such things.
+///
+/// Two fractions rather than a maximum, for the reason
+/// `d3d12_mesh_cpu_parity_test.dart` gives: one pixel off by 40 levels and a
+/// whole image off by 40 levels have the same maximum and are not the same
+/// bug.
+final class _Deviation {
+  const _Deviation(this.overOne, this.overSixteen, this.max);
+
+  factory _Deviation.between(Uint8List a, Uint8List b) {
+    if (a.length != b.length) {
+      throw ArgumentError('${a.length} bytes against ${b.length}');
+    }
+    var overOne = 0;
+    var overSixteen = 0;
+    var max = 0;
+    for (var i = 0; i < a.length; i += 4) {
+      var worst = 0;
+      for (var channel = 0; channel < 4; channel++) {
+        final int delta = (a[i + channel] - b[i + channel]).abs();
+        if (delta > worst) worst = delta;
+      }
+      if (worst > 1) overOne++;
+      if (worst > 16) overSixteen++;
+      if (worst > max) max = worst;
+    }
+    final int pixels = a.length ~/ 4;
+    return _Deviation(overOne / pixels, overSixteen / pixels, max);
+  }
+
+  /// Fraction of pixels differing by more than one level on some channel.
+  final double overOne;
+
+  /// Fraction differing by more than sixteen.
+  final double overSixteen;
+
+  final int max;
+
+  @override
+  String toString() => '>1 level on ${(overOne * 100).toStringAsFixed(2)}% of '
+      'pixels, >16 on ${(overSixteen * 100).toStringAsFixed(2)}%, '
+      'worst $max';
 }

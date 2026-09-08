@@ -195,9 +195,20 @@ final class YuvToRgbMatrix {
 ///
 /// It is not, however, deliberately slow. The matrix is evaluated in 16.16
 /// fixed point, which is what a production CPU converter does and what makes
-/// the measurement in `benchmark/video_upload_benchmark.dart` an honest
+/// the measurement in `benchmark/video_conversion_benchmark.dart` an honest
 /// comparison rather than a strawman. The fixed-point evaluation is proved
 /// equal to [YuvToRgbMatrix.rgbFromCodes] within one level by test.
+///
+/// Lookup tables were the obvious next step and were measured instead of
+/// assumed: the whole matrix as eight 256-entry `Int32List`s plus a clamp
+/// table, which is the cheapest arithmetic this kernel can have, came out
+/// inside the noise of the multiplies it replaced (7.89 ms against 8.53 on the
+/// same 1080p frame). SIMD is measured out for the same reason and one more:
+/// splitting the kernel showed it is roughly a third gather and two thirds
+/// arithmetic, and a downscale gathers bytes that are not adjacent, so a
+/// `Float32x4` would have to be built from four scalar loads - which this
+/// repository has already measured, in the j2k codec, as slower than the
+/// scalar loop it replaces.
 ///
 /// ## Chroma is sampled nearest, and that is a contract
 ///
@@ -217,6 +228,32 @@ final class YuvToRgbMatrix {
 /// premultiplied RGBA image exactly like every other surface in the renderer.
 /// A video frame is opaque, so at full opacity the premultiplication is the
 /// identity and costs three compares.
+///
+/// ## Converting straight into the destination size
+///
+/// [destinationWidth] and [destinationHeight] ask for the result at a size
+/// other than the region's. This is not a new picture: the sample chosen for
+/// each destination pixel is **exactly** the one
+/// [DecodedImage.resample] would have chosen from a 1:1 conversion, so
+/// `convert(region) then resample(w, h)` and `convert(region, destinationWidth:
+/// w, destinationHeight: h)` produce identical bytes - asserted over a matrix
+/// of scale factors in `video_color_conversion_test.dart`, not assumed here.
+///
+/// What it removes is the intermediate image. The CPU presentation path drew a
+/// 1080p frame into a 1084x610 window by converting 2.07 million pixels and
+/// then keeping 0.66 million of them, which is where §68's 86 ms per displayed
+/// frame - a ceiling of 11.6 fps - came from.
+///
+/// It is a point sample, and so was the two-step it replaces:
+/// [DecodedImage.resample] is nearest-neighbour and documents that shrinking
+/// "drops source pixels entirely and aliases". A box filter would be a better
+/// picture than either - measured against a real decoded 1080p frame reduced
+/// to 1084x610, the two differ by more than one level on 7% of pixels and by
+/// more than sixteen on 3%, in the fine detail - and it would be a *different*
+/// picture from the one every golden here records. That makes it the same kind
+/// of change as the chroma note above: both paths at once, deliberately, or it
+/// is a divergence. It is not a small one to pay for either, since averaging
+/// has to read every source pixel that point sampling skips.
 Uint8List convertVideoFrameToRgba(
   VideoFrame frame, {
   VideoRegion? region,
@@ -224,6 +261,8 @@ Uint8List convertVideoFrameToRgba(
   int opacity = 255,
   Uint8List? into,
   int? bytesPerRow,
+  int? destinationWidth,
+  int? destinationHeight,
 }) {
   if (opacity < 0 || opacity > 255) {
     throw ArgumentError.value(opacity, 'opacity', 'must be 0..255');
@@ -239,8 +278,14 @@ Uint8List convertVideoFrameToRgba(
       'does not overlap the ${format.width}x${format.height} frame',
     );
   }
-  final int outWidth = source.width;
-  final int outHeight = source.height;
+  final int outWidth = destinationWidth ?? source.width;
+  final int outHeight = destinationHeight ?? source.height;
+  if (outWidth <= 0 || outHeight <= 0) {
+    throw ArgumentError(
+      'destination ${outWidth}x$outHeight: an image has at least one pixel on '
+      'each axis',
+    );
+  }
   final int stride = bytesPerRow ?? outWidth * 4;
   if (stride < outWidth * 4) {
     throw ArgumentError.value(
@@ -261,24 +306,73 @@ Uint8List convertVideoFrameToRgba(
   final int redIndex = order.redIndex;
   final int blueIndex = order.blueIndex;
 
+  // Which source column and row each destination pixel reads, resolved once
+  // instead of once per pixel. Two 4 KB lists against the 8.29 MB the old
+  // intermediate image cost, and they take the floating point out of the
+  // inner loop - the mapping is decided here and the kernels only index.
+  final Int32List columns = _sampleAxis(source.left, source.width, outWidth);
+  final Int32List rows = _sampleAxis(source.top, source.height, outHeight);
+
   switch (format.pixelFormat) {
     case VideoPixelFormat.bgra8888:
     case VideoPixelFormat.rgba8888:
       _convertPackedRgb(
         frame,
-        source,
         out,
         stride,
         redIndex,
         blueIndex,
         opacity,
+        columns,
+        rows,
       );
     case VideoPixelFormat.nv12:
     case VideoPixelFormat.i420:
     case VideoPixelFormat.yuy2:
-      _convertYuv(frame, source, out, stride, redIndex, blueIndex, opacity);
+      _convertYuv(
+        frame,
+        out,
+        stride,
+        redIndex,
+        blueIndex,
+        opacity,
+        columns,
+        rows,
+      );
   }
   return out;
+}
+
+/// The source coordinate each of [count] destination pixels samples.
+///
+/// The formula is [DecodedImage.resample]'s, deliberately and to the letter -
+/// destination centre mapped back, floored, clamped - because that is what
+/// makes converting at the destination size produce the same bytes as
+/// converting 1:1 and resampling afterwards. A change here is a change to
+/// every video frame the CPU path has ever drawn, so it is one line in one
+/// place rather than one line in each kernel.
+///
+/// The identity case is spelled out rather than falling out of the arithmetic:
+/// `(i + 0.5) * 1.0` floors back to `i` for every `i` a frame can hold, but a
+/// 1:1 conversion is the golden-test path and it should not depend on that
+/// being true.
+Int32List _sampleAxis(int origin, int extent, int count) {
+  final Int32List map = Int32List(count);
+  if (count == extent) {
+    for (var i = 0; i < count; i++) {
+      map[i] = origin + i;
+    }
+    return map;
+  }
+  final double scale = extent / count;
+  final int last = extent - 1;
+  for (var i = 0; i < count; i++) {
+    var sample = ((i + 0.5) * scale).floor();
+    if (sample < 0) sample = 0;
+    if (sample > last) sample = last;
+    map[i] = origin + sample;
+  }
+  return map;
 }
 
 // `convertVideoFrameToNativeRgba` used to sit here. It moved to
@@ -320,28 +414,139 @@ int _clampByte(int value) {
   return value;
 }
 
+/// The YUV kernels, one per layout, and why the addressing is written twice.
+///
+/// [sampleYuvCodes] is still the definition of where a sample lives, and it is
+/// what a test or a tool that has to explain one pixel calls. It is *not* what
+/// these loops call, and that is a measurement rather than a preference: read
+/// per pixel it costs a `frame.plane(i)` list index, a lifetime check and a
+/// `rowOffset` multiply on every one of two million pixels, and it returns a
+/// record. Hoisting the plane out of the loop and the row offset out of the
+/// column took a 1080p NV12 frame from 86 ms to the numbers in
+/// `benchmark/video_conversion_benchmark.dart`.
+///
+/// What keeps the copy honest is not care, it is a test: NV12, I420 and YUY2
+/// encode the same `SyntheticPicture` and must convert to byte-identical
+/// output, which is the assertion an addressing mistake in exactly one of
+/// these three loops cannot survive.
 void _convertYuv(
   VideoFrame frame,
-  VideoRegion source,
   Uint8List out,
   int stride,
   int redIndex,
   int blueIndex,
   int opacity,
+  Int32List columns,
+  Int32List rows,
 ) {
   final VideoFrameFormat format = frame.format;
   final _FixedMatrix m = _FixedMatrix(YuvToRgbMatrix.forFormat(format));
-  final bool opaque = opacity == 255;
-  const int greenIndex = 1;
-  const int alphaIndex = 3;
+  switch (format.pixelFormat) {
+    case VideoPixelFormat.nv12:
+      final VideoPlane luma = frame.plane(0);
+      final VideoPlane chroma = frame.plane(1);
+      _convertNv12(
+        luma.bytes,
+        luma.offset,
+        luma.bytesPerRow,
+        chroma.bytes,
+        chroma.offset,
+        chroma.bytesPerRow,
+        out,
+        stride,
+        redIndex,
+        blueIndex,
+        opacity,
+        columns,
+        rows,
+        m,
+      );
+    case VideoPixelFormat.i420:
+      final VideoPlane luma = frame.plane(0);
+      final VideoPlane cb = frame.plane(1);
+      final VideoPlane cr = frame.plane(2);
+      _convertI420(
+        luma.bytes,
+        luma.offset,
+        luma.bytesPerRow,
+        cb.bytes,
+        cb.offset,
+        cb.bytesPerRow,
+        cr.bytes,
+        cr.offset,
+        cr.bytesPerRow,
+        out,
+        stride,
+        redIndex,
+        blueIndex,
+        opacity,
+        columns,
+        rows,
+        m,
+      );
+    case VideoPixelFormat.yuy2:
+      final VideoPlane packed = frame.plane(0);
+      _convertYuy2(
+        packed.bytes,
+        packed.offset,
+        packed.bytesPerRow,
+        out,
+        stride,
+        redIndex,
+        blueIndex,
+        opacity,
+        columns,
+        rows,
+        m,
+      );
+    case VideoPixelFormat.bgra8888:
+    case VideoPixelFormat.rgba8888:
+      throw ArgumentError.value(
+        format.pixelFormat,
+        'frame.format.pixelFormat',
+        'is already RGB; there are no YUV codes to sample',
+      );
+  }
+}
 
-  for (var y = source.top; y < source.bottom; y++) {
-    var offset = (y - source.top) * stride;
-    for (var x = source.left; x < source.right; x++) {
-      final (int sy, int su, int sv) = sampleYuvCodes(frame, x, y);
-      var r = (m.rY * sy + m.rU * su + m.rV * sv + m.rC + _fixedHalf) >> 16;
-      var g = (m.gY * sy + m.gU * su + m.gV * sv + m.gC + _fixedHalf) >> 16;
-      var b = (m.bY * sy + m.bU * su + m.bV * sv + m.bC + _fixedHalf) >> 16;
+void _convertNv12(
+  Uint8List luma,
+  int lumaOffset,
+  int lumaStride,
+  Uint8List chroma,
+  int chromaOffset,
+  int chromaStride,
+  Uint8List out,
+  int stride,
+  int redIndex,
+  int blueIndex,
+  int opacity,
+  Int32List columns,
+  Int32List rows,
+  _FixedMatrix m,
+) {
+  // The twelve coefficients as locals. Left as field reads they are twelve
+  // loads through the same object on every pixel, and the AOT compiler does
+  // not hoist them out of a loop that also writes to a `Uint8List`.
+  final int rY = m.rY, rU = m.rU, rV = m.rV, rC = m.rC;
+  final int gY = m.gY, gU = m.gU, gV = m.gV, gC = m.gC;
+  final int bY = m.bY, bU = m.bU, bV = m.bV, bC = m.bC;
+  final bool opaque = opacity == 255;
+  final int width = columns.length;
+  for (var j = 0; j < rows.length; j++) {
+    final int sourceY = rows[j];
+    final int lumaRow = lumaOffset + sourceY * lumaStride;
+    final int chromaRow = chromaOffset + (sourceY >> 1) * chromaStride;
+    var offset = j * stride;
+    for (var i = 0; i < width; i++) {
+      final int sourceX = columns[i];
+      final int sy = luma[lumaRow + sourceX];
+      final int chromaAt = chromaRow + (sourceX >> 1) * 2;
+      final int su = chroma[chromaAt];
+      final int sv = chroma[chromaAt + 1];
+      var r = (rY * sy + rU * su + rV * sv + rC + _fixedHalf) >> 16;
+      var g = (gY * sy + gU * su + gV * sv + gC + _fixedHalf) >> 16;
+      var b = (bY * sy + bU * su + bV * sv + bC + _fixedHalf) >> 16;
       r = _clampByte(r);
       g = _clampByte(g);
       b = _clampByte(b);
@@ -351,9 +556,112 @@ void _convertYuv(
         b = premultiplyChannel(b, opacity);
       }
       out[offset + redIndex] = r;
-      out[offset + greenIndex] = g;
+      out[offset + 1] = g;
       out[offset + blueIndex] = b;
-      out[offset + alphaIndex] = opacity;
+      out[offset + 3] = opacity;
+      offset += 4;
+    }
+  }
+}
+
+void _convertI420(
+  Uint8List luma,
+  int lumaOffset,
+  int lumaStride,
+  Uint8List cb,
+  int cbOffset,
+  int cbStride,
+  Uint8List cr,
+  int crOffset,
+  int crStride,
+  Uint8List out,
+  int stride,
+  int redIndex,
+  int blueIndex,
+  int opacity,
+  Int32List columns,
+  Int32List rows,
+  _FixedMatrix m,
+) {
+  final int rY = m.rY, rU = m.rU, rV = m.rV, rC = m.rC;
+  final int gY = m.gY, gU = m.gU, gV = m.gV, gC = m.gC;
+  final int bY = m.bY, bU = m.bU, bV = m.bV, bC = m.bC;
+  final bool opaque = opacity == 255;
+  final int width = columns.length;
+  for (var j = 0; j < rows.length; j++) {
+    final int sourceY = rows[j];
+    final int lumaRow = lumaOffset + sourceY * lumaStride;
+    final int cbRow = cbOffset + (sourceY >> 1) * cbStride;
+    final int crRow = crOffset + (sourceY >> 1) * crStride;
+    var offset = j * stride;
+    for (var i = 0; i < width; i++) {
+      final int sourceX = columns[i];
+      final int half = sourceX >> 1;
+      final int sy = luma[lumaRow + sourceX];
+      final int su = cb[cbRow + half];
+      final int sv = cr[crRow + half];
+      var r = (rY * sy + rU * su + rV * sv + rC + _fixedHalf) >> 16;
+      var g = (gY * sy + gU * su + gV * sv + gC + _fixedHalf) >> 16;
+      var b = (bY * sy + bU * su + bV * sv + bC + _fixedHalf) >> 16;
+      r = _clampByte(r);
+      g = _clampByte(g);
+      b = _clampByte(b);
+      if (!opaque) {
+        r = premultiplyChannel(r, opacity);
+        g = premultiplyChannel(g, opacity);
+        b = premultiplyChannel(b, opacity);
+      }
+      out[offset + redIndex] = r;
+      out[offset + 1] = g;
+      out[offset + blueIndex] = b;
+      out[offset + 3] = opacity;
+      offset += 4;
+    }
+  }
+}
+
+void _convertYuy2(
+  Uint8List packed,
+  int packedOffset,
+  int packedStride,
+  Uint8List out,
+  int stride,
+  int redIndex,
+  int blueIndex,
+  int opacity,
+  Int32List columns,
+  Int32List rows,
+  _FixedMatrix m,
+) {
+  final int rY = m.rY, rU = m.rU, rV = m.rV, rC = m.rC;
+  final int gY = m.gY, gU = m.gU, gV = m.gV, gC = m.gC;
+  final int bY = m.bY, bU = m.bU, bV = m.bV, bC = m.bC;
+  final bool opaque = opacity == 255;
+  final int width = columns.length;
+  for (var j = 0; j < rows.length; j++) {
+    final int packedRow = packedOffset + rows[j] * packedStride;
+    var offset = j * stride;
+    for (var i = 0; i < width; i++) {
+      final int sourceX = columns[i];
+      final int base = packedRow + (sourceX >> 1) * 4;
+      final int sy = packed[base + (sourceX.isEven ? 0 : 2)];
+      final int su = packed[base + 1];
+      final int sv = packed[base + 3];
+      var r = (rY * sy + rU * su + rV * sv + rC + _fixedHalf) >> 16;
+      var g = (gY * sy + gU * su + gV * sv + gC + _fixedHalf) >> 16;
+      var b = (bY * sy + bU * su + bV * sv + bC + _fixedHalf) >> 16;
+      r = _clampByte(r);
+      g = _clampByte(g);
+      b = _clampByte(b);
+      if (!opaque) {
+        r = premultiplyChannel(r, opacity);
+        g = premultiplyChannel(g, opacity);
+        b = premultiplyChannel(b, opacity);
+      }
+      out[offset + redIndex] = r;
+      out[offset + 1] = g;
+      out[offset + blueIndex] = b;
+      out[offset + 3] = opacity;
       offset += 4;
     }
   }
@@ -361,30 +669,60 @@ void _convertYuv(
 
 void _convertPackedRgb(
   VideoFrame frame,
-  VideoRegion source,
   Uint8List out,
   int stride,
   int redIndex,
   int blueIndex,
   int opacity,
+  Int32List columns,
+  Int32List rows,
 ) {
   final VideoPlane plane = frame.plane(0);
-  final Uint8List bytes = plane.bytes;
   // The frame's own channel order, which is the format's business, not the
   // target's.
   final int srcRed =
       frame.format.pixelFormat == VideoPixelFormat.bgra8888 ? 2 : 0;
-  final int srcBlue = 2 - srcRed;
-  final bool opaque = opacity == 255;
+  _copyPackedRgb(
+    plane.bytes,
+    plane.offset,
+    plane.bytesPerRow,
+    out,
+    stride,
+    srcRed,
+    2 - srcRed,
+    redIndex,
+    blueIndex,
+    opacity,
+    columns,
+    rows,
+  );
+}
 
-  for (var y = source.top; y < source.bottom; y++) {
-    var src = plane.rowOffset(y) + source.left * 4;
-    var dst = (y - source.top) * stride;
-    for (var x = source.left; x < source.right; x++) {
-      var r = bytes[src + srcRed];
-      var g = bytes[src + 1];
-      var b = bytes[src + srcBlue];
-      final int a = bytes[src + 3];
+void _copyPackedRgb(
+  Uint8List source,
+  int sourceOffset,
+  int sourceStride,
+  Uint8List out,
+  int stride,
+  int srcRed,
+  int srcBlue,
+  int redIndex,
+  int blueIndex,
+  int opacity,
+  Int32List columns,
+  Int32List rows,
+) {
+  final bool opaque = opacity == 255;
+  final int width = columns.length;
+  for (var j = 0; j < rows.length; j++) {
+    final int row = sourceOffset + rows[j] * sourceStride;
+    var dst = j * stride;
+    for (var i = 0; i < width; i++) {
+      final int src = row + columns[i] * 4;
+      var r = source[src + srcRed];
+      var g = source[src + 1];
+      var b = source[src + srcBlue];
+      final int a = source[src + 3];
       if (!opaque) {
         r = premultiplyChannel(r, opacity);
         g = premultiplyChannel(g, opacity);
@@ -394,7 +732,6 @@ void _convertPackedRgb(
       out[dst + 1] = g;
       out[dst + blueIndex] = b;
       out[dst + 3] = opaque ? a : premultiplyChannel(a, opacity);
-      src += 4;
       dst += 4;
     }
   }

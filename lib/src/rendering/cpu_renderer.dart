@@ -1114,8 +1114,9 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   /// translation of - see the parity note in `video_color_conversion.dart`.
   ///
   /// The source rectangle is honoured as a crop, in whole pixels. When the
-  /// destination has a different size the CPU fallback uses the image
-  /// resampler; native GPU paths keep scaling in their texture sampler.
+  /// destination has a different size the conversion writes straight at that
+  /// size, picking the same source sample the image resampler would have
+  /// picked; native GPU paths keep scaling in their texture sampler.
   ///
   /// The paint's alpha is folded into the conversion instead of being applied
   /// afterwards. It costs three multiplies on a path that is already reading
@@ -1182,6 +1183,20 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   int _videoCacheHeight = -1;
   Framebuffer? _videoCacheResult;
 
+  /// The bytes every converted frame is written into.
+  ///
+  /// Held here rather than allocated per frame because a 1080p conversion is
+  /// 8.29 MB, and at twenty-five frames a second that is 207 MB of garbage a
+  /// second: the trace in §68 attributed 12.8 ms per frame of `ConcurrentMark`
+  /// to it. `GpuVideoImageCache` reached the same conclusion first, one
+  /// staging buffer per stream.
+  ///
+  /// The consequence is that the [Framebuffer] [_convertedVideoFrame] returns
+  /// is only valid until the *next* frame is converted, which is why it never
+  /// leaves [_drawVideoFrame] - it is rasterised inside the same call. Nothing
+  /// else may hold it.
+  Uint8List? _videoScratch;
+
   Framebuffer _convertedVideoFrame(
     VideoFrame frame,
     VideoRegion region,
@@ -1200,10 +1215,22 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
         _videoCacheHeight == destinationHeight) {
       return cached;
     }
-    final Framebuffer converted = Framebuffer(
-      width: region.width,
-      height: region.height,
-      bytesPerRow: region.width * 4,
+    final int bytesPerRow = destinationWidth * 4;
+    final int required = bytesPerRow * destinationHeight;
+    Uint8List? scratch = _videoScratch;
+    if (scratch == null || scratch.length != required) {
+      scratch = Uint8List(required);
+      _videoScratch = scratch;
+    }
+    // Converted straight at the destination size. The two-step this replaced -
+    // convert all 2.07 million source pixels, then keep the 0.66 million a
+    // nearest-neighbour resample chose - produced *these same bytes*, because
+    // `DecodedImage.resample` point-samples too; the difference is only the
+    // work. §68 measured the pair at 47 ms against 9, on the same frame.
+    final Framebuffer result = Framebuffer(
+      width: destinationWidth,
+      height: destinationHeight,
+      bytesPerRow: bytesPerRow,
       format: format,
       pixels: convertVideoFrameToRgba(
         frame,
@@ -1212,35 +1239,11 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
             ? ImageChannelOrder.bgra
             : ImageChannelOrder.rgba,
         opacity: alpha,
+        into: scratch,
+        destinationWidth: destinationWidth,
+        destinationHeight: destinationHeight,
       ),
     );
-    final Framebuffer result;
-    if (destinationWidth == converted.width &&
-        destinationHeight == converted.height) {
-      result = converted;
-    } else {
-      final ImageChannelOrder order =
-          format == PixelFormat.bgra8888Premultiplied
-              ? ImageChannelOrder.bgra
-              : ImageChannelOrder.rgba;
-      final DecodedImage scaled = DecodedImage(
-        width: converted.width,
-        height: converted.height,
-        order: order,
-        pixels: converted.pixels,
-        // RGB video formats may carry alpha even when the paint is opaque.
-        // This flag is metadata only for resampling, so conservatively retain
-        // the alpha channel rather than claiming the pixels are opaque.
-        hasAlpha: true,
-      ).resample(width: destinationWidth, height: destinationHeight);
-      result = Framebuffer(
-        width: scaled.width,
-        height: scaled.height,
-        bytesPerRow: scaled.bytesPerRow,
-        format: format,
-        pixels: scaled.pixels,
-      );
-    }
     _videoCacheFrame = frame;
     _videoCacheRegion = region;
     _videoCacheAlpha = alpha;

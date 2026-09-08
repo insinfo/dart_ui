@@ -9978,7 +9978,7 @@ que reexibem a mesma imagem não pagam.
 contagem acumulada de `presented` na mesma linha confirma o número por outro
 caminho. Não havia erro de medição a encontrar; havia 86 ms de conversão.
 
-#### O conserto, dimensionado e não começado
+#### O conserto, dimensionado — feito em 07/09/2026, ver adiante
 
 Duas mudanças em `_convertedVideoFrame`, ambas em `cpu_renderer.dart`:
 
@@ -9998,6 +9998,11 @@ Nada disso é urgente para quem usa o reprodutor, e vale dizer por quê: o
 caminho que ele usa é o da GPU, e lá o arquivo toca a 25,0 fps com zero
 descartes e 8 ms de drift. O caminho de CPU é o de recurso — máquina sem
 driver, teste headless, golden — e é lá que os 86 ms moram.
+
+As duas foram feitas em 07/09/2026, e a segunda **não** exigiu reargumentar a
+paridade: a imagem saiu byte a byte igual, porque o `resample` que ela
+substitui também amostrava no ponto. Ver *"O conserto: a conversão passou a
+escrever no tamanho do destino"*, logo abaixo.
 
 #### O que a instrumentação custa desligada, medido
 
@@ -10057,6 +10062,206 @@ quadro (38,0 ms contra 39,5 ms de present no mesmo caminho headless), o que
 confirma que o caminho da imagem não sabe qual relógio está atrás dele. Drift,
 descartes e esperas, esses sim, mudam, e por isso são números de relógio de
 parede quando essa flag está ligada.
+
+### O conserto: a conversão passou a escrever no tamanho do destino — 07/09/2026
+
+As duas mudanças que a seção acima dimensionou foram feitas, e o resultado é
+mais simples do que o dilema que se esperava: **a imagem não mudou em um único
+byte.** O caminho de CPU sai de ~11,6 fps de teto para tocar o arquivo de
+25 fps no ritmo dele.
+
+#### A premissa do dilema estava errada, e isso decidiu a pergunta
+
+O receio registrado era: amostrar com passo não é o mesmo que converter tudo e
+reduzir depois, porque reduzir *faz média* e amostrar não faz — logo a redução
+deixaria de ser suave e viraria serrilhada, e a paridade com a GPU teria de ser
+reargumentada.
+
+Só que **`DecodedImage.resample` não faz média**. Ela diz isso na própria
+documentação — vizinho mais próximo, e "reduzir por mais da metade descarta
+pixels de origem inteiros e serrilha". O caminho antigo já era uma amostragem
+pontual; ele apenas pagava 2,07 milhões de conversões para depois jogar fora
+1,41 milhão delas.
+
+Então a decisão foi **amostrar no ponto, com exatamente o mapeamento de
+`resample`** — centro do pixel de destino levado de volta, `floor`, `clamp` —
+escrito uma vez em `_sampleAxis` e não uma vez por kernel. O resultado é
+**byte a byte idêntico** ao que o par converter+reamostrar produzia, o que o
+teste `is the same picture as converting whole and resampling` afirma em quatro
+layouts e seis proporções (1:1, metade exata, 37x29 sem número inteiro, 7x5
+muito além do ponto em que pixels somem, ampliação, e os dois eixos
+discordando): **>1 nível em 0,00% dos pixels, máximo 0**.
+
+Um teste que só sabe afirmar zero é um teste que ninguém viu falhar, então o
+seguinte perturba a amostragem pelo erro mais fácil de cometer — soltar o meio
+pixel que põe a amostra no *centro* — e mede o estrago: **100% dos pixels fora
+por mais de 16 níveis, pior caso 255**. A tolerância zero é carga, não sorte.
+
+**A paridade CPU↔GPU não foi tocada.** A cena de vídeo do
+`d3d11_cpu_parity_test.dart` desenha 1 texel por pixel de propósito e declara
+`tolerance: 0`; continua em 0. (A tolerância de 1 daquele arquivo é a cena de
+borda meio coberta, que é antialiasing e não vídeo.)
+
+#### E a média, que seria uma imagem melhor: medida, não descartada por argumento
+
+A pergunta certa não é se a média seria melhor — seria — e sim quanto ela custa
+e quanto ela muda. Medido em AOT sobre um quadro **decodificado de verdade**
+(1080p, padrão de teste com grades finas e texto, que é o pior caso honesto),
+destino 1084x610:
+
+| | |
+|---|---|
+| ponto contra média de caixa | **>1 nível em 7,06% dos pixels, >16 em 3,38%, pior 228, média 1,75** |
+| custo, amostragem pontual | 6,10 ms |
+| custo, média de caixa (ingênua, em RGB) | 48,83 ms |
+
+Ou seja: 93% da imagem é a mesma dentro de um nível, a diferença mora nas
+grades finas, e a média ingênua devolve todo o ganho. Uma versão barata existe
+— **a matriz é afim, então tirar a média de Y, U e V e converter uma vez é o
+mesmo que converter e depois tirar a média**, e isso leria os 2,07 milhões de
+amostras mas faria só 0,66 milhão de avaliações da matriz. Não foi feito, de
+propósito: seria uma imagem **diferente** da de hoje, e a regra desta biblioteca
+é que uma mudança dessas é feita nos dois caminhos ao mesmo tempo ou é uma
+divergência — a mesma nota que a interpolação bilinear de croma já carrega. Os
+números acima ficam registrados para quem for fazê-la; a GPU, que amostra com
+filtro linear, é quem está mais perto da média hoje.
+
+#### O que ficou mais rápido, e por quê
+
+Três coisas, e só a primeira estava prevista:
+
+1. **converter direto no tamanho do destino** (`destinationWidth` /
+   `destinationHeight` em `convertVideoFrameToRgba`);
+2. **reaproveitar o buffer de saída** (`into:`, que já existia e que o
+   renderizador ignorava);
+3. **os kernels deixaram de chamar `sampleYuvCodes` por pixel.** Essa não
+   estava no plano e é metade do ganho da conversão 1:1: por pixel aquela
+   função custava um índice em `List<VideoPlane>`, uma checagem de tempo de
+   vida, uma multiplicação de `rowOffset` e a devolução de um *record*. Os
+   laços agora são funções estáticas pequenas, uma por layout, com o plano e o
+   offset da linha içados para fora da coluna. `sampleYuvCodes` continua sendo
+   a definição de onde mora uma amostra — o que segura as três cópias juntas é
+   o teste que exige que NV12, I420 e YUY2 decodifiquem byte a byte igual.
+
+**AOT** (`dart compile exe`), 1920x1080 → 1084x610, 40 rodadas **intercaladas**,
+mediana e mínimo. As rodadas são intercaladas por uma razão medida: em blocos,
+duas linhas rodando **código idêntico** deram 23 ms e 36 ms nesta máquina
+(i3-1215U com quatro núcleos de eficiência e um desktop ocupado). A linha
+`CONTROL` é uma duplicata deliberada da linha acima dela e diz quanto do que
+sobra é ruído.
+
+| operação (NV12) | antes | depois |
+|---|---|---|
+| converter quadro inteiro, buffer novo | 47,4 / 58,6 | 26,7 / 33,6 |
+| converter quadro inteiro + reamostrar (**o caminho antigo**) | **47,4 / 68,5** | — |
+| converter inteiro com `into:` + reamostrar (**só a mudança 2**) | 43,2 / 63,3 | — |
+| **direto no destino, com `into:` (as duas)** | — | **9,1 / 11,6** |
+| CONTROL (a mesma linha de novo) | — | 8,8 / 11,4 |
+
+E em `bgra8888`, que é o que o Media Foundation entrega no Windows: caminho
+antigo 17,2 / 23,7 ms, direto no destino **3,6 / 4,7 ms**.
+
+`1/11,6 ms` = **86 fps** de teto contra os 11,6 de antes. Em **JIT** o mesmo
+binário dá 14,1 / 19,6 ms — 1,6x mais lento e com a mesma ordenação, que é a
+razão de as duas metades nunca serem comparadas entre si.
+
+#### As duas mudanças, separadas, porque juntas não medem nada
+
+**A mudança 2 sozinha (`into:`) é pequena no relógio e grande no lixo.** No
+micro-benchmark ela vale 6,6% em NV12 (47,4 → 43,2 ms de mínimo) e 17% em
+`bgra8888` (20,7 → 17,3). O que ela remove é aritmética exata e verificável:
+8.294.400 bytes por quadro do buffer de conversão, mais 2.644.960 do buffer que
+o `resample` devolvia — **10,9 MB por quadro exibido**. Com as duas mudanças o
+que sobra por quadro são as duas tabelas de índice de `_sampleAxis`, 6.776
+bytes.
+
+**E o GC se moveu no traço, que era o ponto.** Mesmo clipe, mesma máquina,
+mesma janela de 10 s, `tool/frame_timeline_trace.dart`, tempo *próprio* por
+quadro:
+
+| fase | antes | depois |
+|---|---|---|
+| `ui.present.rasterize` | 66,87 | **25,07** |
+| `ConcurrentMark` | **14,33** | **4,98** |
+| `Sweep` | 3,34 | 1,05 |
+| `SweepLarge` | 1,53 | 0,55 |
+| quadros na janela | 100 | 164 |
+
+`ConcurrentMark` caiu 2,9x e o número de marcações caiu de 150 para 87. A
+alegação de que os 12,8 ms de GC eram o buffer de 8,29 MB não é mais um
+argumento.
+
+Uma ressalva honesta: um terceiro traço, só com a mudança 2, saiu **pior** que
+o "antes" (97 ms de rasterize contra 66,9 no mesmo código de conversão), porque
+a máquina estava sob carga de outros processos naquele minuto. Traço em JIT sob
+carga não separa mudanças pequenas; por isso a atribuição da mudança 2 acima é
+aritmética de alocação e micro-benchmark em AOT, não aquele traço.
+
+#### Ponta a ponta, em AOT, no reprodutor
+
+Clipe gerado para a medição — 1920x1080, 25 fps, H.264, com trilha de áudio
+**real atenuada a −90 dBFS de pico**, pela mesma razão da nota de áudio acima
+(todos os estágios rodam, ninguém ouve nada):
+
+```powershell
+ffmpeg -f lavfi -i "testsrc2=size=1920x1080:rate=25:duration=14" `
+       -f lavfi -i "sine=frequency=440:duration=14:sample_rate=48000" `
+       -filter:a "volume=-78dB" -c:v libx264 -preset veryfast -pix_fmt yuv420p `
+       -c:a aac -shortest build\bench_1080p.mp4
+```
+
+`video_player.exe --headless --autoplay --stats --frames 300`, relógio mestre
+de áudio, execuções **intercaladas** entre os binários:
+
+| binário | present ms/quadro | melhor fps observado |
+|---|---|---|
+| antes | 69,8 · 45,7 | 17,4 · 8,9 |
+| só a mudança 2 | 44,8 · 50,3 | 9,9 · 11,7 |
+| **as duas** | **32,8 · 26,7** | **24,8 · 25,8** |
+
+A máquina estava carregada e as medianas de fps não separam nada; o **melhor
+fps observado** separa, e separa de forma categórica: antes o caminho de CPU
+**não conseguia** passar de ~11-17 fps porque havia um teto de conversão, e
+depois ele encosta nos 25 fps do arquivo, que é o máximo que existe para
+encostar.
+
+#### SIMD e tabelas: medidos e recusados
+
+A pergunta apareceu e foi respondida com número. Dividindo o kernel direto
+(NV12, 1084x610) em suas duas metades:
+
+| | mínimo |
+|---|---|
+| kernel completo | 8,78 ms |
+| só a coleta de amostras + escrita, sem a matriz | 3,09 ms |
+| só a matriz + escrita, sem a coleta | 5,00 ms |
+
+3,09 + 5,00 = 8,09 contra 8,78: o laço é **35% coleta e 60% aritmética**. Então
+a aritmética *é* metade do custo — e mesmo assim:
+
+- **tabelas** (a matriz inteira como oito `Int32List` de 256 entradas mais uma
+  tabela de clamp, que é a aritmética mais barata que este kernel pode ter)
+  deram **7,89 ms** contra 8,53 do CONTROL — dentro do ruído. Não entraram: não
+  pagam a complexidade nem a perda de "a avaliação em ponto fixo é a
+  definição";
+- **SIMD** não foi escrito, e a razão é medida e não folclórica. Numa redução,
+  as amostras de origem **não são adjacentes** — o passo em x é 1,77 —, então
+  um `Float32x4` teria de ser montado a partir de quatro cargas escalares, que
+  é exatamente o caso que o codec j2k já mediu neste repositório como **mais
+  lento que o laço escalar**. `Int32x4` está fora por outra razão já medida: só
+  `Float32x4` é especializado em AOT no 3.6.
+
+#### Um bug de tempo de vida que o caminho lento escondia
+
+Durante as medições do binário **antes**, uma execução morreu com
+`Bad state: native video frame slot 0 generation 85 is no longer valid`, dentro
+de `_convertPackedRgb`. É o anel de quadros nativos do Media Foundation
+reciclando o slot enquanto o renderizador ainda estava convertendo dele — uma
+corrida que 70 ms de conversão por quadro tornam provável e 27 ms tornam rara.
+**Não foi consertada aqui** e não é vídeo mal decodificado: é
+`video_frame_ring_buffer.dart` fazendo exatamente o que promete (detectar em
+vez de corromper). Fica anotada porque ficou mais difícil de reproduzir, o que
+é a pior coisa que se pode fazer com uma corrida sem consertá-la.
 
 ## 68.4.3 O Vulkan desenha texto — 06/09/2026
 

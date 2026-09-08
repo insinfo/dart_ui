@@ -14,6 +14,8 @@
 /// lockstep to keep compiling.
 library;
 
+import 'dart:typed_data';
+
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/image/decoded_image.dart';
 import 'package:dart_ui/src/graphics/video/video_color_conversion.dart';
@@ -152,6 +154,107 @@ void main() {
       expect(pixelAt(target.framebuffer, 0, 0), <int>[0, 0, 0, 0]);
       expect(pixelAt(target.framebuffer, 1, 0), <int>[0, 0, 255, 255]);
       expect(pixelAt(target.framebuffer, 2, 0), <int>[0, 0, 0, 0]);
+    });
+
+    test('a scaled draw is what converting and resampling produced', () async {
+      // The renderer no longer converts the whole frame and reduces it; it
+      // converts at the destination size. This is the assertion that the two
+      // are the same picture at the level a user sees, and not only at the
+      // level of `convertVideoFrameToRgba` - a renderer that passed the wrong
+      // destination extent would still produce a plausible image.
+      final SyntheticPicture source = SyntheticPicture.ramp(24, 18);
+      final VideoFrame frame = source.encode(VideoPixelFormat.nv12);
+      final MemoryRenderTarget target = await targetOf(11, 7);
+      final list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+      list.drawImage(list.addImage(frame), 0, 0, 24, 18, 0, 0, 11, 7, paint);
+
+      await target.renderDisplayList(list, clearColor: 0);
+
+      final DecodedImage expected = DecodedImage(
+        width: 24,
+        height: 18,
+        order: ImageChannelOrder.rgba,
+        pixels: convertVideoFrameToRgba(frame),
+        hasAlpha: true,
+      ).resample(width: 11, height: 7);
+      for (var y = 0; y < 7; y++) {
+        for (var x = 0; x < 11; x++) {
+          final int at = (y * 11 + x) * 4;
+          expect(
+            pixelAt(target.framebuffer, x, y),
+            <int>[
+              expected.pixels[at],
+              expected.pixels[at + 1],
+              expected.pixels[at + 2],
+              expected.pixels[at + 3],
+            ],
+            reason: 'at $x, $y',
+          );
+        }
+      }
+    });
+
+    // The conversion buffer is now held by the renderer and written again on
+    // every frame - 8.29 MB of garbage a frame was paying for a fresh one. The
+    // hazard that buys is a stale picture: a second frame that fails to
+    // overwrite every byte, or a destination that shrinks and leaves the tail
+    // of the previous one behind. Both are invisible on a still and obvious on
+    // a video, which is the worst way to find a bug.
+    test('a second frame overwrites the buffer the first one used', () async {
+      final MemoryRenderTarget target = await targetOf(8, 6);
+      for (final int seed in <int>[0, 3]) {
+        final VideoFrame frame = SyntheticPicture.ramp(16, 12, seed: seed)
+            .encode(VideoPixelFormat.nv12, sequence: seed);
+        final list = DisplayList();
+        final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+        list.drawImage(list.addImage(frame), 0, 0, 16, 12, 0, 0, 8, 6, paint);
+        await target.renderDisplayList(list, clearColor: 0);
+
+        final Uint8List expected = convertVideoFrameToRgba(
+          frame,
+          destinationWidth: 8,
+          destinationHeight: 6,
+        );
+        for (var y = 0; y < 6; y++) {
+          for (var x = 0; x < 8; x++) {
+            final int at = (y * 8 + x) * 4;
+            expect(
+              pixelAt(target.framebuffer, x, y),
+              <int>[
+                expected[at],
+                expected[at + 1],
+                expected[at + 2],
+                expected[at + 3],
+              ],
+              reason: 'seed $seed at $x, $y',
+            );
+          }
+        }
+      }
+    });
+
+    test('a destination that changes size does not keep the old bytes',
+        () async {
+      final VideoFrame frame = _redBlueFrame();
+      final MemoryRenderTarget big = await targetOf(4, 2);
+      final DisplayList first = DisplayList();
+      final int firstPaint = first.addPaint(colorArgb: 0xFFFFFFFF);
+      first.drawImage(
+          first.addImage(frame), 0, 0, 2, 1, 0, 0, 4, 2, firstPaint);
+      await big.renderDisplayList(first, clearColor: 0);
+
+      // The same renderer, a smaller destination: the buffer is reallocated
+      // rather than sliced, and the second picture must be complete.
+      final DisplayList second = DisplayList();
+      final int secondPaint = second.addPaint(colorArgb: 0xFFFFFFFF);
+      second.drawImage(
+          second.addImage(frame), 0, 0, 2, 1, 0, 0, 2, 1, secondPaint);
+      await big.renderDisplayList(second, clearColor: 0);
+
+      expect(pixelAt(big.framebuffer, 0, 0), <int>[255, 0, 0, 255]);
+      expect(pixelAt(big.framebuffer, 1, 0), <int>[0, 0, 255, 255]);
+      expect(pixelAt(big.framebuffer, 2, 0), <int>[0, 0, 0, 0]);
     });
 
     test('draws the frame the reference converter produces', () async {
