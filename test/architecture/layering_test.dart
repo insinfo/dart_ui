@@ -39,6 +39,14 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // the hash instead of carrying a second implementation of it - and `crypto`
   // reaches only `ffi`, so this closes no cycle.
   'audio': <String>['crypto', 'ffi', 'foundation'],
+  // Blocking handoff between isolates over the platform's own mutex and
+  // condition variable. It sits beside `ffi` and above it for the same reason
+  // `ffi` sits above `foundation`: a mutex is native-ABI plumbing that names
+  // no operating system and no window, and it needs the repository's
+  // allocator rather than a second one of its own. Nothing above it may be
+  // named here - a mailbox that knew what a frame was would be a mailbox the
+  // audio path could not use.
+  'concurrency': <String>['ffi', 'foundation'],
   'scheduler': <String>['foundation'],
   // Native image codecs live behind conditional imports in graphics. They
   // may use the OS-neutral ABI helpers, while platform/window types remain
