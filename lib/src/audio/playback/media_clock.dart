@@ -9,6 +9,8 @@
 /// is what [MediaClock] exposes.
 library;
 
+import '../audio_gain.dart';
+
 /// A playback position measured in what an output device has consumed.
 abstract interface class MediaClock {
   /// How much of the media has been played.
@@ -38,6 +40,29 @@ abstract interface class PcmAudioPlayer implements MediaClock {
   /// The duration of the clip as it will be played, measured in the output
   /// format.
   Duration get duration;
+
+  /// This player's own level. [AudioGain.unity] by default, which is
+  /// bit-identical passthrough.
+  ///
+  /// Applied at the very end of the chain - after decoding, after resampling,
+  /// after mixing - so one multiply covers everything and no earlier stage
+  /// sees an attenuated sample it might make a decision from.
+  ///
+  /// [AudioGain.silence] silences the output; it does **not** pause. The
+  /// transport keeps running, the endpoint keeps consuming frames and
+  /// [position] keeps advancing, so a run at zero gain exercises the same code
+  /// as a run at full volume. That is deliberate: this control exists because
+  /// a profiling run played a tone through somebody's speakers at full volume,
+  /// and a "silence" that quietly stopped the pump would have measured a
+  /// different program than the one being profiled.
+  ///
+  /// This is *stream gain*: it lives inside this process, it does not appear
+  /// in the operating system's volume mixer, and the user cannot change it
+  /// from outside. `AudioSessionVolume` is the other thing, and it is a
+  /// discovered capability on the backend's stream rather than a member here.
+  AudioGain get gain;
+
+  set gain(AudioGain value);
 
   /// Starts, or resumes, consuming samples.
   void play();

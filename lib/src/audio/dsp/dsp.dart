@@ -2,6 +2,7 @@
 library;
 
 export 'native_audio_processor.dart';
+export 'native_gain.dart';
 export 'native_graphic_equalizer.dart';
 export 'native_pcm_clip_player.dart';
 export 'native_sample_mixer.dart';

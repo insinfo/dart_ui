@@ -9,6 +9,7 @@ import 'dart:isolate';
 import '../../ffi/native_memory.dart';
 import '../audio_device.dart';
 import '../audio_format.dart';
+import '../audio_gain.dart';
 import '../dsp/native_pcm_clip_player.dart';
 import '../native/native_pcm_audio_buffer.dart';
 import '../windows/media_foundation_audio_reader.dart';
@@ -290,6 +291,11 @@ final class WasapiPcmAudioPlayer implements PcmAudioPlayer {
   bool _disposed = false;
   String? _failure;
 
+  /// Kept here as well as in the block so the getter answers what the caller
+  /// asked for without a native read, and so it survives [dispose] releasing
+  /// the block underneath it.
+  AudioGain _gain = AudioGain.unity;
+
   /// Why playback stopped, when it stopped by itself. Null while healthy.
   ///
   /// Not part of [PcmAudioPlayer]: a caller that cannot open a device gets a
@@ -329,6 +335,23 @@ final class WasapiPcmAudioPlayer implements PcmAudioPlayer {
           : _block.positionFrames;
     }
     return framesToDuration(_positionFrames, _sampleRate);
+  }
+
+  @override
+  AudioGain get gain => _gain;
+
+  /// Publishes a new level to the pump, which applies it at its next wakeup -
+  /// within one engine period, ten milliseconds or so.
+  ///
+  /// Not instant, and it cannot be: the samples for the current period have
+  /// already been handed to the endpoint. The alternative would be for this
+  /// isolate to reach into the endpoint buffer, which is the one thing the
+  /// whole three-isolate design exists to prevent.
+  @override
+  set gain(AudioGain value) {
+    if (_disposed) return;
+    _gain = value;
+    _block.requestGain(value.factor);
   }
 
   @override
@@ -519,6 +542,11 @@ void _pump(
     final PlaybackControlSnapshot control = PlaybackControlSnapshot();
     int appliedSeek = 0;
     int published = 0;
+    // Tracked as a raw double so the common case - the gain never changes -
+    // compares two doubles and allocates nothing. Building an `AudioGain` per
+    // period would be one Dart allocation per ten milliseconds on the thread
+    // this file goes to some length to keep allocation-free.
+    double appliedGain = 1;
     bool running = false;
     // An empty clip is over before it starts; without this the pump would sit
     // there rendering silence at a position that can never reach the end.
@@ -534,6 +562,14 @@ void _pump(
       // never lost, only ever one period late.
       block.tryReadControl(control);
       if (control.quitRequested) break;
+
+      if (control.gain != appliedGain) {
+        // On the stream, not on the clip player: this is the last stage before
+        // the endpoint, so one multiply covers the conversion the clip went
+        // through and anything a future mixer adds.
+        appliedGain = control.gain;
+        stream.gain = AudioGain(appliedGain);
+      }
 
       if (control.seekSequence != appliedSeek) {
         appliedSeek = control.seekSequence;

@@ -4,3 +4,5 @@ library;
 export 'audio_codec.dart';
 export 'audio_device.dart';
 export 'audio_format.dart';
+export 'audio_gain.dart';
+export 'audio_session_volume.dart';

@@ -15,6 +15,8 @@ final Guid iidMmDeviceEnumerator =
 final Guid iidAudioClient3 = Guid.parse('7ED4EE07-8E67-4CD4-8C1A-2B7A5987AD42');
 final Guid iidAudioRenderClient =
     Guid.parse('F294ACFC-3146-4483-A7BF-ADDCA7C260E2');
+final Guid iidSimpleAudioVolume =
+    Guid.parse('87CE5498-68D6-44E5-9215-6DA47EF883D8');
 
 final Guid _subtypePcm = Guid.parse('00000001-0000-0010-8000-00AA00389B71');
 final Guid _subtypeFloat = Guid.parse('00000003-0000-0010-8000-00AA00389B71');
@@ -484,6 +486,61 @@ final class AudioRenderClient extends ComObject {
       _getBuffer(pointer, frames, out);
   int releaseBuffer(int frames, int flags) =>
       _releaseBuffer(pointer, frames, flags);
+}
+
+typedef _SimpleSetVolumeNative = Int32 Function(
+  Pointer<Void>,
+  Float,
+  Pointer<Uint8>,
+);
+typedef _SimpleGetVolumeNative = Int32 Function(
+  Pointer<Void>,
+  Pointer<Float>,
+);
+typedef _SimpleSetMuteNative = Int32 Function(
+  Pointer<Void>,
+  Int32,
+  Pointer<Uint8>,
+);
+typedef _SimpleGetMuteNative = Int32 Function(
+  Pointer<Void>,
+  Pointer<Int32>,
+);
+
+/// `ISimpleAudioVolume` - this process's row in the Windows volume mixer.
+///
+/// Obtained from `IAudioClient::GetService` on an initialized client, so it is
+/// the volume of the *audio session* the client joined, which by default is
+/// the process's own. That is the row a user finds under the application's
+/// name in the mixer, and Windows persists where they left it.
+///
+/// ## The event-context argument, and why every call here passes null
+///
+/// Both setters take an `LPCGUID EventContext`, which Windows hands back to
+/// `ISimpleAudioVolume` change notifications so a client can tell its own
+/// writes from somebody else's. This framework registers no notification
+/// client, so there is nothing that could receive the context and null is the
+/// documented value for "not interested". If change notifications are ever
+/// added, the context stops being optional: without it a client's own write
+/// comes back as an external change and a naive implementation loops.
+final class SimpleAudioVolume extends ComObject {
+  SimpleAudioVolume(super.pointer) : super(interfaceName: 'ISimpleAudioVolume');
+
+  late final int Function(Pointer<Void>, double, Pointer<Uint8>)
+      _setMasterVolume =
+      comMethod<_SimpleSetVolumeNative>(pointer, 3).asFunction();
+  late final int Function(Pointer<Void>, Pointer<Float>) _getMasterVolume =
+      comMethod<_SimpleGetVolumeNative>(pointer, 4).asFunction();
+  late final int Function(Pointer<Void>, int, Pointer<Uint8>) _setMute =
+      comMethod<_SimpleSetMuteNative>(pointer, 5).asFunction();
+  late final int Function(Pointer<Void>, Pointer<Int32>) _getMute =
+      comMethod<_SimpleGetMuteNative>(pointer, 6).asFunction();
+
+  int setMasterVolume(double level) =>
+      _setMasterVolume(pointer, level, nullptr);
+  int getMasterVolume(Pointer<Float> out) => _getMasterVolume(pointer, out);
+  int setMute(bool muted) => _setMute(pointer, muted ? 1 : 0, nullptr);
+  int getMute(Pointer<Int32> out) => _getMute(pointer, out);
 }
 
 /// Parsed WAVEFORMATEX/WAVEFORMATEXTENSIBLE data.

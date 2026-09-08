@@ -8,7 +8,7 @@ import '../../foundation/lifecycle.dart';
 import '../windows/wasapi_bindings.dart';
 
 const int _blockMagic = 0x4b555044; // "DPUK"
-const int _blockVersion = 2;
+const int _blockVersion = 3;
 
 // Header.
 const int _magicOffset = 0;
@@ -43,7 +43,20 @@ const int _producerOriginOffset = 88;
 const int _producerEndedOffset = 96;
 const int _producerReserved = 100;
 const int _producerTotalFramesOffset = 104;
-const int _blockBytes = 112;
+
+// Control side too, appended rather than placed next to the other control
+// fields: every offset above is already in a released layout, and moving one
+// to keep the regions contiguous would mean rechecking all of them for the
+// sake of tidiness. The region a field belongs to is a discipline about who
+// writes it and under what lock, not a range of addresses.
+//
+// A `double` rather than the float32 the samples are, because the one value
+// that has to be exact is 1.0 - unity is the bit-identical passthrough case
+// and it is compared with `==`, not with a tolerance - and a double survives
+// every arithmetic a caller might do to reach it without a narrowing step in
+// the middle.
+const int _gainOffset = 112;
+const int _blockBytes = 120;
 
 /// The value [WasapiPlaybackControlBlock.producerSequence] holds while the ring
 /// holds nothing the pump may play: before the first prebuffer, and between a
@@ -86,6 +99,9 @@ final class PlaybackControlSnapshot {
   bool quitRequested = false;
   int seekSequence = 0;
   int seekFrame = 0;
+
+  /// The linear gain the owner last asked for. Unity until it asks otherwise.
+  double gain = 1;
 }
 
 /// The one piece of memory the player and its playback isolate share.
@@ -116,6 +132,13 @@ final class WasapiPlaybackControlBlock with DisposableMixin {
     memory.cast<Uint32>()[_magicOffset ~/ 4] = _blockMagic;
     memory.cast<Uint32>()[_versionOffset ~/ 4] = _blockVersion;
     memory.cast<Int64>()[_producerSequenceOffset ~/ 8] = producerSequenceIdle;
+    // NativeAllocator zeroes what it hands back, and zero is a *legitimate*
+    // gain - it is exact silence. A block that never had this written would
+    // therefore play nothing at all, and would do it while reporting a healthy
+    // clock and a rendering state, which is the hardest kind of silence to
+    // diagnose. Unity is written explicitly for the same reason
+    // `producerSequenceIdle` is: the zero value means something else.
+    memory.cast<Double>()[_gainOffset ~/ 8] = 1;
     api.initializeLock(Pointer<Void>.fromAddress(memory.address + _lockOffset));
     return WasapiPlaybackControlBlock._(memory, api, true);
   }
@@ -151,6 +174,9 @@ final class WasapiPlaybackControlBlock with DisposableMixin {
   int _i64(int offset) => _memory.cast<Int64>()[offset ~/ 8];
   void _setI64(int offset, int value) =>
       _memory.cast<Int64>()[offset ~/ 8] = value;
+  double _f64(int offset) => _memory.cast<Double>()[offset ~/ 8];
+  void _setF64(int offset, double value) =>
+      _memory.cast<Double>()[offset ~/ 8] = value;
 
   // --- Control side, owned by the player -----------------------------------
 
@@ -174,6 +200,39 @@ final class WasapiPlaybackControlBlock with DisposableMixin {
     } finally {
       _api.releaseLock(_lock);
     }
+  }
+
+  /// Asks the pump to render at [factor], a linear amplitude multiplier.
+  ///
+  /// Under the lock like every other control, though this one field would be
+  /// safe without it: a gain is a single aligned slot with one writer and no
+  /// companion field it has to agree with. It goes under the lock anyway
+  /// because the pump reads all the controls in one [tryReadControl] and a
+  /// second, lock-free read of a single field would be a second discipline in
+  /// the same loop for no measurable gain - the pump already takes the lock
+  /// every period.
+  void requestGain(double factor) {
+    throwIfDisposed();
+    if (factor.isNaN || !factor.isFinite || factor < 0) {
+      throw ArgumentError.value(
+        factor,
+        'factor',
+        'must be a finite, non-negative linear amplitude',
+      );
+    }
+    _api.acquireLock(_lock);
+    try {
+      _setF64(_gainOffset, factor);
+    } finally {
+      _api.releaseLock(_lock);
+    }
+  }
+
+  /// The gain last requested. For a test, and for the owner to read back what
+  /// it wrote; the pump gets it through [tryReadControl].
+  double get requestedGain {
+    throwIfDisposed();
+    return _f64(_gainOffset);
   }
 
   /// Publishes a reposition and returns its sequence number.
@@ -209,6 +268,7 @@ final class WasapiPlaybackControlBlock with DisposableMixin {
       out.quitRequested = _u32(_quitRequestedOffset) != 0;
       out.seekSequence = _i64(_seekSequenceOffset);
       out.seekFrame = _i64(_seekFrameOffset);
+      out.gain = _f64(_gainOffset);
       return true;
     } finally {
       _api.releaseLock(_lock);

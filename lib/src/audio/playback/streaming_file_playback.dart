@@ -44,6 +44,7 @@ import '../../ffi/native_memory.dart';
 import '../../foundation/lifecycle.dart';
 import '../audio_device.dart';
 import '../audio_format.dart';
+import '../audio_gain.dart';
 import '../dsp/native_audio_processor.dart';
 import '../windows/media_foundation_audio_reader.dart';
 import '../windows/wasapi_backend.dart';
@@ -440,6 +441,10 @@ void _streamPump(
     int appliedSeek = 0;
     int adoptedOrigin = -1;
     int mediaFrame = 0;
+    // A raw double, and compared before it is used: constructing an
+    // `AudioGain` every period would allocate on the one thread in this file
+    // that must not.
+    double appliedGain = 1;
     bool running = false;
     bool ended = false;
 
@@ -451,6 +456,15 @@ void _streamPump(
     while (true) {
       block.tryReadControl(control);
       if (control.quitRequested) break;
+
+      if (control.gain != appliedGain) {
+        // On the stream, so the multiply happens after the ring read - which
+        // is after the producer's resampling and channel mapping. One
+        // multiply, at the last stage, over the samples that are actually
+        // about to be heard.
+        appliedGain = control.gain;
+        stream.gain = AudioGain(appliedGain);
+      }
 
       if (control.seekSequence != appliedSeek) {
         appliedSeek = control.seekSequence;

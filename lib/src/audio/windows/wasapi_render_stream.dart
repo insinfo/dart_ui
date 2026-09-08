@@ -8,7 +8,10 @@ import '../../ffi/native_memory.dart';
 import '../../foundation/lifecycle.dart';
 import '../audio_device.dart';
 import '../audio_format.dart';
+import '../audio_gain.dart';
+import '../audio_session_volume.dart';
 import '../dsp/native_audio_processor.dart';
+import '../dsp/native_gain.dart';
 import 'wasapi_bindings.dart';
 import 'wasapi_shared_ring_buffer.dart';
 
@@ -27,7 +30,9 @@ const int _infinite = 0xffffffff;
 /// therefore records the native thread that opened COM and refuses a call if
 /// the VM resumes it on another thread. Keeping open, pump and dispose in one
 /// uninterrupted synchronous isolate entry is the supported realtime path.
-final class WasapiRenderStream with DisposableMixin implements AudioStream {
+final class WasapiRenderStream
+    with DisposableMixin
+    implements AudioStream, AudioSessionVolume {
   WasapiRenderStream.internal({
     required WasapiNativeApi api,
     required AudioClient3 audioClient,
@@ -71,11 +76,129 @@ final class WasapiRenderStream with DisposableMixin implements AudioStream {
 
   AudioStreamState _state = AudioStreamState.stopped;
 
+  /// The stream's own level. Read once per engine wakeup, on this thread.
+  ///
+  /// A plain field rather than anything synchronised: it is written and read
+  /// by the same isolate that owns the stream, which is the same isolate the
+  /// thread check below already insists on. A player whose transport lives on
+  /// another isolate carries its gain down through its own control block and
+  /// writes this field from the pump - see `wasapi_playback_control_block.dart`.
+  AudioGain _gain = AudioGain.unity;
+
+  /// `ISimpleAudioVolume`, activated on first use and released on dispose.
+  ///
+  /// Lazily, because most streams never ask: every `GetService` call takes a
+  /// reference that has to be balanced, and a stream that only ever renders
+  /// should not carry one.
+  SimpleAudioVolume? _sessionVolume;
+
   @override
   final AudioStreamConfiguration configuration;
 
   @override
   AudioStreamState get state => isDisposed ? AudioStreamState.disposed : _state;
+
+  @override
+  AudioGain get gain => _gain;
+
+  /// Sets the stream's level, refusing here rather than on the audio thread
+  /// when the negotiated format has no gain kernel.
+  ///
+  /// Only packed 24-bit reaches the refusal, and only when a caller has asked
+  /// for it explicitly through [AudioStreamRequest.preferredFormat] - shared
+  /// mode negotiates float32. Refusing at the setter is what makes it a
+  /// *named* refusal the caller can see: accepting the value and then
+  /// discovering three periods later, on the realtime thread, that there is no
+  /// kernel would either kill playback or, worse, pass the samples through
+  /// unattenuated, which is a volume control that silently does nothing.
+  @override
+  set gain(AudioGain value) {
+    throwIfDisposed();
+    final AudioSampleFormat format = configuration.format.sampleFormat;
+    if (!value.isUnity && !nativeGainSupportsFormat(format)) {
+      throw AudioCapabilityError(
+        backendName: 'WasapiRenderStream',
+        capability: 'stream gain on ${format.name}',
+        detail: 'no gain kernel exists for packed 24-bit samples; open the '
+            'stream in float32 or signed32',
+      );
+    }
+    _gain = value;
+  }
+
+  // --- AudioSessionVolume ---------------------------------------------------
+  //
+  // This application's row in the Windows volume mixer, which is a different
+  // thing from [gain] in every way a user can observe: they can move it, it
+  // persists across runs, and it covers every stream this process opened. See
+  // `audio_session_volume.dart` for why it is a discovered capability rather
+  // than a method every backend has to pretend to have.
+
+  SimpleAudioVolume get _session {
+    throwIfDisposed();
+    _checkThread();
+    final SimpleAudioVolume? existing = _sessionVolume;
+    if (existing != null) return existing;
+    final NativeArena arena = NativeArena();
+    try {
+      final Pointer<Pointer<Void>> out = arena.allocateOutPointer();
+      out.value = nullptr;
+      checkHresult(
+        _audioClient.getService(iidSimpleAudioVolume.allocateIn(arena), out),
+        'IAudioClient::GetService(ISimpleAudioVolume)',
+      );
+      return _sessionVolume = SimpleAudioVolume(out.value);
+    } finally {
+      arena.dispose();
+    }
+  }
+
+  @override
+  double get sessionVolume {
+    final SimpleAudioVolume session = _session;
+    final NativeArena arena = NativeArena();
+    try {
+      final Pointer<Float> out = arena.allocate<Float>(sizeOf<Float>());
+      out.value = 0;
+      checkHresult(
+        session.getMasterVolume(out),
+        'ISimpleAudioVolume::GetMasterVolume',
+      );
+      return out.value;
+    } finally {
+      arena.dispose();
+    }
+  }
+
+  @override
+  set sessionVolume(double value) {
+    // Clamped rather than rejected: SetMasterVolume answers E_INVALIDARG
+    // outside 0..1, and a rejected write would leave the user's slider wherever
+    // it happened to be while the caller believed it had moved.
+    checkHresult(
+      _session.setMasterVolume(value.isNaN ? 0 : value.clamp(0.0, 1.0)),
+      'ISimpleAudioVolume::SetMasterVolume',
+    );
+  }
+
+  @override
+  bool get sessionMuted {
+    final SimpleAudioVolume session = _session;
+    final NativeArena arena = NativeArena();
+    try {
+      final Pointer<Int32> out = arena.allocate<Int32>(sizeOf<Int32>());
+      out.value = 0;
+      checkHresult(session.getMute(out), 'ISimpleAudioVolume::GetMute');
+      return out.value != 0;
+    } finally {
+      arena.dispose();
+    }
+  }
+
+  @override
+  set sessionMuted(bool value) {
+    checkHresult(_session.setMute(value), 'ISimpleAudioVolume::SetMute');
+  }
 
   /// Process-local handle that another isolate may signal to stop
   /// [runFromRing]. It is valid until [dispose].
@@ -190,6 +313,16 @@ final class WasapiRenderStream with DisposableMixin implements AudioStream {
     final int byteCount = writable * configuration.format.bytesPerFrame;
     _api.zeroMemory(_sampleBuffer.value.cast<Void>(), byteCount);
     final int copied = ring.tryReadFrames(_sampleBuffer.value, writable);
+    // The last stage before the endpoint, and only over the frames the ring
+    // actually delivered: the rest is the zero fill above, which no gain can
+    // change. `_gain.factor == 1` returns without a memory access, so the
+    // normal case costs one compare per wakeup rather than one per sample.
+    applyNativeGain(
+      _sampleBuffer.value,
+      configuration.format.sampleFormat,
+      copied * configuration.format.channels,
+      _gain.factor,
+    );
     checkHresult(
       _renderClient.releaseBuffer(
         writable,
@@ -229,6 +362,23 @@ final class WasapiRenderStream with DisposableMixin implements AudioStream {
       _renderClient.releaseBuffer(writable, wasapiBufferFlagSilence);
       rethrow;
     }
+    // After the processor, which is after resampling and after whatever
+    // mixing the graph did, so one multiply covers all of it and no earlier
+    // stage ever sees an attenuated sample it might make a decision from.
+    //
+    // Deliberately *not* short-circuited when the gain is silence: the
+    // processor still ran and the frames are still released and counted, so
+    // the clock keeps advancing and a profiling run at zero volume measures
+    // the same program a run at full volume does. Skipping the write would
+    // have been the cheaper thing and the wrong one - it was a full-volume
+    // profiling run that exposed the absence of this control in the first
+    // place, and a "silence" that stops the transport would not be usable for
+    // the next one.
+    applyNativeFloat32Gain(
+      _sampleBuffer.value.cast<Float>(),
+      writable * configuration.format.channels,
+      _gain.factor,
+    );
     checkHresult(
       _renderClient.releaseBuffer(writable, 0),
       'IAudioRenderClient::ReleaseBuffer',
@@ -327,6 +477,14 @@ final class WasapiRenderStream with DisposableMixin implements AudioStream {
         checkHresult(_audioClient.reset(), 'IAudioClient::Reset');
         _state = AudioStreamState.stopped;
       });
+    }
+    // Before the client it was obtained from: `GetService` handed back a
+    // reference, and releasing the client while this one still points at it is
+    // the ordering `ComBag` exists to enforce elsewhere.
+    final SimpleAudioVolume? session = _sessionVolume;
+    if (session != null) {
+      _sessionVolume = null;
+      attempt(session.dispose);
     }
     attempt(_renderClient.dispose);
     attempt(_audioClient.dispose);

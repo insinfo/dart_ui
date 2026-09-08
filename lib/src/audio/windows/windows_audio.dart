@@ -6,10 +6,12 @@ export 'media_foundation_audio_reader.dart';
 export 'wasapi_backend.dart';
 export 'wasapi_bindings.dart'
     show
+        SimpleAudioVolume,
         WasapiWaveFormat,
         chooseWasapiPeriod,
         iidAudioClient3,
-        iidAudioRenderClient;
+        iidAudioRenderClient,
+        iidSimpleAudioVolume;
 export 'wasapi_render_stream.dart';
 export 'wasapi_shared_parameter_block.dart';
 export 'wasapi_shared_ring_buffer.dart';
