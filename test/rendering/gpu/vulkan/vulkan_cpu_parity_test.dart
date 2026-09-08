@@ -226,16 +226,8 @@ void main() {
     }, skip: skip);
 
     test('the validation layer said nothing, or said it was absent', () {
-      final instance = session.instance!;
-      if (!instance.validationEnabled) {
-        printOnFailure('VK_LAYER_KHRONOS_validation is not installed on this '
-            'machine; the barriers and layouts below were exercised without '
-            'it. Every scene still matched the CPU exactly.');
-        return;
-      }
-      expect(instance.problems, isEmpty,
-          reason: 'the validation layer objected while these scenes were '
-              'drawn:\n${instance.problems.join('\n')}');
+      expectValidationSilent(session.instance!,
+          what: 'the barriers and layouts above were exercised');
     }, skip: skip);
   });
 }

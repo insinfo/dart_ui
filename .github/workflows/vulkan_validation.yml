@@ -1,0 +1,135 @@
+# O Vulkan sob a camada de validação, num rasterizador de software.
+#
+# Existe separado de `framework.yml` por uma razão medida, não por gosto: a
+# perna Linux daquele workflow não instala driver nenhum, então
+# `vkCreateInstance` responde `VK_ERROR_INCOMPATIBLE_DRIVER` e **90 testes de
+# Vulkan pulam em silêncio** em toda execução desde que o diretório existe
+# (execução 34181447637, 08/09/2026). A suíte reportava verde sem jamais ter
+# executado o seu próprio assunto.
+#
+# Aqui o runner ganha duas coisas que ele não tem:
+#
+#   * `mesa-vulkan-drivers`, que traz o **lavapipe** — o driver Vulkan por
+#     software da Mesa, LLVM-JIT, sem GPU. Um rasterizador de software é
+#     **mais** conformante que hardware de verdade, não menos, então passar
+#     aqui prova conformidade com a *especificação*;
+#   * `vulkan-validationlayers`, que é `VK_LAYER_KHRONOS_validation`. Sem ela
+#     todo layout de attachment, dependência de subpasse e regra de
+#     compatibilidade de descriptor set do SPIR-V escrito à mão fica
+#     *exercitado* e não *validado*.
+#
+# O que este job **não** prova: que um driver de verdade aceita a mesma
+# configuração, que a extensão de um fabricante não tem uma peculiaridade, ou
+# qualquer coisa sobre desempenho. Isso continua em "o ambiente impede de
+# provar" no README.
+name: Vulkan validation
+
+on:
+  push:
+    paths:
+      - 'lib/src/rendering/gpu/vulkan/**'
+      - 'test/rendering/gpu/vulkan/**'
+      - '.github/workflows/vulkan_validation.yml'
+  pull_request:
+    paths:
+      - 'lib/src/rendering/gpu/vulkan/**'
+      - 'test/rendering/gpu/vulkan/**'
+      - '.github/workflows/vulkan_validation.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: vulkan-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Tem de acompanhar `framework.yml`; a divergência quebra no gate de formato
+  # antes de qualquer teste, com um sintoma que não se parece com a causa.
+  DART_SDK_VERSION: '3.6.2'
+
+jobs:
+  vulkan-validation:
+    name: 'Vulkan under VK_LAYER_KHRONOS_validation (lavapipe)'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Install lavapipe and the validation layer
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libvulkan-dev mesa-vulkan-drivers vulkan-validationlayers \
+            vulkan-tools
+          # Só o ICD do lavapipe, e não todos os que o pacote instala. O
+          # loader tenta cada manifesto em `icd.d`, e os de hardware (radv,
+          # anv) falham em `vkCreateInstance` numa máquina sem a GPU deles —
+          # falha que ele relata pelo `VK_EXT_debug_utils` como WARNING. Como
+          # os testes falham em qualquer WARNING, deixá-los ali seria pedir
+          # que o job reprovasse por um driver que ninguém usa.
+          VULKAN_ICD=$(find /usr/share/vulkan/icd.d -type f -name '*lvp*json' \
+            -print -quit)
+          test -n "$VULKAN_ICD"
+          echo "VK_DRIVER_FILES=$VULKAN_ICD" >> "$GITHUB_ENV"
+
+      # Verdade impressa, não inferida — e verificada aqui, antes dos testes.
+      #
+      # Os testes pulam quando não há dispositivo, e essa é a resposta certa
+      # deles: uma máquina sem driver não é um defeito no renderizador. Mas
+      # neste job um skip é o defeito, porque ele é o job que existe para não
+      # pular. Então quem exige o dispositivo e a camada é o workflow, e não o
+      # teste: assim "o lavapipe sumiu do `apt`" reprova em vermelho aqui em
+      # vez de virar 90 skips verdes como em `framework.yml`.
+      - name: Prove the runner has a device and the layer
+        run: |
+          echo "=== ICD manifests ==="
+          ls -la /usr/share/vulkan/icd.d/ || true
+          echo "=== explicit layer manifests ==="
+          ls -la /usr/share/vulkan/explicit_layer.d/ || true
+          echo "=== VK_DRIVER_FILES=$VK_DRIVER_FILES ==="
+          echo "=== vulkaninfo --summary ==="
+          vulkaninfo --summary | tee /tmp/vulkaninfo.txt
+          echo "=== assertions ==="
+          grep -q 'llvmpipe' /tmp/vulkaninfo.txt \
+            || { echo "no lavapipe device in vulkaninfo --summary"; exit 1; }
+          # Por `find` e não por caminho fixo: o nome do manifesto é do
+          # empacotador, e errá-lo custaria uma execução inteira para
+          # descobrir um nome de arquivo.
+          test -n "$(find /usr/share/vulkan/explicit_layer.d -name \
+            '*khronos_validation*json' -print -quit)" \
+            || { echo "VK_LAYER_KHRONOS_validation manifest is missing"; exit 1; }
+          echo "lavapipe present and the validation layer manifest is installed"
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Analyze
+        run: dart analyze bin lib test
+
+      # DART_UI_REQUIRE_VULKAN_VALIDATION transforma "a camada não carregou"
+      # de skip em falha, e só aqui. Sem isso, o `apt` deixar de trazer
+      # `vulkan-validationlayers` deixaria este job verde e mudo — que é
+      # exatamente o defeito que ele existe para acabar, um nível acima.
+      - name: Run the Vulkan suite under the validation layer
+        env:
+          DART_UI_REQUIRE_VULKAN_VALIDATION: '1'
+        run: |
+          set -o pipefail
+          dart test -j 1 test/rendering/gpu/vulkan --reporter=expanded 2>&1 | tee /tmp/vulkan-tests.log
+
+      # Um round trip de CI é caro, então esta execução tem de imprimir tudo o
+      # que decide o próximo passo. Um teste que pulou aqui não reprova o job -
+      # o `@TestOn('windows')` de `vulkan_window_test.dart` pula por desenho -,
+      # mas ele **tem** de aparecer nomeado, porque a diferença entre "rodou
+      # sob a camada" e "pulou" é a diferença que este workflow inteiro existe
+      # para tornar visível.
+      - name: Say what skipped, by name
+        if: always()
+        run: |
+          echo "=== every line the run reported as skipped ==="
+          grep -E '^\s+(Skip:|VK_LAYER|no Vulkan)' /tmp/vulkan-tests.log || echo "(nothing skipped)"
+          echo "=== the counter line ==="
+          tail -n 3 /tmp/vulkan-tests.log

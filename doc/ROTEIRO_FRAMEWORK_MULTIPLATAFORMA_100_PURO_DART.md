@@ -3161,13 +3161,15 @@ Não portar VMA em C; estudar o algoritmo e implementar o subset necessário em 
 
 Revisto em 2026-08-23 contra `lib/src/rendering/gpu/vulkan/`.
 
-- [ ] **validação sem erros — não provado, e a razão é honesta**: os testes
-  abrem a sessão pedindo `VK_LAYER_KHRONOS_validation` e exigem que ela não
-  reclame, mas **a layer não está instalada nesta máquina** — há o ICD da Intel
-  e não há SDK do LunarG, e `vkEnumerateInstanceLayerProperties` devolve nada.
-  O que aqueles testes provaram aqui foi que os pipelines desenham os pixels
-  certos, **não** que um validador os inspecionou. A distinção é impressa, não
-  escondida, e `VulkanInstance.validationEnabled` é legível;
+- [x] **validação sem erros — provado sob lavapipe, não sob hardware**
+  (08/09/2026): `.github/workflows/vulkan_validation.yml` instala
+  `vulkan-validationlayers` e `mesa-vulkan-drivers` e roda o diretório sob a
+  camada, exigindo silêncio dela. **Nesta máquina** a layer continua ausente —
+  há o ICD do fabricante e não há SDK do LunarG, e
+  `vkEnumerateInstanceLayerProperties` devolve nada —, e ali os casos **pulam
+  com o motivo** em vez de passar calados, que era o que faziam antes. O que
+  está provado é conformidade com a especificação; que um driver de hardware
+  aceite a mesma configuração continua sem prova;
 - [ ] nenhum objeto destruído antes da fence — não verificado;
 - [ ] resize contínuo — não verificado;
 - [x] swapchain out-of-date: recriação com `oldSwapchain` em
@@ -10635,12 +10637,35 @@ proporção ele aparece nos outros caminhos, não.
 
 Isto é tão importante quanto a lista anterior, e é mais fácil de esquecer:
 
-- **as validation layers do Vulkan não estão instaladas nesta máquina.** Os
-  testes pedem `VK_LAYER_KHRONOS_validation` e exigem que ela não reclame; aqui
-  há só o ICD da Intel, sem SDK do LunarG, e
-  `vkEnumerateInstanceLayerProperties` devolve nada. O que aqueles testes
-  provaram **aqui** foi pixel correto, **não** validação — e a distinção é
-  impressa, não escondida;
+- **as validation layers do Vulkan não estão instaladas nesta máquina, e desde
+  08/09/2026 estão num runner.** Aqui continua havendo só o ICD do fabricante,
+  sem SDK do LunarG, e `vkEnumerateInstanceLayerProperties` devolve nada — o
+  que os testes provam **nesta máquina** é pixel correto, **não** validação. O
+  que mudou é que isso deixou de ser a única execução possível:
+  `.github/workflows/vulkan_validation.yml` instala `mesa-vulkan-drivers` (o
+  **lavapipe**) e `vulkan-validationlayers` num `ubuntu-24.04` e roda
+  `dart test -j 1 test/rendering/gpu/vulkan` sob a camada. Como um
+  rasterizador de software é **mais** conformante que hardware de verdade, o
+  que aquele job prova é conformidade com a **especificação**; o que ele não
+  prova é driver de hardware nenhum, peculiaridade de extensão nenhuma e
+  desempenho nenhum.
+
+  Duas armadilhas foram fechadas junto, e as duas eram do tipo "verde que não
+  quer dizer nada":
+
+  1. os seis casos `a camada de validação não disse nada, ou disse que não
+     estava` **imprimiam uma nota e não afirmavam coisa alguma** quando a
+     camada faltava, o que o `package:test` reporta como aprovação. Agora
+     chamam `expectValidationSilent` de `vulkan_session.dart`, que **pula com
+     um motivo** — a nota vira skip visível, e não um tique verde;
+  2. a perna Linux de `framework.yml` **não instala driver nenhum**:
+     `vkCreateInstance` responde `VK_ERROR_INCOMPATIBLE_DRIVER` e **90 testes
+     de Vulkan pulam** em toda execução desde que o diretório existe (a
+     [#34181447637](https://github.com/insinfo/dart_ui/actions/runs/34181447637)
+     é uma delas). O job novo exige o dispositivo e a camada no próprio
+     workflow, por `vulkaninfo` e por `DART_UI_REQUIRE_VULKAN_VALIDATION=1`,
+     para que "o lavapipe sumiu do apt" reprove em vermelho em vez de virar
+     mais 90 skips;
 - **Metal só roda em CI Apple Silicon**, e nunca em Intel;
 - **X11 só rodou sob Xvfb**, nunca num Xorg ou XWayland de verdade. O que
   estava escrito aqui sobre teclado e clipboard estava errado e foi corrigido em

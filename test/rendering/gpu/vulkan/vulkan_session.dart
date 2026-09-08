@@ -18,6 +18,7 @@ import 'dart:io';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_device.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_instance.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_library.dart';
+import 'package:test/test.dart';
 
 final class VulkanSession {
   VulkanSession._(this.library, this.instance, this.device, this.skipReason);
@@ -100,4 +101,48 @@ final class VulkanSession {
     device?.dispose();
     instance?.dispose();
   }
+}
+
+/// Whether a run that could not load the validation layer must fail rather
+/// than skip.
+///
+/// Set by `.github/workflows/vulkan_validation.yml` and by nothing else. The
+/// skip in [expectValidationSilent] is the right answer on a developer
+/// machine, where the layer genuinely is not installed - and it is exactly the
+/// wrong answer in the one job whose whole purpose is to run under it. Without
+/// this switch, `vulkan-validationlayers` disappearing from apt would turn
+/// that job green and quiet, which is the same failure this helper exists to
+/// end, one level up.
+bool get vulkanValidationRequired =>
+    Platform.environment['DART_UI_REQUIRE_VULKAN_VALIDATION'] == '1';
+
+/// Asserts that `VK_LAYER_KHRONOS_validation` stayed silent, or says why it
+/// could not.
+///
+/// Every live-device file in this directory ends with a case that calls this.
+/// Until 08/09/2026 each of the six carried its own copy, and every copy did
+/// the same thing when the layer was absent: printed a note and returned,
+/// which `package:test` reports as a pass. Six green ticks were reporting that
+/// a layer nobody had loaded had approved the frame - coverage that looked
+/// like coverage and was not.
+///
+/// [what] completes the sentence "the validation layer objected while ...",
+/// so it reads as a clause: 'the mesh scenes were drawn'.
+void expectValidationSilent(VulkanInstance instance, {required String what}) {
+  if (!instance.validationEnabled) {
+    final String reason = 'VK_LAYER_KHRONOS_validation is not loaded, so $what '
+        'without it; the cases above still passed, which says the frames were '
+        'right and not that the calls that made them were legal';
+    // A skip here and a failure under the workflow, from one statement of the
+    // condition: the machine that has no layer is not broken, and the job that
+    // installed one and lost it is.
+    if (vulkanValidationRequired) {
+      fail('DART_UI_REQUIRE_VULKAN_VALIDATION is set and $reason');
+    }
+    markTestSkipped(reason);
+    return;
+  }
+  expect(instance.problems, isEmpty,
+      reason: 'the validation layer objected while $what:\n'
+          '${instance.problems.join('\n')}');
 }

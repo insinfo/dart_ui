@@ -299,16 +299,8 @@ void main() {
 
   test('the validation layer said nothing, or said it was absent', () {
     if (_skipped(skip)) return;
-    final instance = session.instance!;
-    if (!instance.validationEnabled) {
-      printOnFailure('VK_LAYER_KHRONOS_validation is not installed on this '
-          'machine; the interleaved render passes above ran without it and '
-          'every scene still matched the CPU exactly.');
-      return;
-    }
-    expect(instance.problems, isEmpty,
-        reason: 'the validation layer objected while the ordered walk ran:\n'
-            '${instance.problems.join('\n')}');
+    expectValidationSilent(session.instance!,
+        what: 'the ordered walk ran its interleaved render passes');
   });
 }
 

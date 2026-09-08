@@ -74,6 +74,7 @@ import 'package:dart_ui/src/rendering/gpu/gl/gl_shaders.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_pipeline.dart';
 import 'package:dart_ui/src/rendering/gpu/vector/analytic_primitive.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_backend.dart';
+import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_instance.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_shaders.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_spirv.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
@@ -323,6 +324,18 @@ void main() {
         box: const Rect.fromLTRB(8, 18, 56, 46),
         radius: 8,
       );
+    });
+
+    test('the validation layer said nothing, or said it was absent', () {
+      // This group asks for the layer through [VulkanSession.open] and, until
+      // 08/09/2026, never read what it said. A layer that is loaded and whose
+      // findings nobody checks is worse than no layer, because the run looks
+      // like it was validated - so the scenes above are the ones that get
+      // checked, being the only ones here that put the analytic pipeline
+      // through a render pass.
+      if (routes.skipped()) return;
+      expectValidationSilent(routes.instance!,
+          what: 'the analytic scenes above were drawn');
     });
   });
 
@@ -870,6 +883,9 @@ final class _VulkanRoutes {
   final String? _skipReason;
 
   VulkanRenderDevice get device => _device!;
+
+  /// The instance the scenes were drawn through, for [expectValidationSilent].
+  VulkanInstance? get instance => _session.instance;
 
   static _VulkanRoutes open() {
     final VulkanSession session = VulkanSession.open(validation: true);

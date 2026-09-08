@@ -57,17 +57,23 @@
 /// so a module that got the matrix rows, the `modulate` fold, the Y negation,
 /// the depth remap or the winding wrong could not produce 0.
 ///
-/// ## What this file cannot check on this machine
+/// ## Where the validation layer checks this file, and where it does not
 ///
-/// **The validation layer is not installed here.** `VK_LAYER_KHRONOS_validation`
-/// was absent on the machine these numbers come from, so the last test in the
-/// second group printed its note and asserted nothing. Every attachment layout,
-/// every subpass dependency and every descriptor-set compatibility rule this
-/// pipeline depends on was therefore exercised but *not verified* - a picture
-/// that matches the CPU exactly can still be built out of undefined behaviour
-/// that another driver implements differently. Installing the layer and
-/// re-running this file is the missing half, and the test is written so that it
-/// starts asserting the moment the layer is there.
+/// **The layer is not installed on the machine these numbers come from.**
+/// `VK_LAYER_KHRONOS_validation` needs the LunarG SDK, which a machine with
+/// only a vendor driver does not have, so here the last test in the second
+/// group skips with that as its reason. It used to print a note and return,
+/// which `package:test` reports as a pass - a green tick saying a layer nobody
+/// had loaded had approved the frame.
+///
+/// The run that does check it is `.github/workflows/vulkan_validation.yml`,
+/// where **lavapipe** - Mesa's software Vulkan driver - and the layer are both
+/// installed and this file runs under both. A software rasteriser is *more*
+/// conformant than real hardware, not less, so what that proves is that the
+/// attachment layouts, the subpass dependencies and the descriptor-set
+/// compatibility of this hand-written SPIR-V are right **against the
+/// specification**. What it cannot prove is a hardware driver refusing the
+/// same configuration, a vendor extension quirk, or anything about speed.
 ///
 /// ## The budgets can fail
 ///
@@ -99,6 +105,7 @@ import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/graphics/mesh/mesh3d.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_backend.dart';
+import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_instance.dart';
 import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_mesh_pipeline.dart';
 import 'package:dart_ui/src/rendering/mesh/mesh_rasterizer.dart';
 import 'package:dart_ui/src/rendering/mesh/mesh_scene.dart';
@@ -476,14 +483,8 @@ void main() {
         markTestSkipped(session.skipReason!);
         return;
       }
-      if (!session.validationEnabled) {
-        printOnFailure('VK_LAYER_KHRONOS_validation is not installed on this '
-            'machine; every scene above was still drawn and still matched.');
-        return;
-      }
-      expect(session.validationProblems, isEmpty,
-          reason: 'the validation layer objected while the mesh scenes were '
-              'drawn:\n${session.validationProblems.join('\n')}');
+      expectValidationSilent(session.instance!,
+          what: 'the mesh scenes were drawn');
     });
 
     test('turning the depth test off lets far triangles overwrite near ones',
@@ -1063,17 +1064,14 @@ final class _MeshSession {
 
   VulkanMeshRenderer get renderer => _renderer!;
 
-  /// What the validation layer objected to, or an empty list.
+  /// The instance the scenes were drawn through, for [expectValidationSilent].
   ///
   /// The half of this file no image comparison can do. Every layout, every
   /// barrier and every descriptor-set compatibility rule the mesh pipeline
-  /// depends on is checked here and nowhere else; a picture that matches the
+  /// depends on is checked there and nowhere else; a picture that matches the
   /// CPU exactly can still be built out of undefined behaviour that another
   /// driver implements differently.
-  List<String> get validationProblems =>
-      _session?.instance?.problems ?? const <String>[];
-
-  bool get validationEnabled => _session?.instance?.validationEnabled ?? false;
+  VulkanInstance? get instance => _session?.instance;
 
   static _MeshSession open() {
     final VulkanSession session = VulkanSession.open(validation: true);

@@ -62,6 +62,8 @@ import 'package:dart_ui/src/rendering/path/fill_rule.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
 import 'package:test/test.dart';
 
+import 'vulkan_session.dart';
+
 const int _width = 160;
 const int _height = 120;
 const int _clear = 0xFF101820;
@@ -648,16 +650,9 @@ void main() {
 
   test('the validation layer said nothing, or said it was absent', () {
     if (skipped()) return;
-    if (!instance!.validationEnabled) {
-      printOnFailure('VK_LAYER_KHRONOS_validation is not installed on this '
-          'machine; the surfaces, swapchains, semaphores and layout '
-          'transitions above were exercised without it, and every pixel '
-          'comparison still matched the CPU exactly.');
-      return;
-    }
-    expect(instance!.problems, isEmpty,
-        reason: 'the validation layer objected while windows were presented '
-            'to:\n${instance!.problems.join('\n')}');
+    expectValidationSilent(instance!,
+        what: 'windows were presented to through their surfaces, swapchains, '
+            'semaphores and layout transitions');
   });
 }
 

@@ -83,16 +83,10 @@ void main() {
       // hidden. `VK_LAYER_KHRONOS_validation` ships with the LunarG SDK and is
       // not present on a machine that only has a driver - including the one
       // this backend was written on. Asserting silence from a layer that is
-      // not loaded would be an assertion about nothing.
-      final instance = session.instance!;
-      if (!instance.validationEnabled) {
-        printOnFailure('validation layer not installed; '
-            'vkCreateGraphicsPipelines still accepted every module');
-        return;
-      }
-      expect(instance.problems, isEmpty,
-          reason: 'the validation layer objected while the pipelines were '
-              'being built:\n${instance.problems.join('\n')}');
+      // not loaded would be an assertion about nothing, so
+      // [expectValidationSilent] skips with a reason instead of passing.
+      expectValidationSilent(session.instance!,
+          what: 'vkCreateGraphicsPipelines accepted every module');
     }, skip: session.skipReason);
   });
 }

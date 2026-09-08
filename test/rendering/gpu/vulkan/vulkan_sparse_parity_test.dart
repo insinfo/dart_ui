@@ -319,17 +319,9 @@ void main() {
       markTestSkipped('no Vulkan device: $skip');
       return;
     }
-    final instance = session.instance!;
-    if (!instance.validationEnabled) {
-      printOnFailure('VK_LAYER_KHRONOS_validation is not installed on this '
-          'machine; the pipelines, descriptor sets, push-constant ranges and '
-          'barriers above were exercised without it. Every solid scene still '
-          'matched the CPU exactly.');
-      return;
-    }
-    expect(instance.problems, isEmpty,
-        reason: 'the validation layer objected while the sparse pass ran:\n'
-            '${instance.problems.join('\n')}');
+    expectValidationSilent(session.instance!,
+        what: 'the sparse pass ran its pipelines, descriptor sets, '
+            'push-constant ranges and barriers');
   });
 }
 

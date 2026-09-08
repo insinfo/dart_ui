@@ -209,12 +209,27 @@ surpresa:
   discreta pode responder diferente. Retina não pode ser confirmado no runner
   de CI, que reporta escala 1,0 num display virtual: marcar aquele item exige
   hardware, não mais código.
-- **O Vulkan não passou pela camada de validação.**
-  `VK_LAYER_KHRONOS_validation` não está instalada nas máquinas usadas. Todo
-  layout de attachment, dependência de subpasse e regra de compatibilidade de
-  descriptor set foi *exercitado*, não *validado* — um quadro que bate com a
-  CPU ainda pode se apoiar em comportamento indefinido que outro driver
-  implementa diferente. E `MeshShading.wireframe` desenha sólido sem
+- **O Vulkan passou pela camada de validação num rasterizador de software, e
+  só ali.** O workflow `vulkan_validation.yml` instala `mesa-vulkan-drivers`
+  (o **lavapipe**, driver Vulkan por software da Mesa) e
+  `vulkan-validationlayers` num runner `ubuntu-24.04` e roda o diretório
+  inteiro sob `VK_LAYER_KHRONOS_validation`, exigindo que ela não emita nenhum
+  erro nem aviso. Um rasterizador de software é **mais** conformante que
+  hardware de verdade, não menos, então o que isso prova é **conformidade com
+  a especificação**: os layouts de attachment, as dependências de subpasse e as
+  regras de compatibilidade de descriptor set do SPIR-V escrito à mão estão
+  certos contra o que a especificação escreve. Saiu de "existe e não foi
+  verificado" por esse recorte, e por nenhum outro.
+
+  O que continua em **o ambiente impede de provar**: nenhum driver de hardware
+  jamais aceitou esta configuração sob validação. Um fabricante recusar um
+  formato, uma extensão ter uma peculiaridade, o desempenho — nada disso o
+  lavapipe pode dizer, e "validado" aqui não quer dizer "funciona em toda GPU".
+  E na perna Linux de `framework.yml` não há driver nenhum: os 90 testes de
+  dispositivo pulam ali, com o motivo impresso, e é o `vulkan_validation.yml`
+  que os executa.
+
+  Continua **não existindo**: `MeshShading.wireframe` desenha sólido sem
   iluminação, porque `VK_POLYGON_MODE_LINE` exige `fillModeNonSolid`, que este
   dispositivo não habilita.
 - **O X11 só rodou sob Xvfb.** Nenhum gerenciador de janelas jamais administrou
