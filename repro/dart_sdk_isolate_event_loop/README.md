@@ -29,14 +29,14 @@ dart run bin/run_all.dart --vm-flag=--experimental-shared-data
 
 The group-bound callback touches no Dart static. Its only channel back is an `Int32` slot passed as the thread argument.
 
-## Results on Windows 11 x64, 23 September 2026
+## Results, 23 September 2026
+
+Local Windows 11 x64, plus [CI run 35934336021](https://github.com/insinfo/dart_ui/actions/runs/35934336021) on `ubuntu-latest` (linux_x64), `macos-14` (macos_arm64) and `windows-latest`. All three platforms produced the same verdict for every case:
 
 | Case | 3.13.3 stable | 3.14.0-248.0.dev | dev + `--experimental-shared-data` |
 |---|---|---|---|
 | nested_callback | 0 of ~30 ticks delivered | 0 of ~30 | 0 of ~30 |
 | on_event | both throw `UnsupportedError` | API not public | API not public |
-| group_bound trivial, async or blocking | completes | **VM abort** in `NativeCallable.isolateGroupBound` (`ffi.cc:169`) | completes |
+| group_bound trivial, async or blocking | completes | **VM abort** in `NativeCallable.isolateGroupBound` (`ffi.cc:169`: pass `--experimental-shared-data`) | completes |
 | group_bound create, async or blocking | `Isolate.create` **succeeds**, then the VM **hangs at exit** waiting for the created isolate to check in | API not public | API not public |
 | group_bound create + `shutdownSync` | completes and exits | API not public | API not public |
-
-For Linux and macOS, see the step summary of the workflow run.
