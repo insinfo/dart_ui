@@ -339,23 +339,39 @@ documentação de `onEvent` que aponta para ele. `tool/sdk313/group_bound_create
 tenta exatamente isso, criando uma thread do sistema com `CreateThread` e
 chamando `Isolate.create` de dentro dela.
 
-**Esse teste travou** — nenhuma saída, processo vivo depois de dois minutos,
-teve de ser morto — e por isso **não é evidência em nenhuma direção**. A
-hipótese, que é hipótese e não medida, é que o callback ligado ao grupo precise
-entrar no grupo como mutator enquanto a thread principal o segura bloqueada num
-`WaitForSingleObject`, e cada uma espere a outra. Se for isso, é um defeito
-próprio e vale relato separado.
+Na primeira execução, em 07/09/2026, **esse teste travou**: nenhuma saída, e o
+processo continuava vivo depois de dois minutos. Ficou registrado como
+inconclusivo, com a hipótese de um deadlock entre o callback ligado ao grupo e
+a thread principal bloqueada em `WaitForSingleObject`. **A hipótese estava
+errada.** A reconstrução portável em
+[`repro/dart_sdk_isolate_event_loop/`](../../repro/dart_sdk_isolate_event_loop/)
+separou as variáveis em 23/09/2026. O resultado foi idêntico em Linux x64,
+macOS arm64 e Windows x64
+([execução de CI](https://github.com/insinfo/dart_ui/actions/runs/35934336021)):
 
-O que fica dito com segurança, então, é mais estreito e mais útil do que
-"embedder-only": **`Isolate.create` recusa em toda chamada que um programa Dart
-comum consegue fazer**, e a única brecha teórica é uma que não foi possível
-demonstrar funcionando. E, sobretudo, **ela não importa enquanto `handleEvent`
-for um stub**, porque criar um isolate que não se pode drenar não resolve nada.
+- o callback ligado ao grupo roda normalmente numa thread estrangeira, com o
+  isolate dono bloqueado em código nativo ou ocioso no laço. **Não há
+  deadlock**;
+- **`Isolate.create` funciona** de dentro dele. A brecha deixa de ser teórica:
+  um pacote 100% Dart chega, sim, a uma thread dentro do grupo e fora de
+  qualquer isolate;
+- o que travava era a **saída da VM**. O isolate criado nunca era desligado, e
+  a VM espera por ele para sempre, imprimindo
+  `Attempt:N waiting for isolate ... to check in`. Com `shutdownSync()` o
+  processo sai limpo. A sonda antiga tinha esse defeito e foi corrigida.
+
+Mesmo assim, **isso não destrava nada enquanto `handleEvent` for um stub**:
+criar um isolate que não se pode drenar não resolve nada. Além disso, no SDK
+dev posterior à [dart-lang/sdk#64285](https://github.com/dart-lang/sdk/issues/64285),
+`Isolate.create` deixou de ser público, e `NativeCallable.isolateGroupBound`
+**aborta a VM** se o programa não rodar com `--experimental-shared-data`.
 
 A proposta 04 pedia que `onEvent`/`handleEvent` fossem implementadas; este
 documento acrescenta que, se `Isolate.create` continuar exigindo uma thread
-sem isolate corrente, é preciso dizer **explicitamente** por qual caminho um
-pacote 100% Dart chega a essa thread — e que esse caminho seja testado.
+sem isolate corrente, o caminho que funciona hoje (um callback
+`isolateGroupBound`) precisa ser **nomeado na documentação e testado**, junto
+com a obrigação de chamar `shutdownSync()`, que hoje só aparece como um
+travamento silencioso na saída.
 
 ### 5.4 Um defeito encontrado de passagem: `pinToCurrentThread` derruba a VM na saída
 
@@ -757,11 +773,12 @@ implementável sem a outra.
 
 Mais duas, menores e independentes, que saíram da medição de §5:
 
-- **`Isolate.create` recusa toda chamada que um programa Dart comum consegue
-  fazer**, e o único estado que satisfaz a guarda da VM — um callback
-  `NativeCallable.isolateGroupBound` — não foi possível demonstrar funcionando
-  (§5.3). Vale como comentário na issue da proposta 04, por ser o mesmo assunto,
-  pedindo que o caminho suportado seja nomeado e testado;
+- **`Isolate.create` recusa toda chamada feita de um `main` comum**, mas
+  funciona de dentro de um callback `NativeCallable.isolateGroupBound` numa
+  thread estrangeira, desde que o isolate criado seja desligado com
+  `shutdownSync()` (§5.3). Já comentado na
+  [#64229](https://github.com/dart-lang/sdk/issues/64229#issuecomment-5804754846),
+  a issue da proposta 04;
 - **`Isolate.pinToCurrentThread` derruba a VM na saída** de um programa comum
   (§5.4). Issue própria, e relevante à proposta 01.
 
@@ -791,8 +808,11 @@ Mais duas, menores e independentes, que saíram da medição de §5:
   [`tool/sdk313/created_isolate_drain_probe.dart`](../../tool/sdk313/created_isolate_drain_probe.dart)
   e [`tool/sdk313/group_bound_create_probe.dart`](../../tool/sdk313/group_bound_create_probe.dart)
   — a superfície de 3.13 medida membro a membro; excluídos do analisador porque
-  nomeiam o que não existe em 3.6. O terceiro trava e está documentado como
-  inconclusivo;
+  nomeiam o que não existe em 3.6. O terceiro travava na saída por não desligar
+  o isolate criado; corrigido, imprime `PROBE=WORKS` em 3.13.3;
+- [`repro/dart_sdk_isolate_event_loop/`](../../repro/dart_sdk_isolate_event_loop/)
+  — as reproduções portáveis (Linux, macOS, Windows) de §4 e §5.3, sem
+  dependências, com watchdog por caso e o workflow `sdk_isolate_repro.yml`;
 - [`test/backends/win32/win32_live_resize_test.dart`](../../test/backends/win32/win32_live_resize_test.dart)
   — a `WndProc` real sem uma volta do laço de eventos;
 - [`doc/ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md`](../ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md)

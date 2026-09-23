@@ -44,9 +44,12 @@
 /// reports what was arranged, and the client-side probe under
 /// `test/backends/win32/uia/` is what turns the arrangement into evidence.
 ///
-/// Dart 3.6 has no `NativeCallable.isolateGroupBound`; when it does, that is
-/// the callable this file should use and the apartment dance becomes optional.
-/// This repository already carries that request in `doc/propostas/`.
+/// Dart 3.6 has no `NativeCallable.isolateGroupBound`. 3.13 has it, but on the
+/// dev SDK it aborts the VM unless the program runs with
+/// `--experimental-shared-data` (measured in `repro/dart_sdk_isolate_event_loop/`).
+/// Once it ships without a flag, that is the callable this file should use and
+/// the apartment dance becomes optional. This repository already carries that
+/// request in `doc/propostas/`.
 library;
 
 import 'dart:ffi';

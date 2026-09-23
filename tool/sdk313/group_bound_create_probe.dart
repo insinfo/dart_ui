@@ -19,27 +19,29 @@
 /// D:/referencias_libs_pdf/dartsdk-3.13.3/bin/dart.exe run tool/sdk313/group_bound_create_probe.dart
 /// ```
 ///
-/// ## Result on 3.13.3, 7 September 2026: INCONCLUSIVE - it hangs
+/// ## Result on 3.13.3: it WORKS - the September 7 hang was this probe's bug
 ///
-/// The process produced no output at all and was still alive after two
-/// minutes, despite the five-second `WaitForSingleObject` below, which means
-/// it never reached the wait or never came back from it. It had to be killed.
+/// The first run, on 7 September 2026, produced no output and never exited,
+/// and was recorded here as an inconclusive deadlock between the group-bound
+/// callback and the main thread blocked in `WaitForSingleObject`. That
+/// hypothesis was wrong. The portable rebuild in
+/// `repro/dart_sdk_isolate_event_loop/` (23 September 2026, identical on
+/// Linux x64, macOS arm64 and Windows x64) separated the variables:
 ///
-/// The likely explanation, and it is a hypothesis rather than a measurement:
-/// the group-bound callback has to enter the isolate group as a mutator on the
-/// foreign thread, and the main thread is inside `WaitForSingleObject` holding
-/// the group - each waits for the other. If that is right, the deadlock is not
-/// specific to `Isolate.create`; it is what a group-bound callback does
-/// whenever the isolate that built it is blocked, which would be worth a bug
-/// report of its own.
+/// * a group-bound callback on a foreign thread runs fine while the isolate
+///   that built it is blocked in native code - there is no deadlock;
+/// * `Isolate.create` **succeeds** from inside it - the guard's "outside of an
+///   isolate" state is reachable from pure Dart;
+/// * what hung was VM shutdown: the created isolate was never shut down, and
+///   the VM waits for it forever at exit, printing
+///   `Attempt:N waiting for isolate group-bound-created to check in`.
 ///
-/// **This probe is therefore not evidence either way about `Isolate.create`.**
-/// It is kept because the question it asks is the right one and because a hang
-/// is a finding worth not losing. The decisive evidence is elsewhere and does
-/// not depend on it: `Isolate.onEvent` and `Isolate.handleEvent` are
-/// unconditional `throw UnsupportedError` stubs in
-/// `sdk/lib/_internal/vm/lib/isolate_patch.dart` on `dart-sdk` main, so no
-/// arrangement of threads reaches a working drain today.
+/// So this probe now calls `shutdownSync()` on the isolate it creates, and
+/// exits. It is still not a working drain: `onEvent`/`handleEvent` remain
+/// `throw UnsupportedError` stubs on 3.13, and on a dev SDK after
+/// dart-lang/sdk#64285 `Isolate.create` is no longer public at all, while
+/// `NativeCallable.isolateGroupBound` aborts the VM unless it runs with
+/// `--experimental-shared-data`.
 library;
 
 import 'dart:ffi';
@@ -82,7 +84,8 @@ const int kOtherError = 13;
 /// isolate. Returns a code because it may not write to a static.
 int _threadMain(Pointer<Void> parameter) {
   try {
-    Isolate.create(debugName: 'group-bound-created');
+    // Left alive, the created isolate keeps the VM from exiting; see above.
+    Isolate.create(debugName: 'group-bound-created').shutdownSync();
     return kCreated;
   } on StateError {
     return kStateError;

@@ -1185,8 +1185,13 @@ Não depender de API experimental no núcleo estável. Se `isolateGroupBound` fo
 - oferecer fallback;
 - não usá-lo para contratos públicos.
 
-O construtor não está disponível no SDK Dart 3.6.2 usado atualmente. Em SDKs
-mais novos ele aceita retorno e chamadas de qualquer thread, mas callback e
+O construtor não está disponível no SDK Dart 3.6.2 usado atualmente. Em 3.13.3
+estável ele funciona. No SDK dev posterior à dart-lang/sdk#64285
+(3.14.0-248.0.dev), porém, construí-lo **aborta a VM** a menos que o programa
+rode com `--experimental-shared-data`, uma flag de VM que um pacote não
+controla. Medido em Linux, macOS e Windows por
+`repro/dart_sdk_isolate_event_loop/`. Em SDKs que o expõem, ele aceita retorno
+e chamadas de qualquer thread, mas callback e
 `exceptionalReturn` precisam ser trivialmente compartilháveis, e o código não
 pode depender de estado global/estático específico de um isolate. Mesmo quando
 disponível, não será usado como `WndProc` principal: não oferece vantagem para
@@ -1198,7 +1203,7 @@ e dependência experimental.
 | `WndProc` e callback síncrono na UI | `NativeCallable.isolateLocal` | mesma thread, retorno imediato |
 | Notificação `void` de thread externa | `NativeCallable.listener` | entrega assíncrona e ponte por `PostMessage` |
 | Callback top-level com vida do isolate | `Pointer.fromFunction` | mesma restrição de thread de `isolateLocal` |
-| Callback síncrono de qualquer thread | `isolateGroupBound` | experimental; fora do núcleo e ausente no SDK 3.6.2 |
+| Callback síncrono de qualquer thread | `isolateGroupBound` | experimental; fora do núcleo, ausente no SDK 3.6.2 e atrás de `--experimental-shared-data` no dev |
 
 ## 10.4 Registro de callbacks
 
