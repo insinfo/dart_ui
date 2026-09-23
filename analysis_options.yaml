@@ -13,6 +13,8 @@ analyzer:
     # only against an SDK that has the API. See the library comment in
     # `tool/sdk313/created_isolate_drain_probe.dart`.
     - tool/sdk313/**
+    # Standalone SDK reproductions, pinned to SDKs other than the package's.
+    - repro/**
   language:
     strict-casts: true
     strict-raw-types: true

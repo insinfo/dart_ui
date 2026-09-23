@@ -1,0 +1,75 @@
+# Reproductions for dart-lang/sdk#64229 and #64230 on Linux, macOS and Windows.
+#
+# Not a gate. Every probe case runs in its own subprocess under the watchdog in
+# `bin/run_all.dart`, which turns hangs and VM aborts into summary lines, so a
+# job fails only if the runner itself cannot run. The result is the log and
+# the step summary.
+#
+# Manual trigger, or on changes to the repro package:
+#   gh workflow run "SDK isolate repro"
+name: SDK isolate repro
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - repro/dart_sdk_isolate_event_loop/**
+      - .github/workflows/sdk_isolate_repro.yml
+
+concurrency:
+  group: sdk-isolate-repro-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  repro:
+    name: ${{ matrix.os }} / Dart ${{ matrix.sdk }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14, windows-latest]
+        # 3.13.3: the last stable that exposes Isolate.create/onEvent/
+        # handleEvent publicly. dev: after the unship in dart-lang/sdk#64285.
+        sdk: ['3.13.3', dev]
+    defaults:
+      run:
+        shell: bash
+        working-directory: repro/dart_sdk_isolate_event_loop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ matrix.sdk }}
+
+      - name: Resolve (no dependencies)
+        run: dart pub get
+
+      - name: Run all cases
+        run: |
+          dart run bin/run_all.dart --timeout=30 | tee run.log
+          {
+            echo "### ${{ matrix.os }} / $(dart --version 2>&1)"
+            echo '```'
+            sed -n '/===== SUMMARY/,$p' run.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run all cases with --experimental-shared-data
+        if: matrix.sdk == 'dev'
+        run: |
+          dart run bin/run_all.dart --timeout=30 \
+            --vm-flag=--experimental-shared-data | tee run-shared-data.log
+          {
+            echo "### ${{ matrix.os }} / dev, --experimental-shared-data"
+            echo '```'
+            sed -n '/===== SUMMARY/,$p' run-shared-data.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sdk-isolate-repro-${{ matrix.os }}-${{ matrix.sdk }}
+          path: repro/dart_sdk_isolate_event_loop/run*.log

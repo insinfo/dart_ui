@@ -1,0 +1,11 @@
+name: dart_sdk_isolate_event_loop
+description: >-
+  Standalone reproductions for dart-lang/sdk#64229 and #64230: group-bound
+  callbacks on foreign threads, and the event loop under a native frame.
+version: 0.0.1
+publish_to: none
+
+# The probes name `dart:isolate` and `dart:ffi` members added in 3.13. No
+# dependencies on purpose: a fresh clone runs with `dart run` alone.
+environment:
+  sdk: '>=3.13.0 <4.0.0'

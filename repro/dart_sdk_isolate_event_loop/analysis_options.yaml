@@ -1,0 +1,6 @@
+# Standalone on purpose: the repository root's options include
+# `package:lints`, and this package has no dependencies to resolve it from.
+analyzer:
+  language:
+    strict-casts: true
+    strict-raw-types: true
