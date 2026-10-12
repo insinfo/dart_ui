@@ -3626,22 +3626,35 @@ Validar com VoiceOver e Accessibility Inspector.
 
 ## 20.15 Critérios AppKit
 
-- [ ] app bundle;
-- [ ] NSApplication;
-- [ ] janela;
-- [ ] custom NSView;
-- [ ] CPU;
-- [ ] Retina;
-- [ ] mouse/trackpad;
-- [ ] teclado;
-- [ ] IME;
-- [ ] clipboard;
-- [ ] drag;
-- [ ] menus;
-- [ ] file dialogs;
-- [ ] acessibilidade;
-- [ ] x64;
-- [ ] arm64;
+Revisto em 12/10/2026 contra o host (`native/dart_ui_macos_host.m`) e as
+sondas do workflow `macos_popup_probe.yml`, que rodam num `macos-14` com
+WindowServer a cada mudança no backend.
+
+- [ ] app bundle — o host é um binário avulso, sem `Info.plist`;
+- [x] NSApplication — o host roda `NSApp` na thread principal (ADR 0001);
+- [x] janela — `MacosWindow` e a galeria (`MACOS_GALLERY=PASS`), multijanela
+  com modal (`MULTIWINDOW_GALLERY=PASS`, `5412cbd`) e popups nativos
+  (`POPUP_WINDOW_SMOKE=PASS`, com e sem host reserva);
+- [x] custom NSView — `DartUiHostView`: `NSTextInputClient`, destino de drag,
+  área de rastreamento do ponteiro;
+- [x] CPU — `macos-iosurface`, hoje o fallback do Metal (§21.6);
+- [ ] Retina — a tela daqui e o runner são 1x; ver §21.6;
+- [~] mouse/trackpad — cliques, botões, contagem de cliques, rolagem precisa
+  e entrada/saída do ponteiro (`INPUT_APP_*` na sonda de input); gestos de
+  trackpad (pinça, rotação) não são lidos;
+- [x] teclado — teclas, modificadores e teclas mortas, com a convenção de
+  edição do Mac (`INPUT_APP_DEAD_KEYS`);
+- [x] IME — pré-edição, commit e texto ao redor do cursor; ver §20.10;
+- [x] clipboard — texto pelo `NSPasteboard` (`macos_clipboard_smoke`);
+- [~] drag — soltar arquivos e texto numa janela (`INPUT_APP_DROP_FILES`); arrastar
+  **para fora** não existe (`canStartDrag` é falso e recusa por nome);
+- [~] menus — menus suspensos em janelas nativas (popups); não há `NSMenu`,
+  então nem barra de menus do app nem menu de contexto do sistema;
+- [~] file dialogs — `NSOpenPanel`/`NSSavePanel` por `osascript`
+  (`file_picker_platform_io.dart`), fora do host e sem janela dona;
+- [ ] acessibilidade — o host não expõe nada a `NSAccessibility`;
+- [ ] x64 — nenhum runner Intel;
+- [x] arm64 — o job `AOT (macos-arm64)` e todo o resto rodam em Apple Silicon;
 - [ ] assinatura/notarização documentadas.
 
 ---
