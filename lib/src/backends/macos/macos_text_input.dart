@@ -16,11 +16,14 @@
 /// no enabled client - a dead key resolved while focus was elsewhere - is
 /// turned into a `TextInputEvent` by the window rather than dropped.
 ///
-/// ## Not used
+/// ## Surrounding text
 ///
-/// Surrounding text: `attributedSubstringForProposedRange:` answers nil, so an
-/// input method converts without document context, as on Win32.
-/// [usesSurroundingText] says so.
+/// Pushed with the caret (`IME_SURROUNDING`), so the host can answer
+/// `selectedRange` and `attributedSubstringForProposedRange:` - which the
+/// press-and-hold accent menu reads to know what it is replacing - and so an
+/// `insertText:replacementRange:` reaching outside the selection comes back as
+/// `IME_DELETE` ahead of the text. Until 12/10/2026 the host answered (0, 0)
+/// and nil, and picking 'é' after holding 'e' typed "eé".
 library;
 
 import 'dart:convert';
@@ -42,6 +45,10 @@ abstract interface class MacosImeHandler {
 
   /// A `COMMIT` line, decoded.
   void onCommit(String text);
+
+  /// An `IME_DELETE` line: UTF-16 units to delete around the caret before the
+  /// text that follows it.
+  void onDeleteSurrounding(int before, int after);
 }
 
 /// The window side a connection needs: its id, a way to talk to its host, and
@@ -67,7 +74,7 @@ final class MacosTextInputBackend implements TextInputBackend {
   bool get supportsComposition => true;
 
   @override
-  bool get usesSurroundingText => false;
+  bool get usesSurroundingText => true;
 
   @override
   TextInputConnection attach({
@@ -101,6 +108,7 @@ final class MacosTextInputConnection
   bool _enabled = false;
   bool _composing = false;
   Rect? _lastCaret;
+  String? _lastSurrounding;
 
   @override
   NativeWindowId get windowId => _window.id;
@@ -137,16 +145,44 @@ final class MacosTextInputConnection
   void updateEditingState() {
     if (!_attached || !_enabled) return;
     final Rect caret = _client.caretRect;
-    if (caret == _lastCaret) return;
-    if (_window.sendImeCommand(HostCommands.imeCaret(
-      caret.left,
-      caret.top,
-      caret.width < 1 ? 1 : caret.width,
-      caret.height,
-    ))) {
+    if (caret != _lastCaret &&
+        _window.sendImeCommand(HostCommands.imeCaret(
+          caret.left,
+          caret.top,
+          caret.width < 1 ? 1 : caret.width,
+          caret.height,
+        ))) {
       _lastCaret = caret;
     }
+    final String surrounding = _surroundingCommand(_client.surroundingText);
+    if (surrounding != _lastSurrounding &&
+        _window.sendImeCommand(surrounding)) {
+      _lastSurrounding = surrounding;
+    }
   }
+
+  /// At most [kMacosImeSurroundingWindow] UTF-16 units on each side of the
+  /// caret: an input method reads a few characters of context, and a whole
+  /// document would not fit the host's 8192-byte line. The offsets are into
+  /// the window, which is all the host measures against.
+  static String _surroundingCommand(ImeSurroundingText surrounding) {
+    final String text = surrounding.text;
+    var start = surrounding.cursor - kMacosImeSurroundingWindow;
+    if (start < 0) start = 0;
+    var end = surrounding.cursor + kMacosImeSurroundingWindow;
+    if (end > text.length) end = text.length;
+    // Not inside a surrogate pair at either end.
+    if (start > 0 && _isLowSurrogate(text.codeUnitAt(start))) start--;
+    if (end < text.length && _isLowSurrogate(text.codeUnitAt(end))) end++;
+    final int anchor = (surrounding.anchor - start).clamp(0, end - start);
+    return HostCommands.imeSurrounding(
+      text.substring(start, end),
+      anchor,
+      surrounding.cursor - start,
+    );
+  }
+
+  static bool _isLowSurrogate(int unit) => unit >= 0xDC00 && unit <= 0xDFFF;
 
   @override
   void cancelComposition() {
@@ -189,8 +225,23 @@ final class MacosTextInputConnection
     if (!_attached || !_enabled) return;
     _composing = false;
     _client.commitText(text);
+    // A field does not push its state from inside an input method's callback
+    // - the Wayland serial rule, see `TextField._syncTextInputState` - so the
+    // host would keep answering for the document before the commit. AppKit
+    // has no serials; the push happens here, once the client has applied it.
+    updateEditingState();
+  }
+
+  @override
+  void onDeleteSurrounding(int before, int after) {
+    if (!_attached || !_enabled) return;
+    _client.deleteSurroundingText(beforeLength: before, afterLength: after);
+    updateEditingState();
   }
 }
+
+/// UTF-16 units of context sent on each side of the caret.
+const int kMacosImeSurroundingWindow = 1000;
 
 /// Decodes the base64 of a `COMPOSE` or `COMMIT` line, or null when it is not
 /// base64 of UTF-8.

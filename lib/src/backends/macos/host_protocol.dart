@@ -18,6 +18,7 @@
 /// it saved.
 library;
 
+import 'dart:convert';
 import 'dart:typed_data';
 
 /// Protocol version this backend was written against.
@@ -283,6 +284,11 @@ abstract interface class HostMessageSink {
   /// `COMMIT=<base64>`: text that ends a composition, replacing the preedit.
   void onCommit(String base64);
 
+  /// `IME_DELETE=<before>:<after>`: UTF-16 units the input method wants
+  /// deleted around the selection before the text that follows - the
+  /// press-and-hold accent menu replacing the letter it was opened on.
+  void onImeDelete(int before, int after);
+
   /// `DRAG_ITEM=<file|text>:<base64>`: one thing a drag entering the view
   /// carries - a file path or the text - sent before its `DRAG=ENTER`.
   void onDragItem(String kind, String base64);
@@ -367,6 +373,9 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onCommit(String base64) {}
+
+  @override
+  void onImeDelete(int before, int after) {}
 
   @override
   void onDragItem(String kind, String base64) {}
@@ -597,6 +606,17 @@ final class HostProtocolParser {
     switch (_line[0]) {
       case 0x49: // 'I'
         if (_startsWith('INPUT=')) return _parseInput(6);
+        if (_startsWith('IME_DELETE=')) {
+          _cursor = 11;
+          final int before = _readInt();
+          if (before < 0 || _cursor >= _length || _line[_cursor] != _kColon) {
+            return _sink.onError('BAD_IME_DELETE');
+          }
+          _cursor++;
+          final int after = _readInt();
+          if (after < 0) return _sink.onError('BAD_IME_DELETE');
+          return _sink.onImeDelete(before, after);
+        }
       case 0x56: // 'V'
         if (_startsWith('VIEW_INPUT=')) return _parseViewInput(11);
         if (_startsWith('VSYNC ')) {
@@ -1184,6 +1204,14 @@ final class HostCommands {
 
   /// Drops the composition in progress without committing it.
   static String imeCancel() => 'IME_CANCEL\n';
+
+  /// The text around the caret and the selection in it, for the host's
+  /// `selectedRange` and `attributedSubstringForProposedRange:`. Offsets are
+  /// UTF-16 units, which a Dart String and an NSString share.
+  static String imeSurrounding(String text, int anchor, int cursor) =>
+      'IME_SURROUNDING '
+      '${text.isEmpty ? '-' : base64.encode(utf8.encode(text))} '
+      '$anchor $cursor\n';
 
   /// Asks for the pasteboard's text. Answered by `CLIPBOARD_DATA` pieces and
   /// one `CLIPBOARD=<request>:NONE|TEXT|FAILED`.

@@ -957,6 +957,10 @@ final class _HostSink with HostMessageSinkAdapter {
   void onCommit(String base64) => _window._onCommit(base64);
 
   @override
+  void onImeDelete(int before, int after) =>
+      _window.imeHandler?.onDeleteSurrounding(before, after);
+
+  @override
   void onDragItem(String kind, String base64) =>
       _window.dropTarget?.onItem(kind, base64);
 

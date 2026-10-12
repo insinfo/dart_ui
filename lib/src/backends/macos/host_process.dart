@@ -783,6 +783,9 @@ final class MacosHostProcess
   void onCommit(String base64) => _sink.onCommit(base64);
 
   @override
+  void onImeDelete(int before, int after) => _sink.onImeDelete(before, after);
+
+  @override
   void onDragItem(String kind, String base64) => _sink.onDragItem(kind, base64);
 
   @override

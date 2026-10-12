@@ -50,6 +50,9 @@ static const size_t kDartUiMaximumLineBytes = 8192;
     composeText:(NSString *)text
        selected:(NSRange)selected;
 - (void)hostView:(DartUiHostView *)view
+    deleteBefore:(NSUInteger)before
+           after:(NSUInteger)after;
+- (void)hostView:(DartUiHostView *)view
             drag:(NSString *)phase
             info:(id<NSDraggingInfo>)info;
 @end
@@ -64,6 +67,13 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 // The framework's caret, in this view's points (top-left origin), from
 // IME_CARET: where a candidate window opens. NSZeroRect until one arrives.
 @property(nonatomic, assign) NSRect caretRect;
+// The text around the framework's caret and the selection in it, in UTF-16
+// units, from IME_SURROUNDING. What selectedRange and
+// attributedSubstringForProposedRange: answer, and what a replacementRange is
+// measured against - the press-and-hold accent menu replaces the character
+// before the caret, and answering nothing turned 'e' then 'é' into "eé".
+@property(nonatomic, copy) NSString *surroundingText;
+@property(nonatomic, assign) NSRange surroundingSelection;
 // What the framework last answered for the drag over this view, from
 // DROP_RESPONSE. AppKit asks for an operation synchronously, on every
 // draggingUpdated:, and the answer lives in another process; blocking the
@@ -161,11 +171,40 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 }
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
-  (void)replacementRange;
   NSString *text =
       [string isKindOfClass:NSAttributedString.class] ? [string string] : string;
   BOOL committing = self.markedText.length > 0;
   [self.markedText setString:@""];
+  // A replacement outside the selection: what the input method wants gone
+  // first, as UTF-16 units before and after the selection. Inside it, the
+  // insertion replaces the selection anyway and nothing more is deleted.
+  if (!committing && replacementRange.location != NSNotFound) {
+    NSRange selection = self.surroundingSelection;
+    NSUInteger start = selection.location;
+    NSUInteger end = NSMaxRange(selection);
+    NSUInteger before =
+        replacementRange.location < start ? start - replacementRange.location
+                                          : 0;
+    NSUInteger after = NSMaxRange(replacementRange) > end
+                           ? NSMaxRange(replacementRange) - end
+                           : 0;
+    if (before > 0 || after > 0) {
+      [self.sink hostView:self deleteBefore:before after:after];
+    }
+    // The framework will push the new state; until it does, keep answering
+    // for the document the input method believes it just made.
+    NSString *current = self.surroundingText ?: @"";
+    NSRange replaced = NSUnionRange(
+        NSMakeRange(MIN(replacementRange.location, current.length),
+                    MIN(replacementRange.length,
+                        current.length -
+                            MIN(replacementRange.location, current.length))),
+        NSMakeRange(MIN(start, current.length), 0));
+    self.surroundingText =
+        [current stringByReplacingCharactersInRange:replaced withString:text];
+    self.surroundingSelection =
+        NSMakeRange(replaced.location + text.length, 0);
+  }
   if (text.length > 0) {
     [self.sink hostView:self insertText:text committing:committing];
   } else if (committing) {
@@ -195,20 +234,35 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   return self.markedText.length > 0;
 }
 
+// Document coordinates: the preedit sits where the selection began.
 - (NSRange)markedRange {
-  return self.markedText.length > 0 ? NSMakeRange(0, self.markedText.length)
-                                    : NSMakeRange(NSNotFound, 0);
+  return self.markedText.length > 0
+             ? NSMakeRange(self.surroundingSelection.location,
+                           self.markedText.length)
+             : NSMakeRange(NSNotFound, 0);
 }
 
 - (NSRange)selectedRange {
-  return NSMakeRange(0, 0);
+  if (self.markedText.length > 0) {
+    return NSMakeRange(
+        self.surroundingSelection.location + self.markedText.length, 0);
+  }
+  return self.surroundingSelection;
 }
 
+// The framework's text around the caret, as plain text. Nil outside it, which
+// tells the input method there is nothing there rather than inventing it.
 - (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range
                                                  actualRange:(NSRangePointer)actualRange {
-  (void)range;
-  (void)actualRange;
-  return nil;
+  NSString *text = self.surroundingText ?: @"";
+  if (range.location == NSNotFound || range.location >= text.length) {
+    return nil;
+  }
+  NSRange clamped = NSMakeRange(
+      range.location, MIN(range.length, text.length - range.location));
+  if (actualRange != NULL) *actualRange = clamped;
+  return [[NSAttributedString alloc]
+      initWithString:[text substringWithRange:clamped]];
 }
 
 - (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
@@ -768,6 +822,18 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
   fflush(stdout);
 }
 
+// IME_DELETE=<before>:<after>: UTF-16 units to delete around the selection
+// before the text that follows. Sent ahead of the TEXT_INPUT or COMMIT of an
+// insertText:replacementRange: whose range reaches outside the selection.
+- (void)hostView:(DartUiHostView *)view
+    deleteBefore:(NSUInteger)before
+           after:(NSUInteger)after {
+  (void)view;
+  if (!self.protocolReady || self.terminating) return;
+  printf("IME_DELETE=%lu:%lu\n", (unsigned long)before, (unsigned long)after);
+  fflush(stdout);
+}
+
 // DRAG_ITEM=<file|text>:<base64> for each thing the drag carries, before the
 // DRAG=ENTER that uses them; then DRAG=<ENTER|OVER|DROP>:<x>:<y>:<mask>:<flags>
 // with view points (top-left origin), the source's NSDragOperation mask and
@@ -1300,6 +1366,13 @@ static const NSUInteger kClipboardChunk = 6000;
     } else if ([parts[1] isEqualToString:@"commit"]) {
       [self.hostView insertText:text
                replacementRange:NSMakeRange(NSNotFound, 0)];
+    } else if ([parts[1] isEqualToString:@"replace"] && parts.count == 5) {
+      // SYNTH_IME replace <b64> <location> <length>: what the press-and-hold
+      // accent menu calls when a variant is picked.
+      [self.hostView
+                insertText:text
+          replacementRange:NSMakeRange((NSUInteger)parts[3].integerValue,
+                                       (NSUInteger)parts[4].integerValue)];
     } else {
       [self printError:@"BAD_SYNTH_IME"];
     }
@@ -1507,6 +1580,22 @@ static const NSUInteger kClipboardChunk = 6000;
                      parts[3].doubleValue, parts[4].doubleValue);
     } else {
       [self printError:@"BAD_IME_CARET"];
+    }
+  } else if ([command hasPrefix:@"IME_SURROUNDING "]) {
+    // IME_SURROUNDING <base64|-> <anchor> <cursor>, offsets in UTF-16 units.
+    NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+    NSString *text = parts.count == 4 ? [self decodeSynthText:parts[1]] : nil;
+    if (text == nil) {
+      [self printError:@"BAD_IME_SURROUNDING"];
+    } else {
+      NSUInteger anchor = MIN((NSUInteger)MAX(parts[2].integerValue, 0),
+                              text.length);
+      NSUInteger cursor = MIN((NSUInteger)MAX(parts[3].integerValue, 0),
+                              text.length);
+      self.hostView.surroundingText = text;
+      self.hostView.surroundingSelection =
+          NSMakeRange(MIN(anchor, cursor),
+                      MAX(anchor, cursor) - MIN(anchor, cursor));
     }
   } else if ([command isEqualToString:@"DROP_REGISTER"]) {
     [self.hostView registerForDraggedTypes:@[

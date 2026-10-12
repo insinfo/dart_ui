@@ -417,6 +417,24 @@ Future<void> _applicationHalf(
             'committed="${controller.value}" '
             'composingAfter=${controller.isComposing}');
 
+    // The press-and-hold accent menu: hold 'e', pick 'é', and AppKit calls
+    // insertText:replacementRange: with the range of the 'e'. The host
+    // measures that range against the text the field pushed
+    // (IME_SURROUNDING) and sends IME_DELETE ahead of the 'é'. Before
+    // 12/10/2026 it answered selectedRange with (0, 0) and ignored the range,
+    // and the field read "cafeé".
+    controller
+      ..value = 'cafe'
+      // The caret after the 'e', where it is when the key is held: setting the
+      // value keeps the previous scene's caret, and a replacement range that
+      // is not next to the caret cannot be expressed as a deletion around it.
+      ..setSelection(4, 4);
+    await _pump(app, const Duration(milliseconds: 200));
+    native.synthesizeInput('SYNTH_IME replace ${_b64('é')} 3 1');
+    await _pump(app, const Duration(milliseconds: 300));
+    record('INPUT_APP_ACCENT_MENU', controller.value == 'café',
+        'value="${controller.value}"');
+
     // Files dropped on a DropTarget: the host's NSDraggingDestination, given
     // a drag over a private pasteboard (SYNTH_DRAG), through the widget
     // tree's drop routing. Paths are ASCII on purpose: macOS hands a path back
