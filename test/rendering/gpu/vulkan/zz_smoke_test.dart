@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dart_ui/src/backends/win32/win32_backend.dart';
 import 'package:dart_ui/src/backends/win32/win32_window.dart';
 import 'package:dart_ui/src/geometry/size.dart';
@@ -10,6 +12,9 @@ import 'package:dart_ui/src/rendering/gpu/vulkan/vulkan_surface_descriptor.dart'
 import 'package:test/test.dart';
 
 void main() {
+  // A Win32 window behind a Vulkan swapchain: nothing to open anywhere else.
+  // It used to stop at vkCreateInstance off Windows; with Mesa's lavapipe on
+  // the Linux CI leg the instance opens, and the Win32 backend then refused.
   test('window smoke', () async {
     final load = VulkanLibrary.open();
     final lib = load.library;
@@ -81,5 +86,7 @@ void main() {
     window.close();
     await backend.shutdown();
     instance.dispose();
-  }, timeout: const Timeout(Duration(seconds: 60)));
+  },
+      timeout: const Timeout(Duration(seconds: 60)),
+      skip: Platform.isWindows ? null : 'a Win32 window smoke: needs Windows');
 }
