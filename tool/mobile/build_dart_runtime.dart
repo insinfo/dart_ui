@@ -23,6 +23,12 @@
 /// an `arm64e.x1-macos` target that lld 3.13.5 rejects ("unknown target").
 /// `--mac-sdk` overrides the choice.
 ///
+/// `tool/mobile/dart_sdk_patches/<tag>-*.patch` is applied to the checkout
+/// first (once; an applied patch is skipped). For iOS it makes the runtime an
+/// app: the main isolate's messages run on the main thread from the main run
+/// loop, the snapshot is found in the bundle, and `UIApplicationMain` runs
+/// with the delegate class the Dart code registered (see the patch).
+///
 /// Never the Flutter engine: these are the Dart SDK's own build targets.
 library;
 
@@ -80,6 +86,7 @@ Future<void> main(List<String> arguments) async {
   if (!File('$sdk/tools/build.py').existsSync()) {
     _fail('no Dart SDK checkout at $sdk (use --fetch)');
   }
+  await _applyPatches(sdk);
   macSdk ??= Platform.isMacOS ? _pickMacSdk() : null;
   for (final String name in targets) {
     final ({String os, String arch, String config}) target = _targets[name]!;
@@ -111,6 +118,24 @@ Future<void> main(List<String> arguments) async {
       ..writeln('$name:')
       ..writeln('  runtime:      $out/exe.stripped/dartaotruntime')
       ..writeln('  gen_snapshot: $out/$hostToolchain/gen_snapshot');
+  }
+}
+
+Future<void> _applyPatches(String sdk) async {
+  final String here = File(Platform.script.toFilePath()).parent.path;
+  final Directory patches = Directory('$here/dart_sdk_patches');
+  if (!patches.existsSync()) return;
+  for (final File patch in patches
+      .listSync()
+      .whereType<File>()
+      .where((File f) => f.path.split('/').last.startsWith('$sdkTag-'))) {
+    // Already applied when it reverses cleanly.
+    final ProcessResult applied = await Process.run(
+        'git', <String>['apply', '--reverse', '--check', patch.absolute.path],
+        workingDirectory: sdk);
+    if (applied.exitCode == 0) continue;
+    await _run('git', <String>['apply', patch.absolute.path],
+        workingDirectory: sdk);
   }
 }
 

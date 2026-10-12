@@ -70,7 +70,20 @@ abre em 1,4 s e responde ao toque.
 
 ## iOS
 
-Precisa do caminho embutido do ADR 0010: o iOS proíbe processos filhos e JIT.
-Ferramentas prontas no Mac de desenvolvimento: Xcode 27.0 em
+Caminho embutido do ADR 0010: o executável do app é o `dartaotruntime`
+compilado para iOS com o patch de `tool/mobile/dart_sdk_patches/`, e o programa
+é um snapshot Mach-O em `Frameworks/App.framework/App`. O Dart roda na thread
+principal e fala com o UIKit pelo runtime ObjC (FFI).
+
+```
+dart run tool/mobile/build_dart_runtime.dart --checkout /caminho/dart-sdk-src \
+    --target ios-simulator-arm64        # ou ios-arm64 para aparelho
+```
+
+Funciona no simulador iOS 27.0: app abre, delegates de app e de cena em Dart,
+janela UIKit desenhada. Próximo: o backend `ios` no `lib/` (janela, desenho,
+toque, teclado) e o empacotamento (`.app` assinado, IPA).
+
+Ferramentas no Mac de desenvolvimento: Xcode 27.0 em
 `/Volumes/ssd_dock/Xcode.app` (usar `DEVELOPER_DIR`), SDKs iOS 27.0 e runtime
 do simulador iOS 27.0.

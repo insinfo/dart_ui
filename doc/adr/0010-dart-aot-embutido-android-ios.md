@@ -1,6 +1,6 @@
 # ADR 0010 — Android e iOS: Dart AOT embutido no app, runtime compilado do Dart SDK
 
-**Status:** proposto (em implementação desde 12 de outubro de 2026)
+**Status:** aceito em parte — Android AOT e o iOS no simulador funcionam (12 de outubro de 2026)
 **Data:** 12 de outubro de 2026
 **Relacionado:** [ADR 0009](0009-android-host-java-e-processo-dart.md),
 [ADR 0001](0001-worker-process-com-iosurface-no-macos.md),
@@ -59,3 +59,33 @@ que o projeto não aceita em nenhuma forma. As fontes do engine em
   mesma tag.
 - **App Store:** só APIs públicas no iOS (nada de SkyLight ou equivalente).
   Publicar exige o Apple Developer Program.
+
+## Resultado (12/10/2026)
+
+**Sem camada nativa nossa.** O que o ADR previa como um `main` em C/Objective-C
+por plataforma não foi preciso:
+
+- **Android:** o `dartaotruntime` e o `gen_snapshot` cruzado, compilados do
+  Dart SDK 3.13.5, rodam no modelo do ADR 0009 (processo filho). O APK AOT do
+  `hello_world` tem 3,1 MB.
+- **iOS:** o executável do app **é** o `dartaotruntime` compilado para iOS, e o
+  programa é um snapshot `app-aot-macho-dylib` assinado em
+  `Frameworks/App.framework/App`, carregado por `dlopen` como qualquer framework
+  embutido. Um patch de ~100 linhas no runtime
+  (`tool/mobile/dart_sdk_patches/3.13.5-ios.patch`, todo sob
+  `DART_HOST_OS_IOS`) faz três coisas:
+  1. acha o snapshot no bundle quando o iOS abre o app sem argumentos;
+  2. trata as mensagens do isolate principal **na thread principal**, a partir
+     do run loop (`Dart_SetMessageNotifyCallback` + uma fonte de CFRunLoop),
+     com o isolate sempre entrado nessa thread - o Dart chama o UIKit direto e o
+     UIKit chama o Dart (`NativeCallable.isolateLocal`) sem trocar de thread;
+  3. depois do `main()` do Dart, roda `UIApplicationMain` com a classe
+     `DartUiAppDelegate` que o Dart registrou.
+
+  Mais dois ajustes para compilar com o SDK do iOS 27 (`<cmath>`, e sem
+  `-exported_symbol` no iOS). Medido no simulador iPhone 18 Pro (iOS 27.0): o
+  Dart registra delegate de app e de cena, recebe `didFinishLaunching` e
+  `scene:willConnect`, cria a `UIWindow` e pinta a tela.
+
+O dylib do snapshot sai marcado como iOS; para o simulador a marca é trocada
+(`vtool -set-build-version iossim`) antes de assinar.

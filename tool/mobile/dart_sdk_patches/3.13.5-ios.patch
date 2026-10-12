@@ -1,0 +1,160 @@
+diff --git a/runtime/bin/BUILD.gn b/runtime/bin/BUILD.gn
+index ecff06a6..87ba4628 100644
+--- a/runtime/bin/BUILD.gn
++++ b/runtime/bin/BUILD.gn
+@@ -40,11 +40,14 @@ config("export_api_symbols") {
+              is_ubsan) {
+     # Export everything so the sanitizers can intercept whatever they want.
+     ldflags = [ "-rdynamic" ]
+-  } else if (is_mac || is_ios) {
++  } else if (is_mac) {
+     ldflags = [
+       "-Wl,-exported_symbol",
+       "-Wl,_Dart_*",
+     ]
++  } else if (is_ios) {
++    # Nothing: libc++abi's -unexported_symbols_list cannot be combined with
++    # -exported_symbol, and nothing looks Dart_* up in an iOS app's binary.
+   } else {
+     ldflags = [ "-Wl,--export-dynamic-symbol=Dart_*" ]
+   }
+diff --git a/runtime/bin/main.cc b/runtime/bin/main.cc
+index 113591a3..38ae20ec 100644
+--- a/runtime/bin/main.cc
++++ b/runtime/bin/main.cc
+@@ -5,7 +5,29 @@
+ #include "bin/main_impl.h"
+ #include "platform/assert.h"
+ 
++#if defined(DART_HOST_OS_IOS)
++#include <stdlib.h>
++#include <string.h>
++#endif
++
+ int main(int argc, char** argv) {
++#if defined(DART_HOST_OS_IOS)
++  // dart_ui: iOS launches an app with no arguments. The snapshot is the
++  // signed dylib the bundle carries at Frameworks/App.framework/App.
++  if (argc < 2) {
++    const char* slash = strrchr(argv[0], '/');
++    const size_t dir = slash == nullptr ? 0 : slash - argv[0] + 1;
++    static const char kSnapshot[] = "Frameworks/App.framework/App";
++    char* path = static_cast<char*>(malloc(dir + sizeof(kSnapshot)));
++    memcpy(path, argv[0], dir);
++    memcpy(path + dir, kSnapshot, sizeof(kSnapshot));
++    static char* ios_argv[3];
++    ios_argv[0] = argv[0];
++    ios_argv[1] = path;
++    ios_argv[2] = nullptr;
++    dart::bin::main(2, ios_argv);
++  }
++#endif
+   dart::bin::main(argc, argv);
+   UNREACHABLE();
+ }
+diff --git a/runtime/bin/main_impl.cc b/runtime/bin/main_impl.cc
+index ab1c5411..e29d4a3b 100644
+--- a/runtime/bin/main_impl.cc
++++ b/runtime/bin/main_impl.cc
+@@ -966,6 +966,71 @@ static void CompileAndSaveKernel(const char* script_name,
+   WriteDepsFile();
+ }
+ 
++#if defined(DART_HOST_OS_IOS)
++// dart_ui: on iOS the main isolate's messages are handled on the main thread,
++// from the main run loop, so the Dart code may call UIKit directly and UIKit
++// may call back into it (NativeCallable.isolateLocal). The isolate stays
++// entered on this thread for the life of the process. Dart's main() returns
++// after registering its classes; this then runs UIApplicationMain with the
++// delegate class the application registered, "DartUiAppDelegate". A program
++// that registers none gets a plain CFRunLoopRun.
++}  // namespace bin
++}  // namespace dart
++#include <CoreFoundation/CoreFoundation.h>
++#include <dlfcn.h>
++#include <atomic>
++namespace dart {
++namespace bin {
++
++static std::atomic<intptr_t> ios_pending_messages{0};
++static CFRunLoopSourceRef ios_message_source = nullptr;
++static CFRunLoopRef ios_main_loop = nullptr;
++
++static void IosNotifyMessage(Dart_Isolate) {
++  ios_pending_messages.fetch_add(1);
++  CFRunLoopSourceSignal(ios_message_source);
++  CFRunLoopWakeUp(ios_main_loop);
++}
++
++static void IosHandleMessages(void*) {
++  for (intptr_t n = ios_pending_messages.exchange(0); n > 0; n--) {
++    Dart_EnterScope();
++    Dart_Handle result = Dart_HandleMessage();
++    if (Dart_IsError(result)) {
++      Syslog::PrintErr("%s\n", Dart_GetError(result));
++    }
++    Dart_ExitScope();
++  }
++}
++
++static void IosInstallMessageLoop() {
++  ios_main_loop = CFRunLoopGetMain();
++  CFRunLoopSourceContext context = {};
++  context.perform = IosHandleMessages;
++  ios_message_source = CFRunLoopSourceCreate(nullptr, 0, &context);
++  CFRunLoopAddSource(ios_main_loop, ios_message_source, kCFRunLoopCommonModes);
++  Dart_SetMessageNotifyCallback(IosNotifyMessage);
++}
++
++[[noreturn]] static void IosRunMainLoop() {
++  // main() and whatever it queued synchronously.
++  IosHandleMessages(nullptr);
++  using GetClass = void* (*)(const char*);
++  using AppMain = int (*)(int, char**, const void*, const void*);
++  auto get_class =
++      reinterpret_cast<GetClass>(dlsym(RTLD_DEFAULT, "objc_getClass"));
++  auto app_main =
++      reinterpret_cast<AppMain>(dlsym(RTLD_DEFAULT, "UIApplicationMain"));
++  if (get_class != nullptr && app_main != nullptr &&
++      get_class("DartUiAppDelegate") != nullptr) {
++    app_main(0, nullptr, nullptr, CFSTR("DartUiAppDelegate"));
++  }
++  while (true) {
++    CFRunLoopRun();
++  }
++}
++#endif  // defined(DART_HOST_OS_IOS)
++
+ void RunMainIsolate(const char* script_name,
+                     const char* asset_resolution_base,
+                     const char* package_config_override,
+@@ -1068,10 +1133,17 @@ void RunMainIsolate(const char* script_name,
+ 
+   Dart_Handle isolate_lib =
+       Dart_LookupLibrary(Dart_NewStringFromCString("dart:isolate"));
++#if defined(DART_HOST_OS_IOS)
++  // Before the start message is queued, so it is announced to this loop.
++  IosInstallMessageLoop();
++#endif
+   result =
+       Dart_Invoke(isolate_lib, Dart_NewStringFromCString("_startMainIsolate"),
+                   kNumIsolateArgs, isolate_args);
+   CHECK_RESULT(result);
++#if defined(DART_HOST_OS_IOS)
++  IosRunMainLoop();
++#endif
+ 
+   // Keep handling messages until the last active receive port is closed.
+   result = Dart_RunLoop();
+diff --git a/runtime/vm/thread.cc b/runtime/vm/thread.cc
+index 887450d2..ba2a147c 100644
+--- a/runtime/vm/thread.cc
++++ b/runtime/vm/thread.cc
+@@ -2,6 +2,7 @@
+ // for details. All rights reserved. Use of this source code is governed by a
+ // BSD-style license that can be found in the LICENSE file.
+ 
++#include <cmath>  // NAN: the iOS 27 SDK headers no longer bring it in.
+ #include <utility>
+ 
+ #include "vm/thread.h"
