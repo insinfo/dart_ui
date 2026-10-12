@@ -212,8 +212,11 @@ void main() {
 
     test('a radial ramp with a focus, reflected, in a rounded rectangle',
         () async {
+      // 2 on lavapipe, on 14 pixels: the focal root goes through a sqrt and
+      // two divisions in float32, and the CPU's float64 lands a level away on
+      // a ramp texel boundary. The linear and repeat scenes stay at 1.
       await _expectParity(() => device, skip, _gradientScene(_radialRRect),
-          tolerance: _gradientTolerance);
+          tolerance: _gradientTolerance + 1);
     });
 
     test('a repeating ramp on a path, under a transform', () async {

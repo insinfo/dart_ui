@@ -36,15 +36,17 @@ void main() {
       session.close();
     });
 
-    test('the driver compiled all nine', () {
+    test('the driver compiled all twelve', () {
       // Null here means vkCreateShaderModule or vkCreateGraphicsPipelines
       // refused, which for a module this backend generated itself is a defect
       // in `vulkan_spirv.dart` and not a driver difference to be tolerated.
       expect(pipelines, isNotNull,
           reason: 'the driver refused the generated SPIR-V or the pipeline '
               'state built around it');
+      // Nine for the three kinds under three blends, and three for the
+      // gradient coverage-mask module under the same three.
       expect(pipelines!.pipelineCount,
-          GpuPipelineKind.values.length * kVulkanBlendModes.length);
+          (GpuPipelineKind.values.length + 1) * kVulkanBlendModes.length);
       expect(pipelines!.shaderWords, greaterThan(0));
       printOnFailure('${pipelines!.shaderWords} SPIR-V words compiled on '
           '${session.device!.physicalDevice.name}');
