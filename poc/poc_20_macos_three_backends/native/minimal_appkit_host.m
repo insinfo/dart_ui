@@ -165,6 +165,12 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
 @property(nonatomic, strong) id eventMonitor;
 @property(nonatomic, assign) NSTimeInterval smokeDuration;
 @property(nonatomic, assign) BOOL commandStdin;
+// --top-left X,Y: where the content area's top-left corner goes, in the same
+// top-left global coordinates CGWindowList and SkyLight use, so the three
+// backends can be laid out side by side with one set of numbers.
+@property(nonatomic, assign) BOOL hasTopLeft;
+@property(nonatomic, assign) NSPoint topLeft;
+@property(nonatomic, copy) NSString *initialTitle;
 @property(nonatomic, assign) NSUInteger frameCount;
 // Transport 2: a shared mapping plus the one data provider that covers it. The
 // provider is built once, not per frame - that is the whole point.
@@ -196,6 +202,12 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
   (void)notification;
 
   NSRect frame = NSMakeRect(200.0, 200.0, 480.0, 320.0);
+  if (self.hasTopLeft) {
+    // Cocoa measures from the bottom of the primary screen, upwards.
+    CGFloat screenHeight = NSScreen.screens.firstObject.frame.size.height;
+    frame.origin = NSMakePoint(
+        self.topLeft.x, screenHeight - self.topLeft.y - frame.size.height);
+  }
   NSWindowStyleMask style = NSWindowStyleMaskTitled |
                             NSWindowStyleMaskClosable |
                             NSWindowStyleMaskResizable;
@@ -203,12 +215,24 @@ typedef kern_return_t (*DartUiMachPortsLookup)(task_t, mach_port_array_t *,
                                             styleMask:style
                                               backing:NSBackingStoreBuffered
                                                 defer:NO];
-  self.window.title = @"dart_ui minimal AppKit host";
+  // NSWindow defaults to releasing itself on close, which under ARC is one
+  // release too many for a window held by a strong property: clicking the close
+  // button freed it, and applicationWillTerminate: then crashed in objc_retain
+  // on [self.window orderOut:] (EXC_BAD_ACCESS, 2026-10-12 crash report).
+  self.window.releasedWhenClosed = NO;
+  self.window.title = self.initialTitle ?: @"dart_ui minimal AppKit host";
   self.hostView = [[DartUiHostView alloc]
       initWithFrame:NSMakeRect(0.0, 0.0, frame.size.width, frame.size.height)];
   self.hostView.wantsLayer = YES;
+  // Backend 3's own colour, the one the conformance suite expects
+  // (220,120,20). It used to be the same blue as SkyLight's frame, so the two
+  // windows could not be told apart before the first FRAME arrived.
   self.hostView.layer.backgroundColor =
-      [NSColor colorWithRed:0.10 green:0.45 blue:0.85 alpha:1.0].CGColor;
+      [NSColor colorWithRed:220.0 / 255.0
+                      green:120.0 / 255.0
+                       blue:20.0 / 255.0
+                      alpha:1.0]
+          .CGColor;
   // The layer must not resample the frame, or the witness reads a blend of
   // neighbouring pixels instead of the pixel that was sent.
   self.hostView.layer.magnificationFilter = kCAFilterNearest;
@@ -870,11 +894,22 @@ int main(int argc, const char *argv[]) {
   @autoreleasepool {
     NSTimeInterval smokeDuration = 0;
     BOOL commandStdin = NO;
+    BOOL hasTopLeft = NO;
+    NSPoint topLeft = NSZeroPoint;
+    NSString *title = nil;
     for (int index = 1; index < argc; index++) {
       if (strcmp(argv[index], "--smoke-seconds") == 0 && index + 1 < argc) {
         smokeDuration = strtod(argv[++index], NULL);
       } else if (strcmp(argv[index], "--command-stdin") == 0) {
         commandStdin = YES;
+      } else if (strcmp(argv[index], "--top-left") == 0 && index + 1 < argc) {
+        double x = 0, y = 0;
+        if (sscanf(argv[++index], "%lf,%lf", &x, &y) == 2) {
+          hasTopLeft = YES;
+          topLeft = NSMakePoint(x, y);
+        }
+      } else if (strcmp(argv[index], "--title") == 0 && index + 1 < argc) {
+        title = [NSString stringWithUTF8String:argv[++index]];
       }
     }
 
@@ -883,6 +918,9 @@ int main(int argc, const char *argv[]) {
         [[DartUiMinimalAppDelegate alloc] init];
     delegate.smokeDuration = smokeDuration;
     delegate.commandStdin = commandStdin;
+    delegate.hasTopLeft = hasTopLeft;
+    delegate.topLeft = topLeft;
+    delegate.initialTitle = title;
     app.delegate = delegate;
     [app setActivationPolicy:NSApplicationActivationPolicyRegular];
     [app run];

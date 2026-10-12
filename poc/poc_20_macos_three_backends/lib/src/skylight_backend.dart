@@ -42,6 +42,9 @@ typedef _SlsNotifyCallbackNative = Void Function(
     Uint32 event, _VoidPtr data, IntPtr size, _VoidPtr context);
 
 const _kCGSBackingStoreBuffered = 2;
+// What AppKit passes to SLSNewWindowWithOpaqueShape on macOS 27: a window
+// whose content is a hosted CAContext (SLSSetWindowLayerContext insists on it).
+const _kSLSWindowTypeLayerHosting = 5;
 const _kCGKeyboardEventKeycode = 9;
 
 /// CGEventType values seen on macOS 14 arm64 for injected input.
@@ -60,6 +63,9 @@ class SkylightBackendReport {
 
   int connectionId = 0;
   int processRegistration = -1;
+
+  /// GetCurrentProcess result: 0 once the process has a PSN, -1 if never asked.
+  int launchServicesCheckIn = -1;
   int registrationAttempts = 0;
   int eventPort = 0;
   int windowId = 0;
@@ -69,6 +75,10 @@ class SkylightBackendReport {
   int windowEventMaskBefore = 0;
   int windowEventMaskAfter = 0;
   int eventsRead = 0;
+
+  /// 'ca-layer' where WindowServer's CAWindowContent feature is on (macOS 27
+  /// measured), 'cg-context' where it is off (macOS 14 CI).
+  String presentation = '';
   final List<int> eventTypes = <int>[];
   final List<String> teardownSteps = <String>[];
   final List<String> missingSymbols = <String>[];
@@ -97,6 +107,10 @@ class SkylightBackend implements MacosWindowBackend {
   _VoidPtr _region = nullptr;
   _VoidPtr _windowContext = nullptr;
   int _windowId = 0;
+  // CA presentation (see [_caWindowContent]): our CAContext hosted in the
+  // window and the one layer whose contents are the frame.
+  _VoidPtr _caContext = nullptr;
+  _VoidPtr _caLayer = nullptr;
 
   int _ownerThread = 0;
   bool _threadStable = true;
@@ -130,6 +144,148 @@ class SkylightBackend implements MacosWindowBackend {
   late final SyntheticInput _syntheticInput = SyntheticInput();
   late final _cfRelease = _coreFoundation.lookupFunction<
       Void Function(_VoidPtr), void Function(_VoidPtr)>('CFRelease');
+
+  // --- CA presentation plumbing ---------------------------------------------
+  //
+  // With WindowServer's CAWindowContent feature on, a window's backing store is
+  // a Core Animation layer, and SkyLight updates it from blocks it always
+  // dispatch_async()s to the MAIN queue (__CGSWindowUpdateBackingStoreData and
+  // __CGSWindowReloadCABackingStoreLayer, lldb 2026-10-12). A Dart standalone
+  // process never drains the main queue - thread 0 sits in Dart_RunLoop - so
+  // SLWindowContextCreate drawing reached nobody: the window stayed
+  // transparent. AppKit creates its windows with type 5 and hosts a CAContext
+  // in them (SLSSetWindowLayerContext); doing the same, and committing the
+  // CATransaction on this thread, needs no main thread at all.
+
+  static final DynamicLibrary _objc =
+      DynamicLibrary.open('/usr/lib/libobjc.A.dylib');
+  late final DynamicLibrary _quartzCore = DynamicLibrary.open(
+      '/System/Library/Frameworks/QuartzCore.framework/QuartzCore');
+  late final _getClass = _objc.lookupFunction<_VoidPtr Function(Pointer<Utf8>),
+      _VoidPtr Function(Pointer<Utf8>)>('objc_getClass');
+  late final _registerSelector = _objc.lookupFunction<
+      _VoidPtr Function(Pointer<Utf8>),
+      _VoidPtr Function(Pointer<Utf8>)>('sel_registerName');
+  late final _send = _objc.lookupFunction<_VoidPtr Function(_VoidPtr, _VoidPtr),
+      _VoidPtr Function(_VoidPtr, _VoidPtr)>('objc_msgSend');
+  late final _sendObject = _objc.lookupFunction<
+      _VoidPtr Function(_VoidPtr, _VoidPtr, _VoidPtr),
+      _VoidPtr Function(_VoidPtr, _VoidPtr, _VoidPtr)>('objc_msgSend');
+  late final _sendBool = _objc.lookupFunction<
+      _VoidPtr Function(_VoidPtr, _VoidPtr, Bool),
+      _VoidPtr Function(_VoidPtr, _VoidPtr, bool)>('objc_msgSend');
+  late final _sendRect = _objc.lookupFunction<
+      _VoidPtr Function(_VoidPtr, _VoidPtr, CGRectNative),
+      _VoidPtr Function(_VoidPtr, _VoidPtr, CGRectNative)>('objc_msgSend');
+  late final _sendConnection = _objc.lookupFunction<
+      _VoidPtr Function(_VoidPtr, _VoidPtr, Uint32, _VoidPtr),
+      _VoidPtr Function(_VoidPtr, _VoidPtr, int, _VoidPtr)>('objc_msgSend');
+  late final _poolPush =
+      _objc.lookupFunction<_VoidPtr Function(), _VoidPtr Function()>(
+          'objc_autoreleasePoolPush');
+  late final _poolPop =
+      _objc.lookupFunction<Void Function(_VoidPtr), void Function(_VoidPtr)>(
+          'objc_autoreleasePoolPop');
+
+  _VoidPtr _class(String name) {
+    final native = name.toNativeUtf8();
+    try {
+      return _getClass(native);
+    } finally {
+      calloc.free(native);
+    }
+  }
+
+  final Map<String, _VoidPtr> _selectors = <String, _VoidPtr>{};
+  _VoidPtr _sel(String name) => _selectors.putIfAbsent(name, () {
+        final native = name.toNativeUtf8();
+        try {
+          return _registerSelector(native);
+        } finally {
+          calloc.free(native);
+        }
+      });
+
+  /// The switch SkyLight itself reads in SLSGetWindowLayerContext.
+  bool get _caWindowContent {
+    try {
+      final enabled = DynamicLibrary.process().lookupFunction<
+          Bool Function(Pointer<Utf8>, Pointer<Utf8>),
+          bool Function(
+              Pointer<Utf8>, Pointer<Utf8>)>('_os_feature_enabled_impl');
+      final domain = 'WindowServer'.toNativeUtf8();
+      final feature = 'CAWindowContent'.toNativeUtf8();
+      try {
+        return enabled(domain, feature);
+      } finally {
+        calloc.free(domain);
+        calloc.free(feature);
+      }
+    } on ArgumentError {
+      return false; // No feature flags at all: an old system, the CG path.
+    }
+  }
+
+  /// Our CAContext on this connection, one layer the size of the window, and
+  /// the context installed as the window's content.
+  void _installLayerContext(int width, int height) {
+    _quartzCore; // CAContext and CALayer live here.
+    final pool = _poolPush();
+    try {
+      _caContext = _sendConnection(
+          _class('CAContext'),
+          _sel('contextWithCGSConnection:options:'),
+          report.connectionId,
+          nullptr);
+      if (_caContext == nullptr) throw StateError('CAContext');
+      _send(_caContext, _sel('retain'));
+      _caLayer = _send(_send(_class('CALayer'), _sel('layer')), _sel('retain'));
+
+      final transaction = _class('CATransaction');
+      _send(transaction, _sel('begin'));
+      _sendBool(transaction, _sel('setDisableActions:'), true);
+      final frame = calloc<CGRectNative>()
+        ..ref.width = width.toDouble()
+        ..ref.height = height.toDouble();
+      _sendRect(_caLayer, _sel('setFrame:'), frame.ref);
+      calloc.free(frame);
+      // The frame must be shown pixel for pixel, never resampled.
+      final nearest = _quartzCore.lookup<_VoidPtr>('kCAFilterNearest').value;
+      _sendObject(_caLayer, _sel('setMagnificationFilter:'), nearest);
+      _sendObject(_caLayer, _sel('setMinificationFilter:'), nearest);
+      _sendObject(_caContext, _sel('setLayer:'), _caLayer);
+      _send(transaction, _sel('commit'));
+
+      final rc = _skyLight.lookupFunction<
+          Int32 Function(Int32, Uint32, _VoidPtr),
+          int Function(int, int, _VoidPtr)>('SLSSetWindowLayerContext')(
+        report.connectionId,
+        _windowId,
+        _caContext,
+      );
+      log('SLSSetWindowLayerContext -> $rc');
+      if (rc != 0) throw StateError('SLSSetWindowLayerContext -> $rc');
+    } finally {
+      _poolPop(pool);
+    }
+  }
+
+  /// Makes [image] the layer's contents and pushes it to the render server
+  /// from this thread. The layer retains the image.
+  void _presentOnLayer(_VoidPtr image) {
+    final pool = _poolPush();
+    try {
+      final transaction = _class('CATransaction');
+      _send(transaction, _sel('begin'));
+      _sendBool(transaction, _sel('setDisableActions:'), true);
+      _sendObject(_caLayer, _sel('setContents:'), image);
+      _send(transaction, _sel('commit'));
+      // A thread without a run loop has nobody to commit implicit work later.
+      _send(transaction, _sel('flush'));
+    } finally {
+      _poolPop(pool);
+    }
+  }
 
   T? _optional<T>(T Function() lookup, String symbol) {
     try {
@@ -197,6 +353,7 @@ class SkylightBackend implements MacosWindowBackend {
   /// while another in the same job got 0 - so a bounded retry is the fix, not
   /// a different ABI.
   void _registerProcess() {
+    _checkInWithLaunchServices();
     final register =
         _skyLight.lookupFunction<Int32 Function(Int32), int Function(int)>(
             'SLPSRegisterWithServer');
@@ -217,6 +374,33 @@ class SkylightBackend implements MacosWindowBackend {
     }
     throw StateError(
         'SLPSRegisterWithServer never succeeded (${report.processRegistration})');
+  }
+
+  /// Gives this process a PSN, the way AppKit does through
+  /// `NSApplication -> GetCurrentProcess -> _RegisterApplication`.
+  ///
+  /// Without it SLPSGetCurrentProcess answers -600 (procNotFound) and the
+  /// WindowServer delivers no physical mouse button to our windows, although
+  /// SLSFindWindowAndOwner names them as the target of the click. Measured on
+  /// macOS 27 with real HID clicks (2026-10-12): 0 events without this call,
+  /// mouseDown/mouseUp with it, also with the main thread blocked.
+  /// TransformProcessType on top of it made delivery worse and is not used.
+  void _checkInWithLaunchServices() {
+    final getCurrentProcess = _optional(
+        () => DynamicLibrary.open('/System/Library/Frameworks/'
+                'ApplicationServices.framework/ApplicationServices')
+            .lookupFunction<Int16 Function(Pointer<Uint32>),
+                int Function(Pointer<Uint32>)>('GetCurrentProcess'),
+        'GetCurrentProcess');
+    if (getCurrentProcess == null) return;
+    final psn = calloc<Uint32>(2);
+    try {
+      report.launchServicesCheckIn = getCurrentProcess(psn);
+      log('GetCurrentProcess -> ${report.launchServicesCheckIn} '
+          'psn=${psn[0]}/${psn[1]}');
+    } finally {
+      calloc.free(psn);
+    }
   }
 
   /// Event types JankyBorders subscribes to immediately before asking for the
@@ -391,9 +575,15 @@ class SkylightBackend implements MacosWindowBackend {
     _lifecycle.requireRunning('create a window');
     _checkThread('createWindow');
 
+    // The historic 200/200 region + 200/200 origin lands at (400, 400), but a
+    // zero region with a 40/120 origin landed at (0, 0) on macOS 27: the origin
+    // arguments are not a position. An explicit position therefore anchors the
+    // region at zero and moves the window with SLSMoveWindow afterwards.
+    final positioned = options.left != null && options.top != null;
+    final regionOffset = positioned ? 0.0 : 200.0;
     final rect = calloc<CGRectNative>()
-      ..ref.x = 200
-      ..ref.y = 200
+      ..ref.x = regionOffset
+      ..ref.y = regionOffset
       ..ref.width = options.width.toDouble()
       ..ref.height = options.height.toDouble();
     final regionSlot = calloc<Pointer<Void>>();
@@ -414,6 +604,10 @@ class SkylightBackend implements MacosWindowBackend {
       calloc.free(regionSlot);
     }
 
+    final layerHosting = _caWindowContent;
+    report.presentation = layerHosting ? 'ca-layer' : 'cg-context';
+    log('presentation -> ${report.presentation}');
+
     final windowIdSlot = calloc<Uint32>();
     try {
       final rc = _skyLight.lookupFunction<
@@ -422,9 +616,9 @@ class SkylightBackend implements MacosWindowBackend {
           int Function(int, int, double, double, _VoidPtr,
               Pointer<Uint32>)>('SLSNewWindow')(
         report.connectionId,
-        _kCGSBackingStoreBuffered,
-        200.0,
-        200.0,
+        layerHosting ? _kSLSWindowTypeLayerHosting : _kCGSBackingStoreBuffered,
+        regionOffset,
+        regionOffset,
         _region,
         windowIdSlot,
       );
@@ -436,14 +630,36 @@ class SkylightBackend implements MacosWindowBackend {
     }
     report.windowId = _windowId;
 
-    _windowContext = _skyLight.lookupFunction<
-        _VoidPtr Function(Int32, Uint32, _VoidPtr),
-        _VoidPtr Function(int, int, _VoidPtr)>('SLWindowContextCreate')(
-      report.connectionId,
-      _windowId,
-      nullptr,
-    );
-    if (_windowContext == nullptr) throw StateError('SLWindowContextCreate');
+    if (positioned) {
+      final point = calloc<CGPointNative>()
+        ..ref.x = options.left!.toDouble()
+        ..ref.y = options.top!.toDouble();
+      try {
+        final rc = _skyLight.lookupFunction<
+            Int32 Function(Int32, Uint32, Pointer<CGPointNative>),
+            int Function(int, int, Pointer<CGPointNative>)>('SLSMoveWindow')(
+          report.connectionId,
+          _windowId,
+          point,
+        );
+        log('SLSMoveWindow(${options.left}, ${options.top}) -> $rc');
+      } finally {
+        calloc.free(point);
+      }
+    }
+
+    if (layerHosting) {
+      _installLayerContext(options.width, options.height);
+    } else {
+      _windowContext = _skyLight.lookupFunction<
+          _VoidPtr Function(Int32, Uint32, _VoidPtr),
+          _VoidPtr Function(int, int, _VoidPtr)>('SLWindowContextCreate')(
+        report.connectionId,
+        _windowId,
+        nullptr,
+      );
+      if (_windowContext == nullptr) throw StateError('SLWindowContextCreate');
+    }
 
     _requestAllWindowEvents();
 
@@ -499,7 +715,8 @@ class SkylightBackend implements MacosWindowBackend {
   Future<void> present(MacosWindow window, MacosFrame frame) async =>
       presentSync(window, frame);
 
-  /// Uploads a CPU BGRA framebuffer into the window's CGContext.
+  /// Uploads a CPU BGRA framebuffer: into the hosted layer on the CA path, into
+  /// the window's CGContext on the CG path.
   void presentSync(MacosWindow window, MacosFrame frame) {
     _lifecycle.requireRunning('present');
     _checkThread('present');
@@ -512,15 +729,19 @@ class SkylightBackend implements MacosWindowBackend {
         .asTypedList(frame.bgraPremultiplied.length)
         .setAll(0, frame.bgraPremultiplied);
 
-    final provider = _coreGraphics.lookupFunction<
-        _VoidPtr Function(_VoidPtr, _VoidPtr, IntPtr, _VoidPtr),
-        _VoidPtr Function(
-            _VoidPtr, _VoidPtr, int, _VoidPtr)>('CGDataProviderCreateWithData')(
+    // The provider owns a copy: on the CA path the render server may read the
+    // image after this call returns, long after `pixels` is freed below.
+    final data = _coreFoundation.lookupFunction<
+        _VoidPtr Function(_VoidPtr, Pointer<Uint8>, IntPtr),
+        _VoidPtr Function(_VoidPtr, Pointer<Uint8>, int)>('CFDataCreate')(
       nullptr,
-      pixels.cast(),
+      pixels,
       frame.bgraPremultiplied.length,
-      nullptr,
     );
+    final provider = _coreGraphics.lookupFunction<_VoidPtr Function(_VoidPtr),
+        _VoidPtr Function(_VoidPtr)>('CGDataProviderCreateWithCFData')(data);
+    _cfRelease(data);
+    calloc.free(pixels);
     final colorSpace =
         _coreGraphics.lookupFunction<_VoidPtr Function(), _VoidPtr Function()>(
             'CGColorSpaceCreateDeviceRGB')();
@@ -543,26 +764,28 @@ class SkylightBackend implements MacosWindowBackend {
       false,
       0,
     );
-    if (image == nullptr) {
-      calloc.free(pixels);
-      throw StateError('CGImageCreate returned null');
-    }
+    if (image == nullptr) throw StateError('CGImageCreate returned null');
 
-    final rect = calloc<CGRectNative>()
-      ..ref.x = 0
-      ..ref.y = 0
-      ..ref.width = frame.width.toDouble()
-      ..ref.height = frame.height.toDouble();
-    _coreGraphics.lookupFunction<
-        Void Function(_VoidPtr, CGRectNative, _VoidPtr),
-        void Function(_VoidPtr, CGRectNative, _VoidPtr)>('CGContextDrawImage')(
-      _windowContext,
-      rect.ref,
-      image,
-    );
-    _coreGraphics.lookupFunction<Void Function(_VoidPtr),
-        void Function(_VoidPtr)>('CGContextFlush')(_windowContext);
-    calloc.free(rect);
+    if (_caLayer != nullptr) {
+      _presentOnLayer(image);
+    } else {
+      final rect = calloc<CGRectNative>()
+        ..ref.x = 0
+        ..ref.y = 0
+        ..ref.width = frame.width.toDouble()
+        ..ref.height = frame.height.toDouble();
+      _coreGraphics.lookupFunction<
+          Void Function(_VoidPtr, CGRectNative, _VoidPtr),
+          void Function(
+              _VoidPtr, CGRectNative, _VoidPtr)>('CGContextDrawImage')(
+        _windowContext,
+        rect.ref,
+        image,
+      );
+      _coreGraphics.lookupFunction<Void Function(_VoidPtr),
+          void Function(_VoidPtr)>('CGContextFlush')(_windowContext);
+      calloc.free(rect);
+    }
 
     _coreGraphics.lookupFunction<Void Function(_VoidPtr),
         void Function(_VoidPtr)>('CGImageRelease')(image);
@@ -570,9 +793,6 @@ class SkylightBackend implements MacosWindowBackend {
         void Function(_VoidPtr)>('CGColorSpaceRelease')(colorSpace);
     _coreGraphics.lookupFunction<Void Function(_VoidPtr),
         void Function(_VoidPtr)>('CGDataProviderRelease')(provider);
-    // CGImageCreate copies nothing; the provider held the buffer and is gone
-    // now, so the frame bytes can go too.
-    calloc.free(pixels);
   }
 
   // --- input -----------------------------------------------------------------
@@ -643,6 +863,21 @@ class SkylightBackend implements MacosWindowBackend {
         report.teardownSteps.add('SLSReleaseWindow=$rc');
       }
       _windowId = 0;
+    }
+    // The window no longer shows them; the hosted tree goes after it.
+    if (_caLayer != nullptr || _caContext != nullptr) {
+      final pool = _poolPush();
+      if (_caContext != nullptr) {
+        _sendObject(_caContext, _sel('setLayer:'), nullptr);
+        _send(_caContext, _sel('release'));
+        _caContext = nullptr;
+      }
+      if (_caLayer != nullptr) {
+        _send(_caLayer, _sel('release'));
+        _caLayer = nullptr;
+      }
+      _poolPop(pool);
+      report.teardownSteps.add('CAContext+CALayer release');
     }
     if (_region != nullptr) {
       final release = _optional(

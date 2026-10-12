@@ -33,12 +33,19 @@ class MacosWindowOptions {
     required this.width,
     required this.height,
     this.title = 'dart_ui',
+    this.left,
+    this.top,
   })  : assert(width > 0),
         assert(height > 0);
 
   final int width;
   final int height;
   final String title;
+
+  /// Top-left corner of the content area in global top-left coordinates (the
+  /// space CGWindowList reports). Null keeps the backend's default placement.
+  final int? left;
+  final int? top;
 }
 
 class MacosWindow {

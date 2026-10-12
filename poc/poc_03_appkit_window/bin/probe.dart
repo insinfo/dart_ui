@@ -365,12 +365,70 @@ void _setArgument(
 
 void _invokeOnMain(Pointer<ObjCObject> invocation, {bool wait = true}) {
   invocation.msgSend('retainArguments');
+  if (wait && _reparkWhenStopped) {
+    _invokeOnMainReparking(invocation);
+    return;
+  }
   msgSendPerformOnMain(
       invocation,
       sel('performSelectorOnMainThread:withObject:waitUntilDone:'),
       sel('invoke'),
       nullptr,
       wait);
+}
+
+// ---------------------------------------------------------------------------
+// The hijacked run loop does not stay hijacked by itself.
+//
+// lldb on macOS 27 (showcase-signal, 2026-10-12): -[NSAnimation _runBlocking]
+// on a dispatch worker schedules a block on the main run loop that calls
+// CFRunLoopStop. The block runs inside the nested loop of a distantPast
+// nextEventMatchingMask:, which times out before it checks the stop flag - so
+// the flag outlives it and stops the OUTER CFRunLoopRun, the one SIGUSR2
+// started. Thread 0 goes back to Dart_RunLoop and every waitUntilDone:YES
+// from then on blocks forever.
+//
+// The handler is CFRunLoopRun itself, so it cannot loop. Instead every call is
+// made without waiting, followed by a marker whose return value proves the
+// queue reached it. If the marker is late AND CFRunLoopCopyCurrentMode(main) is
+// NULL - the loop is not running at all, as opposed to busy in a drag - thread
+// 0 is parked again with another SIGUSR2. The queued calls survive the gap and
+// run as soon as the loop is back.
+// ---------------------------------------------------------------------------
+
+bool _reparkWhenStopped = false;
+int _reparks = 0;
+Pointer<ObjCObject>? _completionMarker;
+
+final _cfRunLoopCopyCurrentMode = libCoreFoundation.lookupFunction<
+    Pointer<Void> Function(Pointer<Void>),
+    Pointer<Void> Function(Pointer<Void>)>('CFRunLoopCopyCurrentMode');
+
+void _invokeOnMainReparking(Pointer<ObjCObject> invocation) {
+  final marker = _completionMarker ??=
+      _newInvocation(getClass('NSNull'), sel('null'));
+  _writeSentinel(marker);
+  final performSelector =
+      sel('performSelectorOnMainThread:withObject:waitUntilDone:');
+  msgSendPerformOnMain(
+      invocation, performSelector, sel('invoke'), nullptr, false);
+  msgSendPerformOnMain(marker, performSelector, sel('invoke'), nullptr, false);
+
+  final waiting = Stopwatch()..start();
+  while (_isSentinel(_returnedObject(marker))) {
+    sleep(const Duration(microseconds: 200));
+    if (waiting.elapsedMilliseconds < 20) continue;
+    waiting.reset();
+    final mode = _cfRunLoopCopyCurrentMode(_hijackedMainRunLoop);
+    if (mode != nullptr) {
+      cfRelease(mode); // Busy (a drag, a button press), not gone.
+      continue;
+    }
+    _reparks++;
+    _log('main run loop was stopped from outside; re-parking thread 0 '
+        '(#$_reparks)');
+    pthread_kill(pthread_main_thread_np(), SIGUSR2);
+  }
 }
 
 Pointer<ObjCObject> _returnedObject(Pointer<ObjCObject> invocation) {
@@ -1226,15 +1284,34 @@ void probeHoldSkyLightWindow(int seconds) {
   _exitProcess(0);
 }
 
+/// [left]/[top] place the content's top-left corner in global top-left
+/// coordinates (what CGWindowList reports); without them the window keeps the
+/// historic Cocoa origin (140, 140).
 Pointer<ObjCObject> _createAndFrontNSWindow(
-    {Pointer<ObjCObject>? windowClass, int width = 800, int height = 600}) {
+    {Pointer<ObjCObject>? windowClass,
+    int width = 800,
+    int height = 600,
+    int? left,
+    int? top}) {
   final effectiveClass = windowClass ?? getClass('NSWindow');
   final allocated = effectiveClass.msgSend('alloc');
   final initSelector = sel('initWithContentRect:styleMask:backing:defer:');
   final invocation = _newInvocation(allocated, initSelector);
+  var x = 140.0;
+  var y = 140.0;
+  if (left != null && top != null) {
+    // Cocoa measures from the bottom of the primary display, upwards.
+    final mainDisplay = libCoreGraphics.lookupFunction<Uint32 Function(),
+        int Function()>('CGMainDisplayID')();
+    final bounds = libCoreGraphics.lookupFunction<
+        shared.CGRectNative Function(Uint32),
+        shared.CGRectNative Function(int)>('CGDisplayBounds')(mainDisplay);
+    x = left.toDouble();
+    y = bounds.height - top - height;
+  }
   final rect = calloc<NSRect>()
-    ..ref.x = 140
-    ..ref.y = 140
+    ..ref.x = x
+    ..ref.y = y
     ..ref.width = width.toDouble()
     ..ref.height = height.toDouble();
   final styleMask = calloc<Uint64>()
@@ -3089,6 +3166,144 @@ Future<void> probeSignalConformance() async {
   if (failures != 0) exitCode = 1;
 }
 
+// ---------------------------------------------------------------------------
+// Backend 2 showcase - the window a person looks at, next to backends 1 and 3
+// (poc_20's tool/run_showcase.sh opens all three).
+//
+// hold-appkit was not usable for that: it dequeued every NSEvent and dropped
+// it, so the window ignored clicks - the close button and title-bar drags
+// included - and it had no title. This one dispatches.
+//
+// The autorelease race the conformance notes describe does not apply here: the
+// pump invocation has retainArguments set, and an NSInvocation in that state
+// retains its return value too, so the dequeued event lives until the pump's
+// next invoke - long enough for sendEvent:. (Peeking with dequeue:NO first was
+// tried and is useless: AppKit builds a new NSEvent per call, so the peeked and
+// the dequeued object never match.) Every call is driven from Dart and waited
+// for, so while sendEvent: runs a nested tracking loop - a drag, a button
+// press - no other call of ours can land inside it.
+// ---------------------------------------------------------------------------
+
+Future<void> probeShowcaseSignal(int seconds) async {
+  const spec = shared.showcaseAppKitSignal;
+  _log('SHOWCASE_BACKEND=appkitSignal');
+  ensureAppKitLoaded();
+  if (!_parkMainThreadInRunLoop()) {
+    _log('FAILURE: could not park the main thread.');
+    exitCode = 1;
+    return;
+  }
+  _reparkWhenStopped = true;
+  final app = _finishLaunchingOnMain();
+  if (app == nullptr || _isSentinel(app)) {
+    _log('FAILURE: finishLaunching on main failed.');
+    exitCode = 1;
+    return;
+  }
+
+  final window = _createAndFrontNSWindow(
+      width: shared.showcaseFrameWidth,
+      height: shared.showcaseFrameHeight,
+      left: spec.left,
+      top: spec.top);
+  if (window == nullptr) {
+    _log('FAILURE: no NSWindow.');
+    exitCode = 1;
+    return;
+  }
+
+  // The close button must leave an object behind to ask isVisible of; the
+  // default would free the window on close and leave this pointer dangling.
+  final no = calloc<Uint8>()..value = 0;
+  final keepOnClose = _newInvocation(window, sel('setReleasedWhenClosed:'));
+  _setArgument(keepOnClose, no.cast(), 2);
+  _invokeOnMain(keepOnClose);
+  calloc.free(no);
+
+  final title = calloc<Pointer<ObjCObject>>()
+    ..value = _retainedNSString(spec.title);
+  final setTitle = _newInvocation(window, sel('setTitle:'));
+  _setArgument(setTitle, title.cast(), 2);
+  _invokeOnMain(setTitle);
+  calloc.free(title);
+
+  final numberInvocation = _newInvocation(window, sel('windowNumber'));
+  _invokeOnMain(numberInvocation);
+  final windowNumber = _returnedInt(numberInvocation);
+
+  final frame = shared.showcaseBgraFrame(spec,
+      footer: 'PID $pid  JANELA $windowNumber');
+  final image = _cgImageFromBgra(
+      frame, shared.showcaseFrameWidth, shared.showcaseFrameHeight);
+  final presented = image != nullptr && _setLayerContentsOnMain(window, image);
+
+  final activate = _newInvocation(app, sel('activateIgnoringOtherApps:'));
+  final yes = calloc<Uint8>()..value = 1;
+  _setArgument(activate, yes.cast(), 2);
+  _invokeOnMain(activate);
+  calloc.free(yes);
+
+  _log('WINDOW_ID=$windowNumber');
+  _log('PID=$pid');
+  _log('PRESENT=${presented ? 'PASS' : 'FAIL'}');
+  _log(seconds > 0
+      ? 'holding for ${seconds}s'
+      : 'holding until the window is closed');
+
+  final take = _newPumpInvocation(app);
+  final send = _newInvocation(app, sel('sendEvent:'));
+  final sendArgument = calloc<Pointer<ObjCObject>>();
+  final isVisible = _newInvocation(window, sel('isVisible'));
+
+  var dispatched = 0;
+  final deadline =
+      seconds > 0 ? DateTime.now().add(Duration(seconds: seconds)) : null;
+  var lastVisibilityCheck = DateTime.now();
+  while (deadline == null || DateTime.now().isBefore(deadline)) {
+    // Drain what is queued, a bounded number per turn, then yield.
+    for (var i = 0; i < 64; i++) {
+      _invokeOnMain(take);
+      final event = _returnedObject(take);
+      if (event == nullptr) break;
+      sendArgument.value = event;
+      _setArgument(send, sendArgument.cast(), 2);
+      _invokeOnMain(send);
+      if (dispatched++ == 0) _log('INPUT first event dispatched');
+    }
+
+    if (DateTime.now().difference(lastVisibilityCheck).inMilliseconds >= 200) {
+      lastVisibilityCheck = DateTime.now();
+      _invokeOnMain(isVisible);
+      final visible = calloc<Uint8>();
+      msgSendVoidPointer(isVisible, sel('getReturnValue:'), visible.cast());
+      final stillVisible = visible.value != 0;
+      calloc.free(visible);
+      if (!stillVisible) {
+        _log('window closed by the user');
+        break;
+      }
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  calloc.free(sendArgument);
+  _log('INPUT_EVENTS dispatched=$dispatched reparks=$_reparks');
+
+  // Same order as the conformance teardown: nothing may wait on the main
+  // thread once its hijacked run loop is stopped.
+  final orderOut = _newInvocation(window, sel('orderOut:'));
+  final nilSender = calloc<Pointer<ObjCObject>>()..value = nullptr;
+  _setArgument(orderOut, nilSender.cast(), 2);
+  _invokeOnMain(orderOut, wait: false);
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  calloc.free(nilSender);
+  // From here on a stopped loop is the goal, not something to repair.
+  _reparkWhenStopped = false;
+  final stopped = _stopHijackedMainRunLoop();
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  _log('TEARDOWN=${stopped ? 'PASS' : 'FAIL'}');
+  if (!stopped) exitCode = 1;
+}
+
 Future<void> main(List<String> args) async {
   final probe = args.isEmpty ? 'thread' : args.first;
   print('=== probe: $probe ===');
@@ -3143,6 +3358,9 @@ Future<void> main(List<String> args) async {
       await probeDispatchLoop();
     case 'conformance-signal':
       await probeSignalConformance();
+    case 'showcase-signal':
+      await probeShowcaseSignal(
+          int.tryParse(args.elementAtOrNull(1) ?? '') ?? 0);
     case 'skylight-foreground':
       await probeSkyLightForeground(
           int.tryParse(args.elementAtOrNull(1) ?? '') ?? 12);
@@ -3158,6 +3376,7 @@ Future<void> main(List<String> args) async {
           '|mainthread-window|event-pump|nsapp-run-main|skylight-window'
           '|vm-health|reverse-channel|pump-timer|hold-appkit-nopump'
           '|transform-process|appkit-bisect|keepalive-hijack'
-          '|graceful-hijack-shutdown|dispatch-loop|conformance-signal]');
+          '|graceful-hijack-shutdown|dispatch-loop|conformance-signal'
+          '|showcase-signal [seconds]]');
   }
 }

@@ -5,5 +5,6 @@ export 'src/io_surface.dart';
 export 'src/mach_clock.dart';
 export 'src/pixel_witness.dart';
 export 'src/shared_frame_buffer.dart';
+export 'src/showcase.dart';
 export 'src/skylight_backend.dart';
 export 'src/synthetic_input.dart';
