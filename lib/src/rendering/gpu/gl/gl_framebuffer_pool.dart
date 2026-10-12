@@ -654,23 +654,8 @@ final class GlDeviceFramebufferFactory
           );
       }
       if (framebuffer != 0 && attachments.hasStencil) {
-        stencilRenderbuffer = _genRenderbuffer();
-        if (stencilRenderbuffer != 0) {
-          gl
-            ..bindRenderbuffer(glRenderbuffer, stencilRenderbuffer)
-            ..renderbufferStorage(
-              glRenderbuffer,
-              glStencilIndex8,
-              width,
-              height,
-            )
-            ..framebufferRenderbuffer(
-              glFramebuffer,
-              glStencilAttachment,
-              glRenderbuffer,
-              stencilRenderbuffer,
-            );
-        }
+        stencilRenderbuffer = attachStencilRenderbuffer(gl, scratchNames,
+            width: width, height: height);
       }
     } else {
       resolveFramebuffer = _genFramebuffer();
@@ -717,24 +702,8 @@ final class GlDeviceFramebufferFactory
           );
       }
       if (framebuffer != 0 && attachments.hasStencil) {
-        stencilRenderbuffer = _genRenderbuffer();
-        if (stencilRenderbuffer != 0) {
-          gl
-            ..bindRenderbuffer(glRenderbuffer, stencilRenderbuffer)
-            ..renderbufferStorageMultisample(
-              glRenderbuffer,
-              attachments.sampleCount,
-              glStencilIndex8,
-              width,
-              height,
-            )
-            ..framebufferRenderbuffer(
-              glFramebuffer,
-              glStencilAttachment,
-              glRenderbuffer,
-              stencilRenderbuffer,
-            );
-        }
+        stencilRenderbuffer = attachStencilRenderbuffer(gl, scratchNames,
+            width: width, height: height, samples: attachments.sampleCount);
       }
     }
 
@@ -867,4 +836,58 @@ final class GlDeviceFramebufferFactory
       gl.deleteTextures(1, scratchNames);
     }
   }
+}
+
+/// Attaches an eight-bit stencil buffer to the framebuffer bound now, and
+/// returns its renderbuffer - or 0, having left nothing behind.
+///
+/// `GL_STENCIL_INDEX8` on its own first, which is what every driver this was
+/// written against takes. Then `GL_DEPTH24_STENCIL8` at the depth-stencil
+/// attachment, because a separate stencil buffer is the one combination the
+/// specification allows a driver to call unsupported - and Mesa does: on
+/// llvmpipe the stencil-only framebuffer was incomplete, the error stayed in
+/// the queue, and the next unrelated `checkError` declared the device lost
+/// (12/10/2026, the first run of the GL suite against Mesa in CI). The depth
+/// half is never read; it is the price of a packed format.
+///
+/// [samples] above 1 allocates multisampled storage. The colour attachment
+/// must already be in place, since completeness is judged with it.
+int attachStencilRenderbuffer(
+  GlApi gl,
+  Pointer<Uint32> scratch, {
+  required int width,
+  required int height,
+  int samples = 0,
+}) {
+  const List<(int, int)> candidates = <(int, int)>[
+    (glStencilIndex8, glStencilAttachment),
+    (glDepth24Stencil8, glDepthStencilAttachment),
+  ];
+  for (final (int format, int attachment) in candidates) {
+    scratch[0] = 0;
+    gl.genRenderbuffers(1, scratch);
+    final int renderbuffer = scratch[0];
+    if (renderbuffer == 0) return 0;
+    gl.bindRenderbuffer(glRenderbuffer, renderbuffer);
+    if (samples > 1) {
+      gl.renderbufferStorageMultisample(
+          glRenderbuffer, samples, format, width, height);
+    } else {
+      gl.renderbufferStorage(glRenderbuffer, format, width, height);
+    }
+    gl.framebufferRenderbuffer(
+        glFramebuffer, attachment, glRenderbuffer, renderbuffer);
+    final bool stored = gl.getError() == glNoError;
+    if (stored &&
+        gl.checkFramebufferStatus(glFramebuffer) == glFramebufferComplete) {
+      return renderbuffer;
+    }
+    gl.framebufferRenderbuffer(glFramebuffer, attachment, glRenderbuffer, 0);
+    scratch[0] = renderbuffer;
+    gl.deleteRenderbuffers(1, scratch);
+    // Drained, so the refusal of an optional format is not read later as a
+    // lost device.
+    gl.getError();
+  }
+  return 0;
 }

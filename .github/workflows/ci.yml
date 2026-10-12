@@ -180,6 +180,10 @@ jobs:
           dart test test/rendering/gpu/gl --reporter=expanded
           dart test test/rendering/gpu/gl_device_test.dart --reporter=expanded \
             --name 'a live GL device|draws a gradient densely'
+          # The sparse/stencil group, measured but not yet a gate: reported
+          # here so each fix shows up as fewer failures in the log.
+          dart test test/rendering/gpu/gl_device_test.dart --reporter=expanded \
+            --name 'opt-in sparse GL component' || true
         env:
           EGL_PLATFORM: surfaceless
           LIBGL_ALWAYS_SOFTWARE: '1'

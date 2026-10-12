@@ -3035,31 +3035,14 @@ final class GlOffscreenTarget
     // Single-sample stencil8 on the resolve framebuffer itself. Enough for an
     // explicit approach-C caller to bind, not enough for the selector to
     // promote into - which is the truthful pair of facts.
-    _device.scratchNames[0] = 0;
-    gl.genRenderbuffers(1, _device.scratchNames);
-    final int renderbuffer = _device.scratchNames[0];
+    gl.bindFramebuffer(glFramebuffer, _fbo);
+    final int renderbuffer = attachStencilRenderbuffer(
+      gl,
+      _device.scratchNames,
+      width: _surface.pixelWidth,
+      height: _surface.pixelHeight,
+    );
     if (renderbuffer == 0) return;
-    gl
-      ..bindFramebuffer(glFramebuffer, _fbo)
-      ..bindRenderbuffer(glRenderbuffer, renderbuffer)
-      ..renderbufferStorage(
-        glRenderbuffer,
-        glStencilIndex8,
-        _surface.pixelWidth,
-        _surface.pixelHeight,
-      )
-      ..framebufferRenderbuffer(
-        glFramebuffer,
-        glStencilAttachment,
-        glRenderbuffer,
-        renderbuffer,
-      );
-    if (gl.checkFramebufferStatus(glFramebuffer) != glFramebufferComplete) {
-      _device.scratchNames[0] = renderbuffer;
-      gl.deleteRenderbuffers(1, _device.scratchNames);
-      gl.getError();
-      return;
-    }
     _stencilRenderbuffer = renderbuffer;
     _surfaceAttachments = const GpuPassAttachments(stencilBits: 8);
   }
@@ -3089,9 +3072,8 @@ final class GlOffscreenTarget
 
     final int drawFbo = _genName(gl.genFramebuffers);
     final int colour = _genName(gl.genRenderbuffers);
-    final int stencil = _genName(gl.genRenderbuffers);
-    if (drawFbo == 0 || colour == 0 || stencil == 0) {
-      _deleteMultisampleObjects(drawFbo, colour, stencil);
+    if (drawFbo == 0 || colour == 0) {
+      _deleteMultisampleObjects(drawFbo, colour, 0);
       gl.getError();
       return false;
     }
@@ -3113,23 +3095,16 @@ final class GlOffscreenTarget
         glColorAttachment0,
         glRenderbuffer,
         colour,
-      )
-      ..bindRenderbuffer(glRenderbuffer, stencil)
-      ..renderbufferStorageMultisample(
-        glRenderbuffer,
-        samples,
-        glStencilIndex8,
-        width,
-        height,
-      )
-      ..framebufferRenderbuffer(
-        glFramebuffer,
-        glStencilAttachment,
-        glRenderbuffer,
-        stencil,
       );
+    final int stencil = attachStencilRenderbuffer(
+      gl,
+      _device.scratchNames,
+      width: width,
+      height: height,
+      samples: samples,
+    );
 
-    final bool complete =
+    final bool complete = stencil != 0 &&
         gl.checkFramebufferStatus(glFramebuffer) == glFramebufferComplete;
     // Restored before anything can observe it, and before the completeness
     // result is acted on: `_createSurfaceObjects` checks `_fbo` next and would
