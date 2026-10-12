@@ -97,8 +97,25 @@ abre o `Application` numa janela SkyLight, sem host e sem AppKit
   movimento chegam com `await` entre cada consulta;
 - janela com barra desenhada pelo framework (`ClientDecoratedWindow`, o mesmo
   `ClientDecorationFrame` do Wayland sem SSD), mover e redimensionar seguindo o
-  arraste na própria janela, maximizar para a tela principal, sem minimizar
-  (sem Dock, não haveria volta) — o botão some;
+  arraste na própria janela, maximizar para a tela principal;
+- **Dock sem AppKit**: `TransformProcessType(psn, kProcessTransformToForegroundApplication)`
+  dá ao processo um tile no Dock (passa de `BackgroundOnly` a `Foreground`).
+  Minimizar é `CoreDockMinimizeItemWithTitleAsync(windowId, título)` e restaurar
+  `CoreDockRestoreItemAsync(windowId)` (HIServices, API privada), sem registrar
+  o processo como cliente do Dock — então sem run loop nem callback de outra
+  thread. O clique no tile chega como Apple Event `kAEReopenApplication`
+  (`'aevt'/'rapp'`) e Sair no menu do tile como `kAEQuitApplication`, na porta
+  de `AEGetRegisteredMachPort`, consultada como a porta de eventos e recebida
+  com o trailer de auditoria (sem ele `AEProcessMessage` recusa). Uma
+  restauração que o Dock faz sozinho é notada por `SLSWindowIsOrderedIn`,
+  depois de a janela ter saído da tela (ela continua na tela durante o efeito
+  de minimizar);
+- no caminho CoreGraphics (macOS 14) crescer a janela **a substitui** por uma do
+  novo tamanho, no mesmo lugar e ordem: a janela com backing store
+  redimensionada por `SLSSetWindowShape` mantém o backing store antigo e o
+  quadro maior escrevia além dele (SIGSEGV em `CGContextDrawImage`, mesmo com
+  contexto novo). `DART_UI_SKYLIGHT_CG=1` força esse caminho num Mac que
+  hospedaria camada;
 - apresentação CPU própria (`macos-cpu`, compatível só com `macos-skylight` e
   `macos-appkit-signal`),
   a `CGImage` do framebuffer posta na `CALayer` hospedada; o Metal e o caminho
@@ -107,8 +124,14 @@ abre o `Application` numa janela SkyLight, sem host e sem AppKit
   modificadores pelas mesmas tabelas do host nativo.
 
 `tool/macos_skylight_smoke.dart` prova janela, pixels de fora
-(`screencapture -l`), clique, digitação com acento, mover, maximizar e o botão
-de fechar, com input postado pelo WindowServer (`SLEventPostToPid`).
+(`screencapture -l`), clique, digitação com acento, mover, maximizar,
+minimizar para o Dock e voltar pelo `'rapp'` enviado de outro processo (como o
+Dock envia) e o botão de fechar, com input postado pelo WindowServer
+(`SLEventPostToPid`).
+
+A barra de menus continua fora: o Menu Manager do HIToolbox cria menus em 64
+bits, mas a barra não muda sem AppKit; o caminho seria publicar janelas-imagem
+com `SLSSetMenuBars`, cujo dicionário não está documentado.
 
 ### Trabalho restante
 

@@ -22,6 +22,7 @@ import '../../../rendering/framebuffer.dart';
 import '../../../rendering/renderer.dart';
 import '../macos_cpu_window.dart';
 import '../macos_event_translation.dart';
+import 'skylight_dock.dart';
 import 'skylight_session.dart';
 
 /// The CPU surface of one [SkylightWindow] at one size.
@@ -124,10 +125,20 @@ final class SkylightWindow
   bool _visible = false;
   bool _closedEmitted = false;
   WindowState _state = WindowState.normal;
+  WindowState _stateBeforeMinimize = WindowState.normal;
+
+  /// Whether the window has left the screen since it was sent to the Dock:
+  /// it stays ordered in through the minimise effect, which is not a
+  /// restore.
+  bool _leftScreen = false;
   Rect? _restoreBounds;
 
   /// The SkyLight window id, the one `screencapture -l` takes.
   int get windowNumber => _native.id;
+
+  /// Whether the WindowServer has the window on screen - false while it is
+  /// in the Dock.
+  bool get isOnScreen => !isDisposed && _session.isOrderedIn(_native);
 
   List<BackendDiagnostic> get diagnostics =>
       List<BackendDiagnostic>.unmodifiable(_diagnostics);
@@ -329,13 +340,13 @@ final class SkylightWindow
   @override
   bool showWindowMenu(Offset position) => false;
 
-  /// No Dock to minimise into without AppKit: a minimised window would be
-  /// one nothing can bring back. Refused rather than lost.
+  /// Only with a Dock tile: a minimised window is one the Dock can bring
+  /// back, and without the tile nothing could.
   @override
-  bool get canMinimize => false;
+  bool get canMinimize => _session.dock != null;
 
   @override
-  void minimize() {}
+  void minimize() => requestState(WindowState.minimised);
 
   @override
   void setMaximized(bool maximized) =>
@@ -353,6 +364,23 @@ final class SkylightWindow
   @override
   bool requestState(WindowState state) {
     if (isDisposed) return false;
+    if (state == WindowState.minimised) {
+      if (_state == WindowState.minimised) return true;
+      final SkylightDock? dock = _session.dock;
+      if (dock == null || !_visible) return false;
+      if (!dock.minimize(_native.id, _title)) return false;
+      _stateBeforeMinimize = _state;
+      _leftScreen = false;
+      _setState(WindowState.minimised);
+      return true;
+    }
+    if (_state == WindowState.minimised) {
+      // Back from the Dock first, into the state it left; then whatever
+      // else was asked.
+      if (!(_session.dock?.restore(_native.id) ?? false)) return false;
+      _setState(_stateBeforeMinimize);
+      if (state == WindowState.normal) return true;
+    }
     switch (state) {
       case WindowState.minimised:
         return false;
@@ -371,6 +399,23 @@ final class SkylightWindow
     }
     _setState(state);
     return true;
+  }
+
+  /// Brings the window back from the Dock, for a click on the app's tile.
+  void restoreFromDock() {
+    if (_state == WindowState.minimised) requestState(WindowState.normal);
+  }
+
+  /// Notices a restore the Dock did by itself - a minimised window picked
+  /// from the tile's menu is ordered back in without asking the app.
+  void syncDockState() {
+    if (isDisposed || _state != WindowState.minimised) return;
+    final bool onScreen = _session.isOrderedIn(_native);
+    if (!onScreen) {
+      _leftScreen = true;
+    } else if (_leftScreen) {
+      _setState(_stateBeforeMinimize);
+    }
   }
 
   void _setState(WindowState next) {
@@ -483,6 +528,7 @@ final class SkylightWindow
   void onDispose() {
     _surface = null;
     _generation.invalidate();
+    if (_state == WindowState.minimised) _session.dock?.remove(_native.id);
     _session.release(_native);
     if (!_closedEmitted) {
       _closedEmitted = true;

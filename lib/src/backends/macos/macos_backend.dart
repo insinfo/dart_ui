@@ -50,6 +50,7 @@ import 'macos_drag_drop.dart';
 import 'macos_event_translation.dart';
 import 'macos_text_input.dart';
 import 'macos_window.dart';
+import 'skylight/skylight_dock.dart';
 import 'skylight/skylight_session.dart';
 import 'skylight/skylight_window.dart';
 import 'spare_host.dart';
@@ -90,6 +91,7 @@ final class MacosWindowingBackend
   Pointer<ObjCObject> _distantPast = nullptr;
   int _defaultRunLoopMode = 0;
   final Stopwatch _sinceGeometry = Stopwatch()..start();
+  final Stopwatch _sinceDockSync = Stopwatch()..start();
 
   /// A hidden popup host waiting to be adopted; see `spare_host.dart`.
   ///
@@ -485,10 +487,12 @@ final class MacosWindowingBackend
       final Stopwatch waited = Stopwatch()..start();
       while (true) {
         final List<MacosRawEvent> events = skylight.poll();
+        final bool dock = _serviceDock(skylight);
         if (events.isNotEmpty) {
           events.forEach(_dispatchSkylight);
           break;
         }
+        if (dock) break;
         final Duration left = timeout - waited.elapsed;
         if (_wakeRequested || left <= Duration.zero) break;
         sleep(left < const Duration(milliseconds: 4)
@@ -684,6 +688,38 @@ final class MacosWindowingBackend
     }
     target.handleEvent(event);
     if (release) _pointerCapture = null;
+  }
+
+  /// The Dock's requests - a click on the tile restores what is minimised,
+  /// Quit asks every window to close - and, every quarter second, a check
+  /// for windows the Dock restored by itself. True when anything happened.
+  bool _serviceDock(SkylightSession skylight) {
+    final List<SkylightDockRequest> requests = skylight.pollDock();
+    final List<SkylightWindow> windows =
+        _windows.whereType<SkylightWindow>().toList();
+    for (final SkylightDockRequest request in requests) {
+      switch (request) {
+        case SkylightDockRequest.reopen:
+          final List<SkylightWindow> minimised = windows
+              .where((SkylightWindow w) => w.state == WindowState.minimised)
+              .toList();
+          for (final SkylightWindow window in minimised) {
+            window.restoreFromDock();
+          }
+          if (minimised.isNotEmpty) _activateSkylight(minimised.last);
+        case SkylightDockRequest.quit:
+          for (final SkylightWindow window in windows) {
+            window.requestClose();
+          }
+      }
+    }
+    if (_sinceDockSync.elapsed > const Duration(milliseconds: 250)) {
+      _sinceDockSync.reset();
+      for (final SkylightWindow window in windows) {
+        window.syncDockState();
+      }
+    }
+    return requests.isNotEmpty;
   }
 
   void _activateSkylight(SkylightWindow window) {

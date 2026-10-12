@@ -33,6 +33,7 @@ import '../../../ffi/objc_runtime.dart';
 import '../../../foundation/diagnostics.dart';
 import '../io_surface.dart' show macosCalloc, macosFree;
 import '../macos_event_translation.dart';
+import 'skylight_dock.dart';
 
 typedef _VoidPtr = Pointer<Void>;
 
@@ -77,7 +78,9 @@ const int _fieldScrollPointAxis2 = 97;
 final class SkylightNativeWindow {
   SkylightNativeWindow._(this.id);
 
-  final int id;
+  /// The WindowServer's id. It changes when the CoreGraphics path grows a
+  /// window, which replaces it (see [SkylightSession.resize]).
+  int id;
   _VoidPtr _region = nullptr;
   _VoidPtr _cgContext = nullptr;
   Pointer<ObjCObject> _caContext = nullptr;
@@ -133,6 +136,7 @@ final class SkylightSession {
         session.dispose();
         return null;
       }
+      session.dock = SkylightDock.open(coreFoundation);
       return session;
     });
   }
@@ -142,6 +146,10 @@ final class SkylightSession {
   final DynamicLibrary _coreFoundation;
   final int connectionId;
   int _eventPort = 0;
+
+  /// The Dock tile and its minimise, null when the process could not
+  /// become a foreground application.
+  SkylightDock? dock;
   NativeCallable<_NotifyNative>? _notify;
   bool _disposed = false;
 
@@ -290,12 +298,15 @@ final class SkylightSession {
               Pointer<Uint16>)>('CGEventKeyboardGetUnicodeString');
 
   /// Messages waiting on the event port, without receiving any.
-  int _queuedMessages() {
+  int _queuedMessages() => _queuedOn(_eventPort);
+
+  /// Messages waiting on [port], without receiving any.
+  int _queuedOn(int port) {
     final Pointer<Uint32> info = macosCalloc<Uint32>(40);
     final Pointer<Uint32> count = macosCalloc<Uint32>(4)..value = 10;
     try {
       // MACH_PORT_RECEIVE_STATUS; mps_msgcount is the fifth word.
-      if (_portAttributes(_taskSelf, _eventPort, 2, info, count) != 0) {
+      if (_portAttributes(_taskSelf, port, 2, info, count) != 0) {
         return 0;
       }
       return info[4];
@@ -325,6 +336,32 @@ final class SkylightSession {
       }
       return events;
     });
+  }
+
+  /// What the Dock asked since the last call - a click on the tile, Quit
+  /// from its menu.
+  List<SkylightDockRequest> pollDock() {
+    final SkylightDock? dock = this.dock;
+    if (_disposed || dock == null) return const <SkylightDockRequest>[];
+    return dock.poll(_queuedOn);
+  }
+
+  /// Whether [window] is on screen - false while it is in the Dock.
+  bool isOrderedIn(SkylightNativeWindow window) {
+    if (window.released) return false;
+    final Pointer<Uint8> slot = macosCalloc<Uint8>(4);
+    try {
+      final int rc = _skyLight.lookupFunction<
+          Int32 Function(Int32, Uint32, Pointer<Uint8>),
+          int Function(int, int, Pointer<Uint8>)>('SLSWindowIsOrderedIn')(
+        connectionId,
+        window.id,
+        slot,
+      );
+      return rc == 0 && slot.value != 0;
+    } finally {
+      macosFree(slot);
+    }
   }
 
   MacosRawEvent _decode(_VoidPtr event) {
@@ -410,31 +447,7 @@ final class SkylightSession {
   }) =>
       ObjCAutoreleasePool.run(() {
         final _VoidPtr region = _newRegion(width, height);
-        final Pointer<Uint32> idSlot = macosCalloc<Uint32>(4);
-        final int id;
-        try {
-          final int rc = _skyLight.lookupFunction<
-              Int32 Function(
-                  Int32, Int32, Double, Double, _VoidPtr, Pointer<Uint32>),
-              int Function(int, int, double, double, _VoidPtr,
-                  Pointer<Uint32>)>('SLSNewWindow')(
-            connectionId,
-            layerHosting
-                ? _kSLSWindowTypeLayerHosting
-                : _kCGSBackingStoreBuffered,
-            0,
-            0,
-            region,
-            idSlot,
-          );
-          id = idSlot.value;
-          if (rc != 0 || id == 0) {
-            _releaseRegion(region);
-            throw StateError('SLSNewWindow -> $rc');
-          }
-        } finally {
-          macosFree(idSlot);
-        }
+        final int id = _newWindow(region);
         final SkylightNativeWindow window = SkylightNativeWindow._(id)
           .._region = region
           ..width = width
@@ -448,6 +461,34 @@ final class SkylightSession {
         move(window, x ?? 200, y ?? 200);
         return window;
       });
+
+  /// A new WindowServer window shaped [region]; releases [region] and
+  /// throws [StateError] when refused.
+  int _newWindow(_VoidPtr region) {
+    final Pointer<Uint32> idSlot = macosCalloc<Uint32>(4);
+    try {
+      final int rc = _skyLight.lookupFunction<
+          Int32 Function(
+              Int32, Int32, Double, Double, _VoidPtr, Pointer<Uint32>),
+          int Function(int, int, double, double, _VoidPtr,
+              Pointer<Uint32>)>('SLSNewWindow')(
+        connectionId,
+        layerHosting ? _kSLSWindowTypeLayerHosting : _kCGSBackingStoreBuffered,
+        0,
+        0,
+        region,
+        idSlot,
+      );
+      final int id = idSlot.value;
+      if (rc != 0 || id == 0) {
+        _releaseRegion(region);
+        throw StateError('SLSNewWindow -> $rc');
+      }
+      return id;
+    } finally {
+      macosFree(idSlot);
+    }
+  }
 
   _VoidPtr _newRegion(int width, int height) {
     final Pointer<_CGRect> rect = macosCalloc<_CGRect>(sizeOf<_CGRect>())
@@ -559,6 +600,10 @@ final class SkylightSession {
   void resize(SkylightNativeWindow window, int width, int height) =>
       ObjCAutoreleasePool.run(() {
         if (width == window.width && height == window.height) return;
+        if (window._cgContext != nullptr) {
+          _replace(window, width, height);
+          return;
+        }
         final _VoidPtr region = _newRegion(width, height);
         _skyLight.lookupFunction<Int32 Function(Int32, Uint32, _VoidPtr),
             int Function(int, int, _VoidPtr)>('SLSSetWindowShape')(
@@ -578,14 +623,39 @@ final class SkylightSession {
           _setLayerFrame(window._layer, width, height);
           objcSendVoid(transaction, objcSelector('commit'));
         }
-        // The CoreGraphics path's context is sized for the backing store it
-        // was made with; drawing a larger frame into it after the reshape
-        // writes past its end (SIGSEGV in CGContextDrawImage on macOS 14).
-        if (window._cgContext != nullptr) {
-          _cfRelease(window._cgContext);
-          window._cgContext = _createCGContext(window.id);
-        }
       });
+
+  /// Resizes a CoreGraphics-path window by replacing it with one of the new
+  /// size, in the same place and order. A reshaped backing-store window
+  /// keeps its old backing store on macOS 14: drawing the larger frame wrote
+  /// past it (SIGSEGV in CGContextDrawImage, with a fresh context too),
+  /// while a window created at that size draws.
+  void _replace(SkylightNativeWindow window, int width, int height) {
+    final bool shown = isOrderedIn(window);
+    final int oldId = window.id;
+    final _VoidPtr oldContext = window._cgContext;
+    final _VoidPtr oldRegion = window._region;
+    final _VoidPtr region = _newRegion(width, height);
+    final int id = _newWindow(region);
+    window
+      ..id = id
+      .._region = region
+      ..width = width
+      ..height = height
+      .._cgContext = _createCGContext(id);
+    _requestAllEvents(id);
+    move(window, window.x, window.y);
+    final orderWindow = _skyLight.lookupFunction<
+        Int32 Function(Int32, Uint32, Int32, Uint32),
+        int Function(int, int, int, int)>('SLSOrderWindow');
+    // kCGSOrderAbove the window it replaces, before that one goes.
+    if (shown) orderWindow(connectionId, id, 1, oldId);
+    _cfRelease(oldContext);
+    orderWindow(connectionId, oldId, 0, 0);
+    _skyLight.lookupFunction<Int32 Function(Int32, Uint32),
+        int Function(int, int)>('SLSReleaseWindow')(connectionId, oldId);
+    _releaseRegion(oldRegion);
+  }
 
   _VoidPtr _createCGContext(int id) => _skyLight.lookupFunction<
           _VoidPtr Function(Int32, Uint32, _VoidPtr),
@@ -733,6 +803,8 @@ final class SkylightSession {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    dock?.dispose();
+    dock = null;
     _notify?.close();
     _notify = null;
   }

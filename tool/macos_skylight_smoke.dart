@@ -104,7 +104,40 @@ final class _Poster {
   void _free(Pointer<NativeType> p) => _freeFn(p.cast());
 }
 
-Future<void> main() async {
+/// What the Dock sends when its tile is clicked: `kAEReopenApplication`
+/// to [pid], from another process, as the Dock does.
+void _sendReopen(int pid) {
+  final DynamicLibrary ae = DynamicLibrary.open(
+      '/System/Library/Frameworks/CoreServices.framework/CoreServices');
+  final _Poster memory = _Poster();
+  final Pointer<Int32> target = memory._alloc<Int32>(4)..value = pid;
+  final Pointer<Uint8> address = memory._alloc<Uint8>(16);
+  final Pointer<Uint8> event = memory._alloc<Uint8>(16);
+  final Pointer<Uint8> reply = memory._alloc<Uint8>(16);
+  // typeKernelProcessID 'kpid'.
+  ae.lookupFunction<
+      Int16 Function(Uint32, Pointer<Int32>, IntPtr, Pointer<Uint8>),
+      int Function(int, Pointer<Int32>, int,
+          Pointer<Uint8>)>('AECreateDesc')(0x6B706964, target, 4, address);
+  // 'aevt'/'rapp', kAutoGenerateReturnID, kAnyTransactionID.
+  ae.lookupFunction<
+          Int16 Function(
+              Uint32, Uint32, Pointer<Uint8>, Int16, Int32, Pointer<Uint8>),
+          int Function(int, int, Pointer<Uint8>, int, int, Pointer<Uint8>)>(
+      'AECreateAppleEvent')(0x61657674, 0x72617070, address, -1, 0, event);
+  // kAENoReply, kAEDefaultTimeout.
+  final int rc = ae.lookupFunction<
+      Int32 Function(Pointer<Uint8>, Pointer<Uint8>, Int32, Long),
+      int Function(Pointer<Uint8>, Pointer<Uint8>, int,
+          int)>('AESendMessage')(event, reply, 1, -1);
+  stdout.writeln('sent reopen to $pid: $rc');
+}
+
+Future<void> main(List<String> arguments) async {
+  if (arguments.length == 2 && arguments.first == '--send-reopen') {
+    _sendReopen(int.parse(arguments[1]));
+    return;
+  }
   if (!Platform.isMacOS) {
     stdout.writeln('MACOS_SKYLIGHT_SMOKE=SKIP not macOS');
     return;
@@ -204,6 +237,33 @@ Future<void> main() async {
         'SKYLIGHT_MAXIMIZE',
         maximised.width > normal.width * 2 && native.clientSize == normal,
         'normal=$normal maximised=$maximised restored=${native.clientSize}');
+
+    // The drawn minimise button sends the window to the Dock; a click on
+    // the app's tile - the reopen Apple Event, sent here from another
+    // process as the Dock sends it - brings it back.
+    poster.click(screen(Offset(native.clientSize.width - 112, 16)));
+    await _pump(app, const Duration(milliseconds: 800));
+    final WindowState minimisedState = native.state;
+    final bool hidden = !native.isOnScreen;
+    final ProcessResult reopen = Process.runSync(Platform.resolvedExecutable,
+        <String>[Platform.script.toFilePath(), '--send-reopen', '$pid']);
+    final Stopwatch reopened = Stopwatch()..start();
+    while (native.state == WindowState.minimised &&
+        reopened.elapsed < const Duration(seconds: 3)) {
+      await _pump(app, const Duration(milliseconds: 50));
+    }
+    await _pump(app, const Duration(milliseconds: 600));
+    record(
+        'SKYLIGHT_MINIMIZE',
+        native.canMinimize &&
+            minimisedState == WindowState.minimised &&
+            hidden &&
+            native.state == WindowState.normal &&
+            native.isOnScreen,
+        'canMinimize=${native.canMinimize} minimised=$minimisedState '
+            'hidden=$hidden restored=${native.state} '
+            'onScreen=${native.isOnScreen} '
+            'sender="${'${reopen.stdout}'.trim()}${reopen.stderr}"');
 
     // The frame's close button, top right.
     poster.click(screen(Offset(native.clientSize.width - 20, 16)));
