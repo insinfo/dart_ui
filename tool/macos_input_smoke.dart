@@ -91,9 +91,13 @@ Future<void> _backendHalf(void Function(String, bool, String) record) async {
     position: Offset(160, 160),
   )) as MacosWindow;
   final events = <PlatformInputEvent>[];
+  final crossings = <String>[];
+  // One listener: the window's stream is single-subscription.
   final StreamSubscription<PlatformWindowEvent> subscription =
       window.events.listen((PlatformWindowEvent event) {
     if (event is PlatformInputEvent) events.add(event);
+    if (event is WindowPointerEnterEvent) crossings.add('enter');
+    if (event is WindowPointerLeaveEvent) crossings.add('leave');
   });
 
   /// Sends [commands] and returns what came out.
@@ -233,6 +237,14 @@ Future<void> _backendHalf(void Function(String, bool, String) record) async {
             texts.single == '1',
         'keys=${keys.map((e) => '0x${e.logicalKey.toRadixString(16)}').toList()} '
             'texts=$texts');
+
+    // --- the pointer crossing the window edge ---------------------------------
+    // Without it hover is never cleared: a button left through the edge stays
+    // lit.
+    crossings.clear();
+    await send(<String>['SYNTH_POINTER enter', 'SYNTH_POINTER leave']);
+    record('INPUT_EVENT_POINTER_CROSSING', crossings.join(',') == 'enter,leave',
+        'crossings=$crossings');
 
     // --- scrolling: a wheel in lines, a trackpad in points -------------------
     out = await send(<String>[

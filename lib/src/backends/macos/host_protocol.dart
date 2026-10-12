@@ -110,6 +110,12 @@ enum HostWindowEventKind {
 
   /// `WINDOW=CLOSED` - the window really is gone.
   closed,
+
+  /// `WINDOW=POINTER_ENTER` and `WINDOW=POINTER_LEAVE`: the pointer crossed
+  /// the edge of the content view, from the view's tracking area. Last in the
+  /// enum so the earlier kinds keep their indices.
+  pointerEntered,
+  pointerLeft,
 }
 
 /// Input as the host's local `NSEvent` monitor saw it.
@@ -799,6 +805,13 @@ final class HostProtocolParser {
         0,
         0,
       );
+    }
+    if (_regionEquals(start, end, 'POINTER_ENTER')) {
+      return _sink.onWindowEvent(
+          HostWindowEventKind.pointerEntered, 0, 0, 0, 0);
+    }
+    if (_regionEquals(start, end, 'POINTER_LEAVE')) {
+      return _sink.onWindowEvent(HostWindowEventKind.pointerLeft, 0, 0, 0, 0);
     }
     if (_regionEquals(start, end, 'ACTIVATED')) {
       return _sink.onWindowEvent(HostWindowEventKind.activated, 0, 0, 0, 0);

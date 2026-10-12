@@ -270,4 +270,15 @@ void main() {
       'error:BAD_INPUT_DETAIL',
     ]);
   });
+
+  test('the pointer crossing the view edge is a window event', () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(utf8.encode(
+      'WINDOW=POINTER_ENTER\nWINDOW=POINTER_LEAVE\n',
+    ));
+    expect(sink.events, <String>[
+      'window:pointerEntered:0.0:0.0:0.0:0.0',
+      'window:pointerLeft:0.0:0.0:0.0:0.0',
+    ]);
+  });
 }

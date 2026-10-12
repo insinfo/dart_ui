@@ -42,10 +42,12 @@ static const size_t kDartUiMaximumLineBytes = 8192;
      reportEvent:(NSString *)kind
               of:(NSEvent *)event;
 - (void)hostView:(DartUiHostView *)view exposedRect:(NSRect)rect;
+- (void)hostView:(DartUiHostView *)view pointerInside:(BOOL)inside;
 @end
 
 @interface DartUiHostView : NSView
 @property(nonatomic, weak) id<DartUiHostViewSink> sink;
+@property(nonatomic, strong) NSTrackingArea *pointerArea;
 @end
 
 @implementation DartUiHostView
@@ -118,6 +120,32 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 
 - (void)scrollWheel:(NSEvent *)event {
   [self.sink hostView:self reportEvent:@"scroll" of:event];
+}
+
+// The pointer leaving the window has no NSEvent of its own unless something
+// asks for one, and without it the framework never clears hover: a button the
+// mouse left through the window edge stays lit. InVisibleRect keeps the area
+// equal to the view through every resize, so it is installed once.
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  if (self.pointerArea != nil) return;
+  self.pointerArea = [[NSTrackingArea alloc]
+      initWithRect:NSZeroRect
+           options:NSTrackingMouseEnteredAndExited | NSTrackingActiveAlways |
+                   NSTrackingInVisibleRect
+             owner:self
+          userInfo:nil];
+  [self addTrackingArea:self.pointerArea];
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+  (void)event;
+  [self.sink hostView:self pointerInside:YES];
+}
+
+- (void)mouseExited:(NSEvent *)event {
+  (void)event;
+  [self.sink hostView:self pointerInside:NO];
 }
 
 @end
@@ -491,6 +519,13 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
   if (!self.protocolReady || self.terminating) return;
   NSPoint point = [self clientPointForEvent:event];
   printf("VIEW_INPUT=%s:%.4f:%.4f\n", kind.UTF8String, point.x, point.y);
+  fflush(stdout);
+}
+
+- (void)hostView:(DartUiHostView *)view pointerInside:(BOOL)inside {
+  (void)view;
+  if (!self.protocolReady || self.terminating) return;
+  printf("WINDOW=%s\n", inside ? "POINTER_ENTER" : "POINTER_LEAVE");
   fflush(stdout);
 }
 
@@ -899,6 +934,11 @@ static const NSUInteger kClipboardChunk = 6000;
 //   SYNTH_MOUSE <down|up|move|drag> <x> <y> <button> <clickCount> <flags>
 //   SYNTH_KEY <down|up> <keyCode> <flags> <characters-b64|-> <ignoring-b64|->
 //   SYNTH_SCROLL <x> <y> <deltaX> <deltaY> <precise 0|1>
+//   SYNTH_POINTER <enter|leave>
+//
+// SYNTH_POINTER calls the view's tracking-area handlers directly: AppKit
+// routes a real crossing to them from its tracking area, and an enter/exit
+// event built by hand carries no tracking area to be routed by.
 //
 // x and y are view points, top-left origin, like everything else here.
 
@@ -919,6 +959,14 @@ static const NSUInteger kClipboardChunk = 6000;
   NSEvent *event = nil;
   NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
   NSInteger number = self.window.windowNumber;
+  if ([verb isEqualToString:@"SYNTH_POINTER"] && parts.count == 2) {
+    if ([parts[1] isEqualToString:@"enter"]) {
+      [self.hostView mouseEntered:[NSApp currentEvent]];
+    } else {
+      [self.hostView mouseExited:[NSApp currentEvent]];
+    }
+    return;
+  }
   if ([verb isEqualToString:@"SYNTH_MOUSE"] && parts.count == 7) {
     NSString *phase = parts[1];
     NSInteger button = parts[4].integerValue;

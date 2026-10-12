@@ -551,6 +551,16 @@ final class MacosWindow
             dirtyRect: c > 0 && d > 0 ? Rect.fromLTWH(a, b, c, d) : null,
           ),
         );
+      case HostWindowEventKind.pointerEntered:
+        _emit(WindowPointerEnterEvent(
+          windowId: _id,
+          generation: _generation.current,
+        ));
+      case HostWindowEventKind.pointerLeft:
+        _emit(WindowPointerLeaveEvent(
+          windowId: _id,
+          generation: _generation.current,
+        ));
       case HostWindowEventKind.activated:
         _emit(
           WindowActivationEvent(
