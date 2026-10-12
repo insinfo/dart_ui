@@ -62,6 +62,7 @@ import '../../../rendering/gpu/d3d12/d3d12_sparse_executor.dart';
 import '../../../rendering/gpu/d3d12/d3d12_surface_descriptor.dart';
 import '../../../rendering/gpu/gpu_batcher.dart';
 import '../../../rendering/gpu/gpu_device_state.dart';
+import '../../../rendering/gpu/gpu_gradient.dart';
 import '../../../rendering/gpu/gpu_path_strategy.dart';
 import '../../../rendering/gpu/gpu_pipeline.dart';
 import '../../../rendering/gpu/gpu_raster_sink.dart';
@@ -370,6 +371,8 @@ final class D3d12RenderDevice
       _library.allocator.allocate<Float>(sizeOf<Float>() * 4);
   late final Pointer<Uint32> _rootConstants =
       _library.allocator.allocate<Uint32>(4 * kD3d12RootConstantCount);
+  late final Pointer<Uint32> _gradientConstants =
+      _library.allocator.allocate<Uint32>(4 * kD3d12GradientConstantCount);
   late final Pointer<D3d12VertexBufferView> _vertexView = _library.allocator
       .allocate<D3d12VertexBufferView>(sizeOf<D3d12VertexBufferView>());
   late final Pointer<D3d12IndexBufferView> _indexView = _library.allocator
@@ -845,17 +848,22 @@ final class D3d12RenderDevice
       );
 
   BackendDiagnostic? _createRootSignature(D3d12Arena arena) {
+    // Two one-descriptor ranges: t0, the batch's texture, and t1, the
+    // gradient ramp. Separate tables rather than one of two, because the two
+    // change independently and a table is bound by its first descriptor.
     final Pointer<D3d12DescriptorRange> range =
-        arena<D3d12DescriptorRange>(sizeOf<D3d12DescriptorRange>());
-    range.ref
-      ..rangeType = d3d12DescriptorRangeTypeSrv
-      ..numDescriptors = 1
-      ..baseShaderRegister = 0
-      ..registerSpace = 0
-      ..offsetInDescriptorsFromTableStart = 0;
+        arena<D3d12DescriptorRange>(sizeOf<D3d12DescriptorRange>() * 2);
+    for (var i = 0; i < 2; i++) {
+      range[i]
+        ..rangeType = d3d12DescriptorRangeTypeSrv
+        ..numDescriptors = 1
+        ..baseShaderRegister = i
+        ..registerSpace = 0
+        ..offsetInDescriptorsFromTableStart = 0;
+    }
 
     final Pointer<D3d12RootParameter> parameters =
-        arena<D3d12RootParameter>(sizeOf<D3d12RootParameter>() * 2);
+        arena<D3d12RootParameter>(sizeOf<D3d12RootParameter>() * 4);
     // Slot 0: the five root constants. See kD3d12RootConstantCount for why the
     // count is five and how they pack.
     parameters[kD3d12RootConstantsSlot]
@@ -869,6 +877,22 @@ final class D3d12RenderDevice
       ..parameterType = d3d12RootParameterTypeDescriptorTable
       ..field8 = 1 // NumDescriptorRanges
       ..field10 = range.address // pDescriptorRanges
+      ..shaderVisibility = d3d12ShaderVisibilityPixel;
+    // Slot 2: the gradient block, b1, twenty dwords. Root constants and not a
+    // constant buffer, like slot 0: per-draw state that costs a command-list
+    // write rather than an upload. 5 + 1 + 20 + 1 = 27 of the 64 DWORDs a root
+    // signature may hold.
+    parameters[kD3d12RootGradientSlot]
+      ..parameterType = d3d12RootParameterTypeConstants
+      ..field8 = 1 // ShaderRegister: b1
+      ..fieldC = 0 // RegisterSpace
+      ..field10 = kD3d12GradientConstantCount // Num32BitValues
+      ..shaderVisibility = d3d12ShaderVisibilityPixel;
+    // Slot 3: the gradient ramp, t1, pixel stage only.
+    parameters[kD3d12RootGradientTextureSlot]
+      ..parameterType = d3d12RootParameterTypeDescriptorTable
+      ..field8 = 1 // NumDescriptorRanges
+      ..field10 = (range + 1).address // pDescriptorRanges
       ..shaderVisibility = d3d12ShaderVisibilityPixel;
 
     final Pointer<D3d12StaticSamplerDesc> samplers =
@@ -894,7 +918,7 @@ final class D3d12RenderDevice
     final Pointer<D3d12RootSignatureDesc> desc =
         arena<D3d12RootSignatureDesc>(sizeOf<D3d12RootSignatureDesc>());
     desc.ref
-      ..numParameters = 2
+      ..numParameters = 4
       ..parameters = parameters
       ..numStaticSamplers = 2
       ..staticSamplers = samplers
@@ -1951,6 +1975,9 @@ final class D3d12RenderDevice
     _rootConstants[3] = kD3d12YFlipDefault;
 
     final _DrawState state = _drawState..reset();
+    // A sentinel no batch carries, so the first draw binds slots 2 and 3:
+    // root arguments are undefined until set, and the pixel shader reads both.
+    Object? boundGradient = state;
     for (var i = firstBatch; i < batchCount; i++) {
       final GpuBatch batch = batcher.batchAt(i);
       var left = batch.scissorLeft;
@@ -2019,6 +2046,26 @@ final class D3d12RenderDevice
           list.pointer,
           kD3d12RootTextureSlot,
           _srvHeap.gpuHandleStart + textureIndex * _srvStride,
+        );
+      }
+
+      final GpuGradientDraw? gradient = batch.gradient;
+      if (!identical(gradient, boundGradient)) {
+        boundGradient = gradient;
+        GpuGradientDraw.writeDenseBlock(
+            _gradientConstants
+                .cast<Float>()
+                .asTypedList(kD3d12GradientConstantCount),
+            gradient);
+        list.setGraphicsRoot32BitConstants(list.pointer, kD3d12RootGradientSlot,
+            kD3d12GradientConstantCount, _gradientConstants.cast<Void>(), 0);
+        // Descriptor 0 when there is no ramp: a table must name a real
+        // descriptor even where the shader's kind 0 never uses what it reads.
+        final int ramp = gradient?.binding.texture.id ?? 0;
+        list.setGraphicsRootDescriptorTable(
+          list.pointer,
+          kD3d12RootGradientTextureSlot,
+          _srvHeap.gpuHandleStart + ramp * _srvStride,
         );
       }
 
@@ -2344,6 +2391,7 @@ final class D3d12RenderDevice
       ..free(_rtvSlot)
       ..free(_clearColor)
       ..free(_rootConstants)
+      ..free(_gradientConstants)
       ..free(_vertexView)
       ..free(_indexView)
       ..free(_heapSlot)

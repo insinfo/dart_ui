@@ -110,6 +110,7 @@ import '../../../rendering/framebuffer.dart';
 import '../../../rendering/gpu/d3d12/d3d12_surface_descriptor.dart';
 import '../../../rendering/gpu/gpu_batcher.dart';
 import '../../../rendering/gpu/gpu_glyph_atlas.dart';
+import '../../../rendering/gpu/gpu_gradient.dart';
 import '../../../rendering/gpu/gpu_mask_atlas.dart';
 import '../../../rendering/gpu/gpu_raster_sink.dart';
 import '../../../rendering/gpu/gpu_texture.dart';
@@ -176,6 +177,9 @@ final class D3d12WindowTarget
       glyphTextureId: _glyphTexture.id,
       fontResolver: _fonts,
       onAtlasFlush: _flushAtlases,
+      // Gradient fills through the coverage atlas and a ramp sampled per
+      // pixel; per target, as the image cache is. See `GpuGradientDraw`.
+      gradientCache: _gradients,
     );
     _player = DisplayListPlayer(_sink);
     // Plain, and deliberately so: two buffers and no flags is what this
@@ -207,6 +211,7 @@ final class D3d12WindowTarget
   late final D3d12Texture _glyphTexture;
   late final ReplayFontResolver _fonts;
   late final D3d12ImageCache _images;
+  late final GpuGradientCache _gradients = GpuGradientCache(allocator: _device);
   late final GpuRasterSink _sink;
   late final DisplayListPlayer _player;
 
@@ -996,6 +1001,7 @@ final class D3d12WindowTarget
     _swapChain?.release();
     _swapChain = null;
     _images.clear();
+    _gradients.clear();
     _device
       ..releaseTexture(_maskTexture)
       ..releaseTexture(_glyphTexture);

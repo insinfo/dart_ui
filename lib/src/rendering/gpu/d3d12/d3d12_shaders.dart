@@ -96,6 +96,17 @@ const int kD3d12RootConstantsSlot = 0;
 /// Index of the SRV descriptor table parameter in the root signature.
 const int kD3d12RootTextureSlot = 1;
 
+/// Index of the gradient block's root constants: register b1, the twenty
+/// floats of `GpuGradientDraw.writeDenseBlock`, pixel stage only.
+const int kD3d12RootGradientSlot = 2;
+
+/// Index of the gradient ramp's SRV table: register t1, pixel stage only.
+const int kD3d12RootGradientTextureSlot = 3;
+
+/// How many 32-bit values the gradient block occupies. Five `float4`s, so no
+/// member straddles a 16-byte boundary and the HLSL packing is the Dart one.
+const int kD3d12GradientConstantCount = 20;
+
 /// The semantic names the input layout declares, in vertex layout order.
 ///
 /// `TEXCOORD` appears twice with different semantic *indices*: 0 for the
@@ -172,6 +183,62 @@ Texture2D uTexture : register(t0);
 SamplerState uPoint : register(s0);
 SamplerState uLinear : register(s1);
 
+// A gradient fill's ramp, in GpuGradientDraw.writeDenseBlock's layout.
+// gradientControl is kind (0 none, 1 linear, 2 radial), spread, lookup scale
+// and lookup bias; kind 0 for every batch without a gradient.
+cbuffer GradientConstants : register(b1) {
+  float4 gradientControl;
+  float4 gradientRow0;
+  float4 gradientRow1;
+  float4 gradientGeometry0;
+  float4 gradientGeometry1;
+};
+
+Texture2D uGradientRamp : register(t1);
+
+// gl_sparse_strips.dart's gradientParameter, transcribed, as in
+// d3d11_shaders.dart; GpuGradientShaderParameters.parameterAtTarget is the
+// reference.
+float gradientParameter(float2 p) {
+  float2 local = float2(dot(gradientRow0.xyz, float3(p, 1.0)),
+                        dot(gradientRow1.xyz, float3(p, 1.0)));
+  if (gradientControl.x < 1.5) {
+    float2 direction = gradientGeometry0.zw - gradientGeometry0.xy;
+    float lengthSquared = dot(direction, direction);
+    return lengthSquared == 0.0
+        ? 0.0
+        : dot(local - gradientGeometry0.xy, direction) / lengthSquared;
+  }
+  float2 center = gradientGeometry0.xy;
+  float radius = gradientGeometry0.z;
+  float2 focus = float2(gradientGeometry0.w, gradientGeometry1.x);
+  float2 ray = local - focus;
+  if (ray.x == 0.0 && ray.y == 0.0) return 0.0;
+  if (focus.x == center.x && focus.y == center.y) return length(ray) / radius;
+  float2 focusFromCenter = focus - center;
+  float a = dot(ray, ray);
+  float b = 2.0 * dot(focusFromCenter, ray);
+  float c = dot(focusFromCenter, focusFromCenter) - radius * radius;
+  float discriminant = b * b - 4.0 * a * c;
+  if (a == 0.0 || discriminant < 0.0) return 0.0;
+  float root = sqrt(discriminant);
+  float first = (-b - root) / (2.0 * a);
+  float second = (-b + root) / (2.0 * a);
+  float scale = max(first > 0.0 ? first : 0.0, second > 0.0 ? second : 0.0);
+  return scale > 0.0 ? 1.0 / scale : 0.0;
+}
+
+// pad, repeat, reflect. Reflect with floor and not fmod, whose sign follows
+// the dividend in HLSL.
+float spreadGradient(float t, float spread) {
+  if (spread > 0.5 && spread < 1.5) return frac(t);
+  if (spread > 1.5) {
+    float repeated = t - 2.0 * floor(t * 0.5);
+    return repeated <= 1.0 ? repeated : 2.0 - repeated;
+  }
+  return clamp(t, 0.0, 1.0);
+}
+
 // Exact area of the pixel square at [p] that lies inside the rectangle [r].
 // Separable, which is why an axis-aligned rectangle needs no mask. The same
 // arithmetic as raster/coverage.dart on the CPU and as boxCoverage in
@@ -193,7 +260,17 @@ float4 psMain(Varying input) : SV_Target {
   float4 linearTexel = uTexture.Sample(uLinear, input.texCoord);
   float4 texel = uUseLinear == 0 ? pointTexel : linearTexel;
 
-  float4 color = input.color;
+  // The ramp is sampled unconditionally, for the reason both taps above are:
+  // a sample under flow control is a gradient instruction the compiler would
+  // hoist anyway. Straight alpha in the texture, premultiplied here; it
+  // replaces the vertex colour, which is white for a gradient quad.
+  float t = spreadGradient(gradientParameter(input.devicePos),
+                           gradientControl.y);
+  float4 straight = uGradientRamp.Sample(
+      uLinear, float2(t * gradientControl.z + gradientControl.w, 0.5));
+  float4 ramp = float4(straight.rgb * straight.a, straight.a);
+
+  float4 color = gradientControl.x > 0.5 ? ramp : input.color;
   if (uMode == 1) {
     // A coverage mask scales the already-premultiplied colour, which is the
     // premultiplied equivalent of mul255(alpha, coverage) on the CPU.
