@@ -51,6 +51,14 @@ final class _RecordingSink with HostMessageSinkAdapter {
   }
 
   @override
+  void onClipboardData(int request, String base64) =>
+      events.add('clipboard-data:$request:$base64');
+
+  @override
+  void onClipboardResult(int request, HostClipboardResult result) =>
+      events.add('clipboard:$request:${result.name}');
+
+  @override
   void onError(String code) => events.add('error:$code');
 
   @override
@@ -153,5 +161,65 @@ void main() {
     expect(HostCommands.setBounds(-1.5, 2, 640, 480),
         'SET_BOUNDS -1.5000 2.0000 640.0000 480.0000\n');
     expect(HostCommands.close(), 'CLOSE\n');
+  });
+
+  test('clipboard pieces arrive in order, then the result that ends them', () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(utf8.encode(
+      'CLIPBOARD_DATA=8:b2zDoQpt\n'
+      'CLIPBOARD_DATA=8:dW5kbw==\n'
+      'CLIPBOARD=8:TEXT\n'
+      'CLIPBOARD=9:NONE\n'
+      'CLIPBOARD=10:WRITTEN\n'
+      'CLIPBOARD=11:FAILED\n',
+    ));
+
+    expect(sink.events, <String>[
+      'clipboard-data:8:b2zDoQpt',
+      'clipboard-data:8:dW5kbw==',
+      'clipboard:8:text',
+      'clipboard:9:none',
+      'clipboard:10:written',
+      'clipboard:11:failed',
+    ]);
+  });
+
+  test('an empty piece is a piece, not a malformed line', () {
+    // The empty string is text too; the host never sends an empty piece for
+    // it, but a parser that refused one would turn a legal line into an error.
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(utf8.encode('CLIPBOARD_DATA=3:\n'));
+    expect(sink.events, <String>['clipboard-data:3:']);
+  });
+
+  test('a clipboard line without a request or a known result is an error', () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(utf8.encode(
+      'CLIPBOARD=:TEXT\n'
+      'CLIPBOARD=4\n'
+      'CLIPBOARD=4:MAYBE\n'
+      'CLIPBOARD_DATA=x:abc\n'
+      'CLIPBOARD_DATA=5abc\n',
+    ));
+    expect(sink.events, <String>[
+      'error:BAD_CLIPBOARD_RESULT',
+      'error:BAD_CLIPBOARD_RESULT',
+      'error:BAD_CLIPBOARD_RESULT',
+      'error:BAD_CLIPBOARD_DATA',
+      'error:BAD_CLIPBOARD_DATA',
+    ]);
+  });
+
+  test('clipboard commands, and a full piece fits under the line cap', () {
+    expect(HostCommands.clipboardRead(8), 'CLIPBOARD_READ 8\n');
+    expect(
+        HostCommands.clipboardAppend(8, 'b2zD'), 'CLIPBOARD_APPEND 8 b2zD\n');
+    expect(HostCommands.clipboardWrite(8), 'CLIPBOARD_WRITE 8\n');
+    expect(kMacosHostClipboardChunk % 4, 0,
+        reason: 'every piece has to decode on its own boundary');
+    // The longest request number a session can produce, beside a full piece.
+    final String longest = HostCommands.clipboardAppend(
+        0x7fffffffffffffff, 'A' * kMacosHostClipboardChunk);
+    expect(utf8.encode(longest).length, lessThan(kMacosHostMaxLineBytes));
   });
 }

@@ -110,6 +110,10 @@ final class MacosBackendCapabilities {
       // to an ordinary activating NSWindow.
       if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
         Capability.nativePopups,
+      // Through the same host: NSPasteboard is AppKit, and the host is the
+      // only process here that runs AppKit.
+      if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
+        Capability.clipboardText,
     };
 
     return BackendProbeResult(

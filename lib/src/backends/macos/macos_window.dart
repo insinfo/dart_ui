@@ -161,6 +161,18 @@ final class MacosWindow
 
   int get hostPid => _supervisor?.handshake?.hostPid ?? 0;
 
+  /// The current host's pasteboard channel, when it has one that works.
+  ///
+  /// Null between hosts (during recovery) and for a host too old to have
+  /// announced `clipboard`. Read every time rather than cached, because a
+  /// recovered window has a different process behind it.
+  MacosClipboardChannel? get clipboardChannel {
+    final MacosHostProcessHandle? host = _supervisor?.host;
+    if (host is! MacosClipboardChannel) return null;
+    final MacosClipboardChannel channel = host as MacosClipboardChannel;
+    return channel.supportsClipboard ? channel : null;
+  }
+
   List<ScreenInfo> get hostScreens => <ScreenInfo>[
         for (final MacosHostScreen screen
             in _supervisor?.handshake?.screens ?? const <MacosHostScreen>[])

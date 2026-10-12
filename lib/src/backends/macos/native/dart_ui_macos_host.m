@@ -155,6 +155,9 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 @property(nonatomic, assign) BOOL terminating;
 @property(nonatomic, assign) BOOL closedReported;
 @property(nonatomic, assign) NSInteger reportedState;
+// Base64 pieces of a CLIPBOARD_WRITE still being sent, by request number.
+@property(nonatomic, strong)
+    NSMutableDictionary<NSNumber *, NSMutableString *> *clipboardPending;
 - (void)reportScreens;
 @end
 
@@ -289,7 +292,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   printf("WINDOW_ID=%ld\n", (long)self.window.windowNumber);
   printf("PROTOCOL=4\n");
   printf("WINDOW_SCALE=%ld\n", (long)scaleMilli);
-  printf("PROTOCOL_FEATURES=surface-port,window-events\n");
+  printf("PROTOCOL_FEATURES=surface-port,window-events,clipboard\n");
   [self reportScreens];
   // HOST_PID is deliberately last: it is the final required field and causes
   // the Dart side to publish the completed handshake immediately.
@@ -711,6 +714,79 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   return nil;
 }
 
+// The general pasteboard, as text. The Dart side owns the request numbers;
+// this side only echoes them, so two requests in flight cannot be confused.
+// Text crosses the pipe as base64 of UTF-8 because the protocol is line based
+// and clipboard text has newlines in it, in pieces short enough for the
+// 8192-byte line cap (kMacosHostClipboardChunk on the Dart side).
+static const NSUInteger kClipboardChunk = 6000;
+
+- (void)readClipboard:(NSString *)command {
+  long long request = [[command substringFromIndex:15] longLongValue];
+  NSString *text =
+      [NSPasteboard.generalPasteboard stringForType:NSPasteboardTypeString];
+  if (text == nil) {
+    printf("CLIPBOARD=%lld:NONE\n", request);
+    fflush(stdout);
+    return;
+  }
+  NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
+  if (bytes == nil) {
+    printf("CLIPBOARD=%lld:FAILED\n", request);
+    fflush(stdout);
+    return;
+  }
+  NSString *encoded = [bytes base64EncodedStringWithOptions:0];
+  for (NSUInteger start = 0; start < encoded.length; start += kClipboardChunk) {
+    NSUInteger length = MIN(kClipboardChunk, encoded.length - start);
+    printf("CLIPBOARD_DATA=%lld:%s\n", request,
+           [encoded substringWithRange:NSMakeRange(start, length)].UTF8String);
+  }
+  printf("CLIPBOARD=%lld:TEXT\n", request);
+  fflush(stdout);
+}
+
+- (void)appendClipboard:(NSString *)command {
+  // CLIPBOARD_APPEND <request> <base64>
+  NSString *rest = [command substringFromIndex:17];
+  NSRange space = [rest rangeOfString:@" "];
+  if (space.location == NSNotFound) {
+    [self printError:@"BAD_CLIPBOARD_APPEND"];
+    return;
+  }
+  NSNumber *request =
+      @([[rest substringToIndex:space.location] longLongValue]);
+  if (self.clipboardPending == nil) {
+    self.clipboardPending = [NSMutableDictionary dictionary];
+  }
+  NSMutableString *pending = self.clipboardPending[request];
+  if (pending == nil) {
+    pending = [NSMutableString string];
+    self.clipboardPending[request] = pending;
+  }
+  [pending appendString:[rest substringFromIndex:space.location + 1]];
+}
+
+- (void)writeClipboard:(NSString *)command {
+  long long request = [[command substringFromIndex:16] longLongValue];
+  NSString *encoded = self.clipboardPending[@(request)] ?: @"";
+  [self.clipboardPending removeObjectForKey:@(request)];
+  NSData *bytes = [[NSData alloc] initWithBase64EncodedString:encoded
+                                                      options:0];
+  NSString *text = bytes == nil
+                       ? nil
+                       : [[NSString alloc] initWithData:bytes
+                                               encoding:NSUTF8StringEncoding];
+  BOOL written = NO;
+  if (text != nil) {
+    NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
+    [pasteboard clearContents];
+    written = [pasteboard setString:text forType:NSPasteboardTypeString];
+  }
+  printf("CLIPBOARD=%lld:%s\n", request, written ? "WRITTEN" : "FAILED");
+  fflush(stdout);
+}
+
 - (void)setBoundsFromCommand:(NSString *)command {
   NSScanner *scanner = [NSScanner scannerWithString:command];
   scanner.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
@@ -764,6 +840,12 @@ static const size_t kDartUiMaximumLineBytes = 8192;
     fflush(stdout);
   } else if ([command hasPrefix:@"SET_BOUNDS "]) {
     [self setBoundsFromCommand:command];
+  } else if ([command hasPrefix:@"CLIPBOARD_READ "]) {
+    [self readClipboard:command];
+  } else if ([command hasPrefix:@"CLIPBOARD_APPEND "]) {
+    [self appendClipboard:command];
+  } else if ([command hasPrefix:@"CLIPBOARD_WRITE "]) {
+    [self writeClipboard:command];
   } else if ([command isEqualToString:@"SHOW"]) {
     BOOL isTransient = [self.windowKind isEqualToString:@"popup"] ||
                        [self.windowKind isEqualToString:@"tooltip"];

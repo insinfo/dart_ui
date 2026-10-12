@@ -8,6 +8,7 @@ on:
       - 'tool/macos_popup_probe.dart'
       - 'tool/macos_backend_smoke.dart'
       - 'tool/popup_window_smoke.dart'
+      - 'tool/macos_clipboard_smoke.dart'
       - '.github/workflows/macos_popup_probe.yml'
 
 concurrency:
@@ -45,3 +46,12 @@ jobs:
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/popup_window_smoke.dart
+
+      # The clipboard goes through the same AppKit host as the window, so it
+      # is proven on the same runner. pbpaste and pbcopy are the witnesses: a
+      # write is checked by reading it from another process, and a read by
+      # writing from one.
+      - name: Clipboard round trip through the pasteboard
+        env:
+          DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+        run: dart run tool/macos_clipboard_smoke.dart

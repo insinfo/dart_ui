@@ -28,17 +28,20 @@ import 'dart:io' show Platform;
 import '../../foundation/diagnostics.dart';
 import '../../geometry/offset.dart';
 import '../../platform/backend_selection.dart';
+import '../../platform/clipboard.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import 'host_locator.dart';
 import 'host_process.dart';
 import 'macos_backend_kind.dart';
 import 'macos_backend_selection.dart';
+import 'macos_clipboard.dart';
 import 'macos_window.dart';
 import 'spare_host.dart';
 
 /// Creates and owns macOS windows through the selected backend strategy.
-final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
+final class MacosWindowingBackend
+    implements WindowingBackend, ScreenProvider, ClipboardProvider {
   MacosWindowingBackend({
     MacosBackendOptions options = const MacosBackendOptions(),
   }) : _options = options;
@@ -60,6 +63,38 @@ final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
   /// start a second launch beside it. Null until the first popup opens: an
   /// application that never shows a menu never pays for an idle process.
   Future<MacosSpareHost?>? _spare;
+
+  /// The general pasteboard, reached through the host of an open window.
+  ///
+  /// See `macos_clipboard.dart`. Two refusals by name instead of a clipboard
+  /// that fails later for a reason nobody kept: before [initialize], and on
+  /// the two strategies that do not create windows, because without a window
+  /// there is no AppKit host to ask.
+  @override
+  Clipboard get clipboard {
+    if (!_initialized) {
+      return const UnavailableClipboard(
+        'the macOS backend has not been initialized, so no AppKit host '
+        'exists to reach the pasteboard through',
+      );
+    }
+    if (_activeKind != MacosBackendKind.appkitNativeHost) {
+      return UnavailableClipboard(
+        'the ${_activeKind?.name} strategy creates no AppKit host, and the '
+        'pasteboard is reached through one; only appkitNativeHost has a '
+        'clipboard',
+      );
+    }
+    return _clipboard;
+  }
+
+  late final MacosClipboard _clipboard = MacosClipboard(() {
+    for (final MacosWindow window in _windows.whereType<MacosWindow>()) {
+      final MacosClipboardChannel? channel = window.clipboardChannel;
+      if (channel != null) return channel;
+    }
+    return null;
+  });
 
   /// Which backend was selected, available after [probe].
   MacosBackendKind? get activeKind => _activeKind;
@@ -204,12 +239,6 @@ final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
       kind: MacosHostWindowKind.values.byName(options.kind.name),
     );
     final MacosSpareHost? spare = await _takeSpare(spawnOptions);
-    if (spawnOptions.kind == MacosHostWindowKind.popup) {
-      // Launched now, while this popup is being built, so that the next one -
-      // the submenu a user is about to hover into, or the same menu reopened -
-      // finds it ready.
-      _spare = MacosSpareHost.launch(binaryPath: binaryPath);
-    }
 
     late final MacosWindow window;
     window = MacosWindow(
@@ -227,6 +256,15 @@ final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
       hostStarter: spare == null ? null : adoptingStarter(spare),
     );
     final opened = await window.open(spawnOptions: spawnOptions);
+    if (spawnOptions.kind == MacosHostWindowKind.popup && _initialized) {
+      // The replacement, launched only once this popup is open: started
+      // alongside it, two AppKit launches competed for the CPU, and on the
+      // macos-14 runner the first popup went from 58 ms to 298 ms. After it,
+      // the launch overlaps nothing the user is waiting on, and the next popup
+      // - the submenu about to be hovered into, or the same menu reopened -
+      // still finds it ready or nearly so.
+      _spare ??= MacosSpareHost.launch(binaryPath: binaryPath);
+    }
     if (!opened) {
       window.dispose();
       await window.teardown;

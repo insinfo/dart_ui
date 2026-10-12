@@ -234,13 +234,45 @@ abstract interface class MacosHostProcessHandle {
   Future<int> kill();
 }
 
+/// The pasteboard, as one host process reaches it.
+///
+/// Separate from [MacosHostProcessHandle] because the clipboard is the
+/// backend's, not a window's: `MacosClipboard` borrows whichever window's host
+/// is alive, and keeping this off the handle means the supervisor's test
+/// doubles do not have to pretend to have a pasteboard.
+abstract interface class MacosClipboardChannel {
+  /// Whether this host announced `clipboard` in `PROTOCOL_FEATURES`. An older
+  /// host would print `ERROR=UNKNOWN_COMMAND` and never answer.
+  bool get supportsClipboard;
+
+  /// Asks for the pasteboard's text. Completes with how the read ended and
+  /// the base64 of the text, which is empty unless the result is
+  /// [HostClipboardResult.text].
+  ///
+  /// Throws [TimeoutException] when the host did not answer within [timeout]
+  /// and [StateError] when it is gone.
+  Future<(HostClipboardResult, String)> requestClipboardRead(Duration timeout);
+
+  /// Replaces the pasteboard's text with [base64], sent in pieces of
+  /// [kMacosHostClipboardChunk]. Throws as [requestClipboardRead] does.
+  Future<HostClipboardResult> requestClipboardWrite(
+    String base64,
+    Duration timeout,
+  );
+}
+
+final class _ClipboardRequest {
+  final StringBuffer data = StringBuffer();
+  final Completer<HostClipboardResult> done = Completer<HostClipboardResult>();
+}
+
 /// A live host process.
 ///
 /// Owns exactly one `Process` and never restarts it: replacing a dead host is
 /// [MacosHostSupervisor]'s job, and keeping the two apart is what lets the
 /// restart path be read without also reading the protocol.
 final class MacosHostProcess
-    implements HostMessageSink, MacosHostProcessHandle {
+    implements HostMessageSink, MacosHostProcessHandle, MacosClipboardChannel {
   MacosHostProcess._(this._process, this._sink, this._onDiagnostic) {
     _parser = HostProtocolParser(this);
   }
@@ -265,6 +297,10 @@ final class MacosHostProcess
   int _protocolVersion = 0;
   int _renderScaleMilli = 1000;
   String _features = '';
+
+  int _nextClipboardRequest = 1;
+  final Map<int, _ClipboardRequest> _clipboardRequests =
+      <int, _ClipboardRequest>{};
   final List<MacosHostScreen> _screens = <MacosHostScreen>[];
   bool _sawMainThread = false;
 
@@ -407,6 +443,7 @@ final class MacosHostProcess
       }
       _exited.complete(status);
       _notify(_SignalKind.exited, status, 0);
+      _failClipboardRequests('the macOS host exited with status $status');
       if (!_handshake.isCompleted) {
         _handshake.complete(
           const MacosHostHandshake(
@@ -442,6 +479,83 @@ final class MacosHostProcess
         ),
       );
       return false;
+    }
+  }
+
+  // --- clipboard -------------------------------------------------------------
+
+  @override
+  bool get supportsClipboard => _features.split(',').contains('clipboard');
+
+  @override
+  Future<(HostClipboardResult, String)> requestClipboardRead(
+    Duration timeout,
+  ) async {
+    final int request = _nextClipboardRequest++;
+    final _ClipboardRequest pending = _ClipboardRequest();
+    _clipboardRequests[request] = pending;
+    if (!send(HostCommands.clipboardRead(request))) {
+      _clipboardRequests.remove(request);
+      throw StateError('the macOS host is not accepting commands');
+    }
+    final HostClipboardResult result = await _awaitClipboard(
+      request,
+      pending,
+      timeout,
+    );
+    return (result, pending.data.toString());
+  }
+
+  @override
+  Future<HostClipboardResult> requestClipboardWrite(
+    String base64,
+    Duration timeout,
+  ) async {
+    final int request = _nextClipboardRequest++;
+    final _ClipboardRequest pending = _ClipboardRequest();
+    _clipboardRequests[request] = pending;
+    for (var start = 0;
+        start < base64.length;
+        start += kMacosHostClipboardChunk) {
+      final int end = start + kMacosHostClipboardChunk < base64.length
+          ? start + kMacosHostClipboardChunk
+          : base64.length;
+      if (!send(HostCommands.clipboardAppend(
+          request, base64.substring(start, end)))) {
+        _clipboardRequests.remove(request);
+        throw StateError('the macOS host is not accepting commands');
+      }
+    }
+    if (!send(HostCommands.clipboardWrite(request))) {
+      _clipboardRequests.remove(request);
+      throw StateError('the macOS host is not accepting commands');
+    }
+    return _awaitClipboard(request, pending, timeout);
+  }
+
+  Future<HostClipboardResult> _awaitClipboard(
+    int request,
+    _ClipboardRequest pending,
+    Duration timeout,
+  ) =>
+      pending.done.future.timeout(timeout, onTimeout: () {
+        // Removed so a late answer is dropped instead of completing a request
+        // whose caller has already been told it failed.
+        _clipboardRequests.remove(request);
+        throw TimeoutException(
+          'the macOS host did not answer clipboard request $request',
+          timeout,
+        );
+      });
+
+  void _failClipboardRequests(String reason) {
+    final List<_ClipboardRequest> pending =
+        _clipboardRequests.values.toList(growable: false);
+    _clipboardRequests.clear();
+    for (final _ClipboardRequest request in pending) {
+      if (!request.done.isCompleted) {
+        request.done.completeError(StateError(reason));
+      }
     }
   }
 
@@ -640,6 +754,18 @@ final class MacosHostProcess
   void onPresented(int sequence, int slot, HostPresentTransport transport) {
     _notify(_SignalKind.presented, sequence, slot);
     _sink.onPresented(sequence, slot, transport);
+  }
+
+  @override
+  void onClipboardData(int request, String base64) =>
+      _clipboardRequests[request]?.data.write(base64);
+
+  @override
+  void onClipboardResult(int request, HostClipboardResult result) {
+    final _ClipboardRequest? pending = _clipboardRequests.remove(request);
+    if (pending != null && !pending.done.isCompleted) {
+      pending.done.complete(result);
+    }
   }
 
   @override

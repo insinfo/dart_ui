@@ -268,6 +268,15 @@ abstract interface class HostMessageSink {
   /// `PRESENT_OK <sequence> <tag>`. [slot] is -1 for the single-surface forms.
   void onPresented(int sequence, int slot, HostPresentTransport transport);
 
+  /// `CLIPBOARD_DATA=<request>:<base64>`: one piece of the text a
+  /// `CLIPBOARD_READ` asked for. Pieces arrive in order, before the
+  /// [onClipboardResult] that ends the request.
+  void onClipboardData(int request, String base64);
+
+  /// `CLIPBOARD=<request>:<NONE|TEXT|WRITTEN|FAILED>`: the end of a clipboard
+  /// request.
+  void onClipboardResult(int request, HostClipboardResult result);
+
   /// `ERROR=<code>`. Rare, and useless without the text, so this one string is
   /// deliberate.
   void onError(String code);
@@ -320,11 +329,43 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
   void onPresented(int sequence, int slot, HostPresentTransport transport) {}
 
   @override
+  void onClipboardData(int request, String base64) {}
+
+  @override
+  void onClipboardResult(int request, HostClipboardResult result) {}
+
+  @override
   void onError(String code) {}
 
   @override
   void onUnrecognised(String line) {}
 }
+
+/// How a clipboard request ended, from `CLIPBOARD=<request>:<RESULT>`.
+enum HostClipboardResult {
+  /// A read found no text on the pasteboard. Not a failure: "nothing to
+  /// paste" is an answer, and `Clipboard.readText` turns it into null.
+  none,
+
+  /// A read finished; the text is whatever `CLIPBOARD_DATA` lines preceded
+  /// this one, possibly none - the empty string is text too.
+  text,
+
+  /// A write replaced the pasteboard's contents.
+  written,
+
+  /// The pasteboard refused, or the text did not survive the trip.
+  failed,
+}
+
+/// The longest base64 run a clipboard line carries, in characters.
+///
+/// Lines are capped at [kMacosHostMaxLineBytes] in both directions, and text
+/// on a clipboard is routinely larger than that - a copied document - so the
+/// text travels as base64 pieces of this size. A multiple of four, so every
+/// piece decodes on its own boundary, and far enough under the cap that the
+/// command word and the request number always fit beside it.
+const int kMacosHostClipboardChunk = 6000;
 
 const int _kNewline = 0x0A;
 const int _kReturn = 0x0D;
@@ -466,6 +507,8 @@ final class HostProtocolParser {
           return _sink.onAck(HostAckKind.teardown, 0);
         }
       case 0x43: // 'C'
+        if (_startsWith('CLIPBOARD_DATA=')) return _parseClipboardData(15);
+        if (_startsWith('CLIPBOARD=')) return _parseClipboardResult(10);
         if (_startsWith('CLOSE_OK')) {
           return _sink.onAck(HostAckKind.closeAccepted, 0);
         }
@@ -503,6 +546,41 @@ final class HostProtocolParser {
     _cursor = offset;
     final value = _readInt();
     _sink.onAck(kind, value == kHostFieldMissing ? 0 : value);
+  }
+
+  // CLIPBOARD_DATA=<request>:<base64>
+  void _parseClipboardData(int offset) {
+    _cursor = offset;
+    final request = _readInt();
+    if (request == kHostFieldMissing ||
+        _cursor >= _length ||
+        _line[_cursor] != _kColon) {
+      return _sink.onError('BAD_CLIPBOARD_DATA');
+    }
+    _sink.onClipboardData(request, _stringFrom(_cursor + 1));
+  }
+
+  // CLIPBOARD=<request>:<NONE|TEXT|WRITTEN|FAILED>
+  void _parseClipboardResult(int offset) {
+    _cursor = offset;
+    final request = _readInt();
+    if (request == kHostFieldMissing ||
+        _cursor >= _length ||
+        _line[_cursor] != _kColon) {
+      return _sink.onError('BAD_CLIPBOARD_RESULT');
+    }
+    final start = _cursor + 1;
+    final HostClipboardResult? result = _regionEquals(start, _length, 'NONE')
+        ? HostClipboardResult.none
+        : _regionEquals(start, _length, 'TEXT')
+            ? HostClipboardResult.text
+            : _regionEquals(start, _length, 'WRITTEN')
+                ? HostClipboardResult.written
+                : _regionEquals(start, _length, 'FAILED')
+                    ? HostClipboardResult.failed
+                    : null;
+    if (result == null) return _sink.onError('BAD_CLIPBOARD_RESULT');
+    _sink.onClipboardResult(request, result);
   }
 
   // INPUT=<kind>:<x>:<y>:<keyCode>:<machTime>
@@ -843,6 +921,19 @@ final class HostCommands {
   const HostCommands._();
 
   static String ping() => 'PING\n';
+
+  /// Asks for the pasteboard's text. Answered by `CLIPBOARD_DATA` pieces and
+  /// one `CLIPBOARD=<request>:NONE|TEXT|FAILED`.
+  static String clipboardRead(int request) => 'CLIPBOARD_READ $request\n';
+
+  /// One base64 piece of the text a [clipboardWrite] with the same [request]
+  /// will put on the pasteboard. At most [kMacosHostClipboardChunk] long.
+  static String clipboardAppend(int request, String base64) =>
+      'CLIPBOARD_APPEND $request $base64\n';
+
+  /// Replaces the pasteboard's text with the pieces sent so far for
+  /// [request]. Answered by `CLIPBOARD=<request>:WRITTEN|FAILED`.
+  static String clipboardWrite(int request) => 'CLIPBOARD_WRITE $request\n';
 
   static String setTitle(String title) => 'SET_TITLE $title\n';
 

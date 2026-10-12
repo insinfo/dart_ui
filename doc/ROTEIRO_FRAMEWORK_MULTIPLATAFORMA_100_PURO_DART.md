@@ -9830,11 +9830,12 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   (`lib/src/backends/macos/spare_host.dart`): depois do primeiro popup, o
   backend mantém um host de popup oculto já lançado, e o próximo popup o
   adota em vez de esperar o AppKit subir. Reabrir um menu caiu de **66 ms
-  para 6,6 ms** de mediana nesta máquina (`reopenMedian=6.58`, pior caso
-  7,27), no mesmo patamar dos 7,29 ms do Windows. O primeiro popup continua
-  frio (~76 ms, um pouco acima dos ~70 de antes, porque a reserva sobe em
-  paralelo com ele), e um app que nunca abre menu nunca paga o processo
-  ocioso. Tooltip não tem reserva: o tipo é fixo no lançamento e o tooltip já
+  para 2,5 ms** de mediana nesta máquina (`reopenMedian=2.46`, pior caso
+  2,70), abaixo dos 7,29 ms do Windows. A reserva só é lançada **depois** de
+  o popup abrir: a primeira versão a lançava junto, e no runner `macos-14` os
+  dois lançamentos do AppKit disputaram a CPU e o primeiro popup foi de 58 ms
+  para 298 ms (run `38224574048`). O primeiro popup continua frio (~70 ms), e
+  um app que nunca abre menu nunca paga o processo ocioso. Tooltip não tem reserva: o tipo é fixo no lançamento e o tooltip já
   espera o atraso de hover. O outro continua aberto: **a ativação da dona não é provada no macOS**: um
   processo iniciado por outro em segundo plano tem a ativação recusada pelo
   sistema (a janela não vira key nem criada visível), então o smoke lê o
@@ -10754,8 +10755,16 @@ proporção ele aparece nos outros caminhos, não.
   interativo, sem `set_maximized`/`set_fullscreen`/`set_minimized`, sem posição
   de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de
   modificador **assumidos**; apenas ABIs **LP64**;
-- **macOS**: sem drag-and-drop, sem clipboard, sem IME (`hasIme: false` nas
-  três estratégias); as APIs de SO não vinculam AppKit nem Foundation. O Metal
+- **macOS**: sem drag-and-drop, sem IME (`hasIme: false` nas três
+  estratégias); as APIs de SO não vinculam AppKit nem Foundation. O
+  **clipboard de texto existe desde 12/10/2026**, pelo host AppKit
+  (`macos_clipboard.dart`: `CLIPBOARD_READ`/`APPEND`/`WRITE`, texto em base64
+  de UTF-8 em pedaços abaixo do teto de linha), só na estratégia
+  `appkitNativeHost` e só com uma janela aberta, que é de onde vem o host.
+  `tool/macos_clipboard_smoke.dart` prova com testemunha de fora do processo
+  (`pbpaste`/`pbcopy`) os dois sentidos, 54 KB em 13 pedaços e o texto vazio
+  distinto de null. Não provado: Cmd+C/Cmd+V num `TextField` de verdade, que
+  depende do mapeamento de teclas do macOS. O Metal
   **apresenta** desde 07/09/2026 (`1c12eba`, pelo IOSurface do ADR 0005), e em
   12/10/2026 isso foi conferido num Mac M4 com macOS 27.2
   (`METAL_WINDOW_PRESENT=PASS`), junto com o fim dos vazamentos do `MTLDevice`
