@@ -3518,11 +3518,24 @@ Implementar protocolo equivalente a `NSTextInputClient`:
 
 Esse componente deve mapear diretamente para o `TextInputClient` comum.
 
+**Estado em 12/10/2026.** A view do host é um `NSTextInputClient` e toda tecla
+passa por `interpretKeyEvents:` (`ee596ca`); marked text vira `COMPOSE`,
+`insertText:` vira `TEXT_INPUT` ou `COMMIT`, `firstRectForCharacterRange:` usa o
+cursor que o Dart envia (`IME_CARET`). Desde `795fbbc` o Dart também envia o
+texto ao redor do cursor (`IME_SURROUNDING`, até 1000 unidades UTF-16 de cada
+lado, nada de um campo sensível), e o host responde `selectedRange`,
+`markedRange` e `attributedSubstringForProposedRange:` com ele; um
+`insertText:replacementRange:` que passa da seleção chega como `IME_DELETE`
+antes do texto. Era o que faltava ao menu de acentos de segurar a tecla: antes
+o campo ficava com "cafeé". `characterIndexForPoint:` continua `NSNotFound`.
+
 Testar:
 
-- dead keys;
-- acentos;
-- CJK;
+- [x] dead keys - `INPUT_APP_DEAD_KEYS` na sonda de input do macOS;
+- [x] acentos - `INPUT_APP_ACCENT_MENU`, o menu de segurar a tecla pelo
+  `insertText:replacementRange:` que ele chama;
+- [x] CJK - `INPUT_APP_IME`, pré-edição e commit pelas chamadas de um input
+  method;
 - emoji picker;
 - dictation quando possível;
 - seleção;
