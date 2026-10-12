@@ -107,6 +107,19 @@ final class PlatformBackendResolver {
             ),
           ),
         ),
+        // AppKit in this process, on a main thread taken from the VM by a
+        // signal. Unsafe by construction (CFRunLoopRun as a signal handler),
+        // so experimental and by name only, like SkyLight.
+        WindowingBackendEntry(
+          name: 'macos-appkit-signal',
+          experimental: true,
+          create: () => MacosWindowingBackend(
+            options: const MacosBackendOptions(
+              requested: MacosBackendKind.appkitSignal,
+              allowUnsafeSignal: true,
+            ),
+          ),
+        ),
       ],
       WindowingBackendEntry(
         name: 'headless',
@@ -853,7 +866,10 @@ final class PlatformBackendResolver {
       PresentationPathEntry.retainedCpu(
         name: 'macos-cpu',
         deviceDescription: 'BGRA framebuffer shown as a CGImage',
-        compatibleWindowingBackends: const <String>{'macos-skylight'},
+        compatibleWindowingBackends: const <String>{
+          'macos-skylight',
+          'macos-appkit-signal',
+        },
         create: (NativeWindow window) {
           final MacosCpuPresenter presenter =
               MacosCpuPresenter(window as MacosCpuWindow);

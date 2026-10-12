@@ -99,7 +99,8 @@ abre o `Application` numa janela SkyLight, sem host e sem AppKit
   `ClientDecorationFrame` do Wayland sem SSD), mover e redimensionar seguindo o
   arraste na própria janela, maximizar para a tela principal, sem minimizar
   (sem Dock, não haveria volta) — o botão some;
-- apresentação CPU própria (`macos-cpu`, compatível só com `macos-skylight`),
+- apresentação CPU própria (`macos-cpu`, compatível só com `macos-skylight` e
+  `macos-appkit-signal`),
   a `CGImage` do framebuffer posta na `CALayer` hospedada; o Metal e o caminho
   de IOSurface recusam essas janelas pelo nome;
 - teclado com texto (`CGEventKeyboardGetUnicodeString`), mouse, roda e
@@ -149,6 +150,48 @@ Esse backend deve exigir opção explícita, emitir diagnóstico visível e nunc
 ser escolhido automaticamente. Seu valor é comparar comportamento AppKit e
 testar APIs enquanto o SDK não oferece takeover suportado da process main
 thread.
+
+### Em `lib/` desde 12/10/2026
+
+`DART_UI_BACKEND=macos-appkit-signal` com `allowExperimentalBackends` abre o
+`Application` numa `NSWindow` de verdade, criada neste processo
+(`lib/src/backends/macos/appkit_signal/`): barra, botões e redimensionar do
+próprio AppKit, conteúdo desenhado pelo framework como `CGImage` no layer da
+view. Cinco coisas que o POC não precisava e o framework precisa, todas
+achadas por crash ou travamento medidos aqui:
+
+- **sem marcador atrás da chamada**: AppKit gira o run loop dentro de
+  `nextEventMatchingMask:`, e um marcador enfileirado depois da chamada rodava
+  *aninhado*, antes de ela terminar — o lado Dart reusava buffers que a thread 0
+  ainda usava e o heap quebrava em `-[NSInvocation setArgument:]`. Agora cada
+  chamada é `waitUntilDone:YES`, e o risco que o marcador cobria (o loop parado
+  por fora com uma chamada na fila) é de um **isolate vigia**: outra thread que,
+  enquanto há chamada em voo, olha `CFRunLoopCopyCurrentMode(main)` e reestaciona
+  a thread 0 quando o loop não está rodando em duas olhadas seguidas;
+- **`-[NSEvent characters]` na thread principal**: ele consulta a fonte de
+  entrada do teclado (teclas mortas) e o HIToolbox exige a fila principal;
+  chamado da thread do Dart, aborta;
+- **ativação**: um processo lançado por outro em segundo plano (terminal,
+  editor) tem `activateIgnoringOtherApps:` recusado, e um app inativo perde o
+  clique; `_SLPSSetFrontProcessWithOptions(…, kCPSUserGenerated)` o traz para
+  frente, como o Dock faz;
+- **eventos sem janela**: um evento postado ao processo chega com
+  `windowNumber` 0; é refeito por `mouseEventWithType:…windowNumber:` para a
+  janela sob o ponto, como um clique ali teria sido;
+- **encerramento**: depois do `dispose` nenhuma chamada espera a thread 0
+  (ela está de volta no `Dart_RunLoop` e nada roda a fila — era um travamento),
+  e o `NativeCallable.listener` do botão fechar não segura o isolate.
+
+O botão vermelho, Cmd+W e Janela > Fechar chegam como `performClose:` numa
+subclasse criada em tempo de execução, que **pede** o fechamento ao framework em
+vez de fechar. Um clique postado no próprio botão ou na barra roda dentro do
+loop de rastreamento do AppKit, que vê o evento cru sem janela: só input real ou
+permissão de Acessibilidade alcança esse caminho, e o smoke manda
+`performClose:` direto.
+
+`tool/macos_appkit_signal_smoke.dart` prova janela, captura de fora, clique,
+digitação com acento, maximizar/restaurar (`zoom:`) e o pedido de fechar, e o
+processo sai sozinho com status 0.
 
 ### Investigação LLDB do lifecycle
 

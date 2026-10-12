@@ -3798,7 +3798,7 @@ com número de run em cada uma.
   (`CAMETALLAYER_PRESENTER=VIABLE`), e isso não compra apresentador: no único
   backend macOS que cria janela em `lib/` a layer está em **outro processo**
   (ADR 0001); o `skylight` cria janela desde 12/10/2026, mas com apresentação
-  CPU (`macos-cpu`), e o `appkitSignal` ainda tem `canCreateWindow: false`.
+  CPU (`macos-cpu`), e o `appkitSignal` também, desde o mesmo dia.
   Um segundo caminho de apresentação sem janela para exercê-lo é o apresentador
   inverificável que este projeto já recusou uma vez;
 - [ ] **resize Retina — não é provável neste CI, e por isso fica desmarcado.**
@@ -6943,7 +6943,9 @@ Requisitos:
 - SkyLight saiu do POC em 12/10/2026: `DART_UI_BACKEND=macos-skylight` com
   `allowExperimentalBackends` abre o `Application` numa janela SkyLight
   (`lib/src/backends/macos/skylight/`, `tool/macos_skylight_smoke.dart`);
-  `appkitSignal` continua indisponível até sair do POC;
+  `appkitSignal` saiu do POC no mesmo dia (`DART_UI_BACKEND=macos-appkit-signal`,
+  `lib/src/backends/macos/appkit_signal/`, `tool/macos_appkit_signal_smoke.dart`);
+  os três backends macOS criam janela pelo framework;
 - a seleção exige opt-in privado + ABI validada para SkyLight, e pedido
   explícito + opt-in inseguro para `appkitSignal`; nenhum dos dois entra como
   fallback silencioso;
@@ -9969,8 +9971,8 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   sistema (a janela não vira key nem criada visível), então o smoke lê o
   estado antes de abrir o popup e, nesse caso, prova só a metade do popup e
   imprime `ownerActiveBefore=false`. O `skylight` cria janela desde
-  12/10/2026, sem popups nativos; o `appkitSignal` não cria janela pelo
-  framework e não anuncia a capacidade;
+  12/10/2026, sem popups nativos; o `appkitSignal` também, também sem
+  popups nativos;
 - **X11 e Wayland têm o código e nunca o executaram.** Os dois smokes
   compilam; só o CI pode prová-los;
 - **acessibilidade do popup**: metade fechada em 06/09/2026. `MenuOpened` era

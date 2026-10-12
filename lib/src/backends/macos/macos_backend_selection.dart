@@ -247,8 +247,8 @@ const String _skyLightFramework =
 BackendCandidate _probeAppKitSignal(MacosBackendOptions options) {
   // AppKit signal hijack is always marked experimental: it works, but
   // CFRunLoopRun is not async-signal-safe and the mechanism has produced
-  // traps in spikes. The experimental flag prevents automatic selection,
-  // while the unsupported probe records that it has not reached lib yet.
+  // traps in spikes. The experimental flag prevents automatic selection;
+  // since 12/10/2026 the implementation is in lib/ (appkit_signal/).
   final explicitlyAllowed =
       options.allowUnsafeSignal || options.allowExperimental;
   final diagnostics = <BackendDiagnostic>[
@@ -261,16 +261,15 @@ BackendCandidate _probeAppKitSignal(MacosBackendOptions options) {
         kind: DiagnosticKind.rejectedByPolicy,
         message: 'unsafe AppKit signal hijack was not explicitly allowed',
       ),
-    const BackendDiagnostic(
-      kind: DiagnosticKind.missingLibrary,
-      message: 'appkitSignal production backend is not integrated',
-      detail: 'the LLDB-validated implementation remains a monolithic POC',
-    ),
   ];
+  // AppKit is the whole requirement; parking the main thread is the first
+  // thing initialize does, and the first thing allowed to.
+  final bool canCreate =
+      Directory('/System/Library/Frameworks/AppKit.framework').existsSync();
   final capabilities = MacosBackendCapabilities(
     kind: MacosBackendKind.appkitSignal,
-    canCreateWindow: false,
-    hasInput: false,
+    canCreateWindow: canCreate,
+    hasInput: canCreate,
     hasIme: false,
     hasAccessibility: false,
     // LLDB run 31341132992 proves CFRunLoopStop + WakeUp unwinds to

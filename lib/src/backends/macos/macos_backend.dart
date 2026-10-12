@@ -23,8 +23,10 @@
 library;
 
 import 'dart:async';
+import 'dart:ffi';
 import 'dart:io' show Platform, sleep;
 
+import '../../ffi/objc_runtime.dart';
 import '../../foundation/diagnostics.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
@@ -35,6 +37,8 @@ import '../../platform/native_window.dart';
 import '../../platform/text_input.dart';
 import '../../platform/window_events.dart';
 import '../../semantics/accessibility.dart';
+import 'appkit_signal/appkit_signal_session.dart';
+import 'appkit_signal/appkit_signal_window.dart';
 import 'host_locator.dart';
 import 'host_process.dart';
 import 'host_supervisor.dart' show MacosHostStarter;
@@ -43,6 +47,7 @@ import 'macos_backend_kind.dart';
 import 'macos_backend_selection.dart';
 import 'macos_clipboard.dart';
 import 'macos_drag_drop.dart';
+import 'macos_event_translation.dart';
 import 'macos_text_input.dart';
 import 'macos_window.dart';
 import 'skylight/skylight_session.dart';
@@ -79,6 +84,12 @@ final class MacosWindowingBackend
   SkylightWindow? _keyWindow;
   SkylightWindow? _pointerCapture;
   bool _wakeRequested = false;
+
+  /// The parked main thread, for the AppKit signal strategy only.
+  AppKitSignalSession? _appKitSignal;
+  Pointer<ObjCObject> _distantPast = nullptr;
+  int _defaultRunLoopMode = 0;
+  final Stopwatch _sinceGeometry = Stopwatch()..start();
 
   /// A hidden popup host waiting to be adopted; see `spare_host.dart`.
   ///
@@ -238,6 +249,26 @@ final class MacosWindowingBackend
       }
       _skylight = session;
     }
+    if (_activeKind == MacosBackendKind.appkitSignal) {
+      final List<BackendDiagnostic> failures = <BackendDiagnostic>[];
+      final AppKitSignalSession? session =
+          await AppKitSignalSession.open(failures);
+      _diagnostics.addAll(failures);
+      if (session == null) {
+        throw UnsupportedCapabilityError(
+          backendName: name,
+          capability: Capability.window,
+          detail: failures.map((d) => d.message).join('; '),
+        );
+      }
+      _appKitSignal = session;
+      _distantPast = objcRetain(
+          objcSendPointer(objcClass('NSDate'), objcSelector('distantPast')));
+      _defaultRunLoopMode = DynamicLibrary.open(
+              '/System/Library/Frameworks/Foundation.framework/Foundation')
+          .lookup<IntPtr>('NSDefaultRunLoopMode')
+          .value;
+    }
     _initialized = true;
     // The semantic tree reaches VoiceOver through the host's view; see
     // `macos_accessibility.dart`. Installed here, as the Win32 backend
@@ -278,6 +309,12 @@ final class MacosWindowingBackend
     _windows.clear();
     _skylight?.dispose();
     _skylight = null;
+    // After the windows: their orderOut needs the main thread, and once the
+    // loop stops nothing on the main queue runs again.
+    _appKitSignal?.dispose();
+    _appKitSignal = null;
+    if (_distantPast != nullptr) objcRelease(_distantPast);
+    _distantPast = nullptr;
   }
 
   @override
@@ -297,8 +334,20 @@ final class MacosWindowingBackend
       if (options.kind.takesActivation) _activateSkylight(window);
       return window;
     }
+    final AppKitSignalSession? signal = _appKitSignal;
+    if (signal != null) {
+      final AppKitSignalWindow window = AppKitSignalWindow.create(
+        session: signal,
+        id: NativeWindowId(_nextWindowId++),
+        options: options,
+        onClosed: _onAppKitSignalWindowClosed,
+      );
+      _quitRequested = false;
+      _windows.add(window);
+      return window;
+    }
     // The MacosWindow class handles the host process lifecycle for
-    // appkitNativeHost; SkyLight is above.
+    // appkitNativeHost; the in-process strategies are above.
     if (_activeKind != MacosBackendKind.appkitNativeHost) {
       throw UnsupportedCapabilityError(
         backendName: name,
@@ -435,7 +484,7 @@ final class MacosWindowingBackend
     if (skylight != null) {
       final Stopwatch waited = Stopwatch()..start();
       while (true) {
-        final List<SkylightEvent> events = skylight.poll();
+        final List<MacosRawEvent> events = skylight.poll();
         if (events.isNotEmpty) {
           events.forEach(_dispatchSkylight);
           break;
@@ -448,7 +497,141 @@ final class MacosWindowingBackend
       }
       _wakeRequested = false;
     }
+    // AppKit signal: events are dequeued on the main thread, read here, and
+    // handed back with sendEvent: so AppKit still moves, resizes and closes
+    // its windows; geometry is re-read after anything happened.
+    final AppKitSignalSession? signal = _appKitSignal;
+    if (signal != null) {
+      final Stopwatch waited = Stopwatch()..start();
+      while (true) {
+        final int handled = _pumpAppKit(signal);
+        if (handled > 0 ||
+            _sinceGeometry.elapsed > const Duration(milliseconds: 100)) {
+          _sinceGeometry.reset();
+          for (final AppKitSignalWindow window
+              in _windows.whereType<AppKitSignalWindow>().toList()) {
+            window.refreshGeometry();
+          }
+        }
+        if (handled > 0) break;
+        final Duration left = timeout - waited.elapsed;
+        if (_wakeRequested || left <= Duration.zero) break;
+        sleep(left < const Duration(milliseconds: 4)
+            ? left
+            : const Duration(milliseconds: 4));
+      }
+      _wakeRequested = false;
+    }
     return !_quitRequested;
+  }
+
+  /// Dequeues, translates and dispatches every pending AppKit event.
+  int _pumpAppKit(AppKitSignalSession session) {
+    var handled = 0;
+    for (var i = 0; i < 64; i++) {
+      final bool more = ObjCAutoreleasePool.run(() {
+        Pointer<ObjCObject> event = session.callObject(
+          session.application,
+          'nextEventMatchingMask:untilDate:inMode:dequeue:',
+          args: <MainArg>[
+            const IntArg(-1), // NSEventMaskAny
+            PointerArg.object(_distantPast),
+            PointerArg(_defaultRunLoopMode),
+            const BoolArg(true),
+          ],
+        );
+        if (event == nullptr) return false;
+        final int type = objcSendUnsigned(event, objcSelector('type'));
+        final int number =
+            objcSendUnsigned(event, objcSelector('windowNumber'));
+        AppKitSignalWindow? target;
+        for (final AppKitSignalWindow window
+            in _windows.whereType<AppKitSignalWindow>()) {
+          if (window.windowNumber == number) target = window;
+        }
+        // A mouse event the WindowServer handed the process without naming a
+        // window - one posted to the process rather than routed by position.
+        // Re-made as the event a click at that point would have been, so
+        // AppKit's title bar and buttons and the framework both see a click
+        // in the window under it.
+        if (number == 0 && _retargetable.contains(type)) {
+          final ({
+            AppKitSignalWindow window,
+            Pointer<ObjCObject> event
+          })? retargeted = _retarget(session, event, type);
+          if (retargeted != null) {
+            target = retargeted.window;
+            event = retargeted.event;
+          }
+        }
+        const Set<int> translated = <int>{
+          1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 22, 25, 26, 27, //
+        };
+        final bool inContent = target != null &&
+            translated.contains(type) &&
+            target.handleEvent(event, type);
+        session.call(session.application, 'sendEvent:',
+            args: <MainArg>[PointerArg.object(event)]);
+        // A press on the title bar or a resize edge is AppKit's: it runs its
+        // own loop inside sendEvent: and the release never comes back out.
+        // In the content area the view gets the release like any other
+        // event, however quick the click.
+        final bool press = type == 1 || type == 3 || type == 25;
+        if (target != null && press && !inContent) target.cancelPointer();
+        return true;
+      });
+      if (!more) break;
+      handled++;
+    }
+    return handled;
+  }
+
+  /// Mouse button and movement types `mouseEventWithType:` can make.
+  static const Set<int> _retargetable = <int>{
+    1, 2, 3, 4, 5, 6, 7, 25, 26, 27, //
+  };
+
+  ({AppKitSignalWindow window, Pointer<ObjCObject> event})? _retarget(
+    AppKitSignalSession session,
+    Pointer<ObjCObject> event,
+    int type,
+  ) {
+    // With no window, locationInWindow is in screen points, bottom-left
+    // origin - the coordinates NSWindow frames use.
+    final List<double> at = session.callRect(event, 'locationInWindow');
+    for (final AppKitSignalWindow window
+        in _windows.whereType<AppKitSignalWindow>().toList().reversed) {
+      final List<double> frame = window.frame;
+      final double x = at[0] - frame[0];
+      final double y = at[1] - frame[1];
+      if (x < 0 || y < 0 || x >= frame[2] || y >= frame[3]) continue;
+      final Pointer<ObjCObject> made = session.callObject(
+        objcClass('NSEvent'),
+        'mouseEventWithType:location:modifierFlags:timestamp:windowNumber:'
+        'context:eventNumber:clickCount:pressure:',
+        args: <MainArg>[
+          IntArg(type),
+          SizeArg(x, y),
+          IntArg(objcSendUnsigned(event, objcSelector('modifierFlags'))),
+          DoubleArg(session.callDouble(event, 'timestamp')),
+          IntArg(window.windowNumber),
+          const PointerArg(0),
+          const IntArg(0),
+          IntArg(type == 1 || type == 2 || type == 3 || type == 4 ? 1 : 0),
+          const FloatArg(1),
+        ],
+      );
+      if (made == nullptr) return null;
+      return (window: window, event: made);
+    }
+    return null;
+  }
+
+  void _onAppKitSignalWindowClosed(AppKitSignalWindow window) {
+    _windows.remove(window);
+    if (_windows.whereType<AppKitSignalWindow>().isEmpty) {
+      _quitRequested = true;
+    }
   }
 
   @override
@@ -461,7 +644,7 @@ final class MacosWindowingBackend
 
   /// Routes one WindowServer event: the pointer to the window under it, or
   /// the one holding the press; the keyboard to the window that has it.
-  void _dispatchSkylight(SkylightEvent event) {
+  void _dispatchSkylight(MacosRawEvent event) {
     final List<SkylightWindow> windows =
         _windows.whereType<SkylightWindow>().toList();
     if (windows.isEmpty) return;

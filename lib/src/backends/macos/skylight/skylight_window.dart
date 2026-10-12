@@ -21,7 +21,7 @@ import '../../../platform/window_events.dart';
 import '../../../rendering/framebuffer.dart';
 import '../../../rendering/renderer.dart';
 import '../macos_cpu_window.dart';
-import '../macos_input.dart';
+import '../macos_event_translation.dart';
 import 'skylight_session.dart';
 
 /// The CPU surface of one [SkylightWindow] at one size.
@@ -442,7 +442,7 @@ final class SkylightWindow
   // -------------------------------------------------------------------------
 
   /// One WindowServer event routed here by the backend.
-  void handleEvent(SkylightEvent event) {
+  void handleEvent(MacosRawEvent event) {
     if (isDisposed) return;
     final Offset screen = Offset(event.screenX, event.screenY);
     final bool pointerEvent =
@@ -466,141 +466,13 @@ final class SkylightWindow
           return;
       }
     }
-    final Duration timestamp =
-        Duration(microseconds: event.timestampNanos ~/ 1000);
-    final Offset local = screenToClient(screen);
-    final int generation = _generation.current;
-    void pointer(PointerEvent Function() build) => _emit(build());
-    switch (event.type) {
-      case 1 || 3 || 25:
-        final PointerButton? button = _button(event);
-        if (button == null) return;
-        pointer(() => PointerDownEvent(
-              windowId: _id,
-              generation: generation,
-              timestamp: timestamp,
-              pointerId: 0,
-              kind: PointerKind.mouse,
-              logicalPosition: local,
-              button: button,
-              clickCount: event.clickCount < 1 ? 1 : event.clickCount,
-            ));
-      case 2 || 4 || 26:
-        final PointerButton? button = _button(event);
-        if (button == null) return;
-        pointer(() => PointerUpEvent(
-              windowId: _id,
-              generation: generation,
-              timestamp: timestamp,
-              pointerId: 0,
-              kind: PointerKind.mouse,
-              logicalPosition: local,
-              button: button,
-            ));
-      case 5 || 6 || 7 || 27:
-        pointer(() => PointerMoveEvent(
-              windowId: _id,
-              generation: generation,
-              timestamp: timestamp,
-              pointerId: 0,
-              kind: PointerKind.mouse,
-              logicalPosition: local,
-            ));
-      case 22:
-        final bool precise = event.continuousScroll;
-        final double dx =
-            precise ? event.scrollPointsX : event.scrollLinesX.toDouble();
-        final double dy =
-            precise ? event.scrollPointsY : event.scrollLinesY.toDouble();
-        if (dx == 0 && dy == 0) return;
-        // The WindowServer's sign is the content's direction; the
-        // framework's is the offset's, as for AppKit's deltas.
-        pointer(() => PointerScrollEvent(
-              windowId: _id,
-              generation: generation,
-              timestamp: timestamp,
-              pointerId: 0,
-              kind: PointerKind.mouse,
-              logicalPosition: local,
-              scrollDelta: Offset(-dx, -dy),
-              scrollDeltaUnit:
-                  precise ? ScrollDeltaUnit.pixels : ScrollDeltaUnit.lines,
-            ));
-      case 10 || 11:
-        _emitKey(event, down: event.type == 10, timestamp: timestamp);
-      case 12:
-        final bool? down = _modifierDown(event);
-        if (down != null) _emitKey(event, down: down, timestamp: timestamp);
-    }
-  }
-
-  static PointerButton? _button(SkylightEvent event) => switch (event.type) {
-        1 || 2 => PointerButton.primary,
-        3 || 4 => PointerButton.secondary,
-        _ => macosPointerButton(event.buttonNumber),
-      };
-
-  /// Whether a flags-changed event is its modifier going down or up, from
-  /// the flag that key controls; null for a key this cannot tell.
-  static bool? _modifierDown(SkylightEvent event) {
-    final int? mask = switch (event.keyCode) {
-      56 || 60 => 1 << 17, // shift
-      59 || 62 => 1 << 18, // control
-      58 || 61 => 1 << 19, // option
-      55 || 54 => 1 << 20, // command
-      57 => 1 << 16, // caps lock
-      _ => null,
-    };
-    return mask == null ? null : (event.flags & mask) != 0;
-  }
-
-  void _emitKey(SkylightEvent event,
-      {required bool down, required Duration timestamp}) {
-    final String characters = event.characters;
-    final int keyChar = characters.isEmpty ? 0 : characters.codeUnitAt(0);
-    final int logicalKey = macosLogicalKey(event.keyCode, keyChar);
-    final Set<KeyModifier> modifiers = macosKeyModifiers(event.flags);
-    final KeyLocation location = macosKeyLocation(event.keyCode);
-    final int generation = _generation.current;
-    _emit(down
-        ? KeyDownEvent(
-            windowId: _id,
-            generation: generation,
-            timestamp: timestamp,
-            physicalKey: event.keyCode,
-            logicalKey: logicalKey,
-            modifiers: modifiers,
-            location: location,
-          )
-        : KeyUpEvent(
-            windowId: _id,
-            generation: generation,
-            timestamp: timestamp,
-            physicalKey: event.keyCode,
-            logicalKey: logicalKey,
-            modifiers: modifiers,
-            location: location,
-          ));
-    if (!down) return;
-    // Text, as macosTextInput filters it: no controls, no function keys,
-    // and nothing typed while Command or Control turns it into a shortcut.
-    if (modifiers.contains(KeyModifier.meta) ||
-        modifiers.contains(KeyModifier.control)) {
-      return;
-    }
-    final StringBuffer text = StringBuffer();
-    for (final int rune in characters.runes) {
-      if (rune < 0x20 || (rune >= 0x7F && rune <= 0x9F)) continue;
-      if (rune >= 0xF700 && rune <= 0xF8FF) continue;
-      text.writeCharCode(rune);
-    }
-    if (text.isEmpty) return;
-    _emit(TextInputEvent(
+    translateMacosRawEvent(
+      event,
+      local: screenToClient(screen),
       windowId: _id,
-      generation: generation,
-      timestamp: timestamp,
-      text: text.toString(),
-    ));
+      generation: _generation.current,
+      emit: _emit,
+    );
   }
 
   void _emit(PlatformWindowEvent event) {

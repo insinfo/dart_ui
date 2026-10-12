@@ -210,6 +210,8 @@ void main() {
           named(path).compatibleWindowingBackends?.contains(backend) ?? true;
 
       expect(serves('macos-cpu', 'macos-skylight'), isTrue);
+      expect(serves('macos-cpu', 'macos-appkit-signal'), isTrue);
+      expect(serves('metal', 'macos-appkit-signal'), isFalse);
       expect(serves('macos-cpu', 'macos'), isFalse);
       expect(serves('metal', 'macos-skylight'), isFalse);
       expect(serves('macos-iosurface', 'macos-skylight'), isFalse);
@@ -220,6 +222,10 @@ void main() {
           (WindowingBackendEntry entry) => entry.name == 'macos-skylight');
       expect(skylight.experimental, isTrue,
           reason: 'private API: reached by name and opt-in, never fallback');
+      final WindowingBackendEntry signal = backends.singleWhere(
+          (WindowingBackendEntry entry) => entry.name == 'macos-appkit-signal');
+      expect(signal.experimental, isTrue,
+          reason: 'CFRunLoopRun as a signal handler: by name and opt-in only');
       expect(backends.first.name, 'macos');
     });
 

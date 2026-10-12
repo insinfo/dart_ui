@@ -11,6 +11,7 @@ on:
       - 'tool/macos_clipboard_smoke.dart'
       - 'tool/macos_input_smoke.dart'
       - 'tool/macos_skylight_smoke.dart'
+      - 'tool/macos_appkit_signal_smoke.dart'
       - '.github/workflows/macos_popup_probe.yml'
 
 concurrency:
@@ -86,3 +87,9 @@ jobs:
       - name: SkyLight window, pixels and input without AppKit
         timeout-minutes: 3
         run: dart run tool/macos_skylight_smoke.dart
+
+      # The third: AppKit in this process, on a main thread taken from the VM
+      # by a signal.
+      - name: AppKit window on a signal-parked main thread
+        timeout-minutes: 3
+        run: dart run tool/macos_appkit_signal_smoke.dart

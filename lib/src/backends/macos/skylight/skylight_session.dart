@@ -32,6 +32,7 @@ import 'dart:typed_data';
 import '../../../ffi/objc_runtime.dart';
 import '../../../foundation/diagnostics.dart';
 import '../io_surface.dart' show macosCalloc, macosFree;
+import '../macos_event_translation.dart';
 
 typedef _VoidPtr = Pointer<Void>;
 
@@ -68,54 +69,6 @@ const int _fieldScrollContinuous = 88;
 const int _fieldWindowUnderPointer = 91;
 const int _fieldScrollPointAxis1 = 96;
 const int _fieldScrollPointAxis2 = 97;
-
-/// What one WindowServer event was, decoded enough to route and translate.
-final class SkylightEvent {
-  SkylightEvent({
-    required this.type,
-    required this.screenX,
-    required this.screenY,
-    required this.windowUnderPointer,
-    required this.flags,
-    required this.timestampNanos,
-    this.keyCode = 0,
-    this.characters = '',
-    this.clickCount = 0,
-    this.buttonNumber = 0,
-    this.scrollLinesX = 0,
-    this.scrollLinesY = 0,
-    this.scrollPointsX = 0,
-    this.scrollPointsY = 0,
-    this.continuousScroll = false,
-  });
-
-  /// `CGEventType`: 1/2 left down/up, 3/4 right down/up, 5 moved, 6/7/27
-  /// dragged, 10/11 key down/up, 12 flags changed, 22 scroll, 25/26 other
-  /// down/up.
-  final int type;
-
-  /// Global position in points, origin at the top left of the main display.
-  final double screenX;
-  final double screenY;
-
-  /// The SkyLight window id under the pointer, 0 for keyboard events.
-  final int windowUnderPointer;
-
-  /// `CGEventFlags`.
-  final int flags;
-  final int timestampNanos;
-  final int keyCode;
-
-  /// What the key types, from `CGEventKeyboardGetUnicodeString`.
-  final String characters;
-  final int clickCount;
-  final int buttonNumber;
-  final int scrollLinesX;
-  final int scrollLinesY;
-  final double scrollPointsX;
-  final double scrollPointsY;
-  final bool continuousScroll;
-}
 
 /// A SkyLight window: its id and what presents into it.
 final class SkylightNativeWindow {
@@ -349,10 +302,10 @@ final class SkylightSession {
   /// Every event queued now, decoded, without ever blocking: a read happens
   /// only while the port reports a queued message, which is what keeps
   /// `SLEventCreateNextEvent` out of its blocking `mach_msg`.
-  List<SkylightEvent> poll({int limit = 256}) {
-    if (_disposed || _eventPort == 0) return const <SkylightEvent>[];
+  List<MacosRawEvent> poll({int limit = 256}) {
+    if (_disposed || _eventPort == 0) return const <MacosRawEvent>[];
     return ObjCAutoreleasePool.run(() {
-      final List<SkylightEvent> events = <SkylightEvent>[];
+      final List<MacosRawEvent> events = <MacosRawEvent>[];
       for (var guard = 0; guard < limit; guard++) {
         if (_queuedMessages() <= 0) break;
         final _VoidPtr event = _createNextEvent(connectionId);
@@ -368,7 +321,7 @@ final class SkylightSession {
     });
   }
 
-  SkylightEvent _decode(_VoidPtr event) {
+  MacosRawEvent _decode(_VoidPtr event) {
     final int type = _eventType(event);
     final _CGPoint location = _eventLocation(event);
     final bool key = type == 10 || type == 11;
@@ -386,7 +339,7 @@ final class SkylightSession {
         macosFree(buffer);
       }
     }
-    return SkylightEvent(
+    return MacosRawEvent(
       type: type,
       screenX: location.x,
       screenY: location.y,
@@ -397,8 +350,8 @@ final class SkylightSession {
       characters: characters,
       clickCount: key || scroll ? 0 : _intField(event, _fieldClickState),
       buttonNumber: key || scroll ? 0 : _intField(event, _fieldButtonNumber),
-      scrollLinesX: scroll ? _intField(event, _fieldScrollAxis2) : 0,
-      scrollLinesY: scroll ? _intField(event, _fieldScrollAxis1) : 0,
+      scrollLinesX: scroll ? _intField(event, _fieldScrollAxis2).toDouble() : 0,
+      scrollLinesY: scroll ? _intField(event, _fieldScrollAxis1).toDouble() : 0,
       scrollPointsX: scroll ? _doubleField(event, _fieldScrollPointAxis2) : 0,
       scrollPointsY: scroll ? _doubleField(event, _fieldScrollPointAxis1) : 0,
       continuousScroll: scroll && _intField(event, _fieldScrollContinuous) != 0,
@@ -483,13 +436,7 @@ final class SkylightSession {
         if (layerHosting) {
           _installLayer(window);
         } else {
-          window._cgContext = _skyLight.lookupFunction<
-              _VoidPtr Function(Int32, Uint32, _VoidPtr),
-              _VoidPtr Function(int, int, _VoidPtr)>('SLWindowContextCreate')(
-            connectionId,
-            id,
-            nullptr,
-          );
+          window._cgContext = _createCGContext(id);
         }
         _requestAllEvents(id);
         move(window, x ?? 200, y ?? 200);
@@ -625,7 +572,22 @@ final class SkylightSession {
           _setLayerFrame(window._layer, width, height);
           objcSendVoid(transaction, objcSelector('commit'));
         }
+        // The CoreGraphics path's context is sized for the backing store it
+        // was made with; drawing a larger frame into it after the reshape
+        // writes past its end (SIGSEGV in CGContextDrawImage on macOS 14).
+        if (window._cgContext != nullptr) {
+          _cfRelease(window._cgContext);
+          window._cgContext = _createCGContext(window.id);
+        }
       });
+
+  _VoidPtr _createCGContext(int id) => _skyLight.lookupFunction<
+          _VoidPtr Function(Int32, Uint32, _VoidPtr),
+          _VoidPtr Function(int, int, _VoidPtr)>('SLWindowContextCreate')(
+        connectionId,
+        id,
+        nullptr,
+      );
 
   /// Shows (`in front`) or hides [window].
   void order(SkylightNativeWindow window, {required bool visible}) {
