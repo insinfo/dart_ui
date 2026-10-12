@@ -214,7 +214,24 @@ permissão de Acessibilidade alcança esse caminho, e o smoke manda
 
 `tool/macos_appkit_signal_smoke.dart` prova janela, captura de fora, clique,
 digitação com acento, maximizar/restaurar (`zoom:`) e o pedido de fechar, e o
-processo sai sozinho com status 0.
+processo sai sozinho com status 0 — em macOS 27 aqui e no macOS 14 do runner
+(CI de 12/10/2026, commit `b0b5fa7`).
+
+O clique do smoke entra na fila do próprio AppKit (`postEvent:atStart:`),
+endereçado à janela. Postado ao processo pelo WindowServer ele chega **sem
+janela**, e no macOS 14 a `NSMenuBarTrackingSession` toma esse press dentro de
+`nextEventMatchingMask:` e roda o loop de menu esperando o próximo clique — a
+amostra (`sample`) do CI mostrou a thread do Dart presa no
+`performSelectorOnMainThread:waitUntilDone:` dessa leitura. Um clique real traz
+a janela e não cai nisso.
+
+O mesmo vale como limite para input real: um loop aninhado do AppKit (menu da
+barra aberto, arraste da barra de título) roda **dentro** da chamada de leitura
+de eventos, e a thread do Dart espera até ele terminar — o framework não pinta
+enquanto o menu está aberto. O watchdog só reestaciona a thread principal
+quando o run loop dela parou, não dentro de um loop aninhado. O passo do CI
+amostra as pilhas se o smoke passar de 90 s, para um travamento novo vir com
+diagnóstico.
 
 ### Investigação LLDB do lifecycle
 
