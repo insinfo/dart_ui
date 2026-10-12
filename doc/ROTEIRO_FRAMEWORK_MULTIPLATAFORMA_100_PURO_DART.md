@@ -10771,7 +10771,12 @@ proporção ele aparece nos outros caminhos, não.
   física, de modo que Ctrl+C copia num layout russo. Lado e teclado numérico
   passam a ir em `location`. `x11_text_field_keys_test.dart` compõe as duas
   metades - bytes de um `xcb_key_press_event_t` até um `TextField` - e fica
-  vermelho com a tradução antiga;
+  vermelho com a tradução antiga; e o workflow `X11 input interop`
+  (`tool/x11_input_smoke.dart`) prova o mesmo contra o Xvfb, com teclas
+  injetadas pelo `xdotool` via XTEST e o clipboard lido pelo `xclip`: na
+  primeira execução (run `38234818022`) Home e Delete editaram o campo,
+  Ctrl+A e Ctrl+C puseram o texto onde o `xclip` o leu, e End e Ctrl+V o
+  colaram de volta;
 - **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
   primária, sem CSD quando o compositor recusa SSD, sem movimento/resize
