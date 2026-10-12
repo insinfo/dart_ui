@@ -42,13 +42,37 @@ Compilar e executar no macOS:
 
 ```bash
 mkdir -p build
-clang -fobjc-arc -Wall -Wextra -framework Cocoa \
+clang -fobjc-arc -Wall -Wextra \
+  -framework Cocoa -framework QuartzCore -framework IOSurface \
   native/minimal_appkit_host.m -o build/minimal_appkit_host
 ./build/minimal_appkit_host --smoke-seconds 2
 
 # Smoke do protocolo controlado por Dart:
 dart run bin/native_host_protocol_smoke.dart build/minimal_appkit_host
 ```
+
+Abrir os três backends lado a lado, para olhar:
+
+```bash
+tool/run_showcase.sh        # até fechar; Ctrl+C encerra os três
+tool/run_showcase.sh 30     # fecha tudo depois de 30 s
+```
+
+Da esquerda para a direita:
+1 SkyLight (azul), 2 AppKit signal hijack (verde), 3 host nativo (laranja). O
+backend 2 despacha eventos de verdade (o botão de fechar e o arraste
+funcionam), o que o probe `hold-appkit` não fazia.
+
+Cada janela pinta no próprio frame o número, o nome, o PID e o id da janela.
+A janela SkyLight, que não tem moldura, também ganha um X pintado que a fecha.
+
+No macOS 27, o backing store das janelas passa pelo Core Animation (feature
+`WindowServer/CAWindowContent`), e a SkyLight só o atualiza pela main queue,
+que um processo Dart nunca drena. Nesse caso, o backend 1 cria a janela com
+tipo 5 e hospeda nela um `CAContext` próprio (`SLSSetWindowLayerContext`), com
+commit na thread do isolate (`presentation -> ca-layer`). Sem a feature, o
+caminho CG antigo continua igual. Diagnóstico completo em
+[`MACOS27_TRES_BACKENDS_2026-10-12.md`](../../doc/logs/MACOS27_TRES_BACKENDS_2026-10-12.md).
 
 O smoke é aprovado somente se imprimir:
 

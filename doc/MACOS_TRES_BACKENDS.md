@@ -56,6 +56,20 @@ acima, que é palavra reservada em Dart).
 - input direcionado com `SLEventPostToPid`;
 - três eventos obrigatórios no CI: `[10, 11, 5]`.
 
+### macOS 27: conteúdo via Core Animation
+
+Medido em 2026-10-12, numa máquina com macOS 27.2: com a feature
+`WindowServer/CAWindowContent` ativa, desenhar por `SLWindowContextCreate` não
+chega à tela. A SkyLight atualiza a camada CA do backing store por blocos que
+sempre manda para a main queue, e a thread 0 de um processo Dart nunca drena
+essa fila. O backend agora detecta a feature e, quando ela está ativa, cria a
+janela com tipo 5 (o que o AppKit usa) e hospeda um `CAContext` próprio via
+`SLSSetWindowLayerContext`, com `CATransaction` na thread do isolate. Isso
+continua sem exigir a thread 0. Para receber cliques físicos, o processo
+também precisa de um PSN: `GetCurrentProcess()` (check-in no LaunchServices)
+antes de `SLPSRegisterWithServer`. Evidência e procedimento em
+[`logs/MACOS27_TRES_BACKENDS_2026-10-12.md`](logs/MACOS27_TRES_BACKENDS_2026-10-12.md).
+
 ### Regra de consumo medida
 
 Uma leitura por mensagem **não basta**: o WindowServer agrupa. Três eventos
