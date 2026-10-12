@@ -3771,7 +3771,10 @@ com número de run em cada uma.
   com `presentation=metal/metal`, um modal que bloqueia a dona, uma janela
   fechada enquanto a outra segue apresentando, `MULTIWINDOW_GALLERY=PASS`;
 - [ ] perda/indisponibilidade tratada;
-- [ ] fallback CPU;
+- [x] fallback CPU — `metal` → `macos-iosurface` → `headless-cpu`, fixado em
+  `default_startup_test.dart` (Metal primeiro, não experimental, com 3D); um
+  Mac cujo probe Metal falha ou cujo anexo falha cai no caminho seguinte, que
+  é o que `an unpinned attach failure falls through to the next path` prova;
 - [~] Intel e Apple Silicon — só arm64 no CI;
 - [x] validação sem erros — a suíte Metal (131 testes), a sonda de janela e
   300 quadros do Kart Racer rodaram limpos sob `MTL_DEBUG_LAYER=1` e

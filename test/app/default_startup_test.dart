@@ -175,6 +175,27 @@ void main() {
       expect(paths.first.kind, PresentationKind.gpu);
     });
 
+    test('orders Metal before the IOSurface CPU path on macOS, by default', () {
+      // GPU first: Metal is the path an application gets, not one it has to
+      // ask for, and the CPU path is what a Mac without a Metal device falls
+      // to. Until 12/10/2026 Metal was experimental and reached only by name;
+      // this pins the decision so it cannot drift back silently.
+      final List<PresentationPathEntry> paths =
+          PlatformBackendResolver.defaultPresentations(
+        operatingSystem: 'macos',
+      );
+
+      expect(
+        paths.map((PresentationPathEntry path) => path.name),
+        <String>['metal', 'macos-iosurface', 'headless-cpu'],
+      );
+      expect(paths.first.kind, PresentationKind.gpu);
+      expect(paths.first.experimental, isFalse);
+      expect(paths.first.createMeshRenderer, isNotNull,
+          reason: '3D in a Metal window draws on the GPU');
+      expect(paths[1].kind, PresentationKind.cpu);
+    });
+
     test('the Windows OpenGL path probes through WGL rather than EGL', () {
       if (!Platform.isWindows) return;
       final List<PresentationPathEntry> paths =
