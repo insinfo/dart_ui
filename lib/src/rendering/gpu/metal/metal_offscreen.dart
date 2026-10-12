@@ -39,6 +39,7 @@ import '../../../graphics/display_list_reader.dart';
 import '../../framebuffer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
+import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
@@ -171,7 +172,7 @@ final class MetalOffscreenTarget {
 
   /// A 1x1 opaque white texture, bound whenever a batch names no texture.
   ///
-  /// See [_drawBatches] for why an unbound texture argument is not an option.
+  /// See [_drawRange] for why an unbound texture argument is not an option.
   /// White and opaque so that a mode which *did* sample it by mistake would
   /// draw the colour unchanged rather than black - the failure would then show
   /// up in a scene with a texture in it, where it belongs, instead of turning
@@ -316,86 +317,224 @@ final class MetalOffscreenTarget {
     _checkAlive();
     ObjCAutoreleasePool.run(() {
       _releaseRetiredBuffers();
-      final Pointer<ObjCObject> passClass =
-          objcClass('MTLRenderPassDescriptor');
-      if (passClass == nullptr) {
-        throw MetalError('the MTLRenderPassDescriptor class is not loaded');
-      }
-      final Pointer<ObjCObject> pass =
-          metalSendPointer(passClass, 'renderPassDescriptor');
-      final Pointer<ObjCObject> attachment = metalSendPointer1(
-          metalSendPointer(pass, 'colorAttachments'),
-          'objectAtIndexedSubscript:',
-          0);
-      if (attachment == nullptr) {
-        throw MetalError('colorAttachments[0] is nil on a render pass '
-            'descriptor');
-      }
-      metalSendVoid1(attachment, 'setTexture:', texture.address);
-      metalSendVoid1(
-        attachment,
-        'setLoadAction:',
-        clearColor == null ? MtlLoadAction.load : MtlLoadAction.clear,
+      final Pointer<ObjCObject> commandBuffer = _newCommandBuffer();
+      final Pointer<ObjCObject> encoder = _renderEncoder(
+        commandBuffer,
+        texture,
+        clearArgb: clearColor,
+        depthTexture: depthTexture,
       );
-      metalSendVoid1(attachment, 'setStoreAction:', MtlStoreAction.store);
-      if (clearColor != null) {
-        metalSendDouble4(
-            attachment, 'setClearColor:', metalClearColor(clearColor));
-      }
-      if (depthTexture != null) {
-        final Pointer<ObjCObject> depth =
-            metalSendPointer(pass, 'depthAttachment');
-        metalSendVoid1(depth, 'setTexture:', depthTexture.address);
-        metalSendVoid1(depth, 'setLoadAction:', MtlLoadAction.clear);
-        metalSendVoid1(depth, 'setStoreAction:', MtlStoreAction.dontCare);
-      }
-
-      final Pointer<ObjCObject> commandBuffer =
-          metalSendPointer(_gpu.commandQueue, 'commandBuffer');
-      if (commandBuffer == nullptr) {
-        throw MetalError('-[MTLCommandQueue commandBuffer] returned nil');
-      }
-      final Pointer<ObjCObject> encoder = metalSendPointer1(
-          commandBuffer, 'renderCommandEncoderWithDescriptor:', pass.address);
-      if (encoder == nullptr) {
-        throw MetalError(
-          'renderCommandEncoderWithDescriptor: returned nil',
-          detail: 'the pass descriptor was rejected - the usual cause is an '
-              'attachment whose texture was not created with '
-              'MTLTextureUsageRenderTarget',
-        );
-      }
       if (body != null) body(encoder);
       metalSendVoid(encoder, 'endEncoding');
+      _finishCommandBuffer(commandBuffer, completedHandler);
+    });
+  }
 
-      if (completedHandler != null) {
-        // Installed before commit, never after: a handler added to a buffer
-        // that has already completed is not guaranteed to run, and this one
-        // is what tells the presenter the IOSurface is finished. Measured at
-        // 6.7 ms end to end in run 34165428755.
-        metalSendVoid1(
-            commandBuffer, 'addCompletedHandler:', completedHandler.address);
-        metalSendVoid(commandBuffer, 'commit');
-        // No waitUntilCompleted and no status read. `commit` only enqueues, so
-        // `status` here would be `committed` and asserting `completed` would
-        // fail every frame - the handler is what observes the outcome, which
-        // is the whole reason a caller asked for one.
-        return;
-      }
+  Pointer<ObjCObject> _newCommandBuffer() {
+    final Pointer<ObjCObject> commandBuffer =
+        metalSendPointer(_gpu.commandQueue, 'commandBuffer');
+    if (commandBuffer == nullptr) {
+      throw MetalError('-[MTLCommandQueue commandBuffer] returned nil');
+    }
+    return commandBuffer;
+  }
 
+  /// One render pass into [target]: cleared to [clearArgb], or to transparent
+  /// when [clearTransparent], or loaded as it is.
+  Pointer<ObjCObject> _renderEncoder(
+    Pointer<ObjCObject> commandBuffer,
+    Pointer<ObjCObject> target, {
+    int? clearArgb,
+    bool clearTransparent = false,
+    Pointer<ObjCObject>? depthTexture,
+  }) {
+    final Pointer<ObjCObject> passClass = objcClass('MTLRenderPassDescriptor');
+    if (passClass == nullptr) {
+      throw MetalError('the MTLRenderPassDescriptor class is not loaded');
+    }
+    final Pointer<ObjCObject> pass =
+        metalSendPointer(passClass, 'renderPassDescriptor');
+    final Pointer<ObjCObject> attachment = metalSendPointer1(
+        metalSendPointer(pass, 'colorAttachments'),
+        'objectAtIndexedSubscript:',
+        0);
+    if (attachment == nullptr) {
+      throw MetalError('colorAttachments[0] is nil on a render pass '
+          'descriptor');
+    }
+    final bool clears = clearArgb != null || clearTransparent;
+    metalSendVoid1(attachment, 'setTexture:', target.address);
+    metalSendVoid1(
+      attachment,
+      'setLoadAction:',
+      clears ? MtlLoadAction.clear : MtlLoadAction.load,
+    );
+    metalSendVoid1(attachment, 'setStoreAction:', MtlStoreAction.store);
+    if (clears) {
+      metalSendDouble4(
+          attachment, 'setClearColor:', metalClearColor(clearArgb ?? 0));
+    }
+    if (depthTexture != null) {
+      final Pointer<ObjCObject> depth =
+          metalSendPointer(pass, 'depthAttachment');
+      metalSendVoid1(depth, 'setTexture:', depthTexture.address);
+      metalSendVoid1(depth, 'setLoadAction:', MtlLoadAction.clear);
+      metalSendVoid1(depth, 'setStoreAction:', MtlStoreAction.dontCare);
+    }
+    final Pointer<ObjCObject> encoder = metalSendPointer1(
+        commandBuffer, 'renderCommandEncoderWithDescriptor:', pass.address);
+    if (encoder == nullptr) {
+      throw MetalError(
+        'renderCommandEncoderWithDescriptor: returned nil',
+        detail: 'the pass descriptor was rejected - the usual cause is an '
+            'attachment whose texture was not created with '
+            'MTLTextureUsageRenderTarget',
+      );
+    }
+    return encoder;
+  }
+
+  void _finishCommandBuffer(
+    Pointer<ObjCObject> commandBuffer,
+    Pointer<ObjCObject>? completedHandler,
+  ) {
+    if (completedHandler != null) {
+      // Installed before commit, never after: a handler added to a buffer
+      // that has already completed is not guaranteed to run, and this one
+      // is what tells the presenter the IOSurface is finished. Measured at
+      // 6.7 ms end to end in run 34165428755.
+      metalSendVoid1(
+          commandBuffer, 'addCompletedHandler:', completedHandler.address);
       metalSendVoid(commandBuffer, 'commit');
-      metalSendVoid(commandBuffer, 'waitUntilCompleted');
+      // No waitUntilCompleted and no status read. `commit` only enqueues, so
+      // `status` here would be `committed` and asserting `completed` would
+      // fail every frame - the handler is what observes the outcome, which
+      // is the whole reason a caller asked for one.
+      return;
+    }
 
-      final int status = metalSendUnsigned(commandBuffer, 'status');
-      if (status != MtlCommandBufferStatus.completed) {
-        throw MetalError(
-          'the command buffer ended in status $status rather than '
-          '${MtlCommandBufferStatus.completed} (completed)',
-          detail:
-              metalErrorDescription(metalSendPointer(commandBuffer, 'error')) ??
-                  'no NSError was attached',
-        );
+    metalSendVoid(commandBuffer, 'commit');
+    metalSendVoid(commandBuffer, 'waitUntilCompleted');
+
+    final int status = metalSendUnsigned(commandBuffer, 'status');
+    if (status != MtlCommandBufferStatus.completed) {
+      throw MetalError(
+        'the command buffer ended in status $status rather than '
+        '${MtlCommandBufferStatus.completed} (completed)',
+        detail:
+            metalErrorDescription(metalSendPointer(commandBuffer, 'error')) ??
+                'no NSError was attached',
+      );
+    }
+  }
+
+  /// The batches recorded since the last pass, in one command buffer: one
+  /// render pass per [GpuRenderPass] of the layer stack - the surface, or a
+  /// layer's own texture - as `submit` walks them on Direct3D 11.
+  ///
+  /// The surface is cleared to the frame's colour the first time a pass of
+  /// this frame touches it, and never again: a surface pass that resumes after
+  /// a layer has to keep what the earlier one drew. A layer's texture is
+  /// cleared to transparent where its pass begins, and only there, so a pass
+  /// split by a mid-frame flush does not lose its first half.
+  void _encodeFrame({Pointer<ObjCObject>? completedHandler}) {
+    _checkAlive();
+    ObjCAutoreleasePool.run(() {
+      _releaseRetiredBuffers();
+      final int first = _submittedBatches;
+      final int count = _batcher.batchCount;
+      Pointer<ObjCObject>? vertexBuffer;
+      Pointer<ObjCObject>? indexBuffer;
+      if (count > first) {
+        final GpuVertexBuffer buffer = _batcher.buffer;
+        vertexBuffer = _newBuffer(buffer.vertices.buffer.asUint8List(
+          0,
+          buffer.vertexCount * kGpuFloatsPerVertex * 4,
+        ));
+        indexBuffer = _newBuffer(
+            buffer.indices.buffer.asUint8List(0, buffer.indexCount * 4));
+        // Handed to the next pass rather than released here; see
+        // [_retiredBuffers]. The command buffer holds its own reference until
+        // the GPU is done, so this cannot pull one out from under it.
+        _retiredBuffers
+          ..add(indexBuffer)
+          ..add(vertexBuffer);
       }
+      final Pointer<ObjCObject> commandBuffer = _newCommandBuffer();
+
+      void segment(
+        Pointer<ObjCObject> target, {
+        required int from,
+        required int to,
+        required int viewportWidth,
+        required int viewportHeight,
+        int? clearArgb,
+        bool clearTransparent = false,
+      }) {
+        final Pointer<ObjCObject> encoder = _renderEncoder(
+          commandBuffer,
+          target,
+          clearArgb: clearArgb,
+          clearTransparent: clearTransparent,
+        );
+        if (to > from) {
+          _drawRange(encoder, from, to, viewportWidth, viewportHeight,
+              vertexBuffer!, indexBuffer!);
+        }
+        metalSendVoid(encoder, 'endEncoding');
+      }
+
+      int? surfaceClear() {
+        if (_surfaceTouched) return null;
+        _surfaceTouched = true;
+        return _frameClear;
+      }
+
+      final int passCount = _layers.passCount;
+      if (passCount == 0) {
+        final int? clear = surfaceClear();
+        if (count > first || clear != null) {
+          segment(texture,
+              from: first,
+              to: count,
+              viewportWidth: width,
+              viewportHeight: height,
+              clearArgb: clear);
+        }
+      } else {
+        for (var p = 0; p < passCount; p++) {
+          final GpuRenderPass pass = _layers.passAt(p);
+          final int end = _layers.passEnd(p, count);
+          final int start = pass.firstBatch < first ? first : pass.firstBatch;
+          final GpuLayerTarget? target = pass.target;
+          if (target == null) {
+            // A surface pass with nothing left to draw still has to be
+            // encoded while the frame's clear is pending - a frame that only
+            // clears is a frame.
+            final bool clearPending = !_surfaceTouched && _frameClear != null;
+            if (end <= start && !clearPending) continue;
+            final int? clear = surfaceClear();
+            segment(texture,
+                from: start,
+                to: end,
+                viewportWidth: pass.viewportWidth,
+                viewportHeight: pass.viewportHeight,
+                clearArgb: clear);
+          } else {
+            // Drawn by an earlier pass of this frame - a mid-frame flush.
+            if (end <= first) continue;
+            final bool clears = pass.clearsTarget && start == pass.firstBatch;
+            if (end <= start && !clears) continue;
+            segment((target as MetalLayerTarget).texture.pointer,
+                from: start,
+                to: end,
+                viewportWidth: pass.viewportWidth,
+                viewportHeight: pass.viewportHeight,
+                clearTransparent: clears);
+          }
+        }
+      }
+      _finishCommandBuffer(commandBuffer, completedHandler);
     });
   }
 
@@ -441,11 +580,11 @@ final class MetalOffscreenTarget {
   /// backend's shader against the test author's idea of the layout rather than
   /// against the layout every other backend uses.
   ///
-  /// **Everything but layers.** Text, images, paths and rounded rectangles go
-  /// through the atlases and the image cache of `metal_textures.dart`. There
-  /// is no layer stack, so a compositing `saveLayer` raises
-  /// `UnsupportedCapabilityError` naming this backend instead of drawing
-  /// something approximate - section 6.6 for the piece not yet built.
+  /// Text, images, paths and rounded rectangles go through the atlases and the
+  /// image cache of `metal_textures.dart`, and a compositing `saveLayer`
+  /// through its own pass into a pooled texture (see [_encodeFrame]). A
+  /// gradient raises `UnsupportedCapabilityError` naming this backend, as on
+  /// every dense GPU path without the sparse-strip executor.
   void renderDisplayList(DisplayList list, {int? clearColor}) {
     beginFrame(clearColor: clearColor);
     playDisplayList(list);
@@ -467,7 +606,8 @@ final class MetalOffscreenTarget {
     _batcher.beginFrame();
     _frameClear = clearColor;
     _submittedBatches = 0;
-    _framePasses = 0;
+    _surfaceTouched = false;
+    _layers.beginFrame(surfaceWidth: width, surfaceHeight: height);
   }
 
   int? _frameClear;
@@ -475,8 +615,9 @@ final class MetalOffscreenTarget {
   /// Batches already drawn by a pass this frame; the next pass starts here.
   int _submittedBatches = 0;
 
-  /// Passes issued this frame. Only the first one clears.
-  int _framePasses = 0;
+  /// Whether a pass of this frame has rendered into the surface. Only the
+  /// first one clears it.
+  bool _surfaceTouched = false;
 
   /// Walks [list] into the batcher. No GPU work happens here.
   void playDisplayList(
@@ -505,14 +646,14 @@ final class MetalOffscreenTarget {
   /// is applied only if no pass has run yet this frame.
   void submit({int? clearColor, Pointer<ObjCObject>? completedHandler}) {
     _checkAlive();
+    if (clearColor != null && !_surfaceTouched) _frameClear = clearColor;
     _uploadAtlases();
-    final int? clear = _framePasses == 0 ? (clearColor ?? _frameClear) : null;
-    encodePass(
-        clearColor: clear,
-        body: _drawBatches,
-        completedHandler: completedHandler);
+    _encodeFrame(completedHandler: completedHandler);
     _submittedBatches = _batcher.batchCount;
-    _framePasses++;
+    // The layer targets go back to the pool here, after the composite quads
+    // that sample them are encoded; a later frame rendering into one is
+    // ordered after this one by the queue and Metal's hazard tracking.
+    _layers.endFrame();
   }
 
   /// `onAtlasFlush`: an atlas filled up mid-frame. Uploads both, draws the
@@ -521,12 +662,8 @@ final class MetalOffscreenTarget {
   /// a pass still samples them.
   void _flushMidFrame() {
     _uploadAtlases();
-    encodePass(
-      clearColor: _framePasses == 0 ? _frameClear : null,
-      body: _drawBatches,
-    );
+    _encodeFrame();
     _submittedBatches = _batcher.batchCount;
-    _framePasses++;
   }
 
   void _uploadAtlases() {
@@ -562,6 +699,14 @@ final class MetalOffscreenTarget {
         filter: GpuTextureFilter.nearest,
       );
 
+  late final MetalLayerAllocator _layerAllocator =
+      MetalLayerAllocator(_store, _pipelines.pixelFormat);
+
+  /// Where a compositing `saveLayer` gets its own pass and texture. See
+  /// [_encodeFrame].
+  late final GpuLayerStack _layers =
+      GpuLayerStack(allocator: _layerAllocator, backendName: 'metal');
+
   late final GpuBatcher _batcher = GpuBatcher();
   late final GpuRasterSink _sink = GpuRasterSink(
     batcher: _batcher,
@@ -573,6 +718,7 @@ final class MetalOffscreenTarget {
     imageResolver: _store.imageCache,
     fontResolver: _store.fontResolver,
     onAtlasFlush: _flushMidFrame,
+    layerStack: _layers,
     // Uniform-radius rounded rectangles through the shader's closed form, as
     // on D3D11, Vulkan and GL: the coverage atlas is a different
     // approximation, and against the CPU it was 52 levels apart on the edges.
@@ -589,20 +735,19 @@ final class MetalOffscreenTarget {
   late final Pointer<MetalUniforms> _uniforms =
       NativeAllocator.instance.allocate<MetalUniforms>(sizeOf<MetalUniforms>());
 
-  void _drawBatches(Pointer<ObjCObject> encoder) {
-    final int batchCount = _batcher.batchCount;
-    final int firstBatch = _submittedBatches;
-    if (batchCount <= firstBatch) return;
-
-    final GpuVertexBuffer buffer = _batcher.buffer;
-    final Pointer<ObjCObject> vertexBuffer =
-        _newBuffer(buffer.vertices.buffer.asUint8List(
-      0,
-      buffer.vertexCount * kGpuFloatsPerVertex * 4,
-    ));
-    final Pointer<ObjCObject> indexBuffer =
-        _newBuffer(buffer.indices.buffer.asUint8List(0, buffer.indexCount * 4));
-    try {
+  /// Draws batches [firstBatch] to [batchCount] into the pass [encoder] is
+  /// recording, whose target is [viewportWidth] x [viewportHeight] - the
+  /// surface, or a layer's texture at the layer's own size.
+  void _drawRange(
+    Pointer<ObjCObject> encoder,
+    int firstBatch,
+    int batchCount,
+    int viewportWidth,
+    int viewportHeight,
+    Pointer<ObjCObject> vertexBuffer,
+    Pointer<ObjCObject> indexBuffer,
+  ) {
+    {
       // Both faces are drawn. GpuVertexBuffer emits quads clockwise in a y-down
       // device space, which is counter-clockwise after the shader's flip; the
       // renderer is 2D and has no back faces, so culling could only turn a sign
@@ -614,8 +759,8 @@ final class MetalOffscreenTarget {
         mtlViewport(
           originX: 0,
           originY: 0,
-          width: width.toDouble(),
-          height: height.toDouble(),
+          width: viewportWidth.toDouble(),
+          height: viewportHeight.toDouble(),
         ),
       );
       metalSendVoid3(encoder, 'setVertexBuffer:offset:atIndex:',
@@ -633,8 +778,8 @@ final class MetalOffscreenTarget {
         var bottom = batch.scissorBottom;
         if (left < 0) left = 0;
         if (top < 0) top = 0;
-        if (right > width) right = width;
-        if (bottom > height) bottom = height;
+        if (right > viewportWidth) right = viewportWidth;
+        if (bottom > viewportHeight) bottom = viewportHeight;
         if (right <= left || bottom <= top) continue;
 
         // No y flip. Metal's scissor origin is the top-left corner of the
@@ -669,8 +814,8 @@ final class MetalOffscreenTarget {
           boundMode = mode;
           boundLinear = linear;
           _uniforms.ref
-            ..viewportWidth = width.toDouble()
-            ..viewportHeight = height.toDouble()
+            ..viewportWidth = viewportWidth.toDouble()
+            ..viewportHeight = viewportHeight.toDouble()
             ..mode = mode
             ..yFlip = kMetalYFlipDefault
             ..useLinear = linear;
@@ -713,14 +858,6 @@ final class MetalOffscreenTarget {
           batch.indexOffset * 4,
         );
       }
-    } finally {
-      // Handed to the next pass rather than released here; see
-      // [_retiredBuffers]. Either way the command buffer holds its own
-      // reference until the GPU is done, so neither choice can pull a buffer
-      // out from under it.
-      _retiredBuffers
-        ..add(indexBuffer)
-        ..add(vertexBuffer);
     }
   }
 
@@ -766,6 +903,7 @@ final class MetalOffscreenTarget {
     // Caught by `OBJC_DEBUG_MISSING_POOLS` on the framework's macOS leg.
     final MetalTexture? mask = _maskTextureOrNull;
     if (mask != null) _store.release(mask);
+    _layerAllocator.dispose();
     ObjCAutoreleasePool.run(() {
       _releaseRetiredBuffers();
       objcRelease(_white);

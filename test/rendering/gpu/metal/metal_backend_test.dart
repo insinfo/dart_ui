@@ -120,15 +120,16 @@ void main() {
       expect(policy, hasLength(1));
       // A probe that says "supported" and stops is useless to whoever has to
       // decide whether to select this backend for a window. What is still
-      // missing changed twice - presentation landed on 07/09/2026, text,
-      // images and paths on 12/10/2026 - so this asserts the current refusal
-      // by name rather than the old ones: layers, and nothing else.
+      // missing changed three times - presentation landed on 07/09/2026,
+      // text, images, paths and layers on 12/10/2026 - so this asserts what
+      // is true now: nothing it draws is refused, a gradient is, and it is
+      // still taken only by name.
       expect(policy.single.message, contains('IOSurface'));
-      expect(policy.single.message, contains('layers'));
-      expect(policy.single.message, isNot(contains('text')));
+      expect(policy.single.message, contains('only by name'));
+      expect(policy.single.message, isNot(contains('refuses')));
       expect(policy.single.detail, contains('PRESENT_SLOT'));
-      expect(policy.single.detail, contains('layer stack'));
-      expect(policy.single.detail, contains('refused by name'));
+      expect(policy.single.detail, contains('layers'));
+      expect(policy.single.detail, contains('gradient is refused by name'));
     });
   });
 

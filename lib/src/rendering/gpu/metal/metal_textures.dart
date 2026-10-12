@@ -37,6 +37,7 @@ import '../../../ffi/native_memory.dart';
 import '../../../ffi/objc_runtime.dart';
 import '../../framebuffer.dart';
 import '../gpu_glyph_atlas.dart';
+import '../gpu_layer_stack.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_texture.dart';
 import 'metal_bindings.dart';
@@ -116,11 +117,15 @@ final class MetalTextureStore {
   /// The texture with [id], or null for [kNoTexture] and anything released.
   MetalTexture? byId(int id) => _byId[id];
 
+  /// A texture the shaders sample. [renderTarget] also lets a pass draw
+  /// into it - a layer - and keeps it in `private` storage, since the CPU
+  /// never writes it.
   MetalTexture create({
     required int width,
     required int height,
     required GpuTextureFormat format,
     required GpuTextureFilter filter,
+    bool renderTarget = false,
   }) {
     final int pixelFormat = switch (format) {
       GpuTextureFormat.alpha8 => MtlPixelFormat.r8Unorm,
@@ -136,8 +141,14 @@ final class MetalTextureStore {
         height,
         0,
       );
-      metalSendVoid1(descriptor, 'setUsage:', MtlTextureUsage.shaderRead);
-      metalSendVoid1(descriptor, 'setStorageMode:', MtlStorageMode.shared);
+      metalSendVoid1(
+          descriptor,
+          'setUsage:',
+          renderTarget
+              ? MtlTextureUsage.shaderRead | MtlTextureUsage.renderTarget
+              : MtlTextureUsage.shaderRead);
+      metalSendVoid1(descriptor, 'setStorageMode:',
+          renderTarget ? MtlStorageMode.private : MtlStorageMode.shared);
       return metalSendPointer1(
           _gpu.device, 'newTextureWithDescriptor:', descriptor.address);
     });
@@ -257,5 +268,85 @@ final class MetalImageCache implements GpuImageResolver {
     );
     _byImage[image] = texture;
     return texture;
+  }
+}
+
+/// A layer's colour target: a texture a pass renders into and the composite
+/// quad then samples, in the same id space as every other texture here.
+final class MetalLayerTarget implements GpuLayerTarget {
+  MetalLayerTarget._(this.texture);
+
+  final MetalTexture texture;
+
+  @override
+  int get id => texture.id;
+
+  @override
+  int get textureId => texture.id;
+
+  @override
+  int get width => texture.width;
+
+  @override
+  int get height => texture.height;
+}
+
+/// Layer targets for one render target, pooled across frames.
+///
+/// In the pixel format of the target's pipelines: a Metal pipeline state is
+/// compiled for one colour format, and a layer drawn with the target's
+/// pipelines has to be that format or the encoder is rejected. Reused by size
+/// - the smallest free target that fits - because an interface animating the
+/// opacity of the same dialog asks for the same layer every frame.
+final class MetalLayerAllocator implements GpuLayerTargetAllocator {
+  MetalLayerAllocator(this._store, this._pixelFormat);
+
+  final MetalTextureStore _store;
+  final int _pixelFormat;
+  final List<MetalLayerTarget> _free = <MetalLayerTarget>[];
+  final List<MetalLayerTarget> _all = <MetalLayerTarget>[];
+
+  @override
+  GpuLayerTarget acquireLayerTarget(int width, int height) {
+    MetalLayerTarget? best;
+    for (final MetalLayerTarget candidate in _free) {
+      if (candidate.width < width || candidate.height < height) continue;
+      if (best == null ||
+          candidate.width * candidate.height < best.width * best.height) {
+        best = candidate;
+      }
+    }
+    if (best != null) {
+      _free.remove(best);
+      return best;
+    }
+    final MetalLayerTarget created = MetalLayerTarget._(_store.create(
+      width: width,
+      height: height,
+      format: _pixelFormat == MtlPixelFormat.bgra8Unorm
+          ? GpuTextureFormat.bgra8888Premultiplied
+          : GpuTextureFormat.rgba8888Premultiplied,
+      // One texel per pixel: a layer is composited back at the size it was
+      // drawn, so nearest and linear agree, and nearest cannot blur an edge.
+      filter: GpuTextureFilter.nearest,
+      renderTarget: true,
+    ));
+    _all.add(created);
+    return created;
+  }
+
+  @override
+  void releaseLayerTarget(GpuLayerTarget target) {
+    if (target is MetalLayerTarget && !_free.contains(target)) {
+      _free.add(target);
+    }
+  }
+
+  void dispose() {
+    for (final MetalLayerTarget target in _all) {
+      _store.release(target.texture);
+    }
+    _all.clear();
+    _free.clear();
   }
 }

@@ -32,9 +32,11 @@
 /// the host process. **Draws** text, images, paths and rounded rectangles
 /// since 12/10/2026, through a glyph atlas and an image cache shared per device
 /// and a coverage atlas per target (`metal_textures.dart`), each compared with
-/// the CPU in `metal_cpu_parity_test.dart`. **Does not exist:** a layer stack,
-/// so a compositing `saveLayer` - and a clip that needs one - is refused by
-/// name rather than flattened.
+/// the CPU in `metal_cpu_parity_test.dart`, and compositing layers through a
+/// `GpuLayerStack` whose passes render into pooled textures. What it shares
+/// with every other GPU backend's dense path is the one refusal left: a
+/// gradient needs the sparse-strip executor, which this backend does not
+/// have.
 ///
 /// ## What [probe] therefore says
 ///
@@ -238,18 +240,23 @@ final class MetalRendererBackend implements RendererBackend {
         const BackendDiagnostic(
           kind: DiagnosticKind.rejectedByPolicy,
           message: 'this backend presents to a macOS window through a shared '
-              'IOSurface, and still refuses compositing layers by name',
+              'IOSurface, and is taken only by name until it has run as the '
+              'default on more than the GPUs it was measured on',
           detail: 'MetalRenderDevice creates a target for a '
               'MemorySurfaceDescriptor - rendered through the shared '
               'GpuRasterSink and read back - and for a MetalPresentSurface, '
               'which is ADR 0005: the IOSurface of surface_pool.dart wrapped '
               'as an MTLTexture, drawn into, and handed to the host with '
               'PRESENT_SLOT once addCompletedHandler: says the GPU finished. '
-              'Text, images, paths and rounded rectangles draw, through the '
-              'glyph and coverage atlases of metal_textures.dart. What is '
-              'still missing is the layer stack, so a compositing saveLayer '
-              'is refused by name rather than flattened, and that is why '
-              'selection takes this backend only when asked for by name.',
+              'Text, images, paths, rounded rectangles and compositing layers '
+              'draw, through the atlases and layer targets of '
+              'metal_textures.dart, matching the CPU in '
+              'metal_cpu_parity_test.dart. A gradient is refused by name, as '
+              'on every dense GPU path without the sparse-strip executor. '
+              'The window path was first measured on 12/10/2026, on an Apple '
+              'M4 and on the CI runner\'s paravirtual GPU; selection takes '
+              'it only when asked for by name until it has run as the '
+              'default.',
         ),
       ],
     );

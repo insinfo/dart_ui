@@ -525,9 +525,15 @@ vence as duas:
    (Ahem caixa por caixa, imagem texel por texel, caminhos e o retângulo
    arredondado pela rota analítica, todos com desvio 0), e a galeria inteira
    rodou no Metal numa janela de verdade (`METAL_GALLERY=PASS`, 3000
-   quadros, mediana 475 us contra 783 us na CPU, nenhum erro). O que ainda
-   recusa pelo nome é a pilha de camadas (`saveLayer` de composição), e é por
-   isso que o seletor ainda só o toma pelo nome. A linha
+   quadros, mediana 475 us contra 783 us na CPU, nenhum erro). No mesmo dia
+   ganhou a pilha de camadas: cada `saveLayer` de composição vira uma passada
+   numa textura do pool, e os cinco cenários de camada do D3D11 dão 0 (`plus`,
+   `src`, texto dentro de camada) ou 1 nível (opacidade, pelo arredondamento
+   já explicado no teste de retângulos com alfa). O que recusa pelo nome é só
+   o que todo caminho denso de GPU recusa sem o executor de faixas esparsas -
+   gradiente. Continua tomado **só pelo nome** por decisão, não por falta: o
+   caminho de janela foi medido pela primeira vez neste dia, num M4 e na GPU
+   paravirtual do runner, e ainda não rodou como padrão. A linha
    "Metal + `CAMetalLayer`" continua sendo intenção. O caminho GL de janela no
    X11 está registrado no seletor e, desde
    07/09/2026, é executado no CI por `tool/x11_gl_smoke.dart` sob Xvfb e Mesa

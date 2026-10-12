@@ -58,6 +58,7 @@ import 'dart:typed_data';
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
+import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/metal/metal_device.dart';
@@ -201,6 +202,50 @@ void main() {
 
     test('a rounded rectangle: 0', () async {
       await _expectParity(gpu, pipelines, _roundedRect(), tolerance: 0);
+    }, skip: _needsMac);
+
+    test('an opacity layer, composited back: 1', () async {
+      // 1, for the reason 'rectangles with alpha' above gives in full: a
+      // translucent composite is quantised once here, in floating point, and
+      // twice on the CPU. D3D11 measures 0 only because it converts to the
+      // target format before blending.
+      await _expectParity(gpu, pipelines, _opacityLayer(), tolerance: 1);
+    }, skip: _needsMac);
+
+    test('a layer inside a layer: 1', () async {
+      // 1, for the reason 'rectangles with alpha' above gives in full: a
+      // translucent composite is quantised once here, in floating point, and
+      // twice on the CPU. D3D11 measures 0 only because it converts to the
+      // target format before blending.
+      await _expectParity(gpu, pipelines, _nestedLayers(), tolerance: 1);
+    }, skip: _needsMac);
+
+    test('a layer under a clip, with a clip inside it: 1', () async {
+      // 1, for the reason 'rectangles with alpha' above gives in full: a
+      // translucent composite is quantised once here, in floating point, and
+      // twice on the CPU. D3D11 measures 0 only because it converts to the
+      // target format before blending.
+      await _expectParity(gpu, pipelines, _clippedLayer(), tolerance: 1);
+    }, skip: _needsMac);
+
+    test('a layer composited with plus: 0', () async {
+      await _expectParity(gpu, pipelines, _plusLayer(), tolerance: 0);
+    }, skip: _needsMac);
+
+    test('a layer composited with src: 0', () async {
+      await _expectParity(gpu, pipelines, _srcLayer(), tolerance: 0);
+    }, skip: _needsMac);
+
+    test('text inside an opacity layer: 0', () async {
+      final DisplayList list = DisplayList();
+      final int background =
+          list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+      list
+        ..drawRect(0, 0, 24, 24, background)
+        ..saveLayer(0, 8, 24, 24, list.addPaint(colorArgb: 0x80FFFFFF));
+      _appendGlyphRun(list, baseline: 16);
+      list.restore();
+      await _expectParity(gpu, pipelines, list, tolerance: 0);
     }, skip: _needsMac);
 
     test('text and an image share a frame with a solid fill: 0', () async {
@@ -479,4 +524,86 @@ void _addRectContour(PathBuilder builder, Rect rect,
       ..lineTo(rect.right, rect.top);
   }
   builder.close();
+}
+
+DisplayList _opacityLayer() {
+  final list = DisplayList();
+  final background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  // Only the alpha of a layer paint means anything; the colour is not a tint.
+  final layerPaint = list.addPaint(colorArgb: 0x80FFFFFF);
+  list.saveLayer(4, 4, 20, 20, layerPaint);
+  final content = list.addPaint(colorArgb: 0xFFCC3311, antiAlias: false);
+  // Deliberately not centred in the layer: a composite that is upside down or
+  // off by a row is invisible against a symmetric shape.
+  list
+    ..drawRect(6, 6, 18, 12, content)
+    ..restore();
+  return list;
+}
+
+DisplayList _nestedLayers() {
+  final list = DisplayList();
+  final background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  final outer = list.addPaint(colorArgb: 0x80FFFFFF);
+  list.saveLayer(3, 3, 21, 21, outer);
+  final inner = list.addPaint(colorArgb: 0x40FFFFFF);
+  list.saveLayer(6, 6, 18, 18, inner);
+  final content = list.addPaint(colorArgb: 0xFFCC3311, antiAlias: false);
+  list
+    ..drawRect(6, 6, 18, 12, content)
+    ..restore()
+    ..restore();
+  return list;
+}
+
+DisplayList _clippedLayer() {
+  final list = DisplayList();
+  final background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  final layerPaint = list.addPaint(colorArgb: 0x80FFFFFF);
+  final content = list.addPaint(colorArgb: 0xFFCC3311, antiAlias: false);
+  list
+    ..save()
+    // The clip is tighter than the layer, so the composite has to obey it.
+    ..clipRect(6, 6, 16, 16)
+    ..saveLayer(3, 3, 21, 21, layerPaint);
+  // And a clip inside the layer, narrower still.
+  list
+    ..save()
+    ..clipRect(8, 8, 20, 14)
+    ..drawRect(0, 0, 24, 24, content)
+    ..restore()
+    ..restore()
+    ..restore();
+  return list;
+}
+
+DisplayList _plusLayer() {
+  final list = DisplayList();
+  final background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  final layerPaint =
+      list.addPaint(colorArgb: 0xFFFFFFFF, blendMode: blendModePlus);
+  list.saveLayer(4, 4, 20, 20, layerPaint);
+  final content = list.addPaint(colorArgb: 0xFF443322, antiAlias: false);
+  list
+    ..drawRect(6, 6, 18, 12, content)
+    ..restore();
+  return list;
+}
+
+DisplayList _srcLayer() {
+  final list = DisplayList();
+  final background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  final layerPaint =
+      list.addPaint(colorArgb: 0xFFFFFFFF, blendMode: blendModeSrc);
+  list.saveLayer(4, 4, 20, 20, layerPaint);
+  final content = list.addPaint(colorArgb: 0xFFCC3311, antiAlias: false);
+  list
+    ..drawRect(6, 6, 18, 12, content)
+    ..restore();
+  return list;
 }
