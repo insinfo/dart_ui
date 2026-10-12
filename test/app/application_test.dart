@@ -218,11 +218,15 @@ void main() {
         ],
         options: const ApplicationOptions(
           size: Size(16, 16),
-          idleTimeout: Duration(milliseconds: 250),
+          idleTimeout: Duration(milliseconds: 1000),
         ),
       );
+      // The window closes well *before* the idle timeout, as in the sibling
+      // test above: the flat wait would sleep through all of it in one go and
+      // present only the initial frame, while a loaded macOS runner fitted
+      // just two frames into the 250 ms window this used to be.
       Future<void>.delayed(
-        const Duration(milliseconds: 250),
+        const Duration(milliseconds: 600),
         application.requestClose,
       );
 
@@ -230,7 +234,7 @@ void main() {
 
       // Nothing here arms an animation frame: `_TickingBox` is a plain
       // `Timer.periodic` calling `setState`, exactly what an application
-      // writes. Against the flat 250 ms wait it advanced exactly once per run,
+      // writes. Against the flat 1 s wait it advanced exactly once per run,
       // so what this number has to separate is one from many - not one count
       // from another. The bar is three rather than the ~15 the capped wait
       // allows because a loaded shared runner spends far longer than the cap
