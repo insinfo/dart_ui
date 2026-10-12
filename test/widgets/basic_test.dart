@@ -207,5 +207,42 @@ void main() {
         greaterThan(FontRegistry.estimatedLineHeight(14)),
       );
     });
+
+    // A newline always breaks, softWrap or not - Flutter's semantics, and
+    // what the model viewer's two-line hint needed: until 12/10/2026 the
+    // single-line path shaped the `\n` and drew a `.notdef` box between the
+    // two sentences, on one line.
+    RenderText laidOut(String text, {double maxWidth = 1000}) {
+      final PipelineOwner pipeline = PipelineOwner(
+        rootConstraints: BoxConstraints.loose(Size(maxWidth, 300)),
+      );
+      final BuildOwner owner = BuildOwner(pipelineOwner: pipeline)
+        ..updateRoot(Text(text, fontSize: 14));
+      addTearDown(owner.dispose);
+      pipeline.flushLayout();
+      return owner.renderRoot! as RenderText;
+    }
+
+    test('a newline breaks the line without softWrap', () {
+      final RenderText one = laidOut('first line');
+      final RenderText two = laidOut('first line\nsecond');
+      expect(two.size.height, greaterThan(one.size.height * 1.5),
+          reason: 'two lines, not one');
+      expect(two.size.width, closeTo(one.size.width, 0.5),
+          reason: 'as wide as its widest line: no box, no second sentence '
+              'on the first line');
+      expect(two.getMaxIntrinsicWidth(double.infinity),
+          closeTo(one.size.width, 0.5));
+    });
+
+    test('without softWrap only the newline breaks, not the width', () {
+      const String text = 'a first line much wider than the box it is given\nb';
+      final RenderText narrow = laidOut(text, maxWidth: 60);
+      final RenderText wide = laidOut(text);
+      expect(narrow.size.height, wide.size.height,
+          reason: 'the same two lines in a narrow box as in a wide one - the '
+              'long line is clipped to the box, not wrapped at it');
+      expect(narrow.size.width, 60);
+    });
   });
 }

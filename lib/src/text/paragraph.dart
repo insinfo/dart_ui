@@ -994,6 +994,13 @@ const int _space = 0x20;
 const int _hyphen = 0x2010;
 const int _hyphenMinus = 0x2D;
 
+/// Whether [unit] forces a line break: LF, CR, VT, FF, NEL, LS or PS.
+///
+/// The set this paragraph engine breaks on, public so that a caller deciding
+/// whether a string needs the engine at all - a single-line label that turns
+/// out to contain a newline - asks the same question the engine answers.
+bool isMandatoryLineBreak(int codeUnit) => _isHardBreak(codeUnit);
+
 bool _isHardBreak(int unit) =>
     unit == 0x0A ||
     unit == 0x0D ||

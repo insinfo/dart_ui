@@ -666,9 +666,34 @@ final class RenderText extends RenderBox {
   set text(String value) {
     if (value == _text) return;
     _text = value;
+    _hasHardBreak = _containsHardBreak(value);
     _paragraph = null;
     markNeedsLayout();
   }
+
+  /// Whether the text contains a newline or another mandatory break.
+  ///
+  /// A label with one goes through the paragraph engine even without
+  /// [softWrap], because the single-line path shapes every character it is
+  /// given and a newline shaped through `cmap` comes out as a `.notdef` box -
+  /// which is what `'one\ntwo'` drew until 12/10/2026. [softWrap] decides only
+  /// whether lines also break at the width, as in Flutter, where a `\n`
+  /// always breaks.
+  late bool _hasHardBreak = _containsHardBreak(_text);
+
+  static bool _containsHardBreak(String text) {
+    for (var i = 0; i < text.length; i++) {
+      if (paragraph.isMandatoryLineBreak(text.codeUnitAt(i))) return true;
+    }
+    return false;
+  }
+
+  bool get _usesParagraph => _softWrap || _hasHardBreak;
+
+  /// The width paragraph layout may use: the constraint when soft wrapping,
+  /// otherwise none, so that only mandatory breaks end a line.
+  double _layoutWidth(double available) =>
+      _softWrap && available.isFinite ? available : double.infinity;
 
   Color get color => _color;
 
@@ -774,7 +799,7 @@ final class RenderText extends RenderBox {
   @override
   void performLayout() {
     final ScaledTypeface? face = font;
-    if (!_softWrap || face == null) {
+    if (!_usesParagraph || face == null) {
       _paragraph = null;
       size = constraints.constrain(_naturalSize);
       return;
@@ -782,8 +807,8 @@ final class RenderText extends RenderBox {
     _paragraph = uiTextPainter.layout(
       _text,
       face,
-      maxWidth:
-          constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity,
+      maxWidth: _layoutWidth(
+          constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity),
       style: paragraph.ParagraphStyle(
         maxLines: _maxLines,
         ellipsis: _ellipsis,
@@ -802,12 +827,12 @@ final class RenderText extends RenderBox {
   @override
   double computeMinIntrinsicWidth(double height) {
     final ScaledTypeface? face = font;
-    if (!_softWrap || face == null) return _naturalSize.width;
+    if (!_usesParagraph || face == null) return _naturalSize.width;
     return uiTextPainter
         .layout(
           _text,
           face,
-          maxWidth: 0,
+          maxWidth: _layoutWidth(0),
           style: paragraph.ParagraphStyle(
             maxLines: _maxLines,
             ellipsis: _ellipsis,
@@ -819,7 +844,24 @@ final class RenderText extends RenderBox {
   }
 
   @override
-  double computeMaxIntrinsicWidth(double height) => _naturalSize.width;
+  double computeMaxIntrinsicWidth(double height) {
+    final ScaledTypeface? face = font;
+    if (!_hasHardBreak || face == null) return _naturalSize.width;
+    // The widest line, not the whole text as one line.
+    return uiTextPainter
+        .layout(
+          _text,
+          face,
+          maxWidth: double.infinity,
+          style: paragraph.ParagraphStyle(
+            maxLines: _maxLines,
+            ellipsis: _ellipsis,
+            heightMultiplier: _lineHeight ?? 1.0,
+          ),
+        )
+        .size
+        .width;
+  }
 
   @override
   double computeMinIntrinsicHeight(double width) => _intrinsicHeightFor(width);
@@ -829,12 +871,12 @@ final class RenderText extends RenderBox {
 
   double _intrinsicHeightFor(double width) {
     final ScaledTypeface? face = font;
-    if (!_softWrap || face == null) return _naturalSize.height;
+    if (!_usesParagraph || face == null) return _naturalSize.height;
     return uiTextPainter
         .layout(
           _text,
           face,
-          maxWidth: width.isFinite ? width : double.infinity,
+          maxWidth: _layoutWidth(width),
           style: paragraph.ParagraphStyle(
             maxLines: _maxLines,
             ellipsis: _ellipsis,
@@ -872,7 +914,7 @@ final class RenderText extends RenderBox {
     if (_text.isEmpty || face == null) return;
     final int paint = list.addPaint(colorArgb: _color.value, antiAlias: true);
     final laidOut = _paragraph;
-    if (_softWrap && laidOut != null) {
+    if (_usesParagraph && laidOut != null) {
       final bool clip =
           laidOut.size.width > size.width || laidOut.size.height > size.height;
       if (clip) {
