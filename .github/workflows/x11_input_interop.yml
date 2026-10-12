@@ -1,0 +1,81 @@
+# X11 keys and clicks into real widgets, under a real X server.
+#
+# Until 12/10/2026 the X11 backend put the keysym in KeyEvent.logicalKey and
+# the widgets compare against Windows virtual-key codes, so in a TextField on
+# Linux the arrows, Home, Delete and Ctrl+C did nothing - only typing, which
+# travels as text, worked. The unit tests compose the two halves from bytes;
+# this runs the claim against Xvfb, with keys injected through XTEST by
+# xdotool and the clipboard read back by xclip, another X client.
+name: X11 input interop
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'lib/src/backends/x11/**'
+      - 'lib/src/platform/keysyms.dart'
+      - 'lib/src/widgets/text_field.dart'
+      - 'lib/src/widgets/focus.dart'
+      - 'tool/x11_input_smoke.dart'
+      - '.github/workflows/x11_input_interop.yml'
+
+concurrency:
+  group: x11-input-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  input:
+    name: xdotool and xclip against a TextField (Xvfb)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: '3.6.2'
+
+      - run: dart pub get
+
+      - name: Install Xvfb, xcb, xdotool and xclip
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            xvfb x11-utils \
+            libxcb1-dev libxcb-shm0-dev libxcb-icccm4-dev \
+            xdotool xclip
+          xdotool version || true
+
+      - name: Keys and clicks into a TextField and a Button
+        env:
+          DISPLAY: ':99'
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          Xvfb :99 -screen 0 1920x1080x24 -ac >build/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 15); do
+            if xdpyinfo -display :99 >/dev/null 2>&1; then break; fi
+            if ! kill -0 "$xvfb_pid" 2>/dev/null; then
+              cat build/xvfb.log
+              exit 1
+            fi
+            sleep 1
+          done
+
+          dart compile exe tool/x11_input_smoke.dart -o build/x11_input_smoke
+          set +e
+          timeout --kill-after=5 90 build/x11_input_smoke
+          status=$?
+          set -e
+          echo "x11_input_smoke exit=$status  (0 pass, 1 fail, 2 no display or tools)"
+          exit "$status"
+
+      - name: Upload the Xvfb log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: x11-input-xvfb-log
+          path: build/xvfb.log
+          if-no-files-found: ignore
