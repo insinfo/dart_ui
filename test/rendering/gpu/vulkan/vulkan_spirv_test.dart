@@ -54,11 +54,13 @@ void main() {
   final List<Uint32List> modules = <Uint32List>[
     code.vertex,
     ...code.fragments,
+    code.gradientFragment,
   ];
   final List<String> names = <String>[
     'vertex',
     for (final GpuPipelineKind kind in GpuPipelineKind.values)
       'fragment ${kind.name}',
+    'fragment coverageMask with a gradient ramp',
   ];
 
   group('the literal-string encoding', () {

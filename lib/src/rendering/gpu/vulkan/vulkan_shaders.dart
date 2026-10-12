@@ -123,6 +123,18 @@ const int kVulkanTextureBinding = 0;
 /// Bytes of push constant the vertex stage reads: one `vec2`.
 const int kVulkanPushConstantBytes = 8;
 
+/// The descriptor set the gradient ramp is bound at, binding
+/// [kVulkanTextureBinding] of a set with the same layout as the texture's -
+/// every texture this device makes already owns one, the ramp included.
+const int kVulkanGradientSet = 1;
+
+/// Where the gradient block starts in the push constants, and how long it is:
+/// `GpuGradientDraw.writeDenseBlock`'s five `vec4`s, fragment stage only. At
+/// 16 rather than 8 so the first `vec4` is 16-byte aligned, as a block member
+/// of that type has to be.
+const int kVulkanGradientPushOffset = 16;
+const int kVulkanGradientPushBytes = 80;
+
 /// The vertex shader, as SPIR-V words.
 ///
 /// Rebuilt on every call rather than cached. It costs a few microseconds once
@@ -465,18 +477,268 @@ int _analyticCoverage(
       boxCoverage);
 }
 
-/// The four modules a device compiles: one vertex stage and three fragment
-/// stages, indexed by [GpuPipelineKind.index].
+/// The coverage-mask module with its colour taken from a gradient ramp.
+///
+/// The dense route's gradient: the shape's coverage comes out of the alpha8
+/// atlas exactly as in [kVulkanModeCoverageMask], and the colour it scales is
+/// the ramp sampled at the pixel instead of the vertex colour - which
+/// `GpuRasterSink` writes as white for a gradient quad. The arithmetic is the
+/// sparse fragment module's, `vulkan_sparse_strips.dart`, over the block of
+/// `GpuGradientDraw.writeDenseBlock`, where kind and spread arrive as floats.
+/// A fifth module rather than a branch in the fourth, for the reason the
+/// library comment gives: every module here is one straight-line block.
+Uint32List buildVulkanGradientFragmentShader() {
+  final SpirvBuilder module = SpirvBuilder()
+    ..capability(kSpirvCapabilityShader);
+  final int glsl = module.extInstImport(kGlslStd450);
+  module.memoryModel(kSpirvAddressingModelLogical, kSpirvMemoryModelGlsl450);
+
+  final int mainId = module.freshId();
+
+  final int voidType = module.typeVoid();
+  final int fnType = module.typeFunction(voidType, const <int>[]);
+  final int f32 = module.typeFloat(32);
+  final int i32 = module.typeInt(32, signed: true);
+  final int boolType = module.typeBool();
+  final int v2 = module.typeVector(f32, 2);
+  final int v3 = module.typeVector(f32, 3);
+  final int v4 = module.typeVector(f32, 4);
+
+  final int inV2 = module.typePointer(kSpirvStorageClassInput, v2);
+  final int inV4 = module.typePointer(kSpirvStorageClassInput, v4);
+  final int outV4 = module.typePointer(kSpirvStorageClassOutput, v4);
+
+  final int sampledImage = module.typeSampledImage(module.typeImage2D(f32));
+  final int sampledPointer =
+      module.typePointer(kSpirvStorageClassUniformConstant, sampledImage);
+
+  // control, target-to-local rows 0 and 1, geometry 0..3 and 4..7.
+  final int pushStruct = module.typeStruct(<int>[v4, v4, v4, v4, v4]);
+  final int pushPointer =
+      module.typePointer(kSpirvStorageClassPushConstant, pushStruct);
+  final int pushV4 = module.typePointer(kSpirvStorageClassPushConstant, v4);
+
+  final int zero = module.constantFloat(f32, 0);
+  final int one = module.constantFloat(f32, 1);
+  final int two = module.constantFloat(f32, 2);
+  final int four = module.constantFloat(f32, 4);
+  final int half = module.constantFloat(f32, 0.5);
+  final int oneAndHalf = module.constantFloat(f32, 1.5);
+  final int zeroZero = module.constantComposite(v2, <int>[zero, zero]);
+  final int oneOne = module.constantComposite(v2, <int>[one, one]);
+  final int halfHalf = module.constantComposite(v2, <int>[half, half]);
+
+  final int vTexCoord = module.variable(inV2, kSpirvStorageClassInput);
+  final int vColor = module.variable(inV4, kSpirvStorageClassInput);
+  final int vShapeRect = module.variable(inV4, kSpirvStorageClassInput);
+  final int vDevicePos = module.variable(inV2, kSpirvStorageClassInput);
+  final int fragColor = module.variable(outV4, kSpirvStorageClassOutput);
+  final int mask =
+      module.variable(sampledPointer, kSpirvStorageClassUniformConstant);
+  final int ramp =
+      module.variable(sampledPointer, kSpirvStorageClassUniformConstant);
+  final int push = module.variable(pushPointer, kSpirvStorageClassPushConstant);
+
+  module
+    ..entryPoint(kSpirvExecutionModelFragment, mainId, kVulkanEntryPoint,
+        <int>[vTexCoord, vColor, vShapeRect, vDevicePos, fragColor])
+    ..executionMode(mainId, kSpirvExecutionModeOriginUpperLeft)
+    ..decorate(vTexCoord, kSpirvDecorationLocation, const <int>[0])
+    ..decorate(vColor, kSpirvDecorationLocation, const <int>[1])
+    ..decorate(vShapeRect, kSpirvDecorationLocation, const <int>[2])
+    ..decorate(vDevicePos, kSpirvDecorationLocation, const <int>[3])
+    ..decorate(fragColor, kSpirvDecorationLocation, const <int>[0])
+    ..decorate(
+        mask, kSpirvDecorationDescriptorSet, const <int>[kVulkanTextureSet])
+    ..decorate(
+        mask, kSpirvDecorationBinding, const <int>[kVulkanTextureBinding])
+    ..decorate(
+        ramp, kSpirvDecorationDescriptorSet, const <int>[kVulkanGradientSet])
+    ..decorate(
+        ramp, kSpirvDecorationBinding, const <int>[kVulkanTextureBinding])
+    ..decorate(pushStruct, kSpirvDecorationBlock);
+  for (var member = 0; member < 5; member++) {
+    module.memberDecorate(pushStruct, member, kSpirvDecorationOffset,
+        <int>[kVulkanGradientPushOffset + member * 16]);
+  }
+
+  final SpirvFunction body = module.beginFunction(voidType, fnType, mainId);
+  int loadV4(int member) => body.load(v4,
+      body.accessChain(pushV4, push, <int>[module.constantInt(i32, member)]));
+
+  // -- coverage, from the atlas ----------------------------------------------
+  final int texel =
+      body.sample(v4, body.load(sampledImage, mask), body.load(v2, vTexCoord));
+  final int maskCoverage = body.extract(f32, texel, 0);
+
+  // -- the gradient parameter at this pixel ----------------------------------
+  final int control = loadV4(0);
+  final int pixel = body.load(v2, vDevicePos);
+  final int pixelXY1 = body.construct(v3, <int>[
+    body.extract(f32, pixel, 0),
+    body.extract(f32, pixel, 1),
+    one,
+  ]);
+  final int row0 = loadV4(1);
+  final int row1 = loadV4(2);
+  final int local = body.construct(v2, <int>[
+    body.dot(f32, body.shuffle(v3, row0, row0, const <int>[0, 1, 2]), pixelXY1),
+    body.dot(f32, body.shuffle(v3, row1, row1, const <int>[0, 1, 2]), pixelXY1),
+  ]);
+  final int geometry0 = loadV4(3);
+  final int geometry1 = loadV4(4);
+
+  // Linear: t = dot(local - start, end - start) / |end - start|^2, and 0 when
+  // the endpoints coincide - the 0 / 0 is computed and discarded by OpSelect.
+  final int start = body.shuffle(v2, geometry0, geometry0, const <int>[0, 1]);
+  final int end = body.shuffle(v2, geometry0, geometry0, const <int>[2, 3]);
+  final int direction = body.subtract(v2, end, start);
+  final int lengthSquared = body.dot(f32, direction, direction);
+  final int linear = body.select(
+      f32,
+      body.equalFloat(boolType, lengthSquared, zero),
+      zero,
+      body.divide(
+          f32,
+          body.dot(f32, body.subtract(v2, local, start), direction),
+          lengthSquared));
+
+  // Radial and focal, the four cases the CPU reference distinguishes.
+  final int center = start;
+  final int radius = body.extract(f32, geometry0, 2);
+  final int focus = body.construct(v2, <int>[
+    body.extract(f32, geometry0, 3),
+    body.extract(f32, geometry1, 0),
+  ]);
+  final int ray = body.subtract(v2, local, focus);
+  final int rayIsZero = body.logicalAnd(
+      boolType,
+      body.equalFloat(boolType, body.extract(f32, ray, 0), zero),
+      body.equalFloat(boolType, body.extract(f32, ray, 1), zero));
+  final int focusAtCenter = body.logicalAnd(
+      boolType,
+      body.equalFloat(
+          boolType, body.extract(f32, focus, 0), body.extract(f32, center, 0)),
+      body.equalFloat(
+          boolType, body.extract(f32, focus, 1), body.extract(f32, center, 1)));
+  final int a = body.dot(f32, ray, ray);
+  final int concentric = body.divide(
+      f32, body.extInst(f32, glsl, kGlslStd450Sqrt, <int>[a]), radius);
+  final int focusFromCenter = body.subtract(v2, focus, center);
+  final int b = body.multiply(f32, two, body.dot(f32, focusFromCenter, ray));
+  final int c = body.subtract(
+      f32,
+      body.dot(f32, focusFromCenter, focusFromCenter),
+      body.multiply(f32, radius, radius));
+  final int discriminant = body.subtract(f32, body.multiply(f32, b, b),
+      body.multiply(f32, four, body.multiply(f32, a, c)));
+  final int root = body.extInst(f32, glsl, kGlslStd450Sqrt, <int>[
+    body.extInst(f32, glsl, kGlslStd450FMax, <int>[discriminant, zero]),
+  ]);
+  final int negB = body.negate(f32, b);
+  final int twoA = body.multiply(f32, two, a);
+  final int first = body.divide(f32, body.subtract(f32, negB, root), twoA);
+  final int second = body.divide(f32, body.add(f32, negB, root), twoA);
+  final int scale = body.extInst(f32, glsl, kGlslStd450FMax, <int>[
+    body.select(f32, body.greaterThanFloat(boolType, first, zero), first, zero),
+    body.select(
+        f32, body.greaterThanFloat(boolType, second, zero), second, zero),
+  ]);
+  final int focal = body.select(
+      f32,
+      body.logicalOr(boolType, body.equalFloat(boolType, a, zero),
+          body.lessThanFloat(boolType, discriminant, zero)),
+      zero,
+      body.select(f32, body.greaterThanFloat(boolType, scale, zero),
+          body.divide(f32, one, scale), zero));
+  final int radial = body.select(
+      f32, rayIsZero, zero, body.select(f32, focusAtCenter, concentric, focal));
+
+  final int kind = body.extract(f32, control, 0);
+  final int parameter = body.select(
+      f32, body.lessThanFloat(boolType, kind, oneAndHalf), linear, radial);
+
+  // Spread: pad, repeat, reflect - GradientSpread's order, as floats.
+  final int pad =
+      body.extInst(f32, glsl, kGlslStd450FClamp, <int>[parameter, zero, one]);
+  final int repeat =
+      body.extInst(f32, glsl, kGlslStd450Fract, <int>[parameter]);
+  final int wrapped = body.subtract(
+      f32,
+      parameter,
+      body.multiply(
+          f32,
+          two,
+          body.extInst(f32, glsl, kGlslStd450Floor,
+              <int>[body.divide(f32, parameter, two)])));
+  final int reflected = body.select(
+      f32,
+      body.lessThanOrEqualFloat(boolType, wrapped, one),
+      wrapped,
+      body.subtract(f32, two, wrapped));
+  final int spread = body.extract(f32, control, 1);
+  final int spreadParameter = body.select(
+      f32,
+      body.greaterThanFloat(boolType, spread, oneAndHalf),
+      reflected,
+      body.select(
+          f32, body.greaterThanFloat(boolType, spread, half), repeat, pad));
+
+  final int rampCoordinate = body.add(
+      f32,
+      body.multiply(f32, spreadParameter, body.extract(f32, control, 2)),
+      body.extract(f32, control, 3));
+  final int straight = body.sampleLod(v4, body.load(sampledImage, ramp),
+      body.construct(v2, <int>[rampCoordinate, half]), zero);
+  // Straight alpha in the ramp, premultiplied here; the vertex colour is
+  // white for a gradient quad, so its multiply is an identity kept for parity
+  // with the other modules.
+  final int rampAlpha = body.extract(f32, straight, 3);
+  final int rampColor = body.construct(v4, <int>[
+    body.multiply(f32, body.extract(f32, straight, 0), rampAlpha),
+    body.multiply(f32, body.extract(f32, straight, 1), rampAlpha),
+    body.multiply(f32, body.extract(f32, straight, 2), rampAlpha),
+    rampAlpha,
+  ]);
+  final int color = body.scale(
+      v4, body.multiply(v4, rampColor, body.load(v4, vColor)), maskCoverage);
+
+  // boxCoverage over the quad, which the mask route writes equal to the quad
+  // so it evaluates to 1 - kept so this module is the coverage-mask one with
+  // only its colour changed.
+  final int rect = body.load(v4, vShapeRect);
+  final int lowCorner = body.shuffle(v2, rect, rect, const <int>[0, 1]);
+  final int highCorner = body.shuffle(v2, rect, rect, const <int>[2, 3]);
+  final int lo = body.extInst(v2, glsl, kGlslStd450FMax,
+      <int>[lowCorner, body.subtract(v2, pixel, halfHalf)]);
+  final int hi = body.extInst(v2, glsl, kGlslStd450FMin,
+      <int>[highCorner, body.add(v2, pixel, halfHalf)]);
+  final int overlap = body.extInst(v2, glsl, kGlslStd450FClamp,
+      <int>[body.subtract(v2, hi, lo), zeroZero, oneOne]);
+  final int boxCoverage = body.multiply(
+      f32, body.extract(f32, overlap, 0), body.extract(f32, overlap, 1));
+
+  body
+    ..store(fragColor, body.scale(v4, color, boxCoverage))
+    ..returnVoid();
+
+  return module.assemble();
+}
+
+/// The modules a device compiles: one vertex stage, three fragment stages
+/// indexed by [GpuPipelineKind.index], and the gradient coverage-mask stage.
 final class VulkanShaderCode {
   VulkanShaderCode()
       : vertex = buildVulkanVertexShader(),
         fragments = List<Uint32List>.unmodifiable(<Uint32List>[
           for (final GpuPipelineKind kind in GpuPipelineKind.values)
             buildVulkanFragmentShader(kind.index),
-        ]);
+        ]),
+        gradientFragment = buildVulkanGradientFragmentShader();
 
   final Uint32List vertex;
   final List<Uint32List> fragments;
+  final Uint32List gradientFragment;
 
   Uint32List fragmentFor(GpuPipelineKind kind) => fragments[kind.index];
 
@@ -484,5 +746,6 @@ final class VulkanShaderCode {
   /// size is a builder that stopped emitting a section.
   int get wordCount =>
       vertex.length +
+      gradientFragment.length +
       fragments.fold<int>(0, (int sum, Uint32List f) => sum + f.length);
 }

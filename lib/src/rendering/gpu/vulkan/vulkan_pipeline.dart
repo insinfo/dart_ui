@@ -63,8 +63,10 @@ final class VulkanPipelines {
     required this.descriptorSetLayout,
     required this.layout,
     required List<Pointer<VkPipeline_T>> pipelines,
+    required List<Pointer<VkPipeline_T>> gradientPipelines,
     required this.shaderWords,
-  }) : _pipelines = pipelines;
+  })  : _pipelines = pipelines,
+        _gradientPipelines = gradientPipelines;
 
   /// The attachment format every pipeline here was built for. A target with a
   /// different format needs its own [VulkanPipelines]; using these would be a
@@ -81,7 +83,21 @@ final class VulkanPipelines {
 
   final List<Pointer<VkPipeline_T>> _pipelines;
 
-  int get pipelineCount => _pipelines.length;
+  /// The gradient coverage-mask module under each of [kVulkanBlendModes].
+  final List<Pointer<VkPipeline_T>> _gradientPipelines;
+
+  int get pipelineCount => _pipelines.length + _gradientPipelines.length;
+
+  /// The pipeline for a coverage-mask batch whose colour is a gradient ramp,
+  /// under [blendMode]. See `buildVulkanGradientFragmentShader`.
+  Pointer<VkPipeline_T> gradientPipelineFor(int blendMode) {
+    final int blend = kVulkanBlendModes.indexOf(blendMode);
+    if (blend < 0) {
+      throw ArgumentError.value(blendMode, 'blendMode',
+          'no Vulkan gradient pipeline was built for it');
+    }
+    return _gradientPipelines[blend];
+  }
 
   /// The pipeline for [kind] under [blendMode].
   ///
@@ -119,9 +135,14 @@ final class VulkanPipelines {
     Pointer<VkDescriptorSetLayout_T> setLayout = nullptr;
     Pointer<VkPipelineLayout_T> layout = nullptr;
     final List<Pointer<VkPipeline_T>> pipelines = <Pointer<VkPipeline_T>>[];
+    final List<Pointer<VkPipeline_T>> gradientPipelines =
+        <Pointer<VkPipeline_T>>[];
 
     void releaseAll() {
-      for (final Pointer<VkPipeline_T> pipeline in pipelines) {
+      for (final Pointer<VkPipeline_T> pipeline in <Pointer<VkPipeline_T>>[
+        ...pipelines,
+        ...gradientPipelines,
+      ]) {
         device.api.destroyPipeline(device.handle, pipeline, nullptr);
       }
       if (layout != nullptr) {
@@ -193,6 +214,30 @@ final class VulkanPipelines {
         }
       }
 
+      final Pointer<VkShaderModule_T> gradientFragment =
+          _createShaderModule(device, arena, code.gradientFragment);
+      if (gradientFragment == nullptr) {
+        releaseAll();
+        return null;
+      }
+      modules.add(gradientFragment);
+      for (final int blendMode in kVulkanBlendModes) {
+        final Pointer<VkPipeline_T> pipeline = _createPipeline(
+          device,
+          arena,
+          vertex: vertex,
+          fragment: gradientFragment,
+          layout: layout,
+          renderPass: clearPass,
+          blend: gpuBlendForMode(blendMode),
+        );
+        if (pipeline == nullptr) {
+          releaseAll();
+          return null;
+        }
+        gradientPipelines.add(pipeline);
+      }
+
       return VulkanPipelines._(
         colorFormat: colorFormat,
         clearRenderPass: clearPass,
@@ -200,6 +245,7 @@ final class VulkanPipelines {
         descriptorSetLayout: setLayout,
         layout: layout,
         pipelines: pipelines,
+        gradientPipelines: gradientPipelines,
         shaderWords: code.wordCount,
       );
     } finally {
@@ -214,10 +260,14 @@ final class VulkanPipelines {
   }
 
   void dispose(VulkanDevice device) {
-    for (final Pointer<VkPipeline_T> pipeline in _pipelines) {
+    for (final Pointer<VkPipeline_T> pipeline in <Pointer<VkPipeline_T>>[
+      ..._pipelines,
+      ..._gradientPipelines,
+    ]) {
       device.api.destroyPipeline(device.handle, pipeline, nullptr);
     }
     _pipelines.clear();
+    _gradientPipelines.clear();
     device.api
       ..destroyPipelineLayout(device.handle, layout, nullptr)
       ..destroyDescriptorSetLayout(device.handle, descriptorSetLayout, nullptr)
@@ -378,23 +428,34 @@ final class VulkanPipelines {
     NativeArena arena,
     Pointer<VkDescriptorSetLayout_T> setLayout,
   ) {
-    final Pointer<VkPushConstantRange> range = arena<VkPushConstantRange>();
-    range.ref
+    // Two ranges: the viewport for the vertex stage, and the gradient block
+    // for the fragment stage of the gradient module. Every pipeline shares
+    // this layout, which is what lets one bind a set and push the block
+    // without a layout switch between a solid batch and a gradient one.
+    final Pointer<VkPushConstantRange> range = arena<VkPushConstantRange>(2);
+    range[0]
       ..stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_VERTEX_BIT
       ..offset = 0
       ..size = kVulkanPushConstantBytes;
+    range[1]
+      ..stageFlags = VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT
+      ..offset = kVulkanGradientPushOffset
+      ..size = kVulkanGradientPushBytes;
 
+    // Set 0 is the batch's texture, set 1 the gradient ramp - the same
+    // layout twice, since a ramp is a texture and owns a set like any other.
     final Pointer<Pointer<VkDescriptorSetLayout_T>> layouts =
-        arena<Pointer<VkDescriptorSetLayout_T>>();
-    layouts.value = setLayout;
+        arena<Pointer<VkDescriptorSetLayout_T>>(2);
+    layouts[0] = setLayout;
+    layouts[1] = setLayout;
 
     final Pointer<VkPipelineLayoutCreateInfo> info =
         arena<VkPipelineLayoutCreateInfo>();
     info.ref
       ..sType = VkStructureType.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO
-      ..setLayoutCount = 1
+      ..setLayoutCount = 2
       ..pSetLayouts = layouts
-      ..pushConstantRangeCount = 1
+      ..pushConstantRangeCount = 2
       ..pPushConstantRanges = range;
 
     final Pointer<Pointer<VkPipelineLayout_T>> out =

@@ -84,6 +84,7 @@ import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/gpu_texture.dart';
@@ -195,6 +196,29 @@ void main() {
   group('text', () {
     test('a glyph run, box for box: 0', () async {
       await _expectParity(() => device, skip, _glyphRun(), tolerance: 0);
+    });
+  });
+
+  group('gradients, through the coverage atlas and a ramp lookup', () {
+    // A fifth fragment module - the coverage mask with its colour taken from
+    // the ramp - and set 1 for the ramp. Until 12/10/2026 the dense route
+    // refused every gradient by name. Metal, Direct3D 11 and 12 run the same
+    // scenes, at 1 level: the ramp is interpolated and premultiplied in float
+    // here, in eight bits on the CPU. No layer scene: no layer stack here.
+    test('a linear ramp across a rectangle', () async {
+      await _expectParity(() => device, skip, _gradientScene(_linearRect),
+          tolerance: _gradientTolerance);
+    });
+
+    test('a radial ramp with a focus, reflected, in a rounded rectangle',
+        () async {
+      await _expectParity(() => device, skip, _gradientScene(_radialRRect),
+          tolerance: _gradientTolerance);
+    });
+
+    test('a repeating ramp on a path, under a transform', () async {
+      await _expectParity(() => device, skip, _gradientScene(_repeatedPath),
+          tolerance: _gradientTolerance);
     });
   });
 
@@ -548,4 +572,68 @@ final class _WindowSurface implements NativeSurfaceDescriptor {
 
   @override
   double get scale => 1;
+}
+
+const int _gradientTolerance = 1;
+
+const List<GradientStop> _stops = <GradientStop>[
+  GradientStop(0, 0xFFE03020),
+  GradientStop(0.5, 0x8020C040),
+  GradientStop(1, 0xFF2040E0),
+];
+
+DisplayList _gradientScene(void Function(DisplayList list) draw) {
+  final DisplayList list = DisplayList();
+  final int background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  draw(list);
+  return list;
+}
+
+void _linearRect(DisplayList list) {
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    antiAlias: false,
+    gradient:
+        LinearGradient(startX: 2, startY: 3, endX: 21, endY: 19, stops: _stops),
+  );
+  list.drawRect(2, 2, 22, 22, paint);
+}
+
+void _radialRRect(DisplayList list) {
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    gradient: RadialGradient(
+      centerX: 12,
+      centerY: 12,
+      radius: 7,
+      focusX: 9,
+      focusY: 10,
+      stops: _stops,
+      spread: GradientSpread.reflect,
+    ),
+  );
+  list.drawRRect(2, 3, 22, 21, 5, 5, 5, 5, 5, 5, 5, 5, paint);
+}
+
+void _repeatedPath(DisplayList list) {
+  final PathBuilder builder = PathBuilder();
+  _addRectContour(builder, const Rect.fromLTRB(1, 1, 15, 15), clockwise: true);
+  _addRectContour(builder, const Rect.fromLTRB(8, 8, 22, 22), clockwise: true);
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    gradient: LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 6,
+      endY: 2,
+      stops: _stops,
+      spread: GradientSpread.repeat,
+    ),
+  );
+  list
+    ..save()
+    ..transform(1, 0, 0, 1, 0.5, 0.25)
+    ..drawPath(list.addPath(builder.build()), paint)
+    ..restore();
 }

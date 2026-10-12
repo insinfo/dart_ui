@@ -53,6 +53,7 @@ import '../../renderer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
 import '../gpu_glyph_atlas.dart';
+import '../gpu_gradient.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_path_planning.dart';
 import '../gpu_path_strategy.dart';
@@ -1448,6 +1449,8 @@ final class _VulkanOrderedRecorder {
         final Pointer<VkRect2D> scissor = arena<VkRect2D>();
         final Pointer<Pointer<VkDescriptorSet_T>> sets =
             arena<Pointer<VkDescriptorSet_T>>();
+        final Pointer<Float> gradientBlock =
+            arena<Float>(GpuGradientDraw.denseBlockFloats);
 
         for (var i = firstBatch; i < endBatch; i++) {
           final GpuBatch batch = _batcher.batchAt(i);
@@ -1459,12 +1462,48 @@ final class _VulkanOrderedRecorder {
             ..width = batch.scissorWidth < 0 ? 0 : batch.scissorWidth
             ..height = batch.scissorHeight < 0 ? 0 : batch.scissorHeight;
           sets.value = texture.descriptorSet;
+          final GpuGradientDraw? gradient = batch.gradient;
+          if (gradient != null) {
+            // The ramp is a texture of this device and owns a descriptor set
+            // like any other; it goes to set 1, and the block to the fragment
+            // range of the push constants. Per gradient batch, because the
+            // batcher never merges two gradients.
+            final VulkanTexture rampTexture =
+                gradient.binding.texture as VulkanTexture;
+            final Pointer<Pointer<VkDescriptorSet_T>> rampSet =
+                arena<Pointer<VkDescriptorSet_T>>();
+            rampSet.value = rampTexture.descriptorSet;
+            GpuGradientDraw.writeDenseBlock(
+                gradientBlock.asTypedList(GpuGradientDraw.denseBlockFloats),
+                gradient);
+            _device.gpu.api
+              ..cmdBindDescriptorSets(
+                commands,
+                VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipelines.layout,
+                kVulkanGradientSet,
+                1,
+                rampSet,
+                0,
+                nullptr,
+              )
+              ..cmdPushConstants(
+                commands,
+                pipelines.layout,
+                VkShaderStageFlagBits.VK_SHADER_STAGE_FRAGMENT_BIT,
+                kVulkanGradientPushOffset,
+                kVulkanGradientPushBytes,
+                gradientBlock.cast<Void>(),
+              );
+          }
 
           _device.gpu.api
             ..cmdBindPipeline(
               commands,
               VkPipelineBindPoint.VK_PIPELINE_BIND_POINT_GRAPHICS,
-              pipelines.pipelineFor(batch.pipeline, batch.blendMode),
+              gradient != null
+                  ? pipelines.gradientPipelineFor(batch.blendMode)
+                  : pipelines.pipelineFor(batch.pipeline, batch.blendMode),
             )
             ..cmdBindDescriptorSets(
               commands,
@@ -1592,6 +1631,9 @@ final class VulkanOffscreenTarget implements RenderTarget {
       // the player and drives the sink directly still gets the device's answer
       // rather than the constructor's default.
       analyticPrimitives: _device.analyticPrimitivesEnabled,
+      // Gradient fills through the coverage atlas and a ramp sampled per
+      // pixel; per target, as the image cache is. See `GpuGradientDraw`.
+      gradientCache: _gradients,
     );
     _player = DisplayListPlayer(_sink);
   }
@@ -1609,6 +1651,7 @@ final class VulkanOffscreenTarget implements RenderTarget {
   /// for why five identical private copies existed before this one.
   final ReplayFontResolver _fonts = ReplayFontResolver();
   late final VulkanImageCache _images;
+  late final GpuGradientCache _gradients = GpuGradientCache(allocator: _device);
   late final GpuRasterSink _sink;
   late final DisplayListPlayer _player;
 
@@ -2117,6 +2160,7 @@ final class VulkanOffscreenTarget implements RenderTarget {
     _device.gpu.waitIdle();
     _recorder.dispose();
     _images.dispose();
+    _gradients.clear();
     _device.releaseTexture(_maskTexture);
     // The glyph atlas texture too: this target created it. Left alive, it was
     // the VkImage the validation layer found at vkDestroyDevice
@@ -2203,6 +2247,9 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
       // the player and drives the sink directly still gets the device's answer
       // rather than the constructor's default.
       analyticPrimitives: _device.analyticPrimitivesEnabled,
+      // Gradient fills through the coverage atlas and a ramp sampled per
+      // pixel; per target, as the image cache is. See `GpuGradientDraw`.
+      gradientCache: _gradients,
     );
     _player = DisplayListPlayer(_sink);
     for (var i = 0; i < _device.gpu.framesInFlight; i++) {
@@ -2224,6 +2271,7 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
   /// for why five identical private copies existed before this one.
   final ReplayFontResolver _fonts = ReplayFontResolver();
   late final VulkanImageCache _images;
+  late final GpuGradientCache _gradients = GpuGradientCache(allocator: _device);
   late final GpuRasterSink _sink;
   late final DisplayListPlayer _player;
   late final _VulkanOrderedRecorder _recorder;
@@ -2903,6 +2951,7 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
     _device.gpu.waitIdle();
     _recorder.dispose();
     _images.dispose();
+    _gradients.clear();
     _device.releaseTexture(_maskTexture);
     _device.releaseTexture(_glyphTexture);
     for (final Pointer<VkSemaphore_T> semaphore in _renderFinished) {
