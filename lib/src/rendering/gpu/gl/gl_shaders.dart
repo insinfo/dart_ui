@@ -161,6 +161,66 @@ const String _fragmentBody = '''
 uniform sampler2D uTexture;
 uniform int uMode;
 
+// A gradient fill's ramp, in GpuGradientDraw.writeDenseBlock's layout as five
+// vec4s: uGradient0 is kind (0 none, 1 linear, 2 radial), spread, lookup scale
+// and lookup bias; 1 and 2 are the rows of target-to-local; 3 and 4 the
+// geometry. The ramp is on texture unit 1. Kind 0 for a batch with no
+// gradient, so the ramp is never read then.
+uniform sampler2D uGradientRamp;
+uniform vec4 uGradient0;
+uniform vec4 uGradient1;
+uniform vec4 uGradient2;
+uniform vec4 uGradient3;
+uniform vec4 uGradient4;
+
+// gl_sparse_strips.dart's gradientParameter over this block; the reference
+// both follow is GpuGradientShaderParameters.parameterAtTarget.
+float gradientParameter(vec2 p) {
+  vec2 local = vec2(dot(uGradient1.xyz, vec3(p, 1.0)),
+                    dot(uGradient2.xyz, vec3(p, 1.0)));
+  if (uGradient0.x < 1.5) {
+    vec2 direction = uGradient3.zw - uGradient3.xy;
+    float lengthSquared = dot(direction, direction);
+    return lengthSquared == 0.0
+        ? 0.0
+        : dot(local - uGradient3.xy, direction) / lengthSquared;
+  }
+  vec2 center = uGradient3.xy;
+  float radius = uGradient3.z;
+  vec2 focus = vec2(uGradient3.w, uGradient4.x);
+  vec2 ray = local - focus;
+  if (all(equal(ray, vec2(0.0)))) return 0.0;
+  if (all(equal(focus, center))) return length(ray) / radius;
+  vec2 focusFromCenter = focus - center;
+  float a = dot(ray, ray);
+  float b = 2.0 * dot(focusFromCenter, ray);
+  float c = dot(focusFromCenter, focusFromCenter) - radius * radius;
+  float discriminant = b * b - 4.0 * a * c;
+  if (a == 0.0 || discriminant < 0.0) return 0.0;
+  float root = sqrt(discriminant);
+  float first = (-b - root) / (2.0 * a);
+  float second = (-b + root) / (2.0 * a);
+  float scale = max(first > 0.0 ? first : 0.0, second > 0.0 ? second : 0.0);
+  return scale > 0.0 ? 1.0 / scale : 0.0;
+}
+
+float spreadGradient(float t, float spread) {
+  if (spread > 0.5 && spread < 1.5) return fract(t);
+  if (spread > 1.5) {
+    float repeated = t - 2.0 * floor(t * 0.5);
+    return repeated <= 1.0 ? repeated : 2.0 - repeated;
+  }
+  return clamp(t, 0.0, 1.0);
+}
+
+// The ramp at [p], straight alpha in the texture and premultiplied here.
+vec4 gradientColor(vec2 p) {
+  float t = spreadGradient(gradientParameter(p), uGradient0.y);
+  vec4 straight =
+      texture(uGradientRamp, vec2(t * uGradient0.z + uGradient0.w, 0.5));
+  return vec4(straight.rgb * straight.a, straight.a);
+}
+
 // Exact area of the pixel square at [p] that lies inside the rectangle [r].
 // Separable, which is why an axis-aligned rectangle needs no mask.
 float boxCoverage(vec4 r, vec2 p) {
@@ -200,7 +260,8 @@ float roundedCoverage(vec4 r, float rad, vec2 p) {
 }
 
 void main() {
-  vec4 color = vColor;
+  // A gradient quad's vertex colour is white; the ramp replaces it.
+  vec4 color = uGradient0.x > 0.5 ? gradientColor(vDevicePos) : vColor;
   float coverage;
   if (uMode == 1) {
     // A coverage mask scales the already-premultiplied colour, which is the

@@ -1643,39 +1643,25 @@ void main() {
         }
       }, skip: sparseSession.skipReason);
 
-      test('a device with no sparse executor refuses a gradient by name', () {
-        // The invariant the player's marker interface used to protect, now
-        // enforced by the sink so the message can name the backend and say
-        // what is missing. A flat fill would read as a paint bug.
-        // The kill switch doing the job it exists for: a build with sparse
-        // turned off has no route that can sample a ramp, and has to say so by
-        // name rather than draw a flat fill.
+      test('a device with no sparse executor draws a gradient densely',
+          () async {
+        // Until 12/10/2026 this was a refusal by name: with sparse turned off
+        // no route could sample a ramp. The dense shader samples it now, so
+        // the same scene draws through the coverage atlas and matches the CPU.
+        // Metal measures 1 level on the same arithmetic; 2 leaves room for a
+        // sampler that rounds its sub-texel weights the other way.
         final _GlSession plain = _GlSession.open(disableSparseStrips: true);
         if (plain.skipReason != null) {
           markTestSkipped('no GL device: ${plain.skipReason}');
           return;
         }
-        final GlOffscreenTarget target = plain.target(64, 64);
         try {
-          expect(target.gradientCache, isNull);
-          expect(
-            () => target.renderDisplayList(
-              _gradientScene(_linearGradient()),
-              clearColor: 0xFF000000,
-            ),
-            throwsA(
-              isA<UnsupportedCapabilityError>().having(
-                (UnsupportedCapabilityError error) => '$error',
-                'message',
-                allOf(
-                  contains('gradient'),
-                  contains('flat fill'),
-                ),
-              ),
-            ),
-          );
+          final _Parity parity =
+              await _parity(plain, _gradientScene(_linearGradient()), 64);
+          expect(parity.drewSomething, isTrue);
+          expect(parity.maxDeviation, lessThanOrEqualTo(2),
+              reason: parity.report);
         } finally {
-          target.dispose();
           plain.close();
         }
       }, skip: sparseSession.skipReason);

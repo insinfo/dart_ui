@@ -218,6 +218,9 @@ final class GlWindowTarget
       // golden test proves nothing about what the screen shows, which is the
       // reason `GlVectorReplay` exists. Same flag, read from the same device.
       analyticPrimitives: _device.analyticPrimitivesEnabled,
+      // Gradient fills through the coverage atlas and a per-pixel ramp
+      // lookup when no sparse route takes them; see `GpuGradientDraw`.
+      gradientCache: _device.gradientCache,
     );
     _player = DisplayListPlayer(_sink);
   }

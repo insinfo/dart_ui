@@ -128,13 +128,12 @@ void main() {
           isFalse);
     });
 
-    test('a gradient draw reports sparse or nothing, never the atlas', () {
-      // The inversion that makes gradients different from every other draw:
-      // the dense coverage atlas is normally the guaranteed fallback, and for
-      // a gradient it is not a fallback at all - it would paint a flat fill.
-      // So the capability set for a gradient has to *withhold* it, which is
-      // what turns "no route" into a named refusal in `GpuRasterSink` instead
-      // of a silently wrong picture.
+    test('a gradient draw reports sparse, or the atlas, never B or C', () {
+      // The atlas used to be withheld for a gradient - it modulated one
+      // vertex colour, so it would have painted a flat fill. Since the dense
+      // shader samples the ramp per pixel it draws a gradient correctly, so
+      // it is offered where the sparse route is not; approaches B and C still
+      // hand the rasteriser one solid material and stay off.
       const GpuPathDrawTraits gradient = GpuPathDrawTraits(hasGradient: true);
 
       final GlVectorReplay withCache = GlVectorReplay.create(
@@ -150,24 +149,21 @@ void main() {
           withCache.capabilities(gradient);
       expect(capable.sparseStrips, isTrue);
       expect(capable.coverageAtlas, isFalse,
-          reason: 'the atlas cannot draw a ramp, so offering it would promise '
-              'a picture the renderer would get wrong');
+          reason: 'where the sparse route exists it keeps the gradients it '
+              'was measured on');
       expect(capable.analyticPrimitives, isFalse);
       expect(capable.tessellation, isFalse,
           reason: 'approach B hands the rasteriser one solid material');
       expect(capable.stencil, isFalse);
 
-      // No cache: nothing at all, which makes the selector raise and the sink
-      // refuse by name.
+      // No sparse cache: the atlas alone, which is a route - not a refusal.
       final GlVectorReplay noCache =
           _replay(sparse: true, tessellation: true, layers: _stack())!;
-      final GpuPathStrategyCapabilities none = noCache.capabilities(gradient);
-      expect(none.sparseStrips, isFalse);
-      expect(none.coverageAtlas, isFalse);
-      expect(none.hasGeneralPathStrategy, isFalse,
-          reason: 'this is what makes GpuPathStrategySelector.select raise, '
-              'which the planning telemetry contains and the sink turns into '
-              'a refusal that names the backend');
+      final GpuPathStrategyCapabilities atlasOnly =
+          noCache.capabilities(gradient);
+      expect(atlasOnly.sparseStrips, isFalse);
+      expect(atlasOnly.coverageAtlas, isTrue);
+      expect(atlasOnly.tessellation, isFalse);
     });
 
     test('a device with no sparse executor is given no gradient cache', () {

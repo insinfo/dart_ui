@@ -398,6 +398,12 @@ final class GlRenderDevice
   int _uniformTexture = -1;
   int _uniformMode = -1;
   int _uniformYFlip = -1;
+  int _uniformGradientRamp = -1;
+
+  /// `uGradient0` to `uGradient4`, the five vec4s of the gradient block.
+  final List<int> _uniformGradient = List<int>.filled(5, -1);
+  late final Float32List _gradientScratch =
+      Float32List(GpuGradientDraw.denseBlockFloats);
 
   GpuDeviceState get state => _state;
 
@@ -565,6 +571,13 @@ final class GlRenderDevice
   GlImageCache get images => _images;
   late final GlImageCache _images = GlImageCache(this);
 
+  /// Gradient ramps for the dense route, one `GL_RGBA8` row each, shared by
+  /// every target on this context for the reason [images] is. The sparse
+  /// executor keeps its own, through `GlVectorReplay`.
+  GpuGradientCache get gradientCache => _gradientCache;
+  late final GpuGradientCache _gradientCache =
+      GpuGradientCache(allocator: this);
+
   /// `glTexSubImage2D` calls made for glyph coverage on this device.
   ///
   /// Counted per *region* rather than per frame or per glyph, because the
@@ -686,6 +699,7 @@ final class GlRenderDevice
   /// window must not do to the window behind it.
   void _disposeSharedCaches() {
     _images.clear();
+    _gradientCache.clear();
     final GlTexture? texture = _glyphTexture;
     if (texture != null) releaseTexture(texture);
     _glyphTexture = null;
@@ -718,6 +732,8 @@ final class GlRenderDevice
     _uniformTexture = -1;
     _uniformMode = -1;
     _uniformYFlip = -1;
+    _uniformGradientRamp = -1;
+    _uniformGradient.fillRange(0, 5, -1);
     _drawState.reset();
     _lastError = null;
   }
@@ -1165,6 +1181,7 @@ final class GlRenderDevice
     _gl
       ..useProgram(_program)
       ..uniform1i(_uniformTexture, 0)
+      ..uniform1i(_uniformGradientRamp, 1)
       ..activeTexture(glTexture0)
       ..bindVertexArray(_vao)
       ..enable(glScissorTest);
@@ -1308,6 +1325,7 @@ final class GlRenderDevice
         _gl
           ..useProgram(_program)
           ..uniform1i(_uniformTexture, 0)
+          ..uniform1i(_uniformGradientRamp, 1)
           ..activeTexture(glTexture0)
           ..bindVertexArray(_vao)
           ..enable(glBlend)
@@ -1672,6 +1690,9 @@ final class GlRenderDevice
       viewportHeight.toDouble(),
     );
     _gl.uniform1i(_uniformYFlip, yFlip);
+    // Rewritten on the first batch of every range: an executor between two
+    // ranges may have used texture unit 1 for its own ramp.
+    Object? boundGradient = _drawState;
 
     for (var i = first; i < last; i++) {
       final batch = batcher.batchAt(i);
@@ -1715,6 +1736,11 @@ final class GlRenderDevice
         state.textureId = batch.textureId;
         _gl.bindTexture(glTexture2D, batch.textureId);
       }
+      final GpuGradientDraw? gradient = batch.gradient;
+      if (!identical(gradient, boundGradient)) {
+        boundGradient = gradient;
+        _bindGradient(gradient);
+      }
       _gl.drawElements(
         glTriangles,
         batch.indexCount,
@@ -1722,6 +1748,21 @@ final class GlRenderDevice
         Pointer<Void>.fromAddress(batch.indexOffset * 4),
       );
     }
+  }
+
+  /// Writes the gradient block's uniforms and binds its ramp to unit 1.
+  void _bindGradient(GpuGradientDraw? gradient) {
+    final Float32List block = _gradientScratch;
+    GpuGradientDraw.writeDenseBlock(block, gradient);
+    for (var i = 0; i < 5; i++) {
+      _gl.uniform4f(_uniformGradient[i], block[i * 4], block[i * 4 + 1],
+          block[i * 4 + 2], block[i * 4 + 3]);
+    }
+    if (gradient == null) return;
+    _gl
+      ..activeTexture(glTexture0 + 1)
+      ..bindTexture(glTexture2D, gradient.binding.texture.id)
+      ..activeTexture(glTexture0);
   }
 
   /// The redundant-state filter, reused across submissions rather than
@@ -1871,6 +1912,10 @@ final class GlRenderDevice
     _uniformTexture = _uniformLocation('uTexture');
     _uniformMode = _uniformLocation('uMode');
     _uniformYFlip = _uniformLocation('uYFlip');
+    _uniformGradientRamp = _uniformLocation('uGradientRamp');
+    for (var i = 0; i < 5; i++) {
+      _uniformGradient[i] = _uniformLocation('uGradient$i');
+    }
     if (_uniformViewport < 0 || _uniformMode < 0 || _uniformYFlip < 0) {
       return const BackendDiagnostic(
         kind: DiagnosticKind.incompatibleDevice,
@@ -2325,6 +2370,9 @@ final class GlOffscreenTarget
       // switch between two frames gets the second one drawn the other way
       // without rebuilding a target.
       analyticPrimitives: _device.analyticPrimitivesEnabled,
+      // Gradient fills through the coverage atlas and a per-pixel ramp
+      // lookup when no sparse route takes them; see `GpuGradientDraw`.
+      gradientCache: _device.gradientCache,
     );
     _player = DisplayListPlayer(_sink);
   }

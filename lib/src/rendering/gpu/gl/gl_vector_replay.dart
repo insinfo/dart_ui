@@ -267,35 +267,33 @@ final class GlVectorReplay {
     );
   }
 
-  /// The capabilities of a gradient draw, where the usual fallback is absent.
+  /// The capabilities of a gradient draw: the sparse route when it has a
+  /// ramp cache, and the dense coverage atlas otherwise.
   ///
-  /// Every other draw in this renderer can end up on the dense coverage atlas,
-  /// which is why every refusal above is a decision about cost. A gradient
-  /// cannot: the atlas stores one alpha per texel and the shader modulates it
-  /// by a single vertex colour, so routing a gradient there would paint a flat
-  /// fill. Approaches B and C have the same problem - both hand the rasteriser
-  /// geometry and a solid material.
+  /// Approaches B and C hand the rasteriser geometry and one solid material,
+  /// so a gradient routed there would paint a flat fill, and they stay off.
+  /// The atlas used to be off too - it modulated coverage by one vertex
+  /// colour - and a device without the sparse executor reported nothing,
+  /// which the sink turned into a refusal. Since 12/10/2026 the dense
+  /// fragment shader multiplies the coverage by a ramp sampled at the pixel
+  /// (`GpuGradientDraw`, `uGradient0..4` and texture unit 1), so the atlas
+  /// draws a gradient correctly. It is offered only where the sparse route is
+  /// not: where both exist the sparse one keeps the gradients it was measured
+  /// on, and a draw it declines still lands in the atlas, because the sink
+  /// falls back there whatever this reports.
   ///
-  /// So this reports the sparse route or *nothing at all*. Nothing at all
-  /// makes the selector raise `UnsupportedError`, the planning telemetry
-  /// contains it, and `GpuRasterSink` turns the missing promotion into a
-  /// refusal that names the backend. A gradient is drawn correctly or it is
-  /// refused out loud; it is never quietly flattened to its fallback colour.
-  ///
-  /// Antialiasing does not gate this one. The sparse encoder is the analytic
-  /// route and a filled path is analytically antialiased here whatever the
-  /// paint says, so an aliased gradient path is the same picture either way -
-  /// and the alternative is not a different route, it is no route.
+  /// Antialiasing does not gate the sparse route. The sparse encoder is the
+  /// analytic route and a filled path is analytically antialiased here
+  /// whatever the paint says, so an aliased gradient path is the same picture
+  /// either way.
   GpuPathStrategyCapabilities _gradientCapabilities() {
     final bool sparse = sparseEnabled && gradientCache != null;
     return GpuPathStrategyCapabilities(
-      // False even now that the backend has the shader, and for the same
-      // reason the coverage atlas is false below: the analytic route modulates
-      // one vertex colour by a coverage it computed, and a ramp is not a
-      // colour. Promoting a gradient into it would paint a flat fill, which is
-      // the wrong picture this whole method exists to refuse.
+      // False: `GpuRasterSink` keeps a gradient off the analytic route in
+      // `fillDeviceRRect` and `_drawAnalyticPath`, so a promotion there would
+      // be declined a second time on its own.
       analyticPrimitives: false,
-      coverageAtlas: false,
+      coverageAtlas: !sparse,
       sparseStrips: sparse,
     );
   }
