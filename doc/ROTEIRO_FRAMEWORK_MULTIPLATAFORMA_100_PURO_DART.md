@@ -3651,8 +3651,12 @@ WindowServer a cada mudança no backend.
   `NSDraggingSource`, começar uma sessão a partir da última pressão do mouse,
   com arquivos como URLs e texto como string; o fim volta como
   `DRAG_SOURCE_END` (`INPUT_APP_DRAG_OUT=PASS action=DragAction.copy`);
-- [~] menus — menus suspensos em janelas nativas (popups); não há `NSMenu`,
-  então nem barra de menus do app nem menu de contexto do sistema;
+- [~] menus — menus suspensos em janelas nativas (popups) e, desde
+  12/10/2026, o menu do app e o menu Janela padrão do macOS na barra (Ocultar
+  Cmd+H, Ocultar Outros, Mostrar Tudo, Encerrar Cmd+Q, Minimizar Cmd+M,
+  Fechar Cmd+W); Encerrar e Fechar são o pedido do botão de fechar
+  (`INPUT_APP_MENU_CLOSE=PASS`). Falta a aplicação declarar menus próprios
+  na barra, e o menu de contexto do sistema;
 - [~] file dialogs — `NSOpenPanel`/`NSSavePanel` por `osascript`
   (`file_picker_platform_io.dart`), fora do host e sem janela dona;
 - [x] acessibilidade — desde 12/10/2026 a view do host é um grupo de

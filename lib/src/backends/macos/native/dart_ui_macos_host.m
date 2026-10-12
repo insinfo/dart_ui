@@ -1691,6 +1691,26 @@ static const NSUInteger kClipboardChunk = 6000;
     }
     return;
   }
+  if ([verb isEqualToString:@"SYNTH_MENU"] && parts.count == 2) {
+    // SYNTH_MENU <title-b64>: the main-menu item with that title, performed
+    // as a click on it would be.
+    NSString *title = [self decodeSynthText:parts[1]];
+    NSMutableArray<NSMenu *> *menus = [NSMutableArray array];
+    if (NSApp.mainMenu != nil) [menus addObject:NSApp.mainMenu];
+    while (menus.count > 0) {
+      NSMenu *menu = menus.firstObject;
+      [menus removeObjectAtIndex:0];
+      for (NSMenuItem *item in menu.itemArray) {
+        if ([item.title isEqualToString:title]) {
+          [menu performActionForItemAtIndex:[menu indexOfItem:item]];
+          return;
+        }
+        if (item.submenu != nil) [menus addObject:item.submenu];
+      }
+    }
+    [self printError:@"SYNTH_MENU_NOT_FOUND"];
+    return;
+  }
   if ([verb isEqualToString:@"SYNTH_A11Y_PRESS"] && parts.count == 2) {
     // SYNTH_A11Y_PRESS <label-b64>: what VoiceOver's activate does to the
     // first element with that label - accessibilityPerformPress.
@@ -2094,6 +2114,17 @@ static const NSUInteger kClipboardChunk = 6000;
   [self reportStateIfChanged];
 }
 
+// Quit and Close from the menus: the same request as the close button.
+- (void)closeFromMenu:(id)sender {
+  (void)sender;
+  [self windowShouldClose:self.window];
+}
+
+- (void)minimizeFromMenu:(id)sender {
+  (void)sender;
+  [self.window miniaturize:nil];
+}
+
 - (BOOL)windowShouldClose:(NSWindow *)sender {
   (void)sender;
   if (self.protocolReady && !self.terminating) {
@@ -2140,6 +2171,62 @@ static const NSUInteger kClipboardChunk = 6000;
 }
 
 @end
+
+// The menus every Mac application has, so the system shortcuts work: an
+// application menu (hide, hide others, show all, quit) and a Window menu
+// (minimise, close). Quit and close go through performClose:, which is
+// windowShouldClose: and so WINDOW=CLOSE_REQUESTED - the framework decides,
+// exactly as for the close button. Each window has its own host, so Cmd+Q
+// asks to close the window it was pressed in. No Edit menu: its key
+// equivalents (Cmd+C, Cmd+V, ...) would be taken before keyDown: and the
+// framework's text fields handle those keys themselves.
+static void DartUiInstallMainMenu(NSApplication *application) {
+  NSMenu *bar = [[NSMenu alloc] init];
+
+  NSMenuItem *appItem = [[NSMenuItem alloc] init];
+  NSMenu *appMenu = [[NSMenu alloc] init];
+  NSString *name = NSProcessInfo.processInfo.processName;
+  [appMenu addItemWithTitle:[@"Hide " stringByAppendingString:name]
+                     action:@selector(hide:)
+              keyEquivalent:@"h"];
+  NSMenuItem *hideOthers =
+      [appMenu addItemWithTitle:@"Hide Others"
+                         action:@selector(hideOtherApplications:)
+                  keyEquivalent:@"h"];
+  hideOthers.keyEquivalentModifierMask =
+      NSEventModifierFlagCommand | NSEventModifierFlagOption;
+  [appMenu addItemWithTitle:@"Show All"
+                     action:@selector(unhideAllApplications:)
+              keyEquivalent:@""];
+  [appMenu addItem:[NSMenuItem separatorItem]];
+  NSMenuItem *quit =
+      [appMenu addItemWithTitle:[@"Quit " stringByAppendingString:name]
+                         action:@selector(closeFromMenu:)
+                  keyEquivalent:@"q"];
+  quit.target = application.delegate;
+  appItem.submenu = appMenu;
+  [bar addItem:appItem];
+
+  NSMenuItem *windowItem = [[NSMenuItem alloc] init];
+  NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+  // Targeted at the delegate, which owns this process's one window: a menu
+  // item with no target goes to the key window, and a host that is not the
+  // active application - its menu reached by an accessibility client, say -
+  // has none.
+  NSMenuItem *minimize = [windowMenu addItemWithTitle:@"Minimize"
+                                               action:@selector(minimizeFromMenu:)
+                                        keyEquivalent:@"m"];
+  minimize.target = application.delegate;
+  NSMenuItem *close = [windowMenu addItemWithTitle:@"Close"
+                                            action:@selector(closeFromMenu:)
+                                     keyEquivalent:@"w"];
+  close.target = application.delegate;
+  windowItem.submenu = windowMenu;
+  [bar addItem:windowItem];
+
+  application.mainMenu = bar;
+  application.windowsMenu = windowMenu;
+}
 
 static BOOL DartUiParseDouble(const char *text, CGFloat *value) {
   char *end = NULL;
@@ -2222,6 +2309,7 @@ int main(int argc, const char *argv[]) {
     [application setActivationPolicy:isTransient
         ? NSApplicationActivationPolicyAccessory
         : NSApplicationActivationPolicyRegular];
+    if (!isTransient) DartUiInstallMainMenu(application);
     [application run];
   }
   return 0;

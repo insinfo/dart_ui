@@ -546,6 +546,16 @@ Future<void> _applicationHalf(
     } finally {
       await _pbcopy(saved);
     }
+
+    // Last, because it ends the run: Window > Close (Cmd+W) from the main
+    // menu the host installs is the close button's request. For the last
+    // window that is a request to close the application, so the application
+    // goes to `closing` and leaves the teardown to dispose - the documented
+    // policy in application.dart.
+    native.synthesizeInput('SYNTH_MENU ${_b64('Close')}');
+    await _pump(app, const Duration(milliseconds: 300));
+    record('INPUT_APP_MENU_CLOSE',
+        app.state == ApplicationLifecycleState.closing, 'state=${app.state}');
   } finally {
     app.dispose();
     await app.closed;
