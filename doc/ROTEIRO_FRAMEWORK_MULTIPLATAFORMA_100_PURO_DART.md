@@ -10767,8 +10767,15 @@ proporção ele aparece nos outros caminhos, não.
   interativo, sem `set_maximized`/`set_fullscreen`/`set_minimized`, sem posição
   de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de
   modificador **assumidos**; apenas ABIs **LP64**;
-- **macOS**: sem drag-and-drop, sem IME (`hasIme: false` nas três
-  estratégias); as APIs de SO não vinculam AppKit nem Foundation. **Até
+- **macOS**: sem drag-and-drop; IME **pela metade** (`hasIme: false` nas três
+  estratégias continua verdadeiro para a pré-edição): desde 12/10/2026 a view
+  do host é um `NSTextInputClient` e o texto passa por `interpretKeyEvents:`,
+  então **teclas mortas compõem** - antes, `´` + `e` num ABNT2 dava `e`,
+  porque o estado de tecla morta só existe dentro do sistema de entrada de
+  texto, medido com eventos postados - e um método CJK confirma o texto pelo
+  `insertText:`; o que falta é mostrar a pré-edição no campo
+  (`TextInputProvider`), e a janela de candidatos abre no canto da janela,
+  não no cursor. As APIs de SO não vinculam AppKit nem Foundation. **Até
   12/10/2026 também não havia input**, e nenhuma lista dizia isso: o probe
   anunciava `keyboardInput`, `pointerInput` e `scrollInput`, o host imprimia
   uma linha `INPUT=` por evento, e nada em `lib/` a transformava em evento do

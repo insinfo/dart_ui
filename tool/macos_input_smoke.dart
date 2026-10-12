@@ -35,6 +35,7 @@ import 'package:dart_ui/src/backends/macos/macos_window.dart';
 const int _shift = 1 << 17;
 const int _command = 1 << 20;
 const int _function = 1 << 23;
+const int _option = 1 << 19;
 
 String _b64(String text) =>
     text.isEmpty ? '-' : base64.encode(utf8.encode(text));
@@ -305,6 +306,10 @@ Future<void> _applicationHalf(
       record('INPUT_APP', false, 'the window is ${native.runtimeType}');
       return;
     }
+    // Shown explicitly, as `Application.run` would: this smoke pumps by hand,
+    // and AppKit dispatches keys only to a window that is on screen - the
+    // event monitor still sees them, the view does not.
+    native.show();
     await _pump(app, const Duration(milliseconds: 400));
 
     native
@@ -343,9 +348,46 @@ Future<void> _applicationHalf(
     record('INPUT_APP_BACKSPACE', controller.value == 'ol',
         'value="${controller.value}"');
 
+    // Dead keys, through the real layout. The keys are posted with *empty*
+    // characters, so AppKit translates them from the key code and the
+    // modifiers with the layout the user has selected - which is what makes
+    // this a test of the layout's dead-key state and not of this file's
+    // strings. AppKit composes inside the NSEvent: the dead key arrives with
+    // no characters and the next one already carries the accented letter, so
+    // no input method client is involved.
+    final String layout = await _keyboardLayout();
+    final List<(int, int)>? deadKeys = switch (layout) {
+      // ABNT2: the acute key beside P, then e; the tilde key, then a.
+      'com.apple.keylayout.Brazilian-ABNT2' => <(int, int)>[
+          (0x21, 0), (0x0E, 0), (0x27, 0), (0x00, 0), //
+        ],
+      // US and ABC: Option+E is the acute, Option+N the tilde.
+      'com.apple.keylayout.US' || 'com.apple.keylayout.ABC' => <(int, int)>[
+          (0x0E, _option), (0x0E, 0), (0x2D, _option), (0x00, 0), //
+        ],
+      _ => null,
+    };
+    if (deadKeys == null) {
+      stdout.writeln('INPUT_APP_DEAD_KEYS=SKIP layout=$layout has no sequence '
+          'in this smoke');
+    } else {
+      controller.value = '';
+      for (final (int keyCode, int flags) in deadKeys) {
+        native
+          ..synthesizeInput('SYNTH_KEY down $keyCode $flags - -')
+          ..synthesizeInput('SYNTH_KEY up $keyCode $flags - -');
+      }
+      await _pump(app, const Duration(milliseconds: 400));
+      record('INPUT_APP_DEAD_KEYS', controller.value == 'éã',
+          'layout=$layout value="${controller.value}"');
+    }
+
     // Cmd+A, Cmd+C: Command arrives as meta, and the field reads the Mac
     // convention, so this is copy - checked from outside the process.
     final String saved = await _pbpaste();
+    // Whatever the checks above left in the field: Cmd+A, Cmd+C must copy it
+    // all, and Cmd+V at the end must double it.
+    final String before = controller.value;
     try {
       native
         ..synthesizeInput(
@@ -368,7 +410,9 @@ Future<void> _applicationHalf(
       await _pump(app, const Duration(milliseconds: 500));
       record(
           'INPUT_APP_COMMAND_SHORTCUTS',
-          copied == 'ol' && controller.value == 'olol',
+          before.isNotEmpty &&
+              copied == before &&
+              controller.value == '$before$before',
           'pbpasteAfterCmdC="$copied" valueAfterCmdV="${controller.value}"');
     } finally {
       await _pbcopy(saved);
@@ -377,6 +421,19 @@ Future<void> _applicationHalf(
     app.dispose();
     await app.closed;
   }
+}
+
+/// The keyboard layout the user has selected, or US when it cannot be read.
+Future<String> _keyboardLayout() async {
+  final ProcessResult result = await Process.run('defaults', const <String>[
+    'read',
+    'com.apple.HIToolbox',
+    'AppleCurrentKeyboardLayoutInputSourceID',
+  ]);
+  final String layout = (result.stdout as String).trim();
+  return result.exitCode == 0 && layout.isNotEmpty
+      ? layout
+      : 'com.apple.keylayout.US';
 }
 
 Future<String> _pbpaste() async {

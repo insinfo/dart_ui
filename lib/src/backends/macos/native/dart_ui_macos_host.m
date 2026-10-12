@@ -43,11 +43,16 @@ static const size_t kDartUiMaximumLineBytes = 8192;
               of:(NSEvent *)event;
 - (void)hostView:(DartUiHostView *)view exposedRect:(NSRect)rect;
 - (void)hostView:(DartUiHostView *)view pointerInside:(BOOL)inside;
+- (void)hostView:(DartUiHostView *)view insertText:(NSString *)text;
 @end
 
-@interface DartUiHostView : NSView
+@interface DartUiHostView : NSView <NSTextInputClient>
 @property(nonatomic, weak) id<DartUiHostViewSink> sink;
 @property(nonatomic, strong) NSTrackingArea *pointerArea;
+// What the text input system is composing - the acute a US layout shows while
+// it waits for the vowel, or a Japanese reading before conversion. Kept here
+// and not yet shown in the field; see keyDown:.
+@property(nonatomic, strong) NSMutableString *markedText;
 @end
 
 @implementation DartUiHostView
@@ -70,8 +75,101 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   [self.sink hostView:self exposedRect:dirtyRect];
 }
 
+// Text goes through the text input system, as in every AppKit text view.
+//
+// Not optional: it is where dead keys are composed. Measured with posted
+// events on an ABNT2 layout, the acute key then E produced "e" when keyDown:
+// read event.characters and "é" when it called interpretKeyEvents: - the
+// dead-key state only exists inside the text input system. Every accent typed
+// through a dead key was coming out bare. It is also where an input method
+// lives, so a CJK method now commits its text through insertText: below;
+// showing its preedit in the field is the TextInputProvider's job and not
+// done yet.
+//
+// Not for a Command or Control chord: those are shortcuts, delivered to the
+// framework as KeyEvents, and the text input system would answer them with
+// Emacs bindings through doCommandBySelector:.
 - (void)keyDown:(NSEvent *)event {
   [self.sink hostView:self reportEvent:@"keyDown" of:event];
+  if ((event.modifierFlags &
+       (NSEventModifierFlagCommand | NSEventModifierFlagControl)) != 0) {
+    return;
+  }
+  [self interpretKeyEvents:@[ event ]];
+}
+
+// --- NSTextInputClient ----------------------------------------------------
+
+- (NSMutableString *)markedText {
+  if (_markedText == nil) _markedText = [NSMutableString string];
+  return _markedText;
+}
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+  (void)replacementRange;
+  NSString *text =
+      [string isKindOfClass:NSAttributedString.class] ? [string string] : string;
+  [self.markedText setString:@""];
+  if (text.length > 0) [self.sink hostView:self insertText:text];
+}
+
+- (void)setMarkedText:(id)string
+        selectedRange:(NSRange)selectedRange
+     replacementRange:(NSRange)replacementRange {
+  (void)selectedRange;
+  (void)replacementRange;
+  NSString *text =
+      [string isKindOfClass:NSAttributedString.class] ? [string string] : string;
+  [self.markedText setString:text ?: @""];
+}
+
+- (void)unmarkText {
+  [self.markedText setString:@""];
+}
+
+- (BOOL)hasMarkedText {
+  return self.markedText.length > 0;
+}
+
+- (NSRange)markedRange {
+  return self.markedText.length > 0 ? NSMakeRange(0, self.markedText.length)
+                                    : NSMakeRange(NSNotFound, 0);
+}
+
+- (NSRange)selectedRange {
+  return NSMakeRange(0, 0);
+}
+
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range
+                                                 actualRange:(NSRangePointer)actualRange {
+  (void)range;
+  (void)actualRange;
+  return nil;
+}
+
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
+  return @[];
+}
+
+// Where a candidate window opens. The caret is the framework's to know and
+// is not sent here yet, so the window's top-left corner stands in for it.
+- (NSRect)firstRectForCharacterRange:(NSRange)range
+                         actualRange:(NSRangePointer)actualRange {
+  (void)range;
+  (void)actualRange;
+  NSRect local = NSMakeRect(0, 0, 1, 20);
+  return [self.window convertRectToScreen:[self convertRect:local toView:nil]];
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+  (void)point;
+  return NSNotFound;
+}
+
+// Return, Delete, the arrows: the framework handles them from their KeyEvents.
+// Not passed to super, which would beep for every one of them.
+- (void)doCommandBySelector:(SEL)selector {
+  (void)selector;
 }
 
 - (void)keyUp:(NSEvent *)event {
@@ -452,6 +550,14 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
 //                 none - what the layout says the key is, for shortcuts.
 - (void)reportMonitoredEvent:(NSEvent *)event {
   if (!self.protocolReady || self.terminating) return;
+  // While the text input system is composing, a key is its - the vowel after
+  // a dead key, an arrow choosing a candidate, Return accepting one - and
+  // reporting it would also move the caret or press the default button. The
+  // Mac's counterpart of the VK_PROCESSKEY win32_window.dart drops.
+  if ((event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp) &&
+      self.hostView.hasMarkedText) {
+    return;
+  }
   NSPoint point = [self clientPointForEvent:event];
   NSEventType type = event.type;
   BOOL isKey = type == NSEventTypeKeyDown || type == NSEventTypeKeyUp ||
@@ -495,20 +601,6 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
          isMouseButton ? (long)event.clickCount : 0L,
          isScroll ? event.scrollingDeltaX : 0.0,
          isScroll ? event.scrollingDeltaY : 0.0, flags, keyChar);
-  // The characters a key press produced, on their own line because they are
-  // text and need encoding. Not for a Command or Control chord: Cmd+C is a
-  // shortcut, and its "c" is not content. Option stays, because Option is
-  // how a Mac keyboard types accented and special characters.
-  if (type == NSEventTypeKeyDown &&
-      (event.modifierFlags &
-       (NSEventModifierFlagCommand | NSEventModifierFlagControl)) == 0) {
-    NSString *characters = event.characters;
-    NSData *bytes = [characters dataUsingEncoding:NSUTF8StringEncoding];
-    if (bytes.length > 0) {
-      printf("TEXT_INPUT=%s\n",
-             [bytes base64EncodedStringWithOptions:0].UTF8String);
-    }
-  }
   fflush(stdout);
 }
 
@@ -519,6 +611,20 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
   if (!self.protocolReady || self.terminating) return;
   NSPoint point = [self clientPointForEvent:event];
   printf("VIEW_INPUT=%s:%.4f:%.4f\n", kind.UTF8String, point.x, point.y);
+  fflush(stdout);
+}
+
+// The characters the text input system committed, on their own line because
+// they are text and need encoding. They come from insertText: - after the
+// layout's dead keys and any input method - and not from the event monitor,
+// which sees a key before AppKit has composed anything.
+- (void)hostView:(DartUiHostView *)view insertText:(NSString *)text {
+  (void)view;
+  if (!self.protocolReady || self.terminating) return;
+  NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
+  if (bytes.length == 0) return;
+  printf("TEXT_INPUT=%s\n",
+         [bytes base64EncodedStringWithOptions:0].UTF8String);
   fflush(stdout);
 }
 
