@@ -1,11 +1,12 @@
 /// The gallery in a real X11 window, rasterized on the CPU.
 ///
-/// **Not executed.** This file was written on Windows and has never been run:
-/// no X server was available to run it against. Everything in it is the same
-/// shape as `gallery_win32.dart`, which *has* been run, and the X11 backend it
-/// names has its own tests - but a working example is a claim about a live
-/// display server, and that claim has not been checked. Treat the first run as
-/// a bring-up, not a regression.
+/// Written on Windows, where no X server was available, and **first run on
+/// 12/10/2026** under Xvfb on the `ubuntu-24.04` runner, in the `X11 input
+/// interop` workflow (run 38235112799): `--frames 400` ended with
+/// `X11_GALLERY=PASS`, 400 frames, none rejected, median 1977 us and p99
+/// 3119 us per frame, 20 controls and 21 semantics nodes, no errors. The
+/// workflow runs it on every change to the X11 backend or to this file. What
+/// Xvfb cannot say is how it looks on a real desktop with a compositor.
 ///
 /// The presentation path is the core protocol's `PutImage`, which
 /// `X11CpuPresenter` drives. It is the same retained-display-list shape the
