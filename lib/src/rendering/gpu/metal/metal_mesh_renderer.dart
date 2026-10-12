@@ -14,6 +14,8 @@ import 'metal_backend.dart';
 import 'metal_bindings.dart';
 import 'metal_device.dart';
 import 'metal_mesh_shaders.dart';
+import 'metal_offscreen.dart';
+import 'metal_window_target.dart';
 
 final class MetalMeshRenderer implements MeshSceneRenderer {
   MetalMeshRenderer(this._device) : _gpu = _device.meshGpu {
@@ -23,13 +25,20 @@ final class MetalMeshRenderer implements MeshSceneRenderer {
   final MetalRenderDevice _device;
   final MetalGpu _gpu;
   late final Pointer<ObjCObject> _library;
-  late final Pointer<ObjCObject> _pipeline;
+  late final Pointer<ObjCObject> _vertex;
+  late final Pointer<ObjCObject> _fragment;
+
+  /// One pipeline state per colour format, **+1** each. A pipeline's
+  /// attachment format is part of its identity in Metal: the offscreen target
+  /// is `RGBA8Unorm` and a window's `IOSurface` is `BGRA8Unorm`, and a state
+  /// built for one is rejected at encode time by a pass into the other.
+  final Map<int, Pointer<ObjCObject>> _pipelines = <int, Pointer<ObjCObject>>{};
   late final Pointer<ObjCObject> _depthState;
   late final Pointer<ObjCObject> _white;
   final Map<_BufferKey, _Buffers> _buffers = <_BufferKey, _Buffers>{};
   final Map<MeshTexture, Pointer<ObjCObject>> _textures =
       <MeshTexture, Pointer<ObjCObject>>{};
-  final Map<MetalMemoryTarget, _Depth> _depth = <MetalMemoryTarget, _Depth>{};
+  final Map<RenderTarget, _Depth> _depth = <RenderTarget, _Depth>{};
   late final Pointer<Float> _uniform =
       NativeAllocator.instance.allocate<Float>(kMetalMeshUniformBytes);
   bool _disposed = false;
@@ -46,64 +55,12 @@ final class MetalMeshRenderer implements MeshSceneRenderer {
     try {
       vertex = _gpu.newFunction(_library, 'meshVs');
       fragment = _gpu.newFunction(_library, 'meshFs');
-      _pipeline = ObjCAutoreleasePool.run(() {
-        final Pointer<ObjCObject> descriptor = metalSendPointer(
-            metalSendPointer(objcClass('MTLRenderPipelineDescriptor'), 'alloc'),
-            'init');
-        try {
-          metalSendVoid1(descriptor, 'setVertexFunction:', vertex!.address);
-          metalSendVoid1(descriptor, 'setFragmentFunction:', fragment!.address);
-          metalSendVoid1(
-              descriptor,
-              'setVertexDescriptor:',
-              metalBuildVertexDescriptor(
-                stride: kMetalMeshVertexStride,
-                attributes: const <MetalVertexAttribute>[
-                  MetalVertexAttribute(
-                      attributeIndex: 0,
-                      format: MtlVertexFormat.float3,
-                      byteOffset: 0,
-                      name: 'position'),
-                  MetalVertexAttribute(
-                      attributeIndex: 1,
-                      format: MtlVertexFormat.float3,
-                      byteOffset: 12,
-                      name: 'normal'),
-                  MetalVertexAttribute(
-                      attributeIndex: 2,
-                      format: MtlVertexFormat.float2,
-                      byteOffset: 24,
-                      name: 'uv'),
-                ],
-              ).address);
-          final Pointer<ObjCObject> color = metalSendPointer1(
-              metalSendPointer(descriptor, 'colorAttachments'),
-              'objectAtIndexedSubscript:',
-              0);
-          metalSendVoid1(color, 'setPixelFormat:', MtlPixelFormat.rgba8Unorm);
-          metalSendVoid1(descriptor, 'setDepthAttachmentPixelFormat:',
-              MtlPixelFormat.depth32Float);
-          final Pointer<Pointer<ObjCObject>> error =
-              NativeAllocator.instance.allocate<Pointer<ObjCObject>>(1);
-          try {
-            error.value = nullptr;
-            final Pointer<ObjCObject> state = metalSendPointer2(
-                _gpu.device,
-                'newRenderPipelineStateWithDescriptor:error:',
-                descriptor.address,
-                error.address);
-            if (state == nullptr) {
-              throw MetalError('Metal refused the mesh pipeline',
-                  detail: metalErrorDescription(error.value));
-            }
-            return state;
-          } finally {
-            NativeAllocator.instance.free(error);
-          }
-        } finally {
-          objcRelease(descriptor);
-        }
-      });
+      _vertex = vertex;
+      _fragment = fragment;
+      // The offscreen format eagerly, so a driver that refuses the program
+      // refuses it here - where the window turns the throw into a null
+      // surface and a diagnostic - and not on the first frame.
+      _pipelineFor(MtlPixelFormat.rgba8Unorm);
       _depthState = ObjCAutoreleasePool.run(() {
         final Pointer<ObjCObject> descriptor = metalSendPointer(
             metalSendPointer(objcClass('MTLDepthStencilDescriptor'), 'alloc'),
@@ -125,23 +82,98 @@ final class MetalMeshRenderer implements MeshSceneRenderer {
       _white =
           _uploadTexture(1, 1, Uint8List.fromList(const [255, 255, 255, 255]));
     } on Object {
+      for (final Pointer<ObjCObject> pipeline in _pipelines.values) {
+        objcRelease(pipeline);
+      }
+      _pipelines.clear();
       if (fragment != null) objcRelease(fragment);
       if (vertex != null) objcRelease(vertex);
       objcRelease(_library);
       rethrow;
     }
-    objcRelease(fragment);
-    objcRelease(vertex);
+  }
+
+  /// The pipeline state drawing into a [pixelFormat] attachment, built on
+  /// first use.
+  Pointer<ObjCObject> _pipelineFor(int pixelFormat) {
+    final Pointer<ObjCObject>? cached = _pipelines[pixelFormat];
+    if (cached != null) return cached;
+    return _pipelines[pixelFormat] = ObjCAutoreleasePool.run(() {
+      final Pointer<ObjCObject> descriptor = metalSendPointer(
+          metalSendPointer(objcClass('MTLRenderPipelineDescriptor'), 'alloc'),
+          'init');
+      try {
+        metalSendVoid1(descriptor, 'setVertexFunction:', _vertex.address);
+        metalSendVoid1(descriptor, 'setFragmentFunction:', _fragment.address);
+        metalSendVoid1(
+            descriptor,
+            'setVertexDescriptor:',
+            metalBuildVertexDescriptor(
+              stride: kMetalMeshVertexStride,
+              attributes: const <MetalVertexAttribute>[
+                MetalVertexAttribute(
+                    attributeIndex: 0,
+                    format: MtlVertexFormat.float3,
+                    byteOffset: 0,
+                    name: 'position'),
+                MetalVertexAttribute(
+                    attributeIndex: 1,
+                    format: MtlVertexFormat.float3,
+                    byteOffset: 12,
+                    name: 'normal'),
+                MetalVertexAttribute(
+                    attributeIndex: 2,
+                    format: MtlVertexFormat.float2,
+                    byteOffset: 24,
+                    name: 'uv'),
+              ],
+            ).address);
+        final Pointer<ObjCObject> color = metalSendPointer1(
+            metalSendPointer(descriptor, 'colorAttachments'),
+            'objectAtIndexedSubscript:',
+            0);
+        metalSendVoid1(color, 'setPixelFormat:', pixelFormat);
+        metalSendVoid1(descriptor, 'setDepthAttachmentPixelFormat:',
+            MtlPixelFormat.depth32Float);
+        final Pointer<Pointer<ObjCObject>> error =
+            NativeAllocator.instance.allocate<Pointer<ObjCObject>>(1);
+        try {
+          error.value = nullptr;
+          final Pointer<ObjCObject> state = metalSendPointer2(
+              _gpu.device,
+              'newRenderPipelineStateWithDescriptor:error:',
+              descriptor.address,
+              error.address);
+          if (state == nullptr) {
+            throw MetalError('Metal refused the mesh pipeline',
+                detail: metalErrorDescription(error.value));
+          }
+          return state;
+        } finally {
+          NativeAllocator.instance.free(error);
+        }
+      } finally {
+        objcRelease(descriptor);
+      }
+    });
   }
 
   @override
   MeshRenderStats drawScene(RenderTarget target, MeshScene scene,
       {Rect? viewport}) {
-    if (_disposed || _device.isDisposed || target is! MetalMemoryTarget) {
-      return MeshRenderStats.zero;
-    }
-    final int width = target.surface.pixelWidth;
-    final int height = target.surface.pixelHeight;
+    if (_disposed || _device.isDisposed) return MeshRenderStats.zero;
+    // The texture the pass draws into: the memory target's own, or the back
+    // slot of a window - the buffer the 2D pass is about to draw the
+    // interface over, which is why it must load rather than clear.
+    final MetalOffscreenTarget? pass = switch (target) {
+      MetalMemoryTarget() => target.meshTarget,
+      MetalWindowTarget() => target.meshTarget,
+      _ => null,
+    };
+    if (pass == null) return MeshRenderStats.zero;
+    final int width = pass.width;
+    final int height = pass.height;
+    final Pointer<ObjCObject> pipeline = _pipelineFor(pass.pixelFormat);
     final Rect area =
         viewport ?? Rect.fromLTWH(0, 0, width.toDouble(), height.toDouble());
     if (area.width <= 0 || area.height <= 0) return MeshRenderStats.zero;
@@ -151,11 +183,11 @@ final class MetalMeshRenderer implements MeshSceneRenderer {
         .multiply(scene.camera.viewMatrix());
     final int started = DateTime.now().microsecondsSinceEpoch;
     var triangles = 0;
-    target.meshTarget.encodePass(
+    pass.encodePass(
       clearColor: scene.backgroundArgb,
       depthTexture: depth.texture,
       body: (Pointer<ObjCObject> encoder) {
-        metalSendVoid1(encoder, 'setRenderPipelineState:', _pipeline.address);
+        metalSendVoid1(encoder, 'setRenderPipelineState:', pipeline.address);
         metalSendVoid1(encoder, 'setDepthStencilState:', _depthState.address);
         metalSendVoid1(
             encoder,
@@ -315,7 +347,7 @@ final class MetalMeshRenderer implements MeshSceneRenderer {
     });
   }
 
-  _Depth _depthFor(MetalMemoryTarget target, int width, int height) {
+  _Depth _depthFor(RenderTarget target, int width, int height) {
     final _Depth? current = _depth[target];
     if (current != null && current.width == width && current.height == height) {
       return current;
@@ -380,12 +412,17 @@ final class MetalMeshRenderer implements MeshSceneRenderer {
       }
       objcRelease(_white);
       objcRelease(_depthState);
-      objcRelease(_pipeline);
+      for (final Pointer<ObjCObject> pipeline in _pipelines.values) {
+        objcRelease(pipeline);
+      }
+      objcRelease(_fragment);
+      objcRelease(_vertex);
       objcRelease(_library);
     });
     _buffers.clear();
     _textures.clear();
     _depth.clear();
+    _pipelines.clear();
     NativeAllocator.instance.free(_uniform);
   }
 }

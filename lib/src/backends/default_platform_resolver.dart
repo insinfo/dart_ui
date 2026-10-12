@@ -789,6 +789,16 @@ final class PlatformBackendResolver {
       backend: renderer,
       experimental: true,
       compatibleWindowingBackends: const <String>{'macos'},
+      // Into the window's back slot, before the interface is drawn over it;
+      // see `MetalWindowTarget.meshTarget`. Throws rather than returning
+      // null, as the Direct3D factory does, so the window reports why.
+      createMeshRenderer: (RenderDevice device) {
+        if (device is! MetalRenderDevice) {
+          throw StateError('metal mesh rendering needs a MetalRenderDevice; '
+              'got ${device.runtimeType}');
+        }
+        return device.createMeshRenderer();
+      },
       createAttachment: (
         RendererBackend _,
         NativeWindow native, {

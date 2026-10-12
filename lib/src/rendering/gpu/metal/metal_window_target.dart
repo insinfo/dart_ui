@@ -320,6 +320,19 @@ final class MetalWindowTarget
     return present(frame);
   }
 
+  /// The back slot, for a 3D pass encoded before this frame's 2D pass.
+  ///
+  /// The mesh pass of `ApplicationWindow` runs between the host's
+  /// `beginFrame` and the display list present, so it lands in the slot the
+  /// 2D pass is about to draw the interface over - the same back slot, since
+  /// nothing presents in between. It clears the slot to the scene's sky and
+  /// waits for the GPU; the 2D pass then loads what it left, because the
+  /// window asks for no clear on a frame a scene was drawn.
+  MetalOffscreenTarget get meshTarget {
+    throwIfDisposed();
+    return _targetForSlot(_surface.backSlot);
+  }
+
   @override
   void resize(int pixelWidth, int pixelHeight, double scale) {
     throwIfDisposed();

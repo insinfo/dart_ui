@@ -225,6 +225,10 @@ final class MetalOffscreenTarget {
   final int width;
   final int height;
 
+  /// The colour format of [texture], which every pipeline drawing into it
+  /// must have been built for.
+  int get pixelFormat => _pipelines.pixelFormat;
+
   /// Whether [dispose] releases [texture]. False for [overTexture].
   final bool _ownsTexture;
 
