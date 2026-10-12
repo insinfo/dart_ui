@@ -9805,8 +9805,18 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   que faltava, agora medida em vez de inferida: janela 1,38 ms, **dispositivo
   20,71 ms**, swapchain 1,91 ms — o dispositivo era ~70% da abertura. O pool
   de popup oculto deixou de ser a próxima coisa a fazer;
-- **macOS não tem popup nativo** e cai no overlay: sem `NSPanel` sem ativação.
-  Não pode ser verificado nesta máquina;
+- ~~**macOS não tem popup nativo**~~ — **fechado em 07/09/2026** (`f8f8c56`) e
+  **conferido numa máquina real em 12/10/2026**. O host AppKit cria `NSPanel`
+  com `NSWindowStyleMaskNonactivatingPanel`, nível 101 e política
+  `Accessory`, e o backend `appkitNativeHost` passou a anunciar
+  `Capability.nativePopups`. `tool/macos_popup_probe.dart` num Mac mini M4 com
+  macOS 27.2: `MACOS_POPUP=PASS popup=NSPanel/128/101/key=false/policy=1
+  tooltip=NSPanel/128/101/key=false/ignoresMouse=true/policy=1`. O que segue
+  sem prova no macOS é o que o `tool/popup_window_smoke.dart` mede no Windows
+  (o popup saindo da dona, o mesmo dispositivo, a dona continuando ativa): o
+  smoke ainda sai com `SKIP` fora do Windows. Os outros dois backends macOS
+  (`skylight`, `appkitSignal`) não criam janela pelo framework e não anunciam
+  a capacidade;
 - **X11 e Wayland têm o código e nunca o executaram.** Os dois smokes
   compilam; só o CI pode prová-los;
 - **acessibilidade do popup**: metade fechada em 06/09/2026. `MenuOpened` era
@@ -10719,8 +10729,13 @@ proporção ele aparece nos outros caminhos, não.
   interativo, sem `set_maximized`/`set_fullscreen`/`set_minimized`, sem posição
   de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de
   modificador **assumidos**; apenas ABIs **LP64**;
-- **macOS**: sem drag-and-drop, sem clipboard, sem IME; Metal **não apresenta**;
-  as APIs de SO não vinculam AppKit nem Foundation;
+- **macOS**: sem drag-and-drop, sem clipboard, sem IME (`hasIme: false` nas
+  três estratégias); as APIs de SO não vinculam AppKit nem Foundation. O Metal
+  **apresenta** desde 07/09/2026 (`1c12eba`, pelo IOSurface do ADR 0005), e em
+  12/10/2026 isso foi conferido num Mac M4 com macOS 27.2
+  (`METAL_WINDOW_PRESENT=PASS`), junto com o fim dos vazamentos do `MTLDevice`
+  por falta de autorelease pool (`doc/logs/METAL_AUTORELEASE_POOLS_2026-10-12.md`).
+  Popups em `NSPanel` só no host nativo;
 - **Web**: sem clipboard, sem drag-and-drop, sem IME; WebGPU sem alvo de
   readback, logo **sem paridade medida**; `system_fonts.dart` sequer compila
   para web.

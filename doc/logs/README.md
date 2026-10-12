@@ -15,6 +15,8 @@ documento é corrigido — não o log.
 | [MACH_PORT_HANDOFF_2026-08-08.md](MACH_PORT_HANDOFF_2026-08-08.md) | Qual mecanismo de passagem de mach port ainda funciona no macOS 14. Confirma, 12 anos depois, que o libxpc continua limpando os registered ports no fork. |
 | [MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md](MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md) | Trace LLDB provando que `CFRunLoopRun` retorna do `_sigtramp` e o processo sai com status 0 — o shutdown do backend 2 não precisa de `_exit`. |
 | [METAL_APRESENTACAO_ESTADO_2026-09-07.md](METAL_APRESENTACAO_ESTADO_2026-09-07.md) | O que Metal e o backend macOS já provaram no `macos-14` e as três afirmações de `doc/` que deixaram de ser verdade. Inclui a limitação que o runner impõe: display `Apple Virtual` a `scale 1.0`, então "resize Retina" não é provável neste CI. |
+| [MACOS27_TRES_BACKENDS_2026-10-12.md](MACOS27_TRES_BACKENDS_2026-10-12.md) | Os três backends lado a lado numa máquina real com macOS 27: cinco problemas, três nossos e dois do sistema (janela SkyLight transparente e surda a cliques), cada um com a evidência e a correção. |
+| [METAL_AUTORELEASE_POOLS_2026-10-12.md](METAL_AUTORELEASE_POOLS_2026-10-12.md) | O que `OBJC_DEBUG_MISSING_POOLS` imprimia e ninguém lia: o `MTLDevice` vazando na abertura, em cada `dispose` e duas vezes por quadro pela thread de conclusão do Metal. As três causas, a medição antes e depois, e a asserção que passou a travar o workflow. |
 
 ## Saídas de probe preservadas
 
