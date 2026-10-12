@@ -15,7 +15,7 @@ A proposta 01 trata de **qual thread** executa o código de UI. Este documento t
 
 Todo toolkit de janela nativo é construído em torno de um loop que **bloqueia** esperando input: `GetMessage`/`MsgWaitForMultipleObjectsEx` no Win32, `poll`/`epoll` sobre o file descriptor da conexão no X11 e Wayland, `CFRunLoopRun` e `[NSApp run]` no macOS. O Dart também tem um loop bloqueante — o message handler do isolate, que serve `Timer`, `Future`, microtasks, `ReceivePort` e I/O assíncrono.
 
-Os dois querem a mesma thread e não se conhecem. Hoje o SDK não oferece nenhuma primitiva suportada para reconciliá-los. O que resta ao código Dart é **polling cooperativo**: nunca bloquear de verdade no loop nativo, acordar em intervalos arbitrários e ceder ao Dart com uma fronteira assíncrona artificial. Este padrão está implementado e funcionando em [`poc_10_event_loop`](../../poc/poc_10_event_loop/lib/src/win32_event_loop.dart), e o custo é estrutural, não um defeito de implementação.
+Os dois querem a mesma thread e não se conhecem. Hoje o SDK não oferece nenhuma primitiva suportada para reconciliá-los. O que resta ao código Dart é **polling cooperativo**: nunca bloquear de verdade no loop nativo, acordar em intervalos arbitrários e ceder ao Dart com uma fronteira assíncrona artificial. Este padrão está implementado e funcionando em [`poc_10_event_loop`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_10_event_loop/lib/src/win32_event_loop.dart), e o custo é estrutural, não um defeito de implementação.
 
 Diferente do problema da proposta 01, **este afeta as três plataformas por igual**. Windows e Linux não precisam da process main thread — os POCs 01 e 02 já criam janelas na própria thread do isolate — mas precisam exatamente da mesma integração de loop.
 
@@ -81,7 +81,7 @@ Enquanto a thread está dentro de `GetMessage`, nenhum `Timer` do Dart dispara. 
 
 ### 3.2 O que o código Dart faz hoje
 
-O padrão real, implementado em [`win32_event_loop.dart:30-42`](../../poc/poc_10_event_loop/lib/src/win32_event_loop.dart#L30-L42):
+O padrão real, implementado em [`win32_event_loop.dart:30-42`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_10_event_loop/lib/src/win32_event_loop.dart#L30-L42):
 
 ```dart
 Future<void> pump(Duration timeout) async {
@@ -120,7 +120,7 @@ Funciona — a POC-10 passa, com `Timer.periodic` de 100 ms convivendo com a fil
 
 ### 3.3 O custo, medido
 
-A [POC-19](../../poc/poc_19_event_loop_metrics) mede esse custo diretamente. Ela compara o padrão atual (`polling`, timeout fixo) com um loop que deriva o timeout do próximo deadline do Dart e é acordado por um evento de kernel quando surge trabalho novo — ou seja, com o que a API desta proposta permitiria. Windows 11, Dart 3.6.2, 3 s por configuração:
+A [POC-19](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_19_event_loop_metrics) mede esse custo diretamente. Ela compara o padrão atual (`polling`, timeout fixo) com um loop que deriva o timeout do próximo deadline do Dart e é acordado por um evento de kernel quando surge trabalho novo — ou seja, com o que a API desta proposta permitiria. Windows 11, Dart 3.6.2, 3 s por configuração:
 
 | Métrica | polling 50 ms (o que existe hoje) | *oracle* (API proposta) | referência |
 |---|---|---|---|
@@ -185,12 +185,12 @@ O passo 3 tem API pública declarada, mas ainda não tem implementação na VM.
 
 | POC | O que estabelece |
 |---|---|
-| [`poc_01_win32_window`](../../poc/poc_01_win32_window) | Janela Win32, class registration e `WndProc` via `NativeCallable.isolateLocal`, na própria thread do isolate. Confirma que o Windows **não** precisa da thread 0 |
-| [`poc_02_x11_window`](../../poc/poc_02_x11_window) | Conexão XCB, janela mapeada, `XCB_EXPOSE` recebido, `xcb_put_image`. Confirma que o Linux **não** precisa da thread 0 |
-| [`poc_09_wayland`](../../poc/poc_09_wayland) | Bindings e probe de Wayland |
-| [`poc_10_event_loop`](../../poc/poc_10_event_loop) | Integração cooperativa Win32 + `Timer` funciona, **ao custo dos quatro compromissos da §3.2** |
-| [`poc_19_event_loop_metrics`](../../poc/poc_19_event_loop_metrics) | Quantifica esse custo e mede o ganho da API proposta: 16,0 Hz → 59,2 Hz, 63,02 ms → 0,54 ms, 14,0 → 0,3 wakeups ociosos/s (§3.3) |
-| [`poc_03_appkit_window`](../../poc/poc_03_appkit_window) | A rota AppKit continua dependente da thread 0; a rota SkyLight/CGS já confirmou janela, pixels e três eventos `[10, 11, 5]` fora da main thread |
+| [`poc_01_win32_window`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_01_win32_window) | Janela Win32, class registration e `WndProc` via `NativeCallable.isolateLocal`, na própria thread do isolate. Confirma que o Windows **não** precisa da thread 0 |
+| [`poc_02_x11_window`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_02_x11_window) | Conexão XCB, janela mapeada, `XCB_EXPOSE` recebido, `xcb_put_image`. Confirma que o Linux **não** precisa da thread 0 |
+| [`poc_09_wayland`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_09_wayland) | Bindings e probe de Wayland |
+| [`poc_10_event_loop`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_10_event_loop) | Integração cooperativa Win32 + `Timer` funciona, **ao custo dos quatro compromissos da §3.2** |
+| [`poc_19_event_loop_metrics`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_19_event_loop_metrics) | Quantifica esse custo e mede o ganho da API proposta: 16,0 Hz → 59,2 Hz, 63,02 ms → 0,54 ms, 14,0 → 0,3 wakeups ociosos/s (§3.3) |
+| [`poc_03_appkit_window`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_03_appkit_window) | A rota AppKit continua dependente da thread 0; a rota SkyLight/CGS já confirmou janela, pixels e três eventos `[10, 11, 5]` fora da main thread |
 
 O ponto a destacar para os mantenedores: **as plataformas onde o Dart já consegue abrir uma janela hoje são precisamente as que demonstram esta limitação de forma isolada**, sem o ruído do problema de main thread do macOS. Windows e Linux são o caso de teste limpo.
 
@@ -310,7 +310,7 @@ O callback conceitual incrementa um contador compartilhado e faz
 promete uma notificação por evento e `handleEvent` trata no máximo um; um bit
 booleano poderia perder notificações coalescidas.
 
-Compare com [`win32_event_loop.dart`](../../poc/poc_10_event_loop/lib/src/win32_event_loop.dart) atual: some o timeout mágico de 50 ms, some o `await Future.delayed(Duration.zero)`, some o `Timer` que existe só para acordar o loop, e o método deixa de ser `async`.
+Compare com [`win32_event_loop.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_10_event_loop/lib/src/win32_event_loop.dart) atual: some o timeout mágico de 50 ms, some o `await Future.delayed(Duration.zero)`, some o `Timer` que existe só para acordar o loop, e o método deixa de ser `async`.
 
 ### 6.4 Uso em Linux (X11/Wayland) e macOS
 
@@ -357,7 +357,7 @@ As quatro seguintes são lacunas reais, medidas neste projeto, e **separáveis**
 | `listener` | ✅ | ❌ só `void` | ✅ completo |
 | `isolateGroupBound` | ✅ | ✅ | ❌ sem statics não compartilhados |
 
-No Windows não há problema: a janela e o pump vivem na thread do isolate, e `isolateLocal` funciona — é o que [`poc_01`](../../poc/poc_01_win32_window/lib/src/win32_window.dart#L158) faz. No macOS com a proposta 01, os delegates rodam na thread 0, que **não** é a thread do isolate, e só `isolateGroupBound` serve — experimental, e sem acesso a estado normal de isolate.
+No Windows não há problema: a janela e o pump vivem na thread do isolate, e `isolateLocal` funciona — é o que [`poc_01`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_01_win32_window/lib/src/win32_window.dart#L158) faz. No macOS com a proposta 01, os delegates rodam na thread 0, que **não** é a thread do isolate, e só `isolateGroupBound` serve — experimental, e sem acesso a estado normal de isolate.
 
 **Pedido.** Estabilizar `NativeCallable.isolateGroupBound` e, junto com `#56841`, tornar viável manter o estado de uma janela em campos compartilháveis. Alternativamente, uma variante que entre sincronamente em um isolate específico e fixado a outra thread, algo como `NativeCallable.isolateBound(isolate, fn)`, bloqueando o chamador nativo até o retorno.
 
@@ -377,7 +377,7 @@ callable.close(mode: NativeCallableCloseMode.safe);
 
 **Problema.** Um GC major no meio da composição de um frame estoura o orçamento de 16,6 ms. Não existe API pública suportada para informar ao runtime que há uma janela de tempo crítica em andamento, nem para aproveitar o tempo ocioso entre frames. Catalogado como **risco R12**.
 
-A [`poc_12_native_buffers`](../../poc/poc_12_native_buffers) foi construída justamente para medir se o framebuffer deve viver no heap Dart ou em memória nativa — e a resposta tende a "nativa" em boa parte por ausência dessa cooperação, o que empurra o framework para fora do heap gerenciado e desfaz parte do valor de escrever em Dart.
+A [`poc_12_native_buffers`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_12_native_buffers) foi construída justamente para medir se o framebuffer deve viver no heap Dart ou em memória nativa — e a resposta tende a "nativa" em boa parte por ausência dessa cooperação, o que empurra o framework para fora do heap gerenciado e desfaz parte do valor de escrever em Dart.
 
 **Pedido.** Hints não vinculantes, no espírito do que engines de jogo e navegadores expõem:
 

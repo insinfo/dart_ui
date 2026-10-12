@@ -10,8 +10,6 @@ on:
       - 'lib/**'
       - 'test/**'
       - 'tool/**'
-      - 'poc/**'
-      - 'mvp/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
   pull_request:
@@ -21,8 +19,6 @@ on:
       - 'lib/**'
       - 'test/**'
       - 'tool/**'
-      - 'poc/**'
-      - 'mvp/**'
       - 'pubspec.yaml'
       - 'pubspec.lock'
   workflow_dispatch:
@@ -120,12 +116,6 @@ jobs:
             libvulkan-dev mesa-vulkan-drivers \
             weston x11-utils x11-xserver-utils
 
-      # ---- Testes portáveis (todas as plataformas) ----
-      - name: Run portable CPU raster tests
-        run: |
-          dart test poc/poc_04_cpu_raster
-          dart test mvp/mvp_01_win32_counter
-
       # ---- Linux: Testes de plataforma com Xvfb ----
       - name: Run platform tests (Linux)
         if: matrix.platform == 'linux'
@@ -145,13 +135,8 @@ jobs:
             sleep 1
           done
           xdpyinfo -display :99 | sed -n '1,3p'
-          dart test poc/poc_02_x11_window
           dart compile exe tool/x11_backend_smoke.dart -o build/x11_backend_smoke
           timeout --kill-after=5 20 build/x11_backend_smoke
-          mkdir -p mvp/mvp_02_x11_counter/build
-          dart compile exe mvp/mvp_02_x11_counter/bin/main.dart -o mvp/mvp_02_x11_counter/build/mvp_02
-          chmod +x mvp/mvp_02_x11_counter/build/mvp_02
-          timeout 15 mvp/mvp_02_x11_counter/build/mvp_02 --smoke-test
         env:
           DISPLAY: ':99'
           LIBGL_ALWAYS_SOFTWARE: '1'
@@ -184,12 +169,6 @@ jobs:
       - name: Run platform tests (Windows)
         if: matrix.platform == 'windows'
         run: |
-          dart test poc/poc_01_win32_window
-          dart test poc/poc_05_com_direct2d
-          dart test poc/poc_10_event_loop
-          New-Item -ItemType Directory -Force -Path mvp/mvp_01_win32_counter/build | Out-Null
-          dart compile exe mvp/mvp_01_win32_counter/bin/main.dart -o mvp/mvp_01_win32_counter/build/mvp_01.exe
-          mvp/mvp_01_win32_counter/build/mvp_01.exe --smoke-test
           # Popups em janela nativa, num HWND de verdade. O headless nao pode
           # provar a linha que importa: que o retangulo do menu SAI da janela
           # dona. Ele tambem le de volta que a dona continua ativa, conta as
@@ -343,15 +322,15 @@ jobs:
           - os: ubuntu-24.04
             platform: linux
             ext: ''
-            entrypoint: mvp/mvp_02_x11_counter/bin/main.dart
+            entrypoint: example/hello_world.dart
           - os: windows-latest
             platform: windows
             ext: '.exe'
-            entrypoint: mvp/mvp_01_win32_counter/bin/main.dart
+            entrypoint: example/hello_world.dart
           - os: macos-14
             platform: macos-arm64
             ext: ''
-            entrypoint: mvp/mvp_03_appkit_counter/bin/main.dart
+            entrypoint: example/hello_world.dart
     steps:
       - uses: actions/checkout@v4
 
@@ -371,13 +350,17 @@ jobs:
       - name: Install dependencies
         run: dart pub get
 
-      - name: AOT compile platform Counter
+      # The same portable app on every platform: the backend is chosen at
+      # run time, so one entrypoint compiles for all three. Until 12/10/2026
+      # these were the per-platform counters under mvp/, now on the
+      # exploracao-inicial branch.
+      - name: AOT compile hello_world
         shell: bash
         run: |
           test -f "${{ matrix.entrypoint }}"
           mkdir -p build
           dart compile exe "${{ matrix.entrypoint }}" \
-            -o build/counter_${{ matrix.platform }}${{ matrix.ext }}
+            -o build/hello_world_${{ matrix.platform }}${{ matrix.ext }}
           echo "✅ AOT compilation successful"
           ls -la build/
 
@@ -386,6 +369,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: aot-${{ matrix.platform }}
-          path: build/counter_*
+          path: build/hello_world_*
           retention-days: 7
           if-no-files-found: error

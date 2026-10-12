@@ -6,7 +6,7 @@
 /// and the stencil-then-cover executor (C) only when it is asked to, and
 /// nothing in the framework ever asked: `default_platform_resolver.dart`
 /// called it with no flags, so both routes ran from this test directory, from
-/// `poc/poc_23_gpu_2d_strategies` and from direct device use, and from no
+/// `exploracao-inicial:poc/poc_23_gpu_2d_strategies` and from direct device use, and from no
 /// window on any platform. `RenderPolicy.routes` is the ask, and
 /// [RenderPolicy.buildsTessellationExecutor] /
 /// [RenderPolicy.buildsStencilCoverExecutor] are what the resolver reads.

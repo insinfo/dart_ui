@@ -7,7 +7,7 @@
 ///     must be testable without a display or a compositor, or it is not
 ///     testable at all - a golden test that needs a visible window is a
 ///     golden test that does not run. This is the configuration
-///     `poc/poc_06_opengl` proved works on Linux under software Mesa, and it
+///     `exploracao-inicial:poc/poc_06_opengl` proved works on Linux under software Mesa, and it
 ///     stays the default everywhere it is available.
 ///   * **WGL**, for Windows, where there is no EGL. A modern context there is
 ///     created from a device context that already carries a pixel format, and
@@ -774,7 +774,7 @@ final class GlContextFactory {
   /// is itself an extension, so it can only be obtained from
   /// `wglGetProcAddress`, which only answers with a context already current -
   /// so a throwaway legacy context has to be created and made current first.
-  /// This is the sequence `poc/poc_06_opengl/bin/opengl_windows.dart` proves
+  /// This is the sequence `exploracao-inicial:poc/poc_06_opengl/bin/opengl_windows.dart` proves
   /// works on this project's hardware.
   ///
   /// Never throws. Every failure is a diagnostic.

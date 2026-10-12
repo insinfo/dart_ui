@@ -7,8 +7,8 @@
 [`31246734901`](https://github.com/insinfo/dart_ui/actions/runs/31246734901) e
 [`31247641461`](https://github.com/insinfo/dart_ui/actions/runs/31247641461)
 (varredura 480×320 / 1080p / 4K) — `macos-14` arm64, Dart 3.6.0
-**Código:** [`transport_benchmark.dart`](../../poc/poc_20_macos_three_backends/bin/transport_benchmark.dart),
-[`embedder_feasibility.c`](../../poc/poc_20_macos_three_backends/native/embedder_feasibility.c)
+**Código:** [`transport_benchmark.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/bin/transport_benchmark.dart),
+[`embedder_feasibility.c`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/native/embedder_feasibility.c)
 
 O documento de arquitetura dizia que a escolha entre as duas evoluções do
 backend 3 sairia de "um spike separado". Este é o spike, e ele responde as duas

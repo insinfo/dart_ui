@@ -2,7 +2,7 @@
 ///
 /// The two routes are built by `GlRenderDevice.adoptContext` and nothing in
 /// the framework used to ask it for them, so they were reachable from tests,
-/// from `poc/poc_23_gpu_2d_strategies` and from direct device use, and from no
+/// from `exploracao-inicial:poc/poc_23_gpu_2d_strategies` and from direct device use, and from no
 /// application at all. `default_platform_resolver.dart` now asks, driven by
 /// `RenderPolicy.routes`, and this is the smoke test for that seam.
 ///

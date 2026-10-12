@@ -1,5 +1,13 @@
 # GitHub CI Multiplataforma — Framework 100% Puro Dart
 
+> **Atualização 12/10/2026:** `poc/` e `mvp/` saíram da `main` e ficam só no
+> branch [`exploracao-inicial`](https://github.com/insinfo/dart_ui/tree/exploracao-inicial),
+> junto com os workflows `poc_tests.yml` e `macos_mainthread_spike.yml`. As seções
+> abaixo sobre POC Tests e os passos de POC/MVP do `ci.yml` descrevem esse
+> estado anterior. Na `main`, o build AOT compila `example/hello_world.dart`
+> nas três plataformas, e as conferências do smoke do backend macOS de produção
+> passaram para `macos_popup_probe.yml`.
+
 > **Projeto:** `C:\MyDartProjects\dart_ui`
 > **Contexto:** Ambiente de desenvolvimento local é Windows. Linux e macOS são testados exclusivamente via GitHub Actions CI.
 > **Data de criação:** 2026-08-04

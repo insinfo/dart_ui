@@ -58,7 +58,7 @@ the native loop between turns.
 
 ## Experimental evidence
 
-[`poc_19_event_loop_metrics`](../../poc/poc_19_event_loop_metrics) compares the
+[`poc_19_event_loop_metrics`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_19_event_loop_metrics) compares the
 current fixed-polling pattern with an oracle that has a kernel wakeup whenever
 Dart work becomes ready. On Windows 11, Dart 3.6.2, three-second samples:
 

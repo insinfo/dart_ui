@@ -1,6 +1,6 @@
 /// COM in pure Dart: vtables, `IUnknown`, `GUID` and `HRESULT`.
 ///
-/// Promoted from `poc/poc_05_com_direct2d/bin/direct2d_windows.dart`, which
+/// Promoted from `exploracao-inicial:poc/poc_05_com_direct2d/bin/direct2d_windows.dart`, which
 /// proved the three things this file exists to make reusable: that a Dart
 /// `Pointer` can be treated as a COM interface pointer, that the first machine
 /// word of such an object is a pointer to a table of function pointers, and

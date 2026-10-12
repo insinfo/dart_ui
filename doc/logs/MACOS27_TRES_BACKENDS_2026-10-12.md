@@ -38,7 +38,7 @@ As três janelas abriam em posições fixas que se sobrepunham. A janela SkyLigh
 mesmo azul.
 
 Correção em
-[`showcase.dart`](../../poc/poc_20_macos_three_backends/lib/src/showcase.dart):
+[`showcase.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/showcase.dart):
 
 - **Identidade:** um `ShowcaseSpec` por backend, com número, nome, título,
   linhas de descrição, a cor da suíte de conformidade (azul `20,120,220`,
@@ -85,7 +85,7 @@ Pelo disassembly, o offset +492 vem logo depois de
 `releasedWhenClosed = YES` por padrão, e isso é uma liberação a mais sob ARC.
 
 A correção é `self.window.releasedWhenClosed = NO;` em
-[`minimal_appkit_host.m`](../../poc/poc_20_macos_three_backends/native/minimal_appkit_host.m).
+[`minimal_appkit_host.m`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/native/minimal_appkit_host.m).
 
 Limite da evidência: o crash dependia de quando a memória era reaproveitada.
 Nem `performClose:` nem `performClick:` com `NSZombieEnabled` o reproduziram, e
@@ -135,7 +135,7 @@ sobra para o `CFRunLoopRun` externo, que é o que o `SIGUSR2` iniciou. A thread
 
 O handler de sinal é o próprio `CFRunLoopRun`, então não dá para fazê-lo
 rodar em loop. A correção fica em `_invokeOnMainReparking` em
-[`probe.dart`](../../poc/poc_03_appkit_window/bin/probe.dart):
+[`probe.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_03_appkit_window/bin/probe.dart):
 
 1. cada chamada é agendada sem esperar (`waitUntilDone:NO`), seguida de um
    marcador (`+[NSNull null]`) cujo valor de retorno prova que a fila chegou
@@ -278,7 +278,7 @@ Dart):
 | `SLSNewWindow(cid, 5, …)`, opções `nil` | `0` | `40,120,220` ✅ |
 
 Implementação em
-[`skylight_backend.dart`](../../poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart):
+[`skylight_backend.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart):
 
 - **Escolha do caminho:** `report.presentation` vale `ca-layer` quando
   `CAWindowContent` está ativa e `cg-context` quando não está. O caminho CG

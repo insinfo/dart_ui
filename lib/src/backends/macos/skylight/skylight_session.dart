@@ -1,6 +1,6 @@
 /// One connection to the WindowServer through SkyLight, with no AppKit.
 ///
-/// The route `poc/poc_20_macos_three_backends` measured (see
+/// The route `exploracao-inicial:poc/poc_20_macos_three_backends` measured (see
 /// `doc/MACOS_TRES_BACKENDS.md`), with one change that makes it usable from
 /// an asynchronous application: **no CFRunLoop**. The POC installed the event
 /// port as a run-loop source on the current thread and then could not

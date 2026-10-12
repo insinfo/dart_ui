@@ -14,7 +14,7 @@
 ///     slot 4 (`CreateBitmap`) through 56 (`IsSupported`), in header order.
 ///   * `ID2D1HwndRenderTarget : ID2D1RenderTarget` adds `CheckWindowState`
 ///     57, `Resize` 58, `GetHwnd` 59. The proof-of-concept
-///     `poc/poc_05_com_direct2d` drove a window through exactly these
+///     `exploracao-inicial:poc/poc_05_com_direct2d` drove a window through exactly these
 ///     numbers, which is the independent check on the arithmetic.
 ///   * `ID2D1DCRenderTarget : ID2D1RenderTarget` adds `BindDC` 57.
 ///   * `ID2D1DeviceContext : ID2D1RenderTarget` adds its own 35 methods at

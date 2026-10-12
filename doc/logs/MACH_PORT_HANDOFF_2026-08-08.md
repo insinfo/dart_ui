@@ -2,8 +2,8 @@
 
 **Run:** [`31249520943`](https://github.com/insinfo/dart_ui/actions/runs/31249520943)
 — `macos-14` arm64, Dart 3.6.0
-**Código:** [`surface_port_probe.dart`](../../poc/poc_20_macos_three_backends/tool/surface_port_probe.dart),
-[`mach_port_transfer.dart`](../../poc/poc_20_macos_three_backends/lib/src/mach_port_transfer.dart)
+**Código:** [`surface_port_probe.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/tool/surface_port_probe.dart),
+[`mach_port_transfer.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/mach_port_transfer.dart)
 
 ## O problema
 

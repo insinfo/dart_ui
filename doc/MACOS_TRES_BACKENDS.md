@@ -41,7 +41,7 @@ tardios, estados explícitos (`new`, `initializing`, `running`, `stopping`,
 `stopped`, `failed`) e shutdown idempotente.
 
 O contrato, a máquina de estados e os testes dessas invariantes agora vivem em
-[`poc/poc_20_macos_three_backends/lib`](../poc/poc_20_macos_three_backends/lib).
+[`poc/poc_20_macos_three_backends/lib`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib).
 O estado inicial concreto chama-se `created` (equivalente ao `new` conceitual
 acima, que é palavra reservada em Dart).
 
@@ -137,7 +137,7 @@ com `SLSSetMenuBars`, cujo dicionário não está documentado.
 
 - ~~extrair o código de `probe.dart` para tipos pequenos com ownership
   explícito~~ — feito em
-  [`skylight_backend.dart`](../poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart);
+  [`skylight_backend.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart);
 - ~~invalidar e liberar source, Mach port, callbacks, regions, contexts e
   janelas em ordem inversa~~ — medido:
   `CGContextRelease → SLSReleaseWindow → CGSReleaseRegion →
@@ -281,7 +281,7 @@ FFI dentro do executável Dart **não** resolve o problema: o código continuari
 sem possuir a thread 0 desde o início do processo.
 
 O witness inicial está em
-[`poc/poc_20_macos_three_backends/native/minimal_appkit_host.m`](../poc/poc_20_macos_three_backends/native/minimal_appkit_host.m).
+[`poc/poc_20_macos_three_backends/native/minimal_appkit_host.m`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/native/minimal_appkit_host.m).
 O protocolo stdin/stdout está na versão 2 e já transporta os dois sentidos:
 
 | Comando | Direção | Efeito |
@@ -405,7 +405,7 @@ backend 3 comprova o roteamento até a view (`VIEW_INPUT_EVENTS=3`).
 1. ~~CI do witness `.m` e captura de `MAIN_THREAD=1`/`WINDOW_ID`~~;
 2. ~~interface Dart e capability report sem selecionar backend automaticamente~~;
 3. ~~extração do SkyLight funcional para código reutilizável~~
-   ([`skylight_backend.dart`](../poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart));
+   ([`skylight_backend.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart));
 4. ~~suíte comum de janela, present, pixels, input e teardown nos três~~;
 5. encapsulamento do signal hijack com opt-in e watchdog;
 6. spike embedder-vs-IPC do host `.m`;

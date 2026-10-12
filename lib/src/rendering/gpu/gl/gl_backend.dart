@@ -1,7 +1,7 @@
 /// The OpenGL backend: the first concrete filling of the GPU abstraction.
 ///
 /// OpenGL rather than Vulkan, Metal or D3D for one reason that outranks every
-/// technical comparison: `poc/poc_06_opengl` already proves the FFI binding
+/// technical comparison: `exploracao-inicial:poc/poc_06_opengl` already proves the FFI binding
 /// loads and answers on Linux under software Mesa in this repository's CI. A
 /// backend that can be *run* in CI is worth more than a faster one that can
 /// only be reasoned about, because the whole point of this stage is to find

@@ -817,7 +817,7 @@ const List<ObjCAbiClass> _args2wA1w = <ObjCAbiClass>[
 ///
 /// ## The aggregate members, and the comment they exist to refute
 ///
-/// `poc/poc_07_metal/lib/metal_bindings.dart` declares `MTLClearColor` - four
+/// `exploracao-inicial:poc/poc_07_metal/lib/metal_bindings.dart` declares `MTLClearColor` - four
 /// `double`s - with the note *"on both arm64 and x86_64 it fits in two GP
 /// registers (16 bytes per pair), so the standard `objc_msgSend` trampoline
 /// handles it as a value argument"*. That is wrong twice over, and it is the

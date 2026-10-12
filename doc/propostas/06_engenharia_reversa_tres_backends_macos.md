@@ -340,7 +340,7 @@ executável Dart **não** resolve: o código continuaria sem possuir a thread 0.
 ### 5.2 Protocolo IPC validado
 
 O witness em
-[`minimal_appkit_host.m`](../../poc/poc_20_macos_three_backends/native/minimal_appkit_host.m)
+[`minimal_appkit_host.m`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/native/minimal_appkit_host.m)
 implementa um protocolo stdin/stdout versão 1:
 
 | Comando | Direção | Efeito |
@@ -350,7 +350,7 @@ implementa um protocolo stdin/stdout versão 1:
 | `CLOSE` | Dart → Host | Chama `[NSApp terminate:nil]`; shutdown normal |
 
 O teste
-[`native_host_protocol_smoke.dart`](../../poc/poc_20_macos_three_backends/bin/native_host_protocol_smoke.dart)
+[`native_host_protocol_smoke.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/bin/native_host_protocol_smoke.dart)
 compila o `.m` com `clang`, inicia o processo, envia os três comandos e verifica
 respostas. O CI macOS `31162204180` aprovou.
 
@@ -376,7 +376,7 @@ Medições completas em
 ## 6. Política de seleção
 
 A implementação concreta da política está em
-[`backend_policy.dart`](../../poc/poc_20_macos_three_backends/lib/src/backend_policy.dart).
+[`backend_policy.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/backend_policy.dart).
 
 ```text
 Ordem de fallback automático:
@@ -400,7 +400,7 @@ O fallback **nunca é silencioso**. O relatório registra:
 ## 7. Contrato comum
 
 O contrato de janela, framebuffer, input e lifecycle implementado em
-[`backend_contract.dart`](../../poc/poc_20_macos_three_backends/lib/src/backend_contract.dart)
+[`backend_contract.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/backend_contract.dart)
 garante:
 
 - **Interface única:** `MacosWindowBackend` — o código de widgets não conhece
@@ -471,8 +471,8 @@ garante:
 - [SPIKE_MACOS_MAIN_THREAD.md](../SPIKE_MACOS_MAIN_THREAD.md) — resultados brutos
 - [MACOS_TRES_BACKENDS.md](../MACOS_TRES_BACKENDS.md) — arquitetura
 - [LLDB trace](../logs/MACOS_SIGNAL_HIJACK_LLDB_2026-08-07.md) — evidência de shutdown
-- [backend_policy.dart](../../poc/poc_20_macos_three_backends/lib/src/backend_policy.dart) — seleção
-- [backend_contract.dart](../../poc/poc_20_macos_three_backends/lib/src/backend_contract.dart) — contrato
+- [backend_policy.dart](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/backend_policy.dart) — seleção
+- [backend_contract.dart](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/backend_contract.dart) — contrato
 
 ---
 
@@ -482,7 +482,7 @@ garante:
 
 - [x] Extrair o consumidor de `probe.dart` para tipos pequenos com ownership
   explícito de porta, source, callback, região, contexto e janela —
-  [`skylight_backend.dart`](../../poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart).
+  [`skylight_backend.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/lib/src/skylight_backend.dart).
 - [x] Invalidar e liberar em ordem inversa — medido no CI, sem símbolo faltando.
 - [x] `pointerMove`: era coalescência de mensagens Mach, não máscara de evento
   (§ 3.4). Resolvido com drenagem extra limitada fora do callback.

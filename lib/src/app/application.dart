@@ -5,7 +5,8 @@
 /// a backend, make a window, make a surface, make a renderer, make a scheduler,
 /// make a [BuildOwner] and a [PipelineOwner], wire pointer and keyboard events
 /// into them, run a loop, tear it all down in the right order - and every MVP
-/// under `mvp/` had its own copy of the same code, subtly diverged. That is
+/// under `mvp/` (now on the `exploracao-inicial` branch) had its own copy of
+/// the same code, subtly diverged. That is
 /// the direct reason there was no X11 or AppKit gallery: writing one meant
 /// re-deriving the assembly rather than swapping a backend.
 ///

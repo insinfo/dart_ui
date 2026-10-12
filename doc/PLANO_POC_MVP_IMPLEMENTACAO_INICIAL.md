@@ -1,5 +1,11 @@
 # Plano POC/MVP — Implementação Inicial do Framework Multiplataforma 100% Puro Dart
 
+> **Atualização 12/10/2026:** a fase de POC/MVP terminou. `poc/` e `mvp/` saíram
+> da `main` e ficam só no branch
+> [`exploracao-inicial`](https://github.com/insinfo/dart_ui/tree/exploracao-inicial);
+> o que eles provaram está em `lib/`. Os caminhos `poc/...` e `mvp/...` deste
+> plano se referem a esse branch.
+
 > **Documento complementar ao:** `ROTEIRO_FRAMEWORK_MULTIPLATAFORMA_100_PURO_DART.md`
 > **Projeto:** `C:\MyDartProjects\dart_ui`
 > **Objetivo:** Validar viabilidade técnica e superar desafios iniciais antes da implementação completa

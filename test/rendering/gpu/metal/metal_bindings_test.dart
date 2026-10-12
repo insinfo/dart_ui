@@ -290,7 +290,7 @@ void main() {
 
   group('enum values', () {
     test('the two constants poc_07_metal got wrong', () {
-      // poc/poc_07_metal/lib/metal_bindings.dart:
+      // exploracao-inicial:poc/poc_07_metal/lib/metal_bindings.dart:
       //     const int mtlLoadActionClear = 0;   // really 2
       //     const int mtlStoreActionStore = 0;  // really 1
       // Both are MTLLoadActionDontCare / MTLStoreActionDontCare. The POC asked

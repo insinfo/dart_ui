@@ -18,7 +18,7 @@
 /// Nothing here is Direct3D-specific, which is exactly why it should be
 /// absorbed. The report at the end of this change lists the members by name;
 /// the unification is meant to be mechanical, so the *shape* deliberately
-/// follows `poc/poc_05_com_direct2d/bin/direct2d_windows.dart` - a `GUID`
+/// follows `exploracao-inicial:poc/poc_05_com_direct2d/bin/direct2d_windows.dart` - a `GUID`
 /// laid out as `Data1, Data2, Data3, Data4[8]`, an interface pointer carried
 /// as a bare `Pointer<Void>`, and vtable slots addressed by index rather than
 /// by generated bindings.

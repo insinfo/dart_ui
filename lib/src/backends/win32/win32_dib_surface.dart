@@ -1,5 +1,5 @@
 /// The CPU presentation path: a top-down 32-bit DIB section blitted to the
-/// window, the arrangement proven in `poc/poc_13_native_dib_present`.
+/// window, the arrangement proven in `exploracao-inicial:poc/poc_13_native_dib_present`.
 ///
 /// Why a DIB section and not `StretchDIBits` from a Dart list: a DIB section
 /// is memory GDI already owns, so presenting it is one `BitBlt` with no copy.

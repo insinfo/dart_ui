@@ -16,7 +16,8 @@ import '../../foundation/diagnostics.dart';
 /// Which macOS windowing strategy is active.
 ///
 /// The names match the keys used in `MACOS_TRES_BACKENDS.md` and in the
-/// POC code under `poc/poc_20_macos_three_backends/`, so a grep finds both.
+/// POC code under `poc/poc_20_macos_three_backends/` on the
+/// `exploracao-inicial` branch, so a grep there finds both.
 enum MacosBackendKind {
   /// WindowServer directly via SkyLight/CGS private API.
   ///

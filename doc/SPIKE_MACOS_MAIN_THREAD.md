@@ -26,7 +26,7 @@ thread 0 ao código Dart.
 | --- | --- |
 | Runner | `macos-14`, arm64 |
 | Dart SDK | 3.6.0 |
-| Probes | [`poc/poc_03_appkit_window/bin/probe.dart`](../poc/poc_03_appkit_window/bin/probe.dart) |
+| Probes | [`poc/poc_03_appkit_window/bin/probe.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_03_appkit_window/bin/probe.dart) |
 | Workflow | [`.github/workflows/macos_mainthread_spike.yml`](../.github/workflows/macos_mainthread_spike.yml) (disparo manual) |
 
 Reproduzir: `gh workflow run "macOS main-thread spike"`.

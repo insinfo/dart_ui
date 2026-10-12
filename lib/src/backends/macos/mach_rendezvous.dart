@@ -23,7 +23,7 @@
 ///     another message rather than another process.
 ///
 /// Only the chosen mechanism is implemented here. The other two live in
-/// `poc/poc_20_macos_three_backends/lib/src/mach_port_transfer.dart` as the
+/// `exploracao-inicial:poc/poc_20_macos_three_backends/lib/src/mach_port_transfer.dart` as the
 /// record of the measurement.
 library;
 

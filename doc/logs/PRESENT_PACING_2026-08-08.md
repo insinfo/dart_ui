@@ -2,7 +2,7 @@
 
 **Run:** [`31274010694`](https://github.com/insinfo/dart_ui/actions/runs/31274010694)
 — `macos-14` arm64, superfície 1920×1080
-**Código:** [`vsync_probe.dart`](../../poc/poc_20_macos_three_backends/bin/vsync_probe.dart)
+**Código:** [`vsync_probe.dart`](https://github.com/insinfo/dart_ui/blob/exploracao-inicial/poc/poc_20_macos_three_backends/bin/vsync_probe.dart)
 
 O benchmark de transporte respondeu **quanto custa** apresentar. Ele não
 responde se o compositor acompanha, e não diz nada sobre o risco que existe com

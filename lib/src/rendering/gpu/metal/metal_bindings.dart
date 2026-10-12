@@ -71,7 +71,7 @@
 ///
 /// ## Two constants the POC had wrong, and what that proves
 ///
-/// `poc/poc_07_metal/lib/metal_bindings.dart` declares:
+/// `exploracao-inicial:poc/poc_07_metal/lib/metal_bindings.dart` declares:
 ///
 /// ```dart
 /// const int mtlLoadActionClear = 0;   // real value: 2

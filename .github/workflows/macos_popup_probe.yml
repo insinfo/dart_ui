@@ -34,10 +34,17 @@ jobs:
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/macos_popup_probe.dart
+      # Probe, window and facade of the production backend, checked by line;
+      # until 12/10/2026 the macOS main-thread spike workflow made these
+      # checks, and it went to the exploracao-inicial branch with poc/.
       - name: Enumerate NSScreen through the production backend
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
-        run: dart run tool/macos_backend_smoke.dart
+        run: |
+          dart run tool/macos_backend_smoke.dart | tee /tmp/macos-production-backend.log
+          grep -q '^MACOS_BACKEND_PROBE=PASS$' /tmp/macos-production-backend.log
+          grep -q '^MACOS_BACKEND_WINDOW=PASS ' /tmp/macos-production-backend.log
+          grep -q '^MACOS_BACKEND_FACADE_SMOKE=PASS$' /tmp/macos-production-backend.log
 
       # The popup smoke with no spare popup host, beside the one with it, so the
       # spare's effect is read on the same runner in the same job. It settled
