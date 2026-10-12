@@ -1136,8 +1136,15 @@ void main() {
         final _Parity parity = await _parity(sparseSession, list, 160);
         expect(parity.executed, GpuPathStrategy.stencilThenCover);
         expect(parity.drewSomething, isTrue);
-        expect(parity.maxDeviation, lessThanOrEqualTo(18),
-            reason: parity.report);
+        // The bound follows the samples the driver gave, from the table above:
+        // Mesa's llvmpipe offers four and measured 42 there too (12/10/2026,
+        // the first CI run of this group), the Intel UHD sixteen and 18.
+        final GlOffscreenTarget probe = sparseSession.target(8, 8);
+        final int samples = probe.surfaceAttachments.sampleCount;
+        probe.dispose();
+        final int bound = samples >= 16 ? 18 : 42;
+        expect(parity.maxDeviation, lessThanOrEqualTo(bound),
+            reason: '$samples samples\n${parity.report}');
         expect(parity.maxDeviation, greaterThan(0),
             reason: 'if this ever reaches zero the cover pass grew an analytic '
                 'fringe, and the comment above is out of date');

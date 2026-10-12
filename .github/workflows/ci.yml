@@ -169,21 +169,14 @@ jobs:
       # (bd705b6) so tinha rodado contra o compilador de shader de ninguem.
       # EGL_PLATFORM=surfaceless porque o pbuffer nao precisa de display.
       #
-      # Do gl_device_test, so o grupo do dispositivo e o gradiente denso. O
-      # grupo da rota esparsa/stencil foi escrito contra o Intel UHD (espera,
-      # por exemplo, dezesseis amostras de MSAA num alvo stencil8) e no
-      # llvmpipe 21 testes falham a partir dessa suposicao - pendencia
-      # registrada, nao escondida: o primeiro run deste passo (9db81e0) mostra.
+      # O gl_device_test inteiro. O grupo da rota esparsa/stencil falhava 21
+      # testes no llvmpipe ate d667912 (stencil empacotado onde o Mesa recusa
+      # o separado) e o limite de quantizacao seguir as amostras do driver.
       - name: OpenGL device tests (Linux, llvmpipe)
         if: matrix.platform == 'linux'
         run: |
           dart test test/rendering/gpu/gl --reporter=expanded
-          dart test test/rendering/gpu/gl_device_test.dart --reporter=expanded \
-            --name 'a live GL device|draws a gradient densely'
-          # The sparse/stencil group, measured but not yet a gate: reported
-          # here so each fix shows up as fewer failures in the log.
-          dart test test/rendering/gpu/gl_device_test.dart --reporter=expanded \
-            --name 'opt-in sparse GL component' || true
+          dart test test/rendering/gpu/gl_device_test.dart --reporter=expanded
         env:
           EGL_PLATFORM: surfaceless
           LIBGL_ALWAYS_SOFTWARE: '1'
