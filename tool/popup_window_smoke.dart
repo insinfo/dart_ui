@@ -455,6 +455,30 @@ Future<void> _checkOpenCost(
     if (owner.host.logicalSize != ownerLogical) break;
   }
 
+  // The same open at a human pace. The burst above reopens every ~80 ms,
+  // faster than anyone opens a menu, and a backend that prepares the next
+  // popup's window in the background - the macOS spare host, launched a
+  // moment after each popup so that it never competes with one - is measured
+  // there mostly on the opens that outran it. A person reopening a menu or
+  // hovering into a submenu waits far longer than 300 ms between the two, so
+  // this is the number those opens see.
+  final paced = <double>[];
+  for (var i = 0; i < 6; i++) {
+    await _pump(app, const Duration(milliseconds: 300));
+    final Stopwatch watch = Stopwatch()..start();
+    final ApplicationWindow popup = await app.openPopup(
+      owner: owner,
+      anchorRect: anchor,
+      content: _menuContent(),
+      kind: PopupKind.menu,
+    );
+    watch.stop();
+    paced.add(watch.elapsedMicroseconds / 1000);
+    await _pump(app, const Duration(milliseconds: 40));
+    app.closeWindow(popup.id);
+  }
+  paced.sort();
+
   // The half of an open a pool would remove. `openPopup` is four steps -
   // create the window hidden, measure the tree, place it, show it - and only
   // the first is what a pooled hidden popup already owns. So a bare
@@ -499,6 +523,8 @@ Future<void> _checkOpenCost(
         'reopenMedian=${median.toStringAsFixed(2)} '
         'reopenWorst=${worst.toStringAsFixed(2)} '
         'cycles=${samples.length} '
+        'pacedMedian=${paced[paced.length ~/ 2].toStringAsFixed(2)} '
+        'pacedWorst=${paced.last.toStringAsFixed(2)} '
         'bareWindowBest=${bare.first.toStringAsFixed(2)} '
         'bareWindowMedian=${bare[bare.length ~/ 2].toStringAsFixed(2)}',
   );
