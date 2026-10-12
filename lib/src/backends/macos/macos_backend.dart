@@ -33,6 +33,7 @@ import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import 'host_locator.dart';
 import 'host_process.dart';
+import 'host_supervisor.dart' show MacosHostStarter;
 import 'macos_backend_kind.dart';
 import 'macos_backend_selection.dart';
 import 'macos_clipboard.dart';
@@ -240,22 +241,37 @@ final class MacosWindowingBackend
     );
     final MacosSpareHost? spare = await _takeSpare(spawnOptions);
 
-    late final MacosWindow window;
-    window = MacosWindow(
-      id: NativeWindowId(_nextWindowId++),
-      surfaceFactory: createIOSurfacePool,
-      clientSize: options.size,
-      renderScale: 1,
-      desktopScale: 1,
-      onDiagnostic: _diagnostics.add,
-      onClosed: _onWindowClosed,
-      // Production has only the Mach-port rendezvous handoff. Keep surfaces
-      // private instead of exposing them system-wide for an unimplemented ID
-      // lookup fallback.
-      globalSurfaces: false,
-      hostStarter: spare == null ? null : adoptingStarter(spare),
-    );
-    final opened = await window.open(spawnOptions: spawnOptions);
+    MacosWindow newWindow(MacosHostStarter? starter) => MacosWindow(
+          id: NativeWindowId(_nextWindowId++),
+          surfaceFactory: createIOSurfacePool,
+          clientSize: options.size,
+          renderScale: 1,
+          desktopScale: 1,
+          onDiagnostic: _diagnostics.add,
+          onClosed: _onWindowClosed,
+          // Production has only the Mach-port rendezvous handoff. Keep
+          // surfaces private instead of exposing them system-wide for an
+          // unimplemented ID lookup fallback.
+          globalSurfaces: false,
+          hostStarter: starter,
+        );
+
+    MacosWindow window =
+        newWindow(spare == null ? null : adoptingStarter(spare));
+    var opened = await window.open(spawnOptions: spawnOptions);
+    if (!opened && spare != null) {
+      // A spare that died between its launch and this adoption - the
+      // `macos-14` runner showed one gone by the time its surfaces were sent
+      // - must not cost the user the menu. One fresh launch, as if there had
+      // been no spare.
+      _diagnostics.add(const BackendDiagnostic.note(
+        'the spare popup host could not be adopted; launching a fresh one',
+      ));
+      window.dispose();
+      await window.teardown;
+      window = newWindow(null);
+      opened = await window.open(spawnOptions: spawnOptions);
+    }
     if (spawnOptions.kind == MacosHostWindowKind.popup && _initialized) {
       // The replacement, launched only once this popup is open: started
       // alongside it, two AppKit launches competed for the CPU, and on the

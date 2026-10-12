@@ -434,6 +434,23 @@ final class MacosHostProcess
       );
     }, cancelOnError: false);
 
+    // A write to a host that has just died fails *asynchronously*: the broken
+    // pipe arrives on the sink's `done`, after [send] has returned true. With
+    // nobody listening it was an unhandled exception that took the whole
+    // application down - seen on the macos-14 runner, in the middle of a
+    // popup's surface handoff - for a host death the supervisor exists to
+    // survive.
+    unawaited(_process.stdin.done.then<void>((_) {}, onError: (Object error) {
+      _stdinBroken = true;
+      _onDiagnostic(
+        BackendDiagnostic(
+          kind: DiagnosticKind.connectionFailed,
+          message: 'macOS host stdin is closed',
+          detail: '$error',
+        ),
+      );
+    }));
+
     unawaited(_process.exitCode.then((int status) {
       if (_exited.isCompleted) return;
       if (_exitReason == MacosHostExitReason.none) {
