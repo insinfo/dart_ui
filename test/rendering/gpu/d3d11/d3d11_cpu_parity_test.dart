@@ -346,8 +346,8 @@ void _linearRect(DisplayList list) {
   final int paint = list.addPaint(
     colorArgb: 0xFFFFFFFF,
     antiAlias: false,
-    gradient: LinearGradient(
-        startX: 2, startY: 3, endX: 21, endY: 19, stops: _stops),
+    gradient:
+        LinearGradient(startX: 2, startY: 3, endX: 21, endY: 19, stops: _stops),
   );
   list.drawRect(2, 2, 22, 22, paint);
 }
@@ -396,8 +396,8 @@ void _rampInLayer(DisplayList list) {
   final int paint = list.addPaint(
     colorArgb: 0xFFFFFFFF,
     antiAlias: false,
-    gradient: LinearGradient(
-        startX: 5, startY: 4, endX: 21, endY: 4, stops: _stops),
+    gradient:
+        LinearGradient(startX: 5, startY: 4, endX: 21, endY: 4, stops: _stops),
   );
   list
     ..drawRect(5, 4, 21, 22, paint)

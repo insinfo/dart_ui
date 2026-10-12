@@ -747,7 +747,6 @@ final class MetalOffscreenTarget {
   late final Pointer<Float> _gradientBlock = NativeAllocator.instance
       .allocate<Float>(GpuGradientDraw.denseBlockFloats * sizeOf<Float>());
 
-
   /// Draws batches [firstBatch] to [batchCount] into the pass [encoder] is
   /// recording, whose target is [viewportWidth] x [viewportHeight] - the
   /// surface, or a layer's texture at the layer's own size.

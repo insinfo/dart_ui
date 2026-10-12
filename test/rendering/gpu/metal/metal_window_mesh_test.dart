@@ -54,8 +54,7 @@ void main() {
       surfaces[pool.backSlot].withPixels((Uint8List pixels) {
         final int stride = surfaces[pool.backSlot].bytesPerRow;
         int at(int x, int y) => y * stride + x * 4;
-        centre = Uint8List.fromList(
-            pixels.sublist(at(32, 24), at(32, 24) + 4));
+        centre = Uint8List.fromList(pixels.sublist(at(32, 24), at(32, 24) + 4));
         corner = Uint8List.fromList(pixels.sublist(at(0, 0), at(0, 0) + 4));
       });
       expect(centre, <int>[0, 0, 255, 255], reason: 'the quad, red, as BGRA');

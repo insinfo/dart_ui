@@ -120,8 +120,7 @@ final class MetalTextureStore implements GpuTextureAllocator {
   late final MetalImageCache imageCache = MetalImageCache._(this);
 
   /// Gradient ramps, one `RGBA8Unorm` row each, shared by every target here.
-  late final GpuGradientCache gradientCache =
-      GpuGradientCache(allocator: this);
+  late final GpuGradientCache gradientCache = GpuGradientCache(allocator: this);
 
   /// How many regions of the glyph atlas have gone to the GPU, for tests that
   /// want to see the atlas shared rather than re-uploaded.
