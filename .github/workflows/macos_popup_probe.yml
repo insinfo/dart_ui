@@ -90,6 +90,24 @@ jobs:
 
       # The third: AppKit in this process, on a main thread taken from the VM
       # by a signal.
+      # A hang here is a deadlock between the Dart thread and the parked
+      # main thread: after 90 s every thread's stack is sampled before the
+      # process is killed, so the log says where each one waits.
       - name: AppKit window on a signal-parked main thread
-        timeout-minutes: 3
-        run: dart run tool/macos_appkit_signal_smoke.dart
+        timeout-minutes: 4
+        run: |
+          dart run tool/macos_appkit_signal_smoke.dart &
+          RUNNER=$!
+          for _ in $(seq 1 90); do
+            kill -0 $RUNNER 2>/dev/null || break
+            sleep 1
+          done
+          if kill -0 $RUNNER 2>/dev/null; then
+            echo "APPKIT_SIGNAL_SMOKE=HANG sampling"
+            for PID in $(pgrep -f macos_appkit_signal_smoke); do
+              sample $PID 3 -mayDie 2>&1 | grep -v -E '^\s*$' | head -400
+            done
+            pkill -9 -f macos_appkit_signal_smoke
+            exit 1
+          fi
+          wait $RUNNER
