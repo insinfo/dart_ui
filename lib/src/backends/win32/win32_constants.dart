@@ -88,6 +88,24 @@ const int gwlExstyle = -20;
 // ShowWindow commands (SW_*)
 // ---------------------------------------------------------------------------
 
+// WM_POINTER* (Windows 8+). Only touch and pen arrive as these unless the
+// process calls EnableMouseInPointer, which this backend does not: the mouse
+// keeps its WM_*BUTTON* messages.
+const int wmPointerupdate = 0x0245;
+const int wmPointerdown = 0x0246;
+const int wmPointerup = 0x0247;
+const int wmPointercapturechanged = 0x024C;
+
+/// `POINTER_INPUT_TYPE`, as `GetPointerType` reports it.
+const int ptTouch = 2;
+const int ptPen = 3;
+const int ptMouse = 4;
+
+/// `POINTER_MESSAGE_FLAG_CANCELED`, in the high word of a `WM_POINTERUP`'s
+/// wParam: the contact ended without the user lifting it - a palm-rejection
+/// decision, a system gesture.
+const int pointerMessageFlagCanceled = 0x8000;
+
 const int swHide = 0;
 const int swShowNormal = 1;
 const int swShowMinimized = 2;

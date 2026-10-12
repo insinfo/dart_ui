@@ -1322,6 +1322,20 @@ final class Win32Window
       // framework's own direction, while WM_MOUSEWHEEL is positive-away-from
       // -the-user, which is the opposite of it. See [_onPointerScroll].
 
+      // Fingers and pens. Answering 0 is what stops Windows from also
+      // turning the contact into WM_LBUTTONDOWN and friends, which would
+      // deliver every tap twice - once as a touch, once as a mouse click.
+      case wmPointerdown:
+      case wmPointerupdate:
+      case wmPointerup:
+        return _onContact(msg, wParam, lParam)
+            ? 0
+            : _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
+      case wmPointercapturechanged:
+        _endContact(win32LoWord(wParam), cancelled: true);
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
       case wmMouseleave:
         return _onPointerLeave();
 
@@ -1525,6 +1539,117 @@ final class Win32Window
   }
 
   Offset _lastPointerPosition = Offset.zero;
+
+  /// Fingers and pens in contact, by Windows pointer id, with their last
+  /// position: `WM_POINTERCAPTURECHANGED` names only the id.
+  final Map<int, ({PointerKind kind, Offset position})> _contacts =
+      <int, ({PointerKind kind, Offset position})>{};
+
+  /// The framework pointer id for Windows pointer [pointer]. Offset by one
+  /// so no contact can ever be pointer 0, which is the mouse's.
+  static int contactPointerId(int pointer) => pointer + 1;
+
+  /// A `WM_POINTER*` message from a finger or a pen; false for the mouse,
+  /// which keeps arriving as `WM_*BUTTON*` and is left to DefWindowProc.
+  bool _onContact(int msg, int wParam, int lParam) {
+    final int pointer = win32LoWord(wParam);
+    final PointerKind? kind = _contactKind(pointer);
+    if (kind == null) return false;
+    var x = win32SignedLoWord(lParam);
+    var y = win32SignedHiWord(lParam);
+    _withScratchPoint((point) {
+      point.ref
+        ..x = x
+        ..y = y;
+      if (_api.screenToClient(_hwnd, point) != 0) {
+        x = point.ref.x;
+        y = point.ref.y;
+      }
+    });
+    final Offset position = _space.physicalToLogical(x, y);
+    final int framework = contactPointerId(pointer);
+    switch (msg) {
+      case wmPointerdown:
+        _contacts[pointer] = (kind: kind, position: position);
+        _emit(PointerDownEvent(
+          windowId: id,
+          generation: _generation.current,
+          timestamp: _eventTimestamp(),
+          pointerId: framework,
+          kind: kind,
+          logicalPosition: position,
+          button: PointerButton.primary,
+        ));
+      case wmPointerupdate:
+        // A pen hovering above the screen updates without contact; a finger
+        // cannot. Both are moves to the framework.
+        if (_contacts.containsKey(pointer)) {
+          _contacts[pointer] = (kind: kind, position: position);
+        }
+        _emit(PointerMoveEvent(
+          windowId: id,
+          generation: _generation.current,
+          timestamp: _eventTimestamp(),
+          pointerId: framework,
+          kind: kind,
+          logicalPosition: position,
+        ));
+      case wmPointerup:
+        if (!_contacts.containsKey(pointer)) return true;
+        _contacts[pointer] = (kind: kind, position: position);
+        _endContact(
+          pointer,
+          cancelled: (win32HiWord(wParam) & pointerMessageFlagCanceled) != 0,
+        );
+    }
+    return true;
+  }
+
+  /// Ends contact [pointer] with an up, or a cancel when the system took it.
+  void _endContact(int pointer, {required bool cancelled}) {
+    final contact = _contacts.remove(pointer);
+    if (contact == null) return;
+    final int framework = contactPointerId(pointer);
+    _emit(cancelled
+        ? PointerCancelEvent(
+            windowId: id,
+            generation: _generation.current,
+            timestamp: _eventTimestamp(),
+            pointerId: framework,
+            kind: contact.kind,
+            logicalPosition: contact.position,
+          )
+        : PointerUpEvent(
+            windowId: id,
+            generation: _generation.current,
+            timestamp: _eventTimestamp(),
+            pointerId: framework,
+            kind: contact.kind,
+            logicalPosition: contact.position,
+            button: PointerButton.primary,
+          ));
+  }
+
+  /// Touch or stylus for a `WM_POINTER*` pointer, or null for the mouse.
+  ///
+  /// When `GetPointerType` cannot say - the contact already ended, or the
+  /// symbol is missing - the message itself is the answer: without
+  /// `EnableMouseInPointer` only touch and pen produce `WM_POINTER*`.
+  PointerKind? _contactKind(int pointer) {
+    final getPointerType = _api.getPointerType;
+    if (getPointerType == null) return PointerKind.touch;
+    final Pointer<Uint32> type = _api.allocator<Uint32>();
+    try {
+      if (getPointerType(pointer, type) == 0) return PointerKind.touch;
+      return switch (type.value) {
+        ptPen => PointerKind.stylus,
+        ptMouse => null,
+        _ => PointerKind.touch,
+      };
+    } finally {
+      _api.allocator.free(type);
+    }
+  }
 
   int _onPointerLeave() {
     _trackingMouse = false;

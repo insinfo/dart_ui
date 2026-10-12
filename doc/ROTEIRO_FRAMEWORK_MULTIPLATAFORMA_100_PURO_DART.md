@@ -1690,6 +1690,16 @@ Depois do mouse básico:
 - IDs estáveis;
 - captura por ponteiro.
 
+**Estado em 12/10/2026:** `WM_POINTERDOWN/UPDATE/UP` tratados para toque e
+caneta (`GetPointerType`; o mouse continua nos `WM_*BUTTON*`, sem
+`EnableMouseInPointer`), viram eventos com `PointerKind.touch`/`stylus` e
+`pointerId` = id do Windows + 1, e respondem 0 — o que impede o Windows de
+promover o contato a um clique de mouse duplicado. O flag de cancelamento e
+`WM_POINTERCAPTURECHANGED` viram `PointerCancelEvent`. Prova:
+`win32_touch_test.dart`, com mensagens sintéticas e um toque real por
+`InjectTouchInput`. **Falta:** pressão, inclinação, área de contato e
+histórico (`GetPointerInfo`/`GetPointerPenInfo`).
+
 ### Teclado
 
 Separar:
@@ -8362,7 +8372,7 @@ aplica, **?** não verificado.
 | `perMonitorDpi` | sim | parcial (escala do probe) | parcial (inteira, a maior dos outputs) | ? | sim | sim |
 | `orderlyShutdown` | sim | sim | sim | sim (provado no spike) | ? | sim |
 | `accessibility` | **sim** (UI Automation, condicionada a `uiautomationcore.dll`) — papel/nome/valor/estado, e Invoke/Toggle/SetValue chegam ao widget; sem MSAA, `ITextProvider`, `IScrollProvider` e `IRangeValueProvider` | não | não | **não** — `hasAccessibility: false` nos três kinds, "not wired yet" | não | não |
-| touch | não | não | sim (`wl_touch`; só testado contra o compositor falso) | não | ? | — |
+| touch | sim (`WM_POINTER*`: toque e caneta, sem o clique duplicado do mouse) | não | sim (`wl_touch`; só testado contra o compositor falso) | não | ? | — |
 | pen / tablet | não | não | não | não | não | — |
 | popups | sim | sim | sim (`xdg_positioner`) | ? | — | sim |
 | tray / notificações | não | não | não | não | não | — |

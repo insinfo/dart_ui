@@ -631,6 +631,11 @@ final class Win32Api {
   int Function(int, int, Pointer<Uint32>, Pointer<Uint32>)? getDpiForMonitor;
   int Function(Pointer<Win32Rect>, int, int, int, int)?
       adjustWindowRectExForDpi;
+
+  /// `GetPointerType` (Windows 8+): whether a `WM_POINTER*` message is a
+  /// finger, a pen or the mouse. Null before Windows 8, which sends no
+  /// `WM_POINTER*` messages at all.
+  int Function(int, Pointer<Uint32>)? getPointerType;
   int Function(int)? openClipboard;
   int Function()? closeClipboard;
   int Function()? emptyClipboard;
@@ -707,6 +712,13 @@ final class Win32Api {
           Int32 Function(Pointer<Win32Rect>, Uint32, Int32, Uint32, Uint32),
           int Function(Pointer<Win32Rect>, int, int, int,
               int)>('AdjustWindowRectExForDpi'),
+    );
+    getPointerType = tryLookup(
+      _user32,
+      'GetPointerType',
+      (library) => library.lookupFunction<
+          Int32 Function(Uint32, Pointer<Uint32>),
+          int Function(int, Pointer<Uint32>)>('GetPointerType'),
     );
     openClipboard = tryLookup(
       _user32,
