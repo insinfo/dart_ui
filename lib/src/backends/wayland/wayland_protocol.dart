@@ -146,6 +146,18 @@ const int wlSeatCapabilityKeyboard = 2;
 const int wlSeatCapabilityTouch = 4;
 
 // ---------------------------------------------------------------------------
+// wl_touch.
+// ---------------------------------------------------------------------------
+
+const int wlTouchRequestRelease = 0;
+
+const int wlTouchEventDown = 0;
+const int wlTouchEventUp = 1;
+const int wlTouchEventMotion = 2;
+const int wlTouchEventFrame = 3;
+const int wlTouchEventCancel = 4;
+
+// ---------------------------------------------------------------------------
 // wl_pointer.
 // ---------------------------------------------------------------------------
 

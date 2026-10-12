@@ -2681,7 +2681,7 @@ estavam escritas. Elas foram corrigidas abaixo; o que segue é o estado.
   `ClientDecorationFrame` desenha a barra (desde 12/10/2026).
 
 **Não existe, e é o que decide se este backend serve:** GPU de qualquer espécie
-(sem EGL, sem `linux-dmabuf`, sem Vulkan), touch, escala fracionária, seleção
+(sem EGL, sem `linux-dmabuf`, sem Vulkan), escala fracionária, seleção
 primária, ícone de arraste, ação `link` e posição de janela. Ver §16.14 e
 §68. Movimento/redimensionamento interativo, `set_maximized`/`set_minimized`/
 `set_fullscreen` (por `WindowStateControl`, §9.3) e CSD existem desde
@@ -2877,7 +2877,7 @@ O resto da lista original está feito, com uma exceção nomeada:
 - [x] pointer enter/leave/motion/button/axis;
 - [x] serials registrados;
 - [x] cursor surface;
-- [ ] **touch frames — `wl_touch` nunca é vinculado**;
+- [x] **touch** (12/10/2026): `wl_touch` vinculado quando o seat anuncia a capacidade; `down`/`motion`/`up` viram `PointerDown/Move/UpEvent` com `PointerKind.touch` e `pointerId` = id do ponto + 1 (o 0 é o mouse), roteados pela superfície onde o dedo desceu; `cancel` encerra cada ponto ainda pressionado; o serial do toque conta para grab de popup e movimento. `frame`, `shape` e `orientation` são consumidos sem uso. Testes contra o compositor falso (`wayland_connection_test.dart`) e na tradução (`wayland_events_test.dart`); **nenhum compositor de CI tem tela de toque**, então nunca rodou com dedo de verdade;
 - [ ] axis source/discrete/value120 e high-resolution scroll — não verificado;
 - [ ] tablet protocol.
 
@@ -3001,7 +3001,7 @@ Revisto em 2026-08-23 contra `lib/src/backends/wayland/`.
 - [x] `wl_shm` (swapchain de até 3 buffers, `memfd_create` + `mmap`, `wl_buffer.release`, destruição adiada de buffer ocupado);
 - [x] frame callback (coalesce com união de damage e contador de frames engolidos);
 - [~] **teclado — sem `xkbcommon`**: parser próprio do keymap texto v1, primeiro grupo e dois níveis, bits de modificador assumidos. Repeat do lado do cliente. Teclas mortas pela tabela Compose do X11, e só quando não há IME (§16.7);
-- [~] pointer sim; **touch não** — `wl_touch` nunca é vinculado;
+- [~] pointer sim; touch sim desde 12/10/2026, só contra o compositor falso;
 - [x] clipboard (`wl_data_device`, **texto apenas**; **sem seleção primária**);
 - [~] drag-and-drop nos dois papéis; **sem ícone de arraste** (`TODO(wayland)` no código) e **sem ação `link`**;
 - [x] text-input-v3 (enable/disable, surrounding text, content type, cursor rectangle, commit com contagem de serial; preedit/commit/delete_surrounding aplicados na ordem do protocolo, com o `done` atrasado descartando só a deleção. **Sem cláusulas de pré-edição** — o v3 removeu `preedit_styling` — e **sem fallback para v1/v2**);
@@ -8362,7 +8362,7 @@ aplica, **?** não verificado.
 | `perMonitorDpi` | sim | parcial (escala do probe) | parcial (inteira, a maior dos outputs) | ? | sim | sim |
 | `orderlyShutdown` | sim | sim | sim | sim (provado no spike) | ? | sim |
 | `accessibility` | **sim** (UI Automation, condicionada a `uiautomationcore.dll`) — papel/nome/valor/estado, e Invoke/Toggle/SetValue chegam ao widget; sem MSAA, `ITextProvider`, `IScrollProvider` e `IRangeValueProvider` | não | não | **não** — `hasAccessibility: false` nos três kinds, "not wired yet" | não | não |
-| touch | não | não | **não** (`wl_touch` nunca vinculado) | não | ? | — |
+| touch | não | não | sim (`wl_touch`; só testado contra o compositor falso) | não | ? | — |
 | pen / tablet | não | não | não | não | não | — |
 | popups | sim | sim | sim (`xdg_positioner`) | ? | — | sim |
 | tray / notificações | não | não | não | não | não | — |
@@ -10880,7 +10880,8 @@ proporção ele aparece nos outros caminhos, não.
   primeira execução (run `38234818022`) Home e Delete editaram o campo,
   Ctrl+A e Ctrl+C puseram o texto onde o `xclip` o leu, e End e Ctrl+V o
   colaram de volta;
-- **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
+- **Wayland**: sem GPU de qualquer espécie, touch nunca provado num toque
+  real, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
   primária, sem posição de janela; a CSD desenhada
   quando o compositor recusa SSD não tem sombra nem menu de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de

@@ -342,6 +342,7 @@ enum _ObjectKind {
   seat,
   pointer,
   keyboard,
+  touch,
   output,
   xdgWmBase,
   xdgSurface,
@@ -462,6 +463,12 @@ final class WaylandConnection
 
   // Seat devices.
   int _pointerId = 0;
+  int _touchId = 0;
+
+  /// Each touch point that is down, by its `wl_touch` id: `up` and `motion`
+  /// name only the id, and `cancel` names nothing at all.
+  final Map<int, ({int surfaceId, double x, double y})> _touchPoints =
+      <int, ({int surfaceId, double x, double y})>{};
   int _keyboardId = 0;
 
   // Input focus, resolved so motion/key events can carry their surface.
@@ -909,6 +916,8 @@ final class WaylandConnection
         return _handlePointerEvent(message, into);
       case _ObjectKind.keyboard:
         return _handleKeyboardEvent(message, into);
+      case _ObjectKind.touch:
+        return _handleTouchEvent(message, into);
       case _ObjectKind.dataDevice:
         _handleDataDeviceEvent(message);
         return false;
@@ -1001,6 +1010,13 @@ final class WaylandConnection
     final capabilities = WaylandMessageReader(message.payload).readUint();
     final hasPointer = (capabilities & wlSeatCapabilityPointer) != 0;
     final hasKeyboard = (capabilities & wlSeatCapabilityKeyboard) != 0;
+    final hasTouch = (capabilities & wlSeatCapabilityTouch) != 0;
+    if (hasTouch && _touchId == 0) {
+      _touchId = _allocateId(_ObjectKind.touch);
+      _writer.begin(_seatId, wlSeatRequestGetTouch);
+      _writer.putNewId(_touchId);
+      _queueMessage();
+    }
     if (hasPointer && _pointerId == 0) {
       _pointerId = _allocateId(_ObjectKind.pointer);
       _writer.begin(_seatId, wlSeatRequestGetPointer);
@@ -1150,6 +1166,92 @@ final class WaylandConnection
       }
     }
     return found.reversed.toList();
+  }
+
+  bool _handleTouchEvent(WaylandWireMessage message, WaylandRawEvent? into) {
+    final reader = WaylandMessageReader(message.payload);
+    switch (message.opcode) {
+      case wlTouchEventDown:
+        final serial = reader.readUint();
+        // A touch-down serial is as good as a click's for everything that
+        // demands one - a popup grab, an interactive move.
+        _rememberInputSerial(serial);
+        final time = reader.readUint();
+        final surfaceId = reader.readObject();
+        final id = reader.readInt();
+        final x = reader.readFixed();
+        final y = reader.readFixed();
+        if (surfaceId == 0) return false;
+        _touchPoints[id] = (surfaceId: surfaceId, x: x, y: y);
+        return _deliver(into, (WaylandRawEvent event) {
+          event
+            ..type = WaylandRawEventType.touchDown
+            ..surfaceId = surfaceId
+            ..serial = serial
+            ..timeMilliseconds = time
+            ..key = id
+            ..x = x
+            ..y = y;
+        });
+      case wlTouchEventUp:
+        final serial = reader.readUint();
+        final time = reader.readUint();
+        final id = reader.readInt();
+        final point = _touchPoints.remove(id);
+        if (point == null) return false;
+        return _deliver(into, (WaylandRawEvent event) {
+          event
+            ..type = WaylandRawEventType.touchUp
+            ..surfaceId = point.surfaceId
+            ..serial = serial
+            ..timeMilliseconds = time
+            ..key = id
+            ..x = point.x
+            ..y = point.y;
+        });
+      case wlTouchEventMotion:
+        final time = reader.readUint();
+        final id = reader.readInt();
+        final x = reader.readFixed();
+        final y = reader.readFixed();
+        final point = _touchPoints[id];
+        if (point == null) return false;
+        _touchPoints[id] = (surfaceId: point.surfaceId, x: x, y: y);
+        return _deliver(into, (WaylandRawEvent event) {
+          event
+            ..type = WaylandRawEventType.touchMotion
+            ..surfaceId = point.surfaceId
+            ..timeMilliseconds = time
+            ..key = id
+            ..x = x
+            ..y = y;
+        });
+      case wlTouchEventCancel:
+        // One cancel per point: the first fills [into], the rest queue
+        // behind it, so a two-finger pinch the compositor took is ended on
+        // both fingers.
+        var target = into;
+        var filled = false;
+        for (final MapEntry(key: id, value: point) in _touchPoints.entries) {
+          if (_deliver(target, (WaylandRawEvent event) {
+            event
+              ..type = WaylandRawEventType.touchCancel
+              ..surfaceId = point.surfaceId
+              ..key = id
+              ..x = point.x
+              ..y = point.y;
+          })) {
+            filled = true;
+          }
+          target = null;
+        }
+        _touchPoints.clear();
+        return filled;
+      default:
+        // frame, shape, orientation: consumed. Each event already carries
+        // its point, so grouping by frame is a refinement nothing needs yet.
+        return false;
+    }
   }
 
   bool _handlePointerEvent(WaylandWireMessage message, WaylandRawEvent? into) {

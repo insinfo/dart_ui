@@ -441,14 +441,18 @@ final class WaylandWindow
       windowId: id,
       generation: generation,
       timestamp: _lastPointerTimestamp,
-      pointerId: 0,
-      kind: PointerKind.mouse,
+      pointerId: _lastPressPointerId,
+      kind: _lastPressKind,
       logicalPosition: _lastPointerPosition,
     ));
   }
 
   Offset _lastPointerPosition = Offset.zero;
   Duration _lastPointerTimestamp = Duration.zero;
+
+  /// The mouse or the finger whose press a move or resize quotes.
+  int _lastPressPointerId = 0;
+  PointerKind _lastPressKind = PointerKind.mouse;
 
   /// xdg-shell's `xdg_toplevel.resize_edge` values.
   static int _xdgEdge(WindowResizeEdge edge) => switch (edge) {
@@ -657,6 +661,10 @@ final class WaylandWindow
     if (pointerEvent is PointerEvent) {
       _lastPointerPosition = pointerEvent.logicalPosition;
       _lastPointerTimestamp = pointerEvent.timestamp;
+      if (pointerEvent is PointerDownEvent) {
+        _lastPressPointerId = pointerEvent.pointerId;
+        _lastPressKind = pointerEvent.kind;
+      }
     }
     if (pointerEvent != null) _emit(pointerEvent);
     if (raw.type == WaylandRawEventType.keyboardKey) {

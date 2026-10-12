@@ -513,6 +513,39 @@ void main() {
           reason: 'motion without focus must be dropped, not misrouted');
     });
 
+    test('touch points are routed by the surface they went down on', () {
+      compositor.touchCapable = true;
+      final connection = openOk();
+      final ids = connection.createToplevel(_request());
+      connection.flush(); // deliver get_touch from the capabilities event
+      expect(compositor.touchId, isNot(0));
+      compositor.sendTouchDown(ids.surfaceId, 20, 200, 0, x: 10, y: 20);
+      compositor.sendTouchDown(ids.surfaceId, 21, 201, 1, x: 50, y: 60);
+      compositor.sendTouchFrame();
+      compositor.sendTouchMotion(202, 1, x: 55, y: 66);
+      compositor.sendTouchUp(22, 203, 0);
+      compositor.sendTouchUp(23, 204, 7); // never went down: dropped
+      compositor.sendTouchCancel();
+
+      final raw = WaylandRawEvent();
+      final seen = <String>[];
+      while (connection.pollEventInto(raw)) {
+        expect(raw.surfaceId, ids.surfaceId);
+        seen.add('${raw.type.name} ${raw.key} ${raw.x},${raw.y}');
+      }
+      expect(seen, <String>[
+        'touchDown 0 10.0,20.0',
+        'touchDown 1 50.0,60.0',
+        'touchMotion 1 55.0,66.0',
+        // Up carries no position; the point's last one is the honest answer.
+        'touchUp 0 10.0,20.0',
+        // Cancel names no point: every point still down is ended.
+        'touchCancel 1 55.0,66.0',
+      ]);
+      expect(connection.lastInputSerial, 21,
+          reason: 'a touch-down serial is quotable, like a click');
+    });
+
     test('the keymap fd is mapped, parsed and closed', () {
       allocator.sharedMemory[555] = _keymapBytes();
       compositor.keymapFd = 555;
@@ -1045,6 +1078,10 @@ final class _FakeCompositor implements WaylandTransport {
   bool failPipeRead = false;
   int outputScale = 1;
   int keymapFd = -1;
+
+  /// Whether the seat announces a touchscreen, and the `wl_touch` it got.
+  bool touchCapable = false;
+  int touchId = 0;
   int keymapSize = 0;
 
   final List<_Request> requests = <_Request>[];
@@ -1204,7 +1241,9 @@ final class _FakeCompositor implements WaylandTransport {
             seatId,
             wlSeatEventCapabilities,
             (w) => w.putUint(
-              wlSeatCapabilityPointer | wlSeatCapabilityKeyboard,
+              wlSeatCapabilityPointer |
+                  wlSeatCapabilityKeyboard |
+                  (touchCapable ? wlSeatCapabilityTouch : 0),
             ),
           );
         case wlOutputInterfaceName:
@@ -1225,6 +1264,8 @@ final class _FakeCompositor implements WaylandTransport {
       final reader = WaylandMessageReader(payload);
       if (opcode == wlSeatRequestGetPointer) {
         pointerId = reader.readNewId();
+      } else if (opcode == wlSeatRequestGetTouch) {
+        touchId = reader.readNewId();
       } else if (opcode == wlSeatRequestGetKeyboard) {
         keyboardId = reader.readNewId();
         if (keymapFd >= 0) {
@@ -1434,6 +1475,40 @@ final class _FakeCompositor implements WaylandTransport {
           pressed ? wlPointerButtonStatePressed : wlPointerButtonStateReleased);
     });
   }
+
+  void sendTouchDown(int surfaceId, int serial, int time, int id,
+      {required double x, required double y}) {
+    _event(touchId, wlTouchEventDown, (w) {
+      w.putUint(serial);
+      w.putUint(time);
+      w.putObject(surfaceId);
+      w.putInt(id);
+      w.putFixed(x);
+      w.putFixed(y);
+    });
+  }
+
+  void sendTouchMotion(int time, int id,
+      {required double x, required double y}) {
+    _event(touchId, wlTouchEventMotion, (w) {
+      w.putUint(time);
+      w.putInt(id);
+      w.putFixed(x);
+      w.putFixed(y);
+    });
+  }
+
+  void sendTouchUp(int serial, int time, int id) {
+    _event(touchId, wlTouchEventUp, (w) {
+      w.putUint(serial);
+      w.putUint(time);
+      w.putInt(id);
+    });
+  }
+
+  void sendTouchFrame() => _event(touchId, wlTouchEventFrame, (w) {});
+
+  void sendTouchCancel() => _event(touchId, wlTouchEventCancel, (w) {});
 
   void sendKeyboardEnter(int surfaceId, int serial) {
     _event(keyboardId, wlKeyboardEventEnter, (w) {

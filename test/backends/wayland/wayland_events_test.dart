@@ -206,6 +206,40 @@ void main() {
       expect(move.generation, 2);
     });
 
+    test('touch points become touch pointers that never collide with the mouse',
+        () {
+      PointerEvent translate(WaylandRawEventType type, int id) {
+        raw
+          ..reset()
+          ..type = type
+          ..surfaceId = 3
+          ..timeMilliseconds = 40
+          ..key = id
+          ..x = 8
+          ..y = 9;
+        return WaylandEventTranslator.translatePointer(
+          raw,
+          windowId: windowId,
+          generation: 1,
+        )! as PointerEvent;
+      }
+
+      final down = translate(WaylandRawEventType.touchDown, 0);
+      expect(down, isA<PointerDownEvent>());
+      expect(down.kind, PointerKind.touch);
+      expect(down.pointerId, isNot(0), reason: 'pointer 0 is the mouse');
+      expect((down as PointerDownEvent).button, PointerButton.primary);
+      expect(down.logicalPosition, const Offset(8, 9));
+
+      expect(translate(WaylandRawEventType.touchMotion, 0),
+          isA<PointerMoveEvent>());
+      expect(translate(WaylandRawEventType.touchUp, 0), isA<PointerUpEvent>());
+      final cancel = translate(WaylandRawEventType.touchCancel, 4);
+      expect(cancel, isA<PointerCancelEvent>());
+      expect(cancel.pointerId, WaylandEventTranslator.touchPointerId(4));
+      expect(cancel.pointerId, isNot(down.pointerId));
+    });
+
     test('buttons map evdev codes to the framework enum', () {
       raw
         ..reset()

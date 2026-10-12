@@ -66,6 +66,16 @@ enum WaylandRawEventType {
 
   /// `zxdg_toplevel_decoration_v1.configure`: which side draws the frame.
   decorationConfigure,
+
+  /// `wl_touch.down`/`motion`/`up`. [WaylandRawEvent.key] is the touch
+  /// point's id, which the compositor reuses once the point is up.
+  touchDown,
+  touchMotion,
+  touchUp,
+
+  /// `wl_touch.cancel`, one per point still down: the compositor took the
+  /// touch sequence for a gesture of its own.
+  touchCancel,
 }
 
 /// One decoded Wayland event, reused across the pump. Never retained.
@@ -312,6 +322,10 @@ abstract final class WaylandEventTranslator {
       case WaylandRawEventType.pointerMotion:
       case WaylandRawEventType.pointerButton:
       case WaylandRawEventType.pointerAxis:
+      case WaylandRawEventType.touchDown:
+      case WaylandRawEventType.touchMotion:
+      case WaylandRawEventType.touchUp:
+      case WaylandRawEventType.touchCancel:
       case WaylandRawEventType.keyboardEnter:
       case WaylandRawEventType.keyboardLeave:
       case WaylandRawEventType.keyboardKey:
@@ -427,10 +441,54 @@ abstract final class WaylandEventTranslator {
           scrollDelta: delta,
           scrollDeltaUnit: ScrollDeltaUnit.pixels,
         );
+      case WaylandRawEventType.touchDown:
+        return PointerDownEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: Duration(milliseconds: raw.timeMilliseconds),
+          pointerId: touchPointerId(raw.key),
+          kind: PointerKind.touch,
+          logicalPosition: Offset(raw.x, raw.y),
+          button: PointerButton.primary,
+        );
+      case WaylandRawEventType.touchMotion:
+        return PointerMoveEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: Duration(milliseconds: raw.timeMilliseconds),
+          pointerId: touchPointerId(raw.key),
+          kind: PointerKind.touch,
+          logicalPosition: Offset(raw.x, raw.y),
+        );
+      case WaylandRawEventType.touchUp:
+        return PointerUpEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: Duration(milliseconds: raw.timeMilliseconds),
+          pointerId: touchPointerId(raw.key),
+          kind: PointerKind.touch,
+          logicalPosition: Offset(raw.x, raw.y),
+          button: PointerButton.primary,
+        );
+      case WaylandRawEventType.touchCancel:
+        return PointerCancelEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: Duration(milliseconds: raw.timeMilliseconds),
+          pointerId: touchPointerId(raw.key),
+          kind: PointerKind.touch,
+          logicalPosition: Offset(raw.x, raw.y),
+        );
       default:
         return null;
     }
   }
+
+  /// The framework pointer id of `wl_touch` point [touchId].
+  ///
+  /// Offset by one because the mouse is pointer 0, and a finger that went
+  /// down as 0 would otherwise continue - or cancel - the mouse's gesture.
+  static int touchPointerId(int touchId) => touchId + 1;
 
   /// Translates one `wl_keyboard.key` into a [KeyEvent], and possibly the
   /// [TextInputEvent] its keysym produces. Events go to [emit] in order:
