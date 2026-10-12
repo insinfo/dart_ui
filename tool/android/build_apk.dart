@@ -6,9 +6,20 @@
 ///   --package dev.dartui.app
 ///   --label "dart_ui"
 ///   --abi arm64-v8a --abi x86_64
+///   --aot              precompiled code instead of a kernel (see below)
 ///   --install          adb install -r the result
 ///   --run              and start it
 /// ```
+///
+/// **AOT.** With `--aot` the application is compiled ahead of time: an AOT
+/// kernel from the host SDK's `gen_kernel_aot`, then an ELF snapshot from a
+/// `gen_snapshot` that targets Android, run by `dartaotruntime` instead of the
+/// VM. Neither tool ships in a Dart SDK release; they come from building the
+/// SDK from source at the runtime's tag (ADR 0010):
+/// `tools/build.py -m product -a arm64 --os android gen_snapshot
+/// dartaotruntime`. `DART_UI_ANDROID_AOT_OUT` names the build output's parent
+/// (`out/` on Linux, `xcodebuild/` on macOS); the per-ABI directories under it
+/// are `ProductAndroidARM64` and `ProductAndroidX64`.
 ///
 /// What goes in (see `lib/src/backends/android/android_backend.dart` for why
 /// the shape is a host activity plus a VM process):
@@ -69,6 +80,7 @@ final class _Options {
     required this.abis,
     required this.install,
     required this.run,
+    required this.aot,
   });
 
   factory _Options.parse(List<String> arguments) {
@@ -79,6 +91,7 @@ final class _Options {
     final List<String> abis = <String>[];
     var install = false;
     var run = false;
+    var aot = false;
     for (var i = 0; i < arguments.length; i++) {
       final String argument = arguments[i];
       String value() {
@@ -97,6 +110,8 @@ final class _Options {
           label = value();
         case '--abi':
           abis.add(value());
+        case '--aot':
+          aot = true;
         case '--install':
           install = true;
         case '--run':
@@ -128,6 +143,7 @@ final class _Options {
       abis: abis.isEmpty ? <String>['arm64-v8a'] : abis,
       install: install,
       run: run,
+      aot: aot,
     );
   }
 
@@ -138,6 +154,7 @@ final class _Options {
   final List<String> abis;
   final bool install;
   final bool run;
+  final bool aot;
 }
 
 final class _BuildError implements Exception {
@@ -165,12 +182,22 @@ final class _Build {
     }
     if (work.existsSync()) work.deleteSync(recursive: true);
     work.createSync(recursive: true);
-    final String kernel = await _compileKernel();
-    final Map<String, String> runtimes = <String, String>{
-      for (final String abi in options.abis) abi: await _runtime(abi),
-    };
+    final Map<String, ({String runtime, String program})> binaries;
+    if (options.aot) {
+      final String kernel = await _compileAotKernel();
+      binaries = <String, ({String runtime, String program})>{
+        for (final String abi in options.abis)
+          abi: await _aotBinaries(abi, kernel),
+      };
+    } else {
+      final String kernel = await _compileKernel();
+      binaries = <String, ({String runtime, String program})>{
+        for (final String abi in options.abis)
+          abi: (runtime: await _runtime(abi), program: kernel),
+      };
+    }
     final String dex = await _compileHost();
-    final String apk = await _package(kernel, runtimes, dex);
+    final String apk = await _package(binaries, dex);
     stdout.writeln('APK: $apk');
     if (options.install) await _install(apk);
   }
@@ -196,6 +223,70 @@ final class _Build {
       kernel,
     ]);
     return kernel;
+  }
+
+  /// An AOT kernel: tree-shaken, product mode, `Platform.isAndroid` folded.
+  Future<String> _compileAotKernel() async {
+    final String dart = env['DART_UI_ANDROID_DART'] ?? 'dart';
+    final ProcessResult version =
+        await Process.run(dart, <String>['--version']);
+    if (!'${version.stdout}${version.stderr}'
+        .contains('Dart SDK version: $runtimeVersion ')) {
+      throw _BuildError('AOT needs the host SDK at $runtimeVersion too');
+    }
+    final String sdk = File(dart).absolute.parent.parent.path;
+    final String kernel = '${work.path}/app_aot.dill';
+    await _exec('$sdk/bin/dartaotruntime', <String>[
+      '$sdk/bin/snapshots/gen_kernel_aot.dart.snapshot',
+      '--platform',
+      '$sdk/lib/_internal/vm_platform_product.dill',
+      '--aot',
+      '--tfa',
+      '--target-os',
+      'android',
+      '-Ddart.vm.product=true',
+      '--packages',
+      '.dart_tool/package_config.json',
+      '-o',
+      kernel,
+      options.entrypoint,
+    ]);
+    return kernel;
+  }
+
+  /// The runtime and the ELF snapshot for [abi], from the SDK build.
+  Future<({String runtime, String program})> _aotBinaries(
+      String abi, String kernel) async {
+    final String? root = env['DART_UI_ANDROID_AOT_OUT'];
+    if (root == null) {
+      throw _BuildError(
+          '--aot needs DART_UI_ANDROID_AOT_OUT (see the library comment)');
+    }
+    final String build =
+        '$root/${abi == 'x86_64' ? 'ProductAndroidX64' : 'ProductAndroidARM64'}';
+    // The stripped runtime: the unstripped one carries 65 MB of symbols.
+    final File runtime = File('$build/exe.stripped/dartaotruntime');
+    // The gen_snapshot that runs here is under the host toolchain's
+    // directory (clang_arm64, clang_x64); the one in exe.stripped/ is built
+    // for Android and runs there.
+    final File? genSnapshot = Directory(build)
+        .listSync()
+        .whereType<Directory>()
+        .where((Directory d) => d.path.split('/').last.startsWith('clang_'))
+        .map((Directory d) => File('${d.path}/gen_snapshot'))
+        .where((File f) => f.existsSync())
+        .firstOrNull;
+    if (!runtime.existsSync() || genSnapshot == null) {
+      throw _BuildError('no dartaotruntime and gen_snapshot in $build');
+    }
+    final String snapshot = '${work.path}/libapp_$abi.so';
+    await _exec(genSnapshot.path, <String>[
+      '--snapshot_kind=app-aot-elf',
+      '--elf=$snapshot',
+      '--strip',
+      kernel,
+    ]);
+    return (runtime: runtime.path, program: snapshot);
   }
 
   /// The Termux VM for [abi], downloaded once into the cache.
@@ -275,7 +366,8 @@ final class _Build {
   }
 
   Future<String> _package(
-      String kernel, Map<String, String> runtimes, String dex) async {
+      Map<String, ({String runtime, String program})> binaries,
+      String dex) async {
     final String unsigned = '${work.path}/unsigned.apk';
     await _exec('$buildTools/aapt2', <String>[
       'link',
@@ -302,11 +394,15 @@ final class _Build {
     // entries are exactly classes.dex and lib/<abi>/lib*.so.
     final Directory stage = Directory('${work.path}/stage')..createSync();
     File(dex).copySync('${stage.path}/classes.dex');
-    for (final MapEntry<String, String> runtime in runtimes.entries) {
-      final Directory lib = Directory('${stage.path}/lib/${runtime.key}')
+    for (final MapEntry<String, ({String runtime, String program})> abi
+        in binaries.entries) {
+      final Directory lib = Directory('${stage.path}/lib/${abi.key}')
         ..createSync(recursive: true);
-      File(runtime.value).copySync('${lib.path}/libdartvm.so');
-      File(kernel).copySync('${lib.path}/libdartui_app.so');
+      // The host starts libdartaotruntime.so when it is there, else the VM.
+      final String runtimeName =
+          options.aot ? 'libdartaotruntime.so' : 'libdartvm.so';
+      File(abi.value.runtime).copySync('${lib.path}/$runtimeName');
+      File(abi.value.program).copySync('${lib.path}/libdartui_app.so');
     }
     await _exec('zip', <String>['-q', '-r', File(unsigned).absolute.path, '.'],
         workingDirectory: stage.path);

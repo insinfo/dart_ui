@@ -53,9 +53,10 @@ roda num emulador Android 15 arm64 um kernel compilado no macOS pelo Dart
 - **Cópia por quadro:** o host copia o buffer para um `Bitmap` e o `Bitmap` para
   a superfície. Não há GPU direta; para isso o processo precisaria da janela
   (`ANativeWindow`), que só o modelo embutido do ADR 0010 dá.
-- **JIT:** o app vai como kernel. Abre mais devagar que AOT e o código fica
-  legível dentro do APK. O AOT precisa de um `gen_snapshot` que gere código
-  Android, que o ADR 0010 traz.
+- **JIT ou AOT:** sem `--aot` o app vai como kernel, que abre mais devagar e
+  fica legível no APK. Com `--aot` (12/10/2026) vai como snapshot ELF com o
+  `dartaotruntime`, ambos do Dart SDK compilado do código-fonte (ADR 0010), e o
+  Termux sai do APK.
 - **Runtime de terceiros:** o repositório do Termux guarda só a versão mais
   nova de cada pacote. O build fixa 3.13.5 e guarda o `.deb` em cache; a troca
   por um runtime compilado do código-fonte do Dart SDK é parte do ADR 0010.

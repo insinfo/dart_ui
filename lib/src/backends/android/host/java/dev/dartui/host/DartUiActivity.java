@@ -124,7 +124,12 @@ public final class DartUiActivity extends Activity implements SurfaceHolder.Call
 
   private void startDart(String socketName) throws IOException {
     String libs = getApplicationInfo().nativeLibraryDir;
-    ProcessBuilder builder = new ProcessBuilder(libs + "/libdartvm.so", libs + "/libdartui_app.so");
+    // An AOT build ships the precompiled runtime and an ELF snapshot; a JIT
+    // build ships the VM and a kernel. Same file name for the program.
+    String runtime = new java.io.File(libs, "libdartaotruntime.so").exists()
+        ? libs + "/libdartaotruntime.so"
+        : libs + "/libdartvm.so";
+    ProcessBuilder builder = new ProcessBuilder(runtime, libs + "/libdartui_app.so");
     builder.environment().put("DART_UI_ANDROID_SOCKET", socketName);
     builder.environment().put("HOME", getFilesDir().getAbsolutePath());
     builder.environment().put("TMPDIR", getCacheDir().getAbsolutePath());

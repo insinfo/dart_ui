@@ -23,6 +23,23 @@ O kernel precisa vir de um Dart **3.13.5**, a versão da VM empacotada
 baixa o pacote `dart` do Termux para `build/android/runtime/`. `--abi x86_64`
 gera para emulador x86_64.
 
+### AOT
+
+`--aot` compila o app antes: kernel AOT pelo `gen_kernel_aot` do SDK 3.13.5 do
+host, snapshot ELF pelo `gen_snapshot` cruzado, e o APK leva o `dartaotruntime`
+no lugar da VM do Termux. Os dois binários vêm do Dart SDK compilado do
+código-fonte, na mesma tag:
+
+```
+dart run tool/mobile/build_dart_runtime.dart --checkout /caminho/dart-sdk-src \
+    --target android-arm64 --fetch      # --fetch só na primeira vez (~13 GB)
+export DART_UI_ANDROID_AOT_OUT=/caminho/dart-sdk-src/sdk/xcodebuild   # out/ no Linux
+dart run tool/android/build_apk.dart example/hello_world.dart --aot --run
+```
+
+Medido no emulador: o `hello_world` AOT tem APK de 3,1 MB (29,9 MB em JIT),
+abre em 1,4 s e responde ao toque.
+
 ### O que funciona (emulador Android 15 arm64)
 
 - janela em tela cheia, com tamanho e densidade da tela (`renderScale`);
@@ -36,7 +53,7 @@ gera para emulador x86_64.
 
 ### O que falta
 
-- AOT (hoje é JIT), GPU direta, áreas das barras do sistema (insets), AAB,
+- GPU direta, áreas das barras do sistema (insets), AAB,
   targetSdk 35 e alinhamento de 16 KB para o Google Play — ver ADR 0010.
 
 ### Peças
