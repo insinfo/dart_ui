@@ -95,14 +95,17 @@ jobs:
           OBJC_DEBUG_MISSING_POOLS: 'YES'
         run: dart test test --reporter=expanded
 
-      # The Direct3D 11 suites, by name, on the one leg that has the device.
+      # The Direct3D suites, by name, on the one leg that has the devices.
       # The run above reported 7271 tests on Windows on 12/10/2026 with no
       # line from test/rendering/gpu/d3d11 in the log, so whether the CPU
       # parity scenes - gradients included - ran there could not be read off
-      # it. This step makes that a line per test instead of an inference.
-      - name: Direct3D 11 parity (Windows)
+      # it. This step makes that a line per test instead of an inference; its
+      # first run showed the four Direct3D 11 gradient scenes passing.
+      - name: Direct3D 11 and 12 parity (Windows)
         if: matrix.platform == 'windows'
-        run: dart test test/rendering/gpu/d3d11 --reporter=expanded
+        run: >-
+          dart test test/rendering/gpu/d3d11 test/rendering/gpu/d3d12
+          --reporter=expanded
 
       # The framework must stay AOT-compilable on every platform from day one.
       # Finding out at release time that something in the core needs mirrors or
