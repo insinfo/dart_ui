@@ -332,6 +332,26 @@ Future<void> _applicationHalf(
     await _pump(app, const Duration(milliseconds: 300));
     record('INPUT_APP_BUTTON', presses == 1, 'presses=$presses');
 
+    // Accessibility, as VoiceOver reaches it: the host's view is a group of
+    // NSAccessibilityElements built from the framework's semantic tree. The
+    // first question from a client makes the host say A11Y_REQUESTED and the
+    // framework publish; the second sees the tree. Then the button is pressed
+    // through accessibilityPerformPress and must count, as a click does.
+    await native.debugAccessibilityDump();
+    await _pump(app, const Duration(milliseconds: 300));
+    final List<String> tree = await native.debugAccessibilityDump();
+    final bool hasButton =
+        tree.any((String line) => line.contains(':AXButton:${_b64('press')}'));
+    final bool hasField =
+        tree.any((String line) => line.contains(':AXTextField:'));
+    record('INPUT_APP_A11Y_TREE', hasButton && hasField,
+        'elements=${tree.length} ${tree.take(4).join(' | ')}');
+    final int pressesBefore = presses;
+    final bool pressed = await native.debugAccessibilityPress('press');
+    await _pump(app, const Duration(milliseconds: 200));
+    record('INPUT_APP_A11Y_PRESS', pressed && presses == pressesBefore + 1,
+        'pressed=$pressed presses=$presses');
+
     native
       ..synthesizeInput('SYNTH_MOUSE down 140 20 0 1 0')
       ..synthesizeInput('SYNTH_MOUSE up 140 20 0 1 0');

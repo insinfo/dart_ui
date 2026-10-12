@@ -33,9 +33,11 @@ import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart';
 import '../../platform/text_input.dart';
 import '../../platform/window_events.dart';
+import '../../semantics/accessibility.dart';
 import 'host_locator.dart';
 import 'host_process.dart';
 import 'host_supervisor.dart' show MacosHostStarter;
+import 'macos_accessibility.dart';
 import 'macos_backend_kind.dart';
 import 'macos_backend_selection.dart';
 import 'macos_clipboard.dart';
@@ -214,13 +216,30 @@ final class MacosWindowingBackend
     // For now, mark initialised and let createWindow perform the lazy setup
     // that MacosWindow already implements for appkitNativeHost.
     _initialized = true;
+    // The semantic tree reaches VoiceOver through the host's view; see
+    // `macos_accessibility.dart`. Installed here, as the Win32 backend
+    // installs UI Automation, and only for the backend that makes windows.
+    if (_activeKind == MacosBackendKind.appkitNativeHost) {
+      platformAccessibility = _accessibility;
+    }
   }
+
+  late final MacosAccessibilityHost _accessibility =
+      MacosAccessibilityHost((int handle) {
+    for (final MacosWindow window in _windows.whereType<MacosWindow>()) {
+      if (window.nativeHandle == handle) return window;
+    }
+    return null;
+  });
 
   @override
   Future<void> shutdown() async {
     if (!_initialized) return;
     _initialized = false;
     _quitRequested = true;
+    if (identical(platformAccessibility, _accessibility)) {
+      platformAccessibility = null;
+    }
 
     final Future<MacosSpareHost?>? spare = _spare;
     _spare = null;

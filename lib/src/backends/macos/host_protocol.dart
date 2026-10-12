@@ -302,6 +302,15 @@ abstract interface class HostMessageSink {
   /// `NSDragOperation` performed, 0 for none, -1 when no session could start.
   void onDragSourceEnd(int request, int operation);
 
+  /// `A11Y_REQUESTED`: an accessibility client asked the view for its tree.
+  void onAccessibilityRequested();
+
+  /// `A11Y_ACTION=<node>:<action>`: a client asked a node to act.
+  void onAccessibilityAction(int node, String action);
+
+  /// `A11Y_DUMP=<line>`: one element of a `SYNTH_A11Y_DUMP`, or `END`.
+  void onAccessibilityDump(String line);
+
   void onAck(HostAckKind kind, int value);
 
   /// `SURFACE_OK <id> <w>x<h>`, the deprecated lookup path. [slot] is -1 when
@@ -389,6 +398,15 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onDragSourceEnd(int request, int operation) {}
+
+  @override
+  void onAccessibilityRequested() {}
+
+  @override
+  void onAccessibilityAction(int node, String action) {}
+
+  @override
+  void onAccessibilityDump(String line) {}
 
   @override
   void onAck(HostAckKind kind, int value) {}
@@ -669,6 +687,23 @@ final class HostProtocolParser {
         if (_startsWith('TITLE_OK')) return _sink.onAck(HostAckKind.title, 0);
         if (_startsWith('TEARDOWN=PASS')) {
           return _sink.onAck(HostAckKind.teardown, 0);
+        }
+      case 0x41: // 'A'
+        if (_startsWith('A11Y_REQUESTED')) {
+          return _sink.onAccessibilityRequested();
+        }
+        if (_startsWith('A11Y_ACTION=')) {
+          _cursor = 12;
+          final int node = _readInt();
+          if (node == kHostFieldMissing ||
+              _cursor >= _length ||
+              _line[_cursor] != _kColon) {
+            return _sink.onError('BAD_A11Y_ACTION');
+          }
+          return _sink.onAccessibilityAction(node, _stringFrom(_cursor + 1));
+        }
+        if (_startsWith('A11Y_DUMP=')) {
+          return _sink.onAccessibilityDump(_stringFrom(10));
         }
       case 0x43: // 'C'
         if (_startsWith('COMPOSE=')) return _parseComposition(8);

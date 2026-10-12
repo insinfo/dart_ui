@@ -797,6 +797,16 @@ final class MacosHostProcess
       _sink.onDragSourceEnd(request, operation);
 
   @override
+  void onAccessibilityRequested() => _sink.onAccessibilityRequested();
+
+  @override
+  void onAccessibilityAction(int node, String action) =>
+      _sink.onAccessibilityAction(node, action);
+
+  @override
+  void onAccessibilityDump(String line) => _sink.onAccessibilityDump(line);
+
+  @override
   void onAck(HostAckKind kind, int value) {
     if (kind == HostAckKind.notMainThread) {
       // The one banner answer that is fatal on its own: a host that is not on

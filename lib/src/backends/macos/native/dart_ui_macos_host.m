@@ -55,9 +55,27 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 - (void)hostView:(DartUiHostView *)view
     dragSourceEnded:(long long)request
           operation:(NSDragOperation)operation;
+- (void)hostViewAccessibilityRequested:(DartUiHostView *)view;
+- (BOOL)hostView:(DartUiHostView *)view
+    accessibilityAction:(NSString *)action
+                     on:(long long)node;
 - (void)hostView:(DartUiHostView *)view
             drag:(NSString *)phase
             info:(id<NSDraggingInfo>)info;
+@end
+
+@class DartUiHostView;
+
+// One node of the framework's semantic tree, as AppKit's accessibility
+// clients see it. The frame is kept in the host view's points (top-left
+// origin, the view is flipped) and converted to the screen on demand, so a
+// window that moves does not need the tree republished.
+@interface DartUiA11yElement : NSAccessibilityElement
+@property(nonatomic, assign) long long nodeId;
+@property(nonatomic, weak) DartUiHostView *hostView;
+@property(nonatomic, assign) NSRect viewRect;
+@property(nonatomic, assign) unsigned long long actionBits;
+@property(nonatomic, strong) NSMutableArray *childElements;
 @end
 
 @interface DartUiHostView : NSView <NSTextInputClient, NSDraggingSource>
@@ -95,12 +113,99 @@ static const size_t kDartUiMaximumLineBytes = 8192;
                     mask:(NSDragOperation)mask
                    paths:(NSArray<NSString *> *)paths
                     text:(NSString *)text;
+// The published semantic tree: its top-level elements, and the tree being
+// received between A11Y_BEGIN and A11Y_END.
+@property(nonatomic, strong) NSArray *a11yRoots;
+@property(nonatomic, strong) NSMutableDictionary<NSNumber *, DartUiA11yElement *> *a11yPending;
+@property(nonatomic, strong) NSMutableArray *a11yPendingRoots;
+@property(nonatomic, assign) BOOL a11yRequested;
+- (BOOL)performA11yAction:(NSString *)action on:(long long)node;
+@end
+
+// SemanticsAction indices, as the framework numbers them (A11Y_NODE carries
+// them as bits).
+static const unsigned long long kA11yActionActivate = 1ull << 1;
+static const unsigned long long kA11yActionIncrement = 1ull << 3;
+static const unsigned long long kA11yActionDecrement = 1ull << 4;
+
+@implementation DartUiA11yElement
+
+- (NSRect)accessibilityFrame {
+  DartUiHostView *view = self.hostView;
+  if (view == nil || view.window == nil) return NSZeroRect;
+  return NSAccessibilityFrameInView(view, self.viewRect);
+}
+
+- (NSArray *)accessibilityChildren {
+  return self.childElements;
+}
+
+- (BOOL)accessibilityPerformPress {
+  if ((self.actionBits & kA11yActionActivate) == 0) return NO;
+  return [self.hostView performA11yAction:@"activate" on:self.nodeId];
+}
+
+- (BOOL)accessibilityPerformIncrement {
+  if ((self.actionBits & kA11yActionIncrement) == 0) return NO;
+  return [self.hostView performA11yAction:@"increment" on:self.nodeId];
+}
+
+- (BOOL)accessibilityPerformDecrement {
+  if ((self.actionBits & kA11yActionDecrement) == 0) return NO;
+  return [self.hostView performA11yAction:@"decrement" on:self.nodeId];
+}
+
 @end
 
 @implementation DartUiHostView
 
 - (BOOL)isFlipped {
   return YES;
+}
+
+// --- NSAccessibility ------------------------------------------------------
+//
+// The view is a group whose children are the framework's semantic tree. The
+// first time a client asks for them the framework is told (A11Y_REQUESTED),
+// and only from then on does it walk and publish the tree - a window nobody
+// reads costs nothing, as on Windows.
+
+- (BOOL)isAccessibilityElement {
+  return NO;
+}
+
+- (NSAccessibilityRole)accessibilityRole {
+  return NSAccessibilityGroupRole;
+}
+
+- (NSArray *)accessibilityChildren {
+  if (!self.a11yRequested) {
+    self.a11yRequested = YES;
+    [self.sink hostViewAccessibilityRequested:self];
+  }
+  return self.a11yRoots ?: @[];
+}
+
+- (id)accessibilityHitTest:(NSPoint)point {
+  NSArray *level = self.a11yRoots ?: @[];
+  id hit = self;
+  BOOL descended = YES;
+  while (descended) {
+    descended = NO;
+    for (DartUiA11yElement *element in [level reverseObjectEnumerator]) {
+      if (NSPointInRect(point, element.accessibilityFrame)) {
+        hit = element;
+        level = element.childElements ?: @[];
+        descended = YES;
+        break;
+      }
+    }
+  }
+  return hit;
+}
+
+- (BOOL)performA11yAction:(NSString *)action on:(long long)node {
+  return [self.sink hostView:self accessibilityAction:action on:node];
 }
 
 - (BOOL)acceptsFirstResponder {
@@ -893,6 +998,131 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
   fflush(stdout);
 }
 
+// A11Y_REQUESTED: an accessibility client asked this view for its children,
+// so the framework should start publishing the tree.
+- (void)hostViewAccessibilityRequested:(DartUiHostView *)view {
+  (void)view;
+  if (!self.protocolReady || self.terminating) return;
+  printf("A11Y_REQUESTED\n");
+  fflush(stdout);
+}
+
+// A11Y_ACTION=<node>:<action>: a client asked a node to act. Answered YES at
+// once - the framework decides; AppKit cannot wait for it.
+- (BOOL)hostView:(DartUiHostView *)view
+    accessibilityAction:(NSString *)action
+                     on:(long long)node {
+  (void)view;
+  if (!self.protocolReady || self.terminating) return NO;
+  printf("A11Y_ACTION=%lld:%s\n", node, action.UTF8String);
+  fflush(stdout);
+  return YES;
+}
+
+static NSAccessibilityRole DartUiA11yRole(NSString *role) {
+  static NSDictionary<NSString *, NSAccessibilityRole> *roles;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    roles = @{
+      @"button" : NSAccessibilityButtonRole,
+      @"toggleButton" : NSAccessibilityCheckBoxRole,
+      @"checkbox" : NSAccessibilityCheckBoxRole,
+      @"radio" : NSAccessibilityRadioButtonRole,
+      @"slider" : NSAccessibilitySliderRole,
+      @"progressBar" : NSAccessibilityProgressIndicatorRole,
+      @"textField" : NSAccessibilityTextFieldRole,
+      @"list" : NSAccessibilityListRole,
+      @"listItem" : NSAccessibilityGroupRole,
+      @"menu" : NSAccessibilityMenuRole,
+      @"menuItem" : NSAccessibilityMenuItemRole,
+      @"dialog" : NSAccessibilityGroupRole,
+      @"tooltip" : NSAccessibilityHelpTagRole,
+      @"scrollView" : NSAccessibilityScrollAreaRole,
+      @"image" : NSAccessibilityImageRole,
+      @"text" : NSAccessibilityStaticTextRole,
+    };
+  });
+  return roles[role] ?: NSAccessibilityGroupRole;
+}
+
+// A11Y_NODE <id> <parent> <role> <label|-> <value|-> <x> <y> <w> <h>
+//           <states> <actions>, between A11Y_BEGIN and A11Y_END; label and
+// value are base64 of UTF-8, the rectangle is in view points.
+- (void)accessibilityNode:(NSArray<NSString *> *)parts {
+  DartUiHostView *view = self.hostView;
+  if (parts.count != 12 || view.a11yPending == nil) {
+    [self printError:@"BAD_A11Y_NODE"];
+    return;
+  }
+  NSString *label = [self decodeSynthText:parts[4]];
+  NSString *value = [self decodeSynthText:parts[5]];
+  if (label == nil || value == nil) {
+    [self printError:@"BAD_A11Y_NODE"];
+    return;
+  }
+  DartUiA11yElement *element = [[DartUiA11yElement alloc] init];
+  element.nodeId = parts[1].longLongValue;
+  element.hostView = view;
+  element.viewRect = NSMakeRect(parts[6].doubleValue, parts[7].doubleValue,
+                                parts[8].doubleValue, parts[9].doubleValue);
+  element.actionBits = (unsigned long long)parts[11].longLongValue;
+  element.childElements = [NSMutableArray array];
+  NSString *roleName = parts[3];
+  NSAccessibilityRole role = DartUiA11yRole(roleName);
+  element.accessibilityRole = role;
+  if (label.length > 0) element.accessibilityLabel = label;
+  // SemanticsState indices: disabled 0, checked 1, mixed 2, selected 3,
+  // focused 4, expanded 5.
+  unsigned long long states = (unsigned long long)parts[10].longLongValue;
+  element.accessibilityEnabled = (states & (1ull << 0)) == 0;
+  if (value.length > 0) {
+    element.accessibilityValue = value;
+  } else if ([role isEqualToString:NSAccessibilityCheckBoxRole] ||
+             [role isEqualToString:NSAccessibilityRadioButtonRole]) {
+    element.accessibilityValue = (states & (1ull << 2))
+                                     ? @2
+                                     : ((states & (1ull << 1)) ? @1 : @0);
+  }
+  if (states & (1ull << 3)) element.accessibilitySelected = YES;
+  if (states & (1ull << 4)) element.accessibilityFocused = YES;
+  if (states & (1ull << 5)) element.accessibilityExpanded = YES;
+
+  long long parent = parts[2].longLongValue;
+  DartUiA11yElement *owner = parent == 0 ? nil : view.a11yPending[@(parent)];
+  if (owner == nil) {
+    element.accessibilityParent = view;
+    [view.a11yPendingRoots addObject:element];
+  } else {
+    element.accessibilityParent = owner;
+    [owner.childElements addObject:element];
+  }
+  view.a11yPending[@(element.nodeId)] = element;
+}
+
+// SYNTH_A11Y_DUMP: the view's accessibility tree as an assistive client reads
+// it, one A11Y_DUMP=<depth>:<role>:<label|->:<value|-> line per element and
+// A11Y_DUMP=END - asked through the same accessibilityChildren a client calls,
+// so it also exercises A11Y_REQUESTED.
+- (void)dumpAccessibility:(NSArray *)elements depth:(int)depth {
+  for (id element in elements) {
+    NSString *label = [element accessibilityLabel] ?: @"";
+    id raw = [element accessibilityValue];
+    NSString *value = raw == nil ? @"" : [NSString stringWithFormat:@"%@", raw];
+    NSData *labelBytes = [label dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *valueBytes = [value dataUsingEncoding:NSUTF8StringEncoding];
+    printf("A11Y_DUMP=%d:%s:%s:%s\n", depth,
+           [[element accessibilityRole] UTF8String] ?: "-",
+           labelBytes.length == 0
+               ? "-"
+               : [labelBytes base64EncodedStringWithOptions:0].UTF8String,
+           valueBytes.length == 0
+               ? "-"
+               : [valueBytes base64EncodedStringWithOptions:0].UTF8String);
+    [self dumpAccessibility:[element accessibilityChildren] ?: @[]
+                      depth:depth + 1];
+  }
+}
+
 // DRAG_SOURCE_END=<request>:<operation>: how a DRAG_START ended - the
 // NSDragOperation the destination performed, 0 for none, -1 when no session
 // could start at all.
@@ -1461,6 +1691,32 @@ static const NSUInteger kClipboardChunk = 6000;
     }
     return;
   }
+  if ([verb isEqualToString:@"SYNTH_A11Y_PRESS"] && parts.count == 2) {
+    // SYNTH_A11Y_PRESS <label-b64>: what VoiceOver's activate does to the
+    // first element with that label - accessibilityPerformPress.
+    NSString *label = [self decodeSynthText:parts[1]];
+    NSMutableArray *queue =
+        [NSMutableArray arrayWithArray:self.hostView.a11yRoots ?: @[]];
+    BOOL pressed = NO;
+    while (queue.count > 0 && !pressed) {
+      DartUiA11yElement *element = queue.firstObject;
+      [queue removeObjectAtIndex:0];
+      if ([element.accessibilityLabel isEqualToString:label]) {
+        pressed = [element accessibilityPerformPress];
+        break;
+      }
+      [queue addObjectsFromArray:element.childElements ?: @[]];
+    }
+    printf("A11Y_DUMP=PRESS:%s\n", pressed ? "YES" : "NO");
+    fflush(stdout);
+    return;
+  }
+  if ([verb isEqualToString:@"SYNTH_A11Y_DUMP"]) {
+    [self dumpAccessibility:[self.hostView accessibilityChildren] depth:0];
+    printf("A11Y_DUMP=END\n");
+    fflush(stdout);
+    return;
+  }
   if ([verb isEqualToString:@"SYNTH_DRAG"] && parts.count == 7) {
     // SYNTH_DRAG <enter|over|leave|drop> <x> <y> <mask> <paths-b64|-> <text-b64|->
     // paths are newline-separated, then base64. The pasteboard is kept across
@@ -1663,6 +1919,20 @@ static const NSUInteger kClipboardChunk = 6000;
                      parts[3].doubleValue, parts[4].doubleValue);
     } else {
       [self printError:@"BAD_IME_CARET"];
+    }
+  } else if ([command isEqualToString:@"A11Y_BEGIN"]) {
+    self.hostView.a11yPending = [NSMutableDictionary dictionary];
+    self.hostView.a11yPendingRoots = [NSMutableArray array];
+  } else if ([command hasPrefix:@"A11Y_NODE "]) {
+    [self accessibilityNode:[command componentsSeparatedByString:@" "]];
+  } else if ([command isEqualToString:@"A11Y_END"]) {
+    DartUiHostView *view = self.hostView;
+    if (view.a11yPendingRoots != nil) {
+      view.a11yRoots = [view.a11yPendingRoots copy];
+      view.a11yPending = nil;
+      view.a11yPendingRoots = nil;
+      NSAccessibilityPostNotification(view,
+                                      NSAccessibilityLayoutChangedNotification);
     }
   } else if ([command hasPrefix:@"DRAG_START "]) {
     // DRAG_START <request> <mask> <paths-b64|-> <text-b64|->, paths

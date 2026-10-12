@@ -19,6 +19,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
@@ -35,6 +36,7 @@ import 'host_process.dart';
 import 'host_protocol.dart';
 import 'host_supervisor.dart';
 import 'io_surface.dart';
+import 'macos_accessibility.dart';
 import 'macos_drag_drop.dart';
 import 'macos_input.dart';
 import 'macos_text_input.dart';
@@ -84,6 +86,8 @@ final class MacosWindow
         MacosSurfaceHost,
         MacosImeWindow,
         MacosDropWindow,
+        MacosAccessibilityWindow,
+        NativeHandleWindow,
         PresentPacer {
   MacosWindow({
     required NativeWindowId id,
@@ -234,6 +238,64 @@ final class MacosWindow
       throw ArgumentError.value(command, 'command', 'not an IME_ command');
     }
     return _supervisor?.send(command) ?? false;
+  }
+
+  /// Opaque, as [NativeHandleWindow] says: the window's id, because the
+  /// `NSWindow` is in the host process and its number changes when a host is
+  /// restarted. It keys the accessibility bridge, which is in this process.
+  @override
+  int get nativeHandle => _id.value;
+
+  @override
+  MacosWindowAccessibility? accessibility;
+
+  @override
+  bool sendAccessibilityCommand(String command) {
+    if (!command.startsWith('A11Y_')) {
+      throw ArgumentError.value(command, 'command', 'not an A11Y_ command');
+    }
+    return _supervisor?.send(command) ?? false;
+  }
+
+  /// The view's accessibility tree as a client reads it, one line per element
+  /// (`<depth>:<role>:<label>:<value>`, base64 text), for a probe.
+  Future<List<String>> debugAccessibilityDump() {
+    final Completer<List<String>> done = Completer<List<String>>();
+    _accessibilityDump = <String>[];
+    _accessibilityDumpDone = done;
+    synthesizeInput('SYNTH_A11Y_DUMP');
+    return done.future.timeout(const Duration(seconds: 5));
+  }
+
+  /// Presses the first element labelled [label] the way VoiceOver does
+  /// (`accessibilityPerformPress`), for a probe. Completes with whether the
+  /// host found and pressed one.
+  Future<bool> debugAccessibilityPress(String label) {
+    final Completer<bool> done = Completer<bool>();
+    _accessibilityPressDone = done;
+    synthesizeInput('SYNTH_A11Y_PRESS ${base64.encode(utf8.encode(label))}');
+    return done.future.timeout(const Duration(seconds: 5));
+  }
+
+  List<String>? _accessibilityDump;
+  Completer<List<String>>? _accessibilityDumpDone;
+  Completer<bool>? _accessibilityPressDone;
+
+  void _onAccessibilityDump(String line) {
+    if (line.startsWith('PRESS:')) {
+      _accessibilityPressDone?.complete(line == 'PRESS:YES');
+      _accessibilityPressDone = null;
+      return;
+    }
+    final List<String>? lines = _accessibilityDump;
+    if (lines == null) return;
+    if (line == 'END') {
+      _accessibilityDump = null;
+      _accessibilityDumpDone?.complete(lines);
+      _accessibilityDumpDone = null;
+      return;
+    }
+    lines.add(line);
   }
 
   /// The drop target registered on this window, if any. See
@@ -972,6 +1034,16 @@ final class _HostSink with HostMessageSinkAdapter {
   @override
   void onDragSourceEnd(int request, int operation) =>
       macosDragSourceEnded(request, operation);
+
+  @override
+  void onAccessibilityRequested() => _window.accessibility?.onRequested();
+
+  @override
+  void onAccessibilityAction(int node, String action) =>
+      _window.accessibility?.onAction(node, action);
+
+  @override
+  void onAccessibilityDump(String line) => _window._onAccessibilityDump(line);
 }
 
 /// The default factory: real `IOSurface`s.

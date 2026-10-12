@@ -3655,7 +3655,14 @@ WindowServer a cada mudança no backend.
   então nem barra de menus do app nem menu de contexto do sistema;
 - [~] file dialogs — `NSOpenPanel`/`NSSavePanel` por `osascript`
   (`file_picker_platform_io.dart`), fora do host e sem janela dona;
-- [ ] acessibilidade — o host não expõe nada a `NSAccessibility`;
+- [x] acessibilidade — desde 12/10/2026 a view do host é um grupo de
+  `NSAccessibilityElement`s montado da árvore semântica do framework
+  (`macos_accessibility.dart`); nada é percorrido até um cliente perguntar
+  (`A11Y_REQUESTED`), e pressionar, incrementar e decrementar voltam como
+  `A11Y_ACTION`. Lido de fora por `AXUIElement` - como o VoiceOver lê - na
+  galeria: botões, caixas, rádios, slider, progresso, campos e lista com os
+  rótulos; na sonda de input, `INPUT_APP_A11Y_TREE` e `INPUT_APP_A11Y_PRESS`
+  (o botão conta o clique). Falta validar com o VoiceOver falando;
 - [ ] x64 — nenhum runner Intel;
 - [x] arm64 — o job `AOT (macos-arm64)` e todo o resto rodam em Apple Silicon;
 - [ ] assinatura/notarização documentadas.
