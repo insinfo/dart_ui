@@ -7,6 +7,7 @@ on:
       - 'lib/src/backends/macos/**'
       - 'tool/macos_popup_probe.dart'
       - 'tool/macos_backend_smoke.dart'
+      - 'tool/popup_window_smoke.dart'
       - '.github/workflows/macos_popup_probe.yml'
 
 concurrency:
@@ -33,3 +34,14 @@ jobs:
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/macos_backend_smoke.dart
+
+      # The probe above proves the NSPanel exists; this proves an Application
+      # puts it in the right place. Until 12/10/2026 the smoke was Windows-only,
+      # and the first macOS run found the AppKit host answering positions with
+      # the window *frame* instead of the content rect - every popup anchored
+      # in a titled window landed one title bar too high - and never reporting
+      # a move made while the window was hidden.
+      - name: Popup window smoke through Application
+        env:
+          DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+        run: dart run tool/popup_window_smoke.dart

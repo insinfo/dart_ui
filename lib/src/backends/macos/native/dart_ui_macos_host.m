@@ -170,15 +170,29 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   return primary == nil ? 0.0 : NSMaxY(primary.frame);
 }
 
-- (NSRect)appKitFrameForTopLeftX:(CGFloat)x
-                               y:(CGFloat)y
-                           width:(CGFloat)width
-                          height:(CGFloat)height {
-  return NSMakeRect(x, [self desktopTop] - y - height, width, height);
+// Positions are the *content* rect's top-left, in top-left-origin screen
+// points, because that is what NativeWindow means on every other backend:
+// Win32's setBounds places the client area and its clientToScreen answers
+// from the client origin. Answering with the frame instead put every popup
+// anchored in a titled window one title bar (32 pt on macOS 27) too high,
+// since the anchor is client-relative and the origin it was added to was not.
+- (NSRect)frameRectForContentTopLeftX:(CGFloat)x
+                                    y:(CGFloat)y
+                                width:(CGFloat)width
+                               height:(CGFloat)height {
+  NSRect content = NSMakeRect(x, [self desktopTop] - y - height, width, height);
+  return [self.window frameRectForContentRect:content];
 }
 
-- (NSPoint)topLeftPositionForWindowFrame:(NSRect)frame {
-  return NSMakePoint(NSMinX(frame), [self desktopTop] - NSMaxY(frame));
+- (NSPoint)contentTopLeftPosition {
+  NSRect content = [self.window contentRectForFrameRect:self.window.frame];
+  return NSMakePoint(NSMinX(content), [self desktopTop] - NSMaxY(content));
+}
+
+- (void)reportMoved {
+  NSPoint point = [self contentTopLeftPosition];
+  printf("WINDOW=MOVED:%.4f:%.4f\n", point.x, point.y);
+  fflush(stdout);
 }
 
 - (double)renderScale {
@@ -250,11 +264,11 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   self.window.acceptsMouseMovedEvents = YES;
 
   if (self.hasInitialX && self.hasInitialY) {
-    NSRect outer = self.window.frame;
-    NSRect requested = [self appKitFrameForTopLeftX:self.initialX
-                                                 y:self.initialY
-                                             width:NSWidth(outer)
-                                            height:NSHeight(outer)];
+    NSRect requested =
+        [self frameRectForContentTopLeftX:self.initialX
+                                        y:self.initialY
+                                    width:self.initialWidth
+                                   height:self.initialHeight];
     [self.window setFrameOrigin:requested.origin];
   } else {
     [self.window center];
@@ -289,7 +303,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 
 - (void)reportInitialWindowState {
   NSSize size = self.hostView.bounds.size;
-  NSPoint position = [self topLeftPositionForWindowFrame:self.window.frame];
+  NSPoint position = [self contentTopLeftPosition];
   double scale = [self renderScale];
   printf("WINDOW=RESIZED:%.4f:%.4f:%.4f\n", size.width, size.height, scale);
   printf("WINDOW=MOVED:%.4f:%.4f\n", position.x, position.y);
@@ -708,12 +722,16 @@ static const size_t kDartUiMaximumLineBytes = 8192;
     [self printError:@"BAD_BOUNDS"];
     return;
   }
-  NSRect content = [self.window contentRectForFrameRect:self.window.frame];
-  content.size = NSMakeSize(width, height);
-  NSRect outer = [self.window frameRectForContentRect:content];
-  outer.origin = [self appKitFrameForTopLeftX:x y:y width:NSWidth(outer)
-                                      height:NSHeight(outer)].origin;
+  NSRect outer =
+      [self frameRectForContentTopLeftX:x y:y width:width height:height];
   [self.window setFrame:outer display:YES];
+  // Reported here and not left to windowDidMove:, which AppKit does not send
+  // for a window that is not on screen. Application.openPopup places the
+  // popup while it is still hidden - it has to, or it would flash at the
+  // wrong place - so without this the Dart side kept the position the hidden
+  // window was created at (0,31 measured) while the panel itself sat exactly
+  // where it was asked to be.
+  [self reportMoved];
 }
 
 - (void)requestRedraw:(NSString *)command {
@@ -803,9 +821,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 - (void)windowDidMove:(NSNotification *)notification {
   (void)notification;
   if (!self.protocolReady || self.terminating) return;
-  NSPoint point = [self topLeftPositionForWindowFrame:self.window.frame];
-  printf("WINDOW=MOVED:%.4f:%.4f\n", point.x, point.y);
-  fflush(stdout);
+  [self reportMoved];
 }
 
 - (void)windowDidChangeBackingProperties:(NSNotification *)notification {

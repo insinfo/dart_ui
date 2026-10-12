@@ -76,10 +76,14 @@ enum HostWindowEventKind {
   /// scale factor of the screen the window is currently on.
   resized,
 
-  /// `WINDOW=MOVED:<x>:<y>` in top-left-origin screen points. The flip out of
-  /// AppKit's bottom-left origin happens in the host, on purpose: it needs the
-  /// screen frame to do it, and shipping that number to Dart just to flip it
-  /// here would put a second copy of the convention in a second language.
+  /// `WINDOW=MOVED:<x>:<y>`: the top-left of the **content** rect, in
+  /// top-left-origin screen points - the client origin, as `clientToScreen`
+  /// means it on every backend, not the frame with its title bar. The flip
+  /// out of AppKit's bottom-left origin happens in the host, on purpose: it
+  /// needs the screen frame to do it, and shipping that number to Dart just
+  /// to flip it here would put a second copy of the convention in a second
+  /// language. Also sent after every `SET_BOUNDS`, because AppKit does not
+  /// notify a move of a window that is not on screen.
   moved,
 
   /// `WINDOW=SCALE:<renderScale>:<desktopScale>`.

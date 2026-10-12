@@ -20,8 +20,10 @@
 ///   * there is no swap chain, so a frame count says nothing about pixels,
 ///     and `WS_EX_NOACTIVATE` has nothing to refuse.
 ///
-/// So this runs on Windows, opens a real window on a real GPU path, and
-/// measures. Each check prints one `KEY=VALUE` line with `PASS`/`FAIL` and the
+/// So this runs on Windows and macOS, opens a real window on the path the
+/// platform selects, and measures. On macOS that needs the AppKit host
+/// (`DART_UI_MACOS_HOST`), because it is the only strategy that reports
+/// [Capability.nativePopups]. Each check prints one `KEY=VALUE` line with `PASS`/`FAIL` and the
 /// numbers that justify it, because a `PASS` with no number is just a word.
 ///
 /// ```
@@ -60,7 +62,7 @@ const int _timedCycles = 20;
 const Duration _frameWindow = Duration(seconds: 2);
 
 Future<void> main(List<String> arguments) async {
-  if (!Platform.isWindows) {
+  if (!Platform.isWindows && !Platform.isMacOS) {
     stderr.writeln(
       'POPUP_WINDOW_SMOKE=SKIP platform=${Platform.operatingSystem}',
     );
@@ -246,6 +248,15 @@ Future<double> _checkEscapesDeviceFramesActivation(
   );
 
   final int errorsBefore = errors.length;
+  // Read before the popup exists, because "the owner is still active" only
+  // means something if it was active to begin with. On macOS 14 and later a
+  // process started by another background process - a terminal, an editor,
+  // this repository's own tooling - is refused activation outright: measured
+  // on macOS 27.2, the AppKit host's window stayed non-key even when created
+  // visible with `activateIgnoringOtherApps:`. Holding the owner to a state
+  // the system never granted would fail this check for a reason that has
+  // nothing to do with popups.
+  final bool ownerActiveBefore = owner.isActive;
   final Stopwatch cold = Stopwatch()..start();
   final ApplicationWindow popup = await app.openPopup(
     owner: owner,
@@ -368,10 +379,15 @@ Future<double> _checkEscapesDeviceFramesActivation(
   final bool ownerActive = owner.isActive;
   final bool popupActive = popup.isActive;
   final bool keyboardOnOwner = app.keyboardFocusWindow == owner.id;
+  // When the system never activated the owner, what is left to prove is the
+  // half that belongs to the popup: it did not take activation, and keys
+  // still go to the owner. `ownerActiveBefore=false` in the line says that the
+  // weaker check is the one that ran.
   record(
     'POPUP_NOACTIVATE',
-    ownerActive && !popupActive && keyboardOnOwner,
-    'ownerActive=$ownerActive popupActive=$popupActive '
+    (ownerActive || !ownerActiveBefore) && !popupActive && keyboardOnOwner,
+    'ownerActiveBefore=$ownerActiveBefore '
+        'ownerActive=$ownerActive popupActive=$popupActive '
         'keyboardFocus=${app.keyboardFocusWindow?.value} '
         'owner=${owner.id.value} popup=${popup.id.value} '
         'ownerFocusManagerActive=${owner.buildOwner.focusManager.isWindowActive} '
