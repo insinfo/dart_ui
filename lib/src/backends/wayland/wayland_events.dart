@@ -28,6 +28,7 @@ import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
 import '../../platform/compose_sequences.dart';
 import '../../platform/input_events.dart';
+import '../../platform/keysyms.dart';
 import '../../platform/window_events.dart';
 import 'wayland_keymap.dart';
 import 'wayland_protocol.dart';
@@ -459,23 +460,29 @@ abstract final class WaylandEventTranslator {
     final timestamp = Duration(milliseconds: raw.timeMilliseconds);
     final modifierSet = _modifierSet(modifiers);
     final pressed = raw.state == wlKeyboardKeyStatePressed;
+    // The Windows VK the widgets compare against, not the keysym: see
+    // [keysymToVirtualKey], which `x11_events.dart` calls too.
+    final logicalKey = keysymToVirtualKey(keysym, xkbKeycode: xkbKeycode);
+    final location = keysymLocation(keysym);
     emit(pressed
         ? KeyDownEvent(
             windowId: windowId,
             generation: generation,
             timestamp: timestamp,
             physicalKey: xkbKeycode,
-            logicalKey: keysym,
+            logicalKey: logicalKey,
             modifiers: modifierSet,
             isRepeat: raw.repeat,
+            location: location,
           )
         : KeyUpEvent(
             windowId: windowId,
             generation: generation,
             timestamp: timestamp,
             physicalKey: xkbKeycode,
-            logicalKey: keysym,
+            logicalKey: logicalKey,
             modifiers: modifierSet,
+            location: location,
           ));
     if (!pressed || modifiers.control || modifiers.alt || modifiers.meta) {
       return;

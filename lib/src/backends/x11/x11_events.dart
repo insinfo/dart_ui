@@ -580,11 +580,13 @@ abstract final class X11EventTranslator {
   ///   * **A keysym that resolves to nothing still emits its [KeyEvent]**, with
   ///     the physical keycode in [KeyEvent.physicalKey], and emits no text.
   ///
-  /// [KeyEvent.location] is left [KeyLocation.standard] deliberately: the
-  /// keysym in [KeyEvent.logicalKey] already distinguishes `Shift_L` from
-  /// `Shift_R` and `KP_1` from `1`, and inventing a second encoding of the same
-  /// fact here - which `wayland_events.dart` does not - would be the first
-  /// place the two backends disagree about the same keyboard.
+  /// [KeyEvent.logicalKey] is the Windows virtual-key code the widgets compare
+  /// against, from [keysymToVirtualKey] - the same function
+  /// `wayland_events.dart` calls, so the two backends cannot disagree about
+  /// the same keyboard. It used to be the keysym itself, which no widget
+  /// matched: Tab, the arrows and Ctrl+C did nothing in a text field on X11.
+  /// The side and the keypad, which the keysym said and a VK does not, travel
+  /// in [KeyEvent.location] instead, as on Windows.
   static void translateKey(
     X11RawEvent raw, {
     required NativeWindowId windowId,
@@ -600,23 +602,27 @@ abstract final class X11EventTranslator {
     final int keysym = keyboard.keysymFor(keycode, state);
     final Duration timestamp = Duration(milliseconds: raw.timestamp);
     final Set<KeyModifier> modifiers = keyboard.modifierSetOf(state);
+    final int logicalKey = keysymToVirtualKey(keysym, xkbKeycode: keycode);
+    final KeyLocation location = keysymLocation(keysym);
     emit(pressed
         ? KeyDownEvent(
             windowId: windowId,
             generation: generation,
             timestamp: timestamp,
             physicalKey: keycode,
-            logicalKey: keysym,
+            logicalKey: logicalKey,
             modifiers: modifiers,
             isRepeat: raw.repeat,
+            location: location,
           )
         : KeyUpEvent(
             windowId: windowId,
             generation: generation,
             timestamp: timestamp,
             physicalKey: keycode,
-            logicalKey: keysym,
+            logicalKey: logicalKey,
             modifiers: modifiers,
+            location: location,
           ));
     if (!pressed) return;
     // AltGr is not Alt even when the layout put them on the same modifier bit:

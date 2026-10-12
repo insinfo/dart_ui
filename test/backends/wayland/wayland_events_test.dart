@@ -334,7 +334,8 @@ void main() {
       expect(emitted, hasLength(2));
       final down = emitted[0] as KeyDownEvent;
       expect(down.physicalKey, 38);
-      expect(down.logicalKey, 0x61);
+      expect(down.logicalKey, 0x41,
+          reason: 'the VK the widgets compare against, not the keysym `a`');
       final text = emitted[1] as TextInputEvent;
       expect(text.text, 'a');
     });
@@ -369,7 +370,7 @@ void main() {
       key(28); // KEY_ENTER: Return is a control, not content.
 
       expect(emitted.single, isA<KeyDownEvent>());
-      expect((emitted.single as KeyDownEvent).logicalKey, xkbKeysymReturn);
+      expect((emitted.single as KeyDownEvent).logicalKey, 0x0D);
     });
 
     test('a missing keymap still reports the hardware key', () {
@@ -390,7 +391,8 @@ void main() {
       );
 
       expect(emitted.single, isA<KeyDownEvent>());
-      expect((emitted.single as KeyDownEvent).logicalKey, xkbNoSymbol);
+      // No keymap, so no keysym - the position still names the key.
+      expect((emitted.single as KeyDownEvent).logicalKey, 0x41);
     });
   });
 

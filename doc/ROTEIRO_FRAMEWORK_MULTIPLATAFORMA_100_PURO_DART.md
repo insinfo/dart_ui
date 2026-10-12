@@ -10748,7 +10748,19 @@ proporção ele aparece nos outros caminhos, não.
   roda desde 07/09/2026 sob **llvmpipe**, nunca sobre GPU, e a malha 3D só
   **linka** por lá — nenhum triângulo foi desenhado no Linux. O dono `INCR`
   deixou esta lista em 07/09/2026: um documento longo agora sai da
-  aplicação em vez de ser recusado;
+  aplicação em vez de ser recusado. **Até 12/10/2026 as teclas não chegavam
+  aos widgets**, nem no X11 nem no Wayland: os dois backends punham o keysym
+  em `KeyEvent.logicalKey`, e os widgets comparam com os VKs do Windows que
+  `focus.dart` declara como contrato - Tab era `0xff09`, as setas
+  `0xff51`-`0xff54` e Ctrl+C `0x63`, então um `TextField` no Linux recebia
+  texto e nada mais. Cada metade tinha teste e o par não funcionava.
+  `keysymToVirtualKey` (`platform/keysyms.dart`) é agora a regra única dos
+  dois: letra pelo keysym, teclas que não são caractere por tabela, e um
+  keysym sem VK (cirílico, `ç`) pelo VK da tecla americana na mesma posição
+  física, de modo que Ctrl+C copia num layout russo. Lado e teclado numérico
+  passam a ir em `location`. `x11_text_field_keys_test.dart` compõe as duas
+  metades - bytes de um `xcb_key_press_event_t` até um `TextField` - e fica
+  vermelho com a tradução antiga;
 - **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
   primária, sem CSD quando o compositor recusa SSD, sem movimento/resize

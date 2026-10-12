@@ -868,7 +868,8 @@ void main() {
       expect(down.windowId, const NativeWindowId(7));
       expect(down.generation, 3);
       expect(down.physicalKey, 38);
-      expect(down.logicalKey, 0x61);
+      expect(down.logicalKey, 0x41,
+          reason: 'the VK the widgets compare against, not the keysym `a`');
       expect(down.timestamp, const Duration(milliseconds: 4321));
       expect(down.modifiers, isEmpty);
       expect(down.isRepeat, isFalse);
@@ -916,7 +917,8 @@ void main() {
           fromWire(type: xcbKeyPress, keycode: 38, state: x11ModControl);
 
       expect(events.single, isA<KeyDownEvent>());
-      expect((events.single as KeyDownEvent).logicalKey, 0x61);
+      expect((events.single as KeyDownEvent).logicalKey, 0x41,
+          reason: 'Ctrl+A reaches a widget as the VK for A');
       expect(
         (events.single as KeyDownEvent).modifiers,
         <KeyModifier>{KeyModifier.control},
@@ -937,7 +939,9 @@ void main() {
           fromWire(type: xcbKeyPress, keycode: 46, state: x11ModMod5);
 
       expect(events.length, 1); // dead_acute has no text of its own
-      expect((events.single as KeyDownEvent).logicalKey, 0xfe51);
+      // A dead key has no VK of its own; like Windows, it reports the VK of
+      // the key it sits on (keycode 46 is evdev 38, the US L).
+      expect((events.single as KeyDownEvent).logicalKey, 0x4C);
     });
 
     test('AltGr reaches the second group text where the layer has some', () {
@@ -986,14 +990,18 @@ void main() {
       final events = fromWire(type: xcbKeyPress, keycode: 54, state: 0);
 
       expect(events.single, isA<KeyDownEvent>());
-      expect((events.single as KeyDownEvent).logicalKey, keysymReturn);
+      expect((events.single as KeyDownEvent).logicalKey, 0x0D,
+          reason: 'Return is VK_RETURN, what a button and a dialog match');
     });
 
     test('a modifier key press produces no text', () {
       final events = fromWire(type: xcbKeyPress, keycode: 50, state: 0);
 
       expect(events.single, isA<KeyDownEvent>());
-      expect((events.single as KeyDownEvent).logicalKey, keysymShiftL);
+      final KeyDownEvent shift = events.single as KeyDownEvent;
+      expect(shift.logicalKey, 0x10);
+      expect(shift.location, KeyLocation.left,
+          reason: 'Shift_L said the side, so the location has to');
     });
 
     test('the repeat flag the filter set is carried onto the KeyDownEvent', () {
@@ -1030,7 +1038,7 @@ void main() {
         );
 
         expect(events.single, isA<KeyDownEvent>());
-        expect((events.single as KeyDownEvent).logicalKey, 0xfe51);
+        expect((events.single as KeyDownEvent).logicalKey, 0x4C);
       });
 
       test('dead_acute then a is two keysyms and one character', () {

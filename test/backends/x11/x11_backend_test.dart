@@ -858,7 +858,7 @@ void main() {
       backend.pumpEvents();
       await Future<void>.delayed(Duration.zero);
 
-      expect(events.whereType<KeyDownEvent>().single.logicalKey, 0x61);
+      expect(events.whereType<KeyDownEvent>().single.logicalKey, 0x41);
       expect(events.whereType<TextInputEvent>().single.text, 'a');
       await subscription.cancel();
     });
@@ -885,7 +885,9 @@ void main() {
 
       final KeyDownEvent down = events.whereType<KeyDownEvent>().single;
       expect(down.physicalKey, 38);
-      expect(down.logicalKey, keysymNoSymbol);
+      // No map, so no keysym - but the key's position is still known, and
+      // keycode 38 is where the US A is.
+      expect(down.logicalKey, 0x41);
       expect(events.whereType<TextInputEvent>(), isEmpty);
       await subscription.cancel();
     });
