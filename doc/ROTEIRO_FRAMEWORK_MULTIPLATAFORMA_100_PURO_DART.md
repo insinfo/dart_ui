@@ -9811,10 +9811,27 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   `Accessory`, e o backend `appkitNativeHost` passou a anunciar
   `Capability.nativePopups`. `tool/macos_popup_probe.dart` num Mac mini M4 com
   macOS 27.2: `MACOS_POPUP=PASS popup=NSPanel/128/101/key=false/policy=1
-  tooltip=NSPanel/128/101/key=false/ignoresMouse=true/policy=1`. O que segue
-  sem prova no macOS é o que o `tool/popup_window_smoke.dart` mede no Windows
-  (o popup saindo da dona, o mesmo dispositivo, a dona continuando ativa): o
-  smoke ainda sai com `SKIP` fora do Windows. Os outros dois backends macOS
+  tooltip=NSPanel/128/101/key=false/ignoresMouse=true/policy=1`. No mesmo dia
+  o `tool/popup_window_smoke.dart` passou a rodar no macOS (e no workflow
+  `macos_popup_probe`), e a primeira execução achou dois defeitos de posição
+  no host que o probe não via, porque ele confere classe e nível, não lugar:
+  o host respondia com o canto do **frame** em vez do **conteúdo** (todo popup
+  ancorado numa janela com título subia 32 pt), e um `SET_BOUNDS` em janela
+  oculta nunca virava `MOVED` (o Dart guardava `0,31` com o painel em
+  `676,494`, conferido pelo `CGWindowList`). Corrigidos em `e66befc`:
+  `POPUP_ESCAPES=PASS ... outsideBy=r=196.0,b=184.0`, os mesmos números do
+  HWND, e `POPUP_WINDOW_SMOKE=PASS` — aqui e no runner `macos-14` (run
+  `38223899443`, mesmos números de posição). Dois números ficam registrados e
+  abertos. **Abrir um menu custa ~66 ms** de mediana aqui e 53,5 ms no runner,
+  contra 7,29 ms no Windows, e quase tudo é a janela (`windowMedian=63.86`),
+  porque cada janela é um processo host novo: medido sozinho, o host leva
+  ~55 ms do `exec` ao `applicationDidFinishLaunching:`, e o handshake depois
+  disso custa menos de 0,1 ms. Um host reserva já lançado é a próxima coisa a
+  medir. E **a ativação da dona não é provada no macOS**: um
+  processo iniciado por outro em segundo plano tem a ativação recusada pelo
+  sistema (a janela não vira key nem criada visível), então o smoke lê o
+  estado antes de abrir o popup e, nesse caso, prova só a metade do popup e
+  imprime `ownerActiveBefore=false`. Os outros dois backends macOS
   (`skylight`, `appkitSignal`) não criam janela pelo framework e não anunciam
   a capacidade;
 - **X11 e Wayland têm o código e nunca o executaram.** Os dois smokes
