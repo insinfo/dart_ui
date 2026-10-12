@@ -35,6 +35,7 @@ import 'host_process.dart';
 import 'macos_backend_kind.dart';
 import 'macos_backend_selection.dart';
 import 'macos_window.dart';
+import 'spare_host.dart';
 
 /// Creates and owns macOS windows through the selected backend strategy.
 final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
@@ -51,6 +52,14 @@ final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
   bool _initialized = false;
   bool _quitRequested = false; // ignore: prefer_final_fields
   int _nextWindowId = 1;
+
+  /// A hidden popup host waiting to be adopted; see `spare_host.dart`.
+  ///
+  /// A future rather than a host because the launch takes ~55 ms and a popup
+  /// that arrives during it should wait for the spare already on its way, not
+  /// start a second launch beside it. Null until the first popup opens: an
+  /// application that never shows a menu never pays for an idle process.
+  Future<MacosSpareHost?>? _spare;
 
   /// Which backend was selected, available after [probe].
   MacosBackendKind? get activeKind => _activeKind;
@@ -140,6 +149,10 @@ final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
     _initialized = false;
     _quitRequested = true;
 
+    final Future<MacosSpareHost?>? spare = _spare;
+    _spare = null;
+    await (await spare)?.dispose();
+
     final windows = List<NativeWindow>.of(_windows);
     for (final window in windows) {
       window.dispose();
@@ -178,6 +191,26 @@ final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
       );
     }
 
+    final spawnOptions = MacosHostSpawnOptions(
+      binaryPath: binaryPath,
+      logicalWidth: options.size.width,
+      logicalHeight: options.size.height,
+      title: options.title,
+      x: options.position?.dx,
+      y: options.position?.dy,
+      visible: options.visible,
+      decorated: options.decorated,
+      resizable: options.resizable,
+      kind: MacosHostWindowKind.values.byName(options.kind.name),
+    );
+    final MacosSpareHost? spare = await _takeSpare(spawnOptions);
+    if (spawnOptions.kind == MacosHostWindowKind.popup) {
+      // Launched now, while this popup is being built, so that the next one -
+      // the submenu a user is about to hover into, or the same menu reopened -
+      // finds it ready.
+      _spare = MacosSpareHost.launch(binaryPath: binaryPath);
+    }
+
     late final MacosWindow window;
     window = MacosWindow(
       id: NativeWindowId(_nextWindowId++),
@@ -191,21 +224,9 @@ final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
       // private instead of exposing them system-wide for an unimplemented ID
       // lookup fallback.
       globalSurfaces: false,
+      hostStarter: spare == null ? null : adoptingStarter(spare),
     );
-    final opened = await window.open(
-      spawnOptions: MacosHostSpawnOptions(
-        binaryPath: binaryPath,
-        logicalWidth: options.size.width,
-        logicalHeight: options.size.height,
-        title: options.title,
-        x: options.position?.dx,
-        y: options.position?.dy,
-        visible: options.visible,
-        decorated: options.decorated,
-        resizable: options.resizable,
-        kind: MacosHostWindowKind.values.byName(options.kind.name),
-      ),
-    );
+    final opened = await window.open(spawnOptions: spawnOptions);
     if (!opened) {
       window.dispose();
       await window.teardown;
@@ -258,6 +279,22 @@ final class MacosWindowingBackend implements WindowingBackend, ScreenProvider {
   /// Diagnostics collected during probe and initialisation.
   List<BackendDiagnostic> get diagnostics =>
       List<BackendDiagnostic>.unmodifiable(_diagnostics);
+
+  /// The spare, if there is one that can become a window like [options].
+  ///
+  /// Taken whether or not it matches: a spare that does not fit this request
+  /// is closed here, so the backend never holds two idle processes.
+  Future<MacosSpareHost?> _takeSpare(MacosHostSpawnOptions options) async {
+    if (options.kind != MacosHostWindowKind.popup) return null;
+    final Future<MacosSpareHost?>? pending = _spare;
+    if (pending == null) return null;
+    _spare = null;
+    final MacosSpareHost? spare = await pending;
+    if (spare == null) return null;
+    if (spare.isAvailable && spare.matches(options)) return spare;
+    await spare.dispose();
+    return null;
+  }
 
   void _requireInitialized(String operation) {
     if (!_initialized) {

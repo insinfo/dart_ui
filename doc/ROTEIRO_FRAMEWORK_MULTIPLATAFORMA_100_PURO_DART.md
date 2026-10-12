@@ -9821,13 +9821,21 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   `676,494`, conferido pelo `CGWindowList`). Corrigidos em `e66befc`:
   `POPUP_ESCAPES=PASS ... outsideBy=r=196.0,b=184.0`, os mesmos números do
   HWND, e `POPUP_WINDOW_SMOKE=PASS` — aqui e no runner `macos-14` (run
-  `38223899443`, mesmos números de posição). Dois números ficam registrados e
-  abertos. **Abrir um menu custa ~66 ms** de mediana aqui e 53,5 ms no runner,
+  `38223899443`, mesmos números de posição). Dois pontos ficaram registrados.
+  **Abrir um menu custava ~66 ms** de mediana aqui e 53,5 ms no runner,
   contra 7,29 ms no Windows, e quase tudo é a janela (`windowMedian=63.86`),
   porque cada janela é um processo host novo: medido sozinho, o host leva
   ~55 ms do `exec` ao `applicationDidFinishLaunching:`, e o handshake depois
-  disso custa menos de 0,1 ms. Um host reserva já lançado é a próxima coisa a
-  medir. E **a ativação da dona não é provada no macOS**: um
+  disso custa menos de 0,1 ms. **Fechado no mesmo dia** por um host reserva
+  (`lib/src/backends/macos/spare_host.dart`): depois do primeiro popup, o
+  backend mantém um host de popup oculto já lançado, e o próximo popup o
+  adota em vez de esperar o AppKit subir. Reabrir um menu caiu de **66 ms
+  para 6,6 ms** de mediana nesta máquina (`reopenMedian=6.58`, pior caso
+  7,27), no mesmo patamar dos 7,29 ms do Windows. O primeiro popup continua
+  frio (~76 ms, um pouco acima dos ~70 de antes, porque a reserva sobe em
+  paralelo com ele), e um app que nunca abre menu nunca paga o processo
+  ocioso. Tooltip não tem reserva: o tipo é fixo no lançamento e o tooltip já
+  espera o atraso de hover. O outro continua aberto: **a ativação da dona não é provada no macOS**: um
   processo iniciado por outro em segundo plano tem a ativação recusada pelo
   sistema (a janela não vira key nem criada visível), então o smoke lê o
   estado antes de abrir o popup e, nesse caso, prova só a metade do popup e
