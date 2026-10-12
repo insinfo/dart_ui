@@ -10919,7 +10919,7 @@ Registradas para quem mexer no código a seguir; **em todas, o código venceu**:
 | `vector/compute_tile_scene.dart` | "nenhum binding de API consome estes buffers ainda" | o executor de compute do D3D12 consome. **Resolvido em 06/09/2026**: o cabeçalho nomeia os dois executores |
 | `doc/vector_editor.md` | o exemplo está em `examples/sk1_editor_demo/` | está em `examples/vector_editor_demo/`. **Resolvido em 06/09/2026**, junto com os caminhos de `geometry/` (hoje `graphics/vector/`), do exportador PDF (hoje `pdf/export/`) e da barra de ferramentas (`toolbox.dart` + `standard_toolbar.dart`) |
 | `doc/vector_editor.md` | booleanas 2D em polígonos **e caminhos** | `shaping.dart` achata para polilinhas e usa Sutherland-Hodgman (convexo, perde curvas). **Resolvido em 06/09/2026**: o documento diz isso, com a limitação de convexidade |
-| `examples/vector_editor_demo/main_window.dart` | "não há seletor de arquivo neste framework" | `platform/file_picker.dart` existe e está exportado |
+| `examples/vector_editor_demo/main_window.dart` | "não há seletor de arquivo neste framework" | `platform/file_picker.dart` existe e está exportado. **Resolvido em 26/08/2026** (§67): o editor abre e salva pelo `FilePicker`, com os filtros de PDF, SVG e CDR; conferido contra o código em 12/10/2026, quando esta linha foi a única da tabela ainda sem data |
 | três arquivos de renderização | citavam `ADR 0007` sem ele existir | **resolvido em 23/08/2026**, durante esta auditoria: o ADR foi escrito |
 
 # 69. Não penalizar uma plataforma por causa de outra — PoC de 2026-08-25
