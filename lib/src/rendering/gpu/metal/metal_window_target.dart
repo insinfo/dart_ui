@@ -118,6 +118,9 @@ final class MetalWindowTarget
   /// The `MTLTexture` wrapping each slot's `IOSurface`, **+1** each.
   final Map<int, Pointer<ObjCObject>> _textures = <int, Pointer<ObjCObject>>{};
 
+  /// The `IOSurfaceRef` address each cached slot wraps.
+  final Map<int, int> _wrapped = <int, int>{};
+
   int _generation = 0;
   int? _pendingClear;
   int? _frameSlot;
@@ -196,6 +199,15 @@ final class MetalWindowTarget
         'must be awaited before the next beginFrame(). Two concurrent frames '
         'would share one completion handler and the first would never finish',
       );
+    }
+    // The window may already have replaced its pool - a resize the presenter
+    // has not been told about yet, the first one a native popup gets. Drawing
+    // at the old size into the new surfaces would wrap them with the wrong
+    // geometry, so the target catches up here; the presenter's own resize
+    // then finds nothing to change.
+    if (_surface.pixelWidth != _descriptor.pixelWidth ||
+        _surface.pixelHeight != _descriptor.pixelHeight) {
+      resize(_surface.pixelWidth, _surface.pixelHeight, _descriptor.scale);
     }
     final int slot = _surface.backSlot;
     _frameSlot = slot;
@@ -355,10 +367,13 @@ final class MetalWindowTarget
 
   /// The borrowed-texture target for [slot], wrapping its `IOSurface`.
   MetalOffscreenTarget _targetForSlot(int slot) {
-    final MetalOffscreenTarget? cached = _slots[slot];
-    if (cached != null) return cached;
-
     final Pointer<Void> surfaceRef = _surface.surfaceRefForSlot(slot);
+    final MetalOffscreenTarget? cached = _slots[slot];
+    if (cached != null && _wrapped[slot] == surfaceRef.address) return cached;
+    // A pool replaced at the same size - a host restart - leaves the size
+    // alone and swaps the surfaces, so the cache is keyed on the surface too.
+    if (cached != null) _releaseSlots();
+
     if (surfaceRef == nullptr) {
       throw UnsupportedCapabilityError(
         backendName: 'metal',
@@ -382,6 +397,7 @@ final class MetalWindowTarget
       );
     }
     _textures[slot] = texture;
+    _wrapped[slot] = surfaceRef.address;
     final MetalOffscreenTarget target = MetalOffscreenTarget.overTexture(
       _gpu,
       _pipelines,
@@ -445,6 +461,7 @@ final class MetalWindowTarget
       }
     });
     _textures.clear();
+    _wrapped.clear();
   }
 
   @override

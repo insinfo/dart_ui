@@ -85,6 +85,32 @@ void main() {
       expect(descriptor.surfaceRefForSlot(99), nullptr);
     });
 
+    test('answers for the window\'s current pool, not the one it was built on',
+        () {
+      // A renderer keeps the descriptor it was attached with, and a resize
+      // replaces the pool behind it. Answering for the old, disposed pool is
+      // what made every native popup's first Metal frame throw: a popup is
+      // created and then sized, and the target found no IOSurface behind the
+      // slots it was given.
+      final MacosSurfacePool first = _pool();
+      final _Host host = _Host(first);
+      final MacosSurfaceDescriptor descriptor = first.describe(1.0, host: host);
+      expect(descriptor.pixelWidth, 100);
+
+      final MacosSurfacePool second = MacosSurfacePool(<MacosPoolSurface>[
+        _FakeSurface(width: 200, height: 80, bytesPerRow: 832),
+        _FakeSurface(width: 200, height: 80, bytesPerRow: 832),
+      ]);
+      first.dispose();
+      host.pool = second;
+      expect(descriptor.pixelWidth, 200);
+      expect(descriptor.pixelHeight, 80);
+      expect(descriptor.bytesPerRow, 832);
+      expect(descriptor.isPresentable, isTrue,
+          reason: 'the window has a live pool, so presenting is possible');
+      second.dispose();
+    });
+
     test('a disposed pool stops being presentable', () {
       final MacosSurfacePool pool = _pool();
       final MacosSurfaceDescriptor descriptor = pool.describe(1.0);
@@ -181,19 +207,21 @@ MacosSurfacePool _pool() => MacosSurfacePool(<MacosPoolSurface>[
     ]);
 
 final class _FakeSurface implements MacosPoolSurface {
+  _FakeSurface({this.width = 100, this.height = 40, this.bytesPerRow = 512});
+
   @override
   int get id => 0;
 
   @override
-  int get width => 100;
+  final int width;
 
   @override
-  int get height => 40;
+  final int height;
 
-  /// 512 and not 400: the rounding a real IOSurface applies, so a caller that
-  /// assumed `width * 4` fails here rather than on a Mac.
+  /// 512 and not 400 by default: the rounding a real IOSurface applies, so a
+  /// caller that assumed `width * 4` fails here rather than on a Mac.
   @override
-  int get bytesPerRow => 512;
+  final int bytesPerRow;
 
   @override
   bool isDisposed = false;
@@ -207,4 +235,23 @@ final class _FakeSurface implements MacosPoolSurface {
 
   @override
   void dispose() => isDisposed = true;
+}
+
+final class _Host implements MacosSurfaceHost {
+  _Host(this.pool);
+
+  MacosSurfacePool pool;
+
+  @override
+  MacosSurfacePool? get currentPool => pool;
+
+  @override
+  bool get isPresentable => true;
+
+  @override
+  int get presentGeneration => 0;
+
+  @override
+  Future<PresentResult> presentBackBuffer({required int generation}) async =>
+      const PresentResult(status: PresentStatus.presented);
 }

@@ -597,6 +597,9 @@ final class MacosWindow
   @override
   bool awaitVerticalBlank() => false;
 
+  @override
+  MacosSurfacePool? get currentPool => _pool;
+
   /// Whether a present would reach a host at all. See [MacosSurfaceHost].
   @override
   bool get isPresentable =>

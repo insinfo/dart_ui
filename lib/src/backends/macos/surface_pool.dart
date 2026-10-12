@@ -47,6 +47,15 @@ abstract interface class MacosSurfaceHost {
   /// The window's generation, as `lifecycle.dart` defines it.
   int get presentGeneration;
 
+  /// The pool the window presents from **now**.
+  ///
+  /// A resize replaces the pool, and a descriptor handed to a renderer before
+  /// it must not keep answering for the old one: a Metal target wrapping the
+  /// disposed pool's slots finds no `IOSurface` behind them and refuses the
+  /// frame - which is what every native popup did on its first frame, since a
+  /// popup is created and then sized.
+  MacosSurfacePool? get currentPool;
+
   /// Marks the back slot presented and sends `PRESENT_SLOT`.
   ///
   /// For a caller that filled the back buffer by means other than
@@ -76,14 +85,18 @@ abstract interface class MacosSurfaceHost {
 /// pretending.
 final class MacosSurfaceDescriptor implements MetalPresentSurface {
   MacosSurfaceDescriptor({
-    required this.pixelWidth,
-    required this.pixelHeight,
+    required int pixelWidth,
+    required int pixelHeight,
     required this.scale,
-    required this.bytesPerRow,
-    required this.slotCount,
+    required int bytesPerRow,
+    required int slotCount,
     MacosSurfacePool? pool,
     MacosSurfaceHost? host,
-  })  : _pool = pool,
+  })  : _pixelWidth = pixelWidth,
+        _pixelHeight = pixelHeight,
+        _bytesPerRow = bytesPerRow,
+        _slotCount = slotCount,
+        _pool = pool,
         _host = host;
 
   /// The pool this describes, when the descriptor was built from a live one.
@@ -94,6 +107,16 @@ final class MacosSurfaceDescriptor implements MetalPresentSurface {
   final MacosSurfacePool? _pool;
 
   final MacosSurfaceHost? _host;
+
+  /// The pool to answer from: the window's current one when there is a window,
+  /// the one this was built from otherwise. See [MacosSurfaceHost.currentPool].
+  MacosSurfacePool? get _live {
+    final MacosSurfaceHost? host = _host;
+    return host == null ? _pool : host.currentPool;
+  }
+
+  /// Every surface of a pool shares its geometry; the pool refuses otherwise.
+  MacosPoolSurface? get _liveSurface => _live?.surfaces.first;
 
   /// The pool this describes, or null for a geometry-only descriptor.
   ///
@@ -107,29 +130,34 @@ final class MacosSurfaceDescriptor implements MetalPresentSurface {
   @override
   String get kind => 'iosurface';
 
+  /// The width of the window's current pool, or the one this was built with.
   @override
-  final int pixelWidth;
+  int get pixelWidth => _liveSurface?.width ?? _pixelWidth;
+  final int _pixelWidth;
 
   @override
-  final int pixelHeight;
+  int get pixelHeight => _liveSurface?.height ?? _pixelHeight;
+  final int _pixelHeight;
 
   @override
   final double scale;
 
   /// The surface's own stride. Never `pixelWidth * 4`: IOSurface rounds up.
   @override
-  final int bytesPerRow;
+  int get bytesPerRow => _liveSurface?.bytesPerRow ?? _bytesPerRow;
+  final int _bytesPerRow;
 
   /// How many buffers rotate behind this descriptor.
   @override
-  final int slotCount;
+  int get slotCount => _live?.surfaces.length ?? _slotCount;
+  final int _slotCount;
 
   @override
-  int get backSlot => _pool?.backSlot ?? 0;
+  int get backSlot => _live?.backSlot ?? 0;
 
   @override
   bool get isPresentable {
-    final MacosSurfacePool? pool = _pool;
+    final MacosSurfacePool? pool = _live;
     final MacosSurfaceHost? host = _host;
     return pool != null &&
         !pool.isDisposed &&
@@ -150,7 +178,7 @@ final class MacosSurfaceDescriptor implements MetalPresentSurface {
   /// that silently encodes nothing.
   @override
   Pointer<Void> surfaceRefForSlot(int slot) {
-    final MacosSurfacePool? pool = _pool;
+    final MacosSurfacePool? pool = _live;
     if (pool == null || pool.isDisposed) return nullptr;
     if (slot < 0 || slot >= pool.surfaces.length) return nullptr;
     final MacosPoolSurface surface = pool.surfaces[slot];
