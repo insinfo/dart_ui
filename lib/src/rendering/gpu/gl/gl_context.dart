@@ -1174,7 +1174,9 @@ final class _EglContext implements GlContext, GlSwapChain {
         _surface = surface,
         _context = context,
         _heap = heap,
-        _libraryResolver = libraryProcResolver(glLibrary);
+        _libraryResolver = libraryProcResolver(glLibrary) {
+    _EglDisplayUses.retain(display.address);
+  }
 
   final _EglApi _api;
   final Pointer<Void> _display;
@@ -1305,8 +1307,38 @@ final class _EglContext implements GlContext, GlSwapChain {
     _api
       ..makeCurrent(_display, nullptr, nullptr, nullptr)
       ..destroyContext(_display, _context)
-      ..destroySurface(_display, _surface)
-      ..terminate(_display);
+      ..destroySurface(_display, _surface);
+    // Only the last one out terminates. See [_EglDisplayUses].
+    if (_EglDisplayUses.release(_display.address)) _api.terminate(_display);
+  }
+}
+
+/// How many live contexts each `EGLDisplay` of this process carries.
+///
+/// `eglGetDisplay(EGL_DEFAULT_DISPLAY)` answers the *same* display to every
+/// caller in a process, and `eglInitialize` on it is idempotent - but
+/// `eglTerminate` is not counted: it marks the display terminated for
+/// everyone, and every other context on it stops being made current. So a
+/// second GL device - a second window, a popup, a second test session - lost
+/// its context the moment the first one was disposed. Found on 12/10/2026,
+/// the first time the device suite ran against Mesa (llvmpipe, surfaceless):
+/// the second session's `eglMakeCurrent` failed right after the first
+/// session's teardown, and thirty-four tests after it read a lost context.
+abstract final class _EglDisplayUses {
+  static final Map<int, int> _uses = <int, int>{};
+
+  static void retain(int display) =>
+      _uses[display] = (_uses[display] ?? 0) + 1;
+
+  /// True when [display] has no context left and may be terminated.
+  static bool release(int display) {
+    final int left = (_uses[display] ?? 1) - 1;
+    if (left > 0) {
+      _uses[display] = left;
+      return false;
+    }
+    _uses.remove(display);
+    return true;
   }
 }
 

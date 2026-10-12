@@ -304,8 +304,15 @@ final class VulkanPipelines {
       ..dstStageMask =
           VkPipelineStageFlagBits.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
       ..srcAccessMask = 0
+      // READ as well on the clearing pass, which does not need it: the two
+      // passes have to be *compatible*, because a framebuffer is created
+      // against one and begun with either, and compatibility requires the
+      // dependencies to be identical. The validation layer said so on
+      // lavapipe - VUID-VkRenderPassBeginInfo-renderPass-00904, "First
+      // dstAccessMask is ...READ_BIT|...WRITE_BIT, but second ... is
+      // ...WRITE_BIT" - and a driver is entitled to misbehave on it.
       ..dstAccessMask = VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-          (clears ? 0 : VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
+          VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
     dependencies[1]
       ..srcSubpass = 0
       ..dstSubpass = vkSubpassExternal

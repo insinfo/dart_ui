@@ -1609,12 +1609,12 @@ final class _MeshPassSet {
                   .VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
               VkPipelineStageFlagBits.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
           ..srcAccessMask = 0
+          // READ on the clearing pass too, so the two passes stay compatible
+          // - see the same line in vulkan_pipeline.dart.
           ..dstAccessMask = VkAccessFlagBits
                   .VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
               VkAccessFlagBits.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-              (clears
-                  ? 0
-                  : VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT);
+              VkAccessFlagBits.VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
         dependencies[1]
           ..srcSubpass = 0
           ..dstSubpass = vkSubpassExternal
