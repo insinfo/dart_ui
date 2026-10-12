@@ -501,7 +501,7 @@ realmente oferece, em ordem de tentativa:
 |---|---|---|
 | Windows | `win32` | D3D11 → OpenGL/WGL → **Direct2D** → **D3D12** → **Vulkan** (experimental) → DIB de GDI |
 | Linux | `wayland`, depois `x11` | OpenGL/EGL no X11 → `wl_shm` → `PutImage` no X11 |
-| macOS | `macos` | IOSurface/CoreGraphics |
+| macOS | `macos` | IOSurface/CoreGraphics; Metal sobre o mesmo IOSurface **só por nome** (`needsExplicitOptIn`) |
 | qualquer | `headless` | renderer de CPU em memória |
 
 Duas divergências entre a tabela normativa acima e o que existe, e o código
@@ -513,9 +513,15 @@ vence as duas:
    §68.2;
 2. **Wayland não tem GPU alguma** — nem EGL, nem `linux-dmabuf`, nem Vulkan. A
    linha "Vulkan ou EGL/OpenGL" é intenção, não estado;
-3. **Metal não apresenta.** Não há `CAMetalLayer`, e `supportsSurface` só
-   aceita `MemorySurfaceDescriptor`. A linha "Metal + `CAMetalLayer`" é
-   intenção. O caminho GL de janela no X11 está registrado no seletor e, desde
+3. **Metal apresenta, mas não pela `CAMetalLayer`, e não por padrão.** Desde
+   07/09/2026 (`1c12eba`) o Metal desenha no IOSurface do pool do host (ADR
+   0005), e em 12/10/2026 `METAL_WINDOW_PRESENT=PASS` num Mac M4 com macOS
+   27.2 conferiu os pixels da janela. Não há `CAMetalLayer` porque a
+   `NSWindow` vive no processo host. O seletor só o toma **pelo nome**
+   (`needsExplicitOptIn`), porque ele ainda recusa texto, clipes e camadas
+   pelo nome - é o que o próprio diagnóstico de seleção imprime. A linha
+   "Metal + `CAMetalLayer`" continua sendo intenção. O caminho GL de janela no
+   X11 está registrado no seletor e, desde
    07/09/2026, é executado no CI por `tool/x11_gl_smoke.dart` sob Xvfb e Mesa
    llvmpipe — sob **nenhuma GPU de verdade** ainda.
 
