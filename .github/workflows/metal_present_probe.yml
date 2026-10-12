@@ -132,6 +132,26 @@ jobs:
           grep -q '^CHECK=pixel_inside_rect RESULT=OK'             build/metal-window-present-probe.log
           grep -q '^CHECK=pixel_outside_rect RESULT=OK'             build/metal-window-present-probe.log
 
+      # OBJC_DEBUG_MISSING_POOLS is set on both probe steps, and until
+      # 12/10/2026 nobody read what it printed: two device references leaked
+      # per presented frame (the last release of an MTLBuffer autoreleases its
+      # device, and it happened on Metal's completion thread), plus one per
+      # device opened and per resource disposed. The VM's own startup lines
+      # (OS_os_log, __NSCFString, ...) are not ours and are not counted; a
+      # Metal or driver class is.
+      - name: Assert no Metal object leaks through a missing pool
+        if: always()
+        shell: bash
+        run: |
+          leaks=$(cat build/metal-present-probe.log build/metal-window-present-probe.log 2>/dev/null \
+            | grep 'MISSING POOLS' \
+            | grep -E 'of class (AGX|MTL|IOGPU|AppleParavirt)' || true)
+          if [ -n "$leaks" ]; then
+            echo "$leaks" | sed -E 's/.*of class ([^ ]+).*/\1/' | sort | uniq -c
+            exit 1
+          fi
+          echo 'METAL_POOL_LEAKS=0'
+
       # Printed, never gated. These three lines are the whole reason the
       # workflow exists, and reading them out of the step summary beats
       # scrolling a log.

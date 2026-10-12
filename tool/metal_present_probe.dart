@@ -353,7 +353,9 @@ final class _IoSurfaceOutcome {
   bool get isUsable => surface != null && texture != nullptr;
 
   void dispose() {
-    if (texture != nullptr) objcRelease(texture);
+    // In a pool: freeing a texture autoreleases its device, and the workflow
+    // fails on any Metal class that `OBJC_DEBUG_MISSING_POOLS` reports.
+    if (texture != nullptr) ObjCAutoreleasePool.run(() => objcRelease(texture));
     surface?.dispose();
   }
 }
@@ -412,7 +414,7 @@ _IoSurfaceOutcome _probeIoSurfaceBridge(
       texture = candidate;
       acceptedMode = mode;
     } else {
-      objcRelease(candidate);
+      ObjCAutoreleasePool.run(() => objcRelease(candidate));
     }
   }
 
@@ -806,6 +808,6 @@ String _probeMetalLayer(
     _fail('cametallayer_group', '$error');
     return 'BLOCKED reason=threw';
   } finally {
-    if (layer != nullptr) objcRelease(layer);
+    if (layer != nullptr) ObjCAutoreleasePool.run(() => objcRelease(layer));
   }
 }

@@ -250,6 +250,26 @@ final class MetalOffscreenTarget {
 
   bool _disposed = false;
 
+  /// The vertex and index buffers of the last pass, released by the next one.
+  ///
+  /// Not at the end of their own pass, because the command buffer retains
+  /// what it encodes and drops it on Metal's completion thread - and the last
+  /// release of an `MTLBuffer` autoreleases the device
+  /// (`-[IOGPUMetalResource dealloc]`) on whichever thread performs it. Metal's
+  /// completion thread has no pool to catch that, so releasing at the end of
+  /// the pass leaked one device reference per buffer: two per frame, counted
+  /// by `OBJC_DEBUG_MISSING_POOLS` in `tool/metal_window_present_probe.dart`.
+  /// One pass later the command buffer has long let go, so the release below
+  /// is the last one and lands in the pass's own pool.
+  final List<Pointer<ObjCObject>> _retiredBuffers = <Pointer<ObjCObject>>[];
+
+  void _releaseRetiredBuffers() {
+    for (final Pointer<ObjCObject> buffer in _retiredBuffers) {
+      objcRelease(buffer);
+    }
+    _retiredBuffers.clear();
+  }
+
   /// Runs a pass that only clears, and waits for it.
   ///
   /// [premultipliedArgb] is packed the way `FrameRequest.clearColor` documents
@@ -292,6 +312,7 @@ final class MetalOffscreenTarget {
   }) {
     _checkAlive();
     ObjCAutoreleasePool.run(() {
+      _releaseRetiredBuffers();
       final Pointer<ObjCObject> passClass =
           objcClass('MTLRenderPassDescriptor');
       if (passClass == nullptr) {
@@ -591,11 +612,13 @@ final class MetalOffscreenTarget {
         );
       }
     } finally {
-      // The pass is waited on before these are released - see the library
-      // comment - so releasing here cannot pull a buffer out from under the
-      // GPU. It is the reason this file waits at all.
-      objcRelease(indexBuffer);
-      objcRelease(vertexBuffer);
+      // Handed to the next pass rather than released here; see
+      // [_retiredBuffers]. Either way the command buffer holds its own
+      // reference until the GPU is done, so neither choice can pull a buffer
+      // out from under it.
+      _retiredBuffers
+        ..add(indexBuffer)
+        ..add(vertexBuffer);
     }
   }
 
@@ -640,6 +663,7 @@ final class MetalOffscreenTarget {
     // thread that is one leaked `MTLDevice` reference per target disposed.
     // Caught by `OBJC_DEBUG_MISSING_POOLS` on the framework's macOS leg.
     ObjCAutoreleasePool.run(() {
+      _releaseRetiredBuffers();
       objcRelease(_white);
       // Never for an overTexture target: the IOSurface-backed texture belongs
       // to the pool, which outlives every target built over it, and releasing
