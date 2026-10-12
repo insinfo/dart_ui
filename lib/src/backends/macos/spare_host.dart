@@ -201,4 +201,11 @@ final class _RelaySink with HostMessageSinkAdapter {
 
   @override
   void onTextInput(String base64) => target?.onTextInput(base64);
+
+  @override
+  void onComposition(String base64, int selectedLocation, int selectedLength) =>
+      target?.onComposition(base64, selectedLocation, selectedLength);
+
+  @override
+  void onCommit(String base64) => target?.onCommit(base64);
 }

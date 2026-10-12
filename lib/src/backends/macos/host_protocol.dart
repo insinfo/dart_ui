@@ -274,6 +274,15 @@ abstract interface class HostMessageSink {
   /// `INPUT=keyDown` line produced, as base64 of UTF-8.
   void onTextInput(String base64);
 
+  /// `COMPOSE=<base64|->:<selectedLocation>:<selectedLength>`: the text input
+  /// system's preedit, from `setMarkedText:`. `-` is an empty preedit: the
+  /// composition ended without anything committed. Offsets are UTF-16 units
+  /// of the composed text.
+  void onComposition(String base64, int selectedLocation, int selectedLength);
+
+  /// `COMMIT=<base64>`: text that ends a composition, replacing the preedit.
+  void onCommit(String base64);
+
   void onAck(HostAckKind kind, int value);
 
   /// `SURFACE_OK <id> <w>x<h>`, the deprecated lookup path. [slot] is -1 when
@@ -339,6 +348,12 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onTextInput(String base64) {}
+
+  @override
+  void onComposition(String base64, int selectedLocation, int selectedLength) {}
+
+  @override
+  void onCommit(String base64) {}
 
   @override
   void onAck(HostAckKind kind, int value) {}
@@ -598,6 +613,8 @@ final class HostProtocolParser {
           return _sink.onAck(HostAckKind.teardown, 0);
         }
       case 0x43: // 'C'
+        if (_startsWith('COMPOSE=')) return _parseComposition(8);
+        if (_startsWith('COMMIT=')) return _sink.onCommit(_stringFrom(7));
         if (_startsWith('CLIPBOARD_DATA=')) return _parseClipboardData(15);
         if (_startsWith('CLIPBOARD=')) return _parseClipboardResult(10);
         if (_startsWith('CLOSE_OK')) {
@@ -637,6 +654,23 @@ final class HostProtocolParser {
     _cursor = offset;
     final value = _readInt();
     _sink.onAck(kind, value == kHostFieldMissing ? 0 : value);
+  }
+
+  // COMPOSE=<base64|->:<selectedLocation>:<selectedLength>
+  void _parseComposition(int offset) {
+    var colon = offset;
+    while (colon < _length && _line[colon] != _kColon) {
+      colon++;
+    }
+    if (colon >= _length) return _sink.onError('BAD_COMPOSE');
+    final String text = String.fromCharCodes(_line, offset, colon);
+    _cursor = colon + 1;
+    final location = _readInt();
+    final length = _readIntField();
+    if (location == kHostFieldMissing || length == kHostFieldMissing) {
+      return _sink.onError('BAD_COMPOSE');
+    }
+    _sink.onComposition(text == '-' ? '' : text, location, length);
   }
 
   // CLIPBOARD_DATA=<request>:<base64>
@@ -1052,6 +1086,14 @@ final class HostCommands {
   const HostCommands._();
 
   static String ping() => 'PING\n';
+
+  /// Where the framework's caret is, in the window's points, top-left origin:
+  /// where the input method opens its candidate window.
+  static String imeCaret(double x, double y, double width, double height) =>
+      'IME_CARET ${_fixed(x)} ${_fixed(y)} ${_fixed(width)} ${_fixed(height)}\n';
+
+  /// Drops the composition in progress without committing it.
+  static String imeCancel() => 'IME_CANCEL\n';
 
   /// Asks for the pasteboard's text. Answered by `CLIPBOARD_DATA` pieces and
   /// one `CLIPBOARD=<request>:NONE|TEXT|FAILED`.

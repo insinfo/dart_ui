@@ -744,6 +744,13 @@ final class MacosHostProcess
   void onTextInput(String base64) => _sink.onTextInput(base64);
 
   @override
+  void onComposition(String base64, int selectedLocation, int selectedLength) =>
+      _sink.onComposition(base64, selectedLocation, selectedLength);
+
+  @override
+  void onCommit(String base64) => _sink.onCommit(base64);
+
+  @override
   void onAck(HostAckKind kind, int value) {
     if (kind == HostAckKind.notMainThread) {
       // The one banner answer that is fatal on its own: a host that is not on

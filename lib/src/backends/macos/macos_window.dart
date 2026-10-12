@@ -35,6 +35,7 @@ import 'host_protocol.dart';
 import 'host_supervisor.dart';
 import 'io_surface.dart';
 import 'macos_input.dart';
+import 'macos_text_input.dart';
 import 'surface_pool.dart';
 
 /// Called for every input event the host dequeued.
@@ -68,7 +69,7 @@ typedef MacosSurfaceFactory = MacosSurfacePool Function({
 /// A window owned by a host process.
 final class MacosWindow
     with DisposableMixin
-    implements NativeWindow, MacosSurfaceHost {
+    implements NativeWindow, MacosSurfaceHost, MacosImeWindow {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -206,6 +207,19 @@ final class MacosWindow
   MacosSurfacePool? get pool => _pool;
 
   set inputListener(MacosInputListener? listener) => _inputListener = listener;
+
+  /// The focused field's input method connection, set by
+  /// [MacosTextInputBackend.attach]. See `macos_text_input.dart`.
+  @override
+  MacosImeHandler? imeHandler;
+
+  @override
+  bool sendImeCommand(String command) {
+    if (!command.startsWith('IME_')) {
+      throw ArgumentError.value(command, 'command', 'not an IME_ command');
+    }
+    return _supervisor?.send(command) ?? false;
+  }
 
   /// Posts a synthetic `NSEvent` into the host's own event queue.
   ///
@@ -752,6 +766,25 @@ final class MacosWindow
     ));
   }
 
+  void _onComposition(String base64, int selectedLocation, int length) {
+    final String? text = decodeImeText(base64);
+    if (text == null) return;
+    imeHandler?.onComposition(text, selectedLocation, length);
+  }
+
+  /// Text that ends a composition. To the focused client when one is
+  /// enabled; otherwise typing, like `TEXT_INPUT` - a dead key resolved while
+  /// no field had an input method connection still types its letter.
+  void _onCommit(String base64) {
+    final MacosImeHandler? handler = imeHandler;
+    if (handler != null && handler.isEnabled) {
+      final String? text = decodeImeText(base64);
+      if (text != null && text.isNotEmpty) handler.onCommit(text);
+      return;
+    }
+    _onTextInput(base64);
+  }
+
   void _emit(PlatformWindowEvent event) {
     if (_events.isClosed) return;
     _events.add(event);
@@ -823,6 +856,13 @@ final class _HostSink with HostMessageSinkAdapter {
 
   @override
   void onTextInput(String base64) => _window._onTextInput(base64);
+
+  @override
+  void onComposition(String base64, int selectedLocation, int selectedLength) =>
+      _window._onComposition(base64, selectedLocation, selectedLength);
+
+  @override
+  void onCommit(String base64) => _window._onCommit(base64);
 }
 
 /// The default factory: real `IOSurface`s.

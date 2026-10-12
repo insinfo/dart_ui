@@ -30,6 +30,7 @@ import '../../geometry/offset.dart';
 import '../../platform/backend_selection.dart';
 import '../../platform/clipboard.dart';
 import '../../platform/native_window.dart';
+import '../../platform/text_input.dart';
 import '../../platform/window_events.dart';
 import 'host_locator.dart';
 import 'host_process.dart';
@@ -37,12 +38,17 @@ import 'host_supervisor.dart' show MacosHostStarter;
 import 'macos_backend_kind.dart';
 import 'macos_backend_selection.dart';
 import 'macos_clipboard.dart';
+import 'macos_text_input.dart';
 import 'macos_window.dart';
 import 'spare_host.dart';
 
 /// Creates and owns macOS windows through the selected backend strategy.
 final class MacosWindowingBackend
-    implements WindowingBackend, ScreenProvider, ClipboardProvider {
+    implements
+        WindowingBackend,
+        ScreenProvider,
+        ClipboardProvider,
+        TextInputProvider {
   MacosWindowingBackend({
     MacosBackendOptions options = const MacosBackendOptions(),
   }) : _options = options;
@@ -100,6 +106,20 @@ final class MacosWindowingBackend
     }
     return _clipboard;
   }
+
+  /// The AppKit text input system, reached through each window's host: dead
+  /// keys and input methods. See `macos_text_input.dart`.
+  @override
+  TextInputBackend get textInput =>
+      _initialized && _activeKind == MacosBackendKind.appkitNativeHost
+          ? const MacosTextInputBackend()
+          : UnavailableTextInput(
+              name: 'nstextinputclient',
+              reason: _initialized
+                  ? 'the ${_activeKind?.name} strategy creates no AppKit host, '
+                      'and the text input system is reached through one'
+                  : 'the macOS backend has not been initialized',
+            );
 
   late final MacosClipboard _clipboard = MacosClipboard(() {
     for (final MacosWindow window in _windows.whereType<MacosWindow>()) {
@@ -346,7 +366,17 @@ final class MacosWindowingBackend
   List<BackendDiagnostic> get diagnostics =>
       List<BackendDiagnostic>.unmodifiable(_diagnostics);
 
+  /// Whether this process keeps a spare popup host at all.
+  ///
+  /// `DART_UI_MACOS_SPARE_HOST=0` turns it off. A diagnostic switch, not a
+  /// setting: it exists so the popup smoke can run with and without the spare
+  /// on the same runner, in the same job, and say which of the two a timing
+  /// belongs to.
+  static final bool spareHostEnabled =
+      Platform.environment['DART_UI_MACOS_SPARE_HOST'] != '0';
+
   void _scheduleSpare(String binaryPath) {
+    if (!spareHostEnabled) return;
     if (_spare != null || _spareTimer != null) return;
     _spareTimer = Timer(spareLaunchDelay, () {
       _spareTimer = null;

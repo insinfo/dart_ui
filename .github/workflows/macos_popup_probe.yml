@@ -48,6 +48,17 @@ jobs:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/popup_window_smoke.dart
 
+      # The same smoke with no spare popup host, for the comparison only this
+      # runner can make: since the spare existed the first menu here went from
+      # 58 ms to 180-310 ms, which no faster machine reproduces. Run beside the
+      # step above, the two POPUP_OPEN_MS lines say whether the spare is the
+      # cause or the runner is.
+      - name: Popup window smoke without the spare host (comparison)
+        env:
+          DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+          DART_UI_MACOS_SPARE_HOST: '0'
+        run: dart run tool/popup_window_smoke.dart
+
       # The clipboard goes through the same AppKit host as the window, so it
       # is proven on the same runner. pbpaste and pbcopy are the witnesses: a
       # write is checked by reading it from another process, and a read by

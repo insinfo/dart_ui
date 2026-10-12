@@ -382,6 +382,28 @@ Future<void> _applicationHalf(
           'layout=$layout value="${controller.value}"');
     }
 
+    // An input method's preedit, shown in the field as a composition, then
+    // replaced by what it commits. The calls are the ones an input method
+    // makes, made directly (SYNTH_IME): a method that marks text is not
+    // guaranteed to be installed. The runner's US layout reaches the same path
+    // through a real one, Option+E in the dead-key check above.
+    controller.value = '';
+    native.synthesizeInput('SYNTH_IME mark ${_b64('にほ')} 2');
+    await _pump(app, const Duration(milliseconds: 300));
+    final bool composing = controller.isComposing;
+    final String preedit = controller.value;
+    native.synthesizeInput('SYNTH_IME commit ${_b64('日本')}');
+    await _pump(app, const Duration(milliseconds: 300));
+    record(
+        'INPUT_APP_IME',
+        composing &&
+            preedit == 'にほ' &&
+            controller.value == '日本' &&
+            !controller.isComposing,
+        'preedit="$preedit" composing=$composing '
+            'committed="${controller.value}" '
+            'composingAfter=${controller.isComposing}');
+
     // Cmd+A, Cmd+C: Command arrives as meta, and the field reads the Mac
     // convention, so this is copy - checked from outside the process.
     final String saved = await _pbpaste();

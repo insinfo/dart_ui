@@ -187,7 +187,9 @@ BackendCandidate _probeAppKitNativeHost(MacosBackendOptions options) {
     kind: MacosBackendKind.appkitNativeHost,
     canCreateWindow: canCreate,
     hasInput: canCreate,
-    hasIme: false, // Not wired yet.
+    // The host's view is an NSTextInputClient: dead keys and input methods,
+    // with the preedit mirrored to the field (macos_text_input.dart).
+    hasIme: canCreate,
     hasAccessibility: false, // Not wired yet.
     hasOrderlyShutdown: canCreate,
     needsHostBinary: true,

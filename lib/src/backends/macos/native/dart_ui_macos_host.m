@@ -43,16 +43,24 @@ static const size_t kDartUiMaximumLineBytes = 8192;
               of:(NSEvent *)event;
 - (void)hostView:(DartUiHostView *)view exposedRect:(NSRect)rect;
 - (void)hostView:(DartUiHostView *)view pointerInside:(BOOL)inside;
-- (void)hostView:(DartUiHostView *)view insertText:(NSString *)text;
+- (void)hostView:(DartUiHostView *)view
+      insertText:(NSString *)text
+       committing:(BOOL)committing;
+- (void)hostView:(DartUiHostView *)view
+    composeText:(NSString *)text
+       selected:(NSRange)selected;
 @end
 
 @interface DartUiHostView : NSView <NSTextInputClient>
 @property(nonatomic, weak) id<DartUiHostViewSink> sink;
 @property(nonatomic, strong) NSTrackingArea *pointerArea;
 // What the text input system is composing - the acute a US layout shows while
-// it waits for the vowel, or a Japanese reading before conversion. Kept here
-// and not yet shown in the field; see keyDown:.
+// it waits for the vowel, or a Japanese reading before conversion. Mirrored
+// to the framework as COMPOSE, which shows it in the field.
 @property(nonatomic, strong) NSMutableString *markedText;
+// The framework's caret, in this view's points (top-left origin), from
+// IME_CARET: where a candidate window opens. NSZeroRect until one arrives.
+@property(nonatomic, assign) NSRect caretRect;
 @end
 
 @implementation DartUiHostView
@@ -109,8 +117,14 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   (void)replacementRange;
   NSString *text =
       [string isKindOfClass:NSAttributedString.class] ? [string string] : string;
+  BOOL committing = self.markedText.length > 0;
   [self.markedText setString:@""];
-  if (text.length > 0) [self.sink hostView:self insertText:text];
+  if (text.length > 0) {
+    [self.sink hostView:self insertText:text committing:committing];
+  } else if (committing) {
+    // An empty commit ends the composition with nothing inserted.
+    [self.sink hostView:self composeText:@"" selected:NSMakeRange(0, 0)];
+  }
 }
 
 - (void)setMarkedText:(id)string
@@ -121,10 +135,13 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   NSString *text =
       [string isKindOfClass:NSAttributedString.class] ? [string string] : string;
   [self.markedText setString:text ?: @""];
+  [self.sink hostView:self composeText:self.markedText selected:selectedRange];
 }
 
 - (void)unmarkText {
+  if (self.markedText.length == 0) return;
   [self.markedText setString:@""];
+  [self.sink hostView:self composeText:@"" selected:NSMakeRange(0, 0)];
 }
 
 - (BOOL)hasMarkedText {
@@ -151,13 +168,15 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   return @[];
 }
 
-// Where a candidate window opens. The caret is the framework's to know and
-// is not sent here yet, so the window's top-left corner stands in for it.
+// Where a candidate window opens: under the framework's caret, which it sends
+// with IME_CARET. Until one arrives, the view's top-left corner.
 - (NSRect)firstRectForCharacterRange:(NSRange)range
                          actualRange:(NSRangePointer)actualRange {
   (void)range;
   (void)actualRange;
-  NSRect local = NSMakeRect(0, 0, 1, 20);
+  NSRect local = NSIsEmptyRect(self.caretRect) && self.caretRect.size.height == 0
+                     ? NSMakeRect(0, 0, 1, 20)
+                     : self.caretRect;
   return [self.window convertRectToScreen:[self convertRect:local toView:nil]];
 }
 
@@ -618,13 +637,38 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
 // they are text and need encoding. They come from insertText: - after the
 // layout's dead keys and any input method - and not from the event monitor,
 // which sees a key before AppKit has composed anything.
-- (void)hostView:(DartUiHostView *)view insertText:(NSString *)text {
+//
+// TEXT_INPUT when nothing was being composed, which the framework treats as
+// typing; COMMIT when it ends a composition, which replaces the preedit the
+// framework is showing instead of being inserted beside it.
+- (void)hostView:(DartUiHostView *)view
+      insertText:(NSString *)text
+       committing:(BOOL)committing {
   (void)view;
   if (!self.protocolReady || self.terminating) return;
   NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
   if (bytes.length == 0) return;
-  printf("TEXT_INPUT=%s\n",
+  printf("%s=%s\n", committing ? "COMMIT" : "TEXT_INPUT",
          [bytes base64EncodedStringWithOptions:0].UTF8String);
+  fflush(stdout);
+}
+
+// COMPOSE=<base64>:<selectedLocation>:<selectedLength>, in UTF-16 units of the
+// composed text, which are a Dart String's units too. An empty composition is
+// "-": the preedit ended without anything committed.
+- (void)hostView:(DartUiHostView *)view
+    composeText:(NSString *)text
+       selected:(NSRange)selected {
+  (void)view;
+  if (!self.protocolReady || self.terminating) return;
+  NSData *bytes = [text dataUsingEncoding:NSUTF8StringEncoding];
+  NSUInteger location = selected.location == NSNotFound ? text.length
+                                                        : selected.location;
+  printf("COMPOSE=%s:%lu:%lu\n",
+         bytes.length == 0 ? "-"
+                           : [bytes base64EncodedStringWithOptions:0].UTF8String,
+         (unsigned long)MIN(location, text.length),
+         (unsigned long)selected.length);
   fflush(stdout);
 }
 
@@ -1065,6 +1109,26 @@ static const NSUInteger kClipboardChunk = 6000;
   NSEvent *event = nil;
   NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
   NSInteger number = self.window.windowNumber;
+  if ([verb isEqualToString:@"SYNTH_IME"] && parts.count >= 3) {
+    // SYNTH_IME mark <b64> <selectedLocation> | SYNTH_IME commit <b64>:
+    // what an input method calls, called directly, because no input method
+    // that marks text is guaranteed to be installed. A US layout's dead keys
+    // are one, and the runner's input smoke reaches them through keys.
+    NSString *text = [self decodeSynthText:parts[2]];
+    if (text == nil) {
+      [self printError:@"BAD_SYNTH_TEXT"];
+    } else if ([parts[1] isEqualToString:@"mark"] && parts.count == 4) {
+      [self.hostView setMarkedText:text
+                     selectedRange:NSMakeRange((NSUInteger)parts[3].integerValue, 0)
+                  replacementRange:NSMakeRange(NSNotFound, 0)];
+    } else if ([parts[1] isEqualToString:@"commit"]) {
+      [self.hostView insertText:text
+               replacementRange:NSMakeRange(NSNotFound, 0)];
+    } else {
+      [self printError:@"BAD_SYNTH_IME"];
+    }
+    return;
+  }
   if ([verb isEqualToString:@"SYNTH_POINTER"] && parts.count == 2) {
     if ([parts[1] isEqualToString:@"enter"]) {
       [self.hostView mouseEntered:[NSApp currentEvent]];
@@ -1217,6 +1281,20 @@ static const NSUInteger kClipboardChunk = 6000;
     fflush(stdout);
   } else if ([command hasPrefix:@"SET_BOUNDS "]) {
     [self setBoundsFromCommand:command];
+  } else if ([command hasPrefix:@"IME_CARET "]) {
+    NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+    if (parts.count == 5) {
+      self.hostView.caretRect =
+          NSMakeRect(parts[1].doubleValue, parts[2].doubleValue,
+                     parts[3].doubleValue, parts[4].doubleValue);
+    } else {
+      [self printError:@"BAD_IME_CARET"];
+    }
+  } else if ([command isEqualToString:@"IME_CANCEL"]) {
+    // Escape inside a preedit, or the field losing focus: the provisional
+    // text is dropped, not committed.
+    [self.hostView.inputContext discardMarkedText];
+    [self.hostView unmarkText];
   } else if ([command hasPrefix:@"SYNTH_"]) {
     [self synthesize:command];
   } else if ([command hasPrefix:@"CLIPBOARD_READ "]) {
