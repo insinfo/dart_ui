@@ -181,13 +181,11 @@ Future<void> main() async {
         capture.exitCode == 0 && File(shot).existsSync(),
         'window=${native.windowNumber} file=$shot');
 
-    Offset screen(Offset client) => native.clientToScreen(client);
-
-    poster.click(screen(const Offset(150, 60)));
+    native.debugPostClick(const Offset(150, 60));
     await _pump(app, const Duration(milliseconds: 400));
     record('APPKIT_SIGNAL_CLICK', presses == 1, 'presses=$presses');
 
-    poster.click(screen(const Offset(150, 20)));
+    native.debugPostClick(const Offset(150, 20));
     await _pump(app, const Duration(milliseconds: 200));
     poster.type('olá');
     await _pump(app, const Duration(milliseconds: 400));

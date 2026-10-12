@@ -460,6 +460,38 @@ final class AppKitSignalWindow
   void debugPerformClose() => ObjCAutoreleasePool.run(() => _session
       .call(_native, 'performClose:', args: const <MainArg>[PointerArg(0)]));
 
+  /// Queues a left click at [clientPosition] in AppKit's own event queue
+  /// (`postEvent:atStart:`), addressed to this window - what the WindowServer
+  /// hands AppKit for a real click. An event posted to the process through
+  /// the WindowServer arrives with no window instead, and on macOS 14 the
+  /// menu bar's tracking session takes such a press and waits for the next
+  /// click inside the event read.
+  void debugPostClick(Offset clientPosition) => ObjCAutoreleasePool.run(() {
+        for (final int type in const <int>[1, 2]) {
+          final Pointer<ObjCObject> event = _session.callObject(
+            objcClass('NSEvent'),
+            'mouseEventWithType:location:modifierFlags:timestamp:'
+            'windowNumber:context:eventNumber:clickCount:pressure:',
+            args: <MainArg>[
+              IntArg(type),
+              // Window coordinates: bottom-left origin, the content area
+              // at the bottom of the frame.
+              SizeArg(clientPosition.dx, _size.height - clientPosition.dy),
+              const IntArg(0),
+              const DoubleArg(0),
+              IntArg(windowNumber),
+              const PointerArg(0),
+              const IntArg(0),
+              const IntArg(1),
+              FloatArg(type == 1 ? 1 : 0),
+            ],
+          );
+          if (event == nullptr) continue;
+          _session.call(_session.application, 'postEvent:atStart:',
+              args: <MainArg>[PointerArg.object(event), const BoolArg(false)]);
+        }
+      });
+
   void _closeRequested() {
     if (isDisposed) return;
     _emit(WindowCloseRequestedEvent(
