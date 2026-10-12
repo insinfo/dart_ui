@@ -793,6 +793,10 @@ final class MacosHostProcess
       _sink.onDrag(phase, x, y, mask, flags);
 
   @override
+  void onDragSourceEnd(int request, int operation) =>
+      _sink.onDragSourceEnd(request, operation);
+
+  @override
   void onAck(HostAckKind kind, int value) {
     if (kind == HostAckKind.notMainThread) {
       // The one banner answer that is fatal on its own: a host that is not on

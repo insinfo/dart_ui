@@ -53,11 +53,14 @@ static const size_t kDartUiMaximumLineBytes = 8192;
     deleteBefore:(NSUInteger)before
            after:(NSUInteger)after;
 - (void)hostView:(DartUiHostView *)view
+    dragSourceEnded:(long long)request
+          operation:(NSDragOperation)operation;
+- (void)hostView:(DartUiHostView *)view
             drag:(NSString *)phase
             info:(id<NSDraggingInfo>)info;
 @end
 
-@interface DartUiHostView : NSView <NSTextInputClient>
+@interface DartUiHostView : NSView <NSTextInputClient, NSDraggingSource>
 @property(nonatomic, weak) id<DartUiHostViewSink> sink;
 @property(nonatomic, strong) NSTrackingArea *pointerArea;
 // What the text input system is composing - the acute a US layout shows while
@@ -81,6 +84,17 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 // answers with the framework's latest response - one update behind - and the
 // framework refines it on the next one.
 @property(nonatomic, assign) NSDragOperation dropOperation;
+// The press or drag a drag *out* starts from: beginDraggingSessionWithItems:
+// needs the mouse event, and the request arrives from the framework a moment
+// after the pointer moved, so the view keeps the latest one.
+@property(nonatomic, strong) NSEvent *lastMouseEvent;
+// The DRAG_START being served, and the operations its source allows.
+@property(nonatomic, assign) long long dragSourceRequest;
+@property(nonatomic, assign) NSDragOperation dragSourceMask;
+- (void)startDragRequest:(long long)request
+                    mask:(NSDragOperation)mask
+                   paths:(NSArray<NSString *> *)paths
+                    text:(NSString *)text;
 @end
 
 @implementation DartUiHostView
@@ -161,6 +175,61 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 - (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
   [self.sink hostView:self drag:@"DROP" info:sender];
   return YES;
+}
+
+// --- NSDraggingSource ------------------------------------------------------
+
+// Starts a drag out of this view with the latest mouse event. Without one -
+// no button went down in this view - there is nothing AppKit will start a
+// session from, and the request ends at once with -1.
+- (void)startDragRequest:(long long)request
+                    mask:(NSDragOperation)mask
+                   paths:(NSArray<NSString *> *)paths
+                    text:(NSString *)text {
+  NSEvent *event = self.lastMouseEvent;
+  if (event == nil) {
+    [self.sink hostView:self dragSourceEnded:request operation:(NSDragOperation)-1];
+    return;
+  }
+  NSPoint at = [self convertPoint:event.locationInWindow fromView:nil];
+  NSRect frame = NSMakeRect(at.x - 16, at.y - 16, 32, 32);
+  NSImage *image = [[NSImage alloc] initWithSize:NSMakeSize(32, 32)];
+  NSMutableArray<NSDraggingItem *> *items = [NSMutableArray array];
+  for (NSString *path in paths) {
+    NSDraggingItem *item = [[NSDraggingItem alloc]
+        initWithPasteboardWriter:[NSURL fileURLWithPath:path]];
+    [item setDraggingFrame:frame contents:image];
+    [items addObject:item];
+  }
+  if (text.length > 0) {
+    NSDraggingItem *item = [[NSDraggingItem alloc] initWithPasteboardWriter:text];
+    [item setDraggingFrame:frame contents:image];
+    [items addObject:item];
+  }
+  if (items.count == 0) {
+    [self.sink hostView:self dragSourceEnded:request operation:(NSDragOperation)-1];
+    return;
+  }
+  self.dragSourceRequest = request;
+  self.dragSourceMask = mask;
+  [self beginDraggingSessionWithItems:items event:event source:self];
+}
+
+- (NSDragOperation)draggingSession:(NSDraggingSession *)session
+    sourceOperationMaskForDraggingContext:(NSDraggingContext)context {
+  (void)session;
+  (void)context;
+  return self.dragSourceMask;
+}
+
+- (void)draggingSession:(NSDraggingSession *)session
+           endedAtPoint:(NSPoint)screenPoint
+              operation:(NSDragOperation)operation {
+  (void)session;
+  (void)screenPoint;
+  [self.sink hostView:self
+      dragSourceEnded:self.dragSourceRequest
+            operation:operation];
 }
 
 // --- NSTextInputClient ----------------------------------------------------
@@ -297,6 +366,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 }
 
 - (void)mouseDown:(NSEvent *)event {
+  self.lastMouseEvent = event;
   [self.sink hostView:self reportEvent:@"pointerDown" of:event];
 }
 
@@ -325,6 +395,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 }
 
 - (void)mouseDragged:(NSEvent *)event {
+  self.lastMouseEvent = event;
   [self.sink hostView:self reportEvent:@"pointerMove" of:event];
 }
 
@@ -819,6 +890,18 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
                            : [bytes base64EncodedStringWithOptions:0].UTF8String,
          (unsigned long)MIN(location, text.length),
          (unsigned long)selected.length);
+  fflush(stdout);
+}
+
+// DRAG_SOURCE_END=<request>:<operation>: how a DRAG_START ended - the
+// NSDragOperation the destination performed, 0 for none, -1 when no session
+// could start at all.
+- (void)hostView:(DartUiHostView *)view
+    dragSourceEnded:(long long)request
+          operation:(NSDragOperation)operation {
+  (void)view;
+  if (!self.protocolReady || self.terminating) return;
+  printf("DRAG_SOURCE_END=%lld:%lld\n", request, (long long)operation);
   fflush(stdout);
 }
 
@@ -1580,6 +1663,24 @@ static const NSUInteger kClipboardChunk = 6000;
                      parts[3].doubleValue, parts[4].doubleValue);
     } else {
       [self printError:@"BAD_IME_CARET"];
+    }
+  } else if ([command hasPrefix:@"DRAG_START "]) {
+    // DRAG_START <request> <mask> <paths-b64|-> <text-b64|->, paths
+    // newline-separated before the base64.
+    NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+    NSString *paths = parts.count == 5 ? [self decodeSynthText:parts[3]] : nil;
+    NSString *text = parts.count == 5 ? [self decodeSynthText:parts[4]] : nil;
+    if (paths == nil || text == nil) {
+      [self printError:@"BAD_DRAG_START"];
+    } else {
+      NSMutableArray<NSString *> *list = [NSMutableArray array];
+      for (NSString *path in [paths componentsSeparatedByString:@"\n"]) {
+        if (path.length > 0) [list addObject:path];
+      }
+      [self.hostView startDragRequest:parts[1].longLongValue
+                                 mask:(NSDragOperation)parts[2].longLongValue
+                                paths:list
+                                 text:text];
     }
   } else if ([command hasPrefix:@"IME_SURROUNDING "]) {
     // IME_SURROUNDING <base64|-> <anchor> <cursor>, offsets in UTF-16 units.

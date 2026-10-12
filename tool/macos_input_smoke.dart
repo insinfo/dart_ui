@@ -30,6 +30,7 @@ import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/macos/macos_backend.dart';
+import 'package:dart_ui/src/backends/macos/macos_drag_drop.dart';
 import 'package:dart_ui/src/backends/macos/macos_window.dart';
 
 const int _shift = 1 << 17;
@@ -467,6 +468,28 @@ Future<void> _applicationHalf(
     await _pump(app, const Duration(milliseconds: 300));
     record('INPUT_APP_DROP_REFUSED', dropped.length == 1,
         'drops=${dropped.length} (one, from the check above)');
+
+    // Dragging out (DRAG_START): a press in the window, which AppKit needs to
+    // begin a session from, then startDrag. With no real button held the
+    // session cannot travel anywhere, so what this checks is the plumbing -
+    // the host's NSDraggingSource began a session and reported its end, and
+    // the future completed with an action rather than hanging or throwing.
+    native.synthesizeInput('SYNTH_MOUSE down 140 110 0 1 0');
+    await _pump(app, const Duration(milliseconds: 150));
+    DragAction? dragOut;
+    Object? dragOutFailure;
+    unawaited(const MacosDragDropBackend()
+        .startDrag(
+            DragRequest(window: native, data: MemoryDragData.text('dart_ui')))
+        .then((DragAction action) => dragOut = action,
+            onError: (Object error) => dragOutFailure = error));
+    for (var i = 0; i < 30 && dragOut == null && dragOutFailure == null; i++) {
+      await _pump(app, const Duration(milliseconds: 100));
+    }
+    native.synthesizeInput('SYNTH_MOUSE up 140 110 0 1 0');
+    await _pump(app, const Duration(milliseconds: 100));
+    record('INPUT_APP_DRAG_OUT', dragOut != null,
+        'action=$dragOut failure=$dragOutFailure');
 
     // Cmd+A, Cmd+C: Command arrives as meta, and the field reads the Mac
     // convention, so this is copy - checked from outside the process.

@@ -1,10 +1,12 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/macos/host_protocol.dart';
 import 'package:dart_ui/src/backends/macos/macos_drag_drop.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/platform/drag_drop.dart';
 import 'package:dart_ui/src/platform/input_events.dart';
+import 'package:dart_ui/src/platform/native_window.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:test/test.dart';
 
@@ -155,8 +157,69 @@ void main() {
     });
   });
 
-  test('this backend receives drops and says it cannot start one', () {
-    expect(const MacosDragDropBackend().canStartDrag, isFalse);
+  group('dragging out', () {
+    test('sends DRAG_START and answers with what the destination did',
+        () async {
+      // Files as file URLs and text as a string, allowing copy and move;
+      // the host's NSDraggingSource ends with the NSDragOperation performed.
+      expect(const MacosDragDropBackend().canStartDrag, isTrue);
+      final _DragWindow window = _DragWindow();
+      final Future<DragAction> drag = const MacosDragDropBackend().startDrag(
+        DragRequest(
+          window: window,
+          data: MemoryDragData(<String, Uint8List>{
+            DragFormats.uriList:
+                utf8.encode('file:///tmp/a.pdf\r\nfile:///tmp/b.svg\r\n'),
+            DragFormats.text: utf8.encode('olá'),
+          }),
+          allowedActions: const <DragAction>{DragAction.copy, DragAction.move},
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      final String command = window.commands.single;
+      final List<String> parts = command.trim().split(' ');
+      expect(parts[0], 'DRAG_START');
+      expect(parts[2], '17', reason: 'copy (1) | move (16)');
+      expect(utf8.decode(base64.decode(parts[3])), '/tmp/a.pdf\n/tmp/b.svg');
+      expect(utf8.decode(base64.decode(parts[4])), 'olá');
+
+      macosDragSourceEnded(int.parse(parts[1]), 16);
+      expect(await drag, DragAction.move);
+    });
+
+    test('a drag nothing was dropped on ends with none', () async {
+      final _DragWindow window = _DragWindow();
+      final Future<DragAction> drag = const MacosDragDropBackend().startDrag(
+        DragRequest(window: window, data: MemoryDragData.text('x')),
+      );
+      await Future<void>.delayed(Duration.zero);
+      macosDragSourceEnded(
+          int.parse(window.commands.single.trim().split(' ')[1]), 0);
+      expect(await drag, DragAction.none);
+    });
+
+    test('no mouse press to start from is a refusal by name', () async {
+      // AppKit begins a session only from a mouse event in the view.
+      final _DragWindow window = _DragWindow();
+      final Future<DragAction> drag = const MacosDragDropBackend().startDrag(
+        DragRequest(window: window, data: MemoryDragData.text('x')),
+      );
+      await Future<void>.delayed(Duration.zero);
+      macosDragSourceEnded(
+          int.parse(window.commands.single.trim().split(' ')[1]), -1);
+      await expectLater(drag, throwsA(isA<DragDropException>()));
+    });
+
+    test('the end line parses, and a broken one is refused', () {
+      final List<String> seen = <String>[];
+      HostProtocolParser(_Sink(seen)).addBytes(utf8.encode(
+          'DRAG_SOURCE_END=4:16\nDRAG_SOURCE_END=5:-1\nDRAG_SOURCE_END=6\n'));
+      expect(seen, <String>[
+        'source end 4 16',
+        'source end 5 -1',
+        'error BAD_DRAG_SOURCE_END'
+      ]);
+    });
   });
 
   test('the two drag lines parse', () {
@@ -186,7 +249,32 @@ final class _Sink with HostMessageSinkAdapter {
       seen.add('drag ${phase.name} $x $y $mask $flags');
 
   @override
+  void onDragSourceEnd(int request, int operation) =>
+      seen.add('source end $request $operation');
+
+  @override
   void onError(String code) => seen.add('error $code');
+}
+
+/// A macOS window as far as a drag source needs one: an id and a host to
+/// send to. The rest of [NativeWindow] is never called here.
+final class _DragWindow implements NativeWindow, MacosDropWindow {
+  final List<String> commands = <String>[];
+
+  @override
+  NativeWindowId get id => const NativeWindowId(5);
+
+  @override
+  MacosDropTarget? dropTarget;
+
+  @override
+  bool sendDropCommand(String command) {
+    commands.add(command);
+    return true;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 final class _Window implements MacosDropWindow {

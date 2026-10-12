@@ -243,8 +243,9 @@ final class MacosWindow
 
   @override
   bool sendDropCommand(String command) {
-    if (!command.startsWith('DROP_')) {
-      throw ArgumentError.value(command, 'command', 'not a DROP_ command');
+    if (!command.startsWith('DROP_') && !command.startsWith('DRAG_START ')) {
+      throw ArgumentError.value(
+          command, 'command', 'not a DROP_ or DRAG_START command');
     }
     return _supervisor?.send(command) ?? false;
   }
@@ -967,6 +968,10 @@ final class _HostSink with HostMessageSinkAdapter {
   @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>
       _window.dropTarget?.onDrag(phase, x, y, mask, flags);
+
+  @override
+  void onDragSourceEnd(int request, int operation) =>
+      macosDragSourceEnded(request, operation);
 }
 
 /// The default factory: real `IOSurface`s.

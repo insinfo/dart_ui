@@ -3646,8 +3646,11 @@ WindowServer a cada mudança no backend.
   edição do Mac (`INPUT_APP_DEAD_KEYS`);
 - [x] IME — pré-edição, commit e texto ao redor do cursor; ver §20.10;
 - [x] clipboard — texto pelo `NSPasteboard` (`macos_clipboard_smoke`);
-- [~] drag — soltar arquivos e texto numa janela (`INPUT_APP_DROP_FILES`); arrastar
-  **para fora** não existe (`canStartDrag` é falso e recusa por nome);
+- [x] drag — soltar arquivos e texto numa janela (`INPUT_APP_DROP_FILES`) e,
+  desde 12/10/2026, arrastar para fora: `DRAG_START` faz a view do host, um
+  `NSDraggingSource`, começar uma sessão a partir da última pressão do mouse,
+  com arquivos como URLs e texto como string; o fim volta como
+  `DRAG_SOURCE_END` (`INPUT_APP_DRAG_OUT=PASS action=DragAction.copy`);
 - [~] menus — menus suspensos em janelas nativas (popups); não há `NSMenu`,
   então nem barra de menus do app nem menu de contexto do sistema;
 - [~] file dialogs — `NSOpenPanel`/`NSSavePanel` por `osascript`

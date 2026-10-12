@@ -20,15 +20,22 @@
 /// itself is decided by the latest one, because `prepareForDragOperation:`
 /// refuses when it is none.
 ///
-/// ## Not here
+/// ## Dragging out
 ///
-/// Dragging *out* of a macOS window: [MacosDragDropBackend.canStartDrag] is
-/// false and [MacosDragDropBackend.startDrag] refuses by name. And, as on
-/// Win32, the action [DropTargetHandler.onDrop] returns does not reach the
-/// source - `performDragOperation:` has answered by then.
+/// [MacosDragDropBackend.startDrag] sends `DRAG_START` and the host's view, an
+/// `NSDraggingSource`, begins a session from the latest mouse press or drag in
+/// it - AppKit starts one from a mouse event and nothing else. Files go as
+/// file URLs and text as a string; the session's end comes back as
+/// `DRAG_SOURCE_END` with the operation the destination performed. Since
+/// 12/10/2026; before it this backend received drops only.
+///
+/// As on Win32, the action [DropTargetHandler.onDrop] returns does not reach
+/// the source - `performDragOperation:` has answered by then.
 library;
 
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import '../../geometry/offset.dart';
 import '../../platform/drag_drop.dart';
@@ -63,7 +70,7 @@ final class MacosDragDropBackend implements DragDropBackend {
   String get name => 'appkit';
 
   @override
-  bool get canStartDrag => false;
+  bool get canStartDrag => true;
 
   @override
   Future<DropTargetRegistration> registerDropTarget({
@@ -101,13 +108,113 @@ final class MacosDragDropBackend implements DragDropBackend {
   }
 
   @override
-  Future<DragAction> startDrag(DragRequest request) async =>
+  Future<DragAction> startDrag(DragRequest request) async {
+    final NativeWindow window = request.window;
+    if (window is! MacosDropWindow) {
       throw DragDropException(
         operation: 'startDrag',
-        reason: 'dragging out of a macOS window is not implemented; this '
-            'backend receives drops only',
+        reason: 'AppKit drags need a macOS window; it was given a '
+            '${window.runtimeType}',
         backend: name,
       );
+    }
+    final int mask = macosDragOperationMask(request.allowedActions);
+    if (mask == 0) {
+      throw DragDropException(
+        operation: 'startDrag',
+        reason: 'allowedActions names nothing NSDragOperation can express '
+            '(${request.allowedActions})',
+        backend: name,
+      );
+    }
+    final List<String> paths = await _filePaths(request.data);
+    final String text = await _text(request.data);
+    if (paths.isEmpty && text.isEmpty) {
+      throw DragDropException(
+        operation: 'startDrag',
+        reason: 'none of the offered formats (${request.data.formats}) is one '
+            'this backend hands AppKit; it knows text/plain and text/uri-list',
+        backend: name,
+      );
+    }
+    final int id = _nextDragRequest++;
+    final Completer<int> ended = Completer<int>();
+    _pendingDrags[id] = ended;
+    if (!(window as MacosDropWindow).sendDropCommand(
+        HostCommands.dragStart(id, mask, paths: paths, text: text))) {
+      _pendingDrags.remove(id);
+      throw DragDropException(
+        operation: 'startDrag',
+        reason: 'the window has no AppKit host to drag from',
+        backend: name,
+      );
+    }
+    final int operation = await ended.future;
+    if (operation < 0) {
+      throw DragDropException(
+        operation: 'startDrag',
+        reason: 'AppKit starts a drag only from a mouse press in the window, '
+            'and none has happened there',
+        backend: name,
+      );
+    }
+    return macosDragActionFor(operation);
+  }
+
+  static Future<List<String>> _filePaths(DragData data) async {
+    if (!data.hasFormat(DragFormats.uriList)) return const <String>[];
+    final Uint8List? bytes = await data.readBytes(DragFormats.uriList);
+    if (bytes == null) return const <String>[];
+    return <String>[
+      for (final String line in utf8.decode(bytes).split(RegExp(r'\r?\n')))
+        if (line.startsWith('file:')) Uri.parse(line.trim()).toFilePath(),
+    ];
+  }
+
+  static Future<String> _text(DragData data) async {
+    for (final String format in <String>[
+      DragFormats.text,
+      DragFormats.plainText,
+      DragFormats.utf8String,
+    ]) {
+      if (!data.hasFormat(format)) continue;
+      final Uint8List? bytes = await data.readBytes(format);
+      if (bytes != null) return utf8.decode(bytes, allowMalformed: true);
+    }
+    return '';
+  }
+}
+
+/// Drags out in flight, by the request number `DRAG_START` carried. One
+/// process, one table: a drag can start in any window, and its end is reported
+/// by whichever host served it.
+final Map<int, Completer<int>> _pendingDrags = <int, Completer<int>>{};
+int _nextDragRequest = 1;
+
+/// A host's `DRAG_SOURCE_END`, routed to the [MacosDragDropBackend.startDrag]
+/// waiting for it.
+void macosDragSourceEnded(int request, int operation) {
+  final Completer<int>? ended = _pendingDrags.remove(request);
+  if (ended != null && !ended.isCompleted) ended.complete(operation);
+}
+
+/// The `NSDragOperation` mask for [actions]; [DragAction.ask] has no spelling.
+int macosDragOperationMask(Set<DragAction> actions) {
+  var mask = 0;
+  if (actions.contains(DragAction.copy)) mask |= _nsDragCopy;
+  if (actions.contains(DragAction.link)) mask |= _nsDragLink;
+  if (actions.contains(DragAction.move)) mask |= _nsDragMove;
+  return mask;
+}
+
+/// What the destination did, from the operation AppKit reports at the end.
+DragAction macosDragActionFor(int operation) {
+  if (operation & _nsDragMove != 0) return DragAction.move;
+  if (operation & _nsDragCopy != 0 || operation & _nsDragGeneric != 0) {
+    return DragAction.copy;
+  }
+  if (operation & _nsDragLink != 0) return DragAction.link;
+  return DragAction.none;
 }
 
 /// One window's drop target: the session assembled from the host's lines.

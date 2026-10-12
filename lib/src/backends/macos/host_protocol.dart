@@ -298,6 +298,10 @@ abstract interface class HostMessageSink {
   /// `NSDragOperation` mask and the modifier flags.
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags);
 
+  /// `DRAG_SOURCE_END=<request>:<operation>`: how a `DRAG_START` ended - the
+  /// `NSDragOperation` performed, 0 for none, -1 when no session could start.
+  void onDragSourceEnd(int request, int operation);
+
   void onAck(HostAckKind kind, int value);
 
   /// `SURFACE_OK <id> <w>x<h>`, the deprecated lookup path. [slot] is -1 when
@@ -382,6 +386,9 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) {}
+
+  @override
+  void onDragSourceEnd(int request, int operation) {}
 
   @override
   void onAck(HostAckKind kind, int value) {}
@@ -674,6 +681,21 @@ final class HostProtocolParser {
       case 0x44: // 'D'
         if (_startsWith('DRAG_ITEM=')) return _parseDragItem(10);
         if (_startsWith('DRAG=')) return _parseDrag(5);
+        if (_startsWith('DRAG_SOURCE_END=')) {
+          _cursor = 16;
+          final int request = _readInt();
+          if (request == kHostFieldMissing ||
+              _cursor >= _length ||
+              _line[_cursor] != _kColon) {
+            return _sink.onError('BAD_DRAG_SOURCE_END');
+          }
+          _cursor++;
+          final int operation = _readInt();
+          if (operation == kHostFieldMissing) {
+            return _sink.onError('BAD_DRAG_SOURCE_END');
+          }
+          return _sink.onDragSourceEnd(request, operation);
+        }
       case 0x45: // 'E'
         if (_startsWith('ERROR=')) return _sink.onError(_stringFrom(6));
       case 0x4D: // 'M'
@@ -1201,6 +1223,21 @@ final class HostCommands {
   /// The `NSDragOperation` the framework answers for the drag in progress;
   /// the host returns it from the next `draggingUpdated:`.
   static String dropResponse(int operation) => 'DROP_RESPONSE $operation\n';
+
+  /// Starts a drag out of the window from its latest mouse press, offering
+  /// [paths] as file URLs and [text] as a string, allowing the
+  /// `NSDragOperation`s in [mask]. Answered by `DRAG_SOURCE_END`.
+  static String dragStart(
+    int request,
+    int mask, {
+    List<String> paths = const <String>[],
+    String text = '',
+  }) {
+    String field(String value) =>
+        value.isEmpty ? '-' : base64.encode(utf8.encode(value));
+    return 'DRAG_START $request $mask ${field(paths.join('\n'))} '
+        '${field(text)}\n';
+  }
 
   /// Drops the composition in progress without committing it.
   static String imeCancel() => 'IME_CANCEL\n';
