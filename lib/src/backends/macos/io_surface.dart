@@ -26,6 +26,7 @@
 library;
 
 import 'dart:ffi';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 typedef _VoidPtr = Pointer<Void>;
@@ -93,6 +94,9 @@ final _ioSurfaceGetAllocSize = _ioSurfaceLib.lookupFunction<
 final _ioSurfaceGetBytesPerRow = _ioSurfaceLib.lookupFunction<
     IntPtr Function(_VoidPtr),
     int Function(_VoidPtr)>('IOSurfaceGetBytesPerRow');
+final _ioSurfaceAlignProperty = _ioSurfaceLib.lookupFunction<
+    IntPtr Function(_VoidPtr, IntPtr),
+    int Function(_VoidPtr, int)>('IOSurfaceAlignProperty');
 final _ioSurfaceCreateMachPort = _ioSurfaceLib.lookupFunction<
     Uint32 Function(_VoidPtr),
     int Function(_VoidPtr)>('IOSurfaceCreateMachPort');
@@ -169,8 +173,9 @@ final class MacosIOSurface implements MacosPoolSurface {
   @override
   final int height;
 
-  /// The surface's own stride, which is NOT `width * 4`: IOSurface rounds up
-  /// for alignment. `Framebuffer` carries this value for the same reason.
+  /// The surface's own stride, which is NOT `width * 4`: rows are aligned
+  /// for Metal (see [MacosIOSurface.create]). `Framebuffer` carries this
+  /// value for the same reason.
   @override
   final int bytesPerRow;
 
@@ -236,7 +241,16 @@ final class MacosIOSurface implements MacosPoolSurface {
         _cfRelease(number);
       }
 
-      final bytesPerRow = width * 4;
+      // Rounded up by IOSurface's own rule, and never just `width * 4`: a
+      // stride given explicitly is taken as given, and a Metal texture over
+      // the surface needs the row aligned - an odd width such as 322 px
+      // (1288 bytes) fails texture validation and is undefined without it.
+      // The 64-byte floor covers a driver that answers less than Metal asks.
+      final aligned = _ioSurfaceAlignProperty(
+        _key('kIOSurfaceBytesPerRow'),
+        width * 4,
+      );
+      final bytesPerRow = (math.max(aligned, width * 4) + 63) & ~63;
       putInt('kIOSurfaceWidth', width);
       putInt('kIOSurfaceHeight', height);
       putInt('kIOSurfaceBytesPerElement', 4);
