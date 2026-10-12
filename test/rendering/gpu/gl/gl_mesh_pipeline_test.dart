@@ -57,6 +57,7 @@
 /// the file that answers that, on a real `HWND`, and it found 24 bits.
 library;
 
+import 'dart:ffi';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
@@ -385,12 +386,11 @@ final class _GlSession {
   }
 
   static _GlSession open() {
-    if (!Platform.isWindows) {
-      // The EGL path in gl_context.dart can serve one too, and wiring it here
-      // without a machine to run it on would be a guess rather than a test.
-      return _failed('this session only opens a WGL context; '
-          '${Platform.operatingSystem} needs the EGL path wiring in');
-    }
+    // Off Windows the EGL pbuffer of gl_context.dart. It waited for a machine
+    // to run on, and since 12/10/2026 the Linux leg of the CI is one - Mesa's
+    // llvmpipe, surfaceless - which makes the 3D path of the default Linux
+    // GPU backend a measured thing rather than an assumption.
+    if (!Platform.isWindows) return _openEgl();
     try {
       final Win32GlSurfaceAttempt attempt = Win32GlSurface.hidden(
         width: _width,
@@ -413,33 +413,65 @@ final class _GlSession {
         return _failed(
             'the context refused to become current', context, glSurface);
       }
-      final GlApi gl = GlApi(context.procAddress);
-      final GlMeshPipelineAttempt built = GlMeshPipeline.create(gl: gl);
-      if (built.pipeline == null) {
-        return _failed('no mesh pipeline: ${built.diagnostics.join('; ')}',
-            context, glSurface);
-      }
-      final Object target = GlMeshOffscreenSurface.create(
-        api: gl,
-        heap: NativeHeap.tryBind(null)!,
-        width: _width,
-        height: _height,
-      );
-      if (target is! GlMeshOffscreenSurface) {
-        built.pipeline!.dispose();
-        return _failed('no off-screen target: $target', context, glSurface);
-      }
-      return _GlSession._(
-        built.pipeline,
-        target,
-        null,
-        built.diagnostics,
-        context,
-        glSurface,
-      );
+      return _withContext(context, glSurface);
     } on Object catch (error) {
       return _failed('opening a GL session threw: $error');
     }
+  }
+
+  static _GlSession _openEgl() {
+    try {
+      final GlLibraryLoad load = GlLibrary.open();
+      final DynamicLibrary? library = load.library;
+      if (library == null) {
+        return _failed('no GL library: ${load.attempted.join(', ')}');
+      }
+      final GlContextAttempt attempt = const GlContextFactory()
+          .create(width: _width, height: _height, glLibrary: library);
+      final GlContext? context = attempt.context;
+      if (context == null) {
+        return _failed('no EGL context: ${attempt.diagnostics.join('; ')}');
+      }
+      if (!context.makeCurrent()) {
+        return _failed('the context refused to become current', context);
+      }
+      return _withContext(context, null, desktop: context.isDesktopGl);
+    } on Object catch (error) {
+      return _failed('opening an EGL session threw: $error');
+    }
+  }
+
+  /// The pipeline and the off-screen target, on a context already current.
+  static _GlSession _withContext(
+    GlContext context,
+    Win32GlSurface? glSurface, {
+    bool? desktop,
+  }) {
+    final GlApi gl = GlApi(context.procAddress);
+    final GlMeshPipelineAttempt built =
+        GlMeshPipeline.create(gl: gl, desktop: desktop);
+    if (built.pipeline == null) {
+      return _failed('no mesh pipeline: ${built.diagnostics.join('; ')}',
+          context, glSurface);
+    }
+    final Object target = GlMeshOffscreenSurface.create(
+      api: gl,
+      heap: NativeHeap.tryBind(null)!,
+      width: _width,
+      height: _height,
+    );
+    if (target is! GlMeshOffscreenSurface) {
+      built.pipeline!.dispose();
+      return _failed('no off-screen target: $target', context, glSurface);
+    }
+    return _GlSession._(
+      built.pipeline,
+      target,
+      null,
+      built.diagnostics,
+      context,
+      glSurface,
+    );
   }
 
   /// Marks the current test skipped and returns true when there is no device.
