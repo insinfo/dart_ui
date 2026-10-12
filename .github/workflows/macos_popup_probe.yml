@@ -9,6 +9,7 @@ on:
       - 'tool/macos_backend_smoke.dart'
       - 'tool/popup_window_smoke.dart'
       - 'tool/macos_clipboard_smoke.dart'
+      - 'tool/macos_input_smoke.dart'
       - '.github/workflows/macos_popup_probe.yml'
 
 concurrency:
@@ -55,3 +56,12 @@ jobs:
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/macos_clipboard_smoke.dart
+
+      # Input, from the AppKit event queue to a Button and a TextField. The
+      # events are posted by the host into its own queue, so they cross the
+      # same dequeue, monitor, protocol line and translation a click does;
+      # posting from outside would need accessibility permission.
+      - name: Input from the event queue to the widgets
+        env:
+          DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+        run: dart run tool/macos_input_smoke.dart

@@ -51,6 +51,15 @@ final class _RecordingSink with HostMessageSinkAdapter {
   }
 
   @override
+  void onInputDetail(HostInputDetail detail) => events.add(
+      'detail:${detail.kind.name}:${detail.button}:${detail.modifierFlags}:'
+      '${detail.clickCount}:${detail.deltaX}:${detail.deltaY}:'
+      '${detail.hasPreciseScrollingDeltas}:${detail.isRepeat}:${detail.keyChar}');
+
+  @override
+  void onTextInput(String base64) => events.add('text:$base64');
+
+  @override
   void onClipboardData(int request, String base64) =>
       events.add('clipboard-data:$request:$base64');
 
@@ -221,5 +230,44 @@ void main() {
     final String longest = HostCommands.clipboardAppend(
         0x7fffffffffffffff, 'A' * kMacosHostClipboardChunk);
     expect(utf8.encode(longest).length, lessThan(kMacosHostMaxLineBytes));
+  });
+
+  test('an input line from a current host carries its detail after the five',
+      () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(utf8.encode(
+      'INPUT=pointerDown:20.0000:30.0000:0:99:1:131072:2:0.0000:0.0000:0:0\n'
+      'INPUT=scroll:1.0000:2.0000:0:100:-1:0:0:-1.5000:25.0000:1:0\n'
+      'INPUT=keyDown:0.0000:0.0000:8:101:-1:1048576:0:0.0000:0.0000:2:99\n'
+      'TEXT_INPUT=w6c=\n',
+    ));
+    expect(sink.events, <String>[
+      'input:pointerDown:20.0:30.0:0:99',
+      'detail:pointerDown:1:131072:2:0.0:0.0:false:false:0',
+      'input:scroll:1.0:2.0:0:100',
+      'detail:scroll:-1:0:0:-1.5:25.0:true:false:0',
+      'input:keyDown:0.0:0.0:8:101',
+      'detail:keyDown:-1:1048576:0:0.0:0.0:false:true:99',
+      'text:w6c=',
+    ]);
+  });
+
+  test('a protocol 2 input line is still input, with no detail', () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink)
+        .addBytes(utf8.encode('INPUT=pointerUp:1.0000:2.0000:0:7\n'));
+    expect(sink.events, <String>['input:pointerUp:1.0:2.0:0:7']);
+  });
+
+  test('a line that stops partway through the detail is an error', () {
+    // Inventing the missing fields would put a guessed button or modifier
+    // into input.
+    final sink = _RecordingSink();
+    HostProtocolParser(sink)
+        .addBytes(utf8.encode('INPUT=pointerUp:1.0000:2.0000:0:7:0:0\n'));
+    expect(sink.events, <String>[
+      'input:pointerUp:1.0:2.0:0:7',
+      'error:BAD_INPUT_DETAIL',
+    ]);
   });
 }

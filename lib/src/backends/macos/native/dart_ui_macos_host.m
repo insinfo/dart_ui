@@ -338,7 +338,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
       NSEventMaskOtherMouseDown | NSEventMaskOtherMouseUp |
       NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged |
       NSEventMaskRightMouseDragged | NSEventMaskOtherMouseDragged |
-      NSEventMaskScrollWheel;
+      NSEventMaskScrollWheel | NSEventMaskFlagsChanged;
   __weak DartUiHostDelegate *weakSelf = self;
   self.eventMonitor =
       [NSEvent addLocalMonitorForEventsMatchingMask:mask
@@ -348,10 +348,30 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   }];
 }
 
+// The modifier flag a modifier key's keyCode sets, or 0 for any other key.
+// AppKit reports a modifier key alone as NSEventTypeFlagsChanged, with no
+// down or up of its own; whether the flag is now set is the direction.
+static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
+  switch (keyCode) {
+    case 0x38: case 0x3C: return NSEventModifierFlagShift;
+    case 0x3B: case 0x3E: return NSEventModifierFlagControl;
+    case 0x3A: case 0x3D: return NSEventModifierFlagOption;
+    case 0x37: case 0x36: return NSEventModifierFlagCommand;
+    case 0x39: return NSEventModifierFlagCapsLock;
+    case 0x3F: return NSEventModifierFlagFunction;
+    default: return 0;
+  }
+}
+
 - (NSString *)kindForEvent:(NSEvent *)event {
   switch (event.type) {
     case NSEventTypeKeyDown: return @"keyDown";
     case NSEventTypeKeyUp: return @"keyUp";
+    case NSEventTypeFlagsChanged: {
+      NSEventModifierFlags flag = modifierFlagForKeyCode(event.keyCode);
+      if (flag == 0) return @"other";
+      return (event.modifierFlags & flag) != 0 ? @"keyDown" : @"keyUp";
+    }
     case NSEventTypeLeftMouseDown:
     case NSEventTypeRightMouseDown:
     case NSEventTypeOtherMouseDown: return @"pointerDown";
@@ -368,20 +388,99 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 }
 
 - (NSPoint)clientPointForEvent:(NSEvent *)event {
-  if (event.window != self.window) return NSZeroPoint;
-  return [self.hostView convertPoint:event.locationInWindow fromView:nil];
+  if (event.window == self.window) {
+    return [self.hostView convertPoint:event.locationInWindow fromView:nil];
+  }
+  // An event with no window - a scroll built from a Quartz event, say - has
+  // locationInWindow in *screen* coordinates, as NSEvent documents. Pointer
+  // and scroll events are the ones whose position means anything.
+  BOOL positional = event.type == NSEventTypeScrollWheel ||
+                    (NSEventMaskFromType(event.type) &
+                     (NSEventMaskMouseMoved | NSEventMaskLeftMouseDown |
+                      NSEventMaskLeftMouseUp | NSEventMaskRightMouseDown |
+                      NSEventMaskRightMouseUp | NSEventMaskOtherMouseDown |
+                      NSEventMaskOtherMouseUp | NSEventMaskLeftMouseDragged |
+                      NSEventMaskRightMouseDragged |
+                      NSEventMaskOtherMouseDragged)) != 0;
+  if (event.window == nil && positional) {
+    NSPoint inWindow = [self.window convertPointFromScreen:event.locationInWindow];
+    return [self.hostView convertPoint:inWindow fromView:nil];
+  }
+  return NSZeroPoint;
 }
 
+// INPUT=<kind>:<x>:<y>:<keyCode>:<machTime>:<button>:<modifierFlags>:
+//       <clickCount>:<deltaX>:<deltaY>:<flags>:<keyChar>
+//
+// The first five fields are the protocol 2 line the latency probes read; the
+// rest are what turning the line into framework input needs, appended so an
+// older reader still parses the front of it:
+//   button        NSEvent.buttonNumber for a mouse event, -1 otherwise;
+//   modifierFlags NSEvent.modifierFlags, raw;
+//   clickCount    NSEvent.clickCount for a press or release, 0 otherwise;
+//   deltaX/Y      scrollingDeltaX/Y for a scroll, 0 otherwise;
+//   flags         bit 0 hasPreciseScrollingDeltas, bit 1 isARepeat;
+//   keyChar       the first code point of charactersIgnoringModifiers, 0 if
+//                 none - what the layout says the key is, for shortcuts.
 - (void)reportMonitoredEvent:(NSEvent *)event {
   if (!self.protocolReady || self.terminating) return;
   NSPoint point = [self clientPointForEvent:event];
-  unsigned short keyCode =
-      event.type == NSEventTypeKeyDown || event.type == NSEventTypeKeyUp
-          ? event.keyCode
-          : 0;
-  printf("INPUT=%s:%.4f:%.4f:%u:%llu\n",
+  NSEventType type = event.type;
+  BOOL isKey = type == NSEventTypeKeyDown || type == NSEventTypeKeyUp ||
+               type == NSEventTypeFlagsChanged;
+  BOOL isMouseButton =
+      type == NSEventTypeLeftMouseDown || type == NSEventTypeLeftMouseUp ||
+      type == NSEventTypeRightMouseDown || type == NSEventTypeRightMouseUp ||
+      type == NSEventTypeOtherMouseDown || type == NSEventTypeOtherMouseUp;
+  BOOL isMouse = isMouseButton || type == NSEventTypeMouseMoved ||
+                 type == NSEventTypeLeftMouseDragged ||
+                 type == NSEventTypeRightMouseDragged ||
+                 type == NSEventTypeOtherMouseDragged;
+  BOOL isScroll = type == NSEventTypeScrollWheel;
+  unsigned short keyCode = isKey ? event.keyCode : 0;
+  unsigned flags = 0;
+  if (isScroll && event.hasPreciseScrollingDeltas) flags |= 1u;
+  if ((type == NSEventTypeKeyDown || type == NSEventTypeKeyUp) &&
+      event.isARepeat) {
+    flags |= 2u;
+  }
+  unsigned keyChar = 0;
+  if (type == NSEventTypeKeyDown || type == NSEventTypeKeyUp) {
+    NSString *ignoring = event.charactersIgnoringModifiers;
+    if (ignoring.length > 0) {
+      UTF32Char scalar = 0;
+      [ignoring getBytes:&scalar
+               maxLength:sizeof(scalar)
+              usedLength:NULL
+                encoding:NSUTF32LittleEndianStringEncoding
+                 options:0
+                   range:NSMakeRange(0, [ignoring rangeOfComposedCharacterSequenceAtIndex:0].length)
+          remainingRange:NULL];
+      keyChar = scalar;
+    }
+  }
+  printf("INPUT=%s:%.4f:%.4f:%u:%llu:%ld:%lu:%ld:%.4f:%.4f:%u:%u\n",
          [self kindForEvent:event].UTF8String, point.x, point.y,
-         (unsigned)keyCode, (unsigned long long)mach_absolute_time());
+         (unsigned)keyCode, (unsigned long long)mach_absolute_time(),
+         isMouse ? (long)event.buttonNumber : -1L,
+         (unsigned long)event.modifierFlags,
+         isMouseButton ? (long)event.clickCount : 0L,
+         isScroll ? event.scrollingDeltaX : 0.0,
+         isScroll ? event.scrollingDeltaY : 0.0, flags, keyChar);
+  // The characters a key press produced, on their own line because they are
+  // text and need encoding. Not for a Command or Control chord: Cmd+C is a
+  // shortcut, and its "c" is not content. Option stays, because Option is
+  // how a Mac keyboard types accented and special characters.
+  if (type == NSEventTypeKeyDown &&
+      (event.modifierFlags &
+       (NSEventModifierFlagCommand | NSEventModifierFlagControl)) == 0) {
+    NSString *characters = event.characters;
+    NSData *bytes = [characters dataUsingEncoding:NSUTF8StringEncoding];
+    if (bytes.length > 0) {
+      printf("TEXT_INPUT=%s\n",
+             [bytes base64EncodedStringWithOptions:0].UTF8String);
+    }
+  }
   fflush(stdout);
 }
 
@@ -787,6 +886,130 @@ static const NSUInteger kClipboardChunk = 6000;
   fflush(stdout);
 }
 
+// --- synthetic input, for smokes ----------------------------------------
+//
+// Builds an NSEvent and posts it to this application's own queue, so it is
+// dequeued, seen by the local event monitor and reported exactly as a real
+// one would be. That is the whole point: tool/macos_input_smoke.dart proves
+// the path from the event queue to a widget, and posting to our own queue
+// needs no accessibility permission, which CGEventPost from outside does - a
+// synthetic click from another process never arrived on the machine this was
+// written on.
+//
+//   SYNTH_MOUSE <down|up|move|drag> <x> <y> <button> <clickCount> <flags>
+//   SYNTH_KEY <down|up> <keyCode> <flags> <characters-b64|-> <ignoring-b64|->
+//   SYNTH_SCROLL <x> <y> <deltaX> <deltaY> <precise 0|1>
+//
+// x and y are view points, top-left origin, like everything else here.
+
+- (NSPoint)windowPointForViewX:(double)x y:(double)y {
+  return [self.hostView convertPoint:NSMakePoint(x, y) toView:nil];
+}
+
+- (NSString *)decodeSynthText:(NSString *)field {
+  if ([field isEqualToString:@"-"]) return @"";
+  NSData *bytes = [[NSData alloc] initWithBase64EncodedString:field options:0];
+  if (bytes == nil) return nil;
+  return [[NSString alloc] initWithData:bytes encoding:NSUTF8StringEncoding];
+}
+
+- (void)synthesize:(NSString *)command {
+  NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+  NSString *verb = parts.firstObject;
+  NSEvent *event = nil;
+  NSTimeInterval now = NSProcessInfo.processInfo.systemUptime;
+  NSInteger number = self.window.windowNumber;
+  if ([verb isEqualToString:@"SYNTH_MOUSE"] && parts.count == 7) {
+    NSString *phase = parts[1];
+    NSInteger button = parts[4].integerValue;
+    NSEventType type;
+    if ([phase isEqualToString:@"move"]) {
+      type = NSEventTypeMouseMoved;
+    } else if ([phase isEqualToString:@"drag"]) {
+      type = button == 0 ? NSEventTypeLeftMouseDragged
+           : button == 1 ? NSEventTypeRightMouseDragged
+                         : NSEventTypeOtherMouseDragged;
+    } else if ([phase isEqualToString:@"down"]) {
+      type = button == 0 ? NSEventTypeLeftMouseDown
+           : button == 1 ? NSEventTypeRightMouseDown
+                         : NSEventTypeOtherMouseDown;
+    } else {
+      type = button == 0 ? NSEventTypeLeftMouseUp
+           : button == 1 ? NSEventTypeRightMouseUp
+                         : NSEventTypeOtherMouseUp;
+    }
+    event = [NSEvent mouseEventWithType:type
+                               location:[self windowPointForViewX:parts[2].doubleValue
+                                                                y:parts[3].doubleValue]
+                          modifierFlags:(NSEventModifierFlags)parts[6].longLongValue
+                              timestamp:now
+                           windowNumber:number
+                                context:nil
+                            eventNumber:0
+                             clickCount:parts[5].integerValue
+                               pressure:type == NSEventTypeMouseMoved ? 0.0 : 1.0];
+    if (event != nil) {
+      // mouseEventWithType: has no buttonNumber argument and leaves it 0 even
+      // for a right-button type, so the number goes through Quartz.
+      CGEventRef quartz = CGEventCreateCopy(event.CGEvent);
+      CGEventSetIntegerValueField(quartz, kCGMouseEventButtonNumber, button);
+      event = [NSEvent eventWithCGEvent:quartz];
+      CFRelease(quartz);
+    }
+  } else if ([verb isEqualToString:@"SYNTH_KEY"] && parts.count == 6) {
+    NSString *characters = [self decodeSynthText:parts[4]];
+    NSString *ignoring = [self decodeSynthText:parts[5]];
+    if (characters == nil || ignoring == nil) {
+      [self printError:@"BAD_SYNTH_TEXT"];
+      return;
+    }
+    unsigned short keyCode = (unsigned short)parts[2].integerValue;
+    NSEventModifierFlags flags = (NSEventModifierFlags)parts[3].longLongValue;
+    BOOL down = [parts[1] isEqualToString:@"down"];
+    NSEventType type = down ? NSEventTypeKeyDown : NSEventTypeKeyUp;
+    if (modifierFlagForKeyCode(keyCode) != 0) {
+      // A modifier key alone is FlagsChanged, whose direction is the flag.
+      CGEventRef quartz = CGEventCreateKeyboardEvent(NULL, keyCode, down);
+      CGEventSetFlags(quartz, (CGEventFlags)flags);
+      event = [NSEvent eventWithCGEvent:quartz];
+      CFRelease(quartz);
+    } else {
+      event = [NSEvent keyEventWithType:type
+                               location:NSZeroPoint
+                          modifierFlags:flags
+                              timestamp:now
+                           windowNumber:number
+                                context:nil
+                             characters:characters
+            charactersIgnoringModifiers:ignoring
+                              isARepeat:NO
+                                keyCode:keyCode];
+    }
+  } else if ([verb isEqualToString:@"SYNTH_SCROLL"] && parts.count == 6) {
+    BOOL precise = parts[5].integerValue != 0;
+    CGEventRef quartz = CGEventCreateScrollWheelEvent2(
+        NULL, precise ? kCGScrollEventUnitPixel : kCGScrollEventUnitLine, 2,
+        (int32_t)parts[4].doubleValue, (int32_t)parts[3].doubleValue, 0);
+    NSPoint windowPoint = [self windowPointForViewX:parts[1].doubleValue
+                                                  y:parts[2].doubleValue];
+    NSPoint screenPoint = [self.window convertPointToScreen:windowPoint];
+    CGEventSetLocation(quartz,
+                       CGPointMake(screenPoint.x, [self desktopTop] - screenPoint.y));
+    CGEventSetIntegerValueField(quartz, kCGMouseEventWindowUnderMousePointer,
+                                number);
+    CGEventSetIntegerValueField(
+        quartz, kCGMouseEventWindowUnderMousePointerThatCanHandleThisEvent,
+        number);
+    event = [NSEvent eventWithCGEvent:quartz];
+    CFRelease(quartz);
+  }
+  if (event == nil) {
+    [self printError:@"BAD_SYNTH"];
+    return;
+  }
+  [NSApp postEvent:event atStart:NO];
+}
+
 - (void)setBoundsFromCommand:(NSString *)command {
   NSScanner *scanner = [NSScanner scannerWithString:command];
   scanner.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
@@ -840,6 +1063,8 @@ static const NSUInteger kClipboardChunk = 6000;
     fflush(stdout);
   } else if ([command hasPrefix:@"SET_BOUNDS "]) {
     [self setBoundsFromCommand:command];
+  } else if ([command hasPrefix:@"SYNTH_"]) {
+    [self synthesize:command];
   } else if ([command hasPrefix:@"CLIPBOARD_READ "]) {
     [self readClipboard:command];
   } else if ([command hasPrefix:@"CLIPBOARD_APPEND "]) {

@@ -10756,7 +10756,21 @@ proporção ele aparece nos outros caminhos, não.
   de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de
   modificador **assumidos**; apenas ABIs **LP64**;
 - **macOS**: sem drag-and-drop, sem IME (`hasIme: false` nas três
-  estratégias); as APIs de SO não vinculam AppKit nem Foundation. O
+  estratégias); as APIs de SO não vinculam AppKit nem Foundation. **Até
+  12/10/2026 também não havia input**, e nenhuma lista dizia isso: o probe
+  anunciava `keyboardInput`, `pointerInput` e `scrollInput`, o host imprimia
+  uma linha `INPUT=` por evento, e nada em `lib/` a transformava em evento do
+  framework - a linha chegava a um `inputListener` que só as ferramentas de
+  latência ligavam, e uma janela macOS não podia ser clicada nem receber
+  texto. Agora o host manda botão, modificadores, `clickCount`, deltas de
+  rolagem e o caractere da tecla segundo o layout, mais uma linha
+  `TEXT_INPUT=` com o texto; `macos_input.dart` traduz para os VKs do Windows
+  que os widgets comparam (letra pelo layout, o resto por posição) e
+  `tool/macos_input_smoke.dart` prova da fila de eventos do AppKit até um
+  `Button` e um `TextField` de verdade, com eventos que o host posta na
+  própria fila (de fora exigiria permissão de acessibilidade). Command chega
+  como `meta`, não como `control`; os atalhos de edição ainda só olham
+  `control`, então **Cmd+C num `TextField` ainda não copia**. O
   **clipboard de texto existe desde 12/10/2026**, pelo host AppKit
   (`macos_clipboard.dart`: `CLIPBOARD_READ`/`APPEND`/`WRITE`, texto em base64
   de UTF-8 em pedaços abaixo do teto de linha), só na estratégia

@@ -721,6 +721,12 @@ final class MacosHostProcess
       _sink.onViewInput(kind, x, y);
 
   @override
+  void onInputDetail(HostInputDetail detail) => _sink.onInputDetail(detail);
+
+  @override
+  void onTextInput(String base64) => _sink.onTextInput(base64);
+
+  @override
   void onAck(HostAckKind kind, int value) {
     if (kind == HostAckKind.notMainThread) {
       // The one banner answer that is fatal on its own: a host that is not on

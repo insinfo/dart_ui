@@ -256,6 +256,18 @@ abstract interface class HostMessageSink {
   /// second event: consumers must not deliver both.
   void onViewInput(HostInputKind kind, double x, double y);
 
+  /// The whole `INPUT=` line, when the host sent the fields after the fifth.
+  ///
+  /// Called *after* [onInput] for the same line, and only by a host new enough
+  /// to append them. [onInput] keeps the five fields the latency probes were
+  /// written against; this is what turning the line into framework input
+  /// needs - the button, the modifiers, the scroll deltas.
+  void onInputDetail(HostInputDetail detail);
+
+  /// `TEXT_INPUT=<base64>`: the characters the key press just reported in an
+  /// `INPUT=keyDown` line produced, as base64 of UTF-8.
+  void onTextInput(String base64);
+
   void onAck(HostAckKind kind, int value);
 
   /// `SURFACE_OK <id> <w>x<h>`, the deprecated lookup path. [slot] is -1 when
@@ -317,6 +329,12 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
   void onViewInput(HostInputKind kind, double x, double y) {}
 
   @override
+  void onInputDetail(HostInputDetail detail) {}
+
+  @override
+  void onTextInput(String base64) {}
+
+  @override
   void onAck(HostAckKind kind, int value) {}
 
   @override
@@ -339,6 +357,70 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onUnrecognised(String line) {}
+}
+
+/// Every field of an `INPUT=` line from a host that sends them all.
+///
+/// ```text
+/// INPUT=<kind>:<x>:<y>:<keyCode>:<machTime>:<button>:<modifierFlags>:
+///       <clickCount>:<deltaX>:<deltaY>:<flags>:<keyChar>
+/// ```
+///
+/// The host's comment above `reportMonitoredEvent:` is the other half of this
+/// definition.
+final class HostInputDetail {
+  const HostInputDetail({
+    required this.kind,
+    required this.x,
+    required this.y,
+    required this.keyCode,
+    required this.machTime,
+    required this.button,
+    required this.modifierFlags,
+    required this.clickCount,
+    required this.deltaX,
+    required this.deltaY,
+    required this.flags,
+    required this.keyChar,
+  });
+
+  final HostInputKind kind;
+
+  /// View coordinates in points, top-left origin (the view is flipped).
+  final double x;
+  final double y;
+
+  /// The hardware key code (`kVK_*`), 0 for anything that is not a key.
+  final int keyCode;
+
+  /// `mach_absolute_time()` when the host saw the event.
+  final int machTime;
+
+  /// `NSEvent.buttonNumber` for a mouse event, -1 otherwise.
+  final int button;
+
+  /// `NSEvent.modifierFlags`, raw.
+  final int modifierFlags;
+
+  /// `NSEvent.clickCount` for a press or release, 0 otherwise.
+  final int clickCount;
+
+  /// `scrollingDeltaX`/`scrollingDeltaY` for a scroll, in AppKit's sign: a
+  /// positive [deltaY] moves the content down.
+  final double deltaX;
+  final double deltaY;
+
+  /// Bit 0: `hasPreciseScrollingDeltas`. Bit 1: `isARepeat`.
+  final int flags;
+
+  /// The first code point of `charactersIgnoringModifiers`, 0 if none.
+  final int keyChar;
+
+  /// Whether [deltaX]/[deltaY] are points (a trackpad) rather than lines.
+  bool get hasPreciseScrollingDeltas => flags & 1 != 0;
+
+  /// Whether this key press is the keyboard's auto-repeat.
+  bool get isRepeat => flags & 2 != 0;
 }
 
 /// How a clipboard request ended, from `CLIPBOARD=<request>:<RESULT>`.
@@ -502,6 +584,9 @@ final class HostProtocolParser {
         if (_startsWith('SURFACE_OK ')) return _parseSurfaceAttached(11);
         if (_startsWith('SHM_OK ')) return _ackAt(HostAckKind.sharedMemory, 7);
       case 0x54: // 'T'
+        if (_startsWith('TEXT_INPUT=')) {
+          return _sink.onTextInput(_stringFrom(11));
+        }
         if (_startsWith('TITLE_OK')) return _sink.onAck(HostAckKind.title, 0);
         if (_startsWith('TEARDOWN=PASS')) {
           return _sink.onAck(HostAckKind.teardown, 0);
@@ -603,6 +688,39 @@ final class HostProtocolParser {
       keyCode == kHostFieldMissing ? 0 : keyCode,
       machTime == kHostFieldMissing ? 0 : machTime,
     );
+    // The fields a protocol 4 host appends. All or nothing: a line that
+    // stops partway is a host this parser does not understand, and inventing
+    // the missing fields would put a guessed button or modifier into input.
+    final button = _readIntField();
+    if (button == kHostFieldMissing) return;
+    final modifierFlags = _readIntField();
+    final clickCount = _readIntField();
+    final deltaX = _readDoubleField();
+    final deltaY = _readDoubleField();
+    final flags = _readIntField();
+    final keyChar = _readIntField();
+    if (modifierFlags == kHostFieldMissing ||
+        clickCount == kHostFieldMissing ||
+        deltaX.isNaN ||
+        deltaY.isNaN ||
+        flags == kHostFieldMissing ||
+        keyChar == kHostFieldMissing) {
+      return _sink.onError('BAD_INPUT_DETAIL');
+    }
+    _sink.onInputDetail(HostInputDetail(
+      kind: kind,
+      x: x,
+      y: y,
+      keyCode: keyCode == kHostFieldMissing ? 0 : keyCode,
+      machTime: machTime == kHostFieldMissing ? 0 : machTime,
+      button: button,
+      modifierFlags: modifierFlags,
+      clickCount: clickCount,
+      deltaX: deltaX,
+      deltaY: deltaY,
+      flags: flags,
+      keyChar: keyChar,
+    ));
   }
 
   // VIEW_INPUT=<kind>:<x>:<y>

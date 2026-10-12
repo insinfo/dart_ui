@@ -25,6 +25,7 @@ import '../../foundation/lifecycle.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/framebuffer.dart';
@@ -33,6 +34,7 @@ import 'host_process.dart';
 import 'host_protocol.dart';
 import 'host_supervisor.dart';
 import 'io_surface.dart';
+import 'macos_input.dart';
 import 'surface_pool.dart';
 
 /// Called for every input event the host dequeued.
@@ -204,6 +206,21 @@ final class MacosWindow
   MacosSurfacePool? get pool => _pool;
 
   set inputListener(MacosInputListener? listener) => _inputListener = listener;
+
+  /// Posts a synthetic `NSEvent` into the host's own event queue.
+  ///
+  /// For smokes: `tool/macos_input_smoke.dart` drives clicks, keys and scrolls
+  /// through the real dequeue and event monitor with it, because a synthetic
+  /// event from another process needs accessibility permission and never
+  /// arrived on the machine this was written on. Accepts only the `SYNTH_`
+  /// commands the host documents above `synthesize:`, so it cannot be used to
+  /// send anything else down the pipe. Returns false when there is no host.
+  bool synthesizeInput(String command) {
+    if (!command.startsWith('SYNTH_') || command.contains('\n')) {
+      throw ArgumentError.value(command, 'command', 'not a SYNTH_ command');
+    }
+    return _supervisor?.send('$command\n') ?? false;
+  }
 
   /// Brings the window up: starts hidden, reads its scale, then attaches pixels.
   ///
@@ -692,6 +709,39 @@ final class MacosWindow
     dispose();
   }
 
+  /// Host input, as framework input. See `macos_input.dart`.
+  ///
+  /// Until this existed the probe reported keyboard, pointer and scroll input
+  /// for this backend while nothing in `lib/` turned an `INPUT=` line into an
+  /// event: the lines reached [inputListener], which only the latency tools
+  /// set, and a window could be neither clicked nor typed into.
+  void _onInputDetail(HostInputDetail detail) {
+    if (detail.kind == HostInputKind.keyDown) {
+      _lastKeyDownMachTime = detail.machTime;
+    }
+    translateMacosInput(
+      detail,
+      windowId: _id,
+      generation: _generation.current,
+      emit: _emit,
+    );
+  }
+
+  /// The key press a `TEXT_INPUT=` line belongs to: the host prints the text
+  /// straight after the `INPUT=keyDown` that produced it.
+  int _lastKeyDownMachTime = 0;
+
+  void _onTextInput(String base64) {
+    final String? text = macosTextInput(base64);
+    if (text == null) return;
+    _emit(TextInputEvent(
+      windowId: _id,
+      generation: _generation.current,
+      timestamp: macosMachTimeToDuration(_lastKeyDownMachTime),
+      text: text,
+    ));
+  }
+
   void _emit(PlatformWindowEvent event) {
     if (_events.isClosed) return;
     _events.add(event);
@@ -757,6 +807,12 @@ final class _HostSink with HostMessageSinkAdapter {
     int machTime,
   ) =>
       _window._inputListener?.call(kind, x, y, keyCode, machTime);
+
+  @override
+  void onInputDetail(HostInputDetail detail) => _window._onInputDetail(detail);
+
+  @override
+  void onTextInput(String base64) => _window._onTextInput(base64);
 }
 
 /// The default factory: real `IOSurface`s.
