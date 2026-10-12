@@ -28,6 +28,9 @@
 /// and relies on what the atlases write: new glyphs and masks go to texels no
 /// earlier frame sampled, and the one write that reuses texels - a full atlas
 /// recycled mid-frame - happens after a pass this file's caller waited for.
+/// A video stream reuses one texture and rewrites it every frame, and that is
+/// safe for the same reason: a window's `present` awaits the GPU before the
+/// next frame begins, so no earlier frame is still sampling it.
 library;
 
 import 'dart:ffi';
@@ -35,11 +38,13 @@ import 'dart:typed_data';
 
 import '../../../ffi/native_memory.dart';
 import '../../../ffi/objc_runtime.dart';
+import '../../../graphics/image/decoded_image.dart';
 import '../../framebuffer.dart';
 import '../gpu_glyph_atlas.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_texture.dart';
+import '../gpu_video_image.dart';
 import 'metal_bindings.dart';
 import 'metal_device.dart';
 
@@ -79,7 +84,10 @@ final class MetalTexture implements GpuTextureHandle {
 }
 
 /// Every texture of one `MTLDevice`, by id.
-final class MetalTextureStore {
+///
+/// Also the [GpuTextureAllocator] the shared video cache asks for its one
+/// texture per stream.
+final class MetalTextureStore implements GpuTextureAllocator {
   MetalTextureStore._(this._gpu) {
     _gpu.addDisposeHook(_dispose);
   }
@@ -216,6 +224,38 @@ final class MetalTextureStore {
     glyphAtlas.markUploaded();
   }
 
+  @override
+  GpuTextureHandle createTexture({
+    required int width,
+    required int height,
+    required GpuTextureFormat format,
+    GpuTextureFilter filter = GpuTextureFilter.linear,
+  }) =>
+      create(width: width, height: height, format: format, filter: filter);
+
+  @override
+  void uploadRegion(
+    GpuTextureHandle texture, {
+    required int x,
+    required int y,
+    required int width,
+    required int height,
+    required Uint8List pixels,
+    required int bytesPerRow,
+  }) =>
+      upload(texture as MetalTexture,
+          x: x,
+          y: y,
+          width: width,
+          height: height,
+          pixels: pixels,
+          bytesPerRow: bytesPerRow);
+
+  @override
+  void releaseTexture(GpuTextureHandle texture) {
+    if (texture is MetalTexture) release(texture);
+  }
+
   void release(MetalTexture texture) {
     if (!texture._valid) return;
     texture._valid = false;
@@ -236,17 +276,25 @@ final class MetalTextureStore {
 ///
 /// Keyed by identity, as `D3d11ImageCache` is: a display list hands the same
 /// `Framebuffer` object every frame it shows the same image, and an image that
-/// changes is a new object. Anything that is not a [Framebuffer] - a video
-/// frame - has no texture here, and the sink refuses it by name.
+/// changes is a new object. A decoded video frame goes to the
+/// [GpuVideoImageCache] every other GPU backend uses - one texture per stream,
+/// rewritten per frame - and anything else has no texture here, which the
+/// sink refuses by name.
 final class MetalImageCache implements GpuImageResolver {
   MetalImageCache._(this._store);
 
   final MetalTextureStore _store;
   final Expando<MetalTexture> _byImage = Expando<MetalTexture>('MetalImage');
 
+  /// [ImageChannelOrder.rgba] because a converted frame lands in an
+  /// `RGBA8Unorm` texture; a BGRA frame skips the conversion into a
+  /// `BGRA8Unorm` one, which Metal samples as RGBA all the same.
+  late final GpuVideoImageCache video =
+      GpuVideoImageCache(_store, channelOrder: ImageChannelOrder.rgba);
+
   @override
   GpuTextureHandle? resolve(Object image) {
-    if (image is! Framebuffer) return null;
+    if (image is! Framebuffer) return video.resolve(image);
     final MetalTexture? cached = _byImage[image];
     if (cached != null && cached.isValid) return cached;
     final MetalTexture texture = _store.create(

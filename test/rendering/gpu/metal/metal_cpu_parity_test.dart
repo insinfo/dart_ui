@@ -59,6 +59,7 @@ import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/video/video_frame.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/metal/metal_device.dart';
@@ -254,6 +255,27 @@ void main() {
       list.drawRect(0, 18, 24, 24, ink);
       _appendGlyphRun(list, baseline: 8);
       await _expectParity(gpu, pipelines, list, tolerance: 0);
+    }, skip: _needsMac);
+  });
+
+  group('video frames', () {
+    test('a BGRA frame, uploaded as the decoder wrote it: 0', () async {
+      // The direct route: the frame's own bytes into a BGRA8Unorm texture,
+      // never reordered in Dart. A wrong format mapping anywhere swaps red
+      // with blue on every video, and the blocks below make that the loudest
+      // possible failure. The CPU converts the same frame through the
+      // reference converter, so the two agree only if the sampler really
+      // reads what the backend claims.
+      await _expectParity(
+          gpu, pipelines, _videoFrame(VideoPixelFormat.bgra8888),
+          tolerance: 0);
+    }, skip: _needsMac);
+
+    test('an NV12 frame, converted to RGBA: 0', () async {
+      // The route every YUV stream takes: converted once into a staging
+      // buffer and uploaded into an RGBA8Unorm texture reused per stream.
+      await _expectParity(gpu, pipelines, _videoFrame(VideoPixelFormat.nv12),
+          tolerance: 0);
     }, skip: _needsMac);
   });
 }
@@ -605,5 +627,59 @@ DisplayList _srcLayer() {
   list
     ..drawRect(6, 6, 18, 12, content)
     ..restore();
+  return list;
+}
+
+/// A [format] video frame drawn over the whole surface, one texel per pixel.
+///
+/// BGRA frames get blocks of pure red, blue, green and a colour asymmetric in
+/// every channel; NV12 frames get blocks of distinct luma and chroma. Not
+/// scaled, so the comparison is between two routes to the same texels and not
+/// between two resamplers.
+DisplayList _videoFrame(VideoPixelFormat format) {
+  final VideoFrame frame = VideoFrame.allocate(
+    VideoFrameFormat(
+      pixelFormat: format,
+      width: _size,
+      height: _size,
+      range: VideoColorRange.full,
+    ),
+    streamId: format.index + 1,
+  );
+  if (format == VideoPixelFormat.bgra8888) {
+    final VideoPlane plane = frame.plane(0);
+    const List<List<int>> colors = <List<int>>[
+      <int>[0, 0, 255, 255], // red
+      <int>[255, 0, 0, 255], // blue
+      <int>[0, 255, 0, 255], // green
+      <int>[32, 96, 200, 255], // asymmetric in every channel
+    ];
+    for (var y = 0; y < _size; y++) {
+      for (var x = 0; x < _size; x++) {
+        plane.bytes.setAll(plane.offset + y * plane.bytesPerRow + x * 4,
+            colors[(x ~/ 6 + y ~/ 6) % colors.length]);
+      }
+    }
+  } else {
+    final VideoPlane luma = frame.plane(0);
+    final VideoPlane chroma = frame.plane(1);
+    for (var y = 0; y < _size; y++) {
+      for (var x = 0; x < _size; x++) {
+        luma.bytes[luma.offset + y * luma.bytesPerRow + x] =
+            40 + ((x ~/ 6 + y ~/ 6) % 4) * 50;
+      }
+    }
+    for (var y = 0; y < _size ~/ 2; y++) {
+      for (var x = 0; x < _size ~/ 2; x++) {
+        final int at = chroma.offset + y * chroma.bytesPerRow + x * 2;
+        chroma.bytes[at] = 64 + (x ~/ 3) * 40; // U
+        chroma.bytes[at + 1] = 200 - (y ~/ 3) * 40; // V
+      }
+    }
+  }
+  final DisplayList list = DisplayList();
+  final int paint = list.addPaint(colorArgb: 0xFFFFFFFF, antiAlias: false);
+  list.drawImage(list.addImage(frame), 0, 0, _size.toDouble(),
+      _size.toDouble(), 0, 0, _size.toDouble(), _size.toDouble(), paint);
   return list;
 }
