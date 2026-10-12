@@ -48,13 +48,16 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
+import '../layout/render_flex.dart' show MainAxisSize;
+import '../layout/render_proxy_box.dart' show RenderProxyBox;
 import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
 import '../semantics/semantics.dart';
-import 'basic.dart' show DefaultTextStyle, RenderText, SizedBox;
+import 'basic.dart' show DefaultTextStyle, RenderText, Row, SizedBox, Text;
 import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
@@ -1053,6 +1056,37 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
   /// Highlights the first enabled row, as F10 does to a menu bar.
   void highlightFirst() => _move(1, from: -1);
 
+  /// Chooses the enabled row whose mnemonic is [character]: opens it when it
+  /// has a submenu, runs it otherwise. False when no row has that mnemonic.
+  bool chooseMnemonic(String character) {
+    final String wanted = character.toLowerCase();
+    for (int index = 0; index < childCount; index++) {
+      final MenuRowBehavior? row = _rowAt(index);
+      if (row == null || !row.enabled || row.mnemonic != wanted) continue;
+      _setHighlighted(index, opensSubmenu: false);
+      if (row.opensSubmenu) {
+        if (!row.isSubmenuOpen) row.openSubmenu();
+      } else {
+        row.activateRow();
+      }
+      return true;
+    }
+    return false;
+  }
+
+  /// The character a letter or digit key types for a mnemonic, or null.
+  static String? mnemonicCharacter(KeyEvent event) {
+    final int key = event.logicalKey;
+    final bool letterOrDigit =
+        (key >= 0x30 && key <= 0x39) || (key >= 0x41 && key <= 0x5A);
+    if (!letterOrDigit) return null;
+    if (event.modifiers.contains(KeyModifier.control) ||
+        event.modifiers.contains(KeyModifier.meta)) {
+      return null;
+    }
+    return String.fromCharCode(key).toLowerCase();
+  }
+
   /// Removes the highlight, closing whatever it had open.
   void clearHighlight() => _setHighlighted(-1, opensSubmenu: false);
 
@@ -1102,6 +1136,10 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
         }
         return _escape(onArrowLeftEscape);
     }
+    // A letter with a mnemonic on this menu chooses that row - F in an
+    // open File menu's parent bar, or O for Open inside it.
+    final String? character = mnemonicCharacter(event);
+    if (character != null && chooseMnemonic(character)) return true;
     // Space and Enter, through the one activation path every control shares.
     return super.handleKeyEvent(event);
   }
@@ -1319,6 +1357,13 @@ mixin MenuRowBehavior on ControlBehavior {
   String? get rowLabel {
     final StringBuffer buffer = StringBuffer();
     void walk(RenderBox node) {
+      // One label, however many text runs it is split into to underline
+      // its mnemonic: "File", not "F ile".
+      if (node is RenderMenuAcceleratorLabel) {
+        if (buffer.isNotEmpty) buffer.write(' ');
+        buffer.write(node.text);
+        return;
+      }
       if (node is RenderText && node.text.isNotEmpty) {
         if (buffer.isNotEmpty) buffer.write(' ');
         buffer.write(node.text);
@@ -1328,6 +1373,22 @@ mixin MenuRowBehavior on ControlBehavior {
 
     visitChildren(walk);
     return buffer.isEmpty ? null : buffer.toString();
+  }
+
+  /// The lower-case mnemonic of this row's [MenuAcceleratorLabel], or null.
+  String? get mnemonic {
+    String? found;
+    void walk(RenderBox node) {
+      if (found != null) return;
+      if (node is RenderMenuAcceleratorLabel) {
+        found = node.mnemonic;
+        return;
+      }
+      node.visitChildren(walk);
+    }
+
+    visitChildren(walk);
+    return found;
   }
 
   /// The pill behind the row the cursor is on.
@@ -2228,6 +2289,23 @@ final class _MenuBarState extends State<MenuBar> {
       _toggleKeyboard();
       return true;
     }
+    // Alt+letter: the menu whose mnemonic it is, from anywhere in the window.
+    if (event is KeyDownEvent && event.modifiers.contains(KeyModifier.alt)) {
+      final String? character = RenderMenuPanel.mnemonicCharacter(event);
+      final RenderMenuPanel? panel = _panel.panel;
+      if (character != null && panel != null) {
+        final FocusNode? before = _keysOwner?.focusManager.primaryFocus;
+        if (!_focusNode.hasPrimaryFocus) _focusNode.requestFocus();
+        if (panel.chooseMnemonic(character)) {
+          if (!identical(before, _focusNode)) _returnTo = before;
+          return true;
+        }
+        // No such menu: the keyboard stays where it was.
+        if (before != null && !identical(before, _focusNode)) {
+          before.requestFocus(FocusChangeReason.restoration);
+        }
+      }
+    }
     // Escape on the bar itself, with no menu open: the panel has no dismiss
     // of its own - a bar is window chrome, not a popup - so the key falls
     // through to here. With a menu open, that menu's panel took it first.
@@ -2290,6 +2368,139 @@ final class _MenuBarState extends State<MenuBar> {
         ),
       ),
     );
+  }
+}
+
+/// A menu label with a mnemonic: `'&File'` shows "File" with the F
+/// underlined, and F chooses the row while its menu has the keyboard - or
+/// Alt+F from anywhere, on a [MenuBar]. `&&` is a literal ampersand.
+///
+/// The Flutter name and spelling. The underline is drawn on Windows and
+/// Linux and left out under the Mac convention, whose menus have none.
+final class MenuAcceleratorLabel extends StatelessWidget {
+  const MenuAcceleratorLabel(this.label, {super.key});
+
+  final String label;
+
+  /// [label] without its markers, and the index of the mnemonic character in
+  /// that text, or -1 when it has none.
+  static ({String text, int index}) parse(String label) {
+    final StringBuffer text = StringBuffer();
+    int index = -1;
+    for (int i = 0; i < label.length; i++) {
+      final String character = label[i];
+      if (character == '&' && i + 1 < label.length) {
+        i++;
+        if (label[i] != '&' && index < 0) index = text.length;
+        text.write(label[i]);
+        continue;
+      }
+      text.write(character);
+    }
+    return (text: text.toString(), index: index);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ({String text, int index}) parsed = parse(label);
+    final String text = parsed.text;
+    final int index = parsed.index;
+    final String? mnemonic = index < 0 ? null : text[index].toLowerCase();
+    final bool underline =
+        index >= 0 && platformEditingConvention != EditingConvention.mac;
+    return _AcceleratorLabelWidget(
+      text: text,
+      mnemonic: mnemonic,
+      child: !underline
+          ? Text(text)
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: <Widget>[
+                if (index > 0) Text(text.substring(0, index)),
+                _UnderlineWidget(
+                  color: Theme.of(context).foreground,
+                  child: Text(text[index]),
+                ),
+                if (index + 1 < text.length) Text(text.substring(index + 1)),
+              ],
+            ),
+    );
+  }
+}
+
+final class _AcceleratorLabelWidget extends SingleChildRenderObjectWidget {
+  const _AcceleratorLabelWidget({
+    required this.text,
+    required this.mnemonic,
+    required super.child,
+  });
+
+  final String text;
+  final String? mnemonic;
+
+  @override
+  RenderMenuAcceleratorLabel createRenderObject(BuildContext context) =>
+      RenderMenuAcceleratorLabel(text: text, mnemonic: mnemonic);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant RenderMenuAcceleratorLabel object,
+  ) {
+    object
+      ..text = text
+      ..mnemonic = mnemonic;
+  }
+}
+
+/// Where a menu row finds the text and mnemonic of a [MenuAcceleratorLabel].
+final class RenderMenuAcceleratorLabel extends RenderProxyBox {
+  RenderMenuAcceleratorLabel({required this.text, required this.mnemonic});
+
+  /// The label as read: markers removed.
+  String text;
+
+  /// Lower-case, or null.
+  String? mnemonic;
+}
+
+final class _UnderlineWidget extends SingleChildRenderObjectWidget {
+  const _UnderlineWidget({required this.color, required super.child});
+
+  final Color color;
+
+  @override
+  _RenderUnderline createRenderObject(BuildContext context) =>
+      _RenderUnderline(color);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant _RenderUnderline object,
+  ) {
+    object.color = color;
+  }
+}
+
+final class _RenderUnderline extends RenderProxyBox {
+  _RenderUnderline(this._color);
+
+  Color _color;
+
+  set color(Color value) {
+    if (value == _color) return;
+    _color = value;
+    markNeedsPaint();
+  }
+
+  @override
+  void paint(DisplayList list, Offset offset) {
+    super.paint(list, offset);
+    // Just under the glyphs: the box is the line's height, and the
+    // descender space is the bottom fifth of it.
+    final double y = (offset.dy + size.height * 0.82).roundToDouble();
+    list.drawRect(offset.dx, y, offset.dx + size.width, y + 1,
+        list.addPaint(colorArgb: _color.value));
   }
 }
 

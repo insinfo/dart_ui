@@ -594,6 +594,51 @@ void main() {
       harness.dispose();
     });
 
+    test('menu labels drop their markers, keep their text and find the letter',
+        () {
+      expect(MenuAcceleratorLabel.parse('&File'), (text: 'File', index: 0));
+      expect(
+          MenuAcceleratorLabel.parse('Save &As'), (text: 'Save As', index: 5));
+      expect(MenuAcceleratorLabel.parse('&&Co'), (text: '&Co', index: -1));
+      expect(MenuAcceleratorLabel.parse('A&&B &C'), (text: 'A&B C', index: 4));
+      final _BarHarness harness = _BarHarness(accelerators: true)..frame();
+      expect(harness.barButton('File').rowLabel, 'File');
+      expect(harness.barButton('File').mnemonic, 'f');
+      harness.dispose();
+    });
+
+    test('Alt+E opens Edit from anywhere, and R then runs Redo', () {
+      final _BarHarness harness = _BarHarness(accelerators: true)..frame();
+      focusBehind(harness);
+
+      harness.keyDown(0x45, alt: true); // E
+      expect(harness.openMenuLabels, <String>['Undo', 'Redo']);
+
+      harness.keyDown(0x52); // R
+      expect(harness.chosen, <String>['Redo']);
+      expect(harness.host.openCount, 0);
+      harness.dispose();
+    });
+
+    test('a letter no menu claims leaves the keyboard alone', () {
+      final _BarHarness harness = _BarHarness(accelerators: true)..frame();
+      final FocusNode? behind = focusBehind(harness);
+      harness.keyDown(0x5A, alt: true); // Z
+      expect(harness.owner.focusManager.primaryFocus, same(behind));
+      expect(harness.host.openCount, 0);
+      harness.dispose();
+    });
+
+    test('after F10 the bare letter is enough', () {
+      final _BarHarness harness = _BarHarness(accelerators: true)..frame();
+      focusBehind(harness);
+      harness
+        ..pressKey(0x79) // F10
+        ..pressKey(0x46); // F
+      expect(harness.openMenuLabels, <String>['New', 'Open']);
+      harness.dispose();
+    });
+
     test('on a Mac neither key touches the bar', () {
       debugEditingConventionOverride = EditingConvention.mac;
       final _BarHarness harness = _BarHarness()..frame();
@@ -983,6 +1028,15 @@ final class _ChainHarness extends _Harness {
 
 /// A [MenuBar] with two top-level menus.
 final class _BarHarness extends _Harness {
+  _BarHarness({this.accelerators = false});
+
+  /// Labels as `MenuAcceleratorLabel('&File')` rather than plain text.
+  final bool accelerators;
+
+  Widget _label(String marked) => accelerators
+      ? MenuAcceleratorLabel(marked)
+      : Text(marked.replaceAll('&', ''));
+
   final List<String> chosen = <String>[];
   int behindPresses = 0;
 
@@ -995,27 +1049,27 @@ final class _BarHarness extends _Harness {
                 menuChildren: <Widget>[
                   MenuItemButton(
                     onPressed: () => chosen.add('New'),
-                    child: const Text('New'),
+                    child: _label('&New'),
                   ),
                   MenuItemButton(
                     onPressed: () => chosen.add('Open'),
-                    child: const Text('Open'),
+                    child: _label('&Open'),
                   ),
                 ],
-                child: const Text('File'),
+                child: _label('&File'),
               ),
               SubmenuButton(
                 menuChildren: <Widget>[
                   MenuItemButton(
                     onPressed: () => chosen.add('Undo'),
-                    child: const Text('Undo'),
+                    child: _label('&Undo'),
                   ),
                   MenuItemButton(
                     onPressed: () => chosen.add('Redo'),
-                    child: const Text('Redo'),
+                    child: _label('&Redo'),
                   ),
                 ],
-                child: const Text('Edit'),
+                child: _label('&Edit'),
               ),
             ],
           ),
