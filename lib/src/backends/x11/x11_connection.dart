@@ -27,6 +27,7 @@ import 'x11_keyboard.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
 import 'x11_put_image_plan.dart';
+import 'x11_randr.dart';
 import 'x11_scale.dart';
 import 'x11_surface.dart';
 
@@ -124,6 +125,21 @@ final class X11DesktopGeometry {
 /// Optional live desktop query, separate so protocol fakes need not invent it.
 abstract interface class X11ScreenClient {
   X11DesktopGeometry readDesktopGeometry();
+}
+
+/// The monitors RandR 1.5 reports, for per-monitor screens.
+///
+/// A seam of its own for the reason [X11CpuClient] is: a test double, or a
+/// connection to a server without RANDR, simply does not implement it, and
+/// the backend falls back to the root screen.
+abstract interface class X11MonitorClient {
+  /// The logical monitors, or null when this connection cannot ask - no
+  /// RANDR extension, no libxcb-randr, or a server older than RandR 1.5 that
+  /// answers `RRGetMonitors` with an error.
+  List<X11Monitor>? readMonitors();
+
+  /// The name an atom stands for, used for the monitor's name.
+  String? atomName(int value);
 }
 
 /// Window and event operations exposed by a production X11 connection.
@@ -361,6 +377,7 @@ final class X11Connection
         X11KeyboardClient,
         X11ClipboardClient,
         X11ScreenClient,
+        X11MonitorClient,
         X11WindowStateClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
@@ -1443,6 +1460,41 @@ final class X11Connection
         widthInMillimetres: screenWidthMillimetres,
         heightInMillimetres: screenHeightMillimetres,
       );
+
+  XcbRandrBindings? _randr;
+  bool _randrLoaded = false;
+
+  /// Why per-monitor geometry is unavailable, when it is: the missing library
+  /// or symbol. Empty while it works.
+  final List<BackendDiagnostic> randrDiagnostics = <BackendDiagnostic>[];
+
+  @override
+  List<X11Monitor>? readMonitors() {
+    throwIfDisposed();
+    if (!extensions.contains('RANDR')) return null;
+    if (!_randrLoaded) {
+      _randrLoaded = true;
+      _randr = XcbRandrBindings.load(randrDiagnostics);
+    }
+    final XcbRandrBindings? randr = _randr;
+    if (randr == null) return null;
+    final cookie = randr.getMonitors(_handle, root, 1);
+    final reply = randr.getMonitorsReply(_handle, cookie, errorScratch);
+    if (reply == nullptr) {
+      // RandR before 1.5 has no RRGetMonitors: BadRequest, not a failure.
+      _drainReplyError('RRGetMonitors');
+      return null;
+    }
+    try {
+      final int words = readU32(reply, 4);
+      final List<X11Monitor> monitors = decodeRandrMonitors(
+        Uint8List.fromList(reply.asTypedList(32 + words * 4)),
+      );
+      return monitors.isEmpty ? null : monitors;
+    } finally {
+      libc.free(reply);
+    }
+  }
 
   @override
   X11DesktopGeometry readDesktopGeometry() {

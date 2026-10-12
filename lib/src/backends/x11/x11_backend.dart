@@ -62,6 +62,7 @@ import 'x11_events.dart';
 import 'x11_keyboard.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
+import 'x11_randr.dart';
 import 'x11_scale.dart';
 import 'x11_surface.dart';
 import 'x11_window.dart';
@@ -404,6 +405,23 @@ final class X11WindowingBackend
     if (geometry.widthPixels <= 0 || geometry.heightPixels <= 0) {
       return const <ScreenInfo>[];
     }
+    final Rect workArea = Rect.fromLTWH(
+      geometry.workX / scale,
+      geometry.workY / scale,
+      geometry.workWidth / scale,
+      geometry.workHeight / scale,
+    );
+    if (connection case final X11MonitorClient monitorClient) {
+      final List<X11Monitor>? monitors = monitorClient.readMonitors();
+      if (monitors != null) {
+        return monitorScreens(
+          monitors,
+          scale: scale,
+          desktopWorkArea: workArea,
+          nameOf: monitorClient.atomName,
+        );
+      }
+    }
     return <ScreenInfo>[
       ScreenInfo(
         bounds: Rect.fromLTWH(
@@ -412,16 +430,47 @@ final class X11WindowingBackend
           geometry.widthPixels / scale,
           geometry.heightPixels / scale,
         ),
-        workArea: Rect.fromLTWH(
-          geometry.workX / scale,
-          geometry.workY / scale,
-          geometry.workWidth / scale,
-          geometry.workHeight / scale,
-        ),
+        workArea: workArea,
         scale: scale,
         isPrimary: true,
         name: 'X11 root screen',
       ),
+    ];
+  }
+
+  /// One [ScreenInfo] per RandR monitor.
+  ///
+  /// X11 has one scale for the whole display - `Xft.dpi` - so every monitor
+  /// carries it. EWMH gives one work area for the whole desktop, so each
+  /// monitor's is that area clipped to the monitor: a panel along the bottom
+  /// of the left monitor shortens the left one, not both. When nothing is
+  /// flagged primary the first monitor is, which is what the server does
+  /// with its own output order.
+  static List<ScreenInfo> monitorScreens(
+    List<X11Monitor> monitors, {
+    required double scale,
+    required Rect desktopWorkArea,
+    String? Function(int atom)? nameOf,
+  }) {
+    final bool anyPrimary = monitors.any((X11Monitor m) => m.primary);
+    return <ScreenInfo>[
+      for (final (int index, X11Monitor monitor) in monitors.indexed)
+        () {
+          final Rect bounds = Rect.fromLTWH(
+            monitor.x / scale,
+            monitor.y / scale,
+            monitor.width / scale,
+            monitor.height / scale,
+          );
+          final Rect clipped = bounds.intersect(desktopWorkArea);
+          return ScreenInfo(
+            bounds: bounds,
+            workArea: clipped.isEmpty ? bounds : clipped,
+            scale: scale,
+            isPrimary: monitor.primary || (!anyPrimary && index == 0),
+            name: nameOf?.call(monitor.nameAtom) ?? 'monitor ${index + 1}',
+          );
+        }(),
     ];
   }
 
