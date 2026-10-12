@@ -507,34 +507,23 @@ final class D3d11VectorReplay {
     );
   }
 
-  /// The capabilities of a gradient draw, where the usual fallback is absent.
+  /// The capabilities of a gradient draw: the dense coverage atlas, and only
+  /// it.
   ///
-  /// Every other draw in this renderer can end up on the dense coverage atlas,
-  /// which is why every refusal above is a decision about cost. A gradient
-  /// cannot: the atlas stores one alpha per texel and the shader modulates it
-  /// by a single vertex colour, so routing a gradient there would paint a flat
-  /// fill. Approaches B and C have the same problem - both hand the rasteriser
-  /// geometry and a solid material - and this backend has no sparse route to
-  /// fall back to.
-  ///
-  /// So this reports **nothing at all**, which is what the selector needs to
-  /// raise `UnsupportedError`. The planning telemetry contains it and
-  /// `GpuRasterSink` turns the missing promotion into a refusal that names the
-  /// backend and says a gradient cannot be flattened to its fallback colour.
-  /// That is exactly the behaviour a Direct3D 11 device already had before
-  /// these routes existed, reached by a shorter path.
+  /// Approaches B and C hand the rasteriser geometry and one solid colour, so
+  /// a gradient routed there would paint a flat fill. The atlas used to be in
+  /// the same position - one alpha per texel modulated by a vertex colour -
+  /// and this reported nothing at all, which the selector turned into a
+  /// refusal. Since 12/10/2026 the dense pixel shader multiplies the coverage
+  /// by a ramp sampled at the pixel (`GpuGradientDraw`, register b1), so the
+  /// atlas is the one route that draws a gradient correctly.
   GpuPathStrategyCapabilities _gradientCapabilities() =>
       const GpuPathStrategyCapabilities(
-        // False even now that the backend has the shader, and for exactly the
-        // reason the coverage atlas is false beside it: the analytic quad
-        // modulates one vertex colour by a coverage it computed, and a ramp is
-        // not a colour. Promoting a gradient into it would paint a flat fill -
-        // the wrong picture this whole method exists to refuse. `GpuRasterSink`
-        // refuses a gradient rounded rectangle a second time on its own, in
-        // `fillDeviceRRect`, so the two agree even on a device with no vector
-        // wiring at all and therefore no call to this method.
+        // False: `GpuRasterSink` keeps a gradient off the analytic route in
+        // `fillDeviceRRect` and `_drawAnalyticPath`, so a promotion there
+        // would be declined a second time on its own.
         analyticPrimitives: false,
-        coverageAtlas: false,
+        coverageAtlas: true,
       );
 
   /// Releases what this wiring retains.

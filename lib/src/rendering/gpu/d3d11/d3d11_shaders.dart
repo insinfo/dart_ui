@@ -191,6 +191,71 @@ VertexOutput vertexMain(VertexInput input) {
 Texture2D<float4> sourceTexture : register(t0);
 SamplerState sourceSampler : register(s0);
 
+// A gradient fill's ramp, in GpuGradientDraw.writeDenseBlock's layout: five
+// float4 registers. control is kind (0 none, 1 linear, 2 radial), spread,
+// lookup scale and lookup bias. Bound for every batch; kind 0 when the batch
+// has no gradient, so the ramp texture is never read then.
+cbuffer GradientConstants : register(b1) {
+  float4 gradientControl;
+  float4 gradientRow0;
+  float4 gradientRow1;
+  float4 gradientGeometry0;
+  float4 gradientGeometry1;
+};
+
+Texture2D<float4> gradientRamp : register(t1);
+SamplerState gradientSampler : register(s1);
+
+// gl_sparse_strips.dart's gradientParameter, transcribed; the reference both
+// follow is GpuGradientShaderParameters.parameterAtTarget.
+float gradientParameter(float2 p) {
+  float2 local = float2(dot(gradientRow0.xyz, float3(p, 1.0)),
+                        dot(gradientRow1.xyz, float3(p, 1.0)));
+  if (gradientControl.x < 1.5) {
+    float2 direction = gradientGeometry0.zw - gradientGeometry0.xy;
+    float lengthSquared = dot(direction, direction);
+    return lengthSquared == 0.0
+        ? 0.0
+        : dot(local - gradientGeometry0.xy, direction) / lengthSquared;
+  }
+  float2 center = gradientGeometry0.xy;
+  float radius = gradientGeometry0.z;
+  float2 focus = float2(gradientGeometry0.w, gradientGeometry1.x);
+  float2 ray = local - focus;
+  if (ray.x == 0.0 && ray.y == 0.0) return 0.0;
+  if (focus.x == center.x && focus.y == center.y) return length(ray) / radius;
+  float2 focusFromCenter = focus - center;
+  float a = dot(ray, ray);
+  float b = 2.0 * dot(focusFromCenter, ray);
+  float c = dot(focusFromCenter, focusFromCenter) - radius * radius;
+  float discriminant = b * b - 4.0 * a * c;
+  if (a == 0.0 || discriminant < 0.0) return 0.0;
+  float root = sqrt(discriminant);
+  float first = (-b - root) / (2.0 * a);
+  float second = (-b + root) / (2.0 * a);
+  float scale = max(first > 0.0 ? first : 0.0, second > 0.0 ? second : 0.0);
+  return scale > 0.0 ? 1.0 / scale : 0.0;
+}
+
+// pad, repeat, reflect. Reflect with floor and not fmod, whose sign follows
+// the dividend in HLSL where GLSL's mod does not.
+float spreadGradient(float t, float spread) {
+  if (spread > 0.5 && spread < 1.5) return frac(t);
+  if (spread > 1.5) {
+    float repeated = t - 2.0 * floor(t * 0.5);
+    return repeated <= 1.0 ? repeated : 2.0 - repeated;
+  }
+  return clamp(t, 0.0, 1.0);
+}
+
+// The ramp at [p], straight alpha in the texture and premultiplied here.
+float4 gradientColor(float2 p) {
+  float t = spreadGradient(gradientParameter(p), gradientControl.y);
+  float4 straight = gradientRamp.Sample(
+      gradientSampler, float2(t * gradientControl.z + gradientControl.w, 0.5));
+  return float4(straight.rgb * straight.a, straight.a);
+}
+
 // Exact area of the pixel square at [p] that lies inside the rectangle [r].
 // Separable, which is why an axis-aligned rectangle needs no mask.
 float boxCoverage(float4 r, float2 p) {
@@ -234,7 +299,9 @@ float roundedCoverage(float4 r, float rad, float2 p) {
 }
 
 float4 pixelMain(VertexOutput input) : SV_Target {
-  float4 color = input.color;
+  // A gradient quad's vertex colour is white; the ramp replaces it.
+  float4 color = gradientControl.x > 0.5 ? gradientColor(input.devicePos)
+                                         : input.color;
   float coverage;
   if (mode == 1) {
     // A coverage mask scales the already-premultiplied colour, which is the

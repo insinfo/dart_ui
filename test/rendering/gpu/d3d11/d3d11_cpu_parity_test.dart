@@ -65,6 +65,7 @@ import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:dart_ui/src/graphics/video/video_frame.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
@@ -294,6 +295,113 @@ void main() {
       await _expectParity(session, _roundedRect(), tolerance: 0);
     });
   });
+
+  group('gradients, through the coverage atlas and a ramp lookup', () {
+    // Until 12/10/2026 every one of these raised UnsupportedCapabilityError:
+    // the dense route modulated coverage by one vertex colour and had nowhere
+    // to put a ramp. The same four scenes run against Metal in
+    // metal_cpu_parity_test.dart, where the observed deviation is 1 - the GPU
+    // interpolates the ramp and premultiplies in float, the CPU in 8 bits.
+    test('a linear ramp across a rectangle', () async {
+      await _expectParity(session, _gradientScene(_linearRect),
+          tolerance: _gradientTolerance);
+    });
+
+    test('a radial ramp with a focus, reflected, in a rounded rectangle',
+        () async {
+      await _expectParity(session, _gradientScene(_radialRRect),
+          tolerance: _gradientTolerance);
+    });
+
+    test('a repeating ramp on a path, under a transform', () async {
+      await _expectParity(session, _gradientScene(_repeatedPath),
+          tolerance: _gradientTolerance);
+    });
+
+    test('a ramp inside an offset layer, where the target origin moves',
+        () async {
+      await _expectParity(session, _gradientScene(_rampInLayer),
+          tolerance: _gradientTolerance);
+    });
+  });
+}
+
+const int _gradientTolerance = 1;
+
+const List<GradientStop> _stops = <GradientStop>[
+  GradientStop(0, 0xFFE03020),
+  GradientStop(0.5, 0x8020C040),
+  GradientStop(1, 0xFF2040E0),
+];
+
+DisplayList _gradientScene(void Function(DisplayList list) draw) {
+  final DisplayList list = DisplayList();
+  final int background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  draw(list);
+  return list;
+}
+
+void _linearRect(DisplayList list) {
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    antiAlias: false,
+    gradient: LinearGradient(
+        startX: 2, startY: 3, endX: 21, endY: 19, stops: _stops),
+  );
+  list.drawRect(2, 2, 22, 22, paint);
+}
+
+void _radialRRect(DisplayList list) {
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    gradient: RadialGradient(
+      centerX: 12,
+      centerY: 12,
+      radius: 7,
+      focusX: 9,
+      focusY: 10,
+      stops: _stops,
+      spread: GradientSpread.reflect,
+    ),
+  );
+  list.drawRRect(2, 3, 22, 21, 5, 5, 5, 5, 5, 5, 5, 5, paint);
+}
+
+void _repeatedPath(DisplayList list) {
+  final PathBuilder builder = PathBuilder();
+  _addRectContour(builder, const Rect.fromLTRB(1, 1, 15, 15), clockwise: true);
+  _addRectContour(builder, const Rect.fromLTRB(8, 8, 22, 22), clockwise: true);
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    gradient: LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 6,
+      endY: 2,
+      stops: _stops,
+      spread: GradientSpread.repeat,
+    ),
+  );
+  list
+    ..save()
+    ..transform(1, 0, 0, 1, 0.5, 0.25)
+    ..drawPath(list.addPath(builder.build()), paint)
+    ..restore();
+}
+
+void _rampInLayer(DisplayList list) {
+  final int layerPaint = list.addPaint(colorArgb: 0xC0FFFFFF);
+  list.saveLayer(5, 4, 21, 22, layerPaint);
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    antiAlias: false,
+    gradient: LinearGradient(
+        startX: 5, startY: 4, endX: 21, endY: 4, stops: _stops),
+  );
+  list
+    ..drawRect(5, 4, 21, 22, paint)
+    ..restore();
 }
 
 // ---------------------------------------------------------------------

@@ -54,6 +54,7 @@ import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
 import '../gpu_device_state.dart';
 import '../gpu_glyph_atlas.dart';
+import '../gpu_gradient.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_path_planning.dart';
@@ -407,6 +408,10 @@ final class D3d11RenderDevice
   ComObject? _samplerPoint;
   ComObject? _samplerLinear;
   ComObject? _constantBuffer;
+
+  /// Register b1 of the dense pixel shader: the gradient block, five float4s
+  /// in `GpuGradientDraw.writeDenseBlock`'s layout.
+  ComObject? _gradientBuffer;
   ComObject? _vertexBuffer;
   ComObject? _indexBuffer;
   int _vertexBufferBytes = 0;
@@ -505,6 +510,9 @@ final class D3d11RenderDevice
   late final Pointer<Uint32> _uint4 = _arena.allocate<Uint32>(16);
   late final Pointer<Uint32> _uint4b = _arena.allocate<Uint32>(16);
   late final Pointer<Uint8> _constants = _arena.allocate<Uint8>(16);
+  late final Pointer<Float> _gradientConstants = _arena
+      .allocate<Uint8>(GpuGradientDraw.denseBlockFloats * 4)
+      .cast<Float>();
   Pointer<Uint8> _staging = nullptr;
   int _stagingBytes = 0;
 
@@ -1193,6 +1201,8 @@ final class D3d11RenderDevice
         }
       }
 
+      _bindGradient(batch.gradient);
+
       context.drawIndexed(
           context.pointer, batch.indexCount, batch.indexOffset, 0);
     }
@@ -1329,6 +1339,32 @@ final class D3d11RenderDevice
       ..psSetConstantBuffers(context.pointer, 0, 1, _slotB);
     _slotB.value = _samplerPoint!.pointer;
     context.psSetSamplers(context.pointer, 0, 1, _slotB);
+    // The ramp's sampler is always linear and clamped: a ramp is one row of
+    // texels whose ends are the gradient's ends.
+    _slotB.value = _samplerLinear!.pointer;
+    context.psSetSamplers(context.pointer, 1, 1, _slotB);
+    _slotB.value = _gradientBuffer!.pointer;
+    context.psSetConstantBuffers(context.pointer, 1, 1, _slotB);
+    _boundGradient = _noGradientBound;
+  }
+
+  /// The gradient the b1 block was last written for. A sentinel after
+  /// [_bindPipeline], so the first batch of a pass always writes it.
+  Object? _boundGradient = _noGradientBound;
+  static const Object _noGradientBound = Object();
+
+  void _bindGradient(GpuGradientDraw? gradient) {
+    if (identical(gradient, _boundGradient)) return;
+    _boundGradient = gradient;
+    GpuGradientDraw.writeDenseBlock(
+        _gradientConstants.asTypedList(GpuGradientDraw.denseBlockFloats),
+        gradient);
+    context.updateSubresource(context.pointer, _gradientBuffer!.pointer, 0,
+        nullptr, _gradientConstants.cast(), 0, 0);
+    final D3d11Texture? ramp =
+        gradient == null ? null : _texturesById[gradient.binding.texture.id];
+    _slotA.value = ramp?.view.pointer ?? nullptr;
+    context.psSetShaderResources(context.pointer, 1, 1, _slotA);
   }
 
   bool _uploadGeometry(GpuBatcher batcher) {
@@ -1601,6 +1637,13 @@ final class D3d11RenderDevice
   D3d11ImageCache get imageCache => _imageCache ??= D3d11ImageCache(this);
   D3d11ImageCache? _imageCache;
 
+  /// Gradient ramps, one `R8G8B8A8_UNORM` row each, shared by every target
+  /// for the reason [imageCache] is. A ramp whose texture died with a lost
+  /// device is rebuilt by the cache on its next use.
+  GpuGradientCache get gradientCache =>
+      _gradientCache ??= GpuGradientCache(allocator: this);
+  GpuGradientCache? _gradientCache;
+
   /// `UpdateSubresource` calls made for glyph coverage, across every target.
   /// A frame that redraws the same text must not increase it, and neither must
   /// a *second window* drawing text the first one already drew.
@@ -1783,6 +1826,7 @@ final class D3d11RenderDevice
     _samplerPoint = null;
     _samplerLinear = null;
     _constantBuffer = null;
+    _gradientBuffer = null;
     // The factory belongs to the removed device's adapter. Keeping it would
     // make the next swap chain be created by a factory for a device that is
     // gone, which is the two-GPU laptop failure `dxgiFactory` documents.
@@ -2013,6 +2057,25 @@ final class D3d11RenderDevice
       );
     }
     _constantBuffer =
+        _objects.keep(ComObject(_out.value, interfaceName: 'ID3D11Buffer'));
+
+    // The gradient block, 80 bytes - five registers, a multiple of 16.
+    desc[0] = GpuGradientDraw.denseBlockFloats * 4;
+    desc[1] = d3d11UsageDefault;
+    desc[2] = d3d11BindConstantBuffer;
+    desc[3] = 0;
+    desc[4] = 0;
+    desc[5] = 0;
+    final int gbHr = hresult(device.createBuffer(
+        device.pointer, _scratchDesc.cast(), nullptr, _out));
+    if (failed(gbHr)) {
+      return BackendDiagnostic(
+        kind: DiagnosticKind.incompatibleDevice,
+        message: 'the gradient constant buffer could not be created',
+        detail: hresultName(gbHr),
+      );
+    }
+    _gradientBuffer =
         _objects.keep(ComObject(_out.value, interfaceName: 'ID3D11Buffer'));
 
     // Scissoring is always on, unlike GL where it is toggled: a batch without
@@ -2416,6 +2479,8 @@ final class D3d11RenderDevice
     // it is the last one out.
     _imageCache?.clear();
     _imageCache = null;
+    _gradientCache?.clear();
+    _gradientCache = null;
     _glyphAtlas?.clear();
     _glyphAtlas = null;
     _glyphTexture = null;
@@ -2501,6 +2566,9 @@ final class D3d11OffscreenTarget
       // without rebuilding a target. Set here too because a target built after
       // the switch was flipped must not draw its first frame the old way.
       analyticPrimitives: _device.analyticPrimitivesEnabled,
+      // Gradient fills through the coverage atlas and a per-pixel ramp
+      // lookup; see `GpuGradientDraw`.
+      gradientCache: _device.gradientCache,
     );
     _player = DisplayListPlayer(_sink);
   }
