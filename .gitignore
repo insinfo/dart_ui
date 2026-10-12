@@ -34,3 +34,6 @@ doc/api/
 # Flutter generated files
 .flutter-plugins
 .flutter-plugins-dependencies
+
+# Marcas do Windows ("baixado da internet") que viram arquivos ao copiar de NTFS/WSL.
+*:Zone.Identifier
