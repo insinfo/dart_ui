@@ -107,21 +107,29 @@ final class MetalGpu {
             'libobjc: ${objcRuntimeLoadError ?? 'loaded'}',
       );
     }
-    final Pointer<ObjCObject> device = mtlCreateSystemDefaultDevice();
-    if (device == nullptr) {
-      throw MetalError(
-        'MTLCreateSystemDefaultDevice returned nil',
-        detail: 'Metal.framework loaded but reported no default GPU, which is '
-            'what a headless or virtualised Mac looks like.',
-      );
-    }
-    final Pointer<ObjCObject> queue =
-        metalSendPointer(device, 'newCommandQueue');
-    if (queue == nullptr) {
-      objcRelease(device);
-      throw MetalError('-[MTLDevice newCommandQueue] returned nil');
-    }
-    return MetalGpu._(device, queue);
+    // A pool even though both results are +1: the convention says what the
+    // *caller* owns, not what the callee autoreleases on the way. Measured on
+    // an M-series Mac under `OBJC_DEBUG_MISSING_POOLS`, the AGX driver
+    // autoreleases the `AGXG16GDevice` inside `MTLCreateSystemDefaultDevice`
+    // and `newCommandQueue` autoreleases an `MTLCommandQueueDescriptor` - one
+    // leak each per open, in a process that opens a device per test.
+    return ObjCAutoreleasePool.run(() {
+      final Pointer<ObjCObject> device = mtlCreateSystemDefaultDevice();
+      if (device == nullptr) {
+        throw MetalError(
+          'MTLCreateSystemDefaultDevice returned nil',
+          detail: 'Metal.framework loaded but reported no default GPU, which '
+              'is what a headless or virtualised Mac looks like.',
+        );
+      }
+      final Pointer<ObjCObject> queue =
+          metalSendPointer(device, 'newCommandQueue');
+      if (queue == nullptr) {
+        objcRelease(device);
+        throw MetalError('-[MTLDevice newCommandQueue] returned nil');
+      }
+      return MetalGpu._(device, queue);
+    });
   }
 
   /// `-[MTLDevice name]`, copied out of the autoreleased `NSString`.
@@ -220,8 +228,11 @@ final class MetalGpu {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    objcRelease(commandQueue);
-    objcRelease(device);
+    // The last release runs the driver's teardown, which autoreleases too.
+    ObjCAutoreleasePool.run(() {
+      objcRelease(commandQueue);
+      objcRelease(device);
+    });
   }
 }
 
@@ -440,11 +451,13 @@ final class MetalPipelineCache {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    for (final Pointer<ObjCObject> state in _states.values) {
-      objcRelease(state);
-    }
-    _states.clear();
-    objcRelease(_library);
+    ObjCAutoreleasePool.run(() {
+      for (final Pointer<ObjCObject> state in _states.values) {
+        objcRelease(state);
+      }
+      _states.clear();
+      objcRelease(_library);
+    });
   }
 }
 

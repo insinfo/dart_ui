@@ -424,10 +424,13 @@ final class MetalWindowTarget
     _slots.clear();
     // After the targets, because a target holds the texture it draws into and
     // releasing the texture first would leave one pointing at freed memory for
-    // the length of the loop above.
-    for (final Pointer<ObjCObject> texture in _textures.values) {
-      objcRelease(texture);
-    }
+    // the length of the loop above. In a pool because freeing a texture
+    // autoreleases its device.
+    ObjCAutoreleasePool.run(() {
+      for (final Pointer<ObjCObject> texture in _textures.values) {
+        objcRelease(texture);
+      }
+    });
     _textures.clear();
   }
 

@@ -635,11 +635,17 @@ final class MetalOffscreenTarget {
     NativeAllocator.instance.free(_uniforms);
     final Pointer<Uint8>? staging = _staging;
     if (staging != null) NativeAllocator.instance.free(staging);
-    objcRelease(_white);
-    // Never for an overTexture target: the IOSurface-backed texture belongs to
-    // the pool, which outlives every target built over it, and releasing it
-    // here would free a surface the host may still be showing.
-    if (_ownsTexture) objcRelease(texture);
+    // In a pool because freeing a texture autoreleases: `-[IOGPUMetalResource
+    // dealloc]` hands its device to `autorelease`, and with no pool on the
+    // thread that is one leaked `MTLDevice` reference per target disposed.
+    // Caught by `OBJC_DEBUG_MISSING_POOLS` on the framework's macOS leg.
+    ObjCAutoreleasePool.run(() {
+      objcRelease(_white);
+      // Never for an overTexture target: the IOSurface-backed texture belongs
+      // to the pool, which outlives every target built over it, and releasing
+      // it here would free a surface the host may still be showing.
+      if (_ownsTexture) objcRelease(texture);
+    });
     // The pipeline cache is the caller's; a target that disposed it would
     // invalidate every other target built from the same device.
   }

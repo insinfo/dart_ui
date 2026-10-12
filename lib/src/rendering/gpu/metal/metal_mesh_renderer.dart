@@ -320,8 +320,8 @@ final class MetalMeshRenderer implements MeshSceneRenderer {
     if (current != null && current.width == width && current.height == height) {
       return current;
     }
-    current?.dispose();
     final Pointer<ObjCObject> texture = ObjCAutoreleasePool.run(() {
+      current?.dispose();
       final Pointer<ObjCObject> descriptor = metalSendPointer4(
           objcClass('MTLTextureDescriptor'),
           'texture2DDescriptorWithPixelFormat:width:height:mipmapped:',
@@ -345,40 +345,48 @@ final class MetalMeshRenderer implements MeshSceneRenderer {
     final List<_BufferKey> keys = _buffers.keys
         .where((key) => mesh.primitives.any((p) => identical(p, key.primitive)))
         .toList();
-    for (final _BufferKey key in keys) {
-      _buffers.remove(key)?.dispose();
-    }
     final Set<MeshTexture> used = mesh.primitives
         .map((p) => p.material.baseColorTexture)
         .whereType<MeshTexture>()
         .toSet();
-    for (final MeshTexture texture in used) {
-      final Pointer<ObjCObject>? object = _textures.remove(texture);
-      if (object != null) objcRelease(object);
-    }
+    // Releasing a resource autoreleases its device; see [dispose].
+    ObjCAutoreleasePool.run(() {
+      for (final _BufferKey key in keys) {
+        _buffers.remove(key)?.dispose();
+      }
+      for (final MeshTexture texture in used) {
+        final Pointer<ObjCObject>? object = _textures.remove(texture);
+        if (object != null) objcRelease(object);
+      }
+    });
   }
 
   @override
   void dispose() {
     if (_disposed) return;
     _disposed = true;
-    for (final _Buffers value in _buffers.values) {
-      value.dispose();
-    }
-    for (final Pointer<ObjCObject> value in _textures.values) {
-      objcRelease(value);
-    }
-    for (final _Depth value in _depth.values) {
-      value.dispose();
-    }
+    // A pool because the last release of a Metal resource autoreleases its
+    // device (`-[IOGPUMetalResource dealloc]`), and a thread with no pool
+    // leaks that reference.
+    ObjCAutoreleasePool.run(() {
+      for (final _Buffers value in _buffers.values) {
+        value.dispose();
+      }
+      for (final Pointer<ObjCObject> value in _textures.values) {
+        objcRelease(value);
+      }
+      for (final _Depth value in _depth.values) {
+        value.dispose();
+      }
+      objcRelease(_white);
+      objcRelease(_depthState);
+      objcRelease(_pipeline);
+      objcRelease(_library);
+    });
     _buffers.clear();
     _textures.clear();
     _depth.clear();
     NativeAllocator.instance.free(_uniform);
-    objcRelease(_white);
-    objcRelease(_depthState);
-    objcRelease(_pipeline);
-    objcRelease(_library);
   }
 }
 
