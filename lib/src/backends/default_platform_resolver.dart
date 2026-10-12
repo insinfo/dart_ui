@@ -125,15 +125,15 @@ final class PlatformBackendResolver {
         // feature - which is what makes it a candidate rather than an
         // experiment. `--presentation=direct3d12` pins it by name.
         _win32D3d12(),
-        // Experimental, and the flag is not caution: `VulkanWindowTarget`
-        // builds its `GpuRasterSink` with no glyph atlas and no font
-        // resolver, so the first glyph run in any window raises
-        // `UnsupportedCapabilityError` by name. A path that cannot draw text
-        // must never be reached by fallback in a UI framework; it is here so
-        // that `--presentation=vulkan` with
-        // `ApplicationOptions.allowExperimentalBackends` can reach it, which
-        // is the difference between a backend under development and a backend
-        // nobody can run.
+        // Experimental, and no longer for the reason this comment first gave.
+        // `VulkanWindowTarget` used to have no glyph atlas and refuse every
+        // glyph run; it has one now, and as of 12/10/2026 it draws text,
+        // images, paths, gradients and 3D like the offscreen target, whose
+        // parity with the CPU runs on Mesa's lavapipe in CI. What keeps the
+        // flag is the *window*: no CI runner has a Vulkan driver behind a
+        // swapchain, so the path a fallback would land on has run only on a
+        // developer's machine. `--presentation=vulkan` with
+        // `ApplicationOptions.allowExperimentalBackends` reaches it.
         _win32Vulkan(),
         PresentationPathEntry.retainedCpu(
           name: 'win32-dib',

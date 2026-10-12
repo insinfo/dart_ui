@@ -508,9 +508,12 @@ Duas divergências entre a tabela normativa acima e o que existe, e o código
 vence as duas:
 
 1. **Vulkan no Linux ainda não está no seletor**, e no Windows entra marcado
-   `experimental` — nunca por *fallback*, só pelo nome — porque
-   `VulkanWindowTarget` não tem atlas de glifos e recusa qualquer texto. Ver
-   §68.2;
+   `experimental` — nunca por *fallback*, só pelo nome. O motivo antigo (o
+   `VulkanWindowTarget` sem atlas de glifos) caiu: em 12/10/2026 ele desenha
+   texto, imagens, caminhos, gradientes (`d1ca864`) e 3D, e a paridade do alvo
+   offscreen com a CPU roda no lavapipe do CI, inclusive sob a camada de
+   validação. O que mantém a marca é a janela: nenhum runner tem driver
+   Vulkan atrás de um swapchain. Ver §68.2;
 2. **Wayland não tem GPU alguma** — nem EGL, nem `linux-dmabuf`, nem Vulkan. A
    linha "Vulkan ou EGL/OpenGL" é intenção, não estado;
 3. **Metal é o padrão no macOS, sobre o IOSurface e não pela
