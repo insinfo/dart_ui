@@ -501,7 +501,7 @@ realmente oferece, em ordem de tentativa:
 |---|---|---|
 | Windows | `win32` | D3D11 → OpenGL/WGL → **Direct2D** → **D3D12** → **Vulkan** (experimental) → DIB de GDI |
 | Linux | `wayland`, depois `x11` | OpenGL/EGL no X11 → `wl_shm` → `PutImage` no X11 |
-| macOS | `macos` | IOSurface/CoreGraphics; Metal sobre o mesmo IOSurface **só por nome** (`needsExplicitOptIn`) |
+| macOS | `macos` | **Metal** sobre o IOSurface do host (padrão desde 12/10/2026) → IOSurface/CoreGraphics na CPU |
 | qualquer | `headless` | renderer de CPU em memória |
 
 Duas divergências entre a tabela normativa acima e o que existe, e o código
@@ -513,28 +513,21 @@ vence as duas:
    §68.2;
 2. **Wayland não tem GPU alguma** — nem EGL, nem `linux-dmabuf`, nem Vulkan. A
    linha "Vulkan ou EGL/OpenGL" é intenção, não estado;
-3. **Metal apresenta, mas não pela `CAMetalLayer`, e não por padrão.** Desde
-   07/09/2026 (`1c12eba`) o Metal desenha no IOSurface do pool do host (ADR
-   0005), e em 12/10/2026 `METAL_WINDOW_PRESENT=PASS` num Mac M4 com macOS
-   27.2 conferiu os pixels da janela. Não há `CAMetalLayer` porque a
-   `NSWindow` vive no processo host. O seletor só o toma **pelo nome**
-   (`needsExplicitOptIn`). Até 12/10/2026 ele recusava texto, imagens,
-   caminhos e retângulos arredondados - o sink não tinha atlas de glifos, de
-   cobertura nem cache de imagem, e todo lote amostrava um texel branco 1x1 -;
-   desde então desenha os quatro, iguais à CPU no `metal_cpu_parity_test`
-   (Ahem caixa por caixa, imagem texel por texel, caminhos e o retângulo
-   arredondado pela rota analítica, todos com desvio 0), e a galeria inteira
-   rodou no Metal numa janela de verdade (`METAL_GALLERY=PASS`, 3000
-   quadros, mediana 475 us contra 783 us na CPU, nenhum erro). No mesmo dia
-   ganhou a pilha de camadas: cada `saveLayer` de composição vira uma passada
-   numa textura do pool, e os cinco cenários de camada do D3D11 dão 0 (`plus`,
-   `src`, texto dentro de camada) ou 1 nível (opacidade, pelo arredondamento
-   já explicado no teste de retângulos com alfa). O que recusa pelo nome é só
-   o que todo caminho denso de GPU recusa sem o executor de faixas esparsas -
-   gradiente. Continua tomado **só pelo nome** por decisão, não por falta: o
-   caminho de janela foi medido pela primeira vez neste dia, num M4 e na GPU
-   paravirtual do runner, e ainda não rodou como padrão. A linha
-   "Metal + `CAMetalLayer`" continua sendo intenção. O caminho GL de janela no
+3. **Metal é o padrão no macOS, sobre o IOSurface e não pela
+   `CAMetalLayer`.** Desde 07/09/2026 (`1c12eba`) o Metal desenha no IOSurface
+   do pool do host (ADR 0005); não há `CAMetalLayer` porque a `NSWindow` vive
+   no processo host. Em 12/10/2026 ele ganhou, nesta ordem, texto, imagens,
+   caminhos e retângulos arredondados (`5989486`), a pilha de camadas
+   (`5697a96`), cenas 3D na janela (`6e9e9a9` - o Kart Racer saiu de 16 fps
+   na CPU para o refresh da tela), quadros de vídeo (`2b91a57`) e gradientes
+   pela rota densa (`8845bce`), cada um comparado com a CPU no
+   `metal_cpu_parity_test` (desvio 0, ou 1 nível onde há mistura ou rampa). Com
+   isso desenha tudo o que o caminho de CPU desenha, e o framework é GPU
+   primeiro: o seletor o toma **por padrão** desde `4e6c2fa`, e a CPU fica
+   para um Mac sem dispositivo Metal e para testes. `5b99374` prende a
+   apresentação FIFO ao refresh da tela por um `CADisplayLink` do host - antes
+   disso um laço que pedia quadro a todo quadro rodava a ~1000 fps numa tela
+   de 60 Hz. A linha "Metal + `CAMetalLayer`" continua sendo intenção. O caminho GL de janela no
    X11 está registrado no seletor e, desde
    07/09/2026, é executado no CI por `tool/x11_gl_smoke.dart` sob Xvfb e Mesa
    llvmpipe — sob **nenhuma GPU de verdade** ainda.
@@ -3744,13 +3737,18 @@ com número de run em cada uma.
 - [~] display list básica — **retângulos sólidos e com alpha**, offscreen, com
   paridade medida contra a CPU em CI Apple Silicon: desvio 0 onde nada mistura,
   1 nível onde mistura;
-- [ ] **texto — recusado por nome**: não há atlas de glifos neste caminho.
-  É por isso que a entrada `metal` em `default_platform_resolver.dart` está
-  marcada `experimental: true` — um caminho que não desenha texto não pode ser
-  alcançado por fallback num framework de UI, a mesma regra que o `_win32Vulkan`
-  já aplicava;
-- [ ] **clips e layers — recusados por nome**: não há atlas de máscara nem
-  pilha de layers;
+- [x] **texto, imagens, caminhos, retângulos arredondados** - atlas de glifos e
+  de cobertura e cache de imagem por dispositivo (`metal_textures.dart`),
+  desvio 0 contra a CPU (`5989486`, 12/10/2026). A entrada `metal` do
+  resolvedor deixou de ser `experimental` em `4e6c2fa` e é o padrão no macOS;
+- [x] **clips e layers** - scissor por lote e uma passada por `saveLayer` de
+  composição numa textura do pool; 0 ou 1 nível contra a CPU (`5697a96`);
+- [x] **gradientes, vídeo e 3D** - gradiente pela rota densa com rampa
+  amostrada no pixel (`8845bce`, 1 nível), quadros de vídeo pelo
+  `GpuVideoImageCache` (`2b91a57`, 0 em BGRA e em NV12) e cenas 3D no slot de
+  trás da janela (`6e9e9a9`, `metal_window_mesh_test` num IOSurface real);
+- [x] **ritmo da tela** - `PRESENT_SLOT ... vsync` e um `CADisplayLink` da view
+  do host; FIFO segura cada quadro até o refresh do anterior (`5b99374`);
 - [ ] múltiplas janelas — o `MTLDevice` e o cache de pipelines são por
   dispositivo e compartilhados (`sharesDevice`), então o custo já está pago;
   o que falta é exercer duas janelas ao mesmo tempo e medir;
@@ -7081,6 +7079,17 @@ glifo não pode ser o caminho em que um aplicativo cai sozinho.
 Reconferido em 07/09/2026 e confirmado item a item; o que mudou desde a
 auditoria está em
 [`logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md`](logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md).
+
+### Atualização de 12/10/2026 — Metal é o padrão no macOS
+
+Os três itens fecharam no mesmo dia - atlas de cobertura e de glifos
+(`5989486`), pilha de layers (`5697a96`) - e vieram junto 3D na janela
+(`6e9e9a9`), vídeo (`2b91a57`), gradiente pela rota densa (`8845bce`) e o
+ritmo da tela por `CADisplayLink` (`5b99374`). Sem nada que o caminho de CPU
+desenhe e o Metal recuse, a entrada `metal` deixou de ser `experimental`
+(`4e6c2fa`): o framework é GPU primeiro, e a CPU é para Mac sem Metal e para
+testes. `tool/metal_window_present_probe.dart` deixou de pedir o Metal pelo
+nome e passou a provar que a seleção padrão o escolhe.
 ### Objetivo
 
 Renderer nativo macOS de produção.
