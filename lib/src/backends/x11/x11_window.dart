@@ -102,7 +102,9 @@ final class X11WindowKindPlan {
   bool get decorated => !overrideRedirect;
 }
 
-final class X11Window with DisposableMixin implements NativeWindow {
+final class X11Window
+    with DisposableMixin
+    implements NativeWindow, WindowStateControl {
   X11Window._({
     required X11WindowClient client,
     required this.xcbWindow,
@@ -113,7 +115,9 @@ final class X11Window with DisposableMixin implements NativeWindow {
     required int pixelHeight,
     required bool visible,
     required void Function(X11Window window) onClosed,
+    bool managed = true,
   })  : _client = client,
+        _managed = managed,
         _cpuClient = client is X11CpuClient ? client as X11CpuClient : null,
         _id = id,
         _scale = scale,
@@ -186,11 +190,17 @@ final class X11Window with DisposableMixin implements NativeWindow {
       pixelHeight: height,
       visible: options.visible,
       onClosed: onClosed,
+      managed: !plan.overrideRedirect,
     );
   }
 
   final X11WindowClient _client;
   final X11CpuClient? _cpuClient;
+
+  /// False for an override-redirect window, which no window manager sees and
+  /// so none can maximise.
+  final bool _managed;
+  WindowState _state = WindowState.normal;
   final NativeWindowId _id;
   final void Function(X11Window window) _onClosed;
   final GenerationToken _generation = GenerationToken();
@@ -265,7 +275,98 @@ final class X11Window with DisposableMixin implements NativeWindow {
   double get desktopScale => _desktopScale;
 
   @override
-  WindowState get state => WindowState.normal;
+  WindowState get state => _state;
+
+  X11WindowStateClient? get _stateClient {
+    final X11WindowClient client = _client;
+    return client is X11WindowStateClient
+        ? client as X11WindowStateClient
+        : null;
+  }
+
+  /// EWMH `_NET_WM_STATE` for maximised and fullscreen, ICCCM
+  /// `WM_CHANGE_STATE` for minimised, `MapWindow` to restore from minimised.
+  ///
+  /// Before the window manager has the window the requests would reach
+  /// nobody, so the property is written instead and the window manager reads
+  /// it when it maps the window. Minimised has no such spelling short of
+  /// `WM_HINTS.initial_state`, and is refused.
+  @override
+  bool requestState(WindowState state) {
+    final X11WindowStateClient? client = _stateClient;
+    if (isDisposed || !_managed || client == null) return false;
+    final int netWmState = _protocol.netWmState;
+    final int horizontal = _client.atom('_NET_WM_STATE_MAXIMIZED_HORZ');
+    final int vertical = _client.atom('_NET_WM_STATE_MAXIMIZED_VERT');
+    final int fullscreen = _client.atom('_NET_WM_STATE_FULLSCREEN');
+    final bool minimised = _state == WindowState.minimised;
+    if (!_protocol.mapped && !minimised) {
+      final List<int>? atoms = switch (state) {
+        WindowState.normal => const <int>[],
+        WindowState.maximised => <int>[horizontal, vertical],
+        WindowState.fullscreen => <int>[fullscreen],
+        WindowState.minimised => null,
+      };
+      if (atoms == null) return false;
+      client.writeNetWmState(xcbWindow, atoms);
+      _client.flush();
+      return true;
+    }
+    void change(int action, int first, [int second = 0]) =>
+        client.sendWindowManagerMessage(
+          window: xcbWindow,
+          type: netWmState,
+          // Source indication 1: a normal application, which a window
+          // manager with focus-stealing rules treats differently from a
+          // pager.
+          data: <int>[action, first, second, 1, 0],
+        );
+    switch (state) {
+      case WindowState.normal:
+        change(netWmStateRemove, fullscreen);
+        change(netWmStateRemove, horizontal, vertical);
+      case WindowState.maximised:
+        change(netWmStateRemove, fullscreen);
+        change(netWmStateAdd, horizontal, vertical);
+      case WindowState.fullscreen:
+        change(netWmStateAdd, fullscreen);
+      case WindowState.minimised:
+        client.sendWindowManagerMessage(
+          window: xcbWindow,
+          type: _client.atom('WM_CHANGE_STATE'),
+          data: const <int>[x11IconicState],
+        );
+    }
+    // ICCCM 4.1.4: mapping an iconic window is how a client de-iconifies it.
+    if (minimised && state != WindowState.minimised) {
+      _client.mapTopLevelWindow(xcbWindow);
+    }
+    _client.flush();
+    return true;
+  }
+
+  /// Re-reads both state properties; true when [state] changed.
+  bool _readState() {
+    final X11WindowStateClient? client = _stateClient;
+    if (client == null) return false;
+    final List<int> net = client.readNetWmState(xcbWindow);
+    final bool iconic = client.readWmState(xcbWindow) == x11IconicState ||
+        net.contains(_client.atom('_NET_WM_STATE_HIDDEN'));
+    final WindowState next;
+    if (iconic) {
+      next = WindowState.minimised;
+    } else if (net.contains(_client.atom('_NET_WM_STATE_FULLSCREEN'))) {
+      next = WindowState.fullscreen;
+    } else if (net.contains(_client.atom('_NET_WM_STATE_MAXIMIZED_HORZ')) &&
+        net.contains(_client.atom('_NET_WM_STATE_MAXIMIZED_VERT'))) {
+      next = WindowState.maximised;
+    } else {
+      next = WindowState.normal;
+    }
+    if (next == _state) return false;
+    _state = next;
+    return true;
+  }
 
   @override
   List<NativeSurfaceDescriptor> get surfaces {
@@ -448,6 +549,7 @@ final class X11Window with DisposableMixin implements NativeWindow {
       _pending.originDirty = false;
     }
     final destroyed = _pending.destroyed;
+    final stateChanged = _pending.stateDirty && !destroyed && _readState();
     if (_pending.resized || destroyed) {
       _generation.invalidate();
       if (destroyed) {
@@ -467,6 +569,13 @@ final class X11Window with DisposableMixin implements NativeWindow {
       originY: _protocol.originY,
       emit: _emit,
     );
+    if (stateChanged) {
+      _emit(WindowStateChangedEvent(
+        windowId: id,
+        generation: generation,
+        state: _state,
+      ));
+    }
     if (destroyed) _closedEventEmitted = true;
     _pending.reset();
     if (destroyed) dispose();

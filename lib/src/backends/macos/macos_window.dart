@@ -88,7 +88,8 @@ final class MacosWindow
         MacosDropWindow,
         MacosAccessibilityWindow,
         NativeHandleWindow,
-        PresentPacer {
+        PresentPacer,
+        WindowStateControl {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -337,6 +338,8 @@ final class MacosWindow
     MacosSurfaceHandoff handoff = MacosSurfaceHandoff.rendezvous,
   }) async {
     throwIfDisposed();
+    _transient = spawnOptions.kind == MacosHostWindowKind.popup ||
+        spawnOptions.kind == MacosHostWindowKind.tooltip;
     final supervisor = MacosHostSupervisor(
       spawnOptions: MacosHostSpawnOptions(
         binaryPath: spawnOptions.binaryPath,
@@ -443,6 +446,18 @@ final class MacosWindow
     // parsed as commands. Stripping is cheaper to reason about than escaping.
     _supervisor
         ?.rememberTitle(value.replaceAll('\n', ' ').replaceAll('\r', ' '));
+  }
+
+  /// A menu or tooltip panel, which has no zoom box and no full screen.
+  bool _transient = false;
+
+  /// `zoom:`, `miniaturize:` and `toggleFullScreen:` in the host. The
+  /// numbering is [WindowState]'s own, which the host's `WINDOW=STATE` already
+  /// uses. Full screen animates, so its answer comes a moment later.
+  @override
+  bool requestState(WindowState state) {
+    if (isDisposed || _transient) return false;
+    return _supervisor?.send(HostCommands.setState(state.index)) ?? false;
   }
 
   @override
@@ -748,8 +763,17 @@ final class MacosWindow
         );
       case HostWindowEventKind.stateChanged:
         final index = a.round();
-        if (index >= 0 && index < WindowState.values.length) {
+        if (index >= 0 &&
+            index < WindowState.values.length &&
+            WindowState.values[index] != _state) {
           _state = WindowState.values[index];
+          _emit(
+            WindowStateChangedEvent(
+              windowId: _id,
+              generation: _generation.current,
+              state: _state,
+            ),
+          );
         }
       case HostWindowEventKind.closeRequested:
         _emit(

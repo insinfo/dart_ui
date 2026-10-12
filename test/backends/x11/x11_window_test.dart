@@ -114,6 +114,11 @@ final class _FakeX11WindowClient implements X11WindowClient, X11CpuClient {
         'WM_DELETE_WINDOW' => 102,
         '_NET_WM_STATE' => 103,
         'WM_STATE' => 104,
+        '_NET_WM_STATE_MAXIMIZED_HORZ' => 105,
+        '_NET_WM_STATE_MAXIMIZED_VERT' => 106,
+        '_NET_WM_STATE_FULLSCREEN' => 107,
+        '_NET_WM_STATE_HIDDEN' => 108,
+        'WM_CHANGE_STATE' => 109,
         _ => 0,
       };
 
@@ -184,6 +189,34 @@ final class _FakeX11WindowClient implements X11WindowClient, X11CpuClient {
 
   @override
   void dispose() => isDisposed = true;
+}
+
+/// A connection that can read and ask for window-manager state, as the real
+/// one does; [_FakeX11WindowClient] alone stands for the doubles that cannot.
+final class _FakeStateClient extends _FakeX11WindowClient
+    implements X11WindowStateClient {
+  List<int> netWmState = <int>[];
+  int wmState = 1;
+  final List<({int type, List<int> data})> messages =
+      <({int type, List<int> data})>[];
+  final List<List<int>> writtenStates = <List<int>>[];
+
+  @override
+  List<int> readNetWmState(int window) => netWmState;
+
+  @override
+  int readWmState(int window) => wmState;
+
+  @override
+  void sendWindowManagerMessage({
+    required int window,
+    required int type,
+    required List<int> data,
+  }) =>
+      messages.add((type: type, data: data));
+
+  @override
+  void writeNetWmState(int window, List<int> atoms) => writtenStates.add(atoms);
 }
 
 X11Window _createWindow(
@@ -375,6 +408,117 @@ void main() {
     expect(resized.generation, 1);
     expect(resized.clientSize, const Size(320, 240));
     expect(resized.renderScale, 2);
+  });
+
+  group('window state', () {
+    test('is read back from _NET_WM_STATE and WM_STATE and reported', () async {
+      final client = _FakeStateClient();
+      final window = _createWindow(client);
+      addTearDown(window.dispose);
+      final events = <PlatformWindowEvent>[];
+      final subscription = window.events.listen(events.add);
+      addTearDown(subscription.cancel);
+
+      void property(int atom) {
+        final raw = _raw(type: xcbPropertyNotify)..atom = atom;
+        window.handleRawEvent(raw);
+        window.flushPendingEvents();
+      }
+
+      client.netWmState = <int>[105, 106];
+      property(103);
+      expect(window.state, WindowState.maximised);
+      client.netWmState = <int>[105, 106, 107];
+      property(103);
+      expect(window.state, WindowState.fullscreen);
+      client.wmState = x11IconicState;
+      property(104);
+      expect(window.state, WindowState.minimised);
+      client
+        ..wmState = 1
+        ..netWmState = <int>[105];
+      property(104);
+      // One axis maximised is a tiled half, not a maximised window.
+      expect(window.state, WindowState.normal);
+      property(103);
+
+      await Future<void>.delayed(Duration.zero);
+      expect(
+        events.whereType<WindowStateChangedEvent>().map((e) => e.state),
+        <WindowState>[
+          WindowState.maximised,
+          WindowState.fullscreen,
+          WindowState.minimised,
+          WindowState.normal,
+        ],
+      );
+    });
+
+    test('a mapped window asks the window manager', () {
+      final client = _FakeStateClient();
+      final window = _createWindow(client);
+      addTearDown(window.dispose);
+
+      expect(window.requestState(WindowState.maximised), isTrue);
+      expect(window.requestState(WindowState.fullscreen), isTrue);
+      expect(window.requestState(WindowState.minimised), isTrue);
+      expect(client.messages.map((m) => '${m.type} ${m.data}'), <String>[
+        '103 [$netWmStateRemove, 107, 0, 1, 0]',
+        '103 [$netWmStateAdd, 105, 106, 1, 0]',
+        '103 [$netWmStateAdd, 107, 0, 1, 0]',
+        '109 [$x11IconicState]',
+      ]);
+      expect(client.mappedWindows, isEmpty);
+    });
+
+    test('restoring a minimised window maps it again', () {
+      final client = _FakeStateClient()..wmState = x11IconicState;
+      final window = _createWindow(client);
+      addTearDown(window.dispose);
+      window
+        ..handleRawEvent(_raw(type: xcbPropertyNotify)..atom = 104)
+        ..handleRawEvent(_raw(type: xcbUnmapNotify))
+        ..flushPendingEvents();
+      expect(window.state, WindowState.minimised);
+
+      expect(window.requestState(WindowState.normal), isTrue);
+      expect(client.messages.map((m) => m.data.first),
+          <int>[netWmStateRemove, netWmStateRemove]);
+      expect(client.mappedWindows, <int>[window.xcbWindow]);
+    });
+
+    test('an unmapped window carries the state into its map', () {
+      final client = _FakeStateClient();
+      final window = _createWindow(
+        client,
+        options: const WindowOptions(size: Size(100, 80), visible: false),
+      );
+      addTearDown(window.dispose);
+
+      expect(window.requestState(WindowState.fullscreen), isTrue);
+      expect(window.requestState(WindowState.minimised), isFalse);
+      expect(client.writtenStates, <List<int>>[
+        <int>[107],
+      ]);
+      expect(client.messages, isEmpty);
+    });
+
+    test('a popup and a connection without the seam refuse', () {
+      final popup = _createWindow(
+        _FakeStateClient(),
+        options: const WindowOptions(
+          size: Size(100, 80),
+          kind: WindowKind.popup,
+        ),
+      );
+      addTearDown(popup.dispose);
+      expect(popup.requestState(WindowState.maximised), isFalse);
+
+      final plain = _createWindow(_FakeX11WindowClient());
+      addTearDown(plain.dispose);
+      expect(plain.requestState(WindowState.maximised), isFalse);
+      expect(plain.state, WindowState.normal);
+    });
   });
 
   test('core pointer input is emitted immediately in logical coordinates',

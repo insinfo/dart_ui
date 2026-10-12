@@ -4,6 +4,8 @@ import 'package:dart_ui/src/backends/wayland/wayland_backend.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_connection.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_events.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_keymap.dart';
+import 'package:dart_ui/src/backends/wayland/wayland_protocol.dart'
+    show xdgToplevelStateFullscreen, xdgToplevelStateMaximized;
 import 'package:dart_ui/src/backends/wayland/wayland_shm.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_window.dart';
 import 'package:dart_ui/src/foundation/diagnostics.dart';
@@ -194,12 +196,19 @@ void main() {
           resizable: resizable,
         )) as WaylandWindow;
 
-    void configure(WaylandWindow window, int width, int height, int serial) {
+    void configure(
+      WaylandWindow window,
+      int width,
+      int height,
+      int serial, {
+      int stateFlags = 0,
+    }) {
       client.script(WaylandRawEvent()
         ..type = WaylandRawEventType.xdgToplevelConfigure
         ..surfaceId = window.surfaceId
         ..width = width
-        ..height = height);
+        ..height = height
+        ..stateFlags = stateFlags);
       client.script(WaylandRawEvent()
         ..type = WaylandRawEventType.xdgSurfaceConfigure
         ..surfaceId = window.surfaceId
@@ -723,6 +732,50 @@ void main() {
             reason: 'a refused move leaves the press alone');
       });
 
+      test('requestState speaks xdg_toplevel and reports the answer', () async {
+        final window = await createWindow();
+        expect(window.requestState(WindowState.maximised), isTrue);
+        expect(window.requestState(WindowState.fullscreen), isTrue);
+        expect(window.requestState(WindowState.minimised), isTrue);
+        expect(client.frameRequests,
+            <String>['maximize', 'fullscreen', 'minimize']);
+
+        final List<PlatformWindowEvent> events = <PlatformWindowEvent>[];
+        final sub = window.events.listen(events.add);
+        configure(window, 800, 600, 40,
+            stateFlags: 1 << xdgToplevelStateFullscreen);
+        backend.pumpEvents();
+        expect(window.state, WindowState.fullscreen);
+
+        // Leaving fullscreen for maximised unsets the first, then asks.
+        client.frameRequests.clear();
+        expect(window.requestState(WindowState.maximised), isTrue);
+        expect(client.frameRequests, <String>['unfullscreen', 'maximize']);
+        configure(window, 800, 600, 41,
+            stateFlags: 1 << xdgToplevelStateMaximized);
+        backend.pumpEvents();
+
+        client.frameRequests.clear();
+        expect(window.requestState(WindowState.normal), isTrue);
+        expect(client.frameRequests, <String>['unmaximize']);
+        configure(window, 640, 480, 42);
+        backend.pumpEvents();
+        // A configure that changes nothing reports nothing.
+        configure(window, 640, 480, 43);
+        backend.pumpEvents();
+
+        await Future<void>.delayed(Duration.zero);
+        await sub.cancel();
+        expect(
+          events.whereType<WindowStateChangedEvent>().map((e) => e.state),
+          <WindowState>[
+            WindowState.fullscreen,
+            WindowState.maximised,
+            WindowState.normal,
+          ],
+        );
+      });
+
       test('the close button asks, as the compositor does', () async {
         final window = await createWindow();
         final List<PlatformWindowEvent> events = <PlatformWindowEvent>[];
@@ -995,6 +1048,10 @@ final class _FakeWaylandClient
   @override
   void setToplevelMaximized(WaylandToplevelIds ids, bool maximized) =>
       frameRequests.add(maximized ? 'maximize' : 'unmaximize');
+
+  @override
+  void setToplevelFullscreen(WaylandToplevelIds ids, bool fullscreen) =>
+      frameRequests.add(fullscreen ? 'fullscreen' : 'unfullscreen');
 
   @override
   void minimizeToplevel(WaylandToplevelIds ids) =>

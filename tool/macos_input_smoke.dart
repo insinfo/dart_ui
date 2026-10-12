@@ -547,13 +547,49 @@ Future<void> _applicationHalf(
       await _pbcopy(saved);
     }
 
+    // Window state, asked for from Dart and read back from AppKit: zoom:,
+    // miniaturize: and toggleFullScreen: in the host, each answered by the
+    // WINDOW=STATE it reports. Full screen animates for about a second each
+    // way, hence the longer waits.
+    Future<bool> becomes(WindowState wanted, Duration timeout) async {
+      final DateTime deadline = DateTime.now().add(timeout);
+      while (native.state != wanted && DateTime.now().isBefore(deadline)) {
+        await _pump(app, const Duration(milliseconds: 50));
+      }
+      return native.state == wanted;
+    }
+
+    final List<String> steps = <String>[];
+    for (final (WindowState wanted, int seconds) in <(WindowState, int)>[
+      (WindowState.maximised, 3),
+      (WindowState.normal, 3),
+      (WindowState.minimised, 3),
+      (WindowState.normal, 3),
+      (WindowState.fullscreen, 6),
+      (WindowState.maximised, 6),
+      (WindowState.normal, 3),
+    ]) {
+      final bool sent = (native as WindowStateControl).requestState(wanted);
+      final bool reached = await becomes(wanted, Duration(seconds: seconds));
+      steps.add('${wanted.name}=${sent && reached}');
+    }
+    record('INPUT_APP_WINDOW_STATE',
+        steps.every((String step) => step.endsWith('true')), steps.join(' '));
+
     // Last, because it ends the run: Window > Close (Cmd+W) from the main
     // menu the host installs is the close button's request. For the last
     // window that is a request to close the application, so the application
     // goes to `closing` and leaves the teardown to dispose - the documented
     // policy in application.dart.
     native.synthesizeInput('SYNTH_MENU ${_b64('Close')}');
-    await _pump(app, const Duration(milliseconds: 300));
+    // Up to three seconds: the restore just above animates, and the host
+    // reads its next command when the animation lets go of the main thread.
+    final DateTime closeDeadline =
+        DateTime.now().add(const Duration(seconds: 3));
+    while (app.state != ApplicationLifecycleState.closing &&
+        DateTime.now().isBefore(closeDeadline)) {
+      await _pump(app, const Duration(milliseconds: 50));
+    }
     record('INPUT_APP_MENU_CLOSE',
         app.state == ApplicationLifecycleState.closing, 'state=${app.state}');
   } finally {

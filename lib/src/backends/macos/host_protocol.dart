@@ -1300,6 +1300,11 @@ final class HostCommands {
 
   static String setTitle(String title) => 'SET_TITLE $title\n';
 
+  /// Asks for a window state, numbered as [HostWindowEventKind.stateChanged]
+  /// reports it: 0 normal, 1 minimised, 2 zoomed, 3 full screen. Answered
+  /// only by the `WINDOW=STATE` that follows, if the state changes.
+  static String setState(int state) => 'SET_STATE $state\n';
+
   /// Bounds in top-left-origin screen points, matching
   /// [HostWindowEventKind.moved].
   static String setBounds(double x, double y, double width, double height) =>

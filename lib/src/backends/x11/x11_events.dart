@@ -424,6 +424,9 @@ final class X11PendingWindowEvents {
   /// RESOURCE_MANAGER was rewritten by a settings daemon.
   bool scaleDirty = false;
 
+  /// `_NET_WM_STATE` or `WM_STATE` changed; the window re-reads both once.
+  bool stateDirty = false;
+
   /// Union of every Expose rectangle seen this drain, in device pixels.
   int exposeLeft = 0;
   int exposeTop = 0;
@@ -438,7 +441,8 @@ final class X11PendingWindowEvents {
       !closeRequested &&
       !destroyed &&
       !originDirty &&
-      !scaleDirty;
+      !scaleDirty &&
+      !stateDirty;
 
   void reset() {
     resized = false;
@@ -450,6 +454,7 @@ final class X11PendingWindowEvents {
     destroyed = false;
     originDirty = false;
     scaleDirty = false;
+    stateDirty = false;
     exposeLeft = 0;
     exposeTop = 0;
     exposeRight = 0;
@@ -769,7 +774,11 @@ abstract final class X11EventTranslator {
         // _NET_WM_STATE and WM_STATE changed: the maximised/fullscreen/iconic
         // answer is now stale. Reading it needs a round trip, so it is done at
         // flush time and only when something asks.
-        return raw.atom == state.netWmState || raw.atom == state.wmState;
+        if (raw.atom == state.netWmState || raw.atom == state.wmState) {
+          pending.stateDirty = true;
+          return true;
+        }
+        return false;
 
       case xcbMotionNotify:
       case xcbKeyPress:

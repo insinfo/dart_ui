@@ -48,6 +48,8 @@ const List<String> x11WellKnownAtoms = <String>[
   '_NET_WM_STATE_MAXIMIZED_VERT',
   '_NET_WM_STATE_FULLSCREEN',
   '_NET_WM_STATE_HIDDEN',
+  // ICCCM 4.1.4: the request to iconify, sent to the root window.
+  'WM_CHANGE_STATE',
   '_NET_WM_WINDOW_TYPE',
   '_NET_WM_WINDOW_TYPE_NORMAL',
   // One atom per WindowKind (see `x11_window.dart`). They are interned with
@@ -167,6 +169,38 @@ abstract interface class X11WindowClient implements X11BackendConnection {
   ({int x, int y})? translateToRoot(int window);
   int flush();
   void recordError(String message);
+}
+
+/// `_NET_WM_STATE` and `WM_STATE`, read back and asked for.
+///
+/// A separate seam, like [X11CpuClient], so the window can tell a connection
+/// that can do this from a test double that cannot, and so the doubles that
+/// predate it keep compiling. Both reads are **round trips**; the window does
+/// them once per `PropertyNotify` drain, not per event.
+abstract interface class X11WindowStateClient {
+  /// The atoms in the window's `_NET_WM_STATE`, empty when it has none.
+  List<int> readNetWmState(int window);
+
+  /// The first word of the window's ICCCM `WM_STATE` - 1 normal, 3 iconic -
+  /// or 0 when the window manager has not set it.
+  int readWmState(int window);
+
+  /// A 32-bit `ClientMessage` about [window], sent to the root window with
+  /// `SubstructureRedirect | SubstructureNotify`.
+  ///
+  /// The mask is the whole difference from an XDND message: EWMH and ICCCM
+  /// requests go to the window manager, which listens on the root, and a
+  /// message sent with an empty mask reaches nobody.
+  void sendWindowManagerMessage({
+    required int window,
+    required int type,
+    required List<int> data,
+  });
+
+  /// Replaces `_NET_WM_STATE` outright. Only meaningful before the window is
+  /// mapped: the window manager reads the property when it takes the window
+  /// over, and owns it afterwards.
+  void writeNetWmState(int window, List<int> atoms);
 }
 
 /// The two core-protocol requests that describe the keyboard.
@@ -326,7 +360,8 @@ final class X11Connection
         X11DragDropClient,
         X11KeyboardClient,
         X11ClipboardClient,
-        X11ScreenClient {
+        X11ScreenClient,
+        X11WindowStateClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
   /// Opens `$DISPLAY`, or reports exactly what stopped it.
@@ -971,6 +1006,55 @@ final class X11Connection
   }) {
     throwIfDisposed();
     if (destination == 0 || type == 0) return;
+    _encodeClientMessage(window, type, data);
+    xcb.sendEvent(_handle, 0, destination, 0, eventScratch);
+  }
+
+  @override
+  void sendWindowManagerMessage({
+    required int window,
+    required int type,
+    required List<int> data,
+  }) {
+    throwIfDisposed();
+    if (window == 0 || type == 0) return;
+    _encodeClientMessage(window, type, data);
+    xcb.sendEvent(
+      _handle,
+      0,
+      root,
+      xcbEventMaskSubstructureRedirect | xcbEventMaskSubstructureNotify,
+      eventScratch,
+    );
+  }
+
+  @override
+  List<int> readNetWmState(int window) => getCardinalProperty(
+        window,
+        atom('_NET_WM_STATE'),
+        xcbAtomAtom,
+        <int>[],
+      );
+
+  @override
+  int readWmState(int window) {
+    final int wmState = atom('WM_STATE');
+    final List<int> words =
+        getCardinalProperty(window, wmState, wmState, <int>[]);
+    return words.isEmpty ? 0 : words.first;
+  }
+
+  @override
+  void writeNetWmState(int window, List<int> atoms) {
+    final int property = atom('_NET_WM_STATE');
+    if (atoms.isEmpty) {
+      deleteWindowProperty(window, property);
+    } else {
+      setWindowProperty32(window, property, xcbAtomAtom, atoms);
+    }
+  }
+
+  void _encodeClientMessage(int window, int type, List<int> data) {
     for (var index = 0; index < 32; index++) {
       eventScratch[index] = 0;
     }
@@ -985,7 +1069,6 @@ final class X11Connection
         index < data.length ? data[index] & 0xffffffff : 0,
       );
     }
-    xcb.sendEvent(_handle, 0, destination, 0, eventScratch);
   }
 
   @override

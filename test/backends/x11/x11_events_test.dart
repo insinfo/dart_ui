@@ -584,6 +584,7 @@ void main() {
         ),
         isTrue,
       );
+      expect(pending.stateDirty, isTrue);
       expect(
         X11EventTranslator.apply(
           _raw(type: xcbPropertyNotify, atom: 0x9999),

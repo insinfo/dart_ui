@@ -15,6 +15,7 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import 'native_window.dart' show WindowState, WindowStateControl;
 
 /// Opaque identity of a window, stable for that window's lifetime.
 ///
@@ -105,6 +106,22 @@ final class WindowActivationEvent extends PlatformWindowEvent {
   });
 
   final WindowActivation activation;
+}
+
+/// The window became normal, minimised, maximised or fullscreen.
+///
+/// Emitted for every change, whoever caused it: the user's title-bar button,
+/// a keyboard shortcut of the window manager, or this application's own
+/// [WindowStateControl.requestState]. A request is answered only through this
+/// event, since the window system may refuse it or carry it out later.
+final class WindowStateChangedEvent extends PlatformWindowEvent {
+  const WindowStateChangedEvent({
+    required super.windowId,
+    required super.generation,
+    required this.state,
+  });
+
+  final WindowState state;
 }
 
 /// The user asked to close the window. The framework decides whether to

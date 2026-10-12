@@ -40,7 +40,7 @@ import 'wayland_shm.dart';
 
 final class WaylandWindow
     with DisposableMixin
-    implements NativeWindow, ClientDecoratedWindow {
+    implements NativeWindow, ClientDecoratedWindow, WindowStateControl {
   WaylandWindow._({
     required WaylandWindowClient client,
     required this.toplevelIds,
@@ -477,6 +477,34 @@ final class WaylandWindow
   @override
   bool get isMaximized => _protocol.maximized;
 
+  /// xdg-shell has no minimised state and no request to leave it: a
+  /// minimised window is restored by the user, through the compositor. So
+  /// [WindowState.normal] here only leaves fullscreen and maximised, and a
+  /// minimise is never reported back.
+  @override
+  bool requestState(WindowState state) {
+    if (isDisposed || isPopup) return false;
+    switch (state) {
+      case WindowState.normal:
+        if (_protocol.fullscreen) {
+          _client.setToplevelFullscreen(toplevelIds, false);
+        }
+        if (_protocol.maximized) {
+          _client.setToplevelMaximized(toplevelIds, false);
+        }
+      case WindowState.minimised:
+        _client.minimizeToplevel(toplevelIds);
+      case WindowState.maximised:
+        if (_protocol.fullscreen) {
+          _client.setToplevelFullscreen(toplevelIds, false);
+        }
+        _client.setToplevelMaximized(toplevelIds, true);
+      case WindowState.fullscreen:
+        _client.setToplevelFullscreen(toplevelIds, true);
+    }
+    return true;
+  }
+
   @override
   void requestClose() {
     if (isDisposed) return;
@@ -730,12 +758,23 @@ final class WaylandWindow
         dirtyRect: damage,
       ));
     }
+    if (!destroyed && !dismissed && state != _reportedState) {
+      _reportedState = state;
+      _emit(WindowStateChangedEvent(
+        windowId: id,
+        generation: generation,
+        state: state,
+      ));
+    }
     if (destroyed) _closedEventEmitted = true;
     _pending.reset();
     if (destroyed || dismissed) dispose();
   }
 
   bool _emitScaleChange = false;
+
+  /// The state the last [WindowStateChangedEvent] carried.
+  WindowState _reportedState = WindowState.normal;
 
   void _emit(PlatformWindowEvent event) {
     if (!_events.isClosed) _events.add(event);

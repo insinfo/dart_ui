@@ -993,6 +993,26 @@ abstract interface class NativeWindow {
 }
 ```
 
+`state` é só leitura. Pedir um estado é a capacidade à parte
+`WindowStateControl.requestState(WindowState)` (`native_window.dart`, desde
+12/10/2026), testada com padrão como `ActivatableWindow`; a resposta chega
+como `WindowStateChangedEvent`, emitido em toda mudança, venha ela do pedido,
+do botão da barra ou de um atalho do gerenciador de janelas. Implementada em
+Win32 (`ShowWindow`; tela cheia é a janela `WS_POPUP` do tamanho do monitor,
+que volta ao estilo e ao retângulo — e ao maximizado — de antes), X11
+(`_NET_WM_STATE` e `WM_CHANGE_STATE` para a raiz com
+`SubstructureRedirect|SubstructureNotify`; antes do map, escreve a
+propriedade; e o `state` agora é lido de volta de `_NET_WM_STATE`/`WM_STATE`
+— até aqui era sempre `normal`), Wayland (`set_maximized`, `set_fullscreen`,
+`set_minimized`; minimizado não é relatado, o xdg-shell não tem esse estado)
+e macOS (`SET_STATE` no host: `zoom:`, `miniaturize:`, `toggleFullScreen:`,
+com o pedido que chega durante a animação de tela cheia guardado até
+`windowDid*FullScreen:`). Provas: `win32_window_state_test.dart` (HWND real,
+CI Windows), `x11_window_test.dart` e `wayland_backend_test.dart` (grupos de
+estado) e `INPUT_APP_WINDOW_STATE` no smoke do macOS, que percorre
+maximizado → normal → minimizado → normal → tela cheia → maximizado → normal
+num host de verdade.
+
 ## 9.4 Dispatcher
 
 ```dart
@@ -2662,10 +2682,10 @@ estavam escritas. Elas foram corrigidas abaixo; o que segue é o estado.
 
 **Não existe, e é o que decide se este backend serve:** GPU de qualquer espécie
 (sem EGL, sem `linux-dmabuf`, sem Vulkan), touch, escala fracionária, seleção
-primária, ícone de arraste, ação `link`, `set_fullscreen` e posição de
-janela. Ver §16.14 e §68. Movimento/redimensionamento interativo,
-`set_maximized`/`set_minimized` e CSD existem desde 12/10/2026 (item **CSD**
-abaixo).
+primária, ícone de arraste, ação `link` e posição de janela. Ver §16.14 e
+§68. Movimento/redimensionamento interativo, `set_maximized`/`set_minimized`/
+`set_fullscreen` (por `WindowStateControl`, §9.3) e CSD existem desde
+12/10/2026 (item **CSD** abaixo).
 
 **Falou com um compositor de verdade em 26/08/2026**, e a evidência está na
 §68.1. Até essa data nenhuma linha tinha falado. As 14 suítes (6.709 linhas)
@@ -2991,7 +3011,7 @@ Revisto em 2026-08-23 contra `lib/src/backends/wayland/`.
 - [ ] **GNOME/KDE/wlroots — nenhum deles**; o único compositor de verdade que já rodou este backend é o **Weston** do job `wayland` do `ci.yml`, desde 26/08/2026;
 - [~] protocolo sem deadlock — provado contra o compositor falso, incluindo o curto-circuito de clipboard que evitaria travar o isolate;
 - [x] buffers sem use-after-release — o release limpa `busy`, a destruição é adiada, e a exaustão do swapchain reusa um buffer ocupado **contando** em `busyReuseCount` em vez de em silêncio;
-- [x] **CSD** (12/10/2026): quando o compositor recusa decoração de servidor — o caso do GNOME e do Weston — o framework desenha a própria barra. `WaylandWindow` implementa `ClientDecoratedWindow` (`native_window.dart`): `clientDecorations` vira verdadeiro quando não há `zxdg_decoration_manager_v1` ou quando o compositor responde `client_side`; `beginMove`/`beginResize` mandam `xdg_toplevel.move`/`resize` com o serial do último clique e emitem um `PointerCancelEvent`, porque o soltar do botão vai para o compositor e nunca chega ao cliente; `setMaximized`/`minimize` usam `set_maximized`/`unset_maximized`/`set_minimized`. O `ClientDecorationFrame` (`widgets/client_decoration.dart`) envolve a raiz de todo `ApplicationWindow` cuja janela é `ClientDecoratedWindow`: barra de 32 px com título, minimizar, maximizar/restaurar e fechar (que pede o fechamento como o compositor pediria), arraste da barra move, clique duplo alterna maximizado, e faixas de 6 px nas bordas e cantos redimensionam — some quando maximizada. Testes: `client_decoration_test.dart` e o grupo xdg-decoration de `wayland_backend_test.dart`; o smoke do Weston imprime `WAYLAND_CSD` e `WAYLAND_MAXIMIZE`. **Falta:** sombra e cantos arredondados, `show_window_menu` no clique direito, tint de hover nos botões (o roteador não dá entrada/saída por caixa) e `set_fullscreen`.
+- [x] **CSD** (12/10/2026): quando o compositor recusa decoração de servidor — o caso do GNOME e do Weston — o framework desenha a própria barra. `WaylandWindow` implementa `ClientDecoratedWindow` (`native_window.dart`): `clientDecorations` vira verdadeiro quando não há `zxdg_decoration_manager_v1` ou quando o compositor responde `client_side`; `beginMove`/`beginResize` mandam `xdg_toplevel.move`/`resize` com o serial do último clique e emitem um `PointerCancelEvent`, porque o soltar do botão vai para o compositor e nunca chega ao cliente; `setMaximized`/`minimize` usam `set_maximized`/`unset_maximized`/`set_minimized`. O `ClientDecorationFrame` (`widgets/client_decoration.dart`) envolve a raiz de todo `ApplicationWindow` cuja janela é `ClientDecoratedWindow`: barra de 32 px com título, minimizar, maximizar/restaurar e fechar (que pede o fechamento como o compositor pediria), arraste da barra move, clique duplo alterna maximizado, e faixas de 6 px nas bordas e cantos redimensionam — some quando maximizada. Testes: `client_decoration_test.dart` e o grupo xdg-decoration de `wayland_backend_test.dart`; o smoke do Weston imprime `WAYLAND_CSD` e `WAYLAND_MAXIMIZE`. **Falta:** sombra e cantos arredondados, `show_window_menu` no clique direito, tint de hover nos botões (o roteador não dá entrada/saída por caixa). `set_fullscreen` veio com `WindowStateControl` (§9.3).
 
 ---
 
@@ -8347,6 +8367,7 @@ aplica, **?** não verificado.
 | popups | sim | sim | sim (`xdg_positioner`) | ? | — | sim |
 | tray / notificações | não | não | não | não | não | — |
 | decoração quando o compositor recusa SSD | — | — | **sim** (`ClientDecorationFrame`: barra, botões, mover e redimensionar pelo compositor; sem sombra) | — | — | — |
+| pedir estado (`WindowStateControl`) | sim (tela cheia = popup do tamanho do monitor) | sim (EWMH/ICCCM; depende do gerenciador de janelas) | sim (sem minimizado relatado) | sim (`zoom:`/`miniaturize:`/`toggleFullScreen:`) | não | não |
 
 A **árvore semântica** do framework existe, é testada e não aparece na tabela
 de propósito: ela é da camada comum, não uma capacidade de backend. O que a
@@ -10861,7 +10882,7 @@ proporção ele aparece nos outros caminhos, não.
   colaram de volta;
 - **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
-  primária, sem `set_fullscreen`, sem posição de janela; a CSD desenhada
+  primária, sem posição de janela; a CSD desenhada
   quando o compositor recusa SSD não tem sombra nem menu de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de
   modificador **assumidos**; apenas ABIs **LP64**;
 - **macOS**: drag-and-drop **só recebendo** desde 12/10/2026: a view do host

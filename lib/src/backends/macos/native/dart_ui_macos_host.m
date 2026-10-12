@@ -624,6 +624,11 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 @property(nonatomic, assign) BOOL terminating;
 @property(nonatomic, assign) BOOL closedReported;
 @property(nonatomic, assign) NSInteger reportedState;
+// A SET_STATE that has to wait for the full-screen animation to end, or -1.
+@property(nonatomic, assign) NSInteger pendingState;
+// Between windowWill*FullScreen and windowDid*FullScreen. AppKit ignores
+// toggleFullScreen:, zoom: and miniaturize: sent during the animation.
+@property(nonatomic, assign) BOOL fullScreenTransition;
 // The drag SYNTH_DRAG is building, from its enter to its leave or drop.
 @property(nonatomic, strong) DartUiSynthDraggingInfo *synthDrag;
 // Base64 pieces of a CLIPBOARD_WRITE still being sent, by request number.
@@ -679,6 +684,47 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
   if (self.window.miniaturized) return 1;
   if (self.window.zoomed) return 2;
   return 0;
+}
+
+// SET_STATE: 0 normal, 1 minimised, 2 zoomed, 3 full screen - the numbering
+// of currentWindowState. Full screen is an animated transition that ignores
+// every request sent during it, so a request that arrives mid-animation, or
+// that has to leave full screen first, waits in pendingState for the
+// windowDid*FullScreen: that ends the animation.
+- (void)applyRequestedState:(NSInteger)state {
+  NSWindow *window = self.window;
+  if (self.fullScreenTransition) {
+    self.pendingState = state;
+    return;
+  }
+  BOOL fullscreen = (window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+  self.pendingState = -1;
+  if (state != 3 && fullscreen) {
+    self.pendingState = state;
+    [window toggleFullScreen:nil];
+    return;
+  }
+  if (state != 1 && window.miniaturized) [window deminiaturize:nil];
+  switch (state) {
+    case 0:
+      if (window.zoomed) [window zoom:nil];
+      break;
+    case 1:
+      [window miniaturize:nil];
+      break;
+    case 2:
+      if (!window.zoomed) [window zoom:nil];
+      break;
+    case 3:
+      if (!fullscreen) {
+        window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+        [window toggleFullScreen:nil];
+      }
+      break;
+    default:
+      break;
+  }
+  [self reportStateIfChanged];
 }
 
 - (void)reportStateIfChanged {
@@ -1931,6 +1977,8 @@ static const NSUInteger kClipboardChunk = 6000;
     fflush(stdout);
   } else if ([command hasPrefix:@"SET_BOUNDS "]) {
     [self setBoundsFromCommand:command];
+  } else if ([command hasPrefix:@"SET_STATE "]) {
+    [self applyRequestedState:[[command substringFromIndex:10] integerValue]];
   } else if ([command hasPrefix:@"IME_CARET "]) {
     NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
     if (parts.count == 5) {
@@ -2104,14 +2152,46 @@ static const NSUInteger kClipboardChunk = 6000;
   [self reportStateIfChanged];
 }
 
+- (void)windowWillEnterFullScreen:(NSNotification *)notification {
+  (void)notification;
+  self.fullScreenTransition = YES;
+}
+
+- (void)windowWillExitFullScreen:(NSNotification *)notification {
+  (void)notification;
+  self.fullScreenTransition = YES;
+}
+
 - (void)windowDidEnterFullScreen:(NSNotification *)notification {
   (void)notification;
-  [self reportStateIfChanged];
+  [self endFullScreenTransition];
 }
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification {
   (void)notification;
+  [self endFullScreenTransition];
+}
+
+- (void)windowDidFailToEnterFullScreen:(NSWindow *)window {
+  (void)window;
+  [self endFullScreenTransition];
+}
+
+- (void)windowDidFailToExitFullScreen:(NSWindow *)window {
+  (void)window;
+  [self endFullScreenTransition];
+}
+
+- (void)endFullScreenTransition {
+  self.fullScreenTransition = NO;
   [self reportStateIfChanged];
+  NSInteger pending = self.pendingState;
+  if (pending < 0) return;
+  // Not from inside the notification: AppKit is still finishing the
+  // transition there, and a zoom: sent now is dropped.
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (self.pendingState == pending) [self applyRequestedState:pending];
+  });
 }
 
 // Quit and Close from the menus: the same request as the close button.
@@ -2249,6 +2329,7 @@ int main(int argc, const char *argv[]) {
     delegate.machServicePort = MACH_PORT_NULL;
     delegate.presentedSlot = -1;
     delegate.reportedState = -1;
+    delegate.pendingState = -1;
 
     for (int index = 1; index < argc; index++) {
       const char *argument = argv[index];

@@ -69,6 +69,10 @@ abstract interface class WaylandWindowClient
 
   void setToplevelMaximized(WaylandToplevelIds ids, bool maximized);
 
+  /// `set_fullscreen` on whichever output the compositor picks, or
+  /// `unset_fullscreen`.
+  void setToplevelFullscreen(WaylandToplevelIds ids, bool fullscreen);
+
   void minimizeToplevel(WaylandToplevelIds ids);
   void ackConfigure(WaylandToplevelIds ids, int serial);
   void hideToplevel(WaylandToplevelIds ids);
@@ -1892,6 +1896,22 @@ final class WaylandConnection
           ? xdgToplevelRequestSetMaximized
           : xdgToplevelRequestUnsetMaximized,
     );
+    _queueMessage();
+    flush();
+  }
+
+  @override
+  void setToplevelFullscreen(WaylandToplevelIds ids, bool fullscreen) {
+    if (isDisposed) return;
+    if (fullscreen) {
+      _writer
+        ..begin(ids.toplevelId, xdgToplevelRequestSetFullscreen)
+        // A null output: the compositor chooses, normally the one the window
+        // is on.
+        ..putObject(0);
+    } else {
+      _writer.begin(ids.toplevelId, xdgToplevelRequestUnsetFullscreen);
+    }
     _queueMessage();
     flush();
   }

@@ -253,6 +253,9 @@ const int icccmSizeHintsWordCount = 18;
 const int motifHintsWordCount = 5;
 const int motifHintFlagDecorations = 1 << 1;
 
+/// ICCCM `WM_STATE.state` and `WM_CHANGE_STATE` value for an iconified window.
+const int x11IconicState = 3;
+
 /// `_NET_WM_STATE` ClientMessage actions.
 const int netWmStateRemove = 0;
 const int netWmStateAdd = 1;

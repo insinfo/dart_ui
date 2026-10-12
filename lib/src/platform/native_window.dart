@@ -267,6 +267,31 @@ abstract interface class EnableableWindow {
   void setEnabled(bool value);
 }
 
+/// A window whose [WindowState] the application can ask for.
+///
+/// Every desktop backend reports the state; this is the other direction - the
+/// "full screen" menu item of a video player, the maximise button of a frame
+/// the application draws itself. Each platform spells it differently:
+/// `xdg_toplevel.set_maximized` and friends on Wayland, `_NET_WM_STATE` and
+/// `WM_CHANGE_STATE` on X11, `ShowWindow` and a borderless window over the
+/// monitor on Win32, `zoom:`/`miniaturize:`/`toggleFullScreen:` on macOS.
+///
+/// A capability, tested for with a pattern, for the reason
+/// [ActivatableWindow] gives.
+abstract interface class WindowStateControl {
+  /// Asks the window system to put the window in [state].
+  ///
+  /// Returns whether the request was sent, not whether it was honoured: the
+  /// window manager may refuse it (a tiling one maximising nothing), carry it
+  /// out after an animation (macOS full screen) or not report it at all
+  /// (Wayland has no minimised state). The outcome arrives as a
+  /// [WindowStateChangedEvent] and in [NativeWindow.state].
+  ///
+  /// [WindowState.normal] leaves maximised and fullscreen and restores a
+  /// minimised window where the platform lets a client do that.
+  bool requestState(WindowState state);
+}
+
 /// Which edge or corner an interactive resize is dragged from.
 enum WindowResizeEdge {
   top,

@@ -15,9 +15,10 @@
 ///     (13.16). None of them are claimed in the probe's capabilities, so a
 ///     caller asking `probe().supports(Capability.clipboardText)` gets a
 ///     truthful no rather than a runtime surprise.
-///   * **Fullscreen.** [WindowState.fullscreen] is never reported; the
-///     borderless-on-monitor-bounds dance needs monitor enumeration, which
-///     belongs with the screens module of 13.1.
+///   * **Fullscreen** is the borderless-window-over-the-monitor of
+///     [Win32Window.requestState], not exclusive mode: no display mode change,
+///     and the taskbar is covered only because the window is the size of the
+///     monitor.
 library;
 
 import 'dart:async';
@@ -248,7 +249,8 @@ final class Win32Window
         NativeHandleWindow,
         ActivatableWindow,
         EnableableWindow,
-        LiveResizeWindow {
+        LiveResizeWindow,
+        WindowStateControl {
   Win32Window._({
     required Win32Api api,
     required Win32WindowClass windowClass,
@@ -772,6 +774,130 @@ final class Win32Window
         context: 'activating window 0x${_hwnd.toRadixString(16)}',
       ));
     }
+  }
+
+  /// `ShowWindow` for normal, minimised and maximised; for fullscreen, the
+  /// borderless window the size of the monitor that every Win32 game and
+  /// video player uses, since Windows has no fullscreen state of its own.
+  ///
+  /// Each of these shows a hidden window, as `ShowWindow` does. Leaving
+  /// fullscreen puts back the style and rectangle the window had, maximised
+  /// again if it was.
+  @override
+  bool requestState(WindowState state) {
+    if (_hwnd == 0 || _destroyed || !kind.takesActivation) return false;
+    if (state == WindowState.fullscreen) return _enterFullscreen();
+    if (_beforeFullscreen != null) _leaveFullscreen();
+    _api.showWindow(
+      _hwnd,
+      switch (state) {
+        WindowState.normal => swRestore,
+        WindowState.minimised => swMinimize,
+        WindowState.maximised => swMaximize,
+        WindowState.fullscreen => swRestore,
+      },
+    );
+    // SW_RESTORE on a window minimised from maximised restores it to
+    // maximised - "the way it was" - so normal takes a second one.
+    if (state == WindowState.normal && _state == WindowState.maximised) {
+      _api.showWindow(_hwnd, swRestore);
+    }
+    return true;
+  }
+
+  /// What a fullscreen window goes back to, or null when it is not one.
+  ({
+    int style,
+    int left,
+    int top,
+    int right,
+    int bottom,
+    bool maximised
+  })? _beforeFullscreen;
+
+  bool _enterFullscreen() {
+    if (_beforeFullscreen != null) return true;
+    final bool wasMaximised = _state == WindowState.maximised;
+    // The restored rectangle, not the maximised one: leaving fullscreen
+    // restores to it and then maximises again.
+    if (_state != WindowState.normal) _api.showWindow(_hwnd, swRestore);
+    final Pointer<Win32Rect> rect = _api.allocator<Win32Rect>();
+    final Pointer<MonitorInfoExW> info = _api.allocator<MonitorInfoExW>();
+    try {
+      if (_api.getWindowRect(_hwnd, rect) == 0 ||
+          !_api.readMonitorInfo(
+            _api.monitorFromWindow(_hwnd, monitorDefaultToNearest),
+            info,
+          )) {
+        _record(win32CallFailed(
+          'GetMonitorInfoW',
+          _api.getLastError(),
+          context: 'entering fullscreen',
+        ));
+        return false;
+      }
+      final int style = _api.getWindowLongPtrW(_hwnd, gwlStyle);
+      _beforeFullscreen = (
+        style: style,
+        left: rect.ref.left,
+        top: rect.ref.top,
+        right: rect.ref.right,
+        bottom: rect.ref.bottom,
+        maximised: wasMaximised,
+      );
+      _api.setWindowLongPtrW(
+        _hwnd,
+        gwlStyle,
+        (style & ~wsOverlappedWindow) | wsPopup,
+      );
+      final Win32Rect monitor = info.ref.rcMonitor;
+      _api.setWindowPos(
+        _hwnd,
+        _hwndTop,
+        monitor.left,
+        monitor.top,
+        monitor.right - monitor.left,
+        monitor.bottom - monitor.top,
+        swpFramechanged | swpNoownerzorder | _swpShowwindow,
+      );
+    } finally {
+      _api.allocator
+        ..free(rect)
+        ..free(info);
+    }
+    // WM_SIZE has come and gone inside SetWindowPos, while the restore
+    // rectangle was already recorded - so the state is right unless the size
+    // did not change, in which case no WM_SIZE came at all.
+    _setState(WindowState.fullscreen);
+    return true;
+  }
+
+  void _leaveFullscreen() {
+    final before = _beforeFullscreen;
+    if (before == null) return;
+    _beforeFullscreen = null;
+    _api.setWindowLongPtrW(_hwnd, gwlStyle, before.style);
+    _api.setWindowPos(
+      _hwnd,
+      0,
+      before.left,
+      before.top,
+      before.right - before.left,
+      before.bottom - before.top,
+      swpFramechanged | swpNoownerzorder | swpNozorder,
+    );
+    if (before.maximised) _api.showWindow(_hwnd, swMaximize);
+    _setState(before.maximised ? WindowState.maximised : WindowState.normal);
+  }
+
+  void _setState(WindowState next) {
+    if (next == _state) return;
+    _state = next;
+    _emit(WindowStateChangedEvent(
+      windowId: id,
+      generation: _generation.current,
+      state: next,
+    ));
   }
 
   /// Whether Windows will deliver mouse and keyboard input to this window.
@@ -1676,11 +1802,15 @@ final class Win32Window
       // A minimised window reports a 0x0 client area. Resizing surfaces to
       // nothing and back is pure churn, so the size is left alone and only the
       // state changes.
-      _state = WindowState.minimised;
+      _setState(WindowState.minimised);
       return 0;
     }
-    _state =
-        wParam == sizeMaximized ? WindowState.maximised : WindowState.normal;
+    // A fullscreen window is a restored one to Windows: the state is ours.
+    _setState(_beforeFullscreen != null
+        ? WindowState.fullscreen
+        : wParam == sizeMaximized
+            ? WindowState.maximised
+            : WindowState.normal);
 
     final width = win32LoWord(lParam);
     final height = win32HiWord(lParam);
