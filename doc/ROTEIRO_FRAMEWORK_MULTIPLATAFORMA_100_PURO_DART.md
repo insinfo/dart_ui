@@ -9831,11 +9831,22 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   backend mantém um host de popup oculto já lançado, e o próximo popup o
   adota em vez de esperar o AppKit subir. Reabrir um menu caiu de **66 ms
   para 2,5 ms** de mediana nesta máquina (`reopenMedian=2.46`, pior caso
-  2,70), abaixo dos 7,29 ms do Windows. A reserva só é lançada **depois** de
-  o popup abrir: a primeira versão a lançava junto, e no runner `macos-14` os
-  dois lançamentos do AppKit disputaram a CPU e o primeiro popup foi de 58 ms
-  para 298 ms (run `38224574048`). O primeiro popup continua frio (~70 ms), e
-  um app que nunca abre menu nunca paga o processo ocioso. Tooltip não tem reserva: o tipo é fixo no lançamento e o tooltip já
+  2,70), abaixo dos 7,29 ms do Windows; no runner `macos-14`, reabrir no
+  ritmo de uma pessoa (`pacedMedian`) dá 6,6 ms com a reserva e 107,6 ms sem
+  ela, no mesmo job. O primeiro popup continua frio (~70 ms aqui), e um app
+  que nunca abre menu nunca paga o processo ocioso.
+
+  **Uma causa registrada errada e corrigida no mesmo dia.** Depois que a
+  reserva entrou, o primeiro menu no runner passou de 58 ms para 180-310 ms
+  em seis execuções, e isso foi atribuído à reserva disputando a CPU com o
+  popup - primeiro lançada junto com ele, depois logo após o `createWindow`,
+  depois com 150 ms de atraso, e o número não se mexeu. O workflow passou a
+  rodar o smoke com e sem a reserva no mesmo job, e com o passo sem reserva
+  primeiro (o primeiro passo paga os caches frios) deu **217,6 ms sem e
+  220,5 ms com** (run `38231956976`): o custo frio é do runner, e o 58 ms
+  anterior foi um runner mais rápido (o mesmo run mediu 1304 fps de popup, os
+  seguintes 419-690). O atraso foi removido - ele custava à rajada a reserva,
+  80 ms de mediana contra 16-32 ms lançando na hora. Tooltip não tem reserva: o tipo é fixo no lançamento e o tooltip já
   espera o atraso de hover. O outro continua aberto: **a ativação da dona não é provada no macOS**: um
   processo iniciado por outro em segundo plano tem a ativação recusada pelo
   sistema (a janela não vira key nem criada visível), então o smoke lê o

@@ -37,30 +37,29 @@ jobs:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/macos_backend_smoke.dart
 
-      # The probe above proves the NSPanel exists; this proves an Application
-      # puts it in the right place. Until 12/10/2026 the smoke was Windows-only,
-      # and the first macOS run found the AppKit host answering positions with
-      # the window *frame* instead of the content rect - every popup anchored
-      # in a titled window landed one title bar too high - and never reporting
-      # a move made while the window was hidden.
-      # The popup smoke with no spare popup host, for the comparison only this
-      # runner can make: since the spare existed the first menu here went from
-      # 58 ms to 180-310 ms, which no faster machine reproduces. Run *before*
-      # the step with the spare: the first run of a job pays the cold caches,
-      # and in the other order that cost landed on the spare's line (209 ms
-      # against 112 ms in run 38231006076), which is the confound this order
-      # removes.
+      # The popup smoke with no spare popup host, beside the one with it, so the
+      # spare's effect is read on the same runner in the same job. It settled
+      # one question already: the first menu here, 180-310 ms since the spare
+      # existed, was 217.6 ms without it and 220.5 ms with it once this step
+      # ran first (run 38231956976) - the runner's cold cost, not the spare.
+      # This step stays first because the first step of a job pays the cold
+      # caches.
       - name: Popup window smoke without the spare host (comparison)
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
           DART_UI_MACOS_SPARE_HOST: '0'
         run: dart run tool/popup_window_smoke.dart
 
+      # The probe above proves the NSPanel exists; this proves an Application
+      # puts it in the right place. Until 12/10/2026 the smoke was Windows-only,
+      # and the first macOS run found the AppKit host answering positions with
+      # the window *frame* instead of the content rect - every popup anchored
+      # in a titled window landed one title bar too high - and never reporting
+      # a move made while the window was hidden.
       - name: Popup window smoke through Application
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/popup_window_smoke.dart
-
 
       # The clipboard goes through the same AppKit host as the window, so it
       # is proven on the same runner. pbpaste and pbcopy are the witnesses: a

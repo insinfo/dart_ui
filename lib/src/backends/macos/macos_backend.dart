@@ -71,18 +71,6 @@ final class MacosWindowingBackend
   /// application that never shows a menu never pays for an idle process.
   Future<MacosSpareHost?>? _spare;
 
-  /// Pending launch of the next spare; see [_scheduleSpare].
-  Timer? _spareTimer;
-
-  /// How long after a popup opens its replacement spare is launched.
-  ///
-  /// Not at once: right after `createWindow` the popup still mounts its tree,
-  /// measures its content - shaping the menu's text, the first time cold - and
-  /// draws its first frame, and an AppKit launch beside that competes for the
-  /// same cores. On the macos-14 runner the first popup took 217 ms with the
-  /// spare launched straight after the window, against 58 ms with no spare.
-  static const Duration spareLaunchDelay = Duration(milliseconds: 150);
-
   /// The general pasteboard, reached through the host of an open window.
   ///
   /// See `macos_clipboard.dart`. Two refusals by name instead of a clipboard
@@ -217,8 +205,6 @@ final class MacosWindowingBackend
     _initialized = false;
     _quitRequested = true;
 
-    _spareTimer?.cancel();
-    _spareTimer = null;
     final Future<MacosSpareHost?>? spare = _spare;
     _spare = null;
     await (await spare)?.dispose();
@@ -307,11 +293,18 @@ final class MacosWindowingBackend
       opened = await window.open(spawnOptions: spawnOptions);
     }
     if (spawnOptions.kind == MacosHostWindowKind.popup) {
-      // The replacement, launched once this popup has had time to appear: see
-      // [spareLaunchDelay]. Started alongside the popup's own host, the two
-      // launches made the first popup 298 ms on the runner; started straight
-      // after it, 217 ms.
-      _scheduleSpare(binaryPath);
+      // The replacement, launched as soon as this popup is open, so that the
+      // next one - the submenu about to be hovered into, or the same menu
+      // reopened - finds it ready. Not started alongside the popup's own host:
+      // that is the one launch the user is waiting on.
+      //
+      // A 150 ms delay was tried and removed. It rested on the first menu on
+      // the macos-14 runner going from 58 ms to ~300 ms once spares existed;
+      // the same runner, same job, with and without a spare and the cold run
+      // first, gave 217.6 ms and 220.5 ms (run 38231956976) - the runner's
+      // cold cost, not the spare's. The delay cost a burst of opens its spare:
+      // median 80 ms against 16-32 ms launching at once.
+      _launchSpare(binaryPath);
     }
     if (!opened) {
       window.dispose();
@@ -375,15 +368,9 @@ final class MacosWindowingBackend
   static final bool spareHostEnabled =
       Platform.environment['DART_UI_MACOS_SPARE_HOST'] != '0';
 
-  void _scheduleSpare(String binaryPath) {
-    if (!spareHostEnabled) return;
-    if (_spare != null || _spareTimer != null) return;
-    _spareTimer = Timer(spareLaunchDelay, () {
-      _spareTimer = null;
-      if (_initialized) {
-        _spare ??= MacosSpareHost.launch(binaryPath: binaryPath);
-      }
-    });
+  void _launchSpare(String binaryPath) {
+    if (!spareHostEnabled || !_initialized) return;
+    _spare ??= MacosSpareHost.launch(binaryPath: binaryPath);
   }
 
   /// The spare, if there is one that can become a window like [options].
@@ -392,10 +379,6 @@ final class MacosWindowingBackend
   /// is closed here, so the backend never holds two idle processes.
   Future<MacosSpareHost?> _takeSpare(MacosHostSpawnOptions options) async {
     if (options.kind != MacosHostWindowKind.popup) return null;
-    // A popup that arrives before the scheduled launch launches its own host,
-    // as without a spare, and leaves the timer running: cancelling it would
-    // mean a burst of popups - a menu reopened, a submenu hovered into - never
-    // got a spare at all, which is the case the spare is for.
     final Future<MacosSpareHost?>? pending = _spare;
     if (pending == null) return null;
     _spare = null;

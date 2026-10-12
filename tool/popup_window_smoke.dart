@@ -457,11 +457,10 @@ Future<void> _checkOpenCost(
 
   // The same open at a human pace. The burst above reopens every ~80 ms,
   // faster than anyone opens a menu, and a backend that prepares the next
-  // popup's window in the background - the macOS spare host, launched a
-  // moment after each popup so that it never competes with one - is measured
-  // there mostly on the opens that outran it. A person reopening a menu or
-  // hovering into a submenu waits far longer than 300 ms between the two, so
-  // this is the number those opens see.
+  // popup's window in the background - the macOS spare host, launched as each
+  // popup opens - is measured there partly on the opens that outran it. A
+  // person reopening a menu or hovering into a submenu waits far longer than
+  // 300 ms between the two, so this is the number those opens see.
   final paced = <double>[];
   for (var i = 0; i < 6; i++) {
     await _pump(app, const Duration(milliseconds: 300));

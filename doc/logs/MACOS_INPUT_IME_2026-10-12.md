@@ -100,9 +100,10 @@ com um host de mentira em `sh` e roda também na perna Linux.
 
 - Texto ao redor para o IME (`attributedSubstringForProposedRange:` devolve
   nil): o método converte sem contexto do documento, como no Win32.
-- O primeiro menu no runner: 58 ms sem reserva de popup, 180 a 310 ms com ela,
-  em seis execuções, sem que o atraso do lançamento da reserva mudasse isso.
-  Aqui o primeiro menu fica em ~70 ms com ou sem. O workflow agora roda o
-  smoke de popup com e sem a reserva (`DART_UI_MACOS_SPARE_HOST=0`) para
-  separar a causa.
+- ~~O primeiro menu no runner~~ — **resolvido no mesmo dia, e não era a
+  reserva**: com o smoke rodando sem e com a reserva no mesmo job, e o passo
+  sem reserva primeiro, o primeiro menu deu 217,6 ms e 220,5 ms (run
+  `38231956976`). É o custo frio do runner; os 58 ms de antes vieram de um
+  runner mais rápido. O atraso de 150 ms que tinha sido posto no lançamento da
+  reserva, por essa hipótese, foi tirado.
 - Drag-and-drop no macOS não existe.
