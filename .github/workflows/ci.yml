@@ -163,6 +163,19 @@ jobs:
       - name: Vulkan parity (Linux, lavapipe)
         if: matrix.platform == 'linux'
         run: dart test test/rendering/gpu/vulkan --reporter=expanded
+      # ---- Linux: OpenGL contra o llvmpipe do Mesa ----
+      # Pelo mesmo motivo: no Framework os testes de dispositivo GL pulam
+      # ("no EGL context", libEGL ausente), e o gradiente da rota densa do GL
+      # (bd705b6) so tinha rodado contra o compilador de shader de ninguem.
+      # EGL_PLATFORM=surfaceless porque o pbuffer nao precisa de display.
+      - name: OpenGL device tests (Linux, llvmpipe)
+        if: matrix.platform == 'linux'
+        run: >-
+          dart test test/rendering/gpu/gl_device_test.dart
+          test/rendering/gpu/gl --reporter=expanded
+        env:
+          EGL_PLATFORM: surfaceless
+          LIBGL_ALWAYS_SOFTWARE: '1'
       # ---- Windows: Testes de plataforma ----
       - name: Run platform tests (Windows)
         if: matrix.platform == 'windows'
