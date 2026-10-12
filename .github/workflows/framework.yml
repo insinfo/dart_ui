@@ -103,9 +103,14 @@ jobs:
       # first run showed the four Direct3D 11 gradient scenes passing.
       - name: Direct3D 11 and 12 parity (Windows)
         if: matrix.platform == 'windows'
+        # One suite at a time: d3d12_experimental_debug_layer_test enables the
+        # debug layer for every device the process creates, and run beside the
+        # others it has reset the adapter - every later suite then reads
+        # DXGI_ERROR_DEVICE_REMOVED. That file says so and asks for -j 1; the
+        # run for 70296b9 lost the glyph and gradient scenes to exactly that.
         run: >-
           dart test test/rendering/gpu/d3d11 test/rendering/gpu/d3d12
-          --reporter=expanded
+          --reporter=expanded --concurrency=1
 
       # The framework must stay AOT-compilable on every platform from day one.
       # Finding out at release time that something in the core needs mirrors or
