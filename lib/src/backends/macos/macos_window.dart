@@ -29,6 +29,7 @@ import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/framebuffer.dart';
+import '../../rendering/present_mode.dart';
 import '../../rendering/renderer.dart';
 import 'host_process.dart';
 import 'host_protocol.dart';
@@ -68,9 +69,22 @@ typedef MacosSurfaceFactory = MacosSurfacePool Function({
 });
 
 /// A window owned by a host process.
+/// How long a paced present waits for the previous frame's refresh.
+///
+/// Three refreshes at 60 Hz. The host's display link pauses while the window
+/// is hidden or fully occluded, and then no refresh comes: the wait ends here
+/// and the loop runs at this rate instead, which is what a window nobody can
+/// see should cost.
+const Duration kMacosVsyncTimeout = Duration(milliseconds: 50);
+
 final class MacosWindow
     with DisposableMixin
-    implements NativeWindow, MacosSurfaceHost, MacosImeWindow, MacosDropWindow {
+    implements
+        NativeWindow,
+        MacosSurfaceHost,
+        MacosImeWindow,
+        MacosDropWindow,
+        PresentPacer {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -488,9 +502,31 @@ final class MacosWindow
   }
 
   Future<PresentResult> _presentBackBuffer(MacosSurfacePool pool) async {
+    final MacosHostProcessHandle? host = _supervisor?.host;
+    final bool paced = _presentMode == PresentMode.fifo &&
+        host is MacosVsyncChannel &&
+        (host as MacosVsyncChannel).supportsVsync;
+    if (paced) {
+      // FIFO: at most one present per refresh. This frame goes out once the
+      // previous one has reached the screen - the bound a swap chain's
+      // present puts on a loop that asks for a frame every frame, which an
+      // IOSurface present, a line on a pipe, otherwise does not have.
+      final Future<bool>? previous = _pendingVsync;
+      _pendingVsync = null;
+      if (previous != null) await previous;
+      // A resize or a close while waiting replaced or released the pool;
+      // this frame was drawn for the old one.
+      if (isDisposed || !identical(_pool, pool)) {
+        return const PresentResult(status: PresentStatus.stale);
+      }
+    }
     final slot = pool.backSlot;
     final sequence = pool.markPresented(slot);
-    final sent = await _supervisor!.present(slot, sequence);
+    final sent = await _supervisor!.present(slot, sequence, vsync: paced);
+    if (sent && paced) {
+      _pendingVsync =
+          (host as MacosVsyncChannel).awaitVsync(sequence, kMacosVsyncTimeout);
+    }
     if (!sent) {
       return const PresentResult(
         status: PresentStatus.deviceLost,
@@ -521,6 +557,45 @@ final class MacosWindow
     if (stale != null) return Future<PresentResult>.value(stale);
     return _presentBackBuffer(_pool!);
   }
+
+  // --- pacing ----------------------------------------------------------------
+
+  PresentMode _presentMode = PresentMode.fifo;
+
+  /// The refresh the last paced present is waiting for, or null.
+  Future<bool>? _pendingVsync;
+
+  /// FIFO, paced by the host's display link, and immediate. Not
+  /// `mailbox`: the host shows whatever `layer.contents` holds at the
+  /// refresh, so there is no queue to replace a frame in.
+  @override
+  Set<PresentMode> get supportedPresentModes =>
+      const <PresentMode>{PresentMode.fifo, PresentMode.immediate};
+
+  @override
+  PresentMode get presentMode => _presentMode;
+
+  @override
+  PresentModeOutcome requestPresentMode(PresentMode mode) {
+    if (supportedPresentModes.contains(mode)) {
+      _presentMode = mode;
+      if (mode == PresentMode.immediate) _pendingVsync = null;
+      return PresentModeOutcome.honoured(mode);
+    }
+    return PresentModeOutcome.refused(
+      mode,
+      applied: _presentMode,
+      reason: 'the AppKit host shows whatever the layer holds at each '
+          'refresh; there is no present queue for mailbox to replace a frame '
+          'in',
+    );
+  }
+
+  /// False always: under FIFO the wait is inside the present itself, which
+  /// holds a frame until the previous one has reached the screen, so a second
+  /// wait here would halve the frame rate rather than pace it.
+  @override
+  bool awaitVerticalBlank() => false;
 
   /// Whether a present would reach a host at all. See [MacosSurfaceHost].
   @override

@@ -201,6 +201,7 @@ enum _SignalKind {
   surfaceAttached,
   surfacePortAttached,
   presented,
+  vsync,
   error,
   exited,
 }
@@ -232,6 +233,22 @@ abstract interface class MacosHostProcessHandle {
   Future<bool> awaitPresented(int sequence, Duration timeout);
   Future<int> close({Duration timeout = const Duration(seconds: 5)});
   Future<int> kill();
+}
+
+/// The display's refresh, as one host process reports it.
+///
+/// Separate from [MacosHostProcessHandle] for the reason
+/// [MacosClipboardChannel] is: pacing is something a window asks of the host
+/// it happens to have, and the supervisor's test doubles have no screen.
+abstract interface class MacosVsyncChannel {
+  /// Whether this host announced `vsync` in `PROTOCOL_FEATURES`, and so
+  /// answers a `PRESENT_SLOT ... vsync` with `VSYNC <sequence>`.
+  bool get supportsVsync;
+
+  /// Completes with true at the first refresh after the present of
+  /// [sequence], and with false after [timeout] - a hidden or occluded window
+  /// has no refresh to report.
+  Future<bool> awaitVsync(int sequence, Duration timeout);
 }
 
 /// The pasteboard, as one host process reaches it.
@@ -272,7 +289,11 @@ final class _ClipboardRequest {
 /// [MacosHostSupervisor]'s job, and keeping the two apart is what lets the
 /// restart path be read without also reading the protocol.
 final class MacosHostProcess
-    implements HostMessageSink, MacosHostProcessHandle, MacosClipboardChannel {
+    implements
+        HostMessageSink,
+        MacosHostProcessHandle,
+        MacosClipboardChannel,
+        MacosVsyncChannel {
   MacosHostProcess._(this._process, this._sink, this._onDiagnostic) {
     _parser = HostProtocolParser(this);
   }
@@ -498,6 +519,17 @@ final class MacosHostProcess
       return false;
     }
   }
+
+  // --- vsync -----------------------------------------------------------------
+
+  @override
+  bool get supportsVsync => _features.split(',').contains('vsync');
+
+  @override
+  Future<bool> awaitVsync(int sequence, Duration timeout) => _waitFor(
+        (signal, a, _) => signal == _SignalKind.vsync && a == sequence,
+        timeout,
+      );
 
   // --- clipboard -------------------------------------------------------------
 
@@ -791,6 +823,12 @@ final class MacosHostProcess
   void onPresented(int sequence, int slot, HostPresentTransport transport) {
     _notify(_SignalKind.presented, sequence, slot);
     _sink.onPresented(sequence, slot, transport);
+  }
+
+  @override
+  void onVsync(int sequence) {
+    _notify(_SignalKind.vsync, sequence, 0);
+    _sink.onVsync(sequence);
   }
 
   @override

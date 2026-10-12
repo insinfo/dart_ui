@@ -213,10 +213,17 @@ final class MacosHostSupervisor {
   /// double buffer already guarantees the client is not writing the presented
   /// slot. [awaitAck] exists for the conformance path, which has to prove the
   /// pixels arrived rather than assume it.
-  Future<bool> present(int slot, int sequence, {bool awaitAck = false}) async {
+  Future<bool> present(
+    int slot,
+    int sequence, {
+    bool awaitAck = false,
+    bool vsync = false,
+  }) async {
     final host = _host;
     if (host == null) return false;
-    if (!host.send(HostCommands.presentSlot(sequence, slot))) return false;
+    if (!host.send(HostCommands.presentSlot(sequence, slot, vsync: vsync))) {
+      return false;
+    }
     if (!awaitAck) return true;
     return host.awaitPresented(sequence, _policy.attachTimeout);
   }

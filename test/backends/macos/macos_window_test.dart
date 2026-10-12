@@ -8,6 +8,7 @@ import 'package:dart_ui/src/backends/macos/macos_window.dart';
 import 'package:dart_ui/src/backends/macos/surface_pool.dart';
 import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
+import 'package:dart_ui/src/rendering/present_mode.dart';
 import 'package:test/test.dart';
 
 final class _FakeSurface implements MacosPoolSurface {
@@ -90,7 +91,161 @@ final class _FakeHost implements MacosHostProcessHandle {
   bool send(String command) => true;
 }
 
+/// A host that reports refreshes only when the test says so.
+final class _PacedHost implements MacosHostProcessHandle, MacosVsyncChannel {
+  _PacedHost({this.supportsVsync = true});
+
+  @override
+  final bool supportsVsync;
+
+  @override
+  final MacosHostHandshake handshake = const MacosHostHandshake(
+    windowNumber: 42,
+    hostPid: 123,
+    protocolVersion: 4,
+    features: 'surface-port,window-events,vsync',
+    renderScale: 1,
+    screens: <MacosHostScreen>[],
+  );
+
+  final List<String> sent = <String>[];
+  final Map<int, Completer<bool>> refreshes = <int, Completer<bool>>{};
+  final Completer<int> _exit = Completer<int>();
+
+  @override
+  Future<bool> awaitVsync(int sequence, Duration timeout) =>
+      (refreshes[sequence] = Completer<bool>()).future;
+
+  @override
+  MacosHostExitReason exitReason = MacosHostExitReason.none;
+
+  @override
+  Future<int> get exitStatus => _exit.future;
+
+  @override
+  int get pid => handshake.hostPid;
+
+  @override
+  Future<bool> awaitAck(HostAckKind kind, Duration timeout) async => true;
+
+  @override
+  Future<bool> awaitPresented(int sequence, Duration timeout) async => true;
+
+  @override
+  Future<bool> awaitSurfaceAttached(int slot, Duration timeout) async => true;
+
+  @override
+  Future<int> close({Duration timeout = const Duration(seconds: 5)}) {
+    exitReason = MacosHostExitReason.requested;
+    if (!_exit.isCompleted) _exit.complete(0);
+    return _exit.future;
+  }
+
+  @override
+  Future<int> kill() => close();
+
+  @override
+  bool send(String command) {
+    sent.add(command.trim());
+    return true;
+  }
+
+  List<String> get presents =>
+      sent.where((String c) => c.startsWith('PRESENT_SLOT')).toList();
+}
+
+Future<MacosWindow> _openPaced(_PacedHost host) async {
+  final window = MacosWindow(
+    id: const NativeWindowId(9),
+    surfaceFactory: ({
+      required pixelWidth,
+      required pixelHeight,
+      required global,
+    }) =>
+        MacosSurfacePool(<_FakeSurface>[
+      _FakeSurface(1, pixelWidth, pixelHeight),
+      _FakeSurface(2, pixelWidth, pixelHeight),
+    ]),
+    clientSize: const Size(8, 6),
+    renderScale: 1,
+    desktopScale: 1,
+    onDiagnostic: (_) {},
+    onClosed: (_) {},
+    hostStarter: (options, sink, onDiagnostic) async => host,
+    poolAttacher: (candidate, pool) async => identical(candidate, host),
+  );
+  expect(
+    await window.open(
+      spawnOptions: const MacosHostSpawnOptions(
+        binaryPath: 'fake',
+        logicalWidth: 8,
+        logicalHeight: 6,
+      ),
+    ),
+    isTrue,
+  );
+  return window;
+}
+
 void main() {
+  group('pacing to the display', () {
+    test('FIFO holds a present until the previous one reached the screen',
+        () async {
+      // An IOSurface present is a line on a pipe and returns at once, so a
+      // loop asking for a frame every frame ran at a thousand frames a second
+      // on a 60 Hz screen. FIFO now sends each present with `vsync` and holds
+      // the next one until the host reports the refresh after it.
+      final host = _PacedHost();
+      final window = await _openPaced(host);
+      expect(window.presentMode, PresentMode.fifo);
+
+      await window.drawAndPresent((_) {});
+      expect(host.presents, <String>['PRESENT_SLOT 1 0 vsync']);
+
+      var second = false;
+      final Future<void> pending =
+          window.drawAndPresent((_) {}).then((_) => second = true);
+      await Future<void>.delayed(Duration.zero);
+      expect(second, isFalse, reason: 'the first frame has not been shown');
+      expect(host.presents, hasLength(1));
+
+      host.refreshes[1]!.complete(true);
+      await pending;
+      expect(second, isTrue);
+      expect(host.presents.last, 'PRESENT_SLOT 2 1 vsync');
+
+      window.dispose();
+      await window.teardown;
+    });
+
+    test('immediate sends without waiting and without asking', () async {
+      final host = _PacedHost();
+      final window = await _openPaced(host);
+      expect(window.requestPresentMode(PresentMode.immediate).accepted, isTrue);
+      await window.drawAndPresent((_) {});
+      await window.drawAndPresent((_) {});
+      expect(host.presents, <String>['PRESENT_SLOT 1 0', 'PRESENT_SLOT 2 1']);
+      expect(host.refreshes, isEmpty);
+
+      expect(window.requestPresentMode(PresentMode.mailbox).accepted, isFalse,
+          reason: 'there is no present queue for mailbox to replace in');
+      window.dispose();
+      await window.teardown;
+    });
+
+    test('a host that never announced vsync is not waited on', () async {
+      // An older host would answer `PRESENT_SLOT ... vsync` with an error and
+      // never send VSYNC; every frame would then sit out the timeout.
+      final host = _PacedHost(supportsVsync: false);
+      final window = await _openPaced(host);
+      await window.drawAndPresent((_) {});
+      await window.drawAndPresent((_) {});
+      expect(host.presents, <String>['PRESENT_SLOT 1 0', 'PRESENT_SLOT 2 1']);
+      window.dispose();
+      await window.teardown;
+    });
+  });
+
   test('failed host spawn does not allocate a pool it cannot attach', () async {
     var allocated = false;
     final window = MacosWindow(

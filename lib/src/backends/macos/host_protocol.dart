@@ -304,6 +304,10 @@ abstract interface class HostMessageSink {
   /// `PRESENT_OK <sequence> <tag>`. [slot] is -1 for the single-surface forms.
   void onPresented(int sequence, int slot, HostPresentTransport transport);
 
+  /// `VSYNC <sequence>`: the display refreshed after the present of
+  /// [sequence] was committed. Sent only for a `PRESENT_SLOT ... vsync`.
+  void onVsync(int sequence);
+
   /// `CLIPBOARD_DATA=<request>:<base64>`: one piece of the text a
   /// `CLIPBOARD_READ` asked for. Pieces arrive in order, before the
   /// [onClipboardResult] that ends the request.
@@ -381,6 +385,9 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onPresented(int sequence, int slot, HostPresentTransport transport) {}
+
+  @override
+  void onVsync(int sequence) {}
 
   @override
   void onClipboardData(int request, String base64) {}
@@ -592,6 +599,12 @@ final class HostProtocolParser {
         if (_startsWith('INPUT=')) return _parseInput(6);
       case 0x56: // 'V'
         if (_startsWith('VIEW_INPUT=')) return _parseViewInput(11);
+        if (_startsWith('VSYNC ')) {
+          _cursor = 6;
+          final int sequence = _readInt();
+          if (sequence == kHostFieldMissing) return _sink.onError('BAD_VSYNC');
+          return _sink.onVsync(sequence);
+        }
       case 0x57: // 'W'
         if (_startsWith('WINDOW=')) return _parseWindowEvent(7);
         if (_startsWith('WINDOW_ID=')) {
@@ -1220,8 +1233,10 @@ final class HostCommands {
       ? 'SURFACE_PORT RENDEZVOUS\n'
       : 'SURFACE_PORT RENDEZVOUS $slot\n';
 
-  static String presentSlot(int sequence, int slot) =>
-      'PRESENT_SLOT $sequence $slot\n';
+  /// [vsync] asks for a `VSYNC <sequence>` at the display's next refresh,
+  /// which a host announces with `vsync` in `PROTOCOL_FEATURES`.
+  static String presentSlot(int sequence, int slot, {bool vsync = false}) =>
+      'PRESENT_SLOT $sequence $slot${vsync ? ' vsync' : ''}\n';
 
   static String close() => 'CLOSE\n';
 

@@ -381,6 +381,11 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 @property(nonatomic, assign) NSUInteger pendingPoolCount;
 @property(nonatomic, assign) NSUInteger pendingPoolAttached;
 @property(nonatomic, assign) NSInteger presentedSlot;
+// The vertical-blank signal for PRESENT_SLOT ... vsync: a display link of the
+// host view, paused until a present asks for the next tick, so an idle window
+// costs nothing. Typed id because CADisplayLink on NSView is macOS 14.
+@property(nonatomic, strong) id vsyncLink;
+@property(nonatomic, strong) NSMutableArray<NSString *> *vsyncWaiters;
 
 @property(nonatomic, assign) mach_port_t machServicePort;
 @property(nonatomic, copy) NSString *machServiceName;
@@ -528,7 +533,7 @@ static const size_t kDartUiMaximumLineBytes = 8192;
   printf("WINDOW_ID=%ld\n", (long)self.window.windowNumber);
   printf("PROTOCOL=4\n");
   printf("WINDOW_SCALE=%ld\n", (long)scaleMilli);
-  printf("PROTOCOL_FEATURES=surface-port,window-events,clipboard\n");
+  printf("PROTOCOL_FEATURES=surface-port,window-events,clipboard,vsync\n");
   [self reportScreens];
   // HOST_PID is deliberately last: it is the final required field and causes
   // the Dart side to publish the completed handshake immediately.
@@ -1082,7 +1087,11 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
 
 - (void)presentSlot:(NSString *)command {
   NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
-  if (parts.count != 3 || self.surfacePool == NULL) {
+  // PRESENT_SLOT <sequence> <slot> [vsync]. The optional word asks for a
+  // VSYNC <sequence> line at the display's next refresh after this commit,
+  // which is what paces a FIFO client to the screen.
+  BOOL wantsVsync = parts.count == 4 && [parts[3] isEqualToString:@"vsync"];
+  if ((parts.count != 3 && !wantsVsync) || self.surfacePool == NULL) {
     [self printError:@"SURFACE_POOL:NOT_READY"];
     return;
   }
@@ -1106,6 +1115,40 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
   [CATransaction flush];
   printf("PRESENT_OK %s slot%ld\n", parts[1].UTF8String, (long)slot);
   fflush(stdout);
+  if (wantsVsync) [self armVsync:parts[1]];
+}
+
+// Reports VSYNC <sequence> at the next refresh of the screen the view is on.
+// The link follows the window between displays by itself, and pauses while
+// the window is hidden or occluded - a client waiting then times out and runs
+// unpaced, which is the right answer for a window nobody can see.
+- (void)armVsync:(NSString *)sequence {
+  if (@available(macOS 14.0, *)) {
+    if (self.vsyncWaiters == nil) self.vsyncWaiters = [NSMutableArray array];
+    [self.vsyncWaiters addObject:sequence];
+    CADisplayLink *link = self.vsyncLink;
+    if (link == nil) {
+      link = [self.hostView displayLinkWithTarget:self
+                                         selector:@selector(onVsync:)];
+      [link addToRunLoop:NSRunLoop.mainRunLoop forMode:NSRunLoopCommonModes];
+      self.vsyncLink = link;
+    }
+    link.paused = NO;
+  } else {
+    // No display link on NSView before macOS 14: answer at once, so the
+    // client is never left waiting on a signal that cannot come.
+    printf("VSYNC %s\n", sequence.UTF8String);
+    fflush(stdout);
+  }
+}
+
+- (void)onVsync:(CADisplayLink *)link API_AVAILABLE(macos(14.0)) {
+  for (NSString *sequence in self.vsyncWaiters) {
+    printf("VSYNC %s\n", sequence.UTF8String);
+  }
+  fflush(stdout);
+  [self.vsyncWaiters removeAllObjects];
+  link.paused = YES;
 }
 
 - (NSCursor *)cursorNamed:(NSString *)name {

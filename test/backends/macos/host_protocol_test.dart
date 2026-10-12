@@ -51,6 +51,9 @@ final class _RecordingSink with HostMessageSinkAdapter {
   }
 
   @override
+  void onVsync(int sequence) => events.add('vsync:$sequence');
+
+  @override
   void onInputDetail(HostInputDetail detail) => events.add(
       'detail:${detail.kind.name}:${detail.button}:${detail.modifierFlags}:'
       '${detail.clickCount}:${detail.deltaX}:${detail.deltaY}:'
@@ -138,6 +141,20 @@ void main() {
     ]);
   });
 
+  test('a refresh after a paced present is its own message', () {
+    // Dispatched on 'V', next to VIEW_INPUT=: the first version of this
+    // parser looked for it under 'P' and never saw one, so every paced frame
+    // sat out the full timeout.
+    final sink = _RecordingSink();
+    final parser = HostProtocolParser(sink);
+    parser.addBytes(utf8.encode('PRESENT_OK 9 slot1\nVSYNC 9\nVSYNC x\n'));
+    expect(sink.events, <String>[
+      'present:9:1:surfaceSlot',
+      'vsync:9',
+      'error:BAD_VSYNC',
+    ]);
+  });
+
   test('oversized and malformed lines report errors then recover', () {
     final sink = _RecordingSink();
     final parser = HostProtocolParser(sink, initialCapacity: 2);
@@ -167,6 +184,8 @@ void main() {
       'SURFACE_PORT RENDEZVOUS 1\n',
     );
     expect(HostCommands.presentSlot(7, 1), 'PRESENT_SLOT 7 1\n');
+    expect(HostCommands.presentSlot(7, 1, vsync: true),
+        'PRESENT_SLOT 7 1 vsync\n');
     expect(HostCommands.setBounds(-1.5, 2, 640, 480),
         'SET_BOUNDS -1.5000 2.0000 640.0000 480.0000\n');
     expect(HostCommands.close(), 'CLOSE\n');
