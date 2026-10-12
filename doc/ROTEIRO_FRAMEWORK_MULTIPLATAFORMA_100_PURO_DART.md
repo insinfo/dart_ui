@@ -10769,8 +10769,12 @@ proporção ele aparece nos outros caminhos, não.
   `tool/macos_input_smoke.dart` prova da fila de eventos do AppKit até um
   `Button` e um `TextField` de verdade, com eventos que o host posta na
   própria fila (de fora exigiria permissão de acessibilidade). Command chega
-  como `meta`, não como `control`; os atalhos de edição ainda só olham
-  `control`, então **Cmd+C num `TextField` ainda não copia**. O
+  como `meta`, não como `control`, e quem decide o que o acorde significa é
+  `EditingConvention` (`platform/editing_convention.dart`): no Mac, Cmd para
+  copiar/colar/desfazer, Option+seta por palavra, Cmd+seta até a borda,
+  Cmd+Shift+Z para refazer, e Ctrl+C não copia. Provado no smoke com o
+  `pbpaste` como testemunha: Cmd+C pôs o texto do `TextField` no pasteboard
+  do sistema e Cmd+V o colou de volta. O
   **clipboard de texto existe desde 12/10/2026**, pelo host AppKit
   (`macos_clipboard.dart`: `CLIPBOARD_READ`/`APPEND`/`WRITE`, texto em base64
   de UTF-8 em pedaços abaixo do teto de linha), só na estratégia

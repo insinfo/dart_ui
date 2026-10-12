@@ -40,6 +40,12 @@ const String _aAcute = 'á';
 const String _hebrew = 'אב';
 
 void main() {
+  // These tests speak the PC convention - Ctrl+C, Ctrl+Left by word - and
+  // pin it, so the macOS leg runs them too instead of reading Cmd. The Mac's
+  // own chords are asserted in text_field_mac_shortcuts_test.dart.
+  setUpAll(() => debugEditingConventionOverride = EditingConvention.pc);
+  tearDownAll(() => debugEditingConventionOverride = null);
+
   group('the caret moves by grapheme cluster, not by code unit', () {
     test('an astral emoji is one step and one backspace', () {
       // 'a' + emoji + 'b' is four code units and three clusters. A code-unit

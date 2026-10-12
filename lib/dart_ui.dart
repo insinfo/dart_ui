@@ -145,6 +145,7 @@ export 'src/pdf/sign/pdf_signature_inspector.dart';
 export 'src/pdf/sign/pdf_signer.dart';
 export 'src/platform/backend_selection.dart';
 export 'src/platform/drag_drop.dart';
+export 'src/platform/editing_convention.dart';
 export 'src/platform/file_picker.dart';
 export 'src/platform/file_watcher.dart';
 export 'src/platform/input_events.dart';

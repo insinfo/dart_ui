@@ -330,10 +330,54 @@ Future<void> _applicationHalf(
     await _pump(app, const Duration(milliseconds: 300));
     record('INPUT_APP_BACKSPACE', controller.value == 'ol',
         'value="${controller.value}"');
+
+    // Cmd+A, Cmd+C: Command arrives as meta, and the field reads the Mac
+    // convention, so this is copy - checked from outside the process.
+    final String saved = await _pbpaste();
+    try {
+      native
+        ..synthesizeInput(
+            'SYNTH_KEY down 0 $_command ${_b64('a')} ${_b64('a')}')
+        ..synthesizeInput('SYNTH_KEY up 0 $_command ${_b64('a')} ${_b64('a')}')
+        ..synthesizeInput(
+            'SYNTH_KEY down 8 $_command ${_b64('c')} ${_b64('c')}')
+        ..synthesizeInput('SYNTH_KEY up 8 $_command ${_b64('c')} ${_b64('c')}');
+      await _pump(app, const Duration(milliseconds: 500));
+      final String copied = await _pbpaste();
+      // Cmd+Right to the end, then Cmd+V.
+      native
+        ..synthesizeInput('SYNTH_KEY down 124 ${_command | _function} '
+            '${_b64('\uF703')} ${_b64('\uF703')}')
+        ..synthesizeInput('SYNTH_KEY up 124 ${_command | _function} '
+            '${_b64('\uF703')} ${_b64('\uF703')}')
+        ..synthesizeInput(
+            'SYNTH_KEY down 9 $_command ${_b64('v')} ${_b64('v')}')
+        ..synthesizeInput('SYNTH_KEY up 9 $_command ${_b64('v')} ${_b64('v')}');
+      await _pump(app, const Duration(milliseconds: 500));
+      record(
+          'INPUT_APP_COMMAND_SHORTCUTS',
+          copied == 'ol' && controller.value == 'olol',
+          'pbpasteAfterCmdC="$copied" valueAfterCmdV="${controller.value}"');
+    } finally {
+      await _pbcopy(saved);
+    }
   } finally {
     app.dispose();
     await app.closed;
   }
+}
+
+Future<String> _pbpaste() async {
+  final ProcessResult result =
+      await Process.run('pbpaste', const <String>[], stdoutEncoding: utf8);
+  return result.stdout as String;
+}
+
+Future<void> _pbcopy(String text) async {
+  final Process process = await Process.start('pbcopy', const <String>[]);
+  process.stdin.add(utf8.encode(text));
+  await process.stdin.close();
+  await process.exitCode;
 }
 
 String _names(List<PlatformInputEvent> events) =>

@@ -32,6 +32,12 @@ const int _keyV = 0x56;
 const int _keyX = 0x58;
 
 void main() {
+  // These tests speak the PC convention - Ctrl+C, Ctrl+Left by word - and
+  // pin it, so the macOS leg runs them too instead of reading Cmd. The Mac's
+  // own chords are asserted in text_field_mac_shortcuts_test.dart.
+  setUpAll(() => debugEditingConventionOverride = EditingConvention.pc);
+  tearDownAll(() => debugEditingConventionOverride = null);
+
   setUpAll(() {
     expect(
       FontRegistry.instance.useFontFile('test/fonts/Roboto-Regular.ttf'),

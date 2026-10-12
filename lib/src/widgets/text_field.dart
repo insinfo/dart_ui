@@ -25,6 +25,7 @@ import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/render_box.dart';
 import '../platform/clipboard.dart';
+import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
 import '../platform/native_window.dart';
 import '../platform/text_input.dart';
@@ -771,11 +772,17 @@ final class TextField extends StatefulWidget {
     this.readOnly = false,
     this.enabled = true,
     this.inactiveSelection = InactiveSelectionHighlight.dimmed,
+    this.editingConvention,
   });
 
   final TextEditingController controller;
   final FocusNode? focusNode;
   final String label;
+
+  /// Which keyboard convention the editing shortcuts follow. Null, the
+  /// default, is the platform's own ([platformEditingConvention]): Cmd+C on a
+  /// Mac, Ctrl+C elsewhere. Set it only to test the other one.
+  final EditingConvention? editingConvention;
 
   /// How the selection is painted when another control holds the keyboard.
   ///
@@ -860,6 +867,7 @@ final class _TextFieldState extends State<TextField> {
           readOnly: widget.readOnly,
           enabled: widget.enabled,
           inactiveSelection: widget.inactiveSelection,
+          editingConvention: widget.editingConvention,
           theme: Theme.of(context),
           // Read where the theme is read, and for the same reason: the field
           // must not be handed a clipboard by its parent, and must not reach
@@ -886,6 +894,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
     required this.readOnly,
     required this.enabled,
     required this.inactiveSelection,
+    required this.editingConvention,
     required this.theme,
     required this.clipboard,
     required this.contextMenu,
@@ -899,6 +908,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
   final bool readOnly;
   final bool enabled;
   final InactiveSelectionHighlight inactiveSelection;
+  final EditingConvention? editingConvention;
   final ThemeData theme;
   final Clipboard clipboard;
   final ContextMenuController? contextMenu;
@@ -916,6 +926,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
         readOnly: readOnly,
       )
         ..inactiveSelection = inactiveSelection
+        ..editingConvention = editingConvention
         ..theme = theme
         ..clipboard = clipboard
         ..contextMenu = contextMenu
@@ -936,6 +947,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
       ..obscure = obscure
       ..readOnly = readOnly
       ..inactiveSelection = inactiveSelection
+      ..editingConvention = editingConvention
       ..theme = theme
       ..clipboard = clipboard
       ..contextMenu = contextMenu
@@ -967,6 +979,15 @@ final class RenderTextField extends RenderBox
   InactiveSelectionHighlight _inactiveSelection =
       InactiveSelectionHighlight.dimmed;
   Clipboard _clipboard = const UnavailableClipboard();
+
+  /// The convention the editing shortcuts follow; null is the platform's.
+  ///
+  /// Read at every key rather than captured, so that
+  /// [debugEditingConventionOverride] reaches a field already on screen.
+  EditingConvention? editingConvention;
+
+  EditingConvention get _convention =>
+      editingConvention ?? platformEditingConvention;
 
   /// The platform's input method, and the window it composes into.
   ///
@@ -1517,8 +1538,33 @@ final class RenderTextField extends RenderBox
     // Shift+click reads is the current one. See [_modifiers].
     _modifiers = event.modifiers;
     if (!enabled || event is! KeyDownEvent) return false;
+    final EditingConvention convention = _convention;
+    final bool mac = convention == EditingConvention.mac;
     final bool shift = event.modifiers.contains(KeyModifier.shift);
-    final bool control = event.modifiers.contains(KeyModifier.control);
+    // "control" below is the *command* modifier of the convention: Ctrl on a
+    // PC, Cmd on a Mac. The backends report what was held; what a chord means
+    // is decided here, once. See `editing_convention.dart`.
+    final bool control = event.modifiers.contains(convention.commandModifier);
+    if (mac && !control && event.modifiers.contains(convention.wordModifier)) {
+      // Option is the Mac's word modifier. Only the four editing keys are
+      // claimed: Option with a letter is how a Mac keyboard types accents, and
+      // that text arrives as a TextInputEvent the plain path below lets
+      // through.
+      switch (event.logicalKey) {
+        case logicalKeyArrowLeft:
+          _controller.moveCaretByWord(-1, extend: shift);
+          return true;
+        case logicalKeyArrowRight:
+          _controller.moveCaretByWord(1, extend: shift);
+          return true;
+        case logicalKeyBackspace:
+          if (!_readOnly) _controller.deleteWordBackward();
+          return true;
+        case logicalKeyDelete:
+          if (!_readOnly) _controller.deleteWordForward();
+          return true;
+      }
+    }
     if (control) {
       // Ctrl turns the four editing keys into their word-wise forms, and Shift
       // still extends. Routed here rather than inside the plain switch below so
@@ -1528,8 +1574,14 @@ final class RenderTextField extends RenderBox
         case 0x41: // Ctrl+A
           _controller.selectAll();
           return true;
-        case 0x5A: // Ctrl+Z
-          if (!_readOnly) _controller.undo();
+        case 0x5A: // Ctrl+Z; Cmd+Shift+Z is the Mac's redo
+          if (!_readOnly) {
+            if (mac && shift) {
+              _controller.redo();
+            } else {
+              _controller.undo();
+            }
+          }
           return true;
         case 0x59: // Ctrl+Y
           if (!_readOnly) _controller.redo();
@@ -1552,6 +1604,24 @@ final class RenderTextField extends RenderBox
           return true;
         case _logicalKeyInsert: // Ctrl+Insert: copy, the older spelling
           _enqueueClipboard(copySelection);
+          return true;
+        // Cmd with an arrow goes to the edge on a Mac, which in a single-line
+        // field is the start or the end of the text.
+        case logicalKeyArrowLeft || logicalKeyArrowUp when mac:
+          _controller.moveCaretToStart(extend: shift);
+          return true;
+        case logicalKeyArrowRight || logicalKeyArrowDown when mac:
+          _controller.moveCaretToEnd(extend: shift);
+          return true;
+        case logicalKeyBackspace when mac:
+          // Cmd+Delete deletes to the start of the line, or the selection
+          // when there is one.
+          if (!_readOnly) {
+            if (!_controller.hasSelection) {
+              _controller.moveCaretToStart(extend: true);
+            }
+            _controller.deleteBackward();
+          }
           return true;
         case logicalKeyArrowLeft:
           _controller.moveCaretByWord(-1, extend: shift);
