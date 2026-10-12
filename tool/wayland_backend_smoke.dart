@@ -416,6 +416,26 @@ Future<void> _reportDecorations(
     return;
   }
   final maximizedSize = window.cpuSurface;
+  // The configure is only half of it: xdg-shell applies a state when the
+  // client commits a buffer of the size it was given, and Weston holds the
+  // next state change until then. An application redraws on the resize
+  // event anyway; the smoke has to do it by hand.
+  final presenter = WaylandCpuPresenter(window);
+  try {
+    final list = DisplayList();
+    list.drawRect(0, 0, 64, 64, list.addPaint(colorArgb: 0xff3070c0));
+    final presented =
+        await presenter.renderDisplayList(list, clearColor: 0xff101010);
+    if (!presented.isSuccess) throw StateError('$presented');
+    await _pumpUntil(
+      backend,
+      () => !window.isFrameThrottled,
+      const Duration(seconds: 10),
+      'wl_surface.frame after maximize',
+    );
+  } finally {
+    presenter.dispose();
+  }
   window.setMaximized(false);
   await _pumpUntil(
     backend,
