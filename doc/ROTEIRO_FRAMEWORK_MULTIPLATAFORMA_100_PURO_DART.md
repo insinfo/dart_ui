@@ -3797,7 +3797,8 @@ com número de run em cada uma.
   O probe mostra que o runner entregaria um drawable
   (`CAMETALLAYER_PRESENTER=VIABLE`), e isso não compra apresentador: no único
   backend macOS que cria janela em `lib/` a layer está em **outro processo**
-  (ADR 0001), e `skylight` e `appkitSignal` têm `canCreateWindow: false` fixo.
+  (ADR 0001); o `skylight` cria janela desde 12/10/2026, mas com apresentação
+  CPU (`macos-cpu`), e o `appkitSignal` ainda tem `canCreateWindow: false`.
   Um segundo caminho de apresentação sem janela para exercê-lo é o apresentador
   inverificável que este projeto já recusou uma vez;
 - [ ] **resize Retina — não é provável neste CI, e por isso fica desmarcado.**
@@ -6939,8 +6940,10 @@ Requisitos:
   [GitHub Actions #31343965371](https://github.com/insinfo/dart_ui/actions/runs/31343965371);
 - o supervisor possui testes determinísticos de crash/restart, replay de
   estado, preservação/reattach do mesmo pool e esgotamento de tentativas;
-- SkyLight e `appkitSignal` continuam indisponíveis para seleção de produção
-  até que suas implementações saiam dos POCs;
+- SkyLight saiu do POC em 12/10/2026: `DART_UI_BACKEND=macos-skylight` com
+  `allowExperimentalBackends` abre o `Application` numa janela SkyLight
+  (`lib/src/backends/macos/skylight/`, `tool/macos_skylight_smoke.dart`);
+  `appkitSignal` continua indisponível até sair do POC;
 - a seleção exige opt-in privado + ABI validada para SkyLight, e pedido
   explícito + opt-in inseguro para `appkitSignal`; nenhum dos dois entra como
   fallback silencioso;
@@ -9965,9 +9968,9 @@ menu, e nenhuma janela vazada no descarte. Ver ADR 0008 e §29.6.1.
   processo iniciado por outro em segundo plano tem a ativação recusada pelo
   sistema (a janela não vira key nem criada visível), então o smoke lê o
   estado antes de abrir o popup e, nesse caso, prova só a metade do popup e
-  imprime `ownerActiveBefore=false`. Os outros dois backends macOS
-  (`skylight`, `appkitSignal`) não criam janela pelo framework e não anunciam
-  a capacidade;
+  imprime `ownerActiveBefore=false`. O `skylight` cria janela desde
+  12/10/2026, sem popups nativos; o `appkitSignal` não cria janela pelo
+  framework e não anuncia a capacidade;
 - **X11 e Wayland têm o código e nunca o executaram.** Os dois smokes
   compilam; só o CI pode prová-los;
 - **acessibilidade do popup**: metade fechada em 06/09/2026. `MenuOpened` era

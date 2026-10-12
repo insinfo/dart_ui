@@ -23,10 +23,11 @@
 library;
 
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show Platform, sleep;
 
 import '../../foundation/diagnostics.dart';
 import '../../geometry/offset.dart';
+import '../../geometry/rect.dart';
 import '../../platform/backend_selection.dart';
 import '../../platform/clipboard.dart';
 import '../../platform/drag_drop.dart';
@@ -44,6 +45,8 @@ import 'macos_clipboard.dart';
 import 'macos_drag_drop.dart';
 import 'macos_text_input.dart';
 import 'macos_window.dart';
+import 'skylight/skylight_session.dart';
+import 'skylight/skylight_window.dart';
 import 'spare_host.dart';
 
 /// Creates and owns macOS windows through the selected backend strategy.
@@ -67,6 +70,15 @@ final class MacosWindowingBackend
   bool _initialized = false;
   bool _quitRequested = false; // ignore: prefer_final_fields
   int _nextWindowId = 1;
+
+  /// The WindowServer connection, for the SkyLight strategy only.
+  SkylightSession? _skylight;
+
+  /// The SkyLight window that has the keyboard, and the one that holds the
+  /// pointer between a press and its release.
+  SkylightWindow? _keyWindow;
+  SkylightWindow? _pointerCapture;
+  bool _wakeRequested = false;
 
   /// A hidden popup host waiting to be adopted; see `spare_host.dart`.
   ///
@@ -213,8 +225,19 @@ final class MacosWindowingBackend
     // skylight: open SkyLight framework and resolve symbols.
     // appkitSignal: install the signal handler.
     //
-    // For now, mark initialised and let createWindow perform the lazy setup
-    // that MacosWindow already implements for appkitNativeHost.
+    if (_activeKind == MacosBackendKind.skylight) {
+      final List<BackendDiagnostic> failures = <BackendDiagnostic>[];
+      final SkylightSession? session = SkylightSession.open(failures);
+      _diagnostics.addAll(failures);
+      if (session == null) {
+        throw UnsupportedCapabilityError(
+          backendName: name,
+          capability: Capability.window,
+          detail: failures.map((d) => d.message).join('; '),
+        );
+      }
+      _skylight = session;
+    }
     _initialized = true;
     // The semantic tree reaches VoiceOver through the host's view; see
     // `macos_accessibility.dart`. Installed here, as the Win32 backend
@@ -253,14 +276,29 @@ final class MacosWindowingBackend
       windows.whereType<MacosWindow>().map((window) => window.teardown),
     );
     _windows.clear();
+    _skylight?.dispose();
+    _skylight = null;
   }
 
   @override
   Future<NativeWindow> createWindow(WindowOptions options) async {
     _requireInitialized('createWindow');
-    // The MacosWindow class already handles the host process lifecycle for
-    // appkitNativeHost.  The other two backends will need their own window
-    // implementations; for now we support the recommended default.
+    final SkylightSession? skylight = _skylight;
+    if (skylight != null) {
+      final SkylightWindow window = SkylightWindow.create(
+        session: skylight,
+        id: NativeWindowId(_nextWindowId++),
+        options: options,
+        onClosed: _onSkylightWindowClosed,
+        onActivate: _activateSkylight,
+      );
+      _quitRequested = false;
+      _windows.add(window);
+      if (options.kind.takesActivation) _activateSkylight(window);
+      return window;
+    }
+    // The MacosWindow class handles the host process lifecycle for
+    // appkitNativeHost; SkyLight is above.
     if (_activeKind != MacosBackendKind.appkitNativeHost) {
       throw UnsupportedCapabilityError(
         backendName: name,
@@ -357,6 +395,21 @@ final class MacosWindowingBackend
 
   @override
   List<ScreenInfo> get screens {
+    final SkylightSession? skylight = _skylight;
+    if (skylight != null) {
+      final display = skylight.mainDisplayBounds;
+      final Rect bounds =
+          Rect.fromLTWH(display.x, display.y, display.width, display.height);
+      return <ScreenInfo>[
+        ScreenInfo(
+          bounds: bounds,
+          workArea: bounds,
+          scale: skylight.mainDisplayScale,
+          isPrimary: true,
+          name: 'main display',
+        ),
+      ];
+    }
     // NSScreen is queried in the AppKit host, where thread ownership is valid.
     // Every host sees the same desktop, so the first completed handshake is a
     // snapshot; concatenating them would report every monitor once per window.
@@ -374,21 +427,94 @@ final class MacosWindowingBackend
   @override
   bool pumpEvents({Duration timeout = Duration.zero}) {
     _requireInitialized('pumpEvents');
-    // The pump depends on the active backend:
-    // - appkitNativeHost: read from the host process pipe
-    // - skylight: read from the SkyLight event port
-    // - appkitSignal: pump the CFRunLoop
-    //
-    // Each is wired when its window implementation lands.
+    // appkitNativeHost: the host's pipe is read by Dart I/O, so there is
+    // nothing to wait on here. SkyLight: the event port is polled, never
+    // received from, in short sleeps up to [timeout] - see
+    // `skylight_session.dart` for why there is no run loop.
+    final SkylightSession? skylight = _skylight;
+    if (skylight != null) {
+      final Stopwatch waited = Stopwatch()..start();
+      while (true) {
+        final List<SkylightEvent> events = skylight.poll();
+        if (events.isNotEmpty) {
+          events.forEach(_dispatchSkylight);
+          break;
+        }
+        final Duration left = timeout - waited.elapsed;
+        if (_wakeRequested || left <= Duration.zero) break;
+        sleep(left < const Duration(milliseconds: 4)
+            ? left
+            : const Duration(milliseconds: 4));
+      }
+      _wakeRequested = false;
+    }
     return !_quitRequested;
   }
 
   @override
   void wake() {
-    // Wake depends on the active backend:
-    // - appkitNativeHost: signal the pipe
-    // - skylight: write to a self-pipe or CFRunLoopSource
-    // - appkitSignal: CFRunLoopWakeUp
+    // The SkyLight wait is a series of short sleeps on this same isolate, so
+    // a wake can only come from code that runs between them; the flag ends
+    // the wait at its next slice. The host pipe needs no wake.
+    _wakeRequested = true;
+  }
+
+  /// Routes one WindowServer event: the pointer to the window under it, or
+  /// the one holding the press; the keyboard to the window that has it.
+  void _dispatchSkylight(SkylightEvent event) {
+    final List<SkylightWindow> windows =
+        _windows.whereType<SkylightWindow>().toList();
+    if (windows.isEmpty) return;
+    final bool keyboard =
+        event.type == 10 || event.type == 11 || event.type == 12;
+    if (keyboard) {
+      (_keyWindow ?? windows.first).handleEvent(event);
+      return;
+    }
+    SkylightWindow? target = _pointerCapture;
+    if (target == null) {
+      for (final SkylightWindow window in windows) {
+        if (window.windowNumber == event.windowUnderPointer) target = window;
+      }
+    }
+    // An event that names no window - one posted to the process rather than
+    // routed by the WindowServer - goes to the window under its position.
+    if (target == null) {
+      final Offset at = Offset(event.screenX, event.screenY);
+      for (final SkylightWindow window in windows.reversed) {
+        final Offset local = window.screenToClient(at);
+        if (local.dx >= 0 &&
+            local.dy >= 0 &&
+            local.dx < window.clientSize.width &&
+            local.dy < window.clientSize.height) {
+          target = window;
+          break;
+        }
+      }
+    }
+    if (target == null) return;
+    final bool press = event.type == 1 || event.type == 3 || event.type == 25;
+    final bool release = event.type == 2 || event.type == 4 || event.type == 26;
+    if (press) {
+      _pointerCapture = target;
+      _activateSkylight(target);
+    }
+    target.handleEvent(event);
+    if (release) _pointerCapture = null;
+  }
+
+  void _activateSkylight(SkylightWindow window) {
+    if (identical(window, _keyWindow)) return;
+    _keyWindow?.setActive(false);
+    _keyWindow = window;
+    window.setActive(true);
+  }
+
+  void _onSkylightWindowClosed(SkylightWindow window) {
+    _windows.remove(window);
+    if (identical(_keyWindow, window)) _keyWindow = null;
+    if (identical(_pointerCapture, window)) _pointerCapture = null;
+    if (_windows.whereType<SkylightWindow>().isEmpty) _quitRequested = true;
   }
 
   /// Diagnostics collected during probe and initialisation.

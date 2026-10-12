@@ -20,7 +20,7 @@
 /// backend, and the selection layer will pin to it or fail with a report.
 library;
 
-import 'dart:io' show Platform;
+import 'dart:io' show Directory, Platform;
 
 import '../../foundation/diagnostics.dart';
 import '../../platform/backend_selection.dart';
@@ -210,15 +210,19 @@ BackendCandidate _probeSkylight() {
     ),
   ];
 
-  diagnostics.add(const BackendDiagnostic(
-    kind: DiagnosticKind.missingLibrary,
-    message: 'SkyLight production backend is not integrated',
-    detail: 'the validated implementation currently exists only in POC 20',
-  ));
-
-  // The POC is evidence, not a production implementation. Keep this false
-  // until createWindow/pumpEvents/wake have a concrete SkyLight delegate.
-  const canCreate = false;
+  // The framework is the whole requirement: no host binary, no main thread.
+  // Whether a WindowServer session exists is answered by initialize, which
+  // is the first thing allowed to talk to it.
+  // The directory, not the binary: since macOS 11 the binary lives in the
+  // dyld shared cache and the path inside the bundle need not exist.
+  final bool canCreate = Directory(_skyLightFramework).existsSync();
+  if (!canCreate) {
+    diagnostics.add(const BackendDiagnostic(
+      kind: DiagnosticKind.missingLibrary,
+      message: 'SkyLight.framework is not present',
+      detail: _skyLightFramework,
+    ));
+  }
 
   final capabilities = MacosBackendCapabilities(
     kind: MacosBackendKind.skylight,
@@ -226,7 +230,7 @@ BackendCandidate _probeSkylight() {
     hasInput: canCreate,
     hasIme: false,
     hasAccessibility: false,
-    hasOrderlyShutdown: false,
+    hasOrderlyShutdown: canCreate,
     needsHostBinary: false,
     diagnostics: diagnostics,
   );
@@ -236,6 +240,9 @@ BackendCandidate _probeSkylight() {
     probe: capabilities.toProbeResult(),
   );
 }
+
+const String _skyLightFramework =
+    '/System/Library/PrivateFrameworks/SkyLight.framework';
 
 BackendCandidate _probeAppKitSignal(MacosBackendOptions options) {
   // AppKit signal hijack is always marked experimental: it works, but

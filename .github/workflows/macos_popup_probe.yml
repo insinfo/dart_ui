@@ -10,6 +10,7 @@ on:
       - 'tool/popup_window_smoke.dart'
       - 'tool/macos_clipboard_smoke.dart'
       - 'tool/macos_input_smoke.dart'
+      - 'tool/macos_skylight_smoke.dart'
       - '.github/workflows/macos_popup_probe.yml'
 
 concurrency:
@@ -78,3 +79,10 @@ jobs:
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
         run: dart run tool/macos_input_smoke.dart
+
+      # The second strategy: the WindowServer through SkyLight, no host and
+      # no AppKit. This runner is macOS 14, where window content is still a
+      # CoreGraphics backing store - the branch macOS 27 no longer takes.
+      - name: SkyLight window, pixels and input without AppKit
+        timeout-minutes: 3
+        run: dart run tool/macos_skylight_smoke.dart

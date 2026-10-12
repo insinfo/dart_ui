@@ -338,6 +338,11 @@ abstract interface class ClientDecoratedWindow {
   /// has none or refused.
   bool showWindowMenu(Offset position);
 
+  /// Whether [minimize] can do anything. False where minimising would
+  /// leave the window with no way back - SkyLight has no Dock - and the
+  /// frame then shows no minimise button.
+  bool get canMinimize;
+
   void minimize();
 
   void setMaximized(bool maximized);

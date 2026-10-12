@@ -82,6 +82,33 @@ extras **limitadas e fora do callback**, apenas depois de uma fatia do run loop
 que entregou algo. O bloqueio histórico acontecia dentro do callback e sem
 limite.
 
+### Em `lib/` desde 12/10/2026
+
+`DART_UI_BACKEND=macos-skylight` com `ApplicationOptions.allowExperimentalBackends`
+abre o `Application` numa janela SkyLight, sem host e sem AppKit
+(`lib/src/backends/macos/skylight/`). O que mudou em relação ao POC:
+
+- **sem CFRunLoop**: o POC instalava a porta de eventos como source no run loop
+  da thread atual e não podia fazer `await` até a última fatia, porque o isolate
+  pode retomar noutra thread. Em `lib/` a porta é **consultada**:
+  `mach_port_get_attributes(MACH_PORT_RECEIVE_STATUS)` diz quantas mensagens há
+  sem receber nenhuma, e `SLEventCreateNextEvent` é chamado uma vez por mensagem
+  — a mesma regra de consumo, de qualquer thread. Medido em macOS 27: tecla e
+  movimento chegam com `await` entre cada consulta;
+- janela com barra desenhada pelo framework (`ClientDecoratedWindow`, o mesmo
+  `ClientDecorationFrame` do Wayland sem SSD), mover e redimensionar seguindo o
+  arraste na própria janela, maximizar para a tela principal, sem minimizar
+  (sem Dock, não haveria volta) — o botão some;
+- apresentação CPU própria (`macos-cpu`, compatível só com `macos-skylight`),
+  a `CGImage` do framebuffer posta na `CALayer` hospedada; o Metal e o caminho
+  de IOSurface recusam essas janelas pelo nome;
+- teclado com texto (`CGEventKeyboardGetUnicodeString`), mouse, roda e
+  modificadores pelas mesmas tabelas do host nativo.
+
+`tool/macos_skylight_smoke.dart` prova janela, pixels de fora
+(`screencapture -l`), clique, digitação com acento, mover, maximizar e o botão
+de fechar, com input postado pelo WindowServer (`SLEventPostToPid`).
+
 ### Trabalho restante
 
 - ~~extrair o código de `probe.dart` para tipos pequenos com ownership
@@ -92,7 +119,8 @@ limite.
   `CGContextRelease → SLSReleaseWindow → CGSReleaseRegion →
   CFRunLoopRemoveSource → CFRelease(source) → CFMachPortInvalidate+CFRelease →
   NativeCallable.close`, sem símbolo faltando;
-- input físico, IME, acessibilidade, clipboard, cursores e drag-and-drop;
+- input **físico** (só provado com eventos postados ao processo), IME,
+  acessibilidade, clipboard, cursores e drag-and-drop;
 - reconciliação após Spaces, fullscreen, monitores, sleep/wake e WindowServer
   restart;
 - tabela de símbolos/ABIs por versão do macOS e falha rápida quando incompatível.

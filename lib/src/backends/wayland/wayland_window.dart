@@ -483,6 +483,9 @@ final class WaylandWindow
       };
 
   @override
+  bool get canMinimize => true;
+
+  @override
   void minimize() {
     if (isDisposed || isPopup) return;
     _client.minimizeToplevel(toplevelIds);

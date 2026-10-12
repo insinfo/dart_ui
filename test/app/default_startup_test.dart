@@ -187,13 +187,40 @@ void main() {
 
       expect(
         paths.map((PresentationPathEntry path) => path.name),
-        <String>['metal', 'macos-iosurface', 'headless-cpu'],
+        <String>['metal', 'macos-iosurface', 'macos-cpu', 'headless-cpu'],
       );
       expect(paths.first.kind, PresentationKind.gpu);
       expect(paths.first.experimental, isFalse);
       expect(paths.first.createMeshRenderer, isNotNull,
           reason: '3D in a Metal window draws on the GPU');
       expect(paths[1].kind, PresentationKind.cpu);
+    });
+
+    test('the in-process macOS strategies have a CPU path of their own', () {
+      // SkyLight windows own a framebuffer and offer no IOSurface: Metal and
+      // the host's IOSurface path must refuse them by name, before a window
+      // exists, and the native host must never land on the in-process path.
+      final List<PresentationPathEntry> paths =
+          PlatformBackendResolver.defaultPresentations(
+        operatingSystem: 'macos',
+      );
+      PresentationPathEntry named(String name) =>
+          paths.singleWhere((PresentationPathEntry path) => path.name == name);
+      bool serves(String path, String backend) =>
+          named(path).compatibleWindowingBackends?.contains(backend) ?? true;
+
+      expect(serves('macos-cpu', 'macos-skylight'), isTrue);
+      expect(serves('macos-cpu', 'macos'), isFalse);
+      expect(serves('metal', 'macos-skylight'), isFalse);
+      expect(serves('macos-iosurface', 'macos-skylight'), isFalse);
+
+      final List<WindowingBackendEntry> backends =
+          PlatformBackendResolver.defaultBackends(operatingSystem: 'macos');
+      final WindowingBackendEntry skylight = backends.singleWhere(
+          (WindowingBackendEntry entry) => entry.name == 'macos-skylight');
+      expect(skylight.experimental, isTrue,
+          reason: 'private API: reached by name and opt-in, never fallback');
+      expect(backends.first.name, 'macos');
     });
 
     test('the Windows OpenGL path probes through WGL rather than EGL', () {

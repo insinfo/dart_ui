@@ -14,6 +14,7 @@ import '../graphics/color.dart';
 import '../layout/alignment.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_flex.dart' show CrossAxisAlignment;
+import '../layout/render_proxy_box.dart' show BoxBorder, BoxDecoration;
 import '../layout/render_stack.dart' show StackFit;
 import '../platform/input_events.dart';
 import '../platform/native_window.dart';
@@ -21,7 +22,7 @@ import 'basic.dart';
 import 'gesture_detector.dart';
 import 'icon.dart';
 import 'pointer_listener.dart';
-import 'proxy.dart' show Center;
+import 'proxy.dart' show Center, DecoratedBox;
 import 'theme.dart';
 import 'widget.dart';
 
@@ -137,26 +138,34 @@ final class _ClientDecorationFrameState extends State<ClientDecorationFrame> {
                     ),
                   ),
                 ),
-                _CaptionButton(
-                  key: const ValueKey<String>('csd-minimize'),
-                  icon: Icons.indeterminate,
-                  size: widget.titleBarHeight,
-                  color: theme.foreground,
-                  onPressed: window.minimize,
-                ),
+                if (window.canMinimize)
+                  _CaptionButton(
+                    key: const ValueKey<String>('csd-minimize'),
+                    size: widget.titleBarHeight,
+                    onPressed: window.minimize,
+                    child: Icon(Icons.indeterminate,
+                        size: widget.titleBarHeight * 0.45,
+                        color: theme.foreground),
+                  ),
                 _CaptionButton(
                   key: const ValueKey<String>('csd-maximize'),
-                  icon: maximized ? _restoreGlyph : _maximizeGlyph,
                   size: widget.titleBarHeight,
-                  color: theme.foreground,
                   onPressed: _toggleMaximized,
+                  // Drawn, not a glyph: U+25A1 is missing from the faces a
+                  // bare Linux or macOS install falls back to.
+                  child: _WindowGlyph(
+                    restore: maximized,
+                    extent: (widget.titleBarHeight * 0.32).roundToDouble(),
+                    color: theme.foreground,
+                  ),
                 ),
                 _CaptionButton(
                   key: const ValueKey<String>('csd-close'),
-                  icon: Icons.close,
                   size: widget.titleBarHeight,
-                  color: theme.foreground,
                   onPressed: window.requestClose,
+                  child: Icon(Icons.close,
+                      size: widget.titleBarHeight * 0.45,
+                      color: theme.foreground),
                 ),
               ],
             ),
@@ -204,12 +213,6 @@ final class _ClientDecorationFrameState extends State<ClientDecorationFrame> {
   static const WindowResizeEdge _topRight = WindowResizeEdge.topRight;
   static const WindowResizeEdge _bottomLeft = WindowResizeEdge.bottomLeft;
   static const WindowResizeEdge _bottomRight = WindowResizeEdge.bottomRight;
-
-  /// `U+25A1` WHITE SQUARE - maximise.
-  static const IconData _maximizeGlyph = IconData(0x25A1);
-
-  /// `U+29C9` TWO JOINED SQUARES - restore.
-  static const IconData _restoreGlyph = IconData(0x29C9);
 }
 
 /// One square caption button: a glyph centred in a tappable box.
@@ -219,16 +222,14 @@ final class _ClientDecorationFrameState extends State<ClientDecorationFrame> {
 final class _CaptionButton extends StatelessWidget {
   const _CaptionButton({
     super.key,
-    required this.icon,
     required this.size,
-    required this.color,
     required this.onPressed,
+    required this.child,
   });
 
-  final IconData icon;
   final double size;
-  final Color color;
   final void Function() onPressed;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) => GestureDetector(
@@ -237,9 +238,45 @@ final class _CaptionButton extends StatelessWidget {
         child: SizedBox(
           width: size * 1.4,
           height: size,
-          child: Center(
-            child: Icon(icon, size: size * 0.45, color: color),
-          ),
+          child: Center(child: child),
         ),
       );
+}
+
+/// The maximise square, or the restore pair of squares.
+final class _WindowGlyph extends StatelessWidget {
+  const _WindowGlyph({
+    required this.restore,
+    required this.extent,
+    required this.color,
+  });
+
+  final bool restore;
+  final double extent;
+  final Color color;
+
+  Widget _square(double side) => SizedBox(
+        width: side,
+        height: side,
+        child: DecoratedBox(
+          decoration: BoxDecoration(border: BoxBorder(color: color, width: 1)),
+        ),
+      );
+
+  @override
+  Widget build(BuildContext context) {
+    if (!restore) return _square(extent);
+    final double side = (extent * 0.8).roundToDouble();
+    final double shift = extent - side;
+    return SizedBox(
+      width: extent,
+      height: extent,
+      child: Stack(
+        children: <Widget>[
+          Positioned(left: shift, top: 0, child: _square(side)),
+          Positioned(left: 0, top: shift, child: _square(side)),
+        ],
+      ),
+    );
+  }
 }

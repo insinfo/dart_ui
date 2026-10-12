@@ -181,6 +181,9 @@ final class _FakeWindow implements ClientDecoratedWindow {
   }
 
   @override
+  bool canMinimize = true;
+
+  @override
   void minimize() => minimizes++;
 
   @override

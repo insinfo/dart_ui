@@ -34,6 +34,7 @@ import '../rendering/render_policy.dart';
 import '../rendering/renderer.dart';
 import 'headless/headless_backend.dart';
 import 'macos/macos.dart';
+import 'macos/macos_cpu_window.dart';
 import 'macos/surface_pool.dart';
 import 'wayland/wayland_backend.dart';
 import 'wayland/wayland_cpu_presenter.dart';
@@ -85,11 +86,28 @@ final class PlatformBackendResolver {
               ? X11WindowingBackend.new
               : () => X11WindowingBackend(environment: options.environment),
         ),
-      if (platform == 'macos')
+      if (platform == 'macos') ...<WindowingBackendEntry>[
         const WindowingBackendEntry(
           name: 'macos',
           create: MacosWindowingBackend.new,
         ),
+        // The WindowServer through SkyLight, in this process: no host
+        // binary, no AppKit. Private API, so experimental - reached only by
+        // name (`DART_UI_BACKEND=macos-skylight`) with
+        // `ApplicationOptions.allowExperimentalBackends`, and never by
+        // fallback from the native host.
+        WindowingBackendEntry(
+          name: 'macos-skylight',
+          experimental: true,
+          create: () => MacosWindowingBackend(
+            options: const MacosBackendOptions(
+              requested: MacosBackendKind.skylight,
+              allowPrivateApi: true,
+              skylightAbiValidated: true,
+            ),
+          ),
+        ),
+      ],
       WindowingBackendEntry(
         name: 'headless',
         create: () => HeadlessWindowingBackend(
@@ -192,6 +210,7 @@ final class PlatformBackendResolver {
         // for how it got here.
         _macosMetal(),
         _macosCpu(),
+        _macosInProcessCpu(),
       ],
       PresentationPathEntry.cpuRenderer(
         backend: const CpuRendererBackend(),
@@ -826,6 +845,25 @@ final class PlatformBackendResolver {
       },
     );
   }
+
+  /// The CPU path of the in-process strategies: the window owns its
+  /// framebuffer and shows it as an image. Compatible only with them, so the
+  /// native host never lands here and they never land on Metal or IOSurface.
+  static PresentationPathEntry _macosInProcessCpu() =>
+      PresentationPathEntry.retainedCpu(
+        name: 'macos-cpu',
+        deviceDescription: 'BGRA framebuffer shown as a CGImage',
+        compatibleWindowingBackends: const <String>{'macos-skylight'},
+        create: (NativeWindow window) {
+          final MacosCpuPresenter presenter =
+              MacosCpuPresenter(window as MacosCpuWindow);
+          return (
+            present: presenter.renderDisplayList,
+            presentNow: presenter.renderDisplayListNow,
+            release: presenter.dispose,
+          );
+        },
+      );
 
   static PresentationPathEntry _macosCpu() => PresentationPathEntry.retainedCpu(
         name: 'macos-iosurface',
