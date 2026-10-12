@@ -182,21 +182,14 @@ final class PlatformBackendResolver {
         ),
       ],
       if (platform == 'macos') ...<PresentationPathEntry>[
-        // Experimental, and the flag is not caution - it is the same rule
-        // `_win32Vulkan` states. `MetalWindowTarget` builds its
-        // `GpuRasterSink` with no mask atlas, no glyph atlas and no layer
-        // stack, so the first path, rounded rectangle, glyph run or
-        // compositing saveLayer in any window raises
-        // `UnsupportedCapabilityError` by name. A path that cannot draw text
-        // must never be reached by fallback in a UI framework. It is here so
-        // that `--presentation=metal` with
-        // `ApplicationOptions.allowExperimentalBackends` can reach it, which
-        // is the difference between a backend under development and a backend
-        // nobody can run.
-        //
-        // What it *can* do is present, which is new as of 07/09/2026 and is
-        // measured rather than asserted - see
-        // `doc/logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md`.
+        // First, and not behind a flag: the framework is GPU first. Metal
+        // draws everything the IOSurface CPU path below draws - text,
+        // images, paths, layers, gradients, video, 3D - each compared with
+        // the CPU in `metal_cpu_parity_test.dart`, so the CPU path is what a
+        // Mac with no Metal device gets, or a run that pins it by name. It
+        // was experimental until 12/10/2026, while it could present but not
+        // yet draw text; see `doc/logs/METAL_APRESENTACAO_ESTADO_2026-09-07.md`
+        // for how it got here.
         _macosMetal(),
         _macosCpu(),
       ],
@@ -787,7 +780,6 @@ final class PlatformBackendResolver {
     const MetalRendererBackend renderer = MetalRendererBackend();
     return PresentationPathEntry.directRenderer(
       backend: renderer,
-      experimental: true,
       compatibleWindowingBackends: const <String>{'macos'},
       // Into the window's back slot, before the interface is drawn over it;
       // see `MetalWindowTarget.meshTarget`. Throws rather than returning

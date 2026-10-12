@@ -29,40 +29,31 @@
 ///
 /// **Presents** through the `IOSurface` of the AppKit host (ADR 0005,
 /// `metal_window_target.dart`), not a `CAMetalLayer` - the `NSWindow` lives in
-/// the host process. **Draws** text, images, paths and rounded rectangles
-/// since 12/10/2026, through a glyph atlas and an image cache shared per device
-/// and a coverage atlas per target (`metal_textures.dart`), each compared with
-/// the CPU in `metal_cpu_parity_test.dart`, and compositing layers through a
-/// `GpuLayerStack` whose passes render into pooled textures. What it shares
-/// with every other GPU backend's dense path is the one refusal left: a
-/// gradient needs the sparse-strip executor, which this backend does not
-/// have.
+/// the host process. **Draws** text, images, paths, rounded rectangles,
+/// compositing layers, gradients, video frames and 3D scenes, each compared
+/// with the CPU in `metal_cpu_parity_test.dart` or, for 3D in a window,
+/// `metal_window_mesh_test.dart`. Gradient fills go through the coverage
+/// atlas and a per-pixel ramp lookup (`GpuGradientDraw`), video through the
+/// `GpuVideoImageCache` every GPU backend shares.
 ///
-/// ## What [probe] therefore says
+/// ## The default on macOS
 ///
-/// `supported: true` on a Mac where the device opens - because
-/// [createDevice] now returns a device that really draws - and
-/// [supportsSurface] answers **true only for a [MemorySurfaceDescriptor]**.
-/// That pair is the honest shape: the selection policy asks whether this
-/// backend can present to the surface at hand, and for a window the answer is
-/// still no. Section 6.6 - faked capability is worse than absent capability -
-/// is satisfied by narrowing the claim rather than by refusing everything, and
-/// the capability set says the same thing: [Capability.cpuPresentation] and
-/// **not** [Capability.gpuPresentation], because the pixels reach the caller
-/// through a readback and not through a swap.
+/// Since 12/10/2026 this is the presentation path selection takes on a Mac,
+/// ahead of `macos-iosurface` - the framework is GPU first, and the CPU path
+/// is for a Mac with no Metal device and for tests. [probe] says
+/// `supported: true` where a device opens and claims both
+/// [Capability.cpuPresentation] (the memory target, read back) and
+/// [Capability.gpuPresentation] (the window, written straight into the
+/// `IOSurface` the host scans out).
 ///
-/// ## What finishing it means
+/// ## What is left
 ///
-/// In the order the pieces depend on each other:
-///
-///   1. a texture type implementing `GpuTextureHandle` and an image cache, so
-///      `drawImage` and the two atlases work - the sink refuses them today;
-///   2. a `GpuLayerTargetAllocator`, as `GlFramebufferPool` and
-///      `D3d11LayerPool` are for their backends, so `saveLayer` composites;
-///   3. the two presenters ADR 0005 splits apart: the `IOSurface` one for
-///      `appkitNativeHost` and the `CAMetalLayer` one for the in-process
-///      backends;
-///   4. device-loss recovery, which on Metal is not the same problem as on
+///   1. pacing to the display: an `IOSurface` present returns at once, so a
+///      loop that asks for a frame every frame is not held to the refresh
+///      rate the way a FIFO swap chain holds it;
+///   2. a `CAMetalLayer` presenter for an in-process backend, the half of
+///      ADR 0005 the out-of-process host does not need;
+///   3. device-loss recovery, which on Metal is not the same problem as on
 ///      Direct3D: there is no `DXGI_ERROR_DEVICE_REMOVED` to observe.
 ///
 library;
@@ -237,26 +228,19 @@ final class MetalRendererBackend implements RendererBackend {
       },
       diagnostics: <BackendDiagnostic>[
         ...diagnostics,
-        const BackendDiagnostic(
-          kind: DiagnosticKind.rejectedByPolicy,
-          message: 'this backend presents to a macOS window through a shared '
-              'IOSurface, and is taken only by name until it has run as the '
-              'default on more than the GPUs it was measured on',
+        const BackendDiagnostic.note(
+          'presents to a macOS window through a shared IOSurface',
           detail: 'MetalRenderDevice creates a target for a '
               'MemorySurfaceDescriptor - rendered through the shared '
               'GpuRasterSink and read back - and for a MetalPresentSurface, '
               'which is ADR 0005: the IOSurface of surface_pool.dart wrapped '
               'as an MTLTexture, drawn into, and handed to the host with '
               'PRESENT_SLOT once addCompletedHandler: says the GPU finished. '
-              'Text, images, paths, rounded rectangles and compositing layers '
-              'draw, through the atlases and layer targets of '
-              'metal_textures.dart, matching the CPU in '
-              'metal_cpu_parity_test.dart. A gradient is refused by name, as '
-              'on every dense GPU path without the sparse-strip executor. '
-              'The window path was first measured on 12/10/2026, on an Apple '
-              'M4 and on the CI runner\'s paravirtual GPU; selection takes '
-              'it only when asked for by name until it has run as the '
-              'default.',
+              'Text, images, paths, rounded rectangles, compositing layers, '
+              'gradients and video frames draw, matching the CPU in '
+              'metal_cpu_parity_test.dart, and 3D scenes draw into the '
+              "window's back slot. The default presentation path on macOS "
+              'since 12/10/2026.',
         ),
       ],
     );
@@ -413,7 +397,7 @@ final class MetalRenderDevice with DisposableMixin implements RenderDevice {
   @override
   RendererInfo get info => RendererInfo(
         name: MetalRendererBackend.backendName,
-        deviceDescription: 'Metal on $deviceName, offscreen only',
+        deviceDescription: 'Metal on $deviceName',
         rasterizationApproach: RasterizationApproach.analyticCoverageAtlas,
       );
 

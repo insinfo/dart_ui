@@ -112,24 +112,26 @@ void main() {
       expect(first.detail, contains('not a defect'));
     });
 
-    test('on macOS it names what is still missing, by name', () {
+    test('on macOS nothing rejects it by policy: it is the default', () {
       if (!Platform.isMacOS) return;
       final BackendProbeResult result = backend.probe();
-      final Iterable<BackendDiagnostic> policy = result.diagnostics.where(
-          (BackendDiagnostic d) => d.kind == DiagnosticKind.rejectedByPolicy);
-      expect(policy, hasLength(1));
-      // A probe that says "supported" and stops is useless to whoever has to
-      // decide whether to select this backend for a window. What is still
-      // missing changed three times - presentation landed on 07/09/2026,
-      // text, images, paths and layers on 12/10/2026 - so this asserts what
-      // is true now: nothing it draws is refused, a gradient is, and it is
-      // still taken only by name.
-      expect(policy.single.message, contains('IOSurface'));
-      expect(policy.single.message, contains('only by name'));
-      expect(policy.single.message, isNot(contains('refuses')));
-      expect(policy.single.detail, contains('PRESENT_SLOT'));
-      expect(policy.single.detail, contains('layers'));
-      expect(policy.single.detail, contains('gradient is refused by name'));
+      expect(result.supported, isTrue);
+      // Until 12/10/2026 a rejectedByPolicy diagnostic kept this backend to
+      // selection by name. It draws everything the CPU path draws now -
+      // text, images, paths, layers, gradients, video, 3D - so the framework,
+      // GPU first, takes it by default and keeps the CPU for a Mac with no
+      // device.
+      expect(
+          result.diagnostics
+              .where((BackendDiagnostic d) =>
+                  d.kind == DiagnosticKind.rejectedByPolicy)
+              .toList(),
+          isEmpty);
+      final BackendDiagnostic presents = result.diagnostics.singleWhere(
+          (BackendDiagnostic d) => d.message.contains('IOSurface'));
+      expect(presents.detail, contains('PRESENT_SLOT'));
+      expect(presents.detail, contains('gradients'));
+      expect(presents.detail, contains('default presentation path'));
     });
   });
 

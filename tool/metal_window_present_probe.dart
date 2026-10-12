@@ -124,16 +124,12 @@ Future<void> main() async {
         // Shown, because a hidden window is a different code path in AppKit
         // and the point here is the one an application actually gets.
         visible: true,
-        // gpuOnly, so a machine whose Metal probe fails is a loud failure
-        // rather than a CPU frame that would prove nothing about Metal - which
-        // is precisely the false green this probe exists to prevent.
-        renderingPolicy: RenderingPolicy.gpuOnly,
-        requestedPresentation: 'metal',
-        // Metal is registered experimental because it still refuses text,
-        // clips and layers by name. Reaching it therefore takes an explicit
-        // opt-in, and that is the correct shape: this probe wants it, an
-        // application must ask for it.
-        allowExperimentalBackends: true,
+        // No policy and no name: Metal is the default presentation path on
+        // macOS since 12/10/2026, so what this probe opens is what an
+        // application gets. A machine whose Metal probe fails falls back to
+        // the CPU path, and the workflow's `APP presentation=metal` check
+        // turns that into a loud failure rather than a CPU frame that would
+        // prove nothing about Metal.
         onError: errors.add,
         onDiagnostic: diagnostics.add,
       ),
