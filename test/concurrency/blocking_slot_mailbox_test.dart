@@ -302,8 +302,22 @@ void main() {
       // The consumer is now parked again on an empty mailbox. Closing here is
       // the shutdown-with-a-waiter case: the waiter must be woken and must
       // leave by name, not sit there.
+      //
+      // Waiting for `parkedWaiters == 1` alone was not enough: the producer
+      // reports before the consumer has drained the ring, and the consumer
+      // parks for a moment *between* frames as well. Under a loaded full-suite
+      // run the check landed in that gap, the consumer was working rather
+      // than parked when `dispose` looked, and the block was freed under it.
+      // Every frame taken *and* parked again is only true after the last one.
       await _untilQuiet(
-          () => mailbox.parkedWaiters == 1, const Duration(seconds: 10));
+        () =>
+            mailbox.takeTotal == slotCount &&
+            mailbox.pendingCount == 0 &&
+            mailbox.parkedWaiters == 1,
+        const Duration(seconds: 10),
+      );
+      expect(mailbox.takeTotal, slotCount,
+          reason: 'the consumer should have taken every frame by now');
       expect(
         mailbox.dispose,
         throwsA(isA<StateError>().having(
