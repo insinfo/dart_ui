@@ -26,7 +26,7 @@
 library;
 
 import 'dart:ffi';
-import 'dart:io' show sleep;
+import 'dart:io' show Platform, sleep;
 import 'dart:typed_data';
 
 import '../../../ffi/objc_runtime.dart';
@@ -58,6 +58,9 @@ typedef _NotifyNative = Void Function(Uint32, _VoidPtr, IntPtr, _VoidPtr);
 
 const int _kCGSBackingStoreBuffered = 2;
 const int _kSLSWindowTypeLayerHosting = 5;
+
+/// `kCGBlendModeCopy`.
+const int _kCGBlendModeCopy = 17;
 
 // CGEventField numbers.
 const int _fieldClickState = 1;
@@ -151,7 +154,10 @@ final class SkylightSession {
 
   /// Whether window content is a hosted Core Animation layer (macOS 27) or a
   /// CoreGraphics backing store (macOS 14 and the CI runner).
+  /// `DART_UI_SKYLIGHT_CG=1` forces the backing store, to exercise that
+  /// path on a Mac that would host a layer.
   late final bool layerHosting = () {
+    if (Platform.environment['DART_UI_SKYLIGHT_CG'] == '1') return false;
     try {
       final enabled = DynamicLibrary.process().lookupFunction<
           Bool Function(Pointer<Uint8>, Pointer<Uint8>),
@@ -612,14 +618,17 @@ final class SkylightSession {
       ObjCAutoreleasePool.run(() {
         if (window.released) return;
         final int length = bytesPerRow * height;
-        final Pointer<Uint8> native = macosCalloc<Uint8>(length);
+        // Slack past the last row: vImage's blitters read whole vectors,
+        // and a frame ending on a page boundary faulted on macOS 14.
+        const int slack = 64;
+        final Pointer<Uint8> native = macosCalloc<Uint8>(length + slack);
         native.asTypedList(length).setRange(0, length, pixels);
         final _VoidPtr data = _coreFoundation.lookupFunction<
             _VoidPtr Function(_VoidPtr, Pointer<Uint8>, IntPtr),
             _VoidPtr Function(_VoidPtr, Pointer<Uint8>, int)>('CFDataCreate')(
           nullptr,
           native,
-          length,
+          length + slack,
         );
         macosFree(native);
         final _VoidPtr provider = _coreGraphics.lookupFunction<
@@ -665,6 +674,12 @@ final class SkylightSession {
                 macosCalloc<_CGRect>(sizeOf<_CGRect>())
                   ..ref.width = width.toDouble()
                   ..ref.height = height.toDouble();
+            // The frame replaces the window's pixels: a copy, not a blend
+            // that reads the backing store back (the macOS 14 crash was in
+            // vPremultipliedAlphaBlend after a reshape).
+            _coreGraphics.lookupFunction<Void Function(_VoidPtr, Int32),
+                    void Function(_VoidPtr, int)>('CGContextSetBlendMode')(
+                window._cgContext, _kCGBlendModeCopy);
             _coreGraphics.lookupFunction<
                 Void Function(_VoidPtr, _CGRect, _VoidPtr),
                 void Function(
