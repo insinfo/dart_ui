@@ -155,6 +155,14 @@ jobs:
         env:
           DISPLAY: ':99'
           LIBGL_ALWAYS_SOFTWARE: '1'
+      # ---- Linux: Vulkan contra o lavapipe do Mesa ----
+      # O passo de dependencias acima instala mesa-vulkan-drivers, e ate
+      # 12/10/2026 nenhum teste usava: no Framework os testes de
+      # test/rendering/gpu/vulkan pulam por falta de instancia. Aqui a
+      # paridade com a CPU roda contra uma implementacao de verdade, por nome.
+      - name: Vulkan parity (Linux, lavapipe)
+        if: matrix.platform == 'linux'
+        run: dart test test/rendering/gpu/vulkan --reporter=expanded
       # ---- Windows: Testes de plataforma ----
       - name: Run platform tests (Windows)
         if: matrix.platform == 'windows'
