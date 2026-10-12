@@ -67,6 +67,10 @@ abstract interface class WaylandWindowClient
   /// `xdg_toplevel.resize` with xdg-shell's edge bits, as [moveToplevel].
   bool resizeToplevel(WaylandToplevelIds ids, int edges);
 
+  /// `xdg_toplevel.show_window_menu` at surface point ([x], [y]), quoting the
+  /// last press as [moveToplevel] does.
+  bool showToplevelWindowMenu(WaylandToplevelIds ids, int x, int y);
+
   void setToplevelMaximized(WaylandToplevelIds ids, bool maximized);
 
   /// `set_fullscreen` on whichever output the compositor picks, or
@@ -1972,6 +1976,19 @@ final class WaylandConnection
     _writer.begin(ids.toplevelId, xdgToplevelRequestMove);
     _writer.putObject(_seatId);
     _writer.putUint(_lastInputSerial);
+    _queueMessage();
+    flush();
+    return true;
+  }
+
+  @override
+  bool showToplevelWindowMenu(WaylandToplevelIds ids, int x, int y) {
+    if (isDisposed || _seatId == 0 || _lastInputSerial == 0) return false;
+    _writer.begin(ids.toplevelId, xdgToplevelRequestShowWindowMenu);
+    _writer.putObject(_seatId);
+    _writer.putUint(_lastInputSerial);
+    _writer.putInt(x);
+    _writer.putInt(y);
     _queueMessage();
     flush();
     return true;

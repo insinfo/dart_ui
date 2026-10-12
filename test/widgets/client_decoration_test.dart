@@ -52,6 +52,19 @@ void main() {
       harness.dispose();
     });
 
+    test('a right click on the title opens the window menu there', () {
+      final _FakeWindow window = _FakeWindow(decorated: true);
+      final _Harness harness = _Harness(_frame(window, <Offset>[]));
+
+      harness.pointer(_down(const Offset(80, 14), PointerButton.secondary));
+      harness.pointer(_up(const Offset(80, 14), PointerButton.secondary));
+      harness.frame();
+
+      expect(window.windowMenus, <Offset>[const Offset(80, 14)]);
+      expect(window.moves, 0);
+      harness.dispose();
+    });
+
     test('the bar takes presses above the content', () {
       final _FakeWindow window = _FakeWindow(decorated: true);
       final List<Offset> presses = <Offset>[];
@@ -159,6 +172,14 @@ final class _FakeWindow implements ClientDecoratedWindow {
     return true;
   }
 
+  final List<Offset> windowMenus = <Offset>[];
+
+  @override
+  bool showWindowMenu(Offset position) {
+    windowMenus.add(position);
+    return true;
+  }
+
   @override
   void minimize() => minimizes++;
 
@@ -202,14 +223,16 @@ final class _Harness {
 
 const NativeWindowId _window = NativeWindowId(1);
 
-PointerDownEvent _down(Offset at) => PointerDownEvent(
+PointerDownEvent _down(Offset at,
+        [PointerButton button = PointerButton.primary]) =>
+    PointerDownEvent(
       windowId: _window,
       generation: 1,
       timestamp: Duration.zero,
       pointerId: 0,
       kind: PointerKind.mouse,
       logicalPosition: at,
-      button: PointerButton.primary,
+      button: button,
     );
 
 PointerMoveEvent _move(Offset at) => PointerMoveEvent(
@@ -221,12 +244,13 @@ PointerMoveEvent _move(Offset at) => PointerMoveEvent(
       logicalPosition: at,
     );
 
-PointerUpEvent _up(Offset at) => PointerUpEvent(
+PointerUpEvent _up(Offset at, [PointerButton button = PointerButton.primary]) =>
+    PointerUpEvent(
       windowId: _window,
       generation: 1,
       timestamp: Duration.zero,
       pointerId: 0,
       kind: PointerKind.mouse,
       logicalPosition: at,
-      button: PointerButton.primary,
+      button: button,
     );

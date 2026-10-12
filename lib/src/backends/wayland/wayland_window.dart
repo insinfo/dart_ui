@@ -450,6 +450,22 @@ final class WaylandWindow
   Offset _lastPointerPosition = Offset.zero;
   Duration _lastPointerTimestamp = Duration.zero;
 
+  @override
+  bool showWindowMenu(Offset position) {
+    if (isDisposed || isPopup) return false;
+    if (!_client.showToplevelWindowMenu(
+      toplevelIds,
+      position.dx.round(),
+      position.dy.round(),
+    )) {
+      return false;
+    }
+    // The menu takes the pointer like a move does; the release is the
+    // compositor's.
+    _cancelImplicitGrab();
+    return true;
+  }
+
   /// The mouse or the finger whose press a move or resize quotes.
   int _lastPressPointerId = 0;
   PointerKind _lastPressKind = PointerKind.mouse;

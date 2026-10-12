@@ -332,6 +332,12 @@ abstract interface class ClientDecoratedWindow {
   /// Starts an interactive resize from [edge], as [beginMove] does.
   bool beginResize(WindowResizeEdge edge);
 
+  /// Opens the window system's own menu for this window - move, resize,
+  /// always on top, close - at [position] in client coordinates, the way a
+  /// right click on a server-drawn title bar does. False when the platform
+  /// has none or refused.
+  bool showWindowMenu(Offset position);
+
   void minimize();
 
   void setMaximized(bool maximized);

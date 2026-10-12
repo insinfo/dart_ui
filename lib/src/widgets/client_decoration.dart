@@ -15,6 +15,7 @@ import '../layout/alignment.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_flex.dart' show CrossAxisAlignment;
 import '../layout/render_stack.dart' show StackFit;
+import '../platform/input_events.dart';
 import '../platform/native_window.dart';
 import 'basic.dart';
 import 'gesture_detector.dart';
@@ -27,8 +28,8 @@ import 'widget.dart';
 /// Wraps [child] in a title bar and resize borders while
 /// [ClientDecoratedWindow.clientDecorations] is true.
 ///
-/// The bar moves the window when dragged and toggles maximised on a double
-/// click; its three buttons minimise, toggle maximised and request a close.
+/// The bar moves the window when dragged, toggles maximised on a double
+/// click and opens the window system's menu on a right click; its three buttons minimise, toggle maximised and request a close.
 /// The borders start a compositor resize from the edge or corner under the
 /// press. A maximised window has no borders, since it has nothing to resize.
 final class ClientDecorationFrame extends StatefulWidget {
@@ -108,19 +109,29 @@ final class _ClientDecorationFrameState extends State<ClientDecorationFrame> {
             child: Row(
               children: <Widget>[
                 Expanded(
-                  child: GestureDetector(
-                    behavior: GestureHitTestBehavior.opaque,
-                    onPanStart: (_) => window.beginMove(),
-                    onDoubleTap: (_) => _toggleMaximized(),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          window.title,
-                          color: theme.foreground,
-                          maxLines: 1,
-                          ellipsis: '…',
+                  // A right click is the window system's menu, as on a
+                  // title bar it draws itself; the drag and double click
+                  // below only ever see the primary button.
+                  child: PointerListener(
+                    onPointerDown: (PointerDownEvent event) {
+                      if (event.button == PointerButton.secondary) {
+                        window.showWindowMenu(event.logicalPosition);
+                      }
+                    },
+                    child: GestureDetector(
+                      behavior: GestureHitTestBehavior.opaque,
+                      onPanStart: (_) => window.beginMove(),
+                      onDoubleTap: (_) => _toggleMaximized(),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            window.title,
+                            color: theme.foreground,
+                            maxLines: 1,
+                            ellipsis: '…',
+                          ),
                         ),
                       ),
                     ),

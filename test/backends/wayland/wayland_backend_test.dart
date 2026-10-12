@@ -776,6 +776,14 @@ void main() {
         );
       });
 
+      test('the window menu goes to the compositor at the click', () async {
+        final window = await createWindow();
+        expect(window.showWindowMenu(const Offset(10.4, 20.6)), isTrue);
+        expect(client.frameRequests, <String>['window menu 10,21']);
+        client.hasPressSerial = false;
+        expect(window.showWindowMenu(Offset.zero), isFalse);
+      });
+
       test('the close button asks, as the compositor does', () async {
         final window = await createWindow();
         final List<PlatformWindowEvent> events = <PlatformWindowEvent>[];
@@ -1035,6 +1043,13 @@ final class _FakeWaylandClient
   bool moveToplevel(WaylandToplevelIds ids) {
     if (!hasPressSerial) return false;
     frameRequests.add('move');
+    return true;
+  }
+
+  @override
+  bool showToplevelWindowMenu(WaylandToplevelIds ids, int x, int y) {
+    if (!hasPressSerial) return false;
+    frameRequests.add('window menu $x,$y');
     return true;
   }
 
