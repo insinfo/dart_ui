@@ -39,6 +39,7 @@ import '../../../graphics/display_list_reader.dart';
 import '../../framebuffer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
+import '../gpu_gradient.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_mask_atlas.dart';
 import '../gpu_pipeline.dart';
@@ -727,6 +728,9 @@ final class MetalOffscreenTarget {
     // on D3D11, Vulkan and GL: the coverage atlas is a different
     // approximation, and against the CPU it was 52 levels apart on the edges.
     analyticPrimitives: true,
+    // Gradient fills through the coverage atlas, sampled per pixel from a
+    // ramp shared per device. See `GpuGradientDraw`.
+    gradientCache: _store.gradientCache,
   );
   late final DisplayListPlayer _player = DisplayListPlayer(_sink);
 
@@ -738,6 +742,11 @@ final class MetalOffscreenTarget {
   /// to accept - which is why there is no `MTLBuffer` for constants.
   late final Pointer<MetalUniforms> _uniforms =
       NativeAllocator.instance.allocate<MetalUniforms>(sizeOf<MetalUniforms>());
+
+  /// The gradient block, rewritten when a batch's gradient changes.
+  late final Pointer<Float> _gradientBlock = NativeAllocator.instance
+      .allocate<Float>(GpuGradientDraw.denseBlockFloats * sizeOf<Float>());
+
 
   /// Draws batches [firstBatch] to [batchCount] into the pass [encoder] is
   /// recording, whose target is [viewportWidth] x [viewportHeight] - the
@@ -774,6 +783,8 @@ final class MetalOffscreenTarget {
       var boundMode = -1;
       var boundLinear = -1;
       var boundTexture = -1;
+      // A sentinel no batch carries, so the first batch always binds.
+      Object? boundGradient = _gradientBlock;
       for (var i = firstBatch; i < batchCount; i++) {
         final GpuBatch batch = _batcher.batchAt(i);
         var left = batch.scissorLeft;
@@ -851,6 +862,25 @@ final class MetalOffscreenTarget {
               (texture?.pointer ?? _white).address, 0);
         }
 
+        final GpuGradientDraw? gradient = batch.gradient;
+        if (!identical(gradient, boundGradient)) {
+          boundGradient = gradient;
+          GpuGradientDraw.writeDenseBlock(
+              _gradientBlock.asTypedList(GpuGradientDraw.denseBlockFloats),
+              gradient);
+          metalSendVoid3(
+              encoder,
+              'setFragmentBytes:length:atIndex:',
+              _gradientBlock.address,
+              GpuGradientDraw.denseBlockFloats * 4,
+              kMetalGradientBufferIndex);
+          final MetalTexture? ramp = gradient == null
+              ? null
+              : _store.byId(gradient.binding.texture.id);
+          metalSendVoid2(encoder, 'setFragmentTexture:atIndex:',
+              (ramp?.pointer ?? _white).address, kMetalGradientTextureIndex);
+        }
+
         metalSendVoid5(
           encoder,
           'drawIndexedPrimitives:indexCount:indexType:indexBuffer:'
@@ -899,6 +929,7 @@ final class MetalOffscreenTarget {
     if (_disposed) return;
     _disposed = true;
     NativeAllocator.instance.free(_uniforms);
+    NativeAllocator.instance.free(_gradientBlock);
     final Pointer<Uint8>? staging = _staging;
     if (staging != null) NativeAllocator.instance.free(staging);
     // In a pool because freeing a texture autoreleases: `-[IOGPUMetalResource

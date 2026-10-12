@@ -59,6 +59,7 @@ import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:dart_ui/src/graphics/video/video_frame.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
@@ -255,6 +256,32 @@ void main() {
       list.drawRect(0, 18, 24, 24, ink);
       _appendGlyphRun(list, baseline: 8);
       await _expectParity(gpu, pipelines, list, tolerance: 0);
+    }, skip: _needsMac);
+  });
+
+  group('gradients', () {
+    test('a linear ramp across a rectangle', () async {
+      await _expectParity(gpu, pipelines, _gradientScene(_linearRect),
+          tolerance: _gradientTolerance);
+    }, skip: _needsMac);
+
+    test('a radial ramp with a focus, reflected, in a rounded rectangle',
+        () async {
+      await _expectParity(gpu, pipelines, _gradientScene(_radialRRect),
+          tolerance: _gradientTolerance);
+    }, skip: _needsMac);
+
+    test('a repeating ramp on a path, under a transform', () async {
+      await _expectParity(gpu, pipelines, _gradientScene(_repeatedPath),
+          tolerance: _gradientTolerance);
+    }, skip: _needsMac);
+
+    test('a ramp inside an offset layer, where the target origin moves',
+        () async {
+      // The layer pass draws at the layer's own origin; a gradient evaluated
+      // in device space there would come out shifted by the layer's corner.
+      await _expectParity(gpu, pipelines, _gradientScene(_rampInLayer),
+          tolerance: _gradientTolerance);
     }, skip: _needsMac);
   });
 
@@ -682,4 +709,85 @@ DisplayList _videoFrame(VideoPixelFormat format) {
   list.drawImage(list.addImage(frame), 0, 0, _size.toDouble(),
       _size.toDouble(), 0, 0, _size.toDouble(), _size.toDouble(), paint);
   return list;
+}
+
+/// What a gradient may differ by: the GPU interpolates between the ramp's
+/// texels in float and premultiplies in float, where the CPU reads the same
+/// texels and rounds in eight bits at each step.
+const int _gradientTolerance = 1;
+
+const List<GradientStop> _stops = <GradientStop>[
+  GradientStop(0, 0xFFE03020),
+  GradientStop(0.5, 0x8020C040),
+  GradientStop(1, 0xFF2040E0),
+];
+
+DisplayList _gradientScene(void Function(DisplayList list) draw) {
+  final DisplayList list = DisplayList();
+  final int background = list.addPaint(colorArgb: 0xFF204060, antiAlias: false);
+  list.drawRect(0, 0, 24, 24, background);
+  draw(list);
+  return list;
+}
+
+void _linearRect(DisplayList list) {
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    antiAlias: false,
+    gradient: LinearGradient(
+        startX: 2, startY: 3, endX: 21, endY: 19, stops: _stops),
+  );
+  list.drawRect(2, 2, 22, 22, paint);
+}
+
+void _radialRRect(DisplayList list) {
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    gradient: RadialGradient(
+      centerX: 12,
+      centerY: 12,
+      radius: 7,
+      focusX: 9,
+      focusY: 10,
+      stops: _stops,
+      spread: GradientSpread.reflect,
+    ),
+  );
+  list.drawRRect(2, 3, 22, 21, 5, 5, 5, 5, 5, 5, 5, 5, paint);
+}
+
+void _repeatedPath(DisplayList list) {
+  final PathBuilder builder = PathBuilder();
+  _addRectContour(builder, const Rect.fromLTRB(1, 1, 15, 15), clockwise: true);
+  _addRectContour(builder, const Rect.fromLTRB(8, 8, 22, 22), clockwise: true);
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    gradient: LinearGradient(
+      startX: 0,
+      startY: 0,
+      endX: 6,
+      endY: 2,
+      stops: _stops,
+      spread: GradientSpread.repeat,
+    ),
+  );
+  list
+    ..save()
+    ..transform(1, 0, 0, 1, 0.5, 0.25)
+    ..drawPath(list.addPath(builder.build()), paint)
+    ..restore();
+}
+
+void _rampInLayer(DisplayList list) {
+  final int layerPaint = list.addPaint(colorArgb: 0xC0FFFFFF);
+  list.saveLayer(5, 4, 21, 22, layerPaint);
+  final int paint = list.addPaint(
+    colorArgb: 0xFFFFFFFF,
+    antiAlias: false,
+    gradient: LinearGradient(
+        startX: 5, startY: 4, endX: 21, endY: 4, stops: _stops),
+  );
+  list
+    ..drawRect(5, 4, 21, 22, paint)
+    ..restore();
 }

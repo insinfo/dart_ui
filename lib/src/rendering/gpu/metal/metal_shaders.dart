@@ -134,6 +134,14 @@ const int kMetalUniformBufferIndex = 1;
 /// The texture index the fragment stage samples.
 const int kMetalTextureIndex = 0;
 
+/// The fragment buffer index of the gradient block - five `float4`s in
+/// `GpuGradientDraw.writeDenseBlock`'s layout - and the texture index of the
+/// ramp it samples. Bound on every draw: kind 0 and the white texel when the
+/// batch has no gradient, because MSL does not define what an unbound
+/// argument reads.
+const int kMetalGradientBufferIndex = 2;
+const int kMetalGradientTextureIndex = 1;
+
 /// Attribute indices, matching `gl_shaders.dart`'s `kAttributePosition` and
 /// friends and therefore the order of `gpu_pipeline.dart`'s offsets.
 const int kMetalAttributePosition = 0;
@@ -228,9 +236,64 @@ static float roundedCoverage(float4 r, float rad, float2 p) {
   return clamp(0.5 - d, 0.0, 1.0);
 }
 
+// A gradient fill's ramp, in GpuGradientDraw.writeDenseBlock's layout.
+// control: kind (0 none, 1 linear, 2 radial), spread, lookup scale and bias.
+struct GradientBlock {
+  float4 control;
+  float4 row0;
+  float4 row1;
+  float4 geometry0;
+  float4 geometry1;
+};
+
+// The gradient parameter at [p], a target-space position: gl_sparse_strips.dart's
+// gradientParameter, transcribed, and GpuGradientShaderParameters
+// .parameterAtTarget is the reference both follow.
+static float gradientParameter(constant GradientBlock& g, float2 p) {
+  float2 local = float2(dot(g.row0.xyz, float3(p, 1.0)),
+                        dot(g.row1.xyz, float3(p, 1.0)));
+  if (g.control.x < 1.5) {
+    float2 direction = g.geometry0.zw - g.geometry0.xy;
+    float lengthSquared = dot(direction, direction);
+    return lengthSquared == 0.0
+        ? 0.0
+        : dot(local - g.geometry0.xy, direction) / lengthSquared;
+  }
+  float2 center = g.geometry0.xy;
+  float radius = g.geometry0.z;
+  float2 focus = float2(g.geometry0.w, g.geometry1.x);
+  float2 ray = local - focus;
+  if (all(ray == float2(0.0))) return 0.0;
+  if (all(focus == center)) return length(ray) / radius;
+  float2 focusFromCenter = focus - center;
+  float a = dot(ray, ray);
+  float b = 2.0 * dot(focusFromCenter, ray);
+  float c = dot(focusFromCenter, focusFromCenter) - radius * radius;
+  float discriminant = b * b - 4.0 * a * c;
+  if (a == 0.0 || discriminant < 0.0) return 0.0;
+  float root = sqrt(discriminant);
+  float first = (-b - root) / (2.0 * a);
+  float second = (-b + root) / (2.0 * a);
+  float scale = max(first > 0.0 ? first : 0.0, second > 0.0 ? second : 0.0);
+  return scale > 0.0 ? 1.0 / scale : 0.0;
+}
+
+// pad, repeat, reflect - GradientSpread's order. Reflect with floor and not
+// fmod, whose sign follows the dividend in MSL where GLSL's mod does not.
+static float spreadGradient(float t, float spread) {
+  if (spread > 0.5 && spread < 1.5) return fract(t);
+  if (spread > 1.5) {
+    float repeated = t - 2.0 * floor(t * 0.5);
+    return repeated <= 1.0 ? repeated : 2.0 - repeated;
+  }
+  return clamp(t, 0.0, 1.0);
+}
+
 fragment float4 fsMain(Varying in [[stage_in]],
                        constant Uniforms& u [[buffer(1)]],
-                       texture2d<float> tex [[texture(0)]]) {
+                       constant GradientBlock& g [[buffer(2)]],
+                       texture2d<float> tex [[texture(0)]],
+                       texture2d<float> ramp [[texture(1)]]) {
   // MSL cannot index a sampler without argument buffers, so both filters are
   // declared here and one is selected. clamp_to_edge on both: an atlas slot is
   // padded by one texel and a repeat mode would fetch a neighbouring glyph at
@@ -247,6 +310,15 @@ fragment float4 fsMain(Varying in [[stage_in]],
   float4 texel = u.useLinear == 0 ? pointTexel : linearTexel;
 
   float4 color = in.color;
+  if (g.control.x > 0.5) {
+    // The ramp at this pixel, straight alpha in the texture and premultiplied
+    // here, in place of the vertex colour - which is white for a gradient
+    // quad, so nothing else scales it.
+    float t = spreadGradient(gradientParameter(g, in.devicePos), g.control.y);
+    float4 straight = ramp.sample(linearSampler,
+                                  float2(t * g.control.z + g.control.w, 0.5));
+    color = float4(straight.rgb * straight.a, straight.a);
+  }
   if (u.mode == 1) {
     // A coverage mask scales the already-premultiplied colour, which is the
     // premultiplied equivalent of mul255(alpha, coverage) on the CPU.

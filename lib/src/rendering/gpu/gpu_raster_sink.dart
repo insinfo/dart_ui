@@ -68,6 +68,7 @@ import '../text/glyph_cache.dart' show glyphPixelOrigin, glyphSubpixelBucket;
 import '../text/glyph_raster.dart' show glyphMasksFit, glyphOutlineTransform;
 import 'gpu_batcher.dart';
 import 'gpu_glyph_atlas.dart';
+import 'gpu_gradient.dart';
 import 'gpu_layer_stack.dart';
 import 'gpu_mask_atlas.dart';
 import 'gpu_path_dispatch.dart';
@@ -182,6 +183,7 @@ final class GpuRasterSink
     this.pathPlanningTelemetry,
     this.pathCommandRecorder,
     this.analyticPrimitives = false,
+    this.gradientCache,
   })  : assert(
           maskAtlas == null || maskTextureId != kNoTexture,
           'a mask atlas needs a texture id, or every mask would batch as if '
@@ -291,6 +293,17 @@ final class GpuRasterSink
   /// guards is the reverse: a backend whose shader does *not* read them would
   /// draw a square-cornered rectangle where a rounded one was asked for.
   bool analyticPrimitives;
+
+  /// Where gradient ramps live on this device, or null when its dense shader
+  /// cannot sample one.
+  ///
+  /// Non-null means the backend's fragment stage reads [GpuBatch.gradient]:
+  /// it multiplies the coverage-atlas texel by the ramp sampled at the pixel
+  /// instead of by the vertex colour. A gradient rectangle, rounded rectangle
+  /// or path then takes the same atlas route a solid one does. Null keeps the
+  /// refusal by name, which is the right answer for a backend whose shader
+  /// would otherwise fill the shape with the paint's fallback colour.
+  final GpuGradientCache? gradientCache;
 
   /// The recognised shape, refilled per draw and never retained.
   ///
@@ -860,7 +873,9 @@ final class GpuRasterSink
     // say so rather than to fill the shape with the paint's fallback colour -
     // a flat shape where a ramp was asked for reads as a paint bug, not a
     // renderer limitation.
-    if (hasGradient) {
+    final GpuGradientDraw? gradient =
+        hasGradient ? _denseGradient(paint, what) : null;
+    if (hasGradient && gradient == null) {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
@@ -869,9 +884,8 @@ final class GpuRasterSink
             'a ramp: ${paint.gradient}. The dense coverage atlas stores one '
             'alpha per texel and modulates it by a single colour, so drawing '
             'it here would produce a flat fill. This device needs the sparse '
-            'strip executor and a gradient cache '
-            '(enableExperimentalSparseStrips), or the paint has a shader '
-            'transform that cannot be inverted.',
+            'strip executor or a dense shader that samples a ramp '
+            '(GpuRasterSink.gradientCache).',
       );
     }
     var result = atlas.rasterizeMask(
@@ -907,10 +921,37 @@ final class GpuRasterSink
     if (result.status == MaskRasterStatus.empty) return;
     // Larger than an empty atlas. Flushing cannot help; tiling can.
     if (result.status == MaskRasterStatus.tooLarge) {
-      _drawMaskTiled(atlas, path, transform, clip, paint, what, alpha, rule);
+      _drawMaskTiled(
+          atlas, path, transform, clip, paint, what, alpha, rule, gradient);
       return;
     }
-    _batchMask(result, clip, paint, alpha);
+    _batchMask(result, clip, paint, alpha, gradient);
+  }
+
+  /// The ramp and parameters for a gradient [paint] on the dense route, or
+  /// null when this device has no shader for one.
+  ///
+  /// Evaluated in the current target's space: a layer pass draws at its own
+  /// origin, so the gradient is moved by the same offset the quads are.
+  GpuGradientDraw? _denseGradient(ReplayPaint paint, String what) {
+    final GpuGradientCache? cache = gradientCache;
+    if (cache == null) return null;
+    final GpuGradientShaderParameters parameters;
+    try {
+      parameters = GpuGradientShaderParameters.fromPaint(
+        paint,
+        targetOriginInDevice: Offset(_originX, _originY),
+      );
+    } on Object catch (error) {
+      throw UnsupportedCapabilityError(
+        backendName: backendName,
+        capability: Capability.gpuPresentation,
+        feature: 'gradient $what',
+        detail: 'the gradient of this $what cannot be evaluated per pixel: '
+            '$error',
+      );
+    }
+    return GpuGradientDraw(cache.resolve(paint.gradient!), parameters);
   }
 
   /// Draws [path] as a closed-form shape when it is one this renderer's
@@ -999,6 +1040,7 @@ final class GpuRasterSink
     String what,
     int alpha,
     FillRule rule,
+    GpuGradientDraw? gradient,
   ) {
     final Rect visible = transform.transformRect(path.bounds).intersect(clip);
     if (visible.isEmpty) return;
@@ -1066,7 +1108,7 @@ final class GpuRasterSink
             'mask that size fits. That is a bug in gpu_mask_atlas.dart.',
           );
         }
-        _batchMask(result, clip, paint, alpha);
+        _batchMask(result, clip, paint, alpha, gradient);
       }
     }
   }
@@ -1087,13 +1129,15 @@ final class GpuRasterSink
     MaskRasterResult result,
     Rect clip,
     ReplayPaint paint,
-    int alpha,
-  ) {
+    int alpha, [
+    GpuGradientDraw? gradient,
+  ]) {
     _setState(
       GpuPipelineKind.coverageMask,
       maskTextureId,
       paint.blendMode,
       clip,
+      gradient: gradient,
     );
     final rect = result.deviceRect;
     final double left = rect.left - _originX;
@@ -1109,10 +1153,13 @@ final class GpuRasterSink
       v0: result.v0,
       u1: result.u1,
       v1: result.v1,
-      red: _channel(paint.argbColor, 16, alpha),
-      green: _channel(paint.argbColor, 8, alpha),
-      blue: _channel(paint.argbColor, 0, alpha),
-      alpha: alpha / 255.0,
+      // A gradient's colour, alpha included, is the ramp's: the CPU replay
+      // reads the paint's own alpha for neither, so the vertex is white and
+      // the shader's multiply by it is an identity.
+      red: gradient != null ? 1 : _channel(paint.argbColor, 16, alpha),
+      green: gradient != null ? 1 : _channel(paint.argbColor, 8, alpha),
+      blue: gradient != null ? 1 : _channel(paint.argbColor, 0, alpha),
+      alpha: gradient != null ? 1 : alpha / 255.0,
       // The mask carries the coverage, so the analytic term must not also
       // apply: a shape rect equal to the quad evaluates to 1 everywhere.
       shapeLeft: left,
@@ -1837,8 +1884,9 @@ final class GpuRasterSink
     GpuPipelineKind pipeline,
     int textureId,
     int blendMode,
-    Rect clip,
-  ) {
+    Rect clip, {
+    GpuGradientDraw? gradient,
+  }) {
     if (blendMode != blendModeSrcOver && _isolationBroken) {
       throw UnsupportedCapabilityError(
         backendName: backendName,
@@ -1860,6 +1908,7 @@ final class GpuRasterSink
       scissorTop: (clip.top - _originY).floor(),
       scissorRight: (clip.right - _originX).ceil(),
       scissorBottom: (clip.bottom - _originY).ceil(),
+      gradient: gradient,
     );
   }
 

@@ -41,6 +41,7 @@ import '../../../ffi/objc_runtime.dart';
 import '../../../graphics/image/decoded_image.dart';
 import '../../framebuffer.dart';
 import '../gpu_glyph_atlas.dart';
+import '../gpu_gradient.dart';
 import '../gpu_layer_stack.dart';
 import '../gpu_raster_sink.dart';
 import '../gpu_texture.dart';
@@ -117,6 +118,10 @@ final class MetalTextureStore implements GpuTextureAllocator {
   final ReplayFontResolver fontResolver = ReplayFontResolver();
 
   late final MetalImageCache imageCache = MetalImageCache._(this);
+
+  /// Gradient ramps, one `RGBA8Unorm` row each, shared by every target here.
+  late final GpuGradientCache gradientCache =
+      GpuGradientCache(allocator: this);
 
   /// How many regions of the glyph atlas have gone to the GPU, for tests that
   /// want to see the atlas shared rather than re-uploaded.

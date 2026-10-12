@@ -2,13 +2,15 @@
 ///
 /// ## The batching rule, stated once
 ///
-/// A batch is a maximal run of quads that share **all four** pieces of draw
+/// A batch is a maximal run of quads that share **all five** pieces of draw
 /// state:
 ///
 ///   1. the pipeline kind ([GpuPipelineKind]);
 ///   2. the bound texture id ([kNoTexture] counts as a value);
 ///   3. the blend mode;
-///   4. the scissor rectangle, in whole device pixels.
+///   4. the scissor rectangle, in whole device pixels;
+///   5. the gradient ([GpuGradientDraw]), by identity - null for every solid
+///      fill, so it breaks a batch only around a gradient shape.
 ///
 /// Anything else - colour, position, transform, the paint object, the order
 /// the display list wrote them in - is *vertex data* and never breaks a batch.
@@ -44,6 +46,7 @@
 /// stops allocating once a process has drawn its busiest frame.
 library;
 
+import 'gpu_gradient.dart';
 import 'gpu_pipeline.dart';
 import 'gpu_texture.dart';
 import 'gpu_vertex_buffer.dart';
@@ -65,8 +68,13 @@ final class GpuBatch {
   int _scissorBottom = 0;
   int _indexOffset = 0;
   int _indexCount = 0;
+  GpuGradientDraw? _gradient;
 
   GpuPipelineKind get pipeline => _pipeline;
+
+  /// The ramp this batch's coverage is multiplied by, or null for a fill whose
+  /// colour is in its vertices.
+  GpuGradientDraw? get gradient => _gradient;
   int get textureId => _textureId;
 
   /// One of the display list's `blendMode*` constants. The backend turns it
@@ -94,6 +102,7 @@ final class GpuBatch {
 
   @override
   String toString() => 'GpuBatch(${_pipeline.name}, tex $_textureId, '
+      '${_gradient == null ? '' : 'gradient, '}'
       'blend $_blendMode, scissor $_scissorLeft,$_scissorTop..'
       '$_scissorRight,$_scissorBottom, $quadCount quads)';
 }
@@ -119,6 +128,7 @@ final class GpuBatcher {
   int _pendingScissorTop = 0;
   int _pendingScissorRight = 0;
   int _pendingScissorBottom = 0;
+  GpuGradientDraw? _pendingGradient;
 
   /// Whether the last batch is still accepting quads.
   bool _open = false;
@@ -160,7 +170,9 @@ final class GpuBatcher {
     required int scissorTop,
     required int scissorRight,
     required int scissorBottom,
+    GpuGradientDraw? gradient,
   }) {
+    _pendingGradient = gradient;
     _pendingPipeline = pipeline;
     _pendingTexture = textureId;
     _pendingBlend = blendMode;
@@ -235,7 +247,8 @@ final class GpuBatcher {
           open._scissorLeft == _pendingScissorLeft &&
           open._scissorTop == _pendingScissorTop &&
           open._scissorRight == _pendingScissorRight &&
-          open._scissorBottom == _pendingScissorBottom) {
+          open._scissorBottom == _pendingScissorBottom &&
+          identical(open._gradient, _pendingGradient)) {
         return open;
       }
     }
@@ -250,6 +263,7 @@ final class GpuBatcher {
       .._scissorTop = _pendingScissorTop
       .._scissorRight = _pendingScissorRight
       .._scissorBottom = _pendingScissorBottom
+      .._gradient = _pendingGradient
       .._indexOffset = buffer.indexCount
       .._indexCount = 0;
     _open = true;

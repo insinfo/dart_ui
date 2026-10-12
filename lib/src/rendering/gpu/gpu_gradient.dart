@@ -316,3 +316,54 @@ final class GpuGradientShaderParameters {
     return s > 0 && s.isFinite ? 1 / s : 0;
   }
 }
+
+/// One gradient fill on the dense route: the ramp, and where it is evaluated.
+///
+/// The dense route rasterises a gradient shape's coverage into the alpha8
+/// atlas exactly as it does a solid one, and the fragment stage then
+/// multiplies that coverage by the ramp sampled at the pixel instead of by a
+/// vertex colour. So a gradient path costs what a solid path costs, plus one
+/// lookup per pixel, and needs no executor of its own.
+///
+/// A draw is part of a batch's state in `GpuBatcher`, compared by identity:
+/// the tiles of one shape share it and merge, two shapes never do.
+final class GpuGradientDraw {
+  const GpuGradientDraw(this.binding, this.parameters);
+
+  final GpuGradientBinding binding;
+  final GpuGradientShaderParameters parameters;
+
+  /// Floats in [writeDenseBlock]'s layout.
+  static const int denseBlockFloats = 20;
+
+  /// Writes the block every dense shader reads, as five `float4`s - a layout
+  /// with no alignment question in MSL, HLSL, GLSL or WGSL:
+  ///
+  ///   0. kind (0 none, 1 linear, 2 radial), spread, lookup scale, lookup bias;
+  ///   1. the first row of target-to-local: a, c, tx, 0;
+  ///   2. the second row: b, d, ty, 0;
+  ///   3. geometry 0..3;
+  ///   4. geometry 4..7.
+  ///
+  /// [draw] null writes kind 0, which every adapter reads as "no gradient".
+  static void writeDenseBlock(Float32List out, GpuGradientDraw? draw) {
+    out.fillRange(0, denseBlockFloats, 0);
+    if (draw == null) return;
+    final Float32List scalars = draw.parameters.scalars;
+    const int transform = GpuGradientUniformOffset.targetToLocal;
+    const int geometry = GpuGradientUniformOffset.geometry;
+    out[0] = scalars[GpuGradientUniformOffset.kind];
+    out[1] = draw.binding.spread.index.toDouble();
+    out[2] = draw.binding.lookupScale;
+    out[3] = draw.binding.lookupBias;
+    out[4] = scalars[transform];
+    out[5] = scalars[transform + 2];
+    out[6] = scalars[transform + 4];
+    out[8] = scalars[transform + 1];
+    out[9] = scalars[transform + 3];
+    out[10] = scalars[transform + 5];
+    for (var i = 0; i < 8; i++) {
+      out[12 + i] = scalars[geometry + i];
+    }
+  }
+}
