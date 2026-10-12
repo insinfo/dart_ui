@@ -208,4 +208,12 @@ final class _RelaySink with HostMessageSinkAdapter {
 
   @override
   void onCommit(String base64) => target?.onCommit(base64);
+
+  @override
+  void onDragItem(String kind, String base64) =>
+      target?.onDragItem(kind, base64);
+
+  @override
+  void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>
+      target?.onDrag(phase, x, y, mask, flags);
 }

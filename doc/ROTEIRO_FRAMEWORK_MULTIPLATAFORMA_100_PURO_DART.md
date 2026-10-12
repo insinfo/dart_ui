@@ -10778,7 +10778,13 @@ proporção ele aparece nos outros caminhos, não.
   interativo, sem `set_maximized`/`set_fullscreen`/`set_minimized`, sem posição
   de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de
   modificador **assumidos**; apenas ABIs **LP64**;
-- **macOS**: sem drag-and-drop. **IME desde 12/10/2026**, na estratégia
+- **macOS**: drag-and-drop **só recebendo** desde 12/10/2026: a view do host
+  é o `NSDraggingDestination` e arquivos e texto soltos numa janela chegam aos
+  `DropTarget` da árvore como em Win32 e Linux (`macos_drag_drop.dart`,
+  `INPUT_APP_DROP_FILES`); arrastar **para fora** não existe. Como o AppKit
+  pede a operação de forma síncrona e a resposta está em outro processo, o
+  host responde com a última resposta do framework, uma atualização atrás.
+  **IME desde 12/10/2026**, na estratégia
   `appkitNativeHost`: a view do host é um `NSTextInputClient` e o texto passa
   por `interpretKeyEvents:`, então **teclas mortas compõem** - antes, `´` + `e`
   num ABNT2 dava `e`, porque o estado de tecla morta só existe dentro do

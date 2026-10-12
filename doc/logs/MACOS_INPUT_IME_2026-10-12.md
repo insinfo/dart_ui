@@ -106,4 +106,9 @@ com um host de mentira em `sh` e roda também na perna Linux.
   `38231956976`). É o custo frio do runner; os 58 ms de antes vieram de um
   runner mais rápido. O atraso de 150 ms que tinha sido posto no lançamento da
   reserva, por essa hipótese, foi tirado.
-- Drag-and-drop no macOS não existe.
+- Drag-and-drop: **receber** existe desde o mesmo dia (`macos_drag_drop.dart`,
+  `INPUT_APP_DROP_FILES` com um `NSDraggingInfo` sobre um pasteboard
+  privado); arrastar para fora não. A operação que o AppKit pede de forma
+  síncrona é respondida com a última resposta do framework, uma atualização
+  atrás, porque bloquear a thread principal esperando o Dart travaria contra
+  a thread que lê os comandos.

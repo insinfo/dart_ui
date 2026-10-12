@@ -34,6 +34,7 @@ import 'host_process.dart';
 import 'host_protocol.dart';
 import 'host_supervisor.dart';
 import 'io_surface.dart';
+import 'macos_drag_drop.dart';
 import 'macos_input.dart';
 import 'macos_text_input.dart';
 import 'surface_pool.dart';
@@ -69,7 +70,7 @@ typedef MacosSurfaceFactory = MacosSurfacePool Function({
 /// A window owned by a host process.
 final class MacosWindow
     with DisposableMixin
-    implements NativeWindow, MacosSurfaceHost, MacosImeWindow {
+    implements NativeWindow, MacosSurfaceHost, MacosImeWindow, MacosDropWindow {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -217,6 +218,19 @@ final class MacosWindow
   bool sendImeCommand(String command) {
     if (!command.startsWith('IME_')) {
       throw ArgumentError.value(command, 'command', 'not an IME_ command');
+    }
+    return _supervisor?.send(command) ?? false;
+  }
+
+  /// The drop target registered on this window, if any. See
+  /// `macos_drag_drop.dart`.
+  @override
+  MacosDropTarget? dropTarget;
+
+  @override
+  bool sendDropCommand(String command) {
+    if (!command.startsWith('DROP_')) {
+      throw ArgumentError.value(command, 'command', 'not a DROP_ command');
     }
     return _supervisor?.send(command) ?? false;
   }
@@ -863,6 +877,14 @@ final class _HostSink with HostMessageSinkAdapter {
 
   @override
   void onCommit(String base64) => _window._onCommit(base64);
+
+  @override
+  void onDragItem(String kind, String base64) =>
+      _window.dropTarget?.onItem(kind, base64);
+
+  @override
+  void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>
+      _window.dropTarget?.onDrag(phase, x, y, mask, flags);
 }
 
 /// The default factory: real `IOSurface`s.

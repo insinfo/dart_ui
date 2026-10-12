@@ -49,6 +49,9 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 - (void)hostView:(DartUiHostView *)view
     composeText:(NSString *)text
        selected:(NSRange)selected;
+- (void)hostView:(DartUiHostView *)view
+            drag:(NSString *)phase
+            info:(id<NSDraggingInfo>)info;
 @end
 
 @interface DartUiHostView : NSView <NSTextInputClient>
@@ -61,6 +64,13 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 // The framework's caret, in this view's points (top-left origin), from
 // IME_CARET: where a candidate window opens. NSZeroRect until one arrives.
 @property(nonatomic, assign) NSRect caretRect;
+// What the framework last answered for the drag over this view, from
+// DROP_RESPONSE. AppKit asks for an operation synchronously, on every
+// draggingUpdated:, and the answer lives in another process; blocking the
+// main thread for it would deadlock against the command reader, so the view
+// answers with the framework's latest response - one update behind - and the
+// framework refines it on the next one.
+@property(nonatomic, assign) NSDragOperation dropOperation;
 @end
 
 @implementation DartUiHostView
@@ -104,6 +114,43 @@ static const size_t kDartUiMaximumLineBytes = 8192;
     return;
   }
   [self interpretKeyEvents:@[ event ]];
+}
+
+// --- NSDraggingDestination ------------------------------------------------
+//
+// Registered for file URLs and text only while the framework has a drop target
+// on this window (DROP_REGISTER), so a window with none shows the no-drop
+// cursor instead of accepting a drop nobody handles.
+
+- (NSDragOperation)draggingEntered:(id<NSDraggingInfo>)sender {
+  // Optimistic until the framework answers: copy, if the source allows it.
+  NSDragOperation mask = sender.draggingSourceOperationMask;
+  self.dropOperation = (mask & NSDragOperationCopy) != 0
+                           ? NSDragOperationCopy
+                           : (mask & NSDragOperationMove) != 0
+                                 ? NSDragOperationMove
+                                 : NSDragOperationNone;
+  [self.sink hostView:self drag:@"ENTER" info:sender];
+  return self.dropOperation;
+}
+
+- (NSDragOperation)draggingUpdated:(id<NSDraggingInfo>)sender {
+  [self.sink hostView:self drag:@"OVER" info:sender];
+  return self.dropOperation & sender.draggingSourceOperationMask;
+}
+
+- (void)draggingExited:(id<NSDraggingInfo>)sender {
+  [self.sink hostView:self drag:@"LEAVE" info:sender];
+}
+
+- (BOOL)prepareForDragOperation:(id<NSDraggingInfo>)sender {
+  (void)sender;
+  return self.dropOperation != NSDragOperationNone;
+}
+
+- (BOOL)performDragOperation:(id<NSDraggingInfo>)sender {
+  [self.sink hostView:self drag:@"DROP" info:sender];
+  return YES;
 }
 
 // --- NSTextInputClient ----------------------------------------------------
@@ -267,6 +314,48 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 
 @end
 
+// What a drag looks like to a destination, for SYNTH_DRAG: a private
+// pasteboard with the items, a location and the source's operations. AppKit
+// hands a real one to the view's NSDraggingDestination methods; this one is
+// handed to the same methods, which then report exactly as for a real drag.
+@interface DartUiSynthDraggingInfo : NSObject <NSDraggingInfo>
+@property(nonatomic, strong) NSWindow *window;
+@property(nonatomic, strong) NSPasteboard *pasteboard;
+@property(nonatomic, assign) NSPoint location;
+@property(nonatomic, assign) NSDragOperation mask;
+@end
+
+@implementation DartUiSynthDraggingInfo
+@synthesize draggingFormation;
+@synthesize animatesToDestination;
+@synthesize numberOfValidItemsForDrop;
+- (NSWindow *)draggingDestinationWindow { return self.window; }
+- (NSDragOperation)draggingSourceOperationMask { return self.mask; }
+- (NSPoint)draggingLocation { return self.location; }
+- (NSPoint)draggedImageLocation { return self.location; }
+- (NSImage *)draggedImage { return nil; }
+- (NSPasteboard *)draggingPasteboard { return self.pasteboard; }
+- (id)draggingSource { return nil; }
+- (NSInteger)draggingSequenceNumber { return 1; }
+- (void)slideDraggedImageTo:(NSPoint)screenPoint { (void)screenPoint; }
+- (NSArray<NSString *> *)namesOfPromisedFilesDroppedAtDestination:(NSURL *)url {
+  (void)url;
+  return nil;
+}
+- (void)enumerateDraggingItemsWithOptions:(NSDraggingItemEnumerationOptions)o
+                                  forView:(NSView *)view
+                                  classes:(NSArray<Class> *)classes
+                            searchOptions:(NSDictionary *)searchOptions
+                               usingBlock:(void (^)(NSDraggingItem *, NSInteger,
+                                                    BOOL *))block {
+  (void)o; (void)view; (void)classes; (void)searchOptions; (void)block;
+}
+- (NSSpringLoadingHighlight)springLoadingHighlight {
+  return NSSpringLoadingHighlightNone;
+}
+- (void)resetSpringLoading {}
+@end
+
 @interface DartUiHostDelegate
     : NSObject <NSApplicationDelegate, NSWindowDelegate, DartUiHostViewSink>
 @property(nonatomic, strong) NSWindow *window;
@@ -300,6 +389,8 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 @property(nonatomic, assign) BOOL terminating;
 @property(nonatomic, assign) BOOL closedReported;
 @property(nonatomic, assign) NSInteger reportedState;
+// The drag SYNTH_DRAG is building, from its enter to its leave or drop.
+@property(nonatomic, strong) DartUiSynthDraggingInfo *synthDrag;
 // Base64 pieces of a CLIPBOARD_WRITE still being sent, by request number.
 @property(nonatomic, strong)
     NSMutableDictionary<NSNumber *, NSMutableString *> *clipboardPending;
@@ -669,6 +760,48 @@ static NSEventModifierFlags modifierFlagForKeyCode(unsigned short keyCode) {
                            : [bytes base64EncodedStringWithOptions:0].UTF8String,
          (unsigned long)MIN(location, text.length),
          (unsigned long)selected.length);
+  fflush(stdout);
+}
+
+// DRAG_ITEM=<file|text>:<base64> for each thing the drag carries, before the
+// DRAG=ENTER that uses them; then DRAG=<ENTER|OVER|DROP>:<x>:<y>:<mask>:<flags>
+// with view points (top-left origin), the source's NSDragOperation mask and
+// the modifier flags; DRAG=LEAVE when it goes without dropping.
+- (void)hostView:(DartUiHostView *)view
+            drag:(NSString *)phase
+            info:(id<NSDraggingInfo>)info {
+  if (!self.protocolReady || self.terminating) return;
+  if ([phase isEqualToString:@"LEAVE"]) {
+    printf("DRAG=LEAVE\n");
+    fflush(stdout);
+    return;
+  }
+  if ([phase isEqualToString:@"ENTER"]) {
+    NSPasteboard *pasteboard = info.draggingPasteboard;
+    NSArray<NSURL *> *urls = [pasteboard
+        readObjectsForClasses:@[ NSURL.class ]
+                      options:@{NSPasteboardURLReadingFileURLsOnlyKey : @YES}];
+    for (NSURL *url in urls) {
+      NSData *bytes = [url.path dataUsingEncoding:NSUTF8StringEncoding];
+      if (bytes.length > 0) {
+        printf("DRAG_ITEM=file:%s\n",
+               [bytes base64EncodedStringWithOptions:0].UTF8String);
+      }
+    }
+    NSString *text = [pasteboard stringForType:NSPasteboardTypeString];
+    NSData *textBytes = [text dataUsingEncoding:NSUTF8StringEncoding];
+    if (textBytes.length > 0 && urls.count == 0) {
+      // A file drag from Finder also carries the path as a string; offering
+      // it as text too would let a text target paste a path the user meant
+      // as a file.
+      printf("DRAG_ITEM=text:%s\n",
+             [textBytes base64EncodedStringWithOptions:0].UTF8String);
+    }
+  }
+  NSPoint point = [view convertPoint:info.draggingLocation fromView:nil];
+  printf("DRAG=%s:%.4f:%.4f:%lu:%lu\n", phase.UTF8String, point.x, point.y,
+         (unsigned long)info.draggingSourceOperationMask,
+         (unsigned long)NSEvent.modifierFlags);
   fflush(stdout);
 }
 
@@ -1129,6 +1262,48 @@ static const NSUInteger kClipboardChunk = 6000;
     }
     return;
   }
+  if ([verb isEqualToString:@"SYNTH_DRAG"] && parts.count == 7) {
+    // SYNTH_DRAG <enter|over|leave|drop> <x> <y> <mask> <paths-b64|-> <text-b64|->
+    // paths are newline-separated, then base64. The pasteboard is kept across
+    // the phases of one drag, as AppKit keeps the drag pasteboard.
+    if ([parts[1] isEqualToString:@"enter"]) {
+      self.synthDrag = [[DartUiSynthDraggingInfo alloc] init];
+      self.synthDrag.window = self.window;
+      self.synthDrag.pasteboard = [NSPasteboard pasteboardWithUniqueName];
+      [self.synthDrag.pasteboard clearContents];
+      NSString *paths = [self decodeSynthText:parts[5]];
+      NSString *text = [self decodeSynthText:parts[6]];
+      NSMutableArray *items = [NSMutableArray array];
+      for (NSString *path in [paths componentsSeparatedByString:@"\n"]) {
+        if (path.length > 0) [items addObject:[NSURL fileURLWithPath:path]];
+      }
+      if (text.length > 0) [items addObject:text];
+      [self.synthDrag.pasteboard writeObjects:items];
+    }
+    DartUiSynthDraggingInfo *info = self.synthDrag;
+    if (info == nil) {
+      [self printError:@"BAD_SYNTH_DRAG"];
+      return;
+    }
+    info.location = [self windowPointForViewX:parts[2].doubleValue
+                                            y:parts[3].doubleValue];
+    info.mask = (NSDragOperation)parts[4].longLongValue;
+    NSString *phase = parts[1];
+    if ([phase isEqualToString:@"enter"]) {
+      [self.hostView draggingEntered:info];
+    } else if ([phase isEqualToString:@"over"]) {
+      [self.hostView draggingUpdated:info];
+    } else if ([phase isEqualToString:@"leave"]) {
+      [self.hostView draggingExited:info];
+      self.synthDrag = nil;
+    } else {
+      if ([self.hostView prepareForDragOperation:info]) {
+        [self.hostView performDragOperation:info];
+      }
+      self.synthDrag = nil;
+    }
+    return;
+  }
   if ([verb isEqualToString:@"SYNTH_POINTER"] && parts.count == 2) {
     if ([parts[1] isEqualToString:@"enter"]) {
       [self.hostView mouseEntered:[NSApp currentEvent]];
@@ -1290,6 +1465,15 @@ static const NSUInteger kClipboardChunk = 6000;
     } else {
       [self printError:@"BAD_IME_CARET"];
     }
+  } else if ([command isEqualToString:@"DROP_REGISTER"]) {
+    [self.hostView registerForDraggedTypes:@[
+      NSPasteboardTypeFileURL, NSPasteboardTypeString
+    ]];
+  } else if ([command isEqualToString:@"DROP_UNREGISTER"]) {
+    [self.hostView unregisterDraggedTypes];
+  } else if ([command hasPrefix:@"DROP_RESPONSE "]) {
+    self.hostView.dropOperation =
+        (NSDragOperation)[[command substringFromIndex:14] longLongValue];
   } else if ([command isEqualToString:@"IME_CANCEL"]) {
     // Escape inside a preedit, or the field losing focus: the provisional
     // text is dropped, not committed.

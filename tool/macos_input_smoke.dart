@@ -276,6 +276,7 @@ Future<void> _applicationHalf(
     void Function(String, bool, String) record) async {
   final controller = TextEditingController();
   var presses = 0;
+  final dropped = <List<String>>[];
   final Application app = await Application.start(
     rootWidget: Column(
       children: <Widget>[
@@ -289,13 +290,25 @@ Future<void> _applicationHalf(
           height: 40,
           child: Button(label: 'press', onPressed: () => presses++),
         ),
+        SizedBox(
+          width: 280,
+          height: 60,
+          child: DropTarget(
+            formats: const <String>[DragFormats.uriList],
+            onDrop: (DropDetails details) async {
+              dropped.add(await details.data.readFilePaths());
+              return DragAction.copy;
+            },
+            child: const ColoredBox(color: Color(0xFF203040)),
+          ),
+        ),
       ],
     ),
     backends: PlatformBackendResolver.defaultBackends(),
     presentations: PlatformBackendResolver.defaultPresentations(),
     options: ApplicationOptions(
       title: 'dart_ui input smoke (application)',
-      size: const Size(320, 120),
+      size: const Size(320, 180),
       environment: Platform.environment,
     ),
   );
@@ -403,6 +416,39 @@ Future<void> _applicationHalf(
         'preedit="$preedit" composing=$composing '
             'committed="${controller.value}" '
             'composingAfter=${controller.isComposing}');
+
+    // Files dropped on a DropTarget: the host's NSDraggingDestination, given
+    // a drag over a private pasteboard (SYNTH_DRAG), through the widget
+    // tree's drop routing. Paths are ASCII on purpose: macOS hands a path back
+    // decomposed (NFD), and comparing that is not what this checks.
+    const String paths = '/tmp/dart_ui_drop_a.pdf\n/tmp/dart_ui_drop_b.svg';
+    const int copyOrMove = 1 | 16;
+    native
+      ..synthesizeInput('SYNTH_DRAG enter 140 100 $copyOrMove ${_b64(paths)} -')
+      ..synthesizeInput('SYNTH_DRAG over 140 110 $copyOrMove - -');
+    await _pump(app, const Duration(milliseconds: 250));
+    native.synthesizeInput('SYNTH_DRAG drop 140 110 $copyOrMove - -');
+    await _pump(app, const Duration(milliseconds: 300));
+    record(
+        'INPUT_APP_DROP_FILES',
+        dropped.length == 1 &&
+            dropped.single.join(',') ==
+                '/tmp/dart_ui_drop_a.pdf,/tmp/dart_ui_drop_b.svg',
+        'drops=${dropped.length} paths=${dropped.firstOrNull}');
+
+    // The same drag over the text field, where no target is: nothing may land.
+    // This checks the outcome only - the widget routing alone would keep it
+    // off the DropTarget. That the framework answers DROP_RESPONSE 0 there is
+    // pinned by macos_drag_drop_test.dart, and that the host then declines the
+    // drop (no DRAG=DROP) was checked against the host binary directly.
+    native
+      ..synthesizeInput('SYNTH_DRAG enter 140 20 $copyOrMove ${_b64(paths)} -')
+      ..synthesizeInput('SYNTH_DRAG over 140 21 $copyOrMove - -');
+    await _pump(app, const Duration(milliseconds: 250));
+    native.synthesizeInput('SYNTH_DRAG drop 140 21 $copyOrMove - -');
+    await _pump(app, const Duration(milliseconds: 300));
+    record('INPUT_APP_DROP_REFUSED', dropped.length == 1,
+        'drops=${dropped.length} (one, from the check above)');
 
     // Cmd+A, Cmd+C: Command arrives as meta, and the field reads the Mac
     // convention, so this is copy - checked from outside the process.

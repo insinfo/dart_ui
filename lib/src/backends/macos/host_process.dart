@@ -751,6 +751,13 @@ final class MacosHostProcess
   void onCommit(String base64) => _sink.onCommit(base64);
 
   @override
+  void onDragItem(String kind, String base64) => _sink.onDragItem(kind, base64);
+
+  @override
+  void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>
+      _sink.onDrag(phase, x, y, mask, flags);
+
+  @override
   void onAck(HostAckKind kind, int value) {
     if (kind == HostAckKind.notMainThread) {
       // The one banner answer that is fatal on its own: a host that is not on

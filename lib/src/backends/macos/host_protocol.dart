@@ -283,6 +283,15 @@ abstract interface class HostMessageSink {
   /// `COMMIT=<base64>`: text that ends a composition, replacing the preedit.
   void onCommit(String base64);
 
+  /// `DRAG_ITEM=<file|text>:<base64>`: one thing a drag entering the view
+  /// carries - a file path or the text - sent before its `DRAG=ENTER`.
+  void onDragItem(String kind, String base64);
+
+  /// `DRAG=<ENTER|OVER|DROP>:<x>:<y>:<mask>:<flags>` or `DRAG=LEAVE`: a drag
+  /// over the view, in view points (top-left origin), with the source's
+  /// `NSDragOperation` mask and the modifier flags.
+  void onDrag(HostDragPhase phase, double x, double y, int mask, int flags);
+
   void onAck(HostAckKind kind, int value);
 
   /// `SURFACE_OK <id> <w>x<h>`, the deprecated lookup path. [slot] is -1 when
@@ -354,6 +363,12 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onCommit(String base64) {}
+
+  @override
+  void onDragItem(String kind, String base64) {}
+
+  @override
+  void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) {}
 
   @override
   void onAck(HostAckKind kind, int value) {}
@@ -443,6 +458,9 @@ final class HostInputDetail {
   /// Whether this key press is the keyboard's auto-repeat.
   bool get isRepeat => flags & 2 != 0;
 }
+
+/// Which part of a drag a `DRAG=` line reports.
+enum HostDragPhase { enter, over, leave, drop }
 
 /// How a clipboard request ended, from `CLIPBOARD=<request>:<RESULT>`.
 enum HostClipboardResult {
@@ -620,6 +638,9 @@ final class HostProtocolParser {
         if (_startsWith('CLOSE_OK')) {
           return _sink.onAck(HostAckKind.closeAccepted, 0);
         }
+      case 0x44: // 'D'
+        if (_startsWith('DRAG_ITEM=')) return _parseDragItem(10);
+        if (_startsWith('DRAG=')) return _parseDrag(5);
       case 0x45: // 'E'
         if (_startsWith('ERROR=')) return _sink.onError(_stringFrom(6));
       case 0x4D: // 'M'
@@ -654,6 +675,52 @@ final class HostProtocolParser {
     _cursor = offset;
     final value = _readInt();
     _sink.onAck(kind, value == kHostFieldMissing ? 0 : value);
+  }
+
+  // DRAG_ITEM=<file|text>:<base64>
+  void _parseDragItem(int offset) {
+    var colon = offset;
+    while (colon < _length && _line[colon] != _kColon) {
+      colon++;
+    }
+    if (colon >= _length) return _sink.onError('BAD_DRAG_ITEM');
+    _sink.onDragItem(
+      String.fromCharCodes(_line, offset, colon),
+      _stringFrom(colon + 1),
+    );
+  }
+
+  // DRAG=<ENTER|OVER|DROP>:<x>:<y>:<mask>:<flags> | DRAG=LEAVE
+  void _parseDrag(int offset) {
+    var end = offset;
+    while (end < _length && _line[end] != _kColon) {
+      end++;
+    }
+    final HostDragPhase? phase = _regionEquals(offset, end, 'ENTER')
+        ? HostDragPhase.enter
+        : _regionEquals(offset, end, 'OVER')
+            ? HostDragPhase.over
+            : _regionEquals(offset, end, 'DROP')
+                ? HostDragPhase.drop
+                : _regionEquals(offset, end, 'LEAVE')
+                    ? HostDragPhase.leave
+                    : null;
+    if (phase == null) return _sink.onError('BAD_DRAG');
+    if (phase == HostDragPhase.leave) {
+      return _sink.onDrag(phase, 0, 0, 0, 0);
+    }
+    _cursor = end;
+    final x = _readDoubleField();
+    final y = _readDoubleField();
+    final mask = _readIntField();
+    final flags = _readIntField();
+    if (x.isNaN ||
+        y.isNaN ||
+        mask == kHostFieldMissing ||
+        flags == kHostFieldMissing) {
+      return _sink.onError('BAD_DRAG');
+    }
+    _sink.onDrag(phase, x, y, mask, flags);
   }
 
   // COMPOSE=<base64|->:<selectedLocation>:<selectedLength>
@@ -1091,6 +1158,16 @@ final class HostCommands {
   /// where the input method opens its candidate window.
   static String imeCaret(double x, double y, double width, double height) =>
       'IME_CARET ${_fixed(x)} ${_fixed(y)} ${_fixed(width)} ${_fixed(height)}\n';
+
+  /// Accepts drags of files and text over the window: a drop target exists.
+  static String dropRegister() => 'DROP_REGISTER\n';
+
+  /// Stops accepting drags: the drop target was revoked.
+  static String dropUnregister() => 'DROP_UNREGISTER\n';
+
+  /// The `NSDragOperation` the framework answers for the drag in progress;
+  /// the host returns it from the next `draggingUpdated:`.
+  static String dropResponse(int operation) => 'DROP_RESPONSE $operation\n';
 
   /// Drops the composition in progress without committing it.
   static String imeCancel() => 'IME_CANCEL\n';

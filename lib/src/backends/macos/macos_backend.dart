@@ -29,6 +29,7 @@ import '../../foundation/diagnostics.dart';
 import '../../geometry/offset.dart';
 import '../../platform/backend_selection.dart';
 import '../../platform/clipboard.dart';
+import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart';
 import '../../platform/text_input.dart';
 import '../../platform/window_events.dart';
@@ -38,6 +39,7 @@ import 'host_supervisor.dart' show MacosHostStarter;
 import 'macos_backend_kind.dart';
 import 'macos_backend_selection.dart';
 import 'macos_clipboard.dart';
+import 'macos_drag_drop.dart';
 import 'macos_text_input.dart';
 import 'macos_window.dart';
 import 'spare_host.dart';
@@ -48,6 +50,7 @@ final class MacosWindowingBackend
         WindowingBackend,
         ScreenProvider,
         ClipboardProvider,
+        DragDropProvider,
         TextInputProvider {
   MacosWindowingBackend({
     MacosBackendOptions options = const MacosBackendOptions(),
@@ -94,6 +97,20 @@ final class MacosWindowingBackend
     }
     return _clipboard;
   }
+
+  /// Drops of files and text onto a window, through its host's
+  /// `NSDraggingDestination`. See `macos_drag_drop.dart`.
+  @override
+  DragDropBackend get dragAndDrop =>
+      _initialized && _activeKind == MacosBackendKind.appkitNativeHost
+          ? const MacosDragDropBackend()
+          : UnavailableDragDrop(
+              name: 'appkit',
+              reason: _initialized
+                  ? 'the ${_activeKind?.name} strategy creates no AppKit host, '
+                      'and drops are received through one'
+                  : 'the macOS backend has not been initialized',
+            );
 
   /// The AppKit text input system, reached through each window's host: dead
   /// keys and input methods. See `macos_text_input.dart`.
