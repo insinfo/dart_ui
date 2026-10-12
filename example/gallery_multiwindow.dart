@@ -24,9 +24,12 @@
 /// dart run example/gallery_multiwindow.dart --frames 24 --backend headless
 /// ```
 ///
-/// On Windows it opens two real HWNDs. Anywhere else - and with
-/// `--backend headless` anywhere at all - it runs the identical script against
-/// the headless backend, which is what makes it a CI gate rather than a demo.
+/// On Windows it opens two real HWNDs, and on macOS two AppKit windows drawn
+/// by Metal - the default presentation path there since 12/10/2026, measured
+/// on a Mac mini M4 that day with both windows reporting `metal` and the
+/// script passing. Anywhere else - and with `--backend headless` anywhere at
+/// all - it runs the identical script against the headless backend, which is
+/// what makes it a CI gate rather than a demo.
 library;
 
 import 'dart:io';
@@ -60,34 +63,42 @@ Future<void> main(List<String> arguments) async {
       Platform.environment['DART_UI_BACKEND'];
   final useWin32 =
       Platform.isWindows && (requested == null || requested == 'win32');
-  final backends = <WindowingBackendEntry>[
-    if (useWin32)
-      const WindowingBackendEntry(
-        name: 'win32',
-        create: Win32WindowingBackend.new,
-      ),
-    const WindowingBackendEntry(
-      name: 'headless',
-      create: HeadlessWindowingBackend.new,
-    ),
-  ];
-  final presentations = <PresentationPathEntry>[
-    if (useWin32)
-      PresentationPathEntry.retainedCpu(
-        name: 'win32-dib',
-        deviceDescription: 'GDI DIB section, BGRA8888 top-down',
-        create: (NativeWindow window) {
-          final presenter = Win32CpuPresenter(window as Win32Window);
-          return (
-            present: presenter.renderDisplayList,
-            presentNow: presenter.renderDisplayListNow,
-            release: presenter.dispose,
-          );
-        },
-      )
-    else
-      PresentationPathEntry.cpuRenderer(),
-  ];
+  // macOS through the platform's own lists: the AppKit backend and whatever
+  // presentation path selection ranks first, which is Metal.
+  final useMacos =
+      Platform.isMacOS && (requested == null || requested == 'macos');
+  final backends = useMacos
+      ? PlatformBackendResolver.defaultBackends()
+      : <WindowingBackendEntry>[
+          if (useWin32)
+            const WindowingBackendEntry(
+              name: 'win32',
+              create: Win32WindowingBackend.new,
+            ),
+          const WindowingBackendEntry(
+            name: 'headless',
+            create: HeadlessWindowingBackend.new,
+          ),
+        ];
+  final presentations = useMacos
+      ? PlatformBackendResolver.defaultPresentations()
+      : <PresentationPathEntry>[
+          if (useWin32)
+            PresentationPathEntry.retainedCpu(
+              name: 'win32-dib',
+              deviceDescription: 'GDI DIB section, BGRA8888 top-down',
+              create: (NativeWindow window) {
+                final presenter = Win32CpuPresenter(window as Win32Window);
+                return (
+                  present: presenter.renderDisplayList,
+                  presentNow: presenter.renderDisplayListNow,
+                  release: presenter.dispose,
+                );
+              },
+            )
+          else
+            PresentationPathEntry.cpuRenderer(),
+        ];
 
   final theme = galleryTheme(arguments);
   final log = <String>[];
@@ -124,7 +135,9 @@ Future<void> main(List<String> arguments) async {
     size: const Size(340, 300),
     position: const Offset(480, 120),
   );
-  log.add('opened A=${windowA.id.value} B=${windowB.id.value}');
+  log.add('opened A=${windowA.id.value} B=${windowB.id.value} '
+      'presentation=${windowA.host.presenter.info.name}/'
+      '${windowB.host.presenter.info.name}');
 
   for (final ApplicationWindow window in application.windows) {
     window.nativeWindow.show();
