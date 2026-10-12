@@ -668,6 +668,11 @@ final class SystemFonts {
         '/System/Library/Fonts',
       ];
     }
+    if (Platform.isAndroid) {
+      // Every face the system ships, including the CJK collections; /product
+      // and /system_ext carry OEM additions on some devices.
+      return <String>['/system/fonts', '/product/fonts', '/system_ext/fonts'];
+    }
     final String? home = env['HOME'];
     final String? xdgData = env['XDG_DATA_HOME'];
     return <String>[
@@ -861,6 +866,11 @@ final class SystemFonts {
         'Helvetica',
       ];
     }
+    if (Platform.isAndroid) {
+      // Roboto since 4.0; the static cut first, because the variable one
+      // needs an instance chosen to read as Regular.
+      return <String>['Roboto Static', 'Roboto', 'Noto Sans', 'Droid Sans'];
+    }
     return <String>[
       'DejaVu Sans',
       'Liberation Sans',
@@ -881,6 +891,14 @@ final class SystemFonts {
     }
     if (Platform.isMacOS) {
       return <String>['SFNSText.ttf', 'Helvetica.ttf', 'Geneva.ttf'];
+    }
+    if (Platform.isAndroid) {
+      return <String>[
+        'RobotoStatic-Regular.ttf',
+        'Roboto-Regular.ttf',
+        'NotoSans-Regular.ttf',
+        'DroidSans.ttf',
+      ];
     }
     return <String>[
       'DejaVuSans.ttf',

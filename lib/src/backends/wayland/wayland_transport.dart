@@ -97,12 +97,21 @@ final class WaylandSocketTransport
 
   /// Opens [socketPath], or reports exactly what stopped it. Never throws:
   /// a probe walking several backends needs a report from each.
+  ///
+  /// A path starting with `@` is a name in the abstract namespace (Linux and
+  /// Android), where Java's `LocalServerSocket` listens; the Android backend
+  /// reuses this transport for its host socket.
   static WaylandTransportAttempt open({
     required WaylandLibc libc,
     required String socketPath,
   }) {
     final diagnostics = <BackendDiagnostic>[];
-    final encodedPath = socketPath.codeUnits;
+    final bool abstractName = socketPath.startsWith('@');
+    // The abstract namespace spells '@' as a leading NUL, and its address
+    // ends where the name does: no terminator, length = family + bytes.
+    final List<int> encodedPath = abstractName
+        ? <int>[0, ...socketPath.substring(1).codeUnits]
+        : socketPath.codeUnits;
     if (encodedPath.length > sockaddrUnPathCapacity - 1) {
       diagnostics.add(BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
@@ -135,7 +144,8 @@ final class WaylandSocketTransport
     for (var i = 0; i < encodedPath.length; i++) {
       address[2 + i] = encodedPath[i] & 0xff;
     }
-    final connected = libc.connect(fd, address, sockaddrUnSize);
+    final connected = libc.connect(
+        fd, address, abstractName ? 2 + encodedPath.length : sockaddrUnSize);
     final connectErrno = libc.errno;
     libc.free(address);
     if (connected != 0) {
@@ -344,7 +354,15 @@ final class WaylandSocketTransport
   }
 
   @override
-  int receive(WaylandWireDecoder decoder, List<int> receivedFds) {
+  int receive(WaylandWireDecoder decoder, List<int> receivedFds) =>
+      receiveBytes((Uint8List bytes, int length) {
+        decoder.addBytes(bytes, length);
+      }, receivedFds);
+
+  /// [receive] for a protocol that is not Wayland's: each chunk goes to
+  /// [onBytes] as the first `length` bytes of a reused buffer.
+  int receiveBytes(void Function(Uint8List bytes, int length) onBytes,
+      List<int> receivedFds) {
     throwIfDisposed();
     if (_broken) return -1;
     var total = 0;
@@ -376,7 +394,7 @@ final class WaylandSocketTransport
       _collectAncillaryFds(receivedFds);
       final native = _ioBuffer.asTypedList(received);
       _receiveCopy.setRange(0, received, native);
-      decoder.addBytes(_receiveCopy, received);
+      onBytes(_receiveCopy, received);
       total += received;
       if (received < _ioBufferSize) return total;
     }

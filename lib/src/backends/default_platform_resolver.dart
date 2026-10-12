@@ -32,6 +32,8 @@ import '../rendering/gpu/vulkan/vulkan_surface_descriptor.dart';
 import '../rendering/mesh/mesh_scene.dart';
 import '../rendering/render_policy.dart';
 import '../rendering/renderer.dart';
+import 'android/android_backend.dart';
+import 'android/android_window.dart';
 import 'headless/headless_backend.dart';
 import 'macos/macos.dart';
 import 'macos/macos_cpu_window.dart';
@@ -121,6 +123,15 @@ final class PlatformBackendResolver {
           ),
         ),
       ],
+      // The activity of the dart_ui Android host, which started this process
+      // and passes its socket in the environment.
+      if (platform == 'android')
+        WindowingBackendEntry(
+          name: 'android',
+          create: options.environment.isEmpty
+              ? AndroidWindowingBackend.new
+              : () => AndroidWindowingBackend(environment: options.environment),
+        ),
       WindowingBackendEntry(
         name: 'headless',
         create: () => HeadlessWindowingBackend(
@@ -225,6 +236,7 @@ final class PlatformBackendResolver {
         _macosCpu(),
         _macosInProcessCpu(),
       ],
+      if (platform == 'android') _androidCpu(),
       PresentationPathEntry.cpuRenderer(
         backend: const CpuRendererBackend(),
         name: 'headless-cpu',
@@ -862,6 +874,22 @@ final class PlatformBackendResolver {
   /// The CPU path of the in-process strategies: the window owns its
   /// framebuffer and shows it as an image. Compatible only with them, so the
   /// native host never lands here and they never land on Metal or IOSurface.
+  static PresentationPathEntry _androidCpu() =>
+      PresentationPathEntry.retainedCpu(
+        name: androidCpuSurfaceKind,
+        deviceDescription: 'RGBA memfd the host copies to its SurfaceView',
+        compatibleWindowingBackends: const <String>{'android'},
+        create: (NativeWindow window) {
+          final RetainedCpuPresenter presenter =
+              RetainedCpuPresenter(window as AndroidWindow);
+          return (
+            present: presenter.renderDisplayList,
+            presentNow: presenter.renderDisplayListNow,
+            release: presenter.dispose,
+          );
+        },
+      );
+
   static PresentationPathEntry _macosInProcessCpu() =>
       PresentationPathEntry.retainedCpu(
         name: 'macos-cpu',

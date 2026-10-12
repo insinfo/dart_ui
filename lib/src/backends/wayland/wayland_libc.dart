@@ -235,13 +235,19 @@ final class WaylandLibc {
   late final _MemfdCreateDart _memfdCreate = _library
       .lookupFunction<_MemfdCreateNative, _MemfdCreateDart>('memfd_create');
 
-  late final _ErrnoLocationDart? _errnoLocation =
-      _library.providesSymbol('__errno_location')
-          ? _library.lookupFunction<_ErrnoLocationNative, _ErrnoLocationDart>(
-              '__errno_location')
-          : null;
+  /// glibc and musl export `__errno_location`; Android's bionic exports the
+  /// same function as `__errno`, and the Android backend uses this libc.
+  late final _ErrnoLocationDart? _errnoLocation = () {
+    for (final String name in const <String>['__errno_location', '__errno']) {
+      if (_library.providesSymbol(name)) {
+        return _library
+            .lookupFunction<_ErrnoLocationNative, _ErrnoLocationDart>(name);
+      }
+    }
+    return null;
+  }();
 
-  /// The current `errno`, or -1 when the host hides `__errno_location`.
+  /// The current `errno`, or -1 when the host hides where it lives.
   /// Read immediately after the failing call; any libc call may overwrite it.
   int get errno {
     final location = _errnoLocation;
