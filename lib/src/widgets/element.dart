@@ -51,6 +51,32 @@ final class BuildOwner {
   /// an event and before traversal claims it.
   ShortcutDispatcher? shortcuts;
 
+  final List<void Function(KeyEvent event)> _keyObservers =
+      <void Function(KeyEvent event)>[];
+  final List<bool Function(KeyEvent event)> _windowKeyHandlers =
+      <bool Function(KeyEvent event)>[];
+
+  /// Sees every key event in this window before anything else does, and
+  /// cannot consume it.
+  ///
+  /// For state that depends on *all* keys, whoever ends up with them: a menu
+  /// bar's "Alt was pressed and released with nothing in between" is broken by
+  /// an Alt+F the focused field consumed, and only an observer sees that F.
+  void addKeyObserver(void Function(KeyEvent event) observer) =>
+      _keyObservers.add(observer);
+
+  void removeKeyObserver(void Function(KeyEvent event) observer) =>
+      _keyObservers.remove(observer);
+
+  /// A handler for keys that belong to the window rather than to a control -
+  /// a menu bar's F10 - offered what the focused control and the shortcut map
+  /// both declined, before focus traversal.
+  void addWindowKeyHandler(bool Function(KeyEvent event) handler) =>
+      _windowKeyHandlers.add(handler);
+
+  void removeWindowKeyHandler(bool Function(KeyEvent event) handler) =>
+      _windowKeyHandlers.remove(handler);
+
   /// Where build failures go.
   ///
   /// Containment, not suppression: a widget whose build throws is left out of
@@ -153,14 +179,24 @@ final class BuildOwner {
   ///   1. the focused control, which may consume the key entirely;
   ///   2. the application's shortcut map, so Ctrl+S works from inside a text
   ///      field that did not want the key;
-  ///   3. focus traversal, so Tab moves even when nothing claimed it.
+  ///   3. the window's own keys ([addWindowKeyHandler]) - F10 for the menu
+  ///      bar;
+  ///   4. focus traversal, so Tab moves even when nothing claimed it.
+  ///
+  /// [addKeyObserver]s see the event before step 1 and cannot stop it.
   ///
   /// Returns false when nothing handled the event, which a backend may use to
   /// let the platform have it - a menu mnemonic, a window accelerator.
   bool dispatchKeyEvent(KeyEvent event) {
     _throwIfDisposed();
+    for (final observer in List.of(_keyObservers)) {
+      observer(event);
+    }
     if (_keyboardRouter.route(event)) return true;
     if (shortcuts?.dispatch(event) ?? false) return true;
+    for (final handler in List.of(_windowKeyHandlers)) {
+      if (handler(event)) return true;
+    }
     return focusManager.handleTraversalKey(event);
   }
 

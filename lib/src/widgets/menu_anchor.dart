@@ -51,6 +51,7 @@ import '../geometry/size.dart';
 import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
+import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
 import '../semantics/semantics.dart';
 import 'basic.dart' show DefaultTextStyle, RenderText, SizedBox;
@@ -638,9 +639,14 @@ final class _MenuPanel extends StatefulWidget {
     this.onDismiss,
     this.onArrowLeftEscape,
     this.onArrowRightEscape,
+    this.handle,
   });
 
   final List<Widget> children;
+
+  /// Filled with the panel's render object, for a [MenuBar] that has to
+  /// highlight its first menu when F10 gives it the keyboard.
+  final _PanelHandle? handle;
 
   /// Left to right rather than top to bottom. A menu bar's strip.
   final bool horizontal;
@@ -693,6 +699,7 @@ final class _MenuPanelState extends State<_MenuPanel> {
   Widget build(BuildContext context) {
     _attachFocus(context);
     return _MenuPanelRenderWidget(
+      handle: widget.handle,
       theme: Theme.of(context),
       focusNode: _node,
       horizontal: widget.horizontal,
@@ -755,6 +762,7 @@ final class _MenuPanelState extends State<_MenuPanel> {
 
 final class _MenuPanelRenderWidget extends MultiChildRenderObjectWidget {
   const _MenuPanelRenderWidget({
+    this.handle,
     required this.theme,
     required this.focusNode,
     required this.horizontal,
@@ -765,6 +773,7 @@ final class _MenuPanelRenderWidget extends MultiChildRenderObjectWidget {
     required super.children,
   });
 
+  final _PanelHandle? handle;
   final ThemeData theme;
   final FocusNode focusNode;
   final bool horizontal;
@@ -774,15 +783,19 @@ final class _MenuPanelRenderWidget extends MultiChildRenderObjectWidget {
   final void Function()? onArrowRightEscape;
 
   @override
-  RenderMenuPanel createRenderObject(BuildContext context) => RenderMenuPanel(
-        horizontal: horizontal,
-        decorated: decorated,
-      )
-        ..theme = theme
-        ..focusNode = focusNode
-        ..onDismiss = onDismiss
-        ..onArrowLeftEscape = onArrowLeftEscape
-        ..onArrowRightEscape = onArrowRightEscape;
+  RenderMenuPanel createRenderObject(BuildContext context) {
+    final RenderMenuPanel panel = RenderMenuPanel(
+      horizontal: horizontal,
+      decorated: decorated,
+    )
+      ..theme = theme
+      ..focusNode = focusNode
+      ..onDismiss = onDismiss
+      ..onArrowLeftEscape = onArrowLeftEscape
+      ..onArrowRightEscape = onArrowRightEscape;
+    handle?.panel = panel;
+    return panel;
+  }
 
   @override
   void updateRenderObject(
@@ -797,7 +810,13 @@ final class _MenuPanelRenderWidget extends MultiChildRenderObjectWidget {
       ..onDismiss = onDismiss
       ..onArrowLeftEscape = onArrowLeftEscape
       ..onArrowRightEscape = onArrowRightEscape;
+    handle?.panel = object;
   }
+}
+
+/// Where a [MenuBar] finds the render object of its own strip.
+final class _PanelHandle {
+  RenderMenuPanel? panel;
 }
 
 /// The frame, the row layout, and the keyboard for one menu.
@@ -1030,6 +1049,12 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
     if (opensSubmenu) next?.openSubmenu();
     markNeedsPaint();
   }
+
+  /// Highlights the first enabled row, as F10 does to a menu bar.
+  void highlightFirst() => _move(1, from: -1);
+
+  /// Removes the highlight, closing whatever it had open.
+  void clearHighlight() => _setHighlighted(-1, opensSubmenu: false);
 
   // -------------------------------------------------------------------------
   // Keyboard
@@ -2111,10 +2136,12 @@ final class RenderSubmenuButton extends RenderBoxContainer<BoxParentData>
 ///     the dropdown's panel restores focus to whoever held it - which is this
 ///     bar's node, taken when the button was pressed.
 ///
-/// **Alt and F10 do not focus the bar.** They cannot yet: `focus.dart` defines
-/// the virtual-key constants this framework interprets and has no `F10` and no
-/// Alt among them, and inventing values in this file would put a second, private
-/// key table beside the real one.
+/// **F10, and Alt pressed and released on its own, give the bar the
+/// keyboard** with its first menu highlighted, from wherever focus was; the
+/// same key, or Escape, gives the keyboard back. Down or Enter then drops the
+/// menu. The bar listens at the window ([BuildOwner.addWindowKeyHandler]), so
+/// this works with focus anywhere. Not on a Mac: the application's menus live
+/// in the system menu bar there, and Option alone is half of typing an accent.
 final class MenuBar extends StatefulWidget {
   const MenuBar({super.key, required this.children});
 
@@ -2148,26 +2175,125 @@ final class _MenuBarState extends State<MenuBar> {
   /// why this is a live probe rather than a stored value.
   final MenuAnchorBox _barBox = MenuAnchorBox();
 
+  final _PanelHandle _panel = _PanelHandle();
+
+  /// The window whose keys this bar listens to, once it has one.
+  BuildOwner? _keysOwner;
+
+  /// Whether every key since the last Alt press was that Alt - the only
+  /// case in which releasing it means "the menu bar".
+  bool _altAlone = false;
+
+  /// Where the keyboard goes back to when the bar lets go of it.
+  FocusNode? _returnTo;
+
   @override
   void dispose() {
+    _keysOwner
+      ?..removeKeyObserver(_observeKey)
+      ..removeWindowKeyHandler(_handleWindowKey);
+    _keysOwner = null;
     _focusNode.dispose();
     super.dispose();
   }
 
+  void _listenForKeys(BuildContext context) {
+    if (_keysOwner != null) return;
+    final BuildOwner? owner = context is Element ? context.owner : null;
+    if (owner == null) return;
+    _keysOwner = owner
+      ..addKeyObserver(_observeKey)
+      ..addWindowKeyHandler(_handleWindowKey);
+  }
+
+  static bool _onlyAlt(KeyEvent event) =>
+      event.modifiers.every((KeyModifier modifier) =>
+          modifier == KeyModifier.alt ||
+          modifier == KeyModifier.capsLock ||
+          modifier == KeyModifier.numLock);
+
+  void _observeKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return;
+    _altAlone = event.logicalKey == _logicalKeyAlt && _onlyAlt(event);
+  }
+
+  bool _handleWindowKey(KeyEvent event) {
+    if (!mounted) return false;
+    if (platformEditingConvention == EditingConvention.mac) return false;
+    if (event is KeyDownEvent &&
+        event.logicalKey == _logicalKeyF10 &&
+        event.modifiers.every((KeyModifier modifier) =>
+            modifier == KeyModifier.capsLock ||
+            modifier == KeyModifier.numLock)) {
+      _toggleKeyboard();
+      return true;
+    }
+    // Escape on the bar itself, with no menu open: the panel has no dismiss
+    // of its own - a bar is window chrome, not a popup - so the key falls
+    // through to here. With a menu open, that menu's panel took it first.
+    if (event is KeyDownEvent &&
+        event.logicalKey == logicalKeyEscape &&
+        _focusNode.hasPrimaryFocus) {
+      _leaveKeyboard();
+      return true;
+    }
+    if (event is KeyUpEvent &&
+        event.logicalKey == _logicalKeyAlt &&
+        _altAlone) {
+      _altAlone = false;
+      _toggleKeyboard();
+      return true;
+    }
+    return false;
+  }
+
+  void _toggleKeyboard() {
+    if (_focusNode.hasPrimaryFocus) {
+      _leaveKeyboard();
+      return;
+    }
+    _returnTo = _keysOwner?.focusManager.primaryFocus;
+    _focusNode.requestFocus();
+    _panel.panel?.highlightFirst();
+  }
+
+  void _leaveKeyboard() {
+    _panel.panel?.clearHighlight();
+    final FocusNode? returnTo = _returnTo;
+    _returnTo = null;
+    if (returnTo != null &&
+        !identical(returnTo, _focusNode) &&
+        returnTo.parent != null &&
+        returnTo.canRequestFocus) {
+      returnTo.requestFocus(FocusChangeReason.restoration);
+    } else {
+      _focusNode.unfocus();
+    }
+  }
+
   @override
-  Widget build(BuildContext context) => _MenuScope(
-        holder: _holder,
-        horizontal: true,
-        passThrough: () => _barBox.globalRect,
-        child: _AnchorProbe(
-          anchor: _barBox,
-          child: _MenuPanel(
-            horizontal: true,
-            decorated: false,
-            autofocus: false,
-            focusNode: _focusNode,
-            children: widget.children,
-          ),
+  Widget build(BuildContext context) {
+    _listenForKeys(context);
+    return _MenuScope(
+      holder: _holder,
+      horizontal: true,
+      passThrough: () => _barBox.globalRect,
+      child: _AnchorProbe(
+        anchor: _barBox,
+        child: _MenuPanel(
+          horizontal: true,
+          decorated: false,
+          autofocus: false,
+          focusNode: _focusNode,
+          handle: _panel,
+          children: widget.children,
         ),
-      );
+      ),
+    );
+  }
 }
+
+/// `VK_MENU` and `VK_F10`, the logical keys every backend reports for Alt
+/// (Option on a Mac) and F10.
+const int _logicalKeyAlt = 0x12;
+const int _logicalKeyF10 = 0x79;

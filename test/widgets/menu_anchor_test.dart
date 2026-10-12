@@ -23,6 +23,7 @@ import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/layout/box_constraints.dart';
 import 'package:dart_ui/src/layout/pipeline.dart';
 import 'package:dart_ui/src/layout/render_box.dart';
+import 'package:dart_ui/src/platform/editing_convention.dart';
 import 'package:dart_ui/src/platform/input_events.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:dart_ui/src/rendering/text/font_registry.dart';
@@ -521,6 +522,93 @@ void main() {
     });
   });
 
+  group('MenuBar from the keyboard', () {
+    // The PC convention, pinned: these are Windows and Linux keys, and the
+    // run may be on a Mac. The Mac case pins its own below.
+    setUp(() => debugEditingConventionOverride = EditingConvention.pc);
+    tearDown(() => debugEditingConventionOverride = null);
+
+    const int alt = 0x12;
+    const int f10 = 0x79;
+    const int keyF = 0x46;
+
+    /// The Behind button, focused the way a user would leave it focused.
+    FocusNode? focusBehind(_BarHarness harness) {
+      harness
+        ..click(harness.centreOf(harness.buttonLabelled('Behind')))
+        ..frame();
+      return harness.owner.focusManager.primaryFocus;
+    }
+
+    test('F10 gives the bar the keyboard with File highlighted, and back', () {
+      final _BarHarness harness = _BarHarness()..frame();
+      final FocusNode? behind = focusBehind(harness);
+      expect(behind, isNotNull);
+
+      harness.pressKey(f10);
+      expect(harness.owner.focusManager.primaryFocus?.debugLabel, 'MenuBar');
+      expect(harness.barButton('File').isHighlighted, isTrue);
+      expect(harness.host.openCount, 0, reason: 'F10 highlights, Down opens');
+
+      harness.pressKey(logicalKeyArrowDown);
+      expect(harness.openMenuLabels, <String>['New', 'Open']);
+
+      // Escape closes the menu onto the bar; a second one leaves the bar.
+      harness.pressKey(logicalKeyEscape);
+      expect(harness.host.openCount, 0);
+      expect(harness.owner.focusManager.primaryFocus?.debugLabel, 'MenuBar');
+      harness.pressKey(logicalKeyEscape);
+      expect(harness.owner.focusManager.primaryFocus, same(behind));
+      expect(harness.barButton('File').isHighlighted, isFalse);
+
+      // And F10 again is the same round trip, toggled by the same key.
+      harness
+        ..pressKey(f10)
+        ..pressKey(f10);
+      expect(harness.owner.focusManager.primaryFocus, same(behind));
+      harness.dispose();
+    });
+
+    test('Alt on its own toggles the bar; Alt+F is not Alt on its own', () {
+      final _BarHarness harness = _BarHarness()..frame();
+      final FocusNode? behind = focusBehind(harness);
+
+      harness
+        ..keyDown(alt, alt: true)
+        ..keyDown(keyF, alt: true)
+        ..keyUp(keyF, alt: true)
+        ..keyUp(alt);
+      expect(harness.owner.focusManager.primaryFocus, same(behind));
+
+      harness
+        ..keyDown(alt, alt: true)
+        ..keyDown(alt, alt: true) // auto-repeat while held
+        ..keyUp(alt);
+      expect(harness.owner.focusManager.primaryFocus?.debugLabel, 'MenuBar');
+      expect(harness.barButton('File').isHighlighted, isTrue);
+
+      harness
+        ..keyDown(alt, alt: true)
+        ..keyUp(alt);
+      expect(harness.owner.focusManager.primaryFocus, same(behind));
+      harness.dispose();
+    });
+
+    test('on a Mac neither key touches the bar', () {
+      debugEditingConventionOverride = EditingConvention.mac;
+      final _BarHarness harness = _BarHarness()..frame();
+      final FocusNode? behind = focusBehind(harness);
+
+      harness
+        ..pressKey(f10)
+        ..keyDown(alt, alt: true)
+        ..keyUp(alt);
+      expect(harness.owner.focusManager.primaryFocus, same(behind));
+      expect(harness.barButton('File').isHighlighted, isFalse);
+      harness.dispose();
+    });
+  });
+
   group('semantics of an open menu', () {
     test(
         'the panel is a modal menu that can be dismissed, and dismissing it '
@@ -786,6 +874,30 @@ abstract class _Harness {
       timestamp: Duration.zero,
       physicalKey: logicalKey,
       logicalKey: logicalKey,
+    ));
+    frame();
+  }
+
+  void keyDown(int logicalKey, {bool alt = false}) {
+    owner.dispatchKeyEvent(KeyDownEvent(
+      windowId: const NativeWindowId(1),
+      generation: 1,
+      timestamp: Duration.zero,
+      physicalKey: logicalKey,
+      logicalKey: logicalKey,
+      modifiers: <KeyModifier>{if (alt) KeyModifier.alt},
+    ));
+    frame();
+  }
+
+  void keyUp(int logicalKey, {bool alt = false}) {
+    owner.dispatchKeyEvent(KeyUpEvent(
+      windowId: const NativeWindowId(1),
+      generation: 1,
+      timestamp: Duration.zero,
+      physicalKey: logicalKey,
+      logicalKey: logicalKey,
+      modifiers: <KeyModifier>{if (alt) KeyModifier.alt},
     ));
     frame();
   }

@@ -4933,7 +4933,8 @@ framework — nenhum hospeda controle nativo — e todos estão exportados por
 - [x] **DropTarget / DragSource** e `DragDropScope`, ligados ao porte de drag-and-drop da §56;
 - [ ] **Ribbon — não existe**;
 - [ ] **ColorPicker — não existe** como controle geral. O que há é `ColorPaletteBar`, uma faixa de amostras fixa do editor vetorial: sem roda HSV, sem espectro, sem entrada hexadecimal;
-- [ ] **MenuBar e StatusBar não existem no framework** — são código de aplicação nos exemplos. `Menu` é menu suspenso, não barra.
+- [x] **MenuBar** existe (`menu_anchor.dart`, API no formato do Flutter, com `SubmenuButton`/`MenuItemButton`): clique abre, passar o mouse troca de menu com um aberto, Esquerda/Direita andam pela barra, Escape devolve o teclado. Desde 12/10/2026, **F10 e Alt sozinho** (apertado e solto sem outra tecla no meio) dão o teclado à barra com o primeiro menu destacado, de onde quer que o foco esteja, e a mesma tecla ou Escape o devolvem — por `BuildOwner.addWindowKeyHandler`/`addKeyObserver`, a etapa da janela entre o mapa de atalhos e a travessia. Desligado na convenção do Mac, onde o menu é o do sistema e Option sozinho é metade de um acento. Testes em `menu_anchor_test.dart` (grupo "MenuBar from the keyboard"). **Sem mnemônicos** (Alt+A abrindo "Arquivo") — os rótulos não têm o caractere sublinhado;
+- [ ] **StatusBar não existe no framework** — é código de aplicação nos exemplos.
 
 Lacunas de comportamento que valem registro, porque cada uma já é bug em algum
 toolkit: o caret **não se move corretamente em texto bidirecional** (salta em
