@@ -2118,6 +2118,10 @@ final class VulkanOffscreenTarget implements RenderTarget {
     _recorder.dispose();
     _images.dispose();
     _device.releaseTexture(_maskTexture);
+    // The glyph atlas texture too: this target created it. Left alive, it was
+    // the VkImage the validation layer found at vkDestroyDevice
+    // (VUID-vkDestroyDevice-device-05137) once the suite ran under lavapipe.
+    _device.releaseTexture(_glyphTexture);
     _destroySurfaceObjects();
   }
 }
@@ -2900,6 +2904,7 @@ final class VulkanWindowTarget implements DisplayListRenderTarget {
     _recorder.dispose();
     _images.dispose();
     _device.releaseTexture(_maskTexture);
+    _device.releaseTexture(_glyphTexture);
     for (final Pointer<VkSemaphore_T> semaphore in _renderFinished) {
       _device.gpu.destroySemaphore(semaphore);
     }
