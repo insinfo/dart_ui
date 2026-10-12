@@ -256,6 +256,7 @@ export 'src/widgets/scrollbar.dart';
 export 'src/widgets/signal_visualization.dart';
 export 'src/widgets/sizing.dart';
 export 'src/widgets/split_view.dart';
+export 'src/widgets/status_bar.dart';
 export 'src/widgets/style.dart';
 export 'src/widgets/svg.dart';
 export 'src/widgets/tabs.dart';

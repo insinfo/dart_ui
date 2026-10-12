@@ -138,6 +138,7 @@ void main() {
           user32.lookupFunction<Int32 Function(IntPtr), int Function(int)>(
               'SetForegroundWindow');
       if (initialize(1, _touchFeedbackNone) == 0) {
+        print('WIN32_TOUCH_INJECTION=SKIP initialize refused');
         markTestSkipped('InitializeTouchInjection refused in this session');
         return;
       }
@@ -171,6 +172,7 @@ void main() {
                 105) &&
             send(_pointerFlagUp, 110, 105);
         if (!sent) {
+          print('WIN32_TOUCH_INJECTION=SKIP inject refused');
           markTestSkipped('InjectTouchInput refused in this session');
           return;
         }
@@ -180,9 +182,13 @@ void main() {
       await _pump(backend, const Duration(milliseconds: 500));
 
       if (events.isEmpty) {
+        print('WIN32_TOUCH_INJECTION=SKIP nothing reached the window');
         markTestSkipped('no injected contact reached the window');
         return;
       }
+      // Evidence for the CI log: what a real injected contact turned into.
+      print('WIN32_TOUCH_INJECTION=RAN '
+          '${events.map((PointerEvent e) => '${e.runtimeType}/${e.kind.name}').join(',')}');
       expect(events.whereType<PointerDownEvent>(), hasLength(1),
           reason: 'one press: the touch, not also a synthesized click');
       expect(
