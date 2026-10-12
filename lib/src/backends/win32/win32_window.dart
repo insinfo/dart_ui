@@ -2,19 +2,14 @@
 ///
 /// ## What this window does not do yet
 ///
-/// Deferred, and documented here because this is where a caller meets them:
+/// Documented here because this is where a caller meets them. IME
+/// (`win32_ime.dart`), clipboard, drag-and-drop in both directions,
+/// UI Automation (`uia/`), the wheel and touch and pen through `WM_POINTER*`
+/// all exist; what is still missing is narrower:
 ///
-///   * **Wheel and extended pointer input.** Core mouse movement/buttons and
-///     keyboard transitions are normalized into the common input contract.
-///     Wheel, high-resolution pointer data and device-specific state remain
-///     deferred until their common contracts exist.
-///   * **IME** (roadmap 13.7). WM_IME_* is unhandled, so composition falls back
-///     to whatever `DefWindowProcW` does. Text input in CJK and with dead keys
-///     will be wrong until the text-composition contract exists.
-///   * **Clipboard** (13.8), **drag-and-drop** (13.9) and **accessibility**
-///     (13.16). None of them are claimed in the probe's capabilities, so a
-///     caller asking `probe().supports(Capability.clipboardText)` gets a
-///     truthful no rather than a runtime surprise.
+///   * **Pen and touch detail.** A contact carries its position and nothing
+///     else: no pressure, tilt, contact area or coalesced history
+///     (`GetPointerInfo`/`GetPointerPenInfo`).
 ///   * **Fullscreen** is the borderless-window-over-the-monitor of
 ///     [Win32Window.requestState], not exclusive mode: no display mode change,
 ///     and the taskbar is covered only because the window is the size of the
