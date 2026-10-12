@@ -152,6 +152,26 @@ jobs:
           fi
           echo 'METAL_POOL_LEAKS=0'
 
+      # Apple's API validation, in the mode that aborts the process on the
+      # first error rather than logging it: the Metal suite - parity with the
+      # CPU, 3D into a real IOSurface, video, gradients - and the real-window
+      # probe. Run clean on a Mac mini M4 on 12/10/2026 (131 tests, the probe,
+      # and 300 frames of the Kart Racer, with GPU shader validation as well);
+      # here it keeps the default macOS path honest on every change to it.
+      - name: Metal suite and window under API validation
+        shell: bash
+        env:
+          MTL_DEBUG_LAYER: '1'
+          MTL_DEBUG_LAYER_ERROR_MODE: assert
+          DART_UI_MACOS_HOST: >-
+            ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+        run: |
+          set -o pipefail
+          dart test test/rendering/gpu/metal --concurrency=1
+          dart run tool/metal_window_present_probe.dart 2>&1 \
+            | tee build/metal-window-validation.log
+          grep -q '^METAL_WINDOW_PRESENT=PASS$' build/metal-window-validation.log
+
       # Printed, never gated. These three lines are the whole reason the
       # workflow exists, and reading them out of the step summary beats
       # scrolling a log.

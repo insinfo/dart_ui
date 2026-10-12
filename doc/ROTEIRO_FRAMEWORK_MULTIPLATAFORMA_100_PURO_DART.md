@@ -3773,7 +3773,11 @@ com número de run em cada uma.
 - [ ] perda/indisponibilidade tratada;
 - [ ] fallback CPU;
 - [~] Intel e Apple Silicon — só arm64 no CI;
-- [ ] validação sem erros.
+- [x] validação sem erros — a suíte Metal (131 testes), a sonda de janela e
+  300 quadros do Kart Racer rodaram limpos sob `MTL_DEBUG_LAYER=1` e
+  `MTL_SHADER_VALIDATION=1` em modo `assert` num Mac mini M4 em 12/10/2026, e
+  o workflow `metal_present_probe.yml` repete a suíte e a sonda sob a
+  validação de API a cada mudança no caminho.
 
 ### E a lacuna que o roteiro não tinha como prever
 
