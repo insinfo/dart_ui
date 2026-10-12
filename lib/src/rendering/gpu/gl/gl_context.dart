@@ -1327,8 +1327,7 @@ final class _EglContext implements GlContext, GlSwapChain {
 abstract final class _EglDisplayUses {
   static final Map<int, int> _uses = <int, int>{};
 
-  static void retain(int display) =>
-      _uses[display] = (_uses[display] ?? 0) + 1;
+  static void retain(int display) => _uses[display] = (_uses[display] ?? 0) + 1;
 
   /// True when [display] has no context left and may be terminated.
   static bool release(int display) {
