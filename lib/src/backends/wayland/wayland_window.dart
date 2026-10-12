@@ -23,10 +23,12 @@ import 'dart:async';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../foundation/value_notifier.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
 import '../../platform/compose_sequences.dart';
+import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
@@ -36,7 +38,9 @@ import 'wayland_events.dart';
 import 'wayland_positioner.dart';
 import 'wayland_shm.dart';
 
-final class WaylandWindow with DisposableMixin implements NativeWindow {
+final class WaylandWindow
+    with DisposableMixin
+    implements NativeWindow, ClientDecoratedWindow {
   WaylandWindow._({
     required WaylandWindowClient client,
     required this.toplevelIds,
@@ -47,7 +51,10 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
     required void Function(WaylandWindow window) onClosed,
     this.isPopup = false,
     this.popupDepth = 0,
+    this.decorated = false,
+    String title = '',
   })  : _client = client,
+        _title = title,
         _cpuClient =
             client is WaylandCpuClient ? client as WaylandCpuClient : null,
         _id = id,
@@ -211,6 +218,8 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
       logicalHeight: height,
       visible: options.visible,
       onClosed: onClosed,
+      decorated: options.decorated,
+      title: options.title,
     );
   }
 
@@ -372,7 +381,106 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
     // xdg_popup has no title: the request would be an error on the role
     // object, and a menu has nowhere to show one anyway.
     if (isPopup) return;
+    _title = value;
     _client.setToplevelTitle(toplevelIds, value);
+  }
+
+  // --- client-side decorations ------------------------------------------------
+
+  /// Whether the application asked for a decorated window.
+  final bool decorated;
+
+  String _title;
+
+  @override
+  String get title => _title;
+
+  /// Whether the compositor has answered the decoration request yet.
+  ///
+  /// Until it does, a compositor that speaks xdg-decoration is assumed to
+  /// grant server-side mode - KDE and wlroots do - so a frame drawn by the
+  /// application does not flash in and back out on the first configure.
+  bool _decorationKnown = false;
+
+  bool get _wantsClientDecorations {
+    if (!decorated || isPopup) return false;
+    if (_client.supportsServerSideDecorations && !_decorationKnown) {
+      return false;
+    }
+    return !_protocol.serverSideDecorated;
+  }
+
+  @override
+  late final ValueNotifier<bool> clientDecorations =
+      ValueNotifier<bool>(_wantsClientDecorations);
+
+  @override
+  bool beginMove() {
+    if (isDisposed || isPopup) return false;
+    if (!_client.moveToplevel(toplevelIds)) return false;
+    _cancelImplicitGrab();
+    return true;
+  }
+
+  @override
+  bool beginResize(WindowResizeEdge edge) {
+    if (isDisposed || isPopup) return false;
+    if (!_client.resizeToplevel(toplevelIds, _xdgEdge(edge))) return false;
+    _cancelImplicitGrab();
+    return true;
+  }
+
+  /// Ends the press that started a compositor move or resize.
+  ///
+  /// The compositor takes the pointer for the whole interaction and the
+  /// button release goes to it, not to this client. Without a cancel the
+  /// gesture that asked for the move would stay pressed until the next
+  /// click, and that click would arrive as a second press.
+  void _cancelImplicitGrab() {
+    _emit(PointerCancelEvent(
+      windowId: id,
+      generation: generation,
+      timestamp: _lastPointerTimestamp,
+      pointerId: 0,
+      kind: PointerKind.mouse,
+      logicalPosition: _lastPointerPosition,
+    ));
+  }
+
+  Offset _lastPointerPosition = Offset.zero;
+  Duration _lastPointerTimestamp = Duration.zero;
+
+  /// xdg-shell's `xdg_toplevel.resize_edge` values.
+  static int _xdgEdge(WindowResizeEdge edge) => switch (edge) {
+        WindowResizeEdge.top => 1,
+        WindowResizeEdge.bottom => 2,
+        WindowResizeEdge.left => 4,
+        WindowResizeEdge.topLeft => 5,
+        WindowResizeEdge.bottomLeft => 6,
+        WindowResizeEdge.right => 8,
+        WindowResizeEdge.topRight => 9,
+        WindowResizeEdge.bottomRight => 10,
+      };
+
+  @override
+  void minimize() {
+    if (isDisposed || isPopup) return;
+    _client.minimizeToplevel(toplevelIds);
+  }
+
+  @override
+  void setMaximized(bool maximized) {
+    if (isDisposed || isPopup) return;
+    _client.setToplevelMaximized(toplevelIds, maximized);
+  }
+
+  @override
+  bool get isMaximized => _protocol.maximized;
+
+  @override
+  void requestClose() {
+    if (isDisposed) return;
+    _emit(WindowCloseRequestedEvent(windowId: id, generation: generation));
   }
 
   @override
@@ -518,6 +626,10 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
       windowId: id,
       generation: generation,
     );
+    if (pointerEvent is PointerEvent) {
+      _lastPointerPosition = pointerEvent.logicalPosition;
+      _lastPointerTimestamp = pointerEvent.timestamp;
+    }
     if (pointerEvent != null) _emit(pointerEvent);
     if (raw.type == WaylandRawEventType.keyboardKey) {
       WaylandEventTranslator.translateKey(
@@ -538,6 +650,10 @@ final class WaylandWindow with DisposableMixin implements NativeWindow {
   /// each kind.
   void flushPendingEvents() {
     if (isDisposed || _pending.isEmpty) return;
+    if (_pending.decorationChanged) {
+      _decorationKnown = true;
+      clientDecorations.value = _wantsClientDecorations;
+    }
     if (_pending.scaleDirty) {
       final scale = _client.bufferScaleHint;
       if (scale != _protocol.bufferScale) {

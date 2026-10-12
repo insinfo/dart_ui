@@ -9,6 +9,7 @@ library;
 
 import '../foundation/diagnostics.dart';
 import '../foundation/lifecycle.dart';
+import '../foundation/value_notifier.dart';
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
@@ -264,6 +265,57 @@ abstract interface class EnableableWindow {
   bool get isEnabled;
 
   void setEnabled(bool value);
+}
+
+/// Which edge or corner an interactive resize is dragged from.
+enum WindowResizeEdge {
+  top,
+  bottom,
+  left,
+  right,
+  topLeft,
+  topRight,
+  bottomLeft,
+  bottomRight,
+}
+
+/// A window whose title bar and borders the application may have to draw,
+/// and which the windowing system still moves and resizes.
+///
+/// The Wayland case: a compositor without `zxdg_decoration_manager_v1` - GNOME,
+/// Weston - draws no frame at all, so a window that is not decorated by the
+/// application has no title, no close button and no way to be moved. The
+/// framework answers by drawing one (`ClientDecorationFrame`) and handing the
+/// gestures back here, because only the compositor can move a window: the
+/// client asks, quoting the pointer press that started the drag.
+///
+/// A capability, tested for with a pattern, for the reason
+/// [ActivatableWindow] gives.
+abstract interface class ClientDecoratedWindow {
+  /// Whether the application must draw this window's frame now. It can change
+  /// after the window opens - a compositor answers the decoration request
+  /// asynchronously - which is why it is a notifier and not a getter.
+  ValueNotifier<bool> get clientDecorations;
+
+  /// The window's title, for the frame to show.
+  String get title;
+
+  /// Starts the compositor's interactive move from the latest pointer press.
+  /// False when it cannot: there was no recent press to quote.
+  bool beginMove();
+
+  /// Starts an interactive resize from [edge], as [beginMove] does.
+  bool beginResize(WindowResizeEdge edge);
+
+  void minimize();
+
+  void setMaximized(bool maximized);
+
+  bool get isMaximized;
+
+  /// What the close button of a frame does: the same request the window
+  /// manager's close button sends, which the application may refuse.
+  void requestClose();
 }
 
 /// A window whose operating-system handle can be passed to native UI.

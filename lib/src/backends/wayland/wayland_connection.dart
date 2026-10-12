@@ -57,6 +57,19 @@ abstract interface class WaylandWindowClient
   WaylandToplevelIds createToplevel(WaylandToplevelRequest request);
   void destroyToplevel(WaylandToplevelIds ids);
   void setToplevelTitle(WaylandToplevelIds ids, String title);
+
+  /// `xdg_toplevel.move` from the latest pointer press. False, sending
+  /// nothing, when there is no seat or no press to quote: a request with a
+  /// stale serial is ignored by a polite compositor and a protocol error to a
+  /// strict one.
+  bool moveToplevel(WaylandToplevelIds ids);
+
+  /// `xdg_toplevel.resize` with xdg-shell's edge bits, as [moveToplevel].
+  bool resizeToplevel(WaylandToplevelIds ids, int edges);
+
+  void setToplevelMaximized(WaylandToplevelIds ids, bool maximized);
+
+  void minimizeToplevel(WaylandToplevelIds ids);
   void ackConfigure(WaylandToplevelIds ids, int serial);
   void hideToplevel(WaylandToplevelIds ids);
 
@@ -1845,6 +1858,50 @@ final class WaylandConnection
     _writer.putUint(grab.serial);
     _queueMessage();
     return true;
+  }
+
+  @override
+  bool moveToplevel(WaylandToplevelIds ids) {
+    if (isDisposed || _seatId == 0 || _lastInputSerial == 0) return false;
+    _writer.begin(ids.toplevelId, xdgToplevelRequestMove);
+    _writer.putObject(_seatId);
+    _writer.putUint(_lastInputSerial);
+    _queueMessage();
+    flush();
+    return true;
+  }
+
+  @override
+  bool resizeToplevel(WaylandToplevelIds ids, int edges) {
+    if (isDisposed || _seatId == 0 || _lastInputSerial == 0) return false;
+    _writer.begin(ids.toplevelId, xdgToplevelRequestResize);
+    _writer.putObject(_seatId);
+    _writer.putUint(_lastInputSerial);
+    _writer.putUint(edges);
+    _queueMessage();
+    flush();
+    return true;
+  }
+
+  @override
+  void setToplevelMaximized(WaylandToplevelIds ids, bool maximized) {
+    if (isDisposed) return;
+    _writer.begin(
+      ids.toplevelId,
+      maximized
+          ? xdgToplevelRequestSetMaximized
+          : xdgToplevelRequestUnsetMaximized,
+    );
+    _queueMessage();
+    flush();
+  }
+
+  @override
+  void minimizeToplevel(WaylandToplevelIds ids) {
+    if (isDisposed) return;
+    _writer.begin(ids.toplevelId, xdgToplevelRequestSetMinimized);
+    _queueMessage();
+    flush();
   }
 
   @override

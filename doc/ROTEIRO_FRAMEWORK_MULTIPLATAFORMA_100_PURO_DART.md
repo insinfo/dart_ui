@@ -2657,14 +2657,15 @@ estavam escritas. Elas foram corrigidas abaixo; o que segue é o estado.
 - **drag-and-drop nos dois papéis**, com versão 3 gateada;
 - **`text-input-v3`** com a ordem de aplicação obrigatória do protocolo e o
   gate do `done` por contagem de commits;
-- **xdg-decoration** negociada — e nada desenha decoração própria se o
-  compositor recusar.
+- **xdg-decoration** negociada — e, se o compositor recusar, o
+  `ClientDecorationFrame` desenha a barra (desde 12/10/2026).
 
 **Não existe, e é o que decide se este backend serve:** GPU de qualquer espécie
 (sem EGL, sem `linux-dmabuf`, sem Vulkan), touch, escala fracionária, seleção
-primária, ícone de arraste, ação `link`, movimento/redimensionamento
-interativo, `set_maximized`/`set_fullscreen`/`set_minimized`, posição de
-janela, e CSD. Ver §16.14 e §68.
+primária, ícone de arraste, ação `link`, `set_fullscreen` e posição de
+janela. Ver §16.14 e §68. Movimento/redimensionamento interativo,
+`set_maximized`/`set_minimized` e CSD existem desde 12/10/2026 (item **CSD**
+abaixo).
 
 **Falou com um compositor de verdade em 26/08/2026**, e a evidência está na
 §68.1. Até essa data nenhuma linha tinha falado. As 14 suítes (6.709 linhas)
@@ -2990,7 +2991,7 @@ Revisto em 2026-08-23 contra `lib/src/backends/wayland/`.
 - [ ] **GNOME/KDE/wlroots — nenhum deles**; o único compositor de verdade que já rodou este backend é o **Weston** do job `wayland` do `ci.yml`, desde 26/08/2026;
 - [~] protocolo sem deadlock — provado contra o compositor falso, incluindo o curto-circuito de clipboard que evitaria travar o isolate;
 - [x] buffers sem use-after-release — o release limpa `busy`, a destruição é adiada, e a exaustão do swapchain reusa um buffer ocupado **contando** em `busyReuseCount` em vez de em silêncio;
-- [ ] **CSD** (novo item): quando o compositor recusa decoração de servidor — o caso do GNOME — **ninguém desenha uma barra de título**. `hasServerSideDecorations` não tem um único consumidor em `lib/`.
+- [x] **CSD** (12/10/2026): quando o compositor recusa decoração de servidor — o caso do GNOME e do Weston — o framework desenha a própria barra. `WaylandWindow` implementa `ClientDecoratedWindow` (`native_window.dart`): `clientDecorations` vira verdadeiro quando não há `zxdg_decoration_manager_v1` ou quando o compositor responde `client_side`; `beginMove`/`beginResize` mandam `xdg_toplevel.move`/`resize` com o serial do último clique e emitem um `PointerCancelEvent`, porque o soltar do botão vai para o compositor e nunca chega ao cliente; `setMaximized`/`minimize` usam `set_maximized`/`unset_maximized`/`set_minimized`. O `ClientDecorationFrame` (`widgets/client_decoration.dart`) envolve a raiz de todo `ApplicationWindow` cuja janela é `ClientDecoratedWindow`: barra de 32 px com título, minimizar, maximizar/restaurar e fechar (que pede o fechamento como o compositor pediria), arraste da barra move, clique duplo alterna maximizado, e faixas de 6 px nas bordas e cantos redimensionam — some quando maximizada. Testes: `client_decoration_test.dart` e o grupo xdg-decoration de `wayland_backend_test.dart`; o smoke do Weston imprime `WAYLAND_CSD` e `WAYLAND_MAXIMIZE`. **Falta:** sombra e cantos arredondados, `show_window_menu` no clique direito, tint de hover nos botões (o roteador não dá entrada/saída por caixa) e `set_fullscreen`.
 
 ---
 
@@ -8345,7 +8346,7 @@ aplica, **?** não verificado.
 | pen / tablet | não | não | não | não | não | — |
 | popups | sim | sim | sim (`xdg_positioner`) | ? | — | sim |
 | tray / notificações | não | não | não | não | não | — |
-| decoração quando o compositor recusa SSD | — | — | **não desenha CSD** | — | — | — |
+| decoração quando o compositor recusa SSD | — | — | **sim** (`ClientDecorationFrame`: barra, botões, mover e redimensionar pelo compositor; sem sombra) | — | — | — |
 
 A **árvore semântica** do framework existe, é testada e não aparece na tabela
 de propósito: ela é da camada comum, não uma capacidade de backend. O que a
@@ -10860,9 +10861,8 @@ proporção ele aparece nos outros caminhos, não.
   colaram de volta;
 - **Wayland**: sem GPU de qualquer espécie, sem touch, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
-  primária, sem CSD quando o compositor recusa SSD, sem movimento/resize
-  interativo, sem `set_maximized`/`set_fullscreen`/`set_minimized`, sem posição
-  de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de
+  primária, sem `set_fullscreen`, sem posição de janela; a CSD desenhada
+  quando o compositor recusa SSD não tem sombra nem menu de janela; xkb reduzido a **primeiro grupo e dois níveis** com bits de
   modificador **assumidos**; apenas ABIs **LP64**;
 - **macOS**: drag-and-drop **só recebendo** desde 12/10/2026: a view do host
   é o `NSDraggingDestination` e arquivos e texto soltos numa janela chegam aos

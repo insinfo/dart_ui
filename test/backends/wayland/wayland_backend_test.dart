@@ -638,6 +638,109 @@ void main() {
         await createWindow();
         expect(client.decorationRequests, isEmpty);
       });
+
+      test('without the protocol the application draws the frame at once',
+          () async {
+        // GNOME and Weston: no xdg-decoration, so no frame unless the
+        // framework draws one, and nothing will ever say otherwise.
+        client.decorationsSupported = false;
+        final window = await createWindow();
+        expect(window.clientDecorations.value, isTrue);
+        expect(window.title, 'janela');
+        window.setTitle('outra');
+        expect(window.title, 'outra');
+      });
+
+      test('with the protocol it waits for the answer, then follows it',
+          () async {
+        // Assumed server-side until the compositor speaks, so a frame does
+        // not flash in and out on KDE; a client-side answer turns it on.
+        final window = await createWindow();
+        expect(window.clientDecorations.value, isFalse);
+        final List<bool> changes = <bool>[];
+        window.clientDecorations.addListener(changes.add);
+        client.script(WaylandRawEvent()
+          ..type = WaylandRawEventType.decorationConfigure
+          ..surfaceId = window.surfaceId
+          ..state = 1); // client-side
+        backend.pumpEvents();
+        expect(window.clientDecorations.value, isTrue);
+        expect(changes, <bool>[true]);
+      });
+
+      test('the frame moves, resizes, minimises and maximises through xdg',
+          () async {
+        client.decorationsSupported = false;
+        final window = await createWindow();
+        expect(window.beginMove(), isTrue);
+        expect(window.beginResize(WindowResizeEdge.bottomRight), isTrue);
+        expect(window.beginResize(WindowResizeEdge.left), isTrue);
+        window
+          ..minimize()
+          ..setMaximized(true)
+          ..setMaximized(false);
+        expect(client.frameRequests, <String>[
+          'move',
+          'resize 10',
+          'resize 4',
+          'minimize',
+          'maximize',
+          'unmaximize',
+        ]);
+
+        client.hasPressSerial = false;
+        expect(window.beginMove(), isFalse,
+            reason: 'no press to quote: refused here, not by the compositor');
+      });
+
+      test('a compositor move cancels the press that started it', () async {
+        // The release goes to the compositor, never to this client; without
+        // the cancel the title bar's drag would stay pressed.
+        client.decorationsSupported = false;
+        final window = await createWindow();
+        final List<PlatformWindowEvent> events = <PlatformWindowEvent>[];
+        final sub = window.events.listen(events.add);
+        window.handleRawEvent(WaylandRawEvent()
+          ..type = WaylandRawEventType.pointerMotion
+          ..surfaceId = window.surfaceId
+          ..timeMilliseconds = 7
+          ..x = 40
+          ..y = 12);
+        expect(window.beginMove(), isTrue);
+        await Future<void>.delayed(Duration.zero);
+        await sub.cancel();
+        final cancel = events.whereType<PointerCancelEvent>().single;
+        expect(cancel.logicalPosition, const Offset(40, 12));
+        expect(cancel.timestamp, const Duration(milliseconds: 7));
+
+        client.hasPressSerial = false;
+        events.clear();
+        final again = window.events.listen(events.add);
+        expect(window.beginMove(), isFalse);
+        await Future<void>.delayed(Duration.zero);
+        await again.cancel();
+        expect(events.whereType<PointerCancelEvent>(), isEmpty,
+            reason: 'a refused move leaves the press alone');
+      });
+
+      test('the close button asks, as the compositor does', () async {
+        final window = await createWindow();
+        final List<PlatformWindowEvent> events = <PlatformWindowEvent>[];
+        final sub = window.events.listen(events.add);
+        window.requestClose();
+        await Future<void>.delayed(Duration.zero);
+        await sub.cancel();
+        expect(events.whereType<WindowCloseRequestedEvent>(), hasLength(1));
+      });
+
+      test('an undecorated window draws no frame', () async {
+        client.decorationsSupported = false;
+        final window = await backend.createWindow(const WindowOptions(
+          size: Size(200, 100),
+          decorated: false,
+        )) as WaylandWindow;
+        expect(window.clientDecorations.value, isFalse);
+      });
     });
 
     group('frame pacing', () {
@@ -868,6 +971,34 @@ final class _FakeWaylandClient
   void setToplevelTitle(WaylandToplevelIds ids, String title) {
     titles.add((ids: ids, title: title));
   }
+
+  /// What the frame asked the compositor to do, in order.
+  final List<String> frameRequests = <String>[];
+
+  /// Whether a press has happened that a move or resize could quote.
+  bool hasPressSerial = true;
+
+  @override
+  bool moveToplevel(WaylandToplevelIds ids) {
+    if (!hasPressSerial) return false;
+    frameRequests.add('move');
+    return true;
+  }
+
+  @override
+  bool resizeToplevel(WaylandToplevelIds ids, int edges) {
+    if (!hasPressSerial) return false;
+    frameRequests.add('resize $edges');
+    return true;
+  }
+
+  @override
+  void setToplevelMaximized(WaylandToplevelIds ids, bool maximized) =>
+      frameRequests.add(maximized ? 'maximize' : 'unmaximize');
+
+  @override
+  void minimizeToplevel(WaylandToplevelIds ids) =>
+      frameRequests.add('minimize');
 
   @override
   void ackConfigure(WaylandToplevelIds ids, int serial) {

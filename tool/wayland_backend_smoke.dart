@@ -196,6 +196,7 @@ Future<void> main() async {
       presenter.dispose();
     }
 
+    await _reportDecorations(backend, waylandWindow);
     await _reportPopup(backend, window);
     _reportKeyboard(backend);
     await _reportClipboard(backend);
@@ -376,6 +377,56 @@ Future<void> _reportClipboard(WaylandWindowingBackend backend) async {
   } on Object catch (error) {
     stdout.writeln('WAYLAND_CLIPBOARD=FAIL $error');
   }
+}
+
+/// Who draws the frame, and whether the compositor honours the requests the
+/// framework's own frame sends.
+///
+/// Weston advertises no xdg-decoration, so a decorated window there must draw
+/// its own bar: `clientDecorations` false under Weston is a regression. The
+/// maximise round trip is what the frame's button and double click rely on;
+/// a compositor that sends no maximised configure is reported, not failed,
+/// since honouring the request is the compositor's choice.
+Future<void> _reportDecorations(
+  WaylandWindowingBackend backend,
+  WaylandWindow window,
+) async {
+  final ssdOffered =
+      backend.globalInterfaces.contains('zxdg_decoration_manager_v1');
+  final csd = window.clientDecorations.value;
+  if (!ssdOffered && !csd) {
+    throw StateError('no xdg-decoration and the window draws no frame');
+  }
+  stdout.writeln(
+    'WAYLAND_CSD=PASS clientDecorations=$csd '
+    'xdgDecoration=$ssdOffered '
+    'serverSide=${window.hasServerSideDecorations}',
+  );
+
+  window.setMaximized(true);
+  try {
+    await _pumpUntil(
+      backend,
+      () => window.isMaximized,
+      const Duration(seconds: 5),
+      'maximized configure',
+    );
+  } on StateError {
+    stdout.writeln('WAYLAND_MAXIMIZE=SKIP no maximized configure');
+    return;
+  }
+  final maximizedSize = window.cpuSurface;
+  window.setMaximized(false);
+  await _pumpUntil(
+    backend,
+    () => !window.isMaximized,
+    const Duration(seconds: 5),
+    'unmaximized configure',
+  );
+  stdout.writeln(
+    'WAYLAND_MAXIMIZE=PASS '
+    'size=${maximizedSize?.pixelWidth}x${maximizedSize?.pixelHeight}',
+  );
 }
 
 Future<void> _pumpUntil(

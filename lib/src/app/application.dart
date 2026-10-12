@@ -169,6 +169,7 @@ import '../scheduler/frame_scheduler.dart';
 import '../scheduler/manual_dispatcher.dart';
 import '../semantics/accessibility.dart';
 import '../text/shaper.dart' show TextDirection;
+import '../widgets/client_decoration.dart';
 import '../widgets/context_menu.dart' show ContextMenuScope;
 import '../widgets/control.dart';
 import '../widgets/controls.dart' show ClipboardScope, TextInputScope;
@@ -1459,7 +1460,17 @@ final class ApplicationWindow with DisposableMixin {
                     // `InTreePopupHost` and every menu still opens, composited
                     // into this window's own surface. See [popupHost].
                     popupHost: popupHost,
-                    home: _rootWidget,
+                    // Inside the app so the bar takes the theme. The frame
+                    // draws nothing until the window system declines to
+                    // decorate the window - see [ClientDecoratedWindow].
+                    home: switch (nativeWindow) {
+                      final ClientDecoratedWindow window =>
+                        ClientDecorationFrame(
+                          window: window,
+                          child: _rootWidget,
+                        ),
+                      _ => _rootWidget,
+                    },
                   ),
                 ),
               ),
