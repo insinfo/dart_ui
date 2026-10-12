@@ -89,6 +89,13 @@ final class MetalGpu {
 
   bool _disposed = false;
 
+  final List<void Function()> _disposeHooks = <void Function()>[];
+
+  /// Runs [hook] when this device is disposed, before the device itself is
+  /// released - so a store of textures made on it (`metal_textures.dart`)
+  /// goes first, while the device they belong to still exists.
+  void addDisposeHook(void Function() hook) => _disposeHooks.add(hook);
+
   /// Opens the system default device and one command queue.
   ///
   /// Throws [MetalError] rather than returning null, and says which of the two
@@ -228,6 +235,10 @@ final class MetalGpu {
   void dispose() {
     if (_disposed) return;
     _disposed = true;
+    for (final void Function() hook in _disposeHooks.reversed) {
+      hook();
+    }
+    _disposeHooks.clear();
     // The last release runs the driver's teardown, which autoreleases too.
     ObjCAutoreleasePool.run(() {
       objcRelease(commandQueue);

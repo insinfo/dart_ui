@@ -120,12 +120,14 @@ void main() {
       expect(policy, hasLength(1));
       // A probe that says "supported" and stops is useless to whoever has to
       // decide whether to select this backend for a window. What is still
-      // missing changed on 07/09/2026 - presentation landed, text and clips
-      // did not - so this asserts the current refusals by name rather than
-      // the old ones.
+      // missing changed twice - presentation landed on 07/09/2026, text,
+      // images and paths on 12/10/2026 - so this asserts the current refusal
+      // by name rather than the old ones: layers, and nothing else.
       expect(policy.single.message, contains('IOSurface'));
+      expect(policy.single.message, contains('layers'));
+      expect(policy.single.message, isNot(contains('text')));
       expect(policy.single.detail, contains('PRESENT_SLOT'));
-      expect(policy.single.detail, contains('glyph atlas'));
+      expect(policy.single.detail, contains('layer stack'));
       expect(policy.single.detail, contains('refused by name'));
     });
   });

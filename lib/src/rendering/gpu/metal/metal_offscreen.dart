@@ -39,12 +39,15 @@ import '../../../graphics/display_list_reader.dart';
 import '../../framebuffer.dart';
 import '../../replay/display_list_player.dart';
 import '../gpu_batcher.dart';
+import '../gpu_mask_atlas.dart';
 import '../gpu_pipeline.dart';
 import '../gpu_raster_sink.dart';
+import '../gpu_texture.dart';
 import '../gpu_vertex_buffer.dart';
 import 'metal_bindings.dart';
 import 'metal_device.dart';
 import 'metal_shaders.dart';
+import 'metal_textures.dart';
 
 /// A texture this framework renders into and then reads back.
 final class MetalOffscreenTarget {
@@ -438,13 +441,13 @@ final class MetalOffscreenTarget {
   /// backend's shader against the test author's idea of the layout rather than
   /// against the layout every other backend uses.
   ///
-  /// **Rectangles and images only.** The sink is built without a mask atlas, a
-  /// glyph atlas or a layer stack, so a path, a rounded rectangle, a glyph run
-  /// or a compositing `saveLayer` raises `UnsupportedCapabilityError` naming
-  /// this backend instead of drawing something approximate. That is section
-  /// 6.6 applied to a backend that is being built a piece at a time.
+  /// **Everything but layers.** Text, images, paths and rounded rectangles go
+  /// through the atlases and the image cache of `metal_textures.dart`. There
+  /// is no layer stack, so a compositing `saveLayer` raises
+  /// `UnsupportedCapabilityError` naming this backend instead of drawing
+  /// something approximate - section 6.6 for the piece not yet built.
   void renderDisplayList(DisplayList list, {int? clearColor}) {
-    beginFrame();
+    beginFrame(clearColor: clearColor);
     playDisplayList(list);
     submit(clearColor: clearColor);
   }
@@ -454,10 +457,26 @@ final class MetalOffscreenTarget {
   /// Split out of [renderDisplayList] because a [RenderTarget] has to record
   /// between `beginFrame` and `present` rather than in one call - see
   /// `MetalMemoryTarget` in `metal_backend.dart`.
-  void beginFrame() {
+  ///
+  /// [clearColor] is the frame's clear, applied by its first pass. It belongs
+  /// here and not only in [submit] because a frame can issue a pass before
+  /// [submit]: an atlas that fills up mid-frame flushes the batches recorded
+  /// so far (`onAtlasFlush`), and that pass is the one that has to clear.
+  void beginFrame({int? clearColor}) {
     _checkAlive();
     _batcher.beginFrame();
+    _frameClear = clearColor;
+    _submittedBatches = 0;
+    _framePasses = 0;
   }
+
+  int? _frameClear;
+
+  /// Batches already drawn by a pass this frame; the next pass starts here.
+  int _submittedBatches = 0;
+
+  /// Passes issued this frame. Only the first one clears.
+  int _framePasses = 0;
 
   /// Walks [list] into the batcher. No GPU work happens here.
   void playDisplayList(
@@ -465,6 +484,9 @@ final class MetalOffscreenTarget {
     Transform2D deviceTransform = Transform2D.identity,
   }) {
     _checkAlive();
+    // The font resolver is the device's and shared by every target on it, so
+    // it is pointed at this list's fonts right before this list replays.
+    _store.fontResolver.bind(DisplayListResources(list));
     _player.play(
       DisplayListReader(list),
       DisplayListResources(list),
@@ -478,18 +500,83 @@ final class MetalOffscreenTarget {
   }
 
   /// Encodes the recorded batches into one pass and waits for it.
+  ///
+  /// [clearColor], when given, overrides the one [beginFrame] recorded; either
+  /// is applied only if no pass has run yet this frame.
   void submit({int? clearColor, Pointer<ObjCObject>? completedHandler}) {
     _checkAlive();
+    _uploadAtlases();
+    final int? clear = _framePasses == 0 ? (clearColor ?? _frameClear) : null;
     encodePass(
-        clearColor: clearColor,
+        clearColor: clear,
         body: _drawBatches,
         completedHandler: completedHandler);
+    _submittedBatches = _batcher.batchCount;
+    _framePasses++;
   }
+
+  /// `onAtlasFlush`: an atlas filled up mid-frame. Uploads both, draws the
+  /// batches recorded so far and **waits** - the sink recycles the full atlas
+  /// as soon as this returns, and those texels must not be overwritten while
+  /// a pass still samples them.
+  void _flushMidFrame() {
+    _uploadAtlases();
+    encodePass(
+      clearColor: _framePasses == 0 ? _frameClear : null,
+      body: _drawBatches,
+    );
+    _submittedBatches = _batcher.batchCount;
+    _framePasses++;
+  }
+
+  void _uploadAtlases() {
+    final GpuMaskAtlas mask = _maskAtlas;
+    if (mask.isDirty) {
+      final int top = mask.dirtyTop;
+      final int rows = mask.dirtyBottom - top;
+      _store.upload(
+        _maskTexture,
+        x: 0,
+        y: top,
+        width: mask.width,
+        height: rows,
+        pixels: Uint8List.sublistView(mask.pixels, top * mask.width),
+        bytesPerRow: mask.width,
+      );
+      mask.markUploaded();
+    }
+    _store.uploadGlyphAtlas();
+  }
+
+  /// This device's textures, glyph atlas, image cache and font resolver.
+  late final MetalTextureStore _store = MetalTextureStore.of(_gpu);
+
+  /// Coverage masks for paths and rounded shapes, per target as on D3D11.
+  final GpuMaskAtlas _maskAtlas = GpuMaskAtlas();
+
+  MetalTexture? _maskTextureOrNull;
+  MetalTexture get _maskTexture => _maskTextureOrNull ??= _store.create(
+        width: _maskAtlas.width,
+        height: _maskAtlas.height,
+        format: GpuTextureFormat.alpha8,
+        filter: GpuTextureFilter.nearest,
+      );
 
   late final GpuBatcher _batcher = GpuBatcher();
   late final GpuRasterSink _sink = GpuRasterSink(
     batcher: _batcher,
     backendName: 'metal',
+    maskAtlas: _maskAtlas,
+    maskTextureId: _maskTexture.id,
+    glyphAtlas: _store.glyphAtlas,
+    glyphTextureId: _store.glyphTexture.id,
+    imageResolver: _store.imageCache,
+    fontResolver: _store.fontResolver,
+    onAtlasFlush: _flushMidFrame,
+    // Uniform-radius rounded rectangles through the shader's closed form, as
+    // on D3D11, Vulkan and GL: the coverage atlas is a different
+    // approximation, and against the CPU it was 52 levels apart on the edges.
+    analyticPrimitives: true,
   );
   late final DisplayListPlayer _player = DisplayListPlayer(_sink);
 
@@ -504,7 +591,8 @@ final class MetalOffscreenTarget {
 
   void _drawBatches(Pointer<ObjCObject> encoder) {
     final int batchCount = _batcher.batchCount;
-    if (batchCount == 0) return;
+    final int firstBatch = _submittedBatches;
+    if (batchCount <= firstBatch) return;
 
     final GpuVertexBuffer buffer = _batcher.buffer;
     final Pointer<ObjCObject> vertexBuffer =
@@ -535,7 +623,9 @@ final class MetalOffscreenTarget {
 
       var boundBlend = -1;
       var boundMode = -1;
-      for (var i = 0; i < batchCount; i++) {
+      var boundLinear = -1;
+      var boundTexture = -1;
+      for (var i = firstBatch; i < batchCount; i++) {
         final GpuBatch batch = _batcher.batchAt(i);
         var left = batch.scissorLeft;
         var top = batch.scissorTop;
@@ -567,15 +657,23 @@ final class MetalOffscreenTarget {
               _pipelines.forBlendMode(batch.blendMode).address);
         }
 
+        // The batch's texture - a glyph or coverage atlas, or an image - and
+        // the sampler its filter asks for. kNoTexture and anything released
+        // bind the white texel; see below.
+        final MetalTexture? texture = _store.byId(batch.textureId);
+        final int linear = texture?.filter == GpuTextureFilter.linear
+            ? kMetalSamplerLinear
+            : kMetalSamplerPoint;
         final int mode = metalPipelineMode(batch.pipeline);
-        if (mode != boundMode) {
+        if (mode != boundMode || linear != boundLinear) {
           boundMode = mode;
+          boundLinear = linear;
           _uniforms.ref
             ..viewportWidth = width.toDouble()
             ..viewportHeight = height.toDouble()
             ..mode = mode
             ..yFlip = kMetalYFlipDefault
-            ..useLinear = kMetalSamplerPoint;
+            ..useLinear = linear;
           metalSendVoid3(
               encoder,
               'setVertexBytes:length:atIndex:',
@@ -597,8 +695,12 @@ final class MetalOffscreenTarget {
         // texel costs one binding and removes the question; the alternative is
         // a shader branch that the other two backends do not have, which would
         // make a parity difference mean something else.
-        metalSendVoid2(
-            encoder, 'setFragmentTexture:atIndex:', _white.address, 0);
+        final int textureId = texture?.id ?? kNoTexture;
+        if (textureId != boundTexture) {
+          boundTexture = textureId;
+          metalSendVoid2(encoder, 'setFragmentTexture:atIndex:',
+              (texture?.pointer ?? _white).address, 0);
+        }
 
         metalSendVoid5(
           encoder,
@@ -662,6 +764,8 @@ final class MetalOffscreenTarget {
     // dealloc]` hands its device to `autorelease`, and with no pool on the
     // thread that is one leaked `MTLDevice` reference per target disposed.
     // Caught by `OBJC_DEBUG_MISSING_POOLS` on the framework's macOS leg.
+    final MetalTexture? mask = _maskTextureOrNull;
+    if (mask != null) _store.release(mask);
     ObjCAutoreleasePool.run(() {
       _releaseRetiredBuffers();
       objcRelease(_white);

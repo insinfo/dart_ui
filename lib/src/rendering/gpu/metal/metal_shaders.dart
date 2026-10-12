@@ -215,6 +215,19 @@ static float boxCoverage(float4 r, float2 p) {
   return overlap.x * overlap.y;
 }
 
+// Coverage of the pixel at [p] by the rectangle [r] with corner radius [rad]:
+// the signed distance to the box pulled in by the radius, read as 0.5 - d.
+// gl_shaders.dart's roundedCoverage, transcribed - see it for where the field
+// is exact and where it approximates the area of a corner arc. Not named
+// `half`: in MSL that word is a type.
+static float roundedCoverage(float4 r, float rad, float2 p) {
+  float2 centre = (r.xy + r.zw) * 0.5;
+  float2 extent = (r.zw - r.xy) * 0.5;
+  float2 q = abs(p - centre) - extent + rad;
+  float d = min(max(q.x, q.y), 0.0) + length(max(q, float2(0.0))) - rad;
+  return clamp(0.5 - d, 0.0, 1.0);
+}
+
 fragment float4 fsMain(Varying in [[stage_in]],
                        constant Uniforms& u [[buffer(1)]],
                        texture2d<float> tex [[texture(0)]]) {
@@ -242,6 +255,13 @@ fragment float4 fsMain(Varying in [[stage_in]],
     // Premultiplied texel modulated by the paint's alpha; the colour channels
     // carry that alpha too, so this is a plain scale.
     color = texel * in.color.a;
+  }
+  // A solid fill whose second texture coordinate is 1 is an analytic rounded
+  // rectangle (kAnalyticRoundedRect), with its radius in the first; every other
+  // solid quad leaves both at zero. A threshold, not an equality: the value is
+  // interpolated, and constant across the quad only up to rounding.
+  if (u.mode == 0 && in.texCoord.y >= 0.5) {
+    return color * roundedCoverage(in.shapeRect, in.texCoord.x, in.devicePos);
   }
   return color * boxCoverage(in.shapeRect, in.devicePos);
 }

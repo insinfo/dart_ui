@@ -1,0 +1,261 @@
+/// Textures for the Metal batch renderer: ids, the glyph atlas, images.
+///
+/// `GpuRasterSink` names textures by an integer id and leaves what an id *is*
+/// to the backend. This file is that half for Metal, built the way the
+/// Direct3D 11 backend builds it (`d3d11_backend.dart`), because the three
+/// GPU backends are compared pixel for pixel and a texture that came out of
+/// a different recipe on one of them would show up as a parity difference
+/// with no obvious cause:
+///
+///   * **one store per device** ([MetalTextureStore.of]), so every target on
+///     an `MTLDevice` - the slots of a window, a popup, an offscreen test
+///     target - shares the glyph atlas and the image textures, as D3D11's
+///     device does. A menu does not rasterise again every glyph its owner
+///     already uploaded;
+///   * the **glyph atlas** and the **coverage atlas** are `R8Unorm`, sampled as
+///     `.r` by `fsMain`'s coverage mode; images are `RGBA8Unorm` or
+///     `BGRA8Unorm` by the framebuffer's own order, so nothing is swizzled on
+///     the CPU - Metal samples both orders as RGBA;
+///   * uploads are `replaceRegion:` into `shared` storage, with no blit
+///     encoder: on Apple Silicon the texture is the memory.
+///
+/// ## A hazard Direct3D does not have
+///
+/// `UpdateSubresource` is ordered against the GPU's use of the texture by the
+/// driver; `replaceRegion:` into shared storage is not. An upload is safe when
+/// no command buffer still reading the same texels is in flight. The offscreen
+/// path waits on every pass, so it always is. The window path does not wait,
+/// and relies on what the atlases write: new glyphs and masks go to texels no
+/// earlier frame sampled, and the one write that reuses texels - a full atlas
+/// recycled mid-frame - happens after a pass this file's caller waited for.
+library;
+
+import 'dart:ffi';
+import 'dart:typed_data';
+
+import '../../../ffi/native_memory.dart';
+import '../../../ffi/objc_runtime.dart';
+import '../../framebuffer.dart';
+import '../gpu_glyph_atlas.dart';
+import '../gpu_raster_sink.dart';
+import '../gpu_texture.dart';
+import 'metal_bindings.dart';
+import 'metal_device.dart';
+
+/// One `MTLTexture` with the id `GpuRasterSink` knows it by.
+final class MetalTexture implements GpuTextureHandle {
+  MetalTexture._(
+    this.id,
+    this.pointer,
+    this.width,
+    this.height,
+    this.format,
+    this.filter,
+  );
+
+  @override
+  final int id;
+
+  /// The `id<MTLTexture>`, **+1**, released by [MetalTextureStore.release].
+  final Pointer<ObjCObject> pointer;
+
+  @override
+  final int width;
+
+  @override
+  final int height;
+
+  @override
+  final GpuTextureFormat format;
+
+  @override
+  final GpuTextureFilter filter;
+
+  bool _valid = true;
+
+  @override
+  bool get isValid => _valid;
+}
+
+/// Every texture of one `MTLDevice`, by id.
+final class MetalTextureStore {
+  MetalTextureStore._(this._gpu) {
+    _gpu.addDisposeHook(_dispose);
+  }
+
+  /// The store for [gpu], created on first use and released with it.
+  static MetalTextureStore of(MetalGpu gpu) =>
+      _stores[gpu] ??= MetalTextureStore._(gpu);
+
+  static final Expando<MetalTextureStore> _stores =
+      Expando<MetalTextureStore>('MetalTextureStore');
+
+  final MetalGpu _gpu;
+  final Map<int, MetalTexture> _byId = <int, MetalTexture>{};
+  int _nextId = 1;
+
+  /// Glyph rasters shared by every target on this device. `R8Unorm`.
+  late final GpuGlyphAtlas glyphAtlas = GpuGlyphAtlas();
+
+  late final MetalTexture glyphTexture = create(
+    width: glyphAtlas.width,
+    height: glyphAtlas.height,
+    format: GpuTextureFormat.alpha8,
+    filter: GpuTextureFilter.nearest,
+  );
+
+  /// Rebound to each list before it is replayed; see [ReplayFontResolver].
+  final ReplayFontResolver fontResolver = ReplayFontResolver();
+
+  late final MetalImageCache imageCache = MetalImageCache._(this);
+
+  /// How many regions of the glyph atlas have gone to the GPU, for tests that
+  /// want to see the atlas shared rather than re-uploaded.
+  int glyphUploadCount = 0;
+
+  /// The texture with [id], or null for [kNoTexture] and anything released.
+  MetalTexture? byId(int id) => _byId[id];
+
+  MetalTexture create({
+    required int width,
+    required int height,
+    required GpuTextureFormat format,
+    required GpuTextureFilter filter,
+  }) {
+    final int pixelFormat = switch (format) {
+      GpuTextureFormat.alpha8 => MtlPixelFormat.r8Unorm,
+      GpuTextureFormat.bgra8888Premultiplied => MtlPixelFormat.bgra8Unorm,
+      _ => MtlPixelFormat.rgba8Unorm,
+    };
+    final Pointer<ObjCObject> texture = ObjCAutoreleasePool.run(() {
+      final Pointer<ObjCObject> descriptor = metalSendPointer4(
+        objcClass('MTLTextureDescriptor'),
+        'texture2DDescriptorWithPixelFormat:width:height:mipmapped:',
+        pixelFormat,
+        width,
+        height,
+        0,
+      );
+      metalSendVoid1(descriptor, 'setUsage:', MtlTextureUsage.shaderRead);
+      metalSendVoid1(descriptor, 'setStorageMode:', MtlStorageMode.shared);
+      return metalSendPointer1(
+          _gpu.device, 'newTextureWithDescriptor:', descriptor.address);
+    });
+    if (texture == nullptr) {
+      throw MetalError('newTextureWithDescriptor: returned nil for a '
+          '${width}x$height ${format.name} texture');
+    }
+    final MetalTexture result =
+        MetalTexture._(_nextId++, texture, width, height, format, filter);
+    _byId[result.id] = result;
+    return result;
+  }
+
+  /// Copies a [width] x [height] rectangle into [texture] at ([x], [y]).
+  ///
+  /// [pixels] starts at the rectangle's first texel and advances
+  /// [bytesPerRow] bytes per row - an atlas row, or a framebuffer row - which
+  /// is the layout `replaceRegion:` reads, so only the span the rectangle
+  /// covers is copied to native memory, not the whole source.
+  void upload(
+    MetalTexture texture, {
+    required int x,
+    required int y,
+    required int width,
+    required int height,
+    required Uint8List pixels,
+    required int bytesPerRow,
+  }) {
+    if (width <= 0 || height <= 0) return;
+    final int bytesPerPixel = texture.format == GpuTextureFormat.alpha8 ? 1 : 4;
+    final int span = (height - 1) * bytesPerRow + width * bytesPerPixel;
+    final Pointer<Uint8> native =
+        NativeAllocator.instance.allocate<Uint8>(span);
+    try {
+      native.asTypedList(span).setRange(0, span, pixels);
+      metalSendReplaceRegion(
+        texture.pointer,
+        'replaceRegion:mipmapLevel:withBytes:bytesPerRow:',
+        mtlRegion2D(x: x, y: y, width: width, height: height),
+        0,
+        native.cast<Void>(),
+        bytesPerRow,
+      );
+    } finally {
+      NativeAllocator.instance.free(native);
+    }
+  }
+
+  /// Sends the glyph atlas's dirty plots to [glyphTexture].
+  void uploadGlyphAtlas() {
+    if (!glyphAtlas.isDirty) return;
+    final int stride = glyphAtlas.width;
+    glyphAtlas.forEachDirtyRegion((int x, int y, int width, int height) {
+      upload(
+        glyphTexture,
+        x: x,
+        y: y,
+        width: width,
+        height: height,
+        pixels: Uint8List.sublistView(glyphAtlas.pixels, y * stride + x),
+        bytesPerRow: stride,
+      );
+      glyphUploadCount++;
+    });
+    glyphAtlas.markUploaded();
+  }
+
+  void release(MetalTexture texture) {
+    if (!texture._valid) return;
+    texture._valid = false;
+    _byId.remove(texture.id);
+    // Freeing a texture autoreleases its device; see metal_offscreen.dart.
+    ObjCAutoreleasePool.run(() => objcRelease(texture.pointer));
+  }
+
+  void _dispose() {
+    for (final MetalTexture texture in _byId.values.toList()) {
+      release(texture);
+    }
+    _stores[_gpu] = null;
+  }
+}
+
+/// Framebuffers the display list draws as images, uploaded once each.
+///
+/// Keyed by identity, as `D3d11ImageCache` is: a display list hands the same
+/// `Framebuffer` object every frame it shows the same image, and an image that
+/// changes is a new object. Anything that is not a [Framebuffer] - a video
+/// frame - has no texture here, and the sink refuses it by name.
+final class MetalImageCache implements GpuImageResolver {
+  MetalImageCache._(this._store);
+
+  final MetalTextureStore _store;
+  final Expando<MetalTexture> _byImage = Expando<MetalTexture>('MetalImage');
+
+  @override
+  GpuTextureHandle? resolve(Object image) {
+    if (image is! Framebuffer) return null;
+    final MetalTexture? cached = _byImage[image];
+    if (cached != null && cached.isValid) return cached;
+    final MetalTexture texture = _store.create(
+      width: image.width,
+      height: image.height,
+      format: image.format == PixelFormat.bgra8888Premultiplied
+          ? GpuTextureFormat.bgra8888Premultiplied
+          : GpuTextureFormat.rgba8888Premultiplied,
+      filter: GpuTextureFilter.linear,
+    );
+    _store.upload(
+      texture,
+      x: 0,
+      y: 0,
+      width: image.width,
+      height: image.height,
+      pixels: image.pixels,
+      bytesPerRow: image.bytesPerRow,
+    );
+    _byImage[image] = texture;
+    return texture;
+  }
+}

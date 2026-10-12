@@ -518,8 +518,16 @@ vence as duas:
    0005), e em 12/10/2026 `METAL_WINDOW_PRESENT=PASS` num Mac M4 com macOS
    27.2 conferiu os pixels da janela. Não há `CAMetalLayer` porque a
    `NSWindow` vive no processo host. O seletor só o toma **pelo nome**
-   (`needsExplicitOptIn`), porque ele ainda recusa texto, clipes e camadas
-   pelo nome - é o que o próprio diagnóstico de seleção imprime. A linha
+   (`needsExplicitOptIn`). Até 12/10/2026 ele recusava texto, imagens,
+   caminhos e retângulos arredondados - o sink não tinha atlas de glifos, de
+   cobertura nem cache de imagem, e todo lote amostrava um texel branco 1x1 -;
+   desde então desenha os quatro, iguais à CPU no `metal_cpu_parity_test`
+   (Ahem caixa por caixa, imagem texel por texel, caminhos e o retângulo
+   arredondado pela rota analítica, todos com desvio 0), e a galeria inteira
+   rodou no Metal numa janela de verdade (`METAL_GALLERY=PASS`, 3000
+   quadros, mediana 475 us contra 783 us na CPU, nenhum erro). O que ainda
+   recusa pelo nome é a pilha de camadas (`saveLayer` de composição), e é por
+   isso que o seletor ainda só o toma pelo nome. A linha
    "Metal + `CAMetalLayer`" continua sendo intenção. O caminho GL de janela no
    X11 está registrado no seletor e, desde
    07/09/2026, é executado no CI por `tool/x11_gl_smoke.dart` sob Xvfb e Mesa

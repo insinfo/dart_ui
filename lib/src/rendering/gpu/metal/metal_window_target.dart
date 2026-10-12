@@ -200,7 +200,7 @@ final class MetalWindowTarget
     final int slot = _surface.backSlot;
     _frameSlot = slot;
     _pendingClear = request.clearColor;
-    _targetForSlot(slot).beginFrame();
+    _targetForSlot(slot).beginFrame(clearColor: request.clearColor);
     return Frame(
       target: this,
       // Null, and deliberately: these pixels live in an IOSurface the host

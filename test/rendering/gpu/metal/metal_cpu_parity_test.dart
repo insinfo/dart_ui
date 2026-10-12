@@ -53,13 +53,17 @@
 library;
 
 import 'dart:io';
+import 'dart:typed_data';
 
+import 'package:dart_ui/src/geometry/path.dart';
+import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/metal/metal_device.dart';
 import 'package:dart_ui/src/rendering/gpu/metal/metal_offscreen.dart';
 import 'package:dart_ui/src/rendering/renderer.dart';
+import 'package:dart_ui/src/text/typeface.dart';
 import 'package:test/test.dart';
 
 /// One size for every scene, so a coordinate reads the same in all of them.
@@ -169,6 +173,42 @@ void main() {
       // do. The rectangle is asymmetric so that getting it wrong moves the
       // clipped region somewhere visible.
       await _expectParity(gpu, pipelines, _clipped(), tolerance: 0);
+    }, skip: _needsMac);
+  });
+
+  // Text, images and filled paths: the three things this backend refused by
+  // name until 12/10/2026, because its sink had no glyph atlas, no coverage
+  // atlas and no image resolver, and every batch sampled a 1x1 white texel.
+  // Ahem first, as on Vulkan: a box either lands where the CPU put it or the
+  // frame shows whatever a wrong texture id sampled.
+  group('text, images and paths', () {
+    test('a glyph run, box for box: 0', () async {
+      await _expectParity(gpu, pipelines, _glyphRun(), tolerance: 0);
+    }, skip: _needsMac);
+
+    test('a drawn image, texel for texel: 0', () async {
+      await _expectParity(gpu, pipelines, _image(), tolerance: 0);
+    }, skip: _needsMac);
+
+    test('a path of two overlapping squares, through the coverage atlas: 0',
+        () async {
+      await _expectParity(gpu, pipelines, _overlappingPath(), tolerance: 0);
+    }, skip: _needsMac);
+
+    test('a path with a hole: 0', () async {
+      await _expectParity(gpu, pipelines, _holePath(), tolerance: 0);
+    }, skip: _needsMac);
+
+    test('a rounded rectangle: 0', () async {
+      await _expectParity(gpu, pipelines, _roundedRect(), tolerance: 0);
+    }, skip: _needsMac);
+
+    test('text and an image share a frame with a solid fill: 0', () async {
+      final DisplayList list = _image();
+      final int ink = list.addPaint(colorArgb: 0xFF2266AA, antiAlias: false);
+      list.drawRect(0, 18, 24, 24, ink);
+      _appendGlyphRun(list, baseline: 8);
+      await _expectParity(gpu, pipelines, list, tolerance: 0);
     }, skip: _needsMac);
   });
 }
@@ -350,4 +390,93 @@ bool _isUniform(Framebuffer buffer) {
         pixels[i + 3]
       ),
   };
+}
+
+/// Three Ahem boxes on the baseline - see `vulkan_cpu_parity_test.dart`.
+DisplayList _glyphRun() => _appendGlyphRun(DisplayList(), baseline: 16);
+
+DisplayList _appendGlyphRun(DisplayList list, {required double baseline}) {
+  final Typeface ahem = Typeface.parse(
+    File('test/fonts/ahem.ttf').readAsBytesSync(),
+  );
+  final ScaledTypeface font = ahem.atSize(8);
+  final int ink = list.addPaint(colorArgb: 0xFFFFFFFF);
+  final int glyph = font.typeface.glyphForCodePoint(0x58);
+  list.drawGlyphRun(
+    list.addFont(font),
+    ink,
+    0,
+    baseline,
+    Int32List.fromList(<int>[glyph, glyph, glyph]),
+    Float32List.fromList(<double>[0, 0, 8, 0, 16, 0]),
+    3,
+  );
+  return list;
+}
+
+/// One texel per pixel, so nearest and linear cannot disagree.
+DisplayList _image() {
+  final Framebuffer image = Framebuffer.allocate(
+    width: 8,
+    height: 8,
+    format: PixelFormat.rgba8888Premultiplied,
+  );
+  for (var y = 0; y < 8; y++) {
+    for (var x = 0; x < 8; x++) {
+      final int offset = image.offsetOf(x, y);
+      image.pixels[offset] = (x + 1) * 0x1F;
+      image.pixels[offset + 1] = (y + 1) * 0x1F;
+      image.pixels[offset + 2] = 0x40;
+      image.pixels[offset + 3] = 0xFF;
+    }
+  }
+  final DisplayList list = DisplayList();
+  final int paint = list.addPaint(colorArgb: 0xFFFFFFFF, antiAlias: false);
+  final int id = list.addImage(image);
+  list.drawImage(id, 0, 0, 8, 8, 4, 4, 12, 12, paint);
+  return list;
+}
+
+DisplayList _overlappingPath() {
+  final PathBuilder builder = PathBuilder();
+  _addRectContour(builder, const Rect.fromLTRB(3, 3, 14, 14), clockwise: true);
+  _addRectContour(builder, const Rect.fromLTRB(9, 9, 20, 20), clockwise: true);
+  final DisplayList list = DisplayList();
+  final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+  list.drawPath(list.addPath(builder.build()), paint);
+  return list;
+}
+
+DisplayList _holePath() {
+  final PathBuilder builder = PathBuilder();
+  _addRectContour(builder, const Rect.fromLTRB(3, 3, 21, 21), clockwise: true);
+  _addRectContour(builder, const Rect.fromLTRB(8, 8, 16, 16), clockwise: false);
+  final DisplayList list = DisplayList();
+  final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+  list.drawPath(list.addPath(builder.build()), paint);
+  return list;
+}
+
+DisplayList _roundedRect() {
+  final DisplayList list = DisplayList();
+  final int paint = list.addPaint(colorArgb: 0xFFFFFFFF);
+  list.drawRRect(3, 3, 21, 21, 6, 6, 6, 6, 6, 6, 6, 6, paint);
+  return list;
+}
+
+void _addRectContour(PathBuilder builder, Rect rect,
+    {required bool clockwise}) {
+  builder.moveTo(rect.left, rect.top);
+  if (clockwise) {
+    builder
+      ..lineTo(rect.right, rect.top)
+      ..lineTo(rect.right, rect.bottom)
+      ..lineTo(rect.left, rect.bottom);
+  } else {
+    builder
+      ..lineTo(rect.left, rect.bottom)
+      ..lineTo(rect.right, rect.bottom)
+      ..lineTo(rect.right, rect.top);
+  }
+  builder.close();
 }
