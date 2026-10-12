@@ -3762,9 +3762,11 @@ com número de run em cada uma.
   trás da janela (`6e9e9a9`, `metal_window_mesh_test` num IOSurface real);
 - [x] **ritmo da tela** - `PRESENT_SLOT ... vsync` e um `CADisplayLink` da view
   do host; FIFO segura cada quadro até o refresh do anterior (`5b99374`);
-- [ ] múltiplas janelas — o `MTLDevice` e o cache de pipelines são por
-  dispositivo e compartilhados (`sharesDevice`), então o custo já está pago;
-  o que falta é exercer duas janelas ao mesmo tempo e medir;
+- [x] múltiplas janelas — o `MTLDevice` e o cache de pipelines são por
+  dispositivo e compartilhados (`sharesDevice`). Exercido em 12/10/2026 pela
+  `example/gallery_multiwindow.dart` no macOS (`5412cbd`): duas janelas AppKit
+  com `presentation=metal/metal`, um modal que bloqueia a dona, uma janela
+  fechada enquanto a outra segue apresentando, `MULTIWINDOW_GALLERY=PASS`;
 - [ ] perda/indisponibilidade tratada;
 - [ ] fallback CPU;
 - [~] Intel e Apple Silicon — só arm64 no CI;
