@@ -17,6 +17,8 @@ on:
       - 'lib/src/widgets/text_field.dart'
       - 'lib/src/widgets/focus.dart'
       - 'tool/x11_input_smoke.dart'
+      - 'example/gallery_x11.dart'
+      - 'example/gallery_shell.dart'
       - '.github/workflows/x11_input_interop.yml'
 
 concurrency:
@@ -70,7 +72,18 @@ jobs:
           status=$?
           set -e
           echo "x11_input_smoke exit=$status  (0 pass, 1 fail, 2 no display or tools)"
-          exit "$status"
+          if [ "$status" != "0" ]; then exit "$status"; fi
+
+          # The gallery example, whose header said it had never run against an
+          # X server. Same display, same job: 400 frames through the X11 CPU
+          # presenter, and the example's own verdict line.
+          set +e
+          timeout --kill-after=5 90 dart run example/gallery_x11.dart --frames 400 \
+            | tee build/gallery_x11.log
+          gallery=${PIPESTATUS[0]}
+          set -e
+          grep -q '^X11_GALLERY=PASS' build/gallery_x11.log
+          exit "$gallery"
 
       - name: Upload the Xvfb log
         if: always()
