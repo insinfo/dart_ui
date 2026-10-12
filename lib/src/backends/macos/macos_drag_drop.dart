@@ -167,7 +167,10 @@ final class MacosDragDropBackend implements DragDropBackend {
     if (bytes == null) return const <String>[];
     return <String>[
       for (final String line in utf8.decode(bytes).split(RegExp(r'\r?\n')))
-        if (line.startsWith('file:')) Uri.parse(line.trim()).toFilePath(),
+        // POSIX whatever runs this: the paths are for AppKit, and a Windows
+        // test runner would otherwise turn them into backslashes.
+        if (line.startsWith('file:'))
+          Uri.parse(line.trim()).toFilePath(windows: false),
     ];
   }
 
