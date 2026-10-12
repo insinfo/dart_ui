@@ -310,7 +310,24 @@ class SkylightBackend implements MacosWindowBackend {
   Future<void> initialize() async => initializeSync();
 
   /// Steps 1-5 of the measured initialisation order.
-  void initializeSync() {
+  ///
+  /// Runs inside an autorelease pool, as [createWindowSync] and [presentSync]
+  /// do: this thread is a Dart thread, not AppKit's, so nothing drains the
+  /// objects SkyLight, CoreGraphics and the Swift runtime autorelease - on
+  /// macOS 27 that is an `OS_os_log` and a `ProcessInfo` here and a `CFData`
+  /// per frame in [presentSync], each logged as `MISSING POOLS` and leaked.
+  void initializeSync() => _inPool(_initializeSync);
+
+  T _inPool<T>(T Function() body) {
+    final pool = _poolPush();
+    try {
+      return body();
+    } finally {
+      _poolPop(pool);
+    }
+  }
+
+  void _initializeSync() {
     _lifecycle.beginInitialize();
     try {
       _skyLight = DynamicLibrary.open(
@@ -571,7 +588,10 @@ class SkylightBackend implements MacosWindowBackend {
   Future<MacosWindow> createWindow(MacosWindowOptions options) async =>
       createWindowSync(options);
 
-  MacosWindow createWindowSync(MacosWindowOptions options) {
+  MacosWindow createWindowSync(MacosWindowOptions options) =>
+      _inPool(() => _createWindowSync(options));
+
+  MacosWindow _createWindowSync(MacosWindowOptions options) {
     _lifecycle.requireRunning('create a window');
     _checkThread('createWindow');
 
@@ -717,7 +737,10 @@ class SkylightBackend implements MacosWindowBackend {
 
   /// Uploads a CPU BGRA framebuffer: into the hosted layer on the CA path, into
   /// the window's CGContext on the CG path.
-  void presentSync(MacosWindow window, MacosFrame frame) {
+  void presentSync(MacosWindow window, MacosFrame frame) =>
+      _inPool(() => _presentSync(window, frame));
+
+  void _presentSync(MacosWindow window, MacosFrame frame) {
     _lifecycle.requireRunning('present');
     _checkThread('present');
     if (window.generation != _lifecycle.generation) {
@@ -803,7 +826,7 @@ class SkylightBackend implements MacosWindowBackend {
   /// to report a pointer move to a position the pointer is already at, which is
   /// why a fixed (400, 400) produced key events but never pointerMove.
   bool injectSyntheticInput({double x = 400, double y = 400}) =>
-      _syntheticInput.postTo(_getpid(), x: x, y: y);
+      _inPool(() => _syntheticInput.postTo(_getpid(), x: x, y: y));
 
   /// Runs the owning run loop in bounded slices. Synchronous by design.
   ///
@@ -826,7 +849,10 @@ class SkylightBackend implements MacosWindowBackend {
     final before = report.eventsRead;
     for (var i = 0; i < slices; i++) {
       final beforeSlice = report.eventsRead;
-      runInMode(_defaultMode, sliceSeconds, true);
+      // One pool per slice: the event port's callbacks autorelease the Mach
+      // message payloads as CFData, and this thread has no run loop of
+      // AppKit's to drain them.
+      _inPool(() => runInMode(_defaultMode, sliceSeconds, true));
       // Only after a slice that actually delivered something: on an empty
       // queue this read is the one earlier probes saw block in mach_msg. A
       // slice that produced an event is exactly the case where the
