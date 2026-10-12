@@ -43,21 +43,24 @@ jobs:
       # the window *frame* instead of the content rect - every popup anchored
       # in a titled window landed one title bar too high - and never reporting
       # a move made while the window was hidden.
-      - name: Popup window smoke through Application
-        env:
-          DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
-        run: dart run tool/popup_window_smoke.dart
-
-      # The same smoke with no spare popup host, for the comparison only this
+      # The popup smoke with no spare popup host, for the comparison only this
       # runner can make: since the spare existed the first menu here went from
-      # 58 ms to 180-310 ms, which no faster machine reproduces. Run beside the
-      # step above, the two POPUP_OPEN_MS lines say whether the spare is the
-      # cause or the runner is.
+      # 58 ms to 180-310 ms, which no faster machine reproduces. Run *before*
+      # the step with the spare: the first run of a job pays the cold caches,
+      # and in the other order that cost landed on the spare's line (209 ms
+      # against 112 ms in run 38231006076), which is the confound this order
+      # removes.
       - name: Popup window smoke without the spare host (comparison)
         env:
           DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
           DART_UI_MACOS_SPARE_HOST: '0'
         run: dart run tool/popup_window_smoke.dart
+
+      - name: Popup window smoke through Application
+        env:
+          DART_UI_MACOS_HOST: ${{ github.workspace }}/lib/src/backends/macos/native/build/dart_ui_macos_host
+        run: dart run tool/popup_window_smoke.dart
+
 
       # The clipboard goes through the same AppKit host as the window, so it
       # is proven on the same runner. pbpaste and pbcopy are the witnesses: a
