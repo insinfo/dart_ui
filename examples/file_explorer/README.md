@@ -18,3 +18,25 @@ dart run bin/file_explorer.dart [pasta]
   aplicativo padrão, observar a pasta).
 - `lib/src/ui/` - a janela.
 - `test/` - o motor contra um `MemoryFileSystem`, e a janela sem tela.
+
+## Distribuir
+
+Um único executável, com as fontes e os ícones dentro:
+
+```
+dart run dart_ui build bin/file_explorer.dart --name "File Explorer" -o build/FileExplorer
+```
+
+No Windows sai `build/FileExplorer.exe`, sem console; no macOS,
+`build/FileExplorer.app`, com o host AppKit dentro; no Linux, o binário e um
+`.desktop`. Cada sistema compila o seu (`dart compile exe` não faz
+cross-compilation).
+
+## Ver sem tela
+
+```
+dart run tool/headless_shot.dart shot.png icons --dark --lang=pt
+```
+
+Cenários: `home`, `details`, `icons`, `tiles`, `rename`, `search`,
+`thispc`, `details-pane`.
