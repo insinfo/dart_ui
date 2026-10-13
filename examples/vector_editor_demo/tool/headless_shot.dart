@@ -141,6 +141,17 @@ Future<void> main(List<String> args) async {
       ..execute('object.toCurves')
       ..execute('tool.shape')
       ..execute('path.selectAllNodes');
+  } else if (scenario == 'outline') {
+    // Every object with a thick dashed outline, round caps and joins.
+    state.model.selectAll();
+    state.model.applyToSelection((VectorStyle s) => s.copyWith(
+        stroke: s.stroke.copyWith(
+            width: 3,
+            color: const Color(0xFF202020),
+            cap: LineCap.round,
+            join: LineJoin.round,
+            dashPattern: const <double>[8, 6])));
+    state.model.selection.deselectAll();
   } else if (scenario == 'corners') {
     // The Shape tool on a rectangle, its corners half rounded, and on the
     // ellipse opened into a pie.

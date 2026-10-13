@@ -96,7 +96,7 @@ Comandos registrados: 114.
 | ❌ | Interactive fill (G) | P1 |  | tudo |
 | ❌ | Mesh fill | P2 |  | tudo |
 | ❌ | Smart fill | P2 |  | tudo |
-| 🟡 | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle` | caps, joins and dashes are kept but the canvas draws them butt, miter and solid |
+| 🟡 | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle` | no arrowheads or calligraphic pen |
 | 🟡 | Fill (F11) | P0 | `panel.fillStroke`, `object.fill` | uniform colour; no fountain, pattern or texture fills |
 
 ### Interações no canvas

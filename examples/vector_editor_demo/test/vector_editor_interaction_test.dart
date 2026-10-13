@@ -494,6 +494,28 @@ void main() {
       harness.dispose();
     });
 
+    test('the outline is drawn with its caps, joins and dashes', () {
+      final harness = _Harness()..withoutSnapping();
+      final rectangle = harness.rectangle;
+      harness.tapDocument(rectangle.cacheBbox.center);
+      harness.model.applyToSelection((VectorStyle s) => s.copyWith(
+          stroke: s.stroke.copyWith(
+              width: 2,
+              cap: LineCap.round,
+              join: LineJoin.round,
+              dashPattern: const <double>[6, 3])));
+      final DisplayList list = harness.frame();
+      final List<int> dashed = <int>[
+        for (var id = 0; id < list.paintCount; id++)
+          if (list.paintStrokeExtras(id)?.dashArray != null) id,
+      ];
+      expect(dashed, isNotEmpty, reason: 'the dashed outline reached a paint');
+      expect(list.paintStrokeExtras(dashed.single)!.dashArray, <double>[6, 3]);
+      expect(list.paintStrokeCap(dashed.single), StrokeCap.round);
+      expect(list.paintStrokeJoin(dashed.single), StrokeJoin.round);
+      harness.dispose();
+    });
+
     test('the Shape tool rounds a rectangle by its corner, in one undo', () {
       final harness = _Harness()..withoutSnapping();
       final rectangle = harness.rectangle;

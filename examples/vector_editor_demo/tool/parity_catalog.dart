@@ -120,8 +120,7 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
         'object.outlineWidth',
         'object.outlineStyle',
       ],
-      partial: 'caps, joins and dashes are kept but the canvas draws them '
-          'butt, miter and solid'),
+      partial: 'no arrowheads or calligraphic pen'),
   ParityFeature(_tools, 'Fill (F11)', 'P0',
       commands: <String>['panel.fillStroke', 'object.fill'],
       partial: 'uniform colour; no fountain, pattern or texture fills'),

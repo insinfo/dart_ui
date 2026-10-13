@@ -15,6 +15,7 @@ import 'dart:math' as math;
 import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
+import '../../geometry/stroke.dart';
 import '../../geometry/transform2d.dart';
 import '../../graphics/color.dart';
 import '../../graphics/display_list.dart';
@@ -429,6 +430,12 @@ class VectorRenderer {
           style: paintStyleStroke,
           strokeWidth: stroke.width,
           antiAlias: true,
+          // The model's enums are in the renderer's order.
+          strokeCap: StrokeCap.values[stroke.cap.index],
+          strokeJoin: StrokeJoin.values[stroke.join.index],
+          miterLimit: stroke.miterLimit,
+          dashArray: stroke.dashPattern.isEmpty ? null : stroke.dashPattern,
+          dashOffset: stroke.dashOffset,
         );
         list.drawPath(pathId, strokePaint);
       }
