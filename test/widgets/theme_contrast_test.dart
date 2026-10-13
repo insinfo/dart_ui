@@ -32,6 +32,7 @@ void main() {
     'cupertino-light': ThemeData.cupertinoLight,
     'cupertino-dark': ThemeData.cupertinoDark,
     'fluent-light': ThemeData.fluentLight,
+    'fluent-dark': ThemeData.fluentDark,
     'high-contrast-dark': ThemeData.highContrastDark,
   };
 

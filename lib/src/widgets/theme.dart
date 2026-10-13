@@ -1233,6 +1233,48 @@ final class ThemeData {
     controlPadding: 12.0,
   );
 
+  /// The dark counterpart of [fluentLight]: a near-neutral charcoal ground,
+  /// raised cards a step lighter, a light-blue accent carrying dark text,
+  /// and the same compact density and 4 px corners. Built from our own
+  /// values, in the spirit of Windows 11's dark mode.
+  static const ThemeData fluentDark = ThemeData(
+    name: 'fluent-dark',
+    brightness: ThemeBrightness.dark,
+    accent: Color(0xFF60CDFF),
+    accentHovered: Color(0xFF7DD6FF),
+    accentPressed: Color(0xFF9ADFFF),
+    accentSubtle: Color(0xFF1B3A4D),
+    surfaceBase: Color(0xFF202020),
+    surfaceSunken: Color(0xFF1A1A1A),
+    surface: Color(0xFF272727),
+    surfaceAlternate: Color(0xFF2C2C2C),
+    surfaceRaised: Color(0xFF323232),
+    borderSubtle: Color(0xFF2E2E2E),
+    border: Color(0xFF3D3D3D),
+    borderStrong: Color(0xFF8A8A8A),
+    foreground: Color(0xFFF2F2F2),
+    foregroundSecondary: Color(0xFFC5C5C5),
+    disabledForeground: Color(0xFF7A7A7A),
+    disabledSurface: Color(0xFF2A2A2A),
+    hoverSurface: Color(0xFF353535),
+    pressedSurface: Color(0xFF2F2F2F),
+    focusRing: Color(0xFF60CDFF),
+    selection: Color(0xFF1F4258),
+    colorScheme: ColorScheme.dark(
+      primary: Color(0xFF60CDFF),
+      onPrimary: Color(0xFF00243A),
+      surface: Color(0xFF272727),
+      surfaceContainer: Color(0xFF2C2C2C),
+      outline: Color(0xFF3D3D3D),
+    ),
+    textTheme: TextTheme(base: 13),
+    iconTheme: IconThemeData(color: Color(0xFFF2F2F2), size: 16),
+    density: ThemeDensity.compact,
+    cornerRadius: 4.0,
+    controlHeight: 32.0,
+    controlPadding: 12.0,
+  );
+
   /// Material 3's baseline scheme (the purple one its specification shows),
   /// with M3's shapes: pill buttons, the M3 switch and slider, 40 dp controls
   /// and 14 sp body text. Values from the published baseline tonal palette.

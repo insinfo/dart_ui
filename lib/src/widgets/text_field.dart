@@ -774,11 +774,20 @@ final class TextField extends StatefulWidget {
     this.enabled = true,
     this.inactiveSelection = InactiveSelectionHighlight.dimmed,
     this.editingConvention,
+    this.onSubmitted,
   });
 
   final TextEditingController controller;
   final FocusNode? focusNode;
+
+  /// Shown, muted, while the field is empty - the placeholder ("Search
+  /// Documents").
   final String label;
+
+  /// Enter pressed with no modifier and nothing being composed: the value is
+  /// confirmed - an address typed, a search run, a rename committed. Null
+  /// leaves Enter to whatever above the field owns it.
+  final void Function(String value)? onSubmitted;
 
   /// Which keyboard convention the editing shortcuts follow. Null, the
   /// default, is the platform's own ([platformEditingConvention]): Cmd+C on a
@@ -869,6 +878,7 @@ final class _TextFieldState extends State<TextField> {
           enabled: widget.enabled,
           inactiveSelection: widget.inactiveSelection,
           editingConvention: widget.editingConvention,
+          onSubmitted: widget.onSubmitted,
           theme: Theme.of(context),
           // Read where the theme is read, and for the same reason: the field
           // must not be handed a clipboard by its parent, and must not reach
@@ -896,6 +906,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
     required this.enabled,
     required this.inactiveSelection,
     required this.editingConvention,
+    required this.onSubmitted,
     required this.theme,
     required this.clipboard,
     required this.contextMenu,
@@ -910,6 +921,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
   final bool enabled;
   final InactiveSelectionHighlight inactiveSelection;
   final EditingConvention? editingConvention;
+  final void Function(String value)? onSubmitted;
   final ThemeData theme;
   final Clipboard clipboard;
   final ContextMenuController? contextMenu;
@@ -928,6 +940,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
       )
         ..inactiveSelection = inactiveSelection
         ..editingConvention = editingConvention
+        ..onSubmitted = onSubmitted
         ..theme = theme
         ..clipboard = clipboard
         ..contextMenu = contextMenu
@@ -949,6 +962,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
       ..readOnly = readOnly
       ..inactiveSelection = inactiveSelection
       ..editingConvention = editingConvention
+      ..onSubmitted = onSubmitted
       ..theme = theme
       ..clipboard = clipboard
       ..contextMenu = contextMenu
@@ -989,6 +1003,9 @@ final class RenderTextField extends RenderBox
 
   EditingConvention get _convention =>
       editingConvention ?? platformEditingConvention;
+
+  /// Called on a plain Enter; see [TextField.onSubmitted].
+  void Function(String value)? onSubmitted;
 
   /// The platform's input method, and the window it composes into.
   ///
@@ -1649,6 +1666,15 @@ final class RenderTextField extends RenderBox
       }
     }
     switch (event.logicalKey) {
+      // Enter confirms only when someone listens and no modifier asks for
+      // something else; while an input method composes, it is the IME's.
+      case logicalKeyEnter
+          when onSubmitted != null &&
+              !_controller.isComposing &&
+              !shift &&
+              !event.modifiers.contains(KeyModifier.alt):
+        onSubmitted!(_controller.value);
+        return true;
       case logicalKeyArrowLeft:
         _controller.moveCaret(-1, extend: shift);
         return true;

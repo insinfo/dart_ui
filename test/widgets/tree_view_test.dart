@@ -12,6 +12,33 @@ void main() {
       harness.dispose();
     });
 
+    test('a node with an icon draws it before its label', () {
+      int drawn(List<TreeNode> nodes) {
+        final harness = _TreeHarness(nodes: nodes);
+        harness.frame();
+        final DisplayList list = DisplayList();
+        harness.owner.pipelineOwner.drawFrame(list);
+        final int count = list.commandCount;
+        harness.dispose();
+        return count;
+      }
+
+      FrameworkFonts.install();
+      addTearDown(FontRegistry.instance.reset);
+      final int plain = drawn(const <TreeNode>[TreeNode(label: 'Documents')]);
+      final int withIcon = drawn(const <TreeNode>[
+        TreeNode(label: 'Documents', icon: PhosphorIcons.folder),
+      ]);
+      expect(withIcon, greaterThan(plain));
+      final harness = _TreeHarness(nodes: const <TreeNode>[
+        TreeNode(label: 'Documents', icon: PhosphorIcons.folder),
+      ]);
+      harness.frame();
+      expect((harness.tree.childAt(0) as RenderTreeItem).icon,
+          PhosphorIcons.folder);
+      harness.dispose();
+    });
+
     test('expanding a node reveals its children in place', () {
       final harness = _TreeHarness(nodes: _fileTree());
       harness.expanded.add('src');

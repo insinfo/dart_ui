@@ -52,6 +52,7 @@ import 'directionality.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'icon.dart';
 import 'style.dart';
 import 'theme.dart';
 import 'virtualization.dart';
@@ -68,9 +69,18 @@ final class TreeNode {
     this.children = const <TreeNode>[],
     this.hasChildren,
     this.enabled = true,
+    this.icon,
+    this.iconColor,
   });
 
   final String label;
+
+  /// Drawn between the disclosure chevron and the label - a folder, a
+  /// drive - or nothing.
+  final IconData? icon;
+
+  /// The icon's colour; null for the label's.
+  final Color? iconColor;
 
   /// What this node *is*, across rebuilds in which the list changed. Defaults
   /// to the label, exactly as [TabItem.id] does.
@@ -380,6 +390,8 @@ final class _TreeViewState extends State<TreeView> {
               // row's element instead of rebuilding it as a stranger.
               key: ValueKey<Object>(_rows[index].node.identity),
               label: _rows[index].node.label,
+              icon: _rows[index].node.icon,
+              iconColor: _rows[index].node.iconColor,
               depth: _rows[index].depth,
               index: index,
               extent: _rowExtent,
@@ -404,6 +416,8 @@ final class _TreeItemWidget extends RenderObjectWidget {
   const _TreeItemWidget({
     super.key,
     required this.label,
+    this.icon,
+    this.iconColor,
     required this.depth,
     required this.index,
     required this.extent,
@@ -416,6 +430,8 @@ final class _TreeItemWidget extends RenderObjectWidget {
   });
 
   final String label;
+  final IconData? icon;
+  final Color? iconColor;
   final int depth;
   final int index;
   final double extent;
@@ -432,6 +448,8 @@ final class _TreeItemWidget extends RenderObjectWidget {
   @override
   RenderTreeItem createRenderObject(BuildContext context) => RenderTreeItem()
     ..label = label
+    ..icon = icon
+    ..iconColor = iconColor
     ..level = depth
     ..index = index
     ..extent = extent
@@ -449,6 +467,8 @@ final class _TreeItemWidget extends RenderObjectWidget {
   ) {
     object
       ..label = label
+      ..icon = icon
+      ..iconColor = iconColor
       ..level = depth
       ..index = index
       ..extent = extent
@@ -485,6 +505,29 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
   set label(String value) {
     if (value == _label) return;
     _label = value;
+    markNeedsPaint();
+  }
+
+  IconData? _icon;
+  Color? _iconColor;
+
+  /// Paints [icon]; kept out of the render tree because the row has no
+  /// children and the icon has no behaviour - only a picture and a size.
+  RenderIcon? _iconPainter;
+
+  IconData? get icon => _icon;
+
+  set icon(IconData? value) {
+    if (value == _icon) return;
+    _icon = value;
+    markNeedsPaint();
+  }
+
+  Color? get iconColor => _iconColor;
+
+  set iconColor(Color? value) {
+    if (value == _iconColor) return;
+    _iconColor = value;
     markNeedsPaint();
   }
 
@@ -593,7 +636,27 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
             offset.dx + toggleStart, offset.dy, toggleExtent, size.height),
       );
     }
-    final double labelStart = indent + toggleExtent + 2;
+    double labelStart = indent + toggleExtent + 2;
+    final IconData? icon = _icon;
+    if (icon != null) {
+      final double iconSize = theme.iconTheme.size ?? kDefaultIconSize;
+      final RenderIcon painter = _iconPainter ??= RenderIcon(icon);
+      painter
+        ..icon = icon
+        ..iconSize = iconSize
+        ..textDirection = _textDirection
+        ..color = !enabled
+            ? theme.disabledForeground
+            : _iconColor ??
+                (_selected ? theme.onSelection : theme.foregroundSecondary);
+      painter.layout(BoxConstraints.tight(Size(iconSize, iconSize)));
+      final double x = rtl ? size.width - labelStart - iconSize : labelStart;
+      painter.paint(
+          list,
+          Offset(offset.dx + x,
+              (offset.dy + (size.height - iconSize) / 2).roundToDouble()));
+      labelStart += iconSize + 6;
+    }
     final double labelWidth =
         (size.width - labelStart - 4).clamp(0.0, double.infinity);
     final Size box = measureLabel(_label);

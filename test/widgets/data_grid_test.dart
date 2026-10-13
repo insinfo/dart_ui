@@ -52,6 +52,57 @@ void main() {
     });
   });
 
+  group('DataGrid as a file list', () {
+    test('a double click or Enter opens the row', () {
+      final harness = _GridHarness(rowCount: 10);
+      harness.frame();
+      final Offset row2 = harness.bodyPoint(10, 2 * 20 + 5);
+      harness.body.handlePointerEvent(_press(row2));
+      harness.body.handlePointerEvent(_press(row2, clicks: 2));
+      harness.frame();
+      expect(harness.selection, <int>{2});
+      expect(harness.activated, <int>[2]);
+      harness.body.handleKeyEvent(_key(logicalKeyArrowDown));
+      harness.frame();
+      harness.body.handleKeyEvent(_key(logicalKeyEnter));
+      expect(harness.activated, <int>[2, 3]);
+      harness.dispose();
+    });
+
+    test('a right click keeps a selection it lands in, takes one it misses',
+        () {
+      final harness = _GridHarness(
+          rowCount: 10, selectionMode: DataGridSelectionMode.multiple)
+        ..selection = <int>{1, 2, 3};
+      harness.frame();
+      harness.body.handlePointerEvent(_press(harness.bodyPoint(10, 2 * 20 + 5),
+          button: PointerButton.secondary));
+      harness.frame();
+      expect(harness.selection, <int>{1, 2, 3},
+          reason: 'the menu acts on the whole selection');
+      expect(harness.secondary, <int?>[2]);
+
+      harness.body.handlePointerEvent(_press(harness.bodyPoint(10, 5 * 20 + 5),
+          button: PointerButton.secondary));
+      harness.frame();
+      expect(harness.selection, <int>{5});
+      harness.dispose();
+    });
+
+    test('a click below the last row drops the selection', () {
+      final harness = _GridHarness(rowCount: 2)..selection = <int>{1};
+      harness.frame();
+      harness.body.handlePointerEvent(_press(harness.bodyPoint(10, 100)));
+      harness.frame();
+      expect(harness.selection, isEmpty);
+      harness.body.handlePointerEvent(
+          _press(harness.bodyPoint(10, 100), button: PointerButton.secondary));
+      expect(harness.secondary, <int?>[null],
+          reason: 'empty space: the background menu');
+      harness.dispose();
+    });
+  });
+
   group('DataGrid keyboard', () {
     test('the first Down selects the first row, later ones walk', () {
       final harness = _GridHarness(rowCount: 100);
@@ -272,6 +323,8 @@ final class _GridHarness {
   Set<int> selection = <int>{};
   DataGridSort? sort;
   final List<String> resized = <String>[];
+  final List<int> activated = <int>[];
+  final List<int?> secondary = <int?>[];
 
   void _mount() => owner.updateRoot(Directionality(
         textDirection: TextDirection.leftToRight,
@@ -291,6 +344,8 @@ final class _GridHarness {
           onSortChanged: (DataGridSort next) => sort = next,
           onColumnResized: (int column, double width) =>
               resized.add('$column:$width'),
+          onRowActivated: activated.add,
+          onSecondaryPress: secondary.add,
           cellBuilder: (BuildContext context, int row, int column) =>
               Text('r$row c$column'),
         ),
@@ -351,14 +406,17 @@ KeyDownEvent _key(int logicalKey, {bool shift = false, bool control = false}) =>
       },
     );
 
-PointerDownEvent _press(Offset position) => PointerDownEvent(
+PointerDownEvent _press(Offset position,
+        {PointerButton button = PointerButton.primary, int clicks = 1}) =>
+    PointerDownEvent(
       windowId: const NativeWindowId(1),
       generation: 1,
       timestamp: Duration.zero,
       pointerId: 0,
       kind: PointerKind.mouse,
       logicalPosition: position,
-      button: PointerButton.primary,
+      button: button,
+      clickCount: clicks,
     );
 
 PointerMoveEvent _move(Offset position) => PointerMoveEvent(

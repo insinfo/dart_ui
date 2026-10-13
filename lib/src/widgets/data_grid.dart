@@ -37,6 +37,7 @@ import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
 import '../layout/render_viewport.dart';
+import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
 import '../semantics/semantics.dart';
 import '../text/shaper.dart' show TextDirection;
@@ -115,6 +116,8 @@ final class DataGrid extends StatefulWidget {
     this.selectedRows = const <int>{},
     this.onSelectionChanged,
     this.onColumnResized,
+    this.onRowActivated,
+    this.onSecondaryPress,
     this.controller,
   });
 
@@ -146,6 +149,18 @@ final class DataGrid extends StatefulWidget {
 
   /// Reports a width the user dragged, for callers that persist layout.
   final void Function(int columnIndex, double width)? onColumnResized;
+
+  /// A row was opened: double-clicked, or Enter pressed on the keyboard's
+  /// row - what opens a file in a file manager.
+  final void Function(int row)? onRowActivated;
+
+  /// A secondary (right) press, with the row under it or null for the empty
+  /// space below the rows. The selection has already been settled the way
+  /// a file manager settles it - a row that was not selected becomes the
+  /// selection, a selected one keeps the whole selection so the menu acts on
+  /// all of it, empty space clears it - so a [ContextMenuArea] around the
+  /// grid can build its menu from the selection.
+  final void Function(int? row)? onSecondaryPress;
 
   final ScrollPosition? controller;
 
@@ -254,6 +269,47 @@ final class _DataGridState extends State<DataGrid> {
     if (target != null) _position.jumpTo(target);
   }
 
+  /// A press on the body: [index] is the row, or -1 for the empty space
+  /// below the last one.
+  void _handlePress(int index, Set<KeyModifier> modifiers,
+      {PointerButton button = PointerButton.primary, int clickCount = 1}) {
+    final bool onRow = index >= 0 && index < widget.rowCount;
+    switch (button) {
+      case PointerButton.primary:
+        if (!onRow) {
+          // Empty space: a plain click drops the selection, as everywhere.
+          final bool extending = modifiers.contains(KeyModifier.shift) ||
+              modifiers.contains(KeyModifier.control) ||
+              modifiers.contains(KeyModifier.meta);
+          if (!extending && widget.selectedRows.isNotEmpty) {
+            _emitSelection(const <int>{});
+          }
+          return;
+        }
+        if (clickCount >= 2) {
+          // The first click of the pair already selected the row.
+          widget.onRowActivated?.call(index);
+          return;
+        }
+        _handleRowPress(index, modifiers);
+      case PointerButton.secondary:
+        if (onRow) {
+          if (!widget.selectedRows.contains(index)) {
+            _handleRowPress(index, const <KeyModifier>{});
+          } else {
+            _cursor = index;
+          }
+        } else if (widget.selectedRows.isNotEmpty) {
+          _emitSelection(const <int>{});
+        }
+        widget.onSecondaryPress?.call(onRow ? index : null);
+      case PointerButton.middle:
+      case PointerButton.forward:
+      case PointerButton.back:
+        break;
+    }
+  }
+
   void _handleRowPress(int index, Set<KeyModifier> modifiers) {
     _cursor = index;
     switch (widget.selectionMode) {
@@ -265,7 +321,8 @@ final class _DataGridState extends State<DataGrid> {
       case DataGridSelectionMode.multiple:
         if (modifiers.contains(KeyModifier.shift)) {
           _emitSelection(_range(_anchor, index));
-        } else if (modifiers.contains(KeyModifier.control)) {
+        } else if (modifiers.contains(KeyModifier.control) ||
+            modifiers.contains(platformEditingConvention.commandModifier)) {
           final Set<int> next = <int>{...widget.selectedRows};
           if (!next.remove(index)) next.add(index);
           _anchor = index;
@@ -320,6 +377,10 @@ final class _DataGridState extends State<DataGrid> {
           return true;
         }
         _moveCursor(_cursor);
+        return true;
+      case logicalKeyEnter when widget.onRowActivated != null:
+        if (_cursor < 0 || _cursor >= widget.rowCount) return false;
+        widget.onRowActivated!(_cursor);
         return true;
       case 0x41: // A
         if (control && widget.selectionMode == DataGridSelectionMode.multiple) {
@@ -382,7 +443,7 @@ final class _DataGridState extends State<DataGrid> {
               selectedCount: widget.selectedRows.length,
               cursor: _cursor,
               onKeyEvent: _handleKey,
-              onRowPressed: _handleRowPress,
+              onRowPressed: _handlePress,
               onViewportExtent: (double extent) {
                 if (extent == _viewportExtent) return;
                 _viewportExtent = extent;
@@ -958,7 +1019,8 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
   final int selectedCount;
   final int cursor;
   final bool Function(KeyEvent event) onKeyEvent;
-  final void Function(int index, Set<KeyModifier> modifiers) onRowPressed;
+  final void Function(int index, Set<KeyModifier> modifiers,
+      {PointerButton button, int clickCount}) onRowPressed;
   final void Function(double extent) onViewportExtent;
 
   @override
@@ -1019,7 +1081,8 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
   int selectedCount;
   int cursor;
   bool Function(KeyEvent event) onKeyEvent;
-  void Function(int index, Set<KeyModifier> modifiers) onRowPressed;
+  void Function(int index, Set<KeyModifier> modifiers,
+      {PointerButton button, int clickCount}) onRowPressed;
   void Function(double extent) onViewportExtent;
 
   ScrollPosition get position => _position;
@@ -1114,10 +1177,17 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
     if (event is PointerDownEvent) {
       final double contentY =
           globalToLocal(event.logicalPosition).dy + _position.pixels;
-      final int index = _virtualization.indexAt(contentY);
-      if (index >= 0 && index < _virtualization.itemCount) {
-        onRowPressed(index, _modifiers);
-      }
+      // Past the last row is empty space, not the last row: `indexAt`
+      // clamps.
+      final int index = contentY >= _virtualization.totalExtent
+          ? -1
+          : _virtualization.indexAt(contentY);
+      onRowPressed(
+        index >= 0 && index < _virtualization.itemCount ? index : -1,
+        _modifiers,
+        button: event.button,
+        clickCount: event.clickCount,
+      );
     }
   }
 
