@@ -31,6 +31,7 @@ import '../graphics/vector/bezier.dart';
 import '../graphics/vector/primitives.dart';
 import '../graphics/vector/selectable_objects.dart';
 import '../graphics/vector/structural_objects.dart';
+import 'node_editing.dart';
 
 /// Types of interactive transform handles.
 enum TransformHandle {
@@ -224,6 +225,21 @@ class SelectionManager {
 
   /// The point rotation actually turns about.
   Offset get pivot => rotationPivot ?? selectionBounds.center;
+
+  /// The nodes the Shape tool has picked on the curve it edits.
+  final NodeSelection nodes = NodeSelection();
+
+  /// The curve the Shape tool edits - the selection, when it is exactly one
+  /// curve - with [nodes] kept on it; null, and no nodes, otherwise.
+  VectorCurve? syncNodeCurve() {
+    final VectorCurve? curve =
+        _selectedObjects.length == 1 && _selectedObjects.first is VectorCurve
+            ? _selectedObjects.first as VectorCurve
+            : null;
+    nodes.edit(curve);
+    nodes.prune();
+    return curve;
+  }
 
   /// The list of currently selected objects.
   List<SelectableObject> get selectedObjects =>

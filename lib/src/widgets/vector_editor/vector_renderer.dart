@@ -29,6 +29,7 @@ import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
 import '../../rendering/text/font_registry.dart';
 import '../../rendering/text/text_painter.dart';
+import '../../vector_editing/node_editing.dart';
 import '../../vector_editing/selection.dart';
 import '../../vector_editing/tool_mode.dart';
 import '../theme.dart';
@@ -253,8 +254,13 @@ class VectorRenderer {
       _renderGuides(page, list, zoom, colors);
     }
 
-    // 6. Selection highlights & transform handles.
-    if (selection != null && selection.hasSelection) {
+    // 6. Selection highlights & transform handles - or, with the Shape
+    // tool on a curve, its nodes and their handles instead.
+    final VectorCurve? edited =
+        currentTool == ToolMode.shaper ? selection?.nodes.curve : null;
+    if (edited != null && selection!.selectedObjects.contains(edited)) {
+      _renderNodes(edited, selection.nodes, list, zoom, colors);
+    } else if (selection != null && selection.hasSelection) {
       _renderSelection(selection, list, zoom, colors);
     }
 
@@ -526,6 +532,75 @@ class VectorRenderer {
           }
         }
       }
+    }
+  }
+
+  /// The Shape tool's view of [curve]: its outline as a hairline, every
+  /// node as a small square - filled when picked - and the Bézier handles of
+  /// the picked nodes as levers ending in a dot. All in screen pixels.
+  static void _renderNodes(
+    VectorCurve curve,
+    NodeSelection picked,
+    DisplayList list,
+    double zoom,
+    VectorCanvasColors colors,
+  ) {
+    final double scale = zoom == 0 ? 1.0 : zoom;
+    final int line = list.addPaint(
+      colorArgb: colors.selection.value,
+      style: paintStyleStroke,
+      strokeWidth: 1.0 / scale,
+    );
+    final int fill = list.addPaint(colorArgb: colors.handleFill.value);
+    final int accent = list.addPaint(colorArgb: colors.selection.value);
+
+    Offset doc(Offset local) => NodeEditing.toDocument(curve, local);
+
+    // The outline, so a curve with no fill is still visible being edited.
+    final PathBuilder outline = PathBuilder();
+    for (final VectorPath path in curve.paths) {
+      final Offset start = doc(path.start);
+      outline.moveTo(start.dx, start.dy);
+      for (final Object point in path.points) {
+        if (point is CurvePoint) {
+          final Offset c1 = doc(point.control1);
+          final Offset c2 = doc(point.control2);
+          final Offset end = doc(point.endpoint);
+          outline.cubicTo(c1.dx, c1.dy, c2.dx, c2.dy, end.dx, end.dy);
+        } else {
+          final Offset end = doc(point as Offset);
+          outline.lineTo(end.dx, end.dy);
+        }
+      }
+      if (path.isClosed) outline.close();
+    }
+    list.drawPath(list.addPath(outline.build()), line);
+
+    final double size = 6.0 / scale;
+    for (final PathNode node in picked.nodes) {
+      final Offset at =
+          doc(NodeEditing.nodePoint(curve.paths[node.path], node.index));
+      for (final NodeHandleSide side in NodeHandleSide.values) {
+        final Offset? handle =
+            NodeEditing.handle(curve, NodeHandleRef(node, side));
+        if (handle == null) continue;
+        final Offset end = doc(handle);
+        final PathBuilder lever = PathBuilder()
+          ..moveTo(at.dx, at.dy)
+          ..lineTo(end.dx, end.dy);
+        list.drawPath(list.addPath(lever.build()), line);
+        final int tip = list.addPath(_diamondPath(end, size * 0.9));
+        list
+          ..drawPath(tip, accent)
+          ..drawPath(tip, line);
+      }
+    }
+    for (final PathNode node in NodeEditing.nodesOf(curve)) {
+      final Offset at =
+          doc(NodeEditing.nodePoint(curve.paths[node.path], node.index));
+      final Rect box = Rect.fromCenter(center: at, width: size, height: size);
+      list.drawRectangle(box, picked.nodes.contains(node) ? accent : fill);
+      list.drawRectangle(box, line);
     }
   }
 

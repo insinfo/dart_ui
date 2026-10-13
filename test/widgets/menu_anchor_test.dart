@@ -569,6 +569,21 @@ void main() {
       harness.dispose();
     });
 
+    test('F10 can be left to the application, Alt still works', () {
+      final _BarHarness harness = _BarHarness(f10Activates: false)..frame();
+      final FocusNode? behind = focusBehind(harness);
+
+      harness.pressKey(f10);
+      expect(harness.owner.focusManager.primaryFocus, same(behind));
+      expect(harness.barButton('File').isHighlighted, isFalse);
+
+      harness
+        ..keyDown(alt, alt: true)
+        ..keyUp(alt);
+      expect(harness.owner.focusManager.primaryFocus?.debugLabel, 'MenuBar');
+      harness.dispose();
+    });
+
     test('Alt on its own toggles the bar; Alt+F is not Alt on its own', () {
       final _BarHarness harness = _BarHarness()..frame();
       final FocusNode? behind = focusBehind(harness);
@@ -1028,10 +1043,11 @@ final class _ChainHarness extends _Harness {
 
 /// A [MenuBar] with two top-level menus.
 final class _BarHarness extends _Harness {
-  _BarHarness({this.accelerators = false});
+  _BarHarness({this.accelerators = false, this.f10Activates = true});
 
   /// Labels as `MenuAcceleratorLabel('&File')` rather than plain text.
   final bool accelerators;
+  final bool f10Activates;
 
   Widget _label(String marked) => accelerators
       ? MenuAcceleratorLabel(marked)
@@ -1044,6 +1060,7 @@ final class _BarHarness extends _Harness {
   Widget buildContent() => Column(
         children: <Widget>[
           MenuBar(
+            f10Activates: f10Activates,
             children: <Widget>[
               SubmenuButton(
                 menuChildren: <Widget>[

@@ -93,6 +93,7 @@ final class PlatformMenuBar extends StatefulWidget {
     this.native = true,
     this.height,
     this.color,
+    this.f10Activates = true,
   });
 
   final List<PlatformMenu> menus;
@@ -105,6 +106,10 @@ final class PlatformMenuBar extends StatefulWidget {
 
   /// The in-window bar's background; null for the theme's alternate surface.
   final Color? color;
+
+  /// Whether a bare F10 gives the in-window bar the keyboard; see
+  /// [MenuBar.f10Activates].
+  final bool f10Activates;
 
   /// Whether [context]'s window can show menus in the system bar - what an
   /// application asks before offering the choice.
@@ -244,6 +249,7 @@ final class _PlatformMenuBarState extends State<PlatformMenuBar> {
     final Widget bar = ColoredBox(
       color: widget.color ?? theme.surfaceAlternate,
       child: MenuBar(
+        f10Activates: widget.f10Activates,
         children: <Widget>[
           for (final PlatformMenu menu in widget.menus)
             SubmenuButton(

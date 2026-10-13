@@ -2204,10 +2204,15 @@ final class RenderSubmenuButton extends RenderBoxContainer<BoxParentData>
 /// this works with focus anywhere. Not on a Mac: the application's menus live
 /// in the system menu bar there, and Option alone is half of typing an accent.
 final class MenuBar extends StatefulWidget {
-  const MenuBar({super.key, required this.children});
+  const MenuBar({super.key, required this.children, this.f10Activates = true});
 
   /// The top-level menus, normally [SubmenuButton]s.
   final List<Widget> children;
+
+  /// Whether a bare F10 gives the bar the keyboard. An application whose
+  /// own shortcut is F10 - CorelDRAW's Shape tool - turns it off and keeps
+  /// Alt; F10 then reaches the window's shortcuts.
+  final bool f10Activates;
 
   @override
   State<MenuBar> createState() => _MenuBarState();
@@ -2281,7 +2286,8 @@ final class _MenuBarState extends State<MenuBar> {
   bool _handleWindowKey(KeyEvent event) {
     if (!mounted) return false;
     if (platformEditingConvention == EditingConvention.mac) return false;
-    if (event is KeyDownEvent &&
+    if (widget.f10Activates &&
+        event is KeyDownEvent &&
         event.logicalKey == _logicalKeyF10 &&
         event.modifiers.every((KeyModifier modifier) =>
             modifier == KeyModifier.capsLock ||

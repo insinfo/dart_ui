@@ -55,6 +55,7 @@ import '../../layout/render_box.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_window.dart' show SystemCursor;
 import '../../vector_editing/selection.dart';
+import '../../vector_editing/shape_tool.dart';
 import '../../vector_editing/snap_manager.dart';
 import '../../vector_editing/text_metrics.dart';
 import '../../vector_editing/tool_controller.dart';
@@ -127,6 +128,7 @@ class VectorCanvas extends StatefulWidget {
     this.onTransformCommitted,
     this.onTextCommitted,
     this.onHint,
+    this.onNodesEdited,
   });
 
   final VectorDocument doc;
@@ -172,6 +174,10 @@ class VectorCanvas extends StatefulWidget {
   /// An in-canvas text edit was committed, with the string it replaced.
   final void Function(VectorText object, String before, String after)?
       onTextCommitted;
+
+  /// The Shape tool changed a curve's nodes - one call per gesture, the cue
+  /// to record one undo step for it.
+  final void Function()? onNodesEdited;
 
   /// A one-line description of what the pointer would do here.
   ///
@@ -229,7 +235,11 @@ class VectorCanvasState extends State<VectorCanvas>
   /// The rubber band currently being dragged, in document units, or null.
   Rect? get marqueeRect {
     final ToolController? controller = _controller;
-    return controller is SelectToolController ? controller.marquee : null;
+    return switch (controller) {
+      SelectToolController() => controller.marquee,
+      ShapeToolController() => controller.marquee,
+      _ => null,
+    };
   }
 
   @override
@@ -298,7 +308,13 @@ class VectorCanvasState extends State<VectorCanvas>
       _controllerDoc = widget.doc;
       _controllerSelection = widget.selection;
       _controller = switch (widget.tool) {
-        ToolMode.select || ToolMode.shaper => SelectToolController(
+        ToolMode.shaper => ShapeToolController(
+            doc: widget.doc,
+            methods: _methods,
+            selection: widget.selection,
+            snap: _snap,
+          ),
+        ToolMode.select => SelectToolController(
             doc: widget.doc,
             methods: _methods,
             selection: widget.selection,
@@ -524,11 +540,15 @@ class VectorCanvasState extends State<VectorCanvas>
 
     final Object? created = controller.takeCreatedObject();
     if (created != null) widget.onObjectCreated?.call(created);
+    var edited = false;
     if (controller is SelectToolController) {
       final SelectionEdit? edit = controller.takeEdit();
       if (edit != null) widget.onTransformCommitted?.call(edit);
+    } else if (controller is ShapeToolController && controller.takeEdited()) {
+      edited = true;
+      widget.onNodesEdited?.call();
     }
-    _report(documentChanged: created != null);
+    _report(documentChanged: created != null || edited);
   }
 
   void _zoomToRect(Rect band) {
@@ -578,6 +598,15 @@ class VectorCanvasState extends State<VectorCanvas>
     }
 
     final ToolController? controller = _tool;
+    if (controller is ShapeToolController) {
+      final String? hint =
+          controller.click(point, widget.page, clicks: _pressClickCount);
+      final bool edited = controller.takeEdited();
+      if (edited) widget.onNodesEdited?.call();
+      if (hint != null) widget.onHint?.call(hint);
+      _report(documentChanged: edited);
+      return;
+    }
     if (controller is SelectToolController) {
       if (_pressClickCount >= 2) {
         final SelectableObject? hit = controller.objectAt(point, widget.page);
@@ -962,8 +991,9 @@ final class RenderVectorCanvas extends RenderBox
       case ToolMode.polygon:
       case ToolMode.curve:
         return SystemCursor.crosshair;
-      case ToolMode.select:
       case ToolMode.shaper:
+        return SystemCursor.arrow;
+      case ToolMode.select:
         final double zoom = _zoom == 0 ? 1 : _zoom;
         final Offset point =
             (globalToLocal(event.logicalPosition) - _pan) / zoom;
