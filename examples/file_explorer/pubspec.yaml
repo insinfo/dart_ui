@@ -1,0 +1,14 @@
+name: file_explorer
+description: 'Explorador de arquivos no estilo do Windows 11, 100% Dart.'
+publish_to: none
+
+environment:
+  sdk: ^3.6.0
+
+dependencies:
+  dart_ui:
+    path: ../..
+
+dev_dependencies:
+  lints: ^5.1.0
+  test: ^1.25.0
