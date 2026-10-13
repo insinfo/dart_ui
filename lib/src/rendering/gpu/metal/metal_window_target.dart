@@ -122,6 +122,9 @@ final class MetalWindowTarget
   final Map<int, int> _wrapped = <int, int>{};
 
   int _generation = 0;
+
+  /// The window's present generation when the current frame began.
+  int _frameWindowGeneration = -1;
   int? _pendingClear;
   int? _frameSlot;
 
@@ -211,6 +214,12 @@ final class MetalWindowTarget
     }
     final int slot = _surface.backSlot;
     _frameSlot = slot;
+    // The window's generation as this frame starts - what the window checks
+    // the present against. The target's own [_generation] counts only the
+    // resizes it was told about; a zoom animation resizes the window twenty
+    // times while the target hears of one or two, and presenting with the
+    // target's count got every later frame rejected - a white window.
+    _frameWindowGeneration = _surface.presentGeneration;
     _pendingClear = request.clearColor;
     _targetForSlot(slot).beginFrame(clearColor: request.clearColor);
     return Frame(
@@ -308,7 +317,7 @@ final class MetalWindowTarget
     }
 
     // Only now. Between `commit` and here the surface was still being written.
-    return _surface.presentBackBuffer(generation: _generation);
+    return _surface.presentBackBuffer(generation: _frameWindowGeneration);
   }
 
   @override

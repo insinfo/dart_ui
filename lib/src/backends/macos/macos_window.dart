@@ -843,6 +843,7 @@ final class MacosWindow
     if (isDisposed || _resizeInFlight) return;
     _resizeInFlight = true;
     final previous = _pool;
+    var attachedNew = false;
     try {
       final pool = _allocatePool();
       if (pool == null) return;
@@ -867,9 +868,44 @@ final class MacosWindow
       _pool = pool;
       _descriptor = pool.describe(_renderScale, host: this);
       previous?.dispose();
+      attachedNew = true;
     } finally {
       _resizeInFlight = false;
     }
+    // A failed attach waits for the next resize, as before - retrying here
+    // would spin on a machine that cannot allocate.
+    if (isDisposed || !attachedNew) return;
+    // A zoom, a double-click on the title bar or a live resize sends a burst
+    // of sizes while this was attaching; they were not dropped silently but
+    // deferred to here. Chase the size the window has *now* - stopping at the
+    // first one left surfaces from mid-animation, every frame was rejected
+    // for the wrong size and the window stayed white.
+    if (_poolStale) {
+      _generation.invalidate();
+      unawaited(_reallocate());
+      return;
+    }
+    // The surfaces finally match. Announce them as a resize under the new
+    // generation: the resize sent while they were being made pointed the
+    // presenter at the pool being replaced, and it rebinds on this one.
+    _emit(
+      WindowResizedEvent(
+        windowId: _id,
+        generation: _generation.current,
+        clientSize: _clientSize,
+        renderScale: _renderScale,
+      ),
+    );
+  }
+
+  /// Whether the pool's pixel size differs from what the window needs.
+  bool get _poolStale {
+    final pool = _pool;
+    if (pool == null) return false;
+    return (_clientSize.width * _renderScale).round() !=
+            pool.surfaces.first.width ||
+        (_clientSize.height * _renderScale).round() !=
+            pool.surfaces.first.height;
   }
 
   void _onHostReplaced(MacosHostHandshake handshake, Duration downtime) {
