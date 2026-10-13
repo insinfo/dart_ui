@@ -22,6 +22,7 @@ import '../layout/alignment.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_constrained_box.dart';
+import '../layout/render_flex.dart' show Axis;
 import 'element.dart';
 import 'widget.dart';
 
@@ -653,6 +654,109 @@ final class RenderOverflowBox extends RenderSingleChildBox {
     final RenderBox? child = this.child;
     if (child == null) return;
     child.layout(_innerConstraints(constraints), parentUsesSize: true);
+    child.parentData!.offset = _alignment.offsetFor(child.size, size);
+  }
+}
+
+/// Lays its child out with no constraints at all - or only along
+/// [constrainedAxis] - and then fits itself to the child within its own,
+/// aligning the child in the result. Flutter's `UnconstrainedBox`.
+///
+/// What it is for: letting a child take its natural size inside a parent
+/// that would otherwise stretch it - a button in a column that stretches,
+/// say. A child larger than the box overflows it, visibly and unclipped, and
+/// [RenderUnconstrainedBox.overflow] records by how much, the same policy as
+/// a [Row] that overflows.
+final class UnconstrainedBox extends SingleChildRenderObjectWidget {
+  const UnconstrainedBox({
+    super.key,
+    this.alignment = Alignment.center,
+    this.constrainedAxis,
+    super.child,
+  });
+
+  /// A physical [Alignment] rather than Flutter's `AlignmentGeometry`.
+  final Alignment alignment;
+
+  /// The axis that keeps the parent's constraints, or null for neither.
+  final Axis? constrainedAxis;
+
+  @override
+  RenderUnconstrainedBox createRenderObject(BuildContext context) =>
+      RenderUnconstrainedBox(
+          alignment: alignment, constrainedAxis: constrainedAxis);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant RenderUnconstrainedBox renderObject,
+  ) {
+    renderObject
+      ..alignment = alignment
+      ..constrainedAxis = constrainedAxis;
+  }
+}
+
+/// The render object behind [UnconstrainedBox].
+final class RenderUnconstrainedBox extends RenderSingleChildBox {
+  RenderUnconstrainedBox({
+    Alignment alignment = Alignment.center,
+    Axis? constrainedAxis,
+    super.child,
+  })  : _alignment = alignment,
+        _constrainedAxis = constrainedAxis;
+
+  Alignment _alignment;
+  Axis? _constrainedAxis;
+
+  Alignment get alignment => _alignment;
+
+  set alignment(Alignment value) {
+    if (value == _alignment) return;
+    _alignment = value;
+    markNeedsLayout();
+  }
+
+  Axis? get constrainedAxis => _constrainedAxis;
+
+  set constrainedAxis(Axis? value) {
+    if (value == _constrainedAxis) return;
+    _constrainedAxis = value;
+    markNeedsLayout();
+  }
+
+  /// How far the child is larger than this box, per axis, after the last
+  /// layout: zero when it fits.
+  Size get overflow => _overflow;
+  Size _overflow = Size.zero;
+
+  BoxConstraints _childConstraints(BoxConstraints constraints) =>
+      switch (_constrainedAxis) {
+        Axis.horizontal => BoxConstraints(
+            minWidth: constraints.minWidth,
+            maxWidth: constraints.maxWidth,
+          ),
+        Axis.vertical => BoxConstraints(
+            minHeight: constraints.minHeight,
+            maxHeight: constraints.maxHeight,
+          ),
+        null => BoxConstraints(),
+      };
+
+  @override
+  void performLayout() {
+    final RenderBox? child = this.child;
+    if (child == null) {
+      size = constraints.smallest;
+      _overflow = Size.zero;
+      return;
+    }
+    child.layout(_childConstraints(constraints), parentUsesSize: true);
+    size = constraints.constrain(child.size);
+    _overflow = Size(
+      math.max(0, child.size.width - size.width),
+      math.max(0, child.size.height - size.height),
+    );
     child.parentData!.offset = _alignment.offsetFor(child.size, size);
   }
 }

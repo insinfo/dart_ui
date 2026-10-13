@@ -287,6 +287,13 @@ abstract class ImplicitlyAnimatedWidgetState<T extends ImplicitlyAnimatedWidget>
     super.dispose();
   }
 
+  /// Runs a transition from the start, for one the widget begins with -
+  /// `TweenAnimationBuilder`'s first build - rather than one a new target
+  /// set off. Call it from `build`, the build-time event it has to be (see
+  /// the library documentation); it reads the theme and the clock.
+  @protected
+  void animateFromStart() => _ensureController()?.forward(from: 0);
+
   /// The controller to drive the transition with, or null when there is none to
   /// have.
   ///

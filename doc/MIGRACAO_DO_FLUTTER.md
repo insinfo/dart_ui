@@ -146,12 +146,12 @@ feito**, que é uma lista de trabalho e não uma posição.
 
 ### Recusas de projeto
 
-- **`Container`** — não existe. Use a composição explícita: `Padding`,
-  `Align`, `SizedBox`, `DecoratedBox`. `Container` no Flutter é um atalho para
-  sete widgets, e o atalho é o que torna difícil ler o que uma tela faz.
-- **`AnimatedContainer`** — consequência da anterior: não há `Container` para
-  animar. Componha `AnimatedPadding`, `AnimatedAlign` e `AnimatedOpacity`, que
-  é o que o `AnimatedContainer` faz por dentro de qualquer modo.
+- **`Container`** e **`AnimatedContainer`** — foram recusa até outubro de
+  2026 e existem agora, para o código migrado do Flutter compilar como está.
+  A recomendação continua: em código novo, componha `Padding`, `Align`,
+  `SizedBox`, `DecoratedBox` (e as versões `Animated*`), porque um
+  `Container` é um atalho para sete widgets e o atalho é o que torna difícil
+  ler o que uma tela faz.
 - **Platform channels, plugins do pub.dev com código nativo** — não existem e
   não vão existir. O equivalente é FFI direto, em Dart, dentro do repositório.
 - **Widgets Material/Cupertino** (`ListTile`, `SnackBar`, `Drawer`,
@@ -164,13 +164,17 @@ feito**, que é uma lista de trabalho e não uma posição.
 
 Sem justificativa de projeto — simplesmente não escrito:
 
-- **Layout**: `Table`, `Flow`, `CustomMultiChildLayout`, `FittedBox`,
-  `UnconstrainedBox`, `Placeholder`.
-- **Texto rico**: `RichText`, `TextSpan` no nível de widget, `WidgetSpan`. O
-  motor de parágrafo já compõe estilos por trecho (`text/paragraph.dart`); o
-  que falta é a fachada de widget sobre ele.
-- **Animação**: `Hero`, `AnimatedSize`, `AnimatedSwitcher`, `AnimatedBuilder`,
-  `TweenAnimationBuilder`, `ValueListenableBuilder`, `AnimatedList`.
+- **Layout**: `Flow`. (`Table`, `CustomMultiChildLayout` com `LayoutId`,
+  `FittedBox`, `UnconstrainedBox`, `Placeholder` e `Container` existem desde
+  outubro de 2026.)
+- **Texto rico**: `WidgetSpan`. (`RichText`, `Text.rich` e `TextSpan` no
+  nível de widget existem.)
+- **Animação**: `Hero`, `AnimatedSize`, `AnimatedList`. (`AnimatedBuilder`,
+  `ListenableBuilder`, as `*Transition`, `TweenAnimationBuilder`,
+  `AnimatedContainer`, `AnimatedSwitcher` e `ValueListenableBuilder`
+  existem; o `TweenAnimationBuilder` só retoma do valor corrente quando sabe
+  interpolar o tipo - os tweens do framework ou um `lerp` dado -, porque o
+  `Tween` daqui é imutável.)
 - **Rolagem**: `CustomScrollView` e a família `Sliver*`, `NestedScrollView`.
 
 ### O que existe aqui e não existe no Flutter
