@@ -630,6 +630,117 @@ class EditorModel {
     touch('Converted ${converted.length} object(s) to curves');
   }
 
+  /// [object]'s outline as curves in document coordinates, or null for
+  /// what has none (a group).
+  static List<VectorPath>? _documentPaths(SelectableObject object) {
+    final DocumentObject? curve = switch (object) {
+      VectorText() => VectorTextMetrics.toCurves(object),
+      VectorCurve() => object,
+      _ => object.toCurve(),
+    };
+    if (curve is! VectorCurve) return null;
+    final List<double> trafo = curve.trafo;
+    Offset map(Offset point) => applyTrafoToPoint(point, trafo);
+    return <VectorPath>[
+      for (final VectorPath path in curve.paths)
+        VectorPath(
+          start: map(path.start),
+          closure: path.closure,
+          points: <Object>[
+            for (final Object point in path.points)
+              switch (point) {
+                CurvePoint() => CurvePoint(
+                    map(point.control1),
+                    map(point.control2),
+                    map(point.endpoint),
+                    point.nodeType,
+                  ),
+                Offset() => map(point),
+                _ => point,
+              },
+          ],
+        ),
+    ];
+  }
+
+  /// Whether Combine has two or more objects with an outline to join.
+  bool get canCombine =>
+      hasSelection &&
+      selection.selectedObjects.where((o) => o is! VectorGroup).length >= 2;
+
+  /// CorelDRAW's Combine (Ctrl+L): the selected objects become one curve
+  /// with all their outlines, wearing the style of the last one selected,
+  /// where the bottom one was. Overlaps become holes, as in CorelDRAW.
+  void combineSelection() {
+    if (!canCombine) return;
+    final List<SelectableObject> objects =
+        selection.selectedObjects.where((o) => o is! VectorGroup).toList();
+    final SelectableObject styleFrom = objects.last;
+    final List<SelectableObject> ordered = _inDocumentOrder(objects);
+    final VectorCurve? combined = active.api.record('Combine', () {
+      final List<VectorPath> paths = <VectorPath>[
+        for (final SelectableObject object in ordered)
+          ...?_documentPaths(object),
+      ];
+      final DocumentObject? bottom = ordered.first.parent;
+      if (paths.isEmpty || bottom is! VectorLayer) return null;
+      final int index = bottom.children.indexOf(ordered.first);
+      final VectorCurve curve = VectorCurve(
+        paths: paths,
+        style: styleFrom.style.copyWith(
+          fill: styleFrom.style.fill.copyWith(fillRule: FillRule.evenOdd),
+        ),
+      );
+      for (final SelectableObject object in ordered) {
+        active.api.methods.removeObject(object);
+      }
+      active.api.methods.addObject(bottom, curve, index);
+      curve.update();
+      return curve;
+    });
+    if (combined == null) return;
+    selection.setSelection(<SelectableObject>[combined]);
+    touch('Combined ${objects.length} objects');
+  }
+
+  /// Whether Break Apart has a curve of several outlines to split.
+  bool get canBreakApart => selection.selectedObjects
+      .any((o) => o is VectorCurve && o.paths.length > 1);
+
+  /// CorelDRAW's Break Apart (Ctrl+K): every curve of several outlines
+  /// becomes one curve per outline, in its place, with its style.
+  void breakApartSelection() {
+    if (!canBreakApart) return;
+    final List<SelectableObject> pieces = active.api.record('Break apart', () {
+      final List<SelectableObject> result = <SelectableObject>[];
+      for (final SelectableObject object
+          in _inDocumentOrder(selection.selectedObjects)) {
+        final DocumentObject? layer = object.parent;
+        if (object is! VectorCurve ||
+            object.paths.length < 2 ||
+            layer is! VectorLayer) {
+          result.add(object);
+          continue;
+        }
+        var index = layer.children.indexOf(object);
+        final List<VectorPath> paths = _documentPaths(object)!;
+        active.api.methods.removeObject(object);
+        for (final VectorPath path in paths) {
+          final VectorCurve piece = VectorCurve(
+            paths: <VectorPath>[path],
+            style: object.style.copyWith(),
+          );
+          active.api.methods.addObject(layer, piece, index++);
+          piece.update();
+          result.add(piece);
+        }
+      }
+      return result;
+    });
+    selection.setSelection(pieces);
+    touch('Broke apart into ${pieces.length} objects');
+  }
+
   /// [objects] sorted bottom to top, so copies keep the stacking order.
   List<SelectableObject> _inDocumentOrder(List<SelectableObject> objects) {
     final order = <DocumentObject, int>{};

@@ -192,8 +192,10 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   // --- object -----------------------------------------------------------------
   ParityFeature(_object, 'Group / Ungroup', 'P0',
       commands: <String>['object.group', 'object.ungroup']),
-  ParityFeature(_object, 'Combine (Ctrl+L)', 'P0'),
-  ParityFeature(_object, 'Break apart (Ctrl+K)', 'P0'),
+  ParityFeature(_object, 'Combine (Ctrl+L)', 'P0',
+      commands: <String>['object.combine']),
+  ParityFeature(_object, 'Break apart (Ctrl+K)', 'P0',
+      commands: <String>['object.breakApart']),
   ParityFeature(_object, 'Convert to curves (Ctrl+Q)', 'P0',
       commands: <String>['object.toCurves']),
   ParityFeature(_object, 'Convert outline to object', 'P1'),

@@ -1,4 +1,4 @@
-/// 
+///
 ///
 /// A tab shows the document name with sK1's `*` marker for unsaved changes, and
 /// carries its own close button.

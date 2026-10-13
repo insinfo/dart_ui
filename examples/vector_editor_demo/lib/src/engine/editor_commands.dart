@@ -418,6 +418,26 @@ final class _EditorCommands {
           disabledReason: (_) => 'select a shape or a text',
           run: (_) => model.convertSelectionToCurves(),
         ),
+        CommandSpec(
+          id: 'object.combine',
+          label: 'Combine',
+          description: 'Joins the selected objects into one curve; '
+              'overlaps become holes.',
+          shortcut: const KeyGesture(logicalKeyL, command: true),
+          enabled: (_) => model.canCombine,
+          disabledReason: (_) => 'select two or more objects',
+          run: (_) => model.combineSelection(),
+        ),
+        CommandSpec(
+          id: 'object.breakApart',
+          label: 'Break Curve Apart',
+          description: 'Splits a curve of several outlines into one curve '
+              'per outline.',
+          shortcut: const KeyGesture(logicalKeyK, command: true),
+          enabled: (_) => model.hasDocument && model.canBreakApart,
+          disabledReason: (_) => 'select a curve with several outlines',
+          run: (_) => model.breakApartSelection(),
+        ),
         _onSelection(
           id: 'object.toFront',
           label: 'To Front',

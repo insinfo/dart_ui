@@ -158,6 +158,43 @@ void main() {
         contains('no such layer'));
   });
 
+  test('combine joins outlines into one curve; break apart undoes it', () {
+    registry
+      ..execute('shape.rectangle',
+          <String, Object?>{'x': 0, 'y': 0, 'width': 100, 'height': 100})
+      ..execute('shape.ellipse',
+          <String, Object?>{'x': 25, 'y': 25, 'width': 50, 'height': 50})
+      ..execute('edit.selectAll');
+    final Rect before = model.selection.selectionBounds;
+
+    expect(registry.execute('object.combine').ok, isTrue);
+    final VectorCurve combined = objects().single as VectorCurve;
+    expect(combined.paths, hasLength(2));
+    expect(combined.cacheBbox.left, closeTo(before.left, 1.5));
+    expect(combined.cacheBbox.width, closeTo(before.width, 3));
+    expect(combined.style.fill.fillRule, FillRule.evenOdd,
+        reason: 'the inner outline is a hole, as in CorelDRAW');
+    expect(model.selection.selectedObjects, <Object>[combined]);
+
+    expect(registry.execute('object.breakApart').ok, isTrue);
+    expect(objects(), hasLength(2));
+    expect(objects().every((o) => o is VectorCurve), isTrue);
+
+    registry.execute('edit.undo');
+    expect(objects().single, isA<VectorCurve>());
+    registry.execute('edit.undo');
+    expect(objects(), hasLength(2));
+    expect(objects().first, isA<VectorRectangle>());
+  });
+
+  test('combine needs two objects, break apart several outlines', () {
+    registry.execute('shape.rectangle',
+        <String, Object?>{'x': 0, 'y': 0, 'width': 10, 'height': 10});
+    expect(registry.execute('object.combine').error, contains('two or more'));
+    expect(registry.execute('object.breakApart').error,
+        contains('several outlines'));
+  });
+
   test('tools are commands with their CorelDRAW keys', () {
     expect(registry.execute('tool.rectangle').ok, isTrue);
     expect(model.tool, ToolMode.rectangle);

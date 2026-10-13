@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 35 | 8 | 20 | 63 | 62% |
+| P0 | 37 | 8 | 18 | 63 | 65% |
 | P1 | 5 | 2 | 37 | 44 | 14% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 41 | 10 | 124 | 175 | 26% |
+| **todas** | 43 | 10 | 122 | 175 | 27% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 60 de 81 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 62 de 83 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 82.
+Comandos registrados: 84.
 
 ## Por área
 
@@ -26,7 +26,7 @@ Comandos registrados: 82.
 | Interações no canvas | 8 | 2 | 3 | 13 | 69% |
 | Barra de propriedades | 3 | 0 | 13 | 16 | 19% |
 | Dockers | 3 | 0 | 12 | 15 | 20% |
-| Operações de objeto | 5 | 2 | 15 | 22 | 27% |
+| Operações de objeto | 7 | 2 | 13 | 22 | 36% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
 | Edição de nós | 0 | 0 | 14 | 14 | 0% |
@@ -163,8 +163,8 @@ Comandos registrados: 82.
 | | funcionalidade | prio | como | falta |
 |---|---|---|---|---|
 | ✅ | Group / Ungroup | P0 | `object.group`, `object.ungroup` |  |
-| ❌ | Combine (Ctrl+L) | P0 |  | tudo |
-| ❌ | Break apart (Ctrl+K) | P0 |  | tudo |
+| ✅ | Combine (Ctrl+L) | P0 | `object.combine` |  |
+| ✅ | Break apart (Ctrl+K) | P0 | `object.breakApart` |  |
 | ✅ | Convert to curves (Ctrl+Q) | P0 | `object.toCurves` |  |
 | ❌ | Convert outline to object | P1 |  | tudo |
 | 🟡 | To front / back of page | P0 | `object.toFront`, `object.toBack` | of the layer; the page has one layer stack per layer |

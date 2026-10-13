@@ -119,6 +119,9 @@ final class EditorMenus {
           CommandItem('object.group'),
           CommandItem('object.ungroup'),
           _,
+          CommandItem('object.combine'),
+          CommandItem('object.breakApart'),
+          _,
           CommandItem('object.toCurves'),
         ]),
         const SubmenuSpec('Paths', <MenuSpecEntry>[
@@ -224,6 +227,10 @@ final class EditorMenus {
           const CommandItem('object.group'),
         if (registry.isEnabled('object.ungroup'))
           const CommandItem('object.ungroup'),
+        if (registry.isEnabled('object.combine'))
+          const CommandItem('object.combine'),
+        if (registry.isEnabled('object.breakApart'))
+          const CommandItem('object.breakApart'),
         _,
         const CommandItem('panel.align',
             label: 'Align and Distribute...', checkable: false),

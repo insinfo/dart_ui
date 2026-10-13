@@ -1,6 +1,8 @@
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 
+export '../../geometry/fill_rule.dart';
+
 /// Measurement units supported by vector documents.
 enum DocUnit {
   /// Millimetres.
@@ -123,11 +125,9 @@ enum DocOrigin {
 // Fill
 // ---------------------------------------------------------------------------
 
-/// How a filled region is determined when sub-paths cross.
-enum FillRule {
-  evenOdd,
-  nonZero,
-}
+// The fill rule is the geometry layer's [FillRule], the one the renderers
+// fill with: a second enum of the same name was hidden from the public API,
+// so no application could set how its own shapes fill.
 
 /// The kind of fill content.
 enum FillType {
