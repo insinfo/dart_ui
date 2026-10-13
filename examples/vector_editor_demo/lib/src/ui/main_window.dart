@@ -650,23 +650,53 @@ class _FindReplaceDialogState extends State<_FindReplaceDialog> {
   final TextEditingController _replace = TextEditingController('');
   bool _matchCase = false;
 
+  /// Text, or colour: CorelDRAW's Find and Replace does both.
+  bool _colours = false;
+
+  /// Where a colour is replaced: fill, outline or both.
+  String _target = 'both';
+
   void _replaceAll() {
     if (_find.value.isEmpty) return;
-    widget.registry.execute('edit.replaceText', <String, Object?>{
-      'find': _find.value,
-      'replace': _replace.value,
-      'matchCase': _matchCase,
+    final CommandOutcome outcome = _colours
+        ? widget.registry.execute('edit.replaceColor', <String, Object?>{
+            'from': _find.value.trim(),
+            'to': _replace.value.trim(),
+            'target': _target,
+          })
+        : widget.registry.execute('edit.replaceText', <String, Object?>{
+            'find': _find.value,
+            'replace': _replace.value,
+            'matchCase': _matchCase,
+          });
+    // A colour typed wrong keeps the dialog open; the status bar says why.
+    if (outcome.ok) closeDialog<void>(context);
+  }
+
+  /// Selects what has the colour in the first field, and closes.
+  void _findColour() {
+    if (_find.value.trim().isEmpty) return;
+    final CommandOutcome outcome =
+        widget.registry.execute('edit.findObjects', <String, Object?>{
+      if (_target != 'outline') 'fill': _find.value.trim(),
+      if (_target == 'outline') 'outline': _find.value.trim(),
     });
-    closeDialog<void>(context);
+    if (outcome.ok) closeDialog<void>(context);
   }
 
   @override
   Widget build(BuildContext context) => SizedBox(
         width: 380,
         child: Dialog(
-          title: 'Find and Replace Text',
+          title: 'Find and Replace',
           onDismiss: () => closeDialog<void>(context),
           actions: <Widget>[
+            if (_colours)
+              Button(
+                label: 'Find',
+                accent: false,
+                onPressed: _findColour,
+              ),
             Button(
                 label: 'Replace All', isDefault: true, onPressed: _replaceAll),
             Button(
@@ -680,21 +710,60 @@ class _FindReplaceDialogState extends State<_FindReplaceDialog> {
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
+              Row(
+                children: <Widget>[
+                  Radio<bool>(
+                    value: false,
+                    groupValue: _colours,
+                    label: 'Text',
+                    onChanged: (bool value) => setState(() => _colours = value),
+                  ),
+                  const SizedBox(width: 12),
+                  Radio<bool>(
+                    value: true,
+                    groupValue: _colours,
+                    label: 'Colour',
+                    onChanged: (bool value) => setState(() => _colours = value),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
               TextField(
                   controller: _find,
-                  label: 'Find',
+                  label: _colours ? 'Find colour (#rrggbb)' : 'Find',
                   onSubmitted: (_) => _replaceAll()),
               const SizedBox(height: 8),
               TextField(
                   controller: _replace,
-                  label: 'Replace with',
+                  label: _colours ? 'Replace with (#rrggbb)' : 'Replace with',
                   onSubmitted: (_) => _replaceAll()),
               const SizedBox(height: 8),
-              CheckBox(
-                value: _matchCase,
-                label: 'Match case',
-                onChanged: (bool value) => setState(() => _matchCase = value),
-              ),
+              if (_colours)
+                Row(
+                  children: <Widget>[
+                    for (final (String id, String label)
+                        in const <(String, String)>[
+                      ('fill', 'Fills'),
+                      ('outline', 'Outlines'),
+                      ('both', 'Both'),
+                    ]) ...<Widget>[
+                      Radio<String>(
+                        value: id,
+                        groupValue: _target,
+                        label: label,
+                        onChanged: (String value) =>
+                            setState(() => _target = value),
+                      ),
+                      const SizedBox(width: 12),
+                    ],
+                  ],
+                )
+              else
+                CheckBox(
+                  value: _matchCase,
+                  label: 'Match case',
+                  onChanged: (bool value) => setState(() => _matchCase = value),
+                ),
             ],
           ),
         ),

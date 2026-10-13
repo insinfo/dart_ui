@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 60 | 3 | 0 | 63 | 98% |
+| P0 | 61 | 2 | 0 | 63 | 98% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 68 | 5 | 102 | 175 | 40% |
+| **todas** | 69 | 4 | 102 | 175 | 41% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 92 de 107 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 131.
+Comandos registrados: 133.
 
 ## Por área
 
@@ -28,7 +28,7 @@ Comandos registrados: 131.
 | Dockers | 4 | 0 | 11 | 15 | 27% |
 | Operações de objeto | 12 | 0 | 10 | 22 | 55% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
-| Menus | 3 | 1 | 4 | 8 | 44% |
+| Menus | 4 | 0 | 4 | 8 | 50% |
 | Edição de nós | 10 | 0 | 4 | 14 | 71% |
 | Encaixe, guias, réguas e grade | 4 | 0 | 3 | 7 | 57% |
 | Página e documento | 3 | 0 | 5 | 8 | 38% |
@@ -202,7 +202,7 @@ Comandos registrados: 131.
 
 | | funcionalidade | prio | como | falta |
 |---|---|---|---|---|
-| 🟡 | Edit | P0 | `edit.undo`, `edit.cut`, `edit.paste`, `edit.pasteSpecial`, `edit.selectAll`, `edit.findReplace`, `edit.replaceText` | Find and Replace finds text only |
+| ✅ | Edit | P0 | `edit.undo`, `edit.cut`, `edit.paste`, `edit.pasteSpecial`, `edit.selectAll`, `edit.findReplace`, `edit.replaceText`, `edit.findObjects`, `edit.replaceColor` |  |
 | ❌ | Layout | P1 |  | the menu is there; every item is still planned |
 | ✅ | Object | P0 | `object.group` |  |
 | ❌ | Effects | P2 |  | tudo |

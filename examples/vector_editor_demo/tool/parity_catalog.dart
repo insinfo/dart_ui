@@ -296,17 +296,17 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   ParityFeature(_align, 'Shift+P / Shift+A', 'P1'),
 
   // --- menus ------------------------------------------------------------------
-  ParityFeature(_menus, 'Edit', 'P0',
-      commands: <String>[
-        'edit.undo',
-        'edit.cut',
-        'edit.paste',
-        'edit.pasteSpecial',
-        'edit.selectAll',
-        'edit.findReplace',
-        'edit.replaceText',
-      ],
-      partial: 'Find and Replace finds text only'),
+  ParityFeature(_menus, 'Edit', 'P0', commands: <String>[
+    'edit.undo',
+    'edit.cut',
+    'edit.paste',
+    'edit.pasteSpecial',
+    'edit.selectAll',
+    'edit.findReplace',
+    'edit.replaceText',
+    'edit.findObjects',
+    'edit.replaceColor',
+  ]),
   ParityFeature(_menus, 'Layout', 'P1',
       partial: 'the menu is there; every item is still planned'),
   ParityFeature(_menus, 'Object', 'P0', commands: <String>['object.group']),

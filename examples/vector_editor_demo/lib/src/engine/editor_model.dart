@@ -1299,6 +1299,83 @@ class EditorModel {
     return found.length;
   }
 
+  /// Selects the objects on the page that match every criterion given - a
+  /// solid [fill] colour, an [outline] colour, a [type] as
+  /// [selectAllOfType] names it - CorelDRAW's Find Objects. Answers how
+  /// many.
+  int findObjects({Color? fill, Color? outline, String? type}) {
+    if (!hasDocument) return 0;
+    bool wanted(SelectableObject o) {
+      if (type != null) {
+        final bool kind = switch (type) {
+          'text' => o is VectorText,
+          'curves' => o is VectorCurve,
+          'rectangles' => o is VectorRectangle,
+          'ellipses' => o is VectorCircle,
+          'polygons' => o is VectorPolygon,
+          'groups' => o is VectorGroup,
+          'images' => o is VectorPixmap,
+          _ => true,
+        };
+        if (!kind) return false;
+      }
+      if (fill != null &&
+          !(o.style.fill.isSolid && o.style.fill.color == fill)) {
+        return false;
+      }
+      if (outline != null &&
+          !(!o.style.stroke.isNone && o.style.stroke.color == outline)) {
+        return false;
+      }
+      return true;
+    }
+
+    final List<SelectableObject> found = <SelectableObject>[
+      for (final VectorLayer layer in active.layers)
+        if (layer.isVisible)
+          for (final DocumentObject child in layer.children)
+            if (child is SelectableObject && wanted(child)) child,
+    ];
+    selection.setSelection(found);
+    refresh(found.isEmpty
+        ? 'No object matches'
+        : '${found.length} object(s) found');
+    return found.length;
+  }
+
+  /// Replaces the colour [from] with [to] - in solid fills, in outlines, or
+  /// both - in every object on the page, inside groups too, as one undo
+  /// step: CorelDRAW's Replace Colour. Answers how many objects changed.
+  int replaceColor(Color from, Color to,
+      {bool fills = true, bool outlines = true}) {
+    if (!hasDocument || from == to) return 0;
+    final List<SelectableObject> targets = <SelectableObject>[];
+    active.document.visitAll((DocumentObject node) {
+      if (node is! SelectableObject || node is VectorGroup) return;
+      final VectorStyle style = node.style;
+      final bool fill = fills && style.fill.isSolid && style.fill.color == from;
+      final bool outline =
+          outlines && !style.stroke.isNone && style.stroke.color == from;
+      if (fill || outline) targets.add(node);
+    });
+    if (targets.isEmpty) {
+      refresh('No object uses that colour');
+      return 0;
+    }
+    active.api.restyle(targets, (VectorStyle style) {
+      VectorStyle next = style;
+      if (fills && style.fill.isSolid && style.fill.color == from) {
+        next = next.copyWith(fill: next.fill.copyWith(color: to));
+      }
+      if (outlines && !style.stroke.isNone && style.stroke.color == from) {
+        next = next.copyWith(stroke: next.stroke.copyWith(color: to));
+      }
+      return next;
+    });
+    touch('Replaced the colour in ${targets.length} object(s)');
+    return targets.length;
+  }
+
   /// Replaces [find] with [replace] in every text object on the page, as
   /// one undo step; answers how many replacements were made.
   int replaceText(String find, String replace, {bool matchCase = true}) {

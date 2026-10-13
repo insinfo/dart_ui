@@ -166,6 +166,50 @@ void main() {
         isTrue);
   });
 
+  test('Find Objects selects by colour and type; Replace Colour recolours', () {
+    registry
+      ..execute('shape.rectangle',
+          <String, Object?>{'x': 0, 'y': 0, 'width': 10, 'height': 10})
+      ..execute('object.fill', <String, Object?>{'color': '#ff0000'})
+      ..execute('shape.ellipse',
+          <String, Object?>{'x': 50, 'y': 0, 'width': 10, 'height': 10})
+      ..execute('object.fill', <String, Object?>{'color': '#ff0000'})
+      ..execute('shape.rectangle',
+          <String, Object?>{'x': 100, 'y': 0, 'width': 10, 'height': 10})
+      ..execute('object.fill', <String, Object?>{'color': '#00ff00'});
+    expect(
+        registry.execute(
+            'edit.findObjects', <String, Object?>{'fill': '#ff0000'}).result,
+        <String, Object?>{'found': 2});
+    expect(
+        registry.execute('edit.findObjects', <String, Object?>{
+          'fill': '#ff0000',
+          'type': 'rectangles',
+        }).result,
+        <String, Object?>{'found': 1});
+    expect(registry.execute('edit.findObjects').ok, isFalse,
+        reason: 'no criterion');
+
+    expect(
+        registry.execute('edit.replaceColor', <String, Object?>{
+          'from': '#ff0000',
+          'to': '#0000ff',
+          'target': 'fill',
+        }).result,
+        <String, Object?>{'changed': 2});
+    expect(
+        objects().where((SelectableObject o) =>
+            o.style.fill.color == const Color(0xFF0000FF)),
+        hasLength(2));
+    expect(model.active.api.undoDescription, isNotNull);
+    registry.execute('edit.undo');
+    expect(
+        objects().where((SelectableObject o) =>
+            o.style.fill.color == const Color(0xFFFF0000)),
+        hasLength(2),
+        reason: 'one undo step');
+  });
+
   test('a typo in a parameter is refused before anything is drawn', () {
     final outcome = registry.execute('shape.rectangle',
         <String, Object?>{'x': 0, 'y': 0, 'widht': 10, 'height': 10});

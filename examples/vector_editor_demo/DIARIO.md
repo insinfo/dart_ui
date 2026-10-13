@@ -175,7 +175,12 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
   `<image>` no SVG), `VectorRenderer.rasterizeObjects`, e comandos
   assíncronos no `CommandRegistry` (`CommandOutcome.started`/`completion`,
   `onCompleted`), cujos erros viram falha relatada e nunca escapam.
-- P0 em 98% (60 feitas, 3 parciais: Editar segue parcial porque Localizar e substituir só acha texto).
+- Localizar e substituir com modo Cor: `edit.findObjects` (seleciona por
+  cor de preenchimento, de contorno e tipo) e `edit.replaceColor` (troca
+  uma cor em preenchimentos, contornos ou ambos, dentro de grupos, num passo
+  de desfazer); o diálogo ganhou Texto/Cor.
+- P0 em 98% (61 feitas, 2 parciais: pena caligráfica e preenchimentos de
+  padrão e textura).
 
 **Ficou pela metade**
 - Pena caligráfica, preenchimentos de padrão e textura.

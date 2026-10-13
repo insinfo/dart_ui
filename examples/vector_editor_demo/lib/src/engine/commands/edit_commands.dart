@@ -9,6 +9,7 @@ import 'package:dart_ui/vector.dart';
 import '../editor_host.dart';
 import '../editor_model.dart';
 import 'command_context.dart';
+import 'object_commands.dart' show parseColor;
 
 List<CommandSpec> editCommands(EditorContext context) {
   final EditorModel model = context.model;
@@ -207,6 +208,59 @@ List<CommandSpec> editCommands(EditorContext context) {
           args['replace']! as String,
           matchCase: !args.has('matchCase') || args['matchCase'] == true,
         ),
+      },
+    ),
+    CommandSpec(
+      id: 'edit.findObjects',
+      label: 'Find Objects',
+      description: 'Selects the objects that match every criterion given: a '
+          'solid fill colour, an outline colour, a type (text, curves, '
+          'rectangles, ellipses, polygons, groups, images).',
+      params: const <CommandParam>[
+        CommandParam('fill', CommandParamType.string,
+            description: '#rrggbb or #aarrggbb'),
+        CommandParam('outline', CommandParamType.string,
+            description: '#rrggbb or #aarrggbb'),
+        CommandParam('type', CommandParamType.string),
+      ],
+      when: context.needsDocument,
+      run: (CommandArgs args) {
+        if (!args.has('fill') && !args.has('outline') && !args.has('type')) {
+          throw const CommandError('give a fill, an outline or a type');
+        }
+        return <String, Object?>{
+          'found': model.findObjects(
+            fill: args.has('fill') ? parseColor(args['fill']) : null,
+            outline: args.has('outline') ? parseColor(args['outline']) : null,
+            type: args.has('type') ? args.string('type') : null,
+          ),
+        };
+      },
+    ),
+    CommandSpec(
+      id: 'edit.replaceColor',
+      label: 'Replace Colour',
+      description: 'Replaces one colour with another in solid fills, '
+          'outlines or both, on every object, as one undo step.',
+      params: const <CommandParam>[
+        CommandParam('from', CommandParamType.string, required: true),
+        CommandParam('to', CommandParamType.string, required: true),
+        CommandParam('target', CommandParamType.string,
+            description: 'fill, outline or both (the default)'),
+      ],
+      when: context.needsDocument,
+      run: (CommandArgs args) {
+        final String target = args.has('target')
+            ? oneOf(args, 'target', const <String>['fill', 'outline', 'both'])
+            : 'both';
+        return <String, Object?>{
+          'changed': model.replaceColor(
+            parseColor(args['from'])!,
+            parseColor(args['to'])!,
+            fills: target != 'outline',
+            outlines: target != 'fill',
+          ),
+        };
       },
     ),
     CommandSpec(
