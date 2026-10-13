@@ -808,6 +808,58 @@ void main() {
       harness.dispose();
     });
   });
+
+  group('a menu taller than the window', () {
+    KeyDownEvent key(int k) => KeyDownEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration.zero,
+          physicalKey: k,
+          logicalKey: k,
+        );
+
+    test('keeps to the window and scrolls inside it', () {
+      final _LongHarness harness = _LongHarness()..frame();
+      harness.controller.open();
+      harness.frame();
+      final RenderMenuPanel panel = harness.panels.single;
+      expect(panel.size.height, lessThanOrEqualTo(300));
+      expect(panel.isScrollable, isTrue);
+      final RenderBox first = panel.children.first;
+      final double before = first.parentData!.offset.dy;
+      harness.owner.dispatchPointerEvent(PointerScrollEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: harness.centreOf(panel),
+        scrollDelta: const Offset(0, 3),
+        scrollDeltaUnit: ScrollDeltaUnit.lines,
+      ));
+      harness.frame();
+      expect(first.parentData!.offset.dy, lessThan(before),
+          reason: 'the wheel scrolled the rows up');
+    });
+
+    test('the keyboard brings the highlighted row into view', () {
+      final _LongHarness harness = _LongHarness()..frame();
+      harness.controller.open();
+      harness.frame();
+      final RenderMenuPanel panel = harness.panels.single;
+      panel.handleKeyEvent(key(logicalKeyEnd));
+      harness.frame();
+      final RenderBox last = panel.children.last;
+      final double top = last.parentData!.offset.dy;
+      expect(top, greaterThanOrEqualTo(0));
+      expect(top + last.size.height, lessThanOrEqualTo(panel.size.height),
+          reason: 'the last row is on screen');
+      panel.handleKeyEvent(key(logicalKeyHome));
+      harness.frame();
+      expect(
+          panel.children.first.parentData!.offset.dy, greaterThanOrEqualTo(0));
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,6 +1057,22 @@ final class _AnchorHarness extends _Harness {
           Button(label: 'Behind', onPressed: () => behindPresses++),
         ],
       );
+}
+
+/// A [MenuAnchor] with more rows than the window is tall.
+final class _LongHarness extends _Harness {
+  final MenuController controller = MenuController();
+
+  @override
+  Widget buildContent() => Column(children: <Widget>[
+        MenuAnchor(
+          controller: controller,
+          menuChildren: <Widget>[
+            for (var i = 0; i < 40; i++)
+              MenuItemButton(onPressed: () {}, child: Text('Item $i')),
+          ],
+        ),
+      ]);
 }
 
 /// A [MenuAnchor] whose menu holds a [SubmenuButton], for the chain tests.

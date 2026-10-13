@@ -45,11 +45,16 @@
 /// behaviour the flag is named after - and no [FocusNode] changes hands.
 library;
 
+import 'dart:math' as math;
+
 import '../geometry/offset.dart';
+import '../geometry/path.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/color.dart';
 import '../graphics/display_list.dart';
+import '../graphics/display_list_geometry.dart';
+import '../graphics/display_list_opcodes.dart' show paintStyleStroke;
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart' show MainAxisSize;
@@ -833,6 +838,22 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
   bool _decorated;
   int _highlighted = -1;
 
+  /// How far a popup column taller than the room it was given is scrolled.
+  ///
+  /// A menu longer than the screen - a font list, a recent-files list on a
+  /// small display - used to be clamped and slid against the top edge, and
+  /// the rows past the bottom could not be reached at all. Now the column
+  /// keeps the room it was given and scrolls inside it: the wheel scrolls
+  /// it, and the keyboard brings the highlighted row into view. Windows
+  /// shows a scroll arrow at each end for the same purpose; here a chevron
+  /// marks an end with more beyond it.
+  double _scroll = 0;
+  double _contentHeight = 0;
+
+  /// Whether the column holds more than it shows.
+  bool get isScrollable =>
+      !_horizontal && _decorated && _contentHeight > size.height + 0.5;
+
   void Function()? onDismiss;
   void Function()? onArrowLeftEscape;
   void Function()? onArrowRightEscape;
@@ -935,6 +956,7 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
     width = width.clamp(constraints.minWidth, maxWidth);
 
     double y = verticalPadding;
+    final List<double> tops = <double>[];
     for (int i = 0; i < childCount; i++) {
       final RenderBox child = childAt(i);
       child.layout(
@@ -945,10 +967,32 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
         ),
         parentUsesSize: true,
       );
-      child.parentData!.offset = Offset(0, y);
+      tops.add(y);
       y += child.size.height;
     }
-    size = constraints.constrain(Size(width, y + verticalPadding));
+    _contentHeight = y + verticalPadding;
+    size = constraints.constrain(Size(width, _contentHeight));
+    _scroll = _scroll.clamp(0.0, math.max(0.0, _contentHeight - size.height));
+    for (int i = 0; i < childCount; i++) {
+      childAt(i).parentData!.offset = Offset(0, tops[i] - _scroll);
+    }
+  }
+
+  /// Scrolls so the row at [index] is fully in view.
+  void _reveal(int index) {
+    if (!isScrollable || index < 0 || index >= childCount) return;
+    final RenderBox row = childAt(index);
+    final double top = row.parentData!.offset.dy + _scroll;
+    final double bottom = top + row.size.height;
+    final double view = size.height - verticalPadding * 2;
+    if (top - verticalPadding < _scroll) {
+      _scroll = top - verticalPadding;
+    } else if (bottom - verticalPadding > _scroll + view) {
+      _scroll = bottom - verticalPadding - view;
+    } else {
+      return;
+    }
+    markNeedsLayout();
   }
 
   /// A strip: each row as wide as it wants, all of them as tall as the tallest.
@@ -989,7 +1033,17 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
   /// the highlighted command twice - once through the row and once through
   /// this. Swallowing is also what makes a press on the frame do nothing.
   @override
-  void handlePointerEvent(PointerEvent event) {}
+  void handlePointerEvent(PointerEvent event) {
+    // The wheel is the one pointer event a panel answers itself: rows own
+    // their clicks, but scrolling belongs to the column.
+    if (event is PointerScrollEvent && isScrollable) {
+      final double row = childCount == 0 ? 24 : childAt(0).size.height;
+      _scroll += event.scrollDeltaUnit == ScrollDeltaUnit.lines
+          ? event.scrollDelta.dy * row
+          : event.scrollDelta.dy;
+      markNeedsLayout();
+    }
+  }
 
   /// Moves the keyboard into this panel, for a row that was pressed.
   ///
@@ -1050,6 +1104,7 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
     final MenuRowBehavior? next = highlightedRow;
     next?.isHighlighted = true;
     if (opensSubmenu) next?.openSubmenu();
+    _reveal(index);
     markNeedsPaint();
   }
 
@@ -1201,11 +1256,49 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
       final double radius = theme.cornerRadiusLarge;
       paintRoundedFill(list, rect, theme.surfaceRaised, radius);
       paintRoundedBorder(list, rect, theme.border, radius);
-      super.paint(list, offset);
+      if (isScrollable) {
+        // Rows scrolled past an end are cut at the padding, not at the
+        // frame, so they never draw over the rounded corners.
+        list
+          ..save()
+          ..clipRectangle(Rect.fromLTRB(rect.left, rect.top + verticalPadding,
+              rect.right, rect.bottom - verticalPadding));
+        super.paint(list, offset);
+        list.restore();
+        _paintScrollMarks(list, rect);
+      } else {
+        super.paint(list, offset);
+      }
       paintFocusRing(list, rect, radius: radius);
       return;
     }
     super.paint(list, offset);
+  }
+
+  /// A small chevron at each end that has more rows beyond it.
+  void _paintScrollMarks(DisplayList list, Rect rect) {
+    final int paint = list.addPaint(
+      colorArgb: theme.foregroundSecondary.value,
+      style: paintStyleStroke,
+      strokeWidth: 1.25,
+    );
+    void chevron(double y, {required bool up}) {
+      final double cx = rect.center.dx;
+      const double w = 4;
+      final double h = up ? -2.5 : 2.5;
+      final PathBuilder path = PathBuilder()
+        ..moveTo(cx - w, y - h / 2)
+        ..lineTo(cx, y + h / 2)
+        ..lineTo(cx + w, y - h / 2);
+      list.drawPath(list.addPath(path.build()), paint);
+    }
+
+    if (_scroll > 0.5) {
+      chevron(rect.top + verticalPadding / 2 + 1, up: true);
+    }
+    if (_scroll < _contentHeight - size.height - 0.5) {
+      chevron(rect.bottom - verticalPadding / 2 - 1, up: false);
+    }
   }
 
   @override
