@@ -16,6 +16,7 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import 'native_window.dart' show WindowState, WindowStateControl;
+import 'system_settings.dart';
 
 /// Opaque identity of a window, stable for that window's lifetime.
 ///
@@ -190,4 +191,39 @@ final class WindowPointerLeaveEvent extends PlatformWindowEvent {
     required super.windowId,
     required super.generation,
   });
+}
+
+/// The desktop's appearance or accessibility preferences changed while the
+/// application was running - dark mode, high contrast, reduced motion, text
+/// size.
+///
+/// **Application-wide news on a window's stream.** The settings belong to the
+/// desktop, not to [windowId]; the event is delivered through a window anyway
+/// because that is where every platform delivers it. Windows broadcasts
+/// `WM_SETTINGCHANGE` to each top-level window, and on macOS every window is
+/// its own host process, each observing AppKit. A three-window application
+/// therefore receives the same news three times, which is harmless: the
+/// application compares [settings] with what it already has and only the
+/// first copy changes anything.
+///
+/// It carries the *whole* new value rather than a hint to go and look, because
+/// the backend that saw the notification is the one that knows how to read the
+/// answer (a registry value, an `NSWorkspace` property) - and a hint would make
+/// the application re-read through a second path that could disagree with the
+/// first. It is also how a backend reports its *startup* values when they come
+/// from the same place as the changes, which is the macOS host's case: one
+/// code path for the first answer and every later one.
+///
+/// Neither generation-checked nor blocked by a modal: a dark-mode switch is
+/// just as true for a window that is being replaced or that a dialog is
+/// covering.
+final class SystemSettingsChangedEvent extends PlatformWindowEvent {
+  const SystemSettingsChangedEvent({
+    required super.windowId,
+    required super.generation,
+    required this.settings,
+  });
+
+  /// Every preference as it stands now, not only the one that moved.
+  final SystemSettings settings;
 }

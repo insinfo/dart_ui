@@ -2171,7 +2171,7 @@ Revisto em 2026-08-23 contra `lib/src/backends/win32/`.
 - [x] drag-and-drop (OLE, **nos dois sentidos** — `IDropTarget` e `DoDragDrop`; a imagem de arraste de `DragRequest.feedback` é **ignorada**);
 - [x] cursor;
 - [ ] monitores — enumeração e mudança em runtime não verificadas;
-- [x] temas (claro/escuro/alto contraste no framework; o tema do SO é lido por `SystemInfo.isDarkMode`);
+- [x] temas (claro/escuro/alto contraste no framework; o tema do SO chega ao vivo por `WM_SETTINGCHANGE`/`WM_THEMECHANGED`/`WM_SYSCOLORCHANGE` → `SystemSettingsChangedEvent` → `Application.systemSettings` → `MediaQueryData.platformBrightness`/`highContrast`/`disableAnimations`/`textScaleFactor` de toda janela; `SystemInfo.isDarkMode` continua como leitura avulsa);
 - [x] Direct2D (§13.12);
 - [x] D3D11/DXGI;
 - [ ] DirectComposition opcional — **não existe**;

@@ -19,6 +19,7 @@ import '../../platform/clipboard.dart';
 import '../../platform/drag_drop.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
+import '../../platform/system_settings.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
 import 'headless_test_support.dart' show FakeClipboard;
@@ -29,14 +30,17 @@ final class HeadlessWindowingBackend
         WindowingBackend,
         ClipboardProvider,
         DragDropProvider,
-        ScreenProvider {
+        ScreenProvider,
+        SystemSettingsSource {
   HeadlessWindowingBackend({
     this.renderScale = 1,
     this.desktopScale = 1,
     List<ScreenInfo>? screens,
-  }) : _screens = List<ScreenInfo>.unmodifiable(
+    SystemSettings systemSettings = SystemSettings.fallback,
+  })  : _screens = List<ScreenInfo>.unmodifiable(
           screens ?? const <ScreenInfo>[defaultHeadlessScreen],
-        ) {
+        ),
+        _systemSettings = systemSettings {
     _validateScale(renderScale, 'renderScale');
     _validateScale(desktopScale, 'desktopScale');
   }
@@ -78,6 +82,39 @@ final class HeadlessWindowingBackend
 
   @override
   String get name => 'headless';
+
+  /// The synthetic desktop's preferences, as a test described them.
+  ///
+  /// Never read from the machine running the test - a developer's dark
+  /// desktop must not change what a test sees. A test that wants a dark or
+  /// high-contrast desktop passes one to the constructor, and one that wants
+  /// the desktop to *change* calls [changeSystemSettings].
+  SystemSettings get systemSettings => _systemSettings;
+  SystemSettings _systemSettings;
+
+  @override
+  SystemSettings readSystemSettings() => _systemSettings;
+
+  /// Simulates the user changing a desktop preference while the application
+  /// runs.
+  ///
+  /// Queues a [SystemSettingsChangedEvent] on **every** open window, for the
+  /// next [pumpEvents] - the shape the real platforms have: Windows broadcasts
+  /// `WM_SETTINGCHANGE` to each top-level window and every macOS host observes
+  /// AppKit on its own. A test of the application therefore also exercises
+  /// the de-duplication of those copies, rather than a tidier delivery no
+  /// platform makes.
+  void changeSystemSettings(SystemSettings settings) {
+    _requireInitialized('changeSystemSettings');
+    _systemSettings = settings;
+    for (final HeadlessWindow window in _windows) {
+      window._emit(SystemSettingsChangedEvent(
+        windowId: window.id,
+        generation: window.generation,
+        settings: settings,
+      ));
+    }
+  }
 
   /// The in-memory clipboard every headless application gets by default.
   ///

@@ -33,7 +33,9 @@ final class EditorUi {
 
   EditorThemeMode themeMode = EditorThemeMode.system;
 
-  /// What the system said last time it was asked; null when it did not say.
+  /// Whether the desktop is in dark mode, kept live by the window from
+  /// `MediaQuery.platformBrightness`; null when the window has no query to
+  /// read - a widget test - and "Follow the system" then stays dark.
   bool? systemDark;
 
   /// The theme the editor wears: the studio look at the sizes this

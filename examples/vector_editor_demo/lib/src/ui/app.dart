@@ -30,13 +30,62 @@ class VectorEditorApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Directionality(
         textDirection: TextDirection.leftToRight,
-        child: Theme(
-          data: theme ?? ThemeData.studioDark.adaptedToPlatform(),
-          child: MainWindow(
-            initialDoc: initialDoc,
-            initialName: initialName,
-            onReady: onReady,
+        child: _FollowSystemBrightness(
+          builder: (Brightness? systemBrightness) => Theme(
+            data: theme ?? ThemeData.studioDark.adaptedToPlatform(),
+            child: MainWindow(
+              initialDoc: initialDoc,
+              initialName: initialName,
+              onReady: onReady,
+              systemBrightness: systemBrightness,
+            ),
           ),
         ),
       );
+}
+
+/// Hands [builder] the desktop's brightness, and rebuilds the window below
+/// only when that brightness changes.
+///
+/// The window's "Follow the system" theme needs the brightness, and the only
+/// place it lives is [MediaQuery] - which is one inherited widget for the
+/// whole query, so a widget that read it directly would also be rebuilt on
+/// every step of a resize. [MainWindow] is the whole editor; rebuilding it per
+/// resize frame would re-run its docking layout for nothing. So this widget
+/// is the one that depends on the query, and it returns the *same* subtree
+/// object while the brightness is unchanged, which the framework skips
+/// without looking inside.
+///
+/// Null outside any [MediaQuery] - a widget test mounting the editor alone -
+/// so the editor keeps its own dark default there.
+class _FollowSystemBrightness extends StatefulWidget {
+  const _FollowSystemBrightness({required this.builder});
+
+  final Widget Function(Brightness? brightness) builder;
+
+  @override
+  State<_FollowSystemBrightness> createState() =>
+      _FollowSystemBrightnessState();
+}
+
+class _FollowSystemBrightnessState extends State<_FollowSystemBrightness> {
+  Brightness? _builtFor;
+  Widget? _built;
+
+  @override
+  void didUpdateWidget(_FollowSystemBrightness oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _built = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Brightness? brightness =
+        MediaQuery.maybePlatformBrightnessOf(context);
+    if (_built == null || brightness != _builtFor) {
+      _builtFor = brightness;
+      _built = widget.builder(brightness);
+    }
+    return _built!;
+  }
 }

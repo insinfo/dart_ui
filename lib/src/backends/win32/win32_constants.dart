@@ -132,6 +132,10 @@ const int wmClose = 0x0010;
 const int wmQueryendsession = 0x0011;
 const int wmQuit = 0x0012;
 const int wmErasebkgnd = 0x0014;
+
+/// `WM_SYSCOLORCHANGE` - the system colours changed, which a high-contrast
+/// theme does. Handled like [wmSettingchange].
+const int wmSyscolorchange = 0x0015;
 const int wmEndsession = 0x0016;
 const int wmShowwindow = 0x0018;
 
@@ -139,12 +143,15 @@ const int wmShowwindow = 0x0018;
 /// while the process was running: light/dark mode, high contrast, the mouse
 /// wheel's lines-per-notch, the double-click time.
 ///
-/// **Unhandled, and deliberately so for now**: nothing above the platform layer
-/// can receive it. `ThemeData.highContrast` exists but every example picks its
-/// theme from `argv` (`example/gallery_shell.dart`), and `window_events.dart`
-/// has no settings-changed event to carry the news. Wiring the message before
-/// the event exists would just be a `switch` arm that drops its argument. See
-/// the message-coverage audit in `doc/architecture/overview.md`.
+/// Handled for the part the framework reports: when
+/// `win32SettingChangeAffectsSystemSettings` says the message is about dark
+/// mode (`lParam` = `"ImmersiveColorSet"`), high contrast, animations or the
+/// text size, the window re-reads every value and emits a
+/// `SystemSettingsChangedEvent`, which the application turns into a new
+/// `MediaQueryData` for every window. Everything else - the environment, the
+/// mouse, the locale - still goes straight to `DefWindowProcW`. See
+/// `win32_system_settings.dart` and the message-coverage audit in
+/// `doc/architecture/overview.md`.
 const int wmSettingchange = 0x001A;
 
 const int wmSetcursor = 0x0020;
@@ -454,9 +461,9 @@ const int wmDpichanged = 0x02E0;
 /// is scale-independent, so linear is the right answer.
 const int wmGetdpiscaledsize = 0x02E4;
 
-/// `WM_THEMECHANGED` - the visual style changed. Unhandled for the same reason
-/// as [wmSettingchange]: there is no theme event above the platform layer to
-/// deliver it to.
+/// `WM_THEMECHANGED` - the visual style changed, which entering or leaving a
+/// high-contrast theme does. Handled like [wmSettingchange]: the settings are
+/// re-read and reported if they moved.
 const int wmThemechanged = 0x031A;
 
 /// `VK_PROCESSKEY` - the virtual key Windows sends for a keystroke an input

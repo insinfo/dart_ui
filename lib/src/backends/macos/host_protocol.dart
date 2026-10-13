@@ -321,6 +321,21 @@ abstract interface class HostMessageSink {
   /// a `MENU_SET <generation>` installed in the menu bar.
   void onMenuAction(int generation, int id);
 
+  /// `SYSTEM_SETTINGS=<dark>:<increaseContrast>:<reduceMotion>`, each `0` or
+  /// `1`: the desktop's appearance and the display accessibility options, as
+  /// AppKit reports them.
+  ///
+  /// Sent once in the banner, before `HOST_PID`, so that the startup values
+  /// and every later change come from one code path in one process; then
+  /// again whenever the appearance (`AppleInterfaceThemeChangedNotification`,
+  /// `NSApp.effectiveAppearance`) or the accessibility display options
+  /// (`NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification`) move -
+  /// and only when the three values differ from the last line, because both
+  /// notifications fire for changes this line does not carry (the accent
+  /// colour, "Reduce transparency"). Fields after the third are ignored, so a
+  /// host that learns to report more does not break this client.
+  void onSystemSettings(bool dark, bool highContrast, bool reduceMotion);
+
   void onAck(HostAckKind kind, int value);
 
   /// `SURFACE_OK <id> <w>x<h>`, the deprecated lookup path. [slot] is -1 when
@@ -424,6 +439,9 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onMenuAction(int generation, int id) {}
+
+  @override
+  void onSystemSettings(bool dark, bool highContrast, bool reduceMotion) {}
 
   @override
   void onAck(HostAckKind kind, int value) {}
@@ -689,6 +707,7 @@ final class HostProtocolParser {
         }
       case 0x53: // 'S'
         if (_startsWith('SURFACE_PORT_OK ')) return _parseSurfacePort(16);
+        if (_startsWith('SYSTEM_SETTINGS=')) return _parseSystemSettings(16);
         if (_startsWith('SURFACE_POOL_OK ')) {
           return _ackAt(HostAckKind.surfacePoolAllocated, 16);
         }
@@ -795,6 +814,36 @@ final class HostProtocolParser {
     _cursor = offset;
     final value = _readInt();
     _sink.onAck(kind, value == kHostFieldMissing ? 0 : value);
+  }
+
+  // SYSTEM_SETTINGS=<dark>:<increaseContrast>:<reduceMotion>[:<ignored>...]
+  //
+  // Strict about the three it knows - each must be exactly 0 or 1, because a
+  // `2` is a host bug and turning it into "true" would hide it - and lenient
+  // about anything after them.
+  void _parseSystemSettings(int offset) {
+    _cursor = offset;
+    final int dark = _readInt();
+    final int contrast = _readNextFlag();
+    final int motion = _readNextFlag();
+    if ((dark != 0 && dark != 1) ||
+        (contrast != 0 && contrast != 1) ||
+        (motion != 0 && motion != 1) ||
+        (_cursor < _length && _line[_cursor] != _kColon)) {
+      return _sink.onError('BAD_SYSTEM_SETTINGS');
+    }
+    _sink.onSystemSettings(dark == 1, contrast == 1, motion == 1);
+  }
+
+  /// The next `:`-separated integer, or [kHostFieldMissing] when the field
+  /// separator is not there - unlike [_readIntField], which also accepts a
+  /// space and silently skips a missing separator.
+  int _readNextFlag() {
+    if (_cursor >= _length || _line[_cursor] != _kColon) {
+      return kHostFieldMissing;
+    }
+    _cursor++;
+    return _readInt();
   }
 
   // DRAG_ITEM=<file|text>:<base64>

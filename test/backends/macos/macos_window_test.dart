@@ -7,6 +7,7 @@ import 'package:dart_ui/src/backends/macos/io_surface.dart';
 import 'package:dart_ui/src/backends/macos/macos_window.dart';
 import 'package:dart_ui/src/backends/macos/surface_pool.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/platform/system_settings.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:dart_ui/src/rendering/present_mode.dart';
 import 'package:test/test.dart';
@@ -417,5 +418,67 @@ void main() {
     expect(await events, hasLength(1));
     expect(closedCallbacks, 1);
     expect(window.isDisposed, isTrue);
+  });
+
+  test('a SYSTEM_SETTINGS line becomes a settings event on the stream',
+      () async {
+    HostMessageSink? sink;
+    final host = _FakeHost();
+    final window = MacosWindow(
+      id: const NativeWindowId(4),
+      surfaceFactory: ({
+        required pixelWidth,
+        required pixelHeight,
+        required global,
+      }) =>
+          MacosSurfacePool(<_FakeSurface>[
+        _FakeSurface(1, pixelWidth, pixelHeight),
+        _FakeSurface(2, pixelWidth, pixelHeight),
+      ]),
+      clientSize: const Size(8, 6),
+      renderScale: 1,
+      desktopScale: 1,
+      onDiagnostic: (_) {},
+      onClosed: (_) {},
+      hostStarter: (options, hostSink, onDiagnostic) async {
+        sink = hostSink;
+        return host;
+      },
+      poolAttacher: (candidate, pool) async => identical(candidate, host),
+    );
+    // Before anybody listens, as the banner's copy arrives: the stream is
+    // single-subscription precisely so that this one is buffered, not lost.
+    expect(
+      await window.open(
+        spawnOptions: const MacosHostSpawnOptions(
+          binaryPath: 'fake',
+          logicalWidth: 8,
+          logicalHeight: 6,
+        ),
+      ),
+      isTrue,
+    );
+    sink!.onSystemSettings(true, false, true);
+
+    final List<PlatformWindowEvent> events = <PlatformWindowEvent>[];
+    final StreamSubscription<PlatformWindowEvent> subscription =
+        window.events.listen(events.add);
+    await Future<void>.delayed(Duration.zero);
+
+    final SystemSettingsChangedEvent event =
+        events.whereType<SystemSettingsChangedEvent>().single;
+    expect(event.windowId, window.id);
+    expect(event.generation, window.generation);
+    expect(
+      event.settings,
+      const SystemSettings(
+        brightness: Brightness.dark,
+        disableAnimations: true,
+      ),
+    );
+
+    await subscription.cancel();
+    window.dispose();
+    await window.teardown;
   });
 }

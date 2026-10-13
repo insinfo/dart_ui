@@ -7,8 +7,12 @@
 ///
 /// The shape follows Flutter's per-view `MediaQueryData`, with one important
 /// boundary: this framework exposes only values its platform contract can
-/// currently report. Size and device-pixel ratio are live; safe padding,
-/// keyboard insets and accessibility preferences may be overridden by a nested
+/// currently report. Size and device-pixel ratio are live, and so are the
+/// desktop-wide preferences - [MediaQueryData.platformBrightness],
+/// [MediaQueryData.highContrast], [MediaQueryData.disableAnimations] and
+/// [MediaQueryData.textScaleFactor] - which the application copies from its
+/// `SystemSettings` into every window and refreshes when the platform reports
+/// a change. Safe padding and keyboard insets may be overridden by a nested
 /// query until the native backends grow corresponding events.
 library;
 
@@ -16,6 +20,7 @@ import 'dart:math' as math;
 
 import '../geometry/size.dart';
 import '../layout/edge_insets.dart';
+import '../platform/system_settings.dart';
 import 'widget.dart';
 
 /// Whether the current window is wider than it is tall.
@@ -34,6 +39,7 @@ final class MediaQueryData {
     this.highContrast = false,
     this.disableAnimations = false,
     this.boldText = false,
+    this.platformBrightness = Brightness.light,
   })  : assert(devicePixelRatio > 0),
         assert(textScaleFactor > 0);
 
@@ -60,6 +66,16 @@ final class MediaQueryData {
   final bool disableAnimations;
   final bool boldText;
 
+  /// Whether the desktop is in light or dark mode.
+  ///
+  /// The *platform's* preference, which is not necessarily the brightness of
+  /// the theme in force: an application may pin a dark theme on a light
+  /// desktop. A widget that wants to follow the system reads this and picks
+  /// its theme from it; because the application rebuilds every window's query
+  /// when the setting changes, that widget follows it live. Light when the
+  /// platform did not say, which is also what every test sees.
+  final Brightness platformBrightness;
+
   Orientation get orientation =>
       size.width > size.height ? Orientation.landscape : Orientation.portrait;
 
@@ -74,6 +90,7 @@ final class MediaQueryData {
     bool? highContrast,
     bool? disableAnimations,
     bool? boldText,
+    Brightness? platformBrightness,
   }) =>
       MediaQueryData(
         size: size ?? this.size,
@@ -86,6 +103,7 @@ final class MediaQueryData {
         highContrast: highContrast ?? this.highContrast,
         disableAnimations: disableAnimations ?? this.disableAnimations,
         boldText: boldText ?? this.boldText,
+        platformBrightness: platformBrightness ?? this.platformBrightness,
       );
 
   /// Returns data in which selected safe-padding edges have been consumed.
@@ -198,7 +216,8 @@ final class MediaQueryData {
       other.accessibleNavigation == accessibleNavigation &&
       other.highContrast == highContrast &&
       other.disableAnimations == disableAnimations &&
-      other.boldText == boldText;
+      other.boldText == boldText &&
+      other.platformBrightness == platformBrightness;
 
   @override
   int get hashCode => Object.hash(
@@ -212,11 +231,13 @@ final class MediaQueryData {
         highContrast,
         disableAnimations,
         boldText,
+        platformBrightness,
       );
 
   @override
   String toString() => 'MediaQueryData($size @ $devicePixelRatio, '
-      'padding: $padding, viewInsets: $viewInsets)';
+      'padding: $padding, viewInsets: $viewInsets, '
+      '${platformBrightness.name})';
 }
 
 EdgeInsets _copyEdges(
@@ -341,6 +362,26 @@ final class MediaQuery extends InheritedWidget {
       of(context).viewInsets;
   static Orientation orientationOf(BuildContext context) =>
       of(context).orientation;
+
+  /// The desktop's light or dark preference; see
+  /// [MediaQueryData.platformBrightness].
+  ///
+  /// Depends on the whole query, as every accessor here does: this framework's
+  /// [MediaQuery] is a plain inherited widget, not Flutter's aspect-keyed
+  /// `InheritedModel`, so a widget that reads only the brightness still
+  /// rebuilds when the window is resized. Read it low in the tree, or below a
+  /// widget that caches its subtree, where that matters.
+  static Brightness platformBrightnessOf(BuildContext context) =>
+      of(context).platformBrightness;
+
+  /// [platformBrightnessOf], or null outside any [MediaQuery] - a widget test
+  /// that mounted a tree without one.
+  static Brightness? maybePlatformBrightnessOf(BuildContext context) =>
+      maybeOf(context)?.platformBrightness;
+
+  static bool highContrastOf(BuildContext context) => of(context).highContrast;
+  static bool disableAnimationsOf(BuildContext context) =>
+      of(context).disableAnimations;
 
   @override
   bool updateShouldNotify(MediaQuery oldWidget) => data != oldWidget.data;

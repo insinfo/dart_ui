@@ -30,6 +30,7 @@ import '../../geometry/size.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_menu.dart';
 import '../../platform/native_window.dart';
+import '../../platform/system_settings.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/framebuffer.dart';
 import '../../rendering/present_mode.dart';
@@ -1066,6 +1067,29 @@ final class MacosWindow
     _onTextInput(base64);
   }
 
+  /// A `SYSTEM_SETTINGS=` line: the banner's copy at startup, then one per
+  /// change the host observed.
+  ///
+  /// Reported as a window event because that is the only road from a host to
+  /// the application, and the stream is single-subscription, so the banner's
+  /// copy - which arrives before anybody listens - is buffered rather than
+  /// lost and becomes the application's startup value. Every window's host
+  /// reports the same desktop; the application drops the copies.
+  ///
+  /// macOS has no system-wide text size, so the scale stays at 1; "Reduce
+  /// motion" is what [SystemSettings.disableAnimations] means.
+  void _onSystemSettings(bool dark, bool highContrast, bool reduceMotion) {
+    _emit(SystemSettingsChangedEvent(
+      windowId: _id,
+      generation: _generation.current,
+      settings: SystemSettings(
+        brightness: dark ? Brightness.dark : Brightness.light,
+        highContrast: highContrast,
+        disableAnimations: reduceMotion,
+      ),
+    ));
+  }
+
   void _emit(PlatformWindowEvent event) {
     if (_events.isClosed) return;
     _events.add(event);
@@ -1179,6 +1203,10 @@ final class _HostSink with HostMessageSinkAdapter {
   @override
   void onMenuAction(int generation, int id) =>
       _window._onMenuAction(generation, id);
+
+  @override
+  void onSystemSettings(bool dark, bool highContrast, bool reduceMotion) =>
+      _window._onSystemSettings(dark, highContrast, reduceMotion);
 }
 
 /// The default factory: real `IOSurface`s.

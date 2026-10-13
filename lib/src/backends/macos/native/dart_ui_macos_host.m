@@ -672,8 +672,18 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 @property(nonatomic, strong) NSMutableString *menuPending;
 @property(nonatomic, assign) long long menuGeneration;
 @property(nonatomic, strong) NSSet<NSString *> *menuKeys;
+// The last SYSTEM_SETTINGS= line written, so a notification that moved
+// nothing this protocol carries (the accent colour, "Reduce transparency")
+// writes nothing, and the three sources that can report one change - the
+// distributed notification, the workspace notification and the KVO of the
+// application's appearance - write it once between them.
+@property(nonatomic, copy) NSString *reportedSystemSettings;
+@property(nonatomic, assign) BOOL observingSystemSettings;
 - (void)reportScreens;
 @end
+
+// The KVO context of NSApp.effectiveAppearance, by address.
+static void *DartUiAppearanceContext = &DartUiAppearanceContext;
 
 @implementation DartUiHostDelegate
 
@@ -855,8 +865,12 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
   printf("WINDOW_ID=%ld\n", (long)self.window.windowNumber);
   printf("PROTOCOL=4\n");
   printf("WINDOW_SCALE=%ld\n", (long)scaleMilli);
-  printf("PROTOCOL_FEATURES=surface-port,window-events,clipboard,vsync\n");
+  printf("PROTOCOL_FEATURES=surface-port,window-events,clipboard,vsync,"
+         "system-settings\n");
   [self reportScreens];
+  // In the banner, before HOST_PID, so the startup values reach Dart through
+  // the same line - and the same parser - as every later change.
+  [self reportSystemSettingsForced:YES];
   // HOST_PID is deliberately last: it is the final required field and causes
   // the Dart side to publish the completed handshake immediately.
   printf("HOST_PID=%d\n", (int)getpid());
@@ -864,7 +878,106 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 
   self.protocolReady = YES;
   [self reportInitialWindowState];
+  [self observeSystemSettings];
   if (self.commandStdin) [self startCommandReader];
+}
+
+// --- system settings -----------------------------------------------------
+//
+// SYSTEM_SETTINGS=<dark>:<increaseContrast>:<reduceMotion>, each 0 or 1.
+//
+// Dark comes from the application's effective appearance, which follows the
+// system because this host never sets one of its own; the AppleInterfaceStyle
+// default is the fallback for a system without NSAppearance names (it exists,
+// reading "Dark", only while dark mode is on). The other two are NSWorkspace's
+// accessibility display options.
+
+- (NSString *)systemSettingsLine {
+  BOOL dark = NO;
+  NSAppearanceName match = [NSApp.effectiveAppearance
+      bestMatchFromAppearancesWithNames:@[
+        NSAppearanceNameAqua, NSAppearanceNameDarkAqua
+      ]];
+  if (match != nil) {
+    dark = [match isEqualToString:NSAppearanceNameDarkAqua];
+  } else {
+    NSString *style =
+        [NSUserDefaults.standardUserDefaults stringForKey:@"AppleInterfaceStyle"];
+    dark = style != nil &&
+           [style caseInsensitiveCompare:@"Dark"] == NSOrderedSame;
+  }
+  NSWorkspace *workspace = NSWorkspace.sharedWorkspace;
+  return [NSString
+      stringWithFormat:@"SYSTEM_SETTINGS=%d:%d:%d", dark ? 1 : 0,
+                       workspace.accessibilityDisplayShouldIncreaseContrast ? 1
+                                                                            : 0,
+                       workspace.accessibilityDisplayShouldReduceMotion ? 1 : 0];
+}
+
+// Writes the line when it differs from the last one, or always when forced
+// (the banner). Main thread only, like every other writer of stdout here.
+- (void)reportSystemSettingsForced:(BOOL)force {
+  if (self.terminating) return;
+  NSString *line = [self systemSettingsLine];
+  if (!force && [line isEqualToString:self.reportedSystemSettings]) return;
+  self.reportedSystemSettings = line;
+  printf("%s\n", line.UTF8String);
+  fflush(stdout);
+}
+
+- (void)systemSettingsMayHaveChanged:(NSNotification *)notification {
+  (void)notification;
+  // One turn of the run loop later: the distributed notification can arrive
+  // before AppKit has updated NSApp.effectiveAppearance, and reading it now
+  // would report the old appearance. The KVO below is the second witness if
+  // even that is too early.
+  dispatch_async(dispatch_get_main_queue(), ^{
+    if (!self.protocolReady) return;
+    [self reportSystemSettingsForced:NO];
+  });
+}
+
+- (void)observeSystemSettings {
+  if (self.observingSystemSettings) return;
+  self.observingSystemSettings = YES;
+  [NSDistributedNotificationCenter.defaultCenter
+      addObserver:self
+         selector:@selector(systemSettingsMayHaveChanged:)
+             name:@"AppleInterfaceThemeChangedNotification"
+           object:nil];
+  [NSWorkspace.sharedWorkspace.notificationCenter
+      addObserver:self
+         selector:@selector(systemSettingsMayHaveChanged:)
+             name:NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification
+           object:nil];
+  [NSApp addObserver:self
+          forKeyPath:@"effectiveAppearance"
+             options:0
+             context:DartUiAppearanceContext];
+}
+
+- (void)stopObservingSystemSettings {
+  if (!self.observingSystemSettings) return;
+  self.observingSystemSettings = NO;
+  [NSDistributedNotificationCenter.defaultCenter removeObserver:self];
+  [NSWorkspace.sharedWorkspace.notificationCenter removeObserver:self];
+  [NSApp removeObserver:self
+             forKeyPath:@"effectiveAppearance"
+                context:DartUiAppearanceContext];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change
+                       context:(void *)context {
+  if (context != DartUiAppearanceContext) {
+    [super observeValueForKeyPath:keyPath
+                         ofObject:object
+                           change:change
+                          context:context];
+    return;
+  }
+  [self systemSettingsMayHaveChanged:nil];
 }
 
 - (void)reportInitialWindowState {
@@ -2414,6 +2527,7 @@ static NSString *DartUiMenuKey(NSEventModifierFlags flags, NSString *key) {
 - (void)applicationWillTerminate:(NSNotification *)notification {
   (void)notification;
   self.terminating = YES;
+  [self stopObservingSystemSettings];
   if (self.eventMonitor != nil) {
     [NSEvent removeMonitor:self.eventMonitor];
     self.eventMonitor = nil;

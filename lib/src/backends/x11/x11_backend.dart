@@ -53,6 +53,8 @@ import '../../platform/compose_sequences_platform_stub.dart'
     as compose_platform;
 import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart';
+import '../../platform/system_info.dart';
+import '../../platform/system_settings.dart';
 import '../../platform/window_events.dart';
 import 'x11_bindings.dart';
 import 'x11_clipboard.dart';
@@ -79,7 +81,8 @@ final class X11WindowingBackend
         WindowingBackend,
         DragDropProvider,
         ClipboardProvider,
-        ScreenProvider {
+        ScreenProvider,
+        SystemSettingsSource {
   X11WindowingBackend({
     bool? isLinux,
     String? operatingSystem,
@@ -94,6 +97,22 @@ final class X11WindowingBackend
 
   @override
   String get name => 'x11';
+
+  /// Startup only, and only the brightness: the freedesktop `color-scheme`,
+  /// asked through `SystemInfo.isDarkMode` (gsettings). Linux has no change
+  /// notification this backend listens to yet - the XSETTINGS manager
+  /// selection and the `org.freedesktop.portal.Settings` D-Bus signal are the
+  /// two candidates - so a change made while the application runs is seen at
+  /// the next start. High contrast, reduced motion and text size stay at
+  /// their defaults.
+  @override
+  Future<SystemSettings?> readSystemSettings() async {
+    final bool? dark = await SystemInfo.isDarkMode();
+    if (dark == null) return null;
+    return SystemSettings(
+      brightness: dark ? Brightness.dark : Brightness.light,
+    );
+  }
 
   final List<X11Window> _windows = <X11Window>[];
   final Map<int, X11Window> _windowsByXid = <int, X11Window>{};

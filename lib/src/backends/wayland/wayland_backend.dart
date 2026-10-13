@@ -62,6 +62,8 @@ import '../../platform/compose_sequences_platform_stub.dart'
     as compose_platform;
 import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart';
+import '../../platform/system_info.dart';
+import '../../platform/system_settings.dart';
 import '../../platform/text_input.dart';
 import '../../platform/window_events.dart';
 import 'wayland_clipboard.dart';
@@ -152,6 +154,7 @@ final class WaylandWindowingBackend
         WindowingBackend,
         ClipboardProvider,
         DragDropProvider,
+        SystemSettingsSource,
         TextInputProvider {
   WaylandWindowingBackend({
     bool? isLinux,
@@ -171,6 +174,22 @@ final class WaylandWindowingBackend
   static final Stopwatch _monotonicClock = Stopwatch()..start();
   static int _defaultMonotonicMilliseconds() =>
       _monotonicClock.elapsedMilliseconds;
+
+  /// Startup only, and only the brightness: the freedesktop `color-scheme`,
+  /// asked through `SystemInfo.isDarkMode` (gsettings). Linux has no change
+  /// notification this backend listens to yet - the XSETTINGS manager
+  /// selection and the `org.freedesktop.portal.Settings` D-Bus signal are the
+  /// two candidates - so a change made while the application runs is seen at
+  /// the next start. High contrast, reduced motion and text size stay at
+  /// their defaults.
+  @override
+  Future<SystemSettings?> readSystemSettings() async {
+    final bool? dark = await SystemInfo.isDarkMode();
+    if (dark == null) return null;
+    return SystemSettings(
+      brightness: dark ? Brightness.dark : Brightness.light,
+    );
+  }
 
   @override
   String get name => 'wayland';

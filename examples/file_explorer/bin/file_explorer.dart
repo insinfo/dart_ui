@@ -25,9 +25,13 @@ Future<void> main(List<String> arguments) async {
       .firstOrNull;
   final ExplorerStrings strings =
       ExplorerStrings.forLocale(lang ?? Platform.localeName);
-  final bool dark = arguments.contains('--dark') ||
-      (!arguments.contains('--light') &&
-          (await SystemInfo.isDarkMode() ?? false));
+  // `--dark` and `--light` pin the palette; without either, the window
+  // follows the system's appearance live (see FileExplorerApp).
+  final bool? dark = arguments.contains('--dark')
+      ? true
+      : arguments.contains('--light')
+          ? false
+          : null;
 
   final Map<Place, String> places = <Place, String>{};
   for (final (Place place, StandardFolder folder) in <(Place, StandardFolder)>[

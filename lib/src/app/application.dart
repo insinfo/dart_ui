@@ -158,6 +158,7 @@ import '../platform/drag_drop.dart';
 import '../platform/input_events.dart';
 import '../platform/native_menu.dart';
 import '../platform/native_window.dart';
+import '../platform/system_settings.dart';
 import '../platform/text_input.dart';
 import '../platform/window_events.dart';
 import '../rendering/cpu_renderer.dart';
@@ -1312,10 +1313,26 @@ final class ApplicationWindow with DisposableMixin {
   /// missing wrapper. An application that wants a different presentation - a
   /// real popup window, once windows are cheap enough to use for menus - passes
   /// its own scope further down; the nearest one wins.
-  MediaQueryData get _mediaQueryData => MediaQueryData(
-        size: host.logicalSize,
-        devicePixelRatio: host.renderScale,
-      );
+  ///
+  /// The desktop-wide half of the query - brightness, contrast, motion, text
+  /// size - is the application's [Application.systemSettings], the same value
+  /// in every window. It is read here, at the one place the query is built,
+  /// so a settings change reaches a window by exactly the route a resize
+  /// does: [_syncMediaQuery] sees a query that no longer matches the mounted
+  /// one and replaces the framework wrappers, and every widget that read
+  /// [MediaQuery] rebuilds through the ordinary inherited-widget path.
+  MediaQueryData get _mediaQueryData {
+    final SystemSettings settings = application.systemSettings.value;
+    return MediaQueryData(
+      size: host.logicalSize,
+      devicePixelRatio: host.renderScale,
+      platformBrightness: settings.brightness,
+      highContrast: settings.highContrast,
+      disableAnimations: settings.disableAnimations,
+      boldText: settings.boldText,
+      textScaleFactor: settings.textScaleFactor,
+    );
+  }
 
   /// The host this window's menus, dropdowns and tooltips open into.
   ///
@@ -2383,6 +2400,12 @@ final class Application with DisposableMixin {
         devices: devices,
       );
 
+      // --- 2b. system settings -----------------------------------------
+      // Before the first window, so that a backend able to answer from
+      // memory (the Windows registry) mounts that window with the right
+      // brightness instead of drawing one light frame and then flipping.
+      application._readInitialSystemSettings();
+
       // --- 3. the first window -----------------------------------------
       await application.openWindow(
         rootWidget: rootWidget,
@@ -2439,6 +2462,38 @@ final class Application with DisposableMixin {
   final List<String> _teardownOrder;
   final FrameStatistics statistics = FrameStatistics();
   final Stopwatch _sinceOverlayRefresh = Stopwatch()..start();
+
+  /// The desktop's appearance and accessibility preferences, live.
+  ///
+  /// Every window's [MediaQuery] is built from [SystemSettingsNotifier.value],
+  /// and a change rebuilds each window's query - so a widget that reads
+  /// `MediaQuery.of(context).platformBrightness` follows the system's dark
+  /// mode with nothing more than that read. Listen to this directly for code
+  /// that is not a widget, or that has to know before any window rebuilds.
+  ///
+  /// Where the values come from:
+  ///
+  ///   * **at startup**, the backend, when it is a [SystemSettingsSource] -
+  ///     synchronously on Windows, through gsettings on Linux - and on macOS
+  ///     the first line each host process sends, which arrives as a
+  ///     [SystemSettingsChangedEvent];
+  ///   * **afterwards**, every [SystemSettingsChangedEvent] a window reports.
+  ///
+  /// [SystemSettings.fallback] (light, standard contrast) until the platform
+  /// says otherwise, and forever on a backend that never does - which is what
+  /// keeps a headless test independent of the developer's desktop.
+  ///
+  /// Assigning [SystemSettingsNotifier.value] overrides the platform until
+  /// its next report, which is occasionally what a tool or a demo wants.
+  late final SystemSettingsNotifier systemSettings = SystemSettingsNotifier()
+    ..addListener(_onSystemSettingsChanged);
+
+  /// Bumped by every report from the platform - even one that changed
+  /// nothing, since "still light" at a later time is still newer news - and
+  /// by every change from any source, an application override included. A
+  /// slow startup answer (gsettings can take a while) that finds it moved
+  /// since the question was asked is stale and is dropped.
+  int _systemSettingsEpoch = 0;
 
   /// Live windows, in the order they were opened.
   final List<ApplicationWindow> _windows = <ApplicationWindow>[];
@@ -3982,6 +4037,51 @@ final class Application with DisposableMixin {
   // Event routing
   // ---------------------------------------------------------------------------
 
+  /// Asks the backend for the settings in force before any window mounts.
+  ///
+  /// A synchronous answer is applied at once and the first frame already
+  /// wears it. An asynchronous one is applied when it lands - unless the
+  /// platform has reported a change in the meantime, in which case the change
+  /// is newer than the question and wins. A failure is not an error worth a
+  /// diagnostic: the fallback is a usable light desktop, and the next change
+  /// the platform reports corrects it.
+  void _readInitialSystemSettings() {
+    final Object source = backend;
+    if (source is! SystemSettingsSource) return;
+    final FutureOr<SystemSettings?> answer;
+    try {
+      answer = source.readSystemSettings();
+    } on Object {
+      return;
+    }
+    if (answer is Future<SystemSettings?>) {
+      final int epoch = _systemSettingsEpoch;
+      unawaited(answer.then((SystemSettings? settings) {
+        if (settings == null || isDisposed) return;
+        if (epoch != _systemSettingsEpoch) return;
+        systemSettings.value = settings;
+      }, onError: (Object _) {}));
+    } else if (answer != null) {
+      systemSettings.value = answer;
+    }
+  }
+
+  /// Pushes new settings into every window's [MediaQuery].
+  void _onSystemSettingsChanged() {
+    _systemSettingsEpoch++;
+    if (isDisposed || _tearingDown) return;
+    for (final ApplicationWindow window in List<ApplicationWindow>.of(
+      _windows,
+    )) {
+      if (window.isDisposed) continue;
+      window._syncMediaQuery();
+      window.requestFrame();
+    }
+    // The loop may be parked in the platform's event wait, and an
+    // asynchronous startup answer arrives on a future the wait cannot see.
+    if (_windows.isNotEmpty) backend.wake();
+  }
+
   /// Routes one platform event to the window it names.
   ///
   /// Returns whether anything consumed it, which a backend may use to let the
@@ -4008,6 +4108,17 @@ final class Application with DisposableMixin {
   /// worse than delivering one a moment early.
   bool handleEvent(PlatformWindowEvent event) {
     if (isDisposed) return false;
+
+    // Desktop-wide news that happens to travel on a window's stream. Handled
+    // before the window lookup and every generation and modal check below,
+    // because none of them applies: dark mode is just as on for a window that
+    // has been superseded or that a dialog is covering, and the settings must
+    // not be lost because the window that carried them closed a moment ago.
+    if (event is SystemSettingsChangedEvent) {
+      _systemSettingsEpoch++;
+      systemSettings.value = event.settings;
+      return true;
+    }
 
     final window = _byId[event.windowId];
     if (window == null || window.isDisposed) {
@@ -4538,6 +4649,9 @@ final class Application with DisposableMixin {
     _state = ApplicationLifecycleState.closing;
     _tearingDown = true;
     _resources.dispose();
+    // After the windows, so that widgets unsubscribing on their way out find
+    // the notifier still alive.
+    systemSettings.dispose();
     // The policy is process-wide, so a disposed application has to put it
     // back: otherwise one test's kill switch configures every test that runs
     // after it in the same isolate, which is the failure mode a global exists

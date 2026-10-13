@@ -14,10 +14,13 @@ library;
 
 import '../graphics/color.dart';
 import '../platform/editing_convention.dart';
+import '../platform/system_settings.dart' show Brightness;
 import '../rendering/text/font_registry.dart';
 import '../text/text_decoration.dart';
 import 'style.dart';
 import 'widget.dart';
+
+export '../platform/system_settings.dart' show Brightness;
 
 /// The 4 px spacing grid every gap, inset and margin in the framework is a
 /// multiple of.
@@ -96,11 +99,11 @@ enum ThemeDensity {
   double get scale => controlHeight / 32.0;
 }
 
-/// Whether a theme uses a light or dark colour palette.
-///
-/// The name intentionally matches Flutter's public contract so widgets can be
-/// ported without translating an otherwise identical enum at every boundary.
-enum Brightness { light, dark }
+// [Brightness] - whether a palette is light or dark - is declared in
+// `platform/system_settings.dart` and re-exported above, so the brightness a
+// theme declares and the one the platform reports through
+// `MediaQueryData.platformBrightness` are the same type and compare directly,
+// as they do in Flutter. See the enum's own comment for why it lives there.
 
 /// Compatibility spelling used by the first pre-release dart_ui themes.
 typedef ThemeBrightness = Brightness;

@@ -203,6 +203,13 @@ final class _RelaySink with HostMessageSinkAdapter {
   void onMenuAction(int generation, int id) =>
       target?.onMenuAction(generation, id);
 
+  /// Forwarded once adopted, dropped before: the banner's copy describes the
+  /// desktop the application already knows about from its own windows, and a
+  /// hidden spare has no window to deliver it through.
+  @override
+  void onSystemSettings(bool dark, bool highContrast, bool reduceMotion) =>
+      target?.onSystemSettings(dark, highContrast, reduceMotion);
+
   @override
   void onTextInput(String base64) => target?.onTextInput(base64);
 

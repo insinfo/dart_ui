@@ -25,8 +25,13 @@ abstract final class SystemInfo {
   /// Whether the platform is currently in dark mode, or null when it does
   /// not say (an older desktop, a Linux without gsettings, a stub target).
   ///
-  /// This is the *current* value, not a subscription; there is no portable
-  /// change notification across the three desktops, so a caller that wants
-  /// to follow the setting re-asks when its window regains focus.
+  /// This is the *current* value, not a subscription. To follow the setting
+  /// while the application runs, read `MediaQuery.of(context)
+  /// .platformBrightness` in a widget, or listen to
+  /// `Application.systemSettings`: those are fed by the backends' own change
+  /// notifications (`WM_SETTINGCHANGE` on Windows, AppKit's appearance and
+  /// accessibility notifications on macOS) and rebuild every window when the
+  /// answer moves. On Linux they are still a startup-time read of this same
+  /// gsettings answer.
   static Future<bool?> isDarkMode() => platform.isDarkMode();
 }

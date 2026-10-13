@@ -527,6 +527,7 @@ redescobrir a lista. **Tratada** significa que há um `case` em
 | `WM_SETCURSOR` | `SetCursor` + retorna 1 para `HTCLIENT` | a classe registra `hCursor = 0` de propósito; o frame fica com o `DefWindowProcW`. Está ligado e fixado por teste |
 | `WM_CLOSE` | `WindowCloseRequestedEvent` | pedido, não ordem |
 | `WM_QUERYENDSESSION` / `WM_ENDSESSION` | `onSessionEnding` | |
+| `WM_SETTINGCHANGE` / `WM_THEMECHANGED` / `WM_SYSCOLORCHANGE` | `SystemSettingsChangedEvent` com os valores relidos (`AppsUseLightTheme`, `SPI_GETHIGHCONTRAST`, `SPI_GETCLIENTAREAANIMATION`, `TextScaleFactor`) | só quando `win32SettingChangeAffectsSystemSettings` diz que a mensagem é sobre isso: `lParam` = `"ImmersiveColorSet"` ou `"WindowsThemeElement"`, ou `wParam` = `SPI_SETHIGHCONTRAST` / `SPI_SETCLIENTAREAANIMATION` / `SPI_SETANIMATION` / `SPI_SETNONCLIENTMETRICS`; `PATH`, mouse e locale continuam indo direto ao `DefWindowProcW`, que também recebe as relevantes. Cada janela de nível superior recebe o broadcast e reporta; o `Application` compara e só a primeira cópia muda o `MediaQueryData` de todas as janelas. Decisão pura em `win32_system_settings.dart`, testada em qualquer SO |
 | `WM_DESTROY` / `WM_NCDESTROY` | `WindowClosedEvent`, solta o token | |
 | `WM_MOUSEMOVE` | `PointerMoveEvent` (+ `TrackMouseEvent` na primeira) | |
 | `WM_MOUSELEAVE` | `WindowPointerLeaveEvent` | |
@@ -611,7 +612,6 @@ test('the side buttons press and release', () async {
 
 | Mensagem | Por que ainda não dói, e o que falta |
 | --- | --- |
-| `WM_SETTINGCHANGE` / `WM_THEMECHANGED` | `ThemeData.highContrast` existe, mas todo exemplo escolhe o tema por `argv` (`example/gallery_shell.dart`) e `window_events.dart` não tem evento de tema. Tratar antes do evento existir seria um `case` que joga o argumento fora. |
 | `WM_DISPLAYCHANGE` | Mudança de resolução que mexe na janela vem seguida de `WM_SIZE`/`WM_MOVE`/`WM_DPICHANGED`, que são tratadas. O que se perde é reler os limites dos monitores — e este backend ainda não tem módulo de telas nem fullscreen. |
 | `WM_SHOWWINDOW` | Não há evento de visibilidade no contrato; `hide()` também não emite nada. |
 | `WM_UNICHAR` | O protocolo pede responder TRUE a `UNICODE_NOCHAR`; o `DefWindowProcW` responde FALSE e quem envia cai de volta em `WM_CHAR`, que é tratada. É por isso que nada quebra. |

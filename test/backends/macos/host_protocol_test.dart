@@ -80,6 +80,10 @@ final class _RecordingSink with HostMessageSinkAdapter {
       events.add('menu:$generation:$id');
 
   @override
+  void onSystemSettings(bool dark, bool highContrast, bool reduceMotion) =>
+      events.add('settings:$dark:$highContrast:$reduceMotion');
+
+  @override
   void onError(String code) => events.add('error:$code');
 
   @override
@@ -338,5 +342,67 @@ void main() {
       'window:pointerEntered:0.0:0.0:0.0:0.0',
       'window:pointerLeft:0.0:0.0:0.0:0.0',
     ]);
+  });
+
+  group('SYSTEM_SETTINGS', () {
+    test('carries dark, increase contrast and reduce motion as 0 or 1', () {
+      final sink = _RecordingSink();
+      HostProtocolParser(sink).addBytes(utf8.encode(
+        'SYSTEM_SETTINGS=0:0:0\n'
+        'SYSTEM_SETTINGS=1:0:0\n'
+        'SYSTEM_SETTINGS=0:1:0\n'
+        'SYSTEM_SETTINGS=0:0:1\n'
+        'SYSTEM_SETTINGS=1:1:1\r\n',
+      ));
+      expect(sink.events, <String>[
+        'settings:false:false:false',
+        'settings:true:false:false',
+        'settings:false:true:false',
+        'settings:false:false:true',
+        'settings:true:true:true',
+      ]);
+    });
+
+    test('arrives in the banner, before the line that completes it', () {
+      // The order the host writes: the startup values ride the handshake so
+      // that the first answer and every later one share one parser.
+      final sink = _RecordingSink();
+      HostProtocolParser(sink).addBytes(utf8.encode(
+        'MAIN_THREAD=1\nWINDOW_ID=42\nPROTOCOL=4\nWINDOW_SCALE=2000\n'
+        'PROTOCOL_FEATURES=surface-port,window-events,clipboard,vsync,'
+        'system-settings\n'
+        'SYSTEM_SETTINGS=1:0:1\n'
+        'HOST_PID=123\n',
+      ));
+      expect(
+        sink.events.sublist(sink.events.length - 2),
+        <String>['settings:true:false:true', 'handshake:hostPid:123'],
+      );
+    });
+
+    test('ignores fields a newer host appends', () {
+      final sink = _RecordingSink();
+      HostProtocolParser(sink)
+          .addBytes(utf8.encode('SYSTEM_SETTINGS=1:0:1:1:0\n'));
+      expect(sink.events, <String>['settings:true:false:true']);
+    });
+
+    test('a value that is not 0 or 1, or a missing field, is an error', () {
+      final sink = _RecordingSink();
+      HostProtocolParser(sink).addBytes(utf8.encode(
+        'SYSTEM_SETTINGS=2:0:0\n'
+        'SYSTEM_SETTINGS=1:0\n'
+        'SYSTEM_SETTINGS=\n'
+        'SYSTEM_SETTINGS=1 0 1\n'
+        'SYSTEM_SETTINGS=1:0:1x\n'
+        'SYSTEM_SETTINGS=-1:0:0\n'
+        'SYSTEM_SETTINGS=0:1:0\n',
+      ));
+      expect(sink.events, <String>[
+        for (var i = 0; i < 6; i++) 'error:BAD_SYSTEM_SETTINGS',
+        // And the parser recovers for the next line.
+        'settings:false:true:false',
+      ]);
+    });
   });
 }

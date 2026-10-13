@@ -35,6 +35,7 @@ import 'win32_coordinates.dart';
 import 'win32_diagnostics.dart';
 import 'win32_dib_surface.dart';
 import 'win32_structs.dart';
+import 'win32_system_settings.dart';
 import 'win32_window_class.dart';
 
 /// `SWP_SHOWWINDOW`, `WS_DISABLED` and `HWND_TOP`.
@@ -1044,6 +1045,31 @@ final class Win32Window
   Offset clientToScreen(Offset clientPosition) =>
       _refreshOrigin().clientToScreen(clientPosition);
 
+  /// Re-reads the system settings when [msg] is one that can have moved them,
+  /// and reports the result.
+  ///
+  /// Every top-level window receives the broadcast, so a multi-window
+  /// application reports it once per window; the application compares the
+  /// values and only the first copy changes anything. Not de-duplicated here,
+  /// because the window that would have to remember the last report is
+  /// precisely the kind of per-window state that disagrees between windows.
+  void _onSystemSettingMessage(int msg, int wParam, int lParam) {
+    final String? area =
+        msg == wmSettingchange ? readWin32SettingArea(lParam) : null;
+    if (!win32SettingChangeAffectsSystemSettings(
+      message: msg,
+      wParam: wParam,
+      area: area,
+    )) {
+      return;
+    }
+    _emit(SystemSettingsChangedEvent(
+      windowId: id,
+      generation: _generation.current,
+      settings: readWin32SystemSettings(),
+    ));
+  }
+
   /// Asks Windows where the client area currently is.
   ///
   /// Cheaper than it looks - one syscall, no allocation - and always right,
@@ -1216,6 +1242,17 @@ final class Win32Window
           ),
         );
         return 0;
+
+      // The desktop's appearance and accessibility preferences. Reported and
+      // still handed on: DefWindowProcW does nothing visible with them for a
+      // window whose frame is the platform's, and an application that
+      // swallowed WM_SETTINGCHANGE would be the one window on the desktop
+      // whose non-client area did not follow a theme change.
+      case wmSettingchange:
+      case wmThemechanged:
+      case wmSyscolorchange:
+        _onSystemSettingMessage(msg, wParam, lParam);
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
       case wmQueryendsession:
         _onSessionEnding();

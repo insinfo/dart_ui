@@ -38,6 +38,22 @@ void main() {
       expect(changed.highContrast, isTrue);
     });
 
+    test('platformBrightness is part of the value', () {
+      expect(data.platformBrightness, Brightness.light,
+          reason: 'unknown is light, as in Flutter');
+      final MediaQueryData dark =
+          data.copyWith(platformBrightness: Brightness.dark);
+      expect(dark.platformBrightness, Brightness.dark);
+      expect(dark.size, data.size);
+      expect(dark, isNot(data),
+          reason: 'equality decides whether dependents rebuild; a field it '
+              'ignored would be a dark-mode switch that changed nothing');
+      expect(dark.hashCode, isNot(data.hashCode));
+      expect(dark.copyWith(platformBrightness: Brightness.light), data);
+      expect(dark.copyWith(size: const Size(1, 1)).platformBrightness,
+          Brightness.dark);
+    });
+
     test('removePadding consumes only the named edges', () {
       final MediaQueryData removed = data.removePadding(
         removeLeft: true,

@@ -526,5 +526,50 @@ void main() {
           ..free(suggested);
       }
     });
+
+    group('WM_SETTINGCHANGE', () {
+      /// `lParam` as Windows builds it: a NUL-terminated UTF-16 area name.
+      Future<int> sendArea(String area) async {
+        final Pointer<Uint16> text = api.allocator<Uint16>(area.length + 1);
+        try {
+          for (var index = 0; index < area.length; index++) {
+            text[index] = area.codeUnitAt(index);
+          }
+          text[area.length] = 0;
+          return await send(wmSettingchange, 0, text.address);
+        } finally {
+          api.allocator.free(text);
+        }
+      }
+
+      test('ImmersiveColorSet reports the settings re-read', () async {
+        // The dark-mode switch. What the values *are* depends on the machine
+        // running the test, so only the shape is asserted: one event, for
+        // this window and generation, carrying a whole value.
+        await sendArea('ImmersiveColorSet');
+        final SystemSettingsChangedEvent event =
+            events.whereType<SystemSettingsChangedEvent>().single;
+        expect(event.windowId, window.id);
+        expect(event.generation, window.generation);
+        expect(event.settings.textScaleFactor, greaterThan(0));
+      });
+
+      test('a high-contrast SPI action and WM_THEMECHANGED report too',
+          () async {
+        await send(wmSettingchange, 0x0043);
+        expect(events.whereType<SystemSettingsChangedEvent>(), hasLength(1));
+        await send(wmThemechanged);
+        expect(events.whereType<SystemSettingsChangedEvent>(), hasLength(1));
+      });
+
+      test('an unrelated area reports nothing and still reaches DefWindowProc',
+          () async {
+        // Editing PATH broadcasts `Environment`; rebuilding every window of
+        // the application for it would be a visible stall for nothing.
+        final int result = await sendArea('Environment');
+        expect(events.whereType<SystemSettingsChangedEvent>(), isEmpty);
+        expect(result, withoutHandler(wmSettingchange));
+      });
+    });
   }, skip: Platform.isWindows ? false : 'needs a real Win32 window');
 }

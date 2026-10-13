@@ -109,7 +109,20 @@ bool _regBindAttempted = false;
 /// The raw `AppsUseLightTheme` DWORD, or null when the value (or advapi32)
 /// is unavailable - Windows before 1607 has neither the value nor the
 /// setting.
-int? readWindowsAppsUseLightTheme() {
+int? readWindowsAppsUseLightTheme() => readWindowsCurrentUserDword(
+      r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
+      'AppsUseLightTheme',
+    );
+
+/// One `REG_DWORD` under `HKEY_CURRENT_USER`, or null when the key, the value
+/// or advapi32 itself is missing, or the value is not a DWORD.
+///
+/// Shared with the Win32 backend, which re-reads the appearance settings
+/// whenever `WM_SETTINGCHANGE` says they moved: one binding of `RegGetValueW`
+/// per process rather than one per caller, and `RRF_RT_REG_DWORD` makes the
+/// registry itself refuse a value of the wrong type instead of this code
+/// reinterpreting four bytes of a string.
+int? readWindowsCurrentUserDword(String subKey, String valueName) {
   if (!_regBindAttempted) {
     _regBindAttempted = true;
     try {
@@ -128,10 +141,8 @@ int? readWindowsAppsUseLightTheme() {
     size.value = 4;
     final int status = read(
       _hkeyCurrentUser,
-      arena.allocateUtf16(
-        r'Software\Microsoft\Windows\CurrentVersion\Themes\Personalize',
-      ),
-      arena.allocateUtf16('AppsUseLightTheme'),
+      arena.allocateUtf16(subKey),
+      arena.allocateUtf16(valueName),
       _rrfRtRegDword,
       nullptr,
       data,

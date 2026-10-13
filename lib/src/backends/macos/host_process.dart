@@ -823,6 +823,10 @@ final class MacosHostProcess
       _sink.onMenuAction(generation, id);
 
   @override
+  void onSystemSettings(bool dark, bool highContrast, bool reduceMotion) =>
+      _sink.onSystemSettings(dark, highContrast, reduceMotion);
+
+  @override
   void onAck(HostAckKind kind, int value) {
     if (kind == HostAckKind.notMainThread) {
       // The one banner answer that is fatal on its own: a host that is not on

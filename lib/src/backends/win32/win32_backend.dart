@@ -27,6 +27,7 @@ import '../../geometry/rect.dart';
 import '../../platform/clipboard.dart';
 import '../../platform/drag_drop.dart';
 import '../../platform/native_window.dart'; // also exports screen_info.dart
+import '../../platform/system_settings.dart';
 import '../../platform/text_input.dart';
 import 'uia/uia_core.dart';
 import 'uia/uia_session.dart';
@@ -40,6 +41,7 @@ import 'win32_drag_drop.dart';
 import 'win32_ime.dart';
 import 'win32_ole.dart';
 import 'win32_structs.dart';
+import 'win32_system_settings.dart';
 import 'win32_window.dart';
 import 'win32_window_class.dart';
 
@@ -50,11 +52,19 @@ final class Win32WindowingBackend
         ClipboardProvider,
         DragDropProvider,
         ScreenProvider,
+        SystemSettingsSource,
         TextInputProvider {
   Win32WindowingBackend();
 
   @override
   String get name => 'win32';
+
+  /// Answered from the registry and `SystemParametersInfoW`, synchronously,
+  /// so the first window mounts in the right mode. Later changes arrive as
+  /// `SystemSettingsChangedEvent`s from each window's `WM_SETTINGCHANGE`; see
+  /// `win32_system_settings.dart`.
+  @override
+  SystemSettings readSystemSettings() => readWin32SystemSettings();
 
   /// The Windows clipboard, over the same `Win32Api` the windows use.
   ///

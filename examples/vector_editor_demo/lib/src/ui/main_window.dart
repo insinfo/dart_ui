@@ -33,11 +33,18 @@ class MainWindow extends StatefulWidget {
     this.initialDoc,
     this.initialName,
     this.onReady,
+    this.systemBrightness,
   });
 
   final VectorDocument? initialDoc;
   final String? initialName;
   final void Function(MainWindowState window)? onReady;
+
+  /// The desktop's light or dark setting, which "Follow the system" wears;
+  /// null when the window has no [MediaQuery] to ask - a widget test - and
+  /// the editor then keeps its own dark default. Handed down by
+  /// [VectorEditorApp], which rebuilds this window only when it changes.
+  final Brightness? systemBrightness;
 
   @override
   State<MainWindow> createState() => MainWindowState();
@@ -91,14 +98,24 @@ class MainWindowState extends State<MainWindow> implements EditorHost {
       ),
     );
     widget.onReady?.call(this);
-    // "Follow the system" needs to know what the system is; asked once at
-    // start, and again whenever the user picks that mode.
-    unawaited(SystemInfo.isDarkMode().then((bool? dark) {
-      if (!mounted) return;
-      ui.systemDark = dark;
-      model.refresh();
-    }).catchError((Object _) {}));
+    // "Follow the system" wears the desktop's brightness, which the
+    // application keeps live; a change arrives through [didUpdateWidget].
+    ui.systemDark = _isDark(widget.systemBrightness);
   }
+
+  @override
+  void didUpdateWidget(MainWindow oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.systemBrightness != oldWidget.systemBrightness) {
+      ui.systemDark = _isDark(widget.systemBrightness);
+    }
+  }
+
+  static bool? _isDark(Brightness? brightness) => switch (brightness) {
+        null => null,
+        Brightness.dark => true,
+        Brightness.light => false,
+      };
 
   // -------------------------------------------------------------------------
   // EditorHost: what the commands need a person or the window for

@@ -166,6 +166,7 @@ export 'src/platform/shell.dart';
 export 'src/platform/standard_paths.dart';
 export 'src/platform/system_fonts.dart';
 export 'src/platform/system_info.dart';
+export 'src/platform/system_settings.dart';
 export 'src/platform/text_input.dart';
 export 'src/platform/trash.dart';
 export 'src/platform/window_events.dart';
