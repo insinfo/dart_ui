@@ -5,6 +5,7 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import '../engine/explorer_commands.dart';
+import '../engine/strings.dart';
 
 const MenuSeparator _ = MenuSeparator();
 
@@ -24,17 +25,17 @@ final List<MenuSpecEntry> kSortMenu = <MenuSpecEntry>[
 ];
 
 /// View ▾ - the layouts, then Show.
-final List<MenuSpecEntry> kViewMenu = <MenuSpecEntry>[
-  for (final (String id, String _, Object _, int _) in kViewModeCommands)
-    CommandItem(id),
-  _,
-  const SubmenuSpec('Show', <MenuSpecEntry>[
-    CommandItem('view.navigationPane'),
-    CommandItem('view.detailsPane'),
-    CommandItem('view.extensions'),
-    CommandItem('view.hiddenItems'),
-  ]),
-];
+List<MenuSpecEntry> viewMenu(ExplorerStrings strings) => <MenuSpecEntry>[
+      for (final (String id, String _, Object _, int _) in kViewModeCommands)
+        CommandItem(id),
+      _,
+      SubmenuSpec(strings.menu('Show'), const <MenuSpecEntry>[
+        CommandItem('view.navigationPane'),
+        CommandItem('view.detailsPane'),
+        CommandItem('view.extensions'),
+        CommandItem('view.hiddenItems'),
+      ]),
+    ];
 
 /// ··· - what does not fit on the bar.
 const List<MenuSpecEntry> kMoreMenu = <MenuSpecEntry>[
@@ -66,13 +67,13 @@ const List<MenuSpecEntry> kItemMenu = <MenuSpecEntry>[
 ];
 
 /// The menu of the empty space of a folder.
-final List<MenuSpecEntry> kBackgroundMenu = <MenuSpecEntry>[
-  SubmenuSpec('View', kViewMenu),
-  SubmenuSpec('Sort by', kSortMenu),
-  const CommandItem('nav.refresh'),
-  _,
-  const CommandItem('file.paste'),
-  const SubmenuSpec('New', kNewMenu),
-  _,
-  const CommandItem('select.all'),
-];
+List<MenuSpecEntry> backgroundMenu(ExplorerStrings strings) => <MenuSpecEntry>[
+      SubmenuSpec(strings.menu('View'), viewMenu(strings)),
+      SubmenuSpec(strings.menu('Sort by'), kSortMenu),
+      const CommandItem('nav.refresh'),
+      _,
+      const CommandItem('file.paste'),
+      SubmenuSpec(strings.menu('New'), kNewMenu),
+      _,
+      const CommandItem('select.all'),
+    ];

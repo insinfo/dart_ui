@@ -240,4 +240,30 @@ void main() {
       expect(host.calls, contains('close'));
     });
   });
+
+  test('in Portuguese every command has a label, and no label is a typo', () {
+    final ExplorerModel m = ExplorerModel(
+      fs: disk(),
+      places: const <Place, String>{},
+      strings: ExplorerStrings.portuguese,
+    );
+    final CommandRegistry registry = CommandRegistry();
+    registerExplorerCommands(registry, m, HeadlessExplorerHost());
+    final Set<String> ids = <String>{
+      for (final Map<String, Object?> c in registry.describe())
+        c['id']! as String,
+    };
+    expect(
+        ids.difference(ExplorerStrings.portuguese.commandLabels.keys.toSet()),
+        isEmpty,
+        reason: 'commands with no Portuguese label');
+    expect(
+        ExplorerStrings.portuguese.commandLabels.keys.toSet().difference(ids),
+        isEmpty,
+        reason: 'labels for commands that do not exist');
+    expect(registry['file.cut']!.label, 'Recortar');
+    expect(registry['file.cut']!.shortcut,
+        const KeyGesture(logicalKeyX, command: true),
+        reason: 'only the words change');
+  });
 }

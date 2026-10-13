@@ -40,7 +40,11 @@ void registerExplorerCommands(
       if (registry.contains(command.id)) {
         throw StateError('two modules register ${command.id}');
       }
-      registry.register(command);
+      // The id, the keys and the behaviour are the same in every language;
+      // only what the menus and tooltips say changes.
+      final String? label = model.strings.commandLabels[command.id];
+      registry
+          .register(label == null ? command : command.copyWith(label: label));
     }
   }
 }

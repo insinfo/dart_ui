@@ -392,7 +392,7 @@ class ExplorerWindowState extends State<ExplorerWindow>
           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
           child: SizedBox(width: 1, child: ColoredBox(color: theme.border)),
         );
-    final bool pt = model.strings.locale.startsWith('pt');
+    final String Function(String) t = model.strings.menu;
     return Padding(
       padding: const EdgeInsets.only(left: 8, right: 8, bottom: 6),
       child: SizedBox(
@@ -402,7 +402,7 @@ class ExplorerWindowState extends State<ExplorerWindow>
           children: <Widget>[
             MenuBarButton(
               icon: FluentIcons.addCircle,
-              label: pt ? 'Novo' : 'New',
+              label: t('New'),
               menu: () => menus.widgets(kNewMenu),
             ),
             divider(),
@@ -414,23 +414,23 @@ class ExplorerWindowState extends State<ExplorerWindow>
             divider(),
             MenuBarButton(
               icon: FluentIcons.arrowSort,
-              label: pt ? 'Classificar' : 'Sort',
+              label: t('Sort'),
               menu: () => menus.widgets(kSortMenu),
             ),
             MenuBarButton(
               icon: FluentIcons.textBulletListLtr,
-              label: pt ? 'Exibir' : 'View',
-              menu: () => menus.widgets(kViewMenu),
+              label: t('View'),
+              menu: () => menus.widgets(viewMenu(model.strings)),
             ),
             MenuBarButton(
               icon: FluentIcons.moreHorizontal,
-              tooltip: pt ? 'Ver mais' : 'See more',
+              tooltip: t('See more'),
               menu: () => menus.widgets(kMoreMenu),
             ),
             const Spacer(),
             BarButton(
               icon: FluentIcons.panelRight,
-              label: pt ? 'Detalhes' : 'Details',
+              label: t('Details'),
               registry: registry,
               command: 'view.detailsPane',
             ),
@@ -446,8 +446,9 @@ class ExplorerWindowState extends State<ExplorerWindow>
       HomeLocation() => HomePage(model: model, registry: registry),
       ThisPcLocation() => ThisPcPage(model: model, registry: registry),
       _ => ContextMenuArea(
-          menuChildren: () => menus.widgets(
-              model.selectedEntries.isEmpty ? kBackgroundMenu : kItemMenu),
+          menuChildren: () => menus.widgets(model.selectedEntries.isEmpty
+              ? backgroundMenu(model.strings)
+              : kItemMenu),
           child: FolderView(
             model: model,
             registry: registry,

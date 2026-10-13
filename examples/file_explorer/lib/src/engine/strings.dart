@@ -40,6 +40,8 @@ final class ExplorerStrings {
     required this.freeOf,
     required this.newTab,
     required this.location,
+    this.commandLabels = const <String, String>{},
+    this.menuNames = const <String, String>{},
   });
 
   final String locale;
@@ -78,6 +80,16 @@ final class ExplorerStrings {
   final String freeOf;
   final String newTab;
   final String location;
+
+  /// Command labels in this language, by command id; a command missing
+  /// here keeps its English label.
+  final Map<String, String> commandLabels;
+
+  /// Submenu and button names - "View", "Sort by" - by their English name.
+  final Map<String, String> menuNames;
+
+  /// [english] in this language.
+  String menu(String english) => menuNames[english] ?? english;
 
   /// "12 items", "1 item".
   String itemCount(int n) => '${_number(n)} ${n == 1 ? item : items}';
@@ -174,6 +186,73 @@ final class ExplorerStrings {
     freeOf: '{free} livres de {total}',
     newTab: 'Nova guia',
     location: 'Local',
+    menuNames: <String, String>{
+      'New': 'Novo',
+      'Sort': 'Classificar',
+      'Sort by': 'Classificar por',
+      'View': 'Exibir',
+      'Show': 'Mostrar',
+      'See more': 'Ver mais',
+      'Details': 'Detalhes',
+      'Open': 'Abrir',
+      'Unpin from Quick access': 'Desafixar do Acesso rápido',
+    },
+    commandLabels: <String, String>{
+      'nav.back': 'Voltar',
+      'nav.forward': 'Avançar',
+      'nav.up': 'Para cima',
+      'nav.refresh': 'Atualizar',
+      'nav.home': 'Início',
+      'nav.thisPc': 'Este Computador',
+      'nav.go': 'Ir para',
+      'nav.place': 'Ir para uma pasta conhecida',
+      'nav.editAddress': 'Editar endereço',
+      'nav.focusSearch': 'Pesquisar',
+      'nav.search': 'Pesquisar por',
+      'tab.new': 'Nova guia',
+      'tab.close': 'Fechar guia',
+      'tab.select': 'Ir para a guia',
+      'tab.next': 'Próxima guia',
+      'tab.previous': 'Guia anterior',
+      'tab.duplicate': 'Duplicar guia',
+      'tab.reopen': 'Reabrir guia fechada',
+      'file.open': 'Abrir',
+      'file.openInNewTab': 'Abrir em nova guia',
+      'file.newFolder': 'Pasta',
+      'file.newTextDocument': 'Documento de Texto',
+      'file.rename': 'Renomear',
+      'file.delete': 'Excluir',
+      'file.cut': 'Recortar',
+      'file.copy': 'Copiar',
+      'file.paste': 'Colar',
+      'file.copyPath': 'Copiar como caminho',
+      'file.properties': 'Propriedades',
+      'file.reveal': 'Mostrar no gerenciador do sistema',
+      'file.pin': 'Fixar no Acesso rápido',
+      'file.unpin': 'Desafixar do Acesso rápido',
+      'select.all': 'Selecionar tudo',
+      'select.none': 'Selecionar nenhum',
+      'select.invert': 'Inverter seleção',
+      'select.byName': 'Selecionar pelo nome',
+      'select.paths': 'Selecionar itens',
+      'view.extraLargeIcons': 'Ícones extra grandes',
+      'view.largeIcons': 'Ícones grandes',
+      'view.mediumIcons': 'Ícones médios',
+      'view.smallIcons': 'Ícones pequenos',
+      'view.list': 'Lista',
+      'view.details': 'Detalhes',
+      'view.tiles': 'Blocos',
+      'sort.name': 'Nome',
+      'sort.dateModified': 'Data de modificação',
+      'sort.type': 'Tipo',
+      'sort.size': 'Tamanho',
+      'sort.ascending': 'Crescente',
+      'sort.descending': 'Decrescente',
+      'view.hiddenItems': 'Itens ocultos',
+      'view.extensions': 'Extensões de nomes de arquivos',
+      'view.navigationPane': 'Painel de navegação',
+      'view.detailsPane': 'Painel de detalhes',
+    },
   );
 
   /// The strings for [localeName] (`pt_BR.UTF-8`, `en-US`...).

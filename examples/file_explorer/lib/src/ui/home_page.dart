@@ -33,6 +33,8 @@ class HomePage extends StatelessWidget {
               children: <Widget>[
                 for (final String path in model.pinned)
                   _QuickAccessTile(
+                    openLabel: model.strings.menu('Open'),
+                    unpinLabel: model.strings.menu('Unpin from Quick access'),
                     name: _nameOf(path),
                     detail: model.fs.parentOf(path) ?? path,
                     onOpen: () => registry
@@ -249,12 +251,16 @@ class _Hoverable extends StatelessWidget {
 
 class _QuickAccessTile extends StatelessWidget {
   const _QuickAccessTile({
+    required this.openLabel,
+    required this.unpinLabel,
     required this.name,
     required this.detail,
     required this.onOpen,
     required this.onUnpin,
   });
 
+  final String openLabel;
+  final String unpinLabel;
   final String name;
   final String detail;
   final void Function() onOpen;
@@ -265,9 +271,8 @@ class _QuickAccessTile extends StatelessWidget {
     final ThemeData theme = Theme.of(context);
     return ContextMenuArea(
       menuChildren: () => <Widget>[
-        MenuItemButton(onPressed: onOpen, child: const Text('Open')),
-        MenuItemButton(
-            onPressed: onUnpin, child: const Text('Unpin from Quick access')),
+        MenuItemButton(onPressed: onOpen, child: Text(openLabel)),
+        MenuItemButton(onPressed: onUnpin, child: Text(unpinLabel)),
       ],
       child: _Hoverable(
         onTap: onOpen,
