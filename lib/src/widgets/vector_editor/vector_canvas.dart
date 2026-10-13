@@ -612,9 +612,9 @@ class VectorCanvasState extends State<VectorCanvas>
           .contains(point)) {
         final Offset local = _toTextLocal(editor.object, point);
         if (_pressClickCount >= 2) {
-          editor.selectWordAtX(local.dx);
+          editor.selectWordAt(local);
         } else {
-          editor.placeCaretAtX(local.dx);
+          editor.placeCaretAt(local);
         }
         _report();
         return;
@@ -709,7 +709,7 @@ class VectorCanvasState extends State<VectorCanvas>
     final Offset local = _toTextLocal(object, at);
     _textEditor = CanvasTextEditor(
       object,
-      caretOffset: VectorTextMetrics.offsetAtX(object, local.dx),
+      caretOffset: VectorTextMetrics.offsetAt(object, local),
     );
     _focusNode.requestFocus(FocusChangeReason.pointer);
     widget.onHint?.call(
@@ -798,7 +798,20 @@ class VectorCanvasState extends State<VectorCanvas>
         return true;
       }
       if (event is KeyDownEvent && event.logicalKey == logicalKeyEnter) {
-        _commitTextEdit();
+        // A paragraph takes Enter as a new line and is left with Ctrl or
+        // Cmd+Enter, like a multi-line field; artistic text is one line
+        // that Enter keeps, and Shift+Enter breaks.
+        final bool command = event.modifiers.contains(KeyModifier.control) ||
+            event.modifiers.contains(KeyModifier.meta);
+        final bool newLine = editor.object.isParagraphText
+            ? !command
+            : event.modifiers.contains(KeyModifier.shift);
+        if (newLine) {
+          editor.insert('\n');
+          _report();
+        } else {
+          _commitTextEdit();
+        }
         return true;
       }
       if (editor.handleKey(event)) {
@@ -1179,17 +1192,10 @@ final class RenderVectorCanvas extends RenderBox
     final CanvasTextEditor? editor = _textEditor;
     if (editor == null) return null;
     final VectorText object = editor.object;
-    final VectorTextInk ink = object.ink;
-    final TextSelectionRange selection = TextSelectionRange(
-      editor.selectionX(editor.value.selection.start),
-      editor.selectionX(editor.value.selection.end),
-    );
     return TextEditCaret(
       trafo: object.trafo,
-      caretX: editor.caretX,
-      ascent: ink.ascent,
-      descent: ink.descent,
-      selection: editor.value.selection.isCollapsed ? null : selection,
+      caret: editor.caret,
+      selection: editor.selectionRects,
     );
   }
 }

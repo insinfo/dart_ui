@@ -174,6 +174,47 @@ Future<void> main(List<String> args) async {
         ..execute('text.align', <String, Object?>{'align': align});
     }
     state.registry.execute('text.bold', <String, Object?>{'on': true});
+  } else if (scenario == 'paragraph' || scenario == 'paragraph-edit') {
+    // Paragraph text: a justified frame, a centred one with a hard break,
+    // and artistic text broken in two lines; with -edit, the first frame
+    // open for editing with a selection across a line break.
+    state.registry
+      ..execute('shape.text', <String, Object?>{
+        'x': 300,
+        'y': 400,
+        'width': 260,
+        'size': 14,
+        'text': 'Paragraph text wraps inside its frame, as wide as the drag '
+            'that made it; a long sentence becomes several lines, and the '
+            'frame grows downward as it fills.',
+      })
+      ..execute('text.align', <String, Object?>{'align': 'justify'})
+      ..execute('shape.text', <String, Object?>{
+        'x': 300,
+        'y': 500,
+        'width': 200,
+        'size': 14,
+        'text': 'A centred frame\nwith a line break,\nthen more words that '
+            'wrap to fit.',
+      })
+      ..execute('text.align', <String, Object?>{'align': 'center'})
+      ..execute('shape.text', <String, Object?>{
+        'x': 300,
+        'y': 640,
+        'size': 20,
+        'text': 'Artistic text\non two lines',
+      });
+    if (scenario == 'paragraph-edit') {
+      final text = objectOfType(
+          (o) => o is VectorText && o.textContent.startsWith('Paragraph'));
+      final at = canvas.toGlobal(text.cacheBbox.topLeft + const Offset(20, 8));
+      driver
+        ..click(at)
+        ..click(at, clickCount: 2)
+        ..key(logicalKeyArrowDown, modifiers: const {KeyModifier.shift})
+        ..key(logicalKeyArrowRight, modifiers: const {KeyModifier.shift})
+        ..key(logicalKeyArrowRight, modifiers: const {KeyModifier.shift});
+    }
   } else if (scenario == 'fountain') {
     // A linear fountain on the rectangle, a radial one on the ellipse; the
     // Properties panel on the ellipse shows both colours.

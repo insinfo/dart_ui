@@ -25,6 +25,7 @@ library;
 
 import '../geometry/offset.dart';
 import '../geometry/path.dart';
+import '../geometry/rect.dart';
 import '../graphics/color.dart';
 import '../graphics/vector/constants.dart';
 import '../graphics/vector/primitives.dart';
@@ -32,6 +33,16 @@ import '../graphics/vector/style.dart';
 import '../rendering/text/font_registry.dart';
 import '../rendering/text/text_painter.dart';
 import '../text/grapheme.dart';
+import '../text/paragraph.dart'
+    show
+        GlyphSpan,
+        Paragraph,
+        ParagraphStyle,
+        TextAlign,
+        TextBox,
+        TextLine,
+        TextPosition;
+import '../text/shaper.dart' show GlyphRun;
 import '../text/typeface.dart';
 
 /// Measures [VectorText] with the registry's fonts.
@@ -50,12 +61,14 @@ abstract final class VectorTextMetrics {
     if (_installed) return;
     _installed = true;
     VectorText.inkProvider = measure;
+    VectorText.linesProvider = lines;
   }
 
   /// Undoes [install], for a test that wants the metric-free approximation.
   static void uninstall() {
     _installed = false;
     VectorText.inkProvider = null;
+    VectorText.linesProvider = null;
   }
 
   /// The face [text] is drawn with, at *document* scale, or null when the
@@ -103,11 +116,93 @@ abstract final class VectorTextMetrics {
     return _faces[key] = face;
   }
 
+  /// Whether [text] is laid out as lines rather than as one run: a
+  /// paragraph text, which wraps in its frame, or an artistic text with a
+  /// line break in it.
+  static bool isMultiline(VectorText text) =>
+      text.isParagraphText || text.textContent.contains('\n');
+
+  /// [text]'s lines with [face], the frame's width multiplied by [scale] -
+  /// the document scale for measuring, the device scale for drawing, so the
+  /// two break the lines in the same places.
+  static Paragraph paragraphAt(
+          VectorText text, ScaledTypeface face, double scale) =>
+      _painter.layout(
+        text.textContent,
+        face,
+        maxWidth: text.isParagraphText ? text.width * scale : double.infinity,
+        style: ParagraphStyle(
+          align: switch (text.style.textStyle.alignment) {
+            VectorTextAlign.left => TextAlign.left,
+            VectorTextAlign.center => TextAlign.center,
+            VectorTextAlign.right => TextAlign.right,
+            VectorTextAlign.justify => TextAlign.justify,
+          },
+          // A word longer than the frame is cut rather than spilling out of
+          // it, as a paragraph frame does in every layout program.
+          breakWords: text.isParagraphText,
+        ),
+      );
+
+  /// [text]'s lines as laid out, for an exporter: one entry per line, each
+  /// placed from the first baseline's origin.
+  static List<VectorTextLine> lines(VectorText text) {
+    final String content = text.textContent;
+    final VectorTextInk ink = measure(text);
+    final Paragraph? laid = isMultiline(text) ? paragraph(text) : null;
+    if (laid == null) {
+      return <VectorTextLine>[
+        VectorTextLine(text: content, x: ink.left, y: 0),
+      ];
+    }
+    final bool justify =
+        text.style.textStyle.alignment == VectorTextAlign.justify;
+    return <VectorTextLine>[
+      for (final TextLine line in laid.lines)
+        VectorTextLine(
+          text: content.substring(line.start, line.end),
+          x: ink.left + line.left,
+          y: line.baseline - ink.ascent,
+          // The last line of a paragraph, and one a break ends, keep their
+          // natural width under justification.
+          justifiedWidth: justify &&
+                  !line.hardBreak &&
+                  line.endIncludingWhitespace < content.length
+              ? line.width
+              : null,
+        ),
+    ];
+  }
+
+  /// [text]'s lines at document scale, or null with no font.
+  static Paragraph? paragraph(VectorText text) {
+    final face = faceFor(text);
+    return face == null ? null : paragraphAt(text, face, 1);
+  }
+
   /// The ink box of [text] in its own units, falling back to the model's
   /// approximation when no font is available.
+  ///
+  /// The origin is the first line's baseline, for every kind of text: at
+  /// the anchor for artistic text, where its alignment hangs the line from,
+  /// and at the frame's left edge for paragraph text, whose frame is
+  /// [VectorText.width] wide and as tall as its lines.
   static VectorTextInk measure(VectorText text) {
     final face = faceFor(text);
     if (face == null) return VectorText.approximateInk(text);
+    if (isMultiline(text)) {
+      final Paragraph laid = paragraphAt(text, face, 1);
+      final double first = laid.lines.first.baseline;
+      final double lines =
+          laid.longestLine <= 0 ? face.pixelSize * 0.5 : laid.longestLine;
+      final double width = text.isParagraphText ? text.width : lines;
+      return VectorTextInk(
+        left: text.isParagraphText ? 0 : text.alignmentShift(width),
+        width: width,
+        ascent: first,
+        descent: laid.height - first,
+      );
+    }
     final width = text.textContent.isEmpty
         ? 0.0
         : _painter.measure(text.textContent, face).width;
@@ -130,7 +225,47 @@ abstract final class VectorTextMetrics {
   /// a caret cannot be inside a kerning pair without also being inside a
   /// grapheme cluster, which [TextEditingValue] forbids.
   static double caretX(VectorText text, int offset) =>
-      _advanceTo(text, offset) + measure(text).left;
+      caretRect(text, offset).left;
+
+  /// The caret for [offset], as a zero-width rectangle in text units: its
+  /// x, and the top and bottom of its line.
+  static Rect caretRect(VectorText text, int offset) {
+    final VectorTextInk ink = measure(text);
+    final Paragraph? laid = isMultiline(text) ? paragraph(text) : null;
+    if (laid == null) {
+      final double x = _advanceTo(text, offset) + ink.left;
+      return Rect.fromLTRB(x, -ink.ascent, x, ink.descent);
+    }
+    final Rect caret = laid.getCaretRect(TextPosition(offset));
+    return caret.shift(Offset(ink.left, -ink.ascent));
+  }
+
+  /// The rectangles [start]..[end] covers, one per line, in text units.
+  static List<Rect> selectionRects(VectorText text, int start, int end) {
+    if (end <= start) return const <Rect>[];
+    final VectorTextInk ink = measure(text);
+    final Paragraph? laid = isMultiline(text) ? paragraph(text) : null;
+    if (laid == null) {
+      return <Rect>[
+        Rect.fromLTRB(
+            caretX(text, start), -ink.ascent, caretX(text, end), ink.descent),
+      ];
+    }
+    return <Rect>[
+      for (final TextBox box in laid.getBoxesForSelection(start, end))
+        box.rect.shift(Offset(ink.left, -ink.ascent)),
+    ];
+  }
+
+  /// The cluster boundary nearest [point], in text units.
+  static int offsetAt(VectorText text, Offset point) {
+    final Paragraph? laid = isMultiline(text) ? paragraph(text) : null;
+    if (laid == null) return offsetAtX(text, point.dx);
+    final VectorTextInk ink = measure(text);
+    return laid
+        .getPositionForOffset(point - Offset(ink.left, -ink.ascent))
+        .offset;
+  }
 
   static double _advanceTo(VectorText text, int offset) {
     if (offset <= 0) return 0;
@@ -180,13 +315,52 @@ abstract final class VectorTextMetrics {
     final content = text.textContent;
     final face = faceFor(text);
     if (face == null || content.isEmpty) return null;
-    final run = _painter.shapeRun(content, face);
     final paths = <VectorPath>[];
     final double scale = face.scale;
-    final double shift = measure(text).left;
+    final VectorTextInk ink = measure(text);
+    // Every run with where its glyphs start: one for a line of artistic
+    // text, one per span of every line for a paragraph.
+    final runs = <(GlyphRun, Offset)>[];
+    if (isMultiline(text)) {
+      final Paragraph laid = paragraphAt(text, face, 1);
+      for (final TextLine line in laid.lines) {
+        for (final GlyphSpan span in line.spans) {
+          runs.add((
+            span.glyphs,
+            Offset(ink.left + span.left, line.baseline - ink.ascent),
+          ));
+        }
+      }
+    } else {
+      runs.add((_painter.shapeRun(content, face), Offset(ink.left, 0)));
+    }
+    for (final (GlyphRun run, Offset origin) in runs) {
+      _outline(run, origin, face, scale, paths);
+    }
+    if (paths.isEmpty) return null;
+    final fill = text.style.fill.isNone
+        ? const FillDescriptor.solid(Color(0xFF000000))
+        : text.style.fill;
+    final curve = VectorCurve(
+      trafo: List.of(text.trafo),
+      style: text.style.copyWith(
+        fill: fill.copyWith(fillRule: FillRule.nonZero),
+        // The renderer draws text without its outline; the curve must look
+        // the same the moment it replaces it.
+        stroke: StrokeDescriptor.none,
+      ),
+      paths: paths,
+    );
+    curve.update();
+    return curve;
+  }
+
+  /// Appends [run]'s glyph outlines, placed from [origin], to [paths].
+  static void _outline(GlyphRun run, Offset origin, ScaledTypeface face,
+      double scale, List<VectorPath> paths) {
     for (var i = 0; i < run.length; i++) {
-      final double gx = run.positions[2 * i] + shift;
-      final double gy = run.positions[2 * i + 1];
+      final double gx = run.positions[2 * i] + origin.dx;
+      final double gy = run.positions[2 * i + 1] + origin.dy;
       // Font units, y up, to text units, y down from the baseline.
       Offset at(Path path, int point) => Offset(
             gx + path.pointX(point) * scale,
@@ -228,21 +402,5 @@ abstract final class VectorTextMetrics {
         point += pointsPerVerb(verb);
       }
     }
-    if (paths.isEmpty) return null;
-    final fill = text.style.fill.isNone
-        ? const FillDescriptor.solid(Color(0xFF000000))
-        : text.style.fill;
-    final curve = VectorCurve(
-      trafo: List.of(text.trafo),
-      style: text.style.copyWith(
-        fill: fill.copyWith(fillRule: FillRule.nonZero),
-        // The renderer draws text without its outline; the curve must look
-        // the same the moment it replaces it.
-        stroke: StrokeDescriptor.none,
-      ),
-      paths: paths,
-    );
-    curve.update();
-    return curve;
   }
 }

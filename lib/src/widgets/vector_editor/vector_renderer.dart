@@ -30,6 +30,7 @@ import '../../graphics/vector/primitives.dart';
 import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
 import '../../rendering/text/text_painter.dart';
+import '../../text/paragraph.dart' show Paragraph;
 import '../../vector_editing/node_editing.dart';
 import '../../vector_editing/parametric_handles.dart';
 import '../../vector_editing/selection.dart';
@@ -351,6 +352,25 @@ class VectorRenderer {
     final double shift = VectorTextMetrics.measure(pending.object).left;
     final paint = list.addPaint(colorArgb: color.value, antiAlias: true);
     final plain = b == 0 && c == 0 && a > 0 && d > 0 && (a - d).abs() < 1e-9;
+    if (VectorTextMetrics.isMultiline(pending.object)) {
+      // Lines: laid out at the device size with the frame scaled to match,
+      // so they break where the document-scale measure says they do, and
+      // hung from the first baseline like a single line is.
+      final Paragraph laid =
+          VectorTextMetrics.paragraphAt(pending.object, shapedFace, scale);
+      final Offset topLeft = Offset(shift * scale, -laid.lines.first.baseline);
+      if (plain) {
+        _textPainter.paintParagraph(
+            list, laid, Offset(tx, ty) + topLeft, paint);
+        return;
+      }
+      list
+        ..save()
+        ..transform(a / scale, b / scale, c / scale, d / scale, tx, ty);
+      _textPainter.paintParagraph(list, laid, topLeft, paint);
+      list.restore();
+      return;
+    }
     if (plain) {
       _textPainter.paint(
           list, content, shapedFace, Offset(tx + a * shift, ty), paint);
@@ -867,32 +887,35 @@ class VectorRenderer {
   ) {
     final scale = zoom == 0 ? 1.0 : zoom;
 
-    final TextSelectionRange? range = caret.selection;
-    if (range != null && range.end > range.start) {
+    if (caret.selection.isNotEmpty) {
       final washPaint = list.addPaint(colorArgb: colors.textSelection.value);
       final builder = PathBuilder();
-      final corners = <Offset>[
-        Offset(range.start, -caret.ascent),
-        Offset(range.end, -caret.ascent),
-        Offset(range.end, caret.descent),
-        Offset(range.start, caret.descent),
-      ];
-      for (var i = 0; i < corners.length; i++) {
-        final point = applyTrafoToPoint(corners[i], caret.trafo);
-        if (i == 0) {
-          builder.moveTo(point.dx, point.dy);
-        } else {
-          builder.lineTo(point.dx, point.dy);
+      // One rectangle per line the selection crosses, each mapped through
+      // the text's transform so a rotated text gets a rotated wash.
+      for (final Rect box in caret.selection) {
+        final corners = <Offset>[
+          Offset(box.left, box.top),
+          Offset(box.right, box.top),
+          Offset(box.right, box.bottom),
+          Offset(box.left, box.bottom),
+        ];
+        for (var i = 0; i < corners.length; i++) {
+          final point = applyTrafoToPoint(corners[i], caret.trafo);
+          if (i == 0) {
+            builder.moveTo(point.dx, point.dy);
+          } else {
+            builder.lineTo(point.dx, point.dy);
+          }
         }
+        builder.close();
       }
-      builder.close();
       list.drawPath(list.addPath(builder.build()), washPaint);
     }
 
-    final top =
-        applyTrafoToPoint(Offset(caret.caretX, -caret.ascent), caret.trafo);
-    final bottom =
-        applyTrafoToPoint(Offset(caret.caretX, caret.descent), caret.trafo);
+    final top = applyTrafoToPoint(
+        Offset(caret.caret.left, caret.caret.top), caret.trafo);
+    final bottom = applyTrafoToPoint(
+        Offset(caret.caret.left, caret.caret.bottom), caret.trafo);
     final caretPaint = list.addPaint(
       colorArgb: colors.caret.value,
       style: paintStyleStroke,
@@ -936,30 +959,18 @@ final class _PendingText {
 final class TextEditCaret {
   const TextEditCaret({
     required this.trafo,
-    required this.caretX,
-    required this.ascent,
-    required this.descent,
-    this.selection,
+    required this.caret,
+    this.selection = const <Rect>[],
   });
 
   /// The text object's transform, which maps the values below into the page.
   final List<double> trafo;
 
-  /// The caret's distance along the baseline from the text origin.
-  final double caretX;
+  /// The caret: a zero-width rectangle from the top to the bottom of its
+  /// line, in text units - the first baseline's start is the origin.
+  final Rect caret;
 
-  /// The line box, measured from the baseline.
-  final double ascent;
-  final double descent;
-
-  /// The selected run, or null for a plain caret.
-  final TextSelectionRange? selection;
-}
-
-/// The two baseline distances a selected run spans.
-final class TextSelectionRange {
-  const TextSelectionRange(this.start, this.end);
-
-  final double start;
-  final double end;
+  /// The selected run, one rectangle per line it crosses; empty for a plain
+  /// caret.
+  final List<Rect> selection;
 }

@@ -150,7 +150,22 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
   preenchimento volta junto, porque a transformação inversa passa por
   `applyTrafo`.
 - P0 em 97% (59 feitas, 4 parciais).
+- Texto de parágrafo: arrastar com a ferramenta Texto cria uma moldura da
+  largura do arraste, com a primeira linha no topo; `shape.text` ganhou
+  `width`. O texto quebra na moldura (com alinhamento, inclusive
+  justificado, agora na barra de texto e no `text.align`), e o artístico
+  quebra em `\n` (Shift+Enter na edição; num parágrafo, Enter é nova linha
+  e Ctrl/Cmd+Enter termina). Caret e seleção em várias linhas, Cima/Baixo
+  e Home/End na linha. Converter em curvas mantém todas as linhas, e o SVG
+  grava um `<tspan>` por linha (justificadas com `textLength`) e guarda
+  texto, largura e alinhamento em atributos `dartui:` para reabrir.
+  Framework: `VectorTextMetrics.paragraph`, `caretRect`, `selectionRects`,
+  `offsetAt`, `lines`; `VectorText.linesProvider`; `TextEditCaret` em
+  retângulos.
+- P0 em 98% (60 feitas, 3 parciais).
 
 **Ficou pela metade**
-- Texto de parágrafo, pena caligráfica, preenchimentos de padrão e textura,
-  Colar especial.
+- Pena caligráfica, preenchimentos de padrão e textura, Colar especial
+  (agora possível: a área de transferência tem imagem e HTML).
+- Arrastar as alças de um parágrafo ainda escala o texto, em vez de mudar a
+  moldura.

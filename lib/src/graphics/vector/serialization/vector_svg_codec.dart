@@ -126,6 +126,50 @@ final class _SvgWriter {
     return out.toString();
   }
 
+  /// Text in lines - a paragraph, or artistic text with line breaks - as
+  /// one `<tspan>` per line, placed where the layout put it, so a reader
+  /// that cannot wrap still shows the lines; justified lines are stretched
+  /// with `textLength`. The string itself, the frame's width and the
+  /// alignment ride along as `dartui:` attributes, which is what reading the
+  /// file back uses: wrapping is recomputed, never taken from the tspans.
+  void _writeLines(StringBuffer out, String indent, VectorText obj,
+      TextStyleDescriptor text) {
+    final List<VectorTextLine> lines = VectorText.linesProvider?.call(obj) ??
+        <VectorTextLine>[
+          // No font engine: the explicit breaks, a line height apart.
+          for (final (int i, String line)
+              in obj.textContent.split('\n').indexed)
+            VectorTextLine(text: line, x: 0, y: i * text.fontSize * 1.2),
+        ];
+    final bool placed = VectorText.linesProvider != null;
+    final List<String> attributes = <String>[
+      'transform="matrix(${_list(obj.trafo)})"',
+      'x="0" y="0"',
+      'font-size="${_n(text.fontSize)}"',
+      'font-family="${_escape(text.fontFamily)}"',
+      if (text.bold) 'font-weight="bold"',
+      if (text.italic) 'font-style="italic"',
+      // Placed lines already carry their alignment in x.
+      if (!placed && text.alignment == VectorTextAlign.center)
+        'text-anchor="middle"'
+      else if (!placed && text.alignment == VectorTextAlign.right)
+        'text-anchor="end"',
+      ..._paint(obj, null),
+      'dartui:type="text"',
+      'dartui:text="${_escape(obj.textContent).replaceAll('\n', '&#10;')}"',
+      'dartui:align="${text.alignment.name}"',
+      if (obj.isParagraphText) 'dartui:width="${_n(obj.width)}"',
+    ];
+    out.writeln('$indent<text ${attributes.join(' ')}>');
+    for (final VectorTextLine line in lines) {
+      final double? stretched = line.justifiedWidth;
+      out.writeln('$indent  <tspan x="${_n(line.x)}" y="${_n(line.y)}"'
+          '${stretched == null ? '' : ' textLength="${_n(stretched)}" '
+              'lengthAdjust="spacing"'}>${_escape(line.text)}</tspan>');
+    }
+    out.writeln('$indent</text>');
+  }
+
   void _object(DocumentObject obj, StringBuffer out, String indent) {
     if (obj is VectorGroup) {
       out.writeln('$indent<g dartui:type="group" '
@@ -138,6 +182,10 @@ final class _SvgWriter {
     }
     if (obj is VectorText) {
       final TextStyleDescriptor text = obj.style.textStyle;
+      if (obj.isParagraphText || obj.textContent.contains('\n')) {
+        _writeLines(out, indent, obj, text);
+        return;
+      }
       final List<String> attributes = <String>[
         'transform="matrix(${_list(obj.trafo)})"',
         'x="0" y="0"',
@@ -622,23 +670,37 @@ final class _SvgReader {
         _applyGradient(curve, element, style, ctm);
         return curve;
       case 'text':
-        final String content = element.innerText.trim();
+        // Text this codec wrote in lines keeps its string, frame and
+        // alignment whole; anything else is one line of what it says.
+        final String? saved = element.getAttribute('dartui:text');
+        final String content = saved ?? element.innerText.trim();
         if (content.isEmpty) return null;
+        final double width =
+            double.tryParse(element.getAttribute('dartui:width') ?? '') ??
+                kTextBlockWidth;
+        final String? savedAlign = element.getAttribute('dartui:align');
         final List<double> x =
             _numbersOrNull(element.getAttribute('x')) ?? const <double>[0];
         final List<double> y =
             _numbersOrNull(element.getAttribute('y')) ?? const <double>[0];
         final VectorStyle base = _vectorStyle(element, style, ctm);
+        final List<double> trafo = _compose(ctm, <double>[
+          1,
+          0,
+          0,
+          1,
+          x.isEmpty ? 0 : x.first,
+          y.isEmpty ? 0 : y.first,
+        ]);
+        VectorTextAlign? align;
+        for (final VectorTextAlign value in VectorTextAlign.values) {
+          if (value.name == savedAlign) align = value;
+        }
         return VectorText(
           textContent: content,
-          trafo: _compose(ctm, <double>[
-            1,
-            0,
-            0,
-            1,
-            x.isEmpty ? 0 : x.first,
-            y.isEmpty ? 0 : y.first,
-          ]),
+          trafo: trafo,
+          initialTrafo: List<double>.of(trafo),
+          width: width > 0 ? width : kTextBlockWidth,
           style: base.copyWith(
             stroke: StrokeDescriptor.none,
             textStyle: base.textStyle.copyWith(
@@ -646,6 +708,7 @@ final class _SvgReader {
               fontFamily: style.fontFamily,
               bold: style.bold,
               italic: style.italic,
+              alignment: align,
             ),
           ),
         )..update();

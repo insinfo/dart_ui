@@ -17,6 +17,8 @@
 /// original string back.
 library;
 
+import '../../geometry/offset.dart';
+import '../../geometry/rect.dart';
 import '../../graphics/vector/primitives.dart';
 import '../../platform/input_events.dart';
 import '../../vector_editing/text_metrics.dart';
@@ -25,8 +27,10 @@ import '../../vector_editing/text_metrics.dart';
 // would be a second source of truth for what Backspace is.
 import '../focus.dart'
     show
+        logicalKeyArrowDown,
         logicalKeyArrowLeft,
         logicalKeyArrowRight,
+        logicalKeyArrowUp,
         logicalKeyBackspace,
         logicalKeyDelete,
         logicalKeyEnd,
@@ -73,22 +77,25 @@ final class CanvasTextEditor {
   /// Whether the string differs from where it started.
   bool get isDirty => object.textContent != originalText;
 
-  /// The caret's distance along the baseline, in the object's own units.
-  double get caretX =>
-      VectorTextMetrics.caretX(object, _value.selection.extentOffset);
+  /// The caret, a zero-width rectangle from the top to the bottom of its
+  /// line, in the object's own units.
+  Rect get caret =>
+      VectorTextMetrics.caretRect(object, _value.selection.extentOffset);
 
-  /// The baseline distance of one end of the selection.
-  double selectionX(int offset) => VectorTextMetrics.caretX(object, offset);
+  /// The selection's rectangles, one per line it crosses; empty for a caret.
+  List<Rect> get selectionRects => VectorTextMetrics.selectionRects(
+      object, _value.selection.start, _value.selection.end);
 
-  /// Puts the caret at the cluster nearest [x], measured along the baseline.
-  void placeCaretAtX(double x, {bool extend = false}) {
-    final int offset = VectorTextMetrics.offsetAtX(object, x);
+  /// Puts the caret at the cluster nearest [point], in the object's units.
+  void placeCaretAt(Offset point, {bool extend = false}) {
+    final int offset = VectorTextMetrics.offsetAt(object, point);
     _moveTo(offset, extend: extend);
   }
 
-  /// Selects the word under [x]. What a double click inside an open edit does.
-  void selectWordAtX(double x) {
-    final int offset = VectorTextMetrics.offsetAtX(object, x);
+  /// Selects the word under [point]. What a double click inside an open
+  /// edit does.
+  void selectWordAt(Offset point) {
+    final int offset = VectorTextMetrics.offsetAt(object, point);
     final TextRange word = TextMotion.wordAt(_value.text, offset);
     value = _value.copyWith(
       selection: TextSelection(baseOffset: word.start, extentOffset: word.end),
@@ -153,11 +160,29 @@ final class CanvasTextEditor {
           extend: shift,
         );
         return true;
+      case logicalKeyArrowUp || logicalKeyArrowDown:
+        // A line up or down at the caret's x - the column a text field
+        // keeps - and the start or the end past the first or last line.
+        final Rect at = caret;
+        final double y = event.logicalKey == logicalKeyArrowUp
+            ? at.top - at.height / 2
+            : at.bottom + at.height / 2;
+        final Rect first = VectorTextMetrics.caretRect(object, 0);
+        final Rect last = VectorTextMetrics.caretRect(object, text.length);
+        if (y < first.top) {
+          _moveTo(0, extend: shift);
+        } else if (y > last.bottom) {
+          _moveTo(text.length, extend: shift);
+        } else {
+          _moveTo(VectorTextMetrics.offsetAt(object, Offset(at.left, y)),
+              extend: shift);
+        }
+        return true;
       case logicalKeyHome:
-        _moveTo(0, extend: shift);
+        _moveTo(control ? 0 : _lineEdge(start: true), extend: shift);
         return true;
       case logicalKeyEnd:
-        _moveTo(text.length, extend: shift);
+        _moveTo(control ? text.length : _lineEdge(start: false), extend: shift);
         return true;
       case logicalKeyBackspace:
         return _delete(forward: false, byWord: control);
@@ -170,6 +195,14 @@ final class CanvasTextEditor {
       default:
         return false;
     }
+  }
+
+  /// The start or the end of the caret's line: the string's ends for a
+  /// single line, the line's for text laid out in lines.
+  int _lineEdge({required bool start}) {
+    final Rect at = caret;
+    final double y = (at.top + at.bottom) / 2;
+    return VectorTextMetrics.offsetAt(object, Offset(start ? -1e9 : 1e9, y));
   }
 
   /// Puts the text back exactly as it was found.

@@ -136,26 +136,47 @@ List<CommandSpec> shapeCommands(EditorContext context) {
     CommandSpec(
       id: 'shape.text',
       label: 'Text',
-      description: 'Artistic text with its baseline starting at x, y.',
+      description: 'Artistic text with its baseline starting at x, y; with '
+          'a width, paragraph text wrapping in a frame that wide whose top '
+          'is at y. A line break in the text starts a new line in both.',
       params: const <CommandParam>[
         CommandParam('x', CommandParamType.number, required: true),
         CommandParam('y', CommandParamType.number, required: true),
         CommandParam('text', CommandParamType.string, required: true),
         CommandParam('size', CommandParamType.number,
             description: 'points; 18 by default'),
+        CommandParam('width', CommandParamType.number,
+            description: 'the paragraph frame, in points; artistic text '
+                'without it'),
       ],
       when: context.needsDocument,
       run: (CommandArgs args) {
+        final double width = args.number('width', 0);
         final VectorText text = methods().createText(
           text: args.string('text'),
           x: args.number('x'),
           y: args.number('y'),
+          width: width > 0 ? width : kTextBlockWidth,
         );
         text.style = text.style.copyWith(
           textStyle:
               text.style.textStyle.copyWith(fontSize: args.number('size', 18)),
         );
         text.update();
+        if (text.isParagraphText) {
+          // y is the frame's top; the origin is the first baseline.
+          text
+            ..trafo = <double>[
+              1,
+              0,
+              0,
+              1,
+              args.number('x'),
+              args.number('y') + text.ink.ascent,
+            ]
+            ..initialTrafo = List<double>.of(text.trafo)
+            ..update();
+        }
         return create(text);
       },
     ),

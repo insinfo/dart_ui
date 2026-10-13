@@ -772,6 +772,11 @@ class _TextPluginState extends State<_TextPlugin> {
             PhosphorIcons.textAlignRight,
             <String, Object?>{'align': 'right'}
           ),
+          (
+            'text.align',
+            PhosphorIcons.textAlignJustify,
+            <String, Object?>{'align': 'justify'}
+          ),
         ])
           CommandIconButton(
             registry: widget.registry,

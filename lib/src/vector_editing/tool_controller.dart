@@ -2,6 +2,8 @@
 ///
 library;
 
+import 'dart:math' as math;
+
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../graphics/vector/constants.dart';
@@ -965,25 +967,64 @@ class TextToolController extends ToolController {
 
   final String placeholder;
 
+  /// How far the pointer travels before a click becomes a frame, in
+  /// document units: a hand that shakes a little still makes artistic text.
+  static const double frameThreshold = 4;
+
+  VectorText? _text;
+  Offset? _start;
+
+  /// A click makes artistic text with its baseline at the point; a drag
+  /// makes paragraph text in a frame as wide as the drag, its first line at
+  /// the frame's top - CorelDRAW's Text tool.
   @override
   void onPointerDown(Offset point, VectorPage page) {
     lastPoint = point;
+    _start = point;
     final text = methods.createText(
       text: placeholder,
       x: point.dx,
       y: point.dy,
     );
+    _text = text;
     methods.addObject(targetLayer(page), text);
     selection.select(text);
     reportCreated(text);
   }
 
   @override
-  void onPointerMove(Offset point, VectorPage page) => lastPoint = point;
+  void onPointerMove(Offset point, VectorPage page) {
+    lastPoint = point;
+    final VectorText? text = _text;
+    final Offset? start = _start;
+    if (text == null || start == null) return;
+    if (!text.isParagraphText && (point - start).distance < frameThreshold) {
+      return;
+    }
+    final double left = math.min(start.dx, point.dx);
+    final double top = math.min(start.dy, point.dy);
+    text
+      ..width = math.max((point.dx - start.dx).abs(), 1.0)
+      ..trafo = <double>[1, 0, 0, 1, left, top]
+      ..update();
+    // The origin is the first baseline: one ascent below the frame's top.
+    text
+      ..trafo = <double>[1, 0, 0, 1, left, top + text.ink.ascent]
+      ..initialTrafo = List<double>.of(text.trafo)
+      ..update();
+    selection.select(text);
+  }
 
   @override
-  void onPointerUp(Offset point, VectorPage page) => doc.update();
+  void onPointerUp(Offset point, VectorPage page) {
+    _text = null;
+    _start = null;
+    doc.update();
+  }
 
   @override
-  void onCancel() {}
+  void onCancel() {
+    _text = null;
+    _start = null;
+  }
 }

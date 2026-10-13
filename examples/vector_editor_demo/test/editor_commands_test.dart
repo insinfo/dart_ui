@@ -143,6 +143,29 @@ void main() {
     expect(model.status, contains('Nothing to clear'));
   });
 
+  test('shape.text with a width is paragraph text wrapping in its frame', () {
+    expect(
+        registry.execute('shape.text', <String, Object?>{
+          'x': 20,
+          'y': 30,
+          'width': 120,
+          'text': 'A paragraph long enough to need more than one line in a '
+              'frame this narrow.',
+        }).ok,
+        isTrue);
+    final VectorText text = objects().single as VectorText;
+    expect(text.isParagraphText, isTrue);
+    expect(text.cacheBbox.left, closeTo(20, 1e-6));
+    expect(text.cacheBbox.top, closeTo(30, 1e-6), reason: 'y is the top');
+    expect(text.cacheBbox.width, closeTo(120, 1e-6));
+    expect(text.cacheBbox.height, greaterThan(18 * 2),
+        reason: 'more than one line');
+    expect(
+        registry
+            .execute('text.align', <String, Object?>{'align': 'justify'}).ok,
+        isTrue);
+  });
+
   test('a typo in a parameter is refused before anything is drawn', () {
     final outcome = registry.execute('shape.rectangle',
         <String, Object?>{'x': 0, 'y': 0, 'widht': 10, 'height': 10});

@@ -7,10 +7,10 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 59 | 4 | 0 | 63 | 97% |
+| P0 | 60 | 3 | 0 | 63 | 98% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 67 | 6 | 102 | 175 | 40% |
+| **todas** | 68 | 5 | 102 | 175 | 40% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
@@ -22,7 +22,7 @@ Comandos registrados: 130.
 
 | área | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| Caixa de ferramentas | 10 | 3 | 47 | 60 | 19% |
+| Caixa de ferramentas | 11 | 2 | 47 | 60 | 20% |
 | Interações no canvas | 9 | 1 | 3 | 13 | 73% |
 | Barra de propriedades | 7 | 0 | 9 | 16 | 44% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
@@ -74,7 +74,7 @@ Comandos registrados: 130.
 | ❌ | Spiral | P2 |  | tudo |
 | ❌ | Common shapes (arrow, flowchart...) | P2 |  | tudo |
 | ❌ | Impact | P2 |  | tudo |
-| 🟡 | Text (F8) | P0 | `tool.text`, `shape.text` | artistic text only; no paragraph text |
+| ✅ | Text (F8) | P0 | `tool.text`, `shape.text` |  |
 | ❌ | Table | P2 |  | tudo |
 | ❌ | Parallel dimension | P2 |  | tudo |
 | ❌ | Horizontal/vertical dimension | P2 |  | tudo |

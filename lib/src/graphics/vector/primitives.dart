@@ -617,6 +617,14 @@ class VectorText extends PrimitiveObject {
   /// The ink box of this text, measured or approximated.
   VectorTextInk get ink => inkProvider?.call(this) ?? approximateInk(this);
 
+  /// This text's lines as laid out - where a paragraph wraps, where each
+  /// line starts - from whoever owns the fonts, like [inkProvider].
+  ///
+  /// What an exporter needs to write wrapped text for a reader that cannot
+  /// wrap it: SVG 1.1 has no paragraph, only positioned lines. Null without
+  /// a font engine, when only the explicit line breaks are known.
+  static List<VectorTextLine> Function(VectorText text)? linesProvider;
+
   /// A metrics-free estimate, for when no font engine has been installed.
   ///
   /// 0.52 em per character and the usual 0.8/0.2 split of the em box: those
@@ -625,12 +633,23 @@ class VectorText extends PrimitiveObject {
   /// impossible to click at all.
   static VectorTextInk approximateInk(VectorText text) {
     final size = text.style.textStyle.fontSize;
-    final width = text.textContent.length * size * 0.52;
+    final em = size * 0.52;
+    // Lines too: the explicit breaks, and for a frame the characters that
+    // fit its width - 1.2 em apart, the usual line height.
+    var lines = 0;
+    var longest = 0;
+    final perLine =
+        text.isParagraphText ? math.max(1, (text.width / em).floor()) : 0;
+    for (final String line in text.textContent.split('\n')) {
+      lines += perLine == 0 ? 1 : math.max(1, (line.length / perLine).ceil());
+      longest = math.max(longest, line.length);
+    }
+    final width = text.isParagraphText ? text.width : longest * em;
     return VectorTextInk(
       width: width,
       ascent: size * 0.8,
-      descent: size * 0.2,
-      left: text.alignmentShift(width),
+      descent: size * 0.2 + (lines - 1) * size * 1.2,
+      left: text.isParagraphText ? 0 : text.alignmentShift(width),
     );
   }
 
@@ -741,6 +760,28 @@ class TextMarkup {
 }
 
 /// One line of text's ink extent, in the text object's own units.
+/// One laid-out line of a [VectorText], in the text's own units.
+final class VectorTextLine {
+  const VectorTextLine({
+    required this.text,
+    required this.x,
+    required this.y,
+    this.justifiedWidth,
+  });
+
+  /// The line's characters, without the space or break that ended it.
+  final String text;
+
+  /// Where it starts, from the text's origin, and its baseline: the first
+  /// line's is 0.
+  final double x;
+  final double y;
+
+  /// The width the line was stretched to, when it is justified; null for a
+  /// line set at its natural width.
+  final double? justifiedWidth;
+}
+
 final class VectorTextInk {
   const VectorTextInk({
     required this.width,

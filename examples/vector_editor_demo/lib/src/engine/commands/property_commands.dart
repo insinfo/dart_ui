@@ -365,7 +365,8 @@ List<CommandSpec> propertyCommands(EditorContext context) {
       id: 'text.align',
       label: 'Alignment',
       description: 'Where the selected texts grow from their anchor: left, '
-          'center or right.',
+          'center or right; justify spreads the lines of a paragraph text '
+          'to both edges of its frame.',
       params: const <CommandParam>[
         CommandParam('align', CommandParamType.string, required: true),
       ],
@@ -373,8 +374,8 @@ List<CommandSpec> propertyCommands(EditorContext context) {
       checked: (CommandArgs args) =>
           allSay(args['align'], (VectorStyle s) => s.textStyle.alignment.name),
       run: (CommandArgs args) {
-        final VectorTextAlign align = VectorTextAlign.values.byName(
-            oneOf(args, 'align', const <String>['left', 'center', 'right']));
+        final VectorTextAlign align = VectorTextAlign.values.byName(oneOf(args,
+            'align', const <String>['left', 'center', 'right', 'justify']));
         model.active.api.restyle(
             selected<VectorText>(),
             (VectorStyle style) => style.copyWith(
