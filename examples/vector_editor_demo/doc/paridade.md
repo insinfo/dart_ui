@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 51 | 10 | 2 | 63 | 89% |
+| P0 | 52 | 10 | 1 | 63 | 90% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 59 | 12 | 104 | 175 | 37% |
+| **todas** | 60 | 12 | 103 | 175 | 38% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 79 de 94 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 81 de 96 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 112.
+Comandos registrados: 114.
 
 ## Por área
 
@@ -24,7 +24,7 @@ Comandos registrados: 112.
 |---|---|---|---|---|---|
 | Caixa de ferramentas | 10 | 3 | 47 | 60 | 19% |
 | Interações no canvas | 8 | 2 | 3 | 13 | 69% |
-| Barra de propriedades | 4 | 2 | 10 | 16 | 31% |
+| Barra de propriedades | 5 | 2 | 9 | 16 | 38% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
 | Operações de objeto | 10 | 2 | 10 | 22 | 50% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
@@ -136,7 +136,7 @@ Comandos registrados: 112.
 | ❌ | Drop shadow | P1 |  | tudo |
 | ❌ | Envelope | P2 |  | tudo |
 | ❌ | Extrude | P2 |  | tudo |
-| ❌ | Zoom | P0 |  | tudo |
+| ✅ | Zoom | P0 | `view.zoomTo`, `view.zoomIn`, `view.zoomOut`, `view.zoomSelection`, `view.zoomPage`, `view.zoomPageWidth`, `view.zoomPageHeight` |  |
 
 ### Dockers
 

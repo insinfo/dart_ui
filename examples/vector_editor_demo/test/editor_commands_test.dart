@@ -211,4 +211,16 @@ void main() {
       expect(command['label'], isNotEmpty, reason: '${command['id']}');
     }
   });
+
+  test('page width and page height fit one side of the page, centred', () {
+    final Rect page = model.active.page.rect;
+    registry.execute('view.zoomPageWidth');
+    final double zoom = model.active.zoom;
+    expect(page.width * zoom, closeTo(800 - 48, 0.01));
+    // The page's centre is the window's centre.
+    expect(model.active.pan.dx + page.center.dx * zoom, closeTo(400, 0.01));
+    expect(model.active.pan.dy + page.center.dy * zoom, closeTo(300, 0.01));
+    registry.execute('view.zoomPageHeight');
+    expect(page.height * model.active.zoom, closeTo(600 - 48, 0.01));
+  });
 }

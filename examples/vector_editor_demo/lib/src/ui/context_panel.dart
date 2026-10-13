@@ -31,6 +31,7 @@ enum ContextPlugin {
   combine,
   nodes,
   freehand,
+  zoom,
 }
 
 /// Which plugins belong on the bar right now.
@@ -40,6 +41,10 @@ enum ContextPlugin {
 /// (bitmaps, text markup, gradient editing).
 List<ContextPlugin> contextPluginsFor(EditorModel model) {
   if (!model.hasDocument) return const <ContextPlugin>[];
+  // The Zoom tool's bar is the zoom and nothing else, as in CorelDRAW.
+  if (model.tool == ToolMode.zoom) {
+    return const <ContextPlugin>[ContextPlugin.zoom];
+  }
 
   // sK1 prepends the polygon config plugin whenever the canvas is in polygon
   // mode, whatever else is showing.
@@ -193,6 +198,7 @@ class ContextPanel extends StatelessWidget {
           ]),
         ContextPlugin.freehand =>
           _FreehandPlugin(model: model, registry: registry),
+        ContextPlugin.zoom => _ZoomPlugin(model: model, registry: registry),
       };
 
   /// A row of command buttons with their own icons and parameters.
@@ -755,4 +761,71 @@ class _FreehandPlugin extends StatelessWidget {
           ),
         ],
       );
+}
+
+// ---------------------------------------------------------------------------
+// Zoom
+// ---------------------------------------------------------------------------
+
+/// The Zoom tool's bar: the levels, then in, out and the fits.
+class _ZoomPlugin extends StatelessWidget {
+  const _ZoomPlugin({required this.model, required this.registry});
+
+  final EditorModel model;
+  final CommandRegistry registry;
+
+  static const List<double> levels = <double>[
+    .1, .25, .5, .75, 1, 2, 4, 8, //
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final ChromeMetrics metrics = ChromeMetrics.of(Theme.of(context));
+    final double zoom = model.active.zoom;
+    final int percent = (zoom * 100).round();
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: <Widget>[
+        SizedBox(
+          width: metrics.widthFor(84),
+          height: metrics.fieldHeight,
+          child: ComboBox<double>(
+            label: 'Zoom levels',
+            // The current zoom as a level of its own when it is none of
+            // the presets - the box shows what the view is, not a preset
+            // it is near.
+            value: zoom,
+            items: <ComboBoxItem<double>>[
+              if (!levels.any((double l) => (l * 100).round() == percent))
+                ComboBoxItem<double>(value: zoom, label: '$percent%'),
+              for (final double level in levels)
+                ComboBoxItem<double>(
+                    value: (level * 100).round() == percent ? zoom : level,
+                    label: '${(level * 100).round()}%'),
+            ],
+            onChanged: (double level) {
+              if (level != zoom) {
+                registry
+                    .execute('view.zoomTo', <String, Object?>{'zoom': level});
+              }
+            },
+          ),
+        ),
+        const SizedBox(width: 6),
+        for (final String id in const <String>[
+          'view.zoomIn',
+          'view.zoomOut',
+          'view.zoomSelection',
+          'view.zoomPage',
+          'view.zoomPageWidth',
+          'view.zoomPageHeight',
+        ])
+          CommandIconButton(
+            registry: registry,
+            command: id,
+            icon: commandIcon(id) ?? PhosphorIcons.magnifyingGlass,
+          ),
+      ],
+    );
+  }
 }

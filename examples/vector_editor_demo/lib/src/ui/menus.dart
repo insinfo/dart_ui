@@ -76,6 +76,8 @@ final class EditorMenus {
           const CommandItem('view.zoomOut'),
           _,
           const CommandItem('view.zoomPage'),
+          const CommandItem('view.zoomPageWidth'),
+          const CommandItem('view.zoomPageHeight'),
           const CommandItem('view.zoomSelection'),
           _,
           const CommandItem('view.grid'),

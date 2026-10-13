@@ -283,6 +283,17 @@ void main() {
       harness.dispose();
     });
 
+    test('the Zoom tool shows the zoom bar and nothing else', () {
+      final harness = _Harness();
+      harness.frame();
+      final model = harness.model;
+      model.selectAll();
+      harness.windowState.registry.execute('tool.zoom');
+      harness.frame();
+      expect(contextPluginsFor(model), <ContextPlugin>[ContextPlugin.zoom]);
+      harness.dispose();
+    });
+
     test('a single rectangle brings up the rectangle plugin', () {
       final harness = _Harness();
       harness.frame();

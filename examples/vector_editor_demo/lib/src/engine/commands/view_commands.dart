@@ -86,6 +86,22 @@ List<CommandSpec> viewCommands(EditorContext context) {
           model.zoomToRect(model.active.page.rect, context.host.viewport),
     ),
     CommandSpec(
+      id: 'view.zoomPageWidth',
+      label: 'Zoom to page width',
+      when: context.needsDocument,
+      run: (_) => model.zoomToSpan(
+          model.active.page.rect, context.host.viewport,
+          horizontal: true),
+    ),
+    CommandSpec(
+      id: 'view.zoomPageHeight',
+      label: 'Zoom to page height',
+      when: context.needsDocument,
+      run: (_) => model.zoomToSpan(
+          model.active.page.rect, context.host.viewport,
+          horizontal: false),
+    ),
+    CommandSpec(
       id: 'view.zoomSelection',
       label: 'Zoom selected',
       shortcut: const KeyGesture(logicalKeyF4),

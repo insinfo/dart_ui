@@ -48,6 +48,8 @@ const Map<String, IconData> _icons = <String, IconData>{
   'view.zoom100': PhosphorIcons.magnifyingGlass,
   'view.zoomPage': PhosphorIcons.frameCorners,
   'view.zoomSelection': PhosphorIcons.crosshair,
+  'view.zoomPageWidth': PhosphorIcons.arrowsHorizontal,
+  'view.zoomPageHeight': PhosphorIcons.arrowsVertical,
   'layer.new': PhosphorIcons.plus,
   'layer.raise': PhosphorIcons.arrowUp,
   'layer.lower': PhosphorIcons.arrowDown,

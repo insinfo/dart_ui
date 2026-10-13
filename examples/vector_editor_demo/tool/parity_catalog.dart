@@ -186,7 +186,15 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   ParityFeature(_bar, 'Drop shadow', 'P1'),
   ParityFeature(_bar, 'Envelope', 'P2'),
   ParityFeature(_bar, 'Extrude', 'P2'),
-  ParityFeature(_bar, 'Zoom', 'P0'),
+  ParityFeature(_bar, 'Zoom', 'P0', commands: <String>[
+    'view.zoomTo',
+    'view.zoomIn',
+    'view.zoomOut',
+    'view.zoomSelection',
+    'view.zoomPage',
+    'view.zoomPageWidth',
+    'view.zoomPageHeight',
+  ]),
 
   // --- dockers ----------------------------------------------------------------
   ParityFeature(_dockers, 'Objects', 'P0', commands: <String>['panel.objects']),

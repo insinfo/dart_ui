@@ -286,6 +286,24 @@ class EditorModel {
     refresh('Zoom ${(active.zoom * 100).round()}%');
   }
 
+  /// Fits [rect]'s width - or, with [horizontal] false, its height - to
+  /// the window, centred on it: CorelDRAW's Zoom to page width and height.
+  void zoomToSpan(Rect rect, Size viewportSize, {required bool horizontal}) {
+    if (!hasDocument || rect.width <= 0 || rect.height <= 0) return;
+    final double available =
+        (horizontal ? viewportSize.width : viewportSize.height) -
+            ZoomMetrics.fitMargin * 2;
+    if (available <= 0) return;
+    final double zoom = (available / (horizontal ? rect.width : rect.height))
+        .clamp(ZoomMetrics.minimum, ZoomMetrics.maximum);
+    active.zoom = zoom;
+    active.pan = Offset(
+      viewportSize.width / 2 - rect.center.dx * zoom,
+      viewportSize.height / 2 - rect.center.dy * zoom,
+    );
+    refresh('Zoom ${(zoom * 100).round()}%');
+  }
+
   /// [zoomToRect] without the rebuild, for callers already building.
   bool fitRect(Rect rect, Size viewportSize) {
     if (!hasDocument || rect.width <= 0 || rect.height <= 0) return false;
