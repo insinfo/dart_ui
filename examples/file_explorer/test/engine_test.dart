@@ -340,4 +340,59 @@ void main() {
     expect(containsText(const Tally(files: 1200, folders: 0), pt),
         '1.200 arquivos, 0 pastas');
   });
+
+  test(
+      'dragging: a move within a drive, a copy onto another, never into itself',
+      () {
+    final MemoryFileSystem fs = MemoryFileSystem()
+      ..addFile('/home/ana/a.txt')
+      ..addFolder('/home/ana/Photos/2024')
+      ..addFolder('/Volumes/USB/backup');
+    final ExplorerModel m = explorer(fs)
+      ..volumes = const <Volume>[
+        Volume(path: '/', label: 'Macintosh HD'),
+        Volume(path: '/Volumes/USB', label: 'USB'),
+      ];
+    const List<String> file = <String>['/home/ana/a.txt'];
+    expect(m.dropEffect('/home/ana/Photos', file), DropEffect.move);
+    expect(m.dropEffect('/Volumes/USB/backup', file), DropEffect.copy);
+    expect(m.dropEffect('/Volumes/USB/backup', file, shift: true),
+        DropEffect.move);
+    expect(
+        m.dropEffect('/home/ana/Photos', file, control: true), DropEffect.copy);
+    expect(
+        m.dropEffect('/home/ana/Photos', file, canMove: false), DropEffect.copy,
+        reason: 'the source only lets it be copied');
+    expect(m.dropEffect('/home/ana', file), DropEffect.none,
+        reason: 'moving into the folder it is in does nothing');
+    expect(m.dropEffect('/home/ana', file, control: true), DropEffect.copy,
+        reason: 'but a copy there is "a - Copy.txt"');
+    const List<String> photos = <String>['/home/ana/Photos'];
+    expect(m.dropEffect('/home/ana/Photos', photos), DropEffect.none);
+    expect(m.dropEffect('/home/ana/Photos/2024', photos), DropEffect.none,
+        reason: 'not into what it contains');
+    expect(m.dropEffect('/home/ana/Photos', null), DropEffect.copy,
+        reason: "another application's files copy unless Shift says move");
+  });
+
+  test('dropping moves or copies into the folder, keeping both names',
+      () async {
+    final MemoryFileSystem fs = MemoryFileSystem()
+      ..addFile('/home/ana/a.txt', size: 3)
+      ..addFile('/home/ana/Photos/a.txt', size: 9)
+      ..addFolder('/home/ana/Docs');
+    final ExplorerModel m = explorer(fs);
+    await m.navigate(const FolderLocation('/home/ana'));
+    final List<String> moved =
+        await m.drop('/home/ana/Docs', <String>['/home/ana/a.txt'], move: true);
+    expect(moved, <String>['/home/ana/Docs/a.txt']);
+    expect(await fs.stat('/home/ana/a.txt'), isNull);
+    final List<String> copied = await m.drop(
+        '/home/ana/Photos', <String>['/home/ana/Docs/a.txt'],
+        move: false);
+    expect(copied, <String>['/home/ana/Photos/a - Copy.txt']);
+    expect(await fs.stat('/home/ana/Docs/a.txt'), isNotNull);
+    expect(m.tab.entries.map((FileEntry e) => e.name), isNot(contains('a.txt')),
+        reason: 'the folder on screen was re-read');
+  });
 }

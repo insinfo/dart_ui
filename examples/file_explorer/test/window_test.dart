@@ -182,6 +182,55 @@ void main() {
     h.dispose();
   });
 
+  test('a file dragged onto a folder row lights it, and drops into it',
+      () async {
+    final _Harness h = _Harness();
+    await h.settle();
+    RenderDataGridRow rowOf(String name) =>
+        h.renders<RenderDataGridRow>().firstWhere((RenderDataGridRow r) {
+          bool has = false;
+          void walk(RenderBox n) {
+            if (n is RenderText && n.text == name) has = true;
+            n.visitChildren(walk);
+          }
+
+          walk(r);
+          return has;
+        });
+    final RenderDataGridRow folder = rowOf('Project Files');
+    final Offset over =
+        folder.localToGlobal(Offset(60, folder.size.height / 2));
+    const String license = '/Users/ana/Documents/license.txt';
+    h.model.dragging = const <String>[license];
+    DragSessionEvent at(Offset p) => DragSessionEvent(
+          windowId: const NativeWindowId(1),
+          position: p,
+          data: MemoryDragData.filePaths(const <String>[license]),
+          allowedActions: const <DragAction>{DragAction.copy, DragAction.move},
+        );
+
+    final DropResponse answer = h.owner.dispatchDragUpdate(at(over));
+    expect(answer.action, DragAction.move, reason: 'same drive: a move');
+    await h.settle();
+    expect(rowOf('Project Files').dropTarget, isTrue);
+
+    final RenderDataGridRow file = rowOf('main.dart');
+    final Offset overFile =
+        file.localToGlobal(Offset(60, file.size.height / 2));
+    expect(h.owner.dispatchDragUpdate(at(overFile)).isAccepted, isFalse,
+        reason: 'over a file it is the folder it already is in: no move');
+
+    h.owner.dispatchDragUpdate(at(over));
+    expect(await h.owner.dispatchDrop(at(over)), DragAction.move);
+    await h.settle();
+    expect(await h.model.fs.stat(license), isNull);
+    expect(
+        await h.model.fs.stat('/Users/ana/Documents/Project Files/license.txt'),
+        isNotNull);
+    expect(h.texts, isNot(contains('license.txt')));
+    h.dispose();
+  });
+
   test('typing a name in the list selects it; a pause starts over', () async {
     final _Harness h = _Harness();
     await h.settle();

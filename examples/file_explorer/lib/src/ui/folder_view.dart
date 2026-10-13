@@ -9,6 +9,7 @@ import '../engine/explorer_tab.dart';
 import '../engine/file_system.dart';
 import '../engine/file_types.dart';
 import '../engine/location.dart';
+import 'drag_support.dart';
 import 'file_icon.dart';
 import 'thumbnails.dart';
 
@@ -86,6 +87,27 @@ class FolderView extends StatelessWidget {
     _select(<String>[entry.path]);
   }
 
+  /// The folder a drop on the empty space goes into: the one on screen, and
+  /// none for Home, This PC or search results.
+  String? get _dropHere => model.canCreateHere ? model.currentFolder : null;
+
+  /// What a drag starting on [entry] carries: the selection when [entry] is
+  /// in it, [entry] alone otherwise.
+  List<String> _dragPaths(FileEntry entry) => tab.selection.contains(entry.path)
+      ? <String>[
+          for (final FileEntry e in tab.visible)
+            if (tab.selection.contains(e.path)) e.path,
+        ]
+      : <String>[entry.path];
+
+  /// [child] as a place files can be dropped into the folder on screen.
+  Widget _background(Widget child) {
+    final String? here = _dropHere;
+    return here == null
+        ? child
+        : folderDropTarget(model: model, folder: here, child: child);
+  }
+
   void _open(FileEntry entry) {
     _select(<String>[entry.path]);
     registry.execute('file.open');
@@ -98,14 +120,14 @@ class FolderView extends StatelessWidget {
       return _Message(icon: PhosphorIcons.warningCircle, text: tab.error!);
     }
     if (tab.visible.isEmpty && !tab.loading) {
-      return _Message(
+      return _background(_Message(
         icon: tab.location is SearchLocation
             ? PhosphorIcons.magnifyingGlass
             : PhosphorIcons.folderOpen,
         text: tab.location is SearchLocation
             ? model.strings.noResults
             : model.strings.emptyFolder,
-      );
+      ));
     }
     return switch (model.viewMode) {
       ViewMode.details => _details(theme),
@@ -158,6 +180,25 @@ class FolderView extends StatelessWidget {
       onSelectionChanged: (Set<int> rows) => _select(
           <String>[for (final int i in rows.toList()..sort()) items[i].path]),
       onRowActivated: (int row) => _open(items[row]),
+      // Rows drag out as files - to a folder here, or to another
+      // application - and folders take drops; anywhere else in the list is
+      // the folder on screen.
+      rowDragData: (Set<int> rows) => dragOut(model,
+          <String>[for (final int i in rows.toList()..sort()) items[i].path]),
+      onRowDragEnd: (DragAction action) => dragEnded(model, action),
+      rowAcceptsDrops: (int row) => items[row].isDirectory,
+      rowDropResponse: (int? row, DropDetails details) {
+        final String? folder = row != null ? items[row].path : _dropHere;
+        return folder == null
+            ? const DropResponse.reject()
+            : folderDropResponse(model, folder, details);
+      },
+      onRowDrop: (int? row, DropDetails details) async {
+        final String? folder = row != null ? items[row].path : _dropHere;
+        return folder == null
+            ? DragAction.none
+            : dropIntoFolder(model, folder, details);
+      },
       sort: sortColumn < 0
           ? null
           : DataGridSort(
@@ -279,7 +320,7 @@ class FolderView extends StatelessWidget {
         : tiles
             ? 72
             : iconSize + 44;
-    return GestureDetector(
+    return _background(GestureDetector(
       behavior: GestureHitTestBehavior.opaque,
       // A click between the items drops the selection, as in Explorer.
       onTap: () => _select(const <String>[]),
@@ -310,14 +351,14 @@ class FolderView extends StatelessWidget {
           },
         ),
       ),
-    );
+    ));
   }
 
   Widget _item(BuildContext context, ThemeData theme, FileEntry entry,
       {required double iconSize, required bool list, required bool tiles}) {
     final bool selected = tab.selection.contains(entry.path);
     final bool renaming = tab.renaming == entry.path;
-    return HoverBuilder(
+    final Widget tile = HoverBuilder(
       builder: (BuildContext context, bool hovered) => GestureDetector(
         behavior: GestureHitTestBehavior.opaque,
         onTap: () => _click(context, entry),
@@ -388,6 +429,22 @@ class FolderView extends StatelessWidget {
           ),
         ),
       ),
+    );
+    // Every item drags; a folder also takes drops, lit while they hover.
+    return DragSource(
+      data: () => dragOut(model, _dragPaths(entry)),
+      allowedActions: const <DragAction>{DragAction.copy, DragAction.move},
+      preferredAction: DragAction.move,
+      opaque: true,
+      onDragEnd: (DragAction action) => dragEnded(model, action),
+      child: entry.isDirectory
+          ? folderDropTarget(
+              model: model,
+              folder: entry.path,
+              highlight: theme.accent.withAlpha(0x2E),
+              child: tile,
+            )
+          : tile,
     );
   }
 

@@ -24,6 +24,10 @@ final class FileClipboard {
 }
 
 /// The explorer.
+/// What dropping files on a folder does - the explorer's own word for it,
+/// so the engine needs no widget type.
+enum DropEffect { none, copy, move }
+
 final class ExplorerModel {
   ExplorerModel({
     required this.fs,
@@ -610,18 +614,120 @@ final class ExplorerModel {
       return const <String>[];
     }
     await idle;
+    final List<String> made = await _transfer(from.paths, here, move: from.cut);
+    if (from.cut) clipboard = null;
+    await _load(tab, keepSelection: true);
+    select(made);
+    return made;
+  }
+
+  /// The paths being dragged out of this window, while the drag runs - so a
+  /// drop back into it knows what it carries before the drop, and can refuse
+  /// to put a folder inside itself.
+  List<String>? dragging;
+
+  /// The volume [path] is on: the longest volume path it is under, or its
+  /// root.
+  String volumeOf(String path) {
+    String best = fs.ancestry(path).first;
+    for (final Volume volume in volumes) {
+      final String root = volume.path;
+      final bool under = fs.caseInsensitive
+          ? path.toLowerCase().startsWith(root.toLowerCase())
+          : path.startsWith(root);
+      if (under && root.length > best.length) best = root;
+    }
+    return best;
+  }
+
+  /// What dropping [paths] on [folder] does, as Explorer decides it: Ctrl
+  /// copies and Shift moves; otherwise a move within one drive and a copy
+  /// onto another. Nothing goes into itself or into what it contains, and
+  /// a move into the folder it is already in does nothing. [paths] null is
+  /// a drag from another application, whose files are not known until the
+  /// drop: it copies unless Shift says move.
+  DropEffect dropEffect(
+    String folder,
+    List<String>? paths, {
+    bool control = false,
+    bool shift = false,
+    bool canMove = true,
+  }) {
+    DropEffect wanted;
+    if (control) {
+      wanted = DropEffect.copy;
+    } else if (shift) {
+      wanted = DropEffect.move;
+    } else if (paths == null || paths.isEmpty) {
+      wanted = DropEffect.copy;
+    } else {
+      final String target = volumeOf(folder);
+      wanted = paths.every((String p) => volumeOf(p) == target)
+          ? DropEffect.move
+          : DropEffect.copy;
+    }
+    if (wanted == DropEffect.move && !canMove) wanted = DropEffect.copy;
+    for (final String path in paths ?? const <String>[]) {
+      if (_isWithin(folder, path)) return DropEffect.none;
+      if (wanted == DropEffect.move && fs.parentOf(path) == folder) {
+        return DropEffect.none;
+      }
+    }
+    return wanted;
+  }
+
+  /// Whether [path] is [ancestor] or inside it.
+  bool _isWithin(String path, String ancestor) {
+    final String a = fs.caseInsensitive ? ancestor.toLowerCase() : ancestor;
+    final String p = fs.caseInsensitive ? path.toLowerCase() : path;
+    if (p == a) return true;
+    final String prefix = a.endsWith(fs.separator) ? a : '$a${fs.separator}';
+    return p.startsWith(prefix);
+  }
+
+  /// Drops [paths] on [folder]: copies or moves them there, and selects
+  /// them when that is the folder on screen. Returns the new paths.
+  Future<List<String>> drop(
+    String folder,
+    List<String> paths, {
+    required bool move,
+  }) async {
+    await idle;
+    final List<String> made = await _transfer(paths, folder, move: move);
+    final bool onScreen = currentFolder == folder;
+    await _load(tab, keepSelection: !onScreen);
+    if (onScreen) select(made);
+    return made;
+  }
+
+  /// Copies or moves [paths] into [folder], a taken name getting " - Copy";
+  /// a move into the folder a file is already in is skipped. Stops at the
+  /// first failure, whose reason goes to [message].
+  Future<List<String>> _transfer(
+    List<String> paths,
+    String folder, {
+    required bool move,
+  }) async {
     final List<String> made = <String>[];
-    final Set<String> names = <String>{for (final e in tab.entries) e.name};
-    for (final String path in from.paths) {
+    final Set<String> names;
+    try {
+      names = <String>{
+        for (final FileEntry e in await fs.list(folder)) e.name,
+      };
+    } on Object catch (error) {
+      _fail(error);
+      return made;
+    }
+    for (final String path in paths) {
       final FileEntry? source = await fs.stat(path);
       if (source == null) continue;
-      final bool sameFolder = fs.parentOf(path) == here;
-      if (from.cut && sameFolder) continue;
+      if (move && fs.parentOf(path) == folder) continue;
+      if (_isWithin(folder, path)) continue;
       final String name = copyName(source.name, names.contains,
           isDirectory: source.isDirectory);
-      final String target = fs.join(here, name);
+      final String target = fs.join(folder, name);
       try {
-        if (from.cut) {
+        if (move) {
           await fs.move(path, target);
         } else {
           await fs.copy(path, target);
@@ -633,9 +739,6 @@ final class ExplorerModel {
         break;
       }
     }
-    if (from.cut) clipboard = null;
-    await _load(tab, keepSelection: true);
-    select(made);
     return made;
   }
 

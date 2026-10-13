@@ -11,6 +11,7 @@ import 'package:dart_ui/dart_ui.dart';
 import '../engine/explorer_model.dart';
 import '../engine/file_system.dart';
 import '../engine/location.dart';
+import 'drag_support.dart';
 
 /// The icon and colour Windows 11 gives each known folder.
 (IconData, Color) placeIcon(Place? place) => switch (place) {
@@ -97,11 +98,14 @@ class _SidebarState extends State<Sidebar> {
                   ]),
                   ..._section(pt ? 'Unidades' : 'Drives', <Widget>[
                     for (final Volume volume in model.volumes)
-                      _row(
-                        id: volume.path,
-                        label: volume.label,
-                        icon: FluentIcons.hardDrive,
-                        color: const Color(0xFF5F6B7A),
+                      _dropInto(
+                        volume.path,
+                        _row(
+                          id: volume.path,
+                          label: volume.label,
+                          icon: FluentIcons.hardDrive,
+                          color: const Color(0xFF5F6B7A),
+                        ),
                       ),
                   ]),
                 ],
@@ -185,15 +189,27 @@ class _SidebarState extends State<Sidebar> {
           child: Text(model.strings.menu('Unpin from Quick access')),
         ),
       ],
-      child: _row(
-        id: path,
-        label: place == null ? model.fs.nameOf(path) : model.placeName(place),
-        icon: icon,
-        color: color,
-        pin: true,
+      child: _dropInto(
+        path,
+        _row(
+          id: path,
+          label: place == null ? model.fs.nameOf(path) : model.placeName(place),
+          icon: icon,
+          color: color,
+          pin: true,
+        ),
       ),
     );
   }
+
+  /// [row] as a place files dragged onto it are dropped into [folder] - a
+  /// pinned folder, a drive - lit while they hover.
+  Widget _dropInto(String folder, Widget row) => folderDropTarget(
+        model: model,
+        folder: folder,
+        highlight: Theme.of(context).accent.withAlpha(0x2E),
+        child: row,
+      );
 
   Widget _row({
     required String id,
