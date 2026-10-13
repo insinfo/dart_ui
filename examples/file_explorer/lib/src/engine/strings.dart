@@ -40,6 +40,7 @@ final class ExplorerStrings {
     required this.freeOf,
     required this.newTab,
     required this.location,
+    this.copy = 'Copy',
     this.commandLabels = const <String, String>{},
     this.menuNames = const <String, String>{},
   });
@@ -80,6 +81,9 @@ final class ExplorerStrings {
   final String freeOf;
   final String newTab;
   final String location;
+
+  /// What a copy's name says it is: "report - Copy.txt".
+  final String copy;
 
   /// Command labels in this language, by command id; a command missing
   /// here keeps its English label.
@@ -189,6 +193,7 @@ final class ExplorerStrings {
     freeOf: '{free} livres de {total}',
     newTab: 'Nova guia',
     location: 'Local',
+    copy: 'Copia',
     menuNames: <String, String>{
       'New': 'Novo',
       'Sort': 'Classificar',

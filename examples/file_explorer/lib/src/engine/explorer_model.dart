@@ -724,7 +724,7 @@ final class ExplorerModel {
       if (move && fs.parentOf(path) == folder) continue;
       if (_isWithin(folder, path)) continue;
       final String name = copyName(source.name, names.contains,
-          isDirectory: source.isDirectory);
+          isDirectory: source.isDirectory, copy: strings.copy);
       final String target = fs.join(folder, name);
       try {
         if (move) {

@@ -395,4 +395,12 @@ void main() {
     expect(m.tab.entries.map((FileEntry e) => e.name), isNot(contains('a.txt')),
         reason: 'the folder on screen was re-read');
   });
+
+  test('a copy is named in the language of the window', () {
+    bool taken(String n) => n == 'nota.txt' || n == 'nota - Copia.txt';
+    expect(copyName('nota.txt', taken, copy: ExplorerStrings.portuguese.copy),
+        'nota - Copia (2).txt');
+    expect(
+        copyName('nota.txt', (String n) => n == 'nota.txt'), 'nota - Copy.txt');
+  });
 }

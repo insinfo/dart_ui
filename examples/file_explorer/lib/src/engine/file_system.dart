@@ -162,16 +162,17 @@ const Set<String> kSystemNames = <String>{
 };
 
 /// Names the copy of [name] the way Windows does when one is already there:
-/// `report - Copy.txt`, then `report - Copy (2).txt`.
+/// `report - Copy.txt`, then `report - Copy (2).txt` - with [copy] in the
+/// user's language, `report - Copia.txt` in Portuguese.
 String copyName(String name, bool Function(String candidate) taken,
-    {bool isDirectory = false}) {
+    {bool isDirectory = false, String copy = 'Copy'}) {
   final int dot = isDirectory ? -1 : name.lastIndexOf('.');
   final String stem = dot > 0 ? name.substring(0, dot) : name;
   final String ext = dot > 0 ? name.substring(dot) : '';
   if (!taken(name)) return name;
-  var candidate = '$stem - Copy$ext';
+  var candidate = '$stem - $copy$ext';
   for (var n = 2; taken(candidate); n++) {
-    candidate = '$stem - Copy ($n)$ext';
+    candidate = '$stem - $copy ($n)$ext';
   }
   return candidate;
 }
