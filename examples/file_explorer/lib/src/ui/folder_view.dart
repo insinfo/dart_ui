@@ -18,6 +18,7 @@ class FolderView extends StatelessWidget {
     required this.model,
     required this.registry,
     required this.renameField,
+    this.headerMenu,
   });
 
   final ExplorerModel model;
@@ -26,6 +27,9 @@ class FolderView extends StatelessWidget {
   /// The in-place rename field, built by the window so it keeps its
   /// controller and focus across rebuilds.
   final Widget Function(FileEntry entry) renameField;
+
+  /// The Details header's right-click menu: which columns to show.
+  final List<Widget> Function()? headerMenu;
 
   ExplorerTab get tab => model.tab;
 
@@ -97,24 +101,29 @@ class FolderView extends StatelessWidget {
     final List<FileEntry> items = tab.visible;
     final bool search = tab.location is SearchLocation;
     final List<DataGridColumn> columns = <DataGridColumn>[
-      DataGridColumn(title: model.strings.name, id: 'name', width: 320),
-      if (search)
-        DataGridColumn(
-            title: model.strings.location, id: 'location', width: 260),
-      DataGridColumn(title: model.strings.dateModified, id: 'date', width: 170),
-      DataGridColumn(title: model.strings.type, id: 'type', width: 170),
-      DataGridColumn(title: model.strings.size, id: 'size', width: 100),
+      for (final DetailsColumn c in model.columns) ...<DataGridColumn>[
+        _column(c),
+        if (search && c == DetailsColumn.name)
+          DataGridColumn(
+              title: model.strings.location, id: 'location', width: 260),
+      ],
     ];
     final List<SortField?> fieldOf = <SortField?>[
-      SortField.name,
-      if (search) null,
-      SortField.dateModified,
-      SortField.type,
-      SortField.size,
+      for (final DataGridColumn c in columns)
+        switch (c.identity) {
+          'name' => SortField.name,
+          'date' => SortField.dateModified,
+          'type' => SortField.type,
+          'size' => SortField.size,
+          _ => null,
+        },
     ];
     final int sortColumn = fieldOf.indexOf(model.sortField);
     return DataGrid(
       decorated: false,
+      headerMenu: headerMenu,
+      columnFitWidth: (int column) =>
+          _fitWidth(theme, columns[column].identity as String, items),
       columns: columns,
       rowCount: items.length,
       rowExtent: 30,
@@ -153,7 +162,7 @@ class FolderView extends StatelessWidget {
                   child: tab.renaming == entry.path
                       ? renameField(entry)
                       : Text(
-                          _shownName(entry),
+                          model.shownName(entry),
                           style: theme.textTheme.bodyMedium,
                           color: theme.foreground,
                           maxLines: 1,
@@ -166,6 +175,8 @@ class FolderView extends StatelessWidget {
             _cell(theme, model.fs.parentOf(entry.path) ?? '', secondary),
           'date' =>
             _cell(theme, dateColumn(entry.modified, model.strings), secondary),
+          'created' =>
+            _cell(theme, dateColumn(entry.created, model.strings), secondary),
           'type' => _cell(theme, typeNameOf(entry, model.strings), secondary),
           _ => Align(
               alignment: Alignment.centerRight,
@@ -177,8 +188,47 @@ class FolderView extends StatelessWidget {
     );
   }
 
-  String _shownName(FileEntry entry) =>
-      model.showExtensions || entry.isDirectory ? entry.name : entry.stem;
+  DataGridColumn _column(DetailsColumn c) => switch (c) {
+        DetailsColumn.name =>
+          DataGridColumn(title: model.strings.name, id: 'name', width: 320),
+        DetailsColumn.dateModified => DataGridColumn(
+            title: model.strings.dateModified, id: 'date', width: 170),
+        DetailsColumn.type =>
+          DataGridColumn(title: model.strings.type, id: 'type', width: 170),
+        DetailsColumn.size =>
+          DataGridColumn(title: model.strings.size, id: 'size', width: 100),
+        DetailsColumn.dateCreated => DataGridColumn(
+            title: model.strings.locale.startsWith('pt')
+                ? 'Data de criação'
+                : 'Date created',
+            id: 'created',
+            width: 170,
+            sortable: false),
+      };
+
+  /// What column [id] needs to show every value whole - a double click on
+  /// its edge, as in File Explorer.
+  double? _fitWidth(ThemeData theme, String id, List<FileEntry> items) {
+    final ScaledTypeface? font = FontRegistry.instance.uiFont(theme.fontSize);
+    double measure(String text) => font == null
+        ? FontRegistry.estimatedSize(text, theme.fontSize).width
+        : uiTextPainter.measure(text, font).width;
+    var widest = 0.0;
+    for (final FileEntry e in items) {
+      final String text = switch (id) {
+        'name' => model.shownName(e),
+        'location' => model.fs.parentOf(e.path) ?? '',
+        'date' => dateColumn(e.modified, model.strings),
+        'created' => dateColumn(e.created, model.strings),
+        'type' => typeNameOf(e, model.strings),
+        _ => sizeColumn(e.size, model.strings),
+      };
+      final double w = measure(text);
+      if (w > widest) widest = w;
+    }
+    final double padding = theme.effectiveControlPadding * 2 + 8;
+    return (widest + padding + (id == 'name' ? 26 : 0)).clamp(60.0, 900.0);
+  }
 
   Widget _cell(ThemeData theme, String text, Color color) => Text(
         text,
@@ -282,7 +332,7 @@ class FolderView extends StatelessWidget {
                               ? renameField(entry)
                               : tiles
                                   ? _tileText(theme, entry)
-                                  : Text(_shownName(entry),
+                                  : Text(model.shownName(entry),
                                       style: theme.textTheme.bodyMedium,
                                       color: theme.foreground,
                                       maxLines: 1,
@@ -302,7 +352,7 @@ class FolderView extends StatelessWidget {
                           SizedBox(height: 28, child: renameField(entry))
                         else
                           Text(
-                            _shownName(entry),
+                            model.shownName(entry),
                             style: theme.textTheme.bodyMedium,
                             color: theme.foreground,
                             maxLines: 1,
@@ -322,7 +372,7 @@ class FolderView extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
-          Text(_shownName(entry),
+          Text(model.shownName(entry),
               style: theme.textTheme.bodyMedium,
               color: theme.foreground,
               maxLines: 1,

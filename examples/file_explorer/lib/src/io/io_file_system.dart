@@ -66,16 +66,6 @@ final class IoFileSystem implements FileSystem {
     return out;
   }
 
-  /// Names Windows hides from a listing even without the hidden bit, which
-  /// `dart:io` cannot read.
-  static const Set<String> _systemNames = <String>{
-    'desktop.ini',
-    'thumbs.db',
-    r'$recycle.bin',
-    'system volume information',
-    '.ds_store',
-  };
-
   Future<FileEntry?> _entryOf(FileSystemEntity entity) async {
     try {
       final FileStat stat = await entity.stat();
@@ -90,7 +80,8 @@ final class IoFileSystem implements FileSystem {
         modified: stat.modified,
         created: stat.changed,
         isHidden:
-            name.startsWith('.') || _systemNames.contains(name.toLowerCase()),
+            name.startsWith('.') || kSystemNames.contains(name.toLowerCase()),
+        isSystem: kSystemNames.contains(name.toLowerCase()),
       );
     } on FileSystemException {
       return null;

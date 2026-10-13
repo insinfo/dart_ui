@@ -91,6 +91,37 @@ List<CommandSpec> viewCommands(ExplorerContext context) {
     ),
     toggle('view.extensions', 'File name extensions',
         () => model.showExtensions, (bool v) => model.showExtensions = v),
+    CommandSpec(
+      id: 'view.protectedFiles',
+      label: 'Protected operating system files',
+      description: 'Shows the files the system keeps for itself - '
+          'desktop.ini, .DS_Store.',
+      checked: (_) => model.showProtected,
+      run: (_) {
+        model.setShowProtected(!model.showProtected);
+        return model.showProtected;
+      },
+    ),
+    for (final (DetailsColumn column, String label)
+        in <(DetailsColumn, String)>[
+      (DetailsColumn.name, 'Name'),
+      (DetailsColumn.dateModified, 'Date modified'),
+      (DetailsColumn.type, 'Type'),
+      (DetailsColumn.size, 'Size'),
+      (DetailsColumn.dateCreated, 'Date created'),
+    ])
+      CommandSpec(
+        id: 'column.${column.name}',
+        label: label,
+        description: 'Shows or hides the column in Details.',
+        checked: (_) => model.columns.contains(column),
+        when: (_) =>
+            column == DetailsColumn.name ? 'the name is always shown' : null,
+        run: (_) {
+          model.toggleColumn(column);
+          return model.columns.contains(column);
+        },
+      ),
     toggle('view.navigationPane', 'Navigation pane', () => model.navigationPane,
         (bool v) => model.navigationPane = v,
         shortcut: const KeyGesture(logicalKeyB, command: true)),

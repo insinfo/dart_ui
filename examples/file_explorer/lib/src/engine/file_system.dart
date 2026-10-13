@@ -15,6 +15,7 @@ final class FileEntry {
     this.modified,
     this.created,
     this.isHidden = false,
+    this.isSystem = false,
   });
 
   final String path;
@@ -28,6 +29,10 @@ final class FileEntry {
 
   /// A dot file, or one the system marks hidden.
   final bool isHidden;
+
+  /// A file the operating system keeps for itself - `desktop.ini`,
+  /// `$RECYCLE.BIN`, `.DS_Store` - shown only when protected files are.
+  final bool isSystem;
 
   /// The part after the last dot, lower case, without it; empty for none
   /// and for a folder.
@@ -139,6 +144,23 @@ abstract interface class FileSystem {
   Future<List<Volume>> volumes();
 }
 
+/// Names Windows and macOS keep for themselves, hidden even from a view
+/// that shows hidden items unless protected files are shown too.
+const Set<String> kSystemNames = <String>{
+  'desktop.ini',
+  'thumbs.db',
+  r'$recycle.bin',
+  'system volume information',
+  'pagefile.sys',
+  'hiberfil.sys',
+  'swapfile.sys',
+  '.ds_store',
+  '.localized',
+  '.spotlight-v100',
+  '.fseventsd',
+  '.trashes',
+};
+
 /// Names the copy of [name] the way Windows does when one is already there:
 /// `report - Copy.txt`, then `report - Copy (2).txt`.
 String copyName(String name, bool Function(String candidate) taken,
@@ -245,6 +267,7 @@ final class MemoryFileSystem implements FileSystem {
         modified: node.modified,
         created: node.modified,
         isHidden: nameOf(path).startsWith('.'),
+        isSystem: kSystemNames.contains(nameOf(path).toLowerCase()),
       );
 
   @override

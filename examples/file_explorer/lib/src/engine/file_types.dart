@@ -134,6 +134,14 @@ const Map<String, (String, String)> _typeNames = <String, (String, String)>{
   'ttf': ('TrueType font file', 'Arquivo de fonte TrueType'),
 };
 
+/// Whether Windows knows [entry]'s type - what "hide extensions for known
+/// file types" hides the extension of.
+bool isKnownType(FileEntry entry) =>
+    !entry.isDirectory &&
+    entry.extension.isNotEmpty &&
+    (_typeNames.containsKey(entry.extension) ||
+        _kinds.containsKey(entry.extension));
+
 /// What [entry] is.
 FileKind kindOf(FileEntry entry) => entry.isDirectory
     ? FileKind.folder

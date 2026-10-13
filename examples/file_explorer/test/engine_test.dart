@@ -266,4 +266,42 @@ void main() {
         const KeyGesture(logicalKeyX, command: true),
         reason: 'only the words change');
   });
+
+  test('hidden, protected and known-extension rules, as Windows applies them',
+      () async {
+    final MemoryFileSystem fs = disk()
+      ..addFile('/home/ana/Documents/desktop.ini')
+      ..addFile('/home/ana/Documents/data.xyz');
+    final ExplorerModel m = explorer(fs);
+    await m.navigate(const FolderLocation('/home/ana/Documents'));
+    expect(names(m), isNot(contains('desktop.ini')));
+    m.setShowHidden(true);
+    expect(names(m), contains('.secret'));
+    expect(names(m), isNot(contains('desktop.ini')),
+        reason: 'a system file needs protected files shown too');
+    m.setShowProtected(true);
+    expect(names(m), contains('desktop.ini'));
+
+    m.showExtensions = false;
+    String shown(String name) =>
+        m.shownName(m.tab.visible.firstWhere((FileEntry e) => e.name == name));
+    expect(shown('Budget.xlsx'), 'Budget');
+    expect(shown('data.xyz'), 'data.xyz', reason: 'an unknown type keeps it');
+    expect(shown('Archive'), 'Archive');
+  });
+
+  test('Details columns: shown in order, Name stays', () {
+    final ExplorerModel m = explorer(disk());
+    m.toggleColumn(DetailsColumn.type);
+    m.toggleColumn(DetailsColumn.dateCreated);
+    m.toggleColumn(DetailsColumn.name);
+    expect(m.columns, <DetailsColumn>[
+      DetailsColumn.name,
+      DetailsColumn.dateModified,
+      DetailsColumn.size,
+      DetailsColumn.dateCreated,
+    ]);
+    m.toggleColumn(DetailsColumn.type);
+    expect(m.columns.indexOf(DetailsColumn.type), 2);
+  });
 }

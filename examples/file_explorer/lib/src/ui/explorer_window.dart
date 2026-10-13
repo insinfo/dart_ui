@@ -584,6 +584,7 @@ class ExplorerWindowState extends State<ExplorerWindow>
               model: model,
               registry: registry,
               renameField: _renameField,
+              headerMenu: () => menus.widgets(kColumnsMenu),
             ),
           ),
       };

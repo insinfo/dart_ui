@@ -34,6 +34,7 @@ List<MenuSpecEntry> viewMenu(ExplorerStrings strings) => <MenuSpecEntry>[
         CommandItem('view.detailsPane'),
         CommandItem('view.extensions'),
         CommandItem('view.hiddenItems'),
+        CommandItem('view.protectedFiles'),
       ]),
     ];
 
@@ -42,10 +43,20 @@ List<MenuSpecEntry> viewMenu(ExplorerStrings strings) => <MenuSpecEntry>[
 List<MenuSpecEntry> settingsMenu(ExplorerStrings strings) => <MenuSpecEntry>[
       const CommandItem('view.hiddenItems'),
       const CommandItem('view.extensions'),
+      const CommandItem('view.protectedFiles'),
       _,
       const CommandItem('view.navigationPane'),
       const CommandItem('view.detailsPane'),
     ];
+
+/// The Details header's menu: the columns to show.
+const List<MenuSpecEntry> kColumnsMenu = <MenuSpecEntry>[
+  CommandItem('column.name'),
+  CommandItem('column.dateModified'),
+  CommandItem('column.type'),
+  CommandItem('column.size'),
+  CommandItem('column.dateCreated'),
+];
 
 /// ··· - what does not fit on the bar.
 const List<MenuSpecEntry> kMoreMenu = <MenuSpecEntry>[

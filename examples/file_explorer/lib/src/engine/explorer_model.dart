@@ -64,7 +64,41 @@ final class ExplorerModel {
   SortField sortField = SortField.name;
   bool ascending = true;
   bool showHidden = false;
+
+  /// File Explorer's "File name extensions": off hides the extension of a
+  /// known type only - `report.pdf` reads "report", `data.xyz` stays whole.
   bool showExtensions = true;
+
+  /// "Hide protected operating system files", inverted: system files appear
+  /// only with this on, hidden items shown or not.
+  bool showProtected = false;
+
+  /// The columns Details shows, in order.
+  final List<DetailsColumn> columns = <DetailsColumn>[
+    DetailsColumn.name,
+    DetailsColumn.dateModified,
+    DetailsColumn.type,
+    DetailsColumn.size,
+  ];
+
+  /// Shows or hides [column]; Name stays.
+  void toggleColumn(DetailsColumn column) {
+    if (column == DetailsColumn.name) return;
+    if (!columns.remove(column)) {
+      columns
+        ..add(column)
+        ..sort(
+            (DetailsColumn a, DetailsColumn b) => a.index.compareTo(b.index));
+    }
+    notify();
+  }
+
+  /// [entry]'s name as the view shows it.
+  String shownName(FileEntry entry) =>
+      showExtensions || !isKnownType(entry) ? entry.name : entry.stem;
+
+  bool _shows(FileEntry e) =>
+      (!e.isHidden || showHidden) && (!e.isSystem || showProtected);
   bool navigationPane = true;
   bool detailsPane = false;
 
@@ -321,7 +355,7 @@ final class ExplorerModel {
       }
       if (generation != t.generation) return;
       for (final FileEntry entry in listed) {
-        if (entry.isHidden && !showHidden) continue;
+        if (!_shows(entry)) continue;
         if (entry.isDirectory) queue.add(entry.path);
         if (entry.name.toLowerCase().contains(query)) {
           t.entries = <FileEntry>[...t.entries, entry];
@@ -340,12 +374,10 @@ final class ExplorerModel {
 
   /// Sorts and filters [t]'s entries into what the view shows.
   void _resort(ExplorerTab t) {
-    final List<FileEntry> shown = showHidden
-        ? t.entries
-        : <FileEntry>[
-            for (final FileEntry e in t.entries)
-              if (!e.isHidden) e,
-          ];
+    final List<FileEntry> shown = <FileEntry>[
+      for (final FileEntry e in t.entries)
+        if (_shows(e)) e,
+    ];
     t.visible = sortEntries(shown, sortField, ascending, strings);
     final Set<String> present = <String>{for (final e in t.visible) e.path};
     t.selection.removeWhere((String p) => !present.contains(p));
@@ -361,6 +393,14 @@ final class ExplorerModel {
       this.ascending = true;
     }
     sortField = field;
+    for (final ExplorerTab t in tabs) {
+      _resort(t);
+    }
+    notify();
+  }
+
+  void setShowProtected(bool value) {
+    showProtected = value;
     for (final ExplorerTab t in tabs) {
       _resort(t);
     }
