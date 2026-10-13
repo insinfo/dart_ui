@@ -223,13 +223,49 @@ Uma variante de `NativeCallable` que, chamada de outra thread, entra no isolate,
 roda e devolve o valor — ou a estabilização dos callbacks ligados ao *isolate
 group* que o SDK vem experimentando. Resolve 2.11.
 
+### P11 — `dart compile shared-library`: o programa como `.so`/`.dylib`/`.dll`/`.a`
+
+O comando que o desenvolvedor digitaria para obter P2. Hoje `dart compile exe`
+junta runtime e programa num executável; a variante geraria o mesmo conjunto
+como **biblioteca**, com uma função C de entrada (inicia a VM e roda `main`) e,
+opcionalmente, funções Dart exportadas por `@Native`/`NativeCallable`:
+
+```
+dart compile shared-library --target-os android --target-arch arm64 \
+    lib/main.dart -o build/libapp.so
+dart compile shared-library --target-os ios lib/main.dart -o build/App.xcframework
+```
+
+- **Android:** a activity faz `System.loadLibrary("app")` e o Dart roda no
+  processo do app, com a `ANativeWindow` — sem processo filho, sem cópia por
+  quadro, com GPU direta (hoje impossível sem código nativo próprio, seção 2.2);
+- **iOS:** o app liga a biblioteca ao executável; sem runtime no papel de
+  executável e sem patch (seções 2.3 e 2.5);
+- **desktop:** plugins em Dart carregáveis por programas C/C++/Java, pedido antigo
+  da comunidade.
+
+### P12 — `dart build android` / `dart build ios`: o pacote da loja num comando
+
+A camada acima de P11: gerar APK/AAB e `.app`/IPA assinados a partir de um
+arquivo de configuração (identificador, nome, versão, ícones, permissões,
+identidade de assinatura). É o que `tool/android/build_apk.dart` e
+`tool/ios/build_app.dart` fazem à mão neste projeto. O lugar natural é o
+`dart build`, que o SDK já usa para *native assets*. A configuração de loja é
+específica de cada app, e por isso a equipe do Dart pode preferir deixar essa
+parte para pacotes — mas o empacotamento mínimo (manifesto, bundle, assinatura
+de desenvolvimento) cabe no SDK e tiraria do caminho `gen_snapshot`, `vtool` e
+a convenção `lib*.so`. Depende de P1, e de P11 para o Android sair do modelo de
+processo.
+
 ---
 
 ## 4. Como levar ao `dart-lang/sdk`
 
 1. **Issues primeiro**, uma por proposta, com o caso medido deste relatório e os
    números (APK de 3,1 MB em AOT; crash *"Must be called from the main thread"*;
-   404 dos artefatos). P1, P2 e P3 são as que pedem decisão da equipe do Dart;
+   404 dos artefatos). P1, P2/P11, P3 e P12 são as que pedem decisão da equipe
+   do Dart — P11 provavelmente como comentário na discussão já existente sobre
+   compilar Dart para biblioteca compartilhada, com o caso mobile como motivo;
    P5, P6, P7 e P9 são mudanças pequenas e podem ir direto como PR.
 2. **PRs de P9** já existem em forma de patch:
    `tool/mobile/dart_sdk_patches/3.13.5-ios.patch`. Separar os três ajustes de
