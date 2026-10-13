@@ -336,6 +336,31 @@ void main() {
       expect(p.lines.single.width, 50.0);
     });
 
+    test('the cut falls where the width runs out, inside the next word', () {
+      // "aa" alone fits the line break; the ellipsis must not stop there -
+      // File Explorer writes "Untitled Spreads…", not "Untitled…".
+      final Paragraph p = Paragraph.single(
+        'aa bbbbbb',
+        a10,
+        maxWidth: 60,
+        paragraphStyle: const ParagraphStyle(maxLines: 1, ellipsis: '…'),
+      );
+      expect(p.lines.single.spans.first.end, 5);
+      expect(p.lines.single.spans.last.isEllipsis, isTrue);
+      expect(p.lines.single.width, lessThanOrEqualTo(60));
+    });
+
+    test('one word wider than the line is cut too, not left to overflow', () {
+      final Paragraph p = Paragraph.single(
+        'aaaaaaaaaa',
+        a10,
+        maxWidth: 50,
+        paragraphStyle: const ParagraphStyle(maxLines: 1, ellipsis: '…'),
+      );
+      expect(p.lines.single.spans.first.end, 4);
+      expect(p.lines.single.width, 50.0);
+    });
+
     test('a three-period ellipsis reserves three ems, not one', () {
       final Paragraph p = Paragraph.single(
         'aaaa bbbb cccc',

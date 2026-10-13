@@ -59,6 +59,8 @@ final class BreadcrumbBar extends StatefulWidget {
     this.leading,
     this.height,
     this.controller,
+    this.radius,
+    this.trailing,
   });
 
   final List<BreadcrumbItem> items;
@@ -84,6 +86,13 @@ final class BreadcrumbBar extends StatefulWidget {
   final Widget? leading;
 
   final double? height;
+
+  /// The corner radius; null for the theme's. Half the height makes the
+  /// pill Files and the Windows 11 search box are drawn as.
+  final double? radius;
+
+  /// Drawn at the end of the bar, typing mode included - a search button.
+  final Widget? trailing;
 
   @override
   State<BreadcrumbBar> createState() => _BreadcrumbBarState();
@@ -115,6 +124,12 @@ final class _BreadcrumbBarState extends State<BreadcrumbBar> {
   @override
   void didUpdateWidget(BreadcrumbBar oldWidget) {
     super.didUpdateWidget(oldWidget);
+    // Going somewhere else - a click in a navigation pane, Back - leaves
+    // the address being typed: what was half typed was about the place the
+    // window just left.
+    if (_editing && oldWidget.editText != widget.editText) {
+      _editing = false;
+    }
     if (!identical(oldWidget.controller, widget.controller)) {
       if (identical(oldWidget.controller?._state, this)) {
         oldWidget.controller?._state = null;
@@ -160,40 +175,57 @@ final class _BreadcrumbBarState extends State<BreadcrumbBar> {
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final double height = widget.height ?? theme.effectiveControlHeight;
-    if (_editing) {
-      return SizedBox(
-        height: height,
-        child: CallbackShortcuts(
-          bindings: <KeyGesture, void Function()?>{
-            const KeyGesture(logicalKeyEscape): _endEdit,
-          },
-          child: TextField(
-            controller: _text,
-            focusNode: _field,
-            onSubmitted: _submit,
-          ),
-        ),
-      );
-    }
+    final double radius = widget.radius ?? theme.cornerRadius;
+    final Widget body = _editing
+        ? CallbackShortcuts(
+            bindings: <KeyGesture, void Function()?>{
+              const KeyGesture(logicalKeyEscape): _endEdit,
+            },
+            child: TextField(
+              controller: _text,
+              focusNode: _field,
+              onSubmitted: _submit,
+              decorated: false,
+            ),
+          )
+        : GestureDetector(
+            behavior: GestureHitTestBehavior.opaque,
+            // The empty part of the bar types an address, as in Explorer.
+            onTap: _beginEdit,
+            child: Padding(
+              padding: EdgeInsets.only(left: radius > 8 ? 10 : 6, right: 6),
+              child: LayoutBuilder(
+                builder: (BuildContext context, BoxConstraints constraints) =>
+                    _steps(theme, constraints.maxWidth - 12),
+              ),
+            ),
+          );
     return SizedBox(
       height: height,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: theme.surfaceAlternate,
-          border: BoxBorder(color: theme.border, width: 1),
-          radius: theme.cornerRadius,
+          border: BoxBorder(
+              color: _editing ? theme.accent : theme.border, width: 1),
+          radius: radius,
         ),
-        child: GestureDetector(
-          behavior: GestureHitTestBehavior.opaque,
-          // The empty part of the bar types an address, as in Explorer.
-          onTap: _beginEdit,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 6),
-            child: LayoutBuilder(
-              builder: (BuildContext context, BoxConstraints constraints) =>
-                  _steps(theme, constraints.maxWidth - 12),
+        child: Row(
+          crossAxisAlignment: layout.CrossAxisAlignment.stretch,
+          children: <Widget>[
+            Expanded(
+              child: _editing
+                  ? Padding(
+                      padding: EdgeInsets.only(left: radius > 8 ? 6 : 0),
+                      child: body,
+                    )
+                  : body,
             ),
-          ),
+            if (widget.trailing != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Center(child: widget.trailing!),
+              ),
+          ],
         ),
       ),
     );

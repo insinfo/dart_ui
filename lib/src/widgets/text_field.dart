@@ -775,9 +775,15 @@ final class TextField extends StatefulWidget {
     this.inactiveSelection = InactiveSelectionHighlight.dimmed,
     this.editingConvention,
     this.onSubmitted,
+    this.decorated = true,
   });
 
   final TextEditingController controller;
+
+  /// Whether the field draws its own box - fill, outline and focus outline.
+  /// False for a field placed inside a surface that already looks like one:
+  /// a search box shaped as a pill, an address bar, a cell being renamed.
+  final bool decorated;
   final FocusNode? focusNode;
 
   /// Shown, muted, while the field is empty - the placeholder ("Search
@@ -879,6 +885,7 @@ final class _TextFieldState extends State<TextField> {
           inactiveSelection: widget.inactiveSelection,
           editingConvention: widget.editingConvention,
           onSubmitted: widget.onSubmitted,
+          decorated: widget.decorated,
           theme: Theme.of(context),
           // Read where the theme is read, and for the same reason: the field
           // must not be handed a clipboard by its parent, and must not reach
@@ -907,6 +914,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
     required this.inactiveSelection,
     required this.editingConvention,
     required this.onSubmitted,
+    required this.decorated,
     required this.theme,
     required this.clipboard,
     required this.contextMenu,
@@ -922,6 +930,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
   final InactiveSelectionHighlight inactiveSelection;
   final EditingConvention? editingConvention;
   final void Function(String value)? onSubmitted;
+  final bool decorated;
   final ThemeData theme;
   final Clipboard clipboard;
   final ContextMenuController? contextMenu;
@@ -941,6 +950,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
         ..inactiveSelection = inactiveSelection
         ..editingConvention = editingConvention
         ..onSubmitted = onSubmitted
+        ..decorated = decorated
         ..theme = theme
         ..clipboard = clipboard
         ..contextMenu = contextMenu
@@ -963,6 +973,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
       ..inactiveSelection = inactiveSelection
       ..editingConvention = editingConvention
       ..onSubmitted = onSubmitted
+      ..decorated = decorated
       ..theme = theme
       ..clipboard = clipboard
       ..contextMenu = contextMenu
@@ -1006,6 +1017,16 @@ final class RenderTextField extends RenderBox
 
   /// Called on a plain Enter; see [TextField.onSubmitted].
   void Function(String value)? onSubmitted;
+
+  /// See [TextField.decorated].
+  bool get decorated => _decorated;
+  bool _decorated = true;
+
+  set decorated(bool value) {
+    if (value == _decorated) return;
+    _decorated = value;
+    markNeedsPaint();
+  }
 
   /// The platform's input method, and the window it composes into.
   ///
@@ -2394,7 +2415,7 @@ final class RenderTextField extends RenderBox
     final Color fillColor =
         enabled ? theme.surfaceAlternate : theme.disabledSurface;
     final double radius = theme.cornerRadius;
-    paintRoundedFill(list, rect, fillColor, radius);
+    if (_decorated) paintRoundedFill(list, rect, fillColor, radius);
     // A field whose own context menu is up still reads as the active one: the
     // keyboard is on loan to the menu, not gone somewhere else. See
     // [selectionColorFor].
@@ -2402,19 +2423,21 @@ final class RenderTextField extends RenderBox
     // Focused thickens the outline instead of only recolouring it: colour
     // alone is not an accessible state signal, and 1.5 px reads as "active"
     // even where the accent and the border have similar luminance.
-    paintRoundedBorder(
-      list,
-      rect,
-      !enabled
-          ? theme.disabledForeground
-          : looksFocused
-              ? theme.accent
-              : isHovered
-                  ? theme.foregroundSecondary
-                  : theme.borderStrong,
-      radius,
-      width: looksFocused ? 1.5 : 1,
-    );
+    if (_decorated) {
+      paintRoundedBorder(
+        list,
+        rect,
+        !enabled
+            ? theme.disabledForeground
+            : looksFocused
+                ? theme.accent
+                : isHovered
+                    ? theme.foregroundSecondary
+                    : theme.borderStrong,
+        radius,
+        width: looksFocused ? 1.5 : 1,
+      );
+    }
     final double padding = theme.effectiveControlPadding;
     final double textTop = labelTopIn(rect);
     final String text = displayText;

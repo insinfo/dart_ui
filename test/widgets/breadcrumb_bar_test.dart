@@ -11,7 +11,7 @@ final class _Bar {
     frame();
   }
 
-  final List<String> items;
+  List<String> items;
   final double width;
   late final BuildOwner owner;
   final List<int> selected = <int>[];
@@ -125,6 +125,17 @@ void main() {
     expect(bar.submitted, <String>['/Users/ana']);
     expect(bar.renders<RenderTextField>(), isEmpty,
         reason: 'back to the steps after Enter');
+    bar.dispose();
+  });
+
+  test('going somewhere else leaves the address being typed', () {
+    final _Bar bar = _Bar(<String>['Users', 'ana']);
+    bar.click(const Offset(590, 16));
+    expect(bar.renders<RenderTextField>(), hasLength(1));
+    bar.items = <String>['Users', 'ana', 'Music'];
+    bar.frame();
+    expect(bar.renders<RenderTextField>(), isEmpty);
+    expect(bar.shownLabels, contains('Music'));
     bar.dispose();
   });
 }

@@ -1100,10 +1100,20 @@ final class _ParagraphBuilder {
 
     double ellipsisWidth = 0;
     _EllipsisRun? ellipsis;
-    if (exceeded && style.ellipsis != null && style.ellipsis!.isNotEmpty) {
-      ellipsis = _shapeEllipsis(ranges.last);
+    final bool ellipsize = style.ellipsis != null &&
+        style.ellipsis!.isNotEmpty &&
+        style.maxLines != null &&
+        (exceeded || _overflows(ranges.last));
+    if (ellipsize) {
+      // The cut goes where the width runs out, between characters - "Untitled
+      // Spreads…" - not after the last word that fit: the rest of the text
+      // up to the next forced break joins the last line before it is cut.
+      final _LineRange last = ranges.last;
+      final _LineRange whole =
+          _LineRange(last.start, _nextHardBreak(last.start), true);
+      ellipsis = _shapeEllipsis(whole);
       ellipsisWidth = ellipsis.width;
-      ranges[ranges.length - 1] = _truncate(ranges.last, ellipsisWidth);
+      ranges[ranges.length - 1] = _truncate(whole, ellipsisWidth);
     }
 
     // Two passes over the lines: alignment needs the paragraph's own width when
@@ -1570,6 +1580,19 @@ final class _ParagraphBuilder {
       positions[i * 2 + 1] = run.positions[i * 2 + 1];
     }
     return _EllipsisRun(ids, positions, count, run.width, runStyle);
+  }
+
+  /// Whether [range] is wider than the line - a word with nowhere to break.
+  bool _overflows(_LineRange range) =>
+      maxWidth.isFinite &&
+      _advance(0, range.start, _trimEnd(range.start, range.end)) > maxWidth;
+
+  /// Where the text from [start] reaches a forced break, or its end.
+  int _nextHardBreak(int start) {
+    for (int i = start; i < text.length; i++) {
+      if (isMandatoryLineBreak(text.codeUnitAt(i))) return i;
+    }
+    return text.length;
   }
 
   /// Cuts [range] back until the ellipsis fits, never inside a cluster.
