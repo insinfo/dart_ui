@@ -203,7 +203,9 @@ class MainWindowState extends State<MainWindow> {
     String? target;
     try {
       target = await FilePicker.saveFile(
-        title: format == 'svg' ? 'Save drawing' : 'Export as ${format.toUpperCase()}',
+        title: format == 'svg'
+            ? 'Save drawing'
+            : 'Export as ${format.toUpperCase()}',
         suggestedName: suggested,
         filters: _writableFilters(format),
         defaultExtension: format,
@@ -288,95 +290,112 @@ class MainWindowState extends State<MainWindow> {
     // ComboBoxScope has to sit above everything that hosts a combo box, for
     // the same reason the menu overlay does: a drop-down painted inside its
     // field would be under every widget that follows it.
-    return ComboBoxScope(
-      child: ColoredBox(
-        color: theme.surface,
-        child: Stack(
-          children: <Widget>[
-            Positioned.fill(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: <Widget>[
-                  EditorMenuBar(
+    void selectTool(ToolMode tool) {
+      model.tool = tool;
+      model.refresh('Tool: ${tool.name}');
+    }
+
+    // One table for the keyboard: the menus' chords (Cmd on a Mac, Ctrl
+    // elsewhere) and the tool box's single keys.
+    final Map<KeyGesture, void Function()?> bindings =
+        <KeyGesture, void Function()?>{
+      for (final ToolEntry? tool in kToolEntries)
+        if (tool?.shortcut != null)
+          tool!.shortcut!: () => selectTool(tool.mode),
+    };
+    catalog.keyBindings(menus).forEach((KeyGesture gesture, run) {
+      if (bindings[gesture] == null) bindings[gesture] = run;
+    });
+
+    return CallbackShortcuts(
+      bindings: bindings,
+      child: ComboBoxScope(
+        child: ColoredBox(
+          color: theme.surface,
+          child: Stack(
+            children: <Widget>[
+              Positioned.fill(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    EditorMenuBar(
+                      menus: menus,
+                      openIndex: model.openMenu,
+                      onOpen: (int index) {
+                        model.openMenu = index;
+                        model.refresh();
+                      },
+                    ),
+                    StandardToolbar(commands: catalog.standardToolbar),
+                    ContextPanel(model: model),
+                    DocumentTabs(
+                      documents: model.documents,
+                      activeIndex: model.activeIndex,
+                      onSelected: model.selectDocument,
+                      onClosed: model.closeDocument,
+                    ),
+                    Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: <Widget>[
+                          Toolbox(
+                            activeTool: model.tool,
+                            fill: model.currentFill,
+                            stroke: model.currentStroke,
+                            onToolSelected: selectTool,
+                            // Double-clicking the pick tool selects everything,
+                            // which is what CorelDRAW and sK1 both do. Only the
+                            // pick tool: a second click on "create rectangle"
+                            // means nothing, and making it mean Select All would
+                            // be a surprise rather than a shortcut.
+                            onToolDoubleTapped: (ToolMode tool) {
+                              if (tool != ToolMode.select) return;
+                              model.selectAll();
+                            },
+                          ),
+                          Expanded(
+                            child: CanvasArea(
+                              model: model,
+                              onViewportResized: _onViewportResized,
+                            ),
+                          ),
+                          PluginArea(model: model),
+                        ],
+                      ),
+                    ),
+                    ColorPaletteBar(
+                      swatchSize: ChromeMetrics.paletteSwatchSize,
+                      height: ChromeMetrics.paletteHeight,
+                      // Which cell the selection is already wearing, so the
+                      // palette answers "what colour is this?" as well as
+                      // "make it that colour".
+                      selectedFill: model.currentFill.isNone
+                          ? null
+                          : model.currentFill.color,
+                      selectedStroke: model.currentStroke.isNone ||
+                              model.currentStroke.width <= 0
+                          ? null
+                          : model.currentStroke.color,
+                      onColorSelected: model.setFill,
+                      onStrokeColorSelected: model.setStroke,
+                    ),
+                    EditorStatusBar(model: model),
+                  ],
+                ),
+              ),
+              if (model.openMenu >= 0)
+                Positioned.fill(
+                  child: EditorMenuOverlay(
                     menus: menus,
                     openIndex: model.openMenu,
-                    onOpen: (int index) {
-                      model.openMenu = index;
+                    onDismiss: () {
+                      model.openMenu = -1;
                       model.refresh();
                     },
                   ),
-                  StandardToolbar(commands: catalog.standardToolbar),
-                  ContextPanel(model: model),
-                  DocumentTabs(
-                    documents: model.documents,
-                    activeIndex: model.activeIndex,
-                    onSelected: model.selectDocument,
-                    onClosed: model.closeDocument,
-                  ),
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        Toolbox(
-                          activeTool: model.tool,
-                          fill: model.currentFill,
-                          stroke: model.currentStroke,
-                          onToolSelected: (ToolMode tool) {
-                            model.tool = tool;
-                            model.refresh('Tool: ${tool.name}');
-                          },
-                          // Double-clicking the pick tool selects everything,
-                          // which is what CorelDRAW and sK1 both do. Only the
-                          // pick tool: a second click on "create rectangle"
-                          // means nothing, and making it mean Select All would
-                          // be a surprise rather than a shortcut.
-                          onToolDoubleTapped: (ToolMode tool) {
-                            if (tool != ToolMode.select) return;
-                            model.selectAll();
-                          },
-                        ),
-                        Expanded(
-                          child: CanvasArea(
-                            model: model,
-                            onViewportResized: _onViewportResized,
-                          ),
-                        ),
-                        PluginArea(model: model),
-                      ],
-                    ),
-                  ),
-                  ColorPaletteBar(
-                    swatchSize: ChromeMetrics.paletteSwatchSize,
-                    height: ChromeMetrics.paletteHeight,
-                    // Which cell the selection is already wearing, so the
-                    // palette answers "what colour is this?" as well as
-                    // "make it that colour".
-                    selectedFill: model.currentFill.isNone
-                        ? null
-                        : model.currentFill.color,
-                    selectedStroke: model.currentStroke.isNone ||
-                            model.currentStroke.width <= 0
-                        ? null
-                        : model.currentStroke.color,
-                    onColorSelected: model.setFill,
-                    onStrokeColorSelected: model.setStroke,
-                  ),
-                  EditorStatusBar(model: model),
-                ],
-              ),
-            ),
-            if (model.openMenu >= 0)
-              Positioned.fill(
-                child: EditorMenuOverlay(
-                  menus: menus,
-                  openIndex: model.openMenu,
-                  onDismiss: () {
-                    model.openMenu = -1;
-                    model.refresh();
-                  },
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       ),
     );

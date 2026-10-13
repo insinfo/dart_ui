@@ -36,7 +36,7 @@ class StandardToolbar extends StatelessWidget {
                   // greyed button explains itself instead of just refusing.
                   tooltip: command.enabled
                       ? '${command.label}'
-                          '${command.shortcut == null ? '' : ' (${command.shortcut})'}'
+                          '${command.shortcut == null ? '' : ' (${command.shortcut!.label()})'}'
                       : '${command.label} - ${command.disabledReason}',
                   onPressed: command.enabled ? command.onInvoke : null,
                 ),

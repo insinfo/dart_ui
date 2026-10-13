@@ -83,7 +83,8 @@ Future<void> main(List<String> args) async {
     // Bug 1: the star used to leave the viewport on the first drag.
     final star = objectOfType((o) => o is VectorPolygon);
     final from = star.cacheBbox.center;
-    driver.drag(canvas.toGlobal(from), canvas.toGlobal(from + const Offset(-140, 90)));
+    driver.drag(
+        canvas.toGlobal(from), canvas.toGlobal(from + const Offset(-140, 90)));
   } else if (scenario == 'handle') {
     // Bug 2: a handle held mid-resize, with the frame following the pointer.
     final rect = objectOfType((o) => o is VectorRectangle);
@@ -213,7 +214,8 @@ final class _Driver {
 
   Duration get _now => Duration(milliseconds: _millis += 10);
 
-  void press(Offset global, {PointerButton button = PointerButton.primary, int clickCount = 1}) {
+  void press(Offset global,
+      {PointerButton button = PointerButton.primary, int clickCount = 1}) {
     owner.dispatchPointerEvent(PointerDownEvent(
       windowId: const NativeWindowId(1),
       generation: 1,

@@ -17,9 +17,10 @@ class ToolEntry {
   final ToolMode mode;
   final IconData icon;
   final String label;
-  final String? shortcut;
+  final KeyGesture? shortcut;
 
-  String get tooltip => shortcut == null ? label : '$label ($shortcut)';
+  String get tooltip =>
+      shortcut == null ? label : '$label (${shortcut!.label()})';
 }
 
 /// The tools, in sK1's `tools.py` order. `null` is a divider.
@@ -28,19 +29,20 @@ const List<ToolEntry?> kToolEntries = <ToolEntry?>[
     mode: ToolMode.select,
     icon: PhosphorIcons.cursor,
     label: 'Selection mode',
-    shortcut: 'Esc',
+    shortcut: KeyGesture(logicalKeyEscape),
   ),
   ToolEntry(
     mode: ToolMode.shaper,
     icon: PhosphorIcons.penNib,
+    // sK1 puts this on Space, but here Space held over the canvas pans the
+    // view, so a Space shortcut could never reach it.
     label: 'Edit nodes',
-    shortcut: 'Space',
   ),
   ToolEntry(
     mode: ToolMode.zoom,
     icon: PhosphorIcons.magnifyingGlass,
     label: 'Zoom mode',
-    shortcut: 'F2',
+    shortcut: KeyGesture(logicalKeyF2),
   ),
   ToolEntry(
     mode: ToolMode.fleur,
@@ -72,7 +74,7 @@ const List<ToolEntry?> kToolEntries = <ToolEntry?>[
     mode: ToolMode.text,
     icon: PhosphorIcons.textT,
     label: 'Create text',
-    shortcut: 'F8',
+    shortcut: KeyGesture(logicalKeyF8),
   ),
 ];
 

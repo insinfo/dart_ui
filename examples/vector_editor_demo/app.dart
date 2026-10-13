@@ -11,7 +11,8 @@ import 'main_window.dart';
 /// and a window with no [Theme] would silently fall back to the framework
 /// default rather than the one the editor picked.
 class VectorEditorApp extends StatelessWidget {
-  const VectorEditorApp({super.key, this.initialDoc, this.initialName, this.theme});
+  const VectorEditorApp(
+      {super.key, this.initialDoc, this.initialName, this.theme});
 
   final VectorDocument? initialDoc;
   final String? initialName;

@@ -712,13 +712,15 @@ class _GroupPlugin extends StatelessWidget {
       children: <Widget>[
         _BarButton(
           icon: PhosphorIcons.stack,
-          tooltip: canGroup ? 'Group (Ctrl+G)' : 'Group - select two objects',
+          tooltip: canGroup
+              ? 'Group (${const KeyGesture(logicalKeyG, command: true).label()})'
+              : 'Group - select two objects',
           onTap: canGroup ? model.group : null,
         ),
         _BarButton(
           icon: PhosphorIcons.circlesThree,
           tooltip: canUngroup
-              ? 'Ungroup (Ctrl+U)'
+              ? 'Ungroup (${const KeyGesture(logicalKeyU, command: true).label()})'
               : 'Ungroup - select exactly one group',
           onTap: canUngroup ? model.ungroup : null,
         ),

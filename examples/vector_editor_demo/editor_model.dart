@@ -47,10 +47,9 @@ class DocumentSession {
 
   VectorPage get page => document.getPage(0);
 
-  VectorLayer get layer => page.children
-      .whereType<VectorLayer>()
-      .firstWhere((layer) => layer.isEditable && layer.isVisible,
-          orElse: () => page.children.whereType<VectorLayer>().first);
+  VectorLayer get layer => page.children.whereType<VectorLayer>().firstWhere(
+      (layer) => layer.isEditable && layer.isVisible,
+      orElse: () => page.children.whereType<VectorLayer>().first);
 
   /// The tab title, with sK1's unsaved marker.
   String get tabTitle => modified ? '$name*' : name;
@@ -131,8 +130,7 @@ class EditorModel {
   /// Corner count for newly created polygons - sK1's PolygonCfgPlugin.
   int polygonCorners = 5;
 
-  FillDescriptor currentFill =
-      const FillDescriptor.solid(Color(0xFF2196F3));
+  FillDescriptor currentFill = const FillDescriptor.solid(Color(0xFF2196F3));
   StrokeDescriptor currentStroke = const StrokeDescriptor(
     color: Color(0xFF1A1A1A),
     width: 1.0,
@@ -176,8 +174,9 @@ class EditorModel {
   bool get hasSelection => hasDocument && selection.hasSelection;
 
   /// The single selected object, or null when zero or several are selected.
-  SelectableObject? get singleSelection =>
-      hasSelection && selection.count == 1 ? selection.selectedObjects.first : null;
+  SelectableObject? get singleSelection => hasSelection && selection.count == 1
+      ? selection.selectedObjects.first
+      : null;
 
   /// Marks the active document dirty and rebuilds the window.
   void touch([String? message]) {
@@ -247,9 +246,10 @@ class EditorModel {
       viewportSize.height - ZoomMetrics.fitMargin * 2,
     );
     if (available.width <= 0 || available.height <= 0) return;
-    final scale = (available.width / rect.width) < (available.height / rect.height)
-        ? available.width / rect.width
-        : available.height / rect.height;
+    final scale =
+        (available.width / rect.width) < (available.height / rect.height)
+            ? available.width / rect.width
+            : available.height / rect.height;
     final zoom = scale.clamp(ZoomMetrics.minimum, ZoomMetrics.maximum);
     active.zoom = zoom;
     active.pan = Offset(
@@ -285,9 +285,12 @@ class EditorModel {
   void setStroke(Color? color) {
     currentStroke = color == null
         ? currentStroke.copyWith(width: 0)
-        : StrokeDescriptor(color: color, width: currentStroke.width <= 0 ? 1 : currentStroke.width);
+        : StrokeDescriptor(
+            color: color,
+            width: currentStroke.width <= 0 ? 1 : currentStroke.width);
     if (!hasSelection) {
-      refresh(color == null ? 'Default outline cleared' : 'Default outline set');
+      refresh(
+          color == null ? 'Default outline cleared' : 'Default outline set');
       return;
     }
     applyToSelection((style) => style.copyWith(stroke: currentStroke));
@@ -603,10 +606,6 @@ class EditorModel {
     if (value > 3.141592653589793) value -= twoPi;
     if (value < -3.141592653589793) value += twoPi;
     final x2 = value * value;
-    return value *
-        (1 -
-            x2 /
-                6 *
-                (1 - x2 / 20 * (1 - x2 / 42 * (1 - x2 / 72))));
+    return value * (1 - x2 / 6 * (1 - x2 / 20 * (1 - x2 / 42 * (1 - x2 / 72))));
   }
 }

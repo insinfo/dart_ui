@@ -67,7 +67,7 @@ class EditorCommand {
   final String id;
   final String label;
   final void Function() onInvoke;
-  final String? shortcut;
+  final KeyGesture? shortcut;
   final IconData? icon;
   final bool enabled;
 
@@ -78,10 +78,8 @@ class EditorCommand {
   final bool? checked;
 
   MenuItem toMenuItem() => MenuItem(
-        label: checked == null
-            ? label
-            : '${checked! ? '✓ ' : '   '}$label',
-        shortcut: shortcut,
+        label: checked == null ? label : '${checked! ? '✓ ' : '   '}$label',
+        shortcut: shortcut?.label(),
         enabled: enabled,
         disabledReason: disabledReason,
         onSelected: enabled ? onInvoke : null,
@@ -108,10 +106,12 @@ class CommandCatalog {
   final EditorModel model;
   final EditorServices services;
 
+  static bool get _mac => platformEditingConvention == EditingConvention.mac;
+
   static const String _notImplemented =
       'this command is not implemented in the Dart demo yet';
 
-  EditorCommand _todo(String id, String label, {String? shortcut}) =>
+  EditorCommand _todo(String id, String label, {KeyGesture? shortcut}) =>
       EditorCommand(
         id: id,
         label: label,
@@ -125,7 +125,7 @@ class CommandCatalog {
     String id,
     String label,
     void Function() run, {
-    String? shortcut,
+    KeyGesture? shortcut,
     IconData? icon,
     int minimum = 1,
   }) {
@@ -152,7 +152,7 @@ class CommandCatalog {
   EditorCommand get newDocument => EditorCommand(
         id: 'new',
         label: 'New',
-        shortcut: 'Ctrl+N',
+        shortcut: const KeyGesture(logicalKeyN, command: true),
         icon: PhosphorIcons.filePlus,
         onInvoke: services.newDocument,
       );
@@ -160,7 +160,7 @@ class CommandCatalog {
   EditorCommand get open => EditorCommand(
         id: 'open',
         label: 'Open...',
-        shortcut: 'Ctrl+O',
+        shortcut: const KeyGesture(logicalKeyO, command: true),
         icon: PhosphorIcons.folderOpen,
         onInvoke: services.openDocument,
       );
@@ -168,7 +168,7 @@ class CommandCatalog {
   EditorCommand get save => EditorCommand(
         id: 'save',
         label: 'Save',
-        shortcut: 'Ctrl+S',
+        shortcut: const KeyGesture(logicalKeyS, command: true),
         icon: PhosphorIcons.floppyDisk,
         enabled: model.hasDocument,
         disabledReason: model.hasDocument ? null : 'no document is open',
@@ -186,7 +186,7 @@ class CommandCatalog {
   EditorCommand get closeDocument => EditorCommand(
         id: 'close',
         label: 'Close',
-        shortcut: 'Ctrl+W',
+        shortcut: const KeyGesture(logicalKeyW, command: true),
         enabled: model.hasDocument,
         disabledReason: model.hasDocument ? null : 'no document is open',
         onInvoke: services.closeDocument,
@@ -220,7 +220,7 @@ class CommandCatalog {
   EditorCommand get print => EditorCommand(
         id: 'print',
         label: 'Print...',
-        shortcut: 'Ctrl+P',
+        shortcut: const KeyGesture(logicalKeyP, command: true),
         icon: PhosphorIcons.printer,
         enabled: model.hasDocument,
         disabledReason: model.hasDocument ? null : 'no document is open',
@@ -230,7 +230,10 @@ class CommandCatalog {
   EditorCommand get quit => EditorCommand(
         id: 'quit',
         label: 'Exit',
-        shortcut: 'Alt+F4',
+        // Each platform's own: Alt+F4 on a PC, Cmd+Q on a Mac.
+        shortcut: _mac
+            ? const KeyGesture(logicalKeyQ, command: true)
+            : const KeyGesture(logicalKeyF4, alt: true),
         onInvoke: services.quit,
       );
 
@@ -239,7 +242,7 @@ class CommandCatalog {
     return EditorCommand(
       id: 'undo',
       label: 'Undo',
-      shortcut: 'Ctrl+Z',
+      shortcut: const KeyGesture(logicalKeyZ, command: true),
       icon: PhosphorIcons.arrowCounterClockwise,
       enabled: can,
       disabledReason: can ? null : 'there is nothing to undo',
@@ -252,7 +255,7 @@ class CommandCatalog {
     return EditorCommand(
       id: 'redo',
       label: 'Redo',
-      shortcut: 'Shift+Ctrl+Z',
+      shortcut: const KeyGesture(logicalKeyZ, command: true, shift: true),
       icon: PhosphorIcons.arrowClockwise,
       enabled: can,
       disabledReason: can ? null : 'there is nothing to redo',
@@ -267,7 +270,7 @@ class CommandCatalog {
           model.deleteSelection();
           model.refresh('Cut');
         },
-        shortcut: 'Ctrl+X',
+        shortcut: const KeyGesture(logicalKeyX, command: true),
         icon: PhosphorIcons.scissors,
       );
 
@@ -275,17 +278,18 @@ class CommandCatalog {
         'copy',
         'Copy',
         () => model.refresh('Copied ${model.selection.count} object(s)'),
-        shortcut: 'Ctrl+C',
+        shortcut: const KeyGesture(logicalKeyC, command: true),
         icon: PhosphorIcons.copy,
       );
 
-  EditorCommand get paste => _todo('paste', 'Paste', shortcut: 'Ctrl+V');
+  EditorCommand get paste => _todo('paste', 'Paste',
+      shortcut: const KeyGesture(logicalKeyV, command: true));
 
   EditorCommand get delete => _needsSelection(
         'delete',
         'Delete',
         model.deleteSelection,
-        shortcut: 'Delete',
+        shortcut: const KeyGesture(logicalKeyDelete),
         icon: PhosphorIcons.trash,
       );
 
@@ -293,13 +297,13 @@ class CommandCatalog {
         'duplicate',
         'Duplicate',
         () => model.moveSelectionBy(10, 10),
-        shortcut: 'Ctrl+D',
+        shortcut: const KeyGesture(logicalKeyD, command: true),
       );
 
   EditorCommand get selectAll => EditorCommand(
         id: 'selectAll',
         label: 'Select All',
-        shortcut: 'Ctrl+A',
+        shortcut: const KeyGesture(logicalKeyA, command: true),
         icon: PhosphorIcons.selectionAll,
         enabled: model.hasDocument,
         disabledReason: model.hasDocument ? null : 'no document is open',
@@ -310,14 +314,14 @@ class CommandCatalog {
         'deselect',
         'Deselect',
         model.deselect,
-        shortcut: 'Shift+Ctrl+A',
+        shortcut: const KeyGesture(logicalKeyA, command: true, shift: true),
       );
 
   EditorCommand get group => _needsSelection(
         'group',
         'Group',
         model.group,
-        shortcut: 'Ctrl+G',
+        shortcut: const KeyGesture(logicalKeyG, command: true),
         minimum: 2,
       );
 
@@ -326,7 +330,7 @@ class CommandCatalog {
     return EditorCommand(
       id: 'ungroup',
       label: 'Ungroup',
-      shortcut: 'Ctrl+U',
+      shortcut: const KeyGesture(logicalKeyU, command: true),
       enabled: isGroup,
       disabledReason: isGroup ? null : 'select exactly one group to ungroup',
       onInvoke: model.ungroup,
@@ -354,7 +358,7 @@ class CommandCatalog {
   EditorCommand get zoomActual => EditorCommand(
         id: 'zoom100',
         label: 'Zoom 100%',
-        shortcut: 'Ctrl+F4',
+        shortcut: const KeyGesture(logicalKeyF4, command: true),
         icon: PhosphorIcons.magnifyingGlass,
         enabled: model.hasDocument,
         disabledReason: model.hasDocument ? null : 'no document is open',
@@ -364,7 +368,7 @@ class CommandCatalog {
   EditorCommand get zoomPage => EditorCommand(
         id: 'zoomPage',
         label: 'Fit zoom to page',
-        shortcut: 'Shift+F4',
+        shortcut: const KeyGesture(logicalKeyF4, shift: true),
         icon: PhosphorIcons.frameCorners,
         enabled: model.hasDocument,
         disabledReason: model.hasDocument ? null : 'no document is open',
@@ -375,7 +379,7 @@ class CommandCatalog {
         'zoomSelection',
         'Zoom selected',
         services.zoomToSelection,
-        shortcut: 'F4',
+        shortcut: const KeyGesture(logicalKeyF4),
         icon: PhosphorIcons.crosshair,
       );
 
@@ -402,7 +406,7 @@ class CommandCatalog {
   EditorCommand get toggleSnap => EditorCommand(
         id: 'snapGrid',
         label: 'Snap to grid',
-        shortcut: 'Alt+G',
+        shortcut: const KeyGesture(logicalKeyG, alt: true),
         checked: model.snapToGrid,
         onInvoke: () {
           model.snapToGrid = !model.snapToGrid;
@@ -417,28 +421,30 @@ class CommandCatalog {
         'moveTop',
         'Move to Top',
         () => model.reorder(up: true, toEnd: true),
-        shortcut: 'Ctrl+Shift+PageUp',
+        shortcut:
+            const KeyGesture(logicalKeyPageUp, command: true, shift: true),
       );
 
   EditorCommand get moveUp => _needsSelection(
         'moveUp',
         'Move Up',
         () => model.reorder(up: true, toEnd: false),
-        shortcut: 'Ctrl+PageUp',
+        shortcut: const KeyGesture(logicalKeyPageUp, command: true),
       );
 
   EditorCommand get moveDown => _needsSelection(
         'moveDown',
         'Move Down',
         () => model.reorder(up: false, toEnd: false),
-        shortcut: 'Ctrl+PageDown',
+        shortcut: const KeyGesture(logicalKeyPageDown, command: true),
       );
 
   EditorCommand get moveToBottom => _needsSelection(
         'moveBottom',
         'Move to Bottom',
         () => model.reorder(up: false, toEnd: true),
-        shortcut: 'Ctrl+Shift+PageDown',
+        shortcut:
+            const KeyGesture(logicalKeyPageDown, command: true, shift: true),
       );
 
   EditorCommand get rotateLeft => _needsSelection(
@@ -468,34 +474,52 @@ class CommandCatalog {
   EditorCommand get alignPanel => EditorCommand(
         id: 'alignPanel',
         label: 'Align and Distribute...',
-        shortcut: 'Ctrl+Shift+D',
+        shortcut: const KeyGesture(logicalKeyD, command: true, shift: true),
         onInvoke: () => services.showPanel(PanelIds.align),
       );
 
   EditorCommand get transformPanel => EditorCommand(
         id: 'transformPanel',
         label: 'Position...',
-        shortcut: 'Alt+F5',
+        shortcut: const KeyGesture(logicalKeyF5, alt: true),
         onInvoke: () => services.showPanel(PanelIds.transform),
       );
 
   EditorCommand get fillPanel => EditorCommand(
         id: 'fillPanel',
         label: 'Fill...',
-        shortcut: 'F11',
+        shortcut: const KeyGesture(logicalKeyF11),
         onInvoke: () => services.showPanel(PanelIds.fillStroke),
       );
 
   EditorCommand get strokePanel => EditorCommand(
         id: 'strokePanel',
         label: 'Stroke...',
-        shortcut: 'F12',
+        shortcut: const KeyGesture(logicalKeyF12),
         onInvoke: () => services.showPanel(PanelIds.fillStroke),
       );
 
   // -------------------------------------------------------------------------
   // Menus, in sK1's order.
   // -------------------------------------------------------------------------
+
+  /// Every shortcut the menus advertise, bound to what the menu item does -
+  /// so a chord works exactly when its menu item is enabled.
+  Map<KeyGesture, void Function()?> keyBindings(List<EditorMenu> menus) {
+    final Map<KeyGesture, void Function()?> bindings =
+        <KeyGesture, void Function()?>{};
+    for (final EditorMenu menu in menus) {
+      for (final EditorCommand? command in menu.items) {
+        final KeyGesture? gesture = command?.shortcut;
+        if (command == null || gesture == null) continue;
+        // Two items may share a chord (F8 is a tool and a todo); the one that
+        // can run wins.
+        if (bindings[gesture] != null) continue;
+        bindings[gesture] = command.enabled ? command.onInvoke : null;
+      }
+    }
+    return bindings;
+  }
 
   List<EditorMenu> get menus => <EditorMenu>[
         EditorMenu(label: 'File', items: <EditorCommand?>[
@@ -507,7 +531,8 @@ class CommandCatalog {
           null,
           closeDocument,
           null,
-          _todo('import', 'Import...', shortcut: 'Ctrl+I'),
+          _todo('import', 'Import...',
+              shortcut: const KeyGesture(logicalKeyI, command: true)),
           exportSvg,
           exportPdf,
           exportCdr,
@@ -550,7 +575,8 @@ class CommandCatalog {
           _todo('deletePage', 'Delete page...'),
           _todo('gotoPage', 'Go to page...'),
           null,
-          _todo('layers', 'Layers...', shortcut: 'F7'),
+          _todo('layers', 'Layers...',
+              shortcut: const KeyGesture(logicalKeyF7)),
           null,
           _todo('pageFrame', 'Page frame'),
           _todo('guidesAround', 'Guides around page'),
@@ -573,7 +599,10 @@ class CommandCatalog {
           group,
           ungroup,
           null,
-          _todo('toCurves', 'Convert to curves', shortcut: 'Ctrl+Q'),
+          // sK1's Ctrl+Q; on a Mac that chord is Quit.
+          _todo('toCurves', 'Convert to curves',
+              shortcut:
+                  _mac ? null : const KeyGesture(logicalKeyQ, command: true)),
         ]),
         EditorMenu(label: 'Paths', items: <EditorCommand?>[
           _todo('selAllNodes', 'Select all nodes'),
@@ -593,7 +622,8 @@ class CommandCatalog {
           _todo('invertBitmap', 'Invert bitmap'),
         ]),
         EditorMenu(label: 'Text', items: <EditorCommand?>[
-          _todo('editText', 'Edit text', shortcut: 'F8'),
+          _todo('editText', 'Edit text',
+              shortcut: const KeyGesture(logicalKeyF8)),
           null,
           _todo('textOnPath', 'Text on path...'),
           null,

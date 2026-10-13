@@ -101,8 +101,8 @@ class _UnitCorner extends StatelessWidget {
       child: GestureDetector(
         behavior: GestureHitTestBehavior.opaque,
         onTap: () {
-          final next = (DocUnit.values.indexOf(model.units) + 1) %
-              DocUnit.values.length;
+          final next =
+              (DocUnit.values.indexOf(model.units) + 1) % DocUnit.values.length;
           model.units = DocUnit.values[next];
           model.refresh('Units: ${model.units.label}');
         },

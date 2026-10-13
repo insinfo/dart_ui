@@ -536,6 +536,59 @@ const int logicalKeyArrowDown = 0x28;
 const int logicalKeyDelete = 0x2E;
 const int logicalKeyPageUp = 0x21;
 const int logicalKeyPageDown = 0x22;
+const int logicalKeyInsert = 0x2D;
+
+/// Letters and digits are their uppercase ASCII codes, as virtual keys are.
+const int logicalKeyA = 0x41;
+const int logicalKeyB = 0x42;
+const int logicalKeyC = 0x43;
+const int logicalKeyD = 0x44;
+const int logicalKeyE = 0x45;
+const int logicalKeyF = 0x46;
+const int logicalKeyG = 0x47;
+const int logicalKeyH = 0x48;
+const int logicalKeyI = 0x49;
+const int logicalKeyJ = 0x4A;
+const int logicalKeyK = 0x4B;
+const int logicalKeyL = 0x4C;
+const int logicalKeyM = 0x4D;
+const int logicalKeyN = 0x4E;
+const int logicalKeyO = 0x4F;
+const int logicalKeyP = 0x50;
+const int logicalKeyQ = 0x51;
+const int logicalKeyR = 0x52;
+const int logicalKeyS = 0x53;
+const int logicalKeyT = 0x54;
+const int logicalKeyU = 0x55;
+const int logicalKeyV = 0x56;
+const int logicalKeyW = 0x57;
+const int logicalKeyX = 0x58;
+const int logicalKeyY = 0x59;
+const int logicalKeyZ = 0x5A;
+const int logicalKeyDigit0 = 0x30;
+const int logicalKeyDigit1 = 0x31;
+const int logicalKeyDigit2 = 0x32;
+const int logicalKeyDigit3 = 0x33;
+const int logicalKeyDigit4 = 0x34;
+const int logicalKeyDigit5 = 0x35;
+const int logicalKeyDigit6 = 0x36;
+const int logicalKeyDigit7 = 0x37;
+const int logicalKeyDigit8 = 0x38;
+const int logicalKeyDigit9 = 0x39;
+
+/// Function keys F1 to F12.
+const int logicalKeyF1 = 0x70;
+const int logicalKeyF2 = 0x71;
+const int logicalKeyF3 = 0x72;
+const int logicalKeyF4 = 0x73;
+const int logicalKeyF5 = 0x74;
+const int logicalKeyF6 = 0x75;
+const int logicalKeyF7 = 0x76;
+const int logicalKeyF8 = 0x77;
+const int logicalKeyF9 = 0x78;
+const int logicalKeyF10 = 0x79;
+const int logicalKeyF11 = 0x7A;
+const int logicalKeyF12 = 0x7B;
 
 extension _FirstOrNull<T> on List<T> {
   T? get firstOrNull => isEmpty ? null : this[0];

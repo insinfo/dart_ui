@@ -121,10 +121,6 @@ import 'widget.dart';
 /// on most keyboards. Windows' `VK_APPS`; every backend normalizes to these.
 const int logicalKeyContextMenu = 0x5D;
 
-/// `VK_F10`. Shift+F10 is the other keyboard route into a context menu, and the
-/// only one on a keyboard that has no Menu key.
-const int logicalKeyF10 = 0x79;
-
 /// Produces the items for one showing of a menu.
 ///
 /// A function rather than a list because enablement is a snapshot of state that

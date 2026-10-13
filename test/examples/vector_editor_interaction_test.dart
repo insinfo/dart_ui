@@ -911,6 +911,89 @@ void main() {
       harness.dispose();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Keyboard shortcuts - one table, the platform's own modifier
+  // -------------------------------------------------------------------------
+
+  group('the menu shortcuts work from the keyboard', () {
+    tearDown(() => debugEditingConventionOverride = null);
+
+    for (final (EditingConvention convention, KeyModifier command)
+        in <(EditingConvention, KeyModifier)>[
+      (EditingConvention.mac, KeyModifier.meta),
+      (EditingConvention.pc, KeyModifier.control),
+    ]) {
+      test('select all, group, undo and redo (${convention.name})', () {
+        debugEditingConventionOverride = convention;
+        final harness = _Harness();
+        final int objects = harness.layer.children.length;
+        harness.key(logicalKeyA, modifiers: <KeyModifier>{command});
+        expect(harness.model.selection.count, objects);
+
+        harness.key(logicalKeyG, modifiers: <KeyModifier>{command});
+        expect(harness.model.singleSelection, isA<VectorGroup>());
+        expect(harness.layer.children, hasLength(1));
+
+        harness.key(logicalKeyZ, modifiers: <KeyModifier>{command});
+        expect(harness.layer.children, hasLength(objects));
+        harness.key(logicalKeyZ,
+            modifiers: <KeyModifier>{command, KeyModifier.shift});
+        expect(harness.layer.children, hasLength(1));
+        harness.dispose();
+      });
+    }
+
+    test('group and ungroup survive undo and redo, twice over', () {
+      final harness = _Harness();
+      final List<DocumentObject> original =
+          List<DocumentObject>.of(harness.layer.children);
+      harness.model
+        ..selectAll()
+        ..group();
+      final VectorGroup group = harness.model.singleSelection! as VectorGroup;
+      for (var round = 0; round < 2; round++) {
+        harness.model.undo();
+        expect(harness.layer.children, original);
+        harness.model.redo();
+        expect(harness.layer.children, <Object>[group]);
+        expect(group.children, original);
+      }
+
+      harness.model.selection.select(group);
+      harness.model.ungroup();
+      expect(harness.layer.children, original);
+      for (var round = 0; round < 2; round++) {
+        harness.model.undo();
+        expect(harness.layer.children, <Object>[group]);
+        expect(group.children, original);
+        harness.model.redo();
+        expect(harness.layer.children, original);
+      }
+      harness.dispose();
+    });
+
+    test("the other platform's modifier is not a command", () {
+      debugEditingConventionOverride = EditingConvention.mac;
+      final harness = _Harness();
+      harness.key(logicalKeyA,
+          modifiers: const <KeyModifier>{KeyModifier.control});
+      expect(harness.model.selection.count, 0);
+      harness.dispose();
+    });
+
+    test('a tool key picks the tool', () {
+      final harness = _Harness();
+      final ToolEntry tool = kToolEntries.whereType<ToolEntry>().firstWhere(
+          (ToolEntry entry) =>
+              entry.shortcut != null && entry.mode != ToolMode.select);
+      harness.key(tool.shortcut!.logicalKey);
+      expect(harness.model.tool, tool.mode);
+      harness.key(logicalKeyEscape);
+      expect(harness.model.tool, ToolMode.select);
+      harness.dispose();
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

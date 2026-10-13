@@ -74,9 +74,6 @@ import 'style.dart';
 import 'theme.dart';
 import 'widget.dart';
 
-/// `VK_F4`, which opens and closes a combo box on every Windows toolkit.
-const int logicalKeyF4 = 0x73;
-
 /// One row of a [ComboBox].
 ///
 /// The label is separate from the value on purpose: a form binds an

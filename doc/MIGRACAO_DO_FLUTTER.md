@@ -120,6 +120,8 @@ Poucas, e cada uma tem motivo:
 | `Chip(label: Widget)` | `Chip(label: String)` | o rótulo é texto; o controle desenha o glifo de exclusão sozinho |
 | `ColorTween extends Tween<Color?>` | `ColorTween extends Tween<int>` | interpola ARGB empacotado, com pré-multiplicação. No nível de widget, `lerpColor(a, b, t)` devolve `Color` |
 | `TextStyle` | subconjunto | `color`, `fontSize`, `fontFamily`, `fontWeight`, `height` — e nada mais |
+| `SingleActivator(LogicalKeyboardKey.keyS, control: true)` | `KeyGesture(logicalKeyS, command: true)` | `command` é Cmd no Mac e Ctrl no PC; `gesture.label()` mostra `⌘S` ou `Ctrl+S` no menu |
+| `CallbackShortcuts` (só com foco dentro) | `CallbackShortcuts` (a janela toda) | atalhos de menu funcionam qualquer que seja o painel clicado por último; o controle focado ainda vê a tecla antes |
 
 E uma diferença de **padrão**, que é a mais fácil de não notar porque compila:
 `Visibility.maintainSize` aqui é `true` por omissão e no Flutter é `false`. Um

@@ -281,8 +281,9 @@ class TransformPanel extends StatelessWidget {
             children: <Widget>[
               Button(
                 label: 'Flip horizontal',
-                onPressed:
-                    enabled ? () => model.flipSelection(horizontal: true) : null,
+                onPressed: enabled
+                    ? () => model.flipSelection(horizontal: true)
+                    : null,
               ),
               const SizedBox(width: 6),
               Button(

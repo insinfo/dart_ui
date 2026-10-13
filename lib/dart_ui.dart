@@ -210,6 +210,7 @@ export 'src/widgets/badge.dart';
 export 'src/widgets/basic.dart' hide RenderColoredBox;
 export 'src/widgets/bounded_draggable.dart';
 export 'src/widgets/calendar.dart';
+export 'src/widgets/callback_shortcuts.dart';
 export 'src/widgets/client_decoration.dart';
 export 'src/widgets/color_picker.dart';
 export 'src/widgets/combo_box.dart';

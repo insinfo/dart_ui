@@ -133,14 +133,12 @@ class _DocumentTab extends StatelessWidget {
                       // at medium weight. It was 11 px, which made the open
                       // document's own name the smallest type in the window.
                       style: theme.textTheme.labelLarge,
-                      color: selected
-                          ? theme.accent
-                          : theme.foregroundSecondary,
+                      color:
+                          selected ? theme.accent : theme.foregroundSecondary,
                     ),
                   ),
                   IconButton(
-                    icon: Icon(Icons.close,
-                        color: theme.foregroundSecondary),
+                    icon: Icon(Icons.close, color: theme.foregroundSecondary),
                     iconSize: theme.iconSize,
                     padding: EdgeInsets.zero,
                     constraints: BoxConstraints(

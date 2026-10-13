@@ -87,9 +87,8 @@ class EditorStatusBar extends StatelessWidget {
         '${fromPoints(cursor.dy, unit).toStringAsFixed(1)} ${unit.label}';
   }
 
-  String get _zoom => model.hasDocument
-      ? '${(model.active.zoom * 100).round()}%'
-      : '--';
+  String get _zoom =>
+      model.hasDocument ? '${(model.active.zoom * 100).round()}%' : '--';
 
   String get _page {
     if (!model.hasDocument) return 'No page';
@@ -134,8 +133,7 @@ class _Section extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: <Widget>[
-            Icon(icon,
-                size: theme.iconSize, color: theme.foregroundSecondary),
+            Icon(icon, size: theme.iconSize, color: theme.foregroundSecondary),
             const SizedBox(width: Spacing.xs),
             Expanded(
               child: Text(
