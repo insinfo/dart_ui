@@ -119,6 +119,7 @@ class VectorCanvas extends StatefulWidget {
     this.showGrid = true,
     this.showGuides = true,
     this.polygonCorners = 5,
+    this.freehandSmoothing = 50,
     this.onZoomChanged,
     this.onPanChanged,
     this.onCursorMoved,
@@ -149,6 +150,10 @@ class VectorCanvas extends StatefulWidget {
 
   /// Corner count for newly created polygons; the sK1 polygon config plugin.
   final int polygonCorners;
+
+  /// How much the Freehand tool smooths a stroke, 0 to 100 - CorelDRAW's
+  /// Freehand smoothing.
+  final double freehandSmoothing;
 
   final void Function(double zoom, Offset pan)? onZoomChanged;
   final void Function(Offset pan)? onPanChanged;
@@ -369,6 +374,8 @@ class VectorCanvasState extends State<VectorCanvas>
         ..preferredLayer = widget.activeLayer;
       if (controller is PolygonToolController) {
         controller.corners = widget.polygonCorners;
+      } else if (controller is FreehandToolController) {
+        controller.smoothing = widget.freehandSmoothing;
       }
     }
     return controller;
