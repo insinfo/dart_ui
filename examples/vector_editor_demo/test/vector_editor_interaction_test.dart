@@ -1288,6 +1288,23 @@ void _shapeToolTests() {
       harness.dispose();
     });
 
+    test('the Freehand tool (F5) draws a fitted curve, one undo', () {
+      final harness = _Harness()..withoutSnapping();
+      final int before = harness.objects.length;
+      harness.key(logicalKeyF5);
+      expect(harness.model.tool, ToolMode.freehand);
+      harness.dragDocument(const Offset(100, 100), const Offset(300, 180),
+          steps: 40);
+      expect(harness.objects, hasLength(before + 1));
+      final VectorCurve stroke = harness.objects.last as VectorCurve;
+      expect(stroke.paths.single.points, hasLength(1),
+          reason: 'a straight drag fits in one segment');
+      expect(stroke.paths.single.points.single, isA<CurvePoint>());
+      harness.model.undo();
+      expect(harness.objects, hasLength(before));
+      harness.dispose();
+    });
+
     test('a band picks the nodes inside it', () {
       final harness = _Harness()..withoutSnapping();
       final (_, Offset Function(int) node) = curveUnderShape(harness);

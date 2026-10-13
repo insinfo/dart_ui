@@ -54,6 +54,12 @@ const List<ToolEntry?> kToolEntries = <ToolEntry?>[
   ),
   null,
   ToolEntry(
+    mode: ToolMode.freehand,
+    icon: PhosphorIcons.scribble,
+    label: 'Freehand',
+    shortcut: KeyGesture(logicalKeyF5),
+  ),
+  ToolEntry(
     mode: ToolMode.curve,
     icon: PhosphorIcons.penNib,
     label: 'Pen (Bezier)',

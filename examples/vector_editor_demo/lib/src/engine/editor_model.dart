@@ -435,7 +435,14 @@ class EditorModel {
     final alt =
         platformEditingConvention == EditingConvention.mac ? '⌥' : 'Alt';
     return switch (tool) {
-      ToolMode.select || ToolMode.shaper => hasSelection
+      ToolMode.shaper => <(String, String)>[
+          ('Click', 'Pick a node or a curve'),
+          ('Drag', 'Move nodes, a handle or a segment'),
+          ('Double-click', 'Add or delete a node'),
+          ('Shift', 'Extend'),
+          ('Arrows', 'Nudge nodes'),
+        ],
+      ToolMode.select => hasSelection
           ? <(String, String)>[
               ('Drag', 'Move'),
               ('Shift', 'Extend'),
@@ -463,6 +470,10 @@ class EditorModel {
           ('Click first node', 'Close'),
           ('Enter', 'Finish'),
           ('Esc', 'Cancel'),
+        ],
+      ToolMode.freehand => <(String, String)>[
+          ('Drag', 'Draw'),
+          ('End on the start', 'Close'),
         ],
       ToolMode.text => <(String, String)>[
           ('Click', 'Place text'),

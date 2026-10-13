@@ -7,22 +7,22 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 49 | 8 | 6 | 63 | 84% |
+| P0 | 50 | 8 | 5 | 63 | 86% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 57 | 10 | 108 | 175 | 35% |
+| **todas** | 58 | 10 | 107 | 175 | 36% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 78 de 93 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 100.
+Comandos registrados: 101.
 
 ## Por área
 
 | área | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| Caixa de ferramentas | 9 | 3 | 48 | 60 | 18% |
+| Caixa de ferramentas | 10 | 3 | 47 | 60 | 19% |
 | Interações no canvas | 8 | 2 | 3 | 13 | 69% |
 | Barra de propriedades | 4 | 0 | 12 | 16 | 25% |
 | Dockers | 3 | 0 | 12 | 15 | 20% |
@@ -53,7 +53,7 @@ Comandos registrados: 100.
 | ❌ | Eraser (X) | P2 |  | tudo |
 | ✅ | Zoom (Z) | P0 | `tool.zoom` |  |
 | ✅ | Pan (H) | P0 | `tool.pan` |  |
-| ❌ | Freehand (F5) | P0 |  | tudo |
+| ✅ | Freehand (F5) | P0 | `tool.freehand` |  |
 | ❌ | 2-point line | P1 |  | tudo |
 | ✅ | Bézier | P0 | `tool.pen` |  |
 | ✅ | Pen | P0 | `tool.pen` |  |

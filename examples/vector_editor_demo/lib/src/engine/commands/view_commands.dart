@@ -15,6 +15,7 @@ const List<(String, String, ToolMode, int)> kToolCommands =
   ('tool.shape', 'Shape (nodes)', ToolMode.shaper, logicalKeyF10),
   ('tool.zoom', 'Zoom', ToolMode.zoom, logicalKeyZ),
   ('tool.pan', 'Pan', ToolMode.fleur, logicalKeyH),
+  ('tool.freehand', 'Freehand', ToolMode.freehand, logicalKeyF5),
   ('tool.pen', 'Pen (Bezier)', ToolMode.curve, logicalKeyB),
   ('tool.rectangle', 'Rectangle', ToolMode.rectangle, logicalKeyF6),
   ('tool.ellipse', 'Ellipse', ToolMode.circle, logicalKeyF7),
