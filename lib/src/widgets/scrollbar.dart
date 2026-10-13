@@ -145,11 +145,20 @@ final class Scrollbar extends StatefulWidget {
     this.fadeDelay = const Duration(milliseconds: 600),
     this.fadeDuration = const Duration(milliseconds: 200),
     this.dispatcher,
+    this.reverse = false,
   });
 
   final ScrollPosition position;
   final Widget child;
   final ScrollbarVisibility visibility;
+
+  /// Whether offset zero is at the bottom (or right) of the track, for a view
+  /// whose content starts there - `CustomScrollView(reverse: true)`.
+  ///
+  /// The thumb is a picture of where the visible part is, so a reversed view
+  /// at offset zero, showing the bottom of its content, has its thumb at the
+  /// bottom of the track; dragging it up moves towards larger offsets.
+  final bool reverse;
 
   /// How wide (or, for a horizontal bar, how tall) the track is.
   final double? thickness;
@@ -288,6 +297,7 @@ final class _ScrollbarState extends State<Scrollbar> {
               minThumbExtent:
                   widget.minThumbExtent ?? scrollbarTheme.minThumbLength,
               interactive: widget.interactive,
+              reverse: widget.reverse,
             ),
           ),
         ),
@@ -305,6 +315,7 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
     required this.thickness,
     required this.minThumbExtent,
     required this.interactive,
+    required this.reverse,
   });
 
   final ScrollPosition position;
@@ -312,6 +323,7 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
   final double thickness;
   final double minThumbExtent;
   final bool interactive;
+  final bool reverse;
 
   @override
   RenderScrollbar createRenderObject(BuildContext context) => RenderScrollbar(
@@ -319,6 +331,7 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
         thickness: thickness,
         minThumbExtent: minThumbExtent,
         interactive: interactive,
+        reverse: reverse,
       )..theme = theme;
 
   @override
@@ -331,6 +344,7 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
       ..thickness = thickness
       ..minThumbExtent = minThumbExtent
       ..interactive = interactive
+      ..reverse = reverse
       ..theme = theme;
   }
 }
@@ -344,7 +358,9 @@ final class RenderScrollbar extends RenderBox
     double thickness = 6,
     double minThumbExtent = 16.0,
     bool interactive = true,
+    bool reverse = false,
   })  : _position = position,
+        _reverse = reverse,
         _thickness = thickness,
         _minThumbExtent = minThumbExtent,
         _interactive = interactive {
@@ -355,6 +371,7 @@ final class RenderScrollbar extends RenderBox
   double _thickness;
   double _minThumbExtent;
   bool _interactive;
+  bool _reverse;
 
   int? _dragPointer;
   double _dragOrigin = 0;
@@ -393,6 +410,20 @@ final class RenderScrollbar extends RenderBox
     if (!value) _dragPointer = null;
     markNeedsPaint();
   }
+
+  /// Whether offset zero is at the trailing end of the track; see
+  /// [Scrollbar.reverse].
+  bool get reverse => _reverse;
+
+  set reverse(bool value) {
+    if (value == _reverse) return;
+    _reverse = value;
+    markNeedsPaint();
+  }
+
+  /// The track direction as a sign on offsets: a pixel of track towards the
+  /// trailing end is this many pixels of offset.
+  double get _sign => _reverse ? -1.0 : 1.0;
 
   bool get _vertical => _position.axis == ScrollAxis.vertical;
 
@@ -439,7 +470,10 @@ final class RenderScrollbar extends RenderBox
     final double fraction = thumb.extent >= 1
         ? 0.0
         : (thumb.start / (1 - thumb.extent)).clamp(0.0, 1.0);
-    return (start: free * fraction, extent: extent);
+    return (
+      start: free * (_reverse ? 1 - fraction : fraction),
+      extent: extent,
+    );
   }
 
   /// Content pixels per pixel of thumb travel.
@@ -490,11 +524,11 @@ final class RenderScrollbar extends RenderBox
       final double buttons = buttonExtent;
       if (buttons > 0) {
         if (rawMain < trackMainStart) {
-          _position.applyDelta(-defaultLineExtent);
+          _position.applyDelta(-defaultLineExtent * _sign);
           return;
         }
         if (rawMain >= trackExtent - trackMainStart) {
-          _position.applyDelta(defaultLineExtent);
+          _position.applyDelta(defaultLineExtent * _sign);
           return;
         }
       }
@@ -507,14 +541,14 @@ final class RenderScrollbar extends RenderBox
       // A press on the track either side of the thumb pages towards it, which
       // is what every platform's scrollbar does and what makes the track more
       // than decoration.
-      _position.pageBy(main < metrics.start ? -1 : 1);
+      _position.pageBy((main < metrics.start ? -1 : 1) * (_reverse ? -1 : 1));
       return;
     }
     if (event is PointerMoveEvent) {
       if (_dragPointer != event.pointerId) return;
       final double scale = dragScale;
       if (scale == 0) return;
-      _position.jumpTo(_dragStartPixels + (main - _dragOrigin) * scale);
+      _position.jumpTo(_dragStartPixels + (main - _dragOrigin) * scale * _sign);
       return;
     }
     if (event is PointerUpEvent || event is PointerCancelEvent) {

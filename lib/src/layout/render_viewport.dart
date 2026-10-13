@@ -137,6 +137,26 @@ final class ScrollPosition {
     return true;
   }
 
+  /// Moves the offset by [correction] without clamping it and without ending
+  /// a fling, because the content moved rather than the user.
+  ///
+  /// This is the call a sliver viewport makes during layout when a list
+  /// discovers that the items *above* the visible ones are not the size it
+  /// had estimated. The content before the viewport just grew or shrank by
+  /// [correction], so the same pixel offset now shows different items; moving
+  /// the offset by the same amount keeps the item the user was looking at
+  /// exactly where it was. [jumpTo] would be wrong twice over: it clamps
+  /// against a content extent that is itself about to be corrected, and it
+  /// stops a fling that the user did nothing to stop.
+  ///
+  /// Listeners are notified, so a scrollbar follows; the next
+  /// [applyViewportGeometry] re-clamps once the content extent is known.
+  void correctBy(double correction) {
+    if (correction == 0) return;
+    _pixels += correction;
+    _notify();
+  }
+
   /// Applies a user delta, returning the part this position could **not**
   /// consume.
   ///

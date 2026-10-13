@@ -189,12 +189,22 @@ final class Scrollable extends SingleChildRenderObjectWidget {
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.wheelEnabled = true,
+    this.reverse = false,
     this.dispatcher,
     this.friction = defaultScrollFriction,
     this.momentumStep = defaultMomentumStep,
   });
 
   final ScrollPosition position;
+
+  /// Whether the content's start is at the bottom (or right) of the view, as
+  /// in a `CustomScrollView(reverse: true)`.
+  ///
+  /// Input is physical - a wheel notch towards the user moves the content up,
+  /// a finger dragged down moves it down - and a reversed view maps that to the
+  /// opposite change in offset. Without this a chat log scrolled from the
+  /// bottom would run backwards under the wheel.
+  final bool reverse;
 
   /// Whether a press-and-drag scrolls. False for a desktop list that should
   /// only answer the wheel and the scrollbar.
@@ -223,6 +233,7 @@ final class Scrollable extends SingleChildRenderObjectWidget {
         dragEnabled: dragEnabled,
         mouseDragEnabled: mouseDragEnabled,
         wheelEnabled: wheelEnabled,
+        reverse: reverse,
         dispatcher: dispatcher ?? GestureScope.of(context),
         friction: friction,
         momentumStep: momentumStep,
@@ -238,6 +249,7 @@ final class Scrollable extends SingleChildRenderObjectWidget {
       ..dragEnabled = dragEnabled
       ..mouseDragEnabled = mouseDragEnabled
       ..wheelEnabled = wheelEnabled
+      ..reverse = reverse
       ..dispatcher = dispatcher ?? GestureScope.of(context)
       ..friction = friction
       ..momentumStep = momentumStep;
@@ -252,6 +264,7 @@ final class RenderScrollGestures extends RenderSingleChildBox
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.wheelEnabled = true,
+    this.reverse = false,
     UiDispatcher? dispatcher,
     double friction = defaultScrollFriction,
     Duration momentumStep = defaultMomentumStep,
@@ -269,6 +282,14 @@ final class RenderScrollGestures extends RenderSingleChildBox
 
   /// Whether the wheel scrolls this view.
   bool wheelEnabled;
+
+  /// Whether a physical movement towards the end decreases the offset; see
+  /// [Scrollable.reverse].
+  bool reverse;
+
+  /// [delta] converted between physical direction and offset direction. The
+  /// conversion is its own inverse, so one helper serves both ways.
+  double _directed(double delta) => reverse ? -delta : delta;
 
   ScrollPosition _position;
   UiDispatcher? _dispatcher;
@@ -377,17 +398,21 @@ final class RenderScrollGestures extends RenderSingleChildBox
     final double delta =
         _vertical ? event.scrollDelta.dy : event.scrollDelta.dx;
     final double remainder = _position.applyScrollDelta(
-      delta,
+      _directed(delta),
       inLines: event.scrollDeltaUnit == ScrollDeltaUnit.lines,
     );
-    if (remainder != 0) _chain(remainder);
+    if (remainder != 0) _chain(_directed(remainder));
   }
 
   /// Applies [delta] handed down from an inner scrollable that could not use
   /// all of it, chaining any remainder further out.
+  ///
+  /// [delta] is physical - in the sense of an unreversed view - so that a
+  /// reversed list nested in an ordinary page hands the page the movement the
+  /// user made rather than its own mirror image.
   void applyChained(double delta) {
-    final double remainder = _position.applyDelta(delta);
-    if (remainder != 0) _chain(remainder);
+    final double remainder = _position.applyDelta(_directed(delta));
+    if (remainder != 0) _chain(_directed(remainder));
   }
 
   /// Hands [delta] to the nearest enclosing scrollable on the same axis.
@@ -423,8 +448,8 @@ final class RenderScrollGestures extends RenderSingleChildBox
     // is what makes a rubber-band possible for a position that asked for one
     // and changes nothing for the default allowance of zero.
     final double remainder =
-        _position.applyDelta(-delta, allowOverscroll: true);
-    if (remainder != 0) _chain(remainder);
+        _position.applyDelta(_directed(-delta), allowOverscroll: true);
+    if (remainder != 0) _chain(_directed(remainder));
   }
 
   void _onDragEnd(DragEndDetails details) {
@@ -440,7 +465,7 @@ final class RenderScrollGestures extends RenderSingleChildBox
         ? details.velocity.pixelsPerSecond.dy
         : details.velocity.pixelsPerSecond.dx;
     if (velocity == 0) return;
-    momentum?.start(-velocity);
+    momentum?.start(_directed(-velocity));
   }
 
   void _discardMomentum() {

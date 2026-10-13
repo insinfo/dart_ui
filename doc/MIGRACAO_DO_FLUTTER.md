@@ -26,7 +26,7 @@ Isto compila quase sem edição vindo do Flutter:
 | Widgets base | `StatelessWidget`, `StatefulWidget`, `State`, `InheritedWidget`, `Widget`, `BuildContext`, `Key`, `ValueKey`, `GlobalKey`, `Builder`, `StatefulBuilder` |
 | Layout | `Row`, `Column`, `Stack`, `Positioned`, `Padding`, `Center`, `Align`, `SizedBox`, `Expanded`, `Flexible`, `Spacer`, `Wrap`, `AspectRatio`, `ConstrainedBox`, `FractionallySizedBox`, `IntrinsicWidth`, `IntrinsicHeight`, `LimitedBox`, `OverflowBox`, `SizedOverflowBox`, `Baseline`, `LayoutBuilder`, `SafeArea` |
 | Pintura | `Opacity`, `ClipRect`, `ClipRRect`, `DecoratedBox`, `BoxDecoration`, `ColoredBox`, `RepaintBoundary`, `IgnorePointer`, `AbsorbPointer` |
-| Conteúdo | `Text`, `Text.rich`, `RichText`, `TextSpan`, `WidgetSpan`, `PlaceholderAlignment`, `Icon`, `Image`, `ListView`, `GridView`, `SingleChildScrollView`, `Card`, `Divider`, `VerticalDivider` |
+| Conteúdo | `Text`, `Text.rich`, `RichText`, `TextSpan`, `WidgetSpan`, `PlaceholderAlignment`, `Icon`, `Image`, `ListView`, `GridView`, `SingleChildScrollView`, `CustomScrollView` e `Sliver*`, `Card`, `Divider`, `VerticalDivider` |
 | Controles | `TextField`, `Radio`, `Switch`, `Slider`, `IconButton`, `Tooltip` |
 | Ambiente | `Theme`, `ThemeData`, `MediaQuery`, `Directionality`, `Navigator`, `Overlay`, `OverlayEntry` |
 | Foco e gestos | `FocusNode`, `FocusScope`, `GestureDetector` |
@@ -176,7 +176,21 @@ Sem justificativa de projeto — simplesmente não escrito:
   existem; o `TweenAnimationBuilder` só retoma do valor corrente quando sabe
   interpolar o tipo - os tweens do framework ou um `lerp` dado -, porque o
   `Tween` daqui é imutável.)
-- **Rolagem**: `CustomScrollView` e a família `Sliver*`, `NestedScrollView`.
+- **Rolagem**: `NestedScrollView` e `SliverAppBar`. (`CustomScrollView` e a
+  família `Sliver*` existem desde 13/10/2026 - `SliverToBoxAdapter`,
+  `SliverList` (`.builder`, `.list`, `SliverChildBuilderDelegate`,
+  `SliverChildListDelegate`), `SliverFixedExtentList`, `SliverGrid` (com
+  `SliverGridDelegateWithFixedCrossAxisCount` e `...WithMaxCrossAxisExtent`,
+  `.count`, `.extent`), `SliverPadding`, `SliverPersistentHeader`
+  (`pinned`/`floating`) e `SliverFillRemaining` -, com o protocolo
+  `SliverConstraints`/`SliverGeometry` em `layout/render_sliver.dart` e filhos
+  construídos durante o layout. Diferenças: `axis:` em vez de
+  `scrollDirection:` e um `ScrollPosition` como `controller`; o delegate exige
+  `childCount` (sem lista infinita); `SliverList` mede as linhas e estima as
+  demais em `estimatedItemExtent` em vez de tirar média; `cacheExtent` é zero
+  por padrão, como no `ListView`; sem `center`/crescimento nos dois sentidos,
+  sem `shrinkWrap` e sem keep-alive. O `SliverAppBar` se monta com um
+  `SliverPersistentHeaderDelegate`.)
 
 ### O que existe aqui e não existe no Flutter
 
