@@ -297,6 +297,7 @@ export 'src/widgets/media_query.dart';
 export 'src/widgets/menu_anchor.dart';
 export 'src/widgets/mouse_region.dart';
 export 'src/widgets/navigator.dart';
+export 'src/widgets/nested_scroll_view.dart';
 export 'src/widgets/number_box.dart';
 export 'src/widgets/overlay.dart';
 export 'src/widgets/phosphor_icons.dart';

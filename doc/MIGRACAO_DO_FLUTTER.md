@@ -179,7 +179,15 @@ Sem justificativa de projeto — simplesmente não escrito:
   existem; o `TweenAnimationBuilder` só retoma do valor corrente quando sabe
   interpolar o tipo - os tweens do framework ou um `lerp` dado -, porque o
   `Tween` daqui é imutável.)
-- **Rolagem**: `NestedScrollView` e `SliverAppBar`. (`CustomScrollView` e a
+- **Rolagem**: nada de essencial. (`NestedScrollView` e `SliverAppBar` com
+  `FlexibleSpaceBar` existem desde 13/10/2026: o `NestedScrollView` coordena
+  roda, arrasto, inércia e teclado num gesto só - recolhe os cabeçalhos antes
+  de a lista mover, e a lista volta ao topo antes de os expandir -, sem
+  `SliverOverlapAbsorber`/`Injector`, porque o corpo já mede a tela menos os
+  cabeçalhos fixos; `innerBoxIsScrolled` é o do Flutter (a lista interna saiu
+  do topo). O `SliverAppBar` não tem `snap`, `stretch` nem
+  `automaticallyImplyLeading`, e `bottom` é um `Widget` com `bottomHeight`,
+  porque não há `PreferredSizeWidget`. `CustomScrollView` e a
   família `Sliver*` existem desde 13/10/2026 - `SliverToBoxAdapter`,
   `SliverList` (`.builder`, `.list`, `SliverChildBuilderDelegate`,
   `SliverChildListDelegate`), `SliverFixedExtentList`, `SliverGrid` (com
@@ -192,8 +200,7 @@ Sem justificativa de projeto — simplesmente não escrito:
   `childCount` (sem lista infinita); `SliverList` mede as linhas e estima as
   demais em `estimatedItemExtent` em vez de tirar média; `cacheExtent` é zero
   por padrão, como no `ListView`; sem `center`/crescimento nos dois sentidos,
-  sem `shrinkWrap` e sem keep-alive. O `SliverAppBar` se monta com um
-  `SliverPersistentHeaderDelegate`.)
+  sem `shrinkWrap` e sem keep-alive.)
 
 ### O que existe aqui e não existe no Flutter
 

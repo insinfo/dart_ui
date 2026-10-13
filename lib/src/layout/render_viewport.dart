@@ -33,6 +33,25 @@ const double defaultLineExtent = 48.0;
 /// Placement of scroll content when it is smaller than its viewport.
 enum ScrollContentAlignment { start, center, end }
 
+/// Decides where a user delta given to a [ScrollPosition] actually goes.
+///
+/// Scroll chaining hands an outer scrollable what an inner one *could not*
+/// use. Some compositions need the opposite order - a `NestedScrollView`
+/// collapses its header before the list inside it moves - and the list's own
+/// input layer cannot know that. A position with a [ScrollPosition.coordinator]
+/// therefore routes every user delta (wheel, drag, momentum, keyboard, paging)
+/// through it, and the coordinator moves whichever positions it coordinates
+/// with [ScrollPosition.applyOwnDelta].
+abstract interface class ScrollDeltaCoordinator {
+  /// Distributes [delta], given by the user to [source], and returns the part
+  /// nobody consumed - the same contract as [ScrollPosition.applyDelta].
+  double applyUserDelta(
+    ScrollPosition source,
+    double delta, {
+    bool allowOverscroll = false,
+  });
+}
+
 /// Where a scrollable is, how far it may go, and what happens at the edges.
 final class ScrollPosition {
   ScrollPosition({
@@ -54,6 +73,10 @@ final class ScrollPosition {
 
   final List<void Function(ScrollPosition position)> _listeners =
       <void Function(ScrollPosition position)>[];
+
+  /// Who decides where this position's user deltas go; null applies them
+  /// here. See [ScrollDeltaCoordinator].
+  ScrollDeltaCoordinator? coordinator;
 
   double _pixels;
   double _viewportExtent;
@@ -164,7 +187,24 @@ final class ScrollPosition {
   /// 27.8): an inner list that has hit its end returns the leftover, and the
   /// outer scrollable moves by exactly that much. A method that returned only
   /// "handled or not" cannot express a gesture that is half consumed.
+  ///
+  /// With a [coordinator] the delta is the coordinator's to distribute, and
+  /// the remainder is what no position it coordinates could use.
   double applyDelta(double delta, {bool allowOverscroll = false}) {
+    final ScrollDeltaCoordinator? coordinator = this.coordinator;
+    if (coordinator != null) {
+      return coordinator.applyUserDelta(
+        this,
+        delta,
+        allowOverscroll: allowOverscroll,
+      );
+    }
+    return applyOwnDelta(delta, allowOverscroll: allowOverscroll);
+  }
+
+  /// [applyDelta] on this position alone, bypassing any [coordinator]. What a
+  /// coordinator itself calls.
+  double applyOwnDelta(double delta, {bool allowOverscroll = false}) {
     if (delta == 0) return 0;
     final double target = _pixels + delta;
     final double clamped = _clamp(target, allowOverscroll: allowOverscroll);

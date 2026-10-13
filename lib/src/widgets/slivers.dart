@@ -45,7 +45,9 @@
 ///   * `SliverAppBar` (`sliver_app_bar.dart`) is a [SliverPersistentHeader]
 ///     with its own delegate, and has no `snap`: the header does not know
 ///     when a scroll has ended;
-///   * no `NestedScrollView`, and no keep-alive.
+///   * `NestedScrollView` (`nested_scroll_view.dart`) sizes its body to the
+///     viewport less the pinned headers, so it needs no overlap absorber;
+///   * no keep-alive.
 library;
 
 import 'dart:collection';

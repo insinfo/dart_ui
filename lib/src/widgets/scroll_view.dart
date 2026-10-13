@@ -53,6 +53,7 @@ import '../gestures/drag.dart';
 import '../gestures/pointer_signal_resolver.dart';
 import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
+import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
 import '../layout/render_viewport.dart';
 import '../platform/input_events.dart';
@@ -175,6 +176,24 @@ final class ScrollMomentum {
     position.fling(next);
     _arm();
   }
+}
+
+/// A render object that coordinates the scrollables nested inside it.
+///
+/// The body of a `NestedScrollView` is one: the list inside it must hand its
+/// deltas to a coordinator, and the list does not know it is in a body. So
+/// every [RenderScrollGestures], when it joins the tree, walks up to the
+/// nearest host and offers its position - the same physical "who contains
+/// me" question scroll chaining asks. The walk stops at the first enclosing
+/// scrollable on the same axis: a list inside the body's list belongs to that
+/// list, not to the body.
+abstract interface class NestedScrollHost {
+  /// [position] belongs to a scrollable that has just joined the tree inside
+  /// this host. The host may ignore it - one on the other axis, say.
+  void attachInnerPosition(ScrollPosition position);
+
+  /// [position] has left the tree, or its scrollable was given another one.
+  void detachInnerPosition(ScrollPosition position);
 }
 
 /// Turns pointer input into movement of [position].
@@ -303,10 +322,15 @@ final class RenderScrollGestures extends RenderSingleChildBox
 
   set position(ScrollPosition value) {
     if (identical(value, _position)) return;
+    _nestedHost?.detachInnerPosition(_position);
     _position = value;
+    _nestedHost?.attachInnerPosition(value);
     _discardMomentum();
     _discardDrag();
   }
+
+  /// The [NestedScrollHost] this scrollable's position was offered to.
+  NestedScrollHost? _nestedHost;
 
   UiDispatcher? get dispatcher => _dispatcher;
 
@@ -479,11 +503,33 @@ final class RenderScrollGestures extends RenderSingleChildBox
   }
 
   @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _nestedHost = _findNestedHost();
+    _nestedHost?.attachInnerPosition(_position);
+  }
+
+  /// The nearest [NestedScrollHost] above, unless a scrollable on the same
+  /// axis is nearer - this one is then nested in *that* one.
+  NestedScrollHost? _findNestedHost() {
+    for (RenderBox? node = parent; node != null; node = node.parent) {
+      if (node is NestedScrollHost) return node as NestedScrollHost;
+      if (node is RenderScrollGestures &&
+          node.position.axis == _position.axis) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  @override
   void detach() {
     // A recognizer holding an arena entry from a detached node never resolves
     // it, and an unresolved arena swallows every later press on that pointer.
     _drag?.cancelPending();
     _discardMomentum();
+    _nestedHost?.detachInnerPosition(_position);
+    _nestedHost = null;
     super.detach();
   }
 }
