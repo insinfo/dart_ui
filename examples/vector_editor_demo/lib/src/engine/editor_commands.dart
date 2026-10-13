@@ -23,6 +23,7 @@ import 'commands/node_commands.dart';
 import 'commands/object_commands.dart';
 import 'commands/selection_commands.dart';
 import 'commands/shape_commands.dart';
+import 'commands/shaping_commands.dart';
 import 'commands/view_commands.dart';
 import 'editor_host.dart';
 import 'editor_model.dart';
@@ -40,6 +41,7 @@ const List<CommandModule> kEditorCommandModules = <CommandModule>[
   viewCommands,
   objectCommands,
   arrangeCommands,
+  shapingCommands,
   nodeCommands,
   selectionCommands,
   shapeCommands,

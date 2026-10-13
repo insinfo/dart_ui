@@ -46,6 +46,13 @@ final class EditorContext {
             '${selected == 1 ? 'is' : 'are'}';
       };
 
+  /// [ok] once a document and a selection exist, with [reason] otherwise.
+  String? Function(CommandArgs) selectionThat(
+    bool Function() ok,
+    String reason,
+  ) =>
+      (CommandArgs args) => needsSelection(args) ?? (ok() ? null : reason);
+
   // --- helpers ----------------------------------------------------------------
 
   /// The selectable objects of the active layer, bottom first - what an

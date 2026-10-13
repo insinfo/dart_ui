@@ -712,6 +712,131 @@ class EditorModel {
     touch('Combined ${objects.length} objects');
   }
 
+  // --- shaping: Weld, Trim, Intersect ---------------------------------------
+  //
+  // CorelDRAW's rule for which object is changed: the *target* is the last
+  // one selected, and it lends the result its style and its place in the
+  // stacking order.
+
+  /// The objects shaping works on - those with an outline - target last.
+  List<SelectableObject> get _shapingObjects =>
+      selection.selectedObjects.where((o) => o is! VectorGroup).toList();
+
+  /// Whether Weld, Trim and Intersect have two outlines to work on.
+  bool get canShape => hasSelection && _shapingObjects.length >= 2;
+
+  /// [object]'s outline in document space, with the rule it is filled by.
+  static (List<VectorPath>, FillRule) _shapeOf(SelectableObject object) => (
+        _documentPaths(object) ?? const <VectorPath>[],
+        object.style.fill.fillRule,
+      );
+
+  /// [operation] folded over [shapes], left to right.
+  static List<VectorPath> _fold(List<(List<VectorPath>, FillRule)> shapes,
+      PathBooleanOperation operation) {
+    var (List<VectorPath> result, FillRule rule) = shapes.first;
+    for (final (List<VectorPath> paths, FillRule next) in shapes.skip(1)) {
+      result =
+          PathBoolean.apply(result, paths, operation, ruleA: rule, ruleB: next);
+      rule = FillRule.nonZero;
+    }
+    return result;
+  }
+
+  /// A curve of [paths] dressed as [target], filled by the rule a boolean
+  /// result is wound for.
+  static VectorCurve _shaped(List<VectorPath> paths, SelectableObject target) =>
+      VectorCurve(
+        paths: paths,
+        style: target.style.copyWith(
+          fill: target.style.fill.copyWith(fillRule: FillRule.nonZero),
+        ),
+      );
+
+  /// CorelDRAW's Weld: every selected outline becomes one curve, in the
+  /// target's place and style. Returns the curve, or null when nothing was
+  /// left to draw.
+  VectorCurve? weldSelection() {
+    if (!canShape) return null;
+    final List<SelectableObject> objects = _shapingObjects;
+    final SelectableObject target = objects.last;
+    final DocumentObject? layer = target.parent;
+    if (layer is! VectorLayer) return null;
+    final VectorCurve? welded = active.api.record('Weld', () {
+      final List<VectorPath> paths = _fold(
+          <(List<VectorPath>, FillRule)>[for (final o in objects) _shapeOf(o)],
+          PathBooleanOperation.union);
+      if (paths.isEmpty) return null;
+      final VectorCurve curve = _shaped(paths, target);
+      final int index = layer.children.indexOf(target);
+      active.api.methods.addObject(layer, curve, index);
+      for (final SelectableObject object in objects) {
+        active.api.methods.removeObject(object);
+      }
+      curve.update();
+      return curve;
+    });
+    if (welded == null) return null;
+    selection.setSelection(<SelectableObject>[welded]);
+    touch('Welded ${objects.length} objects');
+    return welded;
+  }
+
+  /// CorelDRAW's Trim: the other selected objects cut their outline out of
+  /// the target, and stay. Returns what is left of the target, or null when
+  /// nothing is - the target is then gone.
+  VectorCurve? trimSelection() {
+    if (!canShape) return null;
+    final List<SelectableObject> objects = _shapingObjects;
+    final SelectableObject target = objects.last;
+    final DocumentObject? layer = target.parent;
+    if (layer is! VectorLayer) return null;
+    final VectorCurve? trimmed = active.api.record('Trim', () {
+      final List<VectorPath> cutters = _fold(<(List<VectorPath>, FillRule)>[
+        for (final o in objects.take(objects.length - 1)) _shapeOf(o)
+      ], PathBooleanOperation.union);
+      final (List<VectorPath> outline, FillRule rule) = _shapeOf(target);
+      final List<VectorPath> paths = PathBoolean.apply(
+          outline, cutters, PathBooleanOperation.difference,
+          ruleA: rule);
+      final int index = layer.children.indexOf(target);
+      active.api.methods.removeObject(target);
+      if (paths.isEmpty) return null;
+      final VectorCurve curve = _shaped(paths, target);
+      active.api.methods.addObject(layer, curve, index);
+      curve.update();
+      return curve;
+    });
+    selection.setSelection(<SelectableObject>[if (trimmed != null) trimmed]);
+    touch(trimmed == null ? 'Trimmed away entirely' : 'Trimmed');
+    return trimmed;
+  }
+
+  /// CorelDRAW's Intersect: a new curve where every selected outline
+  /// overlaps, above the target and in its style; the originals stay.
+  /// Returns it, or null when they have no area in common.
+  VectorCurve? intersectSelection() {
+    if (!canShape) return null;
+    final List<SelectableObject> objects = _shapingObjects;
+    final SelectableObject target = objects.last;
+    final DocumentObject? layer = target.parent;
+    if (layer is! VectorLayer) return null;
+    final List<VectorPath> paths = _fold(
+        <(List<VectorPath>, FillRule)>[for (final o in objects) _shapeOf(o)],
+        PathBooleanOperation.intersect);
+    if (paths.isEmpty) return null;
+    final VectorCurve curve = active.api.record('Intersect', () {
+      final VectorCurve curve = _shaped(paths, target);
+      active.api.methods
+          .addObject(layer, curve, layer.children.indexOf(target) + 1);
+      curve.update();
+      return curve;
+    });
+    selection.setSelection(<SelectableObject>[curve]);
+    touch('Intersected ${objects.length} objects');
+    return curve;
+  }
+
   /// Whether Break Apart has a curve of several outlines to split.
   bool get canBreakApart => selection.selectedObjects
       .any((o) => o is VectorCurve && o.paths.length > 1);

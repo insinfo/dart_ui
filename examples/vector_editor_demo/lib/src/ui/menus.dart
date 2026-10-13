@@ -124,6 +124,11 @@ final class EditorMenus {
           _,
           CommandItem('object.combine'),
           CommandItem('object.breakApart'),
+          SubmenuSpec('Shaping', <MenuSpecEntry>[
+            CommandItem('object.weld'),
+            CommandItem('object.trim'),
+            CommandItem('object.intersect'),
+          ]),
           _,
           CommandItem('object.toCurves'),
         ]),
@@ -243,6 +248,12 @@ final class EditorMenus {
           const CommandItem('object.combine'),
         if (registry.isEnabled('object.breakApart'))
           const CommandItem('object.breakApart'),
+        if (registry.isEnabled('object.weld'))
+          const SubmenuSpec('Shaping', <MenuSpecEntry>[
+            CommandItem('object.weld'),
+            CommandItem('object.trim'),
+            CommandItem('object.intersect'),
+          ]),
         _,
         const CommandItem('panel.align',
             label: 'Align and Distribute...', checkable: false),

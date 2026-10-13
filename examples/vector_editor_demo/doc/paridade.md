@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 46 | 8 | 9 | 63 | 79% |
+| P0 | 49 | 8 | 6 | 63 | 84% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 54 | 10 | 111 | 175 | 34% |
+| **todas** | 57 | 10 | 108 | 175 | 35% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 75 de 90 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 78 de 93 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 97.
+Comandos registrados: 100.
 
 ## Por área
 
@@ -26,7 +26,7 @@ Comandos registrados: 97.
 | Interações no canvas | 8 | 2 | 3 | 13 | 69% |
 | Barra de propriedades | 4 | 0 | 12 | 16 | 25% |
 | Dockers | 3 | 0 | 12 | 15 | 20% |
-| Operações de objeto | 7 | 2 | 13 | 22 | 36% |
+| Operações de objeto | 10 | 2 | 10 | 22 | 50% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
 | Edição de nós | 9 | 0 | 5 | 14 | 64% |
@@ -172,9 +172,9 @@ Comandos registrados: 97.
 | ✅ | Forward one / Back one | P0 | `object.forward`, `object.backward` |  |
 | ❌ | In front of / Behind / Reverse order | P2 |  | tudo |
 | ❌ | Lock / Unlock objects | P1 |  | layers lock; single objects do not |
-| ❌ | Weld | P0 |  | tudo |
-| ❌ | Trim | P0 |  | tudo |
-| ❌ | Intersect | P0 |  | tudo |
+| ✅ | Weld | P0 | `object.weld` |  |
+| ✅ | Trim | P0 | `object.trim` |  |
+| ✅ | Intersect | P0 | `object.intersect` |  |
 | ❌ | Simplify | P2 |  | tudo |
 | ❌ | Front minus back / Back minus front | P1 |  | tudo |
 | ❌ | Boundary | P2 |  | tudo |

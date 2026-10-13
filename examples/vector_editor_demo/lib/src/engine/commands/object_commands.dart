@@ -32,14 +32,7 @@ Color? parseColor(Object? value) {
 List<CommandSpec> objectCommands(EditorContext context) {
   final EditorModel model = context.model;
   final bool mac = platformEditingConvention == EditingConvention.mac;
-
-  /// [ok] once a document and a selection exist, with [reason] otherwise.
-  String? Function(CommandArgs) selectionThat(
-    bool Function() ok,
-    String reason,
-  ) =>
-      (CommandArgs args) =>
-          context.needsSelection(args) ?? (ok() ? null : reason);
+  final selectionThat = context.selectionThat;
 
   return <CommandSpec>[
     // --- structure ------------------------------------------------------------
