@@ -52,6 +52,29 @@ void main() {
     });
   });
 
+  group('DataGrid column edges', () {
+    test('an edge shows the resize arrow; a double click fits the column', () {
+      final harness = _GridHarness(rowCount: 3);
+      harness.frame();
+      PointerMoveEvent at(double x) => PointerMoveEvent(
+            windowId: const NativeWindowId(1),
+            generation: 1,
+            timestamp: Duration.zero,
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: Offset(x, 10),
+          );
+      expect(harness.header.cursorFor(at(100)), SystemCursor.resizeHorizontal);
+      expect(harness.header.cursorFor(at(50)), isNull);
+      harness.header.handlePointerEvent(_press(const Offset(101, 10)));
+      harness.header
+          .handlePointerEvent(_press(const Offset(101, 10), clicks: 2));
+      harness.frame();
+      expect(harness.resized, contains('0:150.0'));
+      harness.dispose();
+    });
+  });
+
   group('DataGrid as a file list', () {
     test('a double click or Enter opens the row', () {
       final harness = _GridHarness(rowCount: 10);
@@ -345,6 +368,7 @@ final class _GridHarness {
           onColumnResized: (int column, double width) =>
               resized.add('$column:$width'),
           onRowActivated: activated.add,
+          columnFitWidth: (int column) => 150,
           onSecondaryPress: secondary.add,
           cellBuilder: (BuildContext context, int row, int column) =>
               Text('r$row c$column'),

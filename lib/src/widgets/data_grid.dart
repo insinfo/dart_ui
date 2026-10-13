@@ -39,14 +39,17 @@ import '../layout/render_flex.dart';
 import '../layout/render_viewport.dart';
 import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
+import '../platform/native_window.dart' show SystemCursor;
 import '../semantics/semantics.dart';
 import '../text/shaper.dart' show TextDirection;
 import 'basic.dart';
+import 'context_menu_area.dart';
 import 'control.dart';
 import 'directionality.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'pointer_router.dart';
 import 'style.dart';
 import 'theme.dart';
 import 'virtualization.dart';
@@ -120,6 +123,8 @@ final class DataGrid extends StatefulWidget {
     this.onSecondaryPress,
     this.controller,
     this.decorated = true,
+    this.headerMenu,
+    this.columnFitWidth,
   });
 
   final List<DataGridColumn> columns;
@@ -162,6 +167,14 @@ final class DataGrid extends StatefulWidget {
   /// all of it, empty space clears it - so a [ContextMenuArea] around the
   /// grid can build its menu from the selection.
   final void Function(int? row)? onSecondaryPress;
+
+  /// The header's right-click menu - which columns to show, "Size all
+  /// columns to fit" - or null for none.
+  final List<Widget> Function()? headerMenu;
+
+  /// The width column [column] needs to show all of its content, for a
+  /// double click on its right edge - or null where that is not known.
+  final double? Function(int column)? columnFitWidth;
 
   final ScrollPosition? controller;
 
@@ -215,6 +228,12 @@ final class _DataGridState extends State<DataGrid> {
         for (final DataGridColumn column in widget.columns)
           _draggedWidths[column.identity] ?? column.width,
       ];
+
+  Widget _maybeHeaderMenu(Widget header) {
+    final List<Widget> Function()? menu = widget.headerMenu;
+    if (menu == null) return header;
+    return ContextMenuArea(menuChildren: menu, child: header);
+  }
 
   void _resizeColumn(int index, double width) {
     final DataGridColumn column = widget.columns[index];
@@ -429,7 +448,7 @@ final class _DataGridState extends State<DataGrid> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        _DataGridHeaderWidget(
+        _maybeHeaderMenu(_DataGridHeaderWidget(
           columns: widget.columns,
           widths: widths,
           sort: widget.sort,
@@ -437,7 +456,11 @@ final class _DataGridState extends State<DataGrid> {
           theme: theme,
           onSortRequest: _requestSort,
           onResize: _resizeColumn,
-        ),
+          onFit: (int column) {
+            final double? width = widget.columnFitWidth?.call(column);
+            if (width != null) _resizeColumn(column, width);
+          },
+        )),
         Expanded(
           child: FocusAttachment(
             node: _focusNode,
@@ -509,6 +532,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
     required this.theme,
     required this.onSortRequest,
     required this.onResize,
+    required this.onFit,
   });
 
   final List<DataGridColumn> columns;
@@ -518,6 +542,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
   final ThemeData theme;
   final void Function(int column) onSortRequest;
   final void Function(int column, double width) onResize;
+  final void Function(int column) onFit;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
@@ -531,6 +556,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
         ..textDirection = textDirection
         ..onSortRequest = onSortRequest
         ..onResize = onResize
+        ..onFit = onFit
         ..theme = theme;
 
   @override
@@ -545,14 +571,28 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
       ..textDirection = textDirection
       ..onSortRequest = onSortRequest
       ..onResize = onResize
+      ..onFit = onFit
       ..theme = theme;
   }
 }
 
 /// The header row: titles, sort arrow, resize grips.
-final class RenderDataGridHeader extends RenderBox with ControlBehavior {
-  /// Half-width of the resize grip either side of a column boundary.
-  static const double gripExtent = 4;
+final class RenderDataGridHeader extends RenderBox
+    with ControlBehavior
+    implements MouseCursorTarget {
+  /// Half-width of the resize grip either side of a column boundary - wide
+  /// enough to find without aiming, as File Explorer's is.
+  static const double gripExtent = 6;
+
+  /// A column edge shows the resize arrow, so it can be found at all.
+  @override
+  SystemCursor? cursorFor(PointerEvent event) =>
+      _gripAt(globalToLocal(event.logicalPosition).dx) >= 0
+          ? SystemCursor.resizeHorizontal
+          : null;
+
+  /// A double click on an edge: size the column to its content.
+  void Function(int column)? onFit;
 
   List<DataGridColumn> _columns = const <DataGridColumn>[];
   List<double> _widths = const <double>[];
@@ -649,7 +689,11 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
       case PointerDownEvent(button: PointerButton.primary):
         final Offset local = globalToLocal(event.logicalPosition);
         final int grip = _gripAt(local.dx);
-        if (grip >= 0) {
+        if (grip >= 0 && event.clickCount >= 2) {
+          _resizingColumn = -1;
+          _pressedColumn = -1;
+          onFit?.call(grip);
+        } else if (grip >= 0) {
           _resizingColumn = grip;
           _resizeStartX = local.dx;
           _resizeStartWidth = _widths[grip];
@@ -755,7 +799,7 @@ final class RenderDataGridHeader extends RenderBox with ControlBehavior {
             1,
             size.height - Spacing.sm,
           ),
-          theme.borderSubtle,
+          theme.border,
         );
       }
     }
