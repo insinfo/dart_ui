@@ -16,6 +16,7 @@ import 'commands/tab_commands.dart';
 import 'commands/view_commands.dart';
 import 'explorer_host.dart';
 import 'explorer_model.dart';
+import 'strings.dart';
 
 export 'commands/command_context.dart' show ExplorerContext;
 export 'commands/view_commands.dart' show kSortCommands, kViewModeCommands;
@@ -41,10 +42,14 @@ void registerExplorerCommands(
         throw StateError('two modules register ${command.id}');
       }
       // The id, the keys and the behaviour are the same in every language;
-      // only what the menus and tooltips say changes.
-      final String? label = model.strings.commandLabels[command.id];
-      registry
-          .register(label == null ? command : command.copyWith(label: label));
+      // only what the menus and tooltips say changes - the reason a command
+      // is unavailable included, which a disabled button's tooltip shows
+      // after its label.
+      final ExplorerStrings strings = model.strings;
+      registry.register(command.copyWith(
+        label: strings.commandLabels[command.id],
+        reason: strings.reasons.isEmpty ? null : strings.reason,
+      ));
     }
   }
 }

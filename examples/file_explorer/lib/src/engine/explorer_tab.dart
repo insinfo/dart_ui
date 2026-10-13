@@ -53,7 +53,11 @@ final class ExplorerTab {
           if (selection.contains(e.path)) e,
       ];
 
+  /// Stops watching the disk. The generation moves on too, so a listing still
+  /// in flight finds the tab gone when it lands and does not start a watcher
+  /// nobody would cancel.
   void dispose() {
+    generation++;
     unawaited(watcher?.cancel());
     watcher = null;
   }

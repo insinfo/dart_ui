@@ -17,11 +17,14 @@ import '../graphics/display_list_geometry.dart';
 import '../graphics/display_list_opcodes.dart';
 import '../layout/alignment.dart';
 import '../layout/box_constraints.dart';
+import '../layout/decoration.dart' show Decoration, DecorationPosition;
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
 import '../layout/render_proxy_box.dart';
 import '../layout/render_stack.dart' as layout;
+import '../text/shaper.dart' show TextDirection;
 import 'basic.dart';
+import 'directionality.dart';
 import 'element.dart';
 import 'image.dart' show BoxFit, FittedSizes, applyBoxFit;
 import 'proxy.dart';
@@ -36,6 +39,11 @@ import 'widget.dart';
 /// With no child and nothing that bounds it, a Container fills the space it
 /// is given - a coloured panel - and shrinks to nothing where that space is
 /// unbounded, as Flutter's does.
+///
+/// As in Flutter, the [decoration]'s own padding - a border's widths - is
+/// added to [padding], so a bordered container's child sits inside the
+/// border; [foregroundDecoration] is painted over the child. There is no
+/// `clipBehavior`.
 final class Container extends StatelessWidget {
   Container({
     super.key,
@@ -43,6 +51,7 @@ final class Container extends StatelessWidget {
     this.padding,
     this.color,
     this.decoration,
+    this.foregroundDecoration,
     double? width,
     double? height,
     BoxConstraints? constraints,
@@ -60,7 +69,8 @@ final class Container extends StatelessWidget {
   final Alignment? alignment;
   final EdgeInsets? padding;
   final Color? color;
-  final BoxDecoration? decoration;
+  final Decoration? decoration;
+  final Decoration? foregroundDecoration;
   final BoxConstraints? constraints;
   final EdgeInsets? margin;
   final Transform2D? transform;
@@ -80,10 +90,29 @@ final class Container extends StatelessWidget {
     } else if (alignment != null) {
       current = Align(alignment: alignment!, child: current);
     }
-    if (padding != null) current = Padding(padding: padding!, child: current);
+    EdgeInsets? effectivePadding = padding;
+    final Decoration? decoration = this.decoration;
+    if (decoration != null) {
+      final EdgeInsets inset = decoration.padding.resolve(
+          Directionality.maybeOf(context) ?? TextDirection.leftToRight);
+      if (!inset.isZero) {
+        effectivePadding =
+            effectivePadding == null ? inset : effectivePadding + inset;
+      }
+    }
+    if (effectivePadding != null) {
+      current = Padding(padding: effectivePadding, child: current);
+    }
     if (color != null) current = ColoredBox(color: color!, child: current);
     if (decoration != null) {
-      current = DecoratedBox(decoration: decoration!, child: current);
+      current = DecoratedBox(decoration: decoration, child: current);
+    }
+    if (foregroundDecoration != null) {
+      current = DecoratedBox(
+        decoration: foregroundDecoration!,
+        position: DecorationPosition.foreground,
+        child: current,
+      );
     }
     if (constraints != null) {
       current = ConstrainedBox(constraints: constraints!, child: current);

@@ -75,7 +75,8 @@ void main() {
       var saves = 0;
       final actions = ActionMap()
         ..register<_SaveIntent>(
-          CallbackAction<_SaveIntent>((_SaveIntent intent) => saves++),
+          CallbackAction<_SaveIntent>(
+              onInvoke: (_SaveIntent intent) => saves++),
         );
 
       expect(actions.invoke(const _SaveIntent()), isTrue);
@@ -86,12 +87,12 @@ void main() {
     test('a disabled action lets the intent fall through to an outer map', () {
       final outer = ActionMap()
         ..register<_SaveIntent>(
-          CallbackAction<_SaveIntent>((_) {}),
+          CallbackAction<_SaveIntent>(onInvoke: (_) => null),
         );
       var innerRan = false;
       final inner = ActionMap(null, outer)
         ..register<_SaveIntent>(CallbackAction<_SaveIntent>(
-          (_) => innerRan = true,
+          onInvoke: (_) => innerRan = true,
           isEnabled: (_) => false,
         ));
 
@@ -114,7 +115,7 @@ void main() {
         }),
         actions: ActionMap()
           ..register<_SaveIntent>(
-            CallbackAction<_SaveIntent>((_) => saves++),
+            CallbackAction<_SaveIntent>(onInvoke: (_) => saves++),
           ),
       );
 
@@ -154,7 +155,7 @@ void main() {
         }),
         actions: ActionMap()
           ..register<_SaveIntent>(
-            CallbackAction<_SaveIntent>((_) => saves++),
+            CallbackAction<_SaveIntent>(onInvoke: (_) => saves++),
           ),
       );
     owner.updateRoot(TextField(controller: controller));

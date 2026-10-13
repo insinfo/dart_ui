@@ -2,6 +2,7 @@
 ///
 /// ```
 /// dart run tool/headless_shot.dart out.png [scenario] [--dark] [--lang=pt]
+///     [--size=1280x800]
 /// ```
 ///
 /// Scenarios: home, details (the default), icons, tiles, rename, search,
@@ -28,8 +29,16 @@ Future<void> main(List<String> args) async {
   final ExplorerStrings strings = rest.contains('--lang=pt')
       ? ExplorerStrings.portuguese
       : ExplorerStrings.english;
-  const int width = 1280;
-  const int height = 800;
+  final List<int> size = (rest
+              .where((String a) => a.startsWith('--size='))
+              .firstOrNull
+              ?.substring('--size='.length) ??
+          '1280x800')
+      .split('x')
+      .map(int.parse)
+      .toList();
+  final int width = size[0];
+  final int height = size[1];
 
   FrameworkFonts.install();
   FontRegistry.warmSystemFonts();
@@ -119,7 +128,7 @@ Future<void> main(List<String> args) async {
 
   final device = await const CpuRendererBackend().createDevice();
   final MemoryRenderTarget target = device.createTarget(
-    const MemorySurfaceDescriptor(pixelWidth: width, pixelHeight: height),
+    MemorySurfaceDescriptor(pixelWidth: width, pixelHeight: height),
   ) as MemoryRenderTarget;
   final result = await target.renderDisplayList(list, clearColor: 0xFF202020);
   final HeadlessScreenshot shot =

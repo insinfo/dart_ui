@@ -44,6 +44,12 @@ class Sidebar extends StatefulWidget {
   State<Sidebar> createState() => _SidebarState();
 }
 
+/// The sidebar's side margins, which the selected card keeps clear of.
+const double _inset = 8;
+
+/// The space after Home and after each section.
+const double _sectionGap = 18;
+
 class _SidebarState extends State<Sidebar> {
   final Set<String> _folded = <String>{};
 
@@ -82,7 +88,8 @@ class _SidebarState extends State<Sidebar> {
         Expanded(
           child: ScrollViewer(
             child: Padding(
-              padding: const EdgeInsets.only(left: 8, right: 4, top: 6),
+              padding: const EdgeInsets.only(
+                  left: _inset, right: _inset + 1, top: 6),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
@@ -92,7 +99,7 @@ class _SidebarState extends State<Sidebar> {
                     icon: FluentIcons.homeFilled,
                     color: const Color(0xFF0F6CBD),
                   ),
-                  const SizedBox(height: 14),
+                  const SizedBox(height: _sectionGap),
                   ..._section(pt ? 'Fixados' : 'Pinned', <Widget>[
                     for (final String path in model.pinned) _pinned(path),
                   ]),
@@ -113,8 +120,18 @@ class _SidebarState extends State<Sidebar> {
             ),
           ),
         ),
+        // A hairline between the scrolling places and Settings, as Files
+        // draws it; Settings then sits on the status line's level.
         Padding(
-          padding: const EdgeInsets.only(left: 8, right: 4, bottom: 6),
+          padding: const EdgeInsets.only(left: _inset, right: _inset + 1),
+          child: SizedBox(
+            height: 1,
+            child: ColoredBox(color: Theme.of(context).borderSubtle),
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(
+              left: _inset, right: _inset + 1, top: 4, bottom: 3),
           child: MenuAnchor(
             menuChildren: widget.settingsMenu(),
             builder: (BuildContext context, MenuController controller, _) =>
@@ -145,14 +162,16 @@ class _SidebarState extends State<Sidebar> {
           child: SizedBox(
             height: 28,
             child: Padding(
-              padding: const EdgeInsets.only(left: 12, right: 10),
+              padding: const EdgeInsets.only(left: 12, right: 7),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: <Widget>[
                   Expanded(
                     child: Text(title,
-                        style: theme.textTheme.bodySmall,
-                        color: theme.foregroundSecondary),
+                        style: theme.textTheme.bodySmall.copyWith(fontSize: 12),
+                        color: theme.foregroundSecondary,
+                        maxLines: 1,
+                        ellipsis: '…'),
                   ),
                   Opacity(
                     opacity: hovered || folded ? 1 : .6,
@@ -169,8 +188,9 @@ class _SidebarState extends State<Sidebar> {
           ),
         ),
       ),
+      const SizedBox(height: 2),
       if (!folded) ...rows,
-      const SizedBox(height: 14),
+      const SizedBox(height: _sectionGap),
     ];
   }
 
@@ -226,10 +246,11 @@ class _SidebarState extends State<Sidebar> {
       builder: (BuildContext context, bool hovered) => GestureDetector(
         behavior: GestureHitTestBehavior.opaque,
         onTap: onTap ?? () => _go(id),
+        // A 32 px slot, the card 28 px inside it - Files' rhythm.
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 1),
+          padding: const EdgeInsets.symmetric(vertical: 2),
           child: SizedBox(
-            height: 32,
+            height: 28,
             child: Stack(
               children: <Widget>[
                 Positioned.fill(
@@ -253,33 +274,37 @@ class _SidebarState extends State<Sidebar> {
                 ),
                 if (current)
                   Positioned(
-                    left: 0,
-                    top: 8,
-                    bottom: 8,
+                    left: 1,
+                    top: 6,
+                    bottom: 6,
                     width: 3,
                     child: DecoratedBox(
                       decoration:
                           BoxDecoration(color: theme.accent, radius: 1.5),
                     ),
                   ),
-                Padding(
-                  padding: const EdgeInsets.only(left: 12, right: 10),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: <Widget>[
-                      Icon(icon, size: 16, color: color),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Text(label,
-                            style: theme.textTheme.bodyMedium,
-                            color: theme.foreground,
-                            maxLines: 1,
-                            ellipsis: '…'),
-                      ),
-                      if (pin)
-                        Icon(FluentIcons.pin,
-                            size: 14, color: theme.foregroundSecondary),
-                    ],
+                // Filling the card, so the row centres in it: left loose in
+                // the stack it would sit at the card's top.
+                Positioned.fill(
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 12, right: 6),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: <Widget>[
+                        Icon(icon, size: 16, color: color),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Text(label,
+                              style: theme.textTheme.bodyMedium,
+                              color: theme.foreground,
+                              maxLines: 1,
+                              ellipsis: '…'),
+                        ),
+                        if (pin)
+                          Icon(FluentIcons.pin,
+                              size: 14, color: theme.foregroundSecondary),
+                      ],
+                    ),
                   ),
                 ),
               ],

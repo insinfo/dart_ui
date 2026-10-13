@@ -46,3 +46,59 @@ pela metade e o próximo passo. Ver [`AGENTS_FLUTTER.md`](AGENTS_FLUTTER.md).
   5. `Form`/`FormField`/`TextFormField` e formatadores de texto.
   6. Material essencial (`MaterialApp`, `Scaffold`, `AppBar`, botões,
      `ListTile`, `Card`, diálogos).
+
+### Mais tarde, no mesmo dia
+
+**Mudou**
+- Os cinco lotes do P0, em paralelo, cada um com testes e capturas:
+  1. **Pintura e decoração:** `Radius`, `RRect`, `BorderRadius`(`Directional`),
+     `Border`, `BorderSide`, `BoxShadow`, `ShapeDecoration` com
+     `RoundedRectangleBorder`/`CircleBorder`/`StadiumBorder`, `SweepGradient`,
+     `Canvas`/`Paint`/`PictureRecorder`, `CustomPainter`/`CustomClipper`,
+     `ClipOval`/`ClipPath` e `ClipRRect(borderRadius:)`, e o `Path` com a
+     edição do Flutter. Clips não retangulares são camada mais máscara
+     (`dstIn`/`dstOut`): os cantos agora são cortados de verdade, inclusive no
+     Metal.
+  2. **App e binding:** `WidgetsBinding`/`WidgetsFlutterBinding`,
+     `WidgetsBindingObserver`, `WidgetsApp`, `ErrorWidget` (um build que lança
+     vira o widget de erro), `UniqueKey`, `ObjectKey`, `GlobalObjectKey`,
+     `PageStorageKey`, `KeyedSubtree`, `InheritedNotifier`, `InheritedModel`,
+     `VoidCallback`/`ValueChanged`..., `kDebugMode`, `debugPrint`.
+     `void main() => runApp(const MyApp());` abre uma janela Metal no macOS.
+  3. **Rolagem:** `ScrollController`, `scrollDirection:`, `ScrollPhysics`
+     (Clamping, Bouncing com mola, Never, Always, Page), `PageView`/
+     `PageController`, `NotificationListener` e a família `ScrollNotification`,
+     `ListView.separated`, `shrinkWrap`, `GridView` com `gridDelegate`.
+  4. **Entrada:** `Listener`, `Draggable`/`LongPressDraggable`/`DragTarget`,
+     `Dismissible`, `InteractiveViewer`, `Focus`, `KeyboardListener`,
+     `ExcludeFocus`, `FocusTraversalGroup` e as políticas, `Shortcuts`/
+     `Actions`/`Intent`, `SingleActivator`, `CharacterActivator`,
+     `LogicalKeySet`, `LogicalKeyboardKey`, `HardwareKeyboard`.
+  5. **Formulários:** `Form`/`FormField`/`TextFormField`, `InputDecoration`
+     com `OutlineInputBorder`/`UnderlineInputBorder`, formatadores
+     (`FilteringTextInputFormatter`, `LengthLimitingTextInputFormatter`),
+     `TextInputType`/`TextInputAction` (Enter com `next` passa o foco),
+     `SelectableText`.
+- Fechar a última janela encerra o processo, como no Flutter desktop (um
+  `Directory.watch` do explorer o prendia; o `runApp` agora garante).
+- Medida: **P0 67%** (era 53%), P1 18%, **23% no total**. As divergências de
+  cada nome estão no catálogo e as que mais pesam numa migração, em
+  `MIGRACAO_DO_FLUTTER.md` §3.
+
+**Ficou pela metade**
+- `TextEditingController('x')`, `TextSelection.collapsed` e `TextRange` são
+  posicionais; passar para os nomes do Flutter quebra uns 40 usos e pede uma
+  mudança coordenada.
+- `Scrollbar(controller:)`; `SelectionArea`; `KeyRepeatEvent`.
+- Achados no caminho: o player desenha `drawRect`/`drawRRect` girados como a
+  caixa alinhada aos eixos; o `ValueNotifier` daqui não é `Listenable`; `Rect`
+  sem `shortestSide`/`fromCircle`/`expandToInclude`; pontas de um `ClipPath`
+  em estrela vazam alguns pixels.
+
+**Próximo passo**
+- O que falta do P0 (79 nomes): Material essencial (`MaterialApp`,
+  `Scaffold`, `AppBar`, botões, `ListTile`, `Card`, diálogos e
+  `showModalBottomSheet`), imagens (`ImageProvider`, `AssetImage`,
+  `NetworkImage`), `AnimatedCrossFade`/`AnimatedScale`/`AnimatedRotation`/
+  `AnimatedSlide`, `Ticker`/`TickerProviderStateMixin`, `ModalRoute`,
+  `OverlayPortal`, `Clipboard`/`HapticFeedback`/`SystemChrome`.

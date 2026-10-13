@@ -511,29 +511,40 @@ final class TooltipSurface extends StatelessWidget {
   final String message;
 
   @override
-  Widget build(BuildContext context) =>
-      _TooltipRenderWidget(message: message, theme: Theme.of(context));
+  Widget build(BuildContext context) => _TooltipRenderWidget(
+        message: message,
+        theme: Theme.of(context),
+        platformOutline: PopupWindowFrame.outlinedOf(context),
+      );
 }
 
 final class _TooltipRenderWidget extends RenderObjectWidget {
-  const _TooltipRenderWidget({required this.message, required this.theme});
+  const _TooltipRenderWidget({
+    required this.message,
+    required this.theme,
+    required this.platformOutline,
+  });
 
   final String message;
   final ThemeData theme;
+  final bool platformOutline;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
 
   @override
   RenderTooltip createRenderObject(BuildContext context) =>
-      RenderTooltip(message: message)..theme = theme;
+      RenderTooltip(message: message)
+        ..theme = theme
+        ..platformOutline = platformOutline;
 
   @override
   void updateRenderObject(
       BuildContext context, covariant RenderTooltip object) {
     object
       ..message = message
-      ..theme = theme;
+      ..theme = theme
+      ..platformOutline = platformOutline;
   }
 }
 
@@ -541,6 +552,16 @@ final class RenderTooltip extends RenderBox with ControlBehavior {
   RenderTooltip({required String message}) : _message = message;
 
   String _message;
+
+  /// Whether the window this surface fills outlines it already - see
+  /// [PopupWindowFrame]. The surface then paints no hairline of its own.
+  bool get platformOutline => _platformOutline;
+  bool _platformOutline = false;
+  set platformOutline(bool value) {
+    if (value == _platformOutline) return;
+    _platformOutline = value;
+    markNeedsPaint();
+  }
 
   String get message => _message;
 
@@ -569,8 +590,13 @@ final class RenderTooltip extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    paintRoundedFill(list, rect, theme.surfaceRaised, theme.cornerRadiusSmall);
-    paintRoundedBorder(list, rect, theme.border, theme.cornerRadiusSmall);
+    // The control radius, not the small one: at two pixels a tooltip read
+    // as a square box beside rounded menus. It is an overlay, and on a
+    // platform that shows its alpha it is a window of exactly this shape.
+    paintRoundedFill(list, rect, theme.surfaceRaised, theme.cornerRadius);
+    if (!_platformOutline) {
+      paintRoundedBorder(list, rect, theme.border, theme.cornerRadius);
+    }
     paintCenteredLabel(list, _message, rect, theme.foreground);
   }
 

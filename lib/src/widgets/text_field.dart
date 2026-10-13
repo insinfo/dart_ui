@@ -18,6 +18,7 @@ library;
 
 import 'dart:math' as math;
 
+import '../foundation/change_notifier.dart' show Listenable;
 import '../foundation/diagnostics.dart' show UnsupportedCapabilityError;
 import '../foundation/value_notifier.dart';
 import '../geometry/offset.dart';
@@ -50,18 +51,25 @@ import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'input_decorator.dart';
 import 'keyboard_router.dart';
 import 'menu.dart';
 import 'pointer_router.dart' show MouseCursorTarget;
 import 'text_editing.dart';
+import 'text_input_formatter.dart';
+import 'text_input_options.dart';
 import 'theme.dart';
 import 'widget.dart';
 
-/// The editing model is part of this file's contract, not an implementation
-/// detail of it: a caller holding a [TextEditingController] needs
-/// [TextEditingValue], [TextSelection] and [TextRange] to say anything about
-/// it.
+/// The types [TextField]'s Flutter parameters are written in - the
+/// decoration, the formatters, the input type and action - are part of this
+/// file's contract, and so is the editing model: a caller holding a
+/// [TextEditingController] needs [TextEditingValue], [TextSelection] and
+/// [TextRange] to say anything about it.
+export 'input_decorator.dart' hide DecoratedField, RenderInputDecorator;
 export 'text_editing.dart';
+export 'text_input_formatter.dart';
+export 'text_input_options.dart';
 
 // ---------------------------------------------------------------------------
 // Observable values and text editing state
@@ -106,10 +114,145 @@ export 'text_editing.dart';
 ///    intermediate string. Both are real and both are deliberate for now: the
 ///    coalescing policy is a timing question, and a cap without one silently
 ///    throws away the entries a user is most likely to want.
-final class TextEditingController extends ValueNotifier<String> {
+final class TextEditingController extends ValueNotifier<String>
+    implements Listenable {
   TextEditingController([super.value = '']) {
     _base = value.length;
     _extent = value.length;
+  }
+
+  /// A controller holding [value]: text, selection and composing region -
+  /// Flutter's `TextEditingController.fromValue`. Null is the empty value.
+  TextEditingController.fromValue(TextEditingValue? value)
+      : super(value?.text ?? '') {
+    final TextEditingValue start = value ?? TextEditingValue.empty;
+    _base = start.selection.baseOffset;
+    _extent = start.selection.extentOffset;
+    _affinity = start.selection.affinity;
+    _composing = start.composing;
+  }
+
+  // ---------------------------------------------------------------------
+  // Flutter's names
+  // ---------------------------------------------------------------------
+
+  /// The text - Flutter's `TextEditingController.text`; the same string as
+  /// [value].
+  ///
+  /// Setting it keeps the selection where it still fits, rather than
+  /// dropping it as Flutter does: see the `value` setter.
+  String get text => value;
+
+  set text(String newText) => value = newText;
+
+  /// The selection - Flutter's `TextEditingController.selection`.
+  TextSelection get selection => TextSelection(
+        baseOffset: _base,
+        extentOffset: _extent,
+        affinity: _affinity,
+      );
+
+  /// Places the selection.
+  ///
+  /// Throws [ArgumentError] when either end is outside the text, as
+  /// Flutter's does; an end inside a grapheme cluster is moved to the
+  /// cluster's start, as [setSelection] does.
+  set selection(TextSelection next) {
+    if (!isSelectionWithinTextBounds(next)) {
+      throw ArgumentError.value(
+        next,
+        'selection',
+        'outside the text, which is ${value.length} code units long',
+      );
+    }
+    setSelection(next.baseOffset, next.extentOffset, affinity: next.affinity);
+  }
+
+  /// Whether both ends of [selection] are offsets into the text.
+  bool isSelectionWithinTextBounds(TextSelection selection) =>
+      selection.start >= 0 &&
+      selection.start <= value.length &&
+      selection.end >= 0 &&
+      selection.end <= value.length;
+
+  /// Empties the field - Flutter's `TextEditingController.clear`: no text,
+  /// caret at zero, nothing composing.
+  void clear() => editingValue = TextEditingValue.empty;
+
+  // ---------------------------------------------------------------------
+  // Listeners of either shape
+  // ---------------------------------------------------------------------
+
+  /// Zero-argument listeners, each with the wrapper actually registered.
+  final List<(Function, void Function(String))> _voidListeners =
+      <(Function, void Function(String))>[];
+
+  /// Adds a listener of either shape: `(String value) {...}`, as this
+  /// framework's [ValueNotifier] calls it, or `() {...}`, as Flutter's
+  /// `Listenable` does - so `controller.addListener(() => ...)` and a
+  /// `ListenableBuilder(listenable: controller)` both work.
+  @override
+  void addListener(Function listener) {
+    if (listener is void Function(String)) {
+      super.addListener(listener);
+      return;
+    }
+    if (listener is void Function()) {
+      void wrapper(String _) => listener();
+      _voidListeners.add((listener, wrapper));
+      super.addListener(wrapper);
+      return;
+    }
+    throw ArgumentError.value(
+      listener,
+      'listener',
+      'takes no argument or the String value',
+    );
+  }
+
+  @override
+  void removeListener(Function listener) {
+    if (listener is void Function(String)) {
+      super.removeListener(listener);
+      return;
+    }
+    for (int i = 0; i < _voidListeners.length; i++) {
+      if (_voidListeners[i].$1 == listener) {
+        super.removeListener(_voidListeners.removeAt(i).$2);
+        return;
+      }
+    }
+  }
+
+  /// Nesting depth of [_holdNotifications]; while positive, a notification
+  /// is remembered instead of sent.
+  int _holds = 0;
+  bool _heldNotification = false;
+
+  /// Runs [body] with notifications held, then sends at most one.
+  ///
+  /// How a field makes "the edit, then the input formatters' rewrite of it"
+  /// one change: a listener - a form field validating on every keystroke -
+  /// never sees the text a formatter is about to reject.
+  T _holdNotifications<T>(T Function() body) {
+    _holds++;
+    try {
+      return body();
+    } finally {
+      if (--_holds == 0 && _heldNotification) {
+        _heldNotification = false;
+        super.notifyListeners();
+      }
+    }
+  }
+
+  @override
+  void notifyListeners() {
+    if (_holds > 0) {
+      _heldNotification = true;
+      return;
+    }
+    super.notifyListeners();
   }
 
   int _base = 0;
@@ -775,27 +918,78 @@ enum InactiveSelectionHighlight {
   visible,
 }
 
+/// A field the user types text into.
+///
+/// Takes both this framework's parameters and Flutter's, so a Flutter
+/// `TextField` carries over:
+///
+///  * [controller] may be omitted - the field then keeps its own.
+///  * [decoration] draws Flutter's chrome round the field - label, hint,
+///    helper, error, counter, prefix and suffix, outline or underline - in
+///    the theme's colours; see `InputDecoration`. Without one the field
+///    draws its own box, as it always has, with [label] as the placeholder.
+///  * [inputFormatters], and [maxLength] with [maxLengthEnforcement], rewrite
+///    every edit the user makes - typing, pasting, cutting, an input method's
+///    commit - before the field takes it, as in Flutter; a change made
+///    through the controller is not formatted.
+///  * [onChanged] is called after each user edit that changes the text.
+///  * [textInputAction] decides what Enter does: [TextInputAction.next] and
+///    [TextInputAction.previous] move focus along the tab order, the other
+///    actions leave the field, and [onSubmitted] is called after either
+///    unless [onEditingComplete] replaces the focus change.
+///
+/// ## Where it differs from Flutter
+///
+///  * **Enter in a field with no [textInputAction] does not give up focus.**
+///    Flutter's default action is `done`, which unfocuses; here Enter calls
+///    [onSubmitted] when there is one and otherwise goes on to whatever
+///    above the field owns it - a dialog's default button - which is what a
+///    desktop field does. Naming any action restores Flutter's behaviour.
+///  * **[decoration] null keeps this framework's box**, where Flutter would
+///    draw no decoration at all; `InputDecoration.collapsed` draws none.
+///  * **No `style`, `textAlign`, `cursorColor` or `expands`**: the field
+///    draws in the theme's face and colours.
 final class TextField extends StatefulWidget {
   const TextField({
     super.key,
-    required this.controller,
+    this.controller,
     this.focusNode,
+    this.decoration,
+    this.keyboardType,
+    this.textInputAction,
+    this.textCapitalization = TextCapitalization.none,
+    this.autofocus = false,
+    this.obscureText = false,
     this.label = '',
     this.obscure = false,
     this.readOnly = false,
     this.enabled = true,
     this.inactiveSelection = InactiveSelectionHighlight.dimmed,
     this.editingConvention,
+    this.onChanged,
+    this.onEditingComplete,
     this.onSubmitted,
     this.decorated = true,
     this.maxLines = 1,
     this.minLines,
+    this.maxLength,
+    this.maxLengthEnforcement,
+    this.inputFormatters,
   })  : assert(maxLines == null || maxLines > 0, 'maxLines is at least 1'),
         assert(minLines == null || minLines > 0, 'minLines is at least 1'),
         assert(
           minLines == null || maxLines == null || minLines <= maxLines,
           'minLines cannot exceed maxLines',
+        ),
+        assert(
+          maxLength == null ||
+              maxLength == TextField.noMaxLength ||
+              maxLength > 0,
+          'maxLength is positive, or TextField.noMaxLength',
         );
+
+  /// A [maxLength] that shows the counter with no limit.
+  static const int noMaxLength = -1;
 
   /// How many lines the field shows before it scrolls: 1, the default, is a
   /// single-line field; more makes a text area, where Enter starts a new
@@ -806,17 +1000,48 @@ final class TextField extends StatefulWidget {
   /// How many lines a text area shows even when it holds fewer; null is one.
   final int? minLines;
 
-  final TextEditingController controller;
+  /// The text, selection and undo history. Null: the field keeps its own.
+  final TextEditingController? controller;
 
   /// Whether the field draws its own box - fill, outline and focus outline.
   /// False for a field placed inside a surface that already looks like one:
   /// a search box shaped as a pill, an address bar, a cell being renamed.
+  /// Ignored with a [decoration], which draws the box instead.
   final bool decorated;
   final FocusNode? focusNode;
 
+  /// Flutter's chrome round the field; see the class comment.
+  final InputDecoration? decoration;
+
+  /// What kind of text the field holds. Reaches the input method as the
+  /// field's content purpose; a hardware keyboard types what it types.
+  final TextInputType? keyboardType;
+
+  /// What Enter does; see the class comment. Null keeps Enter for
+  /// [onSubmitted], or for whatever above the field owns it.
+  final TextInputAction? textInputAction;
+
+  /// A hint to the input method; never changes what is typed.
+  final TextCapitalization textCapitalization;
+
+  /// Whether the field takes focus when it first appears and nothing else
+  /// in its scope has it.
+  final bool autofocus;
+
+  /// Flutter's name for [obscure]; either one hides the text.
+  final bool obscureText;
+
   /// Shown, muted, while the field is empty - the placeholder ("Search
-  /// Documents").
+  /// Documents"). With a [decoration], its hint and label take this place.
   final String label;
+
+  /// Called after every edit the user makes that changes the text, with the
+  /// text after the input formatters.
+  final void Function(String value)? onChanged;
+
+  /// Called on Enter in a field with a [textInputAction] - in place of the
+  /// action's focus change, as in Flutter.
+  final void Function()? onEditingComplete;
 
   /// Enter pressed with no modifier and nothing being composed: the value is
   /// confirmed - an address typed, a search run, a rename committed. Null
@@ -850,6 +1075,18 @@ final class TextField extends StatefulWidget {
   final bool readOnly;
   final bool enabled;
 
+  /// The most characters - grapheme clusters - the text may hold, shown by a
+  /// counter under a decorated field. [noMaxLength] shows the counter with
+  /// no limit.
+  final int? maxLength;
+
+  /// How [maxLength] is held to; null is
+  /// [LengthLimitingTextInputFormatter.getDefaultMaxLengthEnforcement].
+  final MaxLengthEnforcement? maxLengthEnforcement;
+
+  /// Rewrite each user edit, in order, before the field takes it.
+  final List<TextInputFormatter>? inputFormatters;
+
   @override
   State<TextField> createState() => _TextFieldState();
 }
@@ -868,29 +1105,51 @@ final class PasswordField extends StatelessWidget {
 
 final class _TextFieldState extends State<TextField> {
   FocusNode? _ownedFocusNode;
+  TextEditingController? _ownedController;
+
+  /// The controller and focus node this state is listening to, so a widget
+  /// that swaps either one is unsubscribed from the old.
+  TextEditingController? _listenedController;
+  FocusNode? _listenedFocus;
 
   FocusNode get _focusNode =>
       widget.focusNode ??
       (_ownedFocusNode ??= FocusNode(debugLabel: 'TextField'));
 
+  TextEditingController get _controller =>
+      widget.controller ?? (_ownedController ??= TextEditingController());
+
   @override
   void initState() {
     super.initState();
-    widget.controller.addListener(_onTextChanged);
+    _listen();
   }
 
   @override
   void didUpdateWidget(TextField oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.controller, widget.controller)) {
-      oldWidget.controller.removeListener(_onTextChanged);
-      widget.controller.addListener(_onTextChanged);
+    _listen();
+  }
+
+  void _listen() {
+    final TextEditingController controller = _controller;
+    if (!identical(controller, _listenedController)) {
+      _listenedController?.removeListener(_onTextChanged);
+      controller.addListener(_onTextChanged);
+      _listenedController = controller;
+    }
+    final FocusNode focus = _focusNode;
+    if (!identical(focus, _listenedFocus)) {
+      _listenedFocus?.removeListener(_onFocusChanged);
+      focus.addListener(_onFocusChanged);
+      _listenedFocus = focus;
     }
   }
 
   @override
   void dispose() {
-    widget.controller.removeListener(_onTextChanged);
+    _listenedController?.removeListener(_onTextChanged);
+    _listenedFocus?.removeListener(_onFocusChanged);
     _ownedFocusNode?.dispose();
     super.dispose();
   }
@@ -901,49 +1160,143 @@ final class _TextFieldState extends State<TextField> {
     if (mounted) setState(() {});
   }
 
-  @override
-  Widget build(BuildContext context) => FocusAttachment(
-        node: _focusNode,
-        child: _TextFieldRenderWidget(
-          controller: widget.controller,
-          label: widget.label,
-          obscure: widget.obscure,
-          readOnly: widget.readOnly,
-          enabled: widget.enabled,
-          inactiveSelection: widget.inactiveSelection,
-          editingConvention: widget.editingConvention,
-          onSubmitted: widget.onSubmitted,
-          decorated: widget.decorated,
-          maxLines: widget.maxLines,
-          minLines: widget.minLines,
-          theme: Theme.of(context),
-          // Read where the theme is read, and for the same reason: the field
-          // must not be handed a clipboard by its parent, and must not reach
-          // for a global one.
-          clipboard: ClipboardScope.of(context),
-          // Null when no scope is installed, and that is a supported state: a
-          // field without one answers a secondary click by moving the caret and
-          // opening nothing, rather than failing.
-          contextMenu: ContextMenuScope.maybeOf(context),
-          // Null when no scope is installed, which is the state of every
-          // headless widget test: the field then composes nothing and types
-          // exactly as it does today. See [TextInputScope].
-          textInputScope: TextInputScope.maybeOf(context),
-          focusNode: _focusNode,
-        ),
+  /// A decorated field draws its focus in the decoration - the border and
+  /// the floating label - so a focus change is a rebuild.
+  void _onFocusChanged(FocusNode node) {
+    if (mounted && widget.decoration != null) setState(() {});
+  }
+
+  /// The decoration with what the field itself adds: its enabled state, and
+  /// the counter a [TextField.maxLength] asks for.
+  InputDecoration _effectiveDecoration(InputDecoration decoration) {
+    final bool enabled = widget.enabled && decoration.enabled;
+    InputDecoration result = enabled == decoration.enabled
+        ? decoration
+        : decoration.copyWith(enabled: enabled);
+    final int? maxLength = widget.maxLength;
+    if (maxLength == null ||
+        result.counter != null ||
+        result.counterText != null) {
+      return result;
+    }
+    final int length =
+        LengthLimitingTextInputFormatter.characterCount(_controller.value);
+    final bool limited = maxLength > 0;
+    result = result.copyWith(
+      counterText: limited ? '$length/$maxLength' : '$length',
+      semanticCounterText:
+          limited ? '${maxLength - length} characters remaining' : '',
+    );
+    if (limited && length > maxLength) {
+      // Past the limit, which only an unenforced field can be: the field is
+      // in error, with no message of its own, and the counter says why.
+      final Color error = Theme.of(context).colorScheme.error;
+      result = result.copyWith(
+        errorText: result.errorText ?? '',
+        counterStyle: result.errorStyle ?? TextStyle(color: error),
       );
+    }
+    return result;
+  }
+
+  List<TextInputFormatter> get _formatters {
+    final int? maxLength = widget.maxLength;
+    final MaxLengthEnforcement enforcement = widget.maxLengthEnforcement ??
+        LengthLimitingTextInputFormatter.getDefaultMaxLengthEnforcement();
+    return <TextInputFormatter>[
+      ...?widget.inputFormatters,
+      if (maxLength != null &&
+          maxLength > 0 &&
+          enforcement != MaxLengthEnforcement.none)
+        LengthLimitingTextInputFormatter(
+          maxLength,
+          maxLengthEnforcement: enforcement,
+        ),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final TextEditingController controller = _controller;
+    final FocusNode focusNode = _focusNode;
+    final InputDecoration? decoration = widget.decoration == null
+        ? null
+        : _effectiveDecoration(widget.decoration!);
+    final bool isFocused = focusNode.hasFocus;
+    final bool isEmpty = controller.value.isEmpty;
+    final String placeholder = decoration == null
+        ? widget.label
+        : DecoratedField.placeholderFor(decoration,
+            isFocused: isFocused, isEmpty: isEmpty);
+    final Widget field = FocusAttachment(
+      node: focusNode,
+      autofocus: widget.autofocus,
+      child: _TextFieldRenderWidget(
+        controller: controller,
+        label: placeholder.isEmpty ? widget.label : placeholder,
+        semanticLabel: decoration?.labelText ?? decoration?.hintText,
+        semanticsInvalid: decoration?.hasError ?? false,
+        obscure: widget.obscure || widget.obscureText,
+        readOnly: widget.readOnly,
+        enabled: widget.enabled && (decoration?.enabled ?? true),
+        inactiveSelection: widget.inactiveSelection,
+        editingConvention: widget.editingConvention,
+        onSubmitted: widget.onSubmitted,
+        onChanged: widget.onChanged,
+        onEditingComplete: widget.onEditingComplete,
+        textInputAction: widget.textInputAction,
+        keyboardType: widget.keyboardType,
+        textCapitalization: widget.textCapitalization,
+        inputFormatters: _formatters,
+        decorated: decoration == null && widget.decorated,
+        maxLines: widget.maxLines,
+        minLines: widget.minLines,
+        theme: Theme.of(context),
+        // Read where the theme is read, and for the same reason: the field
+        // must not be handed a clipboard by its parent, and must not reach
+        // for a global one.
+        clipboard: ClipboardScope.of(context),
+        // Null when no scope is installed, and that is a supported state: a
+        // field without one answers a secondary click by moving the caret and
+        // opening nothing, rather than failing.
+        contextMenu: ContextMenuScope.maybeOf(context),
+        // Null when no scope is installed, which is the state of every
+        // headless widget test: the field then composes nothing and types
+        // exactly as it does today. See [TextInputScope].
+        textInputScope: TextInputScope.maybeOf(context),
+        focusNode: focusNode,
+      ),
+    );
+    if (decoration == null) return field;
+    return DecoratedField(
+      decoration: decoration,
+      isFocused: isFocused,
+      isHovering: false,
+      isEmpty: isEmpty,
+      childIsField: true,
+      child: field,
+    );
+  }
 }
 
 final class _TextFieldRenderWidget extends RenderObjectWidget {
   const _TextFieldRenderWidget({
     required this.controller,
     required this.label,
+    required this.semanticLabel,
+    required this.semanticsInvalid,
     required this.obscure,
     required this.readOnly,
     required this.enabled,
     required this.inactiveSelection,
     required this.editingConvention,
     required this.onSubmitted,
+    required this.onChanged,
+    required this.onEditingComplete,
+    required this.textInputAction,
+    required this.keyboardType,
+    required this.textCapitalization,
+    required this.inputFormatters,
     required this.decorated,
     required this.maxLines,
     required this.minLines,
@@ -956,12 +1309,20 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
 
   final TextEditingController controller;
   final String label;
+  final String? semanticLabel;
+  final bool semanticsInvalid;
   final bool obscure;
   final bool readOnly;
   final bool enabled;
   final InactiveSelectionHighlight inactiveSelection;
   final EditingConvention? editingConvention;
   final void Function(String value)? onSubmitted;
+  final void Function(String value)? onChanged;
+  final void Function()? onEditingComplete;
+  final TextInputAction? textInputAction;
+  final TextInputType? keyboardType;
+  final TextCapitalization textCapitalization;
+  final List<TextInputFormatter> inputFormatters;
   final bool decorated;
   final int? maxLines;
   final int? minLines;
@@ -981,9 +1342,17 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
         obscure: obscure,
         readOnly: readOnly,
       )
+        ..semanticLabel = semanticLabel
+        ..semanticsInvalid = semanticsInvalid
         ..inactiveSelection = inactiveSelection
         ..editingConvention = editingConvention
         ..onSubmitted = onSubmitted
+        ..onChanged = onChanged
+        ..onEditingComplete = onEditingComplete
+        ..textInputAction = textInputAction
+        ..keyboardType = keyboardType
+        ..textCapitalization = textCapitalization
+        ..inputFormatters = inputFormatters
         ..decorated = decorated
         ..maxLines = maxLines
         ..minLines = minLines
@@ -1004,11 +1373,19 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
     object
       ..controller = controller
       ..label = label
+      ..semanticLabel = semanticLabel
+      ..semanticsInvalid = semanticsInvalid
       ..obscure = obscure
       ..readOnly = readOnly
       ..inactiveSelection = inactiveSelection
       ..editingConvention = editingConvention
       ..onSubmitted = onSubmitted
+      ..onChanged = onChanged
+      ..onEditingComplete = onEditingComplete
+      ..textInputAction = textInputAction
+      ..keyboardType = keyboardType
+      ..textCapitalization = textCapitalization
+      ..inputFormatters = inputFormatters
       ..decorated = decorated
       ..maxLines = maxLines
       ..minLines = minLines
@@ -1056,6 +1433,139 @@ final class RenderTextField extends RenderBox
   /// Called on a plain Enter; see [TextField.onSubmitted]. In a text area
   /// Enter is a new line, and Ctrl+Enter (Cmd+Enter on a Mac) submits.
   void Function(String value)? onSubmitted;
+
+  /// See [TextField.onChanged]: after a user edit that changed the text.
+  void Function(String value)? onChanged;
+
+  /// See [TextField.onEditingComplete].
+  void Function()? onEditingComplete;
+
+  /// What Enter does; see [TextField.textInputAction].
+  TextInputAction? textInputAction;
+
+  /// See [TextField.inputFormatters]; the field's own length limit is the
+  /// last of them.
+  List<TextInputFormatter> inputFormatters = const <TextInputFormatter>[];
+
+  TextInputType? _keyboardType;
+
+  /// What kind of text the field holds, for the input method.
+  TextInputType? get keyboardType => _keyboardType;
+
+  set keyboardType(TextInputType? value) {
+    if (value == _keyboardType) return;
+    _keyboardType = value;
+    _syncTextInputState();
+  }
+
+  TextCapitalization _textCapitalization = TextCapitalization.none;
+
+  /// How the input method should capitalise; a hint only.
+  TextCapitalization get textCapitalization => _textCapitalization;
+
+  set textCapitalization(TextCapitalization value) {
+    if (value == _textCapitalization) return;
+    _textCapitalization = value;
+    _syncTextInputState();
+  }
+
+  /// What a screen reader announces the field as, when it is not the
+  /// placeholder: a decorated field's label, which stops being the
+  /// placeholder once it floats.
+  String? semanticLabel;
+
+  /// Whether a screen reader is told the value is invalid: a decorated
+  /// field showing an error.
+  bool semanticsInvalid = false;
+
+  /// How deep in [_userEdit] calls this field is.
+  int _userEdits = 0;
+
+  /// Runs an edit the **user** asked for, then gives it to the
+  /// [inputFormatters] and, if the text changed, to [onChanged].
+  ///
+  /// Flutter's rule, and the reason this is a wrapper and not a controller
+  /// listener: formatters and `onChanged` see what the user did, never what
+  /// the program did through the controller. The controller's listeners are
+  /// held until the formatters have had their say, so they hear one change -
+  /// the formatted one.
+  ///
+  /// [format] is false for an input method's provisional text, which the
+  /// formatters see when it is committed.
+  T _userEdit<T>(T Function() body, {bool format = true}) {
+    if (_userEdits > 0) return body();
+    final TextEditingValue before = _controller.editingValue;
+    final TextEditingController controller = _controller;
+    try {
+      return _formatUserEdit(controller, before, body, format: format);
+    } finally {
+      // Only now: the held notification has just been sent, and it is the
+      // one an Up or Down press must not lose its column to.
+      _movingVertically = false;
+    }
+  }
+
+  T _formatUserEdit<T>(
+    TextEditingController controller,
+    TextEditingValue before,
+    T Function() body, {
+    required bool format,
+  }) {
+    return controller._holdNotifications(() {
+      _userEdits++;
+      final T result;
+      try {
+        result = body();
+      } finally {
+        _userEdits--;
+      }
+      if (controller.value == before.text) return result;
+      final List<TextInputFormatter> formatters = inputFormatters;
+      if (format && formatters.isNotEmpty) {
+        final TextEditingValue edited = controller.editingValue;
+        TextEditingValue formatted = edited;
+        for (final TextInputFormatter formatter in formatters) {
+          formatted = formatter.formatEditUpdate(before, formatted);
+        }
+        if (formatted != edited) controller.editingValue = formatted;
+      }
+      if (controller.value != before.text) onChanged?.call(controller.value);
+      return result;
+    });
+  }
+
+  /// Enter in a field that names an action, or has someone to submit to:
+  /// Flutter's `_finalizeEditing`. [onEditingComplete] replaces the
+  /// action's focus change; [onSubmitted] runs after either.
+  void _finishEditing() {
+    final TextInputAction? action = textInputAction;
+    final void Function()? complete = onEditingComplete;
+    if (complete != null) {
+      complete();
+    } else if (action != null) {
+      _controller.clearComposing();
+      final FocusNode? node = focusNode;
+      switch (action) {
+        case TextInputAction.next:
+          node?.manager?.moveFocus(TraversalDirection.next);
+        case TextInputAction.previous:
+          node?.manager?.moveFocus(TraversalDirection.previous);
+        case TextInputAction.none:
+        case TextInputAction.unspecified:
+        case TextInputAction.done:
+        case TextInputAction.go:
+        case TextInputAction.search:
+        case TextInputAction.send:
+        case TextInputAction.continueAction:
+        case TextInputAction.join:
+        case TextInputAction.route:
+        case TextInputAction.emergencyCall:
+        case TextInputAction.newline:
+          node?.unfocus();
+      }
+    }
+    onSubmitted?.call(_controller.value);
+  }
 
   int? _maxLines = 1;
 
@@ -1808,8 +2318,14 @@ final class RenderTextField extends RenderBox
     );
   }
 
+  /// Every key the field handles is a user edit - see [_userEdit] - so the
+  /// input formatters and [TextField.onChanged] see what Backspace, Delete,
+  /// Enter in a text area and Ctrl+Z did to the text.
   @override
-  bool handleKeyEvent(KeyEvent event) {
+  bool handleKeyEvent(KeyEvent event) =>
+      _userEdit(() => _handleKeyEvent(event));
+
+  bool _handleKeyEvent(KeyEvent event) {
     // Every transition, press *and* release, so that the modifier state a
     // Shift+click reads is the current one. See [_modifiers].
     _modifiers = event.modifiers;
@@ -1924,14 +2440,17 @@ final class RenderTextField extends RenderBox
       }
     }
     switch (event.logicalKey) {
-      // Enter confirms only when someone listens and no modifier asks for
-      // something else; while an input method composes, it is the IME's.
+      // Enter confirms only when someone listens - an action, or a submit
+      // callback - and no modifier asks for something else; while an input
+      // method composes, it is the IME's.
       case logicalKeyEnter
-          when onSubmitted != null &&
+          when (onSubmitted != null ||
+                  textInputAction != null ||
+                  onEditingComplete != null) &&
               !_controller.isComposing &&
               !shift &&
               !event.modifiers.contains(KeyModifier.alt):
-        onSubmitted!(_controller.value);
+        _finishEditing();
         return true;
       case logicalKeyArrowLeft:
         _moveCaretVisually(-1, extend: shift);
@@ -2084,7 +2603,7 @@ final class RenderTextField extends RenderBox
       _textInputConnection?.cancelComposition();
       _clearComposition();
     }
-    _controller.replaceSelection(event.text);
+    _userEdit(() => _controller.replaceSelection(event.text));
     _syncTextInputState();
     return true;
   }
@@ -2180,7 +2699,26 @@ final class RenderTextField extends RenderBox
         hints: <ImeContentHint>{ImeContentHint.sensitiveData},
       );
     }
-    return const TextInputConfiguration();
+    // What the field holds and how to capitalise it, from
+    // [TextField.keyboardType] and [TextField.textCapitalization]: a hint an
+    // input method or a touch keyboard reads, and nothing more.
+    final ImeContentHint? capitalization = _textCapitalization.imeContentHint;
+    final bool multiline =
+        isMultiline || _keyboardType?.index == TextInputType.multiline.index;
+    final ImeContentPurpose purpose =
+        _keyboardType?.imeContentPurpose ?? ImeContentPurpose.normal;
+    if (purpose == ImeContentPurpose.normal &&
+        capitalization == null &&
+        !multiline) {
+      return const TextInputConfiguration();
+    }
+    return TextInputConfiguration(
+      purpose: purpose,
+      hints: <ImeContentHint>{
+        if (capitalization != null) capitalization,
+        if (multiline) ImeContentHint.multiline,
+      },
+    );
   }
 
   /// The text around the caret, **with the preedit taken back out**.
@@ -2290,15 +2828,20 @@ final class RenderTextField extends RenderBox
     if (!enabled || _readOnly) return;
     _compositionClauses = composition.clauses;
     _hidesCompositionCaret = composition.hasHiddenCursor;
+    // Provisional text is not formatted - the formatters see it when it is
+    // committed - but it is a change [TextField.onChanged] reports.
     _applyImeEdit(
-      () => _controller.replaceComposingRegion(
-        composition.text,
-        // The caret goes to the end of the preedit when the method asked for
-        // none: it has to be *somewhere*, and the end is where the next
-        // keystroke lands. Only the painting of it is suppressed.
-        caretOffset: composition.hasHiddenCursor
-            ? composition.text.length
-            : composition.cursorStart,
+      () => _userEdit(
+        format: false,
+        () => _controller.replaceComposingRegion(
+          composition.text,
+          // The caret goes to the end of the preedit when the method asked
+          // for none: it has to be *somewhere*, and the end is where the next
+          // keystroke lands. Only the painting of it is suppressed.
+          caretOffset: composition.hasHiddenCursor
+              ? composition.text.length
+              : composition.cursorStart,
+        ),
       ),
     );
     if (composition.isEmpty) {
@@ -2312,7 +2855,7 @@ final class RenderTextField extends RenderBox
     if (!enabled || _readOnly) return;
     _compositionClauses = const <ImeCompositionClause>[];
     _hidesCompositionCaret = false;
-    _applyImeEdit(() => _controller.commitText(text));
+    _applyImeEdit(() => _userEdit(() => _controller.commitText(text)));
   }
 
   @override
@@ -2322,9 +2865,11 @@ final class RenderTextField extends RenderBox
   }) {
     if (!enabled || _readOnly) return;
     _applyImeEdit(
-      () => _controller.deleteSurrounding(
-        beforeLength: beforeLength,
-        afterLength: afterLength,
+      () => _userEdit(
+        () => _controller.deleteSurrounding(
+          beforeLength: beforeLength,
+          afterLength: afterLength,
+        ),
       ),
     );
   }
@@ -2441,7 +2986,7 @@ final class RenderTextField extends RenderBox
       _lastClipboardError = null;
       return true;
     }
-    _controller.replaceSelection('');
+    _userEdit(() => _controller.replaceSelection(''));
     return true;
   }
 
@@ -2473,7 +3018,7 @@ final class RenderTextField extends RenderBox
         'the clipboard held no text this field can accept',
       );
     }
-    _controller.replaceSelection(text);
+    _userEdit(() => _controller.replaceSelection(text));
     return true;
   }
 
@@ -2918,11 +3463,22 @@ final class RenderTextField extends RenderBox
       case logicalKeyEnter:
         if (_controller.isComposing) return null;
         if (control) {
-          if (onSubmitted == null) return false;
-          onSubmitted!(_controller.value);
+          if (onSubmitted == null &&
+              textInputAction == null &&
+              onEditingComplete == null) {
+            return false;
+          }
+          _finishEditing();
           return true;
         }
         if (alt) return null;
+        // A text area that names an action other than a new line finishes
+        // on Enter, as Flutter's does.
+        final TextInputAction? action = textInputAction;
+        if (action != null && action != TextInputAction.newline && !shift) {
+          _finishEditing();
+          return true;
+        }
         if (!_readOnly) _controller.replaceSelection('\n');
         return true;
       case logicalKeyArrowUp || logicalKeyArrowDown:
@@ -2992,7 +3548,9 @@ final class RenderTextField extends RenderBox
         _controller.collapseToPosition(target);
       }
     } finally {
-      _movingVertically = false;
+      // Inside a user edit the notification is held until the edit ends, and
+      // [_userEdit] clears this once it has gone out.
+      if (_userEdits == 0) _movingVertically = false;
     }
     return true;
   }
@@ -3091,7 +3649,7 @@ final class RenderTextField extends RenderBox
   @override
   SemanticsConfiguration describeSemantics() => SemanticsConfiguration(
         role: SemanticsRole.textField,
-        label: _label,
+        label: semanticLabel ?? _label,
         // Never the real text when obscured: a screen reader announcing a
         // password aloud is the failure section 30.8 is about.
         value: _obscure ? null : _controller.value,
@@ -3100,6 +3658,7 @@ final class RenderTextField extends RenderBox
           if (_readOnly) SemanticsState.readOnly,
           if (_obscure) SemanticsState.obscured,
           if (hasFocus) SemanticsState.focused,
+          if (semanticsInvalid) SemanticsState.invalid,
         },
         actions: enabled
             ? const <SemanticsAction>{
@@ -3128,9 +3687,9 @@ final class RenderTextField extends RenderBox
       return super.performSemanticsAction(action, value: value);
     }
     if (!enabled || _readOnly || value == null) return false;
-    _controller
+    _userEdit(() => _controller
       ..selectAll()
-      ..replaceSelection(value);
+      ..replaceSelection(value));
     return true;
   }
 }

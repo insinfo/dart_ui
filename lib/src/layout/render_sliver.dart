@@ -490,9 +490,11 @@ class RenderSliverViewport extends RenderBoxContainer<BoxParentData> {
   RenderSliverViewport({
     required ScrollPosition position,
     bool reverse = false,
+    bool shrinkWrap = false,
     double cacheExtent = 0,
   })  : _position = position,
         _reverse = reverse,
+        _shrinkWrap = shrinkWrap,
         _cacheExtent = cacheExtent;
 
   /// How many times one layout may be restarted by a scroll offset
@@ -506,6 +508,7 @@ class RenderSliverViewport extends RenderBoxContainer<BoxParentData> {
 
   ScrollPosition _position;
   bool _reverse;
+  bool _shrinkWrap;
   double _cacheExtent;
   bool _listening = false;
   double _scrollExtent = 0;
@@ -529,6 +532,18 @@ class RenderSliverViewport extends RenderBoxContainer<BoxParentData> {
   set reverse(bool value) {
     if (value == _reverse) return;
     _reverse = value;
+    markNeedsLayout();
+  }
+
+  /// Whether the viewport is as long as its slivers' total scroll extent -
+  /// up to the space it is given - rather than as long as it may be:
+  /// Flutter's `shrinkWrap`. Along an unbounded axis this is the only way a
+  /// sliver viewport has a size, and every sliver is then laid out in full.
+  bool get shrinkWrap => _shrinkWrap;
+
+  set shrinkWrap(bool value) {
+    if (value == _shrinkWrap) return;
+    _shrinkWrap = value;
     markNeedsLayout();
   }
 
@@ -604,6 +619,10 @@ class RenderSliverViewport extends RenderBoxContainer<BoxParentData> {
 
   @override
   void performLayout() {
+    if (_shrinkWrap) {
+      _performShrinkWrapLayout();
+      return;
+    }
     size = constraints.constrain(
       Size(
         constraints.hasBoundedWidth
@@ -617,6 +636,59 @@ class RenderSliverViewport extends RenderBoxContainer<BoxParentData> {
     final bool vertical = axis == ScrollAxis.vertical;
     final double mainExtent = vertical ? size.height : size.width;
     final double crossExtent = vertical ? size.width : size.height;
+    _layoutAt(mainExtent, crossExtent);
+  }
+
+  /// [shrinkWrap]: the slivers are laid out against the largest extent the
+  /// viewport may have, and the viewport then takes the extent they used.
+  /// A list shorter than that space is laid out once; a longer one fills it
+  /// and scrolls.
+  void _performShrinkWrapLayout() {
+    final bool vertical = axis == ScrollAxis.vertical;
+    final double maxMain =
+        vertical ? constraints.maxHeight : constraints.maxWidth;
+    final double minMain =
+        vertical ? constraints.minHeight : constraints.minWidth;
+    final double crossExtent = vertical
+        ? (constraints.hasBoundedWidth
+            ? constraints.maxWidth
+            : constraints.minWidth)
+        : (constraints.hasBoundedHeight
+            ? constraints.maxHeight
+            : constraints.minHeight);
+    if (maxMain.isFinite) {
+      _layoutAt(maxMain, crossExtent);
+    } else {
+      // An unbounded axis: the slivers cannot be laid out against an
+      // infinite viewport (a lazy list would realize every child it has,
+      // and index arithmetic does not survive infinity). Lay them out
+      // against their own reported extent instead, until it stops changing:
+      // a fixed-extent list settles on the second pass, a measured one once
+      // its estimates have been replaced by measurements.
+      double probe = 0;
+      for (int pass = 0; pass <= maxCorrections; pass++) {
+        _layoutAt(probe, crossExtent);
+        if (_scrollExtent == probe || !_scrollExtent.isFinite) break;
+        probe = _scrollExtent;
+      }
+    }
+    // A sliver that fills the viewport has no extent of its own when the
+    // viewport has none; the smallest allowed size is the only finite answer.
+    final double mainExtent = _scrollExtent.isFinite
+        ? _scrollExtent.clamp(minMain, maxMain)
+        : minMain;
+    size = vertical
+        ? Size(crossExtent, mainExtent)
+        : Size(mainExtent, crossExtent);
+    if (mainExtent != maxMain) {
+      // The slivers were told the viewport was larger than it is; tell them
+      // the truth so their paint extents, and the position's range, agree
+      // with the size just taken.
+      _layoutAt(mainExtent, crossExtent);
+    }
+  }
+
+  void _layoutAt(double mainExtent, double crossExtent) {
     _corrections = 0;
     for (int attempt = 0; attempt <= maxCorrections; attempt++) {
       final double pixels = _position.pixels;

@@ -181,20 +181,40 @@ final class CommandSpec {
   /// This command with another [label] or [description] - a translation:
   /// the id, the keys and the behaviour stay, so a script written against
   /// one language runs in every other.
-  CommandSpec copyWith({String? label, String? description}) => CommandSpec(
-        id: id,
-        label: label ?? this.label,
-        run: run,
-        description: description ?? this.description,
-        shortcut: shortcut,
-        alsoShortcuts: alsoShortcuts,
-        params: params,
-        when: when,
-        enabled: enabled,
-        disabledReason: disabledReason,
-        checked: checked,
-        currentLabel: currentLabel,
-      );
+  ///
+  /// [reason] translates what [when] and [disabledReason] answer, so a
+  /// disabled button's tooltip speaks the language its label does
+  /// ("Copiar - nenhum item selecionado", not "Copiar - nothing is
+  /// selected"). Whether the command is enabled does not change.
+  CommandSpec copyWith({
+    String? label,
+    String? description,
+    String Function(String reason)? reason,
+  }) {
+    final String? Function(CommandArgs args)? why = when;
+    final String Function(CommandArgs args)? because = disabledReason;
+    return CommandSpec(
+      id: id,
+      label: label ?? this.label,
+      run: run,
+      description: description ?? this.description,
+      shortcut: shortcut,
+      alsoShortcuts: alsoShortcuts,
+      params: params,
+      when: reason == null || why == null
+          ? why
+          : (CommandArgs args) {
+              final String? text = why(args);
+              return text == null ? null : reason(text);
+            },
+      enabled: enabled,
+      disabledReason: reason == null || because == null
+          ? because
+          : (CommandArgs args) => reason(because(args)),
+      checked: checked,
+      currentLabel: currentLabel,
+    );
+  }
 
   bool get isEnabled => isEnabledWith(CommandArgs.empty);
   bool? get isChecked => isCheckedWith(CommandArgs.empty);

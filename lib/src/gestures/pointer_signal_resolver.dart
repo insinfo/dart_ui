@@ -65,7 +65,7 @@ final class PointerSignalResolver {
     void Function(E event) callback,
   ) {
     final PointerEvent? pending = _currentEvent;
-    if (pending != null && !identical(pending, event)) {
+    if (pending != null && !_same(pending, event)) {
       throw StateError(
         'PointerSignalResolver.register() was called for a different event '
         'than the one still pending. Registration is only valid while the '
@@ -87,13 +87,18 @@ final class PointerSignalResolver {
   /// Always leaves the resolver empty, including when the callback throws:
   /// a pending registration that outlived its event would attach itself to the
   /// next notch of the wheel.
+  /// The same event, or a copy of it a listener made for its own box -
+  /// see [PointerEvent.original].
+  static bool _same(PointerEvent a, PointerEvent b) =>
+      identical(a.original ?? a, b.original ?? b);
+
   bool resolve(PointerEvent event) {
     final void Function()? callback = _firstRegistered;
     final PointerEvent? pending = _currentEvent;
     _firstRegistered = null;
     _currentEvent = null;
     if (callback == null || pending == null) return false;
-    if (!identical(pending, event)) {
+    if (!_same(pending, event)) {
       throw StateError(
         'PointerSignalResolver.resolve() was called for an event other than '
         'the one candidates registered for.',

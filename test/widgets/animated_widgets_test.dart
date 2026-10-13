@@ -191,7 +191,7 @@ void main() {
         ..tickNow()
         ..advance(const Duration(milliseconds: 50));
       final BoxDecoration now =
-          h.findAll<RenderDecoratedBox>().single.decoration;
+          h.findAll<RenderDecoratedBox>().single.decoration as BoxDecoration;
       expect(now.radius, 5);
       expect(now.border!.width, 1, reason: 'grows from nothing');
       expect(now.color, const Color(0xFF800000));

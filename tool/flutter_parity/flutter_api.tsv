@@ -356,6 +356,7 @@ foundation	function	compute
 foundation	function	consolidateHttpClientResponseBytes
 foundation	variable	dashedTextConfiguration
 foundation	function	debugAssertAllFoundationVarsUnset
+foundation	function	debugDefaultTargetPlatformOverride
 foundation	function	debugFormatDouble
 foundation	function	debugInstrumentAction
 foundation	function	debugMaybeDispatchCreated
@@ -1228,6 +1229,7 @@ painting	function	debugAssertAllPaintingVarsUnset
 painting	function	debugCheckCanResolveTextDirection
 painting	function	debugDescribeTransform
 painting	function	debugFlushLastFrameImageSizeInfo
+painting	function	decodeImageFromList
 painting	function	flipAxis
 painting	function	flipAxisDirection
 painting	const	kDefaultFontSize
@@ -1567,6 +1569,7 @@ scheduler	class	Ticker
 scheduler	typedef	TickerCallback
 scheduler	function	debugAssertAllSchedulerVarsUnset
 scheduler	function	defaultSchedulingStrategy
+scheduler	function	timeDilation
 semantics	enum	AccessibilityFocusBlockType
 semantics	class	AnnounceSemanticsEvent
 semantics	enum	Assertiveness

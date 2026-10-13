@@ -6,10 +6,24 @@ import 'element.dart';
 abstract class Key {
   const factory Key(String value) = ValueKey<String>;
   const Key._();
+
+  /// For subclasses: Flutter's constructor for a key with no value of its
+  /// own, which is what lets `LocalKey` and the other key kinds live in
+  /// other files.
+  const Key.empty();
 }
 
-final class ValueKey<T> extends Key {
-  const ValueKey(this.value) : super._();
+/// A key compared only among siblings - Flutter's `LocalKey`. [ValueKey],
+/// `ObjectKey` and `UniqueKey` are local keys; a [GlobalKey] is not.
+abstract class LocalKey extends Key {
+  const LocalKey() : super.empty();
+}
+
+/// A key equal to another of the same type with an equal [value].
+///
+/// Not final, as in Flutter: `PageStorageKey` extends it.
+class ValueKey<T> extends LocalKey {
+  const ValueKey(this.value);
 
   final T value;
 
@@ -54,8 +68,16 @@ final class ValueKey<T> extends Key {
 /// Exactly one live element may carry a given key at a time; a second is a
 /// [DuplicateGlobalKeyError] rather than a tree in which the registry answers
 /// with whichever widget was built last.
-final class GlobalKey<T extends State<StatefulWidget>> extends Key {
+class GlobalKey<T extends State<StatefulWidget>> extends Key {
   GlobalKey({this.debugLabel}) : super._();
+
+  /// For subclasses with value identity, such as `GlobalObjectKey` - the
+  /// constructor Flutter gives the same name. Such a key is `const`, so its
+  /// subclass has to define equality, or two unrelated widgets would share
+  /// one identity.
+  const GlobalKey.constructor()
+      : debugLabel = null,
+        super._();
 
   /// A name for diagnostics. Never used for identity.
   final String? debugLabel;
@@ -151,6 +173,18 @@ abstract interface class BuildContext {
 
   /// Walks ancestors from the parent upward until [visitor] returns false.
   void visitAncestorElements(bool Function(Element element) visitor);
+
+  /// The element of the nearest enclosing [T], without creating a
+  /// dependency - Flutter's lookup that packages such as `provider` build on.
+  InheritedElement?
+      getElementForInheritedWidgetOfExactType<T extends InheritedWidget>();
+
+  /// Registers this location as a dependent of [ancestor], optionally for one
+  /// [aspect] of it (see `InheritedModel`), and returns its widget.
+  InheritedWidget dependOnInheritedElement(
+    InheritedElement ancestor, {
+    Object? aspect,
+  });
 }
 
 /// Immutable configuration for one location in the element tree.

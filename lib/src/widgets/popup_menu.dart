@@ -499,6 +499,7 @@ final class _PopupMenuSurface extends MultiChildRenderObjectWidget {
   _RenderPopupMenuSurface createRenderObject(BuildContext context) =>
       _RenderPopupMenuSurface()
         ..theme = theme
+        ..platformOutline = PopupWindowFrame.outlinedOf(context)
         ..semanticLabel = semanticLabel;
 
   @override
@@ -508,6 +509,7 @@ final class _PopupMenuSurface extends MultiChildRenderObjectWidget {
   ) {
     renderObject
       ..theme = theme
+      ..platformOutline = PopupWindowFrame.outlinedOf(context)
       ..semanticLabel = semanticLabel;
   }
 }
@@ -523,6 +525,10 @@ final class _PopupMenuSurface extends MultiChildRenderObjectWidget {
 final class _RenderPopupMenuSurface extends RenderBoxContainer<BoxParentData>
     with ControlBehavior {
   String? semanticLabel;
+
+  /// Whether the window this surface fills outlines it already - see
+  /// [PopupWindowFrame]. The surface then paints no hairline of its own.
+  bool platformOutline = false;
 
   /// The air above the first row and below the last, matching [RenderMenu].
   double get verticalPadding => 4;
@@ -573,7 +579,7 @@ final class _RenderPopupMenuSurface extends RenderBoxContainer<BoxParentData>
     );
     final double radius = theme.cornerRadiusLarge;
     paintRoundedFill(list, rect, theme.surfaceRaised, radius);
-    paintRoundedBorder(list, rect, theme.border, radius);
+    if (!platformOutline) paintRoundedBorder(list, rect, theme.border, radius);
     super.paint(list, offset);
   }
 

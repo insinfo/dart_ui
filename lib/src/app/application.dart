@@ -191,6 +191,7 @@ import '../widgets/widget.dart';
 import '../widgets/window_scope.dart';
 import 'application_info.dart';
 import 'frame_loop.dart';
+import 'widgets_binding.dart';
 import 'window_host.dart';
 import 'window_popup_host.dart';
 
@@ -971,7 +972,13 @@ double _parsePositiveDouble(String source, String flag) {
 /// ```
 ///
 /// Returns the [Application] *after* it has been torn down, so a caller can
-/// still read [Application.framesPresented] and friends for a summary. Use
+/// still read [Application.framesPresented] and friends for a summary.
+///
+/// Flutter's semantics where they apply: the started application is attached
+/// to [WidgetsBinding.instance] (callbacks queued on the binding before this
+/// call run on the first frame), and calling this again while it runs
+/// replaces the root widget of its primary window instead of starting a
+/// second application - the returned future is then the running one's. Use
 /// [Application.start] instead when the loop needs to be driven by hand, or
 /// when more than one window is wanted - [Application.openWindow] needs a
 /// started application to open into.
@@ -982,15 +989,33 @@ Future<Application> runApp(
   ApplicationOptions options = const ApplicationOptions(),
   FutureOr<void> Function(Application application)? onStarted,
 }) async {
+  // Flutter's rule for a second call: the running application keeps its
+  // window and its loop, and [rootWidget] replaces the old root - reconciled,
+  // so state survives when the type and key allow it. `runApp(Splash())`,
+  // some `await`s, then `runApp(MyApp())` is a common migrated `main`.
+  final WidgetsBinding binding = WidgetsFlutterBinding.ensureInitialized();
+  final Future<Application>? running = binding.whenApplicationDone;
+  final Application? current = binding.application;
+  if (running != null && current != null && binding.hasRunningApplication) {
+    current.primaryWindow.updateRoot(rootWidget);
+    return running;
+  }
   final application = await Application.start(
     rootWidget: rootWidget,
     backends: backends,
     presentations: presentations,
     options: options,
   );
+  final Completer<Application> done = Completer<Application>();
+  binding.attachApplication(application, whenDone: done.future);
   // Before the loop, so whatever it attaches - a control channel, a probe,
   // a recorder - sees the first frame.
-  if (onStarted != null) await onStarted(application);
+  try {
+    if (onStarted != null) await onStarted(application);
+  } on Object {
+    binding.detachApplication(application);
+    rethrow;
+  }
   final completion = Completer<void>();
   try {
     runZonedGuarded<void>(
@@ -1011,6 +1036,9 @@ Future<Application> runApp(
   } finally {
     application.dispose();
     await application.closed;
+    // After the teardown, so observers hear the application go to detached.
+    binding.detachApplication(application);
+    done.complete(application);
   }
   return application;
 }
@@ -2509,7 +2537,39 @@ final class Application with DisposableMixin {
   ApplicationWindow? _primary;
   NativeWindowId? _keyboardFocus;
   Future<void>? _pendingShutdown;
-  ApplicationLifecycleState _state = ApplicationLifecycleState.starting;
+  ApplicationLifecycleState _stateValue = ApplicationLifecycleState.starting;
+
+  /// Every assignment goes through here so that [addLifecycleListener]'s
+  /// listeners hear each transition, wherever in this file it happens.
+  ApplicationLifecycleState get _state => _stateValue;
+  set _state(ApplicationLifecycleState value) {
+    if (value == _stateValue) return;
+    _stateValue = value;
+    _notifyLifecycle();
+  }
+
+  final List<void Function()> _lifecycleListeners = <void Function()>[];
+
+  /// Calls [listener] after [state] changes and after a window's activation
+  /// changes - what `WidgetsBinding` turns into `AppLifecycleState`.
+  void addLifecycleListener(void Function() listener) =>
+      _lifecycleListeners.add(listener);
+
+  /// Stops calling [listener]; returns whether it was registered.
+  bool removeLifecycleListener(void Function() listener) =>
+      _lifecycleListeners.remove(listener);
+
+  void _notifyLifecycle() {
+    for (final void Function() listener
+        in List<void Function()>.of(_lifecycleListeners)) {
+      try {
+        listener();
+      } catch (error, stackTrace) {
+        _reportUnhandledAsync(error, stackTrace);
+      }
+    }
+  }
+
   bool _runCalled = false;
   bool _tearingDown = false;
 
@@ -2675,6 +2735,23 @@ final class Application with DisposableMixin {
   /// `shutdown()` is not. Rather than pretend, the bag starts the shutdown and
   /// this future is where it lands.
   Future<void> get closed => _pendingShutdown ?? Future<void>.value();
+
+  /// Whether the application is ending because its last top-level window
+  /// went away - the user's close button, the platform destroying it, or code
+  /// closing it - under [ApplicationOptions.exitWhenLastWindowClosed].
+  ///
+  /// False for every other end: a frame budget met, or [requestClose] called
+  /// directly. It is what the production `runApp` reads to decide that the
+  /// process ends with the window, as a desktop application's does.
+  bool get endedWithLastWindow => _endedWithLastWindow;
+  bool _endedWithLastWindow = false;
+
+  /// [requestClose], remembering that the last window is why.
+  void _closeWithLastWindow() {
+    if (isDisposed || _state == ApplicationLifecycleState.closing) return;
+    _endedWithLastWindow = true;
+    requestClose();
+  }
 
   /// Both selection reports plus a line per open window, ready to be logged
   /// verbatim on startup.
@@ -3333,6 +3410,21 @@ final class Application with DisposableMixin {
           .contains(Capability.nativePopups) ??
       false;
 
+  /// Whether a popup window shows the alpha of what it draws - see
+  /// [Capability.transparentPopups].
+  ///
+  /// When it does, [openPopup] clears the popup to [popupClearColor] and the
+  /// menu's own rounded surface is the window's whole shape. When it does
+  /// not, a transparent pixel would come out black, so the popup keeps the
+  /// application's clear colour.
+  bool get popupWindowsAreTransparent =>
+      windowingSelection.chosen?.probe.capabilities
+          .contains(Capability.transparentPopups) ??
+      false;
+
+  /// What a popup window is cleared to when [popupWindowsAreTransparent].
+  static const Color popupClearColor = Color(0x00000000);
+
   /// One [WindowPopupHost] per top-level owner window, shared by its whole
   /// chain.
   ///
@@ -3476,6 +3568,11 @@ final class Application with DisposableMixin {
       owner: parent.id,
       kind: kind.windowKind,
       focus: false,
+      // Transparent where the platform composites the alpha: the menu draws
+      // its own rounded surface and hairline, and anything opaque around it
+      // would be a second, square frame.
+      clearColor: popupWindowsAreTransparent ? popupClearColor : null,
+      backgroundColor: popupWindowsAreTransparent ? popupClearColor : null,
     );
     popup.popupKind = kind;
     // Both before the tree mounts, which [measureRoot] below is about to do.
@@ -3779,7 +3876,7 @@ final class Application with DisposableMixin {
     }
 
     if (topLevelWindows.isEmpty && options.exitWhenLastWindowClosed) {
-      requestClose();
+      _closeWithLastWindow();
     }
     _syncSuspension();
   }
@@ -3870,6 +3967,7 @@ final class Application with DisposableMixin {
       // here would put the keyboard somewhere the platform did not.
       if (_keyboardFocus == window.id) _keyboardFocus = null;
     }
+    _notifyLifecycle();
   }
 
   // ---------------------------------------------------------------------------
@@ -4355,7 +4453,7 @@ final class Application with DisposableMixin {
       // See the library comment: teardown of the last window is the
       // application's single ordered pass, not an unwind from inside an event
       // handler that `run()` is still iterating around.
-      requestClose();
+      _closeWithLastWindow();
       return;
     }
     closeWindow(window.id);

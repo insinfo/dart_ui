@@ -18,6 +18,7 @@ import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../layout/alignment.dart';
 import '../layout/box_constraints.dart';
+import '../layout/decoration.dart' show Decoration;
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
 import '../layout/render_stack.dart' show StackFit;
@@ -131,8 +132,9 @@ final class _TweenAnimationBuilderState<T>
 ///
 /// [width] and [height] animate when both ends are numbers and snap when one
 /// is null (unconstrained has no number to walk from). A decoration animates
-/// its colour, its corner radius and its border's colour and width; a border
-/// that appears or disappears grows from, or shrinks to, nothing.
+/// through [Decoration.lerp], as in Flutter: colour, radii, borders and
+/// shadows interpolate, and a border or shadow that appears or disappears
+/// grows from, or shrinks to, nothing.
 /// [constraints] and [transform] are set, not animated.
 final class AnimatedContainer extends ImplicitlyAnimatedWidget {
   const AnimatedContainer({
@@ -155,7 +157,7 @@ final class AnimatedContainer extends ImplicitlyAnimatedWidget {
   final Alignment? alignment;
   final EdgeInsets? padding;
   final Color? color;
-  final BoxDecoration? decoration;
+  final Decoration? decoration;
   final double? width;
   final double? height;
   final BoxConstraints? constraints;
@@ -177,8 +179,8 @@ final class _AnimatedContainerState
       AnimatedProperty<EdgeInsets?>(widget.margin, _lerpInsets);
   late final AnimatedProperty<Color?> _color =
       AnimatedProperty<Color?>(widget.color, _lerpColor);
-  late final AnimatedProperty<BoxDecoration?> _decoration =
-      AnimatedProperty<BoxDecoration?>(widget.decoration, _lerpDecoration);
+  late final AnimatedProperty<Decoration?> _decoration =
+      AnimatedProperty<Decoration?>(widget.decoration, Decoration.lerp);
   late final AnimatedProperty<double?> _width =
       AnimatedProperty<double?>(widget.width, lerpNullableDouble);
   late final AnimatedProperty<double?> _height =
@@ -197,27 +199,6 @@ final class _AnimatedContainerState
           ? null
           : lerpColor(
               a ?? const Color(0x00000000), b ?? const Color(0x00000000), t);
-
-  static BoxDecoration? _lerpDecoration(
-      BoxDecoration? a, BoxDecoration? b, double t) {
-    if (a == null && b == null) return null;
-    const BoxDecoration none = BoxDecoration();
-    final BoxDecoration from = a ?? none;
-    final BoxDecoration to = b ?? none;
-    final BoxBorder? border = from.border == null && to.border == null
-        ? null
-        : BoxBorder(
-            color: _lerpColor(from.border?.color ?? to.border!.color,
-                to.border?.color ?? from.border!.color, t)!,
-            width:
-                lerpDouble(from.border?.width ?? 0, to.border?.width ?? 0, t),
-          );
-    return BoxDecoration(
-      color: _lerpColor(from.color, to.color, t),
-      border: border,
-      radius: lerpDouble(from.radius, to.radius, t),
-    );
-  }
 
   @override
   bool retarget(double from) {

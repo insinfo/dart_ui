@@ -14,11 +14,18 @@
 library;
 
 import '../geometry/offset.dart';
+import '../geometry/rect.dart';
+import '../geometry/rrect.dart';
 import '../geometry/transform2d.dart';
 import '../graphics/content_hint.dart';
 import '../graphics/display_list_opcodes.dart';
 import '../layout/alignment.dart';
+import '../layout/border_radius.dart';
+import '../layout/canvas.dart' show Clip;
+import '../layout/custom_painter.dart';
+import '../layout/decoration.dart' show Decoration, DecorationPosition;
 import '../layout/render_proxy_box.dart' as layout;
+import 'directionality.dart';
 import 'element.dart';
 import 'widget.dart';
 
@@ -222,70 +229,128 @@ final class Transform extends SingleChildRenderObjectWidget {
   }
 }
 
-/// Clips its child to its own box.
+/// Clips its child to its own box, or to the rectangle [clipper] returns -
+/// Flutter's `ClipRect`.
 ///
 /// The clip and the hit region are the same rectangle by construction, so a
 /// control scrolled out of view cannot keep swallowing clicks.
 final class ClipRect extends SingleChildRenderObjectWidget {
-  const ClipRect({super.key, super.child});
+  const ClipRect({
+    super.key,
+    this.clipper,
+    this.clipBehavior = Clip.hardEdge,
+    super.child,
+  });
+
+  final CustomClipper<Rect>? clipper;
+
+  /// [Clip.none] paints the child unclipped.
+  final Clip clipBehavior;
 
   @override
   layout.RenderClipRect createRenderObject(BuildContext context) =>
-      layout.RenderClipRect();
+      layout.RenderClipRect(clipper: clipper, clipBehavior: clipBehavior);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant layout.RenderClipRect renderObject,
+  ) {
+    renderObject
+      ..clipper = clipper
+      ..clipBehavior = clipBehavior;
+  }
 }
 
-/// Clips its child to its own box with rounded corners.
+/// Clips its child to a rounded rectangle - Flutter's `ClipRRect`.
 ///
-/// **Read [layout.RenderClipRRect] before using this.** The corners round for a
-/// pointer and not for a pixel: no rasterizer here implements `opClipPath`, so
-/// paint falls back to the rectangular clip and the four corner wedges are not
-/// cut. For a rounded *card* - the common case - use [DecoratedBox] with a
-/// radius, whose rounding is real, and reach for this only when content
-/// genuinely has to be cut to the shape.
+/// The corners are [borderRadius] (or the framework's original circular
+/// [radius] when [borderRadius] is zero), or whatever [clipper] returns. They
+/// are cut in paint and refuse the pointer; see [layout.RenderClipRRect] for
+/// how, and what a rounded clip costs (an offscreen layer while on screen).
+/// For a rounded *card* whose content stays inside anyway, a [DecoratedBox]
+/// with a radius is cheaper.
 final class ClipRRect extends SingleChildRenderObjectWidget {
-  const ClipRRect({super.key, this.radius = 0.0, super.child});
+  const ClipRRect({
+    super.key,
+    this.borderRadius = BorderRadius.zero,
+    this.clipper,
+    this.clipBehavior = Clip.antiAlias,
+    this.radius = 0.0,
+    super.child,
+  });
 
-  /// Circular radius on all four corners, clamped at use to half the shorter
-  /// side.
+  /// Flutter's per-corner radii; resolved with the ambient [Directionality].
+  final BorderRadiusGeometry borderRadius;
+
+  final CustomClipper<RRect>? clipper;
+
+  /// [Clip.none] paints the child unclipped; [Clip.hardEdge] cuts aliased.
+  final Clip clipBehavior;
+
+  /// The framework's original circular radius on all four corners, used when
+  /// [borderRadius] is zero. Clamped at use to half the shorter side.
   final double radius;
 
   @override
   layout.RenderClipRRect createRenderObject(BuildContext context) =>
-      layout.RenderClipRRect(radius: radius);
+      layout.RenderClipRRect(
+        radius: radius,
+        borderRadius: borderRadius,
+        clipper: clipper,
+        clipBehavior: clipBehavior,
+        textDirection: Directionality.maybeOf(context),
+      );
 
   @override
   void updateRenderObject(
     BuildContext context,
     covariant layout.RenderClipRRect renderObject,
   ) {
-    renderObject.radius = radius;
+    renderObject
+      ..radius = radius
+      ..borderRadius = borderRadius
+      ..clipper = clipper
+      ..clipBehavior = clipBehavior
+      ..textDirection = Directionality.maybeOf(context);
   }
 }
 
-/// Paints a fill, a border and a corner radius behind its child.
+/// Paints a [Decoration] behind (or, with [position], in front of) its
+/// child - Flutter's `DecoratedBox`.
 ///
-/// This is the rounded card. Unlike [ClipRRect] the radius is honoured in
-/// paint, because `opDrawRRect` is implemented and `opClipPath` is not.
-/// Shadows and gradients are declared absent by name on [BoxDecoration].
+/// A [BoxDecoration] or a [ShapeDecoration]: fills, borders, corner radii and
+/// shadows. Directional radii and borders resolve with the ambient
+/// [Directionality].
 final class DecoratedBox extends SingleChildRenderObjectWidget {
   const DecoratedBox({
     super.key,
     this.decoration = const layout.BoxDecoration(),
+    this.position = DecorationPosition.background,
     super.child,
   });
 
-  final layout.BoxDecoration decoration;
+  final Decoration decoration;
+
+  final DecorationPosition position;
 
   @override
   layout.RenderDecoratedBox createRenderObject(BuildContext context) =>
-      layout.RenderDecoratedBox(decoration: decoration);
+      layout.RenderDecoratedBox(
+        decoration: decoration,
+        position: position,
+        textDirection: Directionality.maybeOf(context),
+      );
 
   @override
   void updateRenderObject(
     BuildContext context,
     covariant layout.RenderDecoratedBox renderObject,
   ) {
-    renderObject.decoration = decoration;
+    renderObject
+      ..decoration = decoration
+      ..position = position
+      ..textDirection = Directionality.maybeOf(context);
   }
 }
 

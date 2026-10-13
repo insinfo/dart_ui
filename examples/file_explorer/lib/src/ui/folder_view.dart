@@ -314,18 +314,21 @@ class FolderView extends StatelessWidget {
             : iconSize < 64
                 ? 96
                 : iconSize + 32;
-    // Files' Large icons: a 128 px cell, the name on one line under it.
+    // Files' Large icons: a 128 x 132 px cell, the name on one line under
+    // it, the rows touching - the tiles' own 2 px margins keep them apart.
     final double cellHeight = list
         ? 28
         : tiles
             ? 72
-            : iconSize + 44;
+            : iconSize + 36;
     return _background(GestureDetector(
       behavior: GestureHitTestBehavior.opaque,
       // A click between the items drops the selection, as in Explorer.
       onTap: () => _select(const <String>[]),
+      // 4 px short on the right, as Files leaves it, so six 128 px cells
+      // fit beside a 232 px sidebar in a 1024 px window.
       child: Padding(
-        padding: const EdgeInsets.all(8),
+        padding: const EdgeInsets.only(left: 8, top: 7, right: 4, bottom: 6),
         child: LayoutBuilder(
           builder: (BuildContext context, BoxConstraints constraints) {
             final int perRow =
@@ -333,7 +336,7 @@ class FolderView extends StatelessWidget {
             final int rows = (items.length + perRow - 1) ~/ perRow;
             return ListView.builder(
               itemCount: rows,
-              itemExtent: cellHeight + 4,
+              itemExtent: list || tiles ? cellHeight + 4 : cellHeight,
               itemBuilder: (BuildContext context, int row) => Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: <Widget>[
@@ -406,12 +409,12 @@ class FolderView extends StatelessWidget {
                     ),
                   )
                 : Padding(
-                    padding: const EdgeInsets.all(6),
+                    padding: const EdgeInsets.only(
+                        left: 6, top: 2, right: 6, bottom: 6),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: <Widget>[
                         _picture(entry, iconSize),
-                        const SizedBox(height: 6),
                         if (renaming)
                           SizedBox(height: 28, child: renameField(entry))
                         else

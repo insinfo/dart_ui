@@ -1491,6 +1491,12 @@ final class HostCommands {
 
   static String show() => 'SHOW\n';
 
+  /// The `CGWindowID` of the window a popup or tooltip belongs to. While
+  /// that window's application is not the active one, the panel is kept at
+  /// the normal level, directly above it, instead of at the pop-up menu
+  /// level above every application.
+  static String setOwner(int windowNumber) => 'OWNER $windowNumber\n';
+
   static String hide() => 'HIDE\n';
 
   static String setCursor(String name) => 'CURSOR $name\n';

@@ -268,6 +268,38 @@ void main() {
         reason: 'only the words change');
   });
 
+  test('in Portuguese a disabled command says why in Portuguese', () {
+    CommandRegistry registered(ExplorerStrings strings) {
+      final ExplorerModel m = ExplorerModel(
+        fs: disk(),
+        places: const <Place, String>{},
+        strings: strings,
+      );
+      final CommandRegistry registry = CommandRegistry();
+      registerExplorerCommands(registry, m, HeadlessExplorerHost());
+      return registry;
+    }
+
+    final CommandRegistry pt = registered(ExplorerStrings.portuguese);
+    final CommandRegistry en = registered(ExplorerStrings.english);
+    // What a disabled toolbar button's tooltip reads: "Copiar - <reason>".
+    expect(pt['file.copy']!.disabledReasonWith(CommandArgs.empty),
+        'nenhum item selecionado');
+    expect(en['file.copy']!.disabledReasonWith(CommandArgs.empty),
+        'nothing is selected');
+    expect(pt['file.copy']!.isEnabled, isFalse,
+        reason: 'translating the reason does not enable the command');
+    // Every reason a command gives right now is one the table translates.
+    final Set<String> translated =
+        ExplorerStrings.portuguese.reasons.values.toSet();
+    for (final Map<String, Object?> c in pt.describe()) {
+      final String id = c['id']! as String;
+      final String? why = pt[id]!.disabledReasonWith(CommandArgs.empty);
+      if (why == null) continue;
+      expect(translated, contains(why), reason: '$id says "$why"');
+    }
+  });
+
   test('hidden, protected and known-extension rules, as Windows applies them',
       () async {
     final MemoryFileSystem fs = disk()

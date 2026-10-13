@@ -77,7 +77,7 @@ class BarButton extends StatelessWidget {
           ),
           child: Padding(
             padding: EdgeInsets.symmetric(
-                horizontal: compact ? 6 : (label == null ? 9 : 10),
+                horizontal: compact ? 6 : (label == null ? 10 : 8),
                 vertical: compact ? 4 : 6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -89,9 +89,11 @@ class BarButton extends StatelessWidget {
                         ? iconColor ?? theme.foreground
                         : theme.disabledForeground),
                 if (label != null) ...<Widget>[
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 6),
+                  // Files' command labels are a size under body text.
                   Text(label!,
-                      style: theme.textTheme.bodyMedium, color: foreground),
+                      style: theme.textTheme.bodyMedium.copyWith(fontSize: 12),
+                      color: foreground),
                 ],
                 if (chevron) ...<Widget>[
                   const SizedBox(width: 6),
@@ -118,6 +120,7 @@ class MenuBarButton extends StatelessWidget {
     this.tooltip,
     this.chevron,
     this.enabled = true,
+    this.iconSize,
   });
 
   final IconData icon;
@@ -133,12 +136,16 @@ class MenuBarButton extends StatelessWidget {
   /// it has a label.
   final bool? chevron;
 
+  /// The glyph's size; null for the theme's.
+  final double? iconSize;
+
   @override
   Widget build(BuildContext context) => MenuAnchor(
         menuChildren: menu(),
         builder: (BuildContext context, MenuController controller, _) =>
             BarButton(
           icon: icon,
+          iconSize: iconSize,
           label: label,
           tooltip: tooltip ?? label,
           chevron: chevron ?? label != null,

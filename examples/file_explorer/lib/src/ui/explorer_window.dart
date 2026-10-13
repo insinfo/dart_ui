@@ -41,7 +41,8 @@ class ExplorerWindow extends StatefulWidget {
   /// Told when the commands are registered - where a test reaches them.
   final void Function(ExplorerWindowState window)? onReady;
 
-  /// The last tab was closed.
+  /// The last tab was closed. Null closes the window, exactly as its close
+  /// button does - which ends the application when it is the last one.
   final void Function()? onClose;
 
   @override
@@ -163,7 +164,14 @@ class ExplorerWindowState extends State<ExplorerWindow>
   }
 
   @override
-  void closeWindow() => widget.onClose?.call();
+  void closeWindow() {
+    final void Function()? onClose = widget.onClose;
+    if (onClose != null) {
+      onClose();
+    } else {
+      WindowScope.of(context)?.close();
+    }
+  }
 
   // --- rename in place ------------------------------------------------------
 
@@ -363,12 +371,14 @@ class ExplorerWindowState extends State<ExplorerWindow>
       SizedBox(
         height: height,
         child: Padding(
-          padding: EdgeInsets.only(left: leading, top: 6),
+          padding: EdgeInsets.only(left: leading, top: 4),
           child: Align(
             alignment: Alignment.bottomLeft,
             child: DocumentTabStrip(
               style: DocumentTabStyle.raised,
-              height: 34,
+              // The raised card 31 px tall under 4 px of headroom, its top
+              // 9 px under the window's, as in Files.
+              height: 35,
               selectedColor: theme.surface,
               tabs: <DocumentTab>[
                 for (var i = 0; i < model.tabs.length; i++)
@@ -391,8 +401,10 @@ class ExplorerWindowState extends State<ExplorerWindow>
         ),
       );
 
+  /// Back, forward, up and refresh on a 40 px pitch, then the pill - the
+  /// row Files draws, its middle level with the pill's.
   Widget _addressRow(ThemeData theme) => Padding(
-        padding: const EdgeInsets.only(left: 8, right: 8, top: 4, bottom: 4),
+        padding: const EdgeInsets.only(left: 4, right: 8, top: 4, bottom: 5),
         child: SizedBox(
           height: 40,
           child: Row(
@@ -408,8 +420,8 @@ class ExplorerWindowState extends State<ExplorerWindow>
                     icon: commandIcon(id)!,
                     registry: registry,
                     command: id,
-                    iconSize: 18),
-              const SizedBox(width: 8),
+                    iconSize: 20),
+              const SizedBox(width: 1),
               Expanded(
                   child: _searching ? _searchPill(theme) : _omnibar(theme)),
             ],
@@ -422,10 +434,14 @@ class ExplorerWindowState extends State<ExplorerWindow>
     final List<(String, BreadcrumbItem)> steps = _steps();
     return BreadcrumbBar(
       controller: address,
-      height: 36,
-      radius: 18,
-      leading: Icon(_locationIcon(model.tab.location),
-          color: theme.accent, size: 16),
+      height: _pillHeight,
+      radius: _pillHeight / 2,
+      // Clear of the rounded end, as far in as the search button is.
+      leading: Padding(
+        padding: const EdgeInsets.only(left: 6),
+        child: Icon(_locationIcon(model.tab.location),
+            color: theme.accent, size: 16),
+      ),
       items: <BreadcrumbItem>[for (final s in steps) s.$2],
       onSelected: (int i) {
         final String id = steps[i].$1;
@@ -449,15 +465,23 @@ class ExplorerWindowState extends State<ExplorerWindow>
         }
         registry.execute('nav.go', <String, Object?>{'path': text.trim()});
       },
-      trailing: BarButton(
-        icon: FluentIcons.search,
-        registry: registry,
-        command: 'nav.focusSearch',
-        iconSize: 16,
-        compact: true,
+      // Inset from the round end by as much as the leading icon is, so the
+      // magnifier does not ride the curve.
+      trailing: Padding(
+        padding: const EdgeInsets.only(right: 6),
+        child: BarButton(
+          icon: FluentIcons.search,
+          registry: registry,
+          command: 'nav.focusSearch',
+          iconSize: 18,
+          compact: true,
+        ),
       ),
     );
   }
+
+  /// The address pill's height - and the search box's, which takes its place.
+  static const double _pillHeight = 38;
 
   /// The pill turned into a search box - Ctrl+F, or its search button.
   Widget _searchPill(ThemeData theme) => CallbackShortcuts(
@@ -465,15 +489,15 @@ class ExplorerWindowState extends State<ExplorerWindow>
           const KeyGesture(logicalKeyEscape): _endSearch,
         },
         child: SizedBox(
-          height: 36,
+          height: _pillHeight,
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: theme.surfaceAlternate,
               border: BoxBorder(color: theme.accent, width: 1),
-              radius: 18,
+              radius: _pillHeight / 2,
             ),
             child: Padding(
-              padding: const EdgeInsets.only(left: 14, right: 4),
+              padding: const EdgeInsets.only(left: 16, right: 10),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: <Widget>[
@@ -519,12 +543,13 @@ class ExplorerWindowState extends State<ExplorerWindow>
             ),
           Expanded(
             child: Padding(
-              padding: const EdgeInsets.only(left: 4, right: 8),
+              padding:
+                  EdgeInsets.only(left: model.navigationPane ? 0 : 8, right: 8),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
                   _card(theme, _commandBar(theme)),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 4),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -559,15 +584,18 @@ class ExplorerWindowState extends State<ExplorerWindow>
       );
 
   Widget _commandBar(ThemeData theme) {
-    Widget command(String id) =>
-        BarButton(icon: commandIcon(id)!, registry: registry, command: id);
+    Widget command(String id) => BarButton(
+        icon: commandIcon(id)!,
+        registry: registry,
+        command: id,
+        iconSize: _commandIconSize);
     Widget divider() => Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 10),
           child: SizedBox(width: 1, child: ColoredBox(color: theme.border)),
         );
     final String Function(String) t = model.strings.menu;
     return SizedBox(
-      height: 46,
+      height: 48,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
         child: Row(
@@ -575,6 +603,7 @@ class ExplorerWindowState extends State<ExplorerWindow>
           children: <Widget>[
             MenuBarButton(
               icon: FluentIcons.addCircle,
+              iconSize: _commandIconSize,
               label: t('New'),
               chevron: false,
               enabled: registry.isEnabled('file.newFolder') ||
@@ -591,23 +620,27 @@ class ExplorerWindowState extends State<ExplorerWindow>
             const Spacer(),
             MenuBarButton(
               icon: FluentIcons.arrowSort,
+              iconSize: _commandIconSize,
               tooltip: t('Sort'),
               chevron: true,
               menu: () => menus.widgets(kSortMenu),
             ),
             MenuBarButton(
               icon: _viewIcon(),
+              iconSize: _commandIconSize,
               tooltip: t('View'),
               chevron: true,
               menu: () => menus.widgets(viewMenu(model.strings)),
             ),
             MenuBarButton(
               icon: FluentIcons.moreHorizontal,
+              iconSize: _commandIconSize,
               tooltip: t('See more'),
               menu: () => menus.widgets(kMoreMenu),
             ),
             BarButton(
               icon: FluentIcons.panelRight,
+              iconSize: _commandIconSize,
               registry: registry,
               command: 'view.detailsPane',
             ),
@@ -616,6 +649,9 @@ class ExplorerWindowState extends State<ExplorerWindow>
       ),
     );
   }
+
+  /// The command bar's glyphs: 20 px, on a 40 px pitch.
+  static const double _commandIconSize = 20;
 
   IconData _viewIcon() => switch (model.viewMode) {
         ViewMode.details => FluentIcons.textBulletListLtr,
@@ -650,8 +686,10 @@ class ExplorerWindowState extends State<ExplorerWindow>
         color: color ?? theme.foregroundSecondary,
         maxLines: 1,
         ellipsis: '…');
+    // As tall as the sidebar's Settings row beside it, so the two read as
+    // one line.
     return SizedBox(
-      height: 32,
+      height: 36,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
         child: Row(

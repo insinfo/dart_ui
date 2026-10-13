@@ -666,6 +666,20 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 @property(nonatomic, assign) BOOL resizable;
 @property(nonatomic, assign) BOOL commandStdin;
 @property(nonatomic, copy) NSString *windowKind;
+// A popup or tooltip panel: borderless, non-opaque and clear, so the surface
+// the framework draws - rounded, with its own hairline - is the window's
+// whole shape, and the window server's shadow follows that shape.
+@property(nonatomic, assign) BOOL transient;
+// The size of the surface the window shadow was last computed from. The
+// shadow of a non-opaque window is taken from its pixels, once; a popup
+// whose content changes size needs it recomputed, and one that merely
+// repaints a row does not.
+@property(nonatomic, assign) NSSize shadowSize;
+// The CGWindowID of the window this popup belongs to (OWNER), or 0. While
+// that window's application is in the background the panel sits at the
+// normal level directly above it; see applyTransientLevel.
+@property(nonatomic, assign) NSInteger ownerWindowNumber;
+@property(nonatomic, assign) BOOL observingActivation;
 
 @property(nonatomic, assign) IOSurfaceRef *surfacePool;
 @property(nonatomic, assign) NSUInteger surfacePoolCount;
@@ -847,6 +861,17 @@ static void *DartUiAppearanceContext = &DartUiAppearanceContext;
         NSWindowCollectionBehaviorIgnoresCycle;
     ((NSPanel *)self.window).becomesKeyOnlyIfNeeded = YES;
     self.window.ignoresMouseEvents = isTooltip;
+    // A menu is not a rectangle. Opaque, the panel showed its own square
+    // frame and square shadow around the rounded surface the framework draws
+    // inside it - two borders, with the window's corners outside the menu's.
+    // Clear, the pixels the framework leaves transparent show the desktop,
+    // and the shadow AppKit draws is computed from the alpha that is left:
+    // one outline, one shadow, both rounded. The framework clears a popup
+    // to transparent for exactly this (Capability.transparentPopups).
+    self.window.opaque = NO;
+    self.window.backgroundColor = NSColor.clearColor;
+    self.window.hasShadow = YES;
+    self.transient = YES;
   }
   self.window.delegate = self;
   self.window.title = self.initialTitle ?: @"dart_ui";
@@ -965,6 +990,82 @@ static void *DartUiAppearanceContext = &DartUiAppearanceContext;
     if (!self.protocolReady) return;
     [self reportSystemSettingsForced:NO];
   });
+}
+
+// --- popup level ------------------------------------------------------------
+//
+// NSPopUpMenuWindowLevel is above every normal window of every application.
+// That is right for a menu of the active application - AppKit's own menus
+// only show while their application is active - and wrong for one whose
+// owner is in the background: a test or a script that opens a menu in an
+// application it never activated put that menu in front of the editor the
+// user was typing in, detached from the window it belonged to.
+//
+// So the level follows the owner. Each window is its own host process, so
+// addChildWindow: is not available; the owner is named by its CGWindowID
+// and ordering is done through the window server, which orders across
+// processes:
+//
+//   * the owner is itself a panel above the normal level (this is a submenu
+//     of a menu at the pop-up level): the pop-up level;
+//   * the owner's process is the frontmost application: the pop-up level;
+//   * otherwise: the normal level, ordered directly above the owner - so
+//     every window in front of the owner stays in front of its menu, and a
+//     submenu, ordered above its parent menu, stays above that.
+//
+// Re-applied when the panel is shown and whenever another application
+// becomes active, so a background owner that is clicked to the front takes
+// its menu up with it instead of covering it.
+
+- (void)applyTransientLevel {
+  if (!self.transient) return;
+  NSInteger owner = self.ownerWindowNumber;
+  if (owner <= 0) {
+    self.window.level = NSPopUpMenuWindowLevel;
+    return;
+  }
+  BOOL front = YES;
+  CFArrayRef info = CGWindowListCopyWindowInfo(
+      kCGWindowListOptionIncludingWindow, (CGWindowID)owner);
+  if (info != NULL) {
+    if (CFArrayGetCount(info) > 0) {
+      NSDictionary *entry =
+          (__bridge NSDictionary *)CFArrayGetValueAtIndex(info, 0);
+      NSInteger layer = [entry[(id)kCGWindowLayer] integerValue];
+      pid_t pid = (pid_t)[entry[(id)kCGWindowOwnerPID] intValue];
+      pid_t frontmost =
+          NSWorkspace.sharedWorkspace.frontmostApplication.processIdentifier;
+      front = layer > kCGNormalWindowLevel || pid == frontmost;
+    }
+    CFRelease(info);
+  }
+  if (front) {
+    self.window.level = NSPopUpMenuWindowLevel;
+    if (self.window.visible) [self.window orderFront:nil];
+    return;
+  }
+  self.window.level = NSNormalWindowLevel;
+  if (self.window.visible) {
+    [self.window orderWindow:NSWindowAbove relativeTo:owner];
+  }
+}
+
+- (void)otherApplicationActivated:(NSNotification *)notification {
+  (void)notification;
+  [self applyTransientLevel];
+}
+
+- (void)setOwnerFromCommand:(NSString *)command {
+  self.ownerWindowNumber = [[command substringFromIndex:6] integerValue];
+  if (!self.observingActivation && self.transient) {
+    self.observingActivation = YES;
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        addObserver:self
+           selector:@selector(otherApplicationActivated:)
+               name:NSWorkspaceDidActivateApplicationNotification
+             object:nil];
+  }
+  [self applyTransientLevel];
 }
 
 - (void)observeSystemSettings {
@@ -1780,6 +1881,20 @@ static NSAccessibilityRole DartUiA11yRole(NSString *role) {
     layer.contents = contents;
   }
   [CATransaction flush];
+  if (self.transient) {
+    IOSurfaceRef surface = self.surfacePool[slot];
+    NSSize size = NSMakeSize((CGFloat)IOSurfaceGetWidth(surface),
+                             (CGFloat)IOSurfaceGetHeight(surface));
+    if (!NSEqualSizes(size, self.shadowSize)) {
+      self.shadowSize = size;
+      // On the next turn: the shadow is read from what the window server
+      // has composited, and the contents committed above reach it only
+      // once this turn's transaction is out.
+      [self.window performSelector:@selector(invalidateShadow)
+                        withObject:nil
+                        afterDelay:0];
+    }
+  }
   printf("PRESENT_OK %s slot%ld\n", parts[1].UTF8String, (long)slot);
   fflush(stdout);
   if (wantsVsync) [self armVsync:parts[1]];
@@ -2517,11 +2632,25 @@ static void DartUiPrintClipboardPayload(long long request, NSString *payload) {
     [self readClipboardType:command];
   } else if ([command hasPrefix:@"CLIPBOARD_WRITE_TYPE "]) {
     [self writeClipboardType:command];
+  } else if ([command hasPrefix:@"OWNER "]) {
+    [self setOwnerFromCommand:command];
   } else if ([command isEqualToString:@"SHOW"]) {
     BOOL isTransient = [self.windowKind isEqualToString:@"popup"] ||
                        [self.windowKind isEqualToString:@"tooltip"];
-    if (isTransient) [self.window orderFront:nil];
-    else [self.window makeKeyAndOrderFront:nil];
+    if (isTransient) {
+      [self.window orderFront:nil];
+      // After ordering in: ordering relative to the owner needs the panel on
+      // screen, and orderFront: alone would leave a background owner's menu
+      // above every application.
+      [self applyTransientLevel];
+      // A frame presented while the panel was hidden gave the window server
+      // nothing to take a shadow from.
+      [self.window performSelector:@selector(invalidateShadow)
+                        withObject:nil
+                        afterDelay:0];
+    } else {
+      [self.window makeKeyAndOrderFront:nil];
+    }
   } else if ([command isEqualToString:@"INSPECT_WINDOW"]) {
     printf("WINDOW_INSPECT=%s:%s:%llu:%ld:%d:%d:%ld\n",
            self.windowKind.UTF8String,
@@ -2787,6 +2916,13 @@ static NSString *DartUiMenuKey(NSEventModifierFlags flags, NSString *key) {
   (void)notification;
   self.terminating = YES;
   [self stopObservingSystemSettings];
+  if (self.observingActivation) {
+    self.observingActivation = NO;
+    [NSWorkspace.sharedWorkspace.notificationCenter
+        removeObserver:self
+                  name:NSWorkspaceDidActivateApplicationNotification
+                object:nil];
+  }
   if (self.eventMonitor != nil) {
     [NSEvent removeMonitor:self.eventMonitor];
     self.eventMonitor = nil;

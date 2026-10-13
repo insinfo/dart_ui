@@ -19,4 +19,42 @@ void main() {
     recortar.run(CommandArgs.empty);
     expect(runs, 1);
   });
+
+  test(
+      'a translated reason: the same commands disabled, saying why in the '
+      'language of the label', () {
+    final CommandSpec copy = CommandSpec(
+      id: 'file.copy',
+      label: 'Copy',
+      when: (CommandArgs args) =>
+          args.has('item') ? null : 'nothing is selected',
+      run: (_) => null,
+    );
+    final CommandSpec copiar = copy.copyWith(
+      label: 'Copiar',
+      reason: (String english) => english == 'nothing is selected'
+          ? 'nenhum item selecionado'
+          : english,
+    );
+    expect(copiar.isEnabled, isFalse);
+    expect(copiar.disabledReasonWith(CommandArgs.empty),
+        'nenhum item selecionado');
+    const CommandArgs picked = CommandArgs(<String, Object?>{'item': 'a'});
+    expect(copiar.isEnabledWith(picked), isTrue);
+    expect(copiar.disabledReasonWith(picked), isNull);
+
+    // The enabled/disabledReason pair is translated the same way.
+    final CommandSpec paste = CommandSpec(
+      id: 'file.paste',
+      label: 'Paste',
+      enabled: (_) => false,
+      disabledReason: (_) => 'the clipboard is empty',
+      run: (_) => null,
+    ).copyWith(reason: (String english) => '<$english>');
+    expect(paste.disabledReasonWith(CommandArgs.empty),
+        '<the clipboard is empty>');
+    expect(copy.copyWith().disabledReasonWith(CommandArgs.empty),
+        'nothing is selected',
+        reason: 'no translator, the reason as it was');
+  });
 }

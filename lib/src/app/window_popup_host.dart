@@ -58,6 +58,7 @@ import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
+import '../widgets/layout_builder.dart' show Builder;
 import '../widgets/popup_host.dart';
 import '../widgets/widget.dart';
 import 'application.dart';
@@ -415,6 +416,14 @@ final class _PopupContent extends StatelessWidget {
 
   final WindowPopupHandle handle;
 
+  /// Under a [PopupWindowFrame] that says whether the platform outlines
+  /// this window, so the surface the builder returns paints the one border
+  /// and not a second one inside the platform's.
   @override
-  Widget build(BuildContext context) => handle.spec.builder(context);
+  Widget build(BuildContext context) => PopupWindowFrame(
+        outlined: handle._chain.application.popupWindowsAreTransparent,
+        // Built under the frame, so the context the builder is handed - and
+        // everything it builds - can ask it.
+        child: Builder(builder: handle.spec.builder),
+      );
 }

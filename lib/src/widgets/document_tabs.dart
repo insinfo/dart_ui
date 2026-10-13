@@ -209,7 +209,12 @@ final class _DocumentTabView extends StatelessWidget {
                     height: theme.focusRingWidth,
                     child: ColoredBox(color: theme.accent),
                   ),
-                Padding(
+                // Filling the tab, so the row is centred in it - in the
+                // raised card below its 4 px of headroom. Left loose in the
+                // stack, the row would shrink to its tallest child and sit
+                // at the top, the label a few pixels above the middle.
+                Positioned.fill(
+                    child: Padding(
                   padding: EdgeInsets.only(
                     left: theme.effectiveControlPadding,
                     right: 4,
@@ -257,7 +262,7 @@ final class _DocumentTabView extends StatelessWidget {
                         ),
                     ],
                   ),
-                ),
+                )),
               ],
             ),
           ),

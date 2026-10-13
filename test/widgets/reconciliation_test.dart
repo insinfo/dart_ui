@@ -365,8 +365,13 @@ void main() {
 
       expect(reporter.hasErrors, isTrue);
       // The siblings still built and still painted: one bad widget must not
-      // take the window with it.
-      expect(_texts(owner), <String>['A', 'C']);
+      // take the window with it. The failed one shows an ErrorWidget, whose
+      // message is the text between them.
+      final List<String> texts = _texts(owner);
+      expect(texts, hasLength(3));
+      expect(texts.first, 'A');
+      expect(texts[1], contains('build refused'));
+      expect(texts.last, 'C');
       owner.dispose();
     });
 

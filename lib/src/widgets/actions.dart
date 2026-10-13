@@ -17,32 +17,68 @@ library;
 
 import '../platform/input_events.dart';
 import '../platform/key_gesture.dart';
+import 'focus.dart' show KeyEventResult;
 
 export '../platform/key_gesture.dart';
 
 /// What the user asked for, independent of how they asked.
 abstract class Intent {
   const Intent();
+
+  /// An intent nothing acts on, bound to a key to take it from the
+  /// shortcuts further out - Flutter's `Intent.doNothing`.
+  static const DoNothingIntent doNothing = DoNothingIntent._();
 }
 
 /// Activate the focused control: Space/Enter, a click, or an automation
 /// invoke all produce this.
-final class ActivateIntent extends Intent {
+class ActivateIntent extends Intent {
   const ActivateIntent();
 }
 
+/// Activate a button - Flutter's `ButtonActivateIntent`, which Space sends
+/// where Enter sends [ActivateIntent].
+class ButtonActivateIntent extends Intent {
+  const ButtonActivateIntent();
+}
+
 /// Dismiss the innermost dismissible thing: a popup, a dialog, an edit.
-final class DismissIntent extends Intent {
+class DismissIntent extends Intent {
   const DismissIntent();
 }
 
 /// Move focus one step.
-final class NextFocusIntent extends Intent {
+class NextFocusIntent extends Intent {
   const NextFocusIntent();
 }
 
-final class PreviousFocusIntent extends Intent {
+class PreviousFocusIntent extends Intent {
   const PreviousFocusIntent();
+}
+
+/// An intent that does nothing: bound to a key, it is handled by
+/// `DoNothingAction` and the key is used up - Flutter's `DoNothingIntent`.
+class DoNothingIntent extends Intent {
+  const factory DoNothingIntent() = DoNothingIntent._;
+
+  const DoNothingIntent._();
+}
+
+/// Like [DoNothingIntent], but the key goes on to the platform: no handler
+/// in the framework sees it - Flutter's `DoNothingAndStopPropagationIntent`.
+class DoNothingAndStopPropagationIntent extends Intent {
+  const factory DoNothingAndStopPropagationIntent() =
+      DoNothingAndStopPropagationIntent._;
+
+  const DoNothingAndStopPropagationIntent._();
+}
+
+/// An intent that carries the code to run - Flutter's `VoidCallbackIntent`,
+/// handled by `VoidCallbackAction`.
+class VoidCallbackIntent extends Intent {
+  const VoidCallbackIntent(this.callback);
+
+  final void Function() callback;
 }
 
 /// Move a value or a selection by one step, for sliders, lists and spinners.
@@ -79,6 +115,14 @@ final class ScrollIntent extends Intent {
   int get hashCode => Object.hash(dx, dy, page);
 }
 
+/// Called by an [Action] whose enabled state may have changed.
+typedef ActionListenerCallback = void Function(Action<Intent> action);
+
+/// The listeners of each action, kept outside it so that an action can
+/// still be `const`.
+final Expando<List<ActionListenerCallback>> _actionListeners =
+    Expando<List<ActionListenerCallback>>('Action listeners');
+
 /// Something that can carry out an [Intent].
 abstract class Action<T extends Intent> {
   const Action();
@@ -86,24 +130,98 @@ abstract class Action<T extends Intent> {
   /// Whether this action can run right now. A disabled action lets the
   /// shortcut fall through, which is what keeps Ctrl+C working in the panel
   /// behind an empty selection.
-  bool isEnabled(T intent) => true;
+  ///
+  /// [isActionEnabled] by default, as in Flutter.
+  bool isEnabled(T intent) => isActionEnabled;
 
-  void invoke(T intent);
+  /// Whether this action is enabled whatever the intent.
+  bool get isActionEnabled => true;
+
+  /// Whether a key that invoked this is used up. False lets the key go on
+  /// to the platform after the action ran - Flutter's `consumesKey`.
+  bool consumesKey(T intent) => true;
+
+  /// What a shortcut answers after invoking this - Flutter's
+  /// `Action.toKeyEventResult`.
+  KeyEventResult toKeyEventResult(T intent, Object? invokeResult) =>
+      consumesKey(intent)
+          ? KeyEventResult.handled
+          : KeyEventResult.skipRemainingHandlers;
+
+  /// The intent type this action is for.
+  Type get intentType => T;
+
+  /// Carries out [intent]. Returns whatever the action wants its invoker to
+  /// see - Flutter's `Object?`; most actions return nothing.
+  Object? invoke(T intent);
+
+  /// Calls [listener] when [notifyActionListeners] says the enabled state
+  /// may have changed.
+  void addActionListener(ActionListenerCallback listener) =>
+      (_actionListeners[this] ??= <ActionListenerCallback>[]).add(listener);
+
+  void removeActionListener(ActionListenerCallback listener) =>
+      _actionListeners[this]?.remove(listener);
+
+  /// Tells the listeners this action's enabled state may have changed.
+  void notifyActionListeners() {
+    final List<ActionListenerCallback>? listeners = _actionListeners[this];
+    if (listeners == null) return;
+    for (final ActionListenerCallback listener
+        in List<ActionListenerCallback>.of(listeners)) {
+      listener(this);
+    }
+  }
 }
 
-/// An action defined by a closure, for the many one-line cases.
-final class CallbackAction<T extends Intent> extends Action<T> {
-  const CallbackAction(this._onInvoke, {bool Function(T intent)? isEnabled})
-      : _isEnabled = isEnabled;
+/// The code a [CallbackAction] runs - Flutter's `OnInvokeCallback`.
+typedef OnInvokeCallback<T extends Intent> = Object? Function(T intent);
 
-  final void Function(T intent) _onInvoke;
+/// An action defined by a closure, for the many one-line cases - Flutter's
+/// `CallbackAction(onInvoke: ...)`.
+///
+/// [isEnabled] is this framework's addition: a disabled callback lets the
+/// key through as an unbound one would.
+class CallbackAction<T extends Intent> extends Action<T> {
+  const CallbackAction({
+    required this.onInvoke,
+    bool Function(T intent)? isEnabled,
+  }) : _isEnabled = isEnabled;
+
+  /// What invoking this runs.
+  final OnInvokeCallback<T> onInvoke;
   final bool Function(T intent)? _isEnabled;
 
   @override
   bool isEnabled(T intent) => _isEnabled?.call(intent) ?? true;
 
   @override
-  void invoke(T intent) => _onInvoke(intent);
+  Object? invoke(T intent) => onInvoke(intent);
+}
+
+/// Runs the callback a [VoidCallbackIntent] carries.
+class VoidCallbackAction extends Action<VoidCallbackIntent> {
+  VoidCallbackAction();
+
+  @override
+  Object? invoke(VoidCallbackIntent intent) {
+    intent.callback();
+    return null;
+  }
+}
+
+/// Does nothing, and uses up the key unless [consumesKey] is false -
+/// Flutter's `DoNothingAction`.
+class DoNothingAction extends Action<Intent> {
+  DoNothingAction({bool consumesKey = true}) : _consumesKey = consumesKey;
+
+  final bool _consumesKey;
+
+  @override
+  bool consumesKey(Intent intent) => _consumesKey;
+
+  @override
+  void invoke(Intent intent) {}
 }
 
 /// Key gestures bound to intents, with an optional parent to fall back to.
@@ -185,9 +303,7 @@ final class _ActionAdapter<T extends Intent> extends Action<Intent> {
   bool isEnabled(Intent intent) => intent is T && _inner.isEnabled(intent);
 
   @override
-  void invoke(Intent intent) {
-    if (intent is T) _inner.invoke(intent);
-  }
+  Object? invoke(Intent intent) => intent is T ? _inner.invoke(intent) : null;
 }
 
 /// Resolves a key event to an intent and dispatches it to an action.

@@ -123,6 +123,76 @@ const Map<String, String> kPartial = <String, String>{
   'Transform': 'a 2D affine `Transform2D`, no perspective',
   'TweenAnimationBuilder': 'resumes from the current value only for types '
       'it knows how to interpolate',
+  // App and binding.
+  'runApp': 'returns `Future<Application>`; window title and size through '
+      '`options:`',
+  'WidgetsBinding': 'a class, not a mixin, speaking for the main window; no '
+      '`platformDispatcher`, `renderView` or `deferFirstFrame`',
+  'WidgetsFlutterBinding': 'only `ensureInitialized`',
+  'WidgetsBindingObserver': '`didPopRoute`, `didPushRoute`, '
+      '`didChangeLocales` and `didHaveMemoryPressure` never fire',
+  'WidgetsApp': 'no `.router`, `navigatorObservers`, `shortcuts` or '
+      '`actions`; `title` names the window',
+  'ErrorWidget': 'a StatelessWidget drawn in the UI font',
+  'PageStorage': 'scroll views do not save their offset in it yet',
+  // Text input and forms.
+  'TextEditingController': 'positional `TextEditingController(\'x\')`; '
+      '`value` is the text, the `TextEditingValue` is `editingValue`',
+  'TextField': 'no `style`, `textAlign`, `cursor*` or `expands`',
+  'TextSelection': '`TextSelection.collapsed(offset)` is positional',
+  'TextRange': '`TextRange(start, end)` is positional',
+  'InputDecoration': 'no `label`/`hint` widgets, '
+      '`prefixIconConstraints`, `floatingLabelAlignment` or `visualDensity`',
+  'InputDecorator': 'the label floats without animation',
+  'Form': '`onPopInvokedWithResult` always gets a null result',
+  'SelectableText': 'no touch handles or toolbar; `minLines` ignored',
+  // Scrolling.
+  'ScrollController': 'views take a `ScrollPositionSource`; '
+      '`keepScrollOffset` has no effect',
+  'PageView': '`itemCount: null` becomes a very large count; one wheel '
+      'notch turns one page',
+  'PageController': '`keepPage` only applies across an axis change',
+  'ScrollPhysics': 'simulations take a `Duration`; no '
+      '`adjustPositionForNewDimensions`',
+  'BouncingScrollPhysics': '`fast` only changes the spring',
+  'Scrollbar': 'takes `position:`, not `controller:`',
+  // Input, focus and shortcuts.
+  'Listener': 'dart_ui\'s pointer events; `translucent` is hit as `opaque`',
+  'Draggable': 'primary button only; cancelled if it leaves the tree',
+  'LongPressDraggable': 'needs a `GestureScope` for the long press',
+  'Dismissible': 'a fling has no spring simulation',
+  'InteractiveViewer': '`Transform2D` instead of `Matrix4`; no inertia, no '
+      '`.builder`',
+  'TransformationController': 'holds a `Transform2D`',
+  'Focus': 'no `onKey`; `includeSemantics` has no effect',
+  'Shortcuts': 'does not answer when nothing is focused',
+  'CallbackShortcuts': 'listens across the whole window',
+  'LogicalKeyboardKey': '`event.logicalKey` is still an `int`; left and '
+      'right modifiers compare equal',
+  'CharacterActivator': 'the character is derived from the key as on a US '
+      'layout',
+  // Painting.
+  'BoxDecoration': 'no `image`; shadows layered, not blurred; `gradient` '
+      'only a `SweepGradient`',
+  'ShapeDecoration': 'no `image`; shadows layered, not blurred',
+  'BoxShadow': 'layered translucent shapes, not a blur',
+  'Canvas': 'non-rectangular clips are a layer and a mask; no '
+      '`drawParagraph`, `drawVertices` or `drawAtlas`',
+  'Paint': 'no `maskFilter`, `colorFilter`, `imageFilter` or '
+      '`filterQuality`',
+  'BlendMode': 'only the Porter-Duff modes are real; the rest draw as '
+      '`srcOver`',
+  'SweepGradient': 'no `transform`; painted in 1-degree wedges',
+  'Path': 'no `combine` or `computeMetrics`; `conicTo` is a cubic',
+  'CustomPaint': '`isComplex` and `willChange` ignored; no semantics',
+  'CustomPainter': 'no `semanticsBuilder`',
+  'ClipRRect': 'an offscreen layer; not on Direct2D or the DOM',
+  'ClipOval': 'an offscreen layer; not on Direct2D or the DOM',
+  'ClipPath': 'an offscreen layer; not on Direct2D or the DOM',
+  'LinearGradient': 'the display list\'s absolute gradient, not '
+      '`colors:` with `Alignment`',
+  'RadialGradient': 'the display list\'s absolute gradient, not '
+      '`colors:` with `Alignment`',
 };
 
 /// Names that have no meaning here, by name or by pattern, with why.

@@ -37,6 +37,7 @@ final class HeadlessWindowingBackend
     this.desktopScale = 1,
     List<ScreenInfo>? screens,
     SystemSettings systemSettings = SystemSettings.fallback,
+    this.transparentPopups = false,
   })  : _screens = List<ScreenInfo>.unmodifiable(
           screens ?? const <ScreenInfo>[defaultHeadlessScreen],
         ),
@@ -161,11 +162,20 @@ final class HeadlessWindowingBackend
 
   bool get isInitialized => _initialized;
 
+  /// Whether the probe claims [Capability.transparentPopups].
+  ///
+  /// Nothing here composites anything, so the claim changes no pixel; it
+  /// exists so a test can drive the path an application takes on a platform
+  /// whose popup windows show their alpha - the transparent clear colour,
+  /// the surface leaving its outline to the platform - without that
+  /// platform.
+  final bool transparentPopups;
+
   @override
   BackendProbeResult probe() => BackendProbeResult(
         backendName: name,
         supported: true,
-        capabilities: const <Capability>{
+        capabilities: <Capability>{
           Capability.window,
           Capability.multipleWindows,
           Capability.cpuPresentation,
@@ -174,6 +184,7 @@ final class HeadlessWindowingBackend
           Capability.pointerInput,
           Capability.scrollInput,
           Capability.orderlyShutdown,
+          if (transparentPopups) Capability.transparentPopups,
         },
         diagnostics: const <BackendDiagnostic>[
           BackendDiagnostic.note(

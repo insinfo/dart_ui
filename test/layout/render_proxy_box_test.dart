@@ -761,15 +761,11 @@ void main() {
           () => RenderClipRRect(radius: double.infinity), throwsArgumentError);
     });
 
-    test(
-        'DECLARED ABSENT: the painted corner is still square, because no '
-        'rasterizer implements opClipPath', () async {
-      // A characterisation test, not an endorsement. `DisplayListPlayer` throws
-      // on opClipPath and the three blend modes cannot express a mask, so this
-      // node emits the rectangular clip rather than an opcode that crashes
-      // every backend. The consequence is measured here so that it is on the
-      // record and so that the day a mask stage lands this test fails and has
-      // to be replaced by its opposite.
+    test('the painted corner is cut, without an opClipPath', () async {
+      // This used to be a characterisation test of the opposite: no
+      // rasterizer implements opClipPath, so the corner wedges were left
+      // square. They are now erased with a dstOut mask inside an isolated
+      // layer (render_clip.dart), and paint agrees with the hit test.
       final RenderClipRRect node = RenderClipRRect(
         radius: 8,
         child: _Probe(preferred: const Size(16, 16), color: _content),
@@ -777,19 +773,14 @@ void main() {
 
       final Framebuffer buffer = await _render(node);
 
-      expect(
-        pixelAt(buffer, 0, 0),
-        _contentPixel,
-        reason: 'the corner wedge is NOT clipped in paint today',
-      );
+      expect(pixelAt(buffer, 0, 0), isNot(_contentPixel),
+          reason: 'the corner wedge is clipped in paint');
+      expect(pixelAt(buffer, 8, 8), _contentPixel);
       expect(
         _commands(node).whereType<ClipPathCommand>(),
         isEmpty,
         reason: 'emitting one would throw in the player',
       );
-
-      // And the disagreement the class comment admits to, in one place: the
-      // same point that paints is refused a pointer.
       node.layout(BoxConstraints.tight(const Size(16, 16)));
       expect(node.hitTest(const Offset(0.5, 0.5)), isNull);
     });

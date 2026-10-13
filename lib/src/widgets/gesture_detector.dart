@@ -22,11 +22,7 @@ import 'widget.dart';
 
 /// How a [GestureDetector] takes part in hit testing.
 ///
-/// There is deliberately no `translucent` member. In Flutter it means "be hit,
-/// but let the thing behind you be hit too", which needs a hit-test result that
-/// can hold several independent branches. This repository's [HitTestPath] is a
-/// single ancestor chain from one deepest hit, so a translucent member here
-/// would be a name with no behaviour behind it.
+/// Flutter's name for it, [HitTestBehavior], is the same enum.
 enum GestureHitTestBehavior {
   /// Hittable only where the child is. A detector wrapped around a transparent
   /// subtree does not invent an interactive region.
@@ -34,7 +30,17 @@ enum GestureHitTestBehavior {
 
   /// Hittable anywhere inside its own bounds, child or not.
   opaque,
+
+  /// Flutter's "be hit, and let what is behind be hit too". Here it is hit
+  /// as [opaque] is, and what is behind is **not** hit: this repository's
+  /// [HitTestPath] is a single ancestor chain from one deepest hit, with no
+  /// room for a second branch. Its ancestors still receive the event, which
+  /// is the case translucent is mostly written for.
+  translucent,
 }
+
+/// Flutter's name for [GestureHitTestBehavior].
+typedef HitTestBehavior = GestureHitTestBehavior;
 
 /// Publishes the dispatcher a gesture's deadlines are armed on.
 ///
@@ -471,7 +477,7 @@ final class RenderGestureDetector extends RenderSingleChildBox
 
   @override
   bool hitTestSelf(Offset position) =>
-      behavior == GestureHitTestBehavior.opaque;
+      behavior != GestureHitTestBehavior.deferToChild;
 
   @override
   void handlePointerEvent(PointerEvent event) {

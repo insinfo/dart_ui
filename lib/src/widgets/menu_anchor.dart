@@ -47,6 +47,7 @@ library;
 
 import 'dart:math' as math;
 
+import '../foundation/value_notifier.dart';
 import '../geometry/offset.dart';
 import '../geometry/path.dart';
 import '../geometry/rect.dart';
@@ -67,9 +68,11 @@ import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'icon.dart' show IconTheme;
 import 'popup.dart';
 import 'popup_host.dart';
 import 'theme.dart';
+import 'value_listenable_builder.dart';
 import 'widget.dart';
 
 // ---------------------------------------------------------------------------
@@ -797,6 +800,7 @@ final class _MenuPanelRenderWidget extends MultiChildRenderObjectWidget {
       decorated: decorated,
     )
       ..theme = theme
+      ..platformOutline = PopupWindowFrame.outlinedOf(context)
       ..focusNode = focusNode
       ..onDismiss = onDismiss
       ..onArrowLeftEscape = onArrowLeftEscape
@@ -814,6 +818,7 @@ final class _MenuPanelRenderWidget extends MultiChildRenderObjectWidget {
       ..horizontal = horizontal
       ..decorated = decorated
       ..theme = theme
+      ..platformOutline = PopupWindowFrame.outlinedOf(context)
       ..focusNode = focusNode
       ..onDismiss = onDismiss
       ..onArrowLeftEscape = onArrowLeftEscape
@@ -827,6 +832,75 @@ final class _PanelHandle {
   RenderMenuPanel? panel;
 }
 
+/// The shape of a popup menu: its frame, its padding and its highlight.
+///
+/// Two looks, picked by [ThemeData.desktop]. A theme adapted to macOS gets
+/// AppKit's menu - what Finder's context menu measures: a 12 px radius,
+/// 5 px of air above the first row and below the last, rows whose text
+/// starts 16 px in, a filled accent pill 5 px in from each side with the
+/// row's text and icons turned [ColorScheme.onPrimary] on it, and
+/// separators inset 10 px from both edges. Every other theme keeps the
+/// look its numbers encode, which is WinUI's: the theme's large radius,
+/// 4 px of padding, and a subtle accent pill 4 px in.
+///
+/// One object so the panel, its rows, its separators and the offset that
+/// lines a submenu up with its opener all read the same numbers.
+final class MenuLook {
+  const MenuLook({
+    required this.radius,
+    required this.verticalPadding,
+    required this.rowPadding,
+    required this.highlightInset,
+    required this.highlightRadius,
+    required this.separatorInset,
+    required this.filledHighlight,
+  });
+
+  /// The look [theme] asks for.
+  factory MenuLook.of(ThemeData theme) => theme.desktop == DesktopPlatform.macos
+      ? const MenuLook(
+          radius: 12,
+          verticalPadding: 5,
+          rowPadding: 16,
+          highlightInset: 5,
+          highlightRadius: 7,
+          separatorInset: 10,
+          filledHighlight: true,
+        )
+      : MenuLook(
+          radius: theme.cornerRadiusLarge,
+          verticalPadding: 4,
+          rowPadding: theme.effectiveControlPadding,
+          highlightInset: 4,
+          highlightRadius: theme.cornerRadiusSmall,
+          separatorInset: 4,
+          filledHighlight: false,
+        );
+
+  /// The popup's corner radius.
+  final double radius;
+
+  /// The air above the first row and below the last.
+  final double verticalPadding;
+
+  /// Where a row's content starts, and where its accelerator or chevron
+  /// ends, from the popup's edge.
+  final double rowPadding;
+
+  /// How far the highlight pill is in from each side of the row.
+  final double highlightInset;
+
+  final double highlightRadius;
+
+  /// How far a separator is in from each side.
+  final double separatorInset;
+
+  /// A highlight filled with the accent, its row's text and icons turned
+  /// [ColorScheme.onPrimary] - or, when false, a subtle accent wash under
+  /// the row's own colours.
+  final bool filledHighlight;
+}
+
 /// The frame, the row layout, and the keyboard for one menu.
 final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
     with ControlBehavior {
@@ -837,6 +911,17 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
   bool _horizontal;
   bool _decorated;
   int _highlighted = -1;
+
+  /// Whether the window this panel fills outlines it already - see
+  /// [PopupWindowFrame]. The panel then paints no hairline of its own.
+  bool get platformOutline => _platformOutline;
+  bool _platformOutline = false;
+
+  set platformOutline(bool value) {
+    if (value == _platformOutline) return;
+    _platformOutline = value;
+    markNeedsPaint();
+  }
 
   /// How far a popup column taller than the room it was given is scrolled.
   ///
@@ -875,7 +960,8 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
   }
 
   /// The air above the first row and below the last, inside a popup's frame.
-  double get verticalPadding => _decorated ? 4 : 0;
+  double get verticalPadding =>
+      _decorated ? MenuLook.of(theme).verticalPadding : 0;
 
   /// The row the keyboard cursor is on, or -1.
   ///
@@ -1253,9 +1339,11 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
       // large radius and a single hairline - the same treatment `RenderMenu`
       // and `RenderContextMenuSurface` paint, so a menu looks the same however
       // it was built.
-      final double radius = theme.cornerRadiusLarge;
+      final double radius = MenuLook.of(theme).radius;
       paintRoundedFill(list, rect, theme.surfaceRaised, radius);
-      paintRoundedBorder(list, rect, theme.border, radius);
+      if (!_platformOutline) {
+        paintRoundedBorder(list, rect, theme.border, radius);
+      }
       if (isScrollable) {
         // Rows scrolled past an end are cut at the padding, not at the
         // frame, so they never draw over the rounded corners.
@@ -1376,6 +1464,7 @@ mixin MenuRowBehavior on ControlBehavior {
   set isHighlighted(bool value) {
     if (value == _highlighted) return;
     _highlighted = value;
+    _updateLit();
     markNeedsPaint();
   }
 
@@ -1491,25 +1580,72 @@ mixin MenuRowBehavior on ControlBehavior {
   /// repaints its label in `onPrimary`, and this row's label is a widget whose
   /// colour this render object does not own; a subtle ground keeps whatever
   /// colour that widget chose readable, which a saturated one would not.
+  ///
+  /// On macOS ([MenuLook.filledHighlight]) the pill is the accent itself, the
+  /// way AppKit draws it, and the row's text and icons turn
+  /// [ColorScheme.onPrimary]: the row's widget rebuilds through [lit], which
+  /// this setter keeps current.
   void paintRowHighlight(DisplayList list, Rect rect) {
     if (!_highlighted) return;
+    // AppKit lights no disabled item; a filled pill under grey text would
+    // read as a command that can be chosen.
+    if (!enabled && MenuLook.of(theme).filledHighlight) return;
+    paintRowPill(list, rect);
+  }
+
+  /// The pill itself, for a row that is lit for another reason - a submenu
+  /// row whose submenu is open.
+  ///
+  /// A highlight that ran edge to edge inside a rounded popup would cut its
+  /// own corners off; inset by [MenuLook.highlightInset] it is a pill sitting
+  /// inside the menu, which is the shape every current desktop draws.
+  void paintRowPill(DisplayList list, Rect rect) {
+    final MenuLook look = MenuLook.of(theme);
+    final double inset = look.highlightInset;
+    // AppKit's pills fill the row; WinUI's leave a pixel above and below.
+    final double vertical = look.filledHighlight ? 0 : 1;
     paintRoundedFill(
       list,
       Rect.fromLTWH(
-        rect.left + _highlightInset,
-        rect.top + 1,
-        rect.width - _highlightInset * 2,
-        rect.height - 2,
+        rect.left + inset,
+        rect.top + vertical,
+        rect.width - inset * 2,
+        rect.height - vertical * 2,
       ),
-      theme.accentSubtle,
-      theme.cornerRadiusSmall,
+      look.filledHighlight ? theme.accent : theme.accentSubtle,
+      look.highlightRadius,
     );
   }
 
-  /// A highlight that ran edge to edge inside a rounded popup would cut its own
-  /// corners off; inset by this it is a pill sitting inside the menu, which is
-  /// the shape every current desktop draws.
-  static const double _highlightInset = 4;
+  /// Where the row's content starts and its accelerator or chevron ends.
+  /// A menu bar's strip is window chrome and keeps the theme's padding.
+  double get _rowPadding => (panel?.horizontal ?? false)
+      ? theme.effectiveControlPadding
+      : MenuLook.of(theme).rowPadding;
+
+  /// Whether the row is drawn on a filled pill now, for the widget that
+  /// colours its text and icons. Null for a row with nobody listening.
+  ValueNotifier<bool>? lit;
+
+  /// Whether this row is lit for a reason other than the keyboard cursor.
+  bool get litOtherwise => false;
+
+  /// Only the keyboard cursor: [litOtherwise] is state the row's widget
+  /// already has when it builds, and notifying from inside its build is
+  /// what this avoids.
+  void _updateLit() {
+    final ValueNotifier<bool>? notifier = lit;
+    if (notifier == null) return;
+    notifier.value =
+        MenuLook.of(theme).filledHighlight && enabled && _highlighted;
+  }
+
+  /// The colour of what the row paints itself - an accelerator, a chevron.
+  Color rowForeground({required Color normal}) => enabled &&
+          MenuLook.of(theme).filledHighlight &&
+          (_highlighted || litOtherwise)
+      ? theme.colorScheme.onPrimary
+      : normal;
 }
 
 // ---------------------------------------------------------------------------
@@ -1531,7 +1667,7 @@ mixin MenuRowBehavior on ControlBehavior {
 ///     Flutter's flag exists for menus that stay up while a checkbox item is
 ///     toggled; that is worth adding when something needs it, and defaulting to
 ///     the other behaviour in the meantime would be the surprising half.
-final class MenuItemButton extends StatelessWidget {
+final class MenuItemButton extends StatefulWidget {
   const MenuItemButton({
     super.key,
     this.onPressed,
@@ -1560,43 +1696,103 @@ final class MenuItemButton extends StatelessWidget {
   final Widget child;
 
   @override
+  State<MenuItemButton> createState() => _MenuItemButtonState();
+}
+
+final class _MenuItemButtonState extends State<MenuItemButton> {
+  /// Whether the row sits on a filled pill now - see [MenuLook].
+  final ValueNotifier<bool> _lit = ValueNotifier<bool>(false);
+
+  @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final _MenuScope? scope = _MenuScope.maybeOf(context);
-    final bool enabled = onPressed != null;
+    final bool enabled = widget.onPressed != null;
     // The row's own colour is pushed down as a default text style rather than
     // painted: the child is an arbitrary widget and this render object cannot
     // recolour it, so a disabled item whose label stayed black would be the one
     // dimming a user cannot see.
     final TextStyle ambient =
         DefaultTextStyle.maybeOf(context) ?? theme.textTheme.bodyMedium;
+    final Color normal = enabled ? theme.foreground : theme.disabledForeground;
     return _MenuItemButtonWidget(
       theme: theme,
-      shortcut: shortcut,
+      shortcut: widget.shortcut,
       enabled: enabled,
-      requestFocusOnHover: requestFocusOnHover,
-      hasLeading: leadingIcon != null,
-      hasTrailing: trailingIcon != null,
+      requestFocusOnHover: widget.requestFocusOnHover,
+      hasLeading: widget.leadingIcon != null,
+      hasTrailing: widget.trailingIcon != null,
+      lit: _lit,
       onActivate: () {
         // Closed first, then run. A command that opens a dialog - or another
         // menu - must not have it torn down by the dismissal of the menu it
         // came from, which is the order `ContextMenu` settled on for the same
         // reason.
         scope?.holder.closeChain();
-        onPressed?.call();
+        widget.onPressed?.call();
       },
       children: <Widget>[
-        if (leadingIcon != null) leadingIcon!,
-        DefaultTextStyle(
-          style: ambient.copyWith(
-            color: enabled ? theme.foreground : theme.disabledForeground,
-          ),
-          child: child,
+        if (widget.leadingIcon != null)
+          _RowInk(lit: _lit, child: widget.leadingIcon!),
+        _RowInk(
+          lit: _lit,
+          text: ambient.copyWith(color: normal),
+          child: widget.child,
         ),
-        if (trailingIcon != null) trailingIcon!,
+        if (widget.trailingIcon != null)
+          _RowInk(lit: _lit, child: widget.trailingIcon!),
       ],
     );
   }
+}
+
+/// A row's content, recoloured [ColorScheme.onPrimary] while the row sits on
+/// a filled pill (`MenuLook.filledHighlight`).
+///
+/// With [text], the content's default text style is [text] when unlit; an
+/// icon given no [text] keeps whatever colour it had.
+final class _RowInk extends StatelessWidget {
+  const _RowInk({
+    required this.lit,
+    this.text,
+    this.forced = false,
+    required this.child,
+  });
+
+  final ValueNotifier<bool> lit;
+  final TextStyle? text;
+
+  /// Lit whatever [lit] says - a submenu row whose submenu is open.
+  final bool forced;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<bool>(
+        valueListenable: lit,
+        child: child,
+        builder: (BuildContext context, bool on, Widget? child) {
+          final TextStyle? style = text;
+          if (!on && !forced) {
+            return style == null
+                ? child!
+                : DefaultTextStyle(style: style, child: child!);
+          }
+          final ThemeData theme = Theme.of(context);
+          final Color ink = theme.colorScheme.onPrimary;
+          final IconThemeData? icons = IconTheme.maybeOf(context);
+          final Widget inked = IconTheme(
+            data: IconThemeData(color: ink, size: icons?.size),
+            child: child!,
+          );
+          final TextStyle base = style ??
+              DefaultTextStyle.maybeOf(context) ??
+              theme.textTheme.bodyMedium;
+          return DefaultTextStyle(
+            style: base.copyWith(color: ink),
+            child: inked,
+          );
+        },
+      );
 }
 
 final class _MenuItemButtonWidget extends MultiChildRenderObjectWidget {
@@ -1607,6 +1803,7 @@ final class _MenuItemButtonWidget extends MultiChildRenderObjectWidget {
     required this.requestFocusOnHover,
     required this.hasLeading,
     required this.hasTrailing,
+    required this.lit,
     required this.onActivate,
     required super.children,
   });
@@ -1617,6 +1814,7 @@ final class _MenuItemButtonWidget extends MultiChildRenderObjectWidget {
   final bool requestFocusOnHover;
   final bool hasLeading;
   final bool hasTrailing;
+  final ValueNotifier<bool> lit;
   final void Function() onActivate;
 
   @override
@@ -1628,6 +1826,7 @@ final class _MenuItemButtonWidget extends MultiChildRenderObjectWidget {
         ..requestFocusOnHover = requestFocusOnHover
         ..hasLeading = hasLeading
         ..hasTrailing = hasTrailing
+        ..lit = lit
         ..onActivate = onActivate;
 
   @override
@@ -1642,6 +1841,7 @@ final class _MenuItemButtonWidget extends MultiChildRenderObjectWidget {
       ..requestFocusOnHover = requestFocusOnHover
       ..hasLeading = hasLeading
       ..hasTrailing = hasTrailing
+      ..lit = lit
       ..onActivate = onActivate;
   }
 }
@@ -1704,7 +1904,7 @@ final class RenderMenuItemButton extends RenderBoxContainer<BoxParentData>
 
   @override
   void performLayout() {
-    final double padding = theme.effectiveControlPadding;
+    final double padding = _rowPadding;
     final double gap = theme.effectiveGap;
     final double maxWidth =
         constraints.hasBoundedWidth ? constraints.maxWidth : _unbounded;
@@ -1775,7 +1975,9 @@ final class RenderMenuItemButton extends RenderBoxContainer<BoxParentData>
         offset.dx + _shortcutRight - measureLabel(text).width,
         labelTopIn(rect),
       ),
-      enabled ? theme.foregroundSecondary : theme.disabledForeground,
+      enabled
+          ? rowForeground(normal: theme.foregroundSecondary)
+          : theme.disabledForeground,
     );
   }
 
@@ -1850,6 +2052,10 @@ final class SubmenuButton extends StatefulWidget {
 final class _SubmenuButtonState extends State<SubmenuButton>
     with _AnchoredMenu<SubmenuButton> {
   MenuController? _owned;
+
+  /// Whether the row sits on a filled pill for the keyboard cursor - see
+  /// [MenuLook]. An open submenu lights it too, read from [isMenuOpen].
+  final ValueNotifier<bool> _lit = ValueNotifier<bool>(false);
   bool _inHorizontalStrip = false;
 
   /// The bar's rect, when this button lives in one - captured from the scope
@@ -1895,8 +2101,18 @@ final class _SubmenuButtonState extends State<SubmenuButton>
   @override
   PopupAnchorPoint get menuPopupPoint => PopupAnchorPoint.topLeft;
 
+  /// Up by the panel's padding beside a row, so the submenu's first row sits
+  /// level with the row that opened it - which is where macOS and Windows
+  /// both put it. Flipped upward near the bottom of the screen the sign
+  /// flips too, and its last row lines up with the opener instead.
   @override
-  Offset get menuOffset => Offset.zero;
+  Offset get menuOffset => _inHorizontalStrip
+      ? Offset.zero
+      : Offset(
+          0,
+          -MenuLook.of(_ambientTheme?.data ?? ThemeData.neutralLight)
+              .verticalPadding,
+        );
 
   /// The innermost open popup, read at the moment this submenu opens.
   ///
@@ -1980,6 +2196,9 @@ final class _SubmenuButtonState extends State<SubmenuButton>
     _passThrough = scope?.passThrough;
     final TextStyle ambient =
         DefaultTextStyle.maybeOf(context) ?? theme.textTheme.bodyMedium;
+    // The trail back to an open submenu, on AppKit's filled pill.
+    final bool trail =
+        isMenuOpen && !_inHorizontalStrip && MenuLook.of(theme).filledHighlight;
     return _SubmenuButtonWidget(
       theme: theme,
       anchor: anchorBox,
@@ -1991,10 +2210,14 @@ final class _SubmenuButtonState extends State<SubmenuButton>
       showsChevron: !_inHorizontalStrip,
       onOpenSubmenu: openMenu,
       onCloseSubmenu: closeMenu,
+      lit: _lit,
       children: <Widget>[
-        if (widget.leadingIcon != null) widget.leadingIcon!,
-        DefaultTextStyle(
-          style: ambient.copyWith(color: theme.foreground),
+        if (widget.leadingIcon != null)
+          _RowInk(lit: _lit, forced: trail, child: widget.leadingIcon!),
+        _RowInk(
+          lit: _lit,
+          forced: trail,
+          text: ambient.copyWith(color: theme.foreground),
           child: widget.child,
         ),
       ],
@@ -2027,9 +2250,11 @@ final class _SubmenuButtonWidget extends MultiChildRenderObjectWidget {
     required this.showsChevron,
     required this.onOpenSubmenu,
     required this.onCloseSubmenu,
+    required this.lit,
     required super.children,
   });
 
+  final ValueNotifier<bool> lit;
   final ThemeData theme;
   final MenuAnchorBox anchor;
   final bool isOpen;
@@ -2046,7 +2271,8 @@ final class _SubmenuButtonWidget extends MultiChildRenderObjectWidget {
         ..toggles = toggles
         ..showsChevron = showsChevron
         ..onOpenSubmenu = onOpenSubmenu
-        ..onCloseSubmenu = onCloseSubmenu;
+        ..onCloseSubmenu = onCloseSubmenu
+        ..lit = lit;
 
   @override
   void updateRenderObject(
@@ -2060,7 +2286,8 @@ final class _SubmenuButtonWidget extends MultiChildRenderObjectWidget {
       ..toggles = toggles
       ..showsChevron = showsChevron
       ..onOpenSubmenu = onOpenSubmenu
-      ..onCloseSubmenu = onCloseSubmenu;
+      ..onCloseSubmenu = onCloseSubmenu
+      ..lit = lit;
   }
 }
 
@@ -2108,6 +2335,9 @@ final class RenderSubmenuButton extends RenderBoxContainer<BoxParentData>
   bool get opensSubmenu => true;
 
   @override
+  bool get litOtherwise => _submenuOpen && !(panel?.horizontal ?? false);
+
+  @override
   bool get isSubmenuOpen => _submenuOpen;
 
   @override
@@ -2142,7 +2372,7 @@ final class RenderSubmenuButton extends RenderBoxContainer<BoxParentData>
 
   @override
   void performLayout() {
-    final double padding = theme.effectiveControlPadding;
+    final double padding = _rowPadding;
     final double gap = theme.effectiveGap;
     final double maxWidth =
         constraints.hasBoundedWidth ? constraints.maxWidth : _unbounded;
@@ -2186,24 +2416,17 @@ final class RenderSubmenuButton extends RenderBoxContainer<BoxParentData>
         Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height);
     // An open submenu keeps its parent row lit even when the pointer has moved
     // off it and into the child menu: without it the user loses the trail back.
-    if (_submenuOpen && !isHighlighted) {
-      paintRoundedFill(
-        list,
-        Rect.fromLTWH(
-            rect.left + 4, rect.top + 1, rect.width - 8, rect.height - 2),
-        theme.accentSubtle,
-        theme.cornerRadiusSmall,
-      );
-    }
+    if (_submenuOpen && !isHighlighted) paintRowPill(list, rect);
     paintRowHighlight(list, rect);
     super.paint(list, offset);
     if (!showsChevron) return;
     // Two mitred strokes, not a solid triangle: the same mark `RenderComboBox`
     // draws, pointing the way the menu will appear.
-    final double padding = theme.effectiveControlPadding;
+    final double padding = _rowPadding;
     final double span = (size.height * 0.22).clamp(3.0, 5.0).roundToDouble();
-    final double centreX =
-        (rect.right - padding - _chevronExtent / 2).roundToDouble();
+    // Right-aligned in its column, so its tip ends where an accelerator in
+    // the rows around it ends: one ragged right edge reads as untidy.
+    final double centreX = (rect.right - padding - span / 2).roundToDouble();
     final double centreY = (rect.top + rect.height / 2).roundToDouble();
     paintPolylineMark(
       list,
@@ -2213,7 +2436,9 @@ final class RenderSubmenuButton extends RenderBoxContainer<BoxParentData>
         Offset(centreX - span / 2, centreY + span),
       ],
       1.5,
-      enabled ? theme.foregroundSecondary : theme.disabledForeground,
+      enabled
+          ? rowForeground(normal: theme.foregroundSecondary)
+          : theme.disabledForeground,
     );
   }
 

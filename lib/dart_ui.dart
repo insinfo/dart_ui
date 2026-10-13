@@ -42,6 +42,8 @@ import 'dart:async';
 import 'src/app/application.dart' as app;
 import 'src/backends/default_platform_resolver_stub.dart'
     if (dart.library.io) 'src/backends/default_platform_resolver.dart';
+import 'src/backends/process_end_stub.dart'
+    if (dart.library.io) 'src/backends/process_end_io.dart';
 import 'src/widgets/widget.dart';
 
 export 'src/animation/animation.dart';
@@ -50,6 +52,7 @@ export 'src/animation/curves.dart';
 export 'src/animation/keyframes.dart';
 export 'src/animation/simulation.dart';
 export 'src/app/app.dart' hide runApp;
+export 'src/app/widgets_binding.dart';
 export 'src/assets/embedded_assets.dart';
 export 'src/audio/audio.dart';
 export 'src/backends/default_platform_resolver_stub.dart'
@@ -73,18 +76,24 @@ export 'src/crypto/pkcs11/pkcs11.dart';
 export 'src/crypto/windows/windows_certificate_store.dart';
 export 'src/crypto/x509/x509_certificate.dart';
 export 'src/diagnostics/dev_overlay.dart';
+export 'src/foundation/app_lifecycle_state.dart';
+export 'src/foundation/basic_types.dart';
 export 'src/foundation/change_notifier.dart';
 export 'src/foundation/compute.dart';
+export 'src/foundation/constants.dart';
 export 'src/foundation/diagnostics.dart';
+export 'src/foundation/error_details.dart';
 export 'src/foundation/frame_timeline.dart';
 export 'src/foundation/lifecycle.dart';
 export 'src/foundation/locale.dart';
 export 'src/foundation/lru_cache.dart';
+export 'src/foundation/print.dart';
 export 'src/gallery/gallery.dart';
 export 'src/geometry/offset.dart';
 export 'src/geometry/path.dart';
 export 'src/geometry/rect.dart';
 export 'src/geometry/relative_rect.dart';
+export 'src/geometry/rrect.dart';
 export 'src/geometry/size.dart';
 export 'src/geometry/transform2d.dart';
 export 'src/gestures/gestures.dart';
@@ -106,6 +115,7 @@ export 'src/graphics/image/png.dart';
 export 'src/graphics/image/png_encoder.dart';
 export 'src/graphics/image/raster_codec.dart';
 export 'src/graphics/image/raster_formats.dart';
+export 'src/graphics/shader.dart';
 export 'src/graphics/svg/svg_path.dart';
 export 'src/graphics/svg/svg_picture.dart';
 export 'src/graphics/vector/arrowheads.dart';
@@ -129,7 +139,18 @@ export 'src/graphics/video/video_color_conversion.dart';
 export 'src/graphics/video/video_decoder.dart';
 export 'src/graphics/video/video_frame.dart';
 export 'src/layout/alignment.dart';
+export 'src/layout/border_radius.dart';
+export 'src/layout/borders.dart';
 export 'src/layout/box_constraints.dart';
+export 'src/layout/canvas.dart'
+    hide
+        convertRadiusToSigma,
+        paintBlurredPath,
+        paintBlurredRRect,
+        paintSweepWedges,
+        writeClipMask;
+export 'src/layout/custom_painter.dart';
+export 'src/layout/decoration.dart';
 export 'src/layout/edge_insets.dart';
 export 'src/layout/layout_errors.dart';
 export 'src/layout/pipeline.dart';
@@ -137,6 +158,7 @@ export 'src/layout/pixel_snap.dart';
 export 'src/layout/render_align.dart';
 export 'src/layout/render_aspect_ratio.dart';
 export 'src/layout/render_box.dart';
+export 'src/layout/render_clip.dart';
 export 'src/layout/render_colored_box.dart';
 export 'src/layout/render_constrained_box.dart';
 export 'src/layout/render_custom_layout.dart';
@@ -150,6 +172,7 @@ export 'src/layout/render_stack.dart';
 export 'src/layout/render_table.dart';
 export 'src/layout/render_viewport.dart';
 export 'src/layout/render_wrap.dart';
+export 'src/layout/scroll_metrics.dart';
 export 'src/pdf/document/pdf_document.dart';
 export 'src/pdf/document/pdf_incremental_writer.dart';
 export 'src/pdf/export/vector_pdf_exporter.dart';
@@ -164,11 +187,13 @@ export 'src/platform/editing_convention.dart';
 export 'src/platform/file_picker.dart';
 export 'src/platform/file_watcher.dart';
 export 'src/platform/input_events.dart';
+export 'src/platform/logical_keyboard_key.dart';
 export 'src/platform/message_box.dart';
 export 'src/platform/native_menu.dart';
 export 'src/platform/native_window.dart';
 export 'src/platform/screen_color.dart';
 export 'src/platform/shell.dart';
+export 'src/platform/shortcut_activator.dart' hide usLayoutCharacter;
 export 'src/platform/standard_paths.dart';
 export 'src/platform/system_fonts.dart';
 export 'src/platform/system_info.dart';
@@ -243,17 +268,20 @@ export 'src/vector_editing/text_metrics.dart';
 export 'src/vector_editing/tool_controller.dart';
 export 'src/vector_editing/tool_mode.dart';
 export 'src/widgets/actions.dart';
+export 'src/widgets/actions_widget.dart';
 export 'src/widgets/animated_list.dart';
 export 'src/widgets/animated_widgets.dart';
 export 'src/widgets/animation_scope.dart';
 export 'src/widgets/async_builders.dart';
 export 'src/widgets/badge.dart';
 export 'src/widgets/basic.dart' hide RenderColoredBox;
+export 'src/widgets/binding_observer.dart';
 export 'src/widgets/bounded_draggable.dart';
 export 'src/widgets/breadcrumb_bar.dart';
 export 'src/widgets/calendar.dart';
 export 'src/widgets/callback_shortcuts.dart';
 export 'src/widgets/client_decoration.dart';
+export 'src/widgets/clip_widgets.dart';
 export 'src/widgets/color_picker.dart';
 export 'src/widgets/combo_box.dart';
 export 'src/widgets/command_button.dart';
@@ -267,11 +295,14 @@ export 'src/widgets/dart_ui_app.dart';
 export 'src/widgets/data_grid.dart';
 export 'src/widgets/dialogs.dart';
 export 'src/widgets/directionality.dart';
+export 'src/widgets/dismissible.dart';
 export 'src/widgets/divider.dart';
 export 'src/widgets/docking.dart';
 export 'src/widgets/document_tabs.dart';
 export 'src/widgets/drag_drop.dart';
+export 'src/widgets/drag_target.dart';
 export 'src/widgets/element.dart';
+export 'src/widgets/error_widget.dart';
 export 'src/widgets/errors.dart';
 export 'src/widgets/expander.dart';
 export 'src/widgets/flow.dart';
@@ -279,6 +310,9 @@ export 'src/widgets/fluent_icons.dart';
 export 'src/widgets/flyout.dart';
 export 'src/widgets/focus.dart';
 export 'src/widgets/focus_scope.dart';
+export 'src/widgets/focus_traversal.dart' hide focusNodeRect;
+export 'src/widgets/focus_widget.dart';
+export 'src/widgets/form.dart';
 export 'src/widgets/gesture_detector.dart';
 export 'src/widgets/hero.dart' show Hero;
 export 'src/widgets/hover.dart';
@@ -287,19 +321,26 @@ export 'src/widgets/icon_button.dart';
 export 'src/widgets/image.dart';
 export 'src/widgets/implicit_animation.dart';
 export 'src/widgets/info_bar.dart';
+export 'src/widgets/inherited_model.dart';
+export 'src/widgets/inherited_notifier.dart';
+export 'src/widgets/interactive_viewer.dart';
 export 'src/widgets/keyboard_router.dart';
+export 'src/widgets/keys.dart';
 export 'src/widgets/layout_builder.dart';
 export 'src/widgets/layout_widgets.dart';
 export 'src/widgets/list_box.dart';
 export 'src/widgets/listenable_builders.dart';
+export 'src/widgets/listener.dart';
 export 'src/widgets/localizations.dart';
 export 'src/widgets/media_query.dart';
 export 'src/widgets/menu_anchor.dart';
 export 'src/widgets/mouse_region.dart';
 export 'src/widgets/navigator.dart';
 export 'src/widgets/nested_scroll_view.dart';
+export 'src/widgets/notification_listener.dart';
 export 'src/widgets/number_box.dart';
 export 'src/widgets/overlay.dart';
+export 'src/widgets/page_view.dart';
 export 'src/widgets/phosphor_icons.dart';
 export 'src/widgets/platform_menu_bar.dart';
 export 'src/widgets/pointer_listener.dart';
@@ -313,9 +354,14 @@ export 'src/widgets/proxy.dart';
 export 'src/widgets/ribbon.dart';
 export 'src/widgets/routes.dart';
 export 'src/widgets/safe_area.dart';
+export 'src/widgets/scroll_controller.dart';
+export 'src/widgets/scroll_notification.dart';
+export 'src/widgets/scroll_physics.dart';
 export 'src/widgets/scroll_view.dart';
 export 'src/widgets/scrollbar.dart';
+export 'src/widgets/selectable_text.dart';
 export 'src/widgets/semantics_widgets.dart';
+export 'src/widgets/shortcuts.dart';
 export 'src/widgets/signal_visualization.dart';
 export 'src/widgets/sizing.dart';
 export 'src/widgets/sliver_app_bar.dart';
@@ -326,6 +372,7 @@ export 'src/widgets/style.dart';
 export 'src/widgets/svg.dart';
 export 'src/widgets/table.dart';
 export 'src/widgets/tabs.dart';
+export 'src/widgets/text_form_field.dart';
 export 'src/widgets/text_span.dart';
 export 'src/widgets/theme.dart';
 export 'src/widgets/time_picker.dart';
@@ -342,6 +389,7 @@ export 'src/widgets/vector_editor/vector_canvas.dart';
 export 'src/widgets/vector_editor/vector_renderer.dart';
 export 'src/widgets/video.dart';
 export 'src/widgets/widget.dart';
+export 'src/widgets/widgets_app.dart';
 export 'src/widgets/window_drag_area.dart';
 export 'src/widgets/window_scope.dart';
 
@@ -353,19 +401,32 @@ export 'src/widgets/window_scope.dart';
 /// first (D3D11/OpenGL today), and retains CPU/headless paths as diagnosed
 /// fallbacks. [onStarted] runs once the application is up, before its
 /// event loop - the place to attach a control channel or a probe.
+///
+/// When the application ends because its last window was closed, the process
+/// ends with it, as a desktop application's does: on the platform defaults
+/// (no [backends] given) a process still alive [kProcessEndGrace] after that -
+/// kept up by something the application left open, such as a file watcher -
+/// is ended with `exit`. One that released everything ends on its own at
+/// once, and code after `await runApp(...)` still runs. Calling [runApp]
+/// again in that window keeps the process. See `process_end_io.dart`.
 Future<app.Application> runApp(
   Widget rootWidget, {
   List<app.WindowingBackendEntry>? backends,
   List<app.PresentationPathEntry>? presentations,
   app.ApplicationOptions options = const app.ApplicationOptions(),
   FutureOr<void> Function(app.Application application)? onStarted,
-}) =>
-    app.runApp(
-      rootWidget,
-      backends:
-          backends ?? PlatformBackendResolver.defaultBackends(options: options),
-      presentations:
-          presentations ?? PlatformBackendResolver.defaultPresentations(),
-      options: options,
-      onStarted: onStarted,
-    );
+}) async {
+  // Another application after the last one ended: the process lives on.
+  cancelProcessEnd();
+  final app.Application application = await app.runApp(
+    rootWidget,
+    backends:
+        backends ?? PlatformBackendResolver.defaultBackends(options: options),
+    presentations:
+        presentations ?? PlatformBackendResolver.defaultPresentations(),
+    options: options,
+    onStarted: onStarted,
+  );
+  if (backends == null) endProcessWithLastWindow(application);
+  return application;
+}

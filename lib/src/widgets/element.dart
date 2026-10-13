@@ -1,13 +1,16 @@
 library;
 
+import '../foundation/error_details.dart';
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
 import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
+import '../platform/logical_keyboard_key.dart' show HardwareKeyboard;
 import '../platform/native_window.dart' show SystemCursor;
 import '../semantics/semantics.dart';
 import 'actions.dart';
 import 'drag_drop.dart';
+import 'error_widget.dart';
 import 'errors.dart';
 import 'focus.dart';
 import 'keyboard_router.dart';
@@ -231,7 +234,9 @@ final class BuildOwner {
   /// The order is the whole contract, and it is the order every desktop
   /// toolkit converges on:
   ///
-  ///   1. the focused control, which may consume the key entirely;
+  ///   1. the focused control, which may consume the key entirely, and then
+  ///      the `onKeyEvent` handlers of its focus node and its ancestors
+  ///      (Flutter's `Focus.onKeyEvent`, `Shortcuts`), nearest first;
   ///   2. the application's shortcut map, so Ctrl+S works from inside a text
   ///      field that did not want the key;
   ///   3. the window's own keys ([addWindowKeyHandler]) - F10 for the menu
@@ -248,7 +253,21 @@ final class BuildOwner {
     for (final observer in List.of(_keyObservers)) {
       observer(event);
     }
+    // Flutter's HardwareKeyboard sees every key first and its handlers
+    // cannot stop the focus system from seeing it too.
+    final bool byKeyboardHandlers =
+        HardwareKeyboard.instance.handleKeyEvent(event);
     if (_keyboardRouter.route(event)) return true;
+    // Then Flutter's bubbling: `Focus.onKeyEvent` from the focused node up.
+    switch (focusManager.handleKeyEvent(event)) {
+      case KeyEventResult.handled:
+        return true;
+      case KeyEventResult.skipRemainingHandlers:
+        return byKeyboardHandlers;
+      case KeyEventResult.ignored:
+        break;
+    }
+    if (byKeyboardHandlers) return true;
     if (_modalDepth == 0 && (shortcuts?.dispatch(event) ?? false)) {
       return true;
     }
@@ -685,10 +704,24 @@ abstract class Element implements BuildContext {
   T? dependOnInheritedWidgetOfExactType<T extends InheritedWidget>() {
     final InheritedElement? ancestor = _inheritedElements?[T];
     if (ancestor == null) return null;
+    return dependOnInheritedElement(ancestor) as T;
+  }
+
+  @override
+  InheritedWidget dependOnInheritedElement(
+    InheritedElement ancestor, {
+    Object? aspect,
+  }) {
     (_dependencies ??= <InheritedElement>{}).add(ancestor);
     ancestor._dependents.add(this);
-    return ancestor.widget as T;
+    ancestor.updateDependencies(this, aspect);
+    return ancestor.widget;
   }
+
+  @override
+  InheritedElement?
+      getElementForInheritedWidgetOfExactType<T extends InheritedWidget>() =>
+          _inheritedElements?[T];
 
   @override
   T? getInheritedWidgetOfExactType<T extends InheritedWidget>() =>
@@ -934,9 +967,32 @@ abstract class ComponentElement extends Element {
 
   Element? get child => _child;
 
+  /// Builds and reconciles the child; a build that throws puts an
+  /// [ErrorWidget] in the child's place, as Flutter does, and rethrows so the
+  /// owner's [ErrorReporter] records the failure with this element's path.
+  ///
+  /// The error widget is installed *before* rethrowing: under a containing
+  /// reporter (every application window has one) the frame then shows the
+  /// error box where the subtree was, instead of the subtree's stale content
+  /// or nothing, and the rest of the window keeps working.
   @override
   void performRebuild() {
-    _child = updateChild(_child, build());
+    final Widget built;
+    try {
+      built = build();
+    } catch (error, stack) {
+      _child = updateChild(
+        _child,
+        ErrorWidget.builder(FlutterErrorDetails(
+          exception: error,
+          stack: stack,
+          library: 'widgets library',
+          context: 'building ${widget.runtimeType}',
+        )),
+      );
+      rethrow;
+    }
+    _child = updateChild(_child, built);
   }
 
   @override
@@ -1022,7 +1078,10 @@ final class StatefulElement extends ComponentElement {
 /// whose [InheritedWidget.updateShouldNotify] answers true marks every
 /// registered dependent dirty; the build owner then rebuilds them
 /// shallowest-first in the same scope, so a theme change settles in one frame.
-final class InheritedElement extends ComponentElement {
+///
+/// Not final, as in Flutter: `InheritedNotifier` and `InheritedModel` extend it
+/// through [updateDependencies] and [notifyDependent].
+class InheritedElement extends ComponentElement {
   InheritedElement(InheritedWidget super.widget);
 
   final Set<Element> _dependents = <Element>{};
@@ -1065,7 +1124,22 @@ final class InheritedElement extends ComponentElement {
   void update(InheritedWidget newWidget) {
     final InheritedWidget oldWidget = widget;
     super.update(newWidget);
-    if (newWidget.updateShouldNotify(oldWidget)) notifyDependents();
+    if (!newWidget.updateShouldNotify(oldWidget)) return;
+    for (final Element dependent in List<Element>.of(_dependents)) {
+      if (dependent.mounted) notifyDependent(oldWidget, dependent);
+    }
+  }
+
+  /// Records that [dependent] depends on this value, for [aspect] when one is
+  /// given. Called on every registration; the base class keeps nothing beyond
+  /// the dependent itself. `InheritedModel`'s element keeps the aspects.
+  void updateDependencies(Element dependent, Object? aspect) {}
+
+  /// Tells [dependent] that this value changed from [oldWidget]'s. The base
+  /// class rebuilds it; `InheritedModel`'s element first asks the widget
+  /// whether this dependent's aspects are affected.
+  void notifyDependent(covariant InheritedWidget oldWidget, Element dependent) {
+    dependent.markNeedsBuild();
   }
 
   /// Marks every dependent for rebuild.

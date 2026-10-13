@@ -265,6 +265,41 @@ void main() {
     h.dispose();
   });
 
+  test('labels sit in the middle of their rows, as Files centres them',
+      () async {
+    final _Harness h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    double middle(RenderBox box) =>
+        box.localToGlobal(Offset.zero).dy + box.size.height / 2;
+    // The nearest box around [label] that is [height] tall: its row.
+    RenderBox rowOf(String label, double height) {
+      RenderBox? box =
+          h.renders<RenderText>().firstWhere((RenderText t) => t.text == label);
+      while (box != null && box.size.height < height - .01) {
+        box = box.parent;
+      }
+      return box!;
+    }
+
+    // The sidebar's cards and section headers, and the status line.
+    for (final (String label, double height) in <(String, double)>[
+      ('Home', 28),
+      ('Desktop', 28),
+      ('Downloads', 28),
+      ('Pinned', 28),
+      ('Drives', 28),
+      ('Settings', 28),
+      (h.model.statusText.$1, 36),
+    ]) {
+      final RenderText text =
+          h.renders<RenderText>().firstWhere((RenderText t) => t.text == label);
+      final RenderBox row = rowOf(label, height);
+      expect(row.size.height, height, reason: label);
+      expect(middle(text), closeTo(middle(row), .5), reason: label);
+    }
+  });
+
   test('the icon views draw every item', () async {
     final _Harness h = _Harness(mode: ViewMode.largeIcons);
     await h.settle();

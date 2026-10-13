@@ -61,23 +61,32 @@ Future<void> main(List<String> arguments) async {
         folder == null ? null : FolderLocation(Directory(folder).absolute.path),
   );
 
-  await runApp(
-    FileExplorerApp(
-      model: model,
-      dark: dark,
-      onClose: () => exit(0),
-      thumbnailLoader: loadThumbnail,
-    ),
-    options: ApplicationOptions.fromArguments(
-      arguments,
-      environment: Platform.environment,
-      title: strings.locale.startsWith('pt')
-          ? 'Explorador de Arquivos'
-          : 'File Explorer',
-      size: const Size(1280, 800),
-      minimumSize: const Size(640, 420),
-      // The tabs take the title bar's place, as in Windows 11 and Finder.
-      titleBar: WindowTitleBar.hidden,
-    ),
-  );
+  final ThumbnailWorkers thumbnails = ThumbnailWorkers();
+  // Closing the last tab closes the window, and the window's close - its
+  // button, Cmd+W, Alt+F4 - ends the application: runApp returns once it is
+  // torn down. What main opened, main closes, so the process then ends on
+  // its own.
+  try {
+    await runApp(
+      FileExplorerApp(
+        model: model,
+        dark: dark,
+        thumbnailLoader: thumbnails.load,
+      ),
+      options: ApplicationOptions.fromArguments(
+        arguments,
+        environment: Platform.environment,
+        title: strings.locale.startsWith('pt')
+            ? 'Explorador de Arquivos'
+            : 'File Explorer',
+        size: const Size(1280, 800),
+        minimumSize: const Size(640, 420),
+        // The tabs take the title bar's place, as in Windows 11 and Finder.
+        titleBar: WindowTitleBar.hidden,
+      ),
+    );
+  } finally {
+    thumbnails.close();
+    model.dispose();
+  }
 }

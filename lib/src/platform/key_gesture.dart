@@ -8,6 +8,8 @@ library;
 
 import 'editing_convention.dart';
 import 'input_events.dart';
+import 'logical_keyboard_key.dart';
+import 'shortcut_activator.dart';
 
 /// A key gesture: one logical key plus the modifiers that must be held.
 ///
@@ -30,7 +32,7 @@ import 'input_events.dart';
 /// [resolved] first, and [label] prints the platform's own notation: `⌘S`
 /// on a Mac, `Ctrl+S` elsewhere. Write [control] or [meta] only for a chord
 /// that really is that key on every platform.
-final class KeyGesture {
+final class KeyGesture implements ShortcutActivator {
   const KeyGesture(
     this.logicalKey, {
     this.control = false,
@@ -77,6 +79,18 @@ final class KeyGesture {
   bool matches(KeyEvent event, [EditingConvention? convention]) =>
       event is KeyDownEvent &&
       KeyGesture.fromEvent(event) == resolved(convention);
+
+  /// As a Flutter `ShortcutActivator`: the gesture's one key.
+  @override
+  Iterable<LogicalKeyboardKey> get triggers =>
+      <LogicalKeyboardKey>[LogicalKeyboardKey(logicalKey)];
+
+  /// As a Flutter `ShortcutActivator`: [matches], on this platform.
+  @override
+  bool accepts(KeyEvent event, HardwareKeyboard state) => matches(event);
+
+  @override
+  String debugDescribeKeys() => label();
 
   /// How a menu or a tooltip shows this gesture to the person at this
   /// machine: `⇧⌘Z` on a Mac, `Ctrl+Shift+Z` elsewhere.

@@ -37,14 +37,14 @@ final RegExp _export = RegExp(
 
 final RegExp _type = RegExp(
     r'^(?:(?:abstract|base|final|sealed|interface|mixin)\s+)*'
-    r'(class|mixin|enum|extension\s+type)\s+([A-Za-z]\w*)',
+    r'(class|mixin|enum|extension\s+type)\s+(?:const\s+)?([A-Za-z]\w*)',
     multiLine: true);
 
 final RegExp _typedef = RegExp(r'^typedef\s+([A-Za-z]\w*)', multiLine: true);
 
 /// A top-level function: a return type, a lower-case name, then `(` or `<`.
 final RegExp _function = RegExp(
-    r'^(?:external\s+)?(?:[A-Z][\w<>?, ]*|void|bool|int|double|num|String|dynamic|Object\??)\s+'
+    r'^(?:external\s+)?(?:[A-Za-z][\w<>?,. ]*[\w>?]|void|bool|int|double|num|String|dynamic|Object\??)\s+'
     r'([a-z]\w*)\s*[<(]',
     multiLine: true);
 

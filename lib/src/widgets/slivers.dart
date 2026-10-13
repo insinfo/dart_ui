@@ -31,8 +31,9 @@
 ///
 /// ## Differences from Flutter, stated once
 ///
-///   * `axis:` rather than `scrollDirection:`, the name `ListView` here
-///     already uses, and a [ScrollPosition] as the controller;
+///   * `axis:` and `scrollDirection:` are both accepted (the same value), and
+///     `controller:` takes a `ScrollController` or a [ScrollPosition];
+///   * no `center` or `anchor`: the scroll always starts at the first sliver;
 ///   * a child delegate needs a `childCount`; an endless builder list is not
 ///     supported, because the extent of the content has to be known for the
 ///     scrollbar and for the estimate of rows not measured yet;
@@ -55,6 +56,7 @@ import 'dart:collection';
 import '../geometry/offset.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
+import '../layout/render_flex.dart' show Axis;
 import '../layout/render_proxy_box.dart';
 import '../layout/render_sliver.dart';
 import '../layout/render_viewport.dart';
@@ -67,6 +69,8 @@ import 'focus.dart';
 import 'focus_scope.dart';
 import 'keyboard_router.dart';
 import 'pointer_router.dart';
+import 'scroll_controller.dart';
+import 'scroll_physics.dart';
 import 'scroll_view.dart';
 import 'scrollbar.dart';
 import 'widget.dart';
@@ -95,32 +99,56 @@ import 'widget.dart';
 /// could not use outwards), drag with momentum, and a [Scrollbar]. It also
 /// takes focus when clicked somewhere that did not focus something else, or
 /// by Tab, and then answers the arrow keys, Page Up/Down and Home/End.
+///
+/// Flutter's `scrollDirection`, `physics`, `shrinkWrap` and a
+/// `ScrollController` as `controller` work as in Flutter; `primary` is
+/// accepted and has no effect.
 final class CustomScrollView extends StatefulWidget {
   const CustomScrollView({
     super.key,
-    required this.slivers,
+    this.slivers = const <Widget>[],
     this.controller,
-    this.axis = ScrollAxis.vertical,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
     this.reverse = false,
+    this.primary,
+    this.physics,
+    this.shrinkWrap = false,
     this.cacheExtent = 0.0,
     this.scrollbar = ScrollbarVisibility.always,
     this.scrollbarThickness,
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
+    this.wheelEnabled = true,
     this.focusable = true,
     this.dispatcher,
-  });
+  }) : axis = scrollDirection ?? axis;
 
   /// The slivers, in scroll order. Every one must be a sliver; a box goes in
   /// a [SliverToBoxAdapter].
   final List<Widget> slivers;
 
-  /// The position to drive. One is created when this is null, and a caller
-  /// that wants to read or set the offset passes its own - its `axis` then
-  /// wins over [axis].
-  final ScrollPosition? controller;
+  /// What drives the offset: a `ScrollController`, or a [ScrollPosition]
+  /// (whose own axis then wins over [axis]). One is created when this is
+  /// null.
+  final ScrollPositionSource? controller;
 
   final ScrollAxis axis;
+
+  /// Flutter's name for [axis].
+  Axis get scrollDirection => axis;
+
+  /// Accepted for Flutter compatibility; has no effect here.
+  final bool? primary;
+
+  /// How the view answers the user - drag, wheel and keys. Null keeps the
+  /// framework's own scrolling; see [Scrollable.physics].
+  final ScrollPhysics? physics;
+
+  /// Whether the view is as long as its slivers (up to the space it is
+  /// given) rather than as long as it is allowed to be. Lays every sliver
+  /// out in full along an unbounded axis, as Flutter does.
+  final bool shrinkWrap;
 
   /// Whether the scroll starts at the bottom (or right) and the slivers grow
   /// upwards (or leftwards) - a chat log that opens on its newest message.
@@ -136,6 +164,10 @@ final class CustomScrollView extends StatefulWidget {
   final bool dragEnabled;
   final bool mouseDragEnabled;
 
+  /// Whether the wheel scrolls the view. False for a view that answers the
+  /// wheel itself, as a `PageView` does a page at a time.
+  final bool wheelEnabled;
+
   /// Whether the view can take keyboard focus to scroll by key. False leaves
   /// the keys to whatever inside it is focused.
   final bool focusable;
@@ -147,30 +179,36 @@ final class CustomScrollView extends StatefulWidget {
 }
 
 final class _CustomScrollViewState extends State<CustomScrollView> {
-  late final ScrollPosition _position =
-      widget.controller ?? ScrollPosition(axis: widget.axis);
+  final ScrollPositionAttachment _attachment = ScrollPositionAttachment();
   final FocusNode _focusNode = FocusNode(debugLabel: 'CustomScrollView');
 
   @override
   void dispose() {
+    _attachment.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
+    final ScrollPosition position =
+        _attachment.update(widget.controller, widget.axis);
     _focusNode.canRequestFocus = widget.focusable;
     final Widget scrollable = FocusAttachment(
       node: _focusNode,
       child: Scrollable(
-        position: _position,
+        position: position,
         reverse: widget.reverse,
+        physics: widget.physics,
         dragEnabled: widget.dragEnabled,
         mouseDragEnabled: widget.mouseDragEnabled,
+        wheelEnabled: widget.wheelEnabled,
         dispatcher: widget.dispatcher,
         child: _SliverViewport(
-          position: _position,
+          position: position,
           reverse: widget.reverse,
+          shrinkWrap: widget.shrinkWrap,
+          physics: Scrollable.resolvePhysics(widget.physics),
           cacheExtent: widget.cacheExtent,
           focusNode: _focusNode,
           children: widget.slivers,
@@ -179,7 +217,7 @@ final class _CustomScrollViewState extends State<CustomScrollView> {
     );
     if (widget.scrollbar == ScrollbarVisibility.never) return scrollable;
     return Scrollbar(
-      position: _position,
+      position: position,
       visibility: widget.scrollbar,
       thickness: widget.scrollbarThickness,
       dispatcher: widget.dispatcher,
@@ -193,6 +231,8 @@ final class _SliverViewport extends MultiChildRenderObjectWidget {
   const _SliverViewport({
     required this.position,
     required this.reverse,
+    required this.shrinkWrap,
+    required this.physics,
     required this.cacheExtent,
     required this.focusNode,
     required super.children,
@@ -200,6 +240,8 @@ final class _SliverViewport extends MultiChildRenderObjectWidget {
 
   final ScrollPosition position;
   final bool reverse;
+  final bool shrinkWrap;
+  final ScrollPhysics? physics;
   final double cacheExtent;
   final FocusNode focusNode;
 
@@ -208,8 +250,11 @@ final class _SliverViewport extends MultiChildRenderObjectWidget {
       RenderCustomScrollViewport(
         position: position,
         reverse: reverse,
+        shrinkWrap: shrinkWrap,
         cacheExtent: cacheExtent,
-      )..focusNode = focusNode;
+      )
+        ..physics = physics
+        ..focusNode = focusNode;
 
   @override
   void updateRenderObject(
@@ -219,6 +264,8 @@ final class _SliverViewport extends MultiChildRenderObjectWidget {
     object
       ..position = position
       ..reverse = reverse
+      ..shrinkWrap = shrinkWrap
+      ..physics = physics
       ..cacheExtent = cacheExtent
       ..focusNode = focusNode;
   }
@@ -240,10 +287,18 @@ final class RenderCustomScrollViewport extends RenderSliverViewport
   RenderCustomScrollViewport({
     required super.position,
     super.reverse,
+    super.shrinkWrap,
     super.cacheExtent,
   });
 
   FocusNode? _focusNode;
+
+  /// The view's physics, already applied to the default. Keys and the
+  /// semantic scroll actions are user scrolling, so a physics that refuses
+  /// it ([NeverScrollableScrollPhysics]) turns them off. Null allows them.
+  ScrollPhysics? physics;
+
+  bool get _userMayScroll => physics?.shouldAcceptUserOffset(position) ?? true;
 
   /// The node that routes keys here. Owned by the scroll view's state.
   FocusNode? get focusNode => _focusNode;
@@ -314,7 +369,7 @@ final class RenderCustomScrollViewport extends RenderSliverViewport
 
   @override
   bool handleKeyEvent(KeyEvent event) {
-    if (event is! KeyDownEvent) return false;
+    if (event is! KeyDownEvent || !_userMayScroll) return false;
     final ScrollPosition position = this.position;
     final double before = position.pixels;
     final int key = event.logicalKey;
@@ -343,10 +398,10 @@ final class RenderCustomScrollViewport extends RenderSliverViewport
   }
 
   bool get _canScrollTowardsTrailing =>
-      reverse ? !position.atStart : !position.atEnd;
+      _userMayScroll && (reverse ? !position.atStart : !position.atEnd);
 
   bool get _canScrollTowardsLeading =>
-      reverse ? !position.atEnd : !position.atStart;
+      _userMayScroll && (reverse ? !position.atEnd : !position.atStart);
 
   @override
   SemanticsConfiguration describeSemantics() => SemanticsConfiguration(
@@ -376,11 +431,11 @@ final class RenderCustomScrollViewport extends RenderSliverViewport
         final FocusNode? node = _focusNode;
         if (node == null || !node.canRequestFocus) return false;
         return node.requestFocus();
-      case SemanticsAction.scrollDown when _vertical:
-      case SemanticsAction.scrollRight when !_vertical:
+      case SemanticsAction.scrollDown when _vertical && _userMayScroll:
+      case SemanticsAction.scrollRight when !_vertical && _userMayScroll:
         pages = reverse ? -1 : 1;
-      case SemanticsAction.scrollUp when _vertical:
-      case SemanticsAction.scrollLeft when !_vertical:
+      case SemanticsAction.scrollUp when _vertical && _userMayScroll:
+      case SemanticsAction.scrollLeft when !_vertical && _userMayScroll:
         pages = reverse ? 1 : -1;
       default:
         return false;

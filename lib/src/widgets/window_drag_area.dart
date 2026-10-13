@@ -4,6 +4,7 @@ library;
 
 import '../geometry/offset.dart';
 import '../layout/render_proxy_box.dart';
+import '../layout/render_stack.dart' show StackFit;
 import '../platform/input_events.dart';
 import '../platform/native_window.dart';
 import 'basic.dart';
@@ -29,7 +30,10 @@ final class WindowDragArea extends StatelessWidget {
     final HiddenTitleBarWindow? window =
         WindowScope.of(context)?.hiddenTitleBar;
     if (window == null) return child;
+    // Passthrough: the child is laid out exactly as it would be without
+    // the handle, so a strip that fills its slot still fills it here.
     return Stack(
+      fit: StackFit.passthrough,
       children: <Widget>[
         Positioned.fill(child: _DragHandle(window: window)),
         child,

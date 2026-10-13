@@ -87,6 +87,11 @@ export '../text/paragraph.dart' show TextAffinity, TextPosition;
 final class TextRange {
   const TextRange(this.start, this.end);
 
+  /// A zero-length range at [offset] - Flutter's `TextRange.collapsed`.
+  const TextRange.collapsed(int offset)
+      : start = offset,
+        end = offset;
+
   /// The absent range. Not a range at offset zero: see the class comment.
   static const TextRange empty = TextRange(-1, -1);
 
@@ -112,6 +117,15 @@ final class TextRange {
   /// [text]: a range that outlives the string it indexed is a bug in the
   /// caller, and silently returning a shorter string would hide it.
   String textInside(String text) => isValid ? text.substring(start, end) : '';
+
+  /// Whether [start] is not after [end].
+  bool get isNormalized => end >= start;
+
+  /// The text before this range - Flutter's `TextRange.textBefore`.
+  String textBefore(String text) => text.substring(0, start);
+
+  /// The text after this range - Flutter's `TextRange.textAfter`.
+  String textAfter(String text) => text.substring(end);
 
   @override
   bool operator ==(Object other) =>
@@ -150,6 +164,12 @@ final class TextSelection {
   })  : baseOffset = offset,
         extentOffset = offset;
 
+  /// A caret at [position] - Flutter's `TextSelection.fromPosition`.
+  TextSelection.fromPosition(TextPosition position)
+      : baseOffset = position.offset,
+        extentOffset = position.offset,
+        affinity = position.affinity;
+
   /// Where the selection was anchored - the end that does *not* move when the
   /// user extends with Shift.
   final int baseOffset;
@@ -179,6 +199,22 @@ final class TextSelection {
 
   /// The caret, as something [Paragraph.getCaretRect] can be handed directly.
   TextPosition get extent => TextPosition(extentOffset, affinity: affinity);
+
+  /// The anchored end as a position.
+  TextPosition get base => TextPosition(baseOffset, affinity: affinity);
+
+  /// Whether both ends are offsets at all; Flutter spells "no selection"
+  /// with -1.
+  bool get isValid => baseOffset >= 0 && extentOffset >= 0;
+
+  /// The selected text.
+  String textInside(String text) => text.substring(start, end);
+
+  /// The text before the selection.
+  String textBefore(String text) => text.substring(0, start);
+
+  /// The text after the selection.
+  String textAfter(String text) => text.substring(end);
 
   TextSelection copyWith({
     int? baseOffset,

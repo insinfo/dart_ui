@@ -454,7 +454,9 @@ void main() {
       final _Harness h = _Harness(theme: theme)..frame();
       final List<Color?> fills = <Color?>[];
       void walk(RenderBox node) {
-        if (node is RenderDecoratedBox) fills.add(node.decoration.color);
+        if (node is RenderDecoratedBox) {
+          fills.add((node.decoration as BoxDecoration).color);
+        }
         node.visitChildren(walk);
       }
 

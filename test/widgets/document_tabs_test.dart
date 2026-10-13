@@ -97,6 +97,24 @@ void main() {
         expect(strip.adds, 1);
         strip.dispose();
       });
+
+      test('the label and icon sit in the middle of the tab', () {
+        final _Strip strip = _Strip(style: style);
+        RenderBox? label;
+        void walk(RenderBox node) {
+          if (node is RenderText && node.text == 'Documents') label = node;
+          node.visitChildren(walk);
+        }
+
+        walk(strip.owner.renderRoot!);
+        final double middle =
+            label!.localToGlobal(Offset.zero).dy + label!.size.height / 2;
+        // The raised card starts 4 px down, leaving the strip's colour
+        // above it; the label is centred in what is the card.
+        expect(middle,
+            closeTo(style == DocumentTabStyle.raised ? (4 + 40) / 2 : 20, .5));
+        strip.dispose();
+      });
     });
   }
 }

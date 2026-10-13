@@ -88,6 +88,18 @@ enum Capability {
   /// correct, cheaper, and cropped at the window's edge. See
   /// `doc/PLANO_POPUPS_EM_JANELAS_NATIVAS.md`.
   nativePopups,
+
+  /// A [nativePopups] surface shows the alpha of its pixels: what a popup
+  /// leaves transparent shows whatever is behind it, and the platform's
+  /// shadow follows the shape that is left.
+  ///
+  /// What lets a menu be its own rounded surface and nothing else. Without
+  /// it the framework clears a popup to the application's colour, because
+  /// a transparent pixel in an opaque window is black - and the menu sits
+  /// inside a rectangle of that colour, which on a platform with no
+  /// rounding of its own is the honest answer. macOS's non-opaque panel
+  /// declares it; Win32's `WS_POPUP` does not (that needs a layered window).
+  transparentPopups,
 }
 
 /// Why a probe reached the conclusion it did.

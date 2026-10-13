@@ -18,6 +18,7 @@ library;
 import '../platform/input_events.dart';
 import '../platform/logical_keys.dart';
 import 'keyboard_router.dart';
+import 'widget.dart' show BuildContext;
 
 export '../platform/logical_keys.dart';
 
@@ -41,6 +42,33 @@ enum FocusChangeReason {
 /// A direction for directional (arrow-key) navigation.
 enum TraversalDirection { up, down, left, right, next, previous }
 
+/// What a key handler did with a key event - Flutter's `KeyEventResult`.
+enum KeyEventResult {
+  /// Used: nobody else sees it.
+  handled,
+
+  /// Not used: it goes on to the next handler up the focus tree, then to
+  /// the application's shortcuts, the window's keys and traversal.
+  ignored,
+
+  /// Not used, and nobody else in the focus tree may use it either: the
+  /// event leaves the framework unhandled, for the platform.
+  skipRemainingHandlers,
+}
+
+/// A key handler on a [FocusNode] - Flutter's `FocusOnKeyEventCallback`.
+typedef FocusOnKeyEventCallback = KeyEventResult Function(
+  FocusNode node,
+  KeyEvent event,
+);
+
+/// Orders the traversable nodes under a group node; what a
+/// `FocusTraversalGroup` installs on its node as its policy.
+typedef FocusTraversalSorter = Iterable<FocusNode> Function(
+  Iterable<FocusNode> descendants,
+  FocusNode currentNode,
+);
+
 /// One focusable location.
 ///
 /// Nodes form a tree that parallels the widget tree but contains only
@@ -52,12 +80,36 @@ class FocusNode {
     bool canRequestFocus = true,
     bool skipTraversal = false,
     KeyboardEventTarget? target,
+    this.onKeyEvent,
+    bool descendantsAreFocusable = true,
+    bool descendantsAreTraversable = true,
   })  : _canRequestFocus = canRequestFocus,
         _skipTraversal = skipTraversal,
+        _descendantsAreFocusable = descendantsAreFocusable,
+        _descendantsAreTraversable = descendantsAreTraversable,
         _target = target;
 
   /// Names the node in diagnostics only.
   final String? debugLabel;
+
+  /// Offered the key events that reach this node unhandled: the focused
+  /// control's own target declined them, and this node holds focus or is an
+  /// ancestor of the node that does. Flutter's `FocusNode.onKeyEvent`.
+  ///
+  /// Handlers run from the focused node up to the root, and the first that
+  /// answers [KeyEventResult.handled] or
+  /// [KeyEventResult.skipRemainingHandlers] ends the walk.
+  FocusOnKeyEventCallback? onKeyEvent;
+
+  /// The widget this node belongs to, set by the widget that attaches it
+  /// (`Focus`, or a control's focus attachment). Flutter's
+  /// `FocusNode.context`, which `Actions` and `Shortcuts` start their search
+  /// from.
+  BuildContext? context;
+
+  /// Orders traversal among this node's descendants when set; see
+  /// [FocusTraversalSorter].
+  FocusTraversalSorter? traversalSorter;
 
   KeyboardEventTarget? _target;
 
@@ -80,8 +132,7 @@ class FocusNode {
   }
 
   final List<FocusNode> _children = <FocusNode>[];
-  final List<void Function(FocusNode node)> _listeners =
-      <void Function(FocusNode node)>[];
+  final List<Function> _listeners = <Function>[];
 
   FocusNode? _parent;
   FocusManager? _manager;
@@ -98,7 +149,52 @@ class FocusNode {
 
   /// Whether this node is willing to take focus. A disabled control sets this
   /// false, which also removes it from traversal without reordering anything.
-  bool get canRequestFocus => _canRequestFocus;
+  ///
+  /// False also while an ancestor has [descendantsAreFocusable] false, as in
+  /// Flutter: that is how `ExcludeFocus` takes a whole subtree out.
+  bool get canRequestFocus {
+    if (!_canRequestFocus) return false;
+    for (FocusNode? node = _parent; node != null; node = node._parent) {
+      if (!node._descendantsAreFocusable) return false;
+    }
+    return true;
+  }
+
+  bool _descendantsAreFocusable;
+  bool _descendantsAreTraversable;
+
+  /// Whether the nodes below this one may take focus. Turning it off moves
+  /// focus out of the subtree if it was inside.
+  bool get descendantsAreFocusable => _descendantsAreFocusable;
+
+  set descendantsAreFocusable(bool value) {
+    if (value == _descendantsAreFocusable) return;
+    _descendantsAreFocusable = value;
+    if (!value) {
+      final FocusNode? focused = _manager?.primaryFocus;
+      if (focused != null && !identical(focused, this)) {
+        for (FocusNode? node = focused._parent;
+            node != null;
+            node = node._parent) {
+          if (identical(node, this)) {
+            _manager?._focusChanged(null, FocusChangeReason.programmatic);
+            break;
+          }
+        }
+      }
+    }
+    _notify();
+  }
+
+  /// Whether Tab may land on the nodes below this one. They stay focusable
+  /// by click and by code.
+  bool get descendantsAreTraversable => _descendantsAreTraversable;
+
+  set descendantsAreTraversable(bool value) {
+    if (value == _descendantsAreTraversable) return;
+    _descendantsAreTraversable = value;
+    _notify();
+  }
 
   set canRequestFocus(bool value) {
     if (value == _canRequestFocus) return;
@@ -109,7 +205,15 @@ class FocusNode {
   /// Whether Tab skips this node. A node can be focusable by click yet not
   /// participate in the tab ring - a text label with a selection, a toolbar
   /// that is reached by arrow keys from its first button.
-  bool get skipTraversal => _skipTraversal;
+  ///
+  /// True also while an ancestor has [descendantsAreTraversable] false.
+  bool get skipTraversal {
+    if (_skipTraversal) return true;
+    for (FocusNode? node = _parent; node != null; node = node._parent) {
+      if (!node._descendantsAreTraversable) return true;
+    }
+    return false;
+  }
 
   set skipTraversal(bool value) {
     if (value == _skipTraversal) return;
@@ -148,11 +252,52 @@ class FocusNode {
     return null;
   }
 
-  void addListener(void Function(FocusNode node) listener) =>
-      _listeners.add(listener);
+  /// Calls [listener] whenever this node's focus changes - it gains or loses
+  /// primary focus, or a descendant does, which changes [hasFocus].
+  ///
+  /// Takes either shape: `void Function(FocusNode node)`, as written here
+  /// before, or Flutter's `void Function()`, as `ChangeNotifier` listeners
+  /// are. Anything else is an [ArgumentError].
+  void addListener(Function listener) {
+    if (listener is! void Function(FocusNode) && listener is! void Function()) {
+      throw ArgumentError.value(listener, 'listener',
+          'must be a void Function() or a void Function(FocusNode)');
+    }
+    _listeners.add(listener);
+  }
 
-  void removeListener(void Function(FocusNode node) listener) =>
-      _listeners.remove(listener);
+  void removeListener(Function listener) => _listeners.remove(listener);
+
+  /// The nodes above this one, nearest first.
+  Iterable<FocusNode> get ancestors sync* {
+    for (FocusNode? node = _parent; node != null; node = node._parent) {
+      yield node;
+    }
+  }
+
+  /// Every node below this one, depth first.
+  Iterable<FocusNode> get descendants sync* {
+    for (final FocusNode child in _children) {
+      yield child;
+      yield* child.descendants;
+    }
+  }
+
+  /// The scope this node is in, or this node when it is a scope - Flutter's
+  /// `nearestScope`.
+  FocusScopeNode? get nearestScope => enclosingScope;
+
+  /// Moves focus to the next node in tab order. Flutter's `nextFocus`.
+  bool nextFocus() =>
+      _manager?.moveFocus(TraversalDirection.next, from: this) ?? false;
+
+  /// Moves focus to the previous node in tab order.
+  bool previousFocus() =>
+      _manager?.moveFocus(TraversalDirection.previous, from: this) ?? false;
+
+  /// Moves focus one step in [direction].
+  bool focusInDirection(TraversalDirection direction) =>
+      _manager?.moveFocus(direction, from: this) ?? false;
 
   /// Adds [child] as the last child in traversal order.
   void add(FocusNode child) => insert(child, index: _children.length);
@@ -270,9 +415,12 @@ class FocusNode {
   }
 
   void _notify() {
-    for (final void Function(FocusNode) listener
-        in List<void Function(FocusNode)>.of(_listeners)) {
-      listener(this);
+    for (final Function listener in List<Function>.of(_listeners)) {
+      if (listener is void Function(FocusNode)) {
+        listener(this);
+      } else if (listener is void Function()) {
+        listener();
+      }
     }
   }
 
@@ -289,6 +437,9 @@ final class FocusScopeNode extends FocusNode {
     super.canRequestFocus,
     super.skipTraversal = true,
   });
+
+  @override
+  FocusScopeNode get nearestScope => this;
 
   /// Whether traversal is trapped inside this scope.
   ///
@@ -422,6 +573,18 @@ final class FocusManager {
   void _focusChanged(FocusNode? node, FocusChangeReason reason) {
     final FocusNode? previous = _primaryFocus;
     if (identical(previous, node)) return;
+    // The ancestors whose hasFocus flips: those above one of the two nodes
+    // and not above both. Told after the change, as Flutter tells them.
+    final Set<FocusNode> above = <FocusNode>{
+      if (previous != null) ...previous.ancestors,
+    };
+    final Set<FocusNode> aboveNew = <FocusNode>{
+      if (node != null) ...node.ancestors,
+    };
+    final List<FocusNode> flipped = <FocusNode>[
+      ...above.difference(aboveNew),
+      ...aboveNew.difference(above),
+    ];
     if (previous != null) {
       previous._hasPrimaryFocus = false;
       final KeyboardEventTarget? target = previous.target;
@@ -444,7 +607,28 @@ final class FocusManager {
       if (target != null) _router?.requestFocus(target);
       node._notify();
     }
+    for (final FocusNode ancestor in flipped) {
+      if (!identical(ancestor, node) && !identical(ancestor, previous)) {
+        ancestor._notify();
+      }
+    }
     _notify();
+  }
+
+  /// Offers [event] to the [FocusNode.onKeyEvent] handlers from the focused
+  /// node up to the root - Flutter's key-event bubbling.
+  ///
+  /// Called after the focused control's own target declined the event.
+  /// Answers [KeyEventResult.ignored] when there is no focus or no handler
+  /// used it.
+  KeyEventResult handleKeyEvent(KeyEvent event) {
+    for (FocusNode? node = _primaryFocus; node != null; node = node._parent) {
+      final FocusOnKeyEventCallback? handler = node.onKeyEvent;
+      if (handler == null) continue;
+      final KeyEventResult result = handler(node, event);
+      if (result != KeyEventResult.ignored) return result;
+    }
+    return KeyEventResult.ignored;
   }
 
   /// Supplies the visual order that tab order must follow.
@@ -464,6 +648,80 @@ final class FocusManager {
   /// makes Tab in a dialog wrap rather than escape.
   List<FocusNode> traversalRing() {
     final FocusNode start = _activeModalScope() ?? rootScope;
+    final List<FocusNode> ring = _visualRing(start);
+    if (!_hasSorter(start)) return ring;
+    return _groupOrder(start, ring);
+  }
+
+  bool _hasSorter(FocusNode root) {
+    for (final FocusNode node in root.descendants) {
+      if (node.traversalSorter != null) return true;
+    }
+    return false;
+  }
+
+  /// [ring] reordered so that each group with a [FocusNode.traversalSorter]
+  /// is visited as one block, in the order its sorter gives.
+  ///
+  /// A group's members are the traversable nodes whose nearest sorted
+  /// ancestor is that group; nested groups are members of the group around
+  /// them and expand in place. Groups without a sorter keep the visual order.
+  List<FocusNode> _groupOrder(FocusNode root, List<FocusNode> ring) {
+    final Map<FocusNode, int> rank = <FocusNode, int>{
+      for (int i = 0; i < ring.length; i++) ring[i]: i,
+    };
+    FocusNode groupOf(FocusNode node) {
+      for (FocusNode? a = node._parent; a != null; a = a._parent) {
+        if (identical(a, root) || a.traversalSorter != null) return a;
+      }
+      return root;
+    }
+
+    // Members of each group: traversable nodes and the nested groups.
+    final Map<FocusNode, List<FocusNode>> members =
+        <FocusNode, List<FocusNode>>{};
+    final Map<FocusNode, int> firstRank = <FocusNode, int>{};
+    for (final FocusNode node in ring) {
+      FocusNode item = node;
+      FocusNode group = groupOf(node);
+      final int r = rank[node]!;
+      while (true) {
+        final List<FocusNode> list = members.putIfAbsent(group, () => []);
+        if (!list.contains(item)) list.add(item);
+        if (firstRank[item] == null || r < firstRank[item]!) {
+          firstRank[item] = r;
+        }
+        if (identical(group, root)) break;
+        item = group;
+        group = groupOf(group);
+      }
+    }
+    final FocusNode current = _primaryFocus ?? root;
+    final List<FocusNode> result = <FocusNode>[];
+    void expand(FocusNode group) {
+      final List<FocusNode> list = members[group] ?? <FocusNode>[];
+      list.sort(
+          (FocusNode a, FocusNode b) => firstRank[a]!.compareTo(firstRank[b]!));
+      final FocusTraversalSorter? sorter = group.traversalSorter;
+      final Iterable<FocusNode> ordered =
+          sorter == null ? list : sorter(list, current);
+      for (final FocusNode item in ordered) {
+        if (members.containsKey(item)) {
+          // A nested group: itself when it is a stop too, then its members.
+          if (rank.containsKey(item)) result.add(item);
+          expand(item);
+        } else {
+          result.add(item);
+        }
+      }
+    }
+
+    expand(root);
+    return result;
+  }
+
+  /// The traversable nodes under [start] in visual order.
+  List<FocusNode> _visualRing(FocusNode start) {
     final List<FocusNode> nodes = _traversableDescendants(start);
     final List<KeyboardEventTarget>? order = traversalOrderProvider?.call();
     if (order == null || order.isEmpty) return nodes;
@@ -501,11 +759,13 @@ final class FocusManager {
   ///
   /// Returns false when there is nowhere to go, which the caller may use to
   /// let the platform move focus out of the window entirely.
-  bool moveFocus(TraversalDirection direction) {
+  ///
+  /// [from] is the node to step from, the focused one by default.
+  bool moveFocus(TraversalDirection direction, {FocusNode? from}) {
     final List<FocusNode> ring = traversalRing();
     if (ring.isEmpty) return false;
-    final int current =
-        _primaryFocus == null ? -1 : ring.indexOf(_primaryFocus!);
+    final FocusNode? origin = from ?? _primaryFocus;
+    final int current = origin == null ? -1 : ring.indexOf(origin);
     final bool backwards = direction == TraversalDirection.previous ||
         direction == TraversalDirection.up ||
         direction == TraversalDirection.left;

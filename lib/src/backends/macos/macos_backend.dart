@@ -418,6 +418,10 @@ final class MacosWindowingBackend
       window = newWindow(null);
       opened = await window.open(spawnOptions: spawnOptions);
     }
+    final NativeWindow? owner = options.owner;
+    if (opened && owner is MacosWindow) {
+      window.setOwnerWindowNumber(owner.hostWindowNumber);
+    }
     if (spawnOptions.kind == MacosHostWindowKind.popup) {
       // The replacement, launched as soon as this popup is open, so that the
       // next one - the submenu about to be hovered into, or the same menu

@@ -45,7 +45,15 @@ sealed class PointerEvent extends PlatformInputEvent {
     required this.pointerId,
     required this.kind,
     required this.logicalPosition,
-  });
+    Offset? localPosition,
+    this.delta = Offset.zero,
+    Offset? localDelta,
+    int? buttons,
+    PointerEvent? original,
+  })  : _localPosition = localPosition,
+        _localDelta = localDelta,
+        _buttons = buttons,
+        _original = original;
 
   /// A stable identifier for this pointer (e.g., touch finger ID). For mice,
   /// this is typically 0.
@@ -54,7 +62,178 @@ sealed class PointerEvent extends PlatformInputEvent {
 
   /// The position in logical units within the client area of the window.
   final Offset logicalPosition;
+
+  final Offset? _localPosition;
+  final Offset? _localDelta;
+  final int? _buttons;
+  final PointerEvent? _original;
+
+  /// The event as the backend reported it, when this one is a
+  /// [transformed] copy; null for the backend's own. Flutter's `original`,
+  /// and what the pointer signal resolver compares, so a copy registered by
+  /// a listener resolves as the event it came from.
+  PointerEvent? get original => _original;
+
+  /// Flutter's name for [pointerId].
+  int get pointer => pointerId;
+
+  /// Flutter's name for [logicalPosition]: where the pointer is in the
+  /// window, in logical pixels.
+  Offset get position => logicalPosition;
+
+  /// Where the pointer is in the coordinate space of the widget receiving
+  /// the event, as Flutter's `Listener` delivers it.
+  ///
+  /// The backend reports window coordinates only; a `Listener` hands its
+  /// callbacks a copy made with [transformed], whose local position is
+  /// relative to the listener's own box. An event that did not come through
+  /// one answers [logicalPosition].
+  Offset get localPosition => _localPosition ?? logicalPosition;
+
+  /// How far the pointer moved since the previous event of this pointer, in
+  /// window coordinates. Zero unless the receiver measured it - a `Listener`
+  /// does, as Flutter's `PointerMoveEvent.delta`.
+  final Offset delta;
+
+  /// [delta] in the receiver's coordinate space.
+  Offset get localDelta => _localDelta ?? delta;
+
+  /// The buttons held, as Flutter's bit set: [kPrimaryButton],
+  /// [kSecondaryButton], [kMiddleMouseButton], [kBackMouseButton] and
+  /// [kForwardMouseButton].
+  ///
+  /// A press reports the button it pressed; a move reports what the receiver
+  /// saw held (a `Listener` tracks it), 0 for a pointer moving with nothing
+  /// pressed - Flutter's hover.
+  int get buttons => _buttons ?? 0;
+
+  /// Whether a button is held - a drag rather than a hover.
+  bool get down => buttons != 0;
+
+  /// This event as a receiver at another place sees it: the same event with
+  /// [localPosition], [delta], [localDelta] and [buttons] filled in.
+  ///
+  /// Flutter's `PointerEvent.transformed`, but given the answers rather than
+  /// a matrix, because the receiver is what knows its own transform.
+  PointerEvent transformed({
+    required Offset localPosition,
+    Offset? delta,
+    Offset? localDelta,
+    int? buttons,
+  }) {
+    final Offset d = delta ?? this.delta;
+    final Offset ld = localDelta ?? _localDelta ?? d;
+    final int? b = buttons ?? _buttons;
+    final PointerEvent e = this;
+    return switch (e) {
+      PointerDownEvent() => PointerDownEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: timestamp,
+          pointerId: pointerId,
+          kind: kind,
+          logicalPosition: logicalPosition,
+          button: e.button,
+          clickCount: e.clickCount,
+          localPosition: localPosition,
+          delta: d,
+          localDelta: ld,
+          buttons: b,
+          original: _original ?? this,
+        ),
+      PointerUpEvent() => PointerUpEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: timestamp,
+          pointerId: pointerId,
+          kind: kind,
+          logicalPosition: logicalPosition,
+          button: e.button,
+          localPosition: localPosition,
+          delta: d,
+          localDelta: ld,
+          buttons: b,
+          original: _original ?? this,
+        ),
+      PointerMoveEvent() => PointerMoveEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: timestamp,
+          pointerId: pointerId,
+          kind: kind,
+          logicalPosition: logicalPosition,
+          localPosition: localPosition,
+          delta: d,
+          localDelta: ld,
+          buttons: b,
+          original: _original ?? this,
+        ),
+      PointerCancelEvent() => PointerCancelEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: timestamp,
+          pointerId: pointerId,
+          kind: kind,
+          logicalPosition: logicalPosition,
+          localPosition: localPosition,
+          delta: d,
+          localDelta: ld,
+          buttons: b,
+          original: _original ?? this,
+        ),
+      PointerScrollEvent() => PointerScrollEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: timestamp,
+          pointerId: pointerId,
+          kind: kind,
+          logicalPosition: logicalPosition,
+          scrollDelta: e.scrollDelta,
+          scrollDeltaUnit: e.scrollDeltaUnit,
+          localPosition: localPosition,
+          delta: d,
+          localDelta: ld,
+          buttons: b,
+          original: _original ?? this,
+        ),
+      PointerPanZoomEvent() => PointerPanZoomEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: timestamp,
+          pointerId: pointerId,
+          kind: kind,
+          logicalPosition: logicalPosition,
+          phase: e.phase,
+          scale: e.scale,
+          rotation: e.rotation,
+          pan: e.pan,
+          localPosition: localPosition,
+          delta: d,
+          localDelta: ld,
+          buttons: b,
+          original: _original ?? this,
+        ),
+    };
+  }
 }
+
+/// Flutter's button bits for [PointerEvent.buttons].
+const int kPrimaryButton = 0x01;
+const int kSecondaryButton = 0x02;
+const int kPrimaryMouseButton = kPrimaryButton;
+const int kSecondaryMouseButton = kSecondaryButton;
+const int kMiddleMouseButton = 0x04;
+const int kBackMouseButton = 0x08;
+const int kForwardMouseButton = 0x10;
+
+/// The bit [button] sets in [PointerEvent.buttons].
+int pointerButtonBit(PointerButton button) => switch (button) {
+      PointerButton.primary => kPrimaryButton,
+      PointerButton.secondary => kSecondaryButton,
+      PointerButton.middle => kMiddleMouseButton,
+      PointerButton.back => kBackMouseButton,
+      PointerButton.forward => kForwardMouseButton,
+    };
 
 final class PointerDownEvent extends PointerEvent {
   const PointerDownEvent({
@@ -64,11 +243,20 @@ final class PointerDownEvent extends PointerEvent {
     required super.pointerId,
     required super.kind,
     required super.logicalPosition,
+    super.localPosition,
+    super.delta,
+    super.localDelta,
+    super.buttons,
+    super.original,
     required this.button,
     this.clickCount = 1,
   });
 
   final PointerButton button;
+
+  /// The button this press pressed, unless the receiver saw others held too.
+  @override
+  int get buttons => _buttons ?? pointerButtonBit(button);
 
   /// Which press of a multi-click this is, **as the platform counted it**.
   ///
@@ -102,6 +290,11 @@ final class PointerUpEvent extends PointerEvent {
     required super.pointerId,
     required super.kind,
     required super.logicalPosition,
+    super.localPosition,
+    super.delta,
+    super.localDelta,
+    super.buttons,
+    super.original,
     required this.button,
   });
 
@@ -116,6 +309,11 @@ final class PointerMoveEvent extends PointerEvent {
     required super.pointerId,
     required super.kind,
     required super.logicalPosition,
+    super.localPosition,
+    super.delta,
+    super.localDelta,
+    super.buttons,
+    super.original,
   });
 }
 
@@ -133,6 +331,11 @@ final class PointerCancelEvent extends PointerEvent {
     required super.pointerId,
     required super.kind,
     required super.logicalPosition,
+    super.localPosition,
+    super.delta,
+    super.localDelta,
+    super.buttons,
+    super.original,
   });
 }
 
@@ -145,6 +348,11 @@ final class PointerScrollEvent extends PointerEvent {
     required super.pointerId,
     required super.kind,
     required super.logicalPosition,
+    super.localPosition,
+    super.delta,
+    super.localDelta,
+    super.buttons,
+    super.original,
     required this.scrollDelta,
     required this.scrollDeltaUnit,
   });
@@ -179,6 +387,11 @@ final class PointerPanZoomEvent extends PointerEvent {
     required super.pointerId,
     required super.kind,
     required super.logicalPosition,
+    super.localPosition,
+    super.delta,
+    super.localDelta,
+    super.buttons,
+    super.original,
     required this.phase,
     this.scale = 1,
     this.rotation = 0,

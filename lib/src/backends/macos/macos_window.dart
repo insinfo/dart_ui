@@ -496,6 +496,16 @@ final class MacosWindow
   /// A menu or tooltip panel, which has no zoom box and no full screen.
   bool _transient = false;
 
+  /// Tells a popup or tooltip host which window it belongs to, by that
+  /// window's [hostWindowNumber]. The host keeps the panel above its owner
+  /// rather than above every application while the owner is in the
+  /// background - a menu opened in an app that was never activated, by a
+  /// test or a script, otherwise floats over whatever is in front.
+  void setOwnerWindowNumber(int windowNumber) {
+    if (isDisposed || !_transient || windowNumber <= 0) return;
+    _supervisor?.send(HostCommands.setOwner(windowNumber));
+  }
+
   /// `zoom:`, `miniaturize:` and `toggleFullScreen:` in the host. The
   /// numbering is [WindowState]'s own, which the host's `WINDOW=STATE` already
   /// uses. Full screen animates, so its answer comes a moment later.

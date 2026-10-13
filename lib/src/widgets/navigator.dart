@@ -581,7 +581,7 @@ final class NavigatorState extends State<Navigator> {
     final ActionMap actions = ActionMap()
       ..register<PopRouteIntent>(
         CallbackAction<PopRouteIntent>(
-          (PopRouteIntent intent) => maybePop<Object?>(),
+          onInvoke: (PopRouteIntent intent) => maybePop<Object?>(),
         ),
       );
     final ShortcutDispatcher dispatcher = ShortcutDispatcher(

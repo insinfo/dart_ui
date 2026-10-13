@@ -39,7 +39,12 @@
 /// differential tolerance absorbs and this comment records.
 library;
 
+import 'dart:math' as math;
 import 'dart:typed_data';
+
+import '../geometry/offset.dart';
+import 'color.dart';
+import 'shader.dart';
 
 /// How a gradient continues outside the 0..1 range of its stops.
 enum GradientSpread {
@@ -95,7 +100,109 @@ final class GradientStop {
 /// sampled**: the stop colours carry the alpha. This is stated here once and
 /// every backend follows it, which is what keeps a differential test able to
 /// compare them.
-sealed class Gradient {
+///
+/// It is also Flutter's `dart:ui` `Gradient`: a [Shader] for `Paint.shader`,
+/// built with [Gradient.linear] or [Gradient.radial] in absolute coordinates.
+/// There is no `Gradient.sweep` - the wire format has no sweep kind - and
+/// `SweepGradient.createShader` returns a shader `Canvas` decomposes instead.
+sealed class Gradient extends Shader {
+  /// Flutter's `ui.Gradient.linear`: a ramp from [from] to [to].
+  ///
+  /// [colorStops], when given, must have one entry per colour, each in 0..1
+  /// and non-decreasing; when omitted the colours are spaced evenly (Flutter
+  /// insists on exactly two colours then; any count of two or more is
+  /// accepted here). [matrix4], a column-major 4x4 matrix, maps the end
+  /// points through its 2D affine part. [TileMode.decal] is painted as
+  /// [TileMode.clamp].
+  factory Gradient.linear(
+    Offset from,
+    Offset to,
+    List<Color> colors, [
+    List<double>? colorStops,
+    TileMode tileMode = TileMode.clamp,
+    List<double>? matrix4,
+  ]) {
+    final Offset a = _mapPoint(matrix4, from);
+    final Offset b = _mapPoint(matrix4, to);
+    return LinearGradient(
+      startX: a.dx,
+      startY: a.dy,
+      endX: b.dx,
+      endY: b.dy,
+      stops: _stopsFrom(colors, colorStops),
+      spread: tileMode.spread,
+    );
+  }
+
+  /// Flutter's `ui.Gradient.radial`: a ramp out of [center] to [radius].
+  ///
+  /// [focal] places the t = 0 point off-centre; a non-zero [focalRadius] (a
+  /// two-point conical gradient) is not representable and is rejected with an
+  /// [ArgumentError]. [matrix4] maps the geometry through its 2D affine part,
+  /// scaling the radius by the square root of the determinant.
+  factory Gradient.radial(
+    Offset center,
+    double radius,
+    List<Color> colors, [
+    List<double>? colorStops,
+    TileMode tileMode = TileMode.clamp,
+    List<double>? matrix4,
+    Offset? focal,
+    double focalRadius = 0.0,
+  ]) {
+    if (focalRadius != 0.0) {
+      throw ArgumentError.value(focalRadius, 'focalRadius',
+          'two-point conical gradients are not supported; only 0 is');
+    }
+    final Offset c = _mapPoint(matrix4, center);
+    final Offset? f = focal == null ? null : _mapPoint(matrix4, focal);
+    var r = radius;
+    if (matrix4 != null) {
+      _checkMatrix(matrix4);
+      r *= math.sqrt((matrix4[0] * matrix4[5] - matrix4[1] * matrix4[4]).abs());
+    }
+    return RadialGradient(
+      centerX: c.dx,
+      centerY: c.dy,
+      radius: r,
+      focusX: f?.dx,
+      focusY: f?.dy,
+      stops: _stopsFrom(colors, colorStops),
+      spread: tileMode.spread,
+    );
+  }
+
+  static void _checkMatrix(List<double> matrix4) {
+    if (matrix4.length != 16) {
+      throw ArgumentError.value(
+          matrix4.length, 'matrix4', 'must have 16 entries (column-major)');
+    }
+  }
+
+  static Offset _mapPoint(List<double>? m, Offset p) {
+    if (m == null) return p;
+    _checkMatrix(m);
+    return Offset(
+        m[0] * p.dx + m[4] * p.dy + m[12], m[1] * p.dx + m[5] * p.dy + m[13]);
+  }
+
+  static List<GradientStop> _stopsFrom(
+      List<Color> colors, List<double>? colorStops) {
+    if (colors.length < 2) {
+      throw ArgumentError.value(
+          colors.length, 'colors', 'a gradient needs at least two colours');
+    }
+    if (colorStops != null && colorStops.length != colors.length) {
+      throw ArgumentError('"colors" and "colorStops" must have the same length '
+          '(${colors.length} != ${colorStops.length})');
+    }
+    return <GradientStop>[
+      for (var i = 0; i < colors.length; i++)
+        GradientStop(
+            colorStops?[i] ?? i / (colors.length - 1), colors[i].value),
+    ];
+  }
+
   Gradient._(List<GradientStop> stops, this.spread)
       : _stopOffsets = Float32List(stops.length),
         _stopColors = Uint32List(stops.length) {

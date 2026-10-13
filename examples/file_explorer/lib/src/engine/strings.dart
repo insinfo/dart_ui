@@ -43,6 +43,7 @@ final class ExplorerStrings {
     this.copy = 'Copy',
     this.commandLabels = const <String, String>{},
     this.menuNames = const <String, String>{},
+    this.reasons = const <String, String>{},
   });
 
   final String locale;
@@ -94,6 +95,14 @@ final class ExplorerStrings {
 
   /// [english] in this language.
   String menu(String english) => menuNames[english] ?? english;
+
+  /// Why a command is unavailable - "nothing is selected" - by its English
+  /// text. What a disabled button's tooltip says after the command's name,
+  /// so it has to be in the same language as the name.
+  final Map<String, String> reasons;
+
+  /// The reason [english] in this language.
+  String reason(String english) => reasons[english] ?? english;
 
   /// "12 items", "1 item".
   String itemCount(int n) => '${_number(n)} ${n == 1 ? item : items}';
@@ -205,6 +214,22 @@ final class ExplorerStrings {
       'Open': 'Abrir',
       'Close': 'Fechar',
       'Unpin from Quick access': 'Desafixar do Acesso rápido',
+    },
+    reasons: <String, String>{
+      'nothing is selected': 'nenhum item selecionado',
+      'not in a folder': 'não está em uma pasta',
+      'select one item': 'selecione um único item',
+      'select a folder': 'selecione uma pasta',
+      'nothing has been cut or copied': 'nada foi recortado ou copiado',
+      'only folders can be pinned': 'só pastas podem ser fixadas',
+      'already pinned': 'já está fixado',
+      'there is nowhere to go back to': 'não há para onde voltar',
+      'there is nowhere to go forward to': 'não há para onde avançar',
+      'this is the top': 'este já é o nível mais alto',
+      'this view is empty': 'esta exibição está vazia',
+      'the name is always shown': 'o nome é sempre exibido',
+      'there is one tab': 'há apenas uma guia',
+      'no tab has been closed': 'nenhuma guia foi fechada',
     },
     commandLabels: <String, String>{
       'nav.back': 'Voltar',

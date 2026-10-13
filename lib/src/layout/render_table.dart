@@ -34,9 +34,14 @@ import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../text/shaper.dart' show TextDirection;
+import 'borders.dart' show BorderSide;
 import 'box_constraints.dart';
 import 'render_box.dart';
 import 'render_proxy_box.dart' show BoxDecoration;
+
+// BorderSide moved to borders.dart with the rest of Flutter's border types;
+// re-exported so `render_table.dart show BorderSide` keeps resolving.
+export 'borders.dart' show BorderSide, BorderStyle;
 
 /// How wide a table column is.
 abstract class TableColumnWidth {
@@ -208,28 +213,6 @@ enum TableCellVerticalAlignment {
 
   /// Stretched to the row's height: a cell with a background.
   fill,
-}
-
-/// One line of a [TableBorder].
-final class BorderSide {
-  const BorderSide({this.color = const Color(0xFF000000), this.width = 1.0});
-
-  static const BorderSide none = BorderSide(width: 0);
-
-  final Color color;
-  final double width;
-
-  bool get isVisible => width > 0;
-
-  @override
-  bool operator ==(Object other) =>
-      other is BorderSide && other.color == color && other.width == width;
-
-  @override
-  int get hashCode => Object.hash(color, width);
-
-  @override
-  String toString() => 'BorderSide($color, $width)';
 }
 
 /// The lines a table draws: around it and between its rows and columns.

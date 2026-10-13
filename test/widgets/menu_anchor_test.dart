@@ -19,6 +19,7 @@ library;
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/graphics/color.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/layout/box_constraints.dart';
 import 'package:dart_ui/src/layout/pipeline.dart';
@@ -34,6 +35,7 @@ import 'package:dart_ui/src/widgets/element.dart';
 import 'package:dart_ui/src/widgets/focus.dart';
 import 'package:dart_ui/src/widgets/menu_anchor.dart';
 import 'package:dart_ui/src/widgets/popup_host.dart';
+import 'package:dart_ui/src/widgets/theme.dart';
 import 'package:dart_ui/src/widgets/widget.dart';
 import 'package:test/test.dart';
 
@@ -233,7 +235,56 @@ void main() {
         handles[1].placedRect!.left,
         greaterThanOrEqualTo(handles[0].placedRect!.right - 1),
       );
+      // And level with the row that opened it: raised by its own padding, so
+      // its first row - not its frame - lines up with "More", which is where
+      // macOS and Windows both put a submenu.
+      expect(
+        handles[1].placedRect!.top + harness.panels.last.verticalPadding,
+        closeTo(harness.submenuRow.localToGlobal(Offset.zero).dy, 0.5),
+      );
       harness.dispose();
+    });
+
+    test(
+        "on macOS a lit row is AppKit's: an accent pill, its text on it "
+        'in onPrimary, and the trail back to an open submenu the same', () {
+      final ThemeData mac =
+          ThemeData.fluentLight.adaptedToPlatform(DesktopPlatform.macos);
+      final _ChainHarness harness = _ChainHarness(theme: mac)..frame();
+      harness.controller.open();
+      harness.frame();
+      expect(harness.labelColourOf(harness.topRow), mac.foreground);
+
+      harness
+        ..hover(harness.centreOf(harness.topRow))
+        ..frame();
+      expect(harness.topRow.isHighlighted, isTrue);
+      expect(harness.labelColourOf(harness.topRow), mac.colorScheme.onPrimary);
+
+      // Into the submenu: "More" stays lit while its submenu is open, and
+      // "Top" goes back to its own colour.
+      harness
+        ..hover(harness.centreOf(harness.submenuRow))
+        ..frame();
+      expect(harness.host.openCount, 2);
+      expect(harness.labelColourOf(harness.topRow), mac.foreground);
+      expect(
+          harness.labelColourOf(harness.submenuRow), mac.colorScheme.onPrimary);
+      // The panel is AppKit's shape too.
+      expect(harness.panels.first.verticalPadding, 5);
+      harness.dispose();
+
+      // A theme nobody adapted keeps the subtle wash and the row's colour.
+      final _ChainHarness plain = _ChainHarness()..frame();
+      plain.controller.open();
+      plain
+        ..frame()
+        ..hover(plain.centreOf(plain.topRow))
+        ..frame();
+      expect(plain.topRow.isHighlighted, isTrue);
+      expect(plain.labelColourOf(plain.topRow),
+          isNot(ThemeData.neutralLight.colorScheme.onPrimary));
+      plain.dispose();
     });
 
     test('closing the parent closes the child', () {
@@ -1077,11 +1128,21 @@ final class _LongHarness extends _Harness {
 
 /// A [MenuAnchor] whose menu holds a [SubmenuButton], for the chain tests.
 final class _ChainHarness extends _Harness {
+  _ChainHarness({this.theme});
+
+  /// Wrapped around the whole tree when given.
+  final ThemeData? theme;
+
   final MenuController controller = MenuController();
   final List<String> chosen = <String>[];
 
   @override
-  Widget buildContent() => Column(
+  Widget buildContent() {
+    final ThemeData? data = theme;
+    return data == null ? _content() : Theme(data: data, child: _content());
+  }
+
+  Widget _content() => Column(
         children: <Widget>[
           MenuAnchor(
             controller: controller,
@@ -1107,6 +1168,25 @@ final class _ChainHarness extends _Harness {
 
   RenderSubmenuButton get submenuRow => findAll<RenderSubmenuButton>()
       .firstWhere((RenderSubmenuButton row) => row.rowLabel == 'More');
+
+  RenderMenuItemButton get topRow => findAll<RenderMenuItemButton>()
+      .firstWhere((RenderMenuItemButton row) => row.rowLabel == 'Top');
+
+  /// The colour the label [row] draws its text in.
+  Color labelColourOf(RenderBox row) {
+    RenderText? found;
+    void walk(RenderBox node) {
+      if (found != null) return;
+      if (node is RenderText) {
+        found = node;
+        return;
+      }
+      node.visitChildren(walk);
+    }
+
+    row.visitChildren(walk);
+    return found!.color;
+  }
 }
 
 /// A [MenuBar] with two top-level menus.

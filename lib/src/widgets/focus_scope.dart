@@ -10,7 +10,6 @@
 /// nothing anywhere hard-codes an index.
 library;
 
-import 'actions.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'widget.dart';
@@ -37,8 +36,36 @@ final class FocusScope extends StatelessWidget {
   @override
   Widget build(BuildContext context) => FocusAttachment(
         node: node,
-        child: _FocusScopeMarker(node: node, child: child),
+        child: _FocusScopeMarker(
+          node: node,
+          child: FocusAttachmentParent(node: node, child: child),
+        ),
       );
+}
+
+/// Publishes the node that the focus nodes attached below join as children.
+///
+/// [FocusScope] publishes its scope, and Flutter's `Focus` widget its own
+/// node, so a control inside a `Focus` is that node's child in the focus
+/// tree: the `Focus` sees the control's focus in `hasFocus` and gets the
+/// keys the control declined, which is what Flutter's key bubbling and
+/// `Shortcuts` are built on.
+final class FocusAttachmentParent extends InheritedWidget {
+  const FocusAttachmentParent({
+    super.key,
+    required this.node,
+    required super.child,
+  });
+
+  final FocusNode node;
+
+  /// The nearest published node, or null.
+  static FocusNode? of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<FocusAttachmentParent>()?.node;
+
+  @override
+  bool updateShouldNotify(FocusAttachmentParent oldWidget) =>
+      !identical(node, oldWidget.node);
 }
 
 /// Carries the scope down. Separate from [FocusScope] so that the attachment
@@ -82,10 +109,18 @@ final class FocusAttachment extends StatefulWidget {
 final class _FocusAttachmentState extends State<FocusAttachment> {
   FocusNode? _attachedTo;
 
+  /// The context given to the node, kept because [context] cannot be read
+  /// once the element is unmounting.
+  BuildContext? _context;
+
   @override
   Widget build(BuildContext context) {
-    final FocusScopeNode? scope = FocusScope.of(context);
-    _attach(scope ?? _ownerRootScope(context));
+    final FocusNode? parent = FocusAttachmentParent.of(context) ??
+        FocusScope.of(context) ??
+        _ownerRootScope(context);
+    _context = context;
+    widget.node.context ??= context;
+    _attach(parent);
     return widget.child;
   }
 
@@ -98,11 +133,19 @@ final class _FocusAttachmentState extends State<FocusAttachment> {
     return element?.owner?.focusManager.rootScope;
   }
 
-  void _attach(FocusScopeNode? scope) {
-    if (scope == null || identical(_attachedTo, widget.node)) return;
+  void _attach(FocusNode? parent) {
+    if (parent == null || identical(_attachedTo, widget.node)) return;
+    final FocusNode? previous = _attachedTo;
+    if (previous != null) {
+      // The widget was given another node: the old one leaves the tree.
+      previous.parent?.remove(previous);
+      if (identical(previous.context, _context)) previous.context = null;
+      _attachedTo = null;
+    }
     if (widget.node.parent != null) return;
-    scope.add(widget.node);
+    parent.add(widget.node);
     _attachedTo = widget.node;
+    final FocusNode scope = widget.node.enclosingScope ?? parent;
     if (widget.autofocus && !scope.hasFocus) {
       widget.node.requestFocus();
     }
@@ -114,32 +157,9 @@ final class _FocusAttachmentState extends State<FocusAttachment> {
     if (identical(_attachedTo, node) && node.parent != null) {
       node.parent!.remove(node);
     }
+    if (identical(node.context, _context)) node.context = null;
+    _context = null;
     _attachedTo = null;
     super.dispose();
   }
-}
-
-/// Binds a shortcut map and an action map to a subtree.
-///
-/// Chained rather than replaced: an inner [Shortcuts] adds to what an outer one
-/// defines, which is what lets a dialog bind Escape without redefining the
-/// application's Ctrl+S.
-final class Shortcuts extends InheritedWidget {
-  const Shortcuts({
-    super.key,
-    required this.shortcuts,
-    required this.actions,
-    required super.child,
-  });
-
-  final ShortcutMap shortcuts;
-  final ActionMap actions;
-
-  static Shortcuts? of(BuildContext context) =>
-      context.dependOnInheritedWidgetOfExactType<Shortcuts>();
-
-  @override
-  bool updateShouldNotify(Shortcuts oldWidget) =>
-      !identical(shortcuts, oldWidget.shortcuts) ||
-      !identical(actions, oldWidget.actions);
 }

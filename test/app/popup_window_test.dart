@@ -81,6 +81,64 @@ void main() {
     });
   });
 
+  group('transparent popup windows', () {
+    test('cleared to transparent only where the platform shows the alpha',
+        () async {
+      for (final bool transparent in <bool>[false, true]) {
+        final app = await _start(transparentPopups: transparent);
+        final owner = app.primaryWindow;
+        await owner.drawFrame();
+        expect(app.popupWindowsAreTransparent, transparent);
+
+        final popup = await app.openPopup(
+          owner: owner,
+          anchorRect: const Rect.fromLTWH(10, 10, 50, 20),
+          content: const _Recorder(
+            colour: _colourPopup,
+            fixedSize: Size(80, 40),
+          ),
+          kind: PopupKind.menu,
+        );
+        // Transparent, the menu's rounded surface is the window's whole
+        // shape. Opaque - Win32's popup - a transparent pixel would be
+        // black, so the application's colour stays.
+        expect(
+          popup.clearColor,
+          transparent ? Application.popupClearColor : null,
+        );
+        expect(Application.popupClearColor.alpha, 0);
+        // An ordinary window never is.
+        expect(owner.clearColor, isNull);
+
+        await _stop(app);
+      }
+    });
+
+    test('the surface is told the platform outlines it', () async {
+      for (final bool transparent in <bool>[false, true]) {
+        final app = await _start(transparentPopups: transparent);
+        final owner = app.primaryWindow;
+        await owner.drawFrame();
+        final host = WindowPopupHost(application: app, owner: owner);
+
+        bool? outlined;
+        host.open(_spec(builder: (BuildContext context) {
+          outlined = PopupWindowFrame.outlinedOf(context);
+          return const _Recorder(
+            colour: _colourPopup,
+            fixedSize: Size(80, 40),
+          );
+        }));
+        await _settle();
+        // The builder's context is the popup window's root, under the frame
+        // the window puts there.
+        expect(outlined, transparent);
+
+        await _stop(app);
+      }
+    });
+  });
+
   group('openPopup', () {
     test('auto-sizes the window to the content, not to the provisional size',
         () async {
@@ -760,13 +818,17 @@ Future<Application> _start({
   _Log? ownerLog,
   PopupPolicy popupPolicy = PopupPolicy.auto,
   List<ScreenInfo> screens = const <ScreenInfo>[_screen],
+  bool transparentPopups = false,
 }) =>
     Application.start(
       rootWidget: root ?? _Recorder(colour: _colourOwner, log: ownerLog),
       backends: <WindowingBackendEntry>[
         WindowingBackendEntry(
           name: 'headless',
-          create: () => HeadlessWindowingBackend(screens: screens),
+          create: () => HeadlessWindowingBackend(
+            screens: screens,
+            transparentPopups: transparentPopups,
+          ),
         ),
       ],
       options: ApplicationOptions(

@@ -355,6 +355,40 @@ final class PopupHostScope extends InheritedWidget {
       !identical(oldWidget.host, host);
 }
 
+/// What the window a popup is drawn in already draws around it.
+///
+/// `Application.openPopup` puts one at the root of a popup *window* whose
+/// platform shows its alpha and outlines the shape that is left - macOS,
+/// whose window server draws a one-pixel rim with the shadow of a
+/// non-opaque panel. A surface that painted its own hairline there drew a
+/// second line one pixel inside the first, which is exactly what reads as a
+/// double border; so a popup surface asks [outlinedOf] and leaves the
+/// outline to the platform when it answers true.
+///
+/// Absent - an in-tree popup, or a window that is opaque (Win32's) - the
+/// surface paints its own hairline, because nothing else will.
+final class PopupWindowFrame extends InheritedWidget {
+  const PopupWindowFrame({
+    super.key,
+    required this.outlined,
+    required super.child,
+  });
+
+  /// Whether the platform outlines the popup's shape itself.
+  final bool outlined;
+
+  /// [outlined] of the nearest frame, false with none.
+  static bool outlinedOf(BuildContext context) =>
+      context
+          .dependOnInheritedWidgetOfExactType<PopupWindowFrame>()
+          ?.outlined ??
+      false;
+
+  @override
+  bool updateShouldNotify(PopupWindowFrame oldWidget) =>
+      oldWidget.outlined != outlined;
+}
+
 // ---------------------------------------------------------------------------
 // The in-tree host
 // ---------------------------------------------------------------------------

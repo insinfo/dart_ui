@@ -4,7 +4,6 @@ library;
 
 import '../geometry/offset.dart';
 import '../geometry/size.dart';
-import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/render_box.dart';
 import '../layout/render_proxy_box.dart';
@@ -107,21 +106,21 @@ final class MenuDivider extends SingleChildRenderObjectWidget {
 
   @override
   RenderBox createRenderObject(BuildContext context) =>
-      _RenderMenuDivider(Theme.of(context).borderSubtle);
+      _RenderMenuDivider(Theme.of(context));
 
   @override
   void updateRenderObject(BuildContext context, RenderBox renderObject) {
-    (renderObject as _RenderMenuDivider).color = Theme.of(context).borderSubtle;
+    (renderObject as _RenderMenuDivider).theme = Theme.of(context);
   }
 }
 
 final class _RenderMenuDivider extends RenderBox {
-  _RenderMenuDivider(this._color);
+  _RenderMenuDivider(this._theme);
 
-  Color _color;
-  set color(Color value) {
-    if (value == _color) return;
-    _color = value;
+  ThemeData _theme;
+  set theme(ThemeData value) {
+    if (identical(value, _theme)) return;
+    _theme = value;
     markNeedsPaint();
   }
 
@@ -132,8 +131,11 @@ final class _RenderMenuDivider extends RenderBox {
 
   @override
   void paint(DisplayList list, Offset offset) {
+    // The menu's own inset (`MenuLook`): in line with the highlight pills
+    // on Windows, further in on macOS, where AppKit insets its separators.
+    final double inset = MenuLook.of(_theme).separatorInset;
     final double y = offset.dy + (size.height / 2).floorToDouble();
-    list.drawRect(offset.dx + 6, y, offset.dx + size.width - 6, y + 1,
-        list.addPaint(colorArgb: _color.value));
+    list.drawRect(offset.dx + inset, y, offset.dx + size.width - inset, y + 1,
+        list.addPaint(colorArgb: _theme.borderSubtle.value));
   }
 }

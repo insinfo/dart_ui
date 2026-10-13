@@ -46,6 +46,18 @@ void main() {
       capabilities(MacosBackendKind.skylight).toProbeResult().capabilities,
       isNot(contains(Capability.nativePopups)),
     );
+    // The host's popup panel is non-opaque and clear, so a popup can be
+    // cleared to transparent and the menu's own rounded surface is its shape.
+    expect(
+      capabilities(MacosBackendKind.appkitNativeHost)
+          .toProbeResult()
+          .capabilities,
+      contains(Capability.transparentPopups),
+    );
+    expect(
+      capabilities(MacosBackendKind.skylight).toProbeResult().capabilities,
+      isNot(contains(Capability.transparentPopups)),
+    );
   });
 
   final candidates = <BackendCandidate>[

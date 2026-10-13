@@ -1,4 +1,4 @@
-/// Immutable 2D paths, stored as a verb stream plus a point stream.
+/// 2D paths, stored as a verb stream plus a point stream.
 ///
 /// The storage is the same decision the display list made and for the same
 /// reason (section 6.5): a path is walked far more often than it is built -
@@ -20,16 +20,17 @@
 ///     intersection cleanup pass that is larger than everything in this file.
 ///     Until that exists, a stroked shape is described by building its
 ///     outline explicitly.
-///   * **Conics and arcs.** [PathBuilder.addOval] and
-///     [PathBuilder.addRoundedRect] approximate their quarter arcs with
-///     cubics using the usual `kappa` constant; the radial error is about
-///     0.027% of the radius - a hundredth of a pixel at a 40 px radius, which
-///     is why it is acceptable and why it is written down. A true conic
-///     (rational quadratic) section would be exact and needs a fourth verb
-///     plus a weight stream; nothing here blocks adding it.
-///   * **Point-in-path testing.** The filler answers coverage; hit testing
-///     against a path needs the same winding walk against a single point and
-///     belongs next to it, not here.
+///   * **Conics and arcs as verbs.** [PathBuilder.addOval],
+///     [PathBuilder.addRoundedRect] and Flutter's [Path.arcTo] family
+///     approximate their arcs with cubics of at most a quarter turn; the
+///     radial error is about 0.027% of the radius - a hundredth of a pixel at
+///     a 40 px radius, which is why it is acceptable and why it is written
+///     down. A true conic (rational quadratic) section would be exact and
+///     needs a fourth verb plus a weight stream; nothing here blocks adding
+///     it.
+///
+/// Point-in-path testing ([Path.contains]) flattens the path and counts
+/// crossings; it is for hit testing, not for anything per pixel.
 ///
 /// ## Coordinates are float32
 ///
@@ -46,7 +47,20 @@ import 'dart:typed_data';
 
 import 'offset.dart';
 import 'rect.dart';
+import 'rrect.dart';
 import 'transform2d.dart';
+
+/// How the inside of a [Path] is decided: Flutter's `PathFillType`.
+///
+/// The same two rules as [FillRule], under Flutter's name, carried by the
+/// path itself as Flutter carries it.
+enum PathFillType {
+  /// Inside where the winding number is not zero.
+  nonZero,
+
+  /// Inside where a ray crosses the outline an odd number of times.
+  evenOdd,
+}
 
 /// Starts a new contour at the following point.
 const int verbMoveTo = 0;
@@ -109,17 +123,66 @@ abstract interface class PolylineSink {
   void close();
 }
 
-/// An immutable path in one coordinate space.
+/// A path in one coordinate space.
 ///
-/// Built through [PathBuilder]. The two backing arrays are never handed out,
-/// so an instance genuinely cannot change after [PathBuilder.build] returns -
-/// which is what makes it safe to intern (see [hashCode]) and to share
-/// between a transformed copy and its original.
+/// Two ways to build one, and they produce the same type:
+///
+///   * [PathBuilder], then [PathBuilder.build] - the framework's own route,
+///     which never allocates per segment and hands back a path nobody else
+///     holds;
+///   * Flutter's: `Path()` and then [moveTo], [lineTo], [cubicTo], [arcTo],
+///     [addRRect]... on the path itself. That is what a `CustomPainter` or a
+///     `CustomClipper<Path>` written for Flutter does, and it works unchanged.
+///
+/// ## Mutable, with copy-on-write storage
+///
+/// The verb and point arrays are never written in place. An edit goes into a
+/// private [PathBuilder] seeded from the current contents, and the next read
+/// copies that builder out into fresh arrays. So a path returned by
+/// [transform] or [shift], which shares its original's arrays, can never be
+/// changed through the original - and a path someone keeps editing costs one
+/// copy per *read after an edit*, not one per segment.
+///
+/// ## Equality is by content, and a mutable path must not change once used
+///
+/// `DisplayList.addPath` interns by `==` and [hashCode], which here compare
+/// verbs, points and [fillType]. A path that is edited *after* it was handed
+/// to a display list would change the picture already recorded and corrupt
+/// the intern table, so `Canvas.drawPath` and the clip widgets record a
+/// [Path.from] copy - the snapshot Flutter's own `drawPath` takes - and code
+/// that calls `DisplayList.addPath` directly must not edit the path
+/// afterwards. [Path.empty] is shared by everyone and refuses edits with a
+/// [StateError].
+///
+/// ## Differences from Flutter
+///
+///   * [transform] takes a [Transform2D] or a 16-element column-major matrix
+///     (`Matrix4.storage`); only the 2D affine part of the latter is used.
+///   * [conicTo] is approximated by one cubic per call; exact for weight 1
+///     and within a fraction of a percent for circular-arc weights.
+///   * `combine`, `computeMetrics` and `addRSuperellipse` do not exist.
+///   * [getBounds] is tight (curve extrema), not the control-point box.
 final class Path {
-  const Path._(this._verbs, this._points, this.bounds, this._hash);
+  /// An empty path, ready to be edited - Flutter's `Path()`.
+  Path() : this._(_noVerbs, _noPoints, Rect.zero, null);
+
+  Path._(this._verbStore, this._pointStore, this._boundsCache, this._hashCache);
+
+  /// A copy of [source] that can be edited without affecting it.
+  factory Path.from(Path source) {
+    final Path copy = Path._(
+        source._verbs, source._points, source._boundsCache, source._hashCache);
+    copy._fillType = source._fillType;
+    return copy;
+  }
+
+  static final Uint8List _noVerbs = Uint8List(0);
+  static final Float32List _noPoints = Float32List(0);
 
   /// A path with no contours. Fills to nothing and bounds to [Rect.zero].
-  static final Path empty = PathBuilder().build();
+  ///
+  /// Shared, so it refuses edits: call `Path()` for one of your own.
+  static final Path empty = PathBuilder().build().._frozen = true;
 
   /// One rectangle, wound clockwise in a y-down space.
   factory Path.rect(Rect rect) => (PathBuilder()..addRect(rect)).build();
@@ -127,27 +190,88 @@ final class Path {
   /// One ellipse inscribed in [rect], wound clockwise in a y-down space.
   factory Path.oval(Rect rect) => (PathBuilder()..addOval(rect)).build();
 
-  final Uint8List _verbs;
+  Uint8List _verbStore;
 
   /// Interleaved `x, y` pairs, indexed by the running total of
   /// [pointsPerVerb] over the verbs before it.
-  final Float32List _points;
+  Float32List _pointStore;
 
-  /// Cached because it is asked for once per draw and never changes.
+  /// The builder an edit goes into; see the class comment.
+  PathBuilder? _editor;
+
+  /// Whether [_editor] holds edits the stored arrays do not have yet.
+  bool _dirty = false;
+
+  bool _frozen = false;
+
+  Rect? _boundsCache;
+
+  int? _hashCache;
+
+  PathFillType _fillType = PathFillType.nonZero;
+
+  Uint8List get _verbs {
+    if (_dirty) _flush();
+    return _verbStore;
+  }
+
+  Float32List get _points {
+    if (_dirty) _flush();
+    return _pointStore;
+  }
+
+  void _flush() {
+    final PathBuilder editor = _editor!;
+    _verbStore = Uint8List(editor._verbCount)
+      ..setRange(0, editor._verbCount, editor._verbs);
+    _pointStore = Float32List(editor._floatCount)
+      ..setRange(0, editor._floatCount, editor._points);
+    _dirty = false;
+  }
+
+  /// The builder an edit is written to, seeded from the current contents on
+  /// the first edit and kept for the ones after it.
+  PathBuilder _edit() {
+    if (_frozen) {
+      throw StateError(
+          'Path.empty is shared by every caller and cannot be edited; '
+          'create a path of your own with Path()');
+    }
+    final PathBuilder editor =
+        _editor ??= PathBuilder().._seed(_verbStore, _pointStore);
+    _dirty = true;
+    _boundsCache = null;
+    _hashCache = null;
+    return editor;
+  }
+
+  /// How the inside of this path is decided when it is filled or clipped.
+  ///
+  /// The display list carries the fill rule on the *paint*, so this is read
+  /// by `Canvas.drawPath` and the clip widgets, which copy it there. Code that
+  /// calls `DisplayList.drawPath` directly chooses the rule on `addPaint`.
+  PathFillType get fillType => _fillType;
+
+  set fillType(PathFillType value) {
+    if (value == _fillType) return;
+    if (_frozen) _edit();
+    _fillType = value;
+    _hashCache = null;
+  }
+
+  /// Cached because it is asked for once per draw and changes only on edit.
   ///
   /// **Tight, not control-point bounds.** The extrema of each quadratic and
-  /// cubic are solved per axis when the path is built - a linear and a
-  /// quadratic root respectively, a handful of flops per curve, paid once.
-  /// Control-point bounds would have been cheaper still and are what most
-  /// implementations settle for, but they overstate a curved shape by up to a
-  /// third of its size, and this rectangle is what decides whether a path is
-  /// culled and how much of the surface a damage region covers. Paying for
-  /// tightness once at build time is worth it when the alternative is
-  /// repainting pixels no shape ever reaches.
-  final Rect bounds;
+  /// cubic are solved per axis - a linear and a quadratic root respectively,
+  /// a handful of flops per curve, paid once per edit. Control-point bounds
+  /// would have been cheaper still and are what most implementations settle
+  /// for, but they overstate a curved shape by up to a third of its size, and
+  /// this rectangle is what decides whether a path is culled and how much of
+  /// the surface a damage region covers.
+  Rect get bounds => _boundsCache ??= _boundsOf(_verbs, _points);
 
-  /// Computed once at build time; see [hashCode].
-  final int _hash;
+  /// Flutter's name for [bounds].
+  Rect getBounds() => bounds;
 
   /// Number of verbs. Zero for an empty path.
   int get verbCount => _verbs.length;
@@ -169,29 +293,409 @@ final class Path {
   Offset pointAt(int index) =>
       Offset(_points[index * 2], _points[index * 2 + 1]);
 
-  /// This path mapped through [transform].
+  /// This path mapped through [matrix]: a [Transform2D], or Flutter's
+  /// 16-element column-major `Matrix4` storage, of which the 2D affine part
+  /// (`[0] [1] [4] [5] [12] [13]`) is used.
   ///
   /// The verb stream is shared with the original rather than copied: it is
-  /// immutable and private, so the only thing two paths could disagree about
+  /// never written in place, so the only thing two paths could disagree about
   /// is their points. Bounds are recomputed from the transformed geometry
   /// instead of transformed as a rectangle, because the bounding box of a
   /// rotated bounding box is strictly larger than the bounding box of the
   /// rotated shape, and the whole point of [bounds] is that it is tight.
-  Path transform(Transform2D transform) {
-    if (transform.isIdentity) return this;
-    final points = Float32List(_points.length);
-    for (var i = 0; i < _points.length; i += 2) {
-      final x = _points[i];
-      final y = _points[i + 1];
+  Path transform(Object matrix) {
+    final Transform2D transform = _affineOf(matrix);
+    if (transform.isIdentity) {
+      // The framework's own callers pass a Transform2D and rely on getting
+      // the same instance back for free. A Flutter caller passes a matrix and
+      // may edit the result, which must then not be this path.
+      return matrix is Transform2D ? this : Path.from(this);
+    }
+    final Uint8List verbs = _verbs;
+    final Float32List source = _points;
+    final points = Float32List(source.length);
+    for (var i = 0; i < source.length; i += 2) {
+      final x = source[i];
+      final y = source[i + 1];
       points[i] = transform.a * x + transform.c * y + transform.tx;
       points[i + 1] = transform.b * x + transform.d * y + transform.ty;
     }
-    return Path._(
-      _verbs,
-      points,
-      _boundsOf(_verbs, points),
-      _hashOf(_verbs, points),
+    return Path._(verbs, points, null, null).._fillType = _fillType;
+  }
+
+  /// This path translated by [offset].
+  Path shift(Offset offset) =>
+      transform(Transform2D.translation(offset.dx, offset.dy));
+
+  static Transform2D _affineOf(Object matrix) {
+    if (matrix is Transform2D) return matrix;
+    if (matrix is List<double> && matrix.length == 16) {
+      return Transform2D(
+          matrix[0], matrix[1], matrix[4], matrix[5], matrix[12], matrix[13]);
+    }
+    throw ArgumentError.value(matrix, 'matrix',
+        'must be a Transform2D or a 16-element column-major 4x4 matrix');
+  }
+
+  // -------------------------------------------------------------------------
+  // Flutter's editing API
+  // -------------------------------------------------------------------------
+
+  /// The point the next segment starts from.
+  Offset get _current =>
+      _editor?._currentPoint ?? _endOf(_verbStore, _pointStore);
+
+  static Offset _endOf(Uint8List verbs, Float32List points) {
+    final PathBuilder probe = PathBuilder().._seed(verbs, points);
+    return probe._currentPoint;
+  }
+
+  /// Starts a new contour at ([x], [y]).
+  void moveTo(double x, double y) => _edit().moveTo(x, y);
+
+  /// Starts a new contour offset by ([dx], [dy]) from the current point.
+  void relativeMoveTo(double dx, double dy) {
+    final Offset at = _current;
+    _edit().moveTo(at.dx + dx, at.dy + dy);
+  }
+
+  /// A straight segment from the current point to ([x], [y]).
+  void lineTo(double x, double y) => _edit().lineTo(x, y);
+
+  void relativeLineTo(double dx, double dy) {
+    final Offset at = _current;
+    _edit().lineTo(at.dx + dx, at.dy + dy);
+  }
+
+  /// A quadratic Bezier through control point ([x1], [y1]) to ([x2], [y2]).
+  void quadraticBezierTo(double x1, double y1, double x2, double y2) =>
+      _edit().quadraticBezierTo(x1, y1, x2, y2);
+
+  void relativeQuadraticBezierTo(double x1, double y1, double x2, double y2) {
+    final Offset at = _current;
+    _edit().quadraticBezierTo(at.dx + x1, at.dy + y1, at.dx + x2, at.dy + y2);
+  }
+
+  /// A cubic Bezier with two control points.
+  void cubicTo(
+    double x1,
+    double y1,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
+  ) =>
+      _edit().cubicTo(x1, y1, x2, y2, x3, y3);
+
+  void relativeCubicTo(
+    double x1,
+    double y1,
+    double x2,
+    double y2,
+    double x3,
+    double y3,
+  ) {
+    final Offset at = _current;
+    _edit().cubicTo(
+        at.dx + x1, at.dy + y1, at.dx + x2, at.dy + y2, at.dx + x3, at.dy + y3);
+  }
+
+  /// A conic section of weight [w]. Weight 1 is exactly a quadratic; any
+  /// other weight is approximated by one cubic (see the class comment).
+  void conicTo(double x1, double y1, double x2, double y2, double w) {
+    final Offset at = _current;
+    _conic(at.dx, at.dy, x1, y1, x2, y2, w);
+  }
+
+  void relativeConicTo(double x1, double y1, double x2, double y2, double w) {
+    final Offset at = _current;
+    _conic(at.dx, at.dy, at.dx + x1, at.dy + y1, at.dx + x2, at.dy + y2, w);
+  }
+
+  void _conic(double x0, double y0, double x1, double y1, double x2, double y2,
+      double w) {
+    if (!(w > 0) || !w.isFinite) {
+      // Weight 0 is a straight line; an infinite weight degenerates to the
+      // two legs through the control point.
+      if (w.isInfinite) {
+        _edit()
+          ..lineTo(x1, y1)
+          ..lineTo(x2, y2);
+      } else {
+        _edit().lineTo(x2, y2);
+      }
+      return;
+    }
+    if (w == 1) {
+      _edit().quadraticBezierTo(x1, y1, x2, y2);
+      return;
+    }
+    final double k = 4 * w / (3 * (1 + w));
+    _edit().cubicTo(
+      x0 + (x1 - x0) * k,
+      y0 + (y1 - y0) * k,
+      x2 + (x1 - x2) * k,
+      y2 + (y1 - y2) * k,
+      x2,
+      y2,
     );
+  }
+
+  /// An elliptical arc on the oval inscribed in [rect], from [startAngle]
+  /// sweeping [sweepAngle] radians (positive is clockwise, y-down).
+  ///
+  /// With [forceMoveTo] the arc starts a new contour; otherwise a straight
+  /// segment joins the current point to the arc's start.
+  void arcTo(
+    Rect rect,
+    double startAngle,
+    double sweepAngle,
+    bool forceMoveTo,
+  ) {
+    final PathBuilder editor = _edit();
+    final double rx = rect.width / 2;
+    final double ry = rect.height / 2;
+    final double cx = rect.left + rx;
+    final double cy = rect.top + ry;
+    final double sx = cx + rx * math.cos(startAngle);
+    final double sy = cy + ry * math.sin(startAngle);
+    if (forceMoveTo || editor._verbCount == 0) {
+      editor.moveTo(sx, sy);
+    } else {
+      editor.lineTo(sx, sy);
+    }
+    _arcSegments(editor, cx, cy, rx, ry, 0, startAngle, sweepAngle);
+  }
+
+  /// An arc to [arcEnd], SVG-style: the ellipse of [radius] rotated by
+  /// [rotation] degrees, choosing the [largeArc] and [clockwise] solution.
+  void arcToPoint(
+    Offset arcEnd, {
+    Radius radius = Radius.zero,
+    double rotation = 0.0,
+    bool largeArc = false,
+    bool clockwise = true,
+  }) {
+    final Offset start = _current;
+    _svgArc(start, arcEnd, radius, rotation, largeArc, clockwise);
+  }
+
+  void relativeArcToPoint(
+    Offset arcEndDelta, {
+    Radius radius = Radius.zero,
+    double rotation = 0.0,
+    bool largeArc = false,
+    bool clockwise = true,
+  }) {
+    final Offset start = _current;
+    _svgArc(start, start + arcEndDelta, radius, rotation, largeArc, clockwise);
+  }
+
+  /// The endpoint-to-centre conversion of SVG 1.1, appendix F.6.5.
+  void _svgArc(Offset from, Offset to, Radius radius, double rotationDegrees,
+      bool largeArc, bool clockwise) {
+    final PathBuilder editor = _edit();
+    var rx = radius.x.abs();
+    var ry = radius.y.abs();
+    if (from == to) return;
+    if (rx == 0 || ry == 0 || !rx.isFinite || !ry.isFinite) {
+      editor.lineTo(to.dx, to.dy);
+      return;
+    }
+    final double phi = rotationDegrees * math.pi / 180;
+    final double cosPhi = math.cos(phi);
+    final double sinPhi = math.sin(phi);
+    final double dx2 = (from.dx - to.dx) / 2;
+    final double dy2 = (from.dy - to.dy) / 2;
+    final double x1p = cosPhi * dx2 + sinPhi * dy2;
+    final double y1p = -sinPhi * dx2 + cosPhi * dy2;
+    final double lambda = (x1p * x1p) / (rx * rx) + (y1p * y1p) / (ry * ry);
+    if (lambda > 1) {
+      final double s = math.sqrt(lambda);
+      rx *= s;
+      ry *= s;
+    }
+    final double num =
+        rx * rx * ry * ry - rx * rx * y1p * y1p - ry * ry * x1p * x1p;
+    final double den = rx * rx * y1p * y1p + ry * ry * x1p * x1p;
+    var coef = den == 0 ? 0.0 : math.sqrt(math.max(0, num / den));
+    if (largeArc == clockwise) coef = -coef;
+    final double cxp = coef * rx * y1p / ry;
+    final double cyp = -coef * ry * x1p / rx;
+    final double cx = cosPhi * cxp - sinPhi * cyp + (from.dx + to.dx) / 2;
+    final double cy = sinPhi * cxp + cosPhi * cyp + (from.dy + to.dy) / 2;
+    double angle(double ux, double uy, double vx, double vy) {
+      final double a = math.atan2(ux * vy - uy * vx, ux * vx + uy * vy);
+      return a;
+    }
+
+    final double theta1 = angle(1, 0, (x1p - cxp) / rx, (y1p - cyp) / ry);
+    var delta = angle((x1p - cxp) / rx, (y1p - cyp) / ry, (-x1p - cxp) / rx,
+        (-y1p - cyp) / ry);
+    if (clockwise && delta < 0) delta += 2 * math.pi;
+    if (!clockwise && delta > 0) delta -= 2 * math.pi;
+    _arcSegments(editor, cx, cy, rx, ry, phi, theta1, delta);
+    // Land exactly on the requested end point, whatever rounding did.
+    editor._replaceLastPoint(to.dx, to.dy);
+  }
+
+  /// Appends cubic segments for an elliptical arc, at most a quarter turn
+  /// each - the usual bound that keeps the radial error under 0.03%.
+  static void _arcSegments(PathBuilder editor, double cx, double cy, double rx,
+      double ry, double phi, double start, double sweep) {
+    if (sweep == 0 || !sweep.isFinite) return;
+    final int segments = (sweep.abs() / (math.pi / 2)).ceil().clamp(1, 64);
+    final double step = sweep / segments;
+    final double k = 4 / 3 * math.tan(step / 4);
+    final double cosPhi = math.cos(phi);
+    final double sinPhi = math.sin(phi);
+    double px(double ex, double ey) => cx + cosPhi * ex - sinPhi * ey;
+    double py(double ex, double ey) => cy + sinPhi * ex + cosPhi * ey;
+    var a0 = start;
+    for (var i = 0; i < segments; i++) {
+      final double a1 = a0 + step;
+      final double c0 = math.cos(a0), s0 = math.sin(a0);
+      final double c1 = math.cos(a1), s1 = math.sin(a1);
+      final double e1x = rx * (c0 - k * s0), e1y = ry * (s0 + k * c0);
+      final double e2x = rx * (c1 + k * s1), e2y = ry * (s1 - k * c1);
+      final double e3x = rx * c1, e3y = ry * s1;
+      editor.cubicTo(px(e1x, e1y), py(e1x, e1y), px(e2x, e2y), py(e2x, e2y),
+          px(e3x, e3y), py(e3x, e3y));
+      a0 = a1;
+    }
+  }
+
+  /// Adds [rect] as a closed contour.
+  void addRect(Rect rect) => _edit().addRect(rect);
+
+  /// Adds the oval inscribed in [oval] as a closed contour.
+  void addOval(Rect oval) => _edit().addOval(oval);
+
+  /// Adds an arc of the oval inscribed in [oval] as a new open contour.
+  void addArc(Rect oval, double startAngle, double sweepAngle) =>
+      arcTo(oval, startAngle, sweepAngle, true);
+
+  /// Adds the polygon through [points], closed if [close] is true.
+  void addPolygon(List<Offset> points, bool close) {
+    if (points.isEmpty) return;
+    final PathBuilder editor = _edit();
+    editor.moveTo(points.first.dx, points.first.dy);
+    for (var i = 1; i < points.length; i++) {
+      editor.lineTo(points[i].dx, points[i].dy);
+    }
+    if (close) editor.close();
+  }
+
+  /// Adds [rrect] as a closed contour. Radii that overrun a side are scaled
+  /// down together, by the rule [RRect.scaleRadii] states.
+  void addRRect(RRect rrect) => _edit().addRoundedRectPerCorner(
+        rrect.outerRect,
+        topLeftX: rrect.tlRadiusX,
+        topLeftY: rrect.tlRadiusY,
+        topRightX: rrect.trRadiusX,
+        topRightY: rrect.trRadiusY,
+        bottomRightX: rrect.brRadiusX,
+        bottomRightY: rrect.brRadiusY,
+        bottomLeftX: rrect.blRadiusX,
+        bottomLeftY: rrect.blRadiusY,
+      );
+
+  /// Adds the contours of [path], shifted by [offset] (and first mapped
+  /// through [matrix4] when given), as new contours.
+  void addPath(Path path, Offset offset, {List<double>? matrix4}) =>
+      _append(path, offset, matrix4, connect: false);
+
+  /// Like [addPath], but the first contour of [path] continues the current
+  /// one: its opening move becomes a line.
+  void extendWithPath(Path path, Offset offset, {List<double>? matrix4}) =>
+      _append(path, offset, matrix4, connect: true);
+
+  void _append(Path path, Offset offset, List<double>? matrix4,
+      {required bool connect}) {
+    Path source = path;
+    if (matrix4 != null) source = source.transform(matrix4);
+    if (offset != Offset.zero) source = source.shift(offset);
+    final Uint8List verbs = source._verbs;
+    final Float32List pts = source._points;
+    final PathBuilder editor = _edit();
+    var p = 0;
+    var first = true;
+    for (var v = 0; v < verbs.length; v++) {
+      switch (verbs[v]) {
+        case verbMoveTo:
+          if (first && connect && editor._verbCount > 0) {
+            editor.lineTo(pts[p * 2], pts[p * 2 + 1]);
+          } else {
+            editor.moveTo(pts[p * 2], pts[p * 2 + 1]);
+          }
+          p += 1;
+        case verbLineTo:
+          editor.lineTo(pts[p * 2], pts[p * 2 + 1]);
+          p += 1;
+        case verbQuadraticTo:
+          editor.quadraticBezierTo(
+              pts[p * 2], pts[p * 2 + 1], pts[p * 2 + 2], pts[p * 2 + 3]);
+          p += 2;
+        case verbCubicTo:
+          editor.cubicTo(pts[p * 2], pts[p * 2 + 1], pts[p * 2 + 2],
+              pts[p * 2 + 3], pts[p * 2 + 4], pts[p * 2 + 5]);
+          p += 3;
+        case verbClose:
+          editor.close();
+      }
+      first = false;
+    }
+  }
+
+  /// Closes the contour in progress back to its first point.
+  void close() => _edit().close();
+
+  /// Removes every contour and returns [fillType] to
+  /// [PathFillType.nonZero]: the state of a new `Path()`, as in Flutter.
+  void reset() {
+    _edit().reset();
+    _fillType = PathFillType.nonZero;
+  }
+
+  /// Whether [point] is inside this path under [fillType].
+  ///
+  /// The path is flattened to a hundredth of a unit and the crossings of a
+  /// horizontal ray are counted, so the answer on the outline itself is
+  /// whichever side rounding puts it on. Open contours are closed implicitly,
+  /// exactly as filling does.
+  bool contains(Offset point) {
+    if (isEmpty) return false;
+    final Rect b = bounds;
+    if (point.dx < b.left ||
+        point.dx > b.right ||
+        point.dy < b.top ||
+        point.dy > b.bottom) {
+      return false;
+    }
+    final FlattenedPath flat = flatten(0.01);
+    final double x = point.dx;
+    final double y = point.dy;
+    var winding = 0;
+    var crossings = 0;
+    for (var c = 0; c < flat.contourCount; c++) {
+      final int start = flat.contourStarts[c];
+      final int end = c + 1 < flat.contourCount
+          ? flat.contourStarts[c + 1]
+          : flat.pointCount;
+      if (end - start < 2) continue;
+      for (var i = start; i < end; i++) {
+        final int j = i + 1 < end ? i + 1 : start;
+        final double x0 = flat.pointX(i), y0 = flat.pointY(i);
+        final double x1 = flat.pointX(j), y1 = flat.pointY(j);
+        if ((y0 <= y) == (y1 <= y)) continue;
+        final double xAt = x0 + (y - y0) * (x1 - x0) / (y1 - y0);
+        if (xAt > x) {
+          crossings++;
+          winding += y1 > y0 ? 1 : -1;
+        }
+      }
+    }
+    return _fillType == PathFillType.evenOdd ? crossings.isOdd : winding != 0;
   }
 
   /// Replaces every curve with straight segments and reports the result to
@@ -241,30 +745,32 @@ final class Path {
     final tx = transform.tx;
     final ty = transform.ty;
 
+    final Uint8List verbs = _verbs;
+    final Float32List points = _points;
     var p = 0;
     var cx = 0.0;
     var cy = 0.0;
-    for (var v = 0; v < _verbs.length; v++) {
-      switch (_verbs[v]) {
+    for (var v = 0; v < verbs.length; v++) {
+      switch (verbs[v]) {
         case verbMoveTo:
-          final x = _points[p * 2];
-          final y = _points[p * 2 + 1];
+          final x = points[p * 2];
+          final y = points[p * 2 + 1];
           p += 1;
           cx = a * x + c * y + tx;
           cy = b * x + d * y + ty;
           sink.moveTo(cx, cy);
         case verbLineTo:
-          final x = _points[p * 2];
-          final y = _points[p * 2 + 1];
+          final x = points[p * 2];
+          final y = points[p * 2 + 1];
           p += 1;
           cx = a * x + c * y + tx;
           cy = b * x + d * y + ty;
           sink.lineTo(cx, cy);
         case verbQuadraticTo:
-          final x1 = _points[p * 2];
-          final y1 = _points[p * 2 + 1];
-          final x2 = _points[p * 2 + 2];
-          final y2 = _points[p * 2 + 3];
+          final x1 = points[p * 2];
+          final y1 = points[p * 2 + 1];
+          final x2 = points[p * 2 + 2];
+          final y2 = points[p * 2 + 3];
           p += 2;
           final ax = a * x1 + c * y1 + tx;
           final ay = b * x1 + d * y1 + ty;
@@ -274,12 +780,12 @@ final class Path {
           cx = ex;
           cy = ey;
         case verbCubicTo:
-          final x1 = _points[p * 2];
-          final y1 = _points[p * 2 + 1];
-          final x2 = _points[p * 2 + 2];
-          final y2 = _points[p * 2 + 3];
-          final x3 = _points[p * 2 + 4];
-          final y3 = _points[p * 2 + 5];
+          final x1 = points[p * 2];
+          final y1 = points[p * 2 + 1];
+          final x2 = points[p * 2 + 2];
+          final y2 = points[p * 2 + 3];
+          final x3 = points[p * 2 + 4];
+          final y3 = points[p * 2 + 5];
           p += 3;
           final c1x = a * x1 + c * y1 + tx;
           final c1y = b * x1 + d * y1 + ty;
@@ -319,12 +825,14 @@ final class Path {
   /// icon geometry every frame contributes one entry to the resource table
   /// instead of one per draw. The encoder's documentation states the
   /// condition that comes with opting in - the resource must not change after
-  /// it has an id - and this type satisfies it by being immutable rather than
-  /// by asking its callers to be careful.
+  /// it has an id. A path built by [PathBuilder] satisfies it because nobody
+  /// else holds it; a path edited with Flutter's API is copied with
+  /// [Path.from] by everything in the framework that records one (see the
+  /// class comment).
   ///
-  /// The comparison is O(verbs + points), which is why [hashCode] is
-  /// precomputed: the map answers from the hash on nearly every lookup and
-  /// only walks the arrays when two paths land in the same bucket.
+  /// The comparison is O(verbs + points), which is why [hashCode] is cached:
+  /// the map answers from the hash on nearly every lookup and only walks the
+  /// arrays when two paths land in the same bucket.
   ///
   /// A path holding NaN coordinates is not equal to itself, exactly as the
   /// underlying doubles are not. It therefore interns as a new resource every
@@ -333,25 +841,30 @@ final class Path {
   bool operator ==(Object other) {
     if (identical(this, other)) return true;
     if (other is! Path) return false;
-    if (other._hash != _hash) return false;
-    if (other._verbs.length != _verbs.length) return false;
-    if (other._points.length != _points.length) return false;
-    for (var i = 0; i < _verbs.length; i++) {
-      if (other._verbs[i] != _verbs[i]) return false;
+    if (other._fillType != _fillType) return false;
+    if (other.hashCode != hashCode) return false;
+    final Uint8List verbs = _verbs;
+    final Float32List points = _points;
+    final Uint8List otherVerbs = other._verbs;
+    final Float32List otherPoints = other._points;
+    if (otherVerbs.length != verbs.length) return false;
+    if (otherPoints.length != points.length) return false;
+    for (var i = 0; i < verbs.length; i++) {
+      if (otherVerbs[i] != verbs[i]) return false;
     }
-    for (var i = 0; i < _points.length; i++) {
-      if (other._points[i] != _points[i]) return false;
+    for (var i = 0; i < points.length; i++) {
+      if (otherPoints[i] != points[i]) return false;
     }
     return true;
   }
 
-  /// Computed once when the path is built, then stored. See [operator ==].
+  /// Computed on first use after an edit, then stored. See [operator ==].
   @override
-  int get hashCode => _hash;
+  int get hashCode => _hashCache ??= _hashOf(_verbs, _points) ^ _fillType.index;
 
   @override
   String toString() => 'Path(${_verbs.length} verbs, $pointCount points, '
-      '$bounds)';
+      '$bounds${_fillType == PathFillType.evenOdd ? ', evenOdd' : ''})';
 
   static int _hashOf(Uint8List verbs, Float32List points) {
     var hash = 0x1a2b3c;
@@ -841,6 +1354,42 @@ final class PathBuilder {
       Path._boundsOf(verbs, points),
       Path._hashOf(verbs, points),
     );
+  }
+
+  /// Replaces the contents with [verbs] and [points] and recovers the
+  /// contour state from them, so that editing can continue where they end.
+  void _seed(Uint8List verbs, Float32List points) {
+    reset();
+    var p = 0;
+    for (var v = 0; v < verbs.length; v++) {
+      final int verb = verbs[v];
+      _pushVerb(verb);
+      final int count = pointsPerVerb(verb);
+      for (var i = 0; i < count; i++) {
+        _pushPoint(points[(p + i) * 2], points[(p + i) * 2 + 1]);
+      }
+      if (verb == verbMoveTo) {
+        _startX = points[p * 2];
+        _startY = points[p * 2 + 1];
+        _needsMove = false;
+      } else if (verb == verbClose) {
+        _needsMove = true;
+      }
+      p += count;
+    }
+  }
+
+  /// Where the next segment starts: the last end point, or the start of the
+  /// contour a [close] just ended, or the origin before anything was added.
+  Offset get _currentPoint {
+    if (_needsMove || _floatCount == 0) return Offset(_startX, _startY);
+    return Offset(_points[_floatCount - 2], _points[_floatCount - 1]);
+  }
+
+  void _replaceLastPoint(double x, double y) {
+    if (_floatCount < 2) return;
+    _points[_floatCount - 2] = x;
+    _points[_floatCount - 1] = y;
   }
 
   void _openContour() {

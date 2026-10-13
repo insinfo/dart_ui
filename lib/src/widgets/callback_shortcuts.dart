@@ -2,6 +2,8 @@
 library;
 
 import '../platform/input_events.dart';
+import '../platform/logical_keyboard_key.dart' show HardwareKeyboard;
+import '../platform/shortcut_activator.dart';
 import 'actions.dart';
 import 'dialogs.dart';
 import 'element.dart';
@@ -32,6 +34,10 @@ import 'widget.dart';
 /// falls through to these bindings. A null callback is a command that is
 /// unavailable right now: the key passes on as if unbound.
 ///
+/// Any [ShortcutActivator] binds, as in Flutter: a [KeyGesture], a
+/// `SingleActivator(LogicalKeyboardKey.keyS, control: true)`, a
+/// `CharacterActivator('?')`.
+///
 /// Flutter's widget of this name only answers while focus is inside it;
 /// this one listens at the window, because an application's menu
 /// commands must work whichever panel was clicked last.
@@ -42,7 +48,7 @@ final class CallbackShortcuts extends StatefulWidget {
     required this.child,
   });
 
-  final Map<KeyGesture, void Function()?> bindings;
+  final Map<ShortcutActivator, void Function()?> bindings;
   final Widget child;
 
   @override
@@ -53,6 +59,8 @@ final class _CallbackShortcutsState extends State<CallbackShortcuts> {
   BuildOwner? _owner;
   Map<KeyGesture, void Function()?> _resolved =
       const <KeyGesture, void Function()?>{};
+  List<MapEntry<ShortcutActivator, void Function()?>> _others =
+      const <MapEntry<ShortcutActivator, void Function()?>>[];
 
   @override
   void initState() {
@@ -68,15 +76,31 @@ final class _CallbackShortcutsState extends State<CallbackShortcuts> {
 
   void _resolve() {
     _resolved = <KeyGesture, void Function()?>{
-      for (final MapEntry<KeyGesture, void Function()?> entry
+      for (final MapEntry<ShortcutActivator, void Function()?> entry
           in widget.bindings.entries)
-        entry.key.resolved(): entry.value,
+        if (entry.key case final KeyGesture gesture)
+          gesture.resolved(): entry.value,
     };
+    _others = <MapEntry<ShortcutActivator, void Function()?>>[
+      for (final MapEntry<ShortcutActivator, void Function()?> entry
+          in widget.bindings.entries)
+        if (entry.key is! KeyGesture) entry,
+    ];
   }
 
   bool _handle(KeyEvent event) {
     if (!mounted || event is! KeyDownEvent) return false;
-    final void Function()? callback = _resolved[KeyGesture.fromEvent(event)];
+    void Function()? callback = _resolved[KeyGesture.fromEvent(event)];
+    if (callback == null) {
+      for (final MapEntry<ShortcutActivator, void Function()?> entry
+          in _others) {
+        if (entry.value != null &&
+            entry.key.accepts(event, HardwareKeyboard.instance)) {
+          callback = entry.value;
+          break;
+        }
+      }
+    }
     if (callback == null) return false;
     callback();
     return true;

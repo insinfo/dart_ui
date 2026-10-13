@@ -114,6 +114,7 @@ import 'focus_scope.dart';
 import 'keyboard_router.dart';
 import 'pointer_router.dart';
 import 'popup.dart';
+import 'popup_host.dart' show PopupWindowFrame;
 import 'theme.dart';
 import 'widget.dart';
 
@@ -734,6 +735,7 @@ final class _ContextMenuSurfaceWidget extends MultiChildRenderObjectWidget {
   RenderContextMenuSurface createRenderObject(BuildContext context) =>
       RenderContextMenuSurface()
         ..theme = theme
+        ..platformOutline = PopupWindowFrame.outlinedOf(context)
         ..focusNode = focusNode
         ..visitsDisabledItems = visitsDisabledItems
         ..onDismiss = onDismiss;
@@ -745,6 +747,7 @@ final class _ContextMenuSurfaceWidget extends MultiChildRenderObjectWidget {
   ) {
     object
       ..theme = theme
+      ..platformOutline = PopupWindowFrame.outlinedOf(context)
       ..focusNode = focusNode
       ..visitsDisabledItems = visitsDisabledItems
       ..onDismiss = onDismiss;
@@ -756,6 +759,10 @@ final class RenderContextMenuSurface extends RenderBoxContainer<BoxParentData>
     with ControlBehavior {
   int _highlighted = -1;
   void Function()? onDismiss;
+
+  /// Whether the window this surface fills outlines it already - see
+  /// [PopupWindowFrame]. The surface then paints no hairline of its own.
+  bool platformOutline = false;
 
   /// Whether arrow keys stop on disabled items. See [ContextMenu].
   ///
@@ -997,12 +1004,14 @@ final class RenderContextMenuSurface extends RenderBoxContainer<BoxParentData>
       theme.colorScheme.surface,
       theme.cornerRadius,
     );
-    paintRoundedBorder(
-      list,
-      rect,
-      theme.colorScheme.outline,
-      theme.cornerRadius,
-    );
+    if (!platformOutline) {
+      paintRoundedBorder(
+        list,
+        rect,
+        theme.colorScheme.outline,
+        theme.cornerRadius,
+      );
+    }
     super.paint(list, offset);
     paintFocusRing(list, rect);
   }

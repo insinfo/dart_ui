@@ -113,7 +113,7 @@ Poucas, e cada uma tem motivo:
 |---|---|---|
 | `Checkbox` | `CheckBox` | herdado do vocabulário WinUI/Fluent do resto dos controles |
 | `ElevatedButton`, `TextButton`, `OutlinedButton` | `Button` | um controle com variantes de estilo, em vez de três classes |
-| `MaterialApp` / `WidgetsApp` | `DartUiApp` | não é Material; instala tema, direção de leitura, escopo de foco, relógio de animação e o host de popups |
+| `MaterialApp` | `DartUiApp` | não é Material; instala tema, direção de leitura, escopo de foco, relógio de animação e o host de popups. `WidgetsApp` existe desde 13/10/2026 (sem `.router`) |
 | `Scaffold` / `AppBar` | — | não existem. Este framework é de aplicação desktop: a barra de menus é `MenuBar` e o chrome da janela é da janela |
 | `runApp(Widget)` | `runApp(...)` | existe, e abre uma janela real; ver §5 |
 | `GridView` com delegates | `Grid` | `Grid` é o layout de trilhas (`GridTrack.fixed/auto/fraction/minmax`), mais perto de CSS Grid que dos delegates. O `GridView` rolável também existe |
@@ -121,8 +121,50 @@ Poucas, e cada uma tem motivo:
 | `Chip(label: Widget)` | `Chip(label: String)` | o rótulo é texto; o controle desenha o glifo de exclusão sozinho |
 | `ColorTween extends Tween<Color?>` | `ColorTween extends Tween<int>` | interpola ARGB empacotado, com pré-multiplicação. No nível de widget, `lerpColor(a, b, t)` devolve `Color` |
 | `TextStyle` | subconjunto | `color`, `fontSize`, `fontFamily`, `fontWeight`, `height` — e nada mais |
-| `SingleActivator(LogicalKeyboardKey.keyS, control: true)` | `KeyGesture(logicalKeyS, command: true)` | `command` é Cmd no Mac e Ctrl no PC; `gesture.label()` mostra `⌘S` ou `Ctrl+S` no menu |
+| `SingleActivator(LogicalKeyboardKey.keyS, control: true)` | o mesmo, ou `KeyGesture(logicalKeyS, command: true)` | `SingleActivator`, `CharacterActivator`, `LogicalKeySet` e `LogicalKeyboardKey` existem desde 13/10/2026 e servem de chave em `Shortcuts`/`CallbackShortcuts`; `KeyGesture` continua, com `command` (Cmd no Mac, Ctrl no PC) e `label()` (`⌘S`/`Ctrl+S`) para menus |
 | `CallbackShortcuts` (só com foco dentro) | `CallbackShortcuts` (a janela toda) | atalhos de menu funcionam qualquer que seja o painel clicado por último; o controle focado ainda vê a tecla antes |
+
+### A API do Flutter, nome a nome
+
+Desde 13/10/2026 a compatibilidade é **medida**: [`paridade_flutter.md`](paridade_flutter.md)
+compara cada nome público do Flutter com a API do `dart_ui` e diz, para cada
+🟡, o que difere (as regras do trabalho estão em
+[`AGENTS_FLUTTER.md`](AGENTS_FLUTTER.md)). As diferenças que mais aparecem
+numa migração:
+
+- **`runApp`** devolve `Future<Application>` (o `void main() => runApp(...)`
+  compila igual); título e tamanho da janela vão em `options:`. Fechar a
+  última janela encerra o processo, como no Flutter desktop.
+- **`TextEditingController('x')`** é posicional (no Flutter, `text: 'x'`), e
+  `value` é o texto - o `TextEditingValue` fica em `editingValue`.
+  `TextSelection.collapsed(offset)` e `TextRange(start, end)` também são
+  posicionais.
+- **`CallbackAction(onInvoke: ...)`** é nomeado, como no Flutter (antes era
+  posicional aqui).
+- **Rolagem:** `controller:` aceita `ScrollController` ou `ScrollPosition`;
+  `scrollDirection:` e o antigo `axis:` são o mesmo valor. Sem `physics:`, a
+  rolagem para seco em todas as plataformas (no macOS o Flutter usa mola). O
+  `Scrollbar` ainda recebe `position:`. No `PageView`, cada entalhe da roda
+  vira uma página.
+- **Pintura:** `Canvas`, `Paint`, `CustomPainter`, `BorderRadius`, `Border`,
+  `BoxShadow`, `ShapeDecoration` e os clips existem com os nomes do Flutter.
+  Clips não retangulares (`ClipRRect`, `ClipOval`, `ClipPath`) são camada mais
+  máscara e não funcionam em Direct2D nem no DOM; sombras são camadas
+  translúcidas, não um blur; `BlendMode` só tem os modos Porter-Duff (o resto
+  desenha como `srcOver`); `gradient:` de uma decoração aceita só
+  `SweepGradient`. `TextDirection` aqui é `leftToRight`/`rightToLeft`.
+  `RenderDecoratedBox.decoration` é `Decoration`: ler `.color` pede cast.
+- **Entrada:** `InteractiveViewer` e `TransformationController` usam
+  `Transform2D` (sem `Matrix4`, sem inércia); `Listener` usa os eventos do
+  `dart_ui`; `HitTestBehavior.translucent` não deixa um irmão de trás ser
+  atingido; `Shortcuts` não responde sem nada focado; `KeyEvent` não tem
+  `KeyRepeatEvent` (a repetição chega como `KeyDownEvent` com `isRepeat`).
+- **Formulários:** Enter sem `textInputAction` não tira o foco; formatadores
+  e `onChanged` rodam só em edições do usuário (o texto provisório da IME é
+  formatado no commit).
+- **Binding:** `WidgetsBinding` é uma classe que fala pela janela principal;
+  `FlutterError.onError` é `ApplicationOptions.onError`; o `Locale` tem o
+  script como segundo posicional (`Locale('pt', null, 'BR')`).
 
 E uma diferença de **padrão**, que é a mais fácil de não notar porque compila:
 `Visibility.maintainSize` aqui é `true` por omissão e no Flutter é `false`. Um

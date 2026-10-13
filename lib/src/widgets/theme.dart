@@ -709,12 +709,23 @@ final class ThemeData {
     this.focusRingWidth = 2.0,
     this.controlStyle = ControlStyle.standard,
     Color? toggleActiveColor,
+    this.desktop,
   })  : _onSelection = onSelection,
         _surfaceSunken = surfaceSunken,
         _toggleActiveColor = toggleActiveColor;
 
   /// The shape language of the controls; see [ControlStyle].
   final ControlStyle controlStyle;
+
+  /// The desktop whose conventions this theme was [adaptedToPlatform] for,
+  /// or null for a theme that keeps its own look everywhere - every
+  /// built-in theme, so a test draws the same pixels on every host.
+  ///
+  /// Read where a platform's convention is a *shape* rather than a size:
+  /// a popup menu on macOS is AppKit's - a large radius, a filled accent
+  /// pill inset from the edges, separators inset from both sides - and a
+  /// Windows 11 menu is WinUI's, whatever the palette.
+  final DesktopPlatform? desktop;
 
   final Color? _toggleActiveColor;
 
@@ -948,6 +959,7 @@ final class ThemeData {
     };
     final double icon = iconTheme.size ?? 16;
     return copyWith(
+      desktop: platform ?? hostDesktopPlatform,
       fontSize: fontSize > text ? fontSize : text,
       density: step,
       controlHeight: controlHeight > 32 ? controlHeight : 32,
@@ -982,6 +994,7 @@ final class ThemeData {
     bool? useMaterial3,
     ControlStyle? controlStyle,
     Color? toggleActiveColor,
+    DesktopPlatform? desktop,
   }) =>
       ThemeData(
         name: name ?? this.name,
@@ -1025,6 +1038,7 @@ final class ThemeData {
         focusRingWidth: focusRingWidth,
         controlStyle: controlStyle ?? this.controlStyle,
         toggleActiveColor: toggleActiveColor ?? _toggleActiveColor,
+        desktop: desktop ?? this.desktop,
       );
 
   @override
@@ -1063,7 +1077,8 @@ final class ThemeData {
       other.textTheme == textTheme &&
       other.scrollbarTheme == scrollbarTheme &&
       other.controlStyle == controlStyle &&
-      other.toggleActiveColor == toggleActiveColor;
+      other.toggleActiveColor == toggleActiveColor &&
+      other.desktop == desktop;
 
   @override
   int get hashCode => Object.hash(
@@ -1080,7 +1095,8 @@ final class ThemeData {
         Object.hash(highContrast, reducedMotion),
         Object.hash(
             cornerRadius, controlHeight, controlPadding, focusRingWidth),
-        Object.hash(textTheme, scrollbarTheme, controlStyle, toggleActiveColor),
+        Object.hash(textTheme, scrollbarTheme, controlStyle, toggleActiveColor,
+            desktop),
       );
 
   /// The neutral base: no platform's look, and the one every test uses so a

@@ -138,7 +138,7 @@ final class RenderPointerListener extends RenderSingleChildBox
 
   @override
   bool hitTestSelf(Offset position) =>
-      behavior == GestureHitTestBehavior.opaque;
+      behavior != GestureHitTestBehavior.deferToChild;
 
   @override
   void handlePointerEvent(PointerEvent event) {

@@ -433,18 +433,19 @@ void main() {
       expect(node.hitTest(const Offset(0.5, 0.5)), isNull, reason: 'corner');
     });
 
-    test('DECLARED ABSENT: no path clip is emitted, so paint stays square', () {
-      // The widget layer inherits the gap the node documents: `opClipPath` has
-      // no rasterizer, so this emits a rectangle. Asserted here as well as on
-      // the node so that a reader who only opens the widget test still finds
-      // out.
+    test('cuts the corners in paint with a mask, not a path clip', () {
+      // A rounded clip is an isolated layer plus a dstOut of "box minus
+      // rounded rectangle": no opClipPath (the player has none) and no
+      // rectangular clip either.
       final List<DisplayListCommand> commands = commandsFor(
         const ClipRRect(radius: 8, child: ColoredBox(color: _content)),
         side: 16,
       );
 
       expect(commands.whereType<ClipPathCommand>(), isEmpty);
-      expect(commands.whereType<ClipRectCommand>(), hasLength(1));
+      expect(commands.whereType<SaveLayerCommand>(), hasLength(1));
+      expect(commands.whereType<DrawPathCommand>(), hasLength(1),
+          reason: 'the mask');
     });
   });
 
@@ -489,8 +490,9 @@ void main() {
       pipeline.flushLayout();
 
       expect(owner.renderRoot, same(node));
-      expect(node.decoration.color, const Color(0xFF00FF00));
-      expect(node.decoration.radius, 4);
+      final BoxDecoration decoration = node.decoration as BoxDecoration;
+      expect(decoration.color, const Color(0xFF00FF00));
+      expect(decoration.radius, 4);
     });
 
     test('an equal decoration is not a change', () {

@@ -112,6 +112,10 @@ final class FrameScheduler {
   final List<FrameCallback> _frameCallbacks = <FrameCallback>[];
   final List<FrameCallback> _pendingCallbackRemovals = <FrameCallback>[];
 
+  /// One-shot callbacks for the end of the next frame; see
+  /// [addPostFrameCallback].
+  List<FrameCallback> _postFrameCallbacks = <FrameCallback>[];
+
   /// The one stopwatch the phase split is read from.
   ///
   /// A field and not a local: `ApplicationWindow.drawFrame` runs this frame up
@@ -210,6 +214,24 @@ final class FrameScheduler {
   /// How many per-frame callbacks are registered.
   int get frameCallbackCount => _frameCallbacks.length;
 
+  /// Runs [callback] once, after the next frame has laid out and painted -
+  /// Flutter's `addPostFrameCallback`.
+  ///
+  /// Like Flutter's, it does not request a frame: one registered from a
+  /// `build` or an `initState` runs at the end of the frame that is being
+  /// built, and one registered from anywhere else waits for whatever draws
+  /// next (call [scheduleFrame] to make that now). A callback registered
+  /// while post-frame callbacks are running waits for the following frame.
+  /// What it dirties is drawn by the same `ApplicationWindow.drawFrame`, whose
+  /// settle loop runs the pipeline again.
+  void addPostFrameCallback(FrameCallback callback) {
+    _throwIfDisposed();
+    _postFrameCallbacks.add(callback);
+  }
+
+  /// How many post-frame callbacks are waiting for the next frame.
+  int get postFrameCallbackCount => _postFrameCallbacks.length;
+
   /// Requests one frame on the next [pump], coalescing repeated requests.
   void scheduleFrame() {
     _throwIfDisposed();
@@ -268,6 +290,7 @@ final class FrameScheduler {
     _disposed = true;
     _frameCallbacks.clear();
     _pendingCallbackRemovals.clear();
+    _postFrameCallbacks.clear();
     pipelineOwner.root = null;
   }
 
@@ -287,6 +310,27 @@ final class FrameScheduler {
 
   void _handleFrame() {
     if (_disposed) return;
+    try {
+      _drawFrame();
+    } finally {
+      _runPostFrameCallbacks();
+    }
+  }
+
+  void _runPostFrameCallbacks() {
+    if (_postFrameCallbacks.isEmpty || _disposed) return;
+    final List<FrameCallback> callbacks = _postFrameCallbacks;
+    _postFrameCallbacks = <FrameCallback>[];
+    for (int i = 0; i < callbacks.length; i++) {
+      try {
+        callbacks[i](_frameTimestamp);
+      } catch (error, stackTrace) {
+        _handleError(FramePipelinePhase.callbacks, error, stackTrace);
+      }
+    }
+  }
+
+  void _drawFrame() {
     _frameScheduled = false;
     _lastErrorPhase = null;
     _frameTimestamp = dispatcher.elapsed;

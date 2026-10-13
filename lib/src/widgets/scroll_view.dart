@@ -45,6 +45,10 @@
 ///    deterministic in a test as it is smooth in an application.
 library;
 
+import 'dart:async';
+
+import '../animation/curves.dart';
+import '../animation/simulation.dart';
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
@@ -53,17 +57,30 @@ import '../gestures/drag.dart';
 import '../gestures/pointer_signal_resolver.dart';
 import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
+import '../layout/edge_insets.dart';
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
+import '../layout/render_flex.dart' show Axis;
+import '../layout/render_sliver.dart'
+    show
+        SliverGridDelegate,
+        SliverGridDelegateWithFixedCrossAxisCount,
+        SliverGridDelegateWithMaxCrossAxisExtent;
 import '../layout/render_viewport.dart';
+import '../layout/scroll_metrics.dart';
 import '../platform/input_events.dart';
 import '../scheduler/timer_handle.dart';
 import '../scheduler/ui_dispatcher.dart';
 import 'basic.dart';
+import 'directionality.dart';
 import 'element.dart';
 import 'gesture_detector.dart';
 import 'pointer_router.dart';
+import 'scroll_controller.dart';
+import 'scroll_notification.dart';
+import 'scroll_physics.dart';
 import 'scrollbar.dart';
+import 'slivers.dart';
 import 'virtualization.dart';
 import 'widget.dart';
 
@@ -95,7 +112,12 @@ const double _restVelocity = 8.0;
 /// physics - velocity, friction, the decision that hitting an edge ends the
 /// fling - and this owns only the timer, because the position must stay free of
 /// clocks and the timer must not re-implement the physics.
-final class ScrollMomentum {
+///
+/// It also runs a physics' ballistic [Simulation] ([runSimulation]) - a
+/// spring back from a bounce, a spring to the nearest page - on the same
+/// fixed step, and is the position's [ScrollActivityHandle] while it runs:
+/// a drag, a `jumpTo` or an `animateTo` cancels it.
+final class ScrollMomentum implements ScrollActivityHandle {
   ScrollMomentum({
     required this.position,
     required this.dispatcher,
@@ -110,6 +132,9 @@ final class ScrollMomentum {
 
   TimerHandle? _timer;
   int _ticks = 0;
+  Simulation? _simulation;
+  ScrollPhysics? _physics;
+  Duration _elapsed = Duration.zero;
 
   /// Whether a fling is currently running.
   bool get isRunning => _timer != null;
@@ -122,21 +147,132 @@ final class ScrollMomentum {
   /// Positive moves the offset towards the end, which is the opposite sign to
   /// the pointer's own velocity: dragging a finger *down* scrolls a list *up*.
   void start(double velocity) {
-    stop();
+    _halt();
     _ticks = 0;
-    if (velocity == 0 || !position.canScroll) return;
+    if (velocity == 0 || !position.canScroll) {
+      position.didEndScroll();
+      return;
+    }
+    position.beginActivity(this);
+    position.didStartScroll();
     position.fling(velocity);
     _arm();
   }
 
-  /// Stops the fling where it is, leaving the offset alone.
+  /// Runs [simulation] - a physics' answer to a release - until it is done,
+  /// moving the position to `simulation.x(t)` every [step].
+  ///
+  /// [physics] decides where the motion must stop: its
+  /// `applyBoundaryConditions` turns a move past an edge into an overscroll,
+  /// which ends the run there. Without a clock this cannot be stepped, so
+  /// [settleSimulation] runs it to its end at once instead.
+  void runSimulation(Simulation simulation, {ScrollPhysics? physics}) {
+    _halt();
+    _ticks = 0;
+    _simulation = simulation;
+    _physics = physics;
+    _elapsed = Duration.zero;
+    position.beginActivity(this);
+    position.didStartScroll();
+    _arm();
+  }
+
+  /// Stops the fling where it is, leaving the offset alone, and ends the
+  /// scroll it was part of.
   void stop() {
+    final bool wasRunning = isRunning;
+    _halt();
+    position.endActivity(this);
+    if (wasRunning) position.didEndScroll();
+  }
+
+  /// Another activity replaced this one on the position.
+  @override
+  void cancel() {
+    final bool wasRunning = isRunning;
+    _halt();
+    if (wasRunning) position.didEndScroll();
+  }
+
+  void _halt() {
     _timer?.cancel();
     _timer = null;
+    _simulation = null;
     if (position.velocity != 0) position.fling(0);
   }
 
+  void _finish() {
+    _timer = null;
+    _simulation = null;
+    position.endActivity(this);
+    position.didEndScroll();
+  }
+
   void _arm() => _timer = dispatcher.schedule(step, _tick);
+
+  /// One step of a [runSimulation].
+  void _tickSimulation(Simulation simulation) {
+    _elapsed += step;
+    final bool done = simulation.isDone(_elapsed);
+    final double target =
+        done ? settledValue(simulation, _elapsed) : simulation.x(_elapsed);
+    if (_applySimulated(position, target, _physics)) {
+      _finish();
+      return;
+    }
+    if (done) {
+      _finish();
+      return;
+    }
+    _arm();
+  }
+
+  /// Moves [position] to [value], stopping at the boundary [physics] draws.
+  /// Returns true when it hit one.
+  static bool _applySimulated(
+    ScrollPosition position,
+    double value,
+    ScrollPhysics? physics,
+  ) {
+    final double overscroll =
+        physics?.applyBoundaryConditions(position, value) ?? 0.0;
+    position.forcePixels(value - overscroll);
+    if (overscroll != 0) {
+      position.didOverscrollBy(overscroll);
+      return true;
+    }
+    return false;
+  }
+
+  /// Where [simulation] rests once done: the spring's end exactly, rather
+  /// than a value within the tolerance of it.
+  static double settledValue(Simulation simulation, Duration time) {
+    if (simulation is SpringSimulation) return simulation.end;
+    if (simulation is BouncingScrollSimulation) {
+      return simulation.restingPosition ?? simulation.x(time);
+    }
+    return simulation.x(time);
+  }
+
+  /// Runs [simulation] to its end at once, for a scroll view with no clock:
+  /// a bounce must still come back, and a page view must still land on a
+  /// page.
+  static void settleSimulation(
+    ScrollPosition position,
+    Simulation simulation, {
+    ScrollPhysics? physics,
+    Duration step = defaultMomentumStep,
+  }) {
+    Duration elapsed = Duration.zero;
+    // Ten minutes of frames is a fling that never ends; stop there.
+    for (int i = 0; i < 37500; i++) {
+      elapsed += step;
+      final bool done = simulation.isDone(elapsed);
+      final double value =
+          done ? settledValue(simulation, elapsed) : simulation.x(elapsed);
+      if (_applySimulated(position, value, physics) || done) return;
+    }
+  }
 
   /// One momentum step, plus a workaround for a defect in the position.
   ///
@@ -161,6 +297,11 @@ final class ScrollMomentum {
   void _tick() {
     _timer = null;
     _ticks++;
+    final Simulation? simulation = _simulation;
+    if (simulation != null) {
+      _tickSimulation(simulation);
+      return;
+    }
     final double velocity = position.velocity;
     final double pixels = position.pixels;
     if (position.tickMomentum(step, friction: friction)) {
@@ -170,11 +311,119 @@ final class ScrollMomentum {
     final double wanted =
         velocity * (step.inMicroseconds / Duration.microsecondsPerSecond);
     final bool reachedAnEdge = (position.pixels - pixels - wanted).abs() > 1e-6;
-    if (reachedAnEdge) return;
+    if (reachedAnEdge) {
+      _finish();
+      return;
+    }
     final double next = velocity * friction;
-    if (next.abs() < _restVelocity) return;
+    if (next.abs() < _restVelocity) {
+      _finish();
+      return;
+    }
     position.fling(next);
     _arm();
+  }
+}
+
+/// The clock each attached scroll view offers its position, for
+/// [ScrollPositionAnimation.animateTo]. A position lives below the scheduler
+/// and cannot hold one itself.
+final Expando<UiDispatcher> _positionDispatchers =
+    Expando<UiDispatcher>('ScrollPosition dispatcher');
+
+/// Flutter's `ScrollPosition.animateTo`, on the clock of the scroll view the
+/// position is attached to.
+extension ScrollPositionAnimation on ScrollPosition {
+  /// Animates the offset from where it is to [to], clamped to the scroll
+  /// range, over [duration] along [curve].
+  ///
+  /// It replaces whatever was moving the position, and a drag, a `jumpTo` or
+  /// another animation replaces it in turn; the future completes either way.
+  /// Without a clock - no scroll view attached, or one without a dispatcher
+  /// - and for a zero [duration], it jumps.
+  Future<void> animateTo(
+    double to, {
+    required Duration duration,
+    required Curve curve,
+  }) {
+    if (to.isNaN) {
+      throw ArgumentError.value(to, 'to', 'must be a number');
+    }
+    final UiDispatcher? dispatcher = _positionDispatchers[this];
+    final double target = to.clamp(0.0, maxScrollExtent);
+    if (dispatcher == null || duration <= Duration.zero || target == pixels) {
+      jumpTo(target);
+      return Future<void>.value();
+    }
+    final _ScrollAnimation animation = _ScrollAnimation(
+      position: this,
+      dispatcher: dispatcher,
+      from: pixels,
+      to: target,
+      duration: duration,
+      curve: curve,
+    );
+    beginActivity(animation);
+    didStartScroll();
+    animation.start();
+    return animation.done;
+  }
+}
+
+/// An `animateTo` in flight: the offset along [curve] every
+/// [defaultMomentumStep], on a fixed step for the reason the fling has one.
+final class _ScrollAnimation implements ScrollActivityHandle {
+  _ScrollAnimation({
+    required this.position,
+    required this.dispatcher,
+    required this.from,
+    required this.to,
+    required this.duration,
+    required this.curve,
+  });
+
+  final ScrollPosition position;
+  final UiDispatcher dispatcher;
+  final double from;
+  final double to;
+  final Duration duration;
+  final Curve curve;
+
+  final Completer<void> _done = Completer<void>();
+  TimerHandle? _timer;
+  Duration _elapsed = Duration.zero;
+
+  Future<void> get done => _done.future;
+
+  void start() => _timer = dispatcher.schedule(defaultMomentumStep, _tick);
+
+  void _tick() {
+    _timer = null;
+    _elapsed += defaultMomentumStep;
+    final double t = _elapsed >= duration
+        ? 1.0
+        : _elapsed.inMicroseconds / duration.inMicroseconds;
+    final double value = from + (to - from) * curve.transform(t);
+    final double overscroll = position.setPixels(value);
+    if (t >= 1.0 || overscroll != 0) {
+      position.endActivity(this);
+      position.didEndScroll();
+      _complete();
+      return;
+    }
+    start();
+  }
+
+  @override
+  void cancel() {
+    _timer?.cancel();
+    _timer = null;
+    position.didEndScroll();
+    _complete();
+  }
+
+  void _complete() {
+    if (!_done.isCompleted) _done.complete();
   }
 }
 
@@ -200,6 +449,10 @@ abstract interface class NestedScrollHost {
 ///
 /// Wraps a viewport rather than being one, so the same input layer serves a
 /// [SingleChildScrollView], a [ListView] and anything else that has an offset.
+///
+/// It is also where a scroll view's notifications come from: its element is
+/// the `context` of every [ScrollNotification] the view sends, and a
+/// [NotificationListener] above it hears them.
 final class Scrollable extends SingleChildRenderObjectWidget {
   const Scrollable({
     super.key,
@@ -209,12 +462,21 @@ final class Scrollable extends SingleChildRenderObjectWidget {
     this.mouseDragEnabled = true,
     this.wheelEnabled = true,
     this.reverse = false,
+    this.physics,
     this.dispatcher,
     this.friction = defaultScrollFriction,
     this.momentumStep = defaultMomentumStep,
   });
 
   final ScrollPosition position;
+
+  /// How the view answers the user; see `scroll_physics.dart`. Applied to
+  /// [ClampingScrollPhysics] as the platform default, as Flutter applies a
+  /// widget's physics to the platform's.
+  ///
+  /// Null keeps this framework's own scrolling - the drag, the fling and the
+  /// clamping it always had - without consulting a physics object.
+  final ScrollPhysics? physics;
 
   /// Whether the content's start is at the bottom (or right) of the view, as
   /// in a `CustomScrollView(reverse: true)`.
@@ -245,6 +507,10 @@ final class Scrollable extends SingleChildRenderObjectWidget {
   final double friction;
   final Duration momentumStep;
 
+  /// [physics] with the platform default at the end of its chain.
+  static ScrollPhysics? resolvePhysics(ScrollPhysics? physics) =>
+      physics?.applyTo(const ClampingScrollPhysics());
+
   @override
   RenderScrollGestures createRenderObject(BuildContext context) =>
       RenderScrollGestures(
@@ -253,10 +519,11 @@ final class Scrollable extends SingleChildRenderObjectWidget {
         mouseDragEnabled: mouseDragEnabled,
         wheelEnabled: wheelEnabled,
         reverse: reverse,
+        physics: resolvePhysics(physics),
         dispatcher: dispatcher ?? GestureScope.of(context),
         friction: friction,
         momentumStep: momentumStep,
-      );
+      )..notificationContext = context;
 
   @override
   void updateRenderObject(
@@ -269,29 +536,44 @@ final class Scrollable extends SingleChildRenderObjectWidget {
       ..mouseDragEnabled = mouseDragEnabled
       ..wheelEnabled = wheelEnabled
       ..reverse = reverse
+      ..physics = resolvePhysics(physics)
       ..dispatcher = dispatcher ?? GestureScope.of(context)
       ..friction = friction
-      ..momentumStep = momentumStep;
+      ..momentumStep = momentumStep
+      ..notificationContext = context;
   }
 }
 
 /// The render endpoint of [Scrollable]: wheel, drag, momentum and chaining.
+///
+/// It is also the [ScrollActivityListener] of its position, turning what the
+/// position reports into the [ScrollNotification]s Flutter sends, dispatched
+/// from [notificationContext].
 final class RenderScrollGestures extends RenderSingleChildBox
-    implements PointerEventTarget {
+    implements PointerEventTarget, ScrollActivityListener {
   RenderScrollGestures({
     required ScrollPosition position,
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.wheelEnabled = true,
-    this.reverse = false,
+    bool reverse = false,
+    this.physics,
     UiDispatcher? dispatcher,
     double friction = defaultScrollFriction,
     Duration momentumStep = defaultMomentumStep,
     super.child,
   })  : _position = position,
+        _reverse = reverse,
         _dispatcher = dispatcher,
         _friction = friction,
         _momentumStep = momentumStep;
+
+  /// The physics, already applied to the default; null for the framework's
+  /// own scrolling. See [Scrollable.physics].
+  ScrollPhysics? physics;
+
+  /// Where notifications are dispatched from: the [Scrollable]'s element.
+  BuildContext? notificationContext;
 
   /// Whether a drag scrolls this view.
   bool dragEnabled;
@@ -304,7 +586,23 @@ final class RenderScrollGestures extends RenderSingleChildBox
 
   /// Whether a physical movement towards the end decreases the offset; see
   /// [Scrollable.reverse].
-  bool reverse;
+  bool get reverse => _reverse;
+  bool _reverse;
+
+  set reverse(bool value) {
+    if (value == _reverse) return;
+    _reverse = value;
+    if (owner != null) _publishAxisDirection();
+  }
+
+  void _publishAxisDirection() {
+    final bool vertical = _position.axis == ScrollAxis.vertical;
+    _position.updateAxisDirection(
+      vertical
+          ? (_reverse ? AxisDirection.up : AxisDirection.down)
+          : (_reverse ? AxisDirection.left : AxisDirection.right),
+    );
+  }
 
   /// [delta] converted between physical direction and offset direction. The
   /// conversion is its own inverse, so one helper serves both ways.
@@ -323,10 +621,26 @@ final class RenderScrollGestures extends RenderSingleChildBox
   set position(ScrollPosition value) {
     if (identical(value, _position)) return;
     _nestedHost?.detachInnerPosition(_position);
+    if (owner != null) _releasePosition(_position);
     _position = value;
+    if (owner != null) _claimPosition(value);
     _nestedHost?.attachInnerPosition(value);
     _discardMomentum();
     _discardDrag();
+  }
+
+  void _claimPosition(ScrollPosition position) {
+    position.addActivityListener(this);
+    final UiDispatcher? dispatcher = _dispatcher;
+    if (dispatcher != null) _positionDispatchers[position] = dispatcher;
+    _publishAxisDirection();
+  }
+
+  void _releasePosition(ScrollPosition position) {
+    position.removeActivityListener(this);
+    if (identical(_positionDispatchers[position], _dispatcher)) {
+      _positionDispatchers[position] = null;
+    }
   }
 
   /// The [NestedScrollHost] this scrollable's position was offered to.
@@ -336,7 +650,9 @@ final class RenderScrollGestures extends RenderSingleChildBox
 
   set dispatcher(UiDispatcher? value) {
     if (identical(value, _dispatcher)) return;
+    if (owner != null) _releasePosition(_position);
     _dispatcher = value;
+    if (owner != null) _claimPosition(_position);
     _discardMomentum();
   }
 
@@ -387,10 +703,23 @@ final class RenderScrollGestures extends RenderSingleChildBox
   @override
   bool hitTestSelf(Offset position) => true;
 
+  /// Whether [physics] lets the user move the position right now. Always
+  /// true without a physics, which is the framework's own behaviour.
+  bool get _acceptsUserOffset =>
+      physics?.shouldAcceptUserOffset(_position) ?? true;
+
   @override
   void handlePointerEvent(PointerEvent event) {
     if (event is PointerScrollEvent) {
       if (!wheelEnabled) return;
+      // As Flutter's Scrollable: a notch along the other axis, or one over a
+      // view the user may not scroll, is not this view's to claim - the view
+      // around it gets the chance instead. Claiming it would win the
+      // resolver and then move nothing: a vertical wheel over a horizontal
+      // strip inside a vertical page would never reach the page.
+      final double delta =
+          _vertical ? event.scrollDelta.dy : event.scrollDelta.dx;
+      if (delta == 0 || !_acceptsUserOffset) return;
       final GestureBinding? binding = GestureBinding.current;
       // Outside a router's dispatch there is nobody to resolve the signal, so
       // a registration would never be honoured. That happens in unit tests
@@ -419,12 +748,24 @@ final class RenderScrollGestures extends RenderSingleChildBox
   /// drive it directly.
   void applyWheel(PointerScrollEvent event) {
     _momentum?.stop();
+    // A wheel notch also stops an animation, as Flutter's pointerScroll goes
+    // idle first.
+    _position.beginActivity(null);
     final double delta =
         _vertical ? event.scrollDelta.dy : event.scrollDelta.dx;
+    final double pixelDelta = _directed(delta);
+    if (pixelDelta != 0) {
+      _position.updateUserScrollDirection(
+        pixelDelta < 0 ? ScrollDirection.forward : ScrollDirection.reverse,
+      );
+    }
     final double remainder = _position.applyScrollDelta(
-      _directed(delta),
+      pixelDelta,
       inLines: event.scrollDeltaUnit == ScrollDeltaUnit.lines,
     );
+    if (!_position.isScrolling) {
+      _position.updateUserScrollDirection(ScrollDirection.idle);
+    }
     if (remainder != 0) _chain(_directed(remainder));
   }
 
@@ -461,35 +802,234 @@ final class RenderScrollGestures extends RenderSingleChildBox
       )
         ..onStart = _onDragStart
         ..onUpdate = _onDragUpdate
-        ..onEnd = _onDragEnd;
+        ..onEnd = _onDragEnd
+        ..onCancel = _onDragCancel;
 
-  void _onDragStart(DragStartDetails details) => _momentum?.stop();
+  /// Whether the drag under way is moving this view. False for one the
+  /// physics refused when it started, which then only chains.
+  bool _dragAccepted = true;
+
+  void _onDragStart(DragStartDetails details) {
+    _momentum?.stop();
+    _position.beginActivity(null);
+    _dragAccepted = _acceptsUserOffset;
+    if (_dragAccepted) _position.didStartScroll(details);
+  }
 
   void _onDragUpdate(DragUpdateDetails details) {
     final double delta = _vertical ? details.delta.dy : details.delta.dx;
-    // Negated: the content follows the finger, so a finger moving down means a
-    // smaller offset. Overscroll is allowed here and settled on release, which
-    // is what makes a rubber-band possible for a position that asked for one
-    // and changes nothing for the default allowance of zero.
-    final double remainder =
-        _position.applyDelta(_directed(-delta), allowOverscroll: true);
-    if (remainder != 0) _chain(_directed(remainder));
+    if (delta == 0) return;
+    // Flutter's user offset: positive towards offset zero, which is the
+    // finger's own direction on an unreversed view.
+    final double userOffset = _directed(delta);
+    if (!_dragAccepted) {
+      _chain(_directed(-userOffset));
+      return;
+    }
+    _position.updateUserScrollDirection(
+      userOffset > 0 ? ScrollDirection.forward : ScrollDirection.reverse,
+    );
+    _position.userDetails = details;
+    try {
+      final ScrollPhysics? physics = this.physics;
+      if (physics == null || _position.coordinator != null) {
+        // Negated: the content follows the finger, so a finger moving down
+        // means a smaller offset. Overscroll is allowed here and settled on
+        // release, which is what makes a rubber-band possible for a position
+        // that asked for one and changes nothing for the default allowance of
+        // zero.
+        final double pixelDelta = physics == null
+            ? -userOffset
+            : -physics.applyPhysicsToUserOffset(_position, userOffset);
+        final double remainder =
+            _position.applyDelta(pixelDelta, allowOverscroll: true);
+        if (remainder != 0) _chain(_directed(remainder));
+        return;
+      }
+      final double target = _position.pixels -
+          physics.applyPhysicsToUserOffset(_position, userOffset);
+      final double overscroll =
+          physics.applyBoundaryConditions(_position, target);
+      _position.forcePixels(target - overscroll);
+      if (overscroll != 0) {
+        _position.didOverscrollBy(overscroll);
+        _chain(_directed(overscroll));
+      }
+    } finally {
+      _position.userDetails = null;
+    }
   }
 
   void _onDragEnd(DragEndDetails details) {
-    if (_position.pixels < 0) {
-      _position.jumpTo(0);
-      return;
-    }
-    if (_position.pixels > _position.maxScrollExtent) {
-      _position.jumpTo(_position.maxScrollExtent);
-      return;
-    }
+    if (!_dragAccepted) return;
     final double velocity = _vertical
         ? details.velocity.pixelsPerSecond.dy
         : details.velocity.pixelsPerSecond.dx;
-    if (velocity == 0) return;
-    momentum?.start(_directed(-velocity));
+    final ScrollPhysics? physics = this.physics;
+    if (physics != null) {
+      _goBallistic(physics, _directed(-velocity), details);
+      return;
+    }
+    if (_position.pixels < 0) {
+      _position.setPixels(0);
+      _position.didEndScroll(details);
+      return;
+    }
+    if (_position.pixels > _position.maxScrollExtent) {
+      _position.setPixels(_position.maxScrollExtent);
+      _position.didEndScroll(details);
+      return;
+    }
+    final ScrollMomentum? momentum = this.momentum;
+    if (velocity == 0 || momentum == null) {
+      _position.didEndScroll(details);
+      return;
+    }
+    momentum.start(_directed(-velocity));
+  }
+
+  void _onDragCancel() {
+    if (!_dragAccepted) return;
+    final ScrollPhysics? physics = this.physics;
+    if (physics != null) {
+      _goBallistic(physics, 0, null);
+      return;
+    }
+    _position.didEndScroll();
+  }
+
+  /// Hands the position to [physics] after a release at [velocity] (in
+  /// offset terms): a fling, a spring back, a spring to a page - or nothing.
+  void _goBallistic(ScrollPhysics physics, double velocity, Object? details) {
+    final double clamped = velocity.abs() < physics.minFlingVelocity
+        ? 0.0
+        : velocity.clamp(-physics.maxFlingVelocity, physics.maxFlingVelocity);
+    final Simulation? simulation =
+        physics.createBallisticSimulation(_position, clamped);
+    if (simulation == null) {
+      _position.didEndScroll(details);
+      return;
+    }
+    final ScrollMomentum? momentum = this.momentum;
+    if (momentum == null) {
+      ScrollMomentum.settleSimulation(
+        _position,
+        simulation,
+        physics: physics,
+        step: _momentumStep,
+      );
+      _position.didEndScroll(details);
+      return;
+    }
+    momentum.runSimulation(simulation, physics: physics);
+  }
+
+  /// Settles the position the way [physics] would after a programmatic or
+  /// keyboard move left it between pages or past an edge - Flutter's
+  /// `goBallistic(0)`. Does nothing without a physics.
+  void goBallistic([double velocity = 0]) {
+    final ScrollPhysics? physics = this.physics;
+    if (physics == null) return;
+    _goBallistic(physics, velocity, null);
+  }
+
+  // ---------------------------------------------------------------------------
+  // ScrollActivityListener: the position's events as Flutter's notifications
+  // ---------------------------------------------------------------------------
+
+  BuildContext? get _context {
+    final BuildContext? context = notificationContext;
+    return context != null && context.mounted ? context : null;
+  }
+
+  @override
+  void didStartScroll(ScrollPosition position, Object? details) {
+    final BuildContext? context = _context;
+    if (context == null) return;
+    ScrollStartNotification(
+      metrics: position.copyWith(),
+      context: context,
+      dragDetails: details is DragStartDetails ? details : null,
+    ).dispatch(context);
+  }
+
+  @override
+  void didUpdateScrollPositionBy(
+    ScrollPosition position,
+    double delta,
+    Object? details,
+  ) {
+    final BuildContext? context = _context;
+    if (context == null) return;
+    ScrollUpdateNotification(
+      metrics: position.copyWith(),
+      context: context,
+      scrollDelta: delta,
+      dragDetails: details is DragUpdateDetails ? details : null,
+    ).dispatch(context);
+  }
+
+  @override
+  void didOverscrollBy(
+    ScrollPosition position,
+    double overscroll,
+    Object? details,
+  ) {
+    final BuildContext? context = _context;
+    if (context == null) return;
+    OverscrollNotification(
+      metrics: position.copyWith(),
+      context: context,
+      overscroll: overscroll,
+      velocity: position.velocity,
+      dragDetails: details is DragUpdateDetails ? details : null,
+    ).dispatch(context);
+  }
+
+  @override
+  void didEndScroll(ScrollPosition position, Object? details) {
+    final BuildContext? context = _context;
+    if (context == null) return;
+    ScrollEndNotification(
+      metrics: position.copyWith(),
+      context: context,
+      dragDetails: details is DragEndDetails ? details : null,
+    ).dispatch(context);
+  }
+
+  @override
+  void didUpdateScrollDirection(
+    ScrollPosition position,
+    ScrollDirection direction,
+  ) {
+    final BuildContext? context = _context;
+    if (context == null) return;
+    UserScrollNotification(
+      metrics: position.copyWith(),
+      context: context,
+      direction: direction,
+    ).dispatch(context);
+  }
+
+  bool _metricsPosted = false;
+
+  /// Posted, not sent: the change is found during layout, and a listener
+  /// that rebuilds in answer must not do it in the middle of one. Without a
+  /// dispatcher there is nowhere to post it, and none is sent.
+  @override
+  void didChangeMetrics(ScrollPosition position) {
+    final UiDispatcher? dispatcher = _dispatcher;
+    if (_metricsPosted || dispatcher == null || _context == null) return;
+    _metricsPosted = true;
+    dispatcher.post(() {
+      _metricsPosted = false;
+      final BuildContext? context = _context;
+      if (context == null || owner == null) return;
+      ScrollMetricsNotification(
+        metrics: _position.copyWith(),
+        context: context,
+      ).dispatch(context);
+    });
   }
 
   void _discardMomentum() {
@@ -505,6 +1045,7 @@ final class RenderScrollGestures extends RenderSingleChildBox
   @override
   void attach(PipelineOwner owner) {
     super.attach(owner);
+    _claimPosition(_position);
     _nestedHost = _findNestedHost();
     _nestedHost?.attachInnerPosition(_position);
   }
@@ -528,6 +1069,7 @@ final class RenderScrollGestures extends RenderSingleChildBox
     // it, and an unresolved arena swallows every later press on that pointer.
     _drag?.cancelPending();
     _discardMomentum();
+    _releasePosition(_position);
     _nestedHost?.detachInnerPosition(_position);
     _nestedHost = null;
     super.detach();
@@ -535,11 +1077,23 @@ final class RenderScrollGestures extends RenderSingleChildBox
 }
 
 /// Shows one window onto a child laid out in full.
+///
+/// Takes Flutter's parameters as well as this framework's: `scrollDirection`
+/// is the same value as `axis` (the one given wins), `controller` takes a
+/// `ScrollController` or a [ScrollPosition], and `reverse`, `padding` and
+/// `physics` behave as in Flutter. `primary` is accepted and has no effect:
+/// there is no `PrimaryScrollController` here. Along an unbounded axis the
+/// view is as long as its child, as in Flutter.
 final class SingleChildScrollView extends StatefulWidget {
   const SingleChildScrollView({
     super.key,
-    required this.child,
-    this.axis = ScrollAxis.vertical,
+    this.child,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
+    this.reverse = false,
+    this.padding,
+    this.primary,
+    this.physics,
     this.controller,
     this.scrollbar = ScrollbarVisibility.always,
     this.scrollbarThickness,
@@ -547,14 +1101,30 @@ final class SingleChildScrollView extends StatefulWidget {
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.dispatcher,
-  });
+  }) : axis = scrollDirection ?? axis;
 
-  final Widget child;
+  final Widget? child;
   final ScrollAxis axis;
 
-  /// The position to drive. One is created when this is null, and a caller
-  /// that wants to read or set the offset passes its own.
-  final ScrollPosition? controller;
+  /// Flutter's name for [axis].
+  Axis get scrollDirection => axis;
+
+  /// Whether offset zero shows the end of the child (its bottom, or right).
+  final bool reverse;
+
+  /// Space around the child, inside the scroll: it scrolls with the child.
+  final EdgeInsetsGeometry? padding;
+
+  /// Accepted for Flutter compatibility; has no effect here.
+  final bool? primary;
+
+  /// How the view answers the user. Null keeps the framework's own
+  /// scrolling; see [Scrollable.physics].
+  final ScrollPhysics? physics;
+
+  /// What drives the offset: a `ScrollController`, or a [ScrollPosition].
+  /// One is created when this is null.
+  final ScrollPositionSource? controller;
 
   final ScrollbarVisibility scrollbar;
   final double? scrollbarThickness;
@@ -568,50 +1138,76 @@ final class SingleChildScrollView extends StatefulWidget {
 }
 
 final class _SingleChildScrollViewState extends State<SingleChildScrollView> {
-  late final ScrollPosition _position =
-      widget.controller ?? ScrollPosition(axis: widget.axis);
+  final ScrollPositionAttachment _attachment = ScrollPositionAttachment();
 
   /// The position this view is driving, for a caller holding the widget.
-  ScrollPosition get position => _position;
+  ScrollPosition get position => _attachment.position;
+
+  @override
+  void dispose() {
+    _attachment.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final ScrollPosition position =
+        _attachment.update(widget.controller, widget.axis);
+    final EdgeInsetsGeometry? padding = widget.padding;
+    Widget? child = widget.child;
+    if (padding != null) {
+      child = Padding(padding: _resolvePadding(padding, context), child: child);
+    }
     final Widget scrollable = Scrollable(
-      position: _position,
+      position: position,
+      reverse: widget.reverse,
+      physics: widget.physics,
       dragEnabled: widget.dragEnabled,
       mouseDragEnabled: widget.mouseDragEnabled,
       dispatcher: widget.dispatcher,
       child: _ViewportWidget(
-        position: _position,
+        position: position,
         contentAlignment: widget.contentAlignment,
-        child: widget.child,
+        reverse: widget.reverse,
+        child: child ?? const SizedBox(),
       ),
     );
     if (widget.scrollbar == ScrollbarVisibility.never) return scrollable;
     return Scrollbar(
-      position: _position,
+      position: position,
       visibility: widget.scrollbar,
       thickness: widget.scrollbarThickness,
       dispatcher: widget.dispatcher,
+      reverse: widget.reverse,
       child: scrollable,
     );
   }
 }
 
+/// [padding] made physical. Only a directional padding needs a
+/// [Directionality]; a physical one is used as it is.
+EdgeInsets _resolvePadding(EdgeInsetsGeometry padding, BuildContext context) =>
+    padding is EdgeInsets
+        ? padding
+        : padding.resolve(Directionality.of(context));
+
 final class _ViewportWidget extends SingleChildRenderObjectWidget {
   const _ViewportWidget({
     required this.position,
     required this.contentAlignment,
+    required this.reverse,
     required Widget super.child,
   });
 
   final ScrollPosition position;
   final ScrollContentAlignment contentAlignment;
+  final bool reverse;
 
   @override
   RenderViewport createRenderObject(BuildContext context) => RenderViewport(
         position: position,
         contentAlignment: contentAlignment,
+        reverse: reverse,
       );
 
   @override
@@ -621,7 +1217,8 @@ final class _ViewportWidget extends SingleChildRenderObjectWidget {
   ) {
     object
       ..position = position
-      ..contentAlignment = contentAlignment;
+      ..contentAlignment = contentAlignment
+      ..reverse = reverse;
   }
 }
 
@@ -633,21 +1230,43 @@ final class _ViewportWidget extends SingleChildRenderObjectWidget {
 /// costs the widget objects but not their elements or render objects.
 /// [ListView.builder] is the one that scales: nothing outside the window is
 /// even described.
+///
+/// ## Flutter's parameters
+///
+/// `scrollDirection` is the same value as `axis` (the one given wins);
+/// `controller` takes a `ScrollController` or a [ScrollPosition]; `physics`,
+/// `reverse`, `padding` and `shrinkWrap` behave as in Flutter, and
+/// [ListView.separated] is here. `primary` is accepted and has no effect.
+/// A list with `reverse`, `padding` or `shrinkWrap` is built from slivers -
+/// a [CustomScrollView] with a [SliverList] - since that is what those
+/// options are made of; without them it is this file's own virtual list.
+///
+/// Differences: `itemCount` is required (there is no endless list, because
+/// the content's extent has to be known for the scrollbar), an item builder
+/// that returns null leaves an empty slot rather than ending the list, and
+/// `cacheExtent` defaults to zero.
 final class ListView extends StatefulWidget {
   ListView({
     super.key,
-    required List<Widget> children,
+    List<Widget> children = const <Widget>[],
     this.itemExtent,
     this.estimatedItemExtent = 40.0,
     this.cacheExtent = 0.0,
     this.controller,
-    this.axis = ScrollAxis.vertical,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
+    this.reverse = false,
+    this.padding,
+    this.primary,
+    this.physics,
+    this.shrinkWrap = false,
     this.scrollbar = ScrollbarVisibility.always,
     this.scrollbarThickness,
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.dispatcher,
-  })  : itemCount = children.length,
+  })  : axis = scrollDirection ?? axis,
+        itemCount = children.length,
         itemBuilder = _builderOver(children);
 
   const ListView.builder({
@@ -658,20 +1277,57 @@ final class ListView extends StatefulWidget {
     this.estimatedItemExtent = 40.0,
     this.cacheExtent = 0.0,
     this.controller,
-    this.axis = ScrollAxis.vertical,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
+    this.reverse = false,
+    this.padding,
+    this.primary,
+    this.physics,
+    this.shrinkWrap = false,
     this.scrollbar = ScrollbarVisibility.always,
     this.scrollbarThickness,
     this.dragEnabled = true,
     this.mouseDragEnabled = true,
     this.dispatcher,
-  });
+  }) : axis = scrollDirection ?? axis;
+
+  /// [itemCount] items with a separator between each two: the separators are
+  /// items of the list too, built by [separatorBuilder] for the gap after
+  /// item `index`.
+  ListView.separated({
+    super.key,
+    required int itemCount,
+    required Widget? Function(BuildContext context, int index) itemBuilder,
+    required Widget Function(BuildContext context, int index) separatorBuilder,
+    this.estimatedItemExtent = 40.0,
+    this.cacheExtent = 0.0,
+    this.controller,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
+    this.reverse = false,
+    this.padding,
+    this.primary,
+    this.physics,
+    this.shrinkWrap = false,
+    this.scrollbar = ScrollbarVisibility.always,
+    this.scrollbarThickness,
+    this.dragEnabled = true,
+    this.mouseDragEnabled = true,
+    this.dispatcher,
+  })  : axis = scrollDirection ?? axis,
+        itemExtent = null,
+        itemCount = itemCount <= 0 ? 0 : itemCount * 2 - 1,
+        itemBuilder = ((BuildContext context, int index) => index.isEven
+            ? itemBuilder(context, index ~/ 2)
+            : separatorBuilder(context, index ~/ 2));
 
   final int itemCount;
 
   /// Called only for realized indices - the visible window plus [cacheExtent]
   /// either side. A list of 100 000 items calls this a few dozen times per
-  /// frame, which is the whole point of the widget.
-  final Widget Function(BuildContext context, int index) itemBuilder;
+  /// frame, which is the whole point of the widget. A null answer leaves the
+  /// slot empty.
+  final Widget? Function(BuildContext context, int index) itemBuilder;
 
   /// The extent of every item, when they all share one.
   ///
@@ -695,13 +1351,40 @@ final class ListView extends StatefulWidget {
   /// usual choice.
   final double cacheExtent;
 
-  final ScrollPosition? controller;
+  /// What drives the offset: a `ScrollController`, or a [ScrollPosition].
+  /// One is created when this is null.
+  final ScrollPositionSource? controller;
   final ScrollAxis axis;
+
+  /// Flutter's name for [axis].
+  Axis get scrollDirection => axis;
+
+  /// Whether the list starts at the bottom (or right) and grows upwards.
+  final bool reverse;
+
+  /// Space around the items, inside the scroll.
+  final EdgeInsetsGeometry? padding;
+
+  /// Accepted for Flutter compatibility; has no effect here.
+  final bool? primary;
+
+  /// How the list answers the user; null keeps the framework's own
+  /// scrolling. See [Scrollable.physics].
+  final ScrollPhysics? physics;
+
+  /// Whether the list is as long as its items (up to the space it is given)
+  /// rather than as long as it is allowed to be - what lets a list sit in a
+  /// column without an `Expanded`.
+  final bool shrinkWrap;
+
   final ScrollbarVisibility scrollbar;
   final double? scrollbarThickness;
   final bool dragEnabled;
   final bool mouseDragEnabled;
   final UiDispatcher? dispatcher;
+
+  /// Whether this list is built from slivers; see the class documentation.
+  bool get _usesSlivers => reverse || padding != null || shrinkWrap;
 
   static Widget Function(BuildContext, int) _builderOver(
     List<Widget> children,
@@ -731,19 +1414,29 @@ final class _ListViewState extends State<ListView> {
   /// measured.
   static const double _initialViewportCeiling = 1024;
 
-  late final ScrollPosition _position =
-      widget.controller ?? ScrollPosition(axis: widget.axis);
+  final ScrollPositionAttachment _attachment = ScrollPositionAttachment();
+  ScrollPosition? _listened;
   ListVirtualization? _plan;
 
-  @override
-  void initState() {
-    super.initState();
-    _position.addListener(_onScrolled);
+  ScrollPosition get _position => _attachment.position;
+
+  /// Attaches the position for the current widget, and listens to it.
+  ScrollPosition _resolvePosition() {
+    final ScrollPosition position =
+        _attachment.update(widget.controller, widget.axis);
+    if (!identical(position, _listened)) {
+      _listened?.removeListener(_onScrolled);
+      position.addListener(_onScrolled);
+      _listened = position;
+    }
+    return position;
   }
 
   @override
   void dispose() {
-    _position.removeListener(_onScrolled);
+    _listened?.removeListener(_onScrolled);
+    _listened = null;
+    _attachment.dispose();
     super.dispose();
   }
 
@@ -751,8 +1444,9 @@ final class _ListViewState extends State<ListView> {
   // repaint - that difference is what virtualization *is*. The same listener
   // covers the viewport being measured for the first time and the offset being
   // re-clamped by a list that shrank, both of which change the window too.
+  // A sliver-built list realizes its window during layout and needs none.
   void _onScrolled(ScrollPosition position) {
-    if (mounted) setState(() {});
+    if (mounted && !widget._usesSlivers) setState(() {});
   }
 
   double get _estimate => widget.itemExtent ?? widget.estimatedItemExtent;
@@ -794,20 +1488,26 @@ final class _ListViewState extends State<ListView> {
         : _initialViewportCeiling;
   }
 
+  Widget _item(BuildContext context, int index) =>
+      widget.itemBuilder(context, index) ?? const SizedBox();
+
   @override
   Widget build(BuildContext context) {
+    final ScrollPosition position = _resolvePosition();
+    if (widget._usesSlivers) return _buildFromSlivers(context, position);
     final ListVirtualization virtualization = _virtualization;
     final RealizedRange range = virtualization.rangeFor(
-      scrollOffset: _position.pixels,
+      scrollOffset: position.pixels,
       viewportExtent: _viewportExtent,
     );
     final Widget scrollable = Scrollable(
-      position: _position,
+      position: position,
+      physics: widget.physics,
       dragEnabled: widget.dragEnabled,
       mouseDragEnabled: widget.mouseDragEnabled,
       dispatcher: widget.dispatcher,
       child: _VirtualList(
-        position: _position,
+        position: position,
         virtualization: virtualization,
         range: range,
         itemExtent: widget.itemExtent,
@@ -822,18 +1522,56 @@ final class _ListViewState extends State<ListView> {
             // item that scrolls out and back.
             _ListViewItem(
               key: ValueKey<int>(index),
-              child: widget.itemBuilder(context, index),
+              child: _item(context, index),
             ),
         ],
       ),
     );
     if (widget.scrollbar == ScrollbarVisibility.never) return scrollable;
     return Scrollbar(
-      position: _position,
+      position: position,
       visibility: widget.scrollbar,
       thickness: widget.scrollbarThickness,
       dispatcher: widget.dispatcher,
       child: scrollable,
+    );
+  }
+
+  /// The list as a [CustomScrollView] of one [SliverList], for the options
+  /// that are sliver features: reverse, padding, shrink-wrapping.
+  Widget _buildFromSlivers(BuildContext context, ScrollPosition position) {
+    final SliverChildBuilderDelegate delegate = SliverChildBuilderDelegate(
+      _item,
+      childCount: widget.itemCount,
+    );
+    final double? itemExtent = widget.itemExtent;
+    Widget sliver = itemExtent != null
+        ? SliverFixedExtentList(delegate: delegate, itemExtent: itemExtent)
+        : SliverList(
+            delegate: delegate,
+            estimatedItemExtent: widget.estimatedItemExtent,
+          );
+    final EdgeInsetsGeometry? padding = widget.padding;
+    if (padding != null) {
+      sliver = SliverPadding(
+        padding: _resolvePadding(padding, context),
+        sliver: sliver,
+      );
+    }
+    return CustomScrollView(
+      controller: position,
+      axis: position.axis,
+      reverse: widget.reverse,
+      physics: widget.physics,
+      shrinkWrap: widget.shrinkWrap,
+      cacheExtent: widget.cacheExtent,
+      scrollbar: widget.scrollbar,
+      scrollbarThickness: widget.scrollbarThickness,
+      dragEnabled: widget.dragEnabled,
+      mouseDragEnabled: widget.mouseDragEnabled,
+      focusable: false,
+      dispatcher: widget.dispatcher,
+      slivers: <Widget>[sliver],
     );
   }
 
@@ -1057,65 +1795,261 @@ final class RenderVirtualList extends RenderBoxContainer<BoxParentData> {
   }
 }
 
-/// A scrolling grid of equal cells, virtualized by row.
+/// A scrolling grid.
 ///
-/// A grid whose columns are equal *is* a list of rows, so this builds one:
-/// [crossAxisCount] cells per row, each row an item of a [ListView.builder] of
-/// height [rowExtent]. Nothing about the virtualization is duplicated, which is
-/// the only way the two can be guaranteed to agree about which items exist.
+/// Flutter's constructors build it from slivers - a [CustomScrollView] with
+/// one [SliverGrid] laid out by a [SliverGridDelegate]:
+///
+/// ```dart
+/// GridView.count(crossAxisCount: 3, children: tiles)
+/// GridView.extent(maxCrossAxisExtent: 160, children: tiles)
+/// GridView.builder(
+///   gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+///     crossAxisCount: 4),
+///   itemCount: photos.length,
+///   itemBuilder: (BuildContext context, int index) => Photo(photos[index]),
+/// )
+/// ```
+///
+/// [GridView.builder] also keeps this framework's older form, with
+/// [crossAxisCount] and [rowExtent] and no delegate: equal cells in rows of a
+/// fixed height, built as a [ListView.builder] of rows.
+///
+/// Differences from Flutter: `itemCount` is required; `primary` is accepted
+/// and has no effect.
 final class GridView extends StatelessWidget {
+  /// A grid of [children] laid out by [gridDelegate].
+  GridView({
+    super.key,
+    required SliverGridDelegate this.gridDelegate,
+    List<Widget> children = const <Widget>[],
+    this.cacheExtent = 0.0,
+    this.controller,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
+    this.reverse = false,
+    this.padding,
+    this.primary,
+    this.physics,
+    this.shrinkWrap = false,
+    this.scrollbar = ScrollbarVisibility.always,
+    this.dragEnabled = true,
+    this.dispatcher,
+  })  : axis = scrollDirection ?? axis,
+        itemCount = children.length,
+        itemBuilder = ((BuildContext context, int index) => children[index]),
+        crossAxisCount = null,
+        rowExtent = null;
+
+  /// A grid whose cells are built on demand: by [gridDelegate], or - this
+  /// framework's older form - in rows of [crossAxisCount] cells [rowExtent]
+  /// high.
   const GridView.builder({
     super.key,
     required this.itemCount,
     required this.itemBuilder,
-    required this.crossAxisCount,
-    required this.rowExtent,
+    this.gridDelegate,
+    this.crossAxisCount,
+    this.rowExtent,
     this.cacheExtent = 0.0,
     this.controller,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
+    this.reverse = false,
+    this.padding,
+    this.primary,
+    this.physics,
+    this.shrinkWrap = false,
     this.scrollbar = ScrollbarVisibility.always,
     this.dragEnabled = true,
     this.dispatcher,
-  }) : assert(crossAxisCount > 0, 'a grid needs at least one column');
+  }) : axis = scrollDirection ?? axis;
+
+  /// A fixed number of columns ([crossAxisCount]) of cells
+  /// [childAspectRatio] wide per unit of height.
+  GridView.count({
+    super.key,
+    required int crossAxisCount,
+    double mainAxisSpacing = 0.0,
+    double crossAxisSpacing = 0.0,
+    double childAspectRatio = 1.0,
+    List<Widget> children = const <Widget>[],
+    this.cacheExtent = 0.0,
+    this.controller,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
+    this.reverse = false,
+    this.padding,
+    this.primary,
+    this.physics,
+    this.shrinkWrap = false,
+    this.scrollbar = ScrollbarVisibility.always,
+    this.dragEnabled = true,
+    this.dispatcher,
+  })  : axis = scrollDirection ?? axis,
+        gridDelegate = SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxisCount,
+          mainAxisSpacing: mainAxisSpacing,
+          crossAxisSpacing: crossAxisSpacing,
+          childAspectRatio: childAspectRatio,
+        ),
+        itemCount = children.length,
+        itemBuilder = ((BuildContext context, int index) => children[index]),
+        crossAxisCount = null,
+        rowExtent = null;
+
+  /// As many columns as fit at no more than [maxCrossAxisExtent] each.
+  GridView.extent({
+    super.key,
+    required double maxCrossAxisExtent,
+    double mainAxisSpacing = 0.0,
+    double crossAxisSpacing = 0.0,
+    double childAspectRatio = 1.0,
+    List<Widget> children = const <Widget>[],
+    this.cacheExtent = 0.0,
+    this.controller,
+    ScrollAxis axis = ScrollAxis.vertical,
+    Axis? scrollDirection,
+    this.reverse = false,
+    this.padding,
+    this.primary,
+    this.physics,
+    this.shrinkWrap = false,
+    this.scrollbar = ScrollbarVisibility.always,
+    this.dragEnabled = true,
+    this.dispatcher,
+  })  : axis = scrollDirection ?? axis,
+        gridDelegate = SliverGridDelegateWithMaxCrossAxisExtent(
+          maxCrossAxisExtent: maxCrossAxisExtent,
+          mainAxisSpacing: mainAxisSpacing,
+          crossAxisSpacing: crossAxisSpacing,
+          childAspectRatio: childAspectRatio,
+        ),
+        itemCount = children.length,
+        itemBuilder = ((BuildContext context, int index) => children[index]),
+        crossAxisCount = null,
+        rowExtent = null;
 
   final int itemCount;
-  final Widget Function(BuildContext context, int index) itemBuilder;
 
-  /// How many cells fit across the grid. The cross axis is divided equally.
-  final int crossAxisCount;
+  /// Called only for the cells being shown. A null answer leaves the cell
+  /// empty.
+  final Widget? Function(BuildContext context, int index) itemBuilder;
 
-  /// The height of one row.
-  final double rowExtent;
+  /// How the cells are laid out. Null only for the older
+  /// [crossAxisCount]/[rowExtent] form of [GridView.builder].
+  final SliverGridDelegate? gridDelegate;
+
+  /// How many cells fit across the grid, in the older form. The cross axis
+  /// is divided equally.
+  final int? crossAxisCount;
+
+  /// The height of one row, in the older form.
+  final double? rowExtent;
 
   final double cacheExtent;
-  final ScrollPosition? controller;
+
+  /// What drives the offset: a `ScrollController`, or a [ScrollPosition].
+  final ScrollPositionSource? controller;
+  final ScrollAxis axis;
+
+  /// Flutter's name for [axis].
+  Axis get scrollDirection => axis;
+
+  final bool reverse;
+  final EdgeInsetsGeometry? padding;
+
+  /// Accepted for Flutter compatibility; has no effect here.
+  final bool? primary;
+  final ScrollPhysics? physics;
+  final bool shrinkWrap;
   final ScrollbarVisibility scrollbar;
   final bool dragEnabled;
   final UiDispatcher? dispatcher;
 
-  /// How many rows the items make up, the trailing partial row included.
-  int get rowCount => (itemCount + crossAxisCount - 1) ~/ crossAxisCount;
+  /// How many rows the items make up in the older form, the trailing partial
+  /// row included.
+  int get rowCount {
+    final int columns = crossAxisCount ?? 1;
+    return (itemCount + columns - 1) ~/ columns;
+  }
+
+  Widget _cell(BuildContext context, int index) =>
+      itemBuilder(context, index) ?? const SizedBox();
 
   @override
-  Widget build(BuildContext context) => ListView.builder(
-        itemCount: rowCount,
-        itemExtent: rowExtent,
-        cacheExtent: cacheExtent,
+  Widget build(BuildContext context) {
+    final SliverGridDelegate? gridDelegate = this.gridDelegate;
+    if (gridDelegate != null) {
+      Widget sliver = SliverGrid(
+        gridDelegate: gridDelegate,
+        delegate: SliverChildBuilderDelegate(_cell, childCount: itemCount),
+      );
+      final EdgeInsetsGeometry? padding = this.padding;
+      if (padding != null) {
+        sliver = SliverPadding(
+          padding: _resolvePadding(padding, context),
+          sliver: sliver,
+        );
+      }
+      return CustomScrollView(
         controller: controller,
+        axis: axis,
+        reverse: reverse,
+        physics: physics,
+        shrinkWrap: shrinkWrap,
+        cacheExtent: cacheExtent,
         scrollbar: scrollbar,
         dragEnabled: dragEnabled,
+        focusable: false,
         dispatcher: dispatcher,
-        itemBuilder: (BuildContext context, int row) => Row(
-          children: <Widget>[
-            for (int column = 0; column < crossAxisCount; column++)
-              Expanded(
-                // The trailing row is padded with empty cells rather than
-                // being narrower: a last row whose two items stretched across
-                // the whole width would not line up with the columns above it.
-                child: row * crossAxisCount + column < itemCount
-                    ? itemBuilder(context, row * crossAxisCount + column)
-                    : const SizedBox(),
-              ),
-          ],
-        ),
+        slivers: <Widget>[sliver],
       );
+    }
+    final int? columns = crossAxisCount;
+    final double? rowExtent = this.rowExtent;
+    if (columns == null || rowExtent == null) {
+      throw ArgumentError(
+        'GridView.builder needs a gridDelegate, or both crossAxisCount and '
+        'rowExtent',
+      );
+    }
+    if (columns <= 0) {
+      throw ArgumentError.value(
+        columns,
+        'crossAxisCount',
+        'a grid needs at least one column',
+      );
+    }
+    return ListView.builder(
+      itemCount: rowCount,
+      itemExtent: rowExtent,
+      cacheExtent: cacheExtent,
+      controller: controller,
+      axis: axis,
+      reverse: reverse,
+      padding: padding,
+      physics: physics,
+      shrinkWrap: shrinkWrap,
+      scrollbar: scrollbar,
+      dragEnabled: dragEnabled,
+      dispatcher: dispatcher,
+      itemBuilder: (BuildContext context, int row) {
+        final List<Widget> cells = <Widget>[
+          for (int column = 0; column < columns; column++)
+            Expanded(
+              // The trailing row is padded with empty cells rather than
+              // being narrower: a last row whose two items stretched across
+              // the whole width would not line up with the columns above it.
+              child: row * columns + column < itemCount
+                  ? _cell(context, row * columns + column)
+                  : const SizedBox(),
+            ),
+        ];
+        return axis == ScrollAxis.vertical
+            ? Row(children: cells)
+            : Column(children: cells);
+      },
+    );
+  }
 }

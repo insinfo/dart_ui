@@ -32,24 +32,16 @@
 ///   would skip the rasterising too, and would let an outer boundary reference
 ///   an inner one instead of copying it - see that class for what the copy
 ///   costs.
-/// * **Rounded *clipping*.** [RenderClipRRect] cannot round the corners it
-///   paints, because no rasterizer in this repository implements `opClipPath`.
-///   The masking blend modes [RenderShaderMask] uses could stand in for one,
-///   but they are bounded - see that class - so the corners would need a
-///   `dstOut` of the box *minus* the rounded rectangle, and that is not wired
-///   yet. Its comment names the missing stage; its hit test is exactly rounded
-///   regardless.
-/// * **Shadows.** [BoxDecoration] carries a colour, a border and a corner
-///   radius, and no shadow. A shadow is a blur, and there is no blur: it is a
-///   separable convolution over a mask, which is the same missing mask stage
-///   `opClipPath` needs.
+/// * **Clips and decorations.** The clip nodes and [RenderDecoratedBox] live
+///   in `render_clip.dart` and `decoration.dart`, with Flutter's shapes:
+///   rounded and path clips are drawn with the masking blend modes
+///   [RenderShaderMask] uses, and shadows are layered rather than blurred.
 library;
 
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../geometry/transform2d.dart';
-import '../graphics/color.dart';
 import '../graphics/content_hint.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
@@ -57,6 +49,10 @@ import '../graphics/display_list_opcodes.dart';
 import '../graphics/gradient.dart';
 import 'alignment.dart';
 import 'render_box.dart';
+
+export 'borders.dart' show BoxBorder;
+export 'decoration.dart' show BoxDecoration, RenderDecoratedBox;
+export 'render_clip.dart' show RenderClipRect, RenderClipRRect;
 
 /// A node that is exactly its child, plus one effect.
 ///
@@ -547,331 +543,13 @@ final class RenderTransform extends RenderProxyBox {
 }
 
 // ---------------------------------------------------------------------------
-// Clipping
+// Clipping and decoration
 // ---------------------------------------------------------------------------
-
-/// Clips its child to this node's own box.
-///
-/// Hit testing needs no override: [RenderBox.hitTest] already rejects a point
-/// outside [RenderBox.size] before it reaches the child, and here that
-/// rectangle *is* the clip. The two agree by construction rather than by two
-/// implementations happening to match, which is the failure this note exists to
-/// rule out - a control clipped out of view that still swallows clicks is the
-/// classic form of it.
-final class RenderClipRect extends RenderProxyBox {
-  RenderClipRect({super.child});
-
-  @override
-  void paint(DisplayList list, Offset offset) {
-    final RenderBox? child = this.child;
-    if (child == null) return;
-    final Size size = this.size;
-    // An empty clip admits nothing. Emitting the pair anyway would be correct
-    // and would still cost a save/restore per frame on a collapsed panel.
-    if (size.isEmpty) return;
-    list
-      ..save()
-      ..clipRectangle(
-        Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height),
-      );
-    paintChild(list, child, offset);
-    list.restore();
-  }
-}
-
-/// Clips its child to this node's box with rounded corners.
-///
-/// ## The corners are rounded for a pointer and square for a pixel, today
-///
-/// This has to be said plainly rather than discovered. The wire format has
-/// `opClipPath` and this node could emit a rounded-rectangle path into it - but
-/// **no rasterizer in this repository implements that opcode**:
-/// `DisplayListPlayer` throws `unsupported` on it, and its message names what
-/// is missing, a clip *mask* stage. Since 13/10/2026 the display list has
-/// `blendModeDstIn` and `blendModeDstOut`, which could stand in for one inside
-/// an isolated layer - but they are bounded, so the corner wedges would need a
-/// `dstOut` of the box minus the rounded outline, an even-odd path. That is
-/// not wired here yet.
-///
-/// So the choice was between emitting an opcode that crashes every backend and
-/// emitting the rectangular clip that works. This emits the rectangle. The four
-/// corner wedges - the area between the rounded outline and the square box -
-/// are **not** clipped in paint, and a child that draws into them will be seen
-/// there. The day a mask stage lands, [paint] becomes a `clipPath` call and the
-/// characterisation test that pins this down must be deleted.
-///
-/// Hit testing is exactly rounded regardless, because that costs nothing: the
-/// corner test below is arithmetic, not rasterization. The two therefore
-/// disagree at four small wedges, which is the honest state of affairs and is
-/// better than a hit region that is wrong in the same places as the paint.
-///
-/// ## Declared absent: elliptical and per-corner radii
-///
-/// One circular [radius] for all four corners. `PathBuilder` already models the
-/// per-corner, two-axis case and `opDrawRRect` already carries eight radii, so
-/// widening this is a mechanical change - it is left undone because nothing
-/// needs it yet and an unused parameter is a thing to get wrong.
-final class RenderClipRRect extends RenderProxyBox {
-  RenderClipRRect({double radius = 0.0, super.child})
-      : _radius = _checkedRadius(radius);
-
-  double _radius;
-
-  /// The circular corner radius, in this node's own coordinates. Clamped at use
-  /// time to half the shorter side, so an over-large radius produces a stadium
-  /// rather than a self-crossing outline.
-  double get radius => _radius;
-
-  set radius(double value) {
-    if (value == _radius) return;
-    _radius = _checkedRadius(value);
-    markNeedsPaint();
-  }
-
-  static double _checkedRadius(double value) {
-    if (!(value >= 0.0) || !value.isFinite) {
-      throw ArgumentError.value(
-        value,
-        'radius',
-        'must be finite and non-negative',
-      );
-    }
-    return value;
-  }
-
-  /// The radius actually used, after clamping to what the box can hold.
-  double get effectiveRadius {
-    final Size size = this.size;
-    final double limit =
-        (size.width < size.height ? size.width : size.height) / 2;
-    return _radius < limit ? _radius : (limit > 0 ? limit : 0);
-  }
-
-  /// Whether [position] is inside the rounded outline.
-  ///
-  /// Only the corner quadrants can reject: a point in the middle cross of the
-  /// box is inside whatever the radius is, so the two range tests below are
-  /// both the fast path and the whole of the non-corner case.
-  bool _insideRounded(Offset position) {
-    final Size size = this.size;
-    if (!size.contains(position)) return false;
-    final double r = effectiveRadius;
-    if (r <= 0) return true;
-    final double dx = position.dx < r
-        ? r - position.dx
-        : (position.dx > size.width - r ? position.dx - (size.width - r) : 0.0);
-    if (dx == 0) return true;
-    final double dy = position.dy < r
-        ? r - position.dy
-        : (position.dy > size.height - r
-            ? position.dy - (size.height - r)
-            : 0.0);
-    if (dy == 0) return true;
-    return dx * dx + dy * dy <= r * r;
-  }
-
-  @override
-  RenderBox? hitTest(Offset position, {HitTestPath? path}) {
-    if (!_insideRounded(position)) return null;
-    return super.hitTest(position, path: path);
-  }
-
-  @override
-  void paint(DisplayList list, Offset offset) {
-    final RenderBox? child = this.child;
-    if (child == null) return;
-    final Size size = this.size;
-    if (size.isEmpty) return;
-    // Rectangular. See the class comment: the corner wedges are the declared
-    // gap, and they are a missing rasterizer stage rather than a missing
-    // decision here.
-    list
-      ..save()
-      ..clipRectangle(
-        Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height),
-      );
-    paintChild(list, child, offset);
-    list.restore();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Decoration
-// ---------------------------------------------------------------------------
-
-/// A line drawn around the inside edge of a box.
-///
-/// Inside, not centred: the stroker in `rendering/path/stroker.dart` centres a
-/// stroke on its path, so [RenderDecoratedBox] insets the outline by half the
-/// width before emitting it. A border that straddled the edge would grow the
-/// visible box by half its width, and two adjacent bordered boxes would overlap
-/// by a full one.
-final class BoxBorder {
-  const BoxBorder({required this.color, required this.width});
-
-  final Color color;
-
-  final double width;
-
-  @override
-  bool operator ==(Object other) =>
-      other is BoxBorder && other.color == color && other.width == width;
-
-  @override
-  int get hashCode => Object.hash(color, width);
-
-  @override
-  String toString() => 'BoxBorder(color: $color, width: $width)';
-}
-
-/// What [RenderDecoratedBox] paints: a fill, a border, and a corner radius.
-///
-/// ## Declared absent: shadows and gradients
-///
-/// Neither is an omission of intent. A drop shadow is an offset, blurred copy
-/// of the shape's mask, and there is no blur anywhere in this repository - it
-/// needs the same mask stage `opClipPath` is waiting on, plus a separable
-/// convolution over it. A gradient needs a paint that is a function of position
-/// rather than one 32-bit colour, which is a change to the display list's paint
-/// table and therefore to the wire format. Both are named here so that the
-/// absence is a decision on the record instead of something a caller discovers
-/// by finding no parameter for it.
-final class BoxDecoration {
-  const BoxDecoration({this.color, this.border, this.radius = 0.0});
-
-  /// The fill, or null for no fill at all. Null and a fully
-  /// transparent colour are the same picture and different commands: null emits
-  /// nothing, `0x00000000` emits a draw the rasterizer then blends to nothing.
-  final Color? color;
-
-  final BoxBorder? border;
-
-  /// Circular corner radius for both the fill and the border. Unlike
-  /// [RenderClipRRect]'s, this one is honoured in paint - `opDrawRRect` is
-  /// implemented, `opClipPath` is not.
-  final double radius;
-
-  /// Whether this decoration would emit anything at all.
-  bool get isEmpty => color == null && (border == null || !(border!.width > 0));
-
-  @override
-  bool operator ==(Object other) =>
-      other is BoxDecoration &&
-      other.color == color &&
-      other.border == border &&
-      other.radius == radius;
-
-  @override
-  int get hashCode => Object.hash(color, border, radius);
-
-  @override
-  String toString() =>
-      'BoxDecoration(color: $color, border: $border, radius: $radius)';
-}
-
-/// Paints a [BoxDecoration] behind its child.
-///
-/// Behind, always: a decoration is a background, and a foreground variant would
-/// be a second node rather than a flag, because "which side of the child" is
-/// the only thing that would differ and a flag that changes paint order is how
-/// a border ends up under the content that is supposed to sit inside it.
-final class RenderDecoratedBox extends RenderProxyBox {
-  RenderDecoratedBox({
-    BoxDecoration decoration = const BoxDecoration(),
-    super.child,
-  }) : _decoration = decoration;
-
-  BoxDecoration _decoration;
-
-  BoxDecoration get decoration => _decoration;
-
-  set decoration(BoxDecoration value) {
-    if (value == _decoration) return;
-    _decoration = value;
-    // A decoration cannot move anything: the radius and the border width are
-    // both drawn inside the box layout already settled on.
-    markNeedsPaint();
-  }
-
-  /// A painted surface takes the pointer; an empty decoration does not.
-  ///
-  /// [RenderColoredBox] answers true unconditionally, and says why: a
-  /// transparent colour is still a surface, and a node that went inert as its
-  /// alpha reached zero would make a fade change behaviour halfway through.
-  /// That reasoning is adopted here for every decoration that draws *something*
-  /// - including a fully transparent one. It does not extend to a decoration
-  /// with no fill and no border, which emits no command at all and is
-  /// indistinguishable from a bare proxy; swallowing a pointer on behalf of
-  /// nothing would make `DecoratedBox()` a pointer trap.
-  @override
-  bool hitTestSelf(Offset position) => !_decoration.isEmpty;
-
-  @override
-  void paint(DisplayList list, Offset offset) {
-    final BoxDecoration decoration = _decoration;
-    final Size size = this.size;
-    if (!size.isEmpty && !decoration.isEmpty) {
-      final Rect bounds =
-          Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height);
-      final double limit =
-          (size.width < size.height ? size.width : size.height) / 2;
-      final double radius =
-          decoration.radius < limit ? decoration.radius : limit;
-
-      final Color? fill = decoration.color;
-      if (fill != null) {
-        final int paintId = list.addPaint(colorArgb: fill.value);
-        if (radius > 0) {
-          list.drawRRectUniform(
-            bounds.left,
-            bounds.top,
-            bounds.right,
-            bounds.bottom,
-            radius,
-            radius,
-            paintId,
-          );
-        } else {
-          list.drawRectangle(bounds, paintId);
-        }
-      }
-
-      final BoxBorder? border = decoration.border;
-      if (border != null && border.width > 0) {
-        // Half a stroke width inward, so the outline lands entirely inside the
-        // box. See BoxBorder for why that is not the rasterizer's default.
-        final double inset = border.width / 2;
-        final Rect stroked = bounds.deflate(inset);
-        if (!stroked.isEmpty) {
-          final int paintId = list.addPaint(
-            colorArgb: border.color.value,
-            style: paintStyleStroke,
-            strokeWidth: border.width,
-          );
-          // The centreline of an inset stroke follows a smaller rounded
-          // rectangle, and its corner radius shrinks with it - keeping the
-          // outer radius here would draw a border that bulges away from the
-          // fill it is supposed to trace.
-          final double innerRadius = radius - inset;
-          if (innerRadius > 0) {
-            list.drawRRectUniform(
-              stroked.left,
-              stroked.top,
-              stroked.right,
-              stroked.bottom,
-              innerRadius,
-              innerRadius,
-              paintId,
-            );
-          } else {
-            list.drawRectangle(stroked, paintId);
-          }
-        }
-      }
-    }
-    super.paint(list, offset);
-  }
-}
+//
+// RenderClipRect, RenderClipRRect, BoxBorder, BoxDecoration and
+// RenderDecoratedBox moved to `render_clip.dart`, `borders.dart` and
+// `decoration.dart`, next to the rest of Flutter's clip, border and
+// decoration types; they are re-exported at the top of this file.
 
 // ---------------------------------------------------------------------------
 // Positioning

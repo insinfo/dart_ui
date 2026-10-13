@@ -164,7 +164,8 @@ void main() {
     controller.open();
     frame();
     final RenderDecoratedBox surface = find<RenderDecoratedBox>()!;
-    expect(surface.decoration.color, ThemeData.neutralDark.surfaceRaised);
+    expect((surface.decoration as BoxDecoration).color,
+        ThemeData.neutralDark.surfaceRaised);
   });
 
   test('Escape closes the flyout, not the dialog it sits in', () async {
