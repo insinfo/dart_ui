@@ -12,13 +12,14 @@ import 'selection.dart';
 import 'tool_controller.dart';
 
 /// What a Shape-tool drag is doing.
-enum ShapeDrag { none, nodes, handle, marquee }
+enum ShapeDrag { none, nodes, handle, segment, marquee }
 
 /// The Shape tool as a state machine of pointer events.
 ///
 /// A press on a selected curve's node picks it (Shift adds or removes) and a
 /// drag moves every picked node; a press on a picked node's handle drags
-/// that handle, keeping a smooth node smooth; a press anywhere else bands
+/// that handle, keeping a smooth node smooth; a press on a segment bends it
+/// under the pointer; a press anywhere else bands
 /// nodes. Clicking another curve edits that one instead. A double click
 /// adds a node on a segment, or removes the node under the pointer.
 ///
@@ -40,6 +41,7 @@ class ShapeToolController extends ToolController {
 
   Offset? _press;
   NodeHandleRef? _handle;
+  SegmentHit? _segment;
   List<VectorPath>? _snapshot;
   bool _edited = false;
 
@@ -79,6 +81,7 @@ class ShapeToolController extends ToolController {
     lastPoint = point;
     _press = point;
     _handle = null;
+    _segment = null;
     _snapshot = null;
     marquee = null;
     final VectorCurve? curve = selection.syncNodeCurve();
@@ -101,6 +104,14 @@ class ShapeToolController extends ToolController {
         }
         _snapshot = _copy(curve);
         _drag = ShapeDrag.nodes;
+        return;
+      }
+      final SegmentHit? segment =
+          NodeEditing.segmentAt(curve, local, tolerance);
+      if (segment != null) {
+        _segment = segment;
+        _snapshot = _copy(curve);
+        _drag = ShapeDrag.segment;
         return;
       }
     }
@@ -131,6 +142,16 @@ class ShapeToolController extends ToolController {
         if (curve == null || handle == null || to == null) return;
         _restore(curve);
         NodeEditing.moveHandle(curve, handle, to);
+        _edited = true;
+      case ShapeDrag.segment:
+        final SegmentHit? segment = _segment;
+        if (curve == null || press == null || segment == null) return;
+        final Offset? from = NodeEditing.toLocal(curve, press);
+        final Offset? to = NodeEditing.toLocal(curve, point);
+        if (from == null || to == null) return;
+        _restore(curve);
+        if (to == from) return;
+        NodeEditing.dragSegment(curve, segment, to - from);
         _edited = true;
       case ShapeDrag.none:
         break;

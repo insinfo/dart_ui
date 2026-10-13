@@ -185,4 +185,47 @@ void main() {
     selection.prune();
     expect(selection.nodes, hasLength(2));
   });
+
+  group('dragging a segment', () {
+    Offset at(VectorCurve curve, int segment, double t) {
+      final VectorPath path = curve.paths.single;
+      final Offset from = NodeEditing.nodePoint(path, segment);
+      final CurvePoint c = path.points[segment] as CurvePoint;
+      final double u = 1 - t;
+      return from * (u * u * u) +
+          c.control1 * (3 * u * u * t) +
+          c.control2 * (3 * u * t * t) +
+          c.endpoint * (t * t * t);
+    }
+
+    for (final double t in <double>[.1, .3, .5, .7, .9]) {
+      test('the point grabbed at t=$t lands under the pointer', () {
+        final VectorCurve curve = wave();
+        const Offset delta = Offset(12, -40);
+        final Offset before = at(curve, 1, t);
+        NodeEditing.dragSegment(curve, SegmentHit(0, 1, t), delta);
+        final Offset after = at(curve, 1, t);
+        expect((after - before - delta).distance, lessThan(1e-9));
+        // The ends stay.
+        expect(
+            NodeEditing.nodePoint(curve.paths.single, 1), const Offset(100, 0));
+        expect(
+            NodeEditing.nodePoint(curve.paths.single, 2), const Offset(300, 0));
+      });
+    }
+
+    test('a straight segment bends into a curve', () {
+      final VectorCurve curve = square();
+      NodeEditing.dragSegment(
+          curve, const SegmentHit(0, 0, .5), const Offset(0, -20));
+      expect(curve.paths.single.points.first, isA<CurvePoint>());
+      expect(at(curve, 0, .5).dy, closeTo(-20, 1e-9));
+    });
+
+    test('no movement changes nothing, not even the segment type', () {
+      final VectorCurve curve = square();
+      NodeEditing.dragSegment(curve, const SegmentHit(0, 0, .5), Offset.zero);
+      expect(curve.paths.single.points.first, isA<Offset>());
+    });
+  });
 }

@@ -313,6 +313,44 @@ abstract final class NodeEditing {
     curve.update();
   }
 
+  /// Bends segment [hit] so the point at its parameter moves by [delta]
+  /// (local units) and its ends stay - dragging a segment with the Shape
+  /// tool. A straight segment becomes a curve first.
+  ///
+  /// The two handles share the move by how near the grabbed point is to
+  /// each end (Inkscape's weighting): grabbed near the start, the first
+  /// handle does almost all of it. Applied to the handles of the segment as
+  /// it was at the press, a drag is exact for any delta: the grabbed point
+  /// lands under the pointer.
+  static void dragSegment(VectorCurve curve, SegmentHit hit, Offset delta) {
+    if (delta == Offset.zero) return;
+    final VectorPath path = curve.paths[hit.path];
+    final int s = hit.segment;
+    final Offset from = nodePoint(path, s);
+    final Object point = path.points[s];
+    final CurvePoint segment = point is CurvePoint
+        ? point
+        : CurvePoint(_lerp(from, point as Offset, 1 / 3),
+            _lerp(from, point, 2 / 3), point);
+    final double t = hit.t.clamp(1e-3, 1 - 1e-3);
+    final double weight;
+    if (t <= 1 / 6) {
+      weight = 0;
+    } else if (t <= .5) {
+      weight = math.pow((6 * t - 1) / 2, 3) / 2;
+    } else if (t <= 5 / 6) {
+      weight = (1 - math.pow((6 * (1 - t) - 1) / 2, 3)) / 2 + .5;
+    } else {
+      weight = 1;
+    }
+    final double u = 1 - t;
+    path.points[s] = segment.copyWith(
+      control1: segment.control1 + delta * ((1 - weight) / (3 * t * u * u)),
+      control2: segment.control2 + delta * (weight / (3 * t * t * u)),
+    );
+    curve.update();
+  }
+
   /// Moves the end of segment [s] and its arriving handle.
   static void _moveEnd(VectorPath path, int s, Offset delta) {
     if (s < 0) return;
