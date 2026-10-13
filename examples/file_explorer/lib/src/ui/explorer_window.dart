@@ -281,30 +281,53 @@ class ExplorerWindowState extends State<ExplorerWindow>
     );
   }
 
-  Widget _tabStrip(ThemeData theme) => Padding(
-        padding: const EdgeInsets.only(left: 8, top: 6),
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: DocumentTabStrip(
-            style: DocumentTabStyle.raised,
-            height: 36,
-            selectedColor: theme.surface,
-            tabs: <DocumentTab>[
-              for (var i = 0; i < model.tabs.length; i++)
-                DocumentTab(
-                  id: model.tabs[i],
-                  label: model.titleOf(model.tabs[i].location),
-                  icon: _locationIcon(model.tabs[i].location),
-                  tooltip: model.folderOf(model.tabs[i].location),
-                ),
-            ],
-            selectedIndex: model.activeIndex,
-            onSelected: (int i) =>
-                registry.execute('tab.select', <String, Object?>{'index': i}),
-            onClosed: (int i) =>
-                registry.execute('tab.close', <String, Object?>{'index': i}),
-            onAdd: () => registry.execute('tab.new'),
-            addTooltip: model.strings.newTab,
+  /// The tabs, where the title bar was: clear of the window buttons the
+  /// platform keeps there, and with the empty strip after them a handle that
+  /// moves the window.
+  Widget _tabStrip(ThemeData theme) {
+    final HiddenTitleBarWindow? bar = WindowScope.of(context)?.hiddenTitleBar;
+    if (bar == null) return _tabs(theme, leading: 8, height: 42);
+    return ValueListenableBuilder<Rect>(
+      valueListenable: bar.systemButtons,
+      builder: (BuildContext context, Rect buttons, _) => WindowDragArea(
+        child: _tabs(
+          theme,
+          leading: buttons.isEmpty ? 8 : buttons.right + 14,
+          height: bar.titleBarHeight > 42 ? bar.titleBarHeight : 42,
+        ),
+      ),
+    );
+  }
+
+  Widget _tabs(ThemeData theme,
+          {required double leading, required double height}) =>
+      SizedBox(
+        height: height,
+        child: Padding(
+          padding: EdgeInsets.only(left: leading, top: 6),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: DocumentTabStrip(
+              style: DocumentTabStyle.raised,
+              height: 36,
+              selectedColor: theme.surface,
+              tabs: <DocumentTab>[
+                for (var i = 0; i < model.tabs.length; i++)
+                  DocumentTab(
+                    id: model.tabs[i],
+                    label: model.titleOf(model.tabs[i].location),
+                    icon: _locationIcon(model.tabs[i].location),
+                    tooltip: model.folderOf(model.tabs[i].location),
+                  ),
+              ],
+              selectedIndex: model.activeIndex,
+              onSelected: (int i) =>
+                  registry.execute('tab.select', <String, Object?>{'index': i}),
+              onClosed: (int i) =>
+                  registry.execute('tab.close', <String, Object?>{'index': i}),
+              onAdd: () => registry.execute('tab.new'),
+              addTooltip: model.strings.newTab,
+            ),
           ),
         ),
       );

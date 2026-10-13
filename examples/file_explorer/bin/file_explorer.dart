@@ -66,6 +66,8 @@ Future<void> main(List<String> arguments) async {
           : 'File Explorer',
       size: const Size(1280, 800),
       minimumSize: const Size(640, 420),
+      // The tabs take the title bar's place, as in Windows 11 and Finder.
+      titleBar: WindowTitleBar.hidden,
     ),
   );
 }
