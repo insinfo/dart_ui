@@ -3,6 +3,7 @@ library;
 
 import '../platform/input_events.dart';
 import 'actions.dart';
+import 'dialogs.dart';
 import 'element.dart';
 import 'widget.dart';
 
@@ -91,7 +92,10 @@ final class _CallbackShortcutsState extends State<CallbackShortcuts> {
   @override
   Widget build(BuildContext context) {
     if (_owner == null && context is Element) {
-      _owner = context.owner?..addWindowKeyHandler(_handle);
+      // Inside a dialog, at its depth: the dialog's shortcuts answer while
+      // it is open, the window's behind it do not.
+      _owner = context.owner
+        ?..addWindowKeyHandler(_handle, modalDepth: modalDepthOf(context));
     }
     return widget.child;
   }

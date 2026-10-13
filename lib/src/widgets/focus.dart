@@ -177,6 +177,17 @@ class FocusNode {
     _children.insert(index, child);
     child._parent = this;
     child._attach(_manager);
+    if (child.canRequestFocus && !child.skipTraversal) {
+      for (FocusNode? ancestor = this;
+          ancestor != null;
+          ancestor = ancestor._parent) {
+        if (ancestor is FocusScopeNode && ancestor._focusOnAttach) {
+          ancestor._focusOnAttach = false;
+          child.requestFocus(FocusChangeReason.restoration);
+          break;
+        }
+      }
+    }
   }
 
   void remove(FocusNode child) {
@@ -274,6 +285,19 @@ final class FocusScopeNode extends FocusNode {
 
   /// The descendant this scope will restore focus to.
   FocusNode? get rememberedChild => _rememberedChild;
+
+  bool _focusOnAttach = false;
+
+  /// Focuses the first focusable descendant - now, or, when there is none
+  /// yet, the first one to attach.
+  ///
+  /// For a scope whose content is still being built: a dialog that has just
+  /// opened, whose controls attach their nodes as their own builds run, later
+  /// in the same frame. Waiting for "after the frame" instead would leave a
+  /// window in which the first keystroke goes to the window behind.
+  void requestFocusOnAttach() {
+    if (!focusRemembered()) _focusOnAttach = true;
+  }
 
   /// Focuses the remembered child, or the first focusable descendant.
   bool focusRemembered() {

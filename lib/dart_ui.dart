@@ -242,6 +242,7 @@ export 'src/widgets/controls.dart';
 export 'src/widgets/custom_paint.dart';
 export 'src/widgets/dart_ui_app.dart';
 export 'src/widgets/data_grid.dart';
+export 'src/widgets/dialogs.dart';
 export 'src/widgets/directionality.dart';
 export 'src/widgets/divider.dart';
 export 'src/widgets/docking.dart';

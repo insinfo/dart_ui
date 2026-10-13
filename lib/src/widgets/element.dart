@@ -55,8 +55,26 @@ final class BuildOwner {
 
   final List<void Function(KeyEvent event)> _keyObservers =
       <void Function(KeyEvent event)>[];
-  final List<bool Function(KeyEvent event)> _windowKeyHandlers =
-      <bool Function(KeyEvent event)>[];
+  final List<(bool Function(KeyEvent event), int)> _windowKeyHandlers =
+      <(bool Function(KeyEvent event), int)>[];
+
+  /// How many modal dialogs are open in this window - the depth of the
+  /// topmost one, 0 when none is.
+  ///
+  /// A window-level handler belongs to the depth it was registered at
+  /// (`modalDepth:` on [addWindowKeyHandler] and [addTextInputHandler]), and
+  /// is not offered keys while a deeper modal is open: Delete in a dialog
+  /// must not delete the files in the window behind it, nor Ctrl+A select
+  /// them, nor F10 open that window's menu bar. The application shortcut map
+  /// ([shortcuts]) is the window's, and is silent under a modal for the same
+  /// reason. Set by the dialog layer as dialogs open and close.
+  int get modalDepth => _modalDepth;
+  int _modalDepth = 0;
+
+  set modalDepth(int value) {
+    assert(value >= 0, 'modalDepth is a count');
+    _modalDepth = value;
+  }
 
   /// The modifier keys held as of the last key transition this window saw.
   ///
@@ -88,11 +106,18 @@ final class BuildOwner {
   /// A handler for keys that belong to the window rather than to a control -
   /// a menu bar's F10 - offered what the focused control and the shortcut map
   /// both declined, before focus traversal.
-  void addWindowKeyHandler(bool Function(KeyEvent event) handler) =>
-      _windowKeyHandlers.add(handler);
+  ///
+  /// [modalDepth] is the dialog the handler lives in, 0 for the window
+  /// itself; see [BuildOwner.modalDepth].
+  void addWindowKeyHandler(
+    bool Function(KeyEvent event) handler, {
+    int modalDepth = 0,
+  }) =>
+      _windowKeyHandlers.add((handler, modalDepth));
 
   void removeWindowKeyHandler(bool Function(KeyEvent event) handler) =>
-      _windowKeyHandlers.remove(handler);
+      _windowKeyHandlers.removeWhere(
+          (final (bool Function(KeyEvent), int) entry) => entry.$1 == handler);
 
   /// Where build failures go.
   ///
@@ -216,9 +241,11 @@ final class BuildOwner {
       observer(event);
     }
     if (_keyboardRouter.route(event)) return true;
-    if (shortcuts?.dispatch(event) ?? false) return true;
-    for (final handler in List.of(_windowKeyHandlers)) {
-      if (handler(event)) return true;
+    if (_modalDepth == 0 && (shortcuts?.dispatch(event) ?? false)) {
+      return true;
+    }
+    for (final (handler, depth) in List.of(_windowKeyHandlers)) {
+      if (depth >= _modalDepth && handler(event)) return true;
     }
     return focusManager.handleTraversalKey(event);
   }
@@ -232,22 +259,28 @@ final class BuildOwner {
   bool dispatchTextInputEvent(TextInputEvent event) {
     _throwIfDisposed();
     if (_keyboardRouter.routeTextInput(event)) return true;
-    for (final handler in List.of(_textInputHandlers)) {
-      if (handler(event)) return true;
+    for (final (handler, depth) in List.of(_textInputHandlers)) {
+      if (depth >= _modalDepth && handler(event)) return true;
     }
     return false;
   }
 
-  final List<bool Function(TextInputEvent event)> _textInputHandlers =
-      <bool Function(TextInputEvent event)>[];
+  final List<(bool Function(TextInputEvent event), int)> _textInputHandlers =
+      <(bool Function(TextInputEvent event), int)>[];
 
   /// Offered the text no focused control took - typing in a file list to
   /// jump to a name, in a tree to find a node. Answers whether it used it.
-  void addTextInputHandler(bool Function(TextInputEvent event) handler) =>
-      _textInputHandlers.add(handler);
+  /// [modalDepth] as for [addWindowKeyHandler].
+  void addTextInputHandler(
+    bool Function(TextInputEvent event) handler, {
+    int modalDepth = 0,
+  }) =>
+      _textInputHandlers.add((handler, modalDepth));
 
   void removeTextInputHandler(bool Function(TextInputEvent event) handler) =>
-      _textInputHandlers.remove(handler);
+      _textInputHandlers.removeWhere(
+          (final (bool Function(TextInputEvent), int) entry) =>
+              entry.$1 == handler);
 
   /// Builds the semantic tree for the current render tree.
   ///

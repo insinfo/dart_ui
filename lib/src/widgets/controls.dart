@@ -20,10 +20,12 @@ import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
+import '../layout/render_flex.dart' show CrossAxisAlignment, MainAxisAlignment;
 import '../layout/render_viewport.dart';
 import '../platform/clipboard.dart';
 import '../platform/input_events.dart';
 import '../semantics/semantics.dart';
+import 'basic.dart' show Column, Expanded, Flexible, Row, SizedBox;
 import 'context_menu.dart';
 import 'control.dart';
 import 'element.dart';
@@ -1482,25 +1484,48 @@ final class RenderScrollViewer extends RenderViewport with ControlBehavior {
       );
 }
 
-/// A modal surface with a title.
+/// A modal surface with a title, and the buttons that close it.
+///
+/// Open one with `showDialog`; its buttons call `closeDialog` with the
+/// answer. [actions] sit in a row at the foot, right-aligned, equal width -
+/// WinUI's ContentDialog order: the primary action first, Cancel last.
 final class Dialog extends StatelessWidget {
   const Dialog({
     super.key,
     required this.title,
     required this.child,
     this.onDismiss,
+    this.actions = const <Widget>[],
   });
 
   final String title;
   final Widget child;
   final void Function()? onDismiss;
+  final List<Widget> actions;
 
   @override
   Widget build(BuildContext context) => _DialogRenderWidget(
         title: title,
         theme: Theme.of(context),
         onDismiss: onDismiss,
-        child: child,
+        child: actions.isEmpty
+            ? child
+            : Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  Flexible(child: child),
+                  const SizedBox(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: <Widget>[
+                      for (var i = 0; i < actions.length; i++) ...<Widget>[
+                        if (i > 0) const SizedBox(width: 8),
+                        Expanded(child: actions[i]),
+                      ],
+                    ],
+                  ),
+                ],
+              ),
       );
 }
 
