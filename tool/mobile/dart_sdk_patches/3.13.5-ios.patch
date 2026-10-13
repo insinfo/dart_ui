@@ -53,10 +53,10 @@ index 113591a3..38ae20ec 100644
    UNREACHABLE();
  }
 diff --git a/runtime/bin/main_impl.cc b/runtime/bin/main_impl.cc
-index ab1c5411..e29d4a3b 100644
+index ab1c5411..f1a76707 100644
 --- a/runtime/bin/main_impl.cc
 +++ b/runtime/bin/main_impl.cc
-@@ -966,6 +966,71 @@ static void CompileAndSaveKernel(const char* script_name,
+@@ -966,6 +966,76 @@ static void CompileAndSaveKernel(const char* script_name,
    WriteDepsFile();
  }
  
@@ -113,10 +113,15 @@ index ab1c5411..e29d4a3b 100644
 +  using AppMain = int (*)(int, char**, const void*, const void*);
 +  auto get_class =
 +      reinterpret_cast<GetClass>(dlsym(RTLD_DEFAULT, "objc_getClass"));
++  // The delegate may be registered after main()'s first await, when the
++  // application gets to its backend; the run loop keeps handling Dart's
++  // messages until it is. UIKit is loaded by then, so its symbol resolves.
++  while (get_class == nullptr || get_class("DartUiAppDelegate") == nullptr) {
++    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.05, true);
++  }
 +  auto app_main =
 +      reinterpret_cast<AppMain>(dlsym(RTLD_DEFAULT, "UIApplicationMain"));
-+  if (get_class != nullptr && app_main != nullptr &&
-+      get_class("DartUiAppDelegate") != nullptr) {
++  if (app_main != nullptr) {
 +    app_main(0, nullptr, nullptr, CFSTR("DartUiAppDelegate"));
 +  }
 +  while (true) {
@@ -128,7 +133,7 @@ index ab1c5411..e29d4a3b 100644
  void RunMainIsolate(const char* script_name,
                      const char* asset_resolution_base,
                      const char* package_config_override,
-@@ -1068,10 +1133,17 @@ void RunMainIsolate(const char* script_name,
+@@ -1068,10 +1138,17 @@ void RunMainIsolate(const char* script_name,
  
    Dart_Handle isolate_lib =
        Dart_LookupLibrary(Dart_NewStringFromCString("dart:isolate"));

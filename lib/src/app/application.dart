@@ -4296,7 +4296,14 @@ final class Application with DisposableMixin {
       _sincePumpReturned
         ..reset()
         ..start();
-      await Future<void>.delayed(Duration.zero);
+      if (backend case final EventLoopWaitingBackend waiting
+          when pumpTimeout > Duration.zero) {
+        // The events of this backend arrive on this isolate's event loop:
+        // the wait has to be an await, or nothing could arrive during it.
+        await waiting.waitForEvents(pumpTimeout);
+      } else {
+        await Future<void>.delayed(Duration.zero);
+      }
       // Read after the yield: that is the single turn this iteration gives the
       // Dart event loop, so it is the only point at which the loop can observe
       // whether the turn produced anything.

@@ -657,7 +657,9 @@ final class SystemFonts {
         '${env['WINDIR'] ?? 'C:\\Windows'}\\Fonts',
       ];
     }
-    if (Platform.isMacOS) {
+    // iOS keeps the same faces under the same root, in subdirectories
+    // (Core, CoreUI), which the recursive walk reaches.
+    if (Platform.isMacOS || Platform.isIOS) {
       final String? home = env['HOME'];
       return <String>[
         if (home != null) '$home/Library/Fonts',
@@ -857,7 +859,9 @@ final class SystemFonts {
     if (Platform.isWindows) {
       return <String>['Segoe UI', 'Tahoma', 'Arial', 'Verdana'];
     }
-    if (Platform.isMacOS) {
+    // iOS keeps the same faces under the same root, in subdirectories
+    // (Core, CoreUI), which the recursive walk reaches.
+    if (Platform.isMacOS || Platform.isIOS) {
       return <String>[
         // The system UI family since Catalina, then the two that predate it.
         'SF Pro Text',
@@ -889,7 +893,9 @@ final class SystemFonts {
     if (Platform.isWindows) {
       return <String>['segoeui.ttf', 'tahoma.ttf', 'arial.ttf', 'verdana.ttf'];
     }
-    if (Platform.isMacOS) {
+    // iOS keeps the same faces under the same root, in subdirectories
+    // (Core, CoreUI), which the recursive walk reaches.
+    if (Platform.isMacOS || Platform.isIOS) {
       return <String>['SFNSText.ttf', 'Helvetica.ttf', 'Geneva.ttf'];
     }
     if (Platform.isAndroid) {

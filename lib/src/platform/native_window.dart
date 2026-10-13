@@ -445,3 +445,18 @@ abstract interface class WindowingBackend {
   /// Wakes a blocked [pumpEvents] from another thread or isolate.
   void wake();
 }
+
+/// A backend whose platform events reach this isolate through its own event
+/// loop - UIKit calling back on the isolate's thread, a socket `dart:io`
+/// reads - so [WindowingBackend.pumpEvents] has nothing to block on.
+///
+/// Blocking there is not merely useless for such a backend but wrong: on iOS
+/// the isolate runs on the main thread, and a pump that slept would stop UIKit
+/// delivering the very events it waits for. The application loop therefore
+/// awaits [waitForEvents] instead of sleeping in the pump, and a backend
+/// that is not one of these keeps the synchronous wait it always had.
+abstract interface class EventLoopWaitingBackend {
+  /// Completes when an event arrived or [wake] was called, or after
+  /// [timeout], whichever is first. Never blocks the isolate.
+  Future<void> waitForEvents(Duration timeout);
+}

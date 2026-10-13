@@ -35,6 +35,8 @@ import '../rendering/renderer.dart';
 import 'android/android_backend.dart';
 import 'android/android_window.dart';
 import 'headless/headless_backend.dart';
+import 'ios/ios_backend.dart';
+import 'ios/ios_window.dart';
 import 'macos/macos.dart';
 import 'macos/macos_cpu_window.dart';
 import 'macos/surface_pool.dart';
@@ -131,6 +133,13 @@ final class PlatformBackendResolver {
           create: options.environment.isEmpty
               ? AndroidWindowingBackend.new
               : () => AndroidWindowingBackend(environment: options.environment),
+        ),
+      // UIKit in this process: the app's executable is the Dart runtime built
+      // for iOS (ADR 0010).
+      if (platform == 'ios')
+        const WindowingBackendEntry(
+          name: 'ios',
+          create: IosWindowingBackend.new,
         ),
       WindowingBackendEntry(
         name: 'headless',
@@ -237,6 +246,7 @@ final class PlatformBackendResolver {
         _macosInProcessCpu(),
       ],
       if (platform == 'android') _androidCpu(),
+      if (platform == 'ios') _iosCpu(),
       PresentationPathEntry.cpuRenderer(
         backend: const CpuRendererBackend(),
         name: 'headless-cpu',
@@ -874,6 +884,21 @@ final class PlatformBackendResolver {
   /// The CPU path of the in-process strategies: the window owns its
   /// framebuffer and shows it as an image. Compatible only with them, so the
   /// native host never lands here and they never land on Metal or IOSurface.
+  static PresentationPathEntry _iosCpu() => PresentationPathEntry.retainedCpu(
+        name: iosCpuSurfaceKind,
+        deviceDescription: 'BGRA framebuffer shown as the view layer contents',
+        compatibleWindowingBackends: const <String>{'ios'},
+        create: (NativeWindow window) {
+          final RetainedCpuPresenter presenter =
+              RetainedCpuPresenter(window as IosWindow);
+          return (
+            present: presenter.renderDisplayList,
+            presentNow: presenter.renderDisplayListNow,
+            release: presenter.dispose,
+          );
+        },
+      );
+
   static PresentationPathEntry _androidCpu() =>
       PresentationPathEntry.retainedCpu(
         name: androidCpuSurfaceKind,
