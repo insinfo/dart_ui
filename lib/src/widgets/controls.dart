@@ -20,7 +20,8 @@ import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_box.dart';
-import '../layout/render_flex.dart' show CrossAxisAlignment, MainAxisAlignment;
+import '../layout/render_flex.dart'
+    show CrossAxisAlignment, MainAxisAlignment, MainAxisSize;
 import '../layout/render_viewport.dart';
 import '../platform/clipboard.dart';
 import '../platform/input_events.dart';
@@ -60,10 +61,17 @@ final class Button extends StatefulWidget {
     this.isDefault = false,
     this.isCancel = false,
     this.styleClasses = const <String>{},
+    this.accent = true,
   });
 
   final String label;
   final void Function()? onPressed;
+
+  /// Filled with the theme's accent - the one action a surface leads with,
+  /// WinUI's AccentButton - or, when false, the standard button: the
+  /// neutral control fill under a hairline border, for every other action.
+  /// A dialog's OK is accent, its Cancel and Apply are not.
+  final bool accent;
 
   /// The button Enter activates when nothing else has focus.
   final bool isDefault;
@@ -97,6 +105,7 @@ final class _ButtonState extends State<Button> {
           isDefault: widget.isDefault,
           isCancel: widget.isCancel,
           styleClasses: widget.styleClasses,
+          accent: widget.accent,
         ),
       );
 }
@@ -110,6 +119,7 @@ final class _ButtonRenderWidget extends RenderObjectWidget {
     required this.isDefault,
     required this.isCancel,
     required this.styleClasses,
+    required this.accent,
   });
 
   final String label;
@@ -119,6 +129,7 @@ final class _ButtonRenderWidget extends RenderObjectWidget {
   final bool isDefault;
   final bool isCancel;
   final Set<String> styleClasses;
+  final bool accent;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
@@ -133,7 +144,8 @@ final class _ButtonRenderWidget extends RenderObjectWidget {
         ..enabled = onPressed != null
         ..isDefault = isDefault
         ..isCancel = isCancel
-        ..styleClasses = styleClasses;
+        ..styleClasses = styleClasses
+        ..accent = accent;
 
   @override
   void updateRenderObject(BuildContext context, covariant RenderButton object) {
@@ -145,7 +157,8 @@ final class _ButtonRenderWidget extends RenderObjectWidget {
       ..enabled = onPressed != null
       ..isDefault = isDefault
       ..isCancel = isCancel
-      ..styleClasses = styleClasses;
+      ..styleClasses = styleClasses
+      ..accent = accent;
   }
 }
 
@@ -156,6 +169,16 @@ final class RenderButton extends RenderBox with ControlBehavior {
   void Function()? onPressed;
   bool isDefault = false;
   bool isCancel = false;
+  bool _accent = true;
+
+  /// See [Button.accent].
+  bool get accent => _accent;
+
+  set accent(bool value) {
+    if (value == _accent) return;
+    _accent = value;
+    markNeedsPaint();
+  }
 
   String get label => _label;
 
@@ -187,12 +210,24 @@ final class RenderButton extends RenderBox with ControlBehavior {
     final double radius = theme.controlStyle == ControlStyle.material
         ? rect.height / 2
         : theme.cornerRadius;
-    paintRoundedFill(list, rect, surfaceColor(), radius);
-    if (theme.highContrast || !enabled) {
+    paintRoundedFill(
+      list,
+      rect,
+      _accent
+          ? surfaceColor()
+          : neutralSurfaceColor(normal: theme.surfaceRaised) ??
+              theme.surfaceRaised,
+      radius,
+    );
+    if (theme.highContrast || !enabled || !_accent) {
       paintRoundedBorder(
         list,
         rect,
-        enabled ? theme.borderStrong : theme.disabledForeground,
+        !enabled
+            ? theme.disabledForeground
+            : _accent || theme.highContrast
+                ? theme.borderStrong
+                : theme.border,
         radius,
       );
     }
@@ -200,7 +235,11 @@ final class RenderButton extends RenderBox with ControlBehavior {
       list,
       _label,
       rect,
-      enabled ? theme.colorScheme.onPrimary : theme.disabledForeground,
+      !enabled
+          ? theme.disabledForeground
+          : _accent
+              ? theme.colorScheme.onPrimary
+              : theme.foreground,
     );
     paintFocusRing(list, rect, radius: radius);
   }
@@ -1511,6 +1550,7 @@ final class Dialog extends StatelessWidget {
         child: actions.isEmpty
             ? child
             : Column(
+                mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
                   Flexible(child: child),

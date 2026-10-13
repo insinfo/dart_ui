@@ -965,6 +965,16 @@ final class RenderText extends RenderBox {
   /// missing font must look like a missing font, not like a collapsed layout.
   @override
   double? computeDistanceToActualBaseline(TextBaseline baseline) {
+    // A paragraph's first line sits below half its leading: with a line
+    // height of 1.45 the letters start lower than the bare ascent, and a row
+    // aligning a label to the first line of wrapped text has to know it.
+    final laidOut = _paragraph;
+    if (_usesParagraph &&
+        laidOut != null &&
+        laidOut.lines.isNotEmpty &&
+        baseline == TextBaseline.alphabetic) {
+      return laidOut.lines.first.baseline;
+    }
     final ScaledTypeface? face = font;
     final double ascent =
         face?.ascent ?? FontRegistry.estimatedLineHeight(_fontSize) / 1.2;
