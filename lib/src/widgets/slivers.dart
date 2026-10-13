@@ -42,8 +42,9 @@
 ///     above it is corrected;
 ///   * `cacheExtent` defaults to zero, as in `ListView`, so the number of
 ///     children built is a number a test can predict;
-///   * no `SliverAppBar`: [SliverPersistentHeader] is the mechanism it is
-///     built from, and a pinned or floating bar is a delegate away;
+///   * `SliverAppBar` (`sliver_app_bar.dart`) is a [SliverPersistentHeader]
+///     with its own delegate, and has no `snap`: the header does not know
+///     when a scroll has ended;
 ///   * no `NestedScrollView`, and no keep-alive.
 library;
 
