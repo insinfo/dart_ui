@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import '../../assets/embedded_assets.dart';
 import 'font_registry.dart';
 import 'framework_fonts_base.dart';
 
@@ -24,12 +25,38 @@ abstract final class FrameworkFonts {
   static const String phosphorIconFileName = 'Phosphor.ttf';
   static const String fluentIconFileName = 'FluentSystemIcons-Resizable.ttf';
 
-  /// Loads from a source checkout or an explicitly packaged asset directory.
+  /// The key a framework font is embedded under by `dart_ui build`.
+  static String embeddedKey(String fileName) => 'dart_ui/fonts/$fileName';
+
+  /// Loads the fonts compiled into the program, else from a source checkout
+  /// or an explicitly packaged asset directory.
+  ///
+  /// Embedded fonts win unless [assetDirectory] is given: a program built
+  /// with `dart_ui build` runs the same on a machine with no checkout, no
+  /// package config and nothing beside the executable.
   static FrameworkFontLoadResult install({
     String? assetDirectory,
     FontRegistry? registry,
   }) {
     final FontRegistry target = registry ?? FontRegistry.instance;
+    final Uint8List? embeddedUi = EmbeddedAssets.bytes(embeddedKey(uiFileName));
+    final Uint8List? embeddedIcons =
+        EmbeddedAssets.bytes(embeddedKey(iconFileName));
+    if (assetDirectory == null && embeddedUi != null && embeddedIcons != null) {
+      Uint8List? embedded(String fileName) =>
+          EmbeddedAssets.bytes(embeddedKey(fileName));
+      return installFromBytes(
+        uiFont: embeddedUi,
+        iconFont: embeddedIcons,
+        uiMediumFont: embedded(uiMediumFileName),
+        uiSemiBoldFont: embedded(uiSemiBoldFileName),
+        tablerIconFont: embedded(tablerIconFileName),
+        phosphorIconFont: embedded(phosphorIconFileName),
+        fluentIconFont: embedded(fluentIconFileName),
+        registry: target,
+        source: 'embedded',
+      );
+    }
     final Directory? directory = _findDirectory(assetDirectory);
     if (directory == null) {
       return const FrameworkFontLoadResult(

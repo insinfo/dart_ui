@@ -7,9 +7,12 @@ import 'application_builder.dart';
 import 'pe_subsystem.dart';
 
 final class DartUiCli {
-  DartUiCli({StringSink? output, StringSink? errors})
+  DartUiCli({StringSink? output, StringSink? errors, this.macosHost})
       : _output = output ?? stdout,
         _errors = errors ?? stderr;
+
+  /// Where the compiled macOS host is, for `build` to put it in the bundle.
+  final String? Function()? macosHost;
 
   final StringSink _output;
   final StringSink _errors;
@@ -60,6 +63,8 @@ final class DartUiCli {
     String? identifier;
     var version = '1.0.0';
     var console = false;
+    final List<String> embed = <String>[];
+    var embedFonts = true;
 
     for (var index = 0; index < arguments.length; index++) {
       final String argument = arguments[index];
@@ -78,6 +83,11 @@ final class DartUiCli {
           index++;
         case '--console':
           console = true;
+        case '--embed':
+          embed.add(_valueAfter(arguments, index, argument));
+          index++;
+        case '--no-embed-fonts':
+          embedFonts = false;
         default:
           if (argument.startsWith('-')) {
             throw _UsageException('unknown build option "$argument"');
@@ -97,6 +107,7 @@ final class DartUiCli {
 
     final ApplicationBuildResult result = await DesktopApplicationBuilder(
       output: _output,
+      macosHost: macosHost,
     ).build(ApplicationBuildRequest(
       entrypoint: entrypoint,
       outputPath: outputPath,
@@ -104,6 +115,8 @@ final class DartUiCli {
       bundleIdentifier: identifier,
       version: version,
       windowsConsole: console,
+      embed: embed,
+      embedFrameworkFonts: embedFonts,
     ));
     _output.writeln('Built: ${result.primaryArtifact}');
     if (result.launcherArtifact case final String launcher) {
@@ -188,6 +201,12 @@ final class DartUiCli {
     _output.writeln('      --identifier <id>     macOS reverse-DNS bundle id');
     _output.writeln('      --version <x.y.z>     macOS bundle version');
     _output.writeln('      --console             Keep Windows console');
+    _output.writeln('      --embed <path>        Compile a file or folder into '
+        'the executable');
+    _output.writeln('                            (repeatable; read with '
+        'EmbeddedAssets)');
+    _output.writeln("      --no-embed-fonts      Leave dart_ui's fonts out; "
+        'they are embedded by default');
   }
 
   void _writePeHelp() {

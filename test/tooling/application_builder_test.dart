@@ -68,6 +68,9 @@ void main() {
       platform: DesktopHostPlatform.macos,
       compiler: _fakeCompiler(),
       output: StringBuffer(),
+      macosHost: () => (File('${temporary.path}/dart_ui_macos_host')
+            ..writeAsStringSync('h'))
+          .path,
     );
 
     final ApplicationBuildResult result = await builder.build(
@@ -89,6 +92,11 @@ void main() {
       isTrue,
     );
     expect(Directory('${bundle.path}/Contents/Resources').existsSync(), isTrue);
+    expect(
+      File('${bundle.path}/Contents/MacOS/dart_ui_macos_host').existsSync(),
+      isTrue,
+      reason: 'the AppKit host travels inside the bundle',
+    );
     expect(plist, contains('<string>Hello &amp; World</string>'));
     expect(plist, contains('<string>com.example.hello-world</string>'));
     expect(plist, contains('<string>2.1.0</string>'));
@@ -110,6 +118,37 @@ void main() {
       throwsA(isA<ApplicationBuildException>()),
     );
     expect(compiled, isFalse);
+  });
+
+  test('embedding: the program registers the resources, then runs main',
+      () async {
+    final File asset = File('${temporary.path}/logo.txt')
+      ..writeAsStringSync('hello');
+    String? compiled;
+    final DesktopApplicationBuilder builder = DesktopApplicationBuilder(
+      platform: DesktopHostPlatform.linux,
+      compiler: (String entry, String out) async {
+        compiled = entry;
+        File(out).writeAsStringSync('');
+      },
+      output: StringBuffer(),
+    );
+    await builder.build(ApplicationBuildRequest(
+      entrypoint: entrypoint.path,
+      outputPath: '${temporary.path}/hello',
+      embed: <String>[asset.path],
+    ));
+    expect(compiled, endsWith('dart_ui_build/hello_world/main.dart'));
+    final Directory work = File(compiled!).parent;
+    addTearDown(() => work.deleteSync(recursive: true));
+    final String main = File(compiled!).readAsStringSync();
+    expect(main, contains('registerEmbeddedAssets();'));
+    expect(main, contains('app.main()'),
+        reason: "the entrypoint's main takes no arguments");
+    final String assets = File('${work.path}/assets.g.dart').readAsStringSync();
+    expect(assets, contains("r'aGVsbG8='"), reason: 'hello in base64');
+    expect(assets, contains("'dart_ui/fonts/Inter-Regular.ttf'"));
+    expect(assets, isNot(contains('Roboto')));
   });
 }
 

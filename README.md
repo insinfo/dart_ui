@@ -21,7 +21,22 @@ dart run dart_ui build example/hello_world.dart -o build/hello_world
   console. Use `--console` para manter o terminal durante depuração.
 - Linux: gera o binário e um launcher `.desktop` com `Terminal=false`.
 - macOS: gera um bundle `.app` com `Contents/Info.plist`, `Contents/MacOS/` e
-  `Contents/Resources/`.
+  `Contents/Resources/`, e leva para dentro dele o host AppKit
+  (`dart_ui_macos_host`), sem o qual o bundle não abre em outra máquina.
+
+**Um único executável.** As fontes do framework (Inter e os ícones Material,
+Tabler, Phosphor e Fluent, com suas licenças) são compiladas dentro do
+executável por padrão: nada precisa ficar ao lado do `.exe`. Recursos do
+próprio aplicativo entram com `--embed`, e são lidos com
+`EmbeddedAssets.bytes('assets/logo.png')`, pelo caminho relativo à pasta do
+projeto:
+
+```shell
+dart run dart_ui build bin/meu_app.dart --embed assets -o build/MeuApp
+```
+
+`--no-embed-fonts` deixa as fontes de fora (um executável ~6 MB menor, que
+então procura `assets/fonts` no disco).
 
 `dart compile exe` não faz cross-compilation: cada artefato deve ser produzido
 no próprio sistema operacional. Distribuição pública no Windows/macOS também

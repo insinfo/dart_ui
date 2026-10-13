@@ -2,6 +2,7 @@ library;
 
 import 'dart:typed_data';
 
+import '../../assets/embedded_assets.dart';
 import 'font_registry.dart';
 import 'framework_fonts_base.dart';
 
@@ -23,15 +24,37 @@ abstract final class FrameworkFonts {
   static const String phosphorIconFileName = 'Phosphor.ttf';
   static const String fluentIconFileName = 'FluentSystemIcons-Resizable.ttf';
 
+  /// The key a framework font is embedded under by `dart_ui build`.
+  static String embeddedKey(String fileName) => 'dart_ui/fonts/$fileName';
+
+  /// With no file system the only fonts there can be are embedded ones.
   static FrameworkFontLoadResult install({
     String? assetDirectory,
     FontRegistry? registry,
-  }) =>
-      const FrameworkFontLoadResult(
+  }) {
+    final Uint8List? ui = EmbeddedAssets.bytes(embeddedKey(uiFileName));
+    final Uint8List? icons = EmbeddedAssets.bytes(embeddedKey(iconFileName));
+    if (ui == null || icons == null) {
+      return const FrameworkFontLoadResult(
         uiFontLoaded: false,
         iconFontLoaded: false,
         directory: null,
       );
+    }
+    Uint8List? embedded(String fileName) =>
+        EmbeddedAssets.bytes(embeddedKey(fileName));
+    return installFromBytes(
+      uiFont: ui,
+      iconFont: icons,
+      uiMediumFont: embedded(uiMediumFileName),
+      uiSemiBoldFont: embedded(uiSemiBoldFileName),
+      tablerIconFont: embedded(tablerIconFileName),
+      phosphorIconFont: embedded(phosphorIconFileName),
+      fluentIconFont: embedded(fluentIconFileName),
+      registry: registry,
+      source: 'embedded',
+    );
+  }
 
   static FrameworkFontLoadResult installFromBytes({
     required Uint8List uiFont,

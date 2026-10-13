@@ -25,6 +25,10 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   'tooling': <String>[],
   'foundation': <String>[],
   'geometry': <String>[],
+  // Resources compiled into the program: a registry of bytes by key, with
+  // no dependency at all, so generated code and the font loader can both
+  // reach it.
+  'assets': <String>[],
   // Raw native-ABI plumbing: COM vtables, GUIDs, HRESULTs, a native
   // allocator. It sits this low because it names no operating system and no
   // window - it manipulates pointers and integers, and the identifier ban
@@ -86,6 +90,7 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // COM vtables. It is an ABI dependency, not a platform one - nothing in
   // `ffi` names a window, a display server or an operating system.
   'rendering': <String>[
+    'assets',
     'ffi',
     'foundation',
     'geometry',

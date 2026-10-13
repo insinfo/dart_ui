@@ -50,6 +50,7 @@ export 'src/animation/curves.dart';
 export 'src/animation/keyframes.dart';
 export 'src/animation/simulation.dart';
 export 'src/app/app.dart' hide runApp;
+export 'src/assets/embedded_assets.dart';
 export 'src/audio/audio.dart';
 export 'src/backends/default_platform_resolver_stub.dart'
     if (dart.library.io) 'src/backends/default_platform_resolver.dart';
