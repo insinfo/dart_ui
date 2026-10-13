@@ -4,7 +4,8 @@ Estado em 12/10/2026. As decisões estão nos ADRs
 [0009](adr/0009-android-host-java-e-processo-dart.md) (Android com host Java,
 funcionando) e [0010](adr/0010-dart-aot-embutido-android-ios.md) (Dart AOT
 embutido, para as lojas e para o iOS, em implementação). O dart_ui não depende
-do Flutter em nenhum desses caminhos.
+do Flutter em nenhum desses caminhos. As dificuldades e as propostas ao Dart SDK
+estão em [`RELATORIO_DART_PURO_ANDROID_IOS.md`](RELATORIO_DART_PURO_ANDROID_IOS.md).
 
 ## Android (host Java + processo Dart)
 
@@ -80,9 +81,17 @@ dart run tool/mobile/build_dart_runtime.dart --checkout /caminho/dart-sdk-src \
     --target ios-simulator-arm64        # ou ios-arm64 para aparelho
 ```
 
-Funciona no simulador iOS 27.0: app abre, delegates de app e de cena em Dart,
-janela UIKit desenhada. Próximo: o backend `ios` no `lib/` (janela, desenho,
-toque, teclado) e o empacotamento (`.app` assinado, IPA).
+```
+export DART_UI_IOS_DART=/caminho/dart-3.13.5/bin/dart
+export DART_UI_IOS_AOT_OUT=/caminho/dart-sdk-src/sdk/xcodebuild
+dart run tool/ios/build_app.dart example/hello_world.dart --run   # simulador
+```
+
+Funciona no simulador iOS 27.0: o backend `ios` (`lib/src/backends/ios/`)
+registra delegates de app e de cena e a `DartUiView`; o `hello_world` desenha
+com Helvetica Neue pelo caminho `ios-cpu` (quadro BGRA como `contents` da
+layer). Toque e teclado (`UIKeyInput`) estão ligados, mas o toque ainda não foi
+provado: o Xcode 27 do `.xip` não traz o app Simulator.
 
 Ferramentas no Mac de desenvolvimento: Xcode 27.0 em
 `/Volumes/ssd_dock/Xcode.app` (usar `DEVELOPER_DIR`), SDKs iOS 27.0 e runtime
