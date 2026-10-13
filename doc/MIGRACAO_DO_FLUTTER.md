@@ -169,9 +169,10 @@ Sem justificativa de projeto — simplesmente não escrito:
   outubro de 2026.)
 - **Texto rico**: `WidgetSpan`. (`RichText`, `Text.rich` e `TextSpan` no
   nível de widget existem.)
-- **Animação**: `Hero`, `AnimatedSize`, `AnimatedList`. (`AnimatedBuilder`,
+- **Animação**: `Hero`, `AnimatedList`. (`AnimatedBuilder`,
   `ListenableBuilder`, as `*Transition`, `TweenAnimationBuilder`,
-  `AnimatedContainer`, `AnimatedSwitcher` e `ValueListenableBuilder`
+  `AnimatedContainer`, `AnimatedSwitcher`, `AnimatedSize` e
+  `ValueListenableBuilder`
   existem; o `TweenAnimationBuilder` só retoma do valor corrente quando sabe
   interpolar o tipo - os tweens do framework ou um `lerp` dado -, porque o
   `Tween` daqui é imutável.)

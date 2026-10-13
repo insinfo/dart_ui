@@ -1,5 +1,5 @@
 /// More of Flutter's animated widgets: [TweenAnimationBuilder],
-/// [AnimatedContainer] and [AnimatedSwitcher].
+/// [AnimatedContainer], [AnimatedSwitcher] and [AnimatedSize].
 ///
 /// The first two are implicit animations on the [ImplicitlyAnimatedWidget]
 /// base - the clock from [AnimationScope], nothing animated without one,
@@ -14,12 +14,16 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/color.dart';
+import '../graphics/display_list.dart';
+import '../graphics/display_list_geometry.dart';
 import '../layout/alignment.dart';
 import '../layout/box_constraints.dart';
 import '../layout/edge_insets.dart';
+import '../layout/render_box.dart';
 import '../layout/render_stack.dart' show StackFit;
 import 'animation_scope.dart';
 import 'basic.dart';
+import 'element.dart';
 import 'implicit_animation.dart';
 import 'layout_widgets.dart';
 import 'proxy.dart';
@@ -414,5 +418,184 @@ final class _AnimatedSwitcherState extends State<AnimatedSwitcher> {
         if (current != null) _faded(current, widget.switchInCurve),
       ],
     );
+  }
+}
+
+/// Grows and shrinks to its child's size over [duration] when the child's
+/// size changes - Flutter's `AnimatedSize`.
+///
+/// The child is laid out at its own size at once, and this box walks from
+/// its old size to the new one, aligning the child by [alignment] and
+/// clipping it while the box is smaller. With no [AnimationScope] above it,
+/// or under reduced motion, it takes the new size at once.
+final class AnimatedSize extends SingleChildRenderObjectWidget {
+  const AnimatedSize({
+    super.key,
+    required this.duration,
+    this.curve = Curves.linear,
+    this.alignment = Alignment.center,
+    super.child,
+  });
+
+  final Duration duration;
+  final Curve curve;
+  final Alignment alignment;
+
+  @override
+  RenderAnimatedSize createRenderObject(BuildContext context) =>
+      RenderAnimatedSize(
+        clock: Theme.of(context).reducedMotion
+            ? null
+            : AnimationScope.maybeOf(context),
+        duration: duration,
+        curve: curve,
+        alignment: alignment,
+      );
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant RenderAnimatedSize renderObject,
+  ) {
+    renderObject
+      ..clock = Theme.of(context).reducedMotion
+          ? null
+          : AnimationScope.maybeOf(context)
+      ..duration = duration
+      ..curve = curve
+      ..alignment = alignment;
+  }
+}
+
+/// The render object behind [AnimatedSize]. It owns its controller: the
+/// size it animates to is only known in layout, and the animation is of
+/// layout, so nothing above it needs to rebuild per frame.
+final class RenderAnimatedSize extends RenderSingleChildBox {
+  RenderAnimatedSize({
+    AnimationClock? clock,
+    required Duration duration,
+    Curve curve = Curves.linear,
+    Alignment alignment = Alignment.center,
+    super.child,
+  })  : _clock = clock,
+        _duration = duration,
+        _curve = curve,
+        _alignment = alignment;
+
+  AnimationClock? _clock;
+  Duration _duration;
+  Curve _curve;
+  Alignment _alignment;
+  AnimationController? _controller;
+
+  /// The size the last transition started from and the one it is going to.
+  Size? _from;
+  Size? _to;
+
+  set clock(AnimationClock? value) {
+    if (identical(value, _clock)) return;
+    _clock = value;
+    _disposeController();
+    markNeedsLayout();
+  }
+
+  set duration(Duration value) {
+    if (value == _duration) return;
+    _duration = value;
+    _disposeController();
+  }
+
+  set curve(Curve value) {
+    if (identical(value, _curve)) return;
+    _curve = value;
+    markNeedsLayout();
+  }
+
+  Alignment get alignment => _alignment;
+
+  set alignment(Alignment value) {
+    if (value == _alignment) return;
+    _alignment = value;
+    markNeedsLayout();
+  }
+
+  /// Whether a transition is running.
+  bool get isAnimating =>
+      (_controller?.isAnimating ?? false) && _from != null && _to != null;
+
+  AnimationController? _ensureController() {
+    final AnimationClock? clock = _clock;
+    if (clock == null || _duration <= Duration.zero) return null;
+    return _controller ??= AnimationController(
+      clock: clock,
+      duration: _duration,
+      initialValue: 1,
+    )..addListener(markNeedsLayout);
+  }
+
+  void _disposeController() {
+    _controller
+      ?..removeListener(markNeedsLayout)
+      ..dispose();
+    _controller = null;
+  }
+
+  @override
+  void detach() {
+    _disposeController();
+    super.detach();
+  }
+
+  @override
+  void performLayout() {
+    final RenderBox? child = this.child;
+    if (child == null) {
+      size = constraints.smallest;
+      _from = _to = null;
+      return;
+    }
+    child.layout(constraints.loosen(), parentUsesSize: true);
+    final Size target = constraints.constrain(child.size);
+    final Size? current = _to == null ? null : _currentSize();
+    if (_to != target) {
+      final AnimationController? controller = _ensureController();
+      if (current == null || controller == null) {
+        // First layout, or no clock: the size is simply the child's.
+        _from = _to = target;
+      } else {
+        _from = current;
+        _to = target;
+        controller.forward(from: 0);
+      }
+    }
+    size = constraints.constrain(_currentSize());
+    child.parentData!.offset = _alignment.offsetFor(child.size, size);
+  }
+
+  Size _currentSize() {
+    final Size from = _from ?? Size.zero;
+    final Size to = _to ?? Size.zero;
+    final AnimationController? controller = _controller;
+    final double t =
+        controller == null ? 1 : _curve.transform(controller.value);
+    return Size.lerp(from, to, t);
+  }
+
+  @override
+  void paint(DisplayList list, Offset offset) {
+    final RenderBox? child = this.child;
+    if (child == null) return;
+    final bool clips = child.size.width > size.width + 0.5 ||
+        child.size.height > size.height + 0.5;
+    if (!clips) {
+      super.paint(list, offset);
+      return;
+    }
+    list
+      ..save()
+      ..clipRectangle(
+          Rect.fromLTWH(offset.dx, offset.dy, size.width, size.height));
+    super.paint(list, offset);
+    list.restore();
   }
 }

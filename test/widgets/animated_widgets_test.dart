@@ -242,6 +242,47 @@ void main() {
       h.dispose();
     });
   });
+
+  group('AnimatedSize', () {
+    test('walks from the old size to the new one, clipping the child', () {
+      double side = 100;
+      final _Harness h = _Harness(() => AnimatedSize(
+            duration: _ms100,
+            alignment: Alignment.topLeft,
+            child: SizedBox(width: side, height: side / 2),
+          ));
+      final RenderAnimatedSize box = h.findAll<RenderAnimatedSize>().single;
+      expect(box.size, const Size(100, 50), reason: 'no animation at first');
+
+      side = 200;
+      h
+        ..settle()
+        ..tickNow();
+      expect(box.size, const Size(100, 50), reason: 'starts where it was');
+      expect(box.child!.size, const Size(200, 100),
+          reason: 'the child is at its new size at once');
+      h.advance(const Duration(milliseconds: 50));
+      expect(box.size, const Size(150, 75));
+      h.advance(const Duration(milliseconds: 50));
+      expect(box.size, const Size(200, 100));
+      h.dispose();
+    });
+
+    test('without a clock it takes the new size at once', () {
+      double side = 100;
+      final _Harness h = _Harness(
+        () => AnimatedSize(
+          duration: _ms100,
+          child: SizedBox(width: side, height: 10),
+        ),
+        withClock: false,
+      );
+      side = 40;
+      h.settle();
+      expect(h.findAll<RenderAnimatedSize>().single.size, const Size(40, 10));
+      h.dispose();
+    });
+  });
 }
 
 /// A tween over a type with no interpolation the framework knows.
