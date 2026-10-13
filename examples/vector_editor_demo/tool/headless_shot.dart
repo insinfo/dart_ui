@@ -141,6 +141,23 @@ Future<void> main(List<String> args) async {
       ..execute('object.toCurves')
       ..execute('tool.shape')
       ..execute('path.selectAllNodes');
+  } else if (scenario == 'corners') {
+    // The Shape tool on a rectangle, its corners half rounded, and on the
+    // ellipse opened into a pie.
+    final VectorRectangle rect =
+        objectOfType((o) => o is VectorRectangle) as VectorRectangle;
+    rect
+      ..corners = <double>[.5, .5, .5, .5]
+      ..update();
+    final VectorCircle circle =
+        objectOfType((o) => o is VectorCircle) as VectorCircle;
+    circle
+      ..angle1 = 1.2
+      ..angle2 = 0
+      ..arcType = ArcType.pieslice
+      ..update();
+    state.model.selection.select(rect);
+    state.registry.execute('tool.shape');
   } else if (scenario == 'shaping') {
     // Weld, Trim and Intersect on the bar with two objects selected.
     state.model.selection.select(objectOfType((o) => o is VectorRectangle));

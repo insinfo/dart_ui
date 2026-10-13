@@ -7,10 +7,10 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 53 | 9 | 1 | 63 | 91% |
+| P0 | 54 | 9 | 0 | 63 | 93% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 61 | 11 | 103 | 175 | 38% |
+| **todas** | 62 | 11 | 102 | 175 | 39% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
@@ -29,7 +29,7 @@ Comandos registrados: 114.
 | Operações de objeto | 10 | 2 | 10 | 22 | 50% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
-| Edição de nós | 9 | 0 | 5 | 14 | 64% |
+| Edição de nós | 10 | 0 | 4 | 14 | 71% |
 | Encaixe, guias, réguas e grade | 3 | 1 | 3 | 7 | 50% |
 | Página e documento | 3 | 0 | 5 | 8 | 38% |
 | Formatos de arquivo | 0 | 0 | 4 | 4 | 0% |
@@ -228,7 +228,7 @@ Comandos registrados: 114.
 | ❌ | Reduce nodes | P1 |  | tudo |
 | ❌ | Stretch, rotate, skew, align nodes | P2 |  | tudo |
 | ❌ | Elastic mode | P2 |  | tudo |
-| ❌ | Parametric shapes: corner handles | P0 |  | tudo |
+| ✅ | Parametric shapes: corner handles | P0 | teste: "the Shape tool rounds a rectangle by its corner, in one undo" |  |
 
 ### Encaixe, guias, réguas e grade
 

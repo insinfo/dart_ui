@@ -216,6 +216,7 @@ export 'src/text/word_break.dart';
 export 'src/vector_editing/curve_fitting.dart';
 export 'src/vector_editing/freehand_tool.dart';
 export 'src/vector_editing/node_editing.dart';
+export 'src/vector_editing/parametric_handles.dart';
 export 'src/vector_editing/path_boolean.dart';
 export 'src/vector_editing/selection.dart';
 export 'src/vector_editing/shape_tool.dart';

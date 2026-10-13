@@ -8,11 +8,12 @@ import '../graphics/vector/primitives.dart';
 import '../graphics/vector/selectable_objects.dart';
 import '../graphics/vector/structural_objects.dart';
 import 'node_editing.dart';
+import 'parametric_handles.dart';
 import 'selection.dart';
 import 'tool_controller.dart';
 
 /// What a Shape-tool drag is doing.
-enum ShapeDrag { none, nodes, handle, segment, marquee }
+enum ShapeDrag { none, nodes, handle, segment, marquee, parametric }
 
 /// The Shape tool as a state machine of pointer events.
 ///
@@ -44,6 +45,12 @@ class ShapeToolController extends ToolController {
   SegmentHit? _segment;
   List<VectorPath>? _snapshot;
   bool _edited = false;
+
+  /// A rectangle's or an ellipse's handle being dragged, and what the shape
+  /// was at the press - restored before every move, as a curve's paths are.
+  PrimitiveObject? _shape;
+  int _shapeHandle = -1;
+  PrimitiveObject? _shapeSnapshot;
 
   /// The band being drawn, in document coordinates.
   Rect? marquee;
@@ -84,6 +91,21 @@ class ShapeToolController extends ToolController {
     _segment = null;
     _snapshot = null;
     marquee = null;
+    _shape = null;
+    _shapeSnapshot = null;
+    final List<SelectableObject> picked = selection.selectedObjects;
+    if (picked.length == 1 && ParametricHandles.supports(picked.single)) {
+      final PrimitiveObject shape = picked.single as PrimitiveObject;
+      final int? handle = ParametricHandles.at(shape, point, _grab);
+      if (handle != null) {
+        _shape = shape;
+        _shapeHandle = handle;
+        _shapeSnapshot = (shape.createEmpty() as PrimitiveObject);
+        shape.copyFields(_shapeSnapshot!);
+        _drag = ShapeDrag.parametric;
+        return;
+      }
+    }
     final VectorCurve? curve = selection.syncNodeCurve();
     final Offset? local =
         curve == null ? null : NodeEditing.toLocal(curve, point);
@@ -153,9 +175,35 @@ class ShapeToolController extends ToolController {
         if (to == from) return;
         NodeEditing.dragSegment(curve, segment, to - from);
         _edited = true;
+      case ShapeDrag.parametric:
+        final PrimitiveObject? shape = _shape;
+        if (shape == null || _shapeHandle < 0) return;
+        _restoreShape();
+        // Ctrl rounds only the corner under the pointer: the lock, open.
+        ParametricHandles.drag(shape, _shapeHandle, point,
+            single: isControlHeld);
+        _edited = true;
       case ShapeDrag.none:
         break;
     }
+  }
+
+  void _restoreShape() {
+    final PrimitiveObject? shape = _shape;
+    final PrimitiveObject? snapshot = _shapeSnapshot;
+    if (shape == null || snapshot == null) return;
+    switch ((shape, snapshot)) {
+      case (final VectorRectangle r, final VectorRectangle s):
+        r.corners = List<double>.of(s.corners);
+      case (final VectorCircle c, final VectorCircle s):
+        c
+          ..angle1 = s.angle1
+          ..angle2 = s.angle2
+          ..arcType = s.arcType;
+      default:
+        return;
+    }
+    shape.update();
   }
 
   @override
@@ -178,13 +226,22 @@ class ShapeToolController extends ToolController {
     }
     marquee = null;
     _snapshot = null;
+    _shape = null;
+    _shapeSnapshot = null;
     _drag = ShapeDrag.none;
   }
 
   @override
   void onCancel() {
+    if (_drag == ShapeDrag.parametric) _restoreShape();
+    _shape = null;
+    _shapeSnapshot = null;
     final VectorCurve? curve = nodes.curve;
-    if (curve != null && _drag != ShapeDrag.marquee) _restore(curve);
+    if (curve != null &&
+        _drag != ShapeDrag.marquee &&
+        _drag != ShapeDrag.parametric) {
+      _restore(curve);
+    }
     _edited = false;
     marquee = null;
     _snapshot = null;
@@ -242,7 +299,12 @@ class ShapeToolController extends ToolController {
     if (shape != null) {
       selection.select(shape);
       selection.syncNodeCurve();
-      return 'Only curves have nodes - Convert to Curves (Ctrl+Q) first';
+      return switch (shape) {
+        VectorRectangle() =>
+          'Drag a corner to round it - with Ctrl, only that corner',
+        VectorCircle() => 'Drag the node: inside for a pie, outside for an arc',
+        _ => 'Only curves have nodes - Convert to Curves (Ctrl+Q) first',
+      };
     }
     nodes.clearNodes();
     return null;

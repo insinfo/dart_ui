@@ -494,6 +494,28 @@ void main() {
       harness.dispose();
     });
 
+    test('the Shape tool rounds a rectangle by its corner, in one undo', () {
+      final harness = _Harness()..withoutSnapping();
+      final rectangle = harness.rectangle;
+      harness.tapDocument(rectangle.cacheBbox.center);
+      harness.useTool(ToolMode.shaper);
+      final Offset corner = ParametricHandles.of(rectangle).first;
+      final double side = math.min(
+          rectangle.rectWidth.abs() * rectangle.trafo[0].abs(),
+          rectangle.rectHeight.abs() * rectangle.trafo[3].abs());
+      // Down the edge a quarter of the shorter side: half rounded.
+      final Offset along =
+          ParametricHandles.of(rectangle)[1] - corner; // to the next corner
+      final Offset to = corner + along / along.distance * (side / 4);
+      harness.dragDocument(corner, to);
+      expect(rectangle.corners.first, closeTo(.5, .02));
+      expect(rectangle.corners.toSet(), hasLength(1),
+          reason: 'every corner together');
+      harness.model.undo();
+      expect(rectangle.corners, <double>[0, 0, 0, 0]);
+      harness.dispose();
+    });
+
     test('Ctrl keeps a move on one axis', () {
       final harness = _Harness()..withoutSnapping();
       final rectangle = harness.rectangle;

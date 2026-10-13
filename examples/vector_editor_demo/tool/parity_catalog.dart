@@ -317,7 +317,8 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   ParityFeature(_nodes, 'Reduce nodes', 'P1'),
   ParityFeature(_nodes, 'Stretch, rotate, skew, align nodes', 'P2'),
   ParityFeature(_nodes, 'Elastic mode', 'P2'),
-  ParityFeature(_nodes, 'Parametric shapes: corner handles', 'P0'),
+  ParityFeature(_nodes, 'Parametric shapes: corner handles', 'P0',
+      evidence: 'the Shape tool rounds a rectangle by its corner, in one undo'),
 
   // --- snapping ---------------------------------------------------------------
   ParityFeature(_snap, 'Snap to grid', 'P0',

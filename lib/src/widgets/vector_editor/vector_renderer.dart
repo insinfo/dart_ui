@@ -30,6 +30,7 @@ import '../../graphics/vector/structural_objects.dart';
 import '../../rendering/text/font_registry.dart';
 import '../../rendering/text/text_painter.dart';
 import '../../vector_editing/node_editing.dart';
+import '../../vector_editing/parametric_handles.dart';
 import '../../vector_editing/selection.dart';
 import '../../vector_editing/tool_mode.dart';
 import '../theme.dart';
@@ -258,8 +259,17 @@ class VectorRenderer {
     // tool on a curve, its nodes and their handles instead.
     final VectorCurve? edited =
         currentTool == ToolMode.shaper ? selection?.nodes.curve : null;
+    final List<SelectableObject> picked =
+        selection?.selectedObjects ?? const <SelectableObject>[];
+    final SelectableObject? shaped =
+        currentTool == ToolMode.shaper && picked.length == 1
+            ? picked.single
+            : null;
     if (edited != null && selection!.selectedObjects.contains(edited)) {
       _renderNodes(edited, selection.nodes, list, zoom, colors);
+    } else if (shaped is PrimitiveObject &&
+        ParametricHandles.supports(shaped)) {
+      _renderParametric(shaped, list, zoom, colors);
     } else if (selection != null && selection.hasSelection) {
       _renderSelection(selection, list, zoom, colors);
     }
@@ -601,6 +611,48 @@ class VectorRenderer {
       final Rect box = Rect.fromCenter(center: at, width: size, height: size);
       list.drawRectangle(box, picked.nodes.contains(node) ? accent : fill);
       list.drawRectangle(box, line);
+    }
+  }
+
+  /// A rectangle's or an ellipse's own handles under the Shape tool: its
+  /// outline, and a node where each corner rounds or each end of the arc is.
+  static void _renderParametric(
+    PrimitiveObject shape,
+    DisplayList list,
+    double zoom,
+    VectorCanvasColors colors,
+  ) {
+    final double scale = zoom == 0 ? 1.0 : zoom;
+    final int line = list.addPaint(
+      colorArgb: colors.selection.value,
+      style: paintStyleStroke,
+      strokeWidth: 1.0 / scale,
+    );
+    final int fill = list.addPaint(colorArgb: colors.handleFill.value);
+    final PathBuilder outline = PathBuilder();
+    for (final VectorPath path in shape.cachePaths ?? shape.getInitialPaths()) {
+      final Offset start = applyTrafoToPoint(path.start, shape.trafo);
+      outline.moveTo(start.dx, start.dy);
+      for (final Object point in path.points) {
+        if (point is CurvePoint) {
+          final Offset c1 = applyTrafoToPoint(point.control1, shape.trafo);
+          final Offset c2 = applyTrafoToPoint(point.control2, shape.trafo);
+          final Offset end = applyTrafoToPoint(point.endpoint, shape.trafo);
+          outline.cubicTo(c1.dx, c1.dy, c2.dx, c2.dy, end.dx, end.dy);
+        } else {
+          final Offset end = applyTrafoToPoint(point as Offset, shape.trafo);
+          outline.lineTo(end.dx, end.dy);
+        }
+      }
+      if (path.isClosed) outline.close();
+    }
+    list.drawPath(list.addPath(outline.build()), line);
+    final double size = 6.0 / scale;
+    for (final Offset at in ParametricHandles.of(shape)) {
+      final Rect box = Rect.fromCenter(center: at, width: size, height: size);
+      list
+        ..drawRectangle(box, fill)
+        ..drawRectangle(box, line);
     }
   }
 

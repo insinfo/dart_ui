@@ -94,3 +94,22 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
 **Próximo passo**
 - Propriedades (Alt+Enter), barras de Texto e de Zoom, alças de canto de
   formas paramétricas, guias arrastadas da régua.
+
+### 13/10/2026, à noite
+
+**Mudou**
+- Barra da ferramenta Zoom: níveis, aproximar, afastar, seleção, página, e
+  os novos `view.zoomPageWidth` e `view.zoomPageHeight`.
+- Ctrl (Cmd no Mac) gira em passos de 15°, como no CorelDRAW; o movimento
+  com Ctrl num eixo só ganhou o teste que faltava.
+- Framework: `ParametricHandles`. A Forma (F10) num retângulo mostra um nó
+  por canto, onde o arredondamento começa; arrastar arredonda todos, e com
+  Ctrl só aquele. Numa elipse, arrastar o nó para dentro faz pizza e para
+  fora faz arco. Um passo de desfazer por arraste.
+- Cenário `corners` na captura headless.
+- P0 em 93%: nenhuma falta por inteiro (54 feitas, 9 parciais).
+
+**Próximo passo**
+- Pontas, junções e tracejado do contorno no canvas (precisa do formato de
+  pintura), guias arrastadas da régua, barra de Texto (fonte, estilo,
+  alinhamento) e texto de parágrafo.
