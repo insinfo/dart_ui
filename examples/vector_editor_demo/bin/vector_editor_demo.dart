@@ -1,7 +1,7 @@
 /// The vector editor (100% Dart).
 ///
 /// ```
-/// dart run [drawing.svg|drawing.cdr] [--control <port>] [--dark|--light]
+/// dart run bin/vector_editor_demo.dart [drawing.svg|drawing.cdr] [--control <port>]
 /// ```
 ///
 /// `--control <port>` opens the control channel on `127.0.0.1:<port>`: JSON

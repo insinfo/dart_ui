@@ -50,7 +50,7 @@ Um teste de camadas (`test/examples/vector_editor_layers_test.dart`) lê os
 
 ## Canal de controle (agentes)
 
-`cd examples/vector_editor_demo && dart run --control 7979` abre
+`cd examples/vector_editor_demo && dart run bin/vector_editor_demo.dart --control 7979` abre
 `127.0.0.1:7979`. Uma requisição JSON por linha:
 
 ```json
@@ -64,10 +64,12 @@ JSON com `method` fecha a conexão; linhas acima de 4 MiB são recusadas.
 
 ## Paridade medida
 
-`dart run tool/vector_editor_parity.dart` cruza o catálogo dos menus do
-CorelDRAW (`doc/vector_editor_catalogo_coreldraw.md`, só documentação pública)
-com o registro e imprime "N de M funcionam", por menu. O número e a lista do
-que falta vão para `doc/vector_editor_paridade.md` a cada entrega.
+Dentro de `examples/vector_editor_demo`, `dart run tool/parity.dart` cruza as
+175 funcionalidades do catálogo do CorelDRAW
+(`doc/vector_editor_catalogo_coreldraw.md`, só documentação pública) com o
+registro de comandos do editor e escreve `doc/paridade.md`: feitas, parciais e
+faltando, por prioridade e por área. Um teste exige que o relatório esteja
+atual e que a tabela só cite comandos registrados e testes que existem.
 
 ## Sala limpa
 
@@ -92,6 +94,6 @@ que falta vão para `doc/vector_editor_paridade.md` a cada entrega.
 | 3 | Editor: todos os comandos no registro; menus, contexto, barras e atalhos a partir dele | feito (painéis de propriedades ainda chamam o modelo) |
 | 4 | Editor: pastas `engine/` e `ui/`, teste de camadas | feito |
 | 5 | `--control` no editor; sonda que desenha e captura só pelo canal (`tool/control_probe.dart`) | feito |
-| 6 | Ferramenta de paridade e `doc/vector_editor_paridade.md` | — |
+| 6 | Ferramenta de paridade (`tool/parity.dart`) e `examples/vector_editor_demo/doc/paridade.md` | feito: 23% no total, 52% das P0 |
 | 7 | Paleta de comandos (Ctrl/⌘+Shift+P) | — |
 | 8 | Auditoria de sala limpa do código derivado do sK1 | — |

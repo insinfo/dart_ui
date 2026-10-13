@@ -127,8 +127,8 @@ Future<void> main(List<String> args) async {
     });
     await step('the menus are listed with their state', () async {
       final List<Object?> rows = await call('ui.menu.list') as List<Object?>;
-      return rows.cast<Map<String, Object?>>().any((row) =>
-          row['command'] == 'object.toCurves' && row['path'] is List);
+      return rows.cast<Map<String, Object?>>().any(
+          (row) => row['command'] == 'object.toCurves' && row['path'] is List);
     });
     await step('fit the page and take a screenshot', () async {
       await execute('view.zoomPage');
