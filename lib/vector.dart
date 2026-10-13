@@ -35,6 +35,8 @@ export 'src/graphics/vector/style.dart';
 export 'src/pdf/export/vector_pdf_exporter.dart';
 export 'src/rendering/text/font_registry.dart' show FontRegistry;
 export 'src/rendering/text/framework_fonts.dart';
+export 'src/vector_editing/curve_fitting.dart';
+export 'src/vector_editing/freehand_tool.dart';
 export 'src/vector_editing/node_editing.dart';
 export 'src/vector_editing/path_boolean.dart';
 export 'src/vector_editing/selection.dart';

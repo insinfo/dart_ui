@@ -11,5 +11,6 @@ enum ToolMode {
   circle,
   polygon,
   curve,
+  freehand,
   text,
 }

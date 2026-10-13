@@ -54,6 +54,7 @@ import '../../graphics/vector/structural_objects.dart';
 import '../../layout/render_box.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_window.dart' show SystemCursor;
+import '../../vector_editing/freehand_tool.dart';
 import '../../vector_editing/selection.dart';
 import '../../vector_editing/shape_tool.dart';
 import '../../vector_editing/snap_manager.dart';
@@ -340,6 +341,12 @@ class VectorCanvasState extends State<VectorCanvas>
             corners: widget.polygonCorners,
           ),
         ToolMode.curve => CurveToolController(
+            doc: widget.doc,
+            methods: _methods,
+            selection: widget.selection,
+            snap: _snap,
+          ),
+        ToolMode.freehand => FreehandToolController(
             doc: widget.doc,
             methods: _methods,
             selection: widget.selection,
@@ -990,6 +997,7 @@ final class RenderVectorCanvas extends RenderBox
       case ToolMode.circle:
       case ToolMode.polygon:
       case ToolMode.curve:
+      case ToolMode.freehand:
         return SystemCursor.crosshair;
       case ToolMode.shaper:
         return SystemCursor.arrow;

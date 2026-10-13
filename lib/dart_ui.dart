@@ -212,6 +212,8 @@ export 'src/text/shapers/arabic.dart';
 export 'src/text/shapers/script_models.dart';
 export 'src/text/typeface.dart';
 export 'src/text/word_break.dart';
+export 'src/vector_editing/curve_fitting.dart';
+export 'src/vector_editing/freehand_tool.dart';
 export 'src/vector_editing/node_editing.dart';
 export 'src/vector_editing/path_boolean.dart';
 export 'src/vector_editing/selection.dart';
