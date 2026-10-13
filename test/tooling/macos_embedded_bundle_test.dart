@@ -2,6 +2,11 @@
 /// toolchain it is compiled with, the build steps in order, and the runtime
 /// patch it depends on. Tools are faked: nothing here needs the Dart SDK
 /// checkout, Xcode or a Mac.
+///
+/// Not on Windows: a `.app` is built on a Mac, and the builder joins POSIX
+/// paths the way the bundle lays them out (`Contents/Frameworks/...`). The
+/// Linux run covers the same logic.
+@TestOn('!windows')
 library;
 
 import 'dart:io';

@@ -138,7 +138,7 @@ Para retomar, leia nesta ordem:
 
 ### Quarto backend do macOS
 IME, área de transferência, arrastar e soltar, acessibilidade, barra de menu
-nativa, desenho durante o live resize, pacing por vsync, um job de CI com
+nativa, testes do empacotador com caminhos do Windows (hoje fora do Windows), desenho durante o live resize, pacing por vsync, um job de CI com
 `tool/macos/embedded_demo.dart`. Só arm64; notarização não testada.
 
 ### Outros pendentes do roteiro
