@@ -181,20 +181,34 @@ void main() {
       }
       await _pump(backend, const Duration(milliseconds: 500));
 
-      if (events.isEmpty) {
-        print('WIN32_TOUCH_INJECTION=SKIP nothing reached the window');
+      // A hosted runner's cursor drifts over the window and posts mouse
+      // moves of its own; they say nothing about the touch. What does is a
+      // touch-kind event, or a press or release of any kind - a click the
+      // system synthesized from the touch is exactly what must not appear.
+      final List<PointerEvent> contact = <PointerEvent>[
+        for (final PointerEvent e in events)
+          if (e.kind == PointerKind.touch ||
+              e is PointerDownEvent ||
+              e is PointerUpEvent)
+            e,
+      ];
+      // Evidence for the CI log: what a real injected contact turned into.
+      final String seen = events
+          .map((PointerEvent e) => '${e.runtimeType}/${e.kind.name}')
+          .join(',');
+      if (contact.isEmpty) {
+        print('WIN32_TOUCH_INJECTION=SKIP no contact reached the window: '
+            '$seen');
         markTestSkipped('no injected contact reached the window');
         return;
       }
-      // Evidence for the CI log: what a real injected contact turned into.
-      print('WIN32_TOUCH_INJECTION=RAN '
-          '${events.map((PointerEvent e) => '${e.runtimeType}/${e.kind.name}').join(',')}');
-      expect(events.whereType<PointerDownEvent>(), hasLength(1),
+      print('WIN32_TOUCH_INJECTION=RAN $seen');
+      expect(contact.whereType<PointerDownEvent>(), hasLength(1),
           reason: 'one press: the touch, not also a synthesized click');
-      expect(
-          events.every((PointerEvent e) => e.kind == PointerKind.touch), isTrue,
-          reason: '${events.map((e) => '${e.runtimeType}/${e.kind}')}');
-      expect(events.whereType<PointerUpEvent>(), hasLength(1));
+      expect(contact.every((PointerEvent e) => e.kind == PointerKind.touch),
+          isTrue,
+          reason: seen);
+      expect(contact.whereType<PointerUpEvent>(), hasLength(1));
     });
   }, skip: Platform.isWindows ? false : 'needs a real Win32 window');
 }
