@@ -19,6 +19,9 @@ final class _Host implements EditorHost {
 
   @override
   void quit() {}
+
+  @override
+  void findReplace() {}
 }
 
 void main() {

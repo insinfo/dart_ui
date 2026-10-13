@@ -23,12 +23,10 @@ final class _Harness {
     );
     owner.updateRoot(PopupScope(
       host: InTreePopupHost(),
-      child: DialogLayer(
-        child: FileExplorerApp(
-          model: model,
-          onReady: (ExplorerWindowState w) => window = w,
-          onClose: () => closed = true,
-        ),
+      child: FileExplorerApp(
+        model: model,
+        onReady: (ExplorerWindowState w) => window = w,
+        onClose: () => closed = true,
       ),
     ));
   }

@@ -35,6 +35,9 @@ final class _NoDialogs implements EditorHost {
   void closeDocument(int index) {}
   @override
   void quit() {}
+
+  @override
+  void findReplace() {}
 }
 
 /// The editor's registry and menus, with no window.

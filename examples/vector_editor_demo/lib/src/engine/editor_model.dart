@@ -1114,6 +1114,94 @@ class EditorModel {
     touch(changed ? 'Order changed' : 'Already there');
   }
 
+  /// Moves the selection in front of everything on the page - onto the top
+  /// of the topmost layer that takes objects - or, with [front] false,
+  /// behind everything, at the bottom of the lowest: CorelDRAW's To Front
+  /// of Page and To Back of Page, which cross layers where To Front stays
+  /// in one.
+  void toPage({required bool front}) {
+    if (!hasSelection) return;
+    final List<VectorLayer> editable = <VectorLayer>[
+      for (final VectorLayer layer in active.layers)
+        if (layer.isEditable && layer.isVisible) layer,
+    ];
+    if (editable.isEmpty) return;
+    final VectorLayer target = front ? editable.last : editable.first;
+    final List<SelectableObject> moving = <SelectableObject>[
+      for (final SelectableObject object
+          in _inDocumentOrder(selection.selectedObjects.toList()))
+        if (object.parent is VectorLayer) object,
+    ];
+    if (moving.isEmpty) return;
+    active.api.record(front ? 'To front of page' : 'To back of page', () {
+      for (final SelectableObject object in moving) {
+        object.parent!.children.remove(object);
+        object.parent = target;
+      }
+      if (front) {
+        target.children.addAll(moving);
+      } else {
+        target.children.insertAll(0, moving);
+      }
+      active.document.update();
+    });
+    touch(front ? 'In front of the page' : 'Behind the page');
+  }
+
+  /// Selects every object of [type] on the page: `objects` (everything),
+  /// `text`, `curves`, `rectangles`, `ellipses`, `polygons` or `groups` -
+  /// CorelDRAW's Edit > Select All, and a search by type.
+  int selectAllOfType(String type) {
+    if (!hasDocument) return 0;
+    bool wanted(SelectableObject o) => switch (type) {
+          'text' => o is VectorText,
+          'curves' => o is VectorCurve,
+          'rectangles' => o is VectorRectangle,
+          'ellipses' => o is VectorCircle,
+          'polygons' => o is VectorPolygon,
+          'groups' => o is VectorGroup,
+          _ => true,
+        };
+    final List<SelectableObject> found = <SelectableObject>[
+      for (final VectorLayer layer in active.layers)
+        if (layer.isVisible)
+          for (final DocumentObject child in layer.children)
+            if (child is SelectableObject && wanted(child)) child,
+    ];
+    selection.setSelection(found);
+    refresh('${found.length} object(s) selected');
+    return found.length;
+  }
+
+  /// Replaces [find] with [replace] in every text object on the page, as
+  /// one undo step; answers how many replacements were made.
+  int replaceText(String find, String replace, {bool matchCase = true}) {
+    if (!hasDocument || find.isEmpty) return 0;
+    final RegExp pattern =
+        RegExp(RegExp.escape(find), caseSensitive: matchCase);
+    final List<VectorText> texts = <VectorText>[];
+    active.document.visitAll((DocumentObject node) {
+      if (node is VectorText && pattern.hasMatch(node.textContent)) {
+        texts.add(node);
+      }
+    });
+    if (texts.isEmpty) {
+      refresh('"$find" not found');
+      return 0;
+    }
+    var count = 0;
+    active.api.record('Replace text', () {
+      for (final VectorText text in texts) {
+        count += pattern.allMatches(text.textContent).length;
+        text.textContent = text.textContent.replaceAll(pattern, replace);
+        text.update();
+      }
+      active.document.update();
+    });
+    touch('Replaced $count');
+    return count;
+  }
+
   /// Nudges the selection with an arrow key: [dx], [dy] are -1, 0 or 1 steps
   /// of 1 mm, times ten with Shift and a tenth with the command key -
   /// CorelDRAW's nudge, super nudge and micro nudge. Held keys repeat into

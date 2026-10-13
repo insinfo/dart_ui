@@ -53,6 +53,9 @@ final class _NoDialogHost implements EditorHost {
 
   @override
   void quit() {}
+
+  @override
+  void findReplace() {}
 }
 
 /// Runs the command line with [arguments], writing to [out] and [err].

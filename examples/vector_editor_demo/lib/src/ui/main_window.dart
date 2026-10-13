@@ -225,6 +225,13 @@ class MainWindowState extends State<MainWindow> implements EditorHost {
   @override
   void quit() => unawaited(_quit());
 
+  @override
+  void findReplace() => unawaited(showDialog<void>(
+        context: context,
+        builder: (BuildContext context) =>
+            _FindReplaceDialog(registry: registry),
+      ));
+
   /// Exit: the same as the window's close button, after the same question.
   Future<void> _quit() async {
     final List<DocumentSession> unsaved =
@@ -533,4 +540,71 @@ VectorDocument buildSampleDocument() {
 
   doc.update();
   return doc;
+}
+
+/// Edit > Find and Replace, for text: what to find, what to put instead,
+/// whether case matters - then `edit.replaceText`, one undo step.
+class _FindReplaceDialog extends StatefulWidget {
+  const _FindReplaceDialog({required this.registry});
+
+  final CommandRegistry registry;
+
+  @override
+  State<_FindReplaceDialog> createState() => _FindReplaceDialogState();
+}
+
+class _FindReplaceDialogState extends State<_FindReplaceDialog> {
+  final TextEditingController _find = TextEditingController('');
+  final TextEditingController _replace = TextEditingController('');
+  bool _matchCase = false;
+
+  void _replaceAll() {
+    if (_find.value.isEmpty) return;
+    widget.registry.execute('edit.replaceText', <String, Object?>{
+      'find': _find.value,
+      'replace': _replace.value,
+      'matchCase': _matchCase,
+    });
+    closeDialog<void>(context);
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: 380,
+        child: Dialog(
+          title: 'Find and Replace Text',
+          onDismiss: () => closeDialog<void>(context),
+          actions: <Widget>[
+            Button(
+                label: 'Replace All', isDefault: true, onPressed: _replaceAll),
+            Button(
+              label: 'Cancel',
+              accent: false,
+              isCancel: true,
+              onPressed: () => closeDialog<void>(context),
+            ),
+          ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              TextField(
+                  controller: _find,
+                  label: 'Find',
+                  onSubmitted: (_) => _replaceAll()),
+              const SizedBox(height: 8),
+              TextField(
+                  controller: _replace,
+                  label: 'Replace with',
+                  onSubmitted: (_) => _replaceAll()),
+              const SizedBox(height: 8),
+              CheckBox(
+                value: _matchCase,
+                label: 'Match case',
+                onChanged: (bool value) => setState(() => _matchCase = value),
+              ),
+            ],
+          ),
+        ),
+      );
 }

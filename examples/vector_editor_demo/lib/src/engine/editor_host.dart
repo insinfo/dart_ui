@@ -25,4 +25,8 @@ abstract interface class EditorHost {
 
   /// Asks to close the editor, as its window's close button does.
   void quit();
+
+  /// Asks what to find and what to replace it with in the drawing's text,
+  /// and replaces it - Edit > Find and Replace.
+  void findReplace();
 }

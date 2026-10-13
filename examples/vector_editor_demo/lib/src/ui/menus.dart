@@ -63,8 +63,23 @@ final class EditorMenus {
           CommandItem('edit.delete'),
           CommandItem('edit.duplicate'),
           _,
-          CommandItem('edit.selectAll'),
+          SubmenuSpec('Select All', <MenuSpecEntry>[
+            CommandItem('edit.selectAll', label: 'Objects'),
+            CommandItem('edit.selectAll',
+                params: <String, Object?>{'type': 'text'}, label: 'Text'),
+            CommandItem('edit.selectAll',
+                params: <String, Object?>{'type': 'curves'}, label: 'Curves'),
+            CommandItem('edit.selectAll',
+                params: <String, Object?>{'type': 'rectangles'},
+                label: 'Rectangles'),
+            CommandItem('edit.selectAll',
+                params: <String, Object?>{'type': 'ellipses'},
+                label: 'Ellipses'),
+            CommandItem('edit.selectAll',
+                params: <String, Object?>{'type': 'groups'}, label: 'Groups'),
+          ]),
           CommandItem('edit.deselect'),
+          CommandItem('edit.findReplace'),
           _,
           CommandItem('panel.fillStroke', label: 'Fill...', checkable: false),
           CommandItem('panel.fillStroke',
@@ -202,10 +217,12 @@ final class EditorMenus {
   ];
 
   static const List<MenuSpecEntry> _order = <MenuSpecEntry>[
+    CommandItem('object.toFrontOfPage'),
     CommandItem('object.toFront'),
     CommandItem('object.forward'),
     CommandItem('object.backward'),
     CommandItem('object.toBack'),
+    CommandItem('object.toBackOfPage'),
   ];
 
   /// The canvas: the selection's menu, or the page's when nothing is

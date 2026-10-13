@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 55 | 8 | 0 | 63 | 94% |
+| P0 | 56 | 7 | 0 | 63 | 94% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 63 | 10 | 102 | 175 | 39% |
+| **todas** | 64 | 9 | 102 | 175 | 39% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 82 de 97 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 90 de 105 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 118.
+Comandos registrados: 122.
 
 ## Por área
 
@@ -26,7 +26,7 @@ Comandos registrados: 118.
 | Interações no canvas | 9 | 1 | 3 | 13 | 73% |
 | Barra de propriedades | 5 | 2 | 9 | 16 | 38% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
-| Operações de objeto | 10 | 2 | 10 | 22 | 50% |
+| Operações de objeto | 11 | 1 | 10 | 22 | 52% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
 | Edição de nós | 10 | 0 | 4 | 14 | 71% |
@@ -167,7 +167,7 @@ Comandos registrados: 118.
 | ✅ | Break apart (Ctrl+K) | P0 | `object.breakApart` |  |
 | ✅ | Convert to curves (Ctrl+Q) | P0 | `object.toCurves` |  |
 | ❌ | Convert outline to object | P1 |  | tudo |
-| 🟡 | To front / back of page | P0 | `object.toFront`, `object.toBack` | of the layer; the page has one layer stack per layer |
+| ✅ | To front / back of page | P0 | `object.toFront`, `object.toBack`, `object.toFrontOfPage`, `object.toBackOfPage` |  |
 | ✅ | To front / back of layer | P0 | `object.toFront`, `object.toBack` |  |
 | ✅ | Forward one / Back one | P0 | `object.forward`, `object.backward` |  |
 | ❌ | In front of / Behind / Reverse order | P2 |  | tudo |
@@ -202,7 +202,7 @@ Comandos registrados: 118.
 
 | | funcionalidade | prio | como | falta |
 |---|---|---|---|---|
-| 🟡 | Edit | P0 | `edit.undo`, `edit.cut`, `edit.paste` | no Paste Special, Find and Replace or Select by type |
+| 🟡 | Edit | P0 | `edit.undo`, `edit.cut`, `edit.paste`, `edit.selectAll`, `edit.findReplace`, `edit.replaceText` | no Paste Special; Find and Replace finds text only |
 | ❌ | Layout | P1 |  | the menu is there; every item is still planned |
 | ✅ | Object | P0 | `object.group` |  |
 | ❌ | Effects | P2 |  | tudo |

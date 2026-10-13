@@ -57,6 +57,20 @@ List<CommandSpec> arrangeCommands(EditorContext context) {
       );
 
   return <CommandSpec>[
+    CommandSpec(
+      id: 'object.toFrontOfPage',
+      label: 'To Front of Page',
+      shortcut: const KeyGesture(logicalKeyHome, command: true),
+      when: context.needsSelection,
+      run: (_) => model.toPage(front: true),
+    ),
+    CommandSpec(
+      id: 'object.toBackOfPage',
+      label: 'To Back of Page',
+      shortcut: const KeyGesture(logicalKeyEnd, command: true),
+      when: context.needsSelection,
+      run: (_) => model.toPage(front: false),
+    ),
     order(
         'object.toFront',
         'To Front',

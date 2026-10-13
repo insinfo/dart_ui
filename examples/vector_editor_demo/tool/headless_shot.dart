@@ -141,6 +141,9 @@ Future<void> main(List<String> args) async {
       ..execute('object.toCurves')
       ..execute('tool.shape')
       ..execute('path.selectAllNodes');
+  } else if (scenario == 'find') {
+    // Edit > Find and Replace, the editor's first dialog.
+    state.registry.execute('edit.findReplace');
   } else if (scenario == 'outline') {
     // Every object with a thick dashed outline, round caps and joins.
     state.model.selectAll();

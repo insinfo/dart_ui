@@ -91,11 +91,59 @@ List<CommandSpec> editCommands(EditorContext context) {
     CommandSpec(
       id: 'edit.selectAll',
       label: 'Select All',
+      description: 'Everything on the page, or only one kind of object.',
+      params: const <CommandParam>[
+        CommandParam('type', CommandParamType.string,
+            description: 'objects (the default), text, curves, rectangles, '
+                'ellipses, polygons or groups'),
+      ],
       shortcut: const KeyGesture(logicalKeyA, command: true),
       when: context.needsDocument,
+      run: (CommandArgs args) {
+        if (!args.has('type')) {
+          model.selectAll();
+          return <String, Object?>{'selected': model.selection.count};
+        }
+        final String type = oneOf(args, 'type', const <String>[
+          'objects',
+          'text',
+          'curves',
+          'rectangles',
+          'ellipses',
+          'polygons',
+          'groups',
+        ]);
+        return <String, Object?>{'selected': model.selectAllOfType(type)};
+      },
+    ),
+    CommandSpec(
+      id: 'edit.findReplace',
+      label: 'Find and Replace...',
+      shortcut: const KeyGesture(logicalKeyH, command: true),
+      when: context.needsDocument,
       run: (_) {
-        model.selectAll();
-        return <String, Object?>{'selected': model.selection.count};
+        context.host.findReplace();
+        return null;
+      },
+    ),
+    CommandSpec(
+      id: 'edit.replaceText',
+      label: 'Replace Text',
+      description: 'Replaces a string in every text object on the page, as '
+          'one undo step - Find and Replace for text.',
+      params: const <CommandParam>[
+        CommandParam('find', CommandParamType.string, required: true),
+        CommandParam('replace', CommandParamType.string, required: true),
+        CommandParam('matchCase', CommandParamType.boolean,
+            description: 'true by default'),
+      ],
+      when: context.needsDocument,
+      run: (CommandArgs args) => <String, Object?>{
+        'replaced': model.replaceText(
+          args['find']! as String,
+          args['replace']! as String,
+          matchCase: !args.has('matchCase') || args['matchCase'] == true,
+        ),
       },
     ),
     CommandSpec(

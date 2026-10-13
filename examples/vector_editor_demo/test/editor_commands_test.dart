@@ -24,6 +24,9 @@ final class _Host implements EditorHost {
 
   @override
   void quit() => asked.add('quit');
+
+  @override
+  void findReplace() => asked.add('find');
 }
 
 void main() {
@@ -222,5 +225,64 @@ void main() {
     expect(model.active.pan.dy + page.center.dy * zoom, closeTo(300, 0.01));
     registry.execute('view.zoomPageHeight');
     expect(page.height * model.active.zoom, closeTo(600 - 48, 0.01));
+  });
+
+  test('select all of a type; replace text across the page in one undo', () {
+    registry
+      ..execute('shape.rectangle', <String, Object?>{
+        'x': 0,
+        'y': 0,
+        'width': 10,
+        'height': 10,
+      })
+      ..execute('shape.text', <String, Object?>{
+        'x': 0,
+        'y': 50,
+        'text': 'Hello world, hello',
+      })
+      ..execute('shape.text', <String, Object?>{
+        'x': 0,
+        'y': 80,
+        'text': 'Nothing here',
+      });
+    expect(
+        registry.execute(
+            'edit.selectAll', <String, Object?>{'type': 'text'}).result,
+        <String, Object?>{'selected': 2});
+    expect(
+        model.selection.selectedObjects.whereType<VectorText>(), hasLength(2));
+    expect(
+        registry.execute('edit.replaceText', <String, Object?>{
+          'find': 'hello',
+          'replace': 'bye',
+          'matchCase': false,
+        }).result,
+        <String, Object?>{'replaced': 2});
+    expect(
+        objects().whereType<VectorText>().first.textContent, 'bye world, bye');
+    model.undo();
+    expect(objects().whereType<VectorText>().first.textContent,
+        'Hello world, hello');
+    registry.execute('edit.findReplace');
+    expect(host.asked, contains('find'), reason: 'the dialog is the host\'s');
+  });
+
+  test('to front and back of the page cross layers', () {
+    registry.execute('shape.rectangle', <String, Object?>{
+      'x': 0,
+      'y': 0,
+      'width': 10,
+      'height': 10,
+    });
+    final SelectableObject rect = objects().single;
+    registry.execute('layer.new');
+    final List<VectorLayer> layers = model.active.layers;
+    expect(layers, hasLength(2));
+    model.pickObject(rect);
+    registry.execute('object.toFrontOfPage');
+    expect(rect.parent, same(layers.last), reason: 'onto the top layer');
+    registry.execute('object.toBackOfPage');
+    expect(rect.parent, same(layers.first));
+    expect(layers.first.children.first, same(rect));
   });
 }

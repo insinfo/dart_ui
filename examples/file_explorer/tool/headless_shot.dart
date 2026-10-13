@@ -51,13 +51,11 @@ Future<void> main(List<String> args) async {
   );
   owner.updateRoot(PopupScope(
     host: InTreePopupHost(),
-    child: DialogLayer(
-      child: FileExplorerApp(
-        model: model,
-        dark: dark,
-        thumbnailLoader: _paintedThumbnail,
-        onReady: (ExplorerWindowState w) => window = w,
-      ),
+    child: FileExplorerApp(
+      model: model,
+      dark: dark,
+      thumbnailLoader: _paintedThumbnail,
+      onReady: (ExplorerWindowState w) => window = w,
     ),
   ));
 

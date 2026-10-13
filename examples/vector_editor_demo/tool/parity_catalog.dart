@@ -230,9 +230,12 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   ParityFeature(_object, 'Convert to curves (Ctrl+Q)', 'P0',
       commands: <String>['object.toCurves']),
   ParityFeature(_object, 'Convert outline to object', 'P1'),
-  ParityFeature(_object, 'To front / back of page', 'P0',
-      commands: <String>['object.toFront', 'object.toBack'],
-      partial: 'of the layer; the page has one layer stack per layer'),
+  ParityFeature(_object, 'To front / back of page', 'P0', commands: <String>[
+    'object.toFront',
+    'object.toBack',
+    'object.toFrontOfPage',
+    'object.toBackOfPage',
+  ]),
   ParityFeature(_object, 'To front / back of layer', 'P0',
       commands: <String>['object.toFront', 'object.toBack']),
   ParityFeature(_object, 'Forward one / Back one', 'P0',
@@ -281,8 +284,15 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
 
   // --- menus ------------------------------------------------------------------
   ParityFeature(_menus, 'Edit', 'P0',
-      commands: <String>['edit.undo', 'edit.cut', 'edit.paste'],
-      partial: 'no Paste Special, Find and Replace or Select by type'),
+      commands: <String>[
+        'edit.undo',
+        'edit.cut',
+        'edit.paste',
+        'edit.selectAll',
+        'edit.findReplace',
+        'edit.replaceText',
+      ],
+      partial: 'no Paste Special; Find and Replace finds text only'),
   ParityFeature(_menus, 'Layout', 'P1',
       partial: 'the menu is there; every item is still planned'),
   ParityFeature(_menus, 'Object', 'P0', commands: <String>['object.group']),
