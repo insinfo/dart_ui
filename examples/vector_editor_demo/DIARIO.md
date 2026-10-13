@@ -67,3 +67,30 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
 **Próximo passo**
 - Booleanos (Soldar, Aparar, Interseção), Mão livre (F5), Propriedades
   (Alt+Enter), arrastar segmento e mover nós com as setas.
+
+### Mais tarde, no mesmo dia
+
+**Mudou**
+- Arrastar segmento (pesos do Inkscape: o ponto agarrado fica sob o cursor)
+  e setas movendo os nós escolhidos sob a Forma.
+- Framework: `PathBoolean`, booleanas que mantêm as Béziers (paper.js):
+  intersecções por subdivisão, trechos coincidentes tratados à parte,
+  classificação por winding exato um fio de cada lado de cada pedaço. Teste
+  de propriedade com 12 mil pontos em formas aleatórias, sem divergência.
+- Soldar, Aparar e Interseção (`shaping_commands`), com o alvo sendo o último
+  selecionado, como no CorelDRAW.
+- Framework: `CurveFitting` (Schneider) e `FreehandToolController`; Mão
+  livre (F5) com suavização.
+- Framework: `CommandIconButton`. A barra de propriedades passou a usar
+  comandos nos botões de nós, de modelagem e de agrupar; o plugin antigo de
+  Combinar ainda dizia "not implemented".
+- P0 em 87% (36% no total).
+
+**Ficou pela metade**
+- Os campos numéricos da barra (posição, tamanho, rotação) ainda chamam o
+  modelo direto.
+- A barra de curvas não tem setas nem estilo de linha.
+
+**Próximo passo**
+- Propriedades (Alt+Enter), barras de Texto e de Zoom, alças de canto de
+  formas paramétricas, guias arrastadas da régua.

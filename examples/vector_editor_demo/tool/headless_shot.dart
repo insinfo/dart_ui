@@ -9,6 +9,7 @@
 /// dart run tool/headless_shot.dart out.png 1400 880
 /// dart run tool/headless_shot.dart out.png 1400 880 menu:1
 /// dart run tool/headless_shot.dart out.png 1400 880 select
+/// dart run tool/headless_shot.dart out.png 1400 880 nodes
 /// ```
 library;
 
@@ -133,6 +134,18 @@ Future<void> main(List<String> args) async {
       ..key(logicalKeyArrowRight, modifiers: const {KeyModifier.shift})
       ..key(logicalKeyArrowRight, modifiers: const {KeyModifier.shift})
       ..key(logicalKeyArrowRight, modifiers: const {KeyModifier.shift});
+  } else if (scenario == 'nodes') {
+    // The Shape tool on a converted rectangle, every node picked.
+    state.model.selection.select(objectOfType((o) => o is VectorRectangle));
+    state.registry
+      ..execute('object.toCurves')
+      ..execute('tool.shape')
+      ..execute('path.selectAllNodes');
+  } else if (scenario == 'shaping') {
+    // Weld, Trim and Intersect on the bar with two objects selected.
+    state.model.selection.select(objectOfType((o) => o is VectorRectangle));
+    state.model
+        .pickObject(objectOfType((o) => o is VectorCircle), toggle: true);
   } else if (scenario == 'multi') {
     // Bug 5: three objects picked up with Shift.
     final rect = objectOfType((o) => o is VectorRectangle);
