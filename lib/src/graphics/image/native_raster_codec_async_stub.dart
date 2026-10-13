@@ -10,5 +10,6 @@ Future<RasterDecodeResult?> tryDecodeNativeRasterAsync(
   required RasterImageFormat format,
   required ImageChannelOrder order,
   required RasterImageLimits limits,
+  int? maxSide,
 }) async =>
     null;

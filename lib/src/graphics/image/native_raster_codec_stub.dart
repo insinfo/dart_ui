@@ -10,5 +10,6 @@ RasterDecodeResult? tryDecodeNativeRaster(
   required RasterImageFormat format,
   required ImageChannelOrder order,
   required RasterImageLimits limits,
+  int? maxSide,
 }) =>
     null;

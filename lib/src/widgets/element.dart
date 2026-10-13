@@ -58,12 +58,6 @@ final class BuildOwner {
   final List<bool Function(KeyEvent event)> _windowKeyHandlers =
       <bool Function(KeyEvent event)>[];
 
-  /// Sees every key event in this window before anything else does, and
-  /// cannot consume it.
-  ///
-  /// For state that depends on *all* keys, whoever ends up with them: a menu
-  /// bar's "Alt was pressed and released with nothing in between" is broken by
-  /// an Alt+F the focused field consumed, and only an observer sees that F.
   /// The modifier keys held as of the last key transition this window saw.
   ///
   /// A [PointerEvent] carries no modifier set, so a Ctrl+click or a
@@ -79,6 +73,12 @@ final class BuildOwner {
   bool get commandHeld =>
       _keyModifiers.contains(platformEditingConvention.commandModifier);
 
+  /// Sees every key event in this window before anything else does, and
+  /// cannot consume it.
+  ///
+  /// For state that depends on *all* keys, whoever ends up with them: a menu
+  /// bar's "Alt was pressed and released with nothing in between" is broken by
+  /// an Alt+F the focused field consumed, and only an observer sees that F.
   void addKeyObserver(void Function(KeyEvent event) observer) =>
       _keyObservers.add(observer);
 
@@ -231,8 +231,23 @@ final class BuildOwner {
   /// map and to traversal on its own way through.
   bool dispatchTextInputEvent(TextInputEvent event) {
     _throwIfDisposed();
-    return _keyboardRouter.routeTextInput(event);
+    if (_keyboardRouter.routeTextInput(event)) return true;
+    for (final handler in List.of(_textInputHandlers)) {
+      if (handler(event)) return true;
+    }
+    return false;
   }
+
+  final List<bool Function(TextInputEvent event)> _textInputHandlers =
+      <bool Function(TextInputEvent event)>[];
+
+  /// Offered the text no focused control took - typing in a file list to
+  /// jump to a name, in a tree to find a node. Answers whether it used it.
+  void addTextInputHandler(bool Function(TextInputEvent event) handler) =>
+      _textInputHandlers.add(handler);
+
+  void removeTextInputHandler(bool Function(TextInputEvent event) handler) =>
+      _textInputHandlers.remove(handler);
 
   /// Builds the semantic tree for the current render tree.
   ///

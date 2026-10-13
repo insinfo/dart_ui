@@ -17,6 +17,7 @@ Future<RasterDecodeResult?> tryDecodeNativeRasterAsync(
   required RasterImageFormat format,
   required ImageChannelOrder order,
   required RasterImageLimits limits,
+  int? maxSide,
 }) async {
   web.ImageBitmap? bitmap;
   try {
@@ -25,19 +26,19 @@ Future<RasterDecodeResult?> tryDecodeNativeRasterAsync(
       web.BlobPropertyBag(type: _mimeType(format)),
     );
     bitmap = await web.window.createImageBitmap(blob).toDart;
-    limits.checkDimensions(bitmap.width, bitmap.height, format);
+    // A size cap draws the bitmap scaled; the browser filters it.
+    final (int width, int height) =
+        fitImageSize(bitmap.width, bitmap.height, maxSide);
+    limits.checkDimensions(width, height, format);
 
-    final web.OffscreenCanvas canvas = web.OffscreenCanvas(
-      bitmap.width,
-      bitmap.height,
-    );
+    final web.OffscreenCanvas canvas = web.OffscreenCanvas(width, height);
     final web.OffscreenRenderingContext? rawContext = canvas.getContext('2d');
     if (rawContext == null) return null;
     final web.OffscreenCanvasRenderingContext2D context =
         rawContext as web.OffscreenCanvasRenderingContext2D;
-    context.drawImage(bitmap, 0, 0);
+    context.drawImage(bitmap, 0, 0, width, height);
     final Uint8ClampedList straight =
-        context.getImageData(0, 0, bitmap.width, bitmap.height).data.toDart;
+        context.getImageData(0, 0, width, height).data.toDart;
     final Uint8List pixels = Uint8List(straight.length);
     var hasAlpha = false;
     for (var i = 0; i < straight.length; i += 4) {
@@ -50,8 +51,8 @@ Future<RasterDecodeResult?> tryDecodeNativeRasterAsync(
     }
     return RasterDecodeResult(
       image: DecodedImage(
-        width: bitmap.width,
-        height: bitmap.height,
+        width: width,
+        height: height,
         order: order,
         pixels: pixels,
         hasAlpha: hasAlpha,

@@ -99,6 +99,7 @@ RasterDecodeResult? tryDecodeTurboJpeg(
   required RasterImageFormat format,
   required ImageChannelOrder order,
   required RasterImageLimits limits,
+  int? maxSide,
 }) {
   if (format != RasterImageFormat.jpeg) return null;
   final _TurboJpegApi? api = _turboJpegApi;
@@ -126,8 +127,20 @@ RasterDecodeResult? tryDecodeTurboJpeg(
         0) {
       return null;
     }
-    final int width = widthOut.value;
-    final int height = heightOut.value;
+    // A size cap decodes at the smallest of libjpeg's 1/2, 1/4 and 1/8
+    // scales that still covers it - straight from the DCT, the full image
+    // never built - and leaves the last step to the caller's resample.
+    var denominator = 1;
+    if (maxSide != null) {
+      final int longest =
+          widthOut.value > heightOut.value ? widthOut.value : heightOut.value;
+      while (denominator < 8 &&
+          (longest + denominator * 2 - 1) ~/ (denominator * 2) >= maxSide) {
+        denominator *= 2;
+      }
+    }
+    final int width = (widthOut.value + denominator - 1) ~/ denominator;
+    final int height = (heightOut.value + denominator - 1) ~/ denominator;
     limits.checkDimensions(width, height, format);
     final int stride = width * 4;
     final int byteLength = stride * height;

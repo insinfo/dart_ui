@@ -78,12 +78,20 @@ const String _signatureHint =
     'expected a PNG, JPEG, WebP, or JPEG 2000 signature';
 
 /// Decodes PNG, JPEG, WebP, or JPEG 2000 after inspecting the signature.
+///
+/// [maxSide] asks for the picture scaled down to fit that many pixels on its
+/// longest side - a thumbnail. The native codecs then decode at the reduced
+/// size (ImageIO thumbnails, libjpeg-turbo DCT scaling, a WIC scaler, a
+/// browser canvas), so a photograph larger than [limits] still gives one,
+/// and the limits apply to the image produced; the Dart codecs decode in full
+/// and box-filter down. A picture that already fits is never enlarged.
 DecodedImage decodeImage(
   Uint8List bytes, {
   ImageChannelOrder order = ImageChannelOrder.bgra,
   PngLimits pngLimits = const PngLimits(),
   RasterImageLimits limits = const RasterImageLimits(),
   bool preferNative = true,
+  int? maxSide,
 }) =>
     decodeImageWithCodec(
       bytes,
@@ -91,6 +99,7 @@ DecodedImage decodeImage(
       pngLimits: pngLimits,
       limits: limits,
       preferNative: preferNative,
+      maxSide: maxSide,
     ).image;
 
 RasterDecodeResult decodeImageWithCodec(
@@ -99,6 +108,7 @@ RasterDecodeResult decodeImageWithCodec(
   PngLimits pngLimits = const PngLimits(),
   RasterImageLimits limits = const RasterImageLimits(),
   bool preferNative = true,
+  int? maxSide,
 }) {
   final RasterImageFormat? format = sniffImageFormat(bytes);
   if (format == null) {
@@ -111,18 +121,22 @@ RasterDecodeResult decodeImageWithCodec(
       format: format,
       order: order,
       limits: limits,
+      maxSide: maxSide,
     );
     if (native != null) {
-      return format == RasterImageFormat.jpeg
-          ? RasterDecodeResult(
-              image: _applyExifOrientation(
-                native.image,
-                _jpegOrientation(bytes),
-              ),
-              codecName: native.codecName,
-              isNative: true,
-            )
-          : native;
+      return _fitted(
+        format == RasterImageFormat.jpeg
+            ? RasterDecodeResult(
+                image: _applyExifOrientation(
+                  native.image,
+                  _jpegOrientation(bytes),
+                ),
+                codecName: native.codecName,
+                isNative: true,
+              )
+            : native,
+        maxSide,
+      );
     }
   }
   final DecodedImage decoded = switch (format) {
@@ -134,14 +148,36 @@ RasterDecodeResult decodeImageWithCodec(
     RasterImageFormat.jpeg2000 =>
       _decodeJp2Dart(bytes, order: order, limits: limits),
   };
+  return _fitted(
+    RasterDecodeResult(
+      image: decoded,
+      codecName: switch (format) {
+        RasterImageFormat.png => 'dart_ui PNG',
+        RasterImageFormat.jpeg2000 => _jp2CodecName,
+        _ => 'dart_ui codecs (Dart)',
+      },
+      isNative: false,
+    ),
+    maxSide,
+  );
+}
+
+/// [result] cut to fit [maxSide], box-filtered: a native codec may hand back
+/// a size only near it (libjpeg scales by eighths), and the Dart codecs
+/// decode at full size.
+RasterDecodeResult _fitted(RasterDecodeResult result, int? maxSide) {
+  final DecodedImage image = result.image;
+  final (int width, int height) =
+      fitImageSize(image.width, image.height, maxSide);
+  if (width == image.width && height == image.height) return result;
   return RasterDecodeResult(
-    image: decoded,
-    codecName: switch (format) {
-      RasterImageFormat.png => 'dart_ui PNG',
-      RasterImageFormat.jpeg2000 => _jp2CodecName,
-      _ => 'dart_ui codecs (Dart)',
-    },
-    isNative: false,
+    image: image.resample(
+      width: width,
+      height: height,
+      filter: ResampleFilter.box,
+    ),
+    codecName: result.codecName,
+    isNative: result.isNative,
   );
 }
 
@@ -159,6 +195,7 @@ Future<DecodedImage> decodeImageAsync(
   PngLimits pngLimits = const PngLimits(),
   RasterImageLimits limits = const RasterImageLimits(),
   bool preferNative = true,
+  int? maxSide,
 }) async =>
     (await decodeImageAsyncWithCodec(
       bytes,
@@ -166,6 +203,7 @@ Future<DecodedImage> decodeImageAsync(
       pngLimits: pngLimits,
       limits: limits,
       preferNative: preferNative,
+      maxSide: maxSide,
     ))
         .image;
 
@@ -176,6 +214,7 @@ Future<RasterDecodeResult> decodeImageAsyncWithCodec(
   PngLimits pngLimits = const PngLimits(),
   RasterImageLimits limits = const RasterImageLimits(),
   bool preferNative = true,
+  int? maxSide,
 }) async {
   final RasterImageFormat? format = sniffImageFormat(bytes);
   if (format == null) {
@@ -188,14 +227,18 @@ Future<RasterDecodeResult> decodeImageAsyncWithCodec(
       format: format,
       order: order,
       limits: limits,
+      maxSide: maxSide,
     );
-    if (native != null) return native;
+    if (native != null) return _fitted(native, maxSide);
   }
   if (format == RasterImageFormat.jpeg2000) {
-    return compute(
-      _decodeJp2Request,
-      _Jp2Request(bytes, order, limits),
-      debugLabel: 'dart_ui jpeg2000 decode',
+    return _fitted(
+      await compute(
+        _decodeJp2Request,
+        _Jp2Request(bytes, order, limits),
+        debugLabel: 'dart_ui jpeg2000 decode',
+      ),
+      maxSide,
     );
   }
   return decodeImageWithCodec(
@@ -204,6 +247,7 @@ Future<RasterDecodeResult> decodeImageAsyncWithCodec(
     pngLimits: pngLimits,
     limits: limits,
     preferNative: preferNative,
+    maxSide: maxSide,
   );
 }
 
@@ -373,6 +417,7 @@ DecodedImage decodeJpeg(
   ImageChannelOrder order = ImageChannelOrder.bgra,
   RasterImageLimits limits = const RasterImageLimits(),
   bool preferNative = true,
+  int? maxSide,
 }) {
   if (!isJpeg(bytes)) {
     throw const JpegDecodeException('start-of-image marker not found');
@@ -382,6 +427,7 @@ DecodedImage decodeJpeg(
     order: order,
     limits: limits,
     preferNative: preferNative,
+    maxSide: maxSide,
   ).image;
 }
 
@@ -472,6 +518,7 @@ DecodedImage decodeWebP(
   ImageChannelOrder order = ImageChannelOrder.bgra,
   RasterImageLimits limits = const RasterImageLimits(),
   bool preferNative = true,
+  int? maxSide,
 }) {
   if (!isWebP(bytes)) {
     throw const WebPDecodeException('RIFF/WEBP signature not found');
@@ -481,6 +528,7 @@ DecodedImage decodeWebP(
     order: order,
     limits: limits,
     preferNative: preferNative,
+    maxSide: maxSide,
   ).image;
 }
 

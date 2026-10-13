@@ -92,6 +92,17 @@ int premultiplyChannel(int channel, int alpha) {
   return (t + (t >> 8)) >> 8;
 }
 
+/// How [DecodedImage.resample] picks the colour of a destination pixel.
+enum ResampleFilter {
+  /// The source pixel under its centre: exact and cheap, aliases when
+  /// shrinking by more than about half.
+  nearest,
+
+  /// The average of every source pixel under it, when shrinking; nearest
+  /// when enlarging.
+  box,
+}
+
 /// An image in memory: premultiplied, tightly packed, four bytes per pixel.
 final class DecodedImage {
   DecodedImage({
@@ -223,10 +234,13 @@ final class DecodedImage {
   ///
   /// It is also visibly worse than a filtered resample at large scale factors -
   /// enlarging shows hard blocks, and shrinking by more than about half drops
-  /// source pixels entirely and aliases. A box filter for minification and a
-  /// bilinear one for magnification are the standard fix and are **not
-  /// implemented here**; the honest place for them is a filter argument on this
-  /// method, so that a caller chooses rather than discovers.
+  /// source pixels entirely and aliases. [ResampleFilter.box] is the fix for
+  /// shrinking: each destination pixel averages every source pixel its
+  /// footprint covers, so a photograph cut to a thumbnail keeps its detail
+  /// instead of a scatter of the pixels that happened to be sampled. It is
+  /// a choice the caller makes - [filter] - because it costs one read per
+  /// source pixel rather than one per destination pixel. A bilinear filter
+  /// for enlarging is **not implemented here**.
   ///
   /// Because the mapping is from destination centres, the operation is a pure
   /// function of the integers involved: scaling by one is the identity, and
@@ -236,6 +250,7 @@ final class DecodedImage {
     required int width,
     required int height,
     Rect? source,
+    ResampleFilter filter = ResampleFilter.nearest,
   }) {
     final Rect from = source ?? bounds;
     if (width <= 0 || height <= 0) {
@@ -243,6 +258,10 @@ final class DecodedImage {
         'resample to ${width}x$height: a decoded image has at least one pixel '
         'on each axis',
       );
+    }
+    if (filter == ResampleFilter.box &&
+        (from.width > width || from.height > height)) {
+      return _boxResample(width, height, from);
     }
     final Uint8List out = Uint8List(width * height * 4);
     final double scaleX = from.width / width;
@@ -270,6 +289,68 @@ final class DecodedImage {
       pixels: out,
       hasAlpha: hasAlpha,
     );
+  }
+
+  /// [resample] with [ResampleFilter.box]: the average of the source
+  /// pixels under each destination pixel. Pixels are premultiplied, so a
+  /// plain average of the four channels is the right blend.
+  DecodedImage _boxResample(int width, int height, Rect from) {
+    final Uint8List out = Uint8List(width * height * 4);
+    final double scaleX = from.width / width;
+    final double scaleY = from.height / height;
+    // The source columns each destination column covers, computed once.
+    final Int32List x0 = Int32List(width);
+    final Int32List x1 = Int32List(width);
+    for (int x = 0; x < width; x++) {
+      final (int a, int b) = _span(from.left, scaleX, x, this.width);
+      x0[x] = a;
+      x1[x] = b;
+    }
+    final Uint32List sums = Uint32List(width * 4);
+    for (int y = 0; y < height; y++) {
+      final (int top, int bottom) = _span(from.top, scaleY, y, this.height);
+      sums.fillRange(0, sums.length, 0);
+      for (int sy = top; sy < bottom; sy++) {
+        final int row = sy * this.width;
+        for (int x = 0; x < width; x++) {
+          final int s = x * 4;
+          for (int sx = x0[x]; sx < x1[x]; sx++) {
+            final int offset = (row + sx) * 4;
+            sums[s] += pixels[offset];
+            sums[s + 1] += pixels[offset + 1];
+            sums[s + 2] += pixels[offset + 2];
+            sums[s + 3] += pixels[offset + 3];
+          }
+        }
+      }
+      final int rows = bottom - top;
+      int target = y * width * 4;
+      for (int x = 0; x < width; x++) {
+        final int count = rows * (x1[x] - x0[x]);
+        final int half = count >> 1;
+        final int s = x * 4;
+        out[target] = (sums[s] + half) ~/ count;
+        out[target + 1] = (sums[s + 1] + half) ~/ count;
+        out[target + 2] = (sums[s + 2] + half) ~/ count;
+        out[target + 3] = (sums[s + 3] + half) ~/ count;
+        target += 4;
+      }
+    }
+    return DecodedImage(
+      width: width,
+      height: height,
+      order: order,
+      pixels: out,
+      hasAlpha: hasAlpha,
+    );
+  }
+
+  /// The source pixels `[start, end)` destination pixel [i] covers along
+  /// one axis: never empty, never outside `[0, limit)`.
+  static (int, int) _span(double origin, double scale, int i, int limit) {
+    final int start = (origin + i * scale).floor().clamp(0, limit - 1);
+    final int end = (origin + (i + 1) * scale).ceil().clamp(start + 1, limit);
+    return (start, end);
   }
 
   @override

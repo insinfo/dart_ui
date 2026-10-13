@@ -14,6 +14,7 @@ RasterDecodeResult? tryDecodeNativeRaster(
   required RasterImageFormat format,
   required ImageChannelOrder order,
   required RasterImageLimits limits,
+  int? maxSide,
 }) {
   if (Platform.isWindows) {
     return tryDecodeWic(
@@ -21,6 +22,7 @@ RasterDecodeResult? tryDecodeNativeRaster(
       format: format,
       order: order,
       limits: limits,
+      maxSide: maxSide,
     );
   }
   if (Platform.isMacOS) {
@@ -29,6 +31,7 @@ RasterDecodeResult? tryDecodeNativeRaster(
       format: format,
       order: order,
       limits: limits,
+      maxSide: maxSide,
     );
   }
   if (Platform.isLinux) {
@@ -37,6 +40,7 @@ RasterDecodeResult? tryDecodeNativeRaster(
       format: format,
       order: order,
       limits: limits,
+      maxSide: maxSide,
     );
   }
   return null;

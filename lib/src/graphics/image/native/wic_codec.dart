@@ -22,6 +22,7 @@ const int _clsctxInprocServer = 1;
 const int _wicDecodeMetadataCacheOnDemand = 0;
 const int _wicBitmapDitherTypeNone = 0;
 const int _wicBitmapPaletteTypeCustom = 0;
+const int _wicBitmapInterpolationModeFant = 3;
 
 typedef _CoInitializeExNative = Int32 Function(Pointer<Void>, Uint32);
 typedef _CoInitializeExDart = int Function(Pointer<Void>, int);
@@ -112,6 +113,8 @@ final class _WicFactory extends ComObject {
       comMethod<_CreateDecoderFromStreamNative>(pointer, 4).asFunction();
   late final _CreateFormatConverterDart _createFormatConverter =
       comMethod<_CreateFormatConverterNative>(pointer, 10).asFunction();
+  late final _CreateFormatConverterDart _createBitmapScaler =
+      comMethod<_CreateFormatConverterNative>(pointer, 11).asFunction();
 
   int createDecoderFromStream(
     Pointer<Void> stream,
@@ -127,6 +130,9 @@ final class _WicFactory extends ComObject {
 
   int createFormatConverter(Pointer<Pointer<Void>> out) =>
       _createFormatConverter(pointer, out);
+
+  int createBitmapScaler(Pointer<Pointer<Void>> out) =>
+      _createBitmapScaler(pointer, out);
 }
 
 typedef _GetFrameNative = Int32 Function(
@@ -226,11 +232,42 @@ final class _WicConverter extends _WicSource {
       );
 }
 
+typedef _ScalerInitializeNative = Int32 Function(
+  Pointer<Void>,
+  Pointer<Void>,
+  Uint32,
+  Uint32,
+  Uint32,
+);
+typedef _ScalerInitializeDart = int Function(
+  Pointer<Void>,
+  Pointer<Void>,
+  int,
+  int,
+  int,
+);
+
+final class _WicScaler extends _WicSource {
+  _WicScaler(super.pointer) : super(interfaceName: 'IWICBitmapScaler');
+
+  late final _ScalerInitializeDart _initialize =
+      comMethod<_ScalerInitializeNative>(pointer, 8).asFunction();
+
+  int initialize(Pointer<Void> source, int width, int height) => _initialize(
+        pointer,
+        source,
+        width,
+        height,
+        _wicBitmapInterpolationModeFant,
+      );
+}
+
 RasterDecodeResult? tryDecodeWic(
   Uint8List bytes, {
   required RasterImageFormat format,
   required ImageChannelOrder order,
   required RasterImageLimits limits,
+  int? maxSide,
 }) {
   final _WicApi? api = _wicApi;
   if (api == null) return null;
@@ -285,9 +322,28 @@ RasterDecodeResult? tryDecodeWic(
     final Pointer<Uint32> heightOut = arena.allocate<Uint32>(sizeOf<Uint32>());
     checkHresult(
         frame.getSize(widthOut, heightOut), 'IWICBitmapSource::GetSize');
-    final int width = widthOut.value;
-    final int height = heightOut.value;
+    // A size cap puts a scaler between the frame and the converter. The
+    // JPEG frame implements IWICBitmapSourceTransform, which the scaler
+    // uses to decode at a reduced size, so a photograph past the budget
+    // still gives a thumbnail; the budget applies to what is produced.
+    final (int width, int height) =
+        fitImageSize(widthOut.value, heightOut.value, maxSide);
     limits.checkDimensions(width, height, format);
+    ComObject source = frame;
+    if (width != widthOut.value || height != heightOut.value) {
+      out.value = nullptr;
+      checkHresult(
+        factory.createBitmapScaler(out),
+        'IWICImagingFactory::CreateBitmapScaler',
+      );
+      final _WicScaler scaler = _WicScaler(out.value);
+      objects.add(scaler);
+      checkHresult(
+        scaler.initialize(frame.pointer, width, height),
+        'IWICBitmapScaler::Initialize',
+      );
+      source = scaler;
+    }
 
     out.value = nullptr;
     checkHresult(
@@ -298,7 +354,7 @@ RasterDecodeResult? tryDecodeWic(
     objects.add(converter);
     checkHresult(
       converter.initialize(
-        frame.pointer,
+        source.pointer,
         _pixelFormat32bppPbgra.allocateIn(arena),
       ),
       'IWICFormatConverter::Initialize(32bppPBGRA)',

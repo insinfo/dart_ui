@@ -65,6 +65,19 @@ final class RasterImageLimits {
   }
 }
 
+/// [width]x[height] scaled down to fit [maxSide] on its longest side, in
+/// proportion and at least one pixel each way; unchanged when it already
+/// fits or [maxSide] is null.
+(int, int) fitImageSize(int width, int height, int? maxSide) {
+  final int longest = width > height ? width : height;
+  if (maxSide == null || longest <= maxSide) return (width, height);
+  final double scale = maxSide / longest;
+  return (
+    (width * scale).round().clamp(1, maxSide),
+    (height * scale).round().clamp(1, maxSide),
+  );
+}
+
 /// A decode plus the implementation that produced it.
 final class RasterDecodeResult {
   const RasterDecodeResult({

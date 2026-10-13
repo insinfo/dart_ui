@@ -61,6 +61,32 @@ typedef _ImageAtIndexDart = Pointer<Void> Function(
   int,
   Pointer<Void>,
 );
+typedef _NumberCreateNative = Pointer<Void> Function(
+  Pointer<Void>,
+  IntPtr,
+  Pointer<Void>,
+);
+typedef _NumberCreateDart = Pointer<Void> Function(
+  Pointer<Void>,
+  int,
+  Pointer<Void>,
+);
+typedef _DictionaryCreateNative = Pointer<Void> Function(
+  Pointer<Void>,
+  Pointer<Pointer<Void>>,
+  Pointer<Pointer<Void>>,
+  IntPtr,
+  Pointer<Void>,
+  Pointer<Void>,
+);
+typedef _DictionaryCreateDart = Pointer<Void> Function(
+  Pointer<Void>,
+  Pointer<Pointer<Void>>,
+  Pointer<Pointer<Void>>,
+  int,
+  Pointer<Void>,
+  Pointer<Void>,
+);
 typedef _ImageDimensionNative = UintPtr Function(Pointer<Void>);
 typedef _ImageDimensionDart = int Function(Pointer<Void>);
 typedef _ColorSpaceNative = Pointer<Void> Function();
@@ -111,6 +137,32 @@ final class _ImageIoApi {
         imageAtIndex =
             imageIo.lookupFunction<_ImageAtIndexNative, _ImageAtIndexDart>(
                 'CGImageSourceCreateImageAtIndex'),
+        thumbnailAtIndex =
+            imageIo.lookupFunction<_ImageAtIndexNative, _ImageAtIndexDart>(
+                'CGImageSourceCreateThumbnailAtIndex'),
+        numberCreate = coreFoundation
+            .lookupFunction<_NumberCreateNative, _NumberCreateDart>(
+          'CFNumberCreate',
+        ),
+        dictionaryCreate = coreFoundation.lookupFunction<
+            _DictionaryCreateNative,
+            _DictionaryCreateDart>('CFDictionaryCreate'),
+        keyCallBacks = coreFoundation.lookup<Void>(
+          'kCFTypeDictionaryKeyCallBacks',
+        ),
+        valueCallBacks = coreFoundation.lookup<Void>(
+          'kCFTypeDictionaryValueCallBacks',
+        ),
+        booleanTrue =
+            coreFoundation.lookup<Pointer<Void>>('kCFBooleanTrue').value,
+        thumbnailFromImageAlways = imageIo
+            .lookup<Pointer<Void>>(
+              'kCGImageSourceCreateThumbnailFromImageAlways',
+            )
+            .value,
+        thumbnailMaxPixelSize = imageIo
+            .lookup<Pointer<Void>>('kCGImageSourceThumbnailMaxPixelSize')
+            .value,
         imageWidth = coreGraphics.lookupFunction<_ImageDimensionNative,
             _ImageDimensionDart>('CGImageGetWidth'),
         imageHeight = coreGraphics.lookupFunction<_ImageDimensionNative,
@@ -152,6 +204,14 @@ final class _ImageIoApi {
   final _CfReleaseDart release;
   final _SourceFromDataDart sourceFromData;
   final _ImageAtIndexDart imageAtIndex;
+  final _ImageAtIndexDart thumbnailAtIndex;
+  final _NumberCreateDart numberCreate;
+  final _DictionaryCreateDart dictionaryCreate;
+  final Pointer<Void> keyCallBacks;
+  final Pointer<Void> valueCallBacks;
+  final Pointer<Void> booleanTrue;
+  final Pointer<Void> thumbnailFromImageAlways;
+  final Pointer<Void> thumbnailMaxPixelSize;
   final _ImageDimensionDart imageWidth;
   final _ImageDimensionDart imageHeight;
   final _ColorSpaceDart createRgb;
@@ -168,6 +228,7 @@ RasterDecodeResult? tryDecodeImageIo(
   required RasterImageFormat format,
   required ImageChannelOrder order,
   required RasterImageLimits limits,
+  int? maxSide,
 }) {
   final _ImageIoApi? api = _imageIoApi;
   if (api == null) return null;
@@ -182,7 +243,17 @@ RasterDecodeResult? tryDecodeImageIo(
     final Pointer<Void> source = api.sourceFromData(data, nullptr);
     if (source == nullptr) return null;
     objects.add(source);
-    final Pointer<Void> image = api.imageAtIndex(source, 0, nullptr);
+    // A size cap asks ImageIO for a thumbnail: JPEG decodes at a fraction
+    // of its size straight from the DCT, so a 36-megapixel photograph never
+    // exists in memory at full size, and the budget below applies to what
+    // is actually produced. The EXIF orientation is left to the caller, as
+    // for a full decode.
+    final Pointer<Void> options =
+        maxSide == null ? nullptr : _thumbnailOptions(api, arena, maxSide);
+    if (options != nullptr) objects.add(options);
+    final Pointer<Void> image = maxSide == null
+        ? api.imageAtIndex(source, 0, nullptr)
+        : api.thumbnailAtIndex(source, 0, options);
     if (image == nullptr) return null;
     objects.add(image);
     final int width = api.imageWidth(image);
@@ -249,5 +320,35 @@ RasterDecodeResult? tryDecodeImageIo(
       api.release(object);
     }
     arena.dispose();
+  }
+}
+
+/// `{FromImageAlways: true, MaxPixelSize: maxSide}`, or null if Core
+/// Foundation refuses; the caller releases it.
+Pointer<Void> _thumbnailOptions(
+  _ImageIoApi api,
+  NativeArena arena,
+  int maxSide,
+) {
+  final Pointer<Int32> side = arena.allocate<Int32>(sizeOf<Int32>())
+    ..value = maxSide;
+  const int numberSInt32Type = 3;
+  final Pointer<Void> number =
+      api.numberCreate(nullptr, numberSInt32Type, side.cast<Void>());
+  if (number == nullptr) return nullptr;
+  try {
+    final Pointer<Pointer<Void>> keys =
+        arena.allocate<Pointer<Void>>(2 * sizeOf<Pointer<Void>>());
+    final Pointer<Pointer<Void>> values =
+        arena.allocate<Pointer<Void>>(2 * sizeOf<Pointer<Void>>());
+    keys[0] = api.thumbnailFromImageAlways;
+    values[0] = api.booleanTrue;
+    keys[1] = api.thumbnailMaxPixelSize;
+    values[1] = number;
+    return api.dictionaryCreate(
+        nullptr, keys, values, 2, api.keyCallBacks, api.valueCallBacks);
+  } finally {
+    // The dictionary retains what it holds.
+    api.release(number);
   }
 }
