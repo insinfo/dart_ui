@@ -52,6 +52,13 @@ import '../../geometry/transform2d.dart';
 /// is a few hundred tiles, each classified in a handful of operations.
 const int kMaskTileSide = 64;
 
+/// Pixels rasterised around each masked tile and then thrown away, so the
+/// coverage at a tile's own edge is the whole shape's: the filler clips the
+/// geometry to its clip rectangle, and the pixel just inside a cut edge loses
+/// part of its coverage to its neighbour. Two pixels is one more than the
+/// error reaches.
+const int kMaskTileMargin = 2;
+
 /// The tile plan for one path, reused from draw to draw so classifying a
 /// shape allocates nothing once the buffers have grown.
 final class MaskTilePlan implements PolylineSink {

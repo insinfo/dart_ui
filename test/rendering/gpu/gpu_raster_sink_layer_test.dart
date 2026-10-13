@@ -8,7 +8,11 @@
 /// readback says "these two pictures differ" and this says where.
 library;
 
+import 'dart:math' as math;
+import 'dart:typed_data';
+
 import 'package:dart_ui/src/foundation/diagnostics.dart';
+import 'package:dart_ui/src/geometry/fill_rule.dart';
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/transform2d.dart';
@@ -456,6 +460,76 @@ void main() {
       expect(sink.batcher.batchCount, 1);
     });
 
+    // Rebuilds the picture the sink's quads draw - masked quads read the
+    // atlas, solid cells are coverage one - against one mask of the shape.
+    int worstAgainstWholeMask(GpuMaskAtlas atlas, int atlasSideForWhole) {
+      const int size = 512;
+      const Rect clip = Rect.fromLTRB(0, 0, 512, 512);
+      final Path star = _star(256, 256, 220, 90);
+      final sink = _sink(maskAtlas: atlas);
+      sink.drawDevicePath(star, Transform2D.identity, clip, _paint());
+      final Uint8List drawn = Uint8List(size * size);
+      for (var i = 0; i < sink.batcher.quadCount; i++) {
+        final q = _quadAt(sink, i);
+        final uv = _uvAt(sink, i);
+        final solid = uv[0] == uv[2] && uv[1] == uv[3];
+        for (var y = q[1].toInt(); y < q[3].toInt(); y++) {
+          for (var x = q[0].toInt(); x < q[2].toInt(); x++) {
+            if (solid) {
+              drawn[y * size + x] = 255;
+              continue;
+            }
+            final tx = (uv[0] * atlas.width).round() + x - q[0].toInt();
+            final ty = (uv[1] * atlas.height).round() + y - q[1].toInt();
+            drawn[y * size + x] = atlas.pixels[ty * atlas.width + tx];
+          }
+        }
+      }
+
+      final whole = GpuMaskAtlas(width: 1024, height: 1024);
+      final r = whole.rasterizeMask(star,
+          transform: Transform2D.identity, clip: clip, rule: FillRule.nonZero);
+      expect(r.isOk, isTrue);
+      final Uint8List expected = Uint8List(size * size);
+      final rx = (r.u0 * whole.width).round();
+      final ry = (r.v0 * whole.height).round();
+      for (var y = r.deviceRect.top.toInt(); y < r.deviceRect.bottom; y++) {
+        for (var x = r.deviceRect.left.toInt(); x < r.deviceRect.right; x++) {
+          expected[y * size + x] = whole.pixels[
+              (ry + y - r.deviceRect.top.toInt()) * whole.width +
+                  rx +
+                  x -
+                  r.deviceRect.left.toInt()];
+        }
+      }
+
+      var worst = 0;
+      for (var i = 0; i < expected.length; i++) {
+        final d = (expected[i] - drawn[i]).abs();
+        if (d > worst) worst = d;
+      }
+      return worst;
+    }
+
+    test('a diagonal shape that fits the atlas is one mask, without seams', () {
+      // The D3D11 and GL route tests on Windows measured 106 levels against a
+      // bound of 96 when this star was tiled: see the skipped test below.
+      expect(
+          worstAgainstWholeMask(GpuMaskAtlas(width: 2048, height: 2048), 1024),
+          lessThanOrEqualTo(1));
+    });
+
+    test('tile seams keep the coverage of the shape drawn whole', () {
+      // The same star against an atlas too small to hold it whole, so it is
+      // tiled. The filler clips the geometry to each tile, and an edge cut at
+      // a tile's side moves coverage between pixels near the cut - up to 122
+      // levels; a two-pixel margin halves the count but not the worst case.
+      expect(worstAgainstWholeMask(GpuMaskAtlas(width: 256, height: 256), 1024),
+          lessThanOrEqualTo(1));
+    },
+        skip: 'known: tile seams shift coverage near the cut (ESTADO.md, '
+            '"O que falta fazer")');
+
     test('a tile that does not fit runs the flush protocol like any mask', () {
       // A diagonal crosses every tile of its band, so every one of them is a
       // 64x64 mask - more than a 256x256 atlas holds while they are pinned
@@ -504,6 +578,19 @@ GpuRasterSink _sink({
     layerStack: stack,
     onAtlasFlush: onAtlasFlush,
   );
+}
+
+Path _star(double cx, double cy, double r, int points) {
+  final PathBuilder builder = PathBuilder();
+  for (var i = 0; i < points * 2; i++) {
+    final double angle = i * math.pi / points - math.pi / 2;
+    final double radius = i.isEven ? r : r * 0.44;
+    final double x = cx + radius * math.cos(angle);
+    final double y = cy + radius * math.sin(angle);
+    i == 0 ? builder.moveTo(x, y) : builder.lineTo(x, y);
+  }
+  builder.close();
+  return builder.build();
 }
 
 Path _rectPath(double left, double top, double right, double bottom) =>

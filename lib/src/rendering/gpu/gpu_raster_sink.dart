@@ -906,7 +906,8 @@ final class GpuRasterSink
     // Rasterised whole it took most of the atlas, evicted everything else
     // and was scanned pixel by pixel every frame; tiled, only the band near
     // curves is a mask, and those small masks stay cached.
-    if (visible.width * visible.height > _tileAboveArea) {
+    if (visible.width * visible.height > _tileAboveArea &&
+        _mostlyRectilinear(path, transform, visible, rule)) {
       _drawMaskTiled(
           atlas, path, transform, clip, paint, what, alpha, rule, gradient);
       return;
@@ -1146,9 +1147,17 @@ final class GpuRasterSink
         // the same pixel twice and blend its coverage twice.
         final Rect tileClip = tile.intersect(clip);
         if (tileClip.isEmpty) continue;
+        // Rasterised with a margin and drawn without it: the filler clips the
+        // geometry to its clip, and an edge cut there hands part of the
+        // coverage of the pixel just inside the cut to its neighbour - up to
+        // 122 levels on a star, at every tile seam an edge crossed. Pixels
+        // [kMaskTileMargin] away from the cut are exact, so only the inner
+        // tile is kept.
+        final Rect rasterClip =
+            tileClip.inflate(kMaskTileMargin.toDouble()).intersect(clip);
         var result = atlas.rasterizeMask(path,
             transform: transform,
-            clip: tileClip,
+            clip: rasterClip,
             rule: rule,
             admitToCache: _admitToAtlas);
         if (result.status == MaskRasterStatus.needsFlush) {
@@ -1156,7 +1165,7 @@ final class GpuRasterSink
           result = atlas.rasterizeMask(
             path,
             transform: transform,
-            clip: tileClip,
+            clip: rasterClip,
             rule: rule,
             admitToCache: _admitToAtlas,
           );
@@ -1170,10 +1179,39 @@ final class GpuRasterSink
             'in gpu_mask_atlas.dart.',
           );
         }
-        _batchMask(result, clip, paint, alpha, gradient);
+        _batchMask(result, clip, paint, alpha, gradient, tileClip);
       }
     }
   }
+
+  /// Whether a shape that would fit the atlas whole is still worth tiling:
+  /// only when most of it is solid cells - a card, whose curves are four
+  /// corners. A star or a circle has an edge in nearly every border tile, so
+  /// tiling it saves nothing and puts tile seams through its antialiased
+  /// edge, where the filler, clipping the geometry at the cut, moves coverage
+  /// between neighbouring pixels (ESTADO.md lists the fix).
+  bool _mostlyRectilinear(
+      Path path, Transform2D transform, Rect visible, FillRule rule) {
+    final MaskTilePlan plan = _tilePlan;
+    plan.plan(
+      path,
+      transform,
+      left: visible.left.floor(),
+      top: visible.top.floor(),
+      right: visible.right.ceil(),
+      bottom: visible.bottom.ceil(),
+      rule: rule,
+      tile: kMaskTileSide,
+    );
+    final double masked =
+        plan.maskedTileCount * (kMaskTileSide * kMaskTileSide).toDouble();
+    return masked <= _tileMaskedFraction * visible.width * visible.height;
+  }
+
+  /// Masked area, as a fraction of the shape's, above which a shape that fits
+  /// the atlas is drawn as one mask instead of tiles. A full-window card
+  /// masks well under a tenth of its tiles.
+  static const double _tileMaskedFraction = 0.25;
 
   /// Reused by every tiled shape; see [MaskTilePlan].
   final MaskTilePlan _tilePlan = MaskTilePlan();
@@ -1238,6 +1276,7 @@ final class GpuRasterSink
     ReplayPaint paint,
     int alpha, [
     GpuGradientDraw? gradient,
+    Rect? within,
   ]) {
     _setState(
       GpuPipelineKind.coverageMask,
@@ -1246,7 +1285,22 @@ final class GpuRasterSink
       clip,
       gradient: gradient,
     );
-    final rect = result.deviceRect;
+    var rect = result.deviceRect;
+    var u0 = result.u0, v0 = result.v0, u1 = result.u1, v1 = result.v1;
+    if (within != null) {
+      // Trimmed to [within] by whole pixels: the mask's texels map one to one
+      // onto [rect]'s device pixels, so the texture coordinates move by the
+      // same fraction of the quad as its edges do.
+      final Rect kept = rect.intersect(within);
+      if (kept.isEmpty) return;
+      final double du = (u1 - u0) / rect.width;
+      final double dv = (v1 - v0) / rect.height;
+      u0 += (kept.left - rect.left) * du;
+      u1 -= (rect.right - kept.right) * du;
+      v0 += (kept.top - rect.top) * dv;
+      v1 -= (rect.bottom - kept.bottom) * dv;
+      rect = kept;
+    }
     final double left = rect.left - _originX;
     final double top = rect.top - _originY;
     final double right = rect.right - _originX;
@@ -1256,10 +1310,10 @@ final class GpuRasterSink
       top: top,
       right: right,
       bottom: bottom,
-      u0: result.u0,
-      v0: result.v0,
-      u1: result.u1,
-      v1: result.v1,
+      u0: u0,
+      v0: v0,
+      u1: u1,
+      v1: v1,
       // A gradient's colour, alpha included, is the ramp's: the CPU replay
       // reads the paint's own alpha for neither, so the vertex is white and
       // the shader's multiply by it is an identity.

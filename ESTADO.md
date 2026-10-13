@@ -106,6 +106,13 @@ Para retomar, leia nesta ordem:
 4. Combo box, flyout e ribbon em janela nativa ainda pintam o próprio
    contorno (a borda dupla dos menus, já resolvida, volta neles).
 5. `ClipPath` vaza alguns pixels nas pontas de uma estrela.
+6. **Emendas do fatiamento de máscaras na GPU:** ao rasterizar uma forma em
+   blocos de 64 px, o preenchedor recorta a geometria no limite do bloco e
+   desloca cobertura entre pixels perto do corte (até 122 níveis numa
+   estrela). Por isso só formas quase retilíneas (cartões) são fatiadas antes
+   de estourar o atlas; a correção de verdade é o preenchedor aceitar um
+   recorte de saída sem recortar a geometria. Teste pulado em
+   `test/rendering/gpu/gpu_raster_sink_layer_test.dart` ("tile seams...").
 
 ### Compatibilidade com o Flutter (P0 em 68%)
 1. **Material, esqueleto do app:** `MaterialApp`, `Scaffold`,
