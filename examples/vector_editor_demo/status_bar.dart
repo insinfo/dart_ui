@@ -19,7 +19,7 @@ class EditorStatusBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return SizedBox(
-      height: ChromeMetrics.statusBarHeight,
+      height: ChromeMetrics.of(Theme.of(context)).statusBarHeight,
       child: DecoratedBox(
         decoration: BoxDecoration(color: theme.surfaceBase),
         child: Padding(

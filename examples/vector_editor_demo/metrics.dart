@@ -1,82 +1,85 @@
-/// Every fixed dimension of the editor chrome, in one place.
+/// The editor's dimensions: its chrome, from the theme, and its zoom limits.
+library;
+
+import 'package:dart_ui/dart_ui.dart';
+
+/// Every dimension of the editor chrome, in one place, derived from the
+/// theme.
 ///
 /// Chrome metrics are the numbers most likely to be copied into three files and
 /// then changed in one: the menu bar's height is also the offset a drop-down
 /// opens at, and the tool box's width is also where the vertical ruler starts.
 /// Naming them here is what keeps those agreements from drifting.
 ///
-/// ## The grid
+/// ## Where the numbers come from
 ///
-/// Every number here is a multiple of 4, and every height is one of the
-/// framework's own: `ThemeData.effectiveControlHeight` at the compact density
-/// is 28, `effectiveRowHeight` is 24, and the editor's bands are built from
-/// those two plus the 4 px spacing scale in `doc/architecture/SISTEMA_DE_DESIGN.md`.
-/// The editor picks `ThemeData.fluentLight`, which is the compact theme, so a
-/// bar declared 28 px tall here is exactly as tall as the combo box that sits
-/// in it - which is the whole reason the numbers are not free-hand any more.
-/// The values they replaced (24, 30, 26, 22, 18, 15) were each right on their
-/// own and agreed with nothing.
-library;
+/// From the theme's control and row heights, its text size and its icon
+/// size - which `ThemeData.adaptedToPlatform` sets to what the desktop's own
+/// applications use: 28 px controls and 24 px rows on a Mac, 32 and 28 on
+/// Windows. The editor's bands were constants once (a 28 px menu bar, 16 px
+/// toolbar icons, 12 px text) and read as a toy beside every other window:
+/// a bar is one control or one row plus air, so it grows with them.
+final class ChromeMetrics {
+  ChromeMetrics.of(ThemeData theme)
+      : control = theme.effectiveControlHeight,
+        row = theme.effectiveRowHeight,
+        text = theme.fontSize,
+        icon = theme.iconTheme.size ?? 16;
 
-/// Heights of the horizontal bands, top to bottom.
-abstract final class ChromeMetrics {
-  /// The menu bar, and therefore the y a drop-down opens at.
-  ///
-  /// One row height plus a hair of air. A menu bar shorter than a row of text
-  /// is the single loudest "this is Windows 95" signal in the window: it was
-  /// 24 px, which left three pixels above a 12 px label.
-  static const double menuBarHeight = 28;
+  /// The theme's control height, row height, text size and icon size.
+  final double control;
+  final double row;
+  final double text;
+  final double icon;
 
-  /// One menu header's width per character of its label, plus the padding.
-  ///
-  /// Fixed rather than measured because the drop-down has to know where the
-  /// header it belongs to starts, and asking the text engine from a widget's
-  /// build would mean shaping every header twice per frame.
-  static const double menuHeaderCharacterWidth = 7.0;
-  static const double menuHeaderPadding = 12.0;
+  /// The menu bar, and therefore the y a drop-down opens at: one row plus
+  /// a hair of air.
+  double get menuBarHeight => row + 4;
 
-  /// The icon toolbar under the menu bar.
-  ///
-  /// A 28 px button (one control) plus 4 px of air above and below.
-  static const double toolbarHeight = 36;
-  static const double toolbarIconSize = 16;
+  /// The icon toolbar under the menu bar: a control-sized button plus 4 px
+  /// of air above and below.
+  double get toolbarHeight => control + 8;
+  double get toolbarIconSize => icon + 2;
 
-  /// The contextual property bar. One control tall plus the same air, so the
+  /// The contextual property bar: one control tall plus the same air, so the
   /// combo boxes and spin boxes in it are not wedged against its edges.
-  static const double contextPanelHeight = 36;
+  double get contextPanelHeight => control + 8;
 
   /// The document tab strip.
-  static const double documentTabsHeight = 28;
+  double get documentTabsHeight => row + 4;
 
-  /// The vertical tool box down the left edge.
-  ///
-  /// 32 = a 28 px button plus 2 px either side. The button is one control tall
-  /// and square, so the tool palette is on the same rhythm as the toolbar.
-  static const double toolboxWidth = 40;
-  static const double toolboxButtonSize = 32;
-  static const double toolboxIconSize = 18;
+  /// The vertical tool box down the left edge: square buttons a little
+  /// larger than a control - they are aimed at all day - and 4 px either side.
+  double get toolboxButtonSize => control + 4;
+  double get toolboxWidth => toolboxButtonSize + 8;
+  double get toolboxIconSize => icon + 4;
 
   /// Ruler thickness, and therefore the size of the corner button between the
-  /// two rulers.
-  static const double rulerThickness = 18;
+  /// two rulers: room for a label a size under the text.
+  double get rulerThickness => (text + 7).roundToDouble();
 
   /// The colour palette strip along the bottom.
-  static const double paletteSwatchSize = 16;
-  static const double paletteHeight = 28;
+  double get paletteSwatchSize => row - 6;
+  double get paletteHeight => row + 4;
 
-  /// The status bar. One row plus air; it holds 11 px text and a few icons.
-  static const double statusBarHeight = 26;
+  /// A field in a bar - spin box, combo box, text box: one control tall.
+  double get fieldHeight => control;
 
-  /// The right-hand plugin area: the collapsed tab strip, and the panel body
-  /// that opens beside it.
-  static const double pluginPanelWidth = 280;
+  /// [designed], a width laid out for 12 px text, at this theme's text size,
+  /// so a field still fits its numbers when the type grows.
+  double widthFor(double designed) => (designed * text / 12).roundToDouble();
+
+  /// The status bar: one row plus air.
+  double get statusBarHeight => row + 4;
+
+  /// The right-hand plugin area.
+  static const double pluginPanelWidth = 300;
 
   /// The title row of each dock section.
-  static const double dockHeaderHeight = 30;
+  double get dockHeaderHeight => control + 2;
 
-  /// Gaps used inside bars, so a group reads as a group.
-  ///
-  /// The 4 px grid: [barGroupSpacing] is one step and [barPadding] two.
+  /// Gaps used inside bars, so a group reads as a group: the 4 px grid,
+  /// [barGroupSpacing] one step and [barPadding] two.
   static const double barGroupSpacing = 4;
   static const double barPadding = 8;
 }

@@ -5,6 +5,7 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import 'editor_model.dart';
+import 'metrics.dart';
 
 /// A panel section with a caption, the `LabeledPanel` sK1 stacks its groups in.
 class PanelSection extends StatelessWidget {
@@ -366,7 +367,7 @@ class AlignPanel extends StatelessWidget {
               PanelRow(
                 label: 'Relative to:',
                 child: SizedBox(
-                  height: 24,
+                  height: ChromeMetrics.of(Theme.of(context)).fieldHeight,
                   child: ComboBox<AlignReference>(
                     label: 'Align relative to',
                     value: model.alignReference,

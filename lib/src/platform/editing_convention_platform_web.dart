@@ -16,3 +16,13 @@ bool detectsApplePlatform() {
       agent.contains('iPhone') ||
       agent.contains('iPad');
 }
+
+/// The desktop under the browser, by the same evidence as
+/// [detectsApplePlatform].
+String detectedOperatingSystem() {
+  if (detectsApplePlatform()) return 'macos';
+  final String agent = web.window.navigator.userAgent;
+  if (agent.contains('Windows')) return 'windows';
+  if (agent.contains('Android')) return 'android';
+  return 'linux';
+}

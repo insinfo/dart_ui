@@ -11,8 +11,9 @@ import 'package:dart_ui/dart_ui.dart';
 
 import 'editor_model.dart';
 
-/// The row height every row shares.
-const double _rowHeight = 26;
+/// The row height every row shares: the theme's row, plus room for the
+/// swatch and the eye and lock buttons.
+double _rowHeight(ThemeData theme) => theme.effectiveRowHeight + 2;
 
 class ObjectsPanel extends StatelessWidget {
   const ObjectsPanel({super.key, required this.model});
@@ -57,7 +58,7 @@ class ObjectsPanel extends StatelessWidget {
           child: ColoredBox(color: theme.border),
         ),
         SizedBox(
-          height: 30,
+          height: theme.effectiveControlHeight + 4,
           child: Row(
             children: <Widget>[
               const SizedBox(width: 4),
@@ -114,7 +115,7 @@ class _LayerRow extends StatelessWidget {
       behavior: GestureHitTestBehavior.opaque,
       onTap: () => model.activateLayer(layer),
       child: SizedBox(
-        height: _rowHeight,
+        height: _rowHeight(theme),
         child: ColoredBox(
           color: active ? theme.surfaceRaised : theme.surfaceAlternate,
           child: Row(
@@ -122,7 +123,7 @@ class _LayerRow extends StatelessWidget {
             children: <Widget>[
               SizedBox(
                 width: 3,
-                height: _rowHeight,
+                height: _rowHeight(theme),
                 child: ColoredBox(
                     color: active ? theme.accent : const Color(0x00000000)),
               ),
@@ -143,7 +144,7 @@ class _LayerRow extends StatelessWidget {
                 onTap: () => model.setLayerLocked(layer, layer.isEditable),
               ),
               const SizedBox(width: 4),
-              const Icon(PhosphorIcons.stack, size: 14),
+              const Icon(PhosphorIcons.stack),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
@@ -216,7 +217,7 @@ class _ObjectRow extends StatelessWidget {
               )
           : null,
       child: SizedBox(
-        height: _rowHeight,
+        height: _rowHeight(theme),
         child: ColoredBox(
           color: selected ? theme.selection : const Color(0x00000000),
           child: Row(
@@ -242,7 +243,7 @@ class _ObjectRow extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 6),
-              Icon(icon, size: 13),
+              Icon(icon),
               const SizedBox(width: 6),
               Expanded(
                 child: Text(
@@ -287,12 +288,11 @@ class _IconButton extends StatelessWidget {
         behavior: GestureHitTestBehavior.opaque,
         onTap: onTap,
         child: SizedBox(
-          width: 24,
-          height: 24,
+          width: theme.effectiveRowHeight,
+          height: theme.effectiveRowHeight,
           child: Center(
             child: Icon(
               icon,
-              size: 14,
               color: onTap == null || dim
                   ? theme.disabledForeground
                   : theme.foregroundSecondary,

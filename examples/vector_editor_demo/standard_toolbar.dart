@@ -15,7 +15,7 @@ class StandardToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Toolbar(
-        height: ChromeMetrics.toolbarHeight,
+        height: ChromeMetrics.of(Theme.of(context)).toolbarHeight,
         padding: const EdgeInsets.symmetric(
           horizontal: ChromeMetrics.barPadding,
           vertical: 2,
@@ -29,7 +29,7 @@ class StandardToolbar extends StatelessWidget {
               else
                 IconButton(
                   icon: Icon(command.icon ?? PhosphorIcons.circle),
-                  iconSize: ChromeMetrics.toolbarIconSize,
+                  iconSize: ChromeMetrics.of(Theme.of(context)).toolbarIconSize,
                   padding: const EdgeInsets.all(5),
                   constraints: BoxConstraints(minWidth: 26, minHeight: 26),
                   // A disabled command names its reason in the tooltip, so the

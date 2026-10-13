@@ -31,7 +31,7 @@ class EditorMenuBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) => PlatformMenuBar(
         native: native,
-        height: ChromeMetrics.menuBarHeight,
+        height: ChromeMetrics.of(Theme.of(context)).menuBarHeight,
         menus: <PlatformMenu>[
           for (var i = 0; i < menus.length; i++)
             menus[i].toPlatformMenu(

@@ -52,3 +52,23 @@ final EditingConvention _detected = platform.detectsApplePlatform()
 /// Replaces [platformEditingConvention] while set, so a test on one platform
 /// can assert the other's shortcuts. Null restores detection.
 EditingConvention? debugEditingConventionOverride;
+
+/// The desktops whose own applications set the sizes a window's controls
+/// should have - see `ThemeData.adaptedToPlatform`.
+enum DesktopPlatform { macos, windows, linux }
+
+/// The desktop this program runs on; [DesktopPlatform.linux] for any other
+/// Unix desktop.
+DesktopPlatform get hostDesktopPlatform =>
+    debugDesktopPlatformOverride ?? _detectedDesktop;
+
+final DesktopPlatform _detectedDesktop =
+    switch (platform.detectedOperatingSystem()) {
+  'macos' || 'ios' => DesktopPlatform.macos,
+  'windows' => DesktopPlatform.windows,
+  _ => DesktopPlatform.linux,
+};
+
+/// Replaces [hostDesktopPlatform] while set, so a test can assert another
+/// desktop's sizes. Null restores detection.
+DesktopPlatform? debugDesktopPlatformOverride;

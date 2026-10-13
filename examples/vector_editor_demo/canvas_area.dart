@@ -39,7 +39,7 @@ class CanvasArea extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         SizedBox(
-          height: ChromeMetrics.rulerThickness,
+          height: ChromeMetrics.of(Theme.of(context)).rulerThickness,
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
@@ -49,7 +49,8 @@ class CanvasArea extends StatelessWidget {
                   zoom: session.zoom,
                   pan: session.pan.dx,
                   unit: model.units,
-                  rulerThickness: ChromeMetrics.rulerThickness,
+                  rulerThickness:
+                      ChromeMetrics.of(Theme.of(context)).rulerThickness,
                   cursorPosition: cursor == null
                       ? null
                       : session.pan.dx + cursor.dx * session.zoom,
@@ -67,7 +68,8 @@ class CanvasArea extends StatelessWidget {
                 zoom: session.zoom,
                 pan: session.pan.dy,
                 unit: model.units,
-                rulerThickness: ChromeMetrics.rulerThickness,
+                rulerThickness:
+                    ChromeMetrics.of(Theme.of(context)).rulerThickness,
                 cursorPosition: cursor == null
                     ? null
                     : session.pan.dy + cursor.dy * session.zoom,
@@ -107,8 +109,8 @@ class _UnitCorner extends StatelessWidget {
           model.refresh('Units: ${model.units.label}');
         },
         child: SizedBox(
-          width: ChromeMetrics.rulerThickness,
-          height: ChromeMetrics.rulerThickness,
+          width: ChromeMetrics.of(Theme.of(context)).rulerThickness,
+          height: ChromeMetrics.of(Theme.of(context)).rulerThickness,
           child: DecoratedBox(
             decoration: BoxDecoration(
               color: theme.surfaceAlternate,

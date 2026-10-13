@@ -95,7 +95,7 @@ class ContextPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final plugins = contextPluginsFor(model);
     return Toolbar(
-      height: ChromeMetrics.contextPanelHeight,
+      height: ChromeMetrics.of(Theme.of(context)).contextPanelHeight,
       padding: const EdgeInsets.symmetric(
         horizontal: ChromeMetrics.barPadding,
         vertical: 2,
@@ -177,8 +177,8 @@ class _Field extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-        width: width,
-        height: 22,
+        width: ChromeMetrics.of(Theme.of(context)).widthFor(width),
+        height: ChromeMetrics.of(Theme.of(context)).fieldHeight,
         child: NumberBox(
           value: value,
           decimals: decimals,
@@ -246,8 +246,8 @@ class _PagePlugin extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[
         SizedBox(
-          width: 92,
-          height: 22,
+          width: ChromeMetrics.of(Theme.of(context)).widthFor(92),
+          height: ChromeMetrics.of(Theme.of(context)).fieldHeight,
           child: ComboBox<String>(
             label: 'Page format',
             value: format.name,
@@ -320,11 +320,11 @@ class _UnitsPlugin extends StatelessWidget {
   Widget build(BuildContext context) => Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: <Widget>[
-          const Icon(PhosphorIcons.ruler, size: 14),
+          const Icon(PhosphorIcons.ruler),
           const SizedBox(width: 4),
           SizedBox(
-            width: 74,
-            height: 22,
+            width: ChromeMetrics.of(Theme.of(context)).widthFor(74),
+            height: ChromeMetrics.of(Theme.of(context)).fieldHeight,
             child: ComboBox<DocUnit>(
               label: 'Document units',
               value: model.units,
@@ -389,7 +389,7 @@ class _ResizePlugin extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[
-        const Icon(PhosphorIcons.arrowsOut, size: 14),
+        const Icon(PhosphorIcons.arrowsOut),
         const SizedBox(width: 4),
         _Field(
           value: fromPoints(bounds.width, unit),
@@ -419,7 +419,7 @@ class _RotatePlugin extends StatelessWidget {
   Widget build(BuildContext context) => Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: <Widget>[
-          const Icon(PhosphorIcons.arrowClockwise, size: 14),
+          const Icon(PhosphorIcons.arrowClockwise),
           const SizedBox(width: 4),
           // Applies the angle as a *delta* and returns to zero, because the
           // model stores a matrix rather than an angle: showing a running total
@@ -582,7 +582,7 @@ class _PolygonPlugin extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[
-        const Icon(PhosphorIcons.polygon, size: 14),
+        const Icon(PhosphorIcons.polygon),
         const SizedBox(width: 4),
         _Field(
           value: polygon.cornersNum.toDouble(),
@@ -639,9 +639,14 @@ class _TextPlugin extends StatefulWidget {
 
 class _TextPluginState extends State<_TextPlugin> {
   late final TextEditingController _controller =
-      TextEditingController(_object.textContent)..addListener(_push);
+      TextEditingController(_object?.textContent ?? '')..addListener(_push);
 
-  VectorText get _object => widget.model.singleSelection! as VectorText;
+  /// The selected text, or null for the one build this plugin can get after
+  /// the selection changed and before the bar swaps it for another plugin.
+  VectorText? get _object => switch (widget.model.singleSelection) {
+        final VectorText text => text,
+        _ => null,
+      };
 
   /// The object the controller was seeded from, so a different selection
   /// reseeds rather than renaming the previous one.
@@ -664,6 +669,7 @@ class _TextPluginState extends State<_TextPlugin> {
   @override
   Widget build(BuildContext context) {
     final text = _object;
+    if (text == null) return const SizedBox();
     if (!identical(_seeded, text)) {
       _seeded = text;
       if (_controller.value != text.textContent) {
@@ -676,8 +682,8 @@ class _TextPluginState extends State<_TextPlugin> {
       crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[
         SizedBox(
-          width: 150,
-          height: 22,
+          width: ChromeMetrics.of(Theme.of(context)).widthFor(150),
+          height: ChromeMetrics.of(Theme.of(context)).fieldHeight,
           child: TextField(controller: _controller, label: 'Text content'),
         ),
         const SizedBox(width: 4),

@@ -74,6 +74,26 @@ double get effectiveGap           => density.gap;
 **Tipo não escala com densidade.** Compacto significa cromo mais apertado; se o
 texto encolher junto, um tema denso vira um tema ilegível.
 
+### O desktop decide o tamanho: `adaptedToPlatform`
+
+Um tema define uma aparência: cores, cantos, caráter. O tamanho das coisas quem
+define é o desktop. Ao lado das outras janelas da tela, uma janela com texto de
+12 px e linhas de menu de 20 px parece um brinquedo. Os temas compactos do
+estúdio eram assim, e foi isso que o usuário viu no editor vetorial, tanto no
+macOS quanto no Windows. `ThemeData.adaptedToPlatform([DesktopPlatform])`
+devolve o mesmo tema nos tamanhos que os aplicativos do próprio sistema usam:
+
+| desktop | texto | controle | linha (lista, menu) | ícone | referência |
+|---|---|---|---|---|---|
+| macOS | 13 | 28 | 24 | 16 | tamanho *regular* do AppKit; linhas de 24 pt dos menus |
+| Windows | 14 | 32 | 28 | 16 | WinUI: corpo Segoe de 14 px, controles de 32 |
+| Linux | 14 | 32 | 28 | 16 | Adwaita e Breeze chegam aos números do Windows |
+
+O método mantém cores, cantos, nome e cor dos ícones, e nunca diminui um tema
+que já é maior: um tema Material continua do tamanho dele. Sem argumento, usa
+`hostDesktopPlatform`. Um teste fixa a plataforma com
+`debugDesktopPlatformOverride` ou passando-a explicitamente.
+
 ### Onde cada altura é usada
 
 | altura | controles |
@@ -324,23 +344,24 @@ de apenas recolori-lo: cor sozinha não é sinal de estado acessível.
 
 ## 8. O que o editor vetorial usa
 
-`examples/vector_editor_demo/metrics.dart` é a aplicação deste contrato a uma
-janela real. O editor escolhe `ThemeData.fluentLight`, que é compacto: altura de
-controle 28, linha 24, padding 8, gap 4. Daí as bandas:
+`examples/vector_editor_demo/metrics.dart` aplica este contrato a uma janela
+real. O editor usa `ThemeData.studioDark` / `studioLight` passados por
+`adaptedToPlatform()`, e `ChromeMetrics.of(theme)` deriva cada banda das alturas
+do tema. Nenhuma banda é uma constante: se o controle cresce, a barra cresce.
 
-| banda | antes | agora | por quê |
+| banda | fórmula | macOS | Windows |
 |---|---|---|---|
-| barra de menus | 24 | 28 | uma linha + ar; 24 deixava 3 px acima de um rótulo de 12 px |
-| barra de ícones | 32 | 36 | botão de 28 + 4 de ar em cima e embaixo |
-| barra contextual | 30 | 36 | um controle + ar, para o combo não encostar na aresta |
-| abas de documento | 24 | 28 | uma linha |
-| caixa de ferramentas | 30 / 26 / 15 | 32 / 28 / 16 | botão de uma altura de controle, ícone do tema |
-| réguas | 18 | 20 | grade |
-| paleta | 26 / 18 | 28 / 16 | grade |
-| barra de status | 22 | 28 | uma linha; 22 era mais baixo que qualquer controle |
-| tira de abas recolhida | 24 | 28 | grade |
-| painel de plugin | 250 | 260 | grade |
-| padding de barra | 6 | 8 | escala de espaçamento |
+| barra de menus | linha + 4 | 28 | 32 |
+| barra de ícones | controle + 8; ícone + 2 | 36 / 18 | 40 / 18 |
+| barra contextual | controle + 8 | 36 | 40 |
+| campo numa barra | controle; largura × texto / 12 | 28 | 32 |
+| abas de documento | linha + 4 | 28 | 32 |
+| caixa de ferramentas | botão = controle + 4; ícone + 4 | 32 / 20 | 36 / 20 |
+| réguas | texto + 7 | 20 | 21 |
+| paleta | amostra = linha − 6; faixa = linha + 4 | 18 / 28 | 22 / 32 |
+| barra de status | linha + 4 | 28 | 32 |
+| cabeçalho de doca | controle + 2 | 30 | 34 |
+| linha do painel Objetos | linha + 2 | 26 | 30 |
 
 E o que o próprio canvas usa, que antes não usava nada:
 

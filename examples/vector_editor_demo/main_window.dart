@@ -501,8 +501,8 @@ class MainWindowState extends State<MainWindow> {
                         ),
                       ),
                       ColorPaletteBar(
-                        swatchSize: ChromeMetrics.paletteSwatchSize,
-                        height: ChromeMetrics.paletteHeight,
+                        swatchSize: ChromeMetrics.of(theme).paletteSwatchSize,
+                        height: ChromeMetrics.of(theme).paletteHeight,
                         // Which cell the selection is already wearing, so the
                         // palette answers "what colour is this?" as well as
                         // "make it that colour".

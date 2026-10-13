@@ -6,6 +6,7 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import 'editor_model.dart';
+import 'metrics.dart';
 import 'objects_panel.dart';
 import 'panels.dart';
 
@@ -76,7 +77,7 @@ final class EditorWorkspace {
                 id: id,
                 name: WorkspacePanels.nameOf(id),
                 widget: const SizedBox(),
-                leading: Icon(WorkspacePanels.iconOf(id), size: 13),
+                leading: Icon(WorkspacePanels.iconOf(id)),
               ),
       );
 
@@ -244,14 +245,14 @@ final class _FloatingPanelState extends State<_FloatingPanel> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
               SizedBox(
-                height: 28,
+                height: ChromeMetrics.of(theme).dockHeaderHeight,
                 child: ColoredBox(
                   color: theme.surfaceAlternate,
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: <Widget>[
                       const SizedBox(width: 8),
-                      Icon(WorkspacePanels.iconOf(widget.id), size: 13),
+                      Icon(WorkspacePanels.iconOf(widget.id)),
                       const SizedBox(width: 6),
                       Expanded(
                         child: Text(
@@ -269,11 +270,10 @@ final class _FloatingPanelState extends State<_FloatingPanel> {
                             widget.model.refresh(
                                 '${WorkspacePanels.nameOf(widget.id)} docked');
                           },
-                          child: const SizedBox(
-                            width: 28,
-                            child: Center(
-                              child:
-                                  Icon(PhosphorIcons.arrowSquareIn, size: 14),
+                          child: SizedBox(
+                            width: ChromeMetrics.of(theme).dockHeaderHeight,
+                            child: const Center(
+                              child: Icon(PhosphorIcons.arrowSquareIn),
                             ),
                           ),
                         ),

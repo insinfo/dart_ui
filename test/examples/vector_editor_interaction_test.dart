@@ -43,6 +43,10 @@ import '../../examples/vector_editor_demo/main_window.dart';
 import '../../examples/vector_editor_demo/metrics.dart';
 import '../../examples/vector_editor_demo/toolbox.dart';
 
+/// The editor's chrome at the theme it wears on this machine.
+final ChromeMetrics _chrome =
+    ChromeMetrics.of(ThemeData.studioDark.adaptedToPlatform());
+
 const Size kWindowSize = Size(1400, 880);
 
 void main() {
@@ -1495,8 +1499,8 @@ final class _Harness {
       if (element is RenderObjectElement) {
         final RenderBox render = element.renderObject;
         if (render.hasSize &&
-            render.size.width == ChromeMetrics.toolboxButtonSize &&
-            render.size.height == ChromeMetrics.toolboxButtonSize &&
+            render.size.width == _chrome.toolboxButtonSize &&
+            render.size.height == _chrome.toolboxButtonSize &&
             seen.add(render.localToGlobal(Offset.zero))) {
           found.add(render);
         }

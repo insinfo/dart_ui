@@ -13,6 +13,7 @@
 library;
 
 import '../graphics/color.dart';
+import '../platform/editing_convention.dart';
 import '../rendering/text/font_registry.dart';
 import 'style.dart';
 import 'widget.dart';
@@ -794,6 +795,46 @@ final class ThemeData {
           PseudoClass.light,
         if (highContrast) PseudoClass.highContrast,
       };
+
+  /// This theme at the sizes [platform]'s own applications use - its
+  /// colours, corners and character kept, its type and controls resized.
+  ///
+  /// A theme is drawn for one look; a desktop decides how big things are.
+  /// The numbers are the platform's, in logical pixels:
+  ///
+  /// | desktop | text | control | row (list, menu) | icon |
+  /// |---------|------|---------|------------------|------|
+  /// | macOS   | 13   | 28      | 24               | 16   |
+  /// | Windows | 14   | 32      | 28               | 16   |
+  /// | Linux   | 14   | 32      | 28               | 16   |
+  ///
+  /// macOS is AppKit's regular size and its menus' 24 pt rows; Windows is
+  /// WinUI's 14 px Segoe body and 32 px controls; Linux follows Adwaita and
+  /// Breeze, which land on Windows' numbers. A compact studio theme drawn at
+  /// 12 px with 20 px menu rows reads as a toy beside every other window on
+  /// the screen - this is what an application calls so it does not.
+  ///
+  /// [platform] defaults to the one this program runs on. Never smaller than
+  /// the theme already is: a theme drawn larger keeps its size.
+  ThemeData adaptedToPlatform([DesktopPlatform? platform]) {
+    final (double text, ThemeDensity step) =
+        switch (platform ?? hostDesktopPlatform) {
+      DesktopPlatform.macos => (13.0, ThemeDensity.compact),
+      DesktopPlatform.windows => (14.0, ThemeDensity.standard),
+      DesktopPlatform.linux => (14.0, ThemeDensity.standard),
+    };
+    final double icon = iconTheme.size ?? 16;
+    return copyWith(
+      fontSize: fontSize > text ? fontSize : text,
+      density: step,
+      controlHeight: controlHeight > 32 ? controlHeight : 32,
+      controlPadding: controlPadding > 12 ? controlPadding : 12,
+      iconTheme: IconThemeData(
+        color: iconTheme.color,
+        size: icon > 16 ? icon : 16,
+      ),
+    );
+  }
 
   ThemeData copyWith({
     String? name,

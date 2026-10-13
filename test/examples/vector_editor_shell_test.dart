@@ -32,6 +32,10 @@ import '../../examples/vector_editor_demo/status_bar.dart';
 import '../../examples/vector_editor_demo/toolbox.dart';
 import '../../examples/vector_editor_demo/workspace.dart';
 
+/// The editor's chrome at the theme it wears on this machine.
+final ChromeMetrics _chrome =
+    ChromeMetrics.of(ThemeData.studioDark.adaptedToPlatform());
+
 const Size kWindowSize = Size(1400, 880);
 
 void main() {
@@ -79,17 +83,12 @@ void main() {
       final harness = _Harness();
       harness.frame();
 
-      expect(
-          harness.sizeOf(EditorMenuBar)!.height, ChromeMetrics.menuBarHeight);
-      expect(
-          harness.sizeOf(StandardToolbar)!.height, ChromeMetrics.toolbarHeight);
-      expect(harness.sizeOf(ContextPanel)!.height,
-          ChromeMetrics.contextPanelHeight);
-      expect(harness.sizeOf(DocumentTabs)!.height,
-          ChromeMetrics.documentTabsHeight);
-      expect(harness.sizeOf(EditorStatusBar)!.height,
-          ChromeMetrics.statusBarHeight);
-      expect(harness.sizeOf(Toolbox)!.width, ChromeMetrics.toolboxWidth);
+      expect(harness.sizeOf(EditorMenuBar)!.height, _chrome.menuBarHeight);
+      expect(harness.sizeOf(StandardToolbar)!.height, _chrome.toolbarHeight);
+      expect(harness.sizeOf(ContextPanel)!.height, _chrome.contextPanelHeight);
+      expect(harness.sizeOf(DocumentTabs)!.height, _chrome.documentTabsHeight);
+      expect(harness.sizeOf(EditorStatusBar)!.height, _chrome.statusBarHeight);
+      expect(harness.sizeOf(Toolbox)!.width, _chrome.toolboxWidth);
       harness.dispose();
     });
 
@@ -101,10 +100,9 @@ void main() {
       expect(rulers, hasLength(2));
       // One spans the canvas horizontally, the other vertically; neither is a
       // hairline, which is what a collapsed ruler would be.
-      expect(rulers.any((r) => r.size.height == ChromeMetrics.rulerThickness),
-          isTrue);
-      expect(rulers.any((r) => r.size.width == ChromeMetrics.rulerThickness),
-          isTrue);
+      expect(
+          rulers.any((r) => r.size.height == _chrome.rulerThickness), isTrue);
+      expect(rulers.any((r) => r.size.width == _chrome.rulerThickness), isTrue);
       for (final ruler in rulers) {
         expect(ruler.size.width, greaterThan(0));
         expect(ruler.size.height, greaterThan(0));
@@ -139,16 +137,13 @@ void main() {
       // draw something there - the canvas' desktop.
       final desktop = _deskColour;
       for (final band in <({String name, double y})>[
-        (name: 'menu bar', y: ChromeMetrics.menuBarHeight / 2),
-        (
-          name: 'toolbar',
-          y: ChromeMetrics.menuBarHeight + ChromeMetrics.toolbarHeight / 2
-        ),
+        (name: 'menu bar', y: _chrome.menuBarHeight / 2),
+        (name: 'toolbar', y: _chrome.menuBarHeight + _chrome.toolbarHeight / 2),
         (
           name: 'property bar',
-          y: ChromeMetrics.menuBarHeight +
-              ChromeMetrics.toolbarHeight +
-              ChromeMetrics.contextPanelHeight / 2
+          y: _chrome.menuBarHeight +
+              _chrome.toolbarHeight +
+              _chrome.contextPanelHeight / 2
         ),
         (name: 'status bar', y: kWindowSize.height - 6),
       ]) {
@@ -170,7 +165,7 @@ void main() {
 
       // Halfway down the tool box, well inside its 30 px.
       final sample = pixels.at(
-        ChromeMetrics.toolboxWidth ~/ 2,
+        _chrome.toolboxWidth ~/ 2,
         (kWindowSize.height / 2).round(),
       );
       expect(sample & 0x00FFFFFF, isNot(desktop));
@@ -442,9 +437,9 @@ void main() {
     test('the theme follows the View menu', () {
       final harness = _Harness();
       harness.model.setThemeMode(EditorThemeMode.light);
-      expect(harness.model.theme, same(ThemeData.studioLight));
+      expect(harness.model.theme.name, ThemeData.studioLight.name);
       harness.model.setThemeMode(EditorThemeMode.dark);
-      expect(harness.model.theme, same(ThemeData.studioDark));
+      expect(harness.model.theme.name, ThemeData.studioDark.name);
       harness.dispose();
     });
 

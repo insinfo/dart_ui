@@ -109,7 +109,7 @@ class Toolbox extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return SizedBox(
-      width: ChromeMetrics.toolboxWidth,
+      width: ChromeMetrics.of(Theme.of(context)).toolboxWidth,
       child: DecoratedBox(
         decoration: BoxDecoration(color: theme.surface),
         child: Column(
@@ -166,8 +166,8 @@ class _ToolButton extends StatelessWidget {
           child: SizedBox(
             // An explicit box, because a tool button is a target: without it
             // the icon's own ink is the only clickable part.
-            width: ChromeMetrics.toolboxButtonSize,
-            height: ChromeMetrics.toolboxButtonSize,
+            width: ChromeMetrics.of(Theme.of(context)).toolboxButtonSize,
+            height: ChromeMetrics.of(Theme.of(context)).toolboxButtonSize,
             child: DecoratedBox(
               decoration: BoxDecoration(
                 // A *wash* of the accent behind a glyph in the accent, not a
@@ -181,7 +181,7 @@ class _ToolButton extends StatelessWidget {
               child: Center(
                 child: Icon(
                   entry.icon,
-                  size: ChromeMetrics.toolboxIconSize,
+                  size: ChromeMetrics.of(Theme.of(context)).toolboxIconSize,
                   color: selected ? theme.accent : theme.foreground,
                 ),
               ),
@@ -204,7 +204,8 @@ class _ToolDivider extends StatelessWidget {
             horizontal: Spacing.sm, vertical: Spacing.xs),
         child: SizedBox(
           height: 1,
-          width: ChromeMetrics.toolboxWidth - Spacing.sm * 2,
+          width:
+              ChromeMetrics.of(Theme.of(context)).toolboxWidth - Spacing.sm * 2,
           child: ColoredBox(color: color),
         ),
       );
@@ -223,15 +224,16 @@ class _ColorIndicator extends StatelessWidget {
     return Tooltip(
       message: 'Current fill and outline',
       child: SizedBox(
-        width: ChromeMetrics.toolboxIconSize + Spacing.sm,
-        height: ChromeMetrics.toolboxIconSize + Spacing.sm,
+        width: ChromeMetrics.of(Theme.of(context)).toolboxIconSize + Spacing.sm,
+        height:
+            ChromeMetrics.of(Theme.of(context)).toolboxIconSize + Spacing.sm,
         child: Stack(
           children: <Widget>[
             Positioned(
               left: 0,
               top: 0,
-              width: ChromeMetrics.toolboxIconSize,
-              height: ChromeMetrics.toolboxIconSize,
+              width: ChromeMetrics.of(Theme.of(context)).toolboxIconSize,
+              height: ChromeMetrics.of(Theme.of(context)).toolboxIconSize,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: fill.isNone ? theme.surfaceAlternate : fill.color,
@@ -243,8 +245,8 @@ class _ColorIndicator extends StatelessWidget {
             Positioned(
               left: Spacing.sm,
               top: Spacing.sm,
-              width: ChromeMetrics.toolboxIconSize,
-              height: ChromeMetrics.toolboxIconSize,
+              width: ChromeMetrics.of(Theme.of(context)).toolboxIconSize,
+              height: ChromeMetrics.of(Theme.of(context)).toolboxIconSize,
               child: DecoratedBox(
                 decoration: BoxDecoration(
                   color: stroke.isNone || stroke.width <= 0

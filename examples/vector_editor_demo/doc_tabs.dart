@@ -41,7 +41,7 @@ class DocumentTabs extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return SizedBox(
-      height: ChromeMetrics.documentTabsHeight,
+      height: ChromeMetrics.of(Theme.of(context)).documentTabsHeight,
       child: DecoratedBox(
         decoration: BoxDecoration(
           color: theme.surfaceAlternate,

@@ -161,12 +161,16 @@ class EditorModel {
   /// What the system said last time it was asked; null when it did not say.
   bool? systemDark;
 
+  /// The theme the editor wears: the studio look at the sizes this desktop's
+  /// own applications use.
   ThemeData get theme => switch (themeMode) {
-        EditorThemeMode.dark => ThemeData.studioDark,
-        EditorThemeMode.light => ThemeData.studioLight,
-        EditorThemeMode.system =>
-          systemDark == false ? ThemeData.studioLight : ThemeData.studioDark,
+        EditorThemeMode.dark => _dark,
+        EditorThemeMode.light => _light,
+        EditorThemeMode.system => systemDark == false ? _light : _dark,
       };
+
+  static final ThemeData _dark = ThemeData.studioDark.adaptedToPlatform();
+  static final ThemeData _light = ThemeData.studioLight.adaptedToPlatform();
 
   /// Whether the menus are in the system's menu bar (macOS) rather than in
   /// the window - the user's choice, offered where [nativeMenuAvailable].
