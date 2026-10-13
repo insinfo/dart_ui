@@ -15,16 +15,58 @@ class FileIcon extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) => SizedBox(
-        width: size,
-        height: size,
-        child: CustomPaint(
-          size: Size(size, size),
-          painter: (DisplayList list, Size box) =>
-              paintFileIcon(list, kind, box.width),
-        ),
-      );
+  Widget build(BuildContext context) {
+    final Widget art = CustomPaint(
+      size: Size(size, size),
+      painter: (DisplayList list, Size box) =>
+          paintFileIcon(list, kind, box.width),
+    );
+    final String? letter = officeLetter(kind);
+    if (letter == null) return SizedBox(width: size, height: size, child: art);
+    // The letter on the badge is text, so it sits over the painting: the
+    // badge square is painted, the W on it is set in the UI font.
+    final Rect badge = officeBadge(size);
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        children: <Widget>[
+          Positioned.fill(child: art),
+          Positioned(
+            left: badge.left,
+            top: badge.top,
+            width: badge.width,
+            height: badge.height,
+            child: Center(
+              child: Text(
+                letter,
+                style: TextStyle(
+                  fontSize: badge.height * .62,
+                  fontWeight: FontWeight.w700,
+                ),
+                color: const Color(0xFFFFFFFF),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
+
+/// The letter Office puts on its files' icons, or null for any other kind.
+String? officeLetter(FileKind kind) => switch (kind) {
+      FileKind.document => 'W',
+      FileKind.spreadsheet => 'X',
+      FileKind.presentation => 'P',
+      _ => null,
+    };
+
+/// Where the badge of an Office icon sits in a [s] x [s] icon: a square on
+/// the left, over the lower part of the page.
+Rect officeBadge(double s) => s <= 20
+    ? Rect.fromLTWH(0, s * .22, s * .62, s * .62)
+    : Rect.fromLTWH(s * .08, s * .36, s * .48, s * .48);
 
 const Color _folderBack = Color(0xFFE0A100);
 const Color _folderFront = Color(0xFFFFC83D);
@@ -35,9 +77,9 @@ const Color _fold = Color(0xFFDADADA);
 
 /// The colour that says what a file is.
 Color kindColor(FileKind kind) => switch (kind) {
-      FileKind.document => const Color(0xFF2B6CD8),
-      FileKind.spreadsheet => const Color(0xFF1E8E4E),
-      FileKind.presentation => const Color(0xFFD9541E),
+      FileKind.document => const Color(0xFF185ABD),
+      FileKind.spreadsheet => const Color(0xFF107C41),
+      FileKind.presentation => const Color(0xFFC43E1C),
       FileKind.pdf => const Color(0xFFD13438),
       FileKind.image => const Color(0xFF0E9AA7),
       FileKind.audio => const Color(0xFF8E44AD),
@@ -84,6 +126,8 @@ void paintFileIcon(DisplayList list, FileKind kind, double s) {
       _paintDrive(list, s);
     case FileKind.archive:
       _paintFolder(list, s, zip: true);
+    case FileKind.document || FileKind.spreadsheet || FileKind.presentation:
+      _paintOffice(list, kind, s);
     default:
       _paintPage(list, kind, s);
   }
@@ -228,4 +272,40 @@ void _paintPage(DisplayList list, FileKind kind, double s) {
       _fill(list, s * .20, s * .58, s * .54, s * .62, _page);
       _fill(list, s * .20, s * .66, s * .48, s * .70, _page);
   }
+}
+
+/// Word, Excel and PowerPoint, as Windows 11 shows them: a page on the right
+/// with lines in the app's colour, and the app's square on the left, under
+/// its letter.
+void _paintOffice(DisplayList list, FileKind kind, double s) {
+  final Color c = kindColor(kind);
+  final bool small = s <= 20;
+  final double l = small ? s * .30 : s * .30;
+  final double t = small ? s * .06 : s * .10;
+  final double r = small ? s : s * .90;
+  final double b = small ? s * .94 : s * .90;
+  final double edge = s >= 24 ? s / 32 : 1;
+  _fill(list, l, t, r, b, _pageEdge, radius: s * .06);
+  _fill(list, l + edge, t + edge, r - edge, b - edge, _page, radius: s * .05);
+  // The lines - rows of cells for Excel, a slide for PowerPoint.
+  final Color light = c.withOpacity(.45);
+  switch (kind) {
+    case FileKind.presentation:
+      _fill(list, s * .62, t + s * .16, r - s * .10, t + s * .40, light,
+          radius: s * .03);
+    case FileKind.spreadsheet:
+      for (var i = 0; i < 4; i++) {
+        final double y = t + s * (.14 + i * .16);
+        _fill(list, s * .60, y, r - s * .08, y + s * .08, light);
+      }
+    default:
+      for (var i = 0; i < 4; i++) {
+        final double y = t + s * (.14 + i * .16);
+        _fill(
+            list, s * .60, y, r - s * (i == 3 ? .22 : .08), y + s * .05, light);
+      }
+  }
+  final Rect badge = officeBadge(s);
+  _fill(list, badge.left, badge.top, badge.right, badge.bottom, c,
+      radius: s * (small ? .10 : .06));
 }
