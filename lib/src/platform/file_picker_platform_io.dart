@@ -441,7 +441,7 @@ Future<String?> _saveMacOS({
   final ProcessResult result =
       await Process.run('/usr/bin/osascript', <String>['-e', script]);
   if (result.exitCode == 0) return '${result.stdout}'.trim();
-  if ('${result.stderr}'.toLowerCase().contains('user canceled')) return null;
+  if (_osascriptCancelled(result)) return null;
   throw FilePickerException(
     operation: 'NSSavePanel via osascript',
     platform: 'macos',
@@ -524,6 +524,17 @@ String _windowsFilter(List<FilePickerFilter> filters) {
   return result.toString();
 }
 
+/// Whether osascript failed because the person dismissed the panel.
+///
+/// AppleScript reports that as error -128, with a message in the system's
+/// language ("User canceled.", "Cancelado pelo usuário."), so the number is
+/// what identifies it.
+bool _osascriptCancelled(ProcessResult result) {
+  final String error = '${result.stderr}';
+  return error.contains('(-128)') ||
+      error.toLowerCase().contains('user canceled');
+}
+
 Future<String?> _openMacOS({
   required String title,
   required List<FilePickerFilter> filters,
@@ -543,7 +554,7 @@ Future<String?> _openMacOS({
   final ProcessResult result =
       await Process.run('/usr/bin/osascript', <String>['-e', script]);
   if (result.exitCode == 0) return '${result.stdout}'.trim();
-  if ('${result.stderr}'.toLowerCase().contains('user canceled')) return null;
+  if (_osascriptCancelled(result)) return null;
   throw FilePickerException(
     operation: 'NSOpenPanel via osascript',
     platform: 'macos',
