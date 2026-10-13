@@ -1,7 +1,6 @@
 /// Transactional document editing API with Undo/Redo history stack.
 library;
 
-
 import 'package:dart_ui/dart_ui.dart';
 
 /// An undoable/redoable document mutation action.
@@ -112,16 +111,17 @@ class DocumentApi {
 
   /// Groups [objects] with undo support, and returns the new group.
   VectorGroup groupObjects(List<SelectableObject> objects) {
-    final members = List<SelectableObject>.of(objects);
+    final members = List<DocumentObject>.of(objects);
     final parent = members.first.parent;
-    final group = methods.groupObjects(members);
+    final group = methods.groupObjects(objects);
+    final index = parent?.children.indexOf(group) ?? -1;
     apply(GenericAction(
       description: 'Group ${members.length} objects',
-      // The group already exists, so the first `execute` must be a no-op or
-      // grouping would happen twice; redo re-runs the real thing.
+      // The first `execute` finds the group already built; a redo rebuilds
+      // it from the same members, where the undo scattered them.
       onExecute: () {
-        if (group.parent == null && parent is VectorLayer) {
-          methods.addObject(parent, group);
+        if (parent is VectorLayer && !parent.children.contains(group)) {
+          _regroup(group, members, parent, index);
         }
       },
       onUndo: () => methods.ungroupObjects(group),
@@ -132,26 +132,45 @@ class DocumentApi {
   /// Ungroups [group] with undo support.
   void ungroupObjects(VectorGroup group) {
     final parent = group.parent;
+    final index = parent?.children.indexOf(group) ?? -1;
     final members = List<DocumentObject>.of(group.children);
     methods.ungroupObjects(group);
     apply(GenericAction(
       description: 'Ungroup',
-      onExecute: () {},
+      // Already ungrouped the first time; a redo does it again.
+      onExecute: () {
+        if (parent != null && parent.children.contains(group)) {
+          methods.ungroupObjects(group);
+        }
+      },
       onUndo: () {
-        if (parent is! VectorLayer) return;
-        for (final member in members) {
-          methods.removeObject(member);
-        }
-        group.children
-          ..clear()
-          ..addAll(members);
-        for (final member in members) {
-          member.parent = group;
-        }
-        methods.addObject(parent, group);
-        group.update();
+        if (parent is VectorLayer) _regroup(group, members, parent, index);
       },
     ));
+  }
+
+  /// Puts [members] back into [group] and the group back at [index].
+  ///
+  /// `DocumentMethods.ungroupObjects` leaves the group's `parent` pointing at
+  /// the layer it left, so whether a group is in the document is asked of
+  /// the layer's children, never of `group.parent`.
+  void _regroup(
+    VectorGroup group,
+    List<DocumentObject> members,
+    VectorLayer parent,
+    int index,
+  ) {
+    for (final member in members) {
+      methods.removeObject(member);
+    }
+    group.children
+      ..clear()
+      ..addAll(members);
+    for (final member in members) {
+      member.parent = group;
+    }
+    methods.addObject(parent, group, index);
+    group.update();
   }
 
   /// Records an interactive move or resize that has *already happened*.
