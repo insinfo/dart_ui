@@ -113,3 +113,27 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
 - Pontas, junções e tracejado do contorno no canvas (precisa do formato de
   pintura), guias arrastadas da régua, barra de Texto (fonte, estilo,
   alinhamento) e texto de parágrafo.
+
+### 13/10/2026, madrugada
+
+**Mudou**
+- Contorno desenhado com pontas, junções e tracejado (framework: o traço
+  completo na DisplayList, CPU, GPU e D2D); pontas de seta (ArrowHead) e a
+  barra de linha da curva.
+- Guias: arrastadas das réguas, movidas pela Seleção, apagadas soltando na
+  régua; guide.add/move/delete/clear.
+- Texto: fonte, negrito, itálico e alinhamento, desenhados e medidos com a
+  mesma face; VectorTextAlign deixou de ser escondido dos barris.
+- Preenchimento gradiente (linear e radial) por comando e no painel.
+- Selecionar tudo por tipo, Localizar e substituir texto (o primeiro
+  diálogo do editor, pelo showDialog do framework), frente e fundo da
+  página, shape.curve.
+- P0 em 96%.
+
+**Ficou pela metade**
+- Texto de parágrafo (moldura com quebra de linha), pena caligráfica,
+  preenchimentos de padrão e textura, Limpar transformações, Colar especial.
+
+**Próximo passo**
+- Texto de parágrafo é a maior P0 que resta.
+
