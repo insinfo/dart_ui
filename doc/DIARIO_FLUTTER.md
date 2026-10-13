@@ -102,3 +102,37 @@ pela metade e o próximo passo. Ver [`AGENTS_FLUTTER.md`](AGENTS_FLUTTER.md).
   `NetworkImage`), `AnimatedCrossFade`/`AnimatedScale`/`AnimatedRotation`/
   `AnimatedSlide`, `Ticker`/`TickerProviderStateMixin`, `ModalRoute`,
   `OverlayPortal`, `Clipboard`/`HapticFeedback`/`SystemChrome`.
+
+### Fim do dia
+
+**Mudou**
+- `Ticker`, `TickerProvider`, `SingleTickerProviderStateMixin`,
+  `TickerProviderStateMixin`, `TickerMode`; `AnimationController(vsync: this)`
+  como no Flutter (com `animateTo`, `repeat(reverse:)`, `fling`,
+  `TickerFuture`); `AnimatedScale`, `AnimatedRotation`, `AnimatedSlide`,
+  `AnimatedFractionallySizedBox`, `PositionedDirectional`.
+- `package:dart_ui/material.dart`, primeira parte: `ThemeData` e
+  `ColorScheme.fromSeed` do Material 3 (HCT e paletas tonais adaptados do
+  material_color_utilities, Apache-2.0), `Colors` com os tons, `TextTheme` e
+  `Typography` M3, 8 810 `Icons`, o widget `Material`, `WidgetState*`. O
+  `dart_ui.dart` continua sem Material.
+- Correções: retângulos girados ou inclinados eram pintados como a caixa
+  alinhada aos eixos (CPU e Metal); `ValueNotifier` agora é `Listenable`;
+  `Offset`/`Size`/`Rect` com a API do `dart:ui`; `Scrollbar(controller:)`.
+- Medida: **P0 68%**, P1 21%, **26% no total**.
+
+**Ficou pela metade**
+- Material: falta o esqueleto do app (`MaterialApp`, `Scaffold`, `AppBar`,
+  `InkWell`, `FloatingActionButton`, `IconButton`, `Drawer`, `SnackBar`,
+  `NavigationBar`/`NavigationRail`/`BottomNavigationBar`, `TabBar`) e, depois,
+  os botões e controles. O contador do Flutter ainda não compila com o import
+  trocado.
+- Do P0 fora do Material: `AnimatedCrossFade`, imagens (`ImageProvider`,
+  `AssetImage`, `NetworkImage`, `Image(image:)`), `ModalRoute`,
+  `OverlayPortal`, `Clipboard`/`HapticFeedback`/`SystemChrome`.
+- `ClipPath` vazando nas pontas; `ShaderMask(blendMode: BlendMode)`.
+- Clicar num item de submenu fecha os menus sem rodar o comando.
+
+**Próximo passo**
+- Na ordem: o bug do submenu; o esqueleto Material e o `examples/material_counter`
+  (o contador do Flutter com só o import trocado); imagens; o resto do P0.

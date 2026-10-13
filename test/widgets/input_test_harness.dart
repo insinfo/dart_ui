@@ -174,7 +174,7 @@ final class InputHarness {
   void drag(Offset from, Offset to, {int steps = 5, bool release = true}) {
     down(from);
     for (int i = 1; i <= steps; i++) {
-      move(Offset.lerp(from, to, i / steps));
+      move(Offset.lerp(from, to, i / steps)!);
     }
     if (release) up(to);
   }

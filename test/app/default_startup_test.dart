@@ -187,7 +187,13 @@ void main() {
 
       expect(
         paths.map((PresentationPathEntry path) => path.name),
-        <String>['metal', 'macos-iosurface', 'macos-cpu', 'headless-cpu'],
+        <String>[
+          'metal',
+          'macos-iosurface',
+          'macos-embedded-iosurface',
+          'macos-cpu',
+          'headless-cpu',
+        ],
       );
       expect(paths.first.kind, PresentationKind.gpu);
       expect(paths.first.experimental, isFalse);
@@ -226,7 +232,11 @@ void main() {
           (WindowingBackendEntry entry) => entry.name == 'macos-appkit-signal');
       expect(signal.experimental, isTrue,
           reason: 'CFRunLoopRun as a signal handler: by name and opt-in only');
-      expect(backends.first.name, 'macos');
+      // The embedded backend comes first, and its probe passes only inside
+      // the embedded runtime (test/backends/macos/macos_embedded_test.dart):
+      // everywhere else the native host stays the default.
+      expect(backends.map((WindowingBackendEntry entry) => entry.name).take(2),
+          <String>['macos-embedded', 'macos']);
     });
 
     test('the Windows OpenGL path probes through WGL rather than EGL', () {

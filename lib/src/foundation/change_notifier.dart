@@ -2,11 +2,9 @@
 /// attached: Flutter's `Listenable` and `ChangeNotifier`, so models written
 /// against them carry over unchanged.
 ///
-/// [ValueNotifier] is the other shape - it hands its listeners the new
-/// value - and stays as it is; a model that only needs to say that it
-/// changed extends [ChangeNotifier] instead, and anything that rebuilds on a
-/// change takes a [Listenable], which an `Animation` and a [ChangeNotifier]
-/// both are.
+/// `ValueNotifier` is a [ChangeNotifier] that also holds a value, as in
+/// Flutter, and anything that rebuilds on a change takes a [Listenable],
+/// which an `Animation`, a [ChangeNotifier] and a `ValueNotifier` all are.
 library;
 
 import 'package:meta/meta.dart';

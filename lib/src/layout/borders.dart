@@ -1049,7 +1049,7 @@ class CircleBorder extends OutlinedBorder {
     if (e == 1.0) return rect;
     final Rect circle = _circleIn(rect);
     if (e == 0.0) return circle;
-    return Rect.lerp(circle, rect, e);
+    return Rect.lerp(circle, rect, e)!;
   }
 
   @override

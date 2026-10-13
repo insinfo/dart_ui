@@ -163,7 +163,10 @@ void main() {
       );
     });
 
-    test('a rotation reaches the sink as its conservative bounding box', () {
+    test('a rotated fill reaches the sink as its outline, not its box', () {
+      // Regression: the player used to hand a 45 degree square to
+      // fillDeviceRect as its device bounding box - twice the square's area,
+      // every pixel of the excess painted.
       final list = DisplayList();
       final int paint = list.addPaint(colorArgb: 0xFF123456);
       const double angle = math.pi / 4;
@@ -171,24 +174,78 @@ void main() {
         ..transform2D(Transform2D.rotation(angle))
         ..drawRect(0, 0, 10, 10, paint);
 
-      final Rect device = _play(list).single<FillRectCall>().deviceRect;
+      final RecordingSink sink = _play(list);
+      expect(sink.allOf<FillRectCall>(), isEmpty);
+      final DrawPathCall call = sink.single<DrawPathCall>();
+      expect(call.paint.style, paintStyleFill);
+      // The outline is the local rectangle; the matrix rides alongside it.
+      expect((call.path as Path).bounds, const Rect.fromLTRB(0, 0, 10, 10));
+      expect(call.transform.b, closeTo(math.sin(angle), 1e-6));
+      expect(call.transform.c, closeTo(-math.sin(angle), 1e-6));
+    });
 
-      // Corners of the rotated square, in the order the transform maps them:
-      // (0,0), (10c, 10s), (10c-10s, 10c+10s), (-10s, 10c). The tolerance is
-      // for the float32 the encoder stores the matrix in, not for the maths.
-      final double c = math.cos(angle);
-      final double s = math.sin(angle);
-      expect(device.left, closeTo(-10 * s, 1e-5));
-      expect(device.top, closeTo(0, 1e-5));
-      expect(device.right, closeTo(10 * c, 1e-5));
-      expect(device.bottom, closeTo(10 * (c + s), 1e-5));
+    test('a skewed rounded rectangle reaches the sink as its outline', () {
+      final list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF123456);
+      list
+        ..transform2D(const Transform2D(1, 0, 0.5, 1, 0, 0))
+        ..drawRRectUniform(0, 0, 20, 10, 3, 3, paint);
 
-      // Stated as an approximation rather than left to be discovered: the box
-      // is twice the area of the square it stands for, and every pixel of that
-      // excess would be painted. A rotated fill needs a quad primitive, not a
-      // tighter box.
-      expect(device.width * device.height, closeTo(200, 1e-3));
-      expect(device.width * device.height, greaterThan(100));
+      final RecordingSink sink = _play(list);
+      expect(sink.allOf<FillRRectCall>(), isEmpty);
+      expect((sink.single<DrawPathCall>().path as Path).bounds,
+          const Rect.fromLTRB(0, 0, 20, 10));
+    });
+
+    test('a quarter turn keeps the rectangle fast path, the rrect does not',
+        () {
+      // A quarter turn maps the rectangle onto an axis-aligned one, so its
+      // box is exact even with the float32 residue in cos(pi/2). A rounded
+      // rectangle's corners move round under the same turn, so it is drawn
+      // as an outline rather than with radii in the wrong corners.
+      final list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF123456);
+      list
+        ..transform2D(Transform2D.rotation(math.pi / 2))
+        ..drawRect(0, 0, 10, 20, paint)
+        ..drawRRect(0, 0, 10, 20, 8, 8, 0, 0, 0, 0, 0, 0, paint);
+
+      final RecordingSink sink = _play(list);
+      final Rect device = sink.single<FillRectCall>().deviceRect;
+      expect(device.left, closeTo(-20, 1e-4));
+      expect(device.top, closeTo(0, 1e-4));
+      expect(device.right, closeTo(0, 1e-4));
+      expect(device.bottom, closeTo(10, 1e-4));
+      expect(sink.allOf<FillRRectCall>(), isEmpty);
+      expect(sink.allOf<DrawPathCall>(), hasLength(1));
+    });
+
+    test('a mirrored rounded rectangle is an outline, a scaled one is not', () {
+      final list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF123456);
+      list
+        ..save()
+        ..transform2D(const Transform2D(-1, 0, 0, 1, 50, 0))
+        ..drawRRect(0, 0, 10, 20, 8, 8, 0, 0, 0, 0, 0, 0, paint)
+        ..restore()
+        ..transform2D(const Transform2D.scaling(2, 3))
+        ..drawRRect(0, 0, 10, 20, 8, 8, 0, 0, 0, 0, 0, 0, paint);
+
+      final RecordingSink sink = _play(list);
+      expect(sink.allOf<DrawPathCall>(), hasLength(1));
+      final FillRRectCall scaled = sink.single<FillRRectCall>();
+      expect(scaled.deviceRect, const Rect.fromLTRB(0, 0, 20, 60));
+      expect(scaled.deviceRadii.take(2), <double>[16, 24]);
+    });
+
+    test('a rotated fill entirely outside the clip is still culled', () {
+      final list = DisplayList();
+      final int paint = list.addPaint(colorArgb: 0xFF123456);
+      list
+        ..clipRect(0, 0, 10, 10)
+        ..transform2D(Transform2D.rotation(math.pi / 4))
+        ..drawRect(60, 0, 70, 10, paint);
+      expect(_play(list).callCount, 0);
     });
   });
 

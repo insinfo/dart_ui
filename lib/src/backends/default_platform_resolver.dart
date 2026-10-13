@@ -37,6 +37,8 @@ import 'android/android_window.dart';
 import 'headless/headless_backend.dart';
 import 'ios/ios_backend.dart';
 import 'ios/ios_window.dart';
+import 'macos/embedded/embedded_backend.dart';
+import 'macos/embedded/embedded_window.dart';
 import 'macos/macos.dart';
 import 'macos/macos_cpu_window.dart';
 import 'macos/surface_pool.dart';
@@ -91,6 +93,15 @@ final class PlatformBackendResolver {
               : () => X11WindowingBackend(environment: options.environment),
         ),
       if (platform == 'macos') ...<WindowingBackendEntry>[
+        // AppKit in this very process, on the main thread: what a .app built
+        // by tool/macos/build_app.dart runs, its executable the Dart runtime
+        // compiled from source with the main-thread patch. Its probe passes
+        // only inside that runtime, so everywhere else selection falls
+        // through to the native host, the default, unchanged.
+        const WindowingBackendEntry(
+          name: macosEmbeddedBackendName,
+          create: MacosEmbeddedWindowingBackend.new,
+        ),
         const WindowingBackendEntry(
           name: 'macos',
           create: MacosWindowingBackend.new,
@@ -243,6 +254,7 @@ final class PlatformBackendResolver {
         // for how it got here.
         _macosMetal(),
         _macosCpu(),
+        _macosEmbeddedCpu(),
         _macosInProcessCpu(),
       ],
       if (platform == 'android') _androidCpu(),
@@ -834,7 +846,12 @@ final class PlatformBackendResolver {
     const MetalRendererBackend renderer = MetalRendererBackend();
     return PresentationPathEntry.directRenderer(
       backend: renderer,
-      compatibleWindowingBackends: const <String>{'macos'},
+      // The embedded backend's windows offer the same IOSurface pool, shown
+      // as their layer's contents instead of by a host.
+      compatibleWindowingBackends: const <String>{
+        'macos',
+        macosEmbeddedBackendName,
+      },
       // Into the window's back slot, before the interface is drawn over it;
       // see `MetalWindowTarget.meshTarget`. Throws rather than returning
       // null, as the Direct3D factory does, so the window reports why.
@@ -850,9 +867,9 @@ final class PlatformBackendResolver {
         NativeWindow native, {
         RenderDevice? device,
       }) async {
-        if (native is! MacosWindow) {
-          throw StateError('metal requires a MacosWindow; got '
-              '${native.runtimeType}');
+        if (native is! MacosWindow && native is! MacosEmbeddedWindow) {
+          throw StateError('metal requires a MacosWindow or a '
+              'MacosEmbeddedWindow; got ${native.runtimeType}');
         }
         // The window's own descriptor, not a new one: it carries the pool and
         // the window, which is what lets the target reach an IOSurfaceRef and
@@ -930,6 +947,42 @@ final class PlatformBackendResolver {
             present: presenter.renderDisplayList,
             presentNow: presenter.renderDisplayListNow,
             release: presenter.dispose,
+          );
+        },
+      );
+
+  /// The CPU path of the embedded backend: the rasteriser writes the back
+  /// `IOSurface` in place and the window shows it as its layer's contents.
+  static PresentationPathEntry _macosEmbeddedCpu() =>
+      PresentationPathEntry.retainedCpu(
+        name: macosEmbeddedSurfaceKind,
+        deviceDescription: 'IOSurface back buffer shown as the layer contents',
+        compatibleWindowingBackends: const <String>{macosEmbeddedBackendName},
+        create: (NativeWindow window) {
+          final MacosEmbeddedWindow native = window as MacosEmbeddedWindow;
+          return (
+            present: (
+              DisplayList list, {
+              int? clearColor,
+              Transform2D? deviceTransform,
+              Rect? damage,
+            }) =>
+                Future<PresentResult>.value(native.drawAndPresent(
+                  (Framebuffer buffer) => rasterizeDisplayList(
+                    list,
+                    buffer,
+                    clearColor: clearColor,
+                    damage: damage,
+                    deviceTransform: deviceTransform ??
+                        Transform2D.scaling(
+                          native.renderScale,
+                          native.renderScale,
+                        ),
+                  ),
+                  frameGeneration: native.generation,
+                )),
+            presentNow: null,
+            release: _doNothing,
           );
         },
       );

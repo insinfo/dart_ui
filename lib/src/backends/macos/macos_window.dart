@@ -97,7 +97,8 @@ final class MacosWindow
         WindowStateControl,
         NativeMenuBarWindow,
         HiddenTitleBarWindow,
-        ScreenColorSampling {
+        ScreenColorSampling,
+        SurfaceReadinessWindow {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -493,6 +494,15 @@ final class MacosWindow
         ?.rememberTitle(value.replaceAll('\n', ' ').replaceAll('\r', ' '));
   }
 
+  /// Paints [premultipliedArgb] where no frame has drawn yet, instead of the
+  /// system's window colour: the strip a live resize uncovers if the frame of
+  /// the new size is late. Without one the host uses the colour at the edge
+  /// of the frame on screen. A popup keeps its transparent window.
+  void setBackgroundColor(int premultipliedArgb) {
+    if (isDisposed || _transient) return;
+    _supervisor?.send(HostCommands.setBackground(premultipliedArgb));
+  }
+
   /// A menu or tooltip panel, which has no zoom box and no full screen.
   bool _transient = false;
 
@@ -756,6 +766,12 @@ final class MacosWindow
 
   @override
   MacosSurfacePool? get currentPool => _pool;
+
+  /// False while a resize's surfaces are being made and handed to the host:
+  /// a frame drawn then is rejected as stale, and its layout and paint would
+  /// sit between the handoff's round trips. See [SurfaceReadinessWindow].
+  @override
+  bool get surfaceReady => !_resizeInFlight;
 
   /// Whether a present would reach a host at all. See [MacosSurfaceHost].
   @override

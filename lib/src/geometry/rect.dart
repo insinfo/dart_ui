@@ -32,6 +32,14 @@ final class Rect {
           math.max(a.dy, b.dy),
         );
 
+  /// The square that encloses the circle of [radius] around [center].
+  Rect.fromCircle({required Offset center, required double radius})
+      : this.fromCenter(
+          center: center,
+          width: radius * 2,
+          height: radius * 2,
+        );
+
   Rect.fromCenter({
     required Offset center,
     required double width,
@@ -47,6 +55,13 @@ final class Rect {
   /// rectangles do not overlap.
   static const Rect zero = Rect.fromLTRB(0, 0, 0, 0);
 
+  static const double _giantScalar = 1.0E+9;
+
+  /// A rectangle that covers everything a layer could draw - Flutter's: a
+  /// finite stand-in for "unbounded", so arithmetic on it stays finite.
+  static const Rect largest =
+      Rect.fromLTRB(-_giantScalar, -_giantScalar, _giantScalar, _giantScalar);
+
   final double left;
   final double top;
   final double right;
@@ -58,13 +73,45 @@ final class Rect {
 
   Offset get topLeft => Offset(left, top);
 
-  Offset get bottomRight => Offset(right, bottom);
+  Offset get topCenter => Offset(left + width / 2, top);
+
+  Offset get topRight => Offset(right, top);
+
+  Offset get centerLeft => Offset(left, top + height / 2);
 
   Offset get center => Offset(left + width / 2, top + height / 2);
 
+  Offset get centerRight => Offset(right, top + height / 2);
+
+  Offset get bottomLeft => Offset(left, bottom);
+
+  Offset get bottomCenter => Offset(left + width / 2, bottom);
+
+  Offset get bottomRight => Offset(right, bottom);
+
   Size get size => Size(width, height);
 
+  /// The lesser of the width and height magnitudes.
+  double get shortestSide => math.min(width.abs(), height.abs());
+
+  /// The greater of the width and height magnitudes.
+  double get longestSide => math.max(width.abs(), height.abs());
+
   bool get isEmpty => right <= left || bottom <= top;
+
+  /// Whether any edge is NaN.
+  bool get hasNaN => left.isNaN || top.isNaN || right.isNaN || bottom.isNaN;
+
+  /// Whether any edge is infinite.
+  bool get isInfinite =>
+      left >= double.infinity ||
+      top >= double.infinity ||
+      right >= double.infinity ||
+      bottom >= double.infinity;
+
+  /// Whether every edge is finite.
+  bool get isFinite =>
+      left.isFinite && top.isFinite && right.isFinite && bottom.isFinite;
 
   /// Half-open on the right and bottom edges, so that tiled rectangles never
   /// both claim the pixel on a shared boundary and a hit test can only ever
@@ -85,7 +132,15 @@ final class Rect {
       top < other.bottom &&
       other.top < bottom;
 
+  /// Flutter's name for [intersects].
+  bool overlaps(Rect other) => intersects(other);
+
   /// The overlapping area, or [Rect.zero] when there is none.
+  ///
+  /// **Differs from Flutter**, whose `intersect` returns the inverted
+  /// rectangle (the max of the lefts against the min of the rights) when the
+  /// two do not overlap. Both answer [isEmpty] true there, which is the test
+  /// a caller should make; the reason for the canonical zero follows.
   ///
   /// Two alternatives were rejected. Returning `null` would push a null check
   /// into every clip and culling site for a case that already has a perfectly
@@ -126,6 +181,16 @@ final class Rect {
     );
   }
 
+  /// The smallest rectangle enclosing both, as Flutter computes it: plain
+  /// minimum and maximum of the edges, an empty operand included - unlike
+  /// [union], which skips an empty one.
+  Rect expandToInclude(Rect other) => Rect.fromLTRB(
+        math.min(left, other.left),
+        math.min(top, other.top),
+        math.max(right, other.right),
+        math.max(bottom, other.bottom),
+      );
+
   /// Grows every edge outward by [delta], as a stroke or shadow extent does.
   Rect inflate(double delta) =>
       Rect.fromLTRB(left - delta, top - delta, right + delta, bottom + delta);
@@ -148,7 +213,13 @@ final class Rect {
   ///
   /// Edges rather than centre-and-size, so that interpolating between two
   /// rectangles that share an edge keeps that edge exactly fixed.
-  static Rect lerp(Rect a, Rect b, double t) {
+  ///
+  /// Flutter's signature: a null end stands for a zero rectangle at the
+  /// origin, two nulls give null, and two rectangles never give null.
+  static Rect? lerp(Rect? a, Rect? b, double t) {
+    if (a == null && b == null) return null;
+    a ??= zero;
+    b ??= zero;
     final inverse = 1.0 - t;
     return Rect.fromLTRB(
       a.left * inverse + b.left * t,

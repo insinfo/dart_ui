@@ -155,7 +155,19 @@ const Map<String, String> kPartial = <String, String>{
   'ScrollPhysics': 'simulations take a `Duration`; no '
       '`adjustPositionForNewDimensions`',
   'BouncingScrollPhysics': '`fast` only changes the spring',
-  'Scrollbar': 'takes `position:`, not `controller:`',
+  'Scrollbar': 'needs `controller:` or `position:`: there is no '
+      '`PrimaryScrollController`',
+  'Rect': '`intersect` gives `Rect.zero` when there is no overlap',
+  'AnimationController': 'listeners fire only when the value changes; '
+      '`AnimationBehavior` has no effect',
+  'Ticker': 'needs an `AnimationClock`; without one it never fires',
+  'TickerMode': 'no `TickerModeData` or `valuesOf`',
+  'ColorScheme': '`contrastLevel` ignored; variants beyond tonalSpot and '
+      'neutral are approximations',
+  'ThemeData': 'the Material subset of the app shell; no button, card or '
+      'dialog themes yet',
+  'Icons': '`_outlined`, `_rounded` and `_sharp` draw the filled glyph',
+  'Material': 'colour, elevation and shape changes do not animate',
   // Input, focus and shortcuts.
   'Listener': 'dart_ui\'s pointer events; `translucent` is hit as `opaque`',
   'Draggable': 'primary button only; cancelled if it leaves the tree',

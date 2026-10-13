@@ -1,0 +1,276 @@
+diff --git a/runtime/bin/main.cc b/runtime/bin/main.cc
+--- a/runtime/bin/main.cc
++++ b/runtime/bin/main.cc
+@@ -10,7 +10,58 @@
+ #include <string.h>
+ #endif
+ 
++#if defined(DART_HOST_OS_MACOS) && !defined(DART_HOST_OS_IOS)
++#include <limits.h>
++#include <mach-o/dyld.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++
++namespace dart {
++namespace bin {
++extern bool dart_ui_main_thread_loop;
++}  // namespace bin
++}  // namespace dart
++
++// dart_ui (appkitEmbedded): as a .app's executable the runtime finds its
++// program in the bundle, at Contents/Frameworks/App.framework/App, and runs
++// the main isolate on the main thread (main_impl.cc). The arguments the app
++// was opened with go to the program, without macOS's old -psn_ one.
++static void MacRunBundle(int argc, char** argv) {
++  char executable[PATH_MAX];
++  uint32_t size = sizeof(executable);
++  if (_NSGetExecutablePath(executable, &size) != 0) return;
++  char resolved[PATH_MAX];
++  if (realpath(executable, resolved) == nullptr) return;
++  char* slash = strrchr(resolved, '/');
++  if (slash == nullptr) return;
++  *slash = '\0';
++  static char snapshot[PATH_MAX];
++  snprintf(snapshot, sizeof(snapshot), "%s/../Frameworks/App.framework/App",
++           resolved);
++  struct stat info;
++  if (stat(snapshot, &info) != 0) return;
++  char** bundle_argv = static_cast<char**>(calloc(argc + 2, sizeof(char*)));
++  int count = 0;
++  bundle_argv[count++] = argv[0];
++  bundle_argv[count++] = snapshot;
++  for (int i = 1; i < argc; i++) {
++    if (strncmp(argv[i], "-psn_", 5) != 0) bundle_argv[count++] = argv[i];
++  }
++  dart::bin::dart_ui_main_thread_loop = true;
++  dart::bin::main(count, bundle_argv);
++}
++#endif
++
+ int main(int argc, char** argv) {
++#if defined(DART_HOST_OS_MACOS) && !defined(DART_HOST_OS_IOS)
++  const char* main_thread = getenv("DART_UI_MAIN_THREAD_LOOP");
++  if (main_thread != nullptr && strcmp(main_thread, "1") == 0) {
++    dart::bin::dart_ui_main_thread_loop = true;
++  }
++  MacRunBundle(argc, argv);
++#endif
+ #if defined(DART_HOST_OS_IOS)
+   // dart_ui: iOS launches an app with no arguments. The snapshot is the
+   // signed dylib the bundle carries at Frameworks/App.framework/App.
+diff --git a/runtime/bin/main_impl.cc b/runtime/bin/main_impl.cc
+--- a/runtime/bin/main_impl.cc
++++ b/runtime/bin/main_impl.cc
+@@ -1035,12 +1035,190 @@
+   }
+ }
+ #endif  // defined(DART_HOST_OS_IOS)
++
++#if defined(DART_HOST_OS_MACOS) && !defined(DART_HOST_OS_IOS)
++// dart_ui (appkitEmbedded): the iOS mode above, for a macOS app. When the
++// runtime is a .app's executable (main.cc found the snapshot in the bundle)
++// or DART_UI_MAIN_THREAD_LOOP=1, the main isolate's messages are handled on
++// the process main thread from a source of the main run loop, with the
++// isolate entered there for the life of the program. Dart then calls AppKit
++// directly and AppKit calls Dart back (NativeCallable.isolateLocal) without
++// changing threads, and NSApplication runs the main run loop once the Dart
++// code asks for it (Dart_DartUiRunApplication). Unlike iOS the program ends
++// as a standalone one does: when the isolate has no live ports left.
++}  // namespace bin
++}  // namespace dart
++#include <CoreFoundation/CoreFoundation.h>
++#include <dlfcn.h>
++#include <atomic>
++namespace dart {
++namespace bin {
++
++bool dart_ui_main_thread_loop = false;
++
++static std::atomic<intptr_t> mac_pending_messages{0};
++static CFRunLoopSourceRef mac_message_source = nullptr;
++static CFRunLoopRef mac_main_loop = nullptr;
++static bool mac_handling = false;
++static bool mac_run_application = false;
++static bool mac_application_running = false;
++
++static void* MacObjC(const char* symbol) {
++  return dlsym(RTLD_DEFAULT, symbol);
++}
++
++static void* MacClass(const char* name) {
++  using GetClass = void* (*)(const char*);
++  auto get_class = reinterpret_cast<GetClass>(MacObjC("objc_getClass"));
++  return get_class == nullptr ? nullptr : get_class(name);
++}
++
++static void* MacSelector(const char* name) {
++  using Register = void* (*)(const char*);
++  return reinterpret_cast<Register>(MacObjC("sel_registerName"))(name);
++}
++
++static void* MacSharedApplication() {
++  void* cls = MacClass("NSApplication");
++  if (cls == nullptr) return nullptr;
++  using Send = void* (*)(void*, void*);
++  return reinterpret_cast<Send>(MacObjC("objc_msgSend"))(
++      cls, MacSelector("sharedApplication"));
++}
++
++// [NSApp stop:nil] ends -run only after the next event, so one is posted.
++static void MacStopApplication() {
++  void* app = MacSharedApplication();
++  if (app == nullptr) return;
++  void* send = MacObjC("objc_msgSend");
++  using SendObject = void (*)(void*, void*, void*);
++  reinterpret_cast<SendObject>(send)(app, MacSelector("stop:"), nullptr);
++  struct Point {
++    double x;
++    double y;
++  };
++  using OtherEvent = void* (*)(void*, void*, uintptr_t, Point, uintptr_t,
++                               double, intptr_t, void*, int16_t, intptr_t,
++                               intptr_t);
++  void* event = reinterpret_cast<OtherEvent>(send)(
++      MacClass("NSEvent"),
++      MacSelector("otherEventWithType:location:modifierFlags:timestamp:"
++                  "windowNumber:context:subtype:data1:data2:"),
++      15 /* NSEventTypeApplicationDefined */, Point{0, 0}, 0, 0, 0, nullptr,
++      0, 0, 0);
++  using PostEvent = void (*)(void*, void*, void*, signed char);
++  if (event != nullptr) {
++    reinterpret_cast<PostEvent>(send)(app, MacSelector("postEvent:atStart:"),
++                                      event, 1);
++  }
++}
++
++static void MacNotifyMessage(Dart_Isolate) {
++  mac_pending_messages.fetch_add(1);
++  CFRunLoopSourceSignal(mac_message_source);
++  CFRunLoopWakeUp(mac_main_loop);
++}
++
++static void MacHandleMessages(void*) {
++  // A run loop nested inside a Dart call (a modal AppKit loop entered from a
++  // message) must not re-enter the isolate: the messages wait for the outer
++  // turn, which signals the source again below.
++  if (mac_handling) return;
++  mac_handling = true;
++  for (intptr_t n = mac_pending_messages.exchange(0); n > 0; n--) {
++    Dart_EnterScope();
++    Dart_Handle result = Dart_HandleMessage();
++    if (Dart_IsError(result)) {
++      const int exit_code = Dart_IsCompilationError(result)
++                                ? kCompilationErrorExitCode
++                                : kErrorExitCode;
++      ErrorExit(exit_code, "%s\n", Dart_GetError(result));
++    }
++    Dart_ExitScope();
++  }
++  mac_handling = false;
++  // What arrived meanwhile runs on the next turn, after AppKit's events.
++  if (mac_pending_messages.load() > 0) {
++    CFRunLoopSourceSignal(mac_message_source);
++    CFRunLoopWakeUp(mac_main_loop);
++  }
++  if (!Dart_HasLivePorts()) {
++    if (mac_application_running) MacStopApplication();
++    CFRunLoopStop(mac_main_loop);
++  }
++}
+ 
++static void MacInstallMessageLoop() {
++  mac_main_loop = CFRunLoopGetMain();
++  CFRunLoopSourceContext context = {};
++  context.perform = MacHandleMessages;
++  mac_message_source = CFRunLoopSourceCreate(nullptr, 0, &context);
++  // Common modes: messages keep flowing during a live resize, a menu's
++  // tracking and AppKit's other event-tracking loops.
++  CFRunLoopAddSource(mac_main_loop, mac_message_source, kCFRunLoopCommonModes);
++  Dart_SetMessageNotifyCallback(MacNotifyMessage);
++}
++
++static void MacRunMainLoop() {
++  // main() and whatever it queued synchronously.
++  MacHandleMessages(nullptr);
++  while (Dart_HasLivePorts() || mac_pending_messages.load() > 0) {
++    if (mac_run_application && !mac_application_running) {
++      void* app = MacSharedApplication();
++      if (app != nullptr) {
++        using Send = void (*)(void*, void*);
++        mac_application_running = true;
++        reinterpret_cast<Send>(MacObjC("objc_msgSend"))(app,
++                                                        MacSelector("run"));
++        mac_application_running = false;
++        mac_run_application = false;
++        continue;
++      }
++      mac_run_application = false;
++    }
++    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 1.0e10, true);
++  }
++  // Back to the standalone runtime's loop, which finds nothing left to do.
++  Dart_SetMessageNotifyCallback(nullptr);
++  CFRunLoopRemoveSource(mac_main_loop, mac_message_source,
++                        kCFRunLoopCommonModes);
++  CFRelease(mac_message_source);
++  mac_message_source = nullptr;
++}
++}  // namespace bin
++}  // namespace dart
++
++// For the Dart side, through DynamicLibrary.process(): the executable
++// exports only Dart_* symbols, hence the prefix. Default visibility spelled
++// out: DART_EXPORT carries it only in a DART_SHARED_LIB build.
++#define DART_UI_EXPORT \
++  extern "C" __attribute__((visibility("default"))) __attribute__((used))
++
++// 1 when this process handles the main isolate's messages on the main thread.
++DART_UI_EXPORT intptr_t Dart_DartUiMainThreadLoop() {
++  return dart::bin::dart_ui_main_thread_loop ? 1 : 0;
++}
++
++// Runs [NSApp run] on the main run loop once the current message is handled.
++DART_UI_EXPORT void Dart_DartUiRunApplication() {
++  dart::bin::mac_run_application = true;
++}
++
++namespace dart {
++namespace bin {
++#endif  // defined(DART_HOST_OS_MACOS) && !defined(DART_HOST_OS_IOS)
++
+ void RunMainIsolate(const char* script_name,
+                     const char* asset_resolution_base,
+                     const char* package_config_override,
+                     CommandLineOptions* dart_options) {
++#if defined(DART_HOST_OS_MACOS) && !defined(DART_HOST_OS_IOS)
++  // dart_ui: an app keeps its bundle's name in the Dock and Activity
++  // Monitor; "dart:App" (the snapshot's name) would replace it.
++  if (script_name != nullptr && !dart_ui_main_thread_loop) {
++#else
+   if (script_name != nullptr) {
++#endif
+     const char* base_name = strrchr(script_name, '/');
+     if (base_name == nullptr) {
+       base_name = script_name;
+@@ -1141,6 +1319,9 @@
+ #if defined(DART_HOST_OS_IOS)
+   // Before the start message is queued, so it is announced to this loop.
+   IosInstallMessageLoop();
++#endif
++#if defined(DART_HOST_OS_MACOS) && !defined(DART_HOST_OS_IOS)
++  if (dart_ui_main_thread_loop) MacInstallMessageLoop();
+ #endif
+   result =
+       Dart_Invoke(isolate_lib, Dart_NewStringFromCString("_startMainIsolate"),
+@@ -1148,6 +1329,9 @@
+   CHECK_RESULT(result);
+ #if defined(DART_HOST_OS_IOS)
+   IosRunMainLoop();
++#endif
++#if defined(DART_HOST_OS_MACOS) && !defined(DART_HOST_OS_IOS)
++  if (dart_ui_main_thread_loop) MacRunMainLoop();
+ #endif
+ 
+   // Keep handling messages until the last active receive port is closed.

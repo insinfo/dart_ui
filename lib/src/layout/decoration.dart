@@ -103,7 +103,7 @@ class Shadow {
     if (b == null) return a.scale(1.0 - t);
     return Shadow(
       color: Color.lerp(a.color, b.color, t)!,
-      offset: Offset.lerp(a.offset, b.offset, t),
+      offset: Offset.lerp(a.offset, b.offset, t)!,
       blurRadius: math.max(0.0, _lerpDouble(a.blurRadius, b.blurRadius, t)),
     );
   }
@@ -184,7 +184,7 @@ class BoxShadow extends Shadow {
     if (b == null) return a.scale(1.0 - t);
     return BoxShadow(
       color: Color.lerp(a.color, b.color, t)!,
-      offset: Offset.lerp(a.offset, b.offset, t),
+      offset: Offset.lerp(a.offset, b.offset, t)!,
       blurRadius: math.max(0.0, _lerpDouble(a.blurRadius, b.blurRadius, t)),
       spreadRadius: _lerpDouble(a.spreadRadius, b.spreadRadius, t),
       blurStyle: a.blurStyle == BlurStyle.normal ? b.blurStyle : a.blurStyle,

@@ -1,4 +1,4 @@
-/// The three macOS windowing backends and what they can do.
+/// The four macOS windowing backends and what they can do.
 ///
 /// See `doc/MACOS_TRES_BACKENDS.md` for the architecture, the measurements
 /// and the reasoning behind each.  This file is the Dart side of that
@@ -40,6 +40,19 @@ enum MacosBackendKind {
   /// The recommended default: correct thread ownership, proven lifecycle,
   /// measurably cheap IPC (22-59 µs round trip, < 0.2% of a 60 Hz frame).
   appkitNativeHost,
+
+  /// AppKit in this process, on the main thread, with Dart as the guest of
+  /// the application's run loop: the executable is the Dart AOT runtime
+  /// built from source with `tool/mobile/dart_sdk_patches/3.13.5-macos.patch`
+  /// (as on iOS, ADR 0010), which handles the main isolate's messages on the
+  /// main thread and runs `[NSApp run]`. One process for every window, so
+  /// popups are child windows of their owner.
+  ///
+  /// Chosen automatically only inside that runtime - a `.app` built by
+  /// `tool/macos/build_app.dart` - where it is the only AppKit path that
+  /// needs neither a second process nor a signal. Implemented by
+  /// `MacosEmbeddedWindowingBackend` (`embedded/`), not by the facade.
+  appkitEmbedded,
 }
 
 /// What a macOS backend reported about itself.
@@ -111,6 +124,15 @@ final class MacosBackendCapabilities {
       // to an ordinary activating NSWindow.
       if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
         Capability.nativePopups,
+      // The embedded backend's menus are nonactivating NSPanels too - child
+      // windows of their owner, in the same process - and as clear as the
+      // host's: the layer shows a premultiplied BGRA IOSurface.
+      if (canCreateWindow &&
+          kind == MacosBackendKind.appkitEmbedded) ...<Capability>[
+        Capability.nativePopups,
+        Capability.transparentPopups,
+        Capability.multipleWindows,
+      ],
       // The host's panel is non-opaque and clear (`dart_ui_macos_host.m`,
       // applicationDidFinishLaunching), and the IOSurface it shows is
       // premultiplied BGRA, so a pixel the framework leaves at zero alpha

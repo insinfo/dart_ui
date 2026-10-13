@@ -441,6 +441,8 @@ final class MacosWindowingBackend
       await window.teardown;
       throw StateError('$name.createWindow: native AppKit host did not start');
     }
+    final int? background = options.backgroundColor;
+    if (background != null) window.setBackgroundColor(background);
     _quitRequested = false;
     _windows.add(window);
     return window;

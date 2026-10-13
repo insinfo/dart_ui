@@ -273,6 +273,24 @@ abstract interface class LiveResizeWindow {
   bool get isLiveResizing;
 }
 
+/// A window whose drawing surface is, for a moment, being replaced.
+///
+/// On the macOS host a resize means new `IOSurface`s at the new pixel size
+/// and a handshake with the host process to hand them over. A frame drawn in
+/// between is drawn for surfaces that are about to be released and is thrown
+/// away as stale - and the measurement that put this here was worse than
+/// waste: during a live resize every step started a frame, the frame's layout
+/// and paint (tens of milliseconds) held up the handshake's replies behind
+/// it, and the five round trips of one handoff took 50 to 140 ms. No frame
+/// of the new size reached the window for the whole drag. The application
+/// skips drawing a window while this is false and draws it as soon as the
+/// surfaces are attached, which is announced as a resize.
+abstract interface class SurfaceReadinessWindow {
+  /// False between a size change and the moment surfaces of the new size can
+  /// be presented.
+  bool get surfaceReady;
+}
+
 /// A window whose input the platform can be told to refuse.
 ///
 /// This is the half of modality the platform owns: a disabled window does not

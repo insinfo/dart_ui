@@ -15,21 +15,50 @@ library;
 
 import 'package:meta/meta.dart';
 
-/// A mutable value with synchronous listeners.
+import 'change_notifier.dart';
+
+/// A [Listenable] that also holds a current [value] - Flutter's
+/// `ValueListenable`, what [ValueListenableBuilder] and anything else that
+/// only reads takes, so a caller can hand over a [ValueNotifier] without
+/// handing over the right to set it.
+abstract interface class ValueListenable<T> implements Listenable {
+  /// The current value.
+  T get value;
+}
+
+/// A [ChangeNotifier] holding one value, notifying when it is replaced by a
+/// value that is not `==` to it - Flutter's `ValueNotifier`, so it goes
+/// wherever a [Listenable] does: `CustomPainter(repaint:)`,
+/// `AnimatedBuilder(animation:)`, `ListenableBuilder`, `Listenable.merge`.
 ///
 /// Synchronous on purpose: a control that learns about a change one microtask
 /// later paints one frame with the old value, and that frame is visible.
-class ValueNotifier<T> {
+///
+/// ## Listeners of either shape
+///
+/// [addListener] takes Flutter's `void Function()` and also this framework's
+/// older `void Function(T value)`, which is handed the new value - the same
+/// accept-both rule `ScrollPosition` and `FocusNode` follow, so code written
+/// against either keeps compiling. The parameter is typed [Function] for that
+/// reason; anything that is neither shape is an [ArgumentError]. Through a
+/// [ValueListenable] or [Listenable] type only the zero-argument shape is
+/// visible, as in Flutter.
+class ValueNotifier<T> extends ChangeNotifier implements ValueListenable<T> {
   ValueNotifier(this._value);
 
   T _value;
-  final List<void Function(T value)> _listeners = <void Function(T value)>[];
 
+  /// Listeners that take the value, each with the zero-argument wrapper
+  /// actually registered, so [removeListener] can find the wrapper again.
+  final List<(Function, void Function())> _valueListeners =
+      <(Function, void Function())>[];
+
+  @override
   T get value => _value;
 
-  set value(T value) {
-    if (value == _value) return;
-    _value = value;
+  set value(T newValue) {
+    if (newValue == _value) return;
+    _value = newValue;
     notifyListeners();
   }
 
@@ -51,16 +80,43 @@ class ValueNotifier<T> {
   @protected
   set silentValue(T next) => _value = next;
 
-  void addListener(void Function(T value) listener) => _listeners.add(listener);
+  /// Calls [listener] after every change: `() {...}`, as Flutter does, or
+  /// `(T value) {...}`, which is handed the new value. See the class comment.
+  @override
+  void addListener(Function listener) {
+    if (listener is void Function()) {
+      super.addListener(listener);
+      return;
+    }
+    if (listener is void Function(T)) {
+      void wrapper() => listener(_value);
+      super.addListener(wrapper);
+      _valueListeners.add((listener, wrapper));
+      return;
+    }
+    throw ArgumentError.value(
+      listener,
+      'listener',
+      'must be a void Function() or a void Function($T)',
+    );
+  }
 
-  void removeListener(void Function(T value) listener) =>
-      _listeners.remove(listener);
-
-  void notifyListeners() {
-    for (final void Function(T) listener in List<void Function(T)>.of(
-      _listeners,
-    )) {
-      listener(_value);
+  /// Stops calling [listener], of either shape. Removing one that was never
+  /// added does nothing.
+  @override
+  void removeListener(Function listener) {
+    if (listener is void Function()) {
+      super.removeListener(listener);
+      return;
+    }
+    for (var i = 0; i < _valueListeners.length; i++) {
+      if (_valueListeners[i].$1 == listener) {
+        super.removeListener(_valueListeners.removeAt(i).$2);
+        return;
+      }
     }
   }
+
+  @override
+  String toString() => '$runtimeType($value)';
 }

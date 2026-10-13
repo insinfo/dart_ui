@@ -93,8 +93,8 @@ final class _Segment {
 
   _Segment.straight(Offset from, Offset to, {required this.shape})
       : p0 = from,
-        p1 = Offset.lerp(from, to, 1 / 3),
-        p2 = Offset.lerp(from, to, 2 / 3),
+        p1 = Offset.lerp(from, to, 1 / 3)!,
+        p2 = Offset.lerp(from, to, 2 / 3)!,
         p3 = to,
         line = true;
 

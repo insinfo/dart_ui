@@ -72,6 +72,7 @@ final class DartUiCli {
     var minimumMacos = '11.0';
     final Map<String, String> plist = <String, String>{};
     String? notaryProfile;
+    var macosBackend = MacosAppBackend.nativeHost;
 
     for (var index = 0; index < arguments.length; index++) {
       final String argument = arguments[index];
@@ -125,7 +126,15 @@ final class DartUiCli {
         case '--notarize':
           notaryProfile = _valueAfter(arguments, index, argument);
           index++;
+        case '--macos-backend':
+          macosBackend = _macosBackend(_valueAfter(arguments, index, argument));
+          index++;
         default:
+          if (argument.startsWith('--macos-backend=')) {
+            macosBackend =
+                _macosBackend(argument.substring('--macos-backend='.length));
+            continue;
+          }
           if (argument.startsWith('-')) {
             throw _UsageException('unknown build option "$argument"');
           }
@@ -161,6 +170,7 @@ final class DartUiCli {
       minimumSystemVersion: minimumMacos,
       infoPlist: plist,
       notaryProfile: notaryProfile,
+      macosBackend: macosBackend,
     ));
     _output.writeln('Built: ${result.primaryArtifact}');
     if (result.launcherArtifact case final String launcher) {
@@ -220,6 +230,14 @@ final class DartUiCli {
     return 0;
   }
 
+  MacosAppBackend _macosBackend(String value) {
+    try {
+      return MacosAppBackend.parse(value);
+    } on FormatException catch (error) {
+      throw _UsageException(error.message);
+    }
+  }
+
   String _valueAfter(List<String> arguments, int index, String option) {
     if (index + 1 >= arguments.length || arguments[index + 1].startsWith('-')) {
       throw _UsageException('$option requires a value');
@@ -267,6 +285,10 @@ final class DartUiCli {
         '(repeatable), e.g.');
     _output.writeln('                            '
         'NSMicrophoneUsageDescription=...');
+    _output.writeln('      --macos-backend <host|embedded>  host (default): '
+        'the AppKit host beside the program; embedded: the Dart runtime '
+        'built with the main-thread patch as the executable '
+        '(DART_UI_DART_SDK_SRC; see tool/macos/build_app.dart)');
     _output.writeln('      --notarize <profile>  Submit to Apple with a '
         'notarytool keychain profile');
     _output.writeln('                            and staple the ticket');

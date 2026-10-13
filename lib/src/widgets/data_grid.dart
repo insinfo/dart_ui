@@ -36,6 +36,7 @@ import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
+import '../layout/pipeline.dart' show PipelineOwner;
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
 import '../layout/render_proxy_box.dart' show BoxBorder, BoxDecoration;
@@ -294,6 +295,10 @@ final class _DataGridState extends State<DataGrid> {
   /// rebuild that reorders or extends the column list.
   final Map<Object, double> _draggedWidths = <Object, double>{};
 
+  /// The header, the body and every realized row, reached directly by a
+  /// column drag. See [_resizeColumn].
+  final _LiveColumnWidths _live = _LiveColumnWidths();
+
   /// The row the keyboard is on. Selection follows it per the mode.
   int _cursor = 0;
 
@@ -337,7 +342,15 @@ final class _DataGridState extends State<DataGrid> {
     final DataGridColumn column = widget.columns[index];
     final double clamped = width < column.minWidth ? column.minWidth : width;
     if ((_draggedWidths[column.identity] ?? column.width) == clamped) return;
-    setState(() => _draggedWidths[column.identity] = clamped);
+    _draggedWidths[column.identity] = clamped;
+    // Not setState. A drag moves one edge per pointer event, and rebuilding
+    // the grid for it ran the application's cellBuilder for every realized
+    // cell of every row, on every event - the widths are all that changed,
+    // and the render objects that use them are told directly. Rows relay out
+    // and their cells keep their layout unless their own column's width
+    // changed; the next rebuild, for whatever reason, passes the same
+    // widths and changes nothing.
+    _live.apply(_widths);
     widget.onColumnResized?.call(index, clamped);
   }
 
@@ -638,6 +651,7 @@ final class _DataGridState extends State<DataGrid> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
         _maybeHeaderMenu(_DataGridHeaderWidget(
+          live: _live,
           columns: widget.columns,
           widths: widths,
           sort: widget.sort,
@@ -655,6 +669,7 @@ final class _DataGridState extends State<DataGrid> {
           child: _withScrollbars(_withDragAndDrop(FocusAttachment(
             node: _focusNode,
             child: _DataGridBodyWidget(
+              live: _live,
               decorated: widget.decorated,
               position: _position,
               horizontal: _horizontal,
@@ -679,6 +694,7 @@ final class _DataGridState extends State<DataGrid> {
                     row++)
                   _DataGridRowWidget(
                     key: ValueKey<int>(row),
+                    live: _live,
                     index: row,
                     extent: _rowExtent,
                     widths: widths,
@@ -862,6 +878,7 @@ final class _CellEditorState extends State<_CellEditor> {
 
 final class _DataGridHeaderWidget extends RenderObjectWidget {
   const _DataGridHeaderWidget({
+    required this.live,
     required this.columns,
     required this.widths,
     required this.sort,
@@ -874,6 +891,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
   });
 
   final ScrollPosition horizontal;
+  final _LiveColumnWidths live;
 
   final List<DataGridColumn> columns;
   final List<double> widths;
@@ -890,6 +908,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
   @override
   RenderDataGridHeader createRenderObject(BuildContext context) =>
       RenderDataGridHeader()
+        .._liveWidths = live
         ..columns = columns
         ..widths = widths
         ..sort = sort
@@ -906,6 +925,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
     covariant RenderDataGridHeader object,
   ) {
     object
+      .._liveWidths = live
       ..columns = columns
       ..widths = widths
       ..sort = sort
@@ -954,8 +974,24 @@ final class RenderDataGridHeader extends RenderBox
   List<double> get widths => _widths;
 
   set widths(List<double> value) {
+    if (_sameWidths(value, _widths)) return;
     _widths = value;
     markNeedsLayout();
+  }
+
+  _LiveColumnWidths? _live;
+
+  set _liveWidths(_LiveColumnWidths? value) {
+    if (identical(value, _live)) return;
+    if (owner != null && identical(_live?.header, this)) _live!.header = null;
+    _live = value;
+    if (owner != null) value?.header = this;
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _live?.header = this;
   }
 
   DataGridSort? get sort => _sort;
@@ -993,6 +1029,7 @@ final class RenderDataGridHeader extends RenderBox
   @override
   void detach() {
     _horizontal?.removeListener(_onScrolled);
+    if (identical(_live?.header, this)) _live!.header = null;
     super.detach();
   }
 
@@ -1222,6 +1259,7 @@ final class RenderDataGridHeader extends RenderBox
 final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
   const _DataGridRowWidget({
     super.key,
+    required this.live,
     required this.index,
     required this.extent,
     required this.widths,
@@ -1233,6 +1271,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
     this.editingColumn = -1,
   });
 
+  final _LiveColumnWidths live;
   final int index;
   final double extent;
   final List<double> widths;
@@ -1245,6 +1284,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
   @override
   RenderDataGridRow createRenderObject(BuildContext context) =>
       RenderDataGridRow()
+        .._liveWidths = live
         ..index = index
         ..extent = extent
         ..widths = widths
@@ -1260,6 +1300,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
     covariant RenderDataGridRow object,
   ) {
     object
+      .._liveWidths = live
       ..index = index
       ..extent = extent
       ..widths = widths
@@ -1299,8 +1340,30 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
   List<double> get widths => _widths;
 
   set widths(List<double> value) {
+    if (_sameWidths(value, _widths)) return;
     _widths = value;
     markNeedsLayout();
+  }
+
+  _LiveColumnWidths? _live;
+
+  set _liveWidths(_LiveColumnWidths? value) {
+    if (identical(value, _live)) return;
+    if (owner != null) _live?.rows.remove(this);
+    _live = value;
+    if (owner != null) value?.rows.add(this);
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _live?.rows.add(this);
+  }
+
+  @override
+  void detach() {
+    _live?.rows.remove(this);
+    super.detach();
   }
 
   bool get selected => _selected;
@@ -1475,6 +1538,7 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
 
 final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
   const _DataGridBodyWidget({
+    required this.live,
     required this.decorated,
     required this.position,
     required this.horizontal,
@@ -1492,6 +1556,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
     required super.children,
   });
 
+  final _LiveColumnWidths live;
   final bool decorated;
   final ScrollPosition position;
   final ScrollPosition horizontal;
@@ -1520,6 +1585,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
         onRowPressed: onRowPressed,
         onViewportExtent: onViewportExtent,
       )
+        .._liveWidths = live
         ..decorated = decorated
         ..horizontal = horizontal
         ..contentWidth = contentWidth
@@ -1541,6 +1607,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
       ..onKeyEvent = onKeyEvent
       ..onRowPressed = onRowPressed
       ..onViewportExtent = onViewportExtent
+      .._liveWidths = live
       ..decorated = decorated
       ..horizontal = horizontal
       ..contentWidth = contentWidth
@@ -1621,6 +1688,21 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
     if (value == _contentWidth) return;
     _contentWidth = value;
     markNeedsLayout();
+  }
+
+  _LiveColumnWidths? _live;
+
+  set _liveWidths(_LiveColumnWidths? value) {
+    if (identical(value, _live)) return;
+    if (owner != null && identical(_live?.body, this)) _live!.body = null;
+    _live = value;
+    if (owner != null) value?.body = this;
+  }
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _live?.body = this;
   }
 
   TextDirection get textDirection => _textDirection;
@@ -1800,6 +1882,7 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
   void detach() {
     _position.removeListener(_onScrolled);
     _horizontal?.removeListener(_onScrolled);
+    if (identical(_live?.body, this)) _live!.body = null;
     super.detach();
   }
 
@@ -1819,4 +1902,37 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
           SemanticsAction.scrollUp,
         },
       );
+}
+
+/// Whether two width lists hold the same values: a rebuild hands every row a
+/// fresh list, and only a different width is a reason to lay out again.
+bool _sameWidths(List<double> a, List<double> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (int i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
+}
+
+/// The render objects a column drag changes, registered while attached.
+///
+/// The drag reaches them through this rather than through a rebuild: see
+/// `_DataGridState._resizeColumn`.
+final class _LiveColumnWidths {
+  RenderDataGridHeader? header;
+  RenderDataGridBody? body;
+  final Set<RenderDataGridRow> rows = <RenderDataGridRow>{};
+
+  void apply(List<double> widths) {
+    header?.widths = widths;
+    double total = 0;
+    for (final double w in widths) {
+      total += w;
+    }
+    body?.contentWidth = total;
+    for (final RenderDataGridRow row in rows) {
+      row.widths = widths;
+    }
+  }
 }

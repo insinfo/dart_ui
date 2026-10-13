@@ -1726,7 +1726,11 @@ final class ApplicationWindow with DisposableMixin {
         'requestFrame().',
       );
     }
-    if (!host.isPresentable) {
+    // A window between two sets of surfaces (a macOS resize handing new ones
+    // to its host) is skipped too: the frame would be thrown away, and its
+    // layout and paint would hold up the handoff. It is drawn the moment the
+    // surfaces are attached, which the window announces as a resize.
+    if (!host.isPresentable || !host.surfaceReady) {
       _needsFrame = true;
       return const PresentResult(
         status: PresentStatus.stale,

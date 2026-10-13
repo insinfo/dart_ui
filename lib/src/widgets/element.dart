@@ -493,12 +493,24 @@ final class BuildOwner {
         for (final Element element in batch) {
           element._inDirtyList = false;
           if (!element.mounted || !identical(element.owner, this)) continue;
-          errorReporter.guard(
-            FrameworkPhase.build,
-            element.rebuild,
-            widgetPath: element.debugWidgetPath(),
-            context: 'rebuilding ${element.widget.runtimeType}',
-          );
+          // Not `errorReporter.guard`: its arguments are evaluated before the
+          // call, and the widget path - every ancestor's runtimeType as a
+          // string - was being built for every rebuilt element of every
+          // frame. Measured on a 200-row DataGrid resize, 7% of the CPU of a
+          // column drag went to `Type.toString` for paths nobody read. The
+          // path is only needed when the rebuild throws.
+          try {
+            element.rebuild();
+          } catch (error, stack) {
+            errorReporter.report(FrameworkError(
+              phase: FrameworkPhase.build,
+              cause: error,
+              stackTrace: stack,
+              widgetPath: element.debugWidgetPath(),
+              context: 'rebuilding ${element.widget.runtimeType}',
+            ));
+            if (errorReporter.rethrowErrors) rethrow;
+          }
         }
       }
     } finally {

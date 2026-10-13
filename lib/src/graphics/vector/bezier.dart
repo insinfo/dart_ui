@@ -57,14 +57,14 @@ Offset evaluateQuadratic(Offset p0, Offset p1, Offset p2, double t) {
 /// Returns `(left, right)` where each curve is represented as `[p0, p1, p2, p3]`.
 (List<Offset>, List<Offset>) splitCubic(
     Offset p0, Offset p1, Offset p2, Offset p3, double t) {
-  final p01 = Offset.lerp(p0, p1, t);
-  final p12 = Offset.lerp(p1, p2, t);
-  final p23 = Offset.lerp(p2, p3, t);
+  final p01 = Offset.lerp(p0, p1, t)!;
+  final p12 = Offset.lerp(p1, p2, t)!;
+  final p23 = Offset.lerp(p2, p3, t)!;
 
-  final p012 = Offset.lerp(p01, p12, t);
-  final p123 = Offset.lerp(p12, p23, t);
+  final p012 = Offset.lerp(p01, p12, t)!;
+  final p123 = Offset.lerp(p12, p23, t)!;
 
-  final p0123 = Offset.lerp(p012, p123, t);
+  final p0123 = Offset.lerp(p012, p123, t)!;
 
   return (
     [p0, p01, p012, p0123],
@@ -75,9 +75,9 @@ Offset evaluateQuadratic(Offset p0, Offset p1, Offset p2, double t) {
 /// Splits a quadratic Bézier curve at parameter [t] into two curves.
 (List<Offset>, List<Offset>) splitQuadratic(
     Offset p0, Offset p1, Offset p2, double t) {
-  final p01 = Offset.lerp(p0, p1, t);
-  final p12 = Offset.lerp(p1, p2, t);
-  final p012 = Offset.lerp(p01, p12, t);
+  final p01 = Offset.lerp(p0, p1, t)!;
+  final p12 = Offset.lerp(p1, p2, t)!;
+  final p012 = Offset.lerp(p01, p12, t)!;
 
   return (
     [p0, p01, p012],

@@ -162,6 +162,19 @@ numa migração:
 - **Formulários:** Enter sem `textInputAction` não tira o foco; formatadores
   e `onChanged` rodam só em edições do usuário (o texto provisório da IME é
   formatado no commit).
+- **Material:** `import 'package:dart_ui/material.dart';` no lugar de
+  `package:flutter/material.dart`. Hoje ela traz o tema (`ThemeData`,
+  `ColorScheme.fromSeed`, `Colors`, `TextTheme`, `Icons`) e o widget
+  `Material`; `Scaffold`, `AppBar` e os botões do Material ainda não
+  existem. As variantes `_outlined`/`_rounded`/`_sharp` de `Icons` desenham o
+  glifo preenchido.
+- **Animação:** `AnimationController(vsync: this, duration: ...)` funciona
+  como no Flutter, com `SingleTickerProviderStateMixin`; o relógio vem do
+  `AnimationScope` (o `DartUiApp` instala um). Descartar um `State` com
+  ticker ativo lança erro também em release.
+- **Geometria:** `Rect.intersect` sem sobreposição devolve `Rect.zero`, não o
+  retângulo invertido do Flutter. O `Scrollbar` precisa de `controller:` ou
+  `position:`: não existe `PrimaryScrollController`.
 - **Binding:** `WidgetsBinding` é uma classe que fala pela janela principal;
   `FlutterError.onError` é `ApplicationOptions.onError`; o `Locale` tem o
   script como segundo posicional (`Locale('pt', null, 'BR')`).

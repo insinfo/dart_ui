@@ -234,6 +234,30 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
   [self.sink hostView:self exposedRect:dirtyRect];
 }
 
+// The layer's contents are the framework's IOSurface, set by PRESENT_SLOT,
+// and AppKit must never replace them. With drawRect: as the view's drawing
+// path, every display pass - and a live resize is one per step, under the
+// default DuringViewResize policy - gave the layer a fresh backing store of
+// what drawRect: drew, which is nothing: the whole window went blank, in the
+// window's colour, until the next present. Measured with
+// tool/macos_resize_probe.dart: every capture of a 120-step resize was an
+// empty window, the frame of the old size included. Through updateLayer
+// AppKit leaves the contents alone.
+- (BOOL)wantsUpdateLayer {
+  return YES;
+}
+
+- (void)updateLayer {
+  // An all-zero rectangle: "repaint everything", as the protocol says.
+  [self.sink hostView:self exposedRect:NSZeroRect];
+}
+
+// A resize is not a reason to redraw: the framework hears of it as
+// WINDOW=RESIZED and draws the new size itself.
+- (NSViewLayerContentsRedrawPolicy)layerContentsRedrawPolicy {
+  return NSViewLayerContentsRedrawOnSetNeedsDisplay;
+}
+
 // Text goes through the text input system, as in every AppKit text view.
 //
 // Not optional: it is where dead keys are composed. Measured with posted
@@ -729,6 +753,16 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 // The KVO context of NSApp.effectiveAppearance, by address.
 static void *DartUiAppearanceContext = &DartUiAppearanceContext;
 
+// Live resize, defined at the end of the file; see the comment there.
+@interface DartUiHostDelegate (DartUiLiveResize)
+- (void)dartUiAwaitFrameForResize;
+- (void)dartUiNotePresented;
+- (void)dartUiSetBackground:(NSString *)command;
+- (void)dartUiSynthLiveResize:(NSString *)command;
+- (void)dartUiWriteResizeReport:(NSString *)path;
+@end
+static void DartUiPostToMain(dispatch_block_t block);
+
 @implementation DartUiHostDelegate
 
 - (void)printError:(NSString *)code {
@@ -888,7 +922,15 @@ static void *DartUiAppearanceContext = &DartUiAppearanceContext;
   self.hostView.sink = self;
   self.hostView.wantsLayer = YES;
   self.hostView.layer.backgroundColor = NSColor.clearColor.CGColor;
-  self.hostView.layer.contentsGravity = kCAGravityTopLeft;
+  // The frame is pinned to the window's top-left corner, where the
+  // framework's origin is, so a frame of the old size stays in place while
+  // the window grows or shrinks around it. "Top" is in the layer's own
+  // geometry, and the backing layer of this flipped view is geometry-flipped:
+  // kCAGravityTopLeft pinned the frame to the *bottom* - measured, a resize
+  // pushed the whole picture down by the height it grew.
+  self.hostView.layer.contentsGravity = self.hostView.layer.contentsAreFlipped
+                                            ? kCAGravityBottomLeft
+                                            : kCAGravityTopLeft;
   self.hostView.layer.magnificationFilter = kCAFilterNearest;
   self.hostView.layer.minificationFilter = kCAFilterNearest;
   self.window.contentView = self.hostView;
@@ -1628,7 +1670,9 @@ static NSAccessibilityRole DartUiA11yRole(NSString *role) {
           });
           continue;
         }
-        dispatch_async(dispatch_get_main_queue(), ^{
+        // Through the inbox, so a resize waiting on the main thread for its
+        // frame can run the commands that bring it. See DartUiPostToMain.
+        DartUiPostToMain(^{
           [weakSelf handleCommand:line];
         });
       }
@@ -1833,7 +1877,7 @@ static NSAccessibilityRole DartUiA11yRole(NSString *role) {
       return;
     }
     mach_port_t port = buffer.message.port.name;
-    dispatch_async(dispatch_get_main_queue(), ^{
+    DartUiPostToMain(^{
       [weakSelf adoptSurfacePort:port slot:slot];
     });
   });
@@ -1898,6 +1942,7 @@ static NSAccessibilityRole DartUiA11yRole(NSString *role) {
   printf("PRESENT_OK %s slot%ld\n", parts[1].UTF8String, (long)slot);
   fflush(stdout);
   if (wantsVsync) [self armVsync:parts[1]];
+  [self dartUiNotePresented];
 }
 
 // Reports VSYNC <sequence> at the next refresh of the screen the view is on.
@@ -2620,6 +2665,10 @@ static void DartUiPrintClipboardPayload(long long request, NSString *payload) {
     // text is dropped, not committed.
     [self.hostView.inputContext discardMarkedText];
     [self.hostView unmarkText];
+  } else if ([command hasPrefix:@"SYNTH_LIVE_RESIZE "]) {
+    [self dartUiSynthLiveResize:command];
+  } else if ([command hasPrefix:@"SET_BACKGROUND "]) {
+    [self dartUiSetBackground:command];
   } else if ([command hasPrefix:@"SYNTH_"]) {
     [self synthesize:command];
   } else if ([command hasPrefix:@"CLIPBOARD_READ "]) {
@@ -2698,6 +2747,7 @@ static void DartUiPrintClipboardPayload(long long request, NSString *payload) {
          [self renderScale]);
   fflush(stdout);
   [self reportStateIfChanged];
+  [self dartUiAwaitFrameForResize];
 }
 
 - (void)windowDidMove:(NSNotification *)notification {
@@ -3045,6 +3095,339 @@ static BOOL DartUiParseDouble(const char *text, CGFloat *value) {
   *value = (CGFloat)parsed;
   return YES;
 }
+
+// --- live resize ----------------------------------------------------------
+//
+// What a user saw: dragging the window's edge, the strip the window grew into
+// stayed white (the window's own background) until a frame at the new size
+// arrived - often never during the drag, because AppKit resized again first.
+//
+// The window and its pixels live in two processes. AppKit resizes this
+// window synchronously on the main thread, inside its own tracking loop, and
+// commits the new frame at the end of that turn; the framework hears of the
+// size afterwards, allocates surfaces of that size, lays out, draws and
+// presents. Native toolkits close that gap by drawing the new size *inside*
+// the resize step. This host does the same across the process boundary:
+// windowDidResize: reports the size and then waits - bounded - until a
+// PRESENT_SLOT of a surface that size has been put on the layer, so the
+// window server receives the new window frame and the frame drawn for it in
+// the same transaction. While it waits it runs the commands the framework
+// sends (the surface handoff for the new pool, the present itself), which is
+// why commands now arrive through an inbox the main thread can drain without
+// returning to the run loop.
+//
+// The wait is capped (kDartUiResizeFrameTimeout): a framework that cannot
+// keep up degrades to the old behaviour - the exposed strip, now painted in
+// the colour at the edge of the last frame rather than white - and never
+// hangs the window. DART_UI_MACOS_SYNC_RESIZE=0 turns it off, for comparison.
+
+static NSMutableArray *gDartUiInbox;
+static NSLock *gDartUiInboxLock;
+static dispatch_semaphore_t gDartUiInboxSignal;
+
+static void DartUiInboxInit(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    gDartUiInbox = [NSMutableArray array];
+    gDartUiInboxLock = [[NSLock alloc] init];
+    gDartUiInboxSignal = dispatch_semaphore_create(0);
+  });
+}
+
+// Runs every queued main-thread block, oldest first. Called from the main
+// queue for each post, and from the resize wait, which is why a block is
+// taken one at a time: the order survives either caller.
+static void DartUiDrainInbox(void) {
+  DartUiInboxInit();
+  for (;;) {
+    dispatch_block_t block = nil;
+    [gDartUiInboxLock lock];
+    if (gDartUiInbox.count > 0) {
+      block = gDartUiInbox[0];
+      [gDartUiInbox removeObjectAtIndex:0];
+    }
+    [gDartUiInboxLock unlock];
+    if (block == nil) return;
+    @autoreleasepool {
+      block();
+    }
+  }
+}
+
+static void DartUiPostToMain(dispatch_block_t block) {
+  DartUiInboxInit();
+  [gDartUiInboxLock lock];
+  [gDartUiInbox addObject:[block copy]];
+  [gDartUiInboxLock unlock];
+  dispatch_semaphore_signal(gDartUiInboxSignal);
+  dispatch_async(dispatch_get_main_queue(), ^{
+    DartUiDrainInbox();
+  });
+}
+
+static const double kDartUiResizeFrameTimeout = 0.1;
+static BOOL gDartUiAwaitingResizeFrame = NO;
+static BOOL gDartUiSynthLiveResize = NO;
+static BOOL gDartUiExplicitBackground = NO;
+
+// Per resize step: how long the step waited, and whether a frame of the new
+// size made it. Written out by SYNTH_LIVE_RESIZE for a probe to read.
+static NSMutableArray<NSNumber *> *gDartUiResizeWaits;
+static long gDartUiResizeSteps = 0;
+static long gDartUiResizeMatched = 0;
+static long gDartUiResizeTimedOut = 0;
+
+// The asynchronous measurement: when a step's size was set, and when (after
+// it) a present of that size arrived. Used with the wait off, where the step
+// returns at once and the frame lands whenever it lands.
+static CFAbsoluteTime gDartUiStepStart = 0;
+static size_t gDartUiStepWidth = 0;
+static size_t gDartUiStepHeight = 0;
+static NSMutableArray<NSNumber *> *gDartUiPresentLatencies;
+
+static BOOL DartUiSyncResizeEnabled(void) {
+  const char *value = getenv("DART_UI_MACOS_SYNC_RESIZE");
+  return value == NULL || strcmp(value, "0") != 0;
+}
+
+@implementation DartUiHostDelegate (DartUiLiveResize)
+
+- (void)dartUiPixelSize:(size_t *)width height:(size_t *)height {
+  NSSize size = self.hostView.bounds.size;
+  double scale = [self renderScale];
+  *width = (size_t)llround(size.width * scale);
+  *height = (size_t)llround(size.height * scale);
+}
+
+- (BOOL)dartUiPresentedWidth:(size_t)width height:(size_t)height {
+  if (self.surfacePool == NULL || self.presentedSlot < 0 ||
+      (NSUInteger)self.presentedSlot >= self.surfacePoolCount) {
+    return NO;
+  }
+  IOSurfaceRef surface = self.surfacePool[self.presentedSlot];
+  return surface != NULL && IOSurfaceGetWidth(surface) == width &&
+         IOSurfaceGetHeight(surface) == height;
+}
+
+// The display link cannot fire while the main thread waits, and a framework
+// pacing its presents on VSYNC would wait for it: the resize answers them.
+- (void)dartUiFlushVsyncWaiters {
+  if (self.vsyncWaiters.count == 0) return;
+  for (NSString *sequence in self.vsyncWaiters) {
+    printf("VSYNC %s\n", sequence.UTF8String);
+  }
+  fflush(stdout);
+  [self.vsyncWaiters removeAllObjects];
+}
+
+// Paints what the window grows into, should the frame not make it in time,
+// in the colour at the right edge of the frame on screen - the application's
+// own background there, light or dark - instead of the window's white.
+- (void)dartUiPaintExposedFromLastFrame {
+  if (gDartUiExplicitBackground || self.surfacePool == NULL ||
+      self.presentedSlot < 0 ||
+      (NSUInteger)self.presentedSlot >= self.surfacePoolCount) {
+    return;
+  }
+  IOSurfaceRef surface = self.surfacePool[self.presentedSlot];
+  if (surface == NULL) return;
+  size_t width = IOSurfaceGetWidth(surface);
+  size_t height = IOSurfaceGetHeight(surface);
+  if (width < 2 || height < 2) return;
+  if (IOSurfaceLock(surface, kIOSurfaceLockReadOnly, NULL) != kIOReturnSuccess) {
+    return;
+  }
+  const uint8_t *base = IOSurfaceGetBaseAddress(surface);
+  size_t stride = IOSurfaceGetBytesPerRow(surface);
+  const uint8_t *pixel = base + (height / 2) * stride + (width - 2) * 4;
+  uint8_t b = pixel[0], g = pixel[1], r = pixel[2], a = pixel[3];
+  IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, NULL);
+  if (a != 255) return;
+  NSColor *color = [NSColor colorWithSRGBRed:r / 255.0
+                                       green:g / 255.0
+                                        blue:b / 255.0
+                                       alpha:1.0];
+  self.hostView.layer.backgroundColor = color.CGColor;
+}
+
+// Called by windowDidResize: once the new size has been reported.
+- (void)dartUiAwaitFrameForResize {
+  if (self.transient || self.terminating || !self.protocolReady) return;
+  if (!self.window.inLiveResize && !gDartUiSynthLiveResize) return;
+  size_t width = 0, height = 0;
+  [self dartUiPixelSize:&width height:&height];
+  gDartUiStepStart = CFAbsoluteTimeGetCurrent();
+  gDartUiStepWidth = width;
+  gDartUiStepHeight = height;
+  gDartUiResizeSteps++;
+  [self dartUiPaintExposedFromLastFrame];
+  if (!DartUiSyncResizeEnabled() || gDartUiAwaitingResizeFrame) return;
+  if ([self dartUiPresentedWidth:width height:height]) {
+    gDartUiResizeMatched++;
+    return;
+  }
+  gDartUiAwaitingResizeFrame = YES;
+  DartUiInboxInit();
+  CFAbsoluteTime start = CFAbsoluteTimeGetCurrent();
+  CFAbsoluteTime deadline = start + kDartUiResizeFrameTimeout;
+  BOOL matched = NO;
+  for (;;) {
+    [self dartUiFlushVsyncWaiters];
+    DartUiDrainInbox();
+    if (self.terminating) break;
+    if ([self dartUiPresentedWidth:width height:height]) {
+      matched = YES;
+      break;
+    }
+    double remaining = deadline - CFAbsoluteTimeGetCurrent();
+    if (remaining <= 0) break;
+    dispatch_semaphore_wait(
+        gDartUiInboxSignal,
+        dispatch_time(DISPATCH_TIME_NOW, (int64_t)(remaining * NSEC_PER_SEC)));
+  }
+  // Presents made during the wait asked for a VSYNC the blocked display
+  // link could not give; the frame is on the layer, so it is answered.
+  [self dartUiFlushVsyncWaiters];
+  gDartUiAwaitingResizeFrame = NO;
+  gDartUiStepStart = 0;
+  if (gDartUiResizeWaits == nil) gDartUiResizeWaits = [NSMutableArray array];
+  [gDartUiResizeWaits
+      addObject:@((CFAbsoluteTimeGetCurrent() - start) * 1e6)];
+  if (matched) {
+    gDartUiResizeMatched++;
+  } else {
+    gDartUiResizeTimedOut++;
+  }
+}
+
+// From presentSlot:, after the layer has the new contents.
+- (void)dartUiNotePresented {
+  if (gDartUiStepStart == 0 || gDartUiAwaitingResizeFrame) return;
+  if (![self dartUiPresentedWidth:gDartUiStepWidth height:gDartUiStepHeight]) {
+    return;
+  }
+  if (gDartUiPresentLatencies == nil) {
+    gDartUiPresentLatencies = [NSMutableArray array];
+  }
+  [gDartUiPresentLatencies
+      addObject:@((CFAbsoluteTimeGetCurrent() - gDartUiStepStart) * 1e6)];
+  gDartUiStepStart = 0;
+}
+
+// SET_BACKGROUND <aarrggbb>: what the window shows where no frame has drawn,
+// from the application's WindowOptions.backgroundColor. Overrides the colour
+// sampled from the last frame.
+- (void)dartUiSetBackground:(NSString *)command {
+  NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+  unsigned int argb = 0;
+  if (parts.count != 2 ||
+      ![[NSScanner scannerWithString:parts[1]] scanHexInt:&argb]) {
+    [self printError:@"BAD_BACKGROUND"];
+    return;
+  }
+  if (self.transient) return;
+  double a = ((argb >> 24) & 0xFF) / 255.0;
+  double r = ((argb >> 16) & 0xFF) / 255.0;
+  double g = ((argb >> 8) & 0xFF) / 255.0;
+  double b = (argb & 0xFF) / 255.0;
+  if (a > 0) {
+    // Premultiplied on the Dart side; NSColor wants it straight.
+    r /= a;
+    g /= a;
+    b /= a;
+  }
+  NSColor *color = [NSColor colorWithSRGBRed:MIN(r, 1.0)
+                                       green:MIN(g, 1.0)
+                                        blue:MIN(b, 1.0)
+                                       alpha:a];
+  gDartUiExplicitBackground = YES;
+  self.window.backgroundColor = color;
+  self.hostView.layer.backgroundColor = color.CGColor;
+}
+
+// SYNTH_LIVE_RESIZE <dw> <dh> <steps> <intervalMs> <path-b64>: resizes the
+// window by dw x dh points in `steps` steps, one per interval, from a timer
+// in the common modes - each step a setFrame:display: on the main thread, as
+// AppKit's own resize loop makes them - with the top-left corner fixed. The
+// steps count as a live resize. At the end the per-step numbers are written
+// to the file, as `key=value` lines, for a probe to read: no accessibility
+// permission is needed to drive it.
+- (void)dartUiSynthLiveResize:(NSString *)command {
+  NSArray<NSString *> *parts = [command componentsSeparatedByString:@" "];
+  NSString *path = parts.count == 6 ? [self decodeSynthText:parts[5]] : nil;
+  if (path == nil || parts[3].integerValue <= 0) {
+    [self printError:@"BAD_SYNTH_LIVE_RESIZE"];
+    return;
+  }
+  double dw = parts[1].doubleValue;
+  double dh = parts[2].doubleValue;
+  NSInteger steps = parts[3].integerValue;
+  double interval = MAX(parts[4].doubleValue, 1.0) / 1000.0;
+  NSRect start = self.window.frame;
+  gDartUiResizeWaits = [NSMutableArray array];
+  gDartUiPresentLatencies = [NSMutableArray array];
+  gDartUiResizeSteps = 0;
+  gDartUiResizeMatched = 0;
+  gDartUiResizeTimedOut = 0;
+  gDartUiSynthLiveResize = YES;
+  __block NSInteger step = 0;
+  __weak DartUiHostDelegate *weakSelf = self;
+  NSTimer *timer = [NSTimer
+      timerWithTimeInterval:interval
+                    repeats:YES
+                      block:^(NSTimer *t) {
+                        DartUiHostDelegate *strongSelf = weakSelf;
+                        if (strongSelf == nil || strongSelf.terminating) {
+                          [t invalidate];
+                          gDartUiSynthLiveResize = NO;
+                          return;
+                        }
+                        step++;
+                        NSRect frame = start;
+                        double grow = (double)step / (double)steps;
+                        frame.size.width = round(start.size.width + dw * grow);
+                        frame.size.height =
+                            round(start.size.height + dh * grow);
+                        // Cocoa's origin is the bottom left; the top stays.
+                        frame.origin.y = NSMaxY(start) - frame.size.height;
+                        [strongSelf.window setFrame:frame display:YES];
+                        if (step < steps) return;
+                        [t invalidate];
+                        gDartUiSynthLiveResize = NO;
+                        [strongSelf dartUiWriteResizeReport:path];
+                      }];
+  [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+}
+
+static NSString *DartUiPercentiles(NSArray<NSNumber *> *values) {
+  if (values.count == 0) return @"n=0";
+  NSArray<NSNumber *> *sorted =
+      [values sortedArrayUsingSelector:@selector(compare:)];
+  double (^at)(double) = ^double(double p) {
+    NSUInteger index = (NSUInteger)ceil(p * sorted.count) - 1;
+    if (index >= sorted.count) index = sorted.count - 1;
+    return sorted[index].doubleValue;
+  };
+  return [NSString stringWithFormat:@"n=%lu p50=%.0f p95=%.0f max=%.0f",
+                                    (unsigned long)sorted.count, at(0.5),
+                                    at(0.95), sorted.lastObject.doubleValue];
+}
+
+- (void)dartUiWriteResizeReport:(NSString *)path {
+  NSString *report = [NSString
+      stringWithFormat:@"sync=%d\nsteps=%ld\nmatched=%ld\ntimed_out=%ld\n"
+                       @"wait_us=%@\npresent_latency_us=%@\n",
+                       DartUiSyncResizeEnabled() ? 1 : 0, gDartUiResizeSteps,
+                       gDartUiResizeMatched, gDartUiResizeTimedOut,
+                       DartUiPercentiles(gDartUiResizeWaits),
+                       DartUiPercentiles(gDartUiPresentLatencies)];
+  [report writeToFile:path
+           atomically:YES
+             encoding:NSUTF8StringEncoding
+                error:nil];
+}
+
+@end
 
 int main(int argc, const char *argv[]) {
   @autoreleasepool {

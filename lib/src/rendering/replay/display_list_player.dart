@@ -20,28 +20,24 @@
 /// against a non-empty rectangle, and already resolved from ids to objects.
 /// The sink's job is to put colour on pixels.
 ///
-/// ## The transform approximation, stated on purpose
+/// ## Rectangles under rotation and skew leave here as paths
 ///
-/// Rectangles reach the sink as [Transform2D.transformRect] gives them: the
-/// axis-aligned bounding box of the transformed rectangle. Under translation,
-/// scale, and 90-degree-multiple rotation that box *is* the shape, so the
-/// result is exact. Under an arbitrary rotation or a skew it is not: the true
-/// image is a rotated quadrilateral and the box is strictly larger, so a fill
-/// covers pixels the shape does not, and a clip lets pixels through that the
-/// shape would have removed. The clip direction is at least conservative in
-/// the safe sense that nothing visible is wrongly removed; the fill direction
-/// is simply wrong, which is why `test/rendering/replay` asserts the inflated
-/// box explicitly rather than letting it pass as a rounding detail.
+/// [RasterSink.fillDeviceRect] is "an axis-aligned box of solid colour", the
+/// one shape a scanline filler can do without a coverage pass, and the player
+/// only uses it while that box *is* the shape: under translation, scale, a
+/// mirror or a quarter turn. Under an arbitrary rotation or a skew the true
+/// image is a quadrilateral and its device box is strictly larger - a 45
+/// degree square's box has twice its area - so a filled rectangle is rebuilt
+/// as its local outline and sent to [RasterSink.drawDevicePath] with the
+/// matrix, which every sink already fills with real coverage. Rounded
+/// rectangles take the same route under anything but a positive scale,
+/// because a mirror or a quarter turn also permutes which corner each radius
+/// belongs to.
 ///
-/// What changes when rotated fills are supported: not this call. A rotated
-/// rectangle is a different primitive - four device-space corners, or a path -
-/// and it arrives as a new [RasterSink] method (`fillDeviceQuad`) that the
-/// player selects when the current transform is not axis-aligned.
-/// [RasterSink.fillDeviceRect] keeps meaning "an axis-aligned box of solid
-/// colour", which is the one shape a scanline filler can do without a
-/// coverage pass. The same holds for the rounded-rectangle radii, which are
-/// scaled by the transform's axis lengths and are only a faithful description
-/// of the shape while the transform is axis-aligned.
+/// Clips and images still use the device box: `clipRect` under a rotation is
+/// conservative (it lets through pixels the shape would have removed, never
+/// the reverse), and an image is a blit with no matrix. `Canvas.clipRect`
+/// already turns a rotated clip into a mask, which is the exact form.
 ///
 /// ## A stroked rectangle leaves here as a path
 ///
@@ -362,9 +358,9 @@ abstract interface class RasterSink {
 
   /// Fills an axis-aligned device rectangle with a solid colour.
   ///
-  /// Exact when the transform is axis-aligned; the bounding box of the true
-  /// shape otherwise. See the library comment - the fix is a new method, not
-  /// a change to this one.
+  /// Only called while the transform keeps axes aligned, where the rectangle
+  /// is exact; a rotated or skewed fill reaches [drawDevicePath] as a path.
+  /// See the library comment.
   ///
   /// The player only ever calls this with `paintStyleFill`; a stroke-bearing
   /// style reaches [drawDevicePath] instead, because the width would need a
@@ -390,10 +386,10 @@ abstract interface class RasterSink {
   /// this against anything tighter than the clip, because the display list
   /// gives it no path bounds.
   ///
-  /// Two exceptions to "never inspected", both from the same decision: a
-  /// stroked rectangle and a stroked rounded rectangle arrive here as a
-  /// centreline the player built, which is always a `Path` even when the
-  /// producer's own paths are some other object. See the library comment.
+  /// The exceptions to "never inspected": a stroked rectangle or rounded
+  /// rectangle arrives here as a centreline the player built, and a filled
+  /// one under rotation or skew as its outline - always a `Path`, even when
+  /// the producer's own paths are some other object. See the library comment.
   ///
   /// This is also the only method that can be handed a stroke-bearing style,
   /// and the only one that can act on one, since the width it carries is in
@@ -731,6 +727,15 @@ final class DisplayListPlayer {
       _drawCentreline(paint);
       return;
     }
+    if (!_keepsAxes(_state.transform)) {
+      // A rotated or skewed rectangle is a quadrilateral, and its device box
+      // would paint every pixel between the two. The sink's path filler is
+      // the primitive that draws the real shape, on every backend.
+      _shapeBuilder.reset();
+      _shapeBuilder.addRect(local);
+      _fillShape(paint);
+      return;
+    }
     final Rect device = _state.deviceBoundsOf(local);
     if (!device.intersects(_state.clip)) return;
     sink.fillDeviceRect(device, _state.clip, paint);
@@ -752,14 +757,25 @@ final class DisplayListPlayer {
       _drawCentreline(paint);
       return;
     }
+    final Transform2D t = _state.transform;
+    if (!_scalesOnly(t)) {
+      // Rotation, skew or a mirror: the device box is not the shape, and the
+      // corners would not stay where the radii say - a quarter turn moves the
+      // top-left radius to the top-right, a mirror swaps them. The local
+      // outline under the full matrix is exact in every case.
+      for (var i = 0; i < 8; i++) {
+        _radii[i] = reader.floatAt(4 + i);
+      }
+      _shapeBuilder.reset();
+      _shapeBuilder.addRoundedRectRadii(local, _radii);
+      _fillShape(paint);
+      return;
+    }
     final Rect device = _state.deviceBoundsOf(local);
     if (!device.intersects(_state.clip)) return;
 
-    // Radii scale with the axis they belong to, so the x radii take the length
-    // of the transformed x axis and the y radii that of the y axis. This is
-    // exact for scale and rotation and merely plausible under skew - the same
-    // caveat the bounding-box fill carries, and for the same reason.
-    final Transform2D t = _state.transform;
+    // Radii scale with the axis they belong to. Only reached under a positive
+    // axis-aligned scale (see [_scalesOnly]), where this is exact.
     final double scaleX = _hypot(t.a, t.b);
     final double scaleY = _hypot(t.c, t.d);
     for (var i = 0; i < 8; i += 2) {
@@ -910,6 +926,40 @@ final class DisplayListPlayer {
       paint,
     );
   }
+
+  /// Fills the outline just built into [_shapeBuilder], culled against the
+  /// clip by its transformed bounds - for a fill the outline is the ink, so
+  /// unlike [_drawCentreline] there is no stroke allowance to inflate by.
+  void _fillShape(ReplayPaint paint) {
+    final Path shape = _shapeBuilder.build();
+    if (!_state.transform.transformRect(shape.bounds).intersects(_state.clip)) {
+      return;
+    }
+    sink.drawDevicePath(shape, _state.transform, _state.clip, paint);
+  }
+
+  /// Below this a matrix term is the float32 residue of a quarter turn
+  /// (`cos(pi / 2)` stored as a float is about 4e-8), not a real rotation:
+  /// a box that far out of true moves no edge by a measurable fraction of a
+  /// pixel on any surface this renders to.
+  static const double _axisEpsilon = 1e-6;
+
+  /// Whether [t] maps axis-aligned rectangles onto axis-aligned rectangles:
+  /// any scale or mirror, and quarter turns. A rectangle is symmetric, so for
+  /// a plain fill its device box is then the exact shape.
+  static bool _keepsAxes(Transform2D t) =>
+      (t.b.abs() < _axisEpsilon && t.c.abs() < _axisEpsilon) ||
+      (t.a.abs() < _axisEpsilon && t.d.abs() < _axisEpsilon);
+
+  /// Whether [t] is a positive scale plus translation, the only matrices
+  /// under which a rounded rectangle's device box and per-axis scaled radii
+  /// describe it. A quarter turn or a mirror keeps the box but permutes the
+  /// corners, which matters as soon as the radii differ.
+  static bool _scalesOnly(Transform2D t) =>
+      t.b.abs() < _axisEpsilon &&
+      t.c.abs() < _axisEpsilon &&
+      t.a > 0 &&
+      t.d > 0;
 
   UnsupportedCommandException _unsupported(
     DisplayListReader reader,

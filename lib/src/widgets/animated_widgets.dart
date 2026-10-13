@@ -559,7 +559,7 @@ final class RenderAnimatedSize extends RenderSingleChildBox {
     final AnimationController? controller = _controller;
     final double t =
         controller == null ? 1 : _curve.transform(controller.value);
-    return Size.lerp(from, to, t);
+    return Size.lerp(from, to, t)!;
   }
 
   @override

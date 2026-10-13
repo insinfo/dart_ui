@@ -501,7 +501,7 @@ abstract final class PropertyTransitions {
         property: property,
         duration: duration,
         curve: curve,
-        lerp: Offset.lerp,
+        lerp: (Offset a, Offset b, double t) => Offset.lerp(a, b, t)!,
       );
 
   static PropertyTransition<Size> ofSize(
@@ -513,7 +513,7 @@ abstract final class PropertyTransitions {
         property: property,
         duration: duration,
         curve: curve,
-        lerp: Size.lerp,
+        lerp: (Size a, Size b, double t) => Size.lerp(a, b, t)!,
       );
 
   static PropertyTransition<Rect> ofRect(
@@ -525,7 +525,7 @@ abstract final class PropertyTransitions {
         property: property,
         duration: duration,
         curve: curve,
-        lerp: Rect.lerp,
+        lerp: (Rect a, Rect b, double t) => Rect.lerp(a, b, t)!,
       );
 }
 

@@ -89,7 +89,7 @@ void main() {
     });
 
     test('interpolates each extent independently', () {
-      final middle = Size.lerp(const Size(0, 100), const Size(50, 0), 0.25);
+      final middle = Size.lerp(const Size(0, 100), const Size(50, 0), 0.25)!;
 
       expect(middle.width, closeTo(12.5, 1e-12));
       expect(middle.height, closeTo(75, 1e-12));

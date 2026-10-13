@@ -268,7 +268,7 @@ final class _RenderFlightLayer extends RenderBoxContainer<BoxParentData> {
       final Rect? to = boxes[i].$2.globalRect;
       final Rect rect = from == null || to == null
           ? (to ?? from ?? Rect.zero)
-          : Rect.lerp(from, to, t);
+          : Rect.lerp(from, to, t)!;
       child.layout(BoxConstraints.tight(Size(rect.width, rect.height)),
           parentUsesSize: true);
       child.parentData!.offset =

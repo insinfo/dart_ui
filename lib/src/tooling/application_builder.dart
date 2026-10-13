@@ -5,7 +5,11 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 
+import 'macos_embedded_bundle.dart';
 import 'pe_subsystem.dart';
+
+export 'macos_embedded_bundle.dart'
+    show MacosAppBackend, MacosEmbeddedToolchain;
 
 enum DesktopHostPlatform { windows, linux, macos }
 
@@ -39,6 +43,8 @@ final class ApplicationBuildRequest {
     this.minimumSystemVersion = '11.0',
     this.infoPlist = const <String, String>{},
     this.notaryProfile,
+    this.macosBackend = MacosAppBackend.nativeHost,
+    this.macosEmbeddedToolchain,
   });
 
   final String entrypoint;
@@ -90,6 +96,17 @@ final class ApplicationBuildRequest {
   /// when set, the signed bundle is submitted, waited for and stapled.
   /// Needs a Developer ID identity and [hardenedRuntime].
   final String? notaryProfile;
+
+  /// What a macOS bundle runs: the native AppKit host beside a
+  /// `dart compile exe` program (the default), or the Dart runtime built
+  /// with the main-thread patch as the executable, AppKit in its process
+  /// (`macos_embedded_bundle.dart`).
+  final MacosAppBackend macosBackend;
+
+  /// The patched runtime, its `gen_snapshot` and a host `dart` of the same
+  /// tag, for [MacosAppBackend.embedded]. Null reads them from the
+  /// environment ([MacosEmbeddedToolchain.resolve]).
+  final MacosEmbeddedToolchain? macosEmbeddedToolchain;
 }
 
 final class ApplicationBuildResult {
@@ -338,6 +355,9 @@ final class DesktopApplicationBuilder {
     String appName,
     String executableName,
   ) async {
+    if (request.macosBackend == MacosAppBackend.embedded) {
+      return _buildMacosEmbedded(request, appName, executableName);
+    }
     final String identifier = request.bundleIdentifier ??
         'dev.dartui.${_bundleIdentifierPart(executableName)}';
     _validateBundleIdentifier(identifier);
@@ -438,6 +458,103 @@ final class DesktopApplicationBuilder {
     }
     _output
         .writeln('Application bundle: ${Directory(bundlePath).absolute.path}');
+    return ApplicationBuildResult(
+      platform: platform,
+      primaryArtifact: Directory(bundlePath).absolute.path,
+    );
+  }
+
+  /// The `appkitEmbedded` bundle: kernel by the host SDK's `gen_kernel_aot`,
+  /// Mach-O snapshot by the patched build's `gen_snapshot`, the runtime as
+  /// the executable. See `macos_embedded_bundle.dart` for the layout.
+  Future<ApplicationBuildResult> _buildMacosEmbedded(
+    ApplicationBuildRequest request,
+    String appName,
+    String executableName,
+  ) async {
+    final String identifier = request.bundleIdentifier ??
+        'dev.dartui.${_bundleIdentifierPart(executableName)}';
+    _validateBundleIdentifier(identifier);
+    var bundlePath = request.outputPath ?? 'build/$executableName.app';
+    if (!bundlePath.toLowerCase().endsWith('.app')) {
+      bundlePath = '$bundlePath.app';
+    }
+    final MacosEmbeddedToolchain? toolchain = request.macosEmbeddedToolchain ??
+        MacosEmbeddedToolchain.resolve(Platform.environment);
+    if (toolchain == null) {
+      throw const ApplicationBuildException(
+          'the embedded macOS backend needs the Dart runtime built with the '
+          'main-thread patch: set DART_UI_DART_SDK_SRC to the Dart SDK '
+          'checkout (tool/mobile/build_dart_runtime.dart --target '
+          'macos-arm64), or use tool/macos/build_app.dart, which builds it');
+    }
+    final List<String> missing = toolchain.missing();
+    if (missing.isNotEmpty) {
+      throw ApplicationBuildException(
+          'the embedded macOS toolchain is incomplete:\n  '
+          '${missing.join('\n  ')}');
+    }
+    final String entrypoint = _entrypointFor(request);
+    final String? packages = findPackageConfig(request.entrypoint);
+    if (packages == null) {
+      throw ApplicationBuildException(
+          'no .dart_tool/package_config.json above ${request.entrypoint}; '
+          'run dart pub get in its package');
+    }
+    final Directory work = Directory('$bundlePath.work');
+    if (work.existsSync()) work.deleteSync(recursive: true);
+    work.createSync(recursive: true);
+    final String kernel = '${work.path}/app.dill';
+    final String snapshot = '${work.path}/App';
+    _output.writeln('Compiling $entrypoint (AOT, Dart $macosEmbeddedSdkTag)');
+    await _tool(
+        toolchain.kernelRuntime,
+        toolchain.kernelArguments(
+            entrypoint: entrypoint, packages: packages, output: kernel));
+    await _tool(toolchain.genSnapshot,
+        toolchain.snapshotArguments(kernel: kernel, output: snapshot));
+
+    final MacosEmbeddedBundleLayout layout =
+        MacosEmbeddedBundleLayout(bundlePath, executableName)..create();
+    File(toolchain.runtime).copySync(layout.executable);
+    await _tool('chmod', <String>['755', layout.executable]);
+    File(snapshot).copySync(layout.snapshot);
+    File(layout.frameworkInfoPlist).writeAsStringSync(
+        macosEmbeddedFrameworkInfoPlist(
+            identifier: identifier,
+            version: request.version,
+            minimumSystemVersion: request.minimumSystemVersion));
+    String? iconFile;
+    if (request.iconPath case final String icon) {
+      iconFile = await _macosIcon(icon, layout.resources);
+    }
+    File(layout.infoPlist).writeAsStringSync(
+      macosEmbeddedInfoPlist(
+        appName: appName,
+        executableName: executableName,
+        identifier: identifier,
+        version: request.version,
+        minimumSystemVersion: request.minimumSystemVersion,
+        iconFile: iconFile,
+        extra: request.infoPlist,
+      ),
+      flush: true,
+    );
+    work.deleteSync(recursive: true);
+    if (request.codesignIdentity case final String identity) {
+      await _codesign(request, identity, bundlePath, <String>[
+        layout.framework,
+      ]);
+      if (request.notaryProfile case final String profile) {
+        await _notarize(bundlePath, profile);
+      }
+    } else if (request.notaryProfile != null) {
+      throw const ApplicationBuildException(
+          'notarization needs a signed bundle; pass --sign with a Developer '
+          'ID identity');
+    }
+    _output.writeln('Application bundle (embedded runtime): '
+        '${Directory(bundlePath).absolute.path}');
     return ApplicationBuildResult(
       platform: platform,
       primaryArtifact: Directory(bundlePath).absolute.path,

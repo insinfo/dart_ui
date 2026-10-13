@@ -1474,6 +1474,12 @@ final class HostCommands {
 
   static String setTitle(String title) => 'SET_TITLE $title\n';
 
+  /// What the window shows where no frame has drawn yet - the strip a live
+  /// resize uncovers before the frame of the new size lands. Premultiplied
+  /// `0xAARRGGBB`, as `WindowOptions.backgroundColor` carries it.
+  static String setBackground(int premultipliedArgb) =>
+      'SET_BACKGROUND ${(premultipliedArgb & 0xFFFFFFFF).toRadixString(16).padLeft(8, '0')}\n';
+
   /// Starts AppKit's window move from the latest left press in the content -
   /// a press the framework found on a title-bar handle.
   static String beginDrag() => 'BEGIN_DRAG\n';

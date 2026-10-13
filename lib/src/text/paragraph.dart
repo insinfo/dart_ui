@@ -1429,6 +1429,28 @@ final class _ShapedRun {
       level.isOdd ? TextDirection.rightToLeft : TextDirection.leftToRight;
 }
 
+/// Shaped runs, one cache per shaper, shared by every paragraph built with it.
+final Expando<GlyphRunCache> _runCaches = Expando<GlyphRunCache>('shaped runs');
+
+/// [shaper] behind a [GlyphRunCache], so that laying the same text out again
+/// at another width only breaks lines.
+///
+/// Shaping is the expensive half of a paragraph - `GSUB` and `GPOS` run in
+/// Dart - and it does not depend on the width at all; line breaking and the
+/// ellipsis do. A column of names being resized re-laid every name out at
+/// every step, and with the paragraph cache keyed on the width each step was
+/// a miss that re-shaped the whole string: measured in the file explorer,
+/// 51% of a column drag's CPU in `OpenTypeShaper.shape`, about 20 ms per
+/// pointer event for 40 rows. With the runs cached the same re-layout costs
+/// the line breaker alone.
+///
+/// Keyed by the shaper object rather than global, so a paragraph cache given
+/// a different shaper never sees another's runs.
+Shaper _cachingShaper(Shaper shaper) {
+  if (shaper is GlyphRunCache) return shaper;
+  return _runCaches[shaper] ??= GlyphRunCache(shaper, maximumEntries: 4096);
+}
+
 /// Runs the pipeline once, for one paragraph.
 final class _ParagraphBuilder {
   _ParagraphBuilder(
@@ -1487,6 +1509,10 @@ final class _ParagraphBuilder {
   }
 
   TextStyle get _defaultStyle => spans.first.style;
+
+  /// [shaper], behind the cache of shaped runs every paragraph laid out
+  /// with it shares. See [_cachingShaper].
+  late final Shaper _shapedRuns = _cachingShaper(shaper);
 
   Paragraph build() {
     _bidi = BidiParagraph.resolve(text, baseDirection: style.baseDirection);
@@ -1675,7 +1701,7 @@ final class _ParagraphBuilder {
             (substitute, runStyle.font.pixelSize),
             () => substitute.atSize(runStyle.font.pixelSize),
           );
-    final GlyphRun run = shaper.shape(
+    final GlyphRun run = _shapedRuns.shape(
       text.substring(start, end),
       font,
       script: _scriptAt(start),
@@ -2228,7 +2254,7 @@ final class _ParagraphBuilder {
       if (run.kind == _RunKind.glyphs) runStyle = run.style;
     }
     final String ellipsis = style.ellipsis!;
-    final GlyphRun run = shaper.shape(
+    final GlyphRun run = _shapedRuns.shape(
       ellipsis,
       runStyle.font,
       script: itemize(ellipsis).first.script,

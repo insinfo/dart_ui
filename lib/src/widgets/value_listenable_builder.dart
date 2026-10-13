@@ -1,12 +1,16 @@
-/// Rebuilds one part of the tree when a [ValueNotifier] changes - and only
+/// Rebuilds one part of the tree when a [ValueListenable] changes - and only
 /// that part.
 library;
 
 import '../foundation/value_notifier.dart';
 import 'widget.dart';
 
+/// Builds a widget from a value - Flutter's `ValueWidgetBuilder`.
+typedef ValueWidgetBuilder<T> = Widget Function(
+    BuildContext context, T value, Widget? child);
+
 /// Builds [builder] with [valueListenable]'s value, again whenever it
-/// changes.
+/// changes - Flutter's `ValueListenableBuilder`.
 ///
 /// The way to keep a frequent change from rebuilding a whole window: the
 /// pointer's coordinates in a status bar, a progress value, a clock. The
@@ -20,8 +24,10 @@ final class ValueListenableBuilder<T> extends StatefulWidget {
     this.child,
   });
 
-  final ValueNotifier<T> valueListenable;
-  final Widget Function(BuildContext context, T value, Widget? child) builder;
+  /// Usually a [ValueNotifier]; anything that holds a value and notifies.
+  final ValueListenable<T> valueListenable;
+
+  final ValueWidgetBuilder<T> builder;
 
   /// A part of the subtree that does not depend on the value.
   final Widget? child;
@@ -54,7 +60,7 @@ final class _ValueListenableBuilderState<T>
     super.dispose();
   }
 
-  void _changed(T _) {
+  void _changed() {
     if (mounted) setState(() {});
   }
 

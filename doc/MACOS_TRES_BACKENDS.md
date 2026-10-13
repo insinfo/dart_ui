@@ -1,8 +1,12 @@
-# macOS — estratégia de três backends
+# macOS — estratégia de quatro backends
+
+> O arquivo mantém o nome `MACOS_TRES_BACKENDS.md` porque é referenciado por
+> nome no código e em outros documentos. Em 13/10/2026 entrou o quarto
+> backend, `appkitEmbedded` (seção "Backend 4").
 
 ## Decisão
 
-O projeto manterá três implementações macOS atrás do mesmo contrato de janela,
+O projeto manterá quatro implementações macOS atrás do mesmo contrato de janela,
 input, apresentação e lifecycle. Elas não são três nomes para a mesma técnica:
 cada uma tem ownership de thread, risco e finalidade diferentes.
 
@@ -11,6 +15,7 @@ cada uma tem ownership de thread, risco e finalidade diferentes.
 | `skylight` | Dart standalone | SkyLight/CGS privada | não exige thread 0 no caminho medido | laboratório avançado e fallback controlado |
 | `appkitSignal` | Dart standalone | AppKit por ObjC runtime | sequestrada por sinal | pesquisa e comparação; nunca default |
 | `appkitNativeHost` | executável `.m` | AppKit normal | possuída desde `main()` | caminho recomendado para robustez |
+| `appkitEmbedded` | runtime Dart AOT compilado do código-fonte, com patch | AppKit por ObjC runtime, no mesmo processo | do runtime: o isolate principal roda nela, dentro do `CFRunLoop` | `.app` de processo único; escolhido sozinho dentro desse runtime |
 
 Distribuição pela App Store não decide esta matriz. Os critérios são correção,
 recuperação após falha, compatibilidade por versão e capacidade de teardown.
@@ -21,7 +26,7 @@ O código de widgets não pode conhecer qual estratégia está ativa. O adaptado
 macOS deverá fornecer, no mínimo:
 
 ```dart
-enum MacosBackendKind { skylight, appkitSignal, appkitNativeHost }
+enum MacosBackendKind { skylight, appkitSignal, appkitNativeHost, appkitEmbedded }
 
 abstract interface class MacosWindowBackend {
   MacosBackendKind get kind;
@@ -345,10 +350,176 @@ controle.** Reabrir se o alvo for 120 Hz com orçamento apertado, se o SDK já
 precisar ser compilado por outro motivo, ou se input exigir latência abaixo de
 1 ms ponta a ponta.
 
+## Backend 4 — AppKit embutido (`appkitEmbedded`)
+
+### Decisão
+
+O caminho do iOS (ADR 0010, `RELATORIO_DART_PURO_ANDROID_IOS.md`) aplicado ao
+macOS: o executável do `.app` **é** o `dartaotruntime` compilado do código-fonte
+do Dart SDK 3.13.5 com um patch, o programa é um snapshot Mach-O em
+`Contents/Frameworks/App.framework`, e o Dart é **convidado** do run loop do
+aplicativo. Um processo só para todas as janelas: menu e submenu são janelas
+filhas (`addChildWindow:ordered:`) da dona, a ordem z e o movimento seguem a
+dona, e abrir um menu custa uma janela, não um processo. Sem Flutter em nenhuma
+forma; sem sinal; sem SkyLight; sem segundo processo.
+
+Não substitui o default: fora desse runtime o probe falha com o motivo e a
+seleção cai no `appkitNativeHost`, como antes.
+
+### Como funciona
+
+O patch (`tool/mobile/dart_sdk_patches/3.13.5-macos.patch`, aplicado por cima
+do de iOS; todo bloco sob `DART_HOST_OS_MACOS && !DART_HOST_OS_IOS`):
+
+1. `main.cc`: sem snapshot na linha de comando e com
+   `../Frameworks/App.framework/App` ao lado do executável — aberto pelo
+   Finder, por `open` ou rodando `Contents/MacOS/X` direto — usa esse
+   snapshot, repassa os outros argumentos ao programa (sem o `-psn_` antigo) e
+   liga o modo thread principal. `DART_UI_MAIN_THREAD_LOOP=1` liga o modo para
+   um snapshot avulso (`dartaotruntime app.dylib`), útil para depurar.
+2. `main_impl.cc`: `Dart_SetMessageNotifyCallback` sinaliza uma
+   `CFRunLoopSource` do run loop principal, nos *common modes* (mensagens
+   continuam durante live resize e tracking de menu); o `perform` dela chama
+   `Dart_HandleMessage` com o isolate sempre entrado na thread 0. Não é
+   reentrante: um loop aninhado dentro de uma mensagem adia as mensagens para o
+   turno de fora, que sinaliza a fonte de novo.
+3. Depois do `main()`, o runtime gira o run loop até o programa não ter mais
+   portas vivas — a mesma regra de término do `dart` standalone (código de
+   saída, `exitCode`, exceção não tratada = 255, tudo igual). Quando o Dart
+   chama `Dart_DartUiRunApplication()`, o runtime roda `[NSApp run]` nesse
+   loop; quando a última porta fecha, `[NSApp stop:]` e um evento vazio fazem o
+   `run` voltar e o processo termina pelo caminho normal.
+4. Dois símbolos exportados (o executável só exporta `Dart_*`):
+   `Dart_DartUiMainThreadLoop` (1 no modo) e `Dart_DartUiRunApplication`.
+5. Em modo app o processo mantém o nome do bundle no Dock e no Monitor de
+   Atividade (o runtime padrão o renomearia para `dart:App`).
+
+O lado Dart (`lib/src/backends/macos/embedded/`):
+
+- `embedded_runtime.dart`: detecção pelo símbolo + `pthread_main_np`. O
+  resolver põe a entrada `macos-embedded` **antes** de `macos`; o probe só passa
+  dentro do runtime, então a escolha é automática lá e nunca em outro lugar.
+- `embedded_appkit.dart`: classes registradas em runtime — `DartUiEmbeddedView`
+  (`NSView`, eventos de mouse/teclado/scroll, `acceptsFirstMouse:`),
+  `DartUiEmbeddedWindow` e `DartUiEmbeddedPanel` (menus: `NSPanel`
+  não-ativante que nunca vira key), delegate de janela e de aplicação. Cada
+  método é um `NativeCallable.isolateLocal` com `keepIsolateAlive = false`: o
+  AppKit chama o Dart sincronamente, na mesma thread.
+- `embedded_backend.dart`: `NSApplication` (política regular, menu Hide/Quit e
+  Window), `EventLoopWaitingBackend` — o `pumpEvents` nunca bloqueia, o loop da
+  aplicação espera com `await`. Depois de cada callback do AppKit o backend
+  manda uma mensagem vazia a si mesmo (coalescida): é a solução do problema 2.4
+  do relatório (microtasks paradas depois de um callback nativo), a mesma do
+  iOS. `ScreenProvider` por `NSScreen`. Cmd+Q pede o fechamento das janelas
+  (`applicationShouldTerminate:` responde *Cancel*), e o programa termina
+  quando elas fecham.
+- `embedded_window.dart`: `NSWindow`/`NSPanel` com a view de conteúdo
+  layer-backed. GPU primeiro: os pixels são o mesmo pool de `IOSurface`
+  (`surface_pool.dart`) do host nativo, e a janela implementa
+  `MacosSurfaceHost` — o caminho `metal` do resolver desenha nas `IOSurface`s e
+  o "present" é `layer.contents = IOSurface` do slot de trás (sem cópia, sem
+  pipe). Sem Metal, `macos-embedded-iosurface` rasteriza na CPU direto na
+  `IOSurface`. Também: `HiddenTitleBarWindow` (botões do sistema, arrastar pela
+  área do título), `WindowStateControl`, `ActivatableWindow`, e
+  `synthesizeInput` com a gramática `SYNTH_MOUSE`/`SYNTH_KEY`/`SYNTH_POINTER`
+  do host, postando `NSEvent`s na fila do próprio AppKit (sem permissão de
+  acessibilidade). `DART_UI_EMBEDDED_TRACE=1` imprime cada evento.
+
+Código compartilhado, extraído em vez de copiado: `apple/cocoa_ffi.dart`
+(structs CG, sends com struct, `NSString`, `CGImage`; o iOS reexporta) e
+`appkit_event_decoding.dart` (`decodeNSEvent`, antes no `appkit_signal`).
+
+### Como gerar
+
+```
+dart run tool/macos/build_app.dart examples/file_explorer/bin/file_explorer.dart \
+    -o build/FileExplorer.app [--name "File Explorer"] [--icon icon.png] [--run]
+```
+
+O script acha o checkout (`--checkout`, `DART_UI_DART_SDK_SRC` ou um
+`dart-sdk-src` ao lado da pasta do repositório), compila o runtime se faltar ou
+estiver velho (`tool/mobile/build_dart_runtime.dart --target macos-arm64`; ~7
+min na primeira vez num M4, com `DEVELOPER_DIR` apontado para o Xcode que achar),
+compila o kernel com o Dart 3.13.5 do host (`--dart`, `DART_UI_MACOS_DART`,
+`DART_UI_IOS_DART` ou `DartSDKs/3.13.5-macos` ao lado do checkout), gera o
+snapshot com o `gen_snapshot` do mesmo build, monta o bundle e assina ad hoc. O
+mesmo pelo CLI, com o toolchain no ambiente:
+`dart run dart_ui build <entry> --macos-backend=embedded`.
+
+```
+X.app/Contents/Info.plist                        sem LSUIElement
+X.app/Contents/MacOS/X                           o dartaotruntime com patch
+X.app/Contents/Frameworks/App.framework/App      -> Versions/Current/App (snapshot)
+```
+
+### Verificado em 13/10/2026 (Mac mini M4, macOS 27.2)
+
+Com `tool/macos/embedded_demo.dart` (`DART_UI_EMBEDDED_PROBE=<pasta>`, que se
+dirige sozinho) e `examples/file_explorer/tool/macos_embedded_popup_probe.dart`:
+
+- backend `macos-embedded`, apresentação `metal`; janela capturada por
+  `screencapture -l` e listada por `CGWindowListCopyWindowInfo` com o nome do
+  bundle como dono;
+- clique sintético no botão: contador 0 → 1, quadros novos apresentados;
+- botão direito: menu aberto em 6–10 ms (host nativo: 243 ms frio, 65 ms com
+  processo reserva), `parentWindow` do menu = janela principal; hover em
+  "Exibir": submenu em 5–9 ms, `parentWindow` = menu, colado à direita do menu
+  (`gap x=0`) e alinhado à linha; `CGWindowList`: submenu > menu > principal,
+  contíguos, nível normal — a ordem z segue a dona;
+- explorer: título oculto com os botões do sistema no lugar, menu de contexto
+  e submenu "Exibir" como janelas filhas, transparentes e com sombra;
+- `performClose:` (botão vermelho) e Quit pelo AppleScript fecham a janela e
+  o processo termina com código 0, aberto por `open` ou direto;
+- partida até o primeiro quadro (mediana de 7, mesmo demo, `Contents/MacOS/X`
+  direto): **275 ms** embutido contra **406 ms** com o host nativo
+  (`dart compile exe` + host `.m`).
+
+### Limitações
+
+- só macOS arm64 (os sends que devolvem `CGRect` contam com o ABI de arm64);
+- sem IME (`NSTextInputClient`), área de transferência, arrastar e soltar,
+  acessibilidade e barra de menu nativa da aplicação — o texto digitado chega
+  pelos caracteres do `keyDown:`; esses recursos vivem hoje no host `.m` e
+  precisam ser portados para cá;
+- sem `LiveResizeWindow`: durante o live resize as mensagens continuam
+  fluindo (common modes) e o quadro novo chega no turno seguinte, mas não é
+  desenhado de dentro do `windowDidResize:`; não medido com arrasto real;
+- sem pacing por vsync (`CVDisplayLink`/`CADisplayLink`) no present;
+- a versão do runtime, do `gen_snapshot` e do kernel é amarrada (3.13.5);
+- um callback do AppKit que entre num loop modal aninhado *de dentro* de Dart
+  adia as mensagens Dart até o loop sair (por desenho, para não reentrar).
+
+### Estado em 13/10/2026 e pendências
+
+Existe e foi provado: patch do runtime, `tool/macos/build_app.dart` e
+`dart_ui build --macos-backend=embedded`, o backend em
+`lib/src/backends/macos/embedded/`, seleção automática só dentro do runtime,
+Metal e CPU em `IOSurface`, menus/submenus como janelas filhas, fechamento e
+término do processo. Testes: `test/backends/macos/macos_embedded_test.dart` e
+`test/tooling/macos_embedded_bundle_test.dart` (rodam sem o checkout do SDK).
+
+Pendente, em ordem:
+
+1. IME (`NSTextInputClient` na `DartUiEmbeddedView`), área de transferência
+   (`NSPasteboard`), arrastar e soltar e acessibilidade — portar do host `.m`;
+2. barra de menu nativa da aplicação (`NativeMenuBarWindow`);
+3. `LiveResizeWindow` e pacing por vsync; medir live resize com arrasto real;
+4. CI: compilar o runtime (ou baixar um artefato) e rodar
+   `tool/macos/embedded_demo.dart` com `DART_UI_EMBEDDED_PROBE`;
+5. hardened runtime + notarização com o framework do snapshot (só ad hoc foi
+   testado).
+
+Achado de passagem, que não é deste backend: um clique num item de
+**submenu** fecha a cadeia sem chamar `onPressed` — igual no host nativo
+(mesmo probe nos dois). Suspeita: `MenuItemButton` lê `widget.onPressed`
+depois de `closeChain()` desmontar o próprio item (`menu_anchor.dart`).
+
 ## Seleção e fallback
 
 Ordem recomendada inicialmente:
 
+0. `appkitEmbedded`, automaticamente e só dentro do runtime embutido (`.app`
+   gerado por `tool/macos/build_app.dart`);
 1. `appkitNativeHost`, quando o aplicativo aceitar artefato nativo;
 2. `skylight`, quando for exigido executável Dart standalone e a versão tiver
    ABI validado;

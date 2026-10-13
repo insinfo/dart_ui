@@ -377,6 +377,15 @@ final class WindowHost with DisposableMixin {
   /// so the window comes back from the taskbar visibly reset.
   bool get isPresentable => !_suspended && !_logicalSize.isEmpty;
 
+  /// False while the native window is replacing its surfaces - see
+  /// [SurfaceReadinessWindow]. Not part of [isPresentable]: the window is not
+  /// suspended, only between two surfaces for a few milliseconds, and a frame
+  /// drawn then would be thrown away - and would delay the replacement.
+  bool get surfaceReady => switch (window) {
+        final SurfaceReadinessWindow surface => surface.surfaceReady,
+        _ => true,
+      };
+
   /// Frames that were begun and then dropped because the surface moved under
   /// them. Exposed because "the generation rule is enforced" is otherwise an
   /// invisible claim.

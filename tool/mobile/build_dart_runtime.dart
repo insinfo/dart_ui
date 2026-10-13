@@ -6,7 +6,10 @@
 ///     --target android-arm64 [--fetch]
 /// ```
 ///
-/// Targets: `android-arm64`, `android-x64`, `ios-arm64`, `ios-simulator-arm64`.
+/// Targets: `android-arm64`, `android-x64`, `ios-arm64`, `ios-simulator-arm64`,
+/// and `macos-arm64` - the runtime of the embedded macOS backend
+/// (`appkitEmbedded`, `tool/macos/build_app.dart`), whose `gen_snapshot` is a
+/// host tool of the same build (`exe.stripped/gen_snapshot`).
 ///
 /// `--fetch` writes a `.gclient` for the tag in [sdkTag] with the Android and
 /// iOS dependencies and runs `gclient sync` (depot_tools on `PATH`). The
@@ -24,7 +27,13 @@
 /// `--mac-sdk` overrides the choice.
 ///
 /// `tool/mobile/dart_sdk_patches/<tag>-*.patch` is applied to the checkout
-/// first (once; an applied patch is skipped). For iOS it makes the runtime an
+/// first, in name order (once; an applied patch is skipped). The macOS patch
+/// goes on top of the iOS one: the same main-thread mode under
+/// `DART_HOST_OS_MACOS`, on when the runtime is a `.app`'s executable.
+///
+/// The SDK's `find_sdk.py` wants a full Xcode; with only the Command Line
+/// Tools selected, `DEVELOPER_DIR` is pointed at the first Xcode found
+/// (`/Applications/Xcode.app`, or one beside the checkout). For iOS it makes the runtime an
 /// app: the main isolate's messages run on the main thread from the main run
 /// loop, the snapshot is found in the bundle, and `UIApplicationMain` runs
 /// with the delegate class the Dart code registered (see the patch).
@@ -53,6 +62,7 @@ const Map<String, ({String os, String arch, String config})> _targets =
     arch: 'arm64',
     config: 'ProductIosSimARM64'
   ),
+  'macos-arm64': (os: 'host', arch: 'arm64', config: 'ProductARM64'),
 };
 
 Future<void> main(List<String> arguments) async {
@@ -88,6 +98,11 @@ Future<void> main(List<String> arguments) async {
   }
   await _applyPatches(sdk);
   macSdk ??= Platform.isMacOS ? _pickMacSdk() : null;
+  final Map<String, String> environment = <String, String>{
+    if (Platform.isMacOS)
+      if (_developerDirectory(checkout) case final String developer)
+        'DEVELOPER_DIR': developer,
+  };
   for (final String name in targets) {
     final ({String os, String arch, String config}) target = _targets[name]!;
     final String out =
@@ -101,23 +116,26 @@ Future<void> main(List<String> arguments) async {
           'product',
           '-a',
           target.arch,
-          '--os',
-          target.os,
+          if (target.os != 'host') ...<String>['--os', target.os],
           if (macSdk != null) ...<String>[
             '--gn-args',
             'mac_sdk_path="$macSdk"'
           ],
           'dartaotruntime',
         ],
-        workingDirectory: sdk);
+        workingDirectory: sdk,
+        environment: environment);
     final String hostToolchain =
         'clang_${Abi.current() == Abi.macosArm64 || Abi.current() == Abi.linuxArm64 ? 'arm64' : 'x64'}';
-    await _run('$sdk/buildtools/ninja/ninja',
-        <String>['-C', out, '$hostToolchain/gen_snapshot']);
+    // For macOS the target is the host: gen_snapshot is the build's own.
+    final String genSnapshot =
+        target.os == 'host' ? 'gen_snapshot' : '$hostToolchain/gen_snapshot';
+    await _run('$sdk/buildtools/ninja/ninja', <String>['-C', out, genSnapshot],
+        environment: environment);
     stdout
       ..writeln('$name:')
       ..writeln('  runtime:      $out/exe.stripped/dartaotruntime')
-      ..writeln('  gen_snapshot: $out/$hostToolchain/gen_snapshot');
+      ..writeln('  gen_snapshot: $out/$genSnapshot');
   }
 }
 
@@ -125,15 +143,27 @@ Future<void> _applyPatches(String sdk) async {
   final String here = File(Platform.script.toFilePath()).parent.path;
   final Directory patches = Directory('$here/dart_sdk_patches');
   if (!patches.existsSync()) return;
-  for (final File patch in patches
+  final List<File> ordered = patches
       .listSync()
       .whereType<File>()
-      .where((File f) => f.path.split('/').last.startsWith('$sdkTag-'))) {
-    // Already applied when it reverses cleanly.
-    final ProcessResult applied = await Process.run(
-        'git', <String>['apply', '--reverse', '--check', patch.absolute.path],
+      .where((File f) => f.path.split('/').last.startsWith('$sdkTag-'))
+      .toList()
+    // In name order: a later patch may build on an earlier one's lines.
+    ..sort((File a, File b) => a.path.compareTo(b.path));
+  // A patch built on an earlier one no longer reverses alone once the later
+  // one is on top, so "already applied" is read from the end: the last patch
+  // that reverses cleanly, and everything before it, is in the tree.
+  var applied = 0;
+  for (var index = ordered.length - 1; index >= 0; index--) {
+    final ProcessResult reverses = await Process.run('git',
+        <String>['apply', '--reverse', '--check', ordered[index].absolute.path],
         workingDirectory: sdk);
-    if (applied.exitCode == 0) continue;
+    if (reverses.exitCode == 0) {
+      applied = index + 1;
+      break;
+    }
+  }
+  for (final File patch in ordered.skip(applied)) {
     await _run('git', <String>['apply', patch.absolute.path],
         workingDirectory: sdk);
   }
@@ -154,6 +184,27 @@ String? _pickMacSdk() {
     if (stub.existsSync() && !stub.readAsStringSync().contains('arm64e.x1')) {
       return '${sdks.path}/$name';
     }
+  }
+  return null;
+}
+
+/// `DEVELOPER_DIR` for the SDK's `find_sdk.py`, which refuses the Command
+/// Line Tools: the caller's when set, else the first Xcode found.
+String? _developerDirectory(String checkout) {
+  final String? set = Platform.environment['DEVELOPER_DIR'];
+  if (set != null) return set;
+  final ProcessResult selected =
+      Process.runSync('xcode-select', <String>['-p']);
+  final String path = '${selected.stdout}'.trim();
+  if (selected.exitCode == 0 && !path.contains('CommandLineTools')) {
+    return null;
+  }
+  for (final String xcode in <String>[
+    '/Applications/Xcode.app',
+    '${Directory(checkout).absolute.parent.path}/Xcode.app',
+  ]) {
+    final String developer = '$xcode/Contents/Developer';
+    if (Directory(developer).existsSync()) return developer;
   }
   return null;
 }
@@ -184,10 +235,12 @@ target_os = ["android", "ios"]
 }
 
 Future<void> _run(String executable, List<String> arguments,
-    {String? workingDirectory}) async {
+    {String? workingDirectory, Map<String, String>? environment}) async {
   stdout.writeln('> $executable ${arguments.join(' ')}');
   final Process process = await Process.start(executable, arguments,
-      workingDirectory: workingDirectory, mode: ProcessStartMode.inheritStdio);
+      workingDirectory: workingDirectory,
+      environment: environment,
+      mode: ProcessStartMode.inheritStdio);
   final int code = await process.exitCode;
   if (code != 0) _fail('$executable exited $code');
 }

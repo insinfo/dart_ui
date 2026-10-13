@@ -72,6 +72,7 @@ import 'gpu_glyph_atlas.dart';
 import 'gpu_gradient.dart';
 import 'gpu_layer_stack.dart';
 import 'gpu_mask_atlas.dart';
+import 'gpu_mask_tiling.dart';
 import 'gpu_path_dispatch.dart';
 import 'gpu_path_planning.dart';
 import 'gpu_path_strategy.dart';
@@ -900,6 +901,16 @@ final class GpuRasterSink
             '(GpuRasterSink.gradientCache).',
       );
     }
+    // A large shape is a large mask only on paper: a window-sized card is
+    // coverage one inside, zero outside and antialiased along a thin band.
+    // Rasterised whole it took most of the atlas, evicted everything else
+    // and was scanned pixel by pixel every frame; tiled, only the band near
+    // curves is a mask, and those small masks stay cached.
+    if (visible.width * visible.height > _tileAboveArea) {
+      _drawMaskTiled(
+          atlas, path, transform, clip, paint, what, alpha, rule, gradient);
+      return;
+    }
     var result = atlas.rasterizeMask(
       path,
       transform: transform,
@@ -1067,38 +1078,77 @@ final class GpuRasterSink
             'a mask of any size, so a $what cannot be tiled either',
       );
     }
+    if (!visible.left.isFinite ||
+        !visible.top.isFinite ||
+        !visible.right.isFinite ||
+        !visible.bottom.isFinite) {
+      return;
+    }
 
-    final double left = visible.left.floorToDouble();
-    final double top = visible.top.floorToDouble();
-    final double right = visible.right.ceilToDouble();
-    final double bottom = visible.bottom.ceilToDouble();
-    final int columns = ((right - left) / tileWidth).ceil();
-    final int rows = ((bottom - top) / tileHeight).ceil();
-    if (columns * rows > _maxMaskTiles) {
+    // Small tiles, classified first: only the ones a curve or an off-pixel
+    // edge passes near are rasterised - and, small, they stay cached in the
+    // atlas from frame to frame - while the rest are whole rectangles or
+    // nothing. See gpu_mask_tiling.dart for the measurement behind it.
+    final int side = kMaskTileSide < tileWidth
+        ? (kMaskTileSide < tileHeight ? kMaskTileSide : tileHeight)
+        : (tileWidth < tileHeight ? tileWidth : tileHeight);
+    final MaskTilePlan plan = _tilePlan;
+    plan.plan(
+      path,
+      transform,
+      left: visible.left.floor(),
+      top: visible.top.floor(),
+      right: visible.right.ceil(),
+      bottom: visible.bottom.ceil(),
+      rule: rule,
+      tile: side,
+    );
+    final int masked = plan.maskedTileCount;
+    if (masked * side * side >
+        _maxMaskTiles * tileWidth.toDouble() * tileHeight) {
       throw UnsupportedCapabilityError(
         backendName: backendName,
         capability: Capability.gpuPresentation,
         feature: 'tiled $what',
-        detail: 'a $what covering ${right - left}x${bottom - top} device '
-            'pixels needs ${columns * rows} tiles of ${tileWidth}x$tileHeight '
-            'out of the ${atlas.width}x${atlas.height} coverage atlas, over '
-            'the limit of $_maxMaskTiles; a shape this large against an atlas '
-            'this small is a configuration mistake, not a drawing',
+        detail: 'a $what covering ${visible.width}x${visible.height} device '
+            'pixels needs $masked masked tiles of ${side}x$side out of the '
+            '${atlas.width}x${atlas.height} coverage atlas, over the limit of '
+            '$_maxMaskTiles atlases of coverage; a shape this large against an '
+            'atlas this small is a configuration mistake, not a drawing',
       );
     }
 
-    for (var y = top; y < bottom; y += tileHeight) {
-      for (var x = left; x < right; x += tileWidth) {
-        final double tileRight = x + tileWidth < right ? x + tileWidth : right;
-        final double tileBottom =
-            y + tileHeight < bottom ? y + tileHeight : bottom;
+    for (int row = 0; row < plan.rows; row++) {
+      for (int column = 0; column < plan.columns; column++) {
+        final Rect tile = Rect.fromLTRB(
+          plan.tileLeft(column).toDouble(),
+          plan.tileTop(row).toDouble(),
+          plan.tileRight(column).toDouble(),
+          plan.tileBottom(row).toDouble(),
+        );
+        if (!plan.needsMask(column, row)) {
+          if (gradient == null) {
+            plan.coveredRects(column, row, (int l, int t, int r, int b) {
+              _batchSolidCell(l, t, r, b, clip, paint, alpha);
+            });
+            continue;
+          }
+          // A ramp has no solid pipeline: a covered cell still goes through
+          // a mask, but an empty tile is skipped all the same.
+          bool any = false;
+          plan.coveredRects(column, row, (int l, int t, int r, int b) {
+            any = true;
+          });
+          if (!any) continue;
+        }
         // Whole-pixel tiles, so each mask is at most the budget and no tile
         // boundary falls inside a pixel - a fractional split would rasterise
         // the same pixel twice and blend its coverage twice.
-        final Rect tile = Rect.fromLTRB(x, y, tileRight, tileBottom);
+        final Rect tileClip = tile.intersect(clip);
+        if (tileClip.isEmpty) continue;
         var result = atlas.rasterizeMask(path,
             transform: transform,
-            clip: tile,
+            clip: tileClip,
             rule: rule,
             admitToCache: _admitToAtlas);
         if (result.status == MaskRasterStatus.needsFlush) {
@@ -1106,7 +1156,7 @@ final class GpuRasterSink
           result = atlas.rasterizeMask(
             path,
             transform: transform,
-            clip: tile,
+            clip: tileClip,
             rule: rule,
             admitToCache: _admitToAtlas,
           );
@@ -1114,15 +1164,60 @@ final class GpuRasterSink
         if (result.status == MaskRasterStatus.empty) continue;
         if (!result.isOk) {
           throw StateError(
-            '$backendName: a ${tileWidth}x$tileHeight tile of a $what came '
-            'back as ${result.status.name} from a '
-            '${atlas.width}x${atlas.height} atlas whose own budget says a '
-            'mask that size fits. That is a bug in gpu_mask_atlas.dart.',
+            '$backendName: a ${side}x$side tile of a $what came back as '
+            '${result.status.name} from a ${atlas.width}x${atlas.height} '
+            'atlas whose own budget says a mask that size fits. That is a bug '
+            'in gpu_mask_atlas.dart.',
           );
         }
         _batchMask(result, clip, paint, alpha, gradient);
       }
     }
+  }
+
+  /// Reused by every tiled shape; see [MaskTilePlan].
+  final MaskTilePlan _tilePlan = MaskTilePlan();
+
+  /// A whole-pixel rectangle of a tiled shape that is entirely inside it:
+  /// coverage one, so the solid pipeline - with the shape's paint, blend mode
+  /// included - draws exactly what the mask would have.
+  void _batchSolidCell(
+    int cellLeft,
+    int cellTop,
+    int cellRight,
+    int cellBottom,
+    Rect clip,
+    ReplayPaint paint,
+    int alpha,
+  ) {
+    var left = cellLeft > clip.left ? cellLeft.toDouble() : clip.left;
+    var top = cellTop > clip.top ? cellTop.toDouble() : clip.top;
+    var right = cellRight < clip.right ? cellRight.toDouble() : clip.right;
+    var bottom = cellBottom < clip.bottom ? cellBottom.toDouble() : clip.bottom;
+    if (right <= left || bottom <= top) return;
+    left -= _originX;
+    top -= _originY;
+    right -= _originX;
+    bottom -= _originY;
+    _setState(GpuPipelineKind.solid, kNoTexture, paint.blendMode, clip);
+    batcher.addQuad(
+      left: left.floorToDouble(),
+      top: top.floorToDouble(),
+      right: right.ceilToDouble(),
+      bottom: bottom.ceilToDouble(),
+      u0: 0,
+      v0: 0,
+      u1: 0,
+      v1: 0,
+      red: _channel(paint.argbColor, 16, alpha),
+      green: _channel(paint.argbColor, 8, alpha),
+      blue: _channel(paint.argbColor, 0, alpha),
+      alpha: alpha / 255.0,
+      shapeLeft: left,
+      shapeTop: top,
+      shapeRight: right,
+      shapeBottom: bottom,
+    );
   }
 
   FillRule _fillRule(ReplayPaint paint) => switch (paint.fillRule) {
@@ -1989,6 +2084,10 @@ final class GpuRasterSink
   /// and turns the pathological configuration (a wall-sized clip and a 64 px
   /// atlas) into a named refusal instead of thousands of rasterisations.
   static const int _maxMaskTiles = 64;
+
+  /// Visible device area above which a shape is drawn tile by tile even when
+  /// it would fit the atlas whole: 256 x 256 pixels, sixteen tiles.
+  static const double _tileAboveArea = 16.0 * kMaskTileSide * kMaskTileSide;
 }
 
 /// Interns the [Path] of a device-space rounded rectangle by its geometry.

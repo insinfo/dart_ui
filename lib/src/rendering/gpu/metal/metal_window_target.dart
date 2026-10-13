@@ -149,6 +149,17 @@ final class MetalWindowTarget
   /// after a timeout is the timed-out frame's.
   int _abandonedFrames = 0;
 
+  /// Command buffers committed with [_handler] whose handler has not run yet.
+  ///
+  /// A window can close with a frame on the GPU - a menu dismissed by the
+  /// very click its last frame answered, measured on the embedded macOS
+  /// backend, where closing a popup is synchronous. Metal still calls the
+  /// block then, so [onDispose] leaves the block and its callable alive
+  /// until this reaches zero; freeing them first crashed the process on
+  /// Metal's completion thread.
+  int _inFlight = 0;
+  bool _releaseWhenIdle = false;
+
   NativeCallable<Void Function(Pointer<Void>, Pointer<ObjCObject>)>? _callable;
   ObjCBlock? _completedHandler;
 
@@ -185,6 +196,11 @@ final class MetalWindowTarget
   /// Delivered on the isolate by `NativeCallable.listener`, not on Metal's
   /// thread, which is what makes touching a Dart field here legal at all.
   void _onGpuFinished(Pointer<Void> block, Pointer<ObjCObject> commandBuffer) {
+    if (_inFlight > 0) _inFlight--;
+    if (_releaseWhenIdle) {
+      if (_inFlight == 0) _releaseHandler();
+      return;
+    }
     if (_abandonedFrames > 0) {
       _abandonedFrames--;
       return;
@@ -278,6 +294,7 @@ final class MetalWindowTarget
     _frameDone = done;
     try {
       target.submit(clearColor: _pendingClear, completedHandler: _handler);
+      _inFlight++;
     } on MetalError catch (error) {
       _frameDone = null;
       return PresentResult(
@@ -476,10 +493,19 @@ final class MetalWindowTarget
   @override
   void onDispose() {
     _releaseSlots();
-    // The block last, and only here: it is marked global so nothing copied it,
-    // which means freeing it while Metal could still call it is a
-    // use-after-free on Metal's own completion thread - the least debuggable
-    // place in the process. By here every frame has completed or timed out.
+    // The block last, and only once Metal can no longer call it: it is marked
+    // global so nothing copied it, which means freeing it while Metal could
+    // still call it is a use-after-free on Metal's own completion thread -
+    // the least debuggable place in the process. A frame still on the GPU
+    // (see [_inFlight]) hands the release to its handler.
+    if (_inFlight > 0) {
+      _releaseWhenIdle = true;
+      return;
+    }
+    _releaseHandler();
+  }
+
+  void _releaseHandler() {
     _completedHandler?.dispose();
     _completedHandler = null;
     _callable?.close();

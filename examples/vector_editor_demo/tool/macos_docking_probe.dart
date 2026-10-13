@@ -38,7 +38,7 @@ Future<void> main(List<String> args) async {
     send('down', from);
     for (var i = 1; i <= 12; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 30));
-      send('drag', Offset.lerp(from, to, i / 12));
+      send('drag', Offset.lerp(from, to, i / 12)!);
     }
     await Future<void>.delayed(const Duration(milliseconds: 100));
     send('up', to);

@@ -221,7 +221,7 @@ void main() {
     test('holds a shared edge fixed while the rest moves', () {
       const from = Rect.fromLTRB(10, 0, 20, 100);
       const to = Rect.fromLTRB(10, 0, 60, 100);
-      final middle = Rect.lerp(from, to, 0.5);
+      final middle = Rect.lerp(from, to, 0.5)!;
 
       expect(middle.left, 10);
       expect(middle.right, closeTo(40, 1e-12));

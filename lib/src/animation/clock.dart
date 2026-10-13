@@ -115,6 +115,12 @@ final class AnimationClock {
   /// The scheduler this clock is attached to, or null.
   FrameScheduler? get scheduler => _scheduler;
 
+  /// Whether [tick] is running right now, so [timestamp] is the current
+  /// frame's. A `Ticker` started from inside a tick - a status listener that
+  /// turns an animation round - takes this frame as its start, as Flutter's
+  /// does, instead of losing a frame to a fresh baseline.
+  bool get inTick => _ticking;
+
   /// Registers [ticker]. Registering the same ticker twice is an error, not a
   /// no-op: a double registration would advance it twice per frame, which is
   /// exactly the bug the once-per-frame test exists to catch.

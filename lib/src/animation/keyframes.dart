@@ -176,13 +176,19 @@ abstract final class KeyframeTracks {
       );
 
   static KeyframeTrack<Offset> ofOffset(List<Keyframe<Offset>> keyframes) =>
-      KeyframeTrack<Offset>(keyframes: keyframes, lerp: Offset.lerp);
+      KeyframeTrack<Offset>(
+          keyframes: keyframes,
+          lerp: (Offset a, Offset b, double t) => Offset.lerp(a, b, t)!);
 
   static KeyframeTrack<Size> ofSize(List<Keyframe<Size>> keyframes) =>
-      KeyframeTrack<Size>(keyframes: keyframes, lerp: Size.lerp);
+      KeyframeTrack<Size>(
+          keyframes: keyframes,
+          lerp: (Size a, Size b, double t) => Size.lerp(a, b, t)!);
 
   static KeyframeTrack<Rect> ofRect(List<Keyframe<Rect>> keyframes) =>
-      KeyframeTrack<Rect>(keyframes: keyframes, lerp: Rect.lerp);
+      KeyframeTrack<Rect>(
+          keyframes: keyframes,
+          lerp: (Rect a, Rect b, double t) => Rect.lerp(a, b, t)!);
 
   /// An `0xAARRGGBB` track. See [ColorTween] for why the interpolation is
   /// premultiplied.

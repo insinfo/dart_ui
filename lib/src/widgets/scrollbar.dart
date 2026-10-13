@@ -43,9 +43,11 @@ library;
 
 import 'dart:math' as math;
 
+import '../foundation/change_notifier.dart';
 import '../geometry/offset.dart';
 import '../geometry/path.dart';
 import '../geometry/rect.dart';
+import '../geometry/rrect.dart';
 import '../geometry/size.dart';
 import '../graphics/color.dart';
 import '../graphics/display_list.dart';
@@ -62,6 +64,7 @@ import 'element.dart';
 import 'gesture_detector.dart';
 import 'pointer_router.dart';
 import 'proxy.dart';
+import 'scroll_controller.dart';
 import 'theme.dart';
 import 'widget.dart';
 
@@ -127,19 +130,38 @@ final class TwoDimensionalScrollbar extends StatelessWidget {
       );
 }
 
-/// Overlays a scrollbar on [child], driven by [position].
+/// Overlays a scrollbar on [child], driven by [position] or [controller].
 ///
 /// The child is laid out at full size and the bar is painted over it rather
 /// than beside it. That is deliberate: insetting the content by the bar's
 /// thickness makes the content reflow the instant a list becomes scrollable,
 /// which is how a list one item too long ends up flickering between two widths.
+///
+/// ## Flutter's parameters
+///
+/// `controller:`, `thumbVisibility:`, `trackVisibility:`, `thickness:`,
+/// `radius:` and `interactive:` mean what they mean in Flutter. The one
+/// difference: Flutter's scrollbar with no controller finds the scroll view
+/// below it through its notifications and the `PrimaryScrollController`;
+/// this one needs to be told, through [controller] (the same
+/// `ScrollController` given to the scroll view, or a `ScrollPosition`) or
+/// [position]. Neither is an [ArgumentError] on the first build.
+///
+/// A `ScrollController` has no position until the view below attaches to it,
+/// which happens while that view is built - after this widget. Until then the
+/// bar is not drawn; it appears with the view's first layout, when the
+/// position reports its geometry through the controller.
 final class Scrollbar extends StatefulWidget {
   const Scrollbar({
     super.key,
-    required this.position,
+    this.position,
+    this.controller,
     required this.child,
+    this.thumbVisibility,
+    this.trackVisibility,
     this.visibility = ScrollbarVisibility.always,
     this.thickness,
+    this.radius,
     this.minThumbExtent,
     this.interactive = true,
     this.fadeDelay = const Duration(milliseconds: 600),
@@ -148,9 +170,41 @@ final class Scrollbar extends StatefulWidget {
     this.reverse = false,
   });
 
-  final ScrollPosition position;
+  /// The position the bar shows and drives - this framework's name. Give
+  /// this or [controller].
+  final ScrollPosition? position;
+
+  /// Flutter's: the `ScrollController` the scroll view below was given, whose
+  /// attached position the bar follows. A `ScrollPosition` is accepted too,
+  /// as every scroll view's `controller:` accepts one.
+  final ScrollPositionSource? controller;
+
   final Widget child;
+
+  /// Flutter's: true keeps the thumb on screen whenever the content can
+  /// scroll ([ScrollbarVisibility.always]); false shows it only while
+  /// scrolling ([ScrollbarVisibility.whenScrolling]). Null defers to
+  /// [visibility].
+  final bool? thumbVisibility;
+
+  /// Flutter's: whether the track is painted behind the thumb even when the
+  /// pointer is not over it. Null defers to the theme's
+  /// `ScrollbarThemeData.trackVisibility`.
+  final bool? trackVisibility;
+
+  /// This framework's policy for when the bar is on screen; see
+  /// [ScrollbarVisibility]. [thumbVisibility], when given, wins.
   final ScrollbarVisibility visibility;
+
+  /// [thumbVisibility] when given, otherwise [visibility].
+  ScrollbarVisibility get effectiveVisibility => switch (thumbVisibility) {
+        null => visibility,
+        true => ScrollbarVisibility.always,
+        false => ScrollbarVisibility.whenScrolling,
+      };
+
+  /// The thumb's (and track's) corner radius. Null takes the theme's.
+  final Radius? radius;
 
   /// Whether offset zero is at the bottom (or right) of the track, for a view
   /// whose content starts there - `CustomScrollView(reverse: true)`.
@@ -167,6 +221,8 @@ final class Scrollbar extends StatefulWidget {
   final double? minThumbExtent;
 
   /// Whether the thumb answers the pointer. False makes it an indicator.
+  /// Flutter's type is `bool?`; null there means true on desktop, which is
+  /// what this default is.
   final bool interactive;
 
   /// How long after the last movement the fade begins.
@@ -192,22 +248,35 @@ final class _ScrollbarState extends State<Scrollbar> {
   double _opacity = 1.0;
   bool _fading = false;
 
+  /// What this state listens to: the [Scrollbar.controller] when it is a
+  /// `ScrollController` (which relays every attached position's changes,
+  /// including the first layout of a position attached after this build),
+  /// otherwise the position itself.
+  Listenable? _listened;
+
+  /// The position drawn by the last build, or null while a controller has no
+  /// client yet.
+  ScrollPosition? _position;
+
   @override
   void initState() {
     super.initState();
     // Hidden until something moves, but only under a policy that can ever show
     // it again. The dispatcher is not known until the first build, so the
     // decision is re-taken there.
-    _opacity = widget.visibility == ScrollbarVisibility.whenScrolling ? 0 : 1;
-    widget.position.addListener(_onScrolled);
+    _opacity =
+        widget.effectiveVisibility == ScrollbarVisibility.whenScrolling ? 0 : 1;
+    _listen();
   }
 
   @override
   void didUpdateWidget(Scrollbar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.position, widget.position)) {
-      oldWidget.position.removeListener(_onScrolled);
-      widget.position.addListener(_onScrolled);
+    if (!identical(oldWidget.position, widget.position) ||
+        !identical(oldWidget.controller, widget.controller)) {
+      _listened?.removeListener(_onChanged);
+      _listened = null;
+      _listen();
     }
   }
 
@@ -215,17 +284,82 @@ final class _ScrollbarState extends State<Scrollbar> {
   void dispose() {
     _timer?.cancel();
     _timer = null;
-    widget.position.removeListener(_onScrolled);
+    _listened?.removeListener(_onChanged);
+    _listened = null;
     super.dispose();
+  }
+
+  /// [Scrollbar.position] or [Scrollbar.controller], checked.
+  ScrollPositionSource get _source {
+    final ScrollPosition? position = widget.position;
+    final ScrollPositionSource? controller = widget.controller;
+    if (position != null &&
+        controller != null &&
+        !identical(position, controller)) {
+      throw ArgumentError(
+        'Scrollbar takes position: or controller:, not both: two sources for '
+        'one bar is a silent winner',
+      );
+    }
+    final ScrollPositionSource? source = position ?? controller;
+    if (source == null) {
+      throw ArgumentError(
+        'Scrollbar needs a controller: (the ScrollController given to the '
+        'scroll view below it) or a position:. Unlike Flutter, it does not '
+        'find the scroll view through PrimaryScrollController',
+      );
+    }
+    if (source is! ScrollPosition && source is! ScrollController) {
+      throw ArgumentError.value(source, 'controller',
+          'must be a ScrollController or a ScrollPosition');
+    }
+    return source;
+  }
+
+  void _listen() {
+    final ScrollPositionSource source = _source;
+    final Listenable listened =
+        source is ScrollController ? source : source as ScrollPosition;
+    listened.addListener(_onChanged);
+    _listened = listened;
+  }
+
+  /// The position to draw: the source itself, or the controller's first
+  /// attached position, or null while it has none.
+  ScrollPosition? _resolve() {
+    final ScrollPositionSource source = _source;
+    if (source is ScrollPosition) return source;
+    final ScrollController controller = source as ScrollController;
+    return controller.hasClients ? controller.positions.first : null;
   }
 
   /// Whether this scrollbar can fade, which needs both a policy and a clock.
   bool get _canFade =>
-      widget.visibility == ScrollbarVisibility.whenScrolling &&
+      widget.effectiveVisibility == ScrollbarVisibility.whenScrolling &&
       _dispatcher != null;
 
-  void _onScrolled(ScrollPosition position) {
-    if (widget.visibility != ScrollbarVisibility.whenScrolling) return;
+  /// The offset last seen by [_onChanged], so that a change of geometry
+  /// alone - the first layout, a window resize - does not count as the
+  /// scrolling that [ScrollbarVisibility.whenScrolling] waits for.
+  double? _lastPixels;
+
+  void _onChanged() {
+    if (!mounted) return;
+    // A controller's first client appears during the scroll view's build and
+    // reports in at its first layout; that is when the bar can be drawn.
+    final ScrollPosition? position = _resolve();
+    if (!identical(position, _position)) setState(() {});
+    final double? pixels = position?.pixels;
+    final double? last = _lastPixels;
+    _lastPixels = pixels;
+    if (last == null || pixels == last) return;
+    _onScrolled();
+  }
+
+  void _onScrolled() {
+    if (widget.effectiveVisibility != ScrollbarVisibility.whenScrolling) {
+      return;
+    }
     if (!mounted) return;
     _timer?.cancel();
     _timer = null;
@@ -265,10 +399,50 @@ final class _ScrollbarState extends State<Scrollbar> {
     _dispatcher = widget.dispatcher ?? GestureScope.of(context);
     // A policy that cannot fade shows the bar instead of hiding it forever.
     if (!_canFade && _opacity < 1 && !_fading) _opacity = 1;
-    if (widget.visibility == ScrollbarVisibility.never || _opacity <= 0) {
-      return widget.child;
+    final ScrollPosition? position = _position = _resolve();
+    _lastPixels ??= position?.pixels;
+    final List<ScrollPositionSource> covered =
+        _ScrollbarScope.sourcesOf(context);
+    // The same Stack whether or not the bar is up, so the child keeps its
+    // element - and a scroll view below keeps its position - when the bar
+    // fades in or a controller's first client makes it appear.
+    final Widget stack = Stack(
+      children: <Widget>[
+        widget.child,
+        if (position != null &&
+            widget.effectiveVisibility != ScrollbarVisibility.never &&
+            _opacity > 0 &&
+            !_coveredByAncestor(covered, position))
+          _bar(context, position),
+      ],
+    );
+    return _ScrollbarScope(
+      sources: <ScrollPositionSource>[...covered, _source],
+      child: stack,
+    );
+  }
+
+  /// Whether an enclosing [Scrollbar] already shows [position].
+  ///
+  /// A scroll view here draws its own bar, as Flutter's desktop scroll
+  /// behaviour does; an app that wraps the view in `Scrollbar(controller:)`
+  /// asked for that bar to be this one, with its own thickness and radius.
+  /// The inner one stands down rather than drawing a second thumb over it.
+  static bool _coveredByAncestor(
+    List<ScrollPositionSource> covered,
+    ScrollPosition position,
+  ) {
+    for (final ScrollPositionSource source in covered) {
+      if (identical(source, position)) return true;
+      if (source is ScrollController && source.positions.contains(position)) {
+        return true;
+      }
     }
-    final bool vertical = widget.position.axis == ScrollAxis.vertical;
+    return false;
+  }
+
+  Widget _bar(BuildContext context, ScrollPosition position) {
+    final bool vertical = position.axis == ScrollAxis.vertical;
     final ThemeData theme = Theme.of(context);
     final ScrollbarThemeData scrollbarTheme = theme.scrollbarTheme;
     final double thickness = widget.thickness ?? scrollbarTheme.thickness;
@@ -278,32 +452,47 @@ final class _ScrollbarState extends State<Scrollbar> {
     );
     final double hitExtent =
         hoveredThickness + scrollbarTheme.crossAxisMargin * 2;
-    return Stack(
-      children: <Widget>[
-        widget.child,
-        Positioned(
-          left: vertical ? null : 0,
-          right: 0,
-          top: vertical ? 0 : null,
-          bottom: 0,
-          width: vertical ? hitExtent : null,
-          height: vertical ? null : hitExtent,
-          child: Opacity(
-            opacity: _opacity,
-            child: _ScrollbarTrack(
-              position: widget.position,
-              theme: theme,
-              thickness: thickness,
-              minThumbExtent:
-                  widget.minThumbExtent ?? scrollbarTheme.minThumbLength,
-              interactive: widget.interactive,
-              reverse: widget.reverse,
-            ),
-          ),
+    return Positioned(
+      left: vertical ? null : 0,
+      right: 0,
+      top: vertical ? 0 : null,
+      bottom: 0,
+      width: vertical ? hitExtent : null,
+      height: vertical ? null : hitExtent,
+      child: Opacity(
+        opacity: _opacity,
+        child: _ScrollbarTrack(
+          position: position,
+          theme: theme,
+          thickness: thickness,
+          radius: widget.radius,
+          trackVisibility: widget.trackVisibility,
+          minThumbExtent:
+              widget.minThumbExtent ?? scrollbarTheme.minThumbLength,
+          interactive: widget.interactive,
+          reverse: widget.reverse,
         ),
-      ],
+      ),
     );
   }
+}
+
+/// The sources of every [Scrollbar] above, so one below can tell that its
+/// position is already shown. See `_ScrollbarState._coveredByAncestor`.
+final class _ScrollbarScope extends InheritedWidget {
+  const _ScrollbarScope({required this.sources, required super.child});
+
+  final List<ScrollPositionSource> sources;
+
+  static List<ScrollPositionSource> sourcesOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<_ScrollbarScope>()?.sources ??
+      const <ScrollPositionSource>[];
+
+  @override
+  bool updateShouldNotify(_ScrollbarScope oldWidget) =>
+      oldWidget.sources.length != sources.length ||
+      Iterable<int>.generate(sources.length)
+          .any((int i) => !identical(oldWidget.sources[i], sources[i]));
 }
 
 /// The track and thumb alone, with no child: [SingleChildRenderObjectWidget]
@@ -313,6 +502,8 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
     required this.position,
     required this.theme,
     required this.thickness,
+    required this.radius,
+    required this.trackVisibility,
     required this.minThumbExtent,
     required this.interactive,
     required this.reverse,
@@ -321,6 +512,8 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
   final ScrollPosition position;
   final ThemeData theme;
   final double thickness;
+  final Radius? radius;
+  final bool? trackVisibility;
   final double minThumbExtent;
   final bool interactive;
   final bool reverse;
@@ -329,6 +522,8 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
   RenderScrollbar createRenderObject(BuildContext context) => RenderScrollbar(
         position: position,
         thickness: thickness,
+        radius: radius,
+        trackVisibility: trackVisibility,
         minThumbExtent: minThumbExtent,
         interactive: interactive,
         reverse: reverse,
@@ -342,6 +537,8 @@ final class _ScrollbarTrack extends SingleChildRenderObjectWidget {
     object
       ..position = position
       ..thickness = thickness
+      ..radius = radius
+      ..trackVisibility = trackVisibility
       ..minThumbExtent = minThumbExtent
       ..interactive = interactive
       ..reverse = reverse
@@ -356,12 +553,16 @@ final class RenderScrollbar extends RenderBox
   RenderScrollbar({
     required ScrollPosition position,
     double thickness = 6,
+    Radius? radius,
+    bool? trackVisibility,
     double minThumbExtent = 16.0,
     bool interactive = true,
     bool reverse = false,
   })  : _position = position,
         _reverse = reverse,
         _thickness = thickness,
+        _radius = radius,
+        _trackVisibility = trackVisibility,
         _minThumbExtent = minThumbExtent,
         _interactive = interactive {
     _position.addListener(_onScrolled);
@@ -369,6 +570,8 @@ final class RenderScrollbar extends RenderBox
 
   ScrollPosition _position;
   double _thickness;
+  Radius? _radius;
+  bool? _trackVisibility;
   double _minThumbExtent;
   bool _interactive;
   bool _reverse;
@@ -393,6 +596,25 @@ final class RenderScrollbar extends RenderBox
   set thickness(double value) {
     if (value == _thickness) return;
     _thickness = value;
+    markNeedsPaint();
+  }
+
+  /// The thumb's and track's corner radius; null takes the theme's.
+  Radius? get radius => _radius;
+
+  set radius(Radius? value) {
+    if (value == _radius) return;
+    _radius = value;
+    markNeedsPaint();
+  }
+
+  /// Whether the track is painted while the pointer is not over the bar;
+  /// null takes the theme's `trackVisibility`.
+  bool? get trackVisibility => _trackVisibility;
+
+  set trackVisibility(bool? value) {
+    if (value == _trackVisibility) return;
+    _trackVisibility = value;
     markNeedsPaint();
   }
 
@@ -578,12 +800,15 @@ final class RenderScrollbar extends RenderBox
             usableTrackExtent,
             visualThickness,
           );
-    if (config.trackVisibility || active) {
+    final double radiusX = _radius?.x ?? config.radius;
+    final double radiusY = _radius?.y ?? config.radius;
+    if ((_trackVisibility ?? config.trackVisibility) || active) {
       _paintRounded(
         list,
         track,
         config.trackColor ?? theme.disabledSurface.withAlpha(0x38),
-        config.radius,
+        radiusX,
+        radiusY,
       );
     }
     if (buttonExtent > 0) {
@@ -608,7 +833,8 @@ final class RenderScrollbar extends RenderBox
       active
           ? config.hoveredThumbColor ?? theme.foreground.withAlpha(0xB8)
           : config.thumbColor ?? theme.foregroundSecondary.withAlpha(0x78),
-      config.radius,
+      radiusX,
+      radiusY,
     );
   }
 
@@ -650,8 +876,8 @@ final class RenderScrollbar extends RenderBox
     final Color fill = config.buttonColor ??
         config.trackColor ??
         theme.disabledSurface.withAlpha(0x88);
-    _paintRounded(list, startButton, fill, config.radius);
-    _paintRounded(list, endButton, fill, config.radius);
+    _paintRounded(list, startButton, fill, config.radius, config.radius);
+    _paintRounded(list, endButton, fill, config.radius, config.radius);
     final Color icon = config.buttonIconColor ?? theme.foregroundSecondary;
     _paintArrow(list, startButton, icon, towardsEnd: false);
     _paintArrow(list, endButton, icon, towardsEnd: true);
@@ -691,19 +917,17 @@ final class RenderScrollbar extends RenderBox
     DisplayList list,
     Rect rect,
     Color color,
-    double configuredRadius,
+    double radiusX,
+    double radiusY,
   ) {
-    final double radius = math.min(
-      configuredRadius,
-      math.min(rect.width, rect.height) / 2,
-    );
+    final double half = math.min(rect.width, rect.height) / 2;
     list.drawRRectUniform(
       rect.left,
       rect.top,
       rect.right,
       rect.bottom,
-      radius,
-      radius,
+      math.max(0, math.min(radiusX, half)),
+      math.max(0, math.min(radiusY, half)),
       list.addPaint(colorArgb: color.value, antiAlias: true),
     );
   }

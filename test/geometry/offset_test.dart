@@ -75,14 +75,15 @@ void main() {
     });
 
     test('halfway is the midpoint', () {
-      final middle = Offset.lerp(const Offset(0, 10), const Offset(10, 20), .5);
+      final middle =
+          Offset.lerp(const Offset(0, 10), const Offset(10, 20), .5)!;
 
       expect(middle.dx, closeTo(5, 1e-12));
       expect(middle.dy, closeTo(15, 1e-12));
     });
 
     test('extrapolates past the endpoints, for overshooting curves', () {
-      final beyond = Offset.lerp(Offset.zero, const Offset(10, -10), 1.5);
+      final beyond = Offset.lerp(Offset.zero, const Offset(10, -10), 1.5)!;
 
       expect(beyond.dx, closeTo(15, 1e-12));
       expect(beyond.dy, closeTo(-15, 1e-12));

@@ -427,9 +427,10 @@ void main() {
   });
 
   group('a shape larger than the atlas', () {
-    test('is tiled, contiguously and without overlap', () {
-      // Tiling and not a CPU fallback: this sink has no surface to fall back
-      // to. The atlas's own budget is the tile size.
+    test('a whole-pixel rectangle is covered by solid tiles, no mask', () {
+      // Tiled and classified (gpu_mask_tiling.dart): every tile of a shape
+      // whose edges lie on whole pixels is coverage 0 or 1, drawn by the
+      // solid pipeline, so nothing is rasterised into the atlas at all.
       final atlas = GpuMaskAtlas();
       final sink = _sink(maskAtlas: atlas);
       const Rect clip = Rect.fromLTRB(0, 0, 3000, 300);
@@ -437,45 +438,45 @@ void main() {
       sink.drawDevicePath(_rectPath(0, 0, 3000, 300), Transform2D.identity,
           clip, _paint(antiAlias: false));
 
-      final int tiles = (3000 / atlas.maxMaskWidth).ceil();
-      expect(tiles, 3);
-      expect(sink.batcher.quadCount, tiles);
-      expect(atlas.rasterizationCount, tiles);
-
-      // Contiguous: a gap would show as a hairline through the shape and an
+      expect(atlas.rasterizationCount, 0);
+      // Contiguous and without overlap: the quads' areas add up to the
+      // rectangle's, and none leaves it. A gap would show as a hairline, an
       // overlap would double the coverage along it.
-      var expectedLeft = 0.0;
-      for (var i = 0; i < tiles; i++) {
+      var area = 0.0;
+      for (var i = 0; i < sink.batcher.quadCount; i++) {
         final quad = _quadAt(sink, i);
-        expect(quad[0], expectedLeft);
-        expect(quad[1], 0);
-        expect(quad[3], 300);
-        expectedLeft = quad[2];
+        expect(quad[0], greaterThanOrEqualTo(0));
+        expect(quad[1], greaterThanOrEqualTo(0));
+        expect(quad[2], lessThanOrEqualTo(3000));
+        expect(quad[3], lessThanOrEqualTo(300));
+        area += (quad[2] - quad[0]) * (quad[3] - quad[1]);
       }
-      expect(expectedLeft, 3000);
+      expect(area, 3000 * 300);
       // One batch: every tile shares pipeline, texture, blend and clip.
       expect(sink.batcher.batchCount, 1);
     });
 
     test('a tile that does not fit runs the flush protocol like any mask', () {
-      // Three tiles of 254x100 into a 256x256 atlas: two stack as shelves of
-      // 102 rows each, and the third has nowhere to go while the first two are
-      // pinned to this frame.
+      // A diagonal crosses every tile of its band, so every one of them is a
+      // 64x64 mask - more than a 256x256 atlas holds while they are pinned
+      // to this frame.
       final atlas = GpuMaskAtlas(width: 256, height: 256);
       var flushes = 0;
       final sink = _sink(maskAtlas: atlas, onAtlasFlush: () => flushes++);
       const Rect clip = Rect.fromLTRB(0, 0, 600, 100);
+      final Path wedge = Path()
+        ..moveTo(0, 0)
+        ..lineTo(600, 0)
+        ..lineTo(600, 100)
+        ..close();
 
-      sink.drawDevicePath(_rectPath(0, 0, 600, 100), Transform2D.identity, clip,
-          _paint(antiAlias: false));
+      sink.drawDevicePath(wedge, Transform2D.identity, clip, _paint());
 
-      expect(sink.batcher.quadCount, 3, reason: 'no tile was dropped');
-      expect(flushes, 1);
-      // The flush split the tiles across two draw calls, which is the point of
-      // closing the batch: the first two sample texels the third overwrote.
-      expect(sink.batcher.batchCount, 2);
-      expect(sink.batcher.batchAt(0).quadCount, 2);
-      expect(sink.batcher.batchAt(1).quadCount, 1);
+      expect(flushes, greaterThan(0));
+      expect(atlas.rasterizationCount, greaterThan(9));
+      // The flush closed the batch: tiles before it sample texels the ones
+      // after it overwrote.
+      expect(sink.batcher.batchCount, greaterThan(1));
     });
   });
 }

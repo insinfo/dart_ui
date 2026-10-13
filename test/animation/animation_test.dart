@@ -250,8 +250,10 @@ void main() {
     });
 
     test('nonsense construction fails loudly', () {
+      // A zero duration is legal, as in Flutter: every run lands at once.
       expect(
-        () => AnimationController(clock: clock, duration: Duration.zero),
+        () => AnimationController(
+            clock: clock, duration: const Duration(microseconds: -1)),
         throwsArgumentError,
       );
       expect(

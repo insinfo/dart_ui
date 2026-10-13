@@ -213,6 +213,23 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'platform',
     'rendering',
   ],
+  // Material Design, published by `lib/material.dart`: a library of widgets
+  // built the way an application builds them, above the widgets layer and
+  // beside `app` (runApp comes from the public library, not from here).
+  'material': <String>[
+    'animation',
+    'foundation',
+    'geometry',
+    'gestures',
+    'graphics',
+    'layout',
+    'platform',
+    'rendering',
+    'scheduler',
+    'semantics',
+    'text',
+    'widgets',
+  ],
   // The application shell sits above everything, which is precisely why it is
   // listed last and why `backends` is still absent from its row: `runApp` has
   // to assemble a backend without being allowed to name one, and the entries

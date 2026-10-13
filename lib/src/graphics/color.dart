@@ -6,8 +6,13 @@ import 'dart:math' as math;
 import 'package:meta/meta.dart';
 
 /// A colour in the sRGB colour space.
+///
+/// Open to subclassing, as Flutter's is, for one reason: a [ColorSwatch] - and
+/// through it Material's `MaterialColor` - *is* a colour (`Colors.blue` paints
+/// as its primary shade) that also carries its other shades
+/// (`Colors.blue[700]`, `Colors.blue.shade700`).
 @immutable
-final class Color {
+class Color {
   const Color(this.value);
 
   const Color.fromARGB(int alpha, int red, int green, int blue)
@@ -99,6 +104,45 @@ final class Color {
   @override
   String toString() =>
       'Color(0x${value.toRadixString(16).padLeft(8, '0').toUpperCase()})';
+}
+
+/// A colour with a set of related shades - Flutter's `ColorSwatch`.
+///
+/// The swatch paints as its primary [value]; `swatch[index]` reads one of the
+/// others. The keys are whatever the family uses: Material's 50..900 and
+/// 100/200/400/700 for its accents.
+@immutable
+class ColorSwatch<T> extends Color {
+  const ColorSwatch(super.primary, this._swatch);
+
+  final Map<T, Color> _swatch;
+
+  /// The shade at [key], or null when the swatch has none.
+  Color? operator [](T key) => _swatch[key];
+
+  /// The keys this swatch has shades for.
+  Iterable<T> get keys => _swatch.keys;
+
+  @override
+  bool operator ==(Object other) =>
+      other is ColorSwatch<T> &&
+      other.value == value &&
+      _sameShades(other._swatch, _swatch);
+
+  static bool _sameShades<T>(Map<T, Color> a, Map<T, Color> b) {
+    if (identical(a, b)) return true;
+    if (a.length != b.length) return false;
+    for (final MapEntry<T, Color> e in a.entries) {
+      if (b[e.key] != e.value) return false;
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hash(value, Object.hashAll(_swatch.values));
+
+  @override
+  String toString() => '$runtimeType(primary value: ${super.toString()})';
 }
 
 /// Common opaque colours, matching Flutter's familiar names.
