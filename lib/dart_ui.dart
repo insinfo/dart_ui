@@ -267,6 +267,7 @@ export 'src/widgets/implicit_animation.dart';
 export 'src/widgets/info_bar.dart';
 export 'src/widgets/keyboard_router.dart';
 export 'src/widgets/layout_builder.dart';
+export 'src/widgets/layout_widgets.dart';
 export 'src/widgets/list_box.dart';
 export 'src/widgets/listenable_builders.dart';
 export 'src/widgets/localizations.dart';
