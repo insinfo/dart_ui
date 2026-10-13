@@ -24,13 +24,13 @@ library;
 
 import 'dart:math' as math;
 
-import '../../geometry/offset.dart';
-import '../../geometry/path.dart';
-import '../../geometry/rect.dart';
-import '../../graphics/vector/bezier.dart';
-import '../../graphics/vector/primitives.dart';
-import '../../graphics/vector/selectable_objects.dart';
-import '../../graphics/vector/structural_objects.dart';
+import '../geometry/offset.dart';
+import '../geometry/path.dart';
+import '../geometry/rect.dart';
+import '../graphics/vector/bezier.dart';
+import '../graphics/vector/primitives.dart';
+import '../graphics/vector/selectable_objects.dart';
+import '../graphics/vector/structural_objects.dart';
 
 /// Types of interactive transform handles.
 enum TransformHandle {

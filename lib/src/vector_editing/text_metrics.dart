@@ -23,16 +23,16 @@
 /// clickable area of a text every time the user zoomed.
 library;
 
-import '../../geometry/offset.dart';
-import '../../geometry/path.dart';
-import '../../graphics/color.dart';
-import '../../graphics/vector/constants.dart';
-import '../../graphics/vector/primitives.dart';
-import '../../graphics/vector/style.dart';
-import '../../rendering/text/font_registry.dart';
-import '../../rendering/text/text_painter.dart';
-import '../../text/grapheme.dart';
-import '../../text/typeface.dart';
+import '../geometry/offset.dart';
+import '../geometry/path.dart';
+import '../graphics/color.dart';
+import '../graphics/vector/constants.dart';
+import '../graphics/vector/primitives.dart';
+import '../graphics/vector/style.dart';
+import '../rendering/text/font_registry.dart';
+import '../rendering/text/text_painter.dart';
+import '../text/grapheme.dart';
+import '../text/typeface.dart';
 
 /// Measures [VectorText] with the registry's fonts.
 abstract final class VectorTextMetrics {

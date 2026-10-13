@@ -1,9 +1,12 @@
-/// Menus described by command id, turned into whatever shows them.
+/// Menus described by command id: data, with no widget in it.
+///
+/// Where a command appears is a separate decision from what it does - the
+/// way VS Code keeps a menu registry apart from its command registry - so a
+/// menu bar, a context menu, an automation client listing the menus and a
+/// parity count all read the same description. Turning one into widgets is
+/// `MenuBuilder`'s job, in the widget layer.
 library;
 
-import '../widgets/icon.dart' show IconData;
-import '../widgets/menu_anchor.dart' show MenuController;
-import '../widgets/platform_menu_bar.dart';
 import 'command.dart';
 import 'command_registry.dart';
 
@@ -42,12 +45,15 @@ final class MenuSeparator extends MenuSpecEntry {
 }
 
 /// A menu of the bar, or a submenu.
+///
+/// [id] names it for whatever draws it - an icon lookup, a test - since a
+/// submenu runs no command of its own.
 final class SubmenuSpec extends MenuSpecEntry {
-  const SubmenuSpec(this.label, this.children, {this.icon});
+  const SubmenuSpec(this.label, this.children, {this.id});
 
   final String label;
   final List<MenuSpecEntry> children;
-  final IconData? icon;
+  final String? id;
 }
 
 /// One row of a flattened menu: where it is, what it runs, and its state.
@@ -84,112 +90,53 @@ final class MenuRow {
       };
 }
 
-/// Turns menu descriptions into the menus a [PlatformMenuBar], a
-/// [ContextMenuArea] or an automation client uses, against one registry.
-final class MenuBuilder {
-  const MenuBuilder(this.registry);
-
-  final CommandRegistry registry;
-
-  /// The bar: one [PlatformMenu] per top-level [SubmenuSpec].
-  List<PlatformMenu> bar(
-    List<SubmenuSpec> menus, {
-    List<MenuController> controllers = const <MenuController>[],
-  }) =>
-      <PlatformMenu>[
-        for (var i = 0; i < menus.length; i++)
-          PlatformMenu(
-            label: menus[i].label,
-            icon: menus[i].icon,
-            controller: i < controllers.length ? controllers[i] : null,
-            children: entries(menus[i].children),
-          ),
-      ];
-
-  /// [children] as menu entries - for a context menu, or one menu's rows.
-  List<PlatformMenuEntry> entries(List<MenuSpecEntry> children) =>
-      <PlatformMenuEntry>[
-        for (final MenuSpecEntry entry in children) _entry(entry),
-      ];
-
-  PlatformMenuEntry _entry(MenuSpecEntry entry) {
-    switch (entry) {
-      case MenuSeparator():
-        return const PlatformMenuDivider();
-      case SubmenuSpec():
-        return PlatformMenu(
-          label: entry.label,
-          icon: entry.icon,
-          children: entries(entry.children),
-        );
-      case CommandItem():
-        final CommandSpec? command = registry[entry.command];
-        if (command == null) {
-          return PlatformMenuItem(
-            label: entry.label ?? entry.command,
-            onSelected: null,
-          );
-        }
-        final CommandArgs args = CommandArgs(entry.params);
-        final bool enabled = _guard(() => command.isEnabledWith(args), false);
-        return PlatformMenuItem(
-          label: entry.label ??
-              _guard(() => command.labelWith(args), command.label),
-          icon: command.icon,
-          shortcut: command.shortcut,
-          checked: entry.checkable
-              ? _guard(() => command.isCheckedWith(args), null)
-              : null,
-          onSelected: enabled
-              ? () => registry.execute(entry.command, entry.params)
-              : null,
-        );
-    }
-  }
-
-  /// Every command row under [menus], depth first, with its path.
-  List<MenuRow> flatten(List<MenuSpecEntry> menus) {
-    final List<MenuRow> rows = <MenuRow>[];
-    void walk(List<MenuSpecEntry> entries, List<String> path) {
-      for (final MenuSpecEntry entry in entries) {
-        switch (entry) {
-          case MenuSeparator():
-            break;
-          case SubmenuSpec():
-            walk(entry.children, <String>[...path, entry.label]);
-          case CommandItem():
-            final CommandSpec? command = registry[entry.command];
-            final CommandArgs args = CommandArgs(entry.params);
-            rows.add(MenuRow(
-              path: path,
-              label: entry.label ??
-                  (command == null
-                      ? entry.command
-                      : _guard(() => command.labelWith(args), command.label)),
-              command: entry.command,
-              registered: command != null,
-              enabled: command != null &&
-                  _guard(() => command.isEnabledWith(args), false),
-              checked: command == null
-                  ? null
-                  : _guard(() => command.isCheckedWith(args), null),
-              shortcut: command?.shortcut?.label(),
-            ));
-        }
+/// Every command row under [menus], depth first, with its path and its
+/// state in [registry].
+List<MenuRow> flattenMenus(
+  CommandRegistry registry,
+  List<MenuSpecEntry> menus,
+) {
+  final List<MenuRow> rows = <MenuRow>[];
+  void walk(List<MenuSpecEntry> entries, List<String> path) {
+    for (final MenuSpecEntry entry in entries) {
+      switch (entry) {
+        case MenuSeparator():
+          break;
+        case SubmenuSpec():
+          walk(entry.children, <String>[...path, entry.label]);
+        case CommandItem():
+          final CommandSpec? command = registry[entry.command];
+          final CommandArgs args = CommandArgs(entry.params);
+          rows.add(MenuRow(
+            path: path,
+            label: entry.label ??
+                (command == null
+                    ? entry.command
+                    : guardCommandState(
+                        () => command.labelWith(args), command.label)),
+            command: entry.command,
+            registered: command != null,
+            enabled: command != null &&
+                guardCommandState(() => command.isEnabledWith(args), false),
+            checked: command == null
+                ? null
+                : guardCommandState(() => command.isCheckedWith(args), null),
+            shortcut: command?.shortcut?.label(),
+          ));
       }
     }
-
-    walk(menus, const <String>[]);
-    return rows;
   }
 
-  /// A state getter that throws reads as [fallback]: a menu must build even
-  /// when one command's `enabled` has a bug.
-  static T _guard<T>(T Function() read, T fallback) {
-    try {
-      return read();
-    } on Object {
-      return fallback;
-    }
+  walk(menus, const <String>[]);
+  return rows;
+}
+
+/// A state getter that throws reads as [fallback]: a menu must build even
+/// when one command's `enabled` has a bug.
+T guardCommandState<T>(T Function() read, T fallback) {
+  try {
+    return read();
+  } on Object {
+    return fallback;
   }
 }

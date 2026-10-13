@@ -22,9 +22,9 @@
 /// unchanged, because for them it is correct.
 library;
 
-import '../../geometry/offset.dart';
-import '../../geometry/rect.dart';
-import '../../graphics/vector/structural_objects.dart';
+import '../geometry/offset.dart';
+import '../geometry/rect.dart';
+import '../graphics/vector/structural_objects.dart';
 import 'selection.dart';
 
 /// Which lines of a box a drag snap is allowed to move onto a guide.

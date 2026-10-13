@@ -19,6 +19,7 @@ library;
 
 import '../../graphics/vector/primitives.dart';
 import '../../platform/input_events.dart';
+import '../../vector_editing/text_metrics.dart';
 // The virtual-key codes the framework interprets itself live in `focus.dart`,
 // which is where every other control reads them from; a private copy here
 // would be a second source of truth for what Backspace is.
@@ -31,7 +32,6 @@ import '../focus.dart'
         logicalKeyEnd,
         logicalKeyHome;
 import '../text_editing.dart';
-import 'text_metrics.dart';
 
 /// A caret and a selection inside one [VectorText], while it is being edited.
 final class CanvasTextEditor {

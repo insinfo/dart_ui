@@ -131,6 +131,8 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   'widgets': <String>[
     'animation',
     'cdr',
+    'commands',
+    'vector_editing',
     'foundation',
     'geometry',
     'graphics',
@@ -179,11 +181,22 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'text',
     'widgets',
   ],
-  // Commands are what an application is made of, above the widgets that show
-  // them: a menu built from command ids is `PlatformMenu`s, and a shortcut is
-  // a `KeyGesture`. Nothing below may know commands exist - a widget takes a
-  // callback, and the application wires it to a command.
-  'commands': <String>['foundation', 'widgets'],
+  // Commands are what an application is made of, and they are not widgets:
+  // an engine with no window registers and runs them, and a shortcut is a
+  // platform `KeyGesture`. Widgets read them (a menu built from command ids)
+  // and so sit above them.
+  'commands': <String>['foundation', 'platform'],
+  // Editing a vector document - selecting, snapping, the tools' state
+  // machines, measuring text - without a widget: what an editor engine
+  // with no window is made of. The canvas widget sits above it.
+  'vector_editing': <String>[
+    'foundation',
+    'geometry',
+    'graphics',
+    'platform',
+    'rendering',
+    'text',
+  ],
   // Automation drives an application from outside: its commands, its
   // windows' input and their pixels. It is the top of the stack beside
   // `app`, and nothing imports it but an application.

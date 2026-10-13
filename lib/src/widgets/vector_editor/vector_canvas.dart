@@ -54,6 +54,11 @@ import '../../graphics/vector/structural_objects.dart';
 import '../../layout/render_box.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_window.dart' show SystemCursor;
+import '../../vector_editing/selection.dart';
+import '../../vector_editing/snap_manager.dart';
+import '../../vector_editing/text_metrics.dart';
+import '../../vector_editing/tool_controller.dart';
+import '../../vector_editing/tool_mode.dart';
 import '../element.dart';
 import '../focus.dart';
 import '../focus_scope.dart';
@@ -61,11 +66,7 @@ import '../keyboard_router.dart';
 import '../pointer_router.dart';
 import '../theme.dart';
 import '../widget.dart';
-import 'selection.dart';
-import 'snap_manager.dart';
 import 'text_edit_controller.dart';
-import 'text_metrics.dart';
-import 'tool_controller.dart';
 import 'vector_renderer.dart';
 
 /// How far, in device pixels, a press may travel and still be a click.

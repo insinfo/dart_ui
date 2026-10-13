@@ -121,14 +121,13 @@ final class WindowAutomation implements AutomationHost {
         final List<SubmenuSpec> Function()? bar = menus;
         if (bar == null) return const <Object?>[];
         return <Object?>[
-          for (final MenuRow row in MenuBuilder(registry).flatten(bar()))
-            row.toJson(),
+          for (final MenuRow row in flattenMenus(registry, bar())) row.toJson(),
         ];
       case 'ui.contextMenu.list':
         final List<MenuSpecEntry> Function()? context = contextMenu;
         if (context == null) return const <Object?>[];
         return <Object?>[
-          for (final MenuRow row in MenuBuilder(registry).flatten(context()))
+          for (final MenuRow row in flattenMenus(registry, context()))
             row.toJson(),
         ];
       case 'ui.inspect':

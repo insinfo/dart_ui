@@ -2,16 +2,16 @@
 ///
 library;
 
-import '../../geometry/offset.dart';
-import '../../geometry/rect.dart';
-import '../../graphics/vector/constants.dart';
-import '../../graphics/vector/doc_methods.dart';
-import '../../graphics/vector/document.dart';
-import '../../graphics/vector/document_object.dart';
-import '../../graphics/vector/primitives.dart';
-import '../../graphics/vector/selectable_objects.dart';
-import '../../graphics/vector/structural_objects.dart';
-import '../../platform/input_events.dart';
+import '../geometry/offset.dart';
+import '../geometry/rect.dart';
+import '../graphics/vector/constants.dart';
+import '../graphics/vector/doc_methods.dart';
+import '../graphics/vector/document.dart';
+import '../graphics/vector/document_object.dart';
+import '../graphics/vector/primitives.dart';
+import '../graphics/vector/selectable_objects.dart';
+import '../graphics/vector/structural_objects.dart';
+import '../platform/input_events.dart';
 import 'selection.dart';
 import 'snap_manager.dart';
 

@@ -7,8 +7,7 @@
 /// and what lets a program be driven without a mouse.
 library;
 
-import '../widgets/actions.dart' show KeyGesture;
-import '../widgets/icon.dart' show IconData;
+import '../platform/key_gesture.dart';
 
 /// The JSON type a [CommandParam] takes.
 enum CommandParamType {
@@ -132,10 +131,10 @@ final class CommandSpec {
     required this.label,
     required this.run,
     this.description = '',
-    this.icon,
     this.shortcut,
     this.alsoShortcuts = const <KeyGesture>[],
     this.params = const <CommandParam>[],
+    this.when,
     this.enabled,
     this.disabledReason,
     this.checked,
@@ -152,13 +151,17 @@ final class CommandSpec {
 
   /// One sentence for a tooltip, the command palette and automation.
   final String description;
-  final IconData? icon;
 
   /// Shown in menus and bound at the window; [alsoShortcuts] are bound only.
   final KeyGesture? shortcut;
   final List<KeyGesture> alsoShortcuts;
 
   final List<CommandParam> params;
+
+  /// Why the command cannot run now with these parameters, or null when it
+  /// can - one function for both questions, so "disabled" and "why" cannot
+  /// disagree. Preferred over [enabled] with [disabledReason].
+  final String? Function(CommandArgs args)? when;
 
   /// Null means always enabled. Given the parameters a row or a caller
   /// would run it with - "Delete layer 3" can be possible when "Delete
@@ -179,10 +182,16 @@ final class CommandSpec {
   bool? get isChecked => isCheckedWith(CommandArgs.empty);
   String get labelNow => labelWith(CommandArgs.empty);
 
-  bool isEnabledWith(CommandArgs args) => enabled?.call(args) ?? true;
+  bool isEnabledWith(CommandArgs args) {
+    final String? Function(CommandArgs args)? why = when;
+    if (why != null && why(args) != null) return false;
+    return enabled?.call(args) ?? true;
+  }
+
   bool? isCheckedWith(CommandArgs args) => checked?.call(args);
   String labelWith(CommandArgs args) => currentLabel?.call(args) ?? label;
-  String? disabledReasonWith(CommandArgs args) => disabledReason?.call(args);
+  String? disabledReasonWith(CommandArgs args) =>
+      when?.call(args) ?? disabledReason?.call(args);
 }
 
 /// How a run ended: [ok] with a [result], or not with an [error].

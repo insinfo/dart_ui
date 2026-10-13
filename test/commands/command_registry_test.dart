@@ -95,6 +95,22 @@ void main() {
     expect(outcome.error, contains('did you mean `edit.delete`'));
   });
 
+  test('when is one answer to both "can it run" and "why not"', () {
+    var ready = false;
+    final spec = CommandSpec(
+      id: 'x.go',
+      label: 'Go',
+      when: (_) => ready ? null : 'not ready',
+      run: (_) => 'went',
+    );
+    final r = CommandRegistry()..register(spec);
+    expect(spec.isEnabled, isFalse);
+    expect(spec.disabledReasonWith(CommandArgs.empty), 'not ready');
+    expect(r.execute('x.go').error, contains('not ready'));
+    ready = true;
+    expect(r.execute('x.go').result, 'went');
+  });
+
   test('a disabled command says why and does not run', () {
     final outcome = registry.execute('edit.delete');
     expect(outcome.ok, isFalse);
@@ -153,20 +169,21 @@ void main() {
     expect(log, <String>['delete']);
   });
 
-  test('of two commands on one key, the one that can run gets it', () {
+  test('of two commands on one key, the one for the context gets it', () {
+    // Registered unconditional first, so order is not what decides.
     final shared = CommandRegistry()
-      ..register(CommandSpec(
-        id: 'object.alignBottom',
-        label: 'Align bottom',
-        shortcut: const KeyGesture(0x42),
-        enabled: (_) => selected,
-        run: (_) => log.add('align'),
-      ))
       ..register(CommandSpec(
         id: 'tool.pen',
         label: 'Pen',
         shortcut: const KeyGesture(0x42),
         run: (_) => log.add('pen'),
+      ))
+      ..register(CommandSpec(
+        id: 'object.alignBottom',
+        label: 'Align bottom',
+        shortcut: const KeyGesture(0x42),
+        when: (_) => selected ? null : 'nothing is selected',
+        run: (_) => log.add('align'),
       ));
     shared.keyBindings()[const KeyGesture(0x42)]!();
     selected = true;

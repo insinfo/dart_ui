@@ -1,7 +1,7 @@
 /// The one place an application's commands are registered and run.
 library;
 
-import '../widgets/actions.dart' show KeyGesture;
+import '../platform/key_gesture.dart';
 import 'command.dart';
 
 /// Every command of an application, by id.
@@ -198,6 +198,8 @@ final class CommandRegistry {
   Map<KeyGesture, void Function()?> keyBindings() {
     final Map<KeyGesture, void Function()?> bindings =
         <KeyGesture, void Function()?>{};
+    // Whether the command holding each key only applies in a context.
+    final Map<KeyGesture, bool> contextual = <KeyGesture, bool>{};
     for (final CommandSpec command in _commands.values) {
       final List<KeyGesture> keys = <KeyGesture>[
         if (command.shortcut != null) command.shortcut!,
@@ -208,11 +210,23 @@ final class CommandRegistry {
       final void Function()? run = hasRequired || !_safeEnabled(command)
           ? null
           : () => execute(command.id);
+      final bool conditional = command.when != null || command.enabled != null;
       for (final KeyGesture key in keys) {
         // Two commands may share a key - CorelDRAW's B aligns the selection
-        // to the bottom and, with nothing selected, picks a tool. The one
-        // that can run now wins; the first registered breaks a tie.
-        if (bindings[key] == null) bindings[key] = run;
+        // to the bottom and, with nothing selected, picks the pen. The rule
+        // is VS Code's `when` clauses: one that can run beats one that
+        // cannot, and of two that can, the one that only applies in a
+        // context beats the one that always does, while the context holds.
+        // Registration order breaks what is left.
+        final bool held = bindings.containsKey(key);
+        final bool replace = !held ||
+            (run != null &&
+                (bindings[key] == null ||
+                    (conditional && !(contextual[key] ?? false))));
+        if (replace) {
+          bindings[key] = run;
+          contextual[key] = conditional;
+        }
       }
     }
     return bindings;

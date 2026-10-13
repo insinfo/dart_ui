@@ -29,8 +29,9 @@ import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
 import '../../rendering/text/font_registry.dart';
 import '../../rendering/text/text_painter.dart';
+import '../../vector_editing/selection.dart';
+import '../../vector_editing/tool_mode.dart';
 import '../theme.dart';
-import 'selection.dart';
 
 /// Every colour the canvas paints with, resolved from the theme.
 ///
@@ -714,19 +715,6 @@ class VectorRenderer {
         Offset(bounds.left, bounds.bottom),
         Offset(bounds.left, bounds.center.dy),
       ];
-}
-
-/// The interaction modes a canvas tool can be in.
-enum ToolMode {
-  select,
-  shaper,
-  zoom,
-  fleur,
-  rectangle,
-  circle,
-  polygon,
-  curve,
-  text,
 }
 
 /// A text object held back until the device-space pass.

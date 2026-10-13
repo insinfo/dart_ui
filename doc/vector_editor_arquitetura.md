@@ -23,21 +23,52 @@ comando registrado**, com id, rótulo, atalho, parâmetros documentados,
 `enabled` e `run`. Menus, menus de contexto, barras, atalhos, paleta de
 comandos, testes e o canal de automação usam todos o mesmo registro.
 
-## Camadas
+## Camadas: portas e adaptadores
 
-| Camada | Onde | O que contém | Pode depender de |
+O motor é o núcleo; a janela e a linha de comando são **adaptadores** sobre
+ele (arquitetura hexagonal). O núcleo não importa framework de interface, e um
+único ponto de composição liga cada adaptador ao núcleo. Por isso o motor roda
+num script ou servidor, e a interface pode trocar de framework sem tocar no
+desenho nem nos comandos.
+
+| Camada | Onde | O que contém | Pode importar |
 |---|---|---|---|
-| Framework: comandos | `lib/src/commands/` | `CommandSpec`, `CommandRegistry`, `MenuSpec`, validação de parâmetros | nada de widgets além de `KeyGesture` |
-| Framework: automação | `lib/src/automation/` | `ControlServer` (JSON por linha, loopback), `AutomationHost` | comandos, plataforma |
-| Editor: motor | `examples/vector_editor_demo/engine/` | sessão, histórico, seleção, **todos os comandos** do editor | framework (sem widgets do editor) |
-| Editor: interface | `examples/vector_editor_demo/ui/` | janela, painéis, canvas, barras | motor |
-| Editor: app | `examples/vector_editor_demo/main.dart`, `tool/` | ponto de entrada, `--control`, ferramentas | tudo |
+| Framework: comandos | `lib/src/commands/` → `package:dart_ui/commands.dart` | `CommandSpec`, `CommandRegistry`, parâmetros, `MenuSpec` como dados, `flattenMenus` | só `platform` (`KeyGesture`, teclas) |
+| Framework: edição vetorial | `lib/src/vector_editing/` + modelo em `graphics/vector` → `package:dart_ui/vector.dart` | documento, histórico, SVG/PDF/CDR, seleção, encaixe, ferramentas, métrica de texto | geometria, gráficos, renderização de texto |
+| Framework: menus de widget | `lib/src/widgets/command_menus.dart` | `MenuBuilder`: `MenuSpec` → `PlatformMenu`, com `iconOf` | comandos, widgets |
+| Framework: automação | `lib/src/automation/` → `package:dart_ui/automation.dart` | `ControlServer`, `WindowAutomation` | app, comandos |
+| Editor: motor | `examples/vector_editor_demo/lib/src/engine/` | modelo, E/S de arquivos, inspeção, **comandos por módulo** em `commands/` | **só** `dart:*`, `vector.dart`, `commands.dart` |
+| Editor: CLI | `lib/src/cli/` + `bin/vector_cli.dart` | adaptador de linha de comando | o motor |
+| Editor: interface | `lib/src/ui/` + `bin/vector_editor_demo.dart` | janela, painéis, menus, ícones, comandos de janela | o motor e `dart_ui.dart` |
 
-Um teste de camadas (`test/examples/vector_editor_layers_test.dart`) lê os
-`import` e falha se o motor importar a interface.
+Testes que seguram as camadas:
+- `test/architecture/headless_libraries_test.dart`: `commands.dart` e
+  `vector.dart` não alcançam widgets, layout, app nem backends.
+- `test/layers_test.dart` (editor): o motor e o CLI só importam as bibliotecas
+  sem interface.
 
 ## Comandos
 
+- **Um módulo por área**, não um arquivo para todos. Cada área
+  (`file_commands.dart`, `edit_commands.dart`, `object_commands.dart`,
+  `arrange_commands.dart`, `layer_commands.dart`...) é uma função
+  `List<CommandSpec> xCommands(EditorContext context)`. O agregador
+  (`editor_commands.dart`) só lista os módulos. Uma área nova é um arquivo
+  novo e uma linha. É a organização do VectorCraft: cerca de 700 comandos em
+  cerca de 150 arquivos de `cmd/`, cada um com seus `specs()`.
+- **Dependências injetadas.** O `EditorContext` (modelo e host) chega a cada
+  módulo pelo construtor, sem globais. Um teste ou o CLI injeta outro host.
+- **Uma condição, um motivo.** `when` responde de uma vez "pode rodar?" e "por
+  que não?" (`null` = pode), como o `enabled` do VectorCraft, que devolve o
+  erro. Condições comuns (`needsDocument`, `needsSelection`,
+  `needsSelected(n)`) ficam no contexto e são escritas uma vez.
+- **Apresentação fora do motor.** O ícone de um comando é decisão da
+  interface (`ui/command_icons.dart`); o atalho é um `KeyGesture` resolvido
+  por plataforma. Assim como no VS Code, a posição nos menus é registrada à
+  parte da definição do comando (`MenuSpec`).
+- **Teclas compartilhadas** seguem as cláusulas `when` do VS Code: ganha o
+  comando que pode rodar; entre dois que podem, ganha o que vale só num
+  contexto (B alinha embaixo com seleção e escolhe a Caneta sem).
 - Id com ponto, por área: `file.save`, `edit.undo`, `object.toCurves`,
   `view.zoomIn`, `tool.rectangle`, `layer.new`, `panel.objects`, `shape.rectangle`.
 - Parâmetros declarados (`CommandParam`: nome, tipo, obrigatório, descrição).
@@ -45,8 +76,24 @@ Um teste de camadas (`test/examples/vector_editor_layers_test.dart`) lê os
   próximo (`widht` → "você quis dizer `width`?").
 - `run` devolve um resultado serializável em JSON (ou nada). Exceções viram
   `CommandError`; o registro nunca deixa uma exceção escapar.
-- `command.batch` roda vários como **um** passo de desfazer.
+- `batch` roda vários como **um** passo de desfazer (`DocumentHistory.group`).
 - A interface é fina: um painel age por `registry.execute(id, params)`.
+
+## Desempenho
+
+- **Reconstruir só o que mudou.** O que muda a cada movimento do mouse (a
+  posição do ponteiro) é um `ValueNotifier` próprio, e só as réguas e as
+  coordenadas da barra de status escutam (`ValueListenableBuilder`, que o
+  framework não tinha e passou a ter). Antes, cada movimento reconstruía a
+  janela inteira, com todos os painéis. Um teste conta os builds da janela e
+  falha se um movimento do ponteiro a reconstruir.
+- **Comandos registrados uma vez**, na abertura. Ler `enabled` e `checked` de
+  um menu custa uma chamada de função por linha, só quando o menu é montado.
+- **A fazer:** o histórico captura o documento inteiro a cada passo
+  (`DocumentState.capture`, O(objetos)). Com documentos grandes, o caminho é
+  compartilhamento estrutural (só copiar o que mudou), como faz o VectorCraft.
+  Também falta medir: um `tool/perf.dart` com documento sintético de milhares
+  de objetos e metas por operação.
 
 ## Canal de controle (agentes)
 
@@ -97,3 +144,21 @@ atual e que a tabela só cite comandos registrados e testes que existem.
 | 6 | Ferramenta de paridade (`tool/parity.dart`) e `examples/vector_editor_demo/doc/paridade.md` | feito: 23% no total, 52% das P0 |
 | 7 | Paleta de comandos (Ctrl/⌘+Shift+P) | — |
 | 8 | Auditoria de sala limpa do código derivado do sK1 | — |
+| 9 | Comandos em módulos por área; motor só com `vector.dart` e `commands.dart`; CLI | feito |
+| 10 | Ponteiro sem reconstruir a janela (`ValueListenableBuilder`) | feito |
+| 11 | Histórico com compartilhamento estrutural e metas de desempenho | — |
+
+## Fontes
+
+- VectorCraft (Apache-2.0), organização pública: `AGENTS.md`,
+  `docs/architecture.md`, `crates/engine/src/cmd/mod.rs`
+  ([github.com/storytold/vectorcraft](https://github.com/storytold/vectorcraft)).
+- VS Code: registro de comandos, registro de menus com `when`, camadas que só
+  dependem das de baixo
+  ([contribution model](https://www.mintlify.com/microsoft/vscode/concepts/contribution-model),
+  [commands and keybindings](https://dev.to/ryankolter/vscode-4-commands-and-keybindings-system-4nhm)).
+- Arquitetura hexagonal: núcleo sem framework; CLI e interface como
+  adaptadores; ponto de composição
+  ([arc42](https://quality.arc42.org/approaches/hexagonal-architecture),
+  [archman](https://archman.dev/docs/architectural-styles/hexagonal-ports-and-adapters)).
+
