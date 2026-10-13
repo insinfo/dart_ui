@@ -87,13 +87,15 @@ final class VectorCanvasColors {
   /// The canvas colours a [ThemeData] asks for.
   factory VectorCanvasColors.fromTheme(ThemeData theme) => VectorCanvasColors(
         desktop: theme.surfaceSunken,
-        sheet: theme.surfaceAlternate,
+        // The paper is the document's, not the interface's: it is white in
+        // a dark theme too, or black artwork would vanish into it.
+        sheet: VectorCanvasPalette.sheet,
         sheetBorder: theme.border,
         sheetShadow: VectorCanvasPalette.sheetShadow,
-        grid: theme.borderSubtle,
+        grid: VectorCanvasPalette.grid,
         guide: VectorCanvasPalette.guide,
         selection: theme.accent,
-        handleFill: theme.surfaceAlternate,
+        handleFill: VectorCanvasPalette.handleFill,
         rubberBand: theme.accent,
         caret: theme.foreground,
         textSelection: theme.selection,
@@ -141,7 +143,9 @@ abstract final class VectorCanvasPalette {
   /// Not a token: a cast shadow is an opacity over whatever is under it, not a
   /// hue in the palette.
   static const Color sheetShadow = Color(0x33000000);
-  static const Color grid = Color(0xFFE7E9ED);
+
+  /// Drawn over the paper, so a tint of black rather than a theme grey.
+  static const Color grid = Color(0x14000000);
 
   /// Not a token either: a guide is a document annotation the user places, and
   /// sK1's cyan is the colour a user of that program looks for.

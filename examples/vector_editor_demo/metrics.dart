@@ -52,25 +52,27 @@ abstract final class ChromeMetrics {
   ///
   /// 32 = a 28 px button plus 2 px either side. The button is one control tall
   /// and square, so the tool palette is on the same rhythm as the toolbar.
-  static const double toolboxWidth = 32;
-  static const double toolboxButtonSize = 28;
-  static const double toolboxIconSize = 16;
+  static const double toolboxWidth = 40;
+  static const double toolboxButtonSize = 32;
+  static const double toolboxIconSize = 18;
 
   /// Ruler thickness, and therefore the size of the corner button between the
   /// two rulers.
-  static const double rulerThickness = 20;
+  static const double rulerThickness = 18;
 
   /// The colour palette strip along the bottom.
   static const double paletteSwatchSize = 16;
   static const double paletteHeight = 28;
 
   /// The status bar. One row plus air; it holds 11 px text and a few icons.
-  static const double statusBarHeight = 28;
+  static const double statusBarHeight = 26;
 
   /// The right-hand plugin area: the collapsed tab strip, and the panel body
   /// that opens beside it.
-  static const double collapsedTabStripWidth = 28;
-  static const double pluginPanelWidth = 260;
+  static const double pluginPanelWidth = 280;
+
+  /// The title row of each dock section.
+  static const double dockHeaderHeight = 30;
 
   /// Gaps used inside bars, so a group reads as a group.
   ///

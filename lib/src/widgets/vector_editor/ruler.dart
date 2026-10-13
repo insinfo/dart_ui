@@ -179,12 +179,10 @@ final class RenderRuler extends RenderBox {
 
   /// The smallest gap, in device pixels, a labelled tick may have.
   ///
-  /// A vertical ruler needs more, because its numbers are stacked one character
-  /// under the next: "150" is three rows tall there and one column wide on the
-  /// horizontal ruler, so the same gap would have the labels running into each
-  /// other on one axis and swimming in space on the other.
+  /// The same on both axes now that the vertical numbers are turned rather
+  /// than stacked a digit per row.
   static const double _minimumLabelGap = 56.0;
-  static const double _minimumVerticalLabelGap = 78.0;
+  static const double _minimumVerticalLabelGap = 56.0;
 
   /// How much of the ruler's thickness a tick takes.
   ///
@@ -368,22 +366,17 @@ final class RenderRuler extends RenderBox {
       // the theme.
       final double baseline = face.ascent + 1;
       if (_isVertical) {
-        // A vertical ruler cannot rotate its text - the CPU rasterizer refuses
-        // rotated glyph runs - so the number is stacked digit under digit,
-        // which is also what several CAD rulers do.
-        final double advance = (face.ascent + face.descent).roundToDouble();
-        var y = offset.dy + pixel + 1;
-        for (final char in label.split('')) {
-          if (y > offset.dy + size.height - advance) break;
-          _painter.paint(
-            list,
-            char,
-            face,
-            Offset(offset.dx + 2, y + baseline),
-            labelPaint,
-          );
-          y += advance;
-        }
+        // Turned a quarter to the left, reading bottom to top as Inkscape's
+        // and CorelDRAW's do, with the cap height against the outer edge and
+        // the number ending just past its tick.
+        final double width = _painter.measure(label, face).width;
+        final double end = offset.dy + pixel + 3 + width;
+        if (end > offset.dy + size.height) continue;
+        list
+          ..save()
+          ..transform(0, -1, 1, 0, offset.dx + baseline, end);
+        _painter.paint(list, label, face, Offset.zero, labelPaint);
+        list.restore();
       } else {
         _painter.paint(
           list,

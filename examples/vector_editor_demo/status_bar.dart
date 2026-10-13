@@ -21,55 +21,59 @@ class EditorStatusBar extends StatelessWidget {
     return SizedBox(
       height: ChromeMetrics.statusBarHeight,
       child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: theme.surfaceAlternate,
-          border: BoxBorder(color: theme.border, width: 1),
-        ),
+        decoration: BoxDecoration(color: theme.surfaceBase),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: Spacing.sm),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: <Widget>[
+              // What the next gesture would do, Graphite-style: the gesture
+              // in a key cap, the action after it. Clipped, so a narrow
+              // window loses hints rather than the readouts on the right.
+              Expanded(
+                child: ClipRect(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: <Widget>[
+                      for (final (gesture, action) in model.hints) ...<Widget>[
+                        _KeyCap(gesture),
+                        const SizedBox(width: 4),
+                        Text(
+                          action,
+                          style: theme.textTheme.labelSmall,
+                          color: theme.foregroundSecondary,
+                        ),
+                        const SizedBox(width: 12),
+                      ],
+                      Expanded(
+                        child: Text(
+                          model.status,
+                          style: theme.textTheme.labelSmall,
+                          color: theme.disabledForeground,
+                          maxLines: 1,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              _Section(
+                icon: PhosphorIcons.selection,
+                text: _selection,
+                width: 150,
+                tooltip: 'Selection',
+              ),
               _Section(
                 icon: PhosphorIcons.cursor,
                 text: _coordinates,
-                width: 152,
+                width: 140,
                 tooltip: 'Pointer position',
               ),
               _Section(
                 icon: PhosphorIcons.magnifyingGlass,
                 text: _zoom,
-                width: 76,
+                width: 64,
                 tooltip: 'Zoom level',
-              ),
-              _Section(
-                icon: PhosphorIcons.gridFour,
-                text: model.snapToGrid ? 'Snap' : 'No snap',
-                width: 76,
-                tooltip: 'Snapping to grid',
-              ),
-              _Section(
-                icon: PhosphorIcons.fileText,
-                text: _page,
-                width: 116,
-                tooltip: 'Current page',
-              ),
-              _Section(
-                icon: PhosphorIcons.selection,
-                text: _selection,
-                width: 168,
-                tooltip: 'Selection',
-              ),
-              Expanded(
-                child: Text(
-                  model.status,
-                  // The status bar is the design system's own example of
-                  // `labelSmall`: "legendas, barra de status, metadados". It
-                  // was a bare 11, which happens to be the same number at a
-                  // 13 px base and stops being so the moment the base moves.
-                  style: theme.textTheme.labelSmall,
-                  color: theme.foregroundSecondary,
-                ),
               ),
               _ColorMonitor(model: model),
             ],
@@ -90,12 +94,6 @@ class EditorStatusBar extends StatelessWidget {
   String get _zoom =>
       model.hasDocument ? '${(model.active.zoom * 100).round()}%' : '--';
 
-  String get _page {
-    if (!model.hasDocument) return 'No page';
-    final page = model.active.page;
-    return '${page.name} (${page.pageFormat.name})';
-  }
-
   String get _selection {
     if (!model.hasDocument) return 'No document';
     final count = model.selection.count;
@@ -105,6 +103,33 @@ class EditorStatusBar extends StatelessWidget {
     return '${fromPoints(bounds.width, unit).toStringAsFixed(0)} x '
         '${fromPoints(bounds.height, unit).toStringAsFixed(0)} ${unit.label}'
         '${count > 1 ? '  ($count objects)' : ''}';
+  }
+}
+
+/// A gesture or key, drawn as a key cap.
+class _KeyCap extends StatelessWidget {
+  const _KeyCap(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.surfaceAlternate,
+        border: BoxBorder(color: theme.border, width: 1),
+        radius: 3,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+        child: Text(
+          label,
+          style: theme.textTheme.labelSmall,
+          color: theme.foreground,
+        ),
+      ),
+    );
   }
 }
 

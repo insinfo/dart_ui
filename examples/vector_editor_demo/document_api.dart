@@ -74,11 +74,14 @@ class DocumentApi {
   /// Applies [trafo] (document space) to each of [objects], as one step.
   void transform(Iterable<SelectableObject> objects, List<double> trafo,
       [String description = 'Transform']) {
+    final List<SelectableObject> list = objects.toList();
     record(description, () {
-      for (final SelectableObject object in objects) {
+      for (final SelectableObject object in list) {
         object.applyTrafo(trafo);
       }
-    });
+    },
+        // Repeated nudges of the same objects are one step.
+        coalesce: description == 'Nudge' ? _NudgeKey(list) : null);
   }
 
   void transformObject(SelectableObject obj, List<double> trafo) =>
@@ -107,4 +110,22 @@ class DocumentApi {
         VectorGroup() => 'group',
         _ => 'object',
       };
+}
+
+/// Equal for the same objects in the same order, so consecutive nudges of
+/// one selection coalesce and a nudge of another selection does not.
+final class _NudgeKey {
+  _NudgeKey(this.objects);
+
+  final List<SelectableObject> objects;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _NudgeKey &&
+      other.objects.length == objects.length &&
+      Iterable<int>.generate(objects.length)
+          .every((int i) => identical(other.objects[i], objects[i]));
+
+  @override
+  int get hashCode => Object.hashAll(objects.map(identityHashCode));
 }

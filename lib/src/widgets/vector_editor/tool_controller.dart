@@ -101,11 +101,24 @@ abstract class ToolController {
     return Rect.fromPoints(start, Offset(start.dx + dx, start.dy + dy));
   }
 
+  /// The layer the editor has chosen for new objects, if any - the one
+  /// highlighted in a layers panel. Ignored when it is not on the page or
+  /// cannot be drawn into.
+  VectorLayer? preferredLayer;
+
   /// The editable layer of [page] a new object belongs on.
-  VectorLayer targetLayer(VectorPage page) => page.children
-      .whereType<VectorLayer>()
-      .firstWhere((layer) => layer.isEditable && layer.isVisible,
-          orElse: () => page.children.whereType<VectorLayer>().first);
+  VectorLayer targetLayer(VectorPage page) {
+    final VectorLayer? preferred = preferredLayer;
+    if (preferred != null &&
+        identical(preferred.parent, page) &&
+        preferred.isEditable &&
+        preferred.isVisible) {
+      return preferred;
+    }
+    return page.children.whereType<VectorLayer>().firstWhere(
+        (layer) => layer.isEditable && layer.isVisible && !layer.isGuideLayer,
+        orElse: () => page.children.whereType<VectorLayer>().first);
+  }
 }
 
 // ---------------------------------------------------------------------------

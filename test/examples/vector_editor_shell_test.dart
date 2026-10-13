@@ -26,6 +26,7 @@ import '../../examples/vector_editor_demo/editor_model.dart';
 import '../../examples/vector_editor_demo/main_window.dart';
 import '../../examples/vector_editor_demo/menu_bar.dart';
 import '../../examples/vector_editor_demo/metrics.dart';
+import '../../examples/vector_editor_demo/objects_panel.dart';
 import '../../examples/vector_editor_demo/plugin_area.dart';
 import '../../examples/vector_editor_demo/standard_toolbar.dart';
 import '../../examples/vector_editor_demo/status_bar.dart';
@@ -397,34 +398,46 @@ void main() {
     });
   });
 
-  group('the plugin area collapses the way sK1 does', () {
-    test('a panel is docked, and the collapsed strip lists all of them', () {
+  group('the dock holds Properties and Objects', () {
+    test('both are on screen, with the layers of the page', () {
       final harness = _Harness();
       harness.frame();
-
-      final strip = harness.sizeOf(CollapsedTabStrip);
-      expect(strip, isNotNull);
-      expect(strip!.width, ChromeMetrics.collapsedTabStripWidth);
-      expect(strip.height, greaterThan(100));
-      expect(harness.model.openPanels, hasLength(3));
+      expect(harness.sizeOf(PluginArea)!.width, ChromeMetrics.pluginPanelWidth);
+      expect(harness.sizeOf(ObjectsPanel), isNotNull);
+      expect(harness.model.active.layers, isNotEmpty);
       harness.dispose();
     });
 
-    test('collapsing the open panel gives its width back to the canvas', () {
+    test('hiding the dock gives its width back to the canvas', () {
       final harness = _Harness();
       harness.frame();
       final expanded =
           harness.rendersOfType<RenderVectorCanvas>().single.size.width;
 
-      harness.model.togglePanel(harness.model.activePanel!);
+      harness.model.toggleDock();
       harness.frame();
 
       final collapsed =
           harness.rendersOfType<RenderVectorCanvas>().single.size.width;
-      expect(collapsed, greaterThan(expanded));
       expect(collapsed - expanded, ChromeMetrics.pluginPanelWidth);
-      // The strip stays: that is what makes it a collapse and not a close.
-      expect(harness.sizeOf(CollapsedTabStrip), isNotNull);
+      harness.dispose();
+    });
+
+    test('layers: add, hide, lock and delete are undoable', () {
+      final harness = _Harness();
+      final model = harness.model;
+      model.addLayer();
+      expect(model.active.layers, hasLength(2));
+      final added = model.active.layer;
+      expect(added.name, 'Layer 2', reason: 'a new layer becomes active');
+      model.setLayerVisible(added, false);
+      expect(added.isVisible, isFalse);
+      model.undo();
+      expect(added.isVisible, isTrue);
+      model.deleteLayer(added);
+      expect(model.active.layers, hasLength(1));
+      model.undo();
+      expect(model.active.layers, hasLength(2));
       harness.dispose();
     });
   });
@@ -439,7 +452,7 @@ void main() {
 /// rendered window against a colour it never paints, and "the bar is not this
 /// colour it was never going to be" is a test that cannot fail.
 final int _deskColour =
-    VectorCanvasColors.fromTheme(ThemeData.fluentLight).desktop.value &
+    VectorCanvasColors.fromTheme(ThemeData.studioDark).desktop.value &
         0x00FFFFFF;
 
 final class _Harness {

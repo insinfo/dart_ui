@@ -1,111 +1,151 @@
-/// The right-hand plugin area - sK1's `plgarea.py` + `plgtabs.py`.
+/// The right-hand dock: Properties on top, Objects below.
 ///
-/// The body is a [Docking] layout so the open panels can be split, tabbed and
-/// maximized like any other docked pane. The vertical strip on the far right is
-/// [CollapsedTabStrip]: clicking a tab opens that panel, clicking the open one
-/// collapses the body entirely and leaves only the strip - which is how sK1
-/// keeps two panels reachable in 24 px.
+/// CorelDRAW's dockers and Graphite's Properties/Layers pair, stacked rather
+/// than behind tabs on a strip: the two things an editor looks at most - what
+/// the selection is and where it sits in the document - are both on screen
+/// at once. Properties has its own tabs for the three property panels.
 library;
 
 import 'package:dart_ui/dart_ui.dart';
 
 import 'editor_model.dart';
 import 'metrics.dart';
+import 'objects_panel.dart';
 import 'panels.dart';
 
-/// The panel body and its collapsed tab strip.
-class PluginArea extends StatefulWidget {
+class PluginArea extends StatelessWidget {
   const PluginArea({super.key, required this.model});
 
   final EditorModel model;
 
   @override
-  State<PluginArea> createState() => _PluginAreaState();
-}
-
-class _PluginAreaState extends State<PluginArea> {
-  DockingLayout? _layout;
-  String? _layoutFor;
-
-  /// The docking layout for the open panel, rebuilt only when it changes.
-  ///
-  /// Rebuilding a [DockingLayout] every frame would reset the user's splitter
-  /// positions and drop the maximized state on each repaint.
-  DockingLayout? _layoutForActive(String? id) {
-    if (id == null) return null;
-    final existing = _layout;
-    if (_layoutFor == id && existing != null) {
-      // The layout persists; its *content* does not. A docking item holds the
-      // widget it was built with, so without this the panel would keep showing
-      // the state it had when the tab was first opened.
-      final root = existing.root;
-      if (root is DockingItem) root.widget = _panelFor(id);
-      return existing;
-    }
-    _layoutFor = id;
-    _layout = DockingLayout(
-      root: DockingItem(
-        id: id,
-        name: PanelIds.names[id] ?? id,
-        closable: true,
-        maximizable: false,
-        widget: _panelFor(id),
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    if (!model.showDock) return const SizedBox();
+    final String tab = model.activePanel ?? PanelIds.transform;
+    return SizedBox(
+      width: ChromeMetrics.pluginPanelWidth,
+      child: DecoratedBox(
+        decoration: BoxDecoration(color: theme.surface),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            SizedBox(width: 1, child: ColoredBox(color: theme.borderSubtle)),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  _DockHeader(
+                    title: 'Properties',
+                    trailing: <Widget>[
+                      for (final id in PanelIds.names.keys)
+                        _Tab(
+                          icon: switch (id) {
+                            PanelIds.transform =>
+                              PhosphorIcons.arrowsOutCardinal,
+                            PanelIds.align => PhosphorIcons.alignLeft,
+                            PanelIds.fillStroke => PhosphorIcons.paintBucket,
+                            _ => PhosphorIcons.circle,
+                          },
+                          tooltip: PanelIds.names[id]!,
+                          selected: tab == id,
+                          onTap: () => model.showPanelTab(id),
+                        ),
+                    ],
+                  ),
+                  Expanded(
+                    flex: 3,
+                    child: switch (tab) {
+                      PanelIds.align => AlignPanel(model: model),
+                      PanelIds.fillStroke => FillStrokePanel(model: model),
+                      _ => TransformPanel(model: model),
+                    },
+                  ),
+                  SizedBox(height: 1, child: ColoredBox(color: theme.border)),
+                  const _DockHeader(title: 'Objects'),
+                  Expanded(flex: 2, child: ObjectsPanel(model: model)),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
-    return _layout;
   }
+}
 
-  Widget _panelFor(String id) => switch (id) {
-        PanelIds.transform => TransformPanel(model: widget.model),
-        PanelIds.align => AlignPanel(model: widget.model),
-        PanelIds.fillStroke => FillStrokePanel(model: widget.model),
-        _ => const SizedBox(),
-      };
+class _DockHeader extends StatelessWidget {
+  const _DockHeader({required this.title, this.trailing = const <Widget>[]});
+
+  final String title;
+  final List<Widget> trailing;
 
   @override
   Widget build(BuildContext context) {
-    final model = widget.model;
-    final active = model.activePanel;
-    final layout = _layoutForActive(active);
+    final theme = Theme.of(context);
+    return SizedBox(
+      height: ChromeMetrics.dockHeaderHeight,
+      child: ColoredBox(
+        color: theme.surfaceSunken,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: <Widget>[
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                title,
+                style: theme.textTheme.labelLarge,
+                color: theme.foreground,
+              ),
+            ),
+            ...trailing,
+            const SizedBox(width: 4),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: <Widget>[
-        if (layout != null)
-          SizedBox(
-            width: ChromeMetrics.pluginPanelWidth,
-            child: Docking(
-              layout: layout,
-              maximizableItem: false,
-              onItemClose: (DockingItem item) {
-                // The docking header's close button and the strip's close
-                // button have to mean the same thing, so both go through the
-                // model rather than only removing the docked pane.
-                final id = item.id;
-                if (id is String) model.closePanel(id);
-              },
+class _Tab extends StatelessWidget {
+  const _Tab({
+    required this.icon,
+    required this.tooltip,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final bool selected;
+  final void Function() onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        behavior: GestureHitTestBehavior.opaque,
+        onTap: onTap,
+        child: SizedBox(
+          width: 26,
+          height: 22,
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: selected ? theme.surfaceRaised : null,
+              radius: theme.cornerRadiusSmall,
+            ),
+            child: Center(
+              child: Icon(
+                icon,
+                size: 14,
+                color: selected ? theme.accent : theme.foregroundSecondary,
+              ),
             ),
           ),
-        CollapsedTabStrip(
-          width: ChromeMetrics.collapsedTabStripWidth,
-          selectedId: active,
-          tabs: <CollapsedTab>[
-            for (final id in model.openPanels)
-              CollapsedTab(
-                id: id,
-                label: PanelIds.names[id] ?? id,
-                icon: switch (id) {
-                  PanelIds.transform => PhosphorIcons.arrowsOutCardinal,
-                  PanelIds.align => PhosphorIcons.alignLeft,
-                  PanelIds.fillStroke => PhosphorIcons.paintBucket,
-                  _ => PhosphorIcons.circle,
-                },
-              ),
-          ],
-          onSelected: (Object id) => model.togglePanel(id as String),
-          onClosed: (Object id) => model.closePanel(id as String),
         ),
-      ],
+      ),
     );
   }
 }

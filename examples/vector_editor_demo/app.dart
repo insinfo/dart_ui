@@ -22,7 +22,7 @@ class VectorEditorApp extends StatelessWidget {
   Widget build(BuildContext context) => Directionality(
         textDirection: TextDirection.leftToRight,
         child: Theme(
-          data: theme ?? ThemeData.fluentLight,
+          data: theme ?? ThemeData.studioDark,
           child: MainWindow(initialDoc: initialDoc, initialName: initialName),
         ),
       );

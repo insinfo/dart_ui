@@ -53,6 +53,7 @@ import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
 import '../../layout/render_box.dart';
 import '../../platform/input_events.dart';
+import '../../platform/native_window.dart' show SystemCursor;
 import '../element.dart';
 import '../focus.dart';
 import '../focus_scope.dart';
@@ -121,6 +122,7 @@ class VectorCanvas extends StatefulWidget {
     this.onSelectionChanged,
     this.onDocumentChanged,
     this.onObjectCreated,
+    this.activeLayer,
     this.onTransformCommitted,
     this.onTextCommitted,
     this.onHint,
@@ -157,6 +159,9 @@ class VectorCanvas extends StatefulWidget {
 
   /// A tool finished creating an object, so it can be pushed onto undo.
   final void Function(Object object)? onObjectCreated;
+
+  /// The layer new objects go on; null for the first one that can take them.
+  final VectorLayer? activeLayer;
 
   /// A move or resize finished. Carries both ends of the gesture, so the
   /// editor records one undo entry for the whole drag instead of one per
@@ -336,7 +341,8 @@ class VectorCanvasState extends State<VectorCanvas>
     if (controller != null) {
       controller
         ..modifiers = _modifiers
-        ..zoom = widget.zoom;
+        ..zoom = widget.zoom
+        ..preferredLayer = widget.activeLayer;
       if (controller is PolygonToolController) {
         controller.corners = widget.polygonCorners;
       }
@@ -744,7 +750,12 @@ class VectorCanvasState extends State<VectorCanvas>
         _report();
         return true;
       }
-      return false;
+      // While typing, a plain key is text - it arrives as a text event - and
+      // must not reach a one-letter shortcut. Chords with Command or Control
+      // still go on, so Save and Undo work in the middle of an edit.
+      final bool chord = event.modifiers.contains(KeyModifier.control) ||
+          event.modifiers.contains(KeyModifier.meta);
+      return event is KeyDownEvent && !chord;
     }
 
     if (event is KeyDownEvent && event.logicalKey == logicalKeyEscape) {
@@ -906,7 +917,8 @@ final class _CanvasLeaf extends RenderObjectWidget {
 }
 
 /// The leaf that rasterizes one page of a [VectorDocument].
-final class RenderVectorCanvas extends RenderBox implements PointerEventTarget {
+final class RenderVectorCanvas extends RenderBox
+    implements PointerEventTarget, MouseCursorTarget {
   RenderVectorCanvas({
     required VectorDocument doc,
     required VectorPage page,
@@ -933,6 +945,50 @@ final class RenderVectorCanvas extends RenderBox implements PointerEventTarget {
         _marquee = marquee,
         _textEditor = textEditor,
         _colors = colors;
+
+  /// The pointer shape for the tool, and over a selection handle the arrow
+  /// that says which way it resizes.
+  @override
+  SystemCursor? cursorFor(PointerEvent event) {
+    switch (_tool) {
+      case ToolMode.fleur:
+        return SystemCursor.hand;
+      case ToolMode.text:
+        return SystemCursor.text;
+      case ToolMode.zoom:
+      case ToolMode.rectangle:
+      case ToolMode.circle:
+      case ToolMode.polygon:
+      case ToolMode.curve:
+        return SystemCursor.crosshair;
+      case ToolMode.select:
+      case ToolMode.shaper:
+        final double zoom = _zoom == 0 ? 1 : _zoom;
+        final Offset point =
+            (globalToLocal(event.logicalPosition) - _pan) / zoom;
+        final TransformHandle? handle = _selection.hitTestHandle(point,
+            tolerance: SelectionManager.handleGrabPixels / zoom);
+        if (handle == null) return SystemCursor.arrow;
+        if (_selection.handleMode == SelectionHandleMode.rotate) {
+          return SystemCursor.crosshair;
+        }
+        return switch (handle) {
+          TransformHandle.topLeft ||
+          TransformHandle.bottomRight =>
+            SystemCursor.resizeDiagonalDown,
+          TransformHandle.topRight ||
+          TransformHandle.bottomLeft =>
+            SystemCursor.resizeDiagonalUp,
+          TransformHandle.topCenter ||
+          TransformHandle.bottomCenter =>
+            SystemCursor.resizeVertical,
+          TransformHandle.midLeft ||
+          TransformHandle.midRight =>
+            SystemCursor.resizeHorizontal,
+          TransformHandle.rotationCenter => SystemCursor.crosshair,
+        };
+    }
+  }
 
   /// Where every pointer event on this canvas goes.
   ///

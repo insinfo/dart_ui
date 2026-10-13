@@ -23,57 +23,59 @@ class ToolEntry {
       shortcut == null ? label : '$label (${shortcut!.label()})';
 }
 
-/// The tools, in sK1's `tools.py` order. `null` is a divider.
+/// The tools, in CorelDRAW's order and with its keys. `null` is a divider.
+///
+/// One-letter keys are safe: the focused control sees a key first, so typing
+/// into a field or a text on the canvas never switches tool.
 const List<ToolEntry?> kToolEntries = <ToolEntry?>[
   ToolEntry(
     mode: ToolMode.select,
     icon: PhosphorIcons.cursor,
-    label: 'Selection mode',
-    shortcut: KeyGesture(logicalKeyEscape),
-  ),
-  ToolEntry(
-    mode: ToolMode.shaper,
-    icon: PhosphorIcons.penNib,
-    // sK1 puts this on Space, but here Space held over the canvas pans the
-    // view, so a Space shortcut could never reach it.
-    label: 'Edit nodes',
+    label: 'Pick',
+    shortcut: KeyGesture(logicalKeyV),
   ),
   ToolEntry(
     mode: ToolMode.zoom,
     icon: PhosphorIcons.magnifyingGlass,
-    label: 'Zoom mode',
-    shortcut: KeyGesture(logicalKeyF2),
+    label: 'Zoom',
+    shortcut: KeyGesture(logicalKeyZ),
   ),
   ToolEntry(
     mode: ToolMode.fleur,
     icon: PhosphorIcons.hand,
-    label: 'Pan mode',
+    label: 'Pan',
+    shortcut: KeyGesture(logicalKeyH),
   ),
   null,
   ToolEntry(
     mode: ToolMode.curve,
-    icon: PhosphorIcons.bezierCurve,
-    label: 'Create curve',
+    icon: PhosphorIcons.penNib,
+    label: 'Pen (Bezier)',
+    shortcut: KeyGesture(logicalKeyB),
   ),
   ToolEntry(
     mode: ToolMode.rectangle,
     icon: PhosphorIcons.square,
-    label: 'Create rectangle',
+    label: 'Rectangle',
+    shortcut: KeyGesture(logicalKeyF6),
   ),
   ToolEntry(
     mode: ToolMode.circle,
     icon: PhosphorIcons.circle,
-    label: 'Create ellipse',
+    label: 'Ellipse',
+    shortcut: KeyGesture(logicalKeyF7),
   ),
   ToolEntry(
     mode: ToolMode.polygon,
     icon: PhosphorIcons.polygon,
-    label: 'Create polygon',
+    label: 'Polygon',
+    shortcut: KeyGesture(logicalKeyY),
   ),
+  null,
   ToolEntry(
     mode: ToolMode.text,
     icon: PhosphorIcons.textT,
-    label: 'Create text',
+    label: 'Text',
     shortcut: KeyGesture(logicalKeyF8),
   ),
 ];
@@ -109,10 +111,7 @@ class Toolbox extends StatelessWidget {
     return SizedBox(
       width: ChromeMetrics.toolboxWidth,
       child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: theme.surfaceAlternate,
-          border: BoxBorder(color: theme.border, width: 1),
-        ),
+        decoration: BoxDecoration(color: theme.surface),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: <Widget>[

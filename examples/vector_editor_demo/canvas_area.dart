@@ -157,9 +157,12 @@ class _MeasuredCanvas extends StatelessWidget {
         showGrid: model.showGrid,
         showGuides: model.showGuides,
         polygonCorners: model.polygonCorners,
+        activeLayer: session.layer,
         onZoomChanged: model.setZoom,
         onPanChanged: (pan) {
-          session.pan = pan;
+          session
+            ..pan = pan
+            ..viewTouched = true;
           model.refresh();
         },
         onCursorMoved: (point) {

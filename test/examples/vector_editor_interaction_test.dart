@@ -989,7 +989,7 @@ void main() {
               entry.shortcut != null && entry.mode != ToolMode.select);
       harness.key(tool.shortcut!.logicalKey);
       expect(harness.model.tool, tool.mode);
-      harness.key(logicalKeyEscape);
+      harness.key(logicalKeyV);
       expect(harness.model.tool, ToolMode.select);
       harness.dispose();
     });

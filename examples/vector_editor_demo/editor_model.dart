@@ -39,6 +39,10 @@ class DocumentSession {
   /// time the canvas reports its box rather than guessed at construction.
   bool fittedOnce = false;
 
+  /// Whether the user has zoomed or panned this tab. Until they do, the
+  /// view follows the window: a resize fits the page again.
+  bool viewTouched = false;
+
   /// Device pixels per document point.
   double zoom = 1.0;
 
@@ -47,9 +51,31 @@ class DocumentSession {
 
   VectorPage get page => document.getPage(0);
 
-  VectorLayer get layer => page.children.whereType<VectorLayer>().firstWhere(
-      (layer) => layer.isEditable && layer.isVisible,
-      orElse: () => page.children.whereType<VectorLayer>().first);
+  /// The layer picked in the Objects panel, if it is still usable.
+  VectorLayer? _activeLayer;
+
+  /// The layer new objects go on: the one picked in the Objects panel, or
+  /// the first that can be drawn into.
+  VectorLayer get layer {
+    final picked = _activeLayer;
+    if (picked != null &&
+        page.children.contains(picked) &&
+        picked.isEditable &&
+        picked.isVisible) {
+      return picked;
+    }
+    return page.children.whereType<VectorLayer>().firstWhere(
+        (layer) => layer.isEditable && layer.isVisible && !layer.isGuideLayer,
+        orElse: () => page.children.whereType<VectorLayer>().first);
+  }
+
+  set layer(VectorLayer value) => _activeLayer = value;
+
+  /// The drawing layers of the page, bottom to top.
+  List<VectorLayer> get layers => page.children
+      .whereType<VectorLayer>()
+      .where((layer) => !layer.isGuideLayer)
+      .toList();
 
   /// The tab title, with sK1's unsaved marker.
   String get tabTitle => modified ? '$name*' : name;
@@ -123,7 +149,8 @@ class EditorModel {
   /// The cursor in document coordinates, or null when it is off the canvas.
   Offset? cursor;
 
-  bool showGrid = true;
+  /// Off by default, as in CorelDRAW: the page is for the artwork.
+  bool showGrid = false;
   bool showGuides = true;
   bool snapToGrid = true;
 
@@ -136,15 +163,11 @@ class EditorModel {
     width: 1.0,
   );
 
-  /// The panels that have been opened at least once, in tab order.
-  final List<String> openPanels = <String>[
-    PanelIds.transform,
-    PanelIds.align,
-    PanelIds.fillStroke,
-  ];
-
-  /// The expanded panel, or null when the plugin area is collapsed.
+  /// The Properties tab on show.
   String? activePanel = PanelIds.transform;
+
+  /// Whether the right-hand dock is on screen.
+  bool showDock = true;
 
   TransformMode transformMode = TransformMode.position;
   AlignReference alignReference = AlignReference.page;
@@ -221,6 +244,7 @@ class EditorModel {
 
   void setZoom(double zoom, [Offset? pan]) {
     if (!hasDocument) return;
+    active.viewTouched = true;
     active.zoom = zoom.clamp(ZoomMetrics.minimum, ZoomMetrics.maximum);
     if (pan != null) active.pan = pan;
     refresh();
@@ -235,6 +259,7 @@ class EditorModel {
   /// Zooms about the centre of a canvas [viewportSize].
   void zoomBy(double factor, Size viewportSize) {
     if (!hasDocument) return;
+    active.viewTouched = true;
     final centre = Offset(viewportSize.width / 2, viewportSize.height / 2);
     final before = (centre - active.pan) / active.zoom;
     final zoom =
@@ -318,6 +343,132 @@ class EditorModel {
       active.document.update();
     }, coalesce: coalesce);
     touch(description);
+  }
+
+  // --- Layers -------------------------------------------------------------
+
+  void addLayer() {
+    if (!hasDocument) return;
+    final layer = active.api.record('New layer', () {
+      final page = active.page;
+      final number = active.layers.length + 1;
+      return active.document.addLayer(page, name: 'Layer $number');
+    });
+    active.layer = layer;
+    touch('Added ${layer.name}');
+  }
+
+  /// Deletes [layer] and what is on it; the last layer is kept.
+  void deleteLayer(VectorLayer layer) {
+    if (!hasDocument || active.layers.length <= 1) return;
+    active.api
+        .record('Delete layer', () => active.api.methods.removeObject(layer));
+    _pruneSelection();
+    touch('Deleted ${layer.name}');
+  }
+
+  /// Moves [layer] one step up (towards the front) or down.
+  void moveLayer(VectorLayer layer, {required bool up}) {
+    final page = active.page;
+    final list = page.children;
+    final index = list.indexOf(layer);
+    final target = up ? index + 1 : index - 1;
+    if (index < 0 || target < 0 || target >= list.length) return;
+    if (list[target] is! VectorLayer ||
+        (list[target] as VectorLayer).isGuideLayer) {
+      return;
+    }
+    edit(up ? 'Raise layer' : 'Lower layer', () {
+      list
+        ..removeAt(index)
+        ..insert(target, layer);
+    });
+  }
+
+  void setLayerVisible(VectorLayer layer, bool visible) {
+    edit(visible ? 'Show layer' : 'Hide layer',
+        () => layer.properties[0] = visible);
+    if (!visible) _pruneSelection();
+  }
+
+  void setLayerLocked(VectorLayer layer, bool locked) {
+    edit(locked ? 'Lock layer' : 'Unlock layer',
+        () => layer.properties[1] = !locked);
+    if (locked) _pruneSelection();
+  }
+
+  void renameLayer(VectorLayer layer, String name) {
+    if (name.trim().isEmpty || name == layer.name) return;
+    edit('Rename layer', () => layer.name = name.trim(), coalesce: layer);
+  }
+
+  void activateLayer(VectorLayer layer) {
+    active.layer = layer;
+    refresh('${layer.name} is the active layer');
+  }
+
+  /// Selects [object] from the Objects panel: alone, or toggled with Shift.
+  void pickObject(SelectableObject object, {bool toggle = false}) {
+    if (toggle) {
+      selection.toggle(object);
+    } else {
+      selection.select(object);
+    }
+    final parent = object.parent;
+    if (parent is VectorLayer) active.layer = parent;
+    refresh('${selection.count} object(s) selected');
+  }
+
+  /// What the next gesture does with the current tool, as (gesture,
+  /// action) pairs for the status bar - Graphite's bottom-bar hints.
+  List<(String, String)> get hints {
+    final mod =
+        platformEditingConvention == EditingConvention.mac ? '⌘' : 'Ctrl';
+    final alt =
+        platformEditingConvention == EditingConvention.mac ? '⌥' : 'Alt';
+    return switch (tool) {
+      ToolMode.select || ToolMode.shaper => hasSelection
+          ? <(String, String)>[
+              ('Drag', 'Move'),
+              ('Shift', 'Extend'),
+              ('Click again', 'Rotate/skew'),
+              ('$alt+Click', 'Select below'),
+              ('Arrows', 'Nudge'),
+            ]
+          : <(String, String)>[
+              ('Click', 'Select'),
+              ('Drag', 'Marquee'),
+              ('Shift', 'Extend'),
+              ('$alt+Click', 'Select below'),
+            ],
+      ToolMode.rectangle || ToolMode.circle => <(String, String)>[
+          ('Drag', 'Draw'),
+          (mod, tool == ToolMode.circle ? 'Circle' : 'Square'),
+          ('Shift', 'From centre'),
+        ],
+      ToolMode.polygon => <(String, String)>[
+          ('Drag', 'Draw from centre'),
+        ],
+      ToolMode.curve => <(String, String)>[
+          ('Click', 'Corner node'),
+          ('Drag', 'Smooth node'),
+          ('Click first node', 'Close'),
+          ('Enter', 'Finish'),
+          ('Esc', 'Cancel'),
+        ],
+      ToolMode.text => <(String, String)>[
+          ('Click', 'Place text'),
+          ('Double-click text', 'Edit'),
+        ],
+      ToolMode.zoom => <(String, String)>[
+          ('Click', 'Zoom in'),
+          ('Shift+Click', 'Zoom out'),
+          ('Drag', 'Zoom to area'),
+        ],
+      ToolMode.fleur => <(String, String)>[
+          ('Drag', 'Pan'),
+        ],
+    };
   }
 
   /// The fill the panels and the palette show: the selection's when there
@@ -501,7 +652,7 @@ class EditorModel {
   /// selection never holds something that is not on the page.
   void _pruneSelection() {
     final live = selection.selectedObjects
-        .where((object) => _isInDocument(object))
+        .where((object) => _isInDocument(object) && _isEditable(object))
         .toList();
     if (live.length == selection.count) {
       return;
@@ -510,6 +661,15 @@ class EditorModel {
     for (final object in live) {
       selection.toggle(object);
     }
+  }
+
+  /// Whether [object] sits on a layer that is visible and unlocked.
+  bool _isEditable(DocumentObject object) {
+    DocumentObject? node = object.parent;
+    while (node != null && node is! VectorLayer) {
+      node = node.parent;
+    }
+    return node is! VectorLayer || (node.isVisible && node.isEditable);
   }
 
   bool _isInDocument(DocumentObject object) {
@@ -584,6 +744,18 @@ class EditorModel {
       }
     });
     touch(changed ? 'Order changed' : 'Already there');
+  }
+
+  /// Nudges the selection with an arrow key: [dx], [dy] are -1, 0 or 1 steps
+  /// of 1 mm, times ten with Shift and a tenth with the command key -
+  /// CorelDRAW's nudge, super nudge and micro nudge. Held keys repeat into
+  /// one undo step.
+  void nudge(int dx, int dy, {bool big = false, bool small = false}) {
+    if (!hasSelection) return;
+    final step = DocUnit.mm.toPoints * (big ? 10 : (small ? 0.1 : 1));
+    active.api.transform(selection.selectedObjects,
+        <double>[1, 0, 0, 1, dx * step, dy * step], 'Nudge');
+    touch('Nudged');
   }
 
   /// Moves the selection by a document-space delta, undoably.
@@ -767,21 +939,17 @@ class EditorModel {
   // Panels
   // -------------------------------------------------------------------------
 
-  /// Clicking a collapsed tab opens it; clicking the open one collapses the
-  /// area, which is what makes the strip a space saver rather than a switcher.
-  void togglePanel(String id) {
-    activePanel = activePanel == id ? null : id;
-    refresh(activePanel == null
-        ? 'Panels collapsed'
-        : '${PanelIds.names[id]} shown');
+  /// Shows panel [id] in the Properties dock, opening the dock if hidden.
+  void showPanelTab(String id) {
+    activePanel = id;
+    showDock = true;
+    refresh('${PanelIds.names[id]} shown');
   }
 
-  void closePanel(String id) {
-    openPanels.remove(id);
-    if (activePanel == id) {
-      activePanel = openPanels.isEmpty ? null : openPanels.first;
-    }
-    refresh('${PanelIds.names[id]} closed');
+  /// Hides or shows the whole right-hand dock.
+  void toggleDock() {
+    showDock = !showDock;
+    refresh(showDock ? 'Panels shown' : 'Panels hidden');
   }
 
   // Small local trig, so the model does not pull in dart:math for two calls

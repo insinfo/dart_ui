@@ -418,6 +418,13 @@ class CommandCatalog {
         },
       );
 
+  EditorCommand get toggleDock => EditorCommand(
+        id: 'showDock',
+        label: 'Show panels',
+        checked: model.showDock,
+        onInvoke: model.toggleDock,
+      );
+
   EditorCommand get toggleGuides => EditorCommand(
         id: 'showGuides',
         label: 'Show guides',
@@ -598,14 +605,22 @@ class CommandCatalog {
           toggleGuides,
           null,
           toggleSnap,
+          null,
+          toggleDock,
         ]),
         EditorMenu(label: 'Layout', items: <EditorCommand?>[
           _todo('insertPage', 'Insert page...'),
           _todo('deletePage', 'Delete page...'),
           _todo('gotoPage', 'Go to page...'),
           null,
-          _todo('layers', 'Layers...',
-              shortcut: const KeyGesture(logicalKeyF7)),
+          EditorCommand(
+            id: 'layers',
+            label: 'Objects and layers',
+            shortcut: const KeyGesture(logicalKeyF7, command: true),
+            onInvoke: () {
+              if (!model.showDock) model.toggleDock();
+            },
+          ),
           null,
           _todo('pageFrame', 'Page frame'),
           _todo('guidesAround', 'Guides around page'),

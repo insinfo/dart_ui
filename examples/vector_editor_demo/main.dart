@@ -15,6 +15,8 @@ void main(List<String> arguments) {
     arguments,
     environment: Platform.environment,
     title: 'Vector Editor (100% Pure Dart)',
+    size: const Size(1400, 880),
+    minimumSize: const Size(960, 600),
   );
 
   VectorDocument? initialDoc;
@@ -33,7 +35,7 @@ void main(List<String> arguments) {
           initialDoc = VectorSvgCodec.importFromSvg(svgXml);
         }
         if (initialDoc != null) {
-          final separator = arg.lastIndexOf(RegExp(r'[\/]'));
+          final separator = arg.lastIndexOf(RegExp(r'[\\/]'));
           initialName = separator < 0 ? arg : arg.substring(separator + 1);
         }
       } catch (_) {

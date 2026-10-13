@@ -1002,6 +1002,57 @@ final class ThemeData {
     ),
   );
 
+  /// A dark studio look for creative tools - vector and image editors, node
+  /// graphs - after Graphite's: neutral greys with no tint, so the artwork
+  /// is the only colour on screen, and one cyan accent for everything the
+  /// tool draws over it (selection, handles, guides). Compact, because a
+  /// tool window spends its space on the canvas.
+  static const ThemeData studioDark = ThemeData(
+    name: 'studio-dark',
+    brightness: ThemeBrightness.dark,
+    accent: Color(0xFF00A8FF),
+    accentHovered: Color(0xFF33BAFF),
+    accentPressed: Color(0xFF66CBFF),
+    accentSubtle: Color(0xFF0E3A52),
+    surfaceBase: Color(0xFF222222),
+    surfaceSunken: Color(0xFF161616),
+    surface: Color(0xFF2B2B2B),
+    surfaceAlternate: Color(0xFF333333),
+    surfaceRaised: Color(0xFF383838),
+    borderSubtle: Color(0xFF262626),
+    border: Color(0xFF444444),
+    borderStrong: Color(0xFF8A8A8A),
+    foreground: Color(0xFFEEEEEE),
+    foregroundSecondary: Color(0xFFAAAAAA),
+    disabledForeground: Color(0xFF777777),
+    disabledSurface: Color(0xFF2E2E2E),
+    hoverSurface: Color(0xFF3D3D3D),
+    pressedSurface: Color(0xFF4A4A4A),
+    focusRing: Color(0xFF33BAFF),
+    selection: Color(0xFF1B4A66),
+    colorScheme: ColorScheme.dark(
+      primary: Color(0xFF00A8FF),
+      onPrimary: Color(0xFF00263B),
+      surface: Color(0xFF2B2B2B),
+      onSurface: Color(0xFFEEEEEE),
+      surfaceContainer: Color(0xFF333333),
+      outline: Color(0xFF444444),
+    ),
+    textTheme: TextTheme(base: 12),
+    iconTheme: IconThemeData(color: Color(0xFFDDDDDD), size: 16),
+    density: ThemeDensity.compact,
+    cornerRadius: 4,
+    controlHeight: 26,
+    controlPadding: 8,
+    scrollbarTheme: ScrollbarThemeData(
+      thumbColor: Color(0xB3777777),
+      hoveredThumbColor: Color(0xE6AAAAAA),
+      trackColor: Color(0x33333333),
+      buttonColor: Color(0x44333333),
+      buttonIconColor: Color(0xFFEEEEEE),
+    ),
+  );
+
   /// dart_ui's own modern defaults: rounder, roomier, 14 px text. Not
   /// Material - that is [materialLight]; until 12/10/2026 this one carried
   /// the name.

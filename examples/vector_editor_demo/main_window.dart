@@ -91,11 +91,7 @@ class MainWindowState extends State<MainWindow> {
     zoomToPage: () => model.zoomToRect(model.active.page.rect, _viewport),
     zoomToSelection: () =>
         model.zoomToRect(model.selection.selectionBounds, _viewport),
-    showPanel: (String id) {
-      if (!model.openPanels.contains(id)) model.openPanels.add(id);
-      model.activePanel = id;
-      model.refresh('${PanelIds.names[id]} shown');
-    },
+    showPanel: model.showPanelTab,
     quit: () => unawaited(_quit()),
   );
 
@@ -282,9 +278,31 @@ class MainWindowState extends State<MainWindow> {
   }
 
   /// Learns the canvas box, and fits the page into it the first time.
+  ///
+  /// After that, a resize keeps whatever is at the centre of the view at the
+  /// centre: a panel opening or the window growing must not slide the page
+  /// off to one side.
   void _onViewportResized(Size size) {
+    final Size before = _viewport;
     _viewport = size;
-    if (_fitPending()) model.refresh();
+    if (_fitPending()) {
+      model.refresh();
+      return;
+    }
+    if (!model.hasDocument || before.width < 40 || before.height < 40) return;
+    final Offset shift = Offset(
+        (size.width - before.width) / 2, (size.height - before.height) / 2);
+    if (shift == Offset.zero) return;
+    for (final DocumentSession session in model.documents) {
+      if (!session.fittedOnce) continue;
+      if (!session.viewTouched && identical(session, model.active)) {
+        // Nobody has framed this view by hand yet: keep the page fitted.
+        model.fitRect(session.page.rect, size);
+      } else {
+        session.pan += shift;
+      }
+    }
+    model.refresh();
   }
 
   /// Fits the current document's page once, as soon as the canvas size is
@@ -369,6 +387,22 @@ class MainWindowState extends State<MainWindow> {
         if (tool?.shortcut != null)
           tool!.shortcut!: () => selectTool(tool.mode),
     };
+    // Arrow keys nudge the selection; Shift for ten times, the command key
+    // for a tenth.
+    if (model.hasSelection) {
+      for (final (int key, int dx, int dy) in <(int, int, int)>[
+        (logicalKeyArrowLeft, -1, 0),
+        (logicalKeyArrowRight, 1, 0),
+        (logicalKeyArrowUp, 0, -1),
+        (logicalKeyArrowDown, 0, 1),
+      ]) {
+        bindings[KeyGesture(key)] = () => model.nudge(dx, dy);
+        bindings[KeyGesture(key, shift: true)] =
+            () => model.nudge(dx, dy, big: true);
+        bindings[KeyGesture(key, command: true)] =
+            () => model.nudge(dx, dy, small: true);
+      }
+    }
     catalog.keyBindings(menus).forEach((KeyGesture gesture, run) {
       if (bindings[gesture] == null) bindings[gesture] = run;
     });
