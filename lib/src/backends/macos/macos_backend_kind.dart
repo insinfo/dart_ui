@@ -115,6 +115,11 @@ final class MacosBackendCapabilities {
       // only process here that runs AppKit.
       if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
         Capability.clipboardText,
+      // PNG/TIFF and HTML, through the same host (`clipboard-rich`). The host
+      // is built from this repository, so the claim follows the source; a
+      // stale binary is refused by name at the operation, not here.
+      if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
+        Capability.clipboardImage,
       // Both ways: the host's view is the NSDraggingDestination and, since
       // 12/10/2026, the NSDraggingSource too (macos_drag_drop.dart).
       if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)

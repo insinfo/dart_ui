@@ -1789,6 +1789,18 @@ Testar:
 
 ## 13.8 Clipboard
 
+**Estado em 13/10/2026:** texto Unicode (`CF_UNICODETEXT`), **HTML** (o
+formato registrado `HTML Format`, com cabeçalho de offsets em bytes UTF-8, e
+`CF_UNICODETEXT` ao lado como alternativa) e **PNG/bitmap** (o formato
+registrado `PNG` mais `CF_DIB` na escrita; na leitura `PNG`, depois
+`CF_DIBV5`, depois `CF_DIB`, convertidos para PNG). O codificador e o
+decodificador de CF_HTML e a conversão DIB↔PNG são Dart puro e testados em
+qualquer plataforma (`test/backends/win32/win32_clipboard_formats_test.dart`);
+**as chamadas FFI de HTML e imagem nunca rodaram num Windows de verdade** — o
+teste de ida e volta existe em `win32_clipboard_test.dart` e é pulado fora do
+Windows. Continuam fora: lista de arquivos, formatos customizados, delayed
+rendering e observação de mudanças.
+
 Implementar:
 
 - texto Unicode;
@@ -2167,7 +2179,7 @@ Revisto em 2026-08-23 contra `lib/src/backends/win32/`.
 - [x] CPU/GDI (DIB retida + `BitBlt`, com damage e resize);
 - [x] mouse, teclado, pointer;
 - [x] IME (IMM32: composição, cláusulas, posicionamento de candidatos, cancelamento; `WM_IME_REQUEST`/`IMR_DOCUMENTFEED` **não** respondida, então o método não lê texto ao redor. **TSF não implementada**);
-- [x] clipboard (**texto apenas**: `Clipboard` não tem imagem nem arquivo);
+- [x] clipboard: texto; desde 13/10/2026 também **HTML e imagem** (`RichClipboard`, §13.8) — só testados por unidade, **nunca num Windows real**; sem lista de arquivos;
 - [x] drag-and-drop (OLE, **nos dois sentidos** — `IDropTarget` e `DoDragDrop`; a imagem de arraste de `DragRequest.feedback` é **ignorada**);
 - [x] cursor;
 - [ ] monitores — enumeração e mudança em runtime não verificadas;
@@ -2445,6 +2457,14 @@ em vez de truncado) e clipboard manager (`CLIPBOARD_MANAGER`/`SAVE_TARGETS`).
 A máquina de estados é testável sem servidor real, como esta seção pedia:
 `test/backends/x11/x11_clipboard_test.dart`.
 
+**Atualização em 13/10/2026:** `text/html` e `image/png` entraram, nos dois
+papéis. Lendo, o backend pede o alvo, aceita a resposta por INCR como no texto
+e decodifica HTML em UTF-16 com BOM (o Firefox já escreveu assim);
+`availableFormats` lê o `TARGETS` do dono. Como dono, o `TARGETS` anuncia só o
+que a cópia tem (uma imagem não oferece texto) e uma cópia de HTML leva sempre
+a alternativa em texto puro. **Só contra o cliente falso**: nenhum HTML ou
+imagem cruzou um X server real até esta data.
+
 Implementar:
 
 - PRIMARY;
@@ -2680,7 +2700,8 @@ estavam escritas. Elas foram corrigidas abaixo; o que segue é o estado.
   é resolvido por `XCURSOR_PATH`/`XCURSOR_THEME`/`XCURSOR_SIZE` e pelos
   diretórios XDG, **e a cadeia de herança do `index.theme` não é lida**.
   Cursores animados tocam todos os quadros;
-- **clipboard** por `wl_data_device` (texto apenas, quatro tipos MIME, com
+- **clipboard** por `wl_data_device` (quatro tipos MIME de texto e, desde
+  13/10/2026, `text/html` e `image/png` — só contra o compositor falso —, com
   curto-circuito quando somos donos da seleção para não travar o isolate);
 - **key repeat** como máquina de estados pura com relógio injetado
   (`repeat_info`, rate 0 desliga, uma tecla por vez, burst máximo 8);
@@ -3012,7 +3033,7 @@ Revisto em 2026-08-23 contra `lib/src/backends/wayland/`.
 - [x] frame callback (coalesce com união de damage e contador de frames engolidos);
 - [~] **teclado — sem `xkbcommon`**: parser próprio do keymap texto v1, primeiro grupo e dois níveis, bits de modificador assumidos. Repeat do lado do cliente. Teclas mortas pela tabela Compose do X11, e só quando não há IME (§16.7);
 - [~] pointer sim; touch sim desde 12/10/2026, só contra o compositor falso;
-- [x] clipboard (`wl_data_device`, **texto apenas**; **sem seleção primária**);
+- [x] clipboard (`wl_data_device`: texto e, desde 13/10/2026, `text/html` e `image/png`, **só contra o compositor falso**; **sem seleção primária**);
 - [~] drag-and-drop nos dois papéis; **sem ícone de arraste** (`TODO(wayland)` no código) e **sem ação `link`**;
 - [x] text-input-v3 (enable/disable, surrounding text, content type, cursor rectangle, commit com contagem de serial; preedit/commit/delete_surrounding aplicados na ordem do protocolo, com o `done` atrasado descartando só a deleção. **Sem cláusulas de pré-edição** — o v3 removeu `preedit_styling` — e **sem fallback para v1/v2**);
 - [~] scaling **inteiro** sim, **fracionário não** (§16.10.1);
@@ -3676,7 +3697,17 @@ WindowServer a cada mudança no backend.
 - [x] teclado — teclas, modificadores e teclas mortas, com a convenção de
   edição do Mac (`INPUT_APP_DEAD_KEYS`);
 - [x] IME — pré-edição, commit e texto ao redor do cursor; ver §20.10;
-- [x] clipboard — texto pelo `NSPasteboard` (`macos_clipboard_smoke`);
+- [x] clipboard — texto pelo `NSPasteboard` (`macos_clipboard_smoke`) e, desde
+  13/10/2026, **HTML e imagem** (`CLIPBOARD_READ_TYPE`/`CLIPBOARD_WRITE_TYPE`,
+  recurso `clipboard-rich` do host). **Verificado neste Mac**, com testemunha
+  em outro processo (`osascript -l JavaScript` lendo e escrevendo o
+  `NSPasteboard`): o PNG escrito aqui sai byte a byte em `public.png`, com
+  `public.tiff` ao lado e sem texto; um `public.png` posto por fora volta byte a
+  byte; **um `public.tiff` posto por fora (convertido pelo `sips`) volta como
+  PNG com os mesmos pixels**; HTML escrito aqui aparece em `public.html` e o
+  `pbpaste` lê a alternativa em texto; HTML posto por fora é lido; uma imagem
+  de 1024×768 (2,6 MB) vai e volta; `availableFormats` responde `image` e
+  `text,html` nos casos certos. RTF não é convertido em HTML;
 - [x] drag — soltar arquivos e texto numa janela (`INPUT_APP_DROP_FILES`) e,
   desde 12/10/2026, arrastar para fora: `DRAG_START` faz a view do host, um
   `NSDraggingSource`, começar uma sessão a partir da última pressão do mouse,
@@ -3818,6 +3849,10 @@ com número de run em cada uma.
   resolvedor deixou de ser `experimental` em `4e6c2fa` e é o padrão no macOS;
 - [x] **clips e layers** - scissor por lote e uma passada por `saveLayer` de
   composição numa textura do pool; 0 ou 1 nível contra a CPU (`5697a96`);
+- [x] **modos de máscara e `ShaderMask`** (13/10/2026) - `srcIn`, `dstIn` e
+  `dstOut` como fatores de blend do Metal, numa layer isolada; 0 ou 1 nível
+  contra a CPU nas cinco cenas de `metal_cpu_parity_test.dart` e desvio máximo
+  1 numa tela de 640x360 com texto em gradiente e lista que some no fim;
 - [x] **gradientes, vídeo e 3D** - gradiente pela rota densa com rampa
   amostrada no pixel (`8845bce`, 1 nível), quadros de vídeo pelo
   `GpuVideoImageCache` (`2b91a57`, 0 em BGRA e em NV12) e cenas 3D no slot de
@@ -4134,6 +4169,30 @@ Blend modes mínimos:
 - exclusion.
 
 A paridade entre CPU e GPU deverá ser medida.
+
+Estado em 13/10/2026: a display list codifica **seis** modos — `srcOver`,
+`src`, `plus` e, desde esta data, os de máscara `srcIn`, `dstIn` e `dstOut`
+(`display_list_opcodes.dart`). Cada um é um par de fatores fixos
+(`gpu_pipeline.dart`: `DST_ALPHA, ZERO`; `ZERO, SRC_ALPHA`;
+`ZERO, ONE_MINUS_SRC_ALPHA`) mapeado em todos os backends de GPU (GL, WebGL,
+Metal, Vulkan, D3D11, D3D12, WebGPU) e copiado termo a termo na CPU
+(`raster/blend.dart`). Os modos são *limitados*: pixel que a primitiva não
+cobre fica intacto (diferente do `kSrcIn` ilimitado do Skia). Nos dois "in",
+fonte transparente **apaga** em vez de ser pulada
+(`blendModeWritesTransparentSource`), senão a máscara de fade não chegaria a
+zero. Uma `saveLayer` opaca em source-over ganhou o bit
+`paintFlagIsolatedLayer` para não ser achatada no pai quando há máscara dentro.
+Direct2D e DOM recusam os três por nome (não há `D2D1_PRIMITIVE_BLEND` nem
+`mix-blend-mode` equivalente). Paridade **medida** neste Mac contra o Metal
+(`metal_cpu_parity_test.dart`): 0 em `srcIn` e `dstOut` sólidos, 1 nível em
+`dstIn`, na rampa que some e no texto com gradiente; uma tela 640x360 com
+`ShaderMask` de texto e de fade deu desvio máximo 1 entre CPU e Metal. As cenas
+foram acrescentadas ao diferencial do GL no Windows com teto 1, **ainda não
+medidas lá**. A captura pegou uma divergência real da CPU, corrigida
+junto: retângulo com gradiente sob clip fracionário arredondava o clip para o
+inteiro e perdia a última linha (o fim do fade ficava sem máscara); agora o
+clip exato entra na geometria, como no retângulo sólido. Continuam faltando clear, destination-over, os "atop", xor e
+todos os separáveis (multiply, screen…), que não são um par de fatores fixos.
 
 ## 23.8 Clipping
 
@@ -4936,6 +4995,7 @@ framework — nenhum hospeda controle nativo — e todos estão exportados por
 - [x] Scrollable, ListView, GridView, Scrollbar, Overlay, PopupStack, Navigator/rotas;
 - [x] **DropTarget / DragSource** e `DragDropScope`, ligados ao porte de drag-and-drop da §56;
 - [ ] **Ribbon — não existe**;
+- [x] **ShaderMask** (13/10/2026, `widgets/proxy.dart` e `RenderShaderMask` em `layout/render_proxy_box.dart`): gradiente sobre o filho num modo de máscara, como o do Flutter, com `shaderCallback` devolvendo um `Gradient` (não há tipo `Shader`) sobre a caixa do filho na origem. O padrão é `blendModeSrcIn` (texto com gradiente) e não o `modulate` do Flutter, que não é um par de fatores fixos; `blendModeDstIn` faz o fade. Pinta `saveLayer` isolada, filho, retângulo com o gradiente e `restore`. Verificado em CPU e Metal por captura sem janela (texto "Gradient text" em rampa de três cores e oito linhas que somem embaixo, desvio máximo 1 entre os dois) e por testes de pixel. A camada é a caixa do widget, como no `Opacity`; Direct2D e DOM recusam por nome;
 - [x] **ColorPicker** (12/10/2026, `widgets/color_picker.dart`): plano de saturação/brilho pintado com dois gradientes lineares sobre o matiz, faixas de matiz e de opacidade (esta sobre xadrez, opcional por `showAlpha`), amostra de prévia e campo hexadecimal que aceita `RGB`, `RRGGBB` e `AARRGGBB`. Cada parte é um controle focável com setas (o picker inteiro funciona sem mouse) e publica papel `slider` com rótulo e valor. Guarda a cor em `HsvColor` para não perder o matiz de um cinza — o teste que arrasta até o preto e volta pegou exatamente esse bug no campo hexadecimal. **Sem conta-gotas** (ler pixel da tela) e sem paleta de recentes; o `ColorPaletteBar` do editor vetorial continua à parte;
 - [x] **MenuBar** existe (`menu_anchor.dart`, API no formato do Flutter, com `SubmenuButton`/`MenuItemButton`): clique abre, passar o mouse troca de menu com um aberto, Esquerda/Direita andam pela barra, Escape devolve o teclado. Desde 12/10/2026, **F10 e Alt sozinho** (apertado e solto sem outra tecla no meio) dão o teclado à barra com o primeiro menu destacado, de onde quer que o foco esteja, e a mesma tecla ou Escape o devolvem — por `BuildOwner.addWindowKeyHandler`/`addKeyObserver`, a etapa da janela entre o mapa de atalhos e a travessia. Desligado na convenção do Mac, onde o menu é o do sistema e Option sozinho é metade de um acento. Testes em `menu_anchor_test.dart` (grupo "MenuBar from the keyboard"). Mnemônicos desde 12/10/2026: `MenuAcceleratorLabel('&Arquivo')` (nome e grafia do Flutter; `&&` é o `&` literal) desenha a letra sublinhada no Windows e no Linux, Alt+letra abre o menu de qualquer lugar da janela, e a letra sozinha escolhe a linha do menu que tem o teclado; o rótulo de acessibilidade continua "Arquivo". O sublinhado aparece sempre, não só com Alt apertado como no Windows;
 - [x] **StatusBar** (12/10/2026, `widgets/status_bar.dart`): faixa com régua no topo e altura do tema (três quartos de um controle, nunca menos que uma linha de legenda), `StatusBarItem` com ícone, texto `labelSmall`, separador, largura fixa opcional (para os vizinhos não andarem quando os dígitos mudam) e dica, e `StatusBarItem.message` que ocupa o que sobra. Sem papel de acessibilidade próprio (`SemanticsRole` não tem `status`; o texto é lido como texto). O editor vetorial de exemplo ainda usa a barra dele.
@@ -8386,7 +8446,7 @@ aplica, **?** não verificado.
 | **`keyboardInput`** | sim | sim desde 26/08/2026 (core protocol: dois grupos, sem `DetectableAutoRepeat`) | sim (subconjunto xkb) | sim | ? | sim |
 | **`textComposition`** | sim, se `imm32` carrega | **não** (XIM não implementado; teclas mortas funcionam e não são IME) | sim, se o compositor anuncia v3 | não | não | não |
 | `clipboardText` | sim | sim desde 26/08/2026 (selections; **INCR nos dois papéis** desde 07/09/2026, provado contra `xclip`; sem `PRIMARY`) | sim | não | não | sim (falso) |
-| `clipboardImage` | **não em plataforma nenhuma** — o contrato `Clipboard` é só texto | não | não | não | não | não |
+| `clipboardImage` | sim desde 13/10/2026 (`PNG` + `CF_DIB`, `HTML Format`) — **só testado por unidade**, nunca num Windows real | sim desde 13/10/2026 (`image/png`, `text/html`) — **só contra o cliente falso** | sim desde 13/10/2026 (`image/png`, `text/html`) — **só contra o compositor falso** | **sim, verificado no pasteboard real** em 13/10/2026 (PNG, TIFF→PNG, HTML) | não (o backend web não tem clipboard) | sim (falso: `FakeClipboard` guarda HTML e imagem) |
 | `dragAndDrop` | sim (OLE, dois sentidos; **imagem de arraste ignorada**) | sim (XDND, dois sentidos; **imagem ignorada**) | sim (dois sentidos; **imagem ignorada**, **sem `link`**) | não | não | não |
 | `perMonitorDpi` | sim | parcial (escala do probe) | parcial (inteira, a maior dos outputs) | ? | sim | sim |
 | `orderlyShutdown` | sim | sim | sim | sim (provado no spike) | ? | sim |
@@ -8411,9 +8471,13 @@ Cinco leituras que essa tabela deixa claras, e que a normativa esconde:
    que resta faltando só no X11 entre os backends de desktop é o **IME**;
 2. **drag-and-drop chegou nos três backends de desktop antes de clipboard e IME
    chegarem em dois deles** — foi a única capacidade portada em bloco;
-3. **`clipboardImage` não existe em lugar nenhum**: o contrato é texto, por
-   decisão registrada, e a matriz normativa que pede "clipboard de imagens
-   básicas" na §4.1 está descrevendo trabalho não começado;
+3. ~~**`clipboardImage` não existe em lugar nenhum**~~. Desde 13/10/2026 o
+   contrato tem uma segunda interface, `RichClipboard` (HTML e imagem como
+   bytes de PNG, mais `availableFormats`), implementada no Win32, X11,
+   Wayland, AppKit e no `FakeClipboard`. Só o AppKit foi provado contra o
+   sistema real; os outros três são provados por bytes e por fakes. Lista de
+   arquivos, formatos privados e notificação de mudança continuam fora, por
+   decisão registrada em `platform/clipboard.dart`;
 4. **`vsync` não é reivindicada por ninguém**, o que é honesto e vale manter:
    o `BitBlt` não é paced, e o `PresentMode` só tem `fifo`/`immediate` reais no
    WGL e no GDI;
@@ -9905,6 +9969,10 @@ fora da tela, e curvas achatadas por `Path.flattenTo`.
   em 1/255 enquanto o shader mantém float;
 - `src` sobre forma baseada em máscara diverge até 255, por semântica do lado
   da GPU;
+- `srcIn`/`dstIn` (13/10/2026) herdam a mesma divergência: a GPU desenha o
+  quad inteiro da máscara e os pixels de cobertura zero dele são apagados, a
+  CPU não os toca. O `ShaderMask` não a vê, porque o retângulo dele é a
+  própria layer;
 - do texto continuam faltando: COLR/CPAL, CBDT e sbix (emoji colorido), fontes
   variáveis, shaping índico/USE, escrita vertical CJK, `BASE`, fallback de
   fonte, edição multilinha, e **hinting de CFF** — os parâmetros são parseados

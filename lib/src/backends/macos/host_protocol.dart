@@ -357,8 +357,8 @@ abstract interface class HostMessageSink {
   /// [onClipboardResult] that ends the request.
   void onClipboardData(int request, String base64);
 
-  /// `CLIPBOARD=<request>:<NONE|TEXT|WRITTEN|FAILED>`: the end of a clipboard
-  /// request.
+  /// `CLIPBOARD=<request>:<NONE|TEXT|DATA|WRITTEN|FAILED>`: the end of a
+  /// clipboard request.
   void onClipboardResult(int request, HostClipboardResult result);
 
   /// `ERROR=<code>`. Rare, and useless without the text, so this one string is
@@ -547,6 +547,11 @@ enum HostClipboardResult {
   /// A read finished; the text is whatever `CLIPBOARD_DATA` lines preceded
   /// this one, possibly none - the empty string is text too.
   text,
+
+  /// A typed read (`CLIPBOARD_READ_TYPE`) finished; the payload is whatever
+  /// `CLIPBOARD_DATA` lines preceded this one. Its own word rather than
+  /// [text] so a reply can never be decoded as the wrong kind of answer.
+  data,
 
   /// A write replaced the pasteboard's contents.
   written,
@@ -921,7 +926,7 @@ final class HostProtocolParser {
     _sink.onClipboardData(request, _stringFrom(_cursor + 1));
   }
 
-  // CLIPBOARD=<request>:<NONE|TEXT|WRITTEN|FAILED>
+  // CLIPBOARD=<request>:<NONE|TEXT|DATA|WRITTEN|FAILED>
   void _parseClipboardResult(int offset) {
     _cursor = offset;
     final request = _readInt();
@@ -935,11 +940,13 @@ final class HostProtocolParser {
         ? HostClipboardResult.none
         : _regionEquals(start, _length, 'TEXT')
             ? HostClipboardResult.text
-            : _regionEquals(start, _length, 'WRITTEN')
-                ? HostClipboardResult.written
-                : _regionEquals(start, _length, 'FAILED')
-                    ? HostClipboardResult.failed
-                    : null;
+            : _regionEquals(start, _length, 'DATA')
+                ? HostClipboardResult.data
+                : _regionEquals(start, _length, 'WRITTEN')
+                    ? HostClipboardResult.written
+                    : _regionEquals(start, _length, 'FAILED')
+                        ? HostClipboardResult.failed
+                        : null;
     if (result == null) return _sink.onError('BAD_CLIPBOARD_RESULT');
     _sink.onClipboardResult(request, result);
   }
@@ -1387,6 +1394,22 @@ final class HostCommands {
   /// Replaces the pasteboard's text with the pieces sent so far for
   /// [request]. Answered by `CLIPBOARD=<request>:WRITTEN|FAILED`.
   static String clipboardWrite(int request) => 'CLIPBOARD_WRITE $request\n';
+
+  /// Asks for the pasteboard's contents in [type]: `png` (base64 of a PNG
+  /// file, converted from TIFF or any other bitmap type when the pasteboard
+  /// has no PNG), `html` (base64 of UTF-8) or `formats` (a comma-separated
+  /// list of `text`, `html`, `image`, unencoded). Answered by `CLIPBOARD_DATA`
+  /// pieces and one `CLIPBOARD=<request>:NONE|DATA|FAILED`. Only for a host
+  /// that announced `clipboard-rich`.
+  static String clipboardReadType(int request, String type) =>
+      'CLIPBOARD_READ_TYPE $request $type\n';
+
+  /// Replaces the pasteboard's contents with the pieces sent so far for
+  /// [request], as [type]: `png` (base64 of a PNG file; the host adds TIFF)
+  /// or `html` (base64 of the HTML, a `.`, base64 of its plain-text
+  /// alternative). Answered by `CLIPBOARD=<request>:WRITTEN|FAILED`.
+  static String clipboardWriteType(int request, String type) =>
+      'CLIPBOARD_WRITE_TYPE $request $type\n';
 
   /// One base64 piece of the menu description a [menuSet] installs, at most
   /// [kMacosHostClipboardChunk] long.

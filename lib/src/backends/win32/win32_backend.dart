@@ -585,6 +585,9 @@ final class Win32WindowingBackend
         Capability.keyboardInput,
         Capability.pointerInput,
         if (api.clipboardSupported) Capability.clipboardText,
+        // `PNG` + `CF_DIB` and `HTML Format`; see win32_clipboard.dart, which
+        // also says what of it has run on a real Windows clipboard.
+        if (api.richClipboardSupported) Capability.clipboardImage,
         // Both halves: `IDropTarget` receives a drop and `DoDragDrop` starts
         // one. The capability is claimed on ole32 having loaded, because that
         // is the single thing either half needs and the only thing that can

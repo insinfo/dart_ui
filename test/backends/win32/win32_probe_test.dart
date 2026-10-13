@@ -118,10 +118,11 @@ void main() {
 
     test('does not claim what it defers', () {
       final result = backend.probe();
-      // Richer desktop services remain unimplemented; the Unicode clipboard
-      // and IMM32 composition are both part of the Win32 vertical slice now.
+      // Richer desktop services remain unimplemented; the Unicode clipboard,
+      // HTML and images on it (since 13/10/2026) and IMM32 composition are
+      // all part of the Win32 vertical slice now.
       expect(result.supports(Capability.clipboardText), isTrue);
-      expect(result.supports(Capability.clipboardImage), isFalse);
+      expect(result.supports(Capability.clipboardImage), isTrue);
       expect(result.supports(Capability.vsync), isFalse);
       // The remaining deferral is written down, not just absent.
       expect(

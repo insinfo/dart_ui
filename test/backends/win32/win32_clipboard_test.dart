@@ -16,6 +16,7 @@
 library;
 
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/win32/win32.dart';
@@ -62,6 +63,51 @@ void main() {
         expect(await clipboard.readText(), value);
       } finally {
         if (previous != null) await clipboard.writeText(previous);
+      }
+    });
+
+    // Written 13/10/2026 on a Mac and, as of that date, never run: HTML and
+    // images through a real Windows clipboard are unproven. The translations
+    // they depend on are tested everywhere in win32_clipboard_formats_test.
+    test('HTML and an image survive a round trip, each with its fallback',
+        () async {
+      final Clipboard clipboard = backend.clipboard;
+      expect(clipboard, isA<RichClipboard>());
+      final RichClipboard rich = clipboard as RichClipboard;
+
+      String? previous;
+      try {
+        previous = await rich.readText();
+      } on ClipboardException catch (error) {
+        markTestSkipped('the clipboard is held by another process: $error');
+        return;
+      }
+
+      try {
+        await rich.writeHtml('<p>olá <b>mundo</b></p>', plainText: 'olá mundo');
+        expect(await rich.readHtml(), '<p>olá <b>mundo</b></p>');
+        expect(await rich.readText(), 'olá mundo',
+            reason: 'HTML is written with CF_UNICODETEXT beside it');
+        expect(await rich.availableFormats(),
+            containsAll(<ClipboardFormat>[ClipboardFormat.html]));
+
+        final Uint8List png = encodePng(
+          width: 2,
+          height: 2,
+          pixels: Uint8List.fromList(<int>[
+            255, 0, 0, 255, 0, 255, 0, 255, //
+            0, 0, 255, 255, 255, 255, 255, 255,
+          ]),
+        );
+        await rich.writeImage(png);
+        expect(await rich.readImage(), png,
+            reason: 'the registered PNG format comes back byte for byte');
+        expect(await rich.readText(), isNull);
+        expect(await rich.availableFormats(), <ClipboardFormat>{
+          ClipboardFormat.image,
+        });
+      } finally {
+        if (previous != null) await rich.writeText(previous);
       }
     });
   }, skip: Platform.isWindows ? false : 'needs Windows');

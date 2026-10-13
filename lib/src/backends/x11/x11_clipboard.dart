@@ -33,6 +33,16 @@
 ///     failed, and the application above had no way to make it succeed.
 ///     Several transfers run at once; see [X11ClipboardManager] for why they
 ///     are not serialised.
+///   * **HTML and images** (since 13/10/2026): reading asks for `text/html`
+///     and `image/png`, and `availableFormats` asks for `TARGETS`; owning
+///     answers `TARGETS` with those two beside the text targets when the copy
+///     carried them, and serves them - INCR included, which an image needs far
+///     more often than text does. An HTML copy always carries its plain-text
+///     alternative, so a terminal pasting it still gets the words. HTML that
+///     another application wrote as UTF-16 with a byte-order mark - Firefox
+///     has - is decoded as such. Only `image/png` counts as an image: it is
+///     the one encoding every X toolkit offers, and the one `readImage`
+///     promises;
 ///   * **`PRIMARY`** - the middle-click selection - is deliberately not here.
 ///     It is a different feature with different semantics (it follows the
 ///     caret, it is not a copy command) and modelling it as a second clipboard
@@ -69,7 +79,8 @@
 /// `CLIPBOARD` reads and writes ran under Xvfb from 26/08/2026; the INCR owner
 /// joined them on 07/09/2026. See §68 of the roadmap for what is still
 /// unproven - chiefly that no GTK or Qt application, as opposed to `xclip`,
-/// has ever pasted from this backend.
+/// has ever pasted from this backend. HTML and images have **only** the fake:
+/// as of 13/10/2026 neither has crossed a real X server.
 library;
 
 import 'dart:async';
@@ -77,6 +88,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import '../../platform/clipboard.dart';
+import '../../platform/clipboard_formats.dart';
 import 'x11_drag_drop.dart' show X11PropertyValue;
 import 'x11_protocol.dart';
 
@@ -96,6 +108,8 @@ const List<String> x11ClipboardAtoms = <String>[
   'TIMESTAMP',
   'MULTIPLE',
   'text/plain;charset=utf-8',
+  clipboardHtmlMime,
+  clipboardPngMime,
   x11ClipboardProperty,
 ];
 
@@ -213,19 +227,33 @@ typedef X11ClipboardTimeLookup = int Function();
 /// application - and the fallback has to complete the same future the caller
 /// is already awaiting. A second [Completer] here would mean the caller got
 /// null while the real answer arrived somewhere it could not see.
+///
+/// Not generic over what it reads, on purpose: one read is in flight at a
+/// time whatever its kind, so the slot holding it has one type, and [decode]
+/// is what makes a text read differ from an image read.
 final class _X11ClipboardRead {
   _X11ClipboardRead({
     required this.requestor,
     required this.property,
+    required this.operation,
+    required this.decode,
     required List<({int atom, String name})> targets,
   }) : _targets = targets;
 
   final int requestor;
   final int property;
+
+  /// The port operation this read serves, for the exceptions it may raise.
+  final String operation;
+
+  /// Turns the owner's reply into the caller's answer. Null means "the owner
+  /// answered with something that is not this format", which is no data.
+  final Object? Function(X11PropertyValue value) decode;
+
   final List<({int atom, String name})> _targets;
   int _attempt = 0;
 
-  final Completer<String?> completer = Completer<String?>();
+  final Completer<Object?> completer = Completer<Object?>();
   Timer? timer;
 
   /// The conversion currently in flight.
@@ -250,7 +278,7 @@ final class _X11ClipboardRead {
 /// Holds its own [payload] rather than reading the manager's current text on
 /// each chunk, and that is a correctness decision, not a copy made out of
 /// habit: ICCCM says an owner keeps servicing a request it accepted even after
-/// it loses the selection, and a transfer that re-read `_ownedText` would
+/// it loses the selection, and a transfer that re-read `_owned` would
 /// either truncate at that moment or splice two different documents together
 /// in the middle of somebody's paste.
 final class _X11IncrementalServe {
@@ -337,10 +365,10 @@ final class X11ClipboardManager {
   /// What this application last copied, while it still owns `CLIPBOARD`.
   ///
   /// Null means we do not own the selection - either nothing was copied, or a
-  /// `SelectionClear` said another application took it. Keeping the text after
-  /// losing ownership is how an application serves stale data to a requestor
-  /// that reached it through a race.
-  String? _ownedText;
+  /// `SelectionClear` said another application took it. Keeping the payload
+  /// after losing ownership is how an application serves stale data to a
+  /// requestor that reached it through a race.
+  _X11OwnedClipboard? _owned;
 
   /// The server time ownership was taken at, which `TIMESTAMP` must answer
   /// with. ICCCM: answering `CurrentTime` there breaks a requestor that is
@@ -350,7 +378,7 @@ final class X11ClipboardManager {
   bool _disposed = false;
 
   /// Whether this application currently believes it owns `CLIPBOARD`.
-  bool get ownsSelection => _ownedText != null;
+  bool get ownsSelection => _owned != null;
 
   /// The largest payload served from a single `ChangeProperty`, in bytes.
   ///
@@ -398,17 +426,162 @@ final class X11ClipboardManager {
   /// refuses that conversion - `STRING` is Latin-1 by definition and is what a
   /// pre-UTF-8 application still offers.
   Future<String?> readText() {
+    // In preference order, skipping anything the server would not intern.
+    // `STRING` is last and is always there - it is a predefined atom - so the
+    // list is never empty.
+    final int utf8Atom = _client.atom('UTF8_STRING');
+    final int mimeAtom = _client.atom('text/plain;charset=utf-8');
+    return _convert<String>(
+      operation: 'readText',
+      own: (_X11OwnedClipboard owned) => owned.text,
+      targets: <({int atom, String name})>[
+        if (utf8Atom != 0) (atom: utf8Atom, name: 'UTF8_STRING'),
+        if (mimeAtom != 0) (atom: mimeAtom, name: 'text/plain;charset=utf-8'),
+        (atom: xcbAtomString, name: 'STRING'),
+      ],
+      decode: _decode,
+      retry: readText,
+    );
+  }
+
+  /// The HTML on `CLIPBOARD`, null when the owner offers none.
+  Future<String?> readHtml() {
+    final int htmlAtom = _client.atom(clipboardHtmlMime);
+    if (htmlAtom == 0) {
+      return _missingAtom<String>('readHtml', clipboardHtmlMime);
+    }
+    return _convert<String>(
+      operation: 'readHtml',
+      own: (_X11OwnedClipboard owned) => owned.html,
+      targets: <({int atom, String name})>[
+        (atom: htmlAtom, name: clipboardHtmlMime),
+      ],
+      decode: (X11PropertyValue value) {
+        // The type the owner used, not the one asked for, decides - and an
+        // owner that labelled its HTML UTF8_STRING still sent HTML.
+        final int utf8Atom = _client.atom('UTF8_STRING');
+        if (value.type != htmlAtom &&
+            (utf8Atom == 0 || value.type != utf8Atom)) {
+          return null;
+        }
+        return decodeClipboardHtml(value.bytes);
+      },
+      retry: readHtml,
+    );
+  }
+
+  /// The image on `CLIPBOARD` as PNG bytes, null when the owner offers none.
+  ///
+  /// A reply typed `image/png` that is not a PNG file is a named failure, not
+  /// null: the owner said it had an image, and pretending it did not would
+  /// hide a broken owner behind an empty clipboard.
+  Future<Uint8List?> readImage() {
+    final int pngAtom = _client.atom(clipboardPngMime);
+    if (pngAtom == 0) {
+      return _missingAtom<Uint8List>('readImage', clipboardPngMime);
+    }
+    return _convert<Uint8List>(
+      operation: 'readImage',
+      own: (_X11OwnedClipboard owned) {
+        final Uint8List? png = owned.png;
+        return png == null ? null : Uint8List.fromList(png);
+      },
+      targets: <({int atom, String name})>[
+        (atom: pngAtom, name: clipboardPngMime),
+      ],
+      decode: (X11PropertyValue value) =>
+          value.type == pngAtom ? value.bytes : null,
+      retry: readImage,
+    ).then((Uint8List? png) {
+      if (png != null && !isPngData(png)) {
+        throw ClipboardException(
+          operation: 'readImage',
+          reason: 'the CLIPBOARD owner answered image/png with ${png.length} '
+              'bytes that are not a PNG file',
+          backend: 'x11',
+        );
+      }
+      return png;
+    });
+  }
+
+  /// Which portable formats the `CLIPBOARD` owner says it can produce, from
+  /// its `TARGETS` answer.
+  ///
+  /// An owner that refuses `TARGETS` - ICCCM requires it, but not every
+  /// client is ICCCM - is reported as offering nothing, which is the only
+  /// thing this side can honestly say about it.
+  Future<Set<ClipboardFormat>> availableFormats() {
+    final int targetsAtom = _client.atom('TARGETS');
+    if (targetsAtom == 0) {
+      return _missingAtom<Set<ClipboardFormat>>('availableFormats', 'TARGETS')
+          .then((Set<ClipboardFormat>? formats) => formats!);
+    }
+    return _convert<Set<ClipboardFormat>>(
+      operation: 'availableFormats',
+      own: (_X11OwnedClipboard owned) => owned.formats,
+      targets: <({int atom, String name})>[
+        (atom: targetsAtom, name: 'TARGETS'),
+      ],
+      decode: _decodeTargets,
+      retry: availableFormats,
+    ).then((Set<ClipboardFormat>? formats) => formats ?? <ClipboardFormat>{});
+  }
+
+  /// The formats a `TARGETS` reply names: a list of 32-bit atoms, in this
+  /// client's byte order (Xlib and xcb both hand format-32 data over as
+  /// native words).
+  Set<ClipboardFormat> _decodeTargets(X11PropertyValue value) {
+    final ByteData data = ByteData.sublistView(value.bytes);
+    final Set<int> atoms = <int>{
+      for (int i = 0; i + 4 <= value.bytes.length; i += 4)
+        data.getUint32(i, Endian.host),
+    };
+    bool offers(String name) {
+      final int atom = _client.atom(name);
+      return atom != 0 && atoms.contains(atom);
+    }
+
+    return <ClipboardFormat>{
+      if (offers('UTF8_STRING') ||
+          offers('text/plain;charset=utf-8') ||
+          atoms.contains(xcbAtomString))
+        ClipboardFormat.text,
+      if (offers(clipboardHtmlMime)) ClipboardFormat.html,
+      if (offers(clipboardPngMime)) ClipboardFormat.image,
+    };
+  }
+
+  Future<T?> _missingAtom<T>(String operation, String name) =>
+      Future<T?>.error(ClipboardException(
+        operation: operation,
+        reason: 'the $name atom was not interned on this connection',
+        backend: 'x11',
+      ));
+
+  /// The conversation every read has, whatever it reads.
+  ///
+  /// [own] answers from our own copy, [targets] are tried in order, [decode]
+  /// turns a reply into the answer, and [retry] is the same read issued again
+  /// once a read already in flight has finished.
+  Future<T?> _convert<T extends Object>({
+    required String operation,
+    required T? Function(_X11OwnedClipboard owned) own,
+    required List<({int atom, String name})> targets,
+    required T? Function(X11PropertyValue value) decode,
+    required Future<T?> Function() retry,
+  }) {
     if (_disposed) {
-      return Future<String?>.error(const ClipboardException(
-        operation: 'readText',
+      return Future<T?>.error(ClipboardException(
+        operation: operation,
         reason: 'the X11 connection is gone',
         backend: 'x11',
       ));
     }
     final int selection = _client.atom('CLIPBOARD');
     if (selection == 0) {
-      return Future<String?>.error(const ClipboardException(
-        operation: 'readText',
+      return Future<T?>.error(ClipboardException(
+        operation: operation,
         reason: 'the CLIPBOARD atom was not interned on this connection',
         backend: 'x11',
       ));
@@ -419,15 +592,16 @@ final class X11ClipboardManager {
     // during a synchronous stretch would deadlock against itself.
     final int owner = _client.getSelectionOwner(selection);
     final int window = _windowOf();
-    if (owner == window && _ownedText != null) {
-      return Future<String?>.value(_ownedText);
+    final _X11OwnedClipboard? owned = _owned;
+    if (owner == window && owned != null) {
+      return Future<T?>.value(own(owned));
     }
     // Nobody owns it. Not a failure - a clipboard with nothing on it - and
     // answering now saves the caller a timeout.
-    if (owner == xcbNone) return Future<String?>.value();
+    if (owner == xcbNone) return Future<T?>.value();
     if (window == xcbNone) {
-      return Future<String?>.error(const ClipboardException(
-        operation: 'readText',
+      return Future<T?>.error(ClipboardException(
+        operation: operation,
         reason: 'a selection transfer needs one of this application\'s '
             'windows to receive the property, and there is none open',
         backend: 'x11',
@@ -438,33 +612,26 @@ final class X11ClipboardManager {
       // One property, one transfer at a time: a second ConvertSelection into
       // the same property would race the first one's reply and both would read
       // the wrong bytes.
-      return active.completer.future.then<String?>((String? _) => readText());
+      return active.completer.future.then<T?>((Object? _) => retry());
     }
     final int property = _client.atom(x11ClipboardProperty);
     if (property == 0) {
-      return Future<String?>.error(const ClipboardException(
-        operation: 'readText',
+      return Future<T?>.error(ClipboardException(
+        operation: operation,
         reason: 'the $x11ClipboardProperty atom was not interned',
         backend: 'x11',
       ));
     }
-    // In preference order, skipping anything the server would not intern.
-    // `STRING` is last and is always there - it is a predefined atom - so the
-    // list is never empty.
-    final int utf8Atom = _client.atom('UTF8_STRING');
-    final int mimeAtom = _client.atom('text/plain;charset=utf-8');
     final read = _X11ClipboardRead(
       requestor: window,
       property: property,
-      targets: <({int atom, String name})>[
-        if (utf8Atom != 0) (atom: utf8Atom, name: 'UTF8_STRING'),
-        if (mimeAtom != 0) (atom: mimeAtom, name: 'text/plain;charset=utf-8'),
-        (atom: xcbAtomString, name: 'STRING'),
-      ],
+      operation: operation,
+      decode: decode,
+      targets: targets,
     );
     _read = read;
     _sendConversion(read, selection);
-    return read.completer.future;
+    return read.completer.future.then<T?>((Object? value) => value as T?);
   }
 
   /// Issues the conversion for the target [read] is currently on.
@@ -553,7 +720,7 @@ final class X11ClipboardManager {
       _client.flush();
       return;
     }
-    _finishRead(read, _decode(value));
+    _finishRead(read, read.decode(value));
   }
 
   /// Advances an `INCR` transfer in either role. Returns whether the event
@@ -602,7 +769,7 @@ final class X11ClipboardManager {
       final BytesBuilder builder = read.incremental!;
       _finishRead(
         read,
-        _decode(X11PropertyValue(
+        read.decode(X11PropertyValue(
           type: read.target,
           format: 8,
           bytes: builder.takeBytes(),
@@ -638,11 +805,11 @@ final class X11ClipboardManager {
     return null;
   }
 
-  void _finishRead(_X11ClipboardRead read, String? text) {
+  void _finishRead(_X11ClipboardRead read, Object? answer) {
     if (!identical(_read, read)) return;
     _read = null;
     read.timer?.cancel();
-    if (!read.completer.isCompleted) read.completer.complete(text);
+    if (!read.completer.isCompleted) read.completer.complete(answer);
   }
 
   void _failRead(_X11ClipboardRead read, String reason) {
@@ -651,7 +818,7 @@ final class X11ClipboardManager {
     read.timer?.cancel();
     if (read.completer.isCompleted) return;
     read.completer.completeError(ClipboardException(
-      operation: 'readText',
+      operation: read.operation,
       reason: reason,
       backend: 'x11',
     ));
@@ -668,35 +835,57 @@ final class X11ClipboardManager {
   /// timestamp makes the server ignore it silently - and an application that
   /// believes it owns the clipboard when it does not is one whose copy simply
   /// never happened.
-  Future<void> writeText(String text) async {
+  Future<void> writeText(String text) =>
+      _own('writeText', _X11OwnedClipboard(text: text));
+
+  /// Takes ownership with [html] behind `text/html` and a plain-text
+  /// alternative behind the text targets, so a requestor that only knows text
+  /// still pastes the words.
+  Future<void> writeHtml(String html, {String? plainText}) => _own(
+        'writeHtml',
+        _X11OwnedClipboard(
+          text: plainText ?? plainTextFromHtml(html),
+          html: html,
+        ),
+      );
+
+  /// Takes ownership with [png] behind `image/png`, and nothing else: an
+  /// image copy leaves no text, as it does everywhere else.
+  Future<void> writeImage(Uint8List png) async {
+    // Inside the future, like every other failure of this port.
+    requirePngData(png);
+    await _own('writeImage', _X11OwnedClipboard(png: Uint8List.fromList(png)));
+  }
+
+  Future<void> _own(String operation, _X11OwnedClipboard owned) async {
     if (_disposed) {
-      throw const ClipboardException(
-        operation: 'writeText',
+      throw ClipboardException(
+        operation: operation,
         reason: 'the X11 connection is gone',
         backend: 'x11',
       );
     }
     final int selection = _client.atom('CLIPBOARD');
     if (selection == 0) {
-      throw const ClipboardException(
-        operation: 'writeText',
+      throw ClipboardException(
+        operation: operation,
         reason: 'the CLIPBOARD atom was not interned on this connection',
         backend: 'x11',
       );
     }
     final int window = _windowOf();
     if (window == xcbNone) {
-      throw const ClipboardException(
-        operation: 'writeText',
+      throw ClipboardException(
+        operation: operation,
         reason: 'owning a selection needs one of this application\'s windows '
             'to own it, and there is none open',
         backend: 'x11',
       );
     }
-    final int bytes = utf8.encode(text).length;
+    final int bytes = owned.byteLength;
     if (bytes > maximumOwnedBytes) {
       throw ClipboardException(
-        operation: 'writeText',
+        operation: operation,
         reason: '$bytes bytes exceeds the $maximumOwnedBytes this backend will '
             'hold; INCR removes the protocol ceiling but not the memory one, '
             'and truncating the payload would be worse than refusing it',
@@ -707,15 +896,15 @@ final class X11ClipboardManager {
     _client.setSelectionOwner(window, selection, time);
     _client.flush();
     if (_client.getSelectionOwner(selection) != window) {
-      throw const ClipboardException(
-        operation: 'writeText',
+      throw ClipboardException(
+        operation: operation,
         reason: 'the server did not accept this application as the CLIPBOARD '
             'owner; the timestamp used was probably older than the current '
             'owner\'s',
         backend: 'x11',
       );
     }
-    _ownedText = text;
+    _owned = owned;
     _ownedSince = time;
   }
 
@@ -733,8 +922,8 @@ final class X11ClipboardManager {
   }) {
     final int clipboard = _client.atom('CLIPBOARD');
     if (clipboard == 0 || selection != clipboard) return false;
-    final String? text = _ownedText;
-    if (text == null) return false;
+    final _X11OwnedClipboard? owned = _owned;
+    if (owned == null) return false;
 
     // ICCCM 2.2: a requestor from before the property field existed sets it to
     // None and means "put it in a property named after the target".
@@ -749,8 +938,13 @@ final class X11ClipboardManager {
     final int utf8Atom = _client.atom('UTF8_STRING');
     final int textAtom = _client.atom('TEXT');
     final int mimeAtom = _client.atom('text/plain;charset=utf-8');
+    final int htmlAtom = _client.atom(clipboardHtmlMime);
+    final int pngAtom = _client.atom(clipboardPngMime);
 
     if (targets != 0 && target == targets) {
+      // Only what this copy can produce: a requestor picks from this list,
+      // and offering text for an image copy would be answered with a refusal.
+      final bool hasText = owned.text != null;
       _client.setWindowProperty32(
         requestor,
         destination,
@@ -758,10 +952,12 @@ final class X11ClipboardManager {
         <int>[
           if (targets != 0) targets,
           if (timestamp != 0) timestamp,
-          if (utf8Atom != 0) utf8Atom,
-          if (mimeAtom != 0) mimeAtom,
-          xcbAtomString,
-          if (textAtom != 0) textAtom,
+          if (owned.png != null && pngAtom != 0) pngAtom,
+          if (owned.html != null && htmlAtom != 0) htmlAtom,
+          if (hasText && utf8Atom != 0) utf8Atom,
+          if (hasText && mimeAtom != 0) mimeAtom,
+          if (hasText) xcbAtomString,
+          if (hasText && textAtom != 0) textAtom,
         ],
       );
       _accept(requestor, selection, target, destination, time);
@@ -781,7 +977,7 @@ final class X11ClipboardManager {
       return true;
     }
 
-    final Uint8List? payload = _encodeFor(target, text);
+    final Uint8List? payload = _encodeFor(target, owned);
     if (payload == null) {
       _refuse(requestor, selection, target, time);
       return true;
@@ -973,7 +1169,17 @@ final class X11ClipboardManager {
   }
 
   /// The bytes for one target, or null when this owner cannot produce it.
-  Uint8List? _encodeFor(int target, String text) {
+  Uint8List? _encodeFor(int target, _X11OwnedClipboard owned) {
+    final int htmlAtom = _client.atom(clipboardHtmlMime);
+    final String? html = owned.html;
+    if (html != null && htmlAtom != 0 && target == htmlAtom) {
+      return Uint8List.fromList(utf8.encode(html));
+    }
+    final int pngAtom = _client.atom(clipboardPngMime);
+    final Uint8List? png = owned.png;
+    if (png != null && pngAtom != 0 && target == pngAtom) return png;
+    final String? text = owned.text;
+    if (text == null) return null;
     final int utf8Atom = _client.atom('UTF8_STRING');
     final int mimeAtom = _client.atom('text/plain;charset=utf-8');
     if ((utf8Atom != 0 && target == utf8Atom) ||
@@ -1029,7 +1235,7 @@ final class X11ClipboardManager {
   bool handleSelectionClear(int selection) {
     final int clipboard = _client.atom('CLIPBOARD');
     if (clipboard == 0 || selection != clipboard) return false;
-    if (_ownedText == null) return false;
+    if (_owned == null) return false;
     // Dropped, not kept: serving text after losing ownership is how a
     // requestor that reached us through a race gets stale data.
     //
@@ -1038,9 +1244,9 @@ final class X11ClipboardManager {
     // each transfer holds its own bytes - so an application halfway through
     // pasting finishes with the text it asked for instead of a truncated
     // document. What it must not do is start a *new* conversion, and it
-    // cannot: `handleSelectionRequest` returns false once there is no owned
-    // text.
-    _ownedText = null;
+    // cannot: `handleSelectionRequest` returns false once there is nothing
+    // owned.
+    _owned = null;
     _ownedSince = xcbCurrentTime;
     return true;
   }
@@ -1058,8 +1264,8 @@ final class X11ClipboardManager {
       _read = null;
       read.timer?.cancel();
       if (!read.completer.isCompleted) {
-        read.completer.completeError(const ClipboardException(
-          operation: 'readText',
+        read.completer.completeError(ClipboardException(
+          operation: read.operation,
           reason: 'the X11 connection was closed while the clipboard owner '
               'was still answering',
           backend: 'x11',
@@ -1074,7 +1280,7 @@ final class X11ClipboardManager {
       serve.timer?.cancel();
     }
     _serving.clear();
-    _ownedText = null;
+    _owned = null;
   }
 
   /// How many INCR transfers this owner has started since it was built.
@@ -1103,7 +1309,7 @@ final class X11ClipboardManager {
 /// Thin on purpose: the state machine belongs to the manager, which the
 /// backend also feeds events to, and this is only the shape the application
 /// layer names.
-final class X11Clipboard implements Clipboard {
+final class X11Clipboard implements RichClipboard {
   const X11Clipboard(this.manager);
 
   final X11ClipboardManager manager;
@@ -1113,4 +1319,46 @@ final class X11Clipboard implements Clipboard {
 
   @override
   Future<void> writeText(String text) => manager.writeText(text);
+
+  @override
+  Future<Set<ClipboardFormat>> availableFormats() => manager.availableFormats();
+
+  @override
+  Future<String?> readHtml() => manager.readHtml();
+
+  @override
+  Future<void> writeHtml(String html, {String? plainText}) =>
+      manager.writeHtml(html, plainText: plainText);
+
+  @override
+  Future<Uint8List?> readImage() => manager.readImage();
+
+  @override
+  Future<void> writeImage(Uint8List png) => manager.writeImage(png);
+}
+
+/// What one copy put on `CLIPBOARD`: any of text, HTML and a PNG.
+///
+/// One object for the whole copy rather than a field per format, so that
+/// "every write replaces everything" is a single assignment and a partially
+/// replaced clipboard - new text, last copy's image - cannot be expressed.
+final class _X11OwnedClipboard {
+  const _X11OwnedClipboard({this.text, this.html, this.png});
+
+  final String? text;
+  final String? html;
+  final Uint8List? png;
+
+  Set<ClipboardFormat> get formats => <ClipboardFormat>{
+        if (text != null) ClipboardFormat.text,
+        if (html != null) ClipboardFormat.html,
+        if (png != null) ClipboardFormat.image,
+      };
+
+  /// The bytes held, for the memory cap. UTF-8 for the strings, because that
+  /// is the size they are served at.
+  int get byteLength =>
+      (text == null ? 0 : utf8.encode(text!).length) +
+      (html == null ? 0 : utf8.encode(html!).length) +
+      (png?.length ?? 0);
 }

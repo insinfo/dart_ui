@@ -1,12 +1,44 @@
 /// The system clipboard, as a port the core can name and no backend owns.
 ///
 /// Copy, cut and paste are the one editing feature that is not a function of
-/// the document: the text has to leave this process and come back from another
-/// one. That crossing is what this file models, and it models it with exactly
-/// two operations - read the text, write the text - because everything else a
-/// clipboard can carry (images, files, HTML, a private format) differs so much
-/// between platforms that a shared contract for it would be a lie. Text is the
-/// format all three targets agree on, so text is what the port promises.
+/// the document: the data has to leave this process and come back from another
+/// one. That crossing is what this file models, in two layers:
+///
+///  * [Clipboard] - read the text, write the text. Text is the format every
+///    target agrees on, so it is the contract every backend must keep, and the
+///    one the text field is written against.
+///  * [RichClipboard] - the same clipboard, plus **HTML** and **images**, the
+///    two other formats every desktop target can carry with one meaning:
+///    HTML as a UTF-8 string, an image as the bytes of a **PNG file**. A
+///    backend that can carry them implements this interface as well; a caller
+///    that wants them asks `clipboard is RichClipboard` rather than assuming.
+///
+/// ## Why PNG, and why bytes
+///
+/// The portable shape of an image on a clipboard is a file, not pixels. macOS
+/// stores `public.png` (or TIFF), X11 and Wayland negotiate `image/png`, and
+/// Windows has a registered `PNG` format beside its own `CF_DIB` - so PNG is
+/// the one encoding all of them can produce and accept, and the alpha channel
+/// survives it. The bytes stay encoded because this layer may not depend on
+/// the image codecs (`graphics` sits beside it, not under it); a caller that
+/// wants pixels decodes with `decodePng`, and a backend whose platform speaks
+/// another bitmap format converts at its own edge - the Win32 backend turns
+/// `CF_DIB`/`CF_DIBV5` into PNG on read, the macOS host turns TIFF into PNG.
+///
+/// ## Still absent, deliberately
+///
+///  * **File lists.** A copied file is a path on one platform, a URL on
+///    another and a shell object with virtual-file promises on Windows; the
+///    drag-and-drop port carries `text/uri-list` for the case that has one
+///    meaning, and the clipboard will borrow that shape when someone needs it.
+///  * **Private and custom formats.** A format only this application reads is
+///    an in-process copy buffer, not a clipboard; one some *other* application
+///    reads is a platform-specific contract that belongs in that backend.
+///  * **RTF**, and HTML synthesised from it. macOS applications such as
+///    TextEdit publish RTF and no HTML; converting one into the other is a
+///    document-model decision, not a transport one.
+///  * **A change notification.** See [Clipboard] for why it would have to be a
+///    poll on two of the targets.
 ///
 /// ## Why every operation is asynchronous
 ///
@@ -59,6 +91,8 @@
 /// can tell them apart.
 library;
 
+import 'dart:typed_data';
+
 /// Reading and writing the platform's text clipboard.
 ///
 /// Implemented once per backend - `Win32Clipboard` on Windows, `FakeClipboard`
@@ -67,8 +101,10 @@ library;
 ///
 /// **Not in this contract, deliberately, and each for a reason:**
 ///
-///  * *Formats other than text.* Images and file lists have no portable shape;
-///    see the library comment.
+///  * *Formats other than text.* HTML and images are [RichClipboard], a second
+///    interface rather than members here, so that a backend - or a test double
+///    - with only text keeps compiling and keeps meaning what it says. File
+///    lists have no portable shape at all; see the library comment.
 ///  * *A change notification.* Win32 has `WM_CLIPBOARDUPDATE`, X11 has
 ///    `SelectionClear` on the owner and nothing at all for observers, and macOS
 ///    has only a polled `changeCount`. A portable "clipboard changed" event
@@ -91,6 +127,94 @@ abstract interface class Clipboard {
   /// must assume the previous contents survived, because on Win32 the
   /// clipboard is not emptied until the lock is held.
   Future<void> writeText(String text);
+}
+
+/// A kind of data a clipboard can hold, as [RichClipboard.availableFormats]
+/// reports it.
+///
+/// Three values because three are portable. A platform format with no entry
+/// here - a file list, RTF, an application's private type - is simply not
+/// reported, which is the honest answer to "can this application paste it?".
+enum ClipboardFormat {
+  /// Plain text: what [Clipboard.readText] returns.
+  text,
+
+  /// HTML markup: what [RichClipboard.readHtml] returns.
+  html,
+
+  /// An image in any encoding the backend can turn into PNG: what
+  /// [RichClipboard.readImage] returns. A Windows `CF_DIB` or a macOS TIFF
+  /// counts, because the backend converts it.
+  image,
+}
+
+/// A clipboard that carries HTML and images as well as text.
+///
+/// ## One write replaces everything
+///
+/// Every write empties the clipboard first, as every platform's own copy does:
+/// [writeImage] leaves no text behind, and [writeText] on a backend that
+/// implements this removes a previous image. The exception is the one a user
+/// expects - [writeHtml] writes the markup **and** a plain-text alternative in
+/// the same operation, because a terminal or a plain text field that is
+/// handed only HTML pastes nothing, and an application that copies rich text
+/// and breaks plain paste has broken the more common case to serve the rarer.
+///
+/// ## Null, empty and failed, as for text
+///
+/// A read of a format the clipboard does not hold returns null - not an
+/// exception, because "the clipboard has text but no image" is an answer and
+/// the paste menu needs it. A clipboard that could not be consulted, or a
+/// format this backend genuinely cannot carry, throws [ClipboardException]
+/// naming the operation, so a missing capability is never mistaken for an
+/// empty clipboard.
+abstract interface class RichClipboard implements Clipboard {
+  /// Which of the portable formats the clipboard holds right now.
+  ///
+  /// A snapshot: another application can replace the contents between this
+  /// call and the read that follows it, and the read then answers null. Use it
+  /// to enable a paste command, never as a promise that a read will succeed.
+  ///
+  /// On X11 this costs a `TARGETS` round trip to the selection owner, the
+  /// same price as a read - it is cheaper than reading only in the bytes that
+  /// do not cross.
+  Future<Set<ClipboardFormat>> availableFormats();
+
+  /// The image on the clipboard as the bytes of a PNG file, or null when it
+  /// holds none.
+  ///
+  /// Always PNG, whatever the platform stored: a backend whose clipboard holds
+  /// a bitmap in another encoding converts it, and throws
+  /// [ClipboardException] when it holds one it cannot convert rather than
+  /// pretending there is no image.
+  Future<Uint8List?> readImage();
+
+  /// Replaces the clipboard's contents with the image in [png], the bytes of
+  /// a PNG file.
+  ///
+  /// Throws [ArgumentError] when [png] does not start with the PNG signature:
+  /// handing another application something it will fail to decode is a bug
+  /// in the caller, not a clipboard failure. Backends whose platform also
+  /// speaks a native bitmap format (`CF_DIB`, TIFF) write that too, so older
+  /// applications can paste it.
+  Future<void> writeImage(Uint8List png);
+
+  /// The HTML on the clipboard, or null when it holds none.
+  ///
+  /// The markup as the source application wrote it - a fragment or a whole
+  /// document - with the transport's framing removed: the Windows `CF_HTML`
+  /// header is parsed away and only the fragment it marks is returned.
+  Future<String?> readHtml();
+
+  /// Replaces the clipboard's contents with [html] and a plain-text
+  /// alternative.
+  ///
+  /// [plainText] is what a text-only paste target receives. When it is null
+  /// it is derived from [html] by `plainTextFromHtml`, which drops the markup
+  /// and keeps the words and the line breaks; pass it explicitly whenever the
+  /// caller already has the text it rendered the HTML from, because that is
+  /// always the better answer.
+  Future<void> writeHtml(String html, {String? plainText});
 }
 
 /// A windowing backend that can hand out the platform's clipboard.
@@ -155,7 +279,10 @@ final class ClipboardException implements Exception {
 /// of the Ctrl+V rather than a null dereference somewhere else, and so that
 /// callers never have to hold a `Clipboard?`. Every operation throws
 /// [ClipboardException] with the reason it was handed to them.
-final class UnavailableClipboard implements Clipboard {
+///
+/// It implements [RichClipboard] so that a caller testing for one still gets
+/// the named failure instead of a silent "this clipboard has no images".
+final class UnavailableClipboard implements RichClipboard {
   const UnavailableClipboard([
     this.reason = 'this application was started without a clipboard; pass one '
         'through ApplicationOptions.clipboard',
@@ -173,4 +300,24 @@ final class UnavailableClipboard implements Clipboard {
   @override
   Future<void> writeText(String text) async =>
       throw ClipboardException(operation: 'writeText', reason: reason);
+
+  @override
+  Future<Set<ClipboardFormat>> availableFormats() async =>
+      throw ClipboardException(operation: 'availableFormats', reason: reason);
+
+  @override
+  Future<Uint8List?> readImage() async =>
+      throw ClipboardException(operation: 'readImage', reason: reason);
+
+  @override
+  Future<void> writeImage(Uint8List png) async =>
+      throw ClipboardException(operation: 'writeImage', reason: reason);
+
+  @override
+  Future<String?> readHtml() async =>
+      throw ClipboardException(operation: 'readHtml', reason: reason);
+
+  @override
+  Future<void> writeHtml(String html, {String? plainText}) async =>
+      throw ClipboardException(operation: 'writeHtml', reason: reason);
 }

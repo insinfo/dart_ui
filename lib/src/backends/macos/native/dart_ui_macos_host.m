@@ -865,8 +865,8 @@ static void *DartUiAppearanceContext = &DartUiAppearanceContext;
   printf("WINDOW_ID=%ld\n", (long)self.window.windowNumber);
   printf("PROTOCOL=4\n");
   printf("WINDOW_SCALE=%ld\n", (long)scaleMilli);
-  printf("PROTOCOL_FEATURES=surface-port,window-events,clipboard,vsync,"
-         "system-settings\n");
+  printf("PROTOCOL_FEATURES=surface-port,window-events,clipboard,"
+         "clipboard-rich,vsync,system-settings\n");
   [self reportScreens];
   // In the banner, before HOST_PID, so the startup values reach Dart through
   // the same line - and the same parser - as every later change.
@@ -1860,6 +1860,163 @@ static const NSUInteger kClipboardChunk = 6000;
   fflush(stdout);
 }
 
+// HTML and images, the formats beyond text (CLIPBOARD_READ_TYPE and
+// CLIPBOARD_WRITE_TYPE, announced as `clipboard-rich`). Separate commands
+// rather than a type argument on the text ones so a Dart side that predates
+// them never sends one to a host that would misread it, and the reverse.
+//
+// Payloads travel as the text ones do - base64, in CLIPBOARD_DATA pieces -
+// and a typed read ends with DATA instead of TEXT. `formats` is the one
+// exception: its answer is a comma-separated list of words, which needs no
+// encoding.
+
+// The image on the pasteboard as PNG bytes, or nil. PNG is taken as it is;
+// any other bitmap type AppKit can decode - TIFF above all, which is what
+// screenshots and most older applications publish - is re-encoded, so the
+// Dart side only ever sees one encoding.
+static NSData *DartUiPasteboardPng(NSPasteboard *pasteboard, BOOL *failed) {
+  *failed = NO;
+  NSData *png = [pasteboard dataForType:NSPasteboardTypePNG];
+  if (png != nil) return png;
+  NSString *type =
+      [pasteboard availableTypeFromArray:[NSBitmapImageRep imageTypes]];
+  if (type == nil) return nil;
+  NSData *data = [pasteboard dataForType:type];
+  NSBitmapImageRep *rep =
+      data == nil ? nil : [NSBitmapImageRep imageRepWithData:data];
+  NSData *converted =
+      rep == nil ? nil
+                 : [rep representationUsingType:NSBitmapImageFileTypePNG
+                                     properties:@{}];
+  // A bitmap type is there but would not decode: that is a failure to
+  // report, not an empty pasteboard.
+  if (converted == nil) *failed = YES;
+  return converted;
+}
+
+static void DartUiPrintClipboardPayload(long long request, NSString *payload) {
+  for (NSUInteger start = 0; start < payload.length; start += kClipboardChunk) {
+    NSUInteger length = MIN(kClipboardChunk, payload.length - start);
+    printf("CLIPBOARD_DATA=%lld:%s\n", request,
+           [payload substringWithRange:NSMakeRange(start, length)].UTF8String);
+  }
+}
+
+- (void)readClipboardType:(NSString *)command {
+  // CLIPBOARD_READ_TYPE <request> <png|html|formats>
+  NSArray<NSString *> *parts =
+      [[command substringFromIndex:20] componentsSeparatedByString:@" "];
+  if (parts.count != 2) {
+    [self printError:@"BAD_CLIPBOARD_READ_TYPE"];
+    return;
+  }
+  long long request = [parts[0] longLongValue];
+  NSString *type = parts[1];
+  NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
+  NSString *payload = nil;
+  BOOL failed = NO;
+  if ([type isEqualToString:@"png"]) {
+    NSData *png = DartUiPasteboardPng(pasteboard, &failed);
+    payload = [png base64EncodedStringWithOptions:0];
+  } else if ([type isEqualToString:@"html"]) {
+    NSString *html = [pasteboard stringForType:NSPasteboardTypeHTML];
+    payload = [[html dataUsingEncoding:NSUTF8StringEncoding]
+        base64EncodedStringWithOptions:0];
+    if (html != nil && payload == nil) failed = YES;
+  } else if ([type isEqualToString:@"formats"]) {
+    NSMutableArray<NSString *> *formats = [NSMutableArray array];
+    if ([pasteboard availableTypeFromArray:@[ NSPasteboardTypeString ]]) {
+      [formats addObject:@"text"];
+    }
+    if ([pasteboard availableTypeFromArray:@[ NSPasteboardTypeHTML ]]) {
+      [formats addObject:@"html"];
+    }
+    if ([pasteboard availableTypeFromArray:@[ NSPasteboardTypePNG ]] ||
+        [pasteboard availableTypeFromArray:[NSBitmapImageRep imageTypes]]) {
+      [formats addObject:@"image"];
+    }
+    payload = [formats componentsJoinedByString:@","];
+  } else {
+    printf("CLIPBOARD=%lld:FAILED\n", request);
+    fflush(stdout);
+    return;
+  }
+  if (failed) {
+    printf("CLIPBOARD=%lld:FAILED\n", request);
+  } else if (payload == nil) {
+    printf("CLIPBOARD=%lld:NONE\n", request);
+  } else {
+    DartUiPrintClipboardPayload(request, payload);
+    printf("CLIPBOARD=%lld:DATA\n", request);
+  }
+  fflush(stdout);
+}
+
+- (void)writeClipboardType:(NSString *)command {
+  // CLIPBOARD_WRITE_TYPE <request> <png|html>. The payload is what
+  // CLIPBOARD_APPEND collected: base64 of the PNG, or base64 of the HTML and
+  // base64 of its plain-text alternative separated by a '.', which is not in
+  // the base64 alphabet and so cannot occur inside either half.
+  NSArray<NSString *> *parts =
+      [[command substringFromIndex:21] componentsSeparatedByString:@" "];
+  if (parts.count != 2) {
+    [self printError:@"BAD_CLIPBOARD_WRITE_TYPE"];
+    return;
+  }
+  long long request = [parts[0] longLongValue];
+  NSString *type = parts[1];
+  NSString *encoded = self.clipboardPending[@(request)] ?: @"";
+  [self.clipboardPending removeObjectForKey:@(request)];
+  NSPasteboard *pasteboard = NSPasteboard.generalPasteboard;
+  BOOL written = NO;
+  if ([type isEqualToString:@"png"]) {
+    NSData *png = [[NSData alloc] initWithBase64EncodedString:encoded
+                                                      options:0];
+    NSBitmapImageRep *rep =
+        png == nil ? nil : [NSBitmapImageRep imageRepWithData:png];
+    // TIFF beside the PNG: Preview's "New from Clipboard" and plenty of
+    // older applications still ask for TIFF first, and NSImage itself writes
+    // it. A PNG AppKit cannot decode is refused before the pasteboard is
+    // touched, so a bad write never empties the user's clipboard.
+    NSData *tiff = rep.TIFFRepresentation;
+    if (rep != nil && tiff != nil) {
+      [pasteboard clearContents];
+      [pasteboard declareTypes:@[ NSPasteboardTypePNG, NSPasteboardTypeTIFF ]
+                         owner:nil];
+      written = [pasteboard setData:png forType:NSPasteboardTypePNG] &&
+                [pasteboard setData:tiff forType:NSPasteboardTypeTIFF];
+    }
+  } else if ([type isEqualToString:@"html"]) {
+    NSArray<NSString *> *halves = [encoded componentsSeparatedByString:@"."];
+    NSString *html = nil;
+    NSString *text = nil;
+    if (halves.count == 2) {
+      NSData *htmlBytes =
+          [[NSData alloc] initWithBase64EncodedString:halves[0] options:0];
+      NSData *textBytes =
+          [[NSData alloc] initWithBase64EncodedString:halves[1] options:0];
+      html = htmlBytes == nil
+                 ? nil
+                 : [[NSString alloc] initWithData:htmlBytes
+                                         encoding:NSUTF8StringEncoding];
+      text = textBytes == nil
+                 ? nil
+                 : [[NSString alloc] initWithData:textBytes
+                                         encoding:NSUTF8StringEncoding];
+    }
+    if (html != nil && text != nil) {
+      [pasteboard clearContents];
+      [pasteboard
+          declareTypes:@[ NSPasteboardTypeHTML, NSPasteboardTypeString ]
+                 owner:nil];
+      written = [pasteboard setString:html forType:NSPasteboardTypeHTML] &&
+                [pasteboard setString:text forType:NSPasteboardTypeString];
+    }
+  }
+  printf("CLIPBOARD=%lld:%s\n", request, written ? "WRITTEN" : "FAILED");
+  fflush(stdout);
+}
+
 // --- synthetic input, for smokes ----------------------------------------
 //
 // Builds an NSEvent and posts it to this application's own queue, so it is
@@ -2258,6 +2415,10 @@ static const NSUInteger kClipboardChunk = 6000;
     [self appendClipboard:command];
   } else if ([command hasPrefix:@"CLIPBOARD_WRITE "]) {
     [self writeClipboard:command];
+  } else if ([command hasPrefix:@"CLIPBOARD_READ_TYPE "]) {
+    [self readClipboardType:command];
+  } else if ([command hasPrefix:@"CLIPBOARD_WRITE_TYPE "]) {
+    [self writeClipboardType:command];
   } else if ([command isEqualToString:@"SHOW"]) {
     BOOL isTransient = [self.windowKind isEqualToString:@"popup"] ||
                        [self.windowKind isEqualToString:@"tooltip"];

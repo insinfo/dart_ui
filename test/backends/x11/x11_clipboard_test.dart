@@ -1,4 +1,5 @@
-/// The X11 clipboard state machine, against a fake selection client.
+/// The X11 clipboard state machine, against a fake selection client - text,
+/// and since 13/10/2026 HTML, images and `TARGETS`.
 ///
 /// The fake records every request and lets a test feed the replies back in the
 /// order a real owner would send them. That proves the *conversation* - the
@@ -31,6 +32,8 @@ const Map<String, int> _atoms = <String, int>{
   'MULTIPLE': 206,
   'text/plain;charset=utf-8': 207,
   x11ClipboardProperty: 208,
+  'text/html': 209,
+  'image/png': 210,
 };
 
 typedef _Conversion = ({
@@ -1208,6 +1211,293 @@ void main() {
       final int changesAtDispose = client.maskChanges.length;
       await Future<void>.delayed(const Duration(milliseconds: 120));
       expect(client.maskChanges.length, changesAtDispose);
+    });
+  });
+
+  group('HTML, images and TARGETS', () {
+    final Uint8List png = Uint8List.fromList(
+        <int>[137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 9, 9]);
+
+    /// Answers the conversion in flight with [value] on our property.
+    void reply(String target, X11PropertyValue value) {
+      client.propertyReplies.add(value);
+      expect(
+        manager.handleSelectionNotify(
+          requestor: _ourWindow,
+          selection: _atoms['CLIPBOARD']!,
+          target: _atoms[target]!,
+          property: _atoms[x11ClipboardProperty]!,
+        ),
+        isTrue,
+      );
+    }
+
+    /// A format-32 `ATOM` property, in this machine's byte order - which is
+    /// how xcb hands a `TARGETS` reply over.
+    X11PropertyValue atomList(List<int> atoms) => X11PropertyValue(
+          type: xcbAtomAtom,
+          format: 32,
+          bytes: Uint32List.fromList(atoms).buffer.asUint8List(),
+        );
+
+    test('readHtml asks for text/html and decodes UTF-8', () async {
+      final Future<String?> pending = manager.readHtml();
+      expect(client.conversions.single.target, _atoms['text/html']);
+      reply('text/html', _value(_atoms['text/html']!, utf8.encode('<b>ç</b>')));
+      expect(await pending, '<b>ç</b>');
+    });
+
+    test('readHtml honours a UTF-16 byte-order mark', () async {
+      // Firefox has written text/html on X11 this way; decoding it as UTF-8
+      // puts a NUL between every character.
+      final Future<String?> pending = manager.readHtml();
+      final List<int> utf16 = <int>[0xFF, 0xFE];
+      for (final int unit in '<i>é</i>'.codeUnits) {
+        utf16
+          ..add(unit & 0xFF)
+          ..add(unit >> 8);
+      }
+      reply('text/html', _value(_atoms['text/html']!, utf16));
+      expect(await pending, '<i>é</i>');
+    });
+
+    test('an owner that refuses text/html has no HTML: null, not an error',
+        () async {
+      final Future<String?> pending = manager.readHtml();
+      manager.handleSelectionNotify(
+        requestor: _ourWindow,
+        selection: _atoms['CLIPBOARD']!,
+        target: _atoms['text/html']!,
+        property: xcbNone,
+      );
+      expect(await pending, isNull);
+      expect(client.conversions, hasLength(1),
+          reason: 'HTML has no fallback target to try');
+    });
+
+    test('readImage asks for image/png and returns the bytes', () async {
+      final Future<Uint8List?> pending = manager.readImage();
+      expect(client.conversions.single.target, _atoms['image/png']);
+      reply('image/png', _value(_atoms['image/png']!, png));
+      expect(await pending, png);
+    });
+
+    test('an image/png reply that is not a PNG is a named failure', () async {
+      final Future<Uint8List?> pending = manager.readImage();
+      reply('image/png', _value(_atoms['image/png']!, <int>[1, 2, 3]));
+      await expectLater(
+        pending,
+        throwsA(isA<ClipboardException>()
+            .having((e) => e.operation, 'operation', 'readImage')
+            .having((e) => e.reason, 'reason', contains('not a PNG'))),
+      );
+    });
+
+    test('an image arriving by INCR is assembled like text', () async {
+      final Future<Uint8List?> pending = manager.readImage();
+      reply(
+        'image/png',
+        X11PropertyValue(
+          type: _atoms['INCR']!,
+          format: 32,
+          bytes: Uint32List.fromList(<int>[png.length]).buffer.asUint8List(),
+        ),
+      );
+      for (final List<int> chunk in <List<int>>[
+        png.sublist(0, 8),
+        png.sublist(8),
+        const <int>[],
+      ]) {
+        client.propertyReplies.add(_value(_atoms['image/png']!, chunk));
+        expect(
+          manager.handlePropertyNotify(
+            window: _ourWindow,
+            atom: _atoms[x11ClipboardProperty]!,
+            state: x11PropertyNewValue,
+          ),
+          isTrue,
+        );
+      }
+      expect(await pending, png);
+    });
+
+    test('availableFormats reads the owner\'s TARGETS', () async {
+      final Future<Set<ClipboardFormat>> pending = manager.availableFormats();
+      expect(client.conversions.single.target, _atoms['TARGETS']);
+      reply(
+        'TARGETS',
+        atomList(<int>[
+          _atoms['TARGETS']!,
+          _atoms['image/png']!,
+          _atoms['text/html']!,
+          _atoms['UTF8_STRING']!,
+          999, // an atom this side never interned: ignored, not an error
+        ]),
+      );
+      expect(await pending, <ClipboardFormat>{
+        ClipboardFormat.text,
+        ClipboardFormat.html,
+        ClipboardFormat.image,
+      });
+    });
+
+    test('a TARGETS list with only STRING still means text', () async {
+      final Future<Set<ClipboardFormat>> pending = manager.availableFormats();
+      reply('TARGETS', atomList(<int>[xcbAtomString]));
+      expect(await pending, <ClipboardFormat>{ClipboardFormat.text});
+    });
+
+    test('an unowned CLIPBOARD has no formats, without a round trip', () async {
+      client.owner = xcbNone;
+      expect(await manager.availableFormats(), isEmpty);
+      expect(client.conversions, isEmpty);
+    });
+
+    test('an owner that refuses TARGETS reports nothing', () async {
+      final Future<Set<ClipboardFormat>> pending = manager.availableFormats();
+      manager.handleSelectionNotify(
+        requestor: _ourWindow,
+        selection: _atoms['CLIPBOARD']!,
+        target: _atoms['TARGETS']!,
+        property: xcbNone,
+      );
+      expect(await pending, isEmpty);
+    });
+
+    test('our own image is answered without asking the server', () async {
+      client.owner = _ourWindow;
+      await manager.writeImage(png);
+      expect(await manager.readImage(), png);
+      expect(await manager.readText(), isNull,
+          reason: 'an image copy leaves no text');
+      expect(await manager.readHtml(), isNull);
+      expect(await manager.availableFormats(),
+          <ClipboardFormat>{ClipboardFormat.image});
+      expect(client.conversions, isEmpty);
+    });
+
+    test(
+        'writeImage refuses bytes that are not a PNG before taking the '
+        'selection', () async {
+      client.owner = _ourWindow;
+      await expectLater(manager.writeImage(Uint8List(3)), throwsArgumentError);
+      expect(client.ownerships, isEmpty);
+    });
+
+    group('serving', () {
+      const int destination = 300;
+
+      bool request(String target) => manager.handleSelectionRequest(
+            requestor: _theirWindow,
+            selection: _atoms['CLIPBOARD']!,
+            target: target == 'STRING' ? xcbAtomString : _atoms[target]!,
+            property: destination,
+            time: 9100,
+          );
+
+      test('an image copy offers image/png and no text in TARGETS', () async {
+        client.owner = _ourWindow;
+        await manager.writeImage(png);
+        client.writes.clear();
+
+        expect(request('TARGETS'), isTrue);
+        final List<int> offered = client.writes.single.value as List<int>;
+        expect(offered, contains(_atoms['image/png']));
+        expect(offered, isNot(contains(_atoms['UTF8_STRING'])));
+        expect(offered, isNot(contains(xcbAtomString)));
+        expect(offered, isNot(contains(_atoms['text/html'])));
+      });
+
+      test('image/png is served as the PNG bytes, typed image/png', () async {
+        client.owner = _ourWindow;
+        await manager.writeImage(png);
+        client.writes.clear();
+        client.notifies.clear();
+
+        expect(request('image/png'), isTrue);
+        final _PropertyWrite write = client.writes.single;
+        expect(write.type, _atoms['image/png']);
+        expect(write.value, png);
+        expect(client.notifies.single.property, destination);
+      });
+
+      test('text asked of an image copy is refused out loud', () async {
+        client.owner = _ourWindow;
+        await manager.writeImage(png);
+        client.notifies.clear();
+
+        expect(request('UTF8_STRING'), isTrue);
+        expect(client.notifies.single.property, xcbNone);
+      });
+
+      test('an HTML copy offers text/html and its plain-text alternative',
+          () async {
+        client.owner = _ourWindow;
+        await manager.writeHtml('<p>olá <b>mundo</b></p>');
+        client.writes.clear();
+
+        expect(request('TARGETS'), isTrue);
+        final List<int> offered = client.writes.single.value as List<int>;
+        expect(offered,
+            containsAll(<int>[_atoms['text/html']!, _atoms['UTF8_STRING']!]));
+        expect(offered, isNot(contains(_atoms['image/png'])));
+        client.writes.clear();
+
+        expect(request('text/html'), isTrue);
+        expect(utf8.decode(client.writes.single.value as Uint8List),
+            '<p>olá <b>mundo</b></p>');
+        expect(client.writes.single.type, _atoms['text/html']);
+        client.writes.clear();
+
+        expect(request('UTF8_STRING'), isTrue);
+        expect(
+            utf8.decode(client.writes.single.value as Uint8List), 'olá mundo');
+      });
+
+      test('an explicit plain-text alternative is the one served', () async {
+        client.owner = _ourWindow;
+        await manager.writeHtml('<p>x</p>', plainText: 'texto próprio');
+        client.writes.clear();
+        expect(request('UTF8_STRING'), isTrue);
+        expect(utf8.decode(client.writes.single.value as Uint8List),
+            'texto próprio');
+      });
+
+      test('a large image goes out by INCR', () async {
+        manager = build(singleShotBytes: 4, chunkBytes: 8);
+        client.owner = _ourWindow;
+        await manager.writeImage(png);
+        client.writes.clear();
+
+        expect(request('image/png'), isTrue);
+        expect(client.writes.single.type, _atoms['INCR']);
+        expect(client.writes.single.value, <int>[png.length]);
+        expect(manager.pendingTransferCount, 1);
+        while (manager.pendingTransferCount > 0) {
+          manager.handlePropertyNotify(
+            window: _theirWindow,
+            atom: destination,
+            state: x11PropertyDeleted,
+          );
+        }
+        final List<int> served = <int>[
+          for (final _PropertyWrite write in client.writes.skip(1))
+            ...write.value as Uint8List,
+        ];
+        expect(served, png);
+        expect(client.writes.skip(1).map((w) => w.type).toSet(),
+            <int>{_atoms['image/png']!});
+      });
+    });
+
+    test('X11Clipboard is a RichClipboard over the manager', () async {
+      client.owner = _ourWindow;
+      final RichClipboard clipboard = X11Clipboard(manager);
+      await clipboard.writeHtml('<b>a</b>');
+      expect(await clipboard.readHtml(), '<b>a</b>');
+      expect(await clipboard.readText(), 'a');
+      expect(await clipboard.availableFormats(),
+          <ClipboardFormat>{ClipboardFormat.text, ClipboardFormat.html});
     });
   });
 }

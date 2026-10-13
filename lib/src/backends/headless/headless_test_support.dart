@@ -8,6 +8,7 @@ import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
 import '../../platform/clipboard.dart';
+import '../../platform/clipboard_formats.dart';
 import '../../platform/input_events.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/framebuffer.dart';
@@ -143,11 +144,20 @@ GoldenComparison compareGolden(
 ///    be written without a test, and the one where "retry until it works"
 ///    turns a copy into a hang.
 ///
-/// [writeText] and [readText] are asynchronous because [Clipboard] is; see that
-/// contract for why the port cannot be synchronous even though this
-/// implementation answers immediately.
-final class FakeClipboard implements Clipboard {
+/// It is a [RichClipboard], so HTML and images round-trip too, with the same
+/// replacement rule a real one keeps: every write empties the clipboard first,
+/// and [writeHtml] leaves a plain-text alternative beside the markup. A widget
+/// that copies an image and a test that pastes text afterwards therefore see
+/// what they would see on a desktop - no text - rather than whatever a previous
+/// test left behind.
+///
+/// Every operation is asynchronous because [Clipboard] is; see that contract
+/// for why the port cannot be synchronous even though this implementation
+/// answers immediately.
+final class FakeClipboard implements RichClipboard {
   String? _text;
+  String? _html;
+  Uint8List? _image;
   ClipboardException? _readFailure;
   ClipboardException? _writeFailure;
   int _reads = 0;
@@ -156,7 +166,14 @@ final class FakeClipboard implements Clipboard {
   /// What a paste would find, without going through [readText].
   String? get text => _text;
 
-  /// How many times each direction was actually exercised.
+  /// The HTML a rich paste would find, without going through [readHtml].
+  String? get html => _html;
+
+  /// The PNG bytes an image paste would find, without going through
+  /// [readImage].
+  Uint8List? get image => _image;
+
+  /// How many times each direction was actually exercised, in every format.
   ///
   /// A copy that is refused must not touch the clipboard at all, and "the text
   /// did not change" cannot prove that - the field might have written the same
@@ -166,7 +183,20 @@ final class FakeClipboard implements Clipboard {
 
   /// Puts [value] on the clipboard as another application would have, without
   /// counting as a [writes] and without being blocked by [failWith].
+  ///
+  /// Only the text: an HTML or image seeded earlier stays, which is how a test
+  /// builds a clipboard holding several formats at once.
   void seedText(String? value) => _text = value;
+
+  /// Puts [value] on the clipboard as HTML, as [seedText] does for text.
+  void seedHtml(String? value) => _html = value;
+
+  /// Puts [png] on the clipboard as an image, as [seedText] does for text.
+  ///
+  /// Not checked for the PNG signature, so a test can reproduce another
+  /// application that put something malformed there.
+  void seedImage(Uint8List? png) =>
+      _image = png == null ? null : Uint8List.fromList(png);
 
   /// Makes every subsequent operation fail with [error].
   ///
@@ -196,23 +226,77 @@ final class FakeClipboard implements Clipboard {
 
   @override
   Future<void> writeText(String value) async {
-    _writes++;
-    final ClipboardException? failure = _writeFailure;
-    if (failure != null) throw failure;
-    _text = value;
+    _beginWrite();
+    _replace(text: value);
   }
 
   @override
   Future<String?> readText() async {
-    _reads++;
-    final ClipboardException? failure = _readFailure;
-    if (failure != null) throw failure;
+    _beginRead();
     return _text;
+  }
+
+  @override
+  Future<Set<ClipboardFormat>> availableFormats() async {
+    _beginRead();
+    return <ClipboardFormat>{
+      if (_text != null) ClipboardFormat.text,
+      if (_html != null) ClipboardFormat.html,
+      if (_image != null) ClipboardFormat.image,
+    };
+  }
+
+  @override
+  Future<String?> readHtml() async {
+    _beginRead();
+    return _html;
+  }
+
+  @override
+  Future<void> writeHtml(String html, {String? plainText}) async {
+    _beginWrite();
+    _replace(text: plainText ?? plainTextFromHtml(html), html: html);
+  }
+
+  @override
+  Future<Uint8List?> readImage() async {
+    _beginRead();
+    final Uint8List? image = _image;
+    // A copy, so a caller that edits what it pasted does not edit the
+    // clipboard behind every later paste.
+    return image == null ? null : Uint8List.fromList(image);
+  }
+
+  @override
+  Future<void> writeImage(Uint8List png) async {
+    // Checked before the write is counted or the failure consulted: a
+    // non-PNG argument is the caller's bug on every platform, busy or not.
+    requirePngData(png);
+    _beginWrite();
+    _replace(image: Uint8List.fromList(png));
   }
 
   /// Empties it, as `EmptyClipboard` does. Never a failure here: a test that
   /// wants an empty clipboard should get one.
-  Future<void> clear() async => _text = null;
+  Future<void> clear() async => _replace();
+
+  void _beginRead() {
+    _reads++;
+    final ClipboardException? failure = _readFailure;
+    if (failure != null) throw failure;
+  }
+
+  void _beginWrite() {
+    _writes++;
+    final ClipboardException? failure = _writeFailure;
+    if (failure != null) throw failure;
+  }
+
+  void _replace({String? text, String? html, Uint8List? image}) {
+    _text = text;
+    _html = html;
+    _image = image;
+  }
 }
 
 /// Client of the deterministic text-input adapter.

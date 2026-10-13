@@ -646,6 +646,15 @@ final class Win32Api {
   int Function(int)? globalUnlock;
   int Function(int)? globalFree;
 
+  /// `RegisterClipboardFormatW`, `GlobalSize` and
+  /// `IsClipboardFormatAvailable`: what the rich clipboard needs beyond the
+  /// text one - a name for `PNG` and `HTML Format`, the length of a block
+  /// whose contents are not NUL-terminated, and a format query that does not
+  /// take the clipboard lock. See [richClipboardSupported].
+  int Function(Pointer<Uint16>)? registerClipboardFormat;
+  int Function(int)? globalSize;
+  int Function(int)? isClipboardFormatAvailable;
+
   /// Which awareness API to call. Decided once, reported by the probe.
   late final Win32DpiAwarenessApi dpiAwarenessApi;
 
@@ -780,6 +789,27 @@ final class Win32Api {
               'GlobalFree'),
     );
 
+    registerClipboardFormat = tryLookup(
+      _user32,
+      'RegisterClipboardFormatW',
+      (library) => library.lookupFunction<Uint32 Function(Pointer<Uint16>),
+          int Function(Pointer<Uint16>)>('RegisterClipboardFormatW'),
+    );
+    globalSize = tryLookup(
+      _kernel32,
+      'GlobalSize',
+      (library) =>
+          library.lookupFunction<IntPtr Function(IntPtr), int Function(int)>(
+              'GlobalSize'),
+    );
+    isClipboardFormatAvailable = tryLookup(
+      _user32,
+      'IsClipboardFormatAvailable',
+      (library) =>
+          library.lookupFunction<Int32 Function(Uint32), int Function(int)>(
+              'IsClipboardFormatAvailable'),
+    );
+
     dpiAwarenessApi = setProcessDpiAwarenessContext != null
         ? Win32DpiAwarenessApi.perMonitorV2
         : setProcessDpiAwareness != null
@@ -804,6 +834,17 @@ final class Win32Api {
       globalLock != null &&
       globalUnlock != null &&
       globalFree != null;
+
+  /// Whether HTML and images can cross the clipboard as well as text.
+  ///
+  /// Every symbol here has been in user32/kernel32 since Windows 95, so on a
+  /// real system this is [clipboardSupported]; it is spelled out so that the
+  /// claim follows the binding rather than an assumption about the DLL.
+  bool get richClipboardSupported =>
+      clipboardSupported &&
+      registerClipboardFormat != null &&
+      globalSize != null &&
+      isClipboardFormatAvailable != null;
 
   // -------------------------------------------------------------------------
   // Derived helpers

@@ -866,6 +866,8 @@ final class WaylandWindowingBackend
               if (_supportsCpuPresentation) Capability.cpuPresentation,
               if (_supportsCpuPresentation) Capability.partialPresent,
               if (_supportsClipboard) Capability.clipboardText,
+              // `image/png` and `text/html` over the same data device.
+              if (_supportsClipboard) Capability.clipboardImage,
               if (_supportsDragAndDrop) Capability.dragAndDrop,
               if (_supportsTextInput) Capability.textComposition,
             }

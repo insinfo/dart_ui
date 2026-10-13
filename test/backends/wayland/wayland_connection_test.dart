@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:dart_ui/src/backends/wayland/wayland_clipboard.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_connection.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_events.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_positioner.dart';
@@ -358,6 +359,137 @@ void main() {
         throwsA(isA<ClipboardException>()),
       );
       expect(compositor.closedFds, containsAll(<int>[800, 801]));
+    });
+
+    group('HTML and images', () {
+      final Uint8List png = Uint8List.fromList(
+          <int>[137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 7]);
+
+      /// A connection that has seen an input serial, so it may own the
+      /// selection.
+      WaylandConnection interacted() {
+        final connection = openOk();
+        final ids = connection.createToplevel(_request());
+        compositor.sendPointerEnter(ids.surfaceId, 77, x: 1, y: 1);
+        connection.pollEventInto(WaylandRawEvent());
+        return connection;
+      }
+
+      test('an image copy offers image/png alone and serves the bytes',
+          () async {
+        final connection = interacted();
+        final clipboard = WaylandClipboard(connection);
+        await clipboard.writeImage(png);
+
+        final sourceId = compositor.selectionSourceId;
+        expect(compositor.sourceMimes[sourceId], <String>{'image/png'});
+        compositor.sendSourceSend(sourceId, 'image/png', 702);
+        connection.pollEventInto(WaylandRawEvent());
+        expect(compositor.writtenFds[702], png);
+        expect(compositor.closedFds, contains(702));
+
+        // Text asked of an image copy: the fd is closed with nothing written,
+        // which a requestor reads as empty.
+        compositor.sendSourceSend(sourceId, wlClipboardTextMime, 703);
+        connection.pollEventInto(WaylandRawEvent());
+        expect(compositor.writtenFds.containsKey(703), isFalse);
+        expect(compositor.closedFds, contains(703));
+
+        expect(await clipboard.readImage(), png,
+            reason: 'our own selection short-circuits');
+        expect(await clipboard.readText(), isNull);
+        expect(await clipboard.availableFormats(),
+            <ClipboardFormat>{ClipboardFormat.image});
+        expect(compositor.pipeCreations, 0);
+      });
+
+      test('an HTML copy offers text/html beside every text MIME', () async {
+        final connection = interacted();
+        final clipboard = WaylandClipboard(connection);
+        await clipboard.writeHtml('<p>olá <b>mundo</b></p>');
+
+        final sourceId = compositor.selectionSourceId;
+        expect(compositor.sourceMimes[sourceId],
+            <String>{'text/html', ...wlClipboardAcceptedTextMimes});
+        compositor.sendSourceSend(sourceId, 'text/html', 704);
+        compositor.sendSourceSend(sourceId, wlClipboardTextMime, 705);
+        connection.pollEventInto(WaylandRawEvent());
+        expect(utf8.decode(compositor.writtenFds[704]!),
+            '<p>olá <b>mundo</b></p>');
+        expect(utf8.decode(compositor.writtenFds[705]!), 'olá mundo');
+
+        expect(await clipboard.readHtml(), '<p>olá <b>mundo</b></p>');
+        expect(await clipboard.readText(), 'olá mundo');
+        expect(await clipboard.availableFormats(),
+            <ClipboardFormat>{ClipboardFormat.text, ClipboardFormat.html});
+      });
+
+      test('an external image offer is received as image/png', () async {
+        final connection = openOk();
+        compositor.sendSelectionOffer(
+            <String>['image/png', 'image/bmp', 'TARGETS'], png);
+        connection.pollEventInto(WaylandRawEvent());
+        final clipboard = WaylandClipboard(connection);
+
+        expect(await clipboard.availableFormats(),
+            <ClipboardFormat>{ClipboardFormat.image});
+        expect(await clipboard.readImage(), png);
+        expect(compositor.lastReceivedMime, 'image/png');
+        expect(await clipboard.readHtml(), isNull);
+      });
+
+      test('external HTML: a charset spelling is accepted, a BOM honoured',
+          () async {
+        final connection = openOk();
+        final List<int> utf16 = <int>[0xFF, 0xFE];
+        for (final int unit in '<i>ç</i>'.codeUnits) {
+          utf16
+            ..add(unit & 0xFF)
+            ..add(unit >> 8);
+        }
+        compositor
+            .sendSelectionOffer(<String>['text/html;charset=utf-16'], utf16);
+        connection.pollEventInto(WaylandRawEvent());
+        final clipboard = WaylandClipboard(connection);
+
+        expect(await clipboard.availableFormats(),
+            <ClipboardFormat>{ClipboardFormat.html});
+        expect(await clipboard.readHtml(), '<i>ç</i>');
+        expect(compositor.lastReceivedMime, 'text/html;charset=utf-16');
+      });
+
+      test('image/png that is not a PNG is a named failure', () async {
+        final connection = openOk();
+        compositor.sendSelectionOffer(<String>['image/png'], <int>[1, 2, 3]);
+        connection.pollEventInto(WaylandRawEvent());
+        await expectLater(
+          WaylandClipboard(connection).readImage(),
+          throwsA(isA<ClipboardException>()
+              .having((e) => e.operation, 'operation', 'readImage')),
+        );
+      });
+
+      test('no image on offer is null without opening a pipe', () async {
+        final connection = openOk();
+        compositor.sendSelectionOffer(
+            <String>[wlClipboardTextMime], utf8.encode('só texto'));
+        connection.pollEventInto(WaylandRawEvent());
+        expect(await WaylandClipboard(connection).readImage(), isNull);
+        expect(compositor.pipeCreations, 0);
+      });
+
+      test('a text-only selection client refuses rich operations by name',
+          () async {
+        final clipboard = WaylandClipboard(_TextOnlySelection());
+        await expectLater(
+          clipboard.readImage(),
+          throwsA(isA<ClipboardException>()
+              .having((e) => e.reason, 'reason', contains('text only'))),
+        );
+        await expectLater(clipboard.writeHtml('<b>x</b>'),
+            throwsA(isA<ClipboardException>()));
+        expect(await clipboard.readText(), 'texto');
+      });
     });
 
     test('a compositor without data-device keeps windows but no clipboard', () {
@@ -1537,4 +1669,17 @@ final class _FakeCompositor implements WaylandTransport {
           pressed ? wlKeyboardKeyStatePressed : wlKeyboardKeyStateReleased);
     });
   }
+}
+
+/// A selection client with text and nothing else: what the clipboard facade
+/// must refuse rich operations on rather than pretend they found nothing.
+final class _TextOnlySelection implements WaylandSelectionClient {
+  @override
+  bool get supportsClipboard => true;
+
+  @override
+  Future<String?> readClipboardText() async => 'texto';
+
+  @override
+  void setClipboardText(String text) {}
 }

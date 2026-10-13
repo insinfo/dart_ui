@@ -238,6 +238,24 @@ void main() {
     ]);
   });
 
+  test('a typed clipboard read ends with DATA, and the commands name the type',
+      () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(utf8.encode(
+      'CLIPBOARD_DATA=12:text,image\n'
+      'CLIPBOARD=12:DATA\n',
+    ));
+
+    expect(sink.events, <String>[
+      'clipboard-data:12:text,image',
+      'clipboard:12:data',
+    ]);
+    expect(HostCommands.clipboardReadType(12, 'formats'),
+        'CLIPBOARD_READ_TYPE 12 formats\n');
+    expect(HostCommands.clipboardWriteType(13, 'png'),
+        'CLIPBOARD_WRITE_TYPE 13 png\n');
+  });
+
   test('a menu choice carries the generation it was installed under', () {
     final sink = _RecordingSink();
     HostProtocolParser(sink).addBytes(utf8.encode(

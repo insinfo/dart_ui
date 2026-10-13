@@ -283,6 +283,30 @@ abstract interface class MacosClipboardChannel {
     String base64,
     Duration timeout,
   );
+
+  /// Whether this host announced `clipboard-rich`: HTML and images through
+  /// [requestClipboardReadType] and [requestClipboardWriteType]. A host built
+  /// before them would answer those with `ERROR=UNKNOWN_COMMAND` and leave
+  /// the request to time out, so they are never sent to one.
+  bool get supportsRichClipboard;
+
+  /// Asks for the pasteboard's contents as [type] (`png`, `html`, `formats`;
+  /// see `HostCommands.clipboardReadType`). Completes with how the read ended
+  /// and the payload, which is empty unless the result is
+  /// [HostClipboardResult.data]. Throws as [requestClipboardRead] does.
+  Future<(HostClipboardResult, String)> requestClipboardReadType(
+    String type,
+    Duration timeout,
+  );
+
+  /// Replaces the pasteboard's contents with [payload] as [type] (`png`,
+  /// `html`; see `HostCommands.clipboardWriteType`), sent in pieces of
+  /// [kMacosHostClipboardChunk]. Throws as [requestClipboardRead] does.
+  Future<HostClipboardResult> requestClipboardWriteType(
+    String type,
+    String payload,
+    Duration timeout,
+  );
 }
 
 final class _ClipboardRequest {
@@ -544,13 +568,52 @@ final class MacosHostProcess
   bool get supportsClipboard => _features.split(',').contains('clipboard');
 
   @override
+  bool get supportsRichClipboard =>
+      _features.split(',').contains('clipboard-rich');
+
+  @override
   Future<(HostClipboardResult, String)> requestClipboardRead(
+    Duration timeout,
+  ) =>
+      _clipboardRead(HostCommands.clipboardRead, timeout);
+
+  @override
+  Future<(HostClipboardResult, String)> requestClipboardReadType(
+    String type,
+    Duration timeout,
+  ) =>
+      _clipboardRead(
+        (int request) => HostCommands.clipboardReadType(request, type),
+        timeout,
+      );
+
+  @override
+  Future<HostClipboardResult> requestClipboardWrite(
+    String base64,
+    Duration timeout,
+  ) =>
+      _clipboardWrite(base64, HostCommands.clipboardWrite, timeout);
+
+  @override
+  Future<HostClipboardResult> requestClipboardWriteType(
+    String type,
+    String payload,
+    Duration timeout,
+  ) =>
+      _clipboardWrite(
+        payload,
+        (int request) => HostCommands.clipboardWriteType(request, type),
+        timeout,
+      );
+
+  Future<(HostClipboardResult, String)> _clipboardRead(
+    String Function(int request) command,
     Duration timeout,
   ) async {
     final int request = _nextClipboardRequest++;
     final _ClipboardRequest pending = _ClipboardRequest();
     _clipboardRequests[request] = pending;
-    if (!send(HostCommands.clipboardRead(request))) {
+    if (!send(command(request))) {
       _clipboardRequests.remove(request);
       throw StateError('the macOS host is not accepting commands');
     }
@@ -562,27 +625,29 @@ final class MacosHostProcess
     return (result, pending.data.toString());
   }
 
-  @override
-  Future<HostClipboardResult> requestClipboardWrite(
-    String base64,
+  /// Sends [payload] in [kMacosHostClipboardChunk] pieces, then the command
+  /// [finish] builds - which tells the host what the pieces were.
+  Future<HostClipboardResult> _clipboardWrite(
+    String payload,
+    String Function(int request) finish,
     Duration timeout,
   ) async {
     final int request = _nextClipboardRequest++;
     final _ClipboardRequest pending = _ClipboardRequest();
     _clipboardRequests[request] = pending;
     for (var start = 0;
-        start < base64.length;
+        start < payload.length;
         start += kMacosHostClipboardChunk) {
-      final int end = start + kMacosHostClipboardChunk < base64.length
+      final int end = start + kMacosHostClipboardChunk < payload.length
           ? start + kMacosHostClipboardChunk
-          : base64.length;
+          : payload.length;
       if (!send(HostCommands.clipboardAppend(
-          request, base64.substring(start, end)))) {
+          request, payload.substring(start, end)))) {
         _clipboardRequests.remove(request);
         throw StateError('the macOS host is not accepting commands');
       }
     }
-    if (!send(HostCommands.clipboardWrite(request))) {
+    if (!send(finish(request))) {
       _clipboardRequests.remove(request);
       throw StateError('the macOS host is not accepting commands');
     }

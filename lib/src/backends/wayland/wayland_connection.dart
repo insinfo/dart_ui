@@ -208,6 +208,31 @@ abstract interface class WaylandSelectionClient {
   Future<String?> readClipboardText();
 }
 
+/// The selection as any MIME types, not only text: what HTML and images on the
+/// clipboard need.
+///
+/// A second interface rather than members on [WaylandSelectionClient] for the
+/// reason that one exists: a test double that only cares about text keeps
+/// implementing one interface fewer, and the clipboard facade can tell the
+/// two apart and refuse rich operations by name on a client without them.
+abstract interface class WaylandMimeSelectionClient
+    implements WaylandSelectionClient {
+  /// Takes the selection with each MIME type in [data] served from its bytes.
+  /// Throws [ClipboardException] as [setClipboardText] does.
+  void setClipboardData(Map<String, Uint8List> data);
+
+  /// The MIME types the current selection offers - ours when we own it,
+  /// otherwise the ones the compositor announced on the selection offer.
+  /// Empty when nobody owns the selection.
+  Set<String> get clipboardMimeTypes;
+
+  /// The selection's bytes as [mime], null when it does not offer [mime].
+  ///
+  /// Our own selection short-circuits, as [readClipboardText] does, and for
+  /// the same deadlock. Throws [ClipboardException] when the transfer fails.
+  Future<Uint8List?> readClipboardMime(String mime);
+}
+
 /// Everything needed to create one toplevel, in logical (surface) units.
 final class WaylandToplevelRequest {
   const WaylandToplevelRequest({
@@ -370,7 +395,7 @@ final class WaylandConnection
     implements
         WaylandWindowClient,
         WaylandCpuClient,
-        WaylandSelectionClient,
+        WaylandMimeSelectionClient,
         WaylandCursorClient,
         WaylandDragDropClient,
         WaylandTextInputClient {
@@ -533,11 +558,12 @@ final class WaylandConnection
   // source replaces it: the compositor owns that transition and retires the
   // old source with `cancelled`. Destroying it earlier can race an outstanding
   // `send` request from another client.
-  final Map<int, String> _clipboardSources = <int, String>{};
+  final Map<int, Map<String, Uint8List>> _clipboardSources =
+      <int, Map<String, Uint8List>>{};
   final Map<int, _WaylandDataOffer> _dataOffers = <int, _WaylandDataOffer>{};
   int _activeClipboardSourceId = 0;
   int _selectionOfferId = 0;
-  String? _ownedClipboardText;
+  Map<String, Uint8List>? _ownedClipboard;
 
   // Window-relevant events decoded while something else was being waited for
   // (a roundtrip during init or resize). Drained first by [pollEventInto].
@@ -1424,6 +1450,14 @@ final class WaylandConnection
 
   @override
   void setClipboardText(String text) {
+    final Uint8List bytes = Uint8List.fromList(utf8.encode(text));
+    setClipboardData(<String, Uint8List>{
+      for (final String mime in wlClipboardAcceptedTextMimes) mime: bytes,
+    });
+  }
+
+  @override
+  void setClipboardData(Map<String, Uint8List> data) {
     throwIfDisposed();
     if (!supportsClipboard) {
       throw const ClipboardException(
@@ -1448,7 +1482,7 @@ final class WaylandConnection
     );
     _writer.putNewId(sourceId);
     _queueMessage();
-    for (final mime in wlClipboardAcceptedTextMimes) {
+    for (final mime in data.keys) {
       _writer.begin(sourceId, wlDataSourceRequestOffer);
       _writer.putString(mime);
       _queueMessage();
@@ -1465,26 +1499,36 @@ final class WaylandConnection
         reason: 'the compositor connection failed while publishing the source',
       );
     }
-    _clipboardSources[sourceId] = text;
+    final Map<String, Uint8List> owned =
+        Map<String, Uint8List>.unmodifiable(data);
+    _clipboardSources[sourceId] = owned;
     _activeClipboardSourceId = sourceId;
-    _ownedClipboardText = text;
+    _ownedClipboard = owned;
+  }
+
+  @override
+  Set<String> get clipboardMimeTypes {
+    final owned = _ownedClipboard;
+    if (_activeClipboardSourceId != 0 && owned != null) {
+      return owned.keys.toSet();
+    }
+    return _dataOffers[_selectionOfferId]?.mimeTypes.toSet() ?? <String>{};
   }
 
   @override
   Future<String?> readClipboardText() async {
-    throwIfDisposed();
-    if (!supportsClipboard) {
-      throw const ClipboardException(
-        operation: 'readText',
-        backend: 'wayland',
-        reason: 'the compositor advertised no usable wl_data_device_manager',
-      );
-    }
+    _requireClipboard('readText');
 
     // Feeding our bytes through a pipe would require this same single-threaded
     // connection to service wl_data_source.send while blocked reading it.
-    final owned = _ownedClipboardText;
-    if (_activeClipboardSourceId != 0 && owned != null) return owned;
+    final owned = _ownedClipboard;
+    if (_activeClipboardSourceId != 0 && owned != null) {
+      for (final accepted in wlClipboardAcceptedTextMimes) {
+        final Uint8List? bytes = owned[accepted];
+        if (bytes != null) return utf8.decode(bytes, allowMalformed: true);
+      }
+      return null;
+    }
 
     final offer = _dataOffers[_selectionOfferId];
     if (offer == null) return null;
@@ -1496,7 +1540,35 @@ final class WaylandConnection
       }
     }
     if (mime == null) return null;
+    return utf8.decode(_receive(offer, mime), allowMalformed: true);
+  }
 
+  @override
+  Future<Uint8List?> readClipboardMime(String mime) async {
+    _requireClipboard('receive');
+    final owned = _ownedClipboard;
+    if (_activeClipboardSourceId != 0 && owned != null) {
+      final Uint8List? bytes = owned[mime];
+      return bytes == null ? null : Uint8List.fromList(bytes);
+    }
+    final offer = _dataOffers[_selectionOfferId];
+    if (offer == null || !offer.mimeTypes.contains(mime)) return null;
+    return _receive(offer, mime);
+  }
+
+  void _requireClipboard(String operation) {
+    throwIfDisposed();
+    if (!supportsClipboard) {
+      throw ClipboardException(
+        operation: operation,
+        backend: 'wayland',
+        reason: 'the compositor advertised no usable wl_data_device_manager',
+      );
+    }
+  }
+
+  /// Asks the selection owner for [mime] through a pipe and reads it all.
+  Uint8List _receive(_WaylandDataOffer offer, String mime) {
     final pipe = _transport.createPipe();
     if (pipe == null) {
       throw const ClipboardException(
@@ -1512,10 +1584,10 @@ final class WaylandConnection
       _writer.putFd(pipe.writeFd);
       _queueMessage();
       if (flush() < 0 || !isValid) {
-        throw const ClipboardException(
+        throw ClipboardException(
           operation: 'receive',
           backend: 'wayland',
-          reason: 'the compositor connection failed while requesting text',
+          reason: 'the compositor connection failed while requesting $mime',
         );
       }
       // sendmsg duplicated the descriptor into the compositor. Keeping our
@@ -1531,7 +1603,7 @@ final class WaylandConnection
               'finish within 2s',
         );
       }
-      return utf8.decode(bytes, allowMalformed: true);
+      return bytes;
     } finally {
       if (writeOpen) _transport.closeFd(pipe.writeFd);
       _transport.closeFd(pipe.readFd);
@@ -1559,7 +1631,7 @@ final class WaylandConnection
         // is not represented by our active source anymore, the local shortcut
         // must not return stale text.
         _activeClipboardSourceId = 0;
-        _ownedClipboardText = null;
+        _ownedClipboard = null;
         if (previous != 0 && previous != id) _destroyDataOffer(previous);
       case wlDataDeviceEventEnter:
         final serial = reader.readUint();
@@ -1626,14 +1698,9 @@ final class WaylandConnection
           return;
         }
         try {
-          final text = _clipboardSources[sourceId];
-          if (text != null && wlClipboardAcceptedTextMimes.contains(mime)) {
-            if (!_transport.writeAllToFd(
-              fd,
-              Uint8List.fromList(utf8.encode(text)),
-            )) {
-              recordError('wl_data_source.send failed for $mime');
-            }
+          final bytes = _clipboardSources[sourceId]?[mime];
+          if (bytes != null && !_transport.writeAllToFd(fd, bytes)) {
+            recordError('wl_data_source.send failed for $mime');
           }
         } finally {
           _transport.closeFd(fd);
@@ -1656,14 +1723,14 @@ final class WaylandConnection
         _clipboardSources.remove(sourceId);
         if (_activeClipboardSourceId == sourceId) {
           _activeClipboardSourceId = 0;
-          _ownedClipboardText = null;
+          _ownedClipboard = null;
         }
         _writer.begin(sourceId, wlDataSourceRequestDestroy);
         _queueMessage();
         flush();
       default:
-        // target is advisory and does not change the bytes this text-only
-        // source can serve.
+        // target is advisory and does not change the bytes this source
+        // serves for a MIME type.
         break;
     }
   }

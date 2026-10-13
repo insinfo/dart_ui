@@ -1118,6 +1118,8 @@ final class X11WindowingBackend
               if (_supportsCpuPresentation) Capability.cpuPresentation,
               if (_supportsDragAndDrop) Capability.dragAndDrop,
               if (_supportsClipboard) Capability.clipboardText,
+              // `image/png` and `text/html` over the same selection.
+              if (_supportsClipboard) Capability.clipboardImage,
             }
           : const <Capability>{},
       diagnostics: diagnostics,
