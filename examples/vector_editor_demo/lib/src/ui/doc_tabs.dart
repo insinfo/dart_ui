@@ -44,123 +44,24 @@ class DocumentTabs extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return SizedBox(
-      height: ChromeMetrics.of(Theme.of(context)).documentTabsHeight,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: theme.surfaceAlternate,
-          border: BoxBorder(color: theme.border, width: 1),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            for (var index = 0; index < documents.length; index++)
-              ContextMenuArea(
-                enabled: contextMenu != null,
-                onOpen: (_) => onSelected(index),
-                menuChildren: contextMenu ?? () => const <Widget>[],
-                child: _DocumentTab(
-                  title: documents[index].tabTitle,
-                  selected: index == activeIndex,
-                  onTap: () => onSelected(index),
-                  onClose: () => onClosed(index),
-                ),
-              ),
-          ],
-        ),
+    final List<Widget> Function()? menu = contextMenu;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.surfaceAlternate,
+        border: BoxBorder(color: theme.border, width: 1),
       ),
-    );
-  }
-}
-
-class _DocumentTab extends StatelessWidget {
-  const _DocumentTab({
-    required this.title,
-    required this.selected,
-    required this.onTap,
-    required this.onClose,
-  });
-
-  final String title;
-  final bool selected;
-  final void Function() onTap;
-  final void Function() onClose;
-
-  /// Per-character width used to size the tab.
-  ///
-  /// Fixed rather than measured for the same reason the menu headers are: the
-  /// strip is rebuilt on every document change and shaping every title twice a
-  /// frame to learn a width is a cost with nothing behind it. Matched to the
-  /// theme's base size, which the label is now drawn at.
-  static const double _characterWidth = 7.0;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return GestureDetector(
-      behavior: GestureHitTestBehavior.opaque,
-      onTap: onTap,
-      child: SizedBox(
-        width: title.length * _characterWidth * theme.fontSize / 12 +
-            theme.effectiveControlPadding * 2 +
-            theme.iconSize +
-            theme.effectiveGap,
-        child: Stack(
-          children: <Widget>[
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  // The accent wash marks a *selected* neutral control; the
-                  // rest of the strip is unbroken surface.
-                  color: selected ? theme.accentSubtle : null,
-                ),
-              ),
-            ),
-            // The indicator, which is what says "this one" now that the box is
-            // gone. Two pixels, along the bottom edge, in the accent - the
-            // same mark the framework's own tab strip draws.
-            if (selected)
-              Positioned(
-                left: 0,
-                right: 0,
-                bottom: 0,
-                height: theme.focusRingWidth,
-                child: ColoredBox(color: theme.accent),
-              ),
-            Padding(
-              padding: EdgeInsets.only(
-                left: theme.effectiveControlPadding,
-                right: Spacing.xs,
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      title,
-                      // A tab label is a control label: the theme's base size
-                      // at medium weight. It was 11 px, which made the open
-                      // document's own name the smallest type in the window.
-                      style: theme.textTheme.labelLarge,
-                      color:
-                          selected ? theme.accent : theme.foregroundSecondary,
-                    ),
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.close, color: theme.foregroundSecondary),
-                    iconSize: theme.iconSize,
-                    padding: EdgeInsets.zero,
-                    constraints: BoxConstraints(
-                      minWidth: theme.iconSize + Spacing.xs,
-                      minHeight: theme.iconSize + Spacing.xs,
-                    ),
-                    tooltip: 'Close $title',
-                    onPressed: onClose,
-                  ),
-                ],
-              ),
-            ),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: DocumentTabStrip(
+          height: ChromeMetrics.of(theme).documentTabsHeight,
+          tabs: <DocumentTab>[
+            for (final DocumentSession document in documents)
+              DocumentTab(label: document.tabTitle, id: document),
           ],
+          selectedIndex: activeIndex,
+          onSelected: onSelected,
+          onClosed: onClosed,
+          contextMenu: menu == null ? null : (int _) => menu(),
         ),
       ),
     );
