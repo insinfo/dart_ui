@@ -14,6 +14,13 @@ import 'video_decoder.dart';
 import 'video_frame.dart';
 import 'video_frame_ring_buffer.dart';
 
+/// How many frames [decoder]'s last seek decoded only to throw away, or null
+/// for a decoder that is not this one. A seek starts the reader at the
+/// target (`AVAssetReader.timeRange`), so this stays near zero; a number
+/// that grows with the target means seeking decodes from the start again.
+int? debugMacosSeekDiscardedFrames(VideoDecoder decoder) =>
+    decoder is _MacNativeVideoDecoder ? decoder._lastSeekDiscarded : null;
+
 /// Opens [path] with AVFoundation, without starting an FFmpeg process.
 Future<VideoDecoder> openMacosNativeVideoDecoder(
   String path,
@@ -57,6 +64,17 @@ final class _CMTime extends Struct {
   @Int64()
   external int epoch;
 }
+
+/// `CMTimeRange`: a start and a duration.
+final class _CMTimeRange extends Struct {
+  external _CMTime start;
+  external _CMTime duration;
+}
+
+typedef _ObjcTimeRangeNative = Void Function(
+    Pointer<Void> receiver, Pointer<Void> selector, _CMTimeRange range);
+typedef _ObjcTimeRange = void Function(
+    Pointer<Void> receiver, Pointer<Void> selector, _CMTimeRange range);
 
 typedef _ObjcFloatNative = Float Function(Pointer<Void>, Pointer<Void>);
 typedef _ObjcFloatDart = double Function(Pointer<Void>, Pointer<Void>);
@@ -176,6 +194,9 @@ final class _MacVideoBindings {
     _voidPtr = send.cast<NativeFunction<_ObjcVoidPtrNative>>().asFunction();
     _cstring = send.cast<NativeFunction<_ObjcCStringNative>>().asFunction();
     _float = send.cast<NativeFunction<_ObjcFloatNative>>().asFunction();
+    // A struct argument goes through plain objc_msgSend on both ABIs; only
+    // a struct *result* needs the _stret entry point.
+    _timeRange = send.cast<NativeFunction<_ObjcTimeRangeNative>>().asFunction();
     // A CMTime is 24 bytes, returned through memory. arm64 objc_msgSend
     // handles that itself; x86-64 has a separate entry point for it.
     _cmTime = (Abi.current() == Abi.macosX64
@@ -237,6 +258,7 @@ final class _MacVideoBindings {
   late final _ObjcCStringDart _cstring;
   late final _ObjcCMTimeDart _cmTime;
   late final _ObjcFloatDart _float;
+  late final _ObjcTimeRange _timeRange;
 
   late final Pointer<Void> Function(Pointer<Void>) _sampleImageBuffer;
   late final _CMTime Function(Pointer<Void>) _sampleTimestamp;
@@ -356,7 +378,17 @@ final class _MacVideoBindings {
   double _nominalFrameRate(Pointer<Void> asset, NativeArena arena) =>
       _float(_firstVideoTrack(asset, arena), _sel('nominalFrameRate', arena));
 
-  _ReaderSession _newReader(Pointer<Void> asset, NativeArena arena) {
+  /// A reader over [asset]'s video track, starting at [start].
+  ///
+  /// The start is AVAssetReader's `timeRange`, so the reader opens at the
+  /// key frame before [start] instead of the beginning of the file. Without
+  /// it a seek decoded every frame up to the target - eleven seconds to
+  /// reach 90% of a seven-minute screen recording, with the window frozen.
+  _ReaderSession _newReader(
+    Pointer<Void> asset,
+    NativeArena arena, {
+    Duration start = Duration.zero,
+  }) {
     final Pointer<Void> track = _firstVideoTrack(asset, arena);
 
     final Pointer<Void> number = _integerObject(
@@ -407,6 +439,21 @@ final class _MacVideoBindings {
       );
     }
     _voidPtr(reader, _sel('addOutput:', arena), output);
+    if (start > Duration.zero) {
+      final Pointer<_CMTimeRange> range = arena<_CMTimeRange>();
+      range.ref.start
+        ..value = start.inMicroseconds
+        ..timescale = Duration.microsecondsPerSecond
+        ..flags = 1 // kCMTimeFlags_Valid
+        ..epoch = 0;
+      range.ref.duration
+        ..value = 0
+        ..timescale = 0
+        // kCMTimeFlags_Valid | kCMTimeFlags_PositiveInfinity: to the end.
+        ..flags = 1 | 4
+        ..epoch = 0;
+      _timeRange(reader, _sel('setTimeRange:', arena), range.ref);
+    }
     if (_bool(reader, _sel('startReading', arena)) == 0) {
       _release(output, arena);
       _release(reader, arena);
@@ -612,6 +659,7 @@ final class _MacNativeVideoDecoder implements VideoDecoder {
   bool _closed = false;
   bool _reading = false;
   VideoSample? _pending;
+  int _lastSeekDiscarded = 0;
 
   @override
   final VideoStreamInfo info;
@@ -689,9 +737,10 @@ final class _MacNativeVideoDecoder implements VideoDecoder {
     using((NativeArena arena) {
       _bindings._closeSession(_session, arena);
       _ring.invalidateAll();
-      _session = _bindings._newReader(_asset, arena);
+      _session = _bindings._newReader(_asset, arena, start: target);
       _pending = null;
       _sequence = 0;
+      _lastSeekDiscarded = 0;
       while (true) {
         final _NativeDecodedFrame? decoded = _bindings._readFrame(
           _session,
@@ -708,6 +757,7 @@ final class _MacNativeVideoDecoder implements VideoDecoder {
         // back now: three slots and a seek that skips a hundred frames would
         // otherwise starve the ring before reaching the target.
         decoded.lease.release();
+        _lastSeekDiscarded++;
       }
     });
   }

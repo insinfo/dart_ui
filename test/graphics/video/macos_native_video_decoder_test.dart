@@ -59,6 +59,10 @@ void main() {
     await decoder.seek(const Duration(milliseconds: 1500));
     final VideoSample sample = (await decoder.readFrame())!;
     expect(sample.timestamp.inMilliseconds, closeTo(1500, 100));
+    // The reader starts at the target. It used to start at the beginning
+    // and decode 15 frames to throw away here - on a seven-minute video,
+    // eleven seconds of a frozen window to reach 90%.
+    expect(debugMacosSeekDiscardedFrames(decoder), lessThan(3));
     sample.release();
     await decoder.close();
   }, skip: Platform.isMacOS ? null : 'AVFoundation is macOS-only');
