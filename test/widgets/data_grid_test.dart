@@ -321,6 +321,91 @@ void main() {
       harness.dispose();
     });
   });
+  group('DataGrid sideways', () {
+    PointerScrollEvent wheel(double dx, double dy) => PointerScrollEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: const Offset(10, 40),
+          scrollDelta: Offset(dx, dy),
+          scrollDeltaUnit: ScrollDeltaUnit.pixels,
+        );
+
+    test('columns that fit do not scroll', () {
+      final harness = _GridHarness(rowCount: 3);
+      harness.frame();
+      expect(harness.sideways.maxScrollExtent, 0);
+      expect(harness.body.handleKeyEvent(_key(logicalKeyArrowRight)), isFalse,
+          reason: 'Right is free for whoever wants it');
+      harness.dispose();
+    });
+
+    test('wider columns scroll the rows and the titles together', () {
+      final harness =
+          _GridHarness(rowCount: 3, widths: const <double>[150, 150]);
+      harness.frame();
+      expect(harness.sideways.maxScrollExtent, 300 - 220);
+      final RenderDataGridRow row =
+          harness.body.childAt(0) as RenderDataGridRow;
+      expect(row.size.width, 300, reason: 'rows as wide as the columns');
+
+      harness.body.handlePointerEvent(wheel(30, 0));
+      harness.frame();
+      expect(harness.sideways.pixels, 30);
+      expect(row.offsetFromParent.dx, -30);
+      expect(harness.header.columnStart(1), 150 - 30);
+
+      // Shift turns the wheel sideways and leaves the rows where they are.
+      harness.body.handleKeyEvent(_key(0x10, shift: true));
+      harness.body.handlePointerEvent(wheel(0, 20));
+      harness.frame();
+      expect(harness.sideways.pixels, 50);
+      expect(harness.scroll.pixels, 0);
+      harness.dispose();
+    });
+
+    test('Left and Right scroll; the header resizes the column it shows', () {
+      final harness =
+          _GridHarness(rowCount: 3, widths: const <double>[150, 150]);
+      harness.frame();
+      expect(harness.body.handleKeyEvent(_key(logicalKeyArrowRight)), isTrue);
+      harness.frame();
+      final double step = harness.sideways.pixels;
+      expect(step, greaterThan(0));
+      harness.body.handleKeyEvent(_key(logicalKeyArrowLeft));
+      harness.frame();
+      expect(harness.sideways.pixels, 0);
+
+      harness.sideways.jumpTo(50);
+      harness.frame();
+      // Name's right edge is at 150 - 50 on screen.
+      harness.header.handlePointerEvent(_press(const Offset(100, 10)));
+      harness.header.handlePointerEvent(_move(const Offset(120, 10)));
+      harness.header.handlePointerEvent(_release(const Offset(120, 10)));
+      harness.frame();
+      expect(harness.header.widths[0], 170);
+      harness.dispose();
+    });
+
+    test('right to left, the rows start at the right edge', () {
+      final harness = _GridHarness(
+          rowCount: 3,
+          widths: const <double>[150, 150],
+          direction: TextDirection.rightToLeft);
+      harness.frame();
+      final RenderDataGridRow row =
+          harness.body.childAt(0) as RenderDataGridRow;
+      expect(row.offsetFromParent.dx, 220 - 300);
+      expect(harness.header.columnStart(0), 220 - 150);
+      harness.sideways.jumpTo(80);
+      harness.frame();
+      expect(row.offsetFromParent.dx, 0);
+      expect(harness.header.columnStart(1), 0);
+      harness.dispose();
+    });
+  });
 }
 
 final class _GridHarness {
@@ -328,6 +413,8 @@ final class _GridHarness {
     required this.rowCount,
     this.selectionMode = DataGridSelectionMode.single,
     this.sortable = true,
+    this.widths = const <double>[100, 80],
+    this.direction = TextDirection.leftToRight,
   }) {
     owner = BuildOwner(
       pipelineOwner: PipelineOwner(
@@ -341,7 +428,10 @@ final class _GridHarness {
   final int rowCount;
   final DataGridSelectionMode selectionMode;
   final bool sortable;
+  final List<double> widths;
+  final TextDirection direction;
   final ScrollPosition scroll = ScrollPosition();
+  final ScrollPosition sideways = ScrollPosition(axis: ScrollAxis.horizontal);
   late final BuildOwner owner;
   Set<int> selection = <int>{};
   DataGridSort? sort;
@@ -350,16 +440,17 @@ final class _GridHarness {
   final List<int?> secondary = <int?>[];
 
   void _mount() => owner.updateRoot(Directionality(
-        textDirection: TextDirection.leftToRight,
+        textDirection: direction,
         child: DataGrid(
           columns: <DataGridColumn>[
-            DataGridColumn(title: 'Name', width: 100, sortable: sortable),
-            DataGridColumn(title: 'Size', width: 80, sortable: sortable),
+            DataGridColumn(title: 'Name', width: widths[0], sortable: sortable),
+            DataGridColumn(title: 'Size', width: widths[1], sortable: sortable),
           ],
           rowCount: rowCount,
           rowExtent: 20,
           cacheExtent: 0,
           controller: scroll,
+          horizontalController: sideways,
           selectionMode: selectionMode,
           selectedRows: selection,
           onSelectionChanged: (Set<int> rows) => selection = rows,

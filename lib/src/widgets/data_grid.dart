@@ -25,8 +25,10 @@
 /// widths the user dragged, and reported through [DataGrid.onColumnResized]
 /// for callers that persist them.
 ///
-/// Horizontal overflow is clipped rather than scrolled in this first version;
-/// the vertical axis is where a grid's size lives.
+/// Columns wider than the grid scroll sideways: the header and the rows move
+/// together, a bar appears along the bottom, and Shift+wheel, a trackpad's
+/// sideways swipe and Left/Right scroll it - Left/Right because the body's
+/// keyboard is a row cursor, with no column to move to.
 library;
 
 import '../geometry/offset.dart';
@@ -51,6 +53,7 @@ import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
 import 'pointer_router.dart';
+import 'scrollbar.dart';
 import 'style.dart';
 import 'theme.dart';
 import 'virtualization.dart';
@@ -123,6 +126,8 @@ final class DataGrid extends StatefulWidget {
     this.onRowActivated,
     this.onSecondaryPress,
     this.controller,
+    this.horizontalController,
+    this.scrollbar = ScrollbarVisibility.always,
     this.decorated = true,
     this.headerMenu,
     this.columnFitWidth,
@@ -185,6 +190,12 @@ final class DataGrid extends StatefulWidget {
 
   final ScrollPosition? controller;
 
+  /// The sideways scroll, for a caller that keeps or drives it.
+  final ScrollPosition? horizontalController;
+
+  /// When the scroll bars show; each only while its axis overflows.
+  final ScrollbarVisibility scrollbar;
+
   /// What dragging rows out carries - the selection as file paths, as text -
   /// or null when these rows cannot be dragged at all.
   ///
@@ -235,6 +246,8 @@ final class DataGrid extends StatefulWidget {
 
 final class _DataGridState extends State<DataGrid> {
   late final ScrollPosition _position = widget.controller ?? ScrollPosition();
+  late final ScrollPosition _horizontal = widget.horizontalController ??
+      ScrollPosition(axis: ScrollAxis.horizontal);
 
   /// The row the last primary press landed on, -1 for empty space: where a
   /// drag of the rows starts from.
@@ -457,6 +470,12 @@ final class _DataGridState extends State<DataGrid> {
         }
         _moveCursor(_cursor);
         return true;
+      case logicalKeyArrowLeft || logicalKeyArrowRight:
+        if (_horizontal.maxScrollExtent <= 0) return false;
+        final bool towardEnd = (event.logicalKey == logicalKeyArrowRight) !=
+            Directionality.of(context).isRightToLeft;
+        _horizontal.applyScrollDelta(towardEnd ? 1 : -1, inLines: true);
+        return true;
       case logicalKeyEnter when widget.onRowActivated != null:
         if (_cursor < 0 || _cursor >= widget.rowCount) return false;
         widget.onRowActivated!(_cursor);
@@ -507,6 +526,7 @@ final class _DataGridState extends State<DataGrid> {
           sort: widget.sort,
           textDirection: direction,
           theme: theme,
+          horizontal: _horizontal,
           onSortRequest: _requestSort,
           onResize: _resizeColumn,
           onFit: (int column) {
@@ -515,11 +535,14 @@ final class _DataGridState extends State<DataGrid> {
           },
         )),
         Expanded(
-          child: _withDragAndDrop(FocusAttachment(
+          child: _withScrollbars(_withDragAndDrop(FocusAttachment(
             node: _focusNode,
             child: _DataGridBodyWidget(
               decorated: widget.decorated,
               position: _position,
+              horizontal: _horizontal,
+              contentWidth: widths.fold(0.0, (double a, double b) => a + b),
+              textDirection: direction,
               focusNode: _focusNode,
               theme: theme,
               virtualization: virtualization,
@@ -566,7 +589,7 @@ final class _DataGridState extends State<DataGrid> {
                   ),
               ],
             ),
-          )),
+          ))),
         ),
       ],
     );
@@ -600,6 +623,17 @@ final class _DataGridState extends State<DataGrid> {
     _setDropRow(response.isAccepted ? row : null);
     return response;
   }
+
+  /// [body] with a bar for each axis, shown while that axis overflows.
+  Widget _withScrollbars(Widget body) => Scrollbar(
+        position: _position,
+        visibility: widget.scrollbar,
+        child: Scrollbar(
+          position: _horizontal,
+          visibility: widget.scrollbar,
+          child: body,
+        ),
+      );
 
   /// [body] as a drag source of the rows and a drop target, as configured.
   Widget _withDragAndDrop(Widget body) {
@@ -650,10 +684,13 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
     required this.sort,
     required this.textDirection,
     required this.theme,
+    required this.horizontal,
     required this.onSortRequest,
     required this.onResize,
     required this.onFit,
   });
+
+  final ScrollPosition horizontal;
 
   final List<DataGridColumn> columns;
   final List<double> widths;
@@ -674,6 +711,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
         ..widths = widths
         ..sort = sort
         ..textDirection = textDirection
+        ..horizontal = horizontal
         ..onSortRequest = onSortRequest
         ..onResize = onResize
         ..onFit = onFit
@@ -689,6 +727,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
       ..widths = widths
       ..sort = sort
       ..textDirection = textDirection
+      ..horizontal = horizontal
       ..onSortRequest = onSortRequest
       ..onResize = onResize
       ..onFit = onFit
@@ -755,15 +794,41 @@ final class RenderDataGridHeader extends RenderBox
   @override
   bool get focusOnPointerDown => false;
 
+  /// The body's sideways scroll, which the titles follow.
+  ScrollPosition? get horizontal => _horizontal;
+  ScrollPosition? _horizontal;
+
+  set horizontal(ScrollPosition? value) {
+    if (identical(value, _horizontal)) return;
+    _horizontal?.removeListener(_onScrolled);
+    _horizontal = value?..addListener(_onScrolled);
+    markNeedsPaint();
+  }
+
+  void _onScrolled(ScrollPosition position) => markNeedsPaint();
+
+  @override
+  void detach() {
+    _horizontal?.removeListener(_onScrolled);
+    super.detach();
+  }
+
+  /// How far the columns are moved by the sideways scroll: left in a
+  /// left-to-right grid, right in a right-to-left one.
+  double get _shift {
+    final double pixels = _horizontal?.pixels ?? 0;
+    return _textDirection.isRightToLeft ? pixels : -pixels;
+  }
+
   /// The x of column [index]'s start edge, in this header's coordinates.
   double columnStart(int index) {
     double cumulative = 0;
     for (int i = 0; i < index && i < _widths.length; i++) {
       cumulative += _widths[i];
     }
-    if (!_textDirection.isRightToLeft) return cumulative;
+    if (!_textDirection.isRightToLeft) return cumulative + _shift;
     final double width = index < _widths.length ? _widths[index] : 0;
-    return size.width - cumulative - width;
+    return size.width - cumulative - width + _shift;
   }
 
   /// The column whose *boundary* grip contains [dx], or -1.
@@ -774,8 +839,10 @@ final class RenderDataGridHeader extends RenderBox
     double cumulative = 0;
     for (int i = 0; i < _widths.length; i++) {
       cumulative += _widths[i];
-      final double edge =
-          _textDirection.isRightToLeft ? size.width - cumulative : cumulative;
+      final double edge = (_textDirection.isRightToLeft
+              ? size.width - cumulative
+              : cumulative) +
+          _shift;
       if ((dx - edge).abs() <= gripExtent) {
         return _columns[i].resizable ? i : -1;
       }
@@ -787,9 +854,10 @@ final class RenderDataGridHeader extends RenderBox
   int _columnAt(double dx) {
     double cumulative = 0;
     for (int i = 0; i < _widths.length; i++) {
-      final double start = _textDirection.isRightToLeft
-          ? size.width - cumulative - _widths[i]
-          : cumulative;
+      final double start = (_textDirection.isRightToLeft
+              ? size.width - cumulative - _widths[i]
+              : cumulative) +
+          _shift;
       if (dx >= start && dx < start + _widths[i]) return i;
       cumulative += _widths[i];
     }
@@ -1192,6 +1260,9 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
   const _DataGridBodyWidget({
     required this.decorated,
     required this.position,
+    required this.horizontal,
+    required this.contentWidth,
+    required this.textDirection,
     required this.focusNode,
     required this.theme,
     required this.virtualization,
@@ -1206,6 +1277,9 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
 
   final bool decorated;
   final ScrollPosition position;
+  final ScrollPosition horizontal;
+  final double contentWidth;
+  final TextDirection textDirection;
   final FocusNode focusNode;
   final ThemeData theme;
   final ListVirtualization virtualization;
@@ -1230,6 +1304,9 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
         onViewportExtent: onViewportExtent,
       )
         ..decorated = decorated
+        ..horizontal = horizontal
+        ..contentWidth = contentWidth
+        ..textDirection = textDirection
         ..theme = theme
         ..focusNode = focusNode;
 
@@ -1248,6 +1325,9 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
       ..onRowPressed = onRowPressed
       ..onViewportExtent = onViewportExtent
       ..decorated = decorated
+      ..horizontal = horizontal
+      ..contentWidth = contentWidth
+      ..textDirection = textDirection
       ..theme = theme
       ..focusNode = focusNode;
   }
@@ -1305,6 +1385,36 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
     markNeedsLayout();
   }
 
+  /// The sideways scroll, over [contentWidth].
+  ScrollPosition? get horizontal => _horizontal;
+  ScrollPosition? _horizontal;
+
+  set horizontal(ScrollPosition? value) {
+    if (identical(value, _horizontal)) return;
+    _horizontal?.removeListener(_onScrolled);
+    _horizontal = value?..addListener(_onScrolled);
+    markNeedsLayout();
+  }
+
+  /// The columns' total width; rows are never narrower than the body.
+  double get contentWidth => _contentWidth;
+  double _contentWidth = 0;
+
+  set contentWidth(double value) {
+    if (value == _contentWidth) return;
+    _contentWidth = value;
+    markNeedsLayout();
+  }
+
+  TextDirection get textDirection => _textDirection;
+  TextDirection _textDirection = TextDirection.leftToRight;
+
+  set textDirection(TextDirection value) {
+    if (value == _textDirection) return;
+    _textDirection = value;
+    markNeedsLayout();
+  }
+
   @override
   void performLayout() {
     final double width = constraints.hasBoundedWidth
@@ -1319,15 +1429,25 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
       viewportExtent: height,
       contentExtent: _virtualization.totalExtent,
     );
+    _horizontal?.applyViewportGeometry(
+      viewportExtent: width,
+      contentExtent: _contentWidth,
+    );
 
+    // A row is as wide as the columns, and never narrower than the body; it
+    // starts at the reading edge and slides by the sideways scroll.
+    final double rowWidth = _contentWidth > width ? _contentWidth : width;
+    final double scrolled = _horizontal?.pixels ?? 0;
+    final double rowX =
+        _textDirection.isRightToLeft ? width - rowWidth + scrolled : -scrolled;
     double cursorY = _range.leadingExtent - _position.pixels;
     for (int i = 0; i < childCount; i++) {
       final RenderBox child = childAt(i);
       child.layout(
-        BoxConstraints(minWidth: width, maxWidth: width),
+        BoxConstraints(minWidth: rowWidth, maxWidth: rowWidth),
         parentUsesSize: true,
       );
-      child.parentData!.offset = Offset(0, cursorY);
+      child.parentData!.offset = Offset(rowX, cursorY);
       cursorY += child.size.height;
     }
     onViewportExtent(height);
@@ -1375,10 +1495,23 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
   void handlePointerEvent(PointerEvent event) {
     super.handlePointerEvent(event);
     if (event is PointerScrollEvent) {
-      _position.applyScrollDelta(
-        event.scrollDelta.dy,
-        inLines: event.scrollDeltaUnit == ScrollDeltaUnit.lines,
-      );
+      final bool lines = event.scrollDeltaUnit == ScrollDeltaUnit.lines;
+      final ScrollPosition? horizontal = _horizontal;
+      // Shift turns a plain wheel sideways, as in every desktop table; a
+      // trackpad's sideways swipe arrives as dx on its own.
+      final bool sideways = horizontal != null &&
+          event.scrollDelta.dx == 0 &&
+          _modifiers.contains(KeyModifier.shift);
+      if (sideways) {
+        horizontal.applyScrollDelta(event.scrollDelta.dy, inLines: lines);
+        return;
+      }
+      if (horizontal != null && event.scrollDelta.dx != 0) {
+        horizontal.applyScrollDelta(event.scrollDelta.dx, inLines: lines);
+      }
+      if (event.scrollDelta.dy != 0) {
+        _position.applyScrollDelta(event.scrollDelta.dy, inLines: lines);
+      }
       return;
     }
     if (event is PointerDownEvent) {
@@ -1436,6 +1569,7 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
   @override
   void detach() {
     _position.removeListener(_onScrolled);
+    _horizontal?.removeListener(_onScrolled);
     super.detach();
   }
 
