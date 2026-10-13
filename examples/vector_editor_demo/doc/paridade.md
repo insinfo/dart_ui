@@ -7,10 +7,10 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 44 | 8 | 11 | 63 | 76% |
+| P0 | 46 | 8 | 9 | 63 | 79% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 52 | 10 | 113 | 175 | 33% |
+| **todas** | 54 | 10 | 111 | 175 | 34% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
@@ -29,7 +29,7 @@ Comandos registrados: 97.
 | Operações de objeto | 7 | 2 | 13 | 22 | 36% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
-| Edição de nós | 7 | 0 | 7 | 14 | 50% |
+| Edição de nós | 9 | 0 | 5 | 14 | 64% |
 | Encaixe, guias, réguas e grade | 3 | 1 | 3 | 7 | 50% |
 | Página e documento | 3 | 0 | 5 | 8 | 38% |
 | Formatos de arquivo | 0 | 0 | 4 | 4 | 0% |
@@ -219,8 +219,8 @@ Comandos registrados: 97.
 | ✅ | Line ↔ curve | P0 | `path.toLine`, `path.toCurve` |  |
 | ✅ | Add node | P0 | `path.addNode` |  |
 | ✅ | Delete node | P0 | `path.deleteNodes` |  |
-| ❌ | Drag a segment | P0 |  | tudo |
-| ❌ | Nudge nodes | P0 |  | tudo |
+| ✅ | Drag a segment | P0 | teste: "dragging a segment bends it under the pointer" |  |
+| ✅ | Nudge nodes | P0 | teste: "the arrows nudge the picked nodes under the Shape tool" |  |
 | ✅ | Select all nodes | P1 | `path.selectAllNodes` |  |
 | ✅ | Join / Break | P0 | `path.joinNodes`, `path.breakNode` |  |
 | ✅ | Reverse direction | P1 | `path.reverse` |  |

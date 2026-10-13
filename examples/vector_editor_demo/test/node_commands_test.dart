@@ -120,6 +120,27 @@ void main() {
     expect(c.paths.any((VectorPath p) => p.isClosed), isTrue);
   });
 
+  test('the arrows nudge the picked nodes under the Shape tool', () {
+    final VectorCurve c = curve();
+    const PathNode node = PathNode(0, 1);
+    final Offset before = NodeEditing.toDocument(
+        c, NodeEditing.nodePoint(c.paths.single, node.index));
+    final Rect box = c.cacheBbox;
+    model.selection.nodes.select(<PathNode>[node]);
+    expect(registry.execute('object.nudge', <String, Object?>{'dx': 1}).ok,
+        isTrue);
+    final Offset after = NodeEditing.toDocument(
+        c, NodeEditing.nodePoint(c.paths.single, node.index));
+    expect(after.dx - before.dx, closeTo(DocUnit.mm.toPoints, 1e-6));
+    expect(after.dy, closeTo(before.dy, 1e-6));
+    expect(model.active.api.undoDescription, 'Nudge nodes');
+
+    model.selection.nodes.clearNodes();
+    registry.execute('object.nudge', <String, Object?>{'dx': 1});
+    expect(c.cacheBbox.left, isNot(closeTo(box.left, 1e-6)),
+        reason: 'with no node picked the object moves');
+  });
+
   test('F10 picks the Shape tool', () {
     final KeyGesture f10 = registry['tool.shape']!.shortcut!;
     expect(f10, const KeyGesture(logicalKeyF10));

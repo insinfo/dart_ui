@@ -916,6 +916,20 @@ class EditorModel {
   void nudge(int dx, int dy, {bool big = false, bool small = false}) {
     if (!hasSelection) return;
     final step = DocUnit.mm.toPoints * (big ? 10 : (small ? 0.1 : 1));
+    // Under the Shape tool the arrows move the picked nodes, not the object.
+    final VectorCurve? curve =
+        tool == ToolMode.shaper && selection.nodes.hasNodes
+            ? selection.syncNodeCurve()
+            : null;
+    if (curve != null) {
+      final Offset? from = NodeEditing.toLocal(curve, Offset.zero);
+      final Offset? to =
+          NodeEditing.toLocal(curve, Offset(dx * step, dy * step));
+      if (from == null || to == null) return;
+      edit('Nudge nodes',
+          () => NodeEditing.moveNodes(curve, selection.nodes.nodes, to - from));
+      return;
+    }
     active.api.transform(selection.selectedObjects,
         <double>[1, 0, 0, 1, dx * step, dy * step], 'Nudge');
     touch('Nudged');

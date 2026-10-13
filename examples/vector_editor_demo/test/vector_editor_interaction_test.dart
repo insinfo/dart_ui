@@ -51,6 +51,7 @@ const Size kWindowSize = Size(1400, 880);
 void main() {
   _rightClickAndCurveTests();
   _alignKeyTests();
+  _shapeToolTests();
   _performanceTests();
   setUpAll(() {
     final fonts = FrameworkFonts.install();
@@ -1226,6 +1227,77 @@ void _performanceTests() {
       expect(window.debugBuildCount, before,
           reason: 'a pointer move rebuilt the whole window');
       expect(harness.model.cursor!.dx, closeTo(195, 1));
+      harness.dispose();
+    });
+  });
+}
+
+void _shapeToolTests() {
+  group('the Shape tool (F10)', () {
+    /// The rectangle as a curve, under the Shape tool, and where its node
+    /// [index] is on the document.
+    (VectorCurve, Offset Function(int)) curveUnderShape(_Harness harness) {
+      harness.model
+        ..pickObject(harness.rectangle)
+        ..convertSelectionToCurves();
+      harness.useTool(ToolMode.shaper);
+      final VectorCurve curve = harness.model.selection.syncNodeCurve()!;
+      Offset node(int index) => NodeEditing.toDocument(
+          curve, NodeEditing.nodePoint(curve.paths.single, index));
+      return (curve, node);
+    }
+
+    test('dragging a node moves it, one undo puts it back', () {
+      final harness = _Harness()..withoutSnapping();
+      final (VectorCurve curve, Offset Function(int) node) =
+          curveUnderShape(harness);
+      final Offset before = node(1);
+      final Offset other = node(2);
+
+      harness.dragDocument(before, before + const Offset(20, 10));
+
+      expect((node(1) - before - const Offset(20, 10)).distance, lessThan(1.0));
+      expect(node(2), other, reason: 'only the grabbed node moves');
+      expect(harness.model.selection.nodes.nodes,
+          <PathNode>{const PathNode(0, 1)});
+      harness.model.undo();
+      expect((node(1) - before).distance, lessThan(1e-6));
+      expect(NodeEditing.nodeCount(curve.paths.single), 4);
+      harness.dispose();
+    });
+
+    test('dragging a segment bends it under the pointer', () {
+      final harness = _Harness()..withoutSnapping();
+      final (VectorCurve curve, Offset Function(int) node) =
+          curveUnderShape(harness);
+      final Offset middle = (node(0) + node(1)) / 2;
+
+      harness.dragDocument(middle, middle + const Offset(0, -15));
+
+      final VectorPath path = curve.paths.single;
+      expect(path.points.first, isA<CurvePoint>());
+      final CurvePoint bent = path.points.first as CurvePoint;
+      final Offset local = NodeEditing.nodePoint(path, 0) * .125 +
+          bent.control1 * .375 +
+          bent.control2 * .375 +
+          bent.endpoint * .125;
+      expect(
+          (NodeEditing.toDocument(curve, local) - middle - const Offset(0, -15))
+              .distance,
+          lessThan(1.0));
+      harness.dispose();
+    });
+
+    test('a band picks the nodes inside it', () {
+      final harness = _Harness()..withoutSnapping();
+      final (_, Offset Function(int) node) = curveUnderShape(harness);
+      final Rect around = Rect.fromPoints(node(0), node(1)).inflate(4);
+
+      harness.dragDocument(around.topLeft - const Offset(0, 30),
+          around.bottomRight - const Offset(0, -30));
+
+      expect(harness.model.selection.nodes.nodes,
+          <PathNode>{const PathNode(0, 0), const PathNode(0, 1)});
       harness.dispose();
     });
   });
