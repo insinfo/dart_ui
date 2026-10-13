@@ -83,6 +83,8 @@ String webGpuBlendFactorName(GpuBlendFactor factor) => switch (factor) {
       GpuBlendFactor.zero => 'zero',
       GpuBlendFactor.one => 'one',
       GpuBlendFactor.oneMinusSrcAlpha => 'one-minus-src-alpha',
+      GpuBlendFactor.srcAlpha => 'src-alpha',
+      GpuBlendFactor.dstAlpha => 'dst-alpha',
     };
 
 /// Bytes per vertex in the one interleaved layout: [kGpuFloatsPerVertex]

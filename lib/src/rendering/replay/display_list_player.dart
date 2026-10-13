@@ -93,6 +93,7 @@ final class ReplayPaint {
     this.strokeCap = StrokeCap.butt,
     this.strokeJoin = StrokeJoin.miter,
     this.strokeExtras,
+    this.isolatedLayer = false,
   });
 
   /// Non-premultiplied 0xAARRGGBB, exactly as the encoder stored it. The
@@ -153,6 +154,15 @@ final class ReplayPaint {
 
   final bool antiAlias;
 
+  /// Whether a `saveLayer` opened with this paint must get its own offscreen
+  /// buffer even when it would composite as an identity - full opacity,
+  /// source-over - and could otherwise be flattened into its parent.
+  ///
+  /// Read only by [RasterSink.beginLayer]; a primitive ignores it. See
+  /// `paintFlagIsolatedLayer` for why a layer with a masking blend mode inside
+  /// cannot be flattened.
+  final bool isolatedLayer;
+
   /// One of the `pathFillRule*` constants. Stroke outlines always override
   /// this to non-zero because that is part of the stroker's contract.
   final int fillRule;
@@ -179,6 +189,7 @@ final class ReplayPaint {
         strokeCap: strokeCap,
         strokeJoin: strokeJoin,
         strokeExtras: strokeExtras,
+        isolatedLayer: isolatedLayer,
       );
 
   @override
@@ -194,7 +205,8 @@ final class ReplayPaint {
       other.shaderTransform == shaderTransform &&
       other.strokeCap == strokeCap &&
       other.strokeJoin == strokeJoin &&
-      other.strokeExtras == strokeExtras;
+      other.strokeExtras == strokeExtras &&
+      other.isolatedLayer == isolatedLayer;
 
   @override
   int get hashCode => Object.hash(
@@ -208,7 +220,8 @@ final class ReplayPaint {
       shaderTransform,
       strokeCap,
       strokeJoin,
-      strokeExtras);
+      strokeExtras,
+      isolatedLayer);
 
   @override
   String toString() => 'ReplayPaint(0x${argbColor.toRadixString(16)}, '
@@ -216,6 +229,7 @@ final class ReplayPaint {
       'aa: $antiAlias, fillRule: $fillRule'
       '${strokeCap == StrokeCap.butt && strokeJoin == StrokeJoin.miter ? '' : ', cap: ${strokeCap.name}, join: ${strokeJoin.name}'}'
       '${strokeExtras == null ? '' : ', $strokeExtras'}'
+      '${isolatedLayer ? ', isolated' : ''}'
       '${gradient == null ? '' : ', gradient: $gradient, shader: $shaderTransform'})';
 }
 
@@ -239,6 +253,7 @@ abstract interface class ReplayResources {
   int paintStyle(int id);
   double paintStrokeWidth(int id);
   int paintBlendMode(int id);
+  bool paintIsolatedLayer(int id);
   bool paintAntiAlias(int id);
   int paintFillRule(int id);
   Gradient? paintGradient(int id);
@@ -283,6 +298,9 @@ final class DisplayListResources implements ReplayResources {
 
   @override
   int paintBlendMode(int id) => _list.paintBlendMode(id);
+
+  @override
+  bool paintIsolatedLayer(int id) => _list.paintIsolatedLayer(id);
 
   @override
   bool paintAntiAlias(int id) => _list.paintAntiAlias(id);
@@ -846,6 +864,7 @@ final class DisplayListPlayer {
       strokeCap: resources.paintStrokeCap(id),
       strokeJoin: resources.paintStrokeJoin(id),
       strokeExtras: resources.paintStrokeExtras(id),
+      isolatedLayer: resources.paintIsolatedLayer(id),
     );
     _paints[id] = paint;
     return gradient == null

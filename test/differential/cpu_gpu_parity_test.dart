@@ -63,6 +63,7 @@ import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/gpu/gl/gl_backend.dart';
@@ -206,6 +207,29 @@ void main() {
       // separate paint paths, and the mode has to reach both.
       // Observed deviation: 0.
       await _expectParity(session, _plusPath(), tolerance: 0);
+    });
+
+    // The masking modes, inside the isolated layer a `ShaderMask` opens.
+    // **Not measured on this driver yet**: they were added on a Mac, where this
+    // file skips, and measured against Metal instead
+    // (`metal_cpu_parity_test.dart`: 0 for solid srcIn and dstOut, 1 for the
+    // rest). The ceiling here is Metal's, declared until a Windows run records
+    // the real number next to each scene - the rule above still holds, and
+    // the first run is the one that should tighten it.
+    test('a solid mask in each masking mode, in an isolated layer', () async {
+      for (final int mode in <int>[
+        blendModeSrcIn,
+        blendModeDstIn,
+        blendModeDstOut,
+      ]) {
+        await _expectParity(session, _maskedLayer(mode), tolerance: 1);
+      }
+    });
+
+    test('a dstIn ramp that fades to transparent, in an isolated layer',
+        () async {
+      await _expectParity(session, _maskedLayer(blendModeDstIn, ramp: true),
+          tolerance: 1);
     });
 
     test('a rectangular clip: 0', () async {
@@ -434,6 +458,44 @@ DisplayList _plusPath() {
     blendMode: blendModePlus,
   );
   list.drawPath(list.addPath(builder.build()), paint);
+  return list;
+}
+
+/// The display list `RenderShaderMask` emits, by hand: an isolated layer, two
+/// overlapping rectangles - one opaque, one translucent - and a mask over the
+/// whole layer in [blendMode], solid or a ramp that ends transparent.
+DisplayList _maskedLayer(int blendMode, {bool ramp = false}) {
+  final list = DisplayList();
+  list
+    ..drawRect(
+        0, 0, 24, 24, list.addPaint(colorArgb: 0xFF204060, antiAlias: false))
+    ..saveLayer(
+        2, 2, 22, 22, list.addPaint(colorArgb: 0xFFFFFFFF, isolatedLayer: true))
+    ..drawRect(
+        3, 3, 15, 15, list.addPaint(colorArgb: 0xFFCC3311, antiAlias: false))
+    ..drawRect(
+        9, 9, 21, 21, list.addPaint(colorArgb: 0x8011CC33, antiAlias: false));
+  final int mask = ramp
+      ? list.addPaint(
+          colorArgb: 0xFFFFFFFF,
+          blendMode: blendMode,
+          antiAlias: false,
+          gradient: LinearGradient(
+            startX: 2,
+            startY: 0,
+            endX: 18,
+            endY: 0,
+            stops: const <GradientStop>[
+              GradientStop(0, 0xFFE03020),
+              GradientStop(1, 0x002040E0),
+            ],
+          ),
+        )
+      : list.addPaint(
+          colorArgb: 0x9966AAEE, blendMode: blendMode, antiAlias: false);
+  list
+    ..drawRect(2, 2, 22, 22, mask)
+    ..restore();
   return list;
 }
 

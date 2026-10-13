@@ -33,9 +33,12 @@
 ///   an inner one instead of copying it - see that class for what the copy
 ///   costs.
 /// * **Rounded *clipping*.** [RenderClipRRect] cannot round the corners it
-///   paints, because no rasterizer in this repository implements `opClipPath`
-///   and the three available blend modes cannot express a mask. Its comment
-///   names the missing stage; its hit test is exactly rounded regardless.
+///   paints, because no rasterizer in this repository implements `opClipPath`.
+///   The masking blend modes [RenderShaderMask] uses could stand in for one,
+///   but they are bounded - see that class - so the corners would need a
+///   `dstOut` of the box *minus* the rounded rectangle, and that is not wired
+///   yet. Its comment names the missing stage; its hit test is exactly rounded
+///   regardless.
 /// * **Shadows.** [BoxDecoration] carries a colour, a border and a corner
 ///   radius, and no shadow. A shadow is a blur, and there is no blur: it is a
 ///   separable convolution over a mask, which is the same missing mask stage
@@ -51,6 +54,7 @@ import '../graphics/content_hint.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
 import '../graphics/display_list_opcodes.dart';
+import '../graphics/gradient.dart';
 import 'alignment.dart';
 import 'render_box.dart';
 
@@ -195,6 +199,165 @@ final class RenderOpacity extends RenderProxyBox {
     );
     paintChild(list, child, offset);
     list.restore();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shader mask
+// ---------------------------------------------------------------------------
+
+/// Builds the gradient a [RenderShaderMask] lays over its child.
+///
+/// [bounds] is the child's box in its own coordinates - origin at zero, the
+/// size it was laid out at - so a callback can say "from the left edge to the
+/// right edge" without knowing where the box sits on screen. Flutter's
+/// `ShaderCallback` has the same argument and returns a `Shader`; this
+/// framework has no shader object, and a [Gradient] *is* everything a paint can
+/// sample, so that is what is returned.
+typedef ShaderCallback = Gradient Function(Rect bounds);
+
+/// Paints its child, then a gradient over it in a masking blend mode, inside
+/// one offscreen layer.
+///
+/// This is Flutter's `ShaderMask`, and the two uses it exists for are the two
+/// default-worthy blend modes:
+///
+///   * **[blendModeSrcIn]** (the default here): the gradient's colour where
+///     the child has alpha, and nothing where it does not. Gradient text - the
+///     glyphs' coverage survives, their colour is replaced by the ramp.
+///   * **[blendModeDstIn]**: the child, kept in proportion to the gradient's
+///     alpha. A list that fades out at its edge - the ramp's colour is never
+///     seen, only its alpha.
+///
+/// [blendModeDstOut] is the complement of the second and is accepted too.
+///
+/// ## Why the default is not Flutter's
+///
+/// Flutter defaults to `BlendMode.modulate`, which multiplies the two colours
+/// and is a *separable* blend rather than a Porter-Duff one: no pair of
+/// fixed-function factors computes it on premultiplied colour for every
+/// backend this framework ships, and the display list encodes only modes that
+/// are such a pair (`gpu_pipeline.dart`). On white text, which is how the
+/// Flutter documentation demonstrates the widget, modulate and srcIn draw the
+/// same picture - so srcIn is the default that makes the canonical example
+/// look the same, and it does not depend on the text being white.
+///
+/// ## The layer is isolated, on purpose and by flag
+///
+/// The mask must blend against the child alone. A full-opacity source-over
+/// layer is normally *flattened* into its parent - the identity composite is
+/// free that way - and inside a flattened layer the gradient would blend
+/// against the window's background as well, masking it too. So the layer
+/// paint sets `isolatedLayer`, which every renderer reads as "allocate the
+/// buffer anyway". That is a buffer the size of this box for as long as the
+/// mask is on screen; there is no cheaper correct way to draw it.
+///
+/// ## What is painted, exactly
+///
+///     saveLayer(box, isolated)
+///       child
+///       save; transform(translate to the box); drawRect(0, 0, w, h, gradient
+///       in [blendMode]); restore
+///     restore
+///
+/// The gradient is drawn under a translation rather than with its geometry
+/// shifted, because a gradient's coordinates are in the space of the command
+/// that uses it (`gradient.dart`): the callback's box is at the origin, so the
+/// rectangle has to be too. The masking modes are *bounded* - a pixel the
+/// rectangle does not cover is untouched - which is why the rectangle covers
+/// the whole layer and not merely the part that should survive.
+///
+/// ## Declared limits
+///
+///   * Like [RenderOpacity], the layer is this box. A child that paints outside
+///     its own box is clipped by the mask.
+///   * Direct2D and the DOM backend refuse the masking blend modes by name;
+///     neither has a per-primitive equation for them. See
+///     `d2d_raster_sink.dart`.
+///   * A box with no area paints nothing: there is nothing for the mask to
+///     cover, and a zero-sized layer would be allocated for no output.
+final class RenderShaderMask extends RenderProxyBox {
+  RenderShaderMask({
+    required ShaderCallback shaderCallback,
+    int blendMode = blendModeSrcIn,
+    super.child,
+  })  : _shaderCallback = shaderCallback,
+        _blendMode = _checkedBlendMode(blendMode);
+
+  ShaderCallback _shaderCallback;
+  int _blendMode;
+
+  /// Called on every paint with the child's local bounds. Replacing it with a
+  /// different function repaints; the framework cannot tell whether two
+  /// closures build the same gradient, so it does not try.
+  ShaderCallback get shaderCallback => _shaderCallback;
+
+  set shaderCallback(ShaderCallback value) {
+    if (identical(value, _shaderCallback)) return;
+    _shaderCallback = value;
+    markNeedsPaint();
+  }
+
+  /// One of the display list's `blendMode*` constants: how the gradient
+  /// combines with the child. Any mode the display list encodes is accepted -
+  /// `srcOver` simply lays the gradient on top - and an unknown one is
+  /// rejected here, at the widget, rather than at the encoder a frame later.
+  int get blendMode => _blendMode;
+
+  set blendMode(int value) {
+    if (value == _blendMode) return;
+    _blendMode = _checkedBlendMode(value);
+    markNeedsPaint();
+  }
+
+  static int _checkedBlendMode(int value) {
+    if (value < 0 || value >= kBlendModeCount) {
+      throw ArgumentError.value(
+        value,
+        'blendMode',
+        'not one of the display list\'s blendMode* constants',
+      );
+    }
+    return value;
+  }
+
+  @override
+  void paint(DisplayList list, Offset offset) {
+    final RenderBox? child = this.child;
+    if (child == null) return;
+    final Size size = this.size;
+    if (size.isEmpty) return;
+    final double width = size.width;
+    final double height = size.height;
+    final Gradient gradient =
+        _shaderCallback(Rect.fromLTWH(0, 0, width, height));
+
+    // White, opaque, isolated: the colour is not drawn, the alpha and blend
+    // mode composite the layer back as an identity, and the flag is what keeps
+    // the layer from being flattened into its parent.
+    final int layerPaint =
+        list.addPaint(colorArgb: 0xFFFFFFFF, isolatedLayer: true);
+    // The colour is not sampled when a gradient is set (`gradient.dart`); the
+    // ramp's stops carry the alpha the mask is made of.
+    final int maskPaint = list.addPaint(
+      colorArgb: 0xFFFFFFFF,
+      gradient: gradient,
+      blendMode: _blendMode,
+    );
+    list.saveLayer(
+      offset.dx,
+      offset.dy,
+      offset.dx + width,
+      offset.dy + height,
+      layerPaint,
+    );
+    paintChild(list, child, offset);
+    list
+      ..save()
+      ..transform(1, 0, 0, 1, offset.dx, offset.dy)
+      ..drawRect(0, 0, width, height, maskPaint)
+      ..restore()
+      ..restore();
   }
 }
 
@@ -424,9 +587,11 @@ final class RenderClipRect extends RenderProxyBox {
 /// `opClipPath` and this node could emit a rounded-rectangle path into it - but
 /// **no rasterizer in this repository implements that opcode**:
 /// `DisplayListPlayer` throws `unsupported` on it, and its message names what
-/// is missing, a clip *mask* stage. The three blend modes that do exist
-/// (`srcOver`, `src`, `plus`) cannot stand in for one: masking a layer needs a
-/// destination-in, and there isn't one.
+/// is missing, a clip *mask* stage. Since 13/10/2026 the display list has
+/// `blendModeDstIn` and `blendModeDstOut`, which could stand in for one inside
+/// an isolated layer - but they are bounded, so the corner wedges would need a
+/// `dstOut` of the box minus the rounded outline, an even-odd path. That is
+/// not wired here yet.
 ///
 /// So the choice was between emitting an opcode that crashes every backend and
 /// emitting the rectangular clip that works. This emits the rectangle. The four

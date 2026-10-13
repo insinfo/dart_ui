@@ -10,6 +10,7 @@
 /// frame.
 library;
 
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:dart_ui/dart_ui.dart';
@@ -122,6 +123,120 @@ void main() {
       expect(owner.renderRoot, same(node), reason: 'reconciled, not replaced');
       expect(node.opacity, 0.25);
       expect(node.alpha, 64);
+    });
+  });
+
+  group('ShaderMask', () {
+    setUpAll(() {
+      // Ahem: every glyph a solid em box, so "inside a glyph" and "between
+      // glyphs" are whole pixels and the assertions below need no tolerance
+      // for antialiasing.
+      FontRegistry.instance.useTypeface(
+        Typeface.parse(File('test/fonts/ahem.ttf').readAsBytesSync()),
+        source: 'test/fonts/ahem.ttf',
+      );
+    });
+
+    /// 'X X' in Ahem at 16 px, centred in a 64x32 frame: two 16 px boxes at
+    /// x 8..24 and 40..56, rows 8..24, with an empty em between them.
+    Widget gradientText({int blendMode = blendModeSrcIn}) => Center(
+          child: ShaderMask(
+            blendMode: blendMode,
+            shaderCallback: (Rect bounds) => LinearGradient(
+              startX: 0,
+              startY: 0,
+              endX: bounds.width,
+              endY: 0,
+              stops: const <GradientStop>[
+                GradientStop(0, 0xFFFF0000),
+                GradientStop(1, 0xFF0000FF),
+              ],
+            ),
+            child: const Text(
+              'X X',
+              style: TextStyle(
+                fontFamily: 'Ahem',
+                fontSize: 16,
+                color: Color(0xFFFFFFFF),
+              ),
+            ),
+          ),
+        );
+
+    Future<Framebuffer> textFrame(Widget root) async {
+      final PipelineOwner pipeline = PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(64, 32)),
+      );
+      BuildOwner(pipelineOwner: pipeline).updateRoot(root);
+      final DisplayList list = DisplayList();
+      pipeline.drawFrame(list);
+      final MemoryRenderTarget target = await memoryTarget(64, 32);
+      addTearDown(target.dispose);
+      await target.renderDisplayList(list, clearColor: _background.value);
+      return target.framebuffer;
+    }
+
+    test('gradient text: the ramp inside the glyphs, nothing outside',
+        () async {
+      final Framebuffer buffer = await textFrame(gradientText());
+
+      // Inside the first glyph, near the ramp's red end; inside the second,
+      // near its blue end. The white of the text is gone - srcIn keeps only
+      // the glyphs' alpha - and the result is opaque.
+      final (int, int, int, int) first = pixelAt(buffer, 12, 16);
+      final (int, int, int, int) second = pixelAt(buffer, 52, 16);
+      expect(first.$1, greaterThan(200));
+      expect(first.$3, lessThan(50));
+      expect(second.$1, lessThan(50));
+      expect(second.$3, greaterThan(200));
+      expect((first.$2, first.$4), (0, 0xFF));
+      expect((second.$2, second.$4), (0, 0xFF));
+
+      // Across every inked pixel of the row the ramp runs one way: red falls
+      // and blue rises, so the gradient spans the mask's box and not each
+      // glyph separately.
+      var previousRed = 256;
+      for (final int x in <int>[
+        for (var i = 9; i < 23; i++) i,
+        for (var i = 41; i < 55; i++) i,
+      ]) {
+        final (int r, int g, int b, int a) = pixelAt(buffer, x, 16);
+        expect(r + b, inInclusiveRange(253, 257), reason: 'a pure ramp at $x');
+        expect(r, lessThanOrEqualTo(previousRed), reason: 'x = $x');
+        previousRed = r;
+      }
+
+      // Between the glyphs and around them: the background, exactly. The
+      // layer was transparent there and srcIn kept it transparent.
+      expect(pixelAt(buffer, 32, 16), _backgroundPixel);
+      expect(pixelAt(buffer, 4, 16), _backgroundPixel);
+      expect(pixelAt(buffer, 12, 4), _backgroundPixel);
+      expect(pixelAt(buffer, 12, 28), _backgroundPixel);
+    });
+
+    test('an update reconfigures the same render node', () {
+      final PipelineOwner pipeline = PipelineOwner(
+        rootConstraints: BoxConstraints.tight(const Size(64, 32)),
+      );
+      final BuildOwner owner = BuildOwner(pipelineOwner: pipeline)
+        ..updateRoot(gradientText());
+      pipeline.flushLayout();
+      layout.RenderShaderMask find(RenderObject node) {
+        if (node is layout.RenderShaderMask) return node;
+        layout.RenderShaderMask? found;
+        node.visitChildren((RenderObject child) => found ??= find(child));
+        return found!;
+      }
+
+      final layout.RenderShaderMask node = find(owner.renderRoot!);
+      expect(node.blendMode, blendModeSrcIn);
+
+      owner.updateRoot(gradientText(blendMode: blendModeDstIn));
+      pipeline.flushLayout();
+
+      expect(find(owner.renderRoot!), same(node),
+          reason: 'reconciled, not replaced');
+      expect(node.blendMode, blendModeDstIn);
     });
   });
 

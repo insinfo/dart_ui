@@ -360,6 +360,8 @@ final class GlApiTessellatedDriver implements TessellatedGlDriver {
         GpuBlendFactor.zero => glZero,
         GpuBlendFactor.one => glOne,
         GpuBlendFactor.oneMinusSrcAlpha => glOneMinusSrcAlpha,
+        GpuBlendFactor.srcAlpha => glSrcAlpha,
+        GpuBlendFactor.dstAlpha => glDstAlpha,
       };
 
   void _throwIfDisposed() {

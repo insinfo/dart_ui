@@ -46,6 +46,7 @@ import 'package:dart_ui/src/foundation/diagnostics.dart';
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/gradient.dart';
 import 'package:dart_ui/src/rendering/cpu_renderer.dart';
 import 'package:dart_ui/src/rendering/framebuffer.dart';
 import 'package:dart_ui/src/rendering/raster/blend.dart';
@@ -277,14 +278,292 @@ void main() {
       expect(() => cpuBlendForMode(-1), throwsA(isA<ArgumentError>()));
     });
 
-    test('is exactly the three the display list encodes', () {
-      // The enum and the wire format have to stay the same size. If a fourth
+    test('is exactly the six the display list encodes', () {
+      // The enum and the wire format have to stay the same size. If a seventh
       // constant is added, this line fails and points at the switch that needs
       // an equation rather than letting it default.
       expect(CpuBlendMode.values.length, kBlendModeCount);
       expect(cpuBlendForMode(blendModeSrcOver), CpuBlendMode.srcOver);
       expect(cpuBlendForMode(blendModeSrc), CpuBlendMode.src);
       expect(cpuBlendForMode(blendModePlus), CpuBlendMode.plus);
+      expect(cpuBlendForMode(blendModeSrcIn), CpuBlendMode.srcIn);
+      expect(cpuBlendForMode(blendModeDstIn), CpuBlendMode.dstIn);
+      expect(cpuBlendForMode(blendModeDstOut), CpuBlendMode.dstOut);
+    });
+
+    test('skips a transparent source exactly where the wire says it may', () {
+      // One rule, stated twice - once on the wire constant for the GPU sink,
+      // once on the enum for the span loops - and the two must not drift.
+      for (var mode = 0; mode < kBlendModeCount; mode++) {
+        expect(
+          cpuBlendForMode(mode).skipsTransparentSource,
+          !blendModeWritesTransparentSource(mode),
+          reason: 'mode $mode',
+        );
+      }
+    });
+  });
+
+  group('the masking modes', () {
+    // The GL factor pairs, applied to the same (128, 0, 0, 128) source:
+    //
+    //   * srcIn  `DST_ALPHA, ZERO`:           dst = src * dstAlpha
+    //   * dstIn  `ZERO, SRC_ALPHA`:           dst = dst * srcAlpha
+    //   * dstOut `ZERO, ONE_MINUS_SRC_ALPHA`: dst = dst * (1 - srcAlpha)
+    //
+    // Over the opaque blue destination (0, 0, 255, 255):
+    //
+    //   * srcIn:  the source scaled by 255/255 - itself, (128, 0, 0, 128).
+    //   * dstIn:  blue and alpha `mul255(255, 128) = 128`: (0, 0, 128, 128).
+    //   * dstOut: blue and alpha `mul255(255, 127) = 127`: (0, 0, 127, 127).
+    const (int, int, int, int) srcInOpaque = (128, 0, 0, 128);
+    const (int, int, int, int) dstInOpaque = (0, 0, 128, 128);
+    const (int, int, int, int) dstOutOpaque = (0, 0, 127, 127);
+
+    test('a rectangle composites each over an opaque destination', () async {
+      expect(await _rect(blendModeSrcIn), srcInOpaque);
+      expect(await _rect(blendModeDstIn), dstInOpaque);
+      expect(await _rect(blendModeDstOut), dstOutOpaque);
+    });
+
+    test('over a half-transparent destination, srcIn reads its alpha',
+        () async {
+      // 0x800000FF is (0, 0, 128, 128) premultiplied. srcIn keeps the
+      // *source's* colour at the destination's alpha: `mul255(128, 128) = 64`
+      // in red and alpha, and the blue is gone. dstIn and dstOut scale the
+      // destination by 128/255 and 127/255, both of which round 128 to 64.
+      const int halfBlue = 0x800000FF;
+      expect(await _rect(blendModeSrcIn, background: halfBlue), (64, 0, 0, 64));
+      expect(await _rect(blendModeDstIn, background: halfBlue), (0, 0, 64, 64));
+      expect(
+          await _rect(blendModeDstOut, background: halfBlue), (0, 0, 64, 64));
+    });
+
+    test('over transparency, srcIn has nothing to keep', () async {
+      // The destination's alpha is zero, so srcIn writes zero - the picture
+      // that makes it gradient *text*: the ramp exists only where the glyphs
+      // put alpha.
+      expect(await _rect(blendModeSrcIn, background: null), (0, 0, 0, 0));
+      expect(await _rect(blendModeDstIn, background: null), (0, 0, 0, 0));
+    });
+
+    test('a path, an image and a glyph run land on the rectangle\'s bytes',
+        () async {
+      // Four loops, as in the groups above, and the new modes have to reach
+      // every one of them: the span sink, the blit, the coverage mask.
+      for (final int mode in <int>[
+        blendModeSrcIn,
+        blendModeDstIn,
+        blendModeDstOut,
+      ]) {
+        final (int, int, int, int) expected = await _rect(mode);
+        expect(await _path(mode), expected, reason: 'path, mode $mode');
+        expect(await _image(mode), expected, reason: 'image, mode $mode');
+        expect(await _glyphs(mode), expected, reason: 'glyphs, mode $mode');
+      }
+    });
+
+    test('a transparent source erases under srcIn and dstIn only', () async {
+      // `blendModeWritesTransparentSource`: for the two "in" modes a source
+      // of alpha zero is the strongest thing they can say. dstOut and the
+      // older modes treat it as nothing to draw.
+      Future<(int, int, int, int)> transparent(int mode) async {
+        final list = DisplayList();
+        list
+          ..drawRect(0, 0, 12, 12,
+              list.addPaint(colorArgb: _destination, antiAlias: false))
+          ..drawRect(2, 2, 10, 10,
+              list.addPaint(colorArgb: 0x00FF0000, blendMode: mode));
+        final target = _target();
+        await target.renderDisplayList(list, clearColor: 0);
+        final pixel = _rgba(target.framebuffer, 5, 5);
+        // Outside the rectangle nothing changes in any mode: the masking modes
+        // are bounded.
+        expect(_rgba(target.framebuffer, 0, 0), (0, 0, 255, 255),
+            reason: 'mode $mode');
+        target.dispose();
+        return pixel;
+      }
+
+      expect(await transparent(blendModeSrcIn), (0, 0, 0, 0));
+      expect(await transparent(blendModeDstIn), (0, 0, 0, 0));
+      expect(await transparent(blendModeDstOut), (0, 0, 255, 255));
+      expect(await transparent(blendModeSrcOver), (0, 0, 255, 255));
+    });
+
+    test('a dstIn ramp fades the destination to nothing', () async {
+      // The fade-out mask, which is the reason a transparent source must not
+      // be skipped. The ramp runs from opaque at x = 0 to transparent at
+      // x = 12, its colour is irrelevant, and the blue under it is kept in
+      // proportion. Before the "in" modes wrote transparent sources, the
+      // last columns - where the ramp's alpha rounds to zero - kept the blue
+      // at full strength: a fade that un-faded at its end.
+      final list = DisplayList();
+      list.drawRect(0, 0, 12, 12,
+          list.addPaint(colorArgb: _destination, antiAlias: false));
+      final Gradient ramp = LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 12,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0xFF00FF00),
+          GradientStop(1, 0x0000FF00),
+        ],
+      );
+      list.drawRect(
+          0,
+          0,
+          12,
+          12,
+          list.addPaint(
+              colorArgb: 0, gradient: ramp, blendMode: blendModeDstIn));
+      final target = _target();
+      await target.renderDisplayList(list, clearColor: 0);
+
+      var previous = 256;
+      for (var x = 0; x < 12; x++) {
+        final (int r, int g, int b, int a) = _rgba(target.framebuffer, x, 5);
+        expect((r, g), (0, 0), reason: 'the ramp\'s green never shows ($x)');
+        expect(b, a, reason: 'still opaque blue, premultiplied ($x)');
+        expect(a, lessThan(previous), reason: 'monotonic fade at x = $x');
+        previous = a;
+      }
+      expect(_rgba(target.framebuffer, 0, 5).$4, greaterThan(230));
+      expect(_rgba(target.framebuffer, 11, 5).$4, lessThan(20));
+      target.dispose();
+    });
+
+    test('a gradient mask reaches the fractional row a solid fill reaches',
+        () async {
+      // The layer ends at y = 10.3, so row 10 is 30% inside it. The red
+      // content is an antialiased rectangle and covers that fraction exactly. A
+      // fully transparent dstIn ramp over the layer must erase all of it -
+      // row 10 included - so the blue background is all that is left. Before
+      // a gradient rectangle took the exact clip into its geometry, the span
+      // sink rounded y = 10.3 down to the integer clip, the mask never touched
+      // row 10, and a faint red line survived under a mask that says
+      // "nothing".
+      final list = DisplayList();
+      final Gradient clear = LinearGradient(
+        startX: 0,
+        startY: 0,
+        endX: 12,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0x00FFFFFF),
+          GradientStop(1, 0x00FFFFFF),
+        ],
+      );
+      list
+        ..drawRect(0, 0, 12, 12,
+            list.addPaint(colorArgb: _destination, antiAlias: false))
+        ..saveLayer(0, 0, 12, 10.3,
+            list.addPaint(colorArgb: 0xFFFFFFFF, isolatedLayer: true))
+        ..drawRect(0, 0, 12, 12, list.addPaint(colorArgb: 0xFFFF0000))
+        ..drawRect(
+            0,
+            0,
+            12,
+            10.3,
+            list.addPaint(
+                colorArgb: 0, gradient: clear, blendMode: blendModeDstIn))
+        ..restore();
+      final target = _target();
+      await target.renderDisplayList(list, clearColor: 0);
+      for (var y = 0; y < 12; y++) {
+        expect(_rgba(target.framebuffer, 5, y), (0, 0, 255, 255),
+            reason: 'row $y');
+      }
+      target.dispose();
+    });
+
+    test('on an antialiased edge, dstIn scales by the coverage too', () async {
+      // The GPU multiplies the fragment by its coverage before the blend, so
+      // dstIn under half coverage keeps half the destination even from an
+      // opaque source. The CPU folds coverage into the source the same way.
+      // Column 5 is covered 128/255 by a rectangle ending at x = 5.5.
+      final list = DisplayList();
+      list
+        ..drawRect(0, 0, 12, 12,
+            list.addPaint(colorArgb: _destination, antiAlias: false))
+        ..drawRect(2, 2, 5.5, 10,
+            list.addPaint(colorArgb: 0xFFFFFFFF, blendMode: blendModeDstIn));
+      final target = _target();
+      await target.renderDisplayList(list, clearColor: 0);
+      expect(_rgba(target.framebuffer, 3, 5), (0, 0, 255, 255));
+      expect(_rgba(target.framebuffer, 5, 5), (0, 0, 128, 128));
+      expect(_rgba(target.framebuffer, 6, 5), (0, 0, 255, 255));
+      target.dispose();
+    });
+
+    test('a layer composited with each mode', () async {
+      // A layer of the (128, 0, 0, 128) source, composited back over opaque
+      // blue: the composite runs the same equations as a primitive.
+      Future<List<(int, int, int, int)>> layer(int mode) async {
+        final list = DisplayList();
+        list
+          ..drawRect(0, 0, 12, 12,
+              list.addPaint(colorArgb: _destination, antiAlias: false))
+          ..saveLayer(0, 0, 12, 12,
+              list.addPaint(colorArgb: 0xFFFFFFFF, blendMode: mode))
+          ..drawRect(
+              2, 2, 10, 10, list.addPaint(colorArgb: _source, antiAlias: false))
+          ..restore();
+        final target = _target();
+        await target.renderDisplayList(list, clearColor: 0);
+        final List<(int, int, int, int)> pixels = <(int, int, int, int)>[
+          _rgba(target.framebuffer, 5, 5),
+          _rgba(target.framebuffer, 0, 0),
+        ];
+        target.dispose();
+        return pixels;
+      }
+
+      // Inside the layer's bounds but outside its content the layer is
+      // transparent: srcIn and dstIn erase there - the composite covers the
+      // whole layer - and dstOut keeps the blue.
+      expect(await layer(blendModeSrcIn), <(int, int, int, int)>[
+        srcInOpaque,
+        (0, 0, 0, 0),
+      ]);
+      expect(await layer(blendModeDstIn), <(int, int, int, int)>[
+        dstInOpaque,
+        (0, 0, 0, 0),
+      ]);
+      expect(await layer(blendModeDstOut), <(int, int, int, int)>[
+        dstOutOpaque,
+        (0, 0, 255, 255),
+      ]);
+    });
+  });
+
+  group('an isolated layer', () {
+    test('lets a masking primitive inside a full-opacity layer through',
+        () async {
+      // The same layer paint as the refusal below - opaque, source-over - plus
+      // the isolation bit. It gets a real buffer, so the dstIn mask multiplies
+      // the layer's red and not the blue background under it.
+      final list = DisplayList();
+      list
+        ..drawRect(0, 0, 12, 12,
+            list.addPaint(colorArgb: _destination, antiAlias: false))
+        ..saveLayer(0, 0, 12, 12,
+            list.addPaint(colorArgb: 0xFFFFFFFF, isolatedLayer: true))
+        ..drawRect(2, 2, 10, 10,
+            list.addPaint(colorArgb: 0xFFFF0000, antiAlias: false))
+        ..drawRect(0, 0, 12, 12,
+            list.addPaint(colorArgb: 0x80FFFFFF, blendMode: blendModeDstIn))
+        ..restore();
+      final target = _target();
+      await target.renderDisplayList(list, clearColor: 0);
+      // Red at alpha 128 inside, (128, 0, 0, 128), over opaque blue: red 128,
+      // blue `mul255(255, 127) = 127`, alpha 255.
+      expect(_rgba(target.framebuffer, 5, 5), (128, 0, 127, 255));
+      // Outside the red, the layer was transparent and dstIn kept it so; the
+      // background is untouched. Flattened, this pixel would be half blue.
+      expect(_rgba(target.framebuffer, 0, 0), (0, 0, 255, 255));
+      target.dispose();
     });
   });
 

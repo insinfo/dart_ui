@@ -442,9 +442,16 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     if (paint.gradient != null && shader == null) return;
     _drew = true;
     if (shader != null) {
-      final Path rectPath =
-          (PathBuilder()..addRect(_toLayer(deviceRect))).build();
-      _spanSink.begin(paint, blend, shader: shader);
+      // The *visible* rectangle, not the whole one: the filler can only clip
+      // whole pixels (its own comment says so), so a fractional clip edge has
+      // to be part of the geometry for its coverage to be exact - which is
+      // what the solid branch below gets from `fillRectAntiAliased`. With the
+      // clip inside the path the span sink must not also round it to the
+      // integer clip, or a clip ending at 317.3 drops row 317 entirely. That
+      // row is where a `ShaderMask`'s fade ends, and dropping it left the
+      // child's last sliver unmasked where the GPU masked it.
+      final Path rectPath = (PathBuilder()..addRect(_toLayer(visible))).build();
+      _spanSink.begin(paint, blend, shader: shader, clippedGeometry: true);
       _filler.fill(rectPath, _toLayer(clip), _spanSink);
       return;
     }
@@ -693,10 +700,11 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   ///   * **empty** - the bounds survived nothing. Nothing is allocated; the
   ///     pair is still delivered by the player, so an empty clip is pushed and
   ///     everything inside is culled by it.
-  ///   * **flattened** - alpha 255 and source-over. Compositing such a layer
-  ///     back is the identity, so its contents go straight into the parent and
-  ///     the layer is exactly its clip. This is what this method used to do to
-  ///     *every* layer, and it is correct only here.
+  ///   * **flattened** - alpha 255 and source-over, and the paint does not
+  ///     ask for isolation. Compositing such a layer back is the identity, so
+  ///     its contents go straight into the parent and the layer is exactly its
+  ///     clip. This is what this method used to do to *every* layer, and it is
+  ///     correct only here.
   ///   * **offscreen** - anything else. A buffer is taken, cleared to
   ///     transparency, and every primitive until the matching [endLayer] is
   ///     written into it with the layer's whole-pixel corner subtracted.
@@ -727,7 +735,9 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   ///     draws its contents straight into the parent, so a `plus` or `src`
   ///     primitive inside one blends against the parent's pixels rather than
   ///     against the transparency an isolating renderer would give it. That is
-  ///     refused by name in [_blendFor] rather than drawn, which is what
+  ///     refused by name in [_blendFor] rather than drawn - a producer that
+  ///     means it, such as `ShaderMask`, sets [ReplayPaint.isolatedLayer] and
+  ///     gets an offscreen layer instead - which is what
   ///     `gpu_raster_sink.dart` does with the same case. It used to be
   ///     unreachable here because this sink composited every primitive
   ///     source-over whatever the paint said; honouring `paint.blendMode` is
@@ -764,7 +774,10 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     final int alpha = (paint.argbColor >> 24) & 0xFF;
     final int blendMode = paint.blendMode;
 
-    if (degenerate || (alpha == 0xFF && blendMode == blendModeSrcOver)) {
+    if (degenerate ||
+        (alpha == 0xFF &&
+            blendMode == blendModeSrcOver &&
+            !paint.isolatedLayer)) {
       // Empty and flattened are the same code: a clip on the target already in
       // hand. They differ only in that an empty one clips everything away,
       // which the intersection below does on its own.
@@ -1321,7 +1334,13 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     final int argb = paint.argbColor;
     // A fully transparent run still costs a rasterization per glyph if it is
     // not stopped here, and invisible text is common: a fade at t = 0.
-    if (paint.gradient == null && (argb >> 24) & 0xFF == 0) return;
+    // Except under the two "in" modes, where transparent ink erases what it
+    // covers - see `blendModeWritesTransparentSource`.
+    if (paint.gradient == null &&
+        (argb >> 24) & 0xFF == 0 &&
+        !blendModeWritesTransparentSource(paint.blendMode)) {
+      return;
+    }
 
     if (!glyphMasksFit(transform)) {
       _drawGlyphRunAsOutlines(
@@ -1600,6 +1619,10 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
 
   _CpuGradientShader? _shader;
 
+  /// Whether the geometry being filled was already intersected with the exact
+  /// clip, so [pixel] must not round it again to the integer one.
+  bool _clippedGeometry = false;
+
   /// Arms the sink for one fill. Paired with the `_filler.fill` call that
   /// follows it, and the only way the two fields are set - they have to move
   /// together, and a caller that set the paint and forgot the mode would paint
@@ -1608,10 +1631,12 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
     ReplayPaint paint,
     CpuBlendMode blendMode, {
     _CpuGradientShader? shader,
+    bool clippedGeometry = false,
   }) {
     _paint = paint;
     _blendMode = blendMode;
     _shader = shader;
+    _clippedGeometry = clippedGeometry;
   }
 
   @override
@@ -1630,8 +1655,9 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
     // is dropped in every mode, including `src`: the span is reported because
     // the shape touches the pixel, but this is the same "nothing to add"
     // rounding `_fillSpan` applies, and `fillRect` below would refuse it
-    // anyway on its own alpha-zero test.
-    if (alpha == 0) return;
+    // anyway on its own alpha-zero test. The "in" modes are the exception
+    // there and here alike: for them a vanishing source erases.
+    if (alpha == 0 && _blendMode.skipsTransparentSource) return;
     rasterizer.fillRect(
       Rect.fromLTRB(
         xStart.toDouble(),
@@ -1651,13 +1677,20 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
   void pixel(int y, int x, int coverage) {
     final _CpuGradientShader? shader = _shader;
     if (shader == null || coverage == 0) return;
-    final clip = rasterizer.clip;
-    if (x < clip.left || x >= clip.right || y < clip.top || y >= clip.bottom) {
-      return;
+    if (!_clippedGeometry) {
+      final clip = rasterizer.clip;
+      if (x < clip.left ||
+          x >= clip.right ||
+          y < clip.top ||
+          y >= clip.bottom) {
+        return;
+      }
     }
     final int argb = shader.sampleArgb(x + 0.5, y + 0.5);
     final int alpha = mul255((argb >> 24) & 0xFF, coverage);
-    if (alpha == 0) return;
+    // A ramp that reaches alpha 0 is the whole point of a fade mask: under
+    // dstIn it must erase, so only the modes where it is an identity skip it.
+    if (alpha == 0 && _blendMode.skipsTransparentSource) return;
     final int red = premultiply((argb >> 16) & 0xFF, alpha);
     final int green = premultiply((argb >> 8) & 0xFF, alpha);
     final int blue = premultiply(argb & 0xFF, alpha);
@@ -1673,6 +1706,11 @@ final class _CoverageToRasterizer implements CoverageSpanSink {
         blendPixelSrc(target.pixels, offset, first, green, third, alpha);
       case CpuBlendMode.plus:
         blendPixelPlus(target.pixels, offset, first, green, third, alpha);
+      case CpuBlendMode.srcIn:
+      case CpuBlendMode.dstIn:
+      case CpuBlendMode.dstOut:
+        blendPixel(
+            _blendMode, target.pixels, offset, first, green, third, alpha);
     }
   }
 }

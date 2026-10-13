@@ -40,7 +40,7 @@
 ///
 /// ## 2. The render pass is this file's own, and so is the framebuffer
 ///
-/// A `VkRenderPass` fixes the attachment list, and the nine 2D pipelines are
+/// A `VkRenderPass` fixes the attachment list, and the 2D pipelines are
 /// compiled against a pass with **one** attachment. Adding a depth attachment
 /// to that pass would make every one of them incompatible with it, so this
 /// builds a second pair of passes - one that clears the colour, one that loads
@@ -1529,8 +1529,8 @@ final class _MeshPassSet {
 
   /// Colour plus depth. `vulkan_pipeline.dart::_createRenderPass` is the
   /// template; the second attachment and the `pDepthStencilAttachment` are the
-  /// whole difference, and they are why this cannot reuse that pass: the nine
-  /// 2D pipelines were compiled against a pass with one attachment and a pass
+  /// whole difference, and they are why this cannot reuse that pass: the 2D
+  /// pipelines were compiled against a pass with one attachment and a pass
   /// with two is not compatible with them.
   static Pointer<VkRenderPass_T> _createRenderPass(
     VulkanDevice device,

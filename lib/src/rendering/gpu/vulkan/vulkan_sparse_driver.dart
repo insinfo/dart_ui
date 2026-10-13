@@ -13,11 +13,12 @@
 /// **1. A pipeline is the whole cross product.** Blend factors, the fragment
 /// module, the vertex layout and the topology are all baked into a
 /// `VkPipeline`, so `setBlendState` and `setSparseMode` cannot bind anything -
-/// they *record* which coordinate changed, and the draw resolves the twelve-way
-/// choice at the last moment. Twelve is four fragment modules (coverage x
-/// paint) times three blend states, built eagerly when the pipeline is created
-/// so that "this driver cannot compile the shader" surfaces at opt-in time and
-/// not in the first frame that happens to draw a gradient.
+/// they *record* which coordinate changed, and the draw resolves the
+/// twenty-four-way choice at the last moment. Twenty-four is four fragment
+/// modules (coverage x paint) times six blend states, built eagerly when the
+/// pipeline is created so that "this driver cannot compile the shader"
+/// surfaces at opt-in time and not in the first frame that happens to draw a
+/// gradient.
 ///
 /// **2. A copy cannot be recorded inside a render pass.** The dense renderer
 /// stages every upload of a frame into one buffer and records them all in a
@@ -68,12 +69,13 @@ import 'vulkan_sparse_strips.dart';
 /// Derived from [kVulkanBlendModes] rather than written out, so a mode added to
 /// the display list is a pipeline that appears here too. Two modes that map to
 /// the same factor pair would produce two identical pipelines, which is waste
-/// and not a bug; today the three are distinct.
+/// and not a bug; today the six are distinct.
 List<GpuBlendState> get kVulkanSparseBlendStates => <GpuBlendState>[
       for (final int mode in kVulkanBlendModes) gpuBlendForMode(mode),
     ];
 
-/// The pipeline layout and the twelve graphics pipelines of the sparse path.
+/// The pipeline layout and the twenty-four graphics pipelines of the sparse
+/// path.
 final class VulkanSparsePipelines {
   VulkanSparsePipelines._({
     required this.layout,
@@ -283,6 +285,8 @@ final class VulkanSparsePipelines {
         GpuBlendFactor.one => VkBlendFactor.VK_BLEND_FACTOR_ONE,
         GpuBlendFactor.oneMinusSrcAlpha =>
           VkBlendFactor.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        GpuBlendFactor.srcAlpha => VkBlendFactor.VK_BLEND_FACTOR_SRC_ALPHA,
+        GpuBlendFactor.dstAlpha => VkBlendFactor.VK_BLEND_FACTOR_DST_ALPHA,
       };
 
   static Pointer<VkPipeline_T> _createPipeline(

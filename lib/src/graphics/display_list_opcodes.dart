@@ -184,10 +184,72 @@ const int pathFillRuleNonZero = 0;
 const int pathFillRuleEvenOdd = 1;
 const int kPathFillRuleCount = 2;
 
+/// Porter-Duff equations on premultiplied colour, carried in bits 8..15 of a
+/// paint's flag word.
+///
+/// Each one is exactly a fixed-function blend - a source factor times the
+/// fragment plus a destination factor times the pixel already there - because
+/// that is what every GPU backend can draw without reading the target back.
+/// The factors are in `gpu_pipeline.dart` and the CPU's term-for-term copy of
+/// them in `raster/blend.dart`.
+///
+/// The three masking modes ([blendModeSrcIn], [blendModeDstIn],
+/// [blendModeDstOut]) are what `ShaderMask` is built from: draw a subtree into
+/// a layer, then draw a gradient over it with one of them. Like every mode
+/// here they are *bounded* - a pixel the primitive does not cover is left
+/// alone - which differs from Skia's unbounded `kSrcIn` and is why a mask is
+/// drawn over the whole layer rather than over the part that should survive.
 const int blendModeSrcOver = 0;
 const int blendModeSrc = 1;
 const int blendModePlus = 2;
-const int kBlendModeCount = 3;
+
+/// `dst = src * dstAlpha`: the source, kept only where the destination has
+/// alpha. Gradient text - the ramp's colour inside the glyphs, nothing outside.
+const int blendModeSrcIn = 3;
+
+/// `dst = dst * srcAlpha`: the destination, kept only where the source has
+/// alpha. A fade-out mask - the source's colour is ignored, only its alpha
+/// matters.
+const int blendModeDstIn = 4;
+
+/// `dst = dst * (1 - srcAlpha)`: the destination, erased where the source has
+/// alpha. The complement of [blendModeDstIn].
+const int blendModeDstOut = 5;
+const int kBlendModeCount = 6;
+
+/// Whether a fully transparent source still changes the destination under
+/// [blendMode], so a primitive whose paint (or whose coverage-scaled colour)
+/// is transparent must still be drawn.
+///
+/// For source-over, plus and dst-out a transparent source is an identity and
+/// skipping it is free. For `src` the framework *chose* to skip it - see
+/// `blendPixelSrc` - so an invisible primitive draws nothing on any backend.
+/// The two "in" modes are different in kind: a transparent source is the
+/// strongest thing they can say, `erase`, and it is the whole point of a fade
+/// mask whose ramp ends at alpha 0. Skipping it there would leave the content
+/// fully visible exactly where the mask says it should be gone. It is also the
+/// continuous limit: a source that rounds to alpha 0 under a sliver of
+/// coverage multiplies the destination by almost nothing, so erasing it is the
+/// nearest representable answer, not a hole.
+///
+/// Coverage zero is a different question with one answer in every mode: a
+/// pixel the shape does not touch is not drawn.
+bool blendModeWritesTransparentSource(int blendMode) =>
+    blendMode == blendModeSrcIn || blendMode == blendModeDstIn;
+
+/// Bit 6 of a paint's flag word: a `saveLayer` with this paint always gets its
+/// own offscreen buffer, even at full opacity in source-over.
+///
+/// A layer that composites as an identity is normally *flattened* - drawn
+/// straight into its parent, because an offscreen pass that multiplies by one
+/// costs a buffer and buys nothing. That is only an identity while everything
+/// inside draws source-over. A masking blend mode inside it would blend
+/// against the parent's pixels instead of against the layer's own transparent
+/// start, and every renderer refuses that by name. A `ShaderMask` is exactly
+/// that subtree - its child, then a gradient in `blendModeDstIn` - so it asks
+/// for isolation explicitly, the way Skia's `saveLayer` always isolates. The
+/// bit means nothing on a paint that is not used by a `saveLayer`.
+const int paintFlagIsolatedLayer = 0x40;
 
 bool isKnownOpcode(int opcode) => opcode > opInvalid && opcode < kOpcodeCount;
 

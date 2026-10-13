@@ -1190,6 +1190,8 @@ int metalBlendFactor(GpuBlendFactor factor) => switch (factor) {
       GpuBlendFactor.zero => MtlBlendFactor.zero,
       GpuBlendFactor.one => MtlBlendFactor.one,
       GpuBlendFactor.oneMinusSrcAlpha => MtlBlendFactor.oneMinusSourceAlpha,
+      GpuBlendFactor.srcAlpha => MtlBlendFactor.sourceAlpha,
+      GpuBlendFactor.dstAlpha => MtlBlendFactor.destinationAlpha,
     };
 
 /// The `MTLPixelFormat` for a [GpuTextureFormat].

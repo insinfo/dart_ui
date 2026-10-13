@@ -1,30 +1,30 @@
-/// The render pass, the pipeline layout and the nine graphics pipelines.
+/// The render pass, the pipeline layout and the eighteen graphics pipelines.
 ///
-/// ## Why nine
+/// ## Why eighteen
 ///
 /// A `VkPipeline` bakes in everything Direct3D 11 and OpenGL let a caller
 /// change between draws: the shaders, the vertex layout, the blend state. This
 /// renderer varies exactly two of those - the fragment mode (three, one per
-/// [GpuPipelineKind]) and the blend equation (three, one per display-list
-/// blend mode) - so the full cross product is nine objects, built once at
-/// device creation and never rebuilt.
+/// [GpuPipelineKind]) and the blend equation (six, one per display-list blend
+/// mode) - so the full cross product is eighteen objects, built once at device
+/// creation and never rebuilt. It was nine until the masking modes arrived.
 ///
-/// Nine is small enough to build eagerly, which is the point. Building them
-/// lazily would move a multi-millisecond compile into the first frame that
-/// happens to draw with `blendModePlus`, which is a stutter nobody can trace
-/// back to its cause. Building all nine up front turns "this driver cannot
-/// compile the shader" into a device that refuses to open, which is where the
-/// caller can still choose another backend.
+/// Eighteen is still small enough to build eagerly, which is the point.
+/// Building them lazily would move a multi-millisecond compile into the first
+/// frame that happens to draw with `blendModePlus`, which is a stutter nobody
+/// can trace back to its cause. Building all of them up front turns "this
+/// driver cannot compile the shader" into a device that refuses to open, which
+/// is where the caller can still choose another backend.
 ///
 /// ## Two render passes, one set of pipelines
 ///
 /// Whether a frame clears its target is a per-frame decision, and `loadOp` is
 /// baked into a `VkRenderPass`. So there are two passes - one that clears and
-/// one that preserves - and the *same* nine pipelines work with both, because
+/// one that preserves - and the *same* pipelines work with both, because
 /// Vulkan's render-pass compatibility rule looks only at the attachments'
 /// formats and sample counts, not at their load and store operations. Building
-/// eighteen pipelines instead would be a straightforward and entirely
-/// unnecessary doubling.
+/// a second set per pass would be a straightforward and entirely unnecessary
+/// doubling.
 library;
 
 import 'dart:ffi';
@@ -43,8 +43,8 @@ const int kVulkanVertexStride = kGpuFloatsPerVertex * 4;
 
 /// The blend modes a pipeline is built for, in the order they are indexed.
 ///
-/// The display list encodes exactly these three (`gpu_pipeline.dart`), and
-/// [gpuBlendForMode] throws on a fourth. Keeping the list here rather than
+/// The display list encodes exactly these six (`gpu_pipeline.dart`), and
+/// [gpuBlendForMode] throws on a seventh. Keeping the list here rather than
 /// deriving it from a `switch` means a mode added to the display list is a
 /// missing entry in one place instead of a pipeline that silently is not
 /// built.
@@ -52,6 +52,9 @@ const List<int> kVulkanBlendModes = <int>[
   blendModeSrcOver,
   blendModeSrc,
   blendModePlus,
+  blendModeSrcIn,
+  blendModeDstIn,
+  blendModeDstOut,
 ];
 
 /// Everything a device compiles once and keeps.
@@ -110,8 +113,8 @@ final class VulkanPipelines {
       throw ArgumentError.value(
         blendMode,
         'blendMode',
-        'no Vulkan pipeline was built for it; the three in '
-            'kVulkanBlendModes are the three the display list encodes',
+        'no Vulkan pipeline was built for it; the modes in '
+            'kVulkanBlendModes are the ones the display list encodes',
       );
     }
     return _pipelines[kind.index * kVulkanBlendModes.length + blend];
@@ -472,6 +475,8 @@ final class VulkanPipelines {
         GpuBlendFactor.one => VkBlendFactor.VK_BLEND_FACTOR_ONE,
         GpuBlendFactor.oneMinusSrcAlpha =>
           VkBlendFactor.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        GpuBlendFactor.srcAlpha => VkBlendFactor.VK_BLEND_FACTOR_SRC_ALPHA,
+        GpuBlendFactor.dstAlpha => VkBlendFactor.VK_BLEND_FACTOR_DST_ALPHA,
       };
 
   static Pointer<VkPipeline_T> _createPipeline(

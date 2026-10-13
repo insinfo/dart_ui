@@ -137,7 +137,9 @@ const int d3d12ResourceBarrierAllSubresources = 0xFFFFFFFF;
 /// `D3D12_BLEND`.
 const int d3d12BlendZero = 1;
 const int d3d12BlendOne = 2;
+const int d3d12BlendSrcAlpha = 5;
 const int d3d12BlendInvSrcAlpha = 6;
+const int d3d12BlendDestAlpha = 7;
 
 /// `D3D12_BLEND_OP_ADD`.
 const int d3d12BlendOpAdd = 1;

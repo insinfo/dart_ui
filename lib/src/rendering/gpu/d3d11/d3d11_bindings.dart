@@ -158,7 +158,9 @@ const int d3d11CullBack = 3;
 
 const int d3d11BlendZero = 1;
 const int d3d11BlendOne = 2;
+const int d3d11BlendSrcAlpha = 5;
 const int d3d11BlendInvSrcAlpha = 6;
+const int d3d11BlendDestAlpha = 7;
 const int d3d11BlendOpAdd = 1;
 const int d3d11ColorWriteEnableAll = 15;
 

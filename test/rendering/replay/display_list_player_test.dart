@@ -701,6 +701,9 @@ final class _PaintStyleOverride implements ReplayResources {
   int paintBlendMode(int id) => _inner.paintBlendMode(id);
 
   @override
+  bool paintIsolatedLayer(int id) => _inner.paintIsolatedLayer(id);
+
+  @override
   bool paintAntiAlias(int id) => _inner.paintAntiAlias(id);
 
   @override

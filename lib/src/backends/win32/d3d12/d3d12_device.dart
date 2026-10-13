@@ -739,15 +739,18 @@ final class D3d12RenderDevice
       //
       // Direct3D 12 has no dynamic blend state: the factors are baked into the
       // pipeline state object. That is the one structural difference from the
-      // GL backend, where a batch's blend mode is a `glBlendFunc` call. Three
+      // GL backend, where a batch's blend mode is a `glBlendFunc` call. Six
       // objects, built up front, because the display list encodes exactly
-      // three modes and building one mid-frame would stall on a driver
-      // compile at the worst possible moment.
+      // six modes and building one mid-frame would stall on a driver compile
+      // at the worst possible moment.
       _pipelines = <int, Pointer<Void>>{};
       for (final int mode in <int>[
         blendModeSrcOver,
         blendModeSrc,
         blendModePlus,
+        blendModeSrcIn,
+        blendModeDstIn,
+        blendModeDstOut,
       ]) {
         final Object pso = _createPipelineState(arena, mode);
         if (pso is BackendDiagnostic) return pso;
@@ -1148,6 +1151,8 @@ final class D3d12RenderDevice
         GpuBlendFactor.zero => d3d12BlendZero,
         GpuBlendFactor.one => d3d12BlendOne,
         GpuBlendFactor.oneMinusSrcAlpha => d3d12BlendInvSrcAlpha,
+        GpuBlendFactor.srcAlpha => d3d12BlendSrcAlpha,
+        GpuBlendFactor.dstAlpha => d3d12BlendDestAlpha,
       };
 
   // -------------------------------------------------------------------

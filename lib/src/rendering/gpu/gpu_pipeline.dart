@@ -65,11 +65,20 @@ enum GpuPipelineKind {
 
 /// Blend factors, named as the two APIs that matter both name them.
 ///
-/// Three of them, because the three blend modes the display list can encode
-/// (`blendModeSrcOver`, `blendModeSrc`, `blendModePlus`) need exactly these.
-/// A fourth factor arriving here means the display list grew a mode, and the
-/// compiler will point at [gpuBlendForMode].
-enum GpuBlendFactor { zero, one, oneMinusSrcAlpha }
+/// Five of them, because the six blend modes the display list can encode need
+/// exactly these: `srcOver`, `src` and `plus` are built from the first three,
+/// and the masking modes add the two alpha factors - `srcIn` scales the source
+/// by [dstAlpha], `dstIn` scales the destination by [srcAlpha], and `dstOut`
+/// reuses [oneMinusSrcAlpha] on the destination side. A sixth factor arriving
+/// here means the display list grew a mode, and the compiler will point at
+/// every backend's translation, which are exhaustive switches on purpose.
+///
+/// The same factor is applied to the alpha channel as to the colour channels
+/// on every backend: each one sets the alpha factors explicitly rather than
+/// leaving them at an API default, which is what makes `dstIn`'s alpha
+/// `dstAlpha * srcAlpha` - the premultiplied equation - and not something a
+/// driver chose.
+enum GpuBlendFactor { zero, one, oneMinusSrcAlpha, srcAlpha, dstAlpha }
 
 /// The fixed-function blend a batch is drawn with.
 final class GpuBlendState {
@@ -97,6 +106,11 @@ final class GpuBlendState {
 /// becomes source-over draws a picture that is wrong in a way that looks like
 /// a paint bug, and section 23.7 of the roadmap requires CPU/GPU parity per
 /// mode to be *measured*, which is impossible if one side quietly substitutes.
+///
+/// The fragment's output is the coverage-scaled premultiplied colour, so each
+/// equation below is the CPU's `blend.dart` equation with `src` meaning "the
+/// paint times the coverage" - which is also what makes an antialiased edge of
+/// a `dstIn` mask a soft edge rather than a hard one.
 GpuBlendState gpuBlendForMode(int blendMode) => switch (blendMode) {
       // dst = src + dst * (1 - a), the premultiplied source-over of blend.dart.
       blendModeSrcOver => const GpuBlendState(
@@ -105,12 +119,21 @@ GpuBlendState gpuBlendForMode(int blendMode) => switch (blendMode) {
         const GpuBlendState(GpuBlendFactor.one, GpuBlendFactor.zero),
       blendModePlus =>
         const GpuBlendState(GpuBlendFactor.one, GpuBlendFactor.one),
+      // dst = src * dstAlpha.
+      blendModeSrcIn =>
+        const GpuBlendState(GpuBlendFactor.dstAlpha, GpuBlendFactor.zero),
+      // dst = dst * srcAlpha.
+      blendModeDstIn =>
+        const GpuBlendState(GpuBlendFactor.zero, GpuBlendFactor.srcAlpha),
+      // dst = dst * (1 - srcAlpha).
+      blendModeDstOut => const GpuBlendState(
+          GpuBlendFactor.zero, GpuBlendFactor.oneMinusSrcAlpha),
       _ => throw ArgumentError.value(
           blendMode,
           'blendMode',
-          'no GPU blend state; the display list encodes only srcOver, src '
-              'and plus, and a new mode must be given factors here rather '
-              'than falling back to srcOver',
+          'no GPU blend state; the display list encodes only srcOver, src, '
+              'plus, srcIn, dstIn and dstOut, and a new mode must be given '
+              'factors here rather than falling back to srcOver',
         ),
     };
 

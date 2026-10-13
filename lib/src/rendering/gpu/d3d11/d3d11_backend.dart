@@ -1482,6 +1482,8 @@ final class D3d11RenderDevice
         GpuBlendFactor.zero => d3d11BlendZero,
         GpuBlendFactor.one => d3d11BlendOne,
         GpuBlendFactor.oneMinusSrcAlpha => d3d11BlendInvSrcAlpha,
+        GpuBlendFactor.srcAlpha => d3d11BlendSrcAlpha,
+        GpuBlendFactor.dstAlpha => d3d11BlendDestAlpha,
       };
 
   Pointer<Uint8> _ensureStaging(int bytes) {

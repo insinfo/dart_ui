@@ -1442,6 +1442,15 @@ final class D2dRasterSink implements RasterSink {
   /// else is refused by name rather than approximated - a `plus` drawn as
   /// source-over is a picture that is quietly wrong, which is the failure
   /// mode section 6.6 forbids.
+  ///
+  /// The masking modes (`srcIn`, `dstIn`, `dstOut`) are refused here too, and
+  /// not for want of binding something: `D2D1_PRIMITIVE_BLEND` has only
+  /// source-over, copy, min, add and max, so there is no per-primitive
+  /// equation to bind even on an `ID2D1DeviceContext`. Direct2D's way to mask
+  /// is a layer with an opacity-mask brush, which knows the mask *before* the
+  /// content is drawn - and a display list states it after, as the last
+  /// primitive inside the layer. Rewriting the stream to hoist it is a replay
+  /// of its own, so a `ShaderMask` on this backend raises this error.
   void _requireSrcOver(ReplayPaint paint, String what) {
     if (paint.blendMode == blendModeSrcOver) return;
     throw UnsupportedCapabilityError(
@@ -1451,7 +1460,9 @@ final class D2dRasterSink implements RasterSink {
       detail: 'blend mode ${paint.blendMode} on $what: ID2D1RenderTarget '
           'composites source-over only; src and plus need the '
           'ID2D1DeviceContext primitive blend, which this backend does not '
-          'bind yet',
+          'bind yet, and srcIn, dstIn and dstOut have no Direct2D primitive '
+          'blend at all - only a layer opacity mask, which must be known '
+          'before the content it masks is drawn',
     );
   }
 

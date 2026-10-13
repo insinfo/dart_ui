@@ -240,6 +240,11 @@ final class DisplayList {
   /// flag word. When a gradient is set the paint's [colorArgb] is **not
   /// sampled** - the stop colours carry the alpha; see `gradient.dart`. The
   /// solid path pays exactly one null test for this parameter.
+  ///
+  /// [isolatedLayer] is bit 6 and is read only when the paint is a
+  /// `saveLayer`'s: it forces the layer offscreen even at full opacity in
+  /// source-over, which a layer with a masking blend mode inside needs. See
+  /// `paintFlagIsolatedLayer`.
   int addPaint({
     required int colorArgb,
     int style = paintStyleFill,
@@ -253,6 +258,7 @@ final class DisplayList {
     double miterLimit = kDefaultMiterLimit,
     List<double>? dashArray,
     double dashOffset = 0,
+    bool isolatedLayer = false,
   }) {
     if (style < 0 || style >= kPaintStyleCount) {
       throw ArgumentError.value(style, 'style', 'unknown paint style');
@@ -273,6 +279,7 @@ final class DisplayList {
     final int flags = (style & 0x3) |
         (antiAlias ? 0x4 : 0x0) |
         ((fillRule & 0x1) << 3) |
+        (isolatedLayer ? paintFlagIsolatedLayer : 0x0) |
         ((blendMode & 0xFF) << 8) |
         shaderBits;
     final int base = _paintCount * _paintWords;
@@ -391,6 +398,14 @@ final class DisplayList {
 
   int paintBlendMode(int id) =>
       (_paintInts[_checkPaint(id) * _paintWords + 1] >> 8) & 0xFF;
+
+  /// Whether a `saveLayer` with [id]'s paint must get its own offscreen
+  /// buffer even when it would composite as an identity. See
+  /// `paintFlagIsolatedLayer`.
+  bool paintIsolatedLayer(int id) =>
+      (_paintInts[_checkPaint(id) * _paintWords + 1] &
+          paintFlagIsolatedLayer) !=
+      0;
 
   double paintStrokeWidth(int id) => _paintFloats[_checkPaint(id)];
 
@@ -1009,6 +1024,7 @@ final class DisplayList {
         antiAlias: other.paintAntiAlias(id),
         fillRule: other.paintFillRule(id),
         gradient: other.paintGradient(id),
+        isolatedLayer: other.paintIsolatedLayer(id),
       );
     }
     final Uint32List pathMap =

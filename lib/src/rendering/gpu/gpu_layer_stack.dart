@@ -665,12 +665,18 @@ final class GpuLayerStack {
   /// the parent. That case is refused by name in `gpu_raster_sink.dart` rather
   /// than drawn wrong, which is the whole reason the exception is written down
   /// here instead of being left as a comfortable assumption.
+  ///
+  /// [isolated] is the way out of it for a producer that means it: a layer
+  /// whose paint sets `paintFlagIsolatedLayer` is always offscreen, so a
+  /// `ShaderMask`'s `dstIn` gradient blends against the layer's own pixels
+  /// and not against the parent's.
   GpuLayer push({
     required Rect deviceBounds,
     required Rect clip,
     required int alpha,
     required int blendMode,
     required int batchIndex,
+    bool isolated = false,
   }) {
     if (_open.length >= maxDepth) {
       throw GpuLayerDepthExceededError(
@@ -711,7 +717,7 @@ final class GpuLayerStack {
       );
     }
 
-    if (alpha == 0xFF && blendMode == blendModeSrcOver) {
+    if (alpha == 0xFF && blendMode == blendModeSrcOver && !isolated) {
       return _pushOpen(
         GpuLayer._(
           kind: GpuLayerKind.flattened,

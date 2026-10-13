@@ -597,5 +597,7 @@ final class GlApiStencilCoverDriver implements StencilCoverGlDriver {
         GpuBlendFactor.zero => glZero,
         GpuBlendFactor.one => glOne,
         GpuBlendFactor.oneMinusSrcAlpha => glOneMinusSrcAlpha,
+        GpuBlendFactor.srcAlpha => glSrcAlpha,
+        GpuBlendFactor.dstAlpha => glDstAlpha,
       };
 }

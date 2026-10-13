@@ -285,6 +285,54 @@ void main() {
     }, skip: _needsMac);
   });
 
+  // The masking modes, inside the isolated layer a ShaderMask opens. These are
+  // the scenes the modes exist for - a solid mask, a fading ramp, gradient
+  // text - and the comparison is the only evidence that `DST_ALPHA` and
+  // `SRC_ALPHA` reach Metal's blend unit with the meaning blend.dart gives
+  // them, alpha channel included.
+  group('masking blend modes in an isolated layer', () {
+    // Measured on this Mac (13/10/2026). Every scene is either exact or one
+    // level out, and one level is the size of the difference worked out on
+    // 'rectangles with alpha' above: the CPU rounds at every `mul255` - the
+    // premultiply, the mask, the layer's composite over the background - and
+    // Metal evaluates in floating point and rounds once. The two solid scenes
+    // that match exactly are the evidence that the factors themselves agree.
+    test('srcIn with a translucent solid mask: 0', () async {
+      await _expectParity(
+          gpu, pipelines, _maskedLayer(blendModeSrcIn, _solidMask),
+          tolerance: 0);
+    }, skip: _needsMac);
+
+    test('dstIn with a translucent solid mask: 1 on 36 pixels', () async {
+      await _expectParity(
+          gpu, pipelines, _maskedLayer(blendModeDstIn, _solidMask),
+          tolerance: 1);
+    }, skip: _needsMac);
+
+    test('dstOut with a translucent solid mask: 0', () async {
+      await _expectParity(
+          gpu, pipelines, _maskedLayer(blendModeDstOut, _solidMask),
+          tolerance: 0);
+    }, skip: _needsMac);
+
+    test('dstIn with a ramp that fades to transparent: 1 on 30 pixels',
+        () async {
+      // The fade-out ShaderMask. The ramp reaches alpha 0 before the right
+      // edge, which is where a backend that skipped transparent sources would
+      // leave the content at full strength.
+      await _expectParity(
+          gpu, pipelines, _maskedLayer(blendModeDstIn, _fadeMask),
+          tolerance: 1);
+    }, skip: _needsMac);
+
+    test('srcIn with a ramp over a glyph run - gradient text: 1 on 45 pixels',
+        () async {
+      await _expectParity(
+          gpu, pipelines, _maskedLayer(blendModeSrcIn, _fadeMask, text: true),
+          tolerance: 1);
+    }, skip: _needsMac);
+  });
+
   group('video frames', () {
     test('a BGRA frame, uploaded as the decoder wrote it: 0', () async {
       // The direct route: the frame's own bytes into a BGRA8Unorm texture,
@@ -791,3 +839,55 @@ void _rampInLayer(DisplayList list) {
     ..drawRect(5, 4, 21, 22, paint)
     ..restore();
 }
+
+/// The display list `RenderShaderMask` emits, by hand: an isolated layer,
+/// content, then [mask] over the whole layer in [blendMode].
+///
+/// The content is two overlapping translucent rectangles - or three Ahem
+/// boxes when [text] is set - so the layer has opaque, translucent and
+/// transparent pixels for the mask to act on, over an opaque background that
+/// must come through untouched wherever the layer is transparent.
+DisplayList _maskedLayer(
+  int blendMode,
+  int Function(DisplayList list, int blendMode) mask, {
+  bool text = false,
+}) {
+  final DisplayList list = DisplayList();
+  list
+    ..drawRect(
+        0, 0, 24, 24, list.addPaint(colorArgb: 0xFF204060, antiAlias: false))
+    ..saveLayer(2, 2, 22, 22,
+        list.addPaint(colorArgb: 0xFFFFFFFF, isolatedLayer: true));
+  if (text) {
+    _appendGlyphRun(list, baseline: 16);
+  } else {
+    list
+      ..drawRect(
+          3, 3, 15, 15, list.addPaint(colorArgb: 0xFFCC3311, antiAlias: false))
+      ..drawRect(
+          9, 9, 21, 21, list.addPaint(colorArgb: 0x8011CC33, antiAlias: false));
+  }
+  list
+    ..drawRect(2, 2, 22, 22, mask(list, blendMode))
+    ..restore();
+  return list;
+}
+
+int _solidMask(DisplayList list, int blendMode) => list.addPaint(
+    colorArgb: 0x9966AAEE, blendMode: blendMode, antiAlias: false);
+
+int _fadeMask(DisplayList list, int blendMode) => list.addPaint(
+      colorArgb: 0xFFFFFFFF,
+      blendMode: blendMode,
+      antiAlias: false,
+      gradient: LinearGradient(
+        startX: 2,
+        startY: 0,
+        endX: 18,
+        endY: 0,
+        stops: const <GradientStop>[
+          GradientStop(0, 0xFFE03020),
+          GradientStop(1, 0x002040E0),
+        ],
+      ),
+    );

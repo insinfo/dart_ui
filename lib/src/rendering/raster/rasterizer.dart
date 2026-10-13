@@ -115,7 +115,11 @@ final class CpuRasterizer {
     // 0 before it looks at the blend mode, so an invisible primitive draws
     // nothing on either backend. A layer is the opposite case, and
     // [compositeLayer] says why.
-    if (alpha == 0) return;
+    //
+    // It does not hold for the two "in" modes, where a transparent source is
+    // an erase and not a no-op; `blendModeWritesTransparentSource` has the
+    // argument, and `gpu_raster_sink.dart` makes the same exception.
+    if (alpha == 0 && blendMode.skipsTransparentSource) return;
 
     final left = _max(pixelEdge(rect.left), clip.left);
     final top = _max(pixelEdge(rect.top), clip.top);
@@ -155,6 +159,37 @@ final class CpuRasterizer {
         _fillReplace(left, top, right, bottom, c0, green, c2, alpha);
       case CpuBlendMode.plus:
         _fillPlus(left, top, right, bottom, c0, green, c2, alpha);
+      case CpuBlendMode.srcIn:
+      case CpuBlendMode.dstIn:
+      case CpuBlendMode.dstOut:
+        _fillMasking(left, top, right, bottom, c0, green, c2, alpha, blendMode);
+    }
+  }
+
+  /// Composites a constant premultiplied pixel over a rectangle with one of
+  /// the masking modes.
+  ///
+  /// One loop for all three, dispatching per pixel through `blendPixel`: they
+  /// are drawn once per `ShaderMask` over one layer, not on a path anyone has
+  /// measured, and a hoisted loop per mode would be three more copies of the
+  /// addressing arithmetic to keep in step for no observed gain.
+  void _fillMasking(
+    int left,
+    int top,
+    int right,
+    int bottom,
+    int c0,
+    int c1,
+    int c2,
+    int alpha,
+    CpuBlendMode mode,
+  ) {
+    for (var y = top; y < bottom; y++) {
+      var offset = y * _bytesPerRow + left * 4;
+      for (var x = left; x < right; x++) {
+        blendPixel(mode, _pixels, offset, c0, c1, c2, alpha);
+        offset += 4;
+      }
     }
   }
 
@@ -242,7 +277,7 @@ final class CpuRasterizer {
     CpuBlendMode blendMode = CpuBlendMode.srcOver,
   }) {
     final alpha = (argbColor >> 24) & 0xff;
-    if (alpha == 0) return;
+    if (alpha == 0 && blendMode.skipsTransparentSource) return;
 
     // Clip in continuous space, before anything is rounded. Intersecting two
     // axis-aligned rectangles is exact, so no coverage is lost here - which is
@@ -362,8 +397,10 @@ final class CpuRasterizer {
       a = mul255(alpha, coverage);
       // A faint colour under a slight coverage can round away completely. The
       // colour channels are zero too whenever the alpha is: they are
-      // premultiplied, so each is at most the alpha.
-      if (a == 0) return;
+      // premultiplied, so each is at most the alpha. The "in" modes still
+      // composite it, because for them a vanishing source is an erase - see
+      // `blendModeWritesTransparentSource`.
+      if (a == 0 && blendMode.skipsTransparentSource) return;
       s0 = mul255(c0, coverage);
       s1 = mul255(c1, coverage);
       s2 = mul255(c2, coverage);
@@ -401,6 +438,13 @@ final class CpuRasterizer {
       case CpuBlendMode.plus:
         for (var x = xStart; x < xEnd; x++) {
           blendPixelPlus(_pixels, offset, s0, s1, s2, a);
+          offset += 4;
+        }
+      case CpuBlendMode.srcIn:
+      case CpuBlendMode.dstIn:
+      case CpuBlendMode.dstOut:
+        for (var x = xStart; x < xEnd; x++) {
+          blendPixel(blendMode, _pixels, offset, s0, s1, s2, a);
           offset += 4;
         }
     }
@@ -448,7 +492,8 @@ final class CpuRasterizer {
     CpuBlendMode blendMode = CpuBlendMode.srcOver,
   }) {
     final alpha = (argbColor >> 24) & 0xff;
-    if (alpha == 0 || maskWidth <= 0 || maskHeight <= 0) return;
+    if (maskWidth <= 0 || maskHeight <= 0) return;
+    if (alpha == 0 && blendMode.skipsTransparentSource) return;
 
     final left = _max(destinationLeft, clip.left);
     final top = _max(destinationTop, clip.top);
@@ -524,11 +569,15 @@ final class CpuRasterizer {
     int alpha,
     CpuBlendMode blendMode,
   ) {
-    // srcOver and plus with nothing to add are exact identities, so the whole
-    // walk is skipped. src is *not*: replacing the destination with a fully
-    // transparent layer erases it, which is what `ONE, ZERO` does on the GPU
-    // as well.
-    if (alpha == 0 && blendMode != CpuBlendMode.src) return;
+    // srcOver, plus and dstOut with nothing to add are exact identities, so
+    // the whole walk is skipped. src is *not*: replacing the destination with
+    // a fully transparent layer erases it, which is what `ONE, ZERO` does on
+    // the GPU as well - and neither are srcIn and dstIn, which erase too.
+    if (alpha == 0 &&
+        blendMode != CpuBlendMode.src &&
+        blendMode.skipsTransparentSource) {
+      return;
+    }
 
     final left = _max(destinationLeft, clip.left);
     final top = _max(destinationTop, clip.top);
@@ -572,6 +621,10 @@ final class CpuRasterizer {
             blendPixelSrc(_pixels, dstOffset, s0, s1, s2, sa);
           case CpuBlendMode.plus:
             blendPixelPlus(_pixels, dstOffset, s0, s1, s2, sa);
+          case CpuBlendMode.srcIn:
+          case CpuBlendMode.dstIn:
+          case CpuBlendMode.dstOut:
+            blendPixel(blendMode, _pixels, dstOffset, s0, s1, s2, sa);
         }
         srcOffset += 4;
         dstOffset += 4;
@@ -668,6 +721,22 @@ final class CpuRasterizer {
         case CpuBlendMode.plus:
           for (var x = left; x < right; x++) {
             blendPixelPlus(
+              _pixels,
+              dstOffset,
+              src[srcOffset + read0],
+              src[srcOffset + 1],
+              src[srcOffset + read2],
+              src[srcOffset + 3],
+            );
+            srcOffset += 4;
+            dstOffset += 4;
+          }
+        case CpuBlendMode.srcIn:
+        case CpuBlendMode.dstIn:
+        case CpuBlendMode.dstOut:
+          for (var x = left; x < right; x++) {
+            blendPixel(
+              blendMode,
               _pixels,
               dstOffset,
               src[srcOffset + read0],

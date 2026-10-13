@@ -66,6 +66,8 @@ void main() {
         webGpuBlendFactorName(GpuBlendFactor.oneMinusSrcAlpha),
         'one-minus-src-alpha',
       );
+      expect(webGpuBlendFactorName(GpuBlendFactor.srcAlpha), 'src-alpha');
+      expect(webGpuBlendFactorName(GpuBlendFactor.dstAlpha), 'dst-alpha');
     });
 
     test('compose with gpuBlendForMode for every display-list mode', () {
@@ -86,6 +88,18 @@ void main() {
       final GpuBlendState plus = gpuBlendForMode(blendModePlus);
       expect(webGpuBlendFactorName(plus.source), 'one');
       expect(webGpuBlendFactorName(plus.destination), 'one');
+
+      final GpuBlendState srcIn = gpuBlendForMode(blendModeSrcIn);
+      expect(webGpuBlendFactorName(srcIn.source), 'dst-alpha');
+      expect(webGpuBlendFactorName(srcIn.destination), 'zero');
+
+      final GpuBlendState dstIn = gpuBlendForMode(blendModeDstIn);
+      expect(webGpuBlendFactorName(dstIn.source), 'zero');
+      expect(webGpuBlendFactorName(dstIn.destination), 'src-alpha');
+
+      final GpuBlendState dstOut = gpuBlendForMode(blendModeDstOut);
+      expect(webGpuBlendFactorName(dstOut.source), 'zero');
+      expect(webGpuBlendFactorName(dstOut.destination), 'one-minus-src-alpha');
     });
   });
 

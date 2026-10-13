@@ -579,5 +579,7 @@ final class WebGlSparseDriver implements SparseGlDriver {
         GpuBlendFactor.one => web.WebGL2RenderingContext.ONE,
         GpuBlendFactor.oneMinusSrcAlpha =>
           web.WebGL2RenderingContext.ONE_MINUS_SRC_ALPHA,
+        GpuBlendFactor.srcAlpha => web.WebGL2RenderingContext.SRC_ALPHA,
+        GpuBlendFactor.dstAlpha => web.WebGL2RenderingContext.DST_ALPHA,
       };
 }

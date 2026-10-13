@@ -439,7 +439,12 @@ final class GpuRasterSink
       return;
     }
     final alpha = (paint.argbColor >> 24) & 0xFF;
-    if (alpha == 0) return;
+    // Invisible ink draws nothing - except under the two "in" modes, where it
+    // erases what it covers; `blendModeWritesTransparentSource` says why, and
+    // the CPU's `fillRect` makes the same exception.
+    if (alpha == 0 && !blendModeWritesTransparentSource(paint.blendMode)) {
+      return;
+    }
 
     // Bare doubles: see the library comment on allocation.
     var left = deviceRect.left > clip.left ? deviceRect.left : clip.left;
@@ -633,7 +638,9 @@ final class GpuRasterSink
     // Recognised and then found invisible: still a success. The atlas route
     // would have drawn nothing either, and falling through to it would only
     // rasterise a mask nobody samples.
-    if (alpha == 0) return true;
+    if (alpha == 0 && !blendModeWritesTransparentSource(paint.blendMode)) {
+      return true;
+    }
 
     // Into layer space, on bare doubles. Zero outside a layer.
     final double left = shape.left - _originX;
@@ -773,7 +780,11 @@ final class GpuRasterSink
     // A gradient carries its own alpha in the ramp, so the paint's alpha
     // channel says nothing about whether it is visible - the CPU replay reads
     // the ramp for a gradient too. Only a solid fill can be skipped here.
-    if (alpha == 0 && !hasGradient) return;
+    if (alpha == 0 &&
+        !hasGradient &&
+        !blendModeWritesTransparentSource(paint.blendMode)) {
+      return;
+    }
 
     final atlas = maskAtlas;
     if (atlas == null) {
@@ -1332,9 +1343,10 @@ final class GpuRasterSink
     final GpuLayerStack? stack = layerStack;
 
     if (stack == null) {
-      final bool composites =
-          !(alpha == 0xFF && blendMode == blendModeSrcOver) &&
-              !deviceBounds.isEmpty;
+      final bool composites = !(alpha == 0xFF &&
+              blendMode == blendModeSrcOver &&
+              !paint.isolatedLayer) &&
+          !deviceBounds.isEmpty;
       if (composites) {
         throw UnsupportedCapabilityError(
           backendName: backendName,
@@ -1359,6 +1371,7 @@ final class GpuRasterSink
       clip: clip,
       alpha: alpha,
       blendMode: blendMode,
+      isolated: paint.isolatedLayer,
       batchIndex: batcher.batchCount,
     );
     _layerDepth++;
@@ -1554,7 +1567,10 @@ final class GpuRasterSink
     final int alpha = (paint.argbColor >> 24) & 0xFF;
     // Invisible text is common - a fade at t = 0 - and costs a rasterisation
     // per new glyph if it is not stopped before the atlas is asked.
-    if (alpha == 0 || glyphCount <= 0) return;
+    if (glyphCount <= 0) return;
+    if (alpha == 0 && !blendModeWritesTransparentSource(paint.blendMode)) {
+      return;
+    }
 
     final ScaledTypeface? interned = resolver.resolveFont(fontId);
     if (interned == null) {

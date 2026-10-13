@@ -264,6 +264,190 @@ void main() {
     });
   });
 
+  group('RenderShaderMask', () {
+    /// A ramp whose two stops are the same colour, so every pixel of it is
+    /// exactly [argb] and an assertion has no interpolation to absorb.
+    Gradient flat(Rect bounds, int argb) => LinearGradient(
+          startX: bounds.left,
+          startY: bounds.top,
+          endX: bounds.right,
+          endY: bounds.top,
+          stops: <GradientStop>[GradientStop(0, argb), GradientStop(1, argb)],
+        );
+
+    test('emits an isolated layer, the child, then the masked rectangle', () {
+      final List<Rect> asked = <Rect>[];
+      final RenderShaderMask node = RenderShaderMask(
+        shaderCallback: (Rect bounds) {
+          asked.add(bounds);
+          return flat(bounds, 0xFF00FF00);
+        },
+        child: _Probe(preferred: const Size(16, 16), color: _content),
+      );
+      node.layout(BoxConstraints.tight(const Size(16, 16)));
+      final DisplayList list = DisplayList();
+      node.paint(list, const Offset(5, 7));
+      final List<DisplayListCommand> commands = expandDisplayList(list);
+
+      expect(
+        commands.map((DisplayListCommand c) => c.runtimeType).toList(),
+        <Type>[
+          SaveLayerCommand,
+          DrawRectCommand, // the child
+          SaveCommand,
+          TransformCommand,
+          DrawRectCommand, // the mask
+          RestoreCommand,
+          RestoreCommand,
+        ],
+      );
+      final SaveLayerCommand layer = commands[0] as SaveLayerCommand;
+      expect((
+        layer.left,
+        layer.top,
+        layer.right,
+        layer.bottom
+      ), (
+        5.0,
+        7.0,
+        21.0,
+        23.0
+      ), reason: 'the layer is the box, at the offset it was painted at');
+      expect(list.paintIsolatedLayer(layer.paintId), isTrue,
+          reason: 'flattened, the mask would blend against the background');
+      expect(list.paintColor(layer.paintId), 0xFFFFFFFF,
+          reason: 'an identity composite: opaque, source-over');
+      expect(list.paintBlendMode(layer.paintId), blendModeSrcOver);
+
+      // The gradient is in the box's own space: the callback saw the box at
+      // the origin, and the rectangle is drawn there under a translation.
+      expect(asked, <Rect>[const Rect.fromLTWH(0, 0, 16, 16)]);
+      final TransformCommand shift = commands[3] as TransformCommand;
+      expect((shift.a, shift.b, shift.c, shift.d, shift.tx, shift.ty),
+          (1.0, 0.0, 0.0, 1.0, 5.0, 7.0));
+      final DrawRectCommand mask = commands[4] as DrawRectCommand;
+      expect((mask.left, mask.top, mask.right, mask.bottom),
+          (0.0, 0.0, 16.0, 16.0));
+      expect(list.paintBlendMode(mask.paintId), blendModeSrcIn,
+          reason: 'srcIn is the default: gradient text');
+      expect(list.paintGradient(mask.paintId),
+          flat(const Rect.fromLTWH(0, 0, 16, 16), 0xFF00FF00));
+      expect(list.paintIsolatedLayer(mask.paintId), isFalse);
+    });
+
+    test('srcIn: the ramp\'s colour where the child is, nothing elsewhere',
+        () async {
+      final Framebuffer buffer = await _render(RenderShaderMask(
+        shaderCallback: (Rect bounds) => flat(bounds, 0xFF00FF00),
+        child: _Probe(
+          preferred: const Size(16, 16),
+          color: _content,
+          fill: const Rect.fromLTRB(4, 4, 12, 12),
+        ),
+      ));
+
+      // Inside the child: the content's red is gone and the ramp's green is
+      // there instead, at the content's alpha - which is opaque.
+      expect(pixelAt(buffer, 8, 8), (0x00, 0xFF, 0x00, 0xFF));
+      // Outside it, inside the mask's box: the layer was transparent there,
+      // srcIn kept it so, and the background shows through untouched. A
+      // flattened layer would have painted green here.
+      expect(pixelAt(buffer, 1, 1), _backgroundPixel);
+      expect(pixelAt(buffer, 14, 8), _backgroundPixel);
+    });
+
+    test('dstIn at half alpha composites like an opacity of 0.5', () async {
+      final Framebuffer buffer = await _render(RenderShaderMask(
+        shaderCallback: (Rect bounds) => flat(bounds, 0x80123456),
+        blendMode: blendModeDstIn,
+        child: _Probe(preferred: const Size(16, 16), color: _content),
+      ));
+      // The ramp's colour is never seen, only its alpha 0x80: the layer holds
+      // the content scaled by 128/255, composited source-over - the numbers
+      // RenderOpacity at 0.5 is held to above.
+      expect(pixelAt(buffer, 8, 8), (118, 58, 57, 0xFF));
+    });
+
+    test('dstIn with a ramp that ends transparent fades the child out',
+        () async {
+      final Framebuffer buffer = await _render(RenderShaderMask(
+        shaderCallback: (Rect bounds) => LinearGradient(
+          startX: 0,
+          startY: 0,
+          endX: bounds.width,
+          endY: 0,
+          stops: const <GradientStop>[
+            GradientStop(0, 0xFFFFFFFF),
+            GradientStop(1, 0x00FFFFFF),
+          ],
+        ),
+        blendMode: blendModeDstIn,
+        child: _Probe(preferred: const Size(16, 16), color: _content),
+      ));
+      // Nearly the content at the left edge, nearly the background at the
+      // right - and in between, red falls towards the background's 0x20.
+      final (int, int, int, int) left = pixelAt(buffer, 0, 8);
+      final (int, int, int, int) right = pixelAt(buffer, 15, 8);
+      expect(left.$1, greaterThan(0xC0));
+      expect(right.$1, lessThan(0x28));
+      var previous = 256;
+      for (var x = 0; x < 16; x++) {
+        final int red = pixelAt(buffer, x, 8).$1;
+        expect(red, lessThan(previous), reason: 'x = $x');
+        previous = red;
+      }
+    });
+
+    test('paints nothing without a child or without area', () {
+      expect(
+        _commands(RenderShaderMask(
+          shaderCallback: (Rect bounds) => flat(bounds, 0xFF00FF00),
+        )),
+        isEmpty,
+      );
+      final RenderShaderMask empty = RenderShaderMask(
+        shaderCallback: (Rect bounds) => flat(bounds, 0xFF00FF00),
+        child: _Probe(preferred: Size.zero, color: _content),
+      );
+      empty.layout(BoxConstraints.loose(const Size(16, 16)));
+      expect(_paint(empty), isEmpty);
+    });
+
+    test('refuses a blend mode the display list cannot encode', () {
+      Gradient build(Rect bounds) => flat(bounds, 0xFF00FF00);
+      expect(() => RenderShaderMask(shaderCallback: build, blendMode: -1),
+          throwsArgumentError);
+      expect(
+          () => RenderShaderMask(
+              shaderCallback: build, blendMode: kBlendModeCount),
+          throwsArgumentError);
+      final RenderShaderMask node = RenderShaderMask(shaderCallback: build);
+      expect(() => node.blendMode = kBlendModeCount, throwsArgumentError);
+    });
+
+    test('a new callback or mode repaints without relaying out', () {
+      Gradient green(Rect bounds) => flat(bounds, 0xFF00FF00);
+      Gradient blue(Rect bounds) => flat(bounds, 0xFF0000FF);
+      final RenderShaderMask node = RenderShaderMask(
+        shaderCallback: green,
+        child: _Probe(preferred: const Size(16, 16)),
+      );
+      node.layout(BoxConstraints.tight(const Size(16, 16)));
+      node.clearNeedsPaintSubtree();
+
+      node.shaderCallback = green;
+      expect(node.needsPaint, isFalse, reason: 'the same function');
+      node.shaderCallback = blue;
+      expect(node.needsPaint, isTrue);
+      expect(node.needsLayout, isFalse);
+
+      node.clearNeedsPaintSubtree();
+      node.blendMode = blendModeDstOut;
+      expect(node.needsPaint, isTrue);
+      expect(node.needsLayout, isFalse);
+    });
+  });
+
   group('RenderTransform', () {
     // An exact quarter turn, written out rather than built from
     // `Transform2D.rotation(pi / 2)`: `cos(pi / 2)` is 6.1e-17, not 0, and

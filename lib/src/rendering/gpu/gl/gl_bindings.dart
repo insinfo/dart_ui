@@ -107,7 +107,9 @@ const int glDecrementWrap = 0x8508;
 
 const int glZero = 0;
 const int glOne = 1;
+const int glSrcAlpha = 0x0302;
 const int glOneMinusSrcAlpha = 0x0303;
+const int glDstAlpha = 0x0304;
 
 const int glArrayBuffer = 0x8892;
 const int glElementArrayBuffer = 0x8893;

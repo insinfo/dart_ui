@@ -508,6 +508,8 @@ final class GlApiSparseDriver implements SparseGlDriver {
         GpuBlendFactor.zero => glZero,
         GpuBlendFactor.one => glOne,
         GpuBlendFactor.oneMinusSrcAlpha => glOneMinusSrcAlpha,
+        GpuBlendFactor.srcAlpha => glSrcAlpha,
+        GpuBlendFactor.dstAlpha => glDstAlpha,
       };
 
   void _throwIfDisposed() {

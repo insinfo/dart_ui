@@ -124,6 +124,9 @@ final class D3d12SparseDriver implements SparseD3d12Driver {
         blendModeSrcOver,
         blendModeSrc,
         blendModePlus,
+        blendModeSrcIn,
+        blendModeDstIn,
+        blendModeDstOut,
       ]) {
         final GpuBlendState blend = gpuBlendForMode(mode);
         final Object pso = _createPipelineState(arena, blend);
@@ -715,6 +718,8 @@ final class D3d12SparseDriver implements SparseD3d12Driver {
         GpuBlendFactor.zero => d3d12BlendZero,
         GpuBlendFactor.one => d3d12BlendOne,
         GpuBlendFactor.oneMinusSrcAlpha => d3d12BlendInvSrcAlpha,
+        GpuBlendFactor.srcAlpha => d3d12BlendSrcAlpha,
+        GpuBlendFactor.dstAlpha => d3d12BlendDestAlpha,
       };
 
   void _requirePass() {

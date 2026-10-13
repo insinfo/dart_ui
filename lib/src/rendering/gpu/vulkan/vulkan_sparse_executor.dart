@@ -103,7 +103,7 @@ final class SparseVulkanMaterial {
 /// Narrow, fakeable surface over the Vulkan calls the executor uses.
 ///
 /// A production adapter maps these onto one open command buffer, one pipeline
-/// layout and twelve graphics pipelines. Typed data stays on this side of the
+/// layout and one graphics pipeline per fragment module per blend state. Typed data stays on this side of the
 /// seam so host-visible-buffer policy belongs to that adapter and not to the
 /// backend-neutral [SparseStripDrawPlan].
 ///

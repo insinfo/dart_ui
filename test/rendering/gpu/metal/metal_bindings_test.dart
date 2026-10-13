@@ -376,6 +376,10 @@ void main() {
       expect(metalBlendFactor(GpuBlendFactor.one), MtlBlendFactor.one);
       expect(metalBlendFactor(GpuBlendFactor.oneMinusSrcAlpha),
           MtlBlendFactor.oneMinusSourceAlpha);
+      expect(metalBlendFactor(GpuBlendFactor.srcAlpha),
+          MtlBlendFactor.sourceAlpha);
+      expect(metalBlendFactor(GpuBlendFactor.dstAlpha),
+          MtlBlendFactor.destinationAlpha);
     });
 
     test('every GpuPipelineKind maps to its declared mode constant', () {

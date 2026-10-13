@@ -31,11 +31,43 @@ void main() {
       );
     });
 
+    test('the masking modes are the Porter-Duff factor pairs', () {
+      // srcIn: dst = src * dstAlpha. The factor is on the *source* side, so
+      // the destination's colour is discarded and only its alpha is read.
+      expect(
+        gpuBlendForMode(blendModeSrcIn),
+        const GpuBlendState(GpuBlendFactor.dstAlpha, GpuBlendFactor.zero),
+      );
+      // dstIn: dst = dst * srcAlpha. The source's colour never reaches the
+      // target, which is what makes a gradient of any colour a pure mask.
+      expect(
+        gpuBlendForMode(blendModeDstIn),
+        const GpuBlendState(GpuBlendFactor.zero, GpuBlendFactor.srcAlpha),
+      );
+      // dstOut: dst = dst * (1 - srcAlpha), source-over's destination term
+      // with the source term dropped.
+      expect(
+        gpuBlendForMode(blendModeDstOut),
+        const GpuBlendState(
+            GpuBlendFactor.zero, GpuBlendFactor.oneMinusSrcAlpha),
+      );
+    });
+
+    test('every encodable mode has a distinct blend state', () {
+      // Two modes sharing a factor pair would be one equation under two names,
+      // and the Vulkan sparse path indexes its pipelines by state.
+      final Set<GpuBlendState> states = <GpuBlendState>{
+        for (var mode = 0; mode < kBlendModeCount; mode++)
+          gpuBlendForMode(mode),
+      };
+      expect(states, hasLength(kBlendModeCount));
+    });
+
     test('an unknown mode throws instead of defaulting to source-over', () {
       // The measurable-parity rule from section 23.7: a mode that quietly
       // becomes srcOver makes CPU/GPU comparison meaningless, because the two
       // sides are no longer being asked for the same thing.
-      expect(() => gpuBlendForMode(3), throwsArgumentError);
+      expect(() => gpuBlendForMode(kBlendModeCount), throwsArgumentError);
       expect(() => gpuBlendForMode(-1), throwsArgumentError);
       expect(() => gpuBlendForMode(99), throwsArgumentError);
     });

@@ -2190,6 +2190,8 @@ final class GlRenderDevice
         GpuBlendFactor.zero => glZero,
         GpuBlendFactor.one => glOne,
         GpuBlendFactor.oneMinusSrcAlpha => glOneMinusSrcAlpha,
+        GpuBlendFactor.srcAlpha => glSrcAlpha,
+        GpuBlendFactor.dstAlpha => glDstAlpha,
       };
 
   @override

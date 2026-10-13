@@ -16,13 +16,15 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/transform2d.dart';
 import '../graphics/content_hint.dart';
+import '../graphics/display_list_opcodes.dart';
 import '../layout/alignment.dart';
 import '../layout/render_proxy_box.dart' as layout;
 import 'element.dart';
 import 'widget.dart';
 
 export '../graphics/content_hint.dart';
-export '../layout/render_proxy_box.dart' show BoxBorder, BoxDecoration;
+export '../layout/render_proxy_box.dart'
+    show BoxBorder, BoxDecoration, ShaderCallback;
 
 /// Fades its child.
 ///
@@ -49,6 +51,61 @@ final class Opacity extends SingleChildRenderObjectWidget {
     covariant layout.RenderOpacity renderObject,
   ) {
     renderObject.opacity = opacity;
+  }
+}
+
+/// Lays a gradient over its child in a masking blend mode.
+///
+/// Flutter's `ShaderMask`, with a [Gradient] where Flutter has a `Shader`:
+/// [shaderCallback] receives the child's box at the origin and returns the
+/// ramp to draw over it. The default [blendMode] is `blendModeSrcIn` - the
+/// gradient's colour wherever the child has alpha, which is gradient text -
+/// and `blendModeDstIn` is the other common one, a fade that keeps the child
+/// in proportion to the ramp's alpha. Why the default differs from Flutter's
+/// `modulate`, why the layer is always offscreen and which backends refuse the
+/// masking modes are on [layout.RenderShaderMask].
+///
+/// ```dart
+/// ShaderMask(
+///   shaderCallback: (Rect bounds) => LinearGradient(
+///     startX: 0, startY: 0, endX: bounds.width, endY: 0,
+///     stops: const <GradientStop>[
+///       GradientStop(0, 0xFFFF5F6D),
+///       GradientStop(1, 0xFFFFC371),
+///     ],
+///   ),
+///   child: Text('Gradient'),
+/// )
+/// ```
+final class ShaderMask extends SingleChildRenderObjectWidget {
+  const ShaderMask({
+    super.key,
+    required this.shaderCallback,
+    this.blendMode = blendModeSrcIn,
+    super.child,
+  });
+
+  /// Builds the gradient from the child's local bounds, on every paint.
+  final layout.ShaderCallback shaderCallback;
+
+  /// One of the display list's `blendMode*` constants.
+  final int blendMode;
+
+  @override
+  layout.RenderShaderMask createRenderObject(BuildContext context) =>
+      layout.RenderShaderMask(
+        shaderCallback: shaderCallback,
+        blendMode: blendMode,
+      );
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant layout.RenderShaderMask renderObject,
+  ) {
+    renderObject
+      ..shaderCallback = shaderCallback
+      ..blendMode = blendMode;
   }
 }
 
