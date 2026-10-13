@@ -625,12 +625,22 @@ class VectorText extends PrimitiveObject {
   /// impossible to click at all.
   static VectorTextInk approximateInk(VectorText text) {
     final size = text.style.textStyle.fontSize;
+    final width = text.textContent.length * size * 0.52;
     return VectorTextInk(
-      width: text.textContent.length * size * 0.52,
+      width: width,
       ascent: size * 0.8,
       descent: size * 0.2,
+      left: text.alignmentShift(width),
     );
   }
+
+  /// Where a string [width] wide starts, from the anchor, for this text's
+  /// alignment: see [VectorTextInk.left].
+  double alignmentShift(double width) => switch (style.textStyle.alignment) {
+        VectorTextAlign.center => -width / 2,
+        VectorTextAlign.right => -width,
+        VectorTextAlign.left || VectorTextAlign.justify => 0,
+      };
 
   /// The box the text occupies, transformed.
   ///
@@ -646,12 +656,12 @@ class VectorText extends PrimitiveObject {
     // renderer draws from - so the local box hangs off the origin: up by the
     // ascent, down by the descent, right by the advance.
     final corners = <Offset>[
-      const Offset(0, 0),
-      Offset(metrics.width, 0),
-      Offset(0, -metrics.ascent),
-      Offset(metrics.width, -metrics.ascent),
-      Offset(0, metrics.descent),
-      Offset(metrics.width, metrics.descent),
+      Offset(metrics.left, 0),
+      Offset(metrics.right, 0),
+      Offset(metrics.left, -metrics.ascent),
+      Offset(metrics.right, -metrics.ascent),
+      Offset(metrics.left, metrics.descent),
+      Offset(metrics.right, metrics.descent),
     ];
     var minX = double.infinity;
     var minY = double.infinity;
@@ -736,10 +746,20 @@ final class VectorTextInk {
     required this.width,
     required this.ascent,
     required this.descent,
+    this.left = 0,
   });
+
+  /// Where the string starts, from the anchor along the baseline: 0 for
+  /// left-aligned text, minus half its width for centred, minus all of it
+  /// for right-aligned - CorelDRAW's artistic text grows from its anchor
+  /// the way its alignment says.
+  final double left;
 
   /// The advance width of the whole string.
   final double width;
+
+  /// Where the string ends, from the anchor.
+  double get right => left + width;
 
   /// How far the tallest glyph rises above the baseline.
   final double ascent;

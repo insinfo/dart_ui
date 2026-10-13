@@ -145,6 +145,10 @@ final class _SvgWriter {
         'font-family="${_escape(text.fontFamily)}"',
         if (text.bold) 'font-weight="bold"',
         if (text.italic) 'font-style="italic"',
+        if (text.alignment == VectorTextAlign.center)
+          'text-anchor="middle"'
+        else if (text.alignment == VectorTextAlign.right)
+          'text-anchor="end"',
         ..._paint(obj, null),
         'dartui:type="text"',
       ];
@@ -329,6 +333,7 @@ final class _Style {
     this.fontFamily = 'Sans',
     this.bold = false,
     this.italic = false,
+    this.align = VectorTextAlign.left,
     this.visible = true,
     this.currentColor = 0xFF000000,
   });
@@ -350,6 +355,9 @@ final class _Style {
   final String fontFamily;
   final bool bold;
   final bool italic;
+
+  /// `text-anchor`: start, middle and end are the text's alignment.
+  final VectorTextAlign align;
   final bool visible;
   final int currentColor;
 }
@@ -758,6 +766,7 @@ final class _SvgReader {
       'font-family',
       'font-weight',
       'font-style',
+      'text-anchor',
       'display',
       'visibility',
       'color',
@@ -851,6 +860,12 @@ final class _SvgReader {
       italic: v.containsKey('font-style')
           ? v['font-style'] == 'italic' || v['font-style'] == 'oblique'
           : parent.italic,
+      align: switch (v['text-anchor']?.trim()) {
+        'middle' => VectorTextAlign.center,
+        'end' => VectorTextAlign.right,
+        'start' => VectorTextAlign.left,
+        _ => parent.align,
+      },
       visible: parent.visible &&
           (ignoreDisplay || v['display']?.toLowerCase() != 'none') &&
           v['visibility']?.toLowerCase() != 'hidden',
@@ -901,6 +916,7 @@ final class _SvgReader {
         fontFamily: style.fontFamily,
         bold: style.bold,
         italic: style.italic,
+        alignment: style.align,
       ),
     );
   }

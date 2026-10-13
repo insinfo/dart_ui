@@ -148,4 +148,52 @@ void main() {
     expect(svg, contains('Tom &amp; Jerry &lt;3'));
     expect(() => VectorSvgCodec.importFromSvg(svg), returnsNormally);
   });
+
+  test('a text keeps its family, italic and alignment through SVG', () {
+    final doc = VectorDocument(docUnits: DocUnit.mm);
+    final methods = DocumentMethods(doc);
+    final layer = doc.getPageLayers(doc.getPage(0)).first;
+    methods.addObject(
+        layer,
+        VectorText(
+          textContent: 'centred',
+          trafo: <double>[1, 0, 0, 1, 100, 100],
+          style: const VectorStyle(
+            textStyle: TextStyleDescriptor(
+              fontFamily: 'Georgia',
+              italic: true,
+              alignment: VectorTextAlign.center,
+            ),
+          ),
+        ));
+    doc.update();
+    final String svg = VectorSvgCodec.exportToSvg(doc);
+    expect(svg, contains('text-anchor="middle"'));
+    final back = VectorSvgCodec.importFromSvg(svg);
+    final VectorText text = back
+        .getPageLayers(back.getPage(0))
+        .first
+        .children
+        .whereType<VectorText>()
+        .single;
+    expect(text.style.textStyle.fontFamily, 'Georgia');
+    expect(text.style.textStyle.italic, isTrue);
+    expect(text.style.textStyle.alignment, VectorTextAlign.center);
+  });
+
+  test('alignment moves the text box about its anchor', () {
+    VectorText at(VectorTextAlign align) => VectorText(
+          textContent: 'abcd',
+          trafo: <double>[1, 0, 0, 1, 100, 0],
+          style: VectorStyle(
+              textStyle: TextStyleDescriptor(fontSize: 10, alignment: align)),
+        )..update();
+    final Rect left = at(VectorTextAlign.left).cacheBbox;
+    final Rect centre = at(VectorTextAlign.center).cacheBbox;
+    final Rect right = at(VectorTextAlign.right).cacheBbox;
+    expect(left.left, closeTo(100, 1e-6));
+    expect(centre.center.dx, closeTo(100, 1e-6));
+    expect(right.right, closeTo(100, 1e-6));
+    expect(centre.width, closeTo(left.width, 1e-6));
+  });
 }

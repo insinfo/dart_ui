@@ -29,11 +29,11 @@ import '../../graphics/vector/document_object.dart';
 import '../../graphics/vector/primitives.dart';
 import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
-import '../../rendering/text/font_registry.dart';
 import '../../rendering/text/text_painter.dart';
 import '../../vector_editing/node_editing.dart';
 import '../../vector_editing/parametric_handles.dart';
 import '../../vector_editing/selection.dart';
+import '../../vector_editing/text_metrics.dart';
 import '../../vector_editing/tool_mode.dart';
 import '../theme.dart';
 
@@ -342,19 +342,25 @@ class VectorRenderer {
     final color = fill.isNone ? const Color(0xFF000000) : fill.color;
     final shapedSize = descriptor.fontSize * scale;
     if (!shapedSize.isFinite || shapedSize < 3) return;
-    final shapedFace = FontRegistry.instance
-        .uiFont(shapedSize, weight: descriptor.bold ? 700 : 400);
+    // The face the metrics measure with - family, bold, italic - so the box
+    // the pointer hits is the ink on screen.
+    final shapedFace = VectorTextMetrics.faceAt(descriptor, shapedSize);
     if (shapedFace == null) return;
+    // Centred and right-aligned text grows from its anchor: the start, in
+    // the text's own units, is measured once at document scale.
+    final double shift = VectorTextMetrics.measure(pending.object).left;
     final paint = list.addPaint(colorArgb: color.value, antiAlias: true);
     final plain = b == 0 && c == 0 && a > 0 && d > 0 && (a - d).abs() < 1e-9;
     if (plain) {
-      _textPainter.paint(list, content, shapedFace, Offset(tx, ty), paint);
+      _textPainter.paint(
+          list, content, shapedFace, Offset(tx + a * shift, ty), paint);
       return;
     }
     list
       ..save()
       ..transform(a / scale, b / scale, c / scale, d / scale, tx, ty);
-    _textPainter.paint(list, content, shapedFace, Offset.zero, paint);
+    _textPainter.paint(
+        list, content, shapedFace, Offset(shift * scale, 0), paint);
     list.restore();
   }
 

@@ -199,8 +199,9 @@ enum PathClosure { opened, closed }
 // Text alignment
 // ---------------------------------------------------------------------------
 
-/// Horizontal text alignment.
-enum TextAlign { left, center, right, justify }
+/// How a text object lines up on its anchor. Named apart from the
+/// paragraph `TextAlign` so both can come from one barrel.
+enum VectorTextAlign { left, center, right, justify }
 
 // ---------------------------------------------------------------------------
 // Z-order placement

@@ -64,8 +64,43 @@ abstract final class VectorTextMetrics {
     final descriptor = text.style.textStyle;
     final size = descriptor.fontSize;
     if (size <= 0) return null;
-    return FontRegistry.instance
-        .uiFont(size, weight: descriptor.bold ? 700 : 400);
+    return faceAt(descriptor, size);
+  }
+
+  static final Map<(String, bool, bool, double), ScaledTypeface?> _faces =
+      <(String, bool, bool, double), ScaledTypeface?>{};
+
+  /// The face [descriptor] names - its family, bold and italic - at [size]
+  /// pixels, or the interface face when the family is not on this machine.
+  /// What the canvas draws with and what this measures with, so the two
+  /// cannot disagree about a single glyph.
+  static ScaledTypeface? faceAt(TextStyleDescriptor descriptor, double size) {
+    final key = (
+      descriptor.fontFamily,
+      descriptor.bold,
+      descriptor.italic,
+      size,
+    );
+    if (_faces.containsKey(key)) return _faces[key];
+    if (_faces.length > 512) _faces.clear();
+    final registry = FontRegistry.instance;
+    final weight = descriptor.bold ? 700 : 400;
+    final family = descriptor.fontFamily;
+    // 'Sans' is the model's default and names no real family: the
+    // interface face is what it has always meant.
+    final named = family.isEmpty || family == 'Sans'
+        ? null
+        : registry.faceFor(family, weight: weight, italic: descriptor.italic);
+    ScaledTypeface? face = named?.atSize(size);
+    if (face == null && descriptor.italic) {
+      final ui = registry.uiTypeface;
+      final slanted = ui == null
+          ? null
+          : registry.faceFor(ui.familyName ?? '', weight: weight, italic: true);
+      face = slanted?.atSize(size);
+    }
+    face ??= registry.uiFont(size, weight: weight);
+    return _faces[key] = face;
   }
 
   /// The ink box of [text] in its own units, falling back to the model's
@@ -76,7 +111,9 @@ abstract final class VectorTextMetrics {
     final width = text.textContent.isEmpty
         ? 0.0
         : _painter.measure(text.textContent, face).width;
+    final box = width <= 0 ? face.pixelSize * 0.5 : width;
     return VectorTextInk(
+      left: text.alignmentShift(box),
       // An empty text still needs a grabbable box, or clearing every character
       // of a text object would make it impossible to click back into. Half an
       // em of caret is what a text field shows for the same reason.
@@ -92,7 +129,10 @@ abstract final class VectorTextMetrics {
   /// and exact for everything except a kerning pair straddling the caret - and
   /// a caret cannot be inside a kerning pair without also being inside a
   /// grapheme cluster, which [TextEditingValue] forbids.
-  static double caretX(VectorText text, int offset) {
+  static double caretX(VectorText text, int offset) =>
+      _advanceTo(text, offset) + measure(text).left;
+
+  static double _advanceTo(VectorText text, int offset) {
     if (offset <= 0) return 0;
     final face = faceFor(text);
     final clamped = offset.clamp(0, text.textContent.length);
@@ -143,8 +183,9 @@ abstract final class VectorTextMetrics {
     final run = _painter.shapeRun(content, face);
     final paths = <VectorPath>[];
     final double scale = face.scale;
+    final double shift = measure(text).left;
     for (var i = 0; i < run.length; i++) {
-      final double gx = run.positions[2 * i];
+      final double gx = run.positions[2 * i] + shift;
       final double gy = run.positions[2 * i + 1];
       // Font units, y up, to text units, y down from the baseline.
       Offset at(Path path, int point) => Offset(

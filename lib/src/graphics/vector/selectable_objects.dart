@@ -237,7 +237,7 @@ class TPGroup extends VectorGroup {
 class TPChildData {
   const TPChildData({
     this.basePoint = 0.0,
-    this.alignment = TextAlign.left,
+    this.alignment = VectorTextAlign.left,
     this.otherSide = false,
   });
 
@@ -245,14 +245,14 @@ class TPChildData {
   final double basePoint;
 
   /// Text alignment relative to [basePoint].
-  final TextAlign alignment;
+  final VectorTextAlign alignment;
 
   /// If true, text is placed on the opposite side of the path.
   final bool otherSide;
 
   TPChildData copyWith({
     double? basePoint,
-    TextAlign? alignment,
+    VectorTextAlign? alignment,
     bool? otherSide,
   }) =>
       TPChildData(

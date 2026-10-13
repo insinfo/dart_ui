@@ -154,6 +154,26 @@ Future<void> main(List<String> args) async {
             <String, Object?>{'start': head.name, 'end': head.name});
       y += 50;
     }
+  } else if (scenario == 'text-style') {
+    // Three texts on one anchor line: left, centred and right aligned, in a
+    // serif face, bold and italic; the last one selected for the text bar.
+    for (final (String align, double y) in <(String, double)>[
+      ('left', 430),
+      ('center', 480),
+      ('right', 530),
+    ]) {
+      state.registry
+        ..execute('shape.text', <String, Object?>{
+          'x': 300,
+          'y': y,
+          'text': 'Aligned $align',
+        })
+        ..execute('text.size', <String, Object?>{'size': 24})
+        ..execute('text.font', <String, Object?>{'family': 'Georgia'})
+        ..execute('text.italic', <String, Object?>{'on': true})
+        ..execute('text.align', <String, Object?>{'align': align});
+    }
+    state.registry.execute('text.bold', <String, Object?>{'on': true});
   } else if (scenario == 'find') {
     // Edit > Find and Replace, the editor's first dialog.
     state.registry.execute('edit.findReplace');

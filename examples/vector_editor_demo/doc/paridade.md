@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 57 | 6 | 0 | 63 | 95% |
+| P0 | 58 | 5 | 0 | 63 | 96% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 65 | 8 | 102 | 175 | 39% |
+| **todas** | 66 | 7 | 102 | 175 | 40% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 90 de 105 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 124.
+Comandos registrados: 128.
 
 ## Por área
 
@@ -24,7 +24,7 @@ Comandos registrados: 124.
 |---|---|---|---|---|---|
 | Caixa de ferramentas | 10 | 3 | 47 | 60 | 19% |
 | Interações no canvas | 9 | 1 | 3 | 13 | 73% |
-| Barra de propriedades | 6 | 1 | 9 | 16 | 41% |
+| Barra de propriedades | 7 | 0 | 9 | 16 | 44% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
 | Operações de objeto | 11 | 1 | 10 | 22 | 52% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
@@ -128,7 +128,7 @@ Comandos registrados: 124.
 | ❌ | Ellipse: arc and pie | P1 |  | tudo |
 | ❌ | Polygon / Star: points | P1 |  | corner count only |
 | ✅ | Freehand, Bézier, Pen | P0 | `tool.freehandSmoothing`, `object.arrows`, `object.outlineStyle` |  |
-| 🟡 | Text: content and size | P0 | `text.content`, `text.size` | content and size; no font, style or alignment |
+| ✅ | Text: content and size | P0 | `text.content`, `text.size`, `text.font`, `text.bold`, `text.italic`, `text.align` |  |
 | ❌ | Interactive fill | P1 |  | tudo |
 | ❌ | Transparency | P1 |  | tudo |
 | ❌ | Blend | P2 |  | tudo |

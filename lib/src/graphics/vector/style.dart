@@ -196,7 +196,7 @@ class TextStyleDescriptor {
     this.fontSize = 12.0,
     this.bold = false,
     this.italic = false,
-    this.alignment = TextAlign.left,
+    this.alignment = VectorTextAlign.left,
     this.lineSpacing = 1.2,
     this.wordSpacing = 0.0,
     this.charSpacing = 0.0,
@@ -206,7 +206,7 @@ class TextStyleDescriptor {
   final double fontSize;
   final bool bold;
   final bool italic;
-  final TextAlign alignment;
+  final VectorTextAlign alignment;
   final double lineSpacing;
   final double wordSpacing;
   final double charSpacing;
@@ -216,7 +216,7 @@ class TextStyleDescriptor {
     double? fontSize,
     bool? bold,
     bool? italic,
-    TextAlign? alignment,
+    VectorTextAlign? alignment,
     double? lineSpacing,
     double? wordSpacing,
     double? charSpacing,

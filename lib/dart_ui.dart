@@ -109,7 +109,7 @@ export 'src/graphics/svg/svg_path.dart';
 export 'src/graphics/svg/svg_picture.dart';
 export 'src/graphics/vector/arrowheads.dart';
 export 'src/graphics/vector/bezier.dart';
-export 'src/graphics/vector/constants.dart' hide TextAlign;
+export 'src/graphics/vector/constants.dart';
 export 'src/graphics/vector/contour.dart';
 export 'src/graphics/vector/doc_methods.dart';
 export 'src/graphics/vector/document.dart';

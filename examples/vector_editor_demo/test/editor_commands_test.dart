@@ -299,8 +299,8 @@ void main() {
     expect(ArrowHead.of(curve.style.stroke.startArrow), ArrowHead.circle);
     expect(ArrowHead.of(curve.style.stroke.endArrow), ArrowHead.triangle);
     expect(
-        registry['object.arrows']!
-            .isCheckedWith(const CommandArgs(<String, Object?>{'end': 'triangle'})),
+        registry['object.arrows']!.isCheckedWith(
+            const CommandArgs(<String, Object?>{'end': 'triangle'})),
         isTrue);
     registry.execute('object.arrows', <String, Object?>{'end': 'none'});
     expect(ArrowHead.of(curve.style.stroke.endArrow), ArrowHead.none);
@@ -310,5 +310,23 @@ void main() {
         }).ok,
         isFalse,
         reason: 'an odd list is refused');
+  });
+
+  test('a text takes a font, bold, italic and alignment, each undoable', () {
+    registry.execute(
+        'shape.text', <String, Object?>{'x': 0, 'y': 50, 'text': 'Title'});
+    final VectorText text = objects().whereType<VectorText>().single;
+    registry.execute('text.font', <String, Object?>{'family': 'Georgia'});
+    expect(text.style.textStyle.fontFamily, 'Georgia');
+    expect(registry.execute('text.bold').result, isTrue, reason: 'toggled on');
+    expect(registry['text.bold']!.isChecked, isTrue);
+    registry.execute('text.italic', <String, Object?>{'on': true});
+    expect(text.style.textStyle.italic, isTrue);
+    registry.execute('text.align', <String, Object?>{'align': 'right'});
+    expect(text.style.textStyle.alignment, VectorTextAlign.right);
+    model.undo();
+    expect(text.style.textStyle.alignment, VectorTextAlign.left);
+    expect(registry.execute('text.bold').result, isFalse,
+        reason: 'toggled back off');
   });
 }

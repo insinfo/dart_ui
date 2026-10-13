@@ -285,5 +285,103 @@ List<CommandSpec> propertyCommands(EditorContext context) {
         return null;
       },
     ),
+    CommandSpec(
+      id: 'text.font',
+      label: 'Font',
+      description: 'The selected texts\' typeface family, by name; one '
+          'this machine lacks draws in the interface face.',
+      params: const <CommandParam>[
+        CommandParam('family', CommandParamType.string, required: true),
+      ],
+      when: needs<VectorText>('a text'),
+      checked: (CommandArgs args) =>
+          allSay(args['family'], (VectorStyle s) => s.textStyle.fontFamily),
+      run: (CommandArgs args) {
+        final String family = args.string('family').trim();
+        if (family.isEmpty) throw const CommandError('`family` is empty');
+        model.active.api.restyle(
+            selected<VectorText>(),
+            (VectorStyle style) => style.copyWith(
+                textStyle: style.textStyle.copyWith(fontFamily: family)));
+        model.touch('Font $family');
+        return null;
+      },
+    ),
+    for (final (
+      String id,
+      String label,
+      bool Function(TextStyleDescriptor),
+      TextStyleDescriptor Function(TextStyleDescriptor, bool)
+    ) toggle in <(
+      String,
+      String,
+      bool Function(TextStyleDescriptor),
+      TextStyleDescriptor Function(TextStyleDescriptor, bool)
+    )>[
+      (
+        'text.bold',
+        'Bold',
+        (TextStyleDescriptor t) => t.bold,
+        (TextStyleDescriptor t, bool on) => t.copyWith(bold: on),
+      ),
+      (
+        'text.italic',
+        'Italic',
+        (TextStyleDescriptor t) => t.italic,
+        (TextStyleDescriptor t, bool on) => t.copyWith(italic: on),
+      ),
+    ])
+      CommandSpec(
+        id: toggle.$1,
+        label: toggle.$2,
+        description: 'Turns ${toggle.$2.toLowerCase()} on or off for the '
+            'selected texts; `on` sets it, no argument toggles.',
+        params: const <CommandParam>[
+          CommandParam('on', CommandParamType.boolean),
+        ],
+        shortcut: toggle.$1 == 'text.bold'
+            ? const KeyGesture(logicalKeyB, command: true)
+            : const KeyGesture(logicalKeyI, command: true),
+        when: needs<VectorText>('a text'),
+        checked: (_) {
+          final List<VectorText> texts = selected<VectorText>();
+          return texts.isNotEmpty &&
+              texts.every((VectorText t) => toggle.$3(t.style.textStyle));
+        },
+        run: (CommandArgs args) {
+          final List<VectorText> texts = selected<VectorText>();
+          final bool on = args.has('on')
+              ? args['on'] == true
+              : !texts.every((VectorText t) => toggle.$3(t.style.textStyle));
+          model.active.api.restyle(
+              texts,
+              (VectorStyle style) =>
+                  style.copyWith(textStyle: toggle.$4(style.textStyle, on)));
+          model.touch('${toggle.$2} ${on ? 'on' : 'off'}');
+          return on;
+        },
+      ),
+    CommandSpec(
+      id: 'text.align',
+      label: 'Alignment',
+      description: 'Where the selected texts grow from their anchor: left, '
+          'center or right.',
+      params: const <CommandParam>[
+        CommandParam('align', CommandParamType.string, required: true),
+      ],
+      when: needs<VectorText>('a text'),
+      checked: (CommandArgs args) =>
+          allSay(args['align'], (VectorStyle s) => s.textStyle.alignment.name),
+      run: (CommandArgs args) {
+        final VectorTextAlign align = VectorTextAlign.values.byName(
+            oneOf(args, 'align', const <String>['left', 'center', 'right']));
+        model.active.api.restyle(
+            selected<VectorText>(),
+            (VectorStyle style) => style.copyWith(
+                textStyle: style.textStyle.copyWith(alignment: align)));
+        model.touch('Aligned ${align.name}');
+        return null;
+      },
+    ),
   ];
 }

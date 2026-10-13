@@ -736,9 +736,67 @@ class _TextPluginState extends State<_TextPlugin> {
               .execute('text.size', <String, Object?>{'size': value}),
         ),
         const _Label('pt'),
+        const SizedBox(width: 6),
+        SizedBox(
+          width: ChromeMetrics.of(Theme.of(context)).widthFor(130),
+          height: ChromeMetrics.of(Theme.of(context)).fieldHeight,
+          child: ComboBox<String>(
+            label: 'Font',
+            value: style.fontFamily,
+            maxVisibleItems: 14,
+            items: <ComboBoxItem<String>>[
+              for (final String family in _families(style.fontFamily))
+                ComboBoxItem<String>(value: family, label: family),
+            ],
+            onChanged: (String family) => widget.registry
+                .execute('text.font', <String, Object?>{'family': family}),
+          ),
+        ),
+        const SizedBox(width: 4),
+        for (final (String id, IconData icon, Map<String, Object?> params)
+            in const <(String, IconData, Map<String, Object?>)>[
+          ('text.bold', PhosphorIcons.textB, <String, Object?>{}),
+          ('text.italic', PhosphorIcons.textItalic, <String, Object?>{}),
+          (
+            'text.align',
+            PhosphorIcons.textAlignLeft,
+            <String, Object?>{'align': 'left'}
+          ),
+          (
+            'text.align',
+            PhosphorIcons.textAlignCenter,
+            <String, Object?>{'align': 'center'}
+          ),
+          (
+            'text.align',
+            PhosphorIcons.textAlignRight,
+            <String, Object?>{'align': 'right'}
+          ),
+        ])
+          CommandIconButton(
+            registry: widget.registry,
+            command: id,
+            icon: icon,
+            params: params,
+          ),
       ],
     );
   }
+
+  /// The machine's families, sorted, with [current] kept in the list even
+  /// when this machine lacks it - a drawing made elsewhere still says what
+  /// it asked for.
+  static List<String> _families(String current) {
+    final List<String> names = _cached ??= (<String>{
+      'Sans',
+      ...FontRegistry.instance.systemFonts.familyNames,
+    }.toList()
+      ..sort(
+          (String a, String b) => a.toLowerCase().compareTo(b.toLowerCase())));
+    return names.contains(current) ? names : <String>[current, ...names];
+  }
+
+  static List<String>? _cached;
 }
 
 /// Freehand smoothing for the next stroke - CorelDRAW's Freehand bar.
