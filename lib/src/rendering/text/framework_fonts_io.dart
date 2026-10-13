@@ -15,12 +15,14 @@ abstract final class FrameworkFonts {
   static const String iconFamily = 'Tabler Icons';
   static const String materialIconFamily = 'Material Icons';
   static const String phosphorIconFamily = 'Phosphor';
+  static const String fluentIconFamily = 'FluentSystemIcons';
   static const String uiFileName = 'Inter-Regular.ttf';
   static const String uiMediumFileName = 'Inter-Medium.ttf';
   static const String uiSemiBoldFileName = 'Inter-SemiBold.ttf';
   static const String iconFileName = 'MaterialIcons-Regular.ttf';
   static const String tablerIconFileName = 'TablerIcons.ttf';
   static const String phosphorIconFileName = 'Phosphor.ttf';
+  static const String fluentIconFileName = 'FluentSystemIcons-Resizable.ttf';
 
   /// Loads from a source checkout or an explicitly packaged asset directory.
   static FrameworkFontLoadResult install({
@@ -47,6 +49,7 @@ abstract final class FrameworkFonts {
       ).readAsBytesSync(),
       tablerIconFont: _readOptional(directory, tablerIconFileName),
       phosphorIconFont: _readOptional(directory, phosphorIconFileName),
+      fluentIconFont: _readOptional(directory, fluentIconFileName),
       registry: target,
       source: directory.path,
     );
@@ -60,6 +63,7 @@ abstract final class FrameworkFonts {
     Uint8List? uiSemiBoldFont,
     Uint8List? tablerIconFont,
     Uint8List? phosphorIconFont,
+    Uint8List? fluentIconFont,
     FontRegistry? registry,
     String? source,
   }) =>
@@ -70,6 +74,7 @@ abstract final class FrameworkFonts {
         uiSemiBoldFont: uiSemiBoldFont,
         tablerIconFont: tablerIconFont,
         phosphorIconFont: phosphorIconFont,
+        fluentIconFont: fluentIconFont,
         registry: registry ?? FontRegistry.instance,
         source: source,
       );

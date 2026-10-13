@@ -2,6 +2,7 @@ library;
 
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
+import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
 import '../platform/native_window.dart' show SystemCursor;
 import '../semantics/semantics.dart';
@@ -63,6 +64,21 @@ final class BuildOwner {
   /// For state that depends on *all* keys, whoever ends up with them: a menu
   /// bar's "Alt was pressed and released with nothing in between" is broken by
   /// an Alt+F the focused field consumed, and only an observer sees that F.
+  /// The modifier keys held as of the last key transition this window saw.
+  ///
+  /// A [PointerEvent] carries no modifier set, so a Ctrl+click or a
+  /// Shift+click reads this: a file list toggling or extending its
+  /// selection, a canvas constraining a drag. It is wrong only when the
+  /// modifier went down before the window had any key event at all - the
+  /// same limit every control here documents.
+  Set<KeyModifier> get keyModifiers => _keyModifiers;
+  Set<KeyModifier> _keyModifiers = const <KeyModifier>{};
+
+  /// Whether the platform's command modifier - Ctrl, or Cmd on a Mac - is
+  /// among [keyModifiers].
+  bool get commandHeld =>
+      _keyModifiers.contains(platformEditingConvention.commandModifier);
+
   void addKeyObserver(void Function(KeyEvent event) observer) =>
       _keyObservers.add(observer);
 
@@ -195,6 +211,7 @@ final class BuildOwner {
   /// let the platform have it - a menu mnemonic, a window accelerator.
   bool dispatchKeyEvent(KeyEvent event) {
     _throwIfDisposed();
+    _keyModifiers = event.modifiers;
     for (final observer in List.of(_keyObservers)) {
       observer(event);
     }

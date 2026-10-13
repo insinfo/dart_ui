@@ -12,6 +12,7 @@ final class FrameworkFontLoadResult {
     this.uiVariantFontsLoaded = 0,
     this.tablerIconFontLoaded = false,
     this.phosphorIconFontLoaded = false,
+    this.fluentIconFontLoaded = false,
     required this.directory,
   });
 
@@ -20,6 +21,9 @@ final class FrameworkFontLoadResult {
   final int uiVariantFontsLoaded;
   final bool tablerIconFontLoaded;
   final bool phosphorIconFontLoaded;
+
+  /// Fluent UI System Icons, the icons of Windows 11 and Microsoft 365.
+  final bool fluentIconFontLoaded;
   final String? directory;
 
   bool get isComplete =>
@@ -36,6 +40,7 @@ FrameworkFontLoadResult installFrameworkFontBytes({
   Uint8List? uiSemiBoldFont,
   Uint8List? tablerIconFont,
   Uint8List? phosphorIconFont,
+  Uint8List? fluentIconFont,
   required FontRegistry registry,
   String? source,
 }) {
@@ -44,6 +49,7 @@ FrameworkFontLoadResult installFrameworkFontBytes({
   var uiVariantsLoaded = 0;
   var tablerLoaded = false;
   var phosphorLoaded = false;
+  var fluentLoaded = false;
   try {
     registry.useTypeface(
       Typeface.parse(uiFont),
@@ -110,12 +116,27 @@ FrameworkFontLoadResult installFrameworkFontBytes({
       phosphorLoaded = false;
     }
   }
+  if (fluentIconFont != null) {
+    try {
+      registry.registerTypeface(
+        Typeface.parse(fluentIconFont),
+        family: 'FluentSystemIcons',
+        source: source == null
+            ? 'bundled Fluent System Icons'
+            : '$source/FluentSystemIcons-Resizable.ttf',
+      );
+      fluentLoaded = true;
+    } on Object {
+      fluentLoaded = false;
+    }
+  }
   return FrameworkFontLoadResult(
     uiFontLoaded: uiLoaded,
     iconFontLoaded: iconsLoaded,
     uiVariantFontsLoaded: uiVariantsLoaded,
     tablerIconFontLoaded: tablerLoaded,
     phosphorIconFontLoaded: phosphorLoaded,
+    fluentIconFontLoaded: fluentLoaded,
     directory: source,
   );
 }

@@ -544,6 +544,7 @@ final class Text extends RenderObjectWidget {
     this.softWrap = false,
     this.maxLines,
     this.ellipsis,
+    this.textAlign = paragraph.TextAlign.start,
   })  : assert(maxLines == null || maxLines > 0),
         assert(ellipsis == null || maxLines != null);
 
@@ -567,8 +568,13 @@ final class Text extends RenderObjectWidget {
   /// Maximum number of wrapped lines, or null for all lines.
   final int? maxLines;
 
-  /// Text placed at the end when [maxLines] removes content.
+  /// Text placed at the end when [maxLines] removes content - or, on a
+  /// single line that does not fit its box, where the cut is.
   final String? ellipsis;
+
+  /// How the lines sit across the text's width - centred under an icon,
+  /// say. Matters once there are lines of different lengths.
+  final paragraph.TextAlign textAlign;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
@@ -586,6 +592,7 @@ final class Text extends RenderObjectWidget {
       softWrap: softWrap,
       maxLines: maxLines,
       ellipsis: ellipsis,
+      textAlign: textAlign,
     );
   }
 
@@ -604,7 +611,8 @@ final class Text extends RenderObjectWidget {
       ..lineHeight = resolved.height
       ..softWrap = softWrap
       ..maxLines = maxLines
-      ..ellipsis = ellipsis;
+      ..ellipsis = ellipsis
+      ..textAlign = textAlign;
   }
 
   /// Resolves and subscribes to the ambient styles. Render-object elements
@@ -640,6 +648,7 @@ final class RenderText extends RenderBox {
     bool softWrap = false,
     int? maxLines,
     String? ellipsis,
+    paragraph.TextAlign textAlign = paragraph.TextAlign.start,
   })  : _text = text,
         _color = color,
         _fontSize = fontSize,
@@ -648,7 +657,8 @@ final class RenderText extends RenderBox {
         _lineHeight = lineHeight,
         _softWrap = softWrap,
         _maxLines = maxLines,
-        _ellipsis = ellipsis;
+        _ellipsis = ellipsis,
+        _textAlign = textAlign;
 
   String _text;
   Color _color;
@@ -659,7 +669,17 @@ final class RenderText extends RenderBox {
   bool _softWrap;
   int? _maxLines;
   String? _ellipsis;
+  paragraph.TextAlign _textAlign;
   paragraph.Paragraph? _paragraph;
+
+  paragraph.TextAlign get textAlign => _textAlign;
+
+  set textAlign(paragraph.TextAlign value) {
+    if (value == _textAlign) return;
+    _textAlign = value;
+    _paragraph = null;
+    markNeedsLayout();
+  }
 
   String get text => _text;
 
@@ -688,12 +708,20 @@ final class RenderText extends RenderBox {
     return false;
   }
 
-  bool get _usesParagraph => _softWrap || _hasHardBreak;
+  /// The paragraph engine wraps, aligns lines and cuts with an ellipsis;
+  /// the single-line path only shapes. An [_ellipsis] therefore takes the
+  /// paragraph path too: a label that does not fit its box ends in "…"
+  /// instead of being cut through a letter.
+  bool get _usesParagraph => _softWrap || _hasHardBreak || _ellipsis != null;
 
   /// The width paragraph layout may use: the constraint when soft wrapping,
   /// otherwise none, so that only mandatory breaks end a line.
+  /// The width lines break at: the box's when the text wraps, or when it
+  /// is cut with an ellipsis - which needs a width to cut at.
   double _layoutWidth(double available) =>
-      _softWrap && available.isFinite ? available : double.infinity;
+      (_softWrap || _ellipsis != null) && available.isFinite
+          ? available
+          : double.infinity;
 
   Color get color => _color;
 
@@ -810,6 +838,7 @@ final class RenderText extends RenderBox {
       maxWidth: _layoutWidth(
           constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity),
       style: paragraph.ParagraphStyle(
+        align: _textAlign,
         maxLines: _maxLines,
         ellipsis: _ellipsis,
         heightMultiplier: _lineHeight ?? 1.0,
@@ -834,6 +863,7 @@ final class RenderText extends RenderBox {
           face,
           maxWidth: _layoutWidth(0),
           style: paragraph.ParagraphStyle(
+            align: _textAlign,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
             heightMultiplier: _lineHeight ?? 1.0,
@@ -854,6 +884,7 @@ final class RenderText extends RenderBox {
           face,
           maxWidth: double.infinity,
           style: paragraph.ParagraphStyle(
+            align: _textAlign,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
             heightMultiplier: _lineHeight ?? 1.0,
@@ -878,6 +909,7 @@ final class RenderText extends RenderBox {
           face,
           maxWidth: _layoutWidth(width),
           style: paragraph.ParagraphStyle(
+            align: _textAlign,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
             heightMultiplier: _lineHeight ?? 1.0,

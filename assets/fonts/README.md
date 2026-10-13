@@ -13,6 +13,13 @@ distributed under the MIT License; the original notice is in
 2.1.2. It is distributed under the MIT License; the original notice is in
 `PhosphorIcons-MIT.txt`.
 
+`FluentSystemIcons-Resizable.ttf` contains the 5,706 regular and filled
+Fluent UI System Icons, one resizable glyph per icon - the icons of Windows
+11 and Microsoft 365. It is distributed under the MIT License; the original
+notice is in `FluentSystemIcons-MIT.txt`. `FluentIcons` in
+`lib/src/widgets/fluent_icons.dart` is generated from its code point map by
+`tool/generate_fluent_icons.dart`.
+
 `MaterialIcons-Regular.ttf` is the classic Material Icons font distributed by
 Google. Material Icons are licensed under the Apache License 2.0.
 
@@ -25,6 +32,7 @@ Sources:
 - https://github.com/rsms/inter/releases/tag/v4.1
 - https://github.com/tabler/tabler-icons/releases/tag/v3.46.0
 - https://github.com/phosphor-icons/web/tree/v2.1.2
+- https://github.com/microsoft/fluentui-system-icons/tree/main/fonts
 - https://fonts.google.com/specimen/Roboto
 - https://github.com/google/material-design-icons
 - https://developers.google.com/fonts/docs/material_icons
