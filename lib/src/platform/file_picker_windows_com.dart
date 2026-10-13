@@ -110,6 +110,9 @@ const int _fosOverwritePrompt = 0x00000002;
 /// OneDrive item, and `GetDisplayName(SIGDN_FILESYSPATH)` then fails on a
 /// selection the user believes they made.
 const int _fosForceFileSystem = 0x00000040;
+
+/// `FOS_PICKFOLDERS`: the open dialog chooses folders, not files.
+const int _fosPickFolders = 0x00000020;
 const int _fosAllowMultiSelect = 0x00000200;
 const int _fosPathMustExist = 0x00000800;
 const int _fosFileMustExist = 0x00001000;
@@ -250,6 +253,7 @@ WindowsFileDialogResult showWindowsFileDialog({
   String? defaultExtension,
   String? initialDirectory,
   bool allowMultiple = false,
+  bool pickFolders = false,
   int ownerWindowHandle = 0,
 }) {
   if (!Platform.isWindows) {
@@ -280,6 +284,7 @@ WindowsFileDialogResult showWindowsFileDialog({
       defaultExtension: defaultExtension,
       initialDirectory: initialDirectory,
       allowMultiple: allowMultiple,
+      pickFolders: pickFolders,
       ownerWindowHandle: ownerWindowHandle,
     );
   } finally {
@@ -314,6 +319,7 @@ Future<WindowsFileDialogResult> showWindowsFileDialogAsync({
   String? defaultExtension,
   String? initialDirectory,
   bool allowMultiple = false,
+  bool pickFolders = false,
   int ownerWindowHandle = 0,
 }) async {
   final WindowsFileDialogResult? result =
@@ -328,6 +334,7 @@ Future<WindowsFileDialogResult> showWindowsFileDialogAsync({
       defaultExtension: defaultExtension,
       initialDirectory: initialDirectory,
       allowMultiple: allowMultiple,
+      pickFolders: pickFolders,
       ownerWindowHandle: ownerWindowHandle,
     ),
   );
@@ -364,6 +371,7 @@ List<WindowsFileDialogStep> probeWindowsFileDialog({
   String? defaultExtension,
   String? initialDirectory,
   bool allowMultiple = false,
+  bool pickFolders = false,
 }) {
   final List<WindowsFileDialogStep> trace = <WindowsFileDialogStep>[];
   if (!Platform.isWindows) {
@@ -448,6 +456,7 @@ List<WindowsFileDialogStep> probeWindowsFileDialog({
       defaultExtension: defaultExtension,
       initialDirectory: initialDirectory,
       allowMultiple: allowMultiple,
+      pickFolders: pickFolders,
       trace: trace,
     );
     return trace;
@@ -467,6 +476,7 @@ WindowsFileDialogResult _show({
   required String? defaultExtension,
   required String? initialDirectory,
   required bool allowMultiple,
+  required bool pickFolders,
   required int ownerWindowHandle,
 }) {
   final NativeArena arena = NativeArena();
@@ -509,6 +519,7 @@ WindowsFileDialogResult _show({
       defaultExtension: defaultExtension,
       initialDirectory: initialDirectory,
       allowMultiple: allowMultiple,
+      pickFolders: pickFolders,
     );
     if (failed(configured)) {
       return WindowsFileDialogResult(
@@ -568,6 +579,7 @@ int _configure({
   required String? defaultExtension,
   required String? initialDirectory,
   required bool allowMultiple,
+  required bool pickFolders,
   List<WindowsFileDialogStep>? trace,
 }) {
   // Every configuration call goes through here so that the unattended probe
@@ -587,8 +599,10 @@ int _configure({
       ));
   if (failed(hr)) return hr;
 
-  final List<({String label, String pattern})> specs =
-      windowsFilterSpecs(filters);
+  // A folder dialog has no file types: SetFileTypes there is an error.
+  final List<({String label, String pattern})> specs = pickFolders
+      ? const <({String label, String pattern})>[]
+      : windowsFilterSpecs(filters);
   // COMDLG_FILTERSPEC is two LPCWSTRs, so the array is 2n pointers and the
   // strings have to outlive the Show() call - hence the arena rather than a
   // per-string allocation freed at the end of this function.
@@ -598,14 +612,16 @@ int _configure({
     table[i * 2] = arena.allocateUtf16(specs[i].label);
     table[i * 2 + 1] = arena.allocateUtf16(specs[i].pattern);
   }
-  hr = step(
-    'IFileDialog::SetFileTypes(${specs.length})',
-    dialog.setFileTypes(specs.length, table.cast<Void>()),
-  );
-  if (failed(hr)) return hr;
-  // One-based, like nFilterIndex was. Zero is an error, not "the first".
-  hr = step('IFileDialog::SetFileTypeIndex(1)', dialog.setFileTypeIndex(1));
-  if (failed(hr)) return hr;
+  if (specs.isNotEmpty) {
+    hr = step(
+      'IFileDialog::SetFileTypes(${specs.length})',
+      dialog.setFileTypes(specs.length, table.cast<Void>()),
+    );
+    if (failed(hr)) return hr;
+    // One-based, like nFilterIndex was. Zero is an error, not "the first".
+    hr = step('IFileDialog::SetFileTypeIndex(1)', dialog.setFileTypeIndex(1));
+    if (failed(hr)) return hr;
+  }
 
   final Pointer<Uint32> options = arena.allocate<Uint32>(sizeOf<Uint32>());
   hr = step('IFileDialog::GetOptions', dialog.getOptions(options));
@@ -621,7 +637,9 @@ int _configure({
   int wanted = options.value | _fosForceFileSystem | _fosPathMustExist;
   wanted |= save
       ? _fosOverwritePrompt
-      : (_fosFileMustExist | (allowMultiple ? _fosAllowMultiSelect : 0));
+      : pickFolders
+          ? _fosPickFolders | (allowMultiple ? _fosAllowMultiSelect : 0)
+          : (_fosFileMustExist | (allowMultiple ? _fosAllowMultiSelect : 0));
   hr = step(
     'IFileDialog::SetOptions(0x${wanted.toRadixString(16)})',
     dialog.setOptions(wanted),

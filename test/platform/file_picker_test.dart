@@ -227,5 +227,37 @@ void main() {
           ? false
           : 'the Common Item Dialog is a Windows API',
     );
+
+    test(
+      'a folder dialog configures with FOS_PICKFOLDERS and no file types',
+      () {
+        final List<WindowsFileDialogStep> trace = probeWindowsFileDialog(
+          save: false,
+          title: 'folder',
+          pickFolders: true,
+        );
+        final List<WindowsFileDialogStep> broken = <WindowsFileDialogStep>[
+          for (final WindowsFileDialogStep step in trace)
+            if (step.required && failed(step.hresult)) step,
+        ];
+        expect(broken, isEmpty,
+            reason: broken
+                .map((WindowsFileDialogStep step) =>
+                    '${step.call} -> ${hresultName(step.hresult)}')
+                .join('\n'));
+        final Iterable<String> calls =
+            trace.map((WindowsFileDialogStep step) => step.call);
+        expect(calls, isNot(contains(startsWith('IFileDialog::SetFileTypes'))));
+        final String options = calls
+            .firstWhere((String c) => c.startsWith('IFileDialog::SetOptions'));
+        final int value = int.parse(
+            options.substring(options.indexOf('0x') + 2, options.length - 1),
+            radix: 16);
+        expect(value & 0x20, 0x20, reason: 'FOS_PICKFOLDERS');
+      },
+      skip: Platform.isWindows
+          ? false
+          : 'the Common Item Dialog is a Windows API',
+    );
   });
 }

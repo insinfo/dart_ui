@@ -242,6 +242,230 @@ String? _openWindowsLegacy({
   });
 }
 
+/// Several files at once. See `FilePicker.openFiles`.
+Future<List<PickedFile>> openFiles({
+  required String title,
+  required List<FilePickerFilter> filters,
+  required int ownerWindowHandle,
+}) async {
+  final List<String> paths;
+  if (Platform.isWindows) {
+    paths = await _pickWindows(
+      title: title,
+      filters: filters,
+      ownerWindowHandle: ownerWindowHandle,
+      multiple: true,
+    );
+  } else if (Platform.isMacOS) {
+    paths = await _osascriptPaths(
+      'choose file with prompt "${_appleScriptString(title)}"'
+      '${_appleScriptTypes(filters)} with multiple selections allowed',
+      operation: 'NSOpenPanel via osascript',
+    );
+  } else if (Platform.isLinux) {
+    paths = await _linuxPaths(<_LinuxPickerCommand>[
+      _LinuxPickerCommand(executable: 'zenity', arguments: <String>[
+        '--file-selection',
+        '--multiple',
+        '--separator=\n',
+        '--title=$title',
+        for (final FilePickerFilter filter in filters)
+          '--file-filter=${filter.label} | ${filter.wildcardPattern}',
+      ]),
+      _LinuxPickerCommand(executable: 'kdialog', arguments: <String>[
+        '--getopenfilename',
+        '',
+        filters
+            .map((FilePickerFilter f) => '${f.wildcardPattern}|${f.label}')
+            .join('\n'),
+        '--multiple',
+        '--separate-output',
+        '--title',
+        title,
+      ]),
+    ], operation: 'openFiles');
+  } else {
+    throw FilePickerException(
+      operation: 'openFiles',
+      platform: Platform.operatingSystem,
+      reason: 'no desktop file-picker backend is available',
+    );
+  }
+  final List<PickedFile> files = <PickedFile>[];
+  for (final String path in paths) {
+    try {
+      files.add(PickedFile(
+        name: _baseName(path),
+        path: path,
+        bytes: await File(path).readAsBytes(),
+      ));
+    } on Object catch (error) {
+      throw FilePickerException(
+        operation: 'read selected file',
+        platform: Platform.operatingSystem,
+        reason: '$error',
+      );
+    }
+  }
+  return files;
+}
+
+/// A folder. See `FilePicker.pickDirectory`.
+Future<String?> pickDirectory({
+  required String title,
+  required int ownerWindowHandle,
+}) async {
+  final List<String> paths;
+  if (Platform.isWindows) {
+    paths = await _pickWindows(
+      title: title,
+      filters: const <FilePickerFilter>[],
+      ownerWindowHandle: ownerWindowHandle,
+      folders: true,
+    );
+  } else if (Platform.isMacOS) {
+    paths = await _osascriptPaths(
+      'choose folder with prompt "${_appleScriptString(title)}"',
+      operation: 'NSOpenPanel (folders) via osascript',
+    );
+  } else if (Platform.isLinux) {
+    paths = await _linuxPaths(<_LinuxPickerCommand>[
+      _LinuxPickerCommand(executable: 'zenity', arguments: <String>[
+        '--file-selection',
+        '--directory',
+        '--title=$title',
+      ]),
+      _LinuxPickerCommand(executable: 'kdialog', arguments: <String>[
+        '--getexistingdirectory',
+        '',
+        '--title',
+        title,
+      ]),
+    ], operation: 'pickDirectory');
+  } else {
+    throw FilePickerException(
+      operation: 'pickDirectory',
+      platform: Platform.operatingSystem,
+      reason: 'no desktop file-picker backend is available',
+    );
+  }
+  if (paths.isEmpty) return null;
+  // A folder path, without the trailing separator AppleScript adds.
+  final String path = paths.first;
+  return path.length > 1 && (path.endsWith('/') || path.endsWith('\\'))
+      ? path.substring(0, path.length - 1)
+      : path;
+}
+
+Future<List<String>> _pickWindows({
+  required String title,
+  required List<FilePickerFilter> filters,
+  required int ownerWindowHandle,
+  bool multiple = false,
+  bool folders = false,
+}) async {
+  final WindowsFileDialogResult result = await showWindowsFileDialogAsync(
+    save: false,
+    title: title,
+    filters: filters,
+    allowMultiple: multiple,
+    pickFolders: folders,
+    ownerWindowHandle: ownerWindowHandle,
+  );
+  switch (result.status) {
+    case WindowsFileDialogStatus.selected:
+      return result.paths;
+    case WindowsFileDialogStatus.cancelled:
+      return const <String>[];
+    case WindowsFileDialogStatus.failed:
+    case WindowsFileDialogStatus.unavailable:
+      throw FilePickerException(
+        operation: 'IFileOpenDialog',
+        platform: 'windows',
+        errorCode: result.hresult,
+        reason: result.detail ?? 'the Common Item Dialog failed',
+      );
+  }
+}
+
+String _appleScriptString(String value) =>
+    value.replaceAll(r'\', r'\\').replaceAll('"', r'\"');
+
+String _appleScriptTypes(List<FilePickerFilter> filters) {
+  final List<String> extensions = <String>[
+    for (final FilePickerFilter filter in filters)
+      for (final String extension in filter.extensions)
+        if (extension != '*') extension.replaceFirst('.', ''),
+  ];
+  return extensions.isEmpty
+      ? ''
+      : ' of type {${extensions.map((String v) => '"$v"').join(', ')}}';
+}
+
+/// Runs [choose] - a `choose file` or `choose folder` expression - and
+/// answers the POSIX paths it picked, one or many; empty when cancelled.
+Future<List<String>> _osascriptPaths(String choose,
+    {required String operation}) async {
+  final String script = 'set picked to ($choose)\n'
+      'if class of picked is not list then set picked to {picked}\n'
+      'set out to ""\n'
+      'repeat with f in picked\n'
+      '  set out to out & POSIX path of f & linefeed\n'
+      'end repeat\n'
+      'return out';
+  final ProcessResult result =
+      await Process.run('/usr/bin/osascript', <String>['-e', script]);
+  if (result.exitCode == 0) {
+    return '${result.stdout}'
+        .split('\n')
+        .map((String line) => line.trim())
+        .where((String line) => line.isNotEmpty)
+        .toList();
+  }
+  if (_osascriptCancelled(result)) return const <String>[];
+  throw FilePickerException(
+    operation: operation,
+    platform: 'macos',
+    errorCode: result.exitCode,
+    reason: '${result.stderr}'.trim(),
+  );
+}
+
+/// The first chooser in [commands] that is installed, its output one path
+/// per line; empty when cancelled.
+Future<List<String>> _linuxPaths(List<_LinuxPickerCommand> commands,
+    {required String operation}) async {
+  final List<String> unavailable = <String>[];
+  for (final _LinuxPickerCommand command in commands) {
+    try {
+      final ProcessResult result =
+          await Process.run(command.executable, command.arguments);
+      if (result.exitCode == 0) {
+        return '${result.stdout}'
+            .split('\n')
+            .map((String line) => line.trim())
+            .where((String line) => line.isNotEmpty)
+            .toList();
+      }
+      if (result.exitCode == 1) return const <String>[];
+      throw FilePickerException(
+        operation: command.executable,
+        platform: 'linux',
+        errorCode: result.exitCode,
+        reason: '${result.stderr}'.trim(),
+      );
+    } on ProcessException {
+      unavailable.add(command.executable);
+    }
+  }
+  throw FilePickerException(
+    operation: operation,
+    platform: 'linux',
+    reason: 'no supported desktop chooser is installed '
+        '(${unavailable.join(', ')} were not found)',
+  );
+}
+
 /// Asks the platform where to write a file. See `FilePicker.saveFile`.
 Future<String?> saveFile({
   required String title,

@@ -25,3 +25,24 @@ Future<String?> saveFile({
     reason: 'this target has no file-picker implementation',
   );
 }
+
+Future<List<PickedFile>> openFiles({
+  required String title,
+  required List<FilePickerFilter> filters,
+  required int ownerWindowHandle,
+}) async {
+  throw const FilePickerException(
+    operation: 'openFiles',
+    reason: 'this target has no file-picker implementation',
+  );
+}
+
+Future<String?> pickDirectory({
+  required String title,
+  required int ownerWindowHandle,
+}) async {
+  throw const FilePickerException(
+    operation: 'pickDirectory',
+    reason: 'this target has no file-picker implementation',
+  );
+}

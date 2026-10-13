@@ -11,56 +11,79 @@ Future<PickedFile?> openFile({
   required String title,
   required List<FilePickerFilter> filters,
   required int ownerWindowHandle,
+}) async {
+  final List<PickedFile> files = await _pick(filters, multiple: false);
+  return files.isEmpty ? null : files.first;
+}
+
+Future<List<PickedFile>> openFiles({
+  required String title,
+  required List<FilePickerFilter> filters,
+  required int ownerWindowHandle,
+}) =>
+    _pick(filters, multiple: true);
+
+/// Always null: a browser exposes no folder paths. See [saveFile].
+Future<String?> pickDirectory({
+  required String title,
+  required int ownerWindowHandle,
+}) async =>
+    null;
+
+/// The browser's file input, one file or many; empty when cancelled.
+Future<List<PickedFile>> _pick(
+  List<FilePickerFilter> filters, {
+  required bool multiple,
 }) {
-  final Completer<PickedFile?> completer = Completer<PickedFile?>();
+  final Completer<List<PickedFile>> completer = Completer<List<PickedFile>>();
   final web.HTMLInputElement input =
       web.document.createElement('input') as web.HTMLInputElement;
   input
     ..type = 'file'
-    ..multiple = false
+    ..multiple = multiple
     ..accept = filters.map((FilePickerFilter value) => value.accept).join(',');
   input.style.display = 'none';
   web.document.body?.append(input);
 
-  void finish(PickedFile? value) {
+  void finish(List<PickedFile> value) {
     input.remove();
     if (!completer.isCompleted) completer.complete(value);
+  }
+
+  void fail(Object error) {
+    input.remove();
+    if (!completer.isCompleted) {
+      completer.completeError(
+        FilePickerException(
+          operation: 'File.arrayBuffer',
+          platform: 'web',
+          reason: '$error',
+        ),
+      );
+    }
   }
 
   late final JSFunction onChange;
   late final JSFunction onCancel;
   onChange = ((web.Event event) {
-    final web.FileList? files = input.files;
-    if (files == null || files.length == 0) {
-      finish(null);
+    final web.FileList? list = input.files;
+    if (list == null || list.length == 0) {
+      finish(const <PickedFile>[]);
       return;
     }
-    final web.File? file = files.item(0);
-    if (file == null) {
-      finish(null);
-      return;
-    }
-    file.arrayBuffer().toDart.then((JSArrayBuffer buffer) {
-      finish(
-        PickedFile(
-          name: file.name,
-          bytes: buffer.toDart.asUint8List(),
-        ),
-      );
-    }).catchError((Object error) {
-      input.remove();
-      if (!completer.isCompleted) {
-        completer.completeError(
-          FilePickerException(
-            operation: 'File.arrayBuffer',
-            platform: 'web',
-            reason: '$error',
-          ),
-        );
-      }
-    });
+    final List<web.File> chosen = <web.File>[
+      for (var i = 0; i < list.length; i++)
+        if (list.item(i) case final web.File file) file,
+    ];
+    Future.wait(<Future<PickedFile>>[
+      for (final web.File file in chosen)
+        file.arrayBuffer().toDart.then((JSArrayBuffer buffer) => PickedFile(
+              name: file.name,
+              bytes: buffer.toDart.asUint8List(),
+            )),
+    ]).then(finish).catchError(fail);
   }).toJS;
-  onCancel = ((web.Event event) => finish(null)).toJS;
+  onCancel = ((web.Event event) => finish(const <PickedFile>[])).toJS;
   input
     ..addEventListener('change', onChange)
     ..addEventListener('cancel', onCancel)

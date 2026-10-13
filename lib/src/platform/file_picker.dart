@@ -23,6 +23,32 @@ abstract final class FilePicker {
         ownerWindowHandle: ownerWindowHandle,
       );
 
+  /// Several files at once - the user Ctrl- or Shift-clicks in the same
+  /// dialog [openFile] shows. Empty when cancelled.
+  static Future<List<PickedFile>> openFiles({
+    String title = 'Open files',
+    List<FilePickerFilter> filters = const <FilePickerFilter>[],
+    int ownerWindowHandle = 0,
+  }) =>
+      platform.openFiles(
+        title: title,
+        filters: filters,
+        ownerWindowHandle: ownerWindowHandle,
+      );
+
+  /// A folder, as a path; null when cancelled.
+  ///
+  /// **Always null on the web**, for the reason [saveFile] gives: a browser
+  /// exposes no paths.
+  static Future<String?> pickDirectory({
+    String title = 'Choose a folder',
+    int ownerWindowHandle = 0,
+  }) =>
+      platform.pickDirectory(
+        title: title,
+        ownerWindowHandle: ownerWindowHandle,
+      );
+
   /// Asks the operating system where to write a file, returning its path.
   ///
   /// A path and not bytes, because saving is the other direction: the caller
