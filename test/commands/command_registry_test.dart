@@ -56,6 +56,47 @@ void main() {
       ]);
   });
 
+  test('an asynchronous command starts, then reports how it ended', () async {
+    final List<String> ended = <String>[];
+    registry
+      ..onCompleted =
+          ((String id, CommandOutcome outcome) => ended.add('$id $outcome'))
+      ..registerAll(<CommandSpec>[
+        CommandSpec(
+          id: 'edit.later',
+          label: 'Later',
+          run: (_) async => 42,
+        ),
+        CommandSpec(
+          id: 'edit.laterRefused',
+          label: 'Later refused',
+          run: (_) async => throw const CommandError('nothing to paste'),
+        ),
+        CommandSpec(
+          id: 'edit.laterBroken',
+          label: 'Later broken',
+          run: (_) async => throw StateError('broken'),
+        ),
+      ]);
+    final CommandOutcome later = registry.execute('edit.later');
+    expect(later.ok, isTrue);
+    expect(later.isPending, isTrue);
+    expect(later.toJson()['pending'], isTrue);
+    expect((await later.completion!).result, 42);
+
+    final CommandOutcome refused = registry.execute('edit.laterRefused');
+    expect((await refused.completion!).error, 'nothing to paste');
+    final CommandOutcome broken = registry.execute('edit.laterBroken');
+    expect((await broken.completion!).error, contains('broken'),
+        reason: 'caught and reported, never an uncaught error');
+    await Future<void>.delayed(Duration.zero);
+    expect(ended, <String>[
+      'edit.later ok(42)',
+      'edit.laterRefused failed(nothing to paste)',
+      'edit.laterBroken failed(`edit.laterBroken` failed: Bad state: broken)',
+    ]);
+  });
+
   test('a command runs with its parameters and returns its result', () {
     final outcome = registry.execute('shape.rectangle',
         <String, Object?>{'x': 0, 'y': 0, 'width': 100, 'height': 50.5});

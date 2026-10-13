@@ -6,6 +6,7 @@
 library;
 
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:dart_ui/commands.dart';
 import 'package:dart_ui/vector.dart';
@@ -696,6 +697,94 @@ class EditorModel {
     });
     selection.setSelection(pasted);
     touch('Pasted ${pasted.length} object(s)');
+  }
+
+  /// What [copySelection] last copied, for the host to put on the system
+  /// clipboard as a picture.
+  List<SelectableObject> get copiedObjects =>
+      List<SelectableObject>.unmodifiable(_clipboard);
+
+  /// The middle of the page, where something pasted from outside lands.
+  Offset get _pageCentre {
+    final PageFormat format = active.page.pageFormat;
+    return Offset(format.width / 2, format.height / 2);
+  }
+
+  /// An image from outside - PNG or JPEG bytes - pasted at the middle of the
+  /// page at one pixel per point, as one undo step. Returns whether the
+  /// bytes were an image.
+  bool pasteImage(Uint8List bytes) {
+    if (!hasDocument) return false;
+    final VectorPixmap? pixmap = VectorPixmap.fromEncoded(bytes);
+    if (pixmap == null) return false;
+    final Rect box = pixmap.cacheBbox;
+    final Offset centre = _pageCentre;
+    pixmap.applyTrafo(<double>[
+      1,
+      0,
+      0,
+      1,
+      centre.dx - box.center.dx,
+      centre.dy - box.center.dy,
+    ]);
+    active.api.addObject(active.layer, pixmap);
+    selection.setSelection(<SelectableObject>[pixmap]);
+    touch('Pasted an image, ${pixmap.pixelWidth} x ${pixmap.pixelHeight} px');
+    return true;
+  }
+
+  /// Text from outside: an SVG drawing becomes its objects, centred on the
+  /// page; anything else becomes artistic text, lines and all. One undo
+  /// step either way.
+  void pasteText(String text) {
+    if (!hasDocument || text.isEmpty) return;
+    final String trimmed = text.trimLeft();
+    if (trimmed.startsWith('<svg') ||
+        (trimmed.startsWith('<?xml') && trimmed.contains('<svg'))) {
+      final VectorDocument drawing = VectorSvgCodec.importFromSvg(trimmed);
+      final List<SelectableObject> objects = <SelectableObject>[
+        for (final VectorLayer layer
+            in drawing.getPageLayers(drawing.getPage(0)))
+          ...layer.children.whereType<SelectableObject>(),
+      ];
+      if (objects.isNotEmpty) {
+        Rect box = objects.first.cacheBbox;
+        for (final SelectableObject object in objects.skip(1)) {
+          box = box.union(object.cacheBbox);
+        }
+        final Offset centre = _pageCentre;
+        final List<double> move = <double>[
+          1,
+          0,
+          0,
+          1,
+          centre.dx - box.center.dx,
+          centre.dy - box.center.dy,
+        ];
+        final List<SelectableObject> pasted = active.api.record('Paste', () {
+          final List<SelectableObject> added = <SelectableObject>[];
+          for (final SelectableObject object in objects) {
+            final SelectableObject copy = object.copy() as SelectableObject
+              ..applyTrafo(move);
+            active.api.methods.addObject(active.layer, copy);
+            added.add(copy);
+          }
+          return added;
+        });
+        selection.setSelection(pasted);
+        touch('Pasted ${pasted.length} object(s) from SVG');
+        return;
+      }
+    }
+    final Offset centre = _pageCentre;
+    final VectorText created = active.api.record('Paste text', () {
+      final VectorText added =
+          active.api.methods.createText(text: text, x: centre.dx, y: centre.dy);
+      active.api.methods.addObject(active.layer, added);
+      return added;
+    });
+    selection.setSelection(<SelectableObject>[created]);
+    touch('Pasted text');
   }
 
   /// Copies the selection in place, a step down and right, and selects the

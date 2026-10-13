@@ -76,12 +76,33 @@ final class CommandRegistry {
             command.disabledReasonWith(args) ?? 'not available now';
         return CommandOutcome.failure('`$id` is disabled: $reason');
       }
-      return CommandOutcome.success(command.run(args));
+      final Object? result = command.run(args);
+      if (result is Future<Object?>) return _started(id, result);
+      return CommandOutcome.success(result);
     } on CommandError catch (error) {
       return CommandOutcome.failure(error.message);
     } on Object catch (error) {
       return CommandOutcome.failure('`$id` failed: $error');
     }
+  }
+
+  /// Called when an asynchronous command ends, with how it ended - the
+  /// place a window shows the failure of a paste that turned out to have
+  /// nothing to paste, since [execute] returned long before.
+  void Function(String id, CommandOutcome outcome)? onCompleted;
+
+  /// [running] as a started outcome whose completion never throws: an
+  /// error in an asynchronous command is a failure to report, not an
+  /// uncaught exception that takes the application down.
+  CommandOutcome _started(String id, Future<Object?> running) {
+    final Future<CommandOutcome> done = running.then<CommandOutcome>(
+      CommandOutcome.success,
+      onError: (Object error) => error is CommandError
+          ? CommandOutcome.failure(error.message)
+          : CommandOutcome.failure('`$id` failed: $error'),
+    );
+    done.then((CommandOutcome outcome) => onCompleted?.call(id, outcome));
+    return CommandOutcome.started(done);
   }
 
   /// Runs [steps] in order as one undo step, stopping at the first failure.

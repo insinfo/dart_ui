@@ -164,8 +164,22 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
   retângulos.
 - P0 em 98% (60 feitas, 3 parciais).
 
+- Colar especial (`edit.pasteSpecial`, Ctrl+Shift+V): objetos copiados
+  aqui, imagem da área de transferência do sistema (vira um `VectorPixmap`
+  no meio da página) ou texto (um desenho SVG entra como objetos; outro
+  texto vira texto artístico). Copiar põe também uma imagem PNG da seleção
+  na área de transferência do sistema, para outros programas. A janela
+  implementa a porta `EditorClipboardHost`; o CLI não, e então só os
+  objetos copiados contam. Framework: imagens no documento vetorial
+  desenhadas pelo canvas (`VectorPixmap.fromImage`/`fromEncoded`/`toPng`,
+  `<image>` no SVG), `VectorRenderer.rasterizeObjects`, e comandos
+  assíncronos no `CommandRegistry` (`CommandOutcome.started`/`completion`,
+  `onCompleted`), cujos erros viram falha relatada e nunca escapam.
+- P0 em 98% (60 feitas, 3 parciais: Editar segue parcial porque Localizar e substituir só acha texto).
+
 **Ficou pela metade**
-- Pena caligráfica, preenchimentos de padrão e textura, Colar especial
-  (agora possível: a área de transferência tem imagem e HTML).
+- Pena caligráfica, preenchimentos de padrão e textura.
+- Uma imagem girada é desenhada como contorno com um X até haver desenho
+  de imagem transformada no display list.
 - Arrastar as alças de um parágrafo ainda escala o texto, em vez de mudar a
   moldura.

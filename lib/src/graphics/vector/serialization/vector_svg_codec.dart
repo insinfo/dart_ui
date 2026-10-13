@@ -23,12 +23,16 @@
 /// width, caps, joins, miter limit and dashes; `display:none`.
 library;
 
+import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import '../../../geometry/offset.dart';
 import '../../../geometry/rect.dart';
 import '../../../geometry/transform2d.dart';
 import '../../color.dart';
+import '../../image/decoded_image.dart';
+import '../../image/raster_formats.dart' show decodeImage;
 import '../../svg/svg_path.dart';
 import '../../svg/svg_values.dart';
 import '../../xml/xml.dart';
@@ -36,6 +40,7 @@ import '../bezier.dart';
 import '../constants.dart';
 import '../document.dart';
 import '../document_object.dart';
+import '../pixmap.dart';
 import '../primitives.dart';
 import '../selectable_objects.dart';
 import '../structural_objects.dart';
@@ -178,6 +183,18 @@ final class _SvgWriter {
         _object(child, out, '$indent  ');
       }
       out.writeln('$indent</g>');
+      return;
+    }
+    if (obj is VectorPixmap) {
+      final Uint8List? png = obj.toPng();
+      if (png == null) return;
+      final double width = obj.pixelWidth * 72.0 / obj.dpi;
+      final double height = obj.pixelHeight * 72.0 / obj.dpi;
+      out.writeln('$indent<image transform="matrix(${_list(obj.trafo)})" '
+          'x="0" y="0" width="${_n(width)}" height="${_n(height)}" '
+          'preserveAspectRatio="none" dartui:type="pixmap" '
+          'dartui:dpi="${_n(obj.dpi)}" '
+          'href="data:image/png;base64,${base64Encode(png)}"/>');
       return;
     }
     if (obj is VectorText) {
@@ -669,6 +686,8 @@ final class _SvgReader {
         )..update();
         _applyGradient(curve, element, style, ctm);
         return curve;
+      case 'image':
+        return _image(element, ctm);
       case 'text':
         // Text this codec wrote in lines keeps its string, frame and
         // alignment whole; anything else is one line of what it says.
@@ -1196,6 +1215,51 @@ final class _SvgReader {
       <double>[t.a, t.b, t.c, t.d, t.tx, t.ty];
 
   /// [outer] after [inner] (both `[a, b, c, d, tx, ty]`).
+  /// An `<image>` with its pixels inline as a `data:` URI - PNG or JPEG -
+  /// as a [VectorPixmap] filling the element's box. An image by reference
+  /// to a file is skipped: a document must not read files a stranger's SVG
+  /// names.
+  VectorPixmap? _image(XmlElement element, Transform2D ctm) {
+    final String href = element.getAttribute('href') ??
+        element.getAttribute('xlink:href') ??
+        '';
+    final int comma = href.indexOf(',');
+    if (!href.startsWith('data:image/') ||
+        comma < 0 ||
+        !href.substring(0, comma).endsWith(';base64')) {
+      return null;
+    }
+    final DecodedImage decoded;
+    try {
+      decoded = decodeImage(
+        base64Decode(href.substring(comma + 1).replaceAll(RegExp(r'\s'), '')),
+        order: ImageChannelOrder.rgba,
+        preferNative: false,
+      );
+    } on Object {
+      return null;
+    }
+    final double dpi =
+        double.tryParse(element.getAttribute('dartui:dpi') ?? '') ?? 72.0;
+    final double naturalWidth = decoded.width * 72.0 / dpi;
+    final double naturalHeight = decoded.height * 72.0 / dpi;
+    final double width = _numberOrNull(element, 'width') ?? naturalWidth;
+    final double height = _numberOrNull(element, 'height') ?? naturalHeight;
+    if (width <= 0 || height <= 0) return null;
+    final VectorPixmap pixmap = VectorPixmap.fromImage(decoded, dpi: dpi);
+    pixmap
+      ..trafo = _compose(ctm, <double>[
+        width / naturalWidth,
+        0,
+        0,
+        height / naturalHeight,
+        _number(element, 'x'),
+        _number(element, 'y'),
+      ])
+      ..update();
+    return pixmap;
+  }
+
   static List<double> _compose(Transform2D outer, List<double> inner) =>
       _trafo(outer.multiply(Transform2D(
           inner[0], inner[1], inner[2], inner[3], inner[4], inner[5])));

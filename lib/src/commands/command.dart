@@ -216,20 +216,45 @@ final class CommandSpec {
 final class CommandOutcome {
   const CommandOutcome.success([this.result])
       : ok = true,
-        error = null;
+        error = null,
+        completion = null;
 
   const CommandOutcome.failure(String this.error)
       : ok = false,
-        result = null;
+        result = null,
+        completion = null;
+
+  /// A command whose `run` returned a `Future`: it started, and
+  /// [completion] says how it ended - with its result, or as a failure for
+  /// whatever it threw, a [CommandError] included.
+  const CommandOutcome.started(Future<CommandOutcome> this.completion)
+      : ok = true,
+        result = null,
+        error = null;
 
   final bool ok;
   final Object? result;
   final String? error;
 
+  /// How an asynchronous command ended; null for one that ran to the end
+  /// before [CommandRegistry.execute] returned.
+  final Future<CommandOutcome>? completion;
+
+  /// Whether the command is still running.
+  bool get isPending => completion != null;
+
   Map<String, Object?> toJson() => ok
-      ? <String, Object?>{'ok': true, 'result': result}
+      ? <String, Object?>{
+          'ok': true,
+          'result': result,
+          if (isPending) 'pending': true,
+        }
       : <String, Object?>{'ok': false, 'error': error};
 
   @override
-  String toString() => ok ? 'ok($result)' : 'failed($error)';
+  String toString() => isPending
+      ? 'started'
+      : ok
+          ? 'ok($result)'
+          : 'failed($error)';
 }

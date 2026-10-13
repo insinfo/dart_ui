@@ -11,6 +11,7 @@
 library;
 
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
@@ -22,13 +23,17 @@ import '../../graphics/display_list.dart';
 import '../../graphics/display_list_geometry.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/gradient.dart';
+import '../../graphics/image/decoded_image.dart';
 import '../../graphics/vector/arrowheads.dart';
 import '../../graphics/vector/constants.dart';
 import '../../graphics/vector/document.dart';
 import '../../graphics/vector/document_object.dart';
+import '../../graphics/vector/pixmap.dart';
 import '../../graphics/vector/primitives.dart';
 import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
+import '../../rendering/cpu_renderer.dart' show rasterizeDisplayList;
+import '../../rendering/framebuffer.dart';
 import '../../rendering/text/text_painter.dart';
 import '../../text/paragraph.dart' show Paragraph;
 import '../../vector_editing/node_editing.dart';
@@ -36,6 +41,7 @@ import '../../vector_editing/parametric_handles.dart';
 import '../../vector_editing/selection.dart';
 import '../../vector_editing/text_metrics.dart';
 import '../../vector_editing/tool_mode.dart';
+import '../image.dart' show framebufferFromImage;
 import '../theme.dart';
 
 /// Every colour the canvas paints with, resolved from the theme.
@@ -203,6 +209,7 @@ class VectorRenderer {
   }) {
     list.save();
     list.clipRectangle(viewport);
+    _zoom = zoom;
 
     // 1. Desktop background - the viewport, never more.
     final bgPaint = list.addPaint(colorArgb: colors.desktop.value);
@@ -386,6 +393,183 @@ class VectorRenderer {
 
   static final TextPainter _textPainter = TextPainter();
 
+  /// [objects] drawn into an image the size of their union's box times
+  /// [scale] - no page, grid or selection, transparent where nothing is -
+  /// or null when they cover nothing. What "copy as a picture" and a PNG
+  /// export need. The sides are capped at [maxSide] pixels.
+  static DecodedImage? rasterizeObjects(
+    List<SelectableObject> objects, {
+    double scale = 1,
+    int maxSide = 8192,
+  }) {
+    Rect? box;
+    for (final SelectableObject object in objects) {
+      final Rect bounds = object.cacheBbox;
+      if (bounds.isEmpty) continue;
+      box = box == null ? bounds : box.union(bounds);
+    }
+    if (box == null || scale <= 0) return null;
+    final double fit =
+        math.min(1, maxSide / math.max(box.width * scale, box.height * scale));
+    final double zoom = scale * fit;
+    final int width = math.max(1, (box.width * zoom).ceil());
+    final int height = math.max(1, (box.height * zoom).ceil());
+    final Offset pan = Offset(-box.left * zoom, -box.top * zoom);
+    final DisplayList list = DisplayList();
+    _zoom = zoom;
+    final texts = <_PendingText>[];
+    list
+      ..save()
+      ..transform2D(
+          Transform2D.compose(translation: pan, scaleX: zoom, scaleY: zoom));
+    for (final SelectableObject object in objects) {
+      _renderObject(object, list, texts);
+    }
+    list.restore();
+    for (final _PendingText text in texts) {
+      _renderText(list, text, zoom: zoom, pan: pan);
+    }
+    final Framebuffer framebuffer = Framebuffer(
+      width: width,
+      height: height,
+      bytesPerRow: width * 4,
+      format: PixelFormat.rgba8888Premultiplied,
+      pixels: Uint8List(width * height * 4),
+    );
+    rasterizeDisplayList(list, framebuffer, clearColor: 0x00000000);
+    return DecodedImage(
+      width: width,
+      height: height,
+      order: ImageChannelOrder.rgba,
+      pixels: framebuffer.pixels,
+      hasAlpha: true,
+    );
+  }
+
+  /// The zoom of the page being rendered, for the images, which are
+  /// resampled to the pixels they cover.
+  static double _zoom = 1;
+
+  /// Each image's pixels at the size they were last drawn, so a frame at
+  /// the same zoom resamples nothing.
+  static final Expando<_PixmapRaster> _rasters = Expando<_PixmapRaster>();
+
+  /// An embedded image, in the document pass so it stays in z-order.
+  ///
+  /// Resampled to the device pixels its rectangle covers and drawn with the
+  /// destination in document units under the zoom: the CPU raster copies
+  /// one source pixel per destination pixel, so the image has to arrive at
+  /// its device size, and a GPU samples the same buffer. That holds for a
+  /// scale and a translation; an image turned or skewed by its transform is
+  /// drawn as its outline with a cross until transformed image drawing
+  /// exists, rather than unrotated in the wrong place.
+  static void _renderPixmap(VectorPixmap pixmap, DisplayList list) {
+    final Uint8List? data = pixmap.pixelData;
+    if (data == null ||
+        pixmap.pixelWidth <= 0 ||
+        pixmap.pixelHeight <= 0 ||
+        pixmap.imageFormat != PixmapFormat.rgba ||
+        data.length != pixmap.pixelWidth * pixmap.pixelHeight * 4) {
+      return;
+    }
+    final List<double> t = pixmap.trafo;
+    final double width = pixmap.pixelWidth * 72.0 / pixmap.dpi;
+    final double height = pixmap.pixelHeight * 72.0 / pixmap.dpi;
+    if (t[1].abs() > 1e-9 || t[2].abs() > 1e-9) {
+      final paint = list.addPaint(
+        colorArgb: 0xFF808080,
+        style: paintStyleStroke,
+        strokeWidth: 1 / (_zoom == 0 ? 1 : _zoom),
+      );
+      final corners = applyTrafoToPoints(<Offset>[
+        Offset.zero,
+        Offset(width, 0),
+        Offset(width, height),
+        Offset(0, height),
+      ], t);
+      final builder = PathBuilder()..moveTo(corners[0].dx, corners[0].dy);
+      for (final Offset c in <Offset>[corners[1], corners[2], corners[3]]) {
+        builder.lineTo(c.dx, c.dy);
+      }
+      builder
+        ..close()
+        ..moveTo(corners[0].dx, corners[0].dy)
+        ..lineTo(corners[2].dx, corners[2].dy)
+        ..moveTo(corners[1].dx, corners[1].dy)
+        ..lineTo(corners[3].dx, corners[3].dy);
+      list.drawPath(list.addPath(builder.build()), paint);
+      return;
+    }
+    final Rect box = pixmap.cacheBbox;
+    final int deviceWidth = (box.width * _zoom).round().clamp(1, 8192);
+    final int deviceHeight = (box.height * _zoom).round().clamp(1, 8192);
+    _PixmapRaster? raster = _rasters[pixmap];
+    if (raster == null ||
+        !identical(raster.data, data) ||
+        raster.image.width != deviceWidth ||
+        raster.image.height != deviceHeight) {
+      final DecodedImage source = DecodedImage(
+        width: pixmap.pixelWidth,
+        height: pixmap.pixelHeight,
+        order: ImageChannelOrder.rgba,
+        pixels: data,
+        hasAlpha: true,
+      );
+      final bool mirroredX = t[0] < 0;
+      final bool mirroredY = t[3] < 0;
+      DecodedImage scaled = source.resample(
+        width: deviceWidth,
+        height: deviceHeight,
+        filter: deviceWidth < pixmap.pixelWidth
+            ? ResampleFilter.box
+            : ResampleFilter.nearest,
+      );
+      if (mirroredX || mirroredY) {
+        scaled = _mirror(scaled, mirroredX, mirroredY);
+      }
+      raster = _rasters[pixmap] = _PixmapRaster(data, scaled);
+    }
+    list.drawImage(
+      list.addImage(framebufferFromImage(raster.image)),
+      0,
+      0,
+      deviceWidth.toDouble(),
+      deviceHeight.toDouble(),
+      box.left,
+      box.top,
+      box.right,
+      box.bottom,
+      list.addPaint(colorArgb: 0xFFFFFFFF),
+    );
+  }
+
+  /// [image] flipped on the axes a negative scale turns over.
+  static DecodedImage _mirror(DecodedImage image, bool x, bool y) {
+    final Uint8List from = image.pixels;
+    final Uint8List to = Uint8List(from.length);
+    final int w = image.width;
+    final int h = image.height;
+    for (int row = 0; row < h; row++) {
+      final int sourceRow = y ? h - 1 - row : row;
+      for (int col = 0; col < w; col++) {
+        final int sourceCol = x ? w - 1 - col : col;
+        final int s = (sourceRow * w + sourceCol) * 4;
+        final int d = (row * w + col) * 4;
+        to[d] = from[s];
+        to[d + 1] = from[s + 1];
+        to[d + 2] = from[s + 2];
+        to[d + 3] = from[s + 3];
+      }
+    }
+    return DecodedImage(
+      width: w,
+      height: h,
+      order: image.order,
+      pixels: to,
+      hasAlpha: image.hasAlpha,
+    );
+  }
+
   static void _renderObject(
     DocumentObject obj,
     DisplayList list,
@@ -400,6 +584,11 @@ class VectorRenderer {
 
     if (obj is VectorText) {
       texts.add(_PendingText(obj));
+      return;
+    }
+
+    if (obj is VectorPixmap) {
+      _renderPixmap(obj, list);
       return;
     }
 
@@ -941,6 +1130,14 @@ class VectorRenderer {
         Offset(bounds.left, bounds.bottom),
         Offset(bounds.left, bounds.center.dy),
       ];
+}
+
+/// An image's pixels at one device size, and the data they came from.
+final class _PixmapRaster {
+  const _PixmapRaster(this.data, this.image);
+
+  final Uint8List data;
+  final DecodedImage image;
 }
 
 /// A text object held back until the device-space pass.

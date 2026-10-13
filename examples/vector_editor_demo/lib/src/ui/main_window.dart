@@ -7,6 +7,7 @@ library;
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dart_ui/dart_ui.dart';
 
@@ -50,7 +51,8 @@ class MainWindow extends StatefulWidget {
   State<MainWindow> createState() => MainWindowState();
 }
 
-class MainWindowState extends State<MainWindow> implements EditorHost {
+class MainWindowState extends State<MainWindow>
+    implements EditorHost, EditorClipboardHost {
   late final EditorModel model = EditorModel(
     onChanged: () {
       if (mounted) setState(() {});
@@ -88,9 +90,15 @@ class MainWindowState extends State<MainWindow> implements EditorHost {
     registerUiCommands(registry, ui);
     ui.workspace.registry = registry;
     // A command that refuses says why, where the user is looking.
-    registry.onExecuted = (String id, CommandOutcome outcome) {
-      if (!outcome.ok) model.refresh(outcome.error);
-    };
+    registry
+      ..onExecuted = (String id, CommandOutcome outcome) {
+        if (!outcome.ok) model.refresh(outcome.error);
+      }
+      // A command that finished later - Paste Special reading the system
+      // clipboard - says why it refused the same way.
+      ..onCompleted = (String id, CommandOutcome outcome) {
+        if (!outcome.ok && mounted) model.refresh(outcome.error);
+      };
     model.addDocument(
       DocumentSession(
         document: widget.initialDoc ?? buildSampleDocument(),
@@ -247,6 +255,73 @@ class MainWindowState extends State<MainWindow> implements EditorHost {
         context: context,
         builder: (BuildContext context) =>
             _FindReplaceDialog(registry: registry),
+      ));
+
+  // --- the system clipboard ---------------------------------------------
+
+  RichClipboard? get _clipboard => switch (ClipboardScope.maybeOf(context)) {
+        final RichClipboard rich => rich,
+        _ => null,
+      };
+
+  @override
+  Future<Set<String>> clipboardFormats() async {
+    final RichClipboard? clipboard = _clipboard;
+    if (clipboard == null) return const <String>{};
+    try {
+      final Set<ClipboardFormat> formats = await clipboard.availableFormats();
+      return <String>{
+        if (formats.contains(ClipboardFormat.image)) 'image',
+        if (formats.contains(ClipboardFormat.text) ||
+            formats.contains(ClipboardFormat.html))
+          'text',
+      };
+    } on ClipboardException {
+      return const <String>{};
+    }
+  }
+
+  @override
+  Future<Uint8List?> clipboardImage() async {
+    try {
+      return await _clipboard?.readImage();
+    } on ClipboardException {
+      return null;
+    }
+  }
+
+  @override
+  Future<String?> clipboardText() async {
+    try {
+      return await _clipboard?.readText();
+    } on ClipboardException {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> copyPicture(List<SelectableObject> objects) async {
+    final RichClipboard? clipboard = _clipboard;
+    if (clipboard == null || objects.isEmpty) return;
+    // Two pixels per point: crisp on a Retina screen, and a picture another
+    // program shrinks rather than blows up.
+    final DecodedImage? image =
+        VectorRenderer.rasterizeObjects(objects, scale: 2);
+    final Uint8List? png =
+        image == null ? null : VectorPixmap.fromImage(image).toPng();
+    if (png == null) return;
+    try {
+      await clipboard.writeImage(png);
+    } on ClipboardException catch (error) {
+      if (mounted) model.refresh('Copied here, not to other programs: $error');
+    }
+  }
+
+  @override
+  void choosePasteFormat(List<String> formats) => unawaited(showDialog<void>(
+        context: context,
+        builder: (BuildContext context) =>
+            _PasteSpecialDialog(registry: registry, formats: formats),
       ));
 
   /// Exit: the same as the window's close button, after the same question.
@@ -620,6 +695,58 @@ class _FindReplaceDialogState extends State<_FindReplaceDialog> {
                 label: 'Match case',
                 onChanged: (bool value) => setState(() => _matchCase = value),
               ),
+            ],
+          ),
+        ),
+      );
+}
+
+/// Edit > Paste Special: one choice per format there is to paste.
+final class _PasteSpecialDialog extends StatelessWidget {
+  const _PasteSpecialDialog({required this.registry, required this.formats});
+
+  final CommandRegistry registry;
+  final List<String> formats;
+
+  static const Map<String, String> _labels = <String, String>{
+    'objects': 'Objects copied in this editor',
+    'image': 'Picture from the clipboard (PNG)',
+    'text': 'Text from the clipboard (an SVG drawing comes in as objects)',
+  };
+
+  void _paste(BuildContext context, String format) {
+    closeDialog<void>(context);
+    registry.execute('edit.pasteSpecial', <String, Object?>{'format': format});
+  }
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+        width: 420,
+        child: Dialog(
+          title: 'Paste Special',
+          onDismiss: () => closeDialog<void>(context),
+          actions: <Widget>[
+            Button(
+              label: 'Cancel',
+              accent: false,
+              isCancel: true,
+              onPressed: () => closeDialog<void>(context),
+            ),
+          ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              const Text('Paste as:'),
+              for (final String format in formats) ...<Widget>[
+                const SizedBox(height: 8),
+                Button(
+                  label: _labels[format] ?? format,
+                  accent: format == formats.first,
+                  isDefault: format == formats.first,
+                  onPressed: () => _paste(context, format),
+                ),
+              ],
             ],
           ),
         ),

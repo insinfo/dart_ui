@@ -14,9 +14,9 @@
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 91 de 106 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 92 de 107 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 130.
+Comandos registrados: 131.
 
 ## Por área
 
@@ -202,7 +202,7 @@ Comandos registrados: 130.
 
 | | funcionalidade | prio | como | falta |
 |---|---|---|---|---|
-| 🟡 | Edit | P0 | `edit.undo`, `edit.cut`, `edit.paste`, `edit.selectAll`, `edit.findReplace`, `edit.replaceText` | no Paste Special; Find and Replace finds text only |
+| 🟡 | Edit | P0 | `edit.undo`, `edit.cut`, `edit.paste`, `edit.pasteSpecial`, `edit.selectAll`, `edit.findReplace`, `edit.replaceText` | Find and Replace finds text only |
 | ❌ | Layout | P1 |  | the menu is there; every item is still planned |
 | ✅ | Object | P0 | `object.group` |  |
 | ❌ | Effects | P2 |  | tudo |

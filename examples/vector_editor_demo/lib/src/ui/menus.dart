@@ -60,6 +60,7 @@ final class EditorMenus {
           CommandItem('edit.cut'),
           CommandItem('edit.copy'),
           CommandItem('edit.paste'),
+          CommandItem('edit.pasteSpecial'),
           CommandItem('edit.delete'),
           CommandItem('edit.duplicate'),
           _,
