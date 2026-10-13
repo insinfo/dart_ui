@@ -262,6 +262,162 @@ void main() {
     expect(first.top, -(content - 100));
   });
 
+  group('text field editing', () {
+    test('arrows move the caret and typing inserts there', () {
+      final _Harness h = _Harness();
+      var text = 'abc';
+      void build(Ui ui) => text = ui.textField(text, key: 'f', width: 400);
+      h.press(const Offset(390, 10));
+      h.frame(build);
+      h.release(const Offset(390, 10));
+      h.frame(build);
+      h.input.keys.addAll(<int>[0x25, 0x25]); // two Lefts
+      h.frame(build);
+      h.input.text.write('X');
+      h.frame(build);
+      expect(text, 'aXbc');
+      h.input.keys.add(0x24); // Home
+      h.frame(build);
+      h.input.text.write('>');
+      h.frame(build);
+      expect(text, '>aXbc');
+      h.input.keys.add(0x2E); // Delete
+      h.frame(build);
+      expect(text, '>Xbc');
+    });
+
+    test('Shift selects, typing replaces the selection', () {
+      final _Harness h = _Harness();
+      var text = 'olá mundo';
+      void build(Ui ui) => text = ui.textField(text, key: 'f', width: 400);
+      h.press(const Offset(390, 10));
+      h.frame(build);
+      h.release(const Offset(390, 10));
+      h.frame(build);
+      h.input
+        ..modifiers = const <KeyModifier>{KeyModifier.shift}
+        ..keys.addAll(List<int>.filled(5, 0x25));
+      h.frame(build);
+      h.input
+        ..modifiers = const <KeyModifier>{}
+        ..text.write('Dart');
+      h.frame(build);
+      expect(text, 'olá Dart');
+    });
+
+    test('Command/Control+A selects everything; Backspace clears it', () {
+      final _Harness h = _Harness();
+      var text = 'tudo';
+      void build(Ui ui) => text = ui.textField(text, key: 'f', width: 400);
+      h.press(const Offset(390, 10));
+      h.frame(build);
+      h.release(const Offset(390, 10));
+      h.frame(build);
+      h.input
+        ..modifiers = const <KeyModifier>{KeyModifier.meta}
+        ..keys.add(0x41);
+      h.frame(build);
+      h.input
+        ..modifiers = const <KeyModifier>{}
+        ..keys.add(0x08);
+      h.frame(build);
+      expect(text, '');
+    });
+
+    test('a press puts the caret where it lands', () {
+      final _Harness h = _Harness();
+      var text = 'abcdef';
+      void build(Ui ui) => text = ui.textField(text, key: 'f', width: 400);
+      // Left of the first letter: the caret goes to the start.
+      h.press(const Offset(2, 10));
+      h.frame(build);
+      h.release(const Offset(2, 10));
+      h.frame(build);
+      h.input.text.write('[');
+      h.frame(build);
+      expect(text, '[abcdef');
+    });
+  });
+
+  group('windows', () {
+    test('drag by the title moves it; the close button closes it', () {
+      final _Harness h = _Harness();
+      var open = true;
+      void build(Ui ui) {
+        if (open) {
+          open = ui.window('Camadas', (Ui w) => w.label('conteúdo'),
+              position: const Offset(100, 100));
+        }
+      }
+
+      h.frame(build);
+      h.frame(build);
+      final Rect before = h.memory.windowRects.values.single;
+      expect(before.topLeft, const Offset(100, 100));
+      h.press(const Offset(120, 110));
+      h.frame(build);
+      h.move(const Offset(170, 140));
+      h.input.down = true;
+      h.frame(build);
+      h.release(const Offset(170, 140));
+      h.frame(build);
+      h.frame(build);
+      expect(
+          h.memory.windowRects.values.single.topLeft, const Offset(150, 130));
+      // The close button is the title-height square at the top right.
+      final Rect moved = h.memory.windowRects.values.single;
+      final double title = ThemeData.neutralLight.effectiveControlHeight;
+      final Offset close =
+          Offset(moved.right - title / 2, moved.top + title / 2);
+      h.press(close);
+      h.frame(build);
+      h.release(close);
+      h.frame(build);
+      h.frame(build);
+      expect(open, isFalse);
+      expect(h.memory.windowRects, isEmpty);
+    });
+
+    test('a window takes the click from what is under it', () {
+      final _Harness h = _Harness();
+      var under = 0, inside = 0;
+      void build(Ui ui) {
+        if (ui.button('Embaixo')) under++;
+        ui.window('Por cima', (Ui w) {
+          if (w.button('Dentro')) inside++;
+        }, position: Offset.zero);
+      }
+
+      h.frame(build);
+      h.frame(build);
+      // (5,5) is under both the area's button and the window's title bar.
+      h.press(const Offset(5, 5));
+      h.frame(build);
+      h.release(const Offset(5, 5));
+      h.frame(build);
+      expect(under, 0, reason: 'the window covers the button');
+      expect(inside, 0, reason: 'the press was on the title bar');
+    });
+
+    test('pressing a lower window brings it to the front', () {
+      final _Harness h = _Harness();
+      void build(Ui ui) {
+        ui.window('A', (Ui w) => w.label('a'), position: const Offset(10, 10));
+        ui.window('B', (Ui w) => w.label('b'), position: const Offset(60, 60));
+      }
+
+      h.frame(build);
+      h.frame(build);
+      final int a = h.memory.windowOrder.first;
+      expect(h.memory.windowOrder.last, isNot(a));
+      h.press(const Offset(20, 20));
+      h.frame(build);
+      h.release(const Offset(20, 20));
+      h.frame(build);
+      expect(h.memory.windowOrder.last, a);
+    });
+  });
+
   test('an idle frame asks for no other', () {
     final _Harness h = _Harness();
     void build(Ui ui) {

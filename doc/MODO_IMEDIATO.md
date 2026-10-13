@@ -69,7 +69,8 @@ imediato entra em qualquer tela retida, e `runImmediateApp` é só
 
 `label`, `heading`, `separator`, `button`, `checkbox`, `radio`, `toggle`,
 `slider`, `progress`, `textField`; organização com `horizontal`, `vertical`,
-`indent`, `space`, `panel`, `collapsing`, `scrollArea`, `themed`; e as peças
+`indent`, `space`, `panel`, `collapsing`, `scrollArea`, `themed`; janelas
+flutuantes com `window`; e as peças
 para controles próprios: `allocate(Size)` reserva espaço, `interact(rect, id)`
 devolve hover, pressão, clique e arraste, `canvas` é a `DisplayList`.
 
@@ -77,8 +78,11 @@ devolve hover, pressão, clique e arraste, `canvas` é a `DisplayList`.
 
 - **Acessibilidade:** a área inteira é um nó genérico; um quadro imediato não
   guarda nós por controle entre quadros.
-- **Texto:** campo de uma linha, inserção no fim, Backspace, Enter e Esc; sem
-  cursor móvel, seleção nem pré-edição de IME ainda.
+- **Texto:** campo de uma linha com cursor (setas, Home, End, clique),
+  seleção (Shift, arraste, Command/Control+A), Backspace, Delete e rolagem
+  horizontal; ainda sem copiar e colar nem pré-edição de IME.
 - **Painéis** desenham o fundo com o tamanho do quadro anterior; a mudança
   aparece no quadro seguinte, que eles mesmos pedem.
-- **Janelas flutuantes** dentro da área (as do egui) ainda não existem.
+- **Janelas flutuantes** (`ui.window`) arrastam pela barra de título, vêm para
+  a frente ao serem pressionadas e fecham pelo ×; o que está atrás de uma janela
+  não recebe o clique. Ainda não redimensionam pela borda.

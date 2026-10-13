@@ -33,6 +33,7 @@ import '../geometry/size.dart';
 import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
+import '../platform/input_events.dart';
 import '../rendering/text/font_registry.dart';
 import '../text/shaper.dart';
 import '../text/typeface.dart';
@@ -61,6 +62,16 @@ final class ImmediateInput {
 
   /// Logical keys pressed this frame (`logicalKey*` constants).
   final List<int> keys = <int>[];
+
+  /// The modifiers held with the last key this frame.
+  Set<KeyModifier> modifiers = const <KeyModifier>{};
+
+  bool get shift => modifiers.contains(KeyModifier.shift);
+
+  /// Command on macOS, Control elsewhere: the shortcut modifier.
+  bool get command =>
+      modifiers.contains(KeyModifier.meta) ||
+      modifiers.contains(KeyModifier.control);
 
   bool get isEmpty =>
       !pressed &&
@@ -96,6 +107,13 @@ final class ImmediateMemory {
 
   /// The size the content took last frame, for an area with no fixed size.
   Size contentSize = Size.zero;
+
+  /// Floating windows, bottom to top.
+  final List<int> windowOrder = <int>[];
+
+  /// Where each window drawn last frame was: what hides the content below it
+  /// from the pointer this frame.
+  final Map<int, Rect> windowRects = <int, Rect>{};
 
   T value<T>(int id, T Function() create) =>
       (_values.containsKey(id) ? _values[id] : (_values[id] = create())) as T;
@@ -153,6 +171,31 @@ final class _Frame {
   bool claimedPress = false;
   int? hotThisFrame;
   bool wantsRepaint = false;
+  final List<_WindowRequest> windows = <_WindowRequest>[];
+
+  /// The window being drawn, null for the area's own content.
+  int? currentWindow;
+}
+
+final class _WindowRequest {
+  _WindowRequest(
+      this.id, this.title, this.contents, this.width, this.origin, this.theme);
+  final int id;
+
+  /// The theme of the region that asked: a window opened from a themed part
+  /// of the interface wears that theme, though it is drawn at the frame's end.
+  final ThemeData? theme;
+  final String title;
+  final void Function(Ui ui) contents;
+  final double width;
+  final Offset origin;
+}
+
+final class _WindowState {
+  _WindowState(this.position);
+  Offset position;
+  Size size = Size.zero;
+  bool closeRequested = false;
 }
 
 /// One layout region of an immediate-mode frame.
@@ -326,8 +369,10 @@ final class Ui {
     final ImmediateInput input = _frame.input;
     final ImmediateMemory memory = _frame.memory;
     final Offset? pointer = input.pointer;
-    final bool inside =
-        pointer != null && rect.contains(pointer) && _clip.contains(pointer);
+    final bool inside = pointer != null &&
+        rect.contains(pointer) &&
+        _clip.contains(pointer) &&
+        !_occluded(pointer);
     final bool hovered =
         inside && (memory.active == null || memory.active == id);
     if (hovered) _frame.hotThisFrame = id;
@@ -351,6 +396,186 @@ final class Ui {
       clicked: clicked,
       dragDelta: drag,
     );
+  }
+
+  /// Whether a window above the one being drawn covers [point].
+  bool _occluded(Offset point) {
+    final ImmediateMemory memory = _frame.memory;
+    final List<int> order = memory.windowOrder;
+    final int? current = _frame.currentWindow;
+    final int start = current == null ? 0 : order.indexOf(current) + 1;
+    for (var i = start; i < order.length; i++) {
+      final Rect? rect = memory.windowRects[order[i]];
+      if (rect != null && rect.contains(point)) return true;
+    }
+    return false;
+  }
+
+  // -------------------------------------------------------------------------
+  // Windows
+  // -------------------------------------------------------------------------
+
+  /// A floating window over the area, drawn after everything else.
+  ///
+  /// Drag it by its title, bring it forward by pressing in it, close it with
+  /// its button: [window] then returns false - once - and the caller decides
+  /// whether to keep calling it. Its contents run while it is drawn, at the
+  /// end of the frame, so they may read state the rest of the frame changed.
+  bool window(String title, void Function(Ui ui) contents,
+      {double width = 280, Offset? position, Object? key}) {
+    final int id = idFor(key ?? 'window:$title');
+    final ImmediateMemory memory = _frame.memory;
+    final int index = memory.windowOrder.contains(id)
+        ? memory.windowOrder.indexOf(id)
+        : memory.windowOrder.length;
+    final Offset origin = position ??
+        Offset(
+            _region.left + 48 + 28.0 * index, _region.top + 48 + 28.0 * index);
+    final _WindowState state =
+        memory.value<_WindowState>(id, () => _WindowState(origin));
+    if (state.closeRequested) {
+      state.closeRequested = false;
+      memory.windowOrder.remove(id);
+      memory.windowRects.remove(id);
+      return false;
+    }
+    if (!memory.windowOrder.contains(id)) memory.windowOrder.add(id);
+    _frame.windows
+        .add(_WindowRequest(id, title, contents, width, origin, _theme));
+    return true;
+  }
+
+  void _drawWindows() {
+    final ImmediateMemory memory = _frame.memory;
+    final Set<int> drawn = <int>{};
+    // Windows may open windows: draw until none is left undrawn.
+    var guard = 0;
+    while (guard++ < 8) {
+      final Map<int, _WindowRequest> pending = <int, _WindowRequest>{
+        for (final _WindowRequest r in _frame.windows)
+          if (!drawn.contains(r.id)) r.id: r,
+      };
+      if (pending.isEmpty) break;
+      for (final int id in List<int>.of(memory.windowOrder)) {
+        final _WindowRequest? request = pending[id];
+        if (request == null) continue;
+        drawn.add(id);
+        Ui._(_frame, _region, true, Object.hash(_seed, 'window', id), _clip,
+                request.theme)
+            ._drawWindow(request);
+      }
+    }
+    // A window not drawn this frame no longer hides anything.
+    memory.windowRects.removeWhere((int id, Rect _) => !drawn.contains(id));
+    memory.windowOrder.removeWhere((int id) => !drawn.contains(id));
+    _frame.currentWindow = null;
+  }
+
+  void _drawWindow(_WindowRequest request) {
+    final ImmediateMemory memory = _frame.memory;
+    final ImmediateInput input = _frame.input;
+    final _WindowState state = memory.value<_WindowState>(
+        request.id, () => _WindowState(request.origin));
+    _frame.currentWindow = request.id;
+    final double titleHeight = theme.effectiveControlHeight;
+    final double pad = theme.effectiveControlPadding;
+    final Size size = state.size == Size.zero
+        ? Size(request.width, titleHeight + pad * 2)
+        : state.size;
+    // Keep the title bar on the area, or a window dragged off could never
+    // come back.
+    final Offset position = Offset(
+      state.position.dx
+          .clamp(_region.left - size.width + 60, _region.right - 60),
+      state.position.dy.clamp(_region.top, _region.bottom - titleHeight),
+    );
+    state.position = position;
+    final Rect rect =
+        Rect.fromLTWH(position.dx, position.dy, size.width, size.height);
+    final Offset? pointer = input.pointer;
+    // A press anywhere in the window brings it to the front.
+    if (input.pressed &&
+        pointer != null &&
+        rect.contains(pointer) &&
+        !_occluded(pointer)) {
+      memory.windowOrder
+        ..remove(request.id)
+        ..add(request.id);
+      _frame.wantsRepaint = true;
+    }
+    final double radius = theme.cornerRadiusLarge;
+    _frame.painter.paintRoundedFill(canvas, rect.translate(0, 4).inflate(2),
+        const Color(0x22000000), radius + 2);
+    _frame.painter.paintRoundedFill(canvas, rect, theme.surfaceRaised, radius);
+    _frame.painter.paintRoundedBorder(canvas, rect, theme.border, radius);
+    final Ui chrome = Ui._(
+        _frame, rect, true, Object.hash(request.id, 'chrome'), _clip, _theme);
+    // Title bar: drags the window.
+    final Rect titleBar = Rect.fromLTWH(
+        rect.left, rect.top, rect.width - titleHeight, titleHeight);
+    final Response drag =
+        chrome.interact(titleBar, Object.hash(request.id, 'title'));
+    if (drag.pressed && drag.dragDelta != Offset.zero) {
+      state.position = state.position + drag.dragDelta;
+      _frame.wantsRepaint = true;
+    }
+    _paintText(
+        request.title,
+        Offset(rect.left + pad, _textTop(titleBar, theme.fontSize)),
+        theme.fontSize,
+        theme.foreground,
+        maxWidth: titleBar.width - pad);
+    // Close button.
+    final Rect close = Rect.fromLTWH(
+        rect.right - titleHeight, rect.top, titleHeight, titleHeight);
+    final Response closing =
+        chrome.interact(close, Object.hash(request.id, 'close'));
+    if (closing.hovered) {
+      _frame.painter.paintRoundedFill(canvas, close.inflate(-6),
+          theme.hoverSurface, theme.cornerRadiusSmall);
+    }
+    final Offset c = close.center;
+    const double h = 4.5;
+    paintPolyline(
+        canvas,
+        <Offset>[c + const Offset(-h, -h), c + const Offset(h, h)],
+        1.5,
+        theme.foregroundSecondary);
+    paintPolyline(
+        canvas,
+        <Offset>[c + const Offset(h, -h), c + const Offset(-h, h)],
+        1.5,
+        theme.foregroundSecondary);
+    if (closing.clicked) {
+      state.closeRequested = true;
+      _frame.wantsRepaint = true;
+    }
+    canvas.drawRectangle(
+        Rect.fromLTWH(rect.left, rect.top + titleHeight, rect.width, 1),
+        canvas.addPaint(colorArgb: theme.borderSubtle.value));
+    // Contents, clipped to the window.
+    final Rect clip = rect.intersect(_clip);
+    canvas
+      ..save()
+      ..clipRect(clip.left, clip.top, clip.right, clip.bottom);
+    final Ui content = Ui._(
+        _frame,
+        Rect.fromLTRB(rect.left + pad, rect.top + titleHeight + pad,
+            rect.right - pad, double.infinity),
+        true,
+        Object.hash(request.id, 'content'),
+        clip,
+        _theme);
+    request.contents(content);
+    canvas.restore();
+    final Size used = content.usedSize;
+    final Size wanted = Size(math.max(request.width, used.width + pad * 2),
+        titleHeight + used.height + pad * 2);
+    if (wanted != state.size) {
+      state.size = wanted;
+      _frame.wantsRepaint = true;
+    }
+    memory.windowRects[request.id] = rect;
   }
 
   // -------------------------------------------------------------------------
@@ -695,33 +920,128 @@ final class Ui {
     }
   }
 
-  /// A one-line text field; returns the text after this frame's typing.
+  /// A one-line text field; returns the text after this frame's editing.
   ///
-  /// Click to focus; typing appends, Backspace deletes, Enter or a click
-  /// elsewhere ends the edit.
+  /// A press focuses it and puts the caret where it landed; dragging
+  /// selects. Arrows, Home and End move the caret (with Shift, the
+  /// selection), Backspace and Delete remove, Command/Control+A selects all,
+  /// typing replaces the selection, and Enter, Escape or a press elsewhere
+  /// ends the edit. Text longer than the field scrolls to keep the caret in
+  /// view.
   String textField(String text,
       {Object? key, String hint = '', double width = 220}) {
     final int id = idFor(key ?? 'textField#${_counter++}');
     final ImmediateMemory memory = _frame.memory;
+    final ImmediateInput input = _frame.input;
     final Rect rect = allocate(Size(width, theme.effectiveControlHeight));
     final Response response = interact(rect, id);
-    if (response.clicked && memory.focused != id) {
-      memory.focused = id;
-      _frame.painter.requestKeyboardFocus();
-    }
-    var next = text;
-    final bool focused = memory.focused == id;
-    if (focused) {
-      final ImmediateInput input = _frame.input;
-      if (input.text.isNotEmpty) next += input.text.toString();
-      for (final int key in input.keys) {
-        if (key == 0x08 && next.isNotEmpty) {
-          next = String.fromCharCodes(next.runes.toList()..removeLast());
-        } else if (key == 0x0D || key == 0x1B) {
-          memory.focused = null;
+    final double pad = theme.effectiveControlPadding / 1.5;
+    final double size = theme.fontSize;
+    final Rect inner =
+        Rect.fromLTRB(rect.left + pad, rect.top, rect.right - pad, rect.bottom);
+    final _TextEditState state =
+        memory.value<_TextEditState>(id, _TextEditState.new);
+    List<int> runes = text.runes.toList();
+    state.clampTo(runes.length);
+
+    double widthOf(List<int> part) =>
+        part.isEmpty ? 0 : _measure(String.fromCharCodes(part), size).width;
+    int indexAt(double x) {
+      final double local = x - inner.left + state.scroll;
+      var best = 0;
+      var bestDistance = double.infinity;
+      for (var i = 0; i <= runes.length; i++) {
+        final double distance = (widthOf(runes.sublist(0, i)) - local).abs();
+        if (distance < bestDistance) {
+          best = i;
+          bestDistance = distance;
         }
       }
+      return best;
     }
+
+    final Offset? pointer = input.pointer;
+    if (input.pressed && memory.active == id && pointer != null) {
+      if (memory.focused != id) {
+        memory.focused = id;
+        _frame.painter.requestKeyboardFocus();
+      }
+      state
+        ..caret = indexAt(pointer.dx)
+        ..anchor = state.caret;
+    } else if (response.pressed && pointer != null && memory.focused == id) {
+      state.caret = indexAt(pointer.dx);
+    }
+    final bool focused = memory.focused == id;
+    if (focused) {
+      void replaceSelection(List<int> insert) {
+        final int start = state.selectionStart, end = state.selectionEnd;
+        runes = <int>[
+          ...runes.sublist(0, start),
+          ...insert,
+          ...runes.sublist(end),
+        ];
+        state
+          ..caret = start + insert.length
+          ..anchor = state.caret;
+      }
+
+      void moveTo(int index) {
+        state.caret = index.clamp(0, runes.length);
+        if (!input.shift) state.anchor = state.caret;
+      }
+
+      for (final int key in input.keys) {
+        switch (key) {
+          case 0x08: // Backspace
+            if (state.hasSelection) {
+              replaceSelection(const <int>[]);
+            } else if (state.caret > 0) {
+              state.anchor = state.caret - 1;
+              replaceSelection(const <int>[]);
+            }
+          case 0x2E: // Delete
+            if (state.hasSelection) {
+              replaceSelection(const <int>[]);
+            } else if (state.caret < runes.length) {
+              state.anchor = state.caret + 1;
+              replaceSelection(const <int>[]);
+            }
+          case 0x25: // Left
+            moveTo(!input.shift && state.hasSelection
+                ? state.selectionStart
+                : state.caret - 1);
+          case 0x27: // Right
+            moveTo(!input.shift && state.hasSelection
+                ? state.selectionEnd
+                : state.caret + 1);
+          case 0x24 || 0x26: // Home, Up
+            moveTo(0);
+          case 0x23 || 0x28: // End, Down
+            moveTo(runes.length);
+          case 0x41 when input.command: // Select all
+            state
+              ..anchor = 0
+              ..caret = runes.length;
+          case 0x0D || 0x1B: // Enter, Escape
+            memory.focused = null;
+        }
+      }
+      if (input.text.isNotEmpty && memory.focused == id) {
+        replaceSelection(input.text.toString().runes.toList());
+      }
+    }
+    final String next = String.fromCharCodes(runes);
+
+    // Keep the caret in view.
+    final double caretX = widthOf(runes.sublist(0, state.caret));
+    if (caretX - state.scroll > inner.width - 2) {
+      state.scroll = caretX - inner.width + 2;
+    } else if (caretX < state.scroll) {
+      state.scroll = caretX;
+    }
+    if (!focused) state.scroll = 0;
+
     final double radius =
         theme.controlStyle == ControlStyle.material ? 4 : theme.cornerRadius;
     _frame.painter
@@ -736,22 +1056,30 @@ final class Ui {
                 : theme.border,
         radius,
         width: focused ? 2 : 1);
-    final double pad = theme.effectiveControlPadding / 1.5;
-    final double top = _textTop(rect, theme.fontSize);
-    final bool showHint = next.isEmpty && !focused && hint.isNotEmpty;
-    _paintText(showHint ? hint : next, Offset(rect.left + pad, top),
-        theme.fontSize, showHint ? theme.foregroundSecondary : theme.foreground,
-        maxWidth: rect.width - pad * 2);
-    if (focused) {
-      final double caretX = rect.left +
-          pad +
-          math.min(_measure(next, theme.fontSize).width, rect.width - pad * 2);
+    final double top = _textTop(rect, size);
+    final double lineHeight = (size * 1.25).roundToDouble();
+    canvas
+      ..save()
+      ..clipRect(inner.left, inner.top, inner.right, inner.bottom);
+    if (focused && state.hasSelection) {
+      final double from = widthOf(runes.sublist(0, state.selectionStart));
+      final double to = widthOf(runes.sublist(0, state.selectionEnd));
       canvas.drawRectangle(
-          Rect.fromLTWH(caretX.roundToDouble(), top, 1.5,
-              (theme.fontSize * 1.2).roundToDouble()),
+          Rect.fromLTWH(
+              inner.left + from - state.scroll, top - 1, to - from, lineHeight),
+          canvas.addPaint(colorArgb: theme.selection.value));
+    }
+    final bool showHint = next.isEmpty && !focused && hint.isNotEmpty;
+    _paintText(showHint ? hint : next, Offset(inner.left - state.scroll, top),
+        size, showHint ? theme.foregroundSecondary : theme.foreground);
+    if (focused) {
+      canvas.drawRectangle(
+          Rect.fromLTWH((inner.left + caretX - state.scroll).roundToDouble(),
+              top - 1, 1.5, lineHeight),
           canvas.addPaint(colorArgb: theme.accent.value));
     }
-    if (next != text) _frame.wantsRepaint = true;
+    canvas.restore();
+    if (next != text || response.pressed) _frame.wantsRepaint = true;
     return next;
   }
 
@@ -894,8 +1222,10 @@ final class Ui {
   // Frame end
   // -------------------------------------------------------------------------
 
-  /// Settles the frame; true when another one is needed.
+  /// Settles the frame; true when another one is needed. Draws the floating
+  /// windows first: they go over everything the frame drew.
   bool finish() {
+    _drawWindows();
     final ImmediateInput input = _frame.input;
     final ImmediateMemory memory = _frame.memory;
     // A press on nothing takes the keyboard away from a text field.
@@ -915,5 +1245,21 @@ final class Ui {
       ..hot = _frame.hotThisFrame
       ..contentSize = usedSize;
     return _frame.wantsRepaint || hotChanged;
+  }
+}
+
+/// Caret, selection and horizontal scroll of one text field, between frames.
+final class _TextEditState {
+  int caret = 0;
+  int anchor = 0;
+  double scroll = 0;
+
+  bool get hasSelection => caret != anchor;
+  int get selectionStart => math.min(caret, anchor);
+  int get selectionEnd => math.max(caret, anchor);
+
+  void clampTo(int length) {
+    caret = caret.clamp(0, length);
+    anchor = anchor.clamp(0, length);
   }
 }

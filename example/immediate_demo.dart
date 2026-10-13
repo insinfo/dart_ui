@@ -29,9 +29,27 @@ var _sharpen = true;
 var _mode = 'normal';
 var _name = '';
 var _applied = 0;
+var _layersOpen = true;
+final List<bool> _layerVisible = <bool>[true, true, false, true];
+final List<String> _layerNames = <String>[
+  'Fundo',
+  'Céu',
+  'Texto',
+  'Ajuste de curvas'
+];
 final List<String> _log = <String>[];
 
 void build(Ui ui) => ui.themed(demoThemes[demoTheme]!, (Ui ui) {
+      if (_layersOpen) {
+        _layersOpen =
+            ui.window('Camadas', position: const Offset(560, 160), (Ui w) {
+          for (var i = 0; i < _layerNames.length; i++) {
+            _layerVisible[i] = w.checkbox(_layerNames[i], _layerVisible[i]);
+          }
+          w.separator();
+          _layerNames[0] = w.textField(_layerNames[0], key: 'nome-fundo');
+        });
+      }
       ui.horizontal((Ui row) {
         for (final String name in demoThemes.keys) {
           demoTheme = row.radio(name, name, demoTheme);
@@ -81,6 +99,7 @@ void build(Ui ui) => ui.themed(demoThemes[demoTheme]!, (Ui ui) {
               list.label(line);
             }
           });
+          _layersOpen = panel.checkbox('Janela de camadas', _layersOpen);
           panel.collapsing('Detalhes', (Ui details) {
             details.label('Modo imediato: a interface é esta função.');
             details.label('Estado: variáveis comuns do programa.');

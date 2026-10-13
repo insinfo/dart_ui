@@ -173,7 +173,9 @@ final class RenderImmediate extends RenderBox
   @override
   bool handleKeyEvent(KeyEvent event) {
     if (memory.focused == null || event is! KeyDownEvent) return false;
-    _input.keys.add(event.logicalKey);
+    _input
+      ..keys.add(event.logicalKey)
+      ..modifiers = event.modifiers;
     markNeedsPaint();
     return true;
   }
