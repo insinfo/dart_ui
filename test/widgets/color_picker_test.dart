@@ -138,12 +138,63 @@ void main() {
       picker.dispose();
     });
   });
+
+  group('the eyedropper', () {
+    test('shows where the window can sample, and takes what it brings back',
+        () async {
+      final _Sampler window = _Sampler(const Color(0x80FF8800));
+      final _Picker picker =
+          _Picker(const Color(0xFF000000), showAlpha: false, window: window);
+      final RenderIconButton dropper = picker.find<RenderIconButton>();
+      dropper.activate();
+      await Future<void>.delayed(Duration.zero);
+      picker.settle();
+      expect(window.samples, 1);
+      expect(picker.chosen.single, const Color(0xFFFF8800),
+          reason: 'opaque: this picker hides alpha');
+      picker.dispose();
+    });
+
+    test('a cancel changes nothing; no sampler, no button', () async {
+      final _Sampler window = _Sampler(null);
+      final _Picker picker = _Picker(const Color(0xFF000000), window: window);
+      picker.find<RenderIconButton>().activate();
+      await Future<void>.delayed(Duration.zero);
+      expect(picker.chosen, isEmpty);
+      picker.dispose();
+
+      final _Picker plain = _Picker(const Color(0xFF000000));
+      expect(plain.findAll<RenderIconButton>(), isEmpty);
+      plain.dispose();
+    });
+  });
+}
+
+/// A window whose eyedropper returns [colour] - null for a cancel.
+final class _Sampler implements WindowController {
+  _Sampler(this.colour);
+
+  final Color? colour;
+  int samples = 0;
+
+  @override
+  bool get canSampleScreenColor => true;
+
+  @override
+  Future<Color?> sampleScreenColor() async {
+    samples++;
+    return colour;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 /// One picker in a tree, re-built with each colour it reports, as an
 /// application holding the colour in its state would.
 final class _Picker {
-  _Picker(Color initial, {this.showAlpha = true}) : _color = initial {
+  _Picker(Color initial, {this.showAlpha = true, this.window})
+      : _color = initial {
     owner = BuildOwner(
       pipelineOwner: PipelineOwner(
         rootConstraints: BoxConstraints.loose(const Size(400, 400)),
@@ -154,22 +205,29 @@ final class _Picker {
   }
 
   final bool showAlpha;
+  final WindowController? window;
   late final BuildOwner owner;
   Color _color;
   final List<Color> chosen = <Color>[];
 
-  Widget _build() => Align(
-        alignment: Alignment.topLeft,
-        child: ColorPicker(
-          value: _color,
-          showAlpha: showAlpha,
-          onChanged: (Color color) {
-            chosen.add(color);
-            _color = color;
-            owner.updateRoot(_build());
-          },
-        ),
-      );
+  Widget _build() {
+    final Widget picker = Align(
+      alignment: Alignment.topLeft,
+      child: ColorPicker(
+        value: _color,
+        showAlpha: showAlpha,
+        onChanged: (Color color) {
+          chosen.add(color);
+          _color = color;
+          owner.updateRoot(_build());
+        },
+      ),
+    );
+    final WindowController? controller = window;
+    return controller == null
+        ? picker
+        : WindowScope(controller: controller, child: picker);
+  }
 
   void settle() {
     for (int pass = 0; pass < 8; pass++) {

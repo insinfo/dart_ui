@@ -896,7 +896,7 @@ static void *DartUiAppearanceContext = &DartUiAppearanceContext;
   printf("PROTOCOL=4\n");
   printf("WINDOW_SCALE=%ld\n", (long)scaleMilli);
   printf("PROTOCOL_FEATURES=surface-port,window-events,clipboard,"
-         "clipboard-rich,vsync,system-settings\n");
+         "clipboard-rich,vsync,system-settings,color-sampler\n");
   [self reportScreens];
   // In the banner, before HOST_PID, so the startup values reach Dart through
   // the same line - and the same parser - as every later change.
@@ -2391,6 +2391,29 @@ static void DartUiPrintClipboardPayload(long long request, NSString *payload) {
   } else if ([command isEqualToString:@"PING"]) {
     printf("PONG\n");
     fflush(stdout);
+  } else if ([command isEqualToString:@"SAMPLE_COLOR"]) {
+    // The system eyedropper: NSColorSampler shows the loupe every colour
+    // well uses and needs no Screen Recording permission - the user's click
+    // is the consent. COLOR_SAMPLE=<aarrggbb> in sRGB, or - for a cancel.
+    if (@available(macOS 10.15, *)) {
+      [[[NSColorSampler alloc] init]
+          showSamplerWithSelectionHandler:^(NSColor *picked) {
+            NSColor *srgb = [picked colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+            if (srgb == nil) {
+              printf("COLOR_SAMPLE=-\n");
+            } else {
+              unsigned a = (unsigned)lround(srgb.alphaComponent * 255.0);
+              unsigned r = (unsigned)lround(srgb.redComponent * 255.0);
+              unsigned g = (unsigned)lround(srgb.greenComponent * 255.0);
+              unsigned b = (unsigned)lround(srgb.blueComponent * 255.0);
+              printf("COLOR_SAMPLE=%02x%02x%02x%02x\n", a, r, g, b);
+            }
+            fflush(stdout);
+          }];
+    } else {
+      printf("COLOR_SAMPLE=-\n");
+      fflush(stdout);
+    }
   } else if ([command isEqualToString:@"BEGIN_DRAG"]) {
     // The window move the title bar would have started, from the press that
     // the framework decided landed on a handle. AppKit tracks the rest.

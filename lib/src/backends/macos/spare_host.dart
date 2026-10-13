@@ -230,6 +230,9 @@ final class _RelaySink with HostMessageSinkAdapter {
       target?.onGesture(kind, phase, value, x, y, machTime);
 
   @override
+  void onColorSample(String value) => target?.onColorSample(value);
+
+  @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>
       target?.onDrag(phase, x, y, mask, flags);
 }

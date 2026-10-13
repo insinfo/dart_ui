@@ -15,6 +15,14 @@ final class _RecordingSink with HostMessageSinkAdapter {
   void onProtocolFeatures(String features) => events.add('features:$features');
 
   @override
+  void onGesture(String kind, String phase, double value, double x, double y,
+          int machTime) =>
+      events.add('gesture:$kind:$phase:$value:$x:$y:$machTime');
+
+  @override
+  void onColorSample(String value) => events.add('color:$value');
+
+  @override
   void onTitleBar(double x, double y, double width, double height,
           double titleBarHeight) =>
       events.add('titlebar:$x:$y:$width:$height:$titleBarHeight');
@@ -215,6 +223,24 @@ void main() {
     expect(HostCommands.setBounds(-1.5, 2, 640, 480),
         'SET_BOUNDS -1.5000 2.0000 640.0000 480.0000\n');
     expect(HostCommands.close(), 'CLOSE\n');
+  });
+
+  test('trackpad gestures and the eyedropper answer', () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(utf8.encode(
+      'GESTURE=magnify:begin:0.000000:140.5000:60.0000:99\n'
+      'GESTURE=rotate:change:-12.500000:1.0000:2.0000:100\n'
+      'GESTURE=magnify:end\n'
+      'COLOR_SAMPLE=ff3366cc\n'
+      'COLOR_SAMPLE=-\n',
+    ));
+    expect(sink.events, <String>[
+      'gesture:magnify:begin:0.0:140.5:60.0:99',
+      'gesture:rotate:change:-12.5:1.0:2.0:100',
+      'error:BAD_GESTURE',
+      'color:ff3366cc',
+      'color:-',
+    ]);
   });
 
   test('clipboard pieces arrive in order, then the result that ends them', () {

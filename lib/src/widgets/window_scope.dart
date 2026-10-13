@@ -3,6 +3,7 @@ library;
 
 import '../geometry/offset.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import '../platform/native_menu.dart';
 import '../platform/native_window.dart';
 import 'widget.dart';
@@ -46,6 +47,13 @@ abstract interface class WindowController {
     List<NativeMenu>? menus,
     void Function(int id) onSelected,
   );
+
+  /// Whether [sampleScreenColor] can pick a colour from the screen here.
+  bool get canSampleScreenColor;
+
+  /// The platform's eyedropper: the colour the user clicks anywhere on the
+  /// screen, or null when they cancel or the platform has no sampler.
+  Future<Color?> sampleScreenColor();
 
   /// Opens a window that belongs to this one - a floating panel, a tool
   /// palette - showing [child], on every platform.

@@ -11,6 +11,12 @@ final class _MacWindow implements WindowController {
   @override
   final bool hasNativeMenuBar;
 
+  @override
+  bool get canSampleScreenColor => false;
+
+  @override
+  Future<Color?> sampleScreenColor() async => null;
+
   List<NativeMenu>? menus;
   void Function(int id)? onSelected;
   int installs = 0;

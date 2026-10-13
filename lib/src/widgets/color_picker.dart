@@ -20,9 +20,13 @@ import 'control.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'icon.dart';
+import 'icon_button.dart';
+import 'phosphor_icons.dart';
 import 'text_field.dart';
 import 'theme.dart';
 import 'widget.dart';
+import 'window_scope.dart';
 
 /// A colour as hue (0 to 360), saturation and value (0 to 1), and alpha
 /// (0 to 1).
@@ -220,6 +224,15 @@ final class _ColorPickerState extends State<ColorPicker> {
     widget.onChanged?.call(parsed);
   }
 
+  /// The platform's eyedropper; the colour it brings back becomes the value,
+  /// opaque unless this picker shows alpha.
+  Future<void> _sample(WindowController window) async {
+    final Color? picked = await window.sampleScreenColor();
+    if (picked == null || !mounted || widget.onChanged == null) return;
+    _set(
+        HsvColor.fromColor(widget.showAlpha ? picked : picked.withAlpha(0xFF)));
+  }
+
   void _set(HsvColor next) {
     if (next == _hsv) return;
     setState(() => _hsv = next);
@@ -234,6 +247,9 @@ final class _ColorPickerState extends State<ColorPicker> {
     final double gap = theme.effectiveGap;
     final double strip = theme.effectiveControlHeight * 0.6;
     final bool enabled = widget.onChanged != null;
+    // The eyedropper, where the window has the platform's sampler.
+    final WindowController? window = WindowScope.of(context);
+    final bool canSample = enabled && (window?.canSampleScreenColor ?? false);
     return SizedBox(
       width: widget.planeSize + gap + strip,
       child: Column(
@@ -305,6 +321,14 @@ final class _ColorPickerState extends State<ColorPicker> {
                   enabled: enabled,
                 ),
               ),
+              if (canSample) ...<Widget>[
+                SizedBox(width: gap),
+                IconButton(
+                  icon: const Icon(PhosphorIcons.eyedropper),
+                  tooltip: 'Pick a colour from the screen',
+                  onPressed: () => _sample(window!),
+                ),
+              ],
             ],
           ),
         ],

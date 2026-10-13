@@ -163,6 +163,7 @@ export 'src/platform/input_events.dart';
 export 'src/platform/message_box.dart';
 export 'src/platform/native_menu.dart';
 export 'src/platform/native_window.dart';
+export 'src/platform/screen_color.dart';
 export 'src/platform/shell.dart';
 export 'src/platform/standard_paths.dart';
 export 'src/platform/system_fonts.dart';

@@ -158,6 +158,7 @@ import '../platform/drag_drop.dart';
 import '../platform/input_events.dart';
 import '../platform/native_menu.dart';
 import '../platform/native_window.dart';
+import '../platform/screen_color.dart';
 import '../platform/system_settings.dart';
 import '../platform/text_input.dart';
 import '../platform/window_events.dart';
@@ -4703,6 +4704,19 @@ final class _ApplicationWindowController implements WindowController {
 
   @override
   bool get hasNativeMenuBar => _window.nativeWindow is NativeMenuBarWindow;
+
+  @override
+  bool get canSampleScreenColor => _window.nativeWindow is ScreenColorSampling;
+
+  @override
+  Future<Color?> sampleScreenColor() async => switch (_window.nativeWindow) {
+        final ScreenColorSampling sampler => switch (
+              await sampler.sampleScreenColor()) {
+            final int argb => Color(argb),
+            null => null,
+          },
+        _ => null,
+      };
 
   @override
   HiddenTitleBarWindow? get hiddenTitleBar => switch (_window.nativeWindow) {

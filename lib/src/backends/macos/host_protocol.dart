@@ -306,6 +306,10 @@ abstract interface class HostMessageSink {
   void onGesture(String kind, String phase, double value, double x, double y,
       int machTime);
 
+  /// `COLOR_SAMPLE=<aarrggbb>` or `COLOR_SAMPLE=-`: what the system
+  /// eyedropper a `SAMPLE_COLOR` opened picked, in sRGB, or a cancel.
+  void onColorSample(String value);
+
   /// `DRAG=<ENTER|OVER|DROP>:<x>:<y>:<mask>:<flags>` or `DRAG=LEAVE`: a drag
   /// over the view, in view points (top-left origin), with the source's
   /// `NSDragOperation` mask and the modifier flags.
@@ -432,6 +436,9 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
   @override
   void onGesture(String kind, String phase, double value, double x, double y,
       int machTime) {}
+
+  @override
+  void onColorSample(String value) {}
 
   @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) {}
@@ -759,6 +766,9 @@ final class HostProtocolParser {
         }
       case 0x43: // 'C'
         if (_startsWith('COMPOSE=')) return _parseComposition(8);
+        if (_startsWith('COLOR_SAMPLE=')) {
+          return _sink.onColorSample(_stringFrom(13));
+        }
         if (_startsWith('COMMIT=')) return _sink.onCommit(_stringFrom(7));
         if (_startsWith('CLIPBOARD_DATA=')) return _parseClipboardData(15);
         if (_startsWith('CLIPBOARD=')) return _parseClipboardResult(10);

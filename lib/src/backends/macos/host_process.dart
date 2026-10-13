@@ -247,6 +247,16 @@ abstract interface class MacosHostProcessHandle {
 /// Separate from [MacosHostProcessHandle] for the reason
 /// [MacosClipboardChannel] is: pacing is something a window asks of the host
 /// it happens to have, and the supervisor's test doubles have no screen.
+abstract interface class MacosColorSamplerChannel {
+  /// Whether this host announced `color-sampler`, and so answers
+  /// `SAMPLE_COLOR` with `COLOR_SAMPLE=`. An older host would answer
+  /// `ERROR=UNKNOWN_COMMAND` and leave the eyedropper waiting forever.
+  bool get supportsColorSampler;
+}
+
+/// Refresh pacing a window can ask of its host.
+///
+/// See [MacosVsyncChannel].
 abstract interface class MacosVsyncChannel {
   /// Whether this host announced `vsync` in `PROTOCOL_FEATURES`, and so
   /// answers a `PRESENT_SLOT ... vsync` with `VSYNC <sequence>`.
@@ -324,6 +334,7 @@ final class MacosHostProcess
         HostMessageSink,
         MacosHostProcessHandle,
         MacosClipboardChannel,
+        MacosColorSamplerChannel,
         MacosVsyncChannel {
   MacosHostProcess._(this._process, this._sink, this._onDiagnostic) {
     _parser = HostProtocolParser(this);
@@ -570,6 +581,10 @@ final class MacosHostProcess
   @override
   bool get supportsRichClipboard =>
       _features.split(',').contains('clipboard-rich');
+
+  @override
+  bool get supportsColorSampler =>
+      _features.split(',').contains('color-sampler');
 
   @override
   Future<(HostClipboardResult, String)> requestClipboardRead(
@@ -869,6 +884,9 @@ final class MacosHostProcess
   void onGesture(String kind, String phase, double value, double x, double y,
           int machTime) =>
       _sink.onGesture(kind, phase, value, x, y, machTime);
+
+  @override
+  void onColorSample(String value) => _sink.onColorSample(value);
 
   @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>

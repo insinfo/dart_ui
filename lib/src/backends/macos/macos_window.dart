@@ -30,6 +30,7 @@ import '../../geometry/size.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_menu.dart';
 import '../../platform/native_window.dart';
+import '../../platform/screen_color.dart';
 import '../../platform/system_settings.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/framebuffer.dart';
@@ -95,7 +96,8 @@ final class MacosWindow
         PresentPacer,
         WindowStateControl,
         NativeMenuBarWindow,
-        HiddenTitleBarWindow {
+        HiddenTitleBarWindow,
+        ScreenColorSampling {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -1035,6 +1037,34 @@ final class MacosWindow
 
   final MacosGestureAccumulator _gestures = MacosGestureAccumulator();
 
+  Completer<int?>? _colorSample;
+
+  /// NSColorSampler, through the host. Null at once when the host predates
+  /// it, when a sample is already being taken, or when the window is gone.
+  @override
+  Future<int?> sampleScreenColor() {
+    if (_colorSample != null || isDisposed) return Future<int?>.value();
+    final MacosHostProcessHandle? host = _supervisor?.host;
+    if (host is! MacosColorSamplerChannel ||
+        !(host as MacosColorSamplerChannel).supportsColorSampler) {
+      return Future<int?>.value();
+    }
+    final Completer<int?> sample = _colorSample = Completer<int?>();
+    if (!(_supervisor?.send('SAMPLE_COLOR\n') ?? false)) {
+      _colorSample = null;
+      return Future<int?>.value();
+    }
+    return sample.future;
+  }
+
+  void _onColorSample(String value) {
+    final Completer<int?>? sample = _colorSample;
+    _colorSample = null;
+    if (sample == null || sample.isCompleted) return;
+    final int? argb = value.length == 8 ? int.tryParse(value, radix: 16) : null;
+    sample.complete(argb);
+  }
+
   void _onGesture(String kind, String phase, double value, double x, double y,
       int machTime) {
     for (final PointerPanZoomEvent event in _gestures.take(
@@ -1203,6 +1233,9 @@ final class _HostSink with HostMessageSinkAdapter {
   void onGesture(String kind, String phase, double value, double x, double y,
           int machTime) =>
       _window._onGesture(kind, phase, value, x, y, machTime);
+
+  @override
+  void onColorSample(String value) => _window._onColorSample(value);
 
   @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>
