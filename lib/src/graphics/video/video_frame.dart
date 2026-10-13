@@ -492,6 +492,23 @@ final class VideoFrame {
   int get width => format.width;
   int get height => format.height;
 
+  /// Whether every plane's storage is still the decoder's loan to this
+  /// frame. False once a seek, a close or a [release] took it back.
+  ///
+  /// A renderer asks this before reading: a display list recorded before a
+  /// seek can still be replayed after it - a repaint for an unrelated reason,
+  /// the window settling a frame - and reading a recycled slot would show
+  /// another frame's bytes, which the lifetime check turns into a throw.
+  /// What it draws instead is the last picture of the stream it already
+  /// holds, or nothing.
+  bool get isReadable {
+    for (var i = 0; i < planes.length; i++) {
+      final VideoFrameStorageLifetime? lifetime = planes[i].lifetime;
+      if (lifetime != null && !lifetime.isValid) return false;
+    }
+    return true;
+  }
+
   VideoPlane plane(int index) {
     final VideoPlane result = planes[index];
     result.lifetime?.validate();

@@ -1131,6 +1131,10 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   ) {
     final int alpha = (paint.argbColor >> 24) & 0xFF;
     if (alpha == 0) return;
+    // A frame whose slot a seek took back: its bytes may already be another
+    // frame's. Drawn from the conversion cache if it is there, else not at
+    // all - see [VideoFrame.isReadable].
+    if (!frame.isReadable && !identical(_videoCacheFrame, frame)) return;
 
     final VideoRegion region = VideoRegion(
       sourceRect.left.floor(),

@@ -59,6 +59,7 @@ import '../../geometry/rect.dart';
 import '../../geometry/transform2d.dart';
 import '../../graphics/content_hint.dart';
 import '../../graphics/display_list_opcodes.dart';
+import '../../graphics/video/video_frame.dart';
 import '../../text/typeface.dart';
 import '../path/fill_rule.dart';
 import '../path/stroker.dart';
@@ -1190,6 +1191,11 @@ final class GpuRasterSink
     );
     final resolver = imageResolver;
     final texture = resolver?.resolve(image);
+    if (texture == null && image is VideoFrame && !image.isReadable) {
+      // A frame a seek took back, of a stream never uploaded: nothing to
+      // show, which is not a missing capability.
+      return;
+    }
     if (texture == null || !texture.isValid) {
       throw UnsupportedCapabilityError(
         backendName: backendName,

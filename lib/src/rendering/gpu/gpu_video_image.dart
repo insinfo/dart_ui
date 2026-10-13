@@ -229,6 +229,14 @@ final class GpuVideoImageCache {
       texture = null;
     }
 
+    if (!image.isReadable) {
+      // Its slot went back to the decoder (a seek) after the list that draws
+      // it was recorded. The texture still holds the stream's last upload -
+      // the picture on screen a moment ago - which is the honest thing to
+      // show until the next frame arrives.
+      return texture;
+    }
+
     if (texture != null && stream.uploadedSequence == image.sequence) {
       // The same frame, drawn again. Uploading it a second time would be a
       // full pass over megabytes to produce the bytes the texture holds.

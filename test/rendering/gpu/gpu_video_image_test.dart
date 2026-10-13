@@ -528,6 +528,55 @@ void main() {
       expect(allocator.creates, 1);
     });
 
+    test('a frame a seek took back shows the stream\'s last picture', () {
+      final allocator = _Allocator();
+      final resolver = _VideoResolver(GpuVideoImageCache(allocator));
+      final sink = GpuRasterSink(
+        batcher: GpuBatcher()..beginFrame(),
+        backendName: 'test',
+        imageResolver: resolver,
+      );
+      void draw(VideoFrame frame) => sink.drawDeviceImage(
+            frame,
+            const Rect.fromLTRB(0, 0, 16, 8),
+            const Rect.fromLTRB(0, 0, 16, 8),
+            _wideClip,
+            _opaque,
+          );
+
+      draw(_leased(_frame(VideoPixelFormat.bgra8888), _Lease()));
+      final int uploads = allocator.uploads;
+      // The player released its frames for a seek, and a repaint replays the
+      // list recorded before it. Reading the slot used to throw "is no
+      // longer valid" out of the paint.
+      final VideoFrame stale =
+          _leased(_frame(VideoPixelFormat.bgra8888, sequence: 1), _Lease());
+      stale.release();
+      expect(stale.isReadable, isFalse);
+      draw(stale);
+      expect(sink.batcher.batchCount, 1, reason: 'the last upload is drawn');
+      expect(allocator.uploads, uploads, reason: 'nothing read from the slot');
+    });
+
+    test('a stale frame of a stream never uploaded draws nothing', () {
+      final sink = GpuRasterSink(
+        batcher: GpuBatcher()..beginFrame(),
+        backendName: 'test',
+        imageResolver: _VideoResolver(GpuVideoImageCache(_Allocator())),
+      );
+      final VideoFrame stale =
+          _leased(_frame(VideoPixelFormat.bgra8888, streamId: 9), _Lease())
+            ..release();
+      sink.drawDeviceImage(
+        stale,
+        const Rect.fromLTRB(0, 0, 16, 8),
+        const Rect.fromLTRB(0, 0, 16, 8),
+        _wideClip,
+        _opaque,
+      );
+      expect(sink.batcher.batchCount, 0);
+    });
+
     test('without a video-aware resolver it is still refused by name', () {
       final sink = GpuRasterSink(
         batcher: GpuBatcher()..beginFrame(),
@@ -712,6 +761,38 @@ final class _Upload {
   final Uint8List pixels;
   final int bytesPerRow;
 }
+
+/// A decoder loan the test can take back, as a seek does.
+final class _Lease implements VideoFrameStorageLifetime {
+  bool _valid = true;
+
+  @override
+  bool get isValid => _valid;
+
+  @override
+  void validate() {
+    if (!_valid) throw StateError('slot is no longer valid');
+  }
+
+  @override
+  void release() => _valid = false;
+}
+
+/// [frame]'s bytes, borrowed through [lease].
+VideoFrame _leased(VideoFrame frame, _Lease lease) => VideoFrame(
+      format: frame.format,
+      planes: <VideoPlane>[
+        for (final VideoPlane plane in frame.planes)
+          VideoPlane(
+            bytes: plane.bytes,
+            bytesPerRow: plane.bytesPerRow,
+            offset: plane.offset,
+            lifetime: lease,
+          ),
+      ],
+      streamId: frame.streamId,
+      sequence: frame.sequence,
+    );
 
 final class _Allocator implements GpuTextureAllocator {
   _Allocator({
