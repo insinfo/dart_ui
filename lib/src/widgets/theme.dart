@@ -15,6 +15,7 @@ library;
 import '../graphics/color.dart';
 import '../platform/editing_convention.dart';
 import '../rendering/text/font_registry.dart';
+import '../text/text_decoration.dart';
 import 'style.dart';
 import 'widget.dart';
 
@@ -213,20 +214,73 @@ final class FontWeight {
   static const FontWeight bold = w700;
 }
 
-/// The stable, portable subset of Flutter's TextStyle contract.
+/// Whether glyphs are upright or slanted - Flutter's `FontStyle`.
+///
+/// Reaches the engine as face selection: [FontStyle.italic] asks the family
+/// for its italic face, then for an oblique when it has no true italic. Only
+/// when it has neither - the bundled Inter, for one - is the upright face
+/// sheared, as Flutter and every browser do; a real italic is a different
+/// design, and is always preferred when the family has one.
+enum FontStyle { normal, italic }
+
+/// The portable subset of Flutter's TextStyle contract.
+///
+/// Every field is nullable and means "inherit": [merge] lets a non-null field
+/// of the argument win, which is how a style flows down from the theme
+/// through [DefaultTextStyle] into a `Text` and on down a tree of
+/// `TextSpan`s, each level naming only what it changes.
+///
+/// ## Which fields cost what
+///
+/// [color], [fontSize], [fontFamily], [fontWeight], [fontStyle] and [height]
+/// are drawn by a label's single shaped run - the cheap path every control
+/// uses. [letterSpacing], [wordSpacing], [backgroundColor] and the
+/// decoration fields need the paragraph engine, which carries them per span;
+/// a `Text` whose style sets any of them takes that path on its own, as does
+/// an italic in a family with no italic face, which is sheared. Nothing
+/// changes for a label that sets none.
+///
+/// Not carried over from Flutter: `inherit` (every style here merges),
+/// `shadows`, `foreground`/`background` paints, font features and variations,
+/// and a per-span [height] - line height is a paragraph property here, and a
+/// span's [height] is ignored inside a rich text.
 final class TextStyle {
   const TextStyle({
     this.color,
+    this.backgroundColor,
     this.fontSize,
     this.fontFamily,
     this.fontWeight,
+    this.fontStyle,
+    this.letterSpacing,
+    this.wordSpacing,
     this.height,
+    this.decoration,
+    this.decorationColor,
+    this.decorationStyle,
+    this.decorationThickness,
   });
 
   final Color? color;
+
+  /// A rectangle behind the text, the height of its face's ascent plus
+  /// descent.
+  final Color? backgroundColor;
+
   final double? fontSize;
   final String? fontFamily;
   final FontWeight? fontWeight;
+  final FontStyle? fontStyle;
+
+  /// Extra pixels after every grapheme cluster. May be negative.
+  ///
+  /// Part of the measured width, the line breaks, the caret positions and
+  /// the hit testing - not a paint-time offset - so a letter-spaced heading
+  /// still selects and wraps where it is drawn.
+  final double? letterSpacing;
+
+  /// Extra pixels after every space, on top of [letterSpacing].
+  final double? wordSpacing;
 
   /// Line height as a multiple of [fontSize], or null for the face's own.
   ///
@@ -238,43 +292,109 @@ final class TextStyle {
   /// unaffected.
   final double? height;
 
+  /// The lines to draw with the text; combine several with
+  /// [TextDecoration.combine].
+  final TextDecoration? decoration;
+
+  /// The decoration's colour, or null for the text's.
+  final Color? decorationColor;
+
+  /// Solid, double, dotted, dashed or wavy - all five are drawn as named.
+  final TextDecorationStyle? decorationStyle;
+
+  /// A multiplier on the stroke the face's `post` table asks for.
+  final double? decorationThickness;
+
+  /// Whether this style needs the paragraph engine rather than a label's
+  /// single shaped run: spacing, a background or a decoration.
+  bool get needsParagraph =>
+      (letterSpacing != null && letterSpacing != 0) ||
+      (wordSpacing != null && wordSpacing != 0) ||
+      backgroundColor != null ||
+      (decoration != null && decoration != TextDecoration.none);
+
   TextStyle merge(TextStyle? other) => other == null
       ? this
       : TextStyle(
           color: other.color ?? color,
+          backgroundColor: other.backgroundColor ?? backgroundColor,
           fontSize: other.fontSize ?? fontSize,
           fontFamily: other.fontFamily ?? fontFamily,
           fontWeight: other.fontWeight ?? fontWeight,
+          fontStyle: other.fontStyle ?? fontStyle,
+          letterSpacing: other.letterSpacing ?? letterSpacing,
+          wordSpacing: other.wordSpacing ?? wordSpacing,
           height: other.height ?? height,
+          decoration: other.decoration ?? decoration,
+          decorationColor: other.decorationColor ?? decorationColor,
+          decorationStyle: other.decorationStyle ?? decorationStyle,
+          decorationThickness: other.decorationThickness ?? decorationThickness,
         );
 
   TextStyle copyWith({
     Color? color,
+    Color? backgroundColor,
     double? fontSize,
     String? fontFamily,
     FontWeight? fontWeight,
+    FontStyle? fontStyle,
+    double? letterSpacing,
+    double? wordSpacing,
     double? height,
+    TextDecoration? decoration,
+    Color? decorationColor,
+    TextDecorationStyle? decorationStyle,
+    double? decorationThickness,
   }) =>
       TextStyle(
         color: color ?? this.color,
+        backgroundColor: backgroundColor ?? this.backgroundColor,
         fontSize: fontSize ?? this.fontSize,
         fontFamily: fontFamily ?? this.fontFamily,
         fontWeight: fontWeight ?? this.fontWeight,
+        fontStyle: fontStyle ?? this.fontStyle,
+        letterSpacing: letterSpacing ?? this.letterSpacing,
+        wordSpacing: wordSpacing ?? this.wordSpacing,
         height: height ?? this.height,
+        decoration: decoration ?? this.decoration,
+        decorationColor: decorationColor ?? this.decorationColor,
+        decorationStyle: decorationStyle ?? this.decorationStyle,
+        decorationThickness: decorationThickness ?? this.decorationThickness,
       );
 
   @override
   bool operator ==(Object other) =>
       other is TextStyle &&
       other.color == color &&
+      other.backgroundColor == backgroundColor &&
       other.fontSize == fontSize &&
       other.fontFamily == fontFamily &&
       other.fontWeight == fontWeight &&
-      other.height == height;
+      other.fontStyle == fontStyle &&
+      other.letterSpacing == letterSpacing &&
+      other.wordSpacing == wordSpacing &&
+      other.height == height &&
+      other.decoration == decoration &&
+      other.decorationColor == decorationColor &&
+      other.decorationStyle == decorationStyle &&
+      other.decorationThickness == decorationThickness;
 
   @override
-  int get hashCode =>
-      Object.hash(color, fontSize, fontFamily, fontWeight, height);
+  int get hashCode => Object.hash(
+        color,
+        backgroundColor,
+        fontSize,
+        fontFamily,
+        fontWeight,
+        fontStyle,
+        letterSpacing,
+        wordSpacing,
+        height,
+        decoration,
+        decorationColor,
+        decorationStyle,
+        decorationThickness,
+      );
 }
 
 /// The type scale, derived from one number.

@@ -134,6 +134,7 @@ import 'dart:typed_data';
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../graphics/color.dart';
 import 'bidi.dart';
 import 'default_ignorable.dart';
 import 'font_fallback.dart';
@@ -141,6 +142,7 @@ import 'grapheme.dart';
 import 'line_break.dart';
 import 'script.dart';
 import 'shaper.dart';
+import 'text_decoration.dart';
 import 'typeface.dart';
 
 // ---------------------------------------------------------------------------
@@ -227,13 +229,42 @@ final class TextBox {
   String toString() => 'TextBox($rect, ${direction.name})';
 }
 
-/// The face, size and language one span of text is drawn with.
+/// Everything one span of text is laid out and painted with.
 ///
 /// Not `const`-constructible, because a [ScaledTypeface] is parsed font bytes
 /// and cannot be. Value equality, because it is half of the paragraph cache
 /// key and two spans with the same face and size must share a cache entry.
+///
+/// ## Layout fields and paint fields
+///
+/// [font], [language], [letterSpacing] and [wordSpacing] change where glyphs
+/// go. The rest - [color], [backgroundColor] and the decoration fields - only
+/// change how they are drawn, and are here anyway because a paragraph is the
+/// only thing that knows where a span ended up after bidi reordering and line
+/// breaking: the painter walks the laid-out spans, and each one has to carry
+/// its own colour and its own underline for the painter to find them.
+///
+/// They are all in the cache key, paint fields included, because a cached
+/// paragraph hands its spans - styles and all - to the painter. A key that
+/// left colour out would return a paragraph painted in the colour of whoever
+/// laid it out first. The cost is a fresh layout when a *span's* colour
+/// changes; a null [color] means "the paint the caller passes to
+/// `paintParagraph`", which is what a label animating its one colour uses, and
+/// that never reaches the key.
 final class TextStyle {
-  const TextStyle({required this.font, this.language});
+  const TextStyle({
+    required this.font,
+    this.language,
+    this.color,
+    this.backgroundColor,
+    this.letterSpacing = 0,
+    this.wordSpacing = 0,
+    this.decoration = TextDecoration.none,
+    this.decorationColor,
+    this.decorationStyle = TextDecorationStyle.solid,
+    this.decorationThickness = 1.0,
+    this.syntheticItalic = false,
+  });
 
   final ScaledTypeface font;
 
@@ -242,17 +273,128 @@ final class TextStyle {
   /// come from the caller; null means the script's default language system.
   final String? language;
 
+  /// The glyphs' colour, or null for the paint the paragraph is drawn with.
+  ///
+  /// A colour glyph - an `sbix` or `CBDT` emoji - is a picture and ignores
+  /// it, as it ignores the paint.
+  final Color? color;
+
+  /// A rectangle behind the span, from its face's ascent to its descent, or
+  /// null for none.
+  ///
+  /// The face's box rather than the line's, as a browser draws an inline
+  /// background: a small word on a line with a large one is not highlighted
+  /// to the large one's height.
+  final Color? backgroundColor;
+
+  /// Extra advance after every grapheme cluster, in pixels. May be negative.
+  ///
+  /// After every *cluster*, not every glyph and not every code unit: an
+  /// accented letter, a flag and a family emoji each get one gap, and a mark
+  /// never separates from its base. A ligature that spans two clusters gets
+  /// both gaps after it - the engine does not split ligatures, so the spacing
+  /// collects at the ligature's end, and the advance is still right.
+  ///
+  /// It is part of the shaped run's advances, so line breaking, the line's
+  /// width, carets, hit testing and selection boxes all see it; the space
+  /// after the last cluster of a line counts towards that line's width, as it
+  /// does in Flutter.
+  final double letterSpacing;
+
+  /// Extra advance after every space (U+0020 and U+00A0), on top of
+  /// [letterSpacing]. May be negative.
+  final double wordSpacing;
+
+  /// Which lines to draw with the span. See `text_decoration.dart`.
+  final TextDecoration decoration;
+
+  /// The lines' colour, or null for the glyphs'.
+  final Color? decorationColor;
+
+  final TextDecorationStyle decorationStyle;
+
+  /// A multiplier on the thickness the face asks for - Flutter's meaning, so
+  /// 2.0 is twice as heavy at every size.
+  final double decorationThickness;
+
+  /// Whether the glyphs are slanted by shearing, because italic was asked
+  /// for and [font] has no italic or oblique of its own.
+  ///
+  /// A paint field: the shear is about the baseline, so every advance, caret
+  /// and selection box is where the upright face put it - which is also how
+  /// Skia and every browser synthesize an oblique. The painter applies it as
+  /// a transform around the span's glyphs; both rasterizers fill glyphs from
+  /// their outlines under a skew rather than from cached masks, so the text
+  /// stays sharp, and costs an outline fill per glyph per frame. Decorations
+  /// and backgrounds are not sheared, and neither is a colour emoji - a
+  /// slanted picture is a damaged picture.
+  final bool syntheticItalic;
+
+  /// Whether letter or word spacing moves anything.
+  bool get hasSpacing => letterSpacing != 0 || wordSpacing != 0;
+
+  /// Whether painting needs more than the caller's one paint: a colour of
+  /// its own, a background or a decoration.
+  bool get hasPaintStyle =>
+      color != null ||
+      backgroundColor != null ||
+      !decoration.isNone ||
+      syntheticItalic;
+
+  /// This style with its face replaced - for a caller that resolved a family
+  /// and weight into a face and has everything else already.
+  TextStyle withFont(ScaledTypeface font) => TextStyle(
+        font: font,
+        language: language,
+        color: color,
+        backgroundColor: backgroundColor,
+        letterSpacing: letterSpacing,
+        wordSpacing: wordSpacing,
+        decoration: decoration,
+        decorationColor: decorationColor,
+        decorationStyle: decorationStyle,
+        decorationThickness: decorationThickness,
+        syntheticItalic: syntheticItalic,
+      );
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is TextStyle && other.font == font && other.language == language;
+      other is TextStyle &&
+          other.font == font &&
+          other.language == language &&
+          other.color == color &&
+          other.backgroundColor == backgroundColor &&
+          other.letterSpacing == letterSpacing &&
+          other.wordSpacing == wordSpacing &&
+          other.decoration == decoration &&
+          other.decorationColor == decorationColor &&
+          other.decorationStyle == decorationStyle &&
+          other.decorationThickness == decorationThickness &&
+          other.syntheticItalic == syntheticItalic;
 
   @override
-  int get hashCode => Object.hash(font, language);
+  int get hashCode => Object.hash(
+        font,
+        language,
+        color,
+        backgroundColor,
+        letterSpacing,
+        wordSpacing,
+        decoration,
+        decorationColor,
+        decorationStyle,
+        decorationThickness,
+        syntheticItalic,
+      );
 
   @override
-  String toString() =>
-      'TextStyle($font${language == null ? '' : ', $language'})';
+  String toString() => 'TextStyle($font${language == null ? '' : ', $language'}'
+      '${color == null ? '' : ', $color'}'
+      '${letterSpacing == 0 ? '' : ', letterSpacing $letterSpacing'}'
+      '${wordSpacing == 0 ? '' : ', wordSpacing $wordSpacing'}'
+      '${decoration.isNone ? '' : ', $decoration'}'
+      '${syntheticItalic ? ', synthetic italic' : ''})';
 }
 
 /// Unambiguous public name for paragraph shaping styles.
@@ -284,6 +426,15 @@ final class TextSpan {
   @override
   String toString() => 'TextSpan(${text.length} units, $style)';
 }
+
+/// Unambiguous public name for a paragraph span.
+///
+/// The package exports the widget-level `TextSpan` - Flutter's, with
+/// children, an inheritable style and a recognizer - under the plain name,
+/// because that is the one ported code writes. A caller laying a paragraph out
+/// directly from already-resolved faces uses this name, as it uses
+/// [ParagraphTextStyle] for the style.
+typedef ParagraphTextSpan = TextSpan;
 
 /// Everything about a paragraph that is not its text or its per-span style.
 final class ParagraphStyle {
@@ -658,6 +809,15 @@ final class Paragraph {
   /// Whether [ParagraphStyle.maxLines] removed anything.
   final bool didExceedMaxLines;
 
+  /// Whether any span has a colour, a background or a decoration of its own.
+  ///
+  /// False for nearly every paragraph on screen - a label, a text field -
+  /// and that is what lets the painter keep its one-paint loop for them,
+  /// emitting exactly the commands it emitted before spans could be styled.
+  late final bool hasPaintStyles = spans.any(
+    (TextSpan span) => span.style.hasPaintStyle,
+  );
+
   /// The box the paragraph occupies, using [longestLine] rather than
   /// [maxWidth]: a caller that asked for infinite width wants the real one
   /// back, and a caller that asked for a finite one already knows it.
@@ -1011,6 +1171,7 @@ enum _RunKind {
 const int _tab = 0x09;
 const int _softHyphen = 0x00AD;
 const int _space = 0x20;
+const int _noBreakSpace = 0xA0;
 const int _hyphen = 0x2010;
 const int _hyphenMinus = 0x2D;
 
@@ -1434,6 +1595,21 @@ final class _ParagraphBuilder {
       positions[i * 2 + 1] = run.positions[i * 2 + 1];
       clusters[i] = run.clusters[i] + start;
     }
+    double width = run.width;
+    if (runStyle.hasSpacing) {
+      width += _applySpacing(
+        text,
+        _clusterStarts,
+        start,
+        end,
+        positions,
+        clusters,
+        count,
+        rightToLeft: level.isOdd,
+        letterSpacing: runStyle.letterSpacing,
+        wordSpacing: runStyle.wordSpacing,
+      );
+    }
     return _ShapedRun(
       start: start,
       end: end,
@@ -1445,17 +1621,109 @@ final class _ParagraphBuilder {
       positions: positions,
       clusters: clusters,
       glyphCount: count,
-      width: run.width,
+      width: width,
       prefix: _buildPrefix(
         start,
         end,
         positions,
         clusters,
         count,
-        run.width,
+        width,
         level.isOdd,
       ),
     );
+  }
+
+  /// Which UTF-16 offsets of [text] start a grapheme cluster, one byte per
+  /// offset plus one for the end. Built only when a span has spacing.
+  late final Uint8List _clusterStarts = _markClusterStarts(text);
+
+  static Uint8List _markClusterStarts(String text) {
+    final Uint8List marks = Uint8List(text.length + 1);
+    for (final int boundary in GraphemeBreaks.boundaries(text)) {
+      marks[boundary] = 1;
+    }
+    return marks;
+  }
+
+  /// Adds letter and word spacing to a shaped run, in place, and returns how
+  /// much wider the run became.
+  ///
+  /// The spacing is folded into the glyph positions rather than kept beside
+  /// them, which is the whole trick: [_buildPrefix] reads cluster edges off
+  /// those positions, so line breaking, carets, hit testing and selection
+  /// see the spacing without a single one of them knowing it exists.
+  ///
+  /// Each grapheme cluster in `[start, end)` - [text] indexed - gets its gap
+  /// on its **visual right**, in both directions. For left-to-right text that
+  /// is "after", as letter spacing is defined. For right-to-left text it puts
+  /// the gap of the logically first cluster at the run's right end; the other
+  /// choice, the gap on the cluster's left, leaves the caret between two
+  /// clusters on the wrong side of the gap that belongs to the cluster before
+  /// it, because a right-to-left prefix is measured from the run's right edge
+  /// to the left edge of a glyph. Between clusters the two placements are the
+  /// same picture.
+  ///
+  /// Every glyph of a cluster moves by the same amount, so a mark stays on
+  /// its base. [clusters] are offsets into [text]; [starts] marks which of
+  /// its offsets begin a grapheme cluster. The run's end always closes a
+  /// cluster, even mid-cluster, so a run boundary inside one still counts it.
+  static double _applySpacing(
+    String text,
+    Uint8List starts,
+    int start,
+    int end,
+    Float32List positions,
+    Int32List clusters,
+    int count, {
+    required bool rightToLeft,
+    required double letterSpacing,
+    required double wordSpacing,
+  }) {
+    final int length = end - start;
+    if (length <= 0) return 0;
+    // completed[i]: the spacing of every cluster that ends at or before
+    // `start + i`. A cluster that is still open at `i` contributes nothing,
+    // which is what keeps a mark from being pushed off its base.
+    final Float64List completed = Float64List(length + 1);
+    int clusterStart = start;
+    for (int i = 1; i <= length; i++) {
+      final int offset = start + i;
+      if (offset != end && starts[offset] == 0) {
+        completed[i] = completed[i - 1];
+        continue;
+      }
+      double gap = letterSpacing;
+      if (offset - clusterStart == 1) {
+        final int unit = text.codeUnitAt(clusterStart);
+        if (unit == _space || unit == _noBreakSpace) gap += wordSpacing;
+      }
+      completed[i] = completed[i - 1] + gap;
+      clusterStart = offset;
+    }
+    final double total = completed[length];
+
+    // closing[i]: `completed` at the end of the cluster that holds
+    // `start + i` - what a right-to-left glyph is shifted by, subtracted
+    // from the total, since everything to its left comes logically after.
+    Float64List? closing;
+    if (rightToLeft) {
+      closing = Float64List(length);
+      double last = total;
+      for (int i = length - 1; i >= 0; i--) {
+        if (i + 1 == length || starts[start + i + 1] != 0) {
+          last = completed[i + 1];
+        }
+        closing[i] = last;
+      }
+    }
+    for (int k = 0; k < count; k++) {
+      final int index = (clusters[k] - start).clamp(0, length - 1);
+      final double shift =
+          rightToLeft ? total - closing![index] : completed[index];
+      positions[k * 2] += shift;
+    }
+    return total;
   }
 
   /// The advance of every logical prefix of a run.
@@ -1721,12 +1989,31 @@ final class _ParagraphBuilder {
     final int count = run.length;
     final Int32List ids = Int32List(count);
     final Float32List positions = Float32List(count * 2);
+    final Int32List clusters = Int32List(count);
     for (int i = 0; i < count; i++) {
       ids[i] = run.glyphIds[i];
       positions[i * 2] = run.positions[i * 2];
       positions[i * 2 + 1] = run.positions[i * 2 + 1];
+      clusters[i] = run.clusters[i];
     }
-    return _EllipsisRun(ids, positions, count, run.width, runStyle);
+    // Spaced like the text it stands for: an ellipsis set tight after
+    // letter-spaced capitals reads as a different typeface.
+    double width = run.width;
+    if (runStyle.hasSpacing) {
+      width += _applySpacing(
+        ellipsis,
+        _markClusterStarts(ellipsis),
+        0,
+        ellipsis.length,
+        positions,
+        clusters,
+        count,
+        rightToLeft: _bidi.baseDirection.isRightToLeft,
+        letterSpacing: runStyle.letterSpacing,
+        wordSpacing: runStyle.wordSpacing,
+      );
+    }
+    return _EllipsisRun(ids, positions, count, width, runStyle);
   }
 
   /// Whether [range] is wider than the line - a word with nowhere to break.
@@ -2129,10 +2416,11 @@ final class _Draft {
 ///
 ///  * every [TextSpan]: its text **and** its [TextStyle], which is the
 ///    [ScaledTypeface] - compared by face *identity* and pixel size - plus the
-///    OpenType language tag. Face identity rather than face equality because a
-///    [Typeface] is parsed bytes with no meaningful value equality, and because
-///    re-parsing the same file legitimately produces a different face that may
-///    shape differently;
+///    OpenType language tag, the letter and word spacing, and the span's own
+///    colour, background and decoration. Face identity rather than face
+///    equality because a [Typeface] is parsed bytes with no meaningful value
+///    equality, and because re-parsing the same file legitimately produces a
+///    different face that may shape differently;
 ///  * every field of [ParagraphStyle]: alignment, forced base direction,
 ///    `maxLines`, the ellipsis string, the tab stop and the height multiplier.
 ///    All of them change the geometry, and `align` additionally changes the run
@@ -2142,8 +2430,10 @@ final class _Draft {
 ///
 /// What is deliberately **not** in the key: the [Shaper], which is a property of
 /// the cache rather than of the request - a cache built with a different shaper
-/// is a different cache. And nothing about the paint: colour does not change
-/// layout.
+/// is a different cache. And the paint the caller passes to the painter: a
+/// span whose colour is null is drawn in it, so a label that animates its one
+/// colour keeps hitting the same entry. A span's *own* colour is in the key
+/// (see [TextStyle]), because the painter reads it off the cached spans.
 ///
 /// ## Invalidation
 ///

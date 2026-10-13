@@ -29,14 +29,18 @@ library;
 import 'dart:typed_data';
 
 import '../../geometry/offset.dart';
+import '../../geometry/path.dart';
 import '../../geometry/size.dart';
+import '../../graphics/color.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../text/cmap.dart' show notdefGlyph;
 import '../../text/default_ignorable.dart';
 import '../../text/font_fallback.dart';
+import '../../text/font_tables.dart' show PostTable;
 import '../../text/paragraph.dart';
 import '../../text/shaper.dart';
+import '../../text/text_decoration.dart';
 import '../../text/typeface.dart';
 import 'color_glyph_cache.dart';
 
@@ -385,6 +389,12 @@ final class TextPainter {
   /// the first baseline would make the second line's position depend on a
   /// number the caller had no way to compute.
   ///
+  /// [paintId] draws every span whose style names no colour of its own. A
+  /// paragraph in which no span does - and has no background or decoration
+  /// either, which is nearly all of them - is drawn by the same one-paint loop
+  /// as before spans could be styled, command for command. One that does is
+  /// drawn in four passes; see [_paintStyledParagraph].
+  ///
   /// Allocates nothing that layout did not already allocate, apart from the
   /// per-command typed lists [emitRun] builds: the spans hold their own copies
   /// of the shaped glyphs, so redrawing a laid-out paragraph never re-shapes.
@@ -394,6 +404,10 @@ final class TextPainter {
     Offset topLeft,
     int paintId,
   ) {
+    if (paragraph.hasPaintStyles) {
+      _paintStyledParagraph(list, paragraph, topLeft, paintId);
+      return;
+    }
     for (final TextLine line in paragraph.lines) {
       final double baseline = topLeft.dy + line.baseline;
       for (final GlyphSpan span in line.spans) {
@@ -406,6 +420,277 @@ final class TextPainter {
         );
       }
     }
+  }
+
+  /// Draws a paragraph whose spans carry colours, backgrounds or decorations.
+  ///
+  /// The order is the one CSS specifies and every browser follows, and each
+  /// step is a pass over every line so that nothing from a later step can be
+  /// covered by an earlier one on the next line:
+  ///
+  ///  1. **backgrounds**, so text is never under its own highlight;
+  ///  2. **underlines and overlines**, under the glyphs - a descender crosses
+  ///     an underline rather than being cut by it;
+  ///  3. **glyphs**, each span in its own paint - colour emoji included,
+  ///     which [emitRun] still draws as pictures;
+  ///  4. **strike-throughs**, over the glyphs, which is the point of them.
+  ///
+  /// A span keeps the caller's [paintId] when its style has no colour, so a
+  /// mixed paragraph - one red word in an otherwise default label - only
+  /// adds paints for what differs.
+  void _paintStyledParagraph(
+    DisplayList list,
+    Paragraph paragraph,
+    Offset topLeft,
+    int paintId,
+  ) {
+    final _SpanPaints paints = _SpanPaints(list, paintId);
+    for (final TextLine line in paragraph.lines) {
+      _paintBackgrounds(list, line, topLeft, paints);
+    }
+    for (final TextLine line in paragraph.lines) {
+      _paintDecorations(list, line, topLeft, paints, TextDecoration.underline);
+      _paintDecorations(list, line, topLeft, paints, TextDecoration.overline);
+    }
+    for (final TextLine line in paragraph.lines) {
+      final double baseline = topLeft.dy + line.baseline;
+      for (final GlyphSpan span in line.spans) {
+        if (span.glyphs.isEmpty) continue;
+        // A fallback face with pictures is an emoji face: not sheared.
+        final bool shear = span.style.syntheticItalic &&
+            !span.glyphs.font.typeface.hasColorBitmaps;
+        if (shear) {
+          // x' = x - k (y - baseline): the baseline stays put, so the
+          // advances, carets and selection boxes still line up with it.
+          list
+            ..save()
+            ..transform(
+              1,
+              0,
+              -_syntheticItalicSkew,
+              1,
+              _syntheticItalicSkew * baseline,
+              0,
+            );
+        }
+        emitRun(
+          list,
+          span.glyphs,
+          Offset(topLeft.dx + span.left, baseline),
+          paints.glyphs(span.style),
+        );
+        if (shear) list.restore();
+      }
+    }
+    for (final TextLine line in paragraph.lines) {
+      _paintDecorations(
+          list, line, topLeft, paints, TextDecoration.lineThrough);
+    }
+  }
+
+  /// One rectangle per stretch of equal background on [line].
+  ///
+  /// Neighbouring spans with the same colour and the same box are merged
+  /// before drawing. Two antialiased rectangles meeting at a fractional x
+  /// each cover the shared pixel partly, and the pixel comes out lighter
+  /// than either: a seam down the middle of a highlighted phrase wherever a
+  /// span boundary - a bidi run, a script change - happened to fall.
+  void _paintBackgrounds(
+    DisplayList list,
+    TextLine line,
+    Offset topLeft,
+    _SpanPaints paints,
+  ) {
+    final double baseline = topLeft.dy + line.baseline;
+    Color? color;
+    double left = 0;
+    double right = 0;
+    double top = 0;
+    double bottom = 0;
+    void flush() {
+      if (color != null && right > left) {
+        list.drawRect(left, top, right, bottom, paints.fill(color!));
+      }
+      color = null;
+    }
+
+    for (final GlyphSpan span in line.spans) {
+      final Color? background = span.style.backgroundColor;
+      if (background == null || span.width <= 0) {
+        flush();
+        continue;
+      }
+      final ScaledTypeface font = span.style.font;
+      final double spanLeft = topLeft.dx + span.left;
+      final double spanTop = baseline - font.ascent;
+      final double spanBottom = baseline + font.descent;
+      if (color == background &&
+          spanTop == top &&
+          spanBottom == bottom &&
+          (spanLeft - right).abs() < 0.01) {
+        right = spanLeft + span.width;
+        continue;
+      }
+      flush();
+      color = background;
+      left = spanLeft;
+      right = spanLeft + span.width;
+      top = spanTop;
+      bottom = spanBottom;
+    }
+    flush();
+  }
+
+  /// Draws every [kind] line on [line], merging neighbouring spans whose
+  /// lines would be identical, for the reason [_paintBackgrounds] merges.
+  ///
+  /// The geometry is per span and comes from the span's own face - not the
+  /// face a fallback run was drawn in, so an emoji in an underlined phrase
+  /// does not drop the underline to wherever the emoji face keeps its own -
+  /// which is why a larger word on the same line has its underline lower
+  /// and thicker, as in every browser.
+  void _paintDecorations(
+    DisplayList list,
+    TextLine line,
+    Offset topLeft,
+    _SpanPaints paints,
+    TextDecoration kind,
+  ) {
+    final double baseline = topLeft.dy + line.baseline;
+    _DecorationSegment? pending;
+    for (final GlyphSpan span in line.spans) {
+      final TextStyle style = span.style;
+      if (!style.decoration.contains(kind) || span.width <= 0) {
+        if (pending != null) _drawDecoration(list, pending, topLeft.dx, paints);
+        pending = null;
+        continue;
+      }
+      final _DecorationSegment segment = _DecorationSegment.of(
+        style,
+        kind,
+        baseline,
+        topLeft.dx + span.left,
+        topLeft.dx + span.right,
+      );
+      if (pending != null && pending.continuesWith(segment)) {
+        pending.right = segment.right;
+        continue;
+      }
+      if (pending != null) _drawDecoration(list, pending, topLeft.dx, paints);
+      pending = segment;
+    }
+    if (pending != null) _drawDecoration(list, pending, topLeft.dx, paints);
+  }
+
+  /// Draws one merged decoration line in its [TextDecorationStyle].
+  ///
+  /// The broken styles are phased from [originX], the paragraph's left
+  /// edge, so a dash pattern runs on unbroken across a colour change.
+  void _drawDecoration(
+    DisplayList list,
+    _DecorationSegment segment,
+    double originX,
+    _SpanPaints paints,
+  ) {
+    final double left = segment.left;
+    final double right = segment.right;
+    final double top = segment.top;
+    final double t = segment.thickness;
+    switch (segment.style) {
+      case TextDecorationStyle.solid:
+        list.drawRect(
+            left, top, right, top + t, paints.decoration(segment.source));
+      case TextDecorationStyle.double:
+        // The second line goes away from the glyphs: below an underline,
+        // above an overline, and a strike-through splits around its centre.
+        final double second = segment.kind == TextDecoration.overline
+            ? top - 2 * t
+            : segment.kind == TextDecoration.lineThrough
+                ? top + t
+                : top + 2 * t;
+        final double first =
+            segment.kind == TextDecoration.lineThrough ? top - t : top;
+        final int paint = paints.decoration(segment.source);
+        list
+          ..drawRect(left, first, right, first + t, paint)
+          ..drawRect(left, second, right, second + t, paint);
+      case TextDecorationStyle.dotted:
+        _drawPattern(list, segment, originX, t, t, paints);
+      case TextDecorationStyle.dashed:
+        _drawPattern(list, segment, originX, 4 * t, 3 * t, paints);
+      case TextDecorationStyle.wavy:
+        _drawWave(list, segment, originX, paints);
+    }
+  }
+
+  /// Rectangles [on] long and [off] apart, from [originX], cut to the
+  /// segment.
+  void _drawPattern(
+    DisplayList list,
+    _DecorationSegment segment,
+    double originX,
+    double on,
+    double off,
+    _SpanPaints paints,
+  ) {
+    final double period = on + off;
+    final int paint = paints.decoration(segment.source);
+    double x =
+        originX + ((segment.left - originX) / period).floorToDouble() * period;
+    for (; x < segment.right; x += period) {
+      final double a = x < segment.left ? segment.left : x;
+      final double b = x + on > segment.right ? segment.right : x + on;
+      if (b > a) {
+        list.drawRect(
+            a, segment.top, b, segment.top + segment.thickness, paint);
+      }
+    }
+  }
+
+  /// A wave of quadratic arcs, stroked [_DecorationSegment.thickness] wide
+  /// and clipped to the segment.
+  ///
+  /// Each arc is half a period, `3t` long and `1.5t` tall either side of
+  /// the centre, so the wave stays legible at a one-pixel stroke without
+  /// looking like a zigzag at a heavy one. An underline's wave is moved down
+  /// by its own height so it clears the descenders the straight line would
+  /// have touched, and an overline's up.
+  void _drawWave(
+    DisplayList list,
+    _DecorationSegment segment,
+    double originX,
+    _SpanPaints paints,
+  ) {
+    final double t = segment.thickness;
+    final double half = 3 * t;
+    final double amplitude = 1.5 * t;
+    final double centre = segment.top +
+        t / 2 +
+        switch (segment.kind) {
+          TextDecoration.underline => amplitude / 2,
+          TextDecoration.overline => -amplitude / 2,
+          _ => 0,
+        };
+    final int start = ((segment.left - originX) / half).floor();
+    final PathBuilder wave = PathBuilder()
+      ..moveTo(originX + start * half, centre);
+    for (int i = start; originX + i * half < segment.right; i++) {
+      final double x = originX + i * half;
+      final double peak =
+          i.isEven ? centre - 2 * amplitude : centre + 2 * amplitude;
+      wave.quadraticBezierTo(x + half / 2, peak, x + half, centre);
+    }
+    final double reach = amplitude + t;
+    list
+      ..save()
+      ..clipRect(
+        segment.left,
+        centre - reach,
+        segment.right,
+        centre + reach,
+      )
+      ..drawPath(list.addPath(wave.build()), paints.stroke(segment.source, t))
+      ..restore();
   }
 
   /// Scratch for [emitRun], sized once to the largest run an opcode can carry.
@@ -430,4 +715,156 @@ final class TextPainter {
     ParagraphStyle style = const ParagraphStyle(),
   }) =>
       layout(text, font, maxWidth: maxWidth, style: style).size;
+}
+
+/// The horizontal shear of a synthesized italic: tan 14 degrees, CSS's default
+/// `oblique` angle, and within a hair of the quarter Skia shears by. Real
+/// italics lean between 9 and 15 degrees; this sits in the range without
+/// pretending to be any one face's.
+const double _syntheticItalicSkew = 0.25;
+
+/// The paints a styled paragraph draws with, derived from the caller's.
+///
+/// A span with no colour uses the caller's paint id itself, so whatever that
+/// paint carries - a blend mode, a gradient - survives. A span with a colour
+/// gets a paint that keeps the caller's antialiasing and blend mode and
+/// changes only the colour; [DisplayList.addPaint] interns, so asking twice
+/// costs a lookup, not a second paint.
+final class _SpanPaints {
+  _SpanPaints(this.list, this.base)
+      : _antiAlias = list.paintAntiAlias(base),
+        _blendMode = list.paintBlendMode(base);
+
+  final DisplayList list;
+  final int base;
+  final bool _antiAlias;
+  final int _blendMode;
+
+  int glyphs(TextStyle style) {
+    final Color? color = style.color;
+    return color == null ? base : fill(color);
+  }
+
+  int fill(Color color) => list.addPaint(
+        colorArgb: color.value,
+        antiAlias: _antiAlias,
+        blendMode: _blendMode,
+      );
+
+  /// The decoration colour falls back to the glyph colour and then to the
+  /// caller's paint, as `decorationColor` does in Flutter.
+  int decoration(TextStyle style) {
+    final Color? color = style.decorationColor ?? style.color;
+    return color == null ? base : fill(color);
+  }
+
+  int stroke(TextStyle style, double width) {
+    final Color? color = style.decorationColor ?? style.color;
+    return list.addPaint(
+      colorArgb: color?.value ?? list.paintColor(base),
+      style: paintStyleStroke,
+      strokeWidth: width,
+      antiAlias: true,
+      blendMode: _blendMode,
+    );
+  }
+}
+
+/// One decoration line across one or more neighbouring spans.
+final class _DecorationSegment {
+  _DecorationSegment._({
+    required this.source,
+    required this.kind,
+    required this.style,
+    required this.left,
+    required this.right,
+    required this.top,
+    required this.thickness,
+  });
+
+  /// Where [kind] sits for [style]'s face, on a line whose baseline is at
+  /// [baseline].
+  ///
+  /// ## The numbers
+  ///
+  ///  * **Thickness** is the `post` table's `underlineThickness` - the
+  ///    designer's stroke - or a fourteenth of the em when the face has no
+  ///    `post` or says zero, times [TextStyle.decorationThickness].
+  ///  * **Underline**: `post.underlinePosition` is the distance from the
+  ///    baseline to the *top* of the stroke (OpenType defines it so; the
+  ///    PostScript centre is the older reading, and FreeType converts from
+  ///    this one). A tenth of the em below the baseline without it.
+  ///  * **Strike-through**: centred on half the x-height, `OS/2.sxHeight`,
+  ///    which is where the eye expects the middle of a lowercase letter; half
+  ///    an em's half when the table is too old to have one. `OS/2`'s own
+  ///    `strikeoutPosition` is deliberately not used: fonts disagree wildly
+  ///    about it, and half the x-height is what Flutter and Chrome draw.
+  ///  * **Overline**: its top at the face's ascent.
+  ///
+  /// The straight styles are snapped to whole pixels - top and thickness,
+  /// at least one pixel - because a one-pixel line at y = 10.4 is drawn as
+  /// two grey rows and reads as blurred. The wave is not snapped: it is
+  /// antialiased along its whole length anyway.
+  factory _DecorationSegment.of(
+    TextStyle style,
+    TextDecoration kind,
+    double baseline,
+    double left,
+    double right,
+  ) {
+    final ScaledTypeface font = style.font;
+    final Typeface face = font.typeface;
+    final PostTable? post = face.post;
+    double thickness = post != null && post.underlineThickness > 0
+        ? post.underlineThickness * font.scale
+        : font.pixelSize / 14;
+    thickness *= style.decorationThickness;
+    double top;
+    if (kind == TextDecoration.underline) {
+      top = post != null && post.underlinePosition != 0
+          ? baseline - post.underlinePosition * font.scale
+          : baseline + font.pixelSize / 10;
+    } else if (kind == TextDecoration.overline) {
+      top = baseline - font.ascent;
+    } else {
+      final int? xHeight = face.os2?.sxHeightOrNull;
+      final double half = xHeight != null && xHeight > 0
+          ? xHeight * font.scale / 2
+          : font.pixelSize / 4;
+      top = baseline - half - thickness / 2;
+    }
+    if (style.decorationStyle != TextDecorationStyle.wavy) {
+      thickness = thickness.roundToDouble();
+      if (thickness < 1) thickness = 1;
+      top = top.roundToDouble();
+    }
+    return _DecorationSegment._(
+      source: style,
+      kind: kind,
+      style: style.decorationStyle,
+      left: left,
+      right: right,
+      top: top,
+      thickness: thickness,
+    );
+  }
+
+  /// The style whose colours the line is drawn in.
+  final TextStyle source;
+  final TextDecoration kind;
+  final TextDecorationStyle style;
+  final double left;
+  double right;
+  final double top;
+  final double thickness;
+
+  /// Whether [next] is the same line carried on: same place, same stroke,
+  /// same colour, and starting where this one ends.
+  bool continuesWith(_DecorationSegment next) =>
+      next.style == style &&
+      next.top == top &&
+      next.thickness == thickness &&
+      (next.source.decorationColor ?? next.source.color) ==
+          (source.decorationColor ?? source.color) &&
+      (next.left - right).abs() < 0.01;
 }

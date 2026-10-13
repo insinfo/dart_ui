@@ -377,13 +377,13 @@ final class FontRegistry implements FontFallback {
   /// "text is missing and nobody knows why".
   String? _source;
 
-  /// One [ScaledTypeface] per size and requested weight.
+  /// One [ScaledTypeface] per size, requested weight and slant.
   ///
   /// Bounded by how many distinct sizes an application uses - a handful - and
   /// worth keeping because the glyph cache and the display list's font table
   /// both key on the scaled face, and every control asks for one per paint.
-  final Map<(double, int), ScaledTypeface> _sized =
-      <(double, int), ScaledTypeface>{};
+  final Map<(double, int, bool), ScaledTypeface> _sized =
+      <(double, int, bool), ScaledTypeface>{};
 
   /// Faces this registry has parsed, by [SystemFontFace.key].
   ///
@@ -428,13 +428,26 @@ final class FontRegistry implements FontFallback {
   ///
   /// Null is the honest answer and callers must handle it; see
   /// [estimatedSize] for what they should reserve when they get it.
-  ScaledTypeface? uiFont(double pixelSize, {int weight = 400}) {
+  ///
+  /// [italic] asks the interface family for its italic, through [faceFor] and
+  /// so through the same slant rule: an oblique when there is no true italic,
+  /// and the upright face when there is neither. Nothing is slanted here -
+  /// the face that comes back says what it is ([Typeface.isItalic],
+  /// [Typeface.isOblique]), and a caller that got an upright for an italic
+  /// decides whether to shear it; the text widgets do, through
+  /// `ParagraphTextStyle.syntheticItalic`.
+  ScaledTypeface? uiFont(
+    double pixelSize, {
+    int weight = 400,
+    bool italic = false,
+  }) {
     final Typeface? face = uiTypeface;
     if (face == null) return null;
-    final Typeface resolved = weight == face.weightClass
+    final Typeface resolved = weight == face.weightClass && !italic
         ? face
-        : faceFor(face.familyName ?? '', weight: weight) ?? face;
-    return _sized[(pixelSize, weight)] ??= resolved.atSize(pixelSize);
+        : faceFor(face.familyName ?? '', weight: weight, italic: italic) ??
+            face;
+    return _sized[(pixelSize, weight, italic)] ??= resolved.atSize(pixelSize);
   }
 
   /// The unsized interface face, discovering it on first use.

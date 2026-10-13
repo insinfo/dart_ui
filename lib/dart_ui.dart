@@ -212,11 +212,15 @@ export 'src/text/font_tables.dart';
 export 'src/text/grapheme.dart';
 export 'src/text/line_break.dart';
 export 'src/text/normalize.dart';
-export 'src/text/paragraph.dart' hide TextStyle;
+// The paragraph engine's `TextStyle` and `TextSpan` are exported as
+// `ParagraphTextStyle` and `ParagraphTextSpan`: the plain names belong to the
+// Flutter-shaped widget types, which are what ported code spells.
+export 'src/text/paragraph.dart' hide TextSpan, TextStyle;
 export 'src/text/script.dart';
 export 'src/text/shaper.dart';
 export 'src/text/shapers/arabic.dart';
 export 'src/text/shapers/script_models.dart';
+export 'src/text/text_decoration.dart';
 export 'src/text/typeface.dart';
 export 'src/text/word_break.dart';
 export 'src/vector_editing/curve_fitting.dart';
@@ -303,6 +307,7 @@ export 'src/widgets/status_bar.dart';
 export 'src/widgets/style.dart';
 export 'src/widgets/svg.dart';
 export 'src/widgets/tabs.dart';
+export 'src/widgets/text_span.dart';
 export 'src/widgets/theme.dart';
 export 'src/widgets/toolbar.dart';
 export 'src/widgets/tooltip.dart';

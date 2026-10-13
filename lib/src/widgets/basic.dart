@@ -3,6 +3,7 @@ library;
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../gestures/recognizer.dart';
 import '../graphics/color.dart';
 import '../graphics/display_list.dart';
 import '../graphics/display_list_geometry.dart';
@@ -19,12 +20,17 @@ import '../layout/render_grid.dart' as layout;
 import '../layout/render_padding.dart' as layout;
 import '../layout/render_stack.dart' as layout;
 import '../layout/render_wrap.dart' as layout;
+import '../platform/input_events.dart';
+import '../platform/native_window.dart' show SystemCursor;
 import '../rendering/text/font_registry.dart';
 import '../text/paragraph.dart' as paragraph;
 import '../text/shaper.dart';
+import '../text/text_decoration.dart';
 import '../text/typeface.dart';
 import 'directionality.dart';
 import 'element.dart';
+import 'pointer_router.dart';
+import 'text_span.dart';
 import 'theme.dart';
 import 'widget.dart';
 
@@ -534,9 +540,20 @@ final class DefaultTextStyle extends InheritedWidget {
 }
 
 /// Text configuration. Shaping and glyph painting remain a renderer concern.
+///
+/// Two spellings, as in Flutter: `Text('plain')` and `Text.rich(span)`. Both
+/// resolve [style] over the ambient [DefaultTextStyle] - or the theme's
+/// `bodyMedium` when there is none - and a rich text then merges each span's
+/// style over that, down the span tree, so a span that names only a colour
+/// keeps the ambient size, face and weight.
+///
+/// A plain `Text` whose style sets only colour, size, family, weight and
+/// slant stays on the single shaped run every control label uses. Letter or
+/// word spacing, a background or a decoration moves it to the paragraph
+/// engine, which carries them per span; `Text.rich` always uses it.
 final class Text extends RenderObjectWidget {
   const Text(
-    this.text, {
+    String this._data, {
     super.key,
     this.style,
     this.fontSize,
@@ -546,10 +563,41 @@ final class Text extends RenderObjectWidget {
     this.ellipsis,
     this.textAlign = paragraph.TextAlign.start,
     this.breakWords = false,
-  })  : assert(maxLines == null || maxLines > 0),
+  })  : textSpan = null,
+        assert(maxLines == null || maxLines > 0),
         assert(ellipsis == null || maxLines != null);
 
-  final String text;
+  /// Rich text: [textSpan]'s tree, its styles inheriting from [style] and
+  /// the ambient text style.
+  ///
+  /// Soft wrapping is off by default, as for the plain constructor - a
+  /// `Text` here is a label first. Turn it on for prose, or use [RichText],
+  /// which wraps by default as Flutter's does.
+  const Text.rich(
+    InlineSpan this.textSpan, {
+    super.key,
+    this.style,
+    this.fontSize,
+    this.color,
+    this.softWrap = false,
+    this.maxLines,
+    this.ellipsis,
+    this.textAlign = paragraph.TextAlign.start,
+    this.breakWords = false,
+  })  : _data = null,
+        assert(maxLines == null || maxLines > 0),
+        assert(ellipsis == null || maxLines != null);
+
+  final String? _data;
+
+  /// The string of a plain `Text`, or null for [Text.rich] - Flutter's name.
+  String? get data => _data;
+
+  /// The rich content, or null for a plain `Text`.
+  final InlineSpan? textSpan;
+
+  /// What is drawn, as plain text: the string, or the spans' text joined.
+  String get text => _data ?? textSpan!.toPlainText();
 
   /// Flutter-compatible style surface. Explicit legacy fields below win.
   final TextStyle? style;
@@ -589,11 +637,20 @@ final class Text extends RenderObjectWidget {
     final TextStyle resolved = _styleFrom(context);
     return RenderText(
       text,
+      span: textSpan,
       fontSize: resolved.fontSize ?? kDefaultUiFontSize,
       color: resolved.color ?? const Color(0xFF111111),
       fontFamily: resolved.fontFamily,
       fontWeight: resolved.fontWeight?.value ?? 400,
+      fontStyle: resolved.fontStyle ?? FontStyle.normal,
       lineHeight: resolved.height,
+      letterSpacing: resolved.letterSpacing ?? 0,
+      wordSpacing: resolved.wordSpacing ?? 0,
+      backgroundColor: resolved.backgroundColor,
+      decoration: resolved.decoration ?? TextDecoration.none,
+      decorationColor: resolved.decorationColor,
+      decorationStyle: resolved.decorationStyle ?? TextDecorationStyle.solid,
+      decorationThickness: resolved.decorationThickness ?? 1.0,
       softWrap: softWrap,
       maxLines: maxLines,
       ellipsis: ellipsis,
@@ -609,12 +666,21 @@ final class Text extends RenderObjectWidget {
   ) {
     final TextStyle resolved = _styleFrom(context);
     renderObject
+      ..span = textSpan
       ..text = text
       ..fontSize = resolved.fontSize ?? kDefaultUiFontSize
       ..color = resolved.color ?? const Color(0xFF111111)
       ..fontFamily = resolved.fontFamily
       ..fontWeight = resolved.fontWeight?.value ?? 400
+      ..fontStyle = resolved.fontStyle ?? FontStyle.normal
       ..lineHeight = resolved.height
+      ..letterSpacing = resolved.letterSpacing ?? 0
+      ..wordSpacing = resolved.wordSpacing ?? 0
+      ..backgroundColor = resolved.backgroundColor
+      ..decoration = resolved.decoration ?? TextDecoration.none
+      ..decorationColor = resolved.decorationColor
+      ..decorationStyle = resolved.decorationStyle ?? TextDecorationStyle.solid
+      ..decorationThickness = resolved.decorationThickness ?? 1.0
       ..softWrap = softWrap
       ..maxLines = maxLines
       ..ellipsis = ellipsis
@@ -637,6 +703,79 @@ final class Text extends RenderObjectWidget {
   }
 }
 
+/// Rich text with no ambient style - Flutter's `RichText`.
+///
+/// Draws [text] exactly as its spans describe it: nothing is inherited from
+/// [DefaultTextStyle] or the theme, so a span tree that names no size gets
+/// the framework's default size and near-black, as Flutter's `RichText` gets
+/// its engine defaults. That is the point of the widget - text whose look
+/// must not depend on where it is placed. [Text.rich] is the one that
+/// inherits, and is usually what an application wants.
+///
+/// Unlike [Text], it wraps by default ([softWrap] true), as in Flutter.
+final class RichText extends RenderObjectWidget {
+  const RichText({
+    super.key,
+    required this.text,
+    this.textAlign = paragraph.TextAlign.start,
+    this.softWrap = true,
+    this.overflow = TextOverflow.clip,
+    this.maxLines,
+  }) : assert(maxLines == null || maxLines > 0);
+
+  final InlineSpan text;
+  final paragraph.TextAlign textAlign;
+
+  /// Whether lines break at the box's width. False breaks only at newlines.
+  final bool softWrap;
+
+  /// What happens to text that does not fit; see [TextOverflow].
+  final TextOverflow overflow;
+
+  /// The most lines to show, or null for all of them.
+  final int? maxLines;
+
+  /// The line limit the engine is given. An ellipsis with no limit on text
+  /// that does not wrap means "cut this one line", as in Flutter, and the
+  /// engine places an ellipsis only on a limited paragraph.
+  int? get _effectiveMaxLines =>
+      maxLines ?? (overflow == TextOverflow.ellipsis && !softWrap ? 1 : null);
+
+  String? get _ellipsis =>
+      overflow == TextOverflow.ellipsis && _effectiveMaxLines != null
+          ? '\u2026'
+          : null;
+
+  @override
+  RenderObjectElement createElement() => RenderObjectElement(this);
+
+  @override
+  RenderText createRenderObject(BuildContext context) => RenderText(
+        text.toPlainText(),
+        span: text,
+        softWrap: softWrap,
+        maxLines: _effectiveMaxLines,
+        ellipsis: _ellipsis,
+        textAlign: textAlign,
+        clipsOverflow: overflow != TextOverflow.visible,
+      );
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    covariant RenderText renderObject,
+  ) {
+    renderObject
+      ..span = text
+      ..text = text.toPlainText()
+      ..softWrap = softWrap
+      ..maxLines = _effectiveMaxLines
+      ..ellipsis = _ellipsis
+      ..textAlign = textAlign
+      ..clipsOverflow = overflow != TextOverflow.visible;
+  }
+}
+
 /// A text leaf with an inexpensive single-line path and opt-in paragraph
 /// wrapping.
 ///
@@ -644,52 +783,114 @@ final class Text extends RenderObjectWidget {
 /// enabled uses the same paragraph engine as rich document text. Both paths
 /// guarantee that layout and paint use the same shaping result, so a label
 /// cannot measure at one width and paint at another.
-final class RenderText extends RenderBox {
+///
+/// ## Rich text
+///
+/// With a [span], the text is the span tree flattened into paragraph spans:
+/// each leaf's style is its ancestors' styles merged in order, and every
+/// field a leaf leaves unset falls back to this node's own - [fontSize],
+/// [fontFamily], [letterSpacing], [decoration] and the rest - which is where
+/// `Text.rich` puts the ambient style. A leaf's colour is the one exception:
+/// unset, it stays unset, and the glyphs are drawn in [color] at paint time,
+/// so changing [color] repaints without laying out again.
+///
+/// A leaf whose span has a recognizer makes the text hit-testable over that
+/// leaf's glyphs - and only there, so a click on plain text still reaches
+/// whatever is behind it - and hands the press to the recognizer.
+final class RenderText extends RenderBox
+    implements PointerEventTarget, MouseCursorTarget {
   RenderText(
     String text, {
+    InlineSpan? span,
     Color color = const Color(0xFF111111),
     double fontSize = kDefaultUiFontSize,
     String? fontFamily,
     int fontWeight = 400,
+    FontStyle fontStyle = FontStyle.normal,
     double? lineHeight,
+    double letterSpacing = 0,
+    double wordSpacing = 0,
+    Color? backgroundColor,
+    TextDecoration decoration = TextDecoration.none,
+    Color? decorationColor,
+    TextDecorationStyle decorationStyle = TextDecorationStyle.solid,
+    double decorationThickness = 1.0,
     bool softWrap = false,
     int? maxLines,
     String? ellipsis,
     paragraph.TextAlign textAlign = paragraph.TextAlign.start,
     bool breakWords = false,
+    bool clipsOverflow = true,
   })  : _text = text,
+        _span = span,
         _color = color,
         _fontSize = fontSize,
         _fontFamily = fontFamily,
         _fontWeight = fontWeight,
+        _fontStyle = fontStyle,
         _lineHeight = lineHeight,
+        _letterSpacing = letterSpacing,
+        _wordSpacing = wordSpacing,
+        _backgroundColor = backgroundColor,
+        _decoration = decoration,
+        _decorationColor = decorationColor,
+        _decorationStyle = decorationStyle,
+        _decorationThickness = decorationThickness,
         _softWrap = softWrap,
         _maxLines = maxLines,
         _ellipsis = ellipsis,
         _textAlign = textAlign,
-        _breakWords = breakWords;
+        _breakWords = breakWords,
+        _clipsOverflow = clipsOverflow;
 
   String _text;
+  InlineSpan? _span;
   Color _color;
   double _fontSize;
   String? _fontFamily;
   int _fontWeight;
+  FontStyle _fontStyle;
   double? _lineHeight;
+  double _letterSpacing;
+  double _wordSpacing;
+  Color? _backgroundColor;
+  TextDecoration _decoration;
+  Color? _decorationColor;
+  TextDecorationStyle _decorationStyle;
+  double _decorationThickness;
   bool _softWrap;
   int? _maxLines;
   String? _ellipsis;
   paragraph.TextAlign _textAlign;
   paragraph.Paragraph? _paragraph;
 
+  /// The paragraph the text was laid out into, or null on the single-run
+  /// path - a plain label with nothing the paragraph engine is needed for.
+  ///
+  /// For a caller that wants the geometry the text was drawn with: caret
+  /// rectangles, selection boxes, the line count, whether `maxLines` cut
+  /// anything. Valid until the next layout.
+  paragraph.Paragraph? get laidOutParagraph => _paragraph;
+
   bool _breakWords;
+  bool _clipsOverflow;
+
+  /// Forgets everything derived from the text or its style - the laid-out
+  /// paragraph and the flattened spans - and asks for layout.
+  void _textChanged() {
+    _paragraph = null;
+    _spans = null;
+    // Links are rebuilt with the spans; plain text has none to rebuild.
+    if (_span == null) _links = const [];
+    markNeedsLayout();
+  }
 
   bool get breakWords => _breakWords;
 
   set breakWords(bool value) {
     if (value == _breakWords) return;
     _breakWords = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
   }
 
   paragraph.TextAlign get textAlign => _textAlign;
@@ -697,18 +898,37 @@ final class RenderText extends RenderBox {
   set textAlign(paragraph.TextAlign value) {
     if (value == _textAlign) return;
     _textAlign = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
   }
 
+  /// Whether text past the box's edge is cut. False only for
+  /// [TextOverflow.visible].
+  bool get clipsOverflow => _clipsOverflow;
+
+  set clipsOverflow(bool value) {
+    if (value == _clipsOverflow) return;
+    _clipsOverflow = value;
+    markNeedsPaint();
+  }
+
+  /// The text as a plain string. With a [span], the span tree's text - set
+  /// both, the span first; the widgets do.
   String get text => _text;
 
   set text(String value) {
     if (value == _text) return;
     _text = value;
     _hasHardBreak = _containsHardBreak(value);
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
+  }
+
+  /// The rich content, or null for plain [text].
+  InlineSpan? get span => _span;
+
+  set span(InlineSpan? value) {
+    if (value == _span) return;
+    _span = value;
+    _textChanged();
   }
 
   /// Whether the text contains a newline or another mandatory break.
@@ -737,12 +957,40 @@ final class RenderText extends RenderBox {
   /// for with `U+FE0F`: a shaped run is one face, and only a paragraph falls
   /// back to a second - the platform's emoji face for "Hello 😀", which the
   /// single-line path drew as a `.notdef` box until 13/10/2026.
+  ///
+  /// And so does rich text, or a style the single run cannot draw - see
+  /// [_needsSpans].
   bool get _usesParagraph =>
       _softWrap ||
       _hasHardBreak ||
       _ellipsis != null ||
       _alignsAcross ||
+      _needsSpans ||
       _fallsBack;
+
+  /// Whether the text is laid out from styled paragraph spans rather than
+  /// from the string and one face: a [span] tree, or spacing, a background or
+  /// a decoration, which the paragraph carries per span and the single
+  /// shaped run has nowhere to put. Weight and slant are not in the list -
+  /// they are a choice of face, and a single run has a face - unless italic
+  /// was asked of a family with no italic, which is drawn sheared, and only
+  /// the paragraph painter shears.
+  bool get _needsSpans =>
+      _span != null ||
+      _letterSpacing != 0 ||
+      _wordSpacing != 0 ||
+      _backgroundColor != null ||
+      !_decoration.isNone ||
+      // Asked last, and only of an italic: [font] is a registry lookup.
+      (_fontStyle == FontStyle.italic && _shears(font, true));
+
+  /// Whether italic was asked for and [face] cannot provide it, so the
+  /// painter has to shear the upright.
+  static bool _shears(ScaledTypeface? face, bool italic) =>
+      italic &&
+      face != null &&
+      !face.typeface.isItalic &&
+      !face.typeface.isOblique;
 
   /// Whether the text needs a face other than [font] somewhere, remembered
   /// per text and face so layout, paint and the intrinsics ask the `cmap`
@@ -763,11 +1011,12 @@ final class RenderText extends RenderBox {
   bool _fallbackNeeded = false;
 
   /// The paragraph's line-height multiplier: [lineHeight], unless the label
-  /// is only in the paragraph engine for [_fallsBack].
+  /// is only in the paragraph engine for [_fallsBack] or for its style.
   ///
   /// A single line has no leading - see [lineHeight] - and a label must not
-  /// grow by its multiplier the moment someone types an emoji into it, so a
-  /// line that would have taken the single-line path keeps its height.
+  /// grow by its multiplier the moment someone types an emoji into it, or
+  /// underlines it, so a line that would have taken the single-line path
+  /// keeps its height.
   double get _heightMultiplier {
     final bool singleLine =
         !_softWrap && !_hasHardBreak && _ellipsis == null && !_alignsAcross;
@@ -802,8 +1051,7 @@ final class RenderText extends RenderBox {
   set fontSize(double value) {
     if (value == _fontSize) return;
     _fontSize = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
   }
 
   String? get fontFamily => _fontFamily;
@@ -811,8 +1059,7 @@ final class RenderText extends RenderBox {
   set fontFamily(String? value) {
     if (value == _fontFamily) return;
     _fontFamily = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
   }
 
   int get fontWeight => _fontWeight;
@@ -820,8 +1067,16 @@ final class RenderText extends RenderBox {
   set fontWeight(int value) {
     if (value == _fontWeight) return;
     _fontWeight = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
+  }
+
+  /// Upright or italic: which face of the family [font] picks.
+  FontStyle get fontStyle => _fontStyle;
+
+  set fontStyle(FontStyle value) {
+    if (value == _fontStyle) return;
+    _fontStyle = value;
+    _textChanged();
   }
 
   /// Leading as a multiple of [fontSize], or null for the face's own.
@@ -834,8 +1089,71 @@ final class RenderText extends RenderBox {
   set lineHeight(double? value) {
     if (value == _lineHeight) return;
     _lineHeight = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
+  }
+
+  /// Extra pixels after every grapheme cluster; see
+  /// `ParagraphTextStyle.letterSpacing`.
+  double get letterSpacing => _letterSpacing;
+
+  set letterSpacing(double value) {
+    if (value == _letterSpacing) return;
+    _letterSpacing = value;
+    _textChanged();
+  }
+
+  /// Extra pixels after every space.
+  double get wordSpacing => _wordSpacing;
+
+  set wordSpacing(double value) {
+    if (value == _wordSpacing) return;
+    _wordSpacing = value;
+    _textChanged();
+  }
+
+  // The paint-only fields below still lay out again when they change: they
+  // travel in the paragraph's spans, which are part of its cache key. That is
+  // a cache lookup when the value comes back, and a decoration that toggles
+  // per frame is not a thing interfaces do.
+
+  Color? get backgroundColor => _backgroundColor;
+
+  set backgroundColor(Color? value) {
+    if (value == _backgroundColor) return;
+    _backgroundColor = value;
+    _textChanged();
+  }
+
+  TextDecoration get decoration => _decoration;
+
+  set decoration(TextDecoration value) {
+    if (value == _decoration) return;
+    _decoration = value;
+    _textChanged();
+  }
+
+  Color? get decorationColor => _decorationColor;
+
+  set decorationColor(Color? value) {
+    if (value == _decorationColor) return;
+    _decorationColor = value;
+    _textChanged();
+  }
+
+  TextDecorationStyle get decorationStyle => _decorationStyle;
+
+  set decorationStyle(TextDecorationStyle value) {
+    if (value == _decorationStyle) return;
+    _decorationStyle = value;
+    _textChanged();
+  }
+
+  double get decorationThickness => _decorationThickness;
+
+  set decorationThickness(double value) {
+    if (value == _decorationThickness) return;
+    _decorationThickness = value;
+    _textChanged();
   }
 
   bool get softWrap => _softWrap;
@@ -843,8 +1161,7 @@ final class RenderText extends RenderBox {
   set softWrap(bool value) {
     if (value == _softWrap) return;
     _softWrap = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
   }
 
   int? get maxLines => _maxLines;
@@ -855,8 +1172,7 @@ final class RenderText extends RenderBox {
       throw ArgumentError.value(value, 'maxLines', 'must be positive');
     }
     _maxLines = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
   }
 
   String? get ellipsis => _ellipsis;
@@ -864,19 +1180,183 @@ final class RenderText extends RenderBox {
   set ellipsis(String? value) {
     if (value == _ellipsis) return;
     _ellipsis = value;
-    _paragraph = null;
-    markNeedsLayout();
+    _textChanged();
   }
 
   /// The face this line is drawn in, or null when the machine has none.
-  ScaledTypeface? get font {
-    final String? family = _fontFamily;
+  ScaledTypeface? get font => _faceFor(
+        _fontSize,
+        _fontFamily,
+        _fontWeight,
+        italic: _fontStyle == FontStyle.italic,
+      );
+
+  /// The face for one combination of size, family, weight and slant.
+  ///
+  /// A family the machine does not have is null here, as it is for [font];
+  /// a rich-text leaf that names one falls back to [font] at its own size
+  /// rather than to nothing, which is the difference between a missing font
+  /// and missing text.
+  static ScaledTypeface? _faceFor(
+    double size,
+    String? family,
+    int weight, {
+    required bool italic,
+  }) {
     if (family == null) {
-      return FontRegistry.instance.uiFont(_fontSize, weight: _fontWeight);
+      return FontRegistry.instance.uiFont(size, weight: weight, italic: italic);
     }
     return FontRegistry.instance
-        .faceFor(family, weight: _fontWeight)
-        ?.atSize(_fontSize);
+        .faceFor(family, weight: weight, italic: italic)
+        ?.atSize(size);
+  }
+
+  // --- rich text -----------------------------------------------------------
+
+  /// The paragraph spans for the text, flattened once per change.
+  List<paragraph.TextSpan>? _spans;
+
+  /// The face [_spans] was built for. A registry reset changes [font]
+  /// without touching any setter, and spans built against the old face
+  /// would lay out in it.
+  ScaledTypeface? _spansFace;
+
+  /// Leaf ranges whose span has a recognizer, in text order.
+  List<({int start, int end, GestureRecognizer recognizer})> _links =
+      const <({int start, int end, GestureRecognizer recognizer})>[];
+
+  /// Recognizers this node handed a press to and that may still be
+  /// following it.
+  ///
+  /// The press's later events go to these rather than to whatever [_links]
+  /// says now: a link that changes colour while pressed rebuilds the spans,
+  /// and a tap whose release went nowhere would never fire. A set, because
+  /// one recognizer may serve several leaves and must see each event once.
+  final Set<GestureRecognizer> _pressed = <GestureRecognizer>{};
+
+  List<paragraph.TextSpan> _spansFor(ScaledTypeface face) {
+    final List<paragraph.TextSpan>? cached = _spans;
+    if (cached != null && _spansFace == face) return cached;
+    final paragraph.TextStyle base = paragraph.TextStyle(
+      font: face,
+      syntheticItalic: _shears(face, _fontStyle == FontStyle.italic),
+      backgroundColor: _backgroundColor,
+      letterSpacing: _letterSpacing,
+      wordSpacing: _wordSpacing,
+      decoration: _decoration,
+      decorationColor: _decorationColor,
+      decorationStyle: _decorationStyle,
+      decorationThickness: _decorationThickness,
+    );
+    final List<paragraph.TextSpan> spans = <paragraph.TextSpan>[];
+    final links = <({int start, int end, GestureRecognizer recognizer})>[];
+    final InlineSpan? root = _span;
+    if (root == null) {
+      spans.add(paragraph.TextSpan(_text, base));
+    } else {
+      int offset = 0;
+      // Faces resolved per (size, family, weight, slant) for this flattening,
+      // so a long document in three styles asks the registry three times.
+      final Map<(double, String?, int, bool), ScaledTypeface> faces =
+          <(double, String?, int, bool), ScaledTypeface>{};
+      void visit(InlineSpan node, TextStyle? inherited) {
+        final TextStyle? style = inherited == null
+            ? node.style
+            : node.style == null
+                ? inherited
+                : inherited.merge(node.style);
+        switch (node) {
+          case TextSpan(:final String? text, :final List<InlineSpan>? children):
+            if (text != null && text.isNotEmpty) {
+              spans.add(paragraph.TextSpan(
+                text,
+                _resolve(style, face, base, faces),
+              ));
+              final GestureRecognizer? recognizer = node.recognizer;
+              if (recognizer != null) {
+                links.add((
+                  start: offset,
+                  end: offset + text.length,
+                  recognizer: recognizer,
+                ));
+              }
+              offset += text.length;
+            }
+            if (children != null) {
+              for (final InlineSpan child in children) {
+                visit(child, style);
+              }
+            }
+        }
+      }
+
+      visit(root, null);
+      // A paragraph needs a style even with no text: an empty rich text
+      // still has a line height, as an empty label does.
+      if (spans.isEmpty) spans.add(paragraph.TextSpan('', base));
+    }
+    _links = links;
+    _spansFace = face;
+    return _spans = spans;
+  }
+
+  /// The paragraph style of one leaf: [style] - its ancestors' styles
+  /// merged - over this node's own fields, which [base] already carries.
+  paragraph.TextStyle _resolve(
+    TextStyle? style,
+    ScaledTypeface face,
+    paragraph.TextStyle base,
+    Map<(double, String?, int, bool), ScaledTypeface> faces,
+  ) {
+    if (style == null) return base;
+    final double size = style.fontSize ?? _fontSize;
+    final String? family = style.fontFamily ?? _fontFamily;
+    final int weight = style.fontWeight?.value ?? _fontWeight;
+    final bool italic = (style.fontStyle ?? _fontStyle) == FontStyle.italic;
+    final ScaledTypeface leafFace = faces[(size, family, weight, italic)] ??=
+        _faceFor(size, family, weight, italic: italic) ??
+            (size == face.pixelSize ? face : face.typeface.atSize(size));
+    return paragraph.TextStyle(
+      font: leafFace,
+      syntheticItalic: _shears(leafFace, italic),
+      color: style.color,
+      backgroundColor: style.backgroundColor ?? _backgroundColor,
+      letterSpacing: style.letterSpacing ?? _letterSpacing,
+      wordSpacing: style.wordSpacing ?? _wordSpacing,
+      decoration: style.decoration ?? _decoration,
+      decorationColor: style.decorationColor ?? _decorationColor,
+      decorationStyle: style.decorationStyle ?? _decorationStyle,
+      decorationThickness: style.decorationThickness ?? _decorationThickness,
+    );
+  }
+
+  /// Lays the text out through the paragraph engine at [maxWidth].
+  ///
+  /// Plain text with no style the engine has to carry goes through
+  /// `uiTextPainter.layout`, keyed exactly as it was before spans could be
+  /// styled, so a wrapped label shares its cache entry with every other
+  /// wrapped label of the same text and face.
+  paragraph.Paragraph _layoutParagraph(ScaledTypeface face, double maxWidth) {
+    final paragraph.ParagraphStyle style = paragraph.ParagraphStyle(
+      align: _textAlign,
+      breakWords: _breakWords,
+      maxLines: _maxLines,
+      ellipsis: _ellipsis,
+      heightMultiplier: _heightMultiplier,
+    );
+    if (!_needsSpans) {
+      return uiTextPainter.layout(
+        _text,
+        face,
+        maxWidth: maxWidth,
+        style: style,
+      );
+    }
+    return uiTextPainter.layoutSpans(
+      _spansFor(face),
+      maxWidth: maxWidth,
+      style: style,
+    );
   }
 
   /// The box this line needs, measured through the same shaper paint uses.
@@ -886,10 +1366,11 @@ final class RenderText extends RenderBox {
     // shows up as blank text rather than as a tree that has collapsed to
     // nothing. See FontRegistry.estimatedSize.
     if (face == null) return FontRegistry.estimatedSize(_text, _fontSize);
-    // A fallback face changes the advances, and only the paragraph knows
-    // them; measuring the single run would size the box for `.notdef`s.
-    if (_fallsBack && !_hasHardBreak) {
-      return uiTextPainter.layout(_text, face).size;
+    // A fallback face, or a style the paragraph carries, changes the
+    // advances, and only the paragraph knows them; measuring the single run
+    // would size the box for `.notdef`s or without the spacing.
+    if (_needsSpans || (_fallsBack && !_hasHardBreak)) {
+      return _layoutParagraph(face, double.infinity).size;
     }
     return uiTextPainter.measure(_text, face);
   }
@@ -902,18 +1383,10 @@ final class RenderText extends RenderBox {
       size = constraints.constrain(_naturalSize);
       return;
     }
-    _paragraph = uiTextPainter.layout(
-      _text,
+    _paragraph = _layoutParagraph(
       face,
-      maxWidth: _layoutWidth(
+      _layoutWidth(
           constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity),
-      style: paragraph.ParagraphStyle(
-        align: _textAlign,
-        breakWords: _breakWords,
-        maxLines: _maxLines,
-        ellipsis: _ellipsis,
-        heightMultiplier: _heightMultiplier,
-      ),
     );
     // Lines centred or right-aligned were placed across the layout width,
     // so the box is that wide: shrunk to the longest line, the offset would
@@ -934,43 +1407,17 @@ final class RenderText extends RenderBox {
   double computeMinIntrinsicWidth(double height) {
     final ScaledTypeface? face = font;
     if (!_usesParagraph || face == null) return _naturalSize.width;
-    return uiTextPainter
-        .layout(
-          _text,
-          face,
-          maxWidth: _layoutWidth(0),
-          style: paragraph.ParagraphStyle(
-            align: _textAlign,
-            breakWords: _breakWords,
-            maxLines: _maxLines,
-            ellipsis: _ellipsis,
-            heightMultiplier: _heightMultiplier,
-          ),
-        )
-        .size
-        .width;
+    return _layoutParagraph(face, _layoutWidth(0)).size.width;
   }
 
   @override
   double computeMaxIntrinsicWidth(double height) {
     final ScaledTypeface? face = font;
-    if (!_hasHardBreak || face == null) return _naturalSize.width;
+    if ((!_hasHardBreak && !_needsSpans) || face == null) {
+      return _naturalSize.width;
+    }
     // The widest line, not the whole text as one line.
-    return uiTextPainter
-        .layout(
-          _text,
-          face,
-          maxWidth: double.infinity,
-          style: paragraph.ParagraphStyle(
-            align: _textAlign,
-            breakWords: _breakWords,
-            maxLines: _maxLines,
-            ellipsis: _ellipsis,
-            heightMultiplier: _heightMultiplier,
-          ),
-        )
-        .size
-        .width;
+    return _layoutParagraph(face, double.infinity).size.width;
   }
 
   @override
@@ -982,21 +1429,7 @@ final class RenderText extends RenderBox {
   double _intrinsicHeightFor(double width) {
     final ScaledTypeface? face = font;
     if (!_usesParagraph || face == null) return _naturalSize.height;
-    return uiTextPainter
-        .layout(
-          _text,
-          face,
-          maxWidth: _layoutWidth(width),
-          style: paragraph.ParagraphStyle(
-            align: _textAlign,
-            breakWords: _breakWords,
-            maxLines: _maxLines,
-            ellipsis: _ellipsis,
-            heightMultiplier: _heightMultiplier,
-          ),
-        )
-        .size
-        .height;
+    return _layoutParagraph(face, _layoutWidth(width)).size.height;
   }
 
   /// The face's ascent: the distance from the top of the line box down to the
@@ -1027,8 +1460,69 @@ final class RenderText extends RenderBox {
     return baseline == TextBaseline.alphabetic ? ascent : size.height;
   }
 
+  // --- links ---------------------------------------------------------------
+
+  /// The recognizer of the leaf whose glyphs are under [position], or null.
+  ///
+  /// Asked of the selection boxes rather than of `getPositionForOffset`:
+  /// the nearest text position always exists, even far to the right of a
+  /// short last line, and a link must not fire from a click on empty space
+  /// beside it.
+  GestureRecognizer? _recognizerAt(Offset position) {
+    final paragraph.Paragraph? laid = _paragraph;
+    if (laid == null || _links.isEmpty) return null;
+    for (final link in _links) {
+      for (final paragraph.TextBox box
+          in laid.getBoxesForSelection(link.start, link.end)) {
+        if (box.rect.contains(position)) return link.recognizer;
+      }
+    }
+    return null;
+  }
+
+  /// Hit only over a link's glyphs - see the class comment.
   @override
-  bool hitTestSelf(Offset position) => false;
+  bool hitTestSelf(Offset position) =>
+      _links.isNotEmpty && _recognizerAt(position) != null;
+
+  @override
+  void handlePointerEvent(PointerEvent event) {
+    if (event is PointerDownEvent) {
+      final GestureRecognizer? recognizer =
+          _recognizerAt(globalToLocal(event.logicalPosition));
+      if (recognizer != null && recognizer.addPointer(event)) {
+        _pressed.add(recognizer);
+      }
+      return;
+    }
+    if (_pressed.isEmpty) return;
+    for (final GestureRecognizer recognizer in _pressed.toList()) {
+      recognizer.routeEvent(event);
+    }
+    if (event is PointerUpEvent || event is PointerCancelEvent) {
+      _pressed.removeWhere(
+        (GestureRecognizer recognizer) => recognizer.trackedPointerCount == 0,
+      );
+    }
+  }
+
+  /// A hand over a link, as Flutter's `TextSpan` defaults it to.
+  @override
+  SystemCursor? cursorFor(PointerEvent event) =>
+      _recognizerAt(globalToLocal(event.logicalPosition)) == null
+          ? null
+          : SystemCursor.hand;
+
+  @override
+  void detach() {
+    // A recognizer still seated in an arena for a node that left the tree
+    // would hold that arena open, as `RenderGestureDetector.detach` explains.
+    for (final GestureRecognizer recognizer in _pressed) {
+      recognizer.cancelPending();
+    }
+    _pressed.clear();
+    super.detach();
+  }
 
   @override
   void paint(DisplayList list, Offset offset) {
@@ -1037,8 +1531,9 @@ final class RenderText extends RenderBox {
     final int paint = list.addPaint(colorArgb: _color.value, antiAlias: true);
     final laidOut = _paragraph;
     if (_usesParagraph && laidOut != null) {
-      final bool clip =
-          laidOut.size.width > size.width || laidOut.size.height > size.height;
+      final bool clip = _clipsOverflow &&
+          (laidOut.size.width > size.width ||
+              laidOut.size.height > size.height);
       if (clip) {
         list
           ..save()
@@ -1053,7 +1548,7 @@ final class RenderText extends RenderBox {
     final GlyphRun run = uiTextPainter.shapeRun(_text, face);
     // Clipped to the box layout gave it, which may be narrower than the text
     // asked for: a constrained parent must not have text spill out of it.
-    final bool clip = run.width > size.width;
+    final bool clip = _clipsOverflow && run.width > size.width;
     if (clip) {
       list
         ..save()
