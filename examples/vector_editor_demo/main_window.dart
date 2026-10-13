@@ -375,6 +375,7 @@ class MainWindowState extends State<MainWindow> {
     _fitPending();
     final theme = model.theme;
     final catalog = CommandCatalog(model: model, services: _services);
+    model.nativeMenuAvailable = PlatformMenuBar.hasNativeMenuBar(context);
     final menus = catalog.menus;
 
     // ComboBoxScope has to sit above everything that hosts a combo box, for
@@ -452,6 +453,7 @@ class MainWindowState extends State<MainWindow> {
                       EditorMenuBar(
                         menus: menus,
                         controllers: model.menuControllers,
+                        native: model.nativeMenuBar,
                       ),
                       StandardToolbar(commands: catalog.standardToolbar),
                       ContextPanel(model: model),

@@ -71,6 +71,10 @@ final class _RecordingSink with HostMessageSinkAdapter {
       events.add('clipboard:$request:${result.name}');
 
   @override
+  void onMenuAction(int generation, int id) =>
+      events.add('menu:$generation:$id');
+
+  @override
   void onError(String code) => events.add('error:$code');
 
   @override
@@ -210,6 +214,23 @@ void main() {
       'clipboard:10:written',
       'clipboard:11:failed',
     ]);
+  });
+
+  test('a menu choice carries the generation it was installed under', () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(utf8.encode(
+      'MENU=ACTION:3:17\n'
+      'MENU=ACTION:3\n'
+      'MENU=ACTION:x:1\n',
+    ));
+
+    expect(sink.events, <String>[
+      'menu:3:17',
+      'error:BAD_MENU_ACTION',
+      'error:BAD_MENU_ACTION',
+    ]);
+    expect(HostCommands.menuSet(4), 'MENU_SET 4\n');
+    expect(HostCommands.menuAppend('e30='), 'MENU_APPEND e30=\n');
   });
 
   test('an empty piece is a piece, not a malformed line', () {

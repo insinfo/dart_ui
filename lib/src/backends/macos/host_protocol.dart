@@ -311,6 +311,10 @@ abstract interface class HostMessageSink {
   /// `A11Y_DUMP=<line>`: one element of a `SYNTH_A11Y_DUMP`, or `END`.
   void onAccessibilityDump(String line);
 
+  /// `MENU=ACTION:<generation>:<id>`: the user chose item [id] of the menus
+  /// a `MENU_SET <generation>` installed in the menu bar.
+  void onMenuAction(int generation, int id);
+
   void onAck(HostAckKind kind, int value);
 
   /// `SURFACE_OK <id> <w>x<h>`, the deprecated lookup path. [slot] is -1 when
@@ -407,6 +411,9 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onAccessibilityDump(String line) {}
+
+  @override
+  void onMenuAction(int generation, int id) {}
 
   @override
   void onAck(HostAckKind kind, int value) {}
@@ -734,6 +741,19 @@ final class HostProtocolParser {
       case 0x45: // 'E'
         if (_startsWith('ERROR=')) return _sink.onError(_stringFrom(6));
       case 0x4D: // 'M'
+        if (_startsWith('MENU=ACTION:')) {
+          _cursor = 12;
+          final int generation = _readInt();
+          if (generation == kHostFieldMissing ||
+              _cursor >= _length ||
+              _line[_cursor] != _kColon) {
+            return _sink.onError('BAD_MENU_ACTION');
+          }
+          _cursor++;
+          final int id = _readInt();
+          if (id == kHostFieldMissing) return _sink.onError('BAD_MENU_ACTION');
+          return _sink.onMenuAction(generation, id);
+        }
         if (_startsWith('MAIN_THREAD=')) {
           _cursor = 12;
           final value = _readInt();
@@ -1297,6 +1317,15 @@ final class HostCommands {
   /// Replaces the pasteboard's text with the pieces sent so far for
   /// [request]. Answered by `CLIPBOARD=<request>:WRITTEN|FAILED`.
   static String clipboardWrite(int request) => 'CLIPBOARD_WRITE $request\n';
+
+  /// One base64 piece of the menu description a [menuSet] installs, at most
+  /// [kMacosHostClipboardChunk] long.
+  static String menuAppend(String base64) => 'MENU_APPEND $base64\n';
+
+  /// Replaces the application's menus with the description sent so far by
+  /// [menuAppend] (JSON, see `MacosNativeMenu`), or takes them out when none
+  /// was sent. Choices come back as `MENU=ACTION:<generation>:<id>`.
+  static String menuSet(int generation) => 'MENU_SET $generation\n';
 
   static String setTitle(String title) => 'SET_TITLE $title\n';
 

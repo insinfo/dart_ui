@@ -19,6 +19,7 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import '../../foundation/diagnostics.dart';
 import 'host_process.dart';
@@ -151,6 +152,8 @@ final class MacosHostSupervisor {
   double? _boundsWidth;
   double? _boundsHeight;
   String? _cursor;
+  String? _menu;
+  int _menuGeneration = 0;
   bool _visible = true;
 
   MacosSupervisorState get state => _state;
@@ -199,6 +202,30 @@ final class MacosHostSupervisor {
   void rememberCursor(String cursor) {
     _cursor = cursor;
     send(HostCommands.setCursor(cursor));
+  }
+
+  /// Installs the menu bar description [json] (null for none) under
+  /// [generation], and keeps it for a host started after a crash.
+  void rememberMenu(int generation, String? json) {
+    _menu = json;
+    _menuGeneration = generation;
+    _sendMenu();
+  }
+
+  void _sendMenu() {
+    final String? json = _menu;
+    if (json != null) {
+      final String encoded = base64.encode(utf8.encode(json));
+      for (var start = 0;
+          start < encoded.length;
+          start += kMacosHostClipboardChunk) {
+        final int end = start + kMacosHostClipboardChunk < encoded.length
+            ? start + kMacosHostClipboardChunk
+            : encoded.length;
+        send(HostCommands.menuAppend(encoded.substring(start, end)));
+      }
+    }
+    send(HostCommands.menuSet(_menuGeneration));
   }
 
   void rememberVisibility(bool visible) {
@@ -376,6 +403,7 @@ final class MacosHostSupervisor {
     }
     final cursor = _cursor;
     if (cursor != null) send(HostCommands.setCursor(cursor));
+    if (_menu != null) _sendMenu();
     // Visibility last: a window that is shown before it is placed flashes at
     // the wrong position, which after a crash looks like a second failure.
     send(_visible ? HostCommands.show() : HostCommands.hide());

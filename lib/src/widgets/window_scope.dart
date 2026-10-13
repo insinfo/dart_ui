@@ -3,6 +3,7 @@ library;
 
 import '../geometry/offset.dart';
 import '../geometry/size.dart';
+import '../platform/native_menu.dart';
 import '../platform/native_window.dart';
 import 'widget.dart';
 
@@ -27,6 +28,19 @@ abstract interface class WindowController {
 
   /// [local] (a position in this window, logical pixels) on the screen.
   Offset toScreen(Offset local);
+
+  /// Whether this window can put menus in the operating system's menu bar -
+  /// the macOS one. See [setNativeMenuBar].
+  bool get hasNativeMenuBar;
+
+  /// Puts [menus] in the operating system's menu bar while this window is
+  /// the active one; [onSelected] gets the id of the item chosen. Null takes
+  /// them out. Does nothing where [hasNativeMenuBar] is false. `PlatformMenuBar`
+  /// is the widget over this.
+  void setNativeMenuBar(
+    List<NativeMenu>? menus,
+    void Function(int id) onSelected,
+  );
 
   /// Opens a window that belongs to this one - a floating panel, a tool
   /// palette - showing [child], on every platform.

@@ -168,6 +168,19 @@ class EditorModel {
           systemDark == false ? ThemeData.studioLight : ThemeData.studioDark,
       };
 
+  /// Whether the menus are in the system's menu bar (macOS) rather than in
+  /// the window - the user's choice, offered where [nativeMenuAvailable].
+  bool nativeMenuBar = false;
+
+  /// Whether this window can put its menus in the system's bar; set by the
+  /// window as it builds.
+  bool nativeMenuAvailable = false;
+
+  void setNativeMenuBar(bool value) {
+    nativeMenuBar = value;
+    refresh(value ? 'Menus in the macOS menu bar' : 'Menus in the window');
+  }
+
   void setThemeMode(EditorThemeMode mode) {
     themeMode = mode;
     refresh('Theme: ${mode.label}');
@@ -207,9 +220,6 @@ class EditorModel {
   HorizontalAlign? horizontalAlign = HorizontalAlign.centre;
   VerticalAlign? verticalAlign = VerticalAlign.middle;
   bool alignAsGroup = true;
-
-  /// The menu whose drop-down is open, by index, or -1.
-  int openMenu = -1;
 
   /// One per menu of the menu bar, so a tool or a test can open one.
   final List<MenuController> menuControllers =

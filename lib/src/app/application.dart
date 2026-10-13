@@ -156,6 +156,7 @@ import '../platform/backend_selection.dart';
 import '../platform/clipboard.dart';
 import '../platform/drag_drop.dart';
 import '../platform/input_events.dart';
+import '../platform/native_menu.dart';
 import '../platform/native_window.dart';
 import '../platform/text_input.dart';
 import '../platform/window_events.dart';
@@ -4549,6 +4550,19 @@ final class _ApplicationWindowController implements WindowController {
 
   @override
   Offset toScreen(Offset local) => _window.nativeWindow.clientToScreen(local);
+
+  @override
+  bool get hasNativeMenuBar => _window.nativeWindow is NativeMenuBarWindow;
+
+  @override
+  void setNativeMenuBar(
+    List<NativeMenu>? menus,
+    void Function(int id) onSelected,
+  ) {
+    if (_window.nativeWindow case final NativeMenuBarWindow window) {
+      window.setNativeMenuBar(menus, onSelected);
+    }
+  }
 
   @override
   Future<ChildWindow> openChildWindow({

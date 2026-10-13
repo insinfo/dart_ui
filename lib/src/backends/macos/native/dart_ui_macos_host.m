@@ -62,9 +62,13 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 - (void)hostView:(DartUiHostView *)view
             drag:(NSString *)phase
             info:(id<NSDraggingInfo>)info;
+- (BOOL)hostView:(DartUiHostView *)view claimsKeyEquivalent:(NSEvent *)event;
 @end
 
 @class DartUiHostView;
+
+static void DartUiInstallMainMenu(NSApplication *application,
+                                  NSArray<NSMenu *> *userMenus);
 
 // One node of the framework's semantic tree, as AppKit's accessibility
 // clients see it. The frame is kept in the host view's points (top-left
@@ -236,6 +240,19 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 // Not for a Command or Control chord: those are shortcuts, delivered to the
 // framework as KeyEvents, and the text input system would answer them with
 // Emacs bindings through doCommandBySelector:.
+// The shortcut of an item in the framework's menus (MENU_SET) is still the
+// framework's: it arrives as a key event, exactly as with no menu bar, so a
+// text field keeps its Command+C and the window's own shortcut table decides
+// what the key does. Answered here, before AppKit asks the main menu - the
+// menu only shows the key.
+- (BOOL)performKeyEquivalent:(NSEvent *)event {
+  if ([self.sink hostView:self claimsKeyEquivalent:event]) {
+    [self keyDown:event];
+    return YES;
+  }
+  return [super performKeyEquivalent:event];
+}
+
 - (void)keyDown:(NSEvent *)event {
   [self.sink hostView:self reportEvent:@"keyDown" of:event];
   if ((event.modifierFlags &
@@ -634,6 +651,12 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 // Base64 pieces of a CLIPBOARD_WRITE still being sent, by request number.
 @property(nonatomic, strong)
     NSMutableDictionary<NSNumber *, NSMutableString *> *clipboardPending;
+// The framework's menus: the base64 pieces of the next MENU_SET, the
+// generation of the installed ones (echoed in MENU=ACTION) and the shortcuts
+// they show, as "<mask>:<key>", which the view hands back to the framework.
+@property(nonatomic, strong) NSMutableString *menuPending;
+@property(nonatomic, assign) long long menuGeneration;
+@property(nonatomic, strong) NSSet<NSString *> *menuKeys;
 - (void)reportScreens;
 @end
 
@@ -1975,6 +1998,11 @@ static const NSUInteger kClipboardChunk = 6000;
     self.window.title = [command substringFromIndex:10];
     printf("TITLE_OK\n");
     fflush(stdout);
+  } else if ([command hasPrefix:@"MENU_APPEND "]) {
+    if (self.menuPending == nil) self.menuPending = [NSMutableString string];
+    [self.menuPending appendString:[command substringFromIndex:12]];
+  } else if ([command hasPrefix:@"MENU_SET "]) {
+    [self installMenus:[[command substringFromIndex:9] longLongValue]];
   } else if ([command hasPrefix:@"SET_BOUNDS "]) {
     [self setBoundsFromCommand:command];
   } else if ([command hasPrefix:@"SET_STATE "]) {
@@ -2205,6 +2233,114 @@ static const NSUInteger kClipboardChunk = 6000;
   [self.window miniaturize:nil];
 }
 
+// --- the framework's menus --------------------------------------------------
+//
+// MENU_SET puts the menus described by the MENU_APPEND pieces before it (JSON,
+// see macos_native_menu.dart) between the application menu and Window; with
+// no pieces it takes them out. A choice goes back as MENU=ACTION with the
+// generation it was installed under, so a click that crosses a replacement
+// on the pipe is recognised as stale.
+
+static const NSEventModifierFlags kDartUiMenuModifiers =
+    NSEventModifierFlagShift | NSEventModifierFlagControl |
+    NSEventModifierFlagOption | NSEventModifierFlagCommand;
+
+static NSEventModifierFlags DartUiMenuMask(long mask) {
+  NSEventModifierFlags flags = 0;
+  if (mask & 1) flags |= NSEventModifierFlagShift;
+  if (mask & 2) flags |= NSEventModifierFlagControl;
+  if (mask & 4) flags |= NSEventModifierFlagOption;
+  if (mask & 8) flags |= NSEventModifierFlagCommand;
+  return flags;
+}
+
+static NSString *DartUiMenuKey(NSEventModifierFlags flags, NSString *key) {
+  // The Delete key's event carries DEL; a menu spells it backspace.
+  if ([key isEqualToString:@"\x7f"]) key = @"\b";
+  return [NSString stringWithFormat:@"%lu:%@",
+                                    (unsigned long)(flags & kDartUiMenuModifiers),
+                                    key.lowercaseString];
+}
+
+- (NSMenu *)menuTitled:(NSString *)title
+               entries:(NSArray *)entries
+                  keys:(NSMutableSet<NSString *> *)keys {
+  NSMenu *menu = [[NSMenu alloc] initWithTitle:title];
+  // The framework says what is enabled; AppKit's validation would enable
+  // every item whose target answers the action.
+  menu.autoenablesItems = NO;
+  for (id entry in entries) {
+    if (![entry isKindOfClass:[NSDictionary class]]) continue;
+    NSString *type = entry[@"t"];
+    NSString *label = [entry[@"l"] isKindOfClass:[NSString class]] ? entry[@"l"] : @"";
+    if ([type isEqualToString:@"sep"]) {
+      [menu addItem:[NSMenuItem separatorItem]];
+    } else if ([type isEqualToString:@"menu"]) {
+      NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:label
+                                                    action:nil
+                                             keyEquivalent:@""];
+      item.submenu = [self menuTitled:label entries:entry[@"c"] keys:keys];
+      [menu addItem:item];
+    } else if ([type isEqualToString:@"item"]) {
+      NSString *key = [entry[@"k"] isKindOfClass:[NSString class]] ? entry[@"k"] : @"";
+      NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:label
+                                                    action:@selector(menuItemChosen:)
+                                             keyEquivalent:key];
+      item.target = self;
+      item.tag = [entry[@"id"] integerValue];
+      item.enabled = [entry[@"e"] boolValue];
+      item.state = [entry[@"x"] boolValue] ? NSControlStateValueOn
+                                            : NSControlStateValueOff;
+      if (key.length > 0) {
+        item.keyEquivalentModifierMask = DartUiMenuMask([entry[@"m"] longValue]);
+        [keys addObject:DartUiMenuKey(item.keyEquivalentModifierMask, key)];
+      }
+      [menu addItem:item];
+    }
+  }
+  return menu;
+}
+
+- (void)installMenus:(long long)generation {
+  NSString *encoded = self.menuPending ?: @"";
+  self.menuPending = nil;
+  NSArray *menus = @[];
+  if (encoded.length > 0) {
+    NSData *bytes = [[NSData alloc] initWithBase64EncodedString:encoded options:0];
+    id json = bytes == nil ? nil
+                           : [NSJSONSerialization JSONObjectWithData:bytes
+                                                             options:0
+                                                               error:NULL];
+    if (![json isKindOfClass:[NSArray class]]) {
+      [self printError:@"BAD_MENU_SET"];
+      return;
+    }
+    menus = json;
+  }
+  NSMutableSet<NSString *> *keys = [NSMutableSet set];
+  NSMutableArray<NSMenu *> *built = [NSMutableArray array];
+  for (id entry in menus) {
+    if (![entry isKindOfClass:[NSDictionary class]]) continue;
+    NSString *label = [entry[@"l"] isKindOfClass:[NSString class]] ? entry[@"l"] : @"";
+    [built addObject:[self menuTitled:label entries:entry[@"c"] keys:keys]];
+  }
+  self.menuGeneration = generation;
+  self.menuKeys = keys;
+  DartUiInstallMainMenu(NSApp, built);
+}
+
+- (void)menuItemChosen:(NSMenuItem *)sender {
+  printf("MENU=ACTION:%lld:%ld\n", self.menuGeneration, (long)sender.tag);
+  fflush(stdout);
+}
+
+- (BOOL)hostView:(DartUiHostView *)view claimsKeyEquivalent:(NSEvent *)event {
+  (void)view;
+  NSString *key = event.charactersIgnoringModifiers;
+  if (self.menuKeys.count == 0 || key.length == 0) return NO;
+  return [self.menuKeys containsObject:DartUiMenuKey(event.modifierFlags, key)];
+}
+
 - (BOOL)windowShouldClose:(NSWindow *)sender {
   (void)sender;
   if (self.protocolReady && !self.terminating) {
@@ -2260,7 +2396,12 @@ static const NSUInteger kClipboardChunk = 6000;
 // asks to close the window it was pressed in. No Edit menu: its key
 // equivalents (Cmd+C, Cmd+V, ...) would be taken before keyDown: and the
 // framework's text fields handle those keys themselves.
-static void DartUiInstallMainMenu(NSApplication *application) {
+//
+// [userMenus] are the framework's (MENU_SET), placed between the application
+// menu and Window. One of them titled Window takes the place of this one,
+// with Minimize and Close at its top, so the bar has a single Window menu.
+static void DartUiInstallMainMenu(NSApplication *application,
+                                  NSArray<NSMenu *> *userMenus) {
   NSMenu *bar = [[NSMenu alloc] init];
 
   NSMenuItem *appItem = [[NSMenuItem alloc] init];
@@ -2287,22 +2428,41 @@ static void DartUiInstallMainMenu(NSApplication *application) {
   appItem.submenu = appMenu;
   [bar addItem:appItem];
 
-  NSMenuItem *windowItem = [[NSMenuItem alloc] init];
-  NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+  NSMenu *windowMenu = nil;
+  for (NSMenu *menu in userMenus) {
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:menu.title
+                                                  action:nil
+                                           keyEquivalent:@""];
+    item.submenu = menu;
+    [bar addItem:item];
+    if (windowMenu == nil && [menu.title isEqualToString:@"Window"]) {
+      windowMenu = menu;
+    }
+  }
+  BOOL merged = windowMenu != nil;
+  if (!merged) windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];
+  NSInteger at = 0;
   // Targeted at the delegate, which owns this process's one window: a menu
   // item with no target goes to the key window, and a host that is not the
   // active application - its menu reached by an accessibility client, say -
   // has none.
-  NSMenuItem *minimize = [windowMenu addItemWithTitle:@"Minimize"
-                                               action:@selector(minimizeFromMenu:)
-                                        keyEquivalent:@"m"];
+  NSMenuItem *minimize = [windowMenu insertItemWithTitle:@"Minimize"
+                                                  action:@selector(minimizeFromMenu:)
+                                           keyEquivalent:@"m"
+                                                 atIndex:at++];
   minimize.target = application.delegate;
-  NSMenuItem *close = [windowMenu addItemWithTitle:@"Close"
-                                            action:@selector(closeFromMenu:)
-                                     keyEquivalent:@"w"];
+  NSMenuItem *close = [windowMenu insertItemWithTitle:@"Close"
+                                               action:@selector(closeFromMenu:)
+                                        keyEquivalent:@"w"
+                                              atIndex:at++];
   close.target = application.delegate;
-  windowItem.submenu = windowMenu;
-  [bar addItem:windowItem];
+  if (merged) {
+    [windowMenu insertItem:[NSMenuItem separatorItem] atIndex:at];
+  } else {
+    NSMenuItem *windowItem = [[NSMenuItem alloc] init];
+    windowItem.submenu = windowMenu;
+    [bar addItem:windowItem];
+  }
 
   application.mainMenu = bar;
   application.windowsMenu = windowMenu;
@@ -2390,7 +2550,7 @@ int main(int argc, const char *argv[]) {
     [application setActivationPolicy:isTransient
         ? NSApplicationActivationPolicyAccessory
         : NSApplicationActivationPolicyRegular];
-    if (!isTransient) DartUiInstallMainMenu(application);
+    if (!isTransient) DartUiInstallMainMenu(application, @[]);
     [application run];
   }
   return 0;

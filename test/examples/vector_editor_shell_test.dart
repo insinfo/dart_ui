@@ -251,12 +251,14 @@ void main() {
       );
 
       // The menu shows the platform's own chord: Ctrl+N on a PC, ⌘N on a Mac.
-      final file = catalog.menus.first.toMenuItems();
+      final file = catalog.menus.first.toPlatformMenu().children;
       final String newShortcut =
           platformEditingConvention == EditingConvention.mac ? '⌘N' : 'Ctrl+N';
       expect(
-          file.any(
-              (item) => item.label == 'New' && item.shortcut == newShortcut),
+          file.any((item) =>
+              item is PlatformMenuItem &&
+              item.label == 'New' &&
+              item.shortcut?.label() == newShortcut),
           isTrue);
 
       // Nothing is selected, so Group must be disabled *and* say why - a

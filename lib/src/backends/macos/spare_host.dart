@@ -200,6 +200,10 @@ final class _RelaySink with HostMessageSinkAdapter {
   void onInputDetail(HostInputDetail detail) => target?.onInputDetail(detail);
 
   @override
+  void onMenuAction(int generation, int id) =>
+      target?.onMenuAction(generation, id);
+
+  @override
   void onTextInput(String base64) => target?.onTextInput(base64);
 
   @override

@@ -8,8 +8,8 @@
 ///
 /// A command that this editor does not implement is present and **disabled with
 /// a named reason** rather than absent or silently inert. A menu that lies about
-/// what it can do is worse than one that is honest about a gap, and [MenuItem]
-/// already carries [MenuItem.disabledReason] to assistive technology.
+/// what it can do is worse than one that is honest about a gap; the reason
+/// is what a disabled toolbar button's tooltip says.
 library;
 
 import 'package:dart_ui/dart_ui.dart';
@@ -86,44 +86,26 @@ class EditorCommand {
   /// A submenu's commands; `null` entries are separators.
   final List<EditorCommand?>? children;
 
-  /// This command as a row of a framework menu: an icon or a check mark,
-  /// the label, and the shortcut in the platform's notation. A submenu when
-  /// it has [children].
-  Widget toMenuWidget() {
-    final IconData? glyph = icon;
-    final Widget leading = checked != null
-        ? (checked!
-            ? const Icon(PhosphorIcons.check, size: 14)
-            : const SizedBox(width: 14))
-        : glyph == null
-            ? const SizedBox(width: 14)
-            : Icon(glyph, size: 14);
+  /// This command as an entry of the menu bar - in the window or in the
+  /// system's bar: an icon or a check mark, the label, and the shortcut. A
+  /// submenu when it has [children].
+  PlatformMenuEntry toPlatformEntry() {
     final List<EditorCommand?>? sub = children;
     if (sub != null) {
-      return SubmenuButton(
-        leadingIcon: leading,
-        menuChildren: <Widget>[
-          for (final EditorCommand? item in sub)
-            if (item == null) const MenuDivider() else item.toMenuWidget(),
-        ],
-        child: Text(label),
+      return PlatformMenu(
+        label: label,
+        icon: icon,
+        children: EditorMenu.entries(sub),
       );
     }
-    return MenuItemButton(
-      leadingIcon: leading,
-      shortcut: shortcut?.label(),
-      onPressed: enabled ? onInvoke : null,
-      child: Text(label),
+    return PlatformMenuItem(
+      label: label,
+      icon: icon,
+      checked: checked,
+      shortcut: shortcut,
+      onSelected: enabled ? onInvoke : null,
     );
   }
-
-  MenuItem toMenuItem() => MenuItem(
-        label: checked == null ? label : '${checked! ? '✓ ' : '   '}$label',
-        shortcut: shortcut?.label(),
-        enabled: enabled,
-        disabledReason: disabledReason,
-        onSelected: enabled ? onInvoke : null,
-      );
 }
 
 /// A top-level menu and its rows. `null` in [items] is a separator.
@@ -133,9 +115,20 @@ class EditorMenu {
   final String label;
   final List<EditorCommand?> items;
 
-  List<MenuItem> toMenuItems() => <MenuItem>[
-        for (final item in items)
-          if (item == null) const MenuItem.separator() else item.toMenuItem(),
+  PlatformMenu toPlatformMenu({MenuController? controller}) => PlatformMenu(
+        label: label,
+        controller: controller,
+        children: entries(items),
+      );
+
+  /// [items] as menu entries; `null` is a divider.
+  static List<PlatformMenuEntry> entries(List<EditorCommand?> items) =>
+      <PlatformMenuEntry>[
+        for (final EditorCommand? item in items)
+          if (item == null)
+            const PlatformMenuDivider()
+          else
+            item.toPlatformEntry(),
       ];
 }
 
@@ -682,6 +675,15 @@ class CommandCatalog {
           toggleSnap,
           null,
           ...themeCommands,
+          if (model.nativeMenuAvailable) ...<EditorCommand?>[
+            null,
+            EditorCommand(
+              id: 'systemMenuBar',
+              label: 'Use the macOS menu bar',
+              checked: model.nativeMenuBar,
+              onInvoke: () => model.setNativeMenuBar(!model.nativeMenuBar),
+            ),
+          ],
         ]),
         EditorMenu(label: 'Layout', items: <EditorCommand?>[
           _todo('insertPage', 'Insert page...'),

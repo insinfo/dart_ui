@@ -27,6 +27,7 @@ import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
 import '../../platform/input_events.dart';
+import '../../platform/native_menu.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/framebuffer.dart';
@@ -39,6 +40,7 @@ import 'io_surface.dart';
 import 'macos_accessibility.dart';
 import 'macos_drag_drop.dart';
 import 'macos_input.dart';
+import 'macos_native_menu.dart';
 import 'macos_text_input.dart';
 import 'surface_pool.dart';
 
@@ -89,7 +91,8 @@ final class MacosWindow
         MacosAccessibilityWindow,
         NativeHandleWindow,
         PresentPacer,
-        WindowStateControl {
+        WindowStateControl,
+        NativeMenuBarWindow {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -473,6 +476,30 @@ final class MacosWindow
   @override
   void setCursor(SystemCursor cursor) =>
       _supervisor?.rememberCursor(cursor.name);
+
+  /// The menus in the menu bar, as last sent; null for none.
+  String? _menuJson;
+  int _menuGeneration = 0;
+  void Function(int id)? _onMenuSelected;
+
+  @override
+  void setNativeMenuBar(
+    List<NativeMenu>? menus,
+    void Function(int id) onSelected,
+  ) {
+    _onMenuSelected = onSelected;
+    final String? json = menus == null ? null : encodeMacosMenus(menus);
+    if (json == _menuJson || isDisposed) return;
+    _menuJson = json;
+    // A new generation each time: an item id is only meaningful in the menus
+    // it was sent with, and a click can cross a replacement on the pipe.
+    _supervisor?.rememberMenu(++_menuGeneration, json);
+  }
+
+  void _onMenuAction(int generation, int id) {
+    if (generation != _menuGeneration) return;
+    _onMenuSelected?.call(id);
+  }
 
   @override
   void requestRedraw([Rect? dirtyRect]) {
@@ -1104,6 +1131,10 @@ final class _HostSink with HostMessageSinkAdapter {
 
   @override
   void onAccessibilityDump(String line) => _window._onAccessibilityDump(line);
+
+  @override
+  void onMenuAction(int generation, int id) =>
+      _window._onMenuAction(generation, id);
 }
 
 /// The default factory: real `IOSurface`s.
