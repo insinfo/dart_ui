@@ -5,8 +5,8 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
+import '../engine/editor_model.dart';
 import 'commands.dart';
-import 'editor_model.dart';
 
 class EditorContextMenus {
   EditorContextMenus(this.catalog);

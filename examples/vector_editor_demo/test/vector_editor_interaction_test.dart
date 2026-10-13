@@ -36,12 +36,11 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
-
-import '../app.dart';
-import '../editor_model.dart';
-import '../main_window.dart';
-import '../metrics.dart';
-import '../toolbox.dart';
+import 'package:vector_editor_demo/src/engine/editor_model.dart';
+import 'package:vector_editor_demo/src/ui/app.dart';
+import 'package:vector_editor_demo/src/ui/main_window.dart';
+import 'package:vector_editor_demo/src/ui/metrics.dart';
+import 'package:vector_editor_demo/src/ui/toolbox.dart';
 
 /// The editor's chrome at the theme it wears on this machine.
 final ChromeMetrics _chrome =

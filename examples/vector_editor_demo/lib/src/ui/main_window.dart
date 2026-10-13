@@ -11,12 +11,12 @@ import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart';
 
+import '../engine/editor_model.dart';
 import 'canvas_area.dart';
 import 'commands.dart';
 import 'context_menus.dart';
 import 'context_panel.dart';
 import 'doc_tabs.dart';
-import 'editor_model.dart';
 import 'menu_bar.dart';
 import 'metrics.dart';
 import 'standard_toolbar.dart';

@@ -19,7 +19,7 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
-import 'editor_model.dart';
+import '../engine/editor_model.dart';
 import 'metrics.dart';
 
 /// The strip of open documents.

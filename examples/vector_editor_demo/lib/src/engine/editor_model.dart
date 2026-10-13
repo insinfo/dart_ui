@@ -7,10 +7,10 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
-import 'context_menus.dart';
+import '../ui/context_menus.dart';
+import '../ui/metrics.dart';
+import '../ui/workspace.dart';
 import 'document_api.dart';
-import 'metrics.dart';
-import 'workspace.dart';
 
 /// One open document, with its own history, selection and viewport.
 ///

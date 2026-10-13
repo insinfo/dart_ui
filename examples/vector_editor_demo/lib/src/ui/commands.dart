@@ -14,7 +14,7 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
-import 'editor_model.dart';
+import '../engine/editor_model.dart';
 import 'workspace.dart';
 
 /// Callbacks the window owns because they need the widget tree or the disk.

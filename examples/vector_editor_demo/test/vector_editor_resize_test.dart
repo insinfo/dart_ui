@@ -5,7 +5,7 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
 
-import '../app.dart';
+import 'package:vector_editor_demo/src/ui/app.dart';
 
 void main() {
   setUpAll(FrameworkFonts.install);

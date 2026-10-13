@@ -4,7 +4,7 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
-import 'editor_model.dart';
+import '../engine/editor_model.dart';
 import 'metrics.dart';
 
 /// A panel section with a caption, the `LabeledPanel` sK1 stacks its groups in.

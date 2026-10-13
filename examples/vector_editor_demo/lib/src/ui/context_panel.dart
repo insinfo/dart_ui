@@ -9,7 +9,7 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
-import 'editor_model.dart';
+import '../engine/editor_model.dart';
 import 'metrics.dart';
 
 /// The plugins a context bar can show, named after sK1's.

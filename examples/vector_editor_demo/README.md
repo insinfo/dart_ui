@@ -115,13 +115,13 @@ examples/vector_editor_demo/                    # Aplicação Desktop do Editor
 
 ```bash
 # Executar o editor com documento padrão
-dart run main.dart
+dart run
 
 # Abrir um arquivo CorelDRAW existente
-dart run main.dart meu_arquivo.cdr
+dart run meu_arquivo.cdr
 
 # Abrir um arquivo SVG existente
-dart run main.dart meu_desenho.svg
+dart run meu_desenho.svg
 ```
 
 ### Verificação sem abrir janela
@@ -140,14 +140,14 @@ Os cenários de **interação** dirigem a janela com eventos de ponteiro e tecla
 marquee, alça agarrada e cursor de texto só existem enquanto o gesto está em curso:
 
 ```bash
-dart run .../headless_shot.dart saida.png 1400 880 drag-star   # objeto arrastado
-dart run .../headless_shot.dart saida.png 1400 880 handle      # alça agarrada, redimensionando
-dart run .../headless_shot.dart saida.png 1400 880 marquee     # retângulo elástico em curso
-dart run .../headless_shot.dart saida.png 1400 880 text-edit   # texto em edição, com caret
-dart run .../headless_shot.dart saida.png 1400 880 multi       # três objetos com Shift
-dart run .../headless_shot.dart saida.png 1400 880 zoomed      # três passos de roda no cursor
-dart run .../headless_shot.dart saida.png 1400 880 rotate     # a moldura de rotação, em repouso
-dart run .../headless_shot.dart saida.png 1400 880 rotating   # um canto agarrado, girando
+dart run tool/headless_shot.dart saida.png 1400 880 drag-star   # objeto arrastado
+dart run tool/headless_shot.dart saida.png 1400 880 handle      # alça agarrada, redimensionando
+dart run tool/headless_shot.dart saida.png 1400 880 marquee     # retângulo elástico em curso
+dart run tool/headless_shot.dart saida.png 1400 880 text-edit   # texto em edição, com caret
+dart run tool/headless_shot.dart saida.png 1400 880 multi       # três objetos com Shift
+dart run tool/headless_shot.dart saida.png 1400 880 zoomed      # três passos de roda no cursor
+dart run tool/headless_shot.dart saida.png 1400 880 rotate     # a moldura de rotação, em repouso
+dart run tool/headless_shot.dart saida.png 1400 880 rotating   # um canto agarrado, girando
 ```
 
 Os testes de regressão correspondentes:

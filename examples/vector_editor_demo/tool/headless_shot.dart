@@ -15,10 +15,9 @@ library;
 import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart';
-
-import '../app.dart';
-import '../editor_model.dart';
-import '../main_window.dart';
+import 'package:vector_editor_demo/src/engine/editor_model.dart';
+import 'package:vector_editor_demo/src/ui/app.dart';
+import 'package:vector_editor_demo/src/ui/main_window.dart';
 
 Future<void> main(List<String> args) async {
   final path = args.isNotEmpty ? args[0] : 'shot.png';

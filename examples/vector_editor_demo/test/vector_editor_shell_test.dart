@@ -16,21 +16,20 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
-
-import '../app.dart';
-import '../canvas_area.dart';
-import '../commands.dart';
-import '../context_panel.dart';
-import '../doc_tabs.dart';
-import '../editor_model.dart';
-import '../main_window.dart';
-import '../menu_bar.dart';
-import '../metrics.dart';
-import '../objects_panel.dart';
-import '../standard_toolbar.dart';
-import '../status_bar.dart';
-import '../toolbox.dart';
-import '../workspace.dart';
+import 'package:vector_editor_demo/src/engine/editor_model.dart';
+import 'package:vector_editor_demo/src/ui/app.dart';
+import 'package:vector_editor_demo/src/ui/canvas_area.dart';
+import 'package:vector_editor_demo/src/ui/commands.dart';
+import 'package:vector_editor_demo/src/ui/context_panel.dart';
+import 'package:vector_editor_demo/src/ui/doc_tabs.dart';
+import 'package:vector_editor_demo/src/ui/main_window.dart';
+import 'package:vector_editor_demo/src/ui/menu_bar.dart';
+import 'package:vector_editor_demo/src/ui/metrics.dart';
+import 'package:vector_editor_demo/src/ui/objects_panel.dart';
+import 'package:vector_editor_demo/src/ui/standard_toolbar.dart';
+import 'package:vector_editor_demo/src/ui/status_bar.dart';
+import 'package:vector_editor_demo/src/ui/toolbox.dart';
+import 'package:vector_editor_demo/src/ui/workspace.dart';
 
 /// The editor's chrome at the theme it wears on this machine.
 final ChromeMetrics _chrome =

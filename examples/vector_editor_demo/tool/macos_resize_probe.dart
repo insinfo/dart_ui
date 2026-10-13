@@ -18,7 +18,7 @@ import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart';
 
-import '../app.dart';
+import 'package:vector_editor_demo/src/ui/app.dart';
 
 Future<void> main(List<String> args) async {
   FrameworkFonts.install();

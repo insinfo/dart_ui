@@ -15,7 +15,7 @@ import 'dart:math' as math;
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/macos/macos_window.dart';
 
-import '../app.dart';
+import 'package:vector_editor_demo/src/ui/app.dart';
 
 Future<void> main(List<String> args) async {
   FrameworkFonts.install();
