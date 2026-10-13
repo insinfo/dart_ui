@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 58 | 5 | 0 | 63 | 96% |
+| P0 | 59 | 4 | 0 | 63 | 97% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 66 | 7 | 102 | 175 | 40% |
+| **todas** | 67 | 6 | 102 | 175 | 40% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 90 de 105 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 91 de 106 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 129.
+Comandos registrados: 130.
 
 ## Por área
 
@@ -26,7 +26,7 @@ Comandos registrados: 129.
 | Interações no canvas | 9 | 1 | 3 | 13 | 73% |
 | Barra de propriedades | 7 | 0 | 9 | 16 | 44% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
-| Operações de objeto | 11 | 1 | 10 | 22 | 52% |
+| Operações de objeto | 12 | 0 | 10 | 22 | 55% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
 | Edição de nós | 10 | 0 | 4 | 14 | 71% |
@@ -180,7 +180,7 @@ Comandos registrados: 129.
 | ❌ | Boundary | P2 |  | tudo |
 | ❌ | Join curves / Close path | P1 |  | tudo |
 | ❌ | PowerClip | P1 |  | tudo |
-| 🟡 | Mirror, rotate | P0 | `object.flip`, `object.rotate` | no Clear transformations |
+| ✅ | Mirror, rotate | P0 | `object.flip`, `object.rotate`, `object.clearTransformations` |  |
 | ✅ | Align & distribute | P0 | `object.align`, `panel.align` |  |
 | ❌ | Barcode, QR code | P2 |  | tudo |
 | ❌ | Symmetry | P2 |  | tudo |

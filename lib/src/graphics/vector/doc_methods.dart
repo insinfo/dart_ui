@@ -1,3 +1,4 @@
+import '../../geometry/offset.dart';
 import 'constants.dart';
 import 'document.dart';
 import 'document_object.dart';
@@ -206,6 +207,61 @@ class DocumentMethods {
   /// Applies an affine transform to an object.
   void applyTrafo(SelectableObject obj, List<double> trafo) {
     obj.applyTrafo(trafo);
+  }
+
+  /// CorelDRAW's Clear Transformations: [obj] back to the shape it was
+  /// created with - unrotated, unskewed, unmirrored, at its first size - and
+  /// left centred where it is now, so the shape comes back without the
+  /// object jumping across the page.
+  ///
+  /// What "created with" is depends on the object. A rectangle's corners are
+  /// its own geometry, so its creation transform is the identity; an
+  /// ellipse, a polygon and a text keep theirs in `initialTrafo`, which is
+  /// what this model has that field for. A curve has nothing to clear: its
+  /// transforms were baked into its points. A group clears each member.
+  ///
+  /// The undoing transform goes through [SelectableObject.applyTrafo], so a
+  /// gradient fill and a scaled outline come back with the shape instead of
+  /// staying rotated over it. Returns whether anything changed.
+  bool clearTransformations(SelectableObject obj) {
+    if (obj is VectorGroup) {
+      var changed = false;
+      for (final DocumentObject child in obj.children) {
+        if (child is SelectableObject) {
+          changed = clearTransformations(child) || changed;
+        }
+      }
+      if (changed) obj.update();
+      return changed;
+    }
+    final List<double>? initial = switch (obj) {
+      VectorRectangle() => kNormalTrafo,
+      VectorCircle(:final List<double> initialTrafo) => initialTrafo,
+      VectorPolygon(:final List<double> initialTrafo) => initialTrafo,
+      VectorText(:final List<double> initialTrafo) => initialTrafo,
+      _ => null,
+    };
+    if (initial == null) return false;
+    final List<double>? undo = invertTrafo(obj.trafo);
+    if (undo == null) return false;
+    final List<double> back = multiplyTrafo(initial, undo);
+    const double tolerance = 1e-9;
+    if (<int>[0, 1, 2, 3]
+        .every((int i) => (back[i] - kNormalTrafo[i]).abs() < tolerance)) {
+      return false; // only moved: nothing to clear
+    }
+    final Offset centre = obj.cacheBbox.center;
+    obj.applyTrafo(back);
+    final Offset now = obj.cacheBbox.center;
+    obj.applyTrafo(<double>[
+      1,
+      0,
+      0,
+      1,
+      centre.dx - now.dx,
+      centre.dy - now.dy,
+    ]);
+    return true;
   }
 
   /// Moves an object by [dx], [dy] points.

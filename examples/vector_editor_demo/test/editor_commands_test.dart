@@ -98,6 +98,51 @@ void main() {
     expect(objects(), isEmpty);
   });
 
+  test('Clear Transformations brings back the shapes, centred in place', () {
+    registry
+      ..execute('shape.rectangle',
+          <String, Object?>{'x': 0, 'y': 0, 'width': 100, 'height': 40})
+      ..execute('shape.ellipse',
+          <String, Object?>{'x': 200, 'y': 0, 'width': 80, 'height': 20})
+      ..execute('edit.selectAll')
+      ..execute('object.rotate', <String, Object?>{'degrees': 30})
+      ..execute('object.flip', <String, Object?>{'direction': 'horizontal'});
+    final List<Offset> centres = <Offset>[
+      for (final SelectableObject object in objects()) object.cacheBbox.center,
+    ];
+    expect(objects().first.cacheBbox.height, greaterThan(41),
+        reason: 'rotated, the rectangle stands taller');
+
+    expect(registry.execute('object.clearTransformations').ok, isTrue);
+    final Rect rectangle = objects().first.cacheBbox;
+    final Rect ellipse = objects().last.cacheBbox;
+    expect(rectangle.width, closeTo(100, 2));
+    expect(rectangle.height, closeTo(40, 2));
+    expect(ellipse.width, closeTo(80, 2));
+    expect(ellipse.height, closeTo(20, 2));
+    for (int i = 0; i < 2; i++) {
+      expect(
+          (objects()[i].cacheBbox.center - centres[i]).distance, lessThan(0.5),
+          reason: 'cleared where it stood');
+    }
+    expect(model.active.api.undoDescription, 'Clear transformations');
+    expect(registry.execute('edit.undo').ok, isTrue);
+    expect(objects().first.cacheBbox.height, greaterThan(41));
+  });
+
+  test('a curve has nothing to clear', () {
+    registry
+      ..execute('shape.rectangle',
+          <String, Object?>{'x': 0, 'y': 0, 'width': 40, 'height': 20})
+      ..execute('selection.select', <String, Object?>{'index': 0})
+      ..execute('object.rotate', <String, Object?>{'degrees': 45})
+      ..execute('object.toCurves');
+    final Rect before = objects().single.cacheBbox;
+    expect(registry.execute('object.clearTransformations').ok, isTrue);
+    expect(objects().single.cacheBbox, before);
+    expect(model.status, contains('Nothing to clear'));
+  });
+
   test('a typo in a parameter is refused before anything is drawn', () {
     final outcome = registry.execute('shape.rectangle',
         <String, Object?>{'x': 0, 'y': 0, 'widht': 10, 'height': 10});

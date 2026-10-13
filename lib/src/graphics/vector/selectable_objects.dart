@@ -318,6 +318,25 @@ List<double> multiplyTrafo(List<double> a, List<double> b) {
   ];
 }
 
+/// The inverse of a 6-element affine transform, or null when it has none -
+/// a transform that squashed the plane onto a line.
+List<double>? invertTrafo(List<double> t) {
+  final double determinant = t[0] * t[3] - t[1] * t[2];
+  if (determinant.abs() < 1e-12) return null;
+  final double a = t[3] / determinant;
+  final double b = -t[1] / determinant;
+  final double c = -t[2] / determinant;
+  final double d = t[0] / determinant;
+  return <double>[
+    a,
+    b,
+    c,
+    d,
+    -(a * t[4] + c * t[5]),
+    -(b * t[4] + d * t[5]),
+  ];
+}
+
 /// Applies a 6-element affine transform to a point.
 Offset applyTrafoToPoint(Offset point, List<double> trafo) {
   return Offset(

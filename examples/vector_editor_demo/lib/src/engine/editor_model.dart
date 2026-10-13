@@ -1318,6 +1318,22 @@ class EditorModel {
     touch('Rotated ${degrees.toStringAsFixed(1)} degrees');
   }
 
+  /// Clear Transformations: each selected object back to the shape it was
+  /// created with, centred where it is; one undo step.
+  void clearTransformations() {
+    if (!hasSelection) return;
+    final objects = selection.selectedObjects;
+    var cleared = 0;
+    active.api.record('Clear transformations', () {
+      for (final object in objects) {
+        if (active.api.methods.clearTransformations(object)) cleared++;
+      }
+    });
+    touch(cleared == 0
+        ? 'Nothing to clear: curves keep their shape in their points'
+        : 'Cleared transformations');
+  }
+
   /// Mirrors the selection about its own centre.
   void flipSelection({required bool horizontal}) {
     if (!hasSelection) return;

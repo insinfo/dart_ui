@@ -115,6 +115,14 @@ List<CommandSpec> objectCommands(EditorContext context) {
       ),
     ),
     CommandSpec(
+      id: 'object.clearTransformations',
+      label: 'Clear Transformations',
+      description: 'Back to the shape each object was created with - '
+          'unrotated, unskewed, unmirrored, first size - centred where it is.',
+      when: context.needsSelection,
+      run: (CommandArgs args) => model.clearTransformations(),
+    ),
+    CommandSpec(
       id: 'object.move',
       label: 'Move',
       description: 'Moves the selection by dx, dy document units.',

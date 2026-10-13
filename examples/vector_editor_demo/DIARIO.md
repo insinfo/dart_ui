@@ -137,3 +137,20 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
 **Próximo passo**
 - Texto de parágrafo é a maior P0 que resta.
 
+
+### 13/10/2026, manhã
+
+**Mudou**
+- Limpar transformações (`object.clearTransformations`, em Organizar e no
+  menu de contexto Transformar): cada objeto volta à forma com que foi
+  criado, sem giro, inclinação, espelho ou escala, centrado onde está; um
+  passo de desfazer. Framework: `DocumentMethods.clearTransformations` (o
+  retângulo volta à identidade; elipse, polígono e texto ao `initialTrafo`;
+  grupos membro a membro; curvas não têm o que limpar) e `invertTrafo`. O
+  preenchimento volta junto, porque a transformação inversa passa por
+  `applyTrafo`.
+- P0 em 97% (59 feitas, 4 parciais).
+
+**Ficou pela metade**
+- Texto de parágrafo, pena caligráfica, preenchimentos de padrão e textura,
+  Colar especial.
