@@ -389,7 +389,7 @@ class MainWindowState extends State<MainWindow> implements EditorHost {
                     registry: registry,
                     items: EditorMenus.standardToolbar,
                   ),
-                  ContextPanel(model: model),
+                  ContextPanel(model: model, registry: registry),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,

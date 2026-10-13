@@ -174,6 +174,7 @@ class _MeasuredCanvas extends StatelessWidget {
           showGrid: model.showGrid,
           showGuides: model.showGuides,
           polygonCorners: model.polygonCorners,
+          freehandSmoothing: model.freehandSmoothing,
           activeLayer: session.layer,
           onZoomChanged: model.setZoom,
           onPanChanged: (pan) {

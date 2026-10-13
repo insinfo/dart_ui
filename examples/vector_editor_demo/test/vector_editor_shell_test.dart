@@ -296,6 +296,34 @@ void main() {
       harness.dispose();
     });
 
+    test('the tool leads the bar: node buttons, Freehand smoothing', () {
+      final harness = _Harness();
+      harness.frame();
+      final model = harness.model;
+      final registry = harness.windowState.registry;
+      model.selection.select(
+          model.active.layer.children.whereType<VectorRectangle>().first);
+      registry
+        ..execute('object.toCurves')
+        ..execute('tool.shape');
+      harness.frame();
+      expect(contextPluginsFor(model).first, ContextPlugin.nodes);
+      // Its buttons are commands: disabled, with the reason, until a node
+      // is picked.
+      expect(CommandIconButton.tooltipOf(registry, 'path.addNode'),
+          contains('pick nodes'));
+      registry.execute('path.selectAllNodes');
+      expect(CommandIconButton.tooltipOf(registry, 'path.addNode'), 'Add node');
+
+      registry
+        ..execute('tool.freehand')
+        ..execute('tool.freehandSmoothing', <String, Object?>{'value': 80});
+      harness.frame();
+      expect(contextPluginsFor(model).first, ContextPlugin.freehand);
+      expect(model.freehandSmoothing, 80);
+      harness.dispose();
+    });
+
     test('the rectangle tool creates a real object, undoably', () {
       final harness = _Harness();
       harness.frame();

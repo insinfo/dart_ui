@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 50 | 8 | 5 | 63 | 86% |
+| P0 | 50 | 9 | 4 | 63 | 87% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 58 | 10 | 107 | 175 | 36% |
+| **todas** | 58 | 11 | 106 | 175 | 36% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 78 de 93 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 101.
+Comandos registrados: 102.
 
 ## Por área
 
@@ -24,7 +24,7 @@ Comandos registrados: 101.
 |---|---|---|---|---|---|
 | Caixa de ferramentas | 10 | 3 | 47 | 60 | 19% |
 | Interações no canvas | 8 | 2 | 3 | 13 | 69% |
-| Barra de propriedades | 4 | 0 | 12 | 16 | 25% |
+| Barra de propriedades | 4 | 1 | 11 | 16 | 28% |
 | Dockers | 3 | 0 | 12 | 15 | 20% |
 | Operações de objeto | 10 | 2 | 10 | 22 | 50% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
@@ -127,7 +127,7 @@ Comandos registrados: 101.
 | ✅ | Rectangle: corners | P0 | teste: "a single rectangle brings up the rectangle plugin" |  |
 | ❌ | Ellipse: arc and pie | P1 |  | tudo |
 | ❌ | Polygon / Star: points | P1 |  | corner count only |
-| ❌ | Freehand, Bézier, Pen | P0 |  | tudo |
+| 🟡 | Freehand, Bézier, Pen | P0 | `tool.freehandSmoothing` | Freehand smoothing; no arrowheads or line style on the bar |
 | ❌ | Text: content and size | P0 |  | content and size; no font, style or alignment |
 | ❌ | Interactive fill | P1 |  | tudo |
 | ❌ | Transparency | P1 |  | tudo |

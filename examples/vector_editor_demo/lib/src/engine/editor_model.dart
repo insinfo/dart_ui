@@ -154,6 +154,9 @@ class EditorModel {
   /// Corner count for newly created polygons - sK1's PolygonCfgPlugin.
   int polygonCorners = 5;
 
+  /// The Freehand tool's smoothing for the next stroke, 0 to 100.
+  double freehandSmoothing = 50;
+
   FillDescriptor currentFill = const FillDescriptor.solid(Color(0xFF2196F3));
   StrokeDescriptor currentStroke = const StrokeDescriptor(
     color: Color(0xFF1A1A1A),

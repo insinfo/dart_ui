@@ -10,6 +10,7 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import '../engine/editor_model.dart';
+import 'command_icons.dart';
 import 'metrics.dart';
 
 /// The plugins a context bar can show, named after sK1's.
@@ -28,6 +29,8 @@ enum ContextPlugin {
   text,
   group,
   combine,
+  nodes,
+  freehand,
 }
 
 /// Which plugins belong on the bar right now.
@@ -40,9 +43,16 @@ List<ContextPlugin> contextPluginsFor(EditorModel model) {
 
   // sK1 prepends the polygon config plugin whenever the canvas is in polygon
   // mode, whatever else is showing.
-  final prefix = model.tool == ToolMode.polygon
-      ? <ContextPlugin>[ContextPlugin.polygonConfig]
-      : const <ContextPlugin>[];
+  // The tool's own settings come first, whatever else is showing: sK1
+  // prepends the polygon config plugin in polygon mode, and CorelDRAW's
+  // Shape tool and Freehand tool bars lead with their own buttons.
+  final prefix = switch (model.tool) {
+    ToolMode.polygon => <ContextPlugin>[ContextPlugin.polygonConfig],
+    ToolMode.freehand => <ContextPlugin>[ContextPlugin.freehand],
+    ToolMode.shaper when model.selection.syncNodeCurve() != null =>
+      <ContextPlugin>[ContextPlugin.nodes],
+    _ => const <ContextPlugin>[],
+  };
 
   if (!model.hasSelection) {
     return <ContextPlugin>[
@@ -87,9 +97,13 @@ List<ContextPlugin> contextPluginsFor(EditorModel model) {
 
 /// The contextual property bar.
 class ContextPanel extends StatelessWidget {
-  const ContextPanel({super.key, required this.model});
+  const ContextPanel({super.key, required this.model, required this.registry});
 
   final EditorModel model;
+
+  /// The buttons that are commands run through here, so their state and
+  /// tooltips are the menus'.
+  final CommandRegistry registry;
 
   @override
   Widget build(BuildContext context) {
@@ -128,9 +142,54 @@ class ContextPanel extends StatelessWidget {
         ContextPlugin.polygon => _PolygonPlugin(model: model),
         ContextPlugin.polygonConfig => _PolygonConfigPlugin(model: model),
         ContextPlugin.text => _TextPlugin(model: model),
-        ContextPlugin.group => _GroupPlugin(model: model),
-        ContextPlugin.combine => _CombinePlugin(model: model),
+        ContextPlugin.group => _commands(const <String>[
+            'object.group',
+            'object.ungroup',
+          ]),
+        ContextPlugin.combine => _commands(const <String>[
+            'object.combine',
+            'object.breakApart',
+            'object.weld',
+            'object.trim',
+            'object.intersect',
+          ]),
+        ContextPlugin.nodes => _commands(const <String?>[
+            'path.addNode',
+            'path.deleteNodes',
+            null,
+            'path.joinNodes',
+            'path.breakNode',
+            null,
+            'path.toLine',
+            'path.toCurve',
+            null,
+            'path.cusp',
+            'path.smooth',
+            'path.symmetrical',
+            null,
+            'path.reverse',
+            'path.close',
+            'path.selectAllNodes',
+          ]),
+        ContextPlugin.freehand =>
+          _FreehandPlugin(model: model, registry: registry),
       };
+
+  /// A row of command buttons; null is a gap between groups.
+  Widget _commands(List<String?> ids) => Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: <Widget>[
+          for (final String? id in ids)
+            if (id == null)
+              const SizedBox(width: 6)
+            else
+              CommandIconButton(
+                registry: registry,
+                command: id,
+                icon: commandIcon(id) ?? PhosphorIcons.question,
+              ),
+        ],
+      );
 }
 
 // ---------------------------------------------------------------------------
@@ -709,58 +768,26 @@ class _TextPluginState extends State<_TextPlugin> {
   }
 }
 
-/// Group / ungroup - sK1's GroupPlugin.
-class _GroupPlugin extends StatelessWidget {
-  const _GroupPlugin({required this.model});
+/// Freehand smoothing for the next stroke - CorelDRAW's Freehand bar.
+class _FreehandPlugin extends StatelessWidget {
+  const _FreehandPlugin({required this.model, required this.registry});
 
   final EditorModel model;
+  final CommandRegistry registry;
 
   @override
-  Widget build(BuildContext context) {
-    final canGroup = model.selection.count >= 2;
-    final canUngroup = model.singleSelection is VectorGroup;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: <Widget>[
-        _BarButton(
-          icon: PhosphorIcons.stack,
-          tooltip: canGroup
-              ? 'Group (${const KeyGesture(logicalKeyG, command: true).label()})'
-              : 'Group - select two objects',
-          onTap: canGroup ? model.group : null,
-        ),
-        _BarButton(
-          icon: PhosphorIcons.circlesThree,
-          tooltip: canUngroup
-              ? 'Ungroup (${const KeyGesture(logicalKeyU, command: true).label()})'
-              : 'Ungroup - select exactly one group',
-          onTap: canUngroup ? model.ungroup : null,
-        ),
-      ],
-    );
-  }
-}
-
-/// Combine / break apart - sK1's CombinePlugin. Both refuse for now, with the
-/// reason in the tooltip rather than a button that does nothing.
-class _CombinePlugin extends StatelessWidget {
-  const _CombinePlugin({required this.model});
-
-  final EditorModel model;
-
-  @override
-  Widget build(BuildContext context) => const Row(
+  Widget build(BuildContext context) => Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: <Widget>[
-          _BarButton(
-            icon: PhosphorIcons.circlesFour,
-            tooltip: 'Combine - path booleans are not implemented yet',
-            onTap: null,
-          ),
-          _BarButton(
-            icon: PhosphorIcons.circleDashed,
-            tooltip: 'Break apart - path booleans are not implemented yet',
-            onTap: null,
+          const _Label('Smoothing:'),
+          _Field(
+            value: model.freehandSmoothing,
+            width: 52,
+            decimals: 0,
+            min: 0,
+            max: 100,
+            onChanged: (double v) => registry.execute(
+                'tool.freehandSmoothing', <String, Object?>{'value': v}),
           ),
         ],
       );

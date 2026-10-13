@@ -109,6 +109,19 @@ List<CommandSpec> viewCommands(EditorContext context) {
       'Snapping off',
       shortcut: const KeyGesture(logicalKeyG, alt: true),
     ),
+    CommandSpec(
+      id: 'tool.freehandSmoothing',
+      label: 'Freehand smoothing',
+      description: 'How far, 0 to 100, the Freehand tool may smooth a stroke.',
+      params: const <CommandParam>[
+        CommandParam('value', CommandParamType.number, required: true),
+      ],
+      run: (CommandArgs args) {
+        model.freehandSmoothing = args.number('value').clamp(0, 100).toDouble();
+        model.refresh('Freehand smoothing ${model.freehandSmoothing.round()}');
+        return model.freehandSmoothing;
+      },
+    ),
     for (final (String id, String label, ToolMode mode, int key)
         in kToolCommands)
       CommandSpec(
