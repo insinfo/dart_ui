@@ -153,6 +153,27 @@ void main() {
     expect(log, <String>['delete']);
   });
 
+  test('of two commands on one key, the one that can run gets it', () {
+    final shared = CommandRegistry()
+      ..register(CommandSpec(
+        id: 'object.alignBottom',
+        label: 'Align bottom',
+        shortcut: const KeyGesture(0x42),
+        enabled: (_) => selected,
+        run: (_) => log.add('align'),
+      ))
+      ..register(CommandSpec(
+        id: 'tool.pen',
+        label: 'Pen',
+        shortcut: const KeyGesture(0x42),
+        run: (_) => log.add('pen'),
+      ));
+    shared.keyBindings()[const KeyGesture(0x42)]!();
+    selected = true;
+    shared.keyBindings()[const KeyGesture(0x42)]!();
+    expect(log, <String>['pen', 'align']);
+  });
+
   group('menus from command ids', () {
     const List<SubmenuSpec> menus = <SubmenuSpec>[
       SubmenuSpec('Edit', <MenuSpecEntry>[

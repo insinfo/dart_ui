@@ -57,8 +57,10 @@ jobs:
       - name: Install dependencies
         run: dart pub get
 
+      # The framework only: every folder of examples/ is a project of its own,
+      # analysed after its own `pub get` by examples.yml.
       - name: Analyze
-        run: dart analyze
+        run: dart analyze bin lib test tool
 
   # A inspeção de ambiente dos runners vive em sanity.yml (semanal/manual):
   # ela não exercita o código do projeto e o runner macOS custa 10x minutos.

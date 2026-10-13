@@ -113,8 +113,7 @@ final class EditorMenus {
               params: <String, Object?>{'direction': 'vertical'},
               label: 'Flip vertical'),
           _,
-          CommandItem('panel.align',
-              label: 'Align and Distribute...', checkable: false),
+          SubmenuSpec('Align and Distribute', _alignAndDistribute),
           SubmenuSpec('Order', _order),
           _,
           CommandItem('object.group'),
@@ -157,6 +156,27 @@ final class EditorMenus {
           CommandItem('help.about'),
         ]),
       ];
+
+  static const List<MenuSpecEntry> _alignAndDistribute = <MenuSpecEntry>[
+    CommandItem('object.alignLeft'),
+    CommandItem('object.alignRight'),
+    CommandItem('object.alignTop'),
+    CommandItem('object.alignBottom'),
+    CommandItem('object.alignCentersVertically'),
+    CommandItem('object.alignCentersHorizontally'),
+    MenuSeparator(),
+    CommandItem('object.centerToPage'),
+    MenuSeparator(),
+    CommandItem('object.distribute',
+        params: <String, Object?>{'direction': 'horizontal'},
+        label: 'Distribute horizontally'),
+    CommandItem('object.distribute',
+        params: <String, Object?>{'direction': 'vertical'},
+        label: 'Distribute vertically'),
+    MenuSeparator(),
+    CommandItem('panel.align',
+        label: 'Align and Distribute...', checkable: false),
+  ];
 
   static const List<MenuSpecEntry> _order = <MenuSpecEntry>[
     CommandItem('object.toFront'),

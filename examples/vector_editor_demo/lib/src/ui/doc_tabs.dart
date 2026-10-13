@@ -1,4 +1,4 @@
-/// The document tab strip - sK1's `doctabs.py`.
+/// 
 ///
 /// A tab shows the document name with sK1's `*` marker for unsaved changes, and
 /// carries its own close button.

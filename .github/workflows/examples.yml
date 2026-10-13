@@ -10,7 +10,7 @@ on:
   pull_request:
 
 env:
-  DART_SDK_VERSION: stable
+  DART_SDK_VERSION: '3.6.2'
 
 jobs:
   examples:

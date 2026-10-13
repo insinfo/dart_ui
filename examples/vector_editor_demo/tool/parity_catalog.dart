@@ -129,7 +129,8 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
       evidence: 'a plain click takes the top object, Alt+click the one '
           'below it'),
   ParityFeature(_canvas, 'Tab / Shift+Tab: next object', 'P2'),
-  ParityFeature(_canvas, 'Esc: deselect', 'P0'),
+  ParityFeature(_canvas, 'Esc: deselect', 'P0',
+      commands: <String>['edit.deselect'], evidence: 'Esc drops the selection'),
   ParityFeature(_canvas, 'Handles: scale, then rotate and skew', 'P0',
       evidence: 'clicking a selected object toggles the frame, and again '
           'toggles back'),
@@ -223,12 +224,24 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   ParityFeature(_object, 'Symmetry', 'P2'),
 
   // --- align keys -------------------------------------------------------------
-  ParityFeature(_align, 'L / R', 'P0'),
-  ParityFeature(_align, 'T / B', 'P0'),
-  ParityFeature(_align, 'C', 'P0'),
-  ParityFeature(_align, 'E', 'P0'),
-  ParityFeature(_align, 'P', 'P0'),
-  ParityFeature(_align, 'Shift+L/R/T/B: distribute', 'P1'),
+  ParityFeature(_align, 'L / R', 'P0',
+      commands: <String>['object.alignLeft', 'object.alignRight'],
+      evidence: 'L lines the selection up on the last object selected'),
+  ParityFeature(_align, 'T / B', 'P0',
+      commands: <String>['object.alignTop', 'object.alignBottom'],
+      evidence: 'B aligns to the bottom with a selection, and is the pen '
+          'without'),
+  ParityFeature(_align, 'C', 'P0',
+      commands: <String>['object.alignCentersVertically']),
+  ParityFeature(_align, 'E', 'P0',
+      commands: <String>['object.alignCentersHorizontally']),
+  ParityFeature(_align, 'P', 'P0',
+      commands: <String>['object.centerToPage'],
+      evidence: 'P centres one object on the page'),
+  ParityFeature(_align, 'Shift+L/R/T/B: distribute', 'P1',
+      commands: <String>['object.distribute'],
+      partial: 'distributes centres from the Align panel and by command; '
+          'the Shift keys are not bound'),
   ParityFeature(_align, 'Shift+C / Shift+E', 'P1'),
   ParityFeature(_align, 'Shift+P / Shift+A', 'P1'),
 

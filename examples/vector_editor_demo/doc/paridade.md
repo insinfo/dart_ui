@@ -7,27 +7,27 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 29 | 8 | 26 | 63 | 52% |
-| P1 | 5 | 1 | 38 | 44 | 13% |
+| P0 | 35 | 8 | 20 | 63 | 62% |
+| P1 | 5 | 2 | 37 | 44 | 14% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 35 | 9 | 131 | 175 | 23% |
+| **todas** | 41 | 10 | 124 | 175 | 26% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 51 de 72 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 60 de 81 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 74.
+Comandos registrados: 82.
 
 ## Por área
 
 | área | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
 | Caixa de ferramentas | 8 | 3 | 49 | 60 | 16% |
-| Interações no canvas | 7 | 2 | 4 | 13 | 62% |
+| Interações no canvas | 8 | 2 | 3 | 13 | 69% |
 | Barra de propriedades | 3 | 0 | 13 | 16 | 19% |
 | Dockers | 3 | 0 | 12 | 15 | 20% |
 | Operações de objeto | 5 | 2 | 15 | 22 | 27% |
-| Alinhar e distribuir (teclas) | 0 | 0 | 8 | 8 | 0% |
+| Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
 | Edição de nós | 0 | 0 | 14 | 14 | 0% |
 | Encaixe, guias, réguas e grade | 3 | 1 | 3 | 7 | 50% |
@@ -108,7 +108,7 @@ Comandos registrados: 74.
 | ❌ | Ctrl+click: inside a group | P1 |  | tudo |
 | ✅ | Alt+click: the object below | P1 | teste: "a plain click takes the top object, Alt+click the one below it" |  |
 | ❌ | Tab / Shift+Tab: next object | P2 |  | tudo |
-| ❌ | Esc: deselect | P0 |  | tudo |
+| ✅ | Esc: deselect | P0 | `edit.deselect`, teste: "Esc drops the selection" |  |
 | ✅ | Handles: scale, then rotate and skew | P0 | teste: "clicking a selected object toggles the frame, and again toggles back" |  |
 | ❌ | Right-drag: copy here | P1 |  | tudo |
 | 🟡 | Numpad +: duplicate in place | P1 | `edit.duplicate` | Ctrl+D duplicates; the numpad key is not bound |
@@ -189,12 +189,12 @@ Comandos registrados: 74.
 
 | | funcionalidade | prio | como | falta |
 |---|---|---|---|---|
-| ❌ | L / R | P0 |  | tudo |
-| ❌ | T / B | P0 |  | tudo |
-| ❌ | C | P0 |  | tudo |
-| ❌ | E | P0 |  | tudo |
-| ❌ | P | P0 |  | tudo |
-| ❌ | Shift+L/R/T/B: distribute | P1 |  | tudo |
+| ✅ | L / R | P0 | `object.alignLeft`, `object.alignRight`, teste: "L lines the selection up on the last object selected" |  |
+| ✅ | T / B | P0 | `object.alignTop`, `object.alignBottom`, teste: "B aligns to the bottom with a selection, and is the pen without" |  |
+| ✅ | C | P0 | `object.alignCentersVertically` |  |
+| ✅ | E | P0 | `object.alignCentersHorizontally` |  |
+| ✅ | P | P0 | `object.centerToPage`, teste: "P centres one object on the page" |  |
+| 🟡 | Shift+L/R/T/B: distribute | P1 | `object.distribute` | distributes centres from the Align panel and by command; the Shift keys are not bound |
 | ❌ | Shift+C / Shift+E | P1 |  | tudo |
 | ❌ | Shift+P / Shift+A | P1 |  | tudo |
 

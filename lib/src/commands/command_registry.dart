@@ -209,7 +209,10 @@ final class CommandRegistry {
           ? null
           : () => execute(command.id);
       for (final KeyGesture key in keys) {
-        bindings.putIfAbsent(key, () => run);
+        // Two commands may share a key - CorelDRAW's B aligns the selection
+        // to the bottom and, with nothing selected, picks a tool. The one
+        // that can run now wins; the first registered breaks a tie.
+        if (bindings[key] == null) bindings[key] = run;
       }
     }
     return bindings;

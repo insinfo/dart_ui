@@ -913,6 +913,45 @@ class EditorModel {
     touch('Aligned ${objects.length} object(s)');
   }
 
+  /// CorelDRAW's align keys (L, R, T, B, C, E, P): with several objects
+  /// selected they line up on the last one selected; with one, or with
+  /// [toPage], on the page. Each object moves on its own; one undo step.
+  void alignTo({
+    HorizontalAlign? horizontal,
+    VerticalAlign? vertical,
+    bool toPage = false,
+  }) {
+    if (!hasSelection) return;
+    final objects = selection.selectedObjects;
+    final SelectableObject? anchor =
+        !toPage && objects.length > 1 ? objects.last : null;
+    final Rect reference = anchor?.cacheBbox ?? active.page.rect;
+    var moved = 0;
+    active.api.record('Align', () {
+      for (final object in objects) {
+        if (identical(object, anchor)) continue;
+        final Rect bounds = object.cacheBbox;
+        final double dx = switch (horizontal) {
+          HorizontalAlign.left => reference.left - bounds.left,
+          HorizontalAlign.centre => reference.center.dx - bounds.center.dx,
+          HorizontalAlign.right => reference.right - bounds.right,
+          null => 0,
+        };
+        final double dy = switch (vertical) {
+          VerticalAlign.top => reference.top - bounds.top,
+          VerticalAlign.middle => reference.center.dy - bounds.center.dy,
+          VerticalAlign.bottom => reference.bottom - bounds.bottom,
+          null => 0,
+        };
+        if (dx == 0 && dy == 0) continue;
+        object.applyTrafo(<double>[1, 0, 0, 1, dx, dy]);
+        moved++;
+      }
+    });
+    touch('Aligned $moved object(s) to '
+        '${anchor == null ? 'the page' : 'the last selected'}');
+  }
+
   /// Spreads the selection evenly. sK1 needs three objects for this and so do
   /// we: two objects are already "distributed", whatever the mode says.
   void applyDistribute({required bool horizontal}) {

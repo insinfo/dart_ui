@@ -50,6 +50,7 @@ const Size kWindowSize = Size(1400, 880);
 
 void main() {
   _rightClickAndCurveTests();
+  _alignKeyTests();
   setUpAll(() {
     final fonts = FrameworkFonts.install();
     expect(fonts.uiFontLoaded, isTrue);
@@ -1207,6 +1208,59 @@ void main() {
       harness.frame();
       expect(harness.model.selection.selectedObjects.whereType<VectorGroup>(),
           isEmpty);
+      harness.dispose();
+    });
+  });
+}
+
+void _alignKeyTests() {
+  group('CorelDRAW\'s align keys', () {
+    test('L lines the selection up on the last object selected', () {
+      final harness = _Harness();
+      harness.model.pickObject(harness.circle);
+      harness.model.pickObject(harness.rectangle, toggle: true);
+      harness.frame();
+      harness.key(logicalKeyL);
+      expect(harness.circle.cacheBbox.left,
+          closeTo(harness.rectangle.cacheBbox.left, 0.01));
+      harness.model.undo();
+      expect(harness.circle.cacheBbox.left,
+          isNot(closeTo(harness.rectangle.cacheBbox.left, 0.01)));
+      harness.dispose();
+    });
+
+    test('P centres one object on the page', () {
+      final harness = _Harness();
+      harness.model.pickObject(harness.star);
+      harness.frame();
+      harness.key(logicalKeyP);
+      final page = harness.session.page.rect;
+      expect(harness.star.cacheBbox.center.dx, closeTo(page.center.dx, 0.01));
+      expect(harness.star.cacheBbox.center.dy, closeTo(page.center.dy, 0.01));
+      harness.dispose();
+    });
+
+    test('B aligns to the bottom with a selection, and is the pen without', () {
+      final harness = _Harness();
+      harness.key(logicalKeyB);
+      expect(harness.model.tool, ToolMode.curve);
+      harness.model.tool = ToolMode.select;
+      harness.model.pickObject(harness.circle);
+      harness.model.pickObject(harness.rectangle, toggle: true);
+      harness.frame();
+      harness.key(logicalKeyB);
+      expect(harness.model.tool, ToolMode.select);
+      expect(harness.circle.cacheBbox.bottom,
+          closeTo(harness.rectangle.cacheBbox.bottom, 0.01));
+      harness.dispose();
+    });
+
+    test('Esc drops the selection', () {
+      final harness = _Harness();
+      harness.model.selectAll();
+      harness.frame();
+      harness.key(logicalKeyEscape);
+      expect(harness.model.hasSelection, isFalse);
       harness.dispose();
     });
   });

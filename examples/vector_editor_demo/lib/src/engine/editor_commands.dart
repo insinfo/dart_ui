@@ -381,6 +381,7 @@ final class _EditorCommands {
           id: 'edit.deselect',
           label: 'Deselect',
           shortcut: const KeyGesture(logicalKeyA, command: true, shift: true),
+          alsoShortcuts: const <KeyGesture>[KeyGesture(logicalKeyEscape)],
           run: (_) => model.deselect(),
         ),
       ];
@@ -538,6 +539,96 @@ final class _EditorCommands {
           enabled: _document,
           disabledReason: _documentReason,
           run: (CommandArgs args) => model.setStroke(_color(args['color'])),
+        ),
+        for (final (
+              String id,
+              String label,
+              int key,
+              HorizontalAlign? h,
+              VerticalAlign? v
+            ) in <(String, String, int, HorizontalAlign?, VerticalAlign?)>[
+          (
+            'object.alignLeft',
+            'Align left',
+            logicalKeyL,
+            HorizontalAlign.left,
+            null
+          ),
+          (
+            'object.alignRight',
+            'Align right',
+            logicalKeyR,
+            HorizontalAlign.right,
+            null
+          ),
+          (
+            'object.alignTop',
+            'Align top',
+            logicalKeyT,
+            null,
+            VerticalAlign.top
+          ),
+          (
+            'object.alignBottom',
+            'Align bottom',
+            logicalKeyB,
+            null,
+            VerticalAlign.bottom
+          ),
+          // CorelDRAW's C lines the centres up on a vertical axis, E on a
+          // horizontal one.
+          (
+            'object.alignCentersVertically',
+            'Align centers vertically',
+            logicalKeyC,
+            HorizontalAlign.centre,
+            null
+          ),
+          (
+            'object.alignCentersHorizontally',
+            'Align centers horizontally',
+            logicalKeyE,
+            null,
+            VerticalAlign.middle
+          ),
+        ])
+          _onSelection(
+            id: id,
+            label: label,
+            description: 'With several objects, to the last one selected; '
+                'with one, to the page.',
+            shortcut: KeyGesture(key),
+            run: (_) => model.alignTo(horizontal: h, vertical: v),
+          ),
+        _onSelection(
+          id: 'object.centerToPage',
+          label: 'Center to page',
+          shortcut: const KeyGesture(logicalKeyP),
+          run: (_) => model.alignTo(
+            horizontal: HorizontalAlign.centre,
+            vertical: VerticalAlign.middle,
+            toPage: true,
+          ),
+        ),
+        CommandSpec(
+          id: 'object.distribute',
+          label: 'Distribute',
+          description: 'Spreads three or more objects evenly between the '
+              'outermost two.',
+          params: const <CommandParam>[
+            CommandParam('direction', CommandParamType.string,
+                required: true, description: 'horizontal or vertical'),
+          ],
+          enabled: (_) => _count >= 3,
+          disabledReason: (_) => 'at least 3 objects must be selected',
+          run: (CommandArgs args) {
+            final String direction = args.string('direction');
+            if (direction != 'horizontal' && direction != 'vertical') {
+              throw const CommandError('`direction` is horizontal or vertical');
+            }
+            model.applyDistribute(horizontal: direction == 'horizontal');
+            return null;
+          },
         ),
         _onSelection(
           id: 'object.align',
