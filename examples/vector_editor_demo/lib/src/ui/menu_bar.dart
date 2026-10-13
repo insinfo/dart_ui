@@ -1,6 +1,7 @@
 /// The application menu bar: the framework's [PlatformMenuBar], fed from
 /// the editor's menus. In the window it is a [MenuBar] - submenus, keyboard
-/// navigation (Alt or F10, the arrows), hover switching, icons, check marks
+/// navigation (Alt - F10 is the Shape tool here, as in CorelDRAW - and the
+/// arrows), hover switching, icons, check marks
 /// and the platform's shortcut notation; on a Mac, when the user asks, the
 /// same menus go to the system's menu bar and this takes no room.
 library;
@@ -23,5 +24,6 @@ class EditorMenuBar extends StatelessWidget {
         native: native,
         height: ChromeMetrics.of(Theme.of(context)).menuBarHeight,
         menus: menus,
+        f10Activates: false,
       );
 }

@@ -12,6 +12,7 @@ import 'command_context.dart';
 const List<(String, String, ToolMode, int)> kToolCommands =
     <(String, String, ToolMode, int)>[
   ('tool.select', 'Pick', ToolMode.select, logicalKeyV),
+  ('tool.shape', 'Shape (nodes)', ToolMode.shaper, logicalKeyF10),
   ('tool.zoom', 'Zoom', ToolMode.zoom, logicalKeyZ),
   ('tool.pan', 'Pan', ToolMode.fleur, logicalKeyH),
   ('tool.pen', 'Pen (Bezier)', ToolMode.curve, logicalKeyB),

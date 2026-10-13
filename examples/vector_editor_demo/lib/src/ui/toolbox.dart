@@ -35,6 +35,12 @@ const List<ToolEntry?> kToolEntries = <ToolEntry?>[
     shortcut: KeyGesture(logicalKeyV),
   ),
   ToolEntry(
+    mode: ToolMode.shaper,
+    icon: PhosphorIcons.bezierCurve,
+    label: 'Shape (nodes)',
+    shortcut: KeyGesture(logicalKeyF10),
+  ),
+  ToolEntry(
     mode: ToolMode.zoom,
     icon: PhosphorIcons.magnifyingGlass,
     label: 'Zoom',

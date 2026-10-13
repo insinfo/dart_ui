@@ -781,6 +781,14 @@ class EditorModel {
   }
 
   /// Records an in-canvas text edit.
+  /// The Shape tool finished a gesture that changed a curve's nodes: one
+  /// undo step for it.
+  void nodesEdited() {
+    if (!hasDocument) return;
+    active.api.commit('Edit nodes');
+    touch('Nodes edited');
+  }
+
   void commitTextEdit(VectorText object, String before, String after) {
     if (!hasDocument) return;
     active.api.setTextContent(object, before, after);

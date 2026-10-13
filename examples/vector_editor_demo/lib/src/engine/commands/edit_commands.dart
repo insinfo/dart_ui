@@ -2,6 +2,7 @@
 library;
 
 import 'package:dart_ui/commands.dart';
+import 'package:dart_ui/vector.dart';
 
 import '../editor_model.dart';
 import 'command_context.dart';
@@ -71,7 +72,13 @@ List<CommandSpec> editCommands(EditorContext context) {
       alsoShortcuts: mac
           ? const <KeyGesture>[KeyGesture(logicalKeyDelete)]
           : const <KeyGesture>[],
-      when: context.needsSelection,
+      // With the Shape tool and nodes picked, Delete removes the nodes
+      // (path.deleteNodes), not the curve they belong to.
+      when: (CommandArgs args) =>
+          context.needsSelection(args) ??
+          (model.tool == ToolMode.shaper && model.selection.nodes.hasNodes
+              ? 'nodes are picked; Delete removes them'
+              : null),
       run: (_) => model.deleteSelection(),
     ),
     CommandSpec(

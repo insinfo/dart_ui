@@ -7,29 +7,29 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 37 | 8 | 18 | 63 | 65% |
-| P1 | 5 | 2 | 37 | 44 | 14% |
+| P0 | 44 | 8 | 11 | 63 | 76% |
+| P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 43 | 10 | 122 | 175 | 27% |
+| **todas** | 52 | 10 | 113 | 175 | 33% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 62 de 83 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 75 de 90 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 84.
+Comandos registrados: 97.
 
 ## Por área
 
 | área | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| Caixa de ferramentas | 8 | 3 | 49 | 60 | 16% |
+| Caixa de ferramentas | 9 | 3 | 48 | 60 | 18% |
 | Interações no canvas | 8 | 2 | 3 | 13 | 69% |
-| Barra de propriedades | 3 | 0 | 13 | 16 | 19% |
+| Barra de propriedades | 4 | 0 | 12 | 16 | 25% |
 | Dockers | 3 | 0 | 12 | 15 | 20% |
 | Operações de objeto | 7 | 2 | 13 | 22 | 36% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
-| Edição de nós | 0 | 0 | 14 | 14 | 0% |
+| Edição de nós | 7 | 0 | 7 | 14 | 50% |
 | Encaixe, guias, réguas e grade | 3 | 1 | 3 | 7 | 50% |
 | Página e documento | 3 | 0 | 5 | 8 | 38% |
 | Formatos de arquivo | 0 | 0 | 4 | 4 | 0% |
@@ -41,7 +41,7 @@ Comandos registrados: 84.
 | ✅ | Pick | P0 | `tool.select` |  |
 | ❌ | Freehand pick | P2 |  | tudo |
 | ❌ | Free transform | P2 |  | tudo |
-| ❌ | Shape (F10) | P0 |  | tudo |
+| ✅ | Shape (F10) | P0 | `tool.shape` |  |
 | ❌ | Smooth | P2 |  | tudo |
 | ❌ | Smear | P2 |  | tudo |
 | ❌ | Twirl | P2 |  | tudo |
@@ -123,7 +123,7 @@ Comandos registrados: 84.
 |---|---|---|---|---|
 | ✅ | Pick, nothing selected: page and units | P0 | teste: "the property bar changes with the selection" |  |
 | ✅ | Pick, selection: position, size, rotation | P0 | teste: "the property bar changes with the selection" |  |
-| ❌ | Shape: nodes | P0 |  | tudo |
+| ✅ | Shape: nodes | P0 | `path.addNode`, `path.deleteNodes`, `path.toLine`, `path.toCurve`, `path.cusp`, `path.smooth`, `path.symmetrical` |  |
 | ✅ | Rectangle: corners | P0 | teste: "a single rectangle brings up the rectangle plugin" |  |
 | ❌ | Ellipse: arc and pie | P1 |  | tudo |
 | ❌ | Polygon / Star: points | P1 |  | corner count only |
@@ -215,15 +215,15 @@ Comandos registrados: 84.
 
 | | funcionalidade | prio | como | falta |
 |---|---|---|---|---|
-| ❌ | Node types (cusp, smooth, symmetrical) | P0 |  | tudo |
-| ❌ | Line ↔ curve | P0 |  | tudo |
-| ❌ | Add node | P0 |  | tudo |
-| ❌ | Delete node | P0 |  | tudo |
+| ✅ | Node types (cusp, smooth, symmetrical) | P0 | `path.cusp`, `path.smooth`, `path.symmetrical` |  |
+| ✅ | Line ↔ curve | P0 | `path.toLine`, `path.toCurve` |  |
+| ✅ | Add node | P0 | `path.addNode` |  |
+| ✅ | Delete node | P0 | `path.deleteNodes` |  |
 | ❌ | Drag a segment | P0 |  | tudo |
 | ❌ | Nudge nodes | P0 |  | tudo |
-| ❌ | Select all nodes | P1 |  | tudo |
-| ❌ | Join / Break | P0 |  | tudo |
-| ❌ | Reverse direction | P1 |  | tudo |
+| ✅ | Select all nodes | P1 | `path.selectAllNodes` |  |
+| ✅ | Join / Break | P0 | `path.joinNodes`, `path.breakNode` |  |
+| ✅ | Reverse direction | P1 | `path.reverse` |  |
 | ❌ | Extract subpath | P1 |  | tudo |
 | ❌ | Reduce nodes | P1 |  | tudo |
 | ❌ | Stretch, rotate, skew, align nodes | P2 |  | tudo |
