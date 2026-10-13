@@ -44,3 +44,26 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
 - Booleanos (Soldar, Aparar, Interseção), Mão livre (F5), Propriedades
   (Alt+Enter), e os painéis de propriedades passando pelo registro.
 
+
+## 13/10/2026
+
+**Mudou**
+- Ferramenta Forma (F10) e edição de nós. No framework, `NodeEditing`
+  trabalha nas coordenadas locais da curva: mover nós e alavancas (suave e
+  simétrico mantêm a restrição), inserir (de Casteljau), apagar, linha/curva,
+  tipo do nó, quebrar, unir, inverter, fechar. `ShapeToolController` cuida dos
+  gestos: clicar e arrastar nós, Shift para somar, banda, duplo clique no
+  segmento para adicionar e no nó para remover.
+- Módulo `node_commands`: `path.*` no menu Paths, um passo de desfazer por
+  comando. Delete apaga os nós escolhidos sob a Forma e o objeto fora dela.
+- `MenuBar.f10Activates: false`: o F10 fica com a aplicação, e Alt continua
+  abrindo a barra.
+- P0 em 76% (33% no total).
+
+**Ficou pela metade**
+- Arrastar um segmento (sem passar pelos nós) e mover nós com as setas.
+- Barra de propriedades da Forma (os comandos existem, mas não há botões).
+
+**Próximo passo**
+- Booleanos (Soldar, Aparar, Interseção), Mão livre (F5), Propriedades
+  (Alt+Enter), arrastar segmento e mover nós com as setas.
